@@ -154,7 +154,7 @@ stage1() {
   mkdir -p "$STAGE1_DIR"
 
   # Build the stdlib bundle first (multi-package manifest).
-  # Track A A1.4 (#860): the F# user-facing `lyric build --manifest`
+  # Track A A1.4: the F# user-facing `lyric build --manifest`
   # dispatcher is gone; stage 1 drives the multi-package compile
   # through the bootstrap-only `--internal-manifest-build` flag
   # which reads `lyric.toml` and feeds the package list straight
@@ -219,7 +219,7 @@ EOF
   local driver_out="$driver_dir/Lyric.CliBundle.dll"
 
   # Snapshot the existing /tmp/lyric-stdlib-* directories so we can
-  # identify *the one the upcoming compile creates* unambiguously (#908).
+  # identify *the one the upcoming compile creates* unambiguously.
   # Reusing CI runners often leaves stale dirs in /tmp; `ls -dt | head -1`
   # would happily pick one of those if filesystem mtimes were close.
   # `|| true` swallows the non-zero exit when the glob doesn't match —
@@ -267,8 +267,7 @@ EOF
   # a Lyric-emitted artefact, so it doesn't land in the F# emitter's
   # stdlib cache.  But Msil.Lowering / Msil.Codegen reference it
   # statically.  Copy it from the stage-0 publish output so stage 1
-  # contains a complete reference set for the AOT entry-point project
-  # (#860 A1.3).
+  # contains a complete reference set for the AOT entry-point project.
   if [[ -f "$BUILD_DIR/stage0-publish/Lyric.Jvm.Hosts.dll" ]]; then
     cp -f "$BUILD_DIR/stage0-publish/Lyric.Jvm.Hosts.dll" "$STAGE1_DIR/"
     copied=$((copied + 1))
@@ -305,7 +304,7 @@ EOF
   # `System.Private.CoreLib` (the unified CoreCLR runtime assembly)
   # to the matching public-facade reference assemblies (System.Runtime,
   # System.Collections, System.Console, mscorlib, ...).  Without this
-  # rewrite the AOT entry-point project (#860 A1.3) can't reference the
+  # rewrite the AOT entry-point project can't reference the
   # stage-1 DLLs as compile-time inputs — the C# compiler refuses to
   # accept refs whose AssemblyRef table points at System.Private.CoreLib.
   if [[ "$SKIP_COREREF_REWRITE" != "1" ]]; then
@@ -332,8 +331,8 @@ stage2() {
   # named `Lyric.Lyric.<Pkg>.dll`.  Until stage 2 is rewritten to drive
   # the same `import Lyric.Cli` driver and compare bundles file-by-file,
   # the reproducibility check below cannot run meaningfully.  Rather
-  # than silently report MISSING for every entry and exit 0 (#907), the
-  # check now fails loudly with a clear message and points the user at
+  # than silently report MISSING for every entry and exit 0, the check
+  # now fails loudly with a clear message and points the user at
   # `SKIP_VERIFY=1` if they want to opt out.
   #
   # If you're here because CI failed: set `SKIP_VERIFY=1` to skip the
@@ -341,7 +340,7 @@ stage2() {
   # outputs of stage 1's CLI-bundle, recompile the driver in stage 2,
   # and compare each artefact across the two stages).
   if [[ "$SKIP_VERIFY" != "1" ]]; then
-    die "stage 2 reproducibility check is incompatible with the A1.2 stage-1 layout; set SKIP_VERIFY=1 to skip, or rewrite stage2() to compare the CLI-bundle outputs (#907)"
+    die "stage 2 reproducibility check is incompatible with the A1.2 stage-1 layout; set SKIP_VERIFY=1 to skip, or rewrite stage2() to compare the CLI-bundle outputs"
   fi
   info "SKIP_VERIFY=1; skipping the reproducibility recompile entirely"
   return 0

@@ -66,6 +66,7 @@ let main argv =
             ProtectedTypeTests.tests
             StdlibLyricTests.tests
             KernelBoundaryTests.tests
+            CircuitStoreHostTests.tests
             JvmSelfTest.tests
             MsilSelfTestM1.tests
             MsilSelfTestM2a.tests
@@ -296,6 +297,7 @@ let main argv =
             SelfHostedVerifierTests.tests
             SelfHostedGeneratorTests.tests
             SelfHostedDerivesTests.tests
+            SelfHostedMonoTests.tests
             MultiFilePackageTests.tests
             ProjectAsDllTests.tests
             CfgErasureTests.tests

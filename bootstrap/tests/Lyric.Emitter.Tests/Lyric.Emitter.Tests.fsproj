@@ -66,6 +66,7 @@
     <Compile Include="ProtectedTypeTests.fs" />
     <Compile Include="StdlibLyricTests.fs" />
     <Compile Include="KernelBoundaryTests.fs" />
+    <Compile Include="CircuitStoreHostTests.fs" />
     <Compile Include="SdkVersionSkewTests.fs" />
     <Compile Include="JvmSelfTest.fs" />
     <Compile Include="MsilSelfTestM1.fs" />
@@ -298,6 +299,7 @@
     <Compile Include="SelfHostedVerifierTests.fs" />
     <Compile Include="SelfHostedGeneratorTests.fs" />
     <Compile Include="SelfHostedDerivesTests.fs" />
+    <Compile Include="SelfHostedMonoTests.fs" />
     <Compile Include="MultiFilePackageTests.fs" />
     <Compile Include="ProjectAsDllTests.fs" />
     <Compile Include="CfgErasureTests.fs" />

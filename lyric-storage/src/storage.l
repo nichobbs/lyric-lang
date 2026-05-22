@@ -129,33 +129,67 @@ pub func isSafePrefix(prefix: in String): Bool {
 // intra-project import resolution does not yet propagate function signatures
 // to the caller's type-checker.  Storage.Kernel.Net still exports these for
 // aspects and external consumers.
+//
+// Each provider gets its own `@cfg`-gated `extern package` block.  The shared
+// data-plane functions (`storagePut`/`storageGet`/...) dispatch on the
+// runtime bucket-handle type, so we declare them in a single non-feature-
+// gated kernel namespace (`Lyric.Storage.Kernel`) that the host shim will
+// resolve at link time once the storage backends are wired up (#733).
 
-@axiom("Amazon S3 SDK for .NET (AWSSDK.S3) / Azure.Storage.Blobs / System.IO")
-func storageConnectS3(region: in String, bucket: in String, accessKey: in String, secretKey: in String, endpointUrl: in String): Result[Int, String] = Err("s3 not linked")
+@axiom("Amazon S3 SDK for .NET (AWSSDK.S3) — connectS3 opens a bucket handle")
+@cfg(feature = "s3")
+extern package AWSSDK.S3 {
+  func storageConnectS3(region: String, bucket: String, accessKey: String, secretKey: String, endpointUrl: String): Result[Int, String]
+    requires: region.length > 0
+    requires: bucket.length > 0
+}
 
-@axiom("Azure Blob Storage SDK for .NET (Azure.Storage.Blobs)")
-func storageConnectAzure(connectionString: in String, containerName: in String): Result[Int, String] = Err("azureblob not linked")
+@axiom("Azure Blob Storage SDK for .NET (Azure.Storage.Blobs) — connectAzure opens a container handle")
+@cfg(feature = "azureblob")
+extern package Azure.Storage.Blobs {
+  func storageConnectAzure(connectionString: String, containerName: String): Result[Int, String]
+    requires: connectionString.length > 0
+    requires: containerName.length > 0
+}
 
-@axiom("Local filesystem storage using System.IO")
-func storageConnectLocal(basePath: in String, bucketName: in String): Result[Int, String] = Err("local not linked")
+@axiom("Local filesystem storage using System.IO — connectLocal opens a directory-backed bucket handle")
+@cfg(feature = "local")
+extern package System.IO {
+  func storageConnectLocal(basePath: String, bucketName: String): Result[Int, String]
+    requires: basePath.length > 0
+    requires: bucketName.length > 0
+}
 
-@axiom("Amazon S3 SDK for .NET (AWSSDK.S3) / Azure.Storage.Blobs / System.IO")
-func storagePut(bucketHandle: in Int, key: in String, dataBase64: in String, contentType: in String, userMetaJson: in String): Result[String, String] = Err("storage not linked")
+@axiom("Shared data-plane: Amazon.S3.AmazonS3Client / Azure.Storage.Blobs.BlobContainerClient / System.IO.File — dispatched by the runtime bucket-handle provider tag")
+extern package Lyric.Storage.Kernel {
+  /// Upload an object.  userMetaJson is a JSON object of string key-value pairs.
+  /// Returns JSON-serialised StorageMetadata on success.
+  func storagePut(bucketHandle: Int, key: String, dataBase64: String, contentType: String, userMetaJson: String): Result[String, String]
+    requires: key.length > 0
 
-@axiom("Amazon S3 SDK for .NET (AWSSDK.S3) / Azure.Storage.Blobs / System.IO")
-func storageGet(bucketHandle: in Int, key: in String): Result[String, String] = Err("storage not linked")
+  /// Download an object.  Returns JSON-serialised StorageObject on success.
+  func storageGet(bucketHandle: Int, key: String): Result[String, String]
+    requires: key.length > 0
 
-@axiom("Amazon S3 SDK for .NET (AWSSDK.S3) / Azure.Storage.Blobs / System.IO")
-func storageDelete(bucketHandle: in Int, key: in String): Result[Unit, String] = Err("storage not linked")
+  /// Delete an object.
+  func storageDelete(bucketHandle: Int, key: String): Result[Unit, String]
+    requires: key.length > 0
 
-@axiom("Amazon S3 SDK for .NET (AWSSDK.S3) / Azure.Storage.Blobs / System.IO")
-func storageList(bucketHandle: in Int, prefix: in String, continuationToken: in String, maxKeys: in Int): Result[String, String] = Err("storage not linked")
+  /// List objects with an optional prefix.  Returns JSON-serialised ListResult.
+  func storageList(bucketHandle: Int, prefix: String, continuationToken: String, maxKeys: Int): Result[String, String]
+    requires: maxKeys >= 1
+    requires: maxKeys <= 1000
 
-@axiom("Amazon S3 SDK for .NET (AWSSDK.S3) / Azure.Storage.Blobs / System.IO")
-func storagePresignedUrl(bucketHandle: in Int, key: in String, expiresInSeconds: in Int): Result[String, String] = Err("storage not linked")
+  /// Generate a pre-signed URL that grants temporary access to the object.
+  /// expiresInSeconds is clamped to the provider's maximum (S3: 7 days).
+  func storagePresignedUrl(bucketHandle: Int, key: String, expiresInSeconds: Int): Result[String, String]
+    requires: key.length > 0
+    requires: expiresInSeconds >= 1
 
-@axiom("Amazon S3 SDK for .NET (AWSSDK.S3) / Azure.Storage.Blobs / System.IO")
-func storageExists(bucketHandle: in Int, key: in String): Result[Bool, String] = Err("storage not linked")
+  /// Return true if an object with the given key exists in the bucket.
+  func storageExists(bucketHandle: Int, key: String): Result[Bool, String]
+    requires: key.length > 0
+}
 
 // ─── Error type ───────────────────────────────────────────────────────────────
 

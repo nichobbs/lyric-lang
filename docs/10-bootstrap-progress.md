@@ -14100,3 +14100,133 @@ Tests:
 - Lyric.Cli:     20/20  (was 256/256 + 2 new in #947; the dropped
                          236 tests covered F# command handlers that
                          no longer exist)
+
+### D-progress-290 — issue #365: implement Lyric.Resilience.CircuitStore
+
+`feedback/05-ecosystem-libraries.md` F-8 / issue #365 documented that
+`lyric-resilience`'s `extern package Lyric.Resilience.CircuitStore` had
+no host-side implementation anywhere in the repo, so the library was
+non-functional — every call into `Resilience.circuitIsOpen` would have
+thrown `MissingMethodException` at runtime.  Compounding the gap, the
+half-open semantics ("one in-flight probe; successful probe closes the
+circuit") had no formal model inside the codebase, so neither the
+verifier nor any test could reason about them.
+
+This entry closes both gaps:
+
+**F# host shim (`bootstrap/src/Lyric.Emitter/CircuitStoreHost.fs`, ~125 LoC).**
+A thin `module Lyric.Resilience.CircuitStore` with a process-global
+`ConcurrentDictionary<string, Entry>` and three static methods
+matching the existing `extern package` signatures
+(`circuitIsOpen(name, cooldownMs)`, `circuitRecordSuccess(name)`,
+`circuitRecordFailure(name, failureThreshold)`).  Per-entry locking
+serialises mutations on the same circuit; concurrent traffic on
+distinct names never contends.  Follows the precedent set by
+`HttpClientHost.fs` — a small shim acceptable under CLAUDE.md
+because non-constant module-level vals (M5.2 stage 3+ wire
+singletons) are not yet emittable from Lyric.
+
+**Lyric-side formal model (`lyric-resilience/src/resilience.l`).**
+The state machine that was previously a commented-out spec sketch is
+now a real `pub protected type CircuitBreakerState` with four mutable
+fields (`consecutiveFailures`, `isOpen`, `openedAtMs`,
+`halfOpenProbeInFlight`), three verifier-visible `invariant:` clauses
+(`consecutiveFailures >= 0`, `isOpen or openedAtMs == 0`,
+`not isOpen or openedAtMs > 0`), and three entries (`recordSuccess`,
+`recordFailure(threshold, nowMs)`, `checkOpen(cooldownMs, nowMs)`)
+whose contracts (`requires: threshold > 0` etc.) are runtime-checked
+in `@runtime_checked` mode and SMT-provable under `@proof_required`.
+`nowMs` is injected as a parameter so the state machine is testable
+without a real clock.  Three thin pub helpers
+(`makeCircuitBreakerState`, `cbStateRecordSuccess/Failure/CheckOpen`)
+give users a Lyric-level handle for unit testing the state machine
+in isolation.
+
+The two implementations are deliberately mirrored.  The F# shim is the
+in-process realization that backs the registry-keyed public API
+(`circuitIsOpen` etc.) that `lyric-web` and `lyric-grpc` call into;
+the Lyric protected type is the verifier-visible source of truth.
+Once wire-singleton emit support ships, the registry plumbing can
+move into Lyric and the F# shim retires.
+
+Test coverage:
+
+- `bootstrap/tests/Lyric.Emitter.Tests/CircuitStoreHostTests.fs`
+  (12 Expecto tests, all passing) — exercises the F# shim
+  directly: fresh-circuit / threshold / success-closes /
+  half-open-probe-grant / single-probe-concurrent-block /
+  failed-probe-reopen / independent-circuits / idempotent-success.
+- `lyric-resilience/tests/resilience_tests.l` (six new Lyric tests)
+  — exercises both the registry-backed public API and the
+  `CircuitBreakerState` formal model with injected `nowMs` for
+  deterministic transitions.
+
+Files:
+
+- new: `bootstrap/src/Lyric.Emitter/CircuitStoreHost.fs`
+- new: `bootstrap/tests/Lyric.Emitter.Tests/CircuitStoreHostTests.fs`
+- edited: `bootstrap/src/Lyric.Emitter/Lyric.Emitter.fsproj`
+- edited: `bootstrap/tests/Lyric.Emitter.Tests/Lyric.Emitter.Tests.fsproj`
+- edited: `bootstrap/tests/Lyric.Emitter.Tests/Program.fs`
+- edited: `lyric-resilience/src/resilience.l`
+- edited: `lyric-resilience/src/_kernel/net/resilience_kernel.l`
+- edited: `lyric-resilience/tests/resilience_tests.l`
+
+### D-progress-291 — Band 5: value generics + cross-package surface + constraint validation in Lyric.Mono (#858)
+
+Closes `docs/41 §9 Band 5` monomorphizer entry partway.  `Lyric.Mono`
+gains three capabilities and a self-test consumer; the cross-package
+specialisation needed to retire the F# emitter's reified-generics path
+still depends on Band 6 (`Lyric.RestoredPackages`).
+
+What shipped:
+
+1. **Value generic parameters (`GPValue`).**  Each specialisation tracks
+   a parallel `valueSubst: Map[String, Expr]` alongside the existing
+   type substitution.  At specialisation time the value-param map is
+   applied across the body (every `EPath([N])` leaf and every
+   `TAValue(EPath([N]))` inside a `TArray.size` or `TGenericApp.args`
+   gets rewritten to the bound concrete Expr) before the worklist
+   walks for nested generic calls.  Mangled names append `V<key>`
+   segments — `valueExprKey` covers integer/bool/char/string literals
+   and single-segment paths.
+
+2. **Cross-package entry point.**  `monoFileWithImports(file,
+   importedGenDecls)` merges caller-supplied generic decls into the
+   same lookup as same-package generics.  The bridges still call
+   `monoFile(file)` (empty imports list) — wiring them through awaits
+   the Band 6 cross-package resolver.
+
+3. **Best-effort marker-constraint validation.**  When a generic
+   function carries a `where T: Marker` bound and `T` substitutes to a
+   primitive, the well-known marker set (`Equals`, `Hash`, `Show`,
+   `Ord`, `Compare`) is checked against the BCL primitive set.
+   Unknown concrete types accept silently because cross-package trait
+   dispatch is Band 6.  Confirmed mismatches emit `M0001` error
+   diagnostics that flow through `MonoResult.diagnostics`.
+
+The new code path activates either when a future surface adds explicit
+type-app syntax at call sites, or when another middle-end pass
+synthesises `ETypeApp(EPath(f), targs)` nodes — Lyric's parser today
+treats `f[T](x)` as `EIndex` followed by `ECall`, so user-written value
+generics still rely on inference from argument types (which works for
+`GPType` but not for `GPValue`).
+
+Files touched:
+
+- `lyric-compiler/lyric/mono.l` — extended the existing pass.
+- `lyric-compiler/lyric/mono_self_test.l` — new consumer with eleven
+  test cases covering type-generic inference, explicit `ETypeApp`
+  type-app, value generics (single + multiple distinct + body
+  substitution), mixed type + value mangling, constraint validation,
+  nested call chains, cross-package, and the no-op fast path.
+- `bootstrap/tests/Lyric.Emitter.Tests/SelfHostedMonoTests.fs` — F#
+  Expecto runner that compiles the self-test through the bootstrap
+  emitter and asserts exit-0 + "ok" in stdout.
+
+Tests:
+- Lexer:        128/128
+- Parser:       323/323
+- TypeChecker:  189/189
+- Emitter:      812/812 (1 new self-host test, 2 ignored unchanged)
+- Lyric.Cli:     65/65
