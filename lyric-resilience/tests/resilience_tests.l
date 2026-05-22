@@ -54,3 +54,76 @@ test "sleepMs(0) does not crash" {
   Resilience.sleepMs(0)
   assertTrue(true, "sleepMs(0) completed without error")
 }
+
+// ─── CircuitBreakerState — formal-model unit tests (issue #365) ──────────────
+
+test "CircuitBreakerState: fresh state is closed" {
+  val st = Resilience.makeCircuitBreakerState()
+  assertFalse(Resilience.cbStateCheckOpen(st, 1000, 1000),
+              "fresh CircuitBreakerState must be closed")
+}
+
+test "CircuitBreakerState: failures below threshold leave state closed" {
+  val st = Resilience.makeCircuitBreakerState()
+  // threshold=5, only 4 failures → still closed.
+  Resilience.cbStateRecordFailure(st, 5, 1000)
+  Resilience.cbStateRecordFailure(st, 5, 2000)
+  Resilience.cbStateRecordFailure(st, 5, 3000)
+  Resilience.cbStateRecordFailure(st, 5, 4000)
+  assertFalse(Resilience.cbStateCheckOpen(st, 10000, 5000),
+              "4 failures below threshold of 5: state stays closed")
+}
+
+test "CircuitBreakerState: reaching threshold opens the state" {
+  val st = Resilience.makeCircuitBreakerState()
+  Resilience.cbStateRecordFailure(st, 3, 1000)
+  Resilience.cbStateRecordFailure(st, 3, 2000)
+  Resilience.cbStateRecordFailure(st, 3, 3000)
+  // cooldown still in effect — should be open
+  assertTrue(Resilience.cbStateCheckOpen(st, 10000, 3500),
+             "3 failures at threshold of 3: state opens")
+}
+
+test "CircuitBreakerState: recordSuccess closes an open state" {
+  val st = Resilience.makeCircuitBreakerState()
+  Resilience.cbStateRecordFailure(st, 2, 1000)
+  Resilience.cbStateRecordFailure(st, 2, 2000)
+  assertTrue(Resilience.cbStateCheckOpen(st, 10000, 2500),
+             "state must open after 2 failures (threshold 2)")
+  Resilience.cbStateRecordSuccess(st)
+  assertFalse(Resilience.cbStateCheckOpen(st, 10000, 3000),
+              "state must close after recordSuccess")
+}
+
+test "CircuitBreakerState: cooldown grants exactly one probe" {
+  val st = Resilience.makeCircuitBreakerState()
+  Resilience.cbStateRecordFailure(st, 2, 1000)
+  Resilience.cbStateRecordFailure(st, 2, 1500)
+  // openedAtMs = 1500; cooldown = 1000 → past cooldown at nowMs >= 2500.
+  // Before cooldown:
+  assertTrue(Resilience.cbStateCheckOpen(st, 1000, 2000),
+             "still in cooldown window: open")
+  // First check past cooldown grants the probe (returns false / allow).
+  assertFalse(Resilience.cbStateCheckOpen(st, 1000, 2600),
+              "first check past cooldown grants probe")
+  // Second concurrent check is blocked (probe in flight).
+  assertTrue(Resilience.cbStateCheckOpen(st, 1000, 2700),
+             "second check is blocked while probe in flight")
+}
+
+test "CircuitBreakerState: failed probe re-opens with fresh cooldown" {
+  val st = Resilience.makeCircuitBreakerState()
+  Resilience.cbStateRecordFailure(st, 2, 1000)
+  Resilience.cbStateRecordFailure(st, 2, 1500)
+  // Past cooldown → take the probe.
+  assertFalse(Resilience.cbStateCheckOpen(st, 1000, 2600),
+              "probe is allowed past cooldown")
+  // Probe fails — re-open with fresh timestamp 3000.
+  Resilience.cbStateRecordFailure(st, 2, 3000)
+  // Cooldown restarts: should still be open at 3500 (only 500ms in).
+  assertTrue(Resilience.cbStateCheckOpen(st, 1000, 3500),
+             "failed probe re-opens with fresh cooldown")
+  // Past the new cooldown: probe again.
+  assertFalse(Resilience.cbStateCheckOpen(st, 1000, 4100),
+              "after re-open cooldown, fresh probe is allowed")
+}

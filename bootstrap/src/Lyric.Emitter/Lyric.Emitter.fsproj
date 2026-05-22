@@ -16,6 +16,7 @@
     <Compile Include="ProcessCapture.fs" />
     <Compile Include="ConsoleHelper.fs" />
     <Compile Include="HttpClientHost.fs" />
+    <Compile Include="CircuitStoreHost.fs" />
     <Compile Include="LogHelper.fs" />
     <Compile Include="VerifierEnv.fs" />
     <Compile Include="Backend.fs" />
