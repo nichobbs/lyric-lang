@@ -571,9 +571,13 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
         val retTy = if isGen {
           MObject
         } else if startsWith(decl.name, "__lambda_") {
-          // Same bootstrap limitation as in lowerFuncMsil: bypass decl.ret for
-          // synthetic lambda functions to avoid null retTy from emitMatch fallthrough.
-          MVoid
+          // For synthetic lambdas: the return type was set during lambda lifting based on
+          // whether the body ends with an expression (implicit return) or not.
+          // If ret is Some(...), use that; otherwise default to MVoid.
+          match decl.ret {
+            case Some(te) -> typeExprToMsil(te, pkgName)
+            case None     -> MVoid
+          }
         } else {
           match decl.ret {
             case Some(te) -> typeExprToMsil(te, pkgName)
@@ -3519,6 +3523,20 @@ func syntheticSpan(): Span {
   Span(startPos = p, endPos = p)
 }
 
+// Check if a Block ends with an expression statement (SExpr).
+// If true, the block has an implicit return value; otherwise it returns Unit/void.
+func blockEndsWithExpr(block: in Block): Bool {
+  if block.statements.count == 0 {
+    false
+  } else {
+    val lastStmt = block.statements[block.statements.count - 1]
+    match lastStmt.kind {
+      case SExpr(_) -> true
+      case _ -> false
+    }
+  }
+}
+
 // Convert a LambdaParam to a full Param (mode=PMIn, ty=Object).
 // All lifted lambda params are typed as Object because the delegate types used
 // (System.Action`N<object,...>) expect object parameters.  If the lambda body
@@ -3555,6 +3573,17 @@ func collectLambdasBfsExpr(e: in Expr, ticker: in List[Int], synths: in List[Ite
         params.add(lambdaParamToParam(lparams[lpi]))
         lpi = lpi + 1
       }
+      // Infer return type: if the body ends with SExpr, the lambda implicitly returns that value (Object in bootstrap).
+      // Otherwise, it returns Unit (void, ret = None).
+      val retTy: Option[TypeExpr] =
+        if blockEndsWithExpr(body) {
+          val seg: List[String] = newList()
+          seg.add("Object")
+          Some(TypeExpr(kind = TRef(path = ModulePath(segments = seg, span = syntheticSpan())),
+                        span = syntheticSpan()))
+        } else {
+          None
+        }
       val decl = FunctionDecl(
         docComments = newList(),
         annotations = newList(),
@@ -3563,7 +3592,7 @@ func collectLambdasBfsExpr(e: in Expr, ticker: in List[Int], synths: in List[Ite
         name        = lname,
         generics    = None,
         params      = params,
-        ret         = None,
+        ret         = retTy,
         whereClause = None,
         contracts   = newList(),
         body        = Some(FBBlock(block = body)),
