@@ -37,6 +37,94 @@ func parseDeriveAndFindFunc(src: in String, name: in String): Bool {
   false
 }
 
+// Recursively count occurrences of `ECall(EMember(_, methodName), _)` in
+// `e`.  Used to verify that synthesised `toJson` bodies for String fields
+// dispatch through the five-step `replace` escape chain in `derives.l`
+// (#992): a regression that strips any link in that chain reduces the
+// `replace` count and fails the assertion.
+func countMethodCalls(e: in Expr, methodName: in String): Int {
+  var n = 0
+  match e.kind {
+    case ECall(fn, args) -> {
+      match fn.kind {
+        case EMember(receiver, name) -> {
+          if name == methodName { n = n + 1 }
+          n = n + countMethodCalls(receiver, methodName)
+        }
+        case _ -> { n = n + countMethodCalls(fn, methodName) }
+      }
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CAPositional(expr) -> { n = n + countMethodCalls(expr, methodName) }
+          case CANamed(_, value, _) -> { n = n + countMethodCalls(value, methodName) }
+        }
+        i = i + 1
+      }
+    }
+    case EMember(receiver, _) -> { n = n + countMethodCalls(receiver, methodName) }
+    case EBinop(_, lhs, rhs)  -> {
+      n = n + countMethodCalls(lhs, methodName)
+      n = n + countMethodCalls(rhs, methodName)
+    }
+    case EBlock(body) -> {
+      var i = 0
+      while i < body.statements.count {
+        match body.statements[i].kind {
+          case SExpr(expr)   -> { n = n + countMethodCalls(expr, methodName) }
+          case SReturn(opt)  -> {
+            match opt {
+              case Some(expr) -> { n = n + countMethodCalls(expr, methodName) }
+              case None       -> ()
+            }
+          }
+          case _ -> ()
+        }
+        i = i + 1
+      }
+    }
+    case EParen(inner) -> { n = n + countMethodCalls(inner, methodName) }
+    case _ -> ()
+  }
+  n
+}
+
+// Find the synthesised IFunc with the given name and return its body
+// expression (the synthesiser wraps the toJson expression in a single
+// SReturn).  Returns None if not found or shaped unexpectedly.
+func findFuncBody(sf: in SourceFile, name: in String): Option[Expr] {
+  var i = 0
+  while i < sf.items.count {
+    match sf.items[i].kind {
+      case IFunc(decl) -> {
+        if decl.name == name {
+          match decl.body {
+            case Some(fb) -> {
+              match fb {
+                case FBExpr(expr) -> { return Some(value = expr) }
+                case FBBlock(blk) -> {
+                  if blk.statements.count > 0 {
+                    match blk.statements[0].kind {
+                      case SReturn(opt) -> { return opt }
+                      case SExpr(e)     -> { return Some(value = e) }
+                      case _            -> { return None }
+                    }
+                  }
+                  return None
+                }
+              }
+            }
+            case None -> { return None }
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  None
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests.
@@ -72,6 +160,28 @@ func testGenerateJsonRecord(): Unit {
   val sf  = deriveFile(pr.file)
   assertEqualInt(sf.items.count, 2, "json-rec: 1 record + 1 synth (toJson)")
   assertTrue(parseDeriveAndFindFunc(src, "Point.toJson"), "json-rec: Point.toJson synthesised")
+}
+
+// Regression for #992: the synthesised `toJson` for a record with a
+// `String` field must dispatch through the five-step `replace` escape
+// chain in `derives.l::jsonFieldExpr` (`\\`, `"`, `\n`, `\r`, `\t`).
+// A regression that strips any link in that chain reduces the count and
+// trips the assertion below; relying on the bare Int-field test
+// (`testGenerateJsonRecord` above) would not catch it.
+func testGenerateJsonRecordStringEscape(): Unit {
+  val src = "package P\n@generate(Json)\nrecord Msg { text: String }\n"
+  val pr  = parse(src)
+  val sf  = deriveFile(pr.file)
+  assertTrue(parseDeriveAndFindFunc(src, "Msg.toJson"),
+    "json-string: Msg.toJson synthesised")
+  match findFuncBody(sf, "Msg.toJson") {
+    case Some(body) -> {
+      val replaceCount = countMethodCalls(body, "replace")
+      assertEqualInt(replaceCount, 5,
+        "json-string: Msg.toJson contains five chained .replace() calls (escape chain)")
+    }
+    case None -> assertTrue(false, "json-string: Msg.toJson body not found")
+  }
 }
 
 func testMultipleDerives(): Unit {
@@ -113,6 +223,76 @@ func testDeriveShowEmptyRecord(): Unit {
   val src = "package P\n@derive(Show)\nrecord Empty {}\n"
   assertTrue(parseDeriveAndFindFunc(src, "Empty.show"),
     "show-empty: Empty.show synthesised (empty record)")
+}
+
+// Regression for #939: synthesised UFCS helpers must inherit the parent
+// item's visibility.  Without it, `pub @derive(Equals) record Point` would
+// produce a package-private `Point.equals`, and cross-package callers
+// would fail visibility checks.
+func testDeriveVisibilityPub(): Unit {
+  val src = "package P\npub @derive(Equals)\nrecord Point { x: Int; y: Int }\n"
+  val pr  = parse(src)
+  val sf  = deriveFile(pr.file)
+  var i = 0
+  var found = false
+  while i < sf.items.count {
+    val it = sf.items[i]
+    match it.kind {
+      case IFunc(decl) -> {
+        if decl.name == "Point.equals" {
+          found = true
+          match it.visibility {
+            case Some(v) -> {
+              match v {
+                case VisPub(_) -> ()  // expected
+                case VisInternal(_) -> {
+                  assertTrue(false,
+                    "visibility-pub: Point.equals should be VisPub, got VisInternal")
+                }
+              }
+              match decl.visibility {
+                case Some(VisPub(_)) -> ()  // expected
+                case _ -> assertTrue(false,
+                  "visibility-pub: Point.equals FunctionDecl should also carry VisPub")
+              }
+            }
+            case None -> assertTrue(false,
+              "visibility-pub: Point.equals should have VisPub but visibility was None")
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  assertTrue(found, "visibility-pub: Point.equals must be synthesised")
+}
+
+// Regression for #939: package-private parent → package-private helper.
+func testDeriveVisibilityPackagePrivate(): Unit {
+  val src = "package P\n@derive(Hash)\nrecord Counter { n: Int }\n"
+  val pr  = parse(src)
+  val sf  = deriveFile(pr.file)
+  var i = 0
+  var found = false
+  while i < sf.items.count {
+    val it = sf.items[i]
+    match it.kind {
+      case IFunc(decl) -> {
+        if decl.name == "Counter.hash" {
+          found = true
+          match it.visibility {
+            case None -> ()  // expected — parent has no `pub` so helper stays package-private
+            case Some(_) -> assertTrue(false,
+              "visibility-pkg: Counter.hash should inherit None (package-private), got Some(_)")
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  assertTrue(found, "visibility-pkg: Counter.hash must be synthesised")
 }
 
 func testExposedRecordDerive(): Unit {
@@ -191,6 +371,7 @@ func main(): Unit {
   testDeriveHashRecord()
   testDeriveShowRecord()
   testGenerateJsonRecord()
+  testGenerateJsonRecordStringEscape()
   testMultipleDerives()
   testDeriveEqualsDistinctType()
   testDeriveHashDistinctType()
@@ -200,6 +381,8 @@ func main(): Unit {
   testDeriveEqualsDistinctBool()
   testDeriveShowDistinctBool()
   testDeriveAndAnnotationDontDuplicate()
+  testDeriveVisibilityPub()
+  testDeriveVisibilityPackagePrivate()
   testExposedRecordDerive()
   testNoDerivesInListDoesNotSynth()
   testIdempotent()

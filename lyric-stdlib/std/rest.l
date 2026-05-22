@@ -367,6 +367,19 @@ pub async func RestClient.jsonBody(
 /// `Ok` case.  Leaking the document keeps the buffer out of the array
 /// pool until the next GC cycle.
 ///
+/// # Malformed input (limitation, #984)
+/// The underlying `Std.Json.parseJson` ultimately calls
+/// `System.Text.Json.JsonDocument.Parse`, which **throws** on syntactically
+/// invalid input.  This function does *not* yet wrap that exception into
+/// an `Err` variant — a malformed body propagates as a panic from the
+/// host boundary, not as a `Result.Err`.  Callers handling potentially-
+/// untrusted JSON should validate up front (e.g. by reading the body via
+/// `jsonBody` and running their own pre-flight check) until a
+/// `tryParseJson` host helper lands.  The same caveat applies to every
+/// other `Std.Json` helper in this file (`jsonString`, `jsonInt`, etc.),
+/// so this function is not a regression — the limitation is documented
+/// here so the API contract is honest about it.
+///
 /// # Errors
 /// - `Http`: transport / status failure (body could not be read).
 ///
