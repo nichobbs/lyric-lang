@@ -160,6 +160,11 @@ func translateLit(lit: in Literal): Term {
 }
 
 // Convert an Int codepoint to a Long value for LInt literals.
+// Lyric's surface lacks a direct Int → Long cast today; mirror the
+// `intToLong` shim in lexer.l.  Inputs are bounded codepoint indices
+// (typically small non-negative integers) so the constant-time-per-bit
+// bound here is acceptable.  Will collapse to a single `conv.i8` IL
+// instruction when the cleaner widening shim lands (lyric-lang #418 §9).
 func codepointToLong(n: in Int): Long {
   var acc: Long = 0i64
   if n >= 0 {
@@ -1112,8 +1117,17 @@ func wpWalk(env: in VEnv, resultSort: in SortInfo, postcond: in Term, stmts: in 
         wpWhile(env, resultSort, postcond, stmts, idx, cond, body, st.span)
       }
       case SInvariant(_) -> {
-        // SInvariant outside a loop — skip.
-        wpWalk(env, resultSort, postcond, stmts, idx + 1)
+        // SInvariant outside a loop is a user error (lyric-lang #418 §7).
+        // Emit a diagnostic so the misplaced clause is surfaced, then
+        // walk on so the rest of the body still gets verified.
+        val rest = wpWalk(env, resultSort, postcond, stmts, idx + 1)
+        val di: List[Diagnostic] = newList()
+        di.add(warningDiagnostic("V0030",
+          "invariant: clause outside loop head is ignored; move it onto a while/loop",
+          st.span))
+        var k: Int = 0
+        while k < rest.diags.count { di.add(rest.diags[k]); k = k + 1 }
+        WpResult(wp = rest.wp, sideGoals = rest.sideGoals, assumed = rest.assumed, diags = di)
       }
       case _ -> {
         val di: List[Diagnostic] = newList()
@@ -1641,6 +1655,12 @@ pub func goalsForFunction(env0: in VEnv, decl: in FunctionDecl): (List[Goal], Li
       rangeTerms.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = lo), sort = SInt), resultVar)))
       rangeTerms.add(TBuiltin(op = BOpLt,  args = termList2(resultVar, TLit(value = VLInt(n = hi), sort = SInt))))
     }
+    case RBKUpperBound(hi) -> {
+      rangeTerms.add(TBuiltin(op = BOpLte, args = termList2(resultVar, TLit(value = VLInt(n = hi), sort = SInt))))
+    }
+    case RBKLowerBound(lo) -> {
+      rangeTerms.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = lo), sort = SInt), resultVar)))
+    }
   }
   val allPostParts: List[Term] = newList()
   allPostParts.add(postTerm)
@@ -1719,6 +1739,117 @@ func freshSymbolsEnv(env: in VEnv): VEnv {
     symbols = freshSyms, checkedArithmetic = env.checkedArithmetic)
 }
 
+// Collect invariant contracts from a protected type's members.
+// Each PMInvariant becomes a CCRequires (assume at entry) and a CCEnsures
+// (must hold at exit) so entries are required to preserve the invariant.
+func collectProtectedInvariants(decl: in ProtectedTypeDecl): List[ContractClause] {
+  val result: List[ContractClause] = newList()
+  var mi = 0
+  while mi < decl.members.count {
+    match decl.members[mi] {
+      case PMInvariant(inv) -> {
+        result.add(CCRequires(expr = inv.expr, span = inv.span))
+        result.add(CCEnsures(expr = inv.expr, span = inv.span))
+      }
+      case _ -> {}
+    }
+    mi = mi + 1
+  }
+  result
+}
+
+// Synthesize a FunctionDecl for a protected-type entry and verify it.
+// Results are accumulated into allGoals / allDiags (no tuple return needed).
+func goalsForProtectedEntry(
+  level:        in VerificationLevel,
+  env0:         in VEnv,
+  protName:     in String,
+  ed:           in EntryDecl,
+  invContracts: in List[ContractClause],
+  allGoals:     in List[Goal],
+  allDiags:     in List[Diagnostic]
+): Unit {
+  val entryContracts: List[ContractClause] = newList()
+  var eci = 0
+  while eci < invContracts.count { entryContracts.add(invContracts[eci]); eci = eci + 1 }
+  val entryOwn = ed.contracts
+  eci = 0
+  while eci < entryOwn.count { entryContracts.add(entryOwn[eci]); eci = eci + 1 }
+  val noDocComments: List[DocComment] = newList()
+  val entryBody: Option[FunctionBody] = Some(value = ed.body)
+  // Pass entry-level annotations through (#662): @axiom / @runtime_checked
+  // overrides on the EntryDecl must reach `levelOfFunction` below.
+  val synthDecl: FunctionDecl = FunctionDecl(
+    docComments = noDocComments,
+    annotations = ed.annotations,
+    visibility  = ed.visibility,
+    isAsync     = false,
+    name        = protName + "::" + ed.name,
+    generics    = None,
+    params      = ed.params,
+    ret         = ed.ret,
+    whereClause = None,
+    contracts   = entryContracts,
+    body        = entryBody,
+    span        = ed.span)
+  val fnLevel = levelOfFunction(level, synthDecl)
+  if vlIsProofRequired(fnLevel) {
+    val fnEnv = freshSymbolsEnv(env0)
+    val (goals, diags) = goalsForFunction(fnEnv, synthDecl)
+    var gi = 0
+    while gi < goals.count { allGoals.add(goals[gi]); gi = gi + 1 }
+    appendTermList2(allDiags, diags)
+  }
+}
+
+// Verify a protected-type PMFunc helper that has its own contracts.
+// Results are accumulated into allGoals / allDiags.
+func goalsForProtectedFunc(
+  level:    in VerificationLevel,
+  env0:     in VEnv,
+  fn:       in FunctionDecl,
+  allGoals: in List[Goal],
+  allDiags: in List[Diagnostic]
+): Unit {
+  val fnLevel = levelOfFunction(level, fn)
+  if vlIsProofRequired(fnLevel) {
+    val fnEnv = freshSymbolsEnv(env0)
+    val (goals, diags) = goalsForFunction(fnEnv, fn)
+    var gi = 0
+    while gi < goals.count { allGoals.add(goals[gi]); gi = gi + 1 }
+    appendTermList2(allDiags, diags)
+  }
+}
+
+// Iterate over protected-type members and collect goals for entries and funcs.
+func goalsForProtectedMembers(
+  level:        in VerificationLevel,
+  env0:         in VEnv,
+  protName:     in String,
+  members:      in List[ProtectedMember],
+  invContracts: in List[ContractClause],
+  allGoals:     in List[Goal],
+  allDiags:     in List[Diagnostic]
+): Unit {
+  var mi = 0
+  while mi < members.count {
+    match members[mi] {
+      case PMEntry(ed)    -> { goalsForProtectedEntry(level, env0, protName, ed, invContracts, allGoals, allDiags) }
+      case PMFunc(fn)     -> { goalsForProtectedFunc(level, env0, fn, allGoals, allDiags) }
+      case _              -> {}
+    }
+    mi = mi + 1
+  }
+}
+
+// #336: aspect weaving (Lyric.Weaver.weaveFile) now runs in the
+// verifier driver before VC generation.  goalsForFile receives the
+// woven SourceFile — original IFuncs are replaced with renamed
+// `__aspect_target` declarations plus wrapper IFuncs carrying the
+// composed contracts (§5 of docs/26-aspects.md).  IAspect items have
+// already been dropped, so the verifier sees the body the runtime
+// executes.  The V0031 same-package warning is therefore retired.
+
 pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[Goal], List[Diagnostic]) {
   if not vlIsProofRequired(level) {
     val noGoals: List[Goal]       = newList()
@@ -1726,13 +1857,53 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
     return (noGoals, noDiags)
   }
 
-  // Build callee table from file's IFunc items.
+  // Build callee table from file's IFunc and protected-type PMFunc items.
   val callees: Map[String, FunctionDecl] = newMap()
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case IFunc(fn) -> callees.add(fn.name, fn)
-      case _         -> {}
+      case IProtected(decl) -> {
+        // #663: Hoare-call rule at a PMEntry call site reads
+        // `callees.<entry>.contracts` to derive the post-state.
+        // Verification combines invariants with ed.contracts, so the
+        // callee stub must do the same; otherwise a caller can't
+        // conclude the invariant after a cross-entry call.
+        val protInvs: List[ContractClause] = collectProtectedInvariants(decl)
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case PMFunc(fn) -> callees.add(decl.name + "::" + fn.name, fn)
+            case PMEntry(ed) -> {
+              val stubContracts: List[ContractClause] = newList()
+              var pi = 0
+              while pi < protInvs.count { stubContracts.add(protInvs[pi]); pi = pi + 1 }
+              val edOwn = ed.contracts
+              pi = 0
+              while pi < edOwn.count { stubContracts.add(edOwn[pi]); pi = pi + 1 }
+              val noDoc: List[DocComment] = newList()
+              val noAnn: List[Annotation] = newList()
+              val entryFn: FunctionDecl = FunctionDecl(
+                docComments = noDoc,
+                annotations = noAnn,
+                visibility  = ed.visibility,
+                isAsync     = false,
+                name        = decl.name + "::" + ed.name,
+                generics    = None,
+                params      = ed.params,
+                ret         = ed.ret,
+                whereClause = None,
+                contracts   = stubContracts,
+                body        = Some(value = ed.body),
+                span        = ed.span)
+              callees.add(decl.name + "::" + ed.name, entryFn)
+            }
+            case _ -> {}
+          }
+          mi = mi + 1
+        }
+      }
+      case _ -> {}
     }
     i = i + 1
   }
@@ -1753,12 +1924,22 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
       case IFunc(fn) -> {
         val fnLevel = levelOfFunction(level, fn)
         if vlIsProofRequired(fnLevel) {
+          // #336: aspect weaving runs in driver.l before this point, so
+          // the IFunc here is either an original function with no
+          // matching aspect, an `__aspect_target` (the renamed inner
+          // body), or a wrapper carrying the composed contracts.  All
+          // three are verified the same way against their declared
+          // contracts.
           val fnEnv = freshSymbolsEnv(env0)
           val (goals, diags) = goalsForFunction(fnEnv, fn)
           var gi = 0
           while gi < goals.count { allGoals.add(goals[gi]); gi = gi + 1 }
           appendTermList2(allDiags, diags)
         }
+      }
+      case IProtected(decl) -> {
+        val invContracts: List[ContractClause] = collectProtectedInvariants(decl)
+        goalsForProtectedMembers(level, env0, decl.name, decl.members, invContracts, allGoals, allDiags)
       }
       case _ -> {}
     }

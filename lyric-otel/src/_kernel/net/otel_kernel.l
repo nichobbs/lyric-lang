@@ -1,9 +1,9 @@
-/// .NET OpenTelemetry extern boundary.
-/// Wires Lyric's OTel wrapper functions to System.Diagnostics.ActivitySource
-/// (tracing) and System.Diagnostics.Metrics.Meter (metrics).
-///
-/// Only active when compiled with feature = "dotnet".
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+// .NET OpenTelemetry extern boundary.
+// Wires Lyric's OTel wrapper functions to System.Diagnostics.ActivitySource
+// (tracing) and System.Diagnostics.Metrics.Meter (metrics).
+//
+// Only active when compiled with feature = "dotnet".
+// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 @cfg(feature = "dotnet")
 package OTel.Kernel.Net
 

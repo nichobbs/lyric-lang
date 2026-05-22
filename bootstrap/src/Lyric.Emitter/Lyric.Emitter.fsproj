@@ -4,9 +4,20 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
 
+  <!-- Expose `internal` helpers (e.g. `parseMajorMinor`,
+       `isWhitelistedT0010Message`) to the test projects without
+       making them part of the public Lyric.Emitter API surface. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="Lyric.Emitter.Tests" />
+    <InternalsVisibleTo Include="Lyric.Cli.Tests" />
+  </ItemGroup>
+
   <ItemGroup>
     <Compile Include="ProcessCapture.fs" />
     <Compile Include="ConsoleHelper.fs" />
+    <Compile Include="HttpClientHost.fs" />
+    <Compile Include="CircuitStoreHost.fs" />
+    <Compile Include="LogHelper.fs" />
     <Compile Include="VerifierEnv.fs" />
     <Compile Include="Backend.fs" />
     <Compile Include="TypeMap.fs" />

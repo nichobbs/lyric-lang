@@ -121,21 +121,21 @@ let tests =
         }
 
         // ---------------------------------------------------------------
-        // JsonDerive — @derive(Json) records grow toJson / fromJson.
+        // JsonDerive — @generate(Json) records grow toJson / fromJson.
         // ---------------------------------------------------------------
 
-        test "derive(Json) adds a Type.toJson function" {
+        test "generate(Json) adds a Type.toJson function" {
             let file =
                 parseClean
                     "package P\n\
-                     @derive(Json)\n\
+                     @generate(Json)\n\
                      pub record Point { x: Int, y: Int }\n"
             let names = funcNames file
             Expect.contains names "Point.toJson"
                 "Point.toJson is synthesised"
         }
 
-        test "non-derive(Json) record gets no toJson" {
+        test "non-generate(Json) record gets no toJson" {
             let file =
                 parseClean
                     "package P\n\
@@ -145,13 +145,13 @@ let tests =
                 "no toJson for plain record"
         }
 
-        test "derive(Json) on multiple records produces a toJson per type" {
+        test "generate(Json) on multiple records produces a toJson per type" {
             let file =
                 parseClean
                     "package P\n\
-                     @derive(Json)\n\
+                     @generate(Json)\n\
                      pub record A { v: Int }\n\
-                     @derive(Json)\n\
+                     @generate(Json)\n\
                      pub record B { s: String }\n"
             let names = funcNames file
             Expect.contains names "A.toJson" "A.toJson"

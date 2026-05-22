@@ -1,47 +1,54 @@
-/// Ws — WebSocket server library for Lyric.
-///
-/// Provides the full connection lifecycle for WebSocket servers:
-/// connection context, message types, a handler interface for
-/// application logic, and a registry interface for sending to
-/// connected clients.
-///
-/// Typical usage:
-///
-///   import Ws
-///
-///   // Implement WsHandler for application logic
-///   record MyHandler {}
-///   impl WsHandler for MyHandler {
-///     func onOpen(ctx: in WsContext): Result[Unit, WsError] { ... }
-///     func onMessage(ctx: in WsContext, msg: in WsMessage): Result[Unit, WsError] { ... }
-///     func onClose(ctx: in WsContext, code: in WsCloseCode): Unit { ... }
-///     func onError(ctx: in WsContext, error: in WsError): Unit { ... }
-///   }
-///
-///   // Create a registry and start serving
-///   match Ws.createRegistry() {
-///     case Ok(registry) -> ...
-///     case Err(e) -> ...
-///   }
-///
-/// Runtime config env vars (LYRIC_CONFIG_WS_SERVER_*):
-///   LYRIC_CONFIG_WS_SERVER_PATH                — WebSocket upgrade path (default: /ws)
-///   LYRIC_CONFIG_WS_SERVER_MAXMESSAGESIZEBYTES — max frame size in bytes (default: 65536)
-///   LYRIC_CONFIG_WS_SERVER_PINGINTERVALMS      — ping interval in milliseconds (default: 30000)
-///   LYRIC_CONFIG_WS_SERVER_HANDSHAKETIMEOUTMS  — upgrade handshake timeout (default: 10000)
-///   LYRIC_CONFIG_WS_AUTH_ENABLED               — enable JWT gate on upgrade (default: true)
-///   LYRIC_CONFIG_WS_AUTH_JWTSECRET             — HMAC-SHA256 secret for JWT (required when auth enabled)
-///   LYRIC_CONFIG_WS_AUTH_ISSUER                — expected iss claim (default: "")
-///   LYRIC_CONFIG_WS_AUTH_AUDIENCE              — expected aud claim (default: "")
+// Ws — WebSocket server library for Lyric.
+//
+// Provides the full connection lifecycle for WebSocket servers:
+// connection context, message types, a handler interface for
+// application logic, and a registry interface for sending to
+// connected clients.
+//
+// Typical usage:
+//
+//   import Ws
+//
+//   // Implement WsHandler for application logic
+//   record MyHandler {}
+//   impl WsHandler for MyHandler {
+//     func onOpen(ctx: in WsContext): Result[Unit, WsError] { ... }
+//     func onMessage(ctx: in WsContext, msg: in WsMessage): Result[Unit, WsError] { ... }
+//     func onClose(ctx: in WsContext, code: in WsCloseCode): Unit { ... }
+//     func onError(ctx: in WsContext, error: in WsError): Unit { ... }
+//   }
+//
+//   // Create a registry and start serving
+//   match Ws.createRegistry() {
+//     case Ok(registry) -> ...
+//     case Err(e) -> ...
+//   }
+//
+// Runtime config env vars (LYRIC_CONFIG_WS_SERVER_*):
+//   LYRIC_CONFIG_WS_SERVER_PATH                — WebSocket upgrade path (default: /ws)
+//   LYRIC_CONFIG_WS_SERVER_MAXMESSAGESIZEBYTES — max frame size in bytes (default: 65536)
+//   LYRIC_CONFIG_WS_SERVER_PINGINTERVALMS      — ping interval in milliseconds (default: 30000)
+//   LYRIC_CONFIG_WS_SERVER_HANDSHAKETIMEOUTMS  — upgrade handshake timeout (default: 10000)
+//   LYRIC_CONFIG_WS_AUTH_ENABLED               — enable JWT gate on upgrade (default: true)
+//   LYRIC_CONFIG_WS_AUTH_JWTSECRET             — HMAC-SHA256 secret for JWT (required when auth enabled)
+//   LYRIC_CONFIG_WS_AUTH_ISSUER                — expected iss claim (default: "")
+//   LYRIC_CONFIG_WS_AUTH_AUDIENCE              — expected aud claim (default: "")
 
 @runtime_checked
 package Ws
 
 import Std.Core
 import Std.Collections
-import Auth
-import Ws.Kernel.Net
-import Ws.Kernel.Jvm
+@cfg(feature = "dotnet")
+import Ws.Kernel.Net as WsKernel
+@cfg(feature = "jvm")
+import Ws.Kernel.Jvm as WsKernel
+
+// Kernel boundary: every BCL / JDK interaction goes through `WsKernel`
+// (`Ws.Kernel.Net` on .NET, `Ws.Kernel.Jvm` on JVM).  This file is the
+// public surface of the library; it must not declare its own `@axiom`
+// stubs (doing so previously shadowed the kernel boundary and broke
+// the trust-boundary audit — see lyric-lang #739).
 
 // ─── Connection identity ──────────────────────────────────────────────────────
 
@@ -54,7 +61,7 @@ pub type WsConnectionId = String
 
 /// RFC 6455 close codes sent in Close frames.
 @stable(since="0.1")
-pub enum WsCloseCode {
+pub union WsCloseCode {
   case Normal(code: Int)
   case GoingAway
   case ProtocolError
@@ -66,7 +73,7 @@ pub enum WsCloseCode {
 
 /// A WebSocket frame payload.
 @stable(since="0.1")
-pub enum WsMessage {
+pub union WsMessage {
   /// UTF-8 text frame.
   case Text(text: String)
   /// Binary frame with Base64-encoded payload.
@@ -75,8 +82,8 @@ pub enum WsMessage {
   case Ping
   /// Pong control frame.
   case Pong
-  /// Close frame with a close code and human-readable reason.
-  case Close(code: WsCloseCode, reason: String)
+  /// Close frame with a close code (RFC 6455 numeric code) and human-readable reason.
+  case Close(code: Int, reason: String)
 }
 
 // ─── Error ────────────────────────────────────────────────────────────────────
@@ -86,7 +93,7 @@ pub enum WsMessage {
 pub record WsError {
   message:      String
   code:         String
-  connectionId: WsConnectionId
+  connectionId: String
 }
 
 // ─── Connection context ───────────────────────────────────────────────────────
@@ -94,7 +101,7 @@ pub record WsError {
 /// Snapshot of a WebSocket connection's metadata, available in every callback.
 @stable(since="0.1")
 pub record WsContext {
-  connectionId:  WsConnectionId
+  connectionId:  String
   path:          String
   query:         String
   remoteAddress: String
@@ -128,22 +135,19 @@ pub interface WsHandler {
 @stable(since="0.1")
 pub interface WsRegistry {
   /// Send a message to a single connection.
-  func send(connectionId: in WsConnectionId, msg: in WsMessage): Result[Unit, WsError]
-    requires: connectionId.length > 0
+  func send(connectionId: in String, msg: in WsMessage): Result[Unit, WsError]
 
   /// Broadcast a message to all currently connected clients.
   func broadcast(msg: in WsMessage): Result[Unit, WsError]
 
   /// Close a connection with the given code and reason.
-  func close(connectionId: in WsConnectionId, code: in WsCloseCode, reason: in String): Result[Unit, WsError]
-    requires: connectionId.length > 0
+  func close(connectionId: in String, code: in WsCloseCode, reason: in String): Result[Unit, WsError]
 
   /// Return the number of currently open connections.
   func connectionCount(): Int
 
   /// Return whether the given connection is currently open.
-  func isConnected(connectionId: in WsConnectionId): Bool
-    requires: connectionId.length > 0
+  func isConnected(connectionId: in String): Bool
 }
 
 // ─── Native registry ──────────────────────────────────────────────────────────
@@ -155,10 +159,11 @@ pub record NativeRegistry {
 }
 
 impl WsRegistry for NativeRegistry {
-  func send(connectionId: in WsConnectionId, msg: in WsMessage): Result[Unit, WsError] {
+  func send(connectionId: in String, msg: in WsMessage): Result[Unit, WsError] {
     val msgType = messageTypeString(msg)
     val msgData = messageDataString(msg)
-    match wsKernelSend(registryHandle, connectionId, msgType, msgData) {
+    val rh = self.registryHandle
+    match WsKernel.send(rh, connectionId, msgType, msgData) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(WsError(message = err, code = "SEND_FAILED", connectionId = connectionId))
     }
@@ -167,69 +172,40 @@ impl WsRegistry for NativeRegistry {
   func broadcast(msg: in WsMessage): Result[Unit, WsError] {
     val msgType = messageTypeString(msg)
     val msgData = messageDataString(msg)
-    match wsKernelBroadcast(registryHandle, msgType, msgData) {
+    val rh = self.registryHandle
+    match WsKernel.broadcast(rh, msgType, msgData) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(WsError(message = err, code = "BROADCAST_FAILED", connectionId = ""))
     }
   }
 
-  func close(connectionId: in WsConnectionId, code: in WsCloseCode, reason: in String): Result[Unit, WsError] {
+  func close(connectionId: in String, code: in WsCloseCode, reason: in String): Result[Unit, WsError] {
     val codeInt = closeCodeToInt(code)
-    match wsKernelClose(registryHandle, connectionId, codeInt, reason) {
+    val rh = self.registryHandle
+    match WsKernel.close(rh, connectionId, codeInt, reason) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(WsError(message = err, code = "CLOSE_FAILED", connectionId = connectionId))
     }
   }
 
   func connectionCount(): Int {
-    return wsKernelConnectionCount(registryHandle)
+    val rh = self.registryHandle
+    return WsKernel.connectionCount(rh)
   }
 
-  func isConnected(connectionId: in WsConnectionId): Bool {
-    return wsKernelIsConnected(registryHandle, connectionId)
+  func isConnected(connectionId: in String): Bool {
+    val rh = self.registryHandle
+    return WsKernel.isConnected(rh, connectionId)
   }
-}
-
-// ─── Runtime config ───────────────────────────────────────────────────────────
-
-/// WebSocket server binding and tuning.
-config Server {
-  path:                 String                      = "/ws"
-  maxMessageSizeBytes:  Int range 1024..=10485760   = 65536
-  pingIntervalMs:       Int range 0..=300000        = 30000
-  handshakeTimeoutMs:   Int range 1000..=30000      = 10000
-}
-
-/// JWT-based authentication applied at upgrade time.
-config WsAuthConfig {
-  enabled:    Bool   = true
-  @sensitive
-  jwtSecret:  String = ""
-  issuer:     String = ""
-  audience:   String = ""
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
-/// Create a kernel-backed connection registry using the Server config.
-///
-/// Fails fast if JWT authentication is enabled but no secret is configured:
-/// an empty `jwtSecret` with `enabled = true` would panic at the first
-/// upgrade attempt when `verifyJwt` violates its `requires: secret.length > 0`
-/// contract.  Callers should either set `WsAuthConfig.jwtSecret` via the
-/// environment variable `LYRIC_CONFIG_WS_AUTH_JWTSECRET`, or disable auth
-/// with `WsAuthConfig.enabled = false`.
+/// Create a kernel-backed connection registry.
+/// The registry manages WebSocket connection lifecycle.
 @stable(since="0.1")
-pub func createRegistry(): Result[WsRegistry, WsError] {
-  if WsAuthConfig.enabled and WsAuthConfig.jwtSecret.length == 0 {
-    return Err(WsError(
-      message = "WsAuthConfig.enabled is true but WsAuthConfig.jwtSecret is empty; " +
-                "set LYRIC_CONFIG_WS_AUTH_JWTSECRET or disable auth with " +
-                "LYRIC_CONFIG_WS_AUTH_ENABLED=false",
-      code          = "WS_AUTH_MISCONFIGURED",
-      connectionId  = ""))
-  }
-  match wsKernelCreateRegistry(Server.maxMessageSizeBytes, Server.pingIntervalMs) {
+pub func createRegistry(): Result[NativeRegistry, WsError] {
+  match WsKernel.createRegistry(65536, 30000) {
     case Ok(handle) -> Ok(NativeRegistry(registryHandle = handle))
     case Err(err)   -> Err(WsError(message = err, code = "REGISTRY_INIT_FAILED", connectionId = ""))
   }
@@ -239,139 +215,88 @@ pub func createRegistry(): Result[WsRegistry, WsError] {
 
 /// Send a UTF-8 text message to a single connection.
 @stable(since="0.1")
-pub func send(registry: in WsRegistry, connectionId: in WsConnectionId, text: in String): Result[Unit, WsError]
-  requires: connectionId.length > 0
-{
-  return registry.send(connectionId, WsMessage.Text(text = text))
+pub func sendText(registry: in NativeRegistry, connectionId: in String, text: in String): Result[Unit, WsError] {
+  val rh = registry.registryHandle
+  match WsKernel.send(rh, connectionId, "text", text) {
+    case Ok(u)    -> Ok(u)
+    case Err(err) -> Err(WsError(message = err, code = "SEND_FAILED", connectionId = connectionId))
+  }
 }
 
 /// Broadcast a UTF-8 text message to all connected clients.
 @stable(since="0.1")
-pub func broadcast(registry: in WsRegistry, text: in String): Result[Unit, WsError] {
-  return registry.broadcast(WsMessage.Text(text = text))
+pub func broadcastText(registry: in NativeRegistry, text: in String): Result[Unit, WsError] {
+  val rh = registry.registryHandle
+  match WsKernel.broadcast(rh, "text", text) {
+    case Ok(u)    -> Ok(u)
+    case Err(err) -> Err(WsError(message = err, code = "BROADCAST_FAILED", connectionId = ""))
+  }
 }
 
 /// Close a connection with the normal close code 1000.
 @stable(since="0.1")
-pub func close(registry: in WsRegistry, connectionId: in WsConnectionId): Result[Unit, WsError]
-  requires: connectionId.length > 0
-{
-  return registry.close(connectionId, WsCloseCode.Normal(code = 1000), "")
+pub func closeConnection(registry: in NativeRegistry, connectionId: in String): Result[Unit, WsError] {
+  val rh = registry.registryHandle
+  match WsKernel.close(rh, connectionId, 1000, "") {
+    case Ok(u)    -> Ok(u)
+    case Err(err) -> Err(WsError(message = err, code = "CLOSE_FAILED", connectionId = connectionId))
+  }
 }
 
 /// Return the number of currently open connections.
 @stable(since="0.1")
-pub func connectionCount(registry: in WsRegistry): Int {
-  return registry.connectionCount()
+pub func connectionCount(registry: in NativeRegistry): Int {
+  val rh = registry.registryHandle
+  return WsKernel.connectionCount(rh)
 }
 
 /// Return whether the given connection is currently open.
 @stable(since="0.1")
-pub func isConnected(registry: in WsRegistry, connectionId: in WsConnectionId): Bool
-  requires: connectionId.length > 0
-{
-  return registry.isConnected(connectionId)
+pub func isConnected(registry: in NativeRegistry, connectionId: in String): Bool {
+  val rh = registry.registryHandle
+  return WsKernel.isConnected(rh, connectionId)
 }
 
 /// Construct a Normal(1000) close code.
 @stable(since="0.1")
 pub func makeCloseNormal(): WsCloseCode {
-  return WsCloseCode.Normal(code = 1000)
+  return Normal(code = 1000)
 }
 
 /// Construct a GoingAway close code.
 @stable(since="0.1")
 pub func makeCloseGoingAway(): WsCloseCode {
-  return WsCloseCode.GoingAway
+  return GoingAway
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
 func messageTypeString(msg: in WsMessage): String {
   match msg {
-    case Text(_)      -> "text"
-    case Binary(_)    -> "binary"
-    case Ping         -> "ping"
-    case Pong         -> "pong"
-    case Close(_, _)  -> "close"
+    case Text(text)           -> "text"
+    case Binary(dataBase64)   -> "binary"
+    case Ping                 -> "ping"
+    case Pong                 -> "pong"
+    case Close(code, reason)  -> "close"
   }
 }
 
 func messageDataString(msg: in WsMessage): String {
   match msg {
-    case Text(text)         -> text
-    case Binary(dataBase64) -> dataBase64
-    case Ping               -> ""
-    case Pong               -> ""
-    case Close(_, reason)   -> reason
+    case Text(text)           -> text
+    case Binary(dataBase64)   -> dataBase64
+    case Ping                 -> ""
+    case Pong                 -> ""
+    case Close(code, reason)  -> reason
   }
 }
 
 func closeCodeToInt(code: in WsCloseCode): Int {
   match code {
-    case Normal(c)      -> c
-    case GoingAway      -> 1001
-    case ProtocolError  -> 1002
+    case Normal(c)       -> c
+    case GoingAway       -> 1001
+    case ProtocolError   -> 1002
     case PolicyViolation -> 1008
-    case InternalError  -> 1011
+    case InternalError   -> 1011
   }
-}
-
-// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
-// Each helper has two @cfg-gated implementations.  The compiler keeps exactly
-// one per active target; the public package code calls these wrappers so the
-// same source compiles under --target dotnet and --target jvm.
-
-@cfg(feature = "dotnet")
-func wsKernelCreateRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): Result[Int, String] {
-  return Ws.Kernel.Net.createRegistry(maxMessageSizeBytes, pingIntervalMs)
-}
-@cfg(feature = "jvm")
-func wsKernelCreateRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): Result[Int, String] {
-  return Ws.Kernel.Jvm.createRegistry(maxMessageSizeBytes, pingIntervalMs)
-}
-
-@cfg(feature = "dotnet")
-func wsKernelSend(registryHandle: in Int, connectionId: in String, messageType: in String, data: in String): Result[Unit, String] {
-  return Ws.Kernel.Net.send(registryHandle, connectionId, messageType, data)
-}
-@cfg(feature = "jvm")
-func wsKernelSend(registryHandle: in Int, connectionId: in String, messageType: in String, data: in String): Result[Unit, String] {
-  return Ws.Kernel.Jvm.send(registryHandle, connectionId, messageType, data)
-}
-
-@cfg(feature = "dotnet")
-func wsKernelBroadcast(registryHandle: in Int, messageType: in String, data: in String): Result[Unit, String] {
-  return Ws.Kernel.Net.broadcast(registryHandle, messageType, data)
-}
-@cfg(feature = "jvm")
-func wsKernelBroadcast(registryHandle: in Int, messageType: in String, data: in String): Result[Unit, String] {
-  return Ws.Kernel.Jvm.broadcast(registryHandle, messageType, data)
-}
-
-@cfg(feature = "dotnet")
-func wsKernelClose(registryHandle: in Int, connectionId: in String, code: in Int, reason: in String): Result[Unit, String] {
-  return Ws.Kernel.Net.close(registryHandle, connectionId, code, reason)
-}
-@cfg(feature = "jvm")
-func wsKernelClose(registryHandle: in Int, connectionId: in String, code: in Int, reason: in String): Result[Unit, String] {
-  return Ws.Kernel.Jvm.close(registryHandle, connectionId, code, reason)
-}
-
-@cfg(feature = "dotnet")
-func wsKernelConnectionCount(registryHandle: in Int): Int {
-  return Ws.Kernel.Net.connectionCount(registryHandle)
-}
-@cfg(feature = "jvm")
-func wsKernelConnectionCount(registryHandle: in Int): Int {
-  return Ws.Kernel.Jvm.connectionCount(registryHandle)
-}
-
-@cfg(feature = "dotnet")
-func wsKernelIsConnected(registryHandle: in Int, connectionId: in String): Bool {
-  return Ws.Kernel.Net.isConnected(registryHandle, connectionId)
-}
-@cfg(feature = "jvm")
-func wsKernelIsConnected(registryHandle: in Int, connectionId: in String): Bool {
-  return Ws.Kernel.Jvm.isConnected(registryHandle, connectionId)
 }

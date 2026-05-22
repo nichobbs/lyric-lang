@@ -248,13 +248,13 @@ import Money.{Amount, Cents}
 import Transfer.TransferError
 import std.http.{HttpResponse, HttpStatus}
 
-pub exposed record TransferRequest @derive(Json) {
+pub exposed record TransferRequest @generate(Json) {
   fromId: Guid
   toId: Guid
   amountCents: Long
 }
 
-pub exposed record TransferResponseBody @derive(Json) {
+pub exposed record TransferResponseBody @generate(Json) {
   fromId: Guid
   toId: Guid
   amountCents: Long
@@ -511,7 +511,7 @@ package Scraper
 import std.http.{HttpClient, HttpResponse}
 import std.collections.Map
 
-pub exposed record PageResult @derive(Json) {
+pub exposed record PageResult @generate(Json) {
   url: String
   statusCode: Int?
   contentLength: Int?
@@ -574,7 +574,7 @@ If the scope is cancelled (caller's cancellation token fires), all in-flight `fe
 
 ## Example 5: Configuration with strong typing
 
-Demonstrates exposed records for wire-level shapes, conversion to opaque types, and `@derive(Json)` for source-generated parsing.
+Demonstrates exposed records for wire-level shapes, conversion to opaque types, and `@generate(Json)` for source-generated parsing.
 
 ```
 // config.l
@@ -584,7 +584,7 @@ package AppConfig
 import std.time.Duration
 import std.net.Url
 
-pub exposed record RawConfig @derive(Json) {
+pub exposed record RawConfig @generate(Json) {
   databaseUrl: String
   databasePoolSize: Long
   redisUrl: String
@@ -797,7 +797,7 @@ Demonstrates an `extern package` declaration with `@axiom`. The block describes 
 @axiom("System.IO.File operations conform to the .NET BCL contract")
 extern package System.IO {
 
-  pub exposed type File @derive(opaqueHandle)
+  pub exposed type File @opaqueHandle
 
   pub func readAllBytes(path: in String): slice[Byte]
     requires: path.length > 0
@@ -890,13 +890,13 @@ pub opaque type User @projectable {
 The compiler-emitted views become:
 
 ```
-exposed record UserView @derive(Json) {
+exposed record UserView @generate(Json) {
   id: Guid                    // UserId.toView()
   email: String
   teamId: Guid?               // Team.id.value, not the full TeamView
 }
 
-exposed record TeamView @derive(Json) {
+exposed record TeamView @generate(Json) {
   id: Guid                    // TeamId.toView()
   name: String
   memberIds: slice[Guid]      // each User.id.value, not slice[UserView]

@@ -11,10 +11,13 @@ output          = "single"
 output_assembly = "Mq.dll"
 
 [project.packages]
-"Mq"              = "src"
-"Mq.Aspects"      = "src"
-"Mq.Kernel.Net"   = "src/_kernel/net"
-"Mq.Kernel.Jvm"   = "src/_kernel/jvm"
+"Mq"              = "src/mq.l"
+"Mq.Aspects"      = "src/mq_aspects.l"
+"Mq.Kernel.Net"   = "src/_kernel/net/mq_kernel.l"
+"Mq.Kernel.Jvm"   = "src/_kernel/jvm/mq_kernel.l"
+
+[project.tests]
+"Mq.MqTests" = "tests/mq_tests.l"
 
 [features]
 dotnet          = []   # Target the .NET kernel (`Mq.Kernel.Net`)
@@ -25,7 +28,7 @@ sqs             = []   # Amazon SQS (AWSSDK.SQS on .NET)
 kafka           = []   # Apache Kafka (Confluent.Kafka on .NET)
 
 [dependencies]
-"Lyric.Stdlib" = { path = "../stdlib" }
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }
 "Lyric.Cache"  = { path = "../lyric-cache" }
 
 # NOTE: The [nuget] table does not yet support per-feature gating (see docs/21-nuget-linking.md).
@@ -44,10 +47,10 @@ kafka           = []   # Apache Kafka (Confluent.Kafka on .NET)
 # All four broker JARs are declared; only the active feature's code compiles.
 [maven]
 # feature = "rabbitmq" — AMQP 0-9-1 client for JVM
-"com.rabbitmq:amqp-client"                  = { version = "5.21.0", features = ["rabbitmq"] }
+"com.rabbitmq:amqp-client"                  = "5.21.0"
 # feature = "azureservicebus" — Azure Service Bus SDK for JVM
-"com.azure:azure-messaging-servicebus"      = { version = "7.17.6", features = ["azureservicebus"] }
+"com.azure:azure-messaging-servicebus"      = "7.17.6"
 # feature = "sqs" — AWS SDK v2 SQS module for JVM
-"software.amazon.awssdk:sqs"                = { version = "2.25.70", features = ["sqs"] }
+"software.amazon.awssdk:sqs"                = "2.25.70"
 # feature = "kafka" — Apache Kafka JVM client
-"org.apache.kafka:kafka-clients"            = { version = "3.7.0", features = ["kafka"] }
+"org.apache.kafka:kafka-clients"            = "3.7.0"

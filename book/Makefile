@@ -46,6 +46,8 @@ CHAPTERS := \
 	chapters/26-database-access.md \
 	chapters/27-health-checks.md \
 	chapters/28-benchmarking.md \
+	chapters/29-application-libraries.md \
+	chapters/30-source-generators.md \
 	chapters/appendix-a-vscode.md \
 	chapters/appendix-b-quick-reference.md
 

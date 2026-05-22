@@ -66,6 +66,8 @@
     <Compile Include="ProtectedTypeTests.fs" />
     <Compile Include="StdlibLyricTests.fs" />
     <Compile Include="KernelBoundaryTests.fs" />
+    <Compile Include="CircuitStoreHostTests.fs" />
+    <Compile Include="SdkVersionSkewTests.fs" />
     <Compile Include="JvmSelfTest.fs" />
     <Compile Include="MsilSelfTestM1.fs" />
     <Compile Include="MsilSelfTestM2a.fs" />
@@ -278,9 +280,14 @@
     <Compile Include="JvmLoweringB125Test.fs" />
     <Compile Include="JvmLoweringB126Test.fs" />
     <Compile Include="JvmLoweringB127Test.fs" />
+    <Compile Include="JvmTestKit.fs" />
     <Compile Include="JvmLoweringB128Test.fs" />
     <Compile Include="JvmLoweringB129Test.fs" />
     <Compile Include="JvmLoweringB130Test.fs" />
+    <Compile Include="JvmLoweringB131Test.fs" />
+    <Compile Include="JvmLoweringB132Test.fs" />
+    <Compile Include="JvmLoweringB133Test.fs" />
+    <Compile Include="JvmLoweringB134Test.fs" />
     <Compile Include="SelfHostedLexerTests.fs" />
     <Compile Include="SelfHostedParserTests.fs" />
     <Compile Include="SelfHostedTypeCheckerTests.fs" />
@@ -290,6 +297,9 @@
     <Compile Include="SelfHostedTestSynthTests.fs" />
     <Compile Include="SelfHostedManifestTests.fs" />
     <Compile Include="SelfHostedVerifierTests.fs" />
+    <Compile Include="SelfHostedGeneratorTests.fs" />
+    <Compile Include="SelfHostedDerivesTests.fs" />
+    <Compile Include="SelfHostedMonoTests.fs" />
     <Compile Include="MultiFilePackageTests.fs" />
     <Compile Include="ProjectAsDllTests.fs" />
     <Compile Include="CfgErasureTests.fs" />

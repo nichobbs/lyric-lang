@@ -35,6 +35,7 @@ authors     = ["Lyric authors"]
 license     = "Apache-2.0"
 
 [features]
+default = ["dotnet"]
 dotnet = []
 # io.grpc (grpc-java) backend (Phase 6).
 jvm    = []
@@ -56,8 +57,11 @@ output_assembly = "Lyric.Grpc.dll"
 # JVM kernel: io.grpc client + server (Phase 6).
 "Grpc.Kernel.Jvm" = "src/_kernel/jvm/grpc_kernel.l"
 
+[project.tests]
+"Grpc.GrpcTypesTests" = "tests/grpc_types_tests.l"
+
 [dependencies]
-"Lyric.Stdlib"     = { path = "../stdlib" }
+"Lyric.Stdlib"     = { path = "../lyric-stdlib" }
 "Lyric.Auth"       = { path = "../lyric-auth" }
 "Lyric.Resilience" = { path = "../lyric-resilience" }
 

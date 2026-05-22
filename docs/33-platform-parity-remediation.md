@@ -108,9 +108,10 @@ not be renumbered.
 ### R1-G  Out-of-scope doc — update JVM and self-hosted entries
 
 `docs/04-out-of-scope.md` marks both the JVM backend and the self-hosted
-compiler as "DEFERRED post-v1".  Both are in active development.  Update to
-"Phase 6 in progress — self-hosted only; not wired to `lyric build` (see
-docs/33-platform-parity-remediation.md)".
+compiler as "DEFERRED post-v1".  Both are in active development.  Updated to
+"PHASE 6 SHIPPED (end-to-end `lyric build --target jvm` works)" — the
+end-to-end CLI pipeline landed in PR #610 (D-progress-265), superseding the
+original "in progress" target text planned here.
 
 ### R1-H  Status banners — flip shipped items
 
@@ -149,12 +150,13 @@ shipped in D-progress-226.
 lyric build --target jvm <file.l>   # target JVM bytecode
 ```
 
-This is incorrect today.  `--target jvm` only switches the kernel directory;
-the output is still a `.dll`.  Replace with an honest callout:
+This was incorrect at the time of writing.  `--target jvm` only switched the
+kernel directory; the output was still a `.dll`.  The book text was updated to
+an honest callout, and then further updated in PR #610 to reflect the
+end-to-end operational state:
 
-> `lyric build --target jvm <file.l>` — selects JVM kernel bindings
-> (`_kernel_jvm/`).  Full JAR emission requires the self-hosted JVM emitter
-> bridge (in progress — see `docs/33-platform-parity-remediation.md §4`).
+> `lyric build --target jvm <file.l>` — end-to-end operational: compiles
+> Lyric source to a runnable JAR via `Jvm.Codegen` + `SelfHostedJvm.fs`.
 
 ### R2-B  aspects chapters — remove "deferred" bullet for aspect templates
 
@@ -385,8 +387,19 @@ uses the F# bootstrap emitter as an escape hatch during stabilisation.
 **Status: SHIPPED (D-progress-241)** — All 60 cross-path parity tests pass:
 20 programs × 3 paths (dotnet-legacy / dotnet / jvm).
 
-Both self-hosted emitters have reached **Phase R parity**.  The following are
-all true as of D-progress-241:
+**Scope clarification (per `docs/41`).**  "Phase R parity" here means
+**parity on the 20-program smoke-test subset**, not on the full M1.4
+language surface.  Both self-hosted emitters still stub or skip ~15 of
+the 25 top-level item kinds (enums, opaque types, interfaces, impl
+blocks, aspects, async non-generator, lambdas, `?` propagation, etc. —
+see `docs/41 §3.1 / §4.1`).  The 20 parity programs are deliberately
+restricted to the common subset of all three paths (no user-defined
+function calls, no records, no contracts) precisely because the
+self-hosted codegens cannot yet handle the broader surface.  Production
+readiness for the full language is tracked in `docs/41` Bands 2–3.
+
+Both self-hosted emitters have reached **Phase R parity** (for the
+20-program subset).  The following are all true as of D-progress-241:
 
 - `lyric build --target dotnet-legacy <file.l>` — F# emitter baseline (escape hatch).
 - `lyric build --target dotnet <file.l>` (default) — produces a `.dll` via

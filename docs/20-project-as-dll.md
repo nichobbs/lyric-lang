@@ -85,6 +85,40 @@ want each package independently consumable as its own DLL — the same
 shape the bootstrap stdlib uses today. `output = "single"` is the
 new default for application projects.
 
+### 3.1 Local-path dependencies
+
+A `[dependencies]` entry may use the inline-table `{ path = "..." }` form to
+reference another Lyric project on the local file-system:
+
+```toml
+[dependencies]
+"Lyric.Web"    = { path = "../lyric-web" }
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }
+```
+
+**Semantics:**
+
+- The path is relative to the directory containing the `lyric.toml` that
+  declares it.
+- The dependency's own `lyric.toml` is read to discover its
+  `[project].output_assembly` (or the default `<name>.dll`).
+- The resolved DLL must already exist at `<dep-dir>/bin/<assembly>.dll`.
+  `lyric build` does **not** rebuild dependencies automatically; build them
+  first with `lyric build --manifest <dep>/lyric.toml`.
+- The resolved DLL path is passed to the compiler as a restored reference,
+  making the dependency's public types and functions available during
+  type-checking and code generation.
+
+**Constraints:**
+
+- Only local-path deps built with `output = "single"` produce a single DLL
+  that can be wired this way. Per-package builds produce multiple DLLs and
+  are not yet supported here.
+- Circular local-path dependencies are not detected at the manifest level;
+  avoid them.
+- The `path` form and the registry/NuGet forms are mutually exclusive for a
+  given package name within one `[dependencies]` block.
+
 ## 4. Compilation pipeline
 
 The `output = "single"` driver:

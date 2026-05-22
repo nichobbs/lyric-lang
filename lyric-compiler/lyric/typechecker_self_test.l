@@ -174,6 +174,74 @@ func testHotAnnotationFlag(): Unit {
   }
 }
 
+func testQualifiedTypeResolvesViaImport(): Unit {
+  // `Lib.Point` in a type position should resolve to the same `Point`
+  // type registered by checkWithImports — no T0014 "qualified type not
+  // resolved".
+  val libSrc = "package Lib\npub record Point { x: Int; y: Int }\n"
+  val libPr  = parse(libSrc)
+  val importedItems: List[Item] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    importedItems.add(libPr.file.items[i])
+    i = i + 1
+  }
+  val src = "package App\nfunc f(p: Lib.Point): Int { 0 }\n"
+  val pr  = parse(src)
+  val cr  = checkWithImports(pr.file, importedItems)
+  // Stronger than just `not hasDiagCode T0014` (#924): assert there
+  // are no type-resolution diagnostics at all.  The previous form
+  // would have passed even if a different type-resolution error
+  // (T0010 / T0020 / T0050) had surfaced, masking a regression.
+  assertTrue(not hasDiagCode(cr, "T0014"),
+    "qualified-type-import: no T0014 for Lib.Point when Point is imported")
+  assertTrue(not hasDiagCode(cr, "T0010"),
+    "qualified-type-import: no T0010 unknown-type for Lib.Point")
+  assertTrue(not hasDiagCode(cr, "T0020"),
+    "qualified-type-import: no T0020 unknown-name for Lib.Point")
+  assertTrue(not hasDiagCode(cr, "T0050"),
+    "qualified-type-import: no T0050 generic-arity for Lib.Point")
+}
+
+func testQualifiedTypeUnknownEmitsT0014(): Unit {
+  // A qualified name whose last segment is not in scope should still
+  // emit T0014, not resolve silently.
+  val src = "package App\nfunc f(x: Unknown.Pkg.Blorp): Int { 0 }\n"
+  val empty: List[Item] = newList()
+  val pr = parse(src)
+  val cr = checkWithImports(pr.file, empty)
+  assertTrue(hasDiagCode(cr, "T0014"),
+    "qualified-unknown: T0014 for Unknown.Pkg.Blorp not in scope")
+}
+
+func testQualifiedTypeMisqualifiedResolvesPermissively(): Unit {
+  // Interim Band 6 behaviour (docs/41 §9, #923): the multi-segment
+  // resolver looks up only the LAST segment in the symbol table.
+  // `Wrong.Prefix.Point` therefore resolves to the imported `Point`
+  // even though the package prefix is wrong, because import-statement
+  // resolution is deferred to Track A.  This test pins that
+  // permissive behaviour so a future change to the resolver
+  // surfaces here intentionally rather than silently flipping the
+  // verdict for existing code.
+  //
+  // Once import resolution lands, replace `assertTrue(not ...)` with
+  // `assertTrue(hasDiagCode(cr, "T0014"))` and tighten the test name
+  // to `testQualifiedTypeMisqualifiedEmitsT0014`.
+  val libSrc = "package Lib\npub record Point { x: Int; y: Int }\n"
+  val libPr  = parse(libSrc)
+  val importedItems: List[Item] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    importedItems.add(libPr.file.items[i])
+    i = i + 1
+  }
+  val src = "package App\nfunc f(p: Wrong.Prefix.Point): Int { 0 }\n"
+  val pr  = parse(src)
+  val cr  = checkWithImports(pr.file, importedItems)
+  assertTrue(not hasDiagCode(cr, "T0014"),
+    "qualified-misqualified: last-segment lookup currently accepts Wrong.Prefix.Point when Point is imported (Band 6 interim — #923)")
+}
+
 func main(): Unit {
   testEmptySource()
   testFuncRegistered()
@@ -193,5 +261,8 @@ func main(): Unit {
   testYieldOutsideAsync()
   testAsyncGeneratorFlags()
   testHotAnnotationFlag()
+  testQualifiedTypeResolvesViaImport()
+  testQualifiedTypeUnknownEmitsT0014()
+  testQualifiedTypeMisqualifiedResolvesPermissively()
   println("typechecker self-test: ok")
 }

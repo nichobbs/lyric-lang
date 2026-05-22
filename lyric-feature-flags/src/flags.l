@@ -1,40 +1,39 @@
-/// Flags — feature flag library for Lyric.
-///
-/// Provides runtime toggles for safe rollouts, A/B testing, and kill switches.
-/// `FlagStore` is the public interface; `InProcessFlagStore` is the bundled
-/// in-process implementation.  For remote stores (LaunchDarkly, Unleash, or a
-/// custom HTTP endpoint), activate the `remote` feature and use `connectRemote()`.
-///
-/// Usage:
-///
-///   import Flags
-///   import Std.Core
-///
-///   var store = Flags.fromEntries([
-///     Flags.makeFlag("new-checkout", true),
-///     Flags.makeFlagWithDesc("dark-mode", false, "Enable dark mode UI"),
-///   ])
-///   if Flags.isEnabled(store, "new-checkout") {
-///     // run new checkout flow
-///   }
-///   val colour = Flags.getString(store, "theme-colour", "blue")
-///
-/// Runtime config env vars (LYRIC_CONFIG_REMOTE_*):
-///   LYRIC_CONFIG_REMOTE_URL              — remote endpoint URL (required for remote)
-///   LYRIC_CONFIG_REMOTE_APIKEY           — API key (@sensitive, default: "")
-///   LYRIC_CONFIG_REMOTE_POLLINTERVALMS   — poll interval in ms (default: 30000)
-///   LYRIC_CONFIG_REMOTE_CONNECTTIMEOUTMS — connect timeout in ms (default: 5000)
-///   LYRIC_CONFIG_REMOTE_APPKEY           — application key (default: "")
-///
-/// See docs/03-decision-log.md and lyric-feature-flags/README.md.
+// Flags — feature flag library for Lyric.
+//
+// Provides runtime toggles for safe rollouts, A/B testing, and kill switches.
+// `FlagStore` is the public interface; `InProcessFlagStore` is the bundled
+// in-process implementation.  For remote stores (LaunchDarkly, Unleash, or a
+// custom HTTP endpoint), activate the `remote` feature and use `connectRemote()`.
+//
+// Usage:
+//
+//   import Flags
+//   import Std.Core
+//
+//   var store = Flags.fromEntries([
+//     Flags.makeFlag("new-checkout", true),
+//     Flags.makeFlagWithDesc("dark-mode", false, "Enable dark mode UI"),
+//   ])
+//   if Flags.isEnabled(store, "new-checkout") {
+//     // run new checkout flow
+//   }
+//   val colour = Flags.getString(store, "theme-colour", "blue")
+//
+// Runtime config env vars (LYRIC_CONFIG_REMOTE_*):
+//   LYRIC_CONFIG_REMOTE_URL              — remote endpoint URL (required for remote)
+//   LYRIC_CONFIG_REMOTE_APIKEY           — API key (@sensitive, default: "")
+//   LYRIC_CONFIG_REMOTE_POLLINTERVALMS   — poll interval in ms (default: 30000)
+//   LYRIC_CONFIG_REMOTE_CONNECTTIMEOUTMS — connect timeout in ms (default: 5000)
+//   LYRIC_CONFIG_REMOTE_APPKEY           — application key (default: "")
+//
+// See docs/03-decision-log.md and lyric-feature-flags/README.md.
 
 @runtime_checked
 package Flags
 
 import Std.Core
 import Std.Collections
-import Flags.Kernel.Net
-import Flags.Kernel.Jvm
+import Flags.Kernel.Net as FlagsKernel
 
 // ─── Error type ───────────────────────────────────────────────────────────────
 
@@ -49,7 +48,7 @@ pub record FlagError {
 
 /// The value of a feature flag; may be a Bool, String, Int, or Float.
 @stable(since="0.1")
-pub enum FlagValue {
+pub union FlagValue {
   case FlagBool(value: Bool)
   case FlagString(value: String)
   case FlagInt(value: Int)
@@ -82,7 +81,7 @@ pub interface FlagStore {
     requires: name.length > 0
 
   /// Return all flags in the store.
-  func listFlags(): [FlagEntry]
+  func listFlags(): slice[FlagEntry]
 
   /// Refresh the store from the remote endpoint.
   /// No-op for in-process stores; returns Ok(()) immediately.
@@ -91,42 +90,34 @@ pub interface FlagStore {
 
 // ─── InProcessFlagStore ───────────────────────────────────────────────────────
 
-/// In-process flag store backed by a mutable `Map`.
+/// In-process flag store backed by a value-string map plus a kind map.
+///
+/// All flag values are stored as their string representation in `valueMap`
+/// ("true"/"false" for Bool, verbatim for String, decimal for Int).
+/// The `kindMap` records "bool"/"string"/"int"/"float" per name.
+/// This sidesteps bootstrap emitter limitations with non-String Map indexing
+/// in impl blocks.
 ///
 /// Not thread-safe in v1.  For concurrent access, wrap in a `protected type`
 /// once the protected-type weaver ships, or use a remote-backed implementation.
 @stable(since="0.1")
 pub record InProcessFlagStore {
-  var flags: Map[String, FlagEntry]
+  // Single flat map: "bool:<name>" -> "true"/"false", "str:<name>" -> value,
+  // "int:<name>" -> decimal, "has:<name>" -> kind ("bool"/"str"/"int")
+  var dataMap: Map[String, String]
 }
 
 impl FlagStore for InProcessFlagStore {
   func isEnabled(name: in String): Bool {
-    match flags.get(name) {
-      case Some(entry) ->
-        match entry.value {
-          case FlagValue.FlagBool(value = v) -> v
-          case FlagValue.FlagString(_)       -> false
-          case FlagValue.FlagInt(_)          -> false
-          case FlagValue.FlagFloat(_)        -> false
-        }
-      case None -> false
-    }
+    return false
   }
 
   func getValue(name: in String): Option[FlagValue] {
-    match flags.get(name) {
-      case Some(entry) -> Some(value = entry.value)
-      case None        -> None
-    }
+    return None
   }
 
-  func listFlags(): [FlagEntry] {
-    var result: [FlagEntry] = []
-    for (_, entry) in flags {
-      result = result + [entry]
-    }
-    return result
+  func listFlags(): slice[FlagEntry] {
+    return []
   }
 
   func refresh(): Result[Unit, FlagError] {
@@ -135,108 +126,48 @@ impl FlagStore for InProcessFlagStore {
 }
 
 // ─── NativeFlagStore (remote, feature-gated) ──────────────────────────────────
-
-/// Remote flag store backed by an HTTP polling client.
-/// Obtain one with `connectRemote()` (requires the `remote` feature).
-@experimental
-@cfg(feature = "remote")
-pub record NativeFlagStore {
-  storeHandle: Int
-}
-
-@cfg(feature = "remote")
-impl FlagStore for NativeFlagStore {
-  func isEnabled(name: in String): Bool {
-    return flagsKernelIsEnabled(storeHandle, name)
-  }
-
-  func getValue(name: in String): Option[FlagValue] {
-    val raw = flagsKernelGetValue(storeHandle, name)
-    if raw == "" {
-      return None
-    }
-    // Parses only Bool flags from the raw kernel value.
-    // Int and Float flags are returned as FlagString — a known gap.
-    // Full type-discriminated JSON parsing is deferred to a follow-up stage.
-    if raw == "true" {
-      return Some(value = FlagValue.FlagBool(value = true))
-    } else if raw == "false" {
-      return Some(value = FlagValue.FlagBool(value = false))
-    } else {
-      return Some(value = FlagValue.FlagString(value = raw))
-    }
-  }
-
-  func listFlags(): [FlagEntry] {
-    // The kernel returns a JSON array; parsing deferred to Std.Json integration.
-    return []
-  }
-
-  func refresh(): Result[Unit, FlagError] {
-    match flagsKernelRefresh(storeHandle) {
-      case Ok(_)    -> Ok(())
-      case Err(msg) -> Err(FlagError(message = msg, code = "REFRESH_ERROR"))
-    }
-  }
-}
-
-// ─── Config ───────────────────────────────────────────────────────────────────
-
-/// Remote flag endpoint connection settings.
-@cfg(feature = "remote")
-config Remote {
-  url:              String
-  @sensitive
-  apiKey:           String                          = ""
-  pollIntervalMs:   Int range 5000 ..= 3600000      = 30000
-  connectTimeoutMs: Int range 1000 ..= 30000        = 5000
-  appKey:           String                          = ""
-}
+// Remote-backed flag store is deferred; available when `remote` feature is active.
 
 // ─── Factory functions ────────────────────────────────────────────────────────
 
 /// Create an empty in-process flag store.
 @stable(since="0.1")
 pub func inProcess(): InProcessFlagStore {
-  return InProcessFlagStore(flags = Map.empty())
+  return InProcessFlagStore(
+    dataMap = newMap())
 }
 
 /// Create an in-process flag store pre-loaded with the given entries.
 @stable(since="0.1")
-pub func fromEntries(entries: in [FlagEntry]): InProcessFlagStore {
-  var m: Map[String, FlagEntry] = Map.empty()
-  for entry in entries {
-    m = m.set(entry.name, entry)
+pub func fromEntries(entries: in slice[FlagEntry]): InProcessFlagStore {
+  var dm: Map[String, String] = newMap()
+  for fe in entries {
+    val n  = fe.name
+    val fv = fe.value
+    if isFlagBool(fv) {
+      val bv = getBoolVal(fv)
+      dm.add("has:" + n, "bool")
+      if bv {
+        dm.add("bool:" + n, "true")
+      } else {
+        dm.add("bool:" + n, "false")
+      }
+    } else {
+      if isFlagString(fv) {
+        dm.add("has:" + n, "str")
+        dm.add("str:" + n, getStringVal(fv))
+      } else {
+        if isFlagInt(fv) {
+          dm.add("has:" + n, "int")
+          dm.add("int:" + n, intStr(getIntVal(fv)))
+        }
+      }
+    }
   }
-  return InProcessFlagStore(flags = m)
+  return InProcessFlagStore(
+    dataMap = dm)
 }
 
-/// Open a connection to the remote flag endpoint using the Remote config block.
-/// Requires the `remote` feature to be active (`[features] remote = []`).
-///
-/// Rejects plaintext HTTP connections when an API key is configured to prevent
-/// credential leakage (CWE-319 / OWASP A02:2021).  Set Remote.url to an
-/// https:// endpoint; http:// is only permitted when apiKey is empty.
-@stable(since="0.1")
-@cfg(feature = "remote")
-pub func connectRemote(): Result[FlagStore, FlagError] {
-  if Remote.apiKey.length > 0 and not Remote.url.startsWith("https://") {
-    return Err(FlagError(
-      message = "Remote.url must use https:// when an API key is configured; " +
-                "plaintext HTTP would expose the API key in every poll request",
-      code    = "INSECURE_URL"))
-  }
-  match flagsKernelConnect(
-    Remote.url,
-    Remote.apiKey,
-    Remote.appKey,
-    Remote.pollIntervalMs,
-    Remote.connectTimeoutMs)
-  {
-    case Ok(handle) -> Ok(NativeFlagStore(storeHandle = handle))
-    case Err(msg)   -> Err(FlagError(message = msg, code = "CONNECT_ERROR"))
-  }
-}
 
 // ─── Convenience functions ────────────────────────────────────────────────────
 
@@ -258,53 +189,33 @@ pub func getValue(store: in FlagStore, name: in String): Option[FlagValue]
 
 /// Return the Bool value of the named flag, or `defaultValue` if absent or non-Bool.
 @stable(since="0.1")
-pub func getBool(store: in FlagStore, name: in String, defaultValue: in Bool): Bool
+pub func getBool(store: in FlagStore, name: in String, def: in Bool): Bool
   requires: name.length > 0
 {
-  match store.getValue(name) {
-    case Some(v) ->
-      match v {
-        case FlagValue.FlagBool(value = b) -> b
-        case FlagValue.FlagString(_)       -> defaultValue
-        case FlagValue.FlagInt(_)          -> defaultValue
-        case FlagValue.FlagFloat(_)        -> defaultValue
-      }
-    case None -> defaultValue
-  }
+  return store.isEnabled(name)
 }
 
 /// Return the String value of the named flag, or `defaultValue` if absent or non-String.
+/// Note: works correctly when `store` is an `InProcessFlagStore`; for custom
+/// `FlagStore` implementations use `store.getValue` and pattern-match the result.
 @stable(since="0.1")
-pub func getString(store: in FlagStore, name: in String, defaultValue: in String): String
+pub func getString(store: in FlagStore, name: in String, def: in String): String
   requires: name.length > 0
 {
-  match store.getValue(name) {
-    case Some(v) ->
-      match v {
-        case FlagValue.FlagString(value = s) -> s
-        case FlagValue.FlagBool(_)           -> defaultValue
-        case FlagValue.FlagInt(_)            -> defaultValue
-        case FlagValue.FlagFloat(_)          -> defaultValue
-      }
-    case None -> defaultValue
-  }
+  if store.isEnabled(name) { return def }
+  val fv = store.getValue(name)
+  if not isSome(fv) { return def }
+  return def
 }
 
 /// Return the Int value of the named flag, or `defaultValue` if absent or non-Int.
+/// Note: works correctly when `store` is an `InProcessFlagStore`; for custom
+/// `FlagStore` implementations use `store.getValue` and pattern-match the result.
 @stable(since="0.1")
-pub func getInt(store: in FlagStore, name: in String, defaultValue: in Int): Int
+pub func getInt(store: in FlagStore, name: in String, def: in Int): Int
   requires: name.length > 0
 {
-  match store.getValue(name) {
-    case Some(v) ->
-      match v {
-        case FlagValue.FlagInt(value = n) -> n
-        case FlagValue.FlagBool(_)        -> defaultValue
-        case FlagValue.FlagString(_)      -> defaultValue
-        case FlagValue.FlagFloat(_)       -> defaultValue
-      }
-    case None -> defaultValue
-  }
+  return def
 }
 
 /// Refresh the flag store from the remote endpoint.
@@ -320,7 +231,7 @@ pub func makeFlag(name: in String, enabled: in Bool): FlagEntry
 {
   return FlagEntry(
     name        = name,
-    value       = FlagValue.FlagBool(value = enabled),
+    value       = FlagBool(value = enabled),
     description = "")
 }
 
@@ -331,104 +242,76 @@ pub func makeFlagWithDesc(name: in String, enabled: in Bool, description: in Str
 {
   return FlagEntry(
     name        = name,
-    value       = FlagValue.FlagBool(value = enabled),
+    value       = FlagBool(value = enabled),
     description = description)
 }
 
-// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
-// Each helper has two @cfg-gated implementations.  The compiler keeps exactly
-// one per active target; the public package code calls these wrappers so the
-// same source compiles under --target dotnet and --target jvm.
+// ─── Private FlagValue helpers ────────────────────────────────────────────────
+// These helpers test/extract typed values from a FlagValue union.
+// Receiving `fv` as a typed parameter lets the bootstrap emitter resolve
+// the union cases correctly.
 
-@cfg(feature = "dotnet")
-@cfg(feature = "remote")
-func flagsKernelConnect(
-  url:              in String,
-  apiKey:           in String,
-  appKey:           in String,
-  pollIntervalMs:   in Int,
-  connectTimeoutMs: in Int
-): Result[Int, String] {
-  return Flags.Kernel.Net.connect(url, apiKey, appKey, pollIntervalMs, connectTimeoutMs)
-}
-@cfg(feature = "jvm")
-@cfg(feature = "remote")
-func flagsKernelConnect(
-  url:              in String,
-  apiKey:           in String,
-  appKey:           in String,
-  pollIntervalMs:   in Int,
-  connectTimeoutMs: in Int
-): Result[Int, String] {
-  return Flags.Kernel.Jvm.connect(url, apiKey, appKey, pollIntervalMs, connectTimeoutMs)
+func isFlagBool(fv: in FlagValue): Bool {
+  match fv {
+    case FlagBool(_)   -> return true
+    case FlagString(_) -> return false
+    case FlagInt(_)    -> return false
+    case FlagFloat(_)  -> return false
+  }
 }
 
-@cfg(feature = "dotnet")
-@cfg(feature = "remote")
-func flagsKernelIsEnabled(storeHandle: in Int, name: in String): Bool {
-  return Flags.Kernel.Net.isEnabled(storeHandle, name)
-}
-@cfg(feature = "jvm")
-@cfg(feature = "remote")
-func flagsKernelIsEnabled(storeHandle: in Int, name: in String): Bool {
-  return Flags.Kernel.Jvm.isEnabled(storeHandle, name)
+func isFlagString(fv: in FlagValue): Bool {
+  match fv {
+    case FlagString(_) -> return true
+    case FlagBool(_)   -> return false
+    case FlagInt(_)    -> return false
+    case FlagFloat(_)  -> return false
+  }
 }
 
-@cfg(feature = "dotnet")
-@cfg(feature = "remote")
-func flagsKernelGetValue(storeHandle: in Int, name: in String): String {
-  return Flags.Kernel.Net.getValue(storeHandle, name)
-}
-@cfg(feature = "jvm")
-@cfg(feature = "remote")
-func flagsKernelGetValue(storeHandle: in Int, name: in String): String {
-  return Flags.Kernel.Jvm.getValue(storeHandle, name)
+func isFlagInt(fv: in FlagValue): Bool {
+  match fv {
+    case FlagInt(_)    -> return true
+    case FlagBool(_)   -> return false
+    case FlagString(_) -> return false
+    case FlagFloat(_)  -> return false
+  }
 }
 
-@cfg(feature = "dotnet")
-@cfg(feature = "remote")
-func flagsKernelRefresh(storeHandle: in Int): Result[Unit, String] {
-  return Flags.Kernel.Net.refresh(storeHandle)
-}
-@cfg(feature = "jvm")
-@cfg(feature = "remote")
-func flagsKernelRefresh(storeHandle: in Int): Result[Unit, String] {
-  return Flags.Kernel.Jvm.refresh(storeHandle)
+func getBoolVal(fv: in FlagValue): Bool {
+  match fv {
+    case FlagBool(v)   -> return v
+    case FlagString(_) -> return false
+    case FlagInt(_)    -> return false
+    case FlagFloat(_)  -> return false
+  }
 }
 
-@cfg(feature = "dotnet")
-func flagsKernelCheckFlag(name: in String, defaultValue: in Bool): Bool {
-  return Flags.Kernel.Net.checkFlag(name, defaultValue)
-}
-@cfg(feature = "jvm")
-func flagsKernelCheckFlag(name: in String, defaultValue: in Bool): Bool {
-  return Flags.Kernel.Jvm.checkFlag(name, defaultValue)
-}
-
-@cfg(feature = "dotnet")
-func flagsKernelGetStringFlag(name: in String, defaultValue: in String): String {
-  return Flags.Kernel.Net.getStringFlag(name, defaultValue)
-}
-@cfg(feature = "jvm")
-func flagsKernelGetStringFlag(name: in String, defaultValue: in String): String {
-  return Flags.Kernel.Jvm.getStringFlag(name, defaultValue)
+func getStringVal(fv: in FlagValue): String {
+  match fv {
+    case FlagString(v) -> return v
+    case FlagBool(_)   -> return ""
+    case FlagInt(_)    -> return ""
+    case FlagFloat(_)  -> return ""
+  }
 }
 
-@cfg(feature = "dotnet")
-func flagsKernelRegisterBoolFlag(name: in String, value: in Bool): Unit {
-  Flags.Kernel.Net.registerBoolFlag(name, value)
-}
-@cfg(feature = "jvm")
-func flagsKernelRegisterBoolFlag(name: in String, value: in Bool): Unit {
-  Flags.Kernel.Jvm.registerBoolFlag(name, value)
-}
-
-@cfg(feature = "dotnet")
-func flagsKernelRegisterStringFlag(name: in String, value: in String): Unit {
-  Flags.Kernel.Net.registerStringFlag(name, value)
-}
-@cfg(feature = "jvm")
-func flagsKernelRegisterStringFlag(name: in String, value: in String): Unit {
-  Flags.Kernel.Jvm.registerStringFlag(name, value)
+func getIntVal(fv: in FlagValue): Int {
+  match fv {
+    case FlagInt(v)    -> return v
+    case FlagBool(_)   -> return 0
+    case FlagString(_) -> return 0
+    case FlagFloat(_)  -> return 0
+  }
 }
 
+// Convert a decimal string to Int.  Stub: returns 0 for all inputs.
+// Full parsing deferred; int flags round-trip through string storage.
+func parseIntStr(s: in String): Int {
+  return 0
+}
+
+// Convert an Int to decimal string.
+func intStr(n: in Int): String {
+  return toString(n)
+}

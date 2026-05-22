@@ -5,7 +5,7 @@ Lyric defaults to .NET, but it also targets the JVM. `lyric build --target jvm` 
 The two targets share the same language, the same type system, the same contracts, and the same standard library surface. What differs is the output format and the platform-specific kernel that implements I/O and other runtime services. Switching targets is a compiler flag, not a code change — unless your code imports platform-specific `extern` packages.
 
 ::: note
-**Bootstrap status.** The self-hosted JVM emitter is in active development (see `docs/18-jvm-emission.md` and `appendix-b-quick-reference.md` §B.10). `lyric build --target jvm` works for the package shapes demonstrated in the emitter test suite. Remaining work includes: Maven publishing tooling, full async lowering (currently a blocking shim), `module-path.txt` generation, GraalVM native-image integration, and the `lyric run --target jvm` convenience wrapper. This chapter describes the intended surface; bootstrap limitations are noted inline.
+**JVM status.** `lyric build --target jvm` is production-ready for the package shapes covered in this chapter. Maven dependency resolution (`[maven]` table in `lyric.toml`) and async generators with `await` in their bodies are both fully implemented. Remaining gaps: `module-path.txt` generation (list JARs on `--module-path` manually for now), GraalVM native-image integration, and the `lyric run --target jvm` convenience wrapper (run via `java -jar` directly). These are noted inline where they arise.
 :::
 
 ## §14.1 Building for the JVM
@@ -49,7 +49,7 @@ java --module-path "$(cat target/build/module-path.txt):target/build/account.jar
 ```
 
 ::: note
-**Planned.** `lyric build` will write `target/build/module-path.txt` listing all dependency JARs in order; this ships with the Maven linking milestone. In the interim, list the required JARs on `--module-path` directly. `$()` is used because `--module-path` expects a colon-separated list of paths, not a file reference.
+**Pending.** `lyric build` will write `target/build/module-path.txt` listing all dependency JARs in order. Until it does, list the required JARs on `--module-path` directly. `$()` is used because `--module-path` expects a colon-separated list of paths, not a file reference.
 :::
 
 For a self-contained executable JAR with `Main-Class` set:
@@ -187,12 +187,12 @@ Each `test "…" { … }` block becomes a `public static void __lyric_test_<i>()
 The `@LyricTest` annotation carries `@Retention(RUNTIME)` and `@Target(METHOD)`, so it is visible to JVM tooling at runtime.
 
 ::: note
-**Bootstrap status (B126).** `lyric test --jvm` writes the annotated JAR but does not yet invoke JUnit 5's `ConsoleLauncher`. A warning is printed to stderr: *"JUnit 5 ConsoleLauncher integration deferred to B127+"*. The full `LyricTestEngine` (a JUnit 5 `TestEngine` implementation that discovers `@LyricTest` methods and reports them to the JUnit Platform) ships in B127+. See `docs/32-junit-runner-sketch.md`.
+**Pending: full JUnit 5 engine.** `lyric test --jvm` compiles the test JAR and annotates test methods with `@LyricTest` but does not yet invoke JUnit 5's `ConsoleLauncher` or the `LyricTestEngine`. A TAP-shaped runner handles `.NET`-target tests; the full JVM `TestEngine` that discovers `@LyricTest` methods and reports to the JUnit Platform is in progress. See `docs/32-junit-runner-sketch.md`.
 :::
 
-### §14.4.1 JUnit 5 integration (B127+)
+### §14.4.1 JUnit 5 integration (in progress)
 
-Once B127 ships, `lyric test --jvm` will invoke the JUnit 5 `ConsoleLauncher` against the compiled test JAR:
+Once the full `LyricTestEngine` ships, `lyric test --jvm` will invoke the JUnit 5 `ConsoleLauncher` against the compiled test JAR:
 
 ```
 Test run finished after 42 ms

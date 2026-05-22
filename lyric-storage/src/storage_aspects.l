@@ -1,31 +1,31 @@
-/// Storage.Aspects — pub aspect templates for storage cross-cutting concerns.
-///
-/// Two templates:
-///
-///   AuditAccess  — B-mode: logs every matched handler call (put, get, delete)
-///                  to a structured audit log before proceeding.  Uses
-///                  `call.qualifiedName` as the operation identifier.
-///
-///   ValidateKey  — C-mode (@inline_template): rejects empty or path-traversal
-///                  storage keys before the call reaches the handler.  Reads
-///                  `args.key` from the concrete handler parameter list.
-///
-/// Typical consumer usage:
-///
-///   import Storage.Aspects
-///
-///   aspect AuditStorage from Storage.Aspects.AuditAccess {
-///     matches: name in { put, get, delete }
-///     config { logLevel: String = "info" }
-///   }
-///
-///   aspect SafeKeys from Storage.Aspects.ValidateKey {
-///     matches: name in { put, get, delete }
-///     inside:  AuditStorage
-///     config { allowDots: Bool = false }
-///   }
-///
-/// See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
+// Storage.Aspects — pub aspect templates for storage cross-cutting concerns.
+//
+// Two templates:
+//
+//   AuditAccess  — B-mode: logs every matched handler call (put, get, delete)
+//                  to a structured audit log before proceeding.  Uses
+//                  `call.qualifiedName` as the operation identifier.
+//
+//   ValidateKey  — C-mode (@inline_template): rejects empty or path-traversal
+//                  storage keys before the call reaches the handler.  Reads
+//                  `args.key` from the concrete handler parameter list.
+//
+// Typical consumer usage:
+//
+//   import Storage.Aspects
+//
+//   aspect AuditStorage from Storage.Aspects.AuditAccess {
+//     matches: name in { put, get, delete }
+//     config { logLevel: String = "info" }
+//   }
+//
+//   aspect SafeKeys from Storage.Aspects.ValidateKey {
+//     matches: name in { put, get, delete }
+//     inside:  AuditStorage
+//     config { allowDots: Bool = false }
+//   }
+//
+// See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
 
 @runtime_checked
 package Storage.Aspects
@@ -33,8 +33,7 @@ package Storage.Aspects
 import Std.Core
 import Std.String as Str
 import Storage
-import Storage.Kernel.Net
-import Storage.Kernel.Jvm
+import Storage.Kernel.Net as StorageKernel
 
 // ─── AuditAccess ─────────────────────────────────────────────────────────────
 
@@ -57,11 +56,11 @@ pub aspect AuditAccess {
     if not enabled {
       ret = call.proceed()
     } else {
-      storageKernelAuditLog(call.qualifiedName, logLevel, "")
+      StorageKernel.auditLog(call.qualifiedName, logLevel, "")
       ret = call.proceed()
       match ret {
-        case Ok(_)  -> storageKernelAuditLog(call.qualifiedName + ":ok",  logLevel, "")
-        case Err(e) -> storageKernelAuditLog(call.qualifiedName + ":err", "warn",   e.message)
+        case Ok(_)  -> StorageKernel.auditLog(call.qualifiedName + ":ok",  logLevel, "")
+        case Err(e) -> StorageKernel.auditLog(call.qualifiedName + ":err", "warn",   e.message)
       }
     }
   }
@@ -94,17 +93,19 @@ pub aspect ValidateKey {
     allowDots: Bool = false
   }
 
+  requires:
+    args.key != ""    // handler must declare a key: String parameter
+
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()
     } else {
-      val norm   = normalisedKey(args.key)
-      val reason = traversalReason(args.key, norm)
+      val reason = traversalReason(args.key)
       if reason != "" {
         ret = Err(StorageError(
           message = "storage key rejected: " + reason,
           code    = "INVALID_KEY"))
-      } else if not allowDots and containsDotDot(norm) {
+      } else if not allowDots and containsDotDot(normalisedKey(args.key)) {
         ret = Err(StorageError(
           message = "storage key must not contain path traversal segments (\"..\")",
           code    = "INVALID_KEY"))
@@ -118,47 +119,39 @@ pub aspect ValidateKey {
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
 // Normalise a key for traversal-detection: URL-decode the path-relevant
-// percent-encodings (only `.`, `/`, `\`), fold backslashes to forward
-// slashes, and repeat until the output stabilises.  The iterative approach
-// handles double-encoded sequences (e.g. `%252e%252e` → `%2e%2e` → `..`).
-// The returned string is *only* for inspection by `containsDotDot` /
-// `traversalReason`; it is never passed downstream to the storage backend.
+// percent-encodings (only `.`, `/`, `\`; everything else is left alone
+// to avoid silently rewriting legitimate object names), fold backslashes
+// to forward slashes, and lower-case nothing else.  The returned string
+// is *only* for inspection by `containsDotDot` / `traversalReason`;
+// it is never passed downstream to the storage backend.
 func normalisedKey(s: in String): String {
-  // Cap iterations to bound worst-case cost on adversarial keys.
-  // Each iteration strictly reduces the length of any percent-encoded prefix
-  // (e.g. %25 → %, %252e → %2e → .) so the loop converges; the cap is a
-  // defence-in-depth guard, not a correctness measure.
-  val maxIter = 20
-  var cur  = s
-  var prev = ""
-  var iter = 0
-  while cur != prev and iter < maxIter {
-    prev    = cur
-    val a   = Str.replace(cur,  "%25", "%")
-    val b   = Str.replace(a,    "%2e", ".")
-    val c   = Str.replace(b,    "%2E", ".")
-    val d   = Str.replace(c,    "%2f", "/")
-    val e   = Str.replace(d,    "%2F", "/")
-    val f   = Str.replace(e,    "%5c", "\\")
-    val g   = Str.replace(f,    "%5C", "\\")
-    cur     = Str.replace(g,    "\\",  "/")
-    iter    = iter + 1
-  }
-  cur
+  // Order matters: decode `%2e` / `%2E` before checking for `..`,
+  // and `%2f` / `%2F` / `%5c` / `%5C` before folding separators.
+  val a = Str.replace(s, "%2e", ".")
+  val b = Str.replace(a, "%2E", ".")
+  val c = Str.replace(b, "%2f", "/")
+  val d = Str.replace(c, "%2F", "/")
+  val e = Str.replace(d, "%5c", "\\")
+  val f = Str.replace(e, "%5C", "\\")
+  Str.replace(f, "\\", "/")
 }
 
 // Reject empty, leading-slash, null-byte, and clearly-bogus keys with
 // a structured reason.  Returns "" when the key clears the cheap
-// rejections.  Accepts a pre-computed normalised key (`norm`) to avoid
-// calling normalisedKey twice.
-func traversalReason(s: in String, norm: in String): String {
+// rejections; the caller then runs the more expensive
+// containsDotDot check against the normalised key.
+func traversalReason(s: in String): String {
   if s == "" {
     return "key must not be empty"
   }
   if Str.contains(s, "\u{0000}") {
     return "key must not contain null bytes"
   }
-  if norm.length > 0 and norm.charAt(0).toString() == "/" {
+  // After normalisation, a leading separator means an attempt to
+  // escape the configured base path.  Catch literal and percent-
+  // encoded variants.
+  val n = normalisedKey(s)
+  if n.length > 0 and n[0].toString() == "/" {
     return "key must not be absolute or start with '/'"
   }
   return ""
@@ -172,21 +165,10 @@ func containsDotDot(s: in String): Bool {
   val limit = s.length - 1
   var i     = 0
   while i < limit {
-    if s.charAt(i).toString() == "." and s.charAt(i + 1).toString() == "." {
+    if s[i].toString() == "." and s[i + 1].toString() == "." {
       return true
     }
     i = i + 1
   }
   return false
-}
-
-// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
-
-@cfg(feature = "dotnet")
-func storageKernelAuditLog(operation: in String, level: in String, detail: in String): Unit {
-  Storage.Kernel.Net.auditLog(operation, level, detail)
-}
-@cfg(feature = "jvm")
-func storageKernelAuditLog(operation: in String, level: in String, detail: in String): Unit {
-  Storage.Kernel.Jvm.auditLog(operation, level, detail)
 }

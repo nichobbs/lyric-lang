@@ -295,8 +295,14 @@ pub union AsmInsn {
   // invokedynamic: u2 index + u2 zero.
   case InvokeDynamic(dynIdx: Int)
 
-  // Branch: opcode + label name (resolved to i16 offset in pass 2).
-  case Branch(op: Int, label: String)
+  // Branch instruction: opcode + label name (resolved to i16 offset in
+  // pass 2).  Named `BranchInsn` rather than `Branch` to avoid colliding
+  // with `Lyric.Manifest.GitRef.Branch(name: String)` /
+  // `Lyric.GitDep.GitRef.Branch(name: String)` in the F# bootstrap
+  // emitter's import resolver when both packages share a compile scope
+  // (see `lyric-compiler/lyric/emitter.l`'s comment about the in-process
+  // MSIL path).
+  case BranchInsn(op: Int, label: String)
 
   // goto_w: label name (resolved to i32 offset).
   case GotoW(label: String)
@@ -401,7 +407,7 @@ func insnSize(insn: in AsmInsn): Int {
                                             //   computed from classIdx; see emitInsn2)
     case InvokeInterface(_, _, _) -> 5      // op + u2 + u1 count + u1 zero
     case InvokeDynamic(_)        -> 5       // op + u2 + u2 zero
-    case Branch(_, _)            -> 3       // op + i16
+    case BranchInsn(_, _)        -> 3       // op + i16
     case GotoW(_)                -> 5       // goto_w + i32
     case ClassRef(_, _)          -> 3       // op + u2
     case NewArray(_)             -> 2       // op + u1
@@ -531,7 +537,7 @@ func emitAllInsns(
         offset = offset + 5
       }
 
-      case Branch(op, label) -> {
+      case BranchInsn(op, label) -> {
         val target   = mapGet(labels, label)
         val resolved = match target {
           case Some(t) -> t
@@ -793,7 +799,7 @@ func collectBranchLabels(asm: in MethodAssembler): Map[String, Bool] {
   var bi = 0
   while bi < asm.insns.count {
     match asm.insns[bi] {
-      case Branch(_, lbl) -> {
+      case BranchInsn(_, lbl) -> {
         match mapGet(seen, lbl) {
           case None    -> seen.add(lbl, true)
           case Some(_) -> ()
@@ -1364,7 +1370,7 @@ pub func emitAthrow(asm: in MethodAssembler): Unit  { emitInsn(asm, Nullary(op =
 // ── Branches ──────────────────────────────────────────────────────────────────
 
 pub func emitGoto(asm: in MethodAssembler, label: in String): Unit {
-  emitInsn(asm, Branch(op = OP_GOTO, label = label))
+  emitInsn(asm, BranchInsn(op = OP_GOTO, label = label))
 }
 
 pub func emitGotoW(asm: in MethodAssembler, label: in String): Unit {
@@ -1372,67 +1378,67 @@ pub func emitGotoW(asm: in MethodAssembler, label: in String): Unit {
 }
 
 pub func emitIfeq(asm: in MethodAssembler, label: in String): Unit {
-  emitInsn(asm, Branch(op = OP_IFEQ, label = label))
+  emitInsn(asm, BranchInsn(op = OP_IFEQ, label = label))
 }
 
 pub func emitIfne(asm: in MethodAssembler, label: in String): Unit {
-  emitInsn(asm, Branch(op = OP_IFNE, label = label))
+  emitInsn(asm, BranchInsn(op = OP_IFNE, label = label))
 }
 
 pub func emitIflt(asm: in MethodAssembler, label: in String): Unit {
-  emitInsn(asm, Branch(op = OP_IFLT, label = label))
+  emitInsn(asm, BranchInsn(op = OP_IFLT, label = label))
 }
 
 pub func emitIfge(asm: in MethodAssembler, label: in String): Unit {
-  emitInsn(asm, Branch(op = OP_IFGE, label = label))
+  emitInsn(asm, BranchInsn(op = OP_IFGE, label = label))
 }
 
 pub func emitIfgt(asm: in MethodAssembler, label: in String): Unit {
-  emitInsn(asm, Branch(op = OP_IFGT, label = label))
+  emitInsn(asm, BranchInsn(op = OP_IFGT, label = label))
 }
 
 pub func emitIfle(asm: in MethodAssembler, label: in String): Unit {
-  emitInsn(asm, Branch(op = OP_IFLE, label = label))
+  emitInsn(asm, BranchInsn(op = OP_IFLE, label = label))
 }
 
 pub func emitIfIcmpeq(asm: in MethodAssembler, label: in String): Unit {
-  emitInsn(asm, Branch(op = OP_IF_ICMPEQ, label = label))
+  emitInsn(asm, BranchInsn(op = OP_IF_ICMPEQ, label = label))
 }
 
 pub func emitIfIcmpne(asm: in MethodAssembler, label: in String): Unit {
-  emitInsn(asm, Branch(op = OP_IF_ICMPNE, label = label))
+  emitInsn(asm, BranchInsn(op = OP_IF_ICMPNE, label = label))
 }
 
 pub func emitIfIcmplt(asm: in MethodAssembler, label: in String): Unit {
-  emitInsn(asm, Branch(op = OP_IF_ICMPLT, label = label))
+  emitInsn(asm, BranchInsn(op = OP_IF_ICMPLT, label = label))
 }
 
 pub func emitIfIcmpge(asm: in MethodAssembler, label: in String): Unit {
-  emitInsn(asm, Branch(op = OP_IF_ICMPGE, label = label))
+  emitInsn(asm, BranchInsn(op = OP_IF_ICMPGE, label = label))
 }
 
 pub func emitIfIcmpgt(asm: in MethodAssembler, label: in String): Unit {
-  emitInsn(asm, Branch(op = OP_IF_ICMPGT, label = label))
+  emitInsn(asm, BranchInsn(op = OP_IF_ICMPGT, label = label))
 }
 
 pub func emitIfIcmple(asm: in MethodAssembler, label: in String): Unit {
-  emitInsn(asm, Branch(op = OP_IF_ICMPLE, label = label))
+  emitInsn(asm, BranchInsn(op = OP_IF_ICMPLE, label = label))
 }
 
 pub func emitIfAcmpeq(asm: in MethodAssembler, label: in String): Unit {
-  emitInsn(asm, Branch(op = OP_IF_ACMPEQ, label = label))
+  emitInsn(asm, BranchInsn(op = OP_IF_ACMPEQ, label = label))
 }
 
 pub func emitIfAcmpne(asm: in MethodAssembler, label: in String): Unit {
-  emitInsn(asm, Branch(op = OP_IF_ACMPNE, label = label))
+  emitInsn(asm, BranchInsn(op = OP_IF_ACMPNE, label = label))
 }
 
 pub func emitIfnull(asm: in MethodAssembler, label: in String): Unit {
-  emitInsn(asm, Branch(op = OP_IFNULL, label = label))
+  emitInsn(asm, BranchInsn(op = OP_IFNULL, label = label))
 }
 
 pub func emitIfnonnull(asm: in MethodAssembler, label: in String): Unit {
-  emitInsn(asm, Branch(op = OP_IFNONNULL, label = label))
+  emitInsn(asm, BranchInsn(op = OP_IFNONNULL, label = label))
 }
 
 // ── Switch instructions ───────────────────────────────────────────────────────

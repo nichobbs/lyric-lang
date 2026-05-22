@@ -2847,9 +2847,34 @@ let private emitFunctionBody
     // whether the source actually pushed something.  Inside a
     // `try { … } finally` protected region (any active defer), the
     // branch must be a `leave`, not a `br` — ECMA-335 III.3.55.
+    let liftToNullableIfNeeded (stackTy: System.Type) (targetTy: System.Type) =
+        // Implicit T → Nullable<T> lifting: when the body expression emits a
+        // value type T but the function declares return type Nullable<T>, wrap
+        // via the Nullable<T>(T) constructor before storing to the result local.
+        if stackTy.IsValueType
+           && not (stackTy.IsGenericType
+                   && not stackTy.IsGenericTypeDefinition
+                   && stackTy.GetGenericTypeDefinition() = typedefof<System.Nullable<_>>)
+           && targetTy.IsValueType
+           && targetTy.IsGenericType
+           && not targetTy.IsGenericTypeDefinition
+           && targetTy.GetGenericTypeDefinition() = typedefof<System.Nullable<_>>
+           && targetTy.GetGenericArguments().[0] = stackTy then
+            let nullableCtor = targetTy.GetConstructor([| stackTy |])
+            match Option.ofObj nullableCtor with
+            | Some ctor -> il.Emit(OpCodes.Newobj, ctor)
+            | None ->
+                // The Nullable<T>(T) constructor is guaranteed to exist
+                // by the BCL contract, so a missing lookup means our
+                // reflection environment is misconfigured (or `targetTy`
+                // is not actually Nullable<T>).  Surfacing a panic here
+                // avoids silently emitting malformed IL that would
+                // crash much later in JIT verification.
+                failwithf "Nullable<T>(T) constructor not found for %s" targetTy.FullName
     let routeReturn (pushedTy: System.Type) =
         match resultLocal with
         | Some loc when pushedTy <> typeof<System.Void> ->
+            liftToNullableIfNeeded pushedTy loc.LocalType
             il.Emit(OpCodes.Stloc, loc)
         | None when pushedTy <> typeof<System.Void> ->
             il.Emit(OpCodes.Pop)
@@ -2945,7 +2970,16 @@ let private emitFunctionBody
         let genericGtpbs =
             if sg.Generics.IsEmpty then [||]
             else mb.GetGenericArguments()
-        emitExternCall il fn paramList returnTy genericGtpbs resultLocal exitLabel targetStr
+        try
+            emitExternCall il fn paramList returnTy genericGtpbs resultLocal exitLabel targetStr
+        with ex ->
+            diags.Add(
+                err "F0001"
+                    (sprintf "FFI resolution error in '%s': %s" fn.Name ex.Message)
+                    fn.Span)
+            // Emit a branch to the exit label so the IL remains structurally
+            // valid even though the function body is incomplete.
+            il.Emit(OpCodes.Br, exitLabel)
     | None ->
         if isVoidReturn then
             il.Emit(OpCodes.Br, exitLabel)
@@ -3236,17 +3270,25 @@ let private emitAssembly
                         clr.GetGenericArguments().Length
                     else 0
                 if lyricArity <> clrArity then
-                    failwithf
-                        "FFI: extern type '%s' has %d type parameter(s) but \"%s\" has %d"
-                        et.Name lyricArity et.ClrName clrArity
-                externTypeNames.[et.Name] <- clr
-                symbols.TryFind et.Name
-                |> Seq.tryHead
-                |> Option.bind Symbol.typeIdOpt
-                |> Option.iter (fun id -> typeIdToClr.[id] <- clr)
+                    codegenDiags.Add(
+                        err "F0002"
+                            (sprintf
+                                "FFI: extern type '%s' has %d type parameter(s) but \"%s\" has %d — type parameter count must match"
+                                et.Name lyricArity et.ClrName clrArity)
+                            et.Span)
+                else
+                    externTypeNames.[et.Name] <- clr
+                    symbols.TryFind et.Name
+                    |> Seq.tryHead
+                    |> Option.bind Symbol.typeIdOpt
+                    |> Option.iter (fun id -> typeIdToClr.[id] <- clr)
             | None ->
-                failwithf "FFI: cannot resolve extern type '%s' = \"%s\" against the loaded AppDomain"
-                    et.Name et.ClrName
+                codegenDiags.Add(
+                    err "F0001"
+                        (sprintf
+                            "FFI: cannot resolve extern type '%s' = \"%s\" — type not found in the loaded AppDomain; check the fully-qualified CLR name"
+                            et.Name et.ClrName)
+                        et.Span)
 
         // Extern types coming in via stdlib imports.  The user's
         // symbol table has the imported `extern type` registered (so
@@ -3518,6 +3560,31 @@ let private emitAssembly
                             |> Seq.tryHead
                             |> Option.bind Symbol.typeIdOpt
                             |> Option.iter (fun tid -> typeIdToClr.[tid] <- ty)
+                | _ -> ()
+            // Enums — register imported enum cases so cross-package uses of
+            // `EnumName.CaseName` resolve correctly in the consuming package.
+            for it in artifact.Source.Items do
+                match it.Kind with
+                | IEnum ed ->
+                    match getType (qualify ed.Name) with
+                    | None -> ()
+                    | Some ty ->
+                        let cases =
+                            ed.Cases
+                            |> List.mapi (fun i c ->
+                                { Records.EnumCase.Name = c.Name; Records.EnumCase.Ordinal = i })
+                        let info =
+                            { Records.EnumInfo.Name  = ed.Name
+                              Records.EnumInfo.Type  = ty
+                              Records.EnumInfo.Cases = cases }
+                        enumTable.[ed.Name] <- info
+                        for c in info.Cases do
+                            enumCases.[c.Name] <- (info, c)
+                            enumCases.[ed.Name + "." + c.Name] <- (info, c)
+                        symbols.TryFind ed.Name
+                        |> Seq.tryHead
+                        |> Option.bind Symbol.typeIdOpt
+                        |> Option.iter (fun tid -> typeIdToClr.[tid] <- ty)
                 | _ -> ()
             // Protected types — populate typeIdToClr so cross-package
             // references to a `protected type` (e.g. `StubCounter` from
@@ -3961,19 +4028,26 @@ let private emitAssembly
         // body only references the others' MethodBuilders, not their
         // bodies.
         for (stub, viewInfo) in viewInfos do
-            let toViewMb = populateToViewMethod stubByOpaqueClr stub viewInfo
-            stub.ToView <- Some toViewMb
-            // Pass D: optional reverse `<Name>View::tryInto`.  Skipped
-            // for projectables with nested-projectable fields (needs
-            // monadic bind through each nested tryInto) and when
-            // `Std.Core.Result` isn't imported.
-            let tryIntoMb =
-                populateTryIntoMethod importedUnionTable stubByOpaqueClr stub viewInfo
-            projectableTable.[stub.OpaqueDecl.Name] <-
-                { Records.ProjectableInfo.OpaqueName    = stub.OpaqueDecl.Name
-                  Records.ProjectableInfo.ToViewMethod  = toViewMb
-                  Records.ProjectableInfo.ViewType      = viewInfo
-                  Records.ProjectableInfo.TryIntoMethod = tryIntoMb }
+            try
+                let toViewMb = populateToViewMethod stubByOpaqueClr stub viewInfo
+                stub.ToView <- Some toViewMb
+                // Pass D: optional reverse `<Name>View::tryInto`.  Skipped
+                // for projectables with nested-projectable fields (needs
+                // monadic bind through each nested tryInto) and when
+                // `Std.Core.Result` isn't imported.
+                let tryIntoMb =
+                    populateTryIntoMethod importedUnionTable stubByOpaqueClr stub viewInfo
+                projectableTable.[stub.OpaqueDecl.Name] <-
+                    { Records.ProjectableInfo.OpaqueName    = stub.OpaqueDecl.Name
+                      Records.ProjectableInfo.ToViewMethod  = toViewMb
+                      Records.ProjectableInfo.ViewType      = viewInfo
+                      Records.ProjectableInfo.TryIntoMethod = tryIntoMb }
+            with ex ->
+                stub.ToView <- None
+                codegenDiags.Add(
+                    err "F0001"
+                        (sprintf "projectable synthesis error for '%s': %s" stub.OpaqueDecl.Name ex.Message)
+                        stub.OpaqueDecl.Span)
 
         // Pass 0.5 — distinct types and range subtypes.
         let distinctTable = Records.DistinctTypeTable()
@@ -5364,6 +5438,8 @@ let private emitAssembly
             recordSealed (kv.Value.Type.CreateType())
             for c in kv.Value.Cases do
                 recordSealed (c.Type.CreateType())
+        for kv in enumTable do
+            recordSealed kv.Value.Type
         // Async state-machine types — created before programTy so the
         // kickoff stubs in programTy can resolve their references at
         // runtime.
@@ -5430,7 +5506,79 @@ let private emitAssembly
 
 /// Cache: package key (e.g. `"Std.Core"`) → compiled artifact.
 let private stdlibArtifactCache : Dictionary<string, StdlibArtifact> = Dictionary()
+/// Per-artifact non-fatal diagnostics (B0050/B0051) stored alongside the
+/// cache entry so callers can surface them on each project without a global.
+let private stdlibArtifactWarnings : Dictionary<string, Diagnostic list> = Dictionary()
 let private stdlibLock : obj = obj()
+
+/// Tracks DLL paths already inspected for version skew so the check is
+/// idempotent within a process (the DLL doesn't change during a build session).
+let private sdkVersionCheckedPaths : System.Collections.Generic.HashSet<string> = System.Collections.Generic.HashSet()
+
+/// Compiler's own stdlib version.  Must match the `stdlib_version` field
+/// embedded in any pre-built `Lyric.Stdlib.dll` for a clean version pass.
+let private compilerStdlibVersion : string = "0.1.0"
+
+/// Parse a semver-like string `"major.minor.patch[-suffix]"` into
+/// `(major, minor)` ints.  Returns `None` on any parse failure.
+///
+/// Internal helper for the SDK-skew check (B0050/B0051).  Exposed
+/// (rather than `let private`) so `Lyric.Emitter.Tests` can unit-test
+/// it directly via the `InternalsVisibleTo` declaration in the
+/// project's `.fsproj`; do NOT call from outside this module.
+let internal parseMajorMinor (v: string) : (int * int) option =
+    let segs = v.Split('.')
+    if segs.Length >= 2 then
+        match System.Int32.TryParse segs.[0], System.Int32.TryParse (segs.[1].Split('-').[0]) with
+        | (true, major), (true, minor) -> Some (major, minor)
+        | _ -> None
+    else None
+
+/// Check `dllPath`'s embedded `Lyric.SdkVersion` against the compiler's
+/// expected version.  Returns B0050/B0051 diagnostics (idempotent per path;
+/// returns `[]` on subsequent calls for the same path).
+let private checkSdkVersionSkew (dllPath: string) : Diagnostic list =
+    // Called from within `lock stdlibLock` in `ensureStdlibArtifact`; the
+    // re-entrant Monitor allows this nested lock acquisition.
+    lock stdlibLock (fun () ->
+        if sdkVersionCheckedPaths.Contains dllPath then []
+        else
+            sdkVersionCheckedPaths.Add dllPath |> ignore
+            let zeroSpan = Span.make Position.initial Position.initial
+            let strict =
+                match System.Environment.GetEnvironmentVariable "LYRIC_STRICT_SDK_VERSION" with
+                | "1" | "true" | "yes" -> true
+                | _ -> false
+            match SdkRoot.tryReadSdkVersion dllPath with
+            | None -> []   // No version resource: old DLL, no check.
+            | Some (_, stdlibVer, _, _) ->
+                if stdlibVer <> compilerStdlibVersion then
+                    match parseMajorMinor stdlibVer, parseMajorMinor compilerStdlibVersion with
+                    | Some (dMaj, dMin), Some (cMaj, cMin) ->
+                        let majorSkew = dMaj <> cMaj
+                        if majorSkew || strict then
+                            [ { Severity = DiagError
+                                Code     = "B0051"
+                                Message  =
+                                  sprintf
+                                      "SDK version mismatch: pre-built stdlib at '%s' has stdlib_version '%s' but compiler expects '%s'. \
+                                       Rebuild the stdlib or use a matching compiler version."
+                                      dllPath stdlibVer compilerStdlibVersion
+                                Span = zeroSpan
+                                Help = None; Related = []; Fix = None } ]
+                        elif dMin <> cMin then
+                            [ { Severity = DiagWarning
+                                Code     = "B0050"
+                                Message  =
+                                  sprintf
+                                      "SDK minor-version skew: pre-built stdlib at '%s' has stdlib_version '%s', compiler expects '%s'. \
+                                       Set LYRIC_STRICT_SDK_VERSION=1 to treat this as an error."
+                                      dllPath stdlibVer compilerStdlibVersion
+                                Span = zeroSpan
+                                Help = None; Related = []; Fix = None } ]
+                        else []
+                    | _ -> []
+                else [])
 
 /// Convert a `RestoredPackages.RestoredArtifact` to the internal
 /// `StdlibArtifact` shape so a pre-built binary `Lyric.Stdlib.dll`
@@ -5785,11 +5933,13 @@ let private parseAndMergeBuiltinFiles
 /// (D041).
 let rec private ensureStdlibArtifact
         (target: CompileTarget)
-        (segments: string list) : Result<StdlibArtifact, Diagnostic list> =
+        (segments: string list) : Result<StdlibArtifact * Diagnostic list, Diagnostic list> =
     let key = sprintf "%A:%s" target (packageKey segments)
     lock stdlibLock (fun () ->
         match stdlibArtifactCache.TryGetValue key with
-        | true, a -> Ok a
+        | true, a ->
+            let ws = match stdlibArtifactWarnings.TryGetValue key with true, ws -> ws | _ -> []
+            Ok (a, ws)
         | _ ->
             // Fast path: try a pre-built binary stdlib DLL (docs/22 §3)
             // before recompiling from source.  Checks SdkRoot for
@@ -5809,13 +5959,15 @@ let rec private ensureStdlibArtifact
                     match RestoredPackages.loadRestoredPackage ref' with
                     | Error _ -> None
                     | Ok arts ->
+                        let versionDiags = checkSdkVersionSkew dllPath
                         arts
                         |> List.tryFind (fun a -> a.Contract.PackageName = pkgName)
-                        |> Option.map restoredToStdlib
+                        |> Option.map (fun a -> restoredToStdlib a, versionDiags)
             match binaryArtifact with
-            | Some artifact ->
+            | Some (artifact, versionDiags) ->
                 stdlibArtifactCache.[key] <- artifact
-                Ok artifact
+                stdlibArtifactWarnings.[key] <- versionDiags
+                Ok (artifact, versionDiags)
             | None ->
             // Source fallback: walk stdlib/ tree and compile from .l files.
             let foundPaths, layoutDiag =
@@ -5871,7 +6023,10 @@ let rec private ensureStdlibArtifact
                         let key = packageKey segs
                         if visited.Add key then
                             match ensureStdlibArtifact target segs with
-                            | Ok a ->
+                            | Ok (a, _ws) ->
+                                // Version-skew warnings (_ws) are stored in
+                                // stdlibArtifactWarnings; the outer
+                                // resolveStdlibImports visit will surface them.
                                 let nestedDeps =
                                     a.Source.Imports
                                     |> List.choose (fun i ->
@@ -5915,10 +6070,23 @@ let rec private ensureStdlibArtifact
                     // assembly-qualified type-ref in the self-hosted DLL keeps
                     // them disambiguated as long as the assembly names differ.
                     let assemblyName =
-                        match segments with
-                        | "Std" :: rest -> "Lyric.Stdlib." + String.concat "" rest
-                        | head :: rest  -> sprintf "Lyric.%s.%s" head (String.concat "" rest)
-                        | []            -> "Lyric.Unknown"
+                        let baseName =
+                            match segments with
+                            | "Std" :: rest -> "Lyric.Stdlib." + String.concat "" rest
+                            | head :: rest  -> sprintf "Lyric.%s.%s" head (String.concat "" rest)
+                            | []            -> "Lyric.Unknown"
+                        // Suffix the assembly identity with the target when
+                        // emitting for JVM so the JVM-flavoured stdlib DLLs
+                        // (with `_kernel_jvm/` externs) don't collide with the
+                        // .NET-flavoured stdlib DLLs (`_kernel/` externs)
+                        // already loaded by the self-hosted CLI bridge or any
+                        // prior `--target dotnet` invocation in the same
+                        // process.  Without this, `Assembly.LoadFrom` raises
+                        // FUSION_E_INVALID_NAME (0x80131047) because two
+                        // assemblies with the same identity cannot coexist.
+                        match target with
+                        | Jvm    -> baseName + ".Jvm"
+                        | Dotnet -> baseName
                     let outPath = Path.Combine(stdlibCacheDir, assemblyName + ".dll")
                     let req =
                         { Source             = src
@@ -5983,7 +6151,8 @@ let rec private ensureStdlibArtifact
                               Lookup       =
                                 fun n -> Option.ofObj (assembly.GetType n) }
                         stdlibArtifactCache.[key] <- artifact
-                        Ok artifact)
+                        stdlibArtifactWarnings.[key] <- []
+                        Ok (artifact, []))
 
 /// Public accessor: returns the absolute paths to every compiled
 /// stdlib DLL that has run so far.  The test harness uses this to
@@ -6035,7 +6204,10 @@ let private resolveStdlibImports
             let key = packageKey segments
             if visited.Add key then
                 match ensureStdlibArtifact target segments with
-                | Ok a ->
+                | Ok (a, ws) ->
+                    // Surface per-artifact version-skew warnings (B0050/B0051)
+                    // into this project's diagnostic list.
+                    for w in ws do diags.Add w
                     // Visit deps first so they appear before in the
                     // ordered list — type-checker import processing
                     // expects topo order.
@@ -6732,7 +6904,13 @@ let emitProject (req: ProjectEmitRequest) : ProjectEmitResult =
         let bundleMain : MethodInfo option ref = ref None
         for pkgName in emitOrder do
             let parsed, combinedSrc = parsedByName.[pkgName]
-            let afterIntra, intraItems, intraArts = resolveIntraImports parsed.File
+            // Apply @cfg erasure before import resolution and type-checking so
+            // duplicate @cfg-gated overloads are pruned before the checker sees them.
+            let cfgErased, cfgDiags =
+                Lyric.Emitter.Cfg.applyCfgErasure
+                    req.ActiveFeatures req.DeclaredFeatures parsed.File
+            allDiags.AddRange cfgDiags
+            let afterIntra, intraItems, intraArts = resolveIntraImports cfgErased
             let afterRestored, restoredItems, restoredArtifacts, restoredDiags =
                 resolveRestoredImports afterIntra req.RestoredPackages
             let resolved, importedItems, stdlibArtifacts, stdImports, importDiags =

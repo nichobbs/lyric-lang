@@ -25,6 +25,7 @@ authors     = ["Lyric authors"]
 license     = "Apache-2.0"
 
 [features]
+default = ["dotnet"]
 # ASP.NET Core / Kestrel HTTP server backend.
 dotnet = []
 # JVM backend (Phase 6 — not yet implemented).
@@ -44,11 +45,14 @@ output_assembly = "Web.dll"
 "Web.Aspects"     = "src/aspects.l"
 # .NET extern boundary — ASP.NET Core minimal APIs + Kestrel.
 "Web.Kernel.Net"  = "src/_kernel/net/web_kernel.l"
-# JVM extern boundary — Undertow HTTP server (Phase 6).
-"Web.Kernel.Jvm"  = "src/_kernel/jvm/web_kernel.l"
+# JVM extern boundary — Undertow HTTP server (Phase 6; excluded from dotnet build).
+# "Web.Kernel.Jvm"  = "src/_kernel/jvm/web_kernel.l"
+
+[project.tests]
+"Web.CorsGuardTests" = "tests/cors_guard_tests.l"
 
 [dependencies]
-"Lyric.Stdlib"       = { path = "../stdlib" }
+"Lyric.Stdlib"       = { path = "../lyric-stdlib" }
 "Lyric.Auth"         = { path = "../lyric-auth" }
 "Lyric.Resilience"   = { path = "../lyric-resilience" }
 
@@ -59,4 +63,4 @@ output_assembly = "Web.dll"
 
 [maven]
 # JVM HTTP server backend (Phase 6).
-"io.undertow:undertow-core" = { version = "2.3.13.Final", features = ["jvm"] }
+"io.undertow:undertow-core" = "2.3.13.Final"

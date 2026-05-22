@@ -4109,6 +4109,114 @@ setup), Q-R-003 (GitHub Pages discovery site), Q-R-004 (`lyric publish
 
 ---
 
+## D075 — Custom source generator API; `@derive` renamed `@generate`
+
+**Date:** 2026-05-18
+**Spec:** `docs/40-source-generators.md`
+
+### Decision
+
+The `@derive` annotation is renamed `@generate` across the language. Built-in
+generators use bare single-segment names (`@generate(Json)`, `@generate(Sql)`,
+`@generate(Proto)`, `@generate(Equals)`). Custom generators use dotted names that
+resolve to source-generator packages (`@generate(Proto.Derive)`,
+`@generate(Acme.MyGenerator)`).
+
+The resolver rule is mechanical: no dot → built-in; contains dot → package reference.
+
+### Custom source generator API
+
+Any Lyric package may act as a compile-time code generator by declaring
+`kind = "source-generator"` in its `lyric.toml` and exporting a single entry point:
+
+```lyric
+import Lyric.GeneratorSdk
+
+pub func generate(req: GeneratorRequest): GeneratorResponse { ... }
+```
+
+`Lyric.GeneratorSdk` (new package, `lyric-generator-sdk/`) provides the
+`GeneratorRequest`, `GeneratorResponse`, `TypeDescriptor`, `FieldDescriptor`, and
+related descriptor types. Generator output is a string of complete Lyric source items
+(`lyricSource`) and an optional list of additional imports. The compiler re-parses
+this output and injects it into the file before type checking, so all generated code
+goes through the full type-checker and mode-checker. No AOT-safety exemptions are
+granted to generated items.
+
+### Pipeline position
+
+Custom generators run at the end of the pre-type-check synthesis chain, after the
+built-in passes:
+
+```
+hoistInlineMethods
+  → Stubbable.synthesizeItems
+  → Wire.synthesizeItems
+  → Generate.synthesizeItems   (replaces JsonDerive.synthesizeItems)
+```
+
+The `Generate.synthesizeItems` pass handles both built-in (inline) and custom
+(in-process bridge, following the `SelfHostedFmt.fs` pattern) generators.
+
+### Rationale
+
+`@derive(Json)` has proven the model: AOT-compatible, type-checked output, no runtime
+reflection. Third-party libraries need the same capability for custom wire formats,
+ORM column mappers, OpenAPI schema generation, etc. Maintaining a closed compiler
+built-in list for every use case is not sustainable.
+
+Renaming `@derive` → `@generate` eliminates the ambiguity with the `derives` clause
+on distinct types (which is a different mechanism: `type UserId = Long derives Hash`).
+`@generate` more clearly communicates intent — it runs a generator — whereas `@derive`
+sounds like a structural inheritance concept.
+
+Moving "user-defined attributes" from `docs/04-out-of-scope.md` DEFERRED into the
+language via this mechanism satisfies the original deferral condition: a concrete use
+case (cross-library source generation) has emerged, and the source-generator approach
+achieves it without a macro language or runtime reflection.
+
+### Security and trust
+
+Generator packages are opt-in (declared in `lyric.toml` and applied via `@generate`).
+Lock-file SHA-512 checksums cover generator packages identically to library
+dependencies. Generator output is fully validated by the compiler. Generators cannot
+observe the full AST; they receive only the structured `GeneratorRequest` descriptor
+for the annotated type.
+
+### Open questions
+
+Q-SG-001 through Q-SG-004 are tracked in `docs/40-source-generators.md` §10.
+
+---
+
+## D076 — Bootstrap F# changes for 24-library build (PR #687)
+
+**Context:** PR #687 compiled all 24 Lyric library packages through the bootstrap
+emitter for the first time.  Several changes were required in the F# bootstrap to
+unblock those builds.  CLAUDE.md §"F# surface is frozen" prohibits new domain logic
+in `bootstrap/src/`; this entry documents each change and its justification so the
+set of permitted F# edits is explicit and auditable.
+
+**Changes and justifications:**
+
+| File | Change | Justification |
+|------|--------|---------------|
+| `Parser.fs` | Accept `var` keyword in record member position | Bootstrap parser must parse valid Lyric source; the self-hosted parser already handles this.  No new semantics — `var` is silently passed through (AST tracking deferred to T6+). |
+| `Codegen.fs` | `BCoalesce` (`??`) IL emission | IL-level code generation for an existing Lyric operator that had no emitter branch.  Purely an emitter completeness fix; no new language surface. |
+| `Codegen.fs` | `case null` pattern in match | Same: completeness fix for a pattern form already in the language spec.  The self-hosted emitter inherits this from the Lyric-side codegen. |
+| `Emitter.fs` | Cross-package enum case registration | Registers imported enum cases so `EnumName.CaseName` can resolve across package boundaries.  No new language semantics; fixes a missing loop in the bootstrap multi-package path. |
+| `Emitter.fs` | `@cfg` erasure before import resolution | Correctness fix: feature-gated overloads were reaching the type checker as duplicates.  The erasure step existed; the ordering was wrong. |
+| `Checker.fs` | Extern-sig registration in `registerItem`; `externSigToDecl` for cross-package preambles | Infrastructure to thread restored-package type anchors (extern / opaque / record / enum / union) through the type checker when checking cross-package imports.  This has no self-hosted equivalent yet because the self-hosted type checker runs on single compilation units; a follow-up will move this to `typechecker_resolver.l`. |
+| `Program.fs` | `--internal-project-build` command (114 lines) | Shim infrastructure required because `lyric build --manifest` in the F# CLI must delegate to the self-hosted CLI for project builds, then receive back the resolved DLL paths over a line-based protocol.  The domain logic lives in `lyric-compiler/lyric/cli.l`; the F# side is a parser for the protocol response (permitted shim infrastructure per CLAUDE.md). |
+
+**Status:** All F# changes in this entry are bootstrap-grade infrastructure.
+Domain logic equivalents belong in the self-hosted compiler and will migrate there
+as the corresponding self-hosted stages mature (type checker resolver: T5.3+;
+parser `var` field AST: T6+).  No further F# domain logic additions are permitted
+beyond this set without a new decision-log entry.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

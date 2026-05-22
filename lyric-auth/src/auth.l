@@ -1,43 +1,44 @@
-/// Auth — transport-agnostic authentication and credential verification.
-///
-/// Provides JWT, API-key, and role-claim primitives that work across HTTP,
-/// gRPC, WebSockets, message queues, and CLI tools.  Protocol-specific
-/// aspect *bindings* call these functions; the verification logic itself has
-/// no transport dependency.
-///
-/// Functions:
-///   Auth.verifyJwt      — validates a Bearer token against an explicit
-///                         allow-list of `alg` values (HS256, RS256, etc.).
-///                         Algorithm pinning prevents alg=none forgery and
-///                         HS256/RS256 confusion (RFC 8725 §3.1).
-///   Auth.extractClaim   — reads a named claim from a pre-verified JWT
-///   Auth.verifyApiKey   — constant-time comparison; prevents timing attacks
-///
-/// Typical usage from a protocol binding (e.g. Web.Aspects.RequiresAuth):
-///
-///   val ok = Auth.verifyJwt(token, jwtSecret, issuer, audience, "HS256")
-///   if not ok { return Err(Web.forbidden("Token is invalid")) }
-///   val role = Auth.extractClaim(token, "role")
-///
-/// See lyric-web/src/aspects.l for the HTTP bindings (RequiresAuth,
-/// RequiresRole, ApiKey).
+// Auth — transport-agnostic authentication and credential verification.
+//
+// Provides JWT, API-key, and role-claim primitives that work across HTTP,
+// gRPC, WebSockets, message queues, and CLI tools.  Protocol-specific
+// aspect *bindings* call these functions; the verification logic itself has
+// no transport dependency.
+//
+// Functions:
+//   Auth.verifyJwt      — validates a Bearer token against an explicit
+//                         allow-list of `alg` values (HS256, RS256, etc.).
+//                         Algorithm pinning prevents alg=none forgery and
+//                         HS256/RS256 confusion (RFC 8725 §3.1).
+//   Auth.extractClaim   — reads a named claim from a pre-verified JWT
+//   Auth.verifyApiKey   — constant-time comparison; prevents timing attacks
+//
+// Typical usage from a protocol binding (e.g. Web.Aspects.RequiresAuth):
+//
+//   val ok = Auth.verifyJwt(token, jwtSecret, issuer, audience, "HS256")
+//   if not ok { return Err(Web.forbidden("Token is invalid")) }
+//   val role = Auth.extractClaim(token, "role")
+//
+// See lyric-web/src/aspects.l for the HTTP bindings (RequiresAuth,
+// RequiresRole, ApiKey).
 
 @runtime_checked
 package Auth
 
 import Std.Core
 import Std.Encoding
-import Auth.Kernel.Net
-import Auth.Kernel.Jvm
+import Std.String
+import Auth.Kernel.Net as AuthKernelNet
+import Auth.Kernel.Jvm as AuthKernelJvm
 
 // ─── JWT algorithm extraction (Lyric-level, no extern dependency) ─────────────
 
 // Find the first occurrence of `ch` in `s` at or after position `pos`.
 // Returns -1 if not found.
-func indexOfCharAfter(s: in String, ch: in String, pos: in Int): Int {
+func indexOfCharAfter(s: in String, ch: in Char, pos: in Int): Int {
   var i = pos
   while i < s.length {
-    if s.charAt(i).toString() == ch { return i }
+    if s[i] == ch { return i }
     i = i + 1
   }
   return -1
@@ -65,10 +66,10 @@ func jwtAlg(token: in String): String {
     else { "" }  // rem == 1 is not valid base64url
   if padded == "" { return "" }
   // Decode to bytes then to a UTF-8 string.
-  match Std.Encoding.tryDecodeBase64(padded) {
+  match tryDecodeBase64(padded) {
     case None -> return ""
     case Some(bytes) -> {
-      match Std.Encoding.tryDecodeUtf8(bytes) {
+      match tryDecodeUtf8(bytes) {
         case None -> return ""
         case Some(header) -> {
           // Scan for the "alg":"VALUE" key-value pair in the header JSON.
@@ -80,7 +81,7 @@ func jwtAlg(token: in String): String {
           val pfxPos = header.lastIndexOf(pfx)
           if pfxPos < 0 { return "" }
           val vs = pfxPos + pfx.length
-          val ve = indexOfCharAfter(header, "\"", vs)
+          val ve = indexOfCharAfter(header, '"', vs)
           if ve < 0 { return "" }
           header.substring(vs, ve)
         }
@@ -129,7 +130,7 @@ pub func verifyJwt(
   requires: secret.length > 0
   requires: allowedAlgorithms.length > 0
   // Case-insensitive check: catches "None", "NONE", "nOnE", etc.
-  requires: not Std.String.contains(Std.String.toLower(allowedAlgorithms), "none")
+  requires: not contains(toLower(allowedAlgorithms), "none")
 {
   // Lyric-level algorithm pinning: reject before reaching the extern if the
   // token's `alg` header is not in `allowedAlgorithms`.  Guards against host
@@ -138,7 +139,7 @@ pub func verifyJwt(
   val alg = jwtAlg(token)
   if alg.length == 0 { return false }
   if not rolesContain(allowedAlgorithms, alg) { return false }
-  return Auth.Kernel.Net.verifyJwt(token, secret, issuer, audience, allowedAlgorithms)
+  return AuthKernelNet.verifyJwt(token, secret, issuer, audience, allowedAlgorithms)
 }
 
 @stable(since="0.1")
@@ -153,13 +154,13 @@ pub func verifyJwt(
   requires: secret.length > 0
   requires: allowedAlgorithms.length > 0
   // Case-insensitive check: catches "None", "NONE", "nOnE", etc.
-  requires: not Std.String.contains(Std.String.toLower(allowedAlgorithms), "none")
+  requires: not contains(toLower(allowedAlgorithms), "none")
 {
   // Lyric-level algorithm pinning: same guard as the .NET overload above.
   val alg = jwtAlg(token)
   if alg.length == 0 { return false }
   if not rolesContain(allowedAlgorithms, alg) { return false }
-  return Auth.Kernel.Jvm.verifyJwt(token, secret, issuer, audience, allowedAlgorithms)
+  return AuthKernelJvm.verifyJwt(token, secret, issuer, audience, allowedAlgorithms)
 }
 
 // ─── Claim extraction ─────────────────────────────────────────────────────────
@@ -176,7 +177,7 @@ pub func verifyJwt(
 pub func extractClaim(token: in String, claimKey: in String): Option[String]
   requires: claimKey.length > 0
 {
-  return Auth.Kernel.Net.extractClaim(token, claimKey)
+  return AuthKernelNet.extractClaim(token, claimKey)
 }
 
 @stable(since="0.1")
@@ -184,7 +185,7 @@ pub func extractClaim(token: in String, claimKey: in String): Option[String]
 pub func extractClaim(token: in String, claimKey: in String): Option[String]
   requires: claimKey.length > 0
 {
-  return Auth.Kernel.Jvm.extractClaim(token, claimKey)
+  return AuthKernelJvm.extractClaim(token, claimKey)
 }
 
 // ─── API key verification ─────────────────────────────────────────────────────
@@ -202,7 +203,7 @@ pub func extractClaim(token: in String, claimKey: in String): Option[String]
 pub func verifyApiKey(provided: in String, expected: in String): Bool
   requires: expected.length > 0
 {
-  return Auth.Kernel.Net.verifyApiKey(provided, expected)
+  return AuthKernelNet.verifyApiKey(provided, expected)
 }
 
 @stable(since="0.1")
@@ -210,7 +211,7 @@ pub func verifyApiKey(provided: in String, expected: in String): Bool
 pub func verifyApiKey(provided: in String, expected: in String): Bool
   requires: expected.length > 0
 {
-  return Auth.Kernel.Jvm.verifyApiKey(provided, expected)
+  return AuthKernelJvm.verifyApiKey(provided, expected)
 }
 
 // ─── Role claim helpers ───────────────────────────────────────────────────────
@@ -219,13 +220,15 @@ pub func verifyApiKey(provided: in String, expected: in String): Bool
 ///
 /// Used by RequiresRole bindings to match the `role` JWT claim against
 /// an allowlist.  For example, `"admin,manager"` contains `"admin"`.
-/// Whitespace around each comma-separated entry in `allowedRoles` is trimmed
-/// before comparison, so `"admin, manager"` matches `"manager"`.  Empty entries
-/// (e.g. `",,"` or `"admin,"`) never match.
+/// Whitespace around each comma-separated entry is trimmed before
+/// comparison, so `"admin, manager"` matches `"manager"`.  Empty
+/// entries (e.g. `",,"` or `"admin,"`) never match.
 ///
-/// Note: `role` is compared as-is (no trimming).  JWT claim values are compact
-/// by specification, so trimming `role` would silently loosen matching and could
-/// become a security regression in future refactors.
+/// Security note: `role` is compared as-is without trimming.  JWT claim
+/// values are compact by specification, so trimming `role` would silently
+/// loosen matching — a JWT claim of `"admin "` (trailing space) would
+/// match `"admin"`, which is a security regression.  Only entries in
+/// `allowedRoles` (caller-controlled) are trimmed for convenience.
 @stable(since="0.1")
 pub func rolesContain(allowedRoles: in String, role: in String): Bool {
   if allowedRoles.length == 0 { return false }
@@ -234,11 +237,11 @@ pub func rolesContain(allowedRoles: in String, role: in String): Bool {
   var start: Int = 0
   var i:     Int = 0
   while i <= allowedRoles.length {
-    val atEnd     = i == allowedRoles.length
-    val atComma   = not atEnd && allowedRoles.charAt(i).toString() == ","
-    if atEnd || atComma {
+    val atEnd   = i == allowedRoles.length
+    val atComma = not atEnd and (allowedRoles[i] == ',')
+    if atEnd or atComma {
       val candidate = allowedRoles.substring(start, i).trim()
-      if candidate.length > 0 && candidate == role { return true }
+      if candidate.length > 0 and candidate == role { return true }
       start = i + 1
     }
     i = i + 1

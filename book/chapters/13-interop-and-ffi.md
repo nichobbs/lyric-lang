@@ -46,8 +46,22 @@ The `@axiom` string is not a comment — it is part of the contract metadata emi
 The `requires:` and `ensures:` clauses inside an extern declaration are axioms in the proof-theoretic sense: the prover treats them as facts, does not try to prove them, and uses them when verifying callers. If a caller in a `@proof_required` module calls `readAllBytes`, the prover knows `result.length >= 0` after the call because the axiom says so. If that axiom is wrong — if there is some code path that returns a negative length — the proof is wrong, and no tool will catch it. This is why the axiom string should be precise and the contracts should be conservative.
 
 ::: note
-**Note:** The bootstrap compiler resolves `extern package` declarations against the `Lyric.Stdlib` F# shim for BCL surface used in Phase 1 examples. Arbitrary BCL types not in that shim produce an `E0030` diagnostic. The full reflection-driven binding, which will let any BCL type be used in an `extern package` block, is a Phase 2 deliverable. For now, reach for the stdlib modules; they cover the common BCL surfaces.
+**Note:** The `Lyric.Stdlib` F# shim is fully retired; the compiler now resolves `extern package` declarations directly against the BCL via reflection-driven binding. Any BCL type can be declared in an `extern package` block and annotated with `@externTarget`. Reach for the stdlib modules first — they provide idiomatic Lyric wrappers with contracts — but arbitrary BCL surfaces are accessible when needed.
 :::
+
+**Static vs. instance calls.** Lyric writes `@externStatic` or `@externInstance` next to `@externTarget` to tell the compiler which CIL/JVM call instruction to emit:
+
+```
+@externTarget("System.Math.Abs")
+@externStatic
+pub func absInt(n: in Int): Int
+
+@externTarget("System.String.Trim")
+@externInstance
+pub func strTrim(s: in String): String
+```
+
+`@externStatic` emits `call` / `invokestatic`; `@externInstance` emits `callvirt` / `invokevirtual` with Lyric arg 0 as the receiver. They are mutually exclusive; setting both is a diagnostic. When neither is present the .NET self-hosted MSIL emitter defaults to static — instance externs must annotate explicitly.
 
 ## §13.3 The `@axiom` social contract
 
@@ -122,7 +136,7 @@ For primitive types, there is no marshalling cost. `Int` and `int` have identica
 
 All Lyric code is AOT-compatible. The compiler generates no calls to `System.Reflection.Emit`, no `Type.GetType(...)`, no `Activator.CreateInstance`. Everything the compiler produces is statically known at build time.
 
-`@derive(Json)` generates a serializer at compile time. `@derive(Sql)` generates a query mapper at compile time. The `wire` block resolves the dependency graph at compile time. None of these require any runtime type introspection.
+`@generate(Json)` generates a serializer at compile time. `@generate(Sql)` generates a query mapper at compile time. The `wire` block resolves the dependency graph at compile time. None of these require any runtime type introspection.
 
 Native AOT (`lyric build --aot`) produces a self-contained executable. No .NET runtime is required at the deployment site — the runtime is compiled into the binary. This is meaningful for server deployments with strict startup-time budgets, for CLI tools shipped without a runtime prerequisite, and for environments where installing .NET is not practical.
 
@@ -131,7 +145,7 @@ Native AOT (`lyric build --aot`) produces a self-contained executable. No .NET r
 
 Reflection is also incompatible with Native AOT, which requires knowing at build time which types and members will be accessed at runtime. A runtime-discovered `GetField` call cannot be included in the AOT compilation because the compiler does not know about it until it happens.
 
-Source generators — the compile-time alternative Lyric uses — are more explicit about what they generate, faster (no startup cost), and AOT-safe. The trade is that you must opt in with `@derive`. The decision log entry D006 records this as one of the deliberate design costs.
+Source generators — the compile-time alternative Lyric uses — are more explicit about what they generate, faster (no startup cost), and AOT-safe. The trade is that you must opt in with `@generate`. The decision log entry D006 records this as one of the deliberate design costs.
 :::
 
 ## §13.7 `Std.Bcl` wrappers

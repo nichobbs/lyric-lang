@@ -1,17 +1,39 @@
 // lyric/emitter.l — Lyric.Emitter bootstrap package.
 //
 // Implements the `emit(req): EmitResult` contract that cli.l and repl.l
-// depend on.  In the bootstrap phase the actual MSIL/JVM lowering still
-// lives in the F# Lyric.Emitter project; this package shells out to the
-// current `lyric` process (via `--internal-build`) to invoke it.
+// depend on.
+//
+// As of Track A (docs/41 §860, A1), `--target dotnet` single-source
+// compilation runs IN-PROCESS via `Msil.Bridge.compileToMsil`.  No
+// subprocess hop, no F# emitter touched at runtime.  `--target jvm`
+// still uses the subprocess fallback because importing `Jvm.Bridge`
+// here would pull `Jvm.Bytecode.BranchInsn` into the same F# emitter
+// scope as `Lyric.Manifest.Branch` / `Lyric.GitDep.Branch` and the F#
+// emitter has known issues with that closure (now mitigated by PR #868
+// but not yet exhaustively retested for the JVM path).
+//
+// The subprocess shellout to `lyric --internal-build` also survives
+// unconditionally when `LYRIC_FORCE_SUBPROCESS=1`, used by the
+// bootstrap validation pipeline to compare in-process vs subprocess
+// output, and for `emitProject` — multi-package + restored-dep builds
+// still route through F# `Program.fs::internalProjectBuild` until the
+// bridges gain a multi-package entry point.
 //
 // Environment variables:
-//   LYRIC_BIN      — path to the dotnet (or lyric) executable.
-//                    Set automatically by Program.fs before routing to the
-//                    self-hosted CLI.  Defaults to "lyric".
-//   LYRIC_CLI_DLL  — when the CLI is a dotnet exec DLL rather than a
-//                    native binary, this is set to the DLL path.
-//                    Program.fs populates it from Assembly.GetEntryAssembly.
+//   LYRIC_FORCE_SUBPROCESS — set to "1" to opt out of the in-process
+//                            compile path; forces every emit() call to
+//                            shell back to `lyric --internal-build`.
+//                            Default: in-process when available.
+//   LYRIC_BIN              — path to the dotnet (or lyric) executable.
+//                            Used by the subprocess fallback only.
+//                            Set automatically by Program.fs before
+//                            routing to the self-hosted CLI.
+//                            Defaults to "lyric".
+//   LYRIC_CLI_DLL          — when the CLI is a dotnet exec DLL rather
+//                            than a native binary, this is set to the
+//                            DLL path.  Subprocess-fallback only.
+//                            Program.fs populates it from
+//                            Assembly.GetEntryAssembly.
 //
 // Thread safety: emit() has no shared mutable state; it is safe to call
 // concurrently.
@@ -28,7 +50,10 @@ import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
 
+import Std.Uuid as Uuid
 import Lyric.Lexer
+import Lyric.CliShell as CliShell
+import Msil.Bridge as MsilBridge
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public types  (mirrors the future-package contract in cli.l)
@@ -51,46 +76,42 @@ pub record EmitResult {
   diagnostics: List[Diagnostic]
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// §2. Subprocess helpers
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// NOTE: lyrExe / lyrPrefixArgs / lyrArgs are duplicated verbatim in
-// contract_meta.l.  If you change one, change both.  A shared
-// `Lyric.CliShell` package would eliminate the duplication once the import
-// graph permits it.
-//
-// The executable to invoke.  When LYRIC_CLI_DLL is set this is "dotnet";
-// when only LYRIC_BIN is set (native binary or wrapper script) this is
-// that value; otherwise fall back to "lyric" on PATH.
-func lyrExe(): String {
-  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
-  if Str.isNotEmpty(cliDll) {
-    // Running under `dotnet exec <dll>`; use the dotnet executable.
-    Environment.getVarOrDefault("LYRIC_BIN", "dotnet")
-  } else {
-    Environment.getVarOrDefault("LYRIC_BIN", "lyric")
-  }
+/// Per-package source feed for `emitProject`.  Each package's `sources` list
+/// holds the `.l` file contents in deterministic order (multi-file packages
+/// should already be resolved by the caller).
+pub record ProjectPackage {
+  name:    String
+  sources: List[String]
 }
 
-// Leading args that must precede any subcommand args.
-// Non-empty only when LYRIC_CLI_DLL is set (inserts "exec <dll>").
-func lyrPrefixArgs(): List[String] {
-  val prefix: List[String] = newList()
-  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
-  if Str.isNotEmpty(cliDll) {
-    prefix.add("exec")
-    prefix.add(cliDll)
-  }
-  prefix
+pub record EmitProjectRequest {
+  packages:         List[ProjectPackage]
+  assemblyName:     String
+  outputPath:       String
+  target:           CompileTarget
+  /// Restored dependency DLL paths.  Each entry is "depName\tdllPath".
+  /// Written to the spec file as `DEP\tdepName\tdllPath` lines.
+  restoredDllPaths: List[String]
+  /// Active feature flags for @cfg erasure.  Each entry is a feature name.
+  /// Written to the spec file as `FEATURE\t<name>` lines.
+  activeFeatures:   List[String]
 }
 
-// Build the full args list for a lyric subcommand invocation.
-func lyrArgs(subcmd: in List[String]): List[String] {
-  val all: List[String] = newList()
-  for a in lyrPrefixArgs().toArray() { all.add(a) }
-  for a in subcmd.toArray()          { all.add(a) }
-  all
+// ─────────────────────────────────────────────────────────────────────────────
+// §2. Subprocess helpers — thin wrappers over Lyric.CliShell.
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The wrapper names below are deliberately distinct from CliShell's
+// public surface: when the local function and the cross-package
+// callee share a name, the bootstrap parser shadows the call site
+// with the enclosing module's symbol, producing infinite recursion
+// at runtime (observed via stack-overflow when both were named
+// `lyrExe`).
+
+func cliShellExe(): String { CliShell.lyrExe() }
+
+func cliShellArgs(subcmd: in List[String]): List[String] {
+  CliShell.lyrArgs(subcmd)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -130,29 +151,194 @@ func failResult(msg: in String): EmitResult {
   EmitResult(outputPath = None, diagnostics = diags)
 }
 
+/// Compile a multi-package project to a single bundled DLL or JAR.
+///
+/// Shells out to `lyric --internal-project-build` which is handled by the F#
+/// bootstrap CLI before it routes to the self-hosted CLI dispatcher.  Each
+/// package's source texts are written to temp files; a tab-delimited spec file
+/// lists all packages and their temp source paths.
+@stable(since="0.1")
+pub func emitProject(req: in EmitProjectRequest): EmitResult {
+  // Per-invocation subdirectory under lyric-emit/ keyed on a v4 UUID.
+  // Two concurrent builds for the same assemblyName would otherwise
+  // race on the spec / source filenames; the UUID guarantees a unique
+  // namespace and a clean tree to delete on completion.
+  val tmpRoot = Path.join(tempBase(), "lyric-emit")
+  match File.createDir(tmpRoot) {
+    case Ok(_)  -> ()
+    case Err(_) -> ()
+  }
+  val tmpDir = Path.join(tmpRoot, Uuid.uuidToString(Uuid.newUuid()))
+  match File.createDir(tmpDir) {
+    case Ok(_)  -> ()
+    case Err(e) -> return failResult("cannot create temp build directory: " + IOError.message(e))
+  }
+
+  val outDir = Path.dirname(req.outputPath)
+  if Str.isNotEmpty(outDir) {
+    match File.createDir(outDir) {
+      case Ok(_)  -> ()
+      case Err(_) -> ()
+    }
+  }
+
+  // Helper: best-effort cleanup of the per-invocation temp directory.
+  // Errors are swallowed so a transient file-handle leak doesn't fail
+  // a successful build; the OS will sweep the parent eventually.
+  // (#837: every early-exit path runs this before returning, so a
+  // write failure never leaves an orphaned UUID directory.)
+
+  // Write each package's sources to temp files and build spec lines.
+  // Spec line format: <packageName> TAB <srcPath1> TAB <srcPath2> ...
+  val specLines: List[String] = newList()
+  var failMsg = ""
+  var pi = 0
+  while pi < req.packages.count and failMsg == "" {
+    val pkg = req.packages[pi]
+    var line = pkg.name
+    var si = 0
+    while si < pkg.sources.count and failMsg == "" {
+      val srcName = req.assemblyName + "__" + pkg.name + "__" + toString(si) + "__src.l"
+      val srcPath = Path.join(tmpDir, srcName)
+      match File.writeText(srcPath, pkg.sources[si]) {
+        case Ok(_)  -> ()
+        case Err(e) -> { failMsg = "cannot write temp source: " + IOError.message(e) }
+      }
+      line = line + "\t" + srcPath
+      si += 1
+    }
+    specLines.add(line)
+    pi += 1
+  }
+
+  if failMsg != "" {
+    match File.deleteDirRecursive(tmpDir) { case Ok(_) -> () case Err(_) -> () }
+    return failResult(failMsg)
+  }
+
+  // Append restored dependency DLL lines: DEP\t<name>\t<dllPath>
+  var di = 0
+  while di < req.restoredDllPaths.count {
+    specLines.add("DEP\t" + req.restoredDllPaths[di])
+    di += 1
+  }
+
+  // Append active feature lines: FEATURE\t<name>
+  var fi = 0
+  while fi < req.activeFeatures.count {
+    specLines.add("FEATURE\t" + req.activeFeatures[fi])
+    fi += 1
+  }
+
+  val specContent = Str.joinList("\n", specLines)
+  val specPath = Path.join(tmpDir, req.assemblyName + "__project_spec.txt")
+  match File.writeText(specPath, specContent) {
+    case Ok(_)  -> ()
+    case Err(e) -> { failMsg = "cannot write project spec: " + IOError.message(e) }
+  }
+
+  if failMsg != "" {
+    match File.deleteDirRecursive(tmpDir) { case Ok(_) -> () case Err(_) -> () }
+    return failResult(failMsg)
+  }
+
+  val targetStr = match req.target {
+    case Dotnet -> "dotnet"
+    case Jvm    -> "jvm"
+  }
+
+  val subcmd: List[String] = newList()
+  subcmd.add("--internal-project-build")
+  subcmd.add(specPath)
+  subcmd.add("-o")
+  subcmd.add(req.outputPath)
+  subcmd.add("--target")
+  subcmd.add(targetStr)
+
+  val result = match Process.run(cliShellExe(), cliShellArgs(subcmd)) {
+    case Ok(code) -> {
+      if code != 0 {
+        failResult("project build failed (see stderr)")
+      } else {
+        val okDiags: List[Diagnostic] = newList()
+        EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
+      }
+    }
+    case Err(e) ->
+      failResult("cannot launch compiler: " + IOError.message(e))
+  }
+
+  match File.deleteDirRecursive(tmpDir) { case Ok(_) -> () case Err(_) -> () }
+
+  result
+}
+
 /// Compile Lyric source to a .NET DLL or JVM JAR.
 ///
-/// Shells out to `lyric --internal-build` which is handled by the F#
-/// bootstrap CLI before it routes to the self-hosted CLI dispatcher.
-/// Errors from the compiler are printed directly to stderr by the
-/// subprocess; `EmitResult.diagnostics` carries a synthetic failure
-/// marker so callers can detect the failure without parsing stderr.
+/// Default path (AOT-friendly): `--target dotnet` calls
+/// `Msil.Bridge.compileToMsil` in-process via a direct package import.
+/// No subprocess hop, no F# emitter touched at runtime.
+///
+/// `--target jvm` still uses the subprocess fallback (see header
+/// comment for why).  Set `LYRIC_FORCE_SUBPROCESS=1` to route every
+/// call through the subprocess shellout for differential testing.
 @stable(since="0.1")
 pub func emit(req: in EmitRequest): EmitResult {
+  // Ensure the output directory exists so the bridges' raw byte-write
+  // doesn't fail with ENOENT on the first build into a fresh tree.
+  val outDir = Path.dirname(req.outputPath)
+  if Str.isNotEmpty(outDir) {
+    match File.createDir(outDir) {
+      case Ok(_)  -> ()
+      case Err(_) -> ()   // non-fatal; the bridge / subprocess will report
+    }
+  }
+
+  if useSubprocessFallback() {
+    emitViaSubprocess(req)
+  } else {
+    match req.target {
+      case Dotnet -> emitMsilInProcess(req)
+      // JVM stays on subprocess fallback (see header comment).
+      case Jvm    -> emitViaSubprocess(req)
+    }
+  }
+}
+
+func useSubprocessFallback(): Bool {
+  Environment.getVarOrDefault("LYRIC_FORCE_SUBPROCESS", "") == "1"
+}
+
+// In-process MSIL emit — direct call into `Msil.Bridge.compileToMsil`.
+// Diagnostics from the bridge land on **stderr** (#893) via
+// `Lyric.DiagnosticUtil`, matching the F# bootstrap CLI convention so
+// IDE integrations, CI scripts, and `2>errors.txt` redirects continue
+// to work the same way they did with the old subprocess path.  The
+// bridge returns true on success and false on any error (parse,
+// type-check, mode-check, codegen).
+func emitMsilInProcess(req: in EmitRequest): EmitResult {
+  // Band 6 stdlib sources are not yet available from within the self-hosted
+  // CLI path (no Lyric equivalent of SelfHostedBridge.findStdlibSources).
+  // Pass an empty list; the F# shim paths populate this correctly.
+  val ok = MsilBridge.compileToMsil(req.source, req.outputPath, newList())
+  if ok {
+    val okDiags: List[Diagnostic] = newList()
+    EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
+  } else {
+    failResult("MSIL compilation failed (see stderr)")
+  }
+}
+
+// Subprocess fallback — preserved for `LYRIC_FORCE_SUBPROCESS=1` and
+// the JVM target.  Writes the source to a temp file and shells back
+// to `lyric --internal-build` which the F# bootstrap CLI dispatches
+// through `Program.fs::internalBuild`.
+func emitViaSubprocess(req: in EmitRequest): EmitResult {
   // Write source text to a temp file.
   val srcPath = match writeTempSource(req.source, req.assemblyName) {
     case Ok(p)  -> p
     case Err(e) ->
       return failResult("cannot write temp source: " + IOError.message(e))
-  }
-
-  // Ensure the output directory exists.
-  val outDir = Path.dirname(req.outputPath)
-  if Str.isNotEmpty(outDir) {
-    match File.createDir(outDir) {
-      case Ok(_)  -> ()
-      case Err(_) -> ()   // non-fatal; `--internal-build` will report the failure
-    }
   }
 
   val targetStr = match req.target {
@@ -168,7 +354,7 @@ pub func emit(req: in EmitRequest): EmitResult {
   subcmd.add("--target")
   subcmd.add(targetStr)
 
-  match Process.run(lyrExe(), lyrArgs(subcmd)) {
+  match Process.run(cliShellExe(), cliShellArgs(subcmd)) {
     case Ok(code) -> {
       if code != 0 {
         return failResult("build failed (see stderr)")

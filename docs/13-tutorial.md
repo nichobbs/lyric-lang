@@ -268,7 +268,7 @@ func main(): Unit {
 }
 ```
 
-For JSON, annotate a record with `@derive(Json)` and the compiler
+For JSON, annotate a record with `@generate(Json)` and the compiler
 synthesises `toJson` and `fromJson`:
 
 ```
@@ -276,7 +276,7 @@ package JsonDemo
 
 import Std.Core
 
-@derive(Json)
+@generate(Json)
 pub record User {
   name: String
   age: Int

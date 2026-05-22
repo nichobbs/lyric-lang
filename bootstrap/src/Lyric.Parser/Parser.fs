@@ -411,7 +411,7 @@ let private parseImports
 // the typed body parsing lives in subsequent slices P4 through P8).
 // ---------------------------------------------------------------------------
 
-/// Item-level annotations (e.g. `@projectable`, `@derive(Json)`,
+/// Item-level annotations (e.g. `@projectable`, `@generate(Json)`,
 /// `@stubbable`) directly precede the item's keyword. Unlike the file-
 /// level loop, this helper does not skip leading STMT_ENDs — we want to
 /// stay attached to the next item.
@@ -2542,6 +2542,13 @@ and private parseRecordMembers
         | TKeyword KwAsync
             when (Cursor.peekAt cursor 1).Token = TKeyword KwFunc ->
             xs.Add(RMFunc (parseFunctionDeclBody cursor diags None))
+        | TKeyword KwVar ->
+            // `var name: Type [= default]` — mutable record field.
+            // Consume the `var` keyword then parse the rest as a plain FieldDecl.
+            // Mutability enforcement is deferred to T6+; the emitter treats all
+            // record fields uniformly for now.
+            Cursor.advance cursor |> ignore
+            xs.Add(RMField (parseFieldDecl cursor diags))
         | _ ->
             xs.Add(RMField (parseFieldDecl cursor diags))
         // Tolerate STMT_END or comma between members.
@@ -4334,7 +4341,7 @@ and private parseItem
         //
         //   pub func foo …
         //   generic[T] pub func foo …
-        //   @derive(Json) pub exposed record …
+        //   @generate(Json) pub exposed record …
         //   generic[K] @pure pub func keys …
         //
         // Loop until none of the three prefix tokens matches.

@@ -125,9 +125,19 @@ func resolveTypePath(
       }
     }
   }
-  // Multi-segment: recognise trailing primitive as a convenience;
-  // cross-package resolution is deferred to T7+.
+  // Multi-segment: resolve against the symbol table using the last segment.
+  // Types from checkWithImports are registered by simple name, so
+  // `Std.Collections.List` resolves to the same entry as `List` when `List`
+  // was imported.  Fall through to primitive check, then T0014.
   val last = path.segments[path.segments.count - 1]
+  match symTableTryFindOne(tbl, last) {
+    case Some(sym) ->
+      match symbolTypeIdOpt(sym) {
+        case Some(tid) -> return TyUser(id = tid, args = args)
+        case None -> {}
+      }
+    case None -> {}
+  }
   match primFromString(last) {
     case Some(prim) -> {
       if args.count > 0 {
@@ -139,7 +149,7 @@ func resolveTypePath(
     case None -> {
       val joined = joinSegments(path.segments)
       diag.add(errorDiagnostic("T0014",
-        "qualified type names not yet resolved (saw '" + joined + "')", span))
+        "unknown qualified type '" + joined + "' ('" + last + "' not found in scope)", span))
       TyError
     }
   }

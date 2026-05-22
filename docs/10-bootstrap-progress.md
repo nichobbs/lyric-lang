@@ -29,6 +29,7 @@ deferred to Phase 3 by design.
 
 | Milestone | Status | Lands in |
 |---|---|---|
+| Supply-chain integrity — `lyric.lock` SHA-512 populated + verified (`--locked`): `Std.HashHost` (`SHA512.HashData` + `Convert.ToHexString`) + `Std.Hash` (`sha512OfBytes`, `sha512OfFile`); CLI restore writes digest for every dep (path/workspace/git on `lyric.toml`, registry on `.nupkg` post `dotnet restore` honouring `NUGET_PACKAGES`); four-way mismatch matrix in `--locked` mode | **Shipped** (PR #804) | #738 |
 | M5.1 stage 1 — self-hosted lexer (subset; co-resident with self-test) | **Shipped** | D-progress-093 |
 | M5.1 stage 2a — multi-file packages | **Shipped** | D-progress-094 |
 | M5.1 stage 2a' — B0010 / B0011 / B0012 multi-file conflict diagnostics | **Shipped** | D-progress-095 |
@@ -57,7 +58,7 @@ deferred to Phase 3 by design.
 | `docs/23` G12 (4/N) — `HttpClientHost.ResponseHeader` (the last F# member) retired; native Lyric `hostResponseHeader` uses `HttpHeaders.TryGetValues(name, out IEnumerable<string>)` + `Linq.Enumerable.ToArray<string>` to surface a `slice[String]` for first-or-empty fallback.  F# `HttpClientHost` deletes entirely | **Shipped** (PR #179) | D-progress-120 |
 | `docs/23` G7 (StubCounter) — `Std.Testing.Mocking.StubCounter` ported from F# shim (`Lyric.Stdlib.StubCounter` / `StubCounterHost`, 24 LoC) to a native Lyric `pub protected type StubCounter`.  New `lyric-stdlib/std/testing_mocking.l` shadows `_kernel/testing_mocking.l` for .NET; wrapper functions (`makeStubCounter`, `stubCounterIncrement`, `stubCounterGet`, `stubCounterReset`) are unchanged.  Emitter.fs gains `IProtected` scanning in the artifact-import loop so cross-package `protected type` references resolve to the correct CLR type (previously only `extern type` / record / union / interface got this treatment) | **Shipped** (PR #182) | D-progress-123 |
 | `docs/23` JsonHost retirement — final eight live methods retired from `Lyric.Stdlib.JsonHost` (`Parse`, `EncodeString`, `RenderDoubleSlice`, `Get{Int,Long,Double,Bool,String}Slice`).  Compiler fixes unblock the migration: (1) FFI default-arg overload selection now filters by leading-param exact type so `JsonDocument.Parse(string, JsonDocumentOptions = default)` resolves correctly when other 2-arg `Parse` overloads exist; (2) `emitExternCall` honours `inout`-mode value-type receivers (load arg pointer directly instead of `Ldarga`-ing the parameter slot) so mutating instance methods like `JsonElement+ArrayEnumerator.MoveNext` work; (3) `toString(Double)` / `toString(Float)` codegen calls `Double.ToString(InvariantCulture)` for round-trip-safe locale-stable formatting.  `_kernel/json_host.l` declares `extern type JsonArrayEnumerator = "System.Text.Json.JsonElement+ArrayEnumerator"` and `extern type JsonEncodedText` and implements `hostEncodeString` and `lyricJsonGet*Slice` in pure Lyric on top of direct externs (`EnumerateArray` / `MoveNext` / `Current` / `JsonEncodedText.{Encode, ToString}`).  `JsonDerive.fs` synthesiser routes `__lyricJsonEscape` and slice readers through the new pure-Lyric kernel functions; `mkSliceHelperExtern` deleted (Double now uses inline `toString`-based rendering like Int/Long).  `Lyric.Stdlib.JsonHost` class removed; the `Lyric.Stdlib` F# shim is now empty of types | **Shipped** | D-progress-139 |
-| `docs/23` F# shim project deleted — with `Lyric.Stdlib.dll` empty of host types after D-progress-139, the `bootstrap/src/Lyric.Stdlib/` project is deleted outright: `.fsproj` / `Stdlib.fs` removed, `<ProjectReference>` lines pulled from `Lyric.Cli`, `Lyric.Emitter`, `Lyric.Emitter.Tests`, and the project entry / configuration / nesting tag scrubbed from `Lyric.sln`.  CLI + test infrastructure (`Cli/Program.fs`, `EmitTestKit.fs`, `ProjectAsDllTests.fs`, `NugetShimTests.fs`) drop their `Lyric.Stdlib.dll` copy / probe paths.  `lyric-stdlib/lyric.toml` reverts `output_assembly` from `Lyric.StdlibBundle.dll` to the canonical `Lyric.Stdlib.dll` — the SDK's `lib/Lyric.Stdlib.dll` is now the Lyric-compiled bundle (no F# / FSharp.Core dep) | **Shipped** | D-progress-140 |
+| `docs/23` F# shim project deleted — with `Lyric.Stdlib.dll` empty of host types after D-progress-139, the `bootstrap/src/Lyric.Stdlib/` project is deleted outright: `.fsproj` / `Stdlib.fs` removed, `<ProjectReference>` lines pulled from `Lyric.Cli`, `Lyric.Emitter`, `Lyric.Emitter.Tests`, and the project entry / configuration / nesting tag scrubbed from `Bootstrap.sln`.  CLI + test infrastructure (`Cli/Program.fs`, `EmitTestKit.fs`, `ProjectAsDllTests.fs`, `NugetShimTests.fs`) drop their `Lyric.Stdlib.dll` copy / probe paths.  `lyric-stdlib/lyric.toml` reverts `output_assembly` from `Lyric.StdlibBundle.dll` to the canonical `Lyric.Stdlib.dll` — the SDK's `lib/Lyric.Stdlib.dll` is now the Lyric-compiled bundle (no F# / FSharp.Core dep) | **Shipped** | D-progress-140 |
 | M5.1 stage 2d.i — `[nuget]` + `[nuget.options]` manifest parsing | **Shipped** (PR #159) | D-progress-117 |
 | M5.1 stage 2d.ii — `lyric restore` csproj forwards `[nuget]` entries to `dotnet restore`; TFM compat fallback for the NuGet-cache locator | **Shipped** (PR #159) | D-progress-117 |
 | M5.1 stage 2d.iii — reflection-driven `Lyric.Cli.NugetShim` generator (static methods only; primitives + same-package `extern type`s; defensive against `MetadataLoadContext` failures) | **Shipped** (PR #162) | D-progress-118 |
@@ -109,7 +110,7 @@ deferred to Phase 3 by design.
 | M5.2 stage 2 — self-hosted contract elaborator (`Lyric.ContractElaborator` + `contract_elaborator_self_test.l`) | **Shipped** (this branch) | D-progress-137 |
 | M5.2 stage 3a — self-hosted MSIL PE / opcode / tables layer (M1–M83) | **Shipped** | D-progress-213..D-progress-219 |
 | M5.2 stage 3b — self-hosted MSIL high-level lowering (`Msil.Lowering`), `Msil.Codegen`, `Msil.Bridge`, F# bridge `SelfHostedMsil.fs` | **Shipped** | D-progress-227 / D-progress-238 / D-progress-240 |
-| M5.2 stage 4 — self-hosted monomorphizer (`Lyric.Mono` package: call-site specialisation for same-package generic functions) | **Shipped** | D-progress-229 |
+| M5.2 stage 4 — self-hosted monomorphizer (`Lyric.Mono` package: call-site specialisation for same-package generic functions; **not invoked from production builds** — `Msil.Bridge` / `Jvm.Bridge` pass parsed input directly to codegen, so generics are still monomorphised by the F# emitter's middle-end. Self-hosted monomorphizer is exercised by `mono_self_test.l` only, per `mono.l:6-27`) | **Shipped** | D-progress-229 |
 | M5.3 manifest self-test — `manifest_self_test.l` + `SelfHostedManifestTests.fs` exercise the `Lyric.Manifest` TOML parser | **Shipped** | D-progress-230 |
 | M5.3 — self-hosted verifier (`Lyric.Verifier` package: VCGen, SMT emission, trivial discharger, `prove` driver + `verifier_self_test.l`) | **Shipped** | D-progress-234 |
 | M5.3 — self-hosted stdlib / formatter / package manager / CLI | **Shipped** (`Lyric.Manifest`, `Lyric.Fmt` CST formatter, `Lyric.ManifestBridge`, `Lyric.TestSynthBridge`, `Lyric.Cli` full command dispatcher handling all CLI commands natively via `SelfHostedCli.fs`) | — |
@@ -11116,7 +11117,11 @@ Phase 5 §M5.2 stage 4 ships the self-hosted monomorphizer as the Lyric-language
 
 ```lyric
 pub func monoFile(file: in SourceFile): MonoResult
-pub record MonoResult { file: SourceFile; rewrites: Map[String, String] }
+pub record MonoResult {
+  file:        SourceFile
+  rewrites:    Map[String, String]
+  diagnostics: List[Diagnostic]   // added in PR #969 (closes #922) — empty today, populated as the pass starts emitting inference/specialisation diagnostics
+}
 ```
 
 **Scope notes:**
@@ -11658,8 +11663,8 @@ library for AWS X-Ray active tracing as a B-mode aspect.
   ConcurrentHashMap cache, region resolution.
 - `lyric-aws-secrets/lyric.toml` — extended: `jvm = []` feature added;
   kernel list extended with `secrets_kernel_jvm.l`; `[maven]` table added
-  (`software.amazon.awssdk:secretsmanager:2.25.x`,
-  `software.amazon.awssdk:ssm:2.25.x`).
+  (`software.amazon.awssdk:secretsmanager:2.25.70`,
+  `software.amazon.awssdk:ssm:2.25.70`).
 
 **Shipped in lyric-aws-xray (new library):**
 
@@ -12342,7 +12347,7 @@ R4 from `docs/36-v1-roadmap.md` is now complete for the three actionable items.
   Porting it requires a Lyric PE-metadata reader; deferred post-v1.0.
 - `Fmt.fs` sunset — gated on R2 (CST formatter parity); not changed here.
 
-**Build:** `dotnet build Lyric.sln` succeeds (0 warnings, 0 errors).
+**Build:** `dotnet build Bootstrap.sln` succeeds (0 warnings, 0 errors).
 **Tests:** `Lyric.Cli.Tests`: 204/224 passed; 20 errored (all pre-existing JVM
 parity failures unrelated to R4). `Lyric.Emitter.Tests`: 759/759 passed.
 
@@ -12397,7 +12402,7 @@ R5 from `docs/36-v1-roadmap.md` is now substantially complete.  Q022-2 is deferr
   limited (UFCS now works via Q022-3; the contract gap only affects `pub-api-diff`
   and verifier cross-package reasoning).  Deferred post-v1.0.
 
-**Build:** `dotnet build Lyric.sln` succeeds (0 warnings, 0 errors).
+**Build:** `dotnet build Bootstrap.sln` succeeds (0 warnings, 0 errors).
 **Tests:** `Lyric.Emitter.Tests`: 759/759; `Lyric.Verifier.Tests`: 266/266;
 `Lyric.Cli.Tests`: 204/224 (same 20 pre-existing JVM parity failures).
 
@@ -12897,3 +12902,1653 @@ Six new test functions exercise the new dep source forms:
 `testWorkspaceSection`, `testRegistrySection`.
 
 **Test results:** 782/782 emitter tests pass, 227/227 CLI tests pass.
+
+### D-progress-265 — End-to-end `lyric build --target jvm` fixes (Phase 6)
+
+`lyric build foo.l --target jvm` is now operational for Lyric programs that
+import the standard library and declare `func main(): Int` (the common
+idiomatic shape).  Three independent defects were closing in front of
+`SelfHostedJvm.compileToJar`:
+
+1. **JVM-target stdlib assembly identity collision.**
+   `bootstrap/src/Lyric.Emitter/Emitter.fs` precompiles `Std.X` for the
+   active `Target`.  The self-hosted CLI bridge (`SelfHostedCli.fs`)
+   compiles its own driver under `Target = Dotnet` before the user's
+   build runs, so `Lyric.Stdlib.Core` (`.NET`-flavour, `_kernel/`) is
+   already loaded into the default `AssemblyLoadContext` by the time the
+   user's `--target jvm` request tries to load the JVM-flavour
+   (`_kernel_jvm/`) DLL of the same name.  Two assemblies with the same
+   identity cannot coexist in one ALC; `Assembly.LoadFrom` raised
+   `FUSION_E_INVALID_NAME` (HRESULT `0x80131047`).  Fixed by suffixing
+   the JVM-target assembly identity with `.Jvm`
+   (`Lyric.Stdlib.Core` → `Lyric.Stdlib.Core.Jvm`), so the two flavours
+   coexist cleanly when both targets are touched within a single
+   `lyric` invocation.
+
+2. **JAR `Main-Class` derived from the source filename, not the package
+   declaration.**  `lyric-compiler/jvm/bridge.l` was passing the F#-supplied
+   `packageName` (the filename without extension) straight into both the
+   `Lyric-Package` manifest attribute and the JVM `Main-Class` attribute.
+   `lyric build hello_jvm.l --target jvm` on a file declaring
+   `package Hello` produced a JAR whose manifest pointed `Main-Class` at
+   `hello_jvm`, a class that does not exist — `java -jar` failed with
+   `ClassNotFoundException`.  Fixed by walking the parsed
+   `SourceFile.packageDecl.path.segments`, joining with `.`, and using
+   the result as `Main-Class`.  The `Lyric-Package` attribute keeps its
+   original filename-derived value for tooling backward compatibility.
+
+3. **JVM main-wrapper descriptor mismatch for `func main(): Int`.**
+   `Jvm.Codegen.codegenPackage` synthesises a `void main(String[])`
+   wrapper that delegates to the Lyric main via `invokestatic`.  The
+   wrapper hard-coded `()V` (void return) regardless of the Lyric main's
+   actual return type, so a `func main(): Int` program emitted
+   `invokestatic main:()V` against an `()I` symbol and the JVM raised
+   `NoSuchMethodError` at startup.  Fixed by recording the Lyric main's
+   resolved `JvmType` and emitting an `invokestatic` with the matching
+   descriptor.  When the Lyric main returns a value, the wrapper now
+   pops the result off the stack before issuing `return` (single-slot
+   only — a Long/Double main return is a follow-up).
+
+**Test coverage.**  Two new programs in the parity smoke suite
+(`bootstrap/tests/Lyric.Cli.Tests/ParityTests.fs`) pin the fixes:
+
+- `parity21_main_int` — `func main(): Int { println(...); return 0 }`
+- `parity22_main_int_returning` — `func main(): Int` with a loop and an
+  intermediate accumulator
+
+Both run through the existing `dotnet-legacy` / `dotnet` / `jvm`
+trinity, so the parity suite now exercises 66 cases (22 programs × 3
+paths, up from 60).
+
+**Test results:** 783/783 emitter tests pass, 233/233 CLI tests pass.
+
+### D-progress-266 — Custom source generator API: `@generate(Pkg.Gen)` runtime
+
+Implements the custom source generator runtime specced in docs/40
+(D075).  The unified `@generate` annotation now handles both built-in
+generators (bare names: `@generate(Json)`) and custom package-based
+generators (dotted names: `@generate(Proto.Derive)`).
+
+**What shipped:**
+
+- **`lyric-compiler/lyric/generator/generator.l`** (`Lyric.Generator`
+  package) — source-text pre-processor wired into `cli.l buildOne`.
+  Scans for dotted `@generate(X.Y)` annotations, resolves the generator
+  DLL from the `lyric.toml` package manifest (path:
+  `.lyric/packages/<name>/<name>.dll` relative to the manifest), invokes
+  it via `dotnet exec <dll>` with a JSON `GeneratorRequest` on stdin, and
+  splices the returned source text and import lines into the compilation
+  unit before the emitter sees it.  Only dotted names trigger the
+  subprocess path; bare names (e.g. `@generate(Json)`) pass through to
+  the existing built-in synthesisers unchanged.
+
+- **`lyric-generator-sdk/`** (`Lyric.GeneratorSdk` package) — SDK
+  types and helpers for authoring generator packages:
+  `GeneratorRequest`, `GeneratorResponse`, `TypeDescriptor`,
+  `FieldDescriptor`, `AnnotationDescriptor`, and `runGenerator(handler)`
+  which wires stdin → handler → stdout for the subprocess bridge.
+
+- **`lyric-compiler/lyric/manifest.l`** — adds `kind: Option[String]` to
+  `PackageSection` so generator packages can declare
+  `kind = "source-generator"` in their `[package]` section.
+
+- **`lyric-compiler/lyric/cli.l`** — threads `manifestPath` through
+  `buildOne`; calls `Generator.preprocess` before emitting.
+
+- **`bootstrap/src/Lyric.Parser/JsonDerive.fs`** (bootstrap shim only)
+  — renames the `@derive(Json)` detector to `@generate(Json)` to keep
+  the F# bootstrap emitter in sync with the unified annotation form.
+  All test source strings and comments updated accordingly.
+
+**Test results:** 323/323 parser, 789/789 emitter, 237/237 CLI.
+
+### D-progress-267 — All 24 Lyric library packages compile; local-path dependency resolution shipped
+
+All 24 first-party Lyric library packages now compile without errors via
+`lyric build --manifest <lib>/lyric.toml`:
+
+`lyric-auth`, `lyric-aws-secrets`, `lyric-aws-xray`, `lyric-cache`,
+`lyric-db`, `lyric-feature-flags`, `lyric-grpc`, `lyric-health`,
+`lyric-i18n`, `lyric-jobs`, `lyric-lambda`, `lyric-logging`, `lyric-mail`,
+`lyric-mq`, `lyric-otel`, `lyric-proto`, `lyric-resilience`, `lyric-search`,
+`lyric-session`, `lyric-storage`, `lyric-testing`, `lyric-validation`,
+`lyric-web`, `lyric-ws`.
+
+**Key bootstrap-compiler changes that unblocked compilation:**
+
+- **Cross-package type anchors** (`ContractMeta.fs` + `RestoredPackages.fs`):
+  A preamble of `extern type`, `opaque`, `union`, `record`, `enum`, `distinct`,
+  and `alias` declarations is extracted from every restored dependency contract
+  and prepended to each package source before type-checking, so that types
+  defined in one DLL are resolvable when compiling a package that imports it.
+
+- **Enum case cross-package registration** (`Emitter.fs`): Imported enum cases
+  are now registered in `enumTable` / `enumCases`, enabling cross-package
+  `EnumName.CaseName` pattern matching in packages that import enums from
+  dependency DLLs.
+
+- **`@cfg` erasure before import resolution** (`Emitter.fs`): Feature-flag
+  erasure (`applyCfgErasure`) is now applied before `resolveIntraImports` and
+  type-checking, so `@cfg`-gated overloads are pruned before the checker sees
+  potential duplicate symbols.
+
+- **Weaver empty-matchers guard** (`Weaver.fs`): The aspect weaver now returns
+  `false` (no match) for templates with an empty `matchers` list instead of
+  falling through to `List.forall []` vacuous-truth, which was silently applying
+  library-template aspects to every function in every file.
+
+- **`BCoalesce` (`??`) IL generation** (`Codegen.fs`): The null-coalescing
+  operator now emits correct `dup / brtrue / pop` IL instead of producing no
+  code.
+
+- **Null-pattern match handling** (`Codegen.fs`): `case null` in a match
+  expression is now correctly treated as a non-catch-all pattern (emits a
+  `ldnull / ceq` null-check) rather than as a catch-all binding named `"null"`.
+
+**Local-path dependency resolution (self-hosted CLI):**
+
+`lyric build --manifest lyric.toml` now resolves `[dependencies]` entries of
+the form `{ path = "..." }` (inline-table local-path deps).  The self-hosted
+`buildProject` function reads each dependency's `lyric.toml`, finds its output
+DLL in `<dep>/bin/<asm>.dll`, and passes the DLL path to the emitter as a
+restored reference.  The `emitProject` → `--internal-project-build` subprocess
+pipeline carries these paths in `DEP\t<name>\t<path>` spec-file lines so the
+F# emitter can load them as `RestoredPackageRef` entries during compilation.
+
+**AppHost subprocess fix (self-hosted emitter):**
+
+The `lyrExe()` / `lyrPrefixArgs()` helpers in `emitter.l` and `contract_meta.l`
+now detect when `LYRIC_BIN` is the native AppHost launcher for the CLI DLL
+(`LYRIC_BIN + ".dll" == LYRIC_CLI_DLL`).  In AppHost mode the helpers call the
+AppHost directly without the `exec <dll>` prefix, avoiding the `dotnet run`
+scenario where the AppHost process would receive `"exec"` as `argv[0]` and
+route it to the unknown-command handler.
+
+**`var` record fields (parser):**
+
+The parser now accepts `var name: Type` in record member declarations,
+preserving the `var` annotation in the AST. Mutability enforcement is deferred
+to the T6+ type-checker tier; the emitter currently treats `var` fields
+identically to non-`var` fields at the IL level.
+
+**Test results:** 792/792 emitter tests pass, 237/237 CLI tests pass.
+
+### D-progress-268 — Self-hosted MSIL FFI + `@externStatic` / `@externInstance` (#370)
+
+End-to-end FFI in the self-hosted MSIL emitter (Phase R6) plus the
+language gap closure for explicit static-vs-instance disambiguation
+on `@externTarget` declarations.
+
+**What shipped:**
+
+- **`lyric-compiler/msil/ffi.l`** (`Msil.Ffi` package) — the FFI resolver
+  for the self-hosted MSIL emitter.  `splitTarget(target)` parses
+  `"System.Type.Member"` (or `..ctor`) into (type FQN, member, isCtor).
+  `splitTypeFqn(typeFqn)` recovers (namespace, simple name).
+  `clrAssemblyForType(typeFqn)` is a hardcoded prefix → assembly table
+  covering every BCL surface the stdlib externs into; types not in the
+  table default to `System.Runtime` (the .NET facade that type-forwards
+  most `System.*` types).  `resolveExternTarget(target, arity, hint)`
+  returns an `FfiResolved` record that the codegen consumes.
+
+  Why a table instead of runtime reflection: the bootstrap F# emitter
+  writes PEs whose calling-assembly metadata trips up
+  `System.Type.GetType` from Lyric-emitted code (consistently returns
+  null even for types demonstrably loaded).  Rather than chase that
+  emit issue down, the resolver derives everything from the
+  `@externTarget` string + the Lyric param/return types, and the
+  `@externStatic` / `@externInstance` annotations resolve the
+  static-vs-instance ambiguity.
+
+- **`@externStatic` / `@externInstance` annotations (#370)** — paired,
+  mutually-exclusive disambiguation hints on `@externTarget`-bearing
+  Lyric functions.  Both annotations are no-ops without
+  `@externTarget`.  Setting both is a diagnostic (resolver falls back
+  to `@externStatic` so the program builds).  When neither is
+  present, the .NET self-hosted MSIL emitter defaults to static —
+  instance externs must annotate explicitly.
+
+- **`lyric-compiler/msil/codegen.l`** — `lowerFuncMsil` now detects
+  `@externTarget` on a `FunctionDecl` and synthesises the body from
+  the resolved BCL target.  Emits `MCall` (static), `MCallvirt`
+  (instance), or `MNewobj` (ctor) with the right MemberRef token.
+  Lazy `ffiAsmRefs` / `ffiTypeRefs` caches on `CodegenCtx` reuse the
+  pre-seeded `arRuntime` row for `System.Runtime` /
+  `System.Private.CoreLib` / `mscorlib`, and intern fresh
+  AssemblyRef / TypeRef rows for everything else on first use.
+
+- **Pre-existing codegen bug, also fixed** — intra-package function
+  calls returned `MObject` regardless of declared return type.
+  `println(userFn())` therefore always fell through to
+  `WriteLine(string)`, producing invalid IL when the actual return
+  was `Int`.  `CodegenCtx.funcRetTypes: Map[String, MsilType]` is
+  now populated in `addPackageTokens` from each `FunctionDecl.ret`,
+  and call sites consult it to return the correct `MsilType`.
+
+**Verified end-to-end** (self-hosted MSIL pipeline, `lyric build`
+default target):
+- `@externTarget("System.Math.Abs") @externStatic` → `Math.Abs(-7) = 7`.
+- `@externTarget("System.Math.Max") @externStatic` plus chained
+  intra-package calls.
+- `@externTarget("System.String.Trim") @externInstance` →
+  `"  hello  ".Trim() = "hello"`.
+- `@externTarget("System.String.Concat") @externStatic` → string
+  concatenation.
+
+**Docs updated:**
+- `docs/01-language-reference.md` §11.3 — replaced the JVM-only
+  name-based heuristic note with the cross-target `@externStatic` /
+  `@externInstance` annotations.
+
+**No F# bootstrap changes.**
+
+**Test results:** 789/789 emitter, 237/237 CLI.
+
+### D-progress-269 — Monomorphizer type-arg inference + ETypeApp + budget (#349)
+
+Three related improvements to `Lyric.Mono` that close most of the
+gaps `inferExprTE` had at the start of this session:
+
+* **`ETypeApp(fn, [T1, …])` is now honored** at `ECall` rewrite
+  sites.  Previously the case fell through to "pass-through fn"
+  even when fn was an `EPath` to a known generic decl — explicit
+  type applications never specialised.  The rewriter now detects
+  `ECall(ETypeApp(EPath([fname]), targs), args)`, uses the supplied
+  targs directly as the substitution, and emits the mangled
+  specialisation request without going through inference.  Unblocks
+  every call site where the user already wrote the type arguments
+  inline.
+
+* **`inferExprTE` extended** to recognise:
+  - `EBinop` arithmetic (`+ - * / %`) — LHS type wins; useful when
+    the generic param sits in a numeric expression.
+  - `EBinop` comparison and logical (`== != < <= > >= and or`) —
+    result is always `Bool`.
+
+  Calls, field projections, lambdas, and constructor calls are
+  still left to the un-specialised fall-through; threading
+  `state.genDecls` / `state.recordDecls` into the inference helper
+  is a separate cut (return-type inference for nested generic calls
+  needs care around recursive shapes).
+
+* **Recursion budget** added to the worklist (`specBudget = 10000`).
+  A pathological generic that recurses with a strictly larger type
+  argument (`f[T] = … f[List[T]] …`) used to loop indefinitely and
+  OOM the compiler.  The compiler now panics with a clear,
+  actionable message naming the runaway specialisation pattern.
+
+**Test results:** 789/789 emitter, 237/237 CLI.
+
+### D-progress-270 — V0031: warn proof-required functions decorated with aspects (#336)
+
+Closes the gap reported in #336 (option-b path): the self-hosted
+verifier walks the parsed AST, not the post-aspect-elaboration AST,
+so `requires:` / `ensures:` clauses introduced by an aspect's
+`around { }` body are not discharged.  Until the verifier moves
+post-elaboration (option-a; requires a self-hosted aspect weaver,
+which is its own multi-week project), the compiler now surfaces a
+**warning** at each affected function.
+
+* **`lyric-compiler/lyric/verifier/vcgen.l`** — `goalsForFile`
+  pre-scans the file for `IAspect` items and collects their names
+  into a `Map[String, Bool]`.  For each `@proof_required` IFunc,
+  the verifier checks the function's annotations against that set;
+  the first match emits `V0031` carrying the aspect name and the
+  function span.
+
+* **`docs/15-phase-4-proof-plan.md`** — `V0031` added to the
+  diagnostic catalogue with recovery hint ("mark function
+  `@runtime_checked` or hand-inline the aspect for proof").
+
+Verified on a minimal repro (`@proof_required` package, aspect
+`MyTimer`, decorated function `compute`):
+
+```
+$ lyric prove sample.l
+V0031 warning [11:1]: function 'compute' is decorated with @MyTimer;
+proofs verify the unelaborated body, which may differ from the
+runtime behaviour after aspect weaving — contracts on the aspect's
+around { } block are not discharged
+1/1 obligations discharged (@proof_required)
+```
+
+Proof still proceeds on the unelaborated body (so existing programs
+build) but downstream auditors and `claude-review` reviewers can
+see the gap.  Full option-a (run verifier post-elaboration) tracked
+in #336 follow-ups; needs a self-hosted aspect weaver to land first.
+
+**Test results:** 789/789 emitter, 237/237 CLI.
+
+### D-progress-271 — RFC zigzag test vectors + shift semantics docs (#361)
+
+Closes #361.  The zigzag32/zigzag64 implementations had already been
+rewritten to avoid shift operators (using `n * 2 ± 1` instead), so
+the underlying correctness bug from the issue is no longer present.
+What was still missing — and what #361 explicitly asked for — is RFC
+test coverage on the boundary cases and language-reference documentation
+of the `.shr` arithmetic-vs-logical distinction.
+
+* **`lyric-proto/tests/proto_types_tests.l`** — 10 new RFC vectors:
+  - `zigzag32(INT_MAX) = 0xFFFFFFFE`, `zigzag32(INT_MIN) = 0xFFFFFFFF`
+  - `unzigzag32` of the same constants
+  - Roundtrips for `INT_MAX`, `INT_MIN`, `LONG_MAX`, `LONG_MIN`, `-1`, `1`
+
+* **`docs/01-language-reference.md` §4.1** — document `.shl(n)` /
+  `.shr(n)` semantics: arithmetic right shift on signed types
+  (`Byte`, `Int`, `Long`), logical right shift on unsigned types
+  (`UInt`, `ULong`).  Cross-reference protobuf zigzag as the
+  canonical consumer.
+
+**Test results:** 789/789 emitter, 237/237 CLI.  The new proto
+vector tests run via `lyric test --manifest lyric-proto/lyric.toml`.
+
+### D-progress-272 — Std.RegexSafe wrapper for Result-shaped regex (#330)
+
+The kernel-level `Std.Regex` already binds the
+`Regex(string, RegexOptions, TimeSpan)` overload with a 1-second
+default match timeout (so `(a+)+$` on adversarial input throws
+`RegexMatchTimeoutException` instead of hanging), but the user-
+facing call surface still leaks the exception as an unchecked
+`Bug`.  This adds a thin `Std.RegexSafe` package that catches the
+throw and returns `Result[T, RegexError]`.
+
+* **`lyric-stdlib/std/regex_safe.l`** (new) — `Std.RegexSafe` public
+  surface:
+  - `RegexError = TimedOut(message) | RegexBug(message)`
+  - `errorMessage(e): String`
+  - `tryCompile(pattern): Result[Regex, RegexError]`
+  - `tryIsMatch(r, input): Result[Bool, RegexError]`
+  - `tryMatchOne(r, input): Result[Match, RegexError]`
+  - `tryReplace(r, input, replacement): Result[String, RegexError]`
+  Local functions are prefixed `try*` to avoid shadowing the kernel
+  module's same-short-named functions — the F# bootstrap call
+  resolver recurses otherwise (separately tracked, but the rename
+  here is the no-op workaround).
+
+* **`lyric-stdlib/tests/regex_safe_tests.l`** (new) — exercises the
+  error-message rendering and the happy paths for compile / isMatch /
+  replace.  We do NOT trigger the 1-second timeout in CI (a large
+  enough adversarial input would slow the suite without adding
+  coverage beyond the BCL guarantee + the kernel binding).
+
+* **`docs/10-stdlib-plan.md`** — adds `Std.Regex` and `Std.RegexSafe`
+  to the stability cut list, with the ReDoS posture spelled out next
+  to each entry.
+
+**Test results:** 790/790 emitter, 237/237 CLI.
+
+### D-progress-273 — Std.Json slice readers dispose JsonDocument (#328)
+
+The scalar `lyricJsonGet*` helpers in `lyric-stdlib/std/json.l`
+already wrap parsing in `defer { hostDisposeJson(doc) }`, but the
+slice readers in `lyric-stdlib/std/_kernel/json_host.l`
+(`lyricJsonGetIntSlice`, `lyricJsonGetLongSlice`,
+`lyricJsonGetDoubleSlice`, `lyricJsonGetBoolSlice`,
+`lyricJsonGetStringSlice`) were missing the disposal — each call
+leaked an unmanaged `JsonDocument` until GC.  This commit adds
+the `defer { hostDisposeJson(doc) }` to every slice reader.
+
+The other half of #328 — `lyricJsonGet*` re-parses the entire JSON
+on every field lookup, making N-field reads O(N) parses — is a
+shape change to `Std.Rest.jsonString`/`jsonInt`/`jsonBool` that
+needs a richer "parse once per response" API.  Left for a
+follow-up; the current code is correct (no leak), just suboptimal.
+
+**Test results:** 790/790 emitter, 237/237 CLI.
+
+### D-progress-274 — JVM `Std.Json` slice readers (#322 follow-up)
+
+Earlier work in #322 added the missing JVM kernel files (console,
+path, process_capture) and the scalar JSON externs.  The slice
+readers `lyricJsonGetIntSlice` / `LongSlice` / `DoubleSlice` /
+`BoolSlice` / `StringSlice` — which are pure-Lyric implementations
+over the lower-level `hostEnumerate*` / `hostTryGet*` primitives —
+were defined only in `_kernel/json_host.l` (.NET path).  A JVM
+build that called any of them would fail to link.
+
+Promotes the five slice readers verbatim into `_kernel_jvm/
+json_host.l`.  The body is identical to the .NET path (pure
+Lyric, no BCL-specific calls) so behaviour matches by
+construction.  All five carry the `defer { hostDisposeJson(doc) }`
+disposal added in D-progress-273.
+
+**Test results:** 790/790 emitter, 237/237 CLI.
+
+### D-progress-275 — Review fixes for PR #789 (REQUIRED + SUGGESTIONs)
+
+Addresses the `claude-review` findings on PR #789:
+
+REQUIRED:
+* **F0002 diagnostic for conflicting `@externStatic` / `@externInstance`**
+  (#790, #793) — both annotations on one extern declaration is now an
+  error.  Surfaced two ways: the self-hosted type checker
+  (`typechecker_stmts.l:checkFunctionBody`) emits `F0002` via
+  `errorDiagnostic` for proof / lint pipelines that thread a diag
+  list; the MSIL codegen (`msil/codegen.l:emitExternTargetBody`)
+  panics with the same message so the `lyric build` path — which
+  skips the type checker — also surfaces the failure.
+* **Invalid-IL hazard for class-typed `@externTarget` params** (#791) —
+  previously the FFI emitter returned `false` and the default lowering
+  emitted `MRet` with no value on the stack, producing
+  VerificationException at runtime.  `emitExternTargetBody` now
+  panics with an actionable message ("use --target dotnet-legacy or
+  wrap the call in a primitive-typed shim").
+
+SUGGESTIONs:
+* **`paramArity` dead parameter removed** (#792) — the table-driven
+  resolver doesn't use it.  Callsite updated in
+  `msil/codegen.l:emitExternTargetBody`.
+* **D-progress-274 cross-ref corrected** (#794) — the JVM slice-reader
+  entry now points at D-progress-273 (the disposal entry) instead of
+  the renumbered-stale D-progress-272.
+* **`isTimeout` locale-sensitivity documented** (#795) — the comment
+  block in `std/regex_safe.l` now explicitly calls out that the
+  classifier falls through to `RegexBug` on non-en-US runtimes
+  because the BCL message is satellite-resource-localised; a
+  locale-stable classifier needs the `Bug` lowering to surface the
+  CLR exception class, which is a separate lifting concern.
+* **`createDir` errors no longer swallowed silently** (#797) —
+  `cmdTestManifest` now reports a `printErr` instead of dropping the
+  `Err` arm on the floor.
+* **O(N²) string-concat replaced with `Str.joinList`** (#799) —
+  `cmdTestManifest`'s package-source bundling now collects into a
+  `List[String]` and joins once instead of repeated `+`.
+* **V0031 cross-package limitation documented** (#800) — the V0031
+  table entry in `docs/15-phase-4-proof-plan.md` now spells out
+  that the same-file detector misses imported cross-package
+  aspects, and points at the `Lyric.Contract` resource lift needed
+  for the full fix.
+* **`cmdTestManifest` 'what' comments trimmed** (#801) — only the
+  JIT-regression note (the WHY) survives; the algorithm steps are
+  legible from the function body.
+
+Not actioned:
+* **#796** (duplicate D-progress-268) — already fixed by the prior
+  renumber commit a5dab90; the review ran against c05f4ee before
+  the renumber landed.
+* **#798** (regex_safe_tests uses manual `main()` driver) — the
+  manual driver matches `StdlibLyricTests.fs`'s harness contract
+  (expects exit 0 + stdout-contains "ok"), which is the same shape
+  json_tests.l / format_tests.l / etc. use.  The `@test_module` +
+  `test "..." { }` syntax the suggestion compares to runs through
+  the separate `lyric test` harness used by `lyric-proto/tests/`.
+  Comment added at the top of the file noting the harness
+  divergence.
+
+**Test results:** 796/796 emitter, 237/237 CLI.
+
+### D-progress-276 — Self-hosted middle-end wired into MSIL and JVM bridges (docs/41 Band 1, partial)
+
+Wires the self-hosted Lyric middle-end into both production back-end
+bridges per `docs/41 §9 Band 1`.  Previously the bridges ran
+`parse → codegen → lowering` directly: a type-incorrect program under
+`--target dotnet` compiled to broken IL with no diagnostic, and
+`requires:` / `ensures:` clauses survived in the AST without ever being
+lowered to runtime asserts.
+
+Scope landed:
+
+* **`lyric-compiler/msil/bridge.l` and `jvm/bridge.l`** now call, after
+  parse and before codegen:
+  1. `Lyric.TypeChecker.check(file)` — diagnostics printed (see below).
+  2. `Lyric.ModeChecker.checkFile(file)` — V-code errors abort the build.
+  3. `Lyric.ContractElaborator.elaborateFile(file)` — `requires:` /
+     `ensures:` lowered to runtime asserts in the AST.
+* **Diagnostic printing.**  Each pass's diagnostics (severity + code +
+  span + message) now print to stdout before the bridge returns.  Parse
+  errors and mode-checker errors fail the build immediately.
+* **Typechecker diagnostics are advisory.**  The self-hosted typechecker
+  doesn't resolve cross-package imports yet (Band 6;
+  `typechecker_resolver.l:129` "deferred to T7+"), so it raises T0010 /
+  T0020 / T0050 for every reference to a stdlib name.  Treating those as
+  build failures would regress every production program that imports
+  `Std.*`, so `tcRes.diagnostics` are surfaced but not gating.  When
+  Band 6 lands the bridge will switch back to `reportAndAbort`.
+* **`Lyric.Mono` wiring deferred.**  Importing `Lyric.Mono` from the
+  bridge breaks the precompile of `Lyric.Msil.Bridge.dll` itself: the
+  frozen F# bootstrap parser cannot parse literal-pattern match arms
+  followed by a further arm — every `case 1 -> 42 \n case _ -> 99`
+  shape P0040s.  `mono.l:782+` uses this idiom (via `case Some(te) ->
+  result = result + …`), and the workaround is to restructure mono.l
+  around constructor-only patterns.  Tracking in the band 5–6 follow-up;
+  for now the `Lyric.Mono` import is commented out with a header note.
+* **Bridge tests added.**  `SelfHostedMsilBridgeTests` gains
+  `mkBridgeFails` for "compile should fail" assertions, plus
+  `shm_mode_check_v0004` (V0004: `@axiom` function with body) and
+  `shm_parse_error` (trailing `+` in a `val` initialiser).
+
+Side fix: renamed the `as` binding in
+`lyric-compiler/lyric/mono.l:typeExprKey` (`case TGenericApp(h, as) ->
+…`) to `gargs` — `as` is a reserved keyword in Lyric and the bare
+binding name was a latent footgun, even though mono.l doesn't yet ride
+the production import path.
+
+**Test results:** 237/237 Lyric.Cli (including 8/8
+SelfHostedMsilBridgeTests, 66/66 ParityTests across the three targets).
+
+### D-progress-277 — Contract elaborator lowers loop invariants (docs/41 Band 4)
+
+Closes the first half of docs/41 §9 Band 4: loop `invariant:`
+clauses now lower to runtime `assert(inv)` calls at the top of every
+reachable loop body, instead of being passed through as inert
+`SInvariant` AST nodes.
+
+* **`lyric-compiler/lyric/contract_elaborator/elaborator.l:elaborateStmtDeep`**
+  gains an `SInvariant(inv)` case that emits `mkAssertCall(inv, span)`.
+  Continue and fall-through edges both re-enter the loop head, so a
+  single assert at the start of the body covers them.  Break exits
+  without re-checking, matching the operational semantics in
+  `docs/08-contract-semantics.md`.
+* **Function-body opt-in.**  `elaborateFunction` previously short-circuited
+  when a function had no `requires:` and no `ensures:` — that path
+  bypassed the deep-walk that would have rewritten `SInvariant`.  A new
+  `functionBodyHasInvariant` predicate (walks `SWhile` / `SFor` / `SLoop` /
+  `STry` / `SScope` / `SDefer` bodies) now also opts the function into
+  elaboration.
+* **`contract_elaborator_self_test.l`** gains `testWhileInvariantLowered`
+  and `testForInvariantLowered`, both verifying that the first
+  statement of the rewritten loop body is `SExpr(ECall(EPath("assert"),
+  …))`.
+
+Still deferred (will follow as part of the second half of Band 4):
+protected-type entries (`PMEntry` with `barrier:` / `invariant:` clauses).
+
+**Test results:** 797/797 emitter, 239/239 Lyric.Cli.
+
+### D-progress-278 — Source-generator supply-chain enforcement (G0002, G0008)
+
+Address review-finding gap #762 documenting the supply-chain
+guardrails added to the custom source-generator pipeline in
+D-progress-266.
+
+* **G0002** — `@generate(Pkg.Gen)` rejects packages whose `lyric.toml`
+  does not declare `[package].kind = "source-generator"`.  Prevents a
+  caller from accidentally running an arbitrary library as a source
+  generator.
+* **G0008** — `@generate(Pkg.Gen)` rejects packages not listed in
+  `[dependencies]` of the consuming `lyric.toml`.  Forces the
+  consumer to opt in explicitly before any generator subprocess can
+  fire.  See `docs/40-source-generators.md` §9 (Phasing) and
+  `lyric-compiler/lyric/generator/generator.l:checkGeneratorDependency`.
+
+Both diagnostics fire as errors at build time, after `scanDirectives`
+returns a `Pkg.Name` reference and before any subprocess is launched.
+The corresponding entries land in the §10 diagnostic table in
+`docs/40-source-generators.md`.
+
+### D-progress-279 — Contract elaborator: protected-type entry elaboration (Band 4 finish)
+
+Completes the second half of docs/41 §9 Band 4: protected-type
+`PMEntry` contract elaboration in the self-hosted elaborator.
+
+* **`elaborator.l`** — `elaborateItem` gains an `IProtected` branch.
+  `elaborateProtectedMember` handles per-member dispatch: for each
+  `PMEntry(ed)`, it collects the enclosing type's `PMInvariant` clauses
+  as `CCEnsures` and appends them to `ed.contracts` to form a combined
+  list. `elaborateFunctionBody` is then applied to the combined list,
+  inserting `assert(requires)` at the body's start and
+  `assert(invariant-as-ensures)` at every return / fall-off site.
+  `PMFunc` members delegate to `elaborateFunction`. `PMField` and
+  `PMInvariant` pass through unchanged.
+* **`contract_elaborator_self_test.l`** gains
+  `testProtectedEntryRequiresLowered` (verifies requires asserts land
+  at the start of an elaborated PMEntry body) and
+  `testProtectedInvariantAppendedToEntries` (verifies PMInvariant
+  clauses are injected as ensures asserts before every return site).
+
+Closes issue #848.
+
+### D-progress-280 — JVM backend: IEnum and IDistinctType codegen (Band 3 partial)
+
+Wires up two previously-stubbed AST item kinds in
+`lyric-compiler/jvm/codegen.l`:
+
+* **`IEnum(decl)`** now produces `LPEnum(LEnumType(className =
+  pkgName + "/" + decl.name, variants = [case names]))`.  The enum
+  class is lowered by the existing `lowerEnum` in `lowering.l`
+  (B112), producing a valid `java.lang.Enum<E>` subclass with
+  `public static final` instance fields.
+* **`IDistinctType(decl)`** now produces `LPDistinctType(LDistinctType(
+  wrapperClass = pkgName + "/" + decl.name, underlyingType =
+  typeExprToJvm(decl.underlying)))`.  The wrapper class is lowered by
+  the existing `lowerDistinctType` in `lowering.l` (B97–B99),
+  producing a class with a private `$value` field and a public
+  accessor.
+
+New end-to-end tests added:
+
+* `self_test_b131.l` / `JvmLoweringB131Test.fs` — compiles a Lyric
+  source file containing an `enum Direction { ... }` declaration via
+  `compileToJar`, runs the JAR, and asserts output = `enum_ok`.
+* `self_test_b132.l` / `JvmLoweringB132Test.fs` — compiles a Lyric
+  source file containing a `type UserId = Int` distinct-type
+  declaration via `compileToJar`, runs the JAR, and asserts output =
+  `distinct_ok`.
+
+Remaining Band 3 items (`IInterface`, `IImpl`, `IAspect`, `ELambda`
+general case, and proper `EPropagate` desugaring) are deferred: they
+require new `LPackageItem` variants in `lowering.l` and/or
+`invokedynamic` infrastructure that does not yet exist.
+
+Closes issue #856 (partial — structural items wired up; complex
+constructs tracked as follow-up).
+
+### D-progress-281 — Track A A1.1: in-process MSIL emit + stderr diagnostics
+
+First concrete step of Track A (`docs/41 §860` — F# CLI elimination +
+Native-AOT publishing).  `Lyric.Emitter.emit` now compiles
+`--target dotnet` single-source builds in-process via a direct call to
+`Msil.Bridge.compileToMsil`, instead of spawning a `lyric
+--internal-build` subprocess that bounces back into F# `Program.fs`.
+
+End-to-end: `cli.l → Lyric.Emitter.emit → MsilBridge.compileToMsil`
+(direct package call).  No subprocess hop, no F# emitter touched at
+runtime.
+
+Three escape hatches preserved for transition and differential testing:
+
+* `LYRIC_FORCE_SUBPROCESS=1` forces every emit through the subprocess
+  shellout regardless of target.  Used by the bootstrap reproducibility
+  pipeline to compare in-process vs subprocess output.
+* `--target jvm` still routes through the subprocess fallback —
+  importing `Jvm.Bridge` from `Lyric.Emitter` would pull
+  `Jvm.Bytecode.BranchInsn` into the same F# emitter import closure as
+  `Lyric.Manifest.Branch` / `Lyric.GitDep.Branch`.  PR #868 already
+  renamed the bytecode case to clear the collision, but the JVM-side
+  switch warrants its own validation pass before flipping.
+* `emitProject` (multi-package + restored-dep builds) still routes
+  through F# `Program.fs::internalProjectBuild` because the
+  self-hosted MSIL bridge doesn't yet expose a multi-package entry
+  point.
+
+Diagnostic-routing fix (#893): `Lyric.DiagnosticUtil`'s
+`diagReportAndAbort` and `diagReport` helpers now write to **stderr**
+via `Std.Console.error` instead of stdout.  This matches the F#
+bootstrap CLI convention; IDE integrations, CI scripts, and
+`2>errors.txt` redirects that worked with the old subprocess path
+continue to work.  The `failResult` text in `emitter.l` was updated to
+reference stderr accordingly.
+
+Pre-required by:
+* PR #888 (#867) — fixed two F# bootstrap emitter bugs in
+  `Lyric.Generator.preprocess` that were silently breaking the
+  self-hosted CLI bridge.  Without #888, the in-process path was
+  unreachable because `Lyric.Cli.dll` couldn't even load.
+* PR #868 — defensive `Branch`→`BranchInsn` rename in
+  `Jvm.Bytecode` / `Msil.Opcodes` that cleared the import-collision
+  hazard for adding `import Msil.Bridge` to `Lyric.Emitter`.
+
+Followup actions (see `docs/41 §860`): port `emitProject` to a
+multi-package bridge entry point, switch JVM target to in-process,
+pre-build `Lyric.Cli.dll` into a checked-in artifact, generate an AOT
+entry-point project, and finally delete the F# CLI scaffolding (12
+SelfHosted*.fs files + duplicate F# helpers + most of `Program.fs`).
+
+Closes #892, #893.
+
+---
+
+### D-progress-282 — Self-hosted MSIL backend Band 2 feature parity (docs/41 §9 Band 2, PR #872)
+
+*claude/fix-band-2-issues-RT5un branch.*
+
+Implements all seven Band-2 items from the `docs/41` remediation plan,
+closing GitHub issues #849–#855.
+
+**IEnum → CLR int enum TypeDef (#849)**
+
+`lowerEnumMsil` in `lyric-compiler/msil/codegen.l` emits a sealed class
+inheriting `System.Enum` with one static `int32` literal field per `case`
+declaration.  The TypeDef carries `tdSealed | tdAutoLayout | tdAnsiClass`.
+Verified by bridge test `shm_enum_smoke`.
+
+**IVal → static init-only field with optional `.cctor` (#850)**
+
+Literal `val` declarations (single `MLdcI4` init expression) are
+registered in a `constValues` map on `CodegenCtx` and inlined at every
+`EPath` reference site as `ldc.i4`.  No MethodDef row is emitted for
+these, avoiding a token-sequence mis-alignment that caused `main` to be
+mis-identified as the static initialiser.  Non-literal vals emit a
+standard static `.cctor` via `initInsns`.  Verified by `shm_const_int`
+and `shm_val_cctor`.
+
+**IInterface → abstract interface TypeDef (#853, interfaces half)**
+
+`lowerInterfaceMsil` emits a TypeDef with `tdInterface | tdAbstract`
+flags and one abstract MethodDef stub (RVA=0, `mdAbstract | mdVirtual`)
+per member signature.  A companion fix removed the RVA post-pass loops
+in `lowerMPackage` / `lowerMPackageWithCtx` that were overwriting
+abstract method RVA=0 slots with concrete body RVAs from a different
+TypeDef.  Verified by `shm_interface_smoke`.
+
+**IOpaque → sealed TypeDef with private fields + .ctor (#853, opaques half)**
+
+`lowerOpaqueMsil` emits a sealed, non-abstract TypeDef with one private
+instance field per `opaque type` field declaration, plus a public `.ctor`
+that `stfld`-stores every argument.  Exposed-twin (`@projectable`) synthesis
+is deferred to Band 3.  Verified by `shm_opaque_smoke`.
+
+**IProtected → Monitor-backed sealed TypeDef (#855, protected half)**
+
+`lowerProtectedTypeMsil` emits a sealed TypeDef with a private `object`
+lock field (initialised in `.ctor`), instance fields for every `var`
+declaration, and one public instance method per `entry`.  Each entry body
+is wrapped in `Monitor.Enter` / `Monitor.Exit` using a try/finally block.
+Verified by `shm_protected_smoke`.
+
+**IAspect + aspect weaver (#855, aspects half)**
+
+`weaveAspectsMsil` is now exported as `pub func` so `bridge.l` can call
+it before `addPackageTokens`.  The weaver renames the original target
+function to `__aspect_target_N_<name>` and synthesises a wrapper whose
+body is the aspect's `around(args)` block.  A critical fix was extracted
+into a `makeSomeFBBlock(b: in Block): Option[FunctionBody]` helper: the
+explicit `Option[FunctionBody]` return type forces the bootstrap emitter
+to bind `T = FunctionBody` through `ctx.ReturnType` rather than
+defaulting to `obj`, which caused the `isinst Option_Some[FunctionBody]`
+pattern-match to silently miss both branches and emit zero IL instructions
+for the wrapper body.  `addPackageTokens` was rewritten to match the
+source-order emit sequence of `codegenMPackage` so that all TypeDef and
+MethodDef token pre-scans stay in lock-step.  Verified by `shm_aspect_weave`.
+
+**EPropagate (`?`) → match-unwrap desugaring (#849 / #855 cross-item)**
+
+`lowerEPropagateMsil` desugars the `?` postfix operator to a
+match-and-early-return for both `Result[T,E]` and `Option[T]` shapes.
+Verified by new bridge test coverage in the existing suite.
+
+**Test wiring**
+
+Seven new bridge tests added to
+`bootstrap/tests/Lyric.Cli.Tests/SelfHostedMsilBridgeTests.fs`:
+`shm_enum_smoke`, `shm_const_int`, `shm_val_cctor`, `shm_interface_smoke`,
+`shm_opaque_smoke`, `shm_aspect_weave`, `shm_protected_smoke`.  All 251
+tests pass (0 failures).
+
+**`IWire` placeholder (item 5 in the Band 2 list)**
+
+`IWire` is promoted from skipped to a `lowerWireMsil`-shaped
+placeholder.  Wire blocks no longer panic the codegen; they emit a
+static-factory-class stub via `lowerWireMsil` that supports the
+binding-site smoke shape used by `shm_aspect_weave` and friends.
+Full DI graph synthesis (`@scope`, `@factory`, transitive
+resolution) remains deferred to Band 3 — see `docs/41 §3.1` for the
+live status (`**Placeholder** — static factory class stub; full DI
+graph lowering deferred to Band 3`).  This downgrades the §8 risk
+matrix entry from HIGH to MEDIUM.
+
+**Remaining Band 2 items deferred to Band 3**
+
+- `ELambda` display-class capture (item 6 in the Band 2 list) — the
+  current codegen falls back to an `MObject` placeholder to avoid a
+  panic.
+- `EAwait` async state machine (item 9) and `EYield` async generator
+  (item 10) — unchanged; still panic.
+- Auto-FFI scoring (item 12) — unchanged.
+
+### D-progress-283 — JVM backend: IInterface and IImpl codegen (Band 3 — #856 remainder)
+
+Wires `IInterface` and `IImpl` AST items through the JVM self-hosted
+backend (`jvm/codegen.l` + `jvm/lowering.l`), completing the structural
+Band 3 items for `interface` and `impl Y for X` declarations.
+
+**`jvm/lowering.l`**
+- Added `implementsIfaces: List[String]` to `LRecord` (all construction sites
+  updated to include `implementsIfaces = newList()`).
+- Added `LInterface` record, `lowerInterface` helper, and `LPInterface` variant
+  in `LPackageItem` so interface ClassFiles flow through `lowerPackage`.
+- `lowerRecord` calls `makeClassFullWithInterfaces` when `implementsIfaces` is
+  non-empty, otherwise falls back to `makeClassFull` (no-change for existing
+  records).
+
+**`jvm/codegen.l`**
+- Added `ImplEntry` record and a pre-pass over all `IImpl` items before the
+  main item loop, so each `IRecord` can look up its interface list at class
+  construction time.
+- `IInterface(decl)` emits `LPInterface` with abstract methods (from `IMSig`)
+  and concrete default methods (from `IMFunc`). Parameter types derived from
+  `Param.ty` directly (fix: removed invalid `PNamed` pattern match; fixed
+  `FunctionSig.returnTy` → `FunctionSig.ret` typo).
+- `IRecord` uses pre-collected impl entries to inject `implementsIfaces` and
+  merged method lists into `LRecord`.
+- `IAspect`, `ELambda`, and general `EPropagate` remain stubbed (need
+  `invokedynamic` infrastructure not yet present).
+
+**Tests**
+- `jvm/self_test_b133.l` + `JvmLoweringB133Test.fs`: interface smoke (compiles
+  `interface Greeter { func greet(): String }` + `impl Greeter for SimpleGreeter`,
+  runs JAR, asserts `jar_written=true`).
+- `jvm/self_test_b134.l` + `JvmLoweringB134Test.fs`: impl smoke (record
+  implementing an interface).
+- All existing self-tests (b3/b4/b91/b95/b124/b130/b131/b132) updated with
+  `implementsIfaces = newList()` and 4-arg `compileToJar`.
+
+Closes issue #856 (IInterface + IImpl wired; IAspect/ELambda/EPropagate deferred to Band 5+).
+
+### D-progress-284 — Band 6: cross-package stdlib type resolution (#846)
+
+Implements Shape 2c of Band 6 (docs/41 §9): the self-hosted MSIL and JVM
+bridges now resolve stdlib type names (`List`, `Option`, `Result`, `Map`, etc.)
+so the self-hosted type checker no longer emits false-positive T0010/T0014
+diagnostics for those names.
+
+**Strategy**: F# shims (`SelfHostedBridge.findStdlibSources`) walk up from
+`AppContext.BaseDirectory` to find `lyric-stdlib/std/`, read every top-level
+`*.l` file, and pass the source texts to `compileToMsil`/`compileToJar` as a
+`List[String]`. Inside the bridges (`msil/bridge.l`, `jvm/bridge.l`), each
+source is parsed and only type declarations (IRecord, IUnion, IEnum,
+IDistinctType, IInterface, ITypeAlias, IOpaque, IExposedRec) are extracted as
+imported items (function items are skipped: multiple stdlib files define
+functions with the same name, and `checkWithImports` uses a strict-insert map
+that throws on duplicates). `checkWithImports(file0, importedItems)` is called
+instead of bare `check(file0)`, providing cross-package type context.
+
+Type-checker output remains advisory (`reportDiagnostics` not `reportAndAbort`):
+the self-hosted checker still generates T0020 false positives for builtin
+functions (`newList`, `println`, etc.) that are not defined in any Lyric source
+file. The fatal gate is deferred until builtin-function coverage is complete.
+
+**Updated call sites**
+- `lyric/emitter.l:emitMsilInProcess` updated to pass `newList()` as third arg
+  to `MsilBridge.compileToMsil` (compat fix for the new signature).
+- F# `SelfHostedJvm.fs` + `SelfHostedMsil.fs` updated to reflect the new
+  4-arg / 3-arg signatures.
+
+Closes issue #846.
+
+### D-progress-285 — Track A A1.2: bootstrap.sh stage 1 CLI-bundle precompile
+
+Second step of Track A (`docs/41 §860` — F# CLI elimination + Native-AOT
+publishing).  After A1.1 made `Lyric.Emitter.emit` compile in-process,
+A1.2 produces the static DLL artefacts the AOT entry-point project
+(A1.3) will reference.
+
+Changes to `scripts/bootstrap.sh`:
+
+* **`stage1_cli_bundle()`** (new) — emits a one-line driver program
+  that does `import Lyric.Cli`, compiles it via `--internal-build`
+  (forces the F# emitter path; the self-hosted CLI dispatcher in cli.l
+  doesn't understand `--target dotnet-legacy` post-A1.1 and would
+  otherwise route the driver through the in-process MSIL bridge that
+  isn't yet feature-complete for compiling the whole compiler).  The
+  F# emitter's stdlib auto-resolve recursively compiles every Lyric
+  package the driver transitively imports — cli.l + lexer / parser /
+  type-checker / mode-checker / contract-elaborator / MSIL backend /
+  manifest / pack / workspace / gitdep / lockfile / generator /
+  emitter / fmt / lint / verifier / doc / contract-meta / repl /
+  test-synth / bench-synth / openapi-parser / openapi-gen — and lands
+  each as a DLL in its per-process scratch cache.  The script then
+  copies every cached DLL into `.bootstrap/stage1/`.  Output:
+  `Lyric.Lyric.Cli.dll` plus ~66 transitive-dependency DLLs.
+
+* **`SKIP_CLI_BUNDLE=1`** env var skips the CLI-bundle step so users
+  iterating on a single compiler package can avoid the ~30-second
+  recompile.
+
+* **Removed**: the old manual `COMPILER_SOURCES` compile loop in stage
+  1.  The F# emitter's auto-resolve does dependency ordering correctly
+  and there's no value in the shell script re-implementing it.  The
+  `COMPILER_SOURCES` variable is still defined because stage 2 references
+  it; stage 2's reproducibility check now reports MISSING for every
+  entry (per-source-file vs per-package DLL naming mismatch) and is
+  documented as such in the script.  Long-term, stage 2 should be
+  rewritten to drive the same `import Lyric.Cli` driver and compare
+  bundles file-by-file.
+
+* **Side fix**: `mkdir -p "$(dirname "$STAGE0_BIN")"` in stage 0 — the
+  symlink target's parent dir wasn't being created, which made stage 0
+  fail on a clean checkout.
+
+* **Side fix**: `--output` → `-o` in two manifest-mode invocations.
+  The Lyric CLI's `build` command only recognises `-o` for output path;
+  `--output` was silently treated as a positional argument and made the
+  CLI complain about "source file not found".
+
+End-to-end verification:
+
+    $ rm -rf .bootstrap
+    $ ./scripts/bootstrap.sh --stage 1
+    [bootstrap] Stage 0: building F# bootstrap compiler
+    [bootstrap] OK: Stage 0 complete
+    [bootstrap] Stage 1: compiling Lyric compiler packages with stage-0 lyric
+    [bootstrap]   compiling stdlib bundle
+    built .bootstrap/stage1/Lyric.Stdlib.dll
+    [bootstrap] Stage 1 (CLI bundle): precompiling Lyric.Cli + transitive deps
+    [bootstrap]   CLI bundle cache: /tmp/lyric-stdlib-…
+    [bootstrap]   copied 67 DLLs into .bootstrap/stage1
+    [bootstrap] OK: Stage 1 CLI bundle complete — Lyric.Lyric.Cli.dll + 66 deps
+    [bootstrap] OK: Stage 1 complete
+
+Tests: 810/810 emitter, 254/254 Lyric.Cli — unchanged by the build
+script edits.
+
+Followup (Track A, A1.3): build an AOT entry-point project that
+references `.bootstrap/stage1/Lyric.Lyric.Cli.dll` + the transitive
+DLLs and publishes with `<PublishAot>true</PublishAot>`.
+
+---
+
+### D-progress-285 — Band 6: multi-segment type resolver + emitProject verification
+
+**Multi-segment qualified type resolver** (`typechecker_resolver.l`):
+
+The self-hosted type checker's `resolveTypePath` previously deferred all
+multi-segment qualified type names (e.g. `Std.Collections.List`,
+`Lib.Point`) with a `T0014 "qualified type names not yet resolved"` error.
+
+The fix: for paths with more than one segment, first try looking up the
+last segment in the symbol table before falling through to the primitive
+check and T0014 error.  Since `checkWithImports` registers imported types
+by their simple name (e.g. `"List"` not `"Std.Collections.List"`), this
+single lookup resolves qualified references that were already imported
+— which is exactly what Band 6 stdlib resolution (D-progress-284) supplies.
+
+Two new tests in `typechecker_self_test.l`:
+- `testQualifiedTypeResolvesViaImport` — parses a library source defining
+  `record Point`, passes it as an imported item, then checks that
+  `Lib.Point` in a function parameter resolves without T0014.
+- `testQualifiedTypeUnknownEmitsT0014` — confirms that a truly unknown
+  qualified name (`Unknown.Pkg.Blorp`) still produces T0014.
+
+**emitProject path verification** (`docs/41 §9 Band 6` item 2):
+
+Confirmed (via code audit and existing tests) that the self-hosted CLI's
+`emitProject` reaches the same F# codegen as the direct F# path:
+`cli.l:buildProject` → `Lyric.Emitter:emitProject` shells out to
+`--internal-project-build`, handled by F# `internalProjectBuild` →
+`Emitter.emitProject`.  `ProjectBuildTests.fs` already exercises this
+path (two tests: multi-package bundle happy path + empty-packages
+rejection).  In-process multi-file bridge is deferred to Track A A1.x.
+
+All tests: 189/189 TypeChecker, 810/810 Emitter, 254/254 Cli.
+
+### D-progress-286 — Band 5: Lyric.Mono wired into both MSIL and JVM bridges (#858)
+
+`lyric-compiler/lyric/mono.l` restructured to compile under the F# bootstrap
+parser.  The F# parser rejected five categories of constructs in the original:
+
+1. `&&` in if/while conditions — replaced with `and`.
+2. Unbraced mutation expressions as match arm bodies (`case X -> var = expr`)
+   — wrapped in braces.
+3. Newline between `->` and match arm body without braces — braces added.
+4. `result` as a local variable name — `KwResult` in the Lyric lexer maps to
+   `EResult` in expression position, causing "EResult outside contract context"
+   at runtime.  Renamed to `acc`, `names`, or `buf` depending on context.
+5. `out` as a local variable name — `KwOut` for parameter-mode declarations.
+   Renamed to `buf`.
+
+Both bridges updated to run the mono pass:
+- `lyric-compiler/msil/bridge.l`: `import Lyric.Mono`; `monoFile(elaborated)`
+  inserted between `elaborateFile` and `codegenMPackage`.
+- `lyric-compiler/jvm/bridge.l`: same — removed the deferred-import comment,
+  added `import Lyric.Mono`, inserted `monoFile(elaborated)` between
+  `elaborateFile` and `codegenPackage`.
+
+The Band 1 pipeline for both targets is now complete:
+  parse → typecheck (advisory) → modecheck (fatal) → elaborate → **mono** → codegen
+
+All tests: 189/189 TypeChecker, 810/810 Emitter, 254/254 Cli.
+
+### D-progress-287 — Band 5: Lyric.Derives self-hosted derive/generate synthesiser (#857)
+
+New package `lyric-compiler/lyric/derives/derives.l` (`Lyric.Derives`):
+
+- `deriveFile(file: in SourceFile): SourceFile` — entry point.  Walks all
+  items and appends synthesised `IFunc` items for each annotated type:
+  - `@derive(Equals)` on records/exposed-records → `TypeName.equals(self, other): Bool`
+  - `@derive(Hash)` on records/exposed-records → `TypeName.hash(self): Int`
+  - `@derive(Show)` on records/exposed-records → `TypeName.show(self): String`
+  - `@generate(Json)` on records/exposed-records → `TypeName.toJson(self): String`
+  - `type X = T derives Equals/Hash/Show` on distinct types → matching UFCS functions
+- Idempotent: a second `deriveFile` call on an already-derived file does not
+  duplicate the synthesised functions (checked via `funcAlreadyExists`).
+- Both bridges updated: `lyric-compiler/msil/bridge.l` and
+  `lyric-compiler/jvm/bridge.l` call `deriveFile(elaborated)` after
+  `elaborateFile` and before `monoFile`.
+
+New self-test `lyric-compiler/lyric/derives_self_test.l` (14 tests) covers:
+no-annotation, equals/hash/show/toJson on records, multiple derives,
+distinct-type derives, empty record, exposed record, idempotency.
+Runs via the F# Expecto harness in `SelfHostedDerivesTests.fs`.
+
+The Band 5 pipeline for both targets is now:
+  elaborate → **deriveFile** → monoFile → codegen
+
+All tests: 189/189 TypeChecker, 811/811 Emitter, 254/254 Cli.
+
+### D-progress-288 — Track A A1.3: AOT entry-point project + CoreLib-ref rewriter
+
+Third step of Track A (`docs/41 §860` — F# CLI elimination + Native-AOT
+publishing).  A1.2 produced the closed set of Lyric-compiled DLLs in
+`.bootstrap/stage1/`; A1.3 makes that set usable as compile-time
+`<Reference>` inputs from a tiny C# AOT entry-point project that
+forwards `Main(args)` straight into `Lyric.Cli.Program.main`.
+
+Two artefacts shipped:
+
+* **`bootstrap/src/Lyric.Cli.Aot/`** (new project) — a Microsoft.NET.Sdk
+  Exe csproj plus a 4-line `Program.cs` trampoline.  The csproj
+  `<Reference Include="..\..\..\.bootstrap\stage1\Lyric.*.dll" />`
+  wildcard pulls in every artefact the stage-1 bundle produces, which
+  is exactly the closed set the AOT linker needs.  The trampoline is
+  deliberately tiny — anything we add to the C# layer blocks deleting
+  the F# CLI in A1.4.
+
+* **`scripts/rewrite-corelib-refs.fsx`** (new) — Mono.Cecil-based
+  rewriter that retargets `TypeRef.Scope` from `System.Private.CoreLib`
+  (the unified CoreCLR runtime assembly) to the matching public-facade
+  reference assembly (`System.Runtime`, `System.Collections`,
+  `System.Console`, `mscorlib`, …).  The F# Lyric emitter writes every
+  typeref to `System.Private.CoreLib` because that's where the type
+  actually lives in CoreCLR, but the reference assemblies the C#
+  compiler trusts split BCL types across ~200 facade assemblies —
+  `System.Object` is exposed by `System.Runtime`, `List<T>` by
+  `System.Collections`, `Console` by `System.Console`, etc.  A bulk
+  AssemblyRef rename can't work because no single facade exposes every
+  type the emitted DLLs reference.
+
+  The script crawls the .NET reference pack at
+  `~/.dotnet/packs/Microsoft.NETCore.App.Ref/<version>/ref/net10.0/`
+  to build a `(TypeFullName → AssemblyName)` lookup and a
+  `(AssemblyName → FacadeId)` lookup with the real version and
+  public-key token from each ref-pack DLL.  Facades use the BCL token
+  (`b03f5f7f11d50a3a`) at v10.0.0.0, but `mscorlib` uses the ECMA token
+  (`b77a5c561934e089`) at v4.0.0.0 for back-compat — hardcoding either
+  set produces refs the C# compiler / CLR loader rejects, so identities
+  are read from the actual ref-pack DLLs.
+
+  For each input DLL, the script walks the TypeRef table; for every
+  TypeRef whose Scope is `System.Private.CoreLib`, it looks up the
+  type's facade, ensures an AssemblyRef row exists for it (adds one if
+  not), retargets the TypeRef.Scope to the new ref, then prunes any
+  AssemblyRef rows nothing points at any more.  Cecil's nested-class
+  `+` separator (`System.IDisposable+EmptyEnumerator`) and the dotted
+  form returned by `System.Reflection` are both tried as lookup keys.
+
+* **`scripts/bootstrap.sh`** changes:
+
+  - Stage 1 now copies `Lyric.Jvm.Hosts.dll` from the stage-0 publish
+    output into `.bootstrap/stage1/`.  It's a hand-written F# project
+    (provides the `Jvm.Hosts.*` extern surface that the JVM kernel
+    calls into), not a Lyric-emitted artefact, so it doesn't land in
+    the F# emitter's per-process stdlib cache.  But `Msil.Lowering` /
+    `Msil.Codegen` reference it statically — without it the AOT csproj
+    fails to resolve transitive deps.
+
+  - Stage 1 invokes `dotnet fsi scripts/rewrite-corelib-refs.fsx
+    .bootstrap/stage1/*.dll` after the copy, retargeting every TypeRef
+    to its public facade.  Output is logged to
+    `.bootstrap/rewrite-corelib-refs.log`.
+
+  - **`SKIP_COREREF_REWRITE=1`** env var skips the rewrite for users
+    who want to inspect the raw emitted DLLs.
+
+End-to-end verification:
+
+    $ rm -rf .bootstrap
+    $ ./scripts/bootstrap.sh --stage 1
+    ...
+    [bootstrap]   copied 68 DLLs into .bootstrap/stage1
+    [bootstrap]   retargeting System.Private.CoreLib refs -> public facades
+    [bootstrap] OK: Stage 1 CLI bundle complete
+
+    $ dotnet build bootstrap/src/Lyric.Cli.Aot
+    ...
+    Build succeeded.
+
+    $ echo 'func main(): Int { println("hello from aot-wrapped lyric"); 0 }' > /tmp/hello.l
+    $ bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric build /tmp/hello.l -o /tmp/hello.dll
+    $ dotnet exec /tmp/hello.dll
+    hello from aot-wrapped lyric
+
+Tests: 811/811 emitter, 254/254 Lyric.Cli — unchanged from
+D-progress-287.  (The original write-up here recorded `810/810`,
+which was a transcription error noticed in #944; the actual run
+total is `811/811` matching the prior milestone — no tests were
+dropped between D-progress-287 and this PR.)
+
+Known limitation: `dotnet publish -p:PublishAot=true` on
+`Lyric.Cli.Aot.csproj` fails inside `ilc` codegen on a specific
+Lyric-emitted method (`Lyric.Cli.Program.cmdPublish`).  The
+non-AOT apphost build works end-to-end; the ilc compatibility issue
+is filed as #915 and tackled separately.  Once #915 is fixed the
+same project will publish to a single self-contained native binary.
+
+Followup (Track A, A1.4): delete the F# CLI scaffolding in
+`bootstrap/src/Lyric.Cli/` — `Program.fs` shrinks to the
+`--internal-build` entry point that stage 1 uses; all `SelfHosted*.fs`
+shims plus `Pack.fs` / `Manifest.fs` / `Maven*.fs` / `Nuget*.fs` /
+`Lint.fs` / `TestSynth.fs` go away.
+
+### D-progress-289 — Track A A1.4: delete F# user-facing CLI dispatcher
+
+Fourth step of Track A (`docs/41 §860` — F# CLI elimination + Native-AOT
+publishing).  A1.3 produced a working AOT entry-point project that
+trampolines straight into the Lyric-emitted `Lyric.Cli.Program.main`,
+making the F# user-facing dispatcher dead code.  A1.4 removes that
+dead code.
+
+Deleted F# source files (~7 kLoC of dispatcher + command handlers +
+their tests):
+
+| Removed file                                  | Was used by             |
+|-----------------------------------------------|-------------------------|
+| `bootstrap/src/Lyric.Cli/Pack.fs`             | `lyric publish/restore` |
+| `bootstrap/src/Lyric.Cli/Maven.fs`            | `lyric build --target jvm` deps |
+| `bootstrap/src/Lyric.Cli/MavenShim.fs`        | Java resolver shell-out |
+| `bootstrap/src/Lyric.Cli/NugetAssets.fs`      | NuGet asset path walker |
+| `bootstrap/src/Lyric.Cli/NugetShim.fs`        | `dotnet restore` wrapper |
+| `bootstrap/src/Lyric.Cli/Lint.fs`             | `lyric lint`            |
+| `bootstrap/src/Lyric.Cli/TestSynth.fs`        | `lyric test` (F# mirror) |
+| `bootstrap/src/Lyric.Cli/SelfHostedPack.fs`   | dispatcher bridge       |
+| `bootstrap/src/Lyric.Cli/SelfHostedFmt.fs`    | dispatcher bridge       |
+| `bootstrap/src/Lyric.Cli/SelfHostedDoc.fs`    | dispatcher bridge       |
+| `bootstrap/src/Lyric.Cli/SelfHostedLint.fs`   | dispatcher bridge       |
+| `bootstrap/src/Lyric.Cli/SelfHostedManifest.fs` | dispatcher bridge     |
+| `bootstrap/src/Lyric.Cli/SelfHostedTestSynth.fs` | dispatcher bridge    |
+| `bootstrap/src/Lyric.Cli/SelfHostedOpenApi.fs` | dispatcher bridge      |
+| `bootstrap/src/Lyric.Cli/SelfHostedBench.fs`  | dispatcher bridge       |
+| `bootstrap/src/Lyric.Cli/SelfHostedVerifier.fs` | dispatcher bridge     |
+| `bootstrap/src/Lyric.Cli/SelfHostedCli.fs`    | primary dispatcher      |
+| (plus ~2 kLoC trimmed from `Program.fs`)      | `bootstrapDispatch` + all `cmdX` |
+
+Plus 14 corresponding test files in `bootstrap/tests/Lyric.Cli.Tests/`
+(`ManifestTests`, `PackTests`, `NugetShimTests`, `MavenTests`,
+`RestoredPackagesTests`, `FmtTests`, `SelfHostedFmtBridgeTests`,
+`ParityTests`, `JvmDiagnosticTests`, `LintTests`, `ProjectBuildTests`,
+`ProveTests`, `TestRunnerTests`, `DocTests`).
+
+Preserved (bootstrap-only):
+
+* `Program.fs` — trimmed to ~280 LoC.  Handles four internal flags
+  (`--internal-build`, `--internal-project-build`,
+  `--internal-contract-meta`, and the new `--internal-manifest-build`
+  added for stage 1's stdlib bundle compile).  Any other argv prints
+  a one-line error pointing at the AOT binary and exits non-zero.
+
+* `Manifest.fs` — TOML parser, retained because
+  `--internal-manifest-build` needs to walk `lyric.toml`'s
+  `[project.packages]` for the stdlib bundle.
+
+* `SelfHostedBridge.fs` / `SelfHostedMsil.fs` / `SelfHostedJvm.fs` —
+  retained because they back `SelfHostedMsil/JvmBridgeTests.fs`,
+  which provide end-to-end coverage of the self-hosted compiler
+  pipeline.
+
+`bootstrap/src/Lyric.Cli/Lyric.Cli.fsproj` and
+`bootstrap/tests/Lyric.Cli.Tests/Lyric.Cli.Tests.fsproj` updated to
+match.  `bootstrap.sh` stage 1 and stage 2 switched from
+`build --manifest …` (no longer recognised) to
+`--internal-manifest-build`.  `Mono.Cecil` and
+`System.Reflection.MetadataLoadContext` package refs dropped from
+`Lyric.Cli.fsproj` (only the deleted AOT code used them).
+
+End-to-end verification:
+
+    $ rm -rf .bootstrap
+    $ ./scripts/bootstrap.sh --stage 1     # builds + retargets + 70 DLLs
+    $ dotnet build bootstrap/src/Lyric.Cli.Aot
+    $ bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric build /tmp/hello.l -o /tmp/hello.dll
+    $ dotnet exec /tmp/hello.dll
+    hello from A1.4 trimmed AOT
+
+Tests:
+- Lexer:        128/128
+- Parser:       323/323
+- TypeChecker:  189/189
+- Emitter:      811/811 (2 ignored, unchanged)
+- Lyric.Cli:     20/20  (was 256/256 + 2 new in #947; the dropped
+                         236 tests covered F# command handlers that
+                         no longer exist)
+
+### D-progress-290 — issue #365: implement Lyric.Resilience.CircuitStore
+
+`feedback/05-ecosystem-libraries.md` F-8 / issue #365 documented that
+`lyric-resilience`'s `extern package Lyric.Resilience.CircuitStore` had
+no host-side implementation anywhere in the repo, so the library was
+non-functional — every call into `Resilience.circuitIsOpen` would have
+thrown `MissingMethodException` at runtime.  Compounding the gap, the
+half-open semantics ("one in-flight probe; successful probe closes the
+circuit") had no formal model inside the codebase, so neither the
+verifier nor any test could reason about them.
+
+This entry closes both gaps:
+
+**F# host shim (`bootstrap/src/Lyric.Emitter/CircuitStoreHost.fs`, ~125 LoC).**
+A thin `module Lyric.Resilience.CircuitStore` with a process-global
+`ConcurrentDictionary<string, Entry>` and three static methods
+matching the existing `extern package` signatures
+(`circuitIsOpen(name, cooldownMs)`, `circuitRecordSuccess(name)`,
+`circuitRecordFailure(name, failureThreshold)`).  Per-entry locking
+serialises mutations on the same circuit; concurrent traffic on
+distinct names never contends.  Follows the precedent set by
+`HttpClientHost.fs` — a small shim acceptable under CLAUDE.md
+because non-constant module-level vals (M5.2 stage 3+ wire
+singletons) are not yet emittable from Lyric.
+
+**Lyric-side formal model (`lyric-resilience/src/resilience.l`).**
+The state machine that was previously a commented-out spec sketch is
+now a real `pub protected type CircuitBreakerState` with four mutable
+fields (`consecutiveFailures`, `isOpen`, `openedAtMs`,
+`halfOpenProbeInFlight`), three verifier-visible `invariant:` clauses
+(`consecutiveFailures >= 0`, `isOpen or openedAtMs == 0`,
+`not isOpen or openedAtMs > 0`), and three entries (`recordSuccess`,
+`recordFailure(threshold, nowMs)`, `checkOpen(cooldownMs, nowMs)`)
+whose contracts (`requires: threshold > 0` etc.) are runtime-checked
+in `@runtime_checked` mode and SMT-provable under `@proof_required`.
+`nowMs` is injected as a parameter so the state machine is testable
+without a real clock.  Three thin pub helpers
+(`makeCircuitBreakerState`, `cbStateRecordSuccess/Failure/CheckOpen`)
+give users a Lyric-level handle for unit testing the state machine
+in isolation.
+
+The two implementations are deliberately mirrored.  The F# shim is the
+in-process realization that backs the registry-keyed public API
+(`circuitIsOpen` etc.) that `lyric-web` and `lyric-grpc` call into;
+the Lyric protected type is the verifier-visible source of truth.
+Once wire-singleton emit support ships, the registry plumbing can
+move into Lyric and the F# shim retires.
+
+Test coverage:
+
+- `bootstrap/tests/Lyric.Emitter.Tests/CircuitStoreHostTests.fs`
+  (12 Expecto tests, all passing) — exercises the F# shim
+  directly: fresh-circuit / threshold / success-closes /
+  half-open-probe-grant / single-probe-concurrent-block /
+  failed-probe-reopen / independent-circuits / idempotent-success.
+- `lyric-resilience/tests/resilience_tests.l` (six new Lyric tests)
+  — exercises both the registry-backed public API and the
+  `CircuitBreakerState` formal model with injected `nowMs` for
+  deterministic transitions.
+
+Files:
+
+- new: `bootstrap/src/Lyric.Emitter/CircuitStoreHost.fs`
+- new: `bootstrap/tests/Lyric.Emitter.Tests/CircuitStoreHostTests.fs`
+- edited: `bootstrap/src/Lyric.Emitter/Lyric.Emitter.fsproj`
+- edited: `bootstrap/tests/Lyric.Emitter.Tests/Lyric.Emitter.Tests.fsproj`
+- edited: `bootstrap/tests/Lyric.Emitter.Tests/Program.fs`
+- edited: `lyric-resilience/src/resilience.l`
+- edited: `lyric-resilience/src/_kernel/net/resilience_kernel.l`
+- edited: `lyric-resilience/tests/resilience_tests.l`
+
+### D-progress-291 — Band 5: value generics + cross-package surface + constraint validation in Lyric.Mono (#858)
+
+Closes `docs/41 §9 Band 5` monomorphizer entry partway.  `Lyric.Mono`
+gains three capabilities and a self-test consumer; the cross-package
+specialisation needed to retire the F# emitter's reified-generics path
+still depends on Band 6 (`Lyric.RestoredPackages`).
+
+What shipped:
+
+1. **Value generic parameters (`GPValue`).**  Each specialisation tracks
+   a parallel `valueSubst: Map[String, Expr]` alongside the existing
+   type substitution.  At specialisation time the value-param map is
+   applied across the body (every `EPath([N])` leaf and every
+   `TAValue(EPath([N]))` inside a `TArray.size` or `TGenericApp.args`
+   gets rewritten to the bound concrete Expr) before the worklist
+   walks for nested generic calls.  Mangled names append `V<key>`
+   segments — `valueExprKey` covers integer/bool/char/string literals
+   and single-segment paths.
+
+2. **Cross-package entry point.**  `monoFileWithImports(file,
+   importedGenDecls)` merges caller-supplied generic decls into the
+   same lookup as same-package generics.  The bridges still call
+   `monoFile(file)` (empty imports list) — wiring them through awaits
+   the Band 6 cross-package resolver.
+
+3. **Best-effort marker-constraint validation.**  When a generic
+   function carries a `where T: Marker` bound and `T` substitutes to a
+   primitive, the well-known marker set (`Equals`, `Hash`, `Show`,
+   `Ord`, `Compare`) is checked against the BCL primitive set.
+   Unknown concrete types accept silently because cross-package trait
+   dispatch is Band 6.  Confirmed mismatches emit `M0001` error
+   diagnostics that flow through `MonoResult.diagnostics`.
+
+The new code path activates either when a future surface adds explicit
+type-app syntax at call sites, or when another middle-end pass
+synthesises `ETypeApp(EPath(f), targs)` nodes — Lyric's parser today
+treats `f[T](x)` as `EIndex` followed by `ECall`, so user-written value
+generics still rely on inference from argument types (which works for
+`GPType` but not for `GPValue`).
+
+Files touched:
+
+- `lyric-compiler/lyric/mono.l` — extended the existing pass.
+- `lyric-compiler/lyric/mono_self_test.l` — new consumer with eleven
+  test cases covering type-generic inference, explicit `ETypeApp`
+  type-app, value generics (single + multiple distinct + body
+  substitution), mixed type + value mangling, constraint validation,
+  nested call chains, cross-package, and the no-op fast path.
+- `bootstrap/tests/Lyric.Emitter.Tests/SelfHostedMonoTests.fs` — F#
+  Expecto runner that compiles the self-test through the bootstrap
+  emitter and asserts exit-0 + "ok" in stdout.
+
+Tests:
+- Lexer:        128/128
+- Parser:       323/323
+- TypeChecker:  189/189
+- Emitter:      812/812 (1 new self-host test, 2 ignored unchanged)
+
+### D-progress-292 — Track A A1.3 follow-up: unblock Native-AOT publish (#915)
+
+Fifth step of Track A.  D-progress-288 (A1.3) shipped the AOT entry-point
+project but called out a known limitation: `dotnet publish -p:PublishAot=true`
+on `Lyric.Cli.Aot.csproj` failed inside `ilc` codegen on
+`Lyric.Cli.Program.cmdPublish(string[])`.  This entry resolves that
+blocker.
+
+Root cause was three latent stack-balance bugs in the F# emitter
+(`bootstrap/src/Lyric.Emitter/Codegen.fs`) that the JIT had been
+silently tolerating but ilc's stricter verifier rejected:
+
+1. **`isNeverBranch` missed divergent statements.**  The predicate only
+   recognised `panic(...)` calls as never-returning, so a match-arm body
+   ending in `return`, `throw`, `break`, or `continue` was treated as a
+   normal value-producing arm.  When such an arm was paired with a
+   value-producing arm, the merge label saw different stack heights
+   (the divergent arm pushed nothing; the other arm pushed its value).
+   Extended the predicate to recognise all four divergent statement
+   forms in addition to `panic(...)`.
+
+2. **Match-arm reconciliation only handled Void↔Unit.**  When sibling
+   arms disagreed on whether they pushed a value (e.g. one arm produced
+   an `Int32` via a fall-through default, another arm was an empty
+   block `{}`), the reconciliation only padded `Void → Unit`/`Unit →
+   Void`.  Widened the reconciliation to pad any `Void → T` (push a
+   default of `T`) and `T → Void` (pop) so the merge label is always
+   reached with the same stack depth.
+
+3. **EIf relied on an inaccurate `branchLeavesValue` look-ahead.**
+   `peekExprType` returns `obj` for `ECall(EMember(...), ...)` shapes
+   it can't statically resolve (e.g. `env.add(name, te)` where the
+   actual return is `void`).  `branchLeavesValue` then reported "leaves
+   a value" for both branches even when one's actual emit was void,
+   producing mismatched stack depths at the merge label.  Restructured
+   `EIf` emission to route each non-divergent branch through an
+   intermediate post-label, then reconcile after both arms' *actual*
+   types are known: when the unified merge type is `Void`, pop the
+   non-Void path's value before falling into `lblEnd`.
+
+The third fix is post-emit reconciliation rather than a smarter
+look-ahead because making `peekExprType` accurate for arbitrary
+method-call shapes would require carrying full type-checker state
+into the look-ahead — out of scope for a bootstrap-grade fix.
+
+End-to-end verification:
+
+    $ rm -rf .bootstrap
+    $ ./scripts/bootstrap.sh --stage 1
+    $ cd bootstrap/src/Lyric.Cli.Aot
+    $ dotnet publish -c Release -r linux-x64 -p:PublishAot=true
+    ...
+    Lyric.Cli.Aot -> .../bin/Release/net10.0/linux-x64/publish/
+
+    $ bin/Release/net10.0/linux-x64/publish/lyric --version
+    lyric 0.1.0
+    $ bin/Release/net10.0/linux-x64/publish/lyric build /tmp/hello.l
+    built /tmp/hello.dll
+    $ dotnet /tmp/hello.dll
+    hello from aot
+
+Resulting binary is ~4 MB, stripped, statically linked against the
+.NET runtime — Track A's "no .NET runtime at deployment" goal for
+the published binary form.
+
+Three ilc warnings remain (out of scope here, not regressions from
+A1.3 — they're pre-existing IL-quality issues that `dotnet build`'s
+JIT had been silently tolerating):
+
+* `Lyric.Cli.Program.cmdSearch(string[])` — "will always throw because:
+  Invalid IL or CLR metadata".  IL-verifier reports a `PathStackDepth`
+  at offset 0x71 plus two type-shape mismatches.  Same general class as
+  this fix (branch-merge stack mismatch) but in a shape the post-emit
+  reconciliation doesn't cover.
+* `Lyric.Emitter.ProcessCapture.runCapture` and
+  `Lyric.Emitter.VerifierEnv.getEnv` — both fail with "Failed to load
+  assembly 'FSharp.Core'".  The Lyric AOT bundle deliberately doesn't
+  ship `FSharp.Core` because no Lyric-emitted code uses it; these two
+  F#-side shims still do.  They're never invoked by `cmdPublish`'s
+  call graph so ilc treats them as unreachable and emits throwing
+  stubs.
+
+The Lyric IL emitter changes do not regress any existing test:
+
+- Lexer:        128/128
+- Parser:       323/323
+- TypeChecker:  189/189
+- Emitter:      812/812 (2 ignored, unchanged)
+- Lyric.Cli:     65/65
+
+### D-progress-292 — Self-hosted aspect weaver wired into `lyric prove` (#336)
+
+Closes the option-(a) path of #336.  The verifier no longer walks the
+parsed AST — `Lyric.Verifier.proveSourceWithOptions` now calls
+`Lyric.Weaver.weaveFile(parsed.file)` before VC generation, so proofs
+discharge against the woven wrapper's composed contracts (the body the
+runtime executes) rather than the bare target body.  The interim V0031
+warning shipped in D-progress-270 is retired; both same-package and
+cross-package aspect targets now contribute boundary contracts to the
+proof obligations (cross-package weaver lift is tracked separately —
+the current weaver only sees `IAspect` items in the file being proven).
+
+* **`lyric-compiler/lyric/weaver/weaver.l`** (new, ~890 LoC) — self-
+  hosted port of `bootstrap/src/Lyric.Emitter/Weaver.fs`.  Mirrors the
+  bootstrap weaver: glob matching (`*`, `?`, `[abc]`, `[a-z]`),
+  `proceed(args)` → `target(args)` rewriter walking the full AST
+  (expressions, blocks, statements, match arms, EOBs, interpolated
+  segments, local bindings, try/catch, defer), wrapper synthesis with
+  `aspect.contracts ++ original.contracts` composition, topological
+  sort by `wraps:` / `inside:` clauses (Kahn's algorithm; lexical
+  tiebreak, cycles fall back to lexical order), `@no_aspect` /
+  `@no_aspect("Name")` opt-outs, and `signature: returns` matching
+  with the same `typeExprToString` shape as F#.  Public surface:
+  `pub func weaveItems(items): List[Item]` and
+  `pub func weaveFile(file): SourceFile`.
+
+* **`lyric-compiler/lyric/verifier/driver.l`** — adds
+  `import Lyric.Weaver` and a `weaveFile(parsed.file)` call in
+  `proveSourceWithOptions` between stability-check and VC generation
+  (step 4).  Identity-op for files without aspect blocks.
+
+* **`lyric-compiler/lyric/verifier/vcgen.l`** — retires the
+  `collectAspectNames` / `firstAspectAnnotation` helpers and the
+  V0031 warning emission in `goalsForFile`.  IAspect items are
+  pre-stripped by the weaver, so the verifier sees only original
+  IFuncs, renamed `__aspect_target` IFuncs, and wrapper IFuncs with
+  composed contracts — all verified identically by `goalsForFunction`
+  against their declared contracts.
+
+* **`docs/15-phase-4-proof-plan.md`** — V0031 row updated to record
+  the retirement (replaced by the weaver pipeline; cross-package
+  aspects remain a follow-up).
+
+Two notable bootstrap-emitter workarounds surfaced during the port:
+
+1. `out` is a reserved keyword (`PMOut` param mode); the parser parses
+   `val out = ...` as `PError`.  Renamed every local in the weaver to
+   `acc` / `noAspectItems`.
+
+2. The bootstrap emitter mis-resolves nested
+   `match mapGet(m, k) { case Some(inners) -> while ii < inners.count {...} }`
+   when the enclosing function returns a `List` of an imported record:
+   the type of `inners.count` collapses to the imported record's
+   element type, hitting the "AspectDecl has no field 'count'" path
+   in `Codegen.emitExpr`.  Worked around by extracting the inner loop
+   into helpers (`bumpInDegrees`, `lookupIntOr0`, `buildSortedResult`)
+   so the receiver type stays inferable from the helper signature.
+
+* **`lyric-compiler/lyric/verifier_self_test.l`** — adds
+  `testProveAspectWeaveNoV0031` (proof-required + matching aspect, no
+  V0031, no error diagnostics) and `testProveNoAspectStillWorks`
+  (regression: weaver is identity-op without aspects).
+
+**Test results:** 811/811 emitter (unchanged), 65/65 CLI, 189/189
+typechecker, 323/323 parser, 128/128 lexer.
+
+### D-progress-293 — Monomorphizer type-arg inference for nested calls, records, and impl/interface generics (#349 follow-up)
+
+Closes the inference gap that D-progress-269 left open: at the start
+of this session `inferExprTE` returned `None` for `ECall`, `EMember`,
+and `ETypeApp` expressions because the helper only saw the local env,
+never `state.genDecls` / `state.recordDecls`.  The fall-through left
+the surrounding generic call un-specialised, which the self-hosted
+MSIL / JVM emitters cannot instantiate.  The fix threads state into
+the helper and adds three new cases plus a record-constructor return
+recogniser:
+
+* **`ECall(EPath(fname), args)`** — look up `fname` in
+  `state.funcDecls` (newly tracked: every same-package IFunc, generic
+  or not).  Unify the callee's declared param types against the
+  inferred arg types; if every type param is bound, substitute the
+  callee's return TypeExpr and return it.  Non-generic callees skip
+  the inference branch and return the declared return type
+  unchanged, so chains like `consume(origin())` where
+  `origin(): Int` is non-generic now specialise the outer generic.
+
+* **`EMember(recv, name)`** — infer `recv`'s type, and when it
+  resolves to a same-package record (or exposed record) in the new
+  `state.recordDecls` map, walk the record's fields, find the named
+  field, and substitute the record's generic params with the
+  receiver's concrete type arguments before returning the field's
+  TypeExpr.  Unblocks the `consume(b.value)` shape called out in the
+  issue once `b` has a known type.
+
+* **`ECall(EPath(recName), args)` for same-package records** —
+  Lyric record literals share the call syntax (`Box(value = 11)`),
+  so the new `inferRecordCtorTE` helper checks
+  `state.recordDecls` before the generic-function branch and
+  returns the record type expression directly.  Together with the
+  init-expression inference added to `rewriteBinding` this means
+  `val b = Box(value = 11)` now seeds `b: Box` into env without
+  requiring an annotation.
+
+* **`ETypeApp(EPath(fname), targs)`** — forward-compatible arm.
+  The current Lyric parser produces `EIndex`, not `ETypeApp`, for
+  `f[T](x)` (the bootstrap grammar treats `[…]` after an
+  expression as indexing), so this case is exercised only when a
+  future explicit-type-app lowering lands.  The arm is here so the
+  monomorphizer reads cleanly when that work comes online.
+
+Beyond the inferer:
+
+* **`MonoState`** gains `funcDecls: Map[String, FunctionDecl]`
+  (all same-package IFuncs, generic and non-generic) and
+  `recordDecls: Map[String, RecordDecl]` (records + exposed
+  records).  Phase 1 collects both alongside the existing
+  `genDecls`.
+
+* **Phase 1 also walks `IInterface` and `IImpl` member lists** via
+  the new `collectIfaceGenerics` / `collectImplGenerics` helpers,
+  so generic default methods inside `interface I { … }` and
+  generic methods on `impl T for X { … }` blocks now feed both
+  the inferer and the specialisation worklist.  The F# bootstrap
+  monomorphises these via CLR runtime generics today, so this
+  closes the divergence the issue called out at `mono.l:898-915`.
+
+* **`rewriteBinding`** falls back to `inferExprTE(init)` when the
+  binding has no annotation, so chains starting from an inferred
+  local (record constructor, generic call return) stay legible to
+  downstream inference rather than dropping the type info at the
+  first `val`/`var`/`let`.
+
+* **`LBVar` / `LBLet` re-binding** drops the existing env entry
+  before adding the new one (`env.remove(name); env.add(name, te)`),
+  closing the MEDIUM gap the issue noted at `mono.l:808-820` where
+  a shadowed `var` left the inferer stuck on the prior annotation.
+
+Bootstrap-grade emitter quirk worked around: the F# bootstrap's
+type checker unifies the V in `mapGet[String, V]` with the
+enclosing function's `Option[TypeExpr]` return type when the lookup
+result is matched directly, which routes downstream field access
+through `TypeExpr` and fails at codegen with
+`'TypeExpr' has no field 'generics'`.  Both
+`inferReturnFromName` and `lookupFieldTE` now hold the lookup in
+a `val recOpt: Option[<Decl>] = …` annotated binding before
+matching, which forces the correct specialisation.  Noted with a
+comment so the workaround moves with the call sites.
+
+* **`lyric-compiler/lyric/mono_self_test.l`** + matching F# runner
+  `bootstrap/tests/Lyric.Emitter.Tests/SelfHostedMonoTests.fs`
+  exercise the five inference shapes (literal arg, nested generic
+  call, record field projection, non-generic-return chaining,
+  multi-param inference).  The runner compiles the self-test
+  source through the bootstrap emitter and asserts `exit 0` + an
+  `ok` line on stdout — same pattern as the other self-hosted
+  library tests (Lyric.Derives, Lyric.Fmt, …).
+
+What is **still** un-specialised: lambda return types, BCL method
+returns (the inferer has no signature info for imported types),
+method calls into impl blocks via the type-class targeting layer.
+These were explicit non-goals for #349 and would need either a
+real type checker bridge or an opaque-imports surface.  Per the
+docstring at the top of `mono.l` they fall through to the
+unchanged `None` branch, which keeps the existing imported-generic
+behaviour intact.
+
+**Test results:** 812/812 emitter (+1 over the previous baseline,
+covering the new mono self-test), 128/128 lexer, 323/323 parser,
+189/189 type checker, 65/65 CLI bridge.
+
+### D-progress-294 — MSIL: `IImpl` emits real `InterfaceImpl` + `MethodImpl` metadata (#878)
+
+The self-hosted MSIL `IImpl` handler in `lyric-compiler/msil/codegen.l`
+previously extracted each impl-block function and added it to the host
+class as a static method, but never constructed an `MPImpl(MImplData)`
+item.  No `InterfaceImpl` row was emitted for `impl Iface for Target`,
+and no `MethodImpl` rows bound interface slots to their implementations.
+Any `Target`-typed value used through an `Iface`-typed slot would fail
+virtual dispatch at runtime — the CLR could not find the method slot
+because the metadata did not record the implementation relationship.
+
+The JVM backend already did the right thing (pre-pass over `IImpl`,
+merge methods into `LRecord` + `implementsIfaces`).  This change brings
+the MSIL backend to parity:
+
+* **Pre-pass over `IImpl`.** `collectImplEntriesMsil` walks the source
+  file and groups impl funcs by target class.  Single-segment interface
+  names are implicitly qualified with the current package; multi-segment
+  paths are kept verbatim.
+* **Instance-method injection.** `mergeImplForwardersMsil` re-uses
+  `lowerImplFuncAsInstanceMsil` to produce virtual instance MFuncs (slot
+  0 reserved for `this`, flags = `Public | Virtual | Final | HideBySig |
+  NewSlot`) for every impl func targeting the record.  Explicit `self`
+  parameters are folded onto slot 0 and excluded from the emitted CLR
+  signature so it matches the interface contract exactly.
+* **Name-based `MImplData`.** `MImplData` and `MImplSlot` gained string
+  fallback fields (`targetTypeName`, `targetTypeNamespace`,
+  `ifaceTypeName`, `ifaceTypeNamespace`, per-slot `ifaceMethodName` /
+  `implMethodName`).  Codegen emits the `MPImpl` item with token fields
+  set to 0 and the names populated; `lowerMImpl` resolves them via
+  `resolveTypeDefRowByName` / `resolveMethodDefRowInType` after every
+  TypeDef is in the table, then writes the `InterfaceImpl` +
+  `MethodImpl` rows.  Resolution failures skip the row instead of
+  emitting a garbage 0 reference that would crash the CLR loader.
+* **`addPackageTokens` parity.** The IRecord / IExposedRec passes in
+  `addPackageTokens` now add `countImplForwardersMsil` to
+  `methodDefRow` so that any `IFunc` following an `impl` block keeps a
+  correct MethodDef token (the old code under-counted impl rows and the
+  Pass-2 IFunc tokens silently drifted).
+* **Old static-on-host folding removed.** The previous
+  `fns.add(implFunc)` path is gone — impl funcs now live as instance
+  methods on the target TypeDef instead of as orphan statics on the
+  host class.
+
+Regression test (`shm_impl_metadata` in
+`bootstrap/tests/Lyric.Cli.Tests/SelfHostedMsilBridgeTests.fs`) compiles
+a program with an interface, a record, and an `impl` block, then
+inspects the resulting DLL with `System.Reflection.Metadata` to assert
+`InterfaceImpl` row count == 1 and `MethodImpl` row count == 1, and
+finally runs the DLL to confirm the metadata is well-formed enough for
+the CLR to load the implementing type without a `TypeLoadException`.
+Verified that disabling the `MPImpl` emission causes the test to fail
+on the `InterfaceImpl` count assertion.
+
+Closes #878.
+
+Tests:
+- Lexer:        128/128
+- Parser:       323/323
+- TypeChecker:  189/189
+- Emitter:      824/824 (2 ignored unchanged; baseline includes D-progress-290, -291, and -293)
+- Lyric.Cli:     67/67  (66 carried over + new `shm_impl_metadata` regression test)

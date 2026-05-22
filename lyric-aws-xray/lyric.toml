@@ -49,6 +49,7 @@ authors     = ["Lyric authors"]
 license     = "Apache-2.0"
 
 [features]
+default = ["local"]
 # .NET production: Amazon.XRay.Recorder.Core.
 aws   = []
 # JVM production: com.amazonaws:aws-xray-recorder-sdk-core.
@@ -61,21 +62,16 @@ name            = "Lyric.AwsXRay"
 output          = "single"
 output_assembly = "AwsXRay.dll"
 
+[project.tests]
+"AwsXRay.XRayTests" = "tests/xray_tests.l"
+
 [project.packages]
-# Subsegment handle, annotation/metadata helpers, Tracing aspect template.
-"AwsXRay"            = "src/xray.l"
-# Extern boundary — exactly one file is compiled per build:
-#   aws   → src/_kernel/xray_kernel_aws.l   (.NET X-Ray SDK)
-#   jvm   → src/_kernel/xray_kernel_jvm.l   (Java X-Ray SDK)
-#   local → src/_kernel/xray_kernel_local.l  (no-op)
-"AwsXRay.Kernel.Net" = [
-  "src/_kernel/xray_kernel_aws.l",
-  "src/_kernel/xray_kernel_jvm.l",
-  "src/_kernel/xray_kernel_local.l",
-]
+# All X-Ray functionality in a single package.  The extern boundaries
+# are embedded in xray.l and selected by @cfg(feature = X).
+"AwsXRay" = "src/xray.l"
 
 [dependencies]
-"Lyric.Stdlib" = { path = "../stdlib" }
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }
 
 [nuget]
 # X-Ray recorder core — included when feature = "aws".

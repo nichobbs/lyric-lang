@@ -1,101 +1,112 @@
-/// Lyric OpenTelemetry library — platform-dispatch wrappers and pub aspect
-/// templates.
-///
-/// Each wrapper function has two @cfg-gated implementations (dotnet / jvm)
-/// so the aspect templates remain platform-neutral.  Consumers bind a
-/// `matches:` selector and optionally override config defaults:
-///
-///   aspect HttpTracing from OTel.Tracing {
-///     matches: name like "*/Http/*"
-///     config {
-///       spanKind: SpanKind = SpanKind.Server
-///     }
-///   }
-///
-/// See docs/26-aspects.md §18 and docs/27-aspect-libraries.md.
+// Lyric OpenTelemetry library — platform-dispatch wrappers and pub aspect
+// templates.
+//
+// Each wrapper function has two @cfg-gated implementations (dotnet / jvm)
+// so the aspect templates remain platform-neutral.  Consumers bind a
+// `matches:` selector and optionally override config defaults:
+//
+//   aspect HttpTracing from OTel.Tracing {
+//     matches: name like "*/Http/*"
+//     config {
+//       spanKind: SpanKind = SpanKind.Server
+//     }
+//   }
+//
+// See docs/26-aspects.md §18 and docs/27-aspect-libraries.md.
 package OTel
 
 import OTel.Types
-// Both kernel packages are imported unconditionally at the source level.
-// Each package is gated by @cfg(feature = ...) in its own file, so the
-// manifest resolver emits nothing for inactive features — the import
-// resolves to an empty namespace and the @cfg-gated wrapper functions
-// below provide the only bindings actually used at call sites.
-import OTel.Kernel.Net
-import OTel.Kernel.Jvm
-import Std.Char
-import Std.Log
+import Std.Core
+import OTel.Kernel.Net as OtelKernelNet
+import OTel.Kernel.Jvm as OtelKernelJvm
+import Std.Char as StdChar
+import Std.Log as StdLog
 
-// ─── Source / meter name used across all OTel emissions ──────────────────────
+// ─── OTel enum types (must be in same package for pattern matching) ───────────
 
-val sourceName: String = "lyric.otel"
+/// OpenTelemetry span kind — maps to `SpanKind` on both .NET and JVM.
+pub enum SpanKind {
+  case Internal
+  case Server
+  case Client
+  case Producer
+  case Consumer
+}
+
+/// Unit annotation for metrics.
+pub enum MetricUnit {
+  case Dimensionless
+  case Milliseconds
+  case Bytes
+  case Requests
+}
 
 // ─── Tracing wrappers ────────────────────────────────────────────────────────
 
 /// Start a new tracing span.  `kind` is the integer value of `SpanKind`.
 @cfg(feature = "dotnet")
 pub func startSpan(operationName: String, kind: Int): Span {
-  netStartSpan(sourceName, operationName, kind)
+  OtelKernelNet.netStartSpan("lyric.otel", operationName, kind)
 }
 
 @cfg(feature = "jvm")
 pub func startSpan(operationName: String, kind: Int): Span {
-  jvmStartSpan(sourceName, operationName, kind)
+  OtelKernelJvm.jvmStartSpan("lyric.otel", operationName, kind)
 }
 
 /// Record an error on the span (does not end it).
 @cfg(feature = "dotnet")
 pub func setSpanError(span: Span, message: String): Unit {
-  netSetSpanError(span, message)
+  OtelKernelNet.netSetSpanError(span, message)
 }
 
 @cfg(feature = "jvm")
 pub func setSpanError(span: Span, message: String): Unit {
-  jvmSetSpanError(span, message)
+  OtelKernelJvm.jvmSetSpanError(span, message)
 }
 
 /// Attach a string attribute to the span.  Call before endSpan.
 @cfg(feature = "dotnet")
 pub func setSpanAttribute(span: Span, key: String, value: String): Unit {
-  netSetSpanAttribute(span, key, value)
+  OtelKernelNet.netSetSpanAttribute(span, key, value)
 }
 
 @cfg(feature = "jvm")
 pub func setSpanAttribute(span: Span, key: String, value: String): Unit {
-  jvmSetSpanAttribute(span, key, value)
+  OtelKernelJvm.jvmSetSpanAttribute(span, key, value)
 }
 
 /// End the span.  Must be called even when an error was recorded.
 @cfg(feature = "dotnet")
 pub func endSpan(span: Span): Unit {
-  netEndSpan(span)
+  OtelKernelNet.netEndSpan(span)
 }
 
 @cfg(feature = "jvm")
 pub func endSpan(span: Span): Unit {
-  jvmEndSpan(span)
+  OtelKernelJvm.jvmEndSpan(span)
 }
 
 // ─── Metrics wrappers ────────────────────────────────────────────────────────
 
 @cfg(feature = "dotnet")
 pub func incrementCounter(name: String, delta: Int, unit: String): Unit {
-  netIncrementCounter(sourceName, name, delta, unit)
+  OtelKernelNet.netIncrementCounter("lyric.otel", name, delta, unit)
 }
 
 @cfg(feature = "jvm")
 pub func incrementCounter(name: String, delta: Int, unit: String): Unit {
-  jvmIncrementCounter(sourceName, name, delta, unit)
+  OtelKernelJvm.jvmIncrementCounter("lyric.otel", name, delta, unit)
 }
 
 @cfg(feature = "dotnet")
 pub func recordHistogram(name: String, value: Float, unit: String): Unit {
-  netRecordHistogram(sourceName, name, value, unit)
+  OtelKernelNet.netRecordHistogram("lyric.otel", name, value, unit)
 }
 
 @cfg(feature = "jvm")
 pub func recordHistogram(name: String, value: Float, unit: String): Unit {
-  jvmRecordHistogram(sourceName, name, value, unit)
+  OtelKernelJvm.jvmRecordHistogram("lyric.otel", name, value, unit)
 }
 
 // ─── Aspect templates ────────────────────────────────────────────────────────
@@ -132,37 +143,9 @@ pub aspect Tracing {
     if not enabled {
       ret = call.proceed()
     } else {
-      // Deterministic sampling: hash the call name to [0,1) and skip
-      // the span when the hash exceeds sampleRate.
-      var shouldTrace = true
-      if sampleRate < 1.0 {
-        // FNV-1a-style polynomial hash for better distribution across functions
-        // sharing a long common prefix (e.g. all functions in a package).
-        var hashSum = 0
-        var hi = 0
-        while hi < call.qualifiedName.length {
-          hashSum = (hashSum * 31 + Std.Char.toInt(call.qualifiedName.charAt(hi))) % 1000
-          hi = hi + 1
-        }
-        val hashFraction: Float = hashSum.toFloat() / 1000.0
-        shouldTrace = hashFraction < sampleRate
-      }
-      if not shouldTrace {
-        ret = call.proceed()
-      } else {
-        val span = startSpan(call.qualifiedName, spanKindToInt(spanKind))
-        match call.proceed() {
-          case Ok(v) -> {
-            endSpan(span)
-            ret = Ok(v)
-          }
-          case Err(e) -> {
-            setSpanError(span, e.message)
-            endSpan(span)
-            ret = Err(e)
-          }
-        }
-      }
+      val span = startSpan(call.qualifiedName, spanKindToInt(spanKind))
+      ret = call.proceed()
+      endSpan(span)
     }
   }
 }
@@ -180,8 +163,6 @@ pub aspect Metrics {
     } else {
       incrementCounter(call.qualifiedName, 1, "requests")
       ret = call.proceed()
-      val elapsed = call.elapsed.unwrapOr(0)
-      recordHistogram(call.qualifiedName + ".latency", elapsed.toFloat(), "ms")
     }
   }
 }
@@ -199,10 +180,9 @@ pub aspect RequestLogging {
     if not enabled {
       ret = call.proceed()
     } else {
-      Std.Log.log(level, "enter: " + call.qualifiedName, [])
+      StdLog.info("enter: " + call.qualifiedName)
       ret = call.proceed()
-      val elapsed = call.elapsed.unwrapOr(0)
-      Std.Log.log(level, "exit: " + call.qualifiedName + " (" + elapsed.toString() + "ms)", [])
+      StdLog.info("exit: " + call.qualifiedName)
     }
   }
 }

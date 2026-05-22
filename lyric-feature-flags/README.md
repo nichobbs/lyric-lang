@@ -2,6 +2,19 @@
 
 Runtime feature flag toggles for safe rollouts, A/B testing, and kill switches.
 
+## Platform parity
+
+| Feature flag | Backend                                                              | Status                |
+|--------------|----------------------------------------------------------------------|-----------------------|
+| `dotnet`     | `System.Net.Http.HttpClient` + `System.Collections.Concurrent`       | Available             |
+| `jvm`        | `java.net.http.HttpClient` (JDK 11+) + `ConcurrentHashMap`           | Planned (Phase 6)     |
+
+The JVM kernel (`Flags.Kernel.Jvm`) declares the HTTP polling client
+against the built-in `java.net.http.HttpClient` plus a
+`lyric.flags.Registry` helper; the JVM helper is supplied by the
+Lyric JVM stdlib JAR (out-of-repo).  Until that JAR ships, only the
+`dotnet` feature produces a runnable artifact.
+
 ## Packages
 
 | Package | Purpose |

@@ -160,6 +160,41 @@ func testRuntimeCheckedNoChecks(): Unit {
   assertEqualInt(diagCount(result), 0, "rc-no-checks: no diagnostics")
 }
 
+func testCrossPackageCallV0002(): Unit {
+  // A proof-required function calling a function from a runtime_checked
+  // package via a multi-segment path (e.g. Ext.Lib.someFunc()) must trigger
+  // V0002 at the call site, in addition to V0001 at the import.
+  val imports: List[ImportedMeta] = newList()
+  imports.add(ImportedMeta(name = "Ext.Lib", level = "runtime_checked"))
+  val src =
+    "@proof_required\npackage P\nimport Ext.Lib\nfunc f(): Unit { Ext.Lib.someFunc() }\n"
+  val pr = parse(src)
+  val result = checkFileWithImports(pr.file, imports)
+  assertTrue(hasDiagCode(result, "V0002"), "cross-pkg: V0002 emitted for cross-package call")
+}
+
+func testCrossPackageCallProofOk(): Unit {
+  // Calling into a proof_required package from proof_required is fine.
+  val imports: List[ImportedMeta] = newList()
+  imports.add(ImportedMeta(name = "Safe.Lib", level = "proof_required"))
+  val src =
+    "@proof_required\npackage P\nimport Safe.Lib\nfunc f(): Unit { Safe.Lib.helper() }\n"
+  val pr = parse(src)
+  val result = checkFileWithImports(pr.file, imports)
+  assertTrue(not (hasDiagCode(result, "V0002")), "cross-pkg-ok: V0002 not emitted for proof_required callee")
+}
+
+func testCrossPackageSingleSegmentV0002(): Unit {
+  // Covers the EPath-receiver branch (single-segment package name).
+  val imports: List[ImportedMeta] = newList()
+  imports.add(ImportedMeta(name = "Pkg", level = "runtime_checked"))
+  val src =
+    "@proof_required\npackage P\nimport Pkg\nfunc f(): Unit { Pkg.someFunc() }\n"
+  val pr = parse(src)
+  val result = checkFileWithImports(pr.file, imports)
+  assertTrue(hasDiagCode(result, "V0002"), "single-seg-pkg: V0002 emitted for single-segment runtime_checked package call")
+}
+
 func main(): Unit {
   testRuntimeCheckedDefault()
   testExplicitRuntimeChecked()
@@ -178,5 +213,8 @@ func main(): Unit {
   testLoopWithoutInvariantV0005()
   testUnboundedQuantifierV0006()
   testRuntimeCheckedNoChecks()
+  testCrossPackageCallV0002()
+  testCrossPackageCallProofOk()
+  testCrossPackageSingleSegmentV0002()
   println("modechecker self-test: ok")
 }

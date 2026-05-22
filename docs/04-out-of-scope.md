@@ -22,7 +22,7 @@ Polymorphism is via interfaces and sum types only. There is no class hierarchy, 
 
 Lyric programs cannot inspect types at runtime. There is no equivalent of `typeof(T).GetFields()`, `getClass()`, or `instanceof` outside of the pattern-matching context.
 
-**Why:** Reflection is what makes opaque types' representational privacy meaningless. It's also what blocks AOT compilation and forces runtime DI containers. Source generators (`@derive`) cover the legitimate use cases that reflection used to handle.
+**Why:** Reflection is what makes opaque types' representational privacy meaningless. It's also what blocks AOT compilation and forces runtime DI containers. Source generators (`@generate`) cover the legitimate use cases that reflection used to handle.
 
 ### Implicit numeric conversion
 
@@ -70,7 +70,7 @@ There is no preprocessor, no `#include`, no textual code expansion. Imports are 
 
 There is no Rust-style `macro_rules!`, no Lisp-style macros, no C++-style templates beyond the language's built-in generics.
 
-**Why:** Macros are powerful but they degrade tooling (LSP support is harder), make code less readable to outsiders, and create a parallel language that learners must also master. Lyric's `@derive` system handles the common case (generating boilerplate from type structure) without exposing a macro language.
+**Why:** Macros are powerful but they degrade tooling (LSP support is harder), make code less readable to outsiders, and create a parallel language that learners must also master. Lyric's `@generate` system handles the common case (generating boilerplate from type structure) without exposing a macro language.
 
 ### Operator overloading
 
@@ -126,12 +126,19 @@ Trait/interface-based generics ship in v1. Package generics (parameterizing whol
 
 ### JVM backend
 
-**Status:** PHASE 6 IN PROGRESS (self-hosted only — not yet wired to `lyric build`)
+**Status:** PHASE 6 SHIPPED (end-to-end `lyric build --target jvm` works)
 
-The self-hosted JVM emitter (`lyric-compiler/jvm/`) is in active development.
-`Jvm.Lowering` (29 `lowerXxx` functions) and `Jvm.Driver` are complete and
-pass 125 self-tests (B3–B125).  CLI wiring (`lyric build --target jvm` producing
-a real JAR) is tracked in `docs/33-platform-parity-remediation.md §4–5`.
+The self-hosted JVM emitter (`lyric-compiler/jvm/`) is operational.
+`Jvm.Lowering` (29 `lowerXxx` functions) and `Jvm.Driver` pass 129 self-tests
+(B3–B130).  The CLI pipeline — F# bootstrap `Emitter.emit` → JVM-flavoured
+stdlib precompile → `SelfHostedJvm.compileToJar` → runnable JAR — is wired and
+exercised by the 22-program × 3-path parity smoke suite in
+`bootstrap/tests/Lyric.Cli.Tests/ParityTests.fs` (`Lyric.Cli.Parity smoke-tests`).
+A Lyric source declaring `func main(): Int` or `func main(): Unit` compiles
+to a `java -jar`-runnable archive whose `Main-Class` is derived from the
+source's `package` declaration.  Library / ecosystem maturity (real-world
+benchmarks, Maven Central publishing flow at scale, native-image AOT) is
+still post-v1 work.
 
 **Original rationale (v1):** Building two backends in parallel risks shipping
 neither. JVM's erased generics and reflection-heavy ecosystem make it a worse
@@ -217,11 +224,16 @@ The compiler evaluates `const` expressions and resolves wire blocks at compile t
 
 ### User-defined attributes (annotations)
 
-**Status:** DEFERRED to v2
+**Status:** INCLUDED — resolved by D075 (`docs/40-source-generators.md`)
 
-The annotation set in v1 is the language's built-in annotations (`@projectable`, `@stubbable`, `@derive`, `@runtime_checked`, etc.). Users cannot define new attributes.
-
-**Why:** Without reflection, user-defined attributes have nothing to act on at runtime. Defining them at compile time requires a macro/source-generator system. Defer until a clear use case emerges.
+Custom source generators provide the compile-time hook that makes user-defined
+`@generate(Pkg.Name)` annotations meaningful. Packages declare `kind =
+"source-generator"` in `lyric.toml` and export a `generate` entry point; the
+compiler calls them during synthesis and injects their output before type checking.
+This is not a general annotation system — annotations that are not `@generate`
+arguments remain compiler-defined — but it covers the primary use case (structured
+boilerplate generation from type shape) without a macro language or runtime
+reflection.
 
 ---
 

@@ -20,6 +20,13 @@ import Std.JsonHost     // brings `JsonDoc`, `JsonElement`, and `host*` fns into
 @stable(since="1.0")
 pub func parseJson(s: in String): JsonDoc { hostParseJson(s) }
 
+/// Release the unmanaged memory held by a `JsonDoc`.  Call this when you
+/// are done walking the document — typically via `defer { disposeJson(doc) }`.
+/// The `lyricJsonGet*` helpers do this automatically; only needed for code
+/// that calls `parseJson` directly.
+@stable(since="1.0")
+pub func disposeJson(d: in JsonDoc): Unit { hostDisposeJson(d) }
+
 @stable(since="1.0")
 pub func rootElement(d: in JsonDoc): JsonElement { hostRootElement(d) }
 
@@ -143,12 +150,13 @@ pub func propertyValue(prop: in JsonProperty): JsonElement {
 }
 
 // =====================================================================
-// fromJson scalar field readers — used by @derive(Json) synthesised stubs.
+// fromJson scalar field readers — used by @generate(Json) synthesised stubs.
 // Each re-parses the JSON string and walks to the named property.
 // =====================================================================
 
 pub func lyricJsonGetInt(s: in String, name: in String, value: out Int): Bool {
   val doc = hostParseJson(s)
+  defer { hostDisposeJson(doc) }
   val root = hostRootElement(doc)
   var elem: JsonElement = default()
   if not hostTryGetProperty(root, name, elem) {
@@ -160,6 +168,7 @@ pub func lyricJsonGetInt(s: in String, name: in String, value: out Int): Bool {
 
 pub func lyricJsonGetLong(s: in String, name: in String, value: out Long): Bool {
   val doc = hostParseJson(s)
+  defer { hostDisposeJson(doc) }
   val root = hostRootElement(doc)
   var elem: JsonElement = default()
   if not hostTryGetProperty(root, name, elem) {
@@ -171,6 +180,7 @@ pub func lyricJsonGetLong(s: in String, name: in String, value: out Long): Bool 
 
 pub func lyricJsonGetDouble(s: in String, name: in String, value: out Double): Bool {
   val doc = hostParseJson(s)
+  defer { hostDisposeJson(doc) }
   val root = hostRootElement(doc)
   var elem: JsonElement = default()
   if not hostTryGetProperty(root, name, elem) {
@@ -182,6 +192,7 @@ pub func lyricJsonGetDouble(s: in String, name: in String, value: out Double): B
 
 pub func lyricJsonGetBool(s: in String, name: in String, value: out Bool): Bool {
   val doc = hostParseJson(s)
+  defer { hostDisposeJson(doc) }
   val root = hostRootElement(doc)
   var elem: JsonElement = default()
   if not hostTryGetProperty(root, name, elem) {
@@ -200,6 +211,7 @@ pub func lyricJsonGetBool(s: in String, name: in String, value: out Bool): Bool 
 
 pub func lyricJsonGetString(s: in String, name: in String, value: out String): Bool {
   val doc = hostParseJson(s)
+  defer { hostDisposeJson(doc) }
   val root = hostRootElement(doc)
   var elem: JsonElement = default()
   if not hostTryGetProperty(root, name, elem) {
@@ -217,6 +229,7 @@ pub func lyricJsonGetString(s: in String, name: in String, value: out String): B
 
 pub func lyricJsonGetSubObject(s: in String, name: in String, value: out String): Bool {
   val doc = hostParseJson(s)
+  defer { hostDisposeJson(doc) }
   val root = hostRootElement(doc)
   var elem: JsonElement = default()
   if not hostTryGetProperty(root, name, elem) {

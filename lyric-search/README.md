@@ -2,6 +2,18 @@
 
 Search engine integration with pluggable backends (Elasticsearch, Meilisearch).
 
+## Platform parity
+
+| Feature flag | Backend                                                       | Status                |
+|--------------|---------------------------------------------------------------|-----------------------|
+| `dotnet`     | `Elastic.Clients.Elasticsearch` + `Meilisearch` .NET clients  | Available             |
+| `jvm`        | `co.elastic.clients:elasticsearch-java` + Meilisearch Java    | Planned (Phase 6)     |
+
+The JVM kernel (`Search.Kernel.Jvm`) declares the Elasticsearch +
+Meilisearch JVM bindings; the `lyric.search.*` JVM helpers are
+supplied by the Lyric JVM stdlib JAR (out-of-repo).  Until that JAR
+ships, only the `dotnet` feature produces a runnable artifact.
+
 ## Packages
 
 | Package | Purpose |

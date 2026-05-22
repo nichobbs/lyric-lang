@@ -34,8 +34,9 @@ type ManifestError =
 
 /// One package dependency: `<name> = "<version>"`.
 type Dependency =
-    { Name:    string
-      Version: string }
+    { Name:      string
+      Version:   string
+      LocalPath: string option }
 
 /// `[package]` section.
 type PackageMetadata =
@@ -168,10 +169,11 @@ type Manifest =
 // ---------------------------------------------------------------------------
 
 type private Value =
-    | VString of string
-    | VBool   of bool
-    | VInt    of int64
-    | VArray  of Value list
+    | VString      of string
+    | VBool        of bool
+    | VInt         of int64
+    | VArray       of Value list
+    | VInlineTable of Map<string, string>
 
 type private Section =
     | RootSection
@@ -292,6 +294,72 @@ let private parseHeader (c: Cursor) : Result<string, ManifestError> =
                     advance c |> ignore
             Ok name
 
+// Parse a TOML inline table `{ key = "value", ... }`.
+// Only string values are captured; non-string values are skipped.
+// Returns `VInlineTable` containing the string-valued key-value pairs.
+let private parseInlineTable (c: Cursor) : Result<Value, ManifestError> =
+    if peek c <> Some '{' then parseError c "expected '{'"
+    else
+        advance c |> ignore  // consume '{'
+        let acc = System.Collections.Generic.Dictionary<string, string>()
+        let mutable err : ManifestError option = None
+        let mutable closed = false
+        while err.IsNone && not closed do
+            skipInlineWhitespace c
+            match peek c with
+            | Some '}' ->
+                advance c |> ignore
+                closed <- true
+            | Some ch when ch = '"' || isBareKeyChar ch ->
+                match parseKey c with
+                | Error e -> err <- Some e
+                | Ok k ->
+                    skipInlineWhitespace c
+                    if peek c <> Some '=' then
+                        err <- Some (ParseError (c.Line, c.Column, "expected '=' in inline table"))
+                    else
+                        advance c |> ignore  // consume '='
+                        skipInlineWhitespace c
+                        match peek c with
+                        | Some '"' ->
+                            match parseQuotedString c with
+                            | Error e -> err <- Some e
+                            | Ok v ->
+                                acc.[k] <- v
+                                skipInlineWhitespace c
+                                if peek c = Some ',' then advance c |> ignore
+                        | _ ->
+                            eprintfn "warning: inline table key '%s' has a non-string value (only string values are supported); the key will be ignored" k
+                            // Track bracket / brace depth so nested arrays
+                            // and inline tables don't terminate the outer
+                            // skip prematurely (e.g. `path = { a = "x" }`
+                            // or `xs = [1, 2]`).  Newlines, top-level `,`,
+                            // and the top-level closing `}` are the
+                            // legitimate stops.
+                            let mutable depth = 0
+                            let mutable stop  = false
+                            while not stop && c.Pos < c.Text.Length do
+                                let ch = c.Text.[c.Pos]
+                                if depth = 0 && (ch = ',' || ch = '}' || ch = '\n') then
+                                    stop <- true
+                                else
+                                    if ch = '{' || ch = '[' then depth <- depth + 1
+                                    elif ch = '}' || ch = ']' then depth <- depth - 1
+                                    advance c |> ignore
+                            skipInlineWhitespace c
+                            if peek c = Some ',' then advance c |> ignore
+            | Some ',' ->
+                advance c |> ignore
+            | Some other ->
+                err <- Some (ParseError (c.Line, c.Column, sprintf "unexpected '%c' in inline table" other))
+            | None ->
+                err <- Some (ParseError (c.Line, c.Column, "unterminated inline table"))
+        match err with
+        | Some e -> Error e
+        | None   ->
+            let pairs = acc |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+            Ok (VInlineTable pairs)
+
 let rec private parseValue (c: Cursor) : Result<Value, ManifestError> =
     skipInlineWhitespace c
     match peek c with
@@ -300,6 +368,7 @@ let rec private parseValue (c: Cursor) : Result<Value, ManifestError> =
         | Ok s -> Ok (VString s)
         | Error e -> Error e
     | Some '[' -> parseArray c
+    | Some '{' -> parseInlineTable c
     | Some 't' | Some 'f' -> parseBool c
     | Some ch when ch = '-' || Char.IsDigit ch -> parseInt c
     | Some other -> parseError c (sprintf "unexpected '%c' starting value" other)
@@ -476,10 +545,15 @@ let private toManifest (entries: Map<string * string, Value>)
         |> List.choose (fun ((sec, key), v) ->
             if sec = "dependencies" then
                 match v with
-                | VString version -> Some (Ok { Name = key; Version = version })
+                | VString version -> Some (Ok { Name = key; Version = version; LocalPath = None })
+                | VInlineTable pairs ->
+                    match Map.tryFind "path" pairs with
+                    | Some p -> Some (Ok { Name = key; Version = ""; LocalPath = Some p })
+                    | None   -> Some (Error (InvalidFieldType (sec, key,
+                                                               "inline table dependency must have a 'path' key")))
                 | _ ->
                     Some (Error (InvalidFieldType (sec, key,
-                                                   "dependency version string")))
+                                                   "dependency version string or inline table with 'path' key")))
             else None)
     let firstDepError =
         depEntries |> List.tryPick (function Error e -> Some e | _ -> None)

@@ -178,17 +178,37 @@ and expose a non-throwing wrapper as a `@externTarget`.
 `Lyric.ContractMeta` (cross-package contract resource reader) is a dependency
 of `Pack.l`; port in order.
 
-**Critical dependency — `--target dotnet-legacy` removal gated on contract-elaborator parity:**
+**`--target dotnet-legacy` removal — contract-elaborator parity reached:**
 `Emitter.fs::emitContractCheck` handles nested-return `ensures:` clauses, loop
 `invariant:` lowering, and protected-type entries for the F# (`--target
 dotnet-legacy`) path.  The self-hosted `contract_elaborator/elaborator.l`
-(M5.2 stage 2) does not yet replicate these three cases — see
-`lyric-compiler/lyric/contract_elaborator/elaborator.l` and the "deferred to
-a follow-up stage" note therein.  Removing `--target dotnet-legacy` before
-the elaborator achieves parity silently drops `ensures:` enforcement on nested
-returns.  Gate the `Emitter.fs` deletion on a passing regression test that
-exercises each deferred construct against both the F# emitter output and the
-self-hosted elaborator output.
+(M5.2 stage 2) now covers every one of those:
+  * `requires:` and `ensures:` (including nested returns at any depth inside
+    `if` / `match` / `try` / `for` / `while` / `loop` bodies — see the file
+    header at `elaborator.l:25-34`),
+  * loop `invariant:` lowering (D-progress-277, docs/41 Band 4), and
+  * **protected-type entries** — `elaborateProtectedMember`
+    (`elaborator.l:1035-1073`) elaborates each `PMEntry` against its own
+    `contracts` list plus the surrounding `PMInvariant` clauses lifted to
+    `CCEnsures`, covered by `testProtectedEntryRequiresLowered` and
+    `testProtectedInvariantAppendedToEntries`.
+`when:` barrier clauses survive in `ed.contracts` for the verifier but are
+not lowered to runtime asserts — they become `Monitor.Wait` conditions in
+the backend, matching the F# emitter's shape.  Band 4 is now complete on
+both axes; removing `--target dotnet-legacy` is no longer gated by a
+contract-elaborator deferral.
+
+**Additional structural blocker (added by `docs/41-self-hosted-compiler-gap-analysis.md`):**
+`Msil.Bridge.compileToMsil` and `Jvm.Bridge.compileToJar` historically went
+`parse → codegen → lowering` directly and skipped the self-hosted
+middle-end entirely.  D-progress-276 wired `Lyric.ModeChecker` (fatal),
+`Lyric.ContractElaborator` (lowering), and `Lyric.TypeChecker` (advisory,
+pending Band 6 cross-package resolution) into both bridges.  `Lyric.Mono`
+wiring is still deferred (the F# bootstrap parser cannot compile mono.l;
+see docs/41 Band 1 status block).  Production builds under `--target
+dotnet` now enforce V0001–V0011 and run `requires:` / `ensures:` /
+`invariant:` runtime asserts; cross-package type resolution and same-package
+monomorphisation remain on the Band 6 / Band 5 follow-up list.
 
 **Bridge pattern** (follow `SelfHostedFmt.fs` / `SelfHostedManifest.fs`):
 
@@ -202,7 +222,7 @@ For each item:
 4. Wire the shim into the relevant command in `Program.fs`.
 5. Remove the F# `<Item>.fs` source file.
 
-**Acceptance criteria:** `dotnet build Lyric.sln` succeeds after each F#
+**Acceptance criteria:** `dotnet build Bootstrap.sln` succeeds after each F#
 file deletion; all `bootstrap/tests/Lyric.Cli.Tests/` and
 `bootstrap/tests/Lyric.Emitter.Tests/` tests pass; `StdlibLyricTests.fs`
 exercises each new self-test file.
@@ -313,7 +333,7 @@ For multi-call scenarios, use a `slice[String]` to accumulate arguments.
 
 ---
 
-### G-02  `@derive(Json)` `fromJson` re-parses the document on every field access
+### G-02  `@generate(Json)` `fromJson` re-parses the document on every field access
 
 **Current behavior:** The synthesised `fromJson` deserialiser re-parses the
 full JSON document on each call to access a single field (D-progress-046

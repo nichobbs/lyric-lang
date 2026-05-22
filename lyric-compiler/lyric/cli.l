@@ -77,6 +77,8 @@ import Std.Process as Process
 import Std.Environment as Environment
 import Std.Errors
 import Std.Parse
+import Std.Sort as Sort
+import Std.Hash as Hash       // sha512OfFile / sha512OfBytes for #738 lock integrity
 
 import Lyric.Manifest as Mf   // parseManifest(text, filePath) -> Result[Manifest, ManifestError]
 import Lyric.Pack as Pack     // publishCsproj, restoreCsproj, xmlEscape, sanitisedPackageName
@@ -86,6 +88,7 @@ import Lyric.GitDep as GitDep  // resolve(url, ref, subdir) -> Result[GitDepResu
 import Lyric.Lockfile as LF    // emptyLockFile, addOrUpdatePackage, serializeLockFile, parseLockFile
 import Std.ProcessCapture as ProcessCapture  // runCapture(exe, args, stdin) -> String
 import Std.Char as Ch
+import Lyric.Generator as Generator          // preprocess(source, manifestPath, sourceFile) -> Result[String, String]
 
 // Phase 5 M5.2+ packages — present when the self-hosted compiler compiles this file.
 import Lyric.Emitter as Emitter        // emit(req) -> EmitResult; CompileTarget, Dotnet, Jvm
@@ -100,6 +103,7 @@ import Lyric.TestSynth as TestSynth    // synthesize, listEntries
 import Lyric.BenchSynth as BenchSynth  // synthesizeBench
 import Lyric.OpenApiParser as OAParser // parseSpec(json) -> Result[ParsedSpec, String]
 import Lyric.OpenApiGen as OAGen       // generateOpenApi(spec, clientName, packageName) -> String
+import Lyric.Lsp as Lsp                // lspRunLoop() — language server stdio loop
 
 func VERSION(): String { "0.1.0" }
 
@@ -182,11 +186,24 @@ func writeRuntimeConfig(dllPath: in String): Unit {
 
 // Compile `sourcePath` to a DLL at `outPath`.
 // Returns the exit code: 0 on success, 1 on error.
-func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarget): Int {
-  val source = match File.readText(sourcePath) {
+// `manifestPath` is forwarded to the generator pre-processor so custom
+// @generate(Pkg.Name) annotations can resolve their generator DLLs.
+func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarget, manifestPath: in Option[String]): Int {
+  var source = match File.readText(sourcePath) {
     case Ok(text) -> text
     case Err(e)   -> {
       printErr("build: " + IOError.message(e))
+      return 1
+    }
+  }
+
+  // Run custom @generate(X.Y) pre-processing before handing source to the
+  // emitter.  Built-in generators (@generate(Json) etc.) are handled later
+  // inside the F# bootstrap's Generate.synthesizeItems pass.
+  source = match Generator.preprocess(source, manifestPath, sourcePath) {
+    case Ok(augmented) -> augmented
+    case Err(msg)      -> {
+      printErr("build: generator error: " + msg)
       return 1
     }
   }
@@ -315,14 +332,6 @@ func cmdBuild(argv: in slice[String]): Int {
       i += 1
     }
   }
-  // D045: feature-set computed here once buildOne / buildProject
-  // accept a `features` parameter (Phase 5+ stage 7 follow-up).  For
-  // now the parsed flags are intentionally unused — they document the
-  // CLI surface in lockstep with the F# bootstrap.
-  val _features = cliFeatures
-  val _noDefault = noDefaultFeatures
-  val _all = allFeatures
-
   // Project-mode: `lyric build --manifest lyric.toml` with no positional source.
   if positional.count == 0 {
     val mfPath = match manifestArg {
@@ -333,7 +342,7 @@ func cmdBuild(argv: in slice[String]): Int {
         return 1
       }
     }
-    return buildProject(mfPath, explicitOut, target)
+    return buildProject(mfPath, explicitOut, target, cliFeatures, noDefaultFeatures, allFeatures)
   }
 
   val sourcePath = positional[0]
@@ -351,12 +360,19 @@ func cmdBuild(argv: in slice[String]): Int {
     }
   }
 
-  buildOne(sourcePath, outPath, target)
+  buildOne(sourcePath, outPath, target, manifestArg)
 }
 
 // Project-mode build: reads [project.packages] from lyric.toml and
 // bundles every package's .l files into a single DLL.
-func buildProject(mfPath: in String, explicitOut: in Option[String], target: in CompileTarget): Int {
+func buildProject(
+  mfPath:           in String,
+  explicitOut:      in Option[String],
+  target:           in CompileTarget,
+  cliFeatures:      in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures:      in Bool
+): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
     case Err(e)   -> {
@@ -379,6 +395,39 @@ func buildProject(mfPath: in String, explicitOut: in Option[String], target: in 
     }
   }
 
+  // D045: resolve active feature set from manifest defaults + CLI flags.
+  // `getManifestFeaturesOrEmpty` returns the whole FeaturesSection record from
+  // the match arm (bootstrap-emitter-safe pattern); field access happens after
+  // the match, outside any match arm body.
+  // D045: resolve active feature set from manifest defaults + CLI flags.
+  // readFeatureDefaultsFromToml / readFeatureDeclaredFromToml bypass the
+  // Manifest.features field (which has a bootstrap-emitter match quirk when
+  // the field type is Option[FeaturesSection]) and scan the raw TOML text
+  // directly.  mfText was already read at the top of this function.
+  val mfDefaults = Mf.readFeatureDefaultsFromToml(mfText, mfPath)
+  val mfDeclared = Mf.readFeatureDeclaredFromToml(mfText, mfPath)
+  val activeFeatures: List[String] = newList()
+  if allFeatures {
+    var ai = 0
+    while ai < mfDeclared.count {
+      activeFeatures.add(mfDeclared[ai])
+      ai += 1
+    }
+  } else {
+    if not noDefaultFeatures {
+      var ai = 0
+      while ai < mfDefaults.count {
+        activeFeatures.add(mfDefaults[ai])
+        ai += 1
+      }
+    }
+    var ci = 0
+    while ci < cliFeatures.count {
+      activeFeatures.add(cliFeatures[ci])
+      ci += 1
+    }
+  }
+
   val mfDir   = Path.dirname(mfPath)
   val outPath = match explicitOut {
     case Some(o) -> o
@@ -397,24 +446,65 @@ func buildProject(mfPath: in String, explicitOut: in Option[String], target: in 
     case Err(e) -> printErr("build: cannot create output dir: " + IOError.message(e))
   }
 
-  // Collect sources for each package entry.
-  val sources: List[String] = newList()
+  if proj.packages.count == 0 {
+    printErr("build: " + mfPath + " [project.packages] is empty — single-DLL projects require explicit per-package source dirs (auto-discovery not yet wired)")
+    return 1
+  }
+
+  // Collect sources for each package entry individually (not concatenated).
+  // Each package entry may be a single .l file or a directory of .l files.
+  val pkgs: List[ProjectPackage] = newList()
   var hadFatal = false
   var pi = 0
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
     val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path }
               else { Path.join(mfDir, pkgEntry.path) }
-    val text = match File.readText(abs) {
-      case Ok(t)  -> t
-      case Err(e) -> {
-        printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
-        hadFatal = true
-        ""
+    val pkgSources: List[String] = newList()
+    if File.fileExists(abs) {
+      // Single .l file: read it directly.
+      match File.readText(abs) {
+        case Ok(t)  -> pkgSources.add(t)
+        case Err(e) -> {
+          printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
+          hadFatal = true
+        }
       }
+    } else if File.dirExists(abs) {
+      // Directory: collect all .l files recursively, sorted for determinism.
+      val allFiles = match File.listFilesRecursive(abs) {
+        case Ok(fs)  -> fs
+        case Err(e)  -> {
+          printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
+          hadFatal = true
+          newList()
+        }
+      }
+      val lFiles: List[String] = newList()
+      for f in allFiles.toArray() {
+        if Str.endsWith(f, ".l") { lFiles.add(f) }
+      }
+      if lFiles.count == 0 {
+        printErr("build: package '" + pkgEntry.name + "': no .l files found in " + abs)
+        hadFatal = true
+      } else {
+        val sorted = Sort.sortStrings(lFiles.toArray())
+        for f in sorted {
+          match File.readText(f) {
+            case Ok(t)  -> pkgSources.add(t)
+            case Err(e) -> {
+              printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
+              hadFatal = true
+            }
+          }
+        }
+      }
+    } else {
+      printErr("build: package '" + pkgEntry.name + "': path not found: " + abs)
+      hadFatal = true
     }
-    if not hadFatal {
-      sources.add(text)
+    if pkgSources.count > 0 {
+      pkgs.add(ProjectPackage(name = pkgEntry.name, sources = pkgSources))
     }
     pi += 1
   }
@@ -423,26 +513,62 @@ func buildProject(mfPath: in String, explicitOut: in Option[String], target: in 
     return 1
   }
 
-  // Emit all sources as a single combined source string (one-package bundle).
-  // The emitter's project path handles multi-package interleaving via
-  // Lyric.Emitter.emitProject when that API is available.  For now the
-  // sources list is passed joined as a sentinel; the emitter decides.
-  var combined = ""
-  var si = 0
-  while si < sources.count {
-    combined = combined + sources[si]
-    si += 1
+  // Resolve local-path dependencies to DLL paths.
+  // Format: "depName\tdllPath" — passed to emitter.l which writes "DEP\t..." lines.
+  val restoredDlls: List[String] = newList()
+  var di = 0
+  while di < manifest.deps.count {
+    val dep = manifest.deps[di]
+    match dep.source {
+      case Path(dir) -> {
+        val depDir = if Path.isAbsolute(dir) { dir }
+                     else { Path.join(mfDir, dir) }
+        val depToml = Path.join(depDir, "lyric.toml")
+        val depBinDir = Path.join(depDir, "bin")
+        if File.fileExists(depToml) {
+          match File.readText(depToml) {
+            case Ok(depMfText) -> {
+              match Mf.parseManifest(depMfText, depToml) {
+                case Ok(depMf) -> {
+                  val dllName = match depMf.project {
+                    case Some(p) -> match p.outputAssembly {
+                      case Some(asm) -> asm
+                      case None      -> p.name + ".dll"
+                    }
+                    case None -> depMf.packageSection.name + ".dll"
+                  }
+                  val dllPath = Path.join(depBinDir, dllName)
+                  if File.fileExists(dllPath) {
+                    restoredDlls.add(dep.name + "\t" + dllPath)
+                  } else {
+                    printErr("build: local dep '" + dep.name + "' not built — run `lyric build --manifest " + depToml + "` first")
+                  }
+                }
+                case Err(_) -> ()
+              }
+            }
+            case Err(_) -> ()
+          }
+        } else {
+          printErr("build: local dep '" + dep.name + "' — no lyric.toml found at '" + depToml + "'; check the path = \"...\" entry in your lyric.toml")
+        }
+      }
+      case _ -> ()
+    }
+    di += 1
   }
 
   val asmName = stemOf(Path.basename(outPath), 4)
-  val req = EmitRequest(
-    source       = combined,
-    assemblyName = asmName,
-    outputPath   = outPath,
-    target       = target
+  val projReq = EmitProjectRequest(
+    packages         = pkgs,
+    assemblyName     = asmName,
+    outputPath       = outPath,
+    target           = target,
+    restoredDllPaths = restoredDlls,
+    activeFeatures   = activeFeatures
   )
 
-  val result  = Emitter.emit(req)
+  val result  = Emitter.emitProject(projReq)
   var hadError = false
   for d in result.diagnostics.toArray() {
     match d.severity {
@@ -498,7 +624,7 @@ func cmdRun(argv: in slice[String]): Int {
   val stem    = stemOf(Path.basename(sourcePath), 2)
   val outPath = Path.join(Path.join(srcDir, ".lyric-run"), stem + ".dll")
 
-  val buildExit = buildOne(sourcePath, outPath, Dotnet)
+  val buildExit = buildOne(sourcePath, outPath, Dotnet, None)
   if buildExit != 0 {
     return buildExit
   }
@@ -1012,6 +1138,62 @@ func buildRestoreCsproj(manifest: in Manifest, target: in String): String {
   xml + "</Project>\n"
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §10a. Lock-file content hashing (lyric-lang #738)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// SHA-512 of the resolved dependency's `lyric.toml`.  Used as the lockable
+/// content identity for `Path`, `Workspace`, and `Git` deps — the manifest
+/// is the canonical content-snapshot for source-form dependencies.
+///
+/// Returns `None` when the file is missing or unreadable; callers treat that
+/// as "graceful skip" in normal restore and as a hard failure in `--locked`.
+func lockSha512OfLocalManifest(localDir: in String): Option[String] {
+  if localDir.length == 0 { return None }
+  val manifestPath = Path.join(localDir, "lyric.toml")
+  match Hash.sha512OfFile(manifestPath) {
+    case Ok(hex) -> Some(value = hex)
+    case Err(_)  -> None
+  }
+}
+
+/// SHA-512 of the resolved NuGet `.nupkg` for a registry dep.  Layout is
+/// `~/.nuget/packages/<name-lower>/<version>/<name-lower>.<version>.nupkg`
+/// — populated by `dotnet restore` before this is called.
+///
+/// Returns `None` when the file is missing (e.g. on a host where the
+/// NuGet cache lives elsewhere, or when `dotnet restore` was skipped).
+func lockSha512OfNupkg(name: in String, version: in String): Option[String] {
+  if name.length == 0 or version.length == 0 { return None }
+  val lower = name.toLower()
+  // NUGET_PACKAGES overrides the cache root (CI uses this); empty falls through so `--locked` isn't soft-bypassed.
+  val nugetPkgVar: Option[String] = match Environment.getVar("NUGET_PACKAGES") {
+    case Ok(p)  -> if p.length > 0 { Some(value = p) } else { None }
+    case Err(_) -> None
+  }
+  val cacheRoot = match nugetPkgVar {
+    case Some(p) -> p
+    case None    -> {
+      val home = match Environment.getVar("HOME") {
+        case Ok(h)  -> h
+        case Err(_) ->
+          match Environment.getVar("USERPROFILE") {
+            case Ok(h)  -> h
+            case Err(_) -> return None
+          }
+      }
+      Path.join(home, ".nuget/packages")
+    }
+  }
+  val cacheDir = Path.join(cacheRoot, lower)
+  val versionDir = Path.join(cacheDir, version)
+  val nupkgPath = Path.join(versionDir, lower + "." + version + ".nupkg")
+  match Hash.sha512OfFile(nupkgPath) {
+    case Ok(hex) -> Some(value = hex)
+    case Err(_)  -> None
+  }
+}
+
 func cmdRestore(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
   var lockedMode = false
@@ -1108,7 +1290,7 @@ func cmdRestore(argv: in slice[String]): Int {
           name    = dep.name,
           version = version,
           source  = src,
-          sha512  = None,
+          sha512  = None,                       // populated after `dotnet restore` below
           path    = None))
       }
       case Workspace(versionConstraint) -> {
@@ -1156,7 +1338,7 @@ func cmdRestore(argv: in slice[String]): Int {
               name    = dep.name,
               version = "",
               source  = "workspace",
-              sha512  = None,
+              sha512  = lockSha512OfLocalManifest(resolvedDir),
               path    = Some(value = resolvedDir)))
             Console.println("restore: " + dep.name + " -> " + resolvedDir + " (workspace)")
           }
@@ -1170,7 +1352,7 @@ func cmdRestore(argv: in slice[String]): Int {
           name    = dep.name,
           version = "",
           source  = "path:" + absDir,
-          sha512  = None,
+          sha512  = lockSha512OfLocalManifest(absDir),
           path    = Some(value = absDir)))
         Console.println("restore: " + dep.name + " -> " + absDir + " (path)")
       }
@@ -1187,7 +1369,7 @@ func cmdRestore(argv: in slice[String]): Int {
               name    = dep.name,
               version = result.resolvedRev,
               source  = srcTag,
-              sha512  = None,
+              sha512  = lockSha512OfLocalManifest(result.localDir),
               path    = Some(value = result.localDir)))
             Console.println("restore: " + dep.name + " -> " + result.localDir + " (" + result.resolvedRev + ")")
           }
@@ -1243,6 +1425,33 @@ func cmdRestore(argv: in slice[String]): Int {
     if dotnetExit != 0 { return dotnetExit }
   }
 
+  // Second pass: now that `dotnet restore` has populated the NuGet cache,
+  // compute SHA-512 of each registry dep's `.nupkg` and write it back into
+  // the lock entry (#738 supply-chain integrity).  Path / Workspace / Git
+  // deps already had their digests written in the resolution loop above.
+  val upgraded: List[LF.LockedPackage] = newList()
+  var ui = 0
+  while ui < lf.packages.count {
+    val pkgEntry = lf.packages[ui]
+    val nupkgSha: Option[String] =
+      if Str.startsWith(pkgEntry.source, "nuget:") {
+        match pkgEntry.sha512 {
+          case Some(_) -> pkgEntry.sha512    // unlikely — kept defensively
+          case None    -> lockSha512OfNupkg(pkgEntry.name, pkgEntry.version)
+        }
+      } else {
+        pkgEntry.sha512
+      }
+    upgraded.add(LF.LockedPackage(
+      name    = pkgEntry.name,
+      version = pkgEntry.version,
+      source  = pkgEntry.source,
+      sha512  = nupkgSha,
+      path    = pkgEntry.path))
+    ui = ui + 1
+  }
+  lf = LF.LockFile(formatVersion = lf.formatVersion, packages = upgraded)
+
   // Write the lock file or verify it (--locked mode).
   if lockedMode {
     // --locked: fail if no lock file exists on disk.
@@ -1276,6 +1485,39 @@ func cmdRestore(argv: in slice[String]): Int {
           } else if locked.version != resolved.version {
             printErr("restore: --locked: '" + resolved.name + "' version changed: locked='" + locked.version + "' resolved='" + resolved.version + "'")
             lockMismatch = true
+          } else {
+            // Content-integrity check (#738).  A `None` on the lock side
+            // means the lock file pre-dates the SHA-512 enforcement; we
+            // refuse to proceed and instruct the user to regenerate.  A
+            // mismatch between the two digests means the resolved
+            // artifact's content changed since the lock was written — the
+            // exact registry-poisoning attack the lock file is supposed
+            // to detect.
+            match locked.sha512 {
+              case None ->
+                match resolved.sha512 {
+                  case None ->
+                    // Both None — soft-pass with a warning so the operator knows the integrity check was skipped (typical for pre-#738 lock files).
+                    printErr("restore: --locked: warning: '" + resolved.name + "' has no SHA-512 on either side; integrity check skipped (regenerate lyric.lock with 'lyric restore' to populate digests)")
+                  case Some(_) -> {
+                    printErr("restore: --locked: '" + resolved.name + "' has no SHA-512 in the lock file; lyric.lock pre-dates content-integrity enforcement — run 'lyric restore' to regenerate")
+                    lockMismatch = true
+                  }
+                }
+              case Some(lockedHash) ->
+                match resolved.sha512 {
+                  case None ->
+                    printErr("restore: --locked: warning: '" + resolved.name + "' could not be re-hashed; integrity check skipped (locked='" + lockedHash + "')")
+                  case Some(resolvedHash) ->
+                    if lockedHash != resolvedHash {
+                      printErr("restore: --locked: '" + resolved.name + "' content changed: locked SHA-512 != resolved SHA-512")
+                      printErr("  locked   : " + lockedHash)
+                      printErr("  resolved : " + resolvedHash)
+                      printErr("  (a registry-poisoning attack would surface here; if the package was legitimately updated, run 'lyric restore' to regenerate the lock)")
+                      lockMismatch = true
+                    }
+                }
+            }
           }
         }
       }
@@ -1741,6 +1983,8 @@ func jsonStringAt(json: in String, startPos: in Int): (String, Int) {
       if c == 'n'      { s = s + "\n" }
       else if c == 't' { s = s + "\t" }
       else if c == 'r' { s = s + "\r" }
+      else if c == 'b' { s = s + "\u{08}" }
+      else if c == 'f' { s = s + "\u{0C}" }
       else             { s = s + ("" + c) }
       escaping = false
     } else if c == '\\' {
@@ -1769,6 +2013,7 @@ func cmdRepl(argv: in slice[String]): Int {
 
 func cmdTest(argv: in slice[String]): Int {
   var filterArg: Option[String] = None
+  var manifestArg: Option[String] = None
   var listMode = false
   val positional: List[String] = newList()
 
@@ -1783,6 +2028,14 @@ func cmdTest(argv: in slice[String]): Int {
         printErr("test: --filter requires a value")
         return 1
       }
+    } else if arg == "--manifest" {
+      if i + 1 < argv.length {
+        manifestArg = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("test: --manifest requires a path")
+        return 1
+      }
     } else if arg == "--list" {
       listMode = true
       i += 1
@@ -1792,8 +2045,17 @@ func cmdTest(argv: in slice[String]): Int {
     }
   }
 
+  // `lyric test --manifest <toml>` reads `[project.tests]` and runs
+  // each test file bundled with the manifest's `[project.packages]`
+  // (#465).  Each test contributes one synthesised executable; the
+  // command's exit code is non-zero if any test fails.
+  match manifestArg {
+    case Some(p) -> return cmdTestManifest(p, filterArg)
+    case None    -> ()
+  }
+
   if positional.count == 0 {
-    printErr("test: missing source file")
+    printErr("test: missing source file (or pass --manifest <lyric.toml>)")
     return 1
   }
 
@@ -1881,6 +2143,184 @@ func cmdTest(argv: in slice[String]): Int {
       }
     }
   }
+}
+
+// Unreachable today: the F# bootstrap CLI fall-back doesn't know
+// `--manifest` for `test`, so this entry point only fires once the
+// self-hosted CLI bridge regains JIT (#465).
+func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
+  val mfText = match File.readText(mfPath) {
+    case Ok(text) -> text
+    case Err(e)   -> {
+      printErr("test: " + IOError.message(e))
+      return 1
+    }
+  }
+  val manifest: Manifest = match Mf.parseManifest(mfText, mfPath) {
+    case Ok(m)  -> m
+    case Err(e) -> {
+      printErr("test: " + ManifestError.message(e))
+      return 1
+    }
+  }
+  val proj: ProjectSection = match manifest.project {
+    case Some(p) -> p
+    case None    -> {
+      printErr("test: " + mfPath + " has no [project] section")
+      return 1
+    }
+  }
+
+  if proj.tests.count == 0 {
+    printErr("test: " + mfPath + " has no [project.tests] entries")
+    return 1
+  }
+
+  val mfDir = Path.dirname(mfPath)
+
+  // Pre-read every [project.packages] source so each test build
+  // reuses the same content.
+  val pkgSources: List[String] = newList()
+  var pi = 0
+  while pi < proj.packages.count {
+    val pkgEntry = proj.packages[pi]
+    val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path }
+              else { Path.join(mfDir, pkgEntry.path) }
+    match File.readText(abs) {
+      case Ok(t)  -> pkgSources.add(t)
+      case Err(e) -> {
+        printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
+        return 1
+      }
+    }
+    pi += 1
+  }
+
+  val testOutDir = Path.join(mfDir, ".lyric-test")
+  match File.createDir(testOutDir) {
+    case Ok(_)  -> ()
+    case Err(e) -> {
+      // Without an output directory every later test emit fails and the
+      // resulting N-test failure cascade obscures the root cause.
+      printErr("test: cannot create '" + testOutDir + "': " + IOError.message(e))
+      return 1
+    }
+  }
+
+  var totalPassed = 0
+  var totalFailed = 0
+
+  // Walk each [project.tests] entry.
+  var ti = 0
+  while ti < proj.tests.count {
+    val testEntry = proj.tests[ti]
+    val abs = if Path.isAbsolute(testEntry.path) { testEntry.path }
+              else { Path.join(mfDir, testEntry.path) }
+    Console.println("== " + testEntry.name + " (" + testEntry.path + ")")
+
+    val testSource = match File.readText(abs) {
+      case Ok(t)  -> t
+      case Err(e) -> {
+        printErr("test: " + IOError.message(e))
+        totalFailed += 1
+        ti += 1
+        continue
+      }
+    }
+
+    val synth = TestSynth.synthesize(testSource, filterArg)
+    val rewritten: String = match synth {
+      case Synthesised(rw, _, _) -> rw
+      case NoTestModule(span)    -> {
+        printErr(abs + ":" + toString(span.startPos.line) +
+                 ": not a @test_module — add @test_module annotation")
+        totalFailed += 1
+        ti += 1
+        continue
+      }
+      case UserMainExists(span) -> {
+        printErr(abs + ":" + toString(span.startPos.line) +
+                 ": @test_module cannot define func main()")
+        totalFailed += 1
+        ti += 1
+        continue
+      }
+      case FixtureUnsupported(span) -> {
+        printErr(abs + ":" + toString(span.startPos.line) +
+                 ": fixture types are not yet supported by `lyric test`")
+        totalFailed += 1
+        ti += 1
+        continue
+      }
+      case ParseFailures(diags) -> {
+        for d in diags.toArray() { printDiag(d) }
+        totalFailed += 1
+        ti += 1
+        continue
+      }
+    }
+
+    // Build the combined source: every [project.packages] file plus
+    // the synthesised test (which now carries a `main()` that runs
+    // every test function).  Collect into a List and `Str.joinList`
+    // at the end to avoid the O(N^2) repeated-concat cost.
+    val parts: List[String] = newList()
+    var si = 0
+    while si < pkgSources.count {
+      parts.add(pkgSources[si])
+      si += 1
+    }
+    parts.add(rewritten)
+    val combined = Str.joinList("", parts)
+
+    val asmStem = stemOf(Path.basename(testEntry.path), 2)
+    val outPath = Path.join(testOutDir, asmStem + ".dll")
+
+    val req = EmitRequest(
+      source       = combined,
+      assemblyName = asmStem,
+      outputPath   = outPath,
+      target       = Dotnet
+    )
+    val result  = Emitter.emit(req)
+    var hadBuildError = false
+    for d in result.diagnostics.toArray() {
+      match d.severity {
+        case DiagError   -> { hadBuildError = true }
+        case DiagWarning -> ()
+      }
+      printDiag(d)
+    }
+    if hadBuildError {
+      printErr(abs + ": test build failed")
+      totalFailed += 1
+      ti += 1
+      continue
+    }
+    writeRuntimeConfig(outPath)
+
+    val execArgs: List[String] = newList()
+    execArgs.add("exec")
+    execArgs.add(outPath)
+    val testExitCode = match Process.run("dotnet", execArgs) {
+      case Ok(code) -> code
+      case Err(e)   -> {
+        printErr("test: failed to start dotnet: " + IOError.message(e))
+        1
+      }
+    }
+    if testExitCode == 0 {
+      totalPassed += 1
+    } else {
+      totalFailed += 1
+    }
+    ti += 1
+  }
+
+  Console.println("")
+  Console.println("== summary: " + toString(totalPassed) + " passed, " +
+                  toString(totalFailed) + " failed")
+  if totalFailed > 0 { 1 } else { 0 }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2126,6 +2566,15 @@ pub func main(argv: in slice[String]): Int {
 
   if cmd == "openapi" {
     return cmdOpenApi(argv)
+  }
+
+  if cmd == "lsp" {
+    // Dispatch to the self-hosted LSP stdio loop in
+    // `lyric-compiler/lyric/lsp.l`.  No CLI args are consumed —
+    // the language server speaks the Language Server Protocol
+    // over stdin/stdout per LSP §3.0.
+    Lsp.lspRunLoop()
+    return 0
   }
 
   printErr("unknown command: " + cmd)

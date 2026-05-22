@@ -11,19 +11,16 @@ output          = "single"
 output_assembly = "Jobs.dll"
 
 [project.packages]
-"Jobs"            = "src"
-"Jobs.Aspects"    = "src"
-"Jobs.Kernel.Net" = "src/_kernel/net"
-"Jobs.Kernel.Jvm" = "src/_kernel/jvm"
+"Jobs"            = "src/jobs.l"
+"Jobs.Aspects"    = "src/jobs_aspects.l"
+"Jobs.Kernel.Net" = "src/_kernel/net/jobs_kernel.l"
 
 [features]
-hangfire = []   # Hangfire backend for .NET (Hangfire.Core + Hangfire.SqlServer); degrades to Quartz on JVM
-quartz   = []   # Quartz.NET scheduler (.NET); Quartz Scheduler on JVM
-dotnet   = []   # .NET kernel backend
-jvm      = []   # JVM kernel backend (Phase 6)
+hangfire = []   # Hangfire backend for .NET (Hangfire.Core + Hangfire.SqlServer)
+quartz   = []   # Quartz.NET scheduler
 
 [dependencies]
-"Lyric.Stdlib"     = { path = "../stdlib" }
+"Lyric.Stdlib"     = { path = "../lyric-stdlib" }
 "Lyric.Resilience" = { path = "../lyric-resilience" }
 
 [nuget]
@@ -32,10 +29,3 @@ jvm      = []   # JVM kernel backend (Phase 6)
 "Hangfire.SqlServer" = "1.8.14"
 # feature = "quartz" — Quartz.NET scheduler
 "Quartz"             = "3.9.0"
-
-# Hangfire has no JVM port; both hangfire and quartz Lyric features map to
-# Quartz Scheduler on JVM.  A single Maven entry covers both features so
-# only one Quartz JAR is restored regardless of which @cfg path activates.
-[maven]
-# features = "hangfire" / "quartz" — JVM Quartz Scheduler (Hangfire degrades to it).
-"org.quartz-scheduler:quartz" = { version = "2.3.2", features = ["hangfire", "quartz"] }

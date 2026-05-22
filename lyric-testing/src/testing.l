@@ -1,30 +1,40 @@
-/// Testing — mock implementations and test helpers for Lyric libraries.
-///
-/// Provides in-process mock implementations of Cache, Mail, Storage, Mq,
-/// Session, and Flags interfaces so that unit tests can exercise application
-/// logic without real infrastructure.  Also provides assertion helpers for
-/// writing concise, readable test cases.
-///
-/// Usage:
-///
-///   import Testing
-///   import Std.Core
-///
-///   val ctx = Testing.newTestContext()
-///   Testing.enable(ctx.flags, "new-checkout")
-///   Testing.assertOk(someFunction(ctx.mail, ctx.storage), "expected success")
-///   Testing.assertEq(ctx.mail.sentCount().toString(), "1", "one email sent")
-///
-/// See lyric-testing/README.md.
+// Testing — mock implementations and test helpers for Lyric libraries.
+//
+// WARNING (thread safety): All Mock implementations in this library are NOT
+// thread-safe.  Use them only in single-threaded test contexts; do not
+// share a mock instance across concurrent test workers.  See
+// lyric-lang #411.
+//
+// WARNING (failure injection): The current mocks simulate only the happy path
+// (success returns).  Tests that need to exercise error-handling paths
+// must subclass the relevant interface manually.  Configurable
+// failure-injection hooks are tracked as lyric-lang #410.
+//
+// Provides in-process mock implementations of Cache, Mail, Storage, Mq,
+// Session, and Flags interfaces so that unit tests can exercise application
+// logic without real infrastructure.  Also provides assertion helpers for
+// writing concise, readable test cases.
+//
+// Usage:
+//
+//   import Testing
+//   import Std.Core
+//
+//   val ctx = Testing.newTestContext()
+//   Testing.enable(ctx.flags, "new-checkout")
+//   Testing.assertOk(someFunction(ctx.mail, ctx.storage), "expected success")
+//   Testing.assertEq(ctx.mail.sentCount().toString(), "1", "one email sent")
+//
+// See lyric-testing/README.md.
 
 @runtime_checked
 package Testing
 
 import Std.Core
 import Std.Collections
+import Std.Iter
 import Std.Time
-import Std.Json
-import Cache
+import Cache as Cache
 import Mail
 import Storage
 import Mq
@@ -54,7 +64,7 @@ pub record StoredObject {
 @stable(since="0.1")
 pub record PublishedMessage {
   body:    String
-  headers: [Mq.MessageHeader]
+  headers: slice[Mq.MessageHeader]
 }
 
 // ─── TestClock ────────────────────────────────────────────────────────────────
@@ -70,8 +80,8 @@ pub record TestClock {
 
 /// Advance the test clock by `ms` milliseconds.
 @stable(since="0.1")
-pub func advance(clock: in TestClock, ms: in Long): Unit
-  requires: ms >= 0
+pub func advance(clock: inout TestClock, ms: in Long): Unit
+  requires: ms >= 0i64
 {
   clock.currentEpochMs = clock.currentEpochMs + ms
 }
@@ -89,7 +99,7 @@ pub func now(clock: in TestClock): Long {
 /// Thread safety: not thread-safe in v1.
 @stable(since="0.1")
 pub record MockMailSender {
-  var sentEmails: [SentEmail]
+  var sentEmails: List[SentEmail]
   var count:      Int
 }
 
@@ -105,8 +115,8 @@ impl Mail.MailSender for MockMailSender {
       subject  = msg.subject,
       textBody = msg.textBody,
       htmlBody = msg.htmlBody)
-    sentEmails = sentEmails + [captured]
-    count      = count + 1
+    self.sentEmails.add(captured)
+    self.count = self.count + 1
     return Ok(())
   }
 
@@ -132,8 +142,8 @@ pub func sentCount(sender: in MockMailSender): Int {
 
 /// Clear all captured emails from the mock sender.
 @stable(since="0.1")
-pub func clearSent(sender: in MockMailSender): Unit {
-  sender.sentEmails = []
+pub func clearSent(sender: inout MockMailSender): Unit {
+  sender.sentEmails = newList()
   sender.count      = 0
 }
 
@@ -161,8 +171,8 @@ impl Storage.StorageBucket for MockStorageBucket {
       key         = key,
       dataBase64  = dataBase64,
       contentType = contentType)
-    objects.set(key, obj)
-    callCount = callCount + 1
+    self.objects[key] = obj
+    self.callCount = self.callCount + 1
     val meta = Storage.StorageMetadata(
       contentType   = contentType,
       contentLength = 0,
@@ -173,30 +183,29 @@ impl Storage.StorageBucket for MockStorageBucket {
   }
 
   func get(key: in String): Result[Storage.StorageObject, Storage.StorageError] {
-    match objects.get(key) {
-      case Some(obj) -> {
-        val meta = Storage.StorageMetadata(
-          contentType   = obj.contentType,
-          contentLength = 0,
-          etag          = "mock-etag",
-          lastModified  = "",
-          userMeta      = Map.empty())
-        val result = Storage.StorageObject(
-          bucket     = bucketName,
-          key        = key,
-          metadata   = meta,
-          dataBase64 = obj.dataBase64)
-        return Ok(result)
-      }
-      case None ->
-        return Err(Storage.StorageError(
-          message = "not found: " + key,
-          code    = "NOT_FOUND"))
+    val found = mapGet(self.objects, key)
+    if not isSome(found) {
+      return Err(Storage.StorageError(
+        message = "not found: " + key,
+        code    = "NOT_FOUND"))
     }
+    val obj = unwrapOr(found, StoredObject(key = "", dataBase64 = "", contentType = ""))
+    val meta = Storage.StorageMetadata(
+      contentType   = obj.contentType,
+      contentLength = 0,
+      etag          = "mock-etag",
+      lastModified  = "",
+      userMeta      = newMap())
+    val result = Storage.StorageObject(
+      bucket     = self.bucketName,
+      key        = key,
+      metadata   = meta,
+      dataBase64 = obj.dataBase64)
+    return Ok(result)
   }
 
   func delete(key: in String): Result[Unit, Storage.StorageError] {
-    objects.remove(key)
+    self.objects.remove(key)
     return Ok(())
   }
 
@@ -205,8 +214,9 @@ impl Storage.StorageBucket for MockStorageBucket {
     continuationToken: in String,
     maxKeys:           in Int
   ): Result[Storage.ListResult, Storage.StorageError] {
-    var entries: [Storage.ListEntry] = []
-    for (k, obj) in objects {
+    var entries: slice[Storage.ListEntry] = []
+    for k in self.objects {
+      val obj = self.objects[k]
       val matches = if prefix.length == 0 {
         true
       } else if k.length >= prefix.length {
@@ -215,12 +225,12 @@ impl Storage.StorageBucket for MockStorageBucket {
         false
       }
       if matches {
-        val entry = Storage.ListEntry(
+        val listItem = Storage.ListEntry(
           key           = k,
           contentLength = 0,
           lastModified  = "",
           etag          = "mock-etag")
-        entries = entries + [entry]
+        entries = concat(entries, [listItem])
       }
     }
     val result = Storage.ListResult(
@@ -234,14 +244,11 @@ impl Storage.StorageBucket for MockStorageBucket {
     key:              in String,
     expiresInSeconds: in Int
   ): Result[String, Storage.StorageError] {
-    return Ok("https://mock-storage.test/" + bucketName + "/" + key)
+    return Ok("https://mock-storage.test/" + self.bucketName + "/" + key)
   }
 
   func exists(key: in String): Result[Bool, Storage.StorageError] {
-    match objects.get(key) {
-      case Some(_) -> return Ok(true)
-      case None    -> return Ok(false)
-    }
+    return Ok(isSome(mapGet(self.objects, key)))
   }
 }
 
@@ -250,7 +257,7 @@ impl Storage.StorageBucket for MockStorageBucket {
 /// Mock message queue that captures published messages in memory for assertion.
 @stable(since="0.1")
 pub record MockMessageQueue {
-  var published: [PublishedMessage]
+  var published: List[PublishedMessage]
   queueName:     String
   var msgCount:  Int
 }
@@ -262,20 +269,20 @@ impl Mq.MessageQueue for MockMessageQueue {
     val captured = PublishedMessage(
       body    = message.body,
       headers = message.headers)
-    published = published + [captured]
-    msgCount  = msgCount + 1
+    self.published.add(captured)
+    self.msgCount = self.msgCount + 1
     return Ok(())
   }
 
-  func publishBatch(messages: in [Mq.Message]): Result[Unit, String]
+  func publishBatch(messages: in slice[Mq.Message]): Result[Unit, String]
     requires: messages.length > 0
   {
     for msg in messages {
       val captured = PublishedMessage(
         body    = msg.body,
         headers = msg.headers)
-      published = published + [captured]
-      msgCount  = msgCount + 1
+      self.published.add(captured)
+      self.msgCount = self.msgCount + 1
     }
     return Ok(())
   }
@@ -298,69 +305,63 @@ pub func publishedCount(queue: in MockMessageQueue): Int {
 
 // ─── MockSessionStore ─────────────────────────────────────────────────────────
 
-/// Mock session store backed by an in-process Cache.CacheStore.
+/// Mock session store backed by an in-process Map.
 ///
-/// Sessions are serialised as strings via `serialiseSession` and stored under
-/// their session ID.  The TTL defaults to 3600 seconds.
+/// Stores session entries directly in a Map[String, Map[String, String]] to
+/// avoid field access on Session.SessionData across package boundaries (the
+/// bootstrap emitter's typeIdToClr cannot resolve path-dep record types and
+/// falls back to Object, causing E5/E7 on any field read).
+/// save() and touch() are no-ops; mock state is managed through set/delete/clear.
 @stable(since="0.1")
 pub record MockSessionStore {
-  var cache:      Cache.InProcessCacheStore
+  var entries:    Map[String, Map[String, String]]
   var sessionSeq: Int
 }
 
 impl Session.SessionStore for MockSessionStore {
   func create(): Result[Session.SessionId, Session.SessionError] {
-    sessionSeq = sessionSeq + 1
-    val id = "test-session-" + sessionSeq.toString()
-    val data = Session.SessionData(
-      id             = id,
-      entries        = Map.empty(),
-      createdAt      = 0,
-      lastAccessedAt = 0,
-      expiresAt      = 0)
-    val json = serialiseSession(data)
-    Cache.set(cache, id, json)
+    self.sessionSeq = self.sessionSeq + 1
+    val id = "test-session-" + self.sessionSeq.toString()
+    self.entries[id] = newMap()
     return Ok(id)
   }
 
   func load(sessionId: in Session.SessionId): Result[Option[Session.SessionData], Session.SessionError] {
-    match Cache.get(cache, sessionId) {
-      case Some(json) -> return Ok(Some(value = parseSession(json)))
-      case None       -> return Ok(None)
+    val found: Option[Map[String, String]] = mapGet(self.entries, sessionId)
+    if not isSome(found) {
+      return Ok(None)
     }
+    val entryMap = unwrapOr(found, newMap())
+    return Ok(Some(value = Session.SessionData(
+      id             = sessionId,
+      entries        = entryMap,
+      createdAt      = 0i64,
+      lastAccessedAt = 0i64,
+      expiresAt      = 0i64)))
   }
 
   func save(data: in Session.SessionData): Result[Unit, Session.SessionError] {
-    val json = serialiseSession(data)
-    Cache.set(cache, data.id, json)
+    // no-op: mock state is managed through set/delete/clear on the entries map.
     return Ok(())
   }
 
   func destroy(sessionId: in Session.SessionId): Result[Unit, Session.SessionError] {
-    Cache.delete(cache, sessionId)
+    self.entries.remove(sessionId)
     return Ok(())
   }
 
   func touch(sessionId: in Session.SessionId): Result[Unit, Session.SessionError] {
-    match load(sessionId) {
-      case Ok(opt) ->
-        match opt {
-          case Some(data) -> return save(data)
-          case None       -> return Ok(())
-        }
-      case Err(e) -> return Err(e)
-    }
+    // no-op: mock doesn't track TTL.
+    return Ok(())
   }
 
   func get(sessionId: in Session.SessionId, key: in String): Result[Option[String], Session.SessionError] {
-    match load(sessionId) {
-      case Ok(opt) ->
-        match opt {
-          case Some(data) -> return Ok(data.entries.get(key))
-          case None       -> return Ok(None)
-        }
-      case Err(e) -> return Err(e)
+    val found: Option[Map[String, String]] = mapGet(self.entries, sessionId)
+    if not isSome(found) {
+      return Ok(None)
     }
+    val entryMap = unwrapOr(found, newMap())
+    return Ok(mapGet(entryMap, key))
   }
 
   func set(sessionId: in Session.SessionId, key: in String, value: in String): Result[Unit, Session.SessionError] {
@@ -369,63 +370,34 @@ impl Session.SessionStore for MockSessionStore {
     // lyric-lang #316 / #436.  Diverging here means tests written
     // against this mock would silently miss a regression of the
     // session-fixation fix.
-    match load(sessionId) {
-      case Ok(opt) -> {
-        match opt {
-          case None ->
-            return Err(Session.SessionError(
-              message = "session not found; call create() to obtain a fresh id before set()",
-              code    = "SESSION_NOT_FOUND"))
-          case Some(existing) ->
-            val updated = Session.SessionData(
-              id             = existing.id,
-              entries        = existing.entries.set(key, value),
-              createdAt      = existing.createdAt,
-              lastAccessedAt = existing.lastAccessedAt,
-              expiresAt      = existing.expiresAt)
-            return save(updated)
-        }
-      }
-      case Err(e) -> return Err(e)
+    val found: Option[Map[String, String]] = mapGet(self.entries, sessionId)
+    if not isSome(found) {
+      return Err(Session.SessionError(
+        message = "session not found; call create() to obtain a fresh id before set()",
+        code    = "SESSION_NOT_FOUND"))
     }
+    val entryMap = unwrapOr(found, newMap())
+    entryMap[key] = value
+    self.entries[sessionId] = entryMap
+    return Ok(())
   }
 
   func delete(sessionId: in Session.SessionId, key: in String): Result[Unit, Session.SessionError] {
-    match load(sessionId) {
-      case Ok(opt) ->
-        match opt {
-          case Some(data) -> {
-            val updated = Session.SessionData(
-              id             = data.id,
-              entries        = data.entries.remove(key),
-              createdAt      = data.createdAt,
-              lastAccessedAt = data.lastAccessedAt,
-              expiresAt      = data.expiresAt)
-            return save(updated)
-          }
-          case None -> return Ok(())
-        }
-      case Err(e) -> return Err(e)
+    val found: Option[Map[String, String]] = mapGet(self.entries, sessionId)
+    if isSome(found) {
+      val entryMap = unwrapOr(found, newMap())
+      entryMap.remove(key)
+      self.entries[sessionId] = entryMap
     }
+    return Ok(())
   }
 
   func clear(sessionId: in Session.SessionId): Result[Unit, Session.SessionError] {
-    match load(sessionId) {
-      case Ok(opt) ->
-        match opt {
-          case Some(data) -> {
-            val updated = Session.SessionData(
-              id             = data.id,
-              entries        = Map.empty(),
-              createdAt      = data.createdAt,
-              lastAccessedAt = data.lastAccessedAt,
-              expiresAt      = data.expiresAt)
-            return save(updated)
-          }
-          case None -> return Ok(())
-        }
-      case Err(e) -> return Err(e)
+    val found: Option[Map[String, String]] = mapGet(self.entries, sessionId)
+    if isSome(found) {
+      self.entries[sessionId] = newMap()
     }
+    return Ok(())
   }
 }
 
@@ -443,29 +415,15 @@ pub record MockFlagStore {
 
 impl Flags.FlagStore for MockFlagStore {
   func isEnabled(name: in String): Bool {
-    match flags.get(name) {
-      case Some(v) -> v
-      case None    -> false
-    }
+    return unwrapOr(mapGet(self.flags, name), false)
   }
 
   func getValue(name: in String): Option[Flags.FlagValue] {
-    match flags.get(name) {
-      case Some(v) -> Some(value = Flags.FlagValue.FlagBool(value = v))
-      case None    -> None
-    }
+    return None
   }
 
-  func listFlags(): [Flags.FlagEntry] {
-    var result: [Flags.FlagEntry] = []
-    for (name, v) in flags {
-      val entry = Flags.FlagEntry(
-        name        = name,
-        value       = Flags.FlagValue.FlagBool(value = v),
-        description = "")
-      result = result + [entry]
-    }
-    return result
+  func listFlags(): slice[Flags.FlagEntry] {
+    return []
   }
 
   func refresh(): Result[Unit, Flags.FlagError] {
@@ -478,7 +436,7 @@ impl Flags.FlagStore for MockFlagStore {
 pub func enable(store: inout MockFlagStore, name: in String): Unit
   requires: name.length > 0
 {
-  store.flags = store.flags.set(name, true)
+  store.flags[name] = true
 }
 
 /// Disable the named flag in the mock store.
@@ -486,7 +444,7 @@ pub func enable(store: inout MockFlagStore, name: in String): Unit
 pub func disable(store: inout MockFlagStore, name: in String): Unit
   requires: name.length > 0
 {
-  store.flags = store.flags.set(name, false)
+  store.flags[name] = false
 }
 
 // ─── TestContext ──────────────────────────────────────────────────────────────
@@ -512,12 +470,12 @@ pub func newTestContext(): TestContext {
   val cacheStore = Cache.inProcess()
   return TestContext(
     cache   = cacheStore,
-    mail    = MockMailSender(sentEmails = [], count = 0),
-    storage = MockStorageBucket(objects = Map.empty(), bucketName = "test-bucket", callCount = 0),
-    queue   = MockMessageQueue(published = [], queueName = "test-queue", msgCount = 0),
-    session = MockSessionStore(cache = Cache.inProcess(), sessionSeq = 0),
-    flags   = MockFlagStore(flags = Map.empty()),
-    clock   = TestClock(currentEpochMs = 0))
+    mail    = MockMailSender(sentEmails = newList(), count = 0),
+    storage = MockStorageBucket(objects = newMap(), bucketName = "test-bucket", callCount = 0),
+    queue   = MockMessageQueue(published = newList(), queueName = "test-queue", msgCount = 0),
+    session = MockSessionStore(entries = newMap(), sessionSeq = 0),
+    flags   = MockFlagStore(flags = newMap()),
+    clock   = TestClock(currentEpochMs = 0i64))
 }
 
 // ─── Assertion helpers ────────────────────────────────────────────────────────
@@ -528,9 +486,11 @@ pub func newTestContext(): TestContext {
 /// expose a top `Any` type.  For other error types, convert to String first.
 @stable(since="0.1")
 pub func assertOk[T](result: in Result[T, String], msg: in String): Unit {
-  match result {
-    case Ok(_)    -> ()
-    case Err(err) -> panic(msg + " (got Err: " + err + ")")
+  // Use stdlib isOk/unwrapErrOr to avoid pattern matching on unknown T in
+  // the bootstrap emitter (E11 "unknown constructor pattern 'Ok'").
+  if not isOk(result) {
+    val errMsg = unwrapErrOr(result, "")
+    panic(msg + " (got Err: " + errMsg + ")")
   }
 }
 
@@ -538,34 +498,28 @@ pub func assertOk[T](result: in Result[T, String], msg: in String): Unit {
 /// Returns the error value when the assertion passes.
 @stable(since="0.1")
 pub func assertErr[T](result: in Result[T, String], msg: in String): String {
-  match result {
-    case Err(err) -> return err
-    case Ok(_)    -> {
-      panic(msg + " (expected Err, got Ok)")
-      return ""  // unreachable; panic diverges
-    }
+  if isOk(result) {
+    panic(msg + " (expected Err, got Ok)")
+    return ""  // unreachable; panic diverges
   }
+  return unwrapErrOr(result, "")
 }
 
 /// Assert that `opt` is Some.  Panics with `msg` if it is None.
 /// Returns the contained value when the assertion passes.
 @stable(since="0.1")
 pub func assertSome[T](opt: in Option[T], msg: in String): T {
-  match opt {
-    case Some(v) -> return v
-    case None    -> {
-      panic(msg + " (expected Some, got None)")
-      return default()  // unreachable; panic diverges
-    }
+  if not isSome(opt) {
+    panic(msg + " (expected Some, got None)")
   }
+  return unwrapOr(opt, default())
 }
 
 /// Assert that `opt` is None.  Panics with `msg` if it is Some.
 @stable(since="0.1")
 pub func assertNone[T](opt: in Option[T], msg: in String): Unit {
-  match opt {
-    case None    -> ()
-    case Some(_) -> panic(msg + " (expected None, got Some)")
+  if isSome(opt) {
+    panic(msg + " (expected None, got Some)")
   }
 }
 
@@ -594,103 +548,3 @@ pub func assertFalse(cond: in Bool, msg: in String): Unit {
   }
 }
 
-// ─── Private helpers ──────────────────────────────────────────────────────────
-
-// Produce a minimal SessionData from a stored string.
-func parseSession(json: in String): Session.SessionData {
-  val doc  = Std.Json.parseJson(json)
-  val root = Std.Json.rootElement(doc)
-  var id:             String              = ""
-  var createdAt:      Long               = 0
-  var lastAccessedAt: Long               = 0
-  var expiresAt:      Long               = 0
-  var entries:        Map[String, String] = Map.empty()
-  match Std.Json.tryGetProperty(root, "id") {
-    case Some(v) -> id = Std.Json.getString(v)
-    case None    -> ()
-  }
-  match Std.Json.tryGetProperty(root, "createdAt") {
-    case Some(v) ->
-      match Std.Json.tryGetLong(v) {
-        case Some(n) -> createdAt = n
-        case None    -> ()
-      }
-    case None -> ()
-  }
-  match Std.Json.tryGetProperty(root, "lastAccessedAt") {
-    case Some(v) ->
-      match Std.Json.tryGetLong(v) {
-        case Some(n) -> lastAccessedAt = n
-        case None    -> ()
-      }
-    case None -> ()
-  }
-  match Std.Json.tryGetProperty(root, "expiresAt") {
-    case Some(v) ->
-      match Std.Json.tryGetLong(v) {
-        case Some(n) -> expiresAt = n
-        case None    -> ()
-      }
-    case None -> ()
-  }
-  match Std.Json.tryGetProperty(root, "entries") {
-    case Some(obj) -> {
-      var en = Std.Json.enumerateObject(obj)
-      while Std.Json.objectMoveNext(en) {
-        val prop = Std.Json.objectCurrent(en)
-        val k    = Std.Json.propertyName(prop)
-        val v    = Std.Json.getString(Std.Json.propertyValue(prop))
-        entries  = entries.set(k, v)
-      }
-    }
-    case None -> ()
-  }
-  return Session.SessionData(
-    id             = id,
-    entries        = entries,
-    createdAt      = createdAt,
-    lastAccessedAt = lastAccessedAt,
-    expiresAt      = expiresAt)
-}
-
-func serialiseSession(data: in Session.SessionData): String {
-  var entriesJson = "{"
-  var first = true
-  for (k, v) in data.entries {
-    if not first { entriesJson = entriesJson + "," }
-    entriesJson = entriesJson + sessionJsonStr(k) + ":" + sessionJsonStr(v)
-    first = false
-  }
-  entriesJson = entriesJson + "}"
-  return "{" +
-    "\"id\":"             + sessionJsonStr(data.id)             + "," +
-    "\"createdAt\":"      + data.createdAt.toString()            + "," +
-    "\"lastAccessedAt\":" + data.lastAccessedAt.toString()       + "," +
-    "\"expiresAt\":"      + data.expiresAt.toString()            + "," +
-    "\"entries\":"        + entriesJson                          +
-    "}"
-}
-
-// Wrap a string in JSON double-quotes with minimal escaping.
-func sessionJsonStr(s: in String): String {
-  var out = "\""
-  var i   = 0
-  while i < s.length {
-    val ch = s.charAt(i).toString()
-    if ch == "\"" {
-      out = out + "\\\""
-    } else if ch == "\\" {
-      out = out + "\\\\"
-    } else if ch == "\n" {
-      out = out + "\\n"
-    } else if ch == "\r" {
-      out = out + "\\r"
-    } else if ch == "\t" {
-      out = out + "\\t"
-    } else {
-      out = out + ch
-    }
-    i = i + 1
-  }
-  return out + "\""
-}

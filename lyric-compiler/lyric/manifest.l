@@ -67,6 +67,9 @@ pub record PackageSection {
   authors:     List[String]
   license:     String
   repository:  Option[String]
+  /// Package kind — `Some("source-generator")` for generator packages,
+  /// `None` for normal library or application packages.
+  kind:        Option[String]
 }
 
 pub record PackageEntry {
@@ -79,6 +82,10 @@ pub record ProjectSection {
   output:         String
   outputAssembly: Option[String]
   packages:       List[PackageEntry]
+  // `[project.tests]` entries.  Mapping from synthetic-package-name
+  // (e.g. "Auth.AuthSecurityTests") to test file path.  Consumed by
+  // `lyric test --manifest <toml>` (#465).
+  tests:          List[PackageEntry]
 }
 
 // ── Dependency source forms ──────────────────────────────────────────────────
@@ -414,6 +421,13 @@ func parseInlineTable(c: inout Cursor, filePath: in String): Result[List[InlineP
           } else if vc == 'f' and peekAt(c, 1) == 'a' and peekAt(c, 2) == 'l' and peekAt(c, 3) == 's' and peekAt(c, 4) == 'e' {
             skipOne(c); skipOne(c); skipOne(c); skipOne(c); skipOne(c)
             pairs.add(InlinePair(key = key, tval = TVBool(b = false)))
+          } else if vc == '[' {
+            // Array value (e.g. features = ["aws"]) — consume and skip;
+            // InlinePair only tracks strings and bools so arrays are discarded.
+            match parseStringArray(c, filePath) {
+              case Err(e) -> return Err(error = e)
+              case Ok(_)  -> ()  // intentionally dropped
+            }
           } else {
             return Err(error = ParseError(filePath = filePath, line = c.line, column = c.col,
                                           message = "expected string or bool value in inline table"))
@@ -618,13 +632,15 @@ func assemblePackage(entries: in List[Entry]): Result[PackageSection, ManifestEr
           val authors: List[String] = unwrapOr(findStringList(entries, "package", "authors"), newList())
           val license     = unwrapOr(findString(entries, "package", "license"), "")
           val repository  = findString(entries, "package", "repository")
+          val kind        = findString(entries, "package", "kind")
           Ok(value = PackageSection(
             name        = name,
             version     = version,
             description = description,
             authors     = authors,
             license     = license,
-            repository  = repository))
+            repository  = repository,
+            kind        = kind))
         }
       }
   }
@@ -645,11 +661,13 @@ func assembleProject(entries: in List[Entry]): Option[ProjectSection] {
   val output         = unwrapOr(findString(entries, "project", "output"), "single")
   val outputAssembly = findString(entries, "project", "output_assembly")
   val packages       = collectSectionPairs(entries, "project.packages")
+  val tests          = collectSectionPairs(entries, "project.tests")
   Some(value = ProjectSection(
     name           = name,
     output         = output,
     outputAssembly = outputAssembly,
-    packages       = packages))
+    packages       = packages,
+    tests          = tests))
 }
 
 // ── Inline table helpers ─────────────────────────────────────────────────────
@@ -971,4 +989,85 @@ pub func depRegistryVersion(source: in DepSource): Option[String] {
     case Registry(v) -> Some(value = v)
     case _           -> None
   }
+}
+
+/// Return the `FeaturesSection` from the manifest, or a synthetic empty one
+/// if the `[features]` section is absent.
+pub func getManifestFeaturesOrEmpty(m: in Manifest): FeaturesSection {
+  match m.features {
+    case Some(f) -> return f
+    case None    -> return FeaturesSection(declared = newList(), defaults = newList())
+  }
+}
+
+/// Return the `defaults` field of a FeaturesSection (intra-package accessor).
+pub func featureSectionDefaults(s: in FeaturesSection): List[String] { s.defaults }
+
+/// Return the `declared` field of a FeaturesSection (intra-package accessor).
+pub func featureSectionDeclared(s: in FeaturesSection): List[String] { s.declared }
+
+/// Return the `default` feature list from the manifest's `[features]` section,
+/// or an empty list if the section is absent.
+pub func getManifestFeatureDefaults(m: in Manifest): List[String] {
+  featureSectionDefaults(getManifestFeaturesOrEmpty(m))
+}
+
+/// Return the `declared` feature list from the manifest's `[features]` section,
+/// or an empty list if the section is absent.
+pub func getManifestFeatureDeclared(m: in Manifest): List[String] {
+  featureSectionDeclared(getManifestFeaturesOrEmpty(m))
+}
+
+/// Read the `default` feature list directly from raw TOML text, bypassing the
+/// Manifest.features field entirely.  This avoids a bootstrap-emitter
+/// code-gen issue where matching Option[FeaturesSection] and accessing the
+/// resulting record's fields can return null in certain call-chain shapes.
+///
+/// Re-parses only the [features] entries — O(n) scan of the TOML token
+/// stream, acceptable for the bootstrap phase.
+pub func readFeatureDefaultsFromToml(text: in String, filePath: in String): List[String] {
+  val result: List[String] = newList()
+  match collectEntries(text, filePath) {
+    case Err(_)      -> ()
+    case Ok(entries) -> {
+      var i = 0
+      while i < entries.count {
+        val e = entries[i]
+        if e.section == "features" and e.key == "default" {
+          match e.value {
+            case VStrList(items) -> {
+              var j = 0
+              while j < items.count {
+                result.add(items[j])
+                j += 1
+              }
+            }
+            case _ -> ()
+          }
+        }
+        i += 1
+      }
+    }
+  }
+  result
+}
+
+/// Read all declared feature names directly from raw TOML text, bypassing
+/// Manifest.features.  See `readFeatureDefaultsFromToml` for rationale.
+pub func readFeatureDeclaredFromToml(text: in String, filePath: in String): List[String] {
+  val result: List[String] = newList()
+  match collectEntries(text, filePath) {
+    case Err(_)      -> ()
+    case Ok(entries) -> {
+      var i = 0
+      while i < entries.count {
+        val e = entries[i]
+        if e.section == "features" and e.key != "default" {
+          result.add(e.key)
+        }
+        i += 1
+      }
+    }
+  }
+  result
 }

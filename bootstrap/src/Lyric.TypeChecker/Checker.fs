@@ -34,6 +34,27 @@ let private err
         (span:  Span) =
     diags.Add(Diagnostic.error code msg span)
 
+/// Build a body-less `FunctionDecl` from a `FunctionSig` for symbol-table
+/// registration.  Used both for `IExtern` members (where the visibility
+/// span is the signature's own) and for `extern package` block members
+/// (where no host annotations exist and the visibility span falls back
+/// to `zeroSpan` because the sig itself has no decl span).
+let private sigToFunctionDecl
+        (sg: FunctionSig)
+        (visibilitySpan: Span) : FunctionDecl =
+    { DocComments = []
+      Annotations = []
+      Visibility  = Some (Pub visibilitySpan)
+      IsAsync     = sg.IsAsync
+      Name        = sg.Name
+      Generics    = sg.Generics
+      Params      = sg.Params
+      Return      = sg.Return
+      Where       = sg.Where
+      Contracts   = sg.Contracts
+      Body        = None
+      Span        = sg.Span }
+
 /// Allocate fresh type identifiers monotonically. The numbering is
 /// scoped to the package being checked; cross-package identity is a
 /// problem for the future contract-metadata layer.
@@ -137,8 +158,17 @@ let private registerItem
         | _ -> None
     | IWire w          -> Some (mkSym w.Name (DKWire w))
     | IExtern e        ->
-        // The extern itself isn't a name; its members are registered
-        // when the type checker visits the extern's body in T3.
+        // Register each EMSig member as a DKFunc so callers can look up
+        // the function in the symbol table during T5 expression checking.
+        for m in e.Members do
+            match m with
+            | EMSig sg ->
+                // `mkSym` mutates `byName`; the returned Symbol isn't
+                // used here because IExtern members aren't tracked in
+                // the outer item list.  The `|> ignore` discards the
+                // value but keeps the side effect.
+                mkSym sg.Name (DKFunc (sigToFunctionDecl sg sg.Span)) |> ignore
+            | _ -> ()
         None
     | IScopeKind s     -> Some (mkSym s.Name (DKScopeKind s))
     | ITest t          -> Some (mkSym t.Title (DKTest t))
@@ -462,14 +492,30 @@ let checkWithImports (file: SourceFile) (importedItems: Item list) : CheckResult
     // and `name/N` (arity-qualified) so overloaded functions each have
     // a unique key while single-definition functions still resolve by
     // bare name at callsites.
+    // Also include EMSig members from IExtern items (extern package declarations)
+    // so callers can type-check calls to extern-package functions.
+    let zeroSpan = Lyric.Lexer.Span.make Lyric.Lexer.Position.initial Lyric.Lexer.Position.initial
+    let externSigToDecl (sg: FunctionSig) : FunctionDecl =
+        sigToFunctionDecl sg zeroSpan
     let signatures =
         Seq.append (List.toSeq importedItems) (List.toSeq file.Items)
-        |> Seq.choose (fun it ->
+        |> Seq.collect (fun it ->
             match it.Kind with
             | IFunc fn ->
                 let sg = resolveFunctionSig table diags fn
-                Some (fn.Name, fn.Params.Length, sg)
-            | _ -> None)
+                Seq.ofList
+                    [ (fn.Name, fn.Params.Length, sg) ]
+            | IExtern e ->
+                e.Members
+                |> List.choose (fun m ->
+                    match m with
+                    | EMSig sg ->
+                        let fn = externSigToDecl sg
+                        let resolved = resolveFunctionSig table diags fn
+                        Some (fn.Name, fn.Params.Length, resolved)
+                    | _ -> None)
+                |> Seq.ofList
+            | _ -> Seq.empty)
         |> Seq.collect (fun (name, arity, sg) ->
             [ (name, sg)
               (name + "/" + string arity, sg) ])

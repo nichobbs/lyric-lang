@@ -33,3 +33,6 @@ output_assembly = "Std.Logging.dll"
 [dependencies]
 # Requires Lyric.Stdlib.dll for Std.Core and Std.LogHost.
 "Lyric.Stdlib" = { path = "../stdlib" }
+
+[project.tests]
+"Std.Logging.LoggingTests" = "tests/logging_tests.l"

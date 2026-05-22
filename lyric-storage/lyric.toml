@@ -11,20 +11,17 @@ output          = "single"
 output_assembly = "Storage.dll"
 
 [project.packages]
-"Storage"            = "src"
-"Storage.Aspects"    = "src"
-"Storage.Kernel.Net" = "src/_kernel/net"
-"Storage.Kernel.Jvm" = "src/_kernel/jvm"
+"Storage"            = "src/storage.l"
+"Storage.Aspects"    = "src/storage_aspects.l"
+"Storage.Kernel.Net" = "src/_kernel/net/storage_kernel.l"
 
 [features]
-dotnet    = []   # .NET kernel backend
-jvm       = []   # JVM kernel backend (Phase 6)
-s3        = []   # Amazon S3 (AWSSDK.S3 on .NET / software.amazon.awssdk:s3 on JVM)
-azureblob = []   # Azure Blob Storage (Azure.Storage.Blobs on .NET / com.azure:azure-storage-blob on JVM)
+s3        = []   # Amazon S3 (AWSSDK.S3 on .NET)
+azureblob = []   # Azure Blob Storage (Azure.Storage.Blobs on .NET)
 local     = []   # Local filesystem storage (cross-platform, no extra deps)
 
 [dependencies]
-"Lyric.Stdlib" = { path = "../stdlib" }
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }
 
 [nuget]
 # feature = "s3" — AWS SDK S3 module for .NET
@@ -32,10 +29,3 @@ local     = []   # Local filesystem storage (cross-platform, no extra deps)
 # feature = "azureblob" — Azure Blob Storage SDK for .NET
 "Azure.Storage.Blobs"   = "12.21.0"
 # feature = "local" — no extra NuGet deps (uses BCL System.IO)
-
-[maven]
-# feature = "s3" — AWS SDK S3 module for JVM
-"software.amazon.awssdk:s3"          = { version = "2.25.70", features = ["s3"] }
-# feature = "azureblob" — Azure Blob Storage SDK for JVM
-"com.azure:azure-storage-blob"       = { version = "12.25.0", features = ["azureblob"] }
-# feature = "local" — no extra Maven deps (uses java.nio.file.Files)

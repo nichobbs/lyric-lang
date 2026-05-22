@@ -22,6 +22,7 @@ import Std.Core
 import Std.Collections
 import Std.String
 import Lyric.Parser
+import Jvm.Classfile
 import Jvm.Lowering
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2663,9 +2664,10 @@ pub func lowerRecord(decl: in RecordDecl, pkgName: in String): LRecord {
   }
 
   LRecord(
-    className = className,
-    fields    = fields,
-    methods   = methods)
+    className        = className,
+    fields           = fields,
+    methods          = methods,
+    implementsIfaces = newList())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2952,6 +2954,52 @@ func makeGeneratorFactory(
     maxLocals = 0)        // inferred from slot scan
 }
 
+// ── IImpl pre-pass helpers ────────────────────────────────────────────────────
+
+record ImplEntry {
+  targetClass: String
+  ifaceClass:  String
+  methods:     List[LFunc]
+}
+
+// Convert a single-segment or multi-segment TypeExpr to a JVM binary class name.
+// Used to resolve `impl Y for X` target from the AST.
+//
+// The non-TRef fallback used to return `pkgName + "/$unknown"` — not a
+// valid JVM binary name and unreferenceable by the class loader.
+// `panic` here surfaces the gap at codegen time with a clear message
+// instead of letting an `interfaces` array reference a nonexistent
+// class and tripping `ClassNotFoundException: pkg/$unknown` at JVM
+// load time.  All `impl` targets are `TRef(path)` in practice today
+// (concrete record names); a non-TRef case is a parser/AST shape
+// not seen yet and we want to know about it loudly.
+func typeExprToJvmClass(te: in TypeExpr, pkgName: in String): String {
+  match te.kind {
+    case TRef(path) -> {
+      if path.segments.count == 1 {
+        pkgName + "/" + path.segments[0]
+      } else {
+        segmentsToJvmPath(path.segments)
+      }
+    }
+    case _ -> panic(
+      "Jvm.Codegen: `impl Y for X` target is not a TRef (path) — got an " +
+      "unsupported TypeExpr shape; refusing to emit an unbindable JVM " +
+      "class name.  Add a TypeExpr arm to typeExprToJvmClass if a new " +
+      "impl-target shape is intended.")
+  }
+}
+
+// Convert a ConstraintRef to a JVM binary class name.
+// Used to resolve `impl Y for X` interface from the AST.
+func constraintRefToJvmClass(cr: in ConstraintRef, pkgName: in String): String {
+  if cr.head.segments.count == 1 {
+    pkgName + "/" + cr.head.segments[0]
+  } else {
+    segmentsToJvmPath(cr.head.segments)
+  }
+}
+
 pub func codegenPackage(file: in SourceFile): LPackage {
   val pkgName    = segmentsToJvmPath(file.packageDecl.path.segments)
   val funcsClass = pkgName
@@ -2959,6 +3007,41 @@ pub func codegenPackage(file: in SourceFile): LPackage {
   val fns:   List[LFunc]        = newList()
   val items: List[LPackageItem] = newList()
   var hasMain = false
+  // Captured return type of the Lyric `main(): T` so the JVM wrapper can
+  // emit a correctly-typed invokestatic.  `JVoid` until / unless a main is
+  // observed.  When the Lyric main returns `Int`, the wrapper pops the int
+  // off the stack (POSIX-style exit code semantics are not propagated yet —
+  // a follow-up can route through `java.lang.System.exit(int)`).
+  var mainRet: JvmType = JVoid
+
+  // ── IImpl pre-pass ──────────────────────────────────────────────────────────
+  // Collect all IImpl blocks before the main item loop so that when IRecord
+  // is processed, its ClassFile can include the correct `implements` list.
+  val implEntries: List[ImplEntry] = newList()
+  var pi = 0
+  while pi < file.items.count {
+    match file.items[pi].kind {
+      case IImpl(decl) -> {
+        val targetClass = typeExprToJvmClass(decl.target, pkgName)
+        val ifaceClass  = constraintRefToJvmClass(decl.iface, pkgName)
+        val implFuncs: List[LFunc] = newList()
+        var mi2 = 0
+        while mi2 < decl.members.count {
+          match decl.members[mi2] {
+            case IMplFunc(fn) -> implFuncs.add(lowerFunc(fn, pkgName, targetClass))
+            case IMplAssoc(_) -> {}
+          }
+          mi2 = mi2 + 1
+        }
+        implEntries.add(ImplEntry(
+          targetClass = targetClass,
+          ifaceClass  = ifaceClass,
+          methods     = implFuncs))
+      }
+      case _ -> {}
+    }
+    pi = pi + 1
+  }
 
   var i = 0
   while i < file.items.count {
@@ -2995,14 +3078,70 @@ pub func codegenPackage(file: in SourceFile): LPackage {
           fns.add(lowerFunc(decl, pkgName, funcsClass))
           if isMainFunc(decl) {
             hasMain = true
+            // Resolve the Lyric main's declared return type so the JVM
+            // wrapper can call it with the matching descriptor.
+            mainRet =
+              match decl.ret {
+                case Some(te) -> typeExprToJvm(te, pkgName)
+                case None     -> JVoid
+              }
           }
         }
       }
       case IRecord(decl) -> {
-        items.add(LPRecord(rec = lowerRecord(decl, pkgName)))
+        // Look up any IImpl entries for this type and inject interfaces + methods.
+        val className = pkgName + "/" + decl.name
+        val ifaces: List[String] = newList()
+        val implFuncs: List[LFunc] = newList()
+        var ei = 0
+        while ei < implEntries.count {
+          if implEntries[ei].targetClass == className {
+            ifaces.add(implEntries[ei].ifaceClass)
+            val ms = implEntries[ei].methods
+            var mi3 = 0
+            while mi3 < ms.count { implFuncs.add(ms[mi3]); mi3 = mi3 + 1 }
+          }
+          ei = ei + 1
+        }
+        val baseRec = lowerRecord(decl, pkgName)
+        val mergedMethods: List[LFunc] = newList()
+        for fn in baseRec.methods.toArray() { mergedMethods.add(fn) }
+        for fn in implFuncs.toArray()      { mergedMethods.add(fn) }
+        items.add(LPRecord(rec = LRecord(
+          className        = baseRec.className,
+          fields           = baseRec.fields,
+          methods          = mergedMethods,
+          implementsIfaces = ifaces)))
       }
       case IExposedRec(decl) -> {
-        items.add(LPRecord(rec = lowerRecord(decl, pkgName)))
+        // Same impl-injection logic as `IRecord` (#900): `impl Trait
+        // for ExposedRec { … }` blocks targeting an exposed-record
+        // type must inject `implements` clauses + method bodies into
+        // the emitted ClassFile, otherwise the record carries the
+        // declared interface only in source-level AST and the JVM
+        // verifier rejects dispatch through `Trait`-typed slots.
+        val className = pkgName + "/" + decl.name
+        val ifaces: List[String] = newList()
+        val implFuncs: List[LFunc] = newList()
+        var ei = 0
+        while ei < implEntries.count {
+          if implEntries[ei].targetClass == className {
+            ifaces.add(implEntries[ei].ifaceClass)
+            val ms = implEntries[ei].methods
+            var mi3 = 0
+            while mi3 < ms.count { implFuncs.add(ms[mi3]); mi3 = mi3 + 1 }
+          }
+          ei = ei + 1
+        }
+        val baseRec = lowerRecord(decl, pkgName)
+        val mergedMethods: List[LFunc] = newList()
+        for fn in baseRec.methods.toArray() { mergedMethods.add(fn) }
+        for fn in implFuncs.toArray()      { mergedMethods.add(fn) }
+        items.add(LPRecord(rec = LRecord(
+          className        = baseRec.className,
+          fields           = baseRec.fields,
+          methods          = mergedMethods,
+          implementsIfaces = ifaces)))
       }
       case IUnion(decl) -> {
         items.add(LPSealedUnion(su = lowerUnion(decl, pkgName)))
@@ -3010,12 +3149,61 @@ pub func codegenPackage(file: in SourceFile): LPackage {
       case IConst(_)         -> {}
       case IVal(_)           -> {}
       case ITypeAlias(_)     -> {}
-      case IDistinctType(_)  -> {}
-      case IEnum(_)          -> {}
+      case IDistinctType(decl) -> {
+        val inner = typeExprToJvm(decl.underlying, pkgName)
+        items.add(LPDistinctType(dt = LDistinctType(
+          wrapperClass   = pkgName + "/" + decl.name,
+          underlyingType = inner)))
+      }
+      case IEnum(decl) -> {
+        val className2 = pkgName + "/" + decl.name
+        val variants: List[String] = newList()
+        var ci = 0
+        while ci < decl.cases.count {
+          variants.add(decl.cases[ci].name)
+          ci = ci + 1
+        }
+        items.add(LPEnum(en = LEnumType(className = className2, variants = variants)))
+      }
       case IOpaque(_)        -> {}
       case IProtected(_)     -> {}
-      case IInterface(_)     -> {}
-      case IImpl(_)          -> {}
+      case IInterface(decl) -> {
+        // Emit a JVM interface ClassFile: one abstract method per IMSig member.
+        val ifClassName = pkgName + "/" + decl.name
+        val abstractMethods: List[MethodInfo] = newList()
+        val concreteFuncs: List[LFunc] = newList()
+        val emptyAttrs: List[Attribute] = newList()
+        var imi = 0
+        while imi < decl.members.count {
+          match decl.members[imi] {
+            case IMSig(sig) -> {
+              val params: List[JvmType] = newList()
+              var spi = 0
+              while spi < sig.params.count {
+                params.add(typeExprToJvm(sig.params[spi].ty, pkgName))
+                spi = spi + 1
+              }
+              val ret = match sig.ret {
+                case Some(te) -> typeExprToJvm(te, pkgName)
+                case None     -> JVoid
+              }
+              val desc = buildDescriptor(params, ret)
+              abstractMethods.add(makeMethodInfo(
+                ACC_PUBLIC + ACC_ABSTRACT, sig.name, desc, emptyAttrs))
+            }
+            case IMFunc(fn) -> {
+              concreteFuncs.add(lowerFunc(fn, pkgName, ifClassName))
+            }
+            case IMAssoc(_) -> {}
+          }
+          imi = imi + 1
+        }
+        items.add(LPInterface(iface = LInterface(
+          className       = ifClassName,
+          abstractMethods = abstractMethods,
+          concreteFuncs   = concreteFuncs)))
+      }
+      case IImpl(_)          -> {}   // handled by pre-pass above
       case IWire(_)          -> {}
       case IScopeKind(_)     -> {}
       case IExtern(_)        -> {}
@@ -3030,18 +3218,52 @@ pub func codegenPackage(file: in SourceFile): LPackage {
     i = i + 1
   }
 
-  // If there's a `main(): Unit` function, add a JVM-main wrapper that accepts
-  // String[] and delegates to the Lyric main().
+  // If there's a `main(): T` function, add a JVM-main wrapper that accepts
+  // String[] and delegates to the Lyric main().  The wrapper has to call the
+  // Lyric main with its actual return descriptor (e.g. `()I` for `Int`,
+  // `()V` for `Unit`) — otherwise the JVM raises NoSuchMethodError.  Any
+  // non-void return value is dropped (POP/POP2) before returning; exposing
+  // it as a process exit code is a follow-up via java.lang.System.exit.
   if hasMain {
+    // Guard against Long/Double `main` returns: the wrapper would need
+    // category-2 `POP2` to discard them, and the generator only emits
+    // category-1 `LPop` today.  Emitting `LPop` against a 2-slot value
+    // would leave the stack unbalanced and trigger a JVM `VerifyError`
+    // at class load.  Refuse to compile rather than silently produce a
+    // broken class file; the source program can wrap the value in an
+    // `Int` return (the idiomatic exit-code shape) or `Unit`.
+    // bridge.l::mainReturns2SlotType pre-validates literal Long/Double
+    // return-type identifiers via J001 before reaching codegenPackage,
+    // but only catches the bare name; a type alias such as
+    // `type MyLong = Long` resolves to JLong here and trips these
+    // panics rather than J001.  See follow-up to widen
+    // mainReturns2SlotType to the resolved slot type.
+    match mainRet {
+      case JLong   -> panic("Jvm.Codegen: `func main(): Long` is not supported on the JVM target — wrap the result in `Int` or `Unit`")
+      case JDouble -> panic("Jvm.Codegen: `func main(): Double` is not supported on the JVM target — wrap the result in `Int` or `Unit`")
+      case _       -> ()
+    }
     val jvmMainParams: List[JvmType] = newList()
     jvmMainParams.add(JArray(elem = JRef(className = "java/lang/String")))
     val jvmMainInsns: List[LInsn] = newList()
     val lyricMainPs: List[JvmType] = newList()
+    // Currently emits main():()V regardless of Lyric main's return type.
+    // Long/Double return would require POP2; Int/Bool etc. would require POP.
+    // Tracked as a follow-up once the JVM wrapper records the Lyric main return type.
     jvmMainInsns.add(LInvokestatic(
       owner  = funcsClass,
       name   = "main",
       params = lyricMainPs,
-      ret    = JVoid))
+      ret    = mainRet))
+    // Discard the Lyric main's return value (when any) before issuing the
+    // JVM `void` return.  The Long/Double 2-slot cases are rejected above,
+    // so every remaining non-void return is category-1 (Int, Boolean,
+    // references, etc.) — a single `LPop` is correct.  Exposing the value
+    // as a process exit code is a follow-up via java.lang.System.exit.
+    match mainRet {
+      case JVoid -> ()
+      case _     -> jvmMainInsns.add(LPop)
+    }
     jvmMainInsns.add(LReturn)
     val jvmMain = LFunc(
       flags     = 0x0009,
@@ -3049,7 +3271,7 @@ pub func codegenPackage(file: in SourceFile): LPackage {
       params    = jvmMainParams,
       ret       = JVoid,
       insns     = jvmMainInsns,
-      maxStack  = 1,
+      maxStack  = 2,
       maxLocals = 1)
     fns.add(jvmMain)
   }

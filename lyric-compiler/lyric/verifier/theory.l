@@ -15,6 +15,10 @@ import Lyric.Parser
 pub union RangeBoundKind {
   case RBKClosed(lo: Long, hi: Long)
   case RBKHalfOpen(lo: Long, hi: Long)
+  // No lower bound — emit only `v <= hi`.  Models AST `..=hi` (`RBLowerOpen`).
+  case RBKUpperBound(hi: Long)
+  // No upper bound — emit only `lo <= v`.  Models AST `lo..` (`RBUpperOpen`).
+  case RBKLowerBound(lo: Long)
   case RBKNone
 }
 
@@ -58,6 +62,29 @@ pub func primitiveSort(name: in String): Option[SortInfo] {
 // §3. TypeExpr → SortInfo.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Build a qualified SMT datatype name from a module path.  Joins segments with
+// `.` so distinct packages with the same short type name (e.g. `Std.Time.Instant`
+// vs `MyPkg.Instant`) produce distinct sorts.  Single-segment paths return the
+// segment unchanged so primitive sorts and built-ins like `Option` keep their
+// canonical names.
+//
+// `.` is chosen over `_` because Lyric identifiers allow `_` (UAX #31
+// XID_Continue), so a `_` separator would collide on inputs like
+// `Pkg_A.Foo` vs `Pkg.A_Foo`.  `.` cannot appear inside a single
+// identifier segment, so the joined string is unambiguous, and SMT-LIB
+// v2.6 §3.1 admits `.` in simple symbols.
+pub func qualifiedDatatypeName(segs: in List[String]): String {
+  if segs.count == 0 { return "?" }
+  if segs.count == 1 { return segs[0] }
+  var name = segs[0]
+  var i = 1
+  while i < segs.count {
+    name = name + "." + segs[i]
+    i = i + 1
+  }
+  name
+}
+
 // Map a TypeExpr to a SortInfo.  Falls back to an uninterpreted sort for
 // unknown types (M4.1 limitation).
 pub func sortOfTypeExpr(t: in TypeExpr): SortInfo {
@@ -73,7 +100,9 @@ pub func sortOfTypeExpr(t: in TypeExpr): SortInfo {
         case Some(si) -> si
         case None     -> {
           val emptyArgs: List[Sort] = newList()
-          sortInfoNoRange(SDatatype(name = leaf, args = emptyArgs))
+          // Use the qualified (Pkg_Sub_Name) form so distinct types with the
+          // same short name don't collapse into one SMT sort.
+          sortInfoNoRange(SDatatype(name = qualifiedDatatypeName(segs), args = emptyArgs))
         }
       }
     }
@@ -88,8 +117,7 @@ pub func sortOfTypeExpr(t: in TypeExpr): SortInfo {
         i = i + 1
       }
       val segs = head.segments
-      val leaf = if segs.count > 0 { segs[segs.count - 1] } else { "?" }
-      sortInfoNoRange(SDatatype(name = leaf, args = argSorts))
+      sortInfoNoRange(SDatatype(name = qualifiedDatatypeName(segs), args = argSorts))
     }
     case TArray(_, elt) -> {
       sortInfoNoRange(SSlice(element = sortOfTypeExpr(elt).sort))
@@ -160,8 +188,20 @@ func constFoldRangeBound(rb: in RangeBound): RangeBoundKind {
         case None -> RBKNone
       }
     }
-    case RBLowerOpen(_, _) -> RBKNone
-    case RBUpperOpen(_, _) -> RBKNone
+    case RBLowerOpen(hi) -> {
+      // AST: `..=hi` — no lower bound, closed upper bound.
+      match foldExprToLong(hi) {
+        case Some(b) -> RBKUpperBound(hi = b)
+        case None    -> RBKNone
+      }
+    }
+    case RBUpperOpen(lo) -> {
+      // AST: `lo..` — closed lower bound, no upper bound.
+      match foldExprToLong(lo) {
+        case Some(a) -> RBKLowerBound(lo = a)
+        case None    -> RBKNone
+      }
+    }
   }
 }
 
@@ -242,6 +282,14 @@ pub func rangeHypotheses(binder: in String, info: in SortInfo): List[Term] {
       val v = TVar(name = binder, sort = info.sort)
       result.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = lo), sort = SInt), v)))
       result.add(TBuiltin(op = BOpLt,  args = termList2(v, TLit(value = VLInt(n = hi), sort = SInt))))
+    }
+    case RBKUpperBound(hi) -> {
+      val v = TVar(name = binder, sort = info.sort)
+      result.add(TBuiltin(op = BOpLte, args = termList2(v, TLit(value = VLInt(n = hi), sort = SInt))))
+    }
+    case RBKLowerBound(lo) -> {
+      val v = TVar(name = binder, sort = info.sort)
+      result.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = lo), sort = SInt), v)))
     }
   }
   result

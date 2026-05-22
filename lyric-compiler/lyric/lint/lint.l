@@ -131,6 +131,23 @@ func checkDocTodos(docs: in List[DocComment]): List[LintDiag] {
   acc
 }
 
+// L006 — @inline_template has no effect: C-mode aspect inlining is not yet implemented.
+// (see docs/27-aspect-libraries.md §C-mode and docs/03-decision-log.md D050)
+func checkAnnotationsL006(anns: in List[Annotation], sp: in Span): List[LintDiag] {
+  val acc: List[LintDiag] = newList()
+  var i = 0
+  while i < anns.count {
+    val ann = anns[i]
+    if ann.name.segments.count == 1 and ann.name.segments[0] == "inline_template" {
+      acc.add(lintWarning("L006",
+        "@inline_template has no effect: C-mode aspect inlining is not yet implemented (docs/27 / D050)",
+        sp))
+    }
+    i = i + 1
+  }
+  acc
+}
+
 // L005 — pub func with a block body should declare at least one contract.
 func checkPubContract(vis: in Option[Visibility], fn: in FunctionDecl): List[LintDiag] {
   match vis {
@@ -175,8 +192,12 @@ func checkItem(item: in Item): List[LintDiag] {
   val acc: List[LintDiag] = newList()
   val vis  = item.visibility
   val docs = item.docComments
+  appendDiags(acc, checkAnnotationsL006(item.annotations, item.span))
   match item.kind {
     case IFunc(fn) -> {
+      // item.annotations and fn.annotations are the same list for top-level
+      // functions (both parsed from the same `anns` value); the outer
+      // checkAnnotationsL006(item.annotations, ...) above already covers them.
       appendDiags(acc, checkFuncName(fn.name, fn.span))
       appendDiags(acc, checkPubDoc(vis, docs, fn.name, "func", item.span))
       appendDiags(acc, checkDocTodos(docs))

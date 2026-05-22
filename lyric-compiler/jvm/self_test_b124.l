@@ -32,7 +32,7 @@ func makePackageClasses(pool: in Pool): List[BuiltClass] {
   val pairFields: List[LField] = newList()
   pairFields.add(LField(flags = ACC_PRIVATE, name = "a", fieldType = JInt))
   pairFields.add(LField(flags = ACC_PRIVATE, name = "b", fieldType = JInt))
-  val pairRec = LRecord(className = "Pair", fields = pairFields, methods = newList())
+  val pairRec = LRecord(className = "Pair", fields = pairFields, methods = newList(), implementsIfaces = newList())
 
   // LPDistinctType: Weight wrapping JInt
   val weightDt = LDistinctType(wrapperClass = "Weight", underlyingType = JInt)

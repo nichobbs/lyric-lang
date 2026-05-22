@@ -51,6 +51,7 @@ let main argv =
             GenericRecordTests.tests
             JsonDeriveTests.tests
             ContractMetaTests.tests
+            SdkVersionSkewTests.tests
             TryCatchTests.tests
             StdHttpTests.tests
             StdMathTests.tests
@@ -65,6 +66,7 @@ let main argv =
             ProtectedTypeTests.tests
             StdlibLyricTests.tests
             KernelBoundaryTests.tests
+            CircuitStoreHostTests.tests
             JvmSelfTest.tests
             MsilSelfTestM1.tests
             MsilSelfTestM2a.tests
@@ -280,6 +282,10 @@ let main argv =
             JvmLoweringB128Test.tests
             JvmLoweringB129Test.tests
             JvmLoweringB130Test.tests
+            JvmLoweringB131Test.tests
+            JvmLoweringB132Test.tests
+            JvmLoweringB133Test.tests
+            JvmLoweringB134Test.tests
             SelfHostedLexerTests.tests
             SelfHostedParserTests.tests
             SelfHostedTypeCheckerTests.tests
@@ -289,6 +295,9 @@ let main argv =
             SelfHostedTestSynthTests.tests
             SelfHostedManifestTests.tests
             SelfHostedVerifierTests.tests
+            SelfHostedGeneratorTests.tests
+            SelfHostedDerivesTests.tests
+            SelfHostedMonoTests.tests
             MultiFilePackageTests.tests
             ProjectAsDllTests.tests
             CfgErasureTests.tests

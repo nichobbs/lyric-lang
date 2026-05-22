@@ -152,17 +152,17 @@ around(args) -> ret {
 
 `proceed(args)` may appear anywhere in the around body, including inside loops, if-branches, and try blocks.
 
-## §22.6 Planned features (not yet implemented)
+## §22.6 Features not yet implemented
 
-The following features are designed and specified in `docs/26-aspects.md` but not yet implemented in the compiler:
+The following features are designed and specified in `docs/26-aspects.md` but not yet wired in the compiler:
 
 **`call` context.** A future milestone adds an ambient `call` value inside the around body that exposes metadata about the weave site: `call.shortName`, `call.qualifiedName`, `call.modulePath`, `call.elapsed` (elapsed time after `proceed`), `call.annotations`, and `call.sourceLocation`. The syntax will be `around(call) -> ret { ... }`.
 
-**`config {}` in aspects.** Aspect-level config blocks for compile-time-overridable parameters (e.g. `config { enabled: Bool = true }`) are deferred.
+**`config {}` injection.** The `config { }` block inside an aspect body parses and is stored in the AST, but the weaver does not yet inject the config values at weave sites. The block is useful for documentation and will be wired in a follow-up milestone.
 
-**Aspect templates.** `pub aspect Name { around(call) -> ret { ... } }` without a `matches:` clause — an exportable template that consumer packages instantiate with their own filter — **shipped** (D051 / D-progress-221; used in `lyric-otel`, `lyric-logging`, `lyric-web`, `lyric-cache`, `lyric-db`).
+**`@inline_template` (C-mode).** The `@inline_template` annotation on a `pub aspect` is parsed but has no effect — C-mode body re-compilation in the consumer package is not yet implemented. The linter emits an L006 warning when it is present.
 
-For the current milestone, the aspect system works end-to-end: write an aspect in a package, the compiler weaves it over the matched functions at build time, and the woven code runs with the correct before/after/loop behaviour.
+The rest of the aspect system works end-to-end: write an aspect in a package, publish it, consume it in another package, and the compiler weaves it over the matched functions at build time. Aspect templates (`pub aspect` without `matches:`), pointcut predicates (`annotated:`, `visibility:`, `signature: returns`), composition ordering (`wraps:` / `inside:`), and the `except name in { … }` exclusion clause are all fully shipped.
 
 ## Exercises
 

@@ -57,7 +57,7 @@ This is also not an API reference. The standard library's source lives in `stdli
 
 ## A note on the compiler
 
-The bootstrap compiler exists and ships working code. `lyric build`, `lyric run`, `lyric test`, and `lyric prove` are real commands you can run today. The compiler targets .NET 10. Some features described in this book are ahead of what is shipped — notably, some advanced FFI, certain `@projectable` edge cases, and the full standard library surface — but the core language and the features that matter most for learning are implemented.
+The compiler exists and ships working code. `lyric build`, `lyric run`, `lyric test`, `lyric bench`, and `lyric prove` are real commands you can run today. The compiler targets .NET 10 and JVM (Java 21). The core language, standard library, FFI, contracts, aspects, formatter, test runner, and benchmarking tool are all implemented. Features still in progress are noted inline where they appear; the most significant are the `lyric run --target jvm` convenience wrapper, JUnit 5 ConsoleLauncher integration, `module-path.txt` generation for JVM builds, the `call` context inside aspect bodies, and `@inline_template` C-mode aspect inlining.
 
 Where a feature is not yet shipped, the text says so. Descriptions that say "the compiler checks" or "the prover discharges" are not hypothetical — they describe what actually happens when you run the commands.
 
@@ -67,6 +67,6 @@ Sequentially, ideally. The examples build on each other. The banking service tha
 
 That said, if you are already familiar with the basics and want to get to contracts, jump to Chapter 8. If you want to understand the test infrastructure, jump to Chapter 15. Each chapter starts with a short summary of what it covers and what you should already know.
 
-Code examples use Lyric for Lyric source, `sh` for shell commands, `json` for JSON, and `toml` for configuration. Comments in Lyric source use `//`. All examples are written to be runnable with the bootstrap compiler unless explicitly noted.
+Code examples use Lyric for Lyric source, `sh` for shell commands, `json` for JSON, and `toml` for configuration. Comments in Lyric source use `//`. All examples are written to be runnable with the current compiler release unless explicitly noted.
 
 One last thing: the language has opinions, and the book explains them. Design decisions are not arbitrary — there is a decision log (`docs/03-decision-log.md`) that records the reasoning behind every significant choice. When the book presents a sidebar that starts with "Why does Lyric...", it is drawing on that log. If you find yourself disagreeing with a decision, the log is the place to read the other side.

@@ -2,6 +2,18 @@
 
 WebSocket server with pluggable backends and aspect-based security.
 
+## Platform parity
+
+| Feature flag | Backend                                              | Status                |
+|--------------|------------------------------------------------------|-----------------------|
+| `dotnet`     | ASP.NET Core WebSockets via `Ws.Kernel.Net`          | Available             |
+| `jvm`        | Undertow WebSocket via `Ws.Kernel.Jvm`               | Planned (Phase 6)     |
+
+`Ws.Kernel.Jvm` declares the Undertow WebSocket bindings; the JVM
+helper classes are supplied by the Lyric JVM stdlib JAR (out-of-repo).
+Until that JAR ships, only the `dotnet` feature produces a runnable
+artifact.
+
 ## Packages
 
 | Package | Purpose |

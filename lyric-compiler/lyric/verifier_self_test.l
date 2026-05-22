@@ -411,6 +411,131 @@ func testProveParseError(): Unit {
   assertEqualInt(summaryTotalCount(summary), 0, "prove-parse-error: no goals")
 }
 
+// #336: aspect weaving runs before VC generation, so the verifier sees
+// the wrapper's composed contracts and the around body that the runtime
+// actually executes — V0031 is retired and the proof obligations come
+// from the woven body.
+func testProveAspectWeaveNoV0031(): Unit {
+  // Aspect `Trivial` matches `compute` and adds a tautological
+  // `ensures: true` clause to the wrapper.  Before #336 this fired
+  // V0031 (and the bare body, not the wrapper, was "proven"); after
+  // #336 the verifier sees the woven wrapper, no V0031 fires, and
+  // the trivial discharger closes the obligations on the woven body.
+  val src =
+    "@proof_required\npackage P\n" +
+    "aspect Trivial {\n" +
+    "  matches: name like \"compute*\"\n" +
+    "  ensures: true\n" +
+    "  around(args) -> ret { proceed(args) }\n" +
+    "}\n" +
+    "func compute(x: in Int): Int { x }\n"
+  val summary = prove(src)
+  assertTrue(not summaryHasErrorDiag(summary), "aspect-weave-noV0031: no error diags")
+  // V0031 must not appear — the verifier walks the woven body.
+  var hasV0031 = false
+  var di = 0
+  while di < summary.diagnostics.count {
+    if summary.diagnostics[di].code == "V0031" { hasV0031 = true }
+    di = di + 1
+  }
+  assertTrue(not hasV0031, "aspect-weave-noV0031: V0031 retired (weaver runs pre-VCgen)")
+}
+
+// #336: with no aspect block, the verifier and weaver behave identically
+// — the pre-existing prove-pr-no-contracts smoke still holds.
+func testProveNoAspectStillWorks(): Unit {
+  val src = "@proof_required\npackage P\nfunc f(): Int { 0 }\n"
+  val summary = prove(src)
+  assertTrue(not summaryHasErrorDiag(summary), "no-aspect-still-works: no error diags")
+}
+
+func testProveProtectedTypeInvariantHolds(): Unit {
+  // An entry with an empty body trivially preserves the invariant:
+  // WP(n>=0, {}) = n>=0, which is the requires hypothesis — discharged.
+  val src = "@proof_required\npackage P\nprotected type Counter {\n  var n: Int\n  invariant: n >= 0\n  entry noop(): Unit { }\n}\n"
+  val summary = prove(src)
+  match summary.level {
+    case VLProofRequired -> {}
+    case _ -> { assertTrue(false, "prot-inv-holds: expected VLProofRequired") }
+  }
+  assertTrue(not summaryHasFailure(summary), "prot-inv-holds: no failure")
+  assertTrue(not summaryHasErrorDiag(summary), "prot-inv-holds: no error diags")
+}
+
+func testProveProtectedTypeInvariantViolated(): Unit {
+  // An assert after a contradicting assignment produces an unresolvable side
+  // goal that the trivial discharger cannot close.
+  val src = "@proof_required\npackage P\nprotected type Counter {\n  var n: Int\n  invariant: n >= 0\n  entry bad(): Unit {\n    n = 0 - 1\n    assert(n >= 0)\n  }\n}\n"
+  val summary = prove(src)
+  match summary.level {
+    case VLProofRequired -> {}
+    case _ -> { assertTrue(false, "prot-inv-violated: expected VLProofRequired") }
+  }
+  assertTrue(summaryHasFailure(summary), "prot-inv-violated: has failure")
+}
+
+func testProveProtectedFuncContractViolated(): Unit {
+  // `goalsForFile`'s `IProtected` arm dispatches `PMEntry` through
+  // `goalsForEntry` (which augments with invariants) and `PMFunc`
+  // through `goalsForProtectedFunc` (which uses the helper's own
+  // contracts unaugmented).  The existing
+  // `testProveProtectedType*Invariant*` tests only exercise the
+  // `PMEntry` route.  Pin the `PMFunc` route by declaring a helper
+  // whose ensures clause is trivially unprovable (#664).
+  val src =
+    "@proof_required\npackage P\n" +
+    "protected type Counter {\n" +
+    "  var n: Int\n" +
+    "  invariant: n >= 0\n" +
+    "  func helper(): Int requires: true ensures: result < 0 { 0 }\n" +
+    "}\n"
+  val summary = prove(src)
+  match summary.level {
+    case VLProofRequired -> {}
+    case _ -> { assertTrue(false, "prot-func-violated: expected VLProofRequired") }
+  }
+  assertTrue(summaryHasFailure(summary), "prot-func-violated: PMFunc with unprovable ensures has failure")
+}
+
+// `..= hi` smoke: verifier accepts the half-open AST without crashing (RBKLowerBound is parser-unreachable today; theory.l keeps it defensive).
+func testProveRangeBoundUpperOnly(): Unit {
+  val src = "@proof_required\npackage P\ntype Pct = Int range ..= 100\nfunc clip(x: in Pct): Int { return x }\n"
+  val summary = prove(src)
+  match summary.level {
+    case VLProofRequired -> {}
+    case _ -> { assertTrue(false, "range-upper-only: expected VLProofRequired") }
+  }
+  assertTrue(not summaryHasErrorDiag(summary), "range-upper-only: no error diags")
+}
+
+// #735/#746 sort-name smoke: two same-shape records compile through `qualifiedDatatypeName` without crash.
+func testProveSortNamespacing(): Unit {
+  val src = "@proof_required\npackage P\nrecord A { x: Int }\nrecord B { x: Int }\nfunc id(a: in A): A { return a }\n"
+  val summary = prove(src)
+  match summary.level {
+    case VLProofRequired -> {}
+    case _ -> { assertTrue(false, "sort-namespace: expected VLProofRequired") }
+  }
+  assertTrue(not summaryHasErrorDiag(summary), "sort-namespace: no error diags")
+}
+
+// #752: pin the collision scenario that motivated the `.` separator in
+// `qualifiedDatatypeName`.  With a `_` separator, segments
+// `["Pkg_A", "Foo"]` and `["Pkg", "A_Foo"]` would both render as
+// "Pkg_A_Foo" — the join is now `.`-separated, so the two paths
+// produce distinct sort names ("Pkg_A.Foo" vs "Pkg.A_Foo").
+func testQualifiedDatatypeNameNoCollision(): Unit {
+  val left:  List[String] = newList()
+  left.add("Pkg_A"); left.add("Foo")
+  val right: List[String] = newList()
+  right.add("Pkg"); right.add("A_Foo")
+  val l = qualifiedDatatypeName(left)
+  val r = qualifiedDatatypeName(right)
+  assertEqual(l, "Pkg_A.Foo", "left rendered as Pkg_A.Foo")
+  assertEqual(r, "Pkg.A_Foo", "right rendered as Pkg.A_Foo")
+  assertTrue(l != r, "the two rendered names are distinct (no `_`-join collision)")
+}
+
 func testSummaryHelpers(): Unit {
   // Build a ProofSummary manually to test helpers.
   val hyps: List[Term] = newList()
@@ -490,6 +615,14 @@ func main(): Unit {
   testProveExplicitRuntimeChecked()
   testProveProofRequiredNoContracts()
   testProveParseError()
+  testProveAspectWeaveNoV0031()
+  testProveNoAspectStillWorks()
+  testProveProtectedTypeInvariantHolds()
+  testProveProtectedTypeInvariantViolated()
+  testProveProtectedFuncContractViolated()
+  testProveRangeBoundUpperOnly()
+  testProveSortNamespacing()
+  testQualifiedDatatypeNameNoCollision()
   testSummaryHelpers()
 
   println("verifier self-test: ok")

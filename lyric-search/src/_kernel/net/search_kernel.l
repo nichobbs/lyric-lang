@@ -1,22 +1,22 @@
-/// Search.Kernel.Net — Elasticsearch and Meilisearch extern boundaries.
-///
-/// Bridges the Search package to the .NET search client libraries:
-///
-///   Elasticsearch (feature = "elasticsearch"):
-///     Elastic.Clients.Elasticsearch NuGet package.
-///     connectElasticsearch() — connect with API key or basic auth
-///     index / indexBatch / search / suggest / delete / deleteIndex / exists / createIndex
-///
-///   Meilisearch (feature = "meilisearch"):
-///     Meilisearch .NET client NuGet package.
-///     connectMeilisearch() — connect with API key
-///     index / indexBatch / search / suggest / delete / deleteIndex / exists / createIndex
-///
-/// All document payloads are passed as JSON strings to avoid tying the
-/// kernel interface to Lyric record types.  The Search package serialises
-/// and deserialises at the boundary; the kernel forwards to the .NET SDK.
-///
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+// Search.Kernel.Net — Elasticsearch and Meilisearch extern boundaries.
+//
+// Bridges the Search package to the .NET search client libraries:
+//
+//   Elasticsearch (feature = "elasticsearch"):
+//     Elastic.Clients.Elasticsearch NuGet package.
+//     connectElasticsearch() — connect with API key or basic auth
+//     index / indexBatch / search / suggest / delete / deleteIndex / exists / createIndex
+//
+//   Meilisearch (feature = "meilisearch"):
+//     Meilisearch .NET client NuGet package.
+//     connectMeilisearch() — connect with API key
+//     index / indexBatch / search / suggest / delete / deleteIndex / exists / createIndex
+//
+// All document payloads are passed as JSON strings to avoid tying the
+// kernel interface to Lyric record types.  The Search package serialises
+// and deserialises at the boundary; the kernel forwards to the .NET SDK.
+//
+// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 package Search.Kernel.Net
 

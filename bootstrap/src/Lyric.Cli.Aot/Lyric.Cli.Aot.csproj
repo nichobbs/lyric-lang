@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>lyric</AssemblyName>
+    <RootNamespace>Lyric.Cli.Aot</RootNamespace>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!-- Stage-1 DLL references.  The wildcard pulls in every artefact
+       `bootstrap.sh -stage 1` deposits, which is exactly the closed
+       set the AOT linker needs: Lyric.Lyric.Cli.dll + transitive
+       Lyric.Lyric.Pkg.dll + Lyric.Stdlib.Pkg.dll. -->
+  <ItemGroup>
+    <Reference Include="../../../.bootstrap/stage1/Lyric.*.dll">
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

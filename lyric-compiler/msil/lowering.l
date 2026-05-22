@@ -107,6 +107,40 @@ pub func buildClassFieldSig(classToken: in Int): List[Byte] {
   bufToList(w)
 }
 
+// Encode a FieldSig blob for a value-type field (VALUETYPE + compressed TypeDefOrRef).
+// Used for enum case fields whose type is the enum TypeDef itself.
+pub func buildValueTypeFieldSig(typeDefOrRef: in Int): List[Byte] {
+  val w = bufNew()
+  bufU1(w, 0x06)    // FIELD
+  bufU1(w, 0x11)    // ELEMENT_TYPE_VALUETYPE
+  writeCompressedInt(w, typeDefOrRef)
+  bufToList(w)
+}
+
+// Build a 4-byte little-endian blob for an I4 Constant table entry.
+pub func buildI4ConstantBlob(v: in Int): List[Byte] {
+  // Byte extraction below uses `%` / `/` which follow Lyric's sign-of-
+  // dividend remainder rule (`-1 % 256 == -1`, not `255`).  The
+  // result is still correct because the kernel's `bufU1` /
+  // `JvmByteBuilder.AppendByte` masks with `v & 0xFF` before
+  // writing — verified in `bootstrap/src/Lyric.Jvm.Hosts/JvmHosts.fs`.
+  // If a future kernel reimplementation drops that mask, rewrite this
+  // helper to either pre-normalise via two's-complement wraparound
+  // (e.g. `if v < 0 { (v % 256) + 256 } else { v % 256 }` per byte)
+  // or use real bitwise primitives once they land in Lyric (#875).
+  val w = bufNew()
+  bufU1(w, v % 256)
+  bufU1(w, (v / 256) % 256)
+  bufU1(w, (v / 65536) % 256)
+  bufU1(w, (v / 16777216) % 256)
+  bufToList(w)
+}
+
+// Return the TypeDefOrRef coded index for System.Enum.
+pub func enumTypeToken(ctx: in LoweringCtx): Int {
+  tdrTypeRef(ctx.trEnum)
+}
+
 // Encode a MethodSig blob (DEFAULT, no HASTHIS for static methods).
 // Format: CALLCONV(0x00), paramCount, retType, params...
 pub func buildStaticMethodSig(params: in List[MsilType], ret: in MsilType): List[Byte] {
@@ -268,6 +302,80 @@ pub record MUnion {
   methods:    List[MFunc]   // methods on the base
 }
 
+// ── MStaticField — module-level static field (IConst / IVal) ─────────────────
+
+pub record MStaticField {
+  flags:      Int         // FDA_PUBLIC | FDA_STATIC | optionally FDA_LITERAL | FDA_INIT_ONLY | FDA_HAS_DEFAULT
+  name:       String
+  fieldType:  MsilType
+  constValue: Int         // literal value when FDA_LITERAL is set (0 otherwise)
+  hasLiteral: Bool        // true if constValue is valid (i.e. FDA_LITERAL field)
+  initInsns:  List[MInsn] // IL to compute initial value for IVal (empty for IConst)
+}
+
+// ── MEnum — CLR enum type ─────────────────────────────────────────────────────
+
+pub record MEnum {
+  className: String       // fully-qualified, e.g. "Pkg.Direction"
+  namespace: String       // e.g. "Pkg"
+  cases:     List[String] // case names; ordinals = 0..n-1
+}
+
+// ── MInterface / MImplData ───────────────────────────────────────────────────
+
+pub record MInterfaceMethod {
+  name:   String
+  params: List[MsilType]
+  ret:    MsilType
+}
+
+pub record MInterface {
+  className: String       // fully-qualified interface name
+  namespace: String
+  methods:   List[MInterfaceMethod]
+}
+
+// Per overridden interface method slot.
+//
+// Tokens may be pre-resolved (non-zero) or 0 with a name fallback: when
+// `ifaceMethodToken == 0`, `lowerMImpl` locates the interface method by
+// matching `ifaceMethodName` within the interface's MethodDef range.  Same
+// for the implementation method.
+pub record MImplSlot {
+  ifaceMethodToken: Int    // MethodDef/MemberRef token, or 0 to use name fallback
+  implMethodToken:  Int    // MethodDef token, or 0 to use name fallback
+  ifaceMethodName:  String // name fallback (used when ifaceMethodToken == 0)
+  implMethodName:   String // name fallback (used when implMethodToken == 0)
+}
+
+// `MImplData` describes one `impl Iface for Target { … }` block.
+//
+// Tokens may be pre-resolved (non-zero) or supplied with a name fallback:
+// when `targetTypeDefRow == 0`, `lowerMImpl` locates the target TypeDef
+// row by matching `targetTypeName` + `targetTypeNamespace` against the
+// already-emitted TypeDef table.  Same for `ifaceTypeToken` / `ifaceTypeName`.
+// This lets `Msil.Codegen` emit `MPImpl` items in source order before all
+// types are lowered without having to pre-compute table rows.
+pub record MImplData {
+  targetTypeDefRow:    Int           // 1-based TypeDef row, or 0 to use name fallback
+  ifaceTypeToken:      Int           // TypeDefOrRef coded index, or 0 to use name fallback
+  slots:               List[MImplSlot]
+  targetTypeName:      String        // e.g. "Pkg.Person"
+  targetTypeNamespace: String        // e.g. "Pkg"
+  ifaceTypeName:       String        // e.g. "Pkg.Greeter"
+  ifaceTypeNamespace:  String        // e.g. "Pkg"
+}
+
+// ── MOpaque — sealed opaque type ─────────────────────────────────────────────
+
+pub record MOpaque {
+  className:    String    // fully-qualified, e.g. "Pkg.AccountId"
+  namespace:    String
+  fields:       List[MField]    // private storage fields
+  methods:      List[MFunc]     // public methods declared in the package
+  isProjectable: Bool           // true if @projectable — emit twin Exposed TypeDef
+}
+
 // ── MDistinctType / MRangeType — thin newtype wrappers ───────────────────────
 
 pub record MDistinctType {
@@ -288,10 +396,16 @@ pub record MRangeType {
 
 pub union MPackageItem {
   case MPRecord(rec: MRecord)
-  case MPFuncs(hostClass: String, funcs: List[MFunc])
+  // MPFuncs: top-level functions + optional static fields (IConst / IVal).
+  // staticFields is empty when there are no module-level constants or vals.
+  case MPFuncs(hostClass: String, funcs: List[MFunc], staticFields: List[MStaticField])
   case MPUnion(u: MUnion)
   case MPDistinctType(d: MDistinctType)
   case MPRangeType(r: MRangeType)
+  case MPEnum(e: MEnum)
+  case MPInterface(iface: MInterface)
+  case MPImpl(implData: MImplData)
+  case MPOpaque(opaqueData: MOpaque)
 }
 
 pub record MPackage {
@@ -316,6 +430,7 @@ pub record LoweringCtx {
   sMsKey:      Int     // blob index of the MS public key token (b03f5f7f11d50a3a)
   // Well-known TypeRef row indices (1-based)
   trObject:    Int     // System.Object in System.Runtime
+  trEnum:      Int     // System.Enum in System.Runtime (for CLR enum types)
   // Well-known AssemblyRef row indices (1-based)
   arRuntime:   Int     // System.Runtime
 }
@@ -370,6 +485,12 @@ pub func newLoweringCtx(packageName: in String): LoweringCtx {
     resolutionScope = rsAssemblyRef(arRuntime),
     typeName = sObject, typeNamespace = sSystem))
 
+  // TypeRef[2]: System.Enum in System.Runtime (needed for CLR enum types)
+  val sEnum = internString(sh, "Enum")
+  val trEnum = addTypeRef(t, TypeRefRow(
+    resolutionScope = rsAssemblyRef(arRuntime),
+    typeName = sEnum, typeNamespace = sSystem))
+
   // Assembly row
   val sPackage = internString(sh, packageName)
   addAssembly(t, AssemblyRow(
@@ -392,6 +513,7 @@ pub func newLoweringCtx(packageName: in String): LoweringCtx {
     sMsCorLib = sMsCorLib,
     sMsKey    = msKey,
     trObject  = trObject,
+    trEnum    = trEnum,
     arRuntime = arRuntime
   )
 }
@@ -789,10 +911,343 @@ pub func lowerMRangeType(r: in MRangeType, ctx: in LoweringCtx): Int {
     inner     = r.inner), ctx)
 }
 
+// ── Enum lowering ─────────────────────────────────────────────────────────────
+
+// Lower an MEnum to a CLR enum TypeDef.
+// Produces: TypeDef extends System.Enum, one `value__` field (I4), one static literal
+// field per case, and one Constant row per case in the Constant table.
+pub func lowerMEnum(e: in MEnum, ctx: in LoweringCtx): Int {
+  val sh = ctx.strings
+  val bh = ctx.blobs
+  val t  = ctx.tables
+
+  val sName = internString(sh, e.className)
+  val sNs   = internString(sh, e.namespace)
+
+  // Allocate TypeDef row first (field list starts right after current fields).
+  val firstField  = t.fields.count + 1
+  val firstMethod = t.methodDefs.count + 1
+
+  // Emit `value__` special field (I4, Private, SpecialName, RTSpecialName).
+  val sValueDunder = internString(sh, "value__")
+  val i4Sig  = buildFieldSig(MInt)
+  val bI4Sig = internBlob(bh, "field_i4_sig", i4Sig)
+  addField(t, FieldRow(
+    flags     = FDA_PRIVATE + FDA_SPECIAL_NAME + FDA_RT_SPECIAL_NAME,
+    name      = sValueDunder,
+    signature = bI4Sig))
+
+  // Emit one static literal field per case + a Constant row for its ordinal value.
+  // The enum's own TypeDef is appended at the end of this function via
+  // `addTypeDef`, so its row number will be `t.typeDefs.count + 1`
+  // (1-based row indices, current count snapshot taken before append).
+  val enumTypeDefRow = t.typeDefs.count + 1
+
+  var ci = 0
+  while ci < e.cases.count {
+    val sCase    = internString(sh, e.cases[ci])
+    // Case field type = VALUETYPE <this enum TypeDef>.
+    // TypeDefOrRef coded-index for a TypeDef: tdrTypeDef(row) = row * 4.
+    val enumTdr  = tdrTypeDef(enumTypeDefRow)
+    val caseSig  = buildValueTypeFieldSig(enumTdr)
+    val bCaseSig = internBlob(bh, "enum_case_" + e.className + "_" + e.cases[ci], caseSig)
+    val caseFieldRow = addField(t, FieldRow(
+      flags     = FDA_PUBLIC + FDA_STATIC + FDA_LITERAL + FDA_HAS_DEFAULT,
+      name      = sCase,
+      signature = bCaseSig))
+    // Constant row: ELEMENT_TYPE_I4 (0x08), parent = hconstField(caseFieldRow).
+    val constBlob = buildI4ConstantBlob(ci)
+    val bConst    = internBlob(bh, "const_" + e.className + "_" + e.cases[ci], constBlob)
+    addConstant(t, ConstantRow(
+      type_  = 0x08,     // ELEMENT_TYPE_I4
+      parent = hconstField(caseFieldRow),
+      value  = bConst))
+    ci = ci + 1
+  }
+
+  // Emit the TypeDef itself — must extend System.Enum.
+  addTypeDef(t, TypeDefRow(
+    flags         = TDF_PUBLIC + TDF_SEALED,
+    typeName      = sName,
+    typeNamespace = sNs,
+    extends       = enumTypeToken(ctx),
+    fieldList     = firstField,
+    methodList    = firstMethod))
+}
+
+// ── Interface lowering ────────────────────────────────────────────────────────
+
+// Lower an MInterface to a CLR interface TypeDef with abstract method headers.
+pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
+  val sh = ctx.strings
+  val bh = ctx.blobs
+  val t  = ctx.tables
+
+  val sName = internString(sh, iface.className)
+  val sNs   = internString(sh, iface.namespace)
+
+  val firstField  = t.fields.count + 1
+  val firstMethod = t.methodDefs.count + 1
+
+  // Emit abstract method header for each interface method.
+  var mi = 0
+  while mi < iface.methods.count {
+    val m    = iface.methods[mi]
+    val sN   = internString(sh, m.name)
+    val mSig = buildInstanceMethodSig(m.params, m.ret)
+    val bSig = internBlob(bh, "ifmeth_" + iface.className + "_" + m.name, mSig)
+    val fp   = t.params_.count + 1
+    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+    // Abstract interface method: Public, Abstract, Virtual, HideBySig, NewSlot, RVA=0.
+    addMethodDef(t, MethodDefRow(
+      rva       = 0,
+      implFlags = 0,
+      flags     = MDA_PUBLIC + MDA_ABSTRACT + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_NEW_SLOT,
+      name      = sN,
+      signature = bSig,
+      paramList = fp))
+    mi = mi + 1
+  }
+
+  // TypeDef flags for a CLR interface: Interface | Abstract | Public.
+  addTypeDef(t, TypeDefRow(
+    flags         = TDF_INTERFACE + TDF_ABSTRACT + TDF_PUBLIC,
+    typeName      = sName,
+    typeNamespace = sNs,
+    extends       = 0,      // interfaces have no extends
+    fieldList     = firstField,
+    methodList    = firstMethod))
+}
+
+// ── Impl lowering ─────────────────────────────────────────────────────────────
+
+// Locate a TypeDef row by matching `typeName` + `typeNamespace` against the
+// already-emitted TypeDef table.  Returns the 1-based row index, or 0 when
+// no match is found.  Both the search name and namespace are interned into
+// the string heap (idempotent), so comparison reduces to comparing the
+// returned offsets against each row's stored offsets.
+pub func resolveTypeDefRowByName(ctx: in LoweringCtx,
+                                  name: in String, ns: in String): Int {
+  if name.length == 0 { return 0 }
+  val sh = ctx.strings
+  val nameTok = internString(sh, name)
+  val nsTok   = internString(sh, ns)
+  var i = 0
+  while i < ctx.tables.typeDefs.count {
+    val td = ctx.tables.typeDefs[i]
+    if td.typeName == nameTok and td.typeNamespace == nsTok {
+      return i + 1
+    }
+    i = i + 1
+  }
+  0
+}
+
+// Locate a MethodDef row by name within a given type's owned method range.
+// Returns 0 if the type row is invalid or no matching method exists.
+pub func resolveMethodDefRowInType(ctx: in LoweringCtx,
+                                    typeDefRow: in Int, methodName: in String): Int {
+  if typeDefRow <= 0 or typeDefRow > ctx.tables.typeDefs.count {
+    return 0
+  }
+  if methodName.length == 0 { return 0 }
+  val sh = ctx.strings
+  val nameTok = internString(sh, methodName)
+  val firstMethod = ctx.tables.typeDefs[typeDefRow - 1].methodList
+  val nextMethod  = if typeDefRow == ctx.tables.typeDefs.count {
+    ctx.tables.methodDefs.count + 1
+  } else {
+    ctx.tables.typeDefs[typeDefRow].methodList
+  }
+  var i = firstMethod
+  while i < nextMethod {
+    val md = ctx.tables.methodDefs[i - 1]
+    if md.name == nameTok {
+      return i
+    }
+    i = i + 1
+  }
+  0
+}
+
+// Lower an MImplData to InterfaceImpl + MethodImpl table rows.
+// The implementing type's TypeDef row must already exist in the tables
+// (lowerMRecord / lowerMFuncsToHostClass must have run first).
+//
+// When `targetTypeDefRow` / `ifaceTypeToken` are 0, the row/token is
+// resolved by name against the already-emitted TypeDef table.  Same for
+// each slot's method tokens — see `MImplData` / `MImplSlot` for the
+// fallback fields.  When resolution fails (no matching TypeDef or method),
+// the corresponding row is skipped rather than emitted with a garbage
+// 0 reference that would crash the CLR type loader.
+pub func lowerMImpl(d: in MImplData, ctx: in LoweringCtx): Int {
+  val t = ctx.tables
+
+  // Resolve the implementing type's TypeDef row.
+  val targetRow = if d.targetTypeDefRow != 0 {
+    d.targetTypeDefRow
+  } else {
+    resolveTypeDefRowByName(ctx, d.targetTypeName, d.targetTypeNamespace)
+  }
+
+  // Resolve the interface's TypeDefOrRef coded index.  For now this only
+  // supports same-assembly interfaces (TypeDef → tdrTypeDef).  Cross-
+  // assembly resolution (TypeRef) is deferred until R6 wires the resolver.
+  val ifaceRow = if d.ifaceTypeToken != 0 {
+    0   // pre-resolved; use d.ifaceTypeToken as-is
+  } else {
+    resolveTypeDefRowByName(ctx, d.ifaceTypeName, d.ifaceTypeNamespace)
+  }
+  val ifaceTok = if d.ifaceTypeToken != 0 {
+    d.ifaceTypeToken
+  } else {
+    if ifaceRow == 0 { 0 } else { tdrTypeDef(ifaceRow) }
+  }
+
+  if targetRow == 0 or ifaceTok == 0 {
+    return 0
+  }
+
+  // InterfaceImpl row: records that targetTypeDefRow implements ifaceTypeToken.
+  addInterfaceImpl(t, InterfaceImplRow(
+    class_     = targetRow,
+    interface_ = ifaceTok))
+
+  // MethodImpl rows: map each interface slot to its implementation.  When
+  // the interface is resolved as a same-assembly TypeDef row, we look up
+  // each interface method by name within its MethodDef range.
+  var si = 0
+  while si < d.slots.count {
+    val slot = d.slots[si]
+
+    val implMTok = if slot.implMethodToken != 0 {
+      slot.implMethodToken
+    } else {
+      resolveMethodDefRowInType(ctx, targetRow, slot.implMethodName)
+    }
+
+    val ifaceMTok = if slot.ifaceMethodToken != 0 {
+      slot.ifaceMethodToken
+    } else {
+      if ifaceRow == 0 { 0 }
+      else { resolveMethodDefRowInType(ctx, ifaceRow, slot.ifaceMethodName) }
+    }
+
+    if implMTok != 0 and ifaceMTok != 0 {
+      addMethodImpl(t, MethodImplRow(
+        class_             = targetRow,
+        methodBody         = mdorMethodDef(implMTok),
+        methodDeclaration  = mdorMethodDef(ifaceMTok)))
+    }
+    si = si + 1
+  }
+  0
+}
+
+// ── Opaque type lowering ──────────────────────────────────────────────────────
+
+// Lower an MOpaque to a sealed TypeDef with private storage fields.
+// When isProjectable=true, also emits a sibling TypeDef with public fields
+// and toExposed/fromExposed static methods.
+pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
+  val sh = ctx.strings
+  val bh = ctx.blobs
+  val t  = ctx.tables
+
+  val sName = internString(sh, op.className)
+  val sNs   = internString(sh, op.namespace)
+
+  val firstField  = t.fields.count + 1
+  val firstMethod = t.methodDefs.count + 1
+
+  // Emit private storage fields (no public field access outside the package).
+  var fi = 0
+  while fi < op.fields.count {
+    val f    = op.fields[fi]
+    val sF   = internString(sh, f.name)
+    val fSig = buildFieldSig(f.fieldType)
+    val bSig = internBlob(bh, "ofield_" + op.className + "_" + f.name, fSig)
+    addField(t, FieldRow(flags = FDA_PRIVATE, name = sF, signature = bSig))
+    fi = fi + 1
+  }
+
+  // Synthesise .ctor from declared fields.
+  val ctorPs: List[MsilType] = newList()
+  var ci = 0
+  while ci < op.fields.count {
+    ctorPs.add(op.fields[ci].fieldType)
+    ci = ci + 1
+  }
+  val ctorSig  = buildInstanceMethodSig(ctorPs, MVoid)
+  val bCtorSig = internBlob(bh, "octor_" + op.className, ctorSig)
+  val sCtor    = internString(sh, ".ctor")
+
+  val mbCtor = newMethodBody()
+  mbCtor.maxStack = 2
+  emitLdarg_0(mbCtor)
+  emitPop(mbCtor)   // skip base ctor call (bootstrap)
+  var ai = 0
+  while ai < op.fields.count {
+    emitLdarg_0(mbCtor)
+    emitLdarg(mbCtor, ai + 1)
+    emitStfld(mbCtor, 0x04000000 + firstField + ai)
+    ai = ai + 1
+  }
+  emitRet(mbCtor)
+  ctx.bodies.add(mbCtor)
+
+  val rvas    = methodBodyRvas(ctx.bodies)
+  val ctorRva = rvas[ctx.bodies.count - 1]
+  val fp      = t.params_.count + 1
+  addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+  addMethodDef(t, MethodDefRow(
+    rva       = ctorRva,
+    implFlags = 0,
+    flags     = MDA_PUBLIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
+    name      = sCtor,
+    signature = bCtorSig,
+    paramList = fp))
+
+  // Emit explicit instance methods.
+  var mi = 0
+  while mi < op.methods.count {
+    val m    = op.methods[mi]
+    val mbM  = lowerMFunc(m, ctx)
+    ctx.bodies.add(mbM)
+    val rvasM = methodBodyRvas(ctx.bodies)
+    val mRva  = rvasM[ctx.bodies.count - 1]
+    val sN    = internString(sh, m.name)
+    val mSig  = buildInstanceMethodSig(m.params, m.ret)
+    val bMSig = internBlob(bh, "ometh_" + op.className + "_" + m.name, mSig)
+    val fpm   = t.params_.count + 1
+    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+    addMethodDef(t, MethodDefRow(
+      rva       = mRva,
+      implFlags = 0,
+      flags     = m.flags,
+      name      = sN,
+      signature = bMSig,
+      paramList = fpm))
+    mi = mi + 1
+  }
+
+  val opaqueRow = addTypeDef(t, TypeDefRow(
+    flags         = TDF_PUBLIC + TDF_SEALED + TDF_BEFORE_FIELD_INIT,
+    typeName      = sName,
+    typeNamespace = sNs,
+    extends       = objectTypeToken(ctx),
+    fieldList     = firstField,
+    methodList    = firstMethod))
+
+  opaqueRow
+}
+
 // ── Top-level static functions lowering ───────────────────────────────────────
 
-// Lower a list of top-level static MFuncs into a single host class named `hostClass`.
+// Lower a list of top-level static MFuncs (and optional static fields) into a
+// single host class named `hostClass`. staticFields holds IConst/IVal items.
 pub func lowerMFuncsToHostClass(hostClass: in String, funcs: in List[MFunc],
+                                staticFields: in List[MStaticField],
                                 ctx: in LoweringCtx): Int {
   val sh = ctx.strings
   val bh = ctx.blobs
@@ -800,8 +1255,69 @@ pub func lowerMFuncsToHostClass(hostClass: in String, funcs: in List[MFunc],
 
   val sName  = internString(sh, hostClass)
   val firstField  = t.fields.count + 1
+
+  // Emit static fields (IConst → literal; IVal → init-only).
+  val cctorInsns: List[MInsn] = newList()
+  val hasCctor: List[Bool] = newList()  // singleton used as mutable bool flag
+  var sfi = 0
+  while sfi < staticFields.count {
+    val sf   = staticFields[sfi]
+    val sN   = internString(sh, sf.name)
+    val fSig = buildFieldSig(sf.fieldType)
+    val bSig = internBlob(bh, "stfld_" + hostClass + "_" + sf.name, fSig)
+    val fRow = addField(t, FieldRow(flags = sf.flags, name = sN, signature = bSig))
+    if sf.hasLiteral {
+      // IConst: emit a Constant table row with the literal value.
+      val constBlob = buildI4ConstantBlob(sf.constValue)
+      val bConst    = internBlob(bh, "const_" + hostClass + "_" + sf.name, constBlob)
+      addConstant(t, ConstantRow(
+        type_  = 0x08,     // ELEMENT_TYPE_I4
+        parent = hconstField(fRow),
+        value  = bConst))
+    } else if sf.initInsns.count > 0 {
+      // IVal: accumulate IL for the .cctor body.
+      var ii = 0
+      while ii < sf.initInsns.count {
+        cctorInsns.add(sf.initInsns[ii])
+        ii = ii + 1
+      }
+      // Store result into the static field.
+      cctorInsns.add(MStsfld(fieldToken = 0x04000000 + fRow))
+      hasCctor.add(true)
+    }
+    sfi = sfi + 1
+  }
+
   val firstMethod = t.methodDefs.count + 1
 
+  // If any IVal fields need runtime initialization, emit a .cctor.
+  if hasCctor.count > 0 {
+    cctorInsns.add(MRet)
+    val mbCctor = newMethodBody()
+    mbCctor.maxStack = 8
+    var ci = 0
+    while ci < cctorInsns.count {
+      lowerMInsn(cctorInsns[ci], mbCctor)
+      ci = ci + 1
+    }
+    ctx.bodies.add(mbCctor)
+    val rvasC = methodBodyRvas(ctx.bodies)
+    val cRva  = rvasC[ctx.bodies.count - 1]
+    val sCctor = internString(sh, ".cctor")
+    val cctorSig  = buildStaticMethodSig(newList(), MVoid)
+    val bCctorSig = internBlob(bh, "cctor_" + hostClass, cctorSig)
+    val fpc = t.params_.count + 1
+    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+    addMethodDef(t, MethodDefRow(
+      rva       = cRva,
+      implFlags = 0,
+      flags     = MDA_PRIVATE + MDA_STATIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
+      name      = sCctor,
+      signature = bCctorSig,
+      paramList = fpc))
+  }
+
+  // Emit static methods.
   var fi = 0
   while fi < funcs.count {
     val f    = funcs[fi]
@@ -846,8 +1362,8 @@ pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
       case MPRecord(rec) -> {
         lowerMRecord(rec, ctx)
       }
-      case MPFuncs(hostClass, funcs) -> {
-        lowerMFuncsToHostClass(hostClass, funcs, ctx)
+      case MPFuncs(hostClass, funcs, staticFields) -> {
+        lowerMFuncsToHostClass(hostClass, funcs, staticFields, ctx)
       }
       case MPUnion(u) -> {
         lowerMUnion(u, ctx)
@@ -858,28 +1374,27 @@ pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
       case MPRangeType(r) -> {
         lowerMRangeType(r, ctx)
       }
+      case MPEnum(e) -> {
+        lowerMEnum(e, ctx)
+      }
+      case MPInterface(iface) -> {
+        lowerMInterface(iface, ctx)
+      }
+      case MPImpl(implData) -> {
+        lowerMImpl(implData, ctx)
+      }
+      case MPOpaque(op) -> {
+        lowerMOpaque(op, ctx)
+      }
     }
     i = i + 1
   }
 
-  // Patch MethodDef RVAs from the accumulated bodies list.
-  val rvas = methodBodyRvas(ctx.bodies)
-  var ri = 0
-  // RVAs apply to ctx.tables.methodDefs in order.
-  // The <Module> TypeDef has no methods; RVA list aligns with methodDefs.
-  // Phase R5: bodies are added exactly once per MethodDef, in order.
-  // The first methodDef (index 0) corresponds to bodies[0], etc.
-  while ri < rvas.count {
-    val row = ctx.tables.methodDefs[ri]
-    ctx.tables.methodDefs[ri] = MethodDefRow(
-      rva       = rvas[ri],
-      implFlags = row.implFlags,
-      flags     = row.flags,
-      name      = row.name,
-      signature = row.signature,
-      paramList = row.paramList)
-    ri = ri + 1
-  }
+  // RVAs for each MethodDef are set inline by each lowerM* call (lowerMRecord,
+  // lowerMOpaque, lowerMFuncsToHostClass, etc.) using the body's position in
+  // the accumulated ctx.bodies list.  Abstract interface methods explicitly get
+  // rva=0 (no body).  No post-pass patching is needed — and a post-pass would
+  // incorrectly overwrite abstract method rva=0 slots with concrete body RVAs.
 
   val inp = AssemblerInput(
     entryPointToken = entryMethodToken,
@@ -905,28 +1420,21 @@ pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx,
   var i = 0
   while i < pkg.items.count {
     match pkg.items[i] {
-      case MPRecord(rec)         -> { lowerMRecord(rec, ctx) }
-      case MPFuncs(hostClass, funcs) -> { lowerMFuncsToHostClass(hostClass, funcs, ctx) }
-      case MPUnion(u)            -> { lowerMUnion(u, ctx) }
-      case MPDistinctType(d)     -> { lowerMDistinctType(d, ctx) }
-      case MPRangeType(r)        -> { lowerMRangeType(r, ctx) }
+      case MPRecord(rec)                       -> { lowerMRecord(rec, ctx) }
+      case MPFuncs(hostClass, funcs, sfields)  -> { lowerMFuncsToHostClass(hostClass, funcs, sfields, ctx) }
+      case MPUnion(u)                          -> { lowerMUnion(u, ctx) }
+      case MPDistinctType(d)                   -> { lowerMDistinctType(d, ctx) }
+      case MPRangeType(r)                      -> { lowerMRangeType(r, ctx) }
+      case MPEnum(e)                           -> { lowerMEnum(e, ctx) }
+      case MPInterface(iface)                  -> { lowerMInterface(iface, ctx) }
+      case MPImpl(implData)                    -> { lowerMImpl(implData, ctx) }
+      case MPOpaque(op)                        -> { lowerMOpaque(op, ctx) }
     }
     i = i + 1
   }
 
-  val rvas = methodBodyRvas(ctx.bodies)
-  var ri = 0
-  while ri < rvas.count {
-    val row = ctx.tables.methodDefs[ri]
-    ctx.tables.methodDefs[ri] = MethodDefRow(
-      rva       = rvas[ri],
-      implFlags = row.implFlags,
-      flags     = row.flags,
-      name      = row.name,
-      signature = row.signature,
-      paramList = row.paramList)
-    ri = ri + 1
-  }
+  // RVAs are set inline by each lowerM* call; no post-pass needed.
+  // (See the same comment in lowerMPackage above.)
 
   val inp = AssemblerInput(
     entryPointToken = entryMethodToken,

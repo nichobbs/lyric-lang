@@ -1,4 +1,4 @@
-// jvm/self_test_b123.l — Stage B123: lowerDeriveOrd (@derive(Compare/Add/Sub) on distinct types).
+// jvm/self_test_b123.l — Stage B123: lowerDeriveOrd (@generate(Compare/Add/Sub) on distinct types).
 //
 // Creates a `UserId` distinct type wrapping JLong with all three derives.
 // Main:

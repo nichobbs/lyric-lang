@@ -47,6 +47,7 @@ pub func serializeManifest(text: in String, filePath: in String): String {
       while di < m.deps.count {
         match m.deps[di].source {
           case Registry(v) -> { s = s + "dep=" + m.deps[di].name + "=" + v + "\n" }
+          case Path(dir)   -> { s = s + "dep-path=" + m.deps[di].name + "=" + dir + "\n" }
           case _ -> ()
         }
         di = di + 1

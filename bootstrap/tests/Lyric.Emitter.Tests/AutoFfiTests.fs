@@ -113,7 +113,40 @@ func main(): Unit {
     "1"
 ]
 
+/// Negative tests: malformed extern declarations produce structured
+/// F0001/F0002 diagnostics rather than raw F# exceptions.
+let negativeTests =
+    testList "C4 FFI diagnostic ratchet" [
+
+        testCase "unknown CLR type in extern type → F0001 diagnostic" <| fun () ->
+            let source = """
+package FFI_Neg1
+extern type NoSuchType = "This.Type.Does.Not.Exist"
+func main(): Unit {
+  println("ok")
+}
+"""
+            let r, _, _, _ = compileAndRun "ffi_neg1_extern_type" source
+            let f0001 = r.Diagnostics |> List.filter (fun d -> d.Code = "F0001")
+            Expect.isNonEmpty f0001
+                "unknown CLR type should produce F0001 diagnostic, not a crash"
+
+        testCase "bad @externTarget → F0001 diagnostic" <| fun () ->
+            let source = """
+package FFI_Neg2
+@externTarget("This.Does.Not.Exist.Method")
+pub func noSuchFunc(): Int = 0
+func main(): Unit {
+  println(toString(noSuchFunc()))
+}
+"""
+            let r, _, _, _ = compileAndRun "ffi_neg2_extern_target" source
+            let f0001 = r.Diagnostics |> List.filter (fun d -> d.Code = "F0001")
+            Expect.isNonEmpty f0001
+                "bad @externTarget should produce F0001 diagnostic, not a crash"
+    ]
+
 let tests =
     testSequenced
     <| testList "C4 phase 1 — strict-match auto-FFI"
-                (cases |> List.map mk)
+                ((cases |> List.map mk) @ [ negativeTests ])

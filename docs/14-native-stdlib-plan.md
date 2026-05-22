@@ -84,7 +84,7 @@ The kernel is the floor. Every language has one (Rust's `std` calls
 | Console / file / network / process / time syscalls | Syscalls. No language can replace these. | ~30 methods |
 | `System.Math` transcendentals (`Sin`, `Cos`, `Log`, `Exp`, `Sqrt`, `Pow`) | Implementing in Lyric is possible (Taylor / CORDIC) but pointless: BCL ships hardware-tuned forms; matching them is a research project. | ~20 methods |
 | Regex engine | A correct, performant regex implementation is a multi-year project. Vendor BCL `System.Text.RegularExpressions`. | ~10 methods |
-| JSON tokenizer | Implementable in Lyric eventually, but `System.Text.Json`'s SIMD-tuned tokenizer is a perf cliff we don't want to fall off. Source generators (`@derive(Json)`) keep most users out of the tokenizer anyway. | ~15 methods |
+| JSON tokenizer | Implementable in Lyric eventually, but `System.Text.Json`'s SIMD-tuned tokenizer is a perf cliff we don't want to fall off. Source generators (`@generate(Json)`) keep most users out of the tokenizer anyway. | ~15 methods |
 | Cryptography primitives | Audit cost. Use BCL `System.Security.Cryptography`. | ~10 methods |
 | HTTP transport (TLS, connection pool) | Same. Use BCL `System.Net.Http`. | ~15 methods |
 | Threading / Task scheduler | Lyric uses .NET TPL by D001. The scheduler stays. | ~10 methods |
@@ -218,7 +218,7 @@ on it. **No incremental cost.**
 | `Std.Hash` | F# shim implicit | Native primitives + native FNV/Murmur for byte slices | G4 | Per-primitive hashes are 1-line; byte-slice hashes are real Lyric. |
 | `Std.Format` (`String.Format`-shaped) | F# shim (`Format.Of1..6`) | Native | — | Drop the F# shim; implement template parsing in Lyric. ~120 LoC. |
 | `Std.Json` (parser) | extern (`System.Text.Json`) | **Stays kernel** | — | See §3. |
-| `Std.Json` (encoder for `@derive(Json)`) | F# shim (`JsonHost.Render*`) | Native | — | Just buffer concatenation; pure Lyric is fine. |
+| `Std.Json` (encoder for `@generate(Json)`) | F# shim (`JsonHost.Render*`) | Native | — | Just buffer concatenation; pure Lyric is fine. |
 | `Std.Regex` | extern | **Stays kernel** | — | Per §3. |
 | `Std.Console`, `Std.File`, `Std.Directory`, `Std.Path`, `Std.Time`, `Std.Random` | extern wrappers | **Surface stays Lyric, kernel calls are extern** | — | The Lyric-side `Result`-returning wrappers are already native. The host call below is kernel. |
 | `Std.Http`, `Std.HttpServer` | extern wrappers | **Same** | — | TLS / connection pool stays kernel. |
@@ -331,7 +331,7 @@ Land G3 if not already done. Then:
    type deleted.  `format1..6` reserved as codegen builtin names
    pending first-class params-array literal support; once that
    lands they collapse into a single varargs builtin.  *(D-progress-104.)*
-3. ✅ **`Std.Json` encoder.**  The `@derive(Json)` slice renderers
+3. ✅ **`Std.Json` encoder.**  The `@generate(Json)` slice renderers
    for Int / Long / Bool / String now synthesise inline `while`
    loops over the slice (mirrors the per-record slice helper
    already shipping); F# `JsonHost.Render{Int,Long,Bool,String}Slice`
@@ -449,6 +449,21 @@ D038 for the umbrella record. Resolutions reproduced inline.
 3. **P1** — boundary primitives G1, G2, G4 (G3 already landed in step 2).
 4. **P2** — native containers, sort, hash, all relying on G3.
 5. **P3, P4** — as §6.
+
+---
+
+### 10.1 Extern-target field reads (post-resolution clarification)
+
+`@externTarget("…")` resolves member references at emit time by walking
+the target type for an instance method, then a static method, then a
+static field with that name. The field path is intentional: it is the
+canonical way to bind to BCL static enum values (such as
+`System.Text.RegularExpressions.RegexOptions.None`) without inventing a
+fresh literal-zero helper. The kernel uses this pattern in
+`lyric-stdlib/std/_kernel/regex.l` for `regexOptionsNone()`; new
+declarations may follow the same shape provided the target is a
+static field of a public BCL type. Audit treats `@externTarget` field
+reads identically to method bindings — both count against Decision F.
 
 ---
 

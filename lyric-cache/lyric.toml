@@ -11,8 +11,11 @@ output          = "single"
 output_assembly = "Cache.dll"
 
 [project.packages]
-"Cache"         = "src"
-"Cache.Aspects" = "src"
+"Cache"         = "src/cache.l"
+"Cache.Aspects" = "src/cache_aspects.l"
 
 [dependencies]
 "Lyric.Stdlib" = { path = "../stdlib" }
+
+[project.tests]
+"Cache.CacheTests" = "tests/cache_tests.l"

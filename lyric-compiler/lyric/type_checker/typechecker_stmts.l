@@ -300,6 +300,29 @@ func hasExternTargetAnnotation(anns: in List[Annotation]): Bool {
   false
 }
 
+// #370: detect `@externStatic` and `@externInstance` co-occurring on
+// the same declaration.  The MSIL FFI resolver falls back to static
+// in that case (so the program still builds), but it's almost
+// always a copy-paste bug — surface it as a diagnostic instead of
+// silently picking one.
+// Keep in sync with `msil/ffi.l` `hasConflictingHints` (#803).  Both
+// scan the same annotation pair; the duplication will retire when
+// the shared `Lyric.Annotations` rollup lands.
+func hasConflictingExternHints(anns: in List[Annotation]): Bool {
+  var i = 0
+  var hasStatic = false
+  var hasInstance = false
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count == 1 {
+      if segs[0] == "externStatic"   { hasStatic   = true }
+      if segs[0] == "externInstance" { hasInstance = true }
+    }
+    i = i + 1
+  }
+  hasStatic and hasInstance
+}
+
 pub func checkFunctionBody(
   tbl:  in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
@@ -307,7 +330,18 @@ pub func checkFunctionBody(
   fn:   in FunctionDecl,
   sig:  in ResolvedSignature
 ): Unit {
-  if hasExternTargetAnnotation(fn.annotations) { return }
+  if hasExternTargetAnnotation(fn.annotations) {
+    // F0002: both @externStatic and @externInstance on one extern.
+    if hasConflictingExternHints(fn.annotations) {
+      diag.add(errorDiagnostic(
+        "F0002",
+        "function '" + fn.name + "' has both @externStatic and "
+        + "@externInstance — pick one (the FFI resolver cannot "
+        + "honour both, and will fall back to @externStatic)",
+        fn.span))
+    }
+    return
+  }
 
   val sc = newScope()
   var i = 0

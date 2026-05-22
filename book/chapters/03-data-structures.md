@@ -176,11 +176,14 @@ func opposite(d: in Direction): Direction {
 }
 ```
 
-Enums are distinct from integers. There is no implicit conversion between `Color` and any numeric type. To get the underlying integer (for interop or serialization), use `.toInt()`. To go the other direction, use `Color.fromInt(n)`, which returns `Option[Color]` — not every integer is a valid color, so the conversion can fail.
+Enums are distinct from integers. There is no implicit conversion between `Color` and any numeric type. To get the ordinal (for interop or serialization), use `.toNat()` — enum ordinals are always non-negative, so `Nat` is the right return type. To go the other direction, use `Color.fromNat(n)`, which returns `Option[Color]` — not every natural number is a valid color, so the conversion can fail.
+
+> **Not yet shipped:** `toNat()` and `fromNat()` are specified but not yet synthesised by the compiler. They are planned for the v1.0 release. Until then, use an explicit `match` or cast via `@externTarget` for ordinal access.
 
 ```lyric
-val n: Int = Color.Green.toInt()        // 1 (by declaration order, zero-indexed)
-val c: Option[Color] = Color.fromInt(5) // None — no Color with index 5
+// Planned API (compiler support coming in v1.0):
+val n: Nat = Color.Green.toNat()        // 1 (by declaration order, zero-indexed)
+val c: Option[Color] = Color.fromNat(5) // None — no Color with index 5
 ```
 
 This is a deliberate difference from C# or Java enums, where the int-to-enum cast silently succeeds for any value. The explicit conversion with an `Option` result forces you to handle the invalid case. Chapter 7 covers error handling in more detail.

@@ -90,6 +90,7 @@ pub record Customer {
   pub id:    CustomerId
   pub email: Email
   internalNotes: String    // package-private field
+  var count: Int           // mutable field (mutability enforcement: T6+)
 }
 
 // Sum type (union)
@@ -194,13 +195,13 @@ opaque type User @projectable {
 ### Exposed records
 
 ```lyric
-exposed record TransferRequest @derive(Json) {
+exposed record TransferRequest @generate(Json) {
   fromId:      Guid
   toId:        Guid
   amountCents: Long
 }
 // Flat, reflection-visible; no invariant clause; intended for DTOs / wire shapes.
-// @derive(Json|Sql|Proto) invokes compile-time source generators.
+// @generate(Json|Sql|Proto) invokes built-in source generators; @generate(Pkg.Name) invokes custom ones.
 ```
 
 ### Interfaces and implementations
@@ -536,7 +537,8 @@ authors = ["alice <alice@example.com>"]
 license = "MIT"
 
 [dependencies]
-Money = "^2.1"
+Money = "^2.1"                          # registry/NuGet channel
+Lyric.Web = { path = "../lyric-web" }  # local-path dep (pre-built DLL in <dep>/bin/)
 
 # NuGet interop — resolved by `lyric restore`, shims generated in _extern/
 [nuget]
@@ -571,7 +573,8 @@ output_assembly = "myapp.dll"
 | `@cfg(feature = "X")` | any item | Erase item when feature `X` is not active; see chapter 20 §20.7 |
 | `@cfg(any(feature = "X", feature = "Y"))` | any item | Erase unless at least one listed feature is active |
 | `@delete` / `@get` / `@patch` / `@post` / `@put` | handler function | HTTP method annotation (lyric-web code-first) |
-| `@derive(Json\|Sql\|Proto)` | `exposed record` | Emit compile-time serializer for the named target |
+| `@generate(Json\|Sql\|Proto)` | `exposed record`, `record`, `union`, `interface` | Invoke built-in source generator for the named target |
+| `@generate(Pkg.Name)` | `exposed record`, `record`, `union`, `interface` | Invoke custom source generator from package `Pkg` |
 | `@experimental` | `pub` item | May change without SemVer major bump |
 | `@inline_template` | `pub aspect` | C-mode template: body re-compiled in consumer package so it can read named `args` fields (deferred; not yet implemented) |
 | `@global_clock_unsafe` | function | Suppresses the proof-system warning for non-`@stubbable` clock access |
@@ -610,6 +613,8 @@ output_assembly = "myapp.dll"
 | `Std.Sort` | Stable sort | `sort[T](xs, cmp)`, `sortInts`, `sortLongs`, `sortStrings` |
 | `Std.Math` | Numeric utilities | `abs`, `min`, `max`, `sqrt`, `pow`, `floor`, `ceil` |
 | `Std.Random` | Pseudo-random values | `nextInt`, `nextDouble`, `nextBool` |
+| `Std.SecureRandom` | Cryptographically-strong randomness | `secureNextInt`, `secureNextIntRange`, `secureGetBytes` |
+| `Std.Hash` | Cryptographic hashing | `sha512OfBytes`, `sha512OfFile` |
 | `Std.Char` | Unicode character utilities | `isLetter`, `isDigit`, `isWhiteSpace`, `isUpperCase`, `isLowerCase`, `toUpperCase`, `toLowerCase`, `toInt`, `fromInt`, `digitValue`, `hexDigitValue` |
 | `Std.Format` | Number and string formatting | `toHexString`, `toHexStringUpper`, `formatFixed`, `zeroPad`, `hexPad`, `padLeft`, `padRight` |
 | `Std.Encoding` | Byte-level encoding | `encodeBase64`, `tryDecodeBase64`, `encodeHex`, `tryDecodeHex`, `encodeUtf8`, `tryDecodeUtf8` |
@@ -631,6 +636,8 @@ output_assembly = "myapp.dll"
 | `Std.Path` | Pure path manipulation | `join`, `extension`, `basename`, `dirname`, `isAbsolute`, `isRelative` |
 
 **External libraries** (separate packages; add to `[dependencies]` in `lyric.toml`):
+
+> **Early-preview status.** The libraries below (`lyric-*`) are showcase / early-preview packages. Their public API surfaces are unstable and may change without a SemVer major bump until v1.0. They have limited automated test coverage and are not yet supported on both .NET and JVM targets. Use them in non-production code or with awareness of these gaps; see [issue #367](https://github.com/nichobbs/lyric-lang/issues/367) for the remediation plan.
 
 | Package | Provides | Key names |
 |---|---|---|
@@ -656,7 +663,7 @@ output_assembly = "myapp.dll"
 
 Codegen builtins (no import needed): `println`, `panic`, `expect`, `assert`, `toString(x)`, `format1`/`format2`/`format3`/`format4`/`format5`/`format6`, `default()`.
 
-### Service libraries (separate packages, not in stdlib)
+### Service libraries (early-preview; separate packages, not in stdlib)
 
 | Library | Package(s) | Purpose | Chapter |
 |---|---|---|---|
@@ -691,9 +698,9 @@ lyric build <file.l>                   # compile to .dll + .runtimeconfig.json
 lyric build --force <file.l>           # rebuild unconditionally (bypass incremental check)
 lyric build --aot <file.l>             # Native AOT; no .NET runtime at deployment
 lyric build --target dotnet <file.l>   # target .NET (default)
-lyric build --target jvm <file.l>      # selects JVM kernel bindings (_kernel_jvm/);
-                                       # full JAR emission via self-hosted JVM emitter
-                                       # (in progress — see docs/33-platform-parity-remediation.md)
+lyric build --target jvm <file.l>      # emit a runnable JAR via the self-hosted JVM emitter
+                                       # (`Main-Class` derived from the source `package`
+                                       # declaration; runs under `java -jar foo.jar`)
 lyric build -o <dir> <file.l>          # write output files to <dir>
 lyric build --manifest lyric.toml      # build from project manifest
                                        # (with [project] output = "single", bundles every
@@ -711,13 +718,15 @@ lyric build --all-features             # transitive closure of every declared fe
 lyric run <file.l>                     # compile and immediately execute
 lyric run <file.l> -- arg1 arg2        # pass arguments to the program
 
-# Test  (single-file mode; --manifest and --doctests are planned for v2)
+# Test  (single-file; --manifest, --doctests, --update-snapshots, property execution: v2)
 lyric test <file.l>                    # run test blocks in a @test_module file
                                        # (TAP-shaped output; exit 1 on any failure)
 lyric test <file.l> --filter <substr>  # only run tests whose title contains <substr>
 lyric test <file.l> --list             # print test titles only; do not compile or run
 lyric test <file.l> --jvm              # compile with JVM backend; write annotated JAR
-                                       # (JUnit 5 ConsoleLauncher integration in B127+)
+                                       # (full JUnit 5 ConsoleLauncher integration in progress)
+lyric test --manifest <lyric.toml>     # run every [project.tests] entry in the manifest
+                                       # (gated by self-hosted CLI bridge; see #465)
 
 # Format
 lyric fmt <file.l>                     # print formatted source to stdout (no configuration)
@@ -774,6 +783,15 @@ lyric repl --verbose                   # REPL with diagnostic output on each eva
 lyric --sdk-info                       # print SDK root, stdlib DLL path, and version information
 lyric public-api-diff <old.dll> <new.dll>  # diff pub surfaces; exits 0 (compatible) or 2 (breaking)
 ```
+
+### CLI environment variables
+
+| Variable | Default | Effect |
+|---|---|---|
+| `LYRIC_BIN` | `lyric` | Path to the `lyric` (or `dotnet`) executable used by the self-hosted CLI when it needs to shell back to itself (e.g. for `emitProject` multi-package builds).  Set automatically by `Program.fs` before dispatching to `cli.l`. |
+| `LYRIC_CLI_DLL` | unset | When the CLI is running as a `dotnet exec <dll>` invocation rather than an AppHost-native binary, the DLL path.  `Program.fs` populates from `Assembly.GetEntryAssembly`.  Subprocess-fallback only. |
+| `LYRIC_FORCE_SUBPROCESS` | `0` | When set to `1`, every `lyric build` runs through the subprocess shellout to `lyric --internal-build` even for `--target dotnet`.  Default is the in-process MSIL emit path that lands `Msil.Bridge.compileToMsil` directly without spawning a subprocess.  Used by the bootstrap reproducibility pipeline to compare in-process vs subprocess output during the Track A migration (`docs/41 §860`). |
+| `LYRIC_STD_PATH` | unset | Override the stdlib source root (`lyric-stdlib/std/`) used by the F# emitter's package-import resolver.  Mainly useful when running stage-1 / stage-2 bootstrap builds out of a non-standard layout. |
 
 ---
 

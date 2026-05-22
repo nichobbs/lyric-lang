@@ -61,7 +61,7 @@ func main(): Unit {
     "}\n"
 
   val jarPath = outDir + "/evens.jar"
-  val ok = compileToJar(src, jarPath, "TestEvens")
+  val ok = compileToJar(src, jarPath, "TestEvens", newList())
   if ok {
     println("jar_written=true")
   } else {

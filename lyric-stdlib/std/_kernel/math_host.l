@@ -124,3 +124,20 @@ pub func hostIsInfinity(x: in Double): Bool = ()
 
 @externTarget("System.Double.IsFinite")
 pub func hostIsFinite(x: in Double): Bool = ()
+
+// =====================================================================
+// Integer type widening / narrowing (System.Convert).
+//
+// Pure-Lyric code cannot implicitly promote Int (32-bit) to Long
+// (64-bit) or truncate Long to Int; mixed-width arithmetic silently
+// evaluates in the narrower type.  These two externs provide the
+// explicit conversions used by numeric algorithms (e.g. zigzag
+// encoding in lyric-proto) that need to cross the 32/64-bit boundary
+// without overflow.
+// =====================================================================
+
+@externTarget("System.Convert.ToInt64")
+pub func hostIntToLong(n: in Int): Long = ()
+
+@externTarget("System.Convert.ToInt32")
+pub func hostLongToInt(n: in Long): Int = ()

@@ -76,8 +76,11 @@ output_assembly = "Lambda.dll"
   "src/_kernel/lambda_kernel_jvm.l",
 ]
 
+[project.tests]
+"Lambda.LambdaTests" = "tests/lambda_tests.l"
+
 [dependencies]
-"Lyric.Stdlib" = { path = "../stdlib" }
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }
 "Lyric.Web"    = { path = "../lyric-web" }
 
 [nuget]

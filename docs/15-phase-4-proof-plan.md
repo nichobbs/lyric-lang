@@ -155,6 +155,7 @@ does not check the call-graph rule.
 | `V0010` | Package declares conflicting verification annotations (`@proof_required` and `@runtime_checked`, etc.) | error | pick one |
 | `V0011` | Unknown `@proof_required` modifier (only `unsafe_blocks_allowed` and `checked_arithmetic` are recognised) | error | drop or correct the modifier |
 | `V0012` | `async func` or `yield`-bearing function appears in proof-required code | error | refactor into a sync core, or mark `@runtime_checked` |
+| `V0031` | **Retired** in #336.  The self-hosted aspect weaver (`Lyric.Weaver.weaveFile`, ported from `bootstrap/src/Lyric.Emitter/Weaver.fs`) now runs in the verifier driver before VC generation, so proofs discharge against the woven wrapper's composed contracts — not the bare body.  The same-package limitation that previously made the warning incomplete is gone; cross-package aspect detection is still future work (imported aspect annotations don't fire weaving today, mirroring the original `V0031` cross-package gap). | — | — |
 
 `V0007` defaults to *error* because allowing `unknown` to slide is
 how every academic verifier's user community ends up tolerating

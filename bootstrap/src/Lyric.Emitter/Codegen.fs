@@ -801,7 +801,13 @@ let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
             // Arithmetic preserves the operand type.  Falls back to
             // the lhs peek; if peek can't tell, we surface `obj`.
             peekExprType ctx l
-        | BCoalesce -> peekExprType ctx l
+        | BCoalesce ->
+            // Nullable<T> ?? expr has result type T (unwrapped), not Nullable<T>.
+            let lt = peekExprType ctx l
+            if lt.IsValueType && lt.IsGenericType
+               && lt.GetGenericTypeDefinition() = typedefof<System.Nullable<_>>
+            then lt.GetGenericArguments().[0]
+            else lt
     | EPrefix (PreNot, _) -> typeof<bool>
     | EPrefix (PreNeg, inner) -> peekExprType ctx inner
     | EIf (_, EOBExpr thenE, _, _) -> peekExprType ctx thenE
@@ -1094,12 +1100,22 @@ let private isNeverBranch (b: ExprOrBlock) : bool =
         match e.Kind with
         | ECall ({ Kind = EPath { Segments = ["panic"] } }, _) -> true
         | _ -> false
+    let isDivergentStmt (s: Statement) =
+        // Divergent statements transfer control out of the branch — the
+        // merge label is never reached from this path, so the arm
+        // doesn't need to leave a value on the stack.  `return`, `throw`,
+        // `break`, `continue` all qualify; `panic(...)` is the
+        // expression-form analogue.
+        match s.Kind with
+        | SReturn _ | SThrow _ | SBreak _ | SContinue _ -> true
+        | SExpr e -> isPanic e
+        | _ -> false
     match b with
     | EOBExpr e -> isPanic e
     | EOBBlock blk ->
         match List.tryLast blk.Statements with
-        | Some { Kind = SExpr e } -> isPanic e
-        | _ -> false
+        | Some s -> isDivergentStmt s
+        | None   -> false
 
 let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     let il = ctx.IL
@@ -2578,6 +2594,53 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         il.MarkLabel(lblEnd)
         typeof<bool>
 
+    // ?? operator: evaluate lhs once; if it has a value use it, else rhs.
+    // Must be a special case like BAnd/BOr because both operands must NOT be
+    // evaluated eagerly — the stack would be imbalanced if we fall through the
+    // generic binop path (which evaluates both sides before applying the op).
+    | EBinop (BCoalesce, lhs, rhs) ->
+        let lt             = emitExpr ctx lhs   // push nullable lhs
+        let lblHaveValue   = il.DefineLabel()
+        let lblEnd         = il.DefineLabel()
+        if lt.IsValueType
+           && lt.IsGenericType
+           && lt.GetGenericTypeDefinition() = typedefof<System.Nullable<_>> then
+            // Value-type Nullable<T>: brtrue is illegal on structs.
+            // Stash in a temp local; use HasValue / Value instance methods.
+            let innerTy    = lt.GetGenericArguments().[0]
+            let nullableTy = typedefof<System.Nullable<_>>.MakeGenericType([| innerTy |])
+            // GetMethod always succeeds on the closed Nullable<T> generic —
+            // NonNull assertions are safe here.
+            let hasValueM  = nullableTy.GetMethod("get_HasValue") |> Option.ofObj |> Option.defaultWith (fun () -> failwith "Nullable<T>.get_HasValue not found")
+            let getValueM  = nullableTy.GetMethod("get_Value")    |> Option.ofObj |> Option.defaultWith (fun () -> failwith "Nullable<T>.get_Value not found")
+            let tmpLoc     = FunctionCtx.defineLocal ctx "__coalesce_tmp" lt
+            il.Emit(OpCodes.Stloc,  tmpLoc)
+            il.Emit(OpCodes.Ldloca, tmpLoc)
+            il.Emit(OpCodes.Call,   hasValueM)
+            // Use long-form Brtrue: see reference-type arm comment below.
+            il.Emit(OpCodes.Brtrue, lblHaveValue)
+            let rt = emitExpr ctx rhs
+            il.Emit(OpCodes.Br, lblEnd)
+            il.MarkLabel(lblHaveValue)
+            il.Emit(OpCodes.Ldloca, tmpLoc)
+            il.Emit(OpCodes.Call,   getValueM)
+            il.MarkLabel(lblEnd)
+            rt
+        else
+            // Reference-type nullable: dup / brtrue / pop.
+            il.Emit(OpCodes.Dup)                     // [lhs, lhs_dup]
+            // Use long-form Brtrue: PersistedAssemblyBuilder's short-branch upgrade
+            // can corrupt IL when the gap crosses other resized instructions.
+            il.Emit(OpCodes.Brtrue, lblHaveValue)    // pop lhs_dup; branch if non-null
+            // lhs was null: discard the null, push the fallback.
+            il.Emit(OpCodes.Pop)
+            let rt = emitExpr ctx rhs
+            il.Emit(OpCodes.Br, lblEnd)
+            il.MarkLabel(lblHaveValue)
+            // lhs was non-null: the original lhs value is already on the stack.
+            il.MarkLabel(lblEnd)
+            rt                                       // result type is the rhs (non-nullable) type
+
     | EBinop (op, lhs, rhs) ->
         let lt = emitExpr ctx lhs
         // Distinct-type binop: if the lhs is a distinct-type struct, the
@@ -2771,11 +2834,10 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         | BGte ->
             if isUnsignedClr opTy then il.Emit(OpCodes.Clt_Un) else il.Emit(OpCodes.Clt)
             emitLdcI4 il 0; il.Emit(OpCodes.Ceq); typeof<bool>
-        | BCoalesce -> opTy
         | BImplies  ->
             il.Emit(OpCodes.Pop); il.Emit(OpCodes.Pop); emitLdcI4 il 1; typeof<bool>
-        | BAnd | BOr ->
-            failwith "logical op fell through to fallback"
+        | BAnd | BOr | BCoalesce ->
+            failwith "short-circuit op fell through to generic binop path"
 
     // ---- if-expression ------------------------------------------------
 
@@ -2809,29 +2871,49 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             let thenLeaves = (not thenIsNever) && branchLeavesValue ctx thenBranch
             let elseLeaves = (not elseIsNever) && branchLeavesValue ctx elseB
             let discardBoth = thenLeaves <> elseLeaves
+            // Route each non-divergent branch through an intermediate
+            // label so we can re-balance the stack once both arms'
+            // *actual* types are known.  `branchLeavesValue` is a
+            // syntactic look-ahead that mis-predicts for ECall shapes
+            // peekExprType doesn't recognise (e.g. `env.add(name, te)`),
+            // and ilc's verifier rejects the resulting mismatched stack
+            // depths even though the JIT was lenient.
+            let lblPostThen = il.DefineLabel()
+            let lblPostElse = il.DefineLabel()
             il.Emit(OpCodes.Brfalse, lblElse)
             let thenTy = emitBranchValueWith ctx thenBranch discardBoth
-            // A Never-returning branch cannot reach lblEnd.  Terminate
-            // its IL path with an unreachable throw so the JIT verifier
-            // sees a single consistent stack height at the merge label.
             if thenIsNever then
                 il.Emit(OpCodes.Ldnull)
                 il.Emit(OpCodes.Throw)
             else
-                il.Emit(OpCodes.Br, lblEnd)
+                il.Emit(OpCodes.Br, lblPostThen)
             il.MarkLabel(lblElse)
             let elseTy = emitBranchValueWith ctx elseB discardBoth
             if elseIsNever && not thenIsNever then
                 il.Emit(OpCodes.Ldnull)
                 il.Emit(OpCodes.Throw)
+            elif not elseIsNever then
+                il.Emit(OpCodes.Br, lblPostElse)
+            // Post-emit reconciliation.  At each post label only one
+            // branch's stack arrives; balance it to the unified type.
+            let voidTy = typeof<System.Void>
+            let mergedTy =
+                if elseIsNever then thenTy
+                elif thenIsNever then elseTy
+                elif thenTy = voidTy || elseTy = voidTy then voidTy
+                else thenTy
+            if not thenIsNever then
+                il.MarkLabel(lblPostThen)
+                if thenTy <> voidTy && mergedTy = voidTy then
+                    il.Emit(OpCodes.Pop)
+                il.Emit(OpCodes.Br, lblEnd)
+            if not elseIsNever then
+                il.MarkLabel(lblPostElse)
+                if elseTy <> voidTy && mergedTy = voidTy then
+                    il.Emit(OpCodes.Pop)
+                // Falls through to lblEnd.
             il.MarkLabel(lblEnd)
-            // Result type: the non-Never branch's type.
-            if elseIsNever then thenTy
-            elif thenIsNever then elseTy
-            elif thenTy = typeof<System.Void> || elseTy = typeof<System.Void> then
-                typeof<System.Void>
-            else
-                thenTy
+            mergedTy
 
     // ---- match (E6: enum-only patterns) -------------------------------
 
@@ -4471,6 +4553,7 @@ and private alwaysMatches (ctx: FunctionCtx) (pat: Pattern) : bool =
     match pat.Kind with
     | PWildcard -> true
     | PBinding ("_", None) -> true
+    | PBinding ("null", None) -> false  // null literal pattern — only matches null
     | PBinding (name, None) ->
         not (ctx.EnumCases.ContainsKey name)
         && not (ctx.UnionCases.ContainsKey name)
@@ -4579,6 +4662,11 @@ and private emitPatternTest
     match pat.Kind with
     | PWildcard | PBinding ("_", None) ->
         emitLdcI4 il 1
+    | PBinding ("null", None) ->
+        // `case null` — test whether the scrutinee is null (nullable reference).
+        il.Emit(OpCodes.Ldloc, tmp)
+        il.Emit(OpCodes.Ldnull)
+        il.Emit(OpCodes.Ceq)
     | PBinding (name, None) ->
         match ctx.EnumCases.TryGetValue name with
         | true, (_, c) ->
@@ -4792,6 +4880,9 @@ and private emitPatternBind
         (pat: Pattern) : unit =
     let il = ctx.IL
     match pat.Kind with
+    | PBinding ("null", None) ->
+        // Null literal pattern — no variable to bind; the scrutinee matched null.
+        ()
     | PBinding (name, None)
         when name <> "_"
              && not (ctx.EnumCases.ContainsKey name)
@@ -4990,26 +5081,30 @@ and private emitMatch
         // ending in a non-expr statement (SAssign, SLocal, etc.) push
         // nothing (Void).  When the two are mixed the CLR verifier rejects
         // the inconsistent stack heights at the branch target with
-        // InvalidProgramException.  Normalise: if a prior arm set a Unit
-        // result and this arm is void, push a zero Unit; if the prior result
-        // is void and this arm pushed Unit, pop it.
-        let unitTy = typeof<System.ValueTuple>
+        // InvalidProgramException.  Normalise: if a prior arm set a non-Void
+        // result and this arm is Void, push a zero default; if the prior
+        // result is Void and this arm pushed a value, pop it.
+        let voidTy = typeof<System.Void>
         let armTy =
             if isNever then rawArmTy  // path is closed; type doesn't matter
             else
                 match resultTy with
-                | Some prevTy ->
-                    if rawArmTy = typeof<System.Void> && prevTy = unitTy then
-                        let dummy = FunctionCtx.defineLocal ctx "__unit_pad" unitTy
+                | Some prevTy when rawArmTy = voidTy && prevTy <> voidTy ->
+                    // Pad with a default value matching the established
+                    // result type so this arm's stack height agrees with
+                    // sibling arms at the merge label.
+                    if prevTy.IsValueType || prevTy.IsGenericParameter then
+                        let dummy = FunctionCtx.defineLocal ctx "__arm_pad" prevTy
                         il.Emit(OpCodes.Ldloca, dummy)
-                        il.Emit(OpCodes.Initobj, unitTy)
+                        il.Emit(OpCodes.Initobj, prevTy)
                         il.Emit(OpCodes.Ldloc, dummy)
-                        unitTy
-                    elif rawArmTy = unitTy && prevTy = typeof<System.Void> then
-                        il.Emit(OpCodes.Pop)
-                        typeof<System.Void>
-                    else rawArmTy
-                | None -> rawArmTy
+                    else
+                        il.Emit(OpCodes.Ldnull)
+                    prevTy
+                | Some prevTy when rawArmTy <> voidTy && prevTy = voidTy ->
+                    il.Emit(OpCodes.Pop)
+                    voidTy
+                | _ -> rawArmTy
         if resultTy.IsNone && not isNever then resultTy <- Some armTy
         FunctionCtx.popScope ctx
         il.Emit(OpCodes.Br, endLbl)
@@ -5409,7 +5504,29 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         | None -> il.Emit(OpCodes.Ret)
 
     | SReturn (Some e) ->
-        let _ = emitExpr ctx e
+        let exprTy = emitExpr ctx e
+        // Implicit T → Nullable<T> lifting: mirrors routeReturn in Emitter.fs.
+        match ctx.ResultLocal with
+        | Some loc
+            when exprTy.IsValueType
+              && not (exprTy.IsGenericType
+                      && not exprTy.IsGenericTypeDefinition
+                      && exprTy.GetGenericTypeDefinition() = typedefof<System.Nullable<_>>)
+              && loc.LocalType.IsValueType
+              && loc.LocalType.IsGenericType
+              && not loc.LocalType.IsGenericTypeDefinition
+              && loc.LocalType.GetGenericTypeDefinition() = typedefof<System.Nullable<_>>
+              && loc.LocalType.GetGenericArguments().[0] = exprTy ->
+            let nullableCtor = loc.LocalType.GetConstructor([| exprTy |])
+            match Option.ofObj nullableCtor with
+            | Some ctor -> il.Emit(OpCodes.Newobj, ctor)
+            | None ->
+                // Matches the get_HasValue / get_Value defensive style
+                // above (#723): a null ctor lookup on a closed Nullable<T>
+                // signals a misconfigured reflection environment, never
+                // a legitimate program shape — refuse to emit broken IL.
+                failwithf "Nullable<T>(T) constructor not found for %s" loc.LocalType.FullName
+        | _ -> ()
         match ctx.ReturnLabel, ctx.ResultLocal with
         | Some lbl, Some loc ->
             il.Emit(OpCodes.Stloc, loc)

@@ -36,6 +36,14 @@ extern type JsonEncodedText      = "System.Text.Json.JsonEncodedText"
 @externTarget("System.Text.Json.JsonDocument.Parse")
 pub func hostParseJson(s: in String): JsonDoc = ()
 
+/// Release the unmanaged memory held by a JsonDocument.
+/// `JsonDocument` implements `IDisposable`; calling `Dispose()` immediately
+/// returns the pooled `byte[]` backing the JSON to the array pool instead
+/// of waiting for the GC.  Every `lyricJsonGet*` helper in `Std.Json` calls
+/// this via `defer` so documents are released at the earliest opportunity.
+@externTarget("System.Text.Json.JsonDocument.Dispose")
+pub func hostDisposeJson(d: in JsonDoc): Unit = ()
+
 @externTarget("System.Text.Json.JsonDocument.RootElement")
 pub func hostRootElement(d: in JsonDoc): JsonElement = ()
 
@@ -157,6 +165,7 @@ pub func hostEncodeString(s: in String): String {
 pub func lyricJsonGetIntSlice(s: in String, name: in String, value: out slice[Int]): Bool {
   val list: List[Int] = newList()
   val doc = hostParseJson(s)
+  defer { hostDisposeJson(doc) }
   val root = hostRootElement(doc)
   var elem: JsonElement = default()
   if not hostTryGetProperty(root, name, elem) {
@@ -183,6 +192,7 @@ pub func lyricJsonGetIntSlice(s: in String, name: in String, value: out slice[In
 pub func lyricJsonGetLongSlice(s: in String, name: in String, value: out slice[Long]): Bool {
   val list: List[Long] = newList()
   val doc = hostParseJson(s)
+  defer { hostDisposeJson(doc) }
   val root = hostRootElement(doc)
   var elem: JsonElement = default()
   if not hostTryGetProperty(root, name, elem) {
@@ -208,6 +218,7 @@ pub func lyricJsonGetLongSlice(s: in String, name: in String, value: out slice[L
 pub func lyricJsonGetDoubleSlice(s: in String, name: in String, value: out slice[Double]): Bool {
   val list: List[Double] = newList()
   val doc = hostParseJson(s)
+  defer { hostDisposeJson(doc) }
   val root = hostRootElement(doc)
   var elem: JsonElement = default()
   if not hostTryGetProperty(root, name, elem) {
@@ -233,6 +244,7 @@ pub func lyricJsonGetDoubleSlice(s: in String, name: in String, value: out slice
 pub func lyricJsonGetBoolSlice(s: in String, name: in String, value: out slice[Bool]): Bool {
   val list: List[Bool] = newList()
   val doc = hostParseJson(s)
+  defer { hostDisposeJson(doc) }
   val root = hostRootElement(doc)
   var elem: JsonElement = default()
   if not hostTryGetProperty(root, name, elem) {
@@ -261,6 +273,7 @@ pub func lyricJsonGetBoolSlice(s: in String, name: in String, value: out slice[B
 pub func lyricJsonGetStringSlice(s: in String, name: in String, value: out slice[String]): Bool {
   val list: List[String] = newList()
   val doc = hostParseJson(s)
+  defer { hostDisposeJson(doc) }
   val root = hostRootElement(doc)
   var elem: JsonElement = default()
   if not hostTryGetProperty(root, name, elem) {

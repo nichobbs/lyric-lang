@@ -46,10 +46,10 @@ yield
 Annotation-style keywords (always preceded by `@`):
 
 ```
-@axiom         @bench           @bench_module          @derive
-@experimental  @global_clock_unsafe  @hidden           @projectable
-@proof_required  @provided      @runtime_checked       @stable
-@stubbable     @test_module
+@axiom         @bench           @bench_module          @generate
+@experimental  @global_clock_unsafe  @hidden           @opaqueHandle
+@projectable   @proof_required  @provided              @runtime_checked
+@stable        @stubbable       @test_module
 ```
 
 **Stability annotations** (`@stable` / `@experimental`) mark the API stability of `pub` items (D040):
@@ -217,6 +217,17 @@ val p2 = p.copy(x = 3.0)        // non-destructive update
 
 All fields must be named at construction. Positional construction is rejected by the parser.
 
+**Mutable record fields (`var`):** A field may be prefixed with `var` to signal that it is intended to be mutated by the record's owning code:
+
+```
+record Counter {
+  var count: Int
+  label: String
+}
+```
+
+The `var` prefix is accepted by the parser. The bootstrap parser consumes the keyword but does not yet carry a mutability flag in `FieldDecl` — the resulting AST node is identical to a non-`var` field. Full AST tracking and mutability enforcement (preventing external reassignment, restricting write sites to the owning package) are deferred to the T6+ type-checker tier; the bootstrap emitter currently treats `var` and non-`var` fields identically at the IL level. The syntax is intentionally similar to local `var` declarations so that the intention is clear in code review.
+
 ### 2.5 Unions (sum types)
 
 ```
@@ -254,7 +265,7 @@ enum Color {
 }
 ```
 
-Enums are unions with no payload. Values are distinct from integers; explicit conversion is required to interoperate with numeric APIs.
+Enums are unions with no payload. Values are distinct from integers; explicit conversion is required to interoperate with numeric APIs. Ordinals are non-negative — `.toNat()` returns the zero-indexed ordinal as `Nat`, and `Color.fromNat(n): Option[Color]` converts back (returning `None` for out-of-range values). **Status: specified; compiler synthesis of `toNat`/`fromNat` is planned for v1.0 and not yet shipped.**
 
 ### 2.7 Arrays and slices
 
@@ -323,7 +334,7 @@ Cycles in the projection graph require explicit `@projectionBoundary` markers �
 ### 2.10 Exposed records
 
 ```
-exposed record TransferRequest @derive(Json) {
+exposed record TransferRequest @generate(Json) {
   fromId: Guid
   toId: Guid
   amountCents: Long
@@ -332,7 +343,7 @@ exposed record TransferRequest @derive(Json) {
 
 `exposed` types are flat, host-visible, and may be inspected by reflection. They compile to plain .NET `record class` types. They cannot have invariants beyond what the type system enforces structurally (no `invariant:` clause). They are intended for wire-level shapes — DTOs, log payloads, config records.
 
-`@derive(Json)`, `@derive(Sql)`, `@derive(Proto)` invoke source generators that emit serializers at compile time. No runtime serialization library is needed.
+`@generate(Json)`, `@generate(Sql)`, `@generate(Proto)` invoke built-in source generators that emit serializers at compile time. No runtime serialization library is needed. Third-party generators are invoked with dotted names (`@generate(Pkg.Name)`); see `docs/40-source-generators.md` and D075.
 
 An `opaque` type cannot have an `exposed` field. An `exposed` type may hold an opaque field, but only as an opaque handle — the inner representation remains hidden.
 
@@ -507,6 +518,8 @@ In split mode, packages are authored as `<package>.lspec` (containing `pub` decl
 Lyric adopts the **Swift operator precedence table** as its base, with the following modifications:
 
 - Bitwise operators are not symbolic — use `.and()`, `.or()`, `.xor()`, `.shl()`, `.shr()` methods on integer types. This sidesteps the C-family precedence trap with `&` and `==`.
+  - `.shl(n: Int)` — logical left shift by `n` bits.  Equivalent to multiplication by `2^n`; high bits are discarded.
+  - `.shr(n: Int)` — **arithmetic** right shift on signed integer types (`Byte`, `Int`, `Long`).  Sign bit is replicated into the vacated high bits, so negative inputs stay negative (`-1.shr(1) == -1`).  Unsigned types (`UInt`, `ULong`) get **logical** right shift (zero-extended).  This matches the .NET runtime's distinction between `>>` on `int` (arithmetic) and `int.UnsignedRightShift` / `>>>` introduced in .NET 7.  Protobuf zigzag encoders rely on this signed/unsigned split — see lyric-proto #361 for the RFC vector tests that pin the behaviour.
 - Chained comparisons follow **Rust's rule**: `a < b < c` is a parse error, not `(a < b) < c`. Comparison operators do not associate.
 - The ternary `?:` operator does not exist. Use `if expr then a else b`.
 - The `?` operator (error propagation) has its own precedence level immediately above postfix.
@@ -1082,20 +1095,42 @@ If you need a generic list-add wrapper, implement it in Lyric using a kernel-lev
 monomorphised helper and expose a generic Lyric function that delegates to the
 concrete helper.
 
-**Static vs. instance call detection (JVM target).**  On the JVM backend the
-emitter determines whether a `@externTarget` binding is a static or instance
-call by inspecting the Lyric function name: if the name begins with a
-PascalCase prefix followed by an underscore (e.g. `Integer_parseInt`,
-`Math_abs`) the emitter emits `invokestatic`; otherwise it emits
-`invokevirtual` with the first parameter treated as the receiver.  A
-hand-written kernel extern that does not follow this convention will be
-silently misrouted.  The long-term fix is an explicit `kind = "static"` /
-`kind = "instance"` parameter on `@externTarget(...)` (tracked as a future
-enhancement); until then, all JVM kernel externs must obey the naming
-convention:
+**Static vs. instance call detection.**  Both backends need to know
+whether a `@externTarget` binding is a static or instance call.  The
+explicit form is two paired annotations (#370):
 
 ```
-// Static call — PascalCase prefix + underscore.
+// Static call — emits `call` / `invokestatic`.
+@externTarget("System.Math.Abs")
+@externStatic
+pub func absInt(n: in Int): Int
+
+// Instance call — emits `callvirt` / `invokevirtual` with the
+// receiver as Lyric arg 0.
+@externTarget("System.String.Trim")
+@externInstance
+pub func strTrim(s: in String): String
+```
+
+`@externStatic` and `@externInstance` are mutually exclusive; setting
+both is a diagnostic (the resolver falls back to `@externStatic` so
+the program still builds).  When neither is present, the .NET
+self-hosted MSIL emitter defaults to static, which is the safer
+choice for stdlib `@externTarget` declarations (most BCL externs are
+static methods or constructors).  Instance externs MUST be annotated
+explicitly — the resolver cannot disambiguate without the hint.
+
+**JVM backend (legacy convention).**  On the JVM backend the emitter
+also accepts a name-based heuristic for legacy stdlib code: if the
+Lyric function name begins with a PascalCase prefix followed by an
+underscore (e.g. `Integer_parseInt`, `Math_abs`) the emitter emits
+`invokestatic`; otherwise `invokevirtual`.  New code on either
+backend should use the explicit `@externStatic` / `@externInstance`
+annotations — the name-based convention is retained only for
+backwards compatibility with externs that pre-date #370:
+
+```
+// Static call — PascalCase prefix + underscore (legacy).
 @externTarget("java.lang.Integer.parseInt")
 pub func Integer_parseInt(s: in String): Int
 

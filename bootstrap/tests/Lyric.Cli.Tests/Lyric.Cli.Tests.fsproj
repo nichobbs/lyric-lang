@@ -5,21 +5,21 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
+  <!--
+    Track A A1.4 (#860) deletes the F# user-facing CLI dispatcher.  The
+    tests that exercised those F# command handlers go with it; what
+    remains is:
+      * ManifestTests: covers the retained TOML parser
+        (bootstrap/src/Lyric.Cli/Manifest.fs), still used by stage 1's
+        internal-manifest-build flag.
+      * SelfHosted{Msil,Jvm}BridgeTests: drive the self-hosted MSIL
+        / JVM compiler pipeline in-process via SelfHostedMsil /
+        SelfHostedJvm.
+  -->
   <ItemGroup>
     <Compile Include="ManifestTests.fs" />
-    <Compile Include="PackTests.fs" />
-    <Compile Include="NugetShimTests.fs" />
-    <Compile Include="MavenTests.fs" />
-    <Compile Include="RestoredPackagesTests.fs" />
-    <Compile Include="FmtTests.fs" />
-    <Compile Include="SelfHostedFmtBridgeTests.fs" />
     <Compile Include="SelfHostedMsilBridgeTests.fs" />
-    <Compile Include="ParityTests.fs" />
-    <Compile Include="LintTests.fs" />
-    <Compile Include="ProjectBuildTests.fs" />
-    <Compile Include="ProveTests.fs" />
-    <Compile Include="TestRunnerTests.fs" />
-    <Compile Include="DocTests.fs" />
+    <Compile Include="SelfHostedJvmBridgeTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

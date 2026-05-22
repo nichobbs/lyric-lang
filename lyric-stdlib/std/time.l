@@ -217,6 +217,12 @@ pub func toIsoString(t: in Instant): String {
 // Monotonic clock.
 // =====================================================================
 
+/// Current UTC time as Unix milliseconds since the epoch.
+@stable(since="1.0")
+pub func nowEpochMillis(): Long {
+  hostDtoToEpochMillis(hostDtoUtcNow())
+}
+
 /// Nanoseconds from an unspecified epoch using the platform's monotonic
 /// high-resolution clock.  The clock never goes backwards, even during
 /// NTP adjustments.  Use differences between two calls to measure

@@ -7,18 +7,7 @@ let main argv =
     let allTests =
         testList "Lyric.Cli" [
             ManifestTests.tests
-            PackTests.tests
-            NugetShimTests.tests
-            MavenTests.tests
-            RestoredPackagesTests.tests
-            FmtTests.tests
-            SelfHostedFmtBridgeTests.tests
             SelfHostedMsilBridgeTests.tests
-            ParityTests.tests
-            LintTests.tests
-            ProjectBuildTests.tests
-            ProveTests.tests
-            TestRunnerTests.tests
-            DocTests.tests
+            SelfHostedJvmBridgeTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

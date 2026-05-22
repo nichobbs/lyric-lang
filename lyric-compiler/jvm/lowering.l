@@ -576,9 +576,10 @@ pub record LFunc {
 }
 
 pub record LRecord {
-  className:  String
-  fields:     List[LField]
-  methods:    List[LFunc]
+  className:        String
+  fields:           List[LField]
+  methods:          List[LFunc]
+  implementsIfaces: List[String]
 }
 
 // ── Type helpers (no OR patterns) ────────────────────────────────────────────
@@ -1067,7 +1068,11 @@ pub func lowerRecord(r: in LRecord, pool: in Pool): ClassFile {
     ))
   }
 
-  makeClassFull(r.className, cfFields, methods)
+  if r.implementsIfaces.count > 0 {
+    makeClassFullWithInterfaces(r.className, r.implementsIfaces, cfFields, methods)
+  } else {
+    makeClassFull(r.className, cfFields, methods)
+  }
 }
 
 // ── B6: Protected types and wire blocks ──────────────────────────────────────
@@ -1930,6 +1935,35 @@ pub func lowerRangeType(r: in LRangeType, pool: in Pool): ClassFile {
     methods      = methods,
     attrs        = newList()
   )
+}
+
+// ── Interface lowering ────────────────────────────────────────────────────────
+//
+// Lowers a Lyric `interface Iface { … }` declaration to a JVM interface
+// ClassFile.  Abstract method headers are emitted with ACC_ABSTRACT; default
+// method bodies (from IMFunc) are emitted as concrete MethodInfos via the
+// pre-resolved LFunc list.
+
+pub record LInterface {
+  className:       String
+  abstractMethods: List[MethodInfo]
+  concreteFuncs:   List[LFunc]
+}
+
+pub func lowerInterface(i: in LInterface, pool: in Pool): ClassFile {
+  val methods: List[MethodInfo] = newList()
+  var ai = 0
+  while ai < i.abstractMethods.count {
+    val m = i.abstractMethods[ai]
+    val _ = poolUtf8(pool, m.name)
+    val _ = poolUtf8(pool, m.descriptor)
+    methods.add(m)
+    ai = ai + 1
+  }
+  for fn in i.concreteFuncs.toArray() {
+    methods.add(lowerFunc(fn, pool))
+  }
+  makeInterfaceWithMethods(i.className, methods)
 }
 
 // ── Opaque-type lowering ──────────────────────────────────────────────────────
@@ -3312,7 +3346,7 @@ pub func lowerFuncWithContract(f: in LFunc, contract: in LContract, pool: in Poo
   lowerFunc(wFunc, pool)
 }
 
-// ── B122: lowerDeriveEquality (@derive(Equals) + @derive(Hash)) ──────────────
+// ── B122: lowerDeriveEquality (@generate(Equals) + @generate(Hash)) ──────────────
 
 pub record LRecordWithDerives {
   className:  String
@@ -3321,15 +3355,16 @@ pub record LRecordWithDerives {
   deriveHash: Bool
 }
 
-/// Lower a record with `@derive(Equals)` and/or `@derive(Hash)`.
+/// Lower a record with `@generate(Equals)` and/or `@generate(Hash)`.
 /// Emits `equals(Object): boolean` with field-by-field comparison
 /// and `hashCode(): int` with a prime-multiply accumulator.
 pub func lowerDeriveEquality(d: in LRecordWithDerives, pool: in Pool): ClassFile {
   // First build the base record
   val r = LRecord(
-    className = d.className,
-    fields    = d.fields,
-    methods   = newList()
+    className        = d.className,
+    fields           = d.fields,
+    methods          = newList(),
+    implementsIfaces = newList()
   )
   val cf = lowerRecord(r, pool)
 
@@ -3462,7 +3497,7 @@ pub func lowerDeriveEquality(d: in LRecordWithDerives, pool: in Pool): ClassFile
   )
 }
 
-// ── B123: lowerDeriveOrd (@derive(Compare/Add/Sub) on distinct types) ─────────
+// ── B123: lowerDeriveOrd (@generate(Compare/Add/Sub) on distinct types) ─────────
 
 pub record LDistinctWithDerives {
   wrapperClass:  String
@@ -3472,7 +3507,7 @@ pub record LDistinctWithDerives {
   deriveSub:     Bool
 }
 
-/// Lower a distinct type with optional @derive(Compare), @derive(Add), @derive(Sub).
+/// Lower a distinct type with optional @generate(Compare), @generate(Add), @generate(Sub).
 /// Emits `compareTo(T): int`, `$add(T): T`, `$sub(T): T` by delegating to the
 /// underlying primitive.
 pub func lowerDeriveOrd(d: in LDistinctWithDerives, pool: in Pool): ClassFile {
@@ -3596,6 +3631,8 @@ pub union LPackageItem {
   // `className` is the JVM binary name (e.g. "math_tests").
   // `slots` carries per-test metadata; method bodies are stubs until B127+.
   case LPTestModule(className: String, slots: List[TestMethodSlot])
+  // B132+: Lyric `interface` declaration — emits a JVM interface ClassFile.
+  case LPInterface(iface: LInterface)
 }
 
 pub record LPackage {
@@ -3660,6 +3697,9 @@ pub func lowerPackage(pkg: in LPackage, pool: in Pool): List[ClassFile] {
         // @LyricTest annotation class so both land in the same JAR.
         result.add(lowerTestModuleClass(className, slots, pool))
         result.add(lyricTestAnnotationClass(pool))
+      }
+      case LPInterface(iface) -> {
+        result.add(lowerInterface(iface, pool))
       }
     }
   }

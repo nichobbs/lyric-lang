@@ -55,6 +55,40 @@ version = "1.0.0"
                 ["1.0.0"; "2.0.0"; "9.9.9"]
                 "versions follow"
 
+        testCase "inline-table dependency carries path, blank version" <| fun () ->
+            let m = parseOk """
+[package]
+name = "Foo"
+version = "1.0.0"
+
+[dependencies]
+"MyLib" = { path = "../my-lib" }
+"""
+            match m.Dependencies with
+            | [ d ] ->
+                Expect.equal d.Name "MyLib" "dep name"
+                Expect.equal d.LocalPath (Some "../my-lib") "local path"
+                Expect.equal d.Version "" "inline-table form has no version"
+            | other ->
+                failwithf "expected 1 dependency, got %A" other
+
+        testCase "inline-table dependency without path surfaces structured error" <| fun () ->
+            let r = parseText """
+[package]
+name = "Foo"
+version = "1.0.0"
+
+[dependencies]
+"MyLib" = { branch = "main" }
+"""
+            match r with
+            | Ok _ -> failwith "expected Error, got Ok"
+            | Error (InvalidFieldType ("dependencies", "MyLib", expected)) ->
+                Expect.stringContains expected "path"
+                    "error message names the missing 'path' key"
+            | Error other ->
+                failwithf "expected InvalidFieldType (\"dependencies\", \"MyLib\", _), got %A" other
+
         testCase "build section optional" <| fun () ->
             let m = parseOk """
 [package]
@@ -354,7 +388,7 @@ metrics = []
                     "declared features sorted alphabetically"
                 Expect.equal f.Default ["logging"] "default set"
 
-        testCase "[features] empty section yields Some with empty lists" <| fun () ->
+        testCase "[features] empty section body is treated as absent (yields None)" <| fun () ->
             // A [features] header with no entries is unusual but valid;
             // since we detect [features] presence by looking for keys
             // under that section, an empty body yields None.  Document

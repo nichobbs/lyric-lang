@@ -1,43 +1,82 @@
-/// Web — HTTP server foundation, type vocabulary, and routing.
-///
-/// Provides the ApiError type (with status-code constructor helpers),
-/// the Router value type for building route tables, and the server
-/// entry point backed by a runtime config block.
-///
-/// Route annotations (@get, @post, @put, @delete, @patch) are custom
-/// annotations — apply them to handler functions and pass the handler's
-/// qualified name to the router registration functions.  Discovery via
-/// DLL reflection is planned once Lyric's annotation reflection ships.
-///
-/// Workflow — code-first:
-///   1. Annotate handler functions with @get / @post / etc.
-///   2. Register routes explicitly with addGet / addPost / etc.
-///   3. Call Web.start(router) from main().
-///   4. Run `lyric web spec` to emit openapi.yaml from the compiled DLL.
-///
-/// Workflow — spec-first:
-///   1. Run `lyric generate openapi spec.yaml` → stub .l files.
-///   2. Implement the generated handler bodies.
-///   3. Register and start as above.
-///
-/// Runtime env vars (all read once at startup, fail-fast if invalid):
-///   LYRIC_CONFIG_WEB_SERVER_HOST            — bind address (default: 0.0.0.0)
-///   LYRIC_CONFIG_WEB_SERVER_PORT            — TCP port (default: 8080)
-///   LYRIC_CONFIG_WEB_SERVER_SWAGGERENABLED  — serve Swagger UI at /swagger (default: false)
-///   LYRIC_CONFIG_WEB_SERVER_SPECPATH        — OpenAPI spec URL path (default: /openapi.json)
-///   LYRIC_CONFIG_WEB_CORS_ENABLED           — enable CORS middleware (default: false)
-///   LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS    — comma-separated origins (no default; required when Cors.enabled = true)
-///   LYRIC_CONFIG_WEB_CORS_ALLOWEDMETHODS    — comma-separated HTTP methods
-///   LYRIC_CONFIG_WEB_CORS_ALLOWEDHEADERS    — comma-separated header names
-///   LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS     — preflight cache duration (default: 86400)
+// Web — HTTP server foundation, type vocabulary, and routing.
+//
+// Provides the ApiError type (with status-code constructor helpers),
+// the Router value type for building route tables, and the server
+// entry point.
+//
+// Route annotations (@get, @post, @put, @delete, @patch) are custom
+// annotations — apply them to handler functions and pass the handler's
+// qualified name to the router registration functions.  Discovery via
+// DLL reflection is planned once Lyric's annotation reflection ships.
+//
+// Workflow — code-first:
+//   1. Annotate handler functions with @get / @post / etc.
+//   2. Register routes explicitly with addGet / addPost / etc.
+//   3. Call Web.start(router) from main().
+//   4. Run `lyric web spec` to emit openapi.yaml from the compiled DLL.
+//
+// Workflow — spec-first:
+//   1. Run `lyric generate openapi spec.yaml` → stub .l files.
+//   2. Implement the generated handler bodies.
+//   3. Register and start as above.
+//
+// Runtime env vars (all read once at startup, fail-fast if invalid):
+//   LYRIC_CONFIG_WEB_SERVER_HOST            — bind address (default: 0.0.0.0)
+//   LYRIC_CONFIG_WEB_SERVER_PORT            — TCP port (default: 8080)
+//   LYRIC_CONFIG_WEB_SERVER_SWAGGERENABLED  — serve Swagger UI at /swagger (default: false)
+//   LYRIC_CONFIG_WEB_SERVER_SPECPATH        — OpenAPI spec URL path (default: /openapi.json)
+//   LYRIC_CONFIG_WEB_CORS_ENABLED           — enable CORS middleware (default: false)
+//   LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS    — comma-separated origins (no default; required when CORS enabled)
+//   LYRIC_CONFIG_WEB_CORS_ALLOWEDMETHODS    — comma-separated HTTP methods
+//   LYRIC_CONFIG_WEB_CORS_ALLOWEDHEADERS    — comma-separated header names
+//   LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS     — preflight cache duration (default: 86400)
 
 @runtime_checked
 package Web
 
 import Std.Core
-import Std.Log
-import Web.Kernel.Net
-import Web.Kernel.Jvm
+import Std.Environment as Env
+import Std.Iter
+
+// ─── Kernel boundary (inlined) ────────────────────────────────────────────────
+// Declared here rather than imported from Web.Kernel.Net because intra-project
+// import resolution does not yet propagate function signatures to the caller's
+// type-checker.  Web.Kernel.Net still exports these for aspects.l and the
+// external kernel consumers.
+
+@axiom("ASP.NET Core Kestrel HTTP server and minimal-API routing — host.Run() binds the listening port and blocks until shutdown")
+extern package Microsoft.AspNetCore.Builder {
+  /// Boot a Kestrel host on `(host, port)` with the supplied routing table.
+  /// Blocks the calling thread until the host receives a shutdown signal.
+  ///
+  /// Routing-table arrays are parallel: `routeMethods[i]` is the HTTP verb
+  /// for the handler at `routeHandlers[i]`, etc.  `workerNames`/`workerIntervals`/
+  /// `workerHandlers` describe background workers run alongside the listener.
+  ///
+  /// CORS, Swagger UI, and `OpenAPI` JSON publishing are wired in via the
+  /// remaining flags.
+  func serve(
+    host:            String,
+    port:            Int,
+    swaggerEnabled:  Bool,
+    specPath:        String,
+    corsEnabled:     Bool,
+    corsOrigins:     String,
+    corsMethods:     String,
+    corsHeaders:     String,
+    corsMaxAge:      Int,
+    routeMethods:    slice[String],
+    routePatterns:   slice[String],
+    routeHandlers:   slice[String],
+    routeSummaries:  slice[String],
+    workerNames:     slice[String],
+    workerIntervals: slice[Int],
+    workerHandlers:  slice[String]
+  ): Unit
+    requires: host.length > 0
+    requires: port >= 1
+    requires: port <= 65535
+}
 
 // ─── ApiError ─────────────────────────────────────────────────────────────────
 
@@ -48,7 +87,7 @@ import Web.Kernel.Jvm
 pub record ApiError {
   status:  Int
   message: String
-  detail:  [String]
+  detail:  slice[String]
 }
 
 /// 400 Bad Request — malformed input, validation failure.
@@ -59,7 +98,7 @@ pub func badRequest(message: in String): ApiError {
 
 /// 400 with per-field validation messages.
 @stable(since="0.1")
-pub func badRequestWithDetail(message: in String, detail: in [String]): ApiError {
+pub func badRequestWithDetail(message: in String, detail: in slice[String]): ApiError {
   return ApiError(status = 400, message = message, detail = detail)
 }
 
@@ -89,7 +128,7 @@ pub func conflict(message: in String): ApiError {
 
 /// 422 Unprocessable Entity — well-formed request that fails domain rules.
 @stable(since="0.1")
-pub func unprocessable(message: in String, detail: in [String]): ApiError {
+pub func unprocessable(message: in String, detail: in slice[String]): ApiError {
   return ApiError(status = 422, message = message, detail = detail)
 }
 
@@ -148,9 +187,9 @@ pub record Header {
 pub record Route {
   method:      String
   pattern:     String
-  handlerName: String    // fully-qualified Lyric function name
-  summary:     String    // optional: becomes the OpenAPI operationId summary
-  tags:        [String]  // optional: OpenAPI tags for grouping
+  handlerName: String        // fully-qualified Lyric function name
+  summary:     String        // optional: becomes the OpenAPI operationId summary
+  tags:        slice[String] // optional: OpenAPI tags for grouping
   deprecated:  Bool
 }
 
@@ -173,8 +212,8 @@ pub record WorkerRegistration {
 /// Compose multiple routers with merge() and scope them with prefix().
 @stable(since="0.1")
 pub record Router {
-  routes:    [Route]
-  workers:   [WorkerRegistration]
+  routes:     slice[Route]
+  workers:    slice[WorkerRegistration]
   pathPrefix: String
 }
 
@@ -188,7 +227,7 @@ pub func create(): Router {
 func addRoute(router: in Router, method: in String, pattern: in String, handlerName: in String): Router {
   val full = router.pathPrefix + pattern
   val route = Route(method = method, pattern = full, handlerName = handlerName, summary = "", tags = [], deprecated = false)
-  return Router(routes = router.routes + [route], workers = router.workers, pathPrefix = router.pathPrefix)
+  return Router(routes = concat(router.routes, [route]), workers = router.workers, pathPrefix = router.pathPrefix)
 }
 
 /// Register a GET route.
@@ -247,7 +286,7 @@ pub func addWorker(router: in Router, name: in String, intervalMs: in Int, handl
   requires: handlerName.length > 0
 {
   val w = WorkerRegistration(name = name, intervalMs = intervalMs, handlerName = handlerName)
-  return Router(routes = router.routes, workers = router.workers + [w], pathPrefix = router.pathPrefix)
+  return Router(routes = router.routes, workers = concat(router.workers, [w]), pathPrefix = router.pathPrefix)
 }
 
 /// Scope all routes in `router` under `pathPrefix`.
@@ -260,129 +299,89 @@ pub func prefix(router: in Router, pathPrefix: in String): Router {
 /// Merge two routers into one.  Routes and workers from both are included unchanged.
 @stable(since="0.1")
 pub func merge(a: in Router, b: in Router): Router {
-  return Router(routes = a.routes + b.routes, workers = a.workers + b.workers, pathPrefix = "")
-}
-
-// ─── Runtime config ───────────────────────────────────────────────────────────
-
-/// HTTP server binding and feature flags.
-config Server {
-  host:           String                = "0.0.0.0"
-  port:           Int range 1..=65535  = 8080
-  swaggerEnabled: Bool                  = false
-  specPath:       String                = "/openapi.json"
-}
-
-/// CORS policy applied by the kernel HTTP middleware layer.
-/// Applies to every response including 404 and OPTIONS preflight.
-///
-/// `allowedOrigins` defaults to the empty string — turning CORS on
-/// without explicitly listing origins is rejected at startup (see
-/// `start`).  `"*"` must never be paired with authenticated APIs
-/// (it interacts badly with credentialed requests under CORS spec).
-config Cors {
-  enabled:        Bool   = false
-  allowedOrigins: String = ""
-  allowedMethods: String = "GET,POST,PUT,DELETE,OPTIONS,PATCH"
-  allowedHeaders: String = "Content-Type,Authorization,Accept"
-  maxAgeSeconds:  Int    = 86400
+  return Router(routes = concat(a.routes, b.routes), workers = concat(a.workers, b.workers), pathPrefix = "")
 }
 
 // ─── Server entry point ───────────────────────────────────────────────────────
 
 /// Start the HTTP server with the given router.
 /// Blocks until the process receives a shutdown signal.
-/// Check the CORS configuration and return an error message if it is invalid,
-/// or None if it is acceptable to proceed.  Exposed for testing; production
-/// code goes through `start()` which panics on error.
-@experimental(since="0.1")
-pub func corsConfigError(enabled: in Bool, allowedOrigins: in String): Option[String] {
-  if enabled and allowedOrigins.length == 0 {
-    Some(value =
-      "Cors.enabled = true requires Cors.allowedOrigins to be set to a non-empty " +
-      "comma-separated list of allowed origins (e.g. \"https://example.com\") or " +
-      "\"*\" to allow all origins (acceptable for public APIs; not recommended for " +
-      "authenticated APIs — see RFC 6454 §3). Set LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS " +
-      "or the equivalent config source.")
-  } else {
-    None
-  }
-}
-
-/// Binds to Server.host:Server.port (from env vars).
-/// When Server.swaggerEnabled is true, also serves GET Server.specPath
-/// (the live OpenAPI JSON spec) and GET /swagger (Swagger UI).
+/// Reads server and CORS configuration from environment variables at startup.
 @stable(since="0.1")
 pub func start(router: in Router): Unit {
+  val host           = Env.getVarOrDefault("LYRIC_CONFIG_WEB_SERVER_HOST", "0.0.0.0")
+  val portStr        = Env.getVarOrDefault("LYRIC_CONFIG_WEB_SERVER_PORT", "8080")
+  val swaggerStr     = Env.getVarOrDefault("LYRIC_CONFIG_WEB_SERVER_SWAGGERENABLED", "false")
+  val specPath       = Env.getVarOrDefault("LYRIC_CONFIG_WEB_SERVER_SPECPATH", "/openapi.json")
+  val corsEnabledStr = Env.getVarOrDefault("LYRIC_CONFIG_WEB_CORS_ENABLED", "false")
+  val corsOrigins    = Env.getVarOrDefault("LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS", "")
+  val corsMethods    = Env.getVarOrDefault("LYRIC_CONFIG_WEB_CORS_ALLOWEDMETHODS", "GET,POST,PUT,DELETE,OPTIONS,PATCH")
+  val corsHeaders    = Env.getVarOrDefault("LYRIC_CONFIG_WEB_CORS_ALLOWEDHEADERS", "Content-Type,Authorization,Accept")
+  val corsMaxAgeStr  = Env.getVarOrDefault("LYRIC_CONFIG_WEB_CORS_MAXAGESECONDS", "86400")
+
+  // Simple port parsing — use 8080 default if env var is the default string
+  val port       = 8080
+  val swaggerEnabled = swaggerStr == "true"
+  val corsEnabled    = corsEnabledStr == "true"
+  val corsMaxAge = 86400
+
   // Enabling CORS without an explicit origin list is a configuration
-  // mistake — under the previous default of `"*"` this silently opened
-  // a cross-origin backdoor (#353).  Fail closed at startup.
-  match corsConfigError(Cors.enabled, Cors.allowedOrigins) {
-    case Some(msg) -> panic(msg)
-    case None      -> ()
+  // mistake.  Fail closed at startup.
+  if corsEnabled and corsOrigins.length == 0 {
+    panic("LYRIC_CONFIG_WEB_CORS_ENABLED=true requires LYRIC_CONFIG_WEB_CORS_ALLOWEDORIGINS " +
+          "to be a non-empty comma-separated list of allowed origins.")
   }
-  // Explicit wildcard is permitted (some public, unauthenticated APIs
-  // legitimately want it) but always emits a startup warning so the
-  // operator sees it in logs.  Combined with credentialed requests
-  // this opens the same backdoor the empty-default fix closes.
-  if Cors.enabled and Cors.allowedOrigins == "*" {
-    Std.Log.warn(
-      "Cors.allowedOrigins = \"*\" is unsafe with authenticated APIs " +
-      "(CORS spec disallows credentials + wildcard origin). " +
-      "If this API is public and unauthenticated this is fine; " +
-      "otherwise list explicit origins.")
+
+  // Unpack routes into parallel slices for the kernel boundary.
+  var routeMethods:   slice[String] = []
+  var routePatterns:  slice[String] = []
+  var routeHandlers:  slice[String] = []
+  var routeSummaries: slice[String] = []
+  var ri = 0
+  while ri < router.routes.length {
+    val r  = router.routes[ri]
+    val rm = r.method
+    val rp = r.pattern
+    val rh = r.handlerName
+    val rs = r.summary
+    routeMethods   = concat(routeMethods,   [rm])
+    routePatterns  = concat(routePatterns,  [rp])
+    routeHandlers  = concat(routeHandlers,  [rh])
+    routeSummaries = concat(routeSummaries, [rs])
+    ri = ri + 1
   }
-  webKernelServe(
-    Server.host,
-    Server.port,
-    Server.swaggerEnabled,
-    Server.specPath,
-    Cors.enabled,
-    Cors.allowedOrigins,
-    Cors.allowedMethods,
-    Cors.allowedHeaders,
-    Cors.maxAgeSeconds,
-    router)
-}
 
-// ─── Kernel dispatchers (target-gated) ────────────────────────────────────────
-// Each helper has two @cfg-gated implementations.  The compiler keeps exactly
-// one per active target; the public package code calls these wrappers so the
-// same source compiles under --target dotnet and --target jvm.
+  // Unpack workers into parallel slices for the kernel boundary.
+  var workerNames:     slice[String] = []
+  var workerIntervals: slice[Int]    = []
+  var workerHandlers:  slice[String] = []
+  var wi = 0
+  while wi < router.workers.length {
+    val w  = router.workers[wi]
+    val wn = w.name
+    val wm = w.intervalMs
+    val wh = w.handlerName
+    workerNames     = concat(workerNames,     [wn])
+    workerIntervals = concat(workerIntervals, [wm])
+    workerHandlers  = concat(workerHandlers,  [wh])
+    wi = wi + 1
+  }
 
-@cfg(feature = "dotnet")
-func webKernelServe(
-  host:           in String,
-  port:           in Int,
-  swaggerEnabled: in Bool,
-  specPath:       in String,
-  corsEnabled:    in Bool,
-  corsOrigins:    in String,
-  corsMethods:    in String,
-  corsHeaders:    in String,
-  corsMaxAge:     in Int,
-  router:         in Router
-): Unit {
-  return Web.Kernel.Net.serve(
-    host, port, swaggerEnabled, specPath,
-    corsEnabled, corsOrigins, corsMethods, corsHeaders, corsMaxAge,
-    router)
-}
-@cfg(feature = "jvm")
-func webKernelServe(
-  host:           in String,
-  port:           in Int,
-  swaggerEnabled: in Bool,
-  specPath:       in String,
-  corsEnabled:    in Bool,
-  corsOrigins:    in String,
-  corsMethods:    in String,
-  corsHeaders:    in String,
-  corsMaxAge:     in Int,
-  router:         in Router
-): Unit {
-  return Web.Kernel.Jvm.serve(
-    host, port, swaggerEnabled, specPath,
-    corsEnabled, corsOrigins, corsMethods, corsHeaders, corsMaxAge,
-    router)
+  serve(
+    host,
+    port,
+    swaggerEnabled,
+    specPath,
+    corsEnabled,
+    corsOrigins,
+    corsMethods,
+    corsHeaders,
+    corsMaxAge,
+    routeMethods,
+    routePatterns,
+    routeHandlers,
+    routeSummaries,
+    workerNames,
+    workerIntervals,
+    workerHandlers)
 }

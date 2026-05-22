@@ -67,6 +67,7 @@ record WalkCtx {
   fnName:  String
   fnLevel: VerificationLevel
   callees: Map[String, CalleeInfo]
+  imports: List[ImportedMeta]    // cross-package callee resolution
   diag:    List[Diagnostic]
 }
 
@@ -89,6 +90,51 @@ func checkCallee(
           span))
       }
     }
+  }
+}
+
+// Extract a dotted name from a chain of EMember/EPath nodes.
+// "Ext" → "Ext", EMember(EPath("Ext"),"Lib") → "Ext.Lib", etc.
+// Returns "" if the expression is not a simple package-style path chain.
+func extractQualifiedName(e: in Expr): String {
+  match e.kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 { return path.segments[0] }
+      ""
+    }
+    case EMember(recv, memberName) -> {
+      val prefix = extractQualifiedName(recv)
+      if prefix == "" { return "" }
+      prefix + "." + memberName
+    }
+    case _ -> ""
+  }
+}
+
+// Check a cross-package call whose receiver package name is `pkgName` against
+// the V0002 rule.  Uses the imported package's level as a proxy for the callee
+// since we don't carry per-function metadata from the import.
+// If the package level doesn't dominate the caller's level, V0002 fires.
+func checkCrossPackageCallee(
+  ctx:     in WalkCtx,
+  pkgName: in String,
+  span:    in Span
+): Unit {
+  var ji = 0
+  while ji < ctx.imports.count {
+    if ctx.imports[ji].name == pkgName {
+      val pkgLevel = levelStringToMode(ctx.imports[ji].level)
+      val admissible = vlDominates(pkgLevel, ctx.fnLevel)
+      if not admissible {
+        ctx.diag.add(errorDiagnostic("V0002",
+          "proof-required function '" + ctx.fnName +
+          "' calls into " + vlDisplay(pkgLevel) + " package '" + pkgName +
+          "'; upgrade callee package or shift caller to @runtime_checked",
+          span))
+      }
+      return  // stop after first matching import (imports are unique after parsing)
+    }
+    ji = ji + 1
   }
 }
 
@@ -119,6 +165,14 @@ func walkExprCalls(ctx: in WalkCtx, e: in Expr): Unit {
         case EPath(path) -> {
           if path.segments.count == 1 {
             checkCallee(ctx, path.segments[0], e.span)
+          }
+        }
+        case EMember(recv, _) -> {
+          // Qualified call like Pkg.someFunc() or Ext.Lib.someFunc() —
+          // extract receiver package name and check package-level dominance.
+          val pkgName = extractQualifiedName(recv)
+          if pkgName != "" {
+            checkCrossPackageCallee(ctx, pkgName, e.span)
           }
         }
         case _ -> {}
@@ -373,6 +427,7 @@ func bodyHasInvariant(body: in Block): Bool {
 func checkFunctionCalls(
   fileLevel: in VerificationLevel,
   callees:   in Map[String, CalleeInfo],
+  imports:   in List[ImportedMeta],
   diag:      in List[Diagnostic],
   fn:        in FunctionDecl
 ): Unit {
@@ -383,6 +438,7 @@ func checkFunctionCalls(
     fnName  = fn.name,
     fnLevel = fnLevel,
     callees = callees,
+    imports = imports,
     diag    = diag)
 
   match fn.body {
@@ -989,7 +1045,7 @@ pub func checkFileWithImports(
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
-      case IFunc(fn) -> checkFunctionCalls(fileLevel, callees, diag, fn)
+      case IFunc(fn) -> checkFunctionCalls(fileLevel, callees, imports, diag, fn)
       case _         -> {}
     }
     i = i + 1

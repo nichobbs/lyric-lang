@@ -2,6 +2,18 @@
 
 Internationalization with placeholder substitution and locale fallback.
 
+## Platform parity
+
+| Feature flag | Backend                                              | Status                |
+|--------------|------------------------------------------------------|-----------------------|
+| `dotnet`     | `System.IO` + `Std.Json` for translation file loads  | Available             |
+| `jvm`        | `java.nio.file.Files` + `Std.Json` (Phase 6)         | Planned (Phase 6)     |
+
+The JVM kernel (`I18n.Kernel.Jvm`) uses the standard JDK file APIs
+and the Lyric stdlib JSON parser; no third-party JVM helpers are
+required, so JVM parity here only waits on the JVM stdlib JAR
+shipping `Std.Json` (see `docs/33-platform-parity-remediation.md`).
+
 ## Packages
 
 | Package | Purpose |

@@ -13,8 +13,11 @@ output_assembly = "Testing.dll"
 [project.packages]
 "Testing" = "src"
 
+[project.tests]
+"Testing.TestingTests" = "tests/testing_tests.l"
+
 [dependencies]
-"Lyric.Stdlib"   = { path = "../stdlib" }
+"Lyric.Stdlib"   = { path = "../lyric-stdlib" }
 "Lyric.Cache"    = { path = "../lyric-cache" }
 "Lyric.Mail"     = { path = "../lyric-mail" }
 "Lyric.Storage"  = { path = "../lyric-storage" }

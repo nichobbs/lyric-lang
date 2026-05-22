@@ -353,7 +353,7 @@ Phase 4 ✅
 ├─ HTTP client basics ✅
 ├─ Response parsing ✅
 ├─ High-level helpers ✅ (retry / timeout / redirect / cancellation; D-progress-070)
-└─ JSON integration ✅ (@derive(Json) source-gen; D-progress-030..060)
+└─ JSON integration ✅ (@generate(Json) source-gen; D-progress-030..060)
 
 Phase 5 ✅
 ├─ Environment & process ✅
@@ -441,6 +441,8 @@ Every `pub` item in `lyric-stdlib/std/` carries either `@stable(since="1.0")` or
 | `Std.Set` (`set.l`) | `@stable` | Immutable set backed by `Dictionary<object,object>` (`newSet`, `setAdd`, `setContains`, `setRemove`, `setUnion`, `setIntersect`). |
 | `Std.Uuid` (`uuid.l`) | `@stable` | UUID v4 generation (`newUuid`) and string round-trip. |
 | `Std.Process` (`process.l`) | `@stable` | Subprocess launch and wait (`spawn`, `spawnCaptured`, `runCapture`); backed by `_kernel/process_host.l`. |
+| `Std.Regex` (`_kernel/regex.l`) | `@stable` | Regex compile + isMatch / matchOne / replace.  **.NET target**: compiled patterns carry a 1-second match timeout by default (`Regex(string, RegexOptions, TimeSpan)` overload) — adversarial input throws `RegexMatchTimeoutException` instead of hanging.  Use `compileWithTimeout` to override.  **JVM target**: `java.util.regex.Pattern` has no native timeout — adversarial input hangs the matching thread.  Mitigation requires a daemon-thread shim or routing through `com.google.re2j`.  Both targets tracked in #330. |
+| `Std.RegexSafe` (`regex_safe.l`) | `@stable` | Result-returning wrappers around `Std.Regex` (`tryCompile`, `tryIsMatch`, `tryMatchOne`, `tryReplace`) that map `RegexMatchTimeoutException` to `Err(TimedOut)` and other exceptions to `Err(RegexBug)`.  Recommended for any regex pattern accepted from outside the program (config, network input, search boxes). |
 | `Std.Random` (`_kernel/random.l`) | `@stable` | Cryptographically-seeded RNG (`randomInt`, `randomDouble`, `randomBool`); kernel-only — no `lyric-stdlib/std/random.l` shim (package opens as `Std.Random` directly from `_kernel/`). |
 | `Std.Testing.Mocking` (`testing_mocking.l`) | `@experimental` | Lightweight mock-object helpers for unit tests; bootstrap-grade. |
 

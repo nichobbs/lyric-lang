@@ -55,10 +55,20 @@ type RestoredPackageRef =
 /// One adjustment: contract Reprs for interfaces don't carry a
 /// `{}` body block (the parser requires one), so synthesise an
 /// empty body for them.  Other shapes parse verbatim.
-let synthesiseSource (contract: ContractMeta.Contract) : string =
+///
+/// `preambleDecls` are extra declarations (extern types, opaque
+/// stubs) from sibling packages in the same bundle, prepended so
+/// that cross-package type references in this package's signatures
+/// resolve during contract type-checking.
+let synthesiseSource (contract: ContractMeta.Contract) (preambleDecls: ContractMeta.ContractDecl list) : string =
     let sb = System.Text.StringBuilder()
     sb.AppendLine ("package " + contract.PackageName) |> ignore
     sb.AppendLine "" |> ignore
+    // Emit preamble (extern / opaque stubs from sibling packages) first.
+    for d in preambleDecls do
+        match d.Kind with
+        | "interface" -> sb.AppendLine (d.Repr + " {}") |> ignore
+        | _ -> sb.AppendLine d.Repr |> ignore
     for d in contract.Decls do
         match d.Kind with
         | "interface" -> sb.AppendLine (d.Repr + " {}") |> ignore
@@ -132,12 +142,43 @@ let private renderError (err: RestoredLoadError) : string =
 
 /// Synthesise + type-check a single contract into a `RestoredArtifact`.
 /// Shared between the single-package and multi-package code paths.
+/// Stdlib type anchors that are not in scope during the standalone
+/// contract Repr type-check.  T0010 "unknown type name 'X'" for one
+/// of these is expected and gets filtered out by `artifactOfContract`;
+/// anything else surfaces as a real load error.
+let internal knownStdlibTypeNames : Set<string> =
+    set [
+        "Option"; "Result"; "List"; "Map"; "Set"; "Iter"
+        "Slice"; "String"; "Int"; "Bool"; "Double"; "Long"
+        "Byte"; "Char"; "Unit"; "Never"; "Float"
+        "IOError"; "ParseError"; "ParseResult"
+        "Instant"; "Duration"; "Clock"
+        "Uuid"; "JsonValue"; "Diagnostic"
+    ]
+
+/// True when `msg` is a T0010 diagnostic message that names a known
+/// stdlib type anchor.  Couples to the T0010 message format from
+/// `Lyric.TypeChecker.Resolver.fs:err diags "T0010" (sprintf "unknown
+/// type name '%s'" name)` — any change to that format must update the
+/// extraction logic here (and the test in
+/// `Lyric.Emitter.Tests.RestoredPackagesTests`).
+let internal isWhitelistedT0010Message (msg: string) : bool =
+    let openQ = msg.IndexOf '\''
+    if openQ < 0 then false
+    else
+        let closeQ = msg.IndexOf('\'', openQ + 1)
+        if closeQ < 0 then false
+        else
+            let name = msg.Substring(openQ + 1, closeQ - openQ - 1)
+            Set.contains name knownStdlibTypeNames
+
 let private artifactOfContract
         (ref': RestoredPackageRef)
         (assembly: Assembly)
         (contract: ContractMeta.Contract)
+        (preamble: ContractMeta.ContractDecl list)
         : Result<RestoredArtifact, RestoredLoadError> =
-    let synthSource = synthesiseSource contract
+    let synthSource = synthesiseSource contract preamble
     let parsed = Lyric.Parser.Parser.parse synthSource
     let parseErrors =
         parsed.Diagnostics
@@ -151,9 +192,15 @@ let private artifactOfContract
         // package qualifications).  Type-check failures
         // surface as a single load error.
         let checked' = Lyric.TypeChecker.Checker.check parsed.File
+        // T0010 ("unknown type name 'X'") fires for stdlib anchors
+        // (Option, Result, …) that aren't in scope during the
+        // standalone contract check.  See `isWhitelistedT0010Message`
+        // above for the extraction logic and test coverage.
         let checkErrors =
             checked'.Diagnostics
-            |> List.filter (fun d -> d.Severity = DiagError)
+            |> List.filter (fun d ->
+                d.Severity = DiagError
+                && not (d.Code = "T0010" && isWhitelistedT0010Message d.Message))
         if not (List.isEmpty checkErrors) then
             Error (SynthesisDiagnostics (ref'.DllPath, checkErrors))
         else
@@ -189,7 +236,7 @@ let loadRestoredPackage
         match ContractMeta.parseFromJson json with
         | None -> Error (MalformedContract ref'.DllPath)
         | Some contract ->
-            match artifactOfContract ref' assembly contract with
+            match artifactOfContract ref' assembly contract [] with
             | Ok a    -> Ok [a]
             | Error e -> Error e
     | None ->
@@ -198,6 +245,24 @@ let loadRestoredPackage
         let perPkg = ContractMeta.readAllContractsFromAssembly ref'.DllPath
         if List.isEmpty perPkg then Error (NoContractResource ref'.DllPath)
         else
+            // Collect all extern-type and protected-type (opaque) decls from every
+            // contract in the bundle.  These are used as a preamble when
+            // type-checking each individual package's contract so that
+            // cross-package type references (e.g. Map[K,V] from Std.CollectionsHost
+            // appearing in Std.Collections signatures) resolve correctly.
+            let allContracts =
+                perPkg
+                |> List.choose (fun (_, j) -> ContractMeta.parseFromJson j)
+            // Collect all type-declaring decls (extern_type, opaque, union, record,
+            // enum, distinct, alias) so that cross-package references in function
+            // signatures resolve during per-package contract type-checking.
+            let typeKinds = System.Collections.Generic.HashSet<string>
+                                (["extern_type"; "opaque"; "union"; "record"; "enum"; "distinct"; "alias"])
+            let globalTypeAnchors =
+                allContracts
+                |> List.collect (fun c ->
+                    c.Decls |> List.filter (fun d -> typeKinds.Contains d.Kind))
+                |> List.distinctBy (fun d -> d.Name)
             let mutable err : RestoredLoadError option = None
             let acc = ResizeArray<RestoredArtifact>()
             for (_pkgName, json) in perPkg do
@@ -205,7 +270,12 @@ let loadRestoredPackage
                     match ContractMeta.parseFromJson json with
                     | None -> err <- Some (MalformedContract ref'.DllPath)
                     | Some contract ->
-                        match artifactOfContract ref' assembly contract with
+                        // Preamble = all type anchors NOT already declared in this package.
+                        let ownNames = contract.Decls |> List.map (fun d -> d.Name) |> Set.ofList
+                        let preamble =
+                            globalTypeAnchors
+                            |> List.filter (fun d -> not (Set.contains d.Name ownNames))
+                        match artifactOfContract ref' assembly contract preamble with
                         | Ok a -> acc.Add a
                         | Error e -> err <- Some e
             match err with

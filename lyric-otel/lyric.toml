@@ -19,6 +19,7 @@ authors     = ["Lyric authors"]
 license     = "Apache-2.0"
 
 [features]
+default = ["dotnet"]
 # Enable the .NET kernel (System.Diagnostics.ActivitySource / Metrics).
 dotnet = []
 # Enable the JVM kernel (io.opentelemetry.api — Phase 6).
@@ -44,6 +45,9 @@ output_assembly = "Lyric.OTel.dll"
 "OTel"                    = "src/otel.l"
 # OTLP exporter configuration and lifecycle API.
 "OTel.Otlp"               = "src/otlp.l"
+
+[project.tests]
+"OTel.OTelTypesTests" = "tests/otel_types_tests.l"
 
 [nuget]
 # OTel API only — used by OTel.Kernel.Net for ActivitySource / Metrics.

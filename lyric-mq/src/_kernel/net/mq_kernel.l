@@ -194,6 +194,7 @@ pub func connect(url: in String, queueName: in String): Result[Int, String]
   return AWSSDK.SQS.connect(url, queueName)
   @cfg(feature = "kafka")
   return Confluent.Kafka.connect(url, queueName)
+  return Err(error = "lyric-mq: no broker feature enabled (rabbitmq / azureservicebus / sqs / kafka)")
 }
 
 /// Publish a single message.
@@ -208,6 +209,7 @@ pub func publish(queueId: in Int, messageId: in String, body: in String, headers
   return AWSSDK.SQS.publish(queueId, messageId, body, headersJson)
   @cfg(feature = "kafka")
   return Confluent.Kafka.publish(queueId, messageId, body, headersJson)
+  return Err(error = "lyric-mq: no broker feature enabled (rabbitmq / azureservicebus / sqs / kafka)")
 }
 
 /// Publish a batch of messages.
@@ -222,6 +224,7 @@ pub func publishBatch(queueId: in Int, messagesJson: in String): Result[Unit, St
   return AWSSDK.SQS.publishBatch(queueId, messagesJson)
   @cfg(feature = "kafka")
   return Confluent.Kafka.publishBatch(queueId, messagesJson)
+  return Err(error = "lyric-mq: no broker feature enabled (rabbitmq / azureservicebus / sqs / kafka)")
 }
 
 /// Poll for the next message.
@@ -236,6 +239,7 @@ pub func consume(queueId: in Int, timeoutMs: in Int): Result[String, String]
   return AWSSDK.SQS.consume(queueId, timeoutMs)
   @cfg(feature = "kafka")
   return Confluent.Kafka.consume(queueId, timeoutMs)
+  return Err(error = "lyric-mq: no broker feature enabled (rabbitmq / azureservicebus / sqs / kafka)")
 }
 
 /// Acknowledge a message.
@@ -250,6 +254,7 @@ pub func ack(queueId: in Int, deliveryTag: in String): Result[Unit, String]
   return AWSSDK.SQS.ack(queueId, deliveryTag)
   @cfg(feature = "kafka")
   return Confluent.Kafka.ack(queueId, deliveryTag)
+  return Err(error = "lyric-mq: no broker feature enabled (rabbitmq / azureservicebus / sqs / kafka)")
 }
 
 /// Negatively acknowledge a message.
@@ -264,6 +269,7 @@ pub func nack(queueId: in Int, deliveryTag: in String, requeue: in Bool): Result
   return AWSSDK.SQS.nack(queueId, deliveryTag, requeue)
   @cfg(feature = "kafka")
   return Confluent.Kafka.nack(queueId, deliveryTag, requeue)
+  return Err(error = "lyric-mq: no broker feature enabled (rabbitmq / azureservicebus / sqs / kafka)")
 }
 
 /// Close the broker connection.

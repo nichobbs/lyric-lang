@@ -63,6 +63,21 @@ jobs:
             echo "Docs-only change — build and test skipped."
           fi
 
+      # Guardrail for #733: PR #687 gutted `_kernel/net/*.l` files in
+      # eight ecosystem libraries; the lint blocks new stubs from
+      # landing while restoration PRs reintroduce real bindings.
+      - name: Audit ecosystem kernel stubs (#733 guardrail)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        run: bash scripts/audit-kernel-stubs.sh
+
+      # Guardrail for #335: keep `docs/17-axiom-audit.md` section 18
+      # totals in sync with the actual `@axiom("...")`-bearing files
+      # under `lyric-stdlib/std/_kernel*/`.  Forces the audit doc to
+      # be updated whenever a new BCL surface gets an `@axiom`.
+      - name: Audit stdlib axioms (#335 guardrail)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        run: bash scripts/audit-axioms.sh
+
       - name: Set up .NET (uses bootstrap/global.json)
         if: steps.changes.outputs.has_code_changes == 'true'
         uses: actions/setup-dotnet@v5
@@ -124,6 +139,32 @@ jobs:
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
         run: dotnet run --project tests/Lyric.Emitter.Tests --no-build --configuration Debug
+
+      # The emitter test suite writes /tmp/lyric-jvm-selftest/Hello.class via the
+      # Jvm.SelfTest stage-B2 program.  Existing tests verify structural validity
+      # with `javap -c` but never execute the class via `java`, so JVM-side
+      # codegen bugs (linkage, descriptor mismatches, etc.) reach main undetected.
+      # Closes #744.
+      - name: JVM execution smoke (run Hello.class via `java`)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        timeout-minutes: 1
+        env:
+          # Hardcoded path; shared with the emitter test that writes the
+          # class so a rename in either site is caught here as a missing
+          # file rather than a silent skip (#776).
+          JVM_SELFTEST_DIR: /tmp/lyric-jvm-selftest
+        run: |
+          set -euo pipefail
+          if [ ! -f "$JVM_SELFTEST_DIR/Hello.class" ]; then
+            echo "::error::Hello.class missing under $JVM_SELFTEST_DIR — Jvm.SelfTest must have run during the Emitter tests step"
+            exit 1
+          fi
+          out=$(java -cp "$JVM_SELFTEST_DIR" Hello)
+          echo "java output: $out"
+          if [ "$out" != "hello from lyric-jvm" ]; then
+            echo "::error::JVM execution produced unexpected output: '$out'"
+            exit 1
+          fi
 
       - name: CLI tests
         if: steps.changes.outputs.has_code_changes == 'true'
@@ -220,23 +261,50 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      - name: Smoke-test the CLI on examples
-        if: steps.changes.outputs.has_code_changes == 'true' && (success() || failure())
-        working-directory: bootstrap
+      - name: Bootstrap stage 1 (F# → self-hosted packages)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        # continue-on-error is intentional during initial integration.
+        # Remove once bootstrap stage-1 passes consistently on main
+        # (tracked in lyric-lang #616).
+        continue-on-error: true
+        working-directory: ${{ github.workspace }}
+        run: ./scripts/bootstrap.sh --stage 1
+
+      # Track A A1.4 (#860) deleted the F# user-facing CLI; the AOT
+      # entry-point project at `bootstrap/src/Lyric.Cli.Aot/` now
+      # serves all user commands by trampolining into the Lyric-emitted
+      # `Lyric.Cli.Program.main` in the stage-1 bundle.  Build it
+      # (skips silently if stage 1 didn't finish) and use the
+      # resulting `lyric` binary for the example smoke tests.
+      - name: Build AOT entry-point + smoke-test the examples
+        if: steps.changes.outputs.has_code_changes == 'true'
+        continue-on-error: true
+        working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          for ex in ../examples/*.l; do
-            # Files annotated `@proof_required` are verifier-only;
-            # run them through `lyric prove` instead of `lyric build`
-            # (they intentionally have no `func main`).
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping AOT smoke test"
+            exit 0
+          fi
+          dotnet build bootstrap/src/Lyric.Cli.Aot --configuration Debug
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT entry-point binary not found at $lyric_bin"
+            exit 1
+          fi
+          for ex in examples/*.l; do
+            # `@proof_required` files are verifier-only — they have no
+            # `func main` so `lyric build` doesn't apply.  The AOT
+            # binary's `lyric prove` path needs `Lyric.Emitter.dll`
+            # in its resolution context (the F# emitter is what
+            # `Std.VerifierEnvHost.hostGetEnv` chains through); the
+            # AOT csproj doesn't carry the F# emitter today, so skip
+            # them for now.  Tracked as a follow-up to Track A.
             if head -n 1 "$ex" | grep -q '^@proof_required'; then
-              echo "=== prove $ex ==="
-              dotnet run --project src/Lyric.Cli --no-build --configuration Debug -- prove "$ex" --allow-unverified
-            else
-              echo "=== build $ex ==="
-              # Use --target dotnet-legacy (F# bootstrap emitter) for smoke tests.
-              # The self-hosted MSIL path (--target dotnet, the default) is still
-              # experimental; the MSIL self-test suite (M1–M83) validates its PE layer.
-              dotnet run --project src/Lyric.Cli --no-build --configuration Debug -- build "$ex" --force --target dotnet-legacy
+              echo "=== skip proof-only $ex (AOT prove path: follow-up) ==="
+              continue
             fi
+            echo "=== build $ex ==="
+            out="/tmp/$(basename "$ex" .l).dll"
+            "$lyric_bin" build "$ex" -o "$out" --force
           done

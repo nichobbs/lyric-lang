@@ -2,6 +2,19 @@
 
 Driver-agnostic database access with typed rows, transactions, and pluggable backends.
 
+## Platform parity
+
+| Feature flag | Backend                                                  | Status                |
+|--------------|----------------------------------------------------------|-----------------------|
+| `dotnet`     | Npgsql + Microsoft.Data.Sqlite ADO.NET drivers           | Available             |
+| `jvm`        | PostgreSQL JDBC + SQLite JDBC via `lyric.db.*` shim JAR  | Planned (Phase 6)     |
+
+The JVM kernel (`Db.Kernel.Jvm`) declares the JDBC bindings against
+`org.postgresql:postgresql` and `org.xerial:sqlite-jdbc`, plus a
+`lyric.db.JdbcConnections` helper.  The Java helper is supplied by the
+Lyric JVM stdlib JAR (out-of-repo, ships with the JVM channel — see
+`docs/33-platform-parity-remediation.md`).
+
 ## Packages
 
 | Package | Purpose |

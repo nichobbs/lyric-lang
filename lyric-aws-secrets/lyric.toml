@@ -75,6 +75,9 @@ name            = "Lyric.AwsSecrets"
 output          = "single"
 output_assembly = "AwsSecrets.dll"
 
+[project.tests]
+"AwsSecrets.SecretsTests" = "tests/secrets_tests.l"
+
 [project.packages]
 # Config annotations, init(), explicit fetch API, error types, cache config.
 "AwsSecrets"            = "src/secrets.l"
@@ -89,7 +92,7 @@ output_assembly = "AwsSecrets.dll"
 ]
 
 [dependencies]
-"Lyric.Stdlib" = { path = "../stdlib" }
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }
 
 [nuget]
 # AWS Secrets Manager SDK — included when feature = "aws".

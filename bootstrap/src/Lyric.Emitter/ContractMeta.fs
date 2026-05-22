@@ -299,7 +299,14 @@ let private declOf (it: Item) : ContractDecl option =
           Ensures   = []
           Body      = None
           Params    = [] }
-    if not (isPub it.Visibility) then None
+    // Extern types and protected types must be included regardless of visibility
+    // so that contract type-checking can resolve them when public function
+    // signatures reference these types.
+    let isTypeAnchor =
+        match it.Kind with
+        | IExternType _ | IProtected _ -> true
+        | _ -> false
+    if not (isPub it.Visibility) && not isTypeAnchor then None
     else
         match it.Kind with
         | IFunc fn ->
@@ -397,6 +404,17 @@ let private declOf (it: Item) : ContractDecl option =
         | IConst c ->
             Some (mkDefault "const" c.Name
                     (sprintf "pub const %s: %s = ..." c.Name (renderTypeExpr c.Type)))
+        | IExternType et ->
+            // Extern types must be included so that contract type-checking can resolve
+            // them when function signatures reference these types.
+            Some (mkDefault "extern_type" et.Name
+                    (sprintf "extern type %s%s = \"%s\""
+                        et.Name (genericsRepr et.Generics) et.ClrName))
+        | IProtected pt ->
+            // Protected types are opaque externally — represent them as opaque types
+            // so contract type-checking can resolve references to them.
+            Some (mkDefault "opaque" pt.Name
+                    (sprintf "pub opaque type %s%s" pt.Name (genericsRepr pt.Generics)))
         | _ -> None
 
 /// Resolve a source file's verification level into the canonical
@@ -461,7 +479,9 @@ let private pubUseDecls
 
 /// Walk a `SourceFile` and produce the contract metadata for it.
 /// `importedSources` maps package-name keys (e.g. `"Std.Core"`) to their
-/// parsed source files; it is used to resolve `pub use` re-exports.
+/// parsed source files; it is used to resolve `pub use` re-exports and to
+/// embed extern/protected type anchors so the contract is self-sufficient
+/// for contract type-checking when loaded as a restored dependency.
 let buildContract
         (sf: SourceFile)
         (importedSources: Map<string, SourceFile>)
@@ -469,11 +489,46 @@ let buildContract
     let pkg = String.concat "." sf.Package.Path.Segments
     let ownDecls = sf.Items |> List.choose declOf
     let reexportDecls = pubUseDecls sf importedSources
+    // Embed extern-type and protected-type declarations from imported packages
+    // as "type anchor" decls.  These are prepended to the contract so that
+    // when the contract is loaded as a restored dependency, the synthesised
+    // source includes the type definitions needed to type-check function
+    // signatures that reference those types (e.g. Map[K,V], Instant, etc.).
+    let ownNames = ownDecls |> List.map (fun d -> d.Name) |> Set.ofList
+    let typeAnchorKinds = System.Collections.Generic.HashSet<string>(["extern_type"; "opaque"])
+    // Dedup by (Kind, Name) so an `extern_type Map` from one import
+    // doesn't shadow an `opaque Map` from another (#718) — they're
+    // genuinely different types even with the same short name.
+    // When two anchors share both Kind and Name, also warn if their
+    // `Repr` fields disagree, since one source is being silently dropped.
+    let anchorDecls =
+        let raw =
+            importedSources
+            |> Map.toList
+            |> List.collect (fun (_, src) ->
+                src.Items
+                |> List.choose declOf
+                |> List.filter (fun d ->
+                    typeAnchorKinds.Contains d.Kind
+                    && not (Set.contains d.Name ownNames)))
+        // Surface representational disagreements before the dedup
+        // discards the loser.  Grouped on (Kind, Name); a single-Repr
+        // group is fine, multi-Repr means two packages contributed
+        // distinct definitions for the same short name.
+        raw
+        |> List.groupBy (fun d -> d.Kind, d.Name)
+        |> List.iter (fun ((kind, name), group) ->
+            let distinctReprs = group |> List.map (fun d -> d.Repr) |> List.distinct
+            if distinctReprs.Length > 1 then
+                System.Console.Error.WriteLine
+                    (sprintf "warning: contract type-anchor '%s %s' has %d disagreeing reprs across imports; keeping first only (#718)"
+                        kind name distinctReprs.Length))
+        raw |> List.distinctBy (fun d -> d.Kind, d.Name)
     { PackageName   = pkg
       Version       = version
       Level         = levelOfFile sf
       FormatVersion = FORMAT_VERSION
-      Decls         = ownDecls @ reexportDecls }
+      Decls         = anchorDecls @ ownDecls @ reexportDecls }
 
 let private escape (s: string) : string =
     let sb = StringBuilder(s.Length + 2)

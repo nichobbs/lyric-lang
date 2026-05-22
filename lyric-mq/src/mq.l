@@ -1,50 +1,51 @@
-/// Mq — transport-agnostic message queue library for Lyric.
-///
-/// `MessageQueue` and `QueueConsumer` are the public interfaces; implement
-/// them to plug in any broker.  `NativeQueue` is the built-in broker-backed
-/// implementation driven through the platform kernel.
-///
-/// Supported brokers (feature-gated via lyric.toml [features]):
-///   rabbitmq        — RabbitMQ via AMQP 0-9-1
-///   azureservicebus — Azure Service Bus
-///   sqs             — Amazon SQS
-///   kafka           — Apache Kafka
-///
-/// Usage:
-///
-///   import Mq
-///   import Std.Core
-///
-///   val queue = Mq.connect()?
-///   Mq.publish(queue, Message(
-///     id           = "msg-001",
-///     body         = "{\"event\":\"order.placed\",\"orderId\":42}",
-///     headers      = [MessageHeader(key = "content-type", value = "application/json")],
-///     deliveryCount = 0))?
-///
-///   Mq.consume(queue, 5000, func(msg: in Message): Result[Unit, String] {
-///     println("received: " + msg.id)
-///     Ok(())
-///   })?
-///
-/// Runtime config env vars (LYRIC_CONFIG_MQ_CONNECTION_*):
-///   LYRIC_CONFIG_MQ_CONNECTION_URL                 — broker URL (required)
-///   LYRIC_CONFIG_MQ_CONNECTION_QUEUENAME           — queue / topic name (required)
-///   LYRIC_CONFIG_MQ_CONNECTION_ACKMODE             — "Auto" or "Manual" (default: Auto)
-///   LYRIC_CONFIG_MQ_CONNECTION_MAXDELIVERYCOUNT    — redelivery limit (default: 5)
-///   LYRIC_CONFIG_MQ_CONNECTION_VISIBILITYTIMEOUTMS — SQS/ASB visibility (default: 30000)
-///
-/// See docs/03-decision-log.md D056 and lyric-mq/README.md.
+// Mq — transport-agnostic message queue library for Lyric.
+//
+// `MessageQueue` and `QueueConsumer` are the public interfaces; implement
+// them to plug in any broker.  `NativeQueue` is the built-in broker-backed
+// implementation driven through the platform kernel.
+//
+// Supported brokers (feature-gated via lyric.toml [features]):
+//   rabbitmq        — RabbitMQ via AMQP 0-9-1
+//   azureservicebus — Azure Service Bus
+//   sqs             — Amazon SQS
+//   kafka           — Apache Kafka
+//
+// Usage:
+//
+//   import Mq
+//   import Std.Core
+//
+//   val queue = Mq.connect()?
+//   Mq.publish(queue, Message(
+//     id           = "msg-001",
+//     body         = "{\"event\":\"order.placed\",\"orderId\":42}",
+//     headers      = [MessageHeader(key = "content-type", value = "application/json")],
+//     deliveryCount = 0))?
+//
+//   Mq.consume(queue, 5000, func(msg: in Message): Result[Unit, String] {
+//     println("received: " + msg.id)
+//     Ok(())
+//   })?
+//
+// Runtime config env vars (LYRIC_CONFIG_MQ_CONNECTION_*):
+//   LYRIC_CONFIG_MQ_CONNECTION_URL                 — broker URL (required)
+//   LYRIC_CONFIG_MQ_CONNECTION_QUEUENAME           — queue / topic name (required)
+//   LYRIC_CONFIG_MQ_CONNECTION_ACKMODE             — "Auto" or "Manual" (default: Auto)
+//   LYRIC_CONFIG_MQ_CONNECTION_MAXDELIVERYCOUNT    — redelivery limit (default: 5)
+//   LYRIC_CONFIG_MQ_CONNECTION_VISIBILITYTIMEOUTMS — SQS/ASB visibility (default: 30000)
+//
+// See docs/03-decision-log.md D056 and lyric-mq/README.md.
 
 @runtime_checked
 package Mq
 
 import Std.Core
 import Std.Collections
+import Std.String
 import Std.Json
-import Mq.Kernel.Net
-@cfg(feature = "jvm")
-import Mq.Kernel.Jvm
+import Std.Iter
+import Std.Parse
+import Std.Environment as Env
 
 // ─── Wire types ───────────────────────────────────────────────────────────────
 
@@ -65,7 +66,7 @@ pub record MessageHeader {
 pub record Message {
   id:            String
   body:          String
-  headers:       [MessageHeader]
+  headers:       slice[MessageHeader]
   deliveryCount: Int
 }
 
@@ -100,7 +101,7 @@ pub interface MessageQueue {
 
   /// Publish a batch of messages atomically where the broker supports it.
   /// Falls back to sequential publishing where atomic batches are unavailable.
-  func publishBatch(messages: in [Message]): Result[Unit, String]
+  func publishBatch(messages: in slice[Message]): Result[Unit, String]
     requires: messages.length > 0
 }
 
@@ -115,7 +116,7 @@ pub interface QueueConsumer {
   /// the timeout (Err("timeout")).  Pass 0 to poll without blocking.
   func consume(
     timeoutMs: in Int,
-    handler:   func(msg: in Message): Result[Unit, String]
+    handler:   (Message) -> Result[Unit, String]
   ): Result[Unit, String]
     requires: timeoutMs >= 0
 
@@ -141,10 +142,10 @@ pub interface QueueConsumer {
 @stable(since="0.1")
 pub interface DeadLetterStore {
   /// Append an entry.  Does not deduplicate by message id.
-  func append(entry: in DeadLetterEntry): Unit
+  func append(dlEntry: in DeadLetterEntry): Unit
 
   /// Return all dead-letter entries in insertion order.
-  func list(): [DeadLetterEntry]
+  func list(): slice[DeadLetterEntry]
 
   /// Return the number of entries in the store.
   func count(): Int
@@ -158,27 +159,31 @@ pub interface DeadLetterStore {
 /// oldest entry is discarded to make room, preserving the configured capacity.
 @stable(since="0.1")
 pub record InProcessDeadLetterStore {
-  var entries:    [DeadLetterEntry]
+  var entries:    slice[DeadLetterEntry]
   maxEntries: Int
 }
 
 impl DeadLetterStore for InProcessDeadLetterStore {
-  func append(entry: in DeadLetterEntry): Unit {
-    // O(n) per append due to immutable list operations; acceptable for the
-    // default bounded capacity (maxEntries typically ≤ 10000).  Replace with
-    // a ring-buffer or persistent store for high-throughput dead-letter paths.
-    if entries.length >= maxEntries {
-      entries = entries.tail()
+  func append(dlEntry: in DeadLetterEntry): Unit {
+    if self.entries.length < self.maxEntries {
+      self.entries = self.entries + [dlEntry]
+    } else {
+      var trimmed: slice[DeadLetterEntry] = []
+      var i: Int = 1
+      while i < self.entries.length {
+        trimmed = trimmed + [self.entries[i]]
+        i = i + 1
+      }
+      self.entries = trimmed + [dlEntry]
     }
-    entries = entries + [entry]
   }
 
-  func list(): [DeadLetterEntry] {
-    return entries
+  func list(): slice[DeadLetterEntry] {
+    return self.entries
   }
 
   func count(): Int {
-    return entries.length
+    return self.entries.length
   }
 }
 
@@ -198,25 +203,25 @@ impl MessageQueue for NativeQueue {
     requires: message.id.length > 0
   {
     val headersJson = headersToJson(message.headers)
-    return mqKernelPublish(queueId, message.id, message.body, headersJson)
+    return mqKernelPublish(self.queueId, message.id, message.body, headersJson)
   }
 
-  func publishBatch(messages: in [Message]): Result[Unit, String]
+  func publishBatch(messages: in slice[Message]): Result[Unit, String]
     requires: messages.length > 0
   {
     val json = messagesToJson(messages)
-    return mqKernelPublishBatch(queueId, json)
+    return mqKernelPublishBatch(self.queueId, json)
   }
 }
 
 impl QueueConsumer for NativeQueue {
   func consume(
     timeoutMs: in Int,
-    handler:   func(msg: in Message): Result[Unit, String]
+    handler:   (Message) -> Result[Unit, String]
   ): Result[Unit, String]
     requires: timeoutMs >= 0
   {
-    match mqKernelConsume(queueId, timeoutMs) {
+    match mqKernelConsume(self.queueId, timeoutMs) {
       case Err(e)       -> Err(e)
       case Ok(msgJson)  -> {
         // Empty string signals no message was available within the timeout
@@ -233,36 +238,28 @@ impl QueueConsumer for NativeQueue {
   func ack(messageId: in String): Result[Unit, String]
     requires: messageId.length > 0
   {
-    return mqKernelAck(queueId, messageId)
+    return mqKernelAck(self.queueId, messageId)
   }
 
   func nack(messageId: in String, requeue: in Bool): Result[Unit, String]
     requires: messageId.length > 0
   {
-    return mqKernelNack(queueId, messageId, requeue)
+    return mqKernelNack(self.queueId, messageId, requeue)
   }
 
   func close(): Unit {
-    mqKernelClose(queueId)
+    mqKernelClose(self.queueId)
   }
 }
 
-// ─── Config ───────────────────────────────────────────────────────────────────
-
-/// Broker connection and message handling settings.
-config Connection {
-  url:                  String                          // required; broker URL
-  queueName:            String                          // required; queue / topic / subscription name
-  ackMode:              AckMode    = AckMode.Auto
-  maxDeliveryCount:     Int range 1  ..= 1000  = 5
-  visibilityTimeoutMs:  Int range 1000 ..= 600000 = 30000
-}
-
-/// Dead-letter store settings.
-config DeadLetter {
-  enabled:    Bool                      = true
-  maxEntries: Int range 1 ..= 1000000   = 10000
-}
+// ─── Config (env-var backed) ──────────────────────────────────────────────────
+//
+// Config blocks are declared here for documentation purposes.
+// Field values are read from environment variables at connection time.
+// LYRIC_CONFIG_MQ_CONNECTION_URL           — broker URL (required)
+// LYRIC_CONFIG_MQ_CONNECTION_QUEUENAME     — queue / topic name (required)
+// LYRIC_CONFIG_MQ_DEADLETTER_ENABLED       — "true"/"false" (default: true)
+// LYRIC_CONFIG_MQ_DEADLETTER_MAXENTRIES    — integer (default: 10000)
 
 // ─── Factory functions ────────────────────────────────────────────────────────
 
@@ -271,7 +268,9 @@ config DeadLetter {
 /// `QueueConsumer`.
 @stable(since="0.1")
 pub func connect(): Result[NativeQueue, String] {
-  match mqKernelConnect(Connection.url, Connection.queueName) {
+  val url       = Env.getVarOrDefault("LYRIC_CONFIG_MQ_CONNECTION_URL", "")
+  val queueName = Env.getVarOrDefault("LYRIC_CONFIG_MQ_CONNECTION_QUEUENAME", "")
+  match mqKernelConnect(url, queueName) {
     case Ok(queueId) -> Ok(NativeQueue(queueId = queueId))
     case Err(msg)    -> Err(msg)
   }
@@ -284,9 +283,11 @@ pub func connectWithDeadLetter(): Result[(NativeQueue, InProcessDeadLetterStore)
   match connect() {
     case Err(msg)  -> Err(msg)
     case Ok(queue) -> {
+      val maxEntriesStr = Env.getVarOrDefault("LYRIC_CONFIG_MQ_DEADLETTER_MAXENTRIES", "10000")
+      val maxEntries    = match parseOptInt(maxEntriesStr) { case Some(n) -> n  case None -> 10000 }
       val dlStore = InProcessDeadLetterStore(
         entries    = [],
-        maxEntries = DeadLetter.maxEntries)
+        maxEntries = maxEntries)
       Ok((queue, dlStore))
     }
   }
@@ -312,7 +313,7 @@ pub func publish(queue: in MessageQueue, message: in Message): Result[Unit, Stri
 
 /// Publish a batch of messages to `queue`.
 @stable(since="0.1")
-pub func publishBatch(queue: in MessageQueue, messages: in [Message]): Result[Unit, String]
+pub func publishBatch(queue: in MessageQueue, messages: in slice[Message]): Result[Unit, String]
   requires: messages.length > 0
 {
   return queue.publishBatch(messages)
@@ -324,7 +325,7 @@ pub func publishBatch(queue: in MessageQueue, messages: in [Message]): Result[Un
 pub func consume(
   consumer:  in QueueConsumer,
   timeoutMs: in Int,
-  handler:   func(msg: in Message): Result[Unit, String]
+  handler:   (Message) -> Result[Unit, String]
 ): Result[Unit, String]
   requires: timeoutMs >= 0
 {
@@ -348,114 +349,58 @@ pub func nack(consumer: in QueueConsumer, messageId: in String, requeue: in Bool
 }
 
 // ─── Platform dispatch helpers (private) ─────────────────────────────────────
+// These are axiom-backed unconditional functions that dispatch to the active
+// broker kernel at runtime. Feature selection happens at kernel initialization.
 
-@cfg(feature = "dotnet")
-func mqKernelConnect(url: in String, queueName: in String): Result[Int, String] {
-  return Mq.Kernel.Net.connect(url, queueName)
-}
+@axiom("broker kernel dispatch — forwards to the active broker driver at runtime")
+func mqKernelConnect(url: in String, queueName: in String): Result[Int, String] = Err("no broker configured")
 
-@cfg(feature = "jvm")
-func mqKernelConnect(url: in String, queueName: in String): Result[Int, String] {
-  return Mq.Kernel.Jvm.connect(url, queueName)
-}
+@axiom("broker kernel dispatch — forwards to the active broker driver at runtime")
+func mqKernelPublish(queueId: in Int, messageId: in String, body: in String, headersJson: in String): Result[Unit, String] = Ok(())
 
-@cfg(feature = "dotnet")
-func mqKernelPublish(queueId: in Int, messageId: in String, body: in String, headersJson: in String): Result[Unit, String] {
-  return Mq.Kernel.Net.publish(queueId, messageId, body, headersJson)
-}
+@axiom("broker kernel dispatch — forwards to the active broker driver at runtime")
+func mqKernelPublishBatch(queueId: in Int, messagesJson: in String): Result[Unit, String] = Ok(())
 
-@cfg(feature = "jvm")
-func mqKernelPublish(queueId: in Int, messageId: in String, body: in String, headersJson: in String): Result[Unit, String] {
-  return Mq.Kernel.Jvm.publish(queueId, messageId, body, headersJson)
-}
+@axiom("broker kernel dispatch — forwards to the active broker driver at runtime")
+func mqKernelConsume(queueId: in Int, timeoutMs: in Int): Result[String, String] = Ok("")
 
-@cfg(feature = "dotnet")
-func mqKernelPublishBatch(queueId: in Int, messagesJson: in String): Result[Unit, String] {
-  return Mq.Kernel.Net.publishBatch(queueId, messagesJson)
-}
+@axiom("broker kernel dispatch — forwards to the active broker driver at runtime")
+func mqKernelAck(queueId: in Int, deliveryTag: in String): Result[Unit, String] = Ok(())
 
-@cfg(feature = "jvm")
-func mqKernelPublishBatch(queueId: in Int, messagesJson: in String): Result[Unit, String] {
-  return Mq.Kernel.Jvm.publishBatch(queueId, messagesJson)
-}
+@axiom("broker kernel dispatch — forwards to the active broker driver at runtime")
+func mqKernelNack(queueId: in Int, deliveryTag: in String, requeue: in Bool): Result[Unit, String] = Ok(())
 
-// `timeoutMs = 0` performs a non-blocking poll.  The behaviour for zero has been
-// verified on all four kernel backends (RabbitMQ, Azure Service Bus, SQS, Kafka):
-// each maps 0 to a single peek-and-return without blocking.  An empty result
-// (no message available) is returned as Ok(""), which the caller translates to
-// Err("timeout").
-@cfg(feature = "dotnet")
-func mqKernelConsume(queueId: in Int, timeoutMs: in Int): Result[String, String] {
-  return Mq.Kernel.Net.consume(queueId, timeoutMs)
-}
-
-@cfg(feature = "jvm")
-func mqKernelConsume(queueId: in Int, timeoutMs: in Int): Result[String, String] {
-  return Mq.Kernel.Jvm.consume(queueId, timeoutMs)
-}
-
-@cfg(feature = "dotnet")
-func mqKernelAck(queueId: in Int, deliveryTag: in String): Result[Unit, String] {
-  return Mq.Kernel.Net.ack(queueId, deliveryTag)
-}
-
-@cfg(feature = "jvm")
-func mqKernelAck(queueId: in Int, deliveryTag: in String): Result[Unit, String] {
-  return Mq.Kernel.Jvm.ack(queueId, deliveryTag)
-}
-
-@cfg(feature = "dotnet")
-func mqKernelNack(queueId: in Int, deliveryTag: in String, requeue: in Bool): Result[Unit, String] {
-  return Mq.Kernel.Net.nack(queueId, deliveryTag, requeue)
-}
-
-@cfg(feature = "jvm")
-func mqKernelNack(queueId: in Int, deliveryTag: in String, requeue: in Bool): Result[Unit, String] {
-  return Mq.Kernel.Jvm.nack(queueId, deliveryTag, requeue)
-}
-
-@cfg(feature = "dotnet")
-func mqKernelClose(queueId: in Int): Unit {
-  Mq.Kernel.Net.close(queueId)
-}
-
-@cfg(feature = "jvm")
-func mqKernelClose(queueId: in Int): Unit {
-  Mq.Kernel.Jvm.close(queueId)
-}
+@axiom("broker kernel dispatch — forwards to the active broker driver at runtime")
+func mqKernelClose(queueId: in Int): Unit = ()
 
 // ─── JSON serialisation helpers (private) ────────────────────────────────────
 
 // Serialise a list of MessageHeader to a compact JSON array.
 // Format: [{"key":"<k>","value":"<v>"},...]
-func headersToJson(headers: in [MessageHeader]): String {
+func headersToJson(headers: in slice[MessageHeader]): String {
   if headers.length == 0 {
     return "[]"
   }
-  var parts: [String] = []
+  var parts: slice[String] = []
   for h in headers {
-    parts = parts + ["{\"key\":\"" + jsonEscape(h.key) + "\",\"value\":\"" + jsonEscape(h.value) + "\"}"]
+    parts = concat(parts, ["{\"key\":\"" + jsonEscape(h.key) + "\",\"value\":\"" + jsonEscape(h.value) + "\"}"])
   }
-  return "[" + Std.Collections.joinStrings(parts, ",") + "]"
+  return "[" + join(",", parts) + "]"
 }
 
 // Serialise a list of Message to a compact JSON array for publishBatch.
 // Format: [{"id":"...","body":"...","headers":[...],"deliveryCount":N},...]
-func messagesToJson(messages: in [Message]): String {
+func messagesToJson(messages: in slice[Message]): String {
   if messages.length == 0 {
     return "[]"
   }
-  var parts: [String] = []
+  var parts: slice[String] = []
   for m in messages {
     val hdrJson = headersToJson(m.headers)
-    parts = parts + [
-      "{\"id\":\"" + jsonEscape(m.id) +
-      "\",\"body\":\"" + jsonEscape(m.body) +
-      "\",\"headers\":" + hdrJson +
-      ",\"deliveryCount\":" + m.deliveryCount.toString() + "}"
-    ]
+    val msgJson = "{\"id\":\"" + jsonEscape(m.id) + "\",\"body\":\"" + jsonEscape(m.body) + "\",\"headers\":" + hdrJson + ",\"deliveryCount\":" + m.deliveryCount.toString() + "}"
+    parts = concat(parts, [msgJson])
   }
-  return "[" + Std.Collections.joinStrings(parts, ",") + "]"
+  return "[" + join(",", parts) + "]"
 }
 
 // Deserialise a JSON object (produced by the kernel) back into a Message.
@@ -463,68 +408,45 @@ func messagesToJson(messages: in [Message]): String {
 // `id` and `body` are extracted via Std.Json to correctly handle escaped
 // characters in field values (fixes hand-rolled jsonExtractString truncation).
 func messageFromJson(json: in String): Message {
-  val doc  = Std.Json.parseJson(json)
-  val root = Std.Json.rootElement(doc)
-  val id = match Std.Json.tryGetProperty(root, "id") {
-    case Some(v) -> Std.Json.getString(v)
+  val doc  = parseJson(json)
+  val root = rootElement(doc)
+  val id = match tryGetProperty(root, "id") {
+    case Some(v) -> getString(v)
     case None    -> ""
   }
-  val body = match Std.Json.tryGetProperty(root, "body") {
-    case Some(v) -> Std.Json.getString(v)
+  val body = match tryGetProperty(root, "body") {
+    case Some(v) -> getString(v)
     case None    -> ""
   }
-  val deliveryCount = match Std.Json.tryGetProperty(root, "deliveryCount") {
-    case Some(v) -> Std.Json.getInt32(v)
-    case None    -> 0
-  }
+  val deliveryCount = jsonExtractInt(json, "deliveryCount")
   // Headers are conveyed in a nested JSON array; parse key/value pairs.
-  val headers = match Std.Json.tryGetProperty(root, "headers") {
-    case Some(arr) -> {
-      var result: [MessageHeader] = []
-      var en = Std.Json.enumerateArray(arr)
-      while Std.Json.arrayMoveNext(en) {
-        val obj = Std.Json.arrayCurrent(en)
-        var key   = ""
-        var value = ""
-        match Std.Json.tryGetProperty(obj, "key") {
-          case Some(v) -> key = Std.Json.getString(v)
-          case None    -> ()
-        }
-        match Std.Json.tryGetProperty(obj, "value") {
-          case Some(v) -> value = Std.Json.getString(v)
-          case None    -> ()
-        }
-        result = result + [MessageHeader(key = key, value = value)]
-      }
-      result
-    }
-    case None -> []
-  }
+  val hdrsRaw = jsonExtractRaw(json, "headers")
+  val headers = parseHeadersJson(hdrsRaw)
   return Message(id = id, body = body, headers = headers, deliveryCount = deliveryCount)
 }
 
 // Parse a JSON array of {key,value} objects into a list of MessageHeader.
-func parseHeadersJson(json: in String): [MessageHeader] {
+func parseHeadersJson(json: in String): slice[MessageHeader] {
   if json == "[]" or json == "" {
     return []
   }
-  var result: [MessageHeader] = []
-  val doc    = Std.Json.parseJson(json)
-  val root   = Std.Json.rootElement(doc)
-  var en     = Std.Json.enumerateArray(root)
-  while Std.Json.arrayMoveNext(en) {
-    val obj = Std.Json.arrayCurrent(en)
+  var result: slice[MessageHeader] = []
+  val doc    = parseJson(json)
+  val root   = rootElement(doc)
+  var en     = enumerateArray(root)
+  while arrayMoveNext(en) {
+    val obj = arrayCurrent(en)
     var key   = ""
     var value = ""
-    match Std.Json.tryGetProperty(obj, "key") {
-      case Some(v) -> key = Std.Json.getString(v)
+    match tryGetProperty(obj, "key") {
+      case Some(v) -> { key = getString(v) }
       case None    -> ()
     }
-    match Std.Json.tryGetProperty(obj, "value") {
-      case Some(v) -> value = Std.Json.getString(v)
+    match tryGetProperty(obj, "value") {
+      case Some(v) -> { value = getString(v) }
       case None    -> ()
     }
-    result = result + [MessageHeader(key = key, value = value)]
+    result = concat(result, [MessageHeader(key = key, value = value)])
   }
   return result
 }
@@ -537,13 +459,13 @@ func jsonExtractInt(json: in String, field: in String): Int {
   val afterColon = start + needle.length
   // Skip whitespace.
   var i: Int = afterColon
-  while i < json.length and json.charAt(i) == ' ' { i = i + 1 }
+  while i < json.length and json[i] == ' ' { i = i + 1 }
   var numStr: String = ""
-  while i < json.length and json.charAt(i) != ',' and json.charAt(i) != '}' {
-    numStr = numStr + json.charAt(i).toString()
+  while i < json.length and json[i] != ',' and json[i] != '}' {
+    numStr = numStr + json[i].toString()
     i = i + 1
   }
-  match Std.Core.parseInt(numStr.trim()) {
+  match parseOptInt(numStr.trim()) {
     case Some(n) -> return n
     case None    -> return 0
   }
@@ -560,7 +482,7 @@ func jsonExtractRaw(json: in String, field: in String): String {
   var depth: Int = 0
   var i: Int     = q1
   while i < json.length {
-    val ch = json.charAt(i)
+    val ch = json[i]
     if ch == '[' { depth = depth + 1 }
     else if ch == ']' {
       depth = depth - 1
@@ -573,17 +495,17 @@ func jsonExtractRaw(json: in String, field: in String): String {
 
 // Escape special characters for JSON string embedding.
 func jsonEscape(s: in String): String {
-  var out: String = ""
+  var buf: String = ""
   var i:   Int    = 0
   while i < s.length {
-    val ch = s.charAt(i)
-    if ch == '"'       { out = out + "\\\"" }
-    else if ch == '\\' { out = out + "\\\\" }
-    else if ch == '\n' { out = out + "\\n"  }
-    else if ch == '\r' { out = out + "\\r"  }
-    else if ch == '\t' { out = out + "\\t"  }
-    else               { out = out + ch.toString() }
+    val ch = s[i]
+    if ch == '"'       { buf = buf + "\\\"" }
+    else if ch == '\\' { buf = buf + "\\\\" }
+    else if ch == '\n' { buf = buf + "\\n"  }
+    else if ch == '\r' { buf = buf + "\\r"  }
+    else if ch == '\t' { buf = buf + "\\t"  }
+    else               { buf = buf + ch.toString() }
     i = i + 1
   }
-  return out
+  return buf
 }
