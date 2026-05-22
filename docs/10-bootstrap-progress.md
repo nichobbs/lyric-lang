@@ -14489,3 +14489,66 @@ behaviour intact.
 **Test results:** 812/812 emitter (+1 over the previous baseline,
 covering the new mono self-test), 128/128 lexer, 323/323 parser,
 189/189 type checker, 65/65 CLI bridge.
+
+### D-progress-294 — MSIL: `IImpl` emits real `InterfaceImpl` + `MethodImpl` metadata (#878)
+
+The self-hosted MSIL `IImpl` handler in `lyric-compiler/msil/codegen.l`
+previously extracted each impl-block function and added it to the host
+class as a static method, but never constructed an `MPImpl(MImplData)`
+item.  No `InterfaceImpl` row was emitted for `impl Iface for Target`,
+and no `MethodImpl` rows bound interface slots to their implementations.
+Any `Target`-typed value used through an `Iface`-typed slot would fail
+virtual dispatch at runtime — the CLR could not find the method slot
+because the metadata did not record the implementation relationship.
+
+The JVM backend already did the right thing (pre-pass over `IImpl`,
+merge methods into `LRecord` + `implementsIfaces`).  This change brings
+the MSIL backend to parity:
+
+* **Pre-pass over `IImpl`.** `collectImplEntriesMsil` walks the source
+  file and groups impl funcs by target class.  Single-segment interface
+  names are implicitly qualified with the current package; multi-segment
+  paths are kept verbatim.
+* **Instance-method injection.** `mergeImplForwardersMsil` re-uses
+  `lowerImplFuncAsInstanceMsil` to produce virtual instance MFuncs (slot
+  0 reserved for `this`, flags = `Public | Virtual | Final | HideBySig |
+  NewSlot`) for every impl func targeting the record.  Explicit `self`
+  parameters are folded onto slot 0 and excluded from the emitted CLR
+  signature so it matches the interface contract exactly.
+* **Name-based `MImplData`.** `MImplData` and `MImplSlot` gained string
+  fallback fields (`targetTypeName`, `targetTypeNamespace`,
+  `ifaceTypeName`, `ifaceTypeNamespace`, per-slot `ifaceMethodName` /
+  `implMethodName`).  Codegen emits the `MPImpl` item with token fields
+  set to 0 and the names populated; `lowerMImpl` resolves them via
+  `resolveTypeDefRowByName` / `resolveMethodDefRowInType` after every
+  TypeDef is in the table, then writes the `InterfaceImpl` +
+  `MethodImpl` rows.  Resolution failures skip the row instead of
+  emitting a garbage 0 reference that would crash the CLR loader.
+* **`addPackageTokens` parity.** The IRecord / IExposedRec passes in
+  `addPackageTokens` now add `countImplForwardersMsil` to
+  `methodDefRow` so that any `IFunc` following an `impl` block keeps a
+  correct MethodDef token (the old code under-counted impl rows and the
+  Pass-2 IFunc tokens silently drifted).
+* **Old static-on-host folding removed.** The previous
+  `fns.add(implFunc)` path is gone — impl funcs now live as instance
+  methods on the target TypeDef instead of as orphan statics on the
+  host class.
+
+Regression test (`shm_impl_metadata` in
+`bootstrap/tests/Lyric.Cli.Tests/SelfHostedMsilBridgeTests.fs`) compiles
+a program with an interface, a record, and an `impl` block, then
+inspects the resulting DLL with `System.Reflection.Metadata` to assert
+`InterfaceImpl` row count == 1 and `MethodImpl` row count == 1, and
+finally runs the DLL to confirm the metadata is well-formed enough for
+the CLR to load the implementing type without a `TypeLoadException`.
+Verified that disabling the `MPImpl` emission causes the test to fail
+on the `InterfaceImpl` count assertion.
+
+Closes #878.
+
+Tests:
+- Lexer:        128/128
+- Parser:       323/323
+- TypeChecker:  189/189
+- Emitter:      824/824 (2 ignored unchanged; baseline includes D-progress-290, -291, and -293)
+- Lyric.Cli:     67/67  (66 carried over + new `shm_impl_metadata` regression test)
