@@ -14230,3 +14230,68 @@ Tests:
 - TypeChecker:  189/189
 - Emitter:      812/812 (1 new self-host test, 2 ignored unchanged)
 - Lyric.Cli:     65/65
+### D-progress-292 — Self-hosted aspect weaver wired into `lyric prove` (#336)
+
+Closes the option-(a) path of #336.  The verifier no longer walks the
+parsed AST — `Lyric.Verifier.proveSourceWithOptions` now calls
+`Lyric.Weaver.weaveFile(parsed.file)` before VC generation, so proofs
+discharge against the woven wrapper's composed contracts (the body the
+runtime executes) rather than the bare target body.  The interim V0031
+warning shipped in D-progress-270 is retired; both same-package and
+cross-package aspect targets now contribute boundary contracts to the
+proof obligations (cross-package weaver lift is tracked separately —
+the current weaver only sees `IAspect` items in the file being proven).
+
+* **`lyric-compiler/lyric/weaver/weaver.l`** (new, ~890 LoC) — self-
+  hosted port of `bootstrap/src/Lyric.Emitter/Weaver.fs`.  Mirrors the
+  bootstrap weaver: glob matching (`*`, `?`, `[abc]`, `[a-z]`),
+  `proceed(args)` → `target(args)` rewriter walking the full AST
+  (expressions, blocks, statements, match arms, EOBs, interpolated
+  segments, local bindings, try/catch, defer), wrapper synthesis with
+  `aspect.contracts ++ original.contracts` composition, topological
+  sort by `wraps:` / `inside:` clauses (Kahn's algorithm; lexical
+  tiebreak, cycles fall back to lexical order), `@no_aspect` /
+  `@no_aspect("Name")` opt-outs, and `signature: returns` matching
+  with the same `typeExprToString` shape as F#.  Public surface:
+  `pub func weaveItems(items): List[Item]` and
+  `pub func weaveFile(file): SourceFile`.
+
+* **`lyric-compiler/lyric/verifier/driver.l`** — adds
+  `import Lyric.Weaver` and a `weaveFile(parsed.file)` call in
+  `proveSourceWithOptions` between stability-check and VC generation
+  (step 4).  Identity-op for files without aspect blocks.
+
+* **`lyric-compiler/lyric/verifier/vcgen.l`** — retires the
+  `collectAspectNames` / `firstAspectAnnotation` helpers and the
+  V0031 warning emission in `goalsForFile`.  IAspect items are
+  pre-stripped by the weaver, so the verifier sees only original
+  IFuncs, renamed `__aspect_target` IFuncs, and wrapper IFuncs with
+  composed contracts — all verified identically by `goalsForFunction`
+  against their declared contracts.
+
+* **`docs/15-phase-4-proof-plan.md`** — V0031 row updated to record
+  the retirement (replaced by the weaver pipeline; cross-package
+  aspects remain a follow-up).
+
+Two notable bootstrap-emitter workarounds surfaced during the port:
+
+1. `out` is a reserved keyword (`PMOut` param mode); the parser parses
+   `val out = ...` as `PError`.  Renamed every local in the weaver to
+   `acc` / `noAspectItems`.
+
+2. The bootstrap emitter mis-resolves nested
+   `match mapGet(m, k) { case Some(inners) -> while ii < inners.count {...} }`
+   when the enclosing function returns a `List` of an imported record:
+   the type of `inners.count` collapses to the imported record's
+   element type, hitting the "AspectDecl has no field 'count'" path
+   in `Codegen.emitExpr`.  Worked around by extracting the inner loop
+   into helpers (`bumpInDegrees`, `lookupIntOr0`, `buildSortedResult`)
+   so the receiver type stays inferable from the helper signature.
+
+* **`lyric-compiler/lyric/verifier_self_test.l`** — adds
+  `testProveAspectWeaveNoV0031` (proof-required + matching aspect, no
+  V0031, no error diagnostics) and `testProveNoAspectStillWorks`
+  (regression: weaver is identity-op without aspects).
+
+**Test results:** 811/811 emitter (unchanged), 65/65 CLI, 189/189
+typechecker, 323/323 parser, 128/128 lexer.

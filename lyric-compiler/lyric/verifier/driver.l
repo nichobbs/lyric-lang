@@ -12,6 +12,7 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.ModeChecker
+import Lyric.Weaver
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Result types.
@@ -162,7 +163,8 @@ pub func proveSourceWithOptions(source: in String, allowUnverified: in Bool): Pr
       results     = results)
   }
 
-  // 2. Mode-check.
+  // 2. Mode-check (against parsed file — annotations and aspect decls
+  //    still visible).
   val modeResult  = checkFile(parsed.file)
   val level       = modeResult.level
   val modeDiags   = modeResult.diagnostics
@@ -180,8 +182,14 @@ pub func proveSourceWithOptions(source: in String, allowUnverified: in Bool): Pr
     return ProofSummary(level = level, diagnostics = allParseDiags, results = results)
   }
 
-  // 4. VC generation.
-  val (goals, vcDiags) = goalsForFile(parsed.file, level)
+  // 4. Aspect weave (#336).  Replaces each matched IFunc with a renamed
+  //    `__aspect_target` plus a wrapper carrying the composed contracts
+  //    so the verifier sees the body the runtime executes.  Identity-op
+  //    for files without any `aspect` block.
+  val wovenFile = weaveFile(parsed.file)
+
+  // 5. VC generation against the woven file.
+  val (goals, vcDiags) = goalsForFile(wovenFile, level)
 
   val modeFatal = hasFatalDiag(modeDiags)
   if modeFatal {

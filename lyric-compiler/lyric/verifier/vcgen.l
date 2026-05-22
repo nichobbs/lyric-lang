@@ -1842,41 +1842,13 @@ func goalsForProtectedMembers(
   }
 }
 
-// #336: collect every same-package aspect name so we can flag
-// functions decorated with one of them.  The verifier walks the
-// parsed AST, NOT the post-elaboration body the runtime actually
-// executes — so contracts on an `@aspect`-introduced wrapper are
-// never proven.  Until the verifier moves post-elaboration, we
-// surface a V0031 warning at each affected call site so users
-// know the proof guarantee weakens for that function.
-func collectAspectNames(file: in SourceFile): Map[String, Bool] {
-  val names: Map[String, Bool] = newMap()
-  var i = 0
-  while i < file.items.count {
-    match file.items[i].kind {
-      case IAspect(decl) -> names.add(decl.name, true)
-      case _ -> ()
-    }
-    i = i + 1
-  }
-  names
-}
-
-// Return the name of the first aspect annotation on `fn`, if any.
-// Aspect annotations are dotted (e.g. `@RequiresAuth`) — we check
-// against the same-package aspect-name set built by
-// `collectAspectNames`.
-func firstAspectAnnotation(aspectNames: in Map[String, Bool], fn: in FunctionDecl): Option[String] {
-  var i = 0
-  while i < fn.annotations.count {
-    val segs = fn.annotations[i].name.segments
-    if segs.count == 1 {
-      if aspectNames.containsKey(segs[0]) { return Some(value = segs[0]) }
-    }
-    i = i + 1
-  }
-  None
-}
+// #336: aspect weaving (Lyric.Weaver.weaveFile) now runs in the
+// verifier driver before VC generation.  goalsForFile receives the
+// woven SourceFile — original IFuncs are replaced with renamed
+// `__aspect_target` declarations plus wrapper IFuncs carrying the
+// composed contracts (§5 of docs/26-aspects.md).  IAspect items have
+// already been dropped, so the verifier sees the body the runtime
+// executes.  The V0031 same-package warning is therefore retired.
 
 pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[Goal], List[Diagnostic]) {
   if not vlIsProofRequired(level) {
@@ -1884,9 +1856,6 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
     val noDiags: List[Diagnostic] = newList()
     return (noGoals, noDiags)
   }
-
-  // #336: gather aspect names for the V0031 warning emitted below.
-  val aspectNames = collectAspectNames(file)
 
   // Build callee table from file's IFunc and protected-type PMFunc items.
   val callees: Map[String, FunctionDecl] = newMap()
@@ -1955,26 +1924,12 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
       case IFunc(fn) -> {
         val fnLevel = levelOfFunction(level, fn)
         if vlIsProofRequired(fnLevel) {
-          // #336: surface V0031 when a proof-required function carries
-          // a same-package aspect annotation.  Proofs run on the
-          // pre-elaboration body; the runtime executes the woven body,
-          // which may add `requires:` / `ensures:` clauses on the
-          // aspect's `around { }` that the verifier never sees.
-          match firstAspectAnnotation(aspectNames, fn) {
-            case Some(aname) -> {
-              val msg = "function '" + fn.name + "' is decorated with @"
-                + aname + "; proofs verify the unelaborated body, which "
-                + "may differ from the runtime behaviour after aspect "
-                + "weaving — contracts on the aspect's around { } block "
-                + "are not discharged"
-              allDiags.add(Diagnostic(
-                severity = DiagWarning,
-                code     = "V0031",
-                message  = msg,
-                span     = fn.span))
-            }
-            case None -> ()
-          }
+          // #336: aspect weaving runs in driver.l before this point, so
+          // the IFunc here is either an original function with no
+          // matching aspect, an `__aspect_target` (the renamed inner
+          // body), or a wrapper carrying the composed contracts.  All
+          // three are verified the same way against their declared
+          // contracts.
           val fnEnv = freshSymbolsEnv(env0)
           val (goals, diags) = goalsForFunction(fnEnv, fn)
           var gi = 0
