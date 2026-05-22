@@ -348,7 +348,7 @@ stage2() {
 }
 
 # The legacy stage 2 body — kept for reference until the A1.2 stage-2
-# rewrite lands (see #907 / #911).  Not currently reachable because
+# rewrite lands.  Not currently reachable because
 # stage2() above hard-fails (or returns when SKIP_VERIFY=1); delete
 # this function entirely once the A1.2 rewrite ships its replacement
 # (`import Lyric.Cli` bundle compile + per-package byte-for-byte diff).

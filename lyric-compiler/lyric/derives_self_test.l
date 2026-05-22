@@ -139,9 +139,9 @@ func testIdempotent(): Unit {
     "idempotent: second deriveFile adds nothing")
 }
 
-// #938 / #952: projection of a distinct type whose underlying is `Bool`
-// must call `.toBool()` — without the Bool arm in `projectionMethod` this
-// falls through to the non-existent `.toValue()` and the synthesised
+// Projection of a distinct type whose underlying is `Bool` must call
+// `.toBool()` — without the Bool arm in `projectionMethod` this would
+// fall through to the non-existent `.toValue()` and the synthesised
 // helpers wouldn't compile.  We exercise the path via `derives Equals`
 // on `type Flag = Bool`; the synthesiser is hit and the result builds
 // without error.
@@ -157,9 +157,9 @@ func testDeriveShowDistinctBool(): Unit {
     "show-distinct-bool: Flag.show synthesised (projectionMethod Bool arm)")
 }
 
-// #937 / #951: a type carrying BOTH a `derives X` clause and a
-// `@derive(X)` annotation must not produce a duplicate helper.
-// `addIfNew` consults both `existingItems` and the in-progress `synths`
+// A type carrying BOTH a `derives X` clause and a `@derive(X)`
+// annotation must not produce a duplicate helper.  `addIfNew`
+// consults both `existingItems` and the in-progress `synths`
 // accumulator to suppress the second synthesis.  Without that guard
 // the file would type-check fail on the duplicate `.equals` definition.
 func testDeriveAndAnnotationDontDuplicate(): Unit {

@@ -591,13 +591,6 @@ func isLiteralI4ExprMsilWithEnv(e: in Expr, constEnv: in Map[String, Bool]): Boo
   }
 }
 
-// Back-compat wrapper for callers that don't have a `constEnv` to thread
-// through — used by paths that don't participate in the constValues
-// inlining chain.  Recognises only literals + parens.
-func isLiteralI4ExprMsil(e: in Expr): Bool {
-  val empty: Map[String, Bool] = newMap()
-  isLiteralI4ExprMsilWithEnv(e, empty)
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Per-function codegen context.

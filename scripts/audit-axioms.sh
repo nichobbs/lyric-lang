@@ -20,6 +20,9 @@
 # script will pass.
 
 set -euo pipefail
+# `nullglob` so an empty kernel directory doesn't expand to a literal
+# `dir/*.l` path and abort the script under `pipefail` (#976).
+shopt -s nullglob
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 AUDIT_DOC="$REPO_ROOT/docs/17-axiom-audit.md"
@@ -31,13 +34,26 @@ if [[ "${1:-}" == "--list-files" ]]; then
   LIST_FILES=1
 fi
 
+# Count `@axiom(` *occurrences* (not files) so a future kernel file
+# carrying multiple `@axiom("...")` annotations doesn't silently pass
+# while only the file count appears in the audit table (#977).  The
+# audit-doc table currently records exactly one row per file, so the
+# two numbers agree today — but counting occurrences future-proofs the
+# guardrail against the file-vs-axiom drift class entirely.
 count_axioms_in_dir() {
   local dir="$1"
   if [[ ! -d "$dir" ]]; then
     echo 0
     return
   fi
-  grep -l '@axiom(' "$dir"/*.l 2>/dev/null | wc -l
+  # `shopt -s nullglob` ensures an empty dir contributes zero.  `cat`
+  # concatenates without invoking the shell glob a second time.
+  local files=( "$dir"/*.l )
+  if [[ ${#files[@]} -eq 0 ]]; then
+    echo 0
+    return
+  fi
+  grep -h '@axiom(' "${files[@]}" 2>/dev/null | wc -l
 }
 
 list_axiom_files_in_dir() {
