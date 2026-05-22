@@ -14229,6 +14229,95 @@ Tests:
 - Parser:       323/323
 - TypeChecker:  189/189
 - Emitter:      812/812 (1 new self-host test, 2 ignored unchanged)
+
+### D-progress-292 — Track A A1.3 follow-up: unblock Native-AOT publish (#915)
+
+Fifth step of Track A.  D-progress-288 (A1.3) shipped the AOT entry-point
+project but called out a known limitation: `dotnet publish -p:PublishAot=true`
+on `Lyric.Cli.Aot.csproj` failed inside `ilc` codegen on
+`Lyric.Cli.Program.cmdPublish(string[])`.  This entry resolves that
+blocker.
+
+Root cause was three latent stack-balance bugs in the F# emitter
+(`bootstrap/src/Lyric.Emitter/Codegen.fs`) that the JIT had been
+silently tolerating but ilc's stricter verifier rejected:
+
+1. **`isNeverBranch` missed divergent statements.**  The predicate only
+   recognised `panic(...)` calls as never-returning, so a match-arm body
+   ending in `return`, `throw`, `break`, or `continue` was treated as a
+   normal value-producing arm.  When such an arm was paired with a
+   value-producing arm, the merge label saw different stack heights
+   (the divergent arm pushed nothing; the other arm pushed its value).
+   Extended the predicate to recognise all four divergent statement
+   forms in addition to `panic(...)`.
+
+2. **Match-arm reconciliation only handled Void↔Unit.**  When sibling
+   arms disagreed on whether they pushed a value (e.g. one arm produced
+   an `Int32` via a fall-through default, another arm was an empty
+   block `{}`), the reconciliation only padded `Void → Unit`/`Unit →
+   Void`.  Widened the reconciliation to pad any `Void → T` (push a
+   default of `T`) and `T → Void` (pop) so the merge label is always
+   reached with the same stack depth.
+
+3. **EIf relied on an inaccurate `branchLeavesValue` look-ahead.**
+   `peekExprType` returns `obj` for `ECall(EMember(...), ...)` shapes
+   it can't statically resolve (e.g. `env.add(name, te)` where the
+   actual return is `void`).  `branchLeavesValue` then reported "leaves
+   a value" for both branches even when one's actual emit was void,
+   producing mismatched stack depths at the merge label.  Restructured
+   `EIf` emission to route each non-divergent branch through an
+   intermediate post-label, then reconcile after both arms' *actual*
+   types are known: when the unified merge type is `Void`, pop the
+   non-Void path's value before falling into `lblEnd`.
+
+The third fix is post-emit reconciliation rather than a smarter
+look-ahead because making `peekExprType` accurate for arbitrary
+method-call shapes would require carrying full type-checker state
+into the look-ahead — out of scope for a bootstrap-grade fix.
+
+End-to-end verification:
+
+    $ rm -rf .bootstrap
+    $ ./scripts/bootstrap.sh --stage 1
+    $ cd bootstrap/src/Lyric.Cli.Aot
+    $ dotnet publish -c Release -r linux-x64 -p:PublishAot=true
+    ...
+    Lyric.Cli.Aot -> .../bin/Release/net10.0/linux-x64/publish/
+
+    $ bin/Release/net10.0/linux-x64/publish/lyric --version
+    lyric 0.1.0
+    $ bin/Release/net10.0/linux-x64/publish/lyric build /tmp/hello.l
+    built /tmp/hello.dll
+    $ dotnet /tmp/hello.dll
+    hello from aot
+
+Resulting binary is ~4 MB, stripped, statically linked against the
+.NET runtime — Track A's "no .NET runtime at deployment" goal for
+the published binary form.
+
+Three ilc warnings remain (out of scope here, not regressions from
+A1.3 — they're pre-existing IL-quality issues that `dotnet build`'s
+JIT had been silently tolerating):
+
+* `Lyric.Cli.Program.cmdSearch(string[])` — "will always throw because:
+  Invalid IL or CLR metadata".  IL-verifier reports a `PathStackDepth`
+  at offset 0x71 plus two type-shape mismatches.  Same general class as
+  this fix (branch-merge stack mismatch) but in a shape the post-emit
+  reconciliation doesn't cover.
+* `Lyric.Emitter.ProcessCapture.runCapture` and
+  `Lyric.Emitter.VerifierEnv.getEnv` — both fail with "Failed to load
+  assembly 'FSharp.Core'".  The Lyric AOT bundle deliberately doesn't
+  ship `FSharp.Core` because no Lyric-emitted code uses it; these two
+  F#-side shims still do.  They're never invoked by `cmdPublish`'s
+  call graph so ilc treats them as unreachable and emits throwing
+  stubs.
+
+The Lyric IL emitter changes do not regress any existing test:
+
+- Lexer:        128/128
+- Parser:       323/323
+- TypeChecker:  189/189
+- Emitter:      812/812 (2 ignored, unchanged)
 - Lyric.Cli:     65/65
 ### D-progress-292 — Self-hosted aspect weaver wired into `lyric prove` (#336)
 
