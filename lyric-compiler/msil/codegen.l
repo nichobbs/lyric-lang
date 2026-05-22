@@ -3730,13 +3730,16 @@ func emitAutoFfiCallMsil(
 
   // The receiver is always a type name (the EPath matched externTypeNames), so
   // this is a static call: no HASTHIS, no receiver load, emit `call` not `callvirt`.
+  // Bootstrap-grade: registers sig as (object…) : void — works correctly for
+  // void-returning static methods.  Methods with non-void returns require
+  // explicit @externTarget annotations or --target dotnet-legacy.
   val argTypes: List[MsilType] = newList()
   var ai = 0
   while ai < args.count {
     argTypes.add(MObject)
     ai = ai + 1
   }
-  val sig = buildStaticMethodSig(argTypes, MObject)
+  val sig = buildStaticMethodSig(argTypes, MVoid)
   val mrRow = ctxAddMemberRef(cctx.lctx, tRefRow, methodName, "autoffi_" + methodName, sig)
   val tok = 0x0A000000 + mrRow
 
@@ -3748,7 +3751,7 @@ func emitAutoFfiCallMsil(
     bi = bi + 1
   }
   insns.add(MCall(methodToken = tok))
-  MObject
+  MVoid
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

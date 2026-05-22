@@ -340,16 +340,16 @@ func main(): Unit {
             "3"
 
         // ── Band 2 (R6): Auto-FFI — extern type method resolution without @externTarget ──
-        // Calls System.Math.Abs(-42) via the auto-FFI path to verify that
-        // emitAutoFfiCallMsil emits a valid static `call` (not callvirt) and
-        // that the result is returned as MObject (boxed Int).
+        // Calls System.GC.Collect() (void, no-arg static) via the auto-FFI path to
+        // verify that emitAutoFfiCallMsil emits a valid static `call` (not callvirt).
+        // Bootstrap-grade auto-FFI uses () : void sig; non-void returns require @externTarget.
         mkBridge "shm_extern_type_smoke"
             """package ShMExternType
 
-extern type MathHelper = "System.Math"
+extern type GCHelper = "System.GC"
 
 func main(): Unit {
-  val result = MathHelper.Abs(-42)
+  GCHelper.Collect()
   println("extern type ok")
 }
 """
