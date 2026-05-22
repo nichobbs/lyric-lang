@@ -284,6 +284,33 @@ func main(): Unit {
 """
             "shim ran"
 
+        // ── #876: aspect `around` body that calls `proceed()` to wrap the target ─
+        // The weaver renames `doWork` to `__aspect_target_0_doWork`; the wrapper
+        // body must rewrite `proceed()` to call the renamed target.  Without the
+        // tree-walking rewrite (the original stub left `proceed` unresolved), the
+        // call lowered to a no-op and the "inside" line was silently dropped.
+        mkBridge "shm_aspect_proceed_wrap"
+            """package ShMAspectProceed
+
+aspect Wrap {
+  matches: visibility: pub
+  around(args) {
+    println("before")
+    proceed()
+    println("after")
+  }
+}
+
+pub func work(): Unit {
+  println("inside")
+}
+
+func main(): Unit {
+  work()
+}
+"""
+            "before\ninside\nafter"
+
         // ── Band 2 (#855): IProtected → Monitor-based record (bootstrap: regular record) ─
         // Protected fields use `var` / `let`; entries use `entry name(params): Ret { body }`.
         mkBridge "shm_protected_smoke"

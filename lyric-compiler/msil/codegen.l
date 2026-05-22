@@ -2859,11 +2859,300 @@ func matchesAspectMsil(aspect: in AspectDecl, fn: in FunctionDecl): Bool {
 
 // Rewrite the `around` body of an aspect, substituting calls to `proceed(args)`
 // with calls to the renamed target function `targetFuncName`.
-// For the bootstrap, we perform a structural string-based approach: any ECall
-// to "proceed" is rewritten to call `targetFuncName`.  A proper implementation
-// would walk the full Expr tree.
+//
+// After aspect weaving the original function is renamed to
+// `__aspect_target_<i>_<name>` (see `weaveAspectsMsil`), so a literal
+// `proceed(...)` call in the wrapper body would resolve to an unknown
+// identifier and silently lower to `MLdNull` via the `EPath` fallback
+// in `lowerExprMsil`.  This walks the full AST and rewrites every
+// `ECall(EPath(["proceed"]), args)` site to call `targetFuncName`
+// instead.  Argument expressions and sub-trees are rewritten
+// recursively so nested `proceed(...)` calls inside `if`/`match`/loop
+// bodies, lambdas, interpolated strings, etc. are all caught.
 func rewriteProceedMsil(body: in Block, targetFuncName: in String): Block {
-  body  // bootstrap: return as-is; proceed() is resolved by name at call time
+  rewriteProceedBlockMsil(body, targetFuncName)
+}
+
+func rewriteProceedBlockMsil(blk: in Block, name: in String): Block {
+  val outs: List[Statement] = newList()
+  var i = 0
+  while i < blk.statements.count {
+    outs.add(rewriteProceedStmtMsil(blk.statements[i], name))
+    i = i + 1
+  }
+  Block(statements = outs, span = blk.span)
+}
+
+func rewriteProceedStmtMsil(s: in Statement, name: in String): Statement {
+  match s.kind {
+    case SLocal(binding) ->
+      Statement(kind = SLocal(binding = rewriteProceedBindingMsil(binding, name)), span = s.span)
+    case SAssign(t, op, v) ->
+      Statement(kind = SAssign(
+        target = rewriteProceedExprMsil(t, name),
+        op     = op,
+        value  = rewriteProceedExprMsil(v, name)), span = s.span)
+    case SReturn(opt) -> {
+      val newOpt = match opt {
+        case None    -> None
+        case Some(e) -> Some(value = rewriteProceedExprMsil(e, name))
+      }
+      Statement(kind = SReturn(value = newOpt), span = s.span)
+    }
+    case SThrow(e) ->
+      Statement(kind = SThrow(expr = rewriteProceedExprMsil(e, name)), span = s.span)
+    case SExpr(e) ->
+      Statement(kind = SExpr(expr = rewriteProceedExprMsil(e, name)), span = s.span)
+    case SWhile(lbl, cond, body) ->
+      Statement(kind = SWhile(
+        label = lbl,
+        cond  = rewriteProceedExprMsil(cond, name),
+        body  = rewriteProceedBlockMsil(body, name)), span = s.span)
+    case SFor(lbl, pat, iter, body) ->
+      Statement(kind = SFor(
+        label = lbl,
+        pat   = pat,
+        iter  = rewriteProceedExprMsil(iter, name),
+        body  = rewriteProceedBlockMsil(body, name)), span = s.span)
+    case SLoop(lbl, body) ->
+      Statement(kind = SLoop(label = lbl, body = rewriteProceedBlockMsil(body, name)), span = s.span)
+    case SDefer(body) ->
+      Statement(kind = SDefer(body = rewriteProceedBlockMsil(body, name)), span = s.span)
+    case SScope(lbl, body) ->
+      Statement(kind = SScope(binding = lbl, body = rewriteProceedBlockMsil(body, name)), span = s.span)
+    case SInvariant(e) ->
+      Statement(kind = SInvariant(expr = rewriteProceedExprMsil(e, name)), span = s.span)
+    case SRule(lhs, rhs) ->
+      Statement(kind = SRule(
+        lhs = rewriteProceedExprMsil(lhs, name),
+        rhs = rewriteProceedExprMsil(rhs, name)), span = s.span)
+    case STry(body, catches) -> {
+      val newCatches: List[CatchClause] = newList()
+      var i = 0
+      while i < catches.count {
+        val cc = catches[i]
+        newCatches.add(CatchClause(
+          typeName = cc.typeName,
+          bindName = cc.bindName,
+          body     = rewriteProceedBlockMsil(cc.body, name),
+          span     = cc.span))
+        i = i + 1
+      }
+      Statement(kind = STry(body = rewriteProceedBlockMsil(body, name), catches = newCatches), span = s.span)
+    }
+    // SBreak, SContinue, SItem: no sub-expressions to walk.
+    case _ -> s
+  }
+}
+
+func rewriteProceedBindingMsil(b: in LocalBinding, name: in String): LocalBinding {
+  match b {
+    case LBVal(pat, ty, init) ->
+      LBVal(pat = pat, ty = ty, init = rewriteProceedExprMsil(init, name))
+    case LBLet(n, ty, init) ->
+      LBLet(name = n, ty = ty, init = rewriteProceedExprMsil(init, name))
+    case LBVar(n, ty, initOpt) -> {
+      val newInit = match initOpt {
+        case Some(x) -> Some(value = rewriteProceedExprMsil(x, name))
+        case None    -> None
+      }
+      LBVar(name = n, ty = ty, init = newInit)
+    }
+  }
+}
+
+func rewriteProceedEobMsil(eob: in ExprOrBlock, name: in String): ExprOrBlock {
+  match eob {
+    case EOBExpr(e)  -> EOBExpr(expr = rewriteProceedExprMsil(e, name))
+    case EOBBlock(b) -> EOBBlock(block = rewriteProceedBlockMsil(b, name))
+  }
+}
+
+func rewriteProceedArgsMsil(args: in List[CallArg], name: in String): List[CallArg] {
+  val buf: List[CallArg] = newList()
+  var i = 0
+  while i < args.count {
+    match args[i] {
+      case CAPositional(e)     ->
+        buf.add(CAPositional(expr = rewriteProceedExprMsil(e, name)))
+      case CANamed(n, e, sp)   ->
+        buf.add(CANamed(name = n, value = rewriteProceedExprMsil(e, name), span = sp))
+    }
+    i = i + 1
+  }
+  buf
+}
+
+func rewriteProceedSegsMsil(segs: in List[InterpolatedSegment], name: in String): List[InterpolatedSegment] {
+  val buf: List[InterpolatedSegment] = newList()
+  var i = 0
+  while i < segs.count {
+    match segs[i] {
+      case ISText(t, sp) -> buf.add(ISText(text = t, span = sp))
+      case ISExpr(e)     -> buf.add(ISExpr(expr = rewriteProceedExprMsil(e, name)))
+    }
+    i = i + 1
+  }
+  buf
+}
+
+func rewriteProceedArmsMsil(arms: in List[MatchArm], name: in String): List[MatchArm] {
+  val buf: List[MatchArm] = newList()
+  var i = 0
+  while i < arms.count {
+    val arm = arms[i]
+    val newGuard = match arm.guard {
+      case None    -> None
+      case Some(g) -> Some(value = rewriteProceedExprMsil(g, name))
+    }
+    buf.add(MatchArm(
+      pattern = arm.pattern,
+      guard   = newGuard,
+      body    = rewriteProceedEobMsil(arm.body, name),
+      span    = arm.span))
+    i = i + 1
+  }
+  buf
+}
+
+// Returns true iff `e` is a single-segment `EPath(["proceed"])`.
+func isProceedPathMsil(e: in Expr): Bool {
+  match e.kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        path.segments[0] == "proceed"
+      } else {
+        false
+      }
+    }
+    case _ -> false
+  }
+}
+
+func rewriteProceedExprMsil(e: in Expr, name: in String): Expr {
+  match e.kind {
+    case ELiteral(_) -> e
+    case EPath(_)    -> e
+    case ESelf       -> e
+    case EResult     -> e
+    case EError      -> e
+    case ERange(_)   -> e
+
+    case ECall(fn, args) -> {
+      val newArgs = rewriteProceedArgsMsil(args, name)
+      if isProceedPathMsil(fn) {
+        // Substitute proceed -> targetFuncName, preserving the callee's
+        // original span so any later diagnostic still points at the
+        // source-level `proceed` site.
+        val segs: List[String] = newList()
+        segs.add(name)
+        val newFn = Expr(
+          kind = EPath(path = ModulePath(segments = segs, span = fn.span)),
+          span = fn.span)
+        Expr(kind = ECall(fn = newFn, args = newArgs), span = e.span)
+      } else {
+        Expr(kind = ECall(fn = rewriteProceedExprMsil(fn, name), args = newArgs), span = e.span)
+      }
+    }
+
+    case EParen(inner) ->
+      Expr(kind = EParen(inner = rewriteProceedExprMsil(inner, name)), span = e.span)
+    case ETuple(exprs) -> {
+      val buf: List[Expr] = newList()
+      var i = 0
+      while i < exprs.count { buf.add(rewriteProceedExprMsil(exprs[i], name)); i = i + 1 }
+      Expr(kind = ETuple(exprs = buf), span = e.span)
+    }
+    case EList(exprs) -> {
+      val buf: List[Expr] = newList()
+      var i = 0
+      while i < exprs.count { buf.add(rewriteProceedExprMsil(exprs[i], name)); i = i + 1 }
+      Expr(kind = EList(exprs = buf), span = e.span)
+    }
+    case EIf(cond, thenB, elseOpt, form) -> {
+      val newElse = match elseOpt {
+        case None    -> None
+        case Some(b) -> Some(value = rewriteProceedEobMsil(b, name))
+      }
+      Expr(kind = EIf(
+        cond       = rewriteProceedExprMsil(cond, name),
+        thenBranch = rewriteProceedEobMsil(thenB, name),
+        elseBranch = newElse,
+        thenForm   = form), span = e.span)
+    }
+    case EMatch(scrut, arms) ->
+      Expr(kind = EMatch(
+        scrutinee = rewriteProceedExprMsil(scrut, name),
+        arms      = rewriteProceedArmsMsil(arms, name)), span = e.span)
+    case EAwait(inner) ->
+      Expr(kind = EAwait(inner = rewriteProceedExprMsil(inner, name)), span = e.span)
+    case EYield(inner) ->
+      Expr(kind = EYield(inner = rewriteProceedExprMsil(inner, name)), span = e.span)
+    case ESpawn(inner) ->
+      Expr(kind = ESpawn(inner = rewriteProceedExprMsil(inner, name)), span = e.span)
+    case ETry(inner) ->
+      Expr(kind = ETry(inner = rewriteProceedExprMsil(inner, name)), span = e.span)
+    case EOld(inner) ->
+      Expr(kind = EOld(inner = rewriteProceedExprMsil(inner, name)), span = e.span)
+    case EPropagate(inner) ->
+      Expr(kind = EPropagate(inner = rewriteProceedExprMsil(inner, name)), span = e.span)
+    case EForall(binders, whereOpt, body) -> {
+      val newWhere = match whereOpt {
+        case None    -> None
+        case Some(w) -> Some(value = rewriteProceedExprMsil(w, name))
+      }
+      Expr(kind = EForall(
+        binders   = binders,
+        whereExpr = newWhere,
+        body      = rewriteProceedExprMsil(body, name)), span = e.span)
+    }
+    case EExists(binders, whereOpt, body) -> {
+      val newWhere = match whereOpt {
+        case None    -> None
+        case Some(w) -> Some(value = rewriteProceedExprMsil(w, name))
+      }
+      Expr(kind = EExists(
+        binders   = binders,
+        whereExpr = newWhere,
+        body      = rewriteProceedExprMsil(body, name)), span = e.span)
+    }
+    case ELambda(lparams, body) ->
+      Expr(kind = ELambda(
+        lambdaParams = lparams,
+        body         = rewriteProceedBlockMsil(body, name)), span = e.span)
+    case ETypeApp(fn, targs) ->
+      Expr(kind = ETypeApp(fn = rewriteProceedExprMsil(fn, name), args = targs), span = e.span)
+    case EIndex(recv, idxs) -> {
+      val buf: List[Expr] = newList()
+      var i = 0
+      while i < idxs.count { buf.add(rewriteProceedExprMsil(idxs[i], name)); i = i + 1 }
+      Expr(kind = EIndex(
+        receiver = rewriteProceedExprMsil(recv, name),
+        indices  = buf), span = e.span)
+    }
+    case EMember(recv, memberName) ->
+      Expr(kind = EMember(
+        receiver   = rewriteProceedExprMsil(recv, name),
+        memberName = memberName), span = e.span)
+    case EPrefix(op, operand) ->
+      Expr(kind = EPrefix(op = op, operand = rewriteProceedExprMsil(operand, name)), span = e.span)
+    case EBinop(op, lhs, rhs) ->
+      Expr(kind = EBinop(
+        op  = op,
+        lhs = rewriteProceedExprMsil(lhs, name),
+        rhs = rewriteProceedExprMsil(rhs, name)), span = e.span)
+    case EAssign(t, op, v) ->
+      Expr(kind = EAssign(
+        target = rewriteProceedExprMsil(t, name),
+        op     = op,
+        value  = rewriteProceedExprMsil(v, name)), span = e.span)
+    case EBlock(blk) ->
+      Expr(kind = EBlock(block = rewriteProceedBlockMsil(blk, name)), span = e.span)
+    case EUnsafe(blk) ->
+      Expr(kind = EUnsafe(block = rewriteProceedBlockMsil(blk, name)), span = e.span)
+    case EInterpolated(segs) ->
+      Expr(kind = EInterpolated(segments = rewriteProceedSegsMsil(segs, name)), span = e.span)
+  }
 }
 
 // Wrap a Block in Some(FBBlock(block = b)): Option[FunctionBody].
