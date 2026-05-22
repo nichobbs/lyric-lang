@@ -225,6 +225,76 @@ func testDeriveShowEmptyRecord(): Unit {
     "show-empty: Empty.show synthesised (empty record)")
 }
 
+// Regression for #939: synthesised UFCS helpers must inherit the parent
+// item's visibility.  Without it, `pub @derive(Equals) record Point` would
+// produce a package-private `Point.equals`, and cross-package callers
+// would fail visibility checks.
+func testDeriveVisibilityPub(): Unit {
+  val src = "package P\npub @derive(Equals)\nrecord Point { x: Int; y: Int }\n"
+  val pr  = parse(src)
+  val sf  = deriveFile(pr.file)
+  var i = 0
+  var found = false
+  while i < sf.items.count {
+    val it = sf.items[i]
+    match it.kind {
+      case IFunc(decl) -> {
+        if decl.name == "Point.equals" {
+          found = true
+          match it.visibility {
+            case Some(v) -> {
+              match v {
+                case VisPub(_) -> ()  // expected
+                case VisInternal(_) -> {
+                  assertTrue(false,
+                    "visibility-pub: Point.equals should be VisPub, got VisInternal")
+                }
+              }
+              match decl.visibility {
+                case Some(VisPub(_)) -> ()  // expected
+                case _ -> assertTrue(false,
+                  "visibility-pub: Point.equals FunctionDecl should also carry VisPub")
+              }
+            }
+            case None -> assertTrue(false,
+              "visibility-pub: Point.equals should have VisPub but visibility was None")
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  assertTrue(found, "visibility-pub: Point.equals must be synthesised")
+}
+
+// Regression for #939: package-private parent → package-private helper.
+func testDeriveVisibilityPackagePrivate(): Unit {
+  val src = "package P\n@derive(Hash)\nrecord Counter { n: Int }\n"
+  val pr  = parse(src)
+  val sf  = deriveFile(pr.file)
+  var i = 0
+  var found = false
+  while i < sf.items.count {
+    val it = sf.items[i]
+    match it.kind {
+      case IFunc(decl) -> {
+        if decl.name == "Counter.hash" {
+          found = true
+          match it.visibility {
+            case None -> ()  // expected — parent has no `pub` so helper stays package-private
+            case Some(_) -> assertTrue(false,
+              "visibility-pkg: Counter.hash should inherit None (package-private), got Some(_)")
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  assertTrue(found, "visibility-pkg: Counter.hash must be synthesised")
+}
+
 func testExposedRecordDerive(): Unit {
   val src = "package P\n@derive(Equals)\npub exposed record Row { id: Int }\n"
   assertTrue(parseDeriveAndFindFunc(src, "Row.equals"),
@@ -311,6 +381,8 @@ func main(): Unit {
   testDeriveEqualsDistinctBool()
   testDeriveShowDistinctBool()
   testDeriveAndAnnotationDontDuplicate()
+  testDeriveVisibilityPub()
+  testDeriveVisibilityPackagePrivate()
   testExposedRecordDerive()
   testNoDerivesInListDoesNotSynth()
   testIdempotent()

@@ -82,13 +82,14 @@ pub record MonoResult {
   /// Maps generic function names to the last-seen specialised name (for
   /// downstream diagnostics; not needed for correctness).
   rewrites:    Map[String, String]
-  /// Monomorphisation diagnostics (e.g. inference failures, conflicting
-  /// specialisations).  Empty in the current implementation — the pass
-  /// silently falls back to leaving generic call sites unspecialised
-  /// when type arguments can't be inferred (see #349 for the inference
-  /// gaps).  Reserved so the bridges can route mono diagnostics through
-  /// `reportAndAbort` consistently with the other pipeline stages,
-  /// without churning their plumbing when mono starts emitting them.
+  /// Monomorphisation diagnostics — populated when the pass detects a
+  /// where-bound violation (`M0001`: a concrete type argument fails its
+  /// declared `where T: Marker` constraint).  Other failure modes (e.g.
+  /// inference gaps from #349) silently fall back to leaving generic
+  /// call sites unspecialised so the type checker's existing diagnostics
+  /// surface them — that's the conservative behaviour by design.  The
+  /// bridges route this list through `reportAndAbort` so M0001s abort
+  /// codegen the same way parse/type-check/mode-check diagnostics do.
   diagnostics: List[Diagnostic]
 }
 
