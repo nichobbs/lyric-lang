@@ -14100,3 +14100,74 @@ Tests:
 - Lyric.Cli:     20/20  (was 256/256 + 2 new in #947; the dropped
                          236 tests covered F# command handlers that
                          no longer exist)
+
+### D-progress-290 — issue #365: implement Lyric.Resilience.CircuitStore
+
+`feedback/05-ecosystem-libraries.md` F-8 / issue #365 documented that
+`lyric-resilience`'s `extern package Lyric.Resilience.CircuitStore` had
+no host-side implementation anywhere in the repo, so the library was
+non-functional — every call into `Resilience.circuitIsOpen` would have
+thrown `MissingMethodException` at runtime.  Compounding the gap, the
+half-open semantics ("one in-flight probe; successful probe closes the
+circuit") had no formal model inside the codebase, so neither the
+verifier nor any test could reason about them.
+
+This entry closes both gaps:
+
+**F# host shim (`bootstrap/src/Lyric.Emitter/CircuitStoreHost.fs`, ~125 LoC).**
+A thin `module Lyric.Resilience.CircuitStore` with a process-global
+`ConcurrentDictionary<string, Entry>` and three static methods
+matching the existing `extern package` signatures
+(`circuitIsOpen(name, cooldownMs)`, `circuitRecordSuccess(name)`,
+`circuitRecordFailure(name, failureThreshold)`).  Per-entry locking
+serialises mutations on the same circuit; concurrent traffic on
+distinct names never contends.  Follows the precedent set by
+`HttpClientHost.fs` — a small shim acceptable under CLAUDE.md
+because non-constant module-level vals (M5.2 stage 3+ wire
+singletons) are not yet emittable from Lyric.
+
+**Lyric-side formal model (`lyric-resilience/src/resilience.l`).**
+The state machine that was previously a commented-out spec sketch is
+now a real `pub protected type CircuitBreakerState` with four mutable
+fields (`consecutiveFailures`, `isOpen`, `openedAtMs`,
+`halfOpenProbeInFlight`), three verifier-visible `invariant:` clauses
+(`consecutiveFailures >= 0`, `isOpen or openedAtMs == 0`,
+`not isOpen or openedAtMs > 0`), and three entries (`recordSuccess`,
+`recordFailure(threshold, nowMs)`, `checkOpen(cooldownMs, nowMs)`)
+whose contracts (`requires: threshold > 0` etc.) are runtime-checked
+in `@runtime_checked` mode and SMT-provable under `@proof_required`.
+`nowMs` is injected as a parameter so the state machine is testable
+without a real clock.  Three thin pub helpers
+(`makeCircuitBreakerState`, `cbStateRecordSuccess/Failure/CheckOpen`)
+give users a Lyric-level handle for unit testing the state machine
+in isolation.
+
+The two implementations are deliberately mirrored.  The F# shim is the
+in-process realization that backs the registry-keyed public API
+(`circuitIsOpen` etc.) that `lyric-web` and `lyric-grpc` call into;
+the Lyric protected type is the verifier-visible source of truth.
+Once wire-singleton emit support ships, the registry plumbing can
+move into Lyric and the F# shim retires.
+
+Test coverage:
+
+- `bootstrap/tests/Lyric.Emitter.Tests/CircuitStoreHostTests.fs`
+  (12 Expecto tests, all passing) — exercises the F# shim
+  directly: fresh-circuit / threshold / success-closes /
+  half-open-probe-grant / single-probe-concurrent-block /
+  failed-probe-reopen / independent-circuits / idempotent-success.
+- `lyric-resilience/tests/resilience_tests.l` (six new Lyric tests)
+  — exercises both the registry-backed public API and the
+  `CircuitBreakerState` formal model with injected `nowMs` for
+  deterministic transitions.
+
+Files:
+
+- new: `bootstrap/src/Lyric.Emitter/CircuitStoreHost.fs`
+- new: `bootstrap/tests/Lyric.Emitter.Tests/CircuitStoreHostTests.fs`
+- edited: `bootstrap/src/Lyric.Emitter/Lyric.Emitter.fsproj`
+- edited: `bootstrap/tests/Lyric.Emitter.Tests/Lyric.Emitter.Tests.fsproj`
+- edited: `bootstrap/tests/Lyric.Emitter.Tests/Program.fs`
+- edited: `lyric-resilience/src/resilience.l`
+- edited: `lyric-resilience/src/_kernel/net/resilience_kernel.l`
+- edited: `lyric-resilience/tests/resilience_tests.l`
