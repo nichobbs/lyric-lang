@@ -13917,7 +13917,11 @@ queue rather than recursing immediately.  `addPackageTokens` then assigns
 stable `MethodDef` tokens to the synthetic functions.  At codegen, each
 `ELambda` site reads `cctx.lambdaTicker.count` as its index (same BFS
 order), looks up `__lambda_<i>` in `funcTokens`, and emits
-`ldnull + ldftn methodToken + newobj System.Action::.ctor`.
+`ldnull + ldftn methodToken + newobj System.Action::.ctor` (zero-param) or
+`newobj System.Action\`N<object,...>::.ctor` (N-param, via TypeSpec for the
+closed generic instantiation).  The delegate arity matches the lambda's
+parameter count; all parameter types are treated as `object` in this
+bootstrap stage.
 
 Two new `MInsn` cases in `lowering.l` support this: `MLdftn(methodToken)`
 (ECMA-335 `ldftn` opcode) and `MNativeInt` in `MsilType`
@@ -13943,7 +13947,7 @@ type name to the CLR FQN) during `addPackageTokens`.  `lowerMethodCallMsil`
 intercepts call sites where the receiver is an `EPath` whose last segment
 resolves to an `externTypeNames` entry and routes them through
 `emitAutoFfiCallMsil`, which looks up or registers the CLR type/member ref
-and emits a direct `call` or `callvirt` without requiring `@externTarget`
+and emits a direct static `call` without requiring `@externTarget`
 annotations on each method.
 
 **Test coverage** (added to `SelfHostedMsilBridgeTests.fs`):

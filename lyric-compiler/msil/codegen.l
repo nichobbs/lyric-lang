@@ -95,6 +95,7 @@ pub record CodegenCtx {
   // Lambda / yield / extern-type support (Band 2, R6).
   tokActionCtor:      Int                // System.Action::.ctor(object, native int)
   tokActionInvoke:    Int                // System.Action::Invoke(): void
+  actionTypeRefs:     Map[Int, Int]      // nparams → TypeRef row for System.Action`N
   externTypeNames:    Map[String, String]  // Lyric name → CLR FQN (from IExternType items)
   lambdaTicker:       List[Int]          // length = next __lambda_<i> index
 }
@@ -315,6 +316,9 @@ pub func newCodegenCtx(packageName: in String): CodegenCtx {
   val tokActionInvoke = 0x0A000000 + ctxAddMemberRef(
     lctx, trAction, "Invoke", "action_invoke", buildInstanceMethodSig(actionInvokePs, MVoid))
 
+  // System.Action`N TypeRefs are registered lazily on first use for each N
+  // (see internActionTypeRef); no static entries here.
+
   val recCtorToks: Map[String, Int] = newMap()
   val fieldToks:   Map[String, Int] = newMap()
   val funcToks:    Map[String, Int] = newMap()
@@ -360,6 +364,7 @@ pub func newCodegenCtx(packageName: in String): CodegenCtx {
     ffiTypeRefs          = newMap(),
     tokActionCtor        = tokActionCtor,
     tokActionInvoke      = tokActionInvoke,
+    actionTypeRefs       = newMap(),
     externTypeNames      = newMap(),
     lambdaTicker         = newList())
 }
@@ -987,6 +992,8 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
         val eTy = lowerExprMsil(cctx, fctx, insns, inner)
         boxIfNeededMsil(cctx, insns, eTy)
         insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
+      } else {
+        panic("Msil.Codegen: yield outside async generator — front-end should have rejected this")
       }
       MVoid
     }
@@ -1053,17 +1060,25 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
     }
     // ── Lambda: non-capturing, emitted as a lifted __lambda_<i> static method ──
     // Lambda-lifting pre-pass (liftLambdasMsil) has already extracted each
-    // ELambda into a synthetic IFunc named __lambda_<i>.  Here we just allocate
+    // ELambda into a synthetic IFunc named __lambda_<i>.  Here we allocate
     // the next index from lambdaTicker and look up the pre-assigned MethodDef.
-    case ELambda(_, _) -> {
+    // Delegate type selection based on param count:
+    //   0 params → System.Action             (non-generic, tokActionCtor)
+    //   N params → System.Action`N<object,…> (TypeSpec via buildActionNCtorTok)
+    // All lifted lambdas have void return (Unit), so only Action variants are needed.
+    case ELambda(lparams, _) -> {
       val idx = cctx.lambdaTicker.count
       cctx.lambdaTicker.add(0)
       val lname = "__lambda_" + toString(idx)
+      val nparams = lparams.count
       match mapGet(cctx.funcTokens, lname) {
         case Some(tok) -> {
+          val ctorTok =
+            if nparams == 0 { cctx.tokActionCtor }
+            else            { buildActionNCtorTok(cctx, nparams) }
           insns.add(MLdNull)
           insns.add(MLdftn(methodToken = tok))
-          insns.add(MNewobj(ctorToken = cctx.tokActionCtor))
+          insns.add(MNewobj(ctorToken = ctorTok))
           MObject
         }
         case None -> {
@@ -1977,8 +1992,9 @@ func lowerBuiltinOrStaticCallMsil(
         }
       }
       case None -> {
-        // Check if funcName is a local variable (e.g. a lambda stored as Action).
-        // If so, load it and emit callvirt Action::Invoke(args).
+        // Check if funcName is a local variable (e.g. a lambda stored as Action/Action`N).
+        // Load the delegate, push args, then callvirt Invoke.  Select the correct
+        // Invoke MemberRef based on argument count to match the delegate arity.
         match mapGet(fctx.slots, funcName) {
           case Some(slot) -> {
             insns.add(MLdloc(slot = slot - fctx.paramCount))
@@ -1987,7 +2003,10 @@ func lowerBuiltinOrStaticCallMsil(
               lowerCallArgMsil(cctx, fctx, insns, args[i])
               i = i + 1
             }
-            insns.add(MCallvirt(methodToken = cctx.tokActionInvoke))
+            val invokeTok =
+              if args.count == 0 { cctx.tokActionInvoke }
+              else               { buildActionNInvokeTok(cctx, args.count) }
+            insns.add(MCallvirt(methodToken = invokeTok))
             MVoid
           }
           case None -> {
@@ -2469,6 +2488,64 @@ func internFfiTypeRef(cctx: in CodegenCtx, asmName: in String,
       tRow
     }
   }
+}
+
+// Return the TypeRef row for System.Action`N (N ≥ 1).
+// TypeRefs are registered lazily on first use for each distinct N and cached
+// in cctx.actionTypeRefs to avoid duplicate metadata rows.
+func internActionTypeRef(cctx: in CodegenCtx, nparams: in Int): Int {
+  match mapGet(cctx.actionTypeRefs, nparams) {
+    case Some(r) -> r
+    case None    -> {
+      val typeName = "Action`" + toString(nparams)
+      val tRow = ctxAddTypeRef(cctx.lctx, "System", typeName, cctx.lctx.arRuntime)
+      cctx.actionTypeRefs.add(nparams, tRow)
+      tRow
+    }
+  }
+}
+
+// Build a newobj token for System.Action`N<object,...> (N ≥ 1).
+// Encodes a TypeSpec for the closed generic instantiation and returns
+// the MemberRef token (0x0A...) for .ctor(object, native int).
+func buildActionNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
+  val trN = internActionTypeRef(cctx, nparams)
+  // TypeDefOrRef coded index for a TypeRef at row R: (R << 2) | 1
+  val codedIdx = (trN * 4) + 1
+  val objArgs: List[MsilType] = newList()
+  var ai = 0
+  while ai < nparams { objArgs.add(MObject); ai = ai + 1 }
+  val gblob = buildGenericInstBlob(codedIdx, objArgs)
+  val specKey = "ActionSpec_ctor_" + toString(nparams)
+  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
+  val ctorPs: List[MsilType] = newList()
+  ctorPs.add(MObject)
+  ctorPs.add(MNativeInt)
+  val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
+  val mrRow = ctxAddMemberRefForTypeSpec(
+    cctx.lctx, tsRow, ".ctor",
+    "action_ctor_" + toString(nparams), ctorSig)
+  0x0A000000 + mrRow
+}
+
+// Build a callvirt token for System.Action`N<object,...>::Invoke(object,...).
+func buildActionNInvokeTok(cctx: in CodegenCtx, nparams: in Int): Int {
+  val trN = internActionTypeRef(cctx, nparams)
+  val codedIdx = (trN * 4) + 1
+  val objArgs: List[MsilType] = newList()
+  var ai = 0
+  while ai < nparams { objArgs.add(MObject); ai = ai + 1 }
+  val gblob = buildGenericInstBlob(codedIdx, objArgs)
+  val specKey = "ActionSpec_invoke_" + toString(nparams)
+  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
+  val invokePs: List[MsilType] = newList()
+  var pi = 0
+  while pi < nparams { invokePs.add(MObject); pi = pi + 1 }
+  val invokeSig = buildInstanceMethodSig(invokePs, MVoid)
+  val mrRow = ctxAddMemberRefForTypeSpec(
+    cctx.lctx, tsRow, "Invoke",
+    "action_invoke_" + toString(nparams), invokeSig)
+  0x0A000000 + mrRow
 }
 
 // Build the MSIL body for a `@externTarget`-bearing function.

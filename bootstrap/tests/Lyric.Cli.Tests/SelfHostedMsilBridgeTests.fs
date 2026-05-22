@@ -303,11 +303,7 @@ func main(): Unit {
             "protected ok"
 
         // ── Band 2 (R6): ELambda — non-capturing lambda lifted to static method ──────────
-        // ELambda nodes are lifted to synthetic __lambda_<i> static methods so that
-        // addPackageTokens assigns them stable MethodDef tokens before codegen.
-        // The lambda is lowered to: ldnull + ldftn __lambda_0 + newobj Action::.ctor.
-        // The invocation f() emits: ldloc f + callvirt Action::Invoke().
-        // Using a zero-arg, Unit-return lambda to match System.Action exactly.
+        // Zero-arg lambda: newobj System.Action::.ctor; f() → callvirt Action::Invoke().
         mkBridge "shm_lambda_non_capturing"
             """package ShMLambda
 
@@ -317,6 +313,17 @@ func main(): Unit {
 }
 """
             "lambda ok"
+
+        // 1-param lambda: newobj System.Action`1<object>::.ctor; f(x) → callvirt Action`1<object>::Invoke(object).
+        mkBridge "shm_lambda_one_param"
+            """package ShMLambdaP
+
+func main(): Unit {
+  val g = { x: Int -> println("param ok") }
+  g(99)
+}
+"""
+            "param ok"
 
         // ── Band 2 (R6): EYield — collect-all generator model ────────────────────────────
         // async func with yield is detected by isAsync && funcBodyContainsYield.
