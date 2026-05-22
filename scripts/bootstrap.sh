@@ -267,8 +267,7 @@ EOF
   # a Lyric-emitted artefact, so it doesn't land in the F# emitter's
   # stdlib cache.  But Msil.Lowering / Msil.Codegen reference it
   # statically.  Copy it from the stage-0 publish output so stage 1
-  # contains a complete reference set for the AOT entry-point project
-  # (#860 A1.3).
+  # contains a complete reference set for the AOT entry-point project.
   if [[ -f "$BUILD_DIR/stage0-publish/Lyric.Jvm.Hosts.dll" ]]; then
     cp -f "$BUILD_DIR/stage0-publish/Lyric.Jvm.Hosts.dll" "$STAGE1_DIR/"
     copied=$((copied + 1))
@@ -305,7 +304,7 @@ EOF
   # `System.Private.CoreLib` (the unified CoreCLR runtime assembly)
   # to the matching public-facade reference assemblies (System.Runtime,
   # System.Collections, System.Console, mscorlib, ...).  Without this
-  # rewrite the AOT entry-point project (#860 A1.3) can't reference the
+  # rewrite the AOT entry-point project can't reference the
   # stage-1 DLLs as compile-time inputs — the C# compiler refuses to
   # accept refs whose AssemblyRef table points at System.Private.CoreLib.
   if [[ "$SKIP_COREREF_REWRITE" != "1" ]]; then
