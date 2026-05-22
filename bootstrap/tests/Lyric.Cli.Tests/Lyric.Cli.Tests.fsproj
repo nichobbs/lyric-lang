@@ -5,23 +5,15 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
+  <!--
+    Track A A1.4 (#860) deletes the F# user-facing CLI dispatcher.  The
+    tests that exercised those F# command handlers go with it; what
+    remains is the self-hosted MSIL / JVM bridge tests, which drive the
+    self-hosted compiler in-process via SelfHostedMsil / SelfHostedJvm.
+  -->
   <ItemGroup>
-    <Compile Include="ManifestTests.fs" />
-    <Compile Include="PackTests.fs" />
-    <Compile Include="NugetShimTests.fs" />
-    <Compile Include="MavenTests.fs" />
-    <Compile Include="RestoredPackagesTests.fs" />
-    <Compile Include="FmtTests.fs" />
-    <Compile Include="SelfHostedFmtBridgeTests.fs" />
     <Compile Include="SelfHostedMsilBridgeTests.fs" />
     <Compile Include="SelfHostedJvmBridgeTests.fs" />
-    <Compile Include="ParityTests.fs" />
-    <Compile Include="JvmDiagnosticTests.fs" />
-    <Compile Include="LintTests.fs" />
-    <Compile Include="ProjectBuildTests.fs" />
-    <Compile Include="ProveTests.fs" />
-    <Compile Include="TestRunnerTests.fs" />
-    <Compile Include="DocTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

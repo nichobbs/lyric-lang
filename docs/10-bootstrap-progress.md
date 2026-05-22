@@ -13999,3 +13999,84 @@ Followup (Track A, A1.4): delete the F# CLI scaffolding in
 `--internal-build` entry point that stage 1 uses; all `SelfHosted*.fs`
 shims plus `Pack.fs` / `Manifest.fs` / `Maven*.fs` / `Nuget*.fs` /
 `Lint.fs` / `TestSynth.fs` go away.
+
+### D-progress-289 — Track A A1.4: delete F# user-facing CLI dispatcher
+
+Fourth step of Track A (`docs/41 §860` — F# CLI elimination + Native-AOT
+publishing).  A1.3 produced a working AOT entry-point project that
+trampolines straight into the Lyric-emitted `Lyric.Cli.Program.main`,
+making the F# user-facing dispatcher dead code.  A1.4 removes that
+dead code.
+
+Deleted F# source files (~7 kLoC of dispatcher + command handlers +
+their tests):
+
+| Removed file                                  | Was used by             |
+|-----------------------------------------------|-------------------------|
+| `bootstrap/src/Lyric.Cli/Pack.fs`             | `lyric publish/restore` |
+| `bootstrap/src/Lyric.Cli/Maven.fs`            | `lyric build --target jvm` deps |
+| `bootstrap/src/Lyric.Cli/MavenShim.fs`        | Java resolver shell-out |
+| `bootstrap/src/Lyric.Cli/NugetAssets.fs`      | NuGet asset path walker |
+| `bootstrap/src/Lyric.Cli/NugetShim.fs`        | `dotnet restore` wrapper |
+| `bootstrap/src/Lyric.Cli/Lint.fs`             | `lyric lint`            |
+| `bootstrap/src/Lyric.Cli/TestSynth.fs`        | `lyric test` (F# mirror) |
+| `bootstrap/src/Lyric.Cli/SelfHostedPack.fs`   | dispatcher bridge       |
+| `bootstrap/src/Lyric.Cli/SelfHostedFmt.fs`    | dispatcher bridge       |
+| `bootstrap/src/Lyric.Cli/SelfHostedDoc.fs`    | dispatcher bridge       |
+| `bootstrap/src/Lyric.Cli/SelfHostedLint.fs`   | dispatcher bridge       |
+| `bootstrap/src/Lyric.Cli/SelfHostedManifest.fs` | dispatcher bridge     |
+| `bootstrap/src/Lyric.Cli/SelfHostedTestSynth.fs` | dispatcher bridge    |
+| `bootstrap/src/Lyric.Cli/SelfHostedOpenApi.fs` | dispatcher bridge      |
+| `bootstrap/src/Lyric.Cli/SelfHostedBench.fs`  | dispatcher bridge       |
+| `bootstrap/src/Lyric.Cli/SelfHostedVerifier.fs` | dispatcher bridge     |
+| `bootstrap/src/Lyric.Cli/SelfHostedCli.fs`    | primary dispatcher      |
+| (plus ~2 kLoC trimmed from `Program.fs`)      | `bootstrapDispatch` + all `cmdX` |
+
+Plus 14 corresponding test files in `bootstrap/tests/Lyric.Cli.Tests/`
+(`ManifestTests`, `PackTests`, `NugetShimTests`, `MavenTests`,
+`RestoredPackagesTests`, `FmtTests`, `SelfHostedFmtBridgeTests`,
+`ParityTests`, `JvmDiagnosticTests`, `LintTests`, `ProjectBuildTests`,
+`ProveTests`, `TestRunnerTests`, `DocTests`).
+
+Preserved (bootstrap-only):
+
+* `Program.fs` — trimmed to ~280 LoC.  Handles four internal flags
+  (`--internal-build`, `--internal-project-build`,
+  `--internal-contract-meta`, and the new `--internal-manifest-build`
+  added for stage 1's stdlib bundle compile).  Any other argv prints
+  a one-line error pointing at the AOT binary and exits non-zero.
+
+* `Manifest.fs` — TOML parser, retained because
+  `--internal-manifest-build` needs to walk `lyric.toml`'s
+  `[project.packages]` for the stdlib bundle.
+
+* `SelfHostedBridge.fs` / `SelfHostedMsil.fs` / `SelfHostedJvm.fs` —
+  retained because they back `SelfHostedMsil/JvmBridgeTests.fs`,
+  which provide end-to-end coverage of the self-hosted compiler
+  pipeline.
+
+`bootstrap/src/Lyric.Cli/Lyric.Cli.fsproj` and
+`bootstrap/tests/Lyric.Cli.Tests/Lyric.Cli.Tests.fsproj` updated to
+match.  `bootstrap.sh` stage 1 and stage 2 switched from
+`build --manifest …` (no longer recognised) to
+`--internal-manifest-build`.  `Mono.Cecil` and
+`System.Reflection.MetadataLoadContext` package refs dropped from
+`Lyric.Cli.fsproj` (only the deleted AOT code used them).
+
+End-to-end verification:
+
+    $ rm -rf .bootstrap
+    $ ./scripts/bootstrap.sh --stage 1     # builds + retargets + 70 DLLs
+    $ dotnet build bootstrap/src/Lyric.Cli.Aot
+    $ bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric build /tmp/hello.l -o /tmp/hello.dll
+    $ dotnet exec /tmp/hello.dll
+    hello from A1.4 trimmed AOT
+
+Tests:
+- Lexer:        128/128
+- Parser:       323/323
+- TypeChecker:  189/189
+- Emitter:      811/811 (2 ignored, unchanged)
+- Lyric.Cli:     20/20  (was 256/256 + 2 new in #947; the dropped
+                         236 tests covered F# command handlers that
+                         no longer exist)

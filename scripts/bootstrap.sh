@@ -154,9 +154,14 @@ stage1() {
   mkdir -p "$STAGE1_DIR"
 
   # Build the stdlib bundle first (multi-package manifest).
+  # Track A A1.4 (#860): the F# user-facing `lyric build --manifest`
+  # dispatcher is gone; stage 1 drives the multi-package compile
+  # through the bootstrap-only `--internal-manifest-build` flag
+  # which reads `lyric.toml` and feeds the package list straight
+  # to `Emitter.emitProject`.
   info "  compiling stdlib bundle"
-  "$STAGE0_BIN" build --manifest "$STDLIB_DIR/lyric.toml" \
-    -o "$STAGE1_DIR/Lyric.Stdlib.dll" --target dotnet-legacy 2>&1 || \
+  "$STAGE0_BIN" --internal-manifest-build "$STDLIB_DIR/lyric.toml" \
+    -o "$STAGE1_DIR/Lyric.Stdlib.dll" --target dotnet 2>&1 || \
     die "stdlib bundle build failed"
 
   if [[ "$SKIP_CLI_BUNDLE" != "1" ]]; then
@@ -271,6 +276,23 @@ EOF
     die "stage-1 CLI bundle: Lyric.Jvm.Hosts.dll not found in stage-0 publish"
   fi
 
+  # `Lyric.Emitter.dll` (the F# bootstrap emitter) hosts a small set of
+  # helper types — `ConsoleHelper`, `ProcessCapture`, `VerifierEnv`,
+  # `HttpClientHost` — that the stdlib kernel modules `@externTarget`
+  # against (see `lyric-stdlib/std/_kernel/{console,process_capture,
+  # verifier_env,http}_host.l`).  The Lyric-emitted stdlib DLLs carry
+  # AssemblyRefs to `Lyric.Emitter` for those externs, so at runtime
+  # any program that prints to stderr / launches a subprocess / reads
+  # an env var / makes an HTTP call needs the emitter DLL on disk.
+  # Stage 0 publishes it; stage 1 copies it alongside the other
+  # bootstrap DLLs so the AOT entry-point project resolves the externs.
+  if [[ -f "$BUILD_DIR/stage0-publish/Lyric.Emitter.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish/Lyric.Emitter.dll" "$STAGE1_DIR/"
+    copied=$((copied + 1))
+  else
+    die "stage-1 CLI bundle: Lyric.Emitter.dll not found in stage-0 publish"
+  fi
+
   info "  copied $copied DLLs into $STAGE1_DIR"
 
   # Sanity check: Lyric.Lyric.Cli.dll must land in stage1/.  If it
@@ -339,7 +361,7 @@ _stage2_legacy() {
 
   info "  compiling stdlib bundle (self-hosted MSIL path)"
   LYRIC_STD_PATH="$STAGE1_DIR" \
-    "$stage1_lyric" build --manifest "$STDLIB_DIR/lyric.toml" \
+    "$stage1_lyric" --internal-manifest-build "$STDLIB_DIR/lyric.toml" \
     -o "$STAGE2_DIR/Lyric.Stdlib.dll" --target dotnet 2>&1 || \
     die "stage-2 stdlib bundle build failed"
 
