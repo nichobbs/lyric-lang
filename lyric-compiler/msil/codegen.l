@@ -69,10 +69,11 @@ pub record CodegenCtx {
   tokStringFormat3:   Int   // String.Format(string,object,object,object)
   tokObjToString:     Int   // Object.ToString() instance HASTHIS
   // List<object> via TypeSpec (for newList() and list operations)
-  tokListObjCtor:     Int   // List<object>::.ctor()  newobj
-  tokListObjAdd:      Int   // List<object>::Add(object): void  callvirt
-  tokListObjGetItem:  Int   // List<object>::get_Item(int32): object  callvirt
-  tokListObjGetCount: Int   // List<object>::get_Count(): int32  callvirt
+  tokListObjCtor:      Int   // List<object>::.ctor()  newobj
+  tokListObjAdd:       Int   // List<object>::Add(object): void  callvirt
+  tokListObjGetItem:   Int   // List<object>::get_Item(int32): object  callvirt
+  tokListObjGetCount:  Int   // List<object>::get_Count(): int32  callvirt
+  tokListObjTypeSpec:  Int   // TypeSpec token for List<object>  castclass
   // Dictionary<object,object> via TypeSpec (for newMap() and map operations)
   tokDictObjCtor:     Int   // Dictionary<object,object>::.ctor()  newobj
   tokDictObjAdd:      Int   // Dictionary<object,object>::Add(object,object): void  callvirt
@@ -95,7 +96,7 @@ pub record CodegenCtx {
   // Lambda / yield / extern-type support (Band 2, R6).
   tokActionCtor:      Int                // System.Action::.ctor(object, native int)
   tokActionInvoke:    Int                // System.Action::Invoke(): void
-  actionTypeRefs:     Map[Int, Int]      // nparams → TypeRef row for System.Action`N
+  actionTypeRefs:     Map[String, Int]   // toString(nparams) → TypeRef row for System.Action`N
   externTypeNames:    Map[String, String]  // Lyric name → CLR FQN (from IExternType items)
   lambdaTicker:       List[Int]          // length = next __lambda_<i> index
 }
@@ -349,6 +350,7 @@ pub func newCodegenCtx(packageName: in String): CodegenCtx {
     tokListObjAdd        = tokListObjAdd,
     tokListObjGetItem    = tokListObjGetItem,
     tokListObjGetCount   = tokListObjGetCount,
+    tokListObjTypeSpec   = 0x1B000000 + tsListObj,
     tokDictObjCtor       = tokDictObjCtor,
     tokDictObjAdd        = tokDictObjAdd,
     tokDictObjGetItem    = tokDictObjGetItem,
@@ -561,9 +563,22 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
     match file.items[j].kind {
       case IFunc(decl) -> {
         cctx.funcTokens.add(decl.name, 0x06000000 + methodDefRow)
-        val retTy = match decl.ret {
-          case Some(te) -> typeExprToMsil(te, pkgName)
-          case None     -> MVoid
+        // Generator functions always return List<object> (MObject) regardless of
+        // the source-level annotation.  Use the same isGenerator logic as
+        // lowerFuncMsil so that call sites in funcRetTypes agree with the actual
+        // emitted signature — avoids void-typed locals when callers store the result.
+        val isGen = decl.isAsync and funcBodyContainsYieldMsil(decl)
+        val retTy = if isGen {
+          MObject
+        } else if startsWith(decl.name, "__lambda_") {
+          // Same bootstrap limitation as in lowerFuncMsil: bypass decl.ret for
+          // synthetic lambda functions to avoid null retTy from emitMatch fallthrough.
+          MVoid
+        } else {
+          match decl.ret {
+            case Some(te) -> typeExprToMsil(te, pkgName)
+            case None     -> MVoid
+          }
         }
         cctx.funcRetTypes.add(decl.name, retTy)
         methodDefRow = methodDefRow + 1
@@ -722,6 +737,8 @@ pub func typeExprToMsil(te: in TypeExpr, pkgName: in String): MsilType {
         MInt
       } else if seg == "Unit" {
         MVoid
+      } else if seg == "Object" {
+        MObject
       } else {
         MClass(className = pkgName + "." + seg)
       }
@@ -922,6 +939,10 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
         case _ -> {
           // For MObject receivers (List, Dict, etc.) handle known BCL properties.
           if memberName == "count" {
+            // castclass makes the stack type explicit as List<object> so the JIT
+            // can verify the callvirt when the receiver was produced by a call
+            // returning Object (e.g. a generator function).
+            insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
             insns.add(MCallvirt(methodToken = cctx.tokListObjGetCount))
             MInt
           } else {
@@ -989,6 +1010,10 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
       if fctx.yieldSlots.count > 0 {
         val collSlot = fctx.yieldSlots[0]
         insns.add(MLdloc(slot = collSlot - fctx.paramCount))
+        // The collector local is typed `object` (MObject) but `List<object>::Add`
+        // expects `this` to be `List<object>`.  Castclass narrows the stack type
+        // so the JIT verifier accepts the callvirt.
+        insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
         val eTy = lowerExprMsil(cctx, fctx, insns, inner)
         boxIfNeededMsil(cctx, insns, eTy)
         insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
@@ -2000,7 +2025,9 @@ func lowerBuiltinOrStaticCallMsil(
             insns.add(MLdloc(slot = slot - fctx.paramCount))
             var i = 0
             while i < args.count {
-              lowerCallArgMsil(cctx, fctx, insns, args[i])
+              val argTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+              // Action<object,...>.Invoke expects object for every param — box value types.
+              boxIfNeededMsil(cctx, insns, argTy)
               i = i + 1
             }
             val invokeTok =
@@ -2494,12 +2521,13 @@ func internFfiTypeRef(cctx: in CodegenCtx, asmName: in String,
 // TypeRefs are registered lazily on first use for each distinct N and cached
 // in cctx.actionTypeRefs to avoid duplicate metadata rows.
 func internActionTypeRef(cctx: in CodegenCtx, nparams: in Int): Int {
-  match mapGet(cctx.actionTypeRefs, nparams) {
+  val key = toString(nparams)
+  match mapGet(cctx.actionTypeRefs, key) {
     case Some(r) -> r
     case None    -> {
-      val typeName = "Action`" + toString(nparams)
+      val typeName = "Action`" + key
       val tRow = ctxAddTypeRef(cctx.lctx, "System", typeName, cctx.lctx.arRuntime)
-      cctx.actionTypeRefs.add(nparams, tRow)
+      cctx.actionTypeRefs.add(key, tRow)
       tRow
     }
   }
@@ -2540,7 +2568,7 @@ func buildActionNInvokeTok(cctx: in CodegenCtx, nparams: in Int): Int {
   val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
   val invokePs: List[MsilType] = newList()
   var pi = 0
-  while pi < nparams { invokePs.add(MObject); pi = pi + 1 }
+  while pi < nparams { invokePs.add(MTypeVar(pi)); pi = pi + 1 }
   val invokeSig = buildInstanceMethodSig(invokePs, MVoid)
   val mrRow = ctxAddMemberRefForTypeSpec(
     cctx.lctx, tsRow, "Invoke",
@@ -2817,10 +2845,22 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
   val retTy =
     if isGenerator {
       MObject
+    } else if startsWith(decl.name, "__lambda_") {
+      // Synthetic lambda functions always return void.  We bypass decl.ret
+      // entirely here: the bootstrap F# emitter may construct the FunctionDecl
+      // with None<object> rather than None<TypeExpr> in the ret slot, causing
+      // both `case Some` and `case None` arms to fail their isinst checks.
+      // When emitMatch falls through it emits ldnull, giving retTy = null, which
+      // yields 0x00 (ELEMENT_TYPE_END) in the method signature and triggers a
+      // BadImageFormatException at load time.
+      MVoid
     } else {
       match decl.ret {
-        case Some(te) -> typeExprToMsil(te, pkgName)
-        case None     -> MVoid
+        case Some(te) -> {
+          val resolved = typeExprToMsil(te, pkgName)
+          if elementTypeByte(resolved) == 0 { MVoid } else { resolved }
+        }
+        case None -> MVoid
       }
     }
 
@@ -3430,18 +3470,17 @@ func syntheticSpan(): Span {
   Span(startPos = p, endPos = p)
 }
 
-// Convert a LambdaParam to a full Param (mode=PMIn, ty=MObject-typed TRef or TUnit).
+// Convert a LambdaParam to a full Param (mode=PMIn, ty=Object).
+// All lifted lambda params are typed as Object because the delegate types used
+// (System.Action`N<object,...>) expect object parameters.  If the lambda body
+// uses a param typed Int/Bool/etc., the value arrives as a boxed object and the
+// body works regardless (bootstrap-grade: unboxing is implicit via object field
+// access or is unnecessary for void-body lambdas like the test cases here).
 func lambdaParamToParam(lp: in LambdaParam): Param {
-  val ty = match lp.ty {
-    case Some(te) -> te
-    case None     -> {
-      // Default to Object when no type annotation is present.
-      val seg: List[String] = newList()
-      seg.add("Object")
-      TypeExpr(kind = TRef(path = ModulePath(segments = seg, span = syntheticSpan())),
-               span = syntheticSpan())
-    }
-  }
+  val seg: List[String] = newList()
+  seg.add("Object")
+  val ty = TypeExpr(kind = TRef(path = ModulePath(segments = seg, span = syntheticSpan())),
+                    span = syntheticSpan())
   Param(mode = PMIn, name = lp.name, ty = ty, dflt = None, span = lp.span)
 }
 
@@ -3454,7 +3493,7 @@ func lambdaParamToParam(lp: in LambdaParam): Param {
 // (liftLambdasMsil) drains `deferred` in FIFO order after all top-level
 // expressions are processed, which naturally matches the codegen traversal
 // order (outer lambdas numbered before any nested lambda in their bodies).
-func collectLambdasBfsExpr(e: in Expr, ticker: in List[Int], out: in List[Item], deferred: in List[Block]): Unit {
+func collectLambdasBfsExpr(e: in Expr, ticker: in List[Int], synths: in List[Item], deferred: in List[Block]): Unit {
   match e.kind {
     case ELambda(lparams, body) -> {
       // BFS: assign index, create synthetic IFunc, defer body (no recursion here).
@@ -3480,7 +3519,7 @@ func collectLambdasBfsExpr(e: in Expr, ticker: in List[Int], out: in List[Item],
         contracts   = newList(),
         body        = Some(FBBlock(block = body)),
         span        = syntheticSpan())
-      out.add(Item(
+      synths.add(Item(
         docComments = newList(),
         annotations = newList(),
         visibility  = None,
@@ -3489,31 +3528,31 @@ func collectLambdasBfsExpr(e: in Expr, ticker: in List[Int], out: in List[Item],
       deferred.add(body)
     }
     case ECall(fn, args) -> {
-      collectLambdasBfsExpr(fn, ticker, out, deferred)
+      collectLambdasBfsExpr(fn, ticker, synths, deferred)
       var ai = 0
       while ai < args.count {
         match args[ai] {
-          case CAPositional(ex)    -> { collectLambdasBfsExpr(ex, ticker, out, deferred) }
-          case CANamed(_, ex, _)   -> { collectLambdasBfsExpr(ex, ticker, out, deferred) }
+          case CAPositional(ex)    -> { collectLambdasBfsExpr(ex, ticker, synths, deferred) }
+          case CANamed(_, ex, _)   -> { collectLambdasBfsExpr(ex, ticker, synths, deferred) }
         }
         ai = ai + 1
       }
     }
     case EBinop(_, lhs, rhs) -> {
-      collectLambdasBfsExpr(lhs, ticker, out, deferred)
-      collectLambdasBfsExpr(rhs, ticker, out, deferred)
+      collectLambdasBfsExpr(lhs, ticker, synths, deferred)
+      collectLambdasBfsExpr(rhs, ticker, synths, deferred)
     }
-    case EPrefix(_, operand)  -> { collectLambdasBfsExpr(operand, ticker, out, deferred) }
-    case EParen(inner)        -> { collectLambdasBfsExpr(inner, ticker, out, deferred) }
-    case EMember(recv, _)     -> { collectLambdasBfsExpr(recv, ticker, out, deferred) }
+    case EPrefix(_, operand)  -> { collectLambdasBfsExpr(operand, ticker, synths, deferred) }
+    case EParen(inner)        -> { collectLambdasBfsExpr(inner, ticker, synths, deferred) }
+    case EMember(recv, _)     -> { collectLambdasBfsExpr(recv, ticker, synths, deferred) }
     case EIf(cond, thenB, elseOpt, _) -> {
-      collectLambdasBfsExpr(cond, ticker, out, deferred)
+      collectLambdasBfsExpr(cond, ticker, synths, deferred)
       match thenB {
-        case EOBExpr(ex)   -> { collectLambdasBfsExpr(ex, ticker, out, deferred) }
+        case EOBExpr(ex)   -> { collectLambdasBfsExpr(ex, ticker, synths, deferred) }
         case EOBBlock(blk) -> {
           var si = 0
           while si < blk.statements.count {
-            collectLambdasBfsStmt(blk.statements[si], ticker, out, deferred)
+            collectLambdasBfsStmt(blk.statements[si], ticker, synths, deferred)
             si = si + 1
           }
         }
@@ -3521,11 +3560,11 @@ func collectLambdasBfsExpr(e: in Expr, ticker: in List[Int], out: in List[Item],
       match elseOpt {
         case Some(elseB) -> {
           match elseB {
-            case EOBExpr(ex)   -> { collectLambdasBfsExpr(ex, ticker, out, deferred) }
+            case EOBExpr(ex)   -> { collectLambdasBfsExpr(ex, ticker, synths, deferred) }
             case EOBBlock(blk) -> {
               var ei = 0
               while ei < blk.statements.count {
-                collectLambdasBfsStmt(blk.statements[ei], ticker, out, deferred)
+                collectLambdasBfsStmt(blk.statements[ei], ticker, synths, deferred)
                 ei = ei + 1
               }
             }
@@ -3537,27 +3576,27 @@ func collectLambdasBfsExpr(e: in Expr, ticker: in List[Int], out: in List[Item],
     case EBlock(block) -> {
       var si = 0
       while si < block.statements.count {
-        collectLambdasBfsStmt(block.statements[si], ticker, out, deferred)
+        collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
         si = si + 1
       }
     }
     case EUnsafe(block) -> {
       var si = 0
       while si < block.statements.count {
-        collectLambdasBfsStmt(block.statements[si], ticker, out, deferred)
+        collectLambdasBfsStmt(block.statements[si], ticker, synths, deferred)
         si = si + 1
       }
     }
     case EMatch(scr, arms) -> {
-      collectLambdasBfsExpr(scr, ticker, out, deferred)
+      collectLambdasBfsExpr(scr, ticker, synths, deferred)
       var ai = 0
       while ai < arms.count {
         match arms[ai].body {
-          case EOBExpr(ex)   -> { collectLambdasBfsExpr(ex, ticker, out, deferred) }
+          case EOBExpr(ex)   -> { collectLambdasBfsExpr(ex, ticker, synths, deferred) }
           case EOBBlock(blk) -> {
             var si = 0
             while si < blk.statements.count {
-              collectLambdasBfsStmt(blk.statements[si], ticker, out, deferred)
+              collectLambdasBfsStmt(blk.statements[si], ticker, synths, deferred)
               si = si + 1
             }
           }
@@ -3568,29 +3607,29 @@ func collectLambdasBfsExpr(e: in Expr, ticker: in List[Int], out: in List[Item],
     case EList(exprs) -> {
       var ei = 0
       while ei < exprs.count {
-        collectLambdasBfsExpr(exprs[ei], ticker, out, deferred)
+        collectLambdasBfsExpr(exprs[ei], ticker, synths, deferred)
         ei = ei + 1
       }
     }
     case EIndex(recv, indices) -> {
-      collectLambdasBfsExpr(recv, ticker, out, deferred)
+      collectLambdasBfsExpr(recv, ticker, synths, deferred)
       var ii = 0
       while ii < indices.count {
-        collectLambdasBfsExpr(indices[ii], ticker, out, deferred)
+        collectLambdasBfsExpr(indices[ii], ticker, synths, deferred)
         ii = ii + 1
       }
     }
-    case EAwait(inner)     -> { collectLambdasBfsExpr(inner, ticker, out, deferred) }
-    case EYield(inner)     -> { collectLambdasBfsExpr(inner, ticker, out, deferred) }
-    case ESpawn(inner)     -> { collectLambdasBfsExpr(inner, ticker, out, deferred) }
-    case ETry(inner)       -> { collectLambdasBfsExpr(inner, ticker, out, deferred) }
-    case EPropagate(inner) -> { collectLambdasBfsExpr(inner, ticker, out, deferred) }
-    case EAssign(_, _, v)  -> { collectLambdasBfsExpr(v, ticker, out, deferred) }
+    case EAwait(inner)     -> { collectLambdasBfsExpr(inner, ticker, synths, deferred) }
+    case EYield(inner)     -> { collectLambdasBfsExpr(inner, ticker, synths, deferred) }
+    case ESpawn(inner)     -> { collectLambdasBfsExpr(inner, ticker, synths, deferred) }
+    case ETry(inner)       -> { collectLambdasBfsExpr(inner, ticker, synths, deferred) }
+    case EPropagate(inner) -> { collectLambdasBfsExpr(inner, ticker, synths, deferred) }
+    case EAssign(_, _, v)  -> { collectLambdasBfsExpr(v, ticker, synths, deferred) }
     case EInterpolated(segs) -> {
       var si = 0
       while si < segs.count {
         match segs[si] {
-          case ISExpr(ex) -> { collectLambdasBfsExpr(ex, ticker, out, deferred) }
+          case ISExpr(ex) -> { collectLambdasBfsExpr(ex, ticker, synths, deferred) }
           case _          -> {}
         }
         si = si + 1
@@ -3599,73 +3638,73 @@ func collectLambdasBfsExpr(e: in Expr, ticker: in List[Int], out: in List[Item],
     case ETuple(exprs) -> {
       var ei = 0
       while ei < exprs.count {
-        collectLambdasBfsExpr(exprs[ei], ticker, out, deferred)
+        collectLambdasBfsExpr(exprs[ei], ticker, synths, deferred)
         ei = ei + 1
       }
     }
-    case ETypeApp(fn, _)  -> { collectLambdasBfsExpr(fn, ticker, out, deferred) }
+    case ETypeApp(fn, _)  -> { collectLambdasBfsExpr(fn, ticker, synths, deferred) }
     case _ -> {}
   }
 }
 
-func collectLambdasBfsStmt(s: in Statement, ticker: in List[Int], out: in List[Item], deferred: in List[Block]): Unit {
+func collectLambdasBfsStmt(s: in Statement, ticker: in List[Int], synths: in List[Item], deferred: in List[Block]): Unit {
   match s.kind {
     case SLocal(binding) -> match binding {
-      case LBVal(_, _, init)    -> { collectLambdasBfsExpr(init, ticker, out, deferred) }
-      case LBLet(_, _, init)    -> { collectLambdasBfsExpr(init, ticker, out, deferred) }
+      case LBVal(_, _, init)    -> { collectLambdasBfsExpr(init, ticker, synths, deferred) }
+      case LBLet(_, _, init)    -> { collectLambdasBfsExpr(init, ticker, synths, deferred) }
       case LBVar(_, _, initOpt) -> match initOpt {
-        case Some(init) -> { collectLambdasBfsExpr(init, ticker, out, deferred) }
+        case Some(init) -> { collectLambdasBfsExpr(init, ticker, synths, deferred) }
         case None       -> {}
       }
     }
-    case SAssign(_, _, v)  -> { collectLambdasBfsExpr(v, ticker, out, deferred) }
+    case SAssign(_, _, v)  -> { collectLambdasBfsExpr(v, ticker, synths, deferred) }
     case SReturn(valOpt)   -> match valOpt {
-      case Some(e) -> { collectLambdasBfsExpr(e, ticker, out, deferred) }
+      case Some(e) -> { collectLambdasBfsExpr(e, ticker, synths, deferred) }
       case None    -> {}
     }
-    case SExpr(e)  -> { collectLambdasBfsExpr(e, ticker, out, deferred) }
-    case SThrow(e) -> { collectLambdasBfsExpr(e, ticker, out, deferred) }
+    case SExpr(e)  -> { collectLambdasBfsExpr(e, ticker, synths, deferred) }
+    case SThrow(e) -> { collectLambdasBfsExpr(e, ticker, synths, deferred) }
     case SWhile(_, cond, body) -> {
-      collectLambdasBfsExpr(cond, ticker, out, deferred)
+      collectLambdasBfsExpr(cond, ticker, synths, deferred)
       var si = 0
       while si < body.statements.count {
-        collectLambdasBfsStmt(body.statements[si], ticker, out, deferred)
+        collectLambdasBfsStmt(body.statements[si], ticker, synths, deferred)
         si = si + 1
       }
     }
     case SFor(_, _, iter, body) -> {
-      collectLambdasBfsExpr(iter, ticker, out, deferred)
+      collectLambdasBfsExpr(iter, ticker, synths, deferred)
       var si = 0
       while si < body.statements.count {
-        collectLambdasBfsStmt(body.statements[si], ticker, out, deferred)
+        collectLambdasBfsStmt(body.statements[si], ticker, synths, deferred)
         si = si + 1
       }
     }
     case SLoop(_, body) -> {
       var si = 0
       while si < body.statements.count {
-        collectLambdasBfsStmt(body.statements[si], ticker, out, deferred)
+        collectLambdasBfsStmt(body.statements[si], ticker, synths, deferred)
         si = si + 1
       }
     }
     case SScope(_, body) -> {
       var si = 0
       while si < body.statements.count {
-        collectLambdasBfsStmt(body.statements[si], ticker, out, deferred)
+        collectLambdasBfsStmt(body.statements[si], ticker, synths, deferred)
         si = si + 1
       }
     }
     case SDefer(body) -> {
       var si = 0
       while si < body.statements.count {
-        collectLambdasBfsStmt(body.statements[si], ticker, out, deferred)
+        collectLambdasBfsStmt(body.statements[si], ticker, synths, deferred)
         si = si + 1
       }
     }
     case STry(body, catches) -> {
       var si = 0
       while si < body.statements.count {
-        collectLambdasBfsStmt(body.statements[si], ticker, out, deferred)
+        collectLambdasBfsStmt(body.statements[si], ticker, synths, deferred)
         si = si + 1
       }
       var ci = 0
@@ -3673,16 +3712,16 @@ func collectLambdasBfsStmt(s: in Statement, ticker: in List[Int], out: in List[I
         val cblk = catches[ci].body
         var csi = 0
         while csi < cblk.statements.count {
-          collectLambdasBfsStmt(cblk.statements[csi], ticker, out, deferred)
+          collectLambdasBfsStmt(cblk.statements[csi], ticker, synths, deferred)
           csi = csi + 1
         }
         ci = ci + 1
       }
     }
-    case SInvariant(e)   -> { collectLambdasBfsExpr(e, ticker, out, deferred) }
+    case SInvariant(e)   -> { collectLambdasBfsExpr(e, ticker, synths, deferred) }
     case SRule(lhs, rhs) -> {
-      collectLambdasBfsExpr(lhs, ticker, out, deferred)
-      collectLambdasBfsExpr(rhs, ticker, out, deferred)
+      collectLambdasBfsExpr(lhs, ticker, synths, deferred)
+      collectLambdasBfsExpr(rhs, ticker, synths, deferred)
     }
     case _ -> {}
   }

@@ -13959,3 +13959,62 @@ annotations on each method.
   program prints "extern type ok".
 
 All tests: 189/189 TypeChecker, 810/810 Emitter, 254/254 Cli.
+
+### D-progress-289 — Self-hosted MSIL PE writer: FAT-body alignment + bridge parse fix
+
+Two follow-ups to D-progress-288 that close out the remaining `shm_yield_collect`
+failure on PR #927:
+
+**FAT method body alignment** (`msil/assembler.l`):
+
+ECMA-335 II.25.4.5 requires FAT-format method bodies to start on a 4-byte
+boundary in the PE image; TINY bodies have no alignment requirement.  The
+PE writer previously laid bodies out consecutively without padding, so when
+a short TINY body (e.g. `helper(): Int { return 42 }`) preceded a FAT body
+(e.g. `main` with locals), the FAT header landed at a non-aligned RVA and
+the CLR JIT rejected the assembly with `InvalidProgramException` — even
+though the IL itself passed `ilverify`.
+
+`methodBodyRvas` now serialises every body up-front and pads each body's
+RVA range to a 4-byte boundary when the *next* body is FAT (detected by
+inspecting the first header byte: bits 0..1 = `0b11`).  `assemblePe` mirrors
+the layout by writing zero-padding between bodies for the same condition.
+Padding is suppressed when the next body is TINY, so single-method or
+tiny-only files produce byte-identical output to the pre-fix layout — every
+existing `msil_self_test_mNN` continues to pass with no offset churn.
+
+**Bridge parse fix — rename `out` parameter** (`msil/codegen.l`):
+
+`collectLambdasBfsExpr` / `collectLambdasBfsStmt` declared a parameter named
+`out`, which is a Lyric reserved keyword (`out` mode marker).  The
+self-hosted Lyric lexer/parser correctly rejected the file, so the bridge
+DLL could not be built and every `SelfHostedMsil` bridge test errored at
+compile time.  The parameter is renamed to `synths` (matching its semantic
+role of collecting synthetic lifted-lambda items) at every call site.
+
+**Yield collector cast** (`msil/codegen.l`):
+
+The yield collector local is typed `object` (`MObject`) in the local
+signature, but `List<object>::Add` and `List<object>::get_Count` require
+`this` to be `List<object>`.  Each `EYield` and each `xs.count` access now
+emits `castclass List<object>` (via the TypeSpec token cached at codegen
+init) before the `callvirt`, so the IL passes both `ilverify` and the JIT
+verifier.
+
+**Generator return type in `addPackageTokens`** (`msil/codegen.l`):
+
+`addPackageTokens` mirrors the `isGenerator` detection from `lowerFuncMsil`
+so that `funcRetTypes` records `MObject` for generator functions regardless
+of the source-level return annotation.  Without this, call sites that
+stored the result of a generator into a typed local emitted code that the
+verifier rejected.
+
+**Action`N invoke signature uses MTypeVar** (`msil/codegen.l`):
+
+`buildActionNInvokeTok` now uses `MTypeVar(pi)` (ECMA-335 `ELEMENT_TYPE_VAR`)
+for each Invoke parameter, matching the generic `Action`N<T0, T1, ...>::Invoke(T0, T1, ...)` signature.  Arguments at the invoke site are
+boxed when needed so primitive-typed args (e.g. `g(99)` where `g` is a
+`(Int) -> Unit` lambda) satisfy the `object`-typed delegate parameter.
+
+All tests pass: 128/128 Lexer, 323/323 Parser, 189/189 TypeChecker,
+811/811 Emitter, 258/258 Cli.

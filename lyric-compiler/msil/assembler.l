@@ -219,21 +219,44 @@ func writeMeta(w: in ByteWriter,
 
 // ── Public helpers ────────────────────────────────────────────────────────────
 
+// True when the first byte of a serialized method body marks the FAT format
+// (ECMA-335 II.25.4.3 — flags bits 0..1 = 0b11 means FAT).  FAT bodies must
+// start at a 4-byte aligned offset (II.25.4.5); TINY bodies have no such
+// requirement.
+func isFatBody(buf: in ByteWriter): Bool {
+  val bs = bufToList(buf)
+  if bs.count == 0 { false } else { (bs[0] % 4) == 3 }
+}
+
 /// Compute the RVA for each method body in `bodies`.
 ///
 /// Returns a list of the same length: `result[i]` is the RVA the caller
 /// must assign to `MethodDef[i+1].rva` before calling `assemblePe`.
 /// Method bodies are laid out consecutively starting at `FIRST_METHOD_RVA`.
+/// When the next body is FAT format, the previous body is padded to a
+/// 4-byte boundary to satisfy ECMA-335 II.25.4.5's DWORD-alignment rule —
+/// without the padding, the CLR JIT rejects misaligned FAT bodies with
+/// InvalidProgramException.
 pub func methodBodyRvas(bodies: in List[MethodBody]): List[Int] {
   val rvas: List[Int] = newList()
-  var rva = FIRST_METHOD_RVA
+  val bufs: List[ByteWriter] = newList()
   var i = 0
   val count = bodies.count
   while i < count {
-    rvas.add(rva)
     val buf = bufNew()
     serializeMethodBody(bodies[i], buf)
-    rva = rva + bufLen(buf)
+    bufs.add(buf)
+    i = i + 1
+  }
+  var rva = FIRST_METHOD_RVA
+  i = 0
+  while i < count {
+    rvas.add(rva)
+    val raw = bufLen(bufs[i])
+    val padded =
+      if (i + 1) < count and isFatBody(bufs[i + 1]) { round4(raw) }
+      else { raw }
+    rva = rva + padded
     i = i + 1
   }
   return rvas
@@ -246,16 +269,30 @@ pub func methodBodyRvas(bodies: in List[MethodBody]): List[Int] {
 /// Caller must populate `inp.tables` with MethodDef.rva values obtained
 /// from `methodBodyRvas(inp.methodBodies)` before calling this function.
 pub func assemblePe(inp: in AssemblerInput): ByteWriter {
-  // Serialize all method bodies and measure total raw size
+  // Serialize all method bodies.  Each body is padded to a 4-byte boundary
+  // ONLY when the next body is FAT-format (per ECMA-335 II.25.4.5).  This
+  // keeps single-method and tiny-only files unchanged while ensuring FAT
+  // bodies that follow a TINY body land on a DWORD-aligned offset — without
+  // the padding, the CLR JIT rejects misaligned FAT bodies.
   val mbBufs: List[ByteWriter] = newList()
   var i = 0
   val mbCount = inp.methodBodies.count
-  var mbTotalRaw = 0
   while i < mbCount {
     val buf = bufNew()
     serializeMethodBody(inp.methodBodies[i], buf)
     mbBufs.add(buf)
-    mbTotalRaw = mbTotalRaw + bufLen(buf)
+    i = i + 1
+  }
+  val mbPadSizes: List[Int] = newList()
+  var mbTotalRaw = 0
+  i = 0
+  while i < mbCount {
+    val raw = bufLen(mbBufs[i])
+    val pad =
+      if (i + 1) < mbCount and isFatBody(mbBufs[i + 1]) { round4(raw) - raw }
+      else { 0 }
+    mbPadSizes.add(pad)
+    mbTotalRaw = mbTotalRaw + raw + pad
     i = i + 1
   }
 
@@ -299,10 +336,12 @@ pub func assemblePe(inp: in AssemblerInput): ByteWriter {
   writePeHdrs(w, textVSize, textRSize, imgSize)            // 0x080–0x1FF
   writeClrHdr(w, mdRva, metaSize, inp.entryPointToken)     // 0x200–0x247
 
-  // Method bodies
+  // Method bodies, each followed by zero-padding to a 4-byte boundary so
+  // that the next FAT-format body satisfies the ECMA-335 alignment rule.
   var j = 0
   while j < mbCount {
     bufAppend(w, mbBufs[j])
+    bufZero(w, mbPadSizes[j])
     j = j + 1
   }
 
