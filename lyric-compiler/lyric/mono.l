@@ -51,10 +51,16 @@
 //     trait dispatch information is not yet plumbed through.
 //
 // Limitations (still Phase 5 bootstrap grade):
-//   • Type inference covers literals, explicitly-annotated variables, and
-//     function parameters.  Complex expression types (method calls, field
-//     projections, lambdas) are not inferred; those call sites are left
-//     un-specialised.
+//   • Type inference covers literals, explicitly-annotated variables,
+//     function parameters, structural binary ops, same-package
+//     function-call returns (after substituting inferred or explicit
+//     type args, including default methods on impl / interface
+//     blocks), and field projections into same-package records.
+//     Lambdas, BCL method returns, and impl-block dispatch via the
+//     type-class targeting layer still fall through to un-specialised
+//     — those call sites stay generic in the emitted IL, which is
+//     correct only for imported generics (which use real CLR
+//     generics).
 //   • Constraint dispatch (re-routing a `T.compare(x)` call inside a
 //     specialised body to the concrete type's compare implementation) is
 //     not yet implemented — it relies on cross-package symbol resolution
@@ -106,18 +112,98 @@ record SpecRequest {
 }
 
 record MonoState {
-  genDecls:  Map[String, FunctionDecl]
-  seenSpecs: Map[String, Bool]
-  allSpecs:  List[SpecRequest]
-  diags:     List[Diagnostic]
+  /// Generic functions defined in this package (callable from anywhere
+  /// in the file).  Used to look up specialisation candidates.
+  genDecls:    Map[String, FunctionDecl]
+  /// All functions visible to the file (same-package + cross-package
+  /// imports merged through `monoFileWithImports`).  Used by
+  /// `inferExprTE` to look up the return type of a callee when
+  /// inferring type arguments through nested calls (#349).
+  funcDecls:   Map[String, FunctionDecl]
+  /// Same-package record decls (and exposed records), keyed by simple
+  /// name.  Used by `inferExprTE` to resolve field projections
+  /// (`recv.field`) to the field's declared TypeExpr, after
+  /// substituting the record's generic parameters with the receiver's
+  /// concrete type arguments (#349).
+  recordDecls: Map[String, RecordDecl]
+  seenSpecs:   Map[String, Bool]
+  allSpecs:    List[SpecRequest]
+  diags:       List[Diagnostic]
 }
 
-func newMonoState(genDecls: in Map[String, FunctionDecl]): MonoState {
+func newMonoState(
+  genDecls:    in Map[String, FunctionDecl],
+  funcDecls:   in Map[String, FunctionDecl],
+  recordDecls: in Map[String, RecordDecl]
+): MonoState {
   MonoState(
-    genDecls  = genDecls,
-    seenSpecs = newMap(),
-    allSpecs  = newList(),
-    diags     = newList())
+    genDecls    = genDecls,
+    funcDecls   = funcDecls,
+    recordDecls = recordDecls,
+    seenSpecs   = newMap(),
+    allSpecs    = newList(),
+    diags       = newList())
+}
+
+// #349: collect generic IFunc methods nested inside `interface I { … }`
+// blocks so the inferer (and the specialisation worklist) can see
+// generic default methods that the bootstrap F# compiler dispatches
+// through CLR runtime generics.  Only default-bodied (`IMFunc`)
+// methods are candidates; pure signatures (`IMSig`) are abstract.
+func collectIfaceGenerics(
+  decl:      in InterfaceDecl,
+  genDecls:  in Map[String, FunctionDecl],
+  funcDecls: in Map[String, FunctionDecl]
+): Unit {
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case IMFunc(fdecl) -> {
+        if not funcDecls.containsKey(fdecl.name) {
+          funcDecls.add(fdecl.name, fdecl)
+        }
+        match fdecl.generics {
+          case Some(_) -> {
+            if not genDecls.containsKey(fdecl.name) {
+              genDecls.add(fdecl.name, fdecl)
+            }
+          }
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
+// #349: collect generic IFunc methods nested inside `impl T for X { … }`
+// blocks.  Mirror of collectIfaceGenerics — see that comment.
+func collectImplGenerics(
+  decl:      in ImplDecl,
+  genDecls:  in Map[String, FunctionDecl],
+  funcDecls: in Map[String, FunctionDecl]
+): Unit {
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case IMplFunc(fdecl) -> {
+        if not funcDecls.containsKey(fdecl.name) {
+          funcDecls.add(fdecl.name, fdecl)
+        }
+        match fdecl.generics {
+          case Some(_) -> {
+            if not genDecls.containsKey(fdecl.name) {
+              genDecls.add(fdecl.name, fdecl)
+            }
+          }
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -796,11 +882,18 @@ func inferLitTE(lit: in Literal, span: in Span): Option[TypeExpr] {
   }
 }
 
-// #349: best-effort TypeExpr inference during monomorphisation (literals/params/annotated locals/structural rules); ECall stays in `rewriteExpr` proper (state-dependent). See D-progress-268.
-func inferExprTE(env: in Map[String, TypeExpr], expr: in Expr): Option[TypeExpr] {
+// #349: best-effort TypeExpr inference during monomorphisation.
+// Threading `MonoState` lets the helper resolve same-package
+// function returns, explicit type applications, and record field
+// projections (the ECall / ETypeApp / EMember arms below).
+// Lambdas, BCL method returns, and impl-block dispatch fall
+// through to `None` — those calls stay generic in the emitted IL,
+// which is the same fall-back behaviour the pre-#349 code shipped
+// (and remains correct for imported generics that use CLR generics).
+func inferExprTE(state: in MonoState, env: in Map[String, TypeExpr], expr: in Expr): Option[TypeExpr] {
   match expr.kind {
     case ELiteral(lit)  -> inferLitTE(lit, expr.span)
-    case EParen(inner)  -> inferExprTE(env, inner)
+    case EParen(inner)  -> inferExprTE(state, env, inner)
     case EPath(path)    -> {
       if path.segments.count == 1 {
         mapGet(env, path.segments[0])
@@ -808,11 +901,11 @@ func inferExprTE(env: in Map[String, TypeExpr], expr: in Expr): Option[TypeExpr]
     }
     case EBinop(op, lhs, _) -> {
       match op {
-        case BAdd -> inferExprTE(env, lhs)
-        case BSub -> inferExprTE(env, lhs)
-        case BMul -> inferExprTE(env, lhs)
-        case BDiv -> inferExprTE(env, lhs)
-        case BMod -> inferExprTE(env, lhs)
+        case BAdd -> inferExprTE(state, env, lhs)
+        case BSub -> inferExprTE(state, env, lhs)
+        case BMul -> inferExprTE(state, env, lhs)
+        case BDiv -> inferExprTE(state, env, lhs)
+        case BMod -> inferExprTE(state, env, lhs)
         case BEq  -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
         case BNeq -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
         case BLt  -> Some(value = TypeExpr(kind = TRef(path = singleSegPath("Bool")), span = expr.span))
@@ -824,7 +917,233 @@ func inferExprTE(env: in Map[String, TypeExpr], expr: in Expr): Option[TypeExpr]
         case _    -> None
       }
     }
+    case ECall(fn, args) -> inferCallReturnTE(state, env, fn, args)
+    case ETypeApp(fn, targs) -> inferTypeAppValueTE(state, env, fn, targs)
+    case EMember(recv, name) -> inferMemberTE(state, env, recv, name)
     case _              -> None
+  }
+}
+
+// Infer the return type of `fn(args)` when `fn` is a same-package
+// function reference.  Record literals share Lyric's call syntax
+// (`Box(value = 11)`) — when the name resolves to a record decl the
+// call's type is that record (or `TGenericApp(RecName, supplied
+// targs)` for generics).  Returns None for unknown callees or
+// inference shapes the helper can't handle.
+func inferCallReturnTE(
+  state: in MonoState,
+  env:   in Map[String, TypeExpr],
+  fn:    in Expr,
+  args:  in List[CallArg]
+): Option[TypeExpr] {
+  match fn.kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        val name = path.segments[0]
+        match inferRecordCtorTE(state, name, None, fn.span) {
+          case Some(te) -> Some(value = te)
+          case None     -> inferReturnFromName(state, env, name, args, None)
+        }
+      } else { None }
+    }
+    case ETypeApp(innerFn, targs) -> {
+      match innerFn.kind {
+        case EPath(p) -> {
+          if p.segments.count == 1 {
+            val name = p.segments[0]
+            match inferRecordCtorTE(state, name, Some(value = targs), fn.span) {
+              case Some(te) -> Some(value = te)
+              case None     -> inferReturnFromName(state, env, name, args, Some(value = targs))
+            }
+          } else { None }
+        }
+        case _ -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+// `f[T1, T2]` in value position — treat as if it were `f[T1, T2]()`
+// would-return.  Only fires when the type-app appears outside an
+// ECall (the ECall arm of inferCallReturnTE above handles the
+// callable shape itself).
+func inferTypeAppValueTE(
+  state: in MonoState,
+  env:   in Map[String, TypeExpr],
+  fn:    in Expr,
+  targs: in List[TypeArg]
+): Option[TypeExpr] {
+  match fn.kind {
+    case EPath(p) -> {
+      if p.segments.count == 1 {
+        inferReturnFromName(state, env, p.segments[0], newList(), Some(value = targs))
+      } else { None }
+    }
+    case _ -> None
+  }
+}
+
+// If `name` is a same-package record, return its TypeExpr (with
+// `targs` supplied for the generic params).  Otherwise None.
+func inferRecordCtorTE(
+  state: in MonoState,
+  name:  in String,
+  targs: in Option[List[TypeArg]],
+  span:  in Span
+): Option[TypeExpr] {
+  // Bootstrap-grade emitter quirk: hold the lookup in a typed
+  // binding so the F# type checker doesn't unify V in mapGet[String, V]
+  // with the enclosing function's Option[TypeExpr] return type
+  // (otherwise downstream `.field` access routes through TypeExpr
+  // and fails codegen).
+  val recOpt: Option[RecordDecl] = mapGet(state.recordDecls, name)
+  match recOpt {
+    case None -> None
+    case Some(_) -> {
+      val path = singleSegPath(name)
+      match targs {
+        case None -> Some(value = TypeExpr(kind = TRef(path = path), span = span))
+        case Some(args) -> {
+          if args.count == 0 {
+            Some(value = TypeExpr(kind = TRef(path = path), span = span))
+          } else {
+            Some(value = TypeExpr(kind = TGenericApp(head = path, args = args), span = span))
+          }
+        }
+      }
+    }
+  }
+}
+
+// Look up `fname` in funcDecls and return its return TypeExpr after
+// substituting either explicit type args or args inferred from
+// positional arguments.  None when the callee is unknown, has no
+// declared return type, or inference leaves any type param unbound.
+func inferReturnFromName(
+  state:        in MonoState,
+  env:          in Map[String, TypeExpr],
+  fname:        in String,
+  args:         in List[CallArg],
+  explicitArgs: in Option[List[TypeArg]]
+): Option[TypeExpr] {
+  val declOpt: Option[FunctionDecl] = mapGet(state.funcDecls, fname)
+  match declOpt {
+    case None -> None
+    case Some(decl) -> {
+      val typeParams = extractTypeParamNames(decl.generics)
+      val subst:      Map[String, TypeExpr] = newMap()
+      val valueSubst: Map[String, Expr]     = newMap()
+      match explicitArgs {
+        case Some(targs) -> {
+          if targs.count == typeParams.count {
+            var i = 0
+            while i < typeParams.count {
+              match targs[i] {
+                case TAType(te) -> subst.add(typeParams[i], te)
+                case TAValue(_) -> ()
+              }
+              i = i + 1
+            }
+          }
+        }
+        case None -> {
+          if typeParams.count > 0 {
+            var i = 0
+            while i < args.count and i < decl.params.count {
+              match inferExprTE(state, env, callArgExpr(args[i])) {
+                case Some(argTE) -> unifyTE(typeParams, decl.params[i].ty, argTE, subst)
+                case None -> ()
+              }
+              i = i + 1
+            }
+          }
+        }
+      }
+      if typeParams.count > 0 and not substIsComplete(typeParams, subst) {
+        None
+      } else {
+        match decl.ret {
+          case None    -> None
+          case Some(r) -> Some(value = substTypeExpr(subst, valueSubst, r))
+        }
+      }
+    }
+  }
+}
+
+// Infer the type of `recv.field` when `recv` resolves to a
+// same-package record (or exposed record) type.  Returns None for
+// imported records, method projections, or undeclared field names.
+func inferMemberTE(
+  state: in MonoState,
+  env:   in Map[String, TypeExpr],
+  recv:  in Expr,
+  name:  in String
+): Option[TypeExpr] {
+  match inferExprTE(state, env, recv) {
+    case None -> None
+    case Some(recvTy) -> {
+      match recvTy.kind {
+        case TRef(path) -> {
+          if path.segments.count == 1 {
+            lookupFieldTE(state, path.segments[0], name, newList())
+          } else { None }
+        }
+        case TGenericApp(head, args) -> {
+          if head.segments.count == 1 {
+            lookupFieldTE(state, head.segments[0], name, args)
+          } else { None }
+        }
+        case _ -> None
+      }
+    }
+  }
+}
+
+// Walk a same-package record decl's fields for one named `field`.
+// `recordArgs` is the receiver's concrete type-argument list (empty
+// when the record has no generic parameters).  The looked-up field's
+// declared TypeExpr is substituted using the record's GPType params
+// → recordArgs binding before being returned.
+func lookupFieldTE(
+  state:      in MonoState,
+  recordName: in String,
+  field:      in String,
+  recordArgs: in List[TypeArg]
+): Option[TypeExpr] {
+  // Same emitter quirk as inferRecordCtorTE — keep the binding typed.
+  val recOpt: Option[RecordDecl] = mapGet(state.recordDecls, recordName)
+  match recOpt {
+    case None -> None
+    case Some(rdecl) -> {
+      val typeParams  = extractTypeParamNames(rdecl.generics)
+      val subst:      Map[String, TypeExpr] = newMap()
+      val valueSubst: Map[String, Expr]     = newMap()
+      if typeParams.count == recordArgs.count {
+        var i = 0
+        while i < typeParams.count {
+          match recordArgs[i] {
+            case TAType(te) -> subst.add(typeParams[i], te)
+            case TAValue(_) -> ()
+          }
+          i = i + 1
+        }
+      }
+      var i = 0
+      while i < rdecl.members.count {
+        match rdecl.members[i] {
+          case RMField(fd) -> {
+            if fd.name == field {
+              return Some(value = substTypeExpr(subst, valueSubst, fd.ty))
+            }
+          }
+          case _ -> ()
+        }
+        i = i + 1
+      }
+      None
+    }
   }
 }
 
@@ -1186,7 +1505,7 @@ func rewriteExpr(
                   val subst: Map[String, TypeExpr] = newMap()
                   var i = 0
                   while i < args.count and i < baseDecl.params.count {
-                    match inferExprTE(env, callArgExpr(args[i])) {
+                    match inferExprTE(state, env, callArgExpr(args[i])) {
                       case Some(argTE) -> {
                         unifyTE(typeParams, baseDecl.params[i].ty, argTE, subst)
                       }
@@ -1422,6 +1741,11 @@ func rewriteStmt(
 }
 
 // Track variables bound in this statement into `env`.
+// #349: when the binding has no explicit annotation, fall back to
+// `inferExprTE(init)` so callers like `val b = Box(...)` can still
+// reach record field projections through `b.<field>` later.  Re-binding
+// `var` / `let` with a fresh annotation drops the prior env entry so
+// shadows reflect the new type (closes the MEDIUM #349 gap).
 func rewriteBinding(
   state:   in MonoState,
   env:     in Map[String, TypeExpr],
@@ -1431,22 +1755,35 @@ func rewriteBinding(
     case LBVal(pat, tyOpt, init) -> {
       match tyOpt {
         case Some(te) -> trackPatternEnv(env, pat, te)
-        case None     -> ()
+        case None     -> {
+          match inferExprTE(state, env, init) {
+            case Some(inferred) -> trackPatternEnv(env, pat, inferred)
+            case None           -> ()
+          }
+        }
       }
       LBVal(pat = pat, ty = tyOpt, init = rewriteExpr(state, env, init))
     }
     case LBVar(name, tyOpt, initOpt) -> {
       match tyOpt {
         case Some(te) -> {
-          if env.containsKey(name) {
-            // Last-write wins — Map.add would throw on duplicate; for simplicity
-            // we leave the old binding in place (type env is best-effort).
-            ()
-          } else {
-            env.add(name, te)
+          if env.containsKey(name) { env.remove(name) }
+          env.add(name, te)
+        }
+        case None -> {
+          match initOpt {
+            case Some(init) -> {
+              match inferExprTE(state, env, init) {
+                case Some(inferred) -> {
+                  if env.containsKey(name) { env.remove(name) }
+                  env.add(name, inferred)
+                }
+                case None -> ()
+              }
+            }
+            case None -> ()
           }
         }
-        case None -> ()
       }
       val newInit = match initOpt {
         case None    -> None
@@ -1457,9 +1794,18 @@ func rewriteBinding(
     case LBLet(name, tyOpt, init) -> {
       match tyOpt {
         case Some(te) -> {
-          if not env.containsKey(name) { env.add(name, te) }
+          if env.containsKey(name) { env.remove(name) }
+          env.add(name, te)
         }
-        case None -> ()
+        case None -> {
+          match inferExprTE(state, env, init) {
+            case Some(inferred) -> {
+              if env.containsKey(name) { env.remove(name) }
+              env.add(name, inferred)
+            }
+            case None -> ()
+          }
+        }
       }
       LBLet(name = name, ty = tyOpt, init = rewriteExpr(state, env, init))
     }
@@ -1556,11 +1902,22 @@ pub func monoFileWithImports(
   importedGenDecls:  in List[FunctionDecl]
 ): MonoResult {
   // ── Phase 1: collect generic function decls ─────────────────────────────
-  val genDecls: Map[String, FunctionDecl] = newMap()
+  // #349: also collect every IFunc (generic + non-generic) and every
+  // record decl so `inferExprTE` can resolve call returns and field
+  // projections through `state.funcDecls` / `state.recordDecls`.
+  // Generic methods nested inside interface / impl blocks are walked
+  // by `collectIfaceGenerics` / `collectImplGenerics` so default-bodied
+  // generic methods also become specialisation candidates.
+  val genDecls:    Map[String, FunctionDecl] = newMap()
+  val funcDecls:   Map[String, FunctionDecl] = newMap()
+  val recordDecls: Map[String, RecordDecl]   = newMap()
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case IFunc(decl) -> {
+        if not funcDecls.containsKey(decl.name) {
+          funcDecls.add(decl.name, decl)
+        }
         match decl.generics {
           case Some(_) -> {
             if not genDecls.containsKey(decl.name) {
@@ -1570,6 +1927,18 @@ pub func monoFileWithImports(
           case None -> ()
         }
       }
+      case IRecord(decl) -> {
+        if not recordDecls.containsKey(decl.name) {
+          recordDecls.add(decl.name, decl)
+        }
+      }
+      case IExposedRec(decl) -> {
+        if not recordDecls.containsKey(decl.name) {
+          recordDecls.add(decl.name, decl)
+        }
+      }
+      case IInterface(decl) -> collectIfaceGenerics(decl, genDecls, funcDecls)
+      case IImpl(decl)      -> collectImplGenerics(decl, genDecls, funcDecls)
       case _ -> ()
     }
     i = i + 1
@@ -1580,6 +1949,9 @@ pub func monoFileWithImports(
   var ig = 0
   while ig < importedGenDecls.count {
     val idecl = importedGenDecls[ig]
+    if not funcDecls.containsKey(idecl.name) {
+      funcDecls.add(idecl.name, idecl)
+    }
     match idecl.generics {
       case Some(_) -> {
         if not genDecls.containsKey(idecl.name) {
@@ -1598,7 +1970,7 @@ pub func monoFileWithImports(
     return MonoResult(file = file, rewrites = emptyRewrites, diagnostics = emptyDiags)
   }
 
-  val state = newMonoState(genDecls)
+  val state = newMonoState(genDecls, funcDecls, recordDecls)
 
   // ── Phase 2: rewrite non-generic items ──────────────────────────────────
   val rewrittenItems: List[Item] = newList()
