@@ -301,4 +301,26 @@ func main(): Unit {
 }
 """
             "protected ok"
+
+        // ── Trailing-expression-as-return-value: `func main(): Int { 0 }` ─
+        // Regression test for the codegen bug where `lowerBlockMsil`
+        // popped the trailing literal, leaving the stack empty for
+        // `ret` and producing `InvalidProgramException` at JIT time.
+        mkBridge "shm_trailing_int_literal"
+            """package ShMTrailingLit
+func main(): Int {
+  println("trailing-int-ok")
+  0
+}
+"""
+            "trailing-int-ok"
+
+        // Bare trailing expression in a non-void function with no
+        // side-effecting preamble — the simplest reproducer of the
+        // same bug.  Exit code is asserted via `runDll`'s `exitCode = 0`.
+        mkBridge "shm_trailing_only_zero"
+            """package ShMTrailingZero
+func main(): Int { 0 }
+"""
+            ""
     ]

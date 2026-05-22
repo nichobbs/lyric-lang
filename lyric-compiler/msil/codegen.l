@@ -2565,7 +2565,33 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
       case Some(body) -> {
         match body {
           case FBBlock(block) -> {
-            lowerBlockMsil(cctx, fctx, insns, block)
+            // Non-void functions implicitly return the value of their
+            // trailing expression — `func main(): Int { 0 }` returns 0.
+            // `lowerBlockMsil` treats every SExpr as a discard-and-pop
+            // statement, which would emit `ldc.i4 0; pop; ret` and
+            // produce IL the verifier rejects with "Return value
+            // missing on the stack".  When the function returns a
+            // non-void type we route the last statement separately so
+            // its value stays on the stack for MRet to consume.
+            val n = block.statements.count
+            if n > 0 and retTy != MVoid {
+              var i = 0
+              while i < n - 1 {
+                lowerStmtMsil(cctx, fctx, insns, block.statements[i])
+                i = i + 1
+              }
+              val last = block.statements[n - 1]
+              match last.kind {
+                case SExpr(e) -> {
+                  val _ = lowerExprMsil(cctx, fctx, insns, e)
+                }
+                case _ -> {
+                  lowerStmtMsil(cctx, fctx, insns, last)
+                }
+              }
+            } else {
+              lowerBlockMsil(cctx, fctx, insns, block)
+            }
             if not endsWithReturnMsil(insns) {
               insns.add(MRet)
             }
@@ -2991,7 +3017,29 @@ func lowerProtectedMsil(cctx: in CodegenCtx, decl: in ProtectedTypeDecl,
         }
         val entryInsns: List[MInsn] = newList()
         match ed.body {
-          case FBBlock(block) -> lowerBlockMsil(cctx, entryFctx, entryInsns, block)
+          case FBBlock(block) -> {
+            // Non-void entry: trailing expression is the implicit return
+            // value (see lowerFuncMsil for the matching FBBlock path).
+            val n = block.statements.count
+            if n > 0 and retTy != MVoid {
+              var li = 0
+              while li < n - 1 {
+                lowerStmtMsil(cctx, entryFctx, entryInsns, block.statements[li])
+                li = li + 1
+              }
+              val last = block.statements[n - 1]
+              match last.kind {
+                case SExpr(e) -> {
+                  val _ = lowerExprMsil(cctx, entryFctx, entryInsns, e)
+                }
+                case _ -> {
+                  lowerStmtMsil(cctx, entryFctx, entryInsns, last)
+                }
+              }
+            } else {
+              lowerBlockMsil(cctx, entryFctx, entryInsns, block)
+            }
+          }
           case FBExpr(e)      -> {
             lowerExprMsil(cctx, entryFctx, entryInsns, e)
             entryInsns.add(MRet)
