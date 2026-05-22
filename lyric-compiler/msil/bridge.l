@@ -54,11 +54,18 @@ pub func compileToMsil(
   var si = 0
   while si < stdlibSources.count {
     val stdPr = parse(stdlibSources[si])
-    // Surface stdlib parse diagnostics so a botched edit to a stdlib
-    // source file doesn't silently produce an incomplete `importedItems`
-    // list (which would later surface as opaque T0010/T0014 errors in
-    // user code).  Advisory only — a stdlib parse warning shouldn't
-    // gate user builds, but the user should see it.
+    // Surface stdlib parse diagnostics — advisory, not fatal (#914).
+    //
+    // Aborting on stdlib parse *errors* would be safer in principle
+    // (the alternative is silently dropping items from `importedItems`,
+    // which then surfaces in user code as opaque T0010 / T0014 errors
+    // far from the real cause).  But today the self-hosted
+    // `Lyric.Parser` still has known gaps relative to the actual
+    // stdlib source files — switching this to `reportAndAbort` makes
+    // every user build fail with parser errors that the F# stage-0
+    // pipeline already tolerates.  Keep advisory until the self-hosted
+    // parser reaches parity with the stdlib (tracked alongside the
+    // type-checker advisory promotion in docs/41 §9 Band 1).
     reportDiagnostics(stdPr.diagnostics)
     var ii = 0
     while ii < stdPr.file.items.count {
