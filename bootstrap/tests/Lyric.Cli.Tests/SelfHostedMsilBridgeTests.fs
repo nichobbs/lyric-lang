@@ -426,4 +426,38 @@ func main(): Unit {
 }
 """
             "7"
+
+        // Regression for #962: when a tiny-header method (e.g. `add` —
+        // no locals, code <= 63 bytes) precedes a fat-header method
+        // (e.g. `main` declaring `val a = add(3,4)`, which needs 1
+        // local and therefore a fat header), the fat header must
+        // start on a 4-byte boundary per ECMA-335 II.25.4.5.  Without
+        // pre-method padding the JIT rejected the assembly with
+        // `InvalidProgramException` even though `ilverify` accepted
+        // the IL.  This test reproduces the minimum 4-line trigger.
+        mkBridge "shm_fat_header_alignment"
+            """package ShMFatHeaderAlign
+func add(a: in Int, b: in Int): Int { a + b }
+func main(): Unit {
+  val a = add(3, 4)
+  println(a)
+}
+"""
+            "7"
+
+        // Regression for #962 (original reproducer): three sequential
+        // `println` statements where the third nests a user-function
+        // call.  Confirms that fat-header alignment holds across
+        // multiple bodies, not just the 2-method minimum.
+        mkBridge "shm_fat_header_three_println"
+            """package ShMFatHeaderThreePrintln
+func add(a: in Int, b: in Int): Int { a + b }
+func square(n: in Int): Int { n * n }
+func main(): Unit {
+  println(add(3, 4))
+  println(square(7))
+  println(add(square(2), square(3)))
+}
+"""
+            "7\n49\n13"
     ]

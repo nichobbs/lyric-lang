@@ -223,13 +223,22 @@ func writeMeta(w: in ByteWriter,
 ///
 /// Returns a list of the same length: `result[i]` is the RVA the caller
 /// must assign to `MethodDef[i+1].rva` before calling `assemblePe`.
-/// Method bodies are laid out consecutively starting at `FIRST_METHOD_RVA`.
+/// Method bodies are laid out consecutively starting at `FIRST_METHOD_RVA`,
+/// with zero-byte padding inserted before any fat-header body so the body's
+/// RVA is 4-byte aligned (ECMA-335 II.25.4.5).  Without this padding the
+/// JIT rejects the assembly with `InvalidProgramException` whenever a
+/// tiny-header method precedes a fat-header method (e.g. when `main` uses
+/// any local — see issue #962).
 pub func methodBodyRvas(bodies: in List[MethodBody]): List[Int] {
   val rvas: List[Int] = newList()
   var rva = FIRST_METHOD_RVA
   var i = 0
   val count = bodies.count
   while i < count {
+    if methodBodyIsFatHeader(bodies[i]) {
+      val rem = rva % 4
+      if rem != 0 { rva = rva + (4 - rem) }
+    }
     rvas.add(rva)
     val buf = bufNew()
     serializeMethodBody(bodies[i], buf)
@@ -246,16 +255,30 @@ pub func methodBodyRvas(bodies: in List[MethodBody]): List[Int] {
 /// Caller must populate `inp.tables` with MethodDef.rva values obtained
 /// from `methodBodyRvas(inp.methodBodies)` before calling this function.
 pub func assemblePe(inp: in AssemblerInput): ByteWriter {
-  // Serialize all method bodies and measure total raw size
+  // Serialize all method bodies and compute pre-body fat-header alignment
+  // padding so the totals match what `methodBodyRvas` produced.  Fat
+  // headers must start on a 4-byte boundary (ECMA-335 II.25.4.5); without
+  // that, the JIT throws InvalidProgramException whenever a tiny-header
+  // method precedes a fat-header method (issue #962).
   val mbBufs: List[ByteWriter] = newList()
+  val mbPads: List[Int] = newList()  // bytes of padding to write *before* mbBufs[i]
   var i = 0
   val mbCount = inp.methodBodies.count
+  var mbCursor = FIRST_METHOD_RVA
   var mbTotalRaw = 0
   while i < mbCount {
+    var pad = 0
+    if methodBodyIsFatHeader(inp.methodBodies[i]) {
+      val rem = mbCursor % 4
+      if rem != 0 { pad = 4 - rem }
+    }
+    mbPads.add(pad)
+    mbCursor = mbCursor + pad
     val buf = bufNew()
     serializeMethodBody(inp.methodBodies[i], buf)
     mbBufs.add(buf)
-    mbTotalRaw = mbTotalRaw + bufLen(buf)
+    mbCursor = mbCursor + bufLen(buf)
+    mbTotalRaw = mbTotalRaw + pad + bufLen(buf)
     i = i + 1
   }
 
@@ -299,9 +322,10 @@ pub func assemblePe(inp: in AssemblerInput): ByteWriter {
   writePeHdrs(w, textVSize, textRSize, imgSize)            // 0x080–0x1FF
   writeClrHdr(w, mdRva, metaSize, inp.entryPointToken)     // 0x200–0x247
 
-  // Method bodies
+  // Method bodies (with fat-header alignment padding interleaved)
   var j = 0
   while j < mbCount {
+    if mbPads[j] > 0 { bufZero(w, mbPads[j]) }
     bufAppend(w, mbBufs[j])
     j = j + 1
   }
