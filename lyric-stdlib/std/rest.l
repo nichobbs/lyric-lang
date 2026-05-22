@@ -267,6 +267,12 @@ pub func RestClient.ensureSuccess(
 
 /// Read a top-level string field from a JSON response body.
 ///
+/// # Cost
+/// Re-parses the full response body on every call.  When reading more
+/// than one field from the same response, prefer `Std.Json.parseJson` +
+/// `rootElement` + `tryGetProperty` + `getString` so the parse cost
+/// is paid once instead of O(N) for N fields.  See #328.
+///
 /// # Errors
 /// - `Deserialize`: body is not valid JSON or the field is absent / not a string.
 @stable(since="1.0")
@@ -288,6 +294,9 @@ pub async func RestClient.jsonString(
 }
 
 /// Read a top-level integer field from a JSON response body.
+///
+/// Re-parses the body per call (see `jsonString` for the amortized
+/// `Std.Json` pattern, #328).
 @stable(since="1.0")
 pub async func RestClient.jsonInt(
   response: in HttpResponse,
@@ -307,6 +316,9 @@ pub async func RestClient.jsonInt(
 }
 
 /// Read a top-level boolean field from a JSON response body.
+///
+/// Re-parses the body per call (see `jsonString` for the amortized
+/// `Std.Json` pattern, #328).
 @stable(since="1.0")
 pub async func RestClient.jsonBool(
   response: in HttpResponse,
