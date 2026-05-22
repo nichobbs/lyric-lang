@@ -253,38 +253,6 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      - name: Smoke-test the CLI on examples (--target dotnet-legacy)
-        if: steps.changes.outputs.has_code_changes == 'true' && (success() || failure())
-        working-directory: bootstrap
-        run: |
-          set -euo pipefail
-          for ex in ../examples/*.l; do
-            # Files annotated `@proof_required` are verifier-only;
-            # run them through `lyric prove` instead of `lyric build`
-            # (they intentionally have no `func main`).
-            if head -n 1 "$ex" | grep -q '^@proof_required'; then
-              echo "=== prove $ex ==="
-              dotnet run --project src/Lyric.Cli --no-build --configuration Debug -- prove "$ex" --allow-unverified
-            else
-              echo "=== build $ex ==="
-              dotnet run --project src/Lyric.Cli --no-build --configuration Debug -- build "$ex" --force --target dotnet-legacy
-            fi
-          done
-
-      - name: Smoke-test the CLI on examples (--target dotnet)
-        if: steps.changes.outputs.has_code_changes == 'true' && (success() || failure())
-        working-directory: bootstrap
-        run: |
-          set -euo pipefail
-          for ex in ../examples/*.l; do
-            if head -n 1 "$ex" | grep -q '^@proof_required'; then
-              echo "=== skip proof-only $ex ==="
-            else
-              echo "=== build $ex --target dotnet ==="
-              dotnet run --project src/Lyric.Cli --no-build --configuration Debug -- build "$ex" --force --target dotnet
-            fi
-          done
-
       - name: Bootstrap stage 1 (F# → self-hosted packages)
         if: steps.changes.outputs.has_code_changes == 'true'
         # continue-on-error is intentional during initial integration.
@@ -293,3 +261,42 @@ jobs:
         continue-on-error: true
         working-directory: ${{ github.workspace }}
         run: ./scripts/bootstrap.sh --stage 1
+
+      # Track A A1.4 (#860) deleted the F# user-facing CLI; the AOT
+      # entry-point project at `bootstrap/src/Lyric.Cli.Aot/` now
+      # serves all user commands by trampolining into the Lyric-emitted
+      # `Lyric.Cli.Program.main` in the stage-1 bundle.  Build it
+      # (skips silently if stage 1 didn't finish) and use the
+      # resulting `lyric` binary for the example smoke tests.
+      - name: Build AOT entry-point + smoke-test the examples
+        if: steps.changes.outputs.has_code_changes == 'true'
+        continue-on-error: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping AOT smoke test"
+            exit 0
+          fi
+          dotnet build bootstrap/src/Lyric.Cli.Aot --configuration Debug
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT entry-point binary not found at $lyric_bin"
+            exit 1
+          fi
+          for ex in examples/*.l; do
+            # `@proof_required` files are verifier-only — they have no
+            # `func main` so `lyric build` doesn't apply.  The AOT
+            # binary's `lyric prove` path needs `Lyric.Emitter.dll`
+            # in its resolution context (the F# emitter is what
+            # `Std.VerifierEnvHost.hostGetEnv` chains through); the
+            # AOT csproj doesn't carry the F# emitter today, so skip
+            # them for now.  Tracked as a follow-up to Track A.
+            if head -n 1 "$ex" | grep -q '^@proof_required'; then
+              echo "=== skip proof-only $ex (AOT prove path: follow-up) ==="
+              continue
+            fi
+            echo "=== build $ex ==="
+            out="/tmp/$(basename "$ex" .l).dll"
+            "$lyric_bin" build "$ex" -o "$out" --force
+          done

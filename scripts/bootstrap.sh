@@ -276,6 +276,23 @@ EOF
     die "stage-1 CLI bundle: Lyric.Jvm.Hosts.dll not found in stage-0 publish"
   fi
 
+  # `Lyric.Emitter.dll` (the F# bootstrap emitter) hosts a small set of
+  # helper types — `ConsoleHelper`, `ProcessCapture`, `VerifierEnv`,
+  # `HttpClientHost` — that the stdlib kernel modules `@externTarget`
+  # against (see `lyric-stdlib/std/_kernel/{console,process_capture,
+  # verifier_env,http}_host.l`).  The Lyric-emitted stdlib DLLs carry
+  # AssemblyRefs to `Lyric.Emitter` for those externs, so at runtime
+  # any program that prints to stderr / launches a subprocess / reads
+  # an env var / makes an HTTP call needs the emitter DLL on disk.
+  # Stage 0 publishes it; stage 1 copies it alongside the other
+  # bootstrap DLLs so the AOT entry-point project resolves the externs.
+  if [[ -f "$BUILD_DIR/stage0-publish/Lyric.Emitter.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish/Lyric.Emitter.dll" "$STAGE1_DIR/"
+    copied=$((copied + 1))
+  else
+    die "stage-1 CLI bundle: Lyric.Emitter.dll not found in stage-0 publish"
+  fi
+
   info "  copied $copied DLLs into $STAGE1_DIR"
 
   # Sanity check: Lyric.Lyric.Cli.dll must land in stage1/.  If it
