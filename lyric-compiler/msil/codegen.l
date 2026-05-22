@@ -94,6 +94,7 @@ pub record CodegenCtx {
   ffiTypeRefs:        Map[String, Int]   // "asm/ns.name" key → TypeRef row index
   // Lambda / yield / extern-type support (Band 2, R6).
   tokActionCtor:      Int                // System.Action::.ctor(object, native int)
+  tokActionInvoke:    Int                // System.Action::Invoke(): void
   externTypeNames:    Map[String, String]  // Lyric name → CLR FQN (from IExternType items)
   lambdaTicker:       List[Int]          // length = next __lambda_<i> index
 }
@@ -309,6 +310,11 @@ pub func newCodegenCtx(packageName: in String): CodegenCtx {
   val tokActionCtor = 0x0A000000 + ctxAddMemberRef(
     lctx, trAction, ".ctor", "action_ctor", buildInstanceMethodSig(actionCtorPs, MVoid))
 
+  // 26. System.Action::Invoke(): void  HASTHIS
+  val actionInvokePs: List[MsilType] = newList()
+  val tokActionInvoke = 0x0A000000 + ctxAddMemberRef(
+    lctx, trAction, "Invoke", "action_invoke", buildInstanceMethodSig(actionInvokePs, MVoid))
+
   val recCtorToks: Map[String, Int] = newMap()
   val fieldToks:   Map[String, Int] = newMap()
   val funcToks:    Map[String, Int] = newMap()
@@ -353,6 +359,7 @@ pub func newCodegenCtx(packageName: in String): CodegenCtx {
     ffiAsmRefs           = newMap(),
     ffiTypeRefs          = newMap(),
     tokActionCtor        = tokActionCtor,
+    tokActionInvoke      = tokActionInvoke,
     externTypeNames      = newMap(),
     lambdaTicker         = newList())
 }
@@ -1970,14 +1977,29 @@ func lowerBuiltinOrStaticCallMsil(
         }
       }
       case None -> {
-        // Could be a cross-package call via qualified path.
-        // Lower args and emit a placeholder — bootstrap limitation.
-        var i = 0
-        while i < args.count {
-          lowerCallArgMsil(cctx, fctx, insns, args[i])
-          i = i + 1
+        // Check if funcName is a local variable (e.g. a lambda stored as Action).
+        // If so, load it and emit callvirt Action::Invoke(args).
+        match mapGet(fctx.slots, funcName) {
+          case Some(slot) -> {
+            insns.add(MLdloc(slot = slot - fctx.paramCount))
+            var i = 0
+            while i < args.count {
+              lowerCallArgMsil(cctx, fctx, insns, args[i])
+              i = i + 1
+            }
+            insns.add(MCallvirt(methodToken = cctx.tokActionInvoke))
+            MVoid
+          }
+          case None -> {
+            // Cross-package call — lower args but emit no call (bootstrap limitation).
+            var i = 0
+            while i < args.count {
+              lowerCallArgMsil(cctx, fctx, insns, args[i])
+              i = i + 1
+            }
+            MObject
+          }
         }
-        MObject
       }
     }
   }
@@ -3706,26 +3728,26 @@ func emitAutoFfiCallMsil(
   val asmName = clrAssemblyForType(clrFqn)
   val tRefRow = internFfiTypeRef(cctx, asmName, sp.ns, sp.name)
 
-  // Build a minimal instance method signature: HASTHIS, paramCount args, object return.
+  // The receiver is always a type name (the EPath matched externTypeNames), so
+  // this is a static call: no HASTHIS, no receiver load, emit `call` not `callvirt`.
   val argTypes: List[MsilType] = newList()
   var ai = 0
   while ai < args.count {
     argTypes.add(MObject)
     ai = ai + 1
   }
-  val sig = buildInstanceMethodSig(argTypes, MObject)
+  val sig = buildStaticMethodSig(argTypes, MObject)
   val mrRow = ctxAddMemberRef(cctx.lctx, tRefRow, methodName, "autoffi_" + methodName, sig)
   val tok = 0x0A000000 + mrRow
 
-  // Load receiver, then args.
-  lowerExprMsil(cctx, fctx, insns, recvExpr)
+  // Load args only (no receiver — it's a type reference, not an instance).
   var bi = 0
   while bi < args.count {
     val aTy = lowerCallArgMsil(cctx, fctx, insns, args[bi])
     boxIfNeededMsil(cctx, insns, aTy)
     bi = bi + 1
   }
-  insns.add(MCallvirt(methodToken = tok))
+  insns.add(MCall(methodToken = tok))
   MObject
 }
 

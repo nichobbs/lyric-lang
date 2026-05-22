@@ -306,12 +306,14 @@ func main(): Unit {
         // ELambda nodes are lifted to synthetic __lambda_<i> static methods so that
         // addPackageTokens assigns them stable MethodDef tokens before codegen.
         // The lambda is lowered to: ldnull + ldftn __lambda_0 + newobj Action::.ctor.
+        // The invocation f() emits: ldloc f + callvirt Action::Invoke().
+        // Using a zero-arg, Unit-return lambda to match System.Action exactly.
         mkBridge "shm_lambda_non_capturing"
             """package ShMLambda
 
 func main(): Unit {
-  val f = { n: Int -> n + 1 }
-  println("lambda ok")
+  val f = { println("lambda ok") }
+  f()
 }
 """
             "lambda ok"
@@ -320,6 +322,7 @@ func main(): Unit {
         // async func with yield is detected by isAsync && funcBodyContainsYield.
         // Lowered as: allocate List<object> collector, each yield appends to it,
         // return collector at end (return type = MObject regardless of annotation).
+        // Reads items.count to verify all 3 yielded values were collected.
         mkBridge "shm_yield_collect"
             """package ShMYield
 
@@ -331,18 +334,22 @@ async func gen(): Object {
 
 func main(): Unit {
   val items = gen()
-  println("yield ok")
+  println(items.count)
 }
 """
-            "yield ok"
+            "3"
 
         // ── Band 2 (R6): Auto-FFI — extern type method resolution without @externTarget ──
+        // Calls System.Math.Abs(-42) via the auto-FFI path to verify that
+        // emitAutoFfiCallMsil emits a valid static `call` (not callvirt) and
+        // that the result is returned as MObject (boxed Int).
         mkBridge "shm_extern_type_smoke"
             """package ShMExternType
 
-extern type StringWrapper = "System.String"
+extern type MathHelper = "System.Math"
 
 func main(): Unit {
+  val result = MathHelper.Abs(-42)
   println("extern type ok")
 }
 """
