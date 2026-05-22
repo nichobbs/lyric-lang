@@ -636,8 +636,8 @@ async generators, protected types, wire blocks, and FFI:
 
 ### Band 4 — Contract elaborator parity
 
-_Status: loop-invariant lowering shipped in D-progress-277.  Protected-type
-entries still deferred._
+_Status: complete.  Loop-invariant lowering and protected-type entry
+lowering both shipped._
 
 - ~~Add loop `invariant:` runtime check insertion (the `:39-41` deferral)
   — produces `assert(inv)` at loop-head and at every `continue` /
@@ -645,9 +645,15 @@ entries still deferred._
   now rewrites `SInvariant(inv)` to `mkAssertCall(inv, span)`, and a
   new `functionBodyHasInvariant` predicate opts the function into the
   deep-walk even when the function carries no requires/ensures clauses.
-- Add protected-type entry lowering in
-  `contract_elaborator/elaborator.l` (the `:43-47` deferral).  **Still
-  deferred.**
+- ~~Add protected-type entry lowering in
+  `contract_elaborator/elaborator.l` (the `:43-47` deferral).~~
+  **Shipped.**  `elaborateProtectedMember`
+  (`elaborator.l:1035-1073`) elaborates each `PMEntry` against its
+  own `contracts` list plus the surrounding `PMInvariant` clauses
+  (lifted to `CCEnsures` by `elaborateItem`'s `IProtected` arm).
+  Covered by `testProtectedEntryRequiresLowered` and
+  `testProtectedInvariantAppendedToEntries` in
+  `contract_elaborator_self_test.l`.
 - Update `docs/36-v1-roadmap.md` R4 to reflect that nested-return
   ensures already work (the current text is stale).
 

@@ -323,4 +323,94 @@ func main(): Int {
 func main(): Int { 0 }
 """
             ""
+
+        // ── Band 7 parity expansion (docs/41 §9): one program per core
+        //    language feature class.  Each smoke runs the full
+        //    self-hosted pipeline (lexer / parser / type-check / mode-check
+        //    / elaborator / mono / codegen / lowering / PE) and asserts on
+        //    runtime output, which is the strongest acceptance check
+        //    short of running the full v1 example set.
+
+        // if / else if / else with a non-trivial discriminator.
+        mkBridge "shm_if_else_chain"
+            """package ShMIfElse
+func classify(n: in Int): String {
+  if n < 0 {
+    "negative"
+  } else if n == 0 {
+    "zero"
+  } else {
+    "positive"
+  }
+}
+func main(): Unit {
+  println(classify(-5))
+  println(classify(0))
+  println(classify(42))
+}
+"""
+            "negative\nzero\npositive"
+
+        // `match` expression on Int with wildcard arm.
+        mkBridge "shm_match_int_with_wildcard"
+            """package ShMMatchInt
+func describe(n: in Int): String {
+  match n {
+    case 0 -> "zero"
+    case 1 -> "one"
+    case _ -> "other"
+  }
+}
+func main(): Unit {
+  println(describe(0))
+  println(describe(1))
+  println(describe(42))
+}
+"""
+            "zero\none\nother"
+
+        // Recursive function — factorial.
+        mkBridge "shm_recursion_factorial"
+            """package ShMRecursion
+func factorial(n: in Int): Int {
+  if n <= 1 {
+    1
+  } else {
+    n * factorial(n - 1)
+  }
+}
+func main(): Unit {
+  println(factorial(5))
+  println(factorial(10))
+}
+"""
+            "120\n3628800"
+
+        // String concatenation.
+        mkBridge "shm_string_concat"
+            """package ShMStringConcat
+func greet(name: in String): String {
+  "hello, " + name + "!"
+}
+func main(): Unit {
+  println(greet("world"))
+  println(greet("lyric"))
+}
+"""
+            "hello, world!\nhello, lyric!"
+
+        // Integer arithmetic: +, -, *, /, %.
+        mkBridge "shm_int_arithmetic"
+            """package ShMIntArith
+func main(): Unit {
+  val a = 17
+  val b = 5
+  println(a + b)
+  println(a - b)
+  println(a * b)
+  println(a / b)
+  println(a % b)
+}
+"""
+            "22\n12\n85\n3\n2"
     ]
