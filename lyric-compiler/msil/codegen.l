@@ -1098,9 +1098,21 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
       val nparams = lparams.count
       match mapGet(cctx.funcTokens, lname) {
         case Some(tok) -> {
+          // Determine delegate type based on lambda return type.
+          // Lambdas that return void use System.Action; those with non-void returns use System.Func.
+          val retType = mapGet(cctx.funcRetTypes, lname)
+          val returnsVoid = match retType {
+            case Some(MVoid) -> true
+            case None        -> true
+            case _           -> false
+          }
           val ctorTok =
-            if nparams == 0 { cctx.tokActionCtor }
-            else            { buildActionNCtorTok(cctx, nparams) }
+            if returnsVoid {
+              if nparams == 0 { cctx.tokActionCtor }
+              else            { buildActionNCtorTok(cctx, nparams) }
+            } else {
+              buildFuncNCtorTok(cctx, nparams)
+            }
           insns.add(MLdNull)
           insns.add(MLdftn(methodToken = tok))
           insns.add(MNewobj(ctorToken = ctorTok))
@@ -2573,6 +2585,43 @@ func buildActionNInvokeTok(cctx: in CodegenCtx, nparams: in Int): Int {
   val mrRow = ctxAddMemberRefForTypeSpec(
     cctx.lctx, tsRow, "Invoke",
     "action_invoke_" + toString(nparams), invokeSig)
+  0x0A000000 + mrRow
+}
+
+// Get or create a TypeRef for System.Func`(nparams+1) where nparams is the lambda parameter count.
+// Reuses the actionTypeRefs map with a "func_N" key to avoid collisions.
+func internFuncTypeRef(cctx: in CodegenCtx, nparams: in Int): Int {
+  val key = "func_" + toString(nparams)
+  match mapGet(cctx.actionTypeRefs, key) {
+    case Some(r) -> r
+    case None    -> {
+      val funcArity = nparams + 1
+      val typeName = "Func`" + toString(funcArity)
+      val tRow = ctxAddTypeRef(cctx.lctx, "System", typeName, cctx.lctx.arRuntime)
+      cctx.actionTypeRefs.add(key, tRow)
+      tRow
+    }
+  }
+}
+
+// Build a newobj token for System.Func`(nparams+1)<object,...,object>::.ctor(object, nativeint).
+// All type parameters are object: nparams input parameters + 1 return type.
+func buildFuncNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
+  val trN = internFuncTypeRef(cctx, nparams)
+  val codedIdx = (trN * 4) + 1
+  val objArgs: List[MsilType] = newList()
+  var ai = 0
+  while ai < nparams + 1 { objArgs.add(MObject); ai = ai + 1 }
+  val gblob = buildGenericInstBlob(codedIdx, objArgs)
+  val specKey = "FuncSpec_ctor_" + toString(nparams)
+  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
+  val ctorPs: List[MsilType] = newList()
+  ctorPs.add(MObject)
+  ctorPs.add(MNativeInt)
+  val ctorSig = buildInstanceMethodSig(ctorPs, MVoid)
+  val mrRow = ctxAddMemberRefForTypeSpec(
+    cctx.lctx, tsRow, ".ctor",
+    "func_ctor_" + toString(nparams), ctorSig)
   0x0A000000 + mrRow
 }
 
