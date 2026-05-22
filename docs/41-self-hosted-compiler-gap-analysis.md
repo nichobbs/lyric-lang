@@ -654,8 +654,6 @@ lowering both shipped._
   Covered by `testProtectedEntryRequiresLowered` and
   `testProtectedInvariantAppendedToEntries` in
   `contract_elaborator_self_test.l`.
-- Update `docs/36-v1-roadmap.md` R4 to reflect that nested-return
-  ensures already work (the current text is stale).
 
 ### Band 5 — Self-hosted ports of F# domain logic
 

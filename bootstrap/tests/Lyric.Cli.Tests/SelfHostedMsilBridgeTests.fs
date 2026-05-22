@@ -331,7 +331,6 @@ func main(): Int { 0 }
         //    runtime output, which is the strongest acceptance check
         //    short of running the full v1 example set.
 
-        // if / else if / else with a non-trivial discriminator.
         mkBridge "shm_if_else_chain"
             """package ShMIfElse
 func classify(n: in Int): String {
@@ -351,7 +350,6 @@ func main(): Unit {
 """
             "negative\nzero\npositive"
 
-        // `match` expression on Int with wildcard arm.
         mkBridge "shm_match_int_with_wildcard"
             """package ShMMatchInt
 func describe(n: in Int): String {
@@ -369,7 +367,6 @@ func main(): Unit {
 """
             "zero\none\nother"
 
-        // Recursive function — factorial.
         mkBridge "shm_recursion_factorial"
             """package ShMRecursion
 func factorial(n: in Int): Int {
@@ -386,7 +383,6 @@ func main(): Unit {
 """
             "120\n3628800"
 
-        // String concatenation.
         mkBridge "shm_string_concat"
             """package ShMStringConcat
 func greet(name: in String): String {
@@ -399,7 +395,6 @@ func main(): Unit {
 """
             "hello, world!\nhello, lyric!"
 
-        // Integer arithmetic: +, -, *, /, %.
         mkBridge "shm_int_arithmetic"
             """package ShMIntArith
 func main(): Unit {
