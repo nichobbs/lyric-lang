@@ -64,7 +64,7 @@ PDF_FLAGS := \
 	-V geometry:margin=2.5cm \
 	-V colorlinks=true \
 	-V linkcolor=NavyBlue \
-	--highlight-style=tango \
+	--syntax-highlighting=tango \
 	--lua-filter=filters/sidebar.lua
 
 ifeq ($(EISVOGEL),1)
@@ -83,7 +83,7 @@ HTML_FLAGS := \
 	--toc \
 	--toc-depth=2 \
 	--css=style.css \
-	--highlight-style=tango \
+	--syntax-highlighting=tango \
 	--lua-filter=filters/sidebar.lua \
 	-V lang=en
 
