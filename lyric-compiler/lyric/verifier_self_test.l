@@ -436,6 +436,29 @@ func testProveProtectedTypeInvariantViolated(): Unit {
   assertTrue(summaryHasFailure(summary), "prot-inv-violated: has failure")
 }
 
+func testProveProtectedFuncContractViolated(): Unit {
+  // `goalsForFile`'s `IProtected` arm dispatches `PMEntry` through
+  // `goalsForEntry` (which augments with invariants) and `PMFunc`
+  // through `goalsForProtectedFunc` (which uses the helper's own
+  // contracts unaugmented).  The existing
+  // `testProveProtectedType*Invariant*` tests only exercise the
+  // `PMEntry` route.  Pin the `PMFunc` route by declaring a helper
+  // whose ensures clause is trivially unprovable (#664).
+  val src =
+    "@proof_required\npackage P\n" +
+    "protected type Counter {\n" +
+    "  var n: Int\n" +
+    "  invariant: n >= 0\n" +
+    "  func helper(): Int requires: true ensures: result < 0 { 0 }\n" +
+    "}\n"
+  val summary = prove(src)
+  match summary.level {
+    case VLProofRequired -> {}
+    case _ -> { assertTrue(false, "prot-func-violated: expected VLProofRequired") }
+  }
+  assertTrue(summaryHasFailure(summary), "prot-func-violated: PMFunc with unprovable ensures has failure")
+}
+
 // `..= hi` smoke: verifier accepts the half-open AST without crashing (RBKLowerBound is parser-unreachable today; theory.l keeps it defensive).
 func testProveRangeBoundUpperOnly(): Unit {
   val src = "@proof_required\npackage P\ntype Pct = Int range ..= 100\nfunc clip(x: in Pct): Int { return x }\n"
@@ -556,6 +579,7 @@ func main(): Unit {
   testProveParseError()
   testProveProtectedTypeInvariantHolds()
   testProveProtectedTypeInvariantViolated()
+  testProveProtectedFuncContractViolated()
   testProveRangeBoundUpperOnly()
   testProveSortNamespacing()
   testQualifiedDatatypeNameNoCollision()
