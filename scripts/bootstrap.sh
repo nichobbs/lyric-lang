@@ -154,7 +154,7 @@ stage1() {
   mkdir -p "$STAGE1_DIR"
 
   # Build the stdlib bundle first (multi-package manifest).
-  # Track A A1.4 (#860): the F# user-facing `lyric build --manifest`
+  # Track A A1.4: the F# user-facing `lyric build --manifest`
   # dispatcher is gone; stage 1 drives the multi-package compile
   # through the bootstrap-only `--internal-manifest-build` flag
   # which reads `lyric.toml` and feeds the package list straight
@@ -219,7 +219,7 @@ EOF
   local driver_out="$driver_dir/Lyric.CliBundle.dll"
 
   # Snapshot the existing /tmp/lyric-stdlib-* directories so we can
-  # identify *the one the upcoming compile creates* unambiguously (#908).
+  # identify *the one the upcoming compile creates* unambiguously.
   # Reusing CI runners often leaves stale dirs in /tmp; `ls -dt | head -1`
   # would happily pick one of those if filesystem mtimes were close.
   # `|| true` swallows the non-zero exit when the glob doesn't match —
