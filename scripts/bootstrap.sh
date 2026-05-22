@@ -332,8 +332,8 @@ stage2() {
   # named `Lyric.Lyric.<Pkg>.dll`.  Until stage 2 is rewritten to drive
   # the same `import Lyric.Cli` driver and compare bundles file-by-file,
   # the reproducibility check below cannot run meaningfully.  Rather
-  # than silently report MISSING for every entry and exit 0 (#907), the
-  # check now fails loudly with a clear message and points the user at
+  # than silently report MISSING for every entry and exit 0, the check
+  # now fails loudly with a clear message and points the user at
   # `SKIP_VERIFY=1` if they want to opt out.
   #
   # If you're here because CI failed: set `SKIP_VERIFY=1` to skip the
@@ -341,7 +341,7 @@ stage2() {
   # outputs of stage 1's CLI-bundle, recompile the driver in stage 2,
   # and compare each artefact across the two stages).
   if [[ "$SKIP_VERIFY" != "1" ]]; then
-    die "stage 2 reproducibility check is incompatible with the A1.2 stage-1 layout; set SKIP_VERIFY=1 to skip, or rewrite stage2() to compare the CLI-bundle outputs (#907)"
+    die "stage 2 reproducibility check is incompatible with the A1.2 stage-1 layout; set SKIP_VERIFY=1 to skip, or rewrite stage2() to compare the CLI-bundle outputs"
   fi
   info "SKIP_VERIFY=1; skipping the reproducibility recompile entirely"
   return 0
