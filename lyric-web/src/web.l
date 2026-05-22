@@ -44,25 +44,39 @@ import Std.Iter
 // type-checker.  Web.Kernel.Net still exports these for aspects.l and the
 // external kernel consumers.
 
-@axiom("ASP.NET Core Kestrel HTTP server and minimal-API routing")
-func serve(
-  host:            String,
-  port:            Int,
-  swaggerEnabled:  Bool,
-  specPath:        String,
-  corsEnabled:     Bool,
-  corsOrigins:     String,
-  corsMethods:     String,
-  corsHeaders:     String,
-  corsMaxAge:      Int,
-  routeMethods:    slice[String],
-  routePatterns:   slice[String],
-  routeHandlers:   slice[String],
-  routeSummaries:  slice[String],
-  workerNames:     slice[String],
-  workerIntervals: slice[Int],
-  workerHandlers:  slice[String]
-): Unit = ()
+@axiom("ASP.NET Core Kestrel HTTP server and minimal-API routing — host.Run() binds the listening port and blocks until shutdown")
+extern package Microsoft.AspNetCore.Builder {
+  /// Boot a Kestrel host on `(host, port)` with the supplied routing table.
+  /// Blocks the calling thread until the host receives a shutdown signal.
+  ///
+  /// Routing-table arrays are parallel: `routeMethods[i]` is the HTTP verb
+  /// for the handler at `routeHandlers[i]`, etc.  `workerNames`/`workerIntervals`/
+  /// `workerHandlers` describe background workers run alongside the listener.
+  ///
+  /// CORS, Swagger UI, and `OpenAPI` JSON publishing are wired in via the
+  /// remaining flags.
+  func serve(
+    host:            String,
+    port:            Int,
+    swaggerEnabled:  Bool,
+    specPath:        String,
+    corsEnabled:     Bool,
+    corsOrigins:     String,
+    corsMethods:     String,
+    corsHeaders:     String,
+    corsMaxAge:      Int,
+    routeMethods:    slice[String],
+    routePatterns:   slice[String],
+    routeHandlers:   slice[String],
+    routeSummaries:  slice[String],
+    workerNames:     slice[String],
+    workerIntervals: slice[Int],
+    workerHandlers:  slice[String]
+  ): Unit
+    requires: host.length > 0
+    requires: port >= 1
+    requires: port <= 65535
+}
 
 // ─── ApiError ─────────────────────────────────────────────────────────────────
 

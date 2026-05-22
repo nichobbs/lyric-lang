@@ -2965,8 +2965,8 @@ record ImplEntry {
 // Convert a single-segment or multi-segment TypeExpr to a JVM binary class name.
 // Used to resolve `impl Y for X` target from the AST.
 //
-// #904: the non-TRef fallback used to return `pkgName + "/$unknown"` —
-// not a valid JVM binary name and unreferenceable by the class loader.
+// The non-TRef fallback used to return `pkgName + "/$unknown"` — not a
+// valid JVM binary name and unreferenceable by the class loader.
 // `panic` here surfaces the gap at codegen time with a clear message
 // instead of letting an `interfaces` array reference a nonexistent
 // class and tripping `ClassNotFoundException: pkg/$unknown` at JVM
@@ -2986,7 +2986,7 @@ func typeExprToJvmClass(te: in TypeExpr, pkgName: in String): String {
       "Jvm.Codegen: `impl Y for X` target is not a TRef (path) — got an " +
       "unsupported TypeExpr shape; refusing to emit an unbindable JVM " +
       "class name.  Add a TypeExpr arm to typeExprToJvmClass if a new " +
-      "impl-target shape is intended (#904).")
+      "impl-target shape is intended.")
   }
 }
 
@@ -3114,7 +3114,34 @@ pub func codegenPackage(file: in SourceFile): LPackage {
           implementsIfaces = ifaces)))
       }
       case IExposedRec(decl) -> {
-        items.add(LPRecord(rec = lowerRecord(decl, pkgName)))
+        // Same impl-injection logic as `IRecord` (#900): `impl Trait
+        // for ExposedRec { … }` blocks targeting an exposed-record
+        // type must inject `implements` clauses + method bodies into
+        // the emitted ClassFile, otherwise the record carries the
+        // declared interface only in source-level AST and the JVM
+        // verifier rejects dispatch through `Trait`-typed slots.
+        val className = pkgName + "/" + decl.name
+        val ifaces: List[String] = newList()
+        val implFuncs: List[LFunc] = newList()
+        var ei = 0
+        while ei < implEntries.count {
+          if implEntries[ei].targetClass == className {
+            ifaces.add(implEntries[ei].ifaceClass)
+            val ms = implEntries[ei].methods
+            var mi3 = 0
+            while mi3 < ms.count { implFuncs.add(ms[mi3]); mi3 = mi3 + 1 }
+          }
+          ei = ei + 1
+        }
+        val baseRec = lowerRecord(decl, pkgName)
+        val mergedMethods: List[LFunc] = newList()
+        for fn in baseRec.methods.toArray() { mergedMethods.add(fn) }
+        for fn in implFuncs.toArray()      { mergedMethods.add(fn) }
+        items.add(LPRecord(rec = LRecord(
+          className        = baseRec.className,
+          fields           = baseRec.fields,
+          methods          = mergedMethods,
+          implementsIfaces = ifaces)))
       }
       case IUnion(decl) -> {
         items.add(LPSealedUnion(su = lowerUnion(decl, pkgName)))

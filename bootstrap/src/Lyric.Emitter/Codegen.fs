@@ -1100,12 +1100,22 @@ let private isNeverBranch (b: ExprOrBlock) : bool =
         match e.Kind with
         | ECall ({ Kind = EPath { Segments = ["panic"] } }, _) -> true
         | _ -> false
+    let isDivergentStmt (s: Statement) =
+        // Divergent statements transfer control out of the branch — the
+        // merge label is never reached from this path, so the arm
+        // doesn't need to leave a value on the stack.  `return`, `throw`,
+        // `break`, `continue` all qualify; `panic(...)` is the
+        // expression-form analogue.
+        match s.Kind with
+        | SReturn _ | SThrow _ | SBreak _ | SContinue _ -> true
+        | SExpr e -> isPanic e
+        | _ -> false
     match b with
     | EOBExpr e -> isPanic e
     | EOBBlock blk ->
         match List.tryLast blk.Statements with
-        | Some { Kind = SExpr e } -> isPanic e
-        | _ -> false
+        | Some s -> isDivergentStmt s
+        | None   -> false
 
 let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     let il = ctx.IL
@@ -2861,29 +2871,49 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             let thenLeaves = (not thenIsNever) && branchLeavesValue ctx thenBranch
             let elseLeaves = (not elseIsNever) && branchLeavesValue ctx elseB
             let discardBoth = thenLeaves <> elseLeaves
+            // Route each non-divergent branch through an intermediate
+            // label so we can re-balance the stack once both arms'
+            // *actual* types are known.  `branchLeavesValue` is a
+            // syntactic look-ahead that mis-predicts for ECall shapes
+            // peekExprType doesn't recognise (e.g. `env.add(name, te)`),
+            // and ilc's verifier rejects the resulting mismatched stack
+            // depths even though the JIT was lenient.
+            let lblPostThen = il.DefineLabel()
+            let lblPostElse = il.DefineLabel()
             il.Emit(OpCodes.Brfalse, lblElse)
             let thenTy = emitBranchValueWith ctx thenBranch discardBoth
-            // A Never-returning branch cannot reach lblEnd.  Terminate
-            // its IL path with an unreachable throw so the JIT verifier
-            // sees a single consistent stack height at the merge label.
             if thenIsNever then
                 il.Emit(OpCodes.Ldnull)
                 il.Emit(OpCodes.Throw)
             else
-                il.Emit(OpCodes.Br, lblEnd)
+                il.Emit(OpCodes.Br, lblPostThen)
             il.MarkLabel(lblElse)
             let elseTy = emitBranchValueWith ctx elseB discardBoth
             if elseIsNever && not thenIsNever then
                 il.Emit(OpCodes.Ldnull)
                 il.Emit(OpCodes.Throw)
+            elif not elseIsNever then
+                il.Emit(OpCodes.Br, lblPostElse)
+            // Post-emit reconciliation.  At each post label only one
+            // branch's stack arrives; balance it to the unified type.
+            let voidTy = typeof<System.Void>
+            let mergedTy =
+                if elseIsNever then thenTy
+                elif thenIsNever then elseTy
+                elif thenTy = voidTy || elseTy = voidTy then voidTy
+                else thenTy
+            if not thenIsNever then
+                il.MarkLabel(lblPostThen)
+                if thenTy <> voidTy && mergedTy = voidTy then
+                    il.Emit(OpCodes.Pop)
+                il.Emit(OpCodes.Br, lblEnd)
+            if not elseIsNever then
+                il.MarkLabel(lblPostElse)
+                if elseTy <> voidTy && mergedTy = voidTy then
+                    il.Emit(OpCodes.Pop)
+                // Falls through to lblEnd.
             il.MarkLabel(lblEnd)
-            // Result type: the non-Never branch's type.
-            if elseIsNever then thenTy
-            elif thenIsNever then elseTy
-            elif thenTy = typeof<System.Void> || elseTy = typeof<System.Void> then
-                typeof<System.Void>
-            else
-                thenTy
+            mergedTy
 
     // ---- match (E6: enum-only patterns) -------------------------------
 
@@ -5051,26 +5081,30 @@ and private emitMatch
         // ending in a non-expr statement (SAssign, SLocal, etc.) push
         // nothing (Void).  When the two are mixed the CLR verifier rejects
         // the inconsistent stack heights at the branch target with
-        // InvalidProgramException.  Normalise: if a prior arm set a Unit
-        // result and this arm is void, push a zero Unit; if the prior result
-        // is void and this arm pushed Unit, pop it.
-        let unitTy = typeof<System.ValueTuple>
+        // InvalidProgramException.  Normalise: if a prior arm set a non-Void
+        // result and this arm is Void, push a zero default; if the prior
+        // result is Void and this arm pushed a value, pop it.
+        let voidTy = typeof<System.Void>
         let armTy =
             if isNever then rawArmTy  // path is closed; type doesn't matter
             else
                 match resultTy with
-                | Some prevTy ->
-                    if rawArmTy = typeof<System.Void> && prevTy = unitTy then
-                        let dummy = FunctionCtx.defineLocal ctx "__unit_pad" unitTy
+                | Some prevTy when rawArmTy = voidTy && prevTy <> voidTy ->
+                    // Pad with a default value matching the established
+                    // result type so this arm's stack height agrees with
+                    // sibling arms at the merge label.
+                    if prevTy.IsValueType || prevTy.IsGenericParameter then
+                        let dummy = FunctionCtx.defineLocal ctx "__arm_pad" prevTy
                         il.Emit(OpCodes.Ldloca, dummy)
-                        il.Emit(OpCodes.Initobj, unitTy)
+                        il.Emit(OpCodes.Initobj, prevTy)
                         il.Emit(OpCodes.Ldloc, dummy)
-                        unitTy
-                    elif rawArmTy = unitTy && prevTy = typeof<System.Void> then
-                        il.Emit(OpCodes.Pop)
-                        typeof<System.Void>
-                    else rawArmTy
-                | None -> rawArmTy
+                    else
+                        il.Emit(OpCodes.Ldnull)
+                    prevTy
+                | Some prevTy when rawArmTy <> voidTy && prevTy = voidTy ->
+                    il.Emit(OpCodes.Pop)
+                    voidTy
+                | _ -> rawArmTy
         if resultTy.IsNone && not isNever then resultTy <- Some armTy
         FunctionCtx.popScope ctx
         il.Emit(OpCodes.Br, endLbl)

@@ -399,10 +399,16 @@ Per `elaborator.l:19-47`:
 
 ### 5.5  Monomorphizer (`lyric-compiler/lyric/mono.l`)
 
-Same-package monomorphisation only (G-07 in `docs/36`).  Cross-package
-generics, value generics (`GPValue`), and constraint propagation deferred.
-The F# emitter handles cross-package generics correctly via reified CLR
-generics.
+Value generics (`GPValue`) and a best-effort marker-constraint validator
+ship in D-progress-291 (#858); cross-package monomorphisation is now an
+exposed API (`monoFileWithImports`) that accepts imported generic
+`FunctionDecl`s, though the MSIL / JVM bridges do not yet pass any
+(Band 6's `Lyric.RestoredPackages` is the gating piece — the bridges
+need a cross-package resolver that pulls full imported IR, not just the
+type-item subset they pass for type-checking today).  The F# emitter
+still handles cross-package generics in production builds via reified
+CLR generics; the self-hosted mono targets the user's compilation unit
+plus whatever generic decls the bridge explicitly hands in.
 
 ---
 
@@ -635,8 +641,8 @@ async generators, protected types, wire blocks, and FFI:
 
 ### Band 4 — Contract elaborator parity
 
-_Status: loop-invariant lowering shipped in D-progress-277.  Protected-type
-entries still deferred._
+_Status: complete.  Loop-invariant lowering and protected-type entry
+lowering both shipped._
 
 - ~~Add loop `invariant:` runtime check insertion (the `:39-41` deferral)
   — produces `assert(inv)` at loop-head and at every `continue` /
@@ -644,11 +650,15 @@ entries still deferred._
   now rewrites `SInvariant(inv)` to `mkAssertCall(inv, span)`, and a
   new `functionBodyHasInvariant` predicate opts the function into the
   deep-walk even when the function carries no requires/ensures clauses.
-- Add protected-type entry lowering in
-  `contract_elaborator/elaborator.l` (the `:43-47` deferral).  **Still
-  deferred.**
-- Update `docs/36-v1-roadmap.md` R4 to reflect that nested-return
-  ensures already work (the current text is stale).
+- ~~Add protected-type entry lowering in
+  `contract_elaborator/elaborator.l` (the `:43-47` deferral).~~
+  **Shipped.**  `elaborateProtectedMember`
+  (`elaborator.l:1035-1073`) elaborates each `PMEntry` against its
+  own `contracts` list plus the surrounding `PMInvariant` clauses
+  (lifted to `CCEnsures` by `elaborateItem`'s `IProtected` arm).
+  Covered by `testProtectedEntryRequiresLowered` and
+  `testProtectedInvariantAppendedToEntries` in
+  `contract_elaborator_self_test.l`.
 
 ### Band 5 — Self-hosted ports of F# domain logic
 
@@ -661,10 +671,14 @@ package + bridge protocol + F# shim, per `SelfHostedFmt.fs` pattern:
   `@generate(Json)` on records, exposed records, and distinct types;
   wired into both MSIL and JVM bridges after contract elaboration
   (D-progress-287).
-- `Lyric.Generics.Monomorphizer` — cross-package + value-generic
-  extensions.  (Same-package mono via `Lyric.Mono.monoFile` is now
-  wired in both bridges — D-progress-286; cross-package and
-  value-generic specialisation remain F#-only.)
+- `Lyric.Generics.Monomorphizer` — same-package mono via
+  `Lyric.Mono.monoFile` wired in both bridges (D-progress-286);
+  value-generic (`GPValue`) specialisation, best-effort marker-
+  constraint validation, and a `monoFileWithImports` cross-package
+  entry point shipped in D-progress-291 (#858).  The bridges still
+  call `monoFile` (empty imports), so cross-package specialisation
+  only activates once Band 6 plumbs imported function decls through
+  `Lyric.RestoredPackages`.
 - `Lyric.RestoredPackages` — cross-package symbol resolution.
 
 ### Band 6 — Cross-package support

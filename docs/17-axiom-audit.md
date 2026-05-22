@@ -153,12 +153,13 @@ the prover treats `NaN` as an uninterpreted value.
 ### `Std.ParseHost` — `lyric-stdlib/std/_kernel/parse_host.l`
 
 ```
-@axiom("System.Int32/Int64/Double/Boolean.TryParse conform to their documented .NET contracts")
+@axiom("System.Double/Boolean.TryParse conform to their documented .NET contracts")
 ```
 
-**BCL surface**: `System.Int32.TryParse`, `System.Int64.TryParse`,
-`System.Double.TryParse`, `System.Boolean.TryParse` — each invoked
-via the `out`-param FFI pattern.
+**BCL surface**: `System.Double.TryParse`, `System.Boolean.TryParse` —
+each invoked via the `out`-param FFI pattern.  `Int32.TryParse` /
+`Int64.TryParse` are no longer routed through the kernel (pure-Lyric
+int parsing in `Std.Parse` replaced them).
 
 **Gap**: Parsing involves character-level iteration over the input
 string, which is outside the decidable fragment.  The result-range
@@ -198,12 +199,13 @@ required).
 ### `Std.EncodingHost` — `lyric-stdlib/std/_kernel/encoding_host.l`
 
 ```
-@axiom("System.Convert and System.Text.Encoding encoding operations conform to their documented .NET contracts")
+@axiom("placeholder — no host calls remain in this boundary file")
 ```
 
-**BCL surface**: `System.Text.Encoding.UTF8` (GetBytes, GetString),
-`System.Convert` (ToBase64String, FromBase64String), backing
-`Std.Encoding`.
+**BCL surface**: empty.  Pure-Lyric encoding helpers replaced every
+host call (UTF-8 / base64 / hex are now native Lyric on top of byte
+slices).  The axiom is retained as a placeholder so the file is
+discoverable by the audit lint; remove it when the file is deleted.
 
 **Gap**: Base-64 and UTF-8 encode/decode involve byte-level iteration
 and produce `slice[Byte]` / `String` values whose contents cannot be
@@ -598,6 +600,24 @@ use this module directly in application code.
 
 **Review**: Provisional (Phase 6).
 
+### `Std.<HostPackage>` — `lyric-stdlib/std/_kernel_jvm/*.l` (`@cfg(feature = "jvm")`)
+
+The directory `lyric-stdlib/std/_kernel_jvm/` mirrors `_kernel/` for the
+JVM target — each file selects a Java BCL extern surface that the
+`@cfg(feature = "jvm")` predicate routes to when compiling
+`--target jvm`.  21 files currently carry `@axiom(...)` annotations
+covering operations on `java.lang.String`, `java.util.{ArrayList,
+HashMap}`, `java.io.{File,FileInputStream,FileOutputStream,Files}`,
+`java.lang.{Math,Character}`, `java.net.URI`, `java.util.regex.Pattern`,
+`java.nio.charset.StandardCharsets`, `java.security.MessageDigest`,
+`java.time.{Instant,Duration,LocalDateTime}`, `java.util.UUID`, and
+`java.lang.System` (env, out, err).
+
+**Coverage**: per-file audit text is pending (`#335` follow-up).  The
+counts below are tracked in section 18 alongside the .NET totals.
+
+**Review**: Provisional pending per-file write-up.
+
 ---
 
 ## 16. `lyric-otel` library kernel boundary
@@ -672,9 +692,50 @@ All are provisional pending weaver integration.
 | `Std.LogHost`            | `log_host.l`                 | 1      | 0           |
 | `Std.RandomHost`         | `random_host.l`              | 1      | 0           |
 | `Std.SecureRandomHost`   | `secure_random_host.l`       | 1      | 0           |
+| `Std.HashHost`           | `hash_host.l`                | 1      | 0           |
+| `Std.Regex`              | `regex.l`                    | 1      | 0           |
+| `Std.Testing.Mocking`    | `testing_mocking.l`          | 1      | 0           |
 | `Std.Jvm`                | `jvm.l`                      | 0      | 1           |
 | `Std.JvmExceptionHost`   | `jvm_exception.l`            | 0      | 1           |
-| **Total**                |                              | **22** | **2**       |
+| **Total**                |                              | **25** | **2**       |
+
+### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
+
+Per-file write-ups are pending (`#335` follow-up); the counts below
+match the `@axiom("...")` annotations actually present in
+`lyric-stdlib/std/_kernel_jvm/*.l` and are kept in sync with the
+audit-lint script (`scripts/audit-axioms.sh`).
+
+| Kernel package           | File                         | Stable | Provisional |
+|--------------------------|------------------------------|--------|-------------|
+| `Std.IO` (JVM)           | `io.l`                       | 1      | 0           |
+| `Std.CharHost`           | `char_host.l`                | 1      | 0           |
+| `Std.CollectionsHost`    | `collections_host.l`         | 1      | 0           |
+| `Std.ConsoleHost`        | `console_host.l`             | 1      | 0           |
+| `Std.EncodingHost`       | `encoding_host.l`            | 1      | 0           |
+| `Std.EnvironmentHost`    | `environment_host.l`         | 1      | 0           |
+| `Std.FileHost`           | `file_host.l`                | 1      | 0           |
+| `Std.FormatHost`         | `format_host.l`              | 1      | 0           |
+| `Std.HttpHost`           | `http_host.l`                | 1      | 0           |
+| `Std.JsonHost`           | `json_host.l`                | 1      | 0           |
+| `Std.LogHost`            | `log_host.l`                 | 1      | 0           |
+| `Std.MathHost`           | `math_host.l`                | 1      | 0           |
+| `Std.ParseHost`          | `parse_host.l`               | 1      | 0           |
+| `Std.PathHost`           | `path_host.l`                | 1      | 0           |
+| `Std.ProcessHost`        | `process_host.l`             | 1      | 0           |
+| `Std.ProcessCaptureHost` | `process_capture_host.l`     | 1      | 0           |
+| `Std.RandomHost`         | `random_host.l`              | 1      | 0           |
+| `Std.SecureRandomHost`   | `secure_random_host.l`       | 1      | 0           |
+| `Std.TimeHost`           | `time_host.l`                | 1      | 0           |
+| `Std.UnicodeHost`        | `unicode_host.l`             | 1      | 0           |
+| `Std.UuidHost`           | `uuid_host.l`                | 1      | 0           |
+| **Total**                |                              | **21** | **0**       |
+
+### Combined total
+
+25 + 21 = **46** stable + **2** provisional = **48** `@axiom`
+annotations covering the entire extern boundary across both
+targets.
 
 Note: the old `std.bcl.*` entries from the M4.3 baseline (11 axioms in 6
 modules) were the conceptual design-doc predecessors of the current
@@ -683,6 +744,7 @@ entries) moved every BCL extern to `lyric-stdlib/std/_kernel/`, replacing
 per-function `@axiom` annotations with package-level annotations that
 cover the entire extern boundary of each kernel file.  The axiom count
 grew from 11 (M4.3 baseline) → 16 (after D-progress-140) → 22 + 2 JVM
-as additional BCL surfaces were added (Console, Path, ProcessCapture,
-VerifierEnv, Random, SecureRandom) and the JVM escape-hatch modules were
-brought under the same audit framework.
+→ 25 + 21 + 2 (current) as additional BCL surfaces were added (Console,
+Path, ProcessCapture, VerifierEnv, Random, SecureRandom, Hash, Regex,
+Testing.Mocking) and the JVM target boundary was brought under the
+same audit framework.

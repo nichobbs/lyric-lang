@@ -178,20 +178,25 @@ and expose a non-throwing wrapper as a `@externTarget`.
 `Lyric.ContractMeta` (cross-package contract resource reader) is a dependency
 of `Pack.l`; port in order.
 
-**Critical dependency — `--target dotnet-legacy` removal gated on contract-elaborator parity:**
+**`--target dotnet-legacy` removal — contract-elaborator parity reached:**
 `Emitter.fs::emitContractCheck` handles nested-return `ensures:` clauses, loop
 `invariant:` lowering, and protected-type entries for the F# (`--target
 dotnet-legacy`) path.  The self-hosted `contract_elaborator/elaborator.l`
-(M5.2 stage 2) covers `requires:` and `ensures:` (including nested returns at
-any depth inside `if` / `match` / `try` / `for` / `while` / `loop` bodies — see
-the file header at `elaborator.l:25-34`) and now also covers loop
-`invariant:` lowering (D-progress-277, docs/41 Band 4).  **Still deferred:**
-protected-type entries (`PMEntry` barriers, `elaborator.l:43-47`).
-Removing `--target dotnet-legacy` before that deferral closes silently
-drops `when:` / `invariant:` enforcement on protected entries.  Gate the
-`Emitter.fs` deletion on a passing regression test that exercises each
-deferred construct against both the F# emitter output and the self-hosted
-elaborator output.
+(M5.2 stage 2) now covers every one of those:
+  * `requires:` and `ensures:` (including nested returns at any depth inside
+    `if` / `match` / `try` / `for` / `while` / `loop` bodies — see the file
+    header at `elaborator.l:25-34`),
+  * loop `invariant:` lowering (D-progress-277, docs/41 Band 4), and
+  * **protected-type entries** — `elaborateProtectedMember`
+    (`elaborator.l:1035-1073`) elaborates each `PMEntry` against its own
+    `contracts` list plus the surrounding `PMInvariant` clauses lifted to
+    `CCEnsures`, covered by `testProtectedEntryRequiresLowered` and
+    `testProtectedInvariantAppendedToEntries`.
+`when:` barrier clauses survive in `ed.contracts` for the verifier but are
+not lowered to runtime asserts — they become `Monitor.Wait` conditions in
+the backend, matching the F# emitter's shape.  Band 4 is now complete on
+both axes; removing `--target dotnet-legacy` is no longer gated by a
+contract-elaborator deferral.
 
 **Additional structural blocker (added by `docs/41-self-hosted-compiler-gap-analysis.md`):**
 `Msil.Bridge.compileToMsil` and `Jvm.Bridge.compileToJar` historically went

@@ -2,6 +2,18 @@
 //
 // Mirrors _kernel/regex.l for the JVM target.
 //
+// **KNOWN GAP — ReDoS vulnerability on JVM (#330):**
+// Unlike `_kernel/regex.l` which compiles every pattern with a
+// 1-second `matchTimeout` via the .NET `Regex(string, RegexOptions,
+// TimeSpan)` overload, `java.util.regex.Pattern` has no native
+// match timeout — adversarial patterns like `(a+)+$` against long
+// input still hang the matching thread indefinitely.  A proper fix
+// requires either (a) a host-side shim that runs `Matcher.find()`
+// on a daemon thread and interrupts after a timeout, or (b) routing
+// JVM regex through `com.google.re2j` (linear-time) instead of
+// `java.util.regex`.  Until one of those lands, the JVM target
+// remains exposed.  Tracked in #330.
+//
 // Pattern maps to java.util.regex.Pattern (compiled regex).
 // Match maps to java.util.regex.Matcher (stateful match cursor).
 //

@@ -267,6 +267,12 @@ pub func RestClient.ensureSuccess(
 
 /// Read a top-level string field from a JSON response body.
 ///
+/// # Cost
+/// Re-parses the full response body on every call.  When reading more
+/// than one field from the same response, prefer `RestClient.json` —
+/// it parses once and returns a `JsonDoc` you can walk repeatedly,
+/// turning N field reads from O(N^2) into O(N).
+///
 /// # Errors
 /// - `Deserialize`: body is not valid JSON or the field is absent / not a string.
 @stable(since="1.0")
@@ -288,6 +294,9 @@ pub async func RestClient.jsonString(
 }
 
 /// Read a top-level integer field from a JSON response body.
+///
+/// Re-parses the body per call.  Prefer `RestClient.json` when reading
+/// more than one field from the same response.
 @stable(since="1.0")
 pub async func RestClient.jsonInt(
   response: in HttpResponse,
@@ -307,6 +316,9 @@ pub async func RestClient.jsonInt(
 }
 
 /// Read a top-level boolean field from a JSON response body.
+///
+/// Re-parses the body per call.  Prefer `RestClient.json` when reading
+/// more than one field from the same response.
 @stable(since="1.0")
 pub async func RestClient.jsonBool(
   response: in HttpResponse,
@@ -337,5 +349,67 @@ pub async func RestClient.jsonBody(
       return Err(error = Http(error = Transport(url = url, error = e)))
     case Ok(text) ->
       return Ok(value = text)
+  }
+}
+
+/// Read the response body and parse it as JSON exactly once, returning
+/// the resulting `JsonDoc`.
+///
+/// # Cost
+/// One parse per call, independent of how many fields you read.  This is
+/// the amortized alternative to `jsonString` / `jsonInt` / `jsonBool`,
+/// each of which re-parses the body on every invocation (O(N^2) reads).
+///
+/// # Ownership
+/// The returned `JsonDoc` owns a pooled byte buffer; the caller MUST
+/// release it via `Std.Json.disposeJson(doc)` — typically with
+/// `defer { disposeJson(doc) }` immediately after pattern-matching the
+/// `Ok` case.  Leaking the document keeps the buffer out of the array
+/// pool until the next GC cycle.
+///
+/// # Malformed input (limitation, #984)
+/// The underlying `Std.Json.parseJson` ultimately calls
+/// `System.Text.Json.JsonDocument.Parse`, which **throws** on syntactically
+/// invalid input.  This function does *not* yet wrap that exception into
+/// an `Err` variant — a malformed body propagates as a panic from the
+/// host boundary, not as a `Result.Err`.  Callers handling potentially-
+/// untrusted JSON should validate up front (e.g. by reading the body via
+/// `jsonBody` and running their own pre-flight check) until a
+/// `tryParseJson` host helper lands.  The same caveat applies to every
+/// other `Std.Json` helper in this file (`jsonString`, `jsonInt`, etc.),
+/// so this function is not a regression — the limitation is documented
+/// here so the API contract is honest about it.
+///
+/// # Errors
+/// - `Http`: transport / status failure (body could not be read).
+///
+/// Note: a malformed JSON body propagates as a panic from the underlying
+/// `System.Text.Json.JsonDocument.Parse` host call, matching the
+/// behaviour of `Std.Json.parseJson` itself.  Validate the body upstream
+/// if untrusted input is a concern.
+///
+/// # Usage
+/// ```
+/// match await RestClient.json(response) {
+///   case Ok(doc) -> {
+///     defer { disposeJson(doc) }
+///     val root = rootElement(doc)
+///     val name = getString(getProperty(root, "name"))
+///     val age  = getInt32(getProperty(root, "age"))
+///     // ... read as many fields as needed from the single parse ...
+///   }
+///   case Err(e) -> // transport failure
+/// }
+/// ```
+@stable(since="1.0")
+pub async func RestClient.json(
+  response: in HttpResponse
+): Result[JsonDoc, RestError] {
+  val url = ""
+  match await HttpResponse.bodyText(response) {
+    case Err(e) ->
+      return Err(error = Http(error = Transport(url = url, error = e)))
+    case Ok(text) ->
+      return Ok(value = parseJson(text))
   }
 }

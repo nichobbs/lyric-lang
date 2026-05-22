@@ -43,6 +43,7 @@ STDLIB_DIR="$REPO_ROOT/lyric-stdlib"
 MAX_STAGE=2
 SKIP_VERIFY="${SKIP_VERIFY:-0}"
 SKIP_CLI_BUNDLE="${SKIP_CLI_BUNDLE:-0}"
+SKIP_COREREF_REWRITE="${SKIP_COREREF_REWRITE:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -153,9 +154,14 @@ stage1() {
   mkdir -p "$STAGE1_DIR"
 
   # Build the stdlib bundle first (multi-package manifest).
+  # Track A A1.4: the F# user-facing `lyric build --manifest`
+  # dispatcher is gone; stage 1 drives the multi-package compile
+  # through the bootstrap-only `--internal-manifest-build` flag
+  # which reads `lyric.toml` and feeds the package list straight
+  # to `Emitter.emitProject`.
   info "  compiling stdlib bundle"
-  "$STAGE0_BIN" build --manifest "$STDLIB_DIR/lyric.toml" \
-    -o "$STAGE1_DIR/Lyric.Stdlib.dll" --target dotnet-legacy 2>&1 || \
+  "$STAGE0_BIN" --internal-manifest-build "$STDLIB_DIR/lyric.toml" \
+    -o "$STAGE1_DIR/Lyric.Stdlib.dll" --target dotnet 2>&1 || \
     die "stdlib bundle build failed"
 
   if [[ "$SKIP_CLI_BUNDLE" != "1" ]]; then
@@ -213,7 +219,7 @@ EOF
   local driver_out="$driver_dir/Lyric.CliBundle.dll"
 
   # Snapshot the existing /tmp/lyric-stdlib-* directories so we can
-  # identify *the one the upcoming compile creates* unambiguously (#908).
+  # identify *the one the upcoming compile creates* unambiguously.
   # Reusing CI runners often leaves stale dirs in /tmp; `ls -dt | head -1`
   # would happily pick one of those if filesystem mtimes were close.
   # `|| true` swallows the non-zero exit when the glob doesn't match —
@@ -255,6 +261,37 @@ EOF
     cp -f "$f" "$STAGE1_DIR/"
     copied=$((copied + 1))
   done
+
+  # `Lyric.Jvm.Hosts.dll` is a hand-written F# project (provides the
+  # `Jvm.Hosts.*` extern surface that the JVM kernel calls into), not
+  # a Lyric-emitted artefact, so it doesn't land in the F# emitter's
+  # stdlib cache.  But Msil.Lowering / Msil.Codegen reference it
+  # statically.  Copy it from the stage-0 publish output so stage 1
+  # contains a complete reference set for the AOT entry-point project.
+  if [[ -f "$BUILD_DIR/stage0-publish/Lyric.Jvm.Hosts.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish/Lyric.Jvm.Hosts.dll" "$STAGE1_DIR/"
+    copied=$((copied + 1))
+  else
+    die "stage-1 CLI bundle: Lyric.Jvm.Hosts.dll not found in stage-0 publish"
+  fi
+
+  # `Lyric.Emitter.dll` (the F# bootstrap emitter) hosts a small set of
+  # helper types — `ConsoleHelper`, `ProcessCapture`, `VerifierEnv`,
+  # `HttpClientHost` — that the stdlib kernel modules `@externTarget`
+  # against (see `lyric-stdlib/std/_kernel/{console,process_capture,
+  # verifier_env,http}_host.l`).  The Lyric-emitted stdlib DLLs carry
+  # AssemblyRefs to `Lyric.Emitter` for those externs, so at runtime
+  # any program that prints to stderr / launches a subprocess / reads
+  # an env var / makes an HTTP call needs the emitter DLL on disk.
+  # Stage 0 publishes it; stage 1 copies it alongside the other
+  # bootstrap DLLs so the AOT entry-point project resolves the externs.
+  if [[ -f "$BUILD_DIR/stage0-publish/Lyric.Emitter.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish/Lyric.Emitter.dll" "$STAGE1_DIR/"
+    copied=$((copied + 1))
+  else
+    die "stage-1 CLI bundle: Lyric.Emitter.dll not found in stage-0 publish"
+  fi
+
   info "  copied $copied DLLs into $STAGE1_DIR"
 
   # Sanity check: Lyric.Lyric.Cli.dll must land in stage1/.  If it
@@ -262,6 +299,22 @@ EOF
   # script needs to be updated.
   [[ -f "$STAGE1_DIR/Lyric.Lyric.Cli.dll" ]] || \
     die "stage-1 CLI bundle: Lyric.Lyric.Cli.dll not found in $STAGE1_DIR after copy"
+
+  # Track A A1.3: retarget Lyric-emitted DLLs' AssemblyRefs from
+  # `System.Private.CoreLib` (the unified CoreCLR runtime assembly)
+  # to the matching public-facade reference assemblies (System.Runtime,
+  # System.Collections, System.Console, mscorlib, ...).  Without this
+  # rewrite the AOT entry-point project can't reference the
+  # stage-1 DLLs as compile-time inputs — the C# compiler refuses to
+  # accept refs whose AssemblyRef table points at System.Private.CoreLib.
+  if [[ "$SKIP_COREREF_REWRITE" != "1" ]]; then
+    info "  retargeting System.Private.CoreLib refs -> public facades"
+    dotnet fsi "$REPO_ROOT/scripts/rewrite-corelib-refs.fsx" "$STAGE1_DIR"/*.dll \
+      > "$BUILD_DIR/rewrite-corelib-refs.log" 2>&1 || \
+      die "stage-1 CLI bundle: corelib-ref rewrite failed (see $BUILD_DIR/rewrite-corelib-refs.log)"
+  else
+    info "SKIP_COREREF_REWRITE=1; leaving stage-1 DLLs with raw CoreLib refs"
+  fi
 
   ok "Stage 1 CLI bundle complete — Lyric.Lyric.Cli.dll + $((copied - 1)) deps in $STAGE1_DIR"
 }
@@ -278,8 +331,8 @@ stage2() {
   # named `Lyric.Lyric.<Pkg>.dll`.  Until stage 2 is rewritten to drive
   # the same `import Lyric.Cli` driver and compare bundles file-by-file,
   # the reproducibility check below cannot run meaningfully.  Rather
-  # than silently report MISSING for every entry and exit 0 (#907), the
-  # check now fails loudly with a clear message and points the user at
+  # than silently report MISSING for every entry and exit 0, the check
+  # now fails loudly with a clear message and points the user at
   # `SKIP_VERIFY=1` if they want to opt out.
   #
   # If you're here because CI failed: set `SKIP_VERIFY=1` to skip the
@@ -287,15 +340,17 @@ stage2() {
   # outputs of stage 1's CLI-bundle, recompile the driver in stage 2,
   # and compare each artefact across the two stages).
   if [[ "$SKIP_VERIFY" != "1" ]]; then
-    die "stage 2 reproducibility check is incompatible with the A1.2 stage-1 layout; set SKIP_VERIFY=1 to skip, or rewrite stage2() to compare the CLI-bundle outputs (#907)"
+    die "stage 2 reproducibility check is incompatible with the A1.2 stage-1 layout; set SKIP_VERIFY=1 to skip, or rewrite stage2() to compare the CLI-bundle outputs"
   fi
   info "SKIP_VERIFY=1; skipping the reproducibility recompile entirely"
   return 0
 }
 
 # The legacy stage 2 body — kept for reference until the A1.2 stage-2
-# rewrite lands.  Not currently reachable because stage2() above hard-
-# fails (or returns when SKIP_VERIFY=1).
+# rewrite lands.  Not currently reachable because
+# stage2() above hard-fails (or returns when SKIP_VERIFY=1); delete
+# this function entirely once the A1.2 rewrite ships its replacement
+# (`import Lyric.Cli` bundle compile + per-package byte-for-byte diff).
 _stage2_legacy() {
   info "Stage 2: recompiling Lyric compiler packages with stage-1 self-hosted emitter"
 
@@ -307,7 +362,7 @@ _stage2_legacy() {
 
   info "  compiling stdlib bundle (self-hosted MSIL path)"
   LYRIC_STD_PATH="$STAGE1_DIR" \
-    "$stage1_lyric" build --manifest "$STDLIB_DIR/lyric.toml" \
+    "$stage1_lyric" --internal-manifest-build "$STDLIB_DIR/lyric.toml" \
     -o "$STAGE2_DIR/Lyric.Stdlib.dll" --target dotnet 2>&1 || \
     die "stage-2 stdlib bundle build failed"
 

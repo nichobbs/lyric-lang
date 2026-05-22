@@ -19,26 +19,25 @@
 //
 // Circuit-breaker state design:
 //
-//   The ideal Lyric model is a protected type:
+//   The formal state machine lives below as `pub protected type
+//   CircuitBreakerState`.  Its invariants (`consecutiveFailures >= 0`,
+//   `isOpen ==> openedAtMs > 0`) are verifier-visible; its entries
+//   document the full transition system.  An instance can be exercised
+//   directly by tests via `makeCircuitBreakerState()` and the three
+//   `cbState*` helpers, with `nowMs` injected so transitions are
+//   deterministic without a real clock.
 //
-//     protected type CircuitBreakerState {
-//       var consecutiveFailures: Int
-//       var isOpen:              Bool
-//       var openedAtMs:          Long
-//       invariant: consecutiveFailures >= 0
-//       entry recordSuccess(): Unit { consecutiveFailures = 0; isOpen = false }
-//       entry recordFailure(threshold: in Int): Unit {
-//         consecutiveFailures = consecutiveFailures + 1
-//         if consecutiveFailures >= threshold { isOpen = true; openedAtMs = now() }
-//       }
-//       entry checkOpen(cooldownMs: in Int): Bool { ... }
-//     }
+//   The aspect's runtime path goes through the process-global registry
+//   exposed by the kernel (`Resilience.Kernel.Net.{circuitIsOpen,
+//   circuitRecordSuccess, circuitRecordFailure}`).  That registry is
+//   implemented in F# at `bootstrap/src/Lyric.Emitter/CircuitStoreHost.fs`
+//   as `Lyric.Resilience.CircuitStore` and mirrors the protected type
+//   entry-for-entry — issue #365 closed the gap where the registry's
+//   half-open semantics lived entirely behind an un-audited extern.
 //
-//   Process-global lifetime requires a wire singleton (M5.2 stage 3+).
-//   Until wire emitter support is complete, process-global state is
-//   managed by the kernel (ConcurrentDictionary / ConcurrentHashMap)
-//   and exposed through the functions below.  The protected type above
-//   is the formal model; compile it separately to verify invariants.
+//   Once non-constant package-level vals (M5.2 stage 3+) and wire-
+//   singleton emit support land, the protected type below can own the
+//   process-global map itself and the F# shim retires.
 //
 // See docs/26-aspects.md §18, docs/27-aspect-libraries.md, D056.
 
@@ -107,6 +106,125 @@ pub func circuitRecordFailure(name: in String, failureThreshold: in Int): Unit {
 @cfg(feature = "jvm")
 pub func circuitRecordFailure(name: in String, failureThreshold: in Int): Unit {
   ResKernelJvm.circuitRecordFailure(name, failureThreshold)
+}
+
+// ─── CircuitBreakerState — formal state machine for one circuit ──────────────
+//
+// The verifier-visible source of truth for the circuit-breaker
+// semantics that lyric-web and lyric-grpc rely on.  An instance carries
+// the four-field state for exactly one circuit; the process-global
+// per-name registry lives in the kernel (see `Resilience.Kernel.Net`)
+// and consults this type one entry at a time.
+//
+// Invariants (carried as `invariant:` clauses and verifier-checkable):
+//   consecutiveFailures >= 0
+//   isOpen ==> openedAtMs > 0
+//
+// `nowMs` is injected as a parameter rather than read from a clock so
+// callers can test the state machine deterministically.  The kernel
+// passes the real wall clock; tests pass a counter.
+//
+// Issue #365: this type was previously commented-out documentation
+// only.  Promoting it to a real protected type makes the semantics
+// verifiable and gives users a Lyric-side handle for unit testing the
+// state machine without standing up the process-global registry.
+
+@stable(since="0.1")
+pub protected type CircuitBreakerState {
+  var consecutiveFailures:   Int  = 0
+  var isOpen:                Bool = false
+  var openedAtMs:            Long = 0
+  var halfOpenProbeInFlight: Bool = false
+
+  invariant: consecutiveFailures >= 0
+  invariant: isOpen or openedAtMs == 0
+  invariant: not isOpen or openedAtMs > 0
+
+  entry recordSuccess(): Unit {
+    consecutiveFailures   = 0
+    isOpen                = false
+    openedAtMs            = 0
+    halfOpenProbeInFlight = false
+  }
+
+  entry recordFailure(threshold: in Int, nowMs: in Long): Unit
+    requires: threshold > 0
+    requires: nowMs > 0
+  {
+    consecutiveFailures = consecutiveFailures + 1
+    if isOpen {
+      // Half-open probe failed — re-open with a fresh cooldown.
+      openedAtMs            = nowMs
+      halfOpenProbeInFlight = false
+    } else {
+      if consecutiveFailures >= threshold {
+        isOpen                = true
+        openedAtMs            = nowMs
+        halfOpenProbeInFlight = false
+      }
+    }
+  }
+
+  entry checkOpen(cooldownMs: in Long, nowMs: in Long): Bool
+    requires: cooldownMs > 0
+    requires: nowMs > 0
+  {
+    if not isOpen {
+      return false
+    }
+    val elapsed = nowMs - openedAtMs
+    if elapsed < cooldownMs {
+      return true
+    }
+    if halfOpenProbeInFlight {
+      return true
+    }
+    halfOpenProbeInFlight = true
+    return false
+  }
+
+  func snapshotIsOpen(): Bool { return isOpen }
+  func snapshotConsecutiveFailures(): Int { return consecutiveFailures }
+  func snapshotOpenedAtMs(): Long { return openedAtMs }
+  func snapshotHalfOpenProbeInFlight(): Bool { return halfOpenProbeInFlight }
+}
+
+/// Construct a fresh, closed circuit breaker state.
+@stable(since="0.1")
+pub func makeCircuitBreakerState(): CircuitBreakerState {
+  return CircuitBreakerState()
+}
+
+/// Record a success against a `CircuitBreakerState` instance.  Resets
+/// the failure counter and closes the circuit; idempotent.
+@stable(since="0.1")
+pub func cbStateRecordSuccess(s: in CircuitBreakerState): Unit {
+  s.recordSuccess()
+}
+
+/// Record a failure against a `CircuitBreakerState` instance.  Pass
+/// the current time as `nowMs` so the state machine remains
+/// deterministic under test.
+@stable(since="0.1")
+pub func cbStateRecordFailure(
+  s: in CircuitBreakerState,
+  threshold: in Int,
+  nowMs: in Long
+): Unit {
+  s.recordFailure(threshold, nowMs)
+}
+
+/// True if the circuit is currently rejecting calls.  When the circuit
+/// is open and `cooldownMs` has elapsed since `openedAtMs`, the first
+/// caller is granted the half-open probe (returns false) and subsequent
+/// callers continue to see true until the probe records its outcome.
+@stable(since="0.1")
+pub func cbStateCheckOpen(
+  s: in CircuitBreakerState,
+  cooldownMs: in Long,
+  nowMs: in Long
+): Bool {
+  return s.checkOpen(cooldownMs, nowMs)
 }
 
 // Private: compute exponential backoff delay with a cap and optional jitter.

@@ -748,9 +748,38 @@ func resolveLbl(offsets: in Map[Int, Int], lbl: in Int): Int {
   }
 }
 
+// Return the IL byte count of `b.insns` (labels contribute 0).
+pub func methodBodyCodeSize(b: in MethodBody): Int {
+  var pos = 0
+  var idx = 0
+  while idx < b.insns.count {
+    val ins = b.insns[idx]
+    match ins {
+      case Label(_) -> ()
+      case _        -> { pos = pos + insnSize(ins) }
+    }
+    idx = idx + 1
+  }
+  return pos
+}
+
+// Does serializing `b` produce a fat method header (vs the 1-byte tiny header)?
+// Mirrors the predicate inside `serializeMethodBody`.  Fat is required when:
+//   - any local variable is declared (`localSig != 0`),
+//   - an exception-handling section is present, OR
+//   - the IL code size exceeds 63 bytes (tiny encodes size in 6 bits).
+// Fat method headers must be 4-byte aligned per ECMA-335 II.25.4.5; the
+// assembler uses this predicate to know whether to inject pre-method padding.
+pub func methodBodyIsFatHeader(b: in MethodBody): Bool {
+  if b.localSig != 0 { return true }
+  if b.ehClauses.count > 0 { return true }
+  return methodBodyCodeSize(b) > 63
+}
+
 // Serialize `b` to `w`, prepending the method header (tiny or fat).
-// Tiny header is used when codeSize ≤ 63 and there are no locals (localSig == 0).
-// Fat header is 12 bytes: flags(2) | maxStack(2) | codeSize(4) | localSig(4).
+// Tiny header is used when `methodBodyIsFatHeader(b)` is false (codeSize ≤ 63
+// AND no locals AND no EH clauses).  Fat header is 12 bytes: flags(2) |
+// maxStack(2) | codeSize(4) | localSig(4).
 pub func serializeMethodBody(b: in MethodBody, w: in ByteWriter): Unit {
   // Pass 1: compute label offsets.
   val offsets: Map[Int, Int] = newMap()
@@ -768,8 +797,11 @@ pub func serializeMethodBody(b: in MethodBody, w: in ByteWriter): Unit {
 
   val hasEH = b.ehClauses.count > 0
 
-  // Write method header.
-  if codeSize <= 63 and b.localSig == 0 and not hasEH {
+  // Write method header.  The tiny-vs-fat decision is delegated to
+  // `methodBodyIsFatHeader` so the assembler's pre-body alignment pass
+  // and this serializer agree on which bodies need 4-byte alignment
+  // (ECMA-335 II.25.4.5; issue #962 + review #985).
+  if not methodBodyIsFatHeader(b) {
     bufU1(w, (codeSize * 4) + 2)
   } else {
     // Fat header flags: FatFormat(0x3) | InitLocals(0x10) | MoreSects(0x08 if EH present)

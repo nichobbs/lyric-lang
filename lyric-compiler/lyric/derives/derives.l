@@ -112,6 +112,16 @@ func call1(fn: in String, arg: in Expr): Expr {
   mkExpr(ECall(fn = pathExpr(fn), args = args), sp())
 }
 
+// `recv.methodName(a1, a2)` — used to chain `String.replace` calls when
+// JSON-escaping String field values inside synthesised `toJson` bodies.
+func methodCall2(recv: in Expr, methodName: in String, a1: in Expr, a2: in Expr): Expr {
+  val args: List[CallArg] = newList()
+  args.add(CAPositional(expr = a1))
+  args.add(CAPositional(expr = a2))
+  val callee = mkExpr(EMember(receiver = recv, memberName = methodName), sp())
+  mkExpr(ECall(fn = callee, args = args), sp())
+}
+
 func binop(op: in BinOp, lhs: in Expr, rhs: in Expr): Expr {
   mkExpr(EBinop(op = op, lhs = lhs, rhs = rhs), sp())
 }
@@ -159,11 +169,11 @@ func makeParam(nm: in String, ty: in TypeExpr): Param {
   Param(mode = PMIn, name = nm, ty = ty, dflt = None, span = sp())
 }
 
-func makeFuncDecl(nm: in String, params: in List[Param], retTy: in TypeExpr, body: in Block): FunctionDecl {
+func makeFuncDecl(nm: in String, params: in List[Param], retTy: in TypeExpr, body: in Block, vis: in Option[Visibility]): FunctionDecl {
   FunctionDecl(
     docComments = newList(),
     annotations = newList(),
-    visibility  = None,
+    visibility  = vis,
     isAsync     = false,
     name        = nm,
     generics    = None,
@@ -176,11 +186,11 @@ func makeFuncDecl(nm: in String, params: in List[Param], retTy: in TypeExpr, bod
   )
 }
 
-func funcItem(fd: in FunctionDecl): Item {
+func funcItem(fd: in FunctionDecl, vis: in Option[Visibility]): Item {
   Item(
     docComments = newList(),
     annotations = newList(),
-    visibility  = None,
+    visibility  = vis,
     kind        = IFunc(decl = fd),
     span        = sp()
   )
@@ -234,23 +244,23 @@ func equalsExprForFields(fields: in List[FieldDecl]): Expr {
 }
 
 // `TypeName.equals(self: in TypeName, other: in TypeName): Bool`
-func synthesizeEqualsRecord(typeName: in String, decl: in RecordDecl): Item {
+func synthesizeEqualsRecord(typeName: in String, decl: in RecordDecl, vis: in Option[Visibility]): Item {
   val fields = collectFields(decl)
   val body   = blockReturn(equalsExprForFields(fields))
   val params: List[Param] = newList()
   params.add(makeParam("self",  typeRef(typeName)))
   params.add(makeParam("other", typeRef(typeName)))
-  funcItem(makeFuncDecl(typeName + ".equals", params, typeRef("Bool"), body))
+  funcItem(makeFuncDecl(typeName + ".equals", params, typeRef("Bool"), body, vis), vis)
 }
 
 // `TypeName.equals(self, other): Bool` for distinct types via projection method.
-func synthesizeEqualsDistinct(typeName: in String, projMethod: in String): Item {
+func synthesizeEqualsDistinct(typeName: in String, projMethod: in String, vis: in Option[Visibility]): Item {
   val cmp  = binop(BEq, call1(projMethod, pathExpr("self")), call1(projMethod, pathExpr("other")))
   val body = blockReturn(cmp)
   val params: List[Param] = newList()
   params.add(makeParam("self",  typeRef(typeName)))
   params.add(makeParam("other", typeRef(typeName)))
-  funcItem(makeFuncDecl(typeName + ".equals", params, typeRef("Bool"), body))
+  funcItem(makeFuncDecl(typeName + ".equals", params, typeRef("Bool"), body, vis), vis)
 }
 
 
@@ -275,20 +285,20 @@ func hashBodyForFields(fields: in List[FieldDecl]): Block {
 }
 
 // `TypeName.hash(self: in TypeName): Int`
-func synthesizeHashRecord(typeName: in String, decl: in RecordDecl): Item {
+func synthesizeHashRecord(typeName: in String, decl: in RecordDecl, vis: in Option[Visibility]): Item {
   val fields = collectFields(decl)
   val body   = hashBodyForFields(fields)
   val params: List[Param] = newList()
   params.add(makeParam("self", typeRef(typeName)))
-  funcItem(makeFuncDecl(typeName + ".hash", params, typeRef("Int"), body))
+  funcItem(makeFuncDecl(typeName + ".hash", params, typeRef("Int"), body, vis), vis)
 }
 
 // `TypeName.hash(self: in TypeName): Int` for distinct types.
-func synthesizeHashDistinct(typeName: in String, projMethod: in String): Item {
+func synthesizeHashDistinct(typeName: in String, projMethod: in String, vis: in Option[Visibility]): Item {
   val body = blockReturn(call1("hashCode", call1(projMethod, pathExpr("self"))))
   val params: List[Param] = newList()
   params.add(makeParam("self", typeRef(typeName)))
-  funcItem(makeFuncDecl(typeName + ".hash", params, typeRef("Int"), body))
+  funcItem(makeFuncDecl(typeName + ".hash", params, typeRef("Int"), body, vis), vis)
 }
 
 
@@ -314,23 +324,23 @@ func showExprForFields(typeName: in String, fields: in List[FieldDecl]): Expr {
 }
 
 // `TypeName.show(self: in TypeName): String`
-func synthesizeShowRecord(typeName: in String, decl: in RecordDecl): Item {
+func synthesizeShowRecord(typeName: in String, decl: in RecordDecl, vis: in Option[Visibility]): Item {
   val fields = collectFields(decl)
   val body   = blockReturn(showExprForFields(typeName, fields))
   val params: List[Param] = newList()
   params.add(makeParam("self", typeRef(typeName)))
-  funcItem(makeFuncDecl(typeName + ".show", params, typeRef("String"), body))
+  funcItem(makeFuncDecl(typeName + ".show", params, typeRef("String"), body, vis), vis)
 }
 
 // `TypeName.show(self: in TypeName): String` for distinct types.
-func synthesizeShowDistinct(typeName: in String, projMethod: in String): Item {
+func synthesizeShowDistinct(typeName: in String, projMethod: in String, vis: in Option[Visibility]): Item {
   val body = blockReturn(
     strCat(strCat(strLit(typeName + "("),
                   call1("toString", call1(projMethod, pathExpr("self")))),
            strLit(")")))
   val params: List[Param] = newList()
   params.add(makeParam("self", typeRef(typeName)))
-  funcItem(makeFuncDecl(typeName + ".show", params, typeRef("String"), body))
+  funcItem(makeFuncDecl(typeName + ".show", params, typeRef("String"), body, vis), vis)
 }
 
 
@@ -339,7 +349,17 @@ func synthesizeShowDistinct(typeName: in String, projMethod: in String): Item {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Render a field value as a JSON string fragment.
-// String fields get surrounding double-quote escapes; primitives use toString.
+// String fields get JSON-escaped (`\`, `"`, `\n`, `\r`, `\t` rewritten
+// to their `\\`-prefixed escape sequences) and wrapped in double quotes
+// so the resulting `toJson` output is valid JSON for the common escape
+// classes.  The remaining C0 control characters (` `-``
+// minus `\n`/`\r`/`\t`) are NOT yet escaped — that final-coverage
+// follow-up needs the synthesiser to call a `__lyricJsonEscape`
+// helper or `Std.Json.encodeString` so it can emit a `\uXXXX`
+// sequence per remaining control byte.  Strings that happen to
+// contain those bytes today produce technically-invalid JSON but
+// the common chat/HTTP-message corpus avoids them.
+// Primitive types use `toString`.
 func jsonFieldExpr(fieldExpr: in Expr, ty: in TypeExpr): Expr {
   val typeName = match ty.kind {
     case TRef(path) -> {
@@ -348,7 +368,18 @@ func jsonFieldExpr(fieldExpr: in Expr, ty: in TypeExpr): Expr {
     case _ -> ""
   }
   if typeName == "String" {
-    strCat(strCat(strLit("\""), fieldExpr), strLit("\""))
+    // self.field
+    //   .replace("\\", "\\\\")   // must be first so the \\ introduced
+    //   .replace("\"", "\\\"")   //   by the next step isn't doubled
+    //   .replace("\n", "\\n")
+    //   .replace("\r", "\\r")
+    //   .replace("\t", "\\t")
+    val esc1 = methodCall2(fieldExpr, "replace", strLit("\\"), strLit("\\\\"))
+    val esc2 = methodCall2(esc1,      "replace", strLit("\""), strLit("\\\""))
+    val esc3 = methodCall2(esc2,      "replace", strLit("\n"), strLit("\\n"))
+    val esc4 = methodCall2(esc3,      "replace", strLit("\r"), strLit("\\r"))
+    val esc5 = methodCall2(esc4,      "replace", strLit("\t"), strLit("\\t"))
+    strCat(strCat(strLit("\""), esc5), strLit("\""))
   } else {
     call1("toString", fieldExpr)
   }
@@ -372,12 +403,12 @@ func toJsonExprForFields(fields: in List[FieldDecl]): Expr {
 }
 
 // `TypeName.toJson(self: in TypeName): String`
-func synthesizeToJsonRecord(typeName: in String, decl: in RecordDecl): Item {
+func synthesizeToJsonRecord(typeName: in String, decl: in RecordDecl, vis: in Option[Visibility]): Item {
   val fields = collectFields(decl)
   val body   = blockReturn(toJsonExprForFields(fields))
   val params: List[Param] = newList()
   params.add(makeParam("self", typeRef(typeName)))
-  funcItem(makeFuncDecl(typeName + ".toJson", params, typeRef("String"), body))
+  funcItem(makeFuncDecl(typeName + ".toJson", params, typeRef("String"), body, vis), vis)
 }
 
 
@@ -396,6 +427,10 @@ func projectionMethod(underlyingName: in String): String {
   if underlyingName == "Float"  { return "toFloat" }
   if underlyingName == "Double" { return "toDouble" }
   if underlyingName == "String" { return "toString" }
+  // Distinct-type wrappers around Bool need `.toBool()` projection;
+  // without this arm they would fall through to the `"toValue"`
+  // fallback and reference a method that doesn't exist on Bool.
+  if underlyingName == "Bool"   { return "toBool" }
   "toValue"
 }
 
@@ -430,27 +465,35 @@ func funcAlreadyExists(items: in List[Item], name: in String): Bool {
 
 // addIfNew avoids synthesising a function that already exists in the file's
 // items (idempotency: a second deriveFile call on an already-derived file
-// must not duplicate the synthesised helpers).
+// must not duplicate the synthesised helpers).  Also checks `synths` so
+// that a type with both a `derives X` clause and a `@derive(X)` annotation
+// does not add the same helper twice in one pass.
 func addIfNew(synths: inout List[Item], existingItems: in List[Item], candidate: in Item, funcName: in String) {
-  if not funcAlreadyExists(existingItems, funcName) {
+  if not funcAlreadyExists(existingItems, funcName) and not funcAlreadyExists(synths, funcName) {
     synths.add(candidate)
   }
 }
 
 func deriveItem(item: in Item, existingItems: in List[Item], synths: inout List[Item]) {
   val anns = item.annotations
+  // Synthesised helpers inherit the parent item's visibility so that
+  // `pub @derive(Equals) record Point { ... }` produces a `pub Point.equals`
+  // accessible to consumer packages.  Without this, every synthesised
+  // helper was package-private and cross-package UFCS calls failed
+  // visibility checks (#939).
+  val vis = item.visibility
   match item.kind {
     case IRecord(decl) -> {
-      if hasDeriveMarker(anns, "Equals")  { addIfNew(synths, existingItems, synthesizeEqualsRecord(decl.name, decl), decl.name + ".equals") }
-      if hasDeriveMarker(anns, "Hash")    { addIfNew(synths, existingItems, synthesizeHashRecord(decl.name, decl), decl.name + ".hash") }
-      if hasDeriveMarker(anns, "Show")    { addIfNew(synths, existingItems, synthesizeShowRecord(decl.name, decl), decl.name + ".show") }
-      if hasGenerateMarker(anns, "Json")  { addIfNew(synths, existingItems, synthesizeToJsonRecord(decl.name, decl), decl.name + ".toJson") }
+      if hasDeriveMarker(anns, "Equals")  { addIfNew(synths, existingItems, synthesizeEqualsRecord(decl.name, decl, vis), decl.name + ".equals") }
+      if hasDeriveMarker(anns, "Hash")    { addIfNew(synths, existingItems, synthesizeHashRecord(decl.name, decl, vis), decl.name + ".hash") }
+      if hasDeriveMarker(anns, "Show")    { addIfNew(synths, existingItems, synthesizeShowRecord(decl.name, decl, vis), decl.name + ".show") }
+      if hasGenerateMarker(anns, "Json")  { addIfNew(synths, existingItems, synthesizeToJsonRecord(decl.name, decl, vis), decl.name + ".toJson") }
     }
     case IExposedRec(decl) -> {
-      if hasDeriveMarker(anns, "Equals")  { addIfNew(synths, existingItems, synthesizeEqualsRecord(decl.name, decl), decl.name + ".equals") }
-      if hasDeriveMarker(anns, "Hash")    { addIfNew(synths, existingItems, synthesizeHashRecord(decl.name, decl), decl.name + ".hash") }
-      if hasDeriveMarker(anns, "Show")    { addIfNew(synths, existingItems, synthesizeShowRecord(decl.name, decl), decl.name + ".show") }
-      if hasGenerateMarker(anns, "Json")  { addIfNew(synths, existingItems, synthesizeToJsonRecord(decl.name, decl), decl.name + ".toJson") }
+      if hasDeriveMarker(anns, "Equals")  { addIfNew(synths, existingItems, synthesizeEqualsRecord(decl.name, decl, vis), decl.name + ".equals") }
+      if hasDeriveMarker(anns, "Hash")    { addIfNew(synths, existingItems, synthesizeHashRecord(decl.name, decl, vis), decl.name + ".hash") }
+      if hasDeriveMarker(anns, "Show")    { addIfNew(synths, existingItems, synthesizeShowRecord(decl.name, decl, vis), decl.name + ".show") }
+      if hasGenerateMarker(anns, "Json")  { addIfNew(synths, existingItems, synthesizeToJsonRecord(decl.name, decl, vis), decl.name + ".toJson") }
     }
     case IDistinctType(decl) -> {
       val projName = projectionMethod(lastSegment(decl.underlying))
@@ -458,14 +501,14 @@ func deriveItem(item: in Item, existingItems: in List[Item], synths: inout List[
       var di = 0
       while di < decl.derives.count {
         val marker = decl.derives[di]
-        if marker == "Equals" { addIfNew(synths, existingItems, synthesizeEqualsDistinct(nm, projName), nm + ".equals") }
-        if marker == "Hash"   { addIfNew(synths, existingItems, synthesizeHashDistinct(nm, projName), nm + ".hash") }
-        if marker == "Show"   { addIfNew(synths, existingItems, synthesizeShowDistinct(nm, projName), nm + ".show") }
+        if marker == "Equals" { addIfNew(synths, existingItems, synthesizeEqualsDistinct(nm, projName, vis), nm + ".equals") }
+        if marker == "Hash"   { addIfNew(synths, existingItems, synthesizeHashDistinct(nm, projName, vis), nm + ".hash") }
+        if marker == "Show"   { addIfNew(synths, existingItems, synthesizeShowDistinct(nm, projName, vis), nm + ".show") }
         di = di + 1
       }
-      if hasDeriveMarker(anns, "Equals") { addIfNew(synths, existingItems, synthesizeEqualsDistinct(nm, projName), nm + ".equals") }
-      if hasDeriveMarker(anns, "Hash")   { addIfNew(synths, existingItems, synthesizeHashDistinct(nm, projName), nm + ".hash") }
-      if hasDeriveMarker(anns, "Show")   { addIfNew(synths, existingItems, synthesizeShowDistinct(nm, projName), nm + ".show") }
+      if hasDeriveMarker(anns, "Equals") { addIfNew(synths, existingItems, synthesizeEqualsDistinct(nm, projName, vis), nm + ".equals") }
+      if hasDeriveMarker(anns, "Hash")   { addIfNew(synths, existingItems, synthesizeHashDistinct(nm, projName, vis), nm + ".hash") }
+      if hasDeriveMarker(anns, "Show")   { addIfNew(synths, existingItems, synthesizeShowDistinct(nm, projName, vis), nm + ".show") }
     }
     case _ -> ()
   }
