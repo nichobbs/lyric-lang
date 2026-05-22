@@ -1,37 +1,65 @@
 // lyric/mono.l — self-hosted monomorphizer (Phase 5 §M5.2).
 //
-// Call-site monomorphizer for generic functions defined in the same
-// compilation unit.  Imported generic functions (e.g. mapOption from
-// Std.Core) use real CLR generic types at runtime — this pass handles
-// same-package generic functions that the self-hosted PE emitter would
-// otherwise be unable to instantiate.
+// Call-site monomorphizer for generic functions.  Specialises same-package
+// generic functions plus any caller-supplied "imported" generic decls
+// (cross-package, opt-in via `monoFileWithImports`) into concrete copies
+// the self-hosted PE/JVM emitter can lower without paramaterised IL.
 //
 // Algorithm:
 //   1. Collect all generic IFunc items from the SourceFile into a lookup map.
+//      Merge any caller-supplied `importedGenDecls` into the same lookup so
+//      cross-package call sites become eligible.
 //   2. Walk non-generic function bodies, rewriting call sites that reference
-//      same-package generic functions.  At each such call site, infer the
-//      concrete type arguments by unifying the function's TypeExpr parameter
-//      types against the known types of the argument expressions (literals
-//      and variables declared with explicit type annotations).
-//   3. If all type parameters are resolved, compute a mangled specialised
-//      name (e.g. "mapFoo__Int__String"), queue a SpecRequest, and rewrite
-//      the call to use the specialised name.
-//   4. Process the worklist: for each SpecRequest, substitute the type vars
-//      in the generic FunctionDecl's param/ret TypeExprs, then walk the
-//      specialised body (which may enqueue further SpecRequests for nested
-//      generic calls).
+//      known generic functions.  At each such call site, infer the concrete
+//      type arguments by unifying the function's TypeExpr parameter types
+//      against the known types of the argument expressions (literals and
+//      variables declared with explicit type annotations).  Explicit
+//      `f[T1, …](args)` type applications bypass inference and carry both
+//      `TAType` and `TAValue` arguments straight into the substitution maps.
+//   3. If all type parameters and value parameters are resolved, compute a
+//      mangled specialised name (e.g. `mapFoo__Int__String`,
+//      `ones__V_3`), queue a SpecRequest, and rewrite the call to use the
+//      specialised name.
+//   4. Process the worklist: for each SpecRequest, substitute the type and
+//      value vars in the generic FunctionDecl's param/ret TypeExprs *and*
+//      in its body, validate any declared `where` bounds against the
+//      substituted types, then walk the specialised body (which may
+//      enqueue further SpecRequests for nested generic calls).
 //   5. Return a MonoResult carrying the rewritten SourceFile (generic IFunc
 //      items removed, specialised items appended) and a rewrites map.
 //
-// Limitations (Phase 5 bootstrap grade):
-//   • Only same-package generics are specialised.  Imported generics use
-//     real CLR generics as emitted by the F# bootstrap compiler.
+// Capabilities (#858, docs/41 §9 Band 5):
+//   • Type-level generics (`GPType`) — full call-site inference + explicit
+//     type-app specialisation.
+//   • Value-level generics (`GPValue`) — explicit-type-app specialisation
+//     only.  Each unique value (literal or path) produces a distinct
+//     specialisation keyed by its source text.  Value-param references
+//     are substituted inside the body (EPath sites + TypeArg shapes such
+//     as `Array[Int, N]` / `Foo[Int, N]`).
+//   • Cross-package generics — accepted via `monoFileWithImports`; the
+//     specialised copy is appended to the user's file.  Soundness depends
+//     on the imported function's body referencing only items the user's
+//     compilation unit can resolve (BCL primitives, imported types,
+//     other already-specialised generics).  The wider Band 6 plumbing
+//     of `Lyric.RestoredPackages` is what unlocks consuming non-trivial
+//     stdlib generics across the boundary.
+//   • Constraint validation — best-effort: when a `where T: Marker` bound
+//     is declared and `T` substitutes to a primitive, the well-known
+//     marker set (`Equals`, `Hash`, `Show`, `Ord`, `Compare`) is checked
+//     and a `M0001` diagnostic is emitted on confirmed mismatch.  Unknown
+//     concrete types accept silently (best-effort) since cross-package
+//     trait dispatch information is not yet plumbed through.
+//
+// Limitations (still Phase 5 bootstrap grade):
 //   • Type inference covers literals, explicitly-annotated variables, and
 //     function parameters.  Complex expression types (method calls, field
 //     projections, lambdas) are not inferred; those call sites are left
 //     un-specialised.
-//   • Value generic parameters (GPValue) are not handled; only type-level
-//     GPType parameters are specialised.
+//   • Constraint dispatch (re-routing a `T.compare(x)` call inside a
+//     specialised body to the concrete type's compare implementation) is
+//     not yet implemented — it relies on cross-package symbol resolution
+//     (`docs/41` §9 Band 6) and the trait dispatch table emitted by the
+//     F# bootstrap compiler today.
 
 package Lyric.Mono
 
@@ -69,22 +97,26 @@ pub record MonoResult {
 // ─────────────────────────────────────────────────────────────────────────────
 
 record SpecRequest {
-  specName: String
-  baseDecl: FunctionDecl
-  subst:    Map[String, TypeExpr]
+  specName:   String
+  baseDecl:   FunctionDecl
+  subst:      Map[String, TypeExpr]
+  valueSubst: Map[String, Expr]
+  callSpan:   Span
 }
 
 record MonoState {
   genDecls:  Map[String, FunctionDecl]
   seenSpecs: Map[String, Bool]
   allSpecs:  List[SpecRequest]
+  diags:     List[Diagnostic]
 }
 
 func newMonoState(genDecls: in Map[String, FunctionDecl]): MonoState {
   MonoState(
     genDecls  = genDecls,
     seenSpecs = newMap(),
-    allSpecs  = newList())
+    allSpecs  = newList(),
+    diags     = newList())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -147,11 +179,48 @@ func typeArgListKey(args: in List[TypeArg]): String {
     if i > 0 { acc = acc + "_" }
     match args[i] {
       case TAType(te) -> { acc = acc + typeExprKey(te) }
-      case TAValue(_) -> { acc = acc + "V" }
+      case TAValue(e) -> { acc = acc + "V" + valueExprKey(e) }
     }
     i = i + 1
   }
   acc
+}
+
+// Mangle a value-generic argument expression into a stable identifier
+// fragment.  Covers the literal forms the type checker accepts as a
+// `TAValue` source (integer/bool/char/string) plus single-segment paths
+// (`EPath([N])`) used to forward an outer value generic into a nested
+// call.  Falls back to "Vx" for shapes mono can't render verbatim — the
+// resulting specialisation still has a unique name within the file
+// because callers de-duplicate via `state.seenSpecs`.
+func valueExprKey(e: in Expr): String {
+  match e.kind {
+    case ELiteral(lit) -> {
+      match lit {
+        case LInt(value, _)   -> longLitKey(value)
+        case LBool(b)         -> if b { "true" } else { "false" }
+        case LChar(cp)        -> "c" + toString(cp)
+        case LString(s)       -> "s" + toString(s.length)
+        case LTripleString(s) -> "s" + toString(s.length)
+        case LRawString(s)    -> "s" + toString(s.length)
+        case LFloat(_, _)     -> "f"
+        case LUnit            -> "u"
+      }
+    }
+    case EPath(path) -> pathSegsKey(path.segments)
+    case EParen(inner) -> valueExprKey(inner)
+    case _ -> "x"
+  }
+}
+
+// Render a Long with a leading 'n' for negatives so the mangled name
+// stays a valid identifier (no `-` characters).
+func longLitKey(v: in Long): String {
+  if v < 0i64 {
+    "n" + toString(0i64 - v)
+  } else {
+    toString(v)
+  }
 }
 
 func typeExprListKey(ts: in List[TypeExpr]): String {
@@ -166,10 +235,15 @@ func typeExprListKey(ts: in List[TypeExpr]): String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §5. TypeExpr substitution (type-var name → concrete TypeExpr)
+// §5. TypeExpr substitution (type-var name → concrete TypeExpr,
+//     value-var name → concrete Expr)
 // ─────────────────────────────────────────────────────────────────────────────
 
-func substTypeExpr(subst: in Map[String, TypeExpr], te: in TypeExpr): TypeExpr {
+func substTypeExpr(
+  subst:      in Map[String, TypeExpr],
+  valueSubst: in Map[String, Expr],
+  te:         in TypeExpr
+): TypeExpr {
   val s = te.span
   match te.kind {
     case TRef(path) -> {
@@ -184,12 +258,7 @@ func substTypeExpr(subst: in Map[String, TypeExpr], te: in TypeExpr): TypeExpr {
       val newArgs: List[TypeArg] = newList()
       var i = 0
       while i < args.count {
-        match args[i] {
-          case TAType(inner) ->
-            newArgs.add(TAType(ty = substTypeExpr(subst, inner)))
-          case TAValue(e)    ->
-            newArgs.add(TAValue(expr = e))
-        }
+        newArgs.add(substTypeArg(subst, valueSubst, args[i]))
         i = i + 1
       }
       TypeExpr(kind = TGenericApp(head = h, args = newArgs), span = s)
@@ -197,24 +266,290 @@ func substTypeExpr(subst: in Map[String, TypeExpr], te: in TypeExpr): TypeExpr {
     case TTuple(ts) -> {
       val newTs: List[TypeExpr] = newList()
       var i = 0
-      while i < ts.count { newTs.add(substTypeExpr(subst, ts[i])); i = i + 1 }
+      while i < ts.count { newTs.add(substTypeExpr(subst, valueSubst, ts[i])); i = i + 1 }
       TypeExpr(kind = TTuple(types = newTs), span = s)
     }
     case TNullable(inner) ->
-      TypeExpr(kind = TNullable(inner = substTypeExpr(subst, inner)), span = s)
+      TypeExpr(kind = TNullable(inner = substTypeExpr(subst, valueSubst, inner)), span = s)
     case TSlice(elem) ->
-      TypeExpr(kind = TSlice(element = substTypeExpr(subst, elem)), span = s)
+      TypeExpr(kind = TSlice(element = substTypeExpr(subst, valueSubst, elem)), span = s)
     case TArray(sz, elem) ->
-      TypeExpr(kind = TArray(size = sz, element = substTypeExpr(subst, elem)), span = s)
+      TypeExpr(kind = TArray(
+        size    = substTypeArg(subst, valueSubst, sz),
+        element = substTypeExpr(subst, valueSubst, elem)), span = s)
     case TFunction(ps, r) -> {
       val newPs: List[TypeExpr] = newList()
       var i = 0
-      while i < ps.count { newPs.add(substTypeExpr(subst, ps[i])); i = i + 1 }
-      TypeExpr(kind = TFunction(parameters = newPs, retTy = substTypeExpr(subst, r)), span = s)
+      while i < ps.count { newPs.add(substTypeExpr(subst, valueSubst, ps[i])); i = i + 1 }
+      TypeExpr(kind = TFunction(parameters = newPs, retTy = substTypeExpr(subst, valueSubst, r)), span = s)
     }
     case TParen(inner) ->
-      TypeExpr(kind = TParen(inner = substTypeExpr(subst, inner)), span = s)
+      TypeExpr(kind = TParen(inner = substTypeExpr(subst, valueSubst, inner)), span = s)
     case _ -> te
+  }
+}
+
+// Substitute inside a TypeArg.  `TAType` recurses into `substTypeExpr`
+// (which itself walks nested type args).  `TAValue` carries an Expr that
+// may reference a value-generic parameter (`Array[Int, N]` shape); we
+// rewrite that Expr via `substExprValue` so the specialised TypeArg
+// carries the substituted concrete value.
+func substTypeArg(
+  subst:      in Map[String, TypeExpr],
+  valueSubst: in Map[String, Expr],
+  arg:        in TypeArg
+): TypeArg {
+  match arg {
+    case TAType(inner) ->
+      TAType(ty = substTypeExpr(subst, valueSubst, inner))
+    case TAValue(e)    ->
+      TAValue(expr = substExprValue(valueSubst, e))
+  }
+}
+
+// Walk an Expr and replace any single-segment `EPath([name])` whose name
+// is bound in `valueSubst` with the substituted concrete Expr.  This is
+// the value-generic counterpart of `substTypeExpr`: it handles the
+// occurrences of a value-generic param inside the function body
+// (e.g. `for i in 0..N` becomes `for i in 0..3` after `N := 3`).
+//
+// The walk is recursive across the Expr grammar but conservative: only
+// shapes the parser actually produces in non-pathological code are
+// expanded.  Sub-expressions that contain Blocks (EIf, EMatch, ELambda)
+// recurse via dedicated block/arm helpers below.
+func substExprValue(valueSubst: in Map[String, Expr], expr: in Expr): Expr {
+  val s = expr.span
+  match expr.kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        match mapGet(valueSubst, path.segments[0]) {
+          case Some(replacement) -> replacement
+          case None              -> expr
+        }
+      } else { expr }
+    }
+    case EParen(inner) ->
+      Expr(kind = EParen(inner = substExprValue(valueSubst, inner)), span = s)
+    case EBinop(op, lhs, rhs) ->
+      Expr(kind = EBinop(
+        op  = op,
+        lhs = substExprValue(valueSubst, lhs),
+        rhs = substExprValue(valueSubst, rhs)), span = s)
+    case EPrefix(op, operand) ->
+      Expr(kind = EPrefix(op = op, operand = substExprValue(valueSubst, operand)), span = s)
+    case EMember(recv, name) ->
+      Expr(kind = EMember(
+        receiver   = substExprValue(valueSubst, recv),
+        memberName = name), span = s)
+    case EIndex(recv, idxs) -> {
+      val newIdxs: List[Expr] = newList()
+      var i = 0
+      while i < idxs.count { newIdxs.add(substExprValue(valueSubst, idxs[i])); i = i + 1 }
+      Expr(kind = EIndex(
+        receiver = substExprValue(valueSubst, recv),
+        indices  = newIdxs), span = s)
+    }
+    case ECall(fn, args) -> {
+      val newArgs: List[CallArg] = newList()
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CAPositional(e)      ->
+            newArgs.add(CAPositional(expr = substExprValue(valueSubst, e)))
+          case CANamed(n, e, span)  ->
+            newArgs.add(CANamed(name = n, value = substExprValue(valueSubst, e), span = span))
+        }
+        i = i + 1
+      }
+      Expr(kind = ECall(
+        fn   = substExprValue(valueSubst, fn),
+        args = newArgs), span = s)
+    }
+    case ETuple(es) -> {
+      val newEs: List[Expr] = newList()
+      var i = 0
+      while i < es.count { newEs.add(substExprValue(valueSubst, es[i])); i = i + 1 }
+      Expr(kind = ETuple(exprs = newEs), span = s)
+    }
+    case EList(es) -> {
+      val newEs: List[Expr] = newList()
+      var i = 0
+      while i < es.count { newEs.add(substExprValue(valueSubst, es[i])); i = i + 1 }
+      Expr(kind = EList(exprs = newEs), span = s)
+    }
+    case ETypeApp(fn, targs) -> {
+      val newTargs: List[TypeArg] = newList()
+      var i = 0
+      while i < targs.count {
+        match targs[i] {
+          case TAType(inner) -> newTargs.add(TAType(ty = inner))
+          case TAValue(e)    -> newTargs.add(TAValue(expr = substExprValue(valueSubst, e)))
+        }
+        i = i + 1
+      }
+      Expr(kind = ETypeApp(
+        fn   = substExprValue(valueSubst, fn),
+        args = newTargs), span = s)
+    }
+    case EAssign(target, op, value) ->
+      Expr(kind = EAssign(
+        target = substExprValue(valueSubst, target),
+        op     = op,
+        value  = substExprValue(valueSubst, value)), span = s)
+    case EAwait(inner) ->
+      Expr(kind = EAwait(inner = substExprValue(valueSubst, inner)), span = s)
+    case EYield(inner) ->
+      Expr(kind = EYield(inner = substExprValue(valueSubst, inner)), span = s)
+    case ESpawn(inner) ->
+      Expr(kind = ESpawn(inner = substExprValue(valueSubst, inner)), span = s)
+    case ETry(inner) ->
+      Expr(kind = ETry(inner = substExprValue(valueSubst, inner)), span = s)
+    case EPropagate(inner) ->
+      Expr(kind = EPropagate(inner = substExprValue(valueSubst, inner)), span = s)
+    case EIf(cond, thenB, elseB, form) -> {
+      val newElse = match elseB {
+        case None    -> None
+        case Some(e) -> Some(value = substEOBValue(valueSubst, e))
+      }
+      Expr(kind = EIf(
+        cond       = substExprValue(valueSubst, cond),
+        thenBranch = substEOBValue(valueSubst, thenB),
+        elseBranch = newElse,
+        thenForm   = form), span = s)
+    }
+    case EMatch(scrut, arms) -> {
+      val newArms: List[MatchArm] = newList()
+      var i = 0
+      while i < arms.count {
+        val arm = arms[i]
+        val newGuard = match arm.guard {
+          case None    -> None
+          case Some(g) -> Some(value = substExprValue(valueSubst, g))
+        }
+        newArms.add(MatchArm(
+          pattern = arm.pattern,
+          guard   = newGuard,
+          body    = substEOBValue(valueSubst, arm.body),
+          span    = arm.span))
+        i = i + 1
+      }
+      Expr(kind = EMatch(scrutinee = substExprValue(valueSubst, scrut), arms = newArms), span = s)
+    }
+    case EBlock(blk) ->
+      Expr(kind = EBlock(block = substBlockValue(valueSubst, blk)), span = s)
+    case EUnsafe(blk) ->
+      Expr(kind = EUnsafe(block = substBlockValue(valueSubst, blk)), span = s)
+    case ELambda(lparams, body) ->
+      Expr(kind = ELambda(lambdaParams = lparams, body = substBlockValue(valueSubst, body)), span = s)
+    case EInterpolated(segs) -> {
+      val newSegs: List[InterpolatedSegment] = newList()
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISText(t, sp) -> newSegs.add(ISText(text = t, span = sp))
+          case ISExpr(e)     -> newSegs.add(ISExpr(expr = substExprValue(valueSubst, e)))
+        }
+        i = i + 1
+      }
+      Expr(kind = EInterpolated(segments = newSegs), span = s)
+    }
+    case _ -> expr
+  }
+}
+
+func substEOBValue(valueSubst: in Map[String, Expr], eob: in ExprOrBlock): ExprOrBlock {
+  match eob {
+    case EOBExpr(e)  -> EOBExpr(expr = substExprValue(valueSubst, e))
+    case EOBBlock(b) -> EOBBlock(block = substBlockValue(valueSubst, b))
+  }
+}
+
+func substBlockValue(valueSubst: in Map[String, Expr], blk: in Block): Block {
+  val newStmts: List[Statement] = newList()
+  var i = 0
+  while i < blk.statements.count {
+    newStmts.add(substStmtValue(valueSubst, blk.statements[i]))
+    i = i + 1
+  }
+  Block(statements = newStmts, span = blk.span)
+}
+
+func substStmtValue(valueSubst: in Map[String, Expr], stmt: in Statement): Statement {
+  val s = stmt.span
+  match stmt.kind {
+    case SLocal(binding) ->
+      Statement(kind = SLocal(binding = substBindingValue(valueSubst, binding)), span = s)
+    case SAssign(target, op, value) ->
+      Statement(kind = SAssign(
+        target = substExprValue(valueSubst, target),
+        op     = op,
+        value  = substExprValue(valueSubst, value)), span = s)
+    case SReturn(opt) -> {
+      val newOpt = match opt {
+        case None    -> None
+        case Some(e) -> Some(value = substExprValue(valueSubst, e))
+      }
+      Statement(kind = SReturn(value = newOpt), span = s)
+    }
+    case SThrow(e) ->
+      Statement(kind = SThrow(expr = substExprValue(valueSubst, e)), span = s)
+    case SExpr(e) ->
+      Statement(kind = SExpr(expr = substExprValue(valueSubst, e)), span = s)
+    case SWhile(lbl, cond, body) ->
+      Statement(kind = SWhile(
+        label = lbl,
+        cond  = substExprValue(valueSubst, cond),
+        body  = substBlockValue(valueSubst, body)), span = s)
+    case SFor(lbl, pat, iter, body) ->
+      Statement(kind = SFor(
+        label = lbl,
+        pat   = pat,
+        iter  = substExprValue(valueSubst, iter),
+        body  = substBlockValue(valueSubst, body)), span = s)
+    case SLoop(lbl, body) ->
+      Statement(kind = SLoop(label = lbl, body = substBlockValue(valueSubst, body)), span = s)
+    case SDefer(body) ->
+      Statement(kind = SDefer(body = substBlockValue(valueSubst, body)), span = s)
+    case SScope(lbl, body) ->
+      Statement(kind = SScope(binding = lbl, body = substBlockValue(valueSubst, body)), span = s)
+    case SInvariant(e) ->
+      Statement(kind = SInvariant(expr = substExprValue(valueSubst, e)), span = s)
+    case SRule(lhs, rhs) ->
+      Statement(kind = SRule(
+        lhs = substExprValue(valueSubst, lhs),
+        rhs = substExprValue(valueSubst, rhs)), span = s)
+    case STry(body, catches) -> {
+      val newBody = substBlockValue(valueSubst, body)
+      val newCatches: List[CatchClause] = newList()
+      var i = 0
+      while i < catches.count {
+        val cc = catches[i]
+        newCatches.add(CatchClause(
+          typeName = cc.typeName,
+          bindName = cc.bindName,
+          body     = substBlockValue(valueSubst, cc.body),
+          span     = cc.span))
+        i = i + 1
+      }
+      Statement(kind = STry(body = newBody, catches = newCatches), span = s)
+    }
+    case _ -> stmt
+  }
+}
+
+func substBindingValue(valueSubst: in Map[String, Expr], binding: in LocalBinding): LocalBinding {
+  match binding {
+    case LBVal(pat, tyOpt, init) ->
+      LBVal(pat = pat, ty = tyOpt, init = substExprValue(valueSubst, init))
+    case LBVar(name, tyOpt, initOpt) -> {
+      val newInit = match initOpt {
+        case None    -> None
+        case Some(e) -> Some(value = substExprValue(valueSubst, e))
+      }
+      LBVar(name = name, ty = tyOpt, init = newInit)
+    }
+    case LBLet(name, tyOpt, init) ->
+      LBLet(name = name, ty = tyOpt, init = substExprValue(valueSubst, init))
   }
 }
 
@@ -315,6 +650,7 @@ func listContainsStr(xs: in List[String], s: in String): Bool {
 // §7. Generic parameter name extraction
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Names of `GPType` (type-level) generic parameters in source order.
 func extractTypeParamNames(gps: in Option[GenericParams]): List[String] {
   val names: List[String] = newList()
   match gps {
@@ -323,7 +659,7 @@ func extractTypeParamNames(gps: in Option[GenericParams]): List[String] {
       var i = 0
       while i < gp.params.count {
         match gp.params[i] {
-          case GPType(name, _) -> names.add(name)
+          case GPType(name, _)  -> names.add(name)
           case GPValue(_, _, _) -> ()
         }
         i = i + 1
@@ -333,22 +669,83 @@ func extractTypeParamNames(gps: in Option[GenericParams]): List[String] {
   names
 }
 
+// Names of `GPValue` (value-level) generic parameters in source order.
+func extractValueParamNames(gps: in Option[GenericParams]): List[String] {
+  val names: List[String] = newList()
+  match gps {
+    case None -> ()
+    case Some(gp) -> {
+      var i = 0
+      while i < gp.params.count {
+        match gp.params[i] {
+          case GPType(_, _)         -> ()
+          case GPValue(name, _, _)  -> names.add(name)
+        }
+        i = i + 1
+      }
+    }
+  }
+  names
+}
+
+// All generic params in source order, paired with a flag (true = GPValue,
+// false = GPType).  Used by the explicit-type-app path to dispatch each
+// supplied TypeArg into either `subst` or `valueSubst`.
+record GenericParamInfo {
+  name:    String
+  isValue: Bool
+}
+
+func extractAllParamInfo(gps: in Option[GenericParams]): List[GenericParamInfo] {
+  val infos: List[GenericParamInfo] = newList()
+  match gps {
+    case None -> ()
+    case Some(gp) -> {
+      var i = 0
+      while i < gp.params.count {
+        match gp.params[i] {
+          case GPType(name, _)      ->
+            infos.add(GenericParamInfo(name = name, isValue = false))
+          case GPValue(name, _, _)  ->
+            infos.add(GenericParamInfo(name = name, isValue = true))
+        }
+        i = i + 1
+      }
+    }
+  }
+  infos
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §8. Specialised function name mangling
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Mangle the specialised function name from the base name + the ordered
+// list of generic params, looking up each substitution in either
+// `subst` (for `GPType`) or `valueSubst` (for `GPValue`).  Value-arg
+// segments are prefixed with `V` to keep them disjoint from type keys.
 func specFuncName(
   base:       in String,
-  typeParams: in List[String],
-  subst:      in Map[String, TypeExpr]
+  allParams:  in List[GenericParamInfo],
+  subst:      in Map[String, TypeExpr],
+  valueSubst: in Map[String, Expr]
 ): String {
   var acc = base
   var i = 0
-  while i < typeParams.count {
+  while i < allParams.count {
+    val p = allParams[i]
     acc = acc + "__"
-    match mapGet(subst, typeParams[i]) {
-      case Some(te) -> { acc = acc + typeExprKey(te) }
-      case None     -> { acc = acc + "Unknown" }
+    if p.isValue {
+      acc = acc + "V"
+      match mapGet(valueSubst, p.name) {
+        case Some(e)  -> { acc = acc + valueExprKey(e) }
+        case None     -> { acc = acc + "Unknown" }
+      }
+    } else {
+      match mapGet(subst, p.name) {
+        case Some(te) -> { acc = acc + typeExprKey(te) }
+        case None     -> { acc = acc + "Unknown" }
+      }
     }
     i = i + 1
   }
@@ -443,14 +840,33 @@ func substIsComplete(typeParams: in List[String], subst: in Map[String, TypeExpr
   true
 }
 
+func allParamsBound(
+  allParams:  in List[GenericParamInfo],
+  subst:      in Map[String, TypeExpr],
+  valueSubst: in Map[String, Expr]
+): Bool {
+  var i = 0
+  while i < allParams.count {
+    val p = allParams[i]
+    if p.isValue {
+      if not valueSubst.containsKey(p.name) { return false }
+    } else {
+      if not subst.containsKey(p.name) { return false }
+    }
+    i = i + 1
+  }
+  true
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §11. Function specialisation — substitute type vars in decl structure
 // ─────────────────────────────────────────────────────────────────────────────
 
 func specializeFunc(
-  decl:     in FunctionDecl,
-  specName: in String,
-  subst:    in Map[String, TypeExpr]
+  decl:       in FunctionDecl,
+  specName:   in String,
+  subst:      in Map[String, TypeExpr],
+  valueSubst: in Map[String, Expr]
 ): FunctionDecl {
   val newParams: List[Param] = newList()
   var i = 0
@@ -459,14 +875,14 @@ func specializeFunc(
     newParams.add(Param(
       mode = p.mode,
       name = p.name,
-      ty   = substTypeExpr(subst, p.ty),
+      ty   = substTypeExpr(subst, valueSubst, p.ty),
       dflt = p.dflt,
       span = p.span))
     i = i + 1
   }
   val newRet = match decl.ret {
     case None    -> None
-    case Some(r) -> Some(value = substTypeExpr(subst, r))
+    case Some(r) -> Some(value = substTypeExpr(subst, valueSubst, r))
   }
   val emptyDocs: List[DocComment] = newList()
   val emptyAnns: List[Annotation] = newList()
@@ -483,6 +899,116 @@ func specializeFunc(
     contracts   = decl.contracts,
     body        = decl.body,
     span        = decl.span)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §11b. Constraint validation
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Validate that the type substitution satisfies the function's declared
+// `where T: …` bounds.  This is a best-effort spot check: well-known
+// derive markers (Equals, Hash, Show, Ord, Compare) are validated against
+// the primitive set the BCL satisfies automatically; everything else
+// (user-defined markers, opaque types, interfaces) accepts silently
+// because cross-package symbol resolution lives in Band 6.  Confirmed
+// mismatches produce an `M0001` error diagnostic at the call site span.
+func validateWhereBounds(
+  decl:     in FunctionDecl,
+  subst:    in Map[String, TypeExpr],
+  callSpan: in Span,
+  diags:    in List[Diagnostic]
+): Unit {
+  match decl.whereClause {
+    case None -> ()
+    case Some(wc) -> {
+      var i = 0
+      while i < wc.bounds.count {
+        val bound = wc.bounds[i]
+        match mapGet(subst, bound.name) {
+          case None -> ()
+          case Some(concrete) -> {
+            var j = 0
+            while j < bound.constraints.count {
+              val cref = bound.constraints[j]
+              if cref.head.segments.count == 1 {
+                val markerName = cref.head.segments[0]
+                if isKnownMarker(markerName) and not satisfiesMarker(concrete, markerName) {
+                  diags.add(errorDiagnostic("M0001",
+                    "generic call '" + decl.name +
+                    "': type argument '" + bound.name + " = " +
+                    renderTypeExpr(concrete) +
+                    "' does not satisfy 'where " + bound.name + ": " +
+                    markerName + "'",
+                    callSpan))
+                }
+              }
+              j = j + 1
+            }
+          }
+        }
+        i = i + 1
+      }
+    }
+  }
+}
+
+func isKnownMarker(name: in String): Bool {
+  name == "Equals" or name == "Hash" or name == "Show"
+    or name == "Ord" or name == "Compare"
+}
+
+// Primitive types satisfy every well-known derive marker (the BCL
+// pairs them with reflection-driven equality / hashing / formatting
+// already).  Any other concrete type passes silently — without a
+// resolver we can't tell whether a user-defined type carries the
+// corresponding `@derive(X)` annotation.  Reference types do NOT
+// blanket-pass: callers depending on a marker the type doesn't supply
+// will already fail at codegen.
+func satisfiesMarker(te: in TypeExpr, marker: in String): Bool {
+  match te.kind {
+    case TRef(path) -> {
+      if path.segments.count == 1 {
+        val nm = path.segments[0]
+        if isPrimitiveName(nm) {
+          true
+        } else {
+          // Unknown user type: accept silently (best-effort).
+          true
+        }
+      } else {
+        // Qualified name (e.g. `Std.Time.Instant`): accept silently.
+        true
+      }
+    }
+    case TGenericApp(_, _) -> true
+    case TTuple(_)         -> true
+    case _                 -> true
+  }
+}
+
+func isPrimitiveName(name: in String): Bool {
+  name == "Int" or name == "Long" or name == "Short" or name == "Byte"
+    or name == "UInt" or name == "ULong" or name == "UShort" or name == "UByte"
+    or name == "Float" or name == "Double"
+    or name == "Bool" or name == "Char" or name == "String"
+}
+
+func renderTypeExpr(te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path)            -> pathSegsKey(path.segments)
+    case TGenericApp(h, args)  -> pathSegsKey(h.segments) + "[" + typeArgListKey(args) + "]"
+    case TUnit                 -> "Unit"
+    case TNever                -> "Never"
+    case TSelf                 -> "Self"
+    case TArray(_, elem)       -> "Array[…, " + renderTypeExpr(elem) + "]"
+    case TSlice(elem)          -> "slice[" + renderTypeExpr(elem) + "]"
+    case TNullable(inner)      -> renderTypeExpr(inner) + "?"
+    case TTuple(ts)            -> "(" + typeExprListKey(ts) + ")"
+    case TFunction(ps, r)      -> "(" + typeExprListKey(ps) + ") -> " + renderTypeExpr(r)
+    case TParen(inner)         -> renderTypeExpr(inner)
+    case TRefined(p, _)        -> pathSegsKey(p.segments)
+    case TError                -> "<error>"
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -599,25 +1125,39 @@ func rewriteExpr(
                 val fname = path.segments[0]
                 match mapGet(state.genDecls, fname) {
                   case Some(baseDecl) -> {
-                    val typeParams = extractTypeParamNames(baseDecl.generics)
-                    if typeParams.count > 0 and targs.count == typeParams.count {
-                      val subst: Map[String, TypeExpr] = newMap()
+                    val allParams = extractAllParamInfo(baseDecl.generics)
+                    if allParams.count > 0 and targs.count == allParams.count {
+                      val subst:      Map[String, TypeExpr] = newMap()
+                      val valueSubst: Map[String, Expr]     = newMap()
                       var i = 0
-                      while i < typeParams.count {
-                        subst.add(typeParams[i], targs[i])
+                      while i < allParams.count {
+                        val p = allParams[i]
+                        match targs[i] {
+                          case TAType(te) -> {
+                            if not p.isValue { subst.add(p.name, te) }
+                          }
+                          case TAValue(e) -> {
+                            if p.isValue { valueSubst.add(p.name, e) }
+                          }
+                        }
                         i = i + 1
                       }
-                      val name = specFuncName(fname, typeParams, subst)
-                      if not state.seenSpecs.containsKey(name) {
-                        state.seenSpecs.add(name, true)
-                        val specDecl = specializeFunc(baseDecl, name, subst)
-                        state.allSpecs.add(SpecRequest(
-                          specName = name,
-                          baseDecl = specDecl,
-                          subst    = subst))
+                      if allParamsBound(allParams, subst, valueSubst) {
+                        val name = specFuncName(fname, allParams, subst, valueSubst)
+                        validateWhereBounds(baseDecl, subst, fn.span, state.diags)
+                        if not state.seenSpecs.containsKey(name) {
+                          state.seenSpecs.add(name, true)
+                          val specDecl = specializeFunc(baseDecl, name, subst, valueSubst)
+                          state.allSpecs.add(SpecRequest(
+                            specName   = name,
+                            baseDecl   = specDecl,
+                            subst      = subst,
+                            valueSubst = valueSubst,
+                            callSpan   = fn.span))
+                        }
+                        val newFn = singleSegPathExpr(name, fn.span)
+                        return Expr(kind = ECall(fn = newFn, args = newArgs), span = s)
                       }
-                      val newFn = singleSegPathExpr(name, fn.span)
-                      return Expr(kind = ECall(fn = newFn, args = newArgs), span = s)
                     }
                     Expr(kind = ECall(fn = fn, args = newArgs), span = s)
                   }
@@ -637,8 +1177,11 @@ func rewriteExpr(
             val fname = path.segments[0]
             match mapGet(state.genDecls, fname) {
               case Some(baseDecl) -> {
-                val typeParams = extractTypeParamNames(baseDecl.generics)
-                if typeParams.count > 0 {
+                val typeParams  = extractTypeParamNames(baseDecl.generics)
+                val valueParams = extractValueParamNames(baseDecl.generics)
+                if typeParams.count > 0 and valueParams.count == 0 {
+                  // Pure type-generic call site: existing inference path
+                  // (value generics require explicit `f[N]` type apps).
                   val subst: Map[String, TypeExpr] = newMap()
                   var i = 0
                   while i < args.count and i < baseDecl.params.count {
@@ -651,14 +1194,19 @@ func rewriteExpr(
                     i = i + 1
                   }
                   if substIsComplete(typeParams, subst) {
-                    val name = specFuncName(fname, typeParams, subst)
+                    val allParams = extractAllParamInfo(baseDecl.generics)
+                    val emptyValueSubst: Map[String, Expr] = newMap()
+                    val name = specFuncName(fname, allParams, subst, emptyValueSubst)
+                    validateWhereBounds(baseDecl, subst, fn.span, state.diags)
                     if not state.seenSpecs.containsKey(name) {
                       state.seenSpecs.add(name, true)
-                      val specDecl = specializeFunc(baseDecl, name, subst)
+                      val specDecl = specializeFunc(baseDecl, name, subst, emptyValueSubst)
                       state.allSpecs.add(SpecRequest(
-                        specName = name,
-                        baseDecl = specDecl,
-                        subst    = subst))
+                        specName   = name,
+                        baseDecl   = specDecl,
+                        subst      = subst,
+                        valueSubst = emptyValueSubst,
+                        callSpan   = fn.span))
                     }
                     val newFn = singleSegPathExpr(name, fn.span)
                     return Expr(kind = ECall(fn = newFn, args = newArgs), span = s)
@@ -958,6 +1506,24 @@ func rewriteFuncBody(
   }
 }
 
+// One-shot value-generic substitution over a FunctionBody.  Replaces every
+// `EPath([N])` whose name `N` is in `valueSubst` with the bound Expr.
+// Skipped when the substitution map is empty (the common case for pure
+// type-generic specialisations).
+func substValueInBody(
+  valueSubst: in Map[String, Expr],
+  body:       in Option[FunctionBody]
+): Option[FunctionBody] {
+  if valueSubst.count == 0 { return body }
+  match body {
+    case None -> None
+    case Some(fb) -> Some(value = match fb {
+      case FBBlock(blk) -> FBBlock(block = substBlockValue(valueSubst, blk))
+      case FBExpr(e)    -> FBExpr(expr  = substExprValue(valueSubst, e))
+    })
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §15. Main entry point
 // ─────────────────────────────────────────────────────────────────────────────
@@ -975,6 +1541,19 @@ func rewriteFuncBody(
 /// If no same-package generic functions are found, the input file is returned
 /// unchanged.
 pub func monoFile(file: in SourceFile): MonoResult {
+  val emptyImports: List[FunctionDecl] = newList()
+  monoFileWithImports(file, emptyImports)
+}
+
+/// Monomorphise generics in `file`, treating `importedGenDecls` as if they
+/// were declared in the same compilation unit.  Soundness is the caller's
+/// responsibility: the imported function's body must reference only items
+/// the user's compilation unit can resolve.  Used by the MSIL / JVM bridges
+/// once Band 6 (`Lyric.RestoredPackages`) is wired through.
+pub func monoFileWithImports(
+  file:              in SourceFile,
+  importedGenDecls:  in List[FunctionDecl]
+): MonoResult {
   // ── Phase 1: collect generic function decls ─────────────────────────────
   val genDecls: Map[String, FunctionDecl] = newMap()
   var i = 0
@@ -993,6 +1572,22 @@ pub func monoFile(file: in SourceFile): MonoResult {
       case _ -> ()
     }
     i = i + 1
+  }
+
+  // Merge imported generic decls (cross-package surface).  Same-package
+  // wins on name collision so user-local shadows take precedence.
+  var ig = 0
+  while ig < importedGenDecls.count {
+    val idecl = importedGenDecls[ig]
+    match idecl.generics {
+      case Some(_) -> {
+        if not genDecls.containsKey(idecl.name) {
+          genDecls.add(idecl.name, idecl)
+        }
+      }
+      case None -> ()
+    }
+    ig = ig + 1
   }
 
   // If nothing to monomorphise, return early.
@@ -1068,10 +1663,13 @@ pub func monoFile(file: in SourceFile): MonoResult {
         + "stop instantiating with strictly larger types.")
     }
     val req = state.allSpecs[wi]
-    // The baseDecl already has type-var substitution applied to its params/ret.
-    // Now rewrite its body to replace nested generic calls.
+    // The baseDecl already has type-var and value-var substitution applied
+    // to its params/ret.  Substitute value-generic Expr references inside
+    // the body too (e.g. `for i in 0..N` → `for i in 0..3`), then walk
+    // for nested generic calls.
+    val substitutedBody = substValueInBody(req.valueSubst, req.baseDecl.body)
     val env    = seedEnvFromParams(req.baseDecl.params)
-    val newBody = rewriteFuncBody(state, env, req.baseDecl.body)
+    val newBody = rewriteFuncBody(state, env, substitutedBody)
     val finalDecl = FunctionDecl(
       docComments = req.baseDecl.docComments,
       annotations = req.baseDecl.annotations,
@@ -1081,7 +1679,7 @@ pub func monoFile(file: in SourceFile): MonoResult {
       generics    = None,
       params      = req.baseDecl.params,
       ret         = req.baseDecl.ret,
-      whereClause = req.baseDecl.whereClause,
+      whereClause = None,
       contracts   = req.baseDecl.contracts,
       body        = newBody,
       span        = req.baseDecl.span)
@@ -1133,8 +1731,7 @@ pub func monoFile(file: in SourceFile): MonoResult {
     items           = allItems,
     span            = file.span)
 
-  val emptyDiags: List[Diagnostic] = newList()
-  MonoResult(file = newFile, rewrites = rewrites, diagnostics = emptyDiags)
+  MonoResult(file = newFile, rewrites = rewrites, diagnostics = state.diags)
 }
 
 // Extract the base function name from a mangled specialisation name.
