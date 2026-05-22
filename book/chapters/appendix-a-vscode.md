@@ -9,7 +9,22 @@ The Lyric VS Code extension is backed by `lyric-lsp`, a language server built fr
 - VS Code 1.70+
 - `lyric` installed and on your `PATH`
 
-**Step 1.** The language server binary (`lyric-lsp`) ships alongside the compiler in the same distribution. If it is not already on your `PATH`, locate it next to the `lyric` binary in your install directory (e.g. `~/.lyric/bin/lyric-lsp` on Linux and macOS, or `~/.lyric/bin/lyric-lsp.exe` on Windows).
+**Step 1.** Obtain `lyric-lsp` — the language server binary the extension talks to.
+
+> **Heads up:** today the standard install (`scripts/install.sh` and the published release archives at `https://github.com/nichobbs/lyric-lang/releases`) ship only the `lyric` compiler binary, not `lyric-lsp`.  Pre-built `lyric-lsp` binaries will ship alongside `lyric` in a future release (see #652).  In the meantime, build the language server from source:
+
+```sh
+cd lyric-lang
+./scripts/bootstrap.sh --stage 1
+# Build the self-hosted LSP driver from `lyric-compiler/lyric/lsp.l`:
+dotnet build bootstrap/src/Lyric.Cli.Aot
+# The resulting binary at
+#   bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric
+# can run the LSP via `lyric lsp`; alias or symlink it as `lyric-lsp`:
+ln -sf "$(pwd)/bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric" ~/.local/bin/lyric-lsp
+```
+
+Set `lyric.serverPath` in VS Code (see below) to point at the symlink.
 
 **Step 2.** Install the extension's Node.js dependencies and compile the TypeScript:
 
