@@ -160,6 +160,7 @@ pub func compileToJar(
 
   // Monomorphise same-package generic calls (Band 5 — docs/41 §9).
   val monoRes = monoFile(derived)
+  if reportAndAbort(monoRes.diagnostics) { return false }
   val file = monoRes.file
 
   val pkg    = codegenPackage(file)

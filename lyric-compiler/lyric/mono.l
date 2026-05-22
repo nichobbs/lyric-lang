@@ -50,10 +50,18 @@ pub record MonoResult {
   /// Rewritten SourceFile: generic IFunc items are removed, specialised
   /// IFunc items are appended, and call sites in non-generic items are
   /// rewritten to use the specialised names.
-  file:     SourceFile
+  file:        SourceFile
   /// Maps generic function names to the last-seen specialised name (for
   /// downstream diagnostics; not needed for correctness).
-  rewrites: Map[String, String]
+  rewrites:    Map[String, String]
+  /// Monomorphisation diagnostics (e.g. inference failures, conflicting
+  /// specialisations).  Empty in the current implementation — the pass
+  /// silently falls back to leaving generic call sites unspecialised
+  /// when type arguments can't be inferred (see #349 for the inference
+  /// gaps).  Reserved so the bridges can route mono diagnostics through
+  /// `reportAndAbort` consistently with the other pipeline stages,
+  /// without churning their plumbing when mono starts emitting them.
+  diagnostics: List[Diagnostic]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -990,7 +998,8 @@ pub func monoFile(file: in SourceFile): MonoResult {
   // If nothing to monomorphise, return early.
   if genDecls.count == 0 {
     val emptyRewrites: Map[String, String] = newMap()
-    return MonoResult(file = file, rewrites = emptyRewrites)
+    val emptyDiags:    List[Diagnostic]    = newList()
+    return MonoResult(file = file, rewrites = emptyRewrites, diagnostics = emptyDiags)
   }
 
   val state = newMonoState(genDecls)
@@ -1124,7 +1133,8 @@ pub func monoFile(file: in SourceFile): MonoResult {
     items           = allItems,
     span            = file.span)
 
-  MonoResult(file = newFile, rewrites = rewrites)
+  val emptyDiags: List[Diagnostic] = newList()
+  MonoResult(file = newFile, rewrites = rewrites, diagnostics = emptyDiags)
 }
 
 // Extract the base function name from a mangled specialisation name.

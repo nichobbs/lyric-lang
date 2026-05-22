@@ -95,6 +95,7 @@ pub func compileToMsil(
 
   // Monomorphise same-package generic calls (Band 5 — docs/41 §9).
   val monoRes = monoFile(derived)
+  if reportAndAbort(monoRes.diagnostics) { return false }
   val file = monoRes.file
 
   // Reconstruct the package name as a dotted string (e.g. "Hello" or
