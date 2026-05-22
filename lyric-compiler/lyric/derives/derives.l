@@ -112,6 +112,16 @@ func call1(fn: in String, arg: in Expr): Expr {
   mkExpr(ECall(fn = pathExpr(fn), args = args), sp())
 }
 
+// `recv.methodName(a1, a2)` — used to chain `String.replace` calls when
+// JSON-escaping String field values inside synthesised `toJson` bodies.
+func methodCall2(recv: in Expr, methodName: in String, a1: in Expr, a2: in Expr): Expr {
+  val args: List[CallArg] = newList()
+  args.add(CAPositional(expr = a1))
+  args.add(CAPositional(expr = a2))
+  val callee = mkExpr(EMember(receiver = recv, memberName = methodName), sp())
+  mkExpr(ECall(fn = callee, args = args), sp())
+}
+
 func binop(op: in BinOp, lhs: in Expr, rhs: in Expr): Expr {
   mkExpr(EBinop(op = op, lhs = lhs, rhs = rhs), sp())
 }
@@ -339,7 +349,15 @@ func synthesizeShowDistinct(typeName: in String, projMethod: in String): Item {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Render a field value as a JSON string fragment.
-// String fields get surrounding double-quote escapes; primitives use toString.
+// String fields get JSON-escaped (backslash and double-quote rewritten
+// to their `\\`-prefixed escape sequences) and wrapped in double quotes
+// so the resulting `toJson` output is valid JSON even when the field
+// contains `"` or `\`.  Newlines / tabs / other control characters are
+// NOT yet escaped — that's a follow-up once the synthesiser can call a
+// dedicated `__lyricJsonEscape` helper or `Std.Json.encodeString`.
+// Primitive types use `toString`.
+// #936: previously emitted `"\"" + self.field + "\""` directly,
+// producing invalid JSON when `self.field` contained `"` or `\`.
 func jsonFieldExpr(fieldExpr: in Expr, ty: in TypeExpr): Expr {
   val typeName = match ty.kind {
     case TRef(path) -> {
@@ -348,7 +366,18 @@ func jsonFieldExpr(fieldExpr: in Expr, ty: in TypeExpr): Expr {
     case _ -> ""
   }
   if typeName == "String" {
-    strCat(strCat(strLit("\""), fieldExpr), strLit("\""))
+    // self.field
+    //   .replace("\\", "\\\\")   // must be first so the \\ introduced
+    //   .replace("\"", "\\\"")   //   by the next step isn't doubled
+    //   .replace("\n", "\\n")
+    //   .replace("\r", "\\r")
+    //   .replace("\t", "\\t")
+    val esc1 = methodCall2(fieldExpr, "replace", strLit("\\"), strLit("\\\\"))
+    val esc2 = methodCall2(esc1,      "replace", strLit("\""), strLit("\\\""))
+    val esc3 = methodCall2(esc2,      "replace", strLit("\n"), strLit("\\n"))
+    val esc4 = methodCall2(esc3,      "replace", strLit("\r"), strLit("\\r"))
+    val esc5 = methodCall2(esc4,      "replace", strLit("\t"), strLit("\\t"))
+    strCat(strCat(strLit("\""), esc5), strLit("\""))
   } else {
     call1("toString", fieldExpr)
   }
@@ -396,6 +425,10 @@ func projectionMethod(underlyingName: in String): String {
   if underlyingName == "Float"  { return "toFloat" }
   if underlyingName == "Double" { return "toDouble" }
   if underlyingName == "String" { return "toString" }
+  // #938 / #952: Bool falls through to "toValue" without this case;
+  // distinct-type wrappers around Bool need toBool() projection or
+  // the synthesised UFCS calls reference a method that doesn't exist.
+  if underlyingName == "Bool"   { return "toBool" }
   "toValue"
 }
 

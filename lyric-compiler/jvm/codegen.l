@@ -2965,8 +2965,8 @@ record ImplEntry {
 // Convert a single-segment or multi-segment TypeExpr to a JVM binary class name.
 // Used to resolve `impl Y for X` target from the AST.
 //
-// #904: the non-TRef fallback used to return `pkgName + "/$unknown"` —
-// not a valid JVM binary name and unreferenceable by the class loader.
+// The non-TRef fallback used to return `pkgName + "/$unknown"` — not a
+// valid JVM binary name and unreferenceable by the class loader.
 // `panic` here surfaces the gap at codegen time with a clear message
 // instead of letting an `interfaces` array reference a nonexistent
 // class and tripping `ClassNotFoundException: pkg/$unknown` at JVM
@@ -2986,7 +2986,7 @@ func typeExprToJvmClass(te: in TypeExpr, pkgName: in String): String {
       "Jvm.Codegen: `impl Y for X` target is not a TRef (path) — got an " +
       "unsupported TypeExpr shape; refusing to emit an unbindable JVM " +
       "class name.  Add a TypeExpr arm to typeExprToJvmClass if a new " +
-      "impl-target shape is intended (#904).")
+      "impl-target shape is intended.")
   }
 }
 

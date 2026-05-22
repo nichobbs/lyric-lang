@@ -13,7 +13,7 @@ let tests =
     testList "Jvm.Lowering B133 (IInterface codegen pipeline, Band 3)" [
 
         testCase "b133_interface_codegen_pipeline" <| fun () ->
-            // #899: wipe any stale JAR from a prior run so `File.Exists`
+            // Wipe any stale JAR from a prior run so `File.Exists`
             // can't pass on a leftover artifact when the new compile
             // silently fails to overwrite.
             let jarPath = "/tmp/lyric-jvm-b133/iface.jar"

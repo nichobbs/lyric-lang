@@ -54,7 +54,7 @@ pub func compileToMsil(
   var si = 0
   while si < stdlibSources.count {
     val stdPr = parse(stdlibSources[si])
-    // #905: surface stdlib parse diagnostics so a botched edit to a stdlib
+    // Surface stdlib parse diagnostics so a botched edit to a stdlib
     // source file doesn't silently produce an incomplete `importedItems`
     // list (which would later surface as opaque T0010/T0014 errors in
     // user code).  Advisory only — a stdlib parse warning shouldn't

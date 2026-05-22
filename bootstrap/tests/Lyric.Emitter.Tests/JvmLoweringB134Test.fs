@@ -13,7 +13,8 @@ let tests =
     testList "Jvm.Lowering B134 (IImpl codegen pipeline, Band 3)" [
 
         testCase "b134_impl_codegen_pipeline" <| fun () ->
-            // #899: wipe any stale JAR from a prior run.
+            // Wipe any stale JAR from a prior run so File.Exists
+            // can't pass on a leftover artifact.
             let jarPath = "/tmp/lyric-jvm-b134/impl.jar"
             try if File.Exists jarPath then File.Delete jarPath with _ -> ()
 
