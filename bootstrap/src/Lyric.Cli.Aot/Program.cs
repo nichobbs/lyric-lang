@@ -44,7 +44,9 @@ public static class Program
         var cliBase = Path.Combine(up, "Lyric.Cli", "bin");
         if (!Directory.Exists(cliBase)) return;
 
-        foreach (var cfg in Directory.GetDirectories(cliBase))
+        var cfgDirs = Directory.GetDirectories(cliBase);
+        Array.Sort(cfgDirs);
+        foreach (var cfg in cfgDirs)
         {
             var dll = Path.Combine(cfg, "net10.0", "lyric.dll");
             if (!File.Exists(dll)) continue;
