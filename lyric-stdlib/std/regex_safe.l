@@ -1,19 +1,10 @@
-// Std.RegexSafe — Result-returning wrappers around the Std.Regex
-// kernel that surface `RegexMatchTimeoutException` as a typed
-// error rather than letting it propagate as an unchecked Bug.
+// Std.RegexSafe — backward-compatible Result wrappers around Std.RegexHost.
 //
-// `Std.Regex` already binds the
-// `Regex(string, RegexOptions, TimeSpan)` overload and threads a
-// 1-second default match timeout into every compiled pattern, so
-// a catastrophic-backtrack input like `(a+)+$` against
-// `aaaaaaaaaaaaaaaaa!` will THROW instead of hanging.  This module
-// catches the throw and converts to `Result[T, RegexError]` so
-// caller code can react without `try`/`catch Bug`.
-//
-// Use this module when accepting regex patterns from outside the
-// program (config, network input, user-typed search boxes).  For
-// hard-coded patterns that are known not to backtrack, the raw
-// `Std.Regex` API is fine.
+// New code should prefer `Std.Regex` (std/regex.l) which provides the same
+// Result-shaped API with a cleaner `CompiledRegex` opaque type and a pure-
+// Lyric `Match` record.  This module is retained for compatibility with
+// existing callers that use `Std.RegexSafe.tryCompile` / `tryIsMatch` etc.
+// with the raw `Std.RegexHost.Regex` handle.
 //
 // Tracks lyric-lang #330.
 
@@ -21,7 +12,7 @@
 package Std.RegexSafe
 
 import Std.Core
-import Std.Regex as RxKernel
+import Std.RegexHost as RxKernel
 
 // ─── Error type ──────────────────────────────────────────────────────────────
 
@@ -52,13 +43,11 @@ pub func errorMessage(e: in RegexError): String {
 /// Compile a pattern with the default 1-second match timeout.
 /// Returns `Err(RegexBug)` when the pattern itself is invalid.
 // `tryCompile`, `tryIsMatch`, `tryMatchOne`, `tryReplace` are
-// prefixed to avoid shadowing the kernel functions of the same
-// short name — without the prefix the F#-bootstrap call resolver
-// recurses (#330 follow-up).
+// prefixed to distinguish them from the `host*`-prefixed kernel functions.
 @stable(since="0.1")
 pub func tryCompile(pattern: in String): Result[RxKernel.Regex, RegexError] {
   return try {
-    Ok(value = RxKernel.compile(pattern))
+    Ok(value = RxKernel.hostCompile(pattern))
   } catch Bug as b {
     Err(error = RegexBug(message = b.message))
   }
@@ -69,7 +58,7 @@ pub func tryCompile(pattern: in String): Result[RxKernel.Regex, RegexError] {
 @stable(since="0.1")
 pub func tryIsMatch(r: in RxKernel.Regex, input: in String): Result[Bool, RegexError] {
   return try {
-    Ok(value = RxKernel.isMatch(r, input))
+    Ok(value = RxKernel.hostIsMatch(r, input))
   } catch Bug as b {
     classify(b.message)
   }
@@ -81,7 +70,7 @@ pub func tryIsMatch(r: in RxKernel.Regex, input: in String): Result[Bool, RegexE
 @stable(since="0.1")
 pub func tryMatchOne(r: in RxKernel.Regex, input: in String): Result[RxKernel.Match, RegexError] {
   return try {
-    Ok(value = RxKernel.matchOne(r, input))
+    Ok(value = RxKernel.hostMatchOne(r, input))
   } catch Bug as b {
     classifyMatch(b.message)
   }
@@ -96,7 +85,7 @@ pub func tryReplace(
   replacement: in String
 ): Result[String, RegexError] {
   return try {
-    Ok(value = RxKernel.replace(r, input, replacement))
+    Ok(value = RxKernel.hostReplace(r, input, replacement))
   } catch Bug as b {
     classifyReplace(b.message)
   }
