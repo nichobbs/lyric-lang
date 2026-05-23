@@ -3171,22 +3171,27 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
 //   1. Slot 0 is reserved for the implicit `this` (the receiver).  `self` in
 //      the body lowers to `ldarg.0` (see `ESelf` in `lowerExprMsil`), so it
 //      naturally points at the receiver.  User parameters occupy slots 1..N.
-//   2. The returned `MFunc.flags` carry `Public | Virtual | HideBySig | Final
-//      | NewSlot` so the CLR allocates a fresh vtable slot and prevents
-//      subclass overrides (the MethodImpl row maps the interface slot to this
-//      method explicitly).
+//      Lyric `impl` methods never include `self` in `decl.params`; the
+//      receiver is always implicit, so no `hasExplicitSelf` check is needed.
+//   2. The returned `MFunc.flags` carry `Public | Virtual | HideBySig` without
+//      `NewSlot` or `Final` — the CLR wires the method to the interface slot
+//      by name-matching.  See msil_self_test_m11.l for validation.
 //
 // The `MFunc.params` list excludes `this`; the signature builder
 // (`buildInstanceMethodSig`) prepends the HASTHIS bit.
 pub func lowerImplMethodMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
-                              pkgName: in String): MFunc {
+                              pkgName: in String,
+                              targetTypeName: in String): MFunc {
   val retTy = match decl.ret {
     case Some(te) -> typeExprToMsil(te, pkgName)
     case None     -> MVoid
   }
   // paramCount = 1 (this) + declared params.  emitLoadSlot/emitStoreSlot
   // distinguish params from locals by comparing slot indices against this.
-  val fctx = makeFuncCtxMsil(pkgName, pkgName, 1 + decl.params.count)
+  // Use targetTypeName (e.g. "Pkg.EnglishGreeter") as className so that
+  // `self.method()` dispatch via MClass(fctx.className) resolves to the
+  // correct methodTokens key.
+  val fctx = makeFuncCtxMsil(pkgName, targetTypeName, 1 + decl.params.count)
   fctx.slotTicker.add(0)   // slot 0 = this, no name binding
 
   val insns: List[MInsn] = newList()
@@ -4248,7 +4253,7 @@ pub func collectImplEntriesMsil(cctx: in CodegenCtx, file: in SourceFile,
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
-            case IMplFunc(fn) -> methods.add(lowerImplMethodMsil(cctx, fn, pkgName))
+            case IMplFunc(fn) -> methods.add(lowerImplMethodMsil(cctx, fn, pkgName, targetName))
             case IMplAssoc(_) -> {}
           }
           mi = mi + 1
@@ -4541,6 +4546,11 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   var ie = 0
   while ie < cctx.implEntries.count {
     val implEntry = cctx.implEntries[ie]
+    // `slots` is reserved for future aliased-implementation support (impl
+    // methods whose name differs from the interface slot they satisfy).
+    // Today, Lyric `impl` blocks always use the same name as the interface
+    // method, so CLR name-matching wires them without explicit MethodImpl rows
+    // and `lowerMImpl` does not iterate slots.
     val mslots: List[MImplSlot] = newList()
     var mi = 0
     while mi < implEntry.methods.count {
