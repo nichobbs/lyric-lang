@@ -536,11 +536,19 @@ func parseJsonStringArray(json: in String, pos: inout Int): List[String] {
 }
 
 // Parse the response JSON: extract lyricSource, additionalImports, and any
-// Error-severity diagnostics.
-func parseResponseJson(json: in String): Result[StringPair, String] {
-    // Guard: empty/non-JSON output means the generator process crashed or exited non-zero.
+// Error-severity diagnostics.  `stderr`, `exitCode`, and `timedOut` are
+// passed through from the capture result so they can be included in error
+// messages when stdout is empty or invalid (#1025).
+func parseResponseJson(json: in String, stderr: in String, exitCode: in Int, timedOut: in Bool): Result[StringPair, String] {
+    // Guard: empty/non-JSON output — include stderr and exit code so the
+    // developer sees the actual failure reason instead of "may have crashed".
     if json == "" {
-        return Err(error = "generator produced no output (process may have crashed)")
+        if timedOut {
+            return Err(error = "generator timed out (killed after 10 s)")
+        }
+        val exitSuffix = if exitCode != 0 { " (exit " + Str.fromInt(exitCode) + ")" } else { "" }
+        val stderrSuffix = if stderr != "" { ": " + stderr } else { "" }
+        return Err(error = "generator produced no output" + exitSuffix + stderrSuffix)
     }
     if not Str.contains(json, "lyricSource") {
         return Err(error = "generator output is not a valid GeneratorResponse")
@@ -830,12 +838,12 @@ pub func preprocess(source: in String, manifestPath: in Option[String], sourceFi
         // `List[String]` return type and emits `List<string>`-typed IL.
         // Inlining `val captureArgs = newList(); captureArgs.add(...);`
         // makes the F# emitter erase the list's type argument to Object
-        // and the resulting `runCapture(... List<object>, ...)` call is
+        // and the resulting `runCaptureWithDiagnostics(... List<object>, ...)` call is
         // rejected by the CLR JIT with InvalidProgramException — #867.
         val captureArgs = buildCaptureArgs(dllPath)
-        val responseJson = ProcessCapture.runCapture("dotnet", captureArgs, requestJson)
+        val captured = ProcessCapture.runCaptureWithDiagnostics("dotnet", captureArgs, requestJson)
 
-        match parseResponseJson(responseJson) {
+        match parseResponseJson(captured.stdout, captured.stderr, captured.exitCode, captured.timedOut) {
             case Err(e)    -> return Err(error = "generator '" + dir.generatorArg + "': " + e)
             case Ok(parts) -> {
                 val generatedSource = parts.first

@@ -128,7 +128,13 @@ let tests =
             //   296 → 297 — `Std.FileHost.hostDeleteFile` for #845
             //               (`Std.File.deleteFile` so callers can
             //               clean up temp files explicitly).
-            Expect.isLessThanOrEqual total 297
+            //   297 → 302 — `Std.ProcessCaptureHost`: `extern type
+            //               ProcessCaptureResult` + four field-accessor
+            //               externs (`pcResultStdout`, `pcResultStderr`,
+            //               `pcResultExitCode`, `pcResultTimedOut`) for
+            //               #1025 / #743 (propagate exit code + stderr
+            //               through the generator / solver pipeline).
+            Expect.isLessThanOrEqual total 302
                 "total extern surface unexpectedly large"
         }
     ]

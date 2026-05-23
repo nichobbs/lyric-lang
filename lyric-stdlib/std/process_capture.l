@@ -1,7 +1,8 @@
-// std/process_capture.l — run a subprocess with piped stdin/stdout.
+// std/process_capture.l — run a subprocess with piped stdin/stdout/stderr.
 //
 // Thin wrapper over `Std.ProcessCaptureHost`.  Used by the self-hosted
-// verifier to invoke z3/cvc5 interactively.
+// verifier to invoke z3/cvc5 interactively and by the source-generator
+// runtime to invoke generator DLLs.
 
 @runtime_checked
 package Std.ProcessCapture
@@ -58,10 +59,45 @@ pub func buildArgString(args: in List[String]): String {
   result
 }
 
+// Full diagnostic result returned by `runCaptureWithDiagnostics`.
+// `stdout` and `stderr` are the complete captured text from the child
+// process.  `exitCode` is the process exit code (-1 on spawn failure,
+// -2 when the process was killed after the wall-clock timeout).
+// `timedOut` is true when the 10-second cap fired and the process was
+// killed before it could exit normally.
+@stable(since="1.0")
+pub record CaptureResult {
+  stdout:   String
+  stderr:   String
+  exitCode: Int
+  timedOut: Bool
+}
+
 /// Spawn `executable` with `args`, write `stdinContent` to its stdin,
 /// and return the captured stdout.  Returns `""` on spawn failure.
+///
+/// Prefer `runCaptureWithDiagnostics` when the caller needs to
+/// distinguish process failures from empty output.
 @stable(since="1.0")
 pub func runCapture(executable: in String, args: in List[String], stdinContent: in String): String {
   val argStr = buildArgString(args)
-  hostRunCapture(executable, argStr, stdinContent)
+  val result = hostRunCapture(executable, argStr, stdinContent)
+  pcResultStdout(result)
+}
+
+/// Spawn `executable` with `args`, write `stdinContent` to its stdin,
+/// and return a `CaptureResult` with stdout, stderr, exit code, and
+/// whether the process timed out (#1025).  Use this instead of
+/// `runCapture` when the caller needs to surface diagnostic information
+/// on failure (generator errors, solver stderr, etc.).
+@stable(since="1.0")
+pub func runCaptureWithDiagnostics(executable: in String, args: in List[String], stdinContent: in String): CaptureResult {
+  val argStr = buildArgString(args)
+  val raw = hostRunCapture(executable, argStr, stdinContent)
+  CaptureResult(
+    stdout   = pcResultStdout(raw),
+    stderr   = pcResultStderr(raw),
+    exitCode = pcResultExitCode(raw),
+    timedOut = pcResultTimedOut(raw)
+  )
 }
