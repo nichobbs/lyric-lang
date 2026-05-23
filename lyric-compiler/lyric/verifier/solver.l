@@ -320,15 +320,20 @@ pub func findCvc5(): Option[String] { findBinary("LYRIC_CVC5", "cvc5") }
 // ─────────────────────────────────────────────────────────────────────────────
 
 func invokeSolver(binPath: in String, args: in List[String], smtSource: in String): SolverOutcome {
-  val stdout = runCapture(binPath, args, smtSource)
-  if stdout.length == 0 {
-    return Unknown(reason = "solver produced no output")
+  val captured = runCaptureWithDiagnostics(binPath, args, smtSource)
+  if captured.timedOut {
+    return Unknown(reason = pathBaseName(binPath) + " timed out (killed after 10 s)")
   }
-  val firstLine = firstNonEmptyLine(stdout)
+  if captured.stdout.length == 0 {
+    val stderrDetail = if captured.stderr != "" { ": " + captured.stderr } else { "" }
+    val exitDetail   = if captured.exitCode != 0 { " (exit " + intToString(captured.exitCode) + ")" } else { "" }
+    return Unknown(reason = "solver produced no output" + exitDetail + stderrDetail)
+  }
+  val firstLine = firstNonEmptyLine(captured.stdout)
   if firstLine == "unsat" {
     Discharged
   } else if firstLine == "sat" {
-    Counterexample(model = stdout)
+    Counterexample(model = captured.stdout)
   } else if firstLine == "unknown" {
     Unknown(reason = pathBaseName(binPath) + " returned unknown")
   } else {

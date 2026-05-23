@@ -1,5 +1,5 @@
 /// Helper for the self-hosted verifier kernel: run a subprocess with
-/// piped stdin/stdout and return the captured stdout text.
+/// piped stdin/stdout/stderr and return a structured result.
 ///
 /// Exposed as `Lyric.Emitter.ProcessCapture.runCapture` so the stdlib
 /// kernel can target it via `@externTarget`.  Always loaded in the
@@ -8,24 +8,30 @@ module Lyric.Emitter.ProcessCapture
 
 open System.Diagnostics
 
+/// Structured result of a subprocess invocation (#743 / #1025).
+/// Callers that only need stdout can use the `Stdout` field directly;
+/// callers that need diagnostics (generator failures, solver errors)
+/// use `Stderr`, `ExitCode`, and `TimedOut`.
+type CaptureResult =
+    { Stdout:   string
+      Stderr:   string
+      ExitCode: int
+      TimedOut: bool }
+
+/// The empty-output sentinel returned on spawn failure.
+let private captureFailure : CaptureResult =
+    { Stdout = ""; Stderr = ""; ExitCode = -1; TimedOut = false }
+
 /// Spawn `executable` with a pre-formed `arguments` string, write
-/// `stdinContent` to the child's stdin, close stdin, read all stdout,
-/// and return it.  Returns `""` on spawn failure or I/O error so
-/// callers (the trivial discharger path) degrade gracefully.
+/// `stdinContent` to the child's stdin, close stdin, and return a
+/// `CaptureResult` with the captured stdout, stderr, exit code, and
+/// whether the process was killed for exceeding the 10-second wall-clock cap.
 ///
-/// **Stderr handling (#743):** stderr is redirected AND drained on a
-/// background thread.  Without draining, a child that writes >4 KB
-/// (Linux default) or >64 KB (Windows default) to stderr blocks on
-/// the write once the pipe buffer fills — the F# parent never reads,
-/// the child hangs, the 10-second WaitForExit timeout fires, the
-/// child is killed, and stdout often ends up empty even though the
-/// child had real output to deliver.  The drain prevents the deadlock.
-/// Drained stderr is forwarded to the host process's own stderr so
-/// it remains visible to whoever invoked the bridge / generator.  A
-/// richer API that returns `(exitCode, stdout, stderr)` as a struct
-/// is tracked in #743 as the follow-up; the immediate change here
-/// is the deadlock fix + stderr visibility.
-let runCapture (executable: string) (arguments: string) (stdinContent: string) : string =
+/// Both stdout and stderr are drained on background threads before
+/// `WaitForExit` so that a child that writes more than the pipe-buffer
+/// limit (4 KB on Linux, 64 KB on Windows) to either stream cannot
+/// deadlock against the parent.
+let runCapture (executable: string) (arguments: string) (stdinContent: string) : CaptureResult =
     let psi = ProcessStartInfo()
     psi.FileName  <- executable
     psi.Arguments <- arguments
@@ -36,19 +42,17 @@ let runCapture (executable: string) (arguments: string) (stdinContent: string) :
     psi.CreateNoWindow  <- true
     try
         match Option.ofObj (Process.Start psi) with
-        | None -> ""
+        | None -> captureFailure
         | Some proc ->
             use _ = proc
             proc.StandardInput.Write stdinContent
             proc.StandardInput.Close()
-            // Start BOTH drains on background threads BEFORE waiting.
+            // Drain both pipes on background threads BEFORE WaitForExit.
             // Running them concurrently lets the kill (if it fires) close
             // both pipes and unblock both drains.
             let stdoutTask =
                 System.Threading.Tasks.Task.Run(fun () ->
                     proc.StandardOutput.ReadToEnd())
-            // Drain stderr (#743): a non-empty stderr that we never read
-            // can fill the pipe buffer and deadlock the child mid-write.
             let stderrTask =
                 System.Threading.Tasks.Task.Run(fun () ->
                     proc.StandardError.ReadToEnd())
@@ -57,19 +61,11 @@ let runCapture (executable: string) (arguments: string) (stdinContent: string) :
             // hung or misbehaving solver binary can still block indefinitely
             // if those flags are ignored.  Kill the process tree if it
             // hasn't exited within 2× the configured solver timeout.
-            if not (proc.WaitForExit 10000) then
+            let timedOut = not (proc.WaitForExit 10000)
+            if timedOut then
                 try proc.Kill(entireProcessTree = true) with _ -> ()
-            // Surface stderr so a generator / bridge failure remains
-            // visible.  Skipped silently if the drain itself errored.
-            try
-                if stderrTask.Wait 5000 then
-                    let errBytes = stderrTask.Result
-                    if not (System.String.IsNullOrEmpty errBytes) then
-                        System.Console.Error.Write errBytes
-            with _ -> ()
-            // Process has exited or been killed; the stdout pipe is now closed.
-            // Give the background drain up to 5 s to flush any remaining bytes.
-            try
-                if stdoutTask.Wait 5000 then stdoutTask.Result else ""
-            with _ -> ""
-    with _ -> ""
+            let stdout = try if stdoutTask.Wait 5000 then stdoutTask.Result else "" with _ -> ""
+            let stderr = try if stderrTask.Wait 5000 then stderrTask.Result else "" with _ -> ""
+            let exitCode = try proc.ExitCode with _ -> if timedOut then -2 else -1
+            { Stdout = stdout; Stderr = stderr; ExitCode = exitCode; TimedOut = timedOut }
+    with _ -> captureFailure
