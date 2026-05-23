@@ -55,13 +55,17 @@ type AuthHost private () =
 
     /// Validate a Bearer JWT.
     ///
-    /// Supports HS256 via HMAC-SHA256 (BCL; no NuGet required).  All other
-    /// algorithms return false (fail closed).  The Lyric layer in `auth.l`
-    /// performs algorithm-allow-list and `alg`-field extraction before calling
-    /// this shim, so `allowedAlgorithms` is passed through for defence-in-depth
-    /// (a future host shim update wires it into `ValidAlgorithms`; #443).
+    /// Supports HS256 only via HMAC-SHA256 (BCL; no NuGet required).  Returns
+    /// false immediately when `allowedAlgorithms` (comma-separated, case-sensitive)
+    /// does not contain "HS256" — the parameter is enforced, not ignored.  RS256
+    /// and other public-key algorithms are tracked in #443.
     static member verifyJwt(token: string, secret: string, issuer: string, audience: string, allowedAlgorithms: string) : bool =
         try
+            let hsAllowed =
+                allowedAlgorithms.Split(',')
+                |> Array.exists (fun a -> a.Trim() = "HS256")
+            if not hsAllowed then false
+            else
             let parts = token.Split('.')
             if parts.Length <> 3 then false
             else

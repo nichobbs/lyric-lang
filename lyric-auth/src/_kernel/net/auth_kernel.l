@@ -32,8 +32,11 @@ import Std.Core
 ///
 /// Algorithm enforcement is applied at the Lyric layer (in Auth.verifyJwt)
 /// before this extern is called, so alg=none and algorithm-confusion attacks
-/// are rejected before reaching the BCL validator.  The host shim wires
-/// `allowedAlgorithms` into `ValidAlgorithms` for defence-in-depth (#443).
+/// are rejected before reaching the BCL validator.  The host shim supports
+/// HS256 only; it returns false immediately if `allowedAlgorithms` does not
+/// contain "HS256" (comma-split, case-sensitive), so a caller that requests
+/// RS256-only receives a hard false rather than a silent no-op.  Full RS256
+/// and public-key algorithm support is tracked in #443.
 ///
 /// Returns true iff the token is well-formed, its signature verifies against
 /// `secret`, and — when non-empty — the `issuer` and `audience` claims match.
