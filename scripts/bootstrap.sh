@@ -364,6 +364,22 @@ EOF
     die "stage-1 CLI bundle: Lyric.Mail.Host.dll not found in publish output"
   fi
 
+  # `Lyric.Mq.Host.dll` is the Phase-5 host shim for #733 — bridges the
+  # lyric-mq in-memory queue backend through `Lyric.Mq.InMemoryHost`.  No
+  # NuGet dependencies (ConcurrentQueue + ConcurrentDictionary only);
+  # RabbitMQ / Azure Service Bus / SQS / Kafka driver shims land as
+  # separate phases under #779.
+  dotnet publish "$COMPILER_DIR/src/Lyric.Mq.Host/Lyric.Mq.Host.fsproj" \
+    --configuration Release \
+    --output "$BUILD_DIR/stage0-publish-mq" \
+    --nologo -v q
+  if [[ -f "$BUILD_DIR/stage0-publish-mq/Lyric.Mq.Host.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish-mq/Lyric.Mq.Host.dll" "$STAGE1_DIR/"
+    copied=$((copied + 1))
+  else
+    die "stage-1 CLI bundle: Lyric.Mq.Host.dll not found in publish output"
+  fi
+
   info "  copied $copied DLLs into $STAGE1_DIR"
 
   # Sanity check: Lyric.Lyric.Cli.dll must land in stage1/.  If it
