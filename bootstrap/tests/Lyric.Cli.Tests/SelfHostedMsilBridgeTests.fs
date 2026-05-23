@@ -444,4 +444,28 @@ func main(): Unit {
 }
 """
             "extern type ok"
+
+        // Regression for #878: IImpl blocks must emit InterfaceImpl + MethodImpl
+        // metadata so that interface dispatch (callvirt through an interface slot)
+        // reaches the concrete method.  Before the fix, impl methods were emitted
+        // as static helpers and dispatch silently produced null / wrong output.
+        mkBridgeWithImplCounts "shm_interface_dispatch"
+            """package ShMIface
+interface Greeter {
+  func greet(name: in String): String
+}
+record EnglishGreeter {}
+impl Greeter for EnglishGreeter {
+  func greet(name: in String): String {
+    "hello, " + name
+  }
+}
+func main(): Unit {
+  val g = EnglishGreeter()
+  println(g.greet("world"))
+}
+"""
+            "hello, world"
+            1   // expectedIfaceImplCount: EnglishGreeter implements Greeter
+            0   // expectedMethodImplCount: CLR name-matching, no explicit MethodImpl rows
     ]
