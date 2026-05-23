@@ -234,6 +234,14 @@ jobs:
           # from source by Emitter.resolveStdlibImports regardless.)
           mkdir -p lyric-stdlib/bin
           cp .bootstrap/stage1/Lyric.Stdlib.dll lyric-stdlib/bin/Lyric.Stdlib.dll
+          # Route emitProject subprocess calls to the F# bootstrap CLI, which
+          # handles --internal-project-build.  The AOT binary is a pure trampoline
+          # into the Lyric CLI dispatcher and does not handle internal flags.
+          cli_dll="$(pwd)/bootstrap/src/Lyric.Cli/bin/Debug/net10.0/lyric.dll"
+          if [ -f "$cli_dll" ]; then
+            export LYRIC_BIN=dotnet
+            export LYRIC_CLI_DLL="$cli_dll"
+          fi
           # Run both test manifests; capture exit codes so both always run
           # before we report the overall result.
           overall=0

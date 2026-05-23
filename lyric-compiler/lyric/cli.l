@@ -544,10 +544,14 @@ func buildProject(
                     printErr("build: local dep '" + dep.name + "' not built — run `lyric build --manifest " + depToml + "` first")
                   }
                 }
-                case Err(_) -> ()
+                case Err(e) -> {
+                  printErr("build: local dep '" + dep.name + "': malformed lyric.toml: " + ManifestError.message(e))
+                }
               }
             }
-            case Err(_) -> ()
+            case Err(e) -> {
+              printErr("build: local dep '" + dep.name + "': cannot read " + depToml + ": " + IOError.message(e))
+            }
           }
         } else {
           printErr("build: local dep '" + dep.name + "' — no lyric.toml found at '" + depToml + "'; check the path = \"...\" entry in your lyric.toml")
@@ -2271,10 +2275,14 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
                     printErr("test: local dep '" + dep.name + "' not built — run `lyric build --manifest " + depToml + "` first")
                   }
                 }
-                case Err(_) -> ()
+                case Err(e) -> {
+                  printErr("test: local dep '" + dep.name + "': malformed lyric.toml: " + ManifestError.message(e))
+                }
               }
             }
-            case Err(_) -> ()
+            case Err(e) -> {
+              printErr("test: local dep '" + dep.name + "': cannot read " + depToml + ": " + IOError.message(e))
+            }
           }
         } else {
           printErr("test: local dep '" + dep.name + "' — no lyric.toml found at '" + depToml + "'")
