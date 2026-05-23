@@ -87,6 +87,15 @@ func testCaptureBothStreams(): Unit {
   }
 }
 
+func testCaptureSpawnFailure(): Unit {
+  // A deliberately nonexistent executable must return Err, not Ok with exitCode = -1.
+  val args: List[String] = newList()
+  match runCapture("__lyric_definitely_nonexistent_exe_xyz__", args, 5000) {
+    case Ok(_)  -> assertTrue(false, "nonexistent executable must return Err")
+    case Err(_) -> assertTrue(true, "spawn failure returns Err")
+  }
+}
+
 func main(): Int {
   testCaptureStdout()
   testCaptureNonZeroExit()
@@ -94,6 +103,7 @@ func main(): Int {
   testCaptureStdinPassthrough()
   testCaptureTimeout()
   testCaptureBothStreams()
+  testCaptureSpawnFailure()
   println("process_tests: ok")
   return 0
 }
