@@ -80,6 +80,103 @@ module private Registry =
             (if String.IsNullOrEmpty(m.HeadersJson) then "[]" else m.HeadersJson)
             m.DeliveryCount
 
+    /// Split a JSON array of objects into individual object strings.
+    /// Respects nested braces and string literals (with escape handling)
+    /// so commas inside an object's body don't split incorrectly.
+    /// Returns an empty list for the empty array `[]` and on malformed
+    /// input — `publishBatch` treats that as "nothing to enqueue".
+    let splitJsonArray (json: string) : string list =
+        let trimmed = json.Trim()
+        if trimmed.Length < 2 || trimmed.[0] <> '[' || trimmed.[trimmed.Length - 1] <> ']' then
+            []
+        else
+            let body = trimmed.Substring(1, trimmed.Length - 2)
+            let results = System.Collections.Generic.List<string>()
+            let mutable depth   = 0
+            let mutable inStr   = false
+            let mutable escaped = false
+            let mutable start   = 0
+            for i in 0 .. body.Length - 1 do
+                let c = body.[i]
+                if escaped then
+                    escaped <- false
+                elif inStr then
+                    if c = '\\' then escaped <- true
+                    elif c = '"' then inStr <- false
+                else
+                    match c with
+                    | '"' -> inStr <- true
+                    | '{' | '[' -> depth <- depth + 1
+                    | '}' | ']' -> depth <- depth - 1
+                    | ',' when depth = 0 ->
+                        let chunk = body.Substring(start, i - start).Trim()
+                        if chunk.Length > 0 then results.Add(chunk)
+                        start <- i + 1
+                    | _ -> ()
+            let tail = body.Substring(start).Trim()
+            if tail.Length > 0 then results.Add(tail)
+            List.ofSeq results
+
+    /// Find a string-typed JSON field `"<key>":"<value>"` and return
+    /// the unescaped value.  Returns None when the field is absent or
+    /// when the JSON has structural issues.  Covers the JSON spec
+    /// string-escape set (`\\`, `\"`, `\/`, `\b`, `\f`, `\n`, `\r`,
+    /// `\t`, and `\uXXXX`) — sufficient for any payload Lyric's
+    /// `Std.Json.encodeString` emits.
+    let tryGetStringField (json: string) (key: string) : string option =
+        let needle = "\"" + key + "\":\""
+        let idx = json.IndexOf(needle, StringComparison.Ordinal)
+        if idx < 0 then None
+        else
+            let start = idx + needle.Length
+            let mutable endIdx = start
+            let mutable escaped = false
+            let mutable found = false
+            while not found && endIdx < json.Length do
+                let c = json.[endIdx]
+                if escaped then
+                    escaped <- false
+                    endIdx <- endIdx + 1
+                elif c = '\\' then
+                    escaped <- true
+                    endIdx <- endIdx + 1
+                elif c = '"' then
+                    found <- true
+                else
+                    endIdx <- endIdx + 1
+            if not found then None
+            else
+                let raw = json.Substring(start, endIdx - start)
+                let sb = System.Text.StringBuilder()
+                let mutable i = 0
+                while i < raw.Length do
+                    if raw.[i] = '\\' && i + 1 < raw.Length then
+                        match raw.[i + 1] with
+                        | '\\' -> sb.Append('\\') |> ignore; i <- i + 2
+                        | '"'  -> sb.Append('"')  |> ignore; i <- i + 2
+                        | '/'  -> sb.Append('/')  |> ignore; i <- i + 2
+                        | 'b'  -> sb.Append('\b') |> ignore; i <- i + 2
+                        | 'f'  -> sb.Append('\f') |> ignore; i <- i + 2
+                        | 'n'  -> sb.Append('\n') |> ignore; i <- i + 2
+                        | 'r'  -> sb.Append('\r') |> ignore; i <- i + 2
+                        | 't'  -> sb.Append('\t') |> ignore; i <- i + 2
+                        | 'u' when i + 5 < raw.Length ->
+                            let hex = raw.Substring(i + 2, 4)
+                            match System.UInt16.TryParse(hex,
+                                    System.Globalization.NumberStyles.HexNumber,
+                                    System.Globalization.CultureInfo.InvariantCulture) with
+                            | true, cp ->
+                                sb.Append(char cp) |> ignore
+                                i <- i + 6
+                            | _ ->
+                                sb.Append(raw.[i]) |> ignore
+                                i <- i + 1
+                        | c    -> sb.Append(c)    |> ignore; i <- i + 2
+                    else
+                        sb.Append(raw.[i]) |> ignore
+                        i <- i + 1
+                Some (sb.ToString())
+
 /// `Lyric.Mq.InMemoryHost` — the static class the kernel's
 /// `@externTarget("Lyric.Mq.InMemoryHost.<method>")` references resolve
 /// to at codegen time.
@@ -116,23 +213,29 @@ type InMemoryHost private () =
                     q.Pending.Enqueue(m))
 
     /// Publish multiple messages atomically.  The kernel pre-serialises
-    /// the array into JSON; the shim's path-finder splits it into
-    /// individual `publish` calls.  Real broker batching (single AMQP
-    /// frame, SQS BatchEntryList, etc.) is tracked for the future
-    /// driver shims under #779.
+    /// the array of {id, body, headersJson} objects into JSON; the shim
+    /// splits the top-level array on balanced `{}` brackets (respecting
+    /// string literals + escapes) and enqueues each message into the
+    /// queue's Pending FIFO.  Real broker batching (single AMQP frame,
+    /// SQS BatchEntryList, etc.) is tracked for the future driver
+    /// shims under #779; this implementation is correct for the
+    /// in-memory backend's FIFO semantics.
     static member publishBatch(queueId: int, messagesJson: string) : Result<unit, string> =
         if String.IsNullOrEmpty(messagesJson) then
             Error "Lyric.Mq.InMemoryHost.publishBatch: messagesJson must be non-empty"
         else
             match Registry.lookup queueId with
             | Error e -> Error e
-            | Ok _ ->
-                // Phase 5 scope: messagesJson is accepted but the shim is
-                // a no-op stub for batch publish — single-message publish
-                // already covers the path-finder happy path, and the JSON
-                // array splitter would need a real parser.  Returns Err
-                // so callers see the gap.
-                Error "Lyric.Mq.InMemoryHost.publishBatch: batch publish not yet wired in the in-memory backend (#733 follow-up; use publish() in a loop for now)"
+            | Ok q ->
+                Registry.safeCall (fun () ->
+                    let messages = Registry.splitJsonArray messagesJson
+                    for objStr in messages do
+                        let id      = Registry.tryGetStringField objStr "id"      |> Option.defaultValue ""
+                        let body    = Registry.tryGetStringField objStr "body"    |> Option.defaultValue ""
+                        let headers = Registry.tryGetStringField objStr "headers" |> Option.defaultValue "[]"
+                        if id.Length > 0 then
+                            let m = { Id = id; Body = body; HeadersJson = headers; DeliveryCount = 0 }
+                            q.Pending.Enqueue(m))
 
     /// Block for up to `timeoutMs` milliseconds waiting for a message.
     /// Returns an empty string on timeout; the message JSON on success.

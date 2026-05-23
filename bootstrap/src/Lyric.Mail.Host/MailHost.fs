@@ -61,13 +61,16 @@ module private Registry =
         try Ok (op())
         with ex -> Error (sprintf "%s: %s" (ex.GetType().Name) ex.Message)
 
-    /// Tiny JSON field extractor: looks for `"<key>":"<value>"` or
-    /// `"<key>":<bareValue>` and returns the value or None.  Sufficient
-    /// for the deterministic JSON shape lyric-mail's serialiseMessage
-    /// produces; avoids pulling System.Text.Json into the shim.
-    let tryGetStringField (json: string) (key: string) : string option =
+    /// JSON field extractor: looks for `"<key>":"<value>"` starting at
+    /// `offset` and returns the unescaped value.  Covers the full JSON
+    /// spec string-escape set (`\\`, `\"`, `\/`, `\b`, `\f`, `\n`,
+    /// `\r`, `\t`, `\uXXXX`) — sufficient for any payload Lyric's
+    /// `Std.Json.encodeString` emits.  Returns the value plus the
+    /// position just past the closing quote (for sequential scans), or
+    /// None when the key is absent or the JSON has structural issues.
+    let tryGetStringFieldFrom (json: string) (key: string) (offset: int) : (string * int) option =
         let needle = "\"" + key + "\":\""
-        let idx = json.IndexOf(needle, StringComparison.Ordinal)
+        let idx = json.IndexOf(needle, offset, StringComparison.Ordinal)
         if idx < 0 then None
         else
             let start = idx + needle.Length
@@ -86,8 +89,8 @@ module private Registry =
                     found <- true
                 else
                     endIdx <- endIdx + 1
-            if found then
-                // Unescape \\, \", \n, \r, \t in the captured slice
+            if not found then None
+            else
                 let raw = json.Substring(start, endIdx - start)
                 let sb = System.Text.StringBuilder()
                 let mutable i = 0
@@ -96,15 +99,32 @@ module private Registry =
                         match raw.[i + 1] with
                         | '\\' -> sb.Append('\\') |> ignore; i <- i + 2
                         | '"'  -> sb.Append('"')  |> ignore; i <- i + 2
+                        | '/'  -> sb.Append('/')  |> ignore; i <- i + 2
+                        | 'b'  -> sb.Append('\b') |> ignore; i <- i + 2
+                        | 'f'  -> sb.Append('\f') |> ignore; i <- i + 2
                         | 'n'  -> sb.Append('\n') |> ignore; i <- i + 2
                         | 'r'  -> sb.Append('\r') |> ignore; i <- i + 2
                         | 't'  -> sb.Append('\t') |> ignore; i <- i + 2
+                        | 'u' when i + 5 < raw.Length ->
+                            let hex = raw.Substring(i + 2, 4)
+                            match System.UInt16.TryParse(hex,
+                                    System.Globalization.NumberStyles.HexNumber,
+                                    System.Globalization.CultureInfo.InvariantCulture) with
+                            | true, cp ->
+                                sb.Append(char cp) |> ignore
+                                i <- i + 6
+                            | _ ->
+                                sb.Append(raw.[i]) |> ignore
+                                i <- i + 1
                         | c    -> sb.Append(c)    |> ignore; i <- i + 2
                     else
                         sb.Append(raw.[i]) |> ignore
                         i <- i + 1
-                Some (sb.ToString())
-            else None
+                Some (sb.ToString(), endIdx + 1)
+
+    /// Convenience: extract a field from the beginning of `json`.
+    let tryGetStringField (json: string) (key: string) : string option =
+        tryGetStringFieldFrom json key 0 |> Option.map fst
 
 /// `Lyric.Mail.SmtpHost` — the static class the kernel's
 /// `@externTarget("Lyric.Mail.SmtpHost.<method>")` references resolve
@@ -146,26 +166,25 @@ type SmtpHost private () =
             match Registry.lookup senderHandle with
             | Error e -> Error e
             | Ok sender ->
-                let fromAddr  = Registry.tryGetStringField messageJson "address"
-                let subject   = Registry.tryGetStringField messageJson "subject"
-                let textBody  = Registry.tryGetStringField messageJson "textBody"
-                let htmlBody  = Registry.tryGetStringField messageJson "htmlBody"
-                match fromAddr, subject with
-                | Some fa, Some subj ->
+                // Offset-based scan: the first `"address"` field is the
+                // "from" object; the next is the first "to" entry.  This
+                // avoids the fragile IndexOf(unescapedFromAddr) lookup
+                // that broke whenever the from-address contained an
+                // escaped character (#1018).
+                let fromPair = Registry.tryGetStringFieldFrom messageJson "address" 0
+                let subject  = Registry.tryGetStringField messageJson "subject"
+                let textBody = Registry.tryGetStringField messageJson "textBody"
+                let htmlBody = Registry.tryGetStringField messageJson "htmlBody"
+                match fromPair, subject with
+                | Some (fa, afterFrom), Some subj ->
                     Registry.safeCall (fun () ->
                         let msg = new MailMessage()
                         msg.From <- MailAddress(fa)
                         msg.Subject <- subj
-                        // The first `"address":"..."` field is the "from" object;
-                        // subsequent ones are in the "to" array.  For the path-finder
-                        // scope, send to a single recipient extracted from the to-array
-                        // shape by scanning for the second occurrence.
-                        let firstFromEnd =
-                            messageJson.IndexOf("\"address\":\"" + fa + "\"", StringComparison.Ordinal)
-                            + ("\"address\":\"" + fa + "\"").Length
-                        let toScan = messageJson.Substring(firstFromEnd)
-                        match Registry.tryGetStringField toScan "address" with
-                        | Some toAddr -> msg.To.Add(MailAddress(toAddr))
+                        // Scan for the first to-array address starting
+                        // immediately after the from-object's address.
+                        match Registry.tryGetStringFieldFrom messageJson "address" afterFrom with
+                        | Some (toAddr, _) -> msg.To.Add(MailAddress(toAddr))
                         | None -> ()  // no recipients; SmtpClient.Send will throw
                         match htmlBody with
                         | Some html when html.Length > 0 ->

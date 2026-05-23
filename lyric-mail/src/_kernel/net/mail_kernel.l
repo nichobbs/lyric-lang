@@ -71,14 +71,27 @@ pub func connectSendGrid(apiKey: in String): Result[Int, String]
   requires: apiKey.length > 0
   = ()
 
-// ─── Shared send / close (dispatched by handle's backend tag) ────────────────
+// ─── SMTP-feature-gated send / close ─────────────────────────────────────────
+//
+// Per-provider gating: `send` and `close` dispatch is bound per-feature
+// to keep the routing honest once additional backend shims land
+// (#1016 follow-up).  Each backend will have its own
+// `@externTarget("Lyric.Mail.<Backend>.send")` arm gated by its feature.
 
 @axiom("Lyric.Mail.SmtpHost.send — parses the messageJson shape produced by Mail.serialiseMessage and dispatches via System.Net.Mail.SmtpClient.Send")
 @externTarget("Lyric.Mail.SmtpHost.send")
+@cfg(feature = "smtp")
 pub func send(senderHandle: in Int, messageJson: in String): Result[Unit, String]
   requires: messageJson.length > 0
   = ()
 
 @axiom("Lyric.Mail.SmtpHost.close — disposes the underlying SmtpClient and removes the handle from the registry")
 @externTarget("Lyric.Mail.SmtpHost.close")
+@cfg(feature = "smtp")
 pub func close(senderHandle: in Int): Unit = ()
+
+// SES / SendGrid send + close arms remain placeholders until those host
+// shims land (#780 follow-up).  Until then, opening an SES or SendGrid
+// handle returns Err from the connect arm; there's nothing to dispatch
+// to.  Each backend will add its own `send` / `close` arm here gated by
+// its feature when the shim lands.

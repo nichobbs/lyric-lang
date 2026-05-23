@@ -41,42 +41,41 @@ import Std.Iter
 // ─── Kernel boundary (inlined) ────────────────────────────────────────────────
 // Declared here rather than imported from Web.Kernel.Net because intra-project
 // import resolution does not yet propagate function signatures to the caller's
-// type-checker.  Web.Kernel.Net still exports these for aspects.l and the
-// external kernel consumers.
+// type-checker.
+//
+// Phase-8 host-shim path of #733: `serve` is bound to
+// `Lyric.Web.HttpListenerHost.serve` (BCL System.Net.HttpListener) as a
+// path-finder backend.  The listener actually binds the port (fixing
+// the silent no-op symptom from #784) and serves a JSON description of
+// the routing table for every request.  Real ASP.NET Core Kestrel +
+// minimal-API integration with Lyric-side handler dispatch is a
+// follow-up under #784 — that path needs Microsoft.AspNetCore NuGet
+// deps + a Lyric-to-host callback mechanism that #784 will track.
 
-@axiom("ASP.NET Core Kestrel HTTP server and minimal-API routing — host.Run() binds the listening port and blocks until shutdown")
-extern package Microsoft.AspNetCore.Builder {
-  /// Boot a Kestrel host on `(host, port)` with the supplied routing table.
-  /// Blocks the calling thread until the host receives a shutdown signal.
-  ///
-  /// Routing-table arrays are parallel: `routeMethods[i]` is the HTTP verb
-  /// for the handler at `routeHandlers[i]`, etc.  `workerNames`/`workerIntervals`/
-  /// `workerHandlers` describe background workers run alongside the listener.
-  ///
-  /// CORS, Swagger UI, and `OpenAPI` JSON publishing are wired in via the
-  /// remaining flags.
-  func serve(
-    host:            String,
-    port:            Int,
-    swaggerEnabled:  Bool,
-    specPath:        String,
-    corsEnabled:     Bool,
-    corsOrigins:     String,
-    corsMethods:     String,
-    corsHeaders:     String,
-    corsMaxAge:      Int,
-    routeMethods:    slice[String],
-    routePatterns:   slice[String],
-    routeHandlers:   slice[String],
-    routeSummaries:  slice[String],
-    workerNames:     slice[String],
-    workerIntervals: slice[Int],
-    workerHandlers:  slice[String]
-  ): Unit
-    requires: host.length > 0
-    requires: port >= 1
-    requires: port <= 65535
-}
+@axiom("Lyric.Web.HttpListenerHost.serve — BCL System.Net.HttpListener path-finder; binds the port and serves a JSON route-table description for every request")
+@externTarget("Lyric.Web.HttpListenerHost.serve")
+func serve(
+  host:            in String,
+  port:            in Int,
+  swaggerEnabled:  in Bool,
+  specPath:        in String,
+  corsEnabled:     in Bool,
+  corsOrigins:     in String,
+  corsMethods:     in String,
+  corsHeaders:     in String,
+  corsMaxAge:      in Int,
+  routeMethods:    in slice[String],
+  routePatterns:   in slice[String],
+  routeHandlers:   in slice[String],
+  routeSummaries:  in slice[String],
+  workerNames:     in slice[String],
+  workerIntervals: in slice[Int],
+  workerHandlers:  in slice[String]
+): Unit
+  requires: host.length > 0
+  requires: port >= 1
+  requires: port <= 65535
+  = ()
 
 // ─── ApiError ─────────────────────────────────────────────────────────────────
 
