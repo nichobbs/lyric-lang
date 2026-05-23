@@ -26,7 +26,7 @@ Here is the full module inventory:
 | `Std.Directory` | `exists`, `create`, `createRecursive`, `enumerate`, `enumerateFiles`, `delete` |
 | `Std.Path` | Pure path helpers: `join`, `extension`, `basename`, `dirname`, `isAbsolute` |
 | `Std.Environment` | `getVar`, `getVarOrDefault`, `args`, `exitCode` |
-| `Std.Process` | `spawn`, `ProcessResult`, `run` |
+| `Std.Process` | `run`, `runChecked`, `runCapture`, `runCaptureWithInput`, `ProcessResult` |
 | `Std.App` | Application entry: `run(main: func Unit): Int`, `withConfig`, `Config` |
 | `Std.Log` | Structured logging: `LogLevel`, `Logger` interface, `debug`, `info`, `warn`, `error` |
 | `Std.Logging` *(service library — not in `stdlib/std/`)* | Named loggers with six levels, structured fields, JSON output, aspect templates — chapter 23; provided by the `lyric-logging` package, not the built-in stdlib |
