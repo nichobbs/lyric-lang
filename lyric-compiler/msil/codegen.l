@@ -3262,16 +3262,6 @@ pub func simpleNameOfQualifiedMsil(qualified: in String): String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §8a. Impl-block pre-pass — collect `impl Iface for Target { … }` entries.
-// ─────────────────────────────────────────────────────────────────────────────
-}
-
-// Walk every `IImpl` item in `file` and produce a flat list of impl entries.
-// Single-segment interface names (`Greeter`) are implicitly qualified with
-// the current package name; multi-segment paths are kept verbatim.  The
-// `lyric-compiler/msil` backend currently only supports same-package
-// interfaces; cross-package interface dispatch is deferred to R6.
-// ─────────────────────────────────────────────────────────────────────────────
 // §9. Record lowering.
 // ─────────────────────────────────────────────────────────────────────────────
 

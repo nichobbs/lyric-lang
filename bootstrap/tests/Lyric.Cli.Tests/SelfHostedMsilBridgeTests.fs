@@ -325,8 +325,8 @@ func main(): Unit {
 }
 """
             "impl-metadata-ok"
-            1   // InterfaceImpl rows
-            1   // MethodImpl rows
+            1   // InterfaceImpl rows: Person implements Greeter
+            0   // MethodImpl rows: CLR name-matching wires same-name virtual methods automatically
 
         // ── Band 2 (#853): IOpaque → sealed TypeDef with private fields + .ctor ─
         // Opaque field syntax is `fieldName: Type` (no `val` keyword).
