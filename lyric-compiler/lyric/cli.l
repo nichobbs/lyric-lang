@@ -2145,9 +2145,6 @@ func cmdTest(argv: in slice[String]): Int {
   }
 }
 
-// Unreachable today: the F# bootstrap CLI fall-back doesn't know
-// `--manifest` for `test`, so this entry point only fires once the
-// self-hosted CLI bridge regains JIT (#465).
 func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
@@ -2178,30 +2175,120 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
 
   val mfDir = Path.dirname(mfPath)
 
-  // Pre-read every [project.packages] source so each test build
-  // reuses the same content.
-  val pkgSources: List[String] = newList()
+  // Resolve active feature set from manifest defaults (no CLI flags in the test runner).
+  val mfDefaults = Mf.readFeatureDefaultsFromToml(mfText, mfPath)
+  val activeFeatures: List[String] = newList()
+  var afi = 0
+  while afi < mfDefaults.count {
+    activeFeatures.add(mfDefaults[afi])
+    afi += 1
+  }
+
+  // Build ProjectPackage entries from [project.packages], matching buildProject.
+  val libPkgs: List[ProjectPackage] = newList()
+  var hadFatal = false
   var pi = 0
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
     val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path }
               else { Path.join(mfDir, pkgEntry.path) }
-    match File.readText(abs) {
-      case Ok(t)  -> pkgSources.add(t)
-      case Err(e) -> {
-        printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
-        return 1
+    val pkgSources: List[String] = newList()
+    if File.fileExists(abs) {
+      match File.readText(abs) {
+        case Ok(t)  -> pkgSources.add(t)
+        case Err(e) -> {
+          printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
+          hadFatal = true
+        }
       }
+    } else if File.dirExists(abs) {
+      val allFiles = match File.listFilesRecursive(abs) {
+        case Ok(fs)  -> fs
+        case Err(e)  -> {
+          printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
+          hadFatal = true
+          newList()
+        }
+      }
+      val lFiles: List[String] = newList()
+      for f in allFiles.toArray() {
+        if Str.endsWith(f, ".l") { lFiles.add(f) }
+      }
+      if lFiles.count == 0 {
+        printErr("test: package '" + pkgEntry.name + "': no .l files found in " + abs)
+        hadFatal = true
+      } else {
+        val sorted = Sort.sortStrings(lFiles.toArray())
+        for f in sorted {
+          match File.readText(f) {
+            case Ok(t)  -> pkgSources.add(t)
+            case Err(e) -> {
+              printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
+              hadFatal = true
+            }
+          }
+        }
+      }
+    } else {
+      printErr("test: package '" + pkgEntry.name + "': path not found: " + abs)
+      hadFatal = true
+    }
+    if pkgSources.count > 0 {
+      libPkgs.add(ProjectPackage(name = pkgEntry.name, sources = pkgSources))
     }
     pi += 1
+  }
+
+  if hadFatal { return 1 }
+
+  // Resolve local-path dependencies to DLL paths, matching buildProject.
+  val restoredDlls: List[String] = newList()
+  var di = 0
+  while di < manifest.deps.count {
+    val dep = manifest.deps[di]
+    match dep.source {
+      case Path(dir) -> {
+        val depDir = if Path.isAbsolute(dir) { dir }
+                     else { Path.join(mfDir, dir) }
+        val depToml = Path.join(depDir, "lyric.toml")
+        val depBinDir = Path.join(depDir, "bin")
+        if File.fileExists(depToml) {
+          match File.readText(depToml) {
+            case Ok(depMfText) -> {
+              match Mf.parseManifest(depMfText, depToml) {
+                case Ok(depMf) -> {
+                  val dllName = match depMf.project {
+                    case Some(p) -> match p.outputAssembly {
+                      case Some(asm) -> asm
+                      case None      -> p.name + ".dll"
+                    }
+                    case None -> depMf.packageSection.name + ".dll"
+                  }
+                  val dllPath = Path.join(depBinDir, dllName)
+                  if File.fileExists(dllPath) {
+                    restoredDlls.add(dep.name + "\t" + dllPath)
+                  } else {
+                    printErr("test: local dep '" + dep.name + "' not built — run `lyric build --manifest " + depToml + "` first")
+                  }
+                }
+                case Err(_) -> ()
+              }
+            }
+            case Err(_) -> ()
+          }
+        } else {
+          printErr("test: local dep '" + dep.name + "' — no lyric.toml found at '" + depToml + "'")
+        }
+      }
+      case _ -> ()
+    }
+    di += 1
   }
 
   val testOutDir = Path.join(mfDir, ".lyric-test")
   match File.createDir(testOutDir) {
     case Ok(_)  -> ()
     case Err(e) -> {
-      // Without an output directory every later test emit fails and the
-      // resulting N-test failure cascade obscures the root cause.
       printErr("test: cannot create '" + testOutDir + "': " + IOError.message(e))
       return 1
     }
@@ -2210,7 +2297,6 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
   var totalPassed = 0
   var totalFailed = 0
 
-  // Walk each [project.tests] entry.
   var ti = 0
   while ti < proj.tests.count {
     val testEntry = proj.tests[ti]
@@ -2228,8 +2314,7 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
       }
     }
 
-    val synth = TestSynth.synthesize(testSource, filterArg)
-    val rewritten: String = match synth {
+    val rewritten: String = match TestSynth.synthesize(testSource, filterArg) {
       case Synthesised(rw, _, _) -> rw
       case NoTestModule(span)    -> {
         printErr(abs + ":" + toString(span.startPos.line) +
@@ -2260,29 +2345,32 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
       }
     }
 
-    // Build the combined source: every [project.packages] file plus
-    // the synthesised test (which now carries a `main()` that runs
-    // every test function).  Collect into a List and `Str.joinList`
-    // at the end to avoid the O(N^2) repeated-concat cost.
-    val parts: List[String] = newList()
+    // Compile the library packages together with the synthesised test package
+    // via emitProject so each package declaration is a separate compilation
+    // unit — concatenating sources into a single-file emit is invalid when
+    // the project contains more than one `package` declaration.
+    val allPkgs: List[ProjectPackage] = newList()
     var si = 0
-    while si < pkgSources.count {
-      parts.add(pkgSources[si])
+    while si < libPkgs.count {
+      allPkgs.add(libPkgs[si])
       si += 1
     }
-    parts.add(rewritten)
-    val combined = Str.joinList("", parts)
+    val testSrcs: List[String] = newList()
+    testSrcs.add(rewritten)
+    allPkgs.add(ProjectPackage(name = testEntry.name, sources = testSrcs))
 
     val asmStem = stemOf(Path.basename(testEntry.path), 2)
     val outPath = Path.join(testOutDir, asmStem + ".dll")
 
-    val req = EmitRequest(
-      source       = combined,
-      assemblyName = asmStem,
-      outputPath   = outPath,
-      target       = Dotnet
+    val projReq = EmitProjectRequest(
+      packages         = allPkgs,
+      assemblyName     = asmStem,
+      outputPath       = outPath,
+      target           = Dotnet,
+      restoredDllPaths = restoredDlls,
+      activeFeatures   = activeFeatures
     )
-    val result  = Emitter.emit(req)
+    val result  = Emitter.emitProject(projReq)
     var hadBuildError = false
     for d in result.diagnostics.toArray() {
       match d.severity {

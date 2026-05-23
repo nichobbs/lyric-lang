@@ -206,3 +206,39 @@ jobs:
             out="/tmp/$(basename "$ex" .l).dll"
             "$lyric_bin" build "$ex" -o "$out" --force
           done
+
+      # Ecosystem security regression tests — exercises lyric-auth (#315, #360)
+      # and lyric-session (#316) through the multi-package test runner added in
+      # #465.  Skipped silently if the stage-1 bundle or AOT binary is absent
+      # (mirrors the AOT smoke step above).  Fails CI when tests are present
+      # and actually fail, so security regressions are caught on every push.
+      - name: Ecosystem test suite (lyric-auth + lyric-session)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping ecosystem tests"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping ecosystem tests"
+            exit 0
+          fi
+          # Pre-build Lyric.Stdlib so local-path dep resolution in the test
+          # runner finds lyric-stdlib/bin/Lyric.Stdlib.dll.
+          echo "=== building Lyric.Stdlib ==="
+          "$lyric_bin" build --manifest lyric-stdlib/lyric.toml
+          # Run both test manifests; capture exit codes so both always run
+          # before we report the overall result.
+          overall=0
+          echo "=== lyric-auth tests ==="
+          "$lyric_bin" test --manifest lyric-auth/lyric.toml || overall=$?
+          echo "=== lyric-session tests ==="
+          "$lyric_bin" test --manifest lyric-session/lyric.toml || overall=$?
+          if [ $overall -ne 0 ]; then
+            echo "::error::ecosystem test suite failed — security regression detected"
+            exit $overall
+          fi
+          echo "ecosystem test suite passed"

@@ -14699,3 +14699,54 @@ via `cat`, timeout enforcement, simultaneous stdout+stderr, and spawn failure
 
 All tests pass: 128/128 Lexer, 323/323 Parser, 189/189 TypeChecker,
 825/825 Emitter, 61/61 Cli.
+
+### D-progress-298 — Multi-package test runner: `lyric test --manifest` (#465)
+
+**Status:** Shipped.
+
+**Problem:** `lyric test` was single-file only (`Emitter.emit`).  Ecosystem
+libraries like `lyric-auth` and `lyric-session` have test files that import
+packages from the same project (e.g. `import Auth`); those imports cannot be
+resolved by the single-file path.  The two security regression test files
+(`lyric-auth/tests/auth_security_tests.l`, `lyric-session/tests/session_fixation_tests.l`)
+existed as living specs but could not be executed.
+
+**Root bug in `cmdTestManifest`:** The previous implementation concatenated
+all package sources into a single string and called `Emitter.emit` (single-file
+path).  A project with multiple `package X` declarations produces invalid source
+when concatenated, so the parser rejected every multi-package test run.  In
+addition, no dependency resolution was performed (causing `import Std.*` to fail),
+and active features were not computed (causing feature-gated packages such as
+`Auth.Kernel.Net` to be silently excluded).
+
+**Fix (`lyric-compiler/lyric/cli.l` — `cmdTestManifest`):**
+1. Active features are resolved via `Mf.readFeatureDefaultsFromToml` before any
+   package is read, matching `buildProject`.
+2. Library packages are built from `[project.packages]` into a
+   `List[ProjectPackage]`, identical to `buildProject` (handles single `.l` files
+   and directories; sorted for determinism).
+3. Local-path dependencies are resolved to DLL paths via the same dep-walking
+   logic as `buildProject` (reads each dep's `lyric.toml`, computes the expected
+   DLL name, warns if the DLL is absent but does not fatal — unbuilt optional
+   deps like `Lyric.Cache` are skipped silently when their packages are
+   feature-gated).
+4. Each test entry from `[project.tests]` is synthesised via `TestSynth.synthesize`
+   and appended as its own `ProjectPackage`; the combined list is compiled via
+   `Emitter.emitProject` so every package declaration lives in its own
+   compilation unit.
+5. Results are TAP-compatible: per-test pass/fail lines, a summary, and an exit
+   code of 1 if any test failed.
+
+**CI integration (`.github/workflows/ci.yml`):**
+A new "Ecosystem test suite" step runs after the AOT smoke test.  It guards
+on the stage-1 bundle and AOT binary (same pattern as the AOT step), pre-builds
+`lyric-stdlib` so dep resolution succeeds, then runs both test manifests in
+sequence (both always run; overall exit code fails CI if either fails).  The
+step has no `continue-on-error` so security regressions block merge.
+
+**Acceptance criteria met:**
+- `lyric test --manifest lyric-auth/lyric.toml` — pins JWT algorithm-pinning
+  (#315) and role allow-list (#360) invariants.
+- `lyric test --manifest lyric-session/lyric.toml` — pins the no-auto-create
+  session-fixation guard (#316).
+- CI fails if either test suite regresses.
