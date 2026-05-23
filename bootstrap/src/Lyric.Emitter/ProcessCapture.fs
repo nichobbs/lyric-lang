@@ -22,16 +22,10 @@ type CaptureResult =
 let private captureFailure : CaptureResult =
     { Stdout = ""; Stderr = ""; ExitCode = -1; TimedOut = false }
 
-/// Spawn `executable` with a pre-formed `arguments` string, write
-/// `stdinContent` to the child's stdin, close stdin, and return a
-/// `CaptureResult` with the captured stdout, stderr, exit code, and
-/// whether the process was killed for exceeding the 10-second wall-clock cap.
-///
-/// Both stdout and stderr are drained on background threads before
-/// `WaitForExit` so that a child that writes more than the pipe-buffer
-/// limit (4 KB on Linux, 64 KB on Windows) to either stream cannot
-/// deadlock against the parent.
-let runCapture (executable: string) (arguments: string) (stdinContent: string) : CaptureResult =
+/// Shared subprocess implementation: spawn `executable`, write `stdinContent`,
+/// drain stdout+stderr in parallel, wait up to `timeoutMs`, and return a
+/// `CaptureResult`.
+let private runCaptureImpl (executable: string) (arguments: string) (stdinContent: string) (timeoutMs: int) : CaptureResult =
     let psi = ProcessStartInfo()
     psi.FileName  <- executable
     psi.Arguments <- arguments
@@ -56,12 +50,7 @@ let runCapture (executable: string) (arguments: string) (stdinContent: string) :
             let stderrTask =
                 System.Threading.Tasks.Task.Run(fun () ->
                     proc.StandardError.ReadToEnd())
-            // 10-second wall-clock cap: solvers already get a per-query
-            // timeout flag (-T:5 for Z3, --tlimit=5000 for cvc5) but a
-            // hung or misbehaving solver binary can still block indefinitely
-            // if those flags are ignored.  Kill the process tree if it
-            // hasn't exited within 2× the configured solver timeout.
-            let timedOut = not (proc.WaitForExit 10000)
+            let timedOut = not (proc.WaitForExit timeoutMs)
             if timedOut then
                 try proc.Kill(entireProcessTree = true) with _ -> ()
             let stdout = try if stdoutTask.Wait 5000 then stdoutTask.Result else "" with _ -> ""
@@ -69,3 +58,21 @@ let runCapture (executable: string) (arguments: string) (stdinContent: string) :
             let exitCode = try proc.ExitCode with _ -> if timedOut then -2 else -1
             { Stdout = stdout; Stderr = stderr; ExitCode = exitCode; TimedOut = timedOut }
     with _ -> captureFailure
+
+/// Spawn `executable` with a pre-formed `arguments` string, write
+/// `stdinContent` to the child's stdin, close stdin, and return a
+/// `CaptureResult` with the captured stdout, stderr, exit code, and
+/// whether the process was killed for exceeding the 10-second wall-clock cap.
+///
+/// Both stdout and stderr are drained on background threads before
+/// `WaitForExit` so that a child that writes more than the pipe-buffer
+/// limit (4 KB on Linux, 64 KB on Windows) to either stream cannot
+/// deadlock against the parent.
+let runCapture (executable: string) (arguments: string) (stdinContent: string) : CaptureResult =
+    runCaptureImpl executable arguments stdinContent 10000
+
+/// Variant of `runCapture` with a caller-supplied `timeoutMs` wall-clock cap
+/// instead of the hardcoded 10-second default.  Used by `Std.Process.runCapture`
+/// and `Std.Process.runCaptureWithInput` (#1023 / #743).
+let runCaptureWithTimeout (executable: string) (arguments: string) (stdinContent: string) (timeoutMs: int) : CaptureResult =
+    runCaptureImpl executable arguments stdinContent timeoutMs

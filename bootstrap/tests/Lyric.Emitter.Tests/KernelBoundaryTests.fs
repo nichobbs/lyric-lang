@@ -134,7 +134,11 @@ let tests =
             //               `pcResultExitCode`, `pcResultTimedOut`) for
             //               #1025 / #743 (propagate exit code + stderr
             //               through the generator / solver pipeline).
-            Expect.isLessThanOrEqual total 302
+            //   302 → 303 — `Std.ProcessCaptureHost.hostRunCaptureTimeout`:
+            //               timeout-aware capture entry point for
+            //               `Std.Process.runCapture` / `runCaptureWithInput`
+            //               (#1023 / #743).
+            Expect.isLessThanOrEqual total 303
                 "total extern surface unexpectedly large"
         }
     ]
