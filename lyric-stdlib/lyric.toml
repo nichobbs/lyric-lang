@@ -34,8 +34,10 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.ProcessHost"      = "std/_kernel/process_host.l"
 # Kernel boundary for console I/O — @externTarget pattern, no extra deps.
 "Std.ConsoleHost"      = "std/_kernel/console_host.l"
-# Regex — extern type + @externTarget; used by lyric-validation.
-"Std.Regex"            = "std/_kernel/regex.l"
+# Regex kernel boundary (extern type + @externTarget).
+"Std.RegexHost"        = "std/_kernel/regex_host.l"
+# Public Std.Regex wrapper — opaque CompiledRegex, Result-based API.
+"Std.Regex"            = "std/regex.l"
 
 # Tier 1 — collections; depends on Tier 0 + kernel.
 "Std.Collections"      = "std/collections.l"
