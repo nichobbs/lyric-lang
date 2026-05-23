@@ -169,3 +169,33 @@ test "duplicate alg attack: both algs in allow-list — still fails on invalid s
   assertTrue(not ok,
     "duplicate alg with both algs allowed: invalid sig must still fail closed")
 }
+
+// ─── exp/nbf overflow regression (#1078) ─────────────────────────────────────
+// parseLong previously had no digit-count cap, so a crafted exp/nbf claim with
+// 20+ digits overflowed to a negative Long under .NET unchecked arithmetic.
+// The check `if exp >= 0i64 and nowSec > exp` was then skipped, treating the
+// token as permanently non-expiring.  The fix caps parseLong at 18 digits;
+// getLongClaimFromJson returns -2i64 for a present-but-oversized claim;
+// validatePayload rejects immediately when it sees -2i64.
+
+test "exp overflow regression: validly-signed token with 20-digit exp is rejected (#1078)" {
+  // Payload: {"exp":99999999999999999999} — 20 digits, overflows Long.
+  // This token is signed with HMAC-SHA256("test-secret") so it passes the
+  // signature check and reaches validatePayload, exercising the overflow guard.
+  // Without the fix the overflowed value is negative → exp check skipped → true.
+  // With the fix getLongClaimFromJson returns -2i64 → validatePayload returns false.
+  val ok = Auth.verifyJwt(
+    "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjk5OTk5OTk5OTk5OTk5OTk5OTk5fQ.XSpwX_lbCxe7CP2z2kBxvBf7Hm-l14y_8YcA2UHqcdc",
+    "test-secret", "", "", "HS256")
+  assertTrue(not ok, "20-digit exp must be rejected — not treated as non-expiring")
+}
+
+test "nbf overflow regression: validly-signed token with 20-digit nbf is rejected (#1078)" {
+  // Payload: {"nbf":99999999999999999999} — same overflow path, nbf direction.
+  // Signed with HMAC-SHA256("test-secret").  Without fix: overflowed nbf is
+  // negative → nbf check skipped → accepted.  With fix: rejected immediately.
+  val ok = Auth.verifyJwt(
+    "eyJhbGciOiJIUzI1NiJ9.eyJuYmYiOjk5OTk5OTk5OTk5OTk5OTk5OTk5fQ.wfVtcqqLpXnI_yfTav0k0p4g1b8wsvJPPJ9x94JEkjA",
+    "test-secret", "", "", "HS256")
+  assertTrue(not ok, "20-digit nbf must be rejected — not treated as not-yet-valid bypass")
+}

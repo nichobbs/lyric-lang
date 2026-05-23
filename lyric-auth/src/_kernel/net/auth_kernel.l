@@ -98,9 +98,13 @@ func getStringClaim(payloadBytes: in slice[Byte], key: in String): String {
 }
 
 // Parse a non-negative decimal integer string to Long.
-// Returns -1i64 for empty input or any non-digit character.
+// Returns -1i64 for empty input, any non-digit character, or inputs longer than
+// 18 digits (Long.MaxValue has 19 digits; capping at 18 prevents unchecked
+// integer overflow from turning a large-but-present exp/nbf claim into a
+// negative value that silently bypasses the expiry check — #1078).
 func parseLong(s: in String): Long {
-  if s.length == 0 { return -1i64 }
+  if s.length == 0  { return -1i64 }
+  if s.length > 18  { return -1i64 }
   var result: Long = 0i64
   var i = 0
   while i < s.length {
@@ -114,8 +118,14 @@ func parseLong(s: in String): Long {
 
 // Extract a numeric (integer) claim from a JSON object string.
 // Scans for `"key":NUMBER` using lastIndexOf for last-wins duplicate-key
-// semantics.  Returns -1i64 when the key is absent, the value is not a plain
-// non-negative integer, or the JSON is malformed.
+// semantics.
+//
+// Return convention:
+//   -1i64  — key absent (caller should skip the claim check)
+//   -2i64  — key present but value is malformed or overflows Long (caller must
+//             REJECT the token — skipping the check on a present-but-unparseable
+//             claim would silently bypass exp/nbf enforcement, #1078)
+//   >= 0   — key present and value successfully parsed
 func getLongClaimFromJson(json: in String, key: in String): Long {
   val pfx = "\"" + key + "\":"
   val pfxPos = json.lastIndexOf(pfx)
@@ -125,16 +135,19 @@ func getLongClaimFromJson(json: in String, key: in String): Long {
   while vs < json.length and json[vs] == ' ' {
     vs = vs + 1
   }
-  if vs >= json.length { return -1i64 }
-  if not isDigit(json[vs]) { return -1i64 }
+  // Key is present; any parse failure from here is -2i64, not -1i64.
+  if vs >= json.length { return -2i64 }
+  if not isDigit(json[vs]) { return -2i64 }
   var ve = vs
   while ve < json.length and isDigit(json[ve]) {
     ve = ve + 1
   }
   val count = ve - vs
-  if count == 0 { return -1i64 }
+  if count == 0 { return -2i64 }
   val numStr = substring(json, vs, count)
-  parseLong(numStr)
+  val parsed = parseLong(numStr)
+  if parsed < 0i64 { return -2i64 }
+  parsed
 }
 
 // ─── Algorithm allow-list ─────────────────────────────────────────────────────
@@ -207,10 +220,14 @@ func validatePayload(
             if aud != audience { return false }
           }
           // Validate exp: token must not be expired.
+          // -2i64 means present but malformed — reject immediately (#1078).
           val exp = getLongClaimFromJson(payloadJson, "exp")
+          if exp < -1i64 { return false }
           if exp >= 0i64 and nowSec > exp { return false }
           // Validate nbf: token must not be used before it becomes valid.
+          // -2i64 means present but malformed — reject immediately (#1078).
           val nbf = getLongClaimFromJson(payloadJson, "nbf")
+          if nbf < -1i64 { return false }
           if nbf >= 0i64 and nowSec < nbf { return false }
           true
         }
