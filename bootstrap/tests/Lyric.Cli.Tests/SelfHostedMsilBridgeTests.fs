@@ -76,6 +76,54 @@ let private mkBridgeFails (label: string) (source: string) : Test =
         finally
             try Directory.Delete(dir, recursive = true) with _ -> ()
 
+/// Compile `source` via the self-hosted MSIL bridge, run it, and additionally
+/// reflect over the produced DLL with `System.Reflection.Metadata` to assert
+/// that the InterfaceImpl table contains `expectedIfaceImplCount` rows and the
+/// MethodImpl table contains `expectedMethodImplCount` rows.  Used by the
+/// #878 regression to verify the MPImpl wiring landed real `InterfaceImpl` +
+/// `MethodImpl` rows instead of silently dropping them.
+let private mkBridgeWithImplCounts
+        (label: string) (source: string) (expected: string)
+        (expectedIfaceImplCount: int) (expectedMethodImplCount: int) : Test =
+    testCase (sprintf "[%s]" label) <| fun () ->
+        let dir = Path.Combine(Path.GetTempPath(), "lyric-msil-bridge-test-" + label + "-" + Guid.NewGuid().ToString("N"))
+        Directory.CreateDirectory dir |> ignore
+        try
+            let dllPath = Path.Combine(dir, label + ".dll")
+            let ok = SelfHostedMsil.compileToDll source dllPath
+            Expect.isTrue ok
+                (sprintf "self-hosted MSIL compile succeeded for '%s'" label)
+            Expect.isTrue (File.Exists dllPath)
+                (sprintf "output DLL exists at %s" dllPath)
+            // Inspect metadata BEFORE running so we report row counts even if
+            // the runtime fails (which itself signals a structural problem).
+            let dllBytes = File.ReadAllBytes dllPath
+            use peStream = new MemoryStream(dllBytes)
+            use peReader = new System.Reflection.PortableExecutable.PEReader(peStream)
+            let mdReader : System.Reflection.Metadata.MetadataReader =
+                System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader peReader
+            // Both InterfaceImpl and MethodImpl rows are reachable through the
+            // owning TypeDef: a TypeDef's `GetInterfaceImplementations()` lists
+            // its InterfaceImpl rows and `GetMethodImplementations()` lists
+            // its MethodImpl rows.  Sum across every TypeDef in the assembly.
+            let mutable ifaceImplRows  = 0
+            let mutable methodImplRows = 0
+            for tdHandle in mdReader.TypeDefinitions do
+                let td = mdReader.GetTypeDefinition(tdHandle)
+                ifaceImplRows  <- ifaceImplRows  + td.GetInterfaceImplementations().Count
+                methodImplRows <- methodImplRows + td.GetMethodImplementations().Count
+            Expect.equal ifaceImplRows expectedIfaceImplCount
+                (sprintf "InterfaceImpl row count for '%s'" label)
+            Expect.equal methodImplRows expectedMethodImplCount
+                (sprintf "MethodImpl row count for '%s'" label)
+            let stdout, stderr, exitCode = runDll dllPath
+            Expect.equal exitCode 0
+                (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) expected
+                (sprintf "stdout matches expected for '%s'" label)
+        finally
+            try Directory.Delete(dir, recursive = true) with _ -> ()
+
 let tests =
     testSequenced
     <| testList "SelfHostedMsil bridge (codegen end-to-end)" [
@@ -244,6 +292,41 @@ func main(): Unit {
 }
 """
             "interface ok"
+
+        // ── #878 Regression: IImpl emits MPImpl + InterfaceImpl/MethodImpl ──
+        // Before #878, the IImpl handler folded impl funcs into the host class
+        // as static methods and never created an `MPImpl` package item.  The
+        // resulting DLL carried no `InterfaceImpl` row for `Greeter`-on-Person`,
+        // and no `MethodImpl` row binding `greet` to its implementation, so
+        // the CLR could not bind interface dispatch even if a caller tried.
+        //
+        // This regression test compiles a program with an interface, a record,
+        // and an `impl` block, then inspects the resulting DLL with
+        // `System.Reflection.Metadata` to assert that the InterfaceImpl table
+        // has exactly 1 row and the MethodImpl table has exactly 1 row.  It
+        // also runs the DLL to confirm the metadata is well-formed enough to
+        // load `Person` (which would otherwise throw `TypeLoadException`).
+        mkBridgeWithImplCounts "shm_impl_metadata"
+            """package ShMImpl
+
+interface Greeter {
+  func greet(): String
+}
+
+record Person { age: Int }
+
+impl Greeter for Person {
+  func greet(): String { "hello" }
+}
+
+func main(): Unit {
+  val p = Person(age = 30)
+  println("impl-metadata-ok")
+}
+"""
+            "impl-metadata-ok"
+            1   // InterfaceImpl rows
+            1   // MethodImpl rows
 
         // ── Band 2 (#853): IOpaque → sealed TypeDef with private fields + .ctor ─
         // Opaque field syntax is `fieldName: Type` (no `val` keyword).

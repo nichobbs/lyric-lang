@@ -394,7 +394,13 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
   var methodDefRow = 1
   var fieldDefRow  = 1
 
-  // Pre-scan: does any IVal need a .cctor (non-literal init)?
+  // Pre-collect impl entries so we know how many forwarder MethodDefs each
+  // IRecord / IExposedRec will own once `codegenMPackage` merges them.
+  // Keeping this in lockstep with the codegen-side injection avoids
+  // off-by-N token-numbering bugs for any IFunc that follows the record.
+  val implEntries = collectImplEntriesMsil(file, pkgName)
+
+  // Pre-scan: does any IVal need a `.cctor` (non-literal init)?
   // After the literal-IVal inlining fix, only non-literal IVals produce
   // a non-empty initInsns list and therefore a .cctor MethodDef row.
   var hasValCctor = false
@@ -416,7 +422,8 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
   while i < file.items.count {
     match file.items[i].kind {
       case IRecord(decl) -> {
-        // lowerMRecord: FieldDef per field; .ctor MethodDef; RMFunc MethodDefs.
+        // lowerMRecord: FieldDef per field; .ctor MethodDef; RMFunc MethodDefs;
+        // plus one MethodDef per impl-forwarder injected by codegenMPackage.
         val className = pkgName + "." + decl.name
         var fi = 0
         while fi < decl.members.count {
@@ -440,6 +447,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
           }
           mi = mi + 1
         }
+        methodDefRow = methodDefRow + countImplForwardersMsil(implEntries, className)
       }
       case IExposedRec(decl) -> {
         // Same layout as IRecord.
@@ -466,6 +474,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
           }
           mi = mi + 1
         }
+        methodDefRow = methodDefRow + countImplForwardersMsil(implEntries, className)
       }
       case IUnion(decl) -> {
         // lowerMUnion: base abstract methods (usually 0) + one lowerMRecord per case.
@@ -3009,6 +3018,246 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §8a. Impl-block pre-pass — collect `impl Iface for Target { … }` entries.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// One `impl Iface for Target { funcs… }` block as collected by the pre-pass.
+// The target/iface class names are fully-qualified (`Pkg.Person`).
+pub record ImplEntryMsil {
+  targetClass: String
+  ifaceClass:  String
+  funcs:       List[FunctionDecl]
+}
+
+// Walk every `IImpl` item in `file` and produce a flat list of impl entries.
+// Single-segment interface names (`Greeter`) are implicitly qualified with
+// the current package name; multi-segment paths are kept verbatim.  The
+// `lyric-compiler/msil` backend currently only supports same-package
+// interfaces; cross-package interface dispatch is deferred to R6.
+pub func collectImplEntriesMsil(file: in SourceFile,
+                                 pkgName: in String): List[ImplEntryMsil] {
+  val entries: List[ImplEntryMsil] = newList()
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IImpl(decl) -> {
+        val targetClass = match decl.target.kind {
+          case TRef(path) -> pkgName + "." + lastSegmentMsil(path)
+          case _          -> pkgName + ".__impl_target"
+        }
+        val rawIface = joinSegsMsil(decl.iface.head.segments, ".")
+        val ifaceClass = if decl.iface.head.segments.count == 1 {
+          pkgName + "." + rawIface
+        } else {
+          rawIface
+        }
+        val funcs: List[FunctionDecl] = newList()
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMplFunc(fn) -> funcs.add(fn)
+            case IMplAssoc(_) -> {}
+          }
+          mi = mi + 1
+        }
+        entries.add(ImplEntryMsil(
+          targetClass = targetClass,
+          ifaceClass  = ifaceClass,
+          funcs       = funcs))
+      }
+      case _ -> {}
+    }
+    i = i + 1
+  }
+  entries
+}
+
+// Count the impl-method MethodDef rows that an `IRecord` / `IExposedRec` named
+// `targetClass` will own after impl forwarders are injected.  Used by
+// `addPackageTokens` to keep MethodDef token assignment in sync with what
+// `lowerMRecord` will actually emit.
+pub func countImplForwardersMsil(entries: in List[ImplEntryMsil],
+                                  targetClass: in String): Int {
+  var total = 0
+  var i = 0
+  while i < entries.count {
+    if entries[i].targetClass == targetClass {
+      total = total + entries[i].funcs.count
+    }
+    i = i + 1
+  }
+  total
+}
+
+// Lower an impl-block FunctionDecl as a **virtual instance method** owned by
+// the target TypeDef, so that the CLR can satisfy the interface contract via
+// implicit name+signature override (and MethodImpl rows can point at it).
+//
+// Calling convention notes:
+//   • Slot 0 is reserved for the implicit `this`; user params start at slot 1.
+//   • If the user wrote `func greet(self: in Person, …)`, the explicit `self`
+//     parameter is folded onto slot 0 instead of allocating a fresh slot,
+//     and it is NOT counted in the emitted CLR signature (which must match
+//     the interface's `instance` signature exactly).
+//
+// Flags: Public | Virtual | Final | HideBySig | NewSlot — Final stops further
+// overrides in subclasses (records are sealed today), NewSlot creates a fresh
+// vtable slot the InterfaceImpl row can bind to.
+pub func lowerImplFuncAsInstanceMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
+                                      targetClass: in String,
+                                      pkgName: in String): MFunc {
+  val retTy =
+    match decl.ret {
+      case Some(te) -> typeExprToMsil(te, pkgName)
+      case None     -> MVoid
+    }
+
+  // Identify whether the first declared parameter is the explicit `self`.
+  val hasExplicitSelf =
+    if decl.params.count > 0 and decl.params[0].name == "self" { true }
+    else { false }
+
+  // Emitted CLR signature param count: explicit `self` is collapsed into `this`.
+  val sigParamCount =
+    if hasExplicitSelf { decl.params.count - 1 } else { decl.params.count }
+
+  // Slot 0 = `this`; user params follow at slots 1..N.  `paramCount` covers
+  // both so `emitLoadSlot` dispatches `ldarg` for every parameter slot and
+  // `ldloc` only for locals (slot >= paramCount).
+  val fctx = makeFuncCtxMsil(pkgName, targetClass, sigParamCount + 1)
+  fctx.slotTicker.add(0)   // reserve slot 0 for `this`
+  val insns: List[MInsn] = newList()
+
+  var pi = 0
+  while pi < decl.params.count {
+    val p = decl.params[pi]
+    val paramTy = typeExprToMsil(p.ty, pkgName)
+    if pi == 0 and hasExplicitSelf {
+      // Bind `self` to slot 0; do not allocate a new slot.
+      fctx.slots.add(p.name, 0)
+      fctx.types.add(p.name, paramTy)
+    } else {
+      val slot = fctx.slotTicker.count
+      fctx.slots.add(p.name, slot)
+      fctx.types.add(p.name, paramTy)
+      fctx.slotTicker.add(0)
+    }
+    pi = pi + 1
+  }
+
+  match decl.body {
+    case Some(body) -> {
+      match body {
+        case FBBlock(block) -> {
+          if retTy != MVoid {
+            val _ = lowerBlockExprMsil(cctx, fctx, insns, block)
+          } else {
+            lowerBlockMsil(cctx, fctx, insns, block)
+          }
+          if not endsWithReturnMsil(insns) {
+            insns.add(MRet)
+          }
+        }
+        case FBExpr(e) -> {
+          lowerExprMsil(cctx, fctx, insns, e)
+          insns.add(MRet)
+        }
+      }
+    }
+    case None -> insns.add(MRet)
+  }
+
+  // Build the CLR-visible parameter type list (skipping explicit `self`).
+  val paramTypes: List[MsilType] = newList()
+  var pj = if hasExplicitSelf { 1 } else { 0 }
+  while pj < decl.params.count {
+    paramTypes.add(typeExprToMsil(decl.params[pj].ty, pkgName))
+    pj = pj + 1
+  }
+
+  MFunc(
+    flags    = MDA_PUBLIC + MDA_VIRTUAL + MDA_FINAL + MDA_HIDE_BY_SIG + MDA_NEW_SLOT,
+    name     = decl.name,
+    params   = paramTypes,
+    ret      = retTy,
+    insns    = insns,
+    maxStack = 16,
+    locals   = fctx.locals)
+}
+
+// Return a new MRecord identical to `baseRec` but with any impl-block
+// forwarders for `baseRec.className` appended to its methods list.
+pub func mergeImplForwardersMsil(baseRec: in MRecord,
+                                  entries: in List[ImplEntryMsil],
+                                  cctx: in CodegenCtx,
+                                  pkgName: in String): MRecord {
+  val merged: List[MFunc] = newList()
+  var bi = 0
+  while bi < baseRec.methods.count {
+    merged.add(baseRec.methods[bi])
+    bi = bi + 1
+  }
+  var ei = 0
+  while ei < entries.count {
+    if entries[ei].targetClass == baseRec.className {
+      val fs = entries[ei].funcs
+      var fi = 0
+      while fi < fs.count {
+        merged.add(lowerImplFuncAsInstanceMsil(cctx, fs[fi], baseRec.className, pkgName))
+        fi = fi + 1
+      }
+    }
+    ei = ei + 1
+  }
+  MRecord(
+    className = baseRec.className,
+    namespace = baseRec.namespace,
+    baseClass = baseRec.baseClass,
+    fields    = baseRec.fields,
+    methods   = merged)
+}
+
+// Strip the last `.`-separated segment from `qualified` and return the prefix
+// ("" when there is no dot).  Used to split `"Pkg.Greeter"` into the
+// namespace `"Pkg"` for `MImplData.ifaceTypeNamespace`.
+pub func namespaceOfQualifiedMsil(qualified: in String): String {
+  var i = qualified.length - 1
+  while i >= 0 {
+    if qualified[i] == '.' {
+      return qualified.substring(0, i)
+    }
+    i = i - 1
+  }
+  ""
+}
+
+// Build an `MImplData` carrying name-based fallback fields for one impl entry.
+// `lowerMImpl` resolves these names to TypeDef rows + method tokens after all
+// types are lowered.  The slots' interface and impl method names are equal
+// for now (no associated-name renaming).
+pub func buildMImplDataMsil(ent: in ImplEntryMsil, pkgName: in String): MImplData {
+  val slots: List[MImplSlot] = newList()
+  var fi = 0
+  while fi < ent.funcs.count {
+    val fn = ent.funcs[fi]
+    slots.add(MImplSlot(
+      ifaceMethodToken = 0,
+      implMethodToken  = 0,
+      ifaceMethodName  = fn.name,
+      implMethodName   = fn.name))
+    fi = fi + 1
+  }
+  MImplData(
+    targetTypeDefRow    = 0,
+    ifaceTypeToken      = 0,
+    slots               = slots,
+    targetTypeName      = ent.targetClass,
+    targetTypeNamespace = pkgName,
+    ifaceTypeName       = ent.ifaceClass,
+    ifaceTypeNamespace  = namespaceOfQualifiedMsil(ent.ifaceClass))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §9. Record lowering.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -3975,15 +4224,28 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   // and IFunc items in the source file and returns a rewritten item list.
   val weavedFile = weaveAspectsMsil(file)
 
+  // ── Impl-block pre-pass (#878) ────────────────────────────────────────────
+  // Collect every `impl Iface for Target { … }` block so that:
+  //   • Each target type's MRecord gets virtual instance methods injected
+  //     (so the CLR can satisfy the interface contract by implicit override).
+  //   • Each block contributes one MPImpl item carrying name-based
+  //     references to the InterfaceImpl + MethodImpl rows that lowerMImpl
+  //     emits once all TypeDefs are in the table.
+  val implEntries = collectImplEntriesMsil(weavedFile, pkgName)
+
   var i = 0
   while i < weavedFile.items.count {
     val item = weavedFile.items[i]
     match item.kind {
       case IRecord(decl) -> {
-        items.add(MPRecord(rec = lowerRecordMsil(decl, pkgName)))
+        val baseRec = lowerRecordMsil(decl, pkgName)
+        items.add(MPRecord(rec = mergeImplForwardersMsil(
+          baseRec, implEntries, cctx, pkgName)))
       }
       case IExposedRec(decl) -> {
-        items.add(MPRecord(rec = lowerRecordMsil(decl, pkgName)))
+        val baseRec = lowerRecordMsil(decl, pkgName)
+        items.add(MPRecord(rec = mergeImplForwardersMsil(
+          baseRec, implEntries, cctx, pkgName)))
       }
       case IFunc(decl) -> {
         fns.add(lowerFuncMsil(cctx, decl, pkgName))
@@ -4121,40 +4383,12 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
           namespace = pkgName,
           methods   = ifaceMethods)))
       }
-      case IImpl(decl) -> {
-        // Band-2 #850: implementation block.
-        // Resolve the target type's TypeDef row and the interface TypeRef token.
-        // The target is always a locally-defined type in the same package for now.
-        val targetName = match decl.target.kind {
-          case TRef(path) -> pkgName + "." + lastSegmentMsil(path)
-          case _          -> pkgName + ".__impl_target"
-        }
-        val ifaceName = joinSegsMsil(decl.iface.head.segments, ".")
-        // The impl is collected here and processed after all TypeDefs are emitted.
-        // We store the info and emit it later (when TypeDef rows are stable).
-        // For the bootstrap, we emit a placeholder MImplData with row 0 that the
-        // lowering layer resolves by scanning the TypeDef table.
-        // Phase R6: proper cross-assembly interface resolution.
-        val implFuncs: List[MFunc] = newList()
-        var imi = 0
-        while imi < decl.members.count {
-          match decl.members[imi] {
-            case IMplFunc(fn) -> {
-              implFuncs.add(lowerFuncMsil(cctx, fn, targetName))
-            }
-            case IMplAssoc(_) -> {}
-          }
-          imi = imi + 1
-        }
-        // Fold impl functions into the target's record (they become instance methods).
-        // Band-2 bootstrap: emit impl methods as regular functions on the host class
-        // with a synthesised "self" first parameter.  The InterfaceImpl row is emitted
-        // with a placeholder class_ = 0 that gets resolved at the lowering step.
-        var imfi = 0
-        while imfi < implFuncs.count {
-          fns.add(implFuncs[imfi])
-          imfi = imfi + 1
-        }
+      case IImpl(_) -> {
+        // Handled by the impl-block pre-pass (#878).  The impl funcs are
+        // injected as virtual instance methods on the target's MRecord
+        // (see `mergeImplForwardersMsil`), and one `MPImpl` item per entry
+        // is appended below so `lowerMImpl` can emit the InterfaceImpl +
+        // MethodImpl rows after all TypeDefs are in the table.
       }
       case IOpaque(decl) -> {
         // Band-2 #853: opaque type.
@@ -4202,6 +4436,16 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
       case IError           -> {}
     }
     i = i + 1
+  }
+
+  // Emit MPImpl items (#878) so `lowerMImpl` can wire up InterfaceImpl +
+  // MethodImpl rows once every TypeDef is in the table.  Emitted before the
+  // host-class MPFuncs because lowerMImpl needs the target's TypeDef rows
+  // to already exist when it runs.
+  var ie = 0
+  while ie < implEntries.count {
+    items.add(MPImpl(implData = buildMImplDataMsil(implEntries[ie], pkgName)))
+    ie = ie + 1
   }
 
   // Emit the host class: functions + static fields (IConst/IVal).
