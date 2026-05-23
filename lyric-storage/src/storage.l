@@ -192,10 +192,12 @@ func storageDelete(bucketHandle: in Int, key: in String): Result[Unit, String]
   requires: key.length > 0
   = ()
 
-/// List objects with an optional prefix.  Returns JSON-serialised ListResult.
+/// List objects with an optional prefix.  `startAfterKey` is the raw key
+/// to start listing after (alphabetically); pass "" to start from the beginning.
+/// Lyric encodes/decodes the opaque `continuationToken` in the public API.
 @axiom("Lyric.Storage.LocalHost.storageList — dispatches by backend tag; local-fs uses Directory.EnumerateFiles")
 @externTarget("Lyric.Storage.LocalHost.storageList")
-func storageList(bucketHandle: in Int, prefix: in String, continuationToken: in String, maxKeys: in Int): Result[String, String]
+func storageList(bucketHandle: in Int, prefix: in String, startAfterKey: in String, maxKeys: in Int): Result[String, String]
   requires: maxKeys >= 1
   requires: maxKeys <= 1000
   = ()
@@ -353,6 +355,9 @@ impl StorageBucket for NativeBucket {
     continuationToken: in String,
     maxKeys:           in Int
   ): Result[ListResult, StorageError] {
+    // The public `continuationToken` is the raw key returned as
+    // `nextContinuationToken` by the previous page; pass it through as
+    // `startAfterKey` so the backend starts listing after that key.
     match storageList(self.bucketHandle, prefix, continuationToken, maxKeys) {
       case Ok(json) -> parseListResult(json)
       case Err(msg) -> Err(StorageError(message = msg, code = "LIST_ERROR"))

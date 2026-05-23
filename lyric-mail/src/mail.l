@@ -108,10 +108,17 @@ record NativeSender { senderHandle: Int }
 
 impl MailSender for NativeSender {
   func send(msg: in EmailMessage): Result[Unit, MailError] {
-    val json = serialiseMessage(msg)
-    match MailKernel.send(self.senderHandle, json) {
+    val toAddrs = addressesToSlice(msg.to)
+    match MailKernel.smtpSend(
+      self.senderHandle,
+      msg.from.address,
+      toAddrs,
+      msg.subject,
+      msg.textBody,
+      msg.htmlBody
+    ) {
       case Ok(_)    -> Ok(())
-      case Err(msg) -> Err(MailError(message = msg, code = "SEND_ERROR"))
+      case Err(err) -> Err(MailError(message = err, code = "SEND_ERROR"))
     }
   }
 
@@ -362,63 +369,13 @@ func buildMessage(
     replyTo     = None)
 }
 
-// Produce a JSON string representation of an EmailMessage for the kernel.
-// Uses manual string building to avoid a hard dependency on Std.Json at the
-// message-construction level.
-func serialiseMessage(msg: in EmailMessage): String {
-  val fromJson   = serialiseAddress(msg.from)
-  val toJson     = serialiseAddressList(msg.to)
-  val ccJson     = serialiseAddressList(msg.cc)
-  val bccJson    = serialiseAddressList(msg.bcc)
-  val attJson    = serialiseAttachmentList(msg.attachments)
-  val replyJson  = match msg.replyTo {
-    case Some(addr) -> serialiseAddress(addr)
-    case None       -> "null"
-  }
-  return "{" +
-    "\"from\":"        + fromJson  + "," +
-    "\"to\":"          + toJson    + "," +
-    "\"cc\":"          + ccJson    + "," +
-    "\"bcc\":"         + bccJson   + "," +
-    "\"subject\":"     + jsonString(msg.subject)  + "," +
-    "\"textBody\":"    + jsonString(msg.textBody) + "," +
-    "\"htmlBody\":"    + jsonString(msg.htmlBody) + "," +
-    "\"attachments\":" + attJson   + "," +
-    "\"replyTo\":"     + replyJson +
-    "}"
-}
-
-// Serialise a single EmailAddress to JSON.
-func serialiseAddress(addr: in EmailAddress): String {
-  return "{\"address\":" + jsonString(addr.address) +
-         ",\"displayName\":" + jsonString(addr.displayName) + "}"
-}
-
-// Serialise a list of EmailAddress values to a JSON array.
-func serialiseAddressList(addrs: in slice[EmailAddress]): String {
-  var result = "["
-  var first  = true
+// Extract the address strings from a slice of EmailAddress values.
+func addressesToSlice(addrs: in slice[EmailAddress]): slice[String] {
+  var result: slice[String] = []
   for addr in addrs {
-    if not first { result = result + "," }
-    result = result + serialiseAddress(addr)
-    first  = false
+    result = result + [addr.address]
   }
-  return result + "]"
-}
-
-// Serialise a list of Attachment values to a JSON array.
-func serialiseAttachmentList(attachments: in slice[Attachment]): String {
-  var result = "["
-  var first  = true
-  for att in attachments {
-    if not first { result = result + "," }
-    result = result +
-      "{\"filename\":"    + jsonString(att.filename)    + "," +
-       "\"contentType\":" + jsonString(att.contentType) + "," +
-       "\"dataBase64\":"  + jsonString(att.dataBase64)  + "}"
-    first = false
-  }
-  return result + "]"
+  return result
 }
 
 // Return true if `s` contains characters that could inject MIME headers.
@@ -431,29 +388,4 @@ func containsHeaderInjection(s: in String): Bool {
     i = i + 1
   }
   return false
-}
-
-// Wrap a string value in JSON double quotes, escaping backslash, double-quote,
-// and the common control characters.
-func jsonString(s: in String): String {
-  var buf = "\""
-  var i   = 0
-  while i < s.length {
-    val ch = s[i]
-    if ch == '"' {
-      buf = buf + "\\\""
-    } else if ch == '\\' {
-      buf = buf + "\\\\"
-    } else if ch == '\n' {
-      buf = buf + "\\n"
-    } else if ch == '\r' {
-      buf = buf + "\\r"
-    } else if ch == '\t' {
-      buf = buf + "\\t"
-    } else {
-      buf = buf + ch.toString()
-    }
-    i = i + 1
-  }
-  return buf + "\""
 }

@@ -12,6 +12,11 @@
 /// of queues with separate Pending (FIFO) and InFlight (ack-tracking)
 /// state, mirroring RabbitMQ's basic.nack(requeue) semantics.
 ///
+/// `publishBatch` has been removed from the kernel boundary (#1022):
+/// it required the F# host to parse a JSON array, violating the
+/// typed-parameters contract.  The public `Mq.publishBatch` wrapper
+/// now loops over `publish` at the Lyric level.
+///
 /// Wire format for messages returned by `consume`:
 ///   JSON object: {"id":"...","body":"...","headers":[],"deliveryCount":N}
 ///   Empty string "" signals a timeout (no message available).
@@ -41,13 +46,6 @@ pub func connect(url: in String, queueName: in String): Result[Int, String]
 @cfg(feature = "inmemory")
 pub func publish(queueId: in Int, messageId: in String, body: in String, headersJson: in String): Result[Unit, String]
   requires: messageId.length > 0
-  = ()
-
-@axiom("Lyric.Mq.InMemoryHost.publishBatch — splits the JSON array of {id, body, headers} objects on balanced braces and enqueues each into Pending")
-@externTarget("Lyric.Mq.InMemoryHost.publishBatch")
-@cfg(feature = "inmemory")
-pub func publishBatch(queueId: in Int, messagesJson: in String): Result[Unit, String]
-  requires: messagesJson.length > 0
   = ()
 
 @axiom("Lyric.Mq.InMemoryHost.consume — blocking poll on the Pending queue; returns '' on timeout")

@@ -209,8 +209,17 @@ impl MessageQueue for NativeQueue {
   func publishBatch(messages: in slice[Message]): Result[Unit, String]
     requires: messages.length > 0
   {
-    val json = messagesToJson(messages)
-    return mqKernelPublishBatch(self.queueId, json)
+    var i: Int = 0
+    while i < messages.length {
+      val m = messages[i]
+      val hj = headersToJson(m.headers)
+      match mqKernelPublish(self.queueId, m.id, m.body, hj) {
+        case Err(e) -> return Err(e)
+        case Ok(_)  -> ()
+      }
+      i = i + 1
+    }
+    return Ok(())
   }
 }
 
@@ -359,9 +368,6 @@ func mqKernelConnect(url: in String, queueName: in String): Result[Int, String] 
 func mqKernelPublish(queueId: in Int, messageId: in String, body: in String, headersJson: in String): Result[Unit, String] = Ok(())
 
 @axiom("broker kernel dispatch — forwards to the active broker driver at runtime")
-func mqKernelPublishBatch(queueId: in Int, messagesJson: in String): Result[Unit, String] = Ok(())
-
-@axiom("broker kernel dispatch — forwards to the active broker driver at runtime")
 func mqKernelConsume(queueId: in Int, timeoutMs: in Int): Result[String, String] = Ok("")
 
 @axiom("broker kernel dispatch — forwards to the active broker driver at runtime")
@@ -384,21 +390,6 @@ func headersToJson(headers: in slice[MessageHeader]): String {
   var parts: slice[String] = []
   for h in headers {
     parts = concat(parts, ["{\"key\":\"" + jsonEscape(h.key) + "\",\"value\":\"" + jsonEscape(h.value) + "\"}"])
-  }
-  return "[" + join(",", parts) + "]"
-}
-
-// Serialise a list of Message to a compact JSON array for publishBatch.
-// Format: [{"id":"...","body":"...","headers":[...],"deliveryCount":N},...]
-func messagesToJson(messages: in slice[Message]): String {
-  if messages.length == 0 {
-    return "[]"
-  }
-  var parts: slice[String] = []
-  for m in messages {
-    val hdrJson = headersToJson(m.headers)
-    val msgJson = "{\"id\":\"" + jsonEscape(m.id) + "\",\"body\":\"" + jsonEscape(m.body) + "\",\"headers\":" + hdrJson + ",\"deliveryCount\":" + m.deliveryCount.toString() + "}"
-    parts = concat(parts, [msgJson])
   }
   return "[" + join(",", parts) + "]"
 }

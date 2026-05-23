@@ -109,31 +109,25 @@ type RedisStore private () =
                 Error (sprintf "Lyric.Session.RedisStore.load: unknown storeHandle %d" storeHandle)
 
     /// Persist the JSON-encoded session value at its existing key,
-    /// preserving the original TTL.  The session JSON must include the
-    /// session ID (the caller embeds it under a known key like "id").
-    /// This method extracts the ID via `parseSessionId` below; if no
-    /// session ID can be recovered the operation fails fast.
-    static member save(storeHandle: int, sessionJson: string) : Result<unit, string> =
-        if String.IsNullOrEmpty(sessionJson) then
+    /// preserving the original TTL.  `sessionId` identifies the Redis key
+    /// directly — no JSON parsing required.
+    static member save(storeHandle: int, sessionId: string, sessionJson: string) : Result<unit, string> =
+        if String.IsNullOrEmpty(sessionId) then
+            Error "Lyric.Session.RedisStore.save: sessionId must be non-empty"
+        elif String.IsNullOrEmpty(sessionJson) then
             Error "Lyric.Session.RedisStore.save: sessionJson must be non-empty"
         else
             match connections.TryGetValue(storeHandle) with
             | true, h ->
-                match RedisStore.parseSessionId sessionJson with
-                | Some sid ->
-                    safeCall (fun () ->
-                        let key = toKey h sid
-                        // KeepTtl preserves the TTL that `create` set;
-                        // explicit re-set without TTL would otherwise
-                        // erase it.  StackExchange.Redis defaults to
-                        // `When.Always`, so the value is overwritten.
-                        h.Database.StringSet(
-                            RedisKey.op_Implicit(key),
-                            RedisValue.op_Implicit(sessionJson),
-                            Nullable<TimeSpan>(),
-                            keepTtl = true) |> ignore)
-                | None ->
-                    Error "Lyric.Session.RedisStore.save: sessionJson missing 'id' field"
+                safeCall (fun () ->
+                    let key = toKey h sessionId
+                    // KeepTtl preserves the TTL that `create` set;
+                    // explicit re-set without TTL would otherwise erase it.
+                    h.Database.StringSet(
+                        RedisKey.op_Implicit(key),
+                        RedisValue.op_Implicit(sessionJson),
+                        Nullable<TimeSpan>(),
+                        keepTtl = true) |> ignore)
             | false, _ ->
                 Error (sprintf "Lyric.Session.RedisStore.save: unknown storeHandle %d" storeHandle)
 
@@ -171,16 +165,3 @@ type RedisStore private () =
             | false, _ ->
                 Error (sprintf "Lyric.Session.RedisStore.touch: unknown storeHandle %d" storeHandle)
 
-    /// Minimal JSON-id parser: looks for `"id":"<value>"` in the
-    /// supplied JSON payload.  Avoids pulling in System.Text.Json just
-    /// for this single string operation in the hot path; saves a
-    /// dependency in the host shim.
-    static member private parseSessionId(json: string) : string option =
-        let prefix = "\"id\":\""
-        let idx = json.IndexOf(prefix, StringComparison.Ordinal)
-        if idx < 0 then None
-        else
-            let start = idx + prefix.Length
-            let endIdx = json.IndexOf('"', start)
-            if endIdx < 0 then None
-            else Some (json.Substring(start, endIdx - start))

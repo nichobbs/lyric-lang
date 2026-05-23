@@ -210,10 +210,11 @@ type LocalHost private () =
                             if File.Exists(metaPath) then File.Delete(metaPath))
 
     /// List objects under `prefix`.  Returns JSON-serialised ListResult.
-    /// Local-fs implementation ignores `continuationToken` and clamps at
-    /// `maxKeys` results — sufficient for the local-dev use case.
+    /// `startAfterKey` is the raw key to start listing after (alphabetically);
+    /// pass "" to start from the beginning.  Returns the actual last key
+    /// as `nextContinuationToken` so callers can page correctly (#1012).
     static member storageList(bucketHandle: int, prefix: string,
-                               continuationToken: string, maxKeys: int) : Result<string, string> =
+                               startAfterKey: string, maxKeys: int) : Result<string, string> =
         if maxKeys < 1 || maxKeys > 1000 then
             Error "Lyric.Storage.LocalHost.storageList: maxKeys must be in [1, 1000]"
         else
@@ -232,10 +233,12 @@ type LocalHost private () =
                                 |> Array.filter (fun f -> not (f.EndsWith(".meta.json", StringComparison.Ordinal)))
                                 |> Array.map (fun f ->
                                     let rel = Path.GetRelativePath(bucketDir, f)
-                                    // Normalise to forward-slash for cross-platform
-                                    // key shape (matches S3/Azure conventions).
                                     rel.Replace(Path.DirectorySeparatorChar, '/'))
                                 |> Array.filter (fun k -> k.StartsWith(prefix, StringComparison.Ordinal))
+                                |> Array.filter (fun k ->
+                                    // Skip keys up to and including startAfterKey for pagination.
+                                    String.IsNullOrEmpty(startAfterKey) ||
+                                    String.Compare(k, startAfterKey, StringComparison.Ordinal) > 0)
                                 |> Array.sort
                             let truncated = allFiles.Length > maxKeys
                             let pageKeys  =
@@ -245,11 +248,16 @@ type LocalHost private () =
                                 |> Array.map (fun k ->
                                     let full = Path.Combine(bucketDir, k.Replace('/', Path.DirectorySeparatorChar))
                                     let info = FileInfo(full)
-                                    sprintf "{\"key\":%s,\"contentLength\":%d,\"lastModified\":%s,\"etag\":\"\"}"
+                                    let etag = Registry.computeEtag (File.ReadAllBytes(full))
+                                    sprintf "{\"key\":%s,\"contentLength\":%d,\"lastModified\":%s,\"etag\":%s}"
                                         (Registry.jsonString k) info.Length
-                                        (Registry.jsonString (info.LastWriteTimeUtc.ToString("O"))))
+                                        (Registry.jsonString (info.LastWriteTimeUtc.ToString("O")))
+                                        (Registry.jsonString etag))
                                 |> String.concat ","
-                            let nextTok = if truncated then "\"\"" else "null"
+                            // Return the actual last key so callers can resume from here.
+                            let nextTok =
+                                if truncated then Registry.jsonString (Array.last pageKeys)
+                                else "null"
                             sprintf "{\"entries\":[%s],\"nextContinuationToken\":%s,\"isTruncated\":%b}"
                                 entries nextTok truncated)
 
