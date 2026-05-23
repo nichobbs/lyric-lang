@@ -1090,15 +1090,26 @@ func splitTypeName(fqn: in String): List[String] {
 // Uses #Strings heap interning — both `internString` calls are idempotent so
 // they do not pollute the heap.
 pub func findTypeDefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
-  // `lowerMRecord` stores the full qualified name (e.g. "Pkg.Foo") as
-  // `typeName` and the package name as `typeNamespace` separately.
-  // Match by the full FQN token, not the split short name.
-  val sFqn = internString(ctx.strings, fqn)
+  // lowerMRecord stores the SIMPLE name in typeName and the namespace in
+  // typeNamespace (e.g. "EnglishGreeter"/"ShMIface" for "ShMIface.EnglishGreeter").
+  // Split the FQN at the last dot and match both fields independently.
+  var lastDot = -1
+  var di = 0
+  while di < fqn.length {
+    if fqn[di] == '.' { lastDot = di }
+    di = di + 1
+  }
+  val ns         = if lastDot < 0 { "" }
+                   else { fqn.substring(0, lastDot) }
+  val simpleName = if lastDot < 0 { fqn }
+                   else { fqn.substring(lastDot + 1, fqn.length - lastDot - 1) }
+  val sNs = internString(ctx.strings, ns)
+  val sSN = internString(ctx.strings, simpleName)
   val t = ctx.tables
   var i = 0
   while i < t.typeDefs.count {
     val td = t.typeDefs[i]
-    if td.typeName == sFqn {
+    if td.typeNamespace == sNs and td.typeName == sSN {
       return i + 1
     }
     i = i + 1
