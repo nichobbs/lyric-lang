@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- BCL System.Net.Mail.SmtpClient is the simplest no-NuGet SMTP path
+         on .NET 10.  It's flagged with SYSLIB0014 (obsolete advisory)
+         which is fine for the Phase-4 path-finder shim — full MailKit
+         integration lands as a follow-up under #780. -->
+    <NoWarn>$(NoWarn);SYSLIB0014</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="MailHost.fs" />
+  </ItemGroup>
+
+</Project>

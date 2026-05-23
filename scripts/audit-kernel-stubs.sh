@@ -44,9 +44,38 @@ joined=$(IFS='|'; echo "${patterns[*]}")
 # branch and grep for lines starting with `+` whose body matches a stub
 # pattern.  The leading-`+` filter alone restricts us to additions; the
 # `(pub )?func` prefix catches both public and private stub declarations.
-added_stubs=$(git diff "$base_sha"..HEAD --unified=0 \
-  -- 'lyric-*/src/_kernel/net/*.l' 2>/dev/null \
-  | grep -E "^\+[[:space:]]*(pub[[:space:]]+)?func.*($joined)" \
+#
+# `@externTarget("...")`-annotated declarations are legitimate extern
+# bodies (the `= ()` is the language-level convention for "no body, bind
+# to the named target") and must be exempted.  The host-shim Phase 4+
+# kernels (lyric-mail, lyric-mq, etc.) deliberately use this form.
+# Filter them out before applying the stub pattern.
+raw_diff=$(git diff "$base_sha"..HEAD --unified=3 \
+  -- 'lyric-*/src/_kernel/net/*.l' 2>/dev/null || true)
+
+added_stubs=$(echo "$raw_diff" \
+  | awk -v pat="$joined" '
+      BEGIN { has_extern = 0 }
+      # Track @externTarget annotations seen on context or added lines
+      # immediately preceding a func declaration.  Reset whenever we
+      # see a non-annotation, non-doc, non-blank line.
+      /^[+ ]\s*@externTarget\(/ { has_extern = 1; next }
+      /^[+ ]\s*@axiom\(/        { next }            # doc-only — keep state
+      /^[+ ]\s*@cfg\(/          { next }            # cfg-only — keep state
+      /^[+ ]\s*@stable\(/       { next }            # doc-only — keep state
+      /^[+ ]\s*\/\//            { next }            # comment — keep state
+      /^[+ ]\s*$/               { next }            # blank — keep state
+      /^\+\s*(pub\s+)?func/ {
+        if (has_extern == 0) {
+          if ($0 ~ pat) print
+        }
+        has_extern = 0
+        next
+      }
+      # Any other line resets the extern-marker state.
+      { has_extern = 0 }
+    ' \
+  | grep -E "($joined)" \
   || true)
 
 if [ -n "$added_stubs" ]; then
