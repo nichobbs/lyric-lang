@@ -226,10 +226,14 @@ jobs:
             echo "::warning::AOT binary not found at $lyric_bin; skipping ecosystem tests"
             exit 0
           fi
-          # Pre-build Lyric.Stdlib so local-path dep resolution in the test
-          # runner finds lyric-stdlib/bin/Lyric.Stdlib.dll.
-          echo "=== building Lyric.Stdlib ==="
-          "$lyric_bin" build --manifest lyric-stdlib/lyric.toml
+          # Stage 1 already compiled Lyric.Stdlib.dll into .bootstrap/stage1/.
+          # Copy it to the canonical dep-resolution path so the test runner's
+          # local-path dep resolver finds it without re-running a manifest build.
+          # (lyric-stdlib/lyric.toml [project.packages] is deliberately incomplete;
+          # stdlib packages not listed there — e.g. Std.Testing — are auto-resolved
+          # from source by Emitter.resolveStdlibImports regardless.)
+          mkdir -p lyric-stdlib/bin
+          cp .bootstrap/stage1/Lyric.Stdlib.dll lyric-stdlib/bin/Lyric.Stdlib.dll
           # Run both test manifests; capture exit codes so both always run
           # before we report the overall result.
           overall=0
