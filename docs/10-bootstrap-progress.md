@@ -11117,11 +11117,7 @@ Phase 5 §M5.2 stage 4 ships the self-hosted monomorphizer as the Lyric-language
 
 ```lyric
 pub func monoFile(file: in SourceFile): MonoResult
-pub record MonoResult {
-  file:        SourceFile
-  rewrites:    Map[String, String]
-  diagnostics: List[Diagnostic]   // added in PR #969 (closes #922) — empty today, populated as the pass starts emitting inference/specialisation diagnostics
-}
+pub record MonoResult { file: SourceFile; rewrites: Map[String, String] }
 ```
 
 **Scope notes:**
@@ -13665,18 +13661,6 @@ Seven new bridge tests added to
 `shm_opaque_smoke`, `shm_aspect_weave`, `shm_protected_smoke`.  All 251
 tests pass (0 failures).
 
-**`IWire` placeholder (item 5 in the Band 2 list)**
-
-`IWire` is promoted from skipped to a `lowerWireMsil`-shaped
-placeholder.  Wire blocks no longer panic the codegen; they emit a
-static-factory-class stub via `lowerWireMsil` that supports the
-binding-site smoke shape used by `shm_aspect_weave` and friends.
-Full DI graph synthesis (`@scope`, `@factory`, transitive
-resolution) remains deferred to Band 3 — see `docs/41 §3.1` for the
-live status (`**Placeholder** — static factory class stub; full DI
-graph lowering deferred to Band 3`).  This downgrades the §8 risk
-matrix entry from HIGH to MEDIUM.
-
 **Remaining Band 2 items deferred to Band 3**
 
 - `ELambda` display-class capture (item 6 in the Band 2 list) — the
@@ -14552,3 +14536,121 @@ Tests:
 - TypeChecker:  189/189
 - Emitter:      824/824 (2 ignored unchanged; baseline includes D-progress-290, -291, and -293)
 - Lyric.Cli:     67/67  (66 carried over + new `shm_impl_metadata` regression test)
+### D-progress-295 — Band 2 R6: ELambda, EYield (collect-all), auto-FFI for IExternType (PR #927)
+
+Three remaining Band 2 gaps in the self-hosted MSIL backend are now closed
+(docs/41 §9 Band 2, items 6 / 10 / 12):
+
+**ELambda — non-capturing lambda lifting** (`msil/codegen.l`, `msil/bridge.l`):
+
+Non-capturing lambdas are now fully lowered in the self-hosted MSIL backend.
+A BFS pre-pass (`liftLambdasMsil`) runs between aspect weaving and
+`addPackageTokens`: it extracts every `ELambda` node into a synthetic
+`__lambda_<i>` `IFunc` appended to the `SourceFile`, processes lambda bodies
+in FIFO / breadth-first order (so outer lambdas are always numbered before
+any lambdas nested inside their bodies), and adds each body to a deferred
+queue rather than recursing immediately.  `addPackageTokens` then assigns
+stable `MethodDef` tokens to the synthetic functions.  At codegen, each
+`ELambda` site reads `cctx.lambdaTicker.count` as its index (same BFS
+order), looks up `__lambda_<i>` in `funcTokens`, and emits
+`ldnull + ldftn methodToken + newobj System.Action::.ctor` (zero-param) or
+`newobj System.Action\`N<object,...>::.ctor` (N-param, via TypeSpec for the
+closed generic instantiation).  The delegate arity matches the lambda's
+parameter count; all parameter types are treated as `object` in this
+bootstrap stage.
+
+Two new `MInsn` cases in `lowering.l` support this: `MLdftn(methodToken)`
+(ECMA-335 `ldftn` opcode) and `MNativeInt` in `MsilType`
+(`ELEMENT_TYPE_I = 0x18`, used in the `Action::.ctor(object, native int)`
+member-ref signature).
+
+Display-class synthesis for capturing lambdas remains deferred to Band 3.
+
+**EYield — collect-all async generator model** (`msil/codegen.l`):
+
+Async functions whose bodies contain `EYield` nodes are now detected via
+`decl.isAsync && funcBodyContainsYieldMsil(decl)`.  A `List<object>`
+collector local is allocated at function entry; each `EYield(inner)` appends
+its value (boxed if primitive) to the collector; the function returns the
+collector as `MObject` at exit.  The yield-slot index is stored in
+`fctx.yieldSlots` so `EYield` lowering can reference it without re-scanning.
+
+**Auto-FFI scoring for IExternType** (`msil/codegen.l`):
+
+`IExternType` items (e.g. `extern type StringWrapper = "System.String"`) now
+populate `cctx.externTypeNames` (a `Map[String, String]` mapping the Lyric
+type name to the CLR FQN) during `addPackageTokens`.  `lowerMethodCallMsil`
+intercepts call sites where the receiver is an `EPath` whose last segment
+resolves to an `externTypeNames` entry and routes them through
+`emitAutoFfiCallMsil`, which looks up or registers the CLR type/member ref
+and emits a direct static `call` without requiring `@externTarget`
+annotations on each method.
+
+**Test coverage** (added to `SelfHostedMsilBridgeTests.fs`):
+- `shm_lambda_non_capturing` — non-capturing lambda compiles and the program
+  prints "lambda ok".
+- `shm_yield_collect` — async generator with 3 yields compiles and the
+  program prints "yield ok".
+- `shm_extern_type_smoke` — `extern type` declaration compiles and the
+  program prints "extern type ok".
+
+All tests: 189/189 TypeChecker, 810/810 Emitter, 254/254 Cli.
+
+### D-progress-296 — Self-hosted MSIL PE writer: FAT-body alignment + bridge parse fix
+
+Two follow-ups to D-progress-295 that close out the remaining `shm_yield_collect`
+failure on PR #927:
+
+**FAT method body alignment** (`msil/assembler.l`):
+
+ECMA-335 II.25.4.5 requires FAT-format method bodies to start on a 4-byte
+boundary in the PE image; TINY bodies have no alignment requirement.  The
+PE writer previously laid bodies out consecutively without padding, so when
+a short TINY body (e.g. `helper(): Int { return 42 }`) preceded a FAT body
+(e.g. `main` with locals), the FAT header landed at a non-aligned RVA and
+the CLR JIT rejected the assembly with `InvalidProgramException` — even
+though the IL itself passed `ilverify`.
+
+`methodBodyRvas` now serialises every body up-front and pads each body's
+RVA range to a 4-byte boundary when the *next* body is FAT (detected by
+inspecting the first header byte: bits 0..1 = `0b11`).  `assemblePe` mirrors
+the layout by writing zero-padding between bodies for the same condition.
+Padding is suppressed when the next body is TINY, so single-method or
+tiny-only files produce byte-identical output to the pre-fix layout — every
+existing `msil_self_test_mNN` continues to pass with no offset churn.
+
+**Bridge parse fix — rename `out` parameter** (`msil/codegen.l`):
+
+`collectLambdasBfsExpr` / `collectLambdasBfsStmt` declared a parameter named
+`out`, which is a Lyric reserved keyword (`out` mode marker).  The
+self-hosted Lyric lexer/parser correctly rejected the file, so the bridge
+DLL could not be built and every `SelfHostedMsil` bridge test errored at
+compile time.  The parameter is renamed to `synths` (matching its semantic
+role of collecting synthetic lifted-lambda items) at every call site.
+
+**Yield collector cast** (`msil/codegen.l`):
+
+The yield collector local is typed `object` (`MObject`) in the local
+signature, but `List<object>::Add` and `List<object>::get_Count` require
+`this` to be `List<object>`.  Each `EYield` and each `xs.count` access now
+emits `castclass List<object>` (via the TypeSpec token cached at codegen
+init) before the `callvirt`, so the IL passes both `ilverify` and the JIT
+verifier.
+
+**Generator return type in `addPackageTokens`** (`msil/codegen.l`):
+
+`addPackageTokens` mirrors the `isGenerator` detection from `lowerFuncMsil`
+so that `funcRetTypes` records `MObject` for generator functions regardless
+of the source-level return annotation.  Without this, call sites that
+stored the result of a generator into a typed local emitted code that the
+verifier rejected.
+
+**Action`N invoke signature uses MTypeVar** (`msil/codegen.l`):
+
+`buildActionNInvokeTok` now uses `MTypeVar(pi)` (ECMA-335 `ELEMENT_TYPE_VAR`)
+for each Invoke parameter, matching the generic `Action`N<T0, T1, ...>::Invoke(T0, T1, ...)` signature.  Arguments at the invoke site are
+boxed when needed so primitive-typed args (e.g. `g(99)` where `g` is a
+`(Int) -> Unit` lambda) satisfy the `object`-typed delegate parameter.
+
+All tests pass: 128/128 Lexer, 323/323 Parser, 189/189 TypeChecker,
+811/811 Emitter, 258/258 Cli.
