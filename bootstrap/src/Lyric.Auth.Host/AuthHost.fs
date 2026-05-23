@@ -128,12 +128,16 @@ type AuthHost private () =
                     | Some s -> value <- s; true
         with _ -> false
 
-    /// Constant-time byte-for-byte comparison of two strings (UTF-8 encoded).
+    /// Byte-content-constant-time comparison of two strings (UTF-8 encoded).
     ///
     /// Returns true iff `provided` and `expected` encode identically.
-    /// Uses `CryptographicOperations.FixedTimeEquals` which runs in time
-    /// proportional to `expected.Length` regardless of where the strings differ,
-    /// preventing timing-oracle attacks on API keys.
+    /// Uses `CryptographicOperations.FixedTimeEquals` which is constant-time
+    /// with respect to content when both inputs have the same byte length —
+    /// preventing value-oracle timing attacks on equal-length key comparisons.
+    /// When UTF-8 lengths differ the method returns immediately without
+    /// examining content, so the expected key's byte length may be inferred
+    /// from timing.  For fixed-format keys (e.g. 32-byte random tokens) the
+    /// length is not secret and this limitation is acceptable.
     static member verifyApiKey(provided: string, expected: string) : bool =
         if String.IsNullOrEmpty expected then false
         else

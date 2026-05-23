@@ -190,14 +190,17 @@ pub func extractClaim(token: in String, claimKey: in String): Option[String]
 
 // ─── API key verification ─────────────────────────────────────────────────────
 
-/// Constant-time comparison of `provided` against `expected`.
+/// Byte-content-constant-time comparison of `provided` against `expected`.
 ///
-/// Returns true iff the two strings are byte-for-byte identical.
-/// The comparison runs in time proportional to `expected.length` regardless
-/// of where the strings first differ, preventing timing-oracle attacks.
+/// Returns true iff the two strings are byte-for-byte identical.  The
+/// comparison is constant-time with respect to content when both encode to
+/// the same byte length, preventing value-oracle timing attacks.  When
+/// lengths differ the call returns immediately; for fixed-format keys
+/// (e.g. 32-byte random tokens) the length is not secret and this is
+/// acceptable.
 ///
-/// Always supply the expected key as `expected` (not `provided`) to ensure
-/// the timing guarantee holds even when `provided` is shorter.
+/// Always supply the expected key as `expected` (not `provided`) to keep
+/// the length-constant guarantee aligned with the fixed expected key.
 @stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func verifyApiKey(provided: in String, expected: in String): Bool

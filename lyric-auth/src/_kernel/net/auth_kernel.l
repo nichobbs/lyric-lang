@@ -87,9 +87,11 @@ pub func extractClaim(token: in String, claimKey: in String): Option[String]
 
 // ─── API key ──────────────────────────────────────────────────────────────────
 
-/// Constant-time comparison of `provided` against `expected`.
+/// Byte-content-constant-time comparison of `provided` against `expected`.
 /// Returns true iff the two strings are byte-for-byte identical.
-/// Constant-time prevents timing-oracle attacks on API keys.
+/// Constant-time with respect to content when both encode to the same byte
+/// length, preventing value-oracle timing attacks.  Length mismatches exit
+/// early; for fixed-format keys the length is not secret so this is acceptable.
 @axiom("Lyric.Auth.AuthHost.verifyApiKey — CryptographicOperations.FixedTimeEquals")
 @externTarget("Lyric.Auth.AuthHost.verifyApiKey")
 @stable(since="0.1")
