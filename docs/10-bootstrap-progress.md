@@ -14654,3 +14654,48 @@ boxed when needed so primitive-typed args (e.g. `g(99)` where `g` is a
 
 All tests pass: 128/128 Lexer, 323/323 Parser, 189/189 TypeChecker,
 811/811 Emitter, 258/258 Cli.
+
+### D-progress-297 — `Std.Process` captured-output API: `runCapture` / `runCaptureWithInput` / `ProcessResult` (#1023 / #743, PR #1060)
+
+Completes the `Std.Process` subprocess-capture API (#1023) and resolves
+the remaining developer-experience gap in #743.
+
+**`ProcessCapture.fs` refactor:**
+
+`runCapture` is split into `runCaptureImpl(timeoutMs)` (shared core, no
+outer exception catch) and two callers:
+- `runCapture` wraps with `try … with _ -> captureFailure` to preserve
+  backward-compatible silent-failure behaviour for `Std.ProcessCapture`
+  callers (verifier, generator).
+- `runCaptureWithTimeout` delegates to `runCaptureImpl` without an outer
+  catch — spawn failures propagate as exceptions, making the `Err` return
+  path in the Lyric wrappers reachable (#1062).
+
+**`_kernel/process_capture_host.l`:**
+
+Added `hostRunCaptureTimeout(executable, arguments, stdinContent, timeoutMs):`
+`ProcessCaptureResult`, targeting `Lyric.Emitter.ProcessCapture.runCaptureWithTimeout`.
+
+**`_kernel_jvm/process_capture_host.l`:**
+
+Added matching stub for `lyric.stdlib.jvm.ProcessCaptureHost.runCaptureWithTimeout`.
+JVM implementation tracked in #1065.
+
+**`std/process.l`:**
+
+Added:
+- `pub record ProcessResult { stdout, stderr, exitCode, timedOut }`
+- `pub func runCapture(executable, args, timeoutMs): Result[ProcessResult, String]`
+- `pub func runCaptureWithInput(executable, args, stdin, timeoutMs): Result[ProcessResult, String]`
+- Private `buildCaptureArgString` (always-quote variant of `buildArgString`)
+
+**`lyric-stdlib/tests/process_tests.l`:**
+
+Seven tests covering: stdout capture, non-zero exit, stderr, stdin passthrough
+via `cat`, timeout enforcement, simultaneous stdout+stderr, and spawn failure
+(`Err` contract is reachable for nonexistent executables).
+
+**`KernelBoundaryTests.fs`:** ratchet bumped 302 → 303.
+
+All tests pass: 128/128 Lexer, 323/323 Parser, 189/189 TypeChecker,
+825/825 Emitter, 61/61 Cli.

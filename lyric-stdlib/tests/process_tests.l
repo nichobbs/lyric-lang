@@ -12,12 +12,6 @@ import Std.Collections
 import Std.Process
 import Std.Testing
 
-func makeArgs(a: in String): List[String] {
-  val args: List[String] = newList()
-  args.add(a)
-  args
-}
-
 func makeShArgs(cmd: in String): List[String] {
   val args: List[String] = newList()
   args.add("-c")
