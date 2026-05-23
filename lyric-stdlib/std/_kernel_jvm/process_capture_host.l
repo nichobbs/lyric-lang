@@ -47,3 +47,9 @@ pub func pcResultTimedOut(r: in ProcessCaptureResult): Bool = ()
 // a result with empty strings and exitCode = -1 on spawn failure or I/O error.
 @externTarget("lyric.stdlib.jvm.ProcessCaptureHost.runCapture")
 pub func hostRunCapture(executable: in String, arguments: in String, stdinContent: in String): ProcessCaptureResult = ()
+
+// Variant of `hostRunCapture` with a caller-supplied `timeoutMs` wall-clock
+// cap.  Used by `Std.Process.runCapture` and `Std.Process.runCaptureWithInput`
+// (#1023 / #743).
+@externTarget("lyric.stdlib.jvm.ProcessCaptureHost.runCaptureWithTimeout")
+pub func hostRunCaptureTimeout(executable: in String, arguments: in String, stdinContent: in String, timeoutMs: in Int): ProcessCaptureResult = ()
