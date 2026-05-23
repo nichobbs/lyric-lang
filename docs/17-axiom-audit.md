@@ -693,7 +693,7 @@ All are provisional pending weaver integration.
 | `Std.RandomHost`         | `random_host.l`              | 1      | 0           |
 | `Std.SecureRandomHost`   | `secure_random_host.l`       | 1      | 0           |
 | `Std.HashHost`           | `hash_host.l`                | 1      | 0           |
-| `Std.Regex`              | `regex.l`                    | 1      | 0           |
+| `Std.RegexHost`          | `regex_host.l`               | 1      | 0           |
 | `Std.Testing.Mocking`    | `testing_mocking.l`          | 1      | 0           |
 | `Std.Jvm`                | `jvm.l`                      | 0      | 1           |
 | `Std.JvmExceptionHost`   | `jvm_exception.l`            | 0      | 1           |
@@ -729,11 +729,12 @@ audit-lint script (`scripts/audit-axioms.sh`).
 | `Std.TimeHost`           | `time_host.l`                | 1      | 0           |
 | `Std.UnicodeHost`        | `unicode_host.l`             | 1      | 0           |
 | `Std.UuidHost`           | `uuid_host.l`                | 1      | 0           |
-| **Total**                |                              | **21** | **0**       |
+| `Std.RegexHost`          | `regex_host.l`               | 1      | 0           |
+| **Total**                |                              | **22** | **0**       |
 
 ### Combined total
 
-25 + 21 = **46** stable + **2** provisional = **48** `@axiom`
+25 + 22 = **47** stable + **2** provisional = **49** `@axiom`
 annotations covering the entire extern boundary across both
 targets.
 
@@ -744,7 +745,7 @@ entries) moved every BCL extern to `lyric-stdlib/std/_kernel/`, replacing
 per-function `@axiom` annotations with package-level annotations that
 cover the entire extern boundary of each kernel file.  The axiom count
 grew from 11 (M4.3 baseline) → 16 (after D-progress-140) → 22 + 2 JVM
-→ 25 + 21 + 2 (current) as additional BCL surfaces were added (Console,
-Path, ProcessCapture, VerifierEnv, Random, SecureRandom, Hash, Regex,
+→ 25 + 22 + 2 (current) as additional BCL surfaces were added (Console,
+Path, ProcessCapture, VerifierEnv, Random, SecureRandom, Hash, Regex/RegexHost,
 Testing.Mocking) and the JVM target boundary was brought under the
 same audit framework.
