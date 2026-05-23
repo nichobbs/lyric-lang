@@ -438,6 +438,8 @@ pub record LoweringCtx {
   trEnum:      Int     // System.Enum in System.Runtime (for CLR enum types)
   // Well-known AssemblyRef row indices (1-based)
   arRuntime:   Int     // System.Runtime
+  // Well-known MemberRef row indices (1-based)
+  mrObjectCtor: Int    // System.Object::.ctor() — called by synthesised record constructors
 }
 
 // Build and intern the Microsoft framework public key token blob.
@@ -496,6 +498,17 @@ pub func newLoweringCtx(packageName: in String): LoweringCtx {
     resolutionScope = rsAssemblyRef(arRuntime),
     typeName = sEnum, typeNamespace = sSystem))
 
+  // MemberRef[1]: System.Object::.ctor() — called from synthesised record constructors
+  // to satisfy the CLR verifier rule that every .ctor must call a base constructor
+  // before returning (ECMA-335 §I.8.9.6.6; ilverify error ThisUninitReturn).
+  val sCtorName    = internString(sh, ".ctor")
+  val objCtorSig   = buildInstanceMethodSig(newList(), MVoid)
+  val bObjCtorSig  = internBlob(bh, "__object_ctor_sig__", objCtorSig)
+  val mrObjectCtor = addMemberRef(t, MemberRefRow(
+    class     = mrpTypeRef(trObject),
+    name      = sCtorName,
+    signature = bObjCtorSig))
+
   // Assembly row
   val sPackage = internString(sh, packageName)
   addAssembly(t, AssemblyRow(
@@ -506,20 +519,21 @@ pub func newLoweringCtx(packageName: in String): LoweringCtx {
     name = sPackage, culture = 0))
 
   LoweringCtx(
-    strings   = sh,
-    blobs     = bh,
-    us        = uh,
-    guids     = gh,
-    tables    = t,
-    bodies    = newList(),
-    sModule   = sModule,
-    sObject   = sObject,
-    sSystem   = sSystem,
-    sMsCorLib = sMsCorLib,
-    sMsKey    = msKey,
-    trObject  = trObject,
-    trEnum    = trEnum,
-    arRuntime = arRuntime
+    strings      = sh,
+    blobs        = bh,
+    us           = uh,
+    guids        = gh,
+    tables       = t,
+    bodies       = newList(),
+    sModule      = sModule,
+    sObject      = sObject,
+    sSystem      = sSystem,
+    sMsCorLib    = sMsCorLib,
+    sMsKey       = msKey,
+    trObject     = trObject,
+    trEnum       = trEnum,
+    arRuntime    = arRuntime,
+    mrObjectCtor = mrObjectCtor
   )
 }
 
@@ -724,7 +738,13 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
   val bh = ctx.blobs
   val t  = ctx.tables
 
-  val sName  = internString(sh, r.className)
+  // TypeDef typeName must be the SIMPLE (unqualified) type name, not the full
+  // namespace-qualified name.  r.className = "Pkg.Name" but the TypeDef must
+  // store "Name" in typeName and "Pkg" in typeNamespace so the CLR type loader
+  // can resolve the type by (namespace, simpleName) without a dot-split issue.
+  val simpleNameRec = if r.namespace.length == 0 { r.className }
+                      else { r.className.substring(r.namespace.length + 1, r.className.length - r.namespace.length - 1) }
+  val sName  = internString(sh, simpleNameRec)
   val sNs    = internString(sh, r.namespace)
 
   val firstField  = t.fields.count + 1
@@ -756,16 +776,15 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
   val bCtorSig = internBlob(bh, ctorKey, ctorSig)
   val sCtor    = internString(sh, ".ctor")
 
-  // Build .ctor body: ldarg.0; [ldarg.n; stfld field_n]×n; ret
+  // Build .ctor body: ldarg.0; call Object::.ctor(); [ldarg.n; stfld field_n]×n; ret
+  // The base-class call is required: ECMA-335 §I.8.9.6.6 mandates that every
+  // instance constructor initialises `this` by calling a base constructor before
+  // returning.  Omitting it produces ilverify error ThisUninitReturn and an
+  // InvalidProgramException at JIT time on modern .NET runtimes.
   val mbCtor = newMethodBody()
   mbCtor.maxStack = 2
   emitLdarg_0(mbCtor)
-  // call System.Object..ctor()
-  // (Object..ctor token is injected below after the TypeDef is added; for now we
-  // emit a placeholder call token of 0 that the caller must patch, OR we skip the
-  // base .ctor call for Phase R5. Calling Object..ctor() is optional for managed
-  // code — the CLR zero-initialises the object before .ctor runs.)
-  emitPop(mbCtor)   // pop the `this` we just loaded (skip base ctor call)
+  emitCall(mbCtor, 0x0A000000 + ctx.mrObjectCtor)
   var ai = 0
   while ai < r.fields.count {
     emitLdarg_0(mbCtor)
@@ -834,7 +853,9 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
   val bh = ctx.blobs
   val t  = ctx.tables
 
-  val sBase  = internString(sh, u.baseName)
+  val simpleNameUnion = if u.namespace.length == 0 { u.baseName }
+                        else { u.baseName.substring(u.namespace.length + 1, u.baseName.length - u.namespace.length - 1) }
+  val sBase  = internString(sh, simpleNameUnion)
   val sNs    = internString(sh, u.namespace)
 
   val baseFirstField  = t.fields.count + 1
@@ -989,7 +1010,9 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
   val bh = ctx.blobs
   val t  = ctx.tables
 
-  val sName = internString(sh, iface.className)
+  val simpleNameIface = if iface.namespace.length == 0 { iface.className }
+                        else { iface.className.substring(iface.namespace.length + 1, iface.className.length - iface.namespace.length - 1) }
+  val sName = internString(sh, simpleNameIface)
   val sNs   = internString(sh, iface.namespace)
 
   val firstField  = t.fields.count + 1
@@ -1160,7 +1183,9 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
   val bh = ctx.blobs
   val t  = ctx.tables
 
-  val sName = internString(sh, op.className)
+  val simpleNameOpaque = if op.namespace.length == 0 { op.className }
+                         else { op.className.substring(op.namespace.length + 1, op.className.length - op.namespace.length - 1) }
+  val sName = internString(sh, simpleNameOpaque)
   val sNs   = internString(sh, op.namespace)
 
   val firstField  = t.fields.count + 1
@@ -1191,7 +1216,7 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
   val mbCtor = newMethodBody()
   mbCtor.maxStack = 2
   emitLdarg_0(mbCtor)
-  emitPop(mbCtor)   // skip base ctor call (bootstrap)
+  emitCall(mbCtor, 0x0A000000 + ctx.mrObjectCtor)
   var ai = 0
   while ai < op.fields.count {
     emitLdarg_0(mbCtor)

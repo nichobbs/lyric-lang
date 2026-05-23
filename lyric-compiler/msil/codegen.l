@@ -2062,13 +2062,34 @@ func lowerBuiltinOrStaticCallMsil(
             MVoid
           }
           case None -> {
-            // Cross-package call — lower args but emit no call (bootstrap limitation).
-            var i = 0
-            while i < args.count {
-              lowerCallArgMsil(cctx, fctx, insns, args[i])
-              i = i + 1
+            // Same-package record/union/opaque constructor: funcName matches
+            // an IRecord / IUnion case / IOpaque TypeDef in the current package.
+            // Emit args + newobj so the CLR stack type is a valid reference rather
+            // than a raw value-typed argument left without a call instruction.
+            val ctorKey = fctx.pkgName + "." + funcName
+            match mapGet(cctx.recordCtorTokens, ctorKey) {
+              case Some(ctorTok) -> {
+                var ci = 0
+                while ci < args.count {
+                  lowerCallArgMsil(cctx, fctx, insns, args[ci])
+                  ci = ci + 1
+                }
+                insns.add(MNewobj(ctorToken = ctorTok))
+                // Return MObject (not MClass) so the calling context allocates
+                // an object-typed local — buildLocalVarSig handles 0x1C correctly
+                // but cannot encode 0x12 (CLASS) without a following TypeDef token.
+                MObject
+              }
+              case None -> {
+                // Cross-package call — lower args but emit no call (bootstrap limitation).
+                var i = 0
+                while i < args.count {
+                  lowerCallArgMsil(cctx, fctx, insns, args[i])
+                  i = i + 1
+                }
+                MObject
+              }
             }
-            MObject
           }
         }
       }
@@ -2967,15 +2988,27 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
       case Some(body) -> {
         match body {
           case FBBlock(block) -> {
-            lowerBlockMsil(cctx, fctx, insns, block)
-            // Generators always return the collector; non-generators add ret if
-            // the block didn't already end with one.
-            if isGenerator and not endsWithReturnMsil(insns) {
-              val collSlot2 = fctx.yieldSlots[0]
-              insns.add(MLdloc(slot = collSlot2 - fctx.paramCount))
-              insns.add(MRet)
-            } else if not isGenerator and not endsWithReturnMsil(insns) {
-              insns.add(MRet)
+            // Three-way dispatch based on function kind:
+            //   generators     → lowerBlockMsil (discard) + yield-collector return
+            //   non-void       → lowerBlockExprMsil (keep trailing value on stack)
+            //   void/Unit      → lowerBlockMsil (discard) + bare MRet
+            if isGenerator {
+              lowerBlockMsil(cctx, fctx, insns, block)
+              if not endsWithReturnMsil(insns) {
+                val collSlot2 = fctx.yieldSlots[0]
+                insns.add(MLdloc(slot = collSlot2 - fctx.paramCount))
+                insns.add(MRet)
+              }
+            } else if retTy != MVoid {
+              val _ = lowerBlockExprMsil(cctx, fctx, insns, block)
+              if not endsWithReturnMsil(insns) {
+                insns.add(MRet)
+              }
+            } else {
+              lowerBlockMsil(cctx, fctx, insns, block)
+              if not endsWithReturnMsil(insns) {
+                insns.add(MRet)
+              }
             }
           }
           case FBExpr(e) -> {
@@ -3231,6 +3264,19 @@ pub func namespaceOfQualifiedMsil(qualified: in String): String {
   ""
 }
 
+// Return the last `.`-separated segment of `qualified` (the simple type name).
+// E.g. `"Pkg.Greeter"` → `"Greeter"`, `"Greeter"` → `"Greeter"`.
+pub func simpleNameOfQualifiedMsil(qualified: in String): String {
+  var i = qualified.length - 1
+  while i >= 0 {
+    if qualified[i] == '.' {
+      return qualified.substring(i + 1, qualified.length - i - 1)
+    }
+    i = i - 1
+  }
+  qualified
+}
+
 // Build an `MImplData` carrying name-based fallback fields for one impl entry.
 // `lowerMImpl` resolves these names to TypeDef rows + method tokens after all
 // types are lowered.  The slots' interface and impl method names are equal
@@ -3251,9 +3297,9 @@ pub func buildMImplDataMsil(ent: in ImplEntryMsil, pkgName: in String): MImplDat
     targetTypeDefRow    = 0,
     ifaceTypeToken      = 0,
     slots               = slots,
-    targetTypeName      = ent.targetClass,
+    targetTypeName      = simpleNameOfQualifiedMsil(ent.targetClass),
     targetTypeNamespace = pkgName,
-    ifaceTypeName       = ent.ifaceClass,
+    ifaceTypeName       = simpleNameOfQualifiedMsil(ent.ifaceClass),
     ifaceTypeNamespace  = namespaceOfQualifiedMsil(ent.ifaceClass))
 }
 

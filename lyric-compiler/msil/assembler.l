@@ -254,7 +254,7 @@ pub func methodBodyRvas(bodies: in List[MethodBody]): List[Int] {
     rvas.add(rva)
     val raw = bufLen(bufs[i])
     val padded =
-      if (i + 1) < count and isFatBody(bufs[i + 1]) { round4(raw) }
+      if (i + 1) < count and isFatBody(bufs[i + 1]) { round4(rva + raw) - rva }
       else { raw }
     rva = rva + padded
     i = i + 1
@@ -285,14 +285,16 @@ pub func assemblePe(inp: in AssemblerInput): ByteWriter {
   }
   val mbPadSizes: List[Int] = newList()
   var mbTotalRaw = 0
+  var currentPos = 0
   i = 0
   while i < mbCount {
     val raw = bufLen(mbBufs[i])
     val pad =
-      if (i + 1) < mbCount and isFatBody(mbBufs[i + 1]) { round4(raw) - raw }
+      if (i + 1) < mbCount and isFatBody(mbBufs[i + 1]) { round4(currentPos + raw) - currentPos - raw }
       else { 0 }
     mbPadSizes.add(pad)
     mbTotalRaw = mbTotalRaw + raw + pad
+    currentPos = currentPos + raw + pad
     i = i + 1
   }
 
