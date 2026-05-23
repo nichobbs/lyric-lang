@@ -1062,29 +1062,6 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
 
 // ── Impl lowering ─────────────────────────────────────────────────────────────
 
-// Split a fully-qualified type name "Pkg.Sub.Name" into (namespace, name).
-// The namespace is everything before the last dot; the name is the trailing
-// segment.  When no dot is present, namespace is empty.
-func splitTypeName(fqn: in String): List[String] {
-  var lastDot = -1
-  var i = 0
-  while i < fqn.length {
-    if fqn[i] == '.' {
-      lastDot = i
-    }
-    i = i + 1
-  }
-  val parts: List[String] = newList()
-  if lastDot < 0 {
-    parts.add("")
-    parts.add(fqn)
-  } else {
-    parts.add(fqn.substring(0, lastDot))
-    parts.add(fqn.substring(lastDot + 1))
-  }
-  parts
-}
-
 // Find the 1-based TypeDef row whose (namespace, name) matches the given
 // fully-qualified type name.  Returns 0 if no such TypeDef exists.
 // Uses #Strings heap interning — both `internString` calls are idempotent so
