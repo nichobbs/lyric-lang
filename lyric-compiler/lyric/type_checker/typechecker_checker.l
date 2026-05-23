@@ -583,14 +583,17 @@ func stmtContainsYield(stmt: in Statement): Bool {
         case LBVar(_, _, Some(e)) -> exprContainsYield(e)
         case LBVar(_, _, None)  -> false
       }
-    case STry(body, catches) -> {
+    case STry(body, catches, finally_) -> {
       if blockContainsYield(body) { return true }
       var i = 0
       while i < catches.count {
         if blockContainsYield(catches[i].body) { return true }
         i = i + 1
       }
-      false
+      match finally_ {
+        case None     -> false
+        case Some(fb) -> blockContainsYield(fb)
+      }
     }
     case SDefer(b)         -> blockContainsYield(b)
     case SScope(_, b)      -> blockContainsYield(b)

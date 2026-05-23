@@ -47,6 +47,7 @@ type Type =
     | TySelf
     | TyVar      of name: string
     | TyError
+    | TyException
 
 module Type =
 
@@ -119,3 +120,4 @@ module Type =
         | TySelf             -> "Self"
         | TyVar n            -> n
         | TyError            -> "<error>"
+        | TyException        -> "Exception"

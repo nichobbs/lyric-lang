@@ -727,7 +727,7 @@ and StatementKind =
     | SBreak       of label: string option
     | SContinue    of label: string option
     | SThrow       of Expr
-    | STry         of body: Block * catches: CatchClause list
+    | STry         of body: Block * catches: CatchClause list * finally_: Block option
     | SDefer       of Block
     | SScope       of binding: string option * body: Block
     | SFor         of label: string option * pat: Pattern * iter: Expr * body: Block

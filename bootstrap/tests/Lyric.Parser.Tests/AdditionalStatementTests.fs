@@ -144,8 +144,22 @@ let tests =
         test "try with no catches" {
             let blk = parseFnClean "{ try { } ; return 0 }"
             match (firstStmt blk).Kind with
-            | STry(_, []) -> ()
+            | STry(_, [], _) -> ()
             | other -> failtestf "expected STry no catches, got %A" other
+        }
+
+        test "try with finally and no catches" {
+            let blk = parseFnClean "{ try { } finally { } ; return 0 }"
+            match (firstStmt blk).Kind with
+            | STry(_, [], Some _) -> ()
+            | other -> failtestf "expected STry with finally, got %A" other
+        }
+
+        test "try with catch and finally" {
+            let blk = parseFnClean "{ try { } catch Bug { } finally { } ; return 0 }"
+            match (firstStmt blk).Kind with
+            | STry(_, [_], Some _) -> ()
+            | other -> failtestf "expected STry with catch and finally, got %A" other
         }
 
         // ----- defer -----

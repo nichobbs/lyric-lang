@@ -230,7 +230,7 @@ pub func checkStatement(
       val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body)
     }
 
-    case STry(body, catches) -> {
+    case STry(body, catches, finally_) -> {
       val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body)
       var i = 0
       while i < catches.count {
@@ -239,12 +239,16 @@ pub func checkStatement(
         match c.bindName {
           case None       -> {}
           case Some(bname) -> {
-            scopeAdd(sc, LocalBinding(name = bname, ty = TyError, isMutable = false))
+            scopeAdd(sc, LocalBinding(name = bname, ty = TyException, isMutable = false))
           }
         }
         val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, c.body)
         scopePop(sc)
         i = i + 1
+      }
+      match finally_ {
+        case None     -> {}
+        case Some(fb) -> { val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, fb) }
       }
     }
 

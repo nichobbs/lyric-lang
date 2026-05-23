@@ -112,6 +112,7 @@ let rec toClrTypeWithGenerics
         | None   -> typeof<obj>      // erasure fallback for unbound vars
     | TyRange _       -> typeof<obj>  // ranges are consumed by for-loop codegen; never boxed
     | TyError         -> typeof<obj>
+    | TyException     -> typeof<System.Exception>
 
 /// Back-compat overload that erases every `TyVar` to `obj`.
 let toClrTypeWith (lookup: TypeId -> ClrType option) (t: Type) : ClrType =

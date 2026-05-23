@@ -100,7 +100,7 @@ let tests =
                 parseFnClean
                     "{ try { val x = 1 } catch IOException { val y = 2 } ; return 0 }"
             match (firstStmt blk).Kind with
-            | STry(_, [c]) ->
+            | STry(_, [c], _) ->
                 Expect.equal c.Type "IOException" "catch type"
                 Expect.isNone c.Bind "no bind"
             | other -> failtestf "expected STry one catch, got %A" other
@@ -111,7 +111,7 @@ let tests =
                 parseFnClean
                     "{ try { val x = 1 } catch IOException as e { val y = 2 } ; return 0 }"
             match (firstStmt blk).Kind with
-            | STry(_, [c]) ->
+            | STry(_, [c], _) ->
                 Expect.equal c.Type "IOException" "catch type"
                 Expect.equal c.Bind (Some "e") "bound to e"
             | other -> failtestf "expected STry catch-as, got %A" other
@@ -122,7 +122,7 @@ let tests =
                 parseFnClean
                     "{ try { } catch IOException { } catch RuntimeException { } ; return 0 }"
             match (firstStmt blk).Kind with
-            | STry(_, cs) ->
+            | STry(_, cs, _) ->
                 Expect.equal cs.Length 2 "two catch clauses"
                 Expect.equal cs.[0].Type "IOException" "first type"
                 Expect.equal cs.[1].Type "RuntimeException" "second type"

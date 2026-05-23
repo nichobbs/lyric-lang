@@ -1368,7 +1368,7 @@ pub func stmtInline(s: in Statement): String {
     case SBreak(label)         -> labelKwStr("break", label)
     case SContinue(label)      -> labelKwStr("continue", label)
     case SThrow(e)             -> "throw " + exprInline(0, e)
-    case STry(body, catches)   -> tryInlineStr(body, catches)
+    case STry(body, catches, finally_)   -> tryInlineStr(body, catches, finally_)
     case SDefer(b)             -> "defer { " + blockInline(b) + " }"
     case SScope(bindStr, body)    -> scopeInlineStr(bindStr, body)
     case SFor(lbl, p, it, b)   -> forInlineStr(lbl, p, it, b)
@@ -1508,7 +1508,7 @@ func labelKwStr(kw: in String, label: in Option[String]): String {
   }
 }
 
-func tryInlineStr(body: in Block, catches: in List[CatchClause]): String {
+func tryInlineStr(body: in Block, catches: in List[CatchClause], finally_: in Option[Block]): String {
   val parts: List[String] = newList()
   var i = 0
   while i < catches.count {
@@ -1520,7 +1520,11 @@ func tryInlineStr(body: in Block, catches: in List[CatchClause]): String {
     parts.add("catch " + c.typeName + bindStr + " { " + blockInline(c.body) + " }")
     i = i + 1
   }
-  "try { " + blockInline(body) + " } " + joinStrings(parts, " ")
+  val finStr = match finally_ {
+    case None     -> ""
+    case Some(fb) -> " finally { " + blockInline(fb) + " }"
+  }
+  "try { " + blockInline(body) + " } " + joinStrings(parts, " ") + finStr
 }
 
 func scopeInlineStr(bindStr: in Option[String], body: in Block): String {
@@ -1623,7 +1627,7 @@ pub func stmtLines(s: in Statement, ctx: inout FmtCtx): List[String] {
     case SFor(lbl, p, it, b)  -> forLines(lbl, p, it, b, ctx)
     case SWhile(lbl, c, b)    -> whileLines(lbl, c, b, ctx)
     case SLoop(lbl, b)        -> loopLines(lbl, b, ctx)
-    case STry(body, catches)  -> tryLines(body, catches, ctx)
+    case STry(body, catches, finally_)  -> tryLines(body, catches, finally_, ctx)
     case SDefer(b)            -> deferLines(b, ctx)
     case SScope(bindStr, b)   -> scopeLines(bindStr, b, ctx)
     case SItem(item)          -> itemDoc(item, ctx)
@@ -1751,7 +1755,7 @@ func loopLines(lbl: in Option[String], b: in Block, ctx: inout FmtCtx): List[Str
   concatDoc3(head, indentDoc(2, blockLines(b, ctx)), singleLineDoc("}"))
 }
 
-func tryLines(body: in Block, catches: in List[CatchClause], ctx: inout FmtCtx): List[String] {
+func tryLines(body: in Block, catches: in List[CatchClause], finally_: in Option[Block], ctx: inout FmtCtx): List[String] {
   val acc: List[String] = newList()
   acc.add("try {")
   val bd = indentDoc(2, blockLines(body, ctx))
@@ -1769,6 +1773,15 @@ func tryLines(body: in Block, catches: in List[CatchClause], ctx: inout FmtCtx):
     var j = 0
     while j < cb.count { acc.add(cb[j]); j = j + 1 }
     i = i + 1
+  }
+  match finally_ {
+    case None -> {}
+    case Some(fb) -> {
+      acc.add("} finally {")
+      val fb2 = indentDoc(2, blockLines(fb, ctx))
+      var k = 0
+      while k < fb2.count { acc.add(fb2[k]); k = k + 1 }
+    }
   }
   acc.add("}")
   acc

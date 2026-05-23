@@ -199,12 +199,13 @@ and private rewriteStatement (aliases: Set<string>) (s: Statement) : Statement =
         | SReturn opt -> SReturn (opt |> Option.map (rewriteExpr aliases))
         | SBreak _ | SContinue _ -> s.Kind
         | SThrow e    -> SThrow (rewriteExpr aliases e)
-        | STry (body, catches) ->
+        | STry (body, catches, finally_) ->
             let body' = rewriteBlock aliases body
             let catches' =
                 catches
                 |> List.map (fun c -> { c with Body = rewriteBlock aliases c.Body })
-            STry (body', catches')
+            let finally_' = finally_ |> Option.map (rewriteBlock aliases)
+            STry (body', catches', finally_')
         | SDefer body -> SDefer (rewriteBlock aliases body)
         | SScope (n, body) -> SScope (n, rewriteBlock aliases body)
         | SFor (l, p, it, body) ->

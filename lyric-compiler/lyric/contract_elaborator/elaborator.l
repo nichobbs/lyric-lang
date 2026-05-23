@@ -469,7 +469,7 @@ func substResultStmt(s: in Statement, name: in String): Statement {
     case SBreak(_)    -> s
     case SContinue(_) -> s
     case SThrow(x)    -> mkStmt(SThrow(expr = substResult(x, name)), s.span)
-    case STry(body, catches) -> {
+    case STry(body, catches, finally_) -> {
       val newCatches: List[CatchClause] = newList()
       var i = 0
       while i < catches.count {
@@ -481,7 +481,11 @@ func substResultStmt(s: in Statement, name: in String): Statement {
           span     = c.span))
         i = i + 1
       }
-      mkStmt(STry(body = substResultBlock(body, name), catches = newCatches), s.span)
+      val newFinally = match finally_ {
+        case None     -> None
+        case Some(fb) -> Some(substResultBlock(fb, name))
+      }
+      mkStmt(STry(body = substResultBlock(body, name), catches = newCatches, finally_ = newFinally), s.span)
     }
     case SDefer(body) ->
       mkStmt(SDefer(body = substResultBlock(body, name)), s.span)
@@ -780,7 +784,7 @@ func elaborateStmtDeep(
       acc.add(mkStmt(SLoop(
         label = label,
         body  = elaborateBlockDeep(body, ensuresExprs, counter)), s.span))
-    case STry(body, catches) -> {
+    case STry(body, catches, finally_) -> {
       val newBody = elaborateBlockDeep(body, ensuresExprs, counter)
       val newCatches: List[CatchClause] = newList()
       var ci = 0
@@ -793,7 +797,11 @@ func elaborateStmtDeep(
           span     = c.span))
         ci = ci + 1
       }
-      acc.add(mkStmt(STry(body = newBody, catches = newCatches), s.span))
+      val newFinally = match finally_ {
+        case None     -> None
+        case Some(fb) -> Some(elaborateBlockDeep(fb, ensuresExprs, counter))
+      }
+      acc.add(mkStmt(STry(body = newBody, catches = newCatches, finally_ = newFinally), s.span))
     }
     case SScope(label, body) ->
       acc.add(mkStmt(SScope(
@@ -892,14 +900,17 @@ func stmtHasInvariant(s: in Statement): Bool {
     case SLoop(_, body)            -> blockHasInvariant(body)
     case SScope(_, body)           -> blockHasInvariant(body)
     case SDefer(body)              -> blockHasInvariant(body)
-    case STry(body, catches)       -> {
+    case STry(body, catches, finally_) -> {
       if blockHasInvariant(body) { return true }
       var i = 0
       while i < catches.count {
         if blockHasInvariant(catches[i].body) { return true }
         i = i + 1
       }
-      false
+      match finally_ {
+        case None     -> false
+        case Some(fb) -> blockHasInvariant(fb)
+      }
     }
     // #826: statement-level if/match blocks lower to SExpr(EIf|EMatch), so
     // a `while ... invariant:` nested inside an `if` body produces a

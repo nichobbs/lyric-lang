@@ -274,12 +274,16 @@ func visitStmt(st: in Statement, output: in List[CallRef]): Unit {
     case SBreak(_)    -> {}
     case SContinue(_) -> {}
     case SThrow(x)    -> visitExpr(x, output)
-    case STry(body, catches) -> {
+    case STry(body, catches, finally_) -> {
       visitBlock(body, output)
       var i = 0
       while i < catches.count {
         visitBlock(catches[i].body, output)
         i = i + 1
+      }
+      match finally_ {
+        case None     -> {}
+        case Some(fb) -> visitBlock(fb, output)
       }
     }
     case SDefer(body)    -> visitBlock(body, output)

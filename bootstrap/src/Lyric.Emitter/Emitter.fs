@@ -1159,12 +1159,13 @@ and private desugarStmts
             | SInvariant e -> SInvariant (recurExpr e)
             | SRule (lhs, rhs) ->
                 SRule (recurExpr lhs, recurExpr rhs)
-            | STry (body, catches) ->
+            | STry (body, catches, finally_) ->
                 let body' = recurBlk body
                 let catches' =
                     catches
                     |> List.map (fun c -> { c with Body = recurBlk c.Body })
-                STry (body', catches')
+                let finally_' = finally_ |> Option.map recurBlk
+                STry (body', catches', finally_')
             | SDefer body -> SDefer (recurBlk body)
             | SScope (b, body) -> SScope (b, recurBlk body)
             | SFor (lbl, pat, iter, body) ->

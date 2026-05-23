@@ -2340,8 +2340,8 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
     }
 
     // ── Try/catch ─────────────────────────────────────────────────────────
-    case STry(body, catches) -> {
-      lowerTryCatch(ctx, insns, body, catches)
+    case STry(body, catches, finally_) -> {
+      lowerTryCatch(ctx, insns, body, catches, finally_)
     }
 
     // ── Invariant annotation (runtime: skip) ──────────────────────────────
@@ -2397,10 +2397,11 @@ func lowerLocalPatBind(
 // ─────────────────────────────────────────────────────────────────────────────
 
 func lowerTryCatch(
-  ctx:     in FuncCtx,
-  insns:   in List[LInsn],
-  body:    in Block,
-  catches: in List[CatchClause]
+  ctx:      in FuncCtx,
+  insns:    in List[LInsn],
+  body:     in Block,
+  catches:  in List[CatchClause],
+  finally_: in Option[Block]
 ): Unit {
   val startL   = freshLabel(ctx)
   val endL     = freshLabel(ctx)
@@ -2441,6 +2442,14 @@ func lowerTryCatch(
   }
 
   insns.add(LLabel(name = afterL))
+
+  // Emit finally block inline after the try/catch region.
+  // JVM finally semantics require duplicating the block on each exit path;
+  // for now we emit it once here (post-region) matching the MSIL strategy.
+  match finally_ {
+    case None     -> {}
+    case Some(fb) -> lowerBlock(ctx, insns, fb)
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2840,14 +2849,17 @@ func stmtContainsYield(stmt: in Statement): Bool {
     case SFor(_, _, iter, body) -> exprContainsYield(iter) or blockContainsYield(body)
     case SBreak(_)             -> false
     case SContinue(_)          -> false
-    case STry(body, catches)   -> {
+    case STry(body, catches, finally_)   -> {
       if blockContainsYield(body) { return true }
       var i = 0
       while i < catches.count {
         if blockContainsYield(catches[i].body) { return true }
         i = i + 1
       }
-      false
+      match finally_ {
+        case None     -> false
+        case Some(fb) -> blockContainsYield(fb)
+      }
     }
     case SDefer(body)    -> blockContainsYield(body)
     case SScope(_, body) -> blockContainsYield(body)
