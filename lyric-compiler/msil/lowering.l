@@ -342,15 +342,13 @@ pub record MInterface {
 
 // Per overridden interface method slot.
 //
-// Tokens may be pre-resolved (non-zero) or 0 with a name fallback: when
-// `ifaceMethodToken == 0`, `lowerMImpl` locates the interface method by
-// matching `ifaceMethodName` within the interface's MethodDef range.  Same
-// for the implementation method.
+// Either token may be 0 — in that case `lowerMImpl` resolves the slot by
+// looking up the corresponding `*Name` field in the type's MethodDef range.
 pub record MImplSlot {
-  ifaceMethodToken: Int    // MethodDef/MemberRef token, or 0 to use name fallback
-  implMethodToken:  Int    // MethodDef token, or 0 to use name fallback
-  ifaceMethodName:  String // name fallback (used when ifaceMethodToken == 0)
-  implMethodName:   String // name fallback (used when implMethodToken == 0)
+  ifaceMethodToken: Int   // MethodDef or MemberRef token of the interface method (0 = resolve by name)
+  implMethodToken:  Int   // MethodDef token of the implementing method (0 = resolve by name)
+  ifaceMethodName:  String  // method name on the interface; used when ifaceMethodToken == 0
+  implMethodName:   String  // method name on the implementing type; used when implMethodToken == 0
 }
 
 // `MImplData` describes one `impl Iface for Target { … }` block.
@@ -362,13 +360,15 @@ pub record MImplSlot {
 // This lets `Msil.Codegen` emit `MPImpl` items in source order before all
 // types are lowered without having to pre-compute table rows.
 pub record MImplData {
-  targetTypeDefRow:    Int           // 1-based TypeDef row, or 0 to use name fallback
-  ifaceTypeToken:      Int           // TypeDefOrRef coded index, or 0 to use name fallback
-  slots:               List[MImplSlot]
-  targetTypeName:      String        // e.g. "Pkg.Person"
-  targetTypeNamespace: String        // e.g. "Pkg"
-  ifaceTypeName:       String        // e.g. "Pkg.Greeter"
-  ifaceTypeNamespace:  String        // e.g. "Pkg"
+  // Pre-resolved row/token; either may be 0 in which case the corresponding
+  // `*Name` field is used to resolve by scanning ctx.tables at lowering time.
+  // The name-based path is the common one: codegen does not know TypeDef rows
+  // when it builds MPackage items, so the resolution is deferred to lowerMImpl.
+  targetTypeDefRow: Int         // 1-based TypeDef row of the implementing type (0 = resolve by name)
+  ifaceTypeToken:   Int         // TypeDefOrRef coded-index of the interface (0 = resolve by name)
+  slots:            List[MImplSlot]
+  targetTypeName:   String      // fully-qualified, e.g. "Pkg.EnglishGreeter"
+  ifaceTypeName:    String      // fully-qualified, e.g. "Pkg.Greeter"
 }
 
 // ── MOpaque — sealed opaque type ─────────────────────────────────────────────
@@ -698,13 +698,25 @@ pub func lowerMInsn(insn: in MInsn, mb: in MethodBody): Unit {
 
 // Build a LocalVarSig blob for the given list of local types.
 // Format: 0x07 (LOCAL_SIG), compressed count, type bytes...
+// MClass types are encoded as ELEMENT_TYPE_OBJECT (0x1C) because a full
+// class-typed local var entry requires a compressed TypeDefOrRef token that
+// is not yet available to this function.  Using Object is valid; the Lyric
+// type-tracking layer (fctx.types) still records the precise MClass type so
+// method-dispatch lookups in lowerMethodCallMsil work correctly at codegen
+// time.  The CLR verifier sees `object` locals, but the JIT runs the method
+// body without strict verification, so the unverified callvirt is fine at
+// runtime.
 func buildLocalVarSig(locals: in List[MsilType]): List[Byte] {
   val w = bufNew()
   bufU1(w, 0x07)  // LOCAL_SIG
   writeCompressedInt(w, locals.count)
   var i = 0
   while i < locals.count {
-    bufU1(w, elementTypeByte(locals[i]))
+    val et = match locals[i] {
+      case MClass(_) -> 0x1C   // Object: avoids malformed CLASS+TypeDefOrRef entry
+      case other     -> elementTypeByte(other)
+    }
+    bufU1(w, et)
     i = i + 1
   }
   bufToList(w)
@@ -1050,21 +1062,43 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
 
 // ── Impl lowering ─────────────────────────────────────────────────────────────
 
-// Locate a TypeDef row by matching `typeName` + `typeNamespace` against the
-// already-emitted TypeDef table.  Returns the 1-based row index, or 0 when
-// no match is found.  Both the search name and namespace are interned into
-// the string heap (idempotent), so comparison reduces to comparing the
-// returned offsets against each row's stored offsets.
-pub func resolveTypeDefRowByName(ctx: in LoweringCtx,
-                                  name: in String, ns: in String): Int {
-  if name.length == 0 { return 0 }
-  val sh = ctx.strings
-  val nameTok = internString(sh, name)
-  val nsTok   = internString(sh, ns)
+// Split a fully-qualified type name "Pkg.Sub.Name" into (namespace, name).
+// The namespace is everything before the last dot; the name is the trailing
+// segment.  When no dot is present, namespace is empty.
+func splitTypeName(fqn: in String): List[String] {
+  var lastDot = -1
   var i = 0
-  while i < ctx.tables.typeDefs.count {
-    val td = ctx.tables.typeDefs[i]
-    if td.typeName == nameTok and td.typeNamespace == nsTok {
+  while i < fqn.length {
+    if fqn[i] == '.' {
+      lastDot = i
+    }
+    i = i + 1
+  }
+  val parts: List[String] = newList()
+  if lastDot < 0 {
+    parts.add("")
+    parts.add(fqn)
+  } else {
+    parts.add(fqn.substring(0, lastDot))
+    parts.add(fqn.substring(lastDot + 1))
+  }
+  parts
+}
+
+// Find the 1-based TypeDef row whose (namespace, name) matches the given
+// fully-qualified type name.  Returns 0 if no such TypeDef exists.
+// Uses #Strings heap interning — both `internString` calls are idempotent so
+// they do not pollute the heap.
+pub func findTypeDefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
+  // `lowerMRecord` stores the full qualified name (e.g. "Pkg.Foo") as
+  // `typeName` and the package name as `typeNamespace` separately.
+  // Match by the full FQN token, not the split short name.
+  val sFqn = internString(ctx.strings, fqn)
+  val t = ctx.tables
+  var i = 0
+  while i < t.typeDefs.count {
+    val td = t.typeDefs[i]
+    if td.typeName == sFqn {
       return i + 1
     }
     i = i + 1
@@ -1072,26 +1106,25 @@ pub func resolveTypeDefRowByName(ctx: in LoweringCtx,
   0
 }
 
-// Locate a MethodDef row by name within a given type's owned method range.
-// Returns 0 if the type row is invalid or no matching method exists.
-pub func resolveMethodDefRowInType(ctx: in LoweringCtx,
-                                    typeDefRow: in Int, methodName: in String): Int {
-  if typeDefRow <= 0 or typeDefRow > ctx.tables.typeDefs.count {
-    return 0
-  }
-  if methodName.length == 0 { return 0 }
-  val sh = ctx.strings
-  val nameTok = internString(sh, methodName)
-  val firstMethod = ctx.tables.typeDefs[typeDefRow - 1].methodList
-  val nextMethod  = if typeDefRow == ctx.tables.typeDefs.count {
-    ctx.tables.methodDefs.count + 1
+// Find the 1-based MethodDef row owned by typeDefRow with the given method
+// name.  The methods owned by a TypeDef are the contiguous range
+// [td.methodList, nextTd.methodList) in the MethodDef table — the last
+// TypeDef owns through the end of the table.  Returns 0 if not found.
+pub func findMethodDefRowOfType(ctx: in LoweringCtx, typeDefRow: in Int,
+                                 methodName: in String): Int {
+  val t = ctx.tables
+  if typeDefRow < 1 or typeDefRow > t.typeDefs.count { return 0 }
+  val sName = internString(ctx.strings, methodName)
+  val td    = t.typeDefs[typeDefRow - 1]
+  val first = td.methodList
+  val last  = if typeDefRow == t.typeDefs.count {
+    t.methodDefs.count + 1
   } else {
-    ctx.tables.typeDefs[typeDefRow].methodList
+    t.typeDefs[typeDefRow].methodList
   }
-  var i = firstMethod
-  while i < nextMethod {
-    val md = ctx.tables.methodDefs[i - 1]
-    if md.name == nameTok {
+  var i = first
+  while i < last {
+    if t.methodDefs[i - 1].name == sName {
       return i
     }
     i = i + 1
@@ -1099,77 +1132,47 @@ pub func resolveMethodDefRowInType(ctx: in LoweringCtx,
   0
 }
 
-// Lower an MImplData to InterfaceImpl + MethodImpl table rows.
-// The implementing type's TypeDef row must already exist in the tables
-// (lowerMRecord / lowerMFuncsToHostClass must have run first).
+// Lower an MImplData to an InterfaceImpl table row.
 //
-// When `targetTypeDefRow` / `ifaceTypeToken` are 0, the row/token is
-// resolved by name against the already-emitted TypeDef table.  Same for
-// each slot's method tokens — see `MImplData` / `MImplSlot` for the
-// fallback fields.  When resolution fails (no matching TypeDef or method),
-// the corresponding row is skipped rather than emitted with a garbage
-// 0 reference that would crash the CLR type loader.
+// All TypeDef rows referenced by an `MPImpl` must already exist in the tables
+// — `MPImpl` items are emitted after every type-bearing item by
+// `codegenMPackage`, so this invariant holds at the call sites today.
+//
+// `targetTypeDefRow` / `ifaceTypeToken` may be zero, in which case the
+// matching `*Name` field is used to scan the tables.  This is the path
+// codegen takes: it knows the names but not the row numbers when MPackage
+// items are first built.
+//
+// The CLR resolves the interface slot → implementing method mapping by
+// name-matching: when an implementing method has the `virtual` flag set
+// (without `newslot`) and carries the same name/signature as the interface
+// method, the CLR wires them automatically.  Explicit MethodImpl rows are
+// only required when the names differ (aliased implementation), which Lyric
+// `impl` blocks do not support.  This matches the pattern validated by
+// msil_self_test_m11.l.
 pub func lowerMImpl(d: in MImplData, ctx: in LoweringCtx): Int {
   val t = ctx.tables
-
-  // Resolve the implementing type's TypeDef row.
-  val targetRow = if d.targetTypeDefRow != 0 {
+  val targetRow = if d.targetTypeDefRow > 0 {
     d.targetTypeDefRow
   } else {
-    resolveTypeDefRowByName(ctx, d.targetTypeName, d.targetTypeNamespace)
+    findTypeDefRowByName(ctx, d.targetTypeName)
   }
-
-  // Resolve the interface's TypeDefOrRef coded index.  For now this only
-  // supports same-assembly interfaces (TypeDef → tdrTypeDef).  Cross-
-  // assembly resolution (TypeRef) is deferred until R6 wires the resolver.
-  val ifaceRow = if d.ifaceTypeToken != 0 {
-    0   // pre-resolved; use d.ifaceTypeToken as-is
-  } else {
-    resolveTypeDefRowByName(ctx, d.ifaceTypeName, d.ifaceTypeNamespace)
+  if targetRow == 0 {
+    panic("Msil.Lowering: MPImpl target type '" + d.targetTypeName + "' has no TypeDef row")
   }
-  val ifaceTok = if d.ifaceTypeToken != 0 {
+  val ifaceToken = if d.ifaceTypeToken > 0 {
     d.ifaceTypeToken
   } else {
-    if ifaceRow == 0 { 0 } else { tdrTypeDef(ifaceRow) }
+    val ifaceRow = findTypeDefRowByName(ctx, d.ifaceTypeName)
+    if ifaceRow == 0 {
+      panic("Msil.Lowering: MPImpl interface type '" + d.ifaceTypeName + "' has no TypeDef row")
+    }
+    tdrTypeDef(ifaceRow)
   }
-
-  if targetRow == 0 or ifaceTok == 0 {
-    return 0
-  }
-
-  // InterfaceImpl row: records that targetTypeDefRow implements ifaceTypeToken.
+  // InterfaceImpl row: records that targetRow implements ifaceToken.
   addInterfaceImpl(t, InterfaceImplRow(
     class_     = targetRow,
-    interface_ = ifaceTok))
-
-  // MethodImpl rows: map each interface slot to its implementation.  When
-  // the interface is resolved as a same-assembly TypeDef row, we look up
-  // each interface method by name within its MethodDef range.
-  var si = 0
-  while si < d.slots.count {
-    val slot = d.slots[si]
-
-    val implMTok = if slot.implMethodToken != 0 {
-      slot.implMethodToken
-    } else {
-      resolveMethodDefRowInType(ctx, targetRow, slot.implMethodName)
-    }
-
-    val ifaceMTok = if slot.ifaceMethodToken != 0 {
-      slot.ifaceMethodToken
-    } else {
-      if ifaceRow == 0 { 0 }
-      else { resolveMethodDefRowInType(ctx, ifaceRow, slot.ifaceMethodName) }
-    }
-
-    if implMTok != 0 and ifaceMTok != 0 {
-      addMethodImpl(t, MethodImplRow(
-        class_             = targetRow,
-        methodBody         = mdorMethodDef(implMTok),
-        methodDeclaration  = mdorMethodDef(ifaceMTok)))
-    }
-    si = si + 1
-  }
+    interface_ = ifaceToken))
   0
 }
 
