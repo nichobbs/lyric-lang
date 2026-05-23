@@ -55,6 +55,7 @@ pub union Type {
   case TySelf
   case TyVar(name: String)
   case TyError
+  case TyException
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -183,6 +184,8 @@ func typeEquivCore(a: in Type, b: in Type): Bool {
           else { listTypesEquiv(args1, args2) }
         case _ -> false
       }
+    case TyException ->
+      match b { case TyException -> true; case _ -> false }
   }
 }
 
@@ -212,6 +215,7 @@ func optIntEq(a: in Option[Int], b: in Option[Int]): Bool {
 pub func renderType(t: in Type): String {
   match t {
     case TyError        -> "<error>"
+    case TyException    -> "Exception"
     case TySelf         -> "Self"
     case TyVar(nm)      -> nm
     case TyPrim(pt)     -> primName(pt)

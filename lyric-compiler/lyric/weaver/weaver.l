@@ -318,7 +318,7 @@ func rewriteStmt(targetName: in String, paramNames: in List[String], stmt: in St
       Statement(kind = SLoop(label = lbl, body = rewriteBlock(targetName, paramNames, body)), span = s)
     case SScope(b, body) ->
       Statement(kind = SScope(binding = b, body = rewriteBlock(targetName, paramNames, body)), span = s)
-    case STry(body, catches) -> {
+    case STry(body, catches, finally_) -> {
       val newBody = rewriteBlock(targetName, paramNames, body)
       val newCatches: List[CatchClause] = newList()
       var i = 0
@@ -331,7 +331,11 @@ func rewriteStmt(targetName: in String, paramNames: in List[String], stmt: in St
           span     = cc.span))
         i = i + 1
       }
-      Statement(kind = STry(body = newBody, catches = newCatches), span = s)
+      val newFinally = match finally_ {
+        case None     -> None
+        case Some(fb) -> Some(rewriteBlock(targetName, paramNames, fb))
+      }
+      Statement(kind = STry(body = newBody, catches = newCatches, finally_ = newFinally), span = s)
     }
     case SDefer(body) ->
       Statement(kind = SDefer(body = rewriteBlock(targetName, paramNames, body)), span = s)

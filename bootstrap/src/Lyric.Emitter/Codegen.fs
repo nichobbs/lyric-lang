@@ -2349,6 +2349,21 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     | None ->
                         failwithf "E5/E7 codegen: imported record '%s' has no field '%s'"
                             r.Name fieldName
+                | None when fieldName = "typeName" && typeof<System.Exception>.IsAssignableFrom(recvTy) ->
+                    // .typeName on a caught exception: emit ex.GetType().Name
+                    // (System.Exception has no TypeName property; GetType().Name is the CLR pattern).
+                    let getTypeMi =
+                        typeof<obj>.GetMethod("GetType", System.Type.EmptyTypes)
+                        |> Option.ofObj
+                        |> Option.defaultWith (fun () -> failwith "codegen: Object.GetType() not found")
+                    let getNameMi =
+                        typeof<System.Type>.GetProperty("Name")
+                        |> Option.ofObj
+                        |> Option.bind (fun p -> p.GetGetMethod() |> Option.ofObj)
+                        |> Option.defaultWith (fun () -> failwith "codegen: Type.Name getter not found")
+                    il.Emit(OpCodes.Callvirt, getTypeMi)
+                    il.Emit(OpCodes.Callvirt, getNameMi)
+                    typeof<string>
                 | None when isBclType recvTy ->
                     // BCL property fallback: lyric `s.length` -> `String.Length`.
                     // When recvTy is a TypeBuilderInstantiation (e.g. `List<AsmInsn>`)
@@ -4220,7 +4235,7 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
     | EBlock blk ->
         let stmts = blk.Statements
         match stmts with
-        | [{ Kind = STry (body, catches) }] ->
+        | [{ Kind = STry (body, catches, finally_) }] ->
             let il = ctx.IL
             // Gap-2 fix: when in Phase B SM mode and the try body fits
             // the B+++ single-trailing-await shape, use the duplicated-
@@ -4228,6 +4243,7 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             // lowers with a real suspend/resume.
             let isPhaseBPlusPlusPlusTryAwait =
                 ctx.SmAwaitInfo.IsSome
+                && finally_.IsNone
                 && Lyric.Emitter.AsyncStateMachine.isTryAwaitBodyShape body catches
             if isPhaseBPlusPlusPlusTryAwait then
                 // Infer the result type from the inner await.
@@ -4297,6 +4313,13 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                         | _ -> emitStatement ctx stmt
                     else emitStatement ctx stmt)
                 FunctionCtx.popScope ctx
+            match finally_ with
+            | Some fb ->
+                il.BeginFinallyBlock()
+                FunctionCtx.pushScope ctx
+                emitBlock ctx fb
+                FunctionCtx.popScope ctx
+            | None -> ()
             il.EndExceptionBlock()
             ignore endLabel
             il.Emit(OpCodes.Ldloc, resultLoc)
@@ -5932,7 +5955,7 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         // a defer escaped its surrounding block — treat as a bug.
         failwith "E14 codegen: bare SDefer reached emitStatement (block emit should have hoisted it)"
 
-    | STry (body, catches) ->
+    | STry (body, catches, finally_) ->
         // D-progress-048: statement-form `try { … } catch <Type> [as
         // <bind>] { … }`.  Each catch's `<Type>` resolves via the
         // catch-type map below; unknown types fall back to
@@ -5947,6 +5970,7 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
         let resolveCatchType = resolveCatchTypeName
         let isPhaseBPlusPlusPlusTryAwait =
             ctx.SmAwaitInfo.IsSome
+            && finally_.IsNone   // finally blocks defeat the B+++ optimisation
             && Lyric.Emitter.AsyncStateMachine.isTryAwaitBodyShape body catches
         if isPhaseBPlusPlusPlusTryAwait then
             emitTryAwaitDuplicated ctx body catches resolveCatchType None
@@ -5970,6 +5994,13 @@ and emitStatement (ctx: FunctionCtx) (s: Statement) : unit =
                     il.Emit(OpCodes.Pop)
                 emitBlock ctx c.Body
                 FunctionCtx.popScope ctx
+            match finally_ with
+            | Some fb ->
+                il.BeginFinallyBlock()
+                FunctionCtx.pushScope ctx
+                emitBlock ctx fb
+                FunctionCtx.popScope ctx
+            | None -> ()
             il.EndExceptionBlock()
             ignore endLabel
 

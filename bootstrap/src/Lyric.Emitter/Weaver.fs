@@ -156,9 +156,10 @@ let private rewriteProceeds (targetName: string) (paramNames: string list) (root
             | SWhile (lbl, cond, body)           -> SWhile (lbl, rwExpr cond, rwBlock body)
             | SLoop (lbl, body)                  -> SLoop (lbl, rwBlock body)
             | SScope (b, body)                   -> SScope (b, rwBlock body)
-            | STry (body, catches)               ->
+            | STry (body, catches, finally_)      ->
                 STry (rwBlock body,
-                      catches |> List.map (fun c -> { c with Body = rwBlock c.Body }))
+                      catches |> List.map (fun c -> { c with Body = rwBlock c.Body }),
+                      finally_ |> Option.map rwBlock)
             | SDefer body                        -> SDefer (rwBlock body)
             | SInvariant _ | SBreak _ | SContinue _ | SRule _ | SItem _ -> s.Kind
         { s with Kind = kind' }

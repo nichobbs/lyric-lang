@@ -329,12 +329,16 @@ func walkBlockCalls(ctx: in WalkCtx, blk: in Block): Unit {
         }
       }
       case SThrow(x)           -> walkExprCalls(ctx, x)
-      case STry(body, catches) -> {
+      case STry(body, catches, finally_) -> {
         walkBlockCalls(ctx, body)
         var ci = 0
         while ci < catches.count {
           walkBlockCalls(ctx, catches[ci].body)
           ci = ci + 1
+        }
+        match finally_ {
+          case None     -> {}
+          case Some(fb) -> walkBlockCalls(ctx, fb)
         }
       }
       case SDefer(body)        -> walkBlockCalls(ctx, body)
@@ -394,12 +398,16 @@ func checkLoopInvariants(
         }
         checkLoopInvariants(diag, fnName, body)
       }
-      case STry(body, catches) -> {
+      case STry(body, catches, finally_) -> {
         checkLoopInvariants(diag, fnName, body)
         var ci = 0
         while ci < catches.count {
           checkLoopInvariants(diag, fnName, catches[ci].body)
           ci = ci + 1
+        }
+        match finally_ {
+          case None     -> {}
+          case Some(fb) -> checkLoopInvariants(diag, fnName, fb)
         }
       }
       case SDefer(body)    -> checkLoopInvariants(diag, fnName, body)
@@ -913,12 +921,16 @@ func walkBlockAssume(
           }
         }
       }
-      case STry(body, catches)    -> {
+      case STry(body, catches, finally_)    -> {
         walkBlockAssume(diag, inUnsafe, body)
         var ci = 0
         while ci < catches.count {
           walkBlockAssume(diag, inUnsafe, catches[ci].body)
           ci = ci + 1
+        }
+        match finally_ {
+          case None     -> {}
+          case Some(fb) -> walkBlockAssume(diag, inUnsafe, fb)
         }
       }
       case SDefer(body)           -> walkBlockAssume(diag, inUnsafe, body)

@@ -1805,8 +1805,20 @@ func parseStatementInner(st: inout ParseState): Statement {
               keepGoing = false
             }
           }
-          val endSpan = if catches.count > 0 { catches[catches.count - 1].span } else { body.span }
-          mkStmt(STry(body = body, catches = catches), joinSpans(startSpan, endSpan))
+          val finally_ : Option[Block] =
+            if identStr(peekToken(st)) == "finally" {
+              val _ = advance(st)
+              Some(parseBlock(st))
+            } else {
+              None
+            }
+          val endSpan =
+            match finally_ {
+              case Some(fb) -> fb.span
+              case None ->
+                if catches.count > 0 { catches[catches.count - 1].span } else { body.span }
+            }
+          mkStmt(STry(body = body, catches = catches, finally_ = finally_), joinSpans(startSpan, endSpan))
         }
         case KwDo -> {
           val _ = advance(st)

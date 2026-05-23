@@ -1547,7 +1547,7 @@ func collectModifiedVarsSt(st: in Statement, output: in List[String]): Unit {
     case SLoop(_, body) -> collectModifiedVars(body.statements, output)
     case SDefer(body) -> collectModifiedVars(body.statements, output)
     case SScope(_, body) -> collectModifiedVars(body.statements, output)
-    case STry(body, _) -> collectModifiedVars(body.statements, output)
+    case STry(body, _, _) -> collectModifiedVars(body.statements, output)
     case _ -> {}
   }
 }

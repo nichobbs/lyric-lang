@@ -429,8 +429,10 @@ let private resolveFunctionSig
             | SLocal (LBVal (_, _, e)) | SLocal (LBLet (_, _, e)) -> exprHasYield e
             | SLocal (LBVar (_, _, Some e)) -> exprHasYield e
             | SLocal (LBVar (_, _, None)) -> false
-            | STry (body, catches) ->
-                blockHasYield body || catches |> List.exists (fun c -> blockHasYield c.Body)
+            | STry (body, catches, finally_) ->
+                blockHasYield body
+                || catches |> List.exists (fun c -> blockHasYield c.Body)
+                || (match finally_ with Some fb -> blockHasYield fb | None -> false)
             | SDefer b | SScope (_, b) | SLoop (_, b) -> blockHasYield b
             | SFor (_, _, iter, body) -> exprHasYield iter || blockHasYield body
             | SWhile (_, cond, body) -> exprHasYield cond || blockHasYield body

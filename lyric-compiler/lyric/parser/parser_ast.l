@@ -327,7 +327,7 @@ pub union StatementKind {
   case SBreak(label: Option[String])
   case SContinue(label: Option[String])
   case SThrow(expr: Expr)
-  case STry(body: Block, catches: List[CatchClause])
+  case STry(body: Block, catches: List[CatchClause], finally_: Option[Block])
   case SDefer(body: Block)
   case SScope(binding: Option[String], body: Block)
   case SFor(label: Option[String], pat: Pattern, iter: Expr, body: Block)

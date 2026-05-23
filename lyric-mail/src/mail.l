@@ -1,6 +1,6 @@
 // Mail — email sending library for Lyric.
 //
-// Provides a uniform `MailSender` interface over SMTP (MailKit), Amazon SES,
+// Provides a uniform `MailSender` interface over SMTP, Amazon SES,
 // and SendGrid.  Obtain a sender with one of the feature-gated `connect*`
 // factory functions, then call `Mail.send` or the convenience helpers.
 //
@@ -103,27 +103,49 @@ pub interface MailSender {
 
 // ─── Native sender wrapper (internal) ────────────────────────────────────────
 
-// Integer handle issued by the kernel; opaque to consumers.
-record NativeSender { senderHandle: Int }
+// The SmtpClient is held directly as an opaque extern type — no integer
+// handle registry needed (Gap 1: BCL reference type storage via extern type).
+record NativeSender { client: MailKernel.SmtpClient }
 
 impl MailSender for NativeSender {
   func send(msg: in EmailMessage): Result[Unit, MailError] {
-    val toAddrs = addressesToSlice(msg.to)
-    match MailKernel.smtpSend(
-      self.senderHandle,
-      msg.from.address,
-      toAddrs,
-      msg.subject,
-      msg.textBody,
-      msg.htmlBody
-    ) {
-      case Ok(_)    -> Ok(())
-      case Err(err) -> Err(MailError(message = err, code = "SEND_ERROR"))
+    // Gap 2: try/catch wraps BCL calls into Result[T, MailError].
+    try {
+      val mailMsg   = MailKernel.newMailMessage()
+      val fromAddr  = MailKernel.newMailAddress(msg.from.address)
+      MailKernel.mailSetFrom(mailMsg, fromAddr)
+      MailKernel.mailSetSubject(mailMsg, msg.subject)
+      val toCollection = MailKernel.mailGetTo(mailMsg)
+      var i = 0
+      while i < msg.to.length {
+        if msg.to[i].address.length > 0 {
+          val addr = MailKernel.newMailAddress(msg.to[i].address)
+          // Gap 3: instance method dispatch via callvirt.
+          MailKernel.mailAddressCollectionAdd(toCollection, addr)
+        }
+        i = i + 1
+      }
+      if msg.htmlBody.length > 0 {
+        MailKernel.mailSetIsBodyHtml(mailMsg, true)
+        MailKernel.mailSetBody(mailMsg, msg.htmlBody)
+      } else {
+        MailKernel.mailSetIsBodyHtml(mailMsg, false)
+        MailKernel.mailSetBody(mailMsg, msg.textBody)
+      }
+      MailKernel.smtpClientSend(self.client, mailMsg)
+      Ok(())
+    } catch Exception as e {
+      Err(MailError(message = e.message, code = "SEND_ERROR"))
     }
   }
 
   func close(): Unit {
-    MailKernel.close(self.senderHandle)
+    try {
+      MailKernel.smtpClientDispose(self.client)
+    } catch Exception as e {
+      // Swallow dispose errors — same policy as the legacy F# shim.
+      ()
+    }
   }
 }
 
@@ -154,9 +176,17 @@ pub func connectSmtp(): Result[MailSender, MailError] {
   val port      = match parseInt(portStr) { case Some(n) -> n  case None -> 587 }
   val useTls    = useTlsStr != "false"
   val timeoutMs = match parseInt(toMs) { case Some(n) -> n  case None -> 30000 }
-  match MailKernel.connectSmtp(host, port, username, password, useTls, timeoutMs) {
-    case Ok(handle) -> Ok(NativeSender(senderHandle = handle))
-    case Err(msg)   -> Err(MailError(message = msg, code = "CONNECT_ERROR"))
+  try {
+    val client = MailKernel.newSmtpClient(host, port)
+    MailKernel.smtpSetEnableSsl(client, useTls)
+    MailKernel.smtpSetTimeout(client, timeoutMs)
+    if username.length > 0 {
+      val cred = MailKernel.newNetworkCredential(username, password)
+      MailKernel.smtpSetCredentials(client, cred)
+    }
+    Ok(NativeSender(client = client))
+  } catch Exception as e {
+    Err(MailError(message = e.message, code = "CONNECT_ERROR"))
   }
 }
 
@@ -170,8 +200,8 @@ pub func connectSes(): Result[MailSender, MailError] {
   val accessKey = Env.getVarOrDefault("LYRIC_CONFIG_SES_ACCESSKEY", "")
   val secretKey = Env.getVarOrDefault("LYRIC_CONFIG_SES_SECRETKEY", "")
   match MailKernel.connectSes(region, accessKey, secretKey) {
-    case Ok(handle) -> Ok(NativeSender(senderHandle = handle))
-    case Err(msg)   -> Err(MailError(message = msg, code = "CONNECT_ERROR"))
+    case Ok(_)    -> Err(MailError(message = "Amazon SES not yet implemented", code = "NOT_IMPLEMENTED"))
+    case Err(msg) -> Err(MailError(message = msg, code = "CONNECT_ERROR"))
   }
 }
 
@@ -183,8 +213,8 @@ pub func connectSes(): Result[MailSender, MailError] {
 pub func connectSendGrid(): Result[MailSender, MailError] {
   val apiKey = Env.getVarOrDefault("LYRIC_CONFIG_SENDGRIDMAIL_APIKEY", "")
   match MailKernel.connectSendGrid(apiKey) {
-    case Ok(handle) -> Ok(NativeSender(senderHandle = handle))
-    case Err(msg)   -> Err(MailError(message = msg, code = "CONNECT_ERROR"))
+    case Ok(_)    -> Err(MailError(message = "SendGrid not yet implemented", code = "NOT_IMPLEMENTED"))
+    case Err(msg) -> Err(MailError(message = msg, code = "CONNECT_ERROR"))
   }
 }
 
@@ -367,15 +397,6 @@ func buildMessage(
     htmlBody    = htmlBody,
     attachments = [],
     replyTo     = None)
-}
-
-// Extract the address strings from a slice of EmailAddress values.
-func addressesToSlice(addrs: in slice[EmailAddress]): slice[String] {
-  var result: slice[String] = []
-  for addr in addrs {
-    result = result + [addr.address]
-  }
-  return result
 }
 
 // Return true if `s` contains characters that could inject MIME headers.

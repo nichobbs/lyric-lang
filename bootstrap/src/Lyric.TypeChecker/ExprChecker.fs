@@ -278,6 +278,8 @@ let private builtinMember (receiver: Type) (name: string) : Type option =
     | TyArray _,        "length"   -> Some (TyPrim PtInt)
     | TyPrim PtString,  "length"   -> Some (TyPrim PtInt)
     | TyPrim PtString,  "isEmpty"  -> Some (TyPrim PtBool)
+    | TyException,      "message"  -> Some (TyPrim PtString)
+    | TyException,      "typeName" -> Some (TyPrim PtString)
     | _ -> None
 
 let private inferMember
@@ -978,16 +980,20 @@ and checkStatement
                 stmt.Span
         checkBlock scope table sigs genericNames returnType diags body |> ignore
 
-    | STry(body, catches) ->
+    | STry(body, catches, finally_) ->
         checkBlock scope table sigs genericNames returnType diags body |> ignore
         for c in catches do
             scope.Push()
             match c.Bind with
             | Some name ->
-                scope.Add({ Name = name; Type = TyError; IsMutable = false })
+                scope.Add({ Name = name; Type = TyException; IsMutable = false })
             | None -> ()
             checkBlock scope table sigs genericNames returnType diags c.Body |> ignore
             scope.Pop()
+        match finally_ with
+        | Some fb ->
+            checkBlock scope table sigs genericNames returnType diags fb |> ignore
+        | None -> ()
 
     | SItem _ ->
         // Nested item declarations — deferred to T6+.
@@ -1016,9 +1022,9 @@ and checkBlock
             checkStatement scope table sigs genericNames returnType diags stmt
             lastExprType <- TyPrim PtNever
         | STry _ ->
-            // try-catch in expression/block position: value type is deferred to T6+.
-            // Return TyError so surrounding SReturn / val-binding do not emit
-            // spurious T0065 / T0060 mismatches.
+            // try-catch in expression/block position: the type-level value is
+            // deferred to T6+; check the statement body for correctness but
+            // suppress downstream type errors via TyError.
             checkStatement scope table sigs genericNames returnType diags stmt
             lastExprType <- TyError
         | _ ->

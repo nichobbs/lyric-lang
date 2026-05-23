@@ -1309,11 +1309,20 @@ and private parseStatement
         // language reference §1.3 — but my lexer currently treats it
         // as an identifier. The lookup above tolerates either.
         // Real fix: add KwCatch to the lexer. Tracked as a follow-up.
+        let finally_ =
+            match Cursor.peekToken cursor with
+            | TIdent "finally" ->
+                Cursor.advance cursor |> ignore
+                Some (parseBlock cursor diags)
+            | _ -> None
         let endSpan =
-            if catches.Count > 0 then
-                (catches.[catches.Count - 1]).Span
-            else body.Span
-        mkStmt (STry(body, List.ofSeq catches))
+            match finally_ with
+            | Some fb -> fb.Span
+            | None ->
+                if catches.Count > 0 then
+                    (catches.[catches.Count - 1]).Span
+                else body.Span
+        mkStmt (STry(body, List.ofSeq catches, finally_))
             (joinSpans startSpan endSpan)
 
     | TKeyword KwDo ->

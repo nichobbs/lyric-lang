@@ -2451,8 +2451,8 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
     }
 
     // ── Try/catch ─────────────────────────────────────────────────────────────
-    case STry(body, catches) -> {
-      lowerTryCatchMsil(cctx, fctx, insns, body, catches)
+    case STry(body, catches, finally_) -> {
+      lowerTryCatchMsil(cctx, fctx, insns, body, catches, finally_)
     }
 
     // ── Invariant annotation (runtime: skip) ──────────────────────────────────
@@ -2508,11 +2508,12 @@ func lowerLocalPatBindMsil(
 // ─────────────────────────────────────────────────────────────────────────────
 
 func lowerTryCatchMsil(
-  cctx:    in CodegenCtx,
-  fctx:    in FuncCtx,
-  insns:   in List[MInsn],
-  body:    in Block,
-  catches: in List[CatchClause]
+  cctx:     in CodegenCtx,
+  fctx:     in FuncCtx,
+  insns:    in List[MInsn],
+  body:     in Block,
+  catches:  in List[CatchClause],
+  finally_: in Option[Block]
 ): Unit {
   // Bootstrap: inline the try body; catch clauses are emitted but exception
   // table registration is deferred (MethodBody exception table in Phase R6).
@@ -2534,6 +2535,11 @@ func lowerTryCatchMsil(
     }
     lowerBlockMsil(cctx, fctx, insns, c.body)
     i = i + 1
+  }
+  // Emit finally block inline after the try/catch region.
+  match finally_ {
+    case None     -> {}
+    case Some(fb) -> lowerBlockMsil(cctx, fctx, insns, fb)
   }
 }
 
@@ -3001,14 +3007,17 @@ func stmtContainsYieldMsil(s: in Statement): Bool {
     case SLoop(_, b)      -> blockContainsYieldMsil(b)
     case SScope(_, b)     -> blockContainsYieldMsil(b)
     case SDefer(b)        -> blockContainsYieldMsil(b)
-    case STry(b, catches) -> {
+    case STry(b, catches, finally_) -> {
       if blockContainsYieldMsil(b) { return true }
       var ci = 0
       while ci < catches.count {
         if blockContainsYieldMsil(catches[ci].body) { return true }
         ci = ci + 1
       }
-      false
+      match finally_ {
+        case None     -> false
+        case Some(fb) -> blockContainsYieldMsil(fb)
+      }
     }
     case _ -> false
   }
@@ -4037,7 +4046,7 @@ func collectLambdasBfsStmt(s: in Statement, ticker: in List[Int], synths: in Lis
         si = si + 1
       }
     }
-    case STry(body, catches) -> {
+    case STry(body, catches, finally_) -> {
       var si = 0
       while si < body.statements.count {
         collectLambdasBfsStmt(body.statements[si], ticker, synths, deferred)
@@ -4052,6 +4061,16 @@ func collectLambdasBfsStmt(s: in Statement, ticker: in List[Int], synths: in Lis
           csi = csi + 1
         }
         ci = ci + 1
+      }
+      match finally_ {
+        case None -> {}
+        case Some(fb) -> {
+          var fsi = 0
+          while fsi < fb.statements.count {
+            collectLambdasBfsStmt(fb.statements[fsi], ticker, synths, deferred)
+            fsi = fsi + 1
+          }
+        }
       }
     }
     case SInvariant(e)   -> { collectLambdasBfsExpr(e, ticker, synths, deferred) }

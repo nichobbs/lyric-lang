@@ -96,9 +96,10 @@ and private stmtHasAwait (s: Statement) : bool =
     | SLocal (LBVal (_, _, e)) | SLocal (LBLet (_, _, e)) -> exprHasAwait e
     | SLocal (LBVar (_, _, Some e)) -> exprHasAwait e
     | SLocal (LBVar (_, _, None)) -> false
-    | STry (body, catches) ->
+    | STry (body, catches, finally_) ->
         blockHasAwait body
         || catches |> List.exists (fun c -> blockHasAwait c.Body)
+        || (match finally_ with Some fb -> blockHasAwait fb | None -> false)
     | SDefer b | SScope (_, b) | SLoop (_, b) -> blockHasAwait b
     | SFor (_, _, iter, body) -> exprHasAwait iter || blockHasAwait body
     | SWhile (_, cond, body) -> exprHasAwait cond || blockHasAwait body
@@ -235,9 +236,10 @@ and private isSafeStmt (s: Statement) : bool =
     // await pattern.  Pre-stmts execute only on the first-time path;
     // resume re-enters a duplicate user try whose body is just the
     // GetResult.  Catches are emitted twice (once per .try copy).
-    | STry (body, catches) ->
+    | STry (body, catches, finally_) ->
         if not (stmtHasAwait s) then true
         elif catches |> List.exists (fun c -> blockHasAwait c.Body) then false
+        elif (match finally_ with Some fb -> blockHasAwait fb | None -> false) then false
         else isPhaseBPlusPlusPlusTryAwaitBody body
     // Phase B+++ (D-progress-058): `for x in iter { body }` with an
     // award in body.  Iterator state (slice, index) and the loop
@@ -262,9 +264,10 @@ and private isSafeStmt (s: Statement) : bool =
 /// back to the M1.4 blocking shim.
 and private isSafeStmtNested (s: Statement) : bool =
     match s.Kind with
-    | STry (body, catches) ->
+    | STry (body, catches, finally_) ->
         if not (stmtHasAwait s) then true
         elif catches |> List.exists (fun c -> blockHasAwait c.Body) then false
+        elif (match finally_ with Some fb -> blockHasAwait fb | None -> false) then false
         else isPhaseBPlusPlusPlusTryAwaitBody body
     | _ -> isSafeStmt s
 
@@ -744,7 +747,7 @@ let rec private rewriteStmt
         | SItem _ as k -> k
         | SRule (lhs, rhs) ->
             SRule (spillAwaits sigOf sp lhs, spillAwaits sigOf sp rhs)
-        | STry (body, catches) ->
+        | STry (body, catches, finally_) ->
             // Phase B+++ already handles the safe try-await shapes.
             // For unsafe awaits inside a try body, recurse into both
             // the body and each catch.  Spill bindings injected here
@@ -752,7 +755,7 @@ let rec private rewriteStmt
             // for awaits whose results escape the try, so we stay
             // conservative and bail.
             sp.Bailed <- true
-            STry (body, catches)
+            STry (body, catches, finally_)
         | SDefer body ->
             // Same conservative bail — defer cleanup interactions with
             // hoisted spill bindings need explicit semantics.
@@ -948,9 +951,10 @@ let private collectMatchingInners
         | SLocal (LBVal (_, _, e)) | SLocal (LBLet (_, _, e)) -> walkExpr e
         | SLocal (LBVar (_, _, Some e)) -> walkExpr e
         | SLocal (LBVar (_, _, None)) -> ()
-        | STry (body, catches) ->
+        | STry (body, catches, finally_) ->
             walkBlock body
             for c in catches do walkBlock c.Body
+            match finally_ with Some fb -> walkBlock fb | None -> ()
         | SDefer b | SScope (_, b) | SLoop (_, b) -> walkBlock b
         | SFor (_, _, iter, body) -> walkExpr iter; walkBlock body
         | SWhile (_, cond, body) -> walkExpr cond; walkBlock body

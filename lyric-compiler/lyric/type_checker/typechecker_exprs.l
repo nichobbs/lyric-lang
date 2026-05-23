@@ -415,6 +415,11 @@ func builtinMember(recv: in Type, name: in String): Option[Type] {
         }
         case _ -> None
       }
+    case TyException -> {
+      if name == "message"  { return Some(value = TyPrim(pt = PtString)) }
+      if name == "typeName" { return Some(value = TyPrim(pt = PtString)) }
+      None
+    }
     case _ -> None
   }
 }

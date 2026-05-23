@@ -166,6 +166,91 @@ func main(): Unit {
 }
 """,
     "55"
+
+    "try_finally_no_throw",
+    // finally block always runs even on the success path.
+    """
+package TF1
+func main(): Unit {
+  var r: Int = 0
+  try {
+    r = 10
+  } catch Bug {
+    r = -1
+  } finally {
+    r = r + 1
+  }
+  println(toString(r))
+}
+""",
+    "11"
+
+    "try_finally_on_throw",
+    // finally block runs even when an exception is caught.
+    """
+package TF2
+func boom(): Int { panic("oops") }
+func main(): Unit {
+  var r: Int = 0
+  try {
+    r = boom()
+  } catch Bug {
+    r = 5
+  } finally {
+    r = r + 100
+  }
+  println(toString(r))
+}
+""",
+    "105"
+
+    "try_finally_no_catch",
+    // finally without catch clause.
+    """
+package TF3
+func main(): Unit {
+  var sideEffect: Int = 0
+  try {
+    sideEffect = 7
+  } finally {
+    sideEffect = sideEffect + 3
+  }
+  println(toString(sideEffect))
+}
+""",
+    "10"
+
+    "exception_message_member",
+    // .message on a caught exception returns the exception's message string.
+    // panic() prepends "panic: " to its argument.
+    """
+package EM1
+func boom(): Unit { panic("hello from boom") }
+func main(): Unit {
+  try {
+    boom()
+  } catch Exception as e {
+    println(e.message)
+  }
+}
+""",
+    "panic: hello from boom"
+
+    "exception_type_name_member",
+    // .typeName on a caught exception returns the CLR type's simple name.
+    // panic() throws plain System.Exception so the name is "Exception".
+    """
+package ETN1
+func boom(): Unit { panic("ignored") }
+func main(): Unit {
+  try {
+    boom()
+  } catch Exception as e {
+    println(e.typeName)
+  }
+}
+""",
+    "Exception"
 ]
 
 let tests =

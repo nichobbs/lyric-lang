@@ -1,17 +1,13 @@
 /// Mail.Kernel.Net — extern boundary for email-sending providers.
 ///
-/// Phase 4 of #733: BCL System.Net.Mail SMTP backend functional via
-/// `Lyric.Mail.SmtpHost`.  Amazon SES and SendGrid backends remain
-/// declarative-only — their bindings are routed to placeholder
-/// `*NotYet` targets that return a clear "not yet implemented" error
-/// until provider-specific Testcontainers infrastructure lands
-/// (#780 follow-up).
+/// BCL System.Net.Mail SMTP backend: all BCL types are declared as
+/// `extern type` so the Lyric public layer can hold them directly
+/// (no integer handle registry). Error handling uses `try/catch` in
+/// the Lyric public layer — no F# wrapper needed.
 ///
-/// Each provider exposes three functions: `connectXxx` (returns an
-/// opaque Int handle), `smtpSend` (accepts typed native parameters),
-/// and `close`.  The Lyric public layer assembles these from the
-/// `EmailMessage` record before the extern call; the F# host receives
-/// native types and calls BCL APIs directly — no JSON parsing required.
+/// Amazon SES and SendGrid backends remain declarative-only — their
+/// bindings are placeholders until provider-specific Testcontainers
+/// infrastructure lands (#780 follow-up).
 ///
 /// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
@@ -19,29 +15,94 @@ package Mail.Kernel.Net
 
 import Std.Core
 
-// ─── SMTP provider (BCL System.Net.Mail.SmtpClient) ──────────────────────────
+// ─── Extern types ─────────────────────────────────────────────────────────────
 
-@axiom("Lyric.Mail.SmtpHost.connect — System.Net.Mail.SmtpClient over the supplied host/port; useTls maps to EnableSsl")
-@externTarget("Lyric.Mail.SmtpHost.connect")
-@cfg(feature = "smtp")
-pub func connectSmtp(
-  host:      in String,
-  port:      in Int,
-  username:  in String,
-  password:  in String,
-  useTls:    in Bool,
-  timeoutMs: in Int
-): Result[Int, String]
-  requires: host.length > 0
-  requires: port >= 1
-  requires: port <= 65535
-  requires: timeoutMs >= 1
-  = ()
+@axiom("BCL System.Net.Mail.SmtpClient (SYSLIB0014 advisory: acceptable for Phase-4 SMTP path)")
+pub extern type SmtpClient = "System.Net.Mail.SmtpClient"
+
+@axiom("BCL System.Net.Mail.MailMessage")
+pub extern type MailMessage = "System.Net.Mail.MailMessage"
+
+@axiom("BCL System.Net.Mail.MailAddress")
+pub extern type MailAddress = "System.Net.Mail.MailAddress"
+
+@axiom("BCL System.Net.Mail.MailAddressCollection")
+pub extern type MailAddressCollection = "System.Net.Mail.MailAddressCollection"
+
+@axiom("BCL System.Net.NetworkCredential")
+pub extern type NetworkCredential = "System.Net.NetworkCredential"
+
+// ─── SmtpClient construction and configuration ────────────────────────────────
+
+@axiom("new System.Net.Mail.SmtpClient(host, port)")
+@externTarget("System.Net.Mail.SmtpClient..ctor")
+pub func newSmtpClient(host: in String, port: in Int): SmtpClient = ()
+
+@axiom("System.Net.Mail.SmtpClient.EnableSsl setter")
+@externTarget("System.Net.Mail.SmtpClient.set_EnableSsl")
+pub func smtpSetEnableSsl(client: in SmtpClient, value: in Bool): Unit = ()
+
+@axiom("System.Net.Mail.SmtpClient.Timeout setter")
+@externTarget("System.Net.Mail.SmtpClient.set_Timeout")
+pub func smtpSetTimeout(client: in SmtpClient, value: in Int): Unit = ()
+
+@axiom("new System.Net.NetworkCredential(username, password)")
+@externTarget("System.Net.NetworkCredential..ctor")
+pub func newNetworkCredential(username: in String, password: in String): NetworkCredential = ()
+
+@axiom("System.Net.Mail.SmtpClient.Credentials setter — parameter type is ICredentialsByHost; NetworkCredential satisfies it at the CLR level")
+@externTarget("System.Net.Mail.SmtpClient.set_Credentials")
+pub func smtpSetCredentials(client: in SmtpClient, cred: in NetworkCredential): Unit = ()
+
+@axiom("System.Net.Mail.SmtpClient.Send(MailMessage) — instance method, callvirt")
+@externTarget("System.Net.Mail.SmtpClient.Send")
+pub func smtpClientSend(client: in SmtpClient, msg: in MailMessage): Unit = ()
+
+@axiom("System.Net.Mail.SmtpClient.Dispose() — releases the underlying TCP connection")
+@externTarget("System.Net.Mail.SmtpClient.Dispose")
+pub func smtpClientDispose(client: in SmtpClient): Unit = ()
+
+// ─── MailMessage construction and mutation ────────────────────────────────────
+
+@axiom("new System.Net.Mail.MailMessage()")
+@externTarget("System.Net.Mail.MailMessage..ctor")
+pub func newMailMessage(): MailMessage = ()
+
+@axiom("System.Net.Mail.MailMessage.From setter")
+@externTarget("System.Net.Mail.MailMessage.set_From")
+pub func mailSetFrom(msg: in MailMessage, addr: in MailAddress): Unit = ()
+
+@axiom("System.Net.Mail.MailMessage.Subject setter")
+@externTarget("System.Net.Mail.MailMessage.set_Subject")
+pub func mailSetSubject(msg: in MailMessage, subject: in String): Unit = ()
+
+@axiom("System.Net.Mail.MailMessage.IsBodyHtml setter")
+@externTarget("System.Net.Mail.MailMessage.set_IsBodyHtml")
+pub func mailSetIsBodyHtml(msg: in MailMessage, value: in Bool): Unit = ()
+
+@axiom("System.Net.Mail.MailMessage.Body setter")
+@externTarget("System.Net.Mail.MailMessage.set_Body")
+pub func mailSetBody(msg: in MailMessage, body: in String): Unit = ()
+
+@axiom("System.Net.Mail.MailMessage.To getter — returns the MailAddressCollection for recipient mutation")
+@externTarget("System.Net.Mail.MailMessage.get_To")
+pub func mailGetTo(msg: in MailMessage): MailAddressCollection = ()
+
+// ─── MailAddress construction ─────────────────────────────────────────────────
+
+@axiom("new System.Net.Mail.MailAddress(address) — 1-arg constructor")
+@externTarget("System.Net.Mail.MailAddress..ctor")
+pub func newMailAddress(address: in String): MailAddress = ()
+
+// ─── MailAddressCollection mutation ──────────────────────────────────────────
+
+@axiom("System.Net.Mail.MailAddressCollection.Add(MailAddress) — exact-type match picks this overload over Add(string)")
+@externTarget("System.Net.Mail.MailAddressCollection.Add")
+pub func mailAddressCollectionAdd(coll: in MailAddressCollection, addr: in MailAddress): Unit = ()
 
 // ─── Amazon SES (Phase 4 follow-up of #733) ──────────────────────────────────
 
 @axiom("Amazon SES backend not yet implemented (#733 follow-up)")
-@externTarget("Lyric.Mail.SmtpHost.sesConnectNotYet")
 @cfg(feature = "ses")
 pub func connectSes(
   region:    in String,
@@ -49,47 +110,12 @@ pub func connectSes(
   secretKey: in String
 ): Result[Int, String]
   requires: region.length > 0
-  = ()
+  = Err("lyric-mail: Amazon SES backend not yet implemented (Phase 4 follow-up of #733)")
 
 // ─── SendGrid (Phase 4 follow-up of #733) ────────────────────────────────────
 
 @axiom("SendGrid backend not yet implemented (#733 follow-up)")
-@externTarget("Lyric.Mail.SmtpHost.sendGridConnectNotYet")
 @cfg(feature = "sendgrid")
 pub func connectSendGrid(apiKey: in String): Result[Int, String]
   requires: apiKey.length > 0
-  = ()
-
-// ─── SMTP-feature-gated send / close ─────────────────────────────────────────
-//
-// Per-provider gating: `smtpSend` and `close` dispatch is bound per-feature
-// to keep the routing honest once additional backend shims land
-// (#1016 follow-up).  Each backend will have its own
-// `@externTarget("Lyric.Mail.<Backend>.smtpSend")` arm gated by its feature.
-
-@axiom("Lyric.Mail.SmtpHost.smtpSend — dispatches via System.Net.Mail.SmtpClient.Send using typed native parameters; no JSON parsing in the host")
-@externTarget("Lyric.Mail.SmtpHost.smtpSend")
-@cfg(feature = "smtp")
-pub func smtpSend(
-  handle:      in Int,
-  fromAddress: in String,
-  toAddresses: in slice[String],
-  subject:     in String,
-  bodyText:    in String,
-  bodyHtml:    in String
-): Result[Unit, String]
-  requires: fromAddress.length > 0
-  requires: toAddresses.length > 0
-  requires: subject.length > 0
-  = ()
-
-@axiom("Lyric.Mail.SmtpHost.close — disposes the underlying SmtpClient and removes the handle from the registry")
-@externTarget("Lyric.Mail.SmtpHost.close")
-@cfg(feature = "smtp")
-pub func close(senderHandle: in Int): Unit = ()
-
-// SES / SendGrid send + close arms remain placeholders until those host
-// shims land (#780 follow-up).  Until then, opening an SES or SendGrid
-// handle returns Err from the connect arm; there's nothing to dispatch
-// to.  Each backend will add its own `smtpSend` / `close` arm here gated
-// by its feature when the shim lands.
+  = Err("lyric-mail: SendGrid backend not yet implemented (Phase 4 follow-up of #733)")

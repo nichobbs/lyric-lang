@@ -605,7 +605,7 @@ func substStmtValue(valueSubst: in Map[String, Expr], stmt: in Statement): State
       Statement(kind = SRule(
         lhs = substExprValue(valueSubst, lhs),
         rhs = substExprValue(valueSubst, rhs)), span = s)
-    case STry(body, catches) -> {
+    case STry(body, catches, finally_) -> {
       val newBody = substBlockValue(valueSubst, body)
       val newCatches: List[CatchClause] = newList()
       var i = 0
@@ -618,7 +618,11 @@ func substStmtValue(valueSubst: in Map[String, Expr], stmt: in Statement): State
           span     = cc.span))
         i = i + 1
       }
-      Statement(kind = STry(body = newBody, catches = newCatches), span = s)
+      val newFinally = match finally_ {
+        case None     -> None
+        case Some(fb) -> Some(substBlockValue(valueSubst, fb))
+      }
+      Statement(kind = STry(body = newBody, catches = newCatches, finally_ = newFinally), span = s)
     }
     case _ -> stmt
   }
@@ -1719,7 +1723,7 @@ func rewriteStmt(
         lhs = rewriteExpr(state, env, lhs),
         rhs = rewriteExpr(state, env, rhs)), span = s)
 
-    case STry(body, catches) -> {
+    case STry(body, catches, finally_) -> {
       val newBody = rewriteBlock(state, env, body)
       val newCatches: List[CatchClause] = newList()
       var i = 0
@@ -1732,7 +1736,11 @@ func rewriteStmt(
           span     = cc.span))
         i = i + 1
       }
-      Statement(kind = STry(body = newBody, catches = newCatches), span = s)
+      val newFinally = match finally_ {
+        case None     -> None
+        case Some(fb) -> Some(rewriteBlock(state, env, fb))
+      }
+      Statement(kind = STry(body = newBody, catches = newCatches, finally_ = newFinally), span = s)
     }
 
     // SBreak, SContinue, SItem: pass through unchanged
