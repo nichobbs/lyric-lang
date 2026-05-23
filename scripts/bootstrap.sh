@@ -396,6 +396,23 @@ EOF
     die "stage-1 CLI bundle: Lyric.Ws.Host.dll not found in publish output"
   fi
 
+  # `Lyric.Web.Host.dll` is the Phase-8 host shim for #733 — bridges the
+  # lyric-web `Web.start` entry point through `Lyric.Web.HttpListenerHost`
+  # using BCL System.Net.HttpListener.  The path-finder actually binds
+  # the port (fixing the silent no-op from #784) and serves a JSON
+  # description of the routing table for every request.  Real ASP.NET
+  # Core Kestrel + minimal-API dispatch lands as a follow-up.
+  dotnet publish "$COMPILER_DIR/src/Lyric.Web.Host/Lyric.Web.Host.fsproj" \
+    --configuration Release \
+    --output "$BUILD_DIR/stage0-publish-web" \
+    --nologo -v q
+  if [[ -f "$BUILD_DIR/stage0-publish-web/Lyric.Web.Host.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish-web/Lyric.Web.Host.dll" "$STAGE1_DIR/"
+    copied=$((copied + 1))
+  else
+    die "stage-1 CLI bundle: Lyric.Web.Host.dll not found in publish output"
+  fi
+
   info "  copied $copied DLLs into $STAGE1_DIR"
 
   # Sanity check: Lyric.Lyric.Cli.dll must land in stage1/.  If it

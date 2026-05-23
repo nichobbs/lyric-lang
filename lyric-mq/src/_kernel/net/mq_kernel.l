@@ -43,7 +43,7 @@ pub func publish(queueId: in Int, messageId: in String, body: in String, headers
   requires: messageId.length > 0
   = ()
 
-@axiom("Lyric.Mq.InMemoryHost.publishBatch — Err until batch parser lands (#733 follow-up); use publish() in a loop")
+@axiom("Lyric.Mq.InMemoryHost.publishBatch — splits the JSON array of {id, body, headers} objects on balanced braces and enqueues each into Pending")
 @externTarget("Lyric.Mq.InMemoryHost.publishBatch")
 @cfg(feature = "inmemory")
 pub func publishBatch(queueId: in Int, messagesJson: in String): Result[Unit, String]
