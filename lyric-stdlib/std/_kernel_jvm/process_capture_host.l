@@ -51,5 +51,10 @@ pub func hostRunCapture(executable: in String, arguments: in String, stdinConten
 // Variant of `hostRunCapture` with a caller-supplied `timeoutMs` wall-clock
 // cap.  Used by `Std.Process.runCapture` and `Std.Process.runCaptureWithInput`
 // (#1023 / #743).
+//
+// JVM parity gap: `lyric.stdlib.jvm.ProcessCaptureHost.runCaptureWithTimeout`
+// is tracked in #1065.  The method must drain stdout/stderr in parallel and
+// call Process.waitFor(timeoutMs, MILLISECONDS); callers on the JVM target
+// will receive a missing-method error until #1065 lands.
 @externTarget("lyric.stdlib.jvm.ProcessCaptureHost.runCaptureWithTimeout")
 pub func hostRunCaptureTimeout(executable: in String, arguments: in String, stdinContent: in String, timeoutMs: in Int): ProcessCaptureResult = ()
