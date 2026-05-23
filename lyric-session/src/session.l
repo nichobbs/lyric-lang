@@ -153,7 +153,7 @@ impl SessionStore for NativeSessionStore {
 
   func save(data: in SessionData): Result[Unit, SessionError] {
     val json = serializeSessionJson(data)
-    match SessionKernel.save(self.storeHandle, json) {
+    match SessionKernel.save(self.storeHandle, data.id, json) {
       case Ok(u)    -> Ok(u)
       case Err(err) -> Err(SessionError(message = err, code = "SAVE_FAILED"))
     }

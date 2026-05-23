@@ -60,13 +60,13 @@ pub func load(storeHandle: in Int, sessionId: in String): Result[String, String]
 
 /// Persist the serialised session JSON.  Overwrites any existing entry,
 /// preserving the original TTL (StringSet with keepTtl=true).  The
-/// payload must contain an `"id": "..."` field that the shim uses to
-/// recover the Redis key (extracted via a minimal substring search to
-/// avoid a JSON parser dependency in the host shim).
+/// `sessionId` is passed explicitly so the host shim can compute the
+/// Redis key directly without parsing the JSON payload.
 @axiom("Lyric.Session.RedisStore.save — StringSet keepTtl=true")
 @externTarget("Lyric.Session.RedisStore.save")
 @stable(since="0.1")
-pub func save(storeHandle: in Int, sessionJson: in String): Result[Unit, String]
+pub func save(storeHandle: in Int, sessionId: in String, sessionJson: in String): Result[Unit, String]
+  requires: sessionId.length > 0
   requires: sessionJson.length > 0
   = ()
 

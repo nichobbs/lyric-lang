@@ -45,10 +45,10 @@ pub func delete(bucketHandle: in Int, key: in String): Result[Unit, String] = Er
 @axiom("Amazon S3 SDK for .NET (AWSSDK.S3)")
 @cfg(feature = "s3")
 pub func list(
-  bucketHandle:      in Int,
-  prefix:            in String,
-  continuationToken: in String,
-  maxKeys:           in Int
+  bucketHandle:  in Int,
+  prefix:        in String,
+  startAfterKey: in String,
+  maxKeys:       in Int
 ): Result[String, String] = Err("")
 
 @axiom("Amazon S3 SDK for .NET (AWSSDK.S3)")
@@ -93,10 +93,10 @@ pub func delete(bucketHandle: in Int, key: in String): Result[Unit, String] = Er
 @axiom("Azure Blob Storage SDK for .NET (Azure.Storage.Blobs)")
 @cfg(feature = "azureblob")
 pub func list(
-  bucketHandle:      in Int,
-  prefix:            in String,
-  continuationToken: in String,
-  maxKeys:           in Int
+  bucketHandle:  in Int,
+  prefix:        in String,
+  startAfterKey: in String,
+  maxKeys:       in Int
 ): Result[String, String] = Err("")
 
 @axiom("Azure Blob Storage SDK for .NET (Azure.Storage.Blobs)")
@@ -138,10 +138,10 @@ pub func delete(bucketHandle: in Int, key: in String): Result[Unit, String] = Er
 @axiom("Local filesystem storage using System.IO")
 @cfg(feature = "local")
 pub func list(
-  bucketHandle:      in Int,
-  prefix:            in String,
-  continuationToken: in String,
-  maxKeys:           in Int
+  bucketHandle:  in Int,
+  prefix:        in String,
+  startAfterKey: in String,
+  maxKeys:       in Int
 ): Result[String, String] = Err("")
 
 @axiom("Local filesystem storage using System.IO")

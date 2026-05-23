@@ -8,21 +8,10 @@
 /// (#780 follow-up).
 ///
 /// Each provider exposes three functions: `connectXxx` (returns an
-/// opaque Int handle), `send` (accepts a JSON-serialised
-/// EmailMessage), and `close`.
-///
-/// Message JSON format (produced by Mail.serialiseMessage):
-///   {
-///     "from":        {"address": "...", "displayName": "..."},
-///     "to":          [{"address": "...", "displayName": "..."}, ...],
-///     "cc":          [...],
-///     "bcc":         [...],
-///     "subject":     "...",
-///     "textBody":    "...",
-///     "htmlBody":    "...",
-///     "attachments": [{"filename": "...", "contentType": "...", "dataBase64": "..."}, ...],
-///     "replyTo":     {"address": "...", "displayName": "..."} | null
-///   }
+/// opaque Int handle), `smtpSend` (accepts typed native parameters),
+/// and `close`.  The Lyric public layer assembles these from the
+/// `EmailMessage` record before the extern call; the F# host receives
+/// native types and calls BCL APIs directly — no JSON parsing required.
 ///
 /// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
@@ -73,16 +62,25 @@ pub func connectSendGrid(apiKey: in String): Result[Int, String]
 
 // ─── SMTP-feature-gated send / close ─────────────────────────────────────────
 //
-// Per-provider gating: `send` and `close` dispatch is bound per-feature
+// Per-provider gating: `smtpSend` and `close` dispatch is bound per-feature
 // to keep the routing honest once additional backend shims land
 // (#1016 follow-up).  Each backend will have its own
-// `@externTarget("Lyric.Mail.<Backend>.send")` arm gated by its feature.
+// `@externTarget("Lyric.Mail.<Backend>.smtpSend")` arm gated by its feature.
 
-@axiom("Lyric.Mail.SmtpHost.send — parses the messageJson shape produced by Mail.serialiseMessage and dispatches via System.Net.Mail.SmtpClient.Send")
-@externTarget("Lyric.Mail.SmtpHost.send")
+@axiom("Lyric.Mail.SmtpHost.smtpSend — dispatches via System.Net.Mail.SmtpClient.Send using typed native parameters; no JSON parsing in the host")
+@externTarget("Lyric.Mail.SmtpHost.smtpSend")
 @cfg(feature = "smtp")
-pub func send(senderHandle: in Int, messageJson: in String): Result[Unit, String]
-  requires: messageJson.length > 0
+pub func smtpSend(
+  handle:      in Int,
+  fromAddress: in String,
+  toAddresses: in slice[String],
+  subject:     in String,
+  bodyText:    in String,
+  bodyHtml:    in String
+): Result[Unit, String]
+  requires: fromAddress.length > 0
+  requires: toAddresses.length > 0
+  requires: subject.length > 0
   = ()
 
 @axiom("Lyric.Mail.SmtpHost.close — disposes the underlying SmtpClient and removes the handle from the registry")
@@ -93,5 +91,5 @@ pub func close(senderHandle: in Int): Unit = ()
 // SES / SendGrid send + close arms remain placeholders until those host
 // shims land (#780 follow-up).  Until then, opening an SES or SendGrid
 // handle returns Err from the connect arm; there's nothing to dispatch
-// to.  Each backend will add its own `send` / `close` arm here gated by
-// its feature when the shim lands.
+// to.  Each backend will add its own `smtpSend` / `close` arm here gated
+// by its feature when the shim lands.
