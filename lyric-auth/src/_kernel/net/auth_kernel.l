@@ -305,15 +305,14 @@ pub func tryExtractClaim(
   val parts = split(token, ".")
   if parts.length < 2 { return false }
   match fromBase64Url(parts[1]) {
-    case None -> return false
+    case None -> false
     case Some(payloadBytes) -> {
       val claim = getStringClaim(payloadBytes, claimKey)
       if claim.length == 0 { return false }
       value = claim
-      return true
+      true
     }
   }
-  return false
 }
 
 /// Extract a named claim from a JWT payload without re-verifying the signature.
