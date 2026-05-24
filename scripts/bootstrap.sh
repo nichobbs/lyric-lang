@@ -415,19 +415,19 @@ EOF
 
   info "  copied $copied DLLs into $STAGE1_DIR"
 
-  # Remove the per-host scratch publish directories now that every host
-  # shim DLL has been copied into $STAGE1_DIR.  Leaving them in place
-  # accumulates ~100 MB across repeat bootstraps.  The shared
-  # `stage0-publish` directory is intentionally kept because the
-  # generated apphost stub points at `stage0-publish/lyric.dll`.
-  rm -rf \
-    "$BUILD_DIR/stage0-publish-session" \
-    "$BUILD_DIR/stage0-publish-storage" \
-    "$BUILD_DIR/stage0-publish-jobs" \
-    "$BUILD_DIR/stage0-publish-mail" \
-    "$BUILD_DIR/stage0-publish-mq" \
-    "$BUILD_DIR/stage0-publish-ws" \
-    "$BUILD_DIR/stage0-publish-web"
+  # Remove every per-host scratch publish directory now that the shim DLLs
+  # have been copied into $STAGE1_DIR.  Leaving them in place accumulates
+  # ~100 MB across repeat bootstraps.  We glob `stage0-publish-*` so new
+  # ecosystem libraries are cleaned automatically without touching this
+  # script (#1125).  The shared `stage0-publish` directory itself is
+  # intentionally kept because the generated apphost stub points at
+  # `stage0-publish/lyric.dll`.
+  shopt -s nullglob
+  scratch_dirs=("$BUILD_DIR"/stage0-publish-*)
+  shopt -u nullglob
+  if (( ${#scratch_dirs[@]} > 0 )); then
+    rm -rf "${scratch_dirs[@]}"
+  fi
 
   # Sanity check: Lyric.Lyric.Cli.dll must land in stage1/.  If it
   # doesn't, the F# emitter's stdlib-cache layout has changed and this

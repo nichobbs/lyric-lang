@@ -145,6 +145,8 @@ func testDiagnosticsSpawnFailure(): Unit {
     newList(),
     "")
   assertEqualInt(r.exitCode, -1, "spawn failure reports exit code -1")
+  assertEqual(r.stdout, "", "spawn failure produces empty stdout")
+  assertEqual(r.stderr, "", "spawn failure produces empty stderr")
   assertTrue(not r.timedOut, "spawn failure is not a timeout")
 }
 
