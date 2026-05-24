@@ -121,6 +121,19 @@ pub record CodegenCtx {
   // freshly empty and the counter starts at 1 — behaviour unchanged.
   nextMethodDefRow:   List[Int]
   nextFieldDefRow:    List[Int]
+  // Bundle-wide entry point.  When `addPackageTokens` walks a package and
+  // encounters a top-level `func main()`, it records the MethodDef token
+  // here.  At most one element — the first package whose `main()` is seen
+  // wins, matching the F# `emitProject` host-entry policy.  Stays empty
+  // when no package defines `main` (library-shaped bundle).  See #1183
+  // Phase 2.
+  mainEntryToken:     List[Int]
+  // Per-package import edges (#1183 Phase 2).  `pkgImports[pkgName]` is the
+  // dotted-name list of every package that `pkgName` imports.  Populated by
+  // `addPackageTokens` so that call-site resolution in
+  // `lowerBuiltinOrStaticCallMsil` can fall back to each imported package's
+  // FQN-keyed funcs when a bare call doesn't match the current package.
+  pkgImports:         Map[String, List[String]]
 }
 
 // One impl block (`impl Iface for Target { … }`) captured by the pre-pass.
@@ -428,7 +441,9 @@ pub func newCodegenCtx(packageName: in String): CodegenCtx {
     methodTokens         = newMap(),
     implEntries          = newList(),
     nextMethodDefRow     = newList(),
-    nextFieldDefRow      = newList())
+    nextFieldDefRow      = newList(),
+    mainEntryToken       = newList(),
+    pkgImports           = newMap())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -450,6 +465,20 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
                           pkgName: in String): Unit {
   // Collect IExternType names so auto-FFI call interception can resolve them.
   scanExternTypesMsil(cctx, file)
+
+  // Stash this package's import edges so call-site resolution can walk
+  // them (#1183 Phase 2).  Each import contributes its dotted path; the
+  // alias-as suffix (`import X.Y as Z`) is ignored — the codegen falls back
+  // to the source package's FQN regardless of any rebinding the typechecker
+  // already applied.
+  val importedDottedNames: List[String] = newList()
+  var mi = 0
+  while mi < file.imports.count {
+    val imp = file.imports[mi]
+    importedDottedNames.add(joinSegsMsil(imp.path.segments, "."))
+    mi = mi + 1
+  }
+  cctx.pkgImports.add(pkgName, importedDottedNames)
 
   // Resume row numbering from where the previous package's pre-scan left off
   // (#1183 — multi-package compilation).  For a single-package compile via
@@ -706,7 +735,22 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
   while j < file.items.count {
     match file.items[j].kind {
       case IFunc(decl) -> {
-        cctx.funcTokens.add(decl.name, 0x06000000 + methodDefRow)
+        // FQN-keyed for #1183 Phase 2 — cross-package call sites resolve via
+        // `<pkg>.<func>` so multiple packages can co-exist in one cctx without
+        // colliding on simple names.  Single-package call sites that use a
+        // bare `funcName` rebuild the FQN as `fctx.pkgName + "." + funcName`
+        // before lookup (see `lowerBuiltinOrStaticCallMsil`); lambdas use
+        // `fctx.pkgName + ".__lambda_<idx>"` for the same reason.
+        val fqn = pkgName + "." + decl.name
+        val funcTok = 0x06000000 + methodDefRow
+        cctx.funcTokens.add(fqn, funcTok)
+        // Record the first `main()` we see as the bundle entry point.  Later
+        // packages' `main()` (if any) are recorded as regular functions but
+        // do not displace the entry token; the F# emitter's host-main wiring
+        // follows the same first-wins rule.
+        if decl.name == "main" and cctx.mainEntryToken.count == 0 {
+          cctx.mainEntryToken.add(funcTok)
+        }
         // Generator functions always return List<object> (MObject) regardless of
         // the source-level annotation.  Use the same isGenerator logic as
         // lowerFuncMsil so that call sites in funcRetTypes agree with the actual
@@ -728,7 +772,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
             case None     -> MVoid
           }
         }
-        cctx.funcRetTypes.add(decl.name, retTy)
+        cctx.funcRetTypes.add(fqn, retTy)
         methodDefRow = methodDefRow + 1
       }
       case _ -> {}
@@ -946,6 +990,26 @@ func isValueType(ty: in MsilType): Bool {
     case MChar    -> true
     case _        -> false
   }
+}
+
+// Cross-package call resolution helper (#1183 Phase 2).  Walks `imports`
+// — the dotted-name list of packages imported by the calling site's
+// package — and returns the first `<imp>.<funcName>` key that exists in
+// `cctx.funcTokens`.  Returns "" when no import shadows `funcName`.
+//
+// Defined as a top-level helper rather than inline so the `match` over
+// `mapGet` in the call site stays readable.
+func findImportedFqn(cctx: in CodegenCtx, imports: in List[String],
+                     funcName: in String): String {
+  var i = 0
+  while i < imports.count {
+    val candidate = imports[i] + "." + funcName
+    if cctx.funcTokens.containsKey(candidate) {
+      return candidate
+    }
+    i = i + 1
+  }
+  ""
 }
 
 // Return the TypeRef row for boxing the given value type.
@@ -1283,11 +1347,14 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
       cctx.lambdaTicker.add(0)
       val lname = "__lambda_" + toString(idx)
       val nparams = lparams.count
-      match mapGet(cctx.funcTokens, lname) {
+      // FQN key (#1183 Phase 2): lambdas are package-scoped, registered by
+      // `addPackageTokens` as `<pkg>.__lambda_<idx>`.
+      val lambdaKey = fctx.pkgName + "." + lname
+      match mapGet(cctx.funcTokens, lambdaKey) {
         case Some(tok) -> {
           // Determine delegate type based on lambda return type.
           // Lambdas that return void use System.Action; those with non-void returns use System.Func.
-          val retType = mapGet(cctx.funcRetTypes, lname)
+          val retType = mapGet(cctx.funcRetTypes, lambdaKey)
           val returnsVoid = match retType {
             case Some(MVoid) -> true
             case None        -> true
@@ -2233,32 +2300,76 @@ func lowerBuiltinOrStaticCallMsil(
             MVoid
           }
           case None -> {
-            // Intra-package static call.
-            match mapGet(cctx.funcTokens, funcName) {
-              case Some(tok) -> {
-                var i = 0
-                while i < args.count {
-                  lowerCallArgMsil(cctx, fctx, insns, args[i])
-                  i = i + 1
-                }
-                insns.add(MCall(methodToken = tok))
-                match mapGet(cctx.funcRetTypes, funcName) {
-                  case Some(rt) -> rt
-                  case None     -> MObject
-                }
+            // Static call resolution.  Functions are registered FQN-keyed
+            // by `addPackageTokens` (#1183 Phase 2), so a call site that
+            // arrived here with `funcName` = the last path segment needs
+            // to rebuild the FQN before looking it up.
+            //
+            // Two FQNs to try:
+            //   1. The fully-qualified path the caller wrote, when the
+            //      path has 2+ segments (e.g. `Session.inMemory()` →
+            //      "Session.inMemory" in another package).
+            //   2. The current package's FQN — `fctx.pkgName + "." +
+            //      funcName` — for bare calls in the same package
+            //      (single-package compile or an intra-package call in
+            //      a multi-package bundle).
+            //
+            // The qualified form is tried first when present; this lets
+            // a caller in package A unambiguously target package B even
+            // when both packages happen to define a same-named helper.
+            val qualifiedFqn =
+              if path.segments.count >= 2 { joinSegsMsil(path.segments, ".") }
+              else                        { "" }
+            val localFqn = fctx.pkgName + "." + funcName
+            // Fall through to each package this one imports, in declaration
+            // order.  First hit wins — matches the typechecker's import
+            // shadowing rule.  Packages with no recorded imports (e.g. the
+            // single-package compile path) skip the loop entirely.
+            val importedFqn =
+              match mapGet(cctx.pkgImports, fctx.pkgName) {
+                case Some(imps) -> findImportedFqn(cctx, imps, funcName)
+                case None       -> ""
               }
-              case None -> {
-                // Cross-package call (record/union/opaque constructors in this
-                // package were already handled by the outer recordCtorTokens
-                // lookup above).  Push the args and fall through; the caller
-                // is responsible for picking the right call site.
-                var i = 0
-                while i < args.count {
-                  lowerCallArgMsil(cctx, fctx, insns, args[i])
-                  i = i + 1
-                }
-                MObject
+            val resolvedFqn =
+              if qualifiedFqn.length > 0
+                and cctx.funcTokens.containsKey(qualifiedFqn) {
+                qualifiedFqn
+              } else if cctx.funcTokens.containsKey(localFqn) {
+                localFqn
+              } else if importedFqn.length > 0 {
+                importedFqn
+              } else {
+                ""
               }
+            if resolvedFqn.length > 0 {
+              match mapGet(cctx.funcTokens, resolvedFqn) {
+                case Some(tok) -> {
+                  var i = 0
+                  while i < args.count {
+                    lowerCallArgMsil(cctx, fctx, insns, args[i])
+                    i = i + 1
+                  }
+                  insns.add(MCall(methodToken = tok))
+                  match mapGet(cctx.funcRetTypes, resolvedFqn) {
+                    case Some(rt) -> rt
+                    case None     -> MObject
+                  }
+                }
+                case None -> MObject  // unreachable; resolvedFqn was a hit above
+              }
+            } else {
+              // Cross-package call without a registered token: walk args for
+              // side effects and yield MObject as a defensive default.  In
+              // pre-Phase-2 single-package builds this branch fired for
+              // unknown imported funcs (where the call would crash at
+              // runtime); same behaviour preserved here so we don't mask
+              // a missing token with bogus IL.
+              var i = 0
+              while i < args.count {
+                lowerCallArgMsil(cctx, fctx, insns, args[i])
+                i = i + 1
+              }
+              MObject
             }
           }
         }
