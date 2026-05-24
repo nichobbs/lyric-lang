@@ -31,11 +31,13 @@ pub aspect WsAuth {
     if not enabled {
       ret = call.proceed()
     } else {
-      val authResult = Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience, allowedAlgorithms)
-      if isOk(authResult) {
-        ret = call.proceed()
-      } else {
-        ret = Err(())
+      match Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience, allowedAlgorithms) {
+        case Ok(unit) -> {
+          ret = call.proceed()
+        }
+        case Err(jwtErr) -> {
+          ret = Err(())
+        }
       }
     }
   }

@@ -33,7 +33,14 @@ extern package io.jsonwebtoken {
   ///
   /// `clockSkewSeconds` widens both the `exp` and `nbf` validation windows
   /// symmetrically.  Default at the public API is 60 seconds (industry
-  /// standard); the host shim must forward this to JJWT's `allowedClockSkew`.
+  /// standard).  The host shim — when implemented as part of #443 / Phase 6
+  /// — MUST forward this argument to JJWT's `allowedClockSkew` builder.
+  /// Until the JVM AuthHost lands, this extern is a forward declaration only
+  /// and the JVM target is documented as not yet shipped (see lyric-auth/
+  /// lyric.toml `[features]` table: `jvm` is opt-in).  Ignoring
+  /// `clockSkewSeconds` in the eventual host implementation would silently
+  /// re-introduce the strict-expiry behaviour fixed by #1081 — flagged in
+  /// #1153 so the JJWT bridge is shipped with leeway enforcement intact.
   pub func verifyJwt(
     token:             String,
     secret:            String,
