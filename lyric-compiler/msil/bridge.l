@@ -16,6 +16,7 @@ import Lyric.Parser
 import Lyric.TypeChecker
 import Lyric.ModeChecker
 import Lyric.ContractElaborator
+import Lyric.Cfg as Cfg
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.Mono
 import Lyric.Derives
@@ -180,6 +181,32 @@ pub func compileProjectToMsil(
   outputPath:    in String,
   stdlibSources: in List[String]
 ): Bool {
+  // Backward-compat shim: no feature flags.
+  val noFeatures: List[String] = newList()
+  compileProjectToMsilWithFeatures(packages, assemblyName, outputPath,
+                                    stdlibSources, noFeatures, noFeatures)
+}
+
+/// Like `compileProjectToMsil` but threads `activeFeatures` /
+/// `declaredFeatures` through `Lyric.Cfg.applyCfgErasure` before
+/// typecheck.  Items annotated `@cfg(feature = "X")` where `X` is
+/// absent from `activeFeatures` are erased; items whose annotation
+/// references a feature absent from `declaredFeatures` (when the
+/// declared set is non-empty) raise an `F0013` typo warning.
+///
+/// Mirrors the Phase 4 cfg-erasure path the F# `--internal-project-build`
+/// subprocess already implements via `Lyric.Emitter.Cfg.applyCfgErasure`.
+/// Tracked in #1183 as the prerequisite that lets `Lyric.Emitter.emitProject`
+/// route feature-bearing requests through the in-process bridge instead of
+/// the subprocess fallback.
+pub func compileProjectToMsilWithFeatures(
+  packages:         in List[ProjectPackagePayload],
+  assemblyName:     in String,
+  outputPath:       in String,
+  stdlibSources:    in List[String],
+  activeFeatures:   in List[String],
+  declaredFeatures: in List[String]
+): Bool {
   if packages.count == 0 {
     return false
   }
@@ -208,7 +235,11 @@ pub func compileProjectToMsil(
 
     val parseResult = parse(pkg.source)
     if reportAndAbort(parseResult.diagnostics) { return false }
-    val file0 = parseResult.file
+    // Apply `@cfg`-driven erasure BEFORE typecheck so feature-gated
+    // items disappear cleanly (matches the F# emitter convention).
+    val cfgRes = Cfg.applyCfgErasure(activeFeatures, declaredFeatures, parseResult.file)
+    if reportAndAbort(cfgRes.diagnostics) { return false }
+    val file0 = cfgRes.file
 
     val tcRes = checkWithImports(file0, importedItems)
     reportDiagnostics(tcRes.diagnostics)

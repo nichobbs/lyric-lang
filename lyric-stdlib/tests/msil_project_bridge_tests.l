@@ -372,6 +372,88 @@ func testEmitProjectInProcessCrossPackageCall(): Unit {
     "emit_project_in_process_cross_package_call: stdout matches expected")
 }
 
+// ─── @cfg feature erasure via the in-process bridge ────────────────────────
+//
+// These exercise the Phase 4 cfg-erasure plumbing: `emitProject` no longer
+// shells out when `activeFeatures` is non-empty (#1183).  The bridge now
+// runs `Lyric.Cfg.applyCfgErasure` between parse and typecheck so items
+// annotated `@cfg(feature = "X")` are dropped when X is absent from the
+// active set.
+
+func runEmitProjectWithFeatures(label: in String,
+                                projectPkgs: in List[Emitter.ProjectPackage],
+                                assemblyName: in String,
+                                features: in List[String]): Capture.CaptureResult {
+  val dir     = freshTempDir(label)
+  val dllPath = Path.join(dir, assemblyName + ".dll")
+  val req = Emitter.EmitProjectRequest(
+    packages         = projectPkgs,
+    assemblyName     = assemblyName,
+    outputPath       = dllPath,
+    target           = Emitter.Dotnet,
+    restoredDllPaths = newList(),
+    activeFeatures   = features)
+  val result = Emitter.emitProject(req)
+  match result.outputPath {
+    case None -> {
+      cleanup(dir)
+      panic(label + ": emitProject produced no output (diagnostics on stderr)")
+    }
+    case Some(_) -> ()
+  }
+  writeRuntimeConfig(dllPath)
+  val args: List[String] = newList()
+  args.add("exec")
+  args.add(dllPath)
+  val captured = Capture.runCaptureWithDiagnostics("dotnet", args, "")
+  cleanup(dir)
+  captured
+}
+
+// Feature INACTIVE -> the gated function is erased entirely, so `main`
+// falls back to the unconditional branch.
+func testCfgErasureFeatureInactive(): Unit {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkProjectPkg("CfgErase.App",
+    "package CfgErase.App\n" +
+    "\n" +
+    "@cfg(feature = \"experimental\")\n" +
+    "pub func greeting(): String { \"experimental\" }\n" +
+    "\n" +
+    "pub func greetingFallback(): String { \"stable\" }\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(greetingFallback())\n" +
+    "}\n"))
+  val empty: List[String] = newList()
+  val result = runEmitProjectWithFeatures("cfg-inactive", pkgs, "CfgEraseInactive", empty)
+  assertEqualInt(result.exitCode, 0,
+    "cfg_erasure_feature_inactive: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "stable",
+    "cfg_erasure_feature_inactive: stdout matches expected")
+}
+
+// Feature ACTIVE -> the gated function is kept; `main` calls it.
+func testCfgErasureFeatureActive(): Unit {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkProjectPkg("CfgKeep.App",
+    "package CfgKeep.App\n" +
+    "\n" +
+    "@cfg(feature = \"experimental\")\n" +
+    "pub func greeting(): String { \"experimental\" }\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(greeting())\n" +
+    "}\n"))
+  val active: List[String] = newList()
+  active.add("experimental")
+  val result = runEmitProjectWithFeatures("cfg-active", pkgs, "CfgEraseActive", active)
+  assertEqualInt(result.exitCode, 0,
+    "cfg_erasure_feature_active: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "experimental",
+    "cfg_erasure_feature_active: stdout matches expected")
+}
+
 func main(): Int {
   testTwoIndependentPackagesBundle()
   testFirstPackageWithRecordDoesNotDisturbSecond()
@@ -381,6 +463,8 @@ func main(): Int {
   testEmitProjectInProcessIndependent()
   testEmitProjectInProcessCrossPackageCall()
   testCrossPackageUnionConstructAndMatch()
+  testCfgErasureFeatureInactive()
+  testCfgErasureFeatureActive()
   println("msil-project-bridge tests: ok")
   return 0
 }

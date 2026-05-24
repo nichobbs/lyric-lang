@@ -244,12 +244,12 @@ func failResult(msg: in String): EmitResult {
 ///     point yet),
 ///   - the request carries restored dependency DLLs (in-process bridge
 ///     does not yet thread `RestoredPackages` through the middle-end),
-///   - the request carries active feature flags (Phase 4 follow-up
-///     needs to plumb `@cfg` erasure through the in-process bridge),
 ///   - or `LYRIC_FORCE_SUBPROCESS=1` is set for differential testing.
 ///
-/// The subprocess path will be retired in Phase 5 once feature
-/// erasure and restored deps are plumbed through.
+/// Active feature flags (`@cfg`-driven erasure) ARE now plumbed
+/// through the in-process path via `compileProjectToMsilWithFeatures`
+/// (#1183).  The subprocess path will be retired once restored deps
+/// are plumbed through as well.
 @stable(since="0.1")
 pub func emitProject(req: in EmitProjectRequest): EmitResult {
   val outDir = Path.dirname(req.outputPath)
@@ -265,7 +265,6 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
                     case Jvm    -> false
                   }
                   and req.restoredDllPaths.count == 0
-                  and req.activeFeatures.count == 0
                   and not useSubprocessFallback()
 
   if canInProc {
@@ -303,7 +302,13 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
   // cross-package union dispatch (#1140-style).  Mirrors the F# bootstrap
   // `Lyric.Cli.SelfHostedBridge.findStdlibSources` helper.
   val stdlibSources = findStdlibSources()
-  val ok = MsilBridge.compileProjectToMsil(payloads, req.assemblyName, req.outputPath, stdlibSources)
+  // For now, declaredFeatures is the same as activeFeatures (the F#
+  // manifest parser populates both with the active set when the test
+  // runner builds the request).  Once the self-hosted manifest parser
+  // surfaces a separate `[features]` declared set, plumb it through.
+  val ok = MsilBridge.compileProjectToMsilWithFeatures(
+    payloads, req.assemblyName, req.outputPath,
+    stdlibSources, req.activeFeatures, req.activeFeatures)
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
