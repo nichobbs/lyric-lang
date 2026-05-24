@@ -25,6 +25,7 @@
     <Compile Include="SelfHostedBridge.fs" />
     <Compile Include="SelfHostedJvm.fs" />
     <Compile Include="SelfHostedMsil.fs" />
+    <Compile Include="SelfHostedMsilProject.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
