@@ -137,4 +137,99 @@ let tests =
                     "main() in package B picks up the correct entry-point token after the row offset"
             finally
                 try Directory.Delete(dir, recursive = true) with _ -> ()
+
+        // Phase 2: cross-package FUNCTION call.  Pkg A defines `pub func
+        // doubled(x)`; pkg B imports A and calls A.doubled from its main.
+        // The bundle prints the doubled value, proving the FQN-keyed
+        // `funcTokens` table + multi-segment-path resolution in
+        // `lowerBuiltinOrStaticCallMsil` correctly route the call across
+        // the package boundary.
+        testCase "[cross_package_qualified_call]" <| fun () ->
+            let dir =
+                Path.Combine(
+                    Path.GetTempPath(),
+                    "lyric-msil-proj-bridge-xpkgcall-" + Guid.NewGuid().ToString("N"))
+            Directory.CreateDirectory dir |> ignore
+            try
+                let dllPath = Path.Combine(dir, "XPkgCall.dll")
+                let pkgLib =
+                    "package XPkgCall.Lib\n" +
+                    "\n" +
+                    "pub func doubled(x: in Int): Int { x + x }\n"
+                let pkgApp =
+                    "package XPkgCall.App\n" +
+                    "\n" +
+                    "import XPkgCall.Lib\n" +
+                    "\n" +
+                    "func main(): Unit {\n" +
+                    "  println(doubled(21))\n" +
+                    "}\n"
+                let ok =
+                    SelfHostedMsilProject.compileProjectToDll
+                        [ "XPkgCall.Lib", pkgLib
+                          "XPkgCall.App", pkgApp ]
+                        "XPkgCall"
+                        dllPath
+                Expect.isTrue ok
+                    "compile succeeds when consumer package calls library across the boundary"
+                let stdout, stderr, exitCode = runDll dllPath
+                Expect.equal exitCode 0
+                    (sprintf "exit 0 (stderr=%s)" stderr)
+                Expect.equal (stdout.TrimEnd()) "42"
+                    "cross-package call to XPkgCall.Lib.doubled returns the doubled value"
+            finally
+                try Directory.Delete(dir, recursive = true) with _ -> ()
+
+        // Phase 2: chained cross-package function calls (Int-only signature
+        // surface, no record values crossing the package boundary).  Pkg A
+        // exports two pub funcs; pkg B imports A and chains them together
+        // in main.  This exercises:
+        //   1. Cross-package call resolution via the `pkgImports` walk
+        //      (find `XPkgChain.Lib.triple` and `.addOne` from XPkgChain.App).
+        //   2. Function-shaped items being threaded into `importedItems`
+        //      so pkg B's typecheck sees their signatures.
+        //   3. The Int return value flowing back across the boundary into
+        //      println.
+        // Record values crossing the boundary (`Point` returned to pkg B
+        // and field-accessed there) are deferred to a follow-up PR — the
+        // local-variable type-tracking for cross-package record returns
+        // needs separate plumbing.
+        testCase "[cross_package_chained_int_calls]" <| fun () ->
+            let dir =
+                Path.Combine(
+                    Path.GetTempPath(),
+                    "lyric-msil-proj-bridge-xpkgchain-" + Guid.NewGuid().ToString("N"))
+            Directory.CreateDirectory dir |> ignore
+            try
+                let dllPath = Path.Combine(dir, "XPkgChain.dll")
+                let pkgLib =
+                    "package XPkgChain.Lib\n" +
+                    "\n" +
+                    "pub func triple(x: in Int): Int { x + x + x }\n" +
+                    "\n" +
+                    "pub func addOne(x: in Int): Int { x + 1 }\n"
+                let pkgApp =
+                    "package XPkgChain.App\n" +
+                    "\n" +
+                    "import XPkgChain.Lib\n" +
+                    "\n" +
+                    "func main(): Unit {\n" +
+                    "  println(addOne(triple(13)))\n" +
+                    "}\n"
+                let ok =
+                    SelfHostedMsilProject.compileProjectToDll
+                        [ "XPkgChain.Lib", pkgLib
+                          "XPkgChain.App", pkgApp ]
+                        "XPkgChain"
+                        dllPath
+                Expect.isTrue ok
+                    "compile succeeds when consumer package chains calls to two functions from a single in-bundle package"
+                let stdout, stderr, exitCode = runDll dllPath
+                Expect.equal exitCode 0
+                    (sprintf "exit 0 (stderr=%s)" stderr)
+                // triple(13) = 39, addOne(39) = 40.
+                Expect.equal (stdout.TrimEnd()) "40"
+                    "chained cross-package calls compose correctly"
+            finally
+                try Directory.Delete(dir, recursive = true) with _ -> ()
     ]

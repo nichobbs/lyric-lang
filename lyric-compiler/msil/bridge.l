@@ -191,8 +191,14 @@ pub func compileProjectToMsil(
 
   // Cross-package imported items: as we process each package, accumulate its
   // type items so subsequent packages (which may import it) see them at
-  // typecheck.  Phase 1 only honours `stdlibSources` for imports; this list
-  // is staged here so Phase 2 can drop into the loop without re-plumbing.
+  // typecheck (#1183 Phase 2).  Seeds with the precompiled stdlib's type
+  // surface; each in-bundle package contributes its own type-shaped items
+  // to the same list after parse, so a later package's `import Earlier.Pkg`
+  // surfaces the earlier package's types at typecheck.
+  //
+  // Phase 2 scope: type items only.  Cross-package function-call resolution
+  // is handled separately at codegen time via the FQN-keyed `funcTokens`
+  // table built up by the per-package `addPackageTokens` calls below.
   val importedItems: List[Item] = newList()
   collectStdlibTypeItems(stdlibSources, importedItems)
 
@@ -218,6 +224,11 @@ pub func compileProjectToMsil(
 
     perPkgFiles.add(monoRes.file)
     perPkgNames.add(pkg.name)
+
+    // Contribute this package's type-shaped items to `importedItems` so
+    // subsequent packages see them.  Matches `collectStdlibTypeItems`'s
+    // is-type filter.
+    collectTypeItemsFromFile(file0, importedItems)
 
     pi = pi + 1
   }
@@ -294,6 +305,49 @@ pub func compileProjectToMsilEncoded(
   compileProjectToMsil(packages, assemblyName, outputPath, stdlibSources)
 }
 
+// Append every type-shaped and function-shaped item from `file` to
+// `importedItems`.  Used by `compileProjectToMsil` to thread each in-bundle
+// package's types AND public functions forward to subsequent packages'
+// typechecks (#1183 Phase 2).
+//
+// Note: the parallel `collectStdlibTypeItems` deliberately excludes IFunc
+// because the stdlib has multiple definitions of the same simple name
+// (e.g. `toString`) across files; in-bundle packages here are user
+// packages where the same risk applies — we include `pub`-visible
+// functions only, matching the F# emitter's intra-project import policy.
+func collectTypeItemsFromFile(
+  file:          in SourceFile,
+  importedItems: in List[Item]
+): Unit {
+  var i = 0
+  while i < file.items.count {
+    val it = file.items[i]
+    val isType = match it.kind {
+      case IRecord(_)       -> true
+      case IExposedRec(_)   -> true
+      case IUnion(_)        -> true
+      case IEnum(_)         -> true
+      case IDistinctType(_) -> true
+      case IInterface(_)    -> true
+      case ITypeAlias(_)    -> true
+      case IOpaque(_)       -> true
+      case _                -> false
+    }
+    val isPubFunc = match it.kind {
+      case IFunc(decl) -> match decl.visibility {
+        case Some(vis) -> match vis {
+          case VisPub(_) -> true
+          case _         -> false
+        }
+        case None -> false
+      }
+      case _ -> false
+    }
+    if isType or isPubFunc { importedItems.add(it) }
+    i = i + 1
+  }
+}
+
 // Helper: parse `stdlibSources`, extract type-shaped items, and append them
 // to `importedItems`.  Mirrors the per-source loop inside `compileToMsil`
 // (lines 53-88) so multi-package and single-package compile share the same
@@ -356,9 +410,12 @@ func segmentsToString(segments: in List[String]): String {
 }
 
 // Return the MethodDef token of `main` if it was registered, or 0 for libraries.
+// The first package whose `main()` `addPackageTokens` walked over records
+// its token in `cctx.mainEntryToken[0]` (#1183 Phase 2).
 func resolveEntryToken(cctx: in CodegenCtx): Int {
-  match mapGet(cctx.funcTokens, "main") {
-    case Some(tok) -> tok
-    case None      -> 0
+  if cctx.mainEntryToken.count > 0 {
+    cctx.mainEntryToken[0]
+  } else {
+    0
   }
 }
