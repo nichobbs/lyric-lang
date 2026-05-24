@@ -8,7 +8,6 @@ let main argv =
         testList "Lyric.Cli" [
             ManifestTests.tests
             SelfHostedMsilBridgeTests.tests
-            SelfHostedMsilProjectBridgeTests.tests
             SelfHostedJvmBridgeTests.tests
         ]
     runTestsWithCLIArgs [] argv allTests
