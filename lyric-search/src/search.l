@@ -1,4 +1,6 @@
 // Search — search engine integration for Lyric applications.
+// Stability: @experimental — the API compiles, but the Elasticsearch and
+// Meilisearch backends have not been driven against a live cluster in CI.
 //
 // Provides a `SearchClient` interface with Elasticsearch and Meilisearch
 // backends selectable at runtime via feature flags.  Both backends expose

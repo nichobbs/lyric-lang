@@ -460,6 +460,63 @@ func testUnterminatedBlockComment(): Unit {
   assertEqual(r.diagnostics[0].code, "L0001", "unterm block: L0001")
 }
 
+// #425 item 5 / #1174 review finding: a bare decimal literal of
+// `9223372036854775808` (the absolute value of Long.MinValue) fires
+// L0010 — the value only fits as a bit pattern, so a programmer who
+// writes `val x: Long = 9223372036854775808` must see the diagnostic.
+// The literal still emits a TInt(Long.MinValue) so the parser can
+// collapse `PreNeg + literal` into Long.MinValue and cancel the
+// diagnostic (parser-side coverage in `parser_self_test.l`).
+func testBareMinValueAbsLiteralFiresL0010(): Unit {
+  val r = lex("val x = 9223372036854775808")
+  assertTrue(diagCount(r) >= 1, "9223372036854775808: L0010 fires")
+  var sawL0010 = false
+  var i = 0
+  while i < r.diagnostics.count {
+    if r.diagnostics[i].code == "L0010" { sawL0010 = true }
+    i = i + 1
+  }
+  assertTrue(sawL0010, "9223372036854775808: L0010 present")
+  // The bit pattern is preserved so `-9223372036854775808` downstream
+  // can produce Long.MinValue — that's a separate parser test.
+  // The literal itself is the third token (val, ident, =, int).
+  assertEqual(tokenKindAt(r, 3), "int", "9223372036854775808: TInt emitted")
+  assertTrue(intValueAt(r, 3) == -9223372036854775808i64,
+             "9223372036854775808: bit pattern is Long.MinValue")
+}
+
+// Sanity check that other huge literals still hit the regular
+// overflow path (not the MinValue special case).
+func testTrulyOverflowingLiteralStillFiresL0010(): Unit {
+  val r = lex("val x = 9223372036854775809")  // one past Long.MaxValue+1
+  var sawL0010 = false
+  var i = 0
+  while i < r.diagnostics.count {
+    if r.diagnostics[i].code == "L0010" { sawL0010 = true }
+    i = i + 1
+  }
+  assertTrue(sawL0010, "regular overflow: L0010 present")
+  assertEqual(tokenKindAt(r, 3), "int", "regular overflow: TInt emitted (value 0)")
+  assertTrue(intValueAt(r, 3) == 0i64,
+             "regular overflow: value substituted with 0")
+}
+
+// #425 item 2: a `// /*` sequence inside a line comment must NOT
+// open a block comment.  The line-comment scanner is checked before
+// the block-comment scanner (`skipTrivia` dispatch order), so a
+// leading `//` claims the whole line — the `/*` is just comment text.
+// Regression test: `foo // /*\nbar` must produce two real tokens
+// (foo, bar) and no unterminated-comment diagnostic.
+func testLineCommentSwallowsBlockOpen(): Unit {
+  val r = lex("foo // /*\nbar")
+  assertEqualInt(diagCount(r), 0, "line // /*: no unterminated-block diagnostic")
+  assertEqual(tokenKindAt(r, 0), "ident",    "line // /*: foo")
+  assertEqual(identNameAt(r, 0), "foo",      "line // /*: foo name")
+  assertEqual(tokenKindAt(r, 1), "stmt_end", "line // /*: STMT_END after newline")
+  assertEqual(tokenKindAt(r, 2), "ident",    "line // /*: bar")
+  assertEqual(identNameAt(r, 2), "bar",      "line // /*: bar name")
+}
+
 func testDocComment(): Unit {
   val r = lex("/// documentation\nfoo")
   assertEqualInt(r.tokens.count, 4, "doc: doc STMT_END foo EOF")
@@ -483,14 +540,30 @@ func testCrlfNormalisation(): Unit {
 }
 
 // Phase 5 §M5.1 stage 4 — L0040 reserved-name diagnostic for `_X`
-// (underscore followed by an ASCII uppercase letter).  The lexeme
-// still flows through as a TIdent so the parser can recover.
+// (underscore followed by an ASCII uppercase letter).  #425 item 1
+// hardened the lexer so the rejected lexeme is rewritten to a
+// `__error_<offset>` placeholder before TIdent emission; this prevents
+// the original `_Foo` lexeme from clashing with compiler-generated
+// names like `_Async` / `_StateMachine` further down the pipeline.
 func testReservedUnderscoreUpperRejected(): Unit {
   val r = lex("_Hidden")
   assertEqual(tokenKindAt(r, 0), "ident", "L0040: still emitted as TIdent")
-  assertEqual(identNameAt(r, 0), "_Hidden", "L0040: lexeme preserved")
+  assertEqual(identNameAt(r, 0), "__error_0",
+              "L0040: lexeme rewritten to placeholder (offset 0)")
   assertEqualInt(diagCount(r), 1, "L0040: one diagnostic")
   assertEqual(r.diagnostics[0].code, "L0040", "L0040: code")
+}
+
+// #425 item 1: each `_UpperCase` occurrence gets a span-keyed
+// placeholder, so two rejections in the same source produce distinct
+// TIdent names that cannot clash with each other or with the
+// `_StateMachine` / `_Async` family of compiler-generated names.
+func testReservedUnderscoreUpperPlaceholdersDistinct(): Unit {
+  val r = lex("_Foo  _Bar")
+  assertEqualInt(diagCount(r), 2, "L0040: two diagnostics")
+  assertEqual(identNameAt(r, 0), "__error_0", "L0040: first placeholder")
+  // `_Bar` starts at byte offset 6 ("_Foo  " is six bytes).
+  assertEqual(identNameAt(r, 1), "__error_6", "L0040: second placeholder")
 }
 
 func testReservedUnderscoreLowerOK(): Unit {
@@ -711,10 +784,14 @@ func main(): Unit {
   testLineComment()
   testBlockComment()
   testUnterminatedBlockComment()
+  testBareMinValueAbsLiteralFiresL0010()
+  testTrulyOverflowingLiteralStillFiresL0010()
+  testLineCommentSwallowsBlockOpen()
   testDocComment()
   testModuleDocComment()
   testCrlfNormalisation()
   testReservedUnderscoreUpperRejected()
+  testReservedUnderscoreUpperPlaceholdersDistinct()
   testReservedUnderscoreLowerOK()
   testReservedUnderscoreDigitOK()
   testReservedUnderscoreAlone()

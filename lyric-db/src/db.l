@@ -1,4 +1,7 @@
 // Db — driver-agnostic database access with typed rows and transactions.
+// Stability: @experimental — the driver interface compiles and tests exercise
+// a SQLite path, but the production drivers (Npgsql, MySqlConnector, etc.)
+// have not been exercised against a live database in CI.
 //
 // `DbConnection` is the public interface; implement it to add a new driver.
 // Two built-in drivers are provided via feature-gated kernel packages:

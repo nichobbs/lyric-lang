@@ -51,7 +51,13 @@ pub union Type {
   case TyFunction(params: List[Type], ret: Type, isAsync: Bool)
   case TyArray(size: Option[Int], element: Type)
   case TySlice(element: Type)
-  case TyUser(id: TypeId, args: List[Type])
+  /// `TyUser.name` is the declared name from the type environment
+  /// (set by `resolveTypePath` from the matched `Symbol.name`).
+  /// `renderType` prefers it over the `<#id>` fallback so diagnostics
+  /// surface human-readable type names (#425 item 6).  Empty string
+  /// means "name lookup unavailable" — keeps the `<#id>` fallback for
+  /// callers that synthesise a `TyUser` outside the resolver.
+  case TyUser(id: TypeId, name: String, args: List[Type])
   case TySelf
   case TyVar(name: String)
   case TyError
@@ -176,9 +182,9 @@ func typeEquivCore(a: in Type, b: in Type): Bool {
         case TySlice(e2) -> typeEquiv(e1, e2)
         case _           -> false
       }
-    case TyUser(id1, args1) ->
+    case TyUser(id1, _, args1) ->
       match b {
-        case TyUser(id2, args2) ->
+        case TyUser(id2, _, args2) ->
           if not typeIdEq(id1, id2)      { false }
           else if args1.count != args2.count { false }
           else { listTypesEquiv(args1, args2) }
@@ -232,12 +238,18 @@ pub func renderType(t: in Type): String {
       val pstr   = "(" + joinTypes(ps, ", ") + ")"
       prefix + pstr + " -> " + renderType(r)
     }
-    case TyUser(uid, args) ->
+    case TyUser(uid, nm, args) -> {
+      // #425 item 6: prefer the declared name carried in the type
+      // environment over the `<#id>` synthetic fallback.  Empty
+      // string means the constructor did not have name context;
+      // fall back so diagnostics still produce something printable.
+      val head = if nm.length > 0 { nm } else { "<#" + toString(uid.id) + ">" }
       if args.count == 0 {
-        "<#" + toString(uid.id) + ">"
+        head
       } else {
-        "<#" + toString(uid.id) + ">[" + joinTypes(args, ", ") + "]"
+        head + "[" + joinTypes(args, ", ") + "]"
       }
+    }
   }
 }
 

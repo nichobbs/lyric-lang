@@ -1,4 +1,6 @@
 // Flags — feature flag library for Lyric.
+// Stability: @experimental — the in-process store has tests; the remote
+// polling store has not been exercised against a live provider in CI.
 //
 // Provides runtime toggles for safe rollouts, A/B testing, and kill switches.
 // `FlagStore` is the public interface; `InProcessFlagStore` is the bundled

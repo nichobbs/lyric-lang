@@ -36,8 +36,14 @@ public static class Program
         //   AOT:   <repo>/bootstrap/src/Lyric.Cli.Aot/bin/<cfg>/net10.0/lyric.dll
         //   F# CLI: <repo>/bootstrap/src/Lyric.Cli/bin/<cfg>/net10.0/lyric.dll
         //
-        // Five GetDirectoryName calls from the assembly Location reach bootstrap/src/.
-        var loc = Assembly.GetEntryAssembly()?.Location;
+        // Five GetDirectoryName calls from the assembly Location reach
+        // bootstrap/src/.  Prefer `Environment.ProcessPath` (.NET 6+):
+        // `Assembly.GetEntryAssembly().Location` is empty for a published
+        // single-file binary, and `Process.GetCurrentProcess().MainModule`
+        // can be `null` on musl Linux (Alpine and similar — #425 item 7).
+        var loc = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(loc))
+            loc = Assembly.GetEntryAssembly()?.Location;
         if (string.IsNullOrEmpty(loc)) return;
 
         var up = loc;

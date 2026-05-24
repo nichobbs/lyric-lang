@@ -1,4 +1,7 @@
 // Grpc — gRPC client and server API.
+// Stability: @experimental — the API compiles and proto-encoding has
+// unit-level tests, but the end-to-end client + server pair has not been
+// exercised against a real gRPC service in CI.
 //
 // Client (outbound calls):
 //   val ch = Grpc.openChannel("https://host:4317").unwrap()

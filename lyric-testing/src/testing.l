@@ -1,4 +1,7 @@
 // Testing — mock implementations and test helpers for Lyric libraries.
+// Stability: @experimental — the mock implementations and assertion helpers
+// have tests, but the surface is intentionally rough and may grow new helpers
+// ahead of `1.0`.
 //
 // WARNING (thread safety): All Mock implementations in this library are NOT
 // thread-safe.  Use them only in single-threaded test contexts; do not

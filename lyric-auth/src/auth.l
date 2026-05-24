@@ -1,5 +1,8 @@
 // Auth — transport-agnostic authentication and credential verification.
 //
+// Stability: @stable(since="0.1") — public API covered by the
+// SemVer guarantee.  Per-function annotations track the same scope.
+//
 // Provides JWT, API-key, and role-claim primitives that work across HTTP,
 // gRPC, WebSockets, message queues, and CLI tools.  Protocol-specific
 // aspect *bindings* call these functions; the verification logic itself has

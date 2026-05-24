@@ -1,4 +1,7 @@
 // Mail — email sending library for Lyric.
+// Stability: @experimental — the API compiles and unit tests cover the typed
+// envelope, but the SMTP, Amazon SES, and SendGrid backends have not been
+// driven against a live provider in CI.
 //
 // Provides a uniform `MailSender` interface over SMTP, Amazon SES,
 // and SendGrid.  Obtain a sender with one of the feature-gated `connect*`

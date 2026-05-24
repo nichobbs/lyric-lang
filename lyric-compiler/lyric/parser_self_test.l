@@ -8,6 +8,7 @@ package Lyric.ParserSelfTest
 import Std.Core
 import Std.Collections
 import Std.Testing
+import Lyric.Lexer
 import Lyric.Parser
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -494,6 +495,75 @@ func testCstShapeIsLossless(): Unit {
   assertEqual(rendered, pr.source, "CST: lossless round-trip with finer granularity")
 }
 
+// #425 item 3: peek/peekAt past the last token used to return a
+// synthetic TEof with span 0:0, which made diagnostics raised against
+// the synthetic token point at the start of the file.  The fix routes
+// the out-of-bounds peeks through `syntheticEofSpan`, anchored at the
+// real EOF's end position.
+func testPeekPastEofUsesSourceEnd(): Unit {
+  val src = "package P\n"
+  val lr = lex(src)
+  var st = makeParseState(lr.tokens, lr.diagnostics)
+  // Walk to one position past the last real token.
+  while st.pos < lr.tokens.count { st.pos = st.pos + 1 }
+  val sp = peek(st).span
+  val realEof = lr.tokens[lr.tokens.count - 1].span
+  assertTrue(sp.startPos.offset == realEof.endPos.offset,
+             "peek-past-EOF: span starts at real EOF end (not 0)")
+  assertTrue(sp.endPos.offset == realEof.endPos.offset,
+             "peek-past-EOF: span ends at real EOF end (not 0)")
+  // The real EOF lives at offset 10 (`"package P\n"`); confirm the
+  // synthetic span isn't the 0:0 placeholder the old code returned.
+  assertTrue(sp.startPos.offset > 0,
+             "peek-past-EOF: synthetic span is not 0:0")
+}
+
+// #425 item 5 / #1174: the bare literal `9223372036854775808` fires
+// L0010 from the lexer (because the value only fits in Long as a bit
+// pattern).  When the literal is the operand of unary minus, the
+// parser cancels that L0010 — the wrapped pair represents
+// Long.MinValue and is well-formed.  Verifies both the cancellation
+// AND that an unrelated `9223372036854775808` in the same source
+// keeps its diagnostic.
+func testNegationCancelsMinValueAbsDiagnostic(): Unit {
+  val src = "package P\nfunc f(): Long { -9223372036854775808 }\n"
+  val pr = parse(src)
+  var sawL0010 = false
+  var i = 0
+  while i < pr.diagnostics.count {
+    if pr.diagnostics[i].code == "L0010" { sawL0010 = true }
+    i = i + 1
+  }
+  assertTrue(not sawL0010,
+             "-9223372036854775808: L0010 cancelled by PreNeg wrapper")
+}
+
+func testBareMinValueAbsKeepsDiagnostic(): Unit {
+  val src = "package P\nfunc f(): Long { 9223372036854775808 }\n"
+  val pr = parse(src)
+  var sawL0010 = false
+  var i = 0
+  while i < pr.diagnostics.count {
+    if pr.diagnostics[i].code == "L0010" { sawL0010 = true }
+    i = i + 1
+  }
+  assertTrue(sawL0010,
+             "bare 9223372036854775808: L0010 preserved (no PreNeg wrapper)")
+}
+
+func testPeekAtNegativeReturnsSyntheticEof(): Unit {
+  // `peekAt(st, k)` with k that places `pos + k` outside the token
+  // window must also return the source-end-anchored synthetic EOF
+  // rather than a 0:0 span.
+  val src = "package P\n"
+  val lr = lex(src)
+  val st = makeParseState(lr.tokens, lr.diagnostics)
+  val sp = peekAt(st, -1).span
+  val realEof = lr.tokens[lr.tokens.count - 1].span
+  assertTrue(sp.startPos.offset == realEof.endPos.offset,
+             "peekAt(-1): span anchored at real EOF, not 0")
+}
+
 func main(): Unit {
   testEmptySource()
   testPackageDecl()
@@ -530,5 +600,9 @@ func main(): Unit {
   testCstHasSkContractClause()
   testCstNoSkContractClauseWhenAbsent()
   testCstShapeIsLossless()
+  testPeekPastEofUsesSourceEnd()
+  testPeekAtNegativeReturnsSyntheticEof()
+  testNegationCancelsMinValueAbsDiagnostic()
+  testBareMinValueAbsKeepsDiagnostic()
   println("parser self-test: ok")
 }

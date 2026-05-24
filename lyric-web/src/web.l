@@ -1,4 +1,7 @@
 // Web — HTTP server foundation, type vocabulary, and routing.
+// Stability: @experimental — the Router and ApiError vocabulary compile and
+// have unit tests, but the end-to-end pipeline (ASP.NET Core on .NET,
+// Undertow on JVM) has not been exercised against a live HTTP client in CI.
 //
 // Provides the ApiError type (with status-code constructor helpers),
 // the Router value type for building route tables, and the server

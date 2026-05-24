@@ -637,7 +637,26 @@ output_assembly = "myapp.dll"
 
 **External libraries** (separate packages; add to `[dependencies]` in `lyric.toml`):
 
-> **Early-preview status.** The libraries below (`lyric-*`) are showcase / early-preview packages. Their public API surfaces are unstable and may change without a SemVer major bump until v1.0. They have limited automated test coverage and are not yet supported on both .NET and JVM targets. Use them in non-production code or with awareness of these gaps; see [issue #367](https://github.com/nichobbs/lyric-lang/issues/367) for the remediation plan.
+> **Stability framing (Tier 5 — #367).** Per-library stability is now
+> declared in each library's module doc-comment:
+>
+> - **`@stable(since="0.1")`** — `lyric-auth`, `lyric-mq`, `lyric-aws-secrets`.
+>   Public API covered by the SemVer guarantee.  Tested.
+> - **`@experimental` + WARNING banner** — `lyric-session`, `lyric-storage`.
+>   Surface compiles and has tests, but the production backend (Redis,
+>   S3/Azure Blob) has not been driven against a live provider in CI.
+> - **`@experimental`** — every other `lyric-*` package in the table below.
+>   Public API may change without a SemVer major bump until v1.0; test
+>   coverage is uneven; cross-target (.NET / JVM) parity is incomplete.
+>   Use in production with awareness of these gaps.  `lyric-health` in
+>   particular currently `panic`s rather than silently reporting "ok"
+>   on its `__handleLiveness` / `__handleReadiness` exit paths, since
+>   the kernel dispatcher that would actually invoke registered checks
+>   has not landed yet.
+>
+> See [issue #367](https://github.com/nichobbs/lyric-lang/issues/367) for
+> the remediation plan that drives every entry toward `@stable` ahead of
+> v1.0.
 
 | Package | Provides | Key names |
 |---|---|---|

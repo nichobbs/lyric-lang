@@ -1,5 +1,8 @@
 // Lyric OpenTelemetry library — platform-dispatch wrappers and pub aspect
 // templates.
+// Stability: @experimental — the OTLP exporter shipped (D069) and unit tests
+// cover the envelope, but the end-to-end trace + metric + log pipeline has
+// not been exercised against a live OTel collector in CI.
 //
 // Each wrapper function has two @cfg-gated implementations (dotnet / jvm)
 // so the aspect templates remain platform-neutral.  Consumers bind a

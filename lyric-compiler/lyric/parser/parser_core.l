@@ -66,10 +66,25 @@ pub func isAtEnd(st: in ParseState): Bool {
   }
 }
 
+// #425 item 3: a recovery-path peek beyond the last token used to
+// return a synthetic `TEof` with span 0:0, which makes diagnostics
+// raised against the synthetic token point at the start of the file
+// instead of the real EOF.  Anchor the synthetic token at the end of
+// the source: prefer the last real token's end position (which is
+// the EOF that the lexer always appends), and fall back to
+// `initialPosition()` only when the token stream is truly empty.
+@pure
+pub func syntheticEofSpan(st: in ParseState): Span {
+  if st.tokens.count == 0 {
+    pointSpan(initialPosition())
+  } else {
+    pointSpan(st.tokens[st.tokens.count - 1].span.endPos)
+  }
+}
+
 pub func peek(st: in ParseState): SpannedToken {
   if st.pos >= st.tokens.count {
-    val p = initialPosition()
-    makeSpannedToken(TEof, pointSpan(p))
+    makeSpannedToken(TEof, syntheticEofSpan(st))
   } else {
     st.tokens[st.pos]
   }
@@ -78,8 +93,7 @@ pub func peek(st: in ParseState): SpannedToken {
 pub func peekAt(st: in ParseState, k: in Int): SpannedToken {
   val i = st.pos + k
   if i < 0 or i >= st.tokens.count {
-    val p = initialPosition()
-    makeSpannedToken(TEof, pointSpan(p))
+    makeSpannedToken(TEof, syntheticEofSpan(st))
   } else {
     st.tokens[i]
   }

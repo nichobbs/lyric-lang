@@ -1,5 +1,14 @@
 // Health — liveness and readiness health-check endpoints for lyric-web services.
 //
+// Stability: @experimental — the registry API compiles and shape-tests
+// pass, but the kernel dispatcher that actually invokes registered
+// check functions has not landed yet.  `runChecks` panics rather than
+// silently reporting "ok" so that production callers cannot accidentally
+// ship a service whose health endpoints fail to exercise the registered
+// checks.  WARNING: experimental — once the dispatcher lands, the
+// `__handleLiveness` / `__handleReadiness` exit point and the `runChecks`
+// internal will change shape.
+//
 // Registers `/health/live` and `/health/ready` routes on a `Router`.
 // Check functions are stored in a `HealthRegistry` value and run on each
 // request to the corresponding endpoint.
@@ -178,13 +187,21 @@ pub func __handleReadiness(): Result[String, ApiError] {
 
 // Run all checks for the given group and build a JSON response string.
 //
-// NOT YET FUNCTIONAL: this is a stub that always returns {"status":"ok"}.
-// Registered checks are NOT executed.  The kernel dispatcher (pending milestone)
-// will resolve each handlerName via DLL reflection and call the actual check
-// functions.  Until that milestone ships, all endpoints unconditionally report
-// healthy regardless of what checks were registered.  See docs/14.
+// NOT YET FUNCTIONAL.  The kernel dispatcher (pending milestone) will
+// resolve each handlerName via DLL reflection and call the actual check
+// functions; until then this function panics rather than silently
+// reporting "ok" for an unimplemented liveness/readiness pipeline
+// (#367 / #425 item 5 honest framing — a silent stub on a health
+// endpoint would let a degraded service ship as healthy).  Real
+// dispatcher work is tracked in docs/14.
 func runChecks(group: in CheckGroup): Result[String, ApiError] {
-  return Ok("{\"status\":\"ok\",\"checks\":{}}")
+  // The match keeps the parameter live so the panic message includes
+  // the requested group; today's Lyric panic does not interpolate, so
+  // we encode it in the literal string.
+  match group {
+    case Liveness  -> panic("Health.runChecks(Liveness): kernel dispatcher not yet implemented — see docs/14 and #367.  Do not deploy lyric-health as a production health endpoint until this lands.")
+    case Readiness -> panic("Health.runChecks(Readiness): kernel dispatcher not yet implemented — see docs/14 and #367.  Do not deploy lyric-health as a production health endpoint until this lands.")
+  }
 }
 
 // Attach the registry to the router so the kernel knows which checks to run.

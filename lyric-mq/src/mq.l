@@ -1,5 +1,13 @@
 // Mq — transport-agnostic message queue library for Lyric.
 //
+// Stability: @stable(since="0.1") — the `MessageQueue` /
+// `QueueConsumer` / `DeadLetterStore` interfaces, the
+// `Idempotent` / `DeadLetter` aspect templates, and the built-in
+// `NativeQueue` implementation are covered by the SemVer guarantee
+// at the surface level.  Individual broker feature flags
+// (rabbitmq / azureservicebus / sqs / kafka) carry their own
+// experimental envelope until each has end-to-end CI coverage.
+//
 // `MessageQueue` and `QueueConsumer` are the public interfaces; implement
 // them to plug in any broker.  `NativeQueue` is the built-in broker-backed
 // implementation driven through the platform kernel.

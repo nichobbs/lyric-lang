@@ -113,7 +113,7 @@ func resolveTypePath(
     match symTableTryFindOne(tbl, name) {
       case Some(sym) ->
         match symbolTypeIdOpt(sym) {
-          case Some(tid) -> return TyUser(id = tid, args = args)
+          case Some(tid) -> return TyUser(id = tid, name = sym.name, args = args)
           case None -> {
             diag.add(errorDiagnostic("T0013", "'" + name + "' is not a type", span))
             return TyError
@@ -133,7 +133,7 @@ func resolveTypePath(
   match symTableTryFindOne(tbl, last) {
     case Some(sym) ->
       match symbolTypeIdOpt(sym) {
-        case Some(tid) -> return TyUser(id = tid, args = args)
+        case Some(tid) -> return TyUser(id = tid, name = sym.name, args = args)
         case None -> {}
       }
     case None -> {}

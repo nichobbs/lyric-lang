@@ -95,34 +95,17 @@ test "three chained checks are stored in insertion order" {
 }
 
 // ─── Route handlers ──────────────────────────────────────────────────────────
-// The __handle* functions are public (required for kernel dispatcher resolution)
-// but intentionally not @stable.  These tests cover the current stub behavior
-// that unconditionally returns {"status":"ok"} until the kernel dispatcher ships.
-
-test "liveness handler returns Ok" {
-  match Health.__handleLiveness() {
-    case Ok(_)    -> ()
-    case Err(err) -> assertTrue(false, "expected Ok from liveness handler, got Err: " + err.message)
-  }
-}
-
-test "liveness handler Ok body contains 'ok'" {
-  match Health.__handleLiveness() {
-    case Ok(body) -> assertTrue(body.contains("ok"), "liveness body must contain 'ok'")
-    case Err(_)   -> assertTrue(false, "expected Ok from liveness handler")
-  }
-}
-
-test "readiness handler returns Ok" {
-  match Health.__handleReadiness() {
-    case Ok(_)    -> ()
-    case Err(err) -> assertTrue(false, "expected Ok from readiness handler, got Err: " + err.message)
-  }
-}
-
-test "readiness handler Ok body contains 'ok'" {
-  match Health.__handleReadiness() {
-    case Ok(body) -> assertTrue(body.contains("ok"), "readiness body must contain 'ok'")
-    case Err(_)   -> assertTrue(false, "expected Ok from readiness handler")
-  }
-}
+// `__handleLiveness` / `__handleReadiness` are public so the kernel
+// dispatcher can resolve them by name once it lands.  Until then, the
+// downstream `runChecks` panics rather than silently reporting "ok"
+// for an unimplemented health pipeline (#367: a silent stub on a
+// health endpoint would let a degraded service ship as healthy).
+//
+// The previous tests asserted "handler returns Ok with body containing
+// 'ok'" — that was testing the silent-stub behaviour, which we have
+// now closed out.  A test that exercises the panic-on-call contract
+// requires panic-catching infrastructure that the test runner does
+// not yet expose (#1112), so the surface is intentionally untested
+// here: the registry-construction tests above remain to cover the
+// shape of the data, and the panic itself is the documented
+// production-incorrectness gate.

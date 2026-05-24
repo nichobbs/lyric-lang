@@ -397,12 +397,12 @@ wrapper (`Std.Process`) converts OS-level failures to a `Result` type.
 ### `Std.ProcessCaptureHost` — `lyric-stdlib/std/_kernel/process_capture_host.l`
 
 ```
-@axiom("System.Diagnostics.Process piped stdout capture")
+@axiom("System.Diagnostics.Process piped stdout/stderr capture")
 ```
 
-**BCL surface**: `Lyric.Emitter.ProcessCapture.runCapture` — spawns a child
-process, writes to its stdin, and returns its stdout text.  Used by
-`Lyric.Verifier` to invoke z3/cvc5.
+**BCL surface**: `Std.ProcessCaptureHost.runCapture` — spawns a child
+process, writes a single payload to its stdin, and returns the combined
+stdout + stderr text.  Used by `Lyric.Verifier` to invoke z3/cvc5.
 
 **Gap**: Child-process lifecycle (spawn, I/O redirection, exit) involves OS
 state that cannot be modelled in first-order logic.  Spawn failure and I/O
@@ -554,6 +554,88 @@ values from the OS CSPRNG on every call.
 
 **Review**: Stable.
 
+### `Std.HashHost` — `lyric-stdlib/std/_kernel/hash_host.l`
+
+```
+@axiom("System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics; both are pure functions")
+```
+
+**BCL surface**: `System.Security.Cryptography.SHA512.HashData` and
+`System.Convert.ToHexString`.  Composed by `Std.Hash.sha512OfBytes` into a
+single public helper.
+
+**Gap**: SHA-512 is a deterministic cryptographic hash whose output is a
+64-byte slice keyed on the entire input; the prover cannot model the
+underlying algorithm, but both BCL primitives are documented as pure
+(no observable side effects, no hidden state).
+
+**Caller obligation**: None.  Both functions are total on their inputs;
+`HashData` accepts any byte sequence and `ToHexString` accepts any
+byte slice.
+
+**Review**: Stable.
+
+---
+
+## 14a. Pattern matching
+
+### `Std.RegexHost` — `lyric-stdlib/std/_kernel/regex_host.l`
+
+```
+@axiom("System.Text.RegularExpressions.Regex / .Match conform to their documented .NET contracts")
+```
+
+**BCL surface**: `System.Text.RegularExpressions.Regex` (constructor,
+`IsMatch`, `Match`, `Replace`) and `System.Text.RegularExpressions.Match`
+(`Success`, `Value`, `Groups`).  Every compiled pattern carries a
+1-second match timeout (via the `Regex(string, RegexOptions, TimeSpan)`
+overload) so catastrophic backtracking surfaces as
+`RegexMatchTimeoutException` rather than hanging.
+
+**Gap**: Regex matching is a string-level computation that cannot be
+characterised in first-order logic without a string theory; the
+`requires:` clauses checked at the kernel boundary cover only minimal
+range invariants.  Catastrophic-backtracking patterns are mitigated
+by a runtime timeout, but the timeout itself is observed behaviour
+the prover cannot model.
+
+**Caller obligation**: Pattern strings must be valid .NET regex syntax;
+the kernel catches `ArgumentException` from `Regex.Compile` and
+surfaces it as a typed `Result.Err`.  Callers in `@proof_required`
+code must not rely on the regex's effect on specific input shapes —
+that is outside the prover's first-order scope.
+
+**Review**: Stable.
+
+---
+
+## 14b. Test mocking
+
+### `Std.Testing.Mocking` — `lyric-stdlib/std/_kernel/testing_mocking.l`
+
+```
+@axiom("Lyric.Stdlib.StubCounter / .StubCounterHost are an opaque counter the host owns; semantics are make / get / increment with monotonic non-negative integer state")
+```
+
+**BCL surface**: `Lyric.Stdlib.StubCounter` (opaque) and
+`Lyric.Stdlib.StubCounterHost` (static helpers).  Counter creation,
+read, and increment are the only operations.  Backs the
+`@stubbable`-synthesised stub records used by `Std.Testing`.
+
+**Gap**: The opaque counter is host-allocated; its identity and
+monotonic-increment behaviour are runtime invariants the prover
+cannot reason about.  Counter state survives across calls within a
+test, which is exactly the property tests rely on.
+
+**Caller obligation**: Callers must obtain a counter via
+`makeStubCounter` before reading or incrementing it; passing an
+uninitialised counter value is undefined behaviour at the host
+boundary (the kernel does not validate the handle).  Production code
+must not import this module — its purpose is restricted to tests via
+`Std.Testing`.
+
+**Review**: Stable.
+
 ---
 
 ## 15. JVM stdlib kernel boundary
@@ -605,18 +687,28 @@ use this module directly in application code.
 The directory `lyric-stdlib/std/_kernel_jvm/` mirrors `_kernel/` for the
 JVM target — each file selects a Java BCL extern surface that the
 `@cfg(feature = "jvm")` predicate routes to when compiling
-`--target jvm`.  21 files currently carry `@axiom(...)` annotations
-covering operations on `java.lang.String`, `java.util.{ArrayList,
-HashMap}`, `java.io.{File,FileInputStream,FileOutputStream,Files}`,
-`java.lang.{Math,Character}`, `java.net.URI`, `java.util.regex.Pattern`,
-`java.nio.charset.StandardCharsets`, `java.security.MessageDigest`,
-`java.time.{Instant,Duration,LocalDateTime}`, `java.util.UUID`, and
-`java.lang.System` (env, out, err).
+`--target jvm`.  22 files currently carry `@axiom(...)` annotations
+covering operations on `java.lang.{String,Math,Character,System}`,
+`java.util.{ArrayList,HashMap,Random,UUID,regex.Pattern}`,
+`java.io.{File,FileInputStream,FileOutputStream,Files}`,
+`java.net.{URI,http.HttpClient}`, `java.nio.charset.StandardCharsets`,
+`java.security.{MessageDigest,SecureRandom}`,
+`java.time.{Instant,Duration,LocalDateTime,ZoneId}`, and the helper
+classes under `lyric.stdlib.jvm.*` (typed wrappers over the underlying
+JDK surfaces, mirroring `Std.<X>Host` on the .NET side).
 
-**Coverage**: per-file audit text is pending (`#335` follow-up).  The
-counts below are tracked in section 18 alongside the .NET totals.
+Every per-file axiom string is recorded verbatim in §19 below — the
+machine-checked baseline.  CI keeps the baseline aligned with the
+kernel files via `scripts/audit-axioms.sh`.  Each axiom asserts that
+the named JDK / `lyric.stdlib.jvm.*` surface conforms to its
+documented JVM contract; the corresponding `Caller obligation`
+mirrors its .NET twin one row up in §2–14 (e.g. the JVM
+`Std.CharHost` axiom inherits the same Unicode-Char invariants
+documented for the .NET `Std.CharHost`).
 
-**Review**: Provisional pending per-file write-up.
+**Review**: Provisional (per-file Caller-obligation prose tracks the
+JVM-target Phase 6 work; the BCL claim itself is asserted in code
+today and machine-checked in §19).
 
 ---
 
@@ -701,10 +793,10 @@ All are provisional pending weaver integration.
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
-Per-file write-ups are pending (`#335` follow-up); the counts below
-match the `@axiom("...")` annotations actually present in
+The counts below match the `@axiom("...")` annotations actually present in
 `lyric-stdlib/std/_kernel_jvm/*.l` and are kept in sync with the
-audit-lint script (`scripts/audit-axioms.sh`).
+audit-lint script (`scripts/audit-axioms.sh`); per-file axiom strings are
+recorded in the §19 baseline.
 
 | Kernel package           | File                         | Stable | Provisional |
 |--------------------------|------------------------------|--------|-------------|
@@ -749,3 +841,71 @@ grew from 11 (M4.3 baseline) → 16 (after D-progress-140) → 22 + 2 JVM
 Path, ProcessCapture, VerifierEnv, Random, SecureRandom, Hash, Regex/RegexHost,
 Testing.Mocking) and the JVM target boundary was brought under the
 same audit framework.
+
+## 19. Machine-checked axiom baseline
+
+Regenerated by `scripts/audit-axioms.sh --update`.  CI fails whenever this
+baseline diverges from the actual `@axiom(...)` annotations in
+`lyric-stdlib/std/_kernel*/*.l`, so each production-side change must land
+in lockstep with this table.
+
+The `Platform` column is the cfg-routed target boundary the axiom applies
+to.  The `Axiom` column is the verbatim string passed to `@axiom(...)`,
+with `\` line continuations and surrounding whitespace folded into single
+spaces; consult the kernel file itself for the unfolded source.
+
+<!-- BEGIN AXIOM BASELINE -->
+
+| Platform | Package | File | Axiom |
+|---|---|---|---|
+| `dotnet` | `Std.CharHost` | `char_host.l` | System.Char and System.Convert character operations conform to their documented .NET contracts |
+| `dotnet` | `Std.CollectionsHost` | `collections_host.l` | System.Collections.Generic.List / Dictionary conform to their documented .NET contracts |
+| `dotnet` | `Std.ConsoleHost` | `console_host.l` | System.Console operations conform to their documented .NET contracts |
+| `dotnet` | `Std.EncodingHost` | `encoding_host.l` | placeholder — no host calls remain in this boundary file |
+| `dotnet` | `Std.EnvironmentHost` | `environment_host.l` | System.Environment operations conform to their documented .NET contracts |
+| `dotnet` | `Std.FileHost` | `file_host.l` | System.IO.File / Directory operations conform to their documented .NET contracts |
+| `dotnet` | `Std.FormatHost` | `format_host.l` | System.Globalization.CultureInfo and System.String/Int/Double formatting operations conform to their documented .NET contracts |
+| `dotnet` | `Std.HashHost` | `hash_host.l` | System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics; both are pure functions |
+| `dotnet` | `Std.HttpHost` | `http_host.l` | System.Net.Http operations conform to their documented .NET contracts |
+| `dotnet` | `Std.IO` | `io.l` | System.Console and System.IO operations conform to their documented .NET contracts |
+| `dotnet` | `Std.JsonHost` | `json_host.l` | System.Text.Json operations conform to their documented .NET contracts |
+| `dotnet` | `Std.Jvm` | `jvm.l` | Std.Jvm provides JVM-target escape hatches for interoperating with Java exception semantics per docs/31-maven-linking.md Q-J012 |
+| `dotnet` | `Std.JvmExceptionHost` | `jvm_exception.l` | java.lang.Exception is the Java checked-exception root; JvmException wraps it for Lyric callers at the FFI boundary per docs/31-maven-linking.md §5 |
+| `dotnet` | `Std.LogHost` | `log_host.l` | Host logging writes diagnostic messages according to its configured sinks |
+| `dotnet` | `Std.MathHost` | `math_host.l` | System.Math and System.Double operations conform to their documented .NET / IEEE 754 contracts |
+| `dotnet` | `Std.ParseHost` | `parse_host.l` | System.Double/Boolean.TryParse conform to their documented .NET contracts |
+| `dotnet` | `Std.PathHost` | `path_host.l` | System.IO.Path operations conform to their documented .NET contracts |
+| `dotnet` | `Std.ProcessCaptureHost` | `process_capture_host.l` | System.Diagnostics.Process piped stdout/stderr capture |
+| `dotnet` | `Std.ProcessHost` | `process_host.l` | System.Diagnostics.Process conforms to its documented .NET contracts |
+| `dotnet` | `Std.RandomHost` | `random_host.l` | System.Random conforms to its documented .NET contracts; the Shared property returns a thread-safe shared instance (documented since .NET 6) |
+| `dotnet` | `Std.RegexHost` | `regex_host.l` | System.Text.RegularExpressions.Regex / .Match conform to their documented .NET contracts |
+| `dotnet` | `Std.SecureRandomHost` | `secure_random_host.l` | System.Security.Cryptography.RandomNumberGenerator conforms to its documented .NET contracts and produces cryptographically strong output |
+| `dotnet` | `Std.Testing.Mocking` | `testing_mocking.l` | Lyric.Stdlib.StubCounter / .StubCounterHost are an opaque counter the host owns; semantics are make / get / increment with monotonic non-negative integer state |
+| `dotnet` | `Std.TimeHost` | `time_host.l` | System.DateTime / System.TimeSpan / System.DateTimeOffset / System.TimeZoneInfo conform to their documented .NET contracts |
+| `dotnet` | `Std.UnicodeHost` | `unicode_host.l` | System.Char.GetUnicodeCategory returns System.Globalization.UnicodeCategory whose underlying type is int32 |
+| `dotnet` | `Std.UuidHost` | `uuid_host.l` | System.Guid conforms to its documented .NET contract |
+| `dotnet` | `Std.VerifierEnvHost` | `verifier_env_host.l` | System.Environment.GetEnvironmentVariable with null → empty-string safety |
+| `jvm` | `Std.CharHost` | `char_host.l` | java.lang.Character character operations conform to their documented JVM contracts |
+| `jvm` | `Std.CollectionsHost` | `collections_host.l` | java.util.ArrayList / HashMap conform to their documented JVM contracts |
+| `jvm` | `Std.ConsoleHost` | `console_host.l` | lyric.stdlib.jvm.ConsoleHost operations conform to their documented JVM contracts |
+| `jvm` | `Std.EncodingHost` | `encoding_host.l` | placeholder — no host calls remain in this boundary file |
+| `jvm` | `Std.EnvironmentHost` | `environment_host.l` | lyric.stdlib.jvm.EnvHost operations conform to their documented JVM contracts |
+| `jvm` | `Std.FileHost` | `file_host.l` | lyric.stdlib.jvm.FileHost operations conform to their documented JVM contracts |
+| `jvm` | `Std.FormatHost` | `format_host.l` | lyric.stdlib.jvm.FormatHost formatting operations conform to their documented JVM contracts |
+| `jvm` | `Std.HttpHost` | `http_host.l` | lyric.stdlib.jvm.HttpClientHost operations conform to their documented JVM / java.net.http contracts |
+| `jvm` | `Std.IO` | `io.l` | lyric.stdlib.jvm ConsoleHost and FileHost operations conform to their documented JVM contracts |
+| `jvm` | `Std.JsonHost` | `json_host.l` | lyric.stdlib.jvm.JsonHost operations conform to their documented JVM contracts |
+| `jvm` | `Std.LogHost` | `log_host.l` | lyric.stdlib.jvm.LogHost writes diagnostic messages via java.util.logging.Logger |
+| `jvm` | `Std.MathHost` | `math_host.l` | java.lang.Math and java.lang.Double operations conform to their documented JVM / IEEE 754 contracts |
+| `jvm` | `Std.ParseHost` | `parse_host.l` | lyric.stdlib.jvm.ParseHost operations conform to their documented JVM contracts |
+| `jvm` | `Std.PathHost` | `path_host.l` | lyric.stdlib.jvm.PathHost operations conform to their documented JVM contracts |
+| `jvm` | `Std.ProcessCaptureHost` | `process_capture_host.l` | lyric.stdlib.jvm.ProcessCaptureHost piped stdout/stderr capture |
+| `jvm` | `Std.ProcessHost` | `process_host.l` | lyric.stdlib.jvm.ProcessHost operations conform to their documented JVM contracts |
+| `jvm` | `Std.RandomHost` | `random_host.l` | java.util.Random conforms to its documented JDK contracts; lyric.stdlib.jvm.RandomHost wraps a process-wide instance |
+| `jvm` | `Std.RegexHost` | `regex_host.l` | lyric.stdlib.jvm.RegexHost operations conform to their documented JVM / java.util.regex contracts |
+| `jvm` | `Std.SecureRandomHost` | `secure_random_host.l` | java.security.SecureRandom conforms to its documented JDK contracts and produces cryptographically strong output; lyric.stdlib.jvm.SecureRandomHost wraps the strongest available algorithm |
+| `jvm` | `Std.TimeHost` | `time_host.l` | java.time.* operations conform to their documented JVM / ISO 8601 contracts |
+| `jvm` | `Std.UnicodeHost` | `unicode_host.l` | lyric.stdlib.jvm.UnicodeHost correctly maps java.lang.Character.getType to the .NET UnicodeCategory convention |
+| `jvm` | `Std.UuidHost` | `uuid_host.l` | java.util.UUID conforms to its documented JVM contract |
+
+<!-- END AXIOM BASELINE -->

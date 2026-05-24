@@ -1,4 +1,7 @@
 // I18n — internationalization and localization library for Lyric.
+// Stability: @experimental — the surface compiles and the JSON-loaded
+// translation store has tests; the BCP-47 locale parser has not been
+// exercised against the full IANA tag set.
 //
 // Provides locale-aware translation with variable substitution.
 // `TranslationStore` is the public interface; `InProcessTranslationStore` is
