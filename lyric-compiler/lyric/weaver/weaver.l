@@ -28,8 +28,11 @@
 //     `call.modulePath`, `call.sourceLocation`, and `call.annotations`,
 //     materialised as `__lyric_call_<name>` locals.  `call.aspect` is
 //     also injected (the current aspect's name).  `call.elapsed` and
-//     `call.caller` are not yet wired and resolve to `None` (Std.Time
-//     integration is deferred to a follow-up).
+//     `call.caller` require runtime instrumentation (Std.Time integration
+//     and call-site capture) that is deferred to a follow-up.  Any
+//     `call.<unknown>` reference — including those two — surfaces as
+//     an A0043 diagnostic at weave time so users get a clear message
+//     instead of a downstream "undeclared call" type error.
 //
 //   - `@inline_template` (#681): aspects annotated `@inline_template`
 //     have `args.<field>` rewrites applied at weave time; each field
@@ -163,16 +166,25 @@ record RewriteCtx {
   aspectName:       String
   /// Short name of the matched function (for diagnostic messages).
   funcName:         String
-  /// Accumulator for `args.<n>` references that do not match any
-  /// parameter of the matched function.  Drained at weave time and
-  /// surfaced as A0042 diagnostics.
-  argsErrors:       List[ArgsError]
+  /// Accumulator for weave-time diagnostics:
+  ///   - A0042 — `@inline_template` `args.<n>` does not match a
+  ///             parameter of the matched function (#681).
+  ///   - A0043 — `call.<n>` references an unknown context field
+  ///             (e.g. `call.elapsed` before runtime instrumentation
+  ///             lands; #682 follow-up).
+  argsErrors:       List[WeaveDiagEntry]
 }
 
-/// `args.<field>` reference that the weaver could not resolve against
-/// any parameter of the matched function.  Used to surface A0042
-/// diagnostics (#681).
-record ArgsError {
+/// Discriminator + payload for a weave-time diagnostic.  Two kinds
+/// today; new kinds can be added without changing the rewriter's
+/// signature.
+union WeaveDiagKind {
+  case WDArgsMismatch  // A0042
+  case WDCallUnknown   // A0043
+}
+
+record WeaveDiagEntry {
+  kind:       WeaveDiagKind
   aspectName: String
   funcName:   String
   fieldName:  String
@@ -187,7 +199,7 @@ func newRewriteCtx(
   isInlineTemplate: in Bool,
   aspectName:       in String,
   funcName:         in String,
-  argsErrors:       in List[ArgsError]
+  argsErrors:       in List[WeaveDiagEntry]
 ): RewriteCtx {
   RewriteCtx(
     targetName       = targetName,
@@ -206,7 +218,7 @@ func newRewriteCtx(
 func emptyRewriteCtx(targetName: in String, paramNames: in List[String]): RewriteCtx {
   val noConfig: Map[String, Bool] = newMap()
   val noCall:   Map[String, Bool] = newMap()
-  val noErrs:   List[ArgsError]   = newList()
+  val noErrs:   List[WeaveDiagEntry]   = newList()
   newRewriteCtx(targetName, paramNames, noConfig, noCall, false, "", "", noErrs)
 }
 
@@ -281,6 +293,16 @@ func tryMemberRewrite(ctx: in RewriteCtx, expr: in Expr): Option[Expr] {
             segments = singleSeg("__lyric_call_" + name),
             span     = expr.span)),
           span = expr.span))
+      } else {
+        // Unknown call.<field> — surface as A0043 so the user sees a
+        // weaver-targeted message instead of a downstream "call is not
+        // declared" type error (#682 / review #1193).
+        ctx.argsErrors.add(WeaveDiagEntry(
+          kind       = WDCallUnknown,
+          aspectName = ctx.aspectName,
+          funcName   = ctx.funcName,
+          fieldName  = name,
+          span       = expr.span))
       }
     }
     case None -> ()
@@ -299,7 +321,8 @@ func tryMemberRewrite(ctx: in RewriteCtx, expr: in Expr): Option[Expr] {
               span     = expr.span)),
             span = expr.span))
         } else {
-          ctx.argsErrors.add(ArgsError(
+          ctx.argsErrors.add(WeaveDiagEntry(
+            kind       = WDArgsMismatch,
             aspectName = ctx.aspectName,
             funcName   = ctx.funcName,
             fieldName  = name,
@@ -582,13 +605,13 @@ record WeaveSite {
   /// Accumulator for `args.<n>` validation errors (#681).  Same
   /// reference is passed to every `buildWrapper` invocation in a
   /// `weaveItems` run; entries surface as A0042 diagnostics.
-  argsErrors:       List[ArgsError]
+  argsErrors:       List[WeaveDiagEntry]
 }
 
 func makeWeaveSite(
   packagePath:      in String,
   isInlineTemplate: in Bool,
-  argsErrors:       in List[ArgsError]
+  argsErrors:       in List[WeaveDiagEntry]
 ): WeaveSite {
   WeaveSite(
     packagePath      = packagePath,
@@ -646,87 +669,231 @@ func buildConfigPrelude(aspect: in AspectDecl): (List[Statement], Map[String, Bo
   return (stmts, present)
 }
 
-/// Build the `call` ambient prelude for an aspect.  Materialises the
-/// compile-time-known fields (`shortName`, `qualifiedName`,
-/// `modulePath`, `sourceLocation`, `annotations`, `aspect`) as
-/// `val __lyric_call_<field>` locals.  `elapsed` and `caller` are not
-/// yet wired — they resolve to `None` if referenced and stay outside
-/// the rewriter's view.  Returns the set of materialised field names.
+/// Walk an Expr (and any nested Block / EOB) collecting the set of
+/// `call.<field>` member-access names that appear anywhere inside.
+/// Used by `buildCallPrelude` to skip materialising `__lyric_call_*`
+/// locals the body never reads (review #1196).
+func collectCallRefsBlock(blk: in Block, into: in Map[String, Bool]): Unit {
+  var i = 0
+  while i < blk.statements.count {
+    collectCallRefsStmt(blk.statements[i], into)
+    i = i + 1
+  }
+}
+
+func collectCallRefsStmt(s: in Statement, into: in Map[String, Bool]): Unit {
+  match s.kind {
+    case SExpr(e)     -> collectCallRefsExpr(e, into)
+    case SReturn(o)   -> match o {
+                          case Some(e) -> collectCallRefsExpr(e, into)
+                          case None    -> ()
+                        }
+    case SLocal(b)    -> {
+      match b {
+        case LBVal(_, _, init) -> collectCallRefsExpr(init, into)
+        case LBLet(_, _, init) -> collectCallRefsExpr(init, into)
+        case LBVar(_, _, init) -> match init {
+                                    case Some(e) -> collectCallRefsExpr(e, into)
+                                    case None    -> ()
+                                  }
+      }
+    }
+    case SAssign(t, _, v) -> {
+      collectCallRefsExpr(t, into)
+      collectCallRefsExpr(v, into)
+    }
+    case SThrow(e) -> collectCallRefsExpr(e, into)
+    case SFor(_, _, iter, body) -> {
+      collectCallRefsExpr(iter, into)
+      collectCallRefsBlock(body, into)
+    }
+    case SWhile(_, cond, body) -> {
+      collectCallRefsExpr(cond, into)
+      collectCallRefsBlock(body, into)
+    }
+    case SLoop(_, body)   -> collectCallRefsBlock(body, into)
+    case SScope(_, body)  -> collectCallRefsBlock(body, into)
+    case STry(body, catches, finally_) -> {
+      collectCallRefsBlock(body, into)
+      var i = 0
+      while i < catches.count {
+        collectCallRefsBlock(catches[i].body, into)
+        i = i + 1
+      }
+      match finally_ {
+        case Some(fb) -> collectCallRefsBlock(fb, into)
+        case None     -> ()
+      }
+    }
+    case SDefer(body) -> collectCallRefsBlock(body, into)
+    case _ -> ()
+  }
+}
+
+func collectCallRefsExpr(e: in Expr, into: in Map[String, Bool]): Unit {
+  // Top-level: `call.<field>` member access.
+  match matchBareMemberAccess(e, "call") {
+    case Some(name) -> into.add(name, true)
+    case None       -> ()
+  }
+  // Recurse into sub-expressions.
+  match e.kind {
+    case ECall(f, args) -> {
+      collectCallRefsExpr(f, into)
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CAPositional(v)   -> collectCallRefsExpr(v, into)
+          case CANamed(_, v, _)  -> collectCallRefsExpr(v, into)
+        }
+        i = i + 1
+      }
+    }
+    case EParen(inner)        -> collectCallRefsExpr(inner, into)
+    case ETuple(xs)           -> {
+      var i = 0
+      while i < xs.count { collectCallRefsExpr(xs[i], into); i = i + 1 }
+    }
+    case EList(xs)            -> {
+      var i = 0
+      while i < xs.count { collectCallRefsExpr(xs[i], into); i = i + 1 }
+    }
+    case EAwait(inner)        -> collectCallRefsExpr(inner, into)
+    case EYield(inner)        -> collectCallRefsExpr(inner, into)
+    case ESpawn(inner)        -> collectCallRefsExpr(inner, into)
+    case ETry(inner)          -> collectCallRefsExpr(inner, into)
+    case EOld(inner)          -> collectCallRefsExpr(inner, into)
+    case EPropagate(inner)    -> collectCallRefsExpr(inner, into)
+    case EPrefix(_, op)       -> collectCallRefsExpr(op, into)
+    case EBinop(_, l, r)      -> { collectCallRefsExpr(l, into); collectCallRefsExpr(r, into) }
+    case EAssign(t, _, v)     -> { collectCallRefsExpr(t, into); collectCallRefsExpr(v, into) }
+    case EMember(recv, _)     -> collectCallRefsExpr(recv, into)
+    case EIndex(recv, idxs)   -> {
+      collectCallRefsExpr(recv, into)
+      var i = 0
+      while i < idxs.count { collectCallRefsExpr(idxs[i], into); i = i + 1 }
+    }
+    case ETypeApp(f, _)       -> collectCallRefsExpr(f, into)
+    case EIf(c, t, el, _)     -> {
+      collectCallRefsExpr(c, into)
+      collectCallRefsEOB(t, into)
+      match el {
+        case Some(e2) -> collectCallRefsEOB(e2, into)
+        case None     -> ()
+      }
+    }
+    case EMatch(scrut, arms)  -> {
+      collectCallRefsExpr(scrut, into)
+      var i = 0
+      while i < arms.count {
+        match arms[i].guard {
+          case Some(g) -> collectCallRefsExpr(g, into)
+          case None    -> ()
+        }
+        collectCallRefsEOB(arms[i].body, into)
+        i = i + 1
+      }
+    }
+    case ELambda(_, body)     -> collectCallRefsBlock(body, into)
+    case EBlock(blk)          -> collectCallRefsBlock(blk, into)
+    case EUnsafe(blk)         -> collectCallRefsBlock(blk, into)
+    case EInterpolated(segs)  -> {
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISText(_, _)  -> ()
+          case ISExpr(inner) -> collectCallRefsExpr(inner, into)
+        }
+        i = i + 1
+      }
+    }
+    case _ -> ()
+  }
+}
+
+func collectCallRefsEOB(eob: in ExprOrBlock, into: in Map[String, Bool]): Unit {
+  match eob {
+    case EOBExpr(e)   -> collectCallRefsExpr(e, into)
+    case EOBBlock(b)  -> collectCallRefsBlock(b, into)
+  }
+}
+
+/// Build the `call` ambient prelude for an aspect.  Only emits a
+/// `val __lyric_call_<field>` local for fields the aspect body
+/// actually references; aspects that don't touch `call.*` produce
+/// byte-identical wrappers to the pre-todo-06 weaver (review #1196).
+/// Compile-time-known fields: `shortName`, `qualifiedName`,
+/// `modulePath`, `sourceLocation`, `annotations`, `aspect`.  `elapsed`
+/// and `caller` are not yet wired — references surface as A0043
+/// diagnostics handled by the rewriter.
 func buildCallPrelude(
   originalFn: in FunctionDecl,
   aspect:     in AspectDecl,
-  site:       in WeaveSite
+  site:       in WeaveSite,
+  body:       in Block
 ): (List[Statement], Map[String, Bool]) {
   val stmts: List[Statement] = newList()
   val present: Map[String, Bool] = newMap()
 
+  // Pre-scan: which call.<field> names does the body reference?
+  val refs: Map[String, Bool] = newMap()
+  collectCallRefsBlock(body, refs)
+  if refs.count == 0 {
+    return (stmts, present)
+  }
+
   // shortName : String
-  stmts.add(mkValStmt("__lyric_call_shortName", None, mkStringLit(originalFn.name)))
-  present.add("shortName", true)
+  if refs.containsKey("shortName") {
+    stmts.add(mkValStmt("__lyric_call_shortName", None, mkStringLit(originalFn.name)))
+    present.add("shortName", true)
+  }
 
   // qualifiedName : String
-  val qualified =
-    if site.packagePath.length > 0 { site.packagePath + "." + originalFn.name }
-    else                           { originalFn.name }
-  stmts.add(mkValStmt("__lyric_call_qualifiedName", None, mkStringLit(qualified)))
-  present.add("qualifiedName", true)
+  if refs.containsKey("qualifiedName") {
+    val qualified =
+      if site.packagePath.length > 0 { site.packagePath + "." + originalFn.name }
+      else                           { originalFn.name }
+    stmts.add(mkValStmt("__lyric_call_qualifiedName", None, mkStringLit(qualified)))
+    present.add("qualifiedName", true)
+  }
 
   // modulePath : String
-  stmts.add(mkValStmt("__lyric_call_modulePath", None, mkStringLit(site.packagePath)))
-  present.add("modulePath", true)
+  if refs.containsKey("modulePath") {
+    stmts.add(mkValStmt("__lyric_call_modulePath", None, mkStringLit(site.packagePath)))
+    present.add("modulePath", true)
+  }
 
   // sourceLocation : String  (formatted as "<package>:<line>")
-  val locText =
-    if site.packagePath.length > 0 {
-      site.packagePath + ":" + intToString(originalFn.span.startPos.line)
-    } else {
-      "<unknown>:" + intToString(originalFn.span.startPos.line)
-    }
-  stmts.add(mkValStmt("__lyric_call_sourceLocation", None, mkStringLit(locText)))
-  present.add("sourceLocation", true)
+  if refs.containsKey("sourceLocation") {
+    val locText =
+      if site.packagePath.length > 0 {
+        site.packagePath + ":" + toString(originalFn.span.startPos.line)
+      } else {
+        "<unknown>:" + toString(originalFn.span.startPos.line)
+      }
+    stmts.add(mkValStmt("__lyric_call_sourceLocation", None, mkStringLit(locText)))
+    present.add("sourceLocation", true)
+  }
 
   // annotations : slice[String]
-  val annNames: List[String] = newList()
-  var ai = 0
-  while ai < originalFn.annotations.count {
-    annNames.add(annotationShortName(originalFn.annotations[ai]))
-    ai = ai + 1
+  if refs.containsKey("annotations") {
+    val annNames: List[String] = newList()
+    var ai = 0
+    while ai < originalFn.annotations.count {
+      annNames.add(annotationShortName(originalFn.annotations[ai]))
+      ai = ai + 1
+    }
+    stmts.add(mkValStmt("__lyric_call_annotations", None, mkStringSliceLit(annNames)))
+    present.add("annotations", true)
   }
-  stmts.add(mkValStmt("__lyric_call_annotations", None, mkStringSliceLit(annNames)))
-  present.add("annotations", true)
 
   // aspect : String  (the current aspect's name)
-  stmts.add(mkValStmt("__lyric_call_aspect", None, mkStringLit(aspect.name)))
-  present.add("aspect", true)
+  if refs.containsKey("aspect") {
+    stmts.add(mkValStmt("__lyric_call_aspect", None, mkStringLit(aspect.name)))
+    present.add("aspect", true)
+  }
 
   return (stmts, present)
-}
-
-/// Convert an Int to a base-10 String — used for `sourceLocation`.
-/// Std.Core's `toString` covers this but we keep the dependency
-/// surface inside this file for clarity (the only call site).
-func intToString(n: in Int): String {
-  if n == 0 { return "0" }
-  val isNeg = n < 0
-  var x = if isNeg { 0 - n } else { n }
-  var digits = ""
-  while x > 0 {
-    val d = x - (x / 10) * 10
-    val ch =
-      if d == 0 { "0" }
-      else if d == 1 { "1" }
-      else if d == 2 { "2" }
-      else if d == 3 { "3" }
-      else if d == 4 { "4" }
-      else if d == 5 { "5" }
-      else if d == 6 { "6" }
-      else if d == 7 { "7" }
-      else if d == 8 { "8" }
-      else { "9" }
-    digits = ch + digits
-    x = x / 10
-  }
-  if isNeg { "-" + digits } else { digits }
 }
 
 func buildWrapper(
@@ -754,9 +921,11 @@ func buildWrapper(
   // Build preludes.  Each helper returns a (statements, present-field set)
   // pair; the present sets feed the rewriter so only materialised fields
   // are rewritten — out-of-scope references like `config.<unknown>` stay
-  // as member accesses and surface as type errors at the use site.
+  // as member accesses and surface as type errors at the use site.  The
+  // call prelude is lazy: it pre-scans `around.body` for `call.<x>` refs
+  // and emits only the locals the body actually reads.
   val (cfgStmts, cfgPresent) = buildConfigPrelude(aspect)
-  val (callStmts, callPresent) = buildCallPrelude(originalFn, aspect, site)
+  val (callStmts, callPresent) = buildCallPrelude(originalFn, aspect, site, around.body)
 
   val ctx = newRewriteCtx(
     callTargetName,
@@ -1227,18 +1396,34 @@ func packagePathString(file: in SourceFile): String {
   segmentsJoin(file.packageDecl.path.segments)
 }
 
-/// Convert a list of A0042 args-mismatch errors to diagnostic objects.
-func argsErrorsToDiagnostics(errs: in List[ArgsError]): List[Diagnostic] {
+/// Convert weave-time diagnostic entries (A0042 args mismatches and
+/// A0043 unknown `call.<field>` accesses) to user-facing Diagnostic
+/// objects.
+func weaveDiagsToDiagnostics(errs: in List[WeaveDiagEntry]): List[Diagnostic] {
   val diags: List[Diagnostic] = newList()
   var i = 0
   while i < errs.count {
     val e = errs[i]
-    val msg =
-      "@inline_template aspect '" + e.aspectName +
-      "' references args." + e.fieldName +
-      " but matched function '" + e.funcName +
-      "' has no parameter named '" + e.fieldName + "'"
-    diags.add(errorDiagnostic("A0042", msg, e.span))
+    match e.kind {
+      case WDArgsMismatch -> {
+        val msg =
+          "@inline_template aspect '" + e.aspectName +
+          "' references args." + e.fieldName +
+          " but matched function '" + e.funcName +
+          "' has no parameter named '" + e.fieldName + "'"
+        diags.add(errorDiagnostic("A0042", msg, e.span))
+      }
+      case WDCallUnknown -> {
+        val msg =
+          "aspect '" + e.aspectName +
+          "' references call." + e.fieldName +
+          " on matched function '" + e.funcName +
+          "' but the weaver does not (yet) inject a value for that " +
+          "field (recognised fields: shortName, qualifiedName, " +
+          "modulePath, sourceLocation, annotations, aspect)"
+        diags.add(errorDiagnostic("A0043", msg, e.span))
+      }
+    }
     i = i + 1
   }
   diags
@@ -1250,7 +1435,7 @@ func weaveItemsCore(
   items:       in List[Item],
   packagePath: in String
 ): WeaveResult {
-  val argsErrors: List[ArgsError] = newList()
+  val argsErrors: List[WeaveDiagEntry] = newList()
   val collected = collectActiveAspects(items)
   if collected.count == 0 {
     val noAspectItems: List[Item] = newList()
@@ -1364,7 +1549,7 @@ func weaveItemsCore(
     }
     idx = idx + 1
   }
-  WeaveResult(items = result, diagnostics = argsErrorsToDiagnostics(argsErrors))
+  WeaveResult(items = result, diagnostics = weaveDiagsToDiagnostics(argsErrors))
 }
 
 pub func weaveItems(items: in List[Item]): List[Item] {

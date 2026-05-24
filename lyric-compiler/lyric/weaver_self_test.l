@@ -1,6 +1,12 @@
-// weaver_self_test.l — exercises the self-hosted `Lyric.Weaver` library.
-// Compiled and executed by SelfHostedWeaverTests.fs.  Exit 0 + "ok" in
-// stdout means every assertion held.
+// weaver_self_test.l — exercises the self-hosted `Lyric.Weaver`
+// library.  Discovered + executed via `lyric test`:
+//
+//   lyric test lyric-compiler/lyric/weaver_self_test.l
+//
+// CI runs this file as part of the build-and-test job (see
+// `.github/workflows/ci.yml`).  Locally, build the AOT entry point
+// first (`scripts/bootstrap.sh --stage 1` + `dotnet build
+// bootstrap/src/Lyric.Cli.Aot`) then invoke `lyric test` as above.
 //
 // Covers the three todo/06 features that land in weaver.l:
 //
@@ -10,13 +16,17 @@
 //
 //   - #682: the woven body carries `__lyric_call_<name>` locals for
 //           the compile-time-known fields (shortName, qualifiedName,
-//           modulePath, sourceLocation, annotations, aspect);
-//           `call.<name>` member access rewrites to those locals.
+//           modulePath, sourceLocation, annotations, aspect); the
+//           prelude is lazy — only fields the body references are
+//           emitted; `call.<name>` member access rewrites to those
+//           locals; unknown fields surface as A0043 weave-time
+//           diagnostics.
 //
 //   - #681: aspects marked `@inline_template` have `args.<field>`
 //           rewritten to bare `<field>` paths at weave time; field
 //           names that don't match a parameter accumulate as A0042
 //           diagnostics.
+@test_module
 package Lyric.WeaverSelfTest
 
 import Std.Core
@@ -108,13 +118,6 @@ func isValBinding(s: in Statement, name: in String): Bool {
   }
 }
 
-func isPathExpr(e: in Expr, name: in String): Bool {
-  match e.kind {
-    case EPath(p) -> p.segments.count == 1 and p.segments[0] == name
-    case _        -> false
-  }
-}
-
 func literalIntValue(e: in Expr): Long {
   match e.kind {
     case ELiteral(lit) -> {
@@ -141,7 +144,7 @@ func literalStringValue(e: in Expr): String {
   }
 }
 
-/// Find any `SExpr` whose top-level expression contains a path leaf
+/// True iff the body (transitively) contains a bare path expression
 /// matching `name`.  Used to assert that `config.<x>` was rewritten
 /// to `__aspect_cfg_<x>` somewhere in the rewritten body.
 func bodyMentionsPath(blk: in Block, name: in String): Bool {
@@ -312,18 +315,27 @@ func functionCount(file: in SourceFile, name: in String): Int {
   n
 }
 
+func diagsHaveCode(diags: in List[Diagnostic], code: in String): Bool {
+  var i = 0
+  while i < diags.count {
+    if diags[i].code == code { return true }
+    i = i + 1
+  }
+  false
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Baseline: no aspects → identity (just IAspect items dropped).
 // ─────────────────────────────────────────────────────────────────────────────
 
-func testNoAspectIdentity(): Unit {
+test "no-aspect file is identity-rewritten" {
   val src = "package P\nfunc f(): Int { 1 }\n"
   val woven = parseWeave(src)
-  assertEqualInt(woven.items.count, 1, "no-aspect: items unchanged")
+  assertEqualInt(woven.items.count, 1, "items unchanged")
   val fn = firstFunction(woven, "f")
   val blk = functionBody(fn)
-  assertEqualInt(blk.statements.count, 1, "no-aspect: body unchanged")
+  assertEqualInt(blk.statements.count, 1, "body unchanged")
 }
 
 
@@ -331,29 +343,32 @@ func testNoAspectIdentity(): Unit {
 // §2. #683 — `config { }` wiring.
 // ─────────────────────────────────────────────────────────────────────────────
 
-func testConfigPreludeInjected(): Unit {
+test "config { } prelude is injected at the top of the woven body" {
   val src =
     "package P\n" +
     "aspect Limit {\n" +
     "  config { maxRetries: Int = 3 }\n" +
     "  matches: name like \"f*\"\n" +
-    "  around(args) -> ret { proceed(args) }\n" +
+    "  around(args) -> ret {\n" +
+    "    val r = config.maxRetries\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
     "}\n" +
     "func foo(x: in Int): Int { x + 1 }\n"
   val woven = parseWeave(src)
   // Two IFuncs: `foo` (wrapper) and `foo__aspect_target` (renamed original).
-  assertEqualInt(functionCount(woven, "foo"), 1, "config: one wrapper named 'foo'")
-  assertEqualInt(functionCount(woven, "foo__aspect_target"), 1, "config: one renamed target")
+  assertEqualInt(functionCount(woven, "foo"), 1, "one wrapper named 'foo'")
+  assertEqualInt(functionCount(woven, "foo__aspect_target"), 1, "one renamed target")
   // Wrapper body must start with the config prelude.
   val wrapper = firstFunction(woven, "foo")
   val body    = functionBody(wrapper)
   assertTrue(isValBinding(body.statements[0], "__aspect_cfg_maxRetries"),
-             "config: first wrapper stmt is __aspect_cfg_maxRetries val")
+             "first wrapper stmt is __aspect_cfg_maxRetries val")
   val initExpr = findValInit(body, "__aspect_cfg_maxRetries")
-  assertTrue(literalIntValue(initExpr) == 3L, "config: default 3 captured")
+  assertTrue(literalIntValue(initExpr) == 3i64, "default 3 captured")
 }
 
-func testConfigDotRewritten(): Unit {
+test "config.<field> member access rewrites to __aspect_cfg_<field>" {
   val src =
     "package P\n" +
     "aspect Limit {\n" +
@@ -368,42 +383,39 @@ func testConfigDotRewritten(): Unit {
   val woven = parseWeave(src)
   val wrapper = firstFunction(woven, "bar")
   val body    = functionBody(wrapper)
-  // `config.maxRetries` should be gone; `__aspect_cfg_maxRetries` should appear.
   assertTrue(not bodyHasMemberAccess(body, "config", "maxRetries"),
-             "config: config.maxRetries member access rewritten away")
+             "config.maxRetries member access rewritten away")
   assertTrue(bodyMentionsPath(body, "__aspect_cfg_maxRetries"),
-             "config: __aspect_cfg_maxRetries path present")
+             "__aspect_cfg_maxRetries path present")
 }
 
-func testConfigSkipsFieldsWithoutDefault(): Unit {
-  // Field without a default is skipped — no prelude entry emitted (env-var
-  // resolution is a follow-up).  We still expect the wrapper to be built;
-  // we just shouldn't see __aspect_cfg_<field> for the no-default field.
+test "config fields without a default are skipped in the prelude" {
   val src =
     "package P\n" +
     "aspect Limit {\n" +
     "  config {\n" +
-    "    withDefault:   Int = 7\n" +
+    "    withDefault:    Int = 7\n" +
     "    withoutDefault: Int\n" +
     "  }\n" +
     "  matches: name like \"q\"\n" +
-    "  around(args) -> ret { proceed(args) }\n" +
+    "  around(args) -> ret {\n" +
+    "    val r = config.withDefault\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
     "}\n" +
     "func q(): Int { 0 }\n"
   val woven = parseWeave(src)
   val wrapper = firstFunction(woven, "q")
   val body    = functionBody(wrapper)
-  assertTrue(bodyMentionsPath(body, "__aspect_cfg_withDefault") or
-             isValBinding(body.statements[0], "__aspect_cfg_withDefault"),
-             "config: defaulted field materialised")
-  // The non-defaulted field MUST NOT appear in the prelude.
+  assertTrue(isValBinding(body.statements[0], "__aspect_cfg_withDefault"),
+             "defaulted field materialised")
   var i = 0
   var saw = false
   while i < body.statements.count {
     if isValBinding(body.statements[i], "__aspect_cfg_withoutDefault") { saw = true }
     i = i + 1
   }
-  assertTrue(not saw, "config: non-defaulted field has no prelude entry")
+  assertTrue(not saw, "non-defaulted field has no prelude entry")
 }
 
 
@@ -411,35 +423,41 @@ func testConfigSkipsFieldsWithoutDefault(): Unit {
 // §3. #682 — `call` ambient prelude.
 // ─────────────────────────────────────────────────────────────────────────────
 
-func testCallPreludeShortName(): Unit {
+test "call prelude carries the compile-time-known string fields" {
   val src =
     "package MyApp.Handlers\n" +
     "aspect Trace {\n" +
     "  matches: name like \"handle*\"\n" +
-    "  around(args) -> ret { proceed(args) }\n" +
+    "  around(args) -> ret {\n" +
+    "    val sn = call.shortName\n" +
+    "    val qn = call.qualifiedName\n" +
+    "    val mp = call.modulePath\n" +
+    "    val asp = call.aspect\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
     "}\n" +
     "func handleX(): Int { 1 }\n"
   val woven = parseWeave(src)
   val wrapper = firstFunction(woven, "handleX")
   val body    = functionBody(wrapper)
   val sn = findValInit(body, "__lyric_call_shortName")
-  assertEqual(literalStringValue(sn), "handleX", "call: shortName literal matches")
+  assertEqual(literalStringValue(sn), "handleX", "shortName literal matches")
   val qn = findValInit(body, "__lyric_call_qualifiedName")
   assertEqual(literalStringValue(qn), "MyApp.Handlers.handleX",
-              "call: qualifiedName combines packagePath + name")
+              "qualifiedName combines packagePath + name")
   val mp = findValInit(body, "__lyric_call_modulePath")
-  assertEqual(literalStringValue(mp), "MyApp.Handlers", "call: modulePath is packagePath")
+  assertEqual(literalStringValue(mp), "MyApp.Handlers", "modulePath is packagePath")
   val asp = findValInit(body, "__lyric_call_aspect")
-  assertEqual(literalStringValue(asp), "Trace", "call: aspect literal is the aspect name")
+  assertEqual(literalStringValue(asp), "Trace", "aspect literal is the aspect name")
 }
 
-func testCallDotRewritten(): Unit {
+test "call.<field> member access rewrites to __lyric_call_<field>" {
   val src =
     "package P\n" +
     "aspect Trace {\n" +
     "  matches: name like \"g\"\n" +
     "  around(args) -> ret {\n" +
-    "    val name = call.shortName\n" +
+    "    val sn = call.shortName\n" +
     "    proceed(args)\n" +
     "  }\n" +
     "}\n" +
@@ -448,14 +466,15 @@ func testCallDotRewritten(): Unit {
   val wrapper = firstFunction(woven, "g")
   val body    = functionBody(wrapper)
   assertTrue(not bodyHasMemberAccess(body, "call", "shortName"),
-             "call: call.shortName member access rewritten away")
+             "call.shortName member access rewritten away")
   assertTrue(bodyMentionsPath(body, "__lyric_call_shortName"),
-             "call: __lyric_call_shortName path present")
+             "__lyric_call_shortName path present")
 }
 
-func testCallUnknownFieldUnchanged(): Unit {
-  // call.elapsed is not yet wired; the rewriter must NOT touch it so
-  // the downstream type-checker can surface the gap.
+test "unknown call.<field> emits A0043 weave diagnostic" {
+  // call.elapsed is not yet wired; the rewriter leaves the expression
+  // intact AND emits A0043 so the user gets a weaver-targeted message
+  // instead of a "call is undeclared" type error (review #1193).
   val src =
     "package P\n" +
     "aspect Trace {\n" +
@@ -466,13 +485,36 @@ func testCallUnknownFieldUnchanged(): Unit {
     "  }\n" +
     "}\n" +
     "func g(): Int { 0 }\n"
-  val woven = parseWeave(src)
-  val wrapper = firstFunction(woven, "g")
+  val wr = parseWeaveDiags(src)
+  val wrapper = firstFunction(wr.file, "g")
   val body    = functionBody(wrapper)
-  // `call.elapsed` should still be present — we deliberately leave
-  // unwired fields alone.
   assertTrue(bodyHasMemberAccess(body, "call", "elapsed"),
-             "call: unknown field call.elapsed left intact")
+             "call.elapsed left intact in AST")
+  assertTrue(diagsHaveCode(wr.diagnostics, "A0043"),
+             "A0043 emitted for unknown call.elapsed")
+}
+
+test "call prelude is omitted when the body never references call.<x>" {
+  // Lazy injection: a wrapper whose body never touches call.* must
+  // not carry __lyric_call_* locals (review #1196 — header comment
+  // promised byte-identical output for non-referencing aspects).
+  val src =
+    "package P\n" +
+    "aspect Pure {\n" +
+    "  matches: name like \"p\"\n" +
+    "  around(args) -> ret { proceed(args) }\n" +
+    "}\n" +
+    "func p(): Int { 0 }\n"
+  val woven = parseWeave(src)
+  val wrapper = firstFunction(woven, "p")
+  val body    = functionBody(wrapper)
+  var saw = false
+  var i = 0
+  while i < body.statements.count {
+    if isValBinding(body.statements[i], "__lyric_call_shortName") { saw = true }
+    i = i + 1
+  }
+  assertTrue(not saw, "no __lyric_call_* prelude when body ignores call.*")
 }
 
 
@@ -480,7 +522,7 @@ func testCallUnknownFieldUnchanged(): Unit {
 // §4. #681 — `@inline_template` args.<field> rewriting + A0042.
 // ─────────────────────────────────────────────────────────────────────────────
 
-func testInlineTemplateRewritesArgs(): Unit {
+test "@inline_template rewrites args.<param> to bare <param>" {
   val src =
     "package P\n" +
     "@inline_template\n" +
@@ -493,22 +535,17 @@ func testInlineTemplateRewritesArgs(): Unit {
     "}\n" +
     "func h(x: in Int): Int { x }\n"
   val wr = parseWeaveDiags(src)
-  // No A0042 — args.x matches a param.
-  var i = 0
-  while i < wr.diagnostics.count {
-    assertTrue(wr.diagnostics[i].code != "A0042",
-               "inline_template: no A0042 for valid args.<param>")
-    i = i + 1
-  }
+  assertTrue(not diagsHaveCode(wr.diagnostics, "A0042"),
+             "no A0042 for valid args.<param>")
   val wrapper = firstFunction(wr.file, "h")
   val body    = functionBody(wrapper)
   assertTrue(not bodyHasMemberAccess(body, "args", "x"),
-             "inline_template: args.x rewritten away")
+             "args.x rewritten away")
   assertTrue(bodyMentionsPath(body, "x"),
-             "inline_template: bare path 'x' present after rewrite")
+             "bare path 'x' present after rewrite")
 }
 
-func testInlineTemplateMissingArgEmitsA0042(): Unit {
+test "@inline_template emits A0042 for args.<missing>" {
   val src =
     "package P\n" +
     "@inline_template\n" +
@@ -521,17 +558,11 @@ func testInlineTemplateMissingArgEmitsA0042(): Unit {
     "}\n" +
     "func h(x: in Int): Int { x }\n"
   val wr = parseWeaveDiags(src)
-  // Expect at least one A0042.
-  var found = false
-  var i = 0
-  while i < wr.diagnostics.count {
-    if wr.diagnostics[i].code == "A0042" { found = true }
-    i = i + 1
-  }
-  assertTrue(found, "inline_template: A0042 emitted for args.unknownField")
+  assertTrue(diagsHaveCode(wr.diagnostics, "A0042"),
+             "A0042 emitted for args.unknownField")
 }
 
-func testNonTemplateLeavesArgsAlone(): Unit {
+test "non-template aspects leave args.<field> alone" {
   // Without @inline_template, args.<field> must pass through unchanged
   // — no rewrite, no A0042 (parity with the F# weaver's contract).
   val src =
@@ -545,33 +576,10 @@ func testNonTemplateLeavesArgsAlone(): Unit {
     "}\n" +
     "func h(x: in Int): Int { x }\n"
   val wr = parseWeaveDiags(src)
-  var i = 0
-  while i < wr.diagnostics.count {
-    assertTrue(wr.diagnostics[i].code != "A0042",
-               "non-template: no A0042 emitted")
-    i = i + 1
-  }
+  assertTrue(not diagsHaveCode(wr.diagnostics, "A0042"),
+             "no A0042 emitted")
   val wrapper = firstFunction(wr.file, "h")
   val body    = functionBody(wrapper)
   assertTrue(bodyHasMemberAccess(body, "args", "x"),
-             "non-template: args.x left intact")
-}
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Test runner.
-// ─────────────────────────────────────────────────────────────────────────────
-
-func main(): Unit {
-  testNoAspectIdentity()
-  testConfigPreludeInjected()
-  testConfigDotRewritten()
-  testConfigSkipsFieldsWithoutDefault()
-  testCallPreludeShortName()
-  testCallDotRewritten()
-  testCallUnknownFieldUnchanged()
-  testInlineTemplateRewritesArgs()
-  testInlineTemplateMissingArgEmitsA0042()
-  testNonTemplateLeavesArgsAlone()
-  println("weaver self-test: ok")
+             "args.x left intact")
 }
