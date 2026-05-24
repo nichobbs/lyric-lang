@@ -1,14 +1,5 @@
 // tests/session_store_tests.l — unit tests for InProcessSessionStore
 // covering the CRUD surface beyond what session_fixation_tests.l covers.
-//
-// NOTE: uses Std.Core helpers (isOk/isErr/isSome/unwrapResultOr/unwrapErrOr/
-// unwrapOr) instead of direct Ok/Err/Some/None constructor patterns to work
-// around an emitter limitation in cross-package Result/Option matching under
-// emitProject (#465).  Where isNone would be expected, `not isSome(opt)` is
-// used instead: early-return Ok(None) sites produce a None whose generic type
-// argument the emitter can't resolve for a direct `case None` isinst check,
-// so the `case None` arm of isNone silently falls through returning false.
-// `not isSome` avoids the nullary-case isinst path entirely.
 
 @test_module
 package Session.SessionStoreTests
@@ -21,212 +12,307 @@ import Session as Session
 
 test "create() returns Ok with a non-empty session ID" {
   val store = Session.inMemory()
-  val cr = store.create()
-  assertTrue(isOk(cr), "create() must succeed")
-  val sid = unwrapResultOr(cr, "")
-  assertTrue(sid.length > 0, "session ID must be non-empty")
+  match store.create() {
+    case Err(e)  -> assertTrue(false, "create() must succeed: " + e.message)
+    case Ok(sid) -> assertTrue(sid.length > 0, "session ID must be non-empty")
+  }
 }
 
 test "create() returns different IDs on successive calls" {
   val store = Session.inMemory()
-  val cr1 = store.create()
-  assertTrue(isOk(cr1), "create() #1 must succeed")
-  val sid1 = unwrapResultOr(cr1, "")
-  val cr2 = store.create()
-  assertTrue(isOk(cr2), "create() #2 must succeed")
-  val sid2 = unwrapResultOr(cr2, "")
-  assertTrue(sid1 != sid2, "successive create() calls must produce distinct IDs")
+  match store.create() {
+    case Err(e) -> assertTrue(false, "create() #1 must succeed: " + e.message)
+    case Ok(sid1) ->
+      match store.create() {
+        case Err(e) -> assertTrue(false, "create() #2 must succeed: " + e.message)
+        case Ok(sid2) ->
+          assertTrue(sid1 != sid2, "successive create() calls must produce distinct IDs")
+      }
+  }
 }
 
 // ─── load() ──────────────────────────────────────────────────────────────────
 
 test "load() after create() returns Some(data)" {
   val store = Session.inMemory()
-  val cr = store.create()
-  assertTrue(isOk(cr), "create() must succeed")
-  val sid = unwrapResultOr(cr, "")
-  val lr = store.load(sid)
-  assertTrue(isOk(lr), "load() must succeed")
-  val opt = unwrapResultOr(lr, None)
-  assertTrue(isSome(opt), "load() must return Some for a just-created session")
-  // Verify the session is usable (set/get round-trip confirms the correct session was loaded).
-  val sr = store.set(sid, "__probe__", "1")
-  assertTrue(isOk(sr), "set() into the loaded session must succeed")
+  match store.create() {
+    case Err(e) -> assertTrue(false, "create() must succeed: " + e.message)
+    case Ok(sid) ->
+      match store.load(sid) {
+        case Err(e) -> assertTrue(false, "load() must succeed: " + e.message)
+        case Ok(opt) ->
+          match opt {
+            case None ->
+              assertTrue(false, "load() must return Some for a just-created session")
+            case Some(_) -> {
+              // Verify the session is usable (set/get round-trip confirms the correct
+              // session was loaded).
+              match store.set(sid, "__probe__", "1") {
+                case Err(e) -> assertTrue(false, "set() into the loaded session must succeed: " + e.message)
+                case Ok(_)  -> ()
+              }
+            }
+          }
+      }
+  }
 }
 
 test "load() for unknown ID returns Ok(None)" {
   val store = Session.inMemory()
-  val lr = store.load("this-id-does-not-exist")
-  assertTrue(isOk(lr), "load() on unknown id must return Ok(None)")
-  val opt = unwrapResultOr(lr, None)
-  assertTrue(not isSome(opt), "load() on unknown id must be None")
+  match store.load("this-id-does-not-exist") {
+    case Err(e) -> assertTrue(false, "load() on unknown id must return Ok(None): " + e.message)
+    case Ok(opt) ->
+      match opt {
+        case Some(_) -> assertTrue(false, "load() on unknown id must be None")
+        case None    -> ()
+      }
+  }
 }
 
 // ─── get() and set() ─────────────────────────────────────────────────────────
 
 test "get() on unknown session returns Ok(None)" {
   val store = Session.inMemory()
-  val gr = store.get("nonexistent-session", "any-key")
-  assertTrue(isOk(gr), "get() on unknown session must be Ok(None)")
-  val opt = unwrapResultOr(gr, None)
-  assertTrue(not isSome(opt), "get() on unknown session must return None")
+  match store.get("nonexistent-session", "any-key") {
+    case Err(e) -> assertTrue(false, "get() on unknown session must be Ok(None): " + e.message)
+    case Ok(opt) ->
+      match opt {
+        case Some(_) -> assertTrue(false, "get() on unknown session must return None")
+        case None    -> ()
+      }
+  }
 }
 
 test "set() then get() round-trip" {
   val store = Session.inMemory()
-  val cr = store.create()
-  assertTrue(isOk(cr), "create() must succeed")
-  val sid = unwrapResultOr(cr, "")
-  val sr = store.set(sid, "username", "alice")
-  assertTrue(isOk(sr), "set() must succeed")
-  val gr = store.get(sid, "username")
-  assertTrue(isOk(gr), "get() must succeed")
-  val opt = unwrapResultOr(gr, None)
-  assertTrue(isSome(opt), "get() must find value after set()")
-  val v = unwrapOr(opt, "")
-  assertEqual(v, "alice", "round-trip value")
+  match store.create() {
+    case Err(e) -> assertTrue(false, "create() must succeed: " + e.message)
+    case Ok(sid) -> {
+      match store.set(sid, "username", "alice") {
+        case Err(e) -> assertTrue(false, "set() must succeed: " + e.message)
+        case Ok(_)  -> ()
+      }
+      match store.get(sid, "username") {
+        case Err(e) -> assertTrue(false, "get() must succeed: " + e.message)
+        case Ok(opt) ->
+          match opt {
+            case None    -> assertTrue(false, "get() must find value after set()")
+            case Some(v) -> assertEqual(v, "alice", "round-trip value")
+          }
+      }
+    }
+  }
 }
 
 test "set() then delete() then get() returns None" {
   val store = Session.inMemory()
-  val cr = store.create()
-  assertTrue(isOk(cr), "create() must succeed")
-  val sid = unwrapResultOr(cr, "")
-  val sr = store.set(sid, "k", "v")
-  assertTrue(isOk(sr), "set() must succeed")
-  val dr = store.delete(sid, "k")
-  assertTrue(isOk(dr), "delete() must succeed")
-  val gr = store.get(sid, "k")
-  assertTrue(isOk(gr), "get() after delete() must return Ok(None)")
-  val opt = unwrapResultOr(gr, None)
-  assertTrue(isNone(opt), "key must be absent after delete()")
+  match store.create() {
+    case Err(e) -> assertTrue(false, "create() must succeed: " + e.message)
+    case Ok(sid) -> {
+      match store.set(sid, "k", "v") {
+        case Err(e) -> assertTrue(false, "set() must succeed: " + e.message)
+        case Ok(_)  -> ()
+      }
+      match store.delete(sid, "k") {
+        case Err(e) -> assertTrue(false, "delete() must succeed: " + e.message)
+        case Ok(_)  -> ()
+      }
+      match store.get(sid, "k") {
+        case Err(e) -> assertTrue(false, "get() after delete() must return Ok(None): " + e.message)
+        case Ok(opt) ->
+          match opt {
+            case Some(_) -> assertTrue(false, "key must be absent after delete()")
+            case None    -> ()
+          }
+      }
+    }
+  }
 }
 
 test "multiple keys in same session are independent" {
   val store = Session.inMemory()
-  val cr = store.create()
-  assertTrue(isOk(cr), "create() must succeed")
-  val sid = unwrapResultOr(cr, "")
-  val sra = store.set(sid, "a", "1")
-  assertTrue(isOk(sra), "set(a) must succeed")
-  val srb = store.set(sid, "b", "2")
-  assertTrue(isOk(srb), "set(b) must succeed")
-  val gra = store.get(sid, "a")
-  assertTrue(isOk(gra), "get(a) must succeed")
-  val optA = unwrapResultOr(gra, None)
-  assertTrue(isSome(optA), "get(a) must find value")
-  val va = unwrapOr(optA, "")
-  val grb = store.get(sid, "b")
-  assertTrue(isOk(grb), "get(b) must succeed")
-  val optB = unwrapResultOr(grb, None)
-  assertTrue(isSome(optB), "get(b) must find value")
-  val vb = unwrapOr(optB, "")
-  assertEqual(va, "1", "key a")
-  assertEqual(vb, "2", "key b")
+  match store.create() {
+    case Err(e) -> assertTrue(false, "create() must succeed: " + e.message)
+    case Ok(sid) -> {
+      match store.set(sid, "a", "1") {
+        case Err(e) -> assertTrue(false, "set(a) must succeed: " + e.message)
+        case Ok(_)  -> ()
+      }
+      match store.set(sid, "b", "2") {
+        case Err(e) -> assertTrue(false, "set(b) must succeed: " + e.message)
+        case Ok(_)  -> ()
+      }
+      match store.get(sid, "a") {
+        case Err(e) -> assertTrue(false, "get(a) must succeed: " + e.message)
+        case Ok(optA) ->
+          match optA {
+            case None     -> assertTrue(false, "get(a) must find value")
+            case Some(va) -> assertEqual(va, "1", "key a")
+          }
+      }
+      match store.get(sid, "b") {
+        case Err(e) -> assertTrue(false, "get(b) must succeed: " + e.message)
+        case Ok(optB) ->
+          match optB {
+            case None     -> assertTrue(false, "get(b) must find value")
+            case Some(vb) -> assertEqual(vb, "2", "key b")
+          }
+      }
+    }
+  }
 }
 
 // ─── destroy() ───────────────────────────────────────────────────────────────
 
 test "destroy() makes session disappear from load()" {
   val store = Session.inMemory()
-  val cr = store.create()
-  assertTrue(isOk(cr), "create() must succeed")
-  val sid = unwrapResultOr(cr, "")
-  val dstr = store.destroy(sid)
-  assertTrue(isOk(dstr), "destroy() must succeed")
-  val lr = store.load(sid)
-  assertTrue(isOk(lr), "load() after destroy() must be Ok(None)")
-  val opt = unwrapResultOr(lr, None)
-  assertTrue(not isSome(opt), "session must not exist after destroy()")
+  match store.create() {
+    case Err(e) -> assertTrue(false, "create() must succeed: " + e.message)
+    case Ok(sid) -> {
+      match store.destroy(sid) {
+        case Err(e) -> assertTrue(false, "destroy() must succeed: " + e.message)
+        case Ok(_)  -> ()
+      }
+      match store.load(sid) {
+        case Err(e) -> assertTrue(false, "load() after destroy() must be Ok(None): " + e.message)
+        case Ok(opt) ->
+          match opt {
+            case Some(_) -> assertTrue(false, "session must not exist after destroy()")
+            case None    -> ()
+          }
+      }
+    }
+  }
 }
 
 // ─── clear() ─────────────────────────────────────────────────────────────────
 
 test "clear() empties all keys but session still exists" {
   val store = Session.inMemory()
-  val cr = store.create()
-  assertTrue(isOk(cr), "create() must succeed")
-  val sid = unwrapResultOr(cr, "")
-  val srx = store.set(sid, "x", "hello")
-  assertTrue(isOk(srx), "set(x) must succeed")
-  val sry = store.set(sid, "y", "world")
-  assertTrue(isOk(sry), "set(y) must succeed")
-  val clr = store.clear(sid)
-  assertTrue(isOk(clr), "clear() must succeed")
-  // Session must still exist.
-  val lr = store.load(sid)
-  assertTrue(isOk(lr), "load() after clear() must succeed")
-  val opt = unwrapResultOr(lr, None)
-  assertTrue(isSome(opt), "session must still exist after clear()")
-  // Verify all keys are absent (observable behaviour rather than internal count).
-  val grx = store.get(sid, "x")
-  assertTrue(isOk(grx), "get(x) after clear() must be Ok")
-  val optX = unwrapResultOr(grx, None)
-  assertTrue(isNone(optX), "key x must be absent after clear()")
-  val gry = store.get(sid, "y")
-  assertTrue(isOk(gry), "get(y) after clear() must be Ok")
-  val optY = unwrapResultOr(gry, None)
-  assertTrue(isNone(optY), "key y must be absent after clear()")
+  match store.create() {
+    case Err(e) -> assertTrue(false, "create() must succeed: " + e.message)
+    case Ok(sid) -> {
+      match store.set(sid, "x", "hello") {
+        case Err(e) -> assertTrue(false, "set(x) must succeed: " + e.message)
+        case Ok(_)  -> ()
+      }
+      match store.set(sid, "y", "world") {
+        case Err(e) -> assertTrue(false, "set(y) must succeed: " + e.message)
+        case Ok(_)  -> ()
+      }
+      match store.clear(sid) {
+        case Err(e) -> assertTrue(false, "clear() must succeed: " + e.message)
+        case Ok(_)  -> ()
+      }
+      // Session must still exist.
+      match store.load(sid) {
+        case Err(e) -> assertTrue(false, "load() after clear() must succeed: " + e.message)
+        case Ok(opt) ->
+          match opt {
+            case None    -> assertTrue(false, "session must still exist after clear()")
+            case Some(_) -> ()
+          }
+      }
+      // Verify all keys are absent (observable behaviour rather than internal count).
+      match store.get(sid, "x") {
+        case Err(e) -> assertTrue(false, "get(x) after clear() must be Ok: " + e.message)
+        case Ok(optX) ->
+          match optX {
+            case Some(_) -> assertTrue(false, "key x must be absent after clear()")
+            case None    -> ()
+          }
+      }
+      match store.get(sid, "y") {
+        case Err(e) -> assertTrue(false, "get(y) after clear() must be Ok: " + e.message)
+        case Ok(optY) ->
+          match optY {
+            case Some(_) -> assertTrue(false, "key y must be absent after clear()")
+            case None    -> ()
+          }
+      }
+    }
+  }
 }
 
 // ─── touch() ─────────────────────────────────────────────────────────────────
 
 test "touch() on existing session returns Ok" {
   val store = Session.inMemory()
-  val cr = store.create()
-  assertTrue(isOk(cr), "create() must succeed")
-  val sid = unwrapResultOr(cr, "")
-  val tr = store.touch(sid)
-  assertTrue(isOk(tr), "touch() on existing session must succeed")
+  match store.create() {
+    case Err(e) -> assertTrue(false, "create() must succeed: " + e.message)
+    case Ok(sid) ->
+      match store.touch(sid) {
+        case Err(e) -> assertTrue(false, "touch() on existing session must succeed: " + e.message)
+        case Ok(_)  -> ()
+      }
+  }
 }
 
 test "touch() on non-existent session returns Ok (no-op)" {
   val store = Session.inMemory()
-  val tr = store.touch("ghost-session-id")
-  assertTrue(isOk(tr), "touch() on non-existent session must be Ok")
+  match store.touch("ghost-session-id") {
+    case Err(e) -> assertTrue(false, "touch() on non-existent session must be Ok: " + e.message)
+    case Ok(_)  -> ()
+  }
 }
 
 // ─── delete() ────────────────────────────────────────────────────────────────
 
 test "delete() on non-existent key is idempotent" {
   val store = Session.inMemory()
-  val cr = store.create()
-  assertTrue(isOk(cr), "create() must succeed")
-  val sid = unwrapResultOr(cr, "")
-  val dr = store.delete(sid, "nope")
-  assertTrue(isOk(dr), "delete() of absent key must be Ok")
+  match store.create() {
+    case Err(e) -> assertTrue(false, "create() must succeed: " + e.message)
+    case Ok(sid) ->
+      match store.delete(sid, "nope") {
+        case Err(e) -> assertTrue(false, "delete() of absent key must be Ok: " + e.message)
+        case Ok(_)  -> ()
+      }
+  }
 }
 
 test "destroy() on non-existent session is idempotent" {
   val store = Session.inMemory()
-  val dr = store.destroy("no-such-session")
-  assertTrue(isOk(dr), "destroy() on absent session must not fail")
+  match store.destroy("no-such-session") {
+    case Err(e) -> assertTrue(false, "destroy() on absent session must not fail: " + e.message)
+    case Ok(_)  -> ()
+  }
 }
 
 // ─── Session isolation ────────────────────────────────────────────────────────
 
 test "two distinct sessions are independent" {
   val store = Session.inMemory()
-  val cr1 = store.create()
-  assertTrue(isOk(cr1), "create() #1 must succeed")
-  val sid1 = unwrapResultOr(cr1, "")
-  val cr2 = store.create()
-  assertTrue(isOk(cr2), "create() #2 must succeed")
-  val sid2 = unwrapResultOr(cr2, "")
-  val sr1 = store.set(sid1, "role", "admin")
-  assertTrue(isOk(sr1), "set(sid1, role) must succeed")
-  val sr2 = store.set(sid2, "role", "guest")
-  assertTrue(isOk(sr2), "set(sid2, role) must succeed")
-  val gr1 = store.get(sid1, "role")
-  assertTrue(isOk(gr1), "get(sid1, role) must succeed")
-  val opt1 = unwrapResultOr(gr1, None)
-  assertTrue(isSome(opt1), "get(sid1, role) must find value")
-  val r1 = unwrapOr(opt1, "")
-  val gr2 = store.get(sid2, "role")
-  assertTrue(isOk(gr2), "get(sid2, role) must succeed")
-  val opt2 = unwrapResultOr(gr2, None)
-  assertTrue(isSome(opt2), "get(sid2, role) must find value")
-  val r2 = unwrapOr(opt2, "")
-  assertEqual(r1, "admin", "session 1 role")
-  assertEqual(r2, "guest", "session 2 role")
+  match store.create() {
+    case Err(e) -> assertTrue(false, "create() #1 must succeed: " + e.message)
+    case Ok(sid1) ->
+      match store.create() {
+        case Err(e) -> assertTrue(false, "create() #2 must succeed: " + e.message)
+        case Ok(sid2) -> {
+          match store.set(sid1, "role", "admin") {
+            case Err(e) -> assertTrue(false, "set(sid1, role) must succeed: " + e.message)
+            case Ok(_)  -> ()
+          }
+          match store.set(sid2, "role", "guest") {
+            case Err(e) -> assertTrue(false, "set(sid2, role) must succeed: " + e.message)
+            case Ok(_)  -> ()
+          }
+          match store.get(sid1, "role") {
+            case Err(e) -> assertTrue(false, "get(sid1, role) must succeed: " + e.message)
+            case Ok(opt1) ->
+              match opt1 {
+                case None     -> assertTrue(false, "get(sid1, role) must find value")
+                case Some(r1) -> assertEqual(r1, "admin", "session 1 role")
+              }
+          }
+          match store.get(sid2, "role") {
+            case Err(e) -> assertTrue(false, "get(sid2, role) must succeed: " + e.message)
+            case Ok(opt2) ->
+              match opt2 {
+                case None     -> assertTrue(false, "get(sid2, role) must find value")
+                case Some(r2) -> assertEqual(r2, "guest", "session 2 role")
+              }
+          }
+        }
+      }
+  }
 }

@@ -3026,9 +3026,24 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             let constructedCtor =
                 TypeBuilder.GetConstructor(constructedCase, caseInfo.Ctor)
             // Now emit each arg, then `Newobj` the constructed ctor.
-            for argExpr in argExprs do
+            // Pin each arg's `ExpectedType` to its substituted Lyric
+            // field type so a nullary inner case (e.g. `None` for a
+            // `T = Option<String>` field of an in-project `Wrap` case)
+            // closes its own type parameters against the surrounding
+            // case's already-resolved `T` rather than falling back to
+            // `obj`.  Mirrors the imported-union path immediately
+            // below and fixes the same cross-package isinst mismatch
+            // (#1140) for in-project generic unions.
+            let substMap =
+                List.zip info.Generics (List.ofArray typeArgs) |> Map.ofList
+            for (f, argExpr) in List.zip caseInfo.Fields argExprs do
+                let substFieldTy =
+                    Lyric.Emitter.TypeMap.toClrTypeWithGenerics
+                        ctx.Lookup substMap f.LyricType
+                let savedExpected = ctx.ExpectedType
+                ctx.ExpectedType <- Some substFieldTy
                 let _ = emitExpr ctx argExpr
-                ()
+                ctx.ExpectedType <- savedExpected
             il.Emit(OpCodes.Newobj, constructedCtor)
             constructedParent
 
@@ -3157,10 +3172,23 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             let substMap =
                 List.zip info.Generics (List.ofArray typeArgs) |> Map.ofList
             for (f, argExpr) in List.zip caseInfo.Fields argExprs do
-                let argTy = emitExpr ctx argExpr
+                // Compute the substituted field type FIRST so we can
+                // pin it as `ExpectedType` while the arg is emitted.
+                // Without this, a nullary inner case (e.g. `None` for
+                // a `T = Option<String>` field of `Ok`) can't see the
+                // surrounding case's resolved `T` — its
+                // `inferTypeArgsFromReturn` rejects `ctx.ReturnType`
+                // (e.g. `Result<…,…>`, arity 2) when its own arity is
+                // 1, falls back to `obj`, and produces an
+                // `Option<obj>$None` that the match-site `isinst
+                // Option<String>$None` can't recognise (#1140).
                 let substFieldTy =
                     Lyric.Emitter.TypeMap.toClrTypeWithGenerics
                         ctx.Lookup substMap f.LyricType
+                let savedExpected = ctx.ExpectedType
+                ctx.ExpectedType <- Some substFieldTy
+                let argTy = emitExpr ctx argExpr
+                ctx.ExpectedType <- savedExpected
                 if not substFieldTy.IsValueType && argTy.IsValueType then
                     il.Emit(OpCodes.Box, argTy)
                 elif substFieldTy.IsValueType && argTy = typeof<obj> then
@@ -4169,7 +4197,44 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                                         else
                                             emitExpr ctx payload
                                     | _ ->
-                                        emitExpr ctx payload
+                                        // Pin `ExpectedType` to the
+                                        // already-resolved substitution
+                                        // of this arg's Lyric param
+                                        // type whenever every type-var
+                                        // in it is bound (e.g. for the
+                                        // `default: T` slot of
+                                        // `unwrapResultOr(gr, None)`,
+                                        // `T = Option<String>` was
+                                        // bound from the preceding `gr`
+                                        // arg, so `None` can close its
+                                        // own `Option[T2]` against
+                                        // `T2 = String`).  Without
+                                        // this hint, a nullary inner
+                                        // case falls back to `obj` and
+                                        // produces an instance the
+                                        // downstream `case None`
+                                        // `isinst` can't recognise
+                                        // (#1140).
+                                        if i < lyricParamTypes.Length
+                                           && allGenericsBound lyricParamTypes.[i] then
+                                            let provSubst =
+                                                List.zip genericNames
+                                                    (bindings
+                                                     |> Array.map (function
+                                                         | Some t -> t
+                                                         | None   -> typeof<obj>)
+                                                     |> List.ofArray)
+                                                |> Map.ofList
+                                            let substArgTy =
+                                                Lyric.Emitter.TypeMap.toClrTypeWithGenerics
+                                                    ctx.Lookup provSubst lyricParamTypes.[i]
+                                            let savedExpected = ctx.ExpectedType
+                                            ctx.ExpectedType <- Some substArgTy
+                                            let r = emitExpr ctx payload
+                                            ctx.ExpectedType <- savedExpected
+                                            r
+                                        else
+                                            emitExpr ctx payload
                                 if i < lyricParamTypes.Length then
                                     bindLyricToClr lyricParamTypes.[i] argTy
                                 let lb = FunctionCtx.defineLocal ctx ("__imp_arg_" + string i) argTy

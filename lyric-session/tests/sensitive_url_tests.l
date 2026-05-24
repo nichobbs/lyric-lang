@@ -14,10 +14,6 @@
 //      StackExchange.Redis is known to surface.  Exercising the function
 //      directly lets us verify the Redis URL path without standing up a
 //      live Redis (#1071).
-//
-// NOTE: uses Std.Core helpers (isErr/unwrapErrOr) instead of direct Ok/Err
-// constructor patterns to work around an emitter limitation in cross-package
-// Result matching under emitProject (#465).
 
 @test_module
 package Session.SensitiveUrlTests
@@ -31,13 +27,15 @@ test "InProcessSessionStore: credential URL never appears in session errors" {
   // the in-memory path produces errors whose text does not embed credential
   // material (defensive belt-and-suspenders check).
   val store = Session.inMemory()
-  val r = store.set("phantom-id", "key", "value")
-  assertTrue(isErr(r), "set() on unknown id should fail")
-  val e = unwrapErrOr(r, SessionError(message = "", code = ""))
-  assertTrue(not e.message.contains("s3cr3t"),
-    "session error must not contain password substring: " + e.message)
-  assertTrue(not e.message.contains("redis://:s3cr3t@127.0.0.1:56789/0"),
-    "session error must not echo the full URL: " + e.message)
+  match store.set("phantom-id", "key", "value") {
+    case Ok(_) -> assertTrue(false, "set() on unknown id should fail")
+    case Err(e) -> {
+      assertTrue(not e.message.contains("s3cr3t"),
+        "session error must not contain password substring: " + e.message)
+      assertTrue(not e.message.contains("redis://:s3cr3t@127.0.0.1:56789/0"),
+        "session error must not echo the full URL: " + e.message)
+    }
+  }
 }
 
 // ─── maskUrlCredentials: pure-function unit coverage (#1071) ─────────────────
@@ -106,14 +104,15 @@ test "maskUrlCredentials handles Unicode-bearing passwords" {
 
 test "session destroy errors (if any) do not embed url field value" {
   val store = Session.inMemory()
-  val r = store.destroy("no-such-session")
   // destroy() on a non-existent session is a no-op (Ok); only check if Err.
-  if isErr(r) {
-    val e = unwrapErrOr(r, SessionError(message = "", code = ""))
-    assertTrue(not e.message.contains("s3cr3t"),
-      "destroy error must not contain password: " + e.message)
-    assertTrue(not e.code.contains("s3cr3t"),
-      "destroy error code must not contain password: " + e.code)
+  match store.destroy("no-such-session") {
+    case Ok(_) -> ()
+    case Err(e) -> {
+      assertTrue(not e.message.contains("s3cr3t"),
+        "destroy error must not contain password: " + e.message)
+      assertTrue(not e.code.contains("s3cr3t"),
+        "destroy error code must not contain password: " + e.code)
+    }
   }
 }
 
@@ -121,11 +120,12 @@ test "session error codes do not embed url field value" {
   // Verify that error codes from session operations are fixed strings,
   // not constructed from config values (which could include credentials).
   val store = Session.inMemory()
-  val r = store.load("nonexistent")
   // load() on a nonexistent id returns Ok(None); only check Err if present.
-  if isErr(r) {
-    val e = unwrapErrOr(r, SessionError(message = "", code = ""))
-    assertTrue(e.code.length > 0, "error code must be non-empty")
-    assertTrue(not e.code.contains("s3cr3t"), "error code must not contain credential")
+  match store.load("nonexistent") {
+    case Ok(_) -> ()
+    case Err(e) -> {
+      assertTrue(e.code.length > 0, "error code must be non-empty")
+      assertTrue(not e.code.contains("s3cr3t"), "error code must not contain credential")
+    }
   }
 }

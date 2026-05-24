@@ -28,6 +28,7 @@
     <Compile Include="OpaqueTypeTests.fs" />
     <Compile Include="MultiPackageTests.fs" />
     <Compile Include="CrossAssemblyGenericTests.fs" />
+    <Compile Include="CrossPackageOptionMatchTests.fs" />
     <Compile Include="WhereClauseTests.fs" />
     <Compile Include="NullaryInferenceTests.fs" />
     <Compile Include="GenericUnionTests.fs" />
