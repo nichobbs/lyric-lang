@@ -1,22 +1,33 @@
 // std/_kernel_jvm/regex_host.l — JVM kernel boundary for regex.
 //
-// Mirrors _kernel/regex_host.l for the JVM target.  All operations route
-// through lyric.stdlib.jvm.RegexHost, which wraps java.util.regex.Pattern
-// inside a JvmPattern envelope that carries the match timeout.
+// Mirrors _kernel/regex_host.l for the JVM target.  All operations that
+// require two Java API calls (Pattern.matcher(input) + find/replaceAll)
+// route through lyric.stdlib.jvm.RegexHost shims, which already exist in
+// the stdlib shim JAR and are used by Std.RegexSafe on the JVM path.
 //
-// java.util.regex.Pattern has no native match timeout.  The Phase 6
-// lyric.stdlib.jvm.RegexHost shim implements timeout enforcement via a
-// daemon thread that interrupts Matcher.find() after the configured deadline.
-// The interrupted Matcher throws RuntimeException (message contains "time-out")
-// so the Std.Regex isTimeout classifier treats it identically to the .NET
-// RegexMatchTimeoutException.
+// java.util.regex.Pattern has no native match timeout.
 //
-// Functions are prefixed `host*` following the Std.HttpHost convention so
-// that the public wrapper `std/regex.l` can call `RxHost.hostCompile(...)` etc.
-// without triggering name-shadowing recursion.
+// **KNOWN GAP — ReDoS vulnerability on JVM (#330):**
+// Unlike the .NET kernel which compiles every pattern with a
+// 1-second matchTimeout via the 3-arg Regex ctor, Pattern has
+// no timeout mechanism.  Adversarial patterns like `(a+)+$` against
+// long input can hang the matching thread indefinitely on JVM.
 //
-// JvmPattern stores both the compiled Pattern and the timeout duration so
-// match operations can enforce the deadline without extra parameters.
+// A proper fix requires a host-side shim that wraps Pattern in a
+// JvmPattern envelope and runs Matcher.find() on a daemon thread,
+// interrupting after the configured deadline.  That work is tracked
+// in #1103 (Phase 6 JVM regex timeout shim).  Until it lands:
+//   - hostCompile returns a raw java.util.regex.Pattern with no timeout.
+//   - hostCompileWithTimeout accepts a seconds parameter but ignores it;
+//     the lyric.stdlib.jvm.RegexHost.compileWithTimeout shim stub calls
+//     Pattern.compile(pattern) and discards seconds.  The stub must be
+//     added to the stdlib shim JAR alongside isMatch / matchOne / replace.
+//   - The isTimeout classifier in Std.Regex / Std.RegexSafe will never
+//     trigger on JVM until the daemon-thread shim is in place.
+//
+// Functions are prefixed `host*` following the Std.HttpHost convention
+// to prevent name-shadowing recursion when Std.Regex (std/regex.l)
+// calls RxHost.hostCompile(...) etc.
 //
 // The public Lyric API lives in std/regex.l (Std.Regex).  Import
 // Std.RegexHost only in stdlib internals that need the raw JVM types.
@@ -26,18 +37,22 @@ package Std.RegexHost
 
 import Std.Core
 
-// JvmPattern wraps java.util.regex.Pattern + a timeout duration.
-// Compiled by RegexHost.hostCompile / RegexHost.hostCompileWithTimeout.
-extern type Regex = "lyric.stdlib.jvm.JvmPattern"
-extern type Match = "lyric.stdlib.jvm.JvmMatcher"
+// java.util.regex.Pattern — compiled regex (existing JDK type).
+// java.util.regex.Matcher — stateful match cursor (existing JDK type).
+extern type Regex = "java.util.regex.Pattern"
+extern type Match = "java.util.regex.Matcher"
 
 // ─── Compilation ─────────────────────────────────────────────────────────────
 
-// Default 1-second match timeout.
-@externTarget("lyric.stdlib.jvm.RegexHost.compile")
+// Default compile: routes to java.util.regex.Pattern.compile(String).
+// No timeout protection — see KNOWN GAP above.
+@externTarget("java.util.regex.Pattern.compile")
 pub func hostCompile(pattern: in String): Regex = ()
 
-// Custom timeout in seconds (must be positive).
+// Custom-timeout compile: timeout parameter is accepted but IGNORED on JVM
+// until the daemon-thread shim (#1103) lands.  Routes to a RegexHost stub
+// that calls Pattern.compile(pattern) and discards seconds.  The stub must
+// be added to the stdlib shim JAR; see #1103.
 @externTarget("lyric.stdlib.jvm.RegexHost.compileWithTimeout")
 pub func hostCompileWithTimeout(pattern: in String, seconds: in Double): Regex
   requires: seconds > 0.0
@@ -45,26 +60,23 @@ pub func hostCompileWithTimeout(pattern: in String, seconds: in Double): Regex
 
 // ─── Match operations ────────────────────────────────────────────────────────
 //
-// Each operation extracts the timeout from the JvmPattern envelope and runs
-// Matcher.find() / replaceAll() on a daemon thread, interrupting after the
-// deadline.  On timeout the shim throws RuntimeException with a message
-// containing "time-out" so the isTimeout detector in Std.Regex classifies it.
+// Shims exist in the stdlib shim JAR:
+//   isMatch  — Pattern.matcher(input).find()
+//   matchOne — Pattern.matcher(input); advances with find(); returns Matcher
+//   replace  — Pattern.matcher(input).replaceAll(replacement)
 
-// Returns true when the pattern matches anywhere in input.
 @externTarget("lyric.stdlib.jvm.RegexHost.isMatch")
 pub func hostIsMatch(r: in Regex, input: in String): Bool = ()
 
-// Returns the first match as a JvmMatcher.  Callers check m.success.
 @externTarget("lyric.stdlib.jvm.RegexHost.matchOne")
 pub func hostMatchOne(r: in Regex, input: in String): Match = ()
 
-// Replaces all non-overlapping occurrences of the pattern.
 @externTarget("lyric.stdlib.jvm.RegexHost.replace")
 pub func hostReplace(r: in Regex, input: in String, replacement: in String): String = ()
 
 // ─── Match inspection ────────────────────────────────────────────────────────
 //
-// After hostMatchOne(r, input), inspect the JvmMatcher via:
+// After hostMatchOne(r, input), inspect the Matcher via:
 //   m.success  — whether find() returned true
 //   m.value    — Matcher.group()   (full matched text)
 //   m.index    — Matcher.start()   (byte offset of match start)

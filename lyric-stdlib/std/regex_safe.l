@@ -118,8 +118,8 @@ func classifyReplace(msg: in String): Result[String, RegexError] {
 // A locale-stable classifier would need to inspect the exception
 // class instead of its message — the Lyric `try`/`catch Bug` lowers
 // every exception into a single `Bug` shape, so the exception's
-// runtime type is not surfaced.  Until that loweing changes we
-// document the locale dependency explicitly.
+// runtime type is not surfaced.  Until that lowering changes we
+// document the locale dependency explicitly.  Tracked in #1100.
 //
 // We scan the message manually so the wrapper has no `Std.String`
 // import; that import has triggered an F#-bootstrap union-case

@@ -100,19 +100,29 @@ func testErrorMessageInvalidPattern(): Unit {
 
 // ─── ReDoS guard ────────────────────────────────────────────────────────────
 //
-// A catastrophic-backtracking pattern with a short timeout must return
-// an Err rather than hanging indefinitely.  We accept either TimedOut or
-// InvalidPattern because the BCL / JVM exception message is locale-sensitive
-// and the isTimeout classifier only handles the en-US "time-out" phrase.
-// The important guarantee is that the match returns at all — not that it hangs.
+// Verify that a catastrophic-backtracking pattern returns rather than
+// hanging indefinitely.  The expected outcome varies by platform:
+//   .NET — Err(TimedOut) or Err(InvalidPattern): the 3-arg Regex ctor bakes
+//          in the 100ms timeout; the match must return an Err.  On non-en-US
+//          runtimes the BCL message won't contain "time-out", so the classifier
+//          falls back to InvalidPattern (#1100 — locale-stable classifier
+//          is a follow-up).
+//   JVM  — Ok(false) is currently permissible: java.util.regex.Pattern has no
+//          timeout mechanism until the daemon-thread shim lands (#1103).  The
+//          Ok branch logs a warning; an Ok result is NOT a pass for correctness
+//          but IS acceptable while #1103 is open.
+//
+// In all cases the important guarantee is "match returns at all — not that it
+// hangs".  The Ok branch is therefore a documented permissible outcome, not a
+// silent false-pass.
 //
 // Uses compileWithTimeout(0.1) rather than the 1-second default so the test
 // costs ~100 ms in CI instead of ~1 s.
 //
 // Guard against false-pass (#843 pattern): a `try { … } catch Bug` block would
 // silently swallow a failing `assertTrue(false, …)` (assertions panic as Bug
-// too).  We use `tryIsMatch` which wraps the timeout in a Result, so the
-// assertion fires outside the catch scope.
+// too).  We use `tryIsMatch` which wraps the timeout in a Result, so any
+// assertion inside fires outside the catch scope.
 func testReDoSTimeoutFires(): Unit {
   var hostile = ""
   var i = 0
@@ -124,7 +134,7 @@ func testReDoSTimeoutFires(): Unit {
   val r = Re.compileWithTimeout("(a+)+$", 0.1)
   match Re.tryIsMatch(r, hostile) {
     case Ok(matched) ->
-      println("testReDoSTimeoutFires: match returned " + toString(matched) + " (no timeout on this host)")
+      println("testReDoSTimeoutFires: match returned " + toString(matched) + " (JVM — no timeout until #1103)")
     case Err(_) -> ()
   }
 }
