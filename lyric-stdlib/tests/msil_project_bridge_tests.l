@@ -237,6 +237,44 @@ func testCrossPackageRecordValueRoundTrip(): Unit {
     "cross_package_record_value_round_trip: stdout matches expected")
 }
 
+// PROBE (#1183 codegen port investigation): if we bundle Std.Core source
+// AS an in-bundle package, does the existing cross-package machinery let
+// user code construct + match Std.Core union cases like `Some` / `None`?
+//
+// This bypasses the "ImportedUnionCases" reflection-based path the F#
+// emitter uses (we don't have CLR reflection in pure Lyric).  If it
+// works, we have a simpler route to retiring the F# subprocess: just
+// inline the stdlib into the bundle.
+func testProbeInlineStdCoreOptionMatch(): Unit {
+  // Minimal Std.Core-shaped source (just enough for Option + Some + None).
+  val stdCoreSource =
+    "@stable(since=\"1.0\")\n" +
+    "package Std.Core\n" +
+    "\n" +
+    "pub generic[T] union Option {\n" +
+    "  case Some(value: T)\n" +
+    "  case None\n" +
+    "}\n"
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("Std.Core", stdCoreSource))
+  packages.add(mkPkg("InlineStdCoreUser.App",
+    "package InlineStdCoreUser.App\n" +
+    "import Std.Core\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  val s = Some(value = 42)\n" +
+    "  match s {\n" +
+    "    case Some(v) -> println(v)\n" +
+    "    case None    -> println(0)\n" +
+    "  }\n" +
+    "}\n"))
+  val result = compileAndRun("inline-std-core", packages, "InlineStdCoreUser")
+  assertEqualInt(result.exitCode, 0,
+    "probe_inline_std_core_option_match: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42",
+    "probe_inline_std_core_option_match: stdout matches expected")
+}
+
 // ─── Phase 4: in-process routing through Lyric.Emitter.emitProject ──────────
 //
 // The tests above call Msil.Bridge.compileProjectToMsil directly.  Phase 4

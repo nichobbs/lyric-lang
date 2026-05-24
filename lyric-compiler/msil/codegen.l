@@ -134,6 +134,17 @@ pub record CodegenCtx {
   // `lowerBuiltinOrStaticCallMsil` can fall back to each imported package's
   // FQN-keyed funcs when a bare call doesn't match the current package.
   pkgImports:         Map[String, List[String]]
+  // Cross-package union case lookup (#1183 codegen port).  Maps a union
+  // case's simple name (e.g. "Some") to its FQN ctor key
+  // (e.g. "Std.Core.Option$Some") so the construction site can resolve
+  // calls like `Some(value = 42)` from a package that imports the union
+  // rather than declares it.  `recordCtorTokens` is keyed by the FQN, so
+  // a successful lookup here yields the key for the existing token table.
+  // When two unions in different packages share a simple case name, the
+  // last-processed wins (deterministic by addPackageTokens order).  Same
+  // for the parallel `unionCaseFqnByName` which `lowerMatch` uses to
+  // resolve `isinst` against the case TypeDef.
+  unionCaseCtorByName: Map[String, String]
 }
 
 // One impl block (`impl Iface for Target { … }`) captured by the pre-pass.
@@ -443,7 +454,8 @@ pub func newCodegenCtx(packageName: in String): CodegenCtx {
     nextMethodDefRow     = newList(),
     nextFieldDefRow      = newList(),
     mainEntryToken       = newList(),
-    pkgImports           = newMap())
+    pkgImports           = newMap(),
+    unionCaseCtorByName  = newMap())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -651,6 +663,16 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
             fi = fi + 1
           }
           cctx.recordCtorTokens.add(caseName, 0x06000000 + methodDefRow)
+          // Index by simple case name for cross-package construction
+          // (#1183 codegen port).  Allows a user package to write
+          // `Some(value = X)` after `import Std.Core` even though the
+          // case ctor lives under the imported package's FQN.  First
+          // hit wins on collisions (Dictionary.Add throws on duplicates,
+          // so we guard with containsKey).  Same-name cases across
+          // different unions are vanishingly rare in practice.
+          if not cctx.unionCaseCtorByName.containsKey(c.name) {
+            cctx.unionCaseCtorByName.add(c.name, caseName)
+          }
           methodDefRow = methodDefRow + 1
           ci = ci + 1
         }
@@ -2268,7 +2290,25 @@ func lowerBuiltinOrStaticCallMsil(
     // Check recordCtorTokens before funcTokens so that record names are handled
     // even when they shadow a same-named function (which is disallowed by the
     // type checker anyway).
-    val ctorKey = fctx.pkgName + "." + funcName
+    //
+    // Two-step resolution (#1183 codegen port):
+    //   1. Local pkg key `<pkg>.<name>` — same-package record / union case.
+    //   2. Cross-package union-case lookup via `unionCaseCtorByName[name]`
+    //      — yields the FQN ctor key for an imported union case, e.g.
+    //      `Std.Core.Option$Some`.  Lets `Some(value = X)` resolve when
+    //      the user package imports the union rather than declaring it.
+    val localCtorKey = fctx.pkgName + "." + funcName
+    val resolvedCtorKey =
+      if cctx.recordCtorTokens.containsKey(localCtorKey) {
+        localCtorKey
+      } else {
+        match mapGet(cctx.unionCaseCtorByName, funcName) {
+          case Some(fqn) -> fqn
+          case None      -> ""
+        }
+      }
+    val ctorKey = if resolvedCtorKey.length > 0 { resolvedCtorKey }
+                  else                          { localCtorKey }
     match mapGet(cctx.recordCtorTokens, ctorKey) {
       case Some(ctorTok) -> {
         var ci = 0
