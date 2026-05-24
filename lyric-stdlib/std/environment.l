@@ -65,3 +65,27 @@ pub func args(): slice[String] {
 pub func exitCode(code: in Int): Never {
   hostExit(code)
 }
+
+/// Directory containing the currently-executing assembly.  Used by the
+/// self-hosted compiler bridges to locate `lyric-stdlib/` and other
+/// repo-relative resources at runtime.  Mirrors the F# bootstrap shim
+/// `Lyric.Cli.SelfHostedBridge.findStdlibSources` so the in-process
+/// MSIL bridge can drop its empty-stdlibSources approximation.
+///
+/// Returns the host's notion of the app base directory; on .NET this is
+/// `System.AppContext.BaseDirectory`, which is the directory containing
+/// the entry assembly.
+@stable(since="0.1")
+pub func appBaseDirectory(): String {
+  hostAppBaseDirectory()
+}
+
+/// Current working directory of the process.  Equivalent to `pwd` on
+/// POSIX.  Used by the self-hosted compiler bridges as a fallback when
+/// `appBaseDirectory()` doesn't sit beneath a tree that exposes
+/// `lyric-stdlib/` (e.g. when the running DLL lives in a temp directory
+/// during tests).
+@stable(since="0.1")
+pub func currentDirectory(): String {
+  hostCurrentDirectory()
+}

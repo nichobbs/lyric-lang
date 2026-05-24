@@ -138,7 +138,13 @@ let tests =
             //               timeout-aware capture entry point for
             //               `Std.Process.runCapture` / `runCaptureWithInput`
             //               (#1023 / #743).
-            Expect.isLessThanOrEqual total 303
+            //   303 → 305 — `Std.EnvironmentHost.hostAppBaseDirectory` +
+            //               `hostCurrentDirectory` for #1183 Phase 5: the
+            //               in-process MSIL bridge's `findStdlibSources`
+            //               needs to locate `lyric-stdlib/std/` at runtime
+            //               (replaces the F# `SelfHostedBridge.findStdlibSources`
+            //               shim).
+            Expect.isLessThanOrEqual total 305
                 "total extern surface unexpectedly large"
         }
     ]

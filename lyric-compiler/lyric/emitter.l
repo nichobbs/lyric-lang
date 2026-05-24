@@ -124,6 +124,90 @@ func tempBase(): String {
       Environment.getVarOrDefault("TMP", "/tmp")))
 }
 
+// Walk up from `start` looking for a directory whose direct child
+// `lyric-stdlib/std/` exists.  Returns "" if no such ancestor is found
+// within 32 hops.  Used by `findStdlibSources` to try multiple anchor
+// points (app-base directory first, then CWD).
+func walkUpForStdlib(start: in String): String {
+  if start.length == 0 { return "" }
+  var dir = start
+  var hop = 0
+  while hop < 32 {
+    val candidate = Path.join(Path.join(dir, "lyric-stdlib"), "std")
+    if File.dirExists(candidate) { return candidate }
+    val parent = Path.dirname(dir)
+    if parent.length == 0 or parent == dir { return "" }
+    dir = parent
+    hop = hop + 1
+  }
+  ""
+}
+
+// Locate the `lyric-stdlib/std/` directory at runtime, then read every
+// top-level `*.l` source file (excluding the `_kernel/` subdirectory —
+// those files contain extern declarations that aren't meaningful when
+// surfaced to the parser as plain items).
+//
+// Probes (in order):
+//   1. `$LYRIC_STD_PATH` if set — explicit override for installers /
+//      CI scripts.
+//   2. Walk up from `Std.Environment.appBaseDirectory()` — the
+//      production CLI path, where the AOT binary's parent eventually
+//      contains `lyric-stdlib/`.
+//   3. Walk up from `Std.Environment.currentDirectory()` — the
+//      development path, when the running DLL lives in a temp
+//      directory but the shell that invoked it sits inside the repo.
+//
+// Returns the file contents as a `List[String]`.  Returns an empty list
+// when the stdlib directory cannot be located (graceful degradation —
+// callers fall back to advisory-only type checking, same as the F#
+// `findStdlibSources` shim).
+//
+// Mirrors `bootstrap/src/Lyric.Cli/SelfHostedBridge.fs::findStdlibSources`
+// and supersedes it on the in-process bridge path.  Tracked in #1183 as
+// the change that removes the F# stdlib-source shim from the bridge
+// surface.
+func findStdlibSources(): List[String] {
+  val sources: List[String] = newList()
+  // 1. Explicit override.
+  var stdlibDir = ""
+  val envOverride = Environment.getVarOrDefault("LYRIC_STD_PATH", "")
+  if envOverride.length > 0 and File.dirExists(envOverride) {
+    stdlibDir = envOverride
+  }
+  // 2. AppContext.BaseDirectory walk.
+  if stdlibDir.length == 0 {
+    stdlibDir = walkUpForStdlib(Environment.appBaseDirectory())
+  }
+  // 3. CWD walk (typical for development / tests).
+  if stdlibDir.length == 0 {
+    stdlibDir = walkUpForStdlib(Environment.currentDirectory())
+  }
+  if stdlibDir.length == 0 { return sources }
+  // Read every top-level `*.l` file.  `listFilesRecursive` returns paths
+  // under the directory; filter to the immediate children with `.l`
+  // extensions so we don't pull in `_kernel/`.
+  val files = match File.listFilesRecursive(stdlibDir) {
+    case Ok(fs)  -> fs
+    case Err(_)  -> newList()
+  }
+  var fi = 0
+  while fi < files.count {
+    val f = files[fi]
+    // Only the top-level `.l` files: skip anything under `_kernel/` (or
+    // any other subdirectory).  Compare against `stdlibDir` to detect
+    // immediate children.
+    if Path.dirname(f) == stdlibDir and Str.endsWith(f, ".l") {
+      match File.readText(f) {
+        case Ok(text) -> sources.add(text)
+        case Err(_)   -> ()  // skip unreadable files, same as the F# shim
+      }
+    }
+    fi = fi + 1
+  }
+  sources
+}
+
 // Write `source` to a temp file so `--internal-build` can read it.
 // Returns the file path, or an IOError if the write fails.
 func writeTempSource(source: in String, assemblyName: in String): Result[String, IOError] {
@@ -214,12 +298,15 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
     payloads.add(ProjectPackagePayload(name = pkg.name, source = combined))
     pi += 1
   }
-  // Band 6 stdlib sources are not yet propagated to the in-process bridge
-  // (no Lyric equivalent of SelfHostedBridge.findStdlibSources); pass an
-  // empty list.  The subprocess fallback handles cross-package stdlib type
-  // imports when a project needs them.
-  val emptyStdlib: List[String] = newList()
-  val ok = MsilBridge.compileProjectToMsil(payloads, req.assemblyName, req.outputPath, emptyStdlib)
+  // Auto-resolve `lyric-stdlib/std/*.l` at runtime so the in-process bridge
+  // sees Std.Core / Std.Collections / etc. types at typecheck.  Without
+  // this the typechecker rejects user code that imports `Std.Core`
+  // (T0010 / T0020 on `Result`, `Option`, `Ok`, `None`, …) and the
+  // codegen falls back to obj-typed handling, which silently miscompiles
+  // cross-package union dispatch (#1140-style).  Mirrors the F# bootstrap
+  // `Lyric.Cli.SelfHostedBridge.findStdlibSources` helper.
+  val stdlibSources = findStdlibSources()
+  val ok = MsilBridge.compileProjectToMsil(payloads, req.assemblyName, req.outputPath, stdlibSources)
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
@@ -383,10 +470,12 @@ func useSubprocessFallback(): Bool {
 // bridge returns true on success and false on any error (parse,
 // type-check, mode-check, codegen).
 func emitMsilInProcess(req: in EmitRequest): EmitResult {
-  // Band 6 stdlib sources are not yet available from within the self-hosted
-  // CLI path (no Lyric equivalent of SelfHostedBridge.findStdlibSources).
-  // Pass an empty list; the F# shim paths populate this correctly.
-  val ok = MsilBridge.compileToMsil(req.source, req.outputPath, newList())
+  // Auto-resolve `lyric-stdlib/std/*.l` so the bridge's typechecker sees
+  // stdlib types at typecheck.  Mirrors the F# bootstrap shim
+  // `Lyric.Cli.SelfHostedBridge.findStdlibSources` — see the parallel
+  // comment in `emitProjectInProcess` for the rationale.
+  val stdlibSources = findStdlibSources()
+  val ok = MsilBridge.compileToMsil(req.source, req.outputPath, stdlibSources)
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
