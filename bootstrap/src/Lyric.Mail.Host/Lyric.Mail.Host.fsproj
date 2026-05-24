@@ -1,8 +1,0 @@
-<Project Sdk="Microsoft.NET.Sdk">
-
-  <!-- MailHost.fs has been deleted: all SMTP BCL orchestration is now
-       expressed directly in lyric-mail/src/mail.l using extern types
-       and try/catch (issue #1054). This project is retained as a
-       placeholder until the solution file is restructured. -->
-
-</Project>
