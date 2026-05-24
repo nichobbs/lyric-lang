@@ -311,11 +311,6 @@ immediately, not as a state to wait through.
 
 #### Watching an open PR
 
-`.github/workflows/auto-rebase.yml` rebases every open PR onto `main`
-on each push to `main`, but it only performs *clean* rebases — if a
-PR has conflicts the action skips it and the branch stays in a
-conflicted state.  Don't wait for the user to flag the conflict.
-
 Treat **any of these signals** as a cue to fetch `main` and rebase
 the open PR:
 
