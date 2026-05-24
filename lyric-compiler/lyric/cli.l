@@ -2441,45 +2441,10 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
       ti += 1
       continue
     }
-    // Copy any stdlib DLLs compiled on-demand (in /tmp/lyric-stdlib-<pid>/)
-    // into the test output directory so `dotnet exec` can resolve them via
-    // app base directory probing.  additionalProbingPaths only probes NuGet
-    // package-layout paths, not flat directories, so the DLLs must be
-    // collocated with the test DLL.  The F# emitter puts per-package stdlib
-    // DLLs (e.g. Lyric.Stdlib.Time.dll) in a per-PID temp dir during
-    // --internal-project-build; they stay on disk after the subprocess exits.
-    match File.listDirs("/tmp") {
-      case Err(_) -> ()
-      case Ok(tmpEntries) -> {
-        for d in tmpEntries.toArray() {
-          val dbase = Path.basename(d)
-          if Str.startsWith(dbase, "lyric-stdlib-") {
-            match File.listFiles(d) {
-              case Err(_) -> ()
-              case Ok(dllFiles) -> {
-                for f in dllFiles.toArray() {
-                  val fname = Path.basename(f)
-                  if Str.endsWith(fname, ".dll") {
-                    val dst = Path.join(testOutDir, fname)
-                    if not File.fileExists(dst) {
-                      match File.readBytes(f) {
-                        case Err(_) -> ()
-                        case Ok(bytes) -> {
-                          match File.writeBytes(dst, bytes) {
-                            case Err(_) -> ()
-                            case Ok(_)  -> ()
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
+    // Stdlib DLLs compiled on-demand during --internal-project-build are
+    // already in testOutDir: Program.fs copies every DLL from the
+    // subprocess's per-PID stdlib cache to Path.GetDirectoryName(outPath)
+    // before the subprocess exits.  No /tmp scanning needed here.
     writeRuntimeConfigWithProbing(outPath, depBinDirs)
 
     val execArgs: List[String] = newList()

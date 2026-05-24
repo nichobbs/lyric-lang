@@ -280,6 +280,22 @@ let private internalProjectBuild (rest: string list) : int =
             1
         else
             writeRuntimeConfig outPath
+            // Copy every stdlib DLL that was compiled into the subprocess's
+            // per-PID cache into the output directory.  This makes them
+            // visible to `dotnet exec` via app base directory probing without
+            // requiring the caller to scan any world-writable directory.
+            match Option.ofObj (Path.GetDirectoryName outPath) with
+            | Some outDir when not (String.IsNullOrEmpty outDir) ->
+                let cacheDir = Emitter.stdlibCacheDir
+                if Directory.Exists cacheDir then
+                    for dll in Directory.GetFiles(cacheDir, "*.dll") do
+                        match Option.ofObj (Path.GetFileName dll) with
+                        | Some fname ->
+                            let dst = Path.Combine(outDir, fname)
+                            if not (File.Exists dst) then
+                                File.Copy(dll, dst)
+                        | None -> ()
+            | _ -> ()
             0
 
 /// `lyric --internal-manifest-build <lyric.toml> -o <outFile> [--target dotnet|jvm]`

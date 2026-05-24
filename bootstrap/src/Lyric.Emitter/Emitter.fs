@@ -5598,7 +5598,10 @@ let private restoredToStdlib (ra: RestoredPackages.RestoredArtifact) : StdlibArt
 
 /// The shared cache directory for compiled stdlib artifacts.  Per-
 /// process so concurrent test runs don't trample each other.
-let private stdlibCacheDir : string =
+/// Exposed (non-private) so the `--internal-project-build` handler in
+/// Program.fs can copy the compiled DLLs to the caller's output directory
+/// after a successful project build, avoiding any /tmp glob scan.
+let stdlibCacheDir : string =
     let pid = System.Diagnostics.Process.GetCurrentProcess().Id
     let dir = Path.Combine(Path.GetTempPath(), sprintf "lyric-stdlib-%d" pid)
     Directory.CreateDirectory dir |> ignore
