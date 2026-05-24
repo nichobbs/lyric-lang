@@ -76,9 +76,13 @@ pub record CaptureResult {
 /// Spawn `executable` with `args`, write `stdinContent` to its stdin,
 /// and return the captured stdout.  Returns `""` on spawn failure.
 ///
-/// `stderr`, exit code, and timeout status are discarded; use
-/// `runCaptureWithDiagnostics` when callers need to distinguish
-/// process failures from empty output or surface stderr text.
+/// Stderr from the child process is silently discarded; use
+/// `runCaptureWithDiagnostics` to capture it (along with exit code and
+/// timeout status) when callers need to distinguish process failures
+/// from empty output or surface diagnostic text.  Spawn failure
+/// (executable not found, permission denied, etc.) is also silently
+/// absorbed and surfaces as an empty string — `runCaptureWithDiagnostics`
+/// reports it via `exitCode == -1` instead (#743).
 @stable(since="1.0")
 pub func runCapture(executable: in String, args: in List[String], stdinContent: in String): String {
   val argStr = buildArgString(args)

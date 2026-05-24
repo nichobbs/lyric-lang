@@ -90,6 +90,15 @@ pub record MailError {
 
 /// An email sender.  Obtain one with `connectSmtp()`, `connectSes()`, or
 /// `connectSendGrid()`.  Close it with `sender.close()` when done.
+///
+/// **Provider-capability gaps.**  The SMTP backend (`NativeSender`)
+/// does not yet forward `EmailMessage.attachments` — the BCL
+/// `Attachment` extern type and the `ContentDisposition` wiring needed
+/// to compose MIME parts are still pending.  Callers passing a
+/// non-empty `attachments` slice through the SMTP backend will trip
+/// the `requires:` clause on `NativeSender.send` and panic at the
+/// contract boundary instead of silently dropping the data (#1118).
+/// Tracked end-to-end in #780.
 @stable(since="0.1")
 pub interface MailSender {
   /// Send a single email message.
@@ -113,9 +122,14 @@ impl MailSender for NativeSender {
   /// forwarded to the corresponding `MailAddressCollection`s.
   ///
   /// `attachments` are currently **not** forwarded — they require a
-  /// new BCL `Attachment` extern type and ContentDisposition wiring.
-  /// Tracked in #1118.
-  func send(msg: in EmailMessage): Result[Unit, MailError] {
+  /// new BCL `Attachment` extern type and ContentDisposition wiring,
+  /// tracked in #780.  Until the kernel surface lands, the
+  /// `requires: msg.attachments.length == 0` clause below trips on
+  /// attempted use so callers see a contract violation rather than
+  /// silently lose attachments at the SMTP boundary (#1118).
+  func send(msg: in EmailMessage): Result[Unit, MailError]
+    requires: msg.attachments.length == 0
+  {
     // Gap 2: try/catch wraps BCL calls into Result[T, MailError].
     try {
       val mailMsg   = MailKernel.newMailMessage()

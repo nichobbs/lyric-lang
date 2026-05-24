@@ -53,8 +53,26 @@ pub func hostRunCapture(executable: in String, arguments: in String, stdinConten
 // (#1023 / #743).
 //
 // JVM parity gap: `lyric.stdlib.jvm.ProcessCaptureHost.runCaptureWithTimeout`
-// is tracked in #1065.  The method must drain stdout/stderr in parallel and
-// call Process.waitFor(timeoutMs, MILLISECONDS); callers on the JVM target
-// will receive a missing-method error until #1065 lands.
+// is tracked in #1065.  The expected implementation (Java side; lives in the
+// external `lyric-stdlib-shim` JAR project) must:
+//
+//   1. Spawn the subprocess via `ProcessBuilder`.
+//   2. Drain stdout and stderr on two separate daemon threads — `Process`'s
+//      pipe buffers are 4 KB on Linux / 64 KB on Windows, so a synchronous
+//      drain-then-wait sequence deadlocks against children that emit more
+//      than one buffer's worth before exit.  Mirror the .NET `Task.Run`
+//      drainers in `Lyric.Emitter.ProcessCapture.runCaptureImpl`.
+//   3. Enforce the wall-clock cap via `process.waitFor(timeoutMs,
+//      java.util.concurrent.TimeUnit.MILLISECONDS)`; on `false`, call
+//      `process.destroyForcibly()` and record `timedOut = true`.
+//   4. Join the drainer threads with a short bounded wait (`thread.join(5000)`)
+//      to surface what the child had already emitted before the kill.
+//   5. Return a `lyric.stdlib.jvm.ProcessCaptureResult` POJO populated with
+//      `stdout`, `stderr`, `exitCode` (`-2` when timed out, `-1` on spawn
+//      failure, otherwise `process.exitValue()`), and `timedOut`.
+//
+// Until the Java side lands, callers on the JVM target compiling against
+// this kernel will see a `NoSuchMethodError` at load time — surfacing the
+// gap loudly rather than silently dropping the timeout argument.
 @externTarget("lyric.stdlib.jvm.ProcessCaptureHost.runCaptureWithTimeout")
 pub func hostRunCaptureTimeout(executable: in String, arguments: in String, stdinContent: in String, timeoutMs: in Int): ProcessCaptureResult = ()

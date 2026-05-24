@@ -427,12 +427,18 @@ impl SessionStore for InProcessSessionStore {
 
 /// Connect to Redis and return a distributed session store.
 /// Reads connection settings from the RedisSession config block.
+///
+/// Any error message returned by the kernel is routed through
+/// `maskUrlCredentials` so a connection string the kernel chose to
+/// echo back (StackExchange.Redis sometimes embeds the connect string
+/// in `RedisConnectionException`) cannot leak the embedded password
+/// into the caller's error surface (#357 / #477 / #1071).
 @stable(since="0.1")
 @cfg(feature = "redis")
 pub func connectRedis(): Result[SessionStore, SessionError] {
   match SessionKernel.connect("", "session:") {
     case Ok(handle) -> Ok(NativeSessionStore(storeHandle = handle))
-    case Err(err)   -> Err(SessionError(message = err, code = "CONNECT_FAILED"))
+    case Err(err)   -> Err(SessionError(message = maskUrlCredentials(err), code = "CONNECT_FAILED"))
   }
 }
 
@@ -510,6 +516,72 @@ pub func delete(store: in SessionStore, sessionId: in String, key: in String): R
 @stable(since="0.1")
 pub func clear(store: in SessionStore, sessionId: in String): Result[Unit, SessionError] {
   return store.clear(sessionId)
+}
+
+// ─── URL credential masking ───────────────────────────────────────────────────
+
+/// Replace the password portion of a `scheme://user:password@host[:port][/...]`
+/// URL with `***`, leaving every other component intact.
+///
+/// Defensive helper used at the kernel boundary so that connection
+/// failures, log lines, and exception messages built from a Redis URL
+/// never leak the embedded password in plaintext (#357 / #477 / #1071).
+/// The function is `@pure`: pure-text rewriting only, no allocation of
+/// any token store and no validation of the host/scheme — invalid or
+/// non-URL inputs (no `://`, no userinfo, no `:` in userinfo, `@`
+/// after the path separator) round-trip unchanged so callers can route
+/// any string through it without first parsing.
+///
+/// Examples:
+///   `redis://user:s3cr3t@host:6379/0`  → `redis://user:***@host:6379/0`
+///   `rediss://:s3cr3t@host:6379`       → `rediss://:***@host:6379`
+///   `redis://host:6379/0`              → `redis://host:6379/0`
+///   `not a url`                        → `not a url`
+@pure
+@stable(since="0.1")
+pub func maskUrlCredentials(url: in String): String {
+  // Find the scheme separator.
+  match indexOf(url, "://") {
+    case None -> url
+    case Some(schemeEnd) -> {
+      val authStart = schemeEnd + 3
+      if authStart >= url.length { return url }
+      val tail = substring(url, authStart)
+      // Authority component runs until the path/query/fragment marker.
+      // Pin the boundary so an `@` in a later path segment can't be
+      // mistaken for an authority delimiter.
+      var authEnd = tail.length
+      val markers: List[String] = newList()
+      markers.add("/")
+      markers.add("?")
+      markers.add("#")
+      var mi = 0
+      while mi < markers.length {
+        match indexOf(tail, markers[mi]) {
+          case Some(n) -> if n < authEnd { authEnd = n }
+          case None    -> ()
+        }
+        mi = mi + 1
+      }
+      val authority = substring(tail, 0, authEnd)
+      val rest      = substring(tail, authEnd)
+      // userinfo terminates at the first `@` inside the authority.
+      match indexOf(authority, "@") {
+        case None       -> url   // no credentials present
+        case Some(atIx) -> {
+          val userinfo = substring(authority, 0, atIx)
+          val hostport = substring(authority, atIx)   // includes the `@`
+          match indexOf(userinfo, ":") {
+            case None        -> url   // username-only, no password to mask
+            case Some(colon) -> {
+              val user = substring(userinfo, 0, colon)
+              return substring(url, 0, schemeEnd + 3) + user + ":***" + hostport + rest
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
