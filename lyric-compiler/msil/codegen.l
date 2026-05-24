@@ -32,7 +32,6 @@ package Msil.Codegen
 import Std.Core
 import Std.Collections
 import Std.String
-import Std.Console as Console
 import Lyric.Parser
 import Msil.Lowering
 import Msil.Ffi
@@ -995,39 +994,18 @@ func joinSegsMsil(segs: in List[String], sep: in String): String {
 //      don't regress behaviour when the type is undeclared (typecheck
 //      diagnostic surfaces upstream).
 func resolveTypeFqn(cctx: in CodegenCtx, pkgName: in String, seg: in String): String {
-  val localFqn = pkgName + "." + seg
-  // Local declaration always wins, even if typeFqnByName has another
-  // hit registered first (first-wins on simple name across packages).
-  match mapGet(cctx.typeFqnByName, seg) {
-    case Some(fqn) -> {
-      if fqn == localFqn { return localFqn }
-    }
-    case None -> {}
-  }
-  // Walk imports in declaration order; first hit whose simple name maps
-  // back to that import's FQN wins.
-  match mapGet(cctx.pkgImports, pkgName) {
-    case Some(imps) -> {
-      var i = 0
-      while i < imps.count {
-        val candidate = imps[i] + "." + seg
-        match mapGet(cctx.typeFqnByName, seg) {
-          case Some(fqn) -> {
-            if fqn == candidate { return candidate }
-          }
-          case None -> {}
-        }
-        i = i + 1
-      }
-    }
-    case None -> {}
-  }
-  // Last resort: any typeFqnByName hit by simple name.  Catches stdlib
-  // types when the importing pkg doesn't list the source pkg in its
-  // imports (typecheck would have flagged that already).
+  // `typeFqnByName` is keyed by simple type name with first-pkg-wins
+  // semantics (per `addPackageTokens`).  When a hit exists, it IS the
+  // resolution — either it points at this pkg's own declaration
+  // (`pkgName + "." + seg`) or at an imported pkg's.  Type-checking
+  // upstream is the line of defence that rejects un-imported references,
+  // so we accept any hit here without re-validating it against
+  // `pkgImports`.  When `typeFqnByName` has no entry the type was never
+  // declared in the bundle, so fall back to the current-pkg form (the
+  // existing pre-#1183 behaviour).
   match mapGet(cctx.typeFqnByName, seg) {
     case Some(fqn) -> fqn
-    case None      -> localFqn
+    case None      -> pkgName + "." + seg
   }
 }
 
@@ -2016,23 +1994,26 @@ func lowerPatternTestMsil(
           // PConstructor would have emitted — otherwise treat it as a
           // bind-anything pattern (existing semantics).
           val localCtorKey = fctx.pkgName + "." + pBindName
-          val ctorKey =
+          val ctorKeyOpt =
             if cctx.recordCtorTokens.containsKey(localCtorKey) {
-              localCtorKey
+              Some(value = localCtorKey)
             } else {
-              match mapGet(cctx.unionCaseCtorByName, pBindName) {
-                case Some(fqn) -> fqn
-                case None      -> ""
+              mapGet(cctx.unionCaseCtorByName, pBindName)
+            }
+          match ctorKeyOpt {
+            case Some(ctorKey) -> {
+              // `ctorKey` is `<pkg>.<union>$<case>`; isinst against
+              // the case TypeDef.  A record-typed local (no `$` in
+              // the key) wouldn't be reachable here in practice —
+              // `case Foo` for a Foo record binds the variable, it
+              // doesn't isinst — but the guard is cheap.
+              if ctorKey.lastIndexOf("$") >= 0 {
+                emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+                insns.add(MIsinstByName(className = ctorKey))
+                insns.add(MBrFalse(label = failLabel))
               }
             }
-          if ctorKey.length > 0 {
-            val dollarIdx = ctorKey.lastIndexOf("$")
-            if dollarIdx >= 0 {
-              val caseClass = ctorKey
-              emitLoadSlot(insns, scrutSlot, fctx.paramCount)
-              insns.add(MIsinstByName(className = caseClass))
-              insns.add(MBrFalse(label = failLabel))
-            }
+            case None -> {}  // Variable bind — always matches, no test emitted.
           }
         }
       }
