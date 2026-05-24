@@ -6,17 +6,25 @@
 // no transport dependency.
 //
 // Functions:
-//   Auth.verifyJwt      — validates a Bearer token against an explicit
-//                         allow-list of `alg` values (HS256, RS256, etc.).
-//                         Algorithm pinning prevents alg=none forgery and
-//                         HS256/RS256 confusion (RFC 8725 §3.1).
-//   Auth.extractClaim   — reads a named claim from a pre-verified JWT
-//   Auth.verifyApiKey   — constant-time comparison; prevents timing attacks
+//   Auth.verifyJwt          — validates a Bearer token against an explicit
+//                             allow-list of `alg` values (HS256, RS256, etc.).
+//                             Algorithm pinning prevents alg=none forgery and
+//                             HS256/RS256 confusion (RFC 8725 §3.1).  Returns
+//                             a typed Result so callers can distinguish
+//                             algorithm rejection from signature failure
+//                             (#1090).  Applies a 60-second clock-skew
+//                             leeway by default (#1081).
+//   Auth.verifyJwtWithSkew  — same as verifyJwt but with an explicit
+//                             `clockSkewSeconds` argument.
+//   Auth.extractClaim       — reads a named claim from a pre-verified JWT
+//   Auth.verifyApiKey       — constant-time comparison; prevents timing attacks
 //
 // Typical usage from a protocol binding (e.g. Web.Aspects.RequiresAuth):
 //
-//   val ok = Auth.verifyJwt(token, jwtSecret, issuer, audience, "HS256")
-//   if not ok { return Err(Web.forbidden("Token is invalid")) }
+//   match Auth.verifyJwt(token, jwtSecret, issuer, audience, "HS256") {
+//     case Ok(_)        -> ()  // proceed
+//     case Err(jwtErr)  -> return Err(Web.forbidden(jwtErr.message))
+//   }
 //   val role = Auth.extractClaim(token, "role")
 //
 // See lyric-web/src/aspects.l for the HTTP bindings (RequiresAuth,
@@ -30,6 +38,67 @@ import Std.Encoding
 import Std.String
 import Auth.Kernel.Net as AuthKernelNet
 import Auth.Kernel.Jvm as AuthKernelJvm
+
+// ─── JwtError (#1090) ─────────────────────────────────────────────────────────
+
+/// Structured error returned by `verifyJwt` and `verifyJwtWithSkew`.
+///
+/// `code` is a stable, machine-readable identifier suitable for logs and
+/// metrics; `message` is a human-readable description that does NOT include
+/// any token contents.
+///
+/// Defined codes:
+///   "MALFORMED_TOKEN"      — token did not have header.payload.signature shape
+///   "MALFORMED_HEADER"     — header base64url/UTF-8/JSON parse failed
+///   "ALG_REJECTED"         — token alg not in allowedAlgorithms
+///   "ALG_UNSUPPORTED"      — token alg allowed by caller but not implemented
+///                            in this build (e.g. RS256 on the .NET kernel
+///                            until #443 lands)
+///   "BAD_SIGNATURE"        — signature did not verify under secret
+///   "MALFORMED_PAYLOAD"    — payload base64url/UTF-8/JSON parse failed
+///   "ISSUER_MISMATCH"      — iss claim did not match expected issuer
+///   "AUDIENCE_MISMATCH"    — aud claim did not match expected audience
+///   "EXP_OVERFLOW"         — exp claim present but malformed/overflowed
+///   "EXPIRED"              — exp in the past (beyond clockSkewSeconds)
+///   "NBF_OVERFLOW"         — nbf claim present but malformed/overflowed
+///   "NOT_YET_VALID"        — nbf in the future (beyond clockSkewSeconds)
+///   "VERIFICATION_FAILED"  — JVM-only: any failure mode (JJWT does not
+///                            surface fine-grained categories; tracked in #443)
+@stable(since="0.1")
+pub record JwtError {
+  code:    String
+  message: String
+}
+
+/// Default clock-skew leeway in seconds.  60 seconds matches industry
+/// standard (Auth0, AWS Cognito, etc.) — large enough to absorb minor
+/// NTP drift between issuer and validator, small enough to keep tokens
+/// from outliving their declared expiry by a meaningful amount.  See
+/// RFC 7519 §4.1.4 ("Implementers MAY provide for some small leeway,
+/// usually no more than a few minutes, to account for clock skew").
+@stable(since="0.1")
+pub func defaultClockSkewSeconds(): Int { 60 }
+
+// Map an error code returned by the kernel to a JwtError with a
+// human-readable message.  Kept in sync with the codes documented above.
+func makeJwtError(code: in String): JwtError {
+  val msg =
+    if code == "MALFORMED_TOKEN"     { "JWT is malformed (expected header.payload.signature)" }
+    else if code == "MALFORMED_HEADER"  { "JWT header could not be decoded as base64url JSON" }
+    else if code == "ALG_REJECTED"      { "algorithm not permitted by allowedAlgorithms" }
+    else if code == "ALG_UNSUPPORTED"   { "algorithm is not implemented by this build (see #443)" }
+    else if code == "BAD_SIGNATURE"     { "JWT signature did not verify" }
+    else if code == "MALFORMED_PAYLOAD" { "JWT payload could not be decoded as base64url JSON" }
+    else if code == "ISSUER_MISMATCH"   { "JWT iss claim did not match expected issuer" }
+    else if code == "AUDIENCE_MISMATCH" { "JWT aud claim did not contain expected audience" }
+    else if code == "EXP_OVERFLOW"      { "JWT exp claim is malformed or overflows" }
+    else if code == "EXPIRED"           { "JWT has expired" }
+    else if code == "NBF_OVERFLOW"      { "JWT nbf claim is malformed or overflows" }
+    else if code == "NOT_YET_VALID"     { "JWT is not yet valid (nbf is in the future)" }
+    else if code == "VERIFICATION_FAILED" { "JWT verification failed" }
+    else { "JWT verification failed: " + code }
+  JwtError(code = code, message = msg)
+}
 
 // ─── JWT algorithm extraction (Lyric-level, no extern dependency) ─────────────
 
@@ -92,32 +161,32 @@ func jwtAlg(token: in String): String {
 
 // ─── JWT verification ─────────────────────────────────────────────────────────
 
-/// Validate a Bearer JWT.
+/// Validate a Bearer JWT with the default 60-second clock-skew leeway.
 ///
 /// SECURITY: `allowedAlgorithms` MUST be a non-empty, comma-separated
 /// allow-list of JWT `alg` values that the caller is prepared to honour
-/// (e.g. `"HS256"` or `"HS256,RS256"`).  The kernel binds this list to
-/// the underlying validator's algorithm restriction, so tokens whose
-/// `alg` header is `"none"` or any algorithm not in the list fail
-/// verification regardless of signature content.  Without this
-/// allow-list a malicious client can forge an unsigned `alg=none` token
-/// or pull off a classic HS256/RS256 confusion attack (signing with a
-/// known public key as the HMAC secret).
+/// (e.g. `"HS256"` or `"HS256,RS256"`).  Tokens whose `alg` header is
+/// `"none"` or any algorithm not in the list fail verification regardless
+/// of signature content.  Without this allow-list a malicious client can
+/// forge an unsigned `alg=none` token or pull off a classic HS256/RS256
+/// confusion attack (signing with a known public key as the HMAC secret).
 ///
-/// Returns true iff:
-///   - The token is syntactically well-formed.
-///   - The `alg` header is contained in `allowedAlgorithms`.
-///   - The signature verifies against `secret` under the declared `alg`.
-///   - `issuer` matches the `iss` claim (skipped when `issuer` is empty).
-///   - `audience` matches the `aud` claim (skipped when `audience` is empty).
+/// Returns:
+///   Ok(())             — token is well-formed, signed correctly, and all
+///                        present iss/aud/exp/nbf claims hold (with a
+///                        60-second leeway around exp and nbf).
+///   Err(JwtError(...)) — typed failure; see `JwtError` for the defined
+///                        codes (`ALG_REJECTED`, `BAD_SIGNATURE`,
+///                        `EXPIRED`, …).  Callers can branch on `code`
+///                        to distinguish algorithm rejection from
+///                        cryptographic failure from expiry, but should
+///                        treat all `Err` variants as "deny" for the
+///                        protected resource (#1090).
 ///
-/// Returns false for any failure — expired, tampered, missing claim,
-/// `alg` not in allow-list, or malformed header.  False is the safe
-/// default; callers must treat it as "deny" and never special-case
-/// error variants.
+/// For configurable clock-skew leeway, see `verifyJwtWithSkew` (#1081).
 ///
 /// Reference: RFC 8725 §3.1 (JWT Best Current Practices — algorithm
-/// pinning).  See lyric-lang #315.
+/// pinning); RFC 7519 §4.1.4 (clock-skew leeway).
 @stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func verifyJwt(
@@ -126,20 +195,14 @@ pub func verifyJwt(
   issuer:            in String,
   audience:          in String,
   allowedAlgorithms: in String
-): Bool
+): Result[Unit, JwtError]
   requires: secret.length > 0
   requires: allowedAlgorithms.length > 0
   // Case-insensitive check: catches "None", "NONE", "nOnE", etc.
   requires: not contains(toLower(allowedAlgorithms), "none")
 {
-  // Lyric-level algorithm pinning: reject before reaching the extern if the
-  // token's `alg` header is not in `allowedAlgorithms`.  Guards against host
-  // shims that have not yet wired `allowedAlgorithms` into the BCL validator's
-  // `ValidAlgorithms` restriction (RFC 8725 §3.1; see lyric-lang #443).
-  val alg = jwtAlg(token)
-  if alg.length == 0 { return false }
-  if not rolesContain(allowedAlgorithms, alg) { return false }
-  return AuthKernelNet.verifyJwtImpl(token, secret, issuer, audience, allowedAlgorithms)
+  verifyJwtWithSkew(token, secret, issuer, audience, allowedAlgorithms,
+                    defaultClockSkewSeconds())
 }
 
 @stable(since="0.1")
@@ -150,17 +213,91 @@ pub func verifyJwt(
   issuer:            in String,
   audience:          in String,
   allowedAlgorithms: in String
-): Bool
+): Result[Unit, JwtError]
+  requires: secret.length > 0
+  requires: allowedAlgorithms.length > 0
+  requires: not contains(toLower(allowedAlgorithms), "none")
+{
+  verifyJwtWithSkew(token, secret, issuer, audience, allowedAlgorithms,
+                    defaultClockSkewSeconds())
+}
+
+/// Validate a Bearer JWT with an explicit `clockSkewSeconds` leeway.
+///
+/// `clockSkewSeconds` widens the validity window symmetrically:
+///   * token valid if `exp + clockSkewSeconds >= nowSec` (allows tokens
+///     that just expired)
+///   * token valid if `nbf - clockSkewSeconds <= nowSec` (allows tokens
+///     whose `nbf` is slightly in the future relative to the verifier).
+///
+/// Pass `0` to enforce strict expiry (no leeway).  Pass `60` (the
+/// `defaultClockSkewSeconds()` value) for the standard industry default.
+/// Production callers should typically use `verifyJwt` and accept the
+/// default; this entry point exists for testing and for callers with
+/// stricter or more permissive operational requirements (#1081).
+@stable(since="0.1")
+@cfg(feature = "dotnet")
+pub func verifyJwtWithSkew(
+  token:             in String,
+  secret:            in String,
+  issuer:            in String,
+  audience:          in String,
+  allowedAlgorithms: in String,
+  clockSkewSeconds:  in Int
+): Result[Unit, JwtError]
   requires: secret.length > 0
   requires: allowedAlgorithms.length > 0
   // Case-insensitive check: catches "None", "NONE", "nOnE", etc.
   requires: not contains(toLower(allowedAlgorithms), "none")
+  requires: clockSkewSeconds >= 0
+{
+  // Lyric-level algorithm pinning: reject before reaching the extern if the
+  // token's `alg` header is not in `allowedAlgorithms`.  Guards against host
+  // shims that have not yet wired `allowedAlgorithms` into the BCL validator's
+  // `ValidAlgorithms` restriction (RFC 8725 §3.1; see lyric-lang #443).
+  val alg = jwtAlg(token)
+  if alg.length == 0 {
+    // Malformed token (no header or header.alg missing) — surface this as
+    // a structural failure rather than the kernel's BAD_SIGNATURE.
+    return Err(makeJwtError("MALFORMED_HEADER"))
+  }
+  if not rolesContain(allowedAlgorithms, alg) {
+    return Err(makeJwtError("ALG_REJECTED"))
+  }
+  match AuthKernelNet.verifyJwtImpl(
+          token, secret, issuer, audience, allowedAlgorithms, clockSkewSeconds) {
+    case Ok(unit)  -> Ok(())
+    case Err(code) -> Err(makeJwtError(code))
+  }
+}
+
+@stable(since="0.1")
+@cfg(feature = "jvm")
+pub func verifyJwtWithSkew(
+  token:             in String,
+  secret:            in String,
+  issuer:            in String,
+  audience:          in String,
+  allowedAlgorithms: in String,
+  clockSkewSeconds:  in Int
+): Result[Unit, JwtError]
+  requires: secret.length > 0
+  requires: allowedAlgorithms.length > 0
+  // Case-insensitive check: catches "None", "NONE", "nOnE", etc.
+  requires: not contains(toLower(allowedAlgorithms), "none")
+  requires: clockSkewSeconds >= 0
 {
   // Lyric-level algorithm pinning: same guard as the .NET overload above.
   val alg = jwtAlg(token)
-  if alg.length == 0 { return false }
-  if not rolesContain(allowedAlgorithms, alg) { return false }
-  return AuthKernelJvm.verifyJwt(token, secret, issuer, audience, allowedAlgorithms)
+  if alg.length == 0 { return Err(makeJwtError("MALFORMED_HEADER")) }
+  if not rolesContain(allowedAlgorithms, alg) {
+    return Err(makeJwtError("ALG_REJECTED"))
+  }
+  match AuthKernelJvm.verifyJwtImpl(
+          token, secret, issuer, audience, allowedAlgorithms, clockSkewSeconds) {
+    case Ok(unit)  -> Ok(())
+    case Err(code) -> Err(makeJwtError(code))
+  }
 }
 
 // ─── Claim extraction ─────────────────────────────────────────────────────────
@@ -172,6 +309,9 @@ pub func verifyJwt(
 /// value for `claimKey`, or None if the claim is absent.
 ///
 /// Common claim keys: "sub" (subject), "role", "email", "scope".
+///
+/// Claim values containing JSON escape sequences (`\"`, `\n`, `\uXXXX`) are
+/// decoded to their actual character contents (#1079).
 @stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func extractClaim(token: in String, claimKey: in String): Option[String]

@@ -95,11 +95,13 @@ pub aspect RequiresGrpcAuth {
       if args.authToken == "" {
         ret = Err(Grpc.unauthenticated("Authorization metadata missing"))
       } else {
-        val ok = Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience, allowedAlgorithms)
-        if ok {
-          ret = call.proceed()
-        } else {
-          ret = Err(Grpc.permissionDenied("Token is invalid or has expired"))
+        match Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience, allowedAlgorithms) {
+          case Ok(_) -> {
+            ret = call.proceed()
+          }
+          case Err(jwtErr) -> {
+            ret = Err(Grpc.permissionDenied("Token is invalid or has expired"))
+          }
         }
       }
     }
@@ -146,20 +148,22 @@ pub aspect RequiresGrpcRole {
       if args.authToken == "" {
         ret = Err(Grpc.unauthenticated("Authorization metadata missing"))
       } else {
-        val ok = Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience, allowedAlgorithms)
-        if not ok {
-          ret = Err(Grpc.permissionDenied("Token is invalid or has expired"))
-        } else {
-          val claimOpt = Auth.extractClaim(args.authToken, "role")
-          match claimOpt {
-            case None -> {
-              ret = Err(Grpc.permissionDenied("Token does not carry a role claim"))
-            }
-            case Some(roleValue) -> {
-              if Auth.rolesContain(allowedRoles, roleValue) {
-                ret = call.proceed()
-              } else {
-                ret = Err(Grpc.permissionDenied("Insufficient role: " + roleValue))
+        match Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience, allowedAlgorithms) {
+          case Err(jwtErr) -> {
+            ret = Err(Grpc.permissionDenied("Token is invalid or has expired"))
+          }
+          case Ok(_) -> {
+            val claimOpt = Auth.extractClaim(args.authToken, "role")
+            match claimOpt {
+              case None -> {
+                ret = Err(Grpc.permissionDenied("Token does not carry a role claim"))
+              }
+              case Some(roleValue) -> {
+                if Auth.rolesContain(allowedRoles, roleValue) {
+                  ret = call.proceed()
+                } else {
+                  ret = Err(Grpc.permissionDenied("Insufficient role: " + roleValue))
+                }
               }
             }
           }

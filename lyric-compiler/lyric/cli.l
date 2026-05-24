@@ -79,6 +79,7 @@ import Std.Errors
 import Std.Parse
 import Std.Sort as Sort
 import Std.Hash as Hash       // sha512OfFile / sha512OfBytes for #738 lock integrity
+import Std.Json as Json       // encodeString — RFC 8259 string literal escaping (#1093)
 
 import Lyric.Manifest as Mf   // parseManifest(text, filePath) -> Result[Manifest, ManifestError]
 import Lyric.Pack as Pack     // publishCsproj, restoreCsproj, xmlEscape, sanitisedPackageName
@@ -160,22 +161,6 @@ func stemOf(base: in String, extLen: in Int): String {
 // §2. Core build helper
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Escape `\` and `"` in a path before embedding it as a JSON string
-// literal (paths with these characters are rare on POSIX but must still
-// produce valid JSON for `dotnet exec` to parse the runtimeconfig — #1093).
-func jsonEscapePath(s: in String): String {
-  var out = ""
-  var i = 0
-  while i < s.length {
-    val c = s[i]
-    if c == '\\'      { out = out + "\\\\" }
-    else if c == '"'  { out = out + "\\\"" }
-    else              { out = out + Str.substring(s, i, 1) }
-    i = i + 1
-  }
-  out
-}
-
 // Shared runtimeconfig skeleton — the TFM + framework version live here
 // so they're maintained in one place (#1093).  `extra` is inserted at
 // the end of the `runtimeOptions` block; pass an empty string for the
@@ -220,7 +205,12 @@ func writeRuntimeConfigWithProbing(dllPath: in String, probingPaths: in List[Str
     var pi = 0
     while pi < probingPaths.count {
       if pi > 0 { probingSection = probingSection + ",\n" }
-      probingSection = probingSection + "      \"" + jsonEscapePath(probingPaths[pi]) + "\""
+      // Json.encodeString escapes quotes, backslashes, AND control characters
+      // (newlines, tabs, NUL, etc.) per RFC 8259 §7 — a hardening upgrade over
+      // the previous hand-rolled escaper, which only handled \ and " and would
+      // emit raw control bytes for unusual paths (#1093).  Result is already
+      // wrapped in quotes.
+      probingSection = probingSection + "      " + Json.encodeString(probingPaths[pi])
       pi += 1
     }
     probingSection = probingSection + "\n    ]"
