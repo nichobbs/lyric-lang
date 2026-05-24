@@ -11,7 +11,7 @@
 // returns a ProcessCaptureResult POJO with `stdout`, `stderr`,
 // `exitCode`, and `timedOut` fields.
 //
-// Internal: only Std.ProcessCapture should import this.
+// Internal: only Std.ProcessCapture and Std.Process should import this.
 
 @axiom("lyric.stdlib.jvm.ProcessCaptureHost piped stdout/stderr capture")
 package Std.ProcessCaptureHost

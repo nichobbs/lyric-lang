@@ -1522,9 +1522,16 @@ func tryInlineStr(body: in Block, catches: in List[CatchClause], finally_: in Op
   }
   val finStr = match finally_ {
     case None     -> ""
-    case Some(fb) -> " finally { " + blockInline(fb) + " }"
+    case Some(fb) -> "finally { " + blockInline(fb) + " }"
   }
-  "try { " + blockInline(body) + " } " + joinStrings(parts, " ") + finStr
+  val tail = if parts.count > 0 {
+    " " + joinStrings(parts, " ") + (if finStr.length > 0 { " " + finStr } else { "" })
+  } else if finStr.length > 0 {
+    " " + finStr
+  } else {
+    ""
+  }
+  "try { " + blockInline(body) + " }" + tail
 }
 
 func scopeInlineStr(bindStr: in Option[String], body: in Block): String {

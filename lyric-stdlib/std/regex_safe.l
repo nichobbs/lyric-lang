@@ -12,6 +12,7 @@
 package Std.RegexSafe
 
 import Std.Core
+import Std.Regex as Rx
 import Std.RegexHost as RxKernel
 
 // ─── Error type ──────────────────────────────────────────────────────────────
@@ -94,52 +95,16 @@ pub func tryReplace(
 // ─── Private helpers ─────────────────────────────────────────────────────────
 
 func classify(msg: in String): Result[Bool, RegexError] {
-  if isTimeout(msg) { Err(error = TimedOut(message = msg)) }
-  else              { Err(error = RegexBug(message = msg)) }
+  if Rx.isTimeout(msg) { Err(error = TimedOut(message = msg)) }
+  else                 { Err(error = RegexBug(message = msg)) }
 }
 
 func classifyMatch(msg: in String): Result[RxKernel.Match, RegexError] {
-  if isTimeout(msg) { Err(error = TimedOut(message = msg)) }
-  else              { Err(error = RegexBug(message = msg)) }
+  if Rx.isTimeout(msg) { Err(error = TimedOut(message = msg)) }
+  else                 { Err(error = RegexBug(message = msg)) }
 }
 
 func classifyReplace(msg: in String): Result[String, RegexError] {
-  if isTimeout(msg) { Err(error = TimedOut(message = msg)) }
-  else              { Err(error = RegexBug(message = msg)) }
-}
-
-// Best-effort classifier for the `Bug` we caught.  In .NET 6+ the
-// BCL `RegexMatchTimeoutException.Message` reliably contains the
-// phrase "time-out" in en-US, but the message is satellite-
-// resource-localised in non-en-US runtimes (#795).  When the
-// phrase is absent we fall through to RegexBug; the caller still
-// sees an `Err`, just typed conservatively.
-//
-// A locale-stable classifier would need to inspect the exception
-// class instead of its message — the Lyric `try`/`catch Bug` lowers
-// every exception into a single `Bug` shape, so the exception's
-// runtime type is not surfaced.  Until that lowering changes we
-// document the locale dependency explicitly.  Tracked in #1100.
-//
-// We scan the message manually so the wrapper has no `Std.String`
-// import; that import has triggered an F#-bootstrap union-case
-// context bug in the past (see lyric-compiler/msil/ffi.l for the
-// same workaround).
-func isTimeout(msg: in String): Bool {
-  val needle = "time-out"
-  val nLen = needle.length
-  val mLen = msg.length
-  if mLen < nLen { return false }
-  var i = 0
-  while i <= mLen - nLen {
-    var j = 0
-    var ok = true
-    while ok and j < nLen {
-      if msg[i + j] != needle[j] { ok = false }
-      j = j + 1
-    }
-    if ok { return true }
-    i = i + 1
-  }
-  false
+  if Rx.isTimeout(msg) { Err(error = TimedOut(message = msg)) }
+  else                 { Err(error = RegexBug(message = msg)) }
 }

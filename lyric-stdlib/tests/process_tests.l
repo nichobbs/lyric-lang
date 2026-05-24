@@ -2,8 +2,8 @@
 //
 // Covers: successful stdout capture, non-zero exit code, stderr capture,
 // stdin passthrough via `runCaptureWithInput`, and timeout enforcement.
-// All subprocess invocations use `sh -c "..."` so the tests are portable
-// across Linux and macOS CI environments.
+// All subprocess invocations use `sh -c "..."` so the tests run on Linux
+// and macOS CI; Windows coverage is tracked in #1116.
 
 package Std.Process.Tests
 

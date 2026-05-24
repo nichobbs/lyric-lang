@@ -46,6 +46,10 @@ module private JsonHelp =
             | '\n' -> sb.Append("\\n")  |> ignore
             | '\r' -> sb.Append("\\r")  |> ignore
             | '\t' -> sb.Append("\\t")  |> ignore
+            | '\b' -> sb.Append("\\b")  |> ignore
+            | '\f' -> sb.Append("\\f")  |> ignore
+            | c when int c < 0x20 ->
+                sb.AppendFormat("\\u{0:x4}", int c) |> ignore
             | _    -> sb.Append(c)      |> ignore
         sb.Append('"') |> ignore
         sb.ToString()

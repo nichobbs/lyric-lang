@@ -154,7 +154,9 @@ func classifyBug(msg: in String): RegexError {
 // the wrong decision on non-en-US deployments.  A locale-stable classifier
 // requires exposing the exception's runtime class as a separate Bug field —
 // tracked in #1100.
-func isTimeout(msg: in String): Bool {
+//
+// Public so the compatibility shim Std.RegexSafe can reuse it (#1108).
+pub func isTimeout(msg: in String): Bool {
   val needle = "time-out"
   val nLen = needle.length
   val mLen = msg.length
