@@ -149,9 +149,11 @@ func classifyBug(msg: in String): RegexError {
 
 // Best-effort classifier: scans for "time-out" (en-US BCL / JVM shim phrase).
 // The BCL message is satellite-resource-localised in non-en-US runtimes; when
-// the phrase is absent we conservatively map to InvalidPattern.  A future
-// extension that surfaces the exception's runtime class (not just its message)
-// as a separate Bug field would allow a locale-stable check (#330 follow-up).
+// the phrase is absent we conservatively map to InvalidPattern.  Callers that
+// distinguish TimedOut from InvalidPattern for retry/reporting logic will make
+// the wrong decision on non-en-US deployments.  A locale-stable classifier
+// requires exposing the exception's runtime class as a separate Bug field —
+// tracked in #1100.
 func isTimeout(msg: in String): Bool {
   val needle = "time-out"
   val nLen = needle.length
