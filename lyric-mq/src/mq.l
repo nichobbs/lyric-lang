@@ -99,8 +99,16 @@ pub interface MessageQueue {
     requires: message.id.length > 0
     requires: message.body.length >= 0
 
-  /// Publish a batch of messages atomically where the broker supports it.
-  /// Falls back to sequential publishing where atomic batches are unavailable.
+  /// Publish a batch of messages.
+  ///
+  /// Atomicity is broker-dependent: implementations that have native
+  /// batch transactions (e.g. RabbitMQ confirms, Kafka transactional
+  /// producer) deliver all-or-nothing.  The default `NativeQueue`
+  /// implementation iterates sequentially and returns the first
+  /// failure — messages already accepted by the broker before that
+  /// failure remain in the queue, so callers that need strict
+  /// all-or-nothing semantics must use a broker that supports them or
+  /// build idempotency at the consumer (#1046).
   func publishBatch(messages: in slice[Message]): Result[Unit, String]
     requires: messages.length > 0
 }

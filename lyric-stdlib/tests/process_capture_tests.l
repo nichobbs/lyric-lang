@@ -1,15 +1,20 @@
 // stdlib/tests/process_capture_tests.l — Tests for the CWE-78 argument
-// quoting in `Std.ProcessCapture.quoteArg`.
+// quoting in `Std.ProcessCapture.quoteArg` plus the diagnostic capture
+// surface (`runCaptureWithDiagnostics`, `CaptureResult`).
 //
-// Pins the Windows CommandLineToArgvW round-trip for the three attack
-// surfaces the fix targets:
+// CWE-78 set pins the Windows CommandLineToArgvW round-trip for three
+// attack surfaces:
 //   1. Embedded double-quotes.
 //   2. Trailing backslashes (the Windows path-injection vector).
 //   3. Backslash-before-quote runs.
+//
+// `runCaptureWithDiagnostics` set uses `sh -c "..."` so the tests run on
+// Linux and macOS CI; Windows coverage is tracked in #1116.
 
 package Std.ProcessCapture.Tests
 
 import Std.Core
+import Std.Collections
 import Std.ProcessCapture
 import Std.Testing
 
@@ -104,6 +109,45 @@ func testBuildArgStringCwe78Vector(): Unit {
               "trailing-backslash arg can't bleed into the next token")
 }
 
+// ─── runCaptureWithDiagnostics — exit code / stderr surface (#1055) ──────────
+
+func makeShArgs(cmd: in String): List[String] {
+  val args: List[String] = newList()
+  args.add("-c")
+  args.add(cmd)
+  args
+}
+
+func testDiagnosticsStdout(): Unit {
+  val r = runCaptureWithDiagnostics("sh", makeShArgs("printf 'hi'"), "")
+  assertEqual(r.stdout, "hi", "stdout surfaced")
+  assertEqualInt(r.exitCode, 0, "exit code is 0")
+  assertTrue(not r.timedOut, "no timeout fired")
+}
+
+func testDiagnosticsStderr(): Unit {
+  // Generator/solver failure scenario: process exits non-zero and emits
+  // a diagnostic message on stderr.  The diagnostic-capture surface must
+  // surface both so callers can format actionable error messages.
+  val r = runCaptureWithDiagnostics(
+    "sh", makeShArgs("printf 'diag-msg' >&2; exit 3"), "")
+  assertEqual(r.stderr, "diag-msg", "stderr surfaced verbatim")
+  assertEqualInt(r.exitCode, 3, "non-zero exit code propagated")
+  assertEqual(r.stdout, "", "stdout empty when only stderr emitted")
+}
+
+func testDiagnosticsSpawnFailure(): Unit {
+  // Nonexistent executable: stdout/stderr empty, exitCode = -1, no
+  // timeout.  Callers distinguish spawn-failure from genuine non-zero
+  // exit via the sentinel exit code (-1) and the empty captured streams.
+  val r = runCaptureWithDiagnostics(
+    "__lyric_definitely_nonexistent_exe_xyz__",
+    newList(),
+    "")
+  assertEqualInt(r.exitCode, -1, "spawn failure reports exit code -1")
+  assertTrue(not r.timedOut, "spawn failure is not a timeout")
+}
+
 func main(): Int {
   testQuoteSimple()
   testQuoteWithSpaces()
@@ -117,6 +161,9 @@ func main(): Int {
   testBuildArgStringEmpty()
   testBuildArgStringEmptyMember()
   testBuildArgStringCwe78Vector()
+  testDiagnosticsStdout()
+  testDiagnosticsStderr()
+  testDiagnosticsSpawnFailure()
   println("process_capture tests: ok")
   return 0
 }

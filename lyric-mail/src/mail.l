@@ -108,6 +108,13 @@ pub interface MailSender {
 record NativeSender { client: MailKernel.SmtpClient }
 
 impl MailSender for NativeSender {
+  /// Build a `MailMessage` from `msg` and dispatch it through the
+  /// SMTP client.  Recipients (`to`, `cc`, `bcc`) and `replyTo` are
+  /// forwarded to the corresponding `MailAddressCollection`s.
+  ///
+  /// `attachments` are currently **not** forwarded — they require a
+  /// new BCL `Attachment` extern type and ContentDisposition wiring.
+  /// Tracked in #1118.
   func send(msg: in EmailMessage): Result[Unit, MailError] {
     // Gap 2: try/catch wraps BCL calls into Result[T, MailError].
     try {
@@ -124,6 +131,34 @@ impl MailSender for NativeSender {
           MailKernel.mailAddressCollectionAdd(toCollection, addr)
         }
         i = i + 1
+      }
+      val ccCollection = MailKernel.mailGetCc(mailMsg)
+      var ci = 0
+      while ci < msg.cc.length {
+        if msg.cc[ci].address.length > 0 {
+          val addr = MailKernel.newMailAddress(msg.cc[ci].address)
+          MailKernel.mailAddressCollectionAdd(ccCollection, addr)
+        }
+        ci = ci + 1
+      }
+      val bccCollection = MailKernel.mailGetBcc(mailMsg)
+      var bi = 0
+      while bi < msg.bcc.length {
+        if msg.bcc[bi].address.length > 0 {
+          val addr = MailKernel.newMailAddress(msg.bcc[bi].address)
+          MailKernel.mailAddressCollectionAdd(bccCollection, addr)
+        }
+        bi = bi + 1
+      }
+      match msg.replyTo {
+        case Some(rt) -> {
+          if rt.address.length > 0 {
+            val replyToList = MailKernel.mailGetReplyToList(mailMsg)
+            val rtAddr = MailKernel.newMailAddress(rt.address)
+            MailKernel.mailAddressCollectionAdd(replyToList, rtAddr)
+          }
+        }
+        case None -> ()
       }
       if msg.htmlBody.length > 0 {
         MailKernel.mailSetIsBodyHtml(mailMsg, true)
