@@ -37,7 +37,7 @@ import Std.Time
 @axiom("Lyric.Auth.AuthHost.hmacSha256 — BCL HMACSHA256.ComputeHash")
 @externTarget("Lyric.Auth.AuthHost.hmacSha256")
 @stable(since="0.1")
-pub func hmacSha256(key: in slice[Byte], message: in slice[Byte]): slice[Byte]
+func hmacSha256(key: in slice[Byte], message: in slice[Byte]): slice[Byte]
   requires: key.length > 0
   = ()
 

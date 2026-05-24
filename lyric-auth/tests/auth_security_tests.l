@@ -446,11 +446,13 @@ test "verifyJwtWithSkew: zero skew with an expired token rejects (#1081)" {
 }
 
 test "verifyJwtWithSkew: large skew widens the validity window (#1081)" {
-  // Same exp=1 token; apply a 5_000_000_000-second skew (>150 years).
-  // This marks the token as valid because nowSec - exp < skew.
+  // Same exp=1 token; apply a 2_000_000_000-second skew (~63 years).  This
+  // marks the token as valid because nowSec - exp < skew.  Capped at
+  // 2_000_000_000 (< Int.MaxValue = 2_147_483_647) so the literal fits in
+  // an Int parameter without overflow (#1149).
   val r = Auth.verifyJwtWithSkew(
     "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjF9.ll37qi5BStXya0qqqwLHM0oKvWoHHZMdnStJSCMiyPM",
-    "test-secret", "", "", "HS256", 5000000000)
+    "test-secret", "", "", "HS256", 2000000000)
   val isOk = match r {
     case Ok(v)  -> true
     case Err(e) -> false
