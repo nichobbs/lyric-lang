@@ -262,6 +262,13 @@ pub union MInsn {
   case MCallvirt(methodToken: Int)     // callvirt (virtual dispatch)
   case MCastclass(typeToken: Int)      // castclass
   case MIsinst(typeToken: Int)         // isinst (test then push ref or null)
+  // Like `MIsinst` but defers TypeDef row resolution until lowering time
+  // — used by `lowerPatternTestMsil` to test against a user-defined
+  // case TypeDef whose row isn't allocated until `lowerMUnion` runs
+  // (i.e. AFTER the codegen pass that emits this instruction).  Looked
+  // up via `findTypeDefRowByName`; falls back to `isinst System.Object`
+  // when the type isn't in the assembly (e.g. cross-bundle reference).
+  case MIsinstByName(className: String)
   case MBox(typeToken: Int)            // box value type
   case MUnboxAny(typeToken: Int)       // unbox.any
 
@@ -651,7 +658,7 @@ pub func buildGenericInstBlob(typeDefOrRef: in Int,
 // ── Method body lowering ──────────────────────────────────────────────────────
 
 // Lower one MInsn to opcode bytes in `mb`.
-pub func lowerMInsn(insn: in MInsn, mb: in MethodBody): Unit {
+pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Unit {
   match insn {
     case MLabel(id)         -> mbMarkLabel(mb, id)
     case MBr(lbl)           -> emitBr(mb, lbl)
@@ -703,6 +710,15 @@ pub func lowerMInsn(insn: in MInsn, mb: in MethodBody): Unit {
     case MCallvirt(tok)     -> emitCallvirt(mb, tok)
     case MCastclass(tok)    -> emitCastclass(mb, tok)
     case MIsinst(tok)       -> emitIsinst(mb, tok)
+    case MIsinstByName(name) -> {
+      val row = findTypeDefRowByName(ctx, name)
+      val tok = if row > 0 {
+                  0x02000000 + row
+                } else {
+                  0x01000000 + ctx.trObject
+                }
+      emitIsinst(mb, tok)
+    }
     case MBox(tok)          -> emitBox(mb, tok)
     case MUnboxAny(tok)     -> emitUnbox_Any(mb, tok)
     case MDup               -> emitDup(mb)
@@ -762,7 +778,7 @@ pub func lowerMFunc(f: in MFunc, ctx: in LoweringCtx): MethodBody {
   mb.maxStack = f.maxStack
   var i = 0
   while i < f.insns.count {
-    lowerMInsn(f.insns[i], mb)
+    lowerMInsn(ctx, f.insns[i], mb)
     i = i + 1
   }
   mb
@@ -1346,7 +1362,7 @@ pub func lowerMFuncsToHostClass(hostClass: in String, funcs: in List[MFunc],
     mbCctor.maxStack = 8
     var ci = 0
     while ci < cctorInsns.count {
-      lowerMInsn(cctorInsns[ci], mbCctor)
+      lowerMInsn(ctx, cctorInsns[ci], mbCctor)
       ci = ci + 1
     }
     ctx.bodies.add(mbCctor)

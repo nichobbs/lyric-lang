@@ -32,6 +32,7 @@ package Msil.Codegen
 import Std.Core
 import Std.Collections
 import Std.String
+import Std.Console as Console
 import Lyric.Parser
 import Msil.Lowering
 import Msil.Ffi
@@ -138,13 +139,22 @@ pub record CodegenCtx {
   // case's simple name (e.g. "Some") to its FQN ctor key
   // (e.g. "Std.Core.Option$Some") so the construction site can resolve
   // calls like `Some(value = 42)` from a package that imports the union
-  // rather than declares it.  `recordCtorTokens` is keyed by the FQN, so
-  // a successful lookup here yields the key for the existing token table.
-  // When two unions in different packages share a simple case name, the
-  // last-processed wins (deterministic by addPackageTokens order).  Same
-  // for the parallel `unionCaseFqnByName` which `lowerMatch` uses to
-  // resolve `isinst` against the case TypeDef.
+  // rather than declares it.  `recordCtorTokens` is keyed by the FQN,
+  // so a successful lookup here yields the key for the existing token
+  // table.  When two unions in different packages share a simple case
+  // name the first-processed wins (Dictionary.Add throws on duplicates;
+  // `addPackageTokens` guards with `containsKey`).  The match-arm side
+  // does not need a parallel table — `lowerPatternTestMsil` resolves
+  // the case's TypeDef row directly via `findTypeDefRowByName`.
   unionCaseCtorByName: Map[String, String]
+  // Cross-package type name lookup (#1183 codegen port).  Maps a type's
+  // simple name (e.g. "Maybe", "Point") to its FQN
+  // (e.g. "XPkgUnion.Lib.Maybe").  `typeExprToMsil` consults this when
+  // resolving a single-segment `TRef` like `Maybe[Int]` after an
+  // `import XPkgUnion.Lib`, so the resulting `MClass` carries the
+  // correct cross-package FQN instead of `<current-pkg>.<seg>`.  First-
+  // processed wins on collisions, mirroring `unionCaseCtorByName`.
+  typeFqnByName:       Map[String, String]
 }
 
 // One impl block (`impl Iface for Target { … }`) captured by the pre-pass.
@@ -455,7 +465,8 @@ pub func newCodegenCtx(packageName: in String): CodegenCtx {
     nextFieldDefRow      = newList(),
     mainEntryToken       = newList(),
     pkgImports           = newMap(),
-    unionCaseCtorByName  = newMap())
+    unionCaseCtorByName  = newMap(),
+    typeFqnByName        = newMap())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -564,6 +575,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
         // lowerMRecord: FieldDef per field; .ctor MethodDef; RMFunc MethodDefs;
         // followed by injected impl-method MethodDefs (#878).
         val className = pkgName + "." + decl.name
+        // Cross-package type-name index (#1183 codegen port).
+        if not cctx.typeFqnByName.containsKey(decl.name) {
+          cctx.typeFqnByName.add(decl.name, className)
+        }
         var fi = 0
         while fi < decl.members.count {
           match decl.members[fi] {
@@ -604,6 +619,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
       case IExposedRec(decl) -> {
         // Same layout as IRecord.
         val className = pkgName + "." + decl.name
+        if not cctx.typeFqnByName.containsKey(decl.name) {
+          cctx.typeFqnByName.add(decl.name, className)
+        }
         var fi = 0
         while fi < decl.members.count {
           match decl.members[fi] {
@@ -642,6 +660,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
       }
       case IUnion(decl) -> {
         // lowerMUnion: base abstract methods (usually 0) + one lowerMRecord per case.
+        val unionFqn = pkgName + "." + decl.name
+        if not cctx.typeFqnByName.containsKey(decl.name) {
+          cctx.typeFqnByName.add(decl.name, unionFqn)
+        }
         var ci = 0
         while ci < decl.cases.count {
           val c = decl.cases[ci]
@@ -683,6 +705,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
         // interface-typed receiver can dispatch through the interface vtable
         // (#878).
         val ifaceName = pkgName + "." + decl.name
+        if not cctx.typeFqnByName.containsKey(decl.name) {
+          cctx.typeFqnByName.add(decl.name, ifaceName)
+        }
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
@@ -957,7 +982,104 @@ func joinSegsMsil(segs: in List[String], sep: in String): String {
   result
 }
 
-// Map a Lyric TypeExpr to an MsilType.
+// Cross-package type-name resolution helper (#1183 codegen port).
+// Given a simple type name like "Maybe" referenced in `pkgName`, find
+// the FQN to use for the resulting `MClass`.  Resolution order:
+//   1. If `pkgName.<seg>` is a type registered by this pkg's
+//      addPackageTokens (we detect this by checking `typeFqnByName`
+//      for `<seg>` whose value equals `pkgName.<seg>` — local
+//      registration wins over any cross-pkg shadow).
+//   2. Otherwise, walk `pkgImports[pkgName]` and check each imported
+//      pkg's FQN.
+//   3. Otherwise, fall back to the legacy `pkgName.<seg>` form so we
+//      don't regress behaviour when the type is undeclared (typecheck
+//      diagnostic surfaces upstream).
+func resolveTypeFqn(cctx: in CodegenCtx, pkgName: in String, seg: in String): String {
+  val localFqn = pkgName + "." + seg
+  // Local declaration always wins, even if typeFqnByName has another
+  // hit registered first (first-wins on simple name across packages).
+  match mapGet(cctx.typeFqnByName, seg) {
+    case Some(fqn) -> {
+      if fqn == localFqn { return localFqn }
+    }
+    case None -> {}
+  }
+  // Walk imports in declaration order; first hit whose simple name maps
+  // back to that import's FQN wins.
+  match mapGet(cctx.pkgImports, pkgName) {
+    case Some(imps) -> {
+      var i = 0
+      while i < imps.count {
+        val candidate = imps[i] + "." + seg
+        match mapGet(cctx.typeFqnByName, seg) {
+          case Some(fqn) -> {
+            if fqn == candidate { return candidate }
+          }
+          case None -> {}
+        }
+        i = i + 1
+      }
+    }
+    case None -> {}
+  }
+  // Last resort: any typeFqnByName hit by simple name.  Catches stdlib
+  // types when the importing pkg doesn't list the source pkg in its
+  // imports (typecheck would have flagged that already).
+  match mapGet(cctx.typeFqnByName, seg) {
+    case Some(fqn) -> fqn
+    case None      -> localFqn
+  }
+}
+
+// Map a Lyric TypeExpr to an MsilType, resolving cross-package
+// type references via the codegen context (#1183 codegen port).
+pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String): MsilType {
+  match te.kind {
+    case TUnit    -> MVoid
+    case TNever   -> MVoid
+    case TRef(path) -> {
+      val seg = lastSegmentMsil(path)
+      if seg == "Int" {
+        MInt
+      } else if seg == "Long" {
+        MLong
+      } else if seg == "Double" {
+        MDouble
+      } else if seg == "Float" {
+        MDouble
+      } else if seg == "Bool" {
+        MBool
+      } else if seg == "String" {
+        MString
+      } else if seg == "Char" {
+        MChar
+      } else if seg == "Byte" {
+        MInt
+      } else if seg == "Unit" {
+        MVoid
+      } else if seg == "Object" {
+        MObject
+      } else {
+        MClass(className = resolveTypeFqn(cctx, pkgName, seg))
+      }
+    }
+    case TSlice(_)          -> MObject
+    case TGenericApp(_, _)  -> MObject
+    case TNullable(_)       -> MObject
+    case TTuple(_)          -> MObject
+    case TFunction(_, _)    -> MObject
+    case TArray(_, _)       -> MObject
+    case TRefined(_, _)     -> MInt
+    case TParen(inner)      -> typeExprToMsilCtx(cctx, inner, pkgName)
+    case TSelf              -> MObject
+    case TError             -> MObject
+  }
+}
+
+// Legacy entry point (kept for callers that don't yet thread `cctx`).
+// Identical to `typeExprToMsilCtx` except `TRef` resolution always uses
+// `pkgName + "." + seg` for non-primitives.  Migrate call sites to the
+// ctx-aware variant when cross-package type references matter.
 pub func typeExprToMsil(te: in TypeExpr, pkgName: in String): MsilType {
   match te.kind {
     case TUnit    -> MVoid
@@ -1140,9 +1262,38 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
               MInt
             }
             case None -> {
-              // Unknown name — emit null as a safe fallback.
-              insns.add(MLdNull)
-              MObject
+              // Nullary union case as a bare path (e.g. `val n = None`
+              // — Lyric accepts the call-less form).  Same two-step
+              // resolution as the `ECall` path: try the local pkg's
+              // case ctor, then walk `unionCaseCtorByName` for cross-
+              // package cases.  Mirrors the construction-side fix in
+              // `lowerBuiltinOrStaticCallMsil` (#1183 codegen port).
+              val localCtorKey = fctx.pkgName + "." + name
+              val ctorKey =
+                if cctx.recordCtorTokens.containsKey(localCtorKey) {
+                  localCtorKey
+                } else {
+                  match mapGet(cctx.unionCaseCtorByName, name) {
+                    case Some(fqn) -> fqn
+                    case None      -> localCtorKey
+                  }
+                }
+              match mapGet(cctx.recordCtorTokens, ctorKey) {
+                case Some(ctorTok) -> {
+                  insns.add(MNewobj(ctorToken = ctorTok))
+                  // Return the union (parent) type, not the case class,
+                  // so the match-arm `isinst` tests resolve correctly.
+                  val dollarIdx = ctorKey.lastIndexOf("$")
+                  val classTy = if dollarIdx >= 0 { ctorKey.substring(0, dollarIdx) }
+                                else              { ctorKey }
+                  MClass(className = classTy)
+                }
+                case None -> {
+                  // Unknown name — emit null as a safe fallback.
+                  insns.add(MLdNull)
+                  MObject
+                }
+              }
             }
           }
         }
@@ -1852,11 +2003,38 @@ func lowerPatternTestMsil(
 ): Unit {
   match pat.kind {
     case PWildcard -> {}
-    case PBinding(_, innerOpt) -> {
+    case PBinding(pBindName, innerOpt) -> {
       match innerOpt {
         case Some(inner) -> lowerPatternTestMsil(cctx, fctx, insns, inner,
                                                   scrutSlot, scrutTy, failLabel)
-        case None        -> {}
+        case None        -> {
+          // `case Foo ->` with a single-segment path parses as PBinding
+          // (the parser can't tell at that point whether `Foo` names a
+          // local-bind target or a nullary union case).  If `pBindName`
+          // matches a known nullary union case (local or imported via
+          // `unionCaseCtorByName`), emit the isinst test that
+          // PConstructor would have emitted — otherwise treat it as a
+          // bind-anything pattern (existing semantics).
+          val localCtorKey = fctx.pkgName + "." + pBindName
+          val ctorKey =
+            if cctx.recordCtorTokens.containsKey(localCtorKey) {
+              localCtorKey
+            } else {
+              match mapGet(cctx.unionCaseCtorByName, pBindName) {
+                case Some(fqn) -> fqn
+                case None      -> ""
+              }
+            }
+          if ctorKey.length > 0 {
+            val dollarIdx = ctorKey.lastIndexOf("$")
+            if dollarIdx >= 0 {
+              val caseClass = ctorKey
+              emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+              insns.add(MIsinstByName(className = caseClass))
+              insns.add(MBrFalse(label = failLabel))
+            }
+          }
+        }
       }
     }
     case PLiteral(lit) -> {
@@ -1898,7 +2076,17 @@ func lowerPatternTestMsil(
         case MClass(baseCls) -> {
           val caseClass = baseCls + "$" + caseName
           emitLoadSlot(insns, scrutSlot, fctx.paramCount)
-          insns.add(MIsinst(typeToken = 0x01000000 + boxTypeRef(cctx, MClass(className = caseClass))))
+          // Emit a deferred-resolution isinst: the case class's TypeDef
+          // row isn't allocated until `lowerMUnion` runs (which happens
+          // AFTER the codegen pass that emits this instruction), so we
+          // can't bake a token in here.  Pre-#1183 codegen-port this
+          // path built the token via `boxTypeRef(MClass(_))`, which
+          // falls through to `trObject` — so every `isinst` tested
+          // against `System.Object` and always passed, silently
+          // breaking union pattern matching.  `MIsinstByName` resolves
+          // the TypeDef row at lowering time via `findTypeDefRowByName`
+          // (#1183 codegen port).
+          insns.add(MIsinstByName(className = caseClass))
           insns.add(MBrFalse(label = failLabel))
         }
         case _ -> {}
@@ -2298,17 +2486,18 @@ func lowerBuiltinOrStaticCallMsil(
     //      `Std.Core.Option$Some`.  Lets `Some(value = X)` resolve when
     //      the user package imports the union rather than declaring it.
     val localCtorKey = fctx.pkgName + "." + funcName
-    val resolvedCtorKey =
+    val ctorKey =
       if cctx.recordCtorTokens.containsKey(localCtorKey) {
         localCtorKey
       } else {
         match mapGet(cctx.unionCaseCtorByName, funcName) {
           case Some(fqn) -> fqn
-          case None      -> ""
+          // No cross-package union case match; fall through with the
+          // local key so the existing `recordCtorTokens` lookup below
+          // reports its own "no such ctor" path consistently.
+          case None      -> localCtorKey
         }
       }
-    val ctorKey = if resolvedCtorKey.length > 0 { resolvedCtorKey }
-                  else                          { localCtorKey }
     match mapGet(cctx.recordCtorTokens, ctorKey) {
       case Some(ctorTok) -> {
         var ci = 0
@@ -2317,7 +2506,17 @@ func lowerBuiltinOrStaticCallMsil(
           ci = ci + 1
         }
         insns.add(MNewobj(ctorToken = ctorTok))
-        MClass(className = ctorKey)
+        // Union case construction: return the PARENT UNION type so the
+        // surrounding code's match-arm `isinst` can test against
+        // `<union>$<case>` (built as `<scrutTy>$<caseName>` at the
+        // pattern site).  When `ctorKey` is `<pkg>.<union>$<case>`,
+        // strip the `$<case>` suffix to recover the union FQN; record
+        // ctors don't contain `$`, so they pass through unchanged.
+        // Mirrors `Lyric.Emitter.Codegen.fs`'s `info.Type` return.
+        val dollarIdx = ctorKey.lastIndexOf("$")
+        val classTy = if dollarIdx >= 0 { ctorKey.substring(0, dollarIdx) }
+                      else              { ctorKey }
+        MClass(className = classTy)
       }
       case None -> {
         // Check if funcName is a local variable (e.g. a lambda stored as Action/Action`N).
@@ -3108,15 +3307,19 @@ func emitExternTargetBody(
       true
     }
     case Some(r) -> {
-      // Map every Lyric param + return type to MSIL.
+      // Map every Lyric param + return type to MSIL.  Use the ctx-aware
+      // variant so cross-package type references in the signature
+      // (e.g. `func describe(m: in Maybe[Int])` where `Maybe` lives in
+      // an imported package) resolve to the correct FQN instead of the
+      // legacy `<currentPkg>.<seg>` placeholder.
       val paramTypes: List[MsilType] = newList()
       var pi = 0
       while pi < decl.params.count {
-        paramTypes.add(typeExprToMsil(decl.params[pi].ty, pkgName))
+        paramTypes.add(typeExprToMsilCtx(cctx, decl.params[pi].ty, pkgName))
         pi = pi + 1
       }
       val retTy = match decl.ret {
-        case Some(te) -> typeExprToMsil(te, pkgName)
+        case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
         case None     -> MVoid
       }
 
@@ -3356,7 +3559,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
     } else {
       match decl.ret {
         case Some(te) -> {
-          val resolved = typeExprToMsil(te, pkgName)
+          val resolved = typeExprToMsilCtx(cctx, te, pkgName)
           if elementTypeByte(resolved) == 0 { MVoid } else { resolved }
         }
         case None -> MVoid
@@ -3372,7 +3575,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
   var pi = 0
   while pi < decl.params.count {
     val p = decl.params[pi]
-    val paramTy = typeExprToMsil(p.ty, pkgName)
+    val paramTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
     val slot = fctx.slotTicker.count
     fctx.slots.add(p.name, slot)
     fctx.types.add(p.name, paramTy)
