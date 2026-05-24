@@ -292,7 +292,7 @@ pub func verifyJwt(
 
 /// Try to extract a named string claim from a JWT payload segment.
 /// Sets `value` to the claim string and returns true on success.
-/// Returns false and leaves `value` unchanged for absent claims or malformed tokens.
+/// Sets `value` to `""` and returns false for absent claims or malformed tokens.
 /// Call only on tokens already accepted by verifyJwt.
 @stable(since="0.1")
 pub func tryExtractClaim(
@@ -303,12 +303,21 @@ pub func tryExtractClaim(
   requires: claimKey.length > 0
 {
   val parts = split(token, ".")
-  if parts.length < 2 { return false }
+  if parts.length < 2 {
+    value = ""
+    return false
+  }
   match fromBase64Url(parts[1]) {
-    case None -> false
+    case None -> {
+      value = ""
+      false
+    }
     case Some(payloadBytes) -> {
       val claim = getStringClaim(payloadBytes, claimKey)
-      if claim.length == 0 { return false }
+      if claim.length == 0 {
+        value = ""
+        return false
+      }
       value = claim
       true
     }
