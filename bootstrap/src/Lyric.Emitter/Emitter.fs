@@ -2060,6 +2060,9 @@ let private findClrType (qualifiedName: string) : System.Type option =
     // Pin `JvmByteHost` to force-load `Lyric.Jvm.Hosts` — the JVM emitter's
     // `lyric-compiler/jvm/_kernel/kernel.l` `@externTarget`s these.
     let _ = typeof<Lyric.Jvm.Hosts.JvmByteHost>
+    // Pin `AuthHost` to force-load `Lyric.Auth.Host` — auth_kernel.l
+    // `@externTarget`s `Lyric.Auth.AuthHost.*`.
+    let _ = typeof<Lyric.Auth.AuthHost>
     let _ = typeof<System.Text.Json.JsonDocument>
     let _ = typeof<System.Text.RegularExpressions.Regex>
     let _ = typeof<System.Net.HttpListener>
@@ -5595,7 +5598,10 @@ let private restoredToStdlib (ra: RestoredPackages.RestoredArtifact) : StdlibArt
 
 /// The shared cache directory for compiled stdlib artifacts.  Per-
 /// process so concurrent test runs don't trample each other.
-let private stdlibCacheDir : string =
+/// Exposed (non-private) so the `--internal-project-build` handler in
+/// Program.fs can copy the compiled DLLs to the caller's output directory
+/// after a successful project build, avoiding any /tmp glob scan.
+let stdlibCacheDir : string =
     let pid = System.Diagnostics.Process.GetCurrentProcess().Id
     let dir = Path.Combine(Path.GetTempPath(), sprintf "lyric-stdlib-%d" pid)
     Directory.CreateDirectory dir |> ignore

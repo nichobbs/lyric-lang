@@ -190,9 +190,10 @@ driven discovery story.
   TAP-style output, exit codes, `--list`, `--filter`, two-character
   CLI tests, port a representative `lyric-stdlib/tests/*_tests.l` to use
   `expect` so we exercise the new path.
-* **Stage 2** — `--manifest` discovery, multi-file test runs,
-  cross-package non-pub access (§3.2), retire the F# Expecto bridge
-  for the stdlib test suite.
+* **Stage 2** _(shipped — D-progress-297, #465)_ — `--manifest` discovery,
+  multi-file test runs via `Emitter.emitProject`, feature-default resolution,
+  local-path dep resolution.  Cross-package non-pub access (§3.2) and retiring
+  the F# Expecto bridge for the stdlib test suite are follow-up items.
 * **Stage 3** — property execution (auto-derived generators for
   primitive types and opaque ranges), `lyric test --properties`,
   doctest harness for ` ```lyric ` blocks.

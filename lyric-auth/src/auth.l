@@ -83,7 +83,7 @@ func jwtAlg(token: in String): String {
           val vs = pfxPos + pfx.length
           val ve = indexOfCharAfter(header, '"', vs)
           if ve < 0 { return "" }
-          header.substring(vs, ve)
+          header.substring(vs, ve - vs)
         }
       }
     }
@@ -139,7 +139,7 @@ pub func verifyJwt(
   val alg = jwtAlg(token)
   if alg.length == 0 { return false }
   if not rolesContain(allowedAlgorithms, alg) { return false }
-  return AuthKernelNet.verifyJwt(token, secret, issuer, audience, allowedAlgorithms)
+  return AuthKernelNet.verifyJwtImpl(token, secret, issuer, audience, allowedAlgorithms)
 }
 
 @stable(since="0.1")
@@ -177,7 +177,7 @@ pub func verifyJwt(
 pub func extractClaim(token: in String, claimKey: in String): Option[String]
   requires: claimKey.length > 0
 {
-  return AuthKernelNet.extractClaim(token, claimKey)
+  return AuthKernelNet.extractClaimImpl(token, claimKey)
 }
 
 @stable(since="0.1")
@@ -190,20 +190,23 @@ pub func extractClaim(token: in String, claimKey: in String): Option[String]
 
 // ─── API key verification ─────────────────────────────────────────────────────
 
-/// Constant-time comparison of `provided` against `expected`.
+/// Byte-content-constant-time comparison of `provided` against `expected`.
 ///
-/// Returns true iff the two strings are byte-for-byte identical.
-/// The comparison runs in time proportional to `expected.length` regardless
-/// of where the strings first differ, preventing timing-oracle attacks.
+/// Returns true iff the two strings are byte-for-byte identical.  The
+/// comparison is constant-time with respect to content when both encode to
+/// the same byte length, preventing value-oracle timing attacks.  When
+/// lengths differ the call returns immediately; for fixed-format keys
+/// (e.g. 32-byte random tokens) the length is not secret and this is
+/// acceptable.
 ///
-/// Always supply the expected key as `expected` (not `provided`) to ensure
-/// the timing guarantee holds even when `provided` is shorter.
+/// Always supply the expected key as `expected` (not `provided`) to keep
+/// the length-constant guarantee aligned with the fixed expected key.
 @stable(since="0.1")
 @cfg(feature = "dotnet")
 pub func verifyApiKey(provided: in String, expected: in String): Bool
   requires: expected.length > 0
 {
-  return AuthKernelNet.verifyApiKey(provided, expected)
+  return AuthKernelNet.verifyApiKeyImpl(provided, expected)
 }
 
 @stable(since="0.1")
@@ -240,7 +243,7 @@ pub func rolesContain(allowedRoles: in String, role: in String): Bool {
     val atEnd   = i == allowedRoles.length
     val atComma = not atEnd and (allowedRoles[i] == ',')
     if atEnd or atComma {
-      val candidate = allowedRoles.substring(start, i).trim()
+      val candidate = allowedRoles.substring(start, i - start).trim()
       if candidate.length > 0 and candidate == role { return true }
       start = i + 1
     }

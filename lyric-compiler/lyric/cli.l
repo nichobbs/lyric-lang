@@ -184,6 +184,41 @@ func writeRuntimeConfig(dllPath: in String): Unit {
   }
 }
 
+// Like writeRuntimeConfig but includes additionalProbingPaths in the JSON so
+// that `dotnet exec` can locate referenced DLLs (e.g. Lyric.Stdlib.Testing)
+// that live in dependency bin directories rather than the output directory.
+func writeRuntimeConfigWithProbing(dllPath: in String, probingPaths: in List[String]): Unit {
+  val dir  = Path.dirname(dllPath)
+  val base = stemOf(Path.basename(dllPath), 4)  // strip ".dll"
+  val cfgPath = Path.join(dir, base + ".runtimeconfig.json")
+  var probingSection = ""
+  if probingPaths.count > 0 {
+    probingSection = ",\n    \"additionalProbingPaths\": [\n"
+    var pi = 0
+    while pi < probingPaths.count {
+      if pi > 0 { probingSection = probingSection + ",\n" }
+      probingSection = probingSection + "      \"" + probingPaths[pi] + "\""
+      pi += 1
+    }
+    probingSection = probingSection + "\n    ]"
+  }
+  val json =
+    "{\n" +
+    "  \"runtimeOptions\": {\n" +
+    "    \"tfm\": \"net10.0\",\n" +
+    "    \"framework\": {\n" +
+    "      \"name\": \"Microsoft.NETCore.App\",\n" +
+    "      \"version\": \"10.0.0\"\n" +
+    "    }" + probingSection + "\n" +
+    "  }\n" +
+    "}\n"
+  match File.writeText(cfgPath, json) {
+    case Ok(_) -> ()
+    case Err(e) ->
+      printErr("build: warning: runtimeconfig: " + IOError.message(e))
+  }
+}
+
 // Compile `sourcePath` to a DLL at `outPath`.
 // Returns the exit code: 0 on success, 1 on error.
 // `manifestPath` is forwarded to the generator pre-processor so custom
@@ -544,10 +579,14 @@ func buildProject(
                     printErr("build: local dep '" + dep.name + "' not built — run `lyric build --manifest " + depToml + "` first")
                   }
                 }
-                case Err(_) -> ()
+                case Err(e) -> {
+                  printErr("build: local dep '" + dep.name + "': malformed lyric.toml: " + ManifestError.message(e))
+                }
               }
             }
-            case Err(_) -> ()
+            case Err(e) -> {
+              printErr("build: local dep '" + dep.name + "': cannot read " + depToml + ": " + IOError.message(e))
+            }
           }
         } else {
           printErr("build: local dep '" + dep.name + "' — no lyric.toml found at '" + depToml + "'; check the path = \"...\" entry in your lyric.toml")
@@ -2145,9 +2184,54 @@ func cmdTest(argv: in slice[String]): Int {
   }
 }
 
-// Unreachable today: the F# bootstrap CLI fall-back doesn't know
-// `--manifest` for `test`, so this entry point only fires once the
-// self-hosted CLI bridge regains JIT (#465).
+// Returns true when a package source is entirely gated behind a @cfg feature
+// that is not in activeFeatures, meaning the package should be compiled as an
+// empty stub rather than skipped (the import in the parent package still needs
+// to resolve; the @cfg-gated impl items in the parent are elided by the emitter).
+//
+// Detection strategy: prepend "\n" so that both the @cfg annotation and the
+// package declaration are always detectable via "\n@cfg(feature = \"" and
+// "\npackage " even when they appear at the very start of the source.  This
+// avoids false-positives from occurrences of the substring "package " inside
+// doc-comments (e.g. "extern package StackExchange.Redis") that precede the
+// real package declaration.
+func isCfgGatedOut(source: in String, activeFeatures: in List[String]): Bool {
+  val searchable = "\n" + source
+  val cfgMark   = "\n@cfg(feature = \""
+  val pkgMark   = "\npackage "
+  val cfgIdxOpt = Str.indexOf(searchable, cfgMark)
+  match cfgIdxOpt {
+    case None -> false
+    case Some(cfgIdx) -> {
+      val pkgIdxOpt = Str.indexOf(searchable, pkgMark)
+      match pkgIdxOpt {
+        case None -> false
+        case Some(pkgIdx) -> {
+          if cfgIdx >= pkgIdx { false }
+          else {
+            val cfgStart = cfgIdx + cfgMark.length
+            val afterCfg = Str.substring(searchable, cfgStart, searchable.length - cfgStart)
+            val closeOpt = Str.indexOf(afterCfg, "\"")
+            match closeOpt {
+              case None -> false
+              case Some(closeIdx) -> {
+                val featName = Str.substring(afterCfg, 0, closeIdx)
+                var featActive = false
+                var fai = 0
+                while fai < activeFeatures.count {
+                  if activeFeatures[fai] == featName { featActive = true }
+                  fai += 1
+                }
+                not featActive
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
@@ -2178,30 +2262,169 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
 
   val mfDir = Path.dirname(mfPath)
 
-  // Pre-read every [project.packages] source so each test build
-  // reuses the same content.
-  val pkgSources: List[String] = newList()
+  // Resolve active feature set from manifest defaults (no CLI flags in the test runner).
+  val mfDefaults = Mf.readFeatureDefaultsFromToml(mfText, mfPath)
+  val activeFeatures: List[String] = newList()
+  var afi = 0
+  while afi < mfDefaults.count {
+    activeFeatures.add(mfDefaults[afi])
+    afi += 1
+  }
+
+  // Build ProjectPackage entries from [project.packages], matching buildProject.
+  val libPkgs: List[ProjectPackage] = newList()
+  var hadFatal = false
   var pi = 0
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
     val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path }
               else { Path.join(mfDir, pkgEntry.path) }
-    match File.readText(abs) {
-      case Ok(t)  -> pkgSources.add(t)
-      case Err(e) -> {
-        printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
-        return 1
+    val pkgSources: List[String] = newList()
+    if File.fileExists(abs) {
+      match File.readText(abs) {
+        case Ok(t) -> {
+          if isCfgGatedOut(t, activeFeatures) {
+            // Package is gated by an inactive feature: substitute an empty stub
+            // so that imports of this package from sibling packages resolve, while
+            // the @cfg-gated items in those packages are properly elided.
+            pkgSources.add("package " + pkgEntry.name + "\n")
+          } else {
+            pkgSources.add(t)
+          }
+        }
+        case Err(e) -> {
+          printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
+          hadFatal = true
+        }
       }
+    } else if File.dirExists(abs) {
+      val allFiles = match File.listFilesRecursive(abs) {
+        case Ok(fs)  -> fs
+        case Err(e)  -> {
+          printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
+          hadFatal = true
+          newList()
+        }
+      }
+      val lFiles: List[String] = newList()
+      for f in allFiles.toArray() {
+        if Str.endsWith(f, ".l") { lFiles.add(f) }
+      }
+      if lFiles.count == 0 {
+        printErr("test: package '" + pkgEntry.name + "': no .l files found in " + abs)
+        hadFatal = true
+      } else {
+        val sorted = Sort.sortStrings(lFiles.toArray())
+        for f in sorted {
+          match File.readText(f) {
+            case Ok(t) -> {
+              if isCfgGatedOut(t, activeFeatures) {
+                pkgSources.add("package " + pkgEntry.name + "\n")
+              } else {
+                pkgSources.add(t)
+              }
+            }
+            case Err(e) -> {
+              printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
+              hadFatal = true
+            }
+          }
+        }
+      }
+    } else {
+      printErr("test: package '" + pkgEntry.name + "': path not found: " + abs)
+      hadFatal = true
+    }
+    if pkgSources.count > 0 {
+      libPkgs.add(ProjectPackage(name = pkgEntry.name, sources = pkgSources))
     }
     pi += 1
+  }
+
+  if hadFatal { return 1 }
+
+  // Resolve local-path dependencies to DLL paths, matching buildProject.
+  // Also track unique dep bin directories so the test runtimeconfig can
+  // include additionalProbingPaths — this lets dotnet exec locate stdlib
+  // DLLs (e.g. Lyric.Stdlib.Testing) that live in the dep's bin dir but
+  // are not merged into the main dep bundle (e.g. Lyric.Stdlib.dll).
+  val restoredDlls: List[String] = newList()
+  val depBinDirs:   List[String] = newList()
+  var di = 0
+  while di < manifest.deps.count {
+    val dep = manifest.deps[di]
+    match dep.source {
+      case Path(dir) -> {
+        val depDir = if Path.isAbsolute(dir) { dir }
+                     else { Path.join(mfDir, dir) }
+        val depToml = Path.join(depDir, "lyric.toml")
+        val depBinDir = Path.join(depDir, "bin")
+        if File.fileExists(depToml) {
+          match File.readText(depToml) {
+            case Ok(depMfText) -> {
+              match Mf.parseManifest(depMfText, depToml) {
+                case Ok(depMf) -> {
+                  val dllName = match depMf.project {
+                    case Some(p) -> match p.outputAssembly {
+                      case Some(asm) -> asm
+                      case None      -> p.name + ".dll"
+                    }
+                    case None -> depMf.packageSection.name + ".dll"
+                  }
+                  val dllPath = Path.join(depBinDir, dllName)
+                  if File.fileExists(dllPath) {
+                    restoredDlls.add(dep.name + "\t" + dllPath)
+                    // Collect unique dep bin directories for runtime probing.
+                    var alreadyHave = false
+                    var ddi = 0
+                    while ddi < depBinDirs.count {
+                      if depBinDirs[ddi] == depBinDir { alreadyHave = true }
+                      ddi += 1
+                    }
+                    if not alreadyHave { depBinDirs.add(depBinDir) }
+                  } else {
+                    printErr("test: local dep '" + dep.name + "' not built — run `lyric build --manifest " + depToml + "` first")
+                  }
+                }
+                case Err(e) -> {
+                  printErr("test: local dep '" + dep.name + "': malformed lyric.toml: " + ManifestError.message(e))
+                }
+              }
+            }
+            case Err(e) -> {
+              printErr("test: local dep '" + dep.name + "': cannot read " + depToml + ": " + IOError.message(e))
+            }
+          }
+        } else {
+          printErr("test: local dep '" + dep.name + "' — no lyric.toml found at '" + depToml + "'")
+        }
+      }
+      case _ -> ()
+    }
+    di += 1
+  }
+
+  // Include the bootstrap CLI DLL directory in the runtime probing paths so
+  // that host-shim DLLs compiled alongside it (e.g. Lyric.Auth.Host.dll) are
+  // locatable when the compiled test DLL runs via `dotnet exec`.
+  // LYRIC_CLI_DLL is set by Program.fs when the CLI is a dotnet exec DLL
+  // (the typical CI case); it is unset for native AOT binaries.
+  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
+  if cliDll.length > 0 {
+    val cliDir = Path.dirname(cliDll)
+    var haveCliDir = false
+    var hdi = 0
+    while hdi < depBinDirs.count {
+      if depBinDirs[hdi] == cliDir { haveCliDir = true }
+      hdi += 1
+    }
+    if not haveCliDir { depBinDirs.add(cliDir) }
   }
 
   val testOutDir = Path.join(mfDir, ".lyric-test")
   match File.createDir(testOutDir) {
     case Ok(_)  -> ()
     case Err(e) -> {
-      // Without an output directory every later test emit fails and the
-      // resulting N-test failure cascade obscures the root cause.
       printErr("test: cannot create '" + testOutDir + "': " + IOError.message(e))
       return 1
     }
@@ -2210,7 +2433,6 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
   var totalPassed = 0
   var totalFailed = 0
 
-  // Walk each [project.tests] entry.
   var ti = 0
   while ti < proj.tests.count {
     val testEntry = proj.tests[ti]
@@ -2228,8 +2450,7 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
       }
     }
 
-    val synth = TestSynth.synthesize(testSource, filterArg)
-    val rewritten: String = match synth {
+    val rewritten: String = match TestSynth.synthesize(testSource, filterArg) {
       case Synthesised(rw, _, _) -> rw
       case NoTestModule(span)    -> {
         printErr(abs + ":" + toString(span.startPos.line) +
@@ -2260,29 +2481,32 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
       }
     }
 
-    // Build the combined source: every [project.packages] file plus
-    // the synthesised test (which now carries a `main()` that runs
-    // every test function).  Collect into a List and `Str.joinList`
-    // at the end to avoid the O(N^2) repeated-concat cost.
-    val parts: List[String] = newList()
+    // Compile the library packages together with the synthesised test package
+    // via emitProject so each package declaration is a separate compilation
+    // unit — concatenating sources into a single-file emit is invalid when
+    // the project contains more than one `package` declaration.
+    val allPkgs: List[ProjectPackage] = newList()
     var si = 0
-    while si < pkgSources.count {
-      parts.add(pkgSources[si])
+    while si < libPkgs.count {
+      allPkgs.add(libPkgs[si])
       si += 1
     }
-    parts.add(rewritten)
-    val combined = Str.joinList("", parts)
+    val testSrcs: List[String] = newList()
+    testSrcs.add(rewritten)
+    allPkgs.add(ProjectPackage(name = testEntry.name, sources = testSrcs))
 
     val asmStem = stemOf(Path.basename(testEntry.path), 2)
     val outPath = Path.join(testOutDir, asmStem + ".dll")
 
-    val req = EmitRequest(
-      source       = combined,
-      assemblyName = asmStem,
-      outputPath   = outPath,
-      target       = Dotnet
+    val projReq = EmitProjectRequest(
+      packages         = allPkgs,
+      assemblyName     = asmStem,
+      outputPath       = outPath,
+      target           = Dotnet,
+      restoredDllPaths = restoredDlls,
+      activeFeatures   = activeFeatures
     )
-    val result  = Emitter.emit(req)
+    val result  = Emitter.emitProject(projReq)
     var hadBuildError = false
     for d in result.diagnostics.toArray() {
       match d.severity {
@@ -2297,7 +2521,11 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
       ti += 1
       continue
     }
-    writeRuntimeConfig(outPath)
+    // Stdlib DLLs compiled on-demand during --internal-project-build are
+    // already in testOutDir: Program.fs copies every DLL from the
+    // subprocess's per-PID stdlib cache to Path.GetDirectoryName(outPath)
+    // before the subprocess exits.  No /tmp scanning needed here.
+    writeRuntimeConfigWithProbing(outPath, depBinDirs)
 
     val execArgs: List[String] = newList()
     execArgs.add("exec")

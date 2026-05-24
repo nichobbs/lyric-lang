@@ -44,6 +44,11 @@
          `@externTarget("Lyric.Jvm.Hosts.…")` declarations in
          `lyric-compiler/jvm/_kernel/kernel.l` at user-program emit. -->
     <ProjectReference Include="..\Lyric.Jvm.Hosts\Lyric.Jvm.Hosts.fsproj" />
+    <!-- Auth host shim — `Lyric.Auth.AuthHost`.  Same AppDomain reason:
+         `lyric-auth/src/_kernel/net/auth_kernel.l` uses
+         `@externTarget("Lyric.Auth.AuthHost.…")` and `findClrType`
+         must find it at emit time. -->
+    <ProjectReference Include="..\Lyric.Auth.Host\Lyric.Auth.Host.fsproj" />
   </ItemGroup>
 
   <ItemGroup>

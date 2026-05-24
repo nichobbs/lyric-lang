@@ -14,12 +14,14 @@ output_assembly = "Session.dll"
 "Session"            = "src/session.l"
 "Session.Kernel.Net" = "src/_kernel/net/session_kernel.l"
 
-# Session-fixation regression suite — pins the no-auto-create invariant
-# in InProcessSessionStore.set() (#316 / #436).  Runs via the
-# multi-package test runner once issue #465 lands; until then the test
-# files serve as living specs alongside the source.
+# Full session test suite.  Runs via `lyric test --manifest` (#465).
+# - session_fixation_tests.l  — no-auto-create invariant in set() (#316/#436)
+# - session_store_tests.l     — full CRUD surface (create/load/get/set/delete/clear/touch/destroy)
+# - sensitive_url_tests.l     — credential masking: error surfaces must not echo passwords (#357/#477)
 [project.tests]
 "Session.SessionFixationTests" = "tests/session_fixation_tests.l"
+"Session.SessionStoreTests"    = "tests/session_store_tests.l"
+"Session.SensitiveUrlTests"    = "tests/sensitive_url_tests.l"
 
 [features]
 redis    = []   # Redis-backed sessions (StackExchange.Redis)
