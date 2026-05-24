@@ -197,6 +197,15 @@ jobs:
             echo "::error::AOT entry-point binary not found at $lyric_bin"
             exit 1
           fi
+          # Route any emitProject / --target jvm / LYRIC_FORCE_SUBPROCESS hop
+          # to the F# bootstrap CLI.  Required since #1082 stripped the AOT
+          # entry point of its path-discovery shim — the AOT binary is a
+          # pure trampoline and never auto-locates lyric.dll.
+          cli_dll="$(pwd)/bootstrap/src/Lyric.Cli/bin/${BUILD_CONFIG}/net10.0/lyric.dll"
+          if [ -f "$cli_dll" ]; then
+            export LYRIC_BIN=dotnet
+            export LYRIC_CLI_DLL="$cli_dll"
+          fi
           for ex in examples/*.l; do
             # `@proof_required` files are verifier-only — they have no
             # `func main` so `lyric build` doesn't apply.  The AOT
@@ -258,7 +267,8 @@ jobs:
           cp "${stdlib_dlls[@]}" lyric-session/.lyric-test/
           # Route emitProject subprocess calls to the F# bootstrap CLI, which
           # handles --internal-project-build.  The AOT binary is a pure trampoline
-          # into the Lyric CLI dispatcher and does not handle internal flags.
+          # into the Lyric CLI dispatcher and does not handle internal flags
+          # (#1082 stripped the AOT entry point of its path-discovery shim).
           cli_dll="$(pwd)/bootstrap/src/Lyric.Cli/bin/${BUILD_CONFIG}/net10.0/lyric.dll"
           if [ -f "$cli_dll" ]; then
             export LYRIC_BIN=dotnet
