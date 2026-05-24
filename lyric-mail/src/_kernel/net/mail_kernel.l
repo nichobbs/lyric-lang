@@ -95,6 +95,18 @@ pub func mailSetBody(msg: in MailMessage, body: in String): Unit = ()
 @externTarget("System.Net.Mail.MailMessage.get_To")
 pub func mailGetTo(msg: in MailMessage): MailAddressCollection = ()
 
+@axiom("System.Net.Mail.MailMessage.CC getter — returns the MailAddressCollection for carbon-copy recipient mutation")
+@externTarget("System.Net.Mail.MailMessage.get_CC")
+pub func mailGetCc(msg: in MailMessage): MailAddressCollection = ()
+
+@axiom("System.Net.Mail.MailMessage.Bcc getter — returns the MailAddressCollection for blind-carbon-copy recipient mutation")
+@externTarget("System.Net.Mail.MailMessage.get_Bcc")
+pub func mailGetBcc(msg: in MailMessage): MailAddressCollection = ()
+
+@axiom("System.Net.Mail.MailMessage.ReplyToList getter — returns the MailAddressCollection for reply-to mutation (the legacy ReplyTo property is obsolete)")
+@externTarget("System.Net.Mail.MailMessage.get_ReplyToList")
+pub func mailGetReplyToList(msg: in MailMessage): MailAddressCollection = ()
+
 // ─── MailAddress construction ─────────────────────────────────────────────────
 
 @axiom("new System.Net.Mail.MailAddress(address) — 1-arg constructor")

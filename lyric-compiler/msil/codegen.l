@@ -2882,7 +2882,23 @@ func emitExternTargetBody(
 
   val hint = hintFromAnnotations(decl.annotations)
   match resolveExternTarget(target, hint) {
-    case None -> false
+    case None -> {
+      // The FFI resolver could not locate `target` in any loaded
+      // reference assembly.  Falling through with a bare `MRet`
+      // produced invalid IL for non-void returns and a runtime
+      // VerificationException with no build-time signal (#1041).
+      // Emit a runtime stub that throws on call so smoke-test
+      // builds (declare-but-never-call) still build cleanly and
+      // actual call sites get a clear runtime error.
+      val msg = "FFI extern '" + target + "' on '" + decl.name
+        + "' could not be resolved to a method on any loaded "
+        + "reference assembly; check the @externTarget annotation."
+      val msgTok = ctxInternUs(cctx.lctx, msg)
+      insns.add(MLdStr(token = msgTok))
+      insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+      insns.add(MThrow)
+      true
+    }
     case Some(r) -> {
       // Map every Lyric param + return type to MSIL.
       val paramTypes: List[MsilType] = newList()
@@ -3737,8 +3753,17 @@ func lowerProtectedMsil(cctx: in CodegenCtx, decl: in ProtectedTypeDecl,
         }
         val entryInsns: List[MInsn] = newList()
         match ed.body {
-          case FBBlock(block) -> lowerBlockMsil(cctx, entryFctx, entryInsns, block)
-          case FBExpr(e)      -> {
+          case FBBlock(block) -> {
+            // Mirror the lowerFuncMsil retTy dispatch: non-void entry
+            // bodies keep the trailing expression on the stack as the
+            // return value; void/Unit entries discard it (#1039).
+            if retTy != MVoid {
+              val _ = lowerBlockExprMsil(cctx, entryFctx, entryInsns, block)
+            } else {
+              lowerBlockMsil(cctx, entryFctx, entryInsns, block)
+            }
+          }
+          case FBExpr(e) -> {
             lowerExprMsil(cctx, entryFctx, entryInsns, e)
             entryInsns.add(MRet)
           }
