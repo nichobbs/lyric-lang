@@ -1,4 +1,7 @@
 // lyric-proto public API.
+// Stability: @experimental — the proto3 encoder and decoder have unit-level
+// tests, but interop against the canonical Google protobuf tooling has not
+// been exercised in CI.
 //
 // Consumers import this package and use encodeMessage / decodeMessage.
 // Import Proto.Types for the field value constructors (ProtoField, DecodedField).

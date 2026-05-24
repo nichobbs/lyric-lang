@@ -1,4 +1,7 @@
 // Validation — declarative input validation for Lyric.
+// Stability: @experimental — the combinators and `ValidateInput` /
+// `ValidateEmail` aspects have unit tests, but the surface is intentionally
+// minimal and may grow before `1.0`.
 //
 // Provides composable validator combinators that return `[ValidationError]` —
 // an empty list means the value is valid.  This library is distinct from

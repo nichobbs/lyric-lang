@@ -1,5 +1,9 @@
 // AwsSecrets — AWS Secrets Manager and Parameter Store integration for Lyric.
 //
+// Stability: @stable(since="0.1") — the public API is covered by
+// SemVer; the AWS SDK v3 calls behind it are wrapped at the
+// kernel boundary and tracked in docs/17-axiom-audit.md.
+//
 // Primary usage: config-block annotation support.
 //
 //   Apply @secretsManager or @parameterStore to @sensitive fields in a config

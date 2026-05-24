@@ -1,4 +1,7 @@
 // Jobs — background job scheduling and execution library for Lyric.
+// Stability: @experimental — the in-process scheduler has tests; the Hangfire
+// and Quartz.NET backends have not been driven against a live deployment in
+// CI.
 //
 // `JobScheduler` is the public interface; implement it to add a custom
 // backend.  Two implementations are provided:

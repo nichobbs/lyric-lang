@@ -1,4 +1,7 @@
 // AwsXRay — AWS X-Ray active tracing for Lyric Lambda handlers.
+// Stability: @experimental — the active-tracing aspect compiles and unit
+// tests cover the AWS X-Ray header shape, but the end-to-end pipeline has not
+// been exercised against a live X-Ray segment service in CI.
 //
 // The Lambda runtime opens a top-level X-Ray segment for every invocation
 // when active tracing is enabled on the Lambda function.  This library

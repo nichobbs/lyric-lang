@@ -1,4 +1,7 @@
 // Cache — typed key-value cache with TTL and a pluggable store interface.
+// Stability: @experimental — the surface compiles and the in-memory store has
+// tests, but the redis-backed store has not been driven against a live
+// cluster in CI.
 //
 // WARNING (thread safety): `InProcessCacheStore` is NOT thread-safe.  Concurrent
 // access from multiple threads produces undefined behaviour (lost updates,

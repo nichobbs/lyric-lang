@@ -1,5 +1,12 @@
 // Session — distributed session management for Lyric web applications.
 //
+// Stability: @experimental — the surface compiles and the in-memory
+// store has tests, but the Redis-backed store has not been exercised
+// against a real Redis cluster in CI.
+// WARNING: experimental — no stability guarantee.  Public functions
+// may change shape, add parameters, or be renamed before the surface
+// freezes for `1.0`.
+//
 // Provides a `SessionStore` interface with Redis-backed and in-process
 // implementations.  Both share the same API; swap the store at startup
 // via factory functions without changing application code.

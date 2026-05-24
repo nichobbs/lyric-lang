@@ -1,5 +1,12 @@
 // Storage — object and file storage library for Lyric.
 //
+// Stability: @experimental — the local-filesystem backend is
+// exercised by tests, but the S3 and Azure Blob backends have not
+// been driven against a live provider in CI.
+// WARNING: experimental — no stability guarantee.  The
+// `StorageBucket` interface and the `connect*` factories may change
+// before the surface freezes for `1.0`.
+//
 // Provides a uniform `StorageBucket` interface over Amazon S3, Azure Blob
 // Storage, and the local filesystem.  Obtain a bucket handle with one of the
 // feature-gated `connect*` factory functions, then call the typed wrappers or

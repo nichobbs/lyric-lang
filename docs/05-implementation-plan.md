@@ -346,7 +346,30 @@ Open-ended. Successful languages spend most of their lifetime here.
 
 ### Early-preview work (Phase 6)
 
-> **Framing note:** The libraries listed below (`lyric-*`) are showcase / early-preview packages. They arrived before v1.0 to stress-test the compiler and demonstrate real-world integration patterns, but their public API surfaces are unstable, test coverage is limited, and the JVM target is incomplete for most of them. They should not be treated as fully supported releases. The recommended framing until v1.0 is "early-preview"; see [issue #367](https://github.com/nichobbs/lyric-lang/issues/367).
+> **Framing note (Tier 5 — #367).** Per-library stability is declared in
+> each library's module doc-comment.  The cohort splits three ways:
+>
+> - **Production-ready / `@stable(since="0.1")`** — `lyric-auth`,
+>   `lyric-mq`, `lyric-aws-secrets`.  Surface is covered by SemVer;
+>   tests exercise the operative paths; safe to use in production with
+>   the usual deployment due diligence.
+> - **Operational but live-untested / `@experimental` + WARNING banner** —
+>   `lyric-session`, `lyric-storage`.  The Lyric surface compiles and
+>   has tests, but the production backend (Redis, S3 / Azure Blob) has
+>   not been exercised against a live provider in CI.  May change
+>   without a SemVer major bump until the missing coverage lands.
+> - **Surface-only / `@experimental`** — every other `lyric-*` package.
+>   `lyric-health`'s `__handleLiveness` / `__handleReadiness` exits now
+>   `panic` rather than silently returning "ok" — the kernel dispatcher
+>   that would actually invoke registered checks has not landed yet,
+>   and the panic is the deliberate gate against shipping a degraded
+>   service as healthy.  `lyric-ws`'s rate limiter has a one-shot
+>   burst budget (the budget does not refill).  Cross-target (.NET /
+>   JVM) parity remains incomplete for several entries.
+>
+> See [issue #367](https://github.com/nichobbs/lyric-lang/issues/367) for
+> the remediation plan that drives every entry toward `@stable` ahead of
+> v1.0.
 
 - **JVM emitter** — self-hosted Lyric emitter in `lyric-compiler/jvm/`
   (`classfile.l`, `bytecode.l`, `lowering.l`, `driver.l`, …);

@@ -1,4 +1,7 @@
 // Resilience — retry and circuit-breaker aspect templates.
+// Stability: @experimental — the Retry and CircuitBreaker aspect templates
+// compile and have unit tests, but their end-to-end behaviour under load has
+// not been exercised in CI.
 //
 // Two pub aspect templates with no `matches:` clause; consumers bind them
 // locally with a `matches:` selector:

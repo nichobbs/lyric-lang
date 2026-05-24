@@ -1,4 +1,7 @@
 // Std.Logging — structured, named, runtime-configurable logging.
+// Stability: @experimental — the severity-scale + named-logger API compiles
+// and has tests, but the structured-log envelope has not been exercised
+// against a real log aggregator (Datadog, Splunk, OTLP) in CI.
 //
 // Builds on Std.ConsoleHost and adds a six-level severity scale, named loggers,
 // structured key-value fields, and text/JSON output formatting.  A global level

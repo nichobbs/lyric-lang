@@ -1,4 +1,7 @@
 // Lambda — AWS Lambda runtime adapter for Lyric.
+// Stability: @experimental — the API Gateway v1/v2/ALB bridges compile and
+// unit tests cover the request-shape adapters, but the live AWS Lambda
+// runtime has not been exercised in CI.
 //
 // Provides the core vocabulary for writing Lambda functions in Lyric and
 // the serve() entry point that drives the Lambda invocation loop.
