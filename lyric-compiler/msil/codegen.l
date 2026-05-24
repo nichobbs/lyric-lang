@@ -447,13 +447,25 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
   // Pre-scan: does any IVal need a `.cctor` (non-literal init)?
   // After the literal-IVal inlining fix, only non-literal IVals produce
   // a non-empty initInsns list and therefore a .cctor MethodDef row.
+  //
+  // Threading a `constEnv` of `val` names seen so far lets us treat
+  // `val b = a` (where `a` is itself literal) as literal too — without
+  // this, every later val that references an earlier literal val forces
+  // `hasValCctor = true`, allocating a phantom `.cctor` MethodDef and
+  // shifting every subsequent IFunc token by one (silent miscompile).
+  val constEnv: Map[String, Bool] = newMap()
   var hasValCctor = false
   var pi = 0
   while pi < file.items.count {
     match file.items[pi].kind {
       case IVal(decl) -> {
-        if not isLiteralI4ExprMsil(decl.init) {
+        val isLit = isLiteralI4ExprMsilWithEnv(decl.init, constEnv)
+        if not isLit {
           hasValCctor = true
+        }
+        match decl.pattern.kind {
+          case PBinding(valName, _) -> constEnv.add(valName, isLit)
+          case _                    -> {}  // non-simple bindings can't appear in EPath
         }
       }
       case _ -> {}
@@ -714,6 +726,15 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
 // True when an IVal's init expression will produce a single MLdcI4 instruction
 // (so no .cctor is needed after the literal-inlining fix).
 func isLiteralI4ExprMsil(e: in Expr): Bool {
+  val empty: Map[String, Bool] = newMap()
+  isLiteralI4ExprMsilWithEnv(e, empty)
+}
+
+// Env-aware variant: consult `env` when the expression is a bare EPath whose
+// segment matches a previously-seen `val` name.  Lets `val b = a` (with
+// `val a = 7`) resolve to literal, so the pre-scan does not allocate a
+// phantom `.cctor` (which would shift MethodDef tokens for all later IFuncs).
+func isLiteralI4ExprMsilWithEnv(e: in Expr, env: in Map[String, Bool]): Bool {
   match e.kind {
     case ELiteral(lit) -> match lit {
       case LInt(v, _)  -> intToLong(longToInt(v)) == v  // fits in I4
@@ -722,7 +743,17 @@ func isLiteralI4ExprMsil(e: in Expr): Bool {
       case LUnit       -> true  // 0 insns emitted; no .cctor needed
       case _           -> false
     }
-    case EParen(inner) -> isLiteralI4ExprMsil(inner)
+    case EParen(inner) -> isLiteralI4ExprMsilWithEnv(inner, env)
+    case EPath(path) -> {
+      if path.segments.count == 1 and env.containsKey(path.segments[0]) {
+        match mapGet(env, path.segments[0]) {
+          case Some(b) -> b
+          case None    -> false
+        }
+      } else {
+        false
+      }
+    }
     case _             -> false
   }
 }
@@ -3554,13 +3585,298 @@ func matchesAspectMsil(aspect: in AspectDecl, fn: in FunctionDecl): Bool {
   true
 }
 
-// Rewrite the `around` body of an aspect, substituting calls to `proceed(args)`
-// with calls to the renamed target function `targetFuncName`.
-// For the bootstrap, we perform a structural string-based approach: any ECall
-// to "proceed" is rewritten to call `targetFuncName`.  A proper implementation
-// would walk the full Expr tree.
-func rewriteProceedMsil(body: in Block, targetFuncName: in String): Block {
-  body  // bootstrap: return as-is; proceed() is resolved by name at call time
+// Rewrite `proceed(args)` → `targetFuncName(p1, p2, ...)` in an expression
+// tree.  Mirrors `rewriteProceeds` in `bootstrap/src/Lyric.Emitter/Weaver.fs`
+// and `Lyric.Weaver.rewriteBlock` — the F# version is the spec, this port
+// is what the self-hosted MSIL pipeline runs.  Without a proper AST walk
+// the call to `proceed()` inside an aspect `around` body is silently
+// dropped: the wrapped function never executes.
+//
+// Bootstrap-grade parity: `proceed`'s own argument list is ignored; the
+// substitute always forwards the wrapper's own parameter list (matches the
+// F# Weaver and `args.field` is not supported in this slice).
+
+// Make a single-segment EPath expression at a zero span.
+func makeProceedPathExpr(name: in String): Expr {
+  val sp  = makeSpan(initialPosition(), initialPosition())
+  val seg: List[String] = newList()
+  seg.add(name)
+  val mp  = ModulePath(segments = seg, span = sp)
+  Expr(kind = EPath(path = mp), span = sp)
+}
+
+// Build the replacement ECall `targetFuncName(p1, p2, ...)`.
+func proceedSubstitutionMsil(targetFuncName: in String, paramNames: in List[String]): Expr {
+  val args: List[CallArg] = newList()
+  var i = 0
+  while i < paramNames.count {
+    args.add(CAPositional(expr = makeProceedPathExpr(paramNames[i])))
+    i = i + 1
+  }
+  Expr(
+    kind = ECall(fn = makeProceedPathExpr(targetFuncName), args = args),
+    span = makeSpan(initialPosition(), initialPosition()))
+}
+
+func isProceedCallMsil(expr: in Expr): Bool {
+  match expr.kind {
+    case ECall(f, _) -> {
+      match f.kind {
+        case EPath(path) ->
+          path.segments.count == 1 and path.segments[0] == "proceed"
+        case _ -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
+func rewriteProceedExprMsil(targetFuncName: in String, paramNames: in List[String], expr: in Expr): Expr {
+  if isProceedCallMsil(expr) {
+    return proceedSubstitutionMsil(targetFuncName, paramNames)
+  }
+  val s = expr.span
+  match expr.kind {
+    case ECall(f, args) -> {
+      val newArgs: List[CallArg] = newList()
+      var i = 0
+      while i < args.count {
+        newArgs.add(rewriteProceedCallArgMsil(targetFuncName, paramNames, args[i]))
+        i = i + 1
+      }
+      Expr(kind = ECall(
+        fn   = rewriteProceedExprMsil(targetFuncName, paramNames, f),
+        args = newArgs), span = s)
+    }
+    case EParen(inner) ->
+      Expr(kind = EParen(inner = rewriteProceedExprMsil(targetFuncName, paramNames, inner)), span = s)
+    case ETuple(xs) -> {
+      val newXs: List[Expr] = newList()
+      var i = 0
+      while i < xs.count {
+        newXs.add(rewriteProceedExprMsil(targetFuncName, paramNames, xs[i]))
+        i = i + 1
+      }
+      Expr(kind = ETuple(exprs = newXs), span = s)
+    }
+    case EList(xs) -> {
+      val newXs: List[Expr] = newList()
+      var i = 0
+      while i < xs.count {
+        newXs.add(rewriteProceedExprMsil(targetFuncName, paramNames, xs[i]))
+        i = i + 1
+      }
+      Expr(kind = EList(exprs = newXs), span = s)
+    }
+    case EAwait(inner) ->
+      Expr(kind = EAwait(inner = rewriteProceedExprMsil(targetFuncName, paramNames, inner)), span = s)
+    case EYield(inner) ->
+      Expr(kind = EYield(inner = rewriteProceedExprMsil(targetFuncName, paramNames, inner)), span = s)
+    case ESpawn(inner) ->
+      Expr(kind = ESpawn(inner = rewriteProceedExprMsil(targetFuncName, paramNames, inner)), span = s)
+    case ETry(inner) ->
+      Expr(kind = ETry(inner = rewriteProceedExprMsil(targetFuncName, paramNames, inner)), span = s)
+    case EOld(inner) ->
+      Expr(kind = EOld(inner = rewriteProceedExprMsil(targetFuncName, paramNames, inner)), span = s)
+    case EPropagate(inner) ->
+      Expr(kind = EPropagate(inner = rewriteProceedExprMsil(targetFuncName, paramNames, inner)), span = s)
+    case EPrefix(op, operand) ->
+      Expr(kind = EPrefix(op = op, operand = rewriteProceedExprMsil(targetFuncName, paramNames, operand)), span = s)
+    case EBinop(op, l, r) ->
+      Expr(kind = EBinop(
+        op  = op,
+        lhs = rewriteProceedExprMsil(targetFuncName, paramNames, l),
+        rhs = rewriteProceedExprMsil(targetFuncName, paramNames, r)), span = s)
+    case EAssign(t, op, v) ->
+      Expr(kind = EAssign(
+        target = rewriteProceedExprMsil(targetFuncName, paramNames, t),
+        op     = op,
+        value  = rewriteProceedExprMsil(targetFuncName, paramNames, v)), span = s)
+    case EMember(recv, n) ->
+      Expr(kind = EMember(
+        receiver   = rewriteProceedExprMsil(targetFuncName, paramNames, recv),
+        memberName = n), span = s)
+    case EIndex(recv, idxs) -> {
+      val newIdxs: List[Expr] = newList()
+      var i = 0
+      while i < idxs.count {
+        newIdxs.add(rewriteProceedExprMsil(targetFuncName, paramNames, idxs[i]))
+        i = i + 1
+      }
+      Expr(kind = EIndex(
+        receiver = rewriteProceedExprMsil(targetFuncName, paramNames, recv),
+        indices  = newIdxs), span = s)
+    }
+    case ETypeApp(f, targs) ->
+      Expr(kind = ETypeApp(
+        fn   = rewriteProceedExprMsil(targetFuncName, paramNames, f),
+        args = targs), span = s)
+    case EIf(cond, thenB, elseB, form) -> {
+      val newElse = match elseB {
+        case None    -> None
+        case Some(e) -> Some(value = rewriteProceedEOBMsil(targetFuncName, paramNames, e))
+      }
+      Expr(kind = EIf(
+        cond       = rewriteProceedExprMsil(targetFuncName, paramNames, cond),
+        thenBranch = rewriteProceedEOBMsil(targetFuncName, paramNames, thenB),
+        elseBranch = newElse,
+        thenForm   = form), span = s)
+    }
+    case EMatch(scrut, arms) ->
+      Expr(kind = EMatch(
+        scrutinee = rewriteProceedExprMsil(targetFuncName, paramNames, scrut),
+        arms      = rewriteProceedMatchArmsMsil(targetFuncName, paramNames, arms)), span = s)
+    case ELambda(lparams, body) ->
+      Expr(kind = ELambda(
+        lambdaParams = lparams,
+        body         = rewriteProceedBlockMsil(targetFuncName, paramNames, body)), span = s)
+    case EBlock(blk) ->
+      Expr(kind = EBlock(block = rewriteProceedBlockMsil(targetFuncName, paramNames, blk)), span = s)
+    case EUnsafe(blk) ->
+      Expr(kind = EUnsafe(block = rewriteProceedBlockMsil(targetFuncName, paramNames, blk)), span = s)
+    case EInterpolated(segs) -> {
+      val newSegs: List[InterpolatedSegment] = newList()
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISText(t, sp) -> newSegs.add(ISText(text = t, span = sp))
+          case ISExpr(e)     ->
+            newSegs.add(ISExpr(expr = rewriteProceedExprMsil(targetFuncName, paramNames, e)))
+        }
+        i = i + 1
+      }
+      Expr(kind = EInterpolated(segments = newSegs), span = s)
+    }
+    // Leaves: ELiteral, EPath, ESelf, EResult, EForall, EExists, ERange, EError
+    case _ -> expr
+  }
+}
+
+func rewriteProceedCallArgMsil(targetFuncName: in String, paramNames: in List[String], arg: in CallArg): CallArg {
+  match arg {
+    case CAPositional(v)     -> CAPositional(expr = rewriteProceedExprMsil(targetFuncName, paramNames, v))
+    case CANamed(n, v, span) -> CANamed(name = n, value = rewriteProceedExprMsil(targetFuncName, paramNames, v), span = span)
+  }
+}
+
+func rewriteProceedEOBMsil(targetFuncName: in String, paramNames: in List[String], eob: in ExprOrBlock): ExprOrBlock {
+  match eob {
+    case EOBBlock(blk) -> EOBBlock(block = rewriteProceedBlockMsil(targetFuncName, paramNames, blk))
+    case EOBExpr(e)    -> EOBExpr(expr = rewriteProceedExprMsil(targetFuncName, paramNames, e))
+  }
+}
+
+func rewriteProceedMatchArmsMsil(targetFuncName: in String, paramNames: in List[String], arms: in List[MatchArm]): List[MatchArm] {
+  val newArms: List[MatchArm] = newList()
+  var i = 0
+  while i < arms.count {
+    val a = arms[i]
+    val newGuard = match a.guard {
+      case Some(g) -> Some(value = rewriteProceedExprMsil(targetFuncName, paramNames, g))
+      case None    -> None
+    }
+    newArms.add(MatchArm(
+      pattern = a.pattern,
+      guard   = newGuard,
+      body    = rewriteProceedEOBMsil(targetFuncName, paramNames, a.body),
+      span    = a.span))
+    i = i + 1
+  }
+  newArms
+}
+
+func rewriteProceedBindingMsil(targetFuncName: in String, paramNames: in List[String], b: in LocalBinding): LocalBinding {
+  match b {
+    case LBVal(pat, ty, init) ->
+      LBVal(pat = pat, ty = ty, init = rewriteProceedExprMsil(targetFuncName, paramNames, init))
+    case LBVar(name, ty, optInit) -> {
+      val newInit = match optInit {
+        case None    -> None
+        case Some(e) -> Some(value = rewriteProceedExprMsil(targetFuncName, paramNames, e))
+      }
+      LBVar(name = name, ty = ty, init = newInit)
+    }
+    case LBLet(name, ty, init) ->
+      LBLet(name = name, ty = ty, init = rewriteProceedExprMsil(targetFuncName, paramNames, init))
+  }
+}
+
+func rewriteProceedStmtMsil(targetFuncName: in String, paramNames: in List[String], stmt: in Statement): Statement {
+  val s = stmt.span
+  match stmt.kind {
+    case SExpr(e) ->
+      Statement(kind = SExpr(expr = rewriteProceedExprMsil(targetFuncName, paramNames, e)), span = s)
+    case SReturn(opt) -> {
+      val newOpt = match opt {
+        case None    -> None
+        case Some(e) -> Some(value = rewriteProceedExprMsil(targetFuncName, paramNames, e))
+      }
+      Statement(kind = SReturn(value = newOpt), span = s)
+    }
+    case SLocal(binding) ->
+      Statement(kind = SLocal(binding = rewriteProceedBindingMsil(targetFuncName, paramNames, binding)), span = s)
+    case SAssign(t, op, v) ->
+      Statement(kind = SAssign(
+        target = rewriteProceedExprMsil(targetFuncName, paramNames, t),
+        op     = op,
+        value  = rewriteProceedExprMsil(targetFuncName, paramNames, v)), span = s)
+    case SThrow(e) ->
+      Statement(kind = SThrow(expr = rewriteProceedExprMsil(targetFuncName, paramNames, e)), span = s)
+    case SFor(lbl, pat, iter, body) ->
+      Statement(kind = SFor(
+        label = lbl,
+        pat   = pat,
+        iter  = rewriteProceedExprMsil(targetFuncName, paramNames, iter),
+        body  = rewriteProceedBlockMsil(targetFuncName, paramNames, body)), span = s)
+    case SWhile(lbl, cond, body) ->
+      Statement(kind = SWhile(
+        label = lbl,
+        cond  = rewriteProceedExprMsil(targetFuncName, paramNames, cond),
+        body  = rewriteProceedBlockMsil(targetFuncName, paramNames, body)), span = s)
+    case SLoop(lbl, body) ->
+      Statement(kind = SLoop(label = lbl, body = rewriteProceedBlockMsil(targetFuncName, paramNames, body)), span = s)
+    case SScope(b, body) ->
+      Statement(kind = SScope(binding = b, body = rewriteProceedBlockMsil(targetFuncName, paramNames, body)), span = s)
+    case STry(body, catches, finally_) -> {
+      val newBody = rewriteProceedBlockMsil(targetFuncName, paramNames, body)
+      val newCatches: List[CatchClause] = newList()
+      var i = 0
+      while i < catches.count {
+        val cc = catches[i]
+        newCatches.add(CatchClause(
+          typeName = cc.typeName,
+          bindName = cc.bindName,
+          body     = rewriteProceedBlockMsil(targetFuncName, paramNames, cc.body),
+          span     = cc.span))
+        i = i + 1
+      }
+      val newFinally = match finally_ {
+        case None     -> None
+        case Some(fb) -> Some(rewriteProceedBlockMsil(targetFuncName, paramNames, fb))
+      }
+      Statement(kind = STry(body = newBody, catches = newCatches, finally_ = newFinally), span = s)
+    }
+    case SDefer(body) ->
+      Statement(kind = SDefer(body = rewriteProceedBlockMsil(targetFuncName, paramNames, body)), span = s)
+    // SBreak, SContinue, SInvariant, SRule, SItem: pass through
+    case _ -> stmt
+  }
+}
+
+func rewriteProceedBlockMsil(targetFuncName: in String, paramNames: in List[String], blk: in Block): Block {
+  val newStmts: List[Statement] = newList()
+  var i = 0
+  while i < blk.statements.count {
+    newStmts.add(rewriteProceedStmtMsil(targetFuncName, paramNames, blk.statements[i]))
+    i = i + 1
+  }
+  Block(statements = newStmts, span = blk.span)
+}
+
+// Public entry: rewrite `proceed()` in the aspect's around body to call
+// the renamed target function with the original function's params.
+func rewriteProceedMsil(body: in Block, targetFuncName: in String, paramNames: in List[String]): Block {
+  rewriteProceedBlockMsil(targetFuncName, paramNames, body)
 }
 
 // Wrap a Block in Some(FBBlock(block = b)): Option[FunctionBody].
@@ -3581,7 +3897,16 @@ func buildAspectWrapperMsil(originalFn: in FunctionDecl, aspect: in AspectDecl,
     case None -> None
     case Some(around) -> {
       // Build the wrapper: same signature as the original function.
-      val wrapperBody = rewriteProceedMsil(around.body, targetFuncName)
+      // Forward the wrapper's parameter list into `proceed()` (matches
+      // F# Weaver.fs bootstrap-grade behaviour: `proceed`'s own arg list
+      // is ignored).
+      val paramNames: List[String] = newList()
+      var pi = 0
+      while pi < originalFn.params.count {
+        paramNames.add(originalFn.params[pi].name)
+        pi = pi + 1
+      }
+      val wrapperBody = rewriteProceedMsil(around.body, targetFuncName, paramNames)
       val wrapper = FunctionDecl(
         docComments  = newList(),
         annotations  = originalFn.annotations,

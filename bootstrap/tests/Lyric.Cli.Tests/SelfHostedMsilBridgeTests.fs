@@ -367,6 +367,33 @@ func main(): Unit {
 """
             "shim ran"
 
+        // ── #876: aspect `around` body that calls `proceed()` to wrap the target ─
+        // The weaver renames `work` to `__aspect_target_0_work`; the wrapper body
+        // must rewrite `proceed()` to call the renamed target.  Without the
+        // tree-walking rewrite (the original stub left `proceed` unresolved), the
+        // call lowered to a no-op and the "inside" line was silently dropped.
+        mkBridge "shm_aspect_proceed_wrap"
+            """package ShMAspectProceed
+
+aspect Wrap {
+  matches: visibility: pub
+  around(args) {
+    println("before")
+    proceed()
+    println("after")
+  }
+}
+
+pub func work(): Unit {
+  println("inside")
+}
+
+func main(): Unit {
+  work()
+}
+"""
+            "before\ninside\nafter"
+
         // ── Band 2 (#855): IProtected → Monitor-based record (bootstrap: regular record) ─
         // Protected fields use `var` / `let`; entries use `entry name(params): Ret { body }`.
         mkBridge "shm_protected_smoke"
@@ -468,4 +495,159 @@ func main(): Unit {
             "hello, world"
             1   // expectedIfaceImplCount: EnglishGreeter implements Greeter
             0   // expectedMethodImplCount: CLR name-matching, no explicit MethodImpl rows
+
+        // ── Trailing-expression-as-return-value: `func main(): Int { 0 }` ──────────────────
+        // Regression test for the codegen bug where `lowerBlockMsil` popped the
+        // trailing literal, leaving the stack empty for `ret` and producing
+        // `InvalidProgramException` at JIT time.
+        mkBridge "shm_trailing_int_literal"
+            """package ShMTrailingLit
+func main(): Int {
+  println("trailing-int-ok")
+  0
+}
+"""
+            "trailing-int-ok"
+
+        // Bare trailing expression in a non-void function with no side-effecting
+        // preamble — the simplest reproducer of the same bug.  Exit code is
+        // asserted via `runDll`'s `exitCode = 0`.
+        mkBridge "shm_trailing_only_zero"
+            """package ShMTrailingZero
+func main(): Int { 0 }
+"""
+            ""
+
+        // ── Band 7 parity expansion (docs/41 §9): one program per core language
+        //    feature class.  Each smoke runs the full self-hosted pipeline (lexer /
+        //    parser / type-check / mode-check / elaborator / mono / codegen / lowering /
+        //    PE) and asserts on runtime output, which is the strongest acceptance
+        //    check short of running the full v1 example set.
+        mkBridge "shm_if_else_chain"
+            """package ShMIfElse
+func classify(n: in Int): String {
+  if n < 0 {
+    "negative"
+  } else if n == 0 {
+    "zero"
+  } else {
+    "positive"
+  }
+}
+func main(): Unit {
+  println(classify(-5))
+  println(classify(0))
+  println(classify(42))
+}
+"""
+            "negative\nzero\npositive"
+
+        mkBridge "shm_match_int_with_wildcard"
+            """package ShMMatchInt
+func describe(n: in Int): String {
+  match n {
+    case 0 -> "zero"
+    case 1 -> "one"
+    case _ -> "other"
+  }
+}
+func main(): Unit {
+  println(describe(0))
+  println(describe(1))
+  println(describe(42))
+}
+"""
+            "zero\none\nother"
+
+        mkBridge "shm_recursion_factorial"
+            """package ShMRecursion
+func factorial(n: in Int): Int {
+  if n <= 1 {
+    1
+  } else {
+    n * factorial(n - 1)
+  }
+}
+func main(): Unit {
+  println(factorial(5))
+  println(factorial(10))
+}
+"""
+            "120\n3628800"
+
+        mkBridge "shm_string_concat"
+            """package ShMStringConcat
+func greet(name: in String): String {
+  "hello, " + name + "!"
+}
+func main(): Unit {
+  println(greet("world"))
+  println(greet("lyric"))
+}
+"""
+            "hello, world!\nhello, lyric!"
+
+        mkBridge "shm_int_arithmetic"
+            """package ShMIntArith
+func main(): Unit {
+  val a = 17
+  val b = 5
+  println(a + b)
+  println(a - b)
+  println(a * b)
+  println(a / b)
+  println(a % b)
+}
+"""
+            "22\n12\n85\n3\n2"
+
+        // Regression for #877: a module-level `val b = a` whose initialiser is
+        // just a reference to a previously-declared literal `val a` lowers to
+        // a single `ldc.i4` at codegen.  The pre-scan predicate must agree
+        // (no phantom `.cctor` MethodDef row), otherwise IFunc tokens shift
+        // by 1 and calls dispatch to the wrong method.  The crash shape was
+        // `MethodNotFoundException` / `MissingMethodException` at entry-point
+        // invocation.
+        mkBridge "shm_module_const_chain"
+            """package ShMConstChain
+val first  = 7
+val second = first
+func main(): Unit {
+  println(second)
+}
+"""
+            "7"
+
+        // Regression for #962: when a tiny-header method (e.g. `add` — no locals,
+        // code <= 63 bytes) precedes a fat-header method (e.g. `main` declaring
+        // `val a = add(3,4)`, which needs 1 local and therefore a fat header),
+        // the fat header must start on a 4-byte boundary per ECMA-335 II.25.4.5.
+        // Without pre-method padding the JIT rejected the assembly with
+        // `InvalidProgramException` even though `ilverify` accepted the IL.  This
+        // test reproduces the minimum 4-line trigger.
+        mkBridge "shm_fat_header_alignment"
+            """package ShMFatHeaderAlign
+func add(a: in Int, b: in Int): Int { a + b }
+func main(): Unit {
+  val a = add(3, 4)
+  println(a)
+}
+"""
+            "7"
+
+        // Regression for #962 (original reproducer): three sequential `println`
+        // statements where the third nests a user-function call.  Confirms that
+        // fat-header alignment holds across multiple bodies, not just the
+        // 2-method minimum.
+        mkBridge "shm_fat_header_three_println"
+            """package ShMFatHeaderThreePrintln
+func add(a: in Int, b: in Int): Int { a + b }
+func square(n: in Int): Int { n * n }
+func main(): Unit {
+  println(add(3, 4))
+  println(square(7))
+  println(add(square(2), square(3)))
+}
+"""
+            "7\n49\n13"
     ]
