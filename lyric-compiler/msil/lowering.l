@@ -78,13 +78,19 @@ pub func elementTypeByte(t: in MsilType): Int {
 }
 
 // Emit an MsilType encoding into w, handling multi-byte cases.
-// MTypeVar emits 0x13 + index; all other types emit a single element-type byte.
+// MTypeVar emits 0x13 + index; MClass currently degrades to
+// ELEMENT_TYPE_OBJECT (0x1C) — same workaround the local-var sig builder
+// applies (see `buildLocalVarSig` comment).  A full CLASS+TypeDefOrRef
+// encoding requires the LoweringCtx so the writer can look up the TypeDef
+// row by class name; that refactor is tracked alongside #1183 Phase 2/3.
+// All other types emit a single element-type byte.
 func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
   match t {
     case MTypeVar(idx) -> {
       bufU1(w, 0x13)
       bufU1(w, idx)
     }
+    case MClass(_) -> bufU1(w, 0x1C)   // Object: avoids malformed CLASS+TypeDefOrRef entry
     case other -> bufU1(w, elementTypeByte(other))
   }
 }

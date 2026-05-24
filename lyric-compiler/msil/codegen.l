@@ -3541,7 +3541,15 @@ pub func lowerRecordMsil(decl: in RecordDecl, pkgName: in String): MRecord {
     match decl.members[i] {
       case RMField(f) -> {
         fields.add(MField(
-          flags     = 0x0001,   // FDA_PUBLIC
+          // ECMA-335 §II.23.1.5: 0x0006 = `FieldAttributes.Public`.  The
+          // pre-existing literal `0x0001` was actually `PrivateScope`,
+          // which made record fields invisible to cross-package field
+          // access (#1183 Phase 3) — `ldfld` from another package's IL
+          // raised `System.FieldAccessException`.  Single-package field
+          // access happened to work because the JIT skips access checks
+          // for in-class access patterns.  Mirrors the `FDA_PUBLIC`
+          // constant in `tables.l` (re-exported by `Msil.Lowering`).
+          flags     = 0x0006,
           name      = f.name,
           fieldType = typeExprToMsil(f.ty, pkgName)))
       }
