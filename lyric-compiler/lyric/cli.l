@@ -160,6 +160,38 @@ func stemOf(base: in String, extLen: in Int): String {
 // §2. Core build helper
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Escape `\` and `"` in a path before embedding it as a JSON string
+// literal (paths with these characters are rare on POSIX but must still
+// produce valid JSON for `dotnet exec` to parse the runtimeconfig — #1093).
+func jsonEscapePath(s: in String): String {
+  var out = ""
+  var i = 0
+  while i < s.length {
+    val c = s[i]
+    if c == '\\'      { out = out + "\\\\" }
+    else if c == '"'  { out = out + "\\\"" }
+    else              { out = out + Str.substring(s, i, 1) }
+    i = i + 1
+  }
+  out
+}
+
+// Shared runtimeconfig skeleton — the TFM + framework version live here
+// so they're maintained in one place (#1093).  `extra` is inserted at
+// the end of the `runtimeOptions` block; pass an empty string for the
+// minimal form, or the comma-prefixed `additionalProbingPaths` section.
+func runtimeConfigJson(extra: in String): String {
+  "{\n" +
+  "  \"runtimeOptions\": {\n" +
+  "    \"tfm\": \"net10.0\",\n" +
+  "    \"framework\": {\n" +
+  "      \"name\": \"Microsoft.NETCore.App\",\n" +
+  "      \"version\": \"10.0.0\"\n" +
+  "    }" + extra + "\n" +
+  "  }\n" +
+  "}\n"
+}
+
 // Write a minimal runtimeconfig.json next to `dllPath` so `dotnet exec`
 // resolves the right runtime.  Failures are reported as warnings, not
 // hard errors, because the DLL is already written at this point.
@@ -167,16 +199,7 @@ func writeRuntimeConfig(dllPath: in String): Unit {
   val dir  = Path.dirname(dllPath)
   val base = stemOf(Path.basename(dllPath), 4)  // strip ".dll"
   val cfgPath = Path.join(dir, base + ".runtimeconfig.json")
-  val json =
-    "{\n" +
-    "  \"runtimeOptions\": {\n" +
-    "    \"tfm\": \"net10.0\",\n" +
-    "    \"framework\": {\n" +
-    "      \"name\": \"Microsoft.NETCore.App\",\n" +
-    "      \"version\": \"10.0.0\"\n" +
-    "    }\n" +
-    "  }\n" +
-    "}\n"
+  val json = runtimeConfigJson("")
   match File.writeText(cfgPath, json) {
     case Ok(_) -> ()
     case Err(e) ->
@@ -197,21 +220,12 @@ func writeRuntimeConfigWithProbing(dllPath: in String, probingPaths: in List[Str
     var pi = 0
     while pi < probingPaths.count {
       if pi > 0 { probingSection = probingSection + ",\n" }
-      probingSection = probingSection + "      \"" + probingPaths[pi] + "\""
+      probingSection = probingSection + "      \"" + jsonEscapePath(probingPaths[pi]) + "\""
       pi += 1
     }
     probingSection = probingSection + "\n    ]"
   }
-  val json =
-    "{\n" +
-    "  \"runtimeOptions\": {\n" +
-    "    \"tfm\": \"net10.0\",\n" +
-    "    \"framework\": {\n" +
-    "      \"name\": \"Microsoft.NETCore.App\",\n" +
-    "      \"version\": \"10.0.0\"\n" +
-    "    }" + probingSection + "\n" +
-    "  }\n" +
-    "}\n"
+  val json = runtimeConfigJson(probingSection)
   match File.writeText(cfgPath, json) {
     case Ok(_) -> ()
     case Err(e) ->
