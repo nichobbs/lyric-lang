@@ -281,16 +281,19 @@ impl SessionStore for InProcessSessionStore {
   }
 
   func load(sessionId: in String): Result[Option[SessionData], SessionError] {
-    match mapGet(self.sessions, sessionId) {
-      case None       -> Ok(None)
-      case Some(data) -> {
-        val ts = nowMs()
-        if data.expiresAt != 0i64 and data.expiresAt < ts {
-          self.sessions.remove(sessionId)
-          Ok(None)
-        } else {
-          Ok(Some(value = data))
-        }
+    // Use containsKey + indexer instead of mapGet to avoid isinst
+    // TypeBuilderInstantiation issues with Option[SessionData] pattern
+    // matching when SessionData is defined in the same compilation unit.
+    if not self.sessions.containsKey(sessionId) {
+      Ok(None)
+    } else {
+      val data = self.sessions[sessionId]
+      val ts = nowMs()
+      if data.expiresAt != 0i64 and data.expiresAt < ts {
+        self.sessions.remove(sessionId)
+        Ok(None)
+      } else {
+        Ok(Some(value = data))
       }
     }
   }
@@ -306,33 +309,38 @@ impl SessionStore for InProcessSessionStore {
   }
 
   func touch(sessionId: in String): Result[Unit, SessionError] {
-    match load(sessionId) {
-      case Ok(opt) ->
-        match opt {
-          case None       -> Ok(())
-          case Some(data) -> {
-            val ts = nowMs()
-            val updated = SessionData(
-              id             = data.id,
-              entries        = data.entries,
-              createdAt      = data.createdAt,
-              lastAccessedAt = ts,
-              expiresAt      = defaultExpiresAt(self.ttlSeconds))
-            save(updated)
-          }
-        }
-      case Err(e) -> Err(e)
+    if not self.sessions.containsKey(sessionId) {
+      Ok(())
+    } else {
+      val data = self.sessions[sessionId]
+      val ts = nowMs()
+      if data.expiresAt != 0i64 and data.expiresAt < ts {
+        self.sessions.remove(sessionId)
+        Ok(())
+      } else {
+        val updated = SessionData(
+          id             = data.id,
+          entries        = data.entries,
+          createdAt      = data.createdAt,
+          lastAccessedAt = ts,
+          expiresAt      = defaultExpiresAt(self.ttlSeconds))
+        self.save(updated)
+      }
     }
   }
 
   func get(sessionId: in String, key: in String): Result[Option[String], SessionError] {
-    match load(sessionId) {
-      case Ok(opt) ->
-        match opt {
-          case None       -> Ok(None)
-          case Some(data) -> Ok(mapGet(data.entries, key))
-        }
-      case Err(e) -> Err(e)
+    if not self.sessions.containsKey(sessionId) {
+      Ok(None)
+    } else {
+      val data = self.sessions[sessionId]
+      val ts = nowMs()
+      if data.expiresAt != 0i64 and data.expiresAt < ts {
+        self.sessions.remove(sessionId)
+        Ok(None)
+      } else {
+        Ok(mapGet(data.entries, key))
+      }
     }
   }
 
@@ -340,65 +348,71 @@ impl SessionStore for InProcessSessionStore {
     // SECURITY: do NOT auto-create a session here — see #316 and the
     // matching NativeSessionStore.set() comment.  Callers must obtain
     // a fresh id from create() before invoking set().
-    match load(sessionId) {
-      case Ok(opt) ->
-        match opt {
-          case None ->
-            Err(SessionError(
-              message = "session not found; call create() to obtain a fresh id before set()",
-              code    = "SESSION_NOT_FOUND"))
-          case Some(existing) -> {
-            val ts = nowMs()
-            existing.entries[key] = value
-            val updated = SessionData(
-              id             = existing.id,
-              entries        = existing.entries,
-              createdAt      = existing.createdAt,
-              lastAccessedAt = ts,
-              expiresAt      = existing.expiresAt)
-            save(updated)
-          }
-        }
-      case Err(e) -> Err(e)
+    if not self.sessions.containsKey(sessionId) {
+      Err(SessionError(
+        message = "session not found; call create() to obtain a fresh id before set()",
+        code    = "SESSION_NOT_FOUND"))
+    } else {
+      val existing = self.sessions[sessionId]
+      val ts = nowMs()
+      if existing.expiresAt != 0i64 and existing.expiresAt < ts {
+        self.sessions.remove(sessionId)
+        Err(SessionError(
+          message = "session not found; call create() to obtain a fresh id before set()",
+          code    = "SESSION_NOT_FOUND"))
+      } else {
+        existing.entries[key] = value
+        val updated = SessionData(
+          id             = existing.id,
+          entries        = existing.entries,
+          createdAt      = existing.createdAt,
+          lastAccessedAt = ts,
+          expiresAt      = existing.expiresAt)
+        self.save(updated)
+      }
     }
   }
 
   func delete(sessionId: in String, key: in String): Result[Unit, SessionError] {
-    match load(sessionId) {
-      case Ok(opt) ->
-        match opt {
-          case None       -> Ok(())
-          case Some(data) -> {
-            data.entries.remove(key)
-            val updated = SessionData(
-              id             = data.id,
-              entries        = data.entries,
-              createdAt      = data.createdAt,
-              lastAccessedAt = nowMs(),
-              expiresAt      = data.expiresAt)
-            save(updated)
-          }
-        }
-      case Err(e) -> Err(e)
+    if not self.sessions.containsKey(sessionId) {
+      Ok(())
+    } else {
+      val data = self.sessions[sessionId]
+      val ts = nowMs()
+      if data.expiresAt != 0i64 and data.expiresAt < ts {
+        self.sessions.remove(sessionId)
+        Ok(())
+      } else {
+        data.entries.remove(key)
+        val updated = SessionData(
+          id             = data.id,
+          entries        = data.entries,
+          createdAt      = data.createdAt,
+          lastAccessedAt = nowMs(),
+          expiresAt      = data.expiresAt)
+        self.save(updated)
+      }
     }
   }
 
   func clear(sessionId: in String): Result[Unit, SessionError] {
-    match load(sessionId) {
-      case Ok(opt) ->
-        match opt {
-          case None       -> Ok(())
-          case Some(data) -> {
-            val updated = SessionData(
-              id             = data.id,
-              entries        = newMap(),
-              createdAt      = data.createdAt,
-              lastAccessedAt = nowMs(),
-              expiresAt      = data.expiresAt)
-            save(updated)
-          }
-        }
-      case Err(e) -> Err(e)
+    if not self.sessions.containsKey(sessionId) {
+      Ok(())
+    } else {
+      val data = self.sessions[sessionId]
+      val ts = nowMs()
+      if data.expiresAt != 0i64 and data.expiresAt < ts {
+        self.sessions.remove(sessionId)
+        Ok(())
+      } else {
+        val updated = SessionData(
+          id             = data.id,
+          entries        = newMap(),
+          createdAt      = data.createdAt,
+          lastAccessedAt = nowMs(),
+          expiresAt      = data.expiresAt)
+        self.save(updated)
+      }
     }
   }
 }

@@ -2184,6 +2184,54 @@ func cmdTest(argv: in slice[String]): Int {
   }
 }
 
+// Returns true when a package source is entirely gated behind a @cfg feature
+// that is not in activeFeatures, meaning the package should be compiled as an
+// empty stub rather than skipped (the import in the parent package still needs
+// to resolve; the @cfg-gated impl items in the parent are elided by the emitter).
+//
+// Detection strategy: prepend "\n" so that both the @cfg annotation and the
+// package declaration are always detectable via "\n@cfg(feature = \"" and
+// "\npackage " even when they appear at the very start of the source.  This
+// avoids false-positives from occurrences of the substring "package " inside
+// doc-comments (e.g. "extern package StackExchange.Redis") that precede the
+// real package declaration.
+func isCfgGatedOut(source: in String, activeFeatures: in List[String]): Bool {
+  val searchable = "\n" + source
+  val cfgMark   = "\n@cfg(feature = \""
+  val pkgMark   = "\npackage "
+  val cfgIdxOpt = Str.indexOf(searchable, cfgMark)
+  match cfgIdxOpt {
+    case None -> false
+    case Some(cfgIdx) -> {
+      val pkgIdxOpt = Str.indexOf(searchable, pkgMark)
+      match pkgIdxOpt {
+        case None -> false
+        case Some(pkgIdx) -> {
+          if cfgIdx >= pkgIdx { false }
+          else {
+            val cfgStart = cfgIdx + cfgMark.length
+            val afterCfg = Str.substring(searchable, cfgStart, searchable.length - cfgStart)
+            val closeOpt = Str.indexOf(afterCfg, "\"")
+            match closeOpt {
+              case None -> false
+              case Some(closeIdx) -> {
+                val featName = Str.substring(afterCfg, 0, closeIdx)
+                var featActive = false
+                var fai = 0
+                while fai < activeFeatures.count {
+                  if activeFeatures[fai] == featName { featActive = true }
+                  fai += 1
+                }
+                not featActive
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
@@ -2234,7 +2282,16 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
     val pkgSources: List[String] = newList()
     if File.fileExists(abs) {
       match File.readText(abs) {
-        case Ok(t)  -> pkgSources.add(t)
+        case Ok(t) -> {
+          if isCfgGatedOut(t, activeFeatures) {
+            // Package is gated by an inactive feature: substitute an empty stub
+            // so that imports of this package from sibling packages resolve, while
+            // the @cfg-gated items in those packages are properly elided.
+            pkgSources.add("package " + pkgEntry.name + "\n")
+          } else {
+            pkgSources.add(t)
+          }
+        }
         case Err(e) -> {
           printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
           hadFatal = true
@@ -2260,7 +2317,13 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
         val sorted = Sort.sortStrings(lFiles.toArray())
         for f in sorted {
           match File.readText(f) {
-            case Ok(t)  -> pkgSources.add(t)
+            case Ok(t) -> {
+              if isCfgGatedOut(t, activeFeatures) {
+                pkgSources.add("package " + pkgEntry.name + "\n")
+              } else {
+                pkgSources.add(t)
+              }
+            }
             case Err(e) -> {
               printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
               hadFatal = true
@@ -2339,6 +2402,23 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
       case _ -> ()
     }
     di += 1
+  }
+
+  // Include the bootstrap CLI DLL directory in the runtime probing paths so
+  // that host-shim DLLs compiled alongside it (e.g. Lyric.Auth.Host.dll) are
+  // locatable when the compiled test DLL runs via `dotnet exec`.
+  // LYRIC_CLI_DLL is set by Program.fs when the CLI is a dotnet exec DLL
+  // (the typical CI case); it is unset for native AOT binaries.
+  val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")
+  if cliDll.length > 0 {
+    val cliDir = Path.dirname(cliDll)
+    var haveCliDir = false
+    var hdi = 0
+    while hdi < depBinDirs.count {
+      if depBinDirs[hdi] == cliDir { haveCliDir = true }
+      hdi += 1
+    }
+    if not haveCliDir { depBinDirs.add(cliDir) }
   }
 
   val testOutDir = Path.join(mfDir, ".lyric-test")
