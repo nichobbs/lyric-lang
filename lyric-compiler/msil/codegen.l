@@ -68,6 +68,9 @@ pub record CodegenCtx {
   tokStringFormat2:   Int   // String.Format(string,object,object)
   tokStringFormat3:   Int   // String.Format(string,object,object,object)
   tokObjToString:     Int   // Object.ToString() instance HASTHIS
+  tokExcGetMessage:   Int   // Exception.get_Message(): string  instance HASTHIS
+  tokObjGetType:      Int   // Object.GetType(): Type  instance HASTHIS
+  tokTypeGetName:     Int   // Type.get_Name: string  instance HASTHIS
   // List<object> via TypeSpec (for newList() and list operations)
   tokListObjCtor:      Int   // List<object>::.ctor()  newobj
   tokListObjAdd:       Int   // List<object>::Add(object): void  callvirt
@@ -243,6 +246,27 @@ pub func newCodegenCtx(packageName: in String): CodegenCtx {
     lctx, lctx.trObject, "ToString",
     "obj_tostring", buildInstanceMethodSig(toStrPs, MString))
 
+  // System.Type TypeRef (needed for GetType / get_Name)
+  val trType = ctxAddTypeRef(lctx, "System", "Type", lctx.arRuntime)
+
+  // Exception.get_Message(): string  instance HASTHIS
+  val excGetMsgPs: List[MsilType] = newList()
+  val tokExcGetMessage = 0x0A000000 + ctxAddMemberRef(
+    lctx, trException, "get_Message",
+    "exc_get_message", buildInstanceMethodSig(excGetMsgPs, MString))
+
+  // Object.GetType(): Type  instance HASTHIS
+  val objGetTypePs: List[MsilType] = newList()
+  val tokObjGetType = 0x0A000000 + ctxAddMemberRef(
+    lctx, lctx.trObject, "GetType",
+    "obj_gettype", buildInstanceMethodSig(objGetTypePs, MObject))
+
+  // Type.get_Name: string  instance HASTHIS  (Type is reference type; return MString)
+  val typeGetNamePs: List[MsilType] = newList()
+  val tokTypeGetName = 0x0A000000 + ctxAddMemberRef(
+    lctx, trType, "get_Name",
+    "type_get_name", buildInstanceMethodSig(typeGetNamePs, MString))
+
   // ── List<object> via TypeSpec ──────────────────────────────────────────────
   // AssemblyRef for System.Collections (houses List`1 contract in .NET 10)
   val arCollections = ctxAddAssemblyRef(lctx, "System.Collections", 10, 0)
@@ -367,6 +391,9 @@ pub func newCodegenCtx(packageName: in String): CodegenCtx {
     tokStringFormat2     = tokFmt2,
     tokStringFormat3     = tokFmt3,
     tokObjToString       = tokObjToStr,
+    tokExcGetMessage     = tokExcGetMessage,
+    tokObjGetType        = tokObjGetType,
+    tokTypeGetName       = tokTypeGetName,
     tokListObjCtor       = tokListObjCtor,
     tokListObjAdd        = tokListObjAdd,
     tokListObjGetItem    = tokListObjGetItem,
@@ -1032,8 +1059,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
           }
         }
         case _ -> {
-          // For MObject receivers (List, Dict, etc.) handle known BCL properties.
-          if memberName == "count" {
+          // TyException built-in members: .message and .typeName.
+          // Catch-clause exception bindings are stored as MObject; detect by member name.
+          if memberName == "message" {
+            insns.add(MCallvirt(methodToken = cctx.tokExcGetMessage))
+            MString
+          } else if memberName == "typeName" {
+            insns.add(MCallvirt(methodToken = cctx.tokObjGetType))
+            insns.add(MCallvirt(methodToken = cctx.tokTypeGetName))
+            MString
+          } else if memberName == "count" {
             // castclass makes the stack type explicit as List<object> so the JIT
             // can verify the callvirt when the receiver was produced by a call
             // returning Object (e.g. a generator function).
