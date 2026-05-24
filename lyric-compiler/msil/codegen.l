@@ -3631,7 +3631,28 @@ func isProceedCallMsil(expr: in Expr): Bool {
   }
 }
 
+// True for any `proceed(...)` call whose argument list is non-empty.  The
+// bootstrap-grade rewriter always forwards the wrapper's own parameters
+// regardless of what the user passed, so a non-empty arg list is silently
+// dropped — panic instead so the author sees a clear diagnostic at build
+// time rather than a baffling runtime mismatch (#1141).
+func isProceedCallWithArgsMsil(expr: in Expr): Bool {
+  match expr.kind {
+    case ECall(f, args) -> {
+      match f.kind {
+        case EPath(path) ->
+          path.segments.count == 1 and path.segments[0] == "proceed" and args.count > 0
+        case _ -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
 func rewriteProceedExprMsil(targetFuncName: in String, paramNames: in List[String], expr: in Expr): Expr {
+  if isProceedCallWithArgsMsil(expr) {
+    panic("Msil.Codegen: proceed(...) with explicit arguments is not supported by the bootstrap aspect weaver; the wrapper's own parameter list is always forwarded.  Drop the arguments or wait for the v1.x weaver (#1141).")
+  }
   if isProceedCallMsil(expr) {
     return proceedSubstitutionMsil(targetFuncName, paramNames)
   }
@@ -3747,7 +3768,12 @@ func rewriteProceedExprMsil(targetFuncName: in String, paramNames: in List[Strin
       }
       Expr(kind = EInterpolated(segments = newSegs), span = s)
     }
-    // Leaves: ELiteral, EPath, ESelf, EResult, EForall, EExists, ERange, EError
+    // True leaves (no sub-expressions): ELiteral, EPath, ESelf, EResult, ERange, EError.
+    // EForall / EExists carry body sub-expressions but are panic-rejected
+    // by the bootstrap MSIL codegen before this rewriter runs (see lines
+    // 1231 / 1234 above), and aspect `around` bodies cannot legally hold
+    // a `proceed()` call inside a contract predicate, so leaving them in
+    // the catch-all is intentional rather than an oversight (#1142).
     case _ -> expr
   }
 }

@@ -95,15 +95,7 @@ The tests must be runnable via `lyric test --manifest lyric-stdlib/lyric.toml` (
 
 ### #1065 — JVM `ProcessCaptureHost.runCaptureWithTimeout` not shipped
 
-`lyric-stdlib/std/_kernel_jvm/process_capture_host.l` declares an opaque type `ProcessCaptureResult` and accessor externs, but the corresponding Java class `lyric.stdlib.jvm.ProcessCaptureResult` and updated `ProcessCaptureHost.runCapture` have not been implemented.
-
-**Fix:** Implement the Java side of `ProcessCaptureResult` in the appropriate JVM shim location (check `lyric-stdlib/src/jvm/` or the pattern used by other JVM shim classes). The implementation must:
-- Run the subprocess with `ProcessBuilder`
-- Capture stdout and stderr in parallel (separate threads to avoid pipe deadlock)
-- Enforce the timeout via `process.waitFor(timeout, MILLISECONDS)`
-- Return a `ProcessCaptureResult` with `stdout`, `stderr`, `exitCode`, and `timedOut` fields
-
-Add a `KNOWN GAP` comment removal once implemented and update `docs/10-bootstrap-progress.md` accordingly.
+**Addressed by Tier 9** — see `todo/09-jvm-parity.md` §#1065 for the full implementation spec (the Java class, parallel stdout/stderr threads, `process.waitFor(timeout, MILLISECONDS)`, etc.).  Listed here because the work removes the `KNOWN GAP` note from `lyric-stdlib/std/_kernel_jvm/process_capture_host.l`, but the natural owner is the JVM-parity tier — do not duplicate the implementation effort.
 
 ---
 
