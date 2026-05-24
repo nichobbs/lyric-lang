@@ -935,12 +935,26 @@ func maybeEmitStmtEnd(state: inout LexerState): Unit {
       val sp = pointSpan(currentPosition(state))
       val triv = takePendingTrivia(state)
       state.tokens.add(SpannedToken(token = TStmtEnd, span = sp, leadingTrivia = triv))
-      state.prevWasStmtEnd = true
-      state.prevSuppresses = false
-      state.haveAnyToken = true
+      afterEmit(state, TStmtEnd, true)
     }
   }
   state.newlinePending = false
+}
+
+/// Post-emit bookkeeping.  Consolidates the bracket-depth, statement-
+/// terminator-suppression, statement-end, and have-any-token state
+/// updates that every token write must perform — both regular `emit`
+/// and the three direct STMT_END paths (#425 item 9).
+///
+/// `wasStmtEnd` distinguishes a STMT_END write from a regular token:
+/// the STMT_END path needs `prevWasStmtEnd = true` and
+/// `prevSuppresses = false` regardless of the token shape, while a
+/// regular emit lets `tokenSuppressesNewline` drive `prevSuppresses`.
+func afterEmit(state: inout LexerState, tok: in Token, wasStmtEnd: in Bool): Unit {
+  trackBracketDepthFor(state, tok)
+  state.prevSuppresses = if wasStmtEnd { false } else { tokenSuppressesNewline(tok) }
+  state.prevWasStmtEnd = wasStmtEnd
+  state.haveAnyToken = true
 }
 
 /// Emit a token, threading STMT_END insertion and bracket-depth
@@ -952,14 +966,11 @@ func emit(state: inout LexerState, tok: in Token, startP: in Position): Unit {
   val sp = makeSpan(startP, currentPosition(state))
   val triv = takePendingTrivia(state)
   state.tokens.add(SpannedToken(token = tok, span = sp, leadingTrivia = triv))
-  // Removed match — bracket-tracking is moved to a separate helper to
-  // sidestep a bootstrap codegen bug with field assignment inside a
-  // match arm whose scrutinee is a discriminated-union value.  See the
-  // file header for the work-around scope.
-  trackBracketDepthFor(state, tok)
-  state.prevSuppresses = tokenSuppressesNewline(tok)
-  state.prevWasStmtEnd = false
-  state.haveAnyToken = true
+  // Bracket-tracking is consolidated in `afterEmit` to sidestep a
+  // bootstrap codegen bug with field assignment inside a match arm
+  // whose scrutinee is a discriminated-union value (see the file
+  // header for the work-around scope).
+  afterEmit(state, tok, false)
 }
 
 func recordError(state: inout LexerState, code: in String, msg: in String, sp: in Span): Unit {
@@ -1127,15 +1138,20 @@ func lexIdentOrKeyword(state: inout LexerState): Unit {
   val text = if buf.isNormalized() { buf } else { buf.normalize() }
   // Phase 5 §M5.1 stage 4: reject identifiers of the form `_`
   // followed by an ASCII uppercase letter — reserved for compiler-
-  // generated names (grammar.ebnf §1.4).  The lexeme still flows
-  // through as a TIdent so the parser keeps making progress on
-  // recovery; only the diagnostic surfaces the policy.
+  // generated names (grammar.ebnf §1.4, #425 item 1).  The lexeme
+  // is still emitted as a TIdent so the parser can keep making
+  // progress, but the name is replaced with a `__error_<offset>`
+  // placeholder so it cannot collide with synthesised names like
+  // `_Async` / `_StateMachine` further down the pipeline.
   if isReservedUnderscoreUpper(text) {
     recordError(state, "L0040",
                 reservedUnderscoreUpperMessage(text),
                 makeSpan(startP, currentPosition(state)))
+    val placeholder = "__error_" + toString(startP.offset)
+    emitIdentOrKeywordToken(state, placeholder, startP)
+  } else {
+    emitIdentOrKeywordToken(state, text, startP)
   }
-  emitIdentOrKeywordToken(state, text, startP)
 }
 
 @pure
@@ -1288,6 +1304,14 @@ func intToDouble(n: in Int): Double {
 /// `None` on overflow, on empty input, or when a character outside
 /// the base's digit set appears (matches the F# lexer's behaviour of
 /// surfacing L0010 in those cases).
+///
+/// Special case (#425 item 5): the decimal literal exactly equal to
+/// `Long.MaxValue + 1` (= 2^63) is the canonical absolute value of
+/// `Long.MinValue`.  We store it as `Long.MinValue` (the two's-
+/// complement bit pattern), letting the constant folder recognise
+/// `-9223372036854775808` as the user's spelling of `Long.MinValue`.
+/// The literal alone is still semantically out-of-range; the const
+/// folder's `PreNeg` arm is what makes the wrapped form well-defined.
 @pure
 func parseDigits(body: in String, base: in Int): Option[Long] {
   if body.length == 0 { return None }
@@ -1314,7 +1338,18 @@ func parseDigits(body: in String, base: in Int): Option[Long] {
     }
     i = i + 1
   }
-  if overflowed { None } else { Some(value = value) }
+  if overflowed {
+    // #425 item 5: the exact decimal abs-value of Long.MinValue is
+    // accepted as the bit pattern of Long.MinValue itself, so
+    // `-9223372036854775808` folds to Long.MinValue downstream.
+    if base == 10 and body == "9223372036854775808" {
+      Some(value = -9223372036854775808i64)
+    } else {
+      None
+    }
+  } else {
+    Some(value = value)
+  }
 }
 
 func lexBasedInt(state: inout LexerState, startP: in Position, base: in Int): Unit {
@@ -2052,9 +2087,7 @@ func lexPunct(state: inout LexerState): Unit {
         val sp = makeSpan(startP, currentPosition(state))
         val triv = takePendingTrivia(state)
         state.tokens.add(SpannedToken(token = TStmtEnd, span = sp, leadingTrivia = triv))
-        state.prevWasStmtEnd = true
-        state.prevSuppresses = false
-        state.haveAnyToken = true
+        afterEmit(state, TStmtEnd, true)
       } else {
         emit(state, TPunct(p = p), startP)
       }
@@ -2162,7 +2195,7 @@ pub func lex(source: in String): LexResult {
     val sp = pointSpan(currentPosition(state))
     val stmtTriv = takePendingTrivia(state)
     state.tokens.add(SpannedToken(token = TStmtEnd, span = sp, leadingTrivia = stmtTriv))
-    state.prevWasStmtEnd = true
+    afterEmit(state, TStmtEnd, true)
   }
   state.newlinePending = false
   // EOF marker.  Any trailing trivia (final whitespace, a dangling

@@ -460,6 +460,22 @@ func testUnterminatedBlockComment(): Unit {
   assertEqual(r.diagnostics[0].code, "L0001", "unterm block: L0001")
 }
 
+// #425 item 2: a `// /*` sequence inside a line comment must NOT
+// open a block comment.  The line-comment scanner is checked before
+// the block-comment scanner (`skipTrivia` dispatch order), so a
+// leading `//` claims the whole line — the `/*` is just comment text.
+// Regression test: `foo // /*\nbar` must produce two real tokens
+// (foo, bar) and no unterminated-comment diagnostic.
+func testLineCommentSwallowsBlockOpen(): Unit {
+  val r = lex("foo // /*\nbar")
+  assertEqualInt(diagCount(r), 0, "line // /*: no unterminated-block diagnostic")
+  assertEqual(tokenKindAt(r, 0), "ident",    "line // /*: foo")
+  assertEqual(identNameAt(r, 0), "foo",      "line // /*: foo name")
+  assertEqual(tokenKindAt(r, 1), "stmt_end", "line // /*: STMT_END after newline")
+  assertEqual(tokenKindAt(r, 2), "ident",    "line // /*: bar")
+  assertEqual(identNameAt(r, 2), "bar",      "line // /*: bar name")
+}
+
 func testDocComment(): Unit {
   val r = lex("/// documentation\nfoo")
   assertEqualInt(r.tokens.count, 4, "doc: doc STMT_END foo EOF")
@@ -483,14 +499,30 @@ func testCrlfNormalisation(): Unit {
 }
 
 // Phase 5 §M5.1 stage 4 — L0040 reserved-name diagnostic for `_X`
-// (underscore followed by an ASCII uppercase letter).  The lexeme
-// still flows through as a TIdent so the parser can recover.
+// (underscore followed by an ASCII uppercase letter).  #425 item 1
+// hardened the lexer so the rejected lexeme is rewritten to a
+// `__error_<offset>` placeholder before TIdent emission; this prevents
+// the original `_Foo` lexeme from clashing with compiler-generated
+// names like `_Async` / `_StateMachine` further down the pipeline.
 func testReservedUnderscoreUpperRejected(): Unit {
   val r = lex("_Hidden")
   assertEqual(tokenKindAt(r, 0), "ident", "L0040: still emitted as TIdent")
-  assertEqual(identNameAt(r, 0), "_Hidden", "L0040: lexeme preserved")
+  assertEqual(identNameAt(r, 0), "__error_0",
+              "L0040: lexeme rewritten to placeholder (offset 0)")
   assertEqualInt(diagCount(r), 1, "L0040: one diagnostic")
   assertEqual(r.diagnostics[0].code, "L0040", "L0040: code")
+}
+
+// #425 item 1: each `_UpperCase` occurrence gets a span-keyed
+// placeholder, so two rejections in the same source produce distinct
+// TIdent names that cannot clash with each other or with the
+// `_StateMachine` / `_Async` family of compiler-generated names.
+func testReservedUnderscoreUpperPlaceholdersDistinct(): Unit {
+  val r = lex("_Foo  _Bar")
+  assertEqualInt(diagCount(r), 2, "L0040: two diagnostics")
+  assertEqual(identNameAt(r, 0), "__error_0", "L0040: first placeholder")
+  // `_Bar` starts at byte offset 6 ("_Foo  " is six bytes).
+  assertEqual(identNameAt(r, 1), "__error_6", "L0040: second placeholder")
 }
 
 func testReservedUnderscoreLowerOK(): Unit {
@@ -711,10 +743,12 @@ func main(): Unit {
   testLineComment()
   testBlockComment()
   testUnterminatedBlockComment()
+  testLineCommentSwallowsBlockOpen()
   testDocComment()
   testModuleDocComment()
   testCrlfNormalisation()
   testReservedUnderscoreUpperRejected()
+  testReservedUnderscoreUpperPlaceholdersDistinct()
   testReservedUnderscoreLowerOK()
   testReservedUnderscoreDigitOK()
   testReservedUnderscoreAlone()

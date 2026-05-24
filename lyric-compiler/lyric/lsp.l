@@ -612,19 +612,22 @@ func renderType(cr: in CheckResult, ty: in Type): String {
       }
     }
     case TySlice(elem)       -> "slice[" + renderType(cr, elem) + "]"
-    case TyUser(id, args)    -> {
-      // Look up user-defined type name in symbol table.
-      var name = "<type>"
-      val crSymTable = cr.symbols
-      val crSymList  = crSymTable.symbols
-      var si = 0
-      while si < crSymList.count {
-        val sym = crSymList[si]
-        match symbolTypeIdOpt(sym) {
-          case Some(tid) -> { if tid.id == id.id { name = sym.name } }
-          case None      -> {}
+    case TyUser(id, declName, args) -> {
+      // Prefer the name carried in the type (#425 item 6); fall back
+      // to a symbol-table sweep when the constructor lacked context.
+      var name = if declName.length > 0 { declName } else { "<type>" }
+      if declName.length == 0 {
+        val crSymTable = cr.symbols
+        val crSymList  = crSymTable.symbols
+        var si = 0
+        while si < crSymList.count {
+          val sym = crSymList[si]
+          match symbolTypeIdOpt(sym) {
+            case Some(tid) -> { if tid.id == id.id { name = sym.name } }
+            case None      -> {}
+          }
+          si = si + 1
         }
-        si = si + 1
       }
       if args.count == 0 { name }
       else {

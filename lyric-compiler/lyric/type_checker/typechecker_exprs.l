@@ -152,7 +152,7 @@ func isOrderedType(t: in Type): Bool {
 
 func hasDerive(tbl: in SymbolTable, marker: in String, t: in Type): Bool {
   match t {
-    case TyUser(tid, _) -> {
+    case TyUser(tid, _, _) -> {
       var i = 0
       while i < tbl.symbols.count {
         match tbl.symbols[i].kind {
@@ -475,7 +475,7 @@ func inferMember(
   span: in Span
 ): Type {
   match recv {
-    case TyUser(tid, _) -> {
+    case TyUser(tid, _, _) -> {
       val fs = fieldsOfRecord(tbl, tid)
       var i = 0
       while i < fs.count {

@@ -5,6 +5,7 @@ package Lyric.TypeCheckerSelfTest
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Std.Testing
 import Lyric.Parser
 import Lyric.TypeChecker
@@ -242,6 +243,53 @@ func testQualifiedTypeMisqualifiedResolvesPermissively(): Unit {
     "qualified-misqualified: last-segment lookup currently accepts Wrong.Prefix.Point when Point is imported (Band 6 interim — #923)")
 }
 
+// #425 item 6: T0031 ("arithmetic operands must have the same type")
+// used to render user-defined types as `<#7>` because the renderer
+// could not look up declared names.  After the fix, `TyUser` carries
+// its declared name from the resolver and `renderType` surfaces it.
+// We exercise this with a record type used in a typed-arithmetic
+// mismatch (a Bool + Point pair).  T0031's payload must include the
+// declared name "Point" rather than the synthetic `<#N>` placeholder.
+func testTyUserRendersDeclaredName(): Unit {
+  val src =
+    "package P\n" +
+    "record Point { x: Int; y: Int }\n" +
+    "func f(p: in Point, b: in Bool): Int { p + b }\n"
+  val cr = parseCheck(src)
+  // Pull every diagnostic message and assert at least one mentions
+  // "Point" rather than the synthetic `<#…>`.
+  var sawName = false
+  var sawPlaceholder = false
+  var i = 0
+  while i < cr.diagnostics.count {
+    val m = cr.diagnostics[i].message
+    if Str.contains(m, "Point") { sawName = true }
+    if Str.contains(m, "<#") { sawPlaceholder = true }
+    i = i + 1
+  }
+  assertTrue(sawName, "TyUser render: 'Point' surfaces in a diagnostic")
+  assertTrue(not sawPlaceholder,
+             "TyUser render: no `<#…>` placeholder leaked to diagnostics")
+}
+
+// #425 item 5: a range bound of `-9223372036854775808` (Long.MinValue)
+// must fold cleanly without T0093 (overflow during fold).  Before the
+// fix the lexer rejected the inner literal as out-of-range and the
+// fold returned FEOverflow; the lexer now stores 9223372036854775808
+// as Long.MinValue's bit pattern and the fold recognises the
+// PreNeg + literal pair as a single Long.MinValue unit.
+func testRangeBoundLongMinValueFolds(): Unit {
+  val src =
+    "package P\n" +
+    "type Limit = Long range -9223372036854775808 ..= 0\n"
+  val cr = parseCheck(src)
+  // T0093 = "symbolic bound that cannot be folded" — must not fire.
+  assertTrue(not hasDiagCode(cr, "T0093"),
+             "Long.MinValue range bound folds without T0093")
+  assertEqualInt(diagCount(cr), 0,
+                 "Long.MinValue range bound: no diagnostics at all")
+}
+
 func main(): Unit {
   testEmptySource()
   testFuncRegistered()
@@ -264,5 +312,7 @@ func main(): Unit {
   testQualifiedTypeResolvesViaImport()
   testQualifiedTypeUnknownEmitsT0014()
   testQualifiedTypeMisqualifiedResolvesPermissively()
+  testRangeBoundLongMinValueFolds()
+  testTyUserRendersDeclaredName()
   println("typechecker self-test: ok")
 }

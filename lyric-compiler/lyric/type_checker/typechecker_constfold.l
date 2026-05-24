@@ -48,11 +48,39 @@ func foldGo(tbl: in SymbolTable, depth: in Int, e: in Expr): FoldResult {
     case EPrefix(op, inner) ->
       match op {
         case PreNeg -> {
-          match foldGo(tbl, depth, inner) {
-            case FoldErr(e2) -> FoldErr(error = e2)
-            case FoldOk(v)   ->
-              if v == -9223372036854775808 { FoldErr(error = FEOverflow) }
-              else { FoldOk(value = 0 - v) }
+          // #425 item 5: `-9223372036854775808` is the canonical
+          // spelling of `Long.MinValue`.  The lexer stores the inner
+          // literal `9223372036854775808` as the bit pattern of
+          // Long.MinValue (`parseDigits` special case), and the
+          // PreNeg + literal pair folds to Long.MinValue here as a
+          // single unit — preserving the spelling rather than
+          // re-routing through `0 - v` (which would saturate to
+          // Long.MinValue via two's-complement wraparound anyway,
+          // but lose the explicit-vs-saturation distinction).
+          match inner.kind {
+            case ELiteral(litInner) ->
+              match litInner {
+                case LInt(lv, _) ->
+                  if lv == -9223372036854775808i64 {
+                    FoldOk(value = -9223372036854775808i64)
+                  } else {
+                    FoldOk(value = 0i64 - lv)
+                  }
+                case _ ->
+                  match foldGo(tbl, depth, inner) {
+                    case FoldErr(e2) -> FoldErr(error = e2)
+                    case FoldOk(v)   ->
+                      if v == -9223372036854775808i64 { FoldErr(error = FEOverflow) }
+                      else { FoldOk(value = 0i64 - v) }
+                  }
+              }
+            case _ ->
+              match foldGo(tbl, depth, inner) {
+                case FoldErr(e2) -> FoldErr(error = e2)
+                case FoldOk(v)   ->
+                  if v == -9223372036854775808i64 { FoldErr(error = FEOverflow) }
+                  else { FoldOk(value = 0i64 - v) }
+              }
           }
         }
         case _ -> FoldErr(error = FENotConstant)
