@@ -2515,15 +2515,29 @@ func lowerTryCatchMsil(
   catches:  in List[CatchClause],
   finally_: in Option[Block]
 ): Unit {
-  // Bootstrap: inline the try body; catch clauses are emitted but exception
-  // table registration is deferred (MethodBody exception table in Phase R6).
+  val hasCatch   = catches.count > 0
+  val hasFinally = match finally_ { case Some(_) -> true case None -> false }
+  val tryStartL  = freshLabelMsil(fctx)
+  val afterL     = freshLabelMsil(fctx)
+
+  insns.add(MLabel(id = tryStartL))
   lowerBlockMsil(cctx, fctx, insns, body)
-  // Emit catch handlers (reachable if jumped to by CLR exception dispatch).
+  if hasCatch or hasFinally {
+    // `leave` is required (not `br`) when exiting a CLR protected region.
+    insns.add(MLeave(label = afterL))
+  }
+
+  // The `tryEnd` label for all catch EHClauses = first insn after the try body.
+  // It is placed right before the first catch handler (or before the finally
+  // handler when there are no catch clauses).
+  val tryBodyEndL = freshLabelMsil(fctx)
+  insns.add(MLabel(id = tryBodyEndL))
+
   var i = 0
   while i < catches.count {
     val c = catches[i]
-    val handlerL = freshLabelMsil(fctx)
-    insns.add(MLabel(id =handlerL))
+    val handlerStartL = freshLabelMsil(fctx)
+    insns.add(MLabel(id = handlerStartL))
     match c.bindName {
       case Some(bname) -> {
         val exSlot = allocSlotMsil(fctx, bname, MObject)
@@ -2534,13 +2548,44 @@ func lowerTryCatchMsil(
       }
     }
     lowerBlockMsil(cctx, fctx, insns, c.body)
+    insns.add(MLeave(label = afterL))
+    val handlerEndL = freshLabelMsil(fctx)
+    insns.add(MLabel(id = handlerEndL))
+    // System.Exception typed catch: flags=0, token = TypeRef RID for System.Exception.
+    insns.add(MEHClause(
+      flags        = 0,
+      tryStart     = tryStartL,
+      tryEnd       = tryBodyEndL,
+      handlerStart = handlerStartL,
+      handlerEnd   = handlerEndL,
+      catchToken   = 0x01000000 + cctx.trException))
     i = i + 1
   }
-  // Emit finally block inline after the try/catch region.
+
+  // Finally handler: covers the entire try+catch region ([tryStartL, finallyStartL)).
+  // `leave` in the try/catch body transfers to afterL; the CLR runs the finally
+  // handler before transferring.  `endfinally` resumes the leave target or
+  // rethrows the in-flight exception.
   match finally_ {
-    case None     -> {}
-    case Some(fb) -> lowerBlockMsil(cctx, fctx, insns, fb)
+    case None -> {}
+    case Some(fb) -> {
+      val finallyStartL = freshLabelMsil(fctx)
+      val finallyEndL   = freshLabelMsil(fctx)
+      insns.add(MLabel(id = finallyStartL))
+      lowerBlockMsil(cctx, fctx, insns, fb)
+      insns.add(MEndfinally)
+      insns.add(MLabel(id = finallyEndL))
+      insns.add(MEHClause(
+        flags        = 2,
+        tryStart     = tryStartL,
+        tryEnd       = finallyStartL,
+        handlerStart = finallyStartL,
+        handlerEnd   = finallyEndL,
+        catchToken   = 0))
+    }
   }
+
+  insns.add(MLabel(id = afterL))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

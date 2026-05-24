@@ -265,6 +265,17 @@ pub union MInsn {
   case MThrow
   case MLdlen                          // load array length
   case MLdftn(methodToken: Int)        // ldftn — load function pointer (ELEMENT_TYPE_I on stack)
+
+  // Exception-handling instructions and meta-instruction
+  case MLeave(label: Int)              // leave — exit protected region (clears stack, branches)
+  case MEndfinally                     // endfinally — exit finally/fault handler
+  case MEHClause(                      // meta-insn: register one exception-handler clause
+    flags:        Int,                 //   0=typed catch, 2=finally, 4=fault
+    tryStart:     Int,                 //   label ID for start of protected region
+    tryEnd:       Int,                 //   label ID for first insn after protected region
+    handlerStart: Int,                 //   label ID for start of handler code
+    handlerEnd:   Int,                 //   label ID for first insn after handler code
+    catchToken:   Int)                 //   TypeRef/TypeDef token (0 for finally/fault)
 }
 
 // ── MField / MFunc / MRecord ──────────────────────────────────────────────────
@@ -693,6 +704,16 @@ pub func lowerMInsn(insn: in MInsn, mb: in MethodBody): Unit {
     case MThrow             -> emitThrow(mb)
     case MLdlen             -> emitLdlen(mb)
     case MLdftn(tok)        -> emitLdftn(mb, tok)
+    case MLeave(lbl)        -> emitLeave(mb, lbl)
+    case MEndfinally        -> emitEndfinally(mb)
+    case MEHClause(f, ts, te, hs, he, ct) ->
+      mbAddEHClause(mb, EHClause(
+        flags        = f,
+        tryStart     = ts,
+        tryEnd       = te,
+        handlerStart = hs,
+        handlerEnd   = he,
+        catchToken   = ct))
   }
 }
 
