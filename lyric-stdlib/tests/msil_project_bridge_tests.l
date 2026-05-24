@@ -237,6 +237,52 @@ func testCrossPackageRecordValueRoundTrip(): Unit {
     "cross_package_record_value_round_trip: stdout matches expected")
 }
 
+// Cross-package union construction + match (#1183 codegen port).
+// Pkg A defines a generic union; pkg B imports A, constructs both
+// cases, and pattern-matches each.  Exercises three changes together:
+//   1. `unionCaseCtorByName` lets `Some(value=X)` / `None` resolve
+//      to pkg A's ctor tokens by simple name.
+//   2. The construction returns the PARENT UNION type so the local
+//      variable's slot type matches what the match-arm `isinst`
+//      tests against (`<union>$<case>`).
+//   3. `lowerPatternTestMsil` now resolves the case's actual TypeDef
+//      row via `findTypeDefRowByName` instead of falling back to
+//      `trObject` — without that, every `isinst` returned the same
+//      reference and the FIRST pattern arm always matched regardless
+//      of the actual case.
+func testCrossPackageUnionConstructAndMatch(): Unit {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("XPkgUnion.Lib",
+    "package XPkgUnion.Lib\n" +
+    "\n" +
+    "pub union Status {\n" +
+    "  case Active\n" +
+    "  case Inactive\n" +
+    "}\n"))
+  packages.add(mkPkg("XPkgUnion.App",
+    "package XPkgUnion.App\n" +
+    "import XPkgUnion.Lib\n" +
+    "\n" +
+    "func describe(s: in Status): String {\n" +
+    "  match s {\n" +
+    "    case Active()   -> \"active\"\n" +
+    "    case Inactive() -> \"inactive\"\n" +
+    "  }\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  val a = Active()\n" +
+    "  val i = Inactive()\n" +
+    "  println(describe(a))\n" +
+    "  println(describe(i))\n" +
+    "}\n"))
+  val result = compileAndRun("xpkg-union", packages, "XPkgUnion")
+  assertEqualInt(result.exitCode, 0,
+    "cross_package_union_construct_and_match: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "active\ninactive",
+    "cross_package_union_construct_and_match: both arms hit the correct case")
+}
+
 // ─── Phase 4: in-process routing through Lyric.Emitter.emitProject ──────────
 //
 // The tests above call Msil.Bridge.compileProjectToMsil directly.  Phase 4
@@ -334,6 +380,7 @@ func main(): Int {
   testCrossPackageRecordValueRoundTrip()
   testEmitProjectInProcessIndependent()
   testEmitProjectInProcessCrossPackageCall()
+  testCrossPackageUnionConstructAndMatch()
   println("msil-project-bridge tests: ok")
   return 0
 }
