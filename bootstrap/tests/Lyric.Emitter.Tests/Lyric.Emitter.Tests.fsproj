@@ -305,6 +305,7 @@
     <Compile Include="SelfHostedGeneratorTests.fs" />
     <Compile Include="SelfHostedDerivesTests.fs" />
     <Compile Include="SelfHostedMonoTests.fs" />
+    <Compile Include="LyricCompilerSelfTests.fs" />
     <Compile Include="MultiFilePackageTests.fs" />
     <Compile Include="ProjectAsDllTests.fs" />
     <Compile Include="CfgErasureTests.fs" />
