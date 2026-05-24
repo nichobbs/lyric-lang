@@ -17,7 +17,10 @@ output_assembly = "Session.dll"
 # Full session test suite.  Runs via `lyric test --manifest` (#465).
 # - session_fixation_tests.l  — no-auto-create invariant in set() (#316/#436)
 # - session_store_tests.l     — full CRUD surface (create/load/get/set/delete/clear/touch/destroy)
-# - sensitive_url_tests.l     — credential masking: error surfaces must not echo passwords (#357/#477)
+# - sensitive_url_tests.l     — InProcessSessionStore credential-masking defensive checks (#357/#477).
+#                                Redis-backed `Session.Kernel.Net` URL masking is framework-level
+#                                (`@sensitive` annotation) and requires a live Redis connection;
+#                                integration coverage tracked separately.
 [project.tests]
 "Session.SessionFixationTests" = "tests/session_fixation_tests.l"
 "Session.SessionStoreTests"    = "tests/session_store_tests.l"

@@ -9,6 +9,13 @@ on:
 permissions:
   contents: read
 
+# Single build configuration shared across every dotnet build / test /
+# path-discovery step.  Changing it here flips the configuration for
+# every dependent path (bin/$BUILD_CONFIG/net10.0/...) at once — keeps
+# the AOT smoke + ecosystem test paths from drifting (#1080).
+env:
+  BUILD_CONFIG: Debug
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -106,27 +113,27 @@ jobs:
       - name: Build
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
-        run: dotnet build Bootstrap.sln --configuration Debug --no-restore
+        run: dotnet build Bootstrap.sln --configuration $BUILD_CONFIG --no-restore
 
       - name: Lexer tests
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
-        run: dotnet run --project tests/Lyric.Lexer.Tests --no-build --configuration Debug
+        run: dotnet run --project tests/Lyric.Lexer.Tests --no-build --configuration $BUILD_CONFIG
 
       - name: Parser tests
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
-        run: dotnet run --project tests/Lyric.Parser.Tests --no-build --configuration Debug
+        run: dotnet run --project tests/Lyric.Parser.Tests --no-build --configuration $BUILD_CONFIG
 
       - name: Type-checker tests
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
-        run: dotnet run --project tests/Lyric.TypeChecker.Tests --no-build --configuration Debug
+        run: dotnet run --project tests/Lyric.TypeChecker.Tests --no-build --configuration $BUILD_CONFIG
 
       - name: Emitter tests
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
-        run: dotnet run --project tests/Lyric.Emitter.Tests --no-build --configuration Debug
+        run: dotnet run --project tests/Lyric.Emitter.Tests --no-build --configuration $BUILD_CONFIG
 
       # The emitter test suite writes /tmp/lyric-jvm-selftest/Hello.class via the
       # Jvm.SelfTest stage-B2 program.  Existing tests verify structural validity
@@ -157,7 +164,7 @@ jobs:
       - name: CLI tests
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
-        run: dotnet run --project tests/Lyric.Cli.Tests --no-build --configuration Debug
+        run: dotnet run --project tests/Lyric.Cli.Tests --no-build --configuration $BUILD_CONFIG
 
       - name: Bootstrap stage 1 (F# → self-hosted packages)
         if: steps.changes.outputs.has_code_changes == 'true'
@@ -184,8 +191,8 @@ jobs:
             echo "::warning::stage 1 bundle missing; skipping AOT smoke test"
             exit 0
           fi
-          dotnet build bootstrap/src/Lyric.Cli.Aot --configuration Debug
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric"
+          dotnet build bootstrap/src/Lyric.Cli.Aot --configuration $BUILD_CONFIG
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT entry-point binary not found at $lyric_bin"
             exit 1
@@ -221,7 +228,7 @@ jobs:
             echo "::warning::stage 1 bundle missing; skipping ecosystem tests"
             exit 0
           fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric"
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::warning::AOT binary not found at $lyric_bin; skipping ecosystem tests"
             exit 0
@@ -232,20 +239,27 @@ jobs:
           # The main bundle (Lyric.Stdlib.dll) is required for compile-time dep
           # resolution; the individual DLLs (e.g. Lyric.Stdlib.Testing.dll) are
           # needed at runtime by compiled test DLLs.
+          shopt -s nullglob
+          stdlib_dlls=(.bootstrap/stage1/Lyric.Stdlib*.dll)
+          shopt -u nullglob
+          if (( ${#stdlib_dlls[@]} == 0 )); then
+            echo "::warning::no Lyric.Stdlib*.dll found in .bootstrap/stage1; skipping ecosystem tests"
+            exit 0
+          fi
           mkdir -p lyric-stdlib/bin
-          cp .bootstrap/stage1/Lyric.Stdlib*.dll lyric-stdlib/bin/
+          cp "${stdlib_dlls[@]}" lyric-stdlib/bin/
           # Pre-populate each test output directory with the individual stdlib DLLs
           # so `dotnet exec <test>.dll` finds Lyric.Stdlib.Testing and other
           # per-package assemblies that aren't merged into Lyric.Stdlib.dll.
           # These dirs are created here ahead of `lyric test --manifest`; the
           # test runner's `File.createDir` call is idempotent and won't clobber them.
           mkdir -p lyric-auth/.lyric-test lyric-session/.lyric-test
-          cp .bootstrap/stage1/Lyric.Stdlib*.dll lyric-auth/.lyric-test/
-          cp .bootstrap/stage1/Lyric.Stdlib*.dll lyric-session/.lyric-test/
+          cp "${stdlib_dlls[@]}" lyric-auth/.lyric-test/
+          cp "${stdlib_dlls[@]}" lyric-session/.lyric-test/
           # Route emitProject subprocess calls to the F# bootstrap CLI, which
           # handles --internal-project-build.  The AOT binary is a pure trampoline
           # into the Lyric CLI dispatcher and does not handle internal flags.
-          cli_dll="$(pwd)/bootstrap/src/Lyric.Cli/bin/Debug/net10.0/lyric.dll"
+          cli_dll="$(pwd)/bootstrap/src/Lyric.Cli/bin/${BUILD_CONFIG}/net10.0/lyric.dll"
           if [ -f "$cli_dll" ]; then
             export LYRIC_BIN=dotnet
             export LYRIC_CLI_DLL="$cli_dll"

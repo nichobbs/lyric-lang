@@ -7,6 +7,10 @@ package Auth.AuthSecurityTests
 
 import Std.Core
 import Std.Testing
+// `as Auth` is a workaround, not an accidental no-op: in project mode the
+// AliasRewriter only strips the qualified `Auth.foo(...)` → `foo(...)` form
+// when an explicit alias is present.  With a bare `import Auth` the type
+// checker fails to resolve the qualified call sites below.  Tracks #1094.
 import Auth as Auth
 
 // Role membership (#360).

@@ -98,17 +98,23 @@ func getStringClaim(payloadBytes: in slice[Byte], key: in String): String {
 }
 
 // Parse a non-negative decimal integer string to Long.
-// Returns -1i64 for empty input, any non-digit character, or inputs longer than
-// 18 digits (Long.MaxValue has 19 digits; capping at 18 prevents unchecked
-// integer overflow from turning a large-but-present exp/nbf claim into a
-// negative value that silently bypasses the expiry check — #1078).
+//
+// Return convention (matches `getLongClaimFromJson` so the function is safe to
+// use in new call sites without a normalising wrapper, #1088):
+//   -1i64  — logically absent (empty input)
+//   -2i64  — present but unparseable: non-digit character, or input longer
+//            than 18 digits (Long.MaxValue has 19 digits; capping at 18
+//            prevents unchecked integer overflow from turning a large-but-
+//            present exp/nbf claim into a negative value that would silently
+//            bypass the expiry check — #1078).
+//   >= 0   — parsed successfully.
 func parseLong(s: in String): Long {
   if s.length == 0  { return -1i64 }
-  if s.length > 18  { return -1i64 }
+  if s.length > 18  { return -2i64 }
   var result: Long = 0i64
   var i = 0
   while i < s.length {
-    if not isDigit(s[i]) { return -1i64 }
+    if not isDigit(s[i]) { return -2i64 }
     val d = toInt(s[i]) - toInt('0')
     result = result * 10i64 + d
     i = i + 1
