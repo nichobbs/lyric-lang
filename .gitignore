@@ -16,6 +16,9 @@ target/
 # lyric run / lyric build temp output directories
 .lyric-run/
 
+# lyric test output directories (compiled test DLLs and runtimeconfig)
+.lyric-test/
+
 # Compiled kernel DLLs and runtime configs emitted into src/_kernel/ directories
 **/src/_kernel/**/*.dll
 **/src/_kernel/**/*.runtimeconfig.json
