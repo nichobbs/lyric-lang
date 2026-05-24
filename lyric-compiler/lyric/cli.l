@@ -2441,31 +2441,46 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
       ti += 1
       continue
     }
-    // Build the full probing path list: project dep dirs + stdlib temp dirs.
-    // The F# emitter compiles each stdlib package on demand into a per-PID
-    // temp dir (/tmp/lyric-stdlib-<pid>/) during --internal-project-build.
-    // Those dirs hold individual stdlib DLLs (e.g. Lyric.Stdlib.Time.dll)
-    // that the compiled test DLL references but that may not exist anywhere
-    // else on disk.  Adding all current /tmp/lyric-stdlib-* dirs to
-    // additionalProbingPaths lets `dotnet exec` resolve them at runtime.
-    val allProbingDirs: List[String] = newList()
-    var dbi = 0
-    while dbi < depBinDirs.count {
-      allProbingDirs.add(depBinDirs[dbi])
-      dbi += 1
-    }
+    // Copy any stdlib DLLs compiled on-demand (in /tmp/lyric-stdlib-<pid>/)
+    // into the test output directory so `dotnet exec` can resolve them via
+    // app base directory probing.  additionalProbingPaths only probes NuGet
+    // package-layout paths, not flat directories, so the DLLs must be
+    // collocated with the test DLL.  The F# emitter puts per-package stdlib
+    // DLLs (e.g. Lyric.Stdlib.Time.dll) in a per-PID temp dir during
+    // --internal-project-build; they stay on disk after the subprocess exits.
     match File.listDirs("/tmp") {
       case Err(_) -> ()
       case Ok(tmpEntries) -> {
         for d in tmpEntries.toArray() {
-          val base = Path.basename(d)
-          if Str.startsWith(base, "lyric-stdlib-") {
-            allProbingDirs.add(d)
+          val dbase = Path.basename(d)
+          if Str.startsWith(dbase, "lyric-stdlib-") {
+            match File.listFiles(d) {
+              case Err(_) -> ()
+              case Ok(dllFiles) -> {
+                for f in dllFiles.toArray() {
+                  val fname = Path.basename(f)
+                  if Str.endsWith(fname, ".dll") {
+                    val dst = Path.join(testOutDir, fname)
+                    if not File.fileExists(dst) {
+                      match File.readBytes(f) {
+                        case Err(_) -> ()
+                        case Ok(bytes) -> {
+                          match File.writeBytes(dst, bytes) {
+                            case Err(_) -> ()
+                            case Ok(_)  -> ()
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
     }
-    writeRuntimeConfigWithProbing(outPath, allProbingDirs)
+    writeRuntimeConfigWithProbing(outPath, depBinDirs)
 
     val execArgs: List[String] = newList()
     execArgs.add("exec")
