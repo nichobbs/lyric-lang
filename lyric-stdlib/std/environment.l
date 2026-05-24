@@ -65,3 +65,20 @@ pub func args(): slice[String] {
 pub func exitCode(code: in Int): Never {
   hostExit(code)
 }
+
+/// Directory containing the currently-executing assembly.
+///
+/// On .NET this is `System.AppContext.BaseDirectory`, which is the
+/// directory containing the entry assembly.  Useful for resolving
+/// resources packaged alongside the binary.
+@stable(since="0.1")
+pub func appBaseDirectory(): String {
+  hostAppBaseDirectory()
+}
+
+/// Current working directory of the process.  Equivalent to `pwd` on
+/// POSIX.
+@stable(since="0.1")
+pub func currentDirectory(): String {
+  hostCurrentDirectory()
+}
