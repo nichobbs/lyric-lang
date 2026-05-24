@@ -8,6 +8,10 @@
 // `Program.fs` handler, which is the only current handler for multi-package
 // compilation.  Without these vars the subprocess would re-enter this binary,
 // which does not handle internal flags and would print usage + exit 1.
+//
+// The shim is a developer convenience that violates the "keep the AOT
+// entry point tiny" intent; it should disappear once `--internal-project-build`
+// is migrated into the self-hosted CLI dispatcher.  Tracked in #1131.
 
 using System;
 using System.IO;
