@@ -15,7 +15,7 @@
 //
 // Algorithm support:
 //   HS256 — BCL HMAC-SHA256 (no NuGet dependency).
-//   RS256 and other public-key algorithms — fail closed (return false).
+//   RS256 and other public-key algorithms — fail closed (Err("ALG_UNSUPPORTED")).
 //   Full `System.IdentityModel.Tokens.Jwt` integration tracked in #443.
 //
 // Only active when compiled with feature = "dotnet".
@@ -37,7 +37,7 @@ import Std.Time
 @axiom("Lyric.Auth.AuthHost.hmacSha256 — BCL HMACSHA256.ComputeHash")
 @externTarget("Lyric.Auth.AuthHost.hmacSha256")
 @stable(since="0.1")
-func hmacSha256(key: in slice[Byte], message: in slice[Byte]): slice[Byte]
+pub func hmacSha256(key: in slice[Byte], message: in slice[Byte]): slice[Byte]
   requires: key.length > 0
   = ()
 
@@ -66,7 +66,165 @@ func fromBase64Url(seg: in String): Option[slice[Byte]] {
   tryDecodeBase64(padded)
 }
 
+// ─── JSON string escape decoding (#1079) ─────────────────────────────────────
+
+// Decode a single hex digit ('0'..'9', 'a'..'f', 'A'..'F') to its value 0..15.
+// Returns -1 for non-hex input.
+func hexDigit(c: in Char): Int {
+  val cp = toInt(c)
+  if cp >= 48 and cp <= 57  { return cp - 48 }  // '0'..'9'
+  if cp >= 97 and cp <= 102 { return 10 + cp - 97 }  // 'a'..'f'
+  if cp >= 65 and cp <= 70  { return 10 + cp - 65 }  // 'A'..'F'
+  -1
+}
+
+// Append the UTF-8 encoding of a Unicode code point to `acc`.
+// Returns the new accumulated string.  Code points within the BMP are emitted
+// directly via Std.Char.fromInt; astral code points (>0xFFFF) are split into a
+// UTF-16 surrogate pair (matching how Std.Encoding.tryDecodeUtf8 reconstructs
+// 4-byte UTF-8 — see std/encoding.l).  Invalid inputs (outside Unicode range,
+// lone surrogate) emit U+FFFD so the function is total.
+func appendCodepoint(acc: in String, cp: in Int): String {
+  if cp < 0 or cp > 1114111 or (cp >= 55296 and cp <= 57343) {
+    // U+FFFD REPLACEMENT CHARACTER.
+    return acc + "\u{FFFD}"
+  }
+  if cp <= 65535 {
+    return acc + ("" + fromInt(cp))
+  }
+  // Astral plane: encode as UTF-16 surrogate pair.
+  val cp1 = cp - 65536
+  val high = 55296 + cp1 / 1024
+  val low  = 56320 + cp1 % 1024
+  acc + ("" + fromInt(high)) + ("" + fromInt(low))
+}
+
+// Decode JSON string escape sequences in `s` (RFC 8259 §7).
+//
+// Recognises all standard escapes:
+//   \" \\ \/ \b \f \n \r \t  — single-char escapes
+//   \uXXXX                    — basic multilingual plane
+//   \uHHHH\uLLLL              — surrogate pair → astral code point
+//
+// Invalid escapes (unknown letter, short \uXXXX, lone surrogate) emit
+// U+FFFD at the offending position so the function is total — callers do
+// not have to handle a parse failure.  This matches `System.Text.Json`'s
+// permissive-but-faithful behaviour for JWT payloads (which are
+// machine-emitted and almost never carry malformed escapes).
+func decodeJsonEscapes(s: in String): String {
+  var acc = ""
+  var i = 0
+  while i < s.length {
+    val c = s[i]
+    if c != '\\' {
+      acc = acc + substring(s, i, 1)
+      i = i + 1
+    } else {
+      // c == '\\'.  Consume the escape sequence.
+      if i + 1 >= s.length {
+        // Dangling backslash at end of string — emit replacement.
+        acc = acc + "\u{FFFD}"
+        i = i + 1
+      } else {
+        val esc = s[i + 1]
+        if esc == '"'      { acc = acc + "\""; i = i + 2 }
+        else if esc == '\\' { acc = acc + "\\"; i = i + 2 }
+        else if esc == '/'  { acc = acc + "/";  i = i + 2 }
+        else if esc == 'b'  { acc = acc + "\u{08}"; i = i + 2 }
+        else if esc == 'f'  { acc = acc + "\u{0C}"; i = i + 2 }
+        else if esc == 'n'  { acc = acc + "\n"; i = i + 2 }
+        else if esc == 'r'  { acc = acc + "\r"; i = i + 2 }
+        else if esc == 't'  { acc = acc + "\t"; i = i + 2 }
+        else if esc == 'u'  {
+          // \uXXXX — need 4 hex digits.
+          if i + 5 >= s.length {
+            acc = acc + "\u{FFFD}"
+            i = s.length
+          } else {
+            val h0 = hexDigit(s[i + 2])
+            val h1 = hexDigit(s[i + 3])
+            val h2 = hexDigit(s[i + 4])
+            val h3 = hexDigit(s[i + 5])
+            if h0 < 0 or h1 < 0 or h2 < 0 or h3 < 0 {
+              acc = acc + "\u{FFFD}"
+              i = i + 2  // skip past \u, retry on the bad nibble
+            } else {
+              val cp = (h0 * 4096) + (h1 * 256) + (h2 * 16) + h3
+              // Handle surrogate pair for astral code points.
+              // 0xD800 = 55296, 0xDBFF = 56319, 0xDC00 = 56320, 0xDFFF = 57343.
+              if cp >= 55296 and cp <= 56319 {
+                // High surrogate — expect \uLLLL low surrogate next.
+                if i + 11 < s.length and s[i + 6] == '\\' and s[i + 7] == 'u' {
+                  val l0 = hexDigit(s[i + 8])
+                  val l1 = hexDigit(s[i + 9])
+                  val l2 = hexDigit(s[i + 10])
+                  val l3 = hexDigit(s[i + 11])
+                  if l0 < 0 or l1 < 0 or l2 < 0 or l3 < 0 {
+                    acc = acc + "\u{FFFD}"
+                    i = i + 6
+                  } else {
+                    val lo = (l0 * 4096) + (l1 * 256) + (l2 * 16) + l3
+                    if lo >= 56320 and lo <= 57343 {
+                      // Combine surrogate pair to astral code point.
+                      val combined = 65536 + ((cp - 55296) * 1024) + (lo - 56320)
+                      acc = appendCodepoint(acc, combined)
+                      i = i + 12
+                    } else {
+                      // Lone high surrogate — emit replacement, retry from low.
+                      acc = acc + "\u{FFFD}"
+                      i = i + 6
+                    }
+                  }
+                } else {
+                  acc = acc + "\u{FFFD}"
+                  i = i + 6
+                }
+              } else if cp >= 56320 and cp <= 57343 {
+                // Lone low surrogate — emit replacement.
+                acc = acc + "\u{FFFD}"
+                i = i + 6
+              } else {
+                acc = appendCodepoint(acc, cp)
+                i = i + 6
+              }
+            }
+          }
+        } else {
+          // Unknown escape — emit replacement, skip the backslash.
+          acc = acc + "\u{FFFD}"
+          i = i + 2
+        }
+      }
+    }
+  }
+  acc
+}
+
 // ─── JSON claim scanning ──────────────────────────────────────────────────────
+
+// Walk past a JSON-encoded string starting at the opening quote position
+// `quotePos` (json[quotePos] == '"'). Returns the index of the matching
+// closing quote, or -1 if the string is unterminated or malformed.
+//
+// Honours backslash escapes — `\"` does NOT terminate the string.  The
+// escape sequence itself is preserved in the substring; callers should
+// pass the raw substring to `decodeJsonEscapes` before using it.
+func scanJsonString(json: in String, quotePos: in Int): Int {
+  if quotePos < 0 or quotePos >= json.length { return -1 }
+  if json[quotePos] != '"' { return -1 }
+  var i = quotePos + 1
+  while i < json.length {
+    val c = json[i]
+    if c == '"' { return i }
+    if c == '\\' {
+      if i + 1 >= json.length { return -1 }
+      i = i + 2  // skip backslash + escaped char (or \uXXXX prefix)
+    } else {
+      i = i + 1
+    }
+  }
+  -1
+}
 
 // Check whether `audience` appears in the `aud` claim of `json`, where
 // `aud` may be either a string (RFC 7519 §4.1.3 string form) or a JSON
@@ -74,19 +232,22 @@ func fromBase64Url(seg: in String): Option[slice[Byte]] {
 // false when the claim is absent or no element matches.  Used by
 // `validatePayload` so JWT issuers that emit array-form audiences
 // (Keycloak, Auth0, some AWS services) validate correctly (#1089).
+//
+// Both forms apply `decodeJsonEscapes` to the raw string contents before
+// comparison so escape sequences in the issuer's aud match callers'
+// unescaped expected audiences (#1079).
 func audienceMatches(json: in String, audience: in String): Bool {
   if audience.length == 0 { return true }
   // String form: "aud":"VALUE"
   val pfxStr = "\"aud\":\""
   val pfxStrPos = json.lastIndexOf(pfxStr)
   if pfxStrPos >= 0 {
-    val vs = pfxStrPos + pfxStr.length
-    var ve = vs
-    while ve < json.length and json[ve] != '"' {
-      ve = ve + 1
-    }
-    if ve > vs and ve < json.length {
-      if substring(json, vs, ve - vs) == audience { return true }
+    // Position of the opening quote of the value.
+    val openQuote = pfxStrPos + pfxStr.length - 1
+    val closeQuote = scanJsonString(json, openQuote)
+    if closeQuote > openQuote {
+      val raw = substring(json, openQuote + 1, closeQuote - openQuote - 1)
+      if decodeJsonEscapes(raw) == audience { return true }
     }
   }
   // Array form: "aud":[ "VALUE1", "VALUE2", ... ]
@@ -96,17 +257,12 @@ func audienceMatches(json: in String, audience: in String): Bool {
   var i = pfxArrPos + pfxArr.length
   while i < json.length and json[i] != ']' {
     if json[i] == '"' {
-      val vs = i + 1
-      var ve = vs
-      while ve < json.length and json[ve] != '"' {
-        ve = ve + 1
-      }
-      if ve < json.length {
-        if substring(json, vs, ve - vs) == audience { return true }
-        i = ve + 1
-      } else {
-        return false
-      }
+      val openQuote = i
+      val closeQuote = scanJsonString(json, openQuote)
+      if closeQuote < 0 { return false }
+      val raw = substring(json, openQuote + 1, closeQuote - openQuote - 1)
+      if decodeJsonEscapes(raw) == audience { return true }
+      i = closeQuote + 1
     } else {
       i = i + 1
     }
@@ -119,31 +275,24 @@ func audienceMatches(json: in String, audience: in String): Bool {
 // semantics (RFC 8259 §4; matches most JWT library parsers).
 //
 // Honours backslash-escape sequences so `\"` inside the value does not
-// terminate scanning prematurely (#1079).  The escaped character itself
-// is preserved verbatim — full JSON-string decoding (resolving `\n`,
-// `\t`, `\uXXXX`, etc.) is intentionally not done here because the
-// downstream comparison is byte-for-byte equality against the caller's
-// expected issuer/audience string, which is also unescaped in practice.
+// terminate scanning prematurely (#1079).  The result is passed through
+// `decodeJsonEscapes` so callers see the actual character data, not the
+// raw backslash-encoded form (i.e. `"O\"Brien"` returns `O"Brien`,
+// `"line1\nline2"` returns the two lines joined by a literal LF, and
+// `"é"` returns U+00E9).
 //
 // Returns "" when the key is absent or the JSON is malformed.
-func getStringClaimFromJson(json: in String, key: in String): String {
+pub func getStringClaimFromJson(json: in String, key: in String): String {
   val pfx = "\"" + key + "\":\""
   val pfxPos = json.lastIndexOf(pfx)
   if pfxPos < 0 { return "" }
-  val vs = pfxPos + pfx.length
-  var ve = vs
-  while ve < json.length and json[ve] != '"' {
-    if json[ve] == '\\' and ve + 1 < json.length {
-      ve = ve + 2
-    } else {
-      ve = ve + 1
-    }
-  }
-  if ve >= json.length { return "" }
-  // Use standalone substring with explicit COUNT to satisfy the requires contract.
-  val count = ve - vs
+  // Opening quote of the value (the second `"` in `"key":"`).
+  val openQuote = pfxPos + pfx.length - 1
+  val closeQuote = scanJsonString(json, openQuote)
+  if closeQuote < 0 { return "" }
+  val count = closeQuote - openQuote - 1
   if count == 0 { return "" }
-  substring(json, vs, count)
+  decodeJsonEscapes(substring(json, openQuote + 1, count))
 }
 
 // Extract a string claim from a UTF-8-encoded payload byte slice.
@@ -155,63 +304,72 @@ func getStringClaim(payloadBytes: in slice[Byte], key: in String): String {
   }
 }
 
+// ─── parseLong (#1088) ────────────────────────────────────────────────────────
+
 // Parse a non-negative decimal integer string to Long.
 //
-// Return convention (matches `getLongClaimFromJson` so the function is safe to
-// use in new call sites without a normalising wrapper, #1088):
-//   -1i64  — logically absent (empty input)
-//   -2i64  — present but unparseable: non-digit character, or input longer
-//            than 18 digits (Long.MaxValue has 19 digits; capping at 18
-//            prevents unchecked integer overflow from turning a large-but-
-//            present exp/nbf claim into a negative value that would silently
-//            bypass the expiry check — #1078).
-//   >= 0   — parsed successfully.
-func parseLong(s: in String): Long {
-  if s.length == 0  { return -1i64 }
-  if s.length > 18  { return -2i64 }
+// Returns:
+//   Ok(value)            — successfully parsed
+//   Err("parse_error")   — empty input or non-digit character
+//   Err("overflow")      — input longer than 18 digits (Long.MaxValue has 19
+//                          digits; 18-digit cap prevents unchecked overflow
+//                          from turning large-but-present exp/nbf claims into
+//                          negative values that silently bypass expiry — #1078).
+//
+// 18 digits is conservative (Long.MaxValue is 9223372036854775807, 19 digits)
+// but avoids per-digit overflow checks in the hot loop and keeps the spec
+// simple.  Callers needing >18-digit precision should not be using
+// Long-typed claim parsing.
+@stable(since="0.1")
+pub func parseLong(s: in String): Result[Long, String] {
+  if s.length == 0  { return Err("parse_error") }
+  if s.length > 18  { return Err("overflow") }
   var result: Long = 0i64
   var i = 0
   while i < s.length {
-    if not isDigit(s[i]) { return -2i64 }
+    if not isDigit(s[i]) { return Err("parse_error") }
     val d = toInt(s[i]) - toInt('0')
     result = result * 10i64 + d
     i = i + 1
   }
-  result
+  Ok(result)
 }
 
 // Extract a numeric (integer) claim from a JSON object string.
 // Scans for `"key":NUMBER` using lastIndexOf for last-wins duplicate-key
 // semantics.
 //
-// Return convention:
-//   -1i64  — key absent (caller should skip the claim check)
-//   -2i64  — key present but value is malformed or overflows Long (caller must
-//             REJECT the token — skipping the check on a present-but-unparseable
-//             claim would silently bypass exp/nbf enforcement, #1078)
-//   >= 0   — key present and value successfully parsed
-func getLongClaimFromJson(json: in String, key: in String): Long {
+// Returns Result[Option[Long], String]:
+//   Ok(None)         — key absent (caller should skip the claim check)
+//   Ok(Some(v))      — key present and parsed successfully
+//   Err("overflow")  — key present but value overflows Long (caller MUST
+//                      reject the token — skipping the check on a present-
+//                      but-unparseable claim would silently bypass exp/nbf
+//                      enforcement, #1078)
+//   Err("parse_error") — key present but value malformed (non-digit, empty)
+func getLongClaimFromJson(json: in String, key: in String): Result[Option[Long], String] {
   val pfx = "\"" + key + "\":"
   val pfxPos = json.lastIndexOf(pfx)
-  if pfxPos < 0 { return -1i64 }
+  if pfxPos < 0 { return Ok(None) }
   var vs = pfxPos + pfx.length
   // Skip any whitespace between ':' and the number.
   while vs < json.length and json[vs] == ' ' {
     vs = vs + 1
   }
-  // Key is present; any parse failure from here is -2i64, not -1i64.
-  if vs >= json.length { return -2i64 }
-  if not isDigit(json[vs]) { return -2i64 }
+  // Key is present from here on; any parse failure is Err, not Ok(None).
+  if vs >= json.length { return Err("parse_error") }
+  if not isDigit(json[vs]) { return Err("parse_error") }
   var ve = vs
   while ve < json.length and isDigit(json[ve]) {
     ve = ve + 1
   }
   val count = ve - vs
-  if count == 0 { return -2i64 }
+  if count == 0 { return Err("parse_error") }
   val numStr = substring(json, vs, count)
-  val parsed = parseLong(numStr)
-  if parsed < 0i64 { return -2i64 }
-  parsed
+  match parseLong(numStr) {
+    case Ok(v)  -> Ok(Some(value = v))
+    case Err(e) -> Err(e)
+  }
 }
 
 // ─── Algorithm allow-list ─────────────────────────────────────────────────────
@@ -258,48 +416,77 @@ func jwtAlgFromHeader(headerSeg: in String): String {
 // ─── JWT payload claim validation ────────────────────────────────────────────
 
 // Decode the base64url JWT payload segment and validate iss, aud, exp, and nbf
-// claims.  Returns false if the payload cannot be decoded, or if any present
-// claim fails its check.  Returns true when all present claims are valid.
+// claims.  Returns:
+//   Ok(())                       — payload well-formed and all checks passed
+//   Err("MALFORMED_PAYLOAD")     — base64url or UTF-8 decode failed
+//   Err("ISSUER_MISMATCH")       — iss claim does not match expected issuer
+//   Err("AUDIENCE_MISMATCH")     — aud claim does not contain expected audience
+//   Err("EXP_OVERFLOW")          — exp present but malformed/overflowed
+//   Err("EXPIRED")               — exp in the past (beyond clockSkewSeconds)
+//   Err("NBF_OVERFLOW")          — nbf present but malformed/overflowed
+//   Err("NOT_YET_VALID")         — nbf in the future (beyond clockSkewSeconds)
+//
+// `clockSkewSeconds` (#1081) widens the validity window symmetrically:
+//   token valid if  exp + clockSkewSeconds >= nowSec
+//   token valid if  nbf - clockSkewSeconds <= nowSec
+// The default at the public API layer is 60 seconds (industry standard;
+// Auth0, AWS Cognito, etc.).
 func validatePayload(
-  payloadSeg: in String,
-  issuer:     in String,
-  audience:   in String
-): Bool {
+  payloadSeg:       in String,
+  issuer:           in String,
+  audience:         in String,
+  clockSkewSeconds: in Int
+): Result[Unit, String] {
   match fromBase64Url(payloadSeg) {
-    case None -> false
+    case None -> Err("MALFORMED_PAYLOAD")
     case Some(payloadBytes) -> {
       match tryDecodeUtf8(payloadBytes) {
-        case None -> false
+        case None -> Err("MALFORMED_PAYLOAD")
         case Some(payloadJson) -> {
           // Capture the current time once for consistent exp/nbf evaluation.
           val nowSec: Long = nowEpochMillis() / 1000i64
+          val skewLong: Long = toLong(clockSkewSeconds)
           // Validate iss claim when the caller supplied a non-empty issuer.
           if issuer.length > 0 {
             val iss = getStringClaimFromJson(payloadJson, "iss")
-            if iss != issuer { return false }
+            if iss != issuer { return Err("ISSUER_MISMATCH") }
           }
           // Validate aud claim when the caller supplied a non-empty audience.
           // RFC 7519 §4.1.3 permits both string and array forms; see
           // audienceMatches (#1089).
           if audience.length > 0 {
-            if not audienceMatches(payloadJson, audience) { return false }
+            if not audienceMatches(payloadJson, audience) {
+              return Err("AUDIENCE_MISMATCH")
+            }
           }
-          // Validate exp/nbf with no clock-skew leeway.  RFC 7519 §4.1.4
-          // notes implementations MAY allow a few minutes of leeway to
-          // absorb minor clock drift between issuer and validator; we do
-          // not today — tokens issued at exactly the expiry second are
-          // rejected, and `nbf`-bearing tokens are rejected for the full
-          // pre-validity window.  A configurable `clockSkewSeconds`
-          // parameter is tracked separately (#1130).
-          //
-          // -2i64 means present but malformed — reject immediately (#1078).
-          val exp = getLongClaimFromJson(payloadJson, "exp")
-          if exp < -1i64 { return false }
-          if exp >= 0i64 and nowSec >= exp { return false }
-          val nbf = getLongClaimFromJson(payloadJson, "nbf")
-          if nbf < -1i64 { return false }
-          if nbf >= 0i64 and nowSec < nbf { return false }
-          true
+          // Validate exp with clock-skew leeway (#1081).  A present-but-
+          // malformed exp is fatal (#1078).
+          match getLongClaimFromJson(payloadJson, "exp") {
+            case Err(_) -> { return Err("EXP_OVERFLOW") }
+            case Ok(opt) -> {
+              match opt {
+                case None    -> ()
+                case Some(exp) -> {
+                  // Reject when nowSec is past exp + skew.
+                  if nowSec > exp + skewLong { return Err("EXPIRED") }
+                }
+              }
+            }
+          }
+          // Validate nbf with clock-skew leeway (#1081).
+          match getLongClaimFromJson(payloadJson, "nbf") {
+            case Err(_) -> { return Err("NBF_OVERFLOW") }
+            case Ok(opt) -> {
+              match opt {
+                case None    -> ()
+                case Some(nbf) -> {
+                  // Reject when nowSec is earlier than nbf - skew.
+                  if nowSec < nbf - skewLong { return Err("NOT_YET_VALID") }
+                }
+              }
+            }
+          }
+          Ok(())
         }
       }
     }
@@ -312,51 +499,63 @@ func validatePayload(
 ///
 /// This kernel enforces that the token's `alg` header is `"HS256"`, since
 /// HS256 is the only algorithm supported by the BCL extern boundary.  RS256
-/// and other public-key algorithms fail closed (return false); full public-key
-/// support is tracked in #443.
+/// and other public-key algorithms return Err("ALG_UNSUPPORTED"); full
+/// public-key support is tracked in #443.
 ///
-/// `exp` and `nbf` claims are validated when present.  A token with an `exp`
-/// in the past or an `nbf` in the future fails verification.
+/// Returns Result[Unit, String]:
+///   Ok(())                   — token well-formed, signature verified, all claims passed
+///   Err("MALFORMED_TOKEN")   — wrong number of dot-separated segments
+///   Err("MALFORMED_HEADER")  — header base64url/UTF-8/JSON parse failed
+///   Err("ALG_UNSUPPORTED")   — token alg is not HS256 (kernel limitation)
+///   Err("ALG_REJECTED")      — alg not in allowedAlgorithms
+///   Err("BAD_SIGNATURE")     — HMAC verification failed
+///   Err("MALFORMED_PAYLOAD") — payload base64url/UTF-8/JSON parse failed
+///   Err("ISSUER_MISMATCH")   — iss claim mismatched
+///   Err("AUDIENCE_MISMATCH") — aud claim mismatched
+///   Err("EXP_OVERFLOW")      — exp present but malformed
+///   Err("EXPIRED")           — exp in the past
+///   Err("NBF_OVERFLOW")      — nbf present but malformed
+///   Err("NOT_YET_VALID")     — nbf in the future
 ///
-/// Returns true iff the token is well-formed, its HMAC-SHA256 signature
-/// verifies against `secret`, and — when non-empty — the `iss` and `aud`
-/// claims match.
-///
-/// Algorithm support: this kernel implements **HS256 only**.  Tokens
-/// signed with any other algorithm (RS256, ES256, PS256, …) return
-/// `false` with no diagnostic — the function fails closed (#1090).
-/// `allowedAlgorithms` is honoured for HS256 (the token's `alg` must
-/// also be listed); passing an `allowedAlgorithms` that lacks HS256
-/// (e.g. `"RS256"`) causes every token to be rejected.  Asymmetric
-/// algorithm support is tracked separately (#443).
+/// `clockSkewSeconds` adds symmetric leeway to exp and nbf checks (#1081).
 ///
 // Named verifyJwtImpl (not verifyJwt) to avoid a same-name collision with the
-// Auth.verifyJwt wrapper above when compiled in project mode: the alias rewriter
-// turns `AuthKernelNet.verifyJwt(...)` → `verifyJwt(...)`, which the codegen
-// resolves to the current package's function (Auth.verifyJwt) rather than this
-// kernel function, causing infinite recursion.  Using a distinct name ensures
-// the call resolves to this implementation regardless of compilation mode.
-// Tracked in #1127.
+// Auth.verifyJwt wrapper in auth.l when compiled in project mode: the alias
+// rewriter turns `AuthKernelNet.verifyJwt(...)` → `verifyJwt(...)`, which the
+// codegen resolves to the current package's function (Auth.verifyJwt) rather
+// than this kernel function, causing infinite recursion.  Using a distinct
+// name ensures the call resolves to this implementation regardless of
+// compilation mode.  Tracked in #1127 (root alias-rewriter bug, #1094).
 @stable(since="0.1")
 pub func verifyJwtImpl(
   token:             in String,
   secret:            in String,
   issuer:            in String,
   audience:          in String,
-  allowedAlgorithms: in String
-): Bool
+  allowedAlgorithms: in String,
+  clockSkewSeconds:  in Int
+): Result[Unit, String]
   requires: secret.length > 0
   requires: allowedAlgorithms.length > 0
+  requires: clockSkewSeconds >= 0
 {
   // Split into header.payload.signature — must be exactly three parts.
   val parts = split(token, ".")
-  if parts.length != 3 { return false }
+  if parts.length != 3 { return Err("MALFORMED_TOKEN") }
 
-  // Verify algorithm: kernel supports HS256 only.
+  // Extract alg from header.
   val alg = jwtAlgFromHeader(parts[0])
-  if alg != "HS256" { return false }
-  // Belt-and-suspenders: HS256 must also appear in the caller's allow-list.
-  if not algListContains(allowedAlgorithms, "HS256") { return false }
+  if alg.length == 0 { return Err("MALFORMED_HEADER") }
+
+  // Reject before signature verification when alg is not in the caller's
+  // allow-list (#1090) — surfaces a distinct error from BAD_SIGNATURE so
+  // callers can distinguish algorithm rejection from cryptographic failure.
+  if not algListContains(allowedAlgorithms, alg) { return Err("ALG_REJECTED") }
+
+  // This kernel only implements HS256.  When the caller-allowed alg is
+  // something else (e.g. RS256), return ALG_UNSUPPORTED to make the
+  // limitation explicit rather than masking it as BAD_SIGNATURE (#1090).
+  if alg != "HS256" { return Err("ALG_UNSUPPORTED") }
 
   // Verify HMAC-SHA256 signature over header.payload.
   val signingInput = parts[0] + "." + parts[1]
@@ -364,14 +563,16 @@ pub func verifyJwtImpl(
   val secretBytes = encodeUtf8(secret)
   val expectedSig = hmacSha256(secretBytes, signingInputBytes)
   match fromBase64Url(parts[2]) {
-    case None -> return false
+    case None -> return Err("BAD_SIGNATURE")
     case Some(providedSig) -> {
-      if not fixedTimeEqualBytes(expectedSig, providedSig) { return false }
+      if not fixedTimeEqualBytes(expectedSig, providedSig) {
+        return Err("BAD_SIGNATURE")
+      }
     }
   }
 
-  // Validate payload claims (iss, aud, exp, nbf).
-  return validatePayload(parts[1], issuer, audience)
+  // Validate payload claims (iss, aud, exp, nbf) with clock-skew leeway.
+  return validatePayload(parts[1], issuer, audience, clockSkewSeconds)
 }
 
 // ─── Claim extraction ─────────────────────────────────────────────────────────
