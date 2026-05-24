@@ -251,8 +251,14 @@ func validatePayload(
 /// Returns true iff the token is well-formed, its HMAC-SHA256 signature
 /// verifies against `secret`, and — when non-empty — the `iss` and `aud`
 /// claims match.
+// Named verifyJwtImpl (not verifyJwt) to avoid a same-name collision with the
+// Auth.verifyJwt wrapper above when compiled in project mode: the alias rewriter
+// turns `AuthKernelNet.verifyJwt(...)` → `verifyJwt(...)`, which the codegen
+// resolves to the current package's function (Auth.verifyJwt) rather than this
+// kernel function, causing infinite recursion.  Using a distinct name ensures
+// the call resolves to this implementation regardless of compilation mode.
 @stable(since="0.1")
-pub func verifyJwt(
+pub func verifyJwtImpl(
   token:             in String,
   secret:            in String,
   issuer:            in String,
@@ -327,8 +333,9 @@ pub func tryExtractClaim(
 /// Extract a named claim from a JWT payload without re-verifying the signature.
 /// Call only on tokens already accepted by verifyJwt.
 /// Returns None if the claim is absent or the token is malformed.
+// See verifyJwtImpl for the naming rationale — same collision avoidance.
 @stable(since="0.1")
-pub func extractClaim(token: in String, claimKey: in String): Option[String]
+pub func extractClaimImpl(token: in String, claimKey: in String): Option[String]
   requires: claimKey.length > 0
 {
   var v: String = ""
@@ -345,8 +352,9 @@ pub func extractClaim(token: in String, claimKey: in String): Option[String]
 /// Constant-time with respect to content when both encode to the same byte
 /// length, preventing value-oracle timing attacks.  Length mismatches exit
 /// early; for fixed-format keys the length is not secret so this is acceptable.
+// See verifyJwtImpl for the naming rationale — same collision avoidance.
 @stable(since="0.1")
-pub func verifyApiKey(provided: in String, expected: in String): Bool
+pub func verifyApiKeyImpl(provided: in String, expected: in String): Bool
   requires: expected.length > 0
 {
   val a = encodeUtf8(provided)

@@ -7,7 +7,7 @@ package Auth.AuthSecurityTests
 
 import Std.Core
 import Std.Testing
-import Auth
+import Auth as Auth
 
 // Role membership (#360).
 

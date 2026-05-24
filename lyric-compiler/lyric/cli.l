@@ -184,6 +184,41 @@ func writeRuntimeConfig(dllPath: in String): Unit {
   }
 }
 
+// Like writeRuntimeConfig but includes additionalProbingPaths in the JSON so
+// that `dotnet exec` can locate referenced DLLs (e.g. Lyric.Stdlib.Testing)
+// that live in dependency bin directories rather than the output directory.
+func writeRuntimeConfigWithProbing(dllPath: in String, probingPaths: in List[String]): Unit {
+  val dir  = Path.dirname(dllPath)
+  val base = stemOf(Path.basename(dllPath), 4)  // strip ".dll"
+  val cfgPath = Path.join(dir, base + ".runtimeconfig.json")
+  var probingSection = ""
+  if probingPaths.count > 0 {
+    probingSection = ",\n    \"additionalProbingPaths\": [\n"
+    var pi = 0
+    while pi < probingPaths.count {
+      if pi > 0 { probingSection = probingSection + ",\n" }
+      probingSection = probingSection + "      \"" + probingPaths[pi] + "\""
+      pi += 1
+    }
+    probingSection = probingSection + "\n    ]"
+  }
+  val json =
+    "{\n" +
+    "  \"runtimeOptions\": {\n" +
+    "    \"tfm\": \"net10.0\",\n" +
+    "    \"framework\": {\n" +
+    "      \"name\": \"Microsoft.NETCore.App\",\n" +
+    "      \"version\": \"10.0.0\"\n" +
+    "    }" + probingSection + "\n" +
+    "  }\n" +
+    "}\n"
+  match File.writeText(cfgPath, json) {
+    case Ok(_) -> ()
+    case Err(e) ->
+      printErr("build: warning: runtimeconfig: " + IOError.message(e))
+  }
+}
+
 // Compile `sourcePath` to a DLL at `outPath`.
 // Returns the exit code: 0 on success, 1 on error.
 // `manifestPath` is forwarded to the generator pre-processor so custom
@@ -2246,7 +2281,12 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
   if hadFatal { return 1 }
 
   // Resolve local-path dependencies to DLL paths, matching buildProject.
+  // Also track unique dep bin directories so the test runtimeconfig can
+  // include additionalProbingPaths — this lets dotnet exec locate stdlib
+  // DLLs (e.g. Lyric.Stdlib.Testing) that live in the dep's bin dir but
+  // are not merged into the main dep bundle (e.g. Lyric.Stdlib.dll).
   val restoredDlls: List[String] = newList()
+  val depBinDirs:   List[String] = newList()
   var di = 0
   while di < manifest.deps.count {
     val dep = manifest.deps[di]
@@ -2271,6 +2311,14 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
                   val dllPath = Path.join(depBinDir, dllName)
                   if File.fileExists(dllPath) {
                     restoredDlls.add(dep.name + "\t" + dllPath)
+                    // Collect unique dep bin directories for runtime probing.
+                    var alreadyHave = false
+                    var ddi = 0
+                    while ddi < depBinDirs.count {
+                      if depBinDirs[ddi] == depBinDir { alreadyHave = true }
+                      ddi += 1
+                    }
+                    if not alreadyHave { depBinDirs.add(depBinDir) }
                   } else {
                     printErr("test: local dep '" + dep.name + "' not built — run `lyric build --manifest " + depToml + "` first")
                   }
@@ -2393,7 +2441,31 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
       ti += 1
       continue
     }
-    writeRuntimeConfig(outPath)
+    // Build the full probing path list: project dep dirs + stdlib temp dirs.
+    // The F# emitter compiles each stdlib package on demand into a per-PID
+    // temp dir (/tmp/lyric-stdlib-<pid>/) during --internal-project-build.
+    // Those dirs hold individual stdlib DLLs (e.g. Lyric.Stdlib.Time.dll)
+    // that the compiled test DLL references but that may not exist anywhere
+    // else on disk.  Adding all current /tmp/lyric-stdlib-* dirs to
+    // additionalProbingPaths lets `dotnet exec` resolve them at runtime.
+    val allProbingDirs: List[String] = newList()
+    var dbi = 0
+    while dbi < depBinDirs.count {
+      allProbingDirs.add(depBinDirs[dbi])
+      dbi += 1
+    }
+    match File.listDirs("/tmp") {
+      case Err(_) -> ()
+      case Ok(tmpEntries) -> {
+        for d in tmpEntries.toArray() {
+          val base = Path.basename(d)
+          if Str.startsWith(base, "lyric-stdlib-") {
+            allProbingDirs.add(d)
+          }
+        }
+      }
+    }
+    writeRuntimeConfigWithProbing(outPath, allProbingDirs)
 
     val execArgs: List[String] = newList()
     execArgs.add("exec")
