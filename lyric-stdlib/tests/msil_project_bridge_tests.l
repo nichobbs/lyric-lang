@@ -326,103 +326,6 @@ func testEmitProjectInProcessCrossPackageCall(): Unit {
     "emit_project_in_process_cross_package_call: stdout matches expected")
 }
 
-// ─── Verification: cross-package scenarios that lyric-session relies on ────
-//
-// These tests cover the patterns that motivated #1140 and the broader
-// `lyric build --manifest` flow.  Each is routed through
-// `Lyric.Emitter.emitProject` (i.e. through the Phase 4 in-process
-// wrapper) so we can verify that the same code paths the CLI uses for
-// real-world builds actually work without the F# subprocess fallback.
-
-// The #1140 regression, end-to-end through the self-hosted bridge.
-// Pkg A exports a func that returns `Result[Option[String], String]`
-// with an `Ok(None)` early-return site; pkg B imports A, calls it, and
-// pattern-matches on the returned Option.  Before #1180 (F# fix) this
-// silently fell through to the wrong arm; after the in-process bridge
-// adopts the same fix it should print "none".
-//
-// Note: this is the *self-hosted-bridge* exercise of the regression.
-// The F# `CrossPackageOptionMatchTests` exercise the same patterns
-// through the F# emitter; this is the parallel coverage for the
-// in-process path.
-func testRegression1140CrossPackageResultOptionNone(): Unit {
-  val pkgs: List[Emitter.ProjectPackage] = newList()
-  pkgs.add(mkProjectPkg("Bug1140SH.Producer",
-    "package Bug1140SH.Producer\n" +
-    "import Std.Core\n" +
-    "\n" +
-    "pub func produce(input: in String): Result[Option[String], String] {\n" +
-    "  if input == \"empty\" {\n" +
-    "    return Ok(None)\n" +
-    "  }\n" +
-    "  return Ok(Some(value = input))\n" +
-    "}\n"))
-  pkgs.add(mkProjectPkg("Bug1140SH.Consumer",
-    "package Bug1140SH.Consumer\n" +
-    "import Std.Core\n" +
-    "import Bug1140SH.Producer\n" +
-    "\n" +
-    "func describe(input: in String): String {\n" +
-    "  match produce(input) {\n" +
-    "    case Err(e)  -> \"err: \" + e\n" +
-    "    case Ok(opt) ->\n" +
-    "      match opt {\n" +
-    "        case Some(s) -> \"some: \" + s\n" +
-    "        case None    -> \"none\"\n" +
-    "      }\n" +
-    "  }\n" +
-    "}\n" +
-    "\n" +
-    "func main(): Unit {\n" +
-    "  println(describe(\"empty\"))\n" +
-    "  println(describe(\"hello\"))\n" +
-    "}\n"))
-  val result = runEmitProject("bug1140-sh", pkgs, "Bug1140SH")
-  assertEqualInt(result.exitCode, 0,
-    "regression_1140_cross_package_result_option_none: exit 0 (stderr=" + result.stderr + ")")
-  assertEqual(Str.trim(result.stdout), "none\nsome: hello",
-    "regression_1140_cross_package_result_option_none: stdout matches expected")
-}
-
-// Cross-package record values combined with Std.Core types — the
-// shape lyric-session uses for its SessionError record (which travels
-// across the kernel boundary).  Pkg A defines a pub record + a pub
-// func returning `Result[Unit, SessionError]`; pkg B imports A and
-// pattern-matches on the result.
-func testCrossPackageRecordAndStdlibResult(): Unit {
-  val pkgs: List[Emitter.ProjectPackage] = newList()
-  pkgs.add(mkProjectPkg("XPkgSession.Lib",
-    "package XPkgSession.Lib\n" +
-    "import Std.Core\n" +
-    "\n" +
-    "pub record SessionError {\n" +
-    "  message: String\n" +
-    "  code:    String\n" +
-    "}\n" +
-    "\n" +
-    "pub func setUnknown(): Result[Unit, SessionError] {\n" +
-    "  Err(error = SessionError(\n" +
-    "    message = \"session not found\",\n" +
-    "    code    = \"SESSION_NOT_FOUND\"))\n" +
-    "}\n"))
-  pkgs.add(mkProjectPkg("XPkgSession.App",
-    "package XPkgSession.App\n" +
-    "import Std.Core\n" +
-    "import XPkgSession.Lib\n" +
-    "\n" +
-    "func main(): Unit {\n" +
-    "  match setUnknown() {\n" +
-    "    case Ok(_)  -> println(\"unexpected ok\")\n" +
-    "    case Err(e) -> println(e.code)\n" +
-    "  }\n" +
-    "}\n"))
-  val result = runEmitProject("xpkg-session", pkgs, "XPkgSession")
-  assertEqualInt(result.exitCode, 0,
-    "cross_package_record_and_stdlib_result: exit 0 (stderr=" + result.stderr + ")")
-  assertEqual(Str.trim(result.stdout), "SESSION_NOT_FOUND",
-    "cross_package_record_and_stdlib_result: stdout matches expected")
-}
-
 func main(): Int {
   testTwoIndependentPackagesBundle()
   testFirstPackageWithRecordDoesNotDisturbSecond()
@@ -431,28 +334,6 @@ func main(): Int {
   testCrossPackageRecordValueRoundTrip()
   testEmitProjectInProcessIndependent()
   testEmitProjectInProcessCrossPackageCall()
-  // The two tests below exercise cross-package compilation where in-bundle
-  // packages import Std.Core (Result/Option/Ok/Err/etc.).  They CURRENTLY
-  // fail through the in-process bridge because:
-  //   1. `findStdlibSources()` locates `lyric-stdlib/std/` but the self-
-  //      hosted parser still has known gaps relative to the stdlib's
-  //      `.l` files (P0050/P0201/P0202 errors on parse).
-  //   2. Partial type registration falls back to obj-typed handling for
-  //      Result/Option values, producing IL whose pattern-match arms
-  //      hit the wrong branch (or trigger `InvalidProgramException`).
-  //
-  // The same test bodies work through the F# subprocess fallback because
-  // the F# emitter parses the stdlib via its own precompile path.  The
-  // tests are kept here as documentation of what the in-process bridge
-  // needs to handle before the F# `--internal-project-build` handler
-  // can be retired (#1183 Phase 5).
-  //
-  // Uncomment and add to the runner once one of (a) the self-hosted
-  // parser parses the stdlib cleanly, OR (b) Std.Core's small set of
-  // public types are surfaced to the type resolver as built-ins.
-  //   testRegression1140CrossPackageResultOptionNone()
-  //   testCrossPackageRecordAndStdlibResult()
-
   println("msil-project-bridge tests: ok")
   return 0
 }

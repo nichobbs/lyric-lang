@@ -184,20 +184,17 @@ func findStdlibSources(): List[String] {
     stdlibDir = walkUpForStdlib(Environment.currentDirectory())
   }
   if stdlibDir.length == 0 { return sources }
-  // Read every top-level `*.l` file.  `listFilesRecursive` returns paths
-  // under the directory; filter to the immediate children with `.l`
-  // extensions so we don't pull in `_kernel/`.
-  val files = match File.listFilesRecursive(stdlibDir) {
+  // Read every top-level `*.l` file.  `_kernel/` falls below the recursion
+  // boundary, so `listFiles` (non-recursive) gives us exactly the right
+  // surface — no post-filtering needed.
+  val files = match File.listFiles(stdlibDir) {
     case Ok(fs)  -> fs
     case Err(_)  -> newList()
   }
   var fi = 0
   while fi < files.count {
     val f = files[fi]
-    // Only the top-level `.l` files: skip anything under `_kernel/` (or
-    // any other subdirectory).  Compare against `stdlibDir` to detect
-    // immediate children.
-    if Path.dirname(f) == stdlibDir and Str.endsWith(f, ".l") {
+    if Str.endsWith(f, ".l") {
       match File.readText(f) {
         case Ok(text) -> sources.add(text)
         case Err(_)   -> ()  // skip unreadable files, same as the F# shim
