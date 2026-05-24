@@ -144,8 +144,12 @@ pub union PMap[K, V] {
 }
 
 pub func pMapEmpty[K, V](): PMap[K, V]
+// `K: Ord` (or whatever comparable constraint the trait system spells)
+// is the intended bound; the exact `where`-clause syntax depends on the
+// constraint design (see Q-collections-001 in docs/06-open-questions.md).
+// Until that resolves, implement via a comparison helper threaded into
+// the call site rather than a `requires:` clause.
 pub func pMapInsert[K, V](m: PMap[K, V], key: K, value: V): PMap[K, V]
-  requires: // key must be comparable (where K: Ord)
 pub func pMapLookup[K, V](m: PMap[K, V], key: K): Option[V]
 pub func pMapDelete[K, V](m: PMap[K, V], key: K): PMap[K, V]
 pub func pMapToList[K, V](m: PMap[K, V]): List[(K, V)]   // in-order
@@ -198,12 +202,12 @@ Add `requires:` contracts on functions where invariants can be expressed (e.g. `
 - [ ] JVM kernel externs declared (even if with `KNOWN GAP` for Phase 6 Java shim)
 - [ ] `Std.Collections.Persistent` — `PList` type with all specified operations
 - [ ] `Std.Collections.Persistent` — `PMap` type with all specified operations (balanced AVL or HAMT)
-- [ ] `requires:` contracts on `head` (non-empty), `pMapInsert` (key comparable)
+- [ ] `requires:` contract on `head` (non-empty); `pMapInsert` defers a `where K: Ord`-style constraint until the trait-system design (Q-collections-001) lands — see comment in §#684 spec
 - [ ] `persistent_collections_tests.l` passes; structural sharing verified
 - [ ] `lyric-health` dispatcher calls registered check functions via `Std.Reflection` at request time
 - [ ] `/health/live` returns `{"status":"unhealthy"}` with HTTP 503 when any liveness check returns `Err`
 - [ ] `health_tests.l` passes via `lyric test --manifest lyric-health/lyric.toml`
-- [ ] No new F# domain logic (only thin BCL shim in `ReflectionHost.fs`)
+- [ ] No new F# domain logic (Std.Reflection binds BCL types directly via `extern type`; no `ReflectionHost.fs` exists)
 - [ ] All existing tests pass
 - [ ] PR is draft until all criteria above are green; then marked ready for review
 - [ ] Branch rebased onto `main` immediately before marking ready

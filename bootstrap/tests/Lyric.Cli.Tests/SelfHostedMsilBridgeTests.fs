@@ -618,6 +618,23 @@ func main(): Unit {
 """
             "7"
 
+        // Companion depth-3 chain (#1143): independent assurance that
+        // `isLiteralI4ExprMsilWithEnv` propagates transitively across
+        // multiple levels of val aliasing, not just one.  A future regression
+        // that capped the lookup at one indirection would pass the depth-1
+        // test above while silently miscompiling this case.
+        mkBridge "shm_module_const_chain_deep"
+            """package ShMConstChainDeep
+val a = 7
+val b = a
+val c = b
+val d = c
+func main(): Unit {
+  println(d)
+}
+"""
+            "7"
+
         // Regression for #962: when a tiny-header method (e.g. `add` — no locals,
         // code <= 63 bytes) precedes a fat-header method (e.g. `main` declaring
         // `val a = add(3,4)`, which needs 1 local and therefore a fat header),

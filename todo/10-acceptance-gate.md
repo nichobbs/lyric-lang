@@ -17,15 +17,49 @@ Rebase onto `main` at the start of each work session and before marking ready. P
 
 ### #859 — Band 7: Delete F# emitter and bootstrap shims
 
-**Pre-conditions (must be verified before any deletion):**
+**Pre-condition verification — run this BEFORE touching any file:**
+
+Tier 7 deletions are irreversible without a `git revert`.  The session must
+prove every pre-condition mechanically before any deletion runs.  Copy the
+following block verbatim into the first step of the session and inspect every
+output; if any check fails, post a comment on this PR listing the failing
+condition, then stop.  Do not proceed to the deletion sequence.
+
+```sh
+# 1. All tier branches merged.  The list must contain ten entries.
+gh pr list --repo nichobbs/lyric-lang --state merged \
+  --search 'in:title fix/tier1 fix/tier2 fix/tier3 fix/tier4 fix/tier5 fix/tier6 feat/tier7 feat/tier8 feat/tier9' \
+  --json number,title,mergedAt
+
+# 2. Self-hosted pipeline runs the full emitter test suite with zero skips.
+dotnet run --project bootstrap/tests/Lyric.Emitter.Tests 2>&1 \
+  | tee /tmp/emitter-tests.log
+grep -E "skipped|ignored" /tmp/emitter-tests.log  # must be empty
+
+# 3. CLI suite also at zero skips.
+dotnet run --project bootstrap/tests/Lyric.Cli.Tests 2>&1 \
+  | tee /tmp/cli-tests.log
+grep -E "skipped|ignored" /tmp/cli-tests.log     # must be empty
+
+# 4. Stdlib manifest test runner passes on both targets.
+lyric test --manifest lyric-stdlib/lyric.toml --target dotnet
+lyric test --manifest lyric-stdlib/lyric.toml --target jvm
+
+# 5. Stage-3 reproducibility: self-hosted² == self-hosted¹.
+./scripts/bootstrap.sh --stage 3
+```
+
+If any step exits non-zero, or any tier branch is missing from step 1, **stop**.
+Comment on this PR listing the failing condition, then end the session.  Fix
+the failing condition in the appropriate tier's PR before re-opening this one.
+
+**Itemised pre-conditions (each must be machine-verified by the snippet above):**
 
 1. All tiers 1–9 are merged to `main`.
 2. `dotnet run --project bootstrap/tests/Lyric.Emitter.Tests` passes with zero skipped tests via the self-hosted pipeline (no fallback to `Emitter.fs`).
 3. `dotnet run --project bootstrap/tests/Lyric.Cli.Tests` passes with zero skipped tests.
 4. `lyric test --manifest lyric-stdlib/lyric.toml` passes on both `--target dotnet` and `--target jvm`.
 5. `scripts/bootstrap.sh` stage-3 reproducibility check passes (self-hosted² binary matches self-hosted¹ binary).
-
-If any pre-condition fails, **stop**. Fix the failing condition (as a separate PR targeting the appropriate tier) before proceeding with the deletion.
 
 ---
 
