@@ -269,11 +269,41 @@ jobs:
           mkdir -p lyric-auth/.lyric-test lyric-session/.lyric-test
           cp "${stdlib_dlls[@]}" lyric-auth/.lyric-test/
           cp "${stdlib_dlls[@]}" lyric-session/.lyric-test/
+          # Each ecosystem library's compiled test DLL carries
+          # @externTarget references into its F# host shim (Auth.Host,
+          # Session.Host, …).  `additionalProbingPaths` in the
+          # runtimeconfig only resolves NuGet-style versioned layouts,
+          # so the host DLLs must live alongside the test DLL itself
+          # for `dotnet exec` to load them.
+          #
+          # Auth.Host is referenced directly by Lyric.Cli.fsproj so it
+          # lands in the F# CLI bin dir on `dotnet build`.  Session.Host
+          # is independent and only `dotnet publish`-ed by bootstrap.sh
+          # into .bootstrap/stage1/, so we copy from there.
+          cli_bin_dir="$(pwd)/bootstrap/src/Lyric.Cli/bin/${BUILD_CONFIG}/net10.0"
+          if [ -f "$cli_bin_dir/Lyric.Auth.Host.dll" ]; then
+            cp "$cli_bin_dir/Lyric.Auth.Host.dll" lyric-auth/.lyric-test/
+          else
+            echo "::error::Lyric.Auth.Host.dll missing from $cli_bin_dir"
+            exit 1
+          fi
+          if [ -f .bootstrap/stage1/Lyric.Session.Host.dll ]; then
+            cp .bootstrap/stage1/Lyric.Session.Host.dll lyric-session/.lyric-test/
+          else
+            echo "::error::Lyric.Session.Host.dll missing from .bootstrap/stage1"
+            exit 1
+          fi
+          # StackExchange.Redis ships next to Session.Host (bootstrap.sh
+          # copies it from the publish output).  Load is lazy — copy
+          # if present so Redis-backed tests can run.
+          if [ -f .bootstrap/stage1/StackExchange.Redis.dll ]; then
+            cp .bootstrap/stage1/StackExchange.Redis.dll lyric-session/.lyric-test/
+          fi
           # Route emitProject subprocess calls to the F# bootstrap CLI, which
           # handles --internal-project-build.  The AOT binary is a pure trampoline
           # into the Lyric CLI dispatcher and does not handle internal flags
           # (#1082 stripped the AOT entry point of its path-discovery shim).
-          cli_dll="$(pwd)/bootstrap/src/Lyric.Cli/bin/${BUILD_CONFIG}/net10.0/lyric.dll"
+          cli_dll="$cli_bin_dir/lyric.dll"
           if [ -f "$cli_dll" ]; then
             export LYRIC_BIN=dotnet
             export LYRIC_CLI_DLL="$cli_dll"
