@@ -2,65 +2,63 @@
 # audit-axioms.sh — guardrail for docs/17-axiom-audit.md (#335).
 #
 # Re-scans every `lyric-stdlib/std/_kernel*/*.l` file for `@axiom("...")`
-# annotations and diffs the counts against the totals declared in
-# `docs/17-axiom-audit.md` section 18.  Fails the build if the actual
-# count diverges from the documented count, forcing the audit doc to
-# stay in sync with the kernel boundary.
+# annotations and verifies that:
 #
-# Exits 0 when totals match, 1 otherwise (with a per-target diff for
-# the failing target).  Designed for CI — no interactive output, no
-# colour codes by default.
+#   1. The total counts match the totals declared in
+#      `docs/17-axiom-audit.md` section 18.
+#   2. Each (platform, package, file, axiom-string) record appears
+#      verbatim in the machine-checkable baseline table embedded between
+#      `<!-- BEGIN AXIOM BASELINE -->` / `<!-- END AXIOM BASELINE -->`
+#      markers in `docs/17-axiom-audit.md` section 19.
+#
+# Fails the build (exit 1) if either check fails, forcing the audit doc
+# to stay in sync with the kernel boundary.  Use `--update` to rewrite
+# the baseline section in place after auditing a new axiom.
 #
 # Usage:
-#   scripts/audit-axioms.sh                # CI default — count check only
+#   scripts/audit-axioms.sh                # CI default — count + baseline check
 #   scripts/audit-axioms.sh --list-files   # print every kernel file + axiom presence
-#
-# Tracked alongside `docs/17-axiom-audit.md`; bump the audit doc's
-# totals when adding a new `@axiom`-bearing kernel file, then this
-# script will pass.
+#   scripts/audit-axioms.sh --table        # print the structured baseline table to stdout
+#   scripts/audit-axioms.sh --update       # rewrite docs/17 baseline in place
 
 set -euo pipefail
-# `nullglob` so an empty kernel directory doesn't expand to a literal
-# `dir/*.l` path and abort the script under `pipefail` (#976).
 shopt -s nullglob
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 AUDIT_DOC="$REPO_ROOT/docs/17-axiom-audit.md"
 NET_KERNEL="$REPO_ROOT/lyric-stdlib/std/_kernel"
 JVM_KERNEL="$REPO_ROOT/lyric-stdlib/std/_kernel_jvm"
+DRIVER="$REPO_ROOT/scripts/audit_axioms_helper.py"
 
-LIST_FILES=0
-if [[ "${1:-}" == "--list-files" ]]; then
-  LIST_FILES=1
-fi
+MODE="check"
+case "${1:-}" in
+  --list-files) MODE="list" ;;
+  --table)      MODE="table" ;;
+  --update)     MODE="update" ;;
+  "")           MODE="check" ;;
+  *)            echo "unknown flag: $1" >&2; exit 2 ;;
+esac
 
-# Count `@axiom(` *occurrences* (not files) so a future kernel file
-# carrying multiple `@axiom("...")` annotations doesn't silently pass
-# while only the file count appears in the audit table (#977).  The
-# audit-doc table currently records exactly one row per file, so the
-# two numbers agree today — but counting occurrences future-proofs the
-# guardrail against the file-vs-axiom drift class entirely.
 count_axioms_in_dir() {
   local dir="$1"
   if [[ ! -d "$dir" ]]; then
     echo 0
     return
   fi
-  # `shopt -s nullglob` ensures an empty dir contributes zero.  `cat`
-  # concatenates without invoking the shell glob a second time.
   local files=( "$dir"/*.l )
   if [[ ${#files[@]} -eq 0 ]]; then
     echo 0
     return
   fi
-  grep -h '@axiom(' "${files[@]}" 2>/dev/null | wc -l
+  # Match only `@axiom(` at column 0 (skips comment-mentions like `// see @axiom`).
+  grep -h '^@axiom(' "${files[@]}" 2>/dev/null | wc -l
 }
 
 list_axiom_files_in_dir() {
   local dir="$1"
   if [[ ! -d "$dir" ]]; then return; fi
   for f in "$dir"/*.l; do
-    if grep -q '@axiom(' "$f" 2>/dev/null; then
+    if grep -q '^@axiom(' "$f" 2>/dev/null; then
       echo "  AXIOM  $(basename "$f")"
     else
       echo "  ----   $(basename "$f")"
@@ -71,21 +69,30 @@ list_axiom_files_in_dir() {
 actual_net=$(count_axioms_in_dir "$NET_KERNEL")
 actual_jvm=$(count_axioms_in_dir "$JVM_KERNEL")
 
-if [[ $LIST_FILES -eq 1 ]]; then
-  echo "=== .NET kernel ($NET_KERNEL) ==="
-  list_axiom_files_in_dir "$NET_KERNEL"
-  echo "  total: $actual_net @axiom-bearing files"
-  echo ""
-  echo "=== JVM kernel ($JVM_KERNEL) ==="
-  list_axiom_files_in_dir "$JVM_KERNEL"
-  echo "  total: $actual_jvm @axiom-bearing files"
-  exit 0
-fi
+case "$MODE" in
+  list)
+    echo "=== .NET kernel ($NET_KERNEL) ==="
+    list_axiom_files_in_dir "$NET_KERNEL"
+    echo "  total: $actual_net @axiom-bearing files"
+    echo ""
+    echo "=== JVM kernel ($JVM_KERNEL) ==="
+    list_axiom_files_in_dir "$JVM_KERNEL"
+    echo "  total: $actual_jvm @axiom-bearing files"
+    exit 0
+    ;;
+  table)
+    python3 "$DRIVER" --table "$REPO_ROOT"
+    exit 0
+    ;;
+  update)
+    python3 "$DRIVER" --update "$REPO_ROOT" "$AUDIT_DOC"
+    echo "audit-axioms: rewrote §19 baseline ($actual_net .NET + $actual_jvm JVM = $((actual_net + actual_jvm)) records)"
+    exit 0
+    ;;
+esac
 
-# Extract the documented totals from the audit doc's section 18 tables.
-# The .NET totals are the first `| **Total** ... **N** ... **M** |` row
-# after the `### .NET kernel` heading; JVM totals are after the
-# `### JVM kernel` heading.  We sum stable + provisional per table.
+# --- count check (default `check` mode) ---
+
 extract_total_after() {
   local heading_pattern="$1"
   awk -v p="$heading_pattern" '
@@ -102,9 +109,6 @@ doc_jvm=${doc_jvm:-0}
 
 status=0
 
-# Compare.  Note: documented total is `stable + provisional`; actual
-# count is `@axiom-bearing files`, which is the same (one @axiom per
-# file).
 if [[ "$actual_net" != "$doc_net" ]]; then
   echo "::error::audit-axioms: .NET kernel has $actual_net @axiom-bearing files but docs/17 section 18 documents $doc_net"
   echo "  Re-scan: scripts/audit-axioms.sh --list-files"
@@ -119,8 +123,13 @@ if [[ "$actual_jvm" != "$doc_jvm" ]]; then
   status=1
 fi
 
+# --- baseline check ---
+if ! python3 "$DRIVER" --check "$REPO_ROOT" "$AUDIT_DOC"; then
+  status=1
+fi
+
 if [[ $status -eq 0 ]]; then
-  echo "audit-axioms: .NET=$actual_net, JVM=$actual_jvm — both match docs/17 section 18 totals."
+  echo "audit-axioms: .NET=$actual_net, JVM=$actual_jvm; §18 totals + §19 baseline match the kernel files."
 fi
 
 exit $status
