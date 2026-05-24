@@ -74,26 +74,75 @@ Order: fix the underlying code issues first, then restore the tests that were fa
 
 ---
 
-### Issue #733 (storage) — Storage kernel stubs unreachable
+### Issue #733 (storage) — Storage kernel stubs unreachable; replace F# host with native Lyric externs
 
-**Context:** `lyric-storage/src/_kernel/net/storage_kernel.l` declares all storage functions with `@axiom("...")` annotations and `= Err("")` bodies. There are **no `@externTarget` annotations**. `bootstrap/src/Lyric.Storage.Host/StorageHost.fs` was added in PR #1010 and implements the actual BCL operations, but the kernel never calls it. Every storage operation returns `Err("")` silently.
+**Context:** `lyric-storage/src/_kernel/net/storage_kernel.l` declares all storage functions with `@axiom("...")` annotations and `= Err("")` bodies — no `@externTarget` annotations. `bootstrap/src/Lyric.Storage.Host/StorageHost.fs` was added in PR #1010 and implements the actual BCL operations, but the kernel never calls it. Every storage operation silently returns `Err("")`.
 
-**What to do:**
+**Do not wire to `StorageHost.fs`.** The F# host shim approach is deprecated. Instead, bind directly to the NuGet SDKs and BCL from Lyric using `extern package` and `extern type` declarations, then delete `StorageHost.fs` entirely.
 
-Wire `storage_kernel.l` to `StorageHost.fs` by adding `@externTarget("Lyric.Storage.Host.StorageHost.<method>")` to every function declaration in the kernel, matching the actual method signatures in `StorageHost.fs`. Verify the method names precisely — do not guess.
+**Implementation — rewrite `storage_kernel.l` using native Lyric externs:**
 
-Also fix the two known quality issues in `StorageHost.fs` that were found but left unresolved because the library was unreachable:
+Replace the current stub bodies with real bindings in `lyric-storage/src/_kernel/net/storage_kernel.l`:
 
-- **Pagination cursor** (#1012): The local-fs `storageList` returns an empty-string `""` continuation token when `isTruncated = true`. This causes infinite-loop pagination. Either return a meaningful cursor (e.g. the last key seen) or return `null` and `isTruncated = false` (scan-all, no pagination for local-fs dev backend).
+*S3 backend (`@cfg(feature = "s3")`)* — bind via `extern package AWSSDK.S3`:
+```lyric
+extern package AWSSDK.S3 {
+  extern type Amazon.S3.AmazonS3Client {
+    func putObject(request: Amazon.S3.Model.PutObjectRequest): Result[Amazon.S3.Model.PutObjectResponse, String]
+    func getObject(request: Amazon.S3.Model.GetObjectRequest): Result[Amazon.S3.Model.GetObjectResponse, String]
+    func deleteObject(bucket: String, key: String): Result[Unit, String]
+    func listObjectsV2(request: Amazon.S3.Model.ListObjectsV2Request): Result[Amazon.S3.Model.ListObjectsV2Response, String]
+  }
+  extern type Amazon.S3.Model.PutObjectRequest { ... }
+  extern type Amazon.S3.Model.GetObjectRequest { ... }
+  // ... remaining request/response types
+}
+```
 
-- **ETag in list results** (#1011): `storageList` returns empty-string ETags. Compute ETags consistently by reading from the `.meta.json` sidecar (which `storagePut` already writes) rather than re-reading file contents on every list call. This avoids O(file-size × count) memory use (#1047).
+*Azure Blob backend (`@cfg(feature = "azure_blob")`)* — bind via `extern package Azure.Storage.Blobs`:
+```lyric
+extern package Azure.Storage.Blobs {
+  extern type Azure.Storage.Blobs.BlobServiceClient {
+    func GetBlobContainerClient(container: String): Azure.Storage.Blobs.BlobContainerClient
+  }
+  extern type Azure.Storage.Blobs.BlobContainerClient {
+    func GetBlobClient(name: String): Azure.Storage.Blobs.BlobClient
+    func GetBlobsAsync(prefix: String): AsyncEnumerable[Azure.Storage.Blobs.Models.BlobItem]
+  }
+  // ... remaining types
+}
+```
 
-After wiring and fixing, add tests in `lyric-stdlib/tests/storage_tests.l` (or `lyric-storage/tests/`) runnable via `lyric test --manifest` that cover:
-- put → get round-trip
+*Local filesystem backend (`@cfg(feature = "local")`)* — bind BCL `System.IO` directly via `extern type`:
+```lyric
+extern type System.IO.File {
+  static func ReadAllBytes(path: String): slice[Byte]
+  static func WriteAllBytes(path: String, data: slice[Byte]): Unit
+  static func Delete(path: String): Unit
+  static func Exists(path: String): Bool
+}
+extern type System.IO.Directory {
+  static func GetFiles(path: String, pattern: String): slice[String]
+  static func CreateDirectory(path: String): Unit
+}
+```
+
+**Wrap fallible BCL calls in Lyric `try/catch`** inside thin private wrapper functions in `lyric-storage/src/storage.l` (or a `_kernel/net/storage_kernel_try.l` helper) — do NOT use F# for the try/catch. Lyric's `try { } catch (e: Exception) { Err(e.Message) }` pattern is sufficient.
+
+**Fix the two known quality issues in the same pass:**
+
+- **Pagination cursor** (#1012): The local-fs backend must return a meaningful continuation cursor (e.g. the last key seen) when `isTruncated = true`, not `""`. The cursor is passed back on the next call to resume iteration. No infinite-loop pagination.
+
+- **ETag in list results** (#1011): Compute ETags by reading from the `.meta.json` sidecar that `storagePut` writes, not by re-reading file contents. This avoids O(file-size × count) memory on list calls.
+
+**Delete `bootstrap/src/Lyric.Storage.Host/StorageHost.fs`** and remove the project from `Bootstrap.sln` once all `extern package`/`extern type` bindings are in place and tests pass.
+
+After wiring and fixing, add tests in `lyric-storage/tests/storage_tests.l` runnable via `lyric test --manifest lyric-storage/lyric.toml` covering:
+- put → get round-trip (local-fs backend)
 - delete
 - exists (true/false)
 - list with prefix filter
-- list pagination (returns consistent cursor, no infinite loop)
+- list pagination: second call with the returned cursor returns the next page (no infinite loop)
 - ETag consistency between put and list
 
 ---
@@ -109,10 +158,12 @@ After wiring and fixing, add tests in `lyric-stdlib/tests/storage_tests.l` (or `
 - [ ] Cross-package `Result[Option[T]]` `case None ->` pattern match works correctly (verified by direct-pattern session tests)
 - [ ] Session test files use direct `Ok`/`Err`/`Some`/`None` patterns — no `isOk`/`isNone` workaround helpers
 - [ ] GitHub issue filed for the cross-package isinst bug with fix plan linked from the session test files
-- [ ] `storage_kernel.l` — every function has `@externTarget` wiring to `StorageHost.fs`
+- [ ] `storage_kernel.l` uses `extern package`/`extern type` bindings — no `@externTarget` pointing to F# shims
+- [ ] `bootstrap/src/Lyric.Storage.Host/StorageHost.fs` deleted; project removed from `Bootstrap.sln`
 - [ ] Storage put/get/delete/exists operations return real results (not `Err("")`)
 - [ ] Storage list returns a usable continuation cursor (no infinite-loop pagination)
 - [ ] Storage list ETags read from `.meta.json` sidecar, not from re-reading file contents
+- [ ] No F# try/catch logic anywhere in storage path; exception wrapping happens in Lyric
 - [ ] `lyric test --manifest lyric-storage/lyric.toml` runs and passes
 - [ ] No new F# domain logic added anywhere
 - [ ] No disabled, skipped, or `Ignore`-attributed tests

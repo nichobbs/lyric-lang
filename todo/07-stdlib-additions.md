@@ -63,10 +63,30 @@ pub extern func methodGetAttributes(m: in MethodHandle): slice[AttributeHandle] 
 pub extern func attributeTypeName(a: in AttributeHandle): String = ""
 ```
 
-Each `@externTarget` must point to a real F# shim method in a new `bootstrap/src/Lyric.Reflection.Host/ReflectionHost.fs` that wraps the BCL reflection calls. The shim must:
-- Wrap `Assembly.LoadFrom` in a try/catch and return `Result`
-- Wrap `MethodInfo.Invoke` in a try/catch and return `Result`
-- Implement all other methods as thin BCL pass-throughs
+**Do not create `ReflectionHost.fs`.** Bind directly to BCL reflection types from Lyric using `extern type` declarations. All try/catch wrapping for fallible calls goes in the public `reflection.l` layer using Lyric's own `try/catch` — no F# shims at all.
+
+Replace the `@axiom`/`@externTarget` approach in `reflection_host.l` with `extern type` bindings on the BCL types directly:
+
+```lyric
+extern type System.Reflection.Assembly {
+  static func GetExecutingAssembly(): System.Reflection.Assembly
+  static func LoadFrom(assemblyFile: String): System.Reflection.Assembly
+  func GetTypes(): slice[System.Type]
+}
+
+extern type System.Type {
+  prop FullName: String { get }
+  func GetMethods(): slice[System.Reflection.MethodInfo]
+}
+
+extern type System.Reflection.MethodInfo {
+  prop Name: String { get }
+  func Invoke(obj: Any, parameters: slice[Any]): Any
+  func GetCustomAttributes(inherit: Bool): slice[Any]
+}
+```
+
+The opaque handle types (`AssemblyHandle`, `TypeHandle`, etc.) declared in `reflection_host.l` become type aliases over the `extern type` values — or are replaced directly by the BCL type references if the Lyric type system supports that. The public `reflection.l` wrapper wraps the fallible BCL calls (`LoadFrom`, `Invoke`) in `try { } catch (e: Exception) { Err(e.Message) }` to produce `Result[T, String]`.
 
 **Implement `lyric-stdlib/std/reflection.l`** — the public Lyric wrapper:
 
@@ -170,8 +190,9 @@ Add `requires:` contracts on functions where invariants can be expressed (e.g. `
 
 ## Acceptance Criteria
 
-- [ ] `lyric-stdlib/std/_kernel/reflection_host.l` exists with all specified extern declarations
-- [ ] `bootstrap/src/Lyric.Reflection.Host/ReflectionHost.fs` exists as a thin BCL shim (no domain logic)
+- [ ] `lyric-stdlib/std/_kernel/reflection_host.l` uses `extern type System.Reflection.Assembly`, `System.Type`, `System.Reflection.MethodInfo` bindings — no `@externTarget` pointing to F# shims
+- [ ] No `bootstrap/src/Lyric.Reflection.Host/` project created; all BCL access is via `extern type` in `.l` files
+- [ ] All try/catch wrapping for `LoadFrom` and `Invoke` is in Lyric (`reflection.l`), not in F#
 - [ ] `lyric-stdlib/std/reflection.l` public wrapper compiles and exports all specified functions
 - [ ] `reflection_tests.l` passes via `lyric test --manifest lyric-stdlib/lyric.toml`
 - [ ] JVM kernel externs declared (even if with `KNOWN GAP` for Phase 6 Java shim)
