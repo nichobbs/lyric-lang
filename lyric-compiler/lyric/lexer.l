@@ -1300,6 +1300,16 @@ func intToDouble(n: in Int): Double {
   acc
 }
 
+/// Predicate companion to `parseDigits`: true iff `(body, base)`
+/// is the special case `9223372036854775808` in decimal — the
+/// absolute value of `Long.MinValue`.  Used by the decimal lex path
+/// to fire L0010 against the bare literal (and by the parser's
+/// `PreNeg + literal` arm to cancel it).
+@pure
+pub func isMinValueAbsOverflow(body: in String, base: in Int): Bool {
+  base == 10 and body == "9223372036854775808"
+}
+
 /// Parse a digit string in the given base into a `Long`.  Returns
 /// `None` on overflow, on empty input, or when a character outside
 /// the base's digit set appears (matches the F# lexer's behaviour of
@@ -1310,8 +1320,10 @@ func intToDouble(n: in Int): Double {
 /// `Long.MinValue`.  We store it as `Long.MinValue` (the two's-
 /// complement bit pattern), letting the constant folder recognise
 /// `-9223372036854775808` as the user's spelling of `Long.MinValue`.
-/// The literal alone is still semantically out-of-range; the const
-/// folder's `PreNeg` arm is what makes the wrapped form well-defined.
+/// The caller emits L0010 against the bare literal — see
+/// `isMinValueAbsOverflow`; the parser's `PreNeg + literal` arm
+/// cancels that diagnostic when the wrapper makes the value
+/// well-formed.
 @pure
 func parseDigits(body: in String, base: in Int): Option[Long] {
   if body.length == 0 { return None }
@@ -1539,7 +1551,21 @@ func lexDecimalNumber(state: inout LexerState): Unit {
                   makeSpan(startP, currentPosition(state)))
     }
     match parseDigits(stripped, 10) {
-      case Some(v) -> emit(state, TInt(value = v, suffix = isplit.suffix), startP)
+      case Some(v) -> {
+        // #425 item 5: when `parseDigits` accepts `9223372036854775808`
+        // it stores the bit pattern of Long.MinValue.  That value is
+        // ONLY well-formed when the literal is the operand of a unary
+        // minus (the const folder collapses `PreNeg + LInt(MinValue)`
+        // back to Long.MinValue).  Fire L0010 here so a bare literal
+        // is flagged; the parser cancels the diagnostic when it
+        // builds the PreNeg + literal pair (#1174 review finding).
+        if isMinValueAbsOverflow(stripped, 10) {
+          recordError(state, "L0010",
+                      "decimal literal '9223372036854775808' exceeds Long range; only the spelling `-9223372036854775808` is well-formed (Long.MinValue)",
+                      makeSpan(startP, currentPosition(state)))
+        }
+        emit(state, TInt(value = v, suffix = isplit.suffix), startP)
+      }
       case None    -> {
         recordError(state, "L0010", "integer literal out of range",
                     makeSpan(startP, currentPosition(state)))

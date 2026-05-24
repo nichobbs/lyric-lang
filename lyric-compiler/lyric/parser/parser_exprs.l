@@ -1519,10 +1519,48 @@ pub func parseLambdaExpr(st: inout ParseState): Expr {
   }
 }
 
+// #425 item 5 / #1174: when `parsePrefixExpr` collapses a `-` token
+// followed by the literal `9223372036854775808` into PreNeg + LInt,
+// the lexer's L0010 against the bare literal is a false positive —
+// the wrapper makes the value well-formed (Long.MinValue).  Walk
+// the diagnostics in reverse order so we drop the most recent L0010
+// whose span ends exactly at the inner literal's end, leaving any
+// earlier unrelated L0010 in place.
+func cancelMinValueDiagIfWrapped(st: inout ParseState, inner: in Expr): Unit {
+  match inner.kind {
+    case ELiteral(lit) ->
+      match lit {
+        case LInt(v, _) -> {
+          if v == -9223372036854775808i64 {
+            val innerEnd = inner.span.endPos.offset
+            var i = st.diags.count - 1
+            var done = false
+            while not done and i >= 0 {
+              val d = st.diags[i]
+              if d.code == "L0010" and d.span.endPos.offset == innerEnd {
+                st.diags.removeAt(i)
+                done = true
+              }
+              i = i - 1
+            }
+          }
+        }
+        case _ -> {}
+      }
+    case _ -> {}
+  }
+}
+
 pub func parsePrefixExpr(st: inout ParseState): Expr {
   if isPunct(peekToken(st), Minus) {
     val opTok = advance(st)
     val inner = parsePrefixExpr(st)
+    // #425 item 5 / #1174: the lexer fires L0010 against a bare
+    // `9223372036854775808` literal because the value only fits in
+    // Long as a bit pattern.  When the literal is the operand of a
+    // unary minus the pair folds to Long.MinValue and is
+    // well-formed, so cancel the lexer's diagnostic here.
+    cancelMinValueDiagIfWrapped(st, inner)
     mkExpr(EPrefix(op = PreNeg, operand = inner), joinSpans(opTok.span, inner.span))
   } else if isKw(peekToken(st), KwNot) {
     val opTok = advance(st)

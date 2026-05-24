@@ -32,6 +32,13 @@ def find_axiom_strings(text: str) -> list[str]:
 
     Only matches `@axiom(` annotations at column 0 of a line (skips
     `// see @axiom(...)` comment mentions).
+
+    The `in_str` walker counts consecutive backslashes when deciding
+    whether a `"` is escaped — a quote is unescaped iff the run of
+    backslashes immediately to its left has even length.  The previous
+    one-character look-behind treated `\\"` (escaped backslash followed
+    by a closing quote) as an escaped quote and would scan past the
+    end of the axiom string (#1175 review finding).
     """
     out: list[str] = []
     i = 0
@@ -50,8 +57,16 @@ def find_axiom_strings(text: str) -> list[str]:
         in_str = False
         while j < len(text) and depth > 0:
             c = text[j]
-            if c == '"' and (j == 0 or text[j - 1] != "\\"):
-                in_str = not in_str
+            if c == '"':
+                # Count the run of `\` immediately before position j.
+                # Even (incl. zero) → quote is unescaped; odd → escaped.
+                k = j - 1
+                bs = 0
+                while k >= 0 and text[k] == "\\":
+                    bs += 1
+                    k -= 1
+                if bs % 2 == 0:
+                    in_str = not in_str
             elif not in_str:
                 if c == "(":
                     depth += 1

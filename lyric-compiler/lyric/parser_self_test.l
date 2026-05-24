@@ -518,6 +518,39 @@ func testPeekPastEofUsesSourceEnd(): Unit {
              "peek-past-EOF: synthetic span is not 0:0")
 }
 
+// #425 item 5 / #1174: the bare literal `9223372036854775808` fires
+// L0010 from the lexer (because the value only fits in Long as a bit
+// pattern).  When the literal is the operand of unary minus, the
+// parser cancels that L0010 — the wrapped pair represents
+// Long.MinValue and is well-formed.  Verifies both the cancellation
+// AND that an unrelated `9223372036854775808` in the same source
+// keeps its diagnostic.
+func testNegationCancelsMinValueAbsDiagnostic(): Unit {
+  val src = "package P\nfunc f(): Long { -9223372036854775808 }\n"
+  val pr = parse(src)
+  var sawL0010 = false
+  var i = 0
+  while i < pr.diagnostics.count {
+    if pr.diagnostics[i].code == "L0010" { sawL0010 = true }
+    i = i + 1
+  }
+  assertTrue(not sawL0010,
+             "-9223372036854775808: L0010 cancelled by PreNeg wrapper")
+}
+
+func testBareMinValueAbsKeepsDiagnostic(): Unit {
+  val src = "package P\nfunc f(): Long { 9223372036854775808 }\n"
+  val pr = parse(src)
+  var sawL0010 = false
+  var i = 0
+  while i < pr.diagnostics.count {
+    if pr.diagnostics[i].code == "L0010" { sawL0010 = true }
+    i = i + 1
+  }
+  assertTrue(sawL0010,
+             "bare 9223372036854775808: L0010 preserved (no PreNeg wrapper)")
+}
+
 func testPeekAtNegativeReturnsSyntheticEof(): Unit {
   // `peekAt(st, k)` with k that places `pos + k` outside the token
   // window must also return the source-end-anchored synthetic EOF
@@ -569,5 +602,7 @@ func main(): Unit {
   testCstShapeIsLossless()
   testPeekPastEofUsesSourceEnd()
   testPeekAtNegativeReturnsSyntheticEof()
+  testNegationCancelsMinValueAbsDiagnostic()
+  testBareMinValueAbsKeepsDiagnostic()
   println("parser self-test: ok")
 }

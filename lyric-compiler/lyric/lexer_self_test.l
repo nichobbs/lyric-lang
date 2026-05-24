@@ -460,6 +460,47 @@ func testUnterminatedBlockComment(): Unit {
   assertEqual(r.diagnostics[0].code, "L0001", "unterm block: L0001")
 }
 
+// #425 item 5 / #1174 review finding: a bare decimal literal of
+// `9223372036854775808` (the absolute value of Long.MinValue) fires
+// L0010 — the value only fits as a bit pattern, so a programmer who
+// writes `val x: Long = 9223372036854775808` must see the diagnostic.
+// The literal still emits a TInt(Long.MinValue) so the parser can
+// collapse `PreNeg + literal` into Long.MinValue and cancel the
+// diagnostic (parser-side coverage in `parser_self_test.l`).
+func testBareMinValueAbsLiteralFiresL0010(): Unit {
+  val r = lex("val x = 9223372036854775808")
+  assertTrue(diagCount(r) >= 1, "9223372036854775808: L0010 fires")
+  var sawL0010 = false
+  var i = 0
+  while i < r.diagnostics.count {
+    if r.diagnostics[i].code == "L0010" { sawL0010 = true }
+    i = i + 1
+  }
+  assertTrue(sawL0010, "9223372036854775808: L0010 present")
+  // The bit pattern is preserved so `-9223372036854775808` downstream
+  // can produce Long.MinValue — that's a separate parser test.
+  // The literal itself is the third token (val, ident, =, int).
+  assertEqual(tokenKindAt(r, 3), "int", "9223372036854775808: TInt emitted")
+  assertTrue(intValueAt(r, 3) == -9223372036854775808i64,
+             "9223372036854775808: bit pattern is Long.MinValue")
+}
+
+// Sanity check that other huge literals still hit the regular
+// overflow path (not the MinValue special case).
+func testTrulyOverflowingLiteralStillFiresL0010(): Unit {
+  val r = lex("val x = 9223372036854775809")  // one past Long.MaxValue+1
+  var sawL0010 = false
+  var i = 0
+  while i < r.diagnostics.count {
+    if r.diagnostics[i].code == "L0010" { sawL0010 = true }
+    i = i + 1
+  }
+  assertTrue(sawL0010, "regular overflow: L0010 present")
+  assertEqual(tokenKindAt(r, 3), "int", "regular overflow: TInt emitted (value 0)")
+  assertTrue(intValueAt(r, 3) == 0i64,
+             "regular overflow: value substituted with 0")
+}
+
 // #425 item 2: a `// /*` sequence inside a line comment must NOT
 // open a block comment.  The line-comment scanner is checked before
 // the block-comment scanner (`skipTrivia` dispatch order), so a
@@ -743,6 +784,8 @@ func main(): Unit {
   testLineComment()
   testBlockComment()
   testUnterminatedBlockComment()
+  testBareMinValueAbsLiteralFiresL0010()
+  testTrulyOverflowingLiteralStillFiresL0010()
   testLineCommentSwallowsBlockOpen()
   testDocComment()
   testModuleDocComment()
