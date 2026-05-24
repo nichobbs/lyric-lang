@@ -219,11 +219,13 @@ func validatePayload(
             val aud = getStringClaimFromJson(payloadJson, "aud")
             if aud != audience { return false }
           }
-          // Validate exp: token must not be expired.
+          // Validate exp: token must not be expired.  RFC 7519 §4.1.4 says the
+          // token MUST be rejected "on or after the expiration time", so we
+          // use >= (not >) so a token at the exact expiry second is rejected.
           // -2i64 means present but malformed — reject immediately (#1078).
           val exp = getLongClaimFromJson(payloadJson, "exp")
           if exp < -1i64 { return false }
-          if exp >= 0i64 and nowSec > exp { return false }
+          if exp >= 0i64 and nowSec >= exp { return false }
           // Validate nbf: token must not be used before it becomes valid.
           // -2i64 means present but malformed — reject immediately (#1078).
           val nbf = getLongClaimFromJson(payloadJson, "nbf")

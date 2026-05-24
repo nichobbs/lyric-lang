@@ -40,6 +40,19 @@ test "InProcessSessionStore: credential URL never appears in session errors" {
   }
 }
 
+test "session destroy errors (if any) do not embed url field value" {
+  val store = Session.inMemory()
+  match Session.destroy(store, "no-such-session") {
+    case Err(e) -> {
+      assertTrue(not e.message.contains("s3cr3t"),
+        "destroy error must not contain password: " + e.message)
+      assertTrue(not e.code.contains("s3cr3t"),
+        "destroy error code must not contain password: " + e.code)
+    }
+    case Ok(_) -> ()
+  }
+}
+
 test "session error codes do not embed url field value" {
   // Verify that error codes from session operations are fixed strings,
   // not constructed from config values (which could include credentials).

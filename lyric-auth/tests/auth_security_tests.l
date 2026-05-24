@@ -173,7 +173,7 @@ test "duplicate alg attack: both algs in allow-list — still fails on invalid s
 // ─── exp/nbf overflow regression (#1078) ─────────────────────────────────────
 // parseLong previously had no digit-count cap, so a crafted exp/nbf claim with
 // 20+ digits overflowed to a negative Long under .NET unchecked arithmetic.
-// The check `if exp >= 0i64 and nowSec > exp` was then skipped, treating the
+// The check `if exp >= 0i64 and nowSec >= exp` was then skipped, treating the
 // token as permanently non-expiring.  The fix caps parseLong at 18 digits;
 // getLongClaimFromJson returns -2i64 for a present-but-oversized claim;
 // validatePayload rejects immediately when it sees -2i64.

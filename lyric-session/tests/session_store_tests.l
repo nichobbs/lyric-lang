@@ -247,6 +247,14 @@ test "delete() on non-existent key is idempotent" {
   }
 }
 
+test "destroy() on non-existent session is idempotent" {
+  val store = newStore()
+  match Session.destroy(store, "no-such-session") {
+    case Err(e) -> assertTrue(false, "destroy() on absent session must not fail: " + e.message)
+    case Ok(_)  -> ()
+  }
+}
+
 // ─── Session isolation ────────────────────────────────────────────────────────
 
 test "two distinct sessions are independent" {
