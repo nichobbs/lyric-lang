@@ -168,28 +168,32 @@ jobs:
 
       - name: Bootstrap stage 1 (F# → self-hosted packages)
         if: steps.changes.outputs.has_code_changes == 'true'
-        # continue-on-error is intentional during initial integration.
-        # Remove once bootstrap stage-1 passes consistently on main
-        # (tracked in lyric-lang #616).
-        continue-on-error: true
+        # Stage 1 is required: the AOT smoke test, ecosystem tests, and
+        # the cli.l re-parse guarantee all depend on the stage-1 bundle.
+        # The previous `continue-on-error: true` masked latent parse
+        # errors in cli.l (#616) — a `var out` binding sat unfixed for
+        # weeks because the failure was swallowed and downstream steps
+        # silently skipped.  Stage 1 now fails CI loudly.
         working-directory: ${{ github.workspace }}
         run: ./scripts/bootstrap.sh --stage 1
 
       # Track A A1.4 (#860) deleted the F# user-facing CLI; the AOT
       # entry-point project at `bootstrap/src/Lyric.Cli.Aot/` now
       # serves all user commands by trampolining into the Lyric-emitted
-      # `Lyric.Cli.Program.main` in the stage-1 bundle.  Build it
-      # (skips silently if stage 1 didn't finish) and use the
-      # resulting `lyric` binary for the example smoke tests.
+      # `Lyric.Cli.Program.main` in the stage-1 bundle.  Build it and
+      # use the resulting `lyric` binary for the example smoke tests.
+      #
+      # Stage 1 is required (continue-on-error was removed above), so
+      # a missing bundle here means CI infrastructure broke between
+      # steps — fail loudly instead of silently skipping.
       - name: Build AOT entry-point + smoke-test the examples
         if: steps.changes.outputs.has_code_changes == 'true'
-        continue-on-error: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping AOT smoke test"
-            exit 0
+            echo "::error::stage 1 bundle missing; AOT smoke test cannot run"
+            exit 1
           fi
           dotnet build bootstrap/src/Lyric.Cli.Aot --configuration $BUILD_CONFIG
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
@@ -234,13 +238,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping ecosystem tests"
-            exit 0
+            echo "::error::stage 1 bundle missing; ecosystem tests cannot run"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping ecosystem tests"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin"
+            exit 1
           fi
           # Stage 1 compiled all Lyric.Stdlib*.dll files into .bootstrap/stage1/.
           # Copy them all to the canonical dep-resolution path so the test runner's

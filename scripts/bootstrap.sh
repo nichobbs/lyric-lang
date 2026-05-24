@@ -346,7 +346,6 @@ EOF
   # `System.Net.Mail` directly from its kernel.  No F# host shim is
   # published or copied into the stage-1 bundle.
 
-
   # `Lyric.Mq.Host.dll` is the Phase-5 host shim for #733 — bridges the
   # lyric-mq in-memory queue backend through `Lyric.Mq.InMemoryHost`.  No
   # NuGet dependencies (ConcurrentQueue + ConcurrentDictionary only);
