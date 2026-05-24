@@ -579,9 +579,33 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       val recvTy = lowerExpr(ctx, insns, recv)
       match recvTy {
         case JRef(cls) -> {
-          // Treat as getfield — the actual owner class comes from the type.
-          // For bootstrap-grade codegen we use the receiver type as owner.
-          JRef(className = "java/lang/Object")
+          // TyException built-in members: .message and .typeName.
+          if cls == "java/lang/Throwable" and memberName == "message" {
+            val getMessagePs: List[JvmType] = newList()
+            insns.add(LInvokevirtual(
+              owner  = "java/lang/Throwable",
+              name   = "getMessage",
+              params = getMessagePs,
+              ret    = JRef(className = "java/lang/String")))
+            JRef(className = "java/lang/String")
+          } else if cls == "java/lang/Throwable" and memberName == "typeName" {
+            val getClassPs: List[JvmType] = newList()
+            insns.add(LInvokevirtual(
+              owner  = "java/lang/Object",
+              name   = "getClass",
+              params = getClassPs,
+              ret    = JRef(className = "java/lang/Class")))
+            val getSimplePs: List[JvmType] = newList()
+            insns.add(LInvokevirtual(
+              owner  = "java/lang/Class",
+              name   = "getSimpleName",
+              params = getSimplePs,
+              ret    = JRef(className = "java/lang/String")))
+            JRef(className = "java/lang/String")
+          } else {
+            // Generic JRef member access — record field lowering deferred.
+            JRef(className = "java/lang/Object")
+          }
         }
         case _ -> {
           // Primitive member access is not meaningful; return void.
@@ -2430,7 +2454,8 @@ func lowerTryCatch(
     }
     lowerBlock(ctx, insns, c.body)
     insns.add(LGoto(label = afterL))
-    // Register exception table entry.
+    // Register exception table entry for this catch arm.
+    // Specific catches only cover the try body ([startL, endL)).
     // typeName is a dotted class name string like "java.lang.Exception".
     val catchClass = lyricNameToJvm(c.typeName)
     insns.add(LTryCatch(
@@ -2441,14 +2466,39 @@ func lowerTryCatch(
     i = i + 1
   }
 
-  insns.add(LLabel(name = afterL))
-
-  // Emit finally block inline after the try/catch region.
-  // JVM finally semantics require duplicating the block on each exit path;
-  // for now we emit it once here (post-region) matching the MSIL strategy.
+  // When a finally block is present, emit a catch-all handler that runs
+  // the finally block then rethrows, covering the try body and all catch
+  // bodies.  The range [startL, finallyExL) excludes the handler itself,
+  // preventing recursive dispatch into it.
+  //
+  // Normal-path execution reaches afterL, where the finally block is
+  // emitted once more (duplicate copy, identical to javac's strategy).
   match finally_ {
-    case None     -> {}
-    case Some(fb) -> lowerBlock(ctx, insns, fb)
+    case None -> {
+      insns.add(LLabel(name = afterL))
+    }
+    case Some(fb) -> {
+      val finallyExL = freshLabel(ctx)
+      insns.add(LLabel(name = finallyExL))
+      val exTy    = JRef(className = "java/lang/Throwable")
+      val tmpName = "__finally_ex_" + toString(ctx.labelTicker.count)
+      val tmpSlot = allocSlot(ctx, tmpName, exTy)
+      emitStore(insns, tmpSlot, exTy)
+      lowerBlock(ctx, insns, fb)
+      emitLoad(insns, tmpSlot, exTy)
+      insns.add(LAthrow)
+      // Catch-all entry: covers try body ([startL, endL)) and all catch
+      // handler bodies ([endL, finallyExL)).  endLabel = finallyExL means
+      // the handler code itself is not covered (self-exclusion).
+      insns.add(LTryCatch(
+        startLabel   = startL,
+        endLabel     = finallyExL,
+        handlerLabel = finallyExL,
+        catchClass   = ""))
+      // Normal path: finally runs here after successful try/catch completion.
+      insns.add(LLabel(name = afterL))
+      lowerBlock(ctx, insns, fb)
+    }
   }
 }
 
