@@ -1491,3 +1491,51 @@ pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx,
   val peBuf = assemblePe(inp)
   bufToList(peBuf)
 }
+
+// Lower a list of MPackages into ONE complete PE binary against a single
+// shared `LoweringCtx` (#1183 — multi-package compilation).  Each package's
+// TypeDef / MethodDef / FieldDef rows are appended to the unified metadata
+// tables in the order the packages appear in `pkgs`, matching the row
+// numbering that the per-package `addPackageTokens` pre-scan reserved.
+//
+// The PE that comes out has one `Assembly` row (named after the bundle, not
+// any individual package) and as many `TypeDef` rows as the union of every
+// package's records / unions / enums / interfaces / opaques / impls plus one
+// host class per package's functions.  All cross-package call sites that
+// resolved to bundle-local `MethodDef` tokens during codegen point at the
+// correct row in the unified table.
+pub func lowerMPackagesWithCtx(pkgs: in List[MPackage], ctx: in LoweringCtx,
+                                entryMethodToken: in Int): List[Byte] {
+  var pi = 0
+  while pi < pkgs.count {
+    val pkg = pkgs[pi]
+    var i = 0
+    while i < pkg.items.count {
+      match pkg.items[i] {
+        case MPRecord(rec)                       -> { lowerMRecord(rec, ctx) }
+        case MPFuncs(hostClass, funcs, sfields)  -> { lowerMFuncsToHostClass(hostClass, funcs, sfields, ctx) }
+        case MPUnion(u)                          -> { lowerMUnion(u, ctx) }
+        case MPDistinctType(d)                   -> { lowerMDistinctType(d, ctx) }
+        case MPRangeType(r)                      -> { lowerMRangeType(r, ctx) }
+        case MPEnum(e)                           -> { lowerMEnum(e, ctx) }
+        case MPInterface(iface)                  -> { lowerMInterface(iface, ctx) }
+        case MPImpl(implData)                    -> { lowerMImpl(implData, ctx) }
+        case MPOpaque(op)                        -> { lowerMOpaque(op, ctx) }
+      }
+      i = i + 1
+    }
+    pi = pi + 1
+  }
+
+  val inp = AssemblerInput(
+    entryPointToken = entryMethodToken,
+    methodBodies    = ctx.bodies,
+    tables          = ctx.tables,
+    strings         = ctx.strings,
+    us              = ctx.us,
+    blobs           = ctx.blobs,
+    guids           = ctx.guids)
+
+  val peBuf = assemblePe(inp)
+  bufToList(peBuf)
+}

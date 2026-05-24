@@ -144,6 +144,192 @@ pub func compileToMsil(
   }
 }
 
+/// One package's per-source-file payload for `compileProjectToMsil`.
+/// `name` is the dotted package name (e.g. "Bug1140.Producer") and `source`
+/// is the combined source text for that package — multi-file packages should
+/// already be merged into a single string by the caller.
+pub record ProjectPackagePayload {
+  name:   String
+  source: String
+}
+
+/// Compile a list of packages into ONE bundled .NET PE DLL using the
+/// self-hosted MSIL pipeline (#1183, Phase 1 — independent-package bundle).
+///
+/// Runs the per-package middle-end pipeline (parse → typecheck → modecheck →
+/// elaborate → derive → mono → weave → lambda-lift) for every package in
+/// `packages` order, accumulates each package's pre-scan tokens into the
+/// shared `CodegenCtx`, then lowers every `MPackage` against a single shared
+/// `LoweringCtx` and writes one PE.  The bundled assembly is named after
+/// `assemblyName` (matching the F# `Emitter.emitProject` convention).
+///
+/// Returns true on success; false on any parse / mode error, codegen error,
+/// or file write failure.  All diagnostics from each pass are printed via
+/// `Lyric.DiagnosticUtil` before the bridge returns.
+///
+/// Phase 1 scope: independent packages only.  Cross-package imports (one
+/// package importing another in the same bundle) are deferred to Phase 2 —
+/// the call-site resolver in `codegen.l` still treats unknown names as
+/// fallback `MObject` calls when the imported package's tokens aren't in
+/// `cctx.funcTokens`.  This entry point already gives `Lyric.Emitter.emitProject`
+/// a path to bundle multiple independent packages without subprocess-hopping
+/// through the F# emitter.
+pub func compileProjectToMsil(
+  packages:      in List[ProjectPackagePayload],
+  assemblyName:  in String,
+  outputPath:    in String,
+  stdlibSources: in List[String]
+): Bool {
+  if packages.count == 0 {
+    return false
+  }
+
+  // Phase 1: parse + middle-end every package; collect each package's
+  // post-middle-end SourceFile and dotted package name.
+  val perPkgFiles: List[SourceFile] = newList()
+  val perPkgNames: List[String]     = newList()
+
+  // Cross-package imported items: as we process each package, accumulate its
+  // type items so subsequent packages (which may import it) see them at
+  // typecheck.  Phase 1 only honours `stdlibSources` for imports; this list
+  // is staged here so Phase 2 can drop into the loop without re-plumbing.
+  val importedItems: List[Item] = newList()
+  collectStdlibTypeItems(stdlibSources, importedItems)
+
+  var pi = 0
+  while pi < packages.count {
+    val pkg = packages[pi]
+
+    val parseResult = parse(pkg.source)
+    if reportAndAbort(parseResult.diagnostics) { return false }
+    val file0 = parseResult.file
+
+    val tcRes = checkWithImports(file0, importedItems)
+    reportDiagnostics(tcRes.diagnostics)
+
+    val mcRes = checkFile(file0)
+    if reportAndAbort(mcRes.diagnostics) { return false }
+
+    val elaborated = elaborateFile(file0)
+    val derived    = deriveFile(elaborated)
+
+    val monoRes = monoFile(derived)
+    if reportAndAbort(monoRes.diagnostics) { return false }
+
+    perPkgFiles.add(monoRes.file)
+    perPkgNames.add(pkg.name)
+
+    pi = pi + 1
+  }
+
+  // Phase 2: weave + lambda-lift + token pre-scan for every package against
+  // ONE shared cctx — the persistent `nextMethodDefRow` / `nextFieldDefRow`
+  // counters in `CodegenCtx` thread row numbering across calls.  The cctx's
+  // Assembly row is named after the bundle, not any individual package.
+  val cctx = newCodegenCtx(assemblyName)
+
+  val liftedFiles: List[SourceFile] = newList()
+  var li = 0
+  while li < perPkgFiles.count {
+    val weaved = weaveAspectsMsil(perPkgFiles[li])
+    val lifted = liftLambdasMsil(weaved)
+    addPackageTokens(cctx, lifted, perPkgNames[li])
+    liftedFiles.add(lifted)
+    li = li + 1
+  }
+
+  // Phase 3: codegen each package into an MPackage against the same cctx.
+  val mpkgs: List[MPackage] = newList()
+  var ci = 0
+  while ci < liftedFiles.count {
+    val mpkg = codegenMPackage(liftedFiles[ci], cctx)
+    mpkgs.add(mpkg)
+    ci = ci + 1
+  }
+
+  // Phase 4: pick an entry point.  When any package defined a `main` function
+  // the pre-scan stored its MethodDef token on `cctx.funcTokens` under the
+  // simple name "main"; otherwise the bundle is a library (token 0).
+  val entryToken = resolveEntryToken(cctx)
+
+  // Phase 5: lower all MPackages into a single PE against the shared lctx.
+  val bytes = lowerMPackagesWithCtx(mpkgs, cctx.lctx, entryToken)
+
+  val result = writeBytes(outputPath, bytes)
+  match result {
+    case Ok(_)  -> true
+    case Err(_) -> false
+  }
+}
+
+/// Tab-encoded variant of `compileProjectToMsil` for reflection-based
+/// callers (the F# bootstrap test shim in
+/// `bootstrap/src/Lyric.Cli/SelfHostedMsilProject.fs`).  Each entry in
+/// `specLines` is `<packageName> TAB <packageSource>`; the leading segment
+/// is the dotted package name and everything after the first tab is the
+/// combined source text.  Delegates to `compileProjectToMsil` once parsed.
+///
+/// Using a `List[String]` payload avoids cross-language reflection on the
+/// Lyric-emitted `ProjectPackagePayload` record from F# — only strings need
+/// to cross the boundary.
+pub func compileProjectToMsilEncoded(
+  specLines:     in List[String],
+  assemblyName:  in String,
+  outputPath:    in String,
+  stdlibSources: in List[String]
+): Bool {
+  val packages: List[ProjectPackagePayload] = newList()
+  var i = 0
+  while i < specLines.count {
+    val line = specLines[i]
+    val tabPos = line.indexOf("\t")
+    if tabPos < 0 {
+      return false
+    }
+    val name = line.substring(0, tabPos)
+    val src  = line.substring(tabPos + 1)
+    packages.add(ProjectPackagePayload(name = name, source = src))
+    i = i + 1
+  }
+  compileProjectToMsil(packages, assemblyName, outputPath, stdlibSources)
+}
+
+// Helper: parse `stdlibSources`, extract type-shaped items, and append them
+// to `importedItems`.  Mirrors the per-source loop inside `compileToMsil`
+// (lines 53-88) so multi-package and single-package compile share the same
+// stdlib type-resolution rules.  Parse errors are advisory (printed but not
+// fatal) for the same reason `compileToMsil`'s loop documents: the self-
+// hosted parser still has known gaps relative to the actual stdlib source
+// files (#914).
+func collectStdlibTypeItems(
+  stdlibSources: in List[String],
+  importedItems: in List[Item]
+): Unit {
+  var si = 0
+  while si < stdlibSources.count {
+    val stdPr = parse(stdlibSources[si])
+    reportDiagnostics(stdPr.diagnostics)
+    var ii = 0
+    while ii < stdPr.file.items.count {
+      val it = stdPr.file.items[ii]
+      val isType = match it.kind {
+        case IRecord(_)       -> true
+        case IExposedRec(_)   -> true
+        case IUnion(_)        -> true
+        case IEnum(_)         -> true
+        case IDistinctType(_) -> true
+        case IInterface(_)    -> true
+        case ITypeAlias(_)    -> true
+        case IOpaque(_)       -> true
+        case _                -> false
+      }
+      if isType { importedItems.add(it) }
+      ii = ii + 1
+    }
+    si = si + 1
+  }
+}
+
 // Diagnostic-printing helpers — thin wrappers over `Lyric.DiagnosticUtil`.
 // The local names differ from `DiagUtil.diagReportAndAbort` etc. because
 // the bootstrap call resolver shadows fully-qualified cross-package

@@ -113,6 +113,14 @@ pub record CodegenCtx {
   // after all TypeDefs are lowered so InterfaceImpl / MethodImpl rows can be
   // resolved by name (#878).
   implEntries:        List[ImplEntryMsil]
+  // Persistent row counters for multi-package compilation (#1183).
+  // `.count` tracks the highest MethodDef / FieldDef row already allocated by
+  // prior `addPackageTokens` calls, so the next call starts at `.count + 1`
+  // (matching the row-budget pre-scan order in `lowerMPackageWithCtx`).
+  // For single-package compile (`Msil.Bridge.compileToMsil`), these are
+  // freshly empty and the counter starts at 1 — behaviour unchanged.
+  nextMethodDefRow:   List[Int]
+  nextFieldDefRow:    List[Int]
 }
 
 // One impl block (`impl Iface for Target { … }`) captured by the pre-pass.
@@ -418,7 +426,9 @@ pub func newCodegenCtx(packageName: in String): CodegenCtx {
     externTypeNames      = newMap(),
     lambdaTicker         = newList(),
     methodTokens         = newMap(),
-    implEntries          = newList())
+    implEntries          = newList(),
+    nextMethodDefRow     = newList(),
+    nextFieldDefRow      = newList())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -441,8 +451,12 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
   // Collect IExternType names so auto-FFI call interception can resolve them.
   scanExternTypesMsil(cctx, file)
 
-  var methodDefRow = 1
-  var fieldDefRow  = 1
+  // Resume row numbering from where the previous package's pre-scan left off
+  // (#1183 — multi-package compilation).  For a single-package compile via
+  // `Msil.Bridge.compileToMsil`, the cctx is fresh and both counters are
+  // empty, so the starting rows are 1/1 — behaviour unchanged.
+  var methodDefRow = cctx.nextMethodDefRow.count + 1
+  var fieldDefRow  = cctx.nextFieldDefRow.count + 1
 
   // Pre-scan: does any IVal need a `.cctor` (non-literal init)?
   // After the literal-IVal inlining fix, only non-literal IVals produce
@@ -720,6 +734,18 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
       case _ -> {}
     }
     j = j + 1
+  }
+
+  // Sync the persistent counters so a follow-up `addPackageTokens` call
+  // (multi-package compile, #1183) starts where this one left off.  Pad the
+  // counter list to length = (methodDefRow - 1) — the highest row this call
+  // allocated — by appending zero-valued entries.  The list elements are
+  // never read; only `.count` matters.
+  while cctx.nextMethodDefRow.count < methodDefRow - 1 {
+    cctx.nextMethodDefRow.add(0)
+  }
+  while cctx.nextFieldDefRow.count < fieldDefRow - 1 {
+    cctx.nextFieldDefRow.add(0)
   }
 }
 
