@@ -68,9 +68,63 @@ func fromBase64Url(seg: in String): Option[slice[Byte]] {
 
 // ─── JSON claim scanning ──────────────────────────────────────────────────────
 
+// Check whether `audience` appears in the `aud` claim of `json`, where
+// `aud` may be either a string (RFC 7519 §4.1.3 string form) or a JSON
+// array of strings.  Returns true when the audience matches either form;
+// false when the claim is absent or no element matches.  Used by
+// `validatePayload` so JWT issuers that emit array-form audiences
+// (Keycloak, Auth0, some AWS services) validate correctly (#1089).
+func audienceMatches(json: in String, audience: in String): Bool {
+  if audience.length == 0 { return true }
+  // String form: "aud":"VALUE"
+  val pfxStr = "\"aud\":\""
+  val pfxStrPos = json.lastIndexOf(pfxStr)
+  if pfxStrPos >= 0 {
+    val vs = pfxStrPos + pfxStr.length
+    var ve = vs
+    while ve < json.length and json[ve] != '"' {
+      ve = ve + 1
+    }
+    if ve > vs and ve < json.length {
+      if substring(json, vs, ve - vs) == audience { return true }
+    }
+  }
+  // Array form: "aud":[ "VALUE1", "VALUE2", ... ]
+  val pfxArr = "\"aud\":["
+  val pfxArrPos = json.lastIndexOf(pfxArr)
+  if pfxArrPos < 0 { return false }
+  var i = pfxArrPos + pfxArr.length
+  while i < json.length and json[i] != ']' {
+    if json[i] == '"' {
+      val vs = i + 1
+      var ve = vs
+      while ve < json.length and json[ve] != '"' {
+        ve = ve + 1
+      }
+      if ve < json.length {
+        if substring(json, vs, ve - vs) == audience { return true }
+        i = ve + 1
+      } else {
+        return false
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  false
+}
+
 // Extract a string-valued claim from a JSON object string.
 // Scans for `"key":"VALUE"` using lastIndexOf for last-wins duplicate-key
 // semantics (RFC 8259 §4; matches most JWT library parsers).
+//
+// Honours backslash-escape sequences so `\"` inside the value does not
+// terminate scanning prematurely (#1079).  The escaped character itself
+// is preserved verbatim — full JSON-string decoding (resolving `\n`,
+// `\t`, `\uXXXX`, etc.) is intentionally not done here because the
+// downstream comparison is byte-for-byte equality against the caller's
+// expected issuer/audience string, which is also unescaped in practice.
+//
 // Returns "" when the key is absent or the JSON is malformed.
 func getStringClaimFromJson(json: in String, key: in String): String {
   val pfx = "\"" + key + "\":\""
@@ -79,7 +133,11 @@ func getStringClaimFromJson(json: in String, key: in String): String {
   val vs = pfxPos + pfx.length
   var ve = vs
   while ve < json.length and json[ve] != '"' {
-    ve = ve + 1
+    if json[ve] == '\\' and ve + 1 < json.length {
+      ve = ve + 2
+    } else {
+      ve = ve + 1
+    }
   }
   if ve >= json.length { return "" }
   // Use standalone substring with explicit COUNT to satisfy the requires contract.
@@ -221,19 +279,23 @@ func validatePayload(
             if iss != issuer { return false }
           }
           // Validate aud claim when the caller supplied a non-empty audience.
+          // RFC 7519 §4.1.3 permits both string and array forms; see
+          // audienceMatches (#1089).
           if audience.length > 0 {
-            val aud = getStringClaimFromJson(payloadJson, "aud")
-            if aud != audience { return false }
+            if not audienceMatches(payloadJson, audience) { return false }
           }
-          // Validate exp: token must not be expired.  RFC 7519 §4.1.4 says the
-          // token MUST be rejected "on or after the expiration time", so we
-          // use >= (not >) so a token at the exact expiry second is rejected.
+          // Validate exp/nbf with no clock-skew leeway.  RFC 7519 §4.1.4
+          // notes implementations MAY allow a few minutes of leeway to
+          // absorb minor clock drift between issuer and validator; we do
+          // not today — tokens issued at exactly the expiry second are
+          // rejected, and `nbf`-bearing tokens are rejected for the full
+          // pre-validity window.  A configurable `clockSkewSeconds`
+          // parameter is tracked separately (#1130).
+          //
           // -2i64 means present but malformed — reject immediately (#1078).
           val exp = getLongClaimFromJson(payloadJson, "exp")
           if exp < -1i64 { return false }
           if exp >= 0i64 and nowSec >= exp { return false }
-          // Validate nbf: token must not be used before it becomes valid.
-          // -2i64 means present but malformed — reject immediately (#1078).
           val nbf = getLongClaimFromJson(payloadJson, "nbf")
           if nbf < -1i64 { return false }
           if nbf >= 0i64 and nowSec < nbf { return false }
@@ -259,12 +321,22 @@ func validatePayload(
 /// Returns true iff the token is well-formed, its HMAC-SHA256 signature
 /// verifies against `secret`, and — when non-empty — the `iss` and `aud`
 /// claims match.
+///
+/// Algorithm support: this kernel implements **HS256 only**.  Tokens
+/// signed with any other algorithm (RS256, ES256, PS256, …) return
+/// `false` with no diagnostic — the function fails closed (#1090).
+/// `allowedAlgorithms` is honoured for HS256 (the token's `alg` must
+/// also be listed); passing an `allowedAlgorithms` that lacks HS256
+/// (e.g. `"RS256"`) causes every token to be rejected.  Asymmetric
+/// algorithm support is tracked separately (#443).
+///
 // Named verifyJwtImpl (not verifyJwt) to avoid a same-name collision with the
 // Auth.verifyJwt wrapper above when compiled in project mode: the alias rewriter
 // turns `AuthKernelNet.verifyJwt(...)` → `verifyJwt(...)`, which the codegen
 // resolves to the current package's function (Auth.verifyJwt) rather than this
 // kernel function, causing infinite recursion.  Using a distinct name ensures
 // the call resolves to this implementation regardless of compilation mode.
+// Tracked in #1127.
 @stable(since="0.1")
 pub func verifyJwtImpl(
   token:             in String,

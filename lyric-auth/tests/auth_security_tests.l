@@ -181,6 +181,23 @@ test "duplicate alg attack: both algs in allow-list — still fails on invalid s
 // token as permanently non-expiring.  The fix caps parseLong at 18 digits;
 // getLongClaimFromJson returns -2i64 for a present-but-oversized claim;
 // validatePayload rejects immediately when it sees -2i64.
+//
+// Test tokens below were generated with the following Python snippet so they
+// are reproducible and auditable (#1091).  Re-run when the test structure or
+// secret changes — without the right signature the overflow guard would be
+// bypassed at the signature check, producing a false-pass.
+//
+//   import base64, hmac, hashlib
+//   def b64url(b): return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+//   header  = b64url(b'{"alg":"HS256"}')
+//   payload = b64url(b'{"exp":99999999999999999999}')   # or "nbf"
+//   sig     = hmac.new(b"test-secret", f"{header}.{payload}".encode(),
+//                      hashlib.sha256).digest()
+//   print(f"{header}.{payload}.{b64url(sig)}")
+//
+// Expected tokens (verbatim, including signature):
+//   exp: eyJhbGciOiJIUzI1NiJ9.eyJleHAiOjk5OTk5OTk5OTk5OTk5OTk5OTk5fQ.XSpwX_lbCxe7CP2z2kBxvBf7Hm-l14y_8YcA2UHqcdc
+//   nbf: eyJhbGciOiJIUzI1NiJ9.eyJuYmYiOjk5OTk5OTk5OTk5OTk5OTk5OTk5fQ.wfVtcqqLpXnI_yfTav0k0p4g1b8wsvJPPJ9x94JEkjA
 
 test "exp overflow regression: validly-signed token with 20-digit exp is rejected (#1078)" {
   // Payload: {"exp":99999999999999999999} — 20 digits, overflows Long.
