@@ -53,8 +53,17 @@ pub func RestError.message(e: in RestError): String {
 /// - `Bearer`: `Authorization: Bearer <token>` header.
 /// - `Basic`: `Authorization: Basic <base64>` header (pre-encoded).
 /// - `ApiKey`: arbitrary header name / value pair (e.g. `X-Api-Key`).
+///
+/// Declared as `union` (not `enum`) because three of the four cases
+/// carry payload data — `pub enum` is reserved for tag-only
+/// alternatives.  Switching this declaration to `union` aligns the
+/// type with the rest of `Std.Errors` (`HttpError`, `IOError`, …) and
+/// keeps the case-pattern emit path on the same codegen branch used
+/// elsewhere; the surface is binary-identical at the call sites
+/// (`Bearer(token = ...)`, `Basic(credentials = ...)`,
+/// `ApiKey(headerName = ..., headerValue = ...)`).
 @stable(since="1.0")
-pub enum RestAuth {
+pub union RestAuth {
   case None_
   case Bearer(token: String)
   case Basic(credentials: String)

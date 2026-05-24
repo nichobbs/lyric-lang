@@ -7,16 +7,34 @@
 //
 // java.util.regex.Pattern has no native match timeout.
 //
-// **KNOWN GAP — ReDoS vulnerability on JVM (#330):**
+// **KNOWN GAP — ReDoS vulnerability on JVM (#330 / #1103):**
 // Unlike the .NET kernel which compiles every pattern with a
 // 1-second matchTimeout via the 3-arg Regex ctor, Pattern has
 // no timeout mechanism.  Adversarial patterns like `(a+)+$` against
 // long input can hang the matching thread indefinitely on JVM.
 //
-// A proper fix requires a host-side shim that wraps Pattern in a
-// JvmPattern envelope and runs Matcher.find() on a daemon thread,
-// interrupting after the configured deadline.  That work is tracked
-// in #1103 (Phase 6 JVM regex timeout shim).  Until it lands:
+// The intended fix (#1103) is the standard "interruptible
+// CharSequence" pattern:
+//
+//   1. The shim wraps the input String in an
+//      `InterruptibleCharSequence` whose `charAt(int)` throws
+//      `RuntimeException` (NOT `InterruptedException`, which
+//      `CharSequence.charAt` cannot declare) when
+//      `Thread.interrupted()` is true.
+//   2. Before calling `matcher.find()` / `matcher.matches()`, the
+//      shim records the calling thread and schedules a daemon
+//      `ScheduledExecutorService` task to call `thread.interrupt()`
+//      after the configured deadline.
+//   3. If the match completes in time the scheduled task is
+//      cancelled.  If the deadline fires, the thrown
+//      RuntimeException unwinds the matcher and the shim catches
+//      it, clears the thread's interrupt flag, and rethrows a
+//      sentinel exception that the kernel maps to
+//      `Err(TimedOut(message))`.
+//
+// That work is the responsibility of the external `lyric-stdlib-shim`
+// JAR project (it owns every `lyric.stdlib.jvm.*` class).  Until the
+// shim ships:
 //   - hostCompile returns a raw java.util.regex.Pattern with no timeout.
 //   - hostCompileWithTimeout accepts a seconds parameter but ignores it;
 //     the lyric.stdlib.jvm.RegexHost.compileWithTimeout shim stub calls
@@ -24,6 +42,11 @@
 //     added to the stdlib shim JAR alongside isMatch / matchOne / replace.
 //   - The isTimeout classifier in Std.Regex / Std.RegexSafe will never
 //     trigger on JVM until the daemon-thread shim is in place.
+//
+// The Lyric-side `requires:` clause on `hostCompileWithTimeout` (`seconds > 0.0`)
+// preserves the .NET contract so callers that pass a sensible timeout
+// don't silently get a no-op on JVM later — the precondition fires
+// at the kernel boundary regardless of target.
 //
 // Functions are prefixed `host*` following the Std.HttpHost convention
 // to prevent name-shadowing recursion when Std.Regex (std/regex.l)

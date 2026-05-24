@@ -139,6 +139,43 @@ func testReDoSTimeoutFires(): Unit {
   }
 }
 
+// JVM-only follow-up: once #1103 ships the daemon-thread shim, the
+// catastrophic-backtracking pattern below must return Err(TimedOut)
+// within 2 seconds rather than running for minutes.  The `@cfg(feature
+// = "jvm")` guard keeps the test off the .NET CI path (where the 3-arg
+// Regex ctor's matchTimeout already covers the ReDoS case) and pins the
+// JVM acceptance criterion documented in #1103.  The test compiles
+// only when the `jvm` feature is enabled; on .NET builds the function
+// is erased entirely and the gating annotation here keeps that intent
+// explicit.
+@cfg(feature = "jvm")
+func testReDoSTimeoutFiresJvm(): Unit {
+  // Build a longer hostile input than the cross-platform test above so
+  // an un-instrumented Pattern would clearly run past the 2-second
+  // budget — distinguishes a real shim hit from accidental fast-path
+  // termination.
+  var hostile = ""
+  var i = 0
+  while i < 80 {
+    hostile = hostile + "a"
+    i = i + 1
+  }
+  hostile = hostile + "b"
+  val r = Re.compileWithTimeout("(a+)+$", 1.5)
+  match Re.tryIsMatch(r, hostile) {
+    case Ok(_) ->
+      assertTrue(false,
+        "JVM: catastrophic pattern should time out (#1103); shim missing?")
+    case Err(e) ->
+      match e {
+        case TimedOut(_)       -> ()  // expected path
+        case InvalidPattern(_) ->
+          assertTrue(false,
+            "JVM: ReDoS guard surfaced InvalidPattern; expected TimedOut")
+      }
+  }
+}
+
 func main(): Unit {
   testTryCompileOk()
   testTryCompileInvalidPattern()
@@ -152,5 +189,10 @@ func main(): Unit {
   testErrorMessageTimedOut()
   testErrorMessageInvalidPattern()
   testReDoSTimeoutFires()
+  // testReDoSTimeoutFiresJvm() is declared with `@cfg(feature = "jvm")`
+  // and is therefore only compiled under the `jvm` feature.  It is
+  // wired into the JVM test runner separately (#1103 acceptance gate);
+  // calling it unconditionally here would break the .NET build because
+  // the symbol is elided when the feature is off.
   println("regex_tests: ok")
 }

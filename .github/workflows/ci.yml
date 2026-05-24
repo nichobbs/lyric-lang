@@ -276,3 +276,52 @@ jobs:
             exit $overall
           fi
           echo "ecosystem test suite passed"
+
+      # Coverage collection — informational only, not a blocking gate (#1117).
+      # Runs on push to main (not pull_request) to keep PR latency low.
+      # Uses `dotnet-coverage` CLI against the same Expecto-based test
+      # binaries the build-and-test steps already produce, so no project-file
+      # restructuring is required.  The Cobertura report is uploaded as a
+      # CI artifact; viewers / trend-trackers can ingest it from there.
+      - name: Collect code coverage (main only)
+        if: >-
+          steps.changes.outputs.has_code_changes == 'true' &&
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main'
+        continue-on-error: true
+        working-directory: bootstrap
+        run: |
+          set -euo pipefail
+          # The `dotnet-coverage` tool wraps the same XPlat Code Coverage
+          # engine that `dotnet test --collect:"XPlat Code Coverage"` uses,
+          # but lets us drive the Expecto console-app test projects without
+          # adding Microsoft.NET.Test.Sdk + Expecto.TestSdk to every fsproj.
+          dotnet tool install --global dotnet-coverage --version 17.* || true
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          mkdir -p ../coverage
+          for proj in tests/Lyric.Lexer.Tests \
+                      tests/Lyric.Parser.Tests \
+                      tests/Lyric.TypeChecker.Tests \
+                      tests/Lyric.Emitter.Tests \
+                      tests/Lyric.Cli.Tests; do
+            name="$(basename "$proj")"
+            dotnet-coverage collect \
+              --output "../coverage/${name}.cobertura.xml" \
+              --output-format cobertura \
+              dotnet run --project "$proj" --no-build --configuration "$BUILD_CONFIG" \
+              || echo "::warning::coverage run failed for ${name}; continuing"
+          done
+          echo "coverage artifacts:"
+          ls -lah ../coverage || true
+
+      - name: Upload coverage artifact (main only)
+        if: >-
+          steps.changes.outputs.has_code_changes == 'true' &&
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-coverage
+          path: coverage/
+          if-no-files-found: warn
+          retention-days: 30
