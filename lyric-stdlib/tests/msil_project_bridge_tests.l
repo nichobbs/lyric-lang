@@ -25,6 +25,7 @@ import Std.Testing
 import Std.Uuid
 import Std.Environment as Environment
 import Msil.Bridge
+import Lyric.Emitter as Emitter
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -236,12 +237,103 @@ func testCrossPackageRecordValueRoundTrip(): Unit {
     "cross_package_record_value_round_trip: stdout matches expected")
 }
 
+// ─── Phase 4: in-process routing through Lyric.Emitter.emitProject ──────────
+//
+// The tests above call Msil.Bridge.compileProjectToMsil directly.  Phase 4
+// (#1183) makes Lyric.Emitter.emitProject route DOTNET multi-package builds
+// through the same in-process bridge instead of shelling out to
+// `lyric --internal-project-build`.  These tests cover the routing layer:
+// they build a `Lyric.Emitter.EmitProjectRequest`, hand it to
+// `emitProject`, and assert the produced DLL runs and prints the
+// expected value.  No restored deps, no active features — those still
+// route through the subprocess fallback (Phase 5).
+
+func runEmitProject(label: in String, projectPkgs: in List[Emitter.ProjectPackage], assemblyName: in String): Capture.CaptureResult {
+  val dir     = freshTempDir(label)
+  val dllPath = Path.join(dir, assemblyName + ".dll")
+  val req = Emitter.EmitProjectRequest(
+    packages         = projectPkgs,
+    assemblyName     = assemblyName,
+    outputPath       = dllPath,
+    target           = Emitter.Dotnet,
+    restoredDllPaths = newList(),
+    activeFeatures   = newList())
+  val result = Emitter.emitProject(req)
+  match result.outputPath {
+    case None -> {
+      cleanup(dir)
+      panic(label + ": emitProject produced no output (diagnostics on stderr)")
+    }
+    case Some(_) -> ()
+  }
+  writeRuntimeConfig(dllPath)
+  val args: List[String] = newList()
+  args.add("exec")
+  args.add(dllPath)
+  val captured = Capture.runCaptureWithDiagnostics("dotnet", args, "")
+  cleanup(dir)
+  captured
+}
+
+func mkProjectPkg(name: in String, source: in String): Emitter.ProjectPackage {
+  val srcs: List[String] = newList()
+  srcs.add(source)
+  Emitter.ProjectPackage(name = name, sources = srcs)
+}
+
+// Lyric.Emitter.emitProject with two independent packages: pins the
+// in-process routing path (canInProc=true) end-to-end.
+func testEmitProjectInProcessIndependent(): Unit {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkProjectPkg("EmitProjInProc.Lib",
+    "package EmitProjInProc.Lib\n" +
+    "\n" +
+    "pub func tripled(x: in Int): Int { x + x + x }\n"))
+  pkgs.add(mkProjectPkg("EmitProjInProc.App",
+    "package EmitProjInProc.App\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(11)\n" +
+    "}\n"))
+  val result = runEmitProject("emitproj-indep", pkgs, "EmitProjInProc")
+  assertEqualInt(result.exitCode, 0,
+    "emit_project_in_process_independent: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "11",
+    "emit_project_in_process_independent: stdout matches expected")
+}
+
+// Lyric.Emitter.emitProject routes a cross-package call through the
+// in-process bridge — same Phase 2 scenario, now via the front door
+// instead of the bridge directly.
+func testEmitProjectInProcessCrossPackageCall(): Unit {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkProjectPkg("EmitProjXPkg.Lib",
+    "package EmitProjXPkg.Lib\n" +
+    "\n" +
+    "pub func quadrupled(x: in Int): Int { x + x + x + x }\n"))
+  pkgs.add(mkProjectPkg("EmitProjXPkg.App",
+    "package EmitProjXPkg.App\n" +
+    "\n" +
+    "import EmitProjXPkg.Lib\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(quadrupled(11))\n" +
+    "}\n"))
+  val result = runEmitProject("emitproj-xpkg", pkgs, "EmitProjXPkg")
+  assertEqualInt(result.exitCode, 0,
+    "emit_project_in_process_cross_package_call: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "44",
+    "emit_project_in_process_cross_package_call: stdout matches expected")
+}
+
 func main(): Int {
   testTwoIndependentPackagesBundle()
   testFirstPackageWithRecordDoesNotDisturbSecond()
   testCrossPackageQualifiedCall()
   testCrossPackageChainedIntCalls()
   testCrossPackageRecordValueRoundTrip()
+  testEmitProjectInProcessIndependent()
+  testEmitProjectInProcessCrossPackageCall()
   println("msil-project-bridge tests: ok")
   return 0
 }
