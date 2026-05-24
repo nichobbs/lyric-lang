@@ -1,7 +1,7 @@
 name: Auto-enable PR Auto-merge
 on:
   pull_request:
-    types: [opened, reopened]
+    types: [opened, reopened, ready_for_review]
 
 permissions:
   contents: write
@@ -9,6 +9,12 @@ permissions:
 
 jobs:
   enable-auto-merge:
+    # Skip drafts — GitHub rejects `enable_pr_auto_merge` on draft PRs, so
+    # firing here would be a no-op that the workflow swallows with `exit 0`
+    # (showing green) and auto-merge would never actually get enabled.  The
+    # `ready_for_review` trigger above re-runs this job at the draft → ready
+    # transition so non-draft PRs still get auto-merge wired up.
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       # `gh pr merge --auto` requires both repo-level auto-merge to be
