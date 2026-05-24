@@ -153,12 +153,86 @@ func failResult(msg: in String): EmitResult {
 
 /// Compile a multi-package project to a single bundled DLL or JAR.
 ///
-/// Shells out to `lyric --internal-project-build` which is handled by the F#
-/// bootstrap CLI before it routes to the self-hosted CLI dispatcher.  Each
-/// package's source texts are written to temp files; a tab-delimited spec file
-/// lists all packages and their temp source paths.
+/// Default path (#1183 Phase 4 — `--target dotnet` only): calls
+/// `Msil.Bridge.compileProjectToMsil` in-process via a direct package
+/// import.  No subprocess hop, no F# emitter touched at runtime.
+///
+/// Falls back to the `lyric --internal-project-build` subprocess (handled
+/// by the F# bootstrap CLI) when:
+///   - the target is JVM (the JVM bridge has no project-level entry
+///     point yet),
+///   - the request carries restored dependency DLLs (in-process bridge
+///     does not yet thread `RestoredPackages` through the middle-end),
+///   - the request carries active feature flags (Phase 4 follow-up
+///     needs to plumb `@cfg` erasure through the in-process bridge),
+///   - or `LYRIC_FORCE_SUBPROCESS=1` is set for differential testing.
+///
+/// The subprocess path will be retired in Phase 5 once feature
+/// erasure and restored deps are plumbed through.
 @stable(since="0.1")
 pub func emitProject(req: in EmitProjectRequest): EmitResult {
+  val outDir = Path.dirname(req.outputPath)
+  if Str.isNotEmpty(outDir) {
+    match File.createDir(outDir) {
+      case Ok(_)  -> ()
+      case Err(_) -> ()
+    }
+  }
+
+  val canInProc = match req.target {
+                    case Dotnet -> true
+                    case Jvm    -> false
+                  }
+                  and req.restoredDllPaths.count == 0
+                  and req.activeFeatures.count == 0
+                  and not useSubprocessFallback()
+
+  if canInProc {
+    emitProjectInProcess(req)
+  } else {
+    emitProjectViaSubprocess(req)
+  }
+}
+
+// In-process project emit — direct call into `Msil.Bridge.compileProjectToMsil`
+// (#1183 Phase 4).  Each `ProjectPackage`'s multiple sources are joined with
+// a newline boundary before being handed to the bridge, matching the F#
+// `joinPackageSources` convention.  Diagnostics from the bridge land on
+// stderr (same path as `compileToMsil`).
+func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
+  val payloads: List[ProjectPackagePayload] = newList()
+  var pi = 0
+  while pi < req.packages.count {
+    val pkg = req.packages[pi]
+    var combined = ""
+    var si = 0
+    while si < pkg.sources.count {
+      if si > 0 { combined = combined + "\n" }
+      combined = combined + pkg.sources[si]
+      si += 1
+    }
+    payloads.add(ProjectPackagePayload(name = pkg.name, source = combined))
+    pi += 1
+  }
+  // Band 6 stdlib sources are not yet propagated to the in-process bridge
+  // (no Lyric equivalent of SelfHostedBridge.findStdlibSources); pass an
+  // empty list.  The subprocess fallback handles cross-package stdlib type
+  // imports when a project needs them.
+  val emptyStdlib: List[String] = newList()
+  val ok = MsilBridge.compileProjectToMsil(payloads, req.assemblyName, req.outputPath, emptyStdlib)
+  if ok {
+    val okDiags: List[Diagnostic] = newList()
+    EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
+  } else {
+    failResult("project build failed (see stderr)")
+  }
+}
+
+// Subprocess project emit — preserved as the fallback for JVM target,
+// restored-dep / feature-bearing requests, and `LYRIC_FORCE_SUBPROCESS=1`.
+// Will be retired in #1183 Phase 5 once the in-process bridge covers every
+// supported scenario.
+func emitProjectViaSubprocess(req: in EmitProjectRequest): EmitResult {
   // Per-invocation subdirectory under lyric-emit/ keyed on a v4 UUID.
   // Two concurrent builds for the same assemblyName would otherwise
   // race on the spec / source filenames; the UUID guarantees a unique
@@ -172,14 +246,6 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
   match File.createDir(tmpDir) {
     case Ok(_)  -> ()
     case Err(e) -> return failResult("cannot create temp build directory: " + IOError.message(e))
-  }
-
-  val outDir = Path.dirname(req.outputPath)
-  if Str.isNotEmpty(outDir) {
-    match File.createDir(outDir) {
-      case Ok(_)  -> ()
-      case Err(_) -> ()
-    }
   }
 
   // Helper: best-effort cleanup of the per-invocation temp directory.
