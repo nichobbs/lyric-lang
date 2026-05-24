@@ -7,7 +7,7 @@
 // `Lyric.Emitter.ProcessCapture.runCapture` (always loaded in the
 // AppDomain when emitting or running self-hosted Lyric code).
 //
-// Internal: only Std.ProcessCapture should import this.
+// Internal: only Std.ProcessCapture and Std.Process should import this.
 
 @axiom("System.Diagnostics.Process piped stdout/stderr capture")
 package Std.ProcessCaptureHost

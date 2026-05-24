@@ -15,6 +15,13 @@ package Mail.Kernel.Net
 
 import Std.Core
 
+// SMTP externs are intentionally not `@cfg(feature = "smtp")`-gated: the
+// SMTP backend is the default mail provider and uses only `System.Net.Mail`
+// types that ship in the BCL.  No additional NuGet dependency is needed,
+// so the externs are always emittable.  SES/SendGrid below carry their own
+// `@cfg` gates because they pull in optional AWS SDK / SendGrid NuGet
+// dependencies.  See #1112.
+
 // ─── Extern types ─────────────────────────────────────────────────────────────
 
 @axiom("BCL System.Net.Mail.SmtpClient (SYSLIB0014 advisory: acceptable for Phase-4 SMTP path)")

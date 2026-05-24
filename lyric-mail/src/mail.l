@@ -196,13 +196,7 @@ pub func connectSmtp(): Result[MailSender, MailError] {
 @stable(since="0.1")
 @cfg(feature = "ses")
 pub func connectSes(): Result[MailSender, MailError] {
-  val region    = Env.getVarOrDefault("LYRIC_CONFIG_SES_REGION", "us-east-1")
-  val accessKey = Env.getVarOrDefault("LYRIC_CONFIG_SES_ACCESSKEY", "")
-  val secretKey = Env.getVarOrDefault("LYRIC_CONFIG_SES_SECRETKEY", "")
-  match MailKernel.connectSes(region, accessKey, secretKey) {
-    case Ok(_)    -> Err(MailError(message = "Amazon SES not yet implemented", code = "NOT_IMPLEMENTED"))
-    case Err(msg) -> Err(MailError(message = msg, code = "CONNECT_ERROR"))
-  }
+  Err(MailError(message = "Amazon SES not yet implemented (#733 follow-up)", code = "NOT_IMPLEMENTED"))
 }
 
 /// Open a SendGrid client.
@@ -211,11 +205,7 @@ pub func connectSes(): Result[MailSender, MailError] {
 @stable(since="0.1")
 @cfg(feature = "sendgrid")
 pub func connectSendGrid(): Result[MailSender, MailError] {
-  val apiKey = Env.getVarOrDefault("LYRIC_CONFIG_SENDGRIDMAIL_APIKEY", "")
-  match MailKernel.connectSendGrid(apiKey) {
-    case Ok(_)    -> Err(MailError(message = "SendGrid not yet implemented", code = "NOT_IMPLEMENTED"))
-    case Err(msg) -> Err(MailError(message = msg, code = "CONNECT_ERROR"))
-  }
+  Err(MailError(message = "SendGrid not yet implemented (#733 follow-up)", code = "NOT_IMPLEMENTED"))
 }
 
 // ─── Convenience functions ────────────────────────────────────────────────────

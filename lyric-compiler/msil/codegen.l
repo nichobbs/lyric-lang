@@ -2191,27 +2191,16 @@ func lowerBuiltinOrStaticCallMsil(
                 }
               }
               case None -> {
-                // Same-package record/union/opaque constructor or cross-package call.
-                val ctorKey = fctx.pkgName + "." + funcName
-                match mapGet(cctx.recordCtorTokens, ctorKey) {
-                  case Some(ctorTok) -> {
-                    var ci = 0
-                    while ci < args.count {
-                      lowerCallArgMsil(cctx, fctx, insns, args[ci])
-                      ci = ci + 1
-                    }
-                    insns.add(MNewobj(ctorToken = ctorTok))
-                    MObject
-                  }
-                  case None -> {
-                    var i = 0
-                    while i < args.count {
-                      lowerCallArgMsil(cctx, fctx, insns, args[i])
-                      i = i + 1
-                    }
-                    MObject
-                  }
+                // Cross-package call (record/union/opaque constructors in this
+                // package were already handled by the outer recordCtorTokens
+                // lookup above).  Push the args and fall through; the caller
+                // is responsible for picking the right call site.
+                var i = 0
+                while i < args.count {
+                  lowerCallArgMsil(cctx, fctx, insns, args[i])
+                  i = i + 1
                 }
+                MObject
               }
             }
           }
