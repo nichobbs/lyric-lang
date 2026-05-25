@@ -144,7 +144,21 @@ let tests =
             //               needs to locate `lyric-stdlib/std/` at runtime
             //               (replaces the F# `SelfHostedBridge.findStdlibSources`
             //               shim).
-            Expect.isLessThanOrEqual total 305
+            //   305 → 314 — `Std.AssemblyResourcesHost` for #1229 Phase A.2:
+            //               three extern types (`RuntimeAssembly`,
+            //               `ResStream`, `ResMemoryStream`) + six host
+            //               functions (`hostAssemblyLoadFrom`,
+            //               `hostAssemblyResourceNames`,
+            //               `hostAssemblyResourceStream`,
+            //               `hostNewMemoryStream`, `hostStreamCopyTo`,
+            //               `hostMemoryStreamToArray`).  In-process
+            //               embedded-resource reader for the self-hosted
+            //               MSIL bridge's restored-dependency loader.
+            //               High-level `Assembly.LoadFrom` API chosen over
+            //               `System.Reflection.Metadata.PEReader` to avoid
+            //               unsafe pointer arithmetic / a 12-extern
+            //               `BlobReader` chain.
+            Expect.isLessThanOrEqual total 314
                 "total extern surface unexpectedly large"
         }
     ]
