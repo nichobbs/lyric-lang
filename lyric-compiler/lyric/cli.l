@@ -608,7 +608,8 @@ func buildProject(
     outputPath       = outPath,
     target           = target,
     restoredDllPaths = restoredDlls,
-    activeFeatures   = activeFeatures
+    activeFeatures   = activeFeatures,
+    declaredFeatures = mfDeclared
   )
 
   val result  = Emitter.emitProject(projReq)
@@ -2268,6 +2269,7 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
 
   // Resolve active feature set from manifest defaults (no CLI flags in the test runner).
   val mfDefaults = Mf.readFeatureDefaultsFromToml(mfText, mfPath)
+  val mfDeclared = Mf.readFeatureDeclaredFromToml(mfText, mfPath)
   val activeFeatures: List[String] = newList()
   var afi = 0
   while afi < mfDefaults.count {
@@ -2508,7 +2510,8 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
       outputPath       = outPath,
       target           = Dotnet,
       restoredDllPaths = restoredDlls,
-      activeFeatures   = activeFeatures
+      activeFeatures   = activeFeatures,
+      declaredFeatures = mfDeclared
     )
     val result  = Emitter.emitProject(projReq)
     var hadBuildError = false

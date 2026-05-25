@@ -202,9 +202,10 @@ let private internalProjectBuild (rest: string list) : int =
         1
     else
         let lines = File.ReadAllLines specPath
-        let pkgInputs      = ResizeArray<Lyric.Emitter.Emitter.ProjectPackageInput>()
-        let depRefs        = ResizeArray<Lyric.Emitter.RestoredPackages.RestoredPackageRef>()
-        let activeFeatures = ResizeArray<string>()
+        let pkgInputs        = ResizeArray<Lyric.Emitter.Emitter.ProjectPackageInput>()
+        let depRefs          = ResizeArray<Lyric.Emitter.RestoredPackages.RestoredPackageRef>()
+        let activeFeatures   = ResizeArray<string>()
+        let declaredFeatures = ResizeArray<string>()
         let mutable hadFatal = false
         for line in lines do
             if not (String.IsNullOrEmpty line) then
@@ -227,6 +228,12 @@ let private internalProjectBuild (rest: string list) : int =
                     let parts = line.Split('\t')
                     if parts.Length >= 2 then
                         activeFeatures.Add parts.[1]
+                elif line.StartsWith("DECLARED\t", StringComparison.Ordinal) then
+                    // DECLARED line: DECLARED\t<featureName> — manifest's
+                    // declared feature set; drives the F0013 typo guard.
+                    let parts = line.Split('\t')
+                    if parts.Length >= 2 then
+                        declaredFeatures.Add parts.[1]
                 else
                     // PKG line: <packageName>\t<srcPath1>\t<srcPath2>...
                     let parts = line.Split('\t')
@@ -267,7 +274,7 @@ let private internalProjectBuild (rest: string list) : int =
               Single             = true
               Target             = target
               ActiveFeatures     = Set.ofSeq activeFeatures
-              DeclaredFeatures   = Set.ofSeq activeFeatures }
+              DeclaredFeatures   = Set.ofSeq declaredFeatures }
         let result = Emitter.emitProject req
         let errs   = result.Diagnostics |> List.filter (fun d -> d.Severity = DiagError)
         for d in result.Diagnostics do

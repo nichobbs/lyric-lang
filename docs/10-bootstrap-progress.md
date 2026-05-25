@@ -14750,3 +14750,82 @@ step has no `continue-on-error` so security regressions block merge.
 - `lyric test --manifest lyric-session/lyric.toml` — pins the no-auto-create
   session-fixation guard (#316).
 - CI fails if either test suite regresses.
+
+
+### D-progress-299 — `Lyric.Cfg` in-process feature erasure (#1183, PR #1224)
+
+**Status:** Shipped.
+
+**Problem:** `Lyric.Emitter.emitProject` fell back to the F# `lyric
+--internal-project-build` subprocess whenever a request carried active
+feature flags (`req.activeFeatures.count > 0`), because the self-hosted
+multi-package MSIL bridge had no `@cfg` erasure pass.  Any feature-bearing
+build paid a process spawn per `emitProject` call and could not run on
+runtimes where the subprocess hop is undesirable.  Together with the
+restored-dependency-DLL gap (#1229), this was the last blocker on the
+in-process path before the F# subprocess fallback can be retired.
+
+**Fix:**
+
+1. **`lyric-compiler/lyric/cfg.l` (new) — `Lyric.Cfg` package.**  Self-
+   hosted port of `bootstrap/src/Lyric.Emitter/Cfg.fs` per D045.
+   Implements `applyCfgErasure(active, declared, sf): CfgErasureResult`.
+   Walks each top-level `Item.annotations` and the file-level
+   `SourceFile.fileAnnotations`; items annotated with any
+   `@cfg(feature = "X")` whose X is absent from `active` are dropped.
+   File-level `@cfg` erases the whole file (items + imports) when
+   inactive.  F0012 fires for malformed predicates; F0013 fires for
+   features absent from a non-empty `declared` set (typo guard,
+   gated to off when no `[features]` table is declared).
+
+2. **`lyric-compiler/msil/bridge.l` — new
+   `compileProjectToMsilWithFeatures` entry point.**  Wraps the
+   pre-existing `compileProjectToMsil` (which is now a thin
+   no-features shim) and runs `Cfg.applyCfgErasure` between parse and
+   typecheck, so erased items disappear before any name resolution
+   sees them.
+
+3. **`lyric-compiler/lyric/emitter.l` — `EmitProjectRequest`
+   carries `declaredFeatures: List[String]`.**  `emitProject`'s
+   `canInProc` predicate drops the `req.activeFeatures.count == 0`
+   filter; the in-process path forwards `req.declaredFeatures` as
+   a distinct argument from `req.activeFeatures` (the F0013 typo
+   guard depends on them being separate).  The subprocess fallback
+   writes a new `DECLARED\t<name>` spec line per declared feature.
+
+4. **`bootstrap/src/Lyric.Cli/Program.fs` — `--internal-project-build`
+   parses `DECLARED` lines.**  A `ResizeArray<string> declaredFeatures`
+   is populated alongside `activeFeatures` and threaded into
+   `ProjectEmitRequest.DeclaredFeatures`, retiring the matching
+   `Set.ofSeq activeFeatures` placeholder on the subprocess path.
+
+5. **`lyric-compiler/lyric/cli.l` — feeds `Mf.readFeatureDeclaredFromToml`
+   through.**  The `build` and `test --manifest` paths already computed
+   the manifest's declared set for the active-feature resolution; the
+   value is now passed to `EmitProjectRequest.declaredFeatures` instead
+   of being recomputed downstream.
+
+**Tests:**
+
+- `lyric-compiler/lyric/cfg_self_test.l` (new) — `Lyric.Cfg` unit
+  self-test exercising no-annotations, inactive/active erasure, AND
+  semantics, F0012/F0013 firing, F0013 suppression with empty declared,
+  and file-level erasure both ways.  Discovered + run by
+  `bootstrap/tests/Lyric.Emitter.Tests/SelfHostedCfgTests.fs` (same
+  shape as the other `Lyric.*` self-tests).
+- `lyric-stdlib/tests/msil_project_bridge_tests.l` — six new
+  integration tests covering the in-process path end-to-end via
+  `Lyric.Emitter.emitProject`: feature active, feature inactive,
+  AND semantics, F0012 (compile fails), F0013 (warning, compile
+  succeeds), file-level erasure.
+
+**Acceptance criteria met:**
+
+- `emitProject` no longer shells out for feature-bearing requests; the
+  in-process bridge runs `applyCfgErasure` before typecheck.
+- F0013 is functionally live on both paths (the previous "for now"
+  `declaredFeatures == activeFeatures` placeholder removed).
+- Self-test coverage matches the convention of every other self-hosted
+  package (`*_self_test.l` + `SelfHosted*Tests.fs`).
+- Restored-dependency DLLs are the only remaining subprocess case
+  (tracked in #1229).
