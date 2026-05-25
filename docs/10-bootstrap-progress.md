@@ -15495,3 +15495,55 @@ encode static / case-class signatures respectively.
   `recordCtorTokens` keyed by the case-class FQN).
 - Phase A.4 — end-to-end Lyric test.
 - Phase B — JVM JAR resource kernel.
+
+
+### D-progress-309 — restored-artifact free function MemberRefs (#1229 Phase A.3.3.c.3.b)
+
+**Status:** Shipped (free funcs).  Union case ctors remain in c.3.c.
+
+**Problem:** With c.3.a registering record-ctor MemberRefs, the
+remaining gap for typical cross-package use was free functions —
+`MyLib.double(x)` from a consumer would resolve the package import
+correctly but the call-site lookup against `funcTokens` would miss.
+
+**Fix (`lyric-compiler/msil/codegen.l`):**
+
+- `splitPackageName(pkg)` — splits a dotted package name into
+  `(namespace, simpleName)` for `ctxAddTypeRef`.  Returns a
+  2-element list (Lyric doesn't expose tuples cleanly).
+- `ensureHostClassTypeRefRow(cctx, pkg, asmRef)` — allocates (or
+  reuses) the `TypeRef` for the foreign DLL's free-function host
+  class.  The in-bundle emitter puts every free function on a
+  `TypeDef` whose name matches the package name
+  (`MPFuncs(hostClass = pkgName, ...)`), so the foreign DLL has
+  the same shape.  Cached under `"<pkg>/host"` in `ffiTypeRefs`.
+- `registerRestoredFunc(cctx, pkg, fn)` — for each `pub func`:
+  builds the signature via `buildStaticMethodSig(params, ret)`
+  (no HASTHIS for static methods), allocates a MemberRef on the
+  host class, and registers
+  `funcTokens["<pkg>.<name>"] = 0x0A000000 + memberRow`.
+  Skips private funcs (no public surface) and FQNs that already
+  exist in `funcTokens` (in-bundle wins).
+
+The IRecord/IFunc walker now handles both: renamed from
+`registerRestoredRecordCtors` to `registerRestoredMembers`.
+
+**Acceptance criteria met:**
+
+- Consumer-side free-function calls against restored packages
+  resolve to a cross-assembly MemberRef pointing at the foreign
+  DLL's host TypeRef.
+- Signature encoding matches `lowerMFuncsToHostClass`'s in-bundle
+  convention so the runtime resolver matches.
+- 73 CLI + 843 emitter tests green; axiom + kernel-stub audits clean.
+
+**What's next under #1229:**
+
+- Phase A.3.3.c.3.c — union case ctor MemberRefs (each case is its
+  own nested TypeDef in the foreign DLL with its own ctor; allocate
+  TypeRef + MemberRef per case and seed `recordCtorTokens` keyed by
+  the case-class FQN `<pkg>.<union>$<case>`).
+- Phase A.4 — end-to-end Lyric test compiling a library DLL via
+  `Lyric.Emitter.emit`, then a consumer project via `emitProject`
+  with the library in `restoredDllPaths`.
+- Phase B — JVM JAR resource kernel.
