@@ -294,6 +294,10 @@ pub func compileProjectToMsilWithRestored(
   // counters in `CodegenCtx` thread row numbering across calls.  The cctx's
   // Assembly row is named after the bundle, not any individual package.
   val cctx = newCodegenCtx(assemblyName, restoredArtifacts)
+  // Seed cross-package symbol tables with the restored artifacts' type
+  // surface so the per-package addPackageTokens pre-scan sees restored
+  // types as first-class lookups.
+  registerRestoredArtifactTokens(cctx)
 
   val liftedFiles: List[SourceFile] = newList()
   var li = 0

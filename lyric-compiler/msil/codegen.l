@@ -5419,3 +5419,124 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
 
   MPackage(packageName = pkgName, items = items)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §N. Restored-artifact symbol registration.
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Walk each `SynthesisedArtifact` in `cctx.restoredArtifacts` and seed
+// the cross-package symbol tables so consumer-side type references to
+// restored packages resolve to TypeRef rows pointing at the foreign
+// `AssemblyRef`.  Registers type-shaped decls only; MemberRef rows for
+// record ctors / free functions / union case ctors require
+// signature-blob encoding from the typechecker's `ResolvedSignature`
+// map and ship in the c.3 slice.
+
+// Allocate one AssemblyRef per restored artifact, keyed by package
+// name → AssemblyRef row.  Cached in `ffiAsmRefs` so multiple
+// `registerRestoredArtifactTokens` calls against the same package
+// re-use the row.  Lyric-emitted assemblies use `<packageName>.dll`,
+// so the simple assembly name matches the package name verbatim.
+func ensureAssemblyRefForArtifact(cctx: in CodegenCtx,
+                                  packageName: in String): Int {
+  if cctx.ffiAsmRefs.containsKey(packageName) {
+    match mapGet(cctx.ffiAsmRefs, packageName) {
+      case Some(row) -> return row
+      case None      -> ()
+    }
+  }
+  val row = ctxAddAssemblyRef(cctx.lctx, packageName, 1, 0)
+  cctx.ffiAsmRefs.add(packageName, row)
+  row
+}
+
+// True iff `c` is a single-character identifier continuation (ASCII).
+func isIdentChar(c: in String): Bool {
+  if c.length == 0 { return false }
+  val ch = c.substring(0, 1)
+  ch == "_" or
+  (ch >= "0" and ch <= "9") or
+  (ch >= "a" and ch <= "z") or
+  (ch >= "A" and ch <= "Z")
+}
+
+// Walk a union decl's `repr` for case names.  The contract `repr` for
+// unions is the canonical source-level form, e.g.
+// `pub union Maybe { case Some(v: Int), case None }`.  Case names
+// follow the literal `case ` keyword and are terminated by `(`, ` `,
+// `,`, or `}`.
+func registerUnionCases(cctx: in CodegenCtx,
+                        packageName: in String,
+                        unionName: in String,
+                        decl: in ContractDecl): Unit {
+  val repr = decl.repr
+  val needle = "case "
+  var idx = 0
+  while idx >= 0 {
+    val hit = repr.indexOf(needle, idx)
+    if hit < 0 { return }
+    val nameStart = hit + needle.length
+    if nameStart >= repr.length { return }
+    var j = nameStart
+    while j < repr.length and isIdentChar(repr.substring(j, 1)) {
+      j = j + 1
+    }
+    if j > nameStart {
+      val caseName = repr.substring(nameStart, j - nameStart)
+      val ctorKey  = packageName + "." + unionName + "$" + caseName
+      if not cctx.unionCaseCtorByName.containsKey(caseName) {
+        cctx.unionCaseCtorByName.add(caseName, ctorKey)
+      }
+    }
+    idx = j
+  }
+}
+
+// Register one type-shaped decl from a restored artifact: allocates
+// the TypeRef row (cached in `ffiTypeRefs`), seeds the simple-name
+// lookup in `typeFqnByName`, and for unions, also seeds case names
+// in `unionCaseCtorByName`.  First-wins on collisions.
+func registerRestoredTypeDecl(cctx: in CodegenCtx,
+                              packageName: in String,
+                              decl: in ContractDecl,
+                              asmRefRow: in Int): Unit {
+  val typeName = decl.name
+  val typeFqn  = packageName + "." + typeName
+
+  val typeRefKey = packageName + "/" + typeFqn
+  if not cctx.ffiTypeRefs.containsKey(typeRefKey) {
+    val row = ctxAddTypeRef(cctx.lctx, packageName, typeName, asmRefRow)
+    cctx.ffiTypeRefs.add(typeRefKey, row)
+  }
+
+  if not cctx.typeFqnByName.containsKey(typeName) {
+    cctx.typeFqnByName.add(typeName, typeFqn)
+  }
+
+  if decl.kind == "union" {
+    registerUnionCases(cctx, packageName, typeName, decl)
+  }
+}
+
+/// Walk every `SynthesisedArtifact` in `cctx.restoredArtifacts` and
+/// register its type-shaped public decls into the cross-package
+/// symbol tables.  Call once after `newCodegenCtx`, before the
+/// per-package `addPackageTokens` pre-scan.
+pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
+  var ai = 0
+  while ai < cctx.restoredArtifacts.count {
+    val art = cctx.restoredArtifacts[ai]
+    val asmRefRow = ensureAssemblyRefForArtifact(cctx, art.packageName)
+    var di = 0
+    while di < art.contract.decls.count {
+      val decl = art.contract.decls[di]
+      val k = decl.kind
+      if k == "record" or k == "union" or k == "enum"
+         or k == "interface" or k == "opaque" or k == "distinct" {
+        registerRestoredTypeDecl(cctx, art.packageName, decl, asmRefRow)
+      }
+      di = di + 1
+    }
+    ai = ai + 1
+  }
+}

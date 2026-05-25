@@ -15352,3 +15352,80 @@ c.2 / c.3 slices register the symbols and allocate
 - Phase A.3.3.c.3 — `MemberRef` allocation for free functions
   (signature blob encoding from `ResolvedSignature`).
 - Phase A.4 — end-to-end Lyric test.
+
+
+### D-progress-307 — restored-artifact TypeRef registration (#1229 Phase A.3.3.c.2)
+
+**Status:** Shipped (type-shape registration; `MemberRef` for ctors / funcs ships in c.3).
+
+**Problem:** With `compileProjectToMsilWithRestored` accepting
+`SynthesisedArtifact`s as of c.1, the bridge still didn't walk the
+list to seed the cross-package symbol tables.  Consumer-side type
+references to restored packages still resolved to whatever fallback
+the codegen used (typically `MObject`), preventing
+`isinst <RestoredType>` and any other type-shaped lookup from
+hitting a proper TypeRef.
+
+**Fix (`lyric-compiler/msil/codegen.l`):**
+
+New `pub func registerRestoredArtifactTokens(cctx): Unit` plus
+private helpers:
+
+1. `ensureAssemblyRefForArtifact(cctx, packageName)` — allocates one
+   `AssemblyRef` row per restored package, cached in `ffiAsmRefs`.
+   Lyric-emitted DLLs use `<packageName>.dll`, so the simple
+   assembly name matches the package name verbatim.  Version is
+   pinned to 1.0 for now; proper version threading is part of the
+   broader assembly-identity work.
+2. `registerRestoredTypeDecl(cctx, pkg, decl, asmRef)` — for each
+   type-shaped decl (`record` / `union` / `enum` / `interface` /
+   `opaque` / `distinct`):
+   - Allocates a `TypeRef` row pointing at the AssemblyRef
+     (cached in `ffiTypeRefs`).
+   - Seeds `typeFqnByName[simpleName] = "<pkg>.<simple>"` so
+     consumer-side `TRef` resolution finds the correct FQN.
+   - For unions, also walks the contract `repr` for case names and
+     seeds `unionCaseCtorByName[case] = "<pkg>.<union>$<case>"` —
+     enables cross-package case-construction lookups in
+     `lowerBuiltinOrStaticCallMsil`.
+3. `registerUnionCases(cctx, pkg, union, decl)` — scans the
+   union's `repr` for `case <Name>` patterns; case names are
+   terminated by `(`, ` `, `,`, or `}`.
+4. `isIdentChar(c)` — ASCII identifier-continuation check used by
+   the case-name scanner.
+
+**Idempotency:** First-wins on all symbol-table inserts (matches
+the existing `addPackageTokens` policy).  An artifact whose package
+name collides with an in-bundle package's simple-name entry leaves
+the in-bundle entry intact.
+
+**`bridge.l`:** `compileProjectToMsilWithRestored` calls
+`registerRestoredArtifactTokens(cctx)` immediately after
+`newCodegenCtx`, so the per-package `addPackageTokens` pre-scan
+loop already sees restored types as resolvable.
+
+**What's still missing for an end-to-end build against a restored
+dep:** `recordCtorTokens` / `funcTokens` are not yet seeded for
+restored packages — that requires `MemberRef` allocation, which
+requires signature-blob encoding from
+`SynthesisedArtifact.checkResult.sigs`.  That's Phase A.3.3.c.3.
+Consumer-side type references (e.g. function-parameter type
+annotations naming a restored record) work today; consumer-side
+calls to restored ctors / funcs do not.
+
+**Acceptance criteria met:**
+
+- Restored-artifact types reach `typeFqnByName` with their correct
+  cross-package FQN.
+- AssemblyRef + TypeRef rows are allocated and cached.
+- Union case names seed `unionCaseCtorByName`.
+- 73 CLI + 843 emitter tests green; axiom + kernel-stub audits
+  clean.
+
+**What's next under #1229:**
+
+- Phase A.3.3.c.3 — `MemberRef` allocation for record ctors, free
+  funcs, and union case ctors (signature-blob encoding from
+  `ResolvedSignature`).
+- Phase A.4 — end-to-end Lyric test.
+- Phase B — JVM JAR resource kernel.
