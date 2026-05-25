@@ -787,9 +787,10 @@ All are provisional pending weaver integration.
 | `Std.HashHost`           | `hash_host.l`                | 1      | 0           |
 | `Std.RegexHost`          | `regex_host.l`               | 1      | 0           |
 | `Std.Testing.Mocking`    | `testing_mocking.l`          | 1      | 0           |
+| `Std.AssemblyResourcesHost` | `assembly_resources_host.l`  | 1      | 0           |
 | `Std.Jvm`                | `jvm.l`                      | 0      | 1           |
 | `Std.JvmExceptionHost`   | `jvm_exception.l`            | 0      | 1           |
-| **Total**                |                              | **25** | **2**       |
+| **Total**                |                              | **26** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -858,6 +859,7 @@ spaces; consult the kernel file itself for the unfolded source.
 
 | Platform | Package | File | Axiom |
 |---|---|---|---|
+| `dotnet` | `Std.AssemblyResourcesHost` | `assembly_resources_host.l` | System.Reflection.Assembly + System.IO.MemoryStream + System.IO.Stream operations conform to their documented .NET contracts |
 | `dotnet` | `Std.CharHost` | `char_host.l` | System.Char and System.Convert character operations conform to their documented .NET contracts |
 | `dotnet` | `Std.CollectionsHost` | `collections_host.l` | System.Collections.Generic.List / Dictionary conform to their documented .NET contracts |
 | `dotnet` | `Std.ConsoleHost` | `console_host.l` | System.Console operations conform to their documented .NET contracts |
