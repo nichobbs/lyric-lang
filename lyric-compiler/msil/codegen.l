@@ -33,6 +33,7 @@ import Std.Core
 import Std.Collections
 import Std.String
 import Lyric.Parser
+import Lyric.RestoredPackages
 import Msil.Lowering
 import Msil.Ffi
 
@@ -154,6 +155,18 @@ pub record CodegenCtx {
   // correct cross-package FQN instead of `<current-pkg>.<seg>`.  First-
   // processed wins on collisions, mirroring `unionCaseCtorByName`.
   typeFqnByName:       Map[String, String]
+  // Restored-dependency package list (#1229 Phase A.3.3.c).  Each
+  // entry is a `Lyric.RestoredPackages.SynthesisedArtifact`: the
+  // parsed-and-typechecked view of one Lyric DLL the consumer
+  // imports but doesn't ship in this bundle.  Bridge populates this
+  // via `compileProjectToMsilWithRestored`; the symbol-registration
+  // pass walks it to allocate `AssemblyRef` / `TypeRef` / `MemberRef`
+  // rows and register the restored types / funcs into
+  // `typeFqnByName` / `recordCtorTokens` / `unionCaseCtorByName`
+  // above (added in c.2 / c.3).  Length 0 for single-package
+  // compile and for project compiles without restored deps;
+  // behaviour is unchanged in those cases.
+  restoredArtifacts:   List[SynthesisedArtifact]
 }
 
 // One impl block (`impl Iface for Target { … }`) captured by the pre-pass.
@@ -465,7 +478,8 @@ pub func newCodegenCtx(packageName: in String): CodegenCtx {
     mainEntryToken       = newList(),
     pkgImports           = newMap(),
     unionCaseCtorByName  = newMap(),
-    typeFqnByName        = newMap())
+    typeFqnByName        = newMap(),
+    restoredArtifacts    = newList())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

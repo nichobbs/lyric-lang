@@ -20,6 +20,7 @@ import Lyric.Cfg as Cfg
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.Mono
 import Lyric.Derives
+import Lyric.RestoredPackages
 import Msil.Lowering
 import Msil.Codegen
 
@@ -181,10 +182,12 @@ pub func compileProjectToMsil(
   outputPath:    in String,
   stdlibSources: in List[String]
 ): Bool {
-  // Backward-compat shim: no feature flags.
-  val noFeatures: List[String] = newList()
-  compileProjectToMsilWithFeatures(packages, assemblyName, outputPath,
-                                    stdlibSources, noFeatures, noFeatures)
+  // Backward-compat shim: no feature flags, no restored artifacts.
+  val noFeatures: List[String]   = newList()
+  val noArtifacts: List[SynthesisedArtifact]  = newList()
+  compileProjectToMsilWithRestored(packages, assemblyName, outputPath,
+                                   stdlibSources, noFeatures, noFeatures,
+                                   noArtifacts)
 }
 
 /// Like `compileProjectToMsil` but threads `activeFeatures` /
@@ -206,6 +209,45 @@ pub func compileProjectToMsilWithFeatures(
   stdlibSources:    in List[String],
   activeFeatures:   in List[String],
   declaredFeatures: in List[String]
+): Bool {
+  // Forwarder: no restored artifacts.  Callers that need them use
+  // `compileProjectToMsilWithRestored` directly.
+  val noArtifacts: List[SynthesisedArtifact] = newList()
+  compileProjectToMsilWithRestored(packages, assemblyName, outputPath,
+                                   stdlibSources, activeFeatures, declaredFeatures,
+                                   noArtifacts)
+}
+
+/// Like `compileProjectToMsilWithFeatures` but threads a list of
+/// `Lyric.RestoredPackages.SynthesisedArtifact`s for the consumer's
+/// restored dependencies.  Each artifact is the parsed-and-typechecked
+/// view of a Lyric DLL the consumer imports but doesn't ship in this
+/// bundle.  The bridge registers each artifact's `pub` surface
+/// (types, ctors, funcs) into `CodegenCtx`'s cross-package symbol
+/// tables with cross-assembly tokens, so a consumer-side `import
+/// MyApp.Db` resolves into `TypeRef` / `MemberRef` rows pointing at
+/// the restored DLL's `AssemblyRef`.
+///
+/// In this slice (#1229 Phase A.3.3.c.1) the artifacts list is
+/// merely THREADED — `CodegenCtx.restoredArtifacts` carries it and
+/// downstream consumers will register tokens in follow-up slices
+/// (`addRestoredArtifactTokens` for type registration in c.2,
+/// member-ref allocation in c.3).  Callers that pass a non-empty
+/// list and import the restored types still won't link cleanly
+/// until those slices land; callers that pass an empty list (or
+/// don't import the deps) compile exactly as the no-restored
+/// variant does today.
+///
+/// Mirrors the `RestoredPackages` plumbing the F# emitter routes
+/// through `Lyric.Emitter.Emitter.emit` / `emitProject`.
+pub func compileProjectToMsilWithRestored(
+  packages:          in List[ProjectPackagePayload],
+  assemblyName:      in String,
+  outputPath:        in String,
+  stdlibSources:     in List[String],
+  activeFeatures:    in List[String],
+  declaredFeatures:  in List[String],
+  restoredArtifacts: in List[SynthesisedArtifact]
 ): Bool {
   if packages.count == 0 {
     return false
@@ -269,6 +311,14 @@ pub func compileProjectToMsilWithFeatures(
   // counters in `CodegenCtx` thread row numbering across calls.  The cctx's
   // Assembly row is named after the bundle, not any individual package.
   val cctx = newCodegenCtx(assemblyName)
+  // Stash the restored artifacts so subsequent slices' symbol-registration
+  // pass can walk them (#1229 Phase A.3.3.c.1 — wiring only; the registrar
+  // lands in c.2).
+  var rai = 0
+  while rai < restoredArtifacts.count {
+    cctx.restoredArtifacts.add(restoredArtifacts[rai])
+    rai = rai + 1
+  }
 
   val liftedFiles: List[SourceFile] = newList()
   var li = 0

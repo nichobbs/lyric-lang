@@ -15298,3 +15298,57 @@ match the canonical no-body form.
   with cross-assembly tokens.
 - Phase A.4 — end-to-end Lyric test.
 - Phase B — JVM JAR resource kernel.
+
+
+### D-progress-306 — bridge accepts `restoredArtifacts` (#1229 Phase A.3.3.c.1)
+
+**Status:** Shipped (threading only — symbol-registration lands in c.2).
+
+**Problem:** `Msil.Bridge.compileProjectToMsil*` had no parameter for
+restored-dependency artifacts.  Phase A.3.3.b shipped the
+`SynthesisedArtifact` shape; the bridge needs to accept and stash
+the list before the c.2 / c.3 slices can walk it to allocate
+cross-assembly tokens.
+
+**Fix:**
+
+1. **`lyric-compiler/msil/codegen.l`** — `CodegenCtx` gains a new
+   `restoredArtifacts: List[SynthesisedArtifact]` field, populated
+   to an empty list in `newCodegenCtx`.  Added
+   `import Lyric.RestoredPackages` to bring the
+   `SynthesisedArtifact` type into scope.
+2. **`lyric-compiler/msil/bridge.l`** — new entry point
+   `compileProjectToMsilWithRestored(packages, asm, out, stdlibSrc,
+   activeFeatures, declaredFeatures, restoredArtifacts): Bool`.
+   `compileProjectToMsil` and `compileProjectToMsilWithFeatures`
+   are now thin shims that forward with empty restored artifacts.
+   Body copies the artifacts into `cctx.restoredArtifacts` so the
+   c.2 / c.3 symbol-registration passes can walk them.
+
+**Why threading-only:**
+Splitting the threading from the consumption logic lets the larger
+codegen surgery land in isolated PRs with focused tests.  Callers
+that pass empty `restoredArtifacts` compile exactly as before;
+callers that pass populated artifacts won't link cleanly until the
+c.2 / c.3 slices register the symbols and allocate
+`AssemblyRef` / `TypeRef` / `MemberRef` rows.
+
+**Acceptance criteria met:**
+
+- New entry point compiles and runs against existing tests.
+- `compileProjectToMsil` / `compileProjectToMsilWithFeatures`
+  callers see no behavioural change (forwarders).
+- 73 CLI + 842 emitter tests green; axiom + kernel-stub audits
+  clean.
+
+**What's next under #1229:**
+
+- Phase A.3.3.c.2 — `addRestoredArtifactTokens(cctx, art)` walks
+  `art.checkResult.symbols` / `art.contract.decls` and registers
+  TypeRef rows for records / unions / enums into `typeFqnByName`
+  with `AssemblyRef`-backed tokens.  Records and union case
+  ctors get `MemberRef` rows registered into `recordCtorTokens` /
+  `unionCaseCtorByName`.
+- Phase A.3.3.c.3 — `MemberRef` allocation for free functions
+  (signature blob encoding from `ResolvedSignature`).
+- Phase A.4 — end-to-end Lyric test.
