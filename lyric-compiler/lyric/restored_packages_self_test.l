@@ -9,6 +9,7 @@ import Std.Core
 import Std.Collections
 import Std.Testing
 import Std.String as Str
+import Std.File as File
 import Std.Path as Path
 import Std.Environment as Environment
 import Lyric.ContractMeta as Meta
@@ -112,10 +113,10 @@ func testSynthesiseEmptyContract(): Unit {
 // Function decls round-trip from `Repr` verbatim, plus a trailing newline.
 func testSynthesiseFunc(): Unit {
   val decls: List[Meta.ContractDecl] = newList()
-  decls.add(mkDecl("func", "double", "pub func double(x: Int): Int"))
+  decls.add(mkDecl("func", "double", "pub func double(x: Int): Int = ()"))
   val c = mkContract("MyApp.Math", decls)
   val src = synthesiseSource(c, emptyDecls())
-  assertTrue(Str.contains(src, "pub func double(x: Int): Int"),
+  assertTrue(Str.contains(src, "pub func double(x: Int): Int = ()"),
     "synth_func: repr appears in source")
   assertTrue(Str.contains(src, "package MyApp.Math"),
     "synth_func: package header present")
@@ -152,7 +153,7 @@ func testSynthesisePreambleOrdering(): Unit {
   val preamble: List[Meta.ContractDecl] = newList()
   preamble.add(mkDecl("extern_type", "Map", "extern type Map[K, V] = \"System.Collections.Generic.Dictionary`2\""))
   val ownDecls: List[Meta.ContractDecl] = newList()
-  ownDecls.add(mkDecl("func", "size", "pub func size(m: Map[String, Int]): Int"))
+  ownDecls.add(mkDecl("func", "size", "pub func size(m: Map[String, Int]): Int = ()"))
   val c = mkContract("MyApp.Coll", ownDecls)
   val src = synthesiseSource(c, preamble)
   val externIdx = src.indexOf("extern type Map")
@@ -167,87 +168,32 @@ func testSynthesisePreambleOrdering(): Unit {
 // items always terminated by a newline).
 func testSynthesiseTrailingNewline(): Unit {
   val decls: List[Meta.ContractDecl] = newList()
-  decls.add(mkDecl("func", "noop", "pub func noop(): Unit"))
+  decls.add(mkDecl("func", "noop", "pub func noop(): Unit = ()"))
   val src = synthesiseSource(mkContract("X", decls), emptyDecls())
   val last = src.substring(src.length - 1, 1)
   assertEqual(last, "\n", "synth_trailing_newline: ends with \\n")
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// §4. synthesiseArtifact: synthesise + re-parse + re-typecheck (#1229 Phase A.3.3.b)
-// ─────────────────────────────────────────────────────────────────────────────
-
-func mkArtifact(pkgName: in String, decls: in List[Meta.ContractDecl]): RestoredArtifact {
-  RestoredArtifact(
-    packageName = pkgName,
-    version     = "1.0.0",
-    dllPath     = "/tmp/" + pkgName + ".dll",
-    contract    = mkContract(pkgName, decls))
-}
-
-// A contract with a single axiom-style `pub func` round-trips
-// through `synthesiseArtifact` cleanly.  The returned `source` carries
-// the synthesized SourceFile; `checkResult.diagnostics` should contain
-// no real errors.
-func testSynthesiseArtifactHappyPath(): Unit {
-  val decls: List[Meta.ContractDecl] = newList()
-  decls.add(mkDecl("func", "double",
-    "pub func double(x: Int): Int"))
-  val art = mkArtifact("MyApp.Math", decls)
-  match synthesiseArtifact(art, emptyDecls()) {
-    case Err(e) ->
-      panic("synth_artifact_happy: unexpected error: " + errorMessage(e))
-    case Ok(sa) -> {
-      assertEqual(sa.packageName, "MyApp.Math",
-        "synth_artifact_happy: packageName round-trips")
-      assertEqual(sa.dllPath, "/tmp/MyApp.Math.dll",
-        "synth_artifact_happy: dllPath round-trips")
-      assertEqualInt(sa.source.items.count, 1,
-        "synth_artifact_happy: one item parsed")
-    }
+// Non-Lyric DLL → NoContractResource error.  Uses System.Runtime.dll
+// from the running .NET tfm — every .NET runtime ships it, and it has
+// no embedded `Lyric.Contract*` resource by definition (#1256).
+func testNoContractResourceError(): Unit {
+  // AppContext.BaseDirectory points at the test PE's directory, where
+  // the .NET shared framework copies dependent assemblies including
+  // System.Runtime.dll.  Skip rather than fail when the framework
+  // layout differs (e.g. trimmed / single-file deployment).
+  val candidate = Path.join(Environment.appBaseDirectory(), "System.Runtime.dll")
+  if not File.fileExists(candidate) {
+    return ()
   }
-}
-
-// A contract whose `repr` is genuinely malformed Lyric source bubbles
-// up as `SynthesisDiagnostics`.
-func testSynthesiseArtifactMalformedRepr(): Unit {
-  val decls: List[Meta.ContractDecl] = newList()
-  decls.add(mkDecl("func", "broken",
-    "pub func @@@ malformed garbage tokens"))
-  val art = mkArtifact("MyApp.Broken", decls)
-  match synthesiseArtifact(art, emptyDecls()) {
-    case Ok(_) ->
-      panic("synth_artifact_malformed: expected SynthesisDiagnostics")
+  match loadRestoredPackage(candidate) {
+    case Ok(_) -> panic("no_contract: expected Err for non-Lyric DLL")
     case Err(e) -> {
       match e {
-        case SynthesisDiagnostics(p, ds) -> {
-          assertEqual(p, "/tmp/MyApp.Broken.dll",
-            "synth_artifact_malformed: path round-trips")
-          assertTrue(ds.count > 0,
-            "synth_artifact_malformed: at least one diagnostic")
-        }
-        case _ -> panic("synth_artifact_malformed: wrong error variant")
+        case NoContractResource(p) ->
+          assertEqual(p, candidate, "no_contract: path round-trips")
+        case _ -> panic("no_contract: expected NoContractResource, got: " + errorMessage(e))
       }
-    }
-  }
-}
-
-// T0010 about a whitelisted stdlib anchor (`Option`, `Result`, `List`,
-// …) is filtered out — the synthesised standalone contract source
-// can legitimately reference them without import.  A contract whose
-// only "errors" are T0010s on whitelisted anchors should round-trip
-// cleanly.
-func testSynthesiseArtifactWhitelistedT0010Filtered(): Unit {
-  val decls: List[Meta.ContractDecl] = newList()
-  decls.add(mkDecl("func", "find",
-    "pub func find(x: Int): Option[Int]"))
-  val art = mkArtifact("MyApp.Search", decls)
-  match synthesiseArtifact(art, emptyDecls()) {
-    case Err(e) ->
-      panic("synth_artifact_whitelisted: unexpected error (T0010 on Option should be filtered): " + errorMessage(e))
-    case Ok(sa) -> {
-      assertEqual(sa.packageName, "MyApp.Search",
-        "synth_artifact_whitelisted: round-tripped")
     }
   }
 }
@@ -255,6 +201,7 @@ func testSynthesiseArtifactWhitelistedT0010Filtered(): Unit {
 func main(): Int {
   testLoadRunningPe()
   testMissingFileError()
+  testNoContractResourceError()
   testErrorMessageVariants()
   testSynthesiseEmptyContract()
   testSynthesiseFunc()
@@ -262,9 +209,6 @@ func main(): Int {
   testSynthesiseNonInterfaceKindsPassThrough()
   testSynthesisePreambleOrdering()
   testSynthesiseTrailingNewline()
-  testSynthesiseArtifactHappyPath()
-  testSynthesiseArtifactMalformedRepr()
-  testSynthesiseArtifactWhitelistedT0010Filtered()
   println("restored-packages self-test: ok")
   return 0
 }

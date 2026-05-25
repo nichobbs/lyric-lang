@@ -6,6 +6,7 @@
 package Ws.Aspects
 
 import Std.Core
+import Std.Console
 import Auth
 @cfg(feature = "dotnet")
 import Ws.Kernel.Net as WsKernel
@@ -36,6 +37,11 @@ pub aspect WsAuth {
           ret = call.proceed()
         }
         case Err(jwtErr) -> {
+          // `ret` is `Result[Unit, Unit]` — we can't carry the error
+          // code in the return value, but surfacing it via stderr lets
+          // operators correlate failed connections with token issues
+          // (#1156).
+          Console.error("WsAuth: JWT verify failed: " + jwtErr.code)
           ret = Err(())
         }
       }

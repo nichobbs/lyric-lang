@@ -100,7 +100,7 @@ pub aspect RequiresGrpcAuth {
             ret = call.proceed()
           }
           case Err(jwtErr) -> {
-            ret = Err(Grpc.permissionDenied("Token is invalid or has expired"))
+            ret = Err(Grpc.permissionDenied("Token is invalid or has expired: " + jwtErr.code))
           }
         }
       }
@@ -150,7 +150,7 @@ pub aspect RequiresGrpcRole {
       } else {
         match Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience, allowedAlgorithms) {
           case Err(jwtErr) -> {
-            ret = Err(Grpc.permissionDenied("Token is invalid or has expired"))
+            ret = Err(Grpc.permissionDenied("Token is invalid or has expired: " + jwtErr.code))
           }
           case Ok(_) -> {
             val claimOpt = Auth.extractClaim(args.authToken, "role")

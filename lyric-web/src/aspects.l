@@ -100,7 +100,7 @@ pub aspect RequiresAuth {
             ret = call.proceed()
           }
           case Err(jwtErr) -> {
-            ret = Err(WebPkg.forbidden("Token is invalid or has expired"))
+            ret = Err(WebPkg.forbidden("Token is invalid or has expired: " + jwtErr.code))
           }
         }
       }
@@ -151,7 +151,7 @@ pub aspect RequiresRole {
       } else {
         match Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience, allowedAlgorithms) {
           case Err(jwtErr) -> {
-            ret = Err(WebPkg.forbidden("Token is invalid or has expired"))
+            ret = Err(WebPkg.forbidden("Token is invalid or has expired: " + jwtErr.code))
           }
           case Ok(_) -> {
             val claimOpt = Auth.extractClaim(args.authToken, "role")

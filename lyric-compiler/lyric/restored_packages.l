@@ -107,6 +107,13 @@ pub func errorMessage(e: in RestoredLoadError): String {
 /// bundles surface one artifact per package.
 @stable(since="0.1")
 pub func loadRestoredPackage(dllPath: in String): Result[List[RestoredArtifact], RestoredLoadError] {
+  // The pre-flight `fileExists` check carries a narrow TOCTOU window —
+  // the file could be deleted between the check and the read — but
+  // `readAllContractsFromFile` throws on a vanished file, which would
+  // surface here as an unhandled exception.  Living with the race for
+  // now because Lyric's `catch Exception` shape changes the try
+  // expression's value in a way that requires inlining the rest of
+  // the function into the success arm; tracked in #1255.
   if not File.fileExists(dllPath) {
     return Err(error = DllMissing(path = dllPath))
   }
