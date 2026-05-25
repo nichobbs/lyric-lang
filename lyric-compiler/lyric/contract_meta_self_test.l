@@ -216,6 +216,55 @@ func testPureDefaultsFalse(): Unit {
   assertTrue(not c.decls[0].isPure, "pure_default: false when absent")
 }
 
+// Non-object entries inside the `decls` array are silently skipped
+// (matches F# — the parser only yields objects).  Pins the defensive
+// skip path so future schema additions don't crash the parser.
+func testNonObjectDeclEntrySkipped(): Unit {
+  val json =
+    "{\"decls\":[" +
+    "  {\"kind\":\"func\",\"name\":\"keep\"}," +
+    "  \"a-string-not-an-object\"," +
+    "  42," +
+    "  null," +
+    "  {\"kind\":\"func\",\"name\":\"alsoKeep\"}" +
+    "]}"
+  val c = unwrapOrFail(parseFromJson(json), "non_object_decl_entry_skipped")
+  assertEqualInt(c.decls.count, 2, "non_object_decl_entry_skipped: only object entries kept")
+  assertEqual(c.decls[0].name, "keep", "non_object_decl_entry_skipped: first kept")
+  assertEqual(c.decls[1].name, "alsoKeep", "non_object_decl_entry_skipped: second kept")
+}
+
+// `decls` field present but not an Array → silently treated as absent
+// (returns a Contract with empty decls).
+func testNonArrayDeclsFieldSkipped(): Unit {
+  val json = "{\"packageName\":\"P\",\"decls\":\"not-an-array\"}"
+  val c = unwrapOrFail(parseFromJson(json), "non_array_decls_field_skipped")
+  assertEqual(c.packageName, "P", "non_array_decls_field_skipped: other fields parsed")
+  assertEqualInt(c.decls.count, 0, "non_array_decls_field_skipped: decls empty")
+}
+
+// Non-object entries inside `params` array are silently skipped.  Same
+// defensive shape as the decls-array skip.
+func testNonObjectParamEntrySkipped(): Unit {
+  val json =
+    "{\"decls\":[" +
+    "  {" +
+    "    \"name\":\"f\"," +
+    "    \"params\":[" +
+    "      {\"name\":\"a\",\"type\":\"Int\"}," +
+    "      \"not-an-object\"," +
+    "      null," +
+    "      {\"name\":\"b\",\"type\":\"String\"}" +
+    "    ]" +
+    "  }" +
+    "]}"
+  val c = unwrapOrFail(parseFromJson(json), "non_object_param_entry_skipped")
+  assertEqualInt(c.decls[0].params.count, 2,
+    "non_object_param_entry_skipped: only objects kept")
+  assertEqual(c.decls[0].params[0].name, "a", "non_object_param_entry_skipped: p0")
+  assertEqual(c.decls[0].params[1].name, "b", "non_object_param_entry_skipped: p1")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Driver
 // ─────────────────────────────────────────────────────────────────────────────
@@ -232,6 +281,9 @@ func main(): Int {
   testStability()
   testMultipleDeclsOrder()
   testPureDefaultsFalse()
+  testNonObjectDeclEntrySkipped()
+  testNonArrayDeclsFieldSkipped()
+  testNonObjectParamEntrySkipped()
   println("contract-meta self-test: ok")
   return 0
 }

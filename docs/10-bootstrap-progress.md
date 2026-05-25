@@ -14829,3 +14829,96 @@ in-process path before the F# subprocess fallback can be retired.
   package (`*_self_test.l` + `SelfHosted*Tests.fs`).
 - Restored-dependency DLLs are the only remaining subprocess case
   (tracked in #1229).
+
+
+### D-progress-300 — `Lyric.ContractMeta.parseFromJson`: in-process Contract reader (#1229 Phase A.1, PR #1235)
+
+**Status:** Shipped.
+
+**Problem:** The self-hosted MSIL bridge's restored-dependency loader
+(in progress under #1229) needs to extract structured contract surfaces
+from compiled Lyric DLLs.  The F# `bootstrap/src/Lyric.Emitter/ContractMeta.fs`
+already provides `parseFromJson(json) -> Contract option`; the Lyric
+side previously shelled out to `lyric --internal-contract-meta read` /
+`diff` for both reading and diffing, which paid a process-spawn on
+every consumer and depended on the F# bootstrap CLI's continued
+presence.  An in-process Lyric parser was needed before the kernel
+work (Phase A.2 — `System.Reflection.Metadata` resource reader) and
+bridge symbol-table threading (Phase A.3) could land.
+
+**Fix (`lyric-compiler/lyric/contract_meta.l`):**
+
+1. Three new `pub record`s describing the JSON schema:
+   - `ContractParam { name: String, ty: String }`.
+   - `ContractDecl` with `kind`, `name`, `repr`, `isPure`, `stability`,
+     `requiresClauses`, `ensuresClauses`, `body: Option[String]`,
+     `params: List[ContractParam]`.  `requires` / `ensures` field names
+     are reserved Lyric keywords, hence the `…Clauses` suffix.
+   - `Contract { packageName, version, level, formatVersion, decls }`.
+2. `parseFromJson(json: in String): Option[Contract]` walks the JSON
+   tree with `Std.Json`.  Field defaults match
+   `bootstrap/src/Lyric.Emitter/ContractMeta.fs::parseFromJson` byte-for-
+   byte so format-1 and format-2 payloads round-trip identically across
+   the F# and self-hosted implementations:
+     * `packageName` → "".
+     * `version` → "0.0.0".
+     * `level` → "runtime_checked".
+     * `formatVersion` → 1 (format-1 fallback).
+     * `pure` absent → false.
+     * `requires`/`ensures` non-string elements → "" (matching F#
+       `safeStr (inner.GetString()) ""`).
+3. Malformed JSON returns `None`.  `System.Text.Json.JsonDocument.Parse`
+   throws on syntactically invalid input; we wrap with
+   `try { … } catch Bug as _ { None }` (same pattern as
+   `lyric-stdlib/std/regex.l::tryCompile`).  A `parseAndWalk` helper
+   keeps the `defer { disposeJson(doc) }` at function-body top level —
+   the bootstrap emitter does not yet hoist `defer` from inside `try`
+   blocks ("bare SDefer reached emitStatement" panic in
+   `Codegen.fs`).  Without the helper, `parseFromJson` would itself
+   crash before catching anything.
+4. Non-object / non-array silently-skipped paths are explicit: a
+   non-object `decls` array entry is skipped (matches F# behaviour);
+   a non-array `decls` field is treated as absent; a non-object
+   `params` entry is skipped.  These defensive checks let the parser
+   round-trip a future schema version that introduces additional decl
+   kinds or param shapes without crashing.
+
+**Tests (`lyric-compiler/lyric/contract_meta_self_test.l`):**
+
+- `testMinimal` — basic round-trip.
+- `testEmptyObjectDefaults` — every field defaults match F#.
+- `testEmptyStringReturnsNone` / `testNonObjectRootReturnsNone` /
+  `testMalformedJsonReturnsNone` — None paths (empty/whitespace,
+  array root, syntactic garbage).
+- `testPureAndContracts` — `pure: true` + `requires`/`ensures` array
+  round-trip.
+- `testBodyOptional` — `body` field as `Option[String]`.
+- `testParamsArray` — `(name, type)` tuples preserve order.
+- `testStability` — `"stable:X.Y"` / `"experimental"` / "" variants.
+- `testMultipleDeclsOrder` — declaration order preserved.
+- `testPureDefaultsFalse` — `pure` absent → false.
+- `testNonObjectDeclEntrySkipped` / `testNonArrayDeclsFieldSkipped` /
+  `testNonObjectParamEntrySkipped` — defensive skip paths exercised.
+
+Discovered + run by
+`bootstrap/tests/Lyric.Emitter.Tests/SelfHostedContractMetaTests.fs`,
+wired into `Program.fs` and `Lyric.Emitter.Tests.fsproj`.  Shape
+matches every other `SelfHosted*Tests.fs` (test logic in Lyric, F#
+shim only carries discovery + process plumbing).
+
+**Acceptance criteria met:**
+
+- `Lyric.ContractMeta.parseFromJson` is byte-stable against the F#
+  parser for every documented input shape.
+- Malformed JSON returns `None` (not a panic).
+- No new externs added — clean against the kernel-boundary ratchet.
+- 840 emitter + 73 CLI tests green.
+
+**What's next under #1229:**
+
+- Phase A.2 — `Std.ReflectionMetadata` kernel externs wrapping
+  `System.Reflection.Metadata.PEReader` for .NET resource extraction.
+- Phase A.3 — bridge symbol-table threading.
+- Phase A.4 — end-to-end Lyric test compiling + consuming a restored
+  DLL via `Lyric.Emitter.emitProject`.
+- Phase B — JVM JAR resource kernel (`jar_host.l`).
