@@ -662,9 +662,19 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
   - `emitter.l` — `Lyric.Emitter` self-hosted emitter shim (D-progress-260).
     Shells out to `--internal-build` to compile Lyric source from within
     the self-hosted CLI.
-  - `contract_meta.l` — `Lyric.ContractMeta` package (D-progress-260).
-    Reads embedded `Lyric.Contract` metadata from compiled DLLs and diffs
+  - `contract_meta.l` — `Lyric.ContractMeta` package (D-progress-260,
+    D-progress-300 in-process JSON parser, D-progress-302 in-process
+    resource readers).  Reads embedded `Lyric.Contract` metadata from
+    compiled DLLs in-process via `Std.AssemblyResources` (no subprocess
+    hop), parses to structured `Contract` / `ContractDecl`, and diffs
     public API surfaces for `public-api-diff`.
+  - `restored_packages.l` — `Lyric.RestoredPackages` package
+    (#1229 Phase A.3.2, D-progress-303).  Composes the contract-meta
+    in-process readers into a single
+    `loadRestoredPackage(dllPath): Result[List[RestoredArtifact], RestoredLoadError]`
+    entry point for the self-hosted MSIL bridge's restored-dependency
+    resolution path.  Mirrors
+    `bootstrap/src/Lyric.Emitter/RestoredPackages.fs::loadRestoredPackage`.
   - `verifier/` — `Lyric.Verifier` package (M5.3, D-progress-234).  Self-hosted
     port of the Phase 4 proof system: `vcir.l` (VC IR types), `vcgen.l`
     (WP/SP calculus, loop invariant goals, Hoare call rule), `smt.l`
@@ -682,6 +692,7 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     `typechecker_self_test.l`, `modechecker_self_test.l`,
     `contract_elaborator_self_test.l`, `test_synth_self_test.l`,
     `manifest_self_test.l`, `fmt_self_test.l`, `cfg_self_test.l`,
+    `contract_meta_self_test.l`, `restored_packages_self_test.l`,
     `verifier_self_test.l` —
     self-test consumers run by the F# emitter test suite.
   `Lyric` is registered as a built-in head in `Emitter.fs:isBuiltinHead`,

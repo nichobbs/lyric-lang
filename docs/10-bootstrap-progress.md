@@ -15080,3 +15080,69 @@ bridge restored-dep loader doesn't need diff, only read.
   resource in a bundled DLL, surfacing each as a `ContractEntry`.
 - Self-test exercises both readers against the running PE.
 - 73 CLI + 841 emitter tests green; axiom + kernel-stub audits clean.
+
+
+### D-progress-303 — `Lyric.RestoredPackages`: restored-DLL artifact loader (#1229 Phase A.3.2)
+
+**Status:** Shipped.
+
+**Problem:** The self-hosted MSIL bridge needs a structured view of a
+restored-dependency DLL's `pub` surface to resolve cross-package
+references against compiled deps.  Phase A.3.1 shipped the
+`Lyric.ContractMeta` in-process readers; this slice composes them
+into a single `loadRestoredPackage(dllPath) → Result[List[RestoredArtifact], RestoredLoadError]`
+entry point that the bridge (Phase A.3.3) will consume.  Mirrors
+`bootstrap/src/Lyric.Emitter/RestoredPackages.fs::loadRestoredPackage`.
+
+**Fix (`lyric-compiler/lyric/restored_packages.l`, new package
+`Lyric.RestoredPackages`):**
+
+1. `pub record RestoredArtifact { packageName, version, dllPath,
+   contract }` — one artifact per package surfaced by the DLL.
+   Single-package DLLs produce a one-element list (`packageName`
+   recovered from the contract JSON's own field); project-as-DLL
+   bundles produce one element per `Lyric.Contract.<Pkg>` resource.
+2. `pub union RestoredLoadError` — three variants surfacing the
+   three failure modes the bridge needs to distinguish:
+   `DllMissing(path)`, `NoContractResource(path)`,
+   `MalformedContract(path, pkgKey)`.
+3. `pub func errorMessage(e): String` — renders each variant as a
+   short single-line diagnostic that includes the path / pkgKey.
+4. `pub func loadRestoredPackage(dllPath): Result[List[RestoredArtifact], RestoredLoadError]`
+   — orchestrates the three calls (`fileExists`,
+   `Meta.readAllContractsFromFile`, `Meta.parseFromJson`) and packs
+   the result.
+
+**Tests (`lyric-compiler/lyric/restored_packages_self_test.l`):**
+
+Three-case self-test, wired into Expecto via
+`bootstrap/tests/Lyric.Emitter.Tests/SelfHostedRestoredPackagesTests.fs`:
+
+- `testLoadRunningPe` — loads the running test PE itself, asserts
+  one or more artifacts surface and the `packageName` / `dllPath` /
+  `contract.packageName` fields all line up.
+- `testMissingFileError` — a non-existent path returns
+  `Err(DllMissing(path))` with the path round-tripped.
+- `testErrorMessageVariants` — each variant's `errorMessage` output
+  contains the relevant identifier (path / pkgKey).
+
+**Acceptance criteria met:**
+
+- The loader composes the Phase A.1 (`parseFromJson`), A.2
+  (`Std.AssemblyResources`), and A.3.1 (`readAllContractsFromFile`)
+  building blocks into one entry point matching the F# emitter's
+  loader shape.
+- 73 CLI + 842 emitter tests green (was 841 + new self-test); axiom
+  + kernel-stub audits clean.
+
+**What's next under #1229:**
+
+- Phase A.3.3 — `Msil.Bridge.compileProjectToMsil*` accepts
+  `restoredArtifacts: List[RestoredArtifact]`; `addPackageTokens`
+  registers the restored types / funcs into the existing
+  `typeFqnByName` / `recordCtorTokens` / `unionCaseCtorByName`
+  tables with cross-assembly tokens (TypeRef + MemberRef, distinct
+  from the in-bundle TypeDef + MethodDef rows).
+- Phase A.4 — end-to-end Lyric test compiling + consuming a
+  restored DLL via `Lyric.Emitter.emitProject`.
+- Phase B — JVM JAR resource kernel.
