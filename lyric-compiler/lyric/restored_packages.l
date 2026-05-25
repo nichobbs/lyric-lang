@@ -133,3 +133,64 @@ pub func loadRestoredPackage(dllPath: in String): Result[List[RestoredArtifact],
 
   Ok(value = artifacts)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §3. Source synthesis (#1229 Phase A.3.3.a)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Walk a parsed `Contract` and re-emit the source-level shape of its
+// public surface as a single Lyric source string.  The result feeds
+// the bridge's parser + type checker (Phase A.3.3.b will wire that
+// together) so a restored package's symbols become visible to
+// consumers without re-parsing the original source — every
+// declaration's `Repr` field already IS the source-level form
+// (`pub func add(a: Int, b: Int): Int`, `pub record Point { x: Int }`,
+// etc.) so the synthesis is mostly concatenation.
+//
+// Mirrors `bootstrap/src/Lyric.Emitter/RestoredPackages.fs::synthesiseSource`.
+// `preamble` carries extern-type / opaque-type / interface decls
+// from sibling packages whose types appear in this package's
+// signatures — without them, the standalone re-typecheck of the
+// synthesised source would fail with `T0010 unknown type name 'X'`.
+// The bundled-DLL caller in `loadRestoredPackage` (Phase A.3.3.b)
+// will be responsible for assembling the preamble from every
+// contract in the bundle; for the single-package form (and for this
+// initial port) the preamble can be the empty list.
+
+// Render one decl's source-level form.  Interfaces declare in source
+// as `pub interface I {}` — the contract's `Repr` is just the head
+// (`pub interface I`) without the body, so append an empty block.
+// Every other decl kind already includes its full source-level shape.
+func renderDecl(d: in Meta.ContractDecl): String {
+  if d.kind == "interface" {
+    d.repr + " {}\n"
+  } else {
+    d.repr + "\n"
+  }
+}
+
+/// Synthesise a Lyric source file from a `Contract` + optional
+/// preamble.  The result is parseable by the standard
+/// `Lyric.Parser.parse` and type-checkable in isolation.  Function
+/// bodies in the contract are stubs (`= ()` axiom-style); every
+/// public type and signature is preserved verbatim from the contract's
+/// `Repr` strings.
+@stable(since="0.1")
+pub func synthesiseSource(contract: in Meta.Contract,
+                          preamble: in List[Meta.ContractDecl]): String {
+  var sb = "package " + contract.packageName + "\n\n"
+  // Preamble decls first — typically extern types / opaques from
+  // sibling packages whose names appear in this package's signatures.
+  var pi = 0
+  while pi < preamble.count {
+    sb = sb + renderDecl(preamble[pi])
+    pi = pi + 1
+  }
+  // Then the contract's own decls.
+  var di = 0
+  while di < contract.decls.count {
+    sb = sb + renderDecl(contract.decls[di])
+    di = di + 1
+  }
+  sb
+}
