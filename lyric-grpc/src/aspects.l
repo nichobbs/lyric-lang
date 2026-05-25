@@ -45,6 +45,7 @@
 package Grpc.Aspects
 
 import Std.Core
+import Std.Console
 import Grpc.Types
 import Grpc
 import Auth
@@ -100,7 +101,11 @@ pub aspect RequiresGrpcAuth {
             ret = call.proceed()
           }
           case Err(jwtErr) -> {
-            ret = Err(Grpc.permissionDenied("Token is invalid or has expired: " + jwtErr.code))
+            // Log the precise reason to stderr; return a generic
+            // PermissionDenied to the client so we don't leak which
+            // failure mode triggered (#1266).
+            Console.error("RequiresGrpcAuth: JWT verify failed: " + jwtErr.code)
+            ret = Err(Grpc.permissionDenied("Token is invalid or has expired"))
           }
         }
       }
@@ -150,7 +155,8 @@ pub aspect RequiresGrpcRole {
       } else {
         match Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience, allowedAlgorithms) {
           case Err(jwtErr) -> {
-            ret = Err(Grpc.permissionDenied("Token is invalid or has expired: " + jwtErr.code))
+            Console.error("RequiresGrpcRole: JWT verify failed: " + jwtErr.code)
+            ret = Err(Grpc.permissionDenied("Token is invalid or has expired"))
           }
           case Ok(_) -> {
             val claimOpt = Auth.extractClaim(args.authToken, "role")
