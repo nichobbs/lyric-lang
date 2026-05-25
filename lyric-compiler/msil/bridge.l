@@ -218,28 +218,16 @@ pub func compileProjectToMsilWithFeatures(
                                    noArtifacts)
 }
 
-/// Like `compileProjectToMsilWithFeatures` but threads a list of
+/// Like `compileProjectToMsilWithFeatures` but accepts a list of
 /// `Lyric.RestoredPackages.SynthesisedArtifact`s for the consumer's
-/// restored dependencies.  Each artifact is the parsed-and-typechecked
-/// view of a Lyric DLL the consumer imports but doesn't ship in this
-/// bundle.  The bridge registers each artifact's `pub` surface
-/// (types, ctors, funcs) into `CodegenCtx`'s cross-package symbol
-/// tables with cross-assembly tokens, so a consumer-side `import
-/// MyApp.Db` resolves into `TypeRef` / `MemberRef` rows pointing at
-/// the restored DLL's `AssemblyRef`.
-///
-/// In this slice (#1229 Phase A.3.3.c.1) the artifacts list is
-/// merely THREADED — `CodegenCtx.restoredArtifacts` carries it and
-/// downstream consumers will register tokens in follow-up slices
-/// (`addRestoredArtifactTokens` for type registration in c.2,
-/// member-ref allocation in c.3).  Callers that pass a non-empty
-/// list and import the restored types still won't link cleanly
-/// until those slices land; callers that pass an empty list (or
-/// don't import the deps) compile exactly as the no-restored
-/// variant does today.
-///
-/// Mirrors the `RestoredPackages` plumbing the F# emitter routes
-/// through `Lyric.Emitter.Emitter.emit` / `emitProject`.
+/// restored dependencies.  The list is stashed on `CodegenCtx`;
+/// symbol registration that allocates cross-assembly tokens for
+/// the restored surfaces is not yet wired in.  Behaviour today:
+/// callers that pass an empty list (or don't import any restored
+/// types) compile exactly as `compileProjectToMsilWithFeatures`;
+/// callers that pass a non-empty list and rely on consumer-side
+/// imports of the restored types will fail to link until the
+/// symbol-registration pass lands.
 pub func compileProjectToMsilWithRestored(
   packages:          in List[ProjectPackagePayload],
   assemblyName:      in String,
@@ -310,15 +298,7 @@ pub func compileProjectToMsilWithRestored(
   // ONE shared cctx — the persistent `nextMethodDefRow` / `nextFieldDefRow`
   // counters in `CodegenCtx` thread row numbering across calls.  The cctx's
   // Assembly row is named after the bundle, not any individual package.
-  val cctx = newCodegenCtx(assemblyName)
-  // Stash the restored artifacts so subsequent slices' symbol-registration
-  // pass can walk them (#1229 Phase A.3.3.c.1 — wiring only; the registrar
-  // lands in c.2).
-  var rai = 0
-  while rai < restoredArtifacts.count {
-    cctx.restoredArtifacts.add(restoredArtifacts[rai])
-    rai = rai + 1
-  }
+  val cctx = newCodegenCtxWithRestored(assemblyName, restoredArtifacts)
 
   val liftedFiles: List[SourceFile] = newList()
   var li = 0

@@ -155,17 +155,15 @@ pub record CodegenCtx {
   // correct cross-package FQN instead of `<current-pkg>.<seg>`.  First-
   // processed wins on collisions, mirroring `unionCaseCtorByName`.
   typeFqnByName:       Map[String, String]
-  // Restored-dependency package list (#1229 Phase A.3.3.c).  Each
-  // entry is a `Lyric.RestoredPackages.SynthesisedArtifact`: the
-  // parsed-and-typechecked view of one Lyric DLL the consumer
-  // imports but doesn't ship in this bundle.  Bridge populates this
-  // via `compileProjectToMsilWithRestored`; the symbol-registration
-  // pass walks it to allocate `AssemblyRef` / `TypeRef` / `MemberRef`
-  // rows and register the restored types / funcs into
-  // `typeFqnByName` / `recordCtorTokens` / `unionCaseCtorByName`
-  // above (added in c.2 / c.3).  Length 0 for single-package
-  // compile and for project compiles without restored deps;
-  // behaviour is unchanged in those cases.
+  // Restored-dependency package list.  Each entry is a
+  // `Lyric.RestoredPackages.SynthesisedArtifact`: the parsed-and-
+  // typechecked view of one Lyric DLL the consumer imports but
+  // doesn't ship in this bundle.  Bridge populates this via
+  // `compileProjectToMsilWithRestored`; downstream symbol-
+  // registration walks the list to allocate cross-assembly tokens
+  // and seed the cross-package tables above.  Length 0 for single-
+  // package compile and for project compiles without restored
+  // deps; behaviour is unchanged in those cases.
   restoredArtifacts:   List[SynthesisedArtifact]
 }
 
@@ -480,6 +478,21 @@ pub func newCodegenCtx(packageName: in String): CodegenCtx {
     unionCaseCtorByName  = newMap(),
     typeFqnByName        = newMap(),
     restoredArtifacts    = newList())
+}
+
+// Build a fresh CodegenCtx pre-populated with `restored` artifacts.
+// Thin convenience over `newCodegenCtx` for callers that have a
+// non-empty list at construction time (avoids a copy loop at the
+// call site).
+pub func newCodegenCtxWithRestored(packageName: in String,
+                                   restored:    in List[SynthesisedArtifact]): CodegenCtx {
+  val cctx = newCodegenCtx(packageName)
+  var i = 0
+  while i < restored.count {
+    cctx.restoredArtifacts.add(restored[i])
+    i = i + 1
+  }
+  cctx
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
