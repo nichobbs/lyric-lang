@@ -5518,6 +5518,72 @@ func registerRestoredTypeDecl(cctx: in CodegenCtx,
   }
 }
 
+// Look up the TypeRef row previously allocated by registerRestoredTypeDecl.
+// Returns 0 when no row exists (caller skips MemberRef allocation).
+func lookupRestoredTypeRefRow(cctx: in CodegenCtx, packageName: in String,
+                              typeName: in String): Int {
+  val typeFqn    = packageName + "." + typeName
+  val typeRefKey = packageName + "/" + typeFqn
+  if not cctx.ffiTypeRefs.containsKey(typeRefKey) { return 0 }
+  match mapGet(cctx.ffiTypeRefs, typeRefKey) {
+    case Some(row) -> row
+    case None      -> 0
+  }
+}
+
+// Register a record's ctor as a cross-assembly MemberRef in
+// `recordCtorTokens`.  The ctor's signature mirrors the in-bundle
+// `lowerMRecord` convention: HASTHIS, returns void, one param per
+// FIELD (class fields degrade to OBJECT in the sig blob, matching
+// `bufMsilType`'s known limitation — the foreign DLL's ctor uses
+// the same encoding so the runtime resolver matches).
+func registerRestoredRecordCtor(cctx: in CodegenCtx,
+                                packageName: in String,
+                                rec: in RecordDecl): Unit {
+  val className = packageName + "." + rec.name
+  if cctx.recordCtorTokens.containsKey(className) { return }
+
+  val typeRefRow = lookupRestoredTypeRefRow(cctx, packageName, rec.name)
+  if typeRefRow == 0 { return }
+
+  val ctorParams: List[MsilType] = newList()
+  var fi = 0
+  while fi < rec.members.count {
+    match rec.members[fi] {
+      case RMField(f) -> {
+        ctorParams.add(typeExprToMsilCtx(cctx, f.ty, packageName))
+      }
+      case _ -> ()
+    }
+    fi = fi + 1
+  }
+
+  val ctorSig    = buildInstanceMethodSig(ctorParams, MVoid)
+  val sigKey     = "restored_ctor_" + className
+  val memberRow  = ctxAddMemberRef(cctx.lctx, typeRefRow, ".ctor",
+                                    sigKey, ctorSig)
+  cctx.recordCtorTokens.add(className, 0x0A000000 + memberRow)
+}
+
+// Walk every IRecord item in the artifact's parsed source and seed
+// its ctor MemberRef token.  Skips records whose TypeRef row wasn't
+// allocated (e.g. private records that didn't surface as type-shaped
+// decls in the contract).
+func registerRestoredRecordCtors(cctx: in CodegenCtx,
+                                 art: in SynthesisedArtifact): Unit {
+  val items = art.source.items
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IRecord(decl) -> {
+        registerRestoredRecordCtor(cctx, art.packageName, decl)
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
 /// Walk every `SynthesisedArtifact` in `cctx.restoredArtifacts` and
 /// register its type-shaped public decls into the cross-package
 /// symbol tables.  Call once after `newCodegenCtx`, before the
@@ -5527,6 +5593,7 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
   while ai < cctx.restoredArtifacts.count {
     val art = cctx.restoredArtifacts[ai]
     val asmRefRow = ensureAssemblyRefForArtifact(cctx, art.packageName)
+    // Pass 1: types (TypeRef rows + name lookups).
     var di = 0
     while di < art.contract.decls.count {
       val decl = art.contract.decls[di]
@@ -5537,6 +5604,12 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
       }
       di = di + 1
     }
+    // Pass 2: record ctor MemberRef rows (depends on pass 1 having
+    // allocated the TypeRefs).  Walks the parsed source instead of
+    // the contract decls so we get structured field types for
+    // signature encoding.  Free funcs and union case ctors land in
+    // a follow-up slice.
+    registerRestoredRecordCtors(cctx, art)
     ai = ai + 1
   }
 }
