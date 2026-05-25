@@ -303,7 +303,8 @@ func runEmitProject(label: in String, projectPkgs: in List[Emitter.ProjectPackag
     outputPath       = dllPath,
     target           = Emitter.Dotnet,
     restoredDllPaths = newList(),
-    activeFeatures   = newList())
+    activeFeatures   = newList(),
+    declaredFeatures = newList())
   val result = Emitter.emitProject(req)
   match result.outputPath {
     case None -> {
@@ -383,7 +384,8 @@ func testEmitProjectInProcessCrossPackageCall(): Unit {
 func runEmitProjectWithFeatures(label: in String,
                                 projectPkgs: in List[Emitter.ProjectPackage],
                                 assemblyName: in String,
-                                features: in List[String]): Capture.CaptureResult {
+                                features: in List[String],
+                                declared: in List[String]): Capture.CaptureResult {
   val dir     = freshTempDir(label)
   val dllPath = Path.join(dir, assemblyName + ".dll")
   val req = Emitter.EmitProjectRequest(
@@ -392,7 +394,8 @@ func runEmitProjectWithFeatures(label: in String,
     outputPath       = dllPath,
     target           = Emitter.Dotnet,
     restoredDllPaths = newList(),
-    activeFeatures   = features)
+    activeFeatures   = features,
+    declaredFeatures = declared)
   val result = Emitter.emitProject(req)
   match result.outputPath {
     case None -> {
@@ -426,7 +429,9 @@ func testCfgErasureFeatureInactive(): Unit {
     "  println(greetingFallback())\n" +
     "}\n"))
   val empty: List[String] = newList()
-  val result = runEmitProjectWithFeatures("cfg-inactive", pkgs, "CfgEraseInactive", empty)
+  val declared: List[String] = newList()
+  declared.add("experimental")
+  val result = runEmitProjectWithFeatures("cfg-inactive", pkgs, "CfgEraseInactive", empty, declared)
   assertEqualInt(result.exitCode, 0,
     "cfg_erasure_feature_inactive: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "stable",
@@ -447,11 +452,130 @@ func testCfgErasureFeatureActive(): Unit {
     "}\n"))
   val active: List[String] = newList()
   active.add("experimental")
-  val result = runEmitProjectWithFeatures("cfg-active", pkgs, "CfgEraseActive", active)
+  val declared: List[String] = newList()
+  declared.add("experimental")
+  val result = runEmitProjectWithFeatures("cfg-active", pkgs, "CfgEraseActive", active, declared)
   assertEqualInt(result.exitCode, 0,
     "cfg_erasure_feature_active: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "experimental",
     "cfg_erasure_feature_active: stdout matches expected")
+}
+
+// Multiple @cfg on the same item AND together: item is kept only when
+// ALL feature predicates hold.  Here `gated` requires both `alpha` and
+// `beta`; activating only `alpha` erases it.
+func testCfgErasureAndSemantics(): Unit {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkProjectPkg("CfgAnd.App",
+    "package CfgAnd.App\n" +
+    "\n" +
+    "@cfg(feature = \"alpha\")\n" +
+    "@cfg(feature = \"beta\")\n" +
+    "pub func gated(): String { \"both\" }\n" +
+    "\n" +
+    "pub func ungated(): String { \"one\" }\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(ungated())\n" +
+    "}\n"))
+  val active: List[String] = newList()
+  active.add("alpha")
+  val declared: List[String] = newList()
+  declared.add("alpha")
+  declared.add("beta")
+  val result = runEmitProjectWithFeatures("cfg-and", pkgs, "CfgAnd", active, declared)
+  assertEqualInt(result.exitCode, 0,
+    "cfg_erasure_and_semantics: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "one",
+    "cfg_erasure_and_semantics: stdout matches expected")
+}
+
+// Build a `compileProjectToMsil`-style project that should produce
+// diagnostics rather than a runnable output, and return the bridge's
+// pass/fail signal plus the captured diagnostics surface so tests can
+// assert on F0012/F0013 firing.  Uses `compileProjectToMsilWithFeatures`
+// directly (not through `emitProject`) because we want the raw bool
+// return.  When the bridge returns false, the diagnostic was an error;
+// true means warnings only (the build still succeeded).
+func compileAndGetSucceeded(label: in String,
+                            packages: in List[ProjectPackagePayload],
+                            assemblyName: in String,
+                            active: in List[String],
+                            declared: in List[String]): Bool {
+  val dir     = freshTempDir(label)
+  val dllPath = Path.join(dir, assemblyName + ".dll")
+  val stdlibSources: List[String] = newList()
+  val ok = compileProjectToMsilWithFeatures(packages, assemblyName, dllPath,
+                                            stdlibSources, active, declared)
+  cleanup(dir)
+  ok
+}
+
+// F0012 fires for a malformed @cfg (e.g. literal argument instead of
+// `feature = "X"`).  This is an ERROR diagnostic, so the bridge
+// returns false.
+func testCfgErasureF0012Malformed(): Unit {
+  val pkgs: List[ProjectPackagePayload] = newList()
+  pkgs.add(mkPkg("CfgMalformed.App",
+    "package CfgMalformed.App\n" +
+    "\n" +
+    "@cfg(\"experimental\")\n" +
+    "pub func gated(): String { \"x\" }\n" +
+    "\n" +
+    "func main(): Unit { println(0) }\n"))
+  val empty: List[String] = newList()
+  val ok = compileAndGetSucceeded("cfg-f0012", pkgs, "CfgF0012", empty, empty)
+  assertTrue(not ok, "cfg_erasure_f0012_malformed: bridge should reject malformed @cfg")
+}
+
+// F0013 fires when a feature reference is absent from the manifest's
+// declared set (typo guard).  F0013 is a WARNING — the build still
+// succeeds (bridge returns true); the diagnostic surfaces the typo to
+// the user without erasing or breaking compilation.
+//
+// Erasure still happens (the feature isn't in `active`), so we use a
+// fallback function to keep `main` runnable; we assert the build
+// succeeds and produces output.
+func testCfgErasureF0013Typo(): Unit {
+  val pkgs: List[ProjectPackagePayload] = newList()
+  pkgs.add(mkPkg("CfgTypo.App",
+    "package CfgTypo.App\n" +
+    "\n" +
+    "@cfg(feature = \"experimntal\")\n" +
+    "pub func gated(): String { \"x\" }\n" +
+    "\n" +
+    "pub func fallback(): String { \"fallback\" }\n" +
+    "\n" +
+    "func main(): Unit { println(fallback()) }\n"))
+  val empty: List[String] = newList()
+  val declared: List[String] = newList()
+  declared.add("experimental")
+  val ok = compileAndGetSucceeded("cfg-f0013", pkgs, "CfgF0013", empty, declared)
+  assertTrue(ok, "cfg_erasure_f0013_typo: warning should not fail the build")
+}
+
+// File-level `@cfg` (annotation above the `package` declaration)
+// erases every item in the file when the feature is inactive.  Pkg A
+// is fully erased; Pkg B's `main` runs unaffected.
+func testCfgErasureFileLevelErasesEntireFile(): Unit {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkProjectPkg("CfgFile.Lib",
+    "@cfg(feature = \"unused\")\n" +
+    "package CfgFile.Lib\n" +
+    "\n" +
+    "pub func neverCompiled(): Int { 0 }\n"))
+  pkgs.add(mkProjectPkg("CfgFile.App",
+    "package CfgFile.App\n" +
+    "\n" +
+    "func main(): Unit { println(\"survived\") }\n"))
+  val empty: List[String] = newList()
+  val declared: List[String] = newList()
+  declared.add("unused")
+  val result = runEmitProjectWithFeatures("cfg-file-erase", pkgs, "CfgFileErase", empty, declared)
+  assertEqualInt(result.exitCode, 0,
+    "cfg_erasure_file_level: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "survived",
+    "cfg_erasure_file_level: stdout matches expected")
 }
 
 func main(): Int {
@@ -465,6 +589,10 @@ func main(): Int {
   testCrossPackageUnionConstructAndMatch()
   testCfgErasureFeatureInactive()
   testCfgErasureFeatureActive()
+  testCfgErasureAndSemantics()
+  testCfgErasureF0012Malformed()
+  testCfgErasureF0013Typo()
+  testCfgErasureFileLevelErasesEntireFile()
   println("msil-project-bridge tests: ok")
   return 0
 }

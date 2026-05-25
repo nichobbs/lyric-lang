@@ -95,6 +95,14 @@ pub record EmitProjectRequest {
   /// Active feature flags for @cfg erasure.  Each entry is a feature name.
   /// Written to the spec file as `FEATURE\t<name>` lines.
   activeFeatures:   List[String]
+  /// Declared feature flags from the manifest's `[features]` table.
+  /// Used by `@cfg` erasure to fire `F0013` when a feature reference
+  /// names a feature absent from this set (typo guard).  Distinct from
+  /// `activeFeatures`: a declared-but-inactive feature suppresses
+  /// F0013, while a feature absent from `declaredFeatures` raises it.
+  /// An empty list disables the typo guard (F0013 is gated on
+  /// `declared.count > 0`).
+  declaredFeatures: List[String]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -302,13 +310,9 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
   // cross-package union dispatch (#1140-style).  Mirrors the F# bootstrap
   // `Lyric.Cli.SelfHostedBridge.findStdlibSources` helper.
   val stdlibSources = findStdlibSources()
-  // For now, declaredFeatures is the same as activeFeatures (the F#
-  // manifest parser populates both with the active set when the test
-  // runner builds the request).  Once the self-hosted manifest parser
-  // surfaces a separate `[features]` declared set, plumb it through.
   val ok = MsilBridge.compileProjectToMsilWithFeatures(
     payloads, req.assemblyName, req.outputPath,
-    stdlibSources, req.activeFeatures, req.activeFeatures)
+    stdlibSources, req.activeFeatures, req.declaredFeatures)
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
@@ -383,6 +387,13 @@ func emitProjectViaSubprocess(req: in EmitProjectRequest): EmitResult {
   while fi < req.activeFeatures.count {
     specLines.add("FEATURE\t" + req.activeFeatures[fi])
     fi += 1
+  }
+
+  // Append declared feature lines: DECLARED\t<name> for F0013 typo guard.
+  var di2 = 0
+  while di2 < req.declaredFeatures.count {
+    specLines.add("DECLARED\t" + req.declaredFeatures[di2])
+    di2 += 1
   }
 
   val specContent = Str.joinList("\n", specLines)
