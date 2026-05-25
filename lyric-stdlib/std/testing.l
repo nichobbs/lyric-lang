@@ -108,6 +108,7 @@ pub func assertPanics(label: in String, fn: in () -> Unit): Unit {
 /// propagation gap for `Result[Unit, String]` / `Option[String]`,
 /// where the bound `msg` in `case Err(msg)` arrives as `Object`
 /// rather than `String` and `msg.contains(...)` then fails E0012.
+/// Tracked: #1271.
 union PanicTry {
   case PtRan
   case PtPanicked(message: String)
@@ -116,7 +117,8 @@ union PanicTry {
 /// Wrap the try/catch in a helper so the call site matches on the
 /// helper's *return* value rather than on a `val` bound to a
 /// try-expression — the latter currently yields `Object` instead of
-/// `PanicTry` and breaks `case PtPanicked(...)` pattern resolution.
+/// `PanicTry` and breaks `case PtPanicked(...)` pattern resolution
+/// (E11 codegen: unknown constructor pattern).  Tracked: #1270.
 func runAndCapturePanic(fn: in () -> Unit): PanicTry {
   return try {
     fn()
