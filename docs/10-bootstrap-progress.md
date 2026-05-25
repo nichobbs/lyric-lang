@@ -15213,3 +15213,88 @@ private `renderDecl(d): String` helper:
 - Phase A.4 — end-to-end Lyric test compiling + consuming a
   restored DLL via `Lyric.Emitter.emitProject`.
 - Phase B — JVM JAR resource kernel.
+
+
+### D-progress-305 — `Lyric.RestoredPackages.synthesiseArtifact`: synthesise + re-parse + re-typecheck (#1229 Phase A.3.3.b)
+
+**Status:** Shipped.
+
+**Problem:** The bridge needs a fully-typed view of each restored
+package — `synthesiseSource` (Phase A.3.3.a) produces the source
+string; we still need to drive it through the parser and type
+checker to recover the `SymbolTable` + signatures the bridge will
+consult.  Mirrors
+`bootstrap/src/Lyric.Emitter/RestoredPackages.fs::artifactOfContract`.
+
+**Fix (`lyric-compiler/lyric/restored_packages.l` §4):**
+
+1. New `pub record SynthesisedArtifact { packageName, version,
+   dllPath, contract, source, checkResult }` carrying the parsed
+   `SourceFile` and `CheckResult` alongside the original
+   `RestoredArtifact` metadata.
+2. New `case SynthesisDiagnostics(path, diags)` variant on
+   `RestoredLoadError` for parse / type-check failures of the
+   synthesised source.
+3. New `pub func synthesiseArtifact(art, preamble): Result[SynthesisedArtifact, RestoredLoadError]`
+   pipes `synthesiseSource` → `Lyric.Parser.parse` →
+   `Lyric.TypeChecker.check`.  Returns `Err(SynthesisDiagnostics)`
+   on real errors; whitelisted-stdlib-anchor `T0010`s are filtered
+   out (the contract Repr loses cross-package qualifications, so
+   the standalone re-typecheck legitimately can't resolve `Option`,
+   `Result`, `List`, etc).  Helpers: `isWhitelistedStdlibType`,
+   `extractT0010Name`, `isWhitelistedT0010`, `isErrorDiag`,
+   `filterRealErrors`.
+4. `errorMessage` extended with a `SynthesisDiagnostics` arm that
+   includes the diagnostic count and the first message.
+
+**Tests (`lyric-compiler/lyric/restored_packages_self_test.l` §4):**
+
+- `testSynthesiseArtifactHappyPath` — a contract carrying
+  `pub func double(x: Int): Int` round-trips through
+  `synthesiseArtifact` to a `SynthesisedArtifact` whose
+  `source.items` carries one item.
+- `testSynthesiseArtifactMalformedRepr` — a contract whose `repr`
+  is garbage Lyric source bubbles up as `SynthesisDiagnostics`
+  with at least one diagnostic.
+- `testSynthesiseArtifactWhitelistedT0010Filtered` —
+  `pub func find(x: Int): Option[Int]` type-checks cleanly even
+  though `Option` isn't in scope of the standalone synthesised
+  source (the T0010 whitelist filters the diagnostic out).
+
+**Bootstrap-emitter quirks discovered:**
+
+- `match <expr>` directly as a function's last expression panics
+  the F# bootstrap codegen with `"SLocal (LBVal (PError ...))"`
+  even though the same shape works as a statement.  Worked around
+  by assigning into a `var` set inside the match arms.
+- `out` is a reserved keyword (parameter mode); a local named
+  `out` reaches codegen as `PError`.  Renamed to `kept`.
+
+  Both are real bootstrap-emitter gaps; tracked in #1227 / #1228
+  cleanups.
+
+**Contract repr format detail:**
+Contract `func` decls record their `repr` as the bare signature
+without a body (`pub func double(x: Int): Int`) — matches what F#
+`ContractMeta.fs::declOf` produces.  Test cases that synthesised
+`= ()` bodies originally failed because that yields `Unit`-typed
+bodies, contradicting the declared return type.  Updated tests to
+match the canonical no-body form.
+
+**Acceptance criteria met:**
+
+- F# parity at the `synthesiseSource` → `parse` → `check` chain.
+- T0010 whitelist matches the F# implementation's stdlib-anchor
+  set.
+- 73 CLI + 842 emitter tests green; axiom + kernel-stub audits
+  clean.
+
+**What's next under #1229:**
+
+- Phase A.3.3.c — bridge consumption: `Msil.Bridge.compileProjectToMsil*`
+  accepts a `restoredArtifacts: List[SynthesisedArtifact]`;
+  `addPackageTokens` registers restored symbols into
+  `typeFqnByName` / `recordCtorTokens` / `unionCaseCtorByName`
+  with cross-assembly tokens.
+- Phase A.4 — end-to-end Lyric test.
+- Phase B — JVM JAR resource kernel.
