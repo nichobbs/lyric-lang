@@ -180,7 +180,8 @@ pub record ImplEntryMsil {
 // Build and return a fresh CodegenCtx for the named package.
 // Registers all external AssemblyRef/TypeRef/MemberRef rows in a stable order
 // so that every instruction token is a predictable constant.
-pub func newCodegenCtx(packageName: in String): CodegenCtx {
+pub func newCodegenCtx(packageName: in String,
+                       restoredArtifacts: in List[SynthesisedArtifact]): CodegenCtx {
   val lctx = newLoweringCtx(packageName)
   // After newLoweringCtx:
   //   arRuntime  = 1  (System.Runtime AssemblyRef)
@@ -477,22 +478,7 @@ pub func newCodegenCtx(packageName: in String): CodegenCtx {
     pkgImports           = newMap(),
     unionCaseCtorByName  = newMap(),
     typeFqnByName        = newMap(),
-    restoredArtifacts    = newList())
-}
-
-// Build a fresh CodegenCtx pre-populated with `restored` artifacts.
-// Thin convenience over `newCodegenCtx` for callers that have a
-// non-empty list at construction time (avoids a copy loop at the
-// call site).
-pub func newCodegenCtxWithRestored(packageName: in String,
-                                   restored:    in List[SynthesisedArtifact]): CodegenCtx {
-  val cctx = newCodegenCtx(packageName)
-  var i = 0
-  while i < restored.count {
-    cctx.restoredArtifacts.add(restored[i])
-    i = i + 1
-  }
-  cctx
+    restoredArtifacts    = restoredArtifacts)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

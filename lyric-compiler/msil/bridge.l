@@ -112,8 +112,10 @@ pub func compileToMsil(
   val pkgName = segmentsToString(file.packageDecl.path.segments)
 
   // Build the codegen context — seeds a fresh LoweringCtx with all standard
-  // library AssemblyRef / TypeRef / MemberRef rows.
-  val cctx = newCodegenCtx(pkgName)
+  // library AssemblyRef / TypeRef / MemberRef rows.  Single-package
+  // compile path: no restored artifacts.
+  val emptyArtifacts: List[SynthesisedArtifact] = newList()
+  val cctx = newCodegenCtx(pkgName, emptyArtifacts)
 
   // Run the aspect weaver before the token pre-scan so that the pre-scan
   // sees the post-weave function list (renamed originals + synthesised wrappers).
@@ -220,14 +222,7 @@ pub func compileProjectToMsilWithFeatures(
 
 /// Like `compileProjectToMsilWithFeatures` but accepts a list of
 /// `Lyric.RestoredPackages.SynthesisedArtifact`s for the consumer's
-/// restored dependencies.  The list is stashed on `CodegenCtx`;
-/// symbol registration that allocates cross-assembly tokens for
-/// the restored surfaces is not yet wired in.  Behaviour today:
-/// callers that pass an empty list (or don't import any restored
-/// types) compile exactly as `compileProjectToMsilWithFeatures`;
-/// callers that pass a non-empty list and rely on consumer-side
-/// imports of the restored types will fail to link until the
-/// symbol-registration pass lands.
+/// restored dependencies and seeds them into `CodegenCtx.restoredArtifacts`.
 pub func compileProjectToMsilWithRestored(
   packages:          in List[ProjectPackagePayload],
   assemblyName:      in String,
@@ -298,7 +293,7 @@ pub func compileProjectToMsilWithRestored(
   // ONE shared cctx — the persistent `nextMethodDefRow` / `nextFieldDefRow`
   // counters in `CodegenCtx` thread row numbering across calls.  The cctx's
   // Assembly row is named after the bundle, not any individual package.
-  val cctx = newCodegenCtxWithRestored(assemblyName, restoredArtifacts)
+  val cctx = newCodegenCtx(assemblyName, restoredArtifacts)
 
   val liftedFiles: List[SourceFile] = newList()
   var li = 0
