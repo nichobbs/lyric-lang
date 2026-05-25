@@ -5617,11 +5617,13 @@ func registerRestoredRecordCtor(cctx: in CodegenCtx,
 func registerRestoredFunc(cctx: in CodegenCtx,
                           packageName: in String,
                           fn: in FunctionDecl): Unit {
-  // Skip private functions — they don't reach the foreign DLL's
-  // public surface and there's no MemberRef to point at.
+  // Only `pub` functions surface in the foreign DLL with a public
+  // method; `internal` functions are emitted with internal accessibility
+  // and a cross-assembly MemberRef pointing at them would fail to
+  // resolve at runtime.
   val isPub = match fn.visibility {
-    case Some(_) -> true
-    case None    -> false
+    case Some(VisPub(_)) -> true
+    case _               -> false
   }
   if not isPub { return }
 
