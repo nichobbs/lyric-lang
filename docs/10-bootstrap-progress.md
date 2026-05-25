@@ -15020,3 +15020,63 @@ updated (.NET stable count 25 → 26); §19 baseline regenerated via
 - Phase A.4 — end-to-end Lyric test compiling + consuming a restored
   DLL via `Lyric.Emitter.emitProject`.
 - Phase B — JVM JAR resource kernel (`jar_host.l`).
+
+
+### D-progress-302 — `Lyric.ContractMeta.readFromFile`: in-process resource reads (#1229 Phase A.3.1)
+
+**Status:** Shipped.
+
+**Problem:** `Lyric.ContractMeta.readFromFile` was shelling out to
+`lyric --internal-contract-meta read <dll>` for every consumer call
+— a subprocess hop per public-api-diff invocation and a hard
+dependency on the F# bootstrap CLI's continued presence.  Phase A.2
+(`Std.AssemblyResources`) shipped the kernel primitives needed to
+replace it.  This slice does the swap and adds a new
+`readAllContractsFromFile` for the bundled-DLL case the bridge
+restored-dep loader will need in Phase A.3.2.
+
+**Fix (`lyric-compiler/lyric/contract_meta.l`):**
+
+1. `readFromFile(path)` now calls `Std.AssemblyResources.openAssembly`
+   + `tryReadResource("Lyric.Contract")` directly, with
+   `Std.Encoding.tryDecodeUtf8` converting the bytes to a JSON
+   string.  Same `Option[String]` signature, same `None` semantics
+   for absent / unreadable.  The subprocess shellout is gone.
+
+2. New `readAllContractsFromFile(path): List[ContractEntry]` walks
+   every embedded resource: surfaces the legacy `Lyric.Contract`
+   single-package form as `ContractEntry(packageName = "", json)`
+   and each project-as-DLL `Lyric.Contract.<Pkg>` resource as
+   `ContractEntry(packageName = "<Pkg>", json)`.  Mirrors F#
+   `Lyric.Emitter.ContractMeta.readAllContractsFromAssembly`.  Used
+   by the upcoming bridge restored-dep loader (Phase A.3.2) for
+   bundled DLLs.
+
+3. `ContractEntry` is a new `pub record`; small enough that exposing
+   the fields directly (`packageName`, `json`) is the right shape —
+   no kernel extern leakage to hide.
+
+**Tests (`lyric-compiler/lyric/contract_meta_self_test.l`):**
+
+Extends the existing self-test with §3:
+
+- `testReadFromFileInProcess` — `readFromFile` against the running
+  test PE returns `Some(json)`; the JSON parses cleanly via
+  `parseFromJson`; `packageName` is non-empty.
+- `testReadAllContractsFromFileSinglePkg` —
+  `readAllContractsFromFile` surfaces at least one entry; the
+  legacy entry (packageName = "") is present with non-empty JSON.
+
+**Subprocess residue:** `Lyric.ContractMeta.diffContracts` still
+shells out to `lyric --internal-contract-meta diff`.  Porting the
+diff logic to Lyric (mirrors F# `ContractMeta.fs::diffContracts` +
+`renderDiffEntry`) is tracked as a follow-up under #1229; the
+bridge restored-dep loader doesn't need diff, only read.
+
+**Acceptance criteria met:**
+
+- `readFromFile` no longer shells out.
+- `readAllContractsFromFile` walks every `Lyric.Contract.<Pkg>`
+  resource in a bundled DLL, surfacing each as a `ContractEntry`.
+- Self-test exercises both readers against the running PE.
+- 73 CLI + 841 emitter tests green; axiom + kernel-stub audits clean.

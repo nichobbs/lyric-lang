@@ -1,5 +1,7 @@
 // contract_meta_self_test.l — exercises the in-process JSON parser
-// in `Lyric.ContractMeta.parseFromJson` (#1229 Phase A).
+// in `Lyric.ContractMeta.parseFromJson` (#1229 Phase A.1) and the
+// in-process resource readers `readFromFile` /
+// `readAllContractsFromFile` (#1229 Phase A.3).
 //
 // Compiled and executed by SelfHostedContractMetaTests.fs.  Exit 0 +
 // "ok" in stdout means every assertion held.
@@ -10,6 +12,8 @@ import Std.Core
 import Std.Collections
 import Std.Testing
 import Std.String as Str
+import Std.Path as Path
+import Std.Environment as Environment
 import Lyric.ContractMeta
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -266,7 +270,65 @@ func testNonObjectParamEntrySkipped(): Unit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §3. Driver
+// §3. In-process resource readers (#1229 Phase A.3)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The auto-discovery runner (`SelfHostedContractMetaTests.fs`) emits
+// this program as `self_hosted_contract_meta.dll`.  Every Lyric-
+// emitted assembly has an embedded `Lyric.Contract` resource (the
+// emitter writes it during `emit`), so we can verify the in-process
+// reader against the running test PE itself.
+
+func selfDllPath(): String {
+  Path.join(Environment.appBaseDirectory(), "self_hosted_contract_meta.dll")
+}
+
+// `readFromFile` reads the embedded JSON in-process via
+// `Std.AssemblyResources` (no subprocess).  The bytes must round-trip
+// through `parseFromJson` cleanly — pinning the read + parse pipeline
+// the bridge's restored-dep loader uses.
+func testReadFromFileInProcess(): Unit {
+  match readFromFile(selfDllPath()) {
+    case None -> panic("read_from_file_in_process: expected Some(json)")
+    case Some(json) -> {
+      assertTrue(Str.isNotEmpty(json),
+        "read_from_file_in_process: json non-empty")
+      // Round-trip through the parser to confirm the JSON shape.
+      val c = unwrapOrFail(parseFromJson(json), "read_from_file_in_process")
+      assertTrue(Str.isNotEmpty(c.packageName),
+        "read_from_file_in_process: packageName present")
+    }
+  }
+}
+
+// `readFromFile` against a non-existent path throws — the test PE
+// itself always exists, so we only assert the positive case here.
+// (`readFromFile` is throw-on-missing-file by design; the bridge
+// pre-checks via `Std.File.exists` before calling.)
+
+// `readAllContractsFromFile` surfaces at least one entry for a
+// single-package Lyric assembly (the `Lyric.Contract` legacy form).
+// The pkgName for legacy resources is "" (empty) per the F# parity
+// contract.
+func testReadAllContractsFromFileSinglePkg(): Unit {
+  val entries = readAllContractsFromFile(selfDllPath())
+  assertTrue(entries.count >= 1,
+    "read_all_single_pkg: at least one entry")
+  // Find the legacy entry.
+  var foundLegacy = false
+  var i = 0
+  while i < entries.count {
+    if entries[i].packageName == "" and Str.isNotEmpty(entries[i].json) {
+      foundLegacy = true
+    }
+    i = i + 1
+  }
+  assertTrue(foundLegacy,
+    "read_all_single_pkg: legacy (`Lyric.Contract`, packageName = \"\") entry present")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4. Driver
 // ─────────────────────────────────────────────────────────────────────────────
 
 func main(): Int {
@@ -283,6 +345,8 @@ func main(): Int {
   testPureDefaultsFalse()
   testNonObjectDeclEntrySkipped()
   testNonArrayDeclsFieldSkipped()
+  testReadFromFileInProcess()
+  testReadAllContractsFromFileSinglePkg()
   testNonObjectParamEntrySkipped()
   println("contract-meta self-test: ok")
   return 0
