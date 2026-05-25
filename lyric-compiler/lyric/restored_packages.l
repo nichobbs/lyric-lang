@@ -26,6 +26,9 @@ import Std.Core
 import Std.Collections
 import Std.File as File
 import Std.String as Str
+import Lyric.Lexer
+import Lyric.Parser
+import Lyric.TypeChecker
 import Lyric.ContractMeta as Meta
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -63,6 +66,9 @@ pub union RestoredLoadError {
   /// `pkgKey` is the resource's package-suffix ("" for the legacy
   /// single-package form).
   case MalformedContract(path: String, pkgKey: String)
+  /// The synthesised contract source failed to parse or type-check.
+  /// `diags` carries the diagnostics so the caller can render them.
+  case SynthesisDiagnostics(path: String, diags: List[Diagnostic])
 }
 
 /// Render a `RestoredLoadError` as a short single-line string for
@@ -78,6 +84,11 @@ pub func errorMessage(e: in RestoredLoadError): String {
       "restored DLL " + p + ": Lyric.Contract" +
       (if Str.isEmpty(k) { "" } else { "." + k }) +
       " resource is not valid JSON"
+    case SynthesisDiagnostics(p, ds) ->
+      "restored DLL " + p + ": synthesised contract source did not type-check (" +
+      Str.fromInt(ds.count) + " diagnostic" +
+      (if ds.count == 1 { "" } else { "s" }) + ")" +
+      (if ds.count > 0 { "; first: " + ds[0].message } else { "" })
   }
 }
 
@@ -193,4 +204,140 @@ pub func synthesiseSource(contract: in Meta.Contract,
     di = di + 1
   }
   sb
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4. Synthesise + re-parse + re-typecheck (#1229 Phase A.3.3.b)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Compose `synthesiseSource` with `Lyric.Parser.parse` and
+// `Lyric.TypeChecker.check` so a `RestoredArtifact` (the contract +
+// path pair produced by `loadRestoredPackage`) becomes a fully-
+// typed `SynthesisedArtifact` carrying the parsed `SourceFile` and
+// `CheckResult` the bridge will plumb into `CodegenCtx` in Phase
+// A.3.3.c.
+//
+// Mirrors `bootstrap/src/Lyric.Emitter/RestoredPackages.fs::artifactOfContract`.
+
+/// One restored package augmented with its parsed Lyric source and
+/// type-checker output.  `source` is the synthesised `SourceFile`
+/// (`Lyric.Parser` AST shape); `checkResult` carries the
+/// `SymbolTable` + signatures consumers need to resolve cross-
+/// package references against this package.
+@stable(since="0.1")
+pub record SynthesisedArtifact {
+  packageName: String
+  version:     String
+  dllPath:     String
+  contract:    Meta.Contract
+  source:      SourceFile
+  checkResult: CheckResult
+}
+
+// Known stdlib type anchors that legitimately appear unresolved in a
+// standalone contract type-check.  T0010 "unknown type name 'X'" for
+// one of these is expected — the imports inside the contract aren't
+// preserved by the synthesised source (the contract Repr loses
+// cross-package qualifications), so we whitelist the names that
+// every Lyric stdlib consumer would have in scope.  Matches
+// `bootstrap/src/Lyric.Emitter/RestoredPackages.fs::knownStdlibTypeNames`.
+func isWhitelistedStdlibType(name: in String): Bool {
+  name == "Option" or name == "Result" or name == "List" or name == "Map" or
+  name == "Set" or name == "Iter" or name == "Slice" or name == "String" or
+  name == "Int" or name == "Bool" or name == "Double" or name == "Long" or
+  name == "Byte" or name == "Char" or name == "Unit" or name == "Never" or
+  name == "Float" or name == "IOError" or name == "ParseError" or
+  name == "ParseResult" or name == "Instant" or name == "Duration" or
+  name == "Clock" or name == "Uuid" or name == "JsonValue" or
+  name == "Diagnostic"
+}
+
+// Extract the name from a T0010 message of shape `unknown type name 'X'`.
+// Returns "" when the message doesn't carry quoted text in the
+// expected positions.  Couples to the diagnostic-message format from
+// `Lyric.TypeChecker.Resolver`.
+func extractT0010Name(msg: in String): String {
+  val openQ = msg.indexOf("'")
+  if openQ < 0 { return "" }
+  // Scan for the next quote AFTER openQ.
+  var i = openQ + 1
+  while i < msg.length {
+    if msg.substring(i, 1) == "'" {
+      return msg.substring(openQ + 1, i - openQ - 1)
+    }
+    i = i + 1
+  }
+  ""
+}
+
+// True iff `d` is a T0010 about a whitelisted stdlib anchor.
+func isWhitelistedT0010(d: in Diagnostic): Bool {
+  if d.code != "T0010" { return false }
+  val name = extractT0010Name(d.message)
+  if Str.isEmpty(name) { return false }
+  isWhitelistedStdlibType(name)
+}
+
+// True iff `d` is a DiagError (vs DiagWarning).
+func isErrorDiag(d: in Diagnostic): Bool {
+  var isErr = false
+  match d.severity {
+    case DiagError   -> { isErr = true }
+    case DiagWarning -> ()
+  }
+  isErr
+}
+
+// Keep error diagnostics that are NOT whitelisted T0010 stdlib
+// anchors.  Warnings always pass through (callers see the noise).
+func filterRealErrors(diags: in List[Diagnostic]): List[Diagnostic] {
+  val kept: List[Diagnostic] = newList()
+  var i = 0
+  while i < diags.count {
+    val d = diags[i]
+    if isErrorDiag(d) and not isWhitelistedT0010(d) {
+      kept.add(d)
+    }
+    i = i + 1
+  }
+  kept
+}
+
+/// Synthesise a `RestoredArtifact` into a fully-parsed + type-checked
+/// `SynthesisedArtifact`.  Returns `Err(SynthesisDiagnostics)` if
+/// either parsing or type-checking surfaces real errors (whitelisted
+/// stdlib-anchor `T0010`s are filtered out — see
+/// `isWhitelistedStdlibType` for the rationale).
+///
+/// `preamble` carries extern-type / opaque decls from sibling
+/// packages whose names appear in this package's signatures.  Pass
+/// an empty list for single-package DLLs (no siblings); the bundled-
+/// DLL caller (#1229 Phase A.3.3.c) will pass the union of every
+/// sibling's type-declaring decls.
+@stable(since="0.1")
+pub func synthesiseArtifact(art:      in RestoredArtifact,
+                            preamble: in List[Meta.ContractDecl]): Result[SynthesisedArtifact, RestoredLoadError] {
+  val src = synthesiseSource(art.contract, preamble)
+  val pr  = parse(src)
+
+  // Parse errors are always real — contract Repr should be valid
+  // Lyric source by construction.
+  val parseErrors = filterRealErrors(pr.diagnostics)
+  if parseErrors.count > 0 {
+    return Err(error = SynthesisDiagnostics(path = art.dllPath, diags = parseErrors))
+  }
+
+  val cr           = check(pr.file)
+  val checkErrors  = filterRealErrors(cr.diagnostics)
+  if checkErrors.count > 0 {
+    return Err(error = SynthesisDiagnostics(path = art.dllPath, diags = checkErrors))
+  }
+
+  Ok(value = SynthesisedArtifact(
+    packageName = art.packageName,
+    version     = art.version,
+    dllPath     = art.dllPath,
+    contract    = art.contract,
+    source      = pr.file,
+    checkResult = cr))
 }
