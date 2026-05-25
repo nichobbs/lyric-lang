@@ -398,6 +398,10 @@ func parseFromRoot(root: in JsonElement): Option[Contract] {
 }
 
 // Parse + walk + dispose, with no try/catch.  Caller wraps in try.
+// Split off from `parseFromJson` to dodge a bootstrap-emitter limitation
+// where `defer { ... }` inside `try { ... }` re-uses the same control-
+// flow slot for the disposed value, producing a `null` deref at runtime.
+// Tracked in #1241.
 func parseAndWalk(json: in String): Option[Contract] {
   val doc = parseJson(json)
   defer { disposeJson(doc) }

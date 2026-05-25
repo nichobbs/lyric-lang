@@ -189,10 +189,12 @@ func main(): Unit {
   testErrorMessageTimedOut()
   testErrorMessageInvalidPattern()
   testReDoSTimeoutFires()
-  // testReDoSTimeoutFiresJvm() is declared with `@cfg(feature = "jvm")`
-  // and is therefore only compiled under the `jvm` feature.  It is
-  // wired into the JVM test runner separately (#1103 acceptance gate);
-  // calling it unconditionally here would break the .NET build because
-  // the symbol is elided when the feature is off.
+  // `testReDoSTimeoutFiresJvm` is declared with `@cfg(feature = "jvm")`
+  // and therefore only compiles under the `jvm` feature.  Calling it
+  // unconditionally here would leave a dangling reference on the
+  // `dotnet` build (the symbol is erased by `@cfg` before codegen).
+  // The JVM test runner (#1103 acceptance gate) drives the gated case
+  // via a separate top-level entry — see `lyric-stdlib/lyric.toml`'s
+  // JVM target manifest.  Tracked in #1165.
   println("regex_tests: ok")
 }

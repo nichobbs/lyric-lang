@@ -1480,21 +1480,29 @@ pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
 // external method tokens) before any user-defined types are added.
 // Used by `Msil.Codegen` + `Msil.Bridge` so that stdlib call tokens baked
 // into `MInsn` values are stable.
+// Lower one `MPackageItem` into `ctx`'s metadata tables.  Single dispatch
+// point shared by `lowerMPackageWithCtx` and `lowerMPackagesWithCtx` so
+// that new `MPackageItem` variants don't silently fall through the
+// multi-package walker (#1185).
+func lowerMPackageItem(item: in MPackageItem, ctx: in LoweringCtx): Unit {
+  match item {
+    case MPRecord(rec)                       -> { val _ = lowerMRecord(rec, ctx) }
+    case MPFuncs(hostClass, funcs, sfields)  -> { val _ = lowerMFuncsToHostClass(hostClass, funcs, sfields, ctx) }
+    case MPUnion(u)                          -> { val _ = lowerMUnion(u, ctx) }
+    case MPDistinctType(d)                   -> { val _ = lowerMDistinctType(d, ctx) }
+    case MPRangeType(r)                      -> { val _ = lowerMRangeType(r, ctx) }
+    case MPEnum(e)                           -> { val _ = lowerMEnum(e, ctx) }
+    case MPInterface(iface)                  -> { val _ = lowerMInterface(iface, ctx) }
+    case MPImpl(implData)                    -> { val _ = lowerMImpl(implData, ctx) }
+    case MPOpaque(op)                        -> { val _ = lowerMOpaque(op, ctx) }
+  }
+}
+
 pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx,
                                entryMethodToken: in Int): List[Byte] {
   var i = 0
   while i < pkg.items.count {
-    match pkg.items[i] {
-      case MPRecord(rec)                       -> { lowerMRecord(rec, ctx) }
-      case MPFuncs(hostClass, funcs, sfields)  -> { lowerMFuncsToHostClass(hostClass, funcs, sfields, ctx) }
-      case MPUnion(u)                          -> { lowerMUnion(u, ctx) }
-      case MPDistinctType(d)                   -> { lowerMDistinctType(d, ctx) }
-      case MPRangeType(r)                      -> { lowerMRangeType(r, ctx) }
-      case MPEnum(e)                           -> { lowerMEnum(e, ctx) }
-      case MPInterface(iface)                  -> { lowerMInterface(iface, ctx) }
-      case MPImpl(implData)                    -> { lowerMImpl(implData, ctx) }
-      case MPOpaque(op)                        -> { lowerMOpaque(op, ctx) }
-    }
+    lowerMPackageItem(pkg.items[i], ctx)
     i = i + 1
   }
 
@@ -1533,17 +1541,7 @@ pub func lowerMPackagesWithCtx(pkgs: in List[MPackage], ctx: in LoweringCtx,
     val pkg = pkgs[pi]
     var i = 0
     while i < pkg.items.count {
-      match pkg.items[i] {
-        case MPRecord(rec)                       -> { lowerMRecord(rec, ctx) }
-        case MPFuncs(hostClass, funcs, sfields)  -> { lowerMFuncsToHostClass(hostClass, funcs, sfields, ctx) }
-        case MPUnion(u)                          -> { lowerMUnion(u, ctx) }
-        case MPDistinctType(d)                   -> { lowerMDistinctType(d, ctx) }
-        case MPRangeType(r)                      -> { lowerMRangeType(r, ctx) }
-        case MPEnum(e)                           -> { lowerMEnum(e, ctx) }
-        case MPInterface(iface)                  -> { lowerMInterface(iface, ctx) }
-        case MPImpl(implData)                    -> { lowerMImpl(implData, ctx) }
-        case MPOpaque(op)                        -> { lowerMOpaque(op, ctx) }
-      }
+      lowerMPackageItem(pkg.items[i], ctx)
       i = i + 1
     }
     pi = pi + 1

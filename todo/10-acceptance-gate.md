@@ -26,10 +26,14 @@ output; if any check fails, post a comment on this PR listing the failing
 condition, then stop.  Do not proceed to the deletion sequence.
 
 ```sh
-# 1. All tier branches merged.  The list must contain ten entries.
-gh pr list --repo nichobbs/lyric-lang --state merged \
-  --search 'in:title fix/tier1 fix/tier2 fix/tier3 fix/tier4 fix/tier5 fix/tier6 feat/tier7 feat/tier8 feat/tier9' \
-  --json number,title,mergedAt
+# 1. All tier branches merged.  The list must contain ten entries
+#    (gh pr list's --search applies a single keyword query, not branch
+#    matching — pull the merged list and grep locally instead).
+gh pr list --repo nichobbs/lyric-lang --state merged --limit 200 \
+  --json number,headRefName,mergedAt \
+  --jq '.[] | select(.headRefName | startswith("feat/tier") or startswith("fix/tier"))'
+# The output MUST contain ten entries — one per tier 1-10 head branch.
+# If fewer, stop and fix the missing tier in its own PR before continuing.
 
 # 2. Self-hosted pipeline runs the full emitter test suite with zero skips.
 dotnet run --project bootstrap/tests/Lyric.Emitter.Tests 2>&1 \

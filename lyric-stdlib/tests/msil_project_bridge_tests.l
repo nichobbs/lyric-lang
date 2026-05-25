@@ -7,10 +7,9 @@
 // that this file replaces (#1183: tests live in Lyric, not F#, per
 // CLAUDE.md's "F# surface is frozen" policy).
 //
-// Discovery: a thin Expecto runner shim
-// (`bootstrap/tests/Lyric.Cli.Tests/MsilProjectLyricTests.fs`) compiles
-// this file + runs it; the shim only carries the discovery / process
-// plumbing, never any test logic.
+// Discovery: `bootstrap/tests/Lyric.Emitter.Tests/StdlibLyricTests.fs`
+// walks `lyric-stdlib/tests/*.l` automatically; this file is picked up
+// without a dedicated runner shim (#1200).
 
 package Lyric.Tests.MsilProjectBridge
 
