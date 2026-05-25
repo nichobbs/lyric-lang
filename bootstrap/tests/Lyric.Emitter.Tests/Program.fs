@@ -297,6 +297,7 @@ let main argv =
             SelfHostedManifestTests.tests
             SelfHostedCfgTests.tests
             SelfHostedContractMetaTests.tests
+            SelfHostedRestoredPackagesTests.tests
             SelfHostedVerifierTests.tests
             SelfHostedGeneratorTests.tests
             SelfHostedDerivesTests.tests
