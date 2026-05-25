@@ -1,26 +1,29 @@
 // lyric/contract_meta.l — Lyric.ContractMeta bootstrap package.
 //
-// Implements the three functions that cli.l's `cmdPublicApiDiff` needs:
-//   readFromFile(path)          — extract the Lyric.Contract JSON from a DLL
-//   diffContracts(old, new)     — diff two JSON blobs; return rendered entries
-//   hasBreakingChanges(entries) — pure check on the rendered entry list
+// Public surface:
+//   readFromFile(path)             — extract the `Lyric.Contract`
+//                                    JSON resource from a DLL.
+//   readAllContractsFromFile(path) — every `Lyric.Contract.<Pkg>`
+//                                    resource in a bundled DLL.
+//   parseFromJson(json)            — structured Contract / ContractDecl.
+//   diffContracts(oldJson, newJson)— rendered diff entries.
+//   hasBreakingChanges(entries)    — pure check on the diff entries.
 //
-// readFromFile and diffContracts shell out to `lyric --internal-contract-meta`
-// which is handled by the F# bootstrap CLI.  ProcessCapture.runCapture is
-// used so stdout can be captured without spawning a shell.
+// IN-PROCESS RESOURCE READS (#1229 Phase A.3): `readFromFile` and
+// `readAllContractsFromFile` now use `Std.AssemblyResources` to walk
+// embedded resources directly via `System.Reflection.Assembly`, with
+// `Std.Encoding.tryDecodeUtf8` converting the bytes to JSON strings
+// in-process.  Replaces the `lyric --internal-contract-meta read`
+// subprocess shellout that the previous versions used.  Mirrors
+// `bootstrap/src/Lyric.Emitter/ContractMeta.fs::readFromAssembly` and
+// `readAllContractsFromAssembly`.
 //
-// Protocol:
-//   read  <dll>                       → JSON string or "" (no contract)
-//   diff  (old JSON and new JSON in
-//          stdin, separated by \n---\n) → rendered entries separated by \n\n
+// IN-PROCESS PARSER (#1229 Phase A.1): `parseFromJson(json)` parses
+// the JSON blob into structured records using `Std.Json` directly.
 //
-// IN-PROCESS PARSER (#1229 Phase A): the `parseFromJson(json)`
-// function parses the same Lyric.Contract JSON blob into structured
-// `Contract` / `ContractDecl` records using `Std.Json` directly,
-// without any subprocess hop.  Used by the self-hosted MSIL bridge's
-// restored-dependency loader to consume a dep's contract surface
-// without round-tripping through F#.  Mirrors
-// `bootstrap/src/Lyric.Emitter/ContractMeta.fs::parseFromJson`.
+// SUBPROCESS RESIDUE: `diffContracts` is the only subprocess hop
+// remaining in this package — porting the diff logic to Lyric is
+// tracked under #1229 follow-ups.
 
 @runtime_checked
 package Lyric.ContractMeta
@@ -34,6 +37,8 @@ import Std.ProcessCapture
 import Std.Environment as Environment
 import Std.String as Str
 import Std.Json
+import Std.Encoding as Encoding
+import Std.AssemblyResources as AsmRes
 import Lyric.CliShell as CliShell
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -52,24 +57,95 @@ func cliShellArgs(subcmd: in List[String]): List[String] {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §2. readFromFile
+// §2. readFromFile / readAllContractsFromFile (in-process)
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// One entry from a bundled DLL's per-package contract resources.
+/// Single-package assemblies surface as one entry with
+/// `packageName = ""` (legacy `Lyric.Contract` resource form).
+/// Project-as-DLL bundles surface one entry per package
+/// (`Lyric.Contract.<PackageName>` resources).
+@stable(since="0.1")
+pub record ContractEntry {
+  packageName: String
+  json:        String
+}
+
+// Decode a UTF-8 byte slice to a JSON string, or None when the bytes
+// aren't valid UTF-8.  Callers treat None as "resource present but
+// unreadable", which is operationally equivalent to absent for
+// downstream consumers.
+func decodeJson(bytes: in slice[Byte]): Option[String] {
+  Encoding.tryDecodeUtf8(bytes)
+}
 
 /// Read the embedded `Lyric.Contract` JSON resource from `dllPath`.
 /// Returns `Some(json)` if the resource is present, `None` otherwise.
+///
+/// Walks the assembly's manifest resources directly via
+/// `Std.AssemblyResources` — no subprocess.  When the assembly is a
+/// project-as-DLL bundle (no top-level `Lyric.Contract`, only
+/// `Lyric.Contract.<Pkg>` resources), callers should use
+/// `readAllContractsFromFile` instead.
 @stable(since="0.1")
 pub func readFromFile(path: in String): Option[String] {
-  val subcmd: List[String] = newList()
-  subcmd.add("--internal-contract-meta")
-  subcmd.add("read")
-  subcmd.add(path)
-  val output = runCapture(cliShellExe(), cliShellArgs(subcmd), "")
-  val trimmed = Str.trim(output)
-  if Str.isEmpty(trimmed) {
-    None
-  } else {
-    Some(value = trimmed)
+  val ar = AsmRes.openAssembly(path)
+  match AsmRes.tryReadResource(ar, "Lyric.Contract") {
+    case None        -> None
+    case Some(bytes) -> decodeJson(bytes)
   }
+}
+
+/// Walk every `Lyric.Contract` / `Lyric.Contract.<Pkg>` resource in
+/// `dllPath` and return each as a `ContractEntry`.  Single-package
+/// assemblies surface as `[ContractEntry(packageName = "", json)]`;
+/// project-as-DLL bundles surface one entry per package.  Returns
+/// an empty list when no contract resources are present (e.g. a
+/// non-Lyric assembly).
+///
+/// In-process via `Std.AssemblyResources`.  Mirrors F#
+/// `Lyric.Emitter.ContractMeta.readAllContractsFromAssembly`.
+@stable(since="0.1")
+pub func readAllContractsFromFile(path: in String): List[ContractEntry] {
+  val ar     = AsmRes.openAssembly(path)
+  val names  = AsmRes.resourceNames(ar)
+  val result: List[ContractEntry] = newList()
+
+  // 1. Legacy single-package form: a bare `Lyric.Contract`.
+  match AsmRes.tryReadResource(ar, "Lyric.Contract") {
+    case Some(bytes) -> {
+      match decodeJson(bytes) {
+        case Some(json) -> result.add(ContractEntry(packageName = "", json = json))
+        case None       -> ()
+      }
+    }
+    case None -> ()
+  }
+
+  // 2. Per-package form: `Lyric.Contract.<Pkg>`.  Strip the prefix to
+  //    recover the package name.  Both forms can co-exist in
+  //    pathological assemblies; we surface both.
+  val prefix = "Lyric.Contract."
+  var i = 0
+  while i < names.length {
+    val name = names[i]
+    if Str.startsWith(name, prefix) {
+      val pkgName = name.substring(prefix.length, name.length)
+      match AsmRes.tryReadResource(ar, name) {
+        case Some(bytes) -> {
+          match decodeJson(bytes) {
+            case Some(json) ->
+              result.add(ContractEntry(packageName = pkgName, json = json))
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
+    }
+    i = i + 1
+  }
+
+  result
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
