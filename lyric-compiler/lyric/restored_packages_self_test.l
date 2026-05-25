@@ -11,6 +11,7 @@ import Std.Testing
 import Std.String as Str
 import Std.Path as Path
 import Std.Environment as Environment
+import Lyric.ContractMeta as Meta
 import Lyric.RestoredPackages
 
 func selfDllPath(): String {
@@ -70,10 +71,118 @@ func testErrorMessageVariants(): Unit {
     "error_message: MalformedContract mentions pkgKey")
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §3. Source synthesis (#1229 Phase A.3.3.a)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func emptyDecls(): List[Meta.ContractDecl] {
+  newList()
+}
+
+func mkContract(name: in String, decls: in List[Meta.ContractDecl]): Meta.Contract {
+  Meta.Contract(
+    packageName   = name,
+    version       = "1.0.0",
+    level         = "runtime_checked",
+    formatVersion = 2,
+    decls         = decls)
+}
+
+func mkDecl(kind: in String, name: in String, repr: in String): Meta.ContractDecl {
+  Meta.ContractDecl(
+    kind            = kind,
+    name            = name,
+    repr            = repr,
+    isPure          = false,
+    stability       = "",
+    requiresClauses = newList(),
+    ensuresClauses  = newList(),
+    body            = None,
+    params          = newList())
+}
+
+// Empty contract produces a one-line `package X` header.
+func testSynthesiseEmptyContract(): Unit {
+  val c = mkContract("MyApp.Empty", emptyDecls())
+  val src = synthesiseSource(c, emptyDecls())
+  assertTrue(Str.contains(src, "package MyApp.Empty"),
+    "synth_empty: emits package decl")
+}
+
+// Function decls round-trip from `Repr` verbatim, plus a trailing newline.
+func testSynthesiseFunc(): Unit {
+  val decls: List[Meta.ContractDecl] = newList()
+  decls.add(mkDecl("func", "double", "pub func double(x: Int): Int = ()"))
+  val c = mkContract("MyApp.Math", decls)
+  val src = synthesiseSource(c, emptyDecls())
+  assertTrue(Str.contains(src, "pub func double(x: Int): Int = ()"),
+    "synth_func: repr appears in source")
+  assertTrue(Str.contains(src, "package MyApp.Math"),
+    "synth_func: package header present")
+}
+
+// Interface decls get an empty `{}` body appended (per F# parity).
+func testSynthesiseInterfaceAppendsBraces(): Unit {
+  val decls: List[Meta.ContractDecl] = newList()
+  decls.add(mkDecl("interface", "Drawable", "pub interface Drawable"))
+  val c = mkContract("MyApp.Gfx", decls)
+  val src = synthesiseSource(c, emptyDecls())
+  assertTrue(Str.contains(src, "pub interface Drawable {}"),
+    "synth_interface: empty `{}` body appended")
+}
+
+// Records / unions / enums / distincts pass through unchanged.
+func testSynthesiseNonInterfaceKindsPassThrough(): Unit {
+  val decls: List[Meta.ContractDecl] = newList()
+  decls.add(mkDecl("record", "Point", "pub record Point { x: Int, y: Int }"))
+  decls.add(mkDecl("union", "Maybe", "pub union Maybe { case Some(v: Int), case None }"))
+  decls.add(mkDecl("enum", "Color", "pub enum Color { Red, Green, Blue }"))
+  val c = mkContract("MyApp.Types", decls)
+  val src = synthesiseSource(c, emptyDecls())
+  assertTrue(Str.contains(src, "pub record Point { x: Int, y: Int }"),
+    "synth_pass_through: record verbatim")
+  assertTrue(Str.contains(src, "pub union Maybe { case Some(v: Int), case None }"),
+    "synth_pass_through: union verbatim")
+  assertTrue(Str.contains(src, "pub enum Color { Red, Green, Blue }"),
+    "synth_pass_through: enum verbatim")
+}
+
+// Preamble decls appear BEFORE the contract's own decls.
+func testSynthesisePreambleOrdering(): Unit {
+  val preamble: List[Meta.ContractDecl] = newList()
+  preamble.add(mkDecl("extern_type", "Map", "extern type Map[K, V] = \"System.Collections.Generic.Dictionary`2\""))
+  val ownDecls: List[Meta.ContractDecl] = newList()
+  ownDecls.add(mkDecl("func", "size", "pub func size(m: Map[String, Int]): Int = ()"))
+  val c = mkContract("MyApp.Coll", ownDecls)
+  val src = synthesiseSource(c, preamble)
+  val externIdx = src.indexOf("extern type Map")
+  val funcIdx   = src.indexOf("pub func size")
+  assertTrue(externIdx >= 0, "synth_preamble: extern present")
+  assertTrue(funcIdx >= 0,   "synth_preamble: own func present")
+  assertTrue(externIdx < funcIdx,
+    "synth_preamble: extern appears BEFORE the contract's own func")
+}
+
+// Output ends in a newline — keeps the parser-friendly shape (trailing
+// items always terminated by a newline).
+func testSynthesiseTrailingNewline(): Unit {
+  val decls: List[Meta.ContractDecl] = newList()
+  decls.add(mkDecl("func", "noop", "pub func noop(): Unit = ()"))
+  val src = synthesiseSource(mkContract("X", decls), emptyDecls())
+  val last = src.substring(src.length - 1, 1)
+  assertEqual(last, "\n", "synth_trailing_newline: ends with \\n")
+}
+
 func main(): Int {
   testLoadRunningPe()
   testMissingFileError()
   testErrorMessageVariants()
+  testSynthesiseEmptyContract()
+  testSynthesiseFunc()
+  testSynthesiseInterfaceAppendsBraces()
+  testSynthesiseNonInterfaceKindsPassThrough()
+  testSynthesisePreambleOrdering()
+  testSynthesiseTrailingNewline()
   println("restored-packages self-test: ok")
   return 0
 }

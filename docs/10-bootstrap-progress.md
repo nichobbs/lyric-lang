@@ -15146,3 +15146,70 @@ Three-case self-test, wired into Expecto via
 - Phase A.4 — end-to-end Lyric test compiling + consuming a
   restored DLL via `Lyric.Emitter.emitProject`.
 - Phase B — JVM JAR resource kernel.
+
+
+### D-progress-304 — `Lyric.RestoredPackages.synthesiseSource`: contract → Lyric source (#1229 Phase A.3.3.a)
+
+**Status:** Shipped.
+
+**Problem:** The MSIL bridge consumes a restored package's symbol
+table the same way it consumes any in-bundle package's — through the
+existing parser + type checker.  To make a `RestoredArtifact`
+visible to that pipeline, we need to turn its `Contract` (parsed
+JSON metadata) into a Lyric source string the parser can chew on.
+Mirrors `bootstrap/src/Lyric.Emitter/RestoredPackages.fs::synthesiseSource`.
+
+**Fix (`lyric-compiler/lyric/restored_packages.l` §3):**
+
+Add `pub func synthesiseSource(contract, preamble): String` plus a
+private `renderDecl(d): String` helper:
+
+- Emits `package <name>\n\n` from `Contract.packageName`.
+- For each decl in `preamble` then `contract.decls`, appends the
+  decl's `repr` field verbatim (already the source-level form) with
+  a trailing newline.
+- Interfaces are a special case: their `repr` is just the head
+  (`pub interface I`), so an empty `{}` body is appended.  Matches
+  the F# parser's requirement for an interface block.
+- `preamble` lets bundled-DLL callers (Phase A.3.3.b) thread in
+  extern-type / opaque decls from sibling packages so cross-package
+  type references in the package being synthesized resolve during
+  re-typecheck.
+
+**Tests (`lyric-compiler/lyric/restored_packages_self_test.l` §3):**
+
+- `testSynthesiseEmptyContract` — bare `package X` header from an
+  empty contract.
+- `testSynthesiseFunc` — function `repr` round-trips verbatim.
+- `testSynthesiseInterfaceAppendsBraces` — F# parity for the
+  interface special case.
+- `testSynthesiseNonInterfaceKindsPassThrough` — records / unions /
+  enums all preserve their `repr` verbatim.
+- `testSynthesisePreambleOrdering` — preamble decls appear BEFORE
+  the contract's own decls so cross-package type refs resolve.
+- `testSynthesiseTrailingNewline` — output ends in `\n` (parser
+  expects every top-level item terminated by a newline).
+
+**Acceptance criteria met:**
+
+- F# parity at the `repr` ↔ source-text boundary.
+- 73 CLI + 842 emitter tests green (was 841 with 3 cases; +6 new
+  synthesis cases brought the loader self-test to 9 cases).
+- Axiom + kernel-stub audits clean.
+
+**What's next under #1229:**
+
+- Phase A.3.3.b — wire synthesise + re-parse + re-typecheck:
+  `synthesiseArtifact(art): Result[SynthesisedArtifact, ...]` that
+  pipes `synthesiseSource` into `Lyric.Parser.parse` then
+  `Lyric.TypeChecker.check`, producing the `SymbolTable` +
+  signatures the bridge will consult.
+- Phase A.3.3.c — bridge consumption: `Msil.Bridge.compileProjectToMsil*`
+  accepts a `restoredArtifacts: List[SynthesisedArtifact]`;
+  `addPackageTokens` registers the restored symbols into
+  `typeFqnByName` / `recordCtorTokens` / `unionCaseCtorByName` with
+  cross-assembly tokens (TypeRef + MemberRef pointing at the
+  foreign Assembly's `AssemblyRef`).
+- Phase A.4 — end-to-end Lyric test compiling + consuming a
+  restored DLL via `Lyric.Emitter.emitProject`.
+- Phase B — JVM JAR resource kernel.
