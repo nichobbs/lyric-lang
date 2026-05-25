@@ -14922,3 +14922,101 @@ shim only carries discovery + process plumbing).
 - Phase A.4 — end-to-end Lyric test compiling + consuming a restored
   DLL via `Lyric.Emitter.emitProject`.
 - Phase B — JVM JAR resource kernel (`jar_host.l`).
+
+
+### D-progress-301 — `Std.AssemblyResources`: in-process .NET embedded-resource reader (#1229 Phase A.2, PR #1242)
+
+**Status:** Shipped.
+
+**Problem:** The self-hosted MSIL bridge's restored-dependency loader
+(in progress under #1229) needs to read the `Lyric.Contract` /
+`Lyric.Contract.<Pkg>` JSON resources embedded in every compiled
+Lyric assembly.  The F# emitter's
+`bootstrap/src/Lyric.Emitter/ContractMeta.fs::readFromAssembly` does
+this via `Mono.Cecil.AssemblyDefinition`, but the Lyric side has no
+equivalent and shells out to `lyric --internal-contract-meta read`
+on every consumer call.  An in-process Lyric reader was needed
+before the bridge symbol-table threading (Phase A.3) and end-to-end
+test (Phase A.4) could land.
+
+**Fix:**
+
+1. **`lyric-stdlib/std/_kernel/assembly_resources_host.l` (new)** —
+   `Std.AssemblyResourcesHost` kernel.  Three extern types
+   (`RuntimeAssembly` = `System.Reflection.Assembly`, `ResStream` =
+   `System.IO.Stream`, `ResMemoryStream` = `System.IO.MemoryStream`)
+   and eight host functions wrapping the high-level
+   `Assembly.LoadFrom` / `GetManifestResourceNames` /
+   `GetManifestResourceStream` API + `MemoryStream` accumulator +
+   `Stream.Dispose` / `MemoryStream.Dispose` for deterministic release.
+
+2. **`lyric-stdlib/std/assembly_resources.l` (new)** —
+   `Std.AssemblyResources` public surface:
+   - `pub opaque type AssemblyResources` — opaque handle hiding
+     `RuntimeAssembly` from consumers; only `openAssembly`,
+     `resourceNames`, `tryReadResource` are part of the public API.
+   - `pub func openAssembly(path): AssemblyResources` — load assembly +
+     snapshot resource names at open time.
+   - `pub func resourceNames(ar): slice[String]` — stable snapshot.
+   - `pub func tryReadResource(ar, name): Option[slice[Byte]]` —
+     pre-checks the name-list snapshot (guards against the
+     `GetManifestResourceStream` null-return + `CopyTo` panic that
+     would otherwise occur for missing names); disposes both
+     streams before returning so callers reading many resources
+     in a row don't leak file handles.
+
+**Design choice (`Assembly.LoadFrom` vs `System.Reflection.Metadata.PEReader`):**
+The original plan called for `PEReader`, but its embedded-resource
+read path requires either unsafe pointer arithmetic (Lyric doesn't
+expose unsafe pointers) or a ~12-extern chain through `BlobReader`.
+`Assembly.LoadFrom` ships in the same `System.Runtime.dll` (no new
+BCL dep — same property as `PEReader`) and reduces the extern surface
+to **8 functions + 3 types**.  Trade-off accepted: `LoadFrom`
+JIT-resolves the assembly into the current `AssemblyLoadContext`.
+Heavier than metadata-only reads, irrelevant for compile-time
+consumers, and matches the F# emitter's
+`Mono.Cecil.AssemblyDefinition` usage (which also never disposes).
+
+**Tests (`lyric-stdlib/tests/assembly_resources_tests.l`):**
+
+Auto-discovered self-test (no new F# runner shim — picked up by
+`StdlibLyricTests.fs`):
+
+- `testOpenSelf` — `openAssembly` against the running test PE
+  succeeds; snapshots a non-empty name list.
+- `testLyricContractResourcePresent` — the test PE has an embedded
+  `Lyric.Contract` resource (every Lyric-emitted assembly does).
+- `testTryReadLyricContract` — bytes start with `'{'`, cheap shape
+  check that catches obvious garbage.
+- `testTryReadMissingReturnsNone` — missing names return `None`,
+  exercising the snapshot-membership guard.
+- `testResourceNamesIsStable` — repeated calls yield the same
+  snapshot.
+
+**Kernel-boundary ratchet:**
+Bumped 305 → 316 (+11: 3 types + 8 functions) in
+`bootstrap/tests/Lyric.Emitter.Tests/KernelBoundaryTests.fs`,
+with an inline note explaining the `Assembly.LoadFrom` choice and
+the rationale for the dispose pair.  `docs/17-axiom-audit.md` §18
+updated (.NET stable count 25 → 26); §19 baseline regenerated via
+`scripts/audit-axioms.sh --update`.
+
+**Acceptance criteria met:**
+
+- `Std.AssemblyResources` exposes a stable, opaque API for reading
+  embedded resources from .NET PE assemblies.
+- Snapshot-membership guard returns `None` for missing names
+  without panicking the consumer.
+- Disposal pair lets callers release native file handles
+  deterministically.
+- Axiom audit + kernel-boundary ratchet both pass.
+
+**What's next under #1229:**
+
+- Phase A.3 — bridge symbol-table threading: pull
+  `Lyric.ContractMeta.parseFromJson` + `Std.AssemblyResources` into
+  `Msil.Bridge.compileProjectToMsil*`; consult restored artifacts
+  before falling through to source-built packages.
+- Phase A.4 — end-to-end Lyric test compiling + consuming a restored
+  DLL via `Lyric.Emitter.emitProject`.
+- Phase B — JVM JAR resource kernel (`jar_host.l`).

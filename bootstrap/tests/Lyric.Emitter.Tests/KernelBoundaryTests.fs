@@ -144,21 +144,25 @@ let tests =
             //               needs to locate `lyric-stdlib/std/` at runtime
             //               (replaces the F# `SelfHostedBridge.findStdlibSources`
             //               shim).
-            //   305 → 314 — `Std.AssemblyResourcesHost` for #1229 Phase A.2:
+            //   305 → 316 — `Std.AssemblyResourcesHost` for #1229 Phase A.2:
             //               three extern types (`RuntimeAssembly`,
-            //               `ResStream`, `ResMemoryStream`) + six host
+            //               `ResStream`, `ResMemoryStream`) + eight host
             //               functions (`hostAssemblyLoadFrom`,
             //               `hostAssemblyResourceNames`,
             //               `hostAssemblyResourceStream`,
             //               `hostNewMemoryStream`, `hostStreamCopyTo`,
-            //               `hostMemoryStreamToArray`).  In-process
-            //               embedded-resource reader for the self-hosted
-            //               MSIL bridge's restored-dependency loader.
-            //               High-level `Assembly.LoadFrom` API chosen over
-            //               `System.Reflection.Metadata.PEReader` to avoid
-            //               unsafe pointer arithmetic / a 12-extern
-            //               `BlobReader` chain.
-            Expect.isLessThanOrEqual total 314
+            //               `hostMemoryStreamToArray`,
+            //               `hostStreamDispose`, `hostMemoryStreamDispose`).
+            //               In-process embedded-resource reader for the
+            //               self-hosted MSIL bridge's restored-dependency
+            //               loader.  High-level `Assembly.LoadFrom` API
+            //               chosen over `System.Reflection.Metadata.PEReader`
+            //               to avoid unsafe pointer arithmetic / a 12-extern
+            //               `BlobReader` chain.  Dispose calls let
+            //               consumers reading many resources release
+            //               unmanaged buffers deterministically rather
+            //               than waiting for GC.
+            Expect.isLessThanOrEqual total 316
                 "total extern surface unexpectedly large"
         }
     ]

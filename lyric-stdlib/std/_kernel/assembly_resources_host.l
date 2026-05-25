@@ -78,3 +78,19 @@ pub func hostStreamCopyTo(src: in ResStream, dst: in ResMemoryStream): Unit = ()
 /// maps `byte[]` to `slice[Byte]` at the FFI boundary.
 @externTarget("System.IO.MemoryStream.ToArray")
 pub func hostMemoryStreamToArray(ms: in ResMemoryStream): slice[Byte] = ()
+
+/// Resolves to `Stream.Dispose()`.  Deterministic release of native
+/// resources held by a `Stream` (file handles for `UnmanagedMemoryStream`
+/// returned by `GetManifestResourceStream`).  Safe to call exactly
+/// once per stream value.
+@externTarget("System.IO.Stream.Dispose")
+pub func hostStreamDispose(s: in ResStream): Unit = ()
+
+/// Resolves to `MemoryStream.Dispose()`.  Returns the pooled
+/// `byte[]` backing the accumulator to the array pool.  Same
+/// semantics as `hostStreamDispose` (MemoryStream is a Stream
+/// subclass) — separate extern only because Lyric's extern-type
+/// aliases are nominal and the caller's value is typed as
+/// `ResMemoryStream`.
+@externTarget("System.IO.MemoryStream.Dispose")
+pub func hostMemoryStreamDispose(ms: in ResMemoryStream): Unit = ()

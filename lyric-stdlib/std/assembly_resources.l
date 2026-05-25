@@ -29,10 +29,13 @@ import Std.Collections
 import Std.AssemblyResourcesHost
 
 /// Opaque handle to a loaded assembly's resource surface.  Wraps the
-/// CLR `Assembly` handle plus a snapshot of the resource-name list so
-/// the public surface doesn't expose the kernel extern types.
+/// CLR `Assembly` handle plus a snapshot of the resource-name list.
+/// `opaque type` (not `pub record`) keeps the `RuntimeAssembly` kernel
+/// extern type out of consumers' view — the only legal use of an
+/// `AssemblyResources` value outside this package is to pass it to
+/// `resourceNames` / `tryReadResource` / `closeAssemblyResources`.
 @stable(since="0.1")
-pub record AssemblyResources {
+pub opaque type AssemblyResources {
   asm:   RuntimeAssembly
   names: slice[String]
 }
@@ -72,7 +75,9 @@ func containsName(names: in slice[String], needle: in String): Bool {
 /// `None` when the resource isn't present (the kernel's
 /// `Assembly.GetManifestResourceStream` would return null and panic
 /// on the subsequent `CopyTo`; we guard with the name-list snapshot
-/// taken at `openAssembly` time).
+/// taken at `openAssembly` time).  Disposes the per-call resource
+/// stream + `MemoryStream` accumulator before returning so callers
+/// don't leak file handles when reading many resources in a row.
 @stable(since="0.1")
 pub func tryReadResource(ar: in AssemblyResources,
                           name: in String): Option[slice[Byte]] {
@@ -80,5 +85,8 @@ pub func tryReadResource(ar: in AssemblyResources,
   val stream = hostAssemblyResourceStream(ar.asm, name)
   val ms     = hostNewMemoryStream()
   hostStreamCopyTo(stream, ms)
-  Some(value = hostMemoryStreamToArray(ms))
+  val bytes  = hostMemoryStreamToArray(ms)
+  hostMemoryStreamDispose(ms)
+  hostStreamDispose(stream)
+  Some(value = bytes)
 }
