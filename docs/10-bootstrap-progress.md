@@ -15429,3 +15429,69 @@ calls to restored ctors / funcs do not.
   `ResolvedSignature`).
 - Phase A.4 — end-to-end Lyric test.
 - Phase B — JVM JAR resource kernel.
+
+
+### D-progress-308 — restored-artifact record ctor MemberRefs (#1229 Phase A.3.3.c.3.a)
+
+**Status:** Shipped (record ctors only; free funcs / union case ctors ship in c.3.b / c.3.c).
+
+**Problem:** Phase A.3.3.c.2 seeded `typeFqnByName` for restored
+types but didn't allocate cross-assembly `MemberRef` rows for the
+constructors.  A consumer-side `Point(x = 1, y = 2)` against a
+restored `pub record Point { x: Int, y: Int }` would resolve the
+TYPE correctly but the call-site lookup against `recordCtorTokens`
+would miss, leaving the codegen with no valid ctor token to emit.
+
+**Fix (`lyric-compiler/msil/codegen.l` — `registerRestoredArtifactTokens` pass 2):**
+
+After the type-registration pass (c.2), walk each artifact's parsed
+`source.items` for `IRecord` items:
+
+1. `lookupRestoredTypeRefRow(cctx, pkg, typeName)` retrieves the
+   `TypeRef` row allocated in c.2.
+2. `registerRestoredRecordCtor(cctx, pkg, rec)` builds the ctor
+   signature via the existing `buildInstanceMethodSig(params, MVoid)`:
+   - One param per `RMField` member, converted to `MsilType` via
+     the existing `typeExprToMsilCtx`.
+   - Mirrors the in-bundle `lowerMRecord` convention exactly so the
+     foreign DLL's ctor signature matches at runtime (including the
+     `MClass → ELEMENT_TYPE_OBJECT` degradation in `bufMsilType` —
+     both producer and consumer emit Object for class-typed
+     parameters, so they match).
+3. `ctxAddMemberRef(cctx.lctx, typeRefRow, ".ctor", sigKey, ctorSig)`
+   allocates the MemberRef row; the resulting token
+   (`0x0A000000 + row`) lands in `cctx.recordCtorTokens[<fqn>]`.
+4. Idempotent: skips records whose ctor is already registered (an
+   in-bundle package's record always wins over a restored
+   namesake's).
+
+The pass walks `art.source.items` rather than `art.contract.decls`
+so we get structured `FieldDecl` types for signature encoding —
+the contract's `repr` string would otherwise need re-parsing.
+
+**Why ctors first:** record construction is the most common
+cross-package idiom in Lyric stdlib code today.  Free functions
+(c.3.b) and union case ctors (c.3.c) follow the same pattern but
+encode static / case-class signatures respectively.
+
+**Acceptance criteria met:**
+
+- Consumer-side record-construction calls against restored types
+  resolve to a cross-assembly MemberRef pointing at the foreign
+  `AssemblyRef`'s `TypeRef`.
+- Signature encoding matches the in-bundle producer convention so
+  the runtime resolver matches.
+- 73 CLI + 843 emitter tests green; axiom + kernel-stub audits
+  clean.
+
+**What's next under #1229:**
+
+- Phase A.3.3.c.3.b — free function MemberRef allocation (mostly
+  identical, swap `buildInstanceMethodSig` for
+  `buildStaticMethodSig`, walk `IFunc` items, populate
+  `funcTokens`).
+- Phase A.3.3.c.3.c — union case ctor MemberRef allocation (each
+  case becomes its own nested TypeRef + ctor MemberRef; populate
+  `recordCtorTokens` keyed by the case-class FQN).
+- Phase A.4 — end-to-end Lyric test.
+- Phase B — JVM JAR resource kernel.
