@@ -197,8 +197,6 @@ val JK_STRING = 3
 val JK_NUMBER = 4
 val JK_TRUE   = 5
 
-// Read an optional string field.  Returns the field's string value if it
-// exists AND is a String; otherwise returns `fallback`.
 func getStr(elem: in JsonElement, name: in String, fallback: in String): String {
   match tryGetProperty(elem, name) {
     case None    -> fallback
@@ -208,8 +206,6 @@ func getStr(elem: in JsonElement, name: in String, fallback: in String): String 
   }
 }
 
-// Read an optional string field as `Option[String]`.  Returns `None` when
-// the field is absent OR the value isn't a String.
 func getOptStr(elem: in JsonElement, name: in String): Option[String] {
   match tryGetProperty(elem, name) {
     case None    -> None
@@ -219,9 +215,6 @@ func getOptStr(elem: in JsonElement, name: in String): Option[String] {
   }
 }
 
-// Read an optional bool field.  Returns true iff the field exists AND
-// its value is the JSON literal `true`; anything else (absent, false,
-// non-bool) returns false.  Matches the F# `getBoolInElem`.
 func getBool(elem: in JsonElement, name: in String): Bool {
   match tryGetProperty(elem, name) {
     case None    -> false
@@ -229,8 +222,6 @@ func getBool(elem: in JsonElement, name: in String): Bool {
   }
 }
 
-// Read an optional integer field.  Returns the field's Int value if it
-// exists AND is a Number; otherwise returns `fallback`.
 func getInt(elem: in JsonElement, name: in String, fallback: in Int): Int {
   match tryGetProperty(elem, name) {
     case None    -> fallback
@@ -245,10 +236,9 @@ func getInt(elem: in JsonElement, name: in String, fallback: in Int): Int {
   }
 }
 
-// Read an optional string-array field.  Returns each element's string
-// value; non-string elements are coerced to "" (matching the F#
-// behaviour, which calls `safeStr (inner.GetString()) ""`).  Returns
-// an empty list when the field is absent or isn't an Array.
+// Non-string elements coerce to "" — matches the F# `safeStr
+// (inner.GetString()) ""` so format-1/2 round-trips stay byte-stable
+// across the F# and self-hosted implementations.
 func getStrArray(elem: in JsonElement, name: in String): List[String] {
   val result: List[String] = newList()
   match tryGetProperty(elem, name) {
@@ -267,8 +257,6 @@ func getStrArray(elem: in JsonElement, name: in String): List[String] {
   }
 }
 
-// Read the `params` array.  Each entry is an object with `name` and
-// `type` string fields; absent entries default to "".
 func getParams(elem: in JsonElement): List[ContractParam] {
   val result: List[ContractParam] = newList()
   match tryGetProperty(elem, "params") {
@@ -290,7 +278,6 @@ func getParams(elem: in JsonElement): List[ContractParam] {
   }
 }
 
-// Parse one `decls` array entry into a `ContractDecl`.
 func parseDecl(el: in JsonElement): ContractDecl {
   ContractDecl(
     kind            = getStr(el, "kind", ""),
@@ -304,18 +291,12 @@ func parseDecl(el: in JsonElement): ContractDecl {
     params          = getParams(el))
 }
 
-/// Parse a `Lyric.Contract` JSON blob into a structured `Contract`.
-/// Returns `None` if the JSON is malformed.  Mirrors F#
-/// `Lyric.Emitter.ContractMeta.parseFromJson`; field defaults match
-/// exactly so format-1 and format-2 payloads round-trip identically.
-///
-/// Used by the self-hosted MSIL bridge's restored-dependency loader.
-@stable(since="0.1")
-pub func parseFromJson(json: in String): Option[Contract] {
-  if Str.isEmpty(Str.trim(json)) { return None }
-  val doc = parseJson(json)
-  defer { disposeJson(doc) }
-  val root = rootElement(doc)
+// Walk the parsed root.  Returns None when the root isn't a JSON object
+// (mirrors F# `_ -> None` for non-Object kinds).  Factored out so the
+// `defer { disposeJson(doc) }` lives at function-body top level — the
+// bootstrap emitter does not currently hoist defers from inside try
+// blocks.
+func parseFromRoot(root: in JsonElement): Option[Contract] {
   if valueKind(root) != JK_OBJECT { return None }
 
   val decls: List[ContractDecl] = newList()
@@ -338,4 +319,32 @@ pub func parseFromJson(json: in String): Option[Contract] {
     level         = getStr(root, "level", "runtime_checked"),
     formatVersion = getInt(root, "formatVersion", 1),
     decls         = decls))
+}
+
+// Parse + walk + dispose, with no try/catch.  Caller wraps in try.
+func parseAndWalk(json: in String): Option[Contract] {
+  val doc = parseJson(json)
+  defer { disposeJson(doc) }
+  parseFromRoot(rootElement(doc))
+}
+
+/// Parse a `Lyric.Contract` JSON blob into a structured `Contract`.
+/// Returns `None` if the JSON is malformed (syntactically invalid, root
+/// not an object, empty/whitespace).  Mirrors F#
+/// `Lyric.Emitter.ContractMeta.parseFromJson`; field defaults match
+/// exactly so format-1 and format-2 payloads round-trip identically.
+///
+/// Used by the self-hosted MSIL bridge's restored-dependency loader.
+@stable(since="0.1")
+pub func parseFromJson(json: in String): Option[Contract] {
+  if Str.isEmpty(Str.trim(json)) { return None }
+  // `parseJson` is backed by `System.Text.Json.JsonDocument.Parse`,
+  // which throws on syntactically invalid input — surface those as
+  // `None` so callers don't need their own try/catch (matches the F#
+  // `with _ -> None` clause).
+  return try {
+    parseAndWalk(json)
+  } catch Bug as _ {
+    None
+  }
 }

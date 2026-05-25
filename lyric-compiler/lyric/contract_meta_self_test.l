@@ -93,6 +93,23 @@ func testNonObjectRootReturnsNone(): Unit {
   }
 }
 
+// Syntactically invalid JSON → None (parser would otherwise panic with
+// a Bug from System.Text.Json).
+func testMalformedJsonReturnsNone(): Unit {
+  match parseFromJson("{not valid json") {
+    case None    -> ()
+    case Some(_) -> panic("malformed_json: expected None")
+  }
+  match parseFromJson("{\"unterminated\":") {
+    case None    -> ()
+    case Some(_) -> panic("malformed_json: unterminated value expected None")
+  }
+  match parseFromJson("garbage tokens here") {
+    case None    -> ()
+    case Some(_) -> panic("malformed_json: garbage expected None")
+  }
+}
+
 // `pure: true` and `requires`/`ensures` arrays parse correctly.
 func testPureAndContracts(): Unit {
   val json =
@@ -208,6 +225,7 @@ func main(): Int {
   testEmptyObjectDefaults()
   testEmptyStringReturnsNone()
   testNonObjectRootReturnsNone()
+  testMalformedJsonReturnsNone()
   testPureAndContracts()
   testBodyOptional()
   testParamsArray()
