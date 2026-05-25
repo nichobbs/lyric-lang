@@ -1218,7 +1218,7 @@ Every `pub` item in `stdlib/std/` is annotated. See `docs/10-stdlib-plan.md` §"
 
 Summary:
 - **Experimental:** `Std.Testing.Property`, `Std.Testing.Snapshot`, `Std.CoreProof`; HTTP retry/cancel/timeout helpers; time DTO-conversion and timezone-lookup helpers.
-- **Stable (`since="1.0"`):** `Std.Errors`, `Std.Parse`, `Std.Testing` (assertEqual/assertEqualInt/assertTrue), `Std.Collections`, `Std.String`, `Std.Console`, `Std.File`, `Std.Iter`, `Std.Math`, `Std.Stream`, `Std.Log`, `Std.Path`, `Std.Environment`, `Std.App`, `Std.Directory`, `Std.Json`, core HTTP types and methods, core time operations.
+- **Stable (`since="1.0"`):** `Std.Errors`, `Std.Parse`, `Std.Testing` (assertEqual/assertEqualInt/assertTrue/assertPanics/assertPanicsWith — see #1176 for the latter two), `Std.Collections`, `Std.String`, `Std.Console`, `Std.File`, `Std.Iter`, `Std.Math`, `Std.Stream`, `Std.Log`, `Std.Path`, `Std.Environment`, `Std.App`, `Std.Directory`, `Std.Json`, core HTTP types and methods, core time operations.
 
 ### Alternatives considered
 

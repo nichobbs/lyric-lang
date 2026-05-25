@@ -48,16 +48,15 @@ The filter matches on the full test name, including any grouping prefix you esta
 
 ## §15.2 Assertions
 
-`Std.Testing` ships a small, deliberately thin assertion vocabulary. There is no assertion library to learn; these six functions cover essentially everything:
+`Std.Testing` ships a small, deliberately thin assertion vocabulary. There is no assertion library to learn; these five functions cover essentially everything:
 
 | Function | What it does |
 |---|---|
-| `expect(condition)` | Fails if `condition` is `false` |
 | `assertTrue(condition, label)` | Fails if `condition` is `false`; prints `label` on failure |
 | `assertEqualInt(actual, expected, label)` | Fails if `actual != expected`; prints both values and `label` |
-| `assertEqual(actual, expected, label)` | Type-polymorphic version of `assertEqualInt` for any `Equals` type |
-| `assertNone(value, label)` | Fails if `value` is `Some(_)` |
-| `assertSome(value, label)` | Fails if `value` is `None` |
+| `assertEqual(actual, expected, label)` | String-equality assertion; prints both sides and `label` on failure |
+| `assertPanics(label, fn)` | Fails unless `fn()` panics — for pinning documented panic behaviour |
+| `assertPanicsWith(label, expectedSubstring, fn)` | Like `assertPanics`, additionally checks the panic message contains `expectedSubstring` |
 
 A complete test block using several of these:
 
