@@ -297,6 +297,7 @@
     <Compile Include="SelfHostedContractElaboratorTests.fs" />
     <Compile Include="SelfHostedTestSynthTests.fs" />
     <Compile Include="SelfHostedManifestTests.fs" />
+    <Compile Include="SelfHostedCfgTests.fs" />
     <Compile Include="SelfHostedVerifierTests.fs" />
     <Compile Include="SelfHostedGeneratorTests.fs" />
     <Compile Include="SelfHostedDerivesTests.fs" />

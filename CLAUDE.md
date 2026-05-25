@@ -633,6 +633,16 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     (M5.3 stage 1, D-progress-129).  Parses the subset of TOML used by the
     Lyric package system (`[package]`, `[project]`, `[dependencies]`,
     `[nuget]`, `[nuget.options]`, `[features]`).
+  - `cfg.l` — `Lyric.Cfg` compile-time feature erasure (D045 /
+    D-progress-299).  Self-hosted port of `bootstrap/src/Lyric.Emitter/Cfg.fs`.
+    Provides `applyCfgErasure(active, declared, sf): CfgErasureResult`
+    used by `Msil.Bridge.compileProjectToMsilWithFeatures` to drop
+    `@cfg(feature = "X")`-annotated items whose feature is inactive.
+    Emits `F0012` for malformed predicates and `F0013` for features
+    absent from the manifest's `[features]` table (typo guard, opt-in
+    via a non-empty declared set).  File-level `@cfg` annotations erase
+    every item in the file.  Boolean composition (`any` / `all` /
+    `not`) deferred to v1.1 per D045.
   - `manifest_bridge.l` — `Lyric.ManifestBridge` protocol bridge used by
     `SelfHostedManifest.fs` (D-progress-231).
   - `fmt/` — self-hosted formatter `Lyric.Fmt` (M5.3 stages 2–5);
@@ -671,7 +681,8 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
   - `lexer_self_test.l`, `parser_self_test.l`,
     `typechecker_self_test.l`, `modechecker_self_test.l`,
     `contract_elaborator_self_test.l`, `test_synth_self_test.l`,
-    `manifest_self_test.l`, `fmt_self_test.l`, `verifier_self_test.l` —
+    `manifest_self_test.l`, `fmt_self_test.l`, `cfg_self_test.l`,
+    `verifier_self_test.l` —
     self-test consumers run by the F# emitter test suite.
   `Lyric` is registered as a built-in head in `Emitter.fs:isBuiltinHead`,
   so `import Lyric.<X>` resolves under this directory.  The
