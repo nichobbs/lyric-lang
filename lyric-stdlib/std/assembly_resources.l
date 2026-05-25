@@ -22,6 +22,12 @@
 // many distinct assemblies — file a follow-up if that use case
 // surfaces.
 
+// .NET-only.  The underlying kernel binds `System.Reflection.Assembly`;
+// the JVM equivalent would wrap `java.util.jar.JarFile` (tracked in
+// #1229 Phase B).  Without this gate, JVM builds importing
+// `Std.AssemblyResources` would fail at link time because the kernel
+// externs target BCL types that don't exist there (#1249).
+@cfg(feature = "dotnet")
 package Std.AssemblyResources
 
 import Std.Core

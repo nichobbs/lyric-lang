@@ -71,11 +71,11 @@ pub record ContractEntry {
   json:        String
 }
 
-// Decode a UTF-8 byte slice to a JSON string, or None when the bytes
-// aren't valid UTF-8.  Callers treat None as "resource present but
-// unreadable", which is operationally equivalent to absent for
-// downstream consumers.
-func decodeJson(bytes: in slice[Byte]): Option[String] {
+// Decode a UTF-8 byte slice to a string, or None when the bytes aren't
+// valid UTF-8.  The slice is a Lyric.Contract resource payload — JSON
+// in practice — but this helper does no JSON-aware parsing; the name
+// reflects the byte-level operation (#1251).
+func decodeUtf8Resource(bytes: in slice[Byte]): Option[String] {
   Encoding.tryDecodeUtf8(bytes)
 }
 
@@ -87,12 +87,17 @@ func decodeJson(bytes: in slice[Byte]): Option[String] {
 /// project-as-DLL bundle (no top-level `Lyric.Contract`, only
 /// `Lyric.Contract.<Pkg>` resources), callers should use
 /// `readAllContractsFromFile` instead.
+///
+/// **Throws** on missing or unreadable `path` (the underlying BCL
+/// `Assembly.LoadFrom` raises `FileNotFoundException` /
+/// `BadImageFormatException`); callers that need a typed-error shape
+/// should wrap the call in `try` (#1252).
 @stable(since="0.1")
 pub func readFromFile(path: in String): Option[String] {
   val ar = AsmRes.openAssembly(path)
   match AsmRes.tryReadResource(ar, "Lyric.Contract") {
     case None        -> None
-    case Some(bytes) -> decodeJson(bytes)
+    case Some(bytes) -> decodeUtf8Resource(bytes)
   }
 }
 
@@ -114,7 +119,7 @@ pub func readAllContractsFromFile(path: in String): List[ContractEntry] {
   // 1. Legacy single-package form: a bare `Lyric.Contract`.
   match AsmRes.tryReadResource(ar, "Lyric.Contract") {
     case Some(bytes) -> {
-      match decodeJson(bytes) {
+      match decodeUtf8Resource(bytes) {
         case Some(json) -> result.add(ContractEntry(packageName = "", json = json))
         case None       -> ()
       }
@@ -133,7 +138,7 @@ pub func readAllContractsFromFile(path: in String): List[ContractEntry] {
       val pkgName = name.substring(prefix.length, name.length)
       match AsmRes.tryReadResource(ar, name) {
         case Some(bytes) -> {
-          match decodeJson(bytes) {
+          match decodeUtf8Resource(bytes) {
             case Some(json) ->
               result.add(ContractEntry(packageName = pkgName, json = json))
             case None -> ()

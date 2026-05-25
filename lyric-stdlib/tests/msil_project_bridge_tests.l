@@ -521,7 +521,11 @@ func testCfgErasureF0012Malformed(): Unit {
     "@cfg(\"experimental\")\n" +
     "pub func gated(): String { \"x\" }\n" +
     "\n" +
-    "func main(): Unit { println(0) }\n"))
+    // `main` body deliberately compiles cleanly — the test gates on
+    // the F0012 abort BEFORE typecheck runs.  Earlier versions used
+    // `println(0)` (Int, not String) which would have been a latent
+    // type error masked by the abort (#1233).
+    "func main(): Unit { println(\"unreachable\") }\n"))
   val empty: List[String] = newList()
   val ok = compileAndGetSucceeded("cfg-f0012", pkgs, "CfgF0012", empty, empty)
   assertTrue(not ok, "cfg_erasure_f0012_malformed: bridge should reject malformed @cfg")
@@ -535,6 +539,13 @@ func testCfgErasureF0012Malformed(): Unit {
 // Erasure still happens (the feature isn't in `active`), so we use a
 // fallback function to keep `main` runnable; we assert the build
 // succeeds and produces output.
+//
+// Known gap (#1234): this test asserts only that the build succeeded.
+// It does NOT verify F0013 actually fired — a regression that silently
+// dropped the warning would still pass.  The bridge writes diagnostics
+// directly to stderr via `reportAndAbort`; capturing them for assertion
+// needs a `Result`-shaped variant of `compileProjectToMsilWithFeatures`
+// that surfaces the diagnostic list to callers.
 func testCfgErasureF0013Typo(): Unit {
   val pkgs: List[ProjectPackagePayload] = newList()
   pkgs.add(mkPkg("CfgTypo.App",
