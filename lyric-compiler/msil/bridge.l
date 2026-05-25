@@ -20,6 +20,7 @@ import Lyric.Cfg as Cfg
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.Mono
 import Lyric.Derives
+import Lyric.RestoredPackages
 import Msil.Lowering
 import Msil.Codegen
 
@@ -111,8 +112,10 @@ pub func compileToMsil(
   val pkgName = segmentsToString(file.packageDecl.path.segments)
 
   // Build the codegen context — seeds a fresh LoweringCtx with all standard
-  // library AssemblyRef / TypeRef / MemberRef rows.
-  val cctx = newCodegenCtx(pkgName)
+  // library AssemblyRef / TypeRef / MemberRef rows.  Single-package
+  // compile path: no restored artifacts.
+  val emptyArtifacts: List[SynthesisedArtifact] = newList()
+  val cctx = newCodegenCtx(pkgName, emptyArtifacts)
 
   // Run the aspect weaver before the token pre-scan so that the pre-scan
   // sees the post-weave function list (renamed originals + synthesised wrappers).
@@ -181,10 +184,12 @@ pub func compileProjectToMsil(
   outputPath:    in String,
   stdlibSources: in List[String]
 ): Bool {
-  // Backward-compat shim: no feature flags.
-  val noFeatures: List[String] = newList()
-  compileProjectToMsilWithFeatures(packages, assemblyName, outputPath,
-                                    stdlibSources, noFeatures, noFeatures)
+  // Backward-compat shim: no feature flags, no restored artifacts.
+  val noFeatures: List[String]   = newList()
+  val noArtifacts: List[SynthesisedArtifact]  = newList()
+  compileProjectToMsilWithRestored(packages, assemblyName, outputPath,
+                                   stdlibSources, noFeatures, noFeatures,
+                                   noArtifacts)
 }
 
 /// Like `compileProjectToMsil` but threads `activeFeatures` /
@@ -206,6 +211,26 @@ pub func compileProjectToMsilWithFeatures(
   stdlibSources:    in List[String],
   activeFeatures:   in List[String],
   declaredFeatures: in List[String]
+): Bool {
+  // Forwarder: no restored artifacts.  Callers that need them use
+  // `compileProjectToMsilWithRestored` directly.
+  val noArtifacts: List[SynthesisedArtifact] = newList()
+  compileProjectToMsilWithRestored(packages, assemblyName, outputPath,
+                                   stdlibSources, activeFeatures, declaredFeatures,
+                                   noArtifacts)
+}
+
+/// Like `compileProjectToMsilWithFeatures` but accepts a list of
+/// `Lyric.RestoredPackages.SynthesisedArtifact`s for the consumer's
+/// restored dependencies and seeds them into `CodegenCtx.restoredArtifacts`.
+pub func compileProjectToMsilWithRestored(
+  packages:          in List[ProjectPackagePayload],
+  assemblyName:      in String,
+  outputPath:        in String,
+  stdlibSources:     in List[String],
+  activeFeatures:    in List[String],
+  declaredFeatures:  in List[String],
+  restoredArtifacts: in List[SynthesisedArtifact]
 ): Bool {
   if packages.count == 0 {
     return false
@@ -268,7 +293,7 @@ pub func compileProjectToMsilWithFeatures(
   // ONE shared cctx — the persistent `nextMethodDefRow` / `nextFieldDefRow`
   // counters in `CodegenCtx` thread row numbering across calls.  The cctx's
   // Assembly row is named after the bundle, not any individual package.
-  val cctx = newCodegenCtx(assemblyName)
+  val cctx = newCodegenCtx(assemblyName, restoredArtifacts)
 
   val liftedFiles: List[SourceFile] = newList()
   var li = 0
