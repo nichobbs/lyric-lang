@@ -5531,6 +5531,50 @@ func lookupRestoredTypeRefRow(cctx: in CodegenCtx, packageName: in String,
   }
 }
 
+// Split a dotted package name into (namespace, simpleName).  The
+// namespace is everything up to the LAST '.', the simple name is
+// everything after.  Pre-allocated as a 2-element list because Lyric
+// doesn't expose tuples cleanly through extern types.  Examples:
+//   "MyLib"      → ("",      "MyLib")
+//   "MyApp.Db"   → ("MyApp", "Db")
+//   "A.B.C.D"    → ("A.B.C", "D")
+func splitPackageName(pkgName: in String): List[String] {
+  val parts: List[String] = newList()
+  val lastDot = pkgName.lastIndexOf(".")
+  if lastDot < 0 {
+    parts.add("")
+    parts.add(pkgName)
+  } else {
+    parts.add(pkgName.substring(0, lastDot))
+    parts.add(pkgName.substring(lastDot + 1, pkgName.length - lastDot - 1))
+  }
+  parts
+}
+
+// Look up (or allocate) the TypeRef row for a restored package's
+// free-function host class.  The in-bundle emitter puts every
+// free function on a TypeDef whose name matches the package name
+// (`MPFuncs(hostClass = pkgName, ...)`), so the foreign DLL has the
+// same shape.  Cached under "<pkg>/host" in `ffiTypeRefs` so multiple
+// `registerRestoredFreeFunc` calls share one TypeRef.
+func ensureHostClassTypeRefRow(cctx: in CodegenCtx,
+                               packageName: in String,
+                               asmRefRow: in Int): Int {
+  val key = packageName + "/host"
+  if cctx.ffiTypeRefs.containsKey(key) {
+    match mapGet(cctx.ffiTypeRefs, key) {
+      case Some(row) -> return row
+      case None      -> ()
+    }
+  }
+  val parts     = splitPackageName(packageName)
+  val nsPart    = parts[0]
+  val classPart = parts[1]
+  val row = ctxAddTypeRef(cctx.lctx, nsPart, classPart, asmRefRow)
+  cctx.ffiTypeRefs.add(key, row)
+  row
+}
+
 // Register a record's ctor as a cross-assembly MemberRef in
 // `recordCtorTokens`.  The ctor's signature mirrors the in-bundle
 // `lowerMRecord` convention: HASTHIS, returns void, one param per
@@ -5565,18 +5609,61 @@ func registerRestoredRecordCtor(cctx: in CodegenCtx,
   cctx.recordCtorTokens.add(className, 0x0A000000 + memberRow)
 }
 
-// Walk every IRecord item in the artifact's parsed source and seed
-// its ctor MemberRef token.  Skips records whose TypeRef row wasn't
-// allocated (e.g. private records that didn't surface as type-shaped
-// decls in the contract).
-func registerRestoredRecordCtors(cctx: in CodegenCtx,
-                                 art: in SynthesisedArtifact): Unit {
+// Register a free function's MemberRef on the restored package's
+// host class (TypeDef matching the package name).  Signature uses
+// the static method calling convention (no HASTHIS); returns the
+// function's declared return type or MVoid when absent.  Skipped
+// if `funcTokens` already has the FQN (in-bundle wins).
+func registerRestoredFunc(cctx: in CodegenCtx,
+                          packageName: in String,
+                          fn: in FunctionDecl): Unit {
+  // Skip private functions — they don't reach the foreign DLL's
+  // public surface and there's no MemberRef to point at.
+  val isPub = match fn.visibility {
+    case Some(_) -> true
+    case None    -> false
+  }
+  if not isPub { return }
+
+  val fqn = packageName + "." + fn.name
+  if cctx.funcTokens.containsKey(fqn) { return }
+
+  val asmRefRow  = ensureAssemblyRefForArtifact(cctx, packageName)
+  val hostRefRow = ensureHostClassTypeRefRow(cctx, packageName, asmRefRow)
+
+  val paramTypes: List[MsilType] = newList()
+  var pi = 0
+  while pi < fn.params.count {
+    paramTypes.add(typeExprToMsilCtx(cctx, fn.params[pi].ty, packageName))
+    pi = pi + 1
+  }
+  val retType = match fn.ret {
+    case Some(te) -> typeExprToMsilCtx(cctx, te, packageName)
+    case None     -> MVoid
+  }
+
+  val funcSig   = buildStaticMethodSig(paramTypes, retType)
+  val sigKey    = "restored_func_" + fqn
+  val memberRow = ctxAddMemberRef(cctx.lctx, hostRefRow, fn.name,
+                                   sigKey, funcSig)
+  cctx.funcTokens.add(fqn, 0x0A000000 + memberRow)
+}
+
+// Walk the artifact's parsed source and seed MemberRef tokens for
+// every record ctor and every public free function.  Skips records
+// whose TypeRef wasn't allocated (e.g. items elided from the
+// contract) and private funcs (no public surface).
+func registerRestoredMembers(cctx: in CodegenCtx,
+                              art:  in SynthesisedArtifact): Unit {
   val items = art.source.items
   var i = 0
   while i < items.count {
     match items[i].kind {
       case IRecord(decl) -> {
         registerRestoredRecordCtor(cctx, art.packageName, decl)
+      }
+      case IFunc(decl) -> {
+        registerRestoredFunc(cctx, art.packageName, decl)
       }
       case _ -> ()
     }
@@ -5609,7 +5696,7 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
     // the contract decls so we get structured field types for
     // signature encoding.  Free funcs and union case ctors land in
     // a follow-up slice.
-    registerRestoredRecordCtors(cctx, art)
+    registerRestoredMembers(cctx, art)
     ai = ai + 1
   }
 }
