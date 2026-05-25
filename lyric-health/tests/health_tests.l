@@ -101,11 +101,24 @@ test "three chained checks are stored in insertion order" {
 // for an unimplemented health pipeline (#367: a silent stub on a
 // health endpoint would let a degraded service ship as healthy).
 //
-// The previous tests asserted "handler returns Ok with body containing
-// 'ok'" — that was testing the silent-stub behaviour, which we have
-// now closed out.  A test that exercises the panic-on-call contract
-// requires panic-catching infrastructure that the test runner does
-// not yet expose (#1112), so the surface is intentionally untested
-// here: the registry-construction tests above remain to cover the
-// shape of the data, and the panic itself is the documented
-// production-incorrectness gate.
+// The tests below pin the panic contract via `Std.Testing.assertPanicsWith`
+// (#1176).  Without these, a refactor of `runChecks` could regress to a
+// silent `Ok("...")` stub without CI catching it.  The substring matched
+// is the most stable part of the message: the literal "kernel dispatcher
+// not yet implemented" — a future change of the message body wider than
+// that is a deliberate API change that should be reflected in updated
+// tests, not silently allowed.
+
+test "liveness handler panics with kernel-dispatcher-missing message" {
+  assertPanicsWith(
+    "liveness handler panics",
+    "kernel dispatcher not yet implemented",
+    { -> val _ = Health.__handleLiveness() })
+}
+
+test "readiness handler panics with kernel-dispatcher-missing message" {
+  assertPanicsWith(
+    "readiness handler panics",
+    "kernel dispatcher not yet implemented",
+    { -> val _ = Health.__handleReadiness() })
+}
