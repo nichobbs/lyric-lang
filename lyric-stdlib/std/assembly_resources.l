@@ -33,7 +33,11 @@ import Std.AssemblyResourcesHost
 /// `opaque type` (not `pub record`) keeps the `RuntimeAssembly` kernel
 /// extern type out of consumers' view — the only legal use of an
 /// `AssemblyResources` value outside this package is to pass it to
-/// `resourceNames` / `tryReadResource` / `closeAssemblyResources`.
+/// `resourceNames` / `tryReadResource`.
+///
+/// Lifetime: no explicit close.  See the package header for the
+/// rationale — `Assembly.LoadFrom` registers with the process
+/// `AssemblyLoadContext` and is collected with it.
 @stable(since="0.1")
 pub opaque type AssemblyResources {
   asm:   RuntimeAssembly

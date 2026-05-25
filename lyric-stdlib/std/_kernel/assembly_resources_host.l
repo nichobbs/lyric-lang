@@ -9,11 +9,13 @@
 // (Lyric doesn't expose unsafe pointers) or a ~12-extern chain
 // through the `BlobReader` value-type API.  `Assembly.LoadFrom` ships
 // in the same `System.Runtime.dll` (no new BCL dep) and reduces the
-// extern surface to 6 calls + 3 types.  The trade-off is that
-// `LoadFrom` JIT-resolves the assembly into the current
-// `AssemblyLoadContext`; for compile-time consumers like the
-// self-hosted MSIL bridge this overhead is irrelevant, and the
-// process-lifetime accumulation matches the F# emitter's
+// extern surface to 8 host calls + 3 types — 6 read/walk calls plus
+// the `hostStreamDispose` / `hostMemoryStreamDispose` pair so callers
+// reading many resources release file handles deterministically.
+// The trade-off is that `LoadFrom` JIT-resolves the assembly into
+// the current `AssemblyLoadContext`; for compile-time consumers
+// like the self-hosted MSIL bridge this overhead is irrelevant, and
+// the process-lifetime accumulation matches the F# emitter's
 // `Mono.Cecil.AssemblyDefinition` semantics (which also doesn't
 // dispose).
 //
