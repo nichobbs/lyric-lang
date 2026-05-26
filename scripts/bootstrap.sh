@@ -349,9 +349,20 @@ EOF
     die "stage-1 CLI bundle: Lyric.Jobs.Host.dll not found in publish output"
   fi
 
-  # `Lyric.Mail.Host` was removed in #1054 — the lyric-mail SMTP backend
-  # now uses typed externs directly (no F# shim).  The publish step is
-  # skipped; previously it died because the .fsproj no longer exists.
+  # `Lyric.Mail.Host.dll` is the Phase-4 host shim for #733 — bridges the
+  # lyric-mail SMTP backend through `Lyric.Mail.SmtpHost` (BCL System.Net.Mail).
+  # No NuGet dependencies; MailKit / SES / SendGrid shims land as separate
+  # phases under #780 with their own Testcontainers infrastructure.
+  dotnet publish "$COMPILER_DIR/src/Lyric.Mail.Host/Lyric.Mail.Host.fsproj" \
+    --configuration Release \
+    --output "$BUILD_DIR/stage0-publish-mail" \
+    --nologo -v q
+  if [[ -f "$BUILD_DIR/stage0-publish-mail/Lyric.Mail.Host.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish-mail/Lyric.Mail.Host.dll" "$STAGE1_DIR/"
+    copied=$((copied + 1))
+  else
+    die "stage-1 CLI bundle: Lyric.Mail.Host.dll not found in publish output"
+  fi
 
   # `Lyric.Mq.Host.dll` is the Phase-5 host shim for #733 — bridges the
   # lyric-mq in-memory queue backend through `Lyric.Mq.InMemoryHost`.  No
