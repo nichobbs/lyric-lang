@@ -1,11 +1,22 @@
-// weaver_ci_test.l — CI coverage for the three todo/06 weaver features
-// (#683 config wiring, #682 call prelude, #681 @inline_template).
+// weaver_ci_test.l — companion test program for the three todo/06 weaver
+// features (#683 config wiring, #682 call prelude, #681 @inline_template).
 //
-// Compiled and executed by the F# Expecto runner at
-// bootstrap/tests/Lyric.Emitter.Tests/SelfHostedWeaverTests.fs.
-// This is a regular Lyric program (no @test_module) so the bootstrap
-// emitter can compile it directly.  Exit 0 + "ok" in stdout means
-// every assertion held.  Closes #1347.
+// **CI status:** not yet wired into CI.  Adding a SelfHostedXxxTests.fs
+// F# runner shim is prohibited by CLAUDE.md ("no new F# code; do not add
+// a SelfHostedXxxTests.fs runner for a new self-test").  This file will be
+// picked up by `lyric test` once issue #1324 lands the Lyric-native
+// infrastructure that lets the AOT CLI load lyric-compiler/lyric/**/*.l.
+//
+// Manual run (after building the AOT entry point):
+//
+//   ./scripts/bootstrap.sh --stage 1
+//   dotnet build bootstrap/src/Lyric.Cli.Aot
+//   bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric \
+//       run lyric-compiler/lyric/weaver_ci_test.l
+//
+// Unlike weaver_self_test.l (which is @test_module), this file is a
+// regular Lyric program so it can also be compiled directly by the
+// bootstrap emitter.  Exit 0 + "ok" in stdout means every assertion held.
 package Lyric.WeaverCiTest
 
 import Std.Core

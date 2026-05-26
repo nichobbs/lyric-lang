@@ -302,7 +302,6 @@
     <Compile Include="SelfHostedContractMetaTests.fs" />
     <Compile Include="SelfHostedRestoredPackagesTests.fs" />
     <Compile Include="SelfHostedVerifierTests.fs" />
-    <Compile Include="SelfHostedWeaverTests.fs" />
     <Compile Include="SelfHostedGeneratorTests.fs" />
     <Compile Include="SelfHostedDerivesTests.fs" />
     <Compile Include="SelfHostedMonoTests.fs" />

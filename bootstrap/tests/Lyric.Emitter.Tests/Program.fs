@@ -300,7 +300,6 @@ let main argv =
             SelfHostedContractMetaTests.tests
             SelfHostedRestoredPackagesTests.tests
             SelfHostedVerifierTests.tests
-            SelfHostedWeaverTests.tests
             SelfHostedGeneratorTests.tests
             SelfHostedDerivesTests.tests
             SelfHostedMonoTests.tests
