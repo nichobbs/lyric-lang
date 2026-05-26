@@ -226,7 +226,7 @@ record Counter {
 }
 ```
 
-The `var` prefix is accepted by the parser. The bootstrap parser consumes the keyword but does not yet carry a mutability flag in `FieldDecl` — the resulting AST node is identical to a non-`var` field. Full AST tracking and mutability enforcement (preventing external reassignment, restricting write sites to the owning package) are deferred to the T6+ type-checker tier; the bootstrap emitter currently treats `var` and non-`var` fields identically at the IL level. The syntax is intentionally similar to local `var` declarations so that the intention is clear in code review.
+The `var` prefix is accepted by the parser. Both the self-hosted parser (`lyric-compiler/lyric/parser/`) and the stage-0 F# bootstrap parser consume the keyword but do not yet carry a mutability flag in `FieldDecl` — the resulting AST node is identical to a non-`var` field. Full AST tracking and mutability enforcement (preventing external reassignment, restricting write sites to the owning package) are tracked as T6+ type-checker work; the emitter currently treats `var` and non-`var` fields identically at the IL/bytecode level. The syntax is intentionally similar to local `var` declarations so that the intention is clear in code review.
 
 ### 2.5 Unions (sum types)
 
@@ -1168,7 +1168,7 @@ API surface and stability guarantees: governed by `@stable(since="1.0")` / `@exp
 
 `lyric test <source.l>` compiles a `@test_module` file, synthesises a runnable program from its `test "title" { … }` items, and reports results in TAP-shaped form (`1..N`, `ok N - title` / `not ok N - title`, summary counts). Exit codes: `0` (every selected test passed), `1` (at least one failure), `2` (compilation error), `64` (usage error).
 
-`--filter <substring>` runs only tests whose title contains `<substring>`; non-matching tests are reported as `# skip` lines. `--list` prints titles only without compiling. `property` declarations parse but skip at runtime in v1 (`# skip` line); `fixture` declarations are not yet supported (`T0901`). v2 adds `--manifest` discovery, cross-package non-`pub` access (§3.2), property execution (`--properties`), and doctest extraction. See `docs/24-test-runner-plan.md` for the bootstrap-grade design.
+`--filter <substring>` runs only tests whose title contains `<substring>`; non-matching tests are reported as `# skip` lines. `--list` prints titles only without compiling. `property` declarations parse but skip at runtime in v1 (`# skip` line); `fixture` declarations are not yet supported (`T0901`). v2 adds `--manifest` discovery, cross-package non-`pub` access (§3.2), property execution (`--properties`), and doctest extraction. See `docs/24-test-runner-plan.md` for the v1 design and v2 scope.
 
 ### 13.3 Verifier
 
@@ -1376,16 +1376,46 @@ The aspect name in `@no_aspect("Name")` is a string literal matching the aspect'
 | A0008 | Cycle in `wraps:`/`inside:` ordering graph |
 | A0009 | Aspect defines neither `around` advice nor any contract clause |
 | A0013 | `wraps:`/`inside:` references an aspect not declared in the package |
+| A0042 | `@inline_template` aspect body references `args.<field>` that does not match any parameter of the matched function |
+| A0043 | `call.<field>` references an ambient field the weaver does not recognise (recognised: `shortName`, `qualifiedName`, `modulePath`, `sourceLocation`, `annotations`, `aspect`) |
+| A0044 | `config.<field>` references a `config { }` field declared without a literal default; env-var resolution per `docs/26 §8` is a follow-up — add a default or remove the reference |
 
 A0007, A0008, A0009, and A0013 are specified but not yet emitted by the current compiler. Aspects without an `around` body are silently skipped by the weaver; unresolved `wraps:`/`inside:` names are silently ignored. These checks are planned for a follow-up milestone.
+
+A0042 and A0043 are emitted by the self-hosted weaver at weave time
+(`lyric-compiler/lyric/weaver/weaver.l`). The L006 lint warning
+(`@inline_template has no effect`) was removed when weave-time
+`args.<field>` rewriting landed — A0042 supersedes its purpose.
+Diagnostic codes A0027 through A0041 are reserved for in-flight
+aspect work and not yet emitted; the jump from A0026 to A0042
+preserves the allocated A0040 (`call is not in scope inside
+requires:`) and A0041 (template-imports diagnostic referenced in
+`docs/27-aspect-libraries.md` §6.2.1).
 
 ### 14.7 Bootstrap limitations (current milestone)
 
 The following are specified but not yet fully woven:
 
-- The `call` ambient value (`call.shortName`, `call.elapsed`, etc.) inside the around body — not yet parsed or woven.
-- `config {}` blocks in aspects — parsed by the compiler but the weaver does not act on them.
-- `pub aspect` templates and consumer-side instantiation (`aspect X from Pkg.Y`) — parsed by the compiler but the weaver does not act on them.
+- The `call` ambient value's runtime fields — `call.elapsed`
+  (timestamp around `proceed`) and `call.caller` (caller-site
+  location) need runtime instrumentation that is deferred to
+  issue #1298. The compile-time-known fields (`shortName`,
+  `qualifiedName`, `modulePath`, `sourceLocation`, `annotations`,
+  `aspect`) are wired and rewritten by the weaver as
+  `__lyric_call_<name>` locals. Concrete shapes: `shortName`,
+  `qualifiedName`, `modulePath`, `aspect` are `String`;
+  `sourceLocation` is `String` of the form
+  `"<packagePath>:<line>"` (or `"<unknown>:<line>"` when the
+  package path is empty); `annotations` is `slice[String]`
+  carrying the matched function's annotation short-names.
+  References to `call.elapsed` / `call.caller` surface as A0043
+  weave-time diagnostics.
+- `pub aspect` templates and consumer-side instantiation
+  (`aspect X from Pkg.Y`) — parsed by the compiler but the weaver
+  does not act on them.
+
+`config {}` blocks and `@inline_template` `args.<field>` rewriting
+are now fully woven by the self-hosted weaver (todo/06 #683 / #681).
 
 ---
 

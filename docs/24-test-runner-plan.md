@@ -3,22 +3,23 @@
 Status: shipped (v1 — D-progress-138).
 
 This document describes the native `lyric test` command and the
-`@test_module` / `test "…" { … }` surface it consumes. v1 is a
-*bootstrap-grade* runner: enough to retire the F# Expecto bridge for
-`lyric-stdlib/tests/*_tests.l` and let the language reference's promised
-surface (§3.2, §13.2) compile end-to-end. Property-based testing,
-fixtures, snapshot infrastructure beyond `Std.Testing.snapshot`,
-parallelism, JUnit XML output, doctests, and contract-based property
-auto-derivation are all explicitly Phase 3+ work.
+`@test_module` / `test "…" { … }` surface it consumes.  v1 scope:
+discover and execute every `@test_module` file under a manifest's
+test root and surface pass/fail per test, with the assertion API
+the language reference §3.2 / §13.2 specifies.  Property-based
+testing, fixtures, snapshot infrastructure beyond
+`Std.Testing.snapshot`, parallelism, JUnit XML output, doctests,
+and contract-based property auto-derivation are explicitly out of
+v1 scope and tracked for follow-up milestones.
 
-The motivation for finishing v1 now: the panic-on-failure idiom we
-ship today (`assertEqual` panics → exit 0 = pass) couples the stdlib
-test suite to the F# Expecto runner in
-`bootstrap/tests/Lyric.Emitter.Tests/StdlibLyricTests.fs`. Once the
-self-hosted compiler retires the F# host (Phase 5 §M5.4), there is
-no host left to discover the tests. Shipping a native runner now is
-both a Phase 5 deliverable and an immediate quality-of-life win for
-the existing stdlib test suite.
+Background — why v1 was urgent: the panic-on-failure idiom
+(`assertEqual` panics → exit 0 = pass) used to couple the stdlib
+test suite to the F# Expecto runner at
+`bootstrap/tests/Lyric.Emitter.Tests/StdlibLyricTests.fs`.  Without
+a native runner, retiring the F# bootstrap host (per
+`docs/23-fsharp-shim-elimination.md`) would have left no discovery
+mechanism in place.  v1 ships the native runner so the discovery
+path lives in Lyric.
 
 ### 1. Surface
 

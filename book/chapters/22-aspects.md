@@ -156,11 +156,46 @@ around(args) -> ret {
 
 The following features are designed and specified in `docs/26-aspects.md` but not yet wired in the compiler:
 
-**`call` context.** A future milestone adds an ambient `call` value inside the around body that exposes metadata about the weave site: `call.shortName`, `call.qualifiedName`, `call.modulePath`, `call.elapsed` (elapsed time after `proceed`), `call.annotations`, and `call.sourceLocation`. The syntax will be `around(call) -> ret { ... }`.
+**`call` context.** Inside the `around` body, the ambient `call` value
+exposes compile-time-known metadata about the weave site: `call.shortName`,
+`call.qualifiedName`, `call.modulePath`, `call.sourceLocation`,
+`call.annotations`, and `call.aspect` are materialised as locals by the
+weaver and rewritten in place.  Concrete shapes: `shortName`,
+`qualifiedName`, `modulePath`, and `aspect` are `String`;
+`sourceLocation` is `String` of the form `"<packagePath>:<line>"` (e.g.
+`"My.Pkg:42"`, or `"<unknown>:<line>"` when the package path is
+empty); `annotations` is `slice[String]` carrying the matched
+function's annotation short-names.  The weaver pre-scans the body and
+only emits the locals that are actually read — aspects that don't
+reference `call.*` produce byte-identical wrappers to the weaver's
+pre-tier-6 output. `call.elapsed` and `call.caller` need runtime
+instrumentation (timestamp capture around `proceed`, caller-site stack
+walk) and are not yet wired; references to either surface as an
+**A0043** weave-time diagnostic naming the unrecognised field and
+listing the recognised ones. Follow-up tracked in issue #1298.
 
-**`config {}` injection.** The `config { }` block inside an aspect body parses and is stored in the AST, but the weaver does not yet inject the config values at weave sites. The block is useful for documentation and will be wired in a follow-up milestone.
+**`config {}` injection.** Each `config { }` field with a literal
+default is materialised by the weaver as a synthetic
+`val __aspect_cfg_<name>: <ty> = <default>` at the top of the woven
+body, and `config.<name>` member accesses inside the body are
+rewritten to that local. Fields without a literal default that the
+body **never references** are skipped entirely. Fields without a
+literal default that the body **does reference** are also materialised
+— with a `panic("config '<name>' has no default ...")` stub
+initializer — and an **A0044** weave-time diagnostic fires naming the
+aspect, the matched function, and the offending field. The panic stub
+keeps the body type-checkable so the user sees A0044 rather than a
+confusing downstream codegen error; compilation halts on A0044 before
+the panic can run. Runtime env-var resolution for no-default fields
+per the config-block design is a follow-up. The prelude is lazy:
+aspects that never read `config.*` get no synthetic locals.
 
-**`@inline_template` (C-mode).** The `@inline_template` annotation on a `pub aspect` is parsed but has no effect — C-mode body re-compilation in the consumer package is not yet implemented. The linter emits an L006 warning when it is present.
+**`@inline_template` (C-mode).** Aspects whose enclosing item carries
+`@inline_template` get `args.<field>` rewrites at weave time: each
+field name must match a parameter of the matched function, and
+mismatches surface as an **A0042** weave-time diagnostic naming the
+aspect, the matched function, and the offending field. The old L006
+lint warning has been removed since the rewriting now lands.
 
 The rest of the aspect system works end-to-end: write an aspect in a package, publish it, consume it in another package, and the compiler weaves it over the matched functions at build time. Aspect templates (`pub aspect` without `matches:`), pointcut predicates (`annotated:`, `visibility:`, `signature: returns`), composition ordering (`wraps:` / `inside:`), and the `except name in { … }` exclusion clause are all fully shipped.
 

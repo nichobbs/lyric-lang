@@ -253,9 +253,26 @@ written by hand do get lowered (`:1783-1827`).
   `cctx.externTypeNames`; call sites where the receiver resolves to an
   extern type name emit a direct `callvirt` without requiring `@externTarget`
   on each method.  Cross-assembly types not in `Msil.Ffi.clrAssemblyForType`
-  still default to `System.Runtime`, which silently breaks for non-forwarded types.
+  still default to `System.Runtime`, which silently breaks for non-forwarded
+  types — production-grade resolution requires the fallback to either look
+  the assembly up via reflection or emit a hard diagnostic naming the
+  unresolved type.  Track as a follow-up issue before this is removed from
+  Band 5's open list.
 - **`@externTarget` on Lyric generic functions.**  Q022-4 (`docs/36-v1-roadmap.md`):
   not implemented — only fully-monomorphised externs resolve.
+- **Stdlib `IFunc` imports asymmetric between single-file and project
+  bridges.**  `compileToMsil` (single-file `lyric run`) imports stdlib
+  functions for typecheck resolution; `compileProjectToMsilWithRestored`
+  (multi-package builds) imports types only.  The single-file path has
+  advisory `reportDiagnostics`; the project path uses
+  `reportAndAbort`, which would fire T0010 storms when stdlib functions
+  reference types defined in other (yet-unregistered) stdlib modules.
+  Built-in calls (`println`, `panic`, `assert`, …) still resolve through
+  `tryBuiltinFunc` in both paths, so the asymmetry doesn't bite for
+  built-ins.  A multi-package user project calling a **non-builtin**
+  stdlib function (e.g. `Std.Parse.tryParseInt`) hits the gap.
+  Two-phase stdlib registration (types first, then functions) is the
+  planned fix; tracked in #1357.
 
 ### 3.6  Test coverage shape
 
@@ -663,7 +680,13 @@ lowering both shipped._
 ### Band 5 — Self-hosted ports of F# domain logic
 
 These can run in parallel with Bands 2–4.  Each gets a self-hosted Lyric
-package + bridge protocol + F# shim, per `SelfHostedFmt.fs` pattern:
+package called from the in-process MSIL bridge.  The historical
+`SelfHostedFmt.fs` pattern (Lyric package + F# bridge shim) is the
+legacy template that earlier Band 5 ports used; new ports per the
+CLAUDE.md "no new F# code" policy do **not** add new `SelfHostedXxx.fs`
+shims — they call into the Lyric package directly through the
+in-process bridge.  Existing `SelfHosted*.fs` shims are on the deletion
+schedule listed in `docs/23-fsharp-shim-elimination.md`.
 
 - `Lyric.ContractMeta` — partially shipped (`contract_meta.l`); finish
   per `docs/36-v1-roadmap.md` R4.

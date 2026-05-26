@@ -262,8 +262,10 @@ service ProductService {
 
 Streaming requires `async func` and a `Stream[T]` type.  These are
 planned for M1.4+ (docs/05-implementation-plan.md).  The design is
-forward-looking; bootstrap-grade gRPC ships unary-only and emits
-`A0020`-style warnings on streaming annotations until M1.4 lands.
+forward-looking; v1 of `lyric-grpc` ships unary-only and emits a
+diagnostic on streaming annotations.  Streaming is tracked under
+Q-G-XXX (file before implementation begins) — to be lifted from
+SUGGESTION to a v1.x deliverable once `Stream[T]` lands.
 
 ### 5.1 `Stream[T]`
 

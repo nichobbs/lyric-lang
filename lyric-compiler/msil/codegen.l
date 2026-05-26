@@ -34,6 +34,7 @@ import Std.Collections
 import Std.String
 import Lyric.Parser
 import Lyric.RestoredPackages
+import Lyric.Weaver as Weaver
 import Msil.Lowering
 import Msil.Ffi
 
@@ -5179,10 +5180,31 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   var hasMain = false
 
   // ── Band-2: aspect pre-pass ───────────────────────────────────────────────
-  // Before lowering functions, run the aspect weaver to rename matched
-  // functions and synthesise wrapper functions.  The weaver walks all IAspect
-  // and IFunc items in the source file and returns a rewritten item list.
-  val weavedFile = weaveAspectsMsil(file)
+  //
+  // **Pre-condition:** every caller of `codegenMPackage` is expected to
+  // have already woven the file via `Lyric.Weaver.weaveFileWithDiags`
+  // (or equivalent) and aborted on any A0042 / A0043 / A0044 errors.
+  // Today the only caller is `Msil.Bridge` (single-file and project
+  // paths), which does this — so the second call below is an idempotent
+  // safety net (the weaver short-circuits when no `IAspect` items
+  // remain after the first weave).
+  //
+  // We hard-enforce the pre-condition: panic if the second weave
+  // surfaces any diagnostics.  By construction, a properly-woven file
+  // has no remaining `IAspect` items, so the weaver emits no diagnostics
+  // — a non-empty list here means a caller bypassed the bridge and
+  // is feeding raw source into codegen, which would otherwise silently
+  // drop the diagnostics and produce wrong code.  Hard-fail instead of
+  // quietly miscompiling.
+  val weaveSafety = Weaver.weaveFileWithDiags(file)
+  if weaveSafety.diagnostics.count > 0 {
+    panic("codegenMPackage: weaver produced " +
+          toString(weaveSafety.diagnostics.count) +
+          " diagnostic(s) on the second-pass weave — caller bypassed " +
+          "Msil.Bridge's pre-weave + reportAndAbort contract.  Call " +
+          "Weaver.weaveFileWithDiags(file) first and abort on errors.")
+  }
+  val weavedFile = weaveSafety.file
 
   // ── #878: IImpl pre-pass ──────────────────────────────────────────────────
   // Mirrors the JVM backend's approach (`Jvm.Codegen.codegenPackage`): scan

@@ -223,22 +223,22 @@ routing each to the appropriate handler by name.
 ### 4.2 Custom generator invocation
 
 Custom generators run as a **source pre-processing step** inside the self-hosted
-`Lyric.Cli` pipeline, before the file is handed to the F# bootstrap for compilation.
+compiler pipeline, before the file enters the in-process MSIL bridge (or the
+stage-0 `--internal-build` path that backs it during the bootstrap transition).
 No new F# shim is needed. The steps are:
 
 1. Resolve the generator package from the lock file (must already be present; `lyric
    restore` is a prerequisite, like any other dependency).
-2. Compile the generator DLL with `--internal-build` (cached after first compile in
-   the build session).
+2. Compile the generator DLL (cached after first compile in the build session).
 3. Invoke the compiled DLL as a subprocess via a `Process.run` kernel extern:
    serialise the `GeneratorRequest` to JSON on stdin; read the `GeneratorResponse`
    JSON from stdout.
 4. If any `Error`-severity diagnostics are present, fail the build with G0005 (report
    each as a child note).
 5. Append the returned `lyricSource` to the source text and add `additionalImports`
-   to the import list; pass the augmented source to `--internal-build` as normal.
+   to the import list; pass the augmented source to the compiler as normal.
 
-The F# bootstrap compiles the augmented file like any other Lyric source and never
+The compiler processes the augmented file like any other Lyric source and never
 observes the `@generate(Pkg.Name)` annotation directly.
 
 ### 4.3 Invocation granularity

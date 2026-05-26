@@ -185,8 +185,15 @@ pub func proveSourceWithOptions(source: in String, allowUnverified: in Bool): Pr
   // 4. Aspect weave (#336).  Replaces each matched IFunc with a renamed
   //    `__aspect_target` plus a wrapper carrying the composed contracts
   //    so the verifier sees the body the runtime executes.  Identity-op
-  //    for files without any `aspect` block.
-  val wovenFile = weaveFile(parsed.file)
+  //    for files without any `aspect` block.  Uses the with-diagnostics
+  //    variant so weave-time errors (A0042 args-mismatch on
+  //    @inline_template aspects, A0043 unknown call.<field>, A0044
+  //    config.<no-default>) surface in the proof summary instead of
+  //    being silently dropped.
+  val wovenResult = weaveFileWithDiags(parsed.file)
+  val wovenFile   = wovenResult.file
+  val weaveDiags  = wovenResult.diagnostics
+  appendDiags(allParseDiags, weaveDiags)
 
   // 5. VC generation against the woven file.
   val (goals, vcDiags) = goalsForFile(wovenFile, level)

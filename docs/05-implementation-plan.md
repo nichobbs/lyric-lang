@@ -80,7 +80,17 @@ Iterate based on feedback. Do not start Phase 1 with unresolved fundamentals.
 
 ### Architecture
 
+The diagram below describes the **stage-0 F# bootstrap compiler** that
+shipped in M1.1–M1.4.  It is preserved as a historical record of what
+was built first.  The **production pipeline today** is the self-hosted
+Lyric implementation under `lyric-compiler/lyric/` (lexer, parser,
+type checker, mode checker, contract elaborator, monomorphizer,
+weaver, derive synthesizer) and `lyric-compiler/msil/` +
+`lyric-compiler/jvm/` (backends), with the F# pipeline retained only
+as stage-0 bootstrap.
+
 ```
+Stage 0 (historical, F# bootstrap — compiles the self-hosted compiler):
 .l files
    │
    ▼
@@ -108,14 +118,18 @@ Monomorphizer (F#) → AST with generics specialized
 MSIL Emitter (F# using System.Reflection.Emit or similar) → .NET assembly
 ```
 
-Single-pass per file; parallel across files. No optimizations beyond what the .NET JIT provides.
+Stage 1 (production today) replaces every F# pass above with a Lyric
+package under `lyric-compiler/lyric/`, with `lyric-compiler/msil/`
+emitting MSIL via the in-process bridge and `lyric-compiler/jvm/`
+emitting JVM bytecode.  Single-pass per file; parallel across files.
+No optimizations beyond what the .NET JIT / JVM provides.
 
 ### Phase 1 milestones
 
 1. **M1.1 (month 6-9):** Lexer + parser. Can parse all the worked examples without semantic checking.
 2. **M1.2 (month 9-12):** Type checker for primitives, records, sum types, generic monomorphization. Compiler accepts or rejects programs with type errors but doesn't yet emit code.
 3. **M1.3 (month 12-15):** MSIL emitter. Hello World runs. Increasingly complex programs compile and run.
-4. **M1.4 (month 15-18):** Contract elaboration, async, FFI to .NET BCL. The banking example (sans proof) compiles and runs. Two constructs ship in *bootstrap-grade* form (monomorphised generics, hand-curated FFI shim); see `docs/03-decision-log.md` D035 for the full scope-cut rationale. Async is fully implemented via real `IAsyncStateMachine` state machines (Phase A through B+++, D-progress-033..076); FFI remains bootstrap-grade. Async gaps Gap-1 through Gap-4 closed (D-progress-260): `yield` in `async func` bodies synthesises `IAsyncEnumerable<T>` generators; `@hot` / `ValueTask<T>` path wired; parser `yield` precedence corrected. Generators with internal `await` remain deferred (Gap-4a, D070). FFI remains bootstrap-grade.
+4. **M1.4 (month 15-18):** Contract elaboration, async, FFI to .NET BCL. The banking example (sans proof) compiles and runs. **Historical scope-cut (D035):** monomorphised generics and a hand-curated FFI shim shipped in initial M1.4 as the scope-cut path; both have since been replaced by production-grade implementations — generics by reified CLR generics + same-package monomorphisation (`Lyric.Mono`, D-progress-229); FFI by `extern type` / `extern package` declarations under `lyric-stdlib/std/_kernel/` (per `docs/14`, completed at D-progress-104). Async ships with real `IAsyncStateMachine` state machines (Phase A through B+++, D-progress-033..076). Async gaps Gap-1 through Gap-4 closed (D-progress-260): `yield` in `async func` bodies synthesises `IAsyncEnumerable<T>` generators; `@hot` / `ValueTask<T>` path wired; parser `yield` precedence corrected. Generators with internal `await` remain deferred (Gap-4a, D070, tracked).
 
 ### Phase 1 standard library
 
@@ -373,10 +387,12 @@ Open-ended. Successful languages spend most of their lifetime here.
 
 - **JVM emitter** — self-hosted Lyric emitter in `lyric-compiler/jvm/`
   (`classfile.l`, `bytecode.l`, `lowering.l`, `driver.l`, …);
-  `--target jvm` is wired in the CLI via `Lyric.Jvm.Hosts` F# host shim
-  (D-progress-124 / D-progress-125, PR #183–#186).
+  `--target jvm` is wired in the CLI via the existing `Lyric.Jvm.Hosts`
+  F# host shim (D-progress-124 / D-progress-125, PR #183–#186) —
+  a transitional shim on the deletion schedule listed in
+  `docs/23-fsharp-shim-elimination.md`; no new F# code is added here.
   The JVM kernel (`lyric-compiler/jvm/_kernel/kernel.l`) provides
-  the trusted host boundary over `Lyric.Jvm.Hosts`.
+  the trusted host boundary.
   The JVM emitter strategy is documented in `docs/18-jvm-emission.md`.
 - **VS Code extension** — `lyric-vscode/` ships a full LSP-backed extension with
   syntax highlighting, diagnostics, completion, go-to-definition, manifest

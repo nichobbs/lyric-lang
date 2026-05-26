@@ -301,7 +301,7 @@ weave site:
 | `call.qualifiedName` | `String` | Fully qualified target name (e.g. `MyApp.Handlers.handleRequest`) |
 | `call.shortName` | `String` | Short target name (`handleRequest`) |
 | `call.modulePath` | `String` | Package containing the target |
-| `call.sourceLocation` | `SourceLoc` | `{ file, line, column }` of the target's definition |
+| `call.sourceLocation` | `String` | `"<packagePath>:<line>"` of the target's definition (e.g. `"My.Pkg:42"`).  When `packagePath` is empty the weaver substitutes `"<unknown>:<line>"`.  A richer `SourceLoc { file, line, column }` form is tracked for follow-up alongside `call.caller`. |
 | `call.caller` | `Option[SourceLoc]` | Caller site, when available; `None` for entry points and reflective calls |
 | `call.annotations` | `[Annotation]` | The target's annotations (so an aspect can read `@deprecated`, `@public_api`, etc.) |
 | `call.elapsed` | `Option[Int]` | `Some(ms)` after `proceed` returns; `None` before `proceed` is called or if the body never calls `proceed`. The earlier zero-sentinel was rejected as a footgun (Q-aspects-003). |
@@ -772,25 +772,25 @@ faces.
 
 ## 13. Async
 
-Lyric's bootstrap-grade async lowering (D035) blocks via
-`.GetAwaiter().GetResult()`. A real state-machine lowering is Phase 2
-work. v1 aspects on `async func` targets work with the bootstrap
-lowering (since the wrapper is sync and the target's `await` happens
-inside the blocking shim) but **do not preserve async cancellation
-semantics correctly** when advice rebinds args.
+Async lowering ships as real `IAsyncStateMachine` state machines
+(D-progress-033..076 chain; the D035-era blocking shim is gone).
+Aspects compose with continuation-style async: the wrapper's
+`await proceed(args)` resumes on the same `SynchronizationContext`
+as the target's `await`s, and `CancellationToken` flows through the
+synthesised state machine unchanged.  The earlier A0020 warning
+("aspects on async functions use bootstrap-grade lowering;
+cancellation may not propagate correctly") is retired — aspects on
+`async func` targets are first-class.
 
-The conservative v1 stance:
+`yield` inside an `async func` body synthesises an
+`IAsyncEnumerable[T]` generator (Gap-1..Gap-4 closed in
+D-progress-260).  Generators with internal `await` remain deferred
+(Gap-4a, D070, tracked).
 
-- Aspects on sync functions are first-class.
-- Aspects on async functions are accepted by the parser but emit a
-  warning (`A0020: aspects on async functions use bootstrap-grade
-  lowering; cancellation may not propagate correctly`).
-- The Phase 2 async state-machine work explicitly accepts aspect
-  awareness as a design constraint. When it lands, the warning lifts
-  and aspects compose with continuation-style async naturally.
-
-Async-specific advice features (`await proceed(args)` inside the
-advice body, suspend/resume hooks, etc.) are not in v1 scope.
+Async-specific advice features beyond `await proceed(args)` —
+explicit suspend/resume hooks, custom continuation scheduling,
+cancellation interception in the advice body itself — are not in
+v1 scope.
 
 ---
 
@@ -854,16 +854,23 @@ compiler.
 | `A0014` | Glob in `matches: name like "..."` is malformed. |
 | `A0015` | Rebound `args` cannot be proven to satisfy target `requires:`. |
 | `A0016` | Rebound return cannot be proven to satisfy composed `ensures:`. |
-| `A0020` | Aspect applied to async function with bootstrap-grade lowering (warning). |
+| `A0020` | Retired. Was: "aspect applied to async function with bootstrap-grade lowering" — async aspects are now first-class (§13). Code retained as reserved. |
 | `A0021` | Template aspect (`pub aspect` without `matches:`) declares a `matches:` clause; subsumed by A0001 — use A0001 for this case. Reserved. |
 | `A0022` | `aspect ... from Pkg.Template` instantiation declares `around`, `requires:`, or `ensures:` (those come from the template; only `matches:` and `config` override are allowed). |
 | `A0023` | `aspect ... from Pkg.Template` config override declares a field whose type differs from the template's declaration. |
 | `A0024` | `aspect ... from Pkg.Template` config override declares a field not present in the template. |
 | `A0025` | `from` references a `pub aspect` template that is not `pub` (cross-package reference to a package-private template). |
 | `A0026` | `from` references a name that is not a template aspect (e.g. a matching aspect or an ordinary type). |
+| `A0042` | `@inline_template` aspect body references `args.<field>` that does not match any parameter of the matched function.  Surfaced by the weaver at weave time (rather than as a downstream type error) so the message names the aspect, the matched function, and the offending field. |
+| `A0043` | `call.<field>` references an ambient field the weaver does not recognise (e.g. `call.elapsed` / `call.caller` while runtime instrumentation is deferred — see #1298).  Recognised fields today: `shortName`, `qualifiedName`, `modulePath`, `sourceLocation`, `annotations`, `aspect`. |
+| `A0044` | `config.<field>` references a `config { }` field declared without a literal default.  Env-var resolution per §8 is not yet wired; until it lands, the field must have a literal default to be referenced from the aspect body.  Surfaced at weave time to replace the confusing downstream "config not declared" type error. |
 
 Plus the runtime contract codes (`C0014` etc.) gain provenance
 fields naming the aspect that introduced the failing clause (§5.3).
+
+The L006 lint (`@inline_template has no effect`) was removed once
+weave-time `args.<field>` rewriting landed (todo/06 #681) — the
+A0042 diagnostic supersedes its purpose.
 
 ---
 
