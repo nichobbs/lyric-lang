@@ -583,25 +583,62 @@ func isPubVis(vis: in Option[Visibility]): Bool {
   isPub
 }
 
-// Render a TypeExpr as a source-level string.  Coverage is wide
-// enough for the bootstrap's contract use case; degraded forms
-// (TError, unsupported) fall back to "Unit".
+// Render a TypeExpr as a source-level string.  Coverage matches what
+// the bootstrap parser accepts at the top level of a contract repr:
+// every kind round-trips through `parse(synthesiseSource(...))`
+// cleanly.
 func renderTypeExpr(te: in TypeExpr): String {
   match te.kind {
     case TUnit              -> "Unit"
     case TNever             -> "Never"
     case TSelf              -> "Self"
     case TRef(path)         -> joinDots(path.segments)
-    case TGenericApp(h, _)  -> joinDots(h.segments) + "[…]"
+    case TGenericApp(h, args) ->
+      joinDots(h.segments) + "[" + renderTypeArgList(args) + "]"
     case TSlice(elem)       -> "slice[" + renderTypeExpr(elem) + "]"
     case TNullable(inner)   -> renderTypeExpr(inner) + "?"
     case TParen(inner)      -> renderTypeExpr(inner)
     case TArray(_, elem)    -> "slice[" + renderTypeExpr(elem) + "]"
-    case TTuple(_)          -> "Unit"
-    case TFunction(_, _)    -> "Unit"
+    case TTuple(ts)         -> "(" + renderTypeExprList(ts) + ")"
+    case TFunction(ps, r)   ->
+      "(" + renderTypeExprList(ps) + ") -> " + renderTypeExpr(r)
     case TRefined(p, _)     -> joinDots(p.segments)
     case TError             -> "Unit"
   }
+}
+
+// Render a comma-separated TypeExpr list.
+func renderTypeExprList(ts: in List[TypeExpr]): String {
+  var s = ""
+  var i = 0
+  while i < ts.count {
+    if i > 0 { s = s + ", " }
+    s = s + renderTypeExpr(ts[i])
+    i = i + 1
+  }
+  s
+}
+
+// Render one `TypeArg` (either a type or a value-level expression).
+// Value-level args (`array[N, T]` form) emit `<value>` placeholder
+// since the contract surface doesn't carry expression info today.
+func renderTypeArg(a: in TypeArg): String {
+  match a {
+    case TAType(te)  -> renderTypeExpr(te)
+    case TAValue(_)  -> "<value>"
+  }
+}
+
+// Render a comma-separated TypeArg list.
+func renderTypeArgList(args: in List[TypeArg]): String {
+  var s = ""
+  var i = 0
+  while i < args.count {
+    if i > 0 { s = s + ", " }
+    s = s + renderTypeArg(args[i])
+    i = i + 1
+  }
+  s
 }
 
 // Join dotted segments with ".".
@@ -708,21 +745,71 @@ func reprForEnum(decl: in EnumDecl): String {
   "pub enum " + decl.name + " { " + cases + " }"
 }
 
-// Build an empty `pub record` placeholder for the misc kinds.  These
-// are placeholders for the bridge slice — proper renderings (full
-// interface methods, opaque internals, distinct underlying type)
-// land alongside cross-package consumer support for those forms.
+// Build the `pub interface Name { ... }` repr with each abstract
+// method signature.  Default-method bodies and associated types are
+// elided (their full form requires walking ImplMember).
 func reprForInterface(decl: in InterfaceDecl): String {
-  "pub interface " + decl.name
+  var members = ""
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case IMSig(sig) -> {
+        if Str.isNotEmpty(members) { members = members + "; " }
+        members = members + reprForFunctionSig(sig)
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  "pub interface " + decl.name + " { " + members + " }"
 }
+
+// Render a FunctionSig (interface-method head form, no body).
+func reprForFunctionSig(sig: in FunctionSig): String {
+  var params = ""
+  var i = 0
+  while i < sig.params.count {
+    if i > 0 { params = params + ", " }
+    params = params + renderParam(sig.params[i])
+    i = i + 1
+  }
+  val retStr = match sig.ret {
+    case Some(t) -> ": " + renderTypeExpr(t)
+    case None    -> ""
+  }
+  "func " + sig.name + "(" + params + ")" + retStr
+}
+
+// `pub type Name = <underlying>` for distinct types.  Renders the
+// declared underlying type rather than guessing `Int`.
 func reprForDistinct(decl: in DistinctTypeDecl): String {
-  "pub type " + decl.name + " = Int"
+  "pub type " + decl.name + " = " + renderTypeExpr(decl.underlying)
 }
+
+// `pub opaque type Name { f1: T1, ... }` — emits the structural
+// payload so cross-package consumers see the same field set the
+// emitter encoded.  Opaque types without a body emit
+// `pub opaque type Name {}`.
 func reprForOpaque(decl: in OpaqueTypeDecl): String {
-  "pub opaque type " + decl.name + " { __value: Int }"
+  var fields = ""
+  var emittedAny = false
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case OMField(f) -> {
+        if emittedAny { fields = fields + ", " }
+        fields = fields + f.name + ": " + renderTypeExpr(f.ty)
+        emittedAny = true
+      }
+    }
+    i = i + 1
+  }
+  "pub opaque type " + decl.name + " { " + fields + " }"
 }
+
+// `pub alias Name = <rhs>` — renders the actual aliased TypeExpr.
 func reprForTypeAlias(decl: in TypeAliasDecl): String {
-  "pub alias " + decl.name + " = Int"
+  "pub alias " + decl.name + " = " + renderTypeExpr(decl.rhs)
 }
 
 // Construct a default ContractDecl with the three required fields and
@@ -740,16 +827,82 @@ func basicDecl(kind: in String, name: in String, repr: in String): ContractDecl 
     params          = newList())
 }
 
+// Find a single-segment file-level annotation by name.  Returns the
+// first matching annotation (file-level `@axiom`, `@proof_required`,
+// `@runtime_checked` are mutually exclusive in practice but we
+// surface the first hit per the F# convention).
+func findFileAnnotation(file: in SourceFile, name: in String): Option[Annotation] {
+  val anns = file.fileAnnotations
+  var i = 0
+  while i < anns.count {
+    val a = anns[i]
+    if a.name.segments.count == 1 and a.name.segments[0] == name {
+      return Some(value = a)
+    }
+    i = i + 1
+  }
+  None
+}
+
+// Inspect a `@proof_required(...)` annotation for one of the two
+// recognised bare-identifier modifiers (`unsafe_blocks_allowed`,
+// `checked_arithmetic`).  Returns "" when no recognised modifier
+// is present.  Mirrors F# `levelOfFile`'s nested match.
+func proofRequiredModifier(ann: in Annotation): String {
+  var modifier = ""
+  var i = 0
+  while i < ann.args.count {
+    if Str.isEmpty(modifier) {
+      match ann.args[i] {
+        case ABare(name, _) -> { modifier = name }
+        case _              -> ()
+      }
+    }
+    i = i + 1
+  }
+  modifier
+}
+
+/// Determine the verification level for a SourceFile from its file-
+/// level annotations.  Mirrors `bootstrap/src/Lyric.Emitter/ContractMeta.fs::levelOfFile`:
+/// `@axiom` wins → "axiom"; otherwise `@proof_required(modifier?)`
+/// → "proof_required" or "proof_required(<modifier>)"; otherwise
+/// "runtime_checked" (the default for both `@runtime_checked` and
+/// unannotated files).
+@stable(since="0.1")
+pub func levelOfFile(file: in SourceFile): String {
+  match findFileAnnotation(file, "axiom") {
+    case Some(_) -> "axiom"
+    case None -> {
+      match findFileAnnotation(file, "proof_required") {
+        case Some(ann) -> {
+          val m = proofRequiredModifier(ann)
+          if m == "unsafe_blocks_allowed" { "proof_required(unsafe_blocks_allowed)" }
+          else if m == "checked_arithmetic" { "proof_required(checked_arithmetic)" }
+          else { "proof_required" }
+        }
+        case None -> "runtime_checked"
+      }
+    }
+  }
+}
+
 /// Build a `Contract` from a parsed `SourceFile`.  Walks each
-/// top-level item and emits a `ContractDecl` for every `pub` item of
-/// a supported kind (record, func, union, enum, interface, opaque,
-/// distinct, alias).  Non-pub items are filtered out — they don't
-/// surface in the contract.
+/// top-level item and emits a `ContractDecl` for every `pub` item
+/// of a supported kind (record, func, union, enum, interface,
+/// opaque, distinct, alias).  Non-pub items are filtered out.
+///
+/// `version` is the manifest-declared semver string for this
+/// package — the bridge sources it from `Lyric.Manifest` when one
+/// is available, and passes `"0.0.0"` for ad-hoc compiles where no
+/// manifest is in scope.  `level` is computed from the source's
+/// file-level annotations via `levelOfFile` so every emitted DLL
+/// records its declared verification level accurately.
 ///
 /// Used by the self-hosted MSIL bridge to build the `Lyric.Contract`
 /// resource payload before assembly emission.
 @stable(since="0.1")
-pub func buildContractFromFile(file: in SourceFile): Contract {
+pub func buildContractFromFile(file: in SourceFile, version: in String): Contract {
   val decls: List[ContractDecl] = newList()
   var i = 0
   while i < file.items.count {
@@ -779,8 +932,8 @@ pub func buildContractFromFile(file: in SourceFile): Contract {
   }
   Contract(
     packageName   = joinDots(file.packageDecl.path.segments),
-    version       = "0.0.0",
-    level         = "runtime_checked",
+    version       = version,
+    level         = levelOfFile(file),
     formatVersion = 2,
     decls         = decls)
 }
