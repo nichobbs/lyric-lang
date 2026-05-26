@@ -245,7 +245,17 @@ pub interface StorageBucket {
 // and let `list` populate `ListEntry` from disk without re-reading every
 // object's content (#1011).
 
-@stable(since="0.1")
+// Internal record carrying the canonical bucket directory and its
+// constituent parts.  Not `@stable` and not part of the public
+// `Lyric.Storage` surface: callers handle `Bucket` (the trait), and the
+// `connectLocalFs` factory hands back a `LocalBucket` packaged inside
+// `Bucket.Local`.  Marked `pub` only so the impl block below can attach
+// to it — keeping it package-internal would force every `bucket: Bucket`
+// shape onto callers who never look at the underlying fields.
+//
+// (Internal mutation: if the record shape needs to grow new fields the
+// `connectLocalFs` factory and `impl StorageBucket for LocalBucket` are
+// the only call sites that need updating.)
 pub record LocalBucket {
   basePath:   String   // root directory
   bucketName: String   // sub-directory under basePath (the "bucket")
@@ -258,9 +268,18 @@ pub record LocalBucket {
 func resolveLocalPath(bucket: in LocalBucket, key: in String): Result[String, StorageError] {
   // The public isSafeKey check has already rejected absolute keys and `..`
   // segments; this is a belt-and-braces canonicalised cross-check.
-  val joined = bucket.bucketDir + "/" + key
-  val canon  = hostPathGetFullPath(joined)
-  if not Str.startsWith(canon, bucket.bucketDir) {
+  //
+  // Append a trailing separator before the `startsWith` test so a sibling
+  // directory whose path is a string prefix of `bucketDir` (e.g.
+  // `/var/lyric/bucketAEvil` vs `/var/lyric/bucketA`) is correctly rejected.
+  // The canonicalised path of a key inside `bucketDir` always has the
+  // separator between `bucketDir` and the rest, so this is exact, not
+  // pessimistic.
+  val joined    = bucket.bucketDir + "/" + key
+  val canon     = hostPathGetFullPath(joined)
+  val bucketTrm = if Str.endsWith(bucket.bucketDir, "/") { bucket.bucketDir }
+                  else { bucket.bucketDir + "/" }
+  if canon != bucket.bucketDir and not Str.startsWith(canon, bucketTrm) {
     return Err(StorageError(
       message = "resolved key path escapes bucket directory",
       code    = "INVALID_KEY"))
@@ -280,12 +299,16 @@ func computeEtag(bytes: in slice[Byte]): String {
   Str.toLower(hostBytesToHexUpper(raw))
 }
 
-// Format a sidecar JSON object: contentType / lastModified / etag plus
-// `userMeta` (JSON-pre-built by the caller so dict order is stable).
-func buildSidecarJson(contentType: in String, lastModified: in String,
-                       etag: in String, userMetaJson: in String): String {
+// Format a sidecar JSON object: contentType / contentLength / lastModified /
+// etag plus `userMeta` (JSON-pre-built by the caller so dict order is stable).
+// `contentLength` is captured here so `listEntryForKey` can populate the
+// per-entry length without re-reading the object's full payload (#1401).
+func buildSidecarJson(contentType: in String, contentLength: in Long,
+                       lastModified: in String, etag: in String,
+                       userMetaJson: in String): String {
   val meta = if userMetaJson.length == 0 { "{}" } else { userMetaJson }
   return "{\"contentType\":" + jsonString(contentType)
+       + ",\"contentLength\":" + toString(contentLength)
        + ",\"lastModified\":" + jsonString(lastModified)
        + ",\"etag\":" + jsonString(etag)
        + ",\"userMeta\":" + meta + "}"
@@ -383,10 +406,12 @@ impl StorageBucket for LocalBucket {
         }
         // Persist the sidecar metadata for round-trippable userMeta /
         // contentType / etag / lastModified.
-        val etag         = computeEtag(bytes)
-        val lastModified = nowIso8601()
-        val userMetaJson = serialiseStringMap(userMeta)
-        val sidecarJson  = buildSidecarJson(contentType, lastModified, etag, userMetaJson)
+        val etag          = computeEtag(bytes)
+        val contentLength = intToLong(bytes.length)
+        val lastModified  = nowIso8601()
+        val userMetaJson  = serialiseStringMap(userMeta)
+        val sidecarJson   = buildSidecarJson(contentType, contentLength,
+                                             lastModified, etag, userMetaJson)
         match try {
           hostWriteAllText(metaSidecarPath(fullPath), sidecarJson)
           Ok(())
@@ -480,7 +505,7 @@ impl StorageBucket for LocalBucket {
     continuationToken: in String,
     maxKeys:           in Int
   ): Result[ListResult, StorageError] {
-    if maxKeys > 1000 {
+    if maxKeys < 1 or maxKeys > 1000 {
       return Err(StorageError(
         message = "maxKeys must be in [1, 1000]",
         code    = "INVALID_ARGUMENT"))
@@ -660,25 +685,21 @@ func sortKeys(xs: in List[String]): List[String] {
   result
 }
 
-// Build a `ListEntry` for `relKey` by reading content length from the
-// on-disk file and ETag / lastModified from its `.meta.json` sidecar.
-// Does NOT re-read the full file content to recompute the ETag (#1011);
-// the sidecar carries the ETag that `put` already computed once.
+// Build a `ListEntry` for `relKey` purely from its `.meta.json` sidecar.
+// Does NOT read the object's content bytes at all (#1011 / #1401): the
+// sidecar carries `contentLength`, `etag`, and `lastModified` that `put`
+// recorded once, so list pages run at O(sidecar bytes) per entry rather
+// than O(object bytes).  If the sidecar is missing or unparseable
+// `contentLength` falls back to 0 and the optional fields stay empty —
+// the operation still succeeds so partial / migrated buckets remain
+// listable.
 func listEntryForKey(bucket: in LocalBucket, relKey: in String): Result[ListEntry, StorageError] {
   match resolveLocalPath(bucket, relKey) {
     case Err(e)        -> Err(e)
     case Ok(fullPath)  -> {
-      // For content-length we still need to read the file; this is the
-      // single unavoidable per-entry I/O cost.  We never base64 it.
-      val length = try {
-        intToLong(hostReadAllBytes(fullPath).length)
-      } catch Bug as b {
-        return Err(StorageError(
-          message = "cannot stat object '" + relKey + "' for list entry: " + b.message,
-          code    = "LIST_ERROR"))
-      }
-      var etag         = ""
-      var lastModified = ""
+      var contentLength: Long = intToLong(0)
+      var etag                = ""
+      var lastModified        = ""
       val sidecar = metaSidecarPath(fullPath)
       if hostFileExists(sidecar) {
         val txt = try {
@@ -690,14 +711,18 @@ func listEntryForKey(bucket: in LocalBucket, relKey: in String): Result[ListEntr
           val doc  = parseJson(txt)
           val root = rootElement(doc)
           if valueKind(root) == 1 {
-            etag         = getString(getProperty(root, "etag"))
-            lastModified = getString(getProperty(root, "lastModified"))
+            etag          = getString(getProperty(root, "etag"))
+            lastModified  = getString(getProperty(root, "lastModified"))
+            match tryGetLong(getProperty(root, "contentLength")) {
+              case Some(n) -> { contentLength = n }
+              case None    -> ()
+            }
           }
         }
       }
       Ok(ListEntry(
         key           = relKey,
-        contentLength = length,
+        contentLength = contentLength,
         lastModified  = lastModified,
         etag          = etag))
     }
