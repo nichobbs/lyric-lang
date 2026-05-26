@@ -109,10 +109,11 @@ func runScript(
   }
 
   val req = Emitter.EmitRequest(
-    source       = script,
-    assemblyName = "lyric_repl_session",
-    outputPath   = dllFile,
-    target       = Emitter.Dotnet
+    source         = script,
+    assemblyName   = "lyric_repl_session",
+    outputPath     = dllFile,
+    target         = Emitter.Dotnet,
+    packageVersion = ""
   )
   val result = Emitter.emit(req)
 

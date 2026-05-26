@@ -257,10 +257,11 @@ func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarge
   val outBase  = Path.basename(outPath)
   val asmName  = stemOf(outBase, 4)  // strip ".dll"
   val req = EmitRequest(
-    source       = source,
-    assemblyName = asmName,
-    outputPath   = outPath,
-    target       = target
+    source         = source,
+    assemblyName   = asmName,
+    outputPath     = outPath,
+    target         = target,
+    packageVersion = ""
   )
 
   val result = Emitter.emit(req)
@@ -609,7 +610,8 @@ func buildProject(
     target           = target,
     restoredDllPaths = restoredDlls,
     activeFeatures   = activeFeatures,
-    declaredFeatures = mfDeclared
+    declaredFeatures = mfDeclared,
+    packageVersion   = manifest.packageSection.version
   )
 
   val result  = Emitter.emitProject(projReq)
@@ -2160,10 +2162,11 @@ func cmdTest(argv: in slice[String]): Int {
       }
 
       val req = EmitRequest(
-        source       = rewritten,
-        assemblyName = stem,
-        outputPath   = outPath,
-        target       = Dotnet
+        source         = rewritten,
+        assemblyName   = stem,
+        outputPath     = outPath,
+        target         = Dotnet,
+        packageVersion = ""
       )
       val result = Emitter.emit(req)
       var hadError = false
@@ -2511,7 +2514,8 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
       target           = Dotnet,
       restoredDllPaths = restoredDlls,
       activeFeatures   = activeFeatures,
-      declaredFeatures = mfDeclared
+      declaredFeatures = mfDeclared,
+      packageVersion   = manifest.packageSection.version
     )
     val result  = Emitter.emitProject(projReq)
     var hadBuildError = false
@@ -2634,10 +2638,11 @@ func cmdBench(argv: in slice[String]): Int {
       }
 
       val req = EmitRequest(
-        source       = rewritten,
-        assemblyName = stem,
-        outputPath   = outPath,
-        target       = Dotnet
+        source         = rewritten,
+        assemblyName   = stem,
+        outputPath     = outPath,
+        target         = Dotnet,
+        packageVersion = ""
       )
       val result = Emitter.emit(req)
       var hadError = false

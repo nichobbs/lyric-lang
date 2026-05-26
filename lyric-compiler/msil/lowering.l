@@ -483,7 +483,12 @@ func internMsKeyToken(bh: in BlobHeap): Int {
 
 // Create a fresh LoweringCtx pre-populated with the mandatory rows every
 // CLI assembly needs (Module, System.Object TypeRef, System.Runtime AssemblyRef).
-pub func newLoweringCtx(packageName: in String): LoweringCtx {
+// `major` / `minor` populate the Assembly row's version (`addAssembly`
+// at the bottom of this function); pass `(0, 0)` for the bootstrap-
+// compatible default.  Consumers thread the manifest's `[package].version`
+// through `Msil.Bridge` (see #1364).
+pub func newLoweringCtx(packageName: in String,
+                        major: in Int, minor: in Int): LoweringCtx {
   val sh = newStringHeap()
   val bh = newBlobHeap()
   val uh = newUsHeap()
@@ -544,7 +549,7 @@ pub func newLoweringCtx(packageName: in String): LoweringCtx {
   val sPackage = internString(sh, packageName)
   addAssembly(t, AssemblyRow(
     hashAlgId = HASH_ALG_SHA1,
-    majorVersion = 0, minorVersion = 0,
+    majorVersion = major, minorVersion = minor,
     buildNumber = 0, revisionNumber = 0,
     flags = ASF_NONE, publicKey = 0,
     name = sPackage, culture = 0))
@@ -588,6 +593,69 @@ pub func ctxInternBlob(ctx: in LoweringCtx, key: in String, data: in List[Byte])
 pub func ctxInternUs(ctx: in LoweringCtx, s: in String): Int {
   val off = internUs(ctx.us, s)
   0x70000000 + off   // ldstr token = 0x70 << 24 | heap offset
+}
+
+// Parse a `<major>.<minor>(.<patch>)?` semver string into `[major, minor]`
+// for the Assembly / AssemblyRef rows.  An empty or unparseable input
+// returns `[0, 0]` — matching the bootstrap-grade default both rows used
+// before manifest-version threading landed (#1364).  Patch and pre-
+// release segments are ignored; ECMA-335 only carries major / minor /
+// build / revision, and the `Lyric.Contract` resource captures the full
+// semver string separately for `public-api-diff`.
+//
+// Lives in `lowering.l` (not `bridge.l`) because both the bridge entry
+// points and the codegen-side `ensureAssemblyRefForArtifact` consume it,
+// and `codegen.l` already imports `Msil.Lowering`.
+pub func parseSemverMajorMinor(version: in String): List[Int] {
+  val parts: List[Int] = newList()
+  if version.length == 0 {
+    parts.add(0)
+    parts.add(0)
+    return parts
+  }
+  val firstDot = version.indexOf(".")
+  if firstDot < 0 {
+    parts.add(parseIntOr0(version))
+    parts.add(0)
+    return parts
+  }
+  val majStr = version.substring(0, firstDot)
+  val rest   = version.substring(firstDot + 1, version.length - firstDot - 1)
+  val secondDot = rest.indexOf(".")
+  val minStr = if secondDot < 0 { rest }
+               else { rest.substring(0, secondDot) }
+  parts.add(parseIntOr0(majStr))
+  parts.add(parseIntOr0(minStr))
+  parts
+}
+
+// Parse an ASCII decimal int, returning 0 on any non-digit / overflow.
+// Local helper to avoid an `Std.Parse` dependency from the lowering layer.
+func parseIntOr0(s: in String): Int {
+  if s.length == 0 { return 0 }
+  var i = 0
+  var n = 0
+  while i < s.length {
+    val ch = s.substring(i, 1)
+    if ch < "0" or ch > "9" { return 0 }
+    n = n * 10 + semverParseDigit(ch)
+    i = i + 1
+  }
+  n
+}
+
+func semverParseDigit(ch: in String): Int {
+  if ch == "0" { 0 }
+  else if ch == "1" { 1 }
+  else if ch == "2" { 2 }
+  else if ch == "3" { 3 }
+  else if ch == "4" { 4 }
+  else if ch == "5" { 5 }
+  else if ch == "6" { 6 }
+  else if ch == "7" { 7 }
+  else if ch == "8" { 8 }
+  else if ch == "9" { 9 }
+  else { 0 }
 }
 
 // Add a new AssemblyRef row for a BCL / framework assembly and return
@@ -1458,8 +1526,12 @@ pub func lowerMFuncsToHostClass(hostClass: in String, funcs: in List[MFunc],
 
 // Lower an MPackage to a complete PE binary.
 // `entryMethodToken` is the MethodDef token for the program's entry point (0 for libraries).
+// Defaults the Assembly row version to 0.0; the bridge entry points that
+// thread `[package].version` (see #1364) use `lowerMPackageWithCtx` with a
+// pre-seeded `LoweringCtx`, so the bootstrap-grade caller without a manifest
+// retains the legacy default here.
 pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
-  val ctx = newLoweringCtx(pkg.packageName)
+  val ctx = newLoweringCtx(pkg.packageName, 0, 0)
 
   var i = 0
   while i < pkg.items.count {

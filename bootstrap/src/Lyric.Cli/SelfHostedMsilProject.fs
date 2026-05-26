@@ -25,6 +25,7 @@ type private CompileFn =
         -> string
         -> System.Collections.Generic.List<string>
         -> System.Collections.Generic.List<string>
+        -> string
         -> bool
 
 let private bridgeLock = obj ()
@@ -95,20 +96,23 @@ let private resolveDelegate () =
                typeof<string>
                typeof<string>
                listOfStringType
-               listOfStringType |])
+               listOfStringType
+               typeof<string> |])
     match Option.ofObj methodInfo with
     | Some m when m.IsStatic ->
         fun (specLines:        System.Collections.Generic.List<string>)
             (assemblyName:     string)
             (outputPath:       string)
             (stdlibSources:    System.Collections.Generic.List<string>)
-            (restoredDllPaths: System.Collections.Generic.List<string>) ->
+            (restoredDllPaths: System.Collections.Generic.List<string>)
+            (packageVersion:   string) ->
                 match Option.ofObj (m.Invoke(null,
                                              [| box specLines
                                                 box assemblyName
                                                 box outputPath
                                                 box stdlibSources
-                                                box restoredDllPaths |])) with
+                                                box restoredDllPaths
+                                                box packageVersion |])) with
                 | Some o -> unbox<bool> o
                 | None   -> false
     | _ ->
@@ -127,11 +131,15 @@ let private getDelegate () =
 /// `dotnet exec dllPath` can locate the correct runtime.  Mirrors the
 /// helper in `SelfHostedMsil`.
 let private writeRuntimeConfig (dllPath: string) : unit =
+    // F# nullness analysis (`Nullable=enable` in Directory.Build.props)
+    // requires unwrapping `Path.ChangeExtension`'s `string | null`.  In
+    // practice `dllPath` is always non-null so the `None` arm is
+    // unreachable; we panic rather than synthesise a wrong-shape fallback
+    // (`foo.dll.runtimeconfig.json` instead of `foo.runtimeconfig.json`).
     let configPath =
-        let changed = Path.ChangeExtension(dllPath, ".runtimeconfig.json")
-        match Option.ofObj changed with
+        match Option.ofObj (Path.ChangeExtension(dllPath, ".runtimeconfig.json")) with
         | Some p -> p
-        | None   -> dllPath + ".runtimeconfig.json"
+        | None   -> failwithf "writeRuntimeConfig: Path.ChangeExtension returned null for %s" dllPath
     let v = System.Environment.Version
     let json =
         "{\n" +
@@ -148,14 +156,17 @@ let private writeRuntimeConfig (dllPath: string) : unit =
 /// Compile a multi-package bundle through the self-hosted MSIL bridge,
 /// resolving each entry in `restoredDllPaths` against
 /// `Lyric.RestoredPackages.loadRestoredPackage` so cross-assembly imports
-/// see the restored deps' public surface at typecheck.  Returns true on
-/// success, false on parse / type / mode errors, write failure, or any
-/// restored-package load failure.
+/// see the restored deps' public surface at typecheck.  `packageVersion`
+/// is the `[package].version` string for the bundled output; an empty
+/// string falls back to the legacy `"0.0.0"` placeholder.  Returns true
+/// on success, false on parse / type / mode errors, write failure, or
+/// any restored-package load failure.
 let compileProjectWithRestored
         (packages:         (string * string) list)
         (assemblyName:     string)
         (outputPath:       string)
-        (restoredDllPaths: string list) : bool =
+        (restoredDllPaths: string list)
+        (packageVersion:   string) : bool =
     let fn = getDelegate ()
     let specLines = System.Collections.Generic.List<string>()
     for (name, source) in packages do
@@ -163,6 +174,6 @@ let compileProjectWithRestored
     let restored = System.Collections.Generic.List<string>()
     for p in restoredDllPaths do restored.Add p
     let stdlibSources = Lyric.Cli.SelfHostedBridge.findStdlibSources ()
-    let ok = fn specLines assemblyName outputPath stdlibSources restored
+    let ok = fn specLines assemblyName outputPath stdlibSources restored packageVersion
     if ok then writeRuntimeConfig outputPath
     ok

@@ -303,7 +303,8 @@ func runEmitProject(label: in String, projectPkgs: in List[Emitter.ProjectPackag
     target           = Emitter.Dotnet,
     restoredDllPaths = newList(),
     activeFeatures   = newList(),
-    declaredFeatures = newList())
+    declaredFeatures = newList(),
+    packageVersion   = "")
   val result = Emitter.emitProject(req)
   match result.outputPath {
     case None -> {
@@ -394,7 +395,8 @@ func runEmitProjectWithFeatures(label: in String,
     target           = Emitter.Dotnet,
     restoredDllPaths = newList(),
     activeFeatures   = features,
-    declaredFeatures = declared)
+    declaredFeatures = declared,
+    packageVersion   = "")
   val result = Emitter.emitProject(req)
   match result.outputPath {
     case None -> {
@@ -627,7 +629,8 @@ func testRestoredDepWiringNoCrash(): Unit {
     target           = Emitter.Dotnet,
     restoredDllPaths = restoredDlls,
     activeFeatures   = newList(),
-    declaredFeatures = newList())
+    declaredFeatures = newList(),
+    packageVersion   = "")
   val result = Emitter.emitProject(req)
   // Exact expected state: subprocess exited 1, no DLL produced.
   match result.outputPath {
