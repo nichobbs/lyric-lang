@@ -748,7 +748,10 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   // ManifestResource rows (table 0x28).  Wire format per ECMA-335
   // §II.22.24: u4 offset, u4 flags, u2 name (Strings), u2
   // implementation (coded Implementation: 0 = embedded in this
-  // assembly).
+  // assembly).  The 2-byte Strings index here shares the 64-KB heap-
+  // size limitation documented near the top of this function — the
+  // serializer will need widening to u4 alongside the other heap
+  // indices when the assembly's Strings heap exceeds 65 535 bytes.
   var mri = 0
   while mri < t.manifestResources.count {
     val r = t.manifestResources[mri]

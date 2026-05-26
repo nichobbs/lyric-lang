@@ -340,13 +340,12 @@ pub func assemblePe(inp: in AssemblerInput): ByteWriter {
   // Resources directory entry stays zero).  ECMA-335 §II.25.3.3.3
   // requires the region to be 4-byte aligned, so we round up the raw
   // size before the metadata RVA computation.
+  // PE layout
+  val clrHdrSz  = 72
   val rawRsrcSize  = inp.resourceData.count
   val padRsrcSize  = round4(rawRsrcSize)
   val hasResources = rawRsrcSize > 0
-  val rsrcRva      = if hasResources { 0x2000 + clrHdrSz72() + mbTotalRaw } else { 0 }
-
-  // PE layout
-  val clrHdrSz  = 72
+  val rsrcRva      = if hasResources { 0x2000 + clrHdrSz + mbTotalRaw } else { 0 }
   val mdRva     = 0x2000 + clrHdrSz + mbTotalRaw + padRsrcSize   // metadata RVA in .text section
   val textVSize = clrHdrSz + mbTotalRaw + padRsrcSize + metaSize  // actual content bytes in .text
   val textRSize = roundTo(textVSize, 0x200)          // file-aligned .text size
@@ -385,5 +384,3 @@ pub func assemblePe(inp: in AssemblerInput): ByteWriter {
   return w
 }
 
-// CLR header size — 72 bytes per ECMA-335 §II.25.3.3.
-func clrHdrSz72(): Int { 72 }
