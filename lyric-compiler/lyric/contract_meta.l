@@ -38,6 +38,8 @@ import Std.Environment as Environment
 import Std.String as Str
 import Std.Json
 import Std.Encoding as Encoding
+import Lyric.Lexer
+import Lyric.Parser
 import Std.AssemblyResources as AsmRes
 import Lyric.CliShell as CliShell
 
@@ -544,4 +546,241 @@ pub func contractToJson(c: in Contract): String {
     i = i + 1
   }
   sb + "\n  ]\n}\n"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §7. Build a Contract from a parsed SourceFile
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Walks a `Lyric.Parser.SourceFile` and produces a `Contract` describing
+// its public surface.  The contract is what gets serialised via
+// `contractToJson` and embedded as the `Lyric.Contract` resource in
+// every Lyric-emitted assembly.
+//
+// Mirrors `bootstrap/src/Lyric.Emitter/ContractMeta.fs::buildContract`,
+// but only handles the decl kinds the bootstrap parser currently emits
+// at the source level: records, functions, unions, enums, interfaces,
+// opaques, distinct types, type aliases.  `pub`-only filter matches the
+// F# convention; non-pub items don't surface in the contract.
+//
+// `repr` is the source-level shape that `synthesiseSource` re-emits
+// during restored-dep loading: a parseable Lyric declaration that the
+// type-checker can re-consume.  For the bootstrap, we hand-render each
+// kind (proper formatter integration is a follow-up).
+
+// True iff `vis` is `Some(VisPub(_))`.
+func isPubVis(vis: in Option[Visibility]): Bool {
+  var isPub = false
+  match vis {
+    case Some(v) -> {
+      match v {
+        case VisPub(_)      -> { isPub = true }
+        case VisInternal(_) -> ()
+      }
+    }
+    case None -> ()
+  }
+  isPub
+}
+
+// Render a TypeExpr as a source-level string.  Coverage is wide
+// enough for the bootstrap's contract use case; degraded forms
+// (TError, unsupported) fall back to "Unit".
+func renderTypeExpr(te: in TypeExpr): String {
+  match te.kind {
+    case TUnit              -> "Unit"
+    case TNever             -> "Never"
+    case TSelf              -> "Self"
+    case TRef(path)         -> joinDots(path.segments)
+    case TGenericApp(h, _)  -> joinDots(h.segments) + "[…]"
+    case TSlice(elem)       -> "slice[" + renderTypeExpr(elem) + "]"
+    case TNullable(inner)   -> renderTypeExpr(inner) + "?"
+    case TParen(inner)      -> renderTypeExpr(inner)
+    case TArray(_, elem)    -> "slice[" + renderTypeExpr(elem) + "]"
+    case TTuple(_)          -> "Unit"
+    case TFunction(_, _)    -> "Unit"
+    case TRefined(p, _)     -> joinDots(p.segments)
+    case TError             -> "Unit"
+  }
+}
+
+// Join dotted segments with ".".
+func joinDots(segs: in List[String]): String {
+  var s = ""
+  var i = 0
+  while i < segs.count {
+    if i > 0 { s = s + "." }
+    s = s + segs[i]
+    i = i + 1
+  }
+  s
+}
+
+// Render one parameter as `<mode> <name>: <type>` (or just
+// `<name>: <type>` when mode is the default `in` for safety: the
+// bootstrap parser is happy with either form, and the contract
+// surface is read-only anyway).
+func renderParam(p: in Param): String {
+  val modeStr = match p.mode {
+    case PMIn    -> "in "
+    case PMOut   -> "out "
+    case PMInout -> "inout "
+  }
+  p.name + ": " + modeStr + renderTypeExpr(p.ty)
+}
+
+// Build the `pub record Name { field1: T1, field2: T2 }` repr for
+// a record decl.  Records with no fields emit `pub record Name {}`.
+func reprForRecord(decl: in RecordDecl): String {
+  var fields = ""
+  var i = 0
+  var emittedAny = false
+  while i < decl.members.count {
+    match decl.members[i] {
+      case RMField(f) -> {
+        if emittedAny { fields = fields + ", " }
+        fields = fields + f.name + ": " + renderTypeExpr(f.ty)
+        emittedAny = true
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  "pub record " + decl.name + " { " + fields + " }"
+}
+
+// Build the `pub func name(p1: T1, p2: T2): Ret` repr for a function.
+// Bodies are omitted — the parser accepts a bodyless head (treated as
+// abstract / extern-style by the typechecker, which is sufficient for
+// the synth+typecheck round-trip the bridge does).
+func reprForFunc(fn: in FunctionDecl): String {
+  var params = ""
+  var i = 0
+  while i < fn.params.count {
+    if i > 0 { params = params + ", " }
+    params = params + renderParam(fn.params[i])
+    i = i + 1
+  }
+  val retStr = match fn.ret {
+    case Some(t) -> ": " + renderTypeExpr(t)
+    case None    -> ""
+  }
+  "pub func " + fn.name + "(" + params + ")" + retStr
+}
+
+// Build the `pub union Name { case A, case B(x: T) }` repr for a union.
+func reprForUnion(decl: in UnionDecl): String {
+  var cases = ""
+  var i = 0
+  while i < decl.cases.count {
+    if i > 0 { cases = cases + ", " }
+    val c = decl.cases[i]
+    if c.fields.count == 0 {
+      cases = cases + "case " + c.name
+    } else {
+      var fs = ""
+      var j = 0
+      while j < c.fields.count {
+        if j > 0 { fs = fs + ", " }
+        match c.fields[j] {
+          case UFNamed(n, ty, _) -> { fs = fs + n + ": " + renderTypeExpr(ty) }
+          case UFPos(ty, _)      -> { fs = fs + renderTypeExpr(ty) }
+        }
+        j = j + 1
+      }
+      cases = cases + "case " + c.name + "(" + fs + ")"
+    }
+    i = i + 1
+  }
+  "pub union " + decl.name + " { " + cases + " }"
+}
+
+// Build the `pub enum Name { A, B, C }` repr.  EnumDecls carry just
+// case names in the bootstrap parser.
+func reprForEnum(decl: in EnumDecl): String {
+  var cases = ""
+  var i = 0
+  while i < decl.cases.count {
+    if i > 0 { cases = cases + ", " }
+    cases = cases + decl.cases[i].name
+    i = i + 1
+  }
+  "pub enum " + decl.name + " { " + cases + " }"
+}
+
+// Build an empty `pub record` placeholder for the misc kinds.  These
+// are placeholders for the bridge slice — proper renderings (full
+// interface methods, opaque internals, distinct underlying type)
+// land alongside cross-package consumer support for those forms.
+func reprForInterface(decl: in InterfaceDecl): String {
+  "pub interface " + decl.name
+}
+func reprForDistinct(decl: in DistinctTypeDecl): String {
+  "pub type " + decl.name + " = Int"
+}
+func reprForOpaque(decl: in OpaqueTypeDecl): String {
+  "pub opaque type " + decl.name + " { __value: Int }"
+}
+func reprForTypeAlias(decl: in TypeAliasDecl): String {
+  "pub alias " + decl.name + " = Int"
+}
+
+// Construct a default ContractDecl with the three required fields and
+// everything else zeroed.  Mirrors F# `ContractDecl.basic`.
+func basicDecl(kind: in String, name: in String, repr: in String): ContractDecl {
+  ContractDecl(
+    kind            = kind,
+    name            = name,
+    repr            = repr,
+    isPure          = false,
+    stability       = "",
+    requiresClauses = newList(),
+    ensuresClauses  = newList(),
+    body            = None,
+    params          = newList())
+}
+
+/// Build a `Contract` from a parsed `SourceFile`.  Walks each
+/// top-level item and emits a `ContractDecl` for every `pub` item of
+/// a supported kind (record, func, union, enum, interface, opaque,
+/// distinct, alias).  Non-pub items are filtered out — they don't
+/// surface in the contract.
+///
+/// Used by the self-hosted MSIL bridge to build the `Lyric.Contract`
+/// resource payload before assembly emission.
+@stable(since="0.1")
+pub func buildContractFromFile(file: in SourceFile): Contract {
+  val decls: List[ContractDecl] = newList()
+  var i = 0
+  while i < file.items.count {
+    val it = file.items[i]
+    if isPubVis(it.visibility) {
+      match it.kind {
+        case IRecord(r) ->
+          decls.add(basicDecl("record", r.name, reprForRecord(r)))
+        case IFunc(f) ->
+          decls.add(basicDecl("func", f.name, reprForFunc(f)))
+        case IUnion(u) ->
+          decls.add(basicDecl("union", u.name, reprForUnion(u)))
+        case IEnum(e) ->
+          decls.add(basicDecl("enum", e.name, reprForEnum(e)))
+        case IInterface(ix) ->
+          decls.add(basicDecl("interface", ix.name, reprForInterface(ix)))
+        case IDistinctType(d) ->
+          decls.add(basicDecl("distinct", d.name, reprForDistinct(d)))
+        case IOpaque(o) ->
+          decls.add(basicDecl("opaque", o.name, reprForOpaque(o)))
+        case ITypeAlias(a) ->
+          decls.add(basicDecl("alias", a.name, reprForTypeAlias(a)))
+        case _ -> ()
+      }
+    }
+    i = i + 1
+  }
+  Contract(
+    packageName   = joinDots(file.packageDecl.path.segments),
+    version       = "0.0.0",
+    level         = "runtime_checked",
+    formatVersion = 2,
+    decls         = decls)
 }

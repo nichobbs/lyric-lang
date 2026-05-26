@@ -21,8 +21,12 @@ import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.Mono
 import Lyric.Derives
 import Lyric.RestoredPackages
+import Lyric.ContractMeta as Meta
+import Std.Encoding as Encoding
 import Msil.Lowering
 import Msil.Codegen
+import Msil.Tables
+import Msil.Heaps
 
 /// Compile `source` to a .NET PE DLL at `outputPath` using the self-hosted
 /// MSIL pipeline.
@@ -136,6 +140,11 @@ pub func compileToMsil(
 
   // Determine the entry-point MethodDef token (0 = no entry point / library).
   val entryToken = resolveEntryToken(cctx)
+
+  // Embed the package's Lyric.Contract resource (parsed-by-the-loader
+  // JSON describing this assembly's public surface) so downstream
+  // restored-dep consumers see the contract via the in-process loader.
+  embedLyricContract(cctx.lctx, liftedFile, "Lyric.Contract")
 
   // Lower the package IR to raw PE bytes using the pre-seeded context.
   val bytes = lowerMPackageWithCtx(pkg, cctx.lctx, entryToken)
@@ -312,6 +321,10 @@ pub func compileProjectToMsilWithRestored(
     val weaved = weaveAspectsMsil(perPkgFiles[li])
     val lifted = liftLambdasMsil(weaved)
     addPackageTokens(cctx, lifted, perPkgNames[li])
+    // Project-as-DLL embedding: each package's contract goes in its
+    // own `Lyric.Contract.<Pkg>` resource so the in-process loader can
+    // surface them per-package (matching the F# bundled-DLL layout).
+    embedLyricContract(cctx.lctx, lifted, "Lyric.Contract." + perPkgNames[li])
     liftedFiles.add(lifted)
     li = li + 1
   }
@@ -479,6 +492,55 @@ func segmentsToString(segments: in List[String]): String {
 // Return the MethodDef token of `main` if it was registered, or 0 for libraries.
 // The first package whose `main()` `addPackageTokens` walked over records
 // its token in `cctx.mainEntryToken[0]` (#1183 Phase 2).
+// Build a `Lyric.Contract` resource payload for `file` and seed the
+// lowering ctx + metadata tables so the assembler emits it into the
+// PE.  Mirrors what the F# emitter's
+// `bootstrap/src/Lyric.Emitter/ContractMeta.fs::embedIntoAssemblyAs`
+// does as a post-process step; the self-hosted bridge does it in-line
+// during emission instead.
+//
+// `resourceName` is typically `"Lyric.Contract"` for single-package
+// assemblies, or `"Lyric.Contract.<Pkg>"` for project-as-DLL bundles
+// (#1183 multi-package emission).
+func embedLyricContract(lctx: in LoweringCtx, file: in SourceFile,
+                        resourceName: in String): Unit {
+  val contract = Meta.buildContractFromFile(file)
+  val json     = Meta.contractToJson(contract)
+  val jsonBytes = Encoding.encodeUtf8(json)
+  val jsonLen   = jsonBytes.length
+
+  // Resources region layout: per-resource = 4-byte LE length + bytes.
+  // `offset` on the ManifestResource row points at the start of this
+  // resource's length-prefixed slot.
+  val offset = lctx.resourceData.count
+
+  // Append the 4-byte LE length prefix.
+  lctx.resourceData.add(jsonLen % 256)
+  lctx.resourceData.add((jsonLen / 256) % 256)
+  lctx.resourceData.add((jsonLen / 65536) % 256)
+  lctx.resourceData.add((jsonLen / 16777216) % 256)
+
+  // Append the UTF-8 bytes.
+  var i = 0
+  while i < jsonLen {
+    lctx.resourceData.add(jsonBytes[i])
+    i = i + 1
+  }
+
+  // Register the ManifestResource row.  `implementation = 0` for an
+  // embedded resource per ECMA-335 §II.22.24.
+  val sName = internString(lctx.strings, resourceName)
+  val mresRow = addManifestResource(lctx.tables, ManifestResourceRow(
+    offset         = offset,
+    flags          = 1,    // Public
+    name           = sName,
+    implementation = 0))   // embedded
+  // Row index returned by addManifestResource is unused at the
+  // bridge level (the metadata table itself carries it); the call's
+  // only side effect we depend on is appending the row.
+  if mresRow < 0 { () }  // unreachable; row indices are 1-based
+}
+
 func resolveEntryToken(cctx: in CodegenCtx): Int {
   if cctx.mainEntryToken.count > 0 {
     cctx.mainEntryToken[0]
