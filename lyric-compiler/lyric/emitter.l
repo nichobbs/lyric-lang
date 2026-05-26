@@ -3,35 +3,31 @@
 // Implements the `emit(req): EmitResult` contract that cli.l and repl.l
 // depend on.
 //
-// As of Track A (docs/41 §860, A1), `--target dotnet` single-source
-// compilation runs IN-PROCESS via `Msil.Bridge.compileToMsil`.  No
-// subprocess hop, no F# emitter touched at runtime.  `--target jvm`
-// still uses the subprocess fallback because importing `Jvm.Bridge`
-// here would pull `Jvm.Bytecode.BranchInsn` into the same F# emitter
-// scope as `Lyric.Manifest.Branch` / `Lyric.GitDep.Branch` and the F#
-// emitter has known issues with that closure (now mitigated by PR #868
-// but not yet exhaustively retested for the JVM path).
+// `--target dotnet` compilation — both single-source and multi-package
+// — runs IN-PROCESS via `Msil.Bridge.compileToMsilWithVersion` /
+// `compileProjectToMsilWithRestoredAndVersion`.  No subprocess hop, no
+// F# emitter touched at runtime.  Restored-deps, feature flags, and
+// manifest-threaded `[package].version` all flow through the same
+// in-process path.
 //
-// The subprocess shellout to `lyric --internal-build` also survives
-// unconditionally when `LYRIC_FORCE_SUBPROCESS=1`, used by the
-// bootstrap validation pipeline to compare in-process vs subprocess
-// output, and for `emitProject` — multi-package + restored-dep builds
-// still route through F# `Program.fs::internalProjectBuild` until the
-// bridges gain a multi-package entry point.
+// `--target jvm` still shells out to `lyric --internal-build` (single)
+// or `lyric --internal-project-build` (project) because the
+// self-hosted JVM bridge does not yet have a multi-package entry
+// point.  The F# CLI handlers in `bootstrap/src/Lyric.Cli/Program.fs`
+// are kept alive solely for this path; the `--target dotnet` arms of
+// those handlers are unreachable from this file's `emit` /
+// `emitProject` after the slice 3+ retirements.  They survive until
+// the JVM in-process bridge lands.
 //
 // Environment variables:
-//   LYRIC_FORCE_SUBPROCESS — set to "1" to opt out of the in-process
-//                            compile path; forces every emit() call to
-//                            shell back to `lyric --internal-build`.
-//                            Default: in-process when available.
 //   LYRIC_BIN              — path to the dotnet (or lyric) executable.
-//                            Used by the subprocess fallback only.
+//                            Used by the JVM subprocess shim only.
 //                            Set automatically by Program.fs before
 //                            routing to the self-hosted CLI.
 //                            Defaults to "lyric".
 //   LYRIC_CLI_DLL          — when the CLI is a dotnet exec DLL rather
 //                            than a native binary, this is set to the
-//                            DLL path.  Subprocess-fallback only.
+//                            DLL path.  JVM subprocess shim only.
 //                            Program.fs populates it from
 //                            Assembly.GetEntryAssembly.
 //
@@ -256,22 +252,15 @@ func failResult(msg: in String): EmitResult {
 
 /// Compile a multi-package project to a single bundled DLL or JAR.
 ///
-/// Default path (#1183 Phase 4 — `--target dotnet` only): calls
-/// `Msil.Bridge.compileProjectToMsil` in-process via a direct package
-/// import.  No subprocess hop, no F# emitter touched at runtime.
+/// `--target dotnet` runs IN-PROCESS via
+/// `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`.  Restored
+/// dependencies (loaded + synthesised in `emitProjectInProcess`),
+/// active feature flags, and manifest-threaded `[package].version` all
+/// flow through the in-process path.  No F# emitter shellout.
 ///
-/// Falls back to the `lyric --internal-project-build` subprocess (handled
-/// by the F# bootstrap CLI) when:
-///   - the target is JVM (the JVM bridge has no project-level entry
-///     point yet),
-///   - the request carries restored dependency DLLs (in-process bridge
-///     does not yet thread `RestoredPackages` through the middle-end),
-///   - or `LYRIC_FORCE_SUBPROCESS=1` is set for differential testing.
-///
-/// Active feature flags (`@cfg`-driven erasure) ARE now plumbed
-/// through the in-process path via `compileProjectToMsilWithFeatures`
-/// (#1183).  The subprocess path will be retired once restored deps
-/// are plumbed through as well.
+/// `--target jvm` still shells out to `lyric --internal-project-build`
+/// because the self-hosted JVM bridge has no project-level entry point
+/// yet.  Will retire when the JVM in-process bridge lands.
 @stable(since="0.1")
 pub func emitProject(req: in EmitProjectRequest): EmitResult {
   val outDir = Path.dirname(req.outputPath)
@@ -282,16 +271,9 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
     }
   }
 
-  val canInProc = match req.target {
-                    case Dotnet -> true
-                    case Jvm    -> false
-                  }
-                  and not useSubprocessFallback()
-
-  if canInProc {
-    emitProjectInProcess(req)
-  } else {
-    emitProjectViaSubprocess(req)
+  match req.target {
+    case Dotnet -> emitProjectInProcess(req)
+    case Jvm    -> emitProjectViaSubprocess(req)
   }
 }
 
@@ -325,13 +307,14 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
   val stdlibSources = findStdlibSources()
 
   // Load + synthesise each restored-dependency DLL.  `restoredDllPaths`
-  // entries are "depName\tdllPath"; only the dllPath portion matters for
-  // the in-process loader (depName is metadata for the F# subprocess
-  // path's diagnostic surfaces).  If any DLL fails to load or synthesise
-  // (e.g. the dep was built by the self-hosted bridge, which doesn't yet
-  // emit `Lyric.Contract` resources), fall back to the F# subprocess
-  // path which can build against the dep via reflection regardless of
-  // contract presence.
+  // entries are "depName\tdllPath"; only the dllPath portion matters
+  // for the in-process loader (the leading depName is informational).
+  // Load / synthesise failures (DllMissing, NoContractResource,
+  // MalformedContract, SynthesisDiagnostics) bubble up as a single
+  // `EmitResult` failure — the previous behaviour of silently falling
+  // back to the F# `--internal-project-build` subprocess was retired
+  // once slice 3 (#1372) proved the self-hosted bridge round-trips
+  // restored deps end-to-end.
   val restoredArtifacts: List[SynthesisedArtifact] = newList()
   var ri = 0
   while ri < req.restoredDllPaths.count {
@@ -343,7 +326,9 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
       depEntry
     }
     match RP.loadRestoredPackage(dllPath) {
-      case Err(_) -> return emitProjectViaSubprocess(req)
+      case Err(e) ->
+        return failResult("restored dep '" + dllPath +
+                          "' failed to load: " + RP.errorMessage(e))
       case Ok(arts) -> {
         var ai = 0
         while ai < arts.count {
@@ -352,7 +337,10 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
           // can't leak across iterations.
           val preamble: List[Meta.ContractDecl] = newList()
           match RP.synthesiseArtifact(arts[ai], preamble) {
-            case Err(_) -> return emitProjectViaSubprocess(req)
+            case Err(e) ->
+              return failResult("restored dep '" + dllPath +
+                                "' failed to synthesise: " +
+                                RP.errorMessage(e))
             case Ok(syn) -> restoredArtifacts.add(syn)
           }
           ai = ai + 1
@@ -374,10 +362,10 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
   }
 }
 
-// Subprocess project emit — preserved as the fallback for JVM target,
-// restored-dep / feature-bearing requests, and `LYRIC_FORCE_SUBPROCESS=1`.
-// Will be retired in #1183 Phase 5 once the in-process bridge covers every
-// supported scenario.
+// Subprocess project emit — JVM target only.  Writes each package's
+// sources to temp files, builds a tab-encoded spec, and shells to
+// `lyric --internal-project-build`.  Will retire when the self-hosted
+// JVM bridge gains a project-level entry point.
 func emitProjectViaSubprocess(req: in EmitProjectRequest): EmitResult {
   // Per-invocation subdirectory under lyric-emit/ keyed on a v4 UUID.
   // Two concurrent builds for the same assemblyName would otherwise
@@ -494,13 +482,11 @@ func emitProjectViaSubprocess(req: in EmitProjectRequest): EmitResult {
 
 /// Compile Lyric source to a .NET DLL or JVM JAR.
 ///
-/// Default path (AOT-friendly): `--target dotnet` calls
-/// `Msil.Bridge.compileToMsil` in-process via a direct package import.
-/// No subprocess hop, no F# emitter touched at runtime.
-///
-/// `--target jvm` still uses the subprocess fallback (see header
-/// comment for why).  Set `LYRIC_FORCE_SUBPROCESS=1` to route every
-/// call through the subprocess shellout for differential testing.
+/// `--target dotnet` runs IN-PROCESS via
+/// `Msil.Bridge.compileToMsilWithVersion`.  `--target jvm` still
+/// shells out to `lyric --internal-build` because the self-hosted JVM
+/// bridge does not yet have a single-file entry point reachable from
+/// here.  Will retire when the JVM in-process bridge lands.
 @stable(since="0.1")
 pub func emit(req: in EmitRequest): EmitResult {
   // Ensure the output directory exists so the bridges' raw byte-write
@@ -513,19 +499,10 @@ pub func emit(req: in EmitRequest): EmitResult {
     }
   }
 
-  if useSubprocessFallback() {
-    emitViaSubprocess(req)
-  } else {
-    match req.target {
-      case Dotnet -> emitMsilInProcess(req)
-      // JVM stays on subprocess fallback (see header comment).
-      case Jvm    -> emitViaSubprocess(req)
-    }
+  match req.target {
+    case Dotnet -> emitMsilInProcess(req)
+    case Jvm    -> emitViaSubprocess(req)
   }
-}
-
-func useSubprocessFallback(): Bool {
-  Environment.getVarOrDefault("LYRIC_FORCE_SUBPROCESS", "") == "1"
 }
 
 // In-process MSIL emit — direct call into `Msil.Bridge.compileToMsil`.
@@ -551,10 +528,11 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
   }
 }
 
-// Subprocess fallback — preserved for `LYRIC_FORCE_SUBPROCESS=1` and
-// the JVM target.  Writes the source to a temp file and shells back
-// to `lyric --internal-build` which the F# bootstrap CLI dispatches
-// through `Program.fs::internalBuild`.
+// Subprocess single-file emit — JVM target only.  Writes `req.source`
+// to a temp file and shells to `lyric --internal-build`, which the F#
+// bootstrap CLI dispatches through `Program.fs::internalBuild`.  Will
+// retire when the self-hosted JVM bridge gains a reachable single-file
+// entry point.
 func emitViaSubprocess(req: in EmitRequest): EmitResult {
   // Write source text to a temp file.
   val srcPath = match writeTempSource(req.source, req.assemblyName) {
