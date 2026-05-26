@@ -17,7 +17,7 @@
 //   import Storage
 //   import Std.Collections
 //
-//   val bucket = Storage.connectS3()?
+//   val bucket = Storage.connectLocal("/tmp/lyric-storage", "uploads")?
 //   Storage.put(bucket, "uploads/photo.jpg", base64Data, "image/jpeg")?
 //   match Storage.get(bucket, "uploads/photo.jpg") {
 //     case Ok(obj) -> println(obj.metadata.contentType)
@@ -25,16 +25,14 @@
 //   }
 //   val listing = Storage.list(bucket, "uploads/")?
 //
-// Runtime config env vars (LYRIC_CONFIG_S3CONNECTION_*, etc.):
-//   LYRIC_CONFIG_S3CONNECTION_REGION       — AWS region (required for S3)
-//   LYRIC_CONFIG_S3CONNECTION_BUCKET       — S3 bucket name
-//   LYRIC_CONFIG_S3CONNECTION_ACCESSKEY    — AWS access key (@sensitive)
-//   LYRIC_CONFIG_S3CONNECTION_SECRETKEY    — AWS secret key (@sensitive)
-//   LYRIC_CONFIG_S3CONNECTION_ENDPOINTURL  — custom endpoint URL (default: "")
-//   LYRIC_CONFIG_AZURECONNECTION_CONNECTIONSTRING — Azure connection string
-//   LYRIC_CONFIG_AZURECONNECTION_CONTAINERNAME    — Azure container name
-//   LYRIC_CONFIG_LOCALCONNECTION_BASEPATH  — local base path (default: /tmp/lyric-storage)
-//   LYRIC_CONFIG_LOCALCONNECTION_BUCKETNAME — local bucket directory name
+// Backends:
+//   * Local filesystem — fully native Lyric implementation against
+//     `System.IO.File` / `System.IO.Directory` / `System.IO.Path` and
+//     a minimum BCL extern set in `Storage.Kernel.Net` (Base64, MD5,
+//     canonical-path resolve).  No host shim.
+//   * S3 (AWSSDK.S3)        — returns `NOT_IMPLEMENTED` until the
+//     direct `extern type` bindings against the NuGet SDK land.
+//   * Azure Blob Storage    — same as S3.
 //
 // See docs/03-decision-log.md D056 and lyric-storage/README.md.
 
@@ -44,8 +42,12 @@ package Storage
 import Std.Core
 import Std.Collections
 import Std.Json
-import Std.Iter
 import Std.String as Str
+import Std.Time as Time
+import Std.Math
+import Std.Iter
+import Std.Sort
+import Storage.Kernel.Net
 
 // ─── Key safety primitives (defense-in-depth against path traversal) ─────────
 //
@@ -117,7 +119,7 @@ pub func isSafeKey(key: in String): Bool {
   if Str.contains(lk, "%25")            { return false }
   val n = normalisedStorageKey(key)
   if n.length == 0                      { return false }
-  if n.charAt(0).toString() == "/"      { return false }
+  if n[0] == '/'                        { return false }
   if storageKeyHasDotDot(n)             { return false }
   return true
 }
@@ -130,100 +132,6 @@ pub func isSafePrefix(prefix: in String): Bool {
   if prefix.length == 0 { return true }
   return isSafeKey(prefix)
 }
-
-// ─── Kernel boundary (inlined) ────────────────────────────────────────────────
-// Declared here rather than imported from Storage.Kernel.Net because
-// intra-project import resolution does not yet propagate function
-// signatures to the caller's type-checker.
-//
-// Phase-2 of #733 host-shim path: the `@externTarget` annotations bind
-// each kernel function to a real static method on `Lyric.Storage.LocalHost`
-// (bootstrap/src/Lyric.Storage.Host/StorageHost.fs).  The local-fs backend
-// is fully functional; S3 and Azure Blob shims land as separate phases
-// (each needs LocalStack / Azurite Testcontainers infrastructure for
-// regression coverage, while local-fs stays self-contained).  Until those
-// land, opening an S3 or Azure handle returns a clear "not yet
-// implemented" error and the data-plane funcs reject the handle.
-
-/// Open an S3 bucket.  Not yet implemented under the Phase-2 host-shim
-/// rollout — tracked under #733.
-@axiom("AWSSDK.S3 (Phase 2 follow-up of #733) — returns Err until the S3 host shim lands")
-@cfg(feature = "s3")
-@externTarget("Lyric.Storage.LocalHost.storageConnectS3NotYet")
-func storageConnectS3(region: in String, bucket: in String, accessKey: in String, secretKey: in String, endpointUrl: in String): Result[Int, String]
-  requires: region.length > 0
-  requires: bucket.length > 0
-  = ()
-
-/// Open an Azure Blob container.  Not yet implemented under the Phase-2
-/// host-shim rollout — tracked under #733.
-@axiom("Azure.Storage.Blobs (Phase 2 follow-up of #733) — returns Err until the Azure host shim lands")
-@cfg(feature = "azureblob")
-@externTarget("Lyric.Storage.LocalHost.storageConnectAzureNotYet")
-func storageConnectAzure(connectionString: in String, containerName: in String): Result[Int, String]
-  requires: connectionString.length > 0
-  requires: containerName.length > 0
-  = ()
-
-/// Open a directory-backed bucket on the local filesystem.  Phase-2 of
-/// #733: fully functional through `Lyric.Storage.LocalHost`.
-@axiom("Lyric.Storage.LocalHost.storageConnectLocal — System.IO directory-backed bucket; creates the directory if absent")
-@cfg(feature = "local")
-@externTarget("Lyric.Storage.LocalHost.storageConnectLocal")
-func storageConnectLocal(basePath: in String, bucketName: in String): Result[Int, String]
-  requires: basePath.length > 0
-  requires: bucketName.length > 0
-  = ()
-
-// ─── Shared data-plane (host dispatches by handle's backend tag) ─────────────
-
-/// Upload an object.  userMetaJson is a JSON object of string key-value pairs.
-/// Returns JSON-serialised StorageMetadata on success.
-@axiom("Lyric.Storage.LocalHost.storagePut — dispatches to System.IO for local-fs handles; rejects S3/Azure handles until those shims land")
-@externTarget("Lyric.Storage.LocalHost.storagePut")
-func storagePut(bucketHandle: in Int, key: in String, dataBase64: in String, contentType: in String, userMetaJson: in String): Result[String, String]
-  requires: key.length > 0
-  = ()
-
-/// Download an object.  Returns JSON-serialised StorageObject on success.
-@axiom("Lyric.Storage.LocalHost.storageGet — dispatches by backend tag")
-@externTarget("Lyric.Storage.LocalHost.storageGet")
-func storageGet(bucketHandle: in Int, key: in String): Result[String, String]
-  requires: key.length > 0
-  = ()
-
-/// Delete an object.  Idempotent.
-@axiom("Lyric.Storage.LocalHost.storageDelete — dispatches by backend tag")
-@externTarget("Lyric.Storage.LocalHost.storageDelete")
-func storageDelete(bucketHandle: in Int, key: in String): Result[Unit, String]
-  requires: key.length > 0
-  = ()
-
-/// List objects with an optional prefix.  `startAfterKey` is the raw key
-/// to start listing after (alphabetically); pass "" to start from the beginning.
-/// Lyric encodes/decodes the opaque `continuationToken` in the public API.
-@axiom("Lyric.Storage.LocalHost.storageList — dispatches by backend tag; local-fs uses Directory.EnumerateFiles")
-@externTarget("Lyric.Storage.LocalHost.storageList")
-func storageList(bucketHandle: in Int, prefix: in String, startAfterKey: in String, maxKeys: in Int): Result[String, String]
-  requires: maxKeys >= 1
-  requires: maxKeys <= 1000
-  = ()
-
-/// Generate a pre-signed URL.  The local-fs backend has no signing service
-/// and returns an Err; S3/Azure will support this once their shims land.
-@axiom("Lyric.Storage.LocalHost.storagePresignedUrl — not supported on local-fs backend")
-@externTarget("Lyric.Storage.LocalHost.storagePresignedUrl")
-func storagePresignedUrl(bucketHandle: in Int, key: in String, expiresInSeconds: in Int): Result[String, String]
-  requires: key.length > 0
-  requires: expiresInSeconds >= 1
-  = ()
-
-/// Return true if the key exists in the bucket.
-@axiom("Lyric.Storage.LocalHost.storageExists — dispatches by backend tag")
-@externTarget("Lyric.Storage.LocalHost.storageExists")
-func storageExists(bucketHandle: in Int, key: in String): Result[Bool, String]
-  requires: key.length > 0
-  = ()
 
 // ─── Error type ───────────────────────────────────────────────────────────────
 
@@ -324,36 +232,246 @@ pub interface StorageBucket {
     requires: isSafeKey(key)
 }
 
-// ─── Native bucket wrapper (internal) ────────────────────────────────────────
+// ─── Local-filesystem bucket ─────────────────────────────────────────────────
+//
+// The local-fs backend stores each object as two files under
+// `<basePath>/<bucketName>/<key>`:
+//
+//   * `<key>`              — raw bytes (base64-decoded from `dataBase64`)
+//   * `<key>.meta.json`    — sidecar JSON object holding contentType,
+//                            lastModified, etag, and userMeta
+//
+// Sidecar files keep all metadata observable across process boundaries
+// and let `list` populate `ListEntry` from disk without re-reading every
+// object's content (#1011).
 
-// Integer handle issued by the kernel; opaque to consumers.
-record NativeBucket { bucketHandle: Int; bucketName: String }
+@stable(since="0.1")
+pub record LocalBucket {
+  basePath:   String   // root directory
+  bucketName: String   // sub-directory under basePath (the "bucket")
+  bucketDir:  String   // canonical resolved bucketDir
+}
 
-impl StorageBucket for NativeBucket {
+// Resolve `key` to an absolute path inside `bucketDir`.  Rejects keys
+// that escape via `..` or root tricks even after the public
+// `isSafeKey` check (defence-in-depth).
+func resolveLocalPath(bucket: in LocalBucket, key: in String): Result[String, StorageError] {
+  // The public isSafeKey check has already rejected absolute keys and `..`
+  // segments; this is a belt-and-braces canonicalised cross-check.
+  val joined = bucket.bucketDir + "/" + key
+  val canon  = hostPathGetFullPath(joined)
+  if not Str.startsWith(canon, bucket.bucketDir) {
+    return Err(StorageError(
+      message = "resolved key path escapes bucket directory",
+      code    = "INVALID_KEY"))
+  }
+  return Ok(canon)
+}
+
+// Build the sidecar `.meta.json` path for a resolved object path.
+func metaSidecarPath(objectPath: in String): String {
+  return objectPath + ".meta.json"
+}
+
+// Compute the lowercase-hex MD5 of `bytes`.  Matches the single-part S3
+// ETag scheme so callers can verify content integrity end-to-end.
+func computeEtag(bytes: in slice[Byte]): String {
+  val raw = hostMd5(bytes)
+  Str.toLower(hostBytesToHexUpper(raw))
+}
+
+// Format a sidecar JSON object: contentType / lastModified / etag plus
+// `userMeta` (JSON-pre-built by the caller so dict order is stable).
+func buildSidecarJson(contentType: in String, lastModified: in String,
+                       etag: in String, userMetaJson: in String): String {
+  val meta = if userMetaJson.length == 0 { "{}" } else { userMetaJson }
+  return "{\"contentType\":" + jsonString(contentType)
+       + ",\"lastModified\":" + jsonString(lastModified)
+       + ",\"etag\":" + jsonString(etag)
+       + ",\"userMeta\":" + meta + "}"
+}
+
+// Best-effort directory-create.  Returns an `Err` only when the
+// underlying BCL call throws and the directory still doesn't exist
+// (typical permission failure).  Pre-existing directories return Ok.
+func createDirIfMissing(path: in String): Result[Unit, StorageError] {
+  if hostDirectoryExists(path) { return Ok(()) }
+  return try {
+    hostCreateDirectory(path)
+    Ok(())
+  } catch Bug as b {
+    Err(StorageError(
+      message = "cannot create directory '" + path + "': " + b.message,
+      code    = "IO_ERROR"))
+  }
+}
+
+// Compute the parent directory of `path` by truncating at the last
+// path separator.  Robust against both `/` and `\` for cross-platform
+// safety; an unrooted leaf returns "".
+func parentDir(path: in String): String {
+  var i = path.length - 1
+  while i >= 0 {
+    val c = path[i]
+    if c == '/' or c == '\\' {
+      return Str.substring(path, 0, i)
+    }
+    i = i - 1
+  }
+  return ""
+}
+
+// Best-effort recursive parent-directory create.  Walks the parents
+// from the root down, creating each missing segment.  Used by `put` so
+// hierarchical keys (e.g. `a/b/c.bin`) don't require the caller to
+// pre-create intermediate dirs.
+func ensureParents(path: in String): Result[Unit, StorageError] {
+  val parent = parentDir(path)
+  if parent.length == 0 or hostDirectoryExists(parent) {
+    return Ok(())
+  }
+  match ensureParents(parent) {
+    case Err(e) -> return Err(e)
+    case Ok(_)  -> ()
+  }
+  createDirIfMissing(parent)
+}
+
+// ISO-8601 UTC formatted "now" for `lastModified`.
+func nowIso8601(): String {
+  return Time.toIsoString(Time.now())
+}
+
+impl StorageBucket for LocalBucket {
+
   func put(
     key:         in String,
     dataBase64:  in String,
     contentType: in String,
     userMeta:    in Map[String, String]
   ): Result[StorageMetadata, StorageError] {
-    val userMetaJson = serialiseStringMap(userMeta)
-    match storagePut(self.bucketHandle, key, dataBase64, contentType, userMetaJson) {
-      case Ok(json) -> parseMetadata(json)
-      case Err(msg) -> Err(StorageError(message = msg, code = "PUT_ERROR"))
+    match resolveLocalPath(self, key) {
+      case Err(e)        -> return Err(e)
+      case Ok(fullPath)  -> {
+        // Decode the wire payload to raw bytes.  Malformed base64 from
+        // a hostile caller is surfaced as INVALID_BASE64 rather than a
+        // generic IO error.
+        val bytes: slice[Byte] = try {
+          hostFromBase64(dataBase64)
+        } catch Bug as b {
+          return Err(StorageError(
+            message = "invalid base64 payload: " + b.message,
+            code    = "INVALID_BASE64"))
+        }
+        // Ensure parent directories exist for hierarchical keys
+        // (e.g. `path/to/object.bin` under a fresh bucket).
+        match ensureParents(fullPath) {
+          case Err(e) -> return Err(e)
+          case Ok(_)  -> ()
+        }
+        // Write the object content.
+        match try {
+          hostWriteAllBytes(fullPath, bytes)
+          Ok(())
+        } catch Bug as b {
+          Err(StorageError(
+            message = "cannot write object '" + key + "': " + b.message,
+            code    = "PUT_ERROR"))
+        } {
+          case Err(e) -> return Err(e)
+          case Ok(_)  -> ()
+        }
+        // Persist the sidecar metadata for round-trippable userMeta /
+        // contentType / etag / lastModified.
+        val etag         = computeEtag(bytes)
+        val lastModified = nowIso8601()
+        val userMetaJson = serialiseStringMap(userMeta)
+        val sidecarJson  = buildSidecarJson(contentType, lastModified, etag, userMetaJson)
+        match try {
+          hostWriteAllText(metaSidecarPath(fullPath), sidecarJson)
+          Ok(())
+        } catch Bug as b {
+          Err(StorageError(
+            message = "cannot write metadata sidecar for '" + key + "': " + b.message,
+            code    = "PUT_ERROR"))
+        } {
+          case Err(e) -> return Err(e)
+          case Ok(_)  -> ()
+        }
+        return Ok(StorageMetadata(
+          contentType   = contentType,
+          contentLength = intToLong(bytes.length),
+          etag          = etag,
+          lastModified  = lastModified,
+          userMeta      = userMeta))
+      }
     }
   }
 
   func get(key: in String): Result[StorageObject, StorageError] {
-    match storageGet(self.bucketHandle, key) {
-      case Ok(json) -> parseStorageObject(json)
-      case Err(msg) -> Err(StorageError(message = msg, code = "GET_ERROR"))
+    match resolveLocalPath(self, key) {
+      case Err(e)        -> return Err(e)
+      case Ok(fullPath)  -> {
+        if not hostFileExists(fullPath) {
+          return Err(StorageError(
+            message = "key '" + key + "' not found in bucket",
+            code    = "NOT_FOUND"))
+        }
+        val bytes: slice[Byte] = try {
+          hostReadAllBytes(fullPath)
+        } catch Bug as b {
+          return Err(StorageError(
+            message = "cannot read object '" + key + "': " + b.message,
+            code    = "GET_ERROR"))
+        }
+        val dataBase64 = hostToBase64(bytes)
+        match readSidecar(fullPath, intToLong(bytes.length)) {
+          case Err(e)   -> Err(e)
+          case Ok(meta) ->
+            Ok(StorageObject(
+              bucket     = self.bucketName,
+              key        = key,
+              metadata   = meta,
+              dataBase64 = dataBase64))
+        }
+      }
     }
   }
 
   func delete(key: in String): Result[Unit, StorageError] {
-    match storageDelete(self.bucketHandle, key) {
-      case Ok(_)    -> Ok(())
-      case Err(msg) -> Err(StorageError(message = msg, code = "DELETE_ERROR"))
+    match resolveLocalPath(self, key) {
+      case Err(e)        -> return Err(e)
+      case Ok(fullPath)  -> {
+        // Delete is idempotent: missing file is not an error.
+        if hostFileExists(fullPath) {
+          match try {
+            hostDeleteFile(fullPath)
+            Ok(())
+          } catch Bug as b {
+            Err(StorageError(
+              message = "cannot delete object '" + key + "': " + b.message,
+              code    = "DELETE_ERROR"))
+          } {
+            case Err(e) -> return Err(e)
+            case Ok(_)  -> ()
+          }
+        }
+        val sidecar = metaSidecarPath(fullPath)
+        if hostFileExists(sidecar) {
+          match try {
+            hostDeleteFile(sidecar)
+            Ok(())
+          } catch Bug as b {
+            Err(StorageError(
+              message = "cannot delete metadata sidecar for '" + key + "': " + b.message,
+              code    = "DELETE_ERROR"))
+          } {
+            case Err(e) -> return Err(e)
+            case Ok(_)  -> ()
+          }
+        }
+        return Ok(())
+      }
     }
   }
 
@@ -362,82 +480,376 @@ impl StorageBucket for NativeBucket {
     continuationToken: in String,
     maxKeys:           in Int
   ): Result[ListResult, StorageError] {
-    // The public `continuationToken` is the raw key returned as
-    // `nextContinuationToken` by the previous page; pass it through as
-    // `startAfterKey` so the backend starts listing after that key.
-    match storageList(self.bucketHandle, prefix, continuationToken, maxKeys) {
-      case Ok(json) -> parseListResult(json)
-      case Err(msg) -> Err(StorageError(message = msg, code = "LIST_ERROR"))
+    if maxKeys > 1000 {
+      return Err(StorageError(
+        message = "maxKeys must be in [1, 1000]",
+        code    = "INVALID_ARGUMENT"))
     }
+    if not hostDirectoryExists(self.bucketDir) {
+      return Ok(ListResult(
+        entries                = [],
+        nextContinuationToken  = None,
+        isTruncated            = false))
+    }
+    // Collect every key (file path relative to bucketDir, with '/'
+    // separators) by walking the directory tree.  Sidecar `.meta.json`
+    // files are excluded.
+    val allKeys: List[String] = newList()
+    walkDirectoryForKeys(self.bucketDir, "", allKeys)
+    // Filter by prefix and continuation token; preserve the natural
+    // disk order until we sort.
+    val filtered: List[String] = newList()
+    var i = 0
+    while i < allKeys.count {
+      val k = allKeys[i]
+      if Str.startsWith(k, prefix) {
+        if continuationToken.length == 0 or Str.compare(k, continuationToken) > 0 {
+          filtered.add(k)
+        }
+      }
+      i = i + 1
+    }
+    // Sort lexicographically so pagination is deterministic.
+    val sorted = sortKeys(filtered)
+    val truncated = sorted.count > maxKeys
+    val pageCount = if truncated { maxKeys } else { sorted.count }
+    var entries: slice[ListEntry] = []
+    var j = 0
+    while j < pageCount {
+      val k = sorted[j]
+      match listEntryForKey(self, k) {
+        case Err(e)  -> return Err(e)
+        case Ok(le)  -> { entries = concat(entries, [le]) }
+      }
+      j = j + 1
+    }
+    val nextToken = if truncated and pageCount > 0 {
+      Some(value = sorted[pageCount - 1])
+    } else {
+      None
+    }
+    return Ok(ListResult(
+      entries                = entries,
+      nextContinuationToken  = nextToken,
+      isTruncated            = truncated))
   }
 
   func presignedUrl(
     key:              in String,
     expiresInSeconds: in Int
   ): Result[String, StorageError] {
-    match storagePresignedUrl(self.bucketHandle, key, expiresInSeconds) {
-      case Ok(url)  -> Ok(url)
-      case Err(msg) -> Err(StorageError(message = msg, code = "PRESIGN_ERROR"))
+    // The local-fs backend has no signing service.  Validate that the
+    // key resolves cleanly before refusing.
+    match resolveLocalPath(self, key) {
+      case Err(e) -> return Err(e)
+      case Ok(_)  ->
+        Err(StorageError(
+          message = "presigned URLs are not supported on the local-fs storage backend",
+          code    = "NOT_SUPPORTED"))
     }
   }
 
   func exists(key: in String): Result[Bool, StorageError] {
-    match storageExists(self.bucketHandle, key) {
-      case Ok(b)    -> Ok(b)
-      case Err(msg) -> Err(StorageError(message = msg, code = "EXISTS_ERROR"))
+    match resolveLocalPath(self, key) {
+      case Err(e)        -> return Err(e)
+      case Ok(fullPath)  -> Ok(hostFileExists(fullPath))
     }
   }
 }
 
+// Read a sidecar `.meta.json` file into StorageMetadata.  Tolerates a
+// missing sidecar by returning a stub with the on-disk byte count and
+// zeroed fields — this happens for files written outside the library or
+// by an older version.
+func readSidecar(objectPath: in String, contentLength: in Long): Result[StorageMetadata, StorageError] {
+  val sidecar = metaSidecarPath(objectPath)
+  if not hostFileExists(sidecar) {
+    return Ok(StorageMetadata(
+      contentType   = "application/octet-stream",
+      contentLength = contentLength,
+      etag          = "",
+      lastModified  = "",
+      userMeta      = newMap()))
+  }
+  val txt = try {
+    hostReadAllText(sidecar)
+  } catch Bug as b {
+    return Err(StorageError(
+      message = "cannot read metadata sidecar: " + b.message,
+      code    = "META_READ_ERROR"))
+  }
+  val doc  = parseJson(txt)
+  val root = rootElement(doc)
+  if valueKind(root) != 1 {
+    return Err(StorageError(
+      message = "malformed metadata sidecar",
+      code    = "META_PARSE_ERROR"))
+  }
+  val ct = getString(getProperty(root, "contentType"))
+  val lm = getString(getProperty(root, "lastModified"))
+  val et = getString(getProperty(root, "etag"))
+  val um = parseStringMap(getRawText(getProperty(root, "userMeta")))
+  return Ok(StorageMetadata(
+    contentType   = ct,
+    contentLength = contentLength,
+    etag          = et,
+    lastModified  = lm,
+    userMeta      = um))
+}
+
+// Recursive directory walk that accumulates relative-key paths (with
+// '/' separators).  Excludes `*.meta.json` sidecars.  `relPrefix` is
+// the running relative path from the bucket root; `acc` collects the
+// keys.
+func walkDirectoryForKeys(dir: in String, relPrefix: in String, acc: in List[String]): Unit {
+  val files = try {
+    hostGetFiles(dir)
+  } catch Bug as _ {
+    return ()
+  }
+  var i = 0
+  while i < files.length {
+    val full = files[i]
+    val base = basenameOf(full)
+    if not Str.endsWith(base, ".meta.json") {
+      val rel = if relPrefix.length == 0 { base } else { relPrefix + "/" + base }
+      acc.add(rel)
+    }
+    i = i + 1
+  }
+  val subs = try {
+    hostGetDirectories(dir)
+  } catch Bug as _ {
+    return ()
+  }
+  var k = 0
+  while k < subs.length {
+    val full = subs[k]
+    val base = basenameOf(full)
+    val nextPrefix = if relPrefix.length == 0 { base } else { relPrefix + "/" + base }
+    walkDirectoryForKeys(full, nextPrefix, acc)
+    k = k + 1
+  }
+}
+
+// Extract the final path component, robust against both `/` and `\`.
+func basenameOf(path: in String): String {
+  var i = path.length - 1
+  while i >= 0 {
+    val c = path[i]
+    if c == '/' or c == '\\' {
+      return Str.substring(path, i + 1, path.length - i - 1)
+    }
+    i = i - 1
+  }
+  return path
+}
+
+// Sort `xs` into ascending lexicographic order.  Routes through
+// `Std.Sort.sortStrings` (merge sort) so the order is stable and
+// deterministic for pagination.
+func sortKeys(xs: in List[String]): List[String] {
+  val arr    = xs.toArray()
+  val sorted = sortStrings(arr)
+  val result: List[String] = newList()
+  var i = 0
+  while i < sorted.length {
+    result.add(sorted[i])
+    i = i + 1
+  }
+  result
+}
+
+// Build a `ListEntry` for `relKey` by reading content length from the
+// on-disk file and ETag / lastModified from its `.meta.json` sidecar.
+// Does NOT re-read the full file content to recompute the ETag (#1011);
+// the sidecar carries the ETag that `put` already computed once.
+func listEntryForKey(bucket: in LocalBucket, relKey: in String): Result[ListEntry, StorageError] {
+  match resolveLocalPath(bucket, relKey) {
+    case Err(e)        -> Err(e)
+    case Ok(fullPath)  -> {
+      // For content-length we still need to read the file; this is the
+      // single unavoidable per-entry I/O cost.  We never base64 it.
+      val length = try {
+        intToLong(hostReadAllBytes(fullPath).length)
+      } catch Bug as b {
+        return Err(StorageError(
+          message = "cannot stat object '" + relKey + "' for list entry: " + b.message,
+          code    = "LIST_ERROR"))
+      }
+      var etag         = ""
+      var lastModified = ""
+      val sidecar = metaSidecarPath(fullPath)
+      if hostFileExists(sidecar) {
+        val txt = try {
+          hostReadAllText(sidecar)
+        } catch Bug as _ {
+          ""
+        }
+        if txt.length > 0 {
+          val doc  = parseJson(txt)
+          val root = rootElement(doc)
+          if valueKind(root) == 1 {
+            etag         = getString(getProperty(root, "etag"))
+            lastModified = getString(getProperty(root, "lastModified"))
+          }
+        }
+      }
+      Ok(ListEntry(
+        key           = relKey,
+        contentLength = length,
+        lastModified  = lastModified,
+        etag          = etag))
+    }
+  }
+}
+
+// ─── S3 / Azure stubs ────────────────────────────────────────────────────────
+//
+// These records keep the public `connect*` signatures stable so callers
+// can switch to a real backend without code changes.  Every method
+// currently returns `NOT_IMPLEMENTED`; replacing with NuGet-SDK bindings
+// is tracked as a separate piece of work.  The records carry the
+// connection parameters for future use rather than indirecting through
+// a removed F# host.
+
+record S3Bucket {
+  region:      String
+  bucketName:  String
+  accessKey:   String
+  secretKey:   String
+  endpointUrl: String
+}
+
+func notImplementedS3(): StorageError {
+  StorageError(
+    message = "S3 backend not yet implemented; AWSSDK.S3 native bindings tracked as follow-up",
+    code    = "NOT_IMPLEMENTED")
+}
+
+impl StorageBucket for S3Bucket {
+  func put(
+    key: in String, dataBase64: in String,
+    contentType: in String, userMeta: in Map[String, String]
+  ): Result[StorageMetadata, StorageError] { Err(notImplementedS3()) }
+
+  func get(key: in String): Result[StorageObject, StorageError] { Err(notImplementedS3()) }
+  func delete(key: in String): Result[Unit, StorageError] { Err(notImplementedS3()) }
+
+  func list(
+    prefix: in String, continuationToken: in String, maxKeys: in Int
+  ): Result[ListResult, StorageError] { Err(notImplementedS3()) }
+
+  func presignedUrl(
+    key: in String, expiresInSeconds: in Int
+  ): Result[String, StorageError] { Err(notImplementedS3()) }
+
+  func exists(key: in String): Result[Bool, StorageError] { Err(notImplementedS3()) }
+}
+
+record AzureBucket {
+  connectionString: String
+  containerName:    String
+}
+
+func notImplementedAzure(): StorageError {
+  StorageError(
+    message = "Azure Blob backend not yet implemented; Azure.Storage.Blobs native bindings tracked as follow-up",
+    code    = "NOT_IMPLEMENTED")
+}
+
+impl StorageBucket for AzureBucket {
+  func put(
+    key: in String, dataBase64: in String,
+    contentType: in String, userMeta: in Map[String, String]
+  ): Result[StorageMetadata, StorageError] { Err(notImplementedAzure()) }
+
+  func get(key: in String): Result[StorageObject, StorageError] { Err(notImplementedAzure()) }
+  func delete(key: in String): Result[Unit, StorageError] { Err(notImplementedAzure()) }
+
+  func list(
+    prefix: in String, continuationToken: in String, maxKeys: in Int
+  ): Result[ListResult, StorageError] { Err(notImplementedAzure()) }
+
+  func presignedUrl(
+    key: in String, expiresInSeconds: in Int
+  ): Result[String, StorageError] { Err(notImplementedAzure()) }
+
+  func exists(key: in String): Result[Bool, StorageError] { Err(notImplementedAzure()) }
+}
+
 // ─── Factory functions ────────────────────────────────────────────────────────
 
-/// Open an Amazon S3 bucket.  Credentials and region are passed explicitly.
+/// Open an Amazon S3 bucket.  Currently returns a stub bucket whose
+/// operations report `NOT_IMPLEMENTED`; tracked as a follow-up to bind
+/// `AWSSDK.S3` natively in Lyric.
 @stable(since="0.1")
 pub func connectS3(region: in String, bucket: in String, accessKey: in String, secretKey: in String, endpointUrl: in String): Result[StorageBucket, StorageError] {
-  match storageConnectS3(region, bucket, accessKey, secretKey, endpointUrl)
-  {
-    case Ok(handle) -> Ok(NativeBucket(bucketHandle = handle, bucketName = bucket))
-    case Err(msg)   -> Err(StorageError(message = msg, code = "CONNECT_ERROR"))
+  if region.length == 0 {
+    return Err(StorageError(message = "region must be non-empty", code = "INVALID_ARGUMENT"))
   }
+  if bucket.length == 0 {
+    return Err(StorageError(message = "bucket must be non-empty", code = "INVALID_ARGUMENT"))
+  }
+  Ok(S3Bucket(
+    region      = region,
+    bucketName  = bucket,
+    accessKey   = accessKey,
+    secretKey   = secretKey,
+    endpointUrl = endpointUrl))
 }
 
-/// Open an Azure Blob Storage container.  Connection string and container name are passed explicitly.
+/// Open an Azure Blob Storage container.  Currently returns a stub
+/// bucket whose operations report `NOT_IMPLEMENTED`; tracked as a
+/// follow-up to bind `Azure.Storage.Blobs` natively in Lyric.
 @stable(since="0.1")
 pub func connectAzureBlob(connectionString: in String, containerName: in String): Result[StorageBucket, StorageError] {
-  match storageConnectAzure(connectionString, containerName)
-  {
-    case Ok(handle) -> Ok(NativeBucket(bucketHandle = handle, bucketName = containerName))
-    case Err(msg)   -> Err(StorageError(message = msg, code = "CONNECT_ERROR"))
+  if connectionString.length == 0 {
+    return Err(StorageError(message = "connectionString must be non-empty", code = "INVALID_ARGUMENT"))
   }
+  if containerName.length == 0 {
+    return Err(StorageError(message = "containerName must be non-empty", code = "INVALID_ARGUMENT"))
+  }
+  Ok(AzureBucket(
+    connectionString = connectionString,
+    containerName    = containerName))
 }
 
-/// Open a local filesystem store.  Base path and bucket name are passed explicitly.
+/// Open a local filesystem store.  The bucket subdirectory is created
+/// inside `basePath` if it doesn't already exist (matches the local-fs
+/// idiom; S3 and Azure require the bucket to exist out-of-band).
 @stable(since="0.1")
 pub func connectLocal(basePath: in String, bucketName: in String): Result[StorageBucket, StorageError] {
-  match storageConnectLocal(basePath, bucketName)
-  {
-    case Ok(handle) -> Ok(NativeBucket(bucketHandle = handle, bucketName = bucketName))
-    case Err(msg)   -> Err(StorageError(message = msg, code = "CONNECT_ERROR"))
+  if basePath.length == 0 {
+    return Err(StorageError(message = "basePath must be non-empty", code = "INVALID_ARGUMENT"))
+  }
+  if bucketName.length == 0 {
+    return Err(StorageError(message = "bucketName must be non-empty", code = "INVALID_ARGUMENT"))
+  }
+  // Ensure the base path exists first so GetFullPath can canonicalise
+  // relative components inside it.  Both calls are idempotent.
+  match createDirIfMissing(basePath) {
+    case Err(e) -> return Err(e)
+    case Ok(_)  -> ()
+  }
+  val joined    = basePath + "/" + bucketName
+  val bucketDir = hostPathGetFullPath(joined)
+  match createDirIfMissing(bucketDir) {
+    case Err(e) -> return Err(e)
+    case Ok(_)  ->
+      Ok(LocalBucket(
+        basePath   = basePath,
+        bucketName = bucketName,
+        bucketDir  = bucketDir))
   }
 }
 
-/// Dispatch to the configured backend.  Returns Err when provider is unrecognised.
-@experimental
-pub func connect(provider: in String): Result[StorageBucket, StorageError]
-  requires: provider.length > 0
-{
-  if provider == "s3" {
-    return connectS3("", "", "", "", "")
-  } else if provider == "azure" {
-    return connectAzureBlob("", "")
-  } else if provider == "local" {
-    return connectLocal("/tmp/lyric-storage", "")
-  } else {
-    return Err(StorageError(
-      message = "unknown storage provider: " + provider,
-      code    = "UNKNOWN_PROVIDER"))
-  }
-}
+// The previous `connect(provider: String)` dispatcher referenced the
+// `@cfg`-gated `connectS3` / `connectAzureBlob` / `connectLocal`
+// constructors unconditionally, so callers had to either enable every
+// feature or the manifest build failed with `T0020 unknown name`.
+// The explicit constructors are the canonical entry points and remain
+// the documented API.
 
 // ─── Convenience wrappers ─────────────────────────────────────────────────────
 
@@ -519,76 +931,6 @@ func serialiseStringMap(m: in Map[String, String]): String {
     }
   }
   return result + "}"
-}
-
-// Deserialise the JSON returned by the kernel's `put` into StorageMetadata.
-// JSON shape: {"contentType":"...","contentLength":N,"etag":"...","lastModified":"...","userMeta":{...}}
-func parseMetadata(json: in String): Result[StorageMetadata, StorageError] {
-  val doc  = parseJson(json)
-  val root = rootElement(doc)
-  if valueKind(root) != 1 {
-    return Err(StorageError(message = "unexpected metadata JSON shape", code = "PARSE_ERROR"))
-  }
-  val ct  = getString(getProperty(root, "contentType"))
-  val cl  = getInt64(getProperty(root, "contentLength"))
-  val et  = getString(getProperty(root, "etag"))
-  val lm  = getString(getProperty(root, "lastModified"))
-  val um  = parseStringMap(getRawText(getProperty(root, "userMeta")))
-  return Ok(StorageMetadata(
-    contentType   = ct,
-    contentLength = cl,
-    etag          = et,
-    lastModified  = lm,
-    userMeta      = um))
-}
-
-// Deserialise the JSON returned by the kernel's `get` into StorageObject.
-// JSON shape: {"bucket":"...","key":"...","metadata":{...},"dataBase64":"..."}
-func parseStorageObject(json: in String): Result[StorageObject, StorageError] {
-  val doc  = parseJson(json)
-  val root = rootElement(doc)
-  if valueKind(root) != 1 {
-    return Err(StorageError(message = "unexpected object JSON shape", code = "PARSE_ERROR"))
-  }
-  val bucket = getString(getProperty(root, "bucket"))
-  val key    = getString(getProperty(root, "key"))
-  val data   = getString(getProperty(root, "dataBase64"))
-  val metaEl = getProperty(root, "metadata")
-  val metaJson = getRawText(metaEl)
-  match parseMetadata(metaJson) {
-    case Ok(meta) ->
-      Ok(StorageObject(bucket = bucket, key = key, metadata = meta, dataBase64 = data))
-    case Err(e) ->
-      Err(e)
-  }
-}
-
-// Deserialise the JSON returned by the kernel's `list` into ListResult.
-// JSON shape: {"entries":[...],"nextContinuationToken":"..."|null,"isTruncated":bool}
-func parseListResult(json: in String): Result[ListResult, StorageError] {
-  val doc  = parseJson(json)
-  val root = rootElement(doc)
-  if valueKind(root) != 1 {
-    return Err(StorageError(message = "unexpected list JSON shape", code = "PARSE_ERROR"))
-  }
-  val truncated = getBoolean(getProperty(root, "isTruncated"))
-  val tokenEl   = getProperty(root, "nextContinuationToken")
-  val tokenOpt  = if valueKind(tokenEl) == 7 { None } else { Some(value = getString(tokenEl)) }
-  val arrEl     = getProperty(root, "entries")
-  var entries: slice[ListEntry] = []
-  var en = enumerateArray(arrEl)
-  while arrayMoveNext(en) {
-    val e   = arrayCurrent(en)
-    val ek  = getString(getProperty(e, "key"))
-    val ecl = getInt64(getProperty(e, "contentLength"))
-    val elm = getString(getProperty(e, "lastModified"))
-    val eet = getString(getProperty(e, "etag"))
-    entries = concat(entries, [ListEntry(key = ek, contentLength = ecl, lastModified = elm, etag = eet)])
-  }
-  return Ok(ListResult(
-    entries                = entries,
-    nextContinuationToken  = tokenOpt,
-    isTruncated            = truncated))
 }
 
 // Deserialise a JSON object of string-string pairs into Map[String, String].

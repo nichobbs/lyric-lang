@@ -15,6 +15,16 @@ output_assembly = "Storage.dll"
 "Storage.Aspects"    = "src/storage_aspects.l"
 "Storage.Kernel.Net" = "src/_kernel/net/storage_kernel.l"
 
+# Storage test suite.  Runs via `lyric test --manifest`.
+# - storage_tests.l — pure wire-type surface (StorageError, StorageMetadata,
+#                     StorageObject, ListEntry, ListResult) plus the
+#                     production-quality end-to-end local-fs data plane
+#                     (connect / put / get / delete / list / exists /
+#                     presignedUrl, including pagination cursor #1012 and
+#                     ETag-from-sidecar #1011).
+[project.tests]
+"Storage.StorageTests" = "tests/storage_tests.l"
+
 [features]
 s3        = []   # Amazon S3 (AWSSDK.S3 on .NET)
 azureblob = []   # Azure Blob Storage (Azure.Storage.Blobs on .NET)
