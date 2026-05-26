@@ -597,7 +597,12 @@ func collectStdlibTypeItems(
     var ii = 0
     while ii < stdPr.file.items.count {
       val it = stdPr.file.items[ii]
-      val isType = match it.kind {
+      // Include types AND functions so user code can resolve calls
+      // into stdlib (e.g. `println` from `Std.Console`).  Multi-file
+      // duplicate function names (`toString` lives in several stdlib
+      // packages) are handled by `addSigsFromItems`'s first-wins
+      // `containsKey` check rather than blowing up `Dictionary.Add`.
+      val include = match it.kind {
         case IRecord(_)       -> true
         case IExposedRec(_)   -> true
         case IUnion(_)        -> true
@@ -608,9 +613,10 @@ func collectStdlibTypeItems(
         case IOpaque(_)       -> true
         case IProtected(_)    -> true
         case IExternType(_)   -> true
+        case IFunc(_)         -> true
         case _                -> false
       }
-      if isType { importedItems.add(it) }
+      if include { importedItems.add(it) }
       ii = ii + 1
     }
     si = si + 1
