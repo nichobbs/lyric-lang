@@ -447,8 +447,12 @@ pub func parseFromJson(json: in String): Option[Contract] {
 // every emitted assembly.
 
 // Escape one character for inclusion in a JSON string literal.  Returns
-// the escaped sequence (length ≥ 1).  Non-printable code points below
-// 0x20 are emitted as `\u00XX`; everything else passes through verbatim.
+// the escaped sequence (length ≥ 1).  Handles `"`, `\`, `\n`, `\r`, `\t`;
+// every other character passes through verbatim.  Control characters
+// below 0x20 are NOT escaped today — the contract JSON in practice
+// only carries identifier-shaped strings (package / type / field
+// names), so a full `\u00XX` escaper is unnecessary.  Matches the F#
+// `ContractMeta.toJson` minimal-set policy (#1338).
 func escapeJsonChar(c: in String): String {
   if c.length == 0 { return "" }
   if c == "\"" { return "\\\"" }
@@ -459,8 +463,8 @@ func escapeJsonChar(c: in String): String {
   c
 }
 
-// Escape a string for inclusion in a JSON string literal.  Walks the
-// characters one at a time via `Std.String.charAt`.
+// Escape a string for inclusion in a JSON string literal.  Walks
+// the characters via `Std.String.substring(i, 1)`.
 @stable(since="0.1")
 pub func escapeJson(s: in String): String {
   var result = ""
@@ -531,10 +535,14 @@ func renderDecl(d: in ContractDecl): String {
 /// Render a `Contract` as JSON.  Output is the canonical format-2 shape
 /// `parseFromJson` accepts; round-trips through it without loss.
 /// Mirrors `bootstrap/src/Lyric.Emitter/ContractMeta.fs::toJson`.
+///
+/// Threads `c.formatVersion` through to the output instead of
+/// hardcoding `2` so format-1 fixtures stay byte-stable through the
+/// round-trip (#1339).
 @stable(since="0.1")
 pub func contractToJson(c: in Contract): String {
   var sb = "{\n"
-  sb = sb + "  \"formatVersion\": 2,\n"
+  sb = sb + "  \"formatVersion\": " + toString(c.formatVersion) + ",\n"
   sb = sb + "  \"packageName\": \"" + escapeJson(c.packageName) + "\",\n"
   sb = sb + "  \"version\": \"" + escapeJson(c.version) + "\",\n"
   sb = sb + "  \"level\": \"" + escapeJson(c.level) + "\",\n"

@@ -153,27 +153,20 @@ pub func loadRestoredPackage(dllPath: in String): Result[List[RestoredArtifact],
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §3. Source synthesis (#1229 Phase A.3.3.a)
+// §3. Source synthesis
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // Walk a parsed `Contract` and re-emit the source-level shape of its
-// public surface as a single Lyric source string.  The result feeds
-// the bridge's parser + type checker (Phase A.3.3.b will wire that
-// together) so a restored package's symbols become visible to
-// consumers without re-parsing the original source — every
-// declaration's `Repr` field already IS the source-level form
-// (`pub func add(a: Int, b: Int): Int`, `pub record Point { x: Int }`,
-// etc.) so the synthesis is mostly concatenation.
+// public surface as a single Lyric source string.  Each declaration's
+// `Repr` field already IS the source-level form, so synthesis is
+// mostly concatenation.
+//
+// `preamble` carries extern-type / opaque-type / interface decls from
+// sibling packages whose types appear in this package's signatures —
+// without them, the standalone re-typecheck of the synthesised source
+// would fail with `T0010 unknown type name 'X'`.
 //
 // Mirrors `bootstrap/src/Lyric.Emitter/RestoredPackages.fs::synthesiseSource`.
-// `preamble` carries extern-type / opaque-type / interface decls
-// from sibling packages whose types appear in this package's
-// signatures — without them, the standalone re-typecheck of the
-// synthesised source would fail with `T0010 unknown type name 'X'`.
-// The bundled-DLL caller in `loadRestoredPackage` (Phase A.3.3.b)
-// will be responsible for assembling the preamble from every
-// contract in the bundle; for the single-package form (and for this
-// initial port) the preamble can be the empty list.
 
 // Render one decl's source-level form.  Interfaces declare in source
 // as `pub interface I {}` — the contract's `Repr` is just the head
@@ -203,6 +196,11 @@ pub func synthesiseSource(contract: in Meta.Contract,
   while pi < preamble.count {
     sb = sb + renderDecl(preamble[pi])
     pi = pi + 1
+  }
+  // Blank line between preamble and own-decls when both are non-empty,
+  // so the re-parsed source visually separates the two sections (#1260).
+  if preamble.count > 0 and contract.decls.count > 0 {
+    sb = sb + "\n"
   }
   // Then the contract's own decls.
   var di = 0
@@ -296,7 +294,9 @@ func isErrorDiag(d: in Diagnostic): Bool {
 }
 
 // Keep error diagnostics that are NOT whitelisted T0010 stdlib
-// anchors.  Warnings always pass through (callers see the noise).
+// anchors.  Warnings are dropped — the bridge only cares whether a
+// real (non-whitelisted) error fired; warning-only sets count as
+// "synthesise succeeded" (#1264).
 func filterRealErrors(diags: in List[Diagnostic]): List[Diagnostic] {
   val kept: List[Diagnostic] = newList()
   var i = 0

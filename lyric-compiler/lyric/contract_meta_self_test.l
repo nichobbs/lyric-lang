@@ -343,6 +343,8 @@ func testEscapeJsonBasic(): Unit {
     "escape_json_basic: backslash escapes")
   assertEqual(escapeJson("line1\nline2"), "line1\\nline2",
     "escape_json_basic: newline escapes")
+  assertEqual(escapeJson("a\rb"), "a\\rb",
+    "escape_json_basic: carriage-return escapes (#1340)")
   assertEqual(escapeJson("a\tb"), "a\\tb",
     "escape_json_basic: tab escapes")
 }

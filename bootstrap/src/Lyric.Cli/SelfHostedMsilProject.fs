@@ -8,7 +8,9 @@
 module Lyric.Cli.SelfHostedMsilProject
 
 open System
+open System.IO
 open System.Reflection
+open Lyric.Lexer
 open Lyric.Emitter
 
 let private driverSource = """package Msil.MsilProjectBridge
@@ -27,18 +29,14 @@ type private CompileFn =
         -> bool
 
 let private bridgeLock = obj ()
-let private resolved : CompileFn option ref = ref None
+let mutable private resolved : CompileFn option = None
 
 /// Compile the driver source so the emitter produces and caches
-/// `Lyric.Msil.Bridge.dll`.  Delegates to the shared helper in
-/// `SelfHostedBridge.compileBridgeDriver`.
+/// `Lyric.Msil.Bridge.dll`.  Thin wrapper over the shared helper in
+/// `SelfHostedBridge.fs` (#1373).
 let private ensureLyricMsilBridgeAssembly () : string =
-    Lyric.Cli.SelfHostedBridge.compileBridgeDriver
-        "lyric-msil-project-bridge"
-        driverSource
-        "Lyric.Msil.MsilProjectBridge"
-        "Lyric.Msil.Bridge"
-        "self-hosted MSIL project bridge"
+    Lyric.Cli.SelfHostedBridge.ensureMsilBridgeAssembly
+        "msil-project-bridge" driverSource
 
 let private resolveDelegate () =
     let dll = ensureLyricMsilBridgeAssembly ()
@@ -80,7 +78,39 @@ let private resolveDelegate () =
         failwithf "self-hosted MSIL project bridge: static method 'compileProjectToMsilWithRestoredEncoded' not found on Msil.Bridge.Program"
 
 let private getDelegate () =
-    Lyric.Cli.SelfHostedBridge.lockOnce bridgeLock resolved resolveDelegate
+    lock bridgeLock (fun () ->
+        match resolved with
+        | None ->
+            let fn = resolveDelegate ()
+            resolved <- Some fn
+            fn
+        | Some r -> r)
+
+/// Write a minimal `.runtimeconfig.json` alongside `dllPath` so that
+/// `dotnet exec dllPath` can locate the correct runtime.  Mirrors the
+/// helper in `SelfHostedMsil`.
+let private writeRuntimeConfig (dllPath: string) : unit =
+    // F# nullness analysis (`Nullable=enable` in Directory.Build.props)
+    // requires unwrapping `Path.ChangeExtension`'s `string | null`.  In
+    // practice `dllPath` is always non-null so the `None` arm is
+    // unreachable; we panic rather than synthesise a wrong-shape fallback
+    // (`foo.dll.runtimeconfig.json` instead of `foo.runtimeconfig.json`).
+    let configPath =
+        match Option.ofObj (Path.ChangeExtension(dllPath, ".runtimeconfig.json")) with
+        | Some p -> p
+        | None   -> failwithf "writeRuntimeConfig: Path.ChangeExtension returned null for %s" dllPath
+    let v = System.Environment.Version
+    let json =
+        "{\n" +
+        "  \"runtimeOptions\": {\n" +
+        (sprintf "    \"tfm\": \"net%d.%d\",\n" v.Major v.Minor) +
+        "    \"framework\": {\n" +
+        "      \"name\": \"Microsoft.NETCore.App\",\n" +
+        (sprintf "      \"version\": \"%s\"\n" (v.ToString())) +
+        "    }\n" +
+        "  }\n" +
+        "}\n"
+    File.WriteAllText(configPath, json)
 
 /// Compile a multi-package bundle through the self-hosted MSIL bridge,
 /// resolving each entry in `restoredDllPaths` against
@@ -104,5 +134,5 @@ let compileProjectWithRestored
     for p in restoredDllPaths do restored.Add p
     let stdlibSources = Lyric.Cli.SelfHostedBridge.findStdlibSources ()
     let ok = fn specLines assemblyName outputPath stdlibSources restored packageVersion
-    if ok then Lyric.Cli.SelfHostedBridge.writeRuntimeConfig outputPath
+    if ok then writeRuntimeConfig outputPath
     ok

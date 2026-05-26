@@ -3025,15 +3025,7 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 (caseInfo.Type :> System.Type).MakeGenericType typeArgs
             let constructedCtor =
                 TypeBuilder.GetConstructor(constructedCase, caseInfo.Ctor)
-            // Now emit each arg, then `Newobj` the constructed ctor.
-            // Pin each arg's `ExpectedType` to its substituted Lyric
-            // field type so a nullary inner case (e.g. `None` for a
-            // `T = Option<String>` field of an in-project `Wrap` case)
-            // closes its own type parameters against the surrounding
-            // case's already-resolved `T` rather than falling back to
-            // `obj`.  Mirrors the imported-union path immediately
-            // below and fixes the same cross-package isinst mismatch
-            // (#1140) for in-project generic unions.
+            // Pin each arg's ExpectedType to the substituted Lyric field type so nullary inner cases close their type parameters (#1140).
             let substMap =
                 List.zip info.Generics (List.ofArray typeArgs) |> Map.ofList
             for (f, argExpr) in List.zip caseInfo.Fields argExprs do
@@ -3172,16 +3164,7 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
             let substMap =
                 List.zip info.Generics (List.ofArray typeArgs) |> Map.ofList
             for (f, argExpr) in List.zip caseInfo.Fields argExprs do
-                // Compute the substituted field type FIRST so we can
-                // pin it as `ExpectedType` while the arg is emitted.
-                // Without this, a nullary inner case (e.g. `None` for
-                // a `T = Option<String>` field of `Ok`) can't see the
-                // surrounding case's resolved `T` — its
-                // `inferTypeArgsFromReturn` rejects `ctx.ReturnType`
-                // (e.g. `Result<…,…>`, arity 2) when its own arity is
-                // 1, falls back to `obj`, and produces an
-                // `Option<obj>$None` that the match-site `isinst
-                // Option<String>$None` can't recognise (#1140).
+                // Pin substituted field type as ExpectedType so nullary inner cases close their type parameters (#1140).
                 let substFieldTy =
                     Lyric.Emitter.TypeMap.toClrTypeWithGenerics
                         ctx.Lookup substMap f.LyricType

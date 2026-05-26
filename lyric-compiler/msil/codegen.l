@@ -163,15 +163,7 @@ pub record CodegenCtx {
   // correct cross-package FQN instead of `<current-pkg>.<seg>`.  First-
   // processed wins on collisions, mirroring `unionCaseCtorByName`.
   typeFqnByName:       Map[String, String]
-  // Restored-dependency package list.  Each entry is a
-  // `Lyric.RestoredPackages.SynthesisedArtifact`: the parsed-and-
-  // typechecked view of one Lyric DLL the consumer imports but
-  // doesn't ship in this bundle.  Bridge populates this via
-  // `compileProjectToMsilWithRestored`; downstream symbol-
-  // registration walks the list to allocate cross-assembly tokens
-  // and seed the cross-package tables above.  Length 0 for single-
-  // package compile and for project compiles without restored
-  // deps; behaviour is unchanged in those cases.
+  // Synthesised views of restored DLLs the bundle imports but doesn't ship; seeds cross-assembly tokens (#1272).
   restoredArtifacts:   List[SynthesisedArtifact]
 }
 
@@ -5481,11 +5473,9 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
 // so the simple assembly name matches the package name verbatim.
 func ensureAssemblyRefForArtifact(cctx: in CodegenCtx,
                                   packageName: in String): Int {
-  if cctx.ffiAsmRefs.containsKey(packageName) {
-    match mapGet(cctx.ffiAsmRefs, packageName) {
-      case Some(row) -> return row
-      case None      -> ()
-    }
+  match mapGet(cctx.ffiAsmRefs, packageName) {
+    case Some(row) -> return row
+    case None      -> ()
   }
   // Match the restored artifact's Assembly version so the loader binds
   // against the actual producer DLL.  The artifact carries the version
@@ -5519,14 +5509,13 @@ func lookupRestoredArtifactVersion(cctx: in CodegenCtx,
   ""
 }
 
-// True iff `c` is a single-character identifier continuation (ASCII).
-func isIdentChar(c: in String): Bool {
-  if c.length == 0 { return false }
-  val ch = c.substring(0, 1)
-  ch == "_" or
-  (ch >= "0" and ch <= "9") or
-  (ch >= "a" and ch <= "z") or
-  (ch >= "A" and ch <= "Z")
+// True iff `c` is an identifier continuation (ASCII).
+@pure
+func isIdentChar(c: in Char): Bool {
+  c == '_' or
+  (c >= '0' and c <= '9') or
+  (c >= 'a' and c <= 'z') or
+  (c >= 'A' and c <= 'Z')
 }
 
 // Walk a union decl's `repr` for case names.  The contract `repr` for
@@ -5541,13 +5530,16 @@ func registerUnionCases(cctx: in CodegenCtx,
   val repr = decl.repr
   val needle = "case "
   var idx = 0
-  while idx >= 0 {
+  // Loop exits via the early `return`s below (`indexOf` no-match
+  // or `nameStart >= repr.length`); `idx` is non-negative by
+  // construction (#1279).
+  while true {
     val hit = repr.indexOf(needle, idx)
     if hit < 0 { return }
     val nameStart = hit + needle.length
     if nameStart >= repr.length { return }
     var j = nameStart
-    while j < repr.length and isIdentChar(repr.substring(j, 1)) {
+    while j < repr.length and isIdentChar(repr[j]) {
       j = j + 1
     }
     if j > nameStart {
@@ -5593,7 +5585,6 @@ func lookupRestoredTypeRefRow(cctx: in CodegenCtx, packageName: in String,
                               typeName: in String): Int {
   val typeFqn    = packageName + "." + typeName
   val typeRefKey = packageName + "/" + typeFqn
-  if not cctx.ffiTypeRefs.containsKey(typeRefKey) { return 0 }
   match mapGet(cctx.ffiTypeRefs, typeRefKey) {
     case Some(row) -> row
     case None      -> 0
@@ -5728,13 +5719,14 @@ func ensureCaseClassTypeRefRow(cctx: in CodegenCtx,
                                packageName: in String,
                                caseClassName: in String,
                                asmRefRow: in Int): Int {
+  // Cache key is the case-class FQN; sibling lookups
+  // (`lookupRestoredTypeRefRow`) use the same `<pkg>/<fqn>` shape so
+  // `<pkg>` deliberately appears twice (#1294).
   val caseFqn    = packageName + "." + caseClassName
   val typeRefKey = packageName + "/" + caseFqn
-  if cctx.ffiTypeRefs.containsKey(typeRefKey) {
-    match mapGet(cctx.ffiTypeRefs, typeRefKey) {
-      case Some(row) -> return row
-      case None      -> ()
-    }
+  match mapGet(cctx.ffiTypeRefs, typeRefKey) {
+    case Some(row) -> return row
+    case None      -> ()
   }
   val row = ctxAddTypeRef(cctx.lctx, packageName, caseClassName, asmRefRow)
   cctx.ffiTypeRefs.add(typeRefKey, row)
