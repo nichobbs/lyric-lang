@@ -54,7 +54,7 @@ test "set() succeeds for an id obtained via create()" {
 test "delete() on unknown id is idempotent (returns Ok)" {
   val store = Session.inMemory()
   match store.delete("never-existed", "any-key") {
-    case Ok(_)  -> assertTrue(true, "delete() on an unknown id should be idempotent")
+    case Ok(_)  -> ()
     case Err(e) -> assertTrue(false, "delete() on an unknown id should be idempotent: " + e.message)
   }
 }
@@ -62,7 +62,7 @@ test "delete() on unknown id is idempotent (returns Ok)" {
 test "clear() on unknown id is idempotent (returns Ok)" {
   val store = Session.inMemory()
   match store.clear("never-existed") {
-    case Ok(_)  -> assertTrue(true, "clear() on an unknown id should be idempotent")
+    case Ok(_)  -> ()
     case Err(e) -> assertTrue(false, "clear() on an unknown id should be idempotent: " + e.message)
   }
 }

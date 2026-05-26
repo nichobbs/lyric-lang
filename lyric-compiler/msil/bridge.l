@@ -251,6 +251,13 @@ pub func compileProjectToMsilWithRestored(
   // Phase 2 scope: type items only.  Cross-package function-call resolution
   // is handled separately at codegen time via the FQN-keyed `funcTokens`
   // table built up by the per-package `addPackageTokens` calls below.
+  //
+  // Known gap (#1195): this flat accumulation lets earlier packages'
+  // `pub func`s pass typecheck in a later package even when that later
+  // package never imported them.  Codegen later traps the leak via the
+  // `MObject` fall-through in `lowerBuiltinOrStaticCallMsil`, but
+  // per-package import filtering would surface the missing-import
+  // error at typecheck time where the diagnostic is actionable.
   val importedItems: List[Item] = newList()
   collectStdlibTypeItems(stdlibSources, importedItems)
 
@@ -267,7 +274,7 @@ pub func compileProjectToMsilWithRestored(
     val file0 = cfgRes.file
 
     val tcRes = checkWithImports(file0, importedItems)
-    reportDiagnostics(tcRes.diagnostics)
+    if reportAndAbort(tcRes.diagnostics) { return false }
 
     val mcRes = checkFile(file0)
     if reportAndAbort(mcRes.diagnostics) { return false }

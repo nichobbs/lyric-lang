@@ -45,6 +45,7 @@
 package Web.Aspects
 
 import Std.Core
+import Std.Console
 import Web as WebPkg
 import Auth
 import Resilience
@@ -100,6 +101,11 @@ pub aspect RequiresAuth {
             ret = call.proceed()
           }
           case Err(jwtErr) -> {
+            // Log the precise reason to stderr for operators; return a
+            // generic message to the client so we don't leak which
+            // failure mode triggered (expired vs invalid signature vs
+            // wrong issuer/audience) — #1266.
+            Console.error("RequiresAuth: JWT verify failed: " + jwtErr.code)
             ret = Err(WebPkg.forbidden("Token is invalid or has expired"))
           }
         }
@@ -151,6 +157,7 @@ pub aspect RequiresRole {
       } else {
         match Auth.verifyJwt(args.authToken, jwtSecret, issuer, audience, allowedAlgorithms) {
           case Err(jwtErr) -> {
+            Console.error("RequiresRole: JWT verify failed: " + jwtErr.code)
             ret = Err(WebPkg.forbidden("Token is invalid or has expired"))
           }
           case Ok(_) -> {

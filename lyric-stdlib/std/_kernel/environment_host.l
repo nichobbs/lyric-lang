@@ -13,8 +13,11 @@ pub func hostGetEnvironmentVariable(key: in String): String? = ()
 @externTarget("System.Environment.GetCommandLineArgs")
 pub func hostGetCommandLineArgs(): slice[String] = ()
 
-// Directory containing the currently-executing assembly.  Native callers
-// (the self-hosted MSIL bridge) walk up from here to find the
+// Base directory of the host process — `System.AppContext.BaseDirectory`
+// resolves to the entry-point assembly's directory, not the currently-
+// executing assembly's directory (the two differ when a DLL is loaded
+// from a different path than the apphost stub).  Native callers (the
+// self-hosted MSIL bridge) walk up from here to find the
 // `lyric-stdlib/std/` source tree at runtime — same convention the F#
 // bootstrap `Lyric.Cli.SelfHostedBridge.findStdlibSources` uses.
 @externTarget("System.AppContext.get_BaseDirectory")

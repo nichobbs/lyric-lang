@@ -111,7 +111,9 @@ func testJsonDocSimpleArray(): Unit {
   // the array enumeration shape used by typical consumers.
   val doc  = parseJson("[1,2,3]")
   val root = rootElement(doc)
-  assertEqualInt(valueKind(root), 2, "array valueKind is 2")
+  // `JsonValueKind.Array = 2` per System.Text.Json (#1164).
+  val kArray = 2
+  assertEqualInt(valueKind(root), kArray, "array valueKind is JsonValueKind.Array")
   disposeJson(doc)
 }
 

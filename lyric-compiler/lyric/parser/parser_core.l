@@ -74,7 +74,7 @@ pub func isAtEnd(st: in ParseState): Bool {
 // the EOF that the lexer always appends), and fall back to
 // `initialPosition()` only when the token stream is truly empty.
 @pure
-pub func syntheticEofSpan(st: in ParseState): Span {
+func syntheticEofSpan(st: in ParseState): Span {
   if st.tokens.count == 0 {
     pointSpan(initialPosition())
   } else {

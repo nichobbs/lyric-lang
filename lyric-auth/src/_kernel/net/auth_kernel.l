@@ -236,38 +236,45 @@ func scanJsonString(json: in String, quotePos: in Int): Int {
 // Both forms apply `decodeJsonEscapes` to the raw string contents before
 // comparison so escape sequences in the issuer's aud match callers'
 // unescaped expected audiences (#1079).
+//
+// Last-wins semantics (#1162): per RFC 8259 §4 duplicate-key behaviour
+// is implementation-defined, but `getStringClaimFromJson` already picks
+// the last occurrence via `lastIndexOf` for non-array claims.  Mirror
+// that here: when `"aud":"..."` and `"aud":[...]` both appear, the one
+// at the later byte offset wins.  Without this, a leading string-form
+// `aud` would mask a later array-form re-statement (or vice versa).
 func audienceMatches(json: in String, audience: in String): Bool {
   if audience.length == 0 { return true }
-  // String form: "aud":"VALUE"
   val pfxStr = "\"aud\":\""
   val pfxStrPos = json.lastIndexOf(pfxStr)
-  if pfxStrPos >= 0 {
-    // Position of the opening quote of the value.
-    val openQuote = pfxStrPos + pfxStr.length - 1
-    val closeQuote = scanJsonString(json, openQuote)
-    if closeQuote > openQuote {
-      val raw = substring(json, openQuote + 1, closeQuote - openQuote - 1)
-      if decodeJsonEscapes(raw) == audience { return true }
-    }
-  }
-  // Array form: "aud":[ "VALUE1", "VALUE2", ... ]
   val pfxArr = "\"aud\":["
   val pfxArrPos = json.lastIndexOf(pfxArr)
-  if pfxArrPos < 0 { return false }
-  var i = pfxArrPos + pfxArr.length
-  while i < json.length and json[i] != ']' {
-    if json[i] == '"' {
-      val openQuote = i
-      val closeQuote = scanJsonString(json, openQuote)
-      if closeQuote < 0 { return false }
-      val raw = substring(json, openQuote + 1, closeQuote - openQuote - 1)
-      if decodeJsonEscapes(raw) == audience { return true }
-      i = closeQuote + 1
-    } else {
-      i = i + 1
+  // Only the later occurrence is authoritative — earlier `aud` declarations
+  // are shadowed (#1162).  When both forms appear, the one with the larger
+  // byte offset wins; the other is not consulted.
+  val useArr = pfxArrPos > pfxStrPos
+  if useArr {
+    var i = pfxArrPos + pfxArr.length
+    while i < json.length and json[i] != ']' {
+      if json[i] == '"' {
+        val openQuote = i
+        val closeQuote = scanJsonString(json, openQuote)
+        if closeQuote < 0 { return false }
+        val raw = substring(json, openQuote + 1, closeQuote - openQuote - 1)
+        if decodeJsonEscapes(raw) == audience { return true }
+        i = closeQuote + 1
+      } else {
+        i = i + 1
+      }
     }
+    return false
   }
-  false
+  if pfxStrPos < 0 { return false }
+  val openQuote = pfxStrPos + pfxStr.length - 1
+  val closeQuote = scanJsonString(json, openQuote)
+  if closeQuote <= openQuote { return false }
+  val raw = substring(json, openQuote + 1, closeQuote - openQuote - 1)
+  decodeJsonEscapes(raw) == audience
 }
 
 // Extract a string-valued claim from a JSON object string.

@@ -296,7 +296,9 @@ jobs:
           # engine that `dotnet test --collect:"XPlat Code Coverage"` uses,
           # but lets us drive the Expecto console-app test projects without
           # adding Microsoft.NET.Test.Sdk + Expecto.TestSdk to every fsproj.
-          dotnet tool install --global dotnet-coverage --version 17.* || true
+          # Pinned exact version for reproducibility (#1163); bump when
+          # rolling forward, don't switch to a floating range.
+          dotnet tool install --global dotnet-coverage --version 17.16.7 || true
           export PATH="$PATH:$HOME/.dotnet/tools"
           mkdir -p ../coverage
           for proj in tests/Lyric.Lexer.Tests \

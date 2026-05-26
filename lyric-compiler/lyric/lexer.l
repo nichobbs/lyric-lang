@@ -1306,7 +1306,7 @@ func intToDouble(n: in Int): Double {
 /// to fire L0010 against the bare literal (and by the parser's
 /// `PreNeg + literal` arm to cancel it).
 @pure
-pub func isMinValueAbsOverflow(body: in String, base: in Int): Bool {
+func isMinValueAbsOverflow(body: in String, base: in Int): Bool {
   base == 10 and body == "9223372036854775808"
 }
 

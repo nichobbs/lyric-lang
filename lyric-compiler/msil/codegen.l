@@ -120,6 +120,13 @@ pub record CodegenCtx {
   // (matching the row-budget pre-scan order in `lowerMPackageWithCtx`).
   // For single-package compile (`Msil.Bridge.compileToMsil`), these are
   // freshly empty and the counter starts at 1 — behaviour unchanged.
+  //
+  // These are deliberately `List[Int]` rather than `Int`: Lyric records hold
+  // their fields by value, so a non-`var Int` field could not be mutated in
+  // place from `addPackageTokens`.  The list-padding shape mirrors
+  // `lambdaTicker` (`L`-shaped counter, only the `.count` matters) and is
+  // documented as the standard counter idiom in the self-hosted codegen
+  // pending a proper `var` field landing (#1186).
   nextMethodDefRow:   List[Int]
   nextFieldDefRow:    List[Int]
   // Bundle-wide entry point.  When `addPackageTokens` walks a package and
@@ -996,16 +1003,19 @@ func joinSegsMsil(segs: in List[String], sep: in String): String {
 
 // Cross-package type-name resolution helper (#1183 codegen port).
 // Given a simple type name like "Maybe" referenced in `pkgName`, find
-// the FQN to use for the resulting `MClass`.  Resolution order:
-//   1. If `pkgName.<seg>` is a type registered by this pkg's
-//      addPackageTokens (we detect this by checking `typeFqnByName`
-//      for `<seg>` whose value equals `pkgName.<seg>` — local
-//      registration wins over any cross-pkg shadow).
-//   2. Otherwise, walk `pkgImports[pkgName]` and check each imported
-//      pkg's FQN.
-//   3. Otherwise, fall back to the legacy `pkgName.<seg>` form so we
-//      don't regress behaviour when the type is undeclared (typecheck
-//      diagnostic surfaces upstream).
+// the FQN to use for the resulting `MClass`.
+//
+// Resolution: consult `typeFqnByName` (populated by `addPackageTokens`
+// with first-pkg-wins semantics — local registration wins over later
+// shadows from imported packages).  When a hit exists, it IS the
+// resolution — either it points at this pkg's own declaration or at
+// an imported pkg's.  Type-checking upstream is the line of defence
+// that rejects un-imported references, so we accept any hit without
+// re-validating against `pkgImports[pkgName]`.  When no entry exists,
+// fall back to the local-pkg form so codegen doesn't regress on
+// undeclared types (typecheck diagnostic surfaces upstream); the
+// originally-documented pkgImports walk was redundant given the
+// upstream guarantee and is no longer described here (#1221).
 func resolveTypeFqn(cctx: in CodegenCtx, pkgName: in String, seg: in String): String {
   // `typeFqnByName` is keyed by simple type name with first-pkg-wins
   // semantics (per `addPackageTokens`).  When a hit exists, it IS the
@@ -3778,14 +3788,11 @@ pub func lowerRecordMsil(decl: in RecordDecl, pkgName: in String): MRecord {
     match decl.members[i] {
       case RMField(f) -> {
         fields.add(MField(
-          // ECMA-335 §II.23.1.5: 0x0006 = `FieldAttributes.Public`.  The
-          // pre-existing literal `0x0001` was actually `PrivateScope`,
-          // which made record fields invisible to cross-package field
-          // access (#1183 Phase 3) — `ldfld` from another package's IL
-          // raised `System.FieldAccessException`.  Single-package field
-          // access happened to work because the JIT skips access checks
-          // for in-class access patterns.  Mirrors the `FDA_PUBLIC`
-          // constant in `tables.l` (re-exported by `Msil.Lowering`).
+          // ECMA-335 §II.23.1.5: 0x0006 = Public, 0x0001 = Private,
+          // 0x0000 = PrivateScope.  Previous code used 0x0001 (Private,
+          // not PrivateScope as an earlier comment claimed); cross-package
+          // ldfld then raised FieldAccessException (#1183 Phase 3, #1199).
+          // Mirrors FDA_PUBLIC re-exported by Msil.Lowering.
           flags     = 0x0006,
           name      = f.name,
           fieldType = typeExprToMsil(f.ty, pkgName)))
@@ -4152,10 +4159,11 @@ func rewriteProceedExprMsil(targetFuncName: in String, paramNames: in List[Strin
     }
     // True leaves (no sub-expressions): ELiteral, EPath, ESelf, EResult, ERange, EError.
     // EForall / EExists carry body sub-expressions but are panic-rejected
-    // by the bootstrap MSIL codegen before this rewriter runs (see lines
-    // 1231 / 1234 above), and aspect `around` bodies cannot legally hold
-    // a `proceed()` call inside a contract predicate, so leaving them in
-    // the catch-all is intentional rather than an oversight (#1142).
+    // by the bootstrap MSIL codegen before this rewriter runs (search
+    // this file for "EForall not supported"), and aspect `around` bodies
+    // cannot legally hold a `proceed()` call inside a contract predicate,
+    // so leaving them in the catch-all is intentional rather than an
+    // oversight (#1142).
     case _ -> expr
   }
 }
@@ -5152,6 +5160,14 @@ pub func injectImplMethodsIntoRecord(cctx: in CodegenCtx, rec: in MRecord,
 pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   val pkgSegs = file.packageDecl.path.segments
   val pkgName = joinSegsMsil(pkgSegs, ".")
+
+  // Reset the lambda counter so each package's ELambda lookup walks from
+  // `__lambda_0` (matching the per-package `liftLambdasMsil` numbering).
+  // Without this reset, multi-package bundles with closures panic from the
+  // second package onward with "lambda token missing for __lambda_<n>"
+  // because `addPackageTokens` registered FQNs `<pkg>.__lambda_0...` while
+  // codegen looked up `<pkg>.__lambda_<bundleIdx>` (#1194).
+  cctx.lambdaTicker.clear()
 
   val fns:          List[MFunc]        = newList()
   val staticFields: List[MStaticField] = newList()
