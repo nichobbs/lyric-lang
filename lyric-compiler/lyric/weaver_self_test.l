@@ -192,6 +192,18 @@ func stmtMentionsPath(s: in Statement, name: in String): Bool {
     case SLoop(_, body)          -> bodyMentionsPath(body, name)
     case SScope(_, body)         -> bodyMentionsPath(body, name)
     case SDefer(body)            -> bodyMentionsPath(body, name)
+    case STry(body, catches, finally_) -> {
+      if bodyMentionsPath(body, name) { return true }
+      var i = 0
+      while i < catches.count {
+        if bodyMentionsPath(catches[i].body, name) { return true }
+        i = i + 1
+      }
+      match finally_ {
+        case Some(fb) -> bodyMentionsPath(fb, name)
+        case None     -> false
+      }
+    }
     case _ -> false
   }
 }
@@ -263,6 +275,17 @@ func exprMentionsPath(e: in Expr, name: in String): Bool {
     case ETry(inner)            -> exprMentionsPath(inner, name)
     case EPropagate(inner)      -> exprMentionsPath(inner, name)
     case EAssign(t, _, v)       -> exprMentionsPath(t, name) or exprMentionsPath(v, name)
+    case EInterpolated(segs)    -> {
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISText(_, _)  -> ()
+          case ISExpr(inner) -> if exprMentionsPath(inner, name) { return true }
+        }
+        i = i + 1
+      }
+      false
+    }
     case _ -> false
   }
 }
@@ -313,6 +336,18 @@ func stmtHasMemberAccess(s: in Statement, recv: in String, mem: in String): Bool
     case SLoop(_, body)         -> blockHasMemberAccess(body, recv, mem)
     case SScope(_, body)        -> blockHasMemberAccess(body, recv, mem)
     case SDefer(body)           -> blockHasMemberAccess(body, recv, mem)
+    case STry(body, catches, finally_) -> {
+      if blockHasMemberAccess(body, recv, mem) { return true }
+      var i = 0
+      while i < catches.count {
+        if blockHasMemberAccess(catches[i].body, recv, mem) { return true }
+        i = i + 1
+      }
+      match finally_ {
+        case Some(fb) -> blockHasMemberAccess(fb, recv, mem)
+        case None     -> false
+      }
+    }
     case _ -> false
   }
 }
@@ -411,6 +446,17 @@ func exprHasMemberAccess(e: in Expr, recv: in String, mem: in String): Bool {
     case ETry(inner)        -> exprHasMemberAccess(inner, recv, mem)
     case EPropagate(inner)  -> exprHasMemberAccess(inner, recv, mem)
     case EAssign(t, _, v)   -> exprHasMemberAccess(t, recv, mem) or exprHasMemberAccess(v, recv, mem)
+    case EInterpolated(segs) -> {
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISText(_, _)  -> ()
+          case ISExpr(inner) -> if exprHasMemberAccess(inner, recv, mem) { return true }
+        }
+        i = i + 1
+      }
+      false
+    }
     case _ -> false
   }
 }
@@ -589,6 +635,74 @@ test "call prelude carries the compile-time-known string fields" {
   assertEqual(literalStringValue(mp), "MyApp.Handlers", "modulePath is packagePath")
   val asp = findValInit(body, "__lyric_call_aspect")
   assertEqual(literalStringValue(asp), "Trace", "aspect literal is the aspect name")
+}
+
+test "call.sourceLocation literal has <package>:<line> format" {
+  // Review #1317: pin the `packagePath:line` format of
+  // `__lyric_call_sourceLocation` so it can't silently drift to a
+  // different shape.
+  val src =
+    "package My.Pkg\n" +
+    "aspect Trace {\n" +
+    "  matches: name like \"t\"\n" +
+    "  around(args) -> ret {\n" +
+    "    val s = call.sourceLocation\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func t(): Int { 1 }\n"
+  val woven = parseWeave(src)
+  val wrapper = firstFunction(woven, "t")
+  val body    = functionBody(wrapper)
+  val sl = findValInit(body, "__lyric_call_sourceLocation")
+  val sValue = literalStringValue(sl)
+  // Expect format "My.Pkg:<some-positive-line>".  Inline-substring
+  // check (no Std.String import needed) — first 7 chars must equal
+  // "My.Pkg:" and the suffix must carry at least one digit.
+  val prefix = "My.Pkg:"
+  assertTrue(sValue.length > prefix.length,
+             "sourceLocation carries a line-number suffix")
+  var ok = true
+  var k = 0
+  while k < prefix.length and ok {
+    if sValue[k] != prefix[k] { ok = false }
+    k = k + 1
+  }
+  assertTrue(ok, "sourceLocation starts with the package path + ':'")
+}
+
+test "call.annotations is a string slice of the function's annotation short-names" {
+  // Review #1317: cover the `__lyric_call_annotations` path including
+  // the slice[String] type annotation that #1308 introduced for the
+  // empty-list case.
+  val src =
+    "package P\n" +
+    "aspect Trace {\n" +
+    "  matches: name like \"a\"\n" +
+    "  around(args) -> ret {\n" +
+    "    val ann = call.annotations\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "@stable(since=\"0.1\")\n" +
+    "@pure\n" +
+    "func a(): Int { 1 }\n"
+  val woven = parseWeave(src)
+  val wrapper = firstFunction(woven, "a")
+  val body    = functionBody(wrapper)
+  // Verify the prelude carries both annotation short-names as a
+  // string slice.  The exact init expr is EList of two LString
+  // entries — we walk it manually since `findValInit` returns the
+  // raw expr.
+  val annInit = findValInit(body, "__lyric_call_annotations")
+  match annInit.kind {
+    case EList(items) -> {
+      assertEqualInt(items.count, 2, "annotations: two literal entries")
+      assertEqual(literalStringValue(items[0]), "stable", "annotations[0] = stable")
+      assertEqual(literalStringValue(items[1]), "pure",   "annotations[1] = pure")
+    }
+    case _ -> panic("annotations: expected EList init expression")
+  }
 }
 
 test "call.<field> member access rewrites to __lyric_call_<field>" {

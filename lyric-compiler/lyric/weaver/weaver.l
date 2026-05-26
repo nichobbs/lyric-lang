@@ -1534,12 +1534,20 @@ func weaveItemsCore(
 
   // Build a `name -> isInlineTemplate` lookup so the sorted aspect list
   // (which goes through name-only Kahn ordering) can recover the
-  // per-aspect template flag at weave time.
+  // per-aspect template flag at weave time.  Guard the `add` with
+  // `containsKey` so duplicate aspect declarations in one file (a
+  // separate A0002 issue caught upstream by the type checker) don't
+  // throw `Dictionary.Add`'s ArgumentException during the weave pass
+  // (review #1318).  First-wins is fine: A0002 fires before this code
+  // runs in any well-formed pipeline.
   val templateByName: Map[String, Bool] = newMap()
   val declsForSort: List[AspectDecl]    = newList()
   var ci = 0
   while ci < collected.count {
-    templateByName.add(collected[ci].decl.name, collected[ci].isInlineTemplate)
+    val nm = collected[ci].decl.name
+    if not templateByName.containsKey(nm) {
+      templateByName.add(nm, collected[ci].isInlineTemplate)
+    }
     declsForSort.add(collected[ci].decl)
     ci = ci + 1
   }
