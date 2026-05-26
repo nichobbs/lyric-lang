@@ -133,7 +133,17 @@ jobs:
       - name: Emitter tests
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
-        run: dotnet run --project tests/Lyric.Emitter.Tests --no-build --configuration $BUILD_CONFIG
+        run: |
+          set +e
+          dotnet run --project tests/Lyric.Emitter.Tests --no-build --configuration $BUILD_CONFIG --summary 2>&1 | tee /tmp/emit-tests.log
+          rc=${PIPESTATUS[0]}
+          echo "----- last 200 lines (failure context if any) -----"
+          tail -n 200 /tmp/emit-tests.log
+          if [ $rc -ne 0 ]; then
+            echo "----- grep for FAIL/Error/Exception -----"
+            grep -nE "FAIL|fail|Failed|Error|Exception" /tmp/emit-tests.log || true
+          fi
+          exit $rc
 
       # The emitter test suite writes /tmp/lyric-jvm-selftest/Hello.class via the
       # Jvm.SelfTest stage-B2 program.  Existing tests verify structural validity
