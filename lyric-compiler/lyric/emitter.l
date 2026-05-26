@@ -17,7 +17,7 @@
 // bootstrap validation pipeline to compare in-process vs subprocess
 // output, and for `emitProject` — multi-package + restored-dep builds
 // still route through F# `Program.fs::internalProjectBuild` until the
-// bridges gain a multi-package depEntry point.
+// bridges gain a multi-package entry point.
 //
 // Environment variables:
 //   LYRIC_FORCE_SUBPROCESS — set to "1" to opt out of the in-process
@@ -91,10 +91,10 @@ pub record EmitProjectRequest {
   assemblyName:     String
   outputPath:       String
   target:           CompileTarget
-  /// Restored dependency DLL paths.  Each depEntry is "depName\tdllPath".
+  /// Restored dependency DLL paths.  Each entry is "depName\tdllPath".
   /// Written to the spec file as `DEP\tdepName\tdllPath` lines.
   restoredDllPaths: List[String]
-  /// Active feature flags for @cfg erasure.  Each depEntry is a feature name.
+  /// Active feature flags for @cfg erasure.  Each entry is a feature name.
   /// Written to the spec file as `FEATURE\t<name>` lines.
   activeFeatures:   List[String]
   /// Declared feature flags from the manifest's `[features]` table.
@@ -250,7 +250,7 @@ func failResult(msg: in String): EmitResult {
 ///
 /// Falls back to the `lyric --internal-project-build` subprocess (handled
 /// by the F# bootstrap CLI) when:
-///   - the target is JVM (the JVM bridge has no project-level depEntry
+///   - the target is JVM (the JVM bridge has no project-level entry
 ///     point yet),
 ///   - the request carries restored dependency DLLs (in-process bridge
 ///     does not yet thread `RestoredPackages` through the middle-end),

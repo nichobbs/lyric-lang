@@ -25,7 +25,6 @@ import Std.Uuid
 import Std.Environment as Environment
 import Msil.Bridge
 import Lyric.Emitter as Emitter
-import Lyric.CliShell as CliShell
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -589,22 +588,24 @@ func testCfgErasureFileLevelErasesEntireFile(): Unit {
     "cfg_erasure_file_level: stdout matches expected")
 }
 
-// ─── Phase A.4: subprocess-fallback smoke test ─────────────────────────────
+// ─── Phase A.4: restored-dep wiring crash-safety smoke test ────────────────
 //
-// Verify that `emitProject` falls back to the F# subprocess path when an
-// in-process restored-dep load fails — protecting users whose restored
-// DLLs lack a `Lyric.Contract` resource (the self-hosted bridge doesn't
-// yet emit one).  Passes a non-existent restored DLL path and asserts
-// the project build still succeeds (via subprocess) when the consumer
-// doesn't actually import the missing dep.
+// Confirms that the new `emitProject` restored-dep wiring doesn't crash
+// when handed a non-existent DLL path — the load fails cleanly and the
+// emitter falls through to the F# subprocess fallback.  That subprocess
+// then exits 1 because it also can't find the DLL
+// (`Program.fs::internalProjectBuild` lines 218-225 set `hadFatal` on
+// missing DEP files), so `emitProject` returns `EmitResult` with no
+// `outputPath`.  This test just ensures we get THAT clean failure path
+// rather than a panic from the in-process load step.
 //
-// The full end-to-end test (library DLL with contract → consumer →
-// dotnet exec round-trip with cross-package call) lands once the
-// self-hosted bridge emits `Lyric.Contract` resources directly — that's
-// the next slice under #1229.
+// The full end-to-end test (library DLL with embedded `Lyric.Contract`
+// resource → consumer project with cross-package call → `dotnet exec`
+// round-trip) lands once the self-hosted bridge emits `Lyric.Contract`
+// resources directly — see D-progress-311 for the prerequisite slice.
 
-func testRestoredDepSubprocessFallback(): Unit {
-  val tmpDir = freshTempDir("restored-e2e-fallback")
+func testRestoredDepWiringNoCrash(): Unit {
+  val tmpDir = freshTempDir("restored-wiring")
   val consumerPkgs: List[Emitter.ProjectPackage] = newList()
   consumerPkgs.add(mkProjectPkg("RestoredFallbackApp",
     "package RestoredFallbackApp\n" +
@@ -614,10 +615,10 @@ func testRestoredDepSubprocessFallback(): Unit {
     "}\n"))
   val consumerDll = Path.join(tmpDir, "RestoredFallbackApp.dll")
   val restoredDlls: List[String] = newList()
-  // Path that doesn't exist — loader returns DllMissing, emitter falls
-  // back to F# subprocess.  Subprocess ignores the missing DLL (it
-  // checks `File.Exists` and warns rather than failing) so the
-  // consumer's no-import build succeeds.
+  // Non-existent path: in-process loader returns `DllMissing` →
+  // emitter falls through to subprocess → subprocess also sees the
+  // missing DLL and exits 1.  We expect `outputPath = None` and NO
+  // panic.
   restoredDlls.add("RestoredFallbackLib\t" + Path.join(tmpDir, "missing.dll"))
   val req = Emitter.EmitProjectRequest(
     packages         = consumerPkgs,
@@ -628,25 +629,13 @@ func testRestoredDepSubprocessFallback(): Unit {
     activeFeatures   = newList(),
     declaredFeatures = newList())
   val result = Emitter.emitProject(req)
-  // The subprocess fallback may still fail if the F# CLI isn't on PATH
-  // in the test sandbox — when output is missing, just clean up and
-  // exit.  The wiring itself is exercised by the bridge call making it
-  // past the canInProc check.
-  var sawOutput = false
+  // Exact expected state: subprocess exited 1, no DLL produced.
   match result.outputPath {
-    case None    -> ()
-    case Some(_) -> { sawOutput = true }
-  }
-  if sawOutput {
-    writeRuntimeConfig(consumerDll)
-    val args: List[String] = newList()
-    args.add("exec")
-    args.add(consumerDll)
-    val captured = Capture.runCaptureWithDiagnostics("dotnet", args, "")
-    assertEqualInt(captured.exitCode, 0,
-      "restored_subproc_fallback: consumer exits 0 (stderr=" + captured.stderr + ")")
-    assertEqual(Str.trim(captured.stdout), "fallback ok",
-      "restored_subproc_fallback: stdout matches expected")
+    case None    -> ()  // expected
+    case Some(_) -> {
+      cleanup(tmpDir)
+      panic("restored_wiring: subprocess shouldn't produce output when DLL is missing")
+    }
   }
   cleanup(tmpDir)
 }
@@ -666,7 +655,7 @@ func main(): Int {
   testCfgErasureF0012Malformed()
   testCfgErasureF0013Typo()
   testCfgErasureFileLevelErasesEntireFile()
-  testRestoredDepSubprocessFallback()
+  testRestoredDepWiringNoCrash()
   println("msil-project-bridge tests: ok")
   return 0
 }
