@@ -827,6 +827,13 @@ pub func collectStdlibPackages(
     var ii = 0
     while ii < stdPr.file.items.count {
       val it = stdPr.file.items[ii]
+      // Only `pub` functions surface in the foreign DLL's public
+      // method table; private functions get internal accessibility
+      // and a cross-assembly MemberRef would fail to bind at
+      // runtime.  Filtering here keeps `StdlibPkg.items` aligned
+      // with what `registerStdlibFunc` would actually register and
+      // removes the dead `isPub`-guarded iteration on the codegen
+      // side (review #1429).
       val include = match it.kind {
         case IRecord(_)       -> true
         case IExposedRec(_)   -> true
@@ -838,7 +845,10 @@ pub func collectStdlibPackages(
         case IOpaque(_)       -> true
         case IProtected(_)    -> true
         case IExternType(_)   -> true
-        case IFunc(_)         -> true
+        case IFunc(decl)      -> match decl.visibility {
+          case Some(VisPub(_)) -> true
+          case _               -> false
+        }
         case _                -> false
       }
       if include { items.add(it) }

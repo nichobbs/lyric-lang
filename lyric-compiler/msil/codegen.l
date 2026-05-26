@@ -5929,11 +5929,16 @@ func ensureStdlibAssemblyRef(cctx: in CodegenCtx,
 //   Std.Encoding              → Lyric.Stdlib.Encoding
 //   Std.Collections           → Lyric.Stdlib.Collections
 //   Std.CollectionsHost       → Lyric.Stdlib.CollectionsHost
+//   Std.Collections.Host      → Lyric.Stdlib.Collections.Host  (3+ seg)
 //   Lyric.Lexer               → Lyric.Lyric.Lexer
 //   <single-segment>          → Lyric.<segment>
 //
 // Mirrors `bootstrap/src/Lyric.Emitter/Emitter.fs::ensureStdlibArtifact`'s
-// `assemblyName` block.
+// `assemblyName` block.  Tail segments are joined with `.` so a
+// 3+-segment package keeps its segment boundaries — every current
+// stdlib package is 2-segment, but `Std.A.B` and `Std.AB` must yield
+// distinct DLL names (`Lyric.Stdlib.A.B` vs `Lyric.Stdlib.AB`) when
+// the surface grows (review #1427).
 func stdlibAssemblyName(packageName: in String): String {
   val segs = splitDottedName(packageName)
   if segs.count == 0 { return "Lyric.Unknown" }
@@ -5941,6 +5946,7 @@ func stdlibAssemblyName(packageName: in String): String {
   var tail = ""
   var i = 1
   while i < segs.count {
+    if i > 1 { tail = tail + "." }
     tail = tail + segs[i]
     i = i + 1
   }
