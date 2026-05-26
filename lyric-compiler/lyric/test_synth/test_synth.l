@@ -312,6 +312,10 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
   }
   sb = sb + "\n\n"
   sb = sb + synthesizeMain(tests, skipped, filter)
+  // Strip @test_module from the synthesised source — the annotation is
+  // not meaningful in the compiled program and triggers a P0040 parse
+  // cascade in the in-process bridge parser (issue #1442).
+  sb = Str.replace(sb, "@test_module\n", "\n")
   Synthesised(
     source     = sb,
     testCount  = tests.count,
