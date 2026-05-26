@@ -1727,7 +1727,7 @@ func weaveItemsCore(
 
 /// Weave aspect wrappers into an items list and drop the IAspect items.
 /// Diagnostics from the weave (A0042 args-mismatch, A0043 unknown
-/// `call.<field>`) are silently discarded.
+/// `call.<field>`, A0044 `config.<no-default>`) are silently discarded.
 ///
 /// **Limitation:** because this overload has no `SourceFile`, the
 /// package-path is unknown — so the `call.qualifiedName` and
@@ -1748,9 +1748,10 @@ pub func weaveItemsWithDiags(items: in List[Item], packagePath: in String): Weav
 
 /// Weave aspect wrappers into a SourceFile.  Identity-op when the
 /// file has no aspects.  Diagnostics from the weave (A0042 args
-/// mismatch on `@inline_template`, A0043 unknown `call.<field>`) are
-/// silently dropped — callers that need to surface them should use
-/// `weaveFileWithDiags` instead (review #1319).
+/// mismatch on `@inline_template`, A0043 unknown `call.<field>`,
+/// A0044 `config.<no-default>`) are silently dropped — callers that
+/// need to surface them should use `weaveFileWithDiags` instead
+/// (review #1319, #1330).
 pub func weaveFile(file: in SourceFile): SourceFile {
   val newItems = weaveItemsCore(file.items, packagePathString(file)).items
   SourceFile(
