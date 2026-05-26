@@ -15940,3 +15940,108 @@ latent bugs that only surface end-to-end:
   the self-hosted in-process bridge handles restored deps end-to-end.
   JVM remains the only legitimate fallback caller.
 
+
+
+### D-progress-316 — thread manifest [package].version through Msil.Bridge (#1364)
+
+**Status:** Shipped.  The CLI now plumbs `[package].version` from the
+parsed manifest through `Lyric.Emitter` and the in-process MSIL bridge
+so the produced DLL's Assembly metadata row and embedded
+`Lyric.Contract` resource both carry the real semver instead of the
+bootstrap-grade `0.0.0.0` placeholder slice 2b shipped.
+
+**Problem:**
+
+Slice 2b (D-progress-314) embedded `Lyric.Contract` resources but
+hardcoded version `"0.0.0"` because the bridge entry points did not
+accept a manifest.  Slice 3 (D-progress-315) hit the same gap on the
+AssemblyRef side (also hardcoded `0.0`) — version-sensitive restored-
+dep consumers and `public-api-diff` couldn't distinguish releases.
+
+**Fix:**
+
+1. **`lyric-compiler/msil/lowering.l`** — `newLoweringCtx` now takes
+   `major: Int, minor: Int` parameters; passed through to the
+   `addAssembly` row.  Adds `parseSemverMajorMinor(version): List[Int]`
+   (and helpers `parseIntOr0`, `semverParseDigit`) so both the bridge
+   and `ensureAssemblyRefForArtifact` parse the same way.  Living in
+   `lowering.l` keeps `codegen.l` from having to import `bridge.l`.
+2. **`lyric-compiler/msil/codegen.l`** — `newCodegenCtx` gains
+   `major / minor` and threads them into `newLoweringCtx`.
+   `ensureAssemblyRefForArtifact` looks the version up via a new
+   `lookupRestoredArtifactVersion` helper (linear scan over
+   `cctx.restoredArtifacts`) and parses it for the AssemblyRef row,
+   replacing the previous `(0, 0)` hardcode.
+3. **`lyric-compiler/msil/bridge.l`** — new `pub func`s
+   `compileToMsilWithVersion` and
+   `compileProjectToMsilWithRestoredAndVersion` accept a `packageVersion:
+   String`.  The legacy entry points `compileToMsil` /
+   `compileProjectToMsilWithRestored` are now forwarders to the
+   versioned variants with `""`.  The tab-encoded
+   `compileProjectToMsilWithRestoredEncoded` entry takes the version
+   directly (single F# caller, no separate forwarder needed).
+   `embedLyricContract` now receives the threaded value instead of
+   the hardcoded `"0.0.0"`; empty string keeps the legacy behaviour.
+4. **`lyric-compiler/lyric/emitter.l`** — `EmitRequest` /
+   `EmitProjectRequest` gain `packageVersion: String`.  Both
+   `emitInProcess` / `emitProjectInProcess` thread the field into the
+   bridge's new entry points.
+5. **`lyric-compiler/lyric/cli.l`** — `lyric build --manifest` and
+   `lyric test --manifest` paths supply `manifest.packageSection.version`;
+   the ad-hoc / single-file / REPL / bench paths supply `""` (no
+   manifest in scope, falls back to the legacy default).
+6. **`bootstrap/src/Lyric.Cli/SelfHostedMsil.fs`** — `compileToDll`
+   becomes a `""`-passing forwarder; new `compileToDllWithVersion`
+   exposes the threaded path to F# callers.  Reflection lookup now
+   targets the new `compileToMsilWithVersion` bridge entry.
+7. **`bootstrap/src/Lyric.Cli/SelfHostedMsilProject.fs`** —
+   `compileProjectWithRestored` gains a `packageVersion` parameter;
+   reflection lookup targets the updated
+   `compileProjectToMsilWithRestoredEncoded` signature.
+8. **Tests:**
+   - `bootstrap/tests/Lyric.Cli.Tests/SelfHostedRestoredPackageE2ETests.fs`
+     gains `manifest_version_threads_to_assembly_and_contract`:
+     compiles with version `"2.3.4"`, asserts the embedded
+     `Lyric.Contract` JSON carries `"version": "2.3.4"`, and reads back
+     the Assembly row via `AssemblyName.GetAssemblyName` to confirm
+     `(Major=2, Minor=3)`.
+   - Existing `self_hosted_bridge_round_trip` test reuses the new
+     `compileProjectWithRestored` shape with `""` for the version arg.
+   - `lyric-stdlib/tests/msil_project_bridge_tests.l` updated
+     (`EmitProjectRequest` gained a field).
+
+**Folded-in review findings from #1372 (PR #1372 SUGGESTIONs):**
+
+- #1374 — `runDll` post-Kill `WaitForExit()` now uses a 5 s timeout so
+  a zombie kernel state can't hang the test runner indefinitely.
+- #1375 — contract-resource assertion uses `"\"name\":\"greet\""`
+  (matching the JSON name field) instead of the bare substring
+  `"greet"` that could match unrelated occurrences.
+- #1376 — `writeRuntimeConfig` simplified: the dead-but-required null
+  guard around `Path.ChangeExtension` now panics on the unreachable
+  null arm (F# nullness analysis requires SOME unwrap, but the
+  previous fallback `dllPath + ".runtimeconfig.json"` would have
+  produced a wrong filename if hit).
+- #1373 (duplication between `SelfHostedMsil.fs` and
+  `SelfHostedMsilProject.fs`) deferred — orthogonal refactor; tracked
+  separately for a future cleanup pass.
+
+**Acceptance criteria met:**
+
+- 844 emitter + 75 CLI tests pass (one new test:
+  `manifest_version_threads_to_assembly_and_contract`).
+- Producer DLL Assembly row now carries the manifest-declared
+  version; consumer AssemblyRef rows carry the matching restored-
+  artifact version.
+- Embedded `Lyric.Contract.<pkg>` JSON resource carries the threaded
+  semver string verbatim (single-package and multi-package paths).
+
+**What's next:**
+
+- Retire the `emitProjectViaSubprocess` fallback in
+  `lyric-compiler/lyric/emitter.l` for the `.NET` target now that the
+  in-process bridge handles version-threaded restored deps end-to-end.
+  JVM stays as the only fallback caller.
+- Per-package version threading for project-as-DLL bundles (each
+  package can declare its own version) — deferred from this slice;
+  the bridge currently uses one bundle-level version.

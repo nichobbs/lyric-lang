@@ -42,6 +42,22 @@ pub func compileToMsil(
   outputPath:    in String,
   stdlibSources: in List[String]
 ): Bool {
+  compileToMsilWithVersion(source, outputPath, stdlibSources, "")
+}
+
+/// Variant of `compileToMsil` that accepts a `[package].version` string.
+/// Empty string means "no version threaded" — falls back to `0.0.0` for
+/// the Assembly row and the embedded `Lyric.Contract` resource, matching
+/// the legacy `compileToMsil` behaviour.  Non-empty values are parsed via
+/// `parseSemverMajorMinor` (patch / pre-release segments ignored; the
+/// full string is preserved verbatim in the contract resource).  See
+/// #1364 for the threading plan.
+pub func compileToMsilWithVersion(
+  source:         in String,
+  outputPath:     in String,
+  stdlibSources:  in List[String],
+  packageVersion: in String
+): Bool {
   val parseResult = parse(source)
   if reportAndAbort(parseResult.diagnostics) { return false }
 
@@ -117,9 +133,11 @@ pub func compileToMsil(
 
   // Build the codegen context — seeds a fresh LoweringCtx with all standard
   // library AssemblyRef / TypeRef / MemberRef rows.  Single-package
-  // compile path: no restored artifacts.
+  // compile path: no restored artifacts.  `packageVersion` is parsed for
+  // the Assembly row; empty string → `0.0.0.0` (legacy default).
   val emptyArtifacts: List[SynthesisedArtifact] = newList()
-  val cctx = newCodegenCtx(pkgName, emptyArtifacts)
+  val verParts = parseSemverMajorMinor(packageVersion)
+  val cctx = newCodegenCtx(pkgName, emptyArtifacts, verParts[0], verParts[1])
 
   // Run the aspect weaver before the token pre-scan so that the pre-scan
   // sees the post-weave function list (renamed originals + synthesised wrappers).
@@ -144,12 +162,13 @@ pub func compileToMsil(
   // Embed the package's Lyric.Contract resource (parsed-by-the-loader
   // JSON describing this assembly's public surface) so downstream
   // restored-dep consumers see the contract via the in-process loader.
-  // Version threading: the bridge entry points don't currently
-  // accept a manifest, so emit "0.0.0" for ad-hoc compiles.  Tracked
-  // for proper threading in #1364 — once
-  // `compileProjectToMsil*` takes a `version` parameter the CLI's
-  // `lyric build` path can supply the manifest-declared version.
-  embedLyricContract(cctx.lctx, liftedFile, "Lyric.Contract", "0.0.0")
+  // Empty `packageVersion` falls back to "0.0.0" so ad-hoc compiles
+  // without a manifest behave like the legacy path; callers threading
+  // a manifest version (#1364) pass the declared semver verbatim and
+  // it ends up in the embedded contract.
+  val resourceVersion = if packageVersion.length == 0 { "0.0.0" }
+                        else { packageVersion }
+  embedLyricContract(cctx.lctx, liftedFile, "Lyric.Contract", resourceVersion)
 
   // Lower the package IR to raw PE bytes using the pre-seeded context.
   val bytes = lowerMPackageWithCtx(pkg, cctx.lctx, entryToken)
@@ -246,6 +265,27 @@ pub func compileProjectToMsilWithRestored(
   declaredFeatures:  in List[String],
   restoredArtifacts: in List[SynthesisedArtifact]
 ): Bool {
+  // Forwarder to the version-threading variant with an empty version
+  // (legacy `0.0.0.0` Assembly row).
+  compileProjectToMsilWithRestoredAndVersion(
+    packages, assemblyName, outputPath, stdlibSources,
+    activeFeatures, declaredFeatures, restoredArtifacts, "")
+}
+
+/// Like `compileProjectToMsilWithRestored` but accepts a `[package].version`
+/// string used for the bundled Assembly row and the embedded
+/// `Lyric.Contract.<pkg>` resources.  Empty string → legacy `"0.0.0"`
+/// default (see #1364 for the threading plan).
+pub func compileProjectToMsilWithRestoredAndVersion(
+  packages:          in List[ProjectPackagePayload],
+  assemblyName:      in String,
+  outputPath:        in String,
+  stdlibSources:     in List[String],
+  activeFeatures:    in List[String],
+  declaredFeatures:  in List[String],
+  restoredArtifacts: in List[SynthesisedArtifact],
+  packageVersion:    in String
+): Bool {
   if packages.count == 0 {
     return false
   }
@@ -326,7 +366,10 @@ pub func compileProjectToMsilWithRestored(
   // ONE shared cctx — the persistent `nextMethodDefRow` / `nextFieldDefRow`
   // counters in `CodegenCtx` thread row numbering across calls.  The cctx's
   // Assembly row is named after the bundle, not any individual package.
-  val cctx = newCodegenCtx(assemblyName, restoredArtifacts)
+  // `packageVersion` populates the Assembly row's major/minor; empty
+  // falls back to 0.0.0.0.
+  val pvParts = parseSemverMajorMinor(packageVersion)
+  val cctx = newCodegenCtx(assemblyName, restoredArtifacts, pvParts[0], pvParts[1])
   // Seed cross-package symbol tables with the restored artifacts' type
   // surface so the per-package addPackageTokens pre-scan sees restored
   // types as first-class lookups.
@@ -341,9 +384,12 @@ pub func compileProjectToMsilWithRestored(
     // Project-as-DLL embedding: each package's contract goes in its
     // own `Lyric.Contract.<Pkg>` resource so the in-process loader can
     // surface them per-package (matching the F# bundled-DLL layout).
-    // Version is hardcoded "0.0.0" today; see #1364 for the manifest-
-    // threading plan that will replace this with the declared version.
-    embedLyricContract(cctx.lctx, lifted, "Lyric.Contract." + perPkgNames[li], "0.0.0")
+    // `packageVersion` carries the manifest's `[package].version` for
+    // the bundle; per-package versioning is out of scope for #1364 and
+    // tracked separately.
+    val bundleVer = if packageVersion.length == 0 { "0.0.0" }
+                    else { packageVersion }
+    embedLyricContract(cctx.lctx, lifted, "Lyric.Contract." + perPkgNames[li], bundleVer)
     liftedFiles.add(lifted)
     li = li + 1
   }
@@ -424,7 +470,8 @@ pub func compileProjectToMsilWithRestoredEncoded(
   assemblyName:     in String,
   outputPath:       in String,
   stdlibSources:    in List[String],
-  restoredDllPaths: in List[String]
+  restoredDllPaths: in List[String],
+  packageVersion:   in String
 ): Bool {
   val packages: List[ProjectPackagePayload] = newList()
   var i = 0
@@ -468,9 +515,9 @@ pub func compileProjectToMsilWithRestoredEncoded(
 
   val activeFeatures:   List[String] = newList()
   val declaredFeatures: List[String] = newList()
-  compileProjectToMsilWithRestored(
+  compileProjectToMsilWithRestoredAndVersion(
     packages, assemblyName, outputPath, stdlibSources,
-    activeFeatures, declaredFeatures, restoredArtifacts)
+    activeFeatures, declaredFeatures, restoredArtifacts, packageVersion)
 }
 
 // Append every type-shaped and function-shaped item from `file` to

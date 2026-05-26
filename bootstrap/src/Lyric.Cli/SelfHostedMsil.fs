@@ -32,7 +32,7 @@ func main(): Unit { }
 /// slow part (~3-5 s on a cold cache); we only do it once per `lyric`
 /// invocation that touches the self-hosted MSIL emitter.
 let private bridgeLock = obj ()
-let mutable private resolved : (string -> string -> System.Collections.Generic.List<string> -> bool) option = None
+let mutable private resolved : (string -> string -> System.Collections.Generic.List<string> -> string -> bool) option = None
 
 /// Compile the driver source so the emitter produces and caches
 /// `Lyric.Msil.Bridge.dll`.  Returns the absolute path to it.
@@ -92,10 +92,11 @@ let private ensureLyricMsilBridgeAssembly () : string =
             |> String.concat ", "
         failwithf "self-hosted MSIL bridge: 'Lyric.Msil.Bridge.dll' not found in stdlib cache after emit (cached: %s)" cached
 
-/// Reflect out the `compileToMsil` entry point and stash it in `resolved`.
-/// Band 6: the bridge now accepts a 3rd parameter (stdlibSources) for
-/// cross-package type resolution.
-let private resolveDelegates () : string -> string -> System.Collections.Generic.List<string> -> bool =
+/// Reflect out the `compileToMsilWithVersion` entry point and stash it in
+/// `resolved`.  The 4th parameter is a `[package].version` string (empty
+/// = no version threaded; bridge falls back to `0.0.0.0`).  See #1364
+/// for the threading wiring.
+let private resolveDelegates () : string -> string -> System.Collections.Generic.List<string> -> string -> bool =
     let dll = ensureLyricMsilBridgeAssembly ()
     let asm = Lyric.Cli.SelfHostedBridge.loadFromCache dll
     let progType =
@@ -106,21 +107,22 @@ let private resolveDelegates () : string -> string -> System.Collections.Generic
 
     let listOfStringType = typeof<System.Collections.Generic.List<string>>
     let compileToMsilM =
-        match Option.ofObj (progType.GetMethod("compileToMsil", [| typeof<string>; typeof<string>; listOfStringType |])) with
+        match Option.ofObj (progType.GetMethod("compileToMsilWithVersion", [| typeof<string>; typeof<string>; listOfStringType; typeof<string> |])) with
         | Some m when m.IsStatic -> m
-        | _ -> failwithf "self-hosted MSIL bridge: static method 'compileToMsil(string,string,List<string>)' not found on Msil.Bridge.Program"
+        | _ -> failwithf "self-hosted MSIL bridge: static method 'compileToMsilWithVersion(string,string,List<string>,string)' not found on Msil.Bridge.Program"
 
     let compileToMsilFn
         (source: string)
         (outputPath: string)
-        (stdlibSources: System.Collections.Generic.List<string>) : bool =
-        match Option.ofObj (compileToMsilM.Invoke(null, [| box source; box outputPath; box stdlibSources |])) with
+        (stdlibSources: System.Collections.Generic.List<string>)
+        (packageVersion: string) : bool =
+        match Option.ofObj (compileToMsilM.Invoke(null, [| box source; box outputPath; box stdlibSources; box packageVersion |])) with
         | Some o -> unbox<bool> o
         | None   -> false
 
     compileToMsilFn
 
-let private getDelegate () : string -> string -> System.Collections.Generic.List<string> -> bool =
+let private getDelegate () : string -> string -> System.Collections.Generic.List<string> -> string -> bool =
     lock bridgeLock (fun () ->
         match resolved with
         | None ->
@@ -132,11 +134,15 @@ let private getDelegate () : string -> string -> System.Collections.Generic.List
 /// Write a minimal `.runtimeconfig.json` alongside `dllPath` so that
 /// `dotnet exec dllPath` can locate the correct runtime.
 let private writeRuntimeConfig (dllPath: string) : unit =
+    // F# nullness analysis (`Nullable=enable` in Directory.Build.props)
+    // requires unwrapping `Path.ChangeExtension`'s `string | null`.  In
+    // practice `dllPath` is always non-null so the `None` arm is
+    // unreachable; we panic rather than synthesise a wrong-shape fallback
+    // (`foo.dll.runtimeconfig.json` instead of `foo.runtimeconfig.json`).
     let configPath =
-        let changed = Path.ChangeExtension(dllPath, ".runtimeconfig.json")
-        match Option.ofObj changed with
+        match Option.ofObj (Path.ChangeExtension(dllPath, ".runtimeconfig.json")) with
         | Some p -> p
-        | None   -> dllPath + ".runtimeconfig.json"
+        | None   -> failwithf "writeRuntimeConfig: Path.ChangeExtension returned null for %s" dllPath
     let v = System.Environment.Version
     let json =
         "{\n" +
@@ -151,12 +157,19 @@ let private writeRuntimeConfig (dllPath: string) : unit =
     File.WriteAllText(configPath, json)
 
 /// Compile `source` to a .NET PE DLL at `outputPath` using the self-hosted
-/// `Msil.Bridge` pipeline.  Returns true on success, false on parse errors
-/// or write failure.  Band 6: stdlib sources are pre-read from disk and
-/// passed to the bridge for cross-package type resolution.
-let compileToDll (source: string) (outputPath: string) : bool =
+/// `Msil.Bridge` pipeline, threading `packageVersion` through to the
+/// Assembly row and embedded `Lyric.Contract` resource.  Empty
+/// `packageVersion` falls back to the legacy `0.0.0.0` default (#1364).
+/// Returns true on success, false on parse errors or write failure.
+let compileToDllWithVersion (source: string) (outputPath: string)
+                             (packageVersion: string) : bool =
     let fn = getDelegate ()
     let stdlibSources = Lyric.Cli.SelfHostedBridge.findStdlibSources ()
-    let ok = fn source outputPath stdlibSources
+    let ok = fn source outputPath stdlibSources packageVersion
     if ok then writeRuntimeConfig outputPath
     ok
+
+/// Forwarder for callers that don't have a manifest version available;
+/// delegates to `compileToDllWithVersion` with an empty version string.
+let compileToDll (source: string) (outputPath: string) : bool =
+    compileToDllWithVersion source outputPath ""

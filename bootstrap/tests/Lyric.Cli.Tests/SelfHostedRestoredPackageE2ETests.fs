@@ -40,7 +40,12 @@ let private runDll (dll: string) : string * string * int =
     let exited = proc.WaitForExit(60_000)
     if not exited then
         try proc.Kill() with _ -> ()
-        proc.WaitForExit()
+        // Bounded post-Kill wait — on Linux SIGKILL / Windows TerminateProcess
+        // the OS normally collects within milliseconds, but a zombie kernel
+        // state shouldn't hang the test runner indefinitely.  Temp files are
+        // already in workDir which cleanup handles.
+        let _ = proc.WaitForExit(5_000)
+        ()
     stdoutTask.Result, stderrTask.Result, proc.ExitCode
 
 let tests =
@@ -81,7 +86,11 @@ func main(): Unit { () }
                     | None      -> failwith "producer DLL has no embedded Lyric.Contract resource"
                 Expect.stringContains contractJson "Lyric.SelfHostedE2E.Greeter"
                     "contract resource names the producer package"
-                Expect.stringContains contractJson "greet"
+                // Match `"name":"greet"` (no spaces — `contractToJson` emits
+                // compact JSON) so the assertion fires on the JSON name
+                // field rather than any substring of the package name or
+                // a private field that happens to contain "greet".
+                Expect.stringContains contractJson "\"name\":\"greet\""
                     "contract resource includes the public greet function"
 
                 // 3. Build a consumer through the self-hosted bridge,
@@ -104,6 +113,7 @@ func main(): Unit {
                         "consumer"
                         consumerDll
                         [producerDll]
+                        ""
                 Expect.isTrue consumerOk
                     "self-hosted bridge built the consumer with the restored dep"
                 Expect.isTrue (File.Exists consumerDll)
@@ -119,6 +129,61 @@ func main(): Unit {
                     (sprintf "consumer exit 0 expected (stderr=%s)" stderr)
                 Expect.equal (stdout.TrimEnd()) "hello, world"
                     "cross-package call returned the producer's greeting"
+            finally
+                try Directory.Delete(workDir, recursive = true) with _ -> ()
+
+        testCase "[manifest_version_threads_to_assembly_and_contract]" <| fun () ->
+            // #1364 — when the CLI threads a `[package].version` string
+            // through `compileToMsilWithVersion`, the bridge writes that
+            // version into the embedded `Lyric.Contract` resource and the
+            // Assembly row's major/minor.  Slice 3's E2E test exercised
+            // the threading-disabled (empty version) path; this test
+            // exercises the threading-enabled path.
+            let workDir =
+                Path.Combine(Path.GetTempPath(),
+                             "lyric-version-thread-e2e-" + Guid.NewGuid().ToString("N"))
+            Directory.CreateDirectory workDir |> ignore
+            try
+                let producerDll = Path.Combine(workDir, "Lyric.VersionTest.Demo.dll")
+                let producerSource = """package Lyric.VersionTest.Demo
+
+pub func answer(): Int { 42 }
+
+func main(): Unit { () }
+"""
+                let producerOk =
+                    SelfHostedMsil.compileToDllWithVersion
+                        producerSource producerDll "2.3.4"
+                Expect.isTrue producerOk
+                    "self-hosted bridge produced the producer DLL with version"
+                Expect.isTrue (File.Exists producerDll)
+                    "producer DLL exists"
+
+                let contractJson =
+                    match Lyric.Emitter.ContractMeta.readFromAssembly producerDll with
+                    | Some json -> json
+                    | None      -> failwith "producer DLL has no embedded Lyric.Contract"
+                // The threaded "2.3.4" lands in the contract's top-level
+                // `version` JSON field.  `contractToJson` emits pretty
+                // formatting (one field per line, space after colon) for
+                // the outer Contract record, so match that shape.  Empty-
+                // version compiles previously wrote "0.0.0" here; this
+                // assertion proves the threading.
+                Expect.stringContains contractJson "\"version\": \"2.3.4\""
+                    "manifest version threaded into Lyric.Contract"
+
+                // The Assembly metadata row should carry major=2, minor=3 —
+                // the patch segment is dropped (ECMA-335 only has major /
+                // minor / build / revision).  Read it back via
+                // `AssemblyName.Version` for a structural assertion.
+                let asmName =
+                    System.Reflection.AssemblyName.GetAssemblyName producerDll
+                let ver =
+                    match Option.ofObj asmName.Version with
+                    | Some v -> v
+                    | None   -> failwith "Assembly had no Version row"
+                Expect.equal ver.Major 2 "Assembly row carries major=2"
+                Expect.equal ver.Minor 3 "Assembly row carries minor=3"
             finally
                 try Directory.Delete(workDir, recursive = true) with _ -> ()
     ]

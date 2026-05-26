@@ -187,9 +187,13 @@ pub record ImplEntryMsil {
 // Build and return a fresh CodegenCtx for the named package.
 // Registers all external AssemblyRef/TypeRef/MemberRef rows in a stable order
 // so that every instruction token is a predictable constant.
+// `major` / `minor` populate the Assembly row's version; both default to
+// zero for bootstrap-grade callers that don't thread a manifest version.
+// See `Msil.Bridge` entry points for the version threading wiring (#1364).
 pub func newCodegenCtx(packageName: in String,
-                       restoredArtifacts: in List[SynthesisedArtifact]): CodegenCtx {
-  val lctx = newLoweringCtx(packageName)
+                       restoredArtifacts: in List[SynthesisedArtifact],
+                       major: in Int, minor: in Int): CodegenCtx {
+  val lctx = newLoweringCtx(packageName, major, minor)
   // After newLoweringCtx:
   //   arRuntime  = 1  (System.Runtime AssemblyRef)
   //   trObject   = 1  (System.Object TypeRef)
@@ -5461,13 +5465,36 @@ func ensureAssemblyRefForArtifact(cctx: in CodegenCtx,
       case None      -> ()
     }
   }
-  // Match the actual Assembly row's version 0.0.0.0 (`addAssembly`
-  // in `lowering.l::newLoweringCtx`) so the loader doesn't reject the
-  // bind on version mismatch.  Version threading from `[package]
-  // .version` is tracked in #1364.
-  val row = ctxAddLyricPackageAssemblyRef(cctx.lctx, packageName, 0, 0)
+  // Match the restored artifact's Assembly version so the loader binds
+  // against the actual producer DLL.  The artifact carries the version
+  // string the producer's bundle was built with — populated by
+  // `Lyric.RestoredPackages.loadRestoredPackage` from the embedded
+  // `Lyric.Contract` resource (slice 2b / 2b-and-version, #1364).
+  // Unknown package (not in `cctx.restoredArtifacts`) falls back to
+  // `0.0` — that path only fires when an ad-hoc caller registers a
+  // record / func TypeRef without going through `registerRestoredArtifactTokens`,
+  // which is itself a bug; the fallback keeps the loader happy.
+  val verStr = lookupRestoredArtifactVersion(cctx, packageName)
+  val verParts = parseSemverMajorMinor(verStr)
+  val row = ctxAddLyricPackageAssemblyRef(cctx.lctx, packageName,
+                                           verParts[0], verParts[1])
   cctx.ffiAsmRefs.add(packageName, row)
   row
+}
+
+// Walk `cctx.restoredArtifacts` for the matching package and return its
+// declared version string, or `""` when no match.  Linear scan is fine —
+// the typical restored-deps count is a handful, and the lookup happens
+// once per cross-assembly AssemblyRef (results cached in `ffiAsmRefs`).
+func lookupRestoredArtifactVersion(cctx: in CodegenCtx,
+                                   packageName: in String): String {
+  var i = 0
+  while i < cctx.restoredArtifacts.count {
+    val art = cctx.restoredArtifacts[i]
+    if art.packageName == packageName { return art.version }
+    i = i + 1
+  }
+  ""
 }
 
 // True iff `c` is a single-character identifier continuation (ASCII).

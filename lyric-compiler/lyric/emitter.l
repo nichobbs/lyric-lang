@@ -71,6 +71,13 @@ pub record EmitRequest {
   assemblyName: String
   outputPath:   String
   target:       CompileTarget
+  /// `[package].version` from the manifest, threaded through to the
+  /// bridge so the Assembly row + embedded `Lyric.Contract` resource
+  /// carry the real semver instead of the bootstrap-grade `0.0.0.0`.
+  /// Empty string means "no manifest in scope" (ad-hoc compiles via
+  /// the REPL / direct API use), and the bridge falls back to the
+  /// legacy default.  See #1364.
+  packageVersion: String
 }
 
 pub record EmitResult {
@@ -105,6 +112,11 @@ pub record EmitProjectRequest {
   /// An empty list disables the typo guard (F0013 is gated on
   /// `declared.count > 0`).
   declaredFeatures: List[String]
+  /// `[package].version` from the manifest, threaded through to the
+  /// bridge so the bundled Assembly row + per-package
+  /// `Lyric.Contract.<Pkg>` resources carry the real semver.  Empty
+  /// string falls back to the bootstrap-grade `0.0.0.0` (#1364).
+  packageVersion: String
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -350,10 +362,10 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
     ri = ri + 1
   }
 
-  val ok = MsilBridge.compileProjectToMsilWithRestored(
+  val ok = MsilBridge.compileProjectToMsilWithRestoredAndVersion(
     payloads, req.assemblyName, req.outputPath,
     stdlibSources, req.activeFeatures, req.declaredFeatures,
-    restoredArtifacts)
+    restoredArtifacts, req.packageVersion)
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
@@ -529,7 +541,8 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
   // `Lyric.Cli.SelfHostedBridge.findStdlibSources` — see the parallel
   // comment in `emitProjectInProcess` for the rationale.
   val stdlibSources = findStdlibSources()
-  val ok = MsilBridge.compileToMsil(req.source, req.outputPath, stdlibSources)
+  val ok = MsilBridge.compileToMsilWithVersion(
+    req.source, req.outputPath, stdlibSources, req.packageVersion)
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
