@@ -705,18 +705,29 @@ func addSigsFromItems(
         }
         val sg = resolveFunctionSig(tbl, diag, decl)
         val arityKey = decl.name + "/" + toString(decl.params.count)
-        // First-in-wins for both bare and arity-qualified keys.  Bare-name
-        // collisions arise when multiple stdlib files define functions with
-        // the same simple name (e.g. `toString`, `tryGet`) — the bridge's
-        // stdlib loader flat-merges every stdlib file's items into one
-        // `importedItems` list, so duplicates appear in this pass.  The
-        // arity-qualified key disambiguates true overloads at call sites
-        // (the typechecker's call resolver checks arityKey first).  Using
-        // `Dictionary.Add` here would throw on collision and abort the build.
-        if not sigs.containsKey(decl.name) {
+        // Sig-map insertion policy.  Imported items use first-in-wins
+        // because bare-name collisions across stdlib files (e.g.
+        // `toString`, `tryGet` defined in multiple modules) would
+        // otherwise crash via `Dictionary.Add`'s duplicate-key throw.
+        // User items run after imports and unconditionally overwrite —
+        // a user-defined `pub func foo` in the same file MUST win over
+        // any imported `foo` so the user's intent shadows the dep,
+        // matching the standard import-shadowing semantics every other
+        // languages's typechecker gives.  Once #1378's stdlib-IFunc
+        // collection follow-up lands, this lets user code safely
+        // redefine names that happen to overlap with the stdlib
+        // (#1383).
+        if isImported {
+          if not sigs.containsKey(decl.name) {
+            sigs.add(decl.name, sg)
+          }
+          if not sigs.containsKey(arityKey) {
+            sigs.add(arityKey, sg)
+          }
+        } else {
+          if sigs.containsKey(decl.name) { sigs.remove(decl.name) }
           sigs.add(decl.name, sg)
-        }
-        if not sigs.containsKey(arityKey) {
+          if sigs.containsKey(arityKey) { sigs.remove(arityKey) }
           sigs.add(arityKey, sg)
         }
       }
@@ -730,6 +741,15 @@ func addSigsFromItems(
 // `typechecker_exprs.l`).  Stdlib imports must not register signatures
 // under these names because their codegen path expects the polymorphic
 // `TyError`-typed surface.
+//
+// IMPORTANT: keep this list in lock-step with `codegenBuiltinType`'s
+// `name == "<...>" { ... return Some(...) }` arms in
+// `typechecker_exprs.l`.  The two functions form an implicit contract —
+// every name that `codegenBuiltinType` returns a polymorphic signature
+// for must appear here, otherwise an imported stdlib `pub func` with
+// the same simple name will shadow the builtin and tighten the call's
+// argument type from `TyError` (any) to the stdlib's concrete shape
+// (#1384).
 func isCodegenBuiltinName(name: in String): Bool {
   name == "println"
     or name == "toString"
