@@ -168,6 +168,16 @@ pub record ProjectPackagePayload {
   source: String
 }
 
+/// Intermediate carrier used by `compileProjectToMsilWithRestoredAndVersion`'s
+/// pre-parse pass.  Holds the post-parse + cfg-erase + alias-rewrite
+/// `SourceFile` alongside the dotted package name so the second-pass
+/// typecheck loop can index the bundle and build per-package imported-item
+/// lists without re-parsing.
+record ParsedUserPkg {
+  name: String
+  file: SourceFile
+}
+
 /// Compile a list of packages into ONE bundled .NET PE DLL using the
 /// self-hosted MSIL pipeline (#1183, Phase 1 — independent-package bundle).
 ///
@@ -268,79 +278,87 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     return false
   }
 
-  // Phase 1: parse + middle-end every package; collect each package's
-  // post-middle-end SourceFile and dotted package name.
-  val perPkgFiles: List[SourceFile] = newList()
-  val perPkgNames: List[String]     = newList()
-
-  // Cross-package imported items: as we process each package, accumulate its
-  // type items so subsequent packages (which may import it) see them at
-  // typecheck (#1183 Phase 2).  Seeds with the precompiled stdlib's type
-  // surface; each in-bundle package contributes its own type-shaped items
-  // to the same list after parse, so a later package's `import Earlier.Pkg`
-  // surfaces the earlier package's types at typecheck.
-  //
-  // Phase 2 scope: type items only.  Cross-package function-call resolution
-  // is handled separately at codegen time via the FQN-keyed `funcTokens`
-  // table built up by the per-package `addPackageTokens` calls below.
-  //
-  // Known gap (#1195): this flat accumulation lets earlier packages'
-  // `pub func`s pass typecheck in a later package even when that later
-  // package never imported them.  Codegen later traps the leak via the
-  // `MObject` fall-through in `lowerBuiltinOrStaticCallMsil`, but
-  // per-package import filtering would surface the missing-import
-  // error at typecheck time where the diagnostic is actionable.
-  val importedItems: List[Item] = newList()
-  collectStdlibTypeItems(stdlibSources, importedItems)
-
-  // Seed `importedItems` with each restored artifact's public surface so
-  // the typechecker can resolve cross-assembly references against the
-  // synthesised contract source.  `collectTypeItemsFromFile` picks up
-  // type-shaped items + `pub func`s; the codegen-side
-  // `registerRestoredArtifactTokens` then maps those names to
-  // AssemblyRef / TypeRef / MemberRef rows.
-  var ri = 0
-  while ri < restoredArtifacts.count {
-    collectTypeItemsFromFile(restoredArtifacts[ri].source, importedItems)
-    ri = ri + 1
+  // Phase 0: build the BASE imported-items list — items that every
+  // user package can reference unconditionally.  Stdlib and restored-
+  // dependency artifacts go here.  Per-package import filtering
+  // (#1378's architectural recommendation) only applies to in-bundle
+  // user packages: stdlib types like `List` / `Map` and restored
+  // record / function references are always in scope because the
+  // codegen-side AssemblyRef / TypeRef / MemberRef rows for them are
+  // unconditionally seeded into the codegen context.
+  val baseItems: List[Item] = newList()
+  collectStdlibTypeItems(stdlibSources, baseItems)
+  var ri0 = 0
+  while ri0 < restoredArtifacts.count {
+    collectTypeItemsFromFile(restoredArtifacts[ri0].source, baseItems)
+    ri0 = ri0 + 1
   }
 
+  // Phase 1a: parse + cfg-erase + alias-rewrite every user package
+  // up front so we can build a per-package items map before any
+  // typecheck runs.  Doing this in a separate pass over a fresh pass
+  // over the input means each user package's typecheck only sees
+  // items from packages it actually `import`s (transitively), instead
+  // of every earlier-in-the-list package's items.  See #1378's
+  // "per-package symbol tables" recommendation; the old flat
+  // accumulation was a known gap tracked as #1195.
+  val parsedPkgs: List[ParsedUserPkg] = newList()
   var pi = 0
   while pi < packages.count {
     val pkg = packages[pi]
-
     val parseResult = parse(pkg.source)
     if reportAndAbort(parseResult.diagnostics) { return false }
-    // Apply `@cfg`-driven erasure BEFORE typecheck so feature-gated
-    // items disappear cleanly (matches the F# emitter convention).
     val cfgRes = Cfg.applyCfgErasure(activeFeatures, declaredFeatures, parseResult.file)
     if reportAndAbort(cfgRes.diagnostics) { return false }
-    // Collapse `import X as Y` aliases — see the rationale at the
-    // single-package `compileToMsil` invocation above (`AuthKernelNet`
-    // / #1378 follow-up).
     val file0 = Aliases.rewriteFile(cfgRes.file)
+    parsedPkgs.add(ParsedUserPkg(name = pkg.name, file = file0))
+    pi = pi + 1
+  }
 
-    val tcRes = checkWithImports(file0, importedItems)
+  // Phase 1b: index each in-bundle package by name so the per-package
+  // import filter can look its items up by `import <pkgName>` segment.
+  // Item lists are extracted via `collectTypeItemsFromFile` (matches
+  // the historical flat-accumulation semantics: `pub func`s + every
+  // type-shaped item).
+  val inBundleItems:   Map[String, List[Item]] = newMap()
+  val inBundleImports: Map[String, List[ImportDecl]] = newMap()
+  var bi = 0
+  while bi < parsedPkgs.count {
+    val pp: ParsedUserPkg = parsedPkgs[bi]
+    val items: List[Item] = newList()
+    collectTypeItemsFromFile(pp.file, items)
+    inBundleItems.add(pp.name, items)
+    inBundleImports.add(pp.name, pp.file.imports)
+    bi = bi + 1
+  }
+
+  // Phase 2: typecheck + mode-check + elaborate + derive + mono per
+  // package, using a per-package `importedItems` view filtered by the
+  // package's declared imports.
+  val perPkgFiles: List[SourceFile] = newList()
+  val perPkgNames: List[String]     = newList()
+  var ti = 0
+  while ti < parsedPkgs.count {
+    val pp: ParsedUserPkg = parsedPkgs[ti]
+    val importedItems = perPackageImportedItems(baseItems, pp.file.imports,
+                                                inBundleItems, inBundleImports)
+
+    val tcRes = checkWithImports(pp.file, importedItems)
     if reportAndAbort(tcRes.diagnostics) { return false }
 
-    val mcRes = checkFile(file0)
+    val mcRes = checkFile(pp.file)
     if reportAndAbort(mcRes.diagnostics) { return false }
 
-    val elaborated = elaborateFile(file0)
+    val elaborated = elaborateFile(pp.file)
     val derived    = deriveFile(elaborated)
 
     val monoRes = monoFile(derived)
     if reportAndAbort(monoRes.diagnostics) { return false }
 
     perPkgFiles.add(monoRes.file)
-    perPkgNames.add(pkg.name)
+    perPkgNames.add(pp.name)
 
-    // Contribute this package's type-shaped items to `importedItems` so
-    // subsequent packages see them.  Matches `collectStdlibTypeItems`'s
-    // is-type filter.
-    collectTypeItemsFromFile(file0, importedItems)
-
-    pi = pi + 1
+    ti = ti + 1
   }
 
   // Phase 2: weave + lambda-lift + token pre-scan for every package against
@@ -506,6 +524,87 @@ pub func compileProjectToMsilWithRestoredEncoded(
   compileProjectToMsilWithRestoredAndVersion(
     packages, assemblyName, outputPath, stdlibSources,
     activeFeatures, declaredFeatures, restoredArtifacts, packageVersion)
+}
+
+// Build the typecheck's per-package `importedItems` list (#1378's
+// per-package symbol-table recommendation).  The result is the
+// concatenation of:
+//
+//   1. `baseItems`   — every stdlib + restored-dep item, always in
+//                      scope.
+//   2. For each `import <pkg>` declaration that targets an in-bundle
+//      package: that package's items, walked transitively (so
+//      `import A` reaches B when `A` itself imports `B`).
+//
+// In-bundle packages are looked up by dotted package name (the
+// `ProjectPackagePayload.name` of each input package).  Imports that
+// don't match an in-bundle key (stdlib, restored, builtin, or simply
+// unknown) fall through silently — they're either already in
+// `baseItems` or were never an in-bundle reference to begin with.
+//
+// Concrete impact: a user package that doesn't `import` a sibling
+// package no longer sees its types/funcs at typecheck, surfacing the
+// missing-import error at T0010 / T0020 (where it's actionable)
+// instead of letting it slip to codegen's `MObject` fall-through
+// (which was the long-standing #1195 leak).
+func perPackageImportedItems(
+  baseItems:       in List[Item],
+  importList:      in List[ImportDecl],
+  inBundleItems:   in Map[String, List[Item]],
+  inBundleImports: in Map[String, List[ImportDecl]]
+): List[Item] {
+  val result: List[Item] = newList()
+  var bi = 0
+  while bi < baseItems.count {
+    result.add(baseItems[bi])
+    bi = bi + 1
+  }
+  val visited: Map[String, Bool] = newMap()
+  var ii = 0
+  while ii < importList.count {
+    val imp: ImportDecl = importList[ii]
+    val depName = segmentsToString(imp.path.segments)
+    addBundleClosure(depName, inBundleItems, inBundleImports, visited, result)
+    ii = ii + 1
+  }
+  result
+}
+
+// Walk the transitive in-bundle import closure rooted at `pkgName`,
+// adding every reachable in-bundle package's items to `acc`.  Visited
+// packages are tracked to avoid infinite loops on cyclic imports
+// (which the typechecker / module system already rejects, but this
+// helper stays defensive in case a future relaxation lands).
+func addBundleClosure(
+  pkgName:         in String,
+  inBundleItems:   in Map[String, List[Item]],
+  inBundleImports: in Map[String, List[ImportDecl]],
+  visited:         in Map[String, Bool],
+  acc:             in List[Item]
+): Unit {
+  if visited.containsKey(pkgName) { return }
+  visited.add(pkgName, true)
+  match mapGet(inBundleItems, pkgName) {
+    case Some(items) -> {
+      var i = 0
+      while i < items.count {
+        acc.add(items[i])
+        i = i + 1
+      }
+    }
+    case None -> return
+  }
+  match mapGet(inBundleImports, pkgName) {
+    case Some(deps) -> {
+      var ii = 0
+      while ii < deps.count {
+        val sub = segmentsToString(deps[ii].path.segments)
+        addBundleClosure(sub, inBundleItems, inBundleImports, visited, acc)
+        ii = ii + 1
+      }
+    }
+    case None -> ()
+  }
 }
 
 // Append every type-shaped and function-shaped item from `file` to

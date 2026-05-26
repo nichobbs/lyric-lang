@@ -16411,3 +16411,102 @@ on the in-process path.
   `encodeUtf8`, …) reach codegen with proper tokens.
 - Per-package symbol-table filtering (#1378's architectural
   recommendation) for better diagnostic locality.
+
+
+### D-progress-320 — per-package symbol-table filtering (#1378 follow-up)
+
+**Status:** Shipped.  The self-hosted MSIL bridge's multi-package
+typecheck now feeds each user package only the items from its
+explicitly-imported dependencies (transitively, through in-bundle
+edges), instead of flat-merging every prior package's items into
+the next one's `importedItems` list.  Closes #1378's architectural
+"per-package symbol tables" recommendation and the long-standing
+#1195 known-gap.
+
+**Problem:**
+
+`compileProjectToMsilWithRestoredAndVersion` walked packages in
+declaration order and appended each one's type / `pub func` items
+to a shared `importedItems` list after typecheck — so when package
+B was typechecked, it saw not only stdlib + restored items but
+also every earlier package's items, regardless of whether B
+actually `import`ed them.  Two practical pain points:
+
+1. **Implicit visibility leak (#1195).**  B could reference A's
+   types and pub funcs without an `import A` declaration; the
+   typecheck passed, and codegen later traps the leak via the
+   `MObject` fall-through in `lowerBuiltinOrStaticCallMsil`.  The
+   diagnostic surfaced at the wrong layer (codegen, with no source
+   span) rather than at typecheck (where it's actionable).
+2. **Spurious duplicate-name collisions.**  Two unrelated packages
+   that happened to define a record / function with the same
+   simple name (a common pattern — `Helper`, `Config`, etc.)
+   crashed B's typecheck with `T0001 duplicate name` because A's
+   `Helper` landed in B's symbol table before B's own
+   registration.
+
+**Fix:**
+
+1. **`lyric-compiler/msil/bridge.l`** — split the existing single
+   parse-+-middle-end-+-typecheck loop into three phases:
+   - **Phase 0** — build a `baseItems` list (stdlib + restored
+     artifacts) that every user package can reference
+     unconditionally.  Codegen-side AssemblyRef / TypeRef rows for
+     these are seeded into the codegen context regardless of which
+     user package references them, so the typecheck mirrors that
+     reality.
+   - **Phase 1a** — pre-parse every user package (parse + cfg-erase
+     + alias-rewrite); collect the post-parse `SourceFile`s into a
+     `parsedPkgs: List[ParsedUserPkg]` carrier.
+   - **Phase 1b** — index each in-bundle package by dotted name
+     into `inBundleItems: Map[String, List[Item]]` and
+     `inBundleImports: Map[String, List[ImportDecl]]` so the
+     per-package import filter can walk the bundle by name.
+   - **Phase 2** — typecheck + mode-check + elaborate + derive +
+     mono per package, but build each package's `importedItems`
+     via the new `perPackageImportedItems` helper instead of the
+     shared list.
+
+2. **`perPackageImportedItems(baseItems, importList, inBundleItems,
+   inBundleImports)`** — returns `baseItems ++ closure(importList)`
+   where `closure` walks each `import <pkg>` declaration, looks up
+   the in-bundle package, recurses through its own imports
+   (visited-set guarded so cycles terminate), and accumulates the
+   items.  Imports that don't resolve to in-bundle keys (stdlib,
+   restored, builtin) fall through silently — they're either
+   already in `baseItems` or were never an in-bundle reference.
+
+3. **`addBundleClosure`** — the recursive helper.  Map keys are
+   the exact `ProjectPackagePayload.name` strings, so an `import
+   AliasXPkg.Lib` (collapsed by the alias rewriter) matches
+   against the bundle's `AliasXPkg.Lib` entry directly.
+
+4. **`lyric-stdlib/tests/msil_project_bridge_tests.l`** — new
+   regression `testPerPackageIsolationDuplicateName`.  Two
+   unrelated packages each define `pub record Helper` and neither
+   imports the other; before the refactor the second package
+   failed with `T0001`, after it builds and runs cleanly (printing
+   7).  Pins the isolation guarantee.
+
+**Acceptance criteria met:**
+
+- 844 emitter + 75 CLI + 189 typechecker + 325 parser + 128 lexer
+  tests pass (including the new
+  `testPerPackageIsolationDuplicateName`).
+- Existing cross-package tests
+  (`testCrossPackageQualifiedCall`,
+  `testCrossPackageChainedIntCalls`,
+  `testCrossPackageRecordValueRoundTrip`,
+  `testCrossPackageUnionConstructAndMatch`,
+  `testEmitProjectAliasedCrossPackageCall`) continue to pass —
+  they all use explicit `import <SiblingPkg>` declarations, which
+  the new closure walker handles correctly.
+
+**What's next (still open from #1378):**
+
+- Stdlib `IFunc` collection in `collectStdlibTypeItems`.
+- Cross-assembly `MemberRef` registration for stdlib `pub func`s
+  in the bridge codegen (`addPackageTokens` /
+  `registerRestoredArtifactTokens` equivalent for stdlib).  Until
+  these land, user code calling `Std.X.foo(...)` (e.g.
+  `tryDecodeBase64`) still aborts at typecheck with `T0020`.

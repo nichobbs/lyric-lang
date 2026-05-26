@@ -667,6 +667,33 @@ func testEmitProjectAliasedCrossPackageCall(): Unit {
     "alias_cross_package_call: stdout matches expected")
 }
 
+// Regression test for #1378's per-package symbol-table filtering
+// follow-up.  Two unrelated packages each define a record called
+// `Helper` — neither imports the other.  Before the per-package
+// refactor, the bridge flat-merged every prior package's items into
+// the next package's typecheck, so the second `Helper` registration
+// hit T0001 'duplicate name' and aborted the build.  With per-package
+// filtering, each package's typecheck sees only its declared imports
+// (here: none from the bundle), so the name collision is invisible.
+func testPerPackageIsolationDuplicateName(): Unit {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkProjectPkg("PerPkgIso.Alpha",
+    "package PerPkgIso.Alpha\n" +
+    "\n" +
+    "pub record Helper { value: Int }\n"))
+  pkgs.add(mkProjectPkg("PerPkgIso.Beta",
+    "package PerPkgIso.Beta\n" +
+    "\n" +
+    "pub record Helper { value: Int }\n" +
+    "\n" +
+    "func main(): Unit { println(7) }\n"))
+  val result = runEmitProject("perpkg-iso", pkgs, "PerPkgIso")
+  assertEqualInt(result.exitCode, 0,
+    "per_package_isolation_duplicate_name: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "7",
+    "per_package_isolation_duplicate_name: stdout matches expected")
+}
+
 func main(): Int {
   testTwoIndependentPackagesBundle()
   testFirstPackageWithRecordDoesNotDisturbSecond()
@@ -676,6 +703,7 @@ func main(): Int {
   testEmitProjectInProcessIndependent()
   testEmitProjectInProcessCrossPackageCall()
   testEmitProjectAliasedCrossPackageCall()
+  testPerPackageIsolationDuplicateName()
   testCrossPackageUnionConstructAndMatch()
   testCfgErasureFeatureInactive()
   testCfgErasureFeatureActive()
