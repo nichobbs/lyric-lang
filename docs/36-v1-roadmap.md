@@ -1,8 +1,12 @@
 # 36 — v1.0 Roadmap
 
 This document is the actionable pre-release checklist.  Every item either
-blocks the `v1.0` tag or is a known bootstrap-grade shortcut that ships with
-a documented workaround and a 1.x target.
+blocks the `v1.0` tag or is a tracked production-quality gap deferred to
+a specific 1.x milestone with an open issue.  Per `CLAUDE.md`,
+"bootstrap-grade shortcut that ships" is not an acceptable resting
+state for a v1.0 deliverable — items below either ship at production
+quality before v1.0, or are explicitly deferred to a tracked 1.x
+milestone with a linked issue.
 
 Per `docs/05-implementation-plan.md`, v1.0 = end of Phase 3.  The exit
 criteria are:
@@ -30,7 +34,7 @@ are 1.x.  Record the answers as decision-log entries.
 | G2 | Which `@experimental` items graduate to `@stable(since="1.0")` and which stay experimental? | Triggers R1.  Until this list exists, SemVer is unenforceable and any user relying on an `@experimental` item has no compatibility guarantees. |
 | G3 | Does `--legacy` / `LYRIC_FMT_LEGACY=1` survive as a supported flag past 1.0, or does it sunset with `Fmt.fs`? | **Resolved (D066):** Flag survives as deprecated through v1.0; removed in v1.1.  Per-expression CST gap deferred to 1.1. |
 | G4 | Do the `lyric-*` service libraries (`lyric-web`, `lyric-cache`, `lyric-db`, `lyric-health`, `lyric-logging`, `lyric-otel`, `lyric-lambda`, `lyric-aws-secrets`, `lyric-aws-xray`) ship under v1.0 SemVer, or under their own independent versioning? | **Resolved (D066):** Independent versioning per library; each declares its own stability policy in `lyric.toml`. |
-| G5 | Must the three-stage reproducibility bootstrap (`scripts/bootstrap.sh`: F# → self-hosted → self-hosted² binary comparison) produce a passing diff before v1.0? | **Resolved (D066):** Not required.  F# bootstrap is the primary build path for 1.0; reproducibility is a Phase-7 (2.0) gate. |
+| G5 | Must the three-stage reproducibility bootstrap (`scripts/bootstrap.sh`: F# stage 0 → self-hosted stage 1 → self-hosted² binary comparison) produce a passing diff before v1.0? | **Resolved (D066):** Not required for v1.0.  Stage 0 (F# bootstrap) compiles the self-hosted compiler from `.l` sources; user-facing CLI flows through the AOT entry point that loads the Lyric-emitted `Lyric.Cli.Program.main` (Track A A1.4, #860).  Stage-2 binary-identity reproducibility is a Phase-7 (2.0) gate. |
 
 ---
 

@@ -772,25 +772,25 @@ faces.
 
 ## 13. Async
 
-Lyric's bootstrap-grade async lowering (D035) blocks via
-`.GetAwaiter().GetResult()`. A real state-machine lowering is Phase 2
-work. v1 aspects on `async func` targets work with the bootstrap
-lowering (since the wrapper is sync and the target's `await` happens
-inside the blocking shim) but **do not preserve async cancellation
-semantics correctly** when advice rebinds args.
+Async lowering ships as real `IAsyncStateMachine` state machines
+(D-progress-033..076 chain; the D035-era blocking shim is gone).
+Aspects compose with continuation-style async: the wrapper's
+`await proceed(args)` resumes on the same `SynchronizationContext`
+as the target's `await`s, and `CancellationToken` flows through the
+synthesised state machine unchanged.  The earlier A0020 warning
+("aspects on async functions use bootstrap-grade lowering;
+cancellation may not propagate correctly") is retired — aspects on
+`async func` targets are first-class.
 
-The conservative v1 stance:
+`yield` inside an `async func` body synthesises an
+`IAsyncEnumerable[T]` generator (Gap-1..Gap-4 closed in
+D-progress-260).  Generators with internal `await` remain deferred
+(Gap-4a, D070, tracked).
 
-- Aspects on sync functions are first-class.
-- Aspects on async functions are accepted by the parser but emit a
-  warning (`A0020: aspects on async functions use bootstrap-grade
-  lowering; cancellation may not propagate correctly`).
-- The Phase 2 async state-machine work explicitly accepts aspect
-  awareness as a design constraint. When it lands, the warning lifts
-  and aspects compose with continuation-style async naturally.
-
-Async-specific advice features (`await proceed(args)` inside the
-advice body, suspend/resume hooks, etc.) are not in v1 scope.
+Async-specific advice features beyond `await proceed(args)` —
+explicit suspend/resume hooks, custom continuation scheduling,
+cancellation interception in the advice body itself — are not in
+v1 scope.
 
 ---
 
@@ -854,7 +854,7 @@ compiler.
 | `A0014` | Glob in `matches: name like "..."` is malformed. |
 | `A0015` | Rebound `args` cannot be proven to satisfy target `requires:`. |
 | `A0016` | Rebound return cannot be proven to satisfy composed `ensures:`. |
-| `A0020` | Aspect applied to async function with bootstrap-grade lowering (warning). |
+| `A0020` | Retired. Was: "aspect applied to async function with bootstrap-grade lowering" — async aspects are now first-class (§13). Code retained as reserved. |
 | `A0021` | Template aspect (`pub aspect` without `matches:`) declares a `matches:` clause; subsumed by A0001 — use A0001 for this case. Reserved. |
 | `A0022` | `aspect ... from Pkg.Template` instantiation declares `around`, `requires:`, or `ensures:` (those come from the template; only `matches:` and `config` override are allowed). |
 | `A0023` | `aspect ... from Pkg.Template` config override declares a field whose type differs from the template's declaration. |

@@ -1,16 +1,19 @@
 # 14 — Native Stdlib Plan
 
-> **Scope.** This document plans the migration of the Lyric standard
-> library from "Lyric API surface backed by BCL types and an F# shim"
-> (the current model in `docs/10-stdlib-plan.md`) to "Lyric API surface
-> backed by Lyric implementations down to a small audited extern
-> kernel." It is complementary to `10-stdlib-plan.md`, not a
-> replacement: that doc owns *what* the stdlib offers; this doc owns
-> *how deep* it is implemented in Lyric.
+> **STATUS: SHIPPED — historical record.** The migration this document
+> describes is complete.  The F# shim
+> (`bootstrap/src/Lyric.Stdlib/Stdlib.fs`, ≈1200 LoC) was deleted in
+> D-progress-140; the stdlib is now Lyric source down to a small
+> audited extern kernel under `lyric-stdlib/std/_kernel/*.l` that uses
+> `extern type` / `extern package` declarations bound directly to the
+> BCL — no F# intermediate.  See `docs/23-fsharp-shim-elimination.md`
+> for the deletion log and `docs/10-stdlib-plan.md` for the current
+> stability table.
 >
-> **Status.** Draft. Several load-bearing decisions are unresolved and
-> flagged in §10. Do not begin implementation work past §6 P0 until
-> those are settled.
+> The sections below are preserved as a record of the migration
+> sequencing (P0–P3) and the gating decisions; they describe the
+> pre-migration world ("today" in §1 means "as of late 2025/early
+> 2026"), not current state.
 
 ---
 

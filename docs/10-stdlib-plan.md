@@ -20,9 +20,17 @@ The BCL serves as runtime implementation support only; the stdlib's surface API 
 4. **Contracts first**: Public functions declare preconditions and postconditions; contracts are checked at runtime in `@runtime_checked` modules.
 5. **Opaque domain types**: Core domain abstractions (File, Path, HttpResponse) are opaque; DTOs for wire transfer are exposed records.
 
-## Phase 1 — Spec and shape (shipped)
+## Phase 1 — Spec and shape (shipped; historical wording)
 
 **Goal**: Define stdlib source layout and decide what stays in Lyric source vs. F# shim.
+
+> **Note:** Phase-1 framing originally split the stdlib between a Lyric
+> surface and an F# implementation shim (`Lyric.Stdlib/Stdlib.fs`).
+> That shim was deleted entirely in D-progress-140; the boundary today
+> is `lyric-stdlib/std/_kernel/*.l` (audited externs to the BCL via
+> `extern type` / `extern package`) with the rest of the stdlib in pure
+> Lyric.  The "F# shim boundaries" sub-section below records the
+> original plan; do not extend it with new F# entries.
 
 ### Deliverables
 
@@ -64,10 +72,15 @@ The BCL serves as runtime implementation support only; the stdlib's surface API 
    - Define `HttpError` union (ConnectionFailed, Timeout, BadStatus, etc.)
    - Define `ParseError` for string/number parsing
 
-4. **F# shim boundaries**
-   - `Lyric.Stdlib.Console` (Println, Print, PrintlnAny) ✅ exists
-   - `Lyric.Stdlib.Contracts` (Expect, Assert, Panic) ✅ exists
-   - Future: `Lyric.Stdlib.IO`, `Lyric.Stdlib.Http` (hand-curated wrappers)
+4. **F# shim boundaries** (historical — superseded by
+   `lyric-stdlib/std/_kernel/`; `Lyric.Stdlib/Stdlib.fs` deleted in
+   D-progress-140)
+   - ~~`Lyric.Stdlib.Console` (Println, Print, PrintlnAny)~~ — now
+     `lyric-stdlib/std/_kernel/console_host.l`.
+   - ~~`Lyric.Stdlib.Contracts` (Expect, Assert, Panic)~~ — built-ins
+     resolved by the typechecker; no host shim needed.
+   - ~~Future: `Lyric.Stdlib.IO`, `Lyric.Stdlib.Http` (hand-curated wrappers)~~
+     — shipped as `_kernel/file_host.l` + `_kernel/http_host.l` etc.
 
 ### Status
 
@@ -142,7 +155,7 @@ The BCL serves as runtime implementation support only; the stdlib's surface API 
 
 ### Deliverables
 
-1. **Console I/O** (build on F# shim)
+1. **Console I/O** (backed by `lyric-stdlib/std/_kernel/console_host.l`)
    - `Console.print(s: in String): Unit`
    - `Console.println(s: in String): Unit`
    - `Console.readLine(): Result[String, IOError]`
@@ -395,10 +408,10 @@ Phase 6 (examples & docs)
 
 ## Notes
 
-- **Monomorphisation caveat**: Phase 1 Option/Result work because their payloads are reference-typed (obj in M1.4). Value-typed payloads require reified generics (Phase 2 / Phase 4 work).
-- **FFI strategy**: `extern package` declarations in `.l` files list the BCL surface; the F# emitter hand-routes calls to the appropriate static methods. Curated, not reflection-driven.
+- **Monomorphisation**: Reified CLR generics work for value-typed and reference-typed payloads alike on the self-hosted MSIL path; same-package generic specialisation also runs via `Lyric.Mono` (D-progress-229). The M1.4 "obj-typed Option/Result" carve-out is historical.
+- **FFI strategy**: `extern package` / `extern type` declarations in `.l` files (under `lyric-stdlib/std/_kernel/`) list the BCL surface. The self-hosted MSIL bridge resolves these via reflection-driven token tables (`Msil.Ffi`); the F# bootstrap emitter retains its pre-existing hand-routed FFI as part of stage 0.
 - **Error propagation**: The `?` operator (if implemented) will turn `Result` failures into early returns; currently explicit `unwrapOr` or pattern matching.
-- **Async boundaries**: All async stdlib functions use `async func` and return `Task[T]`.  Real `IAsyncStateMachine` synthesis shipped during the C2 chain (D-progress-033..076); the M1.4 blocking shim only fires for shapes the SM emit doesn't cover (today: generic instance impl methods only).
+- **Async boundaries**: All async stdlib functions use `async func` and return `Task[T]`. Real `IAsyncStateMachine` synthesis shipped during the C2 chain (D-progress-033..076); the M1.4 blocking shim has been removed.
 
 
 ---
@@ -426,13 +439,13 @@ Every `pub` item in `lyric-stdlib/std/` carries either `@stable(since="1.0")` or
 | `Std.App` (`app.l`) | `@stable` | `Config`, `run`, `withConfig`, `Config.path`, `Config.rawText`. |
 | `Std.Json` (`json.l`) | `@stable` | `parseJson`, `rootElement`, `getProperty`, `tryGetProperty`, scalar getters, `encodeString`. |
 | `Std.Time` — core (`time.l`) | `@stable` | `now`, `zeroDuration`, duration constructors, `since`, `plus`, `totalMillis`/`Seconds`, `addMonths`/`Years`/`Days`, `fromEpochMillis`/`Seconds`, `parseOptInstant`, comparison/arithmetic helpers, `toIsoString`. |
-| `Std.Time` — DTO/TZ helpers (`time.l`) | `@experimental` | `dtoFromEpochMillis`, `dtoFromEpochSeconds`, `dtoUtcDateTime`, `findTimeZone` — bootstrap-grade; full DateTimeOffset/TimeZone API to settle in Phase 2. |
+| `Std.Time` — DTO/TZ helpers (`time.l`) | `@experimental` | `dtoFromEpochMillis`, `dtoFromEpochSeconds`, `dtoUtcDateTime`, `findTimeZone`. Surface is intentionally narrow; full DateTimeOffset/TimeZone API is tracked for stabilisation. |
 | `Std.Http` — core (`http.l`) | `@stable` | `HttpMethod`, `Url`/`Uri`, `HttpRequest`, `HttpResponse`, `Headers`, core constructors, `request`, `withHeader`, `withJsonBody`/`withTextBody`, `sendAsync`, `getAsync`, `postAsync`, `HttpResponse.*` status helpers, `bodyText`/`bodyBytes`, `HttpResponse.header`. |
-| `Std.Http` — advanced (`http.l`) | `@experimental` | `retry`, cancel/timeout variants (`sendWithCancelAsync`, `getWithCancelAsync`, `postWithCancelAsync`, `sendWithTimeoutAsync`, `getWithTimeoutAsync`, `postWithTimeoutAsync`, `HttpResponse.bodyTextWithCancel`), `clientWithRedirects`, `clientNoRedirects` — bootstrap-grade; cancellation and retry contracts to be redesigned in Phase 2. |
+| `Std.Http` — advanced (`http.l`) | `@experimental` | `retry`, cancel/timeout variants (`sendWithCancelAsync`, `getWithCancelAsync`, `postWithCancelAsync`, `sendWithTimeoutAsync`, `getWithTimeoutAsync`, `postWithTimeoutAsync`, `HttpResponse.bodyTextWithCancel`), `clientWithRedirects`, `clientNoRedirects`. Cancellation/retry contract semantics still under design — tracked for stabilisation alongside `@experimental` → `@stable` cuts. |
 | `Std.Rest` (`rest.l`) | `@stable` | `RestError` union, `RestAuth` enum, `RestClient` opaque type; `create`, `withAuth`; `get`, `post`, `put`, `patch`, `delete`; `bodyText`, `jsonBody`, `jsonString`, `jsonInt`, `jsonBool`; `statusCode`, `isSuccess`, `ensureSuccess`. |
 | `Std.Testing` (`testing.l`) | `@stable` | `assertEqual`, `assertEqualInt`, `assertTrue`, `assertPanics`, `assertPanicsWith` — the basic assert API plus panic-catching helpers for pinning documented panic behaviour (#1176). |
-| `Std.Testing.Property` (`testing_property.l`) | `@experimental` | No shrinking, no `Gen[T]` type-class; bootstrap-grade. Full property-test harness is Phase 3 work. |
-| `Std.Testing.Snapshot` (`testing_snapshot.l`) | `@experimental` | No inline diff, no snapshot update workflow; bootstrap-grade. |
+| `Std.Testing.Property` (`testing_property.l`) | `@experimental` | No shrinking, no `Gen[T]` type-class yet. Full property-test harness tracked for stabilisation. |
+| `Std.Testing.Snapshot` (`testing_snapshot.l`) | `@experimental` | No inline diff, no snapshot update workflow yet — tracked for stabilisation. |
 | `Std.CoreProof` (`core_proof.l`) | `@experimental` | Proof scaffolding helpers (`identity`, `trueLit`, `assertEq`, etc.); internal to the Phase 4 test suite. |
 | `Std.Char` (`char.l`) | `@stable` | Unicode character classification and conversion helpers (`isLetter`, `isDigit`, `isWhitespace`, `toLower`, `toUpper`, `toInt`, `fromInt`). |
 | `Std.Encoding` (`encoding.l`) | `@stable` | UTF-8 encode/decode (`toUtf8Bytes`, `fromUtf8Bytes`, NFC normalization via `_kernel/unicode_host.l`). |
@@ -445,7 +458,7 @@ Every `pub` item in `lyric-stdlib/std/` carries either `@stable(since="1.0")` or
 | `Std.RegexHost` (`_kernel/regex_host.l`) | internal | Raw BCL / JVM regex kernel boundary.  All public functions use `host*` prefix (`hostCompile`, `hostCompileWithTimeout`, `hostIsMatch`, `hostMatchOne`, `hostReplace`) to avoid name-shadowing recursion in the emitter.  Used by `Std.Regex` and `Std.RegexSafe`; import directly only in stdlib kernel code. |
 | `Std.RegexSafe` (`regex_safe.l`) | `@stable` | Backward-compatible Result wrappers around `Std.RegexHost` (`tryCompile`, `tryIsMatch`, `tryMatchOne`, `tryReplace`) returning `Result[T, RegexError]` where `RegexError` carries `TimedOut` / `RegexBug`.  Retained for existing callers; new code should prefer `Std.Regex` which provides the same surface with a cleaner `CompiledRegex` opaque type. |
 | `Std.Random` (`_kernel/random.l`) | `@stable` | Cryptographically-seeded RNG (`randomInt`, `randomDouble`, `randomBool`); kernel-only — no `lyric-stdlib/std/random.l` shim (package opens as `Std.Random` directly from `_kernel/`). |
-| `Std.Testing.Mocking` (`testing_mocking.l`) | `@experimental` | Lightweight mock-object helpers for unit tests; bootstrap-grade. |
+| `Std.Testing.Mocking` (`testing_mocking.l`) | `@experimental` | Lightweight mock-object helpers for unit tests; surface expected to grow before stabilisation. |
 
 ### Enforcement summary
 

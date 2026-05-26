@@ -2,7 +2,7 @@
 
 A safety-oriented application language targeting .NET, drawing on Ada's design principles while maintaining familiar syntax and ecosystem interoperability.
 
-**Status:** Bootstrap compiler shipping (Phase 1 complete, Phase 2 substantially complete). The `lyric` CLI compiles `.l` source files to runnable .NET assemblies today. The language specification and design rationale live alongside the compiler.
+**Status:** Self-hosted compiler shipping. Lyric compiles itself: the self-hosted compiler under `lyric-compiler/lyric/` lexes, parses, type-checks, mode-checks, elaborates contracts, monomorphises, weaves aspects, and emits MSIL (in-process) and JVM bytecode. A 40-module standard library and ~20 ecosystem libraries (web, mq, auth, storage, sessions, jobs, etc.) ship alongside. The legacy F# bootstrap compiler under `bootstrap/src/Lyric.*/` exists solely so stage-0 can compile the self-hosted compiler from `.l` sources; it is closed to new code and on a deletion schedule (see `docs/23-fsharp-shim-elimination.md`).
 
 ## What Lyric is
 
@@ -16,7 +16,7 @@ A general-purpose application language for building services and APIs, with:
 - **Tiered visibility** — opaque domain types coexist with exposed wire-level types via compiler-generated projections
 - **Optional formal verification** via SMT-solver-backed proof of contracts (per-module opt-in)
 
-Lyric targets the .NET runtime initially, leveraging reified generics, value types, and Native AOT.
+Lyric targets the .NET runtime (`--target dotnet`, leveraging reified generics, value types, and Native AOT) and the JVM (`--target jvm`, emitting JVM bytecode via the self-hosted JVM emitter under `lyric-compiler/jvm/`).
 
 ## Quick start
 
@@ -27,25 +27,44 @@ Lyric targets the .NET runtime initially, leveraging reified generics, value typ
 ### Build the compiler
 
 ```sh
+# Stage 0: build the F# bootstrap compiler.
 cd bootstrap
 dotnet build Bootstrap.sln
+
+# Stage 1: bootstrap the self-hosted Lyric compiler.  This compiles
+# every `lyric-compiler/lyric/**/*.l` package into a `Lyric.Lyric.*.dll`
+# bundle under `.bootstrap/stage1/` and builds the AOT entry-point
+# binary `bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric` that
+# trampolines into the Lyric-emitted CLI.
+cd ..
+./scripts/bootstrap.sh --stage 1
 ```
 
 ### Compile and run a Lyric program
 
+User-facing commands flow through the AOT entry-point binary built by
+stage 1.  After `./scripts/bootstrap.sh --stage 1`:
+
 ```sh
+lyric=bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric
+
 # Build: writes hello.dll + hello.runtimeconfig.json alongside hello.l
-dotnet run --project bootstrap/src/Lyric.Cli -- build hello.l
+$lyric build hello.l
 
 # Build + run in one step
-dotnet run --project bootstrap/src/Lyric.Cli -- run hello.l
+$lyric run hello.l
 
 # Pass args to the program
-dotnet run --project bootstrap/src/Lyric.Cli -- run hello.l -- arg1 arg2
+$lyric run hello.l -- arg1 arg2
 ```
 
 `build` is incremental — re-running with the same source and stdlib files is
 a no-op.  Pass `--force` to always rebuild.
+
+The F# `bootstrap/src/Lyric.Cli/` project only handles internal flags
+(`--internal-build`, `--internal-project-build`,
+`--internal-contract-meta`, `--internal-manifest-build`) used by the
+bootstrap pipeline; do not invoke it directly for user commands.
 
 ### Hello world
 
@@ -81,14 +100,21 @@ func main(): Unit {
 }
 ```
 
-Available stdlib modules: `Std.Core` (Result, Option, built-in ops),
-`Std.String` (trim, split, join, case conversion, substring, …),
-`Std.Parse` (tryParseInt, tryParseLong, tryParseDouble, tryParseBool),
-`Std.Errors` (ParseError, IOError, HttpError),
-`Std.File` (readText / writeText / fileExists / createDir),
-`Std.Collections` (`List[T]` and `Map[K, V]` — generic growable
-lists and hash maps backed by the BCL; access via method-style
-`xs.add(item)` / `m[key]` / `m.containsKey(key)` / `xs.count`).
+The 40+ stdlib modules under `lyric-stdlib/std/*.l` cover the
+core surface (`Std.Core`, `Std.Collections`, `Std.String`,
+`Std.Char`, `Std.Iter`, `Std.Set`, `Std.Sort`, `Std.Hash`,
+`Std.Format`, `Std.Stream`), data interchange (`Std.Json`,
+`Std.Xml`, `Std.Yaml`, `Std.Encoding`), I/O (`Std.File`,
+`Std.Directory`, `Std.Path`, `Std.Console`, `Std.Process`,
+`Std.Environment`), networking (`Std.Http`, `Std.Rest`),
+math/random (`Std.Math`, `Std.Random`, `Std.SecureRandom`),
+text matching (`Std.Regex`, `Std.RegexSafe`, `Std.Parse`),
+time/identity (`Std.Time`, `Std.Uuid`), diagnostics
+(`Std.Errors`, `Std.Log`), testing (`Std.Testing`,
+`Std.Testing.Property`, `Std.Testing.Snapshot`,
+`Std.Testing.Mocking`), and reflection-on-self
+(`Std.AssemblyResources`).  See `docs/10-stdlib-plan.md` for the
+stability cut table.
 
 Codegen builtins (no import needed): `println`, `panic`, `expect`,
 `assert`, `toString(x)` (any value → String), `format1`/`format2`/
@@ -118,7 +144,13 @@ dotnet run --project tests/Lyric.Lexer.Tests
 dotnet run --project tests/Lyric.Parser.Tests
 dotnet run --project tests/Lyric.TypeChecker.Tests
 dotnet run --project tests/Lyric.Emitter.Tests
+dotnet run --project tests/Lyric.Cli.Tests
 ```
+
+The `Lyric.Emitter.Tests` runner discovers and executes every
+`lyric-stdlib/tests/*_tests.l` self-test against the in-process MSIL
+bridge.  Self-tests for the self-hosted compiler packages live next to
+their sources (`lyric-compiler/lyric/<pkg>_self_test.l`).
 
 ---
 
@@ -135,7 +167,7 @@ dotnet run --project tests/Lyric.Emitter.Tests
 - [08-contract-semantics.md](docs/08-contract-semantics.md) — operational semantics for `requires` / `ensures` / `invariant`
 - [09-msil-emission.md](docs/09-msil-emission.md) — how Lyric lowers to MSIL on .NET
 - [13-tutorial.md](docs/13-tutorial.md) — guided introduction for newcomers (Phase 3 / D-progress-065)
-- [18-jvm-emission.md](docs/18-jvm-emission.md) — JVM bytecode emission strategy (Phase 6+ stretch goal; emitter to be written in Lyric itself)
+- [18-jvm-emission.md](docs/18-jvm-emission.md) — JVM bytecode emission strategy (self-hosted Lyric emitter shipped in `lyric-compiler/jvm/`)
 - [grammar.ebnf](docs/grammar.ebnf) — formal grammar (Phase 0 deliverable #4)
 
 ## Reading order
