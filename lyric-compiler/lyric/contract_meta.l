@@ -433,3 +433,115 @@ pub func parseFromJson(json: in String): Option[Contract] {
     None
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §6. JSON serialisation
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Render a parsed `Contract` back to the canonical JSON shape that
+// `parseFromJson` accepts.  Mirrors F#
+// `bootstrap/src/Lyric.Emitter/ContractMeta.fs::toJson`.  Used by the
+// bridge to build the `Lyric.Contract` resource that gets embedded in
+// every emitted assembly.
+
+// Escape one character for inclusion in a JSON string literal.  Returns
+// the escaped sequence (length ≥ 1).  Non-printable code points below
+// 0x20 are emitted as `\u00XX`; everything else passes through verbatim.
+func escapeJsonChar(c: in String): String {
+  if c.length == 0 { return "" }
+  if c == "\"" { return "\\\"" }
+  if c == "\\" { return "\\\\" }
+  if c == "\n" { return "\\n" }
+  if c == "\r" { return "\\r" }
+  if c == "\t" { return "\\t" }
+  c
+}
+
+// Escape a string for inclusion in a JSON string literal.  Walks the
+// characters one at a time via `Std.String.charAt`.
+@stable(since="0.1")
+pub func escapeJson(s: in String): String {
+  var result = ""
+  var i = 0
+  while i < s.length {
+    val c = s.substring(i, 1)
+    result = result + escapeJsonChar(c)
+    i = i + 1
+  }
+  result
+}
+
+// Render `xs` as a JSON array of strings.
+func renderStringArray(xs: in List[String]): String {
+  var sb = "["
+  var i = 0
+  while i < xs.count {
+    if i > 0 { sb = sb + "," }
+    sb = sb + "\"" + escapeJson(xs[i]) + "\""
+    i = i + 1
+  }
+  sb + "]"
+}
+
+// Render a `params` array as JSON.
+func renderParams(ps: in List[ContractParam]): String {
+  var sb = "["
+  var i = 0
+  while i < ps.count {
+    if i > 0 { sb = sb + "," }
+    sb = sb + "{\"name\":\"" + escapeJson(ps[i].name) + "\""
+    sb = sb + ",\"type\":\"" + escapeJson(ps[i].ty) + "\"}"
+    i = i + 1
+  }
+  sb + "]"
+}
+
+// Render one `ContractDecl` as a JSON object.  Mirrors F#
+// `renderDecl`: only emits the optional fields when they carry
+// non-empty content, so the JSON stays byte-stable against the
+// F# producer.
+func renderDecl(d: in ContractDecl): String {
+  var sb = "{\"kind\":\"" + escapeJson(d.kind) + "\""
+  sb = sb + ",\"name\":\"" + escapeJson(d.name) + "\""
+  sb = sb + ",\"repr\":\"" + escapeJson(d.repr) + "\""
+  if Str.isNotEmpty(d.stability) {
+    sb = sb + ",\"stability\":\"" + escapeJson(d.stability) + "\""
+  }
+  if d.isPure {
+    sb = sb + ",\"pure\":true"
+  }
+  if d.requiresClauses.count > 0 {
+    sb = sb + ",\"requires\":" + renderStringArray(d.requiresClauses)
+  }
+  if d.ensuresClauses.count > 0 {
+    sb = sb + ",\"ensures\":" + renderStringArray(d.ensuresClauses)
+  }
+  match d.body {
+    case Some(body) -> { sb = sb + ",\"body\":\"" + escapeJson(body) + "\"" }
+    case None       -> ()
+  }
+  if d.params.count > 0 {
+    sb = sb + ",\"params\":" + renderParams(d.params)
+  }
+  sb + "}"
+}
+
+/// Render a `Contract` as JSON.  Output is the canonical format-2 shape
+/// `parseFromJson` accepts; round-trips through it without loss.
+/// Mirrors `bootstrap/src/Lyric.Emitter/ContractMeta.fs::toJson`.
+@stable(since="0.1")
+pub func contractToJson(c: in Contract): String {
+  var sb = "{\n"
+  sb = sb + "  \"formatVersion\": 2,\n"
+  sb = sb + "  \"packageName\": \"" + escapeJson(c.packageName) + "\",\n"
+  sb = sb + "  \"version\": \"" + escapeJson(c.version) + "\",\n"
+  sb = sb + "  \"level\": \"" + escapeJson(c.level) + "\",\n"
+  sb = sb + "  \"decls\": [\n"
+  var i = 0
+  while i < c.decls.count {
+    if i > 0 { sb = sb + ",\n" }
+    sb = sb + "    " + renderDecl(c.decls[i])
+    i = i + 1
+  }
+  sb + "\n  ]\n}\n"
+}

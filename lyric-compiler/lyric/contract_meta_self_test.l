@@ -328,7 +328,130 @@ func testReadAllContractsFromFileSinglePkg(): Unit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §4. Driver
+// §4. JSON serialisation (contractToJson)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// escapeJson covers the printable-ASCII passthrough plus the five
+// always-escaped sequences: `"`, `\`, `\n`, `\r`, `\t`.
+func testEscapeJsonBasic(): Unit {
+  assertEqual(escapeJson("hello"), "hello",
+    "escape_json_basic: printable passthrough")
+  assertEqual(escapeJson("a\"b"), "a\\\"b",
+    "escape_json_basic: quote escapes")
+  assertEqual(escapeJson("a\\b"), "a\\\\b",
+    "escape_json_basic: backslash escapes")
+  assertEqual(escapeJson("line1\nline2"), "line1\\nline2",
+    "escape_json_basic: newline escapes")
+  assertEqual(escapeJson("a\tb"), "a\\tb",
+    "escape_json_basic: tab escapes")
+}
+
+// A `Contract` → JSON → `Contract` round-trip preserves every field
+// the parser exposes.  This is the strongest invariant: the JSON
+// emitted by `contractToJson` must round-trip through `parseFromJson`
+// to the identical structure.
+func testContractToJsonRoundTrip(): Unit {
+  // Build a contract with a non-trivial mix of fields.
+  val params: List[ContractParam] = newList()
+  params.add(ContractParam(name = "x", ty = "Int"))
+  params.add(ContractParam(name = "y", ty = "in slice[Byte]"))
+  val reqClauses: List[String] = newList()
+  reqClauses.add("x >= 0")
+  val ensClauses: List[String] = newList()
+  ensClauses.add("result == x + 1")
+  val decls: List[ContractDecl] = newList()
+  decls.add(ContractDecl(
+    kind            = "func",
+    name            = "succ",
+    repr            = "pub func succ(x: in Int): Int",
+    isPure          = true,
+    stability       = "stable:0.1",
+    requiresClauses = reqClauses,
+    ensuresClauses  = ensClauses,
+    body            = Some(value = "x + 1"),
+    params          = params))
+  val original = Contract(
+    packageName   = "RoundTrip.Pkg",
+    version       = "1.2.3",
+    level         = "runtime_checked",
+    formatVersion = 2,
+    decls         = decls)
+
+  val json    = contractToJson(original)
+  val parsed  = unwrapOrFail(parseFromJson(json), "round_trip")
+
+  // Validate the structural fields.
+  assertEqual(parsed.packageName, original.packageName,
+    "round_trip: packageName")
+  assertEqual(parsed.version, original.version, "round_trip: version")
+  assertEqual(parsed.level, original.level, "round_trip: level")
+  assertEqualInt(parsed.formatVersion, original.formatVersion,
+    "round_trip: formatVersion")
+  assertEqualInt(parsed.decls.count, 1, "round_trip: one decl")
+  val d = parsed.decls[0]
+  assertEqual(d.kind, "func", "round_trip: decl.kind")
+  assertEqual(d.name, "succ", "round_trip: decl.name")
+  assertEqual(d.repr, "pub func succ(x: in Int): Int",
+    "round_trip: decl.repr")
+  assertTrue(d.isPure, "round_trip: decl.isPure")
+  assertEqual(d.stability, "stable:0.1", "round_trip: decl.stability")
+  assertEqualInt(d.requiresClauses.count, 1, "round_trip: requires count")
+  assertEqual(d.requiresClauses[0], "x >= 0", "round_trip: requires[0]")
+  assertEqualInt(d.ensuresClauses.count, 1, "round_trip: ensures count")
+  assertEqual(d.ensuresClauses[0], "result == x + 1", "round_trip: ensures[0]")
+  match d.body {
+    case Some(b) -> assertEqual(b, "x + 1", "round_trip: body")
+    case None    -> panic("round_trip: expected body Some")
+  }
+  assertEqualInt(d.params.count, 2, "round_trip: param count")
+  assertEqual(d.params[0].name, "x", "round_trip: param[0].name")
+  assertEqual(d.params[0].ty, "Int", "round_trip: param[0].ty")
+  assertEqual(d.params[1].name, "y", "round_trip: param[1].name")
+  assertEqual(d.params[1].ty, "in slice[Byte]", "round_trip: param[1].ty")
+}
+
+// A `ContractDecl` with default values for every optional field
+// emits a JSON object that has ONLY the three required keys (kind,
+// name, repr).  Mirrors the F# producer's
+// "skip empty optional fields" convention so the JSON byte-stables
+// across implementations.
+func testContractToJsonOmitsDefaults(): Unit {
+  val noParams: List[ContractParam] = newList()
+  val empty: List[String] = newList()
+  val decls: List[ContractDecl] = newList()
+  decls.add(ContractDecl(
+    kind            = "record",
+    name            = "Point",
+    repr            = "pub record Point { x: Int, y: Int }",
+    isPure          = false,
+    stability       = "",
+    requiresClauses = empty,
+    ensuresClauses  = empty,
+    body            = None,
+    params          = noParams))
+  val c = Contract(
+    packageName   = "Geom",
+    version       = "0.1.0",
+    level         = "runtime_checked",
+    formatVersion = 2,
+    decls         = decls)
+  val json = contractToJson(c)
+  assertTrue(not Str.contains(json, "\"stability\""),
+    "omits_defaults: empty stability key absent")
+  assertTrue(not Str.contains(json, "\"pure\""),
+    "omits_defaults: false pure key absent")
+  assertTrue(not Str.contains(json, "\"requires\""),
+    "omits_defaults: empty requires absent")
+  assertTrue(not Str.contains(json, "\"ensures\""),
+    "omits_defaults: empty ensures absent")
+  assertTrue(not Str.contains(json, "\"body\""),
+    "omits_defaults: None body absent")
+  assertTrue(not Str.contains(json, "\"params\""),
+    "omits_defaults: empty params absent")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §5. Driver
 // ─────────────────────────────────────────────────────────────────────────────
 
 func main(): Int {
@@ -348,6 +471,9 @@ func main(): Int {
   testReadFromFileInProcess()
   testReadAllContractsFromFileSinglePkg()
   testNonObjectParamEntrySkipped()
+  testEscapeJsonBasic()
+  testContractToJsonRoundTrip()
+  testContractToJsonOmitsDefaults()
   println("contract-meta self-test: ok")
   return 0
 }
