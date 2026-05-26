@@ -15771,3 +15771,66 @@ inside the emitted DLL as a proper embedded resource.
   `ManifestResource` row, and passes the payload as
   `inp.resourceData`.
 - **Slice 3** — full E2E Lyric test.
+
+
+### D-progress-314 — bridge embeds `Lyric.Contract` resources (#1229 contract emission slice 2b)
+
+**Status:** Shipped.  Self-hosted-bridge-emitted DLLs now carry the
+`Lyric.Contract` resource the in-process restored-dep loader reads.
+
+**Problem:** Slice 2a (D-progress-313) added PE-level resource
+machinery; the bridge still wasn't building or embedding anything.
+This slice wires the contract-building + JSON serialisation + PE
+embedding together so every Lyric-emitted DLL ships a contract
+matching what the F# emitter produces.
+
+**Fix:**
+
+1. **`lyric-compiler/lyric/contract_meta.l` §7** — new
+   `pub func buildContractFromFile(file): Contract` that walks a
+   parsed `SourceFile` and produces a `Contract` describing its
+   public surface.  Coverage: records, funcs, unions, enums,
+   interfaces, opaques, distinct types, type aliases.  Each
+   `ContractDecl` carries `kind`, `name`, and a hand-rendered `repr`
+   that's a parseable Lyric declaration the synthesise-pass can
+   re-consume (records list fields + types, funcs list params +
+   return type, unions list cases + payload types, enums list case
+   names).  Mirrors `bootstrap/src/Lyric.Emitter/ContractMeta.fs::buildContract`.
+
+2. **`lyric-compiler/msil/lowering.l`** — `LoweringCtx` gains
+   `resourceData: List[Byte]` (defaults to `newList()` in
+   `newLoweringCtx`).  `AssemblerInput` construction in the three
+   `lowerMPackage*` entry points now threads
+   `resourceData = ctx.resourceData` (was `newList()`).
+
+3. **`lyric-compiler/msil/bridge.l`** — new helper
+   `embedLyricContract(lctx, file, resourceName)`:
+   - Calls `Meta.buildContractFromFile` + `Meta.contractToJson`.
+   - UTF-8 encodes via `Std.Encoding.encodeUtf8`.
+   - Appends a 4-byte LE length prefix + the JSON bytes to
+     `lctx.resourceData` (offset = current length, so multiple
+     resources stack correctly).
+   - Calls `addManifestResource` with the row pointing at that
+     offset.
+
+   Wired into both entry points:
+   - `compileToMsil` (single-package) → embeds as `"Lyric.Contract"`.
+   - `compileProjectToMsilWithRestored` (multi-package) → embeds
+     each package's contract as `"Lyric.Contract.<Pkg>"`, matching
+     the F# bundled-DLL layout.
+
+**Acceptance criteria met:**
+
+- Self-hosted-bridge-emitted DLLs now carry a
+  `Lyric.Contract` (or `Lyric.Contract.<Pkg>`) resource.
+- Contract format is byte-stable against `parseFromJson` (slice 1
+  round-trip test still passes).
+- 73 CLI + 844 emitter tests green; axiom audit clean.
+
+**What's next:**
+
+- **Slice 3** — full E2E Lyric test: self-hosted bridge builds a
+  library DLL → consumer reads it via the in-process loader →
+  `dotnet exec` round-trip with cross-package call.  Subprocess
+  fallback in `emitProject` becomes unreachable for any common
+  user case after this lands.

@@ -15,6 +15,7 @@ import Std.String as Str
 import Std.Path as Path
 import Std.Environment as Environment
 import Lyric.ContractMeta
+import Lyric.Parser
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Helpers
@@ -451,6 +452,173 @@ func testContractToJsonOmitsDefaults(): Unit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §6. buildContractFromFile / levelOfFile coverage (#1366)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// These tests parse a small Lyric source string and run the contract
+// builder over it.  Each branch the round-trip JSON tests cannot reach
+// is exercised here: file-level annotation classification, opaque
+// types, multi-case enums, generic interfaces, unions with mixed
+// named + positional fields, and the `TAValue` (array size) generic
+// argument path.
+
+func findDeclByKind(
+  decls: in List[ContractDecl],
+  kind: in String,
+  name: in String): Option[ContractDecl]
+{
+  var i = 0
+  while i < decls.count {
+    val d = decls[i]
+    if d.kind == kind and d.name == name { return Some(value = d) }
+    i = i + 1
+  }
+  None
+}
+
+func unwrapDeclOrFail(
+  opt: in Option[ContractDecl],
+  label: in String): ContractDecl
+{
+  match opt {
+    case Some(d) -> d
+    case None    -> {
+      panic(label + ": expected decl, found none")
+      ContractDecl(
+        kind = "", name = "", repr = "", isPure = false,
+        stability = "", requiresClauses = newList(),
+        ensuresClauses = newList(), body = None, params = newList())
+    }
+  }
+}
+
+// `levelOfFile` returns "runtime_checked" for unannotated files.
+func testLevelOfFileDefault(): Unit {
+  val src = "package P\n\npub func f(): Int { 1 }\n"
+  val pr = parse(src)
+  assertEqual(levelOfFile(pr.file), "runtime_checked",
+    "levelOfFile: unannotated → runtime_checked")
+}
+
+// `levelOfFile` returns "axiom" for `@axiom` file-level annotation.
+func testLevelOfFileAxiom(): Unit {
+  val src = "@axiom\npackage P\n\npub func ax(): Int { 1 }\n"
+  val pr = parse(src)
+  assertEqual(levelOfFile(pr.file), "axiom",
+    "levelOfFile: @axiom → axiom")
+}
+
+// `levelOfFile` returns "proof_required" without modifier.
+func testLevelOfFileProofRequired(): Unit {
+  val src = "@proof_required\npackage P\n\npub func pf(): Int { 1 }\n"
+  val pr = parse(src)
+  assertEqual(levelOfFile(pr.file), "proof_required",
+    "levelOfFile: @proof_required → proof_required")
+}
+
+// `buildContractFromFile` covers opaque types (reprForOpaque).
+func testBuildOpaque(): Unit {
+  val src = "package P\n\npub opaque type Money { amount: Int }\n"
+  val pr = parse(src)
+  val c = buildContractFromFile(pr.file, "1.0.0")
+  val d = unwrapDeclOrFail(
+    findDeclByKind(c.decls, "opaque", "Money"),
+    "buildContractFromFile: opaque Money missing")
+  assertTrue(Str.contains(d.repr, "pub opaque type Money"),
+    "opaque: repr header present (got " + d.repr + ")")
+  assertTrue(Str.contains(d.repr, "amount: Int"),
+    "opaque: amount field present")
+}
+
+// `buildContractFromFile` covers multi-case enums (reprForEnum).
+func testBuildEnum(): Unit {
+  val src = "package P\n\npub enum Color { Red, Green, Blue }\n"
+  val pr = parse(src)
+  val c = buildContractFromFile(pr.file, "1.0.0")
+  val d = unwrapDeclOrFail(
+    findDeclByKind(c.decls, "enum", "Color"),
+    "buildContractFromFile: enum Color missing")
+  assertTrue(Str.contains(d.repr, "Red"),
+    "enum: Red case present")
+  assertTrue(Str.contains(d.repr, "Green"),
+    "enum: Green case present")
+  assertTrue(Str.contains(d.repr, "Blue"),
+    "enum: Blue case present")
+}
+
+// `buildContractFromFile` covers generic interfaces.
+func testBuildGenericInterface(): Unit {
+  val src = "package P\n\npub interface Box[T] {\n  func get(): T\n}\n"
+  val pr = parse(src)
+  val c = buildContractFromFile(pr.file, "1.0.0")
+  val d = unwrapDeclOrFail(
+    findDeclByKind(c.decls, "interface", "Box"),
+    "buildContractFromFile: interface Box missing")
+  assertTrue(Str.contains(d.repr, "Box[T]"),
+    "interface: generic param list present (got " + d.repr + ")")
+  assertTrue(Str.contains(d.repr, "func get()"),
+    "interface: method get() present")
+}
+
+// `buildContractFromFile` covers unions with mixed positional + named
+// payloads (UFPos / UFNamed both exercised by renderUnionCase).
+func testBuildUnionMixedFields(): Unit {
+  val src = "package P\n\npub union Shape {\n" +
+            "  case Circle(radius: Int)\n" +
+            "  case Square(side: Int)\n" +
+            "}\n"
+  val pr = parse(src)
+  val c = buildContractFromFile(pr.file, "1.0.0")
+  val d = unwrapDeclOrFail(
+    findDeclByKind(c.decls, "union", "Shape"),
+    "buildContractFromFile: union Shape missing")
+  assertTrue(Str.contains(d.repr, "Circle"),
+    "union: Circle case present")
+  assertTrue(Str.contains(d.repr, "Square"),
+    "union: Square case present")
+}
+
+// `renderTypeArg` covers the `TAValue` (integer-literal array size)
+// branch via a fixed-size array field in a public record.
+func testBuildArrayTypeArg(): Unit {
+  val src = "package P\n\npub record Buf { bytes: array[4, Int] }\n"
+  val pr = parse(src)
+  val c = buildContractFromFile(pr.file, "1.0.0")
+  val d = unwrapDeclOrFail(
+    findDeclByKind(c.decls, "record", "Buf"),
+    "buildContractFromFile: record Buf missing")
+  assertTrue(Str.contains(d.repr, "array[4, Int]"),
+    "array: TAValue literal renders faithfully (got " + d.repr + ")")
+}
+
+// `buildContractFromFile` carries the supplied version.
+func testBuildVersionThreaded(): Unit {
+  val src = "package P\n\npub func f(): Int { 1 }\n"
+  val pr = parse(src)
+  val c = buildContractFromFile(pr.file, "2.3.4")
+  assertEqual(c.version, "2.3.4",
+    "buildContractFromFile: version argument carried through")
+}
+
+// `buildContractFromFile` filters out non-pub items.
+func testBuildFiltersNonPub(): Unit {
+  val src = "package P\n\nfunc internalOnly(): Int { 1 }\n" +
+            "pub func publicOne(): Int { 1 }\n"
+  val pr = parse(src)
+  val c = buildContractFromFile(pr.file, "1.0.0")
+  val nonPub = findDeclByKind(c.decls, "func", "internalOnly")
+  match nonPub {
+    case None    -> ()
+    case Some(_) -> panic("buildContractFromFile: non-pub item leaked into decls")
+  }
+  val pubd = findDeclByKind(c.decls, "func", "publicOne")
+  match pubd {
+    case Some(_) -> ()
+    case None    -> panic("buildContractFromFile: pub item missing from decls")
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §5. Driver
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -474,6 +642,16 @@ func main(): Int {
   testEscapeJsonBasic()
   testContractToJsonRoundTrip()
   testContractToJsonOmitsDefaults()
+  testLevelOfFileDefault()
+  testLevelOfFileAxiom()
+  testLevelOfFileProofRequired()
+  testBuildOpaque()
+  testBuildEnum()
+  testBuildGenericInterface()
+  testBuildUnionMixedFields()
+  testBuildArrayTypeArg()
+  testBuildVersionThreaded()
+  testBuildFiltersNonPub()
   println("contract-meta self-test: ok")
   return 0
 }

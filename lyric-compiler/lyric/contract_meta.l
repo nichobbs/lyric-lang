@@ -38,6 +38,8 @@ import Std.Environment as Environment
 import Std.String as Str
 import Std.Json
 import Std.Encoding as Encoding
+import Lyric.Lexer
+import Lyric.Parser
 import Std.AssemblyResources as AsmRes
 import Lyric.CliShell as CliShell
 
@@ -544,4 +546,449 @@ pub func contractToJson(c: in Contract): String {
     i = i + 1
   }
   sb + "\n  ]\n}\n"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §7. Build a Contract from a parsed SourceFile
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Walks a `Lyric.Parser.SourceFile` and produces a `Contract` describing
+// its public surface.  The contract is what gets serialised via
+// `contractToJson` and embedded as the `Lyric.Contract` resource in
+// every Lyric-emitted assembly.
+//
+// Mirrors `bootstrap/src/Lyric.Emitter/ContractMeta.fs::buildContract`,
+// but only handles the decl kinds the bootstrap parser currently emits
+// at the source level: records, functions, unions, enums, interfaces,
+// opaques, distinct types, type aliases.  `pub`-only filter matches the
+// F# convention; non-pub items don't surface in the contract.
+//
+// `repr` is the source-level shape that `synthesiseSource` re-emits
+// during restored-dep loading: a parseable Lyric declaration that the
+// type-checker can re-consume.  For the bootstrap, we hand-render each
+// kind (proper formatter integration is a follow-up).
+
+// True iff `vis` is `Some(VisPub(_))`.
+func isPubVis(vis: in Option[Visibility]): Bool {
+  var isPub = false
+  match vis {
+    case Some(v) -> {
+      match v {
+        case VisPub(_)      -> { isPub = true }
+        case VisInternal(_) -> ()
+      }
+    }
+    case None -> ()
+  }
+  isPub
+}
+
+// Render a TypeExpr as a source-level string.  Coverage matches what
+// the bootstrap parser accepts at the top level of a contract repr:
+// every kind round-trips through `parse(synthesiseSource(...))`
+// cleanly.
+func renderTypeExpr(te: in TypeExpr): String {
+  match te.kind {
+    case TUnit              -> "Unit"
+    case TNever             -> "Never"
+    case TSelf              -> "Self"
+    case TRef(path)         -> joinDots(path.segments)
+    case TGenericApp(h, args) ->
+      joinDots(h.segments) + "[" + renderTypeArgList(args) + "]"
+    case TSlice(elem)       -> "slice[" + renderTypeExpr(elem) + "]"
+    case TNullable(inner)   -> renderTypeExpr(inner) + "?"
+    case TParen(inner)      -> renderTypeExpr(inner)
+    case TArray(size, elem) ->
+      "array[" + renderTypeArg(size) + ", " + renderTypeExpr(elem) + "]"
+    case TTuple(ts)         -> "(" + renderTypeExprList(ts) + ")"
+    case TFunction(ps, r)   ->
+      "(" + renderTypeExprList(ps) + ") -> " + renderTypeExpr(r)
+    case TRefined(p, _)     -> joinDots(p.segments)
+    case TError             -> "Unit"
+  }
+}
+
+// Render a comma-separated TypeExpr list.
+func renderTypeExprList(ts: in List[TypeExpr]): String {
+  var s = ""
+  var i = 0
+  while i < ts.count {
+    if i > 0 { s = s + ", " }
+    s = s + renderTypeExpr(ts[i])
+    i = i + 1
+  }
+  s
+}
+
+// Render one `TypeArg` (either a type or a value-level expression).
+// Integer literals (`array[4, Byte]` form) render faithfully so the
+// repr round-trips through the parser; non-literal value expressions
+// (rare in public APIs since they require const-foldable inputs)
+// fall back to a `0` placeholder that at least parses.
+func renderTypeArg(a: in TypeArg): String {
+  match a {
+    case TAType(te) -> renderTypeExpr(te)
+    case TAValue(e) -> renderConstExpr(e)
+  }
+}
+
+// Render a value-level expression used as a generic argument.  Only
+// integer literals are supported today (`array[N, T]` size); other
+// forms fall back to `0`.
+func renderConstExpr(e: in Expr): String {
+  match e.kind {
+    case ELiteral(lit) -> {
+      match lit {
+        case LInt(v, _) -> toString(v)
+        case _          -> "0"
+      }
+    }
+    case _ -> "0"
+  }
+}
+
+// Render a comma-separated TypeArg list.
+func renderTypeArgList(args: in List[TypeArg]): String {
+  var s = ""
+  var i = 0
+  while i < args.count {
+    if i > 0 { s = s + ", " }
+    s = s + renderTypeArg(args[i])
+    i = i + 1
+  }
+  s
+}
+
+// Join dotted segments with ".".
+func joinDots(segs: in List[String]): String {
+  var s = ""
+  var i = 0
+  while i < segs.count {
+    if i > 0 { s = s + "." }
+    s = s + segs[i]
+    i = i + 1
+  }
+  s
+}
+
+// Render one parameter as `<mode> <name>: <type>` (or just
+// `<name>: <type>` when mode is the default `in` for safety: the
+// bootstrap parser is happy with either form, and the contract
+// surface is read-only anyway).
+func renderParam(p: in Param): String {
+  val modeStr = match p.mode {
+    case PMIn    -> "in "
+    case PMOut   -> "out "
+    case PMInout -> "inout "
+  }
+  p.name + ": " + modeStr + renderTypeExpr(p.ty)
+}
+
+// Render one `GenericParam` as a source-level fragment:
+// `GPType` → bare name; `GPValue` → `name: constraint`.
+func renderGenericParam(gp: in GenericParam): String {
+  match gp {
+    case GPType(name, _)             -> name
+    case GPValue(name, constraint, _) -> name + ": " + renderTypeExpr(constraint)
+  }
+}
+
+// Render `Option[GenericParams]` as `""` (absent) or `"[T, U: Int]"`
+// (one or more params).  Empty `params` list also collapses to `""`
+// so the head form stays `pub record Name { … }` rather than
+// `pub record Name[] { … }`.
+func renderGenerics(g: in Option[GenericParams]): String {
+  match g {
+    case None -> ""
+    case Some(gp) -> {
+      if gp.params.count == 0 { return "" }
+      var s = "["
+      var i = 0
+      while i < gp.params.count {
+        if i > 0 { s = s + ", " }
+        s = s + renderGenericParam(gp.params[i])
+        i = i + 1
+      }
+      s + "]"
+    }
+  }
+}
+
+// Build the `pub record Name[T] { field1: T1, field2: T2 }` repr for
+// a record decl.  Records with no fields emit `pub record Name {}`.
+func reprForRecord(decl: in RecordDecl): String {
+  var fields = ""
+  var i = 0
+  var emittedAny = false
+  while i < decl.members.count {
+    match decl.members[i] {
+      case RMField(f) -> {
+        if emittedAny { fields = fields + ", " }
+        fields = fields + f.name + ": " + renderTypeExpr(f.ty)
+        emittedAny = true
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  "pub record " + decl.name + renderGenerics(decl.generics) + " { " + fields + " }"
+}
+
+// Build the `pub func name(p1: T1, p2: T2): Ret` repr for a function.
+// Bodies are omitted — the parser accepts a bodyless head (treated as
+// abstract / extern-style by the typechecker, which is sufficient for
+// the synth+typecheck round-trip the bridge does).
+func reprForFunc(fn: in FunctionDecl): String {
+  var params = ""
+  var i = 0
+  while i < fn.params.count {
+    if i > 0 { params = params + ", " }
+    params = params + renderParam(fn.params[i])
+    i = i + 1
+  }
+  val retStr = match fn.ret {
+    case Some(t) -> ": " + renderTypeExpr(t)
+    case None    -> ""
+  }
+  "pub func " + fn.name + renderGenerics(fn.generics) +
+    "(" + params + ")" + retStr
+}
+
+// Build the `pub union Name { case A, case B(x: T) }` repr for a union.
+func reprForUnion(decl: in UnionDecl): String {
+  var cases = ""
+  var i = 0
+  while i < decl.cases.count {
+    if i > 0 { cases = cases + ", " }
+    val c = decl.cases[i]
+    if c.fields.count == 0 {
+      cases = cases + "case " + c.name
+    } else {
+      var fs = ""
+      var j = 0
+      while j < c.fields.count {
+        if j > 0 { fs = fs + ", " }
+        match c.fields[j] {
+          case UFNamed(n, ty, _) -> { fs = fs + n + ": " + renderTypeExpr(ty) }
+          case UFPos(ty, _)      -> { fs = fs + renderTypeExpr(ty) }
+        }
+        j = j + 1
+      }
+      cases = cases + "case " + c.name + "(" + fs + ")"
+    }
+    i = i + 1
+  }
+  "pub union " + decl.name + renderGenerics(decl.generics) + " { " + cases + " }"
+}
+
+// Build the `pub enum Name { A, B, C }` repr.  EnumDecls carry just
+// case names in the bootstrap parser.
+func reprForEnum(decl: in EnumDecl): String {
+  var cases = ""
+  var i = 0
+  while i < decl.cases.count {
+    if i > 0 { cases = cases + ", " }
+    cases = cases + decl.cases[i].name
+    i = i + 1
+  }
+  "pub enum " + decl.name + " { " + cases + " }"
+}
+
+// Build the `pub interface Name { ... }` repr with each abstract
+// method signature.  Default-method bodies and associated types are
+// elided (their full form requires walking ImplMember).
+func reprForInterface(decl: in InterfaceDecl): String {
+  var members = ""
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case IMSig(sig) -> {
+        if Str.isNotEmpty(members) { members = members + "; " }
+        members = members + reprForFunctionSig(sig)
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  "pub interface " + decl.name + renderGenerics(decl.generics) +
+    " { " + members + " }"
+}
+
+// Render a FunctionSig (interface-method head form, no body).
+func reprForFunctionSig(sig: in FunctionSig): String {
+  var params = ""
+  var i = 0
+  while i < sig.params.count {
+    if i > 0 { params = params + ", " }
+    params = params + renderParam(sig.params[i])
+    i = i + 1
+  }
+  val retStr = match sig.ret {
+    case Some(t) -> ": " + renderTypeExpr(t)
+    case None    -> ""
+  }
+  "func " + sig.name + renderGenerics(sig.generics) +
+    "(" + params + ")" + retStr
+}
+
+// `pub type Name = <underlying>` for distinct types.  Renders the
+// declared underlying type rather than guessing `Int`.
+func reprForDistinct(decl: in DistinctTypeDecl): String {
+  "pub type " + decl.name + renderGenerics(decl.generics) +
+    " = " + renderTypeExpr(decl.underlying)
+}
+
+// `pub opaque type Name { f1: T1, ... }` — emits the structural
+// payload so cross-package consumers see the same field set the
+// emitter encoded.  Opaque types without a body emit
+// `pub opaque type Name {}`.
+func reprForOpaque(decl: in OpaqueTypeDecl): String {
+  var fields = ""
+  var emittedAny = false
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case OMField(f) -> {
+        if emittedAny { fields = fields + ", " }
+        fields = fields + f.name + ": " + renderTypeExpr(f.ty)
+        emittedAny = true
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  "pub opaque type " + decl.name + renderGenerics(decl.generics) +
+    " { " + fields + " }"
+}
+
+// `pub alias Name = <rhs>` — renders the actual aliased TypeExpr.
+func reprForTypeAlias(decl: in TypeAliasDecl): String {
+  "pub alias " + decl.name + renderGenerics(decl.generics) +
+    " = " + renderTypeExpr(decl.rhs)
+}
+
+// Construct a default ContractDecl with the three required fields and
+// everything else zeroed.  Mirrors F# `ContractDecl.basic`.
+func basicDecl(kind: in String, name: in String, repr: in String): ContractDecl {
+  ContractDecl(
+    kind            = kind,
+    name            = name,
+    repr            = repr,
+    isPure          = false,
+    stability       = "",
+    requiresClauses = newList(),
+    ensuresClauses  = newList(),
+    body            = None,
+    params          = newList())
+}
+
+// Find a single-segment file-level annotation by name.  Returns the
+// first matching annotation (file-level `@axiom`, `@proof_required`,
+// `@runtime_checked` are mutually exclusive in practice but we
+// surface the first hit per the F# convention).
+func findFileAnnotation(file: in SourceFile, name: in String): Option[Annotation] {
+  val anns = file.fileAnnotations
+  var i = 0
+  while i < anns.count {
+    val a = anns[i]
+    if a.name.segments.count == 1 and a.name.segments[0] == name {
+      return Some(value = a)
+    }
+    i = i + 1
+  }
+  None
+}
+
+// Inspect a `@proof_required(...)` annotation for one of the two
+// recognised bare-identifier modifiers (`unsafe_blocks_allowed`,
+// `checked_arithmetic`).  Returns "" when no recognised modifier
+// is present.  Mirrors F# `levelOfFile`'s nested match.
+func proofRequiredModifier(ann: in Annotation): String {
+  var modifier = ""
+  var i = 0
+  while i < ann.args.count {
+    if Str.isEmpty(modifier) {
+      match ann.args[i] {
+        case ABare(name, _) -> { modifier = name }
+        case _              -> ()
+      }
+    }
+    i = i + 1
+  }
+  modifier
+}
+
+/// Determine the verification level for a SourceFile from its file-
+/// level annotations.  Mirrors `bootstrap/src/Lyric.Emitter/ContractMeta.fs::levelOfFile`:
+/// `@axiom` wins → "axiom"; otherwise `@proof_required(modifier?)`
+/// → "proof_required" or "proof_required(<modifier>)"; otherwise
+/// "runtime_checked" (the default for both `@runtime_checked` and
+/// unannotated files).
+@stable(since="0.1")
+pub func levelOfFile(file: in SourceFile): String {
+  match findFileAnnotation(file, "axiom") {
+    case Some(_) -> "axiom"
+    case None -> {
+      match findFileAnnotation(file, "proof_required") {
+        case Some(ann) -> {
+          val m = proofRequiredModifier(ann)
+          if m == "unsafe_blocks_allowed" { "proof_required(unsafe_blocks_allowed)" }
+          else if m == "checked_arithmetic" { "proof_required(checked_arithmetic)" }
+          else { "proof_required" }
+        }
+        case None -> "runtime_checked"
+      }
+    }
+  }
+}
+
+/// Build a `Contract` from a parsed `SourceFile`.  Walks each
+/// top-level item and emits a `ContractDecl` for every `pub` item
+/// of a supported kind (record, func, union, enum, interface,
+/// opaque, distinct, alias).  Non-pub items are filtered out.
+///
+/// `version` is the manifest-declared semver string for this
+/// package — the bridge sources it from `Lyric.Manifest` when one
+/// is available, and passes `"0.0.0"` for ad-hoc compiles where no
+/// manifest is in scope.  `level` is computed from the source's
+/// file-level annotations via `levelOfFile` so every emitted DLL
+/// records its declared verification level accurately.
+///
+/// Used by the self-hosted MSIL bridge to build the `Lyric.Contract`
+/// resource payload before assembly emission.
+@stable(since="0.1")
+pub func buildContractFromFile(file: in SourceFile, version: in String): Contract {
+  val decls: List[ContractDecl] = newList()
+  var i = 0
+  while i < file.items.count {
+    val it = file.items[i]
+    if isPubVis(it.visibility) {
+      match it.kind {
+        case IRecord(r) ->
+          decls.add(basicDecl("record", r.name, reprForRecord(r)))
+        case IFunc(f) ->
+          decls.add(basicDecl("func", f.name, reprForFunc(f)))
+        case IUnion(u) ->
+          decls.add(basicDecl("union", u.name, reprForUnion(u)))
+        case IEnum(e) ->
+          decls.add(basicDecl("enum", e.name, reprForEnum(e)))
+        case IInterface(ix) ->
+          decls.add(basicDecl("interface", ix.name, reprForInterface(ix)))
+        case IDistinctType(d) ->
+          decls.add(basicDecl("distinct", d.name, reprForDistinct(d)))
+        case IOpaque(o) ->
+          decls.add(basicDecl("opaque", o.name, reprForOpaque(o)))
+        case ITypeAlias(a) ->
+          decls.add(basicDecl("alias", a.name, reprForTypeAlias(a)))
+        case _ -> ()
+      }
+    }
+    i = i + 1
+  }
+  Contract(
+    packageName   = joinDots(file.packageDecl.path.segments),
+    version       = version,
+    level         = levelOfFile(file),
+    formatVersion = 2,
+    decls         = decls)
 }

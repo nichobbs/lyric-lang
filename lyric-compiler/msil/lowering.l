@@ -464,6 +464,13 @@ pub record LoweringCtx {
   arRuntime:   Int     // System.Runtime
   // Well-known MemberRef row indices (1-based)
   mrObjectCtor: Int    // System.Object::.ctor() — called by synthesised record constructors
+  // Resource payload to embed in the PE.  Each resource is encoded as
+  // a 4-byte little-endian length prefix followed by the resource
+  // bytes; multiple resources are concatenated in `ManifestResource`
+  // table row order.  Empty when the bridge doesn't embed any
+  // resources (the common case before `Lyric.Contract` embedding
+  // shipped).
+  resourceData: List[Byte]
 }
 
 // Build and intern the Microsoft framework public key token blob.
@@ -557,7 +564,8 @@ pub func newLoweringCtx(packageName: in String): LoweringCtx {
     trObject     = trObject,
     trEnum       = trEnum,
     arRuntime    = arRuntime,
-    mrObjectCtor = mrObjectCtor
+    mrObjectCtor = mrObjectCtor,
+    resourceData = newList()
   )
 }
 
@@ -1468,7 +1476,7 @@ pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
     strings         = ctx.strings,
     us              = ctx.us,
     blobs           = ctx.blobs,
-    guids           = ctx.guids, resourceData = newList())
+    guids           = ctx.guids, resourceData = ctx.resourceData)
 
   val peBuf = assemblePe(inp)
   bufToList(peBuf)
@@ -1516,7 +1524,7 @@ pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx,
     strings         = ctx.strings,
     us              = ctx.us,
     blobs           = ctx.blobs,
-    guids           = ctx.guids, resourceData = newList())
+    guids           = ctx.guids, resourceData = ctx.resourceData)
 
   val peBuf = assemblePe(inp)
   bufToList(peBuf)
@@ -1554,7 +1562,7 @@ pub func lowerMPackagesWithCtx(pkgs: in List[MPackage], ctx: in LoweringCtx,
     strings         = ctx.strings,
     us              = ctx.us,
     blobs           = ctx.blobs,
-    guids           = ctx.guids, resourceData = newList())
+    guids           = ctx.guids, resourceData = ctx.resourceData)
 
   val peBuf = assemblePe(inp)
   bufToList(peBuf)
