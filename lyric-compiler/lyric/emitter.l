@@ -161,6 +161,25 @@ func walkUpForStdlib(start: in String): String {
   ""
 }
 
+// Walk up from `start` looking for the `lyric-compiler/lyric/` directory.
+// Returns "" if no such ancestor is found within 32 hops.
+// Used by `emitMsilInProcess` (LYRIC_LOAD_COMPILER=1) to locate compiler
+// source packages at runtime.
+func walkUpForCompilerDir(start: in String): String {
+  if start.length == 0 { return "" }
+  var dir = start
+  var hop = 0
+  while hop < 32 {
+    val candidate = Path.join(Path.join(dir, "lyric-compiler"), "lyric")
+    if File.dirExists(candidate) { return candidate }
+    val parent = Path.dirname(dir)
+    if parent.length == 0 or parent == dir { return "" }
+    dir = parent
+    hop = hop + 1
+  }
+  ""
+}
+
 // Locate the `lyric-stdlib/std/` directory at runtime, then read every
 // `.l` source file — both top-level files (the public stdlib surface)
 // AND the `_kernel/` subdirectory (extern type / @externTarget kernels
@@ -324,6 +343,134 @@ func writeTempSource(source: in String, assemblyName: in String): Result[String,
     case Ok(_)  -> Ok(value = path)
     case Err(e) -> Err(error = e)
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §3b. LYRIC_LOAD_COMPILER helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Scan `source` for the first line that starts with "package " and return
+// the declared package name.  Returns "" if no such line is found.
+// Used by `emitMsilInProcess` (LYRIC_LOAD_COMPILER=1) to build the correct
+// `ProjectPackagePayload` name when the declared package name differs from
+// the CLI-chosen assembly stem (`stem = stemOf(basename, 2)`).
+func extractPackageName(source: in String): String {
+  val prefix = "package "
+  var pos = 0
+  var atLineStart = true
+  while pos < source.length {
+    if atLineStart and pos + prefix.length <= source.length {
+      val candidate = source.substring(pos, prefix.length)
+      if candidate == prefix {
+        var end = pos + prefix.length
+        while end < source.length and source.substring(end, 1) != "\n" {
+          end = end + 1
+        }
+        val nameLen = end - (pos + prefix.length)
+        if nameLen > 0 {
+          return source.substring(pos + prefix.length, nameLen)
+        }
+      }
+    }
+    atLineStart = source.substring(pos, 1) == "\n"
+    pos = pos + 1
+  }
+  ""
+}
+
+// Return `source` with every line beginning with "package " or "import "
+// removed.  Used to strip the redundant preamble from files 2-N when
+// merging a multi-file package (e.g. `Lyric.Parser`'s five `.l` files)
+// into a single source string for the bridge.
+func stripPackageAndImports(source: in String): String {
+  val lines: List[String] = newList()
+  var lineStart = 0
+  var pos = 0
+  while pos <= source.length {
+    val atEnd = pos == source.length
+    val isNewline = not atEnd and source.substring(pos, 1) == "\n"
+    if atEnd or isNewline {
+      val lineLen = pos - lineStart
+      val line = if lineLen > 0 { source.substring(lineStart, lineLen) } else { "" }
+      val skip = Str.startsWith(line, "package ") or Str.startsWith(line, "import ")
+      if not skip {
+        lines.add(line)
+      }
+      lineStart = pos + 1
+    }
+    pos = pos + 1
+  }
+  Str.joinList("\n", lines)
+}
+
+// Combine multiple source files of the same package into one source string.
+// File 0 is kept verbatim (its `package` / `import` preamble is canonical);
+// files 1-N have their `package` and `import` lines stripped before
+// concatenation.  The result is a valid single-file representation of the
+// multi-file package.
+func joinPackageFiles(fileContents: in List[String]): String {
+  if fileContents.count == 0 { return "" }
+  if fileContents.count == 1 { return fileContents[0] }
+  var combined = fileContents[0]
+  var i = 1
+  while i < fileContents.count {
+    val stripped = stripPackageAndImports(fileContents[i])
+    if stripped.length > 0 {
+      combined = combined + "\n" + stripped
+    }
+    i = i + 1
+  }
+  combined
+}
+
+// Build `ProjectPackagePayload` entries for the self-hosted compiler
+// packages that a `@test_module` under `lyric-compiler/lyric/` may import:
+//   Lyric.Lexer  — single file (`lexer.l`), mandatory
+//   Lyric.Parser — five files combined (`parser/*.l`), optional
+//   Lyric.Weaver — single file (`weaver/weaver.l`), optional
+// Returns an empty list if `Lyric.Lexer` cannot be loaded.
+func loadCompilerPayloads(compilerDir: in String): List[ProjectPackagePayload] {
+  val payloads: List[ProjectPackagePayload] = newList()
+
+  // Lyric.Lexer — mandatory base.
+  val lexerPath = Path.join(compilerDir, "lexer.l")
+  match File.readText(lexerPath) {
+    case Ok(src) -> payloads.add(ProjectPackagePayload(name = "Lyric.Lexer", source = src))
+    case Err(_)  -> return payloads
+  }
+
+  // Lyric.Parser — five files in deterministic (alphabetical) order.
+  val parserDir = Path.join(compilerDir, "parser")
+  val parserNames: List[String] = newList()
+  parserNames.add("parser_ast.l")
+  parserNames.add("parser_core.l")
+  parserNames.add("parser_cst.l")
+  parserNames.add("parser_exprs.l")
+  parserNames.add("parser_items.l")
+  val parserContents: List[String] = newList()
+  var pi = 0
+  var parserOk = true
+  while pi < parserNames.count and parserOk {
+    val fp = Path.join(parserDir, parserNames[pi])
+    match File.readText(fp) {
+      case Ok(src) -> parserContents.add(src)
+      case Err(_)  -> { parserOk = false }
+    }
+    pi = pi + 1
+  }
+  if parserOk and parserContents.count > 0 {
+    val parserSrc = joinPackageFiles(parserContents)
+    payloads.add(ProjectPackagePayload(name = "Lyric.Parser", source = parserSrc))
+  }
+
+  // Lyric.Weaver — optional; skip silently if absent.
+  val weaverPath = Path.join(Path.join(compilerDir, "weaver"), "weaver.l")
+  match File.readText(weaverPath) {
+    case Ok(src) -> payloads.add(ProjectPackagePayload(name = "Lyric.Weaver", source = src))
+    case Err(_)  -> ()
+  }
+
+  payloads
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -600,12 +747,50 @@ pub func emit(req: in EmitRequest): EmitResult {
 // to work the same way they did with the old subprocess path.  The
 // bridge returns true on success and false on any error (parse,
 // type-check, mode-check, codegen).
+//
+// When `LYRIC_LOAD_COMPILER=1` is set, switches to the multi-package
+// bridge path: loads `Lyric.Lexer`, `Lyric.Parser`, and `Lyric.Weaver`
+// from `lyric-compiler/lyric/` and compiles together with the requested
+// source so @test_module files in that tree can import those packages
+// (issue #1324).
 func emitMsilInProcess(req: in EmitRequest): EmitResult {
   // Auto-resolve `lyric-stdlib/std/*.l` so the bridge's typechecker sees
   // stdlib types at typecheck.  Mirrors the F# bootstrap shim
   // `Lyric.Cli.SelfHostedBridge.findStdlibSources` — see the parallel
   // comment in `emitProjectInProcess` for the rationale.
   val stdlibSources = findStdlibSources()
+  val loadCompiler = Environment.getVarOrDefault("LYRIC_LOAD_COMPILER", "")
+  if loadCompiler == "1" {
+    var compilerDir = walkUpForCompilerDir(Environment.appBaseDirectory())
+    if compilerDir.length == 0 {
+      compilerDir = walkUpForCompilerDir(Environment.currentDirectory())
+    }
+    if compilerDir.length > 0 {
+      val compilerPayloads = loadCompilerPayloads(compilerDir)
+      if compilerPayloads.count > 0 {
+        val testPkgName = extractPackageName(req.source)
+        val pkgName = if testPkgName.length > 0 { testPkgName } else { req.assemblyName }
+        val allPayloads: List[ProjectPackagePayload] = newList()
+        var ci = 0
+        while ci < compilerPayloads.count {
+          allPayloads.add(compilerPayloads[ci])
+          ci = ci + 1
+        }
+        allPayloads.add(ProjectPackagePayload(name = pkgName, source = req.source))
+        val noFeatures: List[String] = newList()
+        val noArtifacts: List[SynthesisedArtifact] = newList()
+        val ok = MsilBridge.compileProjectToMsilWithRestoredAndVersion(
+          allPayloads, req.assemblyName, req.outputPath,
+          stdlibSources, noFeatures, noFeatures, noArtifacts, req.packageVersion)
+        if ok {
+          val okDiags: List[Diagnostic] = newList()
+          return EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
+        } else {
+          return failResult("MSIL compilation failed (see stderr)")
+        }
+      }
+    }
+  }
   val ok = MsilBridge.compileToMsilWithVersion(
     req.source, req.outputPath, stdlibSources, req.packageVersion)
   if ok {
