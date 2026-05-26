@@ -145,6 +145,11 @@ func literalStringValue(e: in Expr): String {
   }
 }
 
+// Shallow block scan: only the top-level statement list is inspected.
+// This is sufficient because the weaver always injects config/call prelude
+// locals at the very top of the synthesised wrapper Block, never inside
+// a nested if/match/while body.  If that invariant ever changes, extend
+// these helpers to recurse into sub-blocks.
 func bodyMentionsPath(blk: in Block, name: in String): Bool {
   var i = 0
   while i < blk.statements.count {
@@ -201,6 +206,7 @@ func exprMentionsPath(e: in Expr, name: in String): Bool {
   }
 }
 
+// Shallow scan — same rationale as bodyMentionsPath above.
 func bodyHasMemberAccess(blk: in Block, receiverName: in String, memberName: in String): Bool {
   var i = 0
   while i < blk.statements.count {
