@@ -16510,3 +16510,129 @@ actually `import`ed them.  Two practical pain points:
   `registerRestoredArtifactTokens` equivalent for stdlib).  Until
   these land, user code calling `Std.X.foo(...)` (e.g.
   `tryDecodeBase64`) still aborts at typecheck with `T0020`.
+
+
+### D-progress-321 — stdlib codegen MemberRef registration (#1378 follow-up)
+
+**Status:** Shipped.  The self-hosted MSIL bridge now allocates
+cross-assembly `MemberRef` rows for every stdlib `pub func` declared
+in the loaded stdlib sources, so user code that calls
+`Std.X.foo(...)` (e.g. `Std.Encoding.tryDecodeBase64`,
+`Std.String.startsWith`) emits a real `call <memberref>` instruction
+into the user's PE instead of falling through to the `MObject` arm
+in `lowerBuiltinOrStaticCallMsil` (which previously left the operand
+stack unbalanced and produced `InvalidProgramException` at
+`dotnet exec` time).  Closes the third and final #1378 follow-up;
+stdlib `IFunc` collection (the first remaining piece on the
+"What's next" list above) had already landed via the aspect-system
+PR (`ae94a08`), so the typechecker was already accepting these calls
+— this PR makes codegen match.
+
+**Problem:**
+
+After D-progress-318 wired stdlib `_kernel/` types into the bridge
+typechecker and the aspect-completeness PR enabled IFunc collection,
+user code calling stdlib functions typechecked cleanly but the
+bridge's call-site codegen had no MemberRef registered for them.
+`lowerBuiltinOrStaticCallMsil`'s FQN-keyed `funcTokens` lookup
+walked the user's import edges (`pkgImports[user.pkg]`), tried
+`<importedPkg>.<funcName>` for each (e.g.
+`Std.Encoding.tryDecodeBase64`), and found nothing — falling
+through to the defensive `MObject` arm that walks args for side
+effects and emits no `call` instruction at all.  The resulting PE
+ran the user's `tryDecodeBase64("...")` call and immediately tripped
+an `InvalidProgramException` because the stack carried unconsumed
+strings the runtime expected the missing `call` to have popped.
+
+**Fix:**
+
+1. **`lyric-compiler/msil/bridge.l`** — refactor stdlib source
+   ingestion so the codegen-side registration has per-package
+   visibility:
+   - `collectStdlibPackages(stdlibSources): List[StdlibPkg]` parses
+     each stdlib source, reads its `package` declaration, and
+     returns the included items grouped by package
+     (`Std.Core`, `Std.Encoding`, `Std.CollectionsHost`, …).  Drops
+     files whose parse produced an error-severity diagnostic so
+     partial / malformed items don't pollute downstream codegen
+     registration.
+   - `spreadStdlibPackageItems(pkgs, flat)` keeps the existing
+     flat-merged `importedItems` view in sync with the per-package
+     map without re-parsing.  Used by the bridge to feed the
+     typechecker the same flat surface it had before while
+     simultaneously handing the per-package grouping to codegen.
+   - `filterStdlibPkgsByBundle(pkgs, bundleNames)` drops any stdlib
+     entry whose name matches an in-bundle user package so the
+     registration doesn't clash with `addPackageTokens` when the
+     bundle being compiled happens to contain a stdlib package
+     (e.g. compiling the `Lyric.Stdlib` bundle itself).  No-op for
+     normal user builds.
+
+2. **`lyric-compiler/msil/codegen.l`** — add the codegen-side
+   registration matching `registerRestoredFunc`'s pattern:
+   - `StdlibPkg` record (placed here, not in `Msil.Bridge`, so the
+     codegen function can name it without forming a circular
+     import).
+   - `registerStdlibArtifactTokens(cctx, pkgs)` — for each package:
+     allocate the shared `Lyric.Stdlib.<X>` AssemblyRef (cached in
+     `cctx.ffiAsmRefs`), allocate the `<pkgName>.Program` TypeRef
+     (via the existing `ensureHostClassTypeRefRow`), then for every
+     `pub func` register a static `MemberRef` and add the FQN
+     token to `cctx.funcTokens`.
+   - `ensureStdlibAssemblyRef(cctx, packageName)` and
+     `stdlibAssemblyName(packageName)` mirror the F# emitter's
+     `ensureStdlibArtifact` assembly-name convention
+     (`Std.X` → `Lyric.Stdlib.X`, `Lyric.X` → `Lyric.X` /
+     `Lyric.<head>.<rest>`).  Version pinned to `0.1` to match the
+     stdlib manifest's declared semver — the runtime binder is
+     tolerant of minor mismatches; threading the actual version
+     here is tracked in #1364.
+   - `splitDottedName(name)` — local helper that takes apart
+     `"A.B.C"` without depending on `Lyric.Parser`'s tokeniser,
+     keeping `Msil.Codegen`'s import surface minimal.
+
+3. **Wired into both bridge entry points**: `compileToMsilWithVersion`
+   (single-package) and `compileProjectToMsilWithRestoredAndVersion`
+   (multi-package) now call `registerStdlibArtifactTokens` after
+   `registerRestoredArtifactTokens` and before
+   `addPackageTokens`.  This ordering lets stdlib MemberRefs land
+   in `funcTokens` before the per-user-package MethodDef registrations,
+   so the `containsKey` first-wins guards in `registerStdlibFunc`
+   and `addPackageTokens` correctly prefer the in-bundle
+   `MethodDef` if a user package happens to share an FQN with the
+   stdlib (defensive — doesn't happen in practice given the stdlib
+   filter above).
+
+**Limitations / follow-ups:**
+
+- **No end-to-end regression test in this PR.**  The bridge's
+  test harness runs the produced DLL via `dotnet exec` from a
+  temp directory and has no mechanism for placing `Lyric.Stdlib.<X>.dll`
+  alongside the output.  Production builds go through the
+  installed SDK's `additionalProbingPaths` so the runtime locates
+  the stdlib bundle; the bridge's in-repo test harness skips that
+  step.  Adding a regression test that exercises a real stdlib
+  function call requires teaching `runEmitProject` to either
+  pre-populate the F# stdlib cache (via a side-channel F# emit)
+  or stage the stdlib DLLs from a known location.  Tracked as a
+  follow-up for the test-infrastructure layer; doesn't gate the
+  production CLI's correctness.
+- **AssemblyRef naming convention** is intentionally per-package
+  (`Lyric.Stdlib.Encoding`, `Lyric.Stdlib.String`, …) to match the
+  F# emitter, which produces per-package DLLs into the dev cache.
+  The production SDK additionally ships a bundled
+  `lib/Lyric.Stdlib.dll`; both layouts coexist because the
+  F# emit path populates the per-package cache as a side effect
+  even when only the bundle is the user-facing artefact.
+
+**Acceptance criteria met:**
+
+- 844 emitter + 75 CLI + 189 typechecker + 325 parser + 128 lexer
+  tests pass (no regressions).
+- Generated PE for a user program calling a stdlib `pub func`
+  carries the expected `Lyric.Stdlib.<X>` AssemblyRef row + the
+  `<pkgName>.Program::<fn>` MemberRef — verified by the runtime
+  loader's `FileNotFoundException` against `Lyric.Stdlib.<X>`
+  (the binder reaches the AssemblyRef before the file-probing
+  fails), confirming the metadata is structurally correct even
+  though the test harness can't satisfy the runtime probe.
