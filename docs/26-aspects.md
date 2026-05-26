@@ -861,9 +861,15 @@ compiler.
 | `A0024` | `aspect ... from Pkg.Template` config override declares a field not present in the template. |
 | `A0025` | `from` references a `pub aspect` template that is not `pub` (cross-package reference to a package-private template). |
 | `A0026` | `from` references a name that is not a template aspect (e.g. a matching aspect or an ordinary type). |
+| `A0042` | `@inline_template` aspect body references `args.<field>` that does not match any parameter of the matched function.  Surfaced by the weaver at weave time (rather than as a downstream type error) so the message names the aspect, the matched function, and the offending field. |
+| `A0043` | `call.<field>` references an ambient field the weaver does not recognise (e.g. `call.elapsed` / `call.caller` while runtime instrumentation is deferred — see #1298).  Recognised fields today: `shortName`, `qualifiedName`, `modulePath`, `sourceLocation`, `annotations`, `aspect`. |
 
 Plus the runtime contract codes (`C0014` etc.) gain provenance
 fields naming the aspect that introduced the failing clause (§5.3).
+
+The L006 lint (`@inline_template has no effect`) was removed once
+weave-time `args.<field>` rewriting landed (todo/06 #681) — the
+A0042 diagnostic supersedes its purpose.
 
 ---
 

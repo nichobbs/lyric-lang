@@ -322,15 +322,20 @@ func tryMemberRewrite(ctx: in RewriteCtx, expr: in Expr): Option[Expr] {
 }
 
 // Append a weave-time diagnostic only when no entry with the same
-// (kind, funcName, fieldName) is already present.  Linear scan is
-// fine — the diagnostic list is small (one entry per distinct field
-// name per matched function).  Includes `funcName` in the dedup key
-// because `argsErrors` is shared across every matched function in
-// one `weaveItemsCore` invocation: an aspect that references
-// `call.elapsed` and matches both `funcA` and `funcB` should emit
-// one A0043 per wrapper, not one across the whole weave (review #1302).
-// Closes review #1299 (duplicate A0042/A0043 within one body) plus
-// #1302 (cross-function suppression).
+// (kind, aspectName, funcName, fieldName) is already present.
+// Linear scan is fine — the diagnostic list is small (one entry per
+// distinct field name per matched function per aspect).
+//
+// The dedup key has three contextual axes besides `kind`:
+//   - `funcName`: `argsErrors` is shared across every matched
+//     function in one `weaveItemsCore` invocation; an aspect that
+//     references `call.elapsed` and matches both `funcA` and `funcB`
+//     should emit one A0043 per wrapper (review #1302).
+//   - `aspectName`: when two aspects both apply to the same function
+//     and both reference the same unknown `call.<field>`, each
+//     aspect should produce its own diagnostic (review #1313).
+//   - `fieldName`: the original within-body dedup case
+//     (review #1299).
 func addWeaveDiagOnce(
   errs:       in List[WeaveDiagEntry],
   kind:       in WeaveDiagKind,
@@ -344,6 +349,7 @@ func addWeaveDiagOnce(
     val e = errs[i]
     if e.fieldName == fieldName
         and e.funcName == funcName
+        and e.aspectName == aspectName
         and sameWeaveDiagKind(e.kind, kind) {
       return
     }
@@ -823,7 +829,7 @@ func collectMemberRefsExpr(e: in Expr, receiver: in String, into: in Map[String,
     case ETry(inner)          -> collectMemberRefsExpr(inner, receiver, into)
     case EOld(inner)          -> collectMemberRefsExpr(inner, receiver, into)
     case EPropagate(inner)    -> collectMemberRefsExpr(inner, receiver, into)
-    case EPrefix(_, op)       -> collectMemberRefsExpr(op, receiver, into)
+    case EPrefix(_, operand)  -> collectMemberRefsExpr(operand, receiver, into)
     case EBinop(_, l, r)      -> { collectMemberRefsExpr(l, receiver, into); collectMemberRefsExpr(r, receiver, into) }
     case EAssign(t, _, v)     -> { collectMemberRefsExpr(t, receiver, into); collectMemberRefsExpr(v, receiver, into) }
     case EMember(recv, _)     -> collectMemberRefsExpr(recv, receiver, into)

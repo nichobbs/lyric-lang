@@ -185,6 +185,13 @@ func stmtMentionsPath(s: in Statement, name: in String): Bool {
                                   }
       }
     }
+    case SAssign(t, _, v)        -> exprMentionsPath(t, name) or exprMentionsPath(v, name)
+    case SThrow(e)               -> exprMentionsPath(e, name)
+    case SFor(_, _, iter, body)  -> exprMentionsPath(iter, name) or bodyMentionsPath(body, name)
+    case SWhile(_, cond, body)   -> exprMentionsPath(cond, name) or bodyMentionsPath(body, name)
+    case SLoop(_, body)          -> bodyMentionsPath(body, name)
+    case SScope(_, body)         -> bodyMentionsPath(body, name)
+    case SDefer(body)            -> bodyMentionsPath(body, name)
     case _ -> false
   }
 }
@@ -208,7 +215,7 @@ func exprMentionsPath(e: in Expr, name: in String): Bool {
       false
     }
     case EBinop(_, l, r)        -> exprMentionsPath(l, name) or exprMentionsPath(r, name)
-    case EPrefix(_, op)         -> exprMentionsPath(op, name)
+    case EPrefix(_, operand)    -> exprMentionsPath(operand, name)
     case EMember(recv, _)       -> exprMentionsPath(recv, name)
     case EIf(c, t, el, _)       -> {
       if exprMentionsPath(c, name) { return true }
@@ -218,7 +225,22 @@ func exprMentionsPath(e: in Expr, name: in String): Bool {
         case None     -> false
       }
     }
+    case EMatch(scrut, arms)    -> {
+      if exprMentionsPath(scrut, name) { return true }
+      var i = 0
+      while i < arms.count {
+        match arms[i].guard {
+          case Some(g) -> if exprMentionsPath(g, name) { return true }
+          case None    -> ()
+        }
+        if eobMentionsPath(arms[i].body, name) { return true }
+        i = i + 1
+      }
+      false
+    }
+    case ELambda(_, body)       -> bodyMentionsPath(body, name)
     case EBlock(blk)            -> bodyMentionsPath(blk, name)
+    case EUnsafe(blk)           -> bodyMentionsPath(blk, name)
     case ETuple(xs)             -> {
       var i = 0
       while i < xs.count {
@@ -235,6 +257,12 @@ func exprMentionsPath(e: in Expr, name: in String): Bool {
       }
       false
     }
+    case EAwait(inner)          -> exprMentionsPath(inner, name)
+    case EYield(inner)          -> exprMentionsPath(inner, name)
+    case ESpawn(inner)          -> exprMentionsPath(inner, name)
+    case ETry(inner)            -> exprMentionsPath(inner, name)
+    case EPropagate(inner)      -> exprMentionsPath(inner, name)
+    case EAssign(t, _, v)       -> exprMentionsPath(t, name) or exprMentionsPath(v, name)
     case _ -> false
   }
 }
@@ -276,8 +304,26 @@ func stmtHasMemberAccess(s: in Statement, recv: in String, mem: in String): Bool
                                   }
       }
     }
+    case SAssign(t, _, v)       -> exprHasMemberAccess(t, recv, mem) or exprHasMemberAccess(v, recv, mem)
+    case SThrow(e)              -> exprHasMemberAccess(e, recv, mem)
+    case SFor(_, _, iter, body) -> exprHasMemberAccess(iter, recv, mem)
+                                    or blockHasMemberAccess(body, recv, mem)
+    case SWhile(_, cond, body)  -> exprHasMemberAccess(cond, recv, mem)
+                                    or blockHasMemberAccess(body, recv, mem)
+    case SLoop(_, body)         -> blockHasMemberAccess(body, recv, mem)
+    case SScope(_, body)        -> blockHasMemberAccess(body, recv, mem)
+    case SDefer(body)           -> blockHasMemberAccess(body, recv, mem)
     case _ -> false
   }
+}
+
+func blockHasMemberAccess(blk: in Block, recv: in String, mem: in String): Bool {
+  var i = 0
+  while i < blk.statements.count {
+    if stmtHasMemberAccess(blk.statements[i], recv, mem) { return true }
+    i = i + 1
+  }
+  false
 }
 
 func exprHasMemberAccess(e: in Expr, recv: in String, mem: in String): Bool {
@@ -306,7 +352,65 @@ func exprHasMemberAccess(e: in Expr, recv: in String, mem: in String): Bool {
       }
       false
     }
-    case EBinop(_, l, r) -> exprHasMemberAccess(l, recv, mem) or exprHasMemberAccess(r, recv, mem)
+    case EBinop(_, l, r)     -> exprHasMemberAccess(l, recv, mem) or exprHasMemberAccess(r, recv, mem)
+    case EPrefix(_, operand) -> exprHasMemberAccess(operand, recv, mem)
+    case EIf(c, t, el, _)    -> {
+      if exprHasMemberAccess(c, recv, mem) { return true }
+      val tHit = match t {
+        case EOBExpr(e2)  -> exprHasMemberAccess(e2, recv, mem)
+        case EOBBlock(b2) -> blockHasMemberAccess(b2, recv, mem)
+      }
+      if tHit { return true }
+      match el {
+        case Some(eb) -> match eb {
+          case EOBExpr(e3)  -> exprHasMemberAccess(e3, recv, mem)
+          case EOBBlock(b3) -> blockHasMemberAccess(b3, recv, mem)
+        }
+        case None     -> false
+      }
+    }
+    case EMatch(scrut, arms) -> {
+      if exprHasMemberAccess(scrut, recv, mem) { return true }
+      var i = 0
+      while i < arms.count {
+        match arms[i].guard {
+          case Some(g) -> if exprHasMemberAccess(g, recv, mem) { return true }
+          case None    -> ()
+        }
+        val armHit = match arms[i].body {
+          case EOBExpr(e4)  -> exprHasMemberAccess(e4, recv, mem)
+          case EOBBlock(b4) -> blockHasMemberAccess(b4, recv, mem)
+        }
+        if armHit { return true }
+        i = i + 1
+      }
+      false
+    }
+    case ELambda(_, body)   -> blockHasMemberAccess(body, recv, mem)
+    case EBlock(blk)        -> blockHasMemberAccess(blk, recv, mem)
+    case EUnsafe(blk)       -> blockHasMemberAccess(blk, recv, mem)
+    case ETuple(xs)         -> {
+      var i = 0
+      while i < xs.count {
+        if exprHasMemberAccess(xs[i], recv, mem) { return true }
+        i = i + 1
+      }
+      false
+    }
+    case EList(xs)          -> {
+      var i = 0
+      while i < xs.count {
+        if exprHasMemberAccess(xs[i], recv, mem) { return true }
+        i = i + 1
+      }
+      false
+    }
+    case EAwait(inner)      -> exprHasMemberAccess(inner, recv, mem)
+    case EYield(inner)      -> exprHasMemberAccess(inner, recv, mem)
+    case ESpawn(inner)      -> exprHasMemberAccess(inner, recv, mem)
+    case ETry(inner)        -> exprHasMemberAccess(inner, recv, mem)
+    case EPropagate(inner)  -> exprHasMemberAccess(inner, recv, mem)
+    case EAssign(t, _, v)   -> exprHasMemberAccess(t, recv, mem) or exprHasMemberAccess(v, recv, mem)
     case _ -> false
   }
 }
