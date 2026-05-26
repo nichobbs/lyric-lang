@@ -598,7 +598,8 @@ func renderTypeExpr(te: in TypeExpr): String {
     case TSlice(elem)       -> "slice[" + renderTypeExpr(elem) + "]"
     case TNullable(inner)   -> renderTypeExpr(inner) + "?"
     case TParen(inner)      -> renderTypeExpr(inner)
-    case TArray(_, elem)    -> "slice[" + renderTypeExpr(elem) + "]"
+    case TArray(size, elem) ->
+      "array[" + renderTypeArg(size) + ", " + renderTypeExpr(elem) + "]"
     case TTuple(ts)         -> "(" + renderTypeExprList(ts) + ")"
     case TFunction(ps, r)   ->
       "(" + renderTypeExprList(ps) + ") -> " + renderTypeExpr(r)
@@ -666,7 +667,37 @@ func renderParam(p: in Param): String {
   p.name + ": " + modeStr + renderTypeExpr(p.ty)
 }
 
-// Build the `pub record Name { field1: T1, field2: T2 }` repr for
+// Render one `GenericParam` as a source-level fragment:
+// `GPType` → bare name; `GPValue` → `name: constraint`.
+func renderGenericParam(gp: in GenericParam): String {
+  match gp {
+    case GPType(name, _)             -> name
+    case GPValue(name, constraint, _) -> name + ": " + renderTypeExpr(constraint)
+  }
+}
+
+// Render `Option[GenericParams]` as `""` (absent) or `"[T, U: Int]"`
+// (one or more params).  Empty `params` list also collapses to `""`
+// so the head form stays `pub record Name { … }` rather than
+// `pub record Name[] { … }`.
+func renderGenerics(g: in Option[GenericParams]): String {
+  match g {
+    case None -> ""
+    case Some(gp) -> {
+      if gp.params.count == 0 { return "" }
+      var s = "["
+      var i = 0
+      while i < gp.params.count {
+        if i > 0 { s = s + ", " }
+        s = s + renderGenericParam(gp.params[i])
+        i = i + 1
+      }
+      s + "]"
+    }
+  }
+}
+
+// Build the `pub record Name[T] { field1: T1, field2: T2 }` repr for
 // a record decl.  Records with no fields emit `pub record Name {}`.
 func reprForRecord(decl: in RecordDecl): String {
   var fields = ""
@@ -683,7 +714,7 @@ func reprForRecord(decl: in RecordDecl): String {
     }
     i = i + 1
   }
-  "pub record " + decl.name + " { " + fields + " }"
+  "pub record " + decl.name + renderGenerics(decl.generics) + " { " + fields + " }"
 }
 
 // Build the `pub func name(p1: T1, p2: T2): Ret` repr for a function.
@@ -702,7 +733,8 @@ func reprForFunc(fn: in FunctionDecl): String {
     case Some(t) -> ": " + renderTypeExpr(t)
     case None    -> ""
   }
-  "pub func " + fn.name + "(" + params + ")" + retStr
+  "pub func " + fn.name + renderGenerics(fn.generics) +
+    "(" + params + ")" + retStr
 }
 
 // Build the `pub union Name { case A, case B(x: T) }` repr for a union.
@@ -729,7 +761,7 @@ func reprForUnion(decl: in UnionDecl): String {
     }
     i = i + 1
   }
-  "pub union " + decl.name + " { " + cases + " }"
+  "pub union " + decl.name + renderGenerics(decl.generics) + " { " + cases + " }"
 }
 
 // Build the `pub enum Name { A, B, C }` repr.  EnumDecls carry just
@@ -761,7 +793,8 @@ func reprForInterface(decl: in InterfaceDecl): String {
     }
     i = i + 1
   }
-  "pub interface " + decl.name + " { " + members + " }"
+  "pub interface " + decl.name + renderGenerics(decl.generics) +
+    " { " + members + " }"
 }
 
 // Render a FunctionSig (interface-method head form, no body).
@@ -777,13 +810,15 @@ func reprForFunctionSig(sig: in FunctionSig): String {
     case Some(t) -> ": " + renderTypeExpr(t)
     case None    -> ""
   }
-  "func " + sig.name + "(" + params + ")" + retStr
+  "func " + sig.name + renderGenerics(sig.generics) +
+    "(" + params + ")" + retStr
 }
 
 // `pub type Name = <underlying>` for distinct types.  Renders the
 // declared underlying type rather than guessing `Int`.
 func reprForDistinct(decl: in DistinctTypeDecl): String {
-  "pub type " + decl.name + " = " + renderTypeExpr(decl.underlying)
+  "pub type " + decl.name + renderGenerics(decl.generics) +
+    " = " + renderTypeExpr(decl.underlying)
 }
 
 // `pub opaque type Name { f1: T1, ... }` — emits the structural
@@ -804,12 +839,14 @@ func reprForOpaque(decl: in OpaqueTypeDecl): String {
     }
     i = i + 1
   }
-  "pub opaque type " + decl.name + " { " + fields + " }"
+  "pub opaque type " + decl.name + renderGenerics(decl.generics) +
+    " { " + fields + " }"
 }
 
 // `pub alias Name = <rhs>` — renders the actual aliased TypeExpr.
 func reprForTypeAlias(decl: in TypeAliasDecl): String {
-  "pub alias " + decl.name + " = " + renderTypeExpr(decl.rhs)
+  "pub alias " + decl.name + renderGenerics(decl.generics) +
+    " = " + renderTypeExpr(decl.rhs)
 }
 
 // Construct a default ContractDecl with the three required fields and
