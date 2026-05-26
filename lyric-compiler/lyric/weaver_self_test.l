@@ -1,24 +1,12 @@
 // weaver_self_test.l — exercises the self-hosted `Lyric.Weaver`
-// library.  Intended entry point is `lyric test`:
+// library.  Runs automatically in CI via native `lyric test`:
 //
-//   lyric test lyric-compiler/lyric/weaver_self_test.l
+//   LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/weaver_self_test.l
 //
-// **CI status:** the test is NOT yet wired into CI.  Running it via
-// `lyric test` requires the in-process MSIL bridge to load
-// `lyric-compiler/lyric/**/*.l` so the test's `Lyric.Weaver` /
-// `Lyric.Lexer` / `Lyric.Parser` imports resolve; the bridge today
-// only walks `lyric-stdlib/std/`.  Adding the F# `SelfHosted<X>Tests.fs`
-// per-test runner pattern is the alternative used by every other
-// `lyric-compiler/lyric/*_self_test.l` file but is deferred here per
-// the project directive to avoid new F# scaffolding (the eventual
-// CI step will invoke `lyric test` directly once the bridge's
-// compiler-internal package loading is in place).  Until then, run
-// the test manually after building the AOT entry point:
-//
-//   ./scripts/bootstrap.sh --stage 1
-//   dotnet build bootstrap/src/Lyric.Cli.Aot
-//   bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric \
-//       test lyric-compiler/lyric/weaver_self_test.l
+// The `LYRIC_LOAD_COMPILER=1` env var gates `emitMsilInProcess` into the
+// multi-package bridge path, which loads `Lyric.Lexer`, `Lyric.Parser`,
+// and `Lyric.Weaver` from `lyric-compiler/lyric/` so the test's imports
+// resolve without a subprocess hop.  Tracked in issue #1324.
 //
 // Covers the three todo/06 features that land in weaver.l:
 //
