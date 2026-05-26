@@ -308,10 +308,12 @@ against.
 
 **Self-test (`lyric-compiler/lyric/weaver_self_test.l`):**
 
-12 `test "..."` blocks in `@test_module` form covering every
+17 `test "..."` blocks in `@test_module` form covering every
 feature path plus regression cases for #1296 (duplicate
-`call.<field>` references crashing the pre-scan) and #1299
-(duplicate A0042/A0043 emissions).  Does not currently auto-run
+`call.<field>` references crashing the pre-scan), #1299
+(duplicate A0042/A0043 emissions), and #1323 (panic-stub
+materialisation for `config.<no-default>` references so the
+A0044 error replaces the downstream type/codegen error).  Does not currently auto-run
 in CI — the path to running it via `lyric test` directly (no F#
 scaffolding per session directive) requires the in-process bridge
 to load `lyric-compiler/lyric/**/*.l` so the test's

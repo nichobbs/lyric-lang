@@ -34,6 +34,7 @@ import Std.Collections
 import Std.String
 import Lyric.Parser
 import Lyric.RestoredPackages
+import Lyric.Weaver as Weaver
 import Msil.Lowering
 import Msil.Ffi
 
@@ -5180,9 +5181,13 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
 
   // ── Band-2: aspect pre-pass ───────────────────────────────────────────────
   // Before lowering functions, run the aspect weaver to rename matched
-  // functions and synthesise wrapper functions.  The weaver walks all IAspect
-  // and IFunc items in the source file and returns a rewritten item list.
-  val weavedFile = weaveAspectsMsil(file)
+  // functions and synthesise wrapper functions.  Delegates to
+  // `Lyric.Weaver.weaveFileWithDiags` so the todo/06 features (config #683,
+  // call prelude #682, `@inline_template` args.<field> #681) apply here
+  // too (#1327).  The bridge already weaves before calling codegen, so
+  // this second pass is idempotent in practice; diagnostics are dropped
+  // here because the bridge already reported/aborted on them.
+  val weavedFile = Weaver.weaveFileWithDiags(file).file
 
   // ── #878: IImpl pre-pass ──────────────────────────────────────────────────
   // Mirrors the JVM backend's approach (`Jvm.Codegen.codegenPackage`): scan

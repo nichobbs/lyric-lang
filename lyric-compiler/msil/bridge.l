@@ -24,6 +24,7 @@ import Lyric.Derives
 import Lyric.RestoredPackages
 import Lyric.ContractMeta as Meta
 import Std.Encoding as Encoding
+import Lyric.Weaver as Weaver
 import Msil.Lowering
 import Msil.Codegen
 import Msil.Tables
@@ -112,9 +113,15 @@ pub func compileToMsilWithVersion(
 
   // Run the aspect weaver before the token pre-scan so that the pre-scan
   // sees the post-weave function list (renamed originals + synthesised wrappers).
-  // `codegenMPackage` will call weaveAspectsMsil internally too, but it
-  // short-circuits when the file has no IAspect items remaining.
-  val weavedFile = weaveAspectsMsil(file)
+  // Use `Lyric.Weaver.weaveFileWithDiags` (not `weaveAspectsMsil`) so the
+  // todo/06 features — `config { }` wiring (#683), `call` ambient prelude
+  // (#682), `@inline_template` `args.<field>` rewriting (#681) — are
+  // applied during `lyric build`, not just `lyric prove` (#1327).  Abort
+  // on any weave-time error (A0042 / A0043 / A0044) so the user sees the
+  // weaver-targeted message rather than a downstream codegen error.
+  val weaveRes = Weaver.weaveFileWithDiags(file)
+  if reportAndAbort(weaveRes.diagnostics) { return false }
+  val weavedFile = weaveRes.file
 
   // Lambda-lifting: extract ELambda nodes into synthetic __lambda_<i> IFunc items
   // so that addPackageTokens assigns them stable MethodDef tokens before codegen.
@@ -352,7 +359,14 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   val liftedFiles: List[SourceFile] = newList()
   var li = 0
   while li < perPkgFiles.count {
-    val weaved = weaveAspectsMsil(perPkgFiles[li])
+    // Use `Lyric.Weaver.weaveFileWithDiags` so the todo/06 features
+    // (config wiring #683, call prelude #682, `@inline_template`
+    // args.<field> #681) ship through `lyric build` for every
+    // package in the bundle, not just `lyric prove` (#1327).  Abort
+    // on weave-time errors (A0042 / A0043 / A0044).
+    val weaveRes = Weaver.weaveFileWithDiags(perPkgFiles[li])
+    if reportAndAbort(weaveRes.diagnostics) { return false }
+    val weaved = weaveRes.file
     val lifted = liftLambdasMsil(weaved)
     addPackageTokens(cctx, lifted, perPkgNames[li])
     // Project-as-DLL embedding: each package's contract goes in its
