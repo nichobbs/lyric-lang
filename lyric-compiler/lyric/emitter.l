@@ -361,7 +361,7 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
 
   match req.target {
     case Dotnet -> emitProjectInProcess(req)
-    case Jvm    -> emitProjectViaSubprocess(req)
+    case Jvm    -> emitProjectJvmViaSubprocess(req)
   }
 }
 
@@ -454,7 +454,7 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
 // sources to temp files, builds a tab-encoded spec, and shells to
 // `lyric --internal-project-build`.  Will retire when the self-hosted
 // JVM bridge gains a project-level entry point.
-func emitProjectViaSubprocess(req: in EmitProjectRequest): EmitResult {
+func emitProjectJvmViaSubprocess(req: in EmitProjectRequest): EmitResult {
   // Per-invocation subdirectory under lyric-emit/ keyed on a v4 UUID.
   // Two concurrent builds for the same assemblyName would otherwise
   // race on the spec / source filenames; the UUID guarantees a unique
@@ -589,7 +589,7 @@ pub func emit(req: in EmitRequest): EmitResult {
 
   match req.target {
     case Dotnet -> emitMsilInProcess(req)
-    case Jvm    -> emitViaSubprocess(req)
+    case Jvm    -> emitJvmViaSubprocess(req)
   }
 }
 
@@ -621,7 +621,7 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
 // bootstrap CLI dispatches through `Program.fs::internalBuild`.  Will
 // retire when the self-hosted JVM bridge gains a reachable single-file
 // entry point.
-func emitViaSubprocess(req: in EmitRequest): EmitResult {
+func emitJvmViaSubprocess(req: in EmitRequest): EmitResult {
   // Write source text to a temp file.
   val srcPath = match writeTempSource(req.source, req.assemblyName) {
     case Ok(p)  -> p

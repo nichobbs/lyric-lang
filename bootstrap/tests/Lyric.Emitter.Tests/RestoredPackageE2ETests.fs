@@ -148,6 +148,15 @@ func main(): Unit { () }
             Expect.contains codes "E901" "missing-restored-DLL surfaces E901"
             Expect.isNone result.OutputPath
                 "no output when restored-package load fails"
+            let e901msg =
+                result.Diagnostics
+                |> List.tryFind (fun d -> d.Code = "E901")
+                |> Option.map (fun d -> d.Message)
+                |> Option.defaultValue ""
+            Expect.stringContains e901msg "/this/does/not/exist.dll"
+                "E901 message names the missing DLL path"
+            Expect.stringContains e901msg "lyric restore"
+                "E901 message suggests running lyric restore"
 
         // Stage 2c.2.iii — a single restored ref pointing at a
         // bundled (`output = "single"`) DLL exposes every per-package
