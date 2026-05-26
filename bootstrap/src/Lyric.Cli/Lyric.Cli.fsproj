@@ -18,6 +18,9 @@
       * SelfHostedMsil.fs    : test helper that compiles a Lyric program
                                 through the self-hosted MSIL pipeline
                                 in-process (used by the bridge tests).
+      * SelfHostedMsilProject.fs : project-level variant; drives
+                                `compileProjectToMsilWithRestoredEncoded`
+                                for the slice-3 restored-deps E2E test.
       * SelfHostedJvm.fs     : same, for the self-hosted JVM pipeline.
   -->
   <ItemGroup>
@@ -25,6 +28,7 @@
     <Compile Include="SelfHostedBridge.fs" />
     <Compile Include="SelfHostedJvm.fs" />
     <Compile Include="SelfHostedMsil.fs" />
+    <Compile Include="SelfHostedMsilProject.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

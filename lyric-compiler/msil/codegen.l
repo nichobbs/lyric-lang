@@ -5461,7 +5461,11 @@ func ensureAssemblyRefForArtifact(cctx: in CodegenCtx,
       case None      -> ()
     }
   }
-  val row = ctxAddAssemblyRef(cctx.lctx, packageName, 1, 0)
+  // Match the actual Assembly row's version 0.0.0.0 (`addAssembly`
+  // in `lowering.l::newLoweringCtx`) so the loader doesn't reject the
+  // bind on version mismatch.  Version threading from `[package]
+  // .version` is tracked in #1364.
+  val row = ctxAddLyricPackageAssemblyRef(cctx.lctx, packageName, 0, 0)
   cctx.ffiAsmRefs.add(packageName, row)
   row
 }
