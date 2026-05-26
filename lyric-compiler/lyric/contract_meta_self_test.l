@@ -563,10 +563,12 @@ func testBuildGenericInterface(): Unit {
 }
 
 // `buildContractFromFile` covers unions with mixed positional + named
-// payloads (UFPos / UFNamed both exercised by renderUnionCase).
+// payloads — UFPos via the bare-type form (`Circle(Int)`) and UFNamed
+// via the labelled form (`Square(side: Int)`).  Both branches of
+// `renderUnionCase` are exercised (#1370).
 func testBuildUnionMixedFields(): Unit {
   val src = "package P\n\npub union Shape {\n" +
-            "  case Circle(radius: Int)\n" +
+            "  case Circle(Int)\n" +
             "  case Square(side: Int)\n" +
             "}\n"
   val pr = parse(src)

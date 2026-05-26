@@ -5791,7 +5791,6 @@ func registerRestoredUnion(cctx: in CodegenCtx,
 func registerRestoredMembers(cctx: in CodegenCtx,
                               art:  in SynthesisedArtifact): Unit {
   val items = art.source.items
-  val asmRefRow = ensureAssemblyRefForArtifact(cctx, art.packageName)
   var i = 0
   while i < items.count {
     match items[i].kind {
@@ -5802,6 +5801,10 @@ func registerRestoredMembers(cctx: in CodegenCtx,
         registerRestoredFunc(cctx, art.packageName, decl)
       }
       case IUnion(decl) -> {
+        // Compute asmRefRow only when actually needed — the record /
+        // func helpers re-resolve their own AssemblyRef internally, so
+        // hoisting it eagerly was inconsistent (#1295).
+        val asmRefRow = ensureAssemblyRefForArtifact(cctx, art.packageName)
         registerRestoredUnion(cctx, art.packageName, decl, asmRefRow)
       }
       case _ -> ()

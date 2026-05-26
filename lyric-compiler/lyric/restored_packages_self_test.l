@@ -131,12 +131,16 @@ func testSynthesiseInterfaceAppendsBraces(): Unit {
     "synth_interface: empty `{}` body appended")
 }
 
-// Records / unions / enums / distincts pass through unchanged.
+// Records / unions / enums / distincts / aliases / opaques pass through
+// unchanged — `renderDecl` only special-cases interfaces (#1259).
 func testSynthesiseNonInterfaceKindsPassThrough(): Unit {
   val decls: List[Meta.ContractDecl] = newList()
-  decls.add(mkDecl("record", "Point", "pub record Point { x: Int, y: Int }"))
-  decls.add(mkDecl("union", "Maybe", "pub union Maybe { case Some(v: Int), case None }"))
-  decls.add(mkDecl("enum", "Color", "pub enum Color { Red, Green, Blue }"))
+  decls.add(mkDecl("record",        "Point",     "pub record Point { x: Int, y: Int }"))
+  decls.add(mkDecl("union",         "Maybe",     "pub union Maybe { case Some(v: Int), case None }"))
+  decls.add(mkDecl("enum",          "Color",     "pub enum Color { Red, Green, Blue }"))
+  decls.add(mkDecl("distinct_type", "UserId",    "pub type UserId = Int"))
+  decls.add(mkDecl("type_alias",    "Bytes",     "pub alias Bytes = slice[Byte]"))
+  decls.add(mkDecl("opaque",        "OpaqueBox", "pub opaque type OpaqueBox { v: Int }"))
   val c = mkContract("MyApp.Types", decls)
   val src = synthesiseSource(c, emptyDecls())
   assertTrue(Str.contains(src, "pub record Point { x: Int, y: Int }"),
@@ -145,6 +149,12 @@ func testSynthesiseNonInterfaceKindsPassThrough(): Unit {
     "synth_pass_through: union verbatim")
   assertTrue(Str.contains(src, "pub enum Color { Red, Green, Blue }"),
     "synth_pass_through: enum verbatim")
+  assertTrue(Str.contains(src, "pub type UserId = Int"),
+    "synth_pass_through: distinct type verbatim")
+  assertTrue(Str.contains(src, "pub alias Bytes = slice[Byte]"),
+    "synth_pass_through: type alias verbatim")
+  assertTrue(Str.contains(src, "pub opaque type OpaqueBox { v: Int }"),
+    "synth_pass_through: opaque type verbatim")
 }
 
 // Preamble decls appear BEFORE the contract's own decls.
