@@ -1662,6 +1662,11 @@ pub func weaveItemsWithDiags(items: in List[Item], packagePath: in String): Weav
   weaveItemsCore(items, packagePath)
 }
 
+/// Weave aspect wrappers into a SourceFile.  Identity-op when the
+/// file has no aspects.  Diagnostics from the weave (A0042 args
+/// mismatch on `@inline_template`, A0043 unknown `call.<field>`) are
+/// silently dropped — callers that need to surface them should use
+/// `weaveFileWithDiags` instead (review #1319).
 pub func weaveFile(file: in SourceFile): SourceFile {
   val newItems = weaveItemsCore(file.items, packagePathString(file)).items
   SourceFile(
