@@ -1,12 +1,24 @@
 // weaver_self_test.l — exercises the self-hosted `Lyric.Weaver`
-// library.  Discovered + executed via `lyric test`:
+// library.  Intended entry point is `lyric test`:
 //
 //   lyric test lyric-compiler/lyric/weaver_self_test.l
 //
-// CI runs this file as part of the build-and-test job (see
-// `.github/workflows/ci.yml`).  Locally, build the AOT entry point
-// first (`scripts/bootstrap.sh --stage 1` + `dotnet build
-// bootstrap/src/Lyric.Cli.Aot`) then invoke `lyric test` as above.
+// **CI status:** the test is NOT yet wired into CI.  Running it via
+// `lyric test` requires the in-process MSIL bridge to load
+// `lyric-compiler/lyric/**/*.l` so the test's `Lyric.Weaver` /
+// `Lyric.Lexer` / `Lyric.Parser` imports resolve; the bridge today
+// only walks `lyric-stdlib/std/`.  Adding the F# `SelfHosted<X>Tests.fs`
+// per-test runner pattern is the alternative used by every other
+// `lyric-compiler/lyric/*_self_test.l` file but is deferred here per
+// the project directive to avoid new F# scaffolding (the eventual
+// CI step will invoke `lyric test` directly once the bridge's
+// compiler-internal package loading is in place).  Until then, run
+// the test manually after building the AOT entry point:
+//
+//   ./scripts/bootstrap.sh --stage 1
+//   dotnet build bootstrap/src/Lyric.Cli.Aot
+//   bootstrap/src/Lyric.Cli.Aot/bin/Debug/net10.0/lyric \
+//       test lyric-compiler/lyric/weaver_self_test.l
 //
 // Covers the three todo/06 features that land in weaver.l:
 //
@@ -387,6 +399,30 @@ test "config.<field> member access rewrites to __aspect_cfg_<field>" {
              "config.maxRetries member access rewritten away")
   assertTrue(bodyMentionsPath(body, "__aspect_cfg_maxRetries"),
              "__aspect_cfg_maxRetries path present")
+}
+
+test "config prelude is omitted when the body never references config.<x>" {
+  // Lazy injection mirroring the call prelude — a wrapper whose body
+  // never touches config.* must not carry __aspect_cfg_* locals
+  // (review #1307).
+  val src =
+    "package P\n" +
+    "aspect Skip {\n" +
+    "  config { unused: Int = 99 }\n" +
+    "  matches: name like \"s\"\n" +
+    "  around(args) -> ret { proceed(args) }\n" +
+    "}\n" +
+    "func s(): Int { 0 }\n"
+  val woven = parseWeave(src)
+  val wrapper = firstFunction(woven, "s")
+  val body    = functionBody(wrapper)
+  var saw = false
+  var i = 0
+  while i < body.statements.count {
+    if isValBinding(body.statements[i], "__aspect_cfg_unused") { saw = true }
+    i = i + 1
+  }
+  assertTrue(not saw, "no __aspect_cfg_* prelude when body ignores config.*")
 }
 
 test "config fields without a default are skipped in the prelude" {

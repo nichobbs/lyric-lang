@@ -674,24 +674,51 @@ func mkStringSliceLit(items: in List[String]): Expr {
   Expr(kind = EList(exprs = exprs), span = synSpan())
 }
 
-/// Build the `config { }` prelude for an aspect.  Emits one
-/// `val __aspect_cfg_<field>: <ty> = <default>` per field that has a
-/// literal default.  Fields without a default are skipped — runtime
-/// env-var resolution is a follow-up (see todo/06 #683).  Returns the
-/// names of fields that produced a prelude entry, so the rewriter only
-/// substitutes those.
-func buildConfigPrelude(aspect: in AspectDecl): (List[Statement], Map[String, Bool]) {
+/// `slice[<elemName>]` type expression for a synthetic val annotation.
+/// `elemName` is a bare type name (e.g. "String", "Int").
+func mkSliceTypeExpr(elemName: in String): TypeExpr {
+  val sp   = synSpan()
+  val segs: List[String] = newList()
+  segs.add(elemName)
+  val mp   = ModulePath(segments = segs, span = sp)
+  val inner = TypeExpr(kind = TRef(path = mp), span = sp)
+  TypeExpr(kind = TSlice(element = inner), span = sp)
+}
+
+/// Build the `config { }` prelude for an aspect.  Lazy: pre-scans
+/// the aspect body for `config.<field>` references and only emits
+/// `val __aspect_cfg_<field>: <ty> = <default>` for fields the body
+/// actually reads.  Fields without a default are skipped regardless
+/// (runtime env-var resolution is a follow-up — see todo/06 #683).
+/// Aspects whose bodies never touch `config.*` produce byte-
+/// identical wrappers to the pre-todo-06 weaver, matching the
+/// lazy-prelude design used by `buildCallPrelude` (review #1307).
+/// Returns the names of fields that produced a prelude entry so the
+/// rewriter only substitutes those.
+func buildConfigPrelude(
+  aspect: in AspectDecl,
+  body:   in Block
+): (List[Statement], Map[String, Bool]) {
   val stmts: List[Statement] = newList()
   val present: Map[String, Bool] = newMap()
+  if aspect.config.count == 0 { return (stmts, present) }
+
+  // Pre-scan: which config.<field> names does the body reference?
+  val refs: Map[String, Bool] = newMap()
+  collectMemberRefsBlock(body, "config", refs)
+  if refs.count == 0 { return (stmts, present) }
+
   var i = 0
   while i < aspect.config.count {
     val f = aspect.config[i]
-    match f.default {
-      case Some(init) -> {
-        stmts.add(mkValStmt("__aspect_cfg_" + f.name, Some(value = f.ty), init))
-        present.add(f.name, true)
+    if refs.containsKey(f.name) {
+      match f.default {
+        case Some(init) -> {
+          stmts.add(mkValStmt("__aspect_cfg_" + f.name, Some(value = f.ty), init))
+          present.add(f.name, true)
+        }
+        case None -> ()
       }
-      case None -> ()
     }
     i = i + 1
   }
@@ -699,142 +726,142 @@ func buildConfigPrelude(aspect: in AspectDecl): (List[Statement], Map[String, Bo
 }
 
 /// Walk an Expr (and any nested Block / EOB) collecting the set of
-/// `call.<field>` member-access names that appear anywhere inside.
-/// Used by `buildCallPrelude` to skip materialising `__lyric_call_*`
-/// locals the body never reads (review #1196).
-func collectCallRefsBlock(blk: in Block, into: in Map[String, Bool]): Unit {
+/// `<receiver>.<field>` member-access names that appear anywhere
+/// inside.  Used by `buildCallPrelude` and `buildConfigPrelude` to
+/// skip materialising locals the body never reads (#1196, #1307).
+func collectMemberRefsBlock(blk: in Block, receiver: in String, into: in Map[String, Bool]): Unit {
   var i = 0
   while i < blk.statements.count {
-    collectCallRefsStmt(blk.statements[i], into)
+    collectMemberRefsStmt(blk.statements[i], receiver, into)
     i = i + 1
   }
 }
 
-func collectCallRefsStmt(s: in Statement, into: in Map[String, Bool]): Unit {
+func collectMemberRefsStmt(s: in Statement, receiver: in String, into: in Map[String, Bool]): Unit {
   match s.kind {
-    case SExpr(e)     -> collectCallRefsExpr(e, into)
+    case SExpr(e)     -> collectMemberRefsExpr(e, receiver, into)
     case SReturn(o)   -> match o {
-                          case Some(e) -> collectCallRefsExpr(e, into)
+                          case Some(e) -> collectMemberRefsExpr(e, receiver, into)
                           case None    -> ()
                         }
     case SLocal(b)    -> {
       match b {
-        case LBVal(_, _, init) -> collectCallRefsExpr(init, into)
-        case LBLet(_, _, init) -> collectCallRefsExpr(init, into)
+        case LBVal(_, _, init) -> collectMemberRefsExpr(init, receiver, into)
+        case LBLet(_, _, init) -> collectMemberRefsExpr(init, receiver, into)
         case LBVar(_, _, init) -> match init {
-                                    case Some(e) -> collectCallRefsExpr(e, into)
+                                    case Some(e) -> collectMemberRefsExpr(e, receiver, into)
                                     case None    -> ()
                                   }
       }
     }
     case SAssign(t, _, v) -> {
-      collectCallRefsExpr(t, into)
-      collectCallRefsExpr(v, into)
+      collectMemberRefsExpr(t, receiver, into)
+      collectMemberRefsExpr(v, receiver, into)
     }
-    case SThrow(e) -> collectCallRefsExpr(e, into)
+    case SThrow(e) -> collectMemberRefsExpr(e, receiver, into)
     case SFor(_, _, iter, body) -> {
-      collectCallRefsExpr(iter, into)
-      collectCallRefsBlock(body, into)
+      collectMemberRefsExpr(iter, receiver, into)
+      collectMemberRefsBlock(body, receiver, into)
     }
     case SWhile(_, cond, body) -> {
-      collectCallRefsExpr(cond, into)
-      collectCallRefsBlock(body, into)
+      collectMemberRefsExpr(cond, receiver, into)
+      collectMemberRefsBlock(body, receiver, into)
     }
-    case SLoop(_, body)   -> collectCallRefsBlock(body, into)
-    case SScope(_, body)  -> collectCallRefsBlock(body, into)
+    case SLoop(_, body)   -> collectMemberRefsBlock(body, receiver, into)
+    case SScope(_, body)  -> collectMemberRefsBlock(body, receiver, into)
     case STry(body, catches, finally_) -> {
-      collectCallRefsBlock(body, into)
+      collectMemberRefsBlock(body, receiver, into)
       var i = 0
       while i < catches.count {
-        collectCallRefsBlock(catches[i].body, into)
+        collectMemberRefsBlock(catches[i].body, receiver, into)
         i = i + 1
       }
       match finally_ {
-        case Some(fb) -> collectCallRefsBlock(fb, into)
+        case Some(fb) -> collectMemberRefsBlock(fb, receiver, into)
         case None     -> ()
       }
     }
-    case SDefer(body) -> collectCallRefsBlock(body, into)
+    case SDefer(body) -> collectMemberRefsBlock(body, receiver, into)
     case _ -> ()
   }
 }
 
-func collectCallRefsExpr(e: in Expr, into: in Map[String, Bool]): Unit {
-  // Top-level: `call.<field>` member access.  Guard `add` with
+func collectMemberRefsExpr(e: in Expr, receiver: in String, into: in Map[String, Bool]): Unit {
+  // Top-level: `<receiver>.<field>` member access.  Guard `add` with
   // `containsKey` so duplicate references in a body (e.g.
   // `log(call.shortName); ...; log(call.shortName + " end")`) don't
   // trip `Dictionary<K,V>.Add`'s ArgumentException (review #1296).
-  match matchBareMemberAccess(e, "call") {
+  match matchBareMemberAccess(e, receiver) {
     case Some(name) -> if not into.containsKey(name) { into.add(name, true) }
     case None       -> ()
   }
   // Recurse into sub-expressions.
   match e.kind {
     case ECall(f, args) -> {
-      collectCallRefsExpr(f, into)
+      collectMemberRefsExpr(f, receiver, into)
       var i = 0
       while i < args.count {
         match args[i] {
-          case CAPositional(v)   -> collectCallRefsExpr(v, into)
-          case CANamed(_, v, _)  -> collectCallRefsExpr(v, into)
+          case CAPositional(v)   -> collectMemberRefsExpr(v, receiver, into)
+          case CANamed(_, v, _)  -> collectMemberRefsExpr(v, receiver, into)
         }
         i = i + 1
       }
     }
-    case EParen(inner)        -> collectCallRefsExpr(inner, into)
+    case EParen(inner)        -> collectMemberRefsExpr(inner, receiver, into)
     case ETuple(xs)           -> {
       var i = 0
-      while i < xs.count { collectCallRefsExpr(xs[i], into); i = i + 1 }
+      while i < xs.count { collectMemberRefsExpr(xs[i], receiver, into); i = i + 1 }
     }
     case EList(xs)            -> {
       var i = 0
-      while i < xs.count { collectCallRefsExpr(xs[i], into); i = i + 1 }
+      while i < xs.count { collectMemberRefsExpr(xs[i], receiver, into); i = i + 1 }
     }
-    case EAwait(inner)        -> collectCallRefsExpr(inner, into)
-    case EYield(inner)        -> collectCallRefsExpr(inner, into)
-    case ESpawn(inner)        -> collectCallRefsExpr(inner, into)
-    case ETry(inner)          -> collectCallRefsExpr(inner, into)
-    case EOld(inner)          -> collectCallRefsExpr(inner, into)
-    case EPropagate(inner)    -> collectCallRefsExpr(inner, into)
-    case EPrefix(_, op)       -> collectCallRefsExpr(op, into)
-    case EBinop(_, l, r)      -> { collectCallRefsExpr(l, into); collectCallRefsExpr(r, into) }
-    case EAssign(t, _, v)     -> { collectCallRefsExpr(t, into); collectCallRefsExpr(v, into) }
-    case EMember(recv, _)     -> collectCallRefsExpr(recv, into)
+    case EAwait(inner)        -> collectMemberRefsExpr(inner, receiver, into)
+    case EYield(inner)        -> collectMemberRefsExpr(inner, receiver, into)
+    case ESpawn(inner)        -> collectMemberRefsExpr(inner, receiver, into)
+    case ETry(inner)          -> collectMemberRefsExpr(inner, receiver, into)
+    case EOld(inner)          -> collectMemberRefsExpr(inner, receiver, into)
+    case EPropagate(inner)    -> collectMemberRefsExpr(inner, receiver, into)
+    case EPrefix(_, op)       -> collectMemberRefsExpr(op, receiver, into)
+    case EBinop(_, l, r)      -> { collectMemberRefsExpr(l, receiver, into); collectMemberRefsExpr(r, receiver, into) }
+    case EAssign(t, _, v)     -> { collectMemberRefsExpr(t, receiver, into); collectMemberRefsExpr(v, receiver, into) }
+    case EMember(recv, _)     -> collectMemberRefsExpr(recv, receiver, into)
     case EIndex(recv, idxs)   -> {
-      collectCallRefsExpr(recv, into)
+      collectMemberRefsExpr(recv, receiver, into)
       var i = 0
-      while i < idxs.count { collectCallRefsExpr(idxs[i], into); i = i + 1 }
+      while i < idxs.count { collectMemberRefsExpr(idxs[i], receiver, into); i = i + 1 }
     }
-    case ETypeApp(f, _)       -> collectCallRefsExpr(f, into)
+    case ETypeApp(f, _)       -> collectMemberRefsExpr(f, receiver, into)
     case EIf(c, t, el, _)     -> {
-      collectCallRefsExpr(c, into)
-      collectCallRefsEOB(t, into)
+      collectMemberRefsExpr(c, receiver, into)
+      collectMemberRefsEOB(t, receiver, into)
       match el {
-        case Some(e2) -> collectCallRefsEOB(e2, into)
+        case Some(e2) -> collectMemberRefsEOB(e2, receiver, into)
         case None     -> ()
       }
     }
     case EMatch(scrut, arms)  -> {
-      collectCallRefsExpr(scrut, into)
+      collectMemberRefsExpr(scrut, receiver, into)
       var i = 0
       while i < arms.count {
         match arms[i].guard {
-          case Some(g) -> collectCallRefsExpr(g, into)
+          case Some(g) -> collectMemberRefsExpr(g, receiver, into)
           case None    -> ()
         }
-        collectCallRefsEOB(arms[i].body, into)
+        collectMemberRefsEOB(arms[i].body, receiver, into)
         i = i + 1
       }
     }
-    case ELambda(_, body)     -> collectCallRefsBlock(body, into)
-    case EBlock(blk)          -> collectCallRefsBlock(blk, into)
-    case EUnsafe(blk)         -> collectCallRefsBlock(blk, into)
+    case ELambda(_, body)     -> collectMemberRefsBlock(body, receiver, into)
+    case EBlock(blk)          -> collectMemberRefsBlock(blk, receiver, into)
+    case EUnsafe(blk)         -> collectMemberRefsBlock(blk, receiver, into)
     case EInterpolated(segs)  -> {
       var i = 0
       while i < segs.count {
         match segs[i] {
           case ISText(_, _)  -> ()
-          case ISExpr(inner) -> collectCallRefsExpr(inner, into)
+          case ISExpr(inner) -> collectMemberRefsExpr(inner, receiver, into)
         }
         i = i + 1
       }
@@ -843,11 +870,18 @@ func collectCallRefsExpr(e: in Expr, into: in Map[String, Bool]): Unit {
   }
 }
 
-func collectCallRefsEOB(eob: in ExprOrBlock, into: in Map[String, Bool]): Unit {
+func collectMemberRefsEOB(eob: in ExprOrBlock, receiver: in String, into: in Map[String, Bool]): Unit {
   match eob {
-    case EOBExpr(e)   -> collectCallRefsExpr(e, into)
-    case EOBBlock(b)  -> collectCallRefsBlock(b, into)
+    case EOBExpr(e)   -> collectMemberRefsExpr(e, receiver, into)
+    case EOBBlock(b)  -> collectMemberRefsBlock(b, receiver, into)
   }
+}
+
+// Back-compat aliases for the original `collectCallRefs*` surface,
+// kept narrow so existing call sites read naturally.  New code
+// should call `collectMemberRefs*` directly with the receiver name.
+func collectCallRefsBlock(blk: in Block, into: in Map[String, Bool]): Unit {
+  collectMemberRefsBlock(blk, "call", into)
 }
 
 /// Build the `call` ambient prelude for an aspect.  Only emits a
@@ -908,6 +942,11 @@ func buildCallPrelude(
   }
 
   // annotations : slice[String]
+  // The `slice[String]` type annotation is mandatory so the inferred
+  // type from `EList(string-literals)` matches the spec — without it
+  // the synthesised val takes whatever `List[T]`-shaped type the
+  // empty-list path infers, which is wrong for an empty annotations
+  // list (review #1308).
   if refs.containsKey("annotations") {
     val annNames: List[String] = newList()
     var ai = 0
@@ -915,7 +954,10 @@ func buildCallPrelude(
       annNames.add(annotationShortName(originalFn.annotations[ai]))
       ai = ai + 1
     }
-    stmts.add(mkValStmt("__lyric_call_annotations", None, mkStringSliceLit(annNames)))
+    stmts.add(mkValStmt(
+      "__lyric_call_annotations",
+      Some(value = mkSliceTypeExpr("String")),
+      mkStringSliceLit(annNames)))
     present.add("annotations", true)
   }
 
@@ -953,10 +995,11 @@ func buildWrapper(
   // Build preludes.  Each helper returns a (statements, present-field set)
   // pair; the present sets feed the rewriter so only materialised fields
   // are rewritten — out-of-scope references like `config.<unknown>` stay
-  // as member accesses and surface as type errors at the use site.  The
-  // call prelude is lazy: it pre-scans `around.body` for `call.<x>` refs
-  // and emits only the locals the body actually reads.
-  val (cfgStmts, cfgPresent) = buildConfigPrelude(aspect)
+  // as member accesses and surface as type errors at the use site.
+  // Both preludes are lazy: they pre-scan `around.body` for
+  // `config.<x>` / `call.<x>` refs and emit only the locals the body
+  // actually reads (review #1307).
+  val (cfgStmts, cfgPresent) = buildConfigPrelude(aspect, around.body)
   val (callStmts, callPresent) = buildCallPrelude(originalFn, aspect, site, around.body)
 
   val ctx = newRewriteCtx(
