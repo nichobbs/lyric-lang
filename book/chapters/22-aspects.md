@@ -178,10 +178,17 @@ listing the recognised ones. Follow-up tracked in issue #1298.
 default is materialised by the weaver as a synthetic
 `val __aspect_cfg_<name>: <ty> = <default>` at the top of the woven
 body, and `config.<name>` member accesses inside the body are
-rewritten to that local. Fields without a default are skipped —
-runtime env-var resolution per the config-block design is a follow-up.
-The prelude is lazy: aspects that never read `config.*` get no
-synthetic locals.
+rewritten to that local. Fields without a literal default that the
+body **never references** are skipped entirely. Fields without a
+literal default that the body **does reference** are also materialised
+— with a `panic("config '<name>' has no default ...")` stub
+initializer — and an **A0044** weave-time diagnostic fires naming the
+aspect, the matched function, and the offending field. The panic stub
+keeps the body type-checkable so the user sees A0044 rather than a
+confusing downstream codegen error; compilation halts on A0044 before
+the panic can run. Runtime env-var resolution for no-default fields
+per the config-block design is a follow-up. The prelude is lazy:
+aspects that never read `config.*` get no synthetic locals.
 
 **`@inline_template` (C-mode).** Aspects whose enclosing item carries
 `@inline_template` get `args.<field>` rewrites at weave time: each
