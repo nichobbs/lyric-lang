@@ -703,12 +703,18 @@ func findDirectSig(
     case EPath(path) -> {
       if path.segments.count != 1 { return None }
       val name = path.segments[0]
-      match mapGet(sigs, name) {
+      // Prefer the arity-qualified signature so overloaded functions
+      // (e.g. Std.String.substring/2 and substring/3) dispatch to the
+      // overload that actually matches the call's arity.  The bare
+      // `name` key carries the first-in-wins entry from
+      // `addSigsFromItems` (and stays as a fallback for callers that
+      // expect the historical lookup) — using it before the arity
+      // key would misfire as T0042 every time a 3-arg call hits a
+      // bare key registered for the 2-arg overload.
+      val arityKey = name + "/" + toString(arity)
+      match mapGet(sigs, arityKey) {
         case Some(s) -> Some(value = s)
-        case None    -> {
-          val arityKey = name + "/" + toString(arity)
-          mapGet(sigs, arityKey)
-        }
+        case None    -> mapGet(sigs, name)
       }
     }
     case _ -> None

@@ -188,46 +188,56 @@ func rewriteRangeBound(aliases: in List[String], rb: in RangeBound): RangeBound 
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
-  val kind = match e.kind {
-    case EPath(path) -> EPath(path = rewritePath(aliases, path))
+  // Each arm uses an early `return Expr(kind = ..., span = e.span)`
+  // rather than the more idiomatic `val kind = match e.kind { ... }`
+  // form because the bootstrap-stage emitter mis-infers the result
+  // kind when a match-as-expression's arms return different union
+  // variants — every arm gets an empty inferred type and downstream
+  // typechecks of the produced value cascade into T0030/T0033/T0063
+  // "got [empty]" diagnostics on otherwise trivially-typed code.
+  // The split-out helpers below keep each arm's reconstruction
+  // pinned to the single ExprKind variant it actually produces.
+  match e.kind {
+    case EPath(path) ->
+      return Expr(kind = EPath(path = rewritePath(aliases, path)), span = e.span)
     case EMember(receiver, memberName) -> {
-      // `Alias.foo` (where the receiver is a single-segment EPath
-      // whose head is a known alias) collapses to bare `foo`.  Any
-      // deeper member-chain still gets rewritten through the
-      // receiver so `Alias.foo.bar` becomes `foo.bar` (the bar
-      // lookup falls through to BCL / generic-method dispatch like
-      // any other user-written `.member`).
+      // `Alias.foo` collapse: when the receiver is a single-segment
+      // `EPath` whose head is a known alias, drop the alias and
+      // surface the member as a bare path so the post-rewrite
+      // typechecker resolves it against the imported package's
+      // top-level symbols.
       match receiver.kind {
         case EPath(p) -> {
           if p.segments.count == 1 and aliasContains(aliases, p.segments[0]) {
             val segs: List[String] = newList()
             segs.add(memberName)
-            EPath(path = ModulePath(segments = segs, span = p.span))
-          } else {
-            EMember(receiver = rewriteExpr(aliases, receiver),
-                    memberName = memberName)
+            return Expr(kind = EPath(path = ModulePath(segments = segs, span = p.span)),
+                        span = e.span)
           }
         }
-        case _ -> EMember(receiver = rewriteExpr(aliases, receiver),
-                          memberName = memberName)
+        case _ -> ()
       }
+      return Expr(kind = EMember(receiver = rewriteExpr(aliases, receiver),
+                                 memberName = memberName),
+                  span = e.span)
     }
-    case ELiteral(lit) -> ELiteral(lit = lit)
-    case ESelf         -> ESelf
-    case EResult       -> EResult
+    case ELiteral(lit) -> return Expr(kind = ELiteral(lit = lit), span = e.span)
+    case ESelf         -> return Expr(kind = ESelf, span = e.span)
+    case EResult       -> return Expr(kind = EResult, span = e.span)
     case EInterpolated(segments) -> {
       val ss: List[InterpolatedSegment] = newList()
       var i = 0
       while i < segments.count {
-        ss.add(match segments[i] {
-          case ISText(text, span) -> ISText(text = text, span = span)
-          case ISExpr(expr)       -> ISExpr(expr = rewriteExpr(aliases, expr))
-        })
+        match segments[i] {
+          case ISText(text, span) -> ss.add(ISText(text = text, span = span))
+          case ISExpr(expr)       -> ss.add(ISExpr(expr = rewriteExpr(aliases, expr)))
+        }
         i = i + 1
       }
-      EInterpolated(segments = ss)
+      return Expr(kind = EInterpolated(segments = ss), span = e.span)
     }
-    case EParen(inner) -> EParen(inner = rewriteExpr(aliases, inner))
+    case EParen(inner) ->
+      return Expr(kind = EParen(inner = rewriteExpr(aliases, inner)), span = e.span)
     case ETuple(exprs) -> {
       val xs: List[Expr] = newList()
       var i = 0
@@ -235,7 +245,7 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
         xs.add(rewriteExpr(aliases, exprs[i]))
         i = i + 1
       }
-      ETuple(exprs = xs)
+      return Expr(kind = ETuple(exprs = xs), span = e.span)
     }
     case EList(exprs) -> {
       val xs: List[Expr] = newList()
@@ -244,17 +254,18 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
         xs.add(rewriteExpr(aliases, exprs[i]))
         i = i + 1
       }
-      EList(exprs = xs)
+      return Expr(kind = EList(exprs = xs), span = e.span)
     }
     case EIf(cond, thenBranch, elseBranch, thenForm) -> {
       val el = match elseBranch {
         case Some(eob) -> Some(value = rewriteExprOrBlock(aliases, eob))
         case None      -> elseBranch
       }
-      EIf(cond = rewriteExpr(aliases, cond),
-          thenBranch = rewriteExprOrBlock(aliases, thenBranch),
-          elseBranch = el,
-          thenForm = thenForm)
+      return Expr(kind = EIf(cond = rewriteExpr(aliases, cond),
+                             thenBranch = rewriteExprOrBlock(aliases, thenBranch),
+                             elseBranch = el,
+                             thenForm = thenForm),
+                  span = e.span)
     }
     case EMatch(scrutinee, arms) -> {
       val arms2: List[MatchArm] = newList()
@@ -263,29 +274,37 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
         arms2.add(rewriteMatchArm(aliases, arms[i]))
         i = i + 1
       }
-      EMatch(scrutinee = rewriteExpr(aliases, scrutinee), arms = arms2)
+      return Expr(kind = EMatch(scrutinee = rewriteExpr(aliases, scrutinee),
+                                arms = arms2),
+                  span = e.span)
     }
-    case EAwait(inner) -> EAwait(inner = rewriteExpr(aliases, inner))
-    case EYield(inner) -> EYield(inner = rewriteExpr(aliases, inner))
-    case ESpawn(inner) -> ESpawn(inner = rewriteExpr(aliases, inner))
-    case ETry(inner)   -> ETry(inner = rewriteExpr(aliases, inner))
-    case EOld(inner)   -> EOld(inner = rewriteExpr(aliases, inner))
+    case EAwait(inner) -> return Expr(kind = EAwait(inner = rewriteExpr(aliases, inner)), span = e.span)
+    case EYield(inner) -> return Expr(kind = EYield(inner = rewriteExpr(aliases, inner)), span = e.span)
+    case ESpawn(inner) -> return Expr(kind = ESpawn(inner = rewriteExpr(aliases, inner)), span = e.span)
+    case ETry(inner)   -> return Expr(kind = ETry(inner = rewriteExpr(aliases, inner)), span = e.span)
+    case EOld(inner)   -> return Expr(kind = EOld(inner = rewriteExpr(aliases, inner)), span = e.span)
     case EForall(binders, whereExpr, body) -> {
       val w = match whereExpr {
         case Some(x) -> Some(value = rewriteExpr(aliases, x))
         case None    -> whereExpr
       }
-      EForall(binders = binders, whereExpr = w, body = rewriteExpr(aliases, body))
+      return Expr(kind = EForall(binders = binders, whereExpr = w,
+                                 body = rewriteExpr(aliases, body)),
+                  span = e.span)
     }
     case EExists(binders, whereExpr, body) -> {
       val w = match whereExpr {
         case Some(x) -> Some(value = rewriteExpr(aliases, x))
         case None    -> whereExpr
       }
-      EExists(binders = binders, whereExpr = w, body = rewriteExpr(aliases, body))
+      return Expr(kind = EExists(binders = binders, whereExpr = w,
+                                 body = rewriteExpr(aliases, body)),
+                  span = e.span)
     }
     case ELambda(lambdaParams, body) ->
-      ELambda(lambdaParams = lambdaParams, body = rewriteBlock(aliases, body))
+      return Expr(kind = ELambda(lambdaParams = lambdaParams,
+                                 body = rewriteBlock(aliases, body)),
+                  span = e.span)
     case ECall(fn, args) -> {
       val args2: List[CallArg] = newList()
       var i = 0
@@ -293,7 +312,8 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
         args2.add(rewriteCallArg(aliases, args[i]))
         i = i + 1
       }
-      ECall(fn = rewriteExpr(aliases, fn), args = args2)
+      return Expr(kind = ECall(fn = rewriteExpr(aliases, fn), args = args2),
+                  span = e.span)
     }
     case ETypeApp(fn, args) -> {
       val args2: List[TypeArg] = newList()
@@ -302,7 +322,8 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
         args2.add(rewriteTypeArg(aliases, args[i]))
         i = i + 1
       }
-      ETypeApp(fn = rewriteExpr(aliases, fn), args = args2)
+      return Expr(kind = ETypeApp(fn = rewriteExpr(aliases, fn), args = args2),
+                  span = e.span)
     }
     case EIndex(receiver, indices) -> {
       val idxs: List[Expr] = newList()
@@ -311,22 +332,33 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
         idxs.add(rewriteExpr(aliases, indices[i]))
         i = i + 1
       }
-      EIndex(receiver = rewriteExpr(aliases, receiver), indices = idxs)
+      return Expr(kind = EIndex(receiver = rewriteExpr(aliases, receiver),
+                                indices = idxs),
+                  span = e.span)
     }
-    case EPropagate(inner) -> EPropagate(inner = rewriteExpr(aliases, inner))
+    case EPropagate(inner) ->
+      return Expr(kind = EPropagate(inner = rewriteExpr(aliases, inner)), span = e.span)
     case EPrefix(op, operand) ->
-      EPrefix(op = op, operand = rewriteExpr(aliases, operand))
+      return Expr(kind = EPrefix(op = op, operand = rewriteExpr(aliases, operand)),
+                  span = e.span)
     case EBinop(op, lhs, rhs) ->
-      EBinop(op = op, lhs = rewriteExpr(aliases, lhs),
-             rhs = rewriteExpr(aliases, rhs))
-    case ERange(bound) -> ERange(bound = rewriteRangeBound(aliases, bound))
+      return Expr(kind = EBinop(op = op,
+                                lhs = rewriteExpr(aliases, lhs),
+                                rhs = rewriteExpr(aliases, rhs)),
+                  span = e.span)
+    case ERange(bound) ->
+      return Expr(kind = ERange(bound = rewriteRangeBound(aliases, bound)), span = e.span)
     case EAssign(target, op, value) ->
-      EAssign(target = rewriteExpr(aliases, target), op = op,
-              value = rewriteExpr(aliases, value))
-    case EBlock(block)  -> EBlock(block = rewriteBlock(aliases, block))
-    case EUnsafe(block) -> EUnsafe(block = rewriteBlock(aliases, block))
+      return Expr(kind = EAssign(target = rewriteExpr(aliases, target), op = op,
+                                 value = rewriteExpr(aliases, value)),
+                  span = e.span)
+    case EBlock(block)  -> return Expr(kind = EBlock(block = rewriteBlock(aliases, block)), span = e.span)
+    case EUnsafe(block) -> return Expr(kind = EUnsafe(block = rewriteBlock(aliases, block)), span = e.span)
   }
-  Expr(kind = kind, span = e.span)
+  // Unreachable — every ExprKind variant returns above.  The trailing
+  // `return e` keeps the typechecker satisfied that the function has
+  // a Expr-typed exit on every path.
+  return e
 }
 
 func rewriteCallArg(aliases: in List[String], a: in CallArg): CallArg {
@@ -439,22 +471,31 @@ func rewriteBlock(aliases: in List[String], b: in Block): Block {
 }
 
 func rewriteStatement(aliases: in List[String], s: in Statement): Statement {
-  val kind = match s.kind {
-    case SLocal(binding) -> SLocal(binding = rewriteLocalBinding(aliases, binding))
+  // Each arm uses an early `return` rather than the more idiomatic
+  // `val kind = match s.kind { ... }` form because the bootstrap-stage
+  // emitter mis-infers the result kind when a match-as-expression's
+  // arms return different union variants — every arm gets an empty
+  // inferred type and downstream typechecks of the produced value
+  // cascade into T0030/T0033/T0063 "got [empty]" diagnostics.
+  match s.kind {
+    case SLocal(binding) ->
+      return Statement(kind = SLocal(binding = rewriteLocalBinding(aliases, binding)),
+                       span = s.span)
     case SAssign(target, op, value) ->
-      SAssign(target = rewriteExpr(aliases, target),
-              op     = op,
-              value  = rewriteExpr(aliases, value))
+      return Statement(kind = SAssign(target = rewriteExpr(aliases, target),
+                                      op     = op,
+                                      value  = rewriteExpr(aliases, value)),
+                       span = s.span)
     case SReturn(value) -> {
       val v = match value {
         case Some(e) -> Some(value = rewriteExpr(aliases, e))
         case None    -> value
       }
-      SReturn(value = v)
+      return Statement(kind = SReturn(value = v), span = s.span)
     }
-    case SBreak(label)    -> SBreak(label = label)
-    case SContinue(label) -> SContinue(label = label)
-    case SThrow(expr)     -> SThrow(expr = rewriteExpr(aliases, expr))
+    case SBreak(label)    -> return Statement(kind = SBreak(label = label), span = s.span)
+    case SContinue(label) -> return Statement(kind = SContinue(label = label), span = s.span)
+    case SThrow(expr)     -> return Statement(kind = SThrow(expr = rewriteExpr(aliases, expr)), span = s.span)
     case STry(body, catches, finally_) -> {
       val cs: List[CatchClause] = newList()
       var i = 0
@@ -466,29 +507,40 @@ func rewriteStatement(aliases: in List[String], s: in Statement): Statement {
         case Some(blk) -> Some(value = rewriteBlock(aliases, blk))
         case None      -> finally_
       }
-      STry(body = rewriteBlock(aliases, body), catches = cs, finally_ = fn)
+      return Statement(kind = STry(body = rewriteBlock(aliases, body),
+                                   catches = cs, finally_ = fn),
+                       span = s.span)
     }
-    case SDefer(body) -> SDefer(body = rewriteBlock(aliases, body))
+    case SDefer(body) ->
+      return Statement(kind = SDefer(body = rewriteBlock(aliases, body)), span = s.span)
     case SScope(binding, body) ->
-      SScope(binding = binding, body = rewriteBlock(aliases, body))
+      return Statement(kind = SScope(binding = binding, body = rewriteBlock(aliases, body)),
+                       span = s.span)
     case SFor(label, pat, iter, body) ->
-      SFor(label = label,
-           pat   = rewritePattern(aliases, pat),
-           iter  = rewriteExpr(aliases, iter),
-           body  = rewriteBlock(aliases, body))
+      return Statement(kind = SFor(label = label,
+                                   pat   = rewritePattern(aliases, pat),
+                                   iter  = rewriteExpr(aliases, iter),
+                                   body  = rewriteBlock(aliases, body)),
+                       span = s.span)
     case SWhile(label, cond, body) ->
-      SWhile(label = label,
-             cond  = rewriteExpr(aliases, cond),
-             body  = rewriteBlock(aliases, body))
+      return Statement(kind = SWhile(label = label,
+                                     cond  = rewriteExpr(aliases, cond),
+                                     body  = rewriteBlock(aliases, body)),
+                       span = s.span)
     case SLoop(label, body) ->
-      SLoop(label = label, body = rewriteBlock(aliases, body))
-    case SInvariant(expr) -> SInvariant(expr = rewriteExpr(aliases, expr))
-    case SExpr(expr)      -> SExpr(expr = rewriteExpr(aliases, expr))
-    case SRule(lhs, rhs)  ->
-      SRule(lhs = rewriteExpr(aliases, lhs), rhs = rewriteExpr(aliases, rhs))
-    case SItem(item)      -> SItem(item = item)
+      return Statement(kind = SLoop(label = label, body = rewriteBlock(aliases, body)),
+                       span = s.span)
+    case SInvariant(expr) ->
+      return Statement(kind = SInvariant(expr = rewriteExpr(aliases, expr)), span = s.span)
+    case SExpr(expr) ->
+      return Statement(kind = SExpr(expr = rewriteExpr(aliases, expr)), span = s.span)
+    case SRule(lhs, rhs) ->
+      return Statement(kind = SRule(lhs = rewriteExpr(aliases, lhs),
+                                    rhs = rewriteExpr(aliases, rhs)),
+                       span = s.span)
+    case SItem(item) -> return Statement(kind = SItem(item = item), span = s.span)
   }
-  Statement(kind = kind, span = s.span)
+  return s
 }
 
 func rewriteCatch(aliases: in List[String], c: in CatchClause): CatchClause {
@@ -499,14 +551,23 @@ func rewriteCatch(aliases: in List[String], c: in CatchClause): CatchClause {
 }
 
 func rewriteLocalBinding(aliases: in List[String], lb: in LocalBinding): LocalBinding {
+  // Each arm uses an early `return` rather than match-expression
+  // form because the self-hosted typechecker mis-infers the union
+  // result type when arms return different variants of the same
+  // union from inside a match-as-expression (#1170 ecosystem suite
+  // surfaced this as an empty-type T0030/T0033/T0063 cascade on
+  // basic `var i = pos; while i < n { i = i + 1 }` shapes the moment
+  // the file carried any `import X as Y` declaration).  Splitting
+  // each case into an early-returning statement keeps the inferred
+  // result type pinned to the variant the case actually built.
   match lb {
     case LBVal(pat, ty, init) -> {
       val t = match ty {
         case Some(te) -> Some(value = rewriteTypeExpr(aliases, te))
         case None     -> ty
       }
-      LBVal(pat = rewritePattern(aliases, pat), ty = t,
-            init = rewriteExpr(aliases, init))
+      return LBVal(pat = rewritePattern(aliases, pat), ty = t,
+                   init = rewriteExpr(aliases, init))
     }
     case LBVar(name, ty, init) -> {
       val t = match ty {
@@ -517,14 +578,14 @@ func rewriteLocalBinding(aliases: in List[String], lb: in LocalBinding): LocalBi
         case Some(e) -> Some(value = rewriteExpr(aliases, e))
         case None    -> init
       }
-      LBVar(name = name, ty = t, init = v)
+      return LBVar(name = name, ty = t, init = v)
     }
     case LBLet(name, ty, init) -> {
       val t = match ty {
         case Some(te) -> Some(value = rewriteTypeExpr(aliases, te))
         case None     -> ty
       }
-      LBLet(name = name, ty = t, init = rewriteExpr(aliases, init))
+      return LBLet(name = name, ty = t, init = rewriteExpr(aliases, init))
     }
   }
 }
@@ -544,10 +605,15 @@ func rewriteParam(aliases: in List[String], p: in Param): Param {
 }
 
 func rewriteFunctionBody(aliases: in List[String], b: in FunctionBody): FunctionBody {
+  // Early returns for the same bootstrap-emitter match-as-expression
+  // bug documented on rewriteExpr — the result inferred from a
+  // single match expression whose arms return different union
+  // variants ends up empty-typed.
   match b {
-    case FBExpr(expr)   -> FBExpr(expr = rewriteExpr(aliases, expr))
-    case FBBlock(block) -> FBBlock(block = rewriteBlock(aliases, block))
+    case FBExpr(expr)   -> return FBExpr(expr = rewriteExpr(aliases, expr))
+    case FBBlock(block) -> return FBBlock(block = rewriteBlock(aliases, block))
   }
+  return b
 }
 
 func rewriteFunctionDecl(aliases: in List[String], fn: in FunctionDecl): FunctionDecl {
