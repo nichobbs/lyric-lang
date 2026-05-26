@@ -590,7 +590,11 @@ pub func ctxInternUs(ctx: in LoweringCtx, s: in String): Int {
   0x70000000 + off   // ldstr token = 0x70 << 24 | heap offset
 }
 
-// Add a new AssemblyRef row and return its 1-based row index.
+// Add a new AssemblyRef row for a BCL / framework assembly and return
+// its 1-based row index.  Uses the Microsoft framework public key
+// token (`b03f5f7f11d50a3a`) so the loader binds against the
+// strong-named host runtime assemblies.  Lyric package refs use
+// `ctxAddLyricPackageAssemblyRef` below (no public key token).
 pub func ctxAddAssemblyRef(ctx: in LoweringCtx, name: in String,
                            major: in Int, minor: in Int): Int {
   val sName = ctxInternStr(ctx, name)
@@ -598,6 +602,22 @@ pub func ctxAddAssemblyRef(ctx: in LoweringCtx, name: in String,
     majorVersion = major, minorVersion = minor,
     buildNumber = 0, revisionNumber = 0,
     flags = 0, publicKeyToken = ctx.sMsKey,
+    name = sName, culture = 0, hashValue = 0))
+}
+
+// Add an AssemblyRef row for an unsigned Lyric package and return its
+// 1-based row index.  Lyric-emitted DLLs are unsigned (the Assembly row
+// has `publicKey = 0`), so the AssemblyRef must also have
+// `publicKeyToken = 0` — otherwise the loader rejects the bind with a
+// public-key-token mismatch.  Version threading is tracked in #1364;
+// today the major/minor parameters carry through directly.
+pub func ctxAddLyricPackageAssemblyRef(ctx: in LoweringCtx, name: in String,
+                                       major: in Int, minor: in Int): Int {
+  val sName = ctxInternStr(ctx, name)
+  addAssemblyRef(ctx.tables, AssemblyRefRow(
+    majorVersion = major, minorVersion = minor,
+    buildNumber = 0, revisionNumber = 0,
+    flags = 0, publicKeyToken = 0,
     name = sName, culture = 0, hashValue = 0))
 }
 
@@ -1326,7 +1346,19 @@ pub func lowerMFuncsToHostClass(hostClass: in String, funcs: in List[MFunc],
   val bh = ctx.blobs
   val t  = ctx.tables
 
-  val sName  = internString(sh, hostClass)
+  // Split the dotted package name (`hostClass = "Lyric.Pkg.Greeter"`)
+  // into (namespace="Lyric.Pkg", simpleName="Greeter") so the emitted
+  // TypeDef matches the `(namespace, typeName)` shape that
+  // cross-assembly TypeRefs (built by `splitPackageName` on the
+  // consumer side via `ensureHostClassTypeRefRow`) bind against.
+  // Single-segment names (no dot) yield (namespace="", simpleName=hostClass).
+  val lastDotHc = hostClass.lastIndexOf(".")
+  val hcSimple = if lastDotHc < 0 { hostClass }
+                 else { hostClass.substring(lastDotHc + 1, hostClass.length - lastDotHc - 1) }
+  val hcNs     = if lastDotHc < 0 { "" }
+                 else { hostClass.substring(0, lastDotHc) }
+  val sName    = internString(sh, hcSimple)
+  val sNs      = internString(sh, hcNs)
   val firstField  = t.fields.count + 1
 
   // Emit static fields (IConst → literal; IVal → init-only).
@@ -1416,7 +1448,7 @@ pub func lowerMFuncsToHostClass(hostClass: in String, funcs: in List[MFunc],
   addTypeDef(t, TypeDefRow(
     flags         = TDF_PUBLIC + TDF_SEALED + TDF_BEFORE_FIELD_INIT,
     typeName      = sName,
-    typeNamespace = 0,
+    typeNamespace = sNs,
     extends       = objectTypeToken(ctx),
     fieldList     = firstField,
     methodList    = firstMethod))

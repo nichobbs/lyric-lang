@@ -275,6 +275,18 @@ pub func compileProjectToMsilWithRestored(
   val importedItems: List[Item] = newList()
   collectStdlibTypeItems(stdlibSources, importedItems)
 
+  // Seed `importedItems` with each restored artifact's public surface so
+  // the typechecker can resolve cross-assembly references against the
+  // synthesised contract source.  `collectTypeItemsFromFile` picks up
+  // type-shaped items + `pub func`s; the codegen-side
+  // `registerRestoredArtifactTokens` then maps those names to
+  // AssemblyRef / TypeRef / MemberRef rows.
+  var ri = 0
+  while ri < restoredArtifacts.count {
+    collectTypeItemsFromFile(restoredArtifacts[ri].source, importedItems)
+    ri = ri + 1
+  }
+
   var pi = 0
   while pi < packages.count {
     val pkg = packages[pi]
@@ -390,6 +402,75 @@ pub func compileProjectToMsilEncoded(
     i = i + 1
   }
   compileProjectToMsil(packages, assemblyName, outputPath, stdlibSources)
+}
+
+/// Reflection-friendly variant of `compileProjectToMsilWithRestored`.
+/// Mirrors `compileProjectToMsilEncoded` (tab-encoded `<pkgName> TAB
+/// <pkgSource>` rows for the bundle's source packages) but adds a
+/// `restoredDllPaths` list — each entry is the absolute path to a DLL
+/// the consumer treats as a restored Lyric package.
+///
+/// The bridge loads each DLL via `Lyric.RestoredPackages.loadRestoredPackage`
+/// and synthesises a parsed-and-typechecked `SynthesisedArtifact` so the
+/// downstream codegen can resolve cross-assembly references without
+/// touching the F# `--internal-project-build` subprocess fallback.
+/// Returns false if any restored DLL fails to load or synthesise.
+///
+/// Used by `bootstrap/src/Lyric.Cli/SelfHostedMsilProject.fs` to drive
+/// the slice-3 E2E test that demonstrates the in-process bridge produces
+/// linkable artifacts.
+pub func compileProjectToMsilWithRestoredEncoded(
+  specLines:        in List[String],
+  assemblyName:     in String,
+  outputPath:       in String,
+  stdlibSources:    in List[String],
+  restoredDllPaths: in List[String]
+): Bool {
+  val packages: List[ProjectPackagePayload] = newList()
+  var i = 0
+  while i < specLines.count {
+    val line = specLines[i]
+    val tabPos = line.indexOf("\t")
+    if tabPos < 0 {
+      return false
+    }
+    val name = line.substring(0, tabPos)
+    val src  = line.substring(tabPos + 1)
+    packages.add(ProjectPackagePayload(name = name, source = src))
+    i = i + 1
+  }
+
+  // Load + synthesise each restored DLL into a `SynthesisedArtifact`.
+  // Mirrors the loop in `lyric-compiler/lyric/emitter.l::emitProjectInProcess`
+  // so the F# shim's behaviour matches the production CLI path.
+  val restoredArtifacts: List[SynthesisedArtifact] = newList()
+  var ri = 0
+  while ri < restoredDllPaths.count {
+    val dllPath = restoredDllPaths[ri]
+    match loadRestoredPackage(dllPath) {
+      case Err(_) -> return false
+      case Ok(arts) -> {
+        var ai = 0
+        while ai < arts.count {
+          // Fresh preamble per call so an intended-read-only mutation
+          // by `synthesiseArtifact` can't leak across iterations.
+          val preamble: List[Meta.ContractDecl] = newList()
+          match synthesiseArtifact(arts[ai], preamble) {
+            case Err(_) -> return false
+            case Ok(syn) -> restoredArtifacts.add(syn)
+          }
+          ai = ai + 1
+        }
+      }
+    }
+    ri = ri + 1
+  }
+
+  val activeFeatures:   List[String] = newList()
+  val declaredFeatures: List[String] = newList()
+  compileProjectToMsilWithRestored(
+    packages, assemblyName, outputPath, stdlibSources,
+    activeFeatures, declaredFeatures, restoredArtifacts)
 }
 
 // Append every type-shaped and function-shaped item from `file` to

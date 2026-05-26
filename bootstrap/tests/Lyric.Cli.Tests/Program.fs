@@ -9,5 +9,6 @@ let main argv =
             ManifestTests.tests
             SelfHostedMsilBridgeTests.tests
             SelfHostedJvmBridgeTests.tests
+            SelfHostedRestoredPackageE2ETests.tests
         ]
     runTestsWithCLIArgs [] argv allTests

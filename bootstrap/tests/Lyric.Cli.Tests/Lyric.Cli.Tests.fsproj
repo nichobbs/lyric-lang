@@ -20,6 +20,7 @@
     <Compile Include="ManifestTests.fs" />
     <Compile Include="SelfHostedMsilBridgeTests.fs" />
     <Compile Include="SelfHostedJvmBridgeTests.fs" />
+    <Compile Include="SelfHostedRestoredPackageE2ETests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

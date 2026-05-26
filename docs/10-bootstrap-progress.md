@@ -15834,3 +15834,109 @@ matching what the F# emitter produces.
   `dotnet exec` round-trip with cross-package call.  Subprocess
   fallback in `emitProject` becomes unreachable for any common
   user case after this lands.
+
+
+### D-progress-315 — self-hosted bridge restored-deps E2E proof (#1229 contract emission slice 3)
+
+**Status:** Shipped.  Self-hosted MSIL bridge builds DLLs whose
+embedded `Lyric.Contract` resource is consumable by the in-process
+restored-deps loader, and the resulting consumer DLL runs end-to-end
+under `dotnet exec`.
+
+**Problem:** Slice 2b (D-progress-314) made the bridge emit
+`Lyric.Contract` resources, but no test exercised the full chain
+through the self-hosted pipeline.  Without that proof point the
+F# `--internal-project-build` subprocess fallback in
+`lyric-compiler/lyric/emitter.l::emitProjectViaSubprocess` had no
+evidence-backed path to retirement.  The pipeline also had three
+latent bugs that only surface end-to-end:
+
+1. `compileProjectToMsilWithRestored` registered restored artifacts
+   for *codegen* (`registerRestoredArtifactTokens`) but not for
+   *typecheck* — the consumer's `import` resolved at codegen
+   token-lookup but failed at the typechecker, never reaching the
+   working codegen path.
+2. `ensureAssemblyRefForArtifact` minted Lyric-package AssemblyRef
+   rows with the Microsoft framework public key token
+   (`b03f5f7f11d50a3a`) and version `1.0`, while the actual
+   `Assembly` row written by `newLoweringCtx` had `publicKey = 0`
+   and version `0.0.0.0`.  The runtime rejected the bind with
+   "Could not load file or assembly … PublicKeyToken=b03f5f7f11d50a3a"
+   on every cross-assembly call.
+3. `lowerMFuncsToHostClass` put the dotted package name
+   (`"Lyric.SelfHostedE2E.Greeter"`) in the TypeDef's `typeName`
+   field with an empty `typeNamespace`, while consumer TypeRefs
+   split at the last dot via `splitPackageName` and ended up with
+   `(namespace="Lyric.SelfHostedE2E", typeName="Greeter")`.  The
+   CLR loader compares the two fields separately, so a TypeDef
+   with the same conceptual full name didn't match — surfaced as
+   "Could not load type 'Lyric.SelfHostedE2E.Greeter'".
+
+**Fix:**
+
+1. **`lyric-compiler/msil/bridge.l`** — new
+   `pub func compileProjectToMsilWithRestoredEncoded(specLines,
+   assemblyName, outputPath, stdlibSources, restoredDllPaths)`
+   reflection-friendly entry point.  Mirrors
+   `compileProjectToMsilEncoded` but additionally loads + synthesises
+   each restored DLL via `RestoredPackages.loadRestoredPackage` +
+   `synthesiseArtifact` and threads the `SynthesisedArtifact`s into
+   `compileProjectToMsilWithRestored`.  Returns false if any load
+   or synthesis fails.
+2. **`lyric-compiler/msil/bridge.l::compileProjectToMsilWithRestored`** —
+   after `collectStdlibTypeItems` seeds the typechecker's
+   `importedItems`, also call `collectTypeItemsFromFile` for each
+   restored artifact's parsed `source: SourceFile`.  This makes
+   restored packages' public surface visible at typecheck (was
+   previously visible only at codegen via the FQN tables).
+3. **`lyric-compiler/msil/lowering.l`** — split
+   `ctxAddAssemblyRef` into the framework-key version (unchanged
+   for BCL refs) and a new
+   `ctxAddLyricPackageAssemblyRef` that emits
+   `publicKeyToken = 0` for unsigned Lyric package refs.
+4. **`lyric-compiler/msil/codegen.l::ensureAssemblyRefForArtifact`** —
+   call the new `ctxAddLyricPackageAssemblyRef` with version
+   `(0, 0)` so the AssemblyRef row matches the actual Assembly
+   row's version 0.0.0.0 and the missing public key.  Version
+   threading from `[package].version` is tracked in #1364.
+5. **`lyric-compiler/msil/lowering.l::lowerMFuncsToHostClass`** —
+   split the dotted `hostClass` package name at the last `.` and
+   write `(typeNamespace, typeName)` separately, matching the
+   `(namespace, simpleName)` split that record TypeDefs (in
+   `lowerMRecord`) and consumer TypeRefs (via `splitPackageName`
+   in `ensureHostClassTypeRefRow`) already use.
+6. **`bootstrap/src/Lyric.Cli/SelfHostedMsilProject.fs`** — new
+   reflection shim mirroring `SelfHostedMsil.compileToDll` but
+   targeting the new project-level entry point.  Caches the
+   resolved delegate process-wide, writes a `.runtimeconfig.json`
+   alongside the output DLL.
+7. **`bootstrap/tests/Lyric.Cli.Tests/SelfHostedRestoredPackageE2ETests.fs`** —
+   single E2E test that:
+   - Compiles a producer (`Lyric.SelfHostedE2E.Greeter`) via the
+     self-hosted bridge.
+   - Verifies the embedded `Lyric.Contract` resource names the
+     producer package and includes the public `greet` function.
+   - Compiles a consumer (`Lyric.SelfHostedE2E.Consumer`) via the
+     new project shim with the producer DLL as a restored dep.
+   - Runs the consumer via `dotnet exec` and asserts stdout
+     equals `"hello, world"`.
+
+**Acceptance criteria met:**
+
+- 844 emitter + 74 CLI tests pass.
+- 325 parser + 128 lexer + 189 typechecker tests pass.
+- New `self_hosted_bridge_round_trip` test exercises the full
+  build → load → re-emit → run chain through the self-hosted
+  pipeline.
+
+**What's next:**
+
+- #1364 — thread the manifest-declared `[package].version`
+  through `Msil.Bridge.compileProjectToMsil*` so the AssemblyRef
+  + Assembly rows carry the real version instead of the
+  current `0.0.0.0` placeholder.
+- Retire the `emitProjectViaSubprocess` fallback in
+  `lyric-compiler/lyric/emitter.l` for the `.NET` target now that
+  the self-hosted in-process bridge handles restored deps end-to-end.
+  JVM remains the only legitimate fallback caller.
+
