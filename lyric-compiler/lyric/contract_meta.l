@@ -621,12 +621,29 @@ func renderTypeExprList(ts: in List[TypeExpr]): String {
 }
 
 // Render one `TypeArg` (either a type or a value-level expression).
-// Value-level args (`array[N, T]` form) emit `<value>` placeholder
-// since the contract surface doesn't carry expression info today.
+// Integer literals (`array[4, Byte]` form) render faithfully so the
+// repr round-trips through the parser; non-literal value expressions
+// (rare in public APIs since they require const-foldable inputs)
+// fall back to a `0` placeholder that at least parses.
 func renderTypeArg(a: in TypeArg): String {
   match a {
-    case TAType(te)  -> renderTypeExpr(te)
-    case TAValue(_)  -> "<value>"
+    case TAType(te) -> renderTypeExpr(te)
+    case TAValue(e) -> renderConstExpr(e)
+  }
+}
+
+// Render a value-level expression used as a generic argument.  Only
+// integer literals are supported today (`array[N, T]` size); other
+// forms fall back to `0`.
+func renderConstExpr(e: in Expr): String {
+  match e.kind {
+    case ELiteral(lit) -> {
+      match lit {
+        case LInt(v, _) -> toString(v)
+        case _          -> "0"
+      }
+    }
+    case _ -> "0"
   }
 }
 
@@ -836,6 +853,7 @@ func reprForOpaque(decl: in OpaqueTypeDecl): String {
         fields = fields + f.name + ": " + renderTypeExpr(f.ty)
         emittedAny = true
       }
+      case _ -> ()
     }
     i = i + 1
   }

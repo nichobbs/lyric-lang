@@ -145,10 +145,10 @@ pub func compileToMsil(
   // JSON describing this assembly's public surface) so downstream
   // restored-dep consumers see the contract via the in-process loader.
   // Version threading: the bridge entry points don't currently
-  // accept a manifest, so emit "0.0.0" for ad-hoc compiles.  The
-  // CLI's `lyric build` path goes through `Lyric.Emitter.emitProject`
-  // which can supply the manifest-declared version once
-  // `compileProjectToMsil*` takes a `version` parameter.
+  // accept a manifest, so emit "0.0.0" for ad-hoc compiles.  Tracked
+  // for proper threading in #1364 — once
+  // `compileProjectToMsil*` takes a `version` parameter the CLI's
+  // `lyric build` path can supply the manifest-declared version.
   embedLyricContract(cctx.lctx, liftedFile, "Lyric.Contract", "0.0.0")
 
   // Lower the package IR to raw PE bytes using the pre-seeded context.
@@ -329,6 +329,8 @@ pub func compileProjectToMsilWithRestored(
     // Project-as-DLL embedding: each package's contract goes in its
     // own `Lyric.Contract.<Pkg>` resource so the in-process loader can
     // surface them per-package (matching the F# bundled-DLL layout).
+    // Version is hardcoded "0.0.0" today; see #1364 for the manifest-
+    // threading plan that will replace this with the declared version.
     embedLyricContract(cctx.lctx, lifted, "Lyric.Contract." + perPkgNames[li], "0.0.0")
     liftedFiles.add(lifted)
     li = li + 1
