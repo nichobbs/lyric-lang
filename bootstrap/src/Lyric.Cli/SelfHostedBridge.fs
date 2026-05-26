@@ -57,10 +57,17 @@ let preloadStdlibAssemblies () : unit =
 let loadFromCache (path: string) : Assembly =
     Assembly.LoadFrom path
 
-/// Band 6: locate the `lyric-stdlib/std/` directory by walking up from
-/// `AppContext.BaseDirectory`, then read every top-level `*.l` source file
-/// (excluding the `_kernel/` subdirectory, which contains extern declarations
-/// that are not meaningful to the self-hosted parser when used as plain items).
+/// Locate the `lyric-stdlib/std/` directory by walking up from
+/// `AppContext.BaseDirectory`, then read every `.l` source file — both
+/// top-level files (the public stdlib surface) AND `_kernel/` files
+/// (extern-type kernels the public files reference via `import Std.XHost`).
+///
+/// MSIL-target only: `_kernel_jvm/` is never loaded, and the two JVM-only
+/// kernel files (`jvm.l`, `jvm_exception.l`) are skipped by name so
+/// `Std.Jvm.catch` doesn't leak into the .NET symbol table.  Mirrors the
+/// Lyric-side `lyric-compiler/lyric/emitter.l::findStdlibSources` — kept
+/// in lock-step so the F# test shim's view of the stdlib matches the
+/// production AOT CLI's view.
 ///
 /// Returns the file contents as a `System.Collections.Generic.List<string>`.
 /// Returns an empty list when the stdlib directory cannot be found (graceful
@@ -77,6 +84,22 @@ let findStdlibSources () : System.Collections.Generic.List<string> =
     match stdlibDir with
     | None -> ()
     | Some sd ->
+        // Load `_kernel/` files FIRST so their extern type declarations
+        // (`extern type List[T] = "System.Collections.Generic.List`1"`,
+        // `Map[K, V]`, `Random`, …) register in the self-hosted typechecker's
+        // symbol table before the public re-export aliases (`pub alias Random
+        // = Std.RandomHost.Random`).  `symTableTryFindOne` is first-in-wins
+        // and `DKTypeAlias` carries no `TypeId`; registering an alias before
+        // its target makes every bare-name reference resolve to the alias and
+        // fail with T0013 '<name> is not a type'.
+        let kernel = DirectoryInfo(Path.Combine(sd.FullName, "_kernel"))
+        if kernel.Exists then
+            for f in kernel.GetFiles("*.l") do
+                if not (f.Name.StartsWith("jvm", StringComparison.Ordinal)) then
+                    try result.Add(File.ReadAllText f.FullName)
+                    with ex ->
+                        eprintfn "lyric: warning: could not read stdlib source '%s': %s" f.FullName ex.Message
+        // Public surface: every top-level `*.l` file.
         for f in sd.GetFiles("*.l") do
             try result.Add(File.ReadAllText f.FullName)
             with ex ->

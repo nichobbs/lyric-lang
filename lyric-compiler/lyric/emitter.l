@@ -162,9 +162,9 @@ func walkUpForStdlib(start: in String): String {
 }
 
 // Locate the `lyric-stdlib/std/` directory at runtime, then read every
-// top-level `*.l` source file (excluding the `_kernel/` subdirectory —
-// those files contain extern declarations that aren't meaningful when
-// surfaced to the parser as plain items).
+// `.l` source file — both top-level files (the public stdlib surface)
+// AND the `_kernel/` subdirectory (extern type / @externTarget kernels
+// that the public files reference via `import Std.XHost`).
 //
 // Probes (in order):
 //   1. `$LYRIC_STD_PATH` if set — explicit override for installers /
@@ -178,13 +178,13 @@ func walkUpForStdlib(start: in String): String {
 //
 // Returns the file contents as a `List[String]`.  Returns an empty list
 // when the stdlib directory cannot be located (graceful degradation —
-// callers fall back to advisory-only type checking, same as the F#
-// `findStdlibSources` shim).
+// callers fall back to advisory-only type checking).
 //
-// Mirrors `bootstrap/src/Lyric.Cli/SelfHostedBridge.fs::findStdlibSources`
-// and supersedes it on the in-process bridge path.  Tracked in #1183 as
-// the change that removes the F# stdlib-source shim from the bridge
-// surface.
+// MSIL-target only: `_kernel_jvm/` is never loaded here, and the two
+// JVM-only kernel files in `_kernel/` (`jvm.l`, `jvm_exception.l`) are
+// skipped by name so `Std.Jvm.catch` and its `JvmException` extern type
+// don't leak into the .NET symbol table.  A future JVM in-process
+// bridge will need its own target-aware source loader.
 func findStdlibSources(): List[String] {
   val sources: List[String] = newList()
   // 1. Explicit override.
@@ -202,10 +202,32 @@ func findStdlibSources(): List[String] {
     stdlibDir = walkUpForStdlib(Environment.currentDirectory())
   }
   if stdlibDir.length == 0 { return sources }
-  // Read every top-level `*.l` file.  `_kernel/` falls below the recursion
-  // boundary, so `listFiles` (non-recursive) gives us exactly the right
-  // surface — no post-filtering needed.
-  val files = match File.listFiles(stdlibDir) {
+  // Load `_kernel/` files FIRST so their extern type declarations
+  // (`extern type List[T] = "System.Collections.Generic.List`1"`,
+  // `Map[K, V]`, `Random`, `HttpClient`, …) reach the typechecker's
+  // symbol table before the public files' re-export aliases
+  // (`pub alias Random = Std.RandomHost.Random`, etc.).  The
+  // self-hosted typechecker's `symTableTryFindOne` is first-in-wins,
+  // and `DKTypeAlias` carries no `TypeId`, so registering an alias
+  // before its target type makes every reference to the bare name
+  // resolve to the alias and fail with T0013 '<name> is not a type'.
+  appendLyricFiles(sources, Path.join(stdlibDir, "_kernel"), true)
+  // Public surface: every top-level `*.l` file in `lyric-stdlib/std/`.
+  appendLyricFiles(sources, stdlibDir, false)
+  sources
+}
+
+// Read every `*.l` file in `dir` (non-recursive) and append its contents
+// to `sources`.  When `skipJvmKernel` is true, files whose basename starts
+// with `jvm` are skipped — used for `_kernel/` to drop the JVM-only
+// `jvm.l` and `jvm_exception.l` files on MSIL builds.
+func appendLyricFiles(
+  sources:       in List[String],
+  dir:           in String,
+  skipJvmKernel: in Bool
+): Unit {
+  if not File.dirExists(dir) { return }
+  val files = match File.listFiles(dir) {
     case Ok(fs)  -> fs
     case Err(_)  -> newList()
   }
@@ -213,14 +235,17 @@ func findStdlibSources(): List[String] {
   while fi < files.count {
     val f = files[fi]
     if Str.endsWith(f, ".l") {
-      match File.readText(f) {
-        case Ok(text) -> sources.add(text)
-        case Err(_)   -> ()  // skip unreadable files, same as the F# shim
+      val base = Path.basename(f)
+      val skip = skipJvmKernel and Str.startsWith(base, "jvm")
+      if not skip {
+        match File.readText(f) {
+          case Ok(text) -> sources.add(text)
+          case Err(_)   -> ()
+        }
       }
     }
     fi = fi + 1
   }
-  sources
 }
 
 // Write `source` to a temp file so `--internal-build` can read it.
