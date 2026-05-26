@@ -37,6 +37,7 @@ module internal Lyric.Cli.SelfHostedBridge
 open System
 open System.IO
 open System.Reflection
+open Lyric.Lexer
 open Lyric.Emitter
 
 /// Load every Lyric-emitted stdlib DLL in the per-process cache into
@@ -56,6 +57,112 @@ let preloadStdlibAssemblies () : unit =
 /// collectible-ALC migration only has to change one call site.
 let loadFromCache (path: string) : Assembly =
     Assembly.LoadFrom path
+
+/// Write a minimal `.runtimeconfig.json` alongside `dllPath` so that
+/// `dotnet exec dllPath` can locate the correct runtime.  Used by every
+/// self-hosted MSIL bridge that writes a DLL and then executes it.
+let writeRuntimeConfig (dllPath: string) : unit =
+    let configPath =
+        match Option.ofObj (Path.ChangeExtension(dllPath, ".runtimeconfig.json")) with
+        | Some p -> p
+        | None   -> failwithf "writeRuntimeConfig: Path.ChangeExtension returned null for %s" dllPath
+    let v = Environment.Version
+    let json =
+        "{\n" +
+        "  \"runtimeOptions\": {\n" +
+        (sprintf "    \"tfm\": \"net%d.%d\",\n" v.Major v.Minor) +
+        "    \"framework\": {\n" +
+        "      \"name\": \"Microsoft.NETCore.App\",\n" +
+        (sprintf "      \"version\": \"%s\"\n" (v.ToString())) +
+        "    }\n" +
+        "  }\n" +
+        "}\n"
+    File.WriteAllText(configPath, json)
+
+/// Compile a throwaway driver program so the bootstrap emitter materialises
+/// `<targetDllStem>.dll` into the per-process stdlib cache, then return
+/// the absolute path to that DLL.
+///
+/// Parameters:
+///   scratchSuffix    — suffix appended to the temp-dir name
+///                      (e.g. `"lyric-msil-bridge"`)
+///   driverSource     — full Lyric source of the driver program
+///   driverAssemblyName — assembly name for the driver DLL
+///                      (e.g. `"Lyric.Msil.MsilBridge"`)
+///   targetDllStem    — stem of the target DLL to locate in the cache
+///                      (e.g. `"Lyric.Msil.Bridge"`)
+///   contextLabel     — human-readable prefix for error messages
+///                      (e.g. `"self-hosted MSIL bridge"`)
+let compileBridgeDriver
+        (scratchSuffix:      string)
+        (driverSource:       string)
+        (driverAssemblyName: string)
+        (targetDllStem:      string)
+        (contextLabel:       string) : string =
+    let scratch =
+        Path.Combine(Path.GetTempPath(),
+                     sprintf "%s-%d" scratchSuffix
+                         (System.Diagnostics.Process.GetCurrentProcess().Id))
+    Directory.CreateDirectory scratch |> ignore
+    AppDomain.CurrentDomain.ProcessExit.Add(fun _ ->
+        try Directory.Delete(scratch, recursive = true) with _ -> ())
+    let dllPath = Path.Combine(scratch, driverAssemblyName + ".dll")
+    let req : Emitter.EmitRequest =
+        { Source             = driverSource
+          AssemblyName       = driverAssemblyName
+          OutputPath         = dllPath
+          RestoredPackages   = []
+          NugetAssemblyPaths = []
+          ExternShimRoot     = None
+          Target             = Emitter.Dotnet
+          ActiveFeatures     = Set.empty
+          DeclaredFeatures   = Set.empty }
+    let result = Emitter.emit req
+    let errs =
+        result.Diagnostics
+        |> List.filter (fun d -> d.Severity = DiagError)
+    if not (List.isEmpty errs) then
+        let msg =
+            errs
+            |> List.map (fun d -> sprintf "  %s @ %d:%d  %s"
+                                       d.Code
+                                       d.Span.Start.Line
+                                       d.Span.Start.Column
+                                       d.Message)
+            |> String.concat "\n"
+        failwithf "%s: emitter produced errors:\n%s" contextLabel msg
+    preloadStdlibAssemblies ()
+    match Emitter.stdlibAssemblyPaths ()
+          |> List.tryFind (fun p -> Path.GetFileNameWithoutExtension p = targetDllStem) with
+    | Some p -> p
+    | None ->
+        let cached =
+            Emitter.stdlibAssemblyPaths ()
+            |> List.map (fun p ->
+                match Option.ofObj (Path.GetFileName p) with
+                | Some n -> n
+                | None   -> "<unknown>")
+            |> String.concat ", "
+        failwithf "%s: '%s.dll' not found in stdlib cache after emit (cached: %s)"
+            contextLabel targetDllStem cached
+
+/// Thread-safe once-initialised delegate cache.
+///
+/// Usage:
+///   let private lock = obj ()
+///   let private cell : MyDelegate option ref = ref None
+///   let private getDelegate () = SelfHostedBridge.lockOnce lock cell resolveDelegate
+///
+/// The factory is only called once per process; subsequent calls return the
+/// cached value.
+let lockOnce (lockObj: obj) (cell: 'T option ref) (factory: unit -> 'T) : 'T =
+    lock lockObj (fun () ->
+        match !cell with
+        | Some v -> v
+        | None   ->
+            let v = factory ()
+            cell.Value <- Some v
+            v)
 
 /// Locate the `lyric-stdlib/std/` directory by walking up from
 /// `AppContext.BaseDirectory`, then read every `.l` source file — both

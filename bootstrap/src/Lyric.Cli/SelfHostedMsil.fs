@@ -13,9 +13,7 @@
 module Lyric.Cli.SelfHostedMsil
 
 open System
-open System.IO
 open System.Reflection
-open Lyric.Lexer
 open Lyric.Emitter
 
 /// Source of the throwaway driver program.  The empty `main` is the minimum
@@ -32,65 +30,17 @@ func main(): Unit { }
 /// slow part (~3-5 s on a cold cache); we only do it once per `lyric`
 /// invocation that touches the self-hosted MSIL emitter.
 let private bridgeLock = obj ()
-let mutable private resolved : (string -> string -> System.Collections.Generic.List<string> -> string -> bool) option = None
+let private resolved : (string -> string -> System.Collections.Generic.List<string> -> string -> bool) option ref = ref None
 
 /// Compile the driver source so the emitter produces and caches
 /// `Lyric.Msil.Bridge.dll`.  Returns the absolute path to it.
 let private ensureLyricMsilBridgeAssembly () : string =
-    let scratch =
-        Path.Combine(Path.GetTempPath(),
-                     sprintf "lyric-msil-bridge-%d"
-                         (System.Diagnostics.Process.GetCurrentProcess().Id))
-    Directory.CreateDirectory scratch |> ignore
-    AppDomain.CurrentDomain.ProcessExit.Add(fun _ ->
-        try Directory.Delete(scratch, recursive = true) with _ -> ())
-    let dllPath = Path.Combine(scratch, "Lyric.Msil.MsilBridge.dll")
-    let req : Emitter.EmitRequest =
-        { Source             = driverSource
-          AssemblyName       = "Lyric.Msil.MsilBridge"
-          OutputPath         = dllPath
-          RestoredPackages   = []
-          NugetAssemblyPaths = []
-          ExternShimRoot     = None
-          Target             = Emitter.Dotnet
-          ActiveFeatures     = Set.empty
-          DeclaredFeatures   = Set.empty }
-    let result = Emitter.emit req
-    let errs =
-        result.Diagnostics
-        |> List.filter (fun d -> d.Severity = DiagError)
-    if not (List.isEmpty errs) then
-        let msg =
-            errs
-            |> List.map (fun d -> sprintf "  %s @ %d:%d  %s"
-                                       d.Code
-                                       d.Span.Start.Line
-                                       d.Span.Start.Column
-                                       d.Message)
-            |> String.concat "\n"
-        failwithf "self-hosted MSIL bridge: emitter produced errors:\n%s" msg
-
-    Lyric.Cli.SelfHostedBridge.preloadStdlibAssemblies ()
-
-    // Emitter mints stdlib assemblies as `Lyric.<head>.<rest>.dll` for
-    // builtin heads, so `Msil.Bridge` lands as `Lyric.Msil.Bridge.dll` in
-    // the cache (head = "Msil", rest = ["Bridge"]).
-    let lyricMsilBridgeDll =
-        Emitter.stdlibAssemblyPaths ()
-        |> List.tryFind (fun p ->
-            let n = Path.GetFileNameWithoutExtension p
-            n = "Lyric.Msil.Bridge")
-    match lyricMsilBridgeDll with
-    | Some p -> p
-    | None ->
-        let cached =
-            Emitter.stdlibAssemblyPaths ()
-            |> List.map (fun p ->
-                match Option.ofObj (Path.GetFileName p) with
-                | Some n -> n
-                | None -> "<unknown>")
-            |> String.concat ", "
-        failwithf "self-hosted MSIL bridge: 'Lyric.Msil.Bridge.dll' not found in stdlib cache after emit (cached: %s)" cached
+    Lyric.Cli.SelfHostedBridge.compileBridgeDriver
+        "lyric-msil-bridge"
+        driverSource
+        "Lyric.Msil.MsilBridge"
+        "Lyric.Msil.Bridge"
+        "self-hosted MSIL bridge"
 
 /// Reflect out the `compileToMsilWithVersion` entry point and stash it in
 /// `resolved`.  The 4th parameter is a `[package].version` string (empty
@@ -123,38 +73,7 @@ let private resolveDelegates () : string -> string -> System.Collections.Generic
     compileToMsilFn
 
 let private getDelegate () : string -> string -> System.Collections.Generic.List<string> -> string -> bool =
-    lock bridgeLock (fun () ->
-        match resolved with
-        | None ->
-            let fn = resolveDelegates ()
-            resolved <- Some fn
-            fn
-        | Some r -> r)
-
-/// Write a minimal `.runtimeconfig.json` alongside `dllPath` so that
-/// `dotnet exec dllPath` can locate the correct runtime.
-let private writeRuntimeConfig (dllPath: string) : unit =
-    // F# nullness analysis (`Nullable=enable` in Directory.Build.props)
-    // requires unwrapping `Path.ChangeExtension`'s `string | null`.  In
-    // practice `dllPath` is always non-null so the `None` arm is
-    // unreachable; we panic rather than synthesise a wrong-shape fallback
-    // (`foo.dll.runtimeconfig.json` instead of `foo.runtimeconfig.json`).
-    let configPath =
-        match Option.ofObj (Path.ChangeExtension(dllPath, ".runtimeconfig.json")) with
-        | Some p -> p
-        | None   -> failwithf "writeRuntimeConfig: Path.ChangeExtension returned null for %s" dllPath
-    let v = System.Environment.Version
-    let json =
-        "{\n" +
-        "  \"runtimeOptions\": {\n" +
-        (sprintf "    \"tfm\": \"net%d.%d\",\n" v.Major v.Minor) +
-        "    \"framework\": {\n" +
-        "      \"name\": \"Microsoft.NETCore.App\",\n" +
-        (sprintf "      \"version\": \"%s\"\n" (v.ToString())) +
-        "    }\n" +
-        "  }\n" +
-        "}\n"
-    File.WriteAllText(configPath, json)
+    Lyric.Cli.SelfHostedBridge.lockOnce bridgeLock resolved resolveDelegates
 
 /// Compile `source` to a .NET PE DLL at `outputPath` using the self-hosted
 /// `Msil.Bridge` pipeline, threading `packageVersion` through to the
@@ -166,7 +85,7 @@ let compileToDllWithVersion (source: string) (outputPath: string)
     let fn = getDelegate ()
     let stdlibSources = Lyric.Cli.SelfHostedBridge.findStdlibSources ()
     let ok = fn source outputPath stdlibSources packageVersion
-    if ok then writeRuntimeConfig outputPath
+    if ok then Lyric.Cli.SelfHostedBridge.writeRuntimeConfig outputPath
     ok
 
 /// Forwarder for callers that don't have a manifest version available;
