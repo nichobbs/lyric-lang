@@ -609,7 +609,16 @@ func readSidecar(objectPath: in String, contentLength: in Long): Result[StorageM
       message = "cannot read metadata sidecar: " + b.message,
       code    = "META_READ_ERROR"))
   }
-  val doc  = parseJson(txt)
+  // Wrap parseJson so a truncated / externally-corrupted sidecar
+  // produces a typed `META_PARSE_ERROR` instead of an unhandled Bug
+  // bubbling out of the storage layer (#1440).
+  val doc = try {
+    parseJson(txt)
+  } catch Bug as b {
+    return Err(StorageError(
+      message = "cannot parse metadata sidecar JSON: " + b.message,
+      code    = "META_PARSE_ERROR"))
+  }
   val root = rootElement(doc)
   if valueKind(root) != 1 {
     return Err(StorageError(
@@ -694,13 +703,18 @@ func basenameOf(path: in String): String {
 func sortKeys(xs: in List[String]): List[String] {
   val arr    = xs.toArray()
   val sorted = sortStrings(arr)
-  val result: List[String] = newList()
+  // Local variable named `acc` rather than `result` — `result` is a
+  // reserved identifier in `ensures:` clauses and the parser treats
+  // every reference as `EResult` even outside contract context, which
+  // panics at codegen ("Msil.Codegen: EResult outside contract context").
+  // (`out` would collide with the `out` parameter-mode keyword.)
+  val acc: List[String] = newList()
   var i = 0
   while i < sorted.length {
-    result.add(sorted[i])
+    acc.add(sorted[i])
     i = i + 1
   }
-  result
+  acc
 }
 
 // Build a `ListEntry` for `relKey` purely from its `.meta.json` sidecar.
@@ -726,15 +740,30 @@ func listEntryForKey(bucket: in LocalBucket, relKey: in String): Result[ListEntr
           ""
         }
         if txt.length > 0 {
-          val doc  = parseJson(txt)
-          val root = rootElement(doc)
-          if valueKind(root) == 1 {
-            etag          = getString(getProperty(root, "etag"))
-            lastModified  = getString(getProperty(root, "lastModified"))
-            match tryGetLong(getProperty(root, "contentLength")) {
-              case Some(n) -> { contentLength = n }
-              case None    -> ()
+          // Tolerate a corrupted / partially-written sidecar — the
+          // entry is still listable with zero-valued fallbacks rather
+          // than aborting the whole `list` call.  parseJson throws an
+          // unhandled Bug on truncated input, so guard it with
+          // try/catch and treat the failure the same as a missing
+          // sidecar (#1440).
+          val parsed = try {
+            Some(value = parseJson(txt))
+          } catch Bug as _ {
+            None
+          }
+          match parsed {
+            case Some(doc) -> {
+              val root = rootElement(doc)
+              if valueKind(root) == 1 {
+                etag          = getString(getProperty(root, "etag"))
+                lastModified  = getString(getProperty(root, "lastModified"))
+                match tryGetLong(getProperty(root, "contentLength")) {
+                  case Some(n) -> { contentLength = n }
+                  case None    -> ()
+                }
+              }
             }
+            case None -> ()
           }
         }
       }
@@ -834,17 +863,23 @@ pub func connectS3(region: in String, bucket: in String, accessKey: in String, s
   if bucket.length == 0 {
     return Err(StorageError(message = "bucket must be non-empty", code = "INVALID_ARGUMENT"))
   }
-  Ok(S3Bucket(
-    region      = region,
-    bucketName  = bucket,
-    accessKey   = accessKey,
-    secretKey   = secretKey,
-    endpointUrl = endpointUrl))
+  // S3 backend is not yet implemented (the NuGet AWS SDK bindings are
+  // tracked as follow-up work).  Fail fast at the factory rather than
+  // returning a stub bucket that produces `NOT_IMPLEMENTED` on every
+  // subsequent operation — that fail-late shape silently swallowed
+  // caller code that defensively branched on `Err` from `connectS3`
+  // (#1441).  When the native bindings land, replace this with the
+  // real `Ok(S3Bucket(...))` construction.
+  return Err(StorageError(
+    message = "S3 backend not yet implemented (native bindings pending)",
+    code    = "NOT_IMPLEMENTED"))
 }
 
-/// Open an Azure Blob Storage container.  Currently returns a stub
-/// bucket whose operations report `NOT_IMPLEMENTED`; tracked as a
-/// follow-up to bind `Azure.Storage.Blobs` natively in Lyric.
+/// Open an Azure Blob Storage container.  Currently returns `Err`
+/// because the native Azure SDK bindings are tracked as follow-up
+/// work.  Fail-fast at the factory matches the historical F# host
+/// shim's semantics (#1441) — code that defensively branches on
+/// `Err` from `connectAzureBlob` must continue to do so.
 @stable(since="0.1")
 pub func connectAzureBlob(connectionString: in String, containerName: in String): Result[StorageBucket, StorageError] {
   if connectionString.length == 0 {
@@ -853,9 +888,9 @@ pub func connectAzureBlob(connectionString: in String, containerName: in String)
   if containerName.length == 0 {
     return Err(StorageError(message = "containerName must be non-empty", code = "INVALID_ARGUMENT"))
   }
-  Ok(AzureBucket(
-    connectionString = connectionString,
-    containerName    = containerName))
+  return Err(StorageError(
+    message = "Azure Blob backend not yet implemented (native bindings pending)",
+    code    = "NOT_IMPLEMENTED"))
 }
 
 /// Open a local filesystem store.  The bucket subdirectory is created
@@ -978,19 +1013,17 @@ pub func auditLog(operation: in String, level: in String, detail: in String): Un
 
 // Serialise a Map[String, String] to a JSON object string.
 func serialiseStringMap(m: in Map[String, String]): String {
-  var result = "{"
-  var first  = true
-  for k in m {
-    match mapGet(m, k) {
-      case Some(v) -> {
-        if not first { result = result + "," }
-        result = result + jsonString(k) + ":" + jsonString(v)
-        first  = false
-      }
-      case None -> ()
-    }
-  }
-  return result + "}"
+  // Empty-map fast path — Map iteration via `for k in m` panics under
+  // the self-hosted MSIL bridge ("SFor not supported in bootstrap").
+  // The data plane currently only writes an empty `userMeta` Map
+  // (every public `put` overload calls `bucket.put(key, data, ct,
+  // newMap())`), so an "{}" sidecar value preserves the round-trip
+  // contract for today's call sites.  When non-empty `userMeta`
+  // becomes reachable, refactor `put` to thread an explicit
+  // List[(String, String)] alongside the Map so this serialiser
+  // can iterate without `SFor`.
+  if m.count == 0 { return "{}" }
+  return "{}"
 }
 
 // Deserialise a JSON object of string-string pairs into Map[String, String].

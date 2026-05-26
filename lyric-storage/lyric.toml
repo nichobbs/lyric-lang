@@ -25,17 +25,11 @@ output_assembly = "Storage.dll"
 [project.tests]
 "Storage.StorageTests" = "tests/storage_tests.l"
 
-[features]
-s3        = []   # Amazon S3 (AWSSDK.S3 on .NET)
-azureblob = []   # Azure Blob Storage (Azure.Storage.Blobs on .NET)
-local     = []   # Local filesystem storage (cross-platform, no extra deps)
+# `s3` / `azureblob` feature flags + their NuGet entries were removed
+# alongside the F# host shim deletion in this PR (#1439): every `@cfg`-
+# gated kernel function is gone, so the flags controlled nothing and
+# the NuGet refs were dead weight.  Restore both halves together when
+# the native bindings work picks up the S3 / Azure backends.
 
 [dependencies]
 "Lyric.Stdlib" = { path = "../lyric-stdlib" }
-
-[nuget]
-# feature = "s3" — AWS SDK S3 module for .NET
-"AWSSDK.S3"             = "3.7.300"
-# feature = "azureblob" — Azure Blob Storage SDK for .NET
-"Azure.Storage.Blobs"   = "12.21.0"
-# feature = "local" — no extra NuGet deps (uses BCL System.IO)

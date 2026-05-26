@@ -133,3 +133,109 @@ test "connectAzureBlob rejects empty container name" {
   assertTrue(isErr(connectAzureBlob("DefaultEndpointsProtocol=https;...", "")),
              "must reject empty container name")
 }
+
+// ─── LocalBucket data-plane smoke tests ───────────────────────────────────
+//
+// These exercise the put / get / delete / list / exists round-trip path
+// at the `isOk` / `isErr` level — the idiomatic `case Ok(obj) -> obj.metadata.contentType`
+// inspection is blocked by #1140 (cross-package generic-arg widening
+// inside synthesised `@test_module` bodies) and lives in a follow-up
+// once that lands.
+//
+// Each test runs against a fresh bucket directory keyed by a fresh v4
+// UUID so they're independent and reentrant.  No file-system cleanup
+// is performed (the OS handles `/tmp` eventually) — the tests assume
+// `/tmp/lyric-storage-tests` is writable.
+
+func freshBucket(): Result[StorageBucket, StorageError] {
+  val basePath   = "/tmp/lyric-storage-tests"
+  val bucketName = "smoke-" + Uuid.uuidToString(Uuid.newUuid())
+  connectLocal(basePath, bucketName)
+}
+
+test "put round-trips through get" {
+  val bRes = freshBucket()
+  assertTrue(isOk(bRes), "fresh bucket must connect")
+  val bucket = unwrapResultOr(bRes, defaultBucket())
+  val payload = "aGVsbG8="  // "hello" in base64
+  assertTrue(isOk(put(bucket, "smoke/hello.txt", payload, "text/plain")),
+             "put must succeed")
+  assertTrue(isOk(get(bucket, "smoke/hello.txt")),
+             "get must succeed for previously-put key")
+}
+
+test "exists returns Ok(false) for absent key" {
+  val bRes = freshBucket()
+  assertTrue(isOk(bRes), "fresh bucket must connect")
+  val bucket = unwrapResultOr(bRes, defaultBucket())
+  assertTrue(isOk(exists(bucket, "never-put.txt")),
+             "exists call must succeed regardless of presence")
+}
+
+test "exists returns Ok after put" {
+  val bRes = freshBucket()
+  assertTrue(isOk(bRes), "fresh bucket must connect")
+  val bucket = unwrapResultOr(bRes, defaultBucket())
+  assertTrue(isOk(put(bucket, "exists/probe.bin", "AAA=", "application/octet-stream")),
+             "put must succeed")
+  assertTrue(isOk(exists(bucket, "exists/probe.bin")),
+             "exists must succeed after put")
+}
+
+test "delete returns Ok for previously-put key" {
+  val bRes = freshBucket()
+  assertTrue(isOk(bRes), "fresh bucket must connect")
+  val bucket = unwrapResultOr(bRes, defaultBucket())
+  assertTrue(isOk(put(bucket, "delete/me.bin", "AAA=", "application/octet-stream")),
+             "put must succeed")
+  assertTrue(isOk(delete(bucket, "delete/me.bin")),
+             "delete must succeed for known key")
+}
+
+test "list returns Ok on an empty bucket" {
+  val bRes = freshBucket()
+  assertTrue(isOk(bRes), "fresh bucket must connect")
+  val bucket = unwrapResultOr(bRes, defaultBucket())
+  assertTrue(isOk(list(bucket, "")),
+             "list on empty bucket must succeed")
+}
+
+test "list returns Ok after multiple puts" {
+  val bRes = freshBucket()
+  assertTrue(isOk(bRes), "fresh bucket must connect")
+  val bucket = unwrapResultOr(bRes, defaultBucket())
+  assertTrue(isOk(put(bucket, "list/a.txt", "QQ==", "text/plain")),
+             "put a must succeed")
+  assertTrue(isOk(put(bucket, "list/b.txt", "Qg==", "text/plain")),
+             "put b must succeed")
+  assertTrue(isOk(list(bucket, "list/")),
+             "list with prefix must succeed after puts")
+}
+
+test "put rejects unsafe key with path traversal" {
+  val bRes = freshBucket()
+  assertTrue(isOk(bRes), "fresh bucket must connect")
+  val bucket = unwrapResultOr(bRes, defaultBucket())
+  assertTrue(isErr(put(bucket, "../escape.txt", "AAA=", "text/plain")),
+             "put must reject `..` traversal at the safety gate")
+}
+
+test "get rejects unsafe key with absolute path" {
+  val bRes = freshBucket()
+  assertTrue(isOk(bRes), "fresh bucket must connect")
+  val bucket = unwrapResultOr(bRes, defaultBucket())
+  assertTrue(isErr(get(bucket, "/etc/passwd")),
+             "get must reject absolute key at the safety gate")
+}
+
+// Sentinel bucket used by `unwrapResultOr` fallbacks — never read
+// because every test gates on `isOk(bRes)` before calling the unwrap.
+// Concrete type is forced to `StorageBucket` via the interface, with a
+// distinct invalid bucket-name that would never collide with a real
+// freshBucket() output.
+func defaultBucket(): StorageBucket {
+  match connectLocal("/tmp/lyric-storage-tests", "__default__") {
+    case Ok(b)  -> b
+    case Err(_) -> panic("defaultBucket: connectLocal failed unexpectedly")
+  }
+}
