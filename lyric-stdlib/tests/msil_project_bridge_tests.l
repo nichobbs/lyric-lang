@@ -707,6 +707,80 @@ func testPerPackageIsolationDuplicateName(): Unit {
     "per_package_isolation_duplicate_name: stdout matches expected")
 }
 
+// Regression test for #1435.  When the same package source appears in
+// BOTH `packages` (as an in-bundle user package) AND `stdlibSources`
+// (as a pre-loaded base), `perPackageImportedItems` used to call
+// `addBundleClosure` for that package even though its items were already
+// in `baseItems`.  That caused every type defined in the shared package
+// (e.g., a generic union like `Wrap[T]`) to be registered TWICE in the
+// symbol table with distinct TypeIds, corrupting the type-variable
+// resolution for subsequent packages.  `var i = 0; while i <= n - k`
+// loops in an importing package then hit T0033 because `i` resolved to
+// `TyVar("")` instead of `TyPrim(PtInt)`.
+//
+// The fix: `addBundleClosure` skips any package whose name already
+// appears in the stdlib-packages map (`baseNames`), preventing the
+// double registration.  This test pins that fix by passing the same
+// source as both a `packages` entry (Ix1435.Core) and as a
+// `stdlibSources` entry, then asserting that a consumer package whose
+// body contains the exact failing loop shape compiles and runs correctly.
+func testStdlibSelfBuildNoDuplicateTypeVarCorruption(): Unit {
+  // Shared source: appears as BOTH packages["Ix1435.Core"] AND stdlibSources[0].
+  // The generic union mirrors Std.Core's Option[T]/Result[T,E] pattern
+  // whose double-registration triggered the TyVar("") corruption.
+  val sharedSrc =
+    "package Ix1435.Core\n" +
+    "\n" +
+    "pub generic[T] union Wrap {\n" +
+    "  case Wrapped(value: T)\n" +
+    "  case Empty\n" +
+    "}\n" +
+    "\n" +
+    "pub func wrapInt(x: in Int): Wrap[Int] { Wrapped(value = x) }\n"
+  val consumerSrc =
+    "package Ix1435.App\n" +
+    "\n" +
+    "import Ix1435.Core\n" +
+    "\n" +
+    "// Same shape as Std.Regex.isTimeout: loop variable below a subtracted\n" +
+    "// upper bound.  Before the fix this produced T0033 because the LHS of\n" +
+    "// `<=` resolved to TyVar(\"\") instead of TyPrim(PtInt).\n" +
+    "func countPositions(len: in Int, needle: in Int): Int {\n" +
+    "  var i = 0\n" +
+    "  while i <= len - needle {\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  i\n" +
+    "}\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(countPositions(10, 3))\n" +
+    "}\n"
+  val dir     = freshTempDir("ix1435")
+  val dllPath = Path.join(dir, "Ix1435.dll")
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("Ix1435.Core", sharedSrc))
+  packages.add(mkPkg("Ix1435.App",  consumerSrc))
+  val stdlibSources: List[String] = newList()
+  stdlibSources.add(sharedSrc)  // same source — the overlap that caused #1435
+  val ok = compileProjectToMsil(packages, "Ix1435", dllPath, stdlibSources)
+  if not ok {
+    cleanup(dir)
+    panic("ix1435_no_duplicate_type_var_corruption: compile failed (T0033 regression?)")
+  }
+  writeRuntimeConfig(dllPath)
+  val args: List[String] = newList()
+  args.add("exec")
+  args.add(dllPath)
+  val result = Capture.runCaptureWithDiagnostics("dotnet", args, "")
+  cleanup(dir)
+  assertEqualInt(result.exitCode, 0,
+    "ix1435_no_duplicate_type_var_corruption: exit 0 (stderr=" + result.stderr + ")")
+  // countPositions(10, 3): i increments 0..8 while i <= 7, result = 8
+  assertEqual(Str.trim(result.stdout), "8",
+    "ix1435_no_duplicate_type_var_corruption: stdout=8")
+}
+
 func main(): Int {
   testTwoIndependentPackagesBundle()
   testFirstPackageWithRecordDoesNotDisturbSecond()
@@ -725,6 +799,7 @@ func main(): Int {
   testCfgErasureF0013Typo()
   testCfgErasureFileLevelErasesEntireFile()
   testRestoredDepWiringNoCrash()
+  testStdlibSelfBuildNoDuplicateTypeVarCorruption()
   println("msil-project-bridge tests: ok")
   return 0
 }
