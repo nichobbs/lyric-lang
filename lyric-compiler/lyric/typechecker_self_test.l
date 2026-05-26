@@ -290,6 +290,51 @@ func testRangeBoundLongMinValueFolds(): Unit {
                  "Long.MinValue range bound: no diagnostics at all")
 }
 
+func testFirstWinsOnImportFuncCollision(): Unit {
+  // `addSigsFromItems` is called twice by `checkWithImports`: once
+  // with `importedItems`, once with `file.items`.  On the bare name
+  // key, first-wins means the imported signature pins the slot, and
+  // a user-defined function with the same name + same arity does not
+  // overwrite it.  The arity-qualified key (`name/<n>`) is still
+  // distinct, so user overloads at a different arity register fine.
+  //
+  // This test pins both halves of that contract: (a) no
+  // Dictionary.Add throw when the user redeclares an imported name
+  // at the same arity (would have crashed the typechecker before the
+  // first-wins guard); (b) a user overload at a different arity gets
+  // its own arity-qualified slot and resolves cleanly.
+  val libSrc =
+    "package Lib\n" +
+    "pub func collide(x: in Int): Int { x }\n"
+  val libPr  = parse(libSrc)
+  val importedItems: List[Item] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    importedItems.add(libPr.file.items[i])
+    i = i + 1
+  }
+  // (a) same name + same arity: must not crash; check completes.
+  val srcSame =
+    "package App\n" +
+    "func collide(x: in Int): Int { x + 1 }\n" +
+    "func use(): Int { collide(7) }\n"
+  val prSame = parse(srcSame)
+  val crSame = checkWithImports(prSame.file, importedItems)
+  assertTrue(diagCount(crSame) == 0,
+             "first-wins: same-name same-arity user redeclaration does not crash and emits no diagnostics")
+
+  // (b) same name + different arity: user overload registers on its
+  // own arity-qualified key; both calls resolve.
+  val srcDiff =
+    "package App2\n" +
+    "func collide(x: in Int, y: in Int): Int { x + y }\n" +
+    "func use(): Int { collide(7, 8) }\n"
+  val prDiff = parse(srcDiff)
+  val crDiff = checkWithImports(prDiff.file, importedItems)
+  assertTrue(diagCount(crDiff) == 0,
+             "first-wins: same-name different-arity user overload registers cleanly")
+}
+
 func main(): Unit {
   testEmptySource()
   testFuncRegistered()
@@ -314,5 +359,6 @@ func main(): Unit {
   testQualifiedTypeMisqualifiedResolvesPermissively()
   testRangeBoundLongMinValueFolds()
   testTyUserRendersDeclaredName()
+  testFirstWinsOnImportFuncCollision()
   println("typechecker self-test: ok")
 }

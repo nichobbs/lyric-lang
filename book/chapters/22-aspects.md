@@ -160,14 +160,19 @@ The following features are designed and specified in `docs/26-aspects.md` but no
 exposes compile-time-known metadata about the weave site: `call.shortName`,
 `call.qualifiedName`, `call.modulePath`, `call.sourceLocation`,
 `call.annotations`, and `call.aspect` are materialised as locals by the
-weaver and rewritten in place. The weaver pre-scans the body and only
-emits the locals that are actually read — aspects that don't reference
-`call.*` produce byte-identical wrappers to the weaver's pre-tier-6
-output. `call.elapsed` and `call.caller` need runtime instrumentation
-(timestamp capture around `proceed`, caller-site stack walk) and are
-not yet wired; references to either surface as an **A0043** weave-time
-diagnostic naming the unrecognised field and listing the recognised
-ones. Follow-up tracked in issue #1298.
+weaver and rewritten in place.  Concrete shapes: `shortName`,
+`qualifiedName`, `modulePath`, and `aspect` are `String`;
+`sourceLocation` is `String` of the form `"<packagePath>:<line>"` (e.g.
+`"My.Pkg:42"`, or `"<unknown>:<line>"` when the package path is
+empty); `annotations` is `slice[String]` carrying the matched
+function's annotation short-names.  The weaver pre-scans the body and
+only emits the locals that are actually read — aspects that don't
+reference `call.*` produce byte-identical wrappers to the weaver's
+pre-tier-6 output. `call.elapsed` and `call.caller` need runtime
+instrumentation (timestamp capture around `proceed`, caller-site stack
+walk) and are not yet wired; references to either surface as an
+**A0043** weave-time diagnostic naming the unrecognised field and
+listing the recognised ones. Follow-up tracked in issue #1298.
 
 **`config {}` injection.** Each `config { }` field with a literal
 default is materialised by the weaver as a synthetic

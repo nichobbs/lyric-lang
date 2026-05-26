@@ -1402,8 +1402,14 @@ The following are specified but not yet fully woven:
   issue #1298. The compile-time-known fields (`shortName`,
   `qualifiedName`, `modulePath`, `sourceLocation`, `annotations`,
   `aspect`) are wired and rewritten by the weaver as
-  `__lyric_call_<name>` locals; references to `call.elapsed` /
-  `call.caller` surface as A0043 weave-time diagnostics.
+  `__lyric_call_<name>` locals. Concrete shapes: `shortName`,
+  `qualifiedName`, `modulePath`, `aspect` are `String`;
+  `sourceLocation` is `String` of the form
+  `"<packagePath>:<line>"` (or `"<unknown>:<line>"` when the
+  package path is empty); `annotations` is `slice[String]`
+  carrying the matched function's annotation short-names.
+  References to `call.elapsed` / `call.caller` surface as A0043
+  weave-time diagnostics.
 - `pub aspect` templates and consumer-side instantiation
   (`aspect X from Pkg.Y`) — parsed by the compiler but the weaver
   does not act on them.
