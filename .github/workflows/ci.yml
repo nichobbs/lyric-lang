@@ -149,12 +149,10 @@ jobs:
             # Temporary — will be reverted once the CI-only failure is
             # diagnosed.
             tail -c 30000 /tmp/emit-tests.log > /tmp/emit-tail.txt
-            python3 -c '
-            import json, os
-            with open("/tmp/emit-tail.txt") as f:
-                body = "## CI emit-tests diagnostic\n\n```\n" + f.read() + "\n```"
-            print(json.dumps({"body": body}))
-            ' > /tmp/comment.json
+            python3 -c 'import json
+with open("/tmp/emit-tail.txt") as f:
+    body = "## CI emit-tests diagnostic\n\n```\n" + f.read() + "\n```"
+print(json.dumps({"body": body}))' > /tmp/comment.json
             curl -sS -X POST \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer $GH_TOKEN" \
