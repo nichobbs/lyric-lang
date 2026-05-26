@@ -53,6 +53,8 @@ import Std.Environment as Environment
 import Std.Uuid as Uuid
 import Lyric.Lexer
 import Lyric.CliShell as CliShell
+import Lyric.ContractMeta as Meta
+import Lyric.RestoredPackages as RP
 import Msil.Bridge as MsilBridge
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -272,7 +274,6 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
                     case Dotnet -> true
                     case Jvm    -> false
                   }
-                  and req.restoredDllPaths.count == 0
                   and not useSubprocessFallback()
 
   if canInProc {
@@ -310,9 +311,49 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
   // cross-package union dispatch (#1140-style).  Mirrors the F# bootstrap
   // `Lyric.Cli.SelfHostedBridge.findStdlibSources` helper.
   val stdlibSources = findStdlibSources()
-  val ok = MsilBridge.compileProjectToMsilWithFeatures(
+
+  // Load + synthesise each restored-dependency DLL.  `restoredDllPaths`
+  // entries are "depName\tdllPath"; only the dllPath portion matters for
+  // the in-process loader (depName is metadata for the F# subprocess
+  // path's diagnostic surfaces).  If any DLL fails to load or synthesise
+  // (e.g. the dep was built by the self-hosted bridge, which doesn't yet
+  // emit `Lyric.Contract` resources), fall back to the F# subprocess
+  // path which can build against the dep via reflection regardless of
+  // contract presence.
+  val restoredArtifacts: List[SynthesisedArtifact] = newList()
+  var ri = 0
+  while ri < req.restoredDllPaths.count {
+    val depEntry  = req.restoredDllPaths[ri]
+    val tabPos = depEntry.indexOf("\t")
+    val dllPath = if tabPos >= 0 {
+      depEntry.substring(tabPos + 1, depEntry.length - tabPos - 1)
+    } else {
+      depEntry
+    }
+    match RP.loadRestoredPackage(dllPath) {
+      case Err(_) -> return emitProjectViaSubprocess(req)
+      case Ok(arts) -> {
+        var ai = 0
+        while ai < arts.count {
+          // Fresh preamble per call so a mutation by `synthesiseArtifact`
+          // (intended read-only but not enforced by the type system)
+          // can't leak across iterations.
+          val preamble: List[Meta.ContractDecl] = newList()
+          match RP.synthesiseArtifact(arts[ai], preamble) {
+            case Err(_) -> return emitProjectViaSubprocess(req)
+            case Ok(syn) -> restoredArtifacts.add(syn)
+          }
+          ai = ai + 1
+        }
+      }
+    }
+    ri = ri + 1
+  }
+
+  val ok = MsilBridge.compileProjectToMsilWithRestored(
     payloads, req.assemblyName, req.outputPath,
-    stdlibSources, req.activeFeatures, req.declaredFeatures)
+    stdlibSources, req.activeFeatures, req.declaredFeatures,
+    restoredArtifacts)
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)

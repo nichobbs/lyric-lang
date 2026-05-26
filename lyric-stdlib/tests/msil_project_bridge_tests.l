@@ -588,6 +588,58 @@ func testCfgErasureFileLevelErasesEntireFile(): Unit {
     "cfg_erasure_file_level: stdout matches expected")
 }
 
+// ─── Phase A.4: restored-dep wiring crash-safety smoke test ────────────────
+//
+// Confirms that the new `emitProject` restored-dep wiring doesn't crash
+// when handed a non-existent DLL path — the load fails cleanly and the
+// emitter falls through to the F# subprocess fallback.  That subprocess
+// then exits 1 because it also can't find the DLL
+// (`Program.fs::internalProjectBuild` lines 218-225 set `hadFatal` on
+// missing DEP files), so `emitProject` returns `EmitResult` with no
+// `outputPath`.  This test just ensures we get THAT clean failure path
+// rather than a panic from the in-process load step.
+//
+// The full end-to-end test (library DLL with embedded `Lyric.Contract`
+// resource → consumer project with cross-package call → `dotnet exec`
+// round-trip) lands once the self-hosted bridge emits `Lyric.Contract`
+// resources directly — see D-progress-311 for the prerequisite slice.
+
+func testRestoredDepWiringNoCrash(): Unit {
+  val tmpDir = freshTempDir("restored-wiring")
+  val consumerPkgs: List[Emitter.ProjectPackage] = newList()
+  consumerPkgs.add(mkProjectPkg("RestoredFallbackApp",
+    "package RestoredFallbackApp\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(\"fallback ok\")\n" +
+    "}\n"))
+  val consumerDll = Path.join(tmpDir, "RestoredFallbackApp.dll")
+  val restoredDlls: List[String] = newList()
+  // Non-existent path: in-process loader returns `DllMissing` →
+  // emitter falls through to subprocess → subprocess also sees the
+  // missing DLL and exits 1.  We expect `outputPath = None` and NO
+  // panic.
+  restoredDlls.add("RestoredFallbackLib\t" + Path.join(tmpDir, "missing.dll"))
+  val req = Emitter.EmitProjectRequest(
+    packages         = consumerPkgs,
+    assemblyName     = "RestoredFallbackApp",
+    outputPath       = consumerDll,
+    target           = Emitter.Dotnet,
+    restoredDllPaths = restoredDlls,
+    activeFeatures   = newList(),
+    declaredFeatures = newList())
+  val result = Emitter.emitProject(req)
+  // Exact expected state: subprocess exited 1, no DLL produced.
+  match result.outputPath {
+    case None    -> ()  // expected
+    case Some(_) -> {
+      cleanup(tmpDir)
+      panic("restored_wiring: subprocess shouldn't produce output when DLL is missing")
+    }
+  }
+  cleanup(tmpDir)
+}
+
 func main(): Int {
   testTwoIndependentPackagesBundle()
   testFirstPackageWithRecordDoesNotDisturbSecond()
@@ -603,6 +655,7 @@ func main(): Int {
   testCfgErasureF0012Malformed()
   testCfgErasureF0013Typo()
   testCfgErasureFileLevelErasesEntireFile()
+  testRestoredDepWiringNoCrash()
   println("msil-project-bridge tests: ok")
   return 0
 }
