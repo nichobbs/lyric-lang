@@ -37,6 +37,13 @@ pub record AssemblerInput {
   us:              UsHeap
   blobs:           BlobHeap
   guids:           GuidHeap
+  /// Managed-resource payload bytes, concatenated.  Each resource is a
+  /// 4-byte little-endian length prefix followed by the resource data.
+  /// `tables.manifestResources` carries the per-resource offsets into
+  /// this buffer.  When empty (the common case for assemblies with no
+  /// embedded resources), the CLR header's Resources directory entry
+  /// is left zero.
+  resourceData:    List[Byte]
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -132,7 +139,8 @@ func writePeHdrs(w: in ByteWriter, textVSize: in Int, textRSize: in Int, imgSize
 
 // ── CLR IMAGE_COR20_HEADER (72 bytes at file offset 0x200) ───────────────────
 
-func writeClrHdr(w: in ByteWriter, mdRva: in Int, mdSize: in Int, entryToken: in Int): Unit {
+func writeClrHdr(w: in ByteWriter, mdRva: in Int, mdSize: in Int,
+                 entryToken: in Int, rsrcRva: in Int, rsrcSize: in Int): Unit {
   w4p(w, 72)          // cb
   w2p(w, 2)           // MajorRuntimeVersion
   w2p(w, 5)           // MinorRuntimeVersion
@@ -140,7 +148,9 @@ func writeClrHdr(w: in ByteWriter, mdRva: in Int, mdSize: in Int, entryToken: in
   w4p(w, mdSize)      // MetaData.Size
   w4p(w, 1)           // Flags: COMIMAGE_FLAGS_ILONLY
   w4p(w, entryToken)  // EntryPointToken
-  bufZero(w, 48)      // Resources/StrongName/CodeManager/VTable/Export/ManagedNative
+  w4p(w, rsrcRva)     // Resources.VirtualAddress (0 = no embedded resources)
+  w4p(w, rsrcSize)    // Resources.Size
+  bufZero(w, 40)      // StrongName/CodeManager/VTable/Export/ManagedNative (5 × 8 bytes)
 }
 
 // ── BSJB metadata root + 5 stream headers + stream data ──────────────────────
@@ -325,10 +335,20 @@ pub func assemblePe(inp: in AssemblerInput): ByteWriter {
   // metaSize = BSJB header(32) + stream headers(76) + padded stream data
   val metaSize = 108 + tSize + sSize + uSize + bSize + gSize
 
+  // Resources data region.  Lives between method bodies and metadata
+  // when non-empty; zero-sized otherwise (and the CLR header's
+  // Resources directory entry stays zero).  ECMA-335 §II.25.3.3.3
+  // requires the region to be 4-byte aligned, so we round up the raw
+  // size before the metadata RVA computation.
+  val rawRsrcSize  = inp.resourceData.count
+  val padRsrcSize  = round4(rawRsrcSize)
+  val hasResources = rawRsrcSize > 0
+  val rsrcRva      = if hasResources { 0x2000 + clrHdrSz72() + mbTotalRaw } else { 0 }
+
   // PE layout
   val clrHdrSz  = 72
-  val mdRva     = 0x2000 + clrHdrSz + mbTotalRaw   // metadata RVA in .text section
-  val textVSize = clrHdrSz + mbTotalRaw + metaSize  // actual content bytes in .text
+  val mdRva     = 0x2000 + clrHdrSz + mbTotalRaw + padRsrcSize   // metadata RVA in .text section
+  val textVSize = clrHdrSz + mbTotalRaw + padRsrcSize + metaSize  // actual content bytes in .text
   val textRSize = roundTo(textVSize, 0x200)          // file-aligned .text size
   val imgSize   = 0x2000 + roundTo(textVSize, 0x2000)  // SizeOfImage
 
@@ -336,7 +356,8 @@ pub func assemblePe(inp: in AssemblerInput): ByteWriter {
   val w = bufNew()
   writeDos(w)                                              // 0x000–0x07F
   writePeHdrs(w, textVSize, textRSize, imgSize)            // 0x080–0x1FF
-  writeClrHdr(w, mdRva, metaSize, inp.entryPointToken)     // 0x200–0x247
+  writeClrHdr(w, mdRva, metaSize, inp.entryPointToken,
+              rsrcRva, rawRsrcSize)                         // 0x200–0x247
 
   // Method bodies, each followed by zero-padding to a 4-byte boundary so
   // that the next FAT-format body satisfies the ECMA-335 alignment rule.
@@ -347,7 +368,22 @@ pub func assemblePe(inp: in AssemblerInput): ByteWriter {
     j = j + 1
   }
 
+  // Resource data region (length-prefix-per-resource encoding already
+  // applied by the caller in `resourceData`), padded to 4 bytes so the
+  // metadata stream starts aligned.
+  if hasResources {
+    var ri = 0
+    while ri < rawRsrcSize {
+      bufU1(w, inp.resourceData[ri])
+      ri = ri + 1
+    }
+    bufZero(w, padRsrcSize - rawRsrcSize)
+  }
+
   writeMeta(w, tildeBuf, strBuf, usBuf, blBuf, guBuf)      // metadata
   bufZero(w, textRSize - textVSize)                        // section padding
   return w
 }
+
+// CLR header size — 72 bytes per ECMA-335 §II.25.3.3.
+func clrHdrSz72(): Int { 72 }

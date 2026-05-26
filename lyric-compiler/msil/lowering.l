@@ -1468,7 +1468,7 @@ pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
     strings         = ctx.strings,
     us              = ctx.us,
     blobs           = ctx.blobs,
-    guids           = ctx.guids)
+    guids           = ctx.guids, resourceData = newList())
 
   val peBuf = assemblePe(inp)
   bufToList(peBuf)
@@ -1516,7 +1516,7 @@ pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx,
     strings         = ctx.strings,
     us              = ctx.us,
     blobs           = ctx.blobs,
-    guids           = ctx.guids)
+    guids           = ctx.guids, resourceData = newList())
 
   val peBuf = assemblePe(inp)
   bufToList(peBuf)
@@ -1554,7 +1554,7 @@ pub func lowerMPackagesWithCtx(pkgs: in List[MPackage], ctx: in LoweringCtx,
     strings         = ctx.strings,
     us              = ctx.us,
     blobs           = ctx.blobs,
-    guids           = ctx.guids)
+    guids           = ctx.guids, resourceData = newList())
 
   val peBuf = assemblePe(inp)
   bufToList(peBuf)
