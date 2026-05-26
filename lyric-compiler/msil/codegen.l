@@ -5847,3 +5847,176 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
     ai = ai + 1
   }
 }
+
+/// Per-package stdlib payload consumed by
+/// `registerStdlibArtifactTokens`.  Holds the dotted package name
+/// (`Std.Encoding`, `Std.CollectionsHost`, …) alongside the items
+/// the bridge collected from the matching stdlib source.  Defined
+/// here (rather than in `Msil.Bridge`) so the codegen registration
+/// function can name the record type without `Msil.Codegen` having
+/// to import `Msil.Bridge` and form a circular dependency.
+pub record StdlibPkg {
+  name:  String
+  items: List[Item]
+}
+
+/// Walk every `StdlibPkg` and register its `pub func`s as
+/// cross-assembly `MemberRef` rows in `cctx.funcTokens`, keyed by
+/// the function's fully-qualified name (`<pkgName>.<fnName>`).  Call
+/// once after `newCodegenCtx`, before the per-package
+/// `addPackageTokens` pre-scan (#1378 codegen-side closure).
+///
+/// AssemblyRef naming convention matches the F# emitter
+/// (`Lyric.Stdlib.<X>` for `Std.X`, `Lyric.<head>.<rest>` for non-
+/// `Std` builtins).  Each stdlib package's `pub func`s live on a
+/// host class `<pkgName>.Program` in the corresponding DLL — the
+/// same shape `addPackageTokens` produces for user packages.
+///
+/// Empty `pkgs` is a no-op — single-package compiles with no stdlib
+/// imports still work because their callsite codegen never reaches
+/// the `funcTokens` lookup (handled by the hardcoded builtin arms in
+/// `lowerBuiltinOrStaticCallMsil`).
+pub func registerStdlibArtifactTokens(
+  cctx: in CodegenCtx,
+  pkgs: in List[StdlibPkg]
+): Unit {
+  var pi = 0
+  while pi < pkgs.count {
+    val pkg: StdlibPkg = pkgs[pi]
+    val asmRefRow  = ensureStdlibAssemblyRef(cctx, pkg.name)
+    val hostRefRow = ensureHostClassTypeRefRow(cctx, pkg.name, asmRefRow)
+    var ii = 0
+    while ii < pkg.items.count {
+      val it: Item = pkg.items[ii]
+      match it.kind {
+        case IFunc(decl) -> registerStdlibFunc(cctx, pkg.name, hostRefRow, decl)
+        case _           -> ()
+      }
+      ii = ii + 1
+    }
+    pi = pi + 1
+  }
+}
+
+// Allocate (or reuse) the AssemblyRef row for the stdlib DLL that
+// contains `packageName`.  Stdlib DLLs follow the F# emitter's
+// per-package naming convention so the user's PE references the same
+// AssemblyRef identity the F# emitter would have produced — the same
+// SDK-installed (or test-harness-staged) `Lyric.Stdlib.<X>.dll`
+// satisfies the binding at runtime.
+//
+// Cached in `cctx.ffiAsmRefs` under the original package name (not
+// the synthesised assembly name) so two `Std.X` references collapse
+// to one AssemblyRef row.
+func ensureStdlibAssemblyRef(cctx: in CodegenCtx,
+                              packageName: in String): Int {
+  if cctx.ffiAsmRefs.containsKey(packageName) {
+    match mapGet(cctx.ffiAsmRefs, packageName) {
+      case Some(row) -> return row
+      case None      -> ()
+    }
+  }
+  val asmName = stdlibAssemblyName(packageName)
+  // Stdlib assemblies ship version 0.1.0; the loader binds against
+  // the matching `Lyric.Stdlib.<X>.dll` regardless of patch.
+  val row = ctxAddLyricPackageAssemblyRef(cctx.lctx, asmName, 0, 1)
+  cctx.ffiAsmRefs.add(packageName, row)
+  row
+}
+
+// Translate a Lyric package name into the F# emitter's stdlib
+// assembly-name convention so cross-emitter PE bindings line up:
+//   Std.Encoding              → Lyric.Stdlib.Encoding
+//   Std.Collections           → Lyric.Stdlib.Collections
+//   Std.CollectionsHost       → Lyric.Stdlib.CollectionsHost
+//   Std.Collections.Host      → Lyric.Stdlib.Collections.Host  (3+ seg)
+//   Lyric.Lexer               → Lyric.Lyric.Lexer
+//   <single-segment>          → Lyric.<segment>
+//
+// Mirrors `bootstrap/src/Lyric.Emitter/Emitter.fs::ensureStdlibArtifact`'s
+// `assemblyName` block.  Tail segments are joined with `.` so a
+// 3+-segment package keeps its segment boundaries — every current
+// stdlib package is 2-segment, but `Std.A.B` and `Std.AB` must yield
+// distinct DLL names (`Lyric.Stdlib.A.B` vs `Lyric.Stdlib.AB`) when
+// the surface grows (review #1427).
+func stdlibAssemblyName(packageName: in String): String {
+  val segs = splitDottedName(packageName)
+  if segs.count == 0 { return "Lyric.Unknown" }
+  val head = segs[0]
+  var tail = ""
+  var i = 1
+  while i < segs.count {
+    if i > 1 { tail = tail + "." }
+    tail = tail + segs[i]
+    i = i + 1
+  }
+  if head == "Std" {
+    "Lyric.Stdlib." + tail
+  } else if segs.count == 1 {
+    "Lyric." + head
+  } else {
+    "Lyric." + head + "." + tail
+  }
+}
+
+// Split `"A.B.C"` into `["A", "B", "C"]`.  Used by
+// `stdlibAssemblyName` to take apart dotted package names without
+// pulling in `Lyric.Parser` (which would make the codegen depend on
+// the parser).  Uses `String.indexOf` so the implementation stays on
+// supported BCL string operations.
+func splitDottedName(name: in String): List[String] {
+  val segs: List[String] = newList()
+  var rest = name
+  var idx = rest.indexOf(".")
+  while idx >= 0 {
+    segs.add(rest.substring(0, idx))
+    rest = rest.substring(idx + 1, rest.length - idx - 1)
+    idx = rest.indexOf(".")
+  }
+  if rest.length > 0 { segs.add(rest) }
+  segs
+}
+
+// Register one stdlib `pub func` as a cross-assembly `MemberRef`
+// row in `cctx.funcTokens`.  Skipped when:
+//   * `fn` is not `pub` (private stdlib functions aren't reachable
+//     across the package boundary and would fail to bind at runtime)
+//   * `<pkgName>.<fnName>` is already in `funcTokens` (an in-bundle
+//     package, restored artifact, or earlier stdlib pass already
+//     registered it — first-in-wins).
+//
+// Reuses `buildStaticMethodSig` + `typeExprToMsilCtx` so the
+// signature blob matches the encoding the F# emitter would emit on
+// the producer side.  Errors during type resolution surface as
+// `MObject` slots in the signature (matching the existing
+// `registerRestoredFunc` policy).
+func registerStdlibFunc(
+  cctx:        in CodegenCtx,
+  packageName: in String,
+  hostRefRow:  in Int,
+  fn:          in FunctionDecl
+): Unit {
+  val isPub = match fn.visibility {
+    case Some(VisPub(_)) -> true
+    case _               -> false
+  }
+  if not isPub { return }
+  val fqn = packageName + "." + fn.name
+  if cctx.funcTokens.containsKey(fqn) { return }
+
+  val paramTypes: List[MsilType] = newList()
+  var pi = 0
+  while pi < fn.params.count {
+    paramTypes.add(typeExprToMsilCtx(cctx, fn.params[pi].ty, packageName))
+    pi = pi + 1
+  }
+  val retType = match fn.ret {
+    case Some(te) -> typeExprToMsilCtx(cctx, te, packageName)
+    case None     -> MVoid
+  }
+  val funcSig   = buildStaticMethodSig(paramTypes, retType)
+  val sigKey    = "stdlib_func_" + fqn
+  val memberRow = ctxAddMemberRef(cctx.lctx, hostRefRow, fn.name,
+                                   sigKey, funcSig)
+  cctx.funcTokens.add(fqn, 0x0A000000 + memberRow)
+}

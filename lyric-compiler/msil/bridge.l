@@ -72,8 +72,13 @@ pub func compileToMsilWithVersion(
   // imported items so user code can reference `Std.X.Bar` (and the kernel-
   // declared `List[T]`, `Map[K,V]`, `Random`, `Scope`, …) at typecheck.
   // See `collectStdlibTypeItems` for the filter set and the rationale.
+  //
+  // `collectStdlibPackages` produces the per-package grouping that the
+  // codegen `registerStdlibArtifactTokens` consumes below to wire
+  // cross-assembly `MemberRef` rows for `pub func` items.
+  val stdlibPkgs = collectStdlibPackages(stdlibSources)
   val importedItems: List[Item] = newList()
-  collectStdlibTypeItems(stdlibSources, importedItems)
+  spreadStdlibPackageItems(stdlibPkgs, importedItems)
 
   // Collapse `import X as Y` aliases: rewrite `Y.foo(...)` to bare
   // `foo(...)` (and the same for type / pattern positions) so the
@@ -110,6 +115,14 @@ pub func compileToMsilWithVersion(
   val emptyArtifacts: List[SynthesisedArtifact] = newList()
   val verParts = parseSemverMajorMinor(packageVersion)
   val cctx = newCodegenCtx(pkgName, emptyArtifacts, verParts[0], verParts[1])
+  // Allocate cross-assembly MemberRef rows for every stdlib `pub func`
+  // so that user code calling `Std.X.foo(...)` emits a real
+  // `call <memberref>` instead of falling through to the `MObject`
+  // arm in `lowerBuiltinOrStaticCallMsil`.  See the matching wire-up
+  // in `compileProjectToMsilWithRestoredAndVersion` for the full
+  // rationale (mirrors the F# emitter's `resolveStdlibImports` +
+  // `emitAssembly` import-table population).
+  registerStdlibArtifactTokens(cctx, stdlibPkgs)
 
   // Run the aspect weaver before the token pre-scan so that the pre-scan
   // sees the post-weave function list (renamed originals + synthesised wrappers).
@@ -286,8 +299,19 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // record / function references are always in scope because the
   // codegen-side AssemblyRef / TypeRef / MemberRef rows for them are
   // unconditionally seeded into the codegen context.
+  //
+  // `collectStdlibPackages` walks the same `stdlibSources` list that
+  // `collectStdlibTypeItems` does but ALSO returns the items grouped
+  // by their declaring package (`Std.Core`, `Std.Encoding`, …).  The
+  // codegen-side `registerStdlibArtifactTokens` consumes that group
+  // map to allocate cross-assembly MemberRef rows for every
+  // user-callable stdlib `pub func`, so `tryDecodeBase64(...)` etc.
+  // emit a real `call <memberref>` instruction instead of the
+  // `MObject` fall-through that produced `InvalidProgramException`
+  // at runtime.
+  val stdlibPkgs = collectStdlibPackages(stdlibSources)
   val baseItems: List[Item] = newList()
-  collectStdlibTypeItems(stdlibSources, baseItems)
+  spreadStdlibPackageItems(stdlibPkgs, baseItems)
   var ri0 = 0
   while ri0 < restoredArtifacts.count {
     collectTypeItemsFromFile(restoredArtifacts[ri0].source, baseItems)
@@ -373,6 +397,26 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // surface so the per-package addPackageTokens pre-scan sees restored
   // types as first-class lookups.
   registerRestoredArtifactTokens(cctx)
+  // Allocate cross-assembly AssemblyRef / TypeRef / MemberRef rows for
+  // every `pub func` declared in the stdlib so that user code which
+  // calls `Std.X.foo(...)` (e.g. `Std.Encoding.tryDecodeBase64`)
+  // emits a real `call <memberref>` instruction instead of falling
+  // through to the `MObject` arm in `lowerBuiltinOrStaticCallMsil`
+  // (which previously produced an unbalanced operand stack and an
+  // `InvalidProgramException` at runtime).  Mirrors the F# emitter's
+  // `resolveStdlibImports` + `emitAssembly` import-table population.
+  //
+  // Filter `stdlibPkgs` to exclude any package whose name matches an
+  // in-bundle user package — otherwise registering MemberRefs for
+  // `Std.Encoding` when COMPILING `Std.Encoding` itself (as happens
+  // during stdlib bundle precompile) would clash with the
+  // `addPackageTokens` MethodDef registration that follows.  In
+  // practice the bridge today never sees the stdlib being compiled
+  // (the F# emitter handles that), but the guard makes the bridge
+  // robust to a future refactor that routes stdlib compilation
+  // through the in-process path.
+  registerStdlibArtifactTokens(cctx,
+                                filterStdlibPkgsByBundle(stdlibPkgs, perPkgNames))
 
   val liftedFiles: List[SourceFile] = newList()
   var li = 0
@@ -746,6 +790,121 @@ func hasParseError(diags: in List[Diagnostic]): Bool {
       case DiagError -> return true
       case _         -> {}
     }
+    i = i + 1
+  }
+  false
+}
+
+// `StdlibPkg` record is defined in `Msil.Codegen` so the codegen-side
+// `registerStdlibArtifactTokens` can consume it without a circular
+// import.  Imported into this package via `Msil.Codegen`.
+
+// Walk every `stdlibSources` entry, parse it, and group the included
+// items by the source's `package` declaration.  Items are filtered to
+// the same set `collectStdlibTypeItems` accepts (types + `pub func`s
+// + extern types + protected types) so the per-package map is a strict
+// subset of the flat `baseItems` view.
+//
+// Parse-error files are dropped wholesale (matching the
+// `collectStdlibTypeItems` convention) so partial / malformed items
+// don't pollute the downstream codegen registration.
+pub func collectStdlibPackages(
+  stdlibSources: in List[String]
+): List[StdlibPkg] {
+  val pkgs: List[StdlibPkg] = newList()
+  var si = 0
+  while si < stdlibSources.count {
+    val stdPr = parse(stdlibSources[si])
+    // Diagnostics already surfaced via `collectStdlibTypeItems`'s
+    // earlier walk over the same sources, so suppress double-printing
+    // here.
+    if hasParseError(stdPr.diagnostics) {
+      si = si + 1
+      continue
+    }
+    val pkgName = segmentsToString(stdPr.file.packageDecl.path.segments)
+    val items: List[Item] = newList()
+    var ii = 0
+    while ii < stdPr.file.items.count {
+      val it = stdPr.file.items[ii]
+      // Only `pub` functions surface in the foreign DLL's public
+      // method table; private functions get internal accessibility
+      // and a cross-assembly MemberRef would fail to bind at
+      // runtime.  Filtering here keeps `StdlibPkg.items` aligned
+      // with what `registerStdlibFunc` would actually register and
+      // removes the dead `isPub`-guarded iteration on the codegen
+      // side (review #1429).
+      val include = match it.kind {
+        case IRecord(_)       -> true
+        case IExposedRec(_)   -> true
+        case IUnion(_)        -> true
+        case IEnum(_)         -> true
+        case IDistinctType(_) -> true
+        case IInterface(_)    -> true
+        case ITypeAlias(_)    -> true
+        case IOpaque(_)       -> true
+        case IProtected(_)    -> true
+        case IExternType(_)   -> true
+        case IFunc(decl)      -> match decl.visibility {
+          case Some(VisPub(_)) -> true
+          case _               -> false
+        }
+        case _                -> false
+      }
+      if include { items.add(it) }
+      ii = ii + 1
+    }
+    pkgs.add(StdlibPkg(name = pkgName, items = items))
+    si = si + 1
+  }
+  pkgs
+}
+
+// Append every item from every `StdlibPkg` in `pkgs` to `flat`.  Used
+// by the bridge to keep the typecheck-side flat `baseItems` view in
+// sync with the codegen-side per-package map, without re-parsing the
+// stdlib sources a second time.
+pub func spreadStdlibPackageItems(
+  pkgs: in List[StdlibPkg],
+  flat: in List[Item]
+): Unit {
+  var pi = 0
+  while pi < pkgs.count {
+    val pkg: StdlibPkg = pkgs[pi]
+    var ii = 0
+    while ii < pkg.items.count {
+      flat.add(pkg.items[ii])
+      ii = ii + 1
+    }
+    pi = pi + 1
+  }
+}
+
+// Return a new `StdlibPkg` list with any package whose name matches
+// an entry in `bundleNames` dropped.  Used to keep
+// `registerStdlibArtifactTokens` from clashing with `addPackageTokens`
+// when the in-bundle build set happens to include the stdlib package
+// itself (e.g. compiling the `Lyric.Stdlib` bundle).
+pub func filterStdlibPkgsByBundle(
+  pkgs:        in List[StdlibPkg],
+  bundleNames: in List[String]
+): List[StdlibPkg] {
+  val keep: List[StdlibPkg] = newList()
+  var i = 0
+  while i < pkgs.count {
+    val pkg: StdlibPkg = pkgs[i]
+    if not bundleNameMatches(bundleNames, pkg.name) {
+      keep.add(pkg)
+    }
+    i = i + 1
+  }
+  keep
+}
+
+func bundleNameMatches(bundleNames: in List[String], name: in String): Bool {
+  var i = 0
+  while i < bundleNames.count {
+    if bundleNames[i] == name { return true }
     i = i + 1
   }
   false
