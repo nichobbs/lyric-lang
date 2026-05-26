@@ -5651,13 +5651,86 @@ func registerRestoredFunc(cctx: in CodegenCtx,
   cctx.funcTokens.add(fqn, 0x0A000000 + memberRow)
 }
 
+// Allocate a TypeRef row for a union's case class (named
+// `<UnionName>$<CaseName>`).  Cached in `ffiTypeRefs` under the
+// case-class FQN so multiple `registerRestoredUnionCase` calls
+// against the same case share one TypeRef row.
+func ensureCaseClassTypeRefRow(cctx: in CodegenCtx,
+                               packageName: in String,
+                               caseClassName: in String,
+                               asmRefRow: in Int): Int {
+  val caseFqn    = packageName + "." + caseClassName
+  val typeRefKey = packageName + "/" + caseFqn
+  if cctx.ffiTypeRefs.containsKey(typeRefKey) {
+    match mapGet(cctx.ffiTypeRefs, typeRefKey) {
+      case Some(row) -> return row
+      case None      -> ()
+    }
+  }
+  val row = ctxAddTypeRef(cctx.lctx, packageName, caseClassName, asmRefRow)
+  cctx.ffiTypeRefs.add(typeRefKey, row)
+  row
+}
+
+// Extract a UnionField's type expression.  Both UFNamed and UFPos
+// carry a TypeExpr; this helper unifies the access.
+func unionFieldType(uf: in UnionField): TypeExpr {
+  match uf {
+    case UFNamed(_, ty, _) -> ty
+    case UFPos(ty, _)      -> ty
+  }
+}
+
+// Register one union case's ctor MemberRef.  The case class is named
+// `<UnionName>$<CaseName>` and its ctor signature follows the same
+// HASTHIS convention as record ctors — one param per field.  Skipped
+// if the case-class FQN is already registered.
+func registerRestoredUnionCase(cctx: in CodegenCtx,
+                               packageName: in String,
+                               unionName: in String,
+                               c: in UnionCase,
+                               asmRefRow: in Int): Unit {
+  val caseClassName = unionName + "$" + c.name
+  val caseFqn       = packageName + "." + caseClassName
+  if cctx.recordCtorTokens.containsKey(caseFqn) { return }
+
+  val typeRefRow = ensureCaseClassTypeRefRow(cctx, packageName, caseClassName, asmRefRow)
+
+  val ctorParams: List[MsilType] = newList()
+  var fi = 0
+  while fi < c.fields.count {
+    ctorParams.add(typeExprToMsilCtx(cctx, unionFieldType(c.fields[fi]), packageName))
+    fi = fi + 1
+  }
+
+  val ctorSig   = buildInstanceMethodSig(ctorParams, MVoid)
+  val sigKey    = "restored_ucase_" + caseFqn
+  val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, ".ctor",
+                                   sigKey, ctorSig)
+  cctx.recordCtorTokens.add(caseFqn, 0x0A000000 + memberRow)
+}
+
+// Walk every case of a union and register its case-class ctor.
+func registerRestoredUnion(cctx: in CodegenCtx,
+                           packageName: in String,
+                           decl: in UnionDecl,
+                           asmRefRow: in Int): Unit {
+  var ci = 0
+  while ci < decl.cases.count {
+    registerRestoredUnionCase(cctx, packageName, decl.name,
+                              decl.cases[ci], asmRefRow)
+    ci = ci + 1
+  }
+}
+
 // Walk the artifact's parsed source and seed MemberRef tokens for
-// every record ctor and every public free function.  Skips records
-// whose TypeRef wasn't allocated (e.g. items elided from the
-// contract) and private funcs (no public surface).
+// every record ctor, every public free function, and every union
+// case's ctor.  Skips items whose TypeRef wasn't allocated and
+// private funcs (no public surface).
 func registerRestoredMembers(cctx: in CodegenCtx,
                               art:  in SynthesisedArtifact): Unit {
   val items = art.source.items
+  val asmRefRow = ensureAssemblyRefForArtifact(cctx, art.packageName)
   var i = 0
   while i < items.count {
     match items[i].kind {
@@ -5666,6 +5739,9 @@ func registerRestoredMembers(cctx: in CodegenCtx,
       }
       case IFunc(decl) -> {
         registerRestoredFunc(cctx, art.packageName, decl)
+      }
+      case IUnion(decl) -> {
+        registerRestoredUnion(cctx, art.packageName, decl, asmRefRow)
       }
       case _ -> ()
     }
