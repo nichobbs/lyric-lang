@@ -22,7 +22,7 @@ Lyric targets the .NET runtime initially, leveraging reified generics, value typ
 
 ### Prerequisites
 
-- [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) (pinned by `bootstrap/global.json`)
 
 ### Build the compiler
 

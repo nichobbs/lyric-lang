@@ -1,17 +1,52 @@
 # 23 — F# Shim Elimination
 
-**Status:** Drafted.
-**Implementation:** Phase 5 §M5.4+ (post-stage 2c.3 stdlib-bundle proof).
-**Builds on:** `docs/14-native-stdlib-plan.md` (P3 trio shipped per
-D-progress-104), `docs/20-project-as-dll.md` (single-DLL bundling
-shipped per D-progress-098–103), `docs/03-decision-log.md` D035 / D038.
+**Status: STDLIB SHIM ELIMINATED.** The original target —
+`bootstrap/src/Lyric.Stdlib/Stdlib.fs` — was deleted entirely in
+D-progress-140 (2026-04 era). The plan below describes the
+multi-stage journey; sections 4.1–4.3 are now **historical record**
+of how each bucket was retired.
+
+What remains, and the **current policy** (per `CLAUDE.md` §"F# is
+for the existing bootstrap compiler only"):
+
+- The F# stdlib shim project is **gone**. `Lyric.Stdlib.dll` is now
+  the Lyric-compiled bundle from `lyric-stdlib/lyric.toml`, with no
+  F# code and no `FSharp.Core.dll` runtime dep.
+- Ecosystem-library host shims still exist under
+  `bootstrap/src/Lyric.<X>.Host/` for: Auth, Jobs, Jvm.Hosts, Mq,
+  Session, Storage, Web, Ws. These are on the same deletion
+  schedule as the stdlib shim was — they're tolerated until the
+  self-hosted replacement is ready, then deleted. **No new host
+  shims** are permitted; new BCL externs go in
+  `lyric-stdlib/std/_kernel/*.l` via `extern type` / `extern package`
+  declarations directly.
+- The F# stage-0 bootstrap compiler under `bootstrap/src/Lyric.{Lexer,
+  Parser,TypeChecker,Emitter,Cli}/` continues to exist solely so the
+  stage-0 binary can build the self-hosted Lyric compiler from `.l`
+  sources. It is closed to new code; only mechanical bug fixes that
+  unblock stage-0 → stage-1 bootstrap are accepted.
+- The AOT entry point `bootstrap/src/Lyric.Cli.Aot/` is a thin
+  trampoline into the Lyric-emitted `Lyric.Cli.Program.main`; it
+  contains no F#.
+
+**Implementation:** Phase 5 §M5.4 (stdlib shim elimination shipped
+per D-progress-140). Ecosystem-library shim elimination is ongoing
+under per-library tracking issues.
+
+**Builds on:** `docs/14-native-stdlib-plan.md`, `docs/20-project-as-dll.md`,
+`docs/03-decision-log.md` D035 / D038.
 
 ---
 
-## 1. Motivation
+## 1. Motivation (historical)
+
+The discussion below describes the world in which
+`bootstrap/src/Lyric.Stdlib/Stdlib.fs` still existed. As of
+D-progress-140 this file and project are deleted; the section is
+retained as the rationale that drove the migration.
 
 After `docs/14`'s P0–P3 (D-progress-104 closes P3) the F# shim
-`bootstrap/src/Lyric.Stdlib/Stdlib.fs` is **1473 LoC across 23 types**.
+`bootstrap/src/Lyric.Stdlib/Stdlib.fs` was **1473 LoC across 23 types**.
 The stdlib bundle proof (D-progress-103) demonstrated that pure
 Lyric source compiles end-to-end into a single
 `Lyric.StdlibBundle.dll` — but that bundle still depends on a
@@ -82,12 +117,20 @@ counts; everything else here is already in `_kernel/`.
 
 ---
 
-## 4. Type-by-type port plan
+## 4. Type-by-type port plan (historical — completed in D-progress-140)
 
-After P3 the F# shim has 23 types (1473 LoC). Six of those are
-genuinely portable to Lyric today; nine require new language
-features (G-items §5); three are JVM emit helpers that don't
-belong in the stdlib at all; the rest stay extern via direct BCL
+The original plan partitioned the 23 F# shim types into three
+buckets: portable to Lyric today (Bucket B), gated on new language
+features (Bucket C), and out-of-scope (Bucket D). All three buckets
+have shipped — the entire `Lyric.Stdlib` F# project was deleted in
+D-progress-140 once the last extern was migrated. The tables below
+remain as a record of which types went where and what gating
+work each one needed.
+
+After P3 the F# shim had 23 types (1473 LoC). Six of those were
+genuinely portable to Lyric today; nine required new language
+features (G-items §5); three were JVM emit helpers that didn't
+belong in the stdlib at all; the rest stayed extern via direct BCL
 targeting.
 
 ### 4.1 Bucket B — portable to Lyric source today
