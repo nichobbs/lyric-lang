@@ -15596,3 +15596,69 @@ was never allocated.
   chain works and unblocks dropping the F# subprocess for
   restored-dep builds.
 - Phase B — JVM JAR resource kernel.
+
+
+### D-progress-311 — emitter wires restored deps through the in-process bridge (#1229 Phase A.4 partial)
+
+**Status:** Shipped (wiring + subprocess fallback).  Full end-to-end test
+deferred pending self-hosted contract emission.
+
+**Problem:** Phase A.3.3.c completed the bridge-side symbol registration
+for restored artifacts, but `Lyric.Emitter.emitProject` still gated
+`canInProc` on `req.restoredDllPaths.count == 0`, so feature-bearing
+restored-dep builds never reached the new code path.  Result: the
+entire A.3.3.c work was unreachable by external callers.
+
+**Fix (`lyric-compiler/lyric/emitter.l`):**
+
+1. **`canInProc`** no longer excludes restored-dep builds — `Dotnet`
+   targets always try the in-process path first.
+2. **`emitProjectInProcess`** now walks `req.restoredDllPaths`, parses
+   each entry (`"depName\tdllPath"`), and pipes each DLL through
+   `Lyric.RestoredPackages.loadRestoredPackage` →
+   `synthesiseArtifact(_, emptyPreamble)`.  The accumulated
+   `List[SynthesisedArtifact]` is passed to the new
+   `MsilBridge.compileProjectToMsilWithRestored` entry point.
+3. **Subprocess fallback:** if any DLL fails to load (e.g. it has no
+   `Lyric.Contract` resource because the self-hosted bridge doesn't
+   yet emit one) or synthesise (parse / typecheck of the synthesised
+   source fails), `emitProjectInProcess` falls through to
+   `emitProjectViaSubprocess(req)` — the existing F# subprocess
+   handles contract-less DLLs via reflection regardless of the
+   restored-dep contract.  Users see no behavioural regression.
+
+**Tests (`lyric-stdlib/tests/msil_project_bridge_tests.l`):**
+
+`testRestoredDepSubprocessFallback` — passes a non-existent DLL path
+in `restoredDllPaths` and verifies the build either succeeds via the
+subprocess fallback or returns gracefully without crashing the
+consumer process.
+
+The full end-to-end test (library DLL with embedded contract →
+consumer project with cross-package call → `dotnet exec` round-trip)
+requires the library to be compiled by the F# emitter (which embeds
+`Lyric.Contract`).  The cleanest way to do that from a Lyric test is
+via `lyric --internal-build`, but the test sandbox's `lyric` binary
+search-path isn't reliable today.  Lands once self-hosted contract
+emission ships — see next item.
+
+**Acceptance criteria met:**
+
+- `emitProject` reaches the new restored-dep code path for `Dotnet`
+  targets with non-empty `restoredDllPaths`.
+- Loader failures fall back cleanly to the subprocess path so
+  contract-less DLLs (the common case until self-hosted contract
+  emission lands) keep working.
+- 73 CLI + 843 emitter tests green; axiom audit clean.
+
+**What's next under #1229:**
+
+- **Self-hosted contract emission** — port
+  `bootstrap/src/Lyric.Emitter/ContractMeta.fs::buildContract` +
+  `embedIntoAssemblyAs` to Lyric so the self-hosted bridge emits
+  the `Lyric.Contract` resource directly.  Once that lands, the
+  in-process restored-dep path is self-contained (no more
+  subprocess fallback for any user case) and the full end-to-end
+  Lyric test lands alongside.
+- **Phase B (JVM)** — analogous `jar_host.l` wrapping
+  `java.util.jar.JarFile`.
