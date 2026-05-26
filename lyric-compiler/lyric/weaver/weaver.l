@@ -1568,6 +1568,13 @@ func weaveDiagsToDiagnostics(errs: in List[WeaveDiagEntry]): List[Diagnostic] {
         diags.add(errorDiagnostic("A0042", msg, e.span))
       }
       case WDCallUnknown -> {
+        // **Drift warning:** the recognised-fields list below is the
+        // user-visible enumeration of fields the weaver injects in
+        // `buildCallPrelude`.  When a new `call.<field>` is added
+        // there (e.g. `call.elapsed` when runtime instrumentation
+        // lands), this list must be updated to match — otherwise
+        // A0043 will name the new field as "unrecognised" while
+        // simultaneously rewriting it correctly.
         val msg =
           "aspect '" + e.aspectName +
           "' references call." + e.fieldName +

@@ -301,7 +301,7 @@ weave site:
 | `call.qualifiedName` | `String` | Fully qualified target name (e.g. `MyApp.Handlers.handleRequest`) |
 | `call.shortName` | `String` | Short target name (`handleRequest`) |
 | `call.modulePath` | `String` | Package containing the target |
-| `call.sourceLocation` | `SourceLoc` | `{ file, line, column }` of the target's definition |
+| `call.sourceLocation` | `String` | `"<packagePath>:<line>"` of the target's definition (e.g. `"My.Pkg:42"`).  When `packagePath` is empty the weaver substitutes `"<unknown>:<line>"`.  A richer `SourceLoc { file, line, column }` form is tracked for follow-up alongside `call.caller`. |
 | `call.caller` | `Option[SourceLoc]` | Caller site, when available; `None` for entry points and reflective calls |
 | `call.annotations` | `[Annotation]` | The target's annotations (so an aspect can read `@deprecated`, `@public_api`, etc.) |
 | `call.elapsed` | `Option[Int]` | `Some(ms)` after `proceed` returns; `None` before `proceed` is called or if the body never calls `proceed`. The earlier zero-sentinel was rejected as a footgun (Q-aspects-003). |

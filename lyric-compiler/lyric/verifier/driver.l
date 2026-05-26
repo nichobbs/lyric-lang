@@ -187,9 +187,9 @@ pub func proveSourceWithOptions(source: in String, allowUnverified: in Bool): Pr
   //    so the verifier sees the body the runtime executes.  Identity-op
   //    for files without any `aspect` block.  Uses the with-diagnostics
   //    variant so weave-time errors (A0042 args-mismatch on
-  //    @inline_template aspects, A0043 unknown call.<field>) surface in
-  //    the proof summary instead of being silently dropped (#682/#681
-  //    review #1190).
+  //    @inline_template aspects, A0043 unknown call.<field>, A0044
+  //    config.<no-default>) surface in the proof summary instead of
+  //    being silently dropped.
   val wovenResult = weaveFileWithDiags(parsed.file)
   val wovenFile   = wovenResult.file
   val weaveDiags  = wovenResult.diagnostics

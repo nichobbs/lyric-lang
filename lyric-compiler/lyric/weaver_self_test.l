@@ -329,10 +329,8 @@ func stmtHasMemberAccess(s: in Statement, recv: in String, mem: in String): Bool
     }
     case SAssign(t, _, v)       -> exprHasMemberAccess(t, recv, mem) or exprHasMemberAccess(v, recv, mem)
     case SThrow(e)              -> exprHasMemberAccess(e, recv, mem)
-    case SFor(_, _, iter, body) -> exprHasMemberAccess(iter, recv, mem)
-                                    or blockHasMemberAccess(body, recv, mem)
-    case SWhile(_, cond, body)  -> exprHasMemberAccess(cond, recv, mem)
-                                    or blockHasMemberAccess(body, recv, mem)
+    case SFor(_, _, iter, body) -> exprHasMemberAccess(iter, recv, mem) or blockHasMemberAccess(body, recv, mem)
+    case SWhile(_, cond, body)  -> exprHasMemberAccess(cond, recv, mem) or blockHasMemberAccess(body, recv, mem)
     case SLoop(_, body)         -> blockHasMemberAccess(body, recv, mem)
     case SScope(_, body)        -> blockHasMemberAccess(body, recv, mem)
     case SDefer(body)           -> blockHasMemberAccess(body, recv, mem)
@@ -700,6 +698,70 @@ test "call.sourceLocation literal has <package>:<line> format" {
     k = k + 1
   }
   assertTrue(ok, "sourceLocation starts with the package path + ':'")
+}
+
+test "call.sourceLocation / qualifiedName use <unknown>/funcName when packagePath is empty" {
+  // `weaveItems` (no SourceFile) and `weaveItemsWithDiags(items, "")`
+  // pass an empty package path through to the prelude builder.  The
+  // explicit else-branches in buildCallPrelude substitute
+  // `qualifiedName = funcName` and `sourceLocation = "<unknown>:<line>"`.
+  // These branches have no SourceFile-based coverage, so test them
+  // by parsing the source, extracting the items, and calling
+  // `weaveItemsWithDiags(items, "")` directly.
+  val src =
+    "package Will.Be.Ignored\n" +
+    "aspect Trace {\n" +
+    "  matches: name like \"orphan\"\n" +
+    "  around(args) -> ret {\n" +
+    "    val q = call.qualifiedName\n" +
+    "    val s = call.sourceLocation\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func orphan(): Int { 1 }\n"
+  val pr = parse(src)
+  val wr = weaveItemsWithDiags(pr.file.items, "")
+  // Find the wrapper by scanning the rewritten item list.
+  var wrapper: Option[FunctionDecl] = None
+  var i = 0
+  while i < wr.items.count {
+    match wr.items[i].kind {
+      case IFunc(fn) -> if fn.name == "orphan" { wrapper = Some(value = fn) }
+      case _         -> ()
+    }
+    i = i + 1
+  }
+  match wrapper {
+    case Some(fn) -> {
+      match fn.body {
+        case Some(b) -> {
+          match b {
+            case FBBlock(blk) -> {
+              val q = findValInit(blk, "__lyric_call_qualifiedName")
+              assertEqual(literalStringValue(q), "orphan",
+                          "empty packagePath: qualifiedName falls back to funcName")
+              val s = findValInit(blk, "__lyric_call_sourceLocation")
+              val sValue = literalStringValue(s)
+              val prefix = "<unknown>:"
+              assertTrue(sValue.length > prefix.length,
+                         "empty packagePath: sourceLocation carries line suffix")
+              var ok = true
+              var k = 0
+              while k < prefix.length and ok {
+                if sValue[k] != prefix[k] { ok = false }
+                k = k + 1
+              }
+              assertTrue(ok,
+                         "empty packagePath: sourceLocation prefix is '<unknown>:'")
+            }
+            case _ -> panic("orphan wrapper body is not FBBlock")
+          }
+        }
+        case None -> panic("orphan wrapper has no body")
+      }
+    }
+    case None -> panic("orphan wrapper not found in weaved items")
+  }
 }
 
 test "call.annotations is a string slice of the function's annotation short-names" {
