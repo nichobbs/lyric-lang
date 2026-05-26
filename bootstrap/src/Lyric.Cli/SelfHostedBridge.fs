@@ -58,30 +58,58 @@ let preloadStdlibAssemblies () : unit =
 let loadFromCache (path: string) : Assembly =
     Assembly.LoadFrom path
 
-/// Compile a tiny driver source so the emitter materialises
-/// `Lyric.Msil.Bridge.dll` (and the rest of the self-hosted stdlib)
-/// into the per-process cache, then locate the bridge DLL.  Shared by
-/// the `SelfHostedMsil` (single-package) and `SelfHostedMsilProject`
-/// (multi-package) shims to avoid drift between near-identical copies
-/// of this preparation code (#1373).
+/// Write a minimal `.runtimeconfig.json` alongside `dllPath` so that
+/// `dotnet exec dllPath` can locate the correct runtime.  Used by every
+/// self-hosted MSIL bridge that writes a DLL and then executes it.
+let writeRuntimeConfig (dllPath: string) : unit =
+    let configPath =
+        match Option.ofObj (Path.ChangeExtension(dllPath, ".runtimeconfig.json")) with
+        | Some p -> p
+        | None   -> failwithf "writeRuntimeConfig: Path.ChangeExtension returned null for %s" dllPath
+    let v = Environment.Version
+    let json =
+        "{\n" +
+        "  \"runtimeOptions\": {\n" +
+        (sprintf "    \"tfm\": \"net%d.%d\",\n" v.Major v.Minor) +
+        "    \"framework\": {\n" +
+        "      \"name\": \"Microsoft.NETCore.App\",\n" +
+        (sprintf "      \"version\": \"%s\"\n" (v.ToString())) +
+        "    }\n" +
+        "  }\n" +
+        "}\n"
+    File.WriteAllText(configPath, json)
+
+/// Compile a throwaway driver program so the bootstrap emitter materialises
+/// `<targetDllStem>.dll` into the per-process stdlib cache, then return
+/// the absolute path to that DLL.
 ///
-/// `label` distinguishes the per-bridge scratch directory and assembly
-/// name; `driverSource` is the trivial top-level Lyric program whose
-/// imports pull `Msil.Bridge` into the emit graph.
-let ensureMsilBridgeAssembly (label: string) (driverSource: string) : string =
+/// Parameters:
+///   scratchSuffix    — suffix appended to the temp-dir name
+///                      (e.g. `"lyric-msil-bridge"`)
+///   driverSource     — full Lyric source of the driver program
+///   driverAssemblyName — assembly name for the driver DLL
+///                      (e.g. `"Lyric.Msil.MsilBridge"`)
+///   targetDllStem    — stem of the target DLL to locate in the cache
+///                      (e.g. `"Lyric.Msil.Bridge"`)
+///   contextLabel     — human-readable prefix for error messages
+///                      (e.g. `"self-hosted MSIL bridge"`)
+let compileBridgeDriver
+        (scratchSuffix:      string)
+        (driverSource:       string)
+        (driverAssemblyName: string)
+        (targetDllStem:      string)
+        (contextLabel:       string) : string =
     let scratch =
         Path.Combine(Path.GetTempPath(),
-                     sprintf "lyric-%s-%d"
-                         label
+                     sprintf "%s-%d" scratchSuffix
                          (System.Diagnostics.Process.GetCurrentProcess().Id))
     Directory.CreateDirectory scratch |> ignore
     AppDomain.CurrentDomain.ProcessExit.Add(fun _ ->
         try Directory.Delete(scratch, recursive = true) with _ -> ())
-    let asmName = sprintf "Lyric.%s.Bridge" (label.Replace("-", "."))
-    let dllPath = Path.Combine(scratch, asmName + ".dll")
+    let dllPath = Path.Combine(scratch, driverAssemblyName + ".dll")
     let req : Emitter.EmitRequest =
         { Source             = driverSource
-          AssemblyName       = asmName
+          AssemblyName       = driverAssemblyName
           OutputPath         = dllPath
           RestoredPackages   = []
           NugetAssemblyPaths = []
@@ -102,16 +130,10 @@ let ensureMsilBridgeAssembly (label: string) (driverSource: string) : string =
                                        d.Span.Start.Column
                                        d.Message)
             |> String.concat "\n"
-        failwithf "self-hosted %s: emitter produced errors:\n%s" label msg
-
+        failwithf "%s: emitter produced errors:\n%s" contextLabel msg
     preloadStdlibAssemblies ()
-
-    let lyricMsilBridgeDll =
-        Emitter.stdlibAssemblyPaths ()
-        |> List.tryFind (fun p ->
-            let n = Path.GetFileNameWithoutExtension p
-            n = "Lyric.Msil.Bridge")
-    match lyricMsilBridgeDll with
+    match Emitter.stdlibAssemblyPaths ()
+          |> List.tryFind (fun p -> Path.GetFileNameWithoutExtension p = targetDllStem) with
     | Some p -> p
     | None ->
         let cached =
@@ -119,14 +141,40 @@ let ensureMsilBridgeAssembly (label: string) (driverSource: string) : string =
             |> List.map (fun p ->
                 match Option.ofObj (Path.GetFileName p) with
                 | Some n -> n
-                | None -> "<unknown>")
+                | None   -> "<unknown>")
             |> String.concat ", "
-        failwithf "self-hosted %s: 'Lyric.Msil.Bridge.dll' not found in stdlib cache after emit (cached: %s)" label cached
+        failwithf "%s: '%s.dll' not found in stdlib cache after emit (cached: %s)"
+            contextLabel targetDllStem cached
 
-/// Band 6: locate the `lyric-stdlib/std/` directory by walking up from
-/// `AppContext.BaseDirectory`, then read every top-level `*.l` source file
-/// (excluding the `_kernel/` subdirectory, which contains extern declarations
-/// that are not meaningful to the self-hosted parser when used as plain items).
+/// Thread-safe once-initialised delegate cache.
+///
+/// Usage:
+///   let private lock = obj ()
+///   let private cell : MyDelegate option ref = ref None
+///   let private getDelegate () = SelfHostedBridge.lockOnce lock cell resolveDelegate
+///
+/// The factory is only called once per process; subsequent calls return the
+/// cached value.
+let lockOnce (lockObj: obj) (cell: 'T option ref) (factory: unit -> 'T) : 'T =
+    lock lockObj (fun () ->
+        match !cell with
+        | Some v -> v
+        | None   ->
+            let v = factory ()
+            cell.Value <- Some v
+            v)
+
+/// Locate the `lyric-stdlib/std/` directory by walking up from
+/// `AppContext.BaseDirectory`, then read every `.l` source file — both
+/// top-level files (the public stdlib surface) AND `_kernel/` files
+/// (extern-type kernels the public files reference via `import Std.XHost`).
+///
+/// MSIL-target only: `_kernel_jvm/` is never loaded, and the two JVM-only
+/// kernel files (`jvm.l`, `jvm_exception.l`) are skipped by name so
+/// `Std.Jvm.catch` doesn't leak into the .NET symbol table.  Mirrors the
+/// Lyric-side `lyric-compiler/lyric/emitter.l::findStdlibSources` — kept
+/// in lock-step so the F# test shim's view of the stdlib matches the
+/// production AOT CLI's view.
 ///
 /// Returns the file contents as a `System.Collections.Generic.List<string>`.
 /// Returns an empty list when the stdlib directory cannot be found (graceful
@@ -143,7 +191,31 @@ let findStdlibSources () : System.Collections.Generic.List<string> =
     match stdlibDir with
     | None -> ()
     | Some sd ->
-        for f in sd.GetFiles("*.l") do
+        // Within-batch order matters for first-in-wins symbol-table
+        // registration: sort by basename so two machines with different
+        // filesystem-enumeration ordering produce byte-identical
+        // builds (#1385).  Mirrors the Lyric-side
+        // `lyric-compiler/lyric/emitter.l::sortPathsByBasename`.
+        let sorted (dir: DirectoryInfo) =
+            dir.GetFiles("*.l")
+            |> Array.sortBy (fun f -> f.Name)
+        // Load `_kernel/` files FIRST so their extern type declarations
+        // (`extern type List[T] = "System.Collections.Generic.List`1"`,
+        // `Map[K, V]`, `Random`, …) register in the self-hosted typechecker's
+        // symbol table before the public re-export aliases (`pub alias Random
+        // = Std.RandomHost.Random`).  `symTableTryFindOne` is first-in-wins
+        // and `DKTypeAlias` carries no `TypeId`; registering an alias before
+        // its target makes every bare-name reference resolve to the alias and
+        // fail with T0013 '<name> is not a type'.
+        let kernel = DirectoryInfo(Path.Combine(sd.FullName, "_kernel"))
+        if kernel.Exists then
+            for f in sorted kernel do
+                if not (f.Name.StartsWith("jvm", StringComparison.Ordinal)) then
+                    try result.Add(File.ReadAllText f.FullName)
+                    with ex ->
+                        eprintfn "lyric: warning: could not read stdlib source '%s': %s" f.FullName ex.Message
+        // Public surface: every top-level `*.l` file.
+        for f in sorted sd do
             try result.Add(File.ReadAllText f.FullName)
             with ex ->
                 eprintfn "lyric: warning: could not read stdlib source '%s': %s" f.FullName ex.Message
