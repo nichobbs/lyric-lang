@@ -540,6 +540,31 @@ test "duplicate call.<field> references don't crash the pre-scan" {
              "duplicate refs still rewrite + the prelude carries the local")
 }
 
+test "repeated unknown call.<field> emits at most one A0043" {
+  // Regression for review #1299: `tryMemberRewrite` previously
+  // appended to argsErrors once per occurrence, so an aspect body
+  // referencing `call.elapsed` twice produced two A0043 diagnostics.
+  val src =
+    "package P\n" +
+    "aspect Trace {\n" +
+    "  matches: name like \"r\"\n" +
+    "  around(args) -> ret {\n" +
+    "    val a = call.elapsed\n" +
+    "    val b = call.elapsed\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func r(): Int { 0 }\n"
+  val wr = parseWeaveDiags(src)
+  var count = 0
+  var i = 0
+  while i < wr.diagnostics.count {
+    if wr.diagnostics[i].code == "A0043" { count = count + 1 }
+    i = i + 1
+  }
+  assertEqualInt(count, 1, "A0043 dedup: at most one diag per (kind, field)")
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. #681 — `@inline_template` args.<field> rewriting + A0042.

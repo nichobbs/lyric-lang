@@ -212,15 +212,6 @@ func newRewriteCtx(
     argsErrors       = argsErrors)
 }
 
-/// Build an empty context that only performs proceed substitution.
-/// Used by callers that don't need the new wiring (kept for
-/// backwards-compatible call sites and the verifier-driver default).
-func emptyRewriteCtx(targetName: in String, paramNames: in List[String]): RewriteCtx {
-  val noConfig: Map[String, Bool] = newMap()
-  val noCall:   Map[String, Bool] = newMap()
-  val noErrs:   List[WeaveDiagEntry]   = newList()
-  newRewriteCtx(targetName, paramNames, noConfig, noCall, false, "", "", noErrs)
-}
 
 func isProceedCall(expr: in Expr): Bool {
   match expr.kind {
@@ -296,13 +287,11 @@ func tryMemberRewrite(ctx: in RewriteCtx, expr: in Expr): Option[Expr] {
       } else {
         // Unknown call.<field> — surface as A0043 so the user sees a
         // weaver-targeted message instead of a downstream "call is not
-        // declared" type error (#682 / review #1193).
-        ctx.argsErrors.add(WeaveDiagEntry(
-          kind       = WDCallUnknown,
-          aspectName = ctx.aspectName,
-          funcName   = ctx.funcName,
-          fieldName  = name,
-          span       = expr.span))
+        // declared" type error (#682 / review #1193).  Dedupe by
+        // (kind, fieldName) so a body that mentions `call.elapsed`
+        // twice doesn't emit two A0043s (review #1299).
+        addWeaveDiagOnce(ctx.argsErrors, WDCallUnknown, ctx.aspectName,
+                         ctx.funcName, name, expr.span)
       }
     }
     case None -> ()
@@ -310,7 +299,8 @@ func tryMemberRewrite(ctx: in RewriteCtx, expr: in Expr): Option[Expr] {
   // args.<field> → <field>  (only under @inline_template).  When the
   // field name doesn't match a parameter we record an A0042 entry and
   // leave the expression intact so the downstream type-checker can
-  // surface a position too (#681).
+  // surface a position too (#681).  Same per-(kind, fieldName) dedupe
+  // applies (#1299).
   if ctx.isInlineTemplate {
     match matchBareMemberAccess(expr, "args") {
       case Some(name) -> {
@@ -321,18 +311,49 @@ func tryMemberRewrite(ctx: in RewriteCtx, expr: in Expr): Option[Expr] {
               span     = expr.span)),
             span = expr.span))
         } else {
-          ctx.argsErrors.add(WeaveDiagEntry(
-            kind       = WDArgsMismatch,
-            aspectName = ctx.aspectName,
-            funcName   = ctx.funcName,
-            fieldName  = name,
-            span       = expr.span))
+          addWeaveDiagOnce(ctx.argsErrors, WDArgsMismatch, ctx.aspectName,
+                           ctx.funcName, name, expr.span)
         }
       }
       case None -> ()
     }
   }
   None
+}
+
+// Append a weave-time diagnostic only when no entry with the same
+// (kind, fieldName) is already present.  Linear scan is fine — the
+// diagnostic list is small (one entry per distinct field name).
+// Closes review #1299 (duplicate A0042/A0043 emissions).
+func addWeaveDiagOnce(
+  errs:       in List[WeaveDiagEntry],
+  kind:       in WeaveDiagKind,
+  aspectName: in String,
+  funcName:   in String,
+  fieldName:  in String,
+  span:       in Span
+): Unit {
+  var i = 0
+  while i < errs.count {
+    val e = errs[i]
+    if e.fieldName == fieldName and sameWeaveDiagKind(e.kind, kind) {
+      return
+    }
+    i = i + 1
+  }
+  errs.add(WeaveDiagEntry(
+    kind       = kind,
+    aspectName = aspectName,
+    funcName   = funcName,
+    fieldName  = fieldName,
+    span       = span))
+}
+
+func sameWeaveDiagKind(a: in WeaveDiagKind, b: in WeaveDiagKind): Bool {
+  match a {
+    case WDArgsMismatch -> match b { case WDArgsMismatch -> true; case _ -> false }
+    case WDCallUnknown  -> match b { case WDCallUnknown  -> true; case _ -> false }
+  }
 }
 
 func singleSeg(name: in String): List[String] {
