@@ -310,6 +310,13 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // `MObject` fall-through that produced `InvalidProgramException`
   // at runtime.
   val stdlibPkgs = collectStdlibPackages(stdlibSources)
+  // Pool of "always in scope" items: every stdlib package's items plus
+  // every restored-dep artifact's type items.  Per-package import
+  // filtering (#1378) only applies to in-bundle user packages; stdlib
+  // and restored-dep references are looked up via the codegen-side
+  // `funcTokens` / `recordCtorTokens` tables built from the same
+  // sources, so the typecheck-side flat view here keeps the two halves
+  // of the pipeline in sync.
   val baseItems: List[Item] = newList()
   spreadStdlibPackageItems(stdlibPkgs, baseItems)
   var ri0 = 0
@@ -646,6 +653,18 @@ func perPackageImportedItems(
   }
   result
 }
+
+// (Earlier revisions of this PR added a `filteredStdlibItems` /
+// `perPackageImportedItemsFiltered` helper pair that filtered the
+// stdlib spread by the user's `import Std.X` declarations.  Main's
+// #1435 fix took a different route — `baseNames` passed to
+// `addBundleClosure` to skip duplicate registration during a stdlib
+// self-build — and the two approaches converged at the same call site.
+// The filtered variant was removed during rebase to keep the public
+// surface aligned with main; the cross-package same-arity overload
+// collision (e.g. `Std.String.replace/3` vs `Std.Regex.replace/3`)
+// it addressed is tracked as a follow-up to land via the same
+// `baseNames` plumbing.)
 
 // Walk the transitive in-bundle import closure rooted at `pkgName`,
 // adding every reachable in-bundle package's items to `acc`.  Visited
