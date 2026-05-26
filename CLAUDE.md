@@ -112,10 +112,11 @@ task:
 - Hand-routed BCL externs added to plug a stdlib gap "for now" instead of
   a properly audited `lyric-stdlib/std/_kernel/` boundary with the public
   Lyric API on top.
-- New F# code that carries domain logic, parsing, lowering, emission,
-  diagnostics, or any user-visible behaviour. The F# surface is frozen
-  to test/bootstrap shims only — new logic goes in `.l` (see "F# surface
-  is frozen" below).
+- **Any new F# code at all**, regardless of size or purpose. The F#
+  tree under `bootstrap/src/Lyric.*/` is the legacy stage-0 bootstrap
+  compiler on a deletion schedule. New functionality — domain logic,
+  test infrastructure, MSBuild plumbing, "thin shims" — all goes in
+  Lyric. See "F# is for the existing bootstrap compiler only" below.
 - "Bootstrap-grade" caveats in commit messages, PR bodies, or docs
   ("we'll do this properly later", "leaving the hand-routed path in
   place for now", "MSIL-only for this release"). If the proper version
@@ -463,30 +464,90 @@ Do this as part of the same turn that handles the merge webhook
 runs cleaner when an open issue list always reflects in-flight
 work, not historical bookkeeping debt.
 
-### F# surface is frozen — new logic goes in Lyric
+### F# is for the existing bootstrap compiler only — no new F# code
 
-The F# bootstrap compiler surface is closed to new logic. All new
-functionality must be implemented in Lyric (`.l` files). The only
-acceptable new F# code is thin bridge shims (test infrastructure) and
-infrastructure that has no Lyric equivalent yet (e.g. MSBuild
-integration, NuGet plumbing that talks directly to the host runtime).
+**The F# tree under `bootstrap/src/Lyric.*/` is the legacy bootstrap
+compiler. It is the source of truth for nothing user-facing. It exists
+solely so the stage-0 binary can build the self-hosted Lyric compiler
+from `.l` sources, after which stage-1 takes over. Every production
+surface — compiler, standard library, ecosystem libraries, tooling —
+runs through `.l` code.**
 
-Rules:
+**No new F# code.** This is absolute. Not "no new domain logic." Not
+"no shims unless they're thin." **No new F#, full stop.**
+
+Specifically, the following are **not** acceptable, regardless of
+how small or how clearly motivated:
+
+- New F# files in `bootstrap/src/Lyric.*/` projects.
+- New F# files in `bootstrap/tests/Lyric.*Tests/`. Self-tests are
+  written in Lyric (`*_self_test.l`) and discovered by existing
+  Lyric-aware infrastructure. Do not add a `SelfHostedXxxTests.fs`
+  runner for a new self-test; if discovery doesn't work, fix the
+  discovery in Lyric, or file a tracking issue and skip the wiring
+  until the Lyric path is ready.
+- New F# types, functions, modules, or members added to existing F#
+  files — even if the surrounding file is "obviously" the right
+  place. The right place is `.l`.
+- "Just a thin shim" F# code added to bridge a Lyric package into
+  the F# test harness, F# CLI, or F# emitter. Build the bridge in
+  Lyric or via the in-process MSIL bridge instead.
+- `@externTarget` annotations pointing at new F# host code in
+  `bootstrap/src/Lyric.*.Host/`. New BCL boundaries go in
+  `lyric-stdlib/std/_kernel/*.l` via `extern type` / `extern package`
+  declarations directly, with no F# intermediary.
+- New F# infrastructure for MSBuild / NuGet / publish that the
+  self-hosted CLI doesn't already have. If the self-hosted CLI
+  needs it, add it in `lyric-compiler/lyric/`.
+
+**The only acceptable F# edits** are bug fixes to existing F# code
+that the stage-0 bootstrap depends on, and only when:
+
+1. The bug blocks stage-0 → stage-1 bootstrap from completing, AND
+2. The corresponding self-hosted code is already correct (or will be
+   in the same PR), AND
+3. The fix has no design implications — it's mechanically restoring
+   what the F# was supposed to do.
+
+If you find yourself wanting to add F# code for any other reason,
+stop. The answer is "build it in Lyric, or file a tracking issue
+that says exactly what stage-1 needs to ship before the work can
+land."
+
+**The F# surface is on a deletion schedule**, not a stewardship
+schedule. See `docs/23-fsharp-shim-elimination.md`. Every F# file
+that still exists is debt; nothing in the F# tree is "owned" or
+"maintained" — it's tolerated until the self-hosted replacement
+is ready, at which point the F# file is deleted.
+
+**Production-grade self-hosted, not bootstrap-grade anything.** The
+project standard is that every shipped feature works end-to-end
+through the self-hosted toolchain, with production-quality
+diagnostics, documentation, tests, and parity across MSIL and JVM
+targets. "Good enough for bootstrap" is not a deliverable level;
+either ship the production-quality slice, or split the work and
+ship the slice you can finish properly.
+
+Rules for where new code goes:
 
 - **New stdlib modules** → `lyric-stdlib/std/<module>.l` (public) and
   `lyric-stdlib/std/_kernel/<module>_host.l` (externs, only when a BCL
-  boundary is unavoidable).
+  boundary is unavoidable, and the externs are declared with
+  `extern type` / `extern package` in Lyric — not via an F# host
+  shim).
 - **New CLI logic** → implement in `lyric-compiler/lyric/<feature>.l`
-  (as a `Lyric.<Feature>` package).  Track A A1.4 (#860) deleted the
-  F# `SelfHosted<Feature>.fs` dispatcher shims; the AOT entry-point
-  project (`bootstrap/src/Lyric.Cli.Aot/`) now trampolines straight
-  into the Lyric-emitted `Lyric.Cli.Program.main`, so new commands
-  just need to land in `lyric-compiler/lyric/cli.l`'s dispatcher.
-- **New externs** → `lyric-stdlib/std/_kernel/` only; no `@externTarget`
-  or `extern type` declarations outside the kernel boundary.
-- **Do not** add new modules, types, or functions to any existing
-  `bootstrap/src/Lyric.*/` F# project unless they are pure shim
-  infrastructure with no domain logic.
+  (as a `Lyric.<Feature>` package).  The AOT entry-point project
+  (`bootstrap/src/Lyric.Cli.Aot/`) trampolines into the Lyric-emitted
+  `Lyric.Cli.Program.main`, so new commands land in
+  `lyric-compiler/lyric/cli.l`'s dispatcher.
+- **New externs** → `lyric-stdlib/std/_kernel/` only, via `extern type`
+  / `extern package` in `.l`. No `@externTarget` declarations pointing
+  at F# host code.
+- **New self-tests** → `lyric-compiler/lyric/<package>_self_test.l`
+  (or wherever the package lives). Discovery is Lyric's job; do not
+  add an F# runner shim.
+- **New ecosystem-library code** → the appropriate `lyric-*/` root
+  directory in `.l`.
 
 ### Style
 
@@ -863,8 +924,11 @@ FFI is hand-routed through BCL externs instead of reflection-driven.
 Async ships with real `IAsyncStateMachine` state machines (Phase A–B+++,
 D-progress-033..260), including `IAsyncEnumerable<T>` generator synthesis.
 All new language features beyond this point are implemented in the
-self-hosted Lyric compiler under `lyric/` — the F# surface is
-frozen to bootstrap shims only.
+self-hosted Lyric compiler under `lyric-compiler/lyric/`.  The F#
+tree is the stage-0 bootstrap compiler — closed to new code, on a
+deletion schedule.  Do not add F# files, F# tests, F# CLI dispatch,
+or F# externs host shims.  See the "F# is for the existing bootstrap
+compiler only" section above for the full rule and rationale.
 
 ## Glossary (project-specific terms)
 
