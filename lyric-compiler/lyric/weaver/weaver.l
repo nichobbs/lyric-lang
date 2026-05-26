@@ -322,9 +322,15 @@ func tryMemberRewrite(ctx: in RewriteCtx, expr: in Expr): Option[Expr] {
 }
 
 // Append a weave-time diagnostic only when no entry with the same
-// (kind, fieldName) is already present.  Linear scan is fine — the
-// diagnostic list is small (one entry per distinct field name).
-// Closes review #1299 (duplicate A0042/A0043 emissions).
+// (kind, funcName, fieldName) is already present.  Linear scan is
+// fine — the diagnostic list is small (one entry per distinct field
+// name per matched function).  Includes `funcName` in the dedup key
+// because `argsErrors` is shared across every matched function in
+// one `weaveItemsCore` invocation: an aspect that references
+// `call.elapsed` and matches both `funcA` and `funcB` should emit
+// one A0043 per wrapper, not one across the whole weave (review #1302).
+// Closes review #1299 (duplicate A0042/A0043 within one body) plus
+// #1302 (cross-function suppression).
 func addWeaveDiagOnce(
   errs:       in List[WeaveDiagEntry],
   kind:       in WeaveDiagKind,
@@ -336,7 +342,9 @@ func addWeaveDiagOnce(
   var i = 0
   while i < errs.count {
     val e = errs[i]
-    if e.fieldName == fieldName and sameWeaveDiagKind(e.kind, kind) {
+    if e.fieldName == fieldName
+        and e.funcName == funcName
+        and sameWeaveDiagKind(e.kind, kind) {
       return
     }
     i = i + 1

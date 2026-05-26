@@ -229,6 +229,99 @@ discharge cleanly under Z3.
 
 ## Active session decisions
 
+### D-progress-310 — Tier-6 weaver: `config { }`, ambient `call`, `@inline_template` (#683, #682, #681; PR #1172)
+
+*claude/todo-06-review-R8az7 branch.*
+
+Three aspect-system features wired into the self-hosted weaver
+(`lyric-compiler/lyric/weaver/weaver.l`).  The F# bootstrap weaver
+(`bootstrap/src/Lyric.Emitter/Weaver.fs`) is deliberately untouched
+per Band 7 / #859 — the self-hosted weaver is the source of truth.
+
+**Refactor — `RewriteCtx`:**
+
+The previous rewriter threaded `targetName` + `paramNames` as
+positional parameters through every helper.  Adding three new
+substitutions (config, call, args) on top would have either
+duplicated ~400 lines of AST traversal or required four positional
+params per helper.  The new `RewriteCtx` record bundles every
+piece of weave-site state into one value that's threaded once;
+each substitution lives in `tryMemberRewrite` and runs in the
+same bottom-up pass as the existing `proceed(args)` rewrite.
+
+**#683 — `config { }` wiring:**
+
+Each `ConfigField` in `AspectDecl.config` with a literal default is
+materialised as `val __aspect_cfg_<name>: <ty> = <default>` at the
+top of the woven body.  `config.<name>` member accesses are rewritten
+to bare `__aspect_cfg_<name>` paths.  Fields without a default are
+skipped — runtime env-var resolution per `docs/26 §8` / `docs/25` is
+a follow-up.
+
+**#682 — ambient `call` value (compile-time fields):**
+
+`buildCallPrelude` pre-scans the aspect body via `collectCallRefsBlock`
+and materialises only the `__lyric_call_<name>` locals that are
+actually referenced.  Six compile-time-known fields are wired:
+`shortName`, `qualifiedName`, `modulePath`, `sourceLocation`,
+`annotations`, `aspect`.  `call.elapsed` and `call.caller` need
+runtime instrumentation (Std.Time integration plus auto-import-
+injection design); deferred to **#1298**.  Any `call.<unknown>` —
+including those two — surfaces as an **A0043** weave-time
+diagnostic so users get a weaver-targeted message instead of a
+downstream "call is undeclared" type error.
+
+**#681 — `@inline_template`:**
+
+Aspects whose enclosing item carries `@inline_template` get
+`args.<field>` rewrites at weave time: each field name must match
+a parameter of the matched function.  Mismatches accumulate as
+**A0042** diagnostics.  Removed the `L006` lint warning that
+previously flagged `@inline_template` as having no effect.
+
+**Diagnostics plumbing:**
+
+New `WeaveResult` / `WeaveFileResult` records and
+`weaveItemsWithDiags` / `weaveFileWithDiags` public entry points
+return diagnostics alongside the rewritten items.  Existing
+`weaveItems` / `weaveFile` keep their old signatures for back-
+compat (they silently drop diagnostics).  The verifier driver
+(`lyric prove`) switched to `weaveFileWithDiags` so A0042 / A0043
+surface in the proof summary.
+
+Diagnostic emission is deduplicated per-`(kind, funcName, fieldName)`
+via `addWeaveDiagOnce` — a body referencing `call.elapsed` twice
+emits a single A0043; same field across two matched functions
+emits one A0043 each.
+
+**Drive-by — in-process MSIL bridge stdlib function imports:**
+
+`Msil.Bridge.compileToMsil` used to filter `importedItems` down to
+type declarations only.  Functions were skipped because
+`addSigsFromItems` called `Dictionary<K,V>.Add` on the bare name
+key and multi-file stdlib duplicates (`toString` in several
+modules) threw `ArgumentException`.  Switched to first-wins via
+`containsKey`.  Net effect: `lyric run <file>` calling `println`
+from `Std.Console` no longer NREs at runtime through the AOT
+path — codegen now has a real signature to resolve the call
+against.
+
+**Self-test (`lyric-compiler/lyric/weaver_self_test.l`):**
+
+12 `test "..."` blocks in `@test_module` form covering every
+feature path plus regression cases for #1296 (duplicate
+`call.<field>` references crashing the pre-scan) and #1299
+(duplicate A0042/A0043 emissions).  Does not currently auto-run
+in CI — the path to running it via `lyric test` directly (no F#
+scaffolding per session directive) requires the in-process bridge
+to load `lyric-compiler/lyric/**/*.l` so the test's
+`Lyric.Lexer` / `Lyric.Parser` / `Lyric.Weaver` imports resolve.
+That work is in progress on this branch but exposes secondary
+codegen issues (`InvalidProgramException` at runtime) that need
+their own investigation.
+
+---
+
 ### D-progress-147: M5.3 stage 11 — `ELambda` / `EForall` / `EExists` multi-line layouts; type-expression multi-line formally deferred
 
 *claude/lyric-fmt-lambda-forall-multi branch.*
