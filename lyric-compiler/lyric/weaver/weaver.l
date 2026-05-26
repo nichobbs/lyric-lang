@@ -148,15 +148,20 @@ record RewriteCtx {
   /// Parameter names of the matched function, forwarded as positional
   /// args by `proceed(args)`.
   paramNames:       List[String]
-  /// Config field names that have a literal default in the aspect's
-  /// `config { }` block.  `config.<n>` member accesses for these names
-  /// are rewritten to `__aspect_cfg_<n>` paths (#683).
+  /// Config field names the weaver materialises into `__aspect_cfg_<n>`
+  /// locals (#683).  `config.<n>` member accesses for any of these names
+  /// are rewritten to `__aspect_cfg_<n>` paths regardless of whether the
+  /// field carried a literal default — fields without a default are
+  /// materialised with a `panic("...")` stub initializer so the body
+  /// type-checks and codegen succeeds (compilation still fails because
+  /// A0044 fires before any of that runs).
   configFields:     Map[String, Bool]
-  /// Every config field name declared on the aspect, regardless of
-  /// whether it has a default.  Used so `config.<no-default>` can
-  /// surface as A0044 (review #1323) rather than a confusing
-  /// downstream "config not declared" type error.
-  configFieldsAll:  Map[String, Bool]
+  /// Subset of `configFields` whose prelude entry uses the panic stub
+  /// because the field had no default in the `config { }` block.  Drives
+  /// A0044 emission in `tryMemberRewrite` so the user sees a clear
+  /// weaver-targeted message instead of a confusing downstream type
+  /// error (review #1323).
+  configNoDefault:  Map[String, Bool]
   /// Call-context field names that the weaver materialises into
   /// `__lyric_call_<n>` locals.  `call.<n>` for these names rewrites
   /// to the local; other `call.<n>` accesses pass through unchanged
@@ -206,7 +211,7 @@ func newRewriteCtx(
   targetName:       in String,
   paramNames:       in List[String],
   configFields:     in Map[String, Bool],
-  configFieldsAll:  in Map[String, Bool],
+  configNoDefault:  in Map[String, Bool],
   callFields:       in Map[String, Bool],
   isInlineTemplate: in Bool,
   aspectName:       in String,
@@ -217,7 +222,7 @@ func newRewriteCtx(
     targetName       = targetName,
     paramNames       = paramNames,
     configFields     = configFields,
-    configFieldsAll  = configFieldsAll,
+    configNoDefault  = configNoDefault,
     callFields       = callFields,
     isInlineTemplate = isInlineTemplate,
     aspectName       = aspectName,
@@ -279,19 +284,22 @@ func tryMemberRewrite(ctx: in RewriteCtx, expr: in Expr): Option[Expr] {
   match matchBareMemberAccess(expr, "config") {
     case Some(name) -> {
       if ctx.configFields.containsKey(name) {
+        // Field has been materialised in the prelude.  Fields without
+        // a default are also materialised — with a `panic("...")` stub
+        // initializer — so the rewrite path is uniform and the body
+        // type-checks and codegen succeeds for the no-default case.
+        // For those, fire A0044 alongside the rewrite so the user sees
+        // a weaver-targeted message rather than a confusing downstream
+        // codegen error (review #1323).
+        if ctx.configNoDefault.containsKey(name) {
+          addWeaveDiagOnce(ctx.weaveDiags, WDConfigNoDefault, ctx.aspectName,
+                           ctx.funcName, name, expr.span)
+        }
         return Some(value = Expr(
           kind = EPath(path = ModulePath(
             segments = singleSeg("__aspect_cfg_" + name),
             span     = expr.span)),
           span = expr.span))
-      } else if ctx.configFieldsAll.containsKey(name) {
-        // Declared in the `config { }` block but has no literal
-        // default — env-var resolution is a follow-up.  Surface
-        // A0044 so the user sees a weaver-targeted message rather
-        // than a downstream "config not declared" type error
-        // (review #1323).
-        addWeaveDiagOnce(ctx.weaveDiags, WDConfigNoDefault, ctx.aspectName,
-                         ctx.funcName, name, expr.span)
       }
       // config.<unknown> falls through — the field isn't declared
       // on the aspect at all, so the downstream type error is
@@ -718,57 +726,79 @@ func mkSliceTypeExpr(elemName: in String): TypeExpr {
 
 /// Build the `config { }` prelude for an aspect.  Lazy: pre-scans
 /// the aspect body for `config.<field>` references and only emits
-/// `val __aspect_cfg_<field>: <ty> = <default>` for fields the body
-/// actually reads.  Fields without a default are skipped regardless
-/// (runtime env-var resolution is a follow-up — see todo/06 #683).
-/// Aspects whose bodies never touch `config.*` produce byte-
-/// identical wrappers to the pre-todo-06 weaver, matching the
+/// `val __aspect_cfg_<field>: <ty> = <init>` for fields the body
+/// actually reads.  Aspects whose bodies never touch `config.*` produce
+/// byte-identical wrappers to the pre-todo-06 weaver, matching the
 /// lazy-prelude design used by `buildCallPrelude` (review #1307).
+///
+/// Fields without a default are still materialised (when referenced)
+/// with a `panic("config '<name>' has no default value...")` stub
+/// initializer.  This keeps the rewrite path uniform so the body
+/// type-checks and downstream codegen succeeds; A0044 fires alongside
+/// the rewrite in `tryMemberRewrite` so the user sees a clear
+/// weaver-targeted error instead of a confusing "unknown name 'config'"
+/// codegen failure (review #1323).  Runtime env-var resolution for
+/// these fields is a follow-up — see todo/06 #683.
+///
 /// Returns three values:
 ///   - the synthetic prelude statements (one `val __aspect_cfg_<f>`
 ///     per materialised field);
-///   - `present`: field names whose prelude entry was emitted
-///     (rewriter substitutes only those);
-///   - `allDeclared`: every config field name from the aspect's
-///     `config { }` block regardless of default state — used by
-///     the rewriter to emit A0044 for `config.<no-default>` accesses
-///     (review #1323).
+///   - `materialised`: every field name whose prelude entry was
+///     emitted (rewriter substitutes those);
+///   - `noDefault`: subset of `materialised` that used the panic stub
+///     because the field had no default (drives A0044 emission).
 func buildConfigPrelude(
   aspect: in AspectDecl,
   body:   in Block
 ): (List[Statement], Map[String, Bool], Map[String, Bool]) {
   val stmts: List[Statement] = newList()
-  val present: Map[String, Bool] = newMap()
-  val allDeclared: Map[String, Bool] = newMap()
-  // Build `allDeclared` even when the body has no `config.<x>` refs,
-  // so the rewriter has the full set for A0044 detection.
-  var i = 0
-  while i < aspect.config.count {
-    allDeclared.add(aspect.config[i].name, true)
-    i = i + 1
-  }
-  if aspect.config.count == 0 { return (stmts, present, allDeclared) }
+  val materialised: Map[String, Bool] = newMap()
+  val noDefault: Map[String, Bool] = newMap()
+  if aspect.config.count == 0 { return (stmts, materialised, noDefault) }
 
   // Pre-scan: which config.<field> names does the body reference?
   val refs: Map[String, Bool] = newMap()
   collectMemberRefsBlock(body, "config", refs)
-  if refs.count == 0 { return (stmts, present, allDeclared) }
+  if refs.count == 0 { return (stmts, materialised, noDefault) }
 
-  i = 0
+  var i = 0
   while i < aspect.config.count {
     val f = aspect.config[i]
-    if refs.containsKey(f.name) {
+    if refs.containsKey(f.name) and not materialised.containsKey(f.name) {
       match f.default {
         case Some(init) -> {
           stmts.add(mkValStmt("__aspect_cfg_" + f.name, Some(value = f.ty), init))
-          present.add(f.name, true)
+          materialised.add(f.name, true)
         }
-        case None -> ()
+        case None -> {
+          // No literal default — emit a panic stub so the body
+          // type-checks and codegen succeeds.  A0044 fires in
+          // tryMemberRewrite, so compilation halts before the
+          // panic is ever reached at runtime (review #1323).
+          val msg = "config '" + f.name +
+                    "' has no default value and runtime env-var " +
+                    "resolution is not yet wired (see todo/06 #683)"
+          stmts.add(mkValStmt("__aspect_cfg_" + f.name, Some(value = f.ty), mkPanicCall(msg)))
+          materialised.add(f.name, true)
+          noDefault.add(f.name, true)
+        }
       }
     }
     i = i + 1
   }
-  return (stmts, present, allDeclared)
+  return (stmts, materialised, noDefault)
+}
+
+/// `panic(<text>)` call expression at a zero span.  `panic` is a Lyric
+/// built-in returning `Never`, so this expression unifies with any
+/// expected type — usable as a synthesised initializer for a `val` of
+/// arbitrary declared type.
+func mkPanicCall(text: in String): Expr {
+  val args: List[CallArg] = newList()
+  args.add(CAPositional(expr = mkStringLit(text)))
+  Expr(
+    kind = ECall(fn = singleSegPathExpr("panic"), args = args),
+    span = synSpan())
 }
 
 /// Walk an Expr (and any nested Block / EOB) collecting the set of
@@ -1039,13 +1069,14 @@ func buildWrapper(
   }
 
   // Build preludes.  `buildConfigPrelude` returns three sets:
-  // emitted statements, materialised field names (rewriter
-  // substitutes only those), and the full declared set (so the
-  // rewriter can emit A0044 for `config.<no-default>` references —
-  // review #1323).  Both preludes are lazy: they pre-scan
-  // `around.body` for `config.<x>` / `call.<x>` refs and emit only
-  // the locals the body actually reads (review #1307).
-  val (cfgStmts, cfgPresent, cfgAllDeclared) =
+  // emitted statements, the materialised field names (rewriter
+  // substitutes those), and the subset whose initializer is a
+  // `panic(...)` stub because the field had no default — the
+  // rewriter fires A0044 for any reference to those (review #1323).
+  // Both preludes are lazy: they pre-scan `around.body` for
+  // `config.<x>` / `call.<x>` refs and emit only the locals the
+  // body actually reads (review #1307).
+  val (cfgStmts, cfgPresent, cfgNoDefault) =
     buildConfigPrelude(aspect, around.body)
   val (callStmts, callPresent) = buildCallPrelude(originalFn, aspect, site, around.body)
 
@@ -1053,7 +1084,7 @@ func buildWrapper(
     callTargetName,
     paramNames,
     cfgPresent,
-    cfgAllDeclared,
+    cfgNoDefault,
     callPresent,
     site.isInlineTemplate,
     aspect.name,

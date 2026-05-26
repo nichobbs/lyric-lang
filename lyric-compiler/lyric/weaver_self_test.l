@@ -610,7 +610,10 @@ test "config.<no-default> reference emits A0044 weave diagnostic" {
   // previously fell through silently and surfaced as a confusing
   // "config not declared" type error downstream.  The weaver now
   // emits A0044 with a clear message naming the aspect, the
-  // matched function, and the offending field.
+  // matched function, and the offending field, AND materialises
+  // the prelude entry with a `panic(...)` stub so downstream
+  // codegen sees a resolved reference (compilation halts on the
+  // A0044 error before runtime reaches the panic).
   val src =
     "package P\n" +
     "aspect Limit {\n" +
@@ -625,6 +628,11 @@ test "config.<no-default> reference emits A0044 weave diagnostic" {
   val wr = parseWeaveDiags(src)
   assertTrue(diagsHaveCode(wr.diagnostics, "A0044"),
              "A0044 emitted for config.<no-default>")
+  // Verify the stub is wired so the body type-checks.
+  val wrapper = firstFunction(wr.file, "d")
+  val body    = functionBody(wrapper)
+  assertTrue(isValBinding(body.statements[0], "__aspect_cfg_undefaulted"),
+             "no-default field materialised with stub prelude entry")
 }
 
 
