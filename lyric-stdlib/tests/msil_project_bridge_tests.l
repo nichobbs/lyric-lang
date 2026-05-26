@@ -592,19 +592,15 @@ func testCfgErasureFileLevelErasesEntireFile(): Unit {
 
 // ─── Phase A.4: restored-dep wiring crash-safety smoke test ────────────────
 //
-// Confirms that the new `emitProject` restored-dep wiring doesn't crash
-// when handed a non-existent DLL path — the load fails cleanly and the
-// emitter falls through to the F# subprocess fallback.  That subprocess
-// then exits 1 because it also can't find the DLL
-// (`Program.fs::internalProjectBuild` lines 218-225 set `hadFatal` on
-// missing DEP files), so `emitProject` returns `EmitResult` with no
-// `outputPath`.  This test just ensures we get THAT clean failure path
-// rather than a panic from the in-process load step.
-//
-// The full end-to-end test (library DLL with embedded `Lyric.Contract`
-// resource → consumer project with cross-package call → `dotnet exec`
-// round-trip) lands once the self-hosted bridge emits `Lyric.Contract`
-// resources directly — see D-progress-311 for the prerequisite slice.
+// Confirms that the `emitProject` restored-dep wiring doesn't crash
+// when handed a non-existent DLL path — the load fails cleanly and
+// the emitter returns an `EmitResult` carrying a `DllMissing`
+// diagnostic with no `outputPath`.  Before the subprocess fallback
+// retirement this used to bounce through the F# subprocess as a
+// secondary attempt; now the in-process loader's error is the
+// authoritative result (the slice 3 E2E test proves the in-process
+// pipeline works end-to-end, so falling back was both unnecessary
+// and a debuggability hazard — surfacing the original error wins).
 
 func testRestoredDepWiringNoCrash(): Unit {
   val tmpDir = freshTempDir("restored-wiring")
@@ -617,10 +613,9 @@ func testRestoredDepWiringNoCrash(): Unit {
     "}\n"))
   val consumerDll = Path.join(tmpDir, "RestoredFallbackApp.dll")
   val restoredDlls: List[String] = newList()
-  // Non-existent path: in-process loader returns `DllMissing` →
-  // emitter falls through to subprocess → subprocess also sees the
-  // missing DLL and exits 1.  We expect `outputPath = None` and NO
-  // panic.
+  // Non-existent path: in-process loader returns `DllMissing`, which
+  // the emitter surfaces directly via `failResult` (no subprocess
+  // bounce since slice 3).  We expect `outputPath = None` and NO panic.
   restoredDlls.add("RestoredFallbackLib\t" + Path.join(tmpDir, "missing.dll"))
   val req = Emitter.EmitProjectRequest(
     packages         = consumerPkgs,
@@ -632,12 +627,13 @@ func testRestoredDepWiringNoCrash(): Unit {
     declaredFeatures = newList(),
     packageVersion   = "")
   val result = Emitter.emitProject(req)
-  // Exact expected state: subprocess exited 1, no DLL produced.
+  // Expected: in-process loader reports DllMissing, emitter surfaces
+  // via `failResult`, `outputPath = None`.
   match result.outputPath {
     case None    -> ()  // expected
     case Some(_) -> {
       cleanup(tmpDir)
-      panic("restored_wiring: subprocess shouldn't produce output when DLL is missing")
+      panic("restored_wiring: missing DLL must produce no output")
     }
   }
   cleanup(tmpDir)

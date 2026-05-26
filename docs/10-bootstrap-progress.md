@@ -16045,3 +16045,83 @@ dep consumers and `public-api-diff` couldn't distinguish releases.
 - Per-package version threading for project-as-DLL bundles (each
   package can declare its own version) — deferred from this slice;
   the bridge currently uses one bundle-level version.
+
+
+### D-progress-317 — retire .NET subprocess fallback in Lyric.Emitter (#1229)
+
+**Status:** Shipped.  `lyric-compiler/lyric/emitter.l` no longer routes
+any `--target dotnet` compile through the F# `--internal-build` /
+`--internal-project-build` subprocess shim.  Restored-dep load failures
+now surface as proper `EmitResult` diagnostics rather than silently
+bouncing through the F# emitter.
+
+**Problem:**
+
+Slices 2b (#1350) → 3 (#1372) → version threading (#1377) made the
+self-hosted in-process MSIL bridge functionally equivalent to the F#
+emitter for every `--target dotnet` scenario users actually hit:
+single-file, multi-package, restored deps, feature flags,
+`[package].version` threading.  The subprocess fallback in
+`emitter.l` was kept alive as belt-and-suspenders during the
+migration, but its existence had three real costs:
+
+1. **Debuggability hazard** — when an in-process restored-dep load
+   failed (`DllMissing`, `NoContractResource`, `MalformedContract`,
+   `SynthesisDiagnostics`), the emitter silently retried via
+   subprocess instead of surfacing the original error.  The user saw
+   "subprocess exited 1" with no context about *why* the in-process
+   path failed.
+2. **Double-failure mode** — both the in-process loader and the F#
+   `Program.fs::internalProjectBuild` use the same
+   `Lyric.RestoredPackages` semantics; a load that failed in-process
+   would fail identically in the subprocess.  The "fallback" was
+   never a real recovery, just a noise multiplier.
+3. **CLAUDE.md production-readiness** — `LYRIC_FORCE_SUBPROCESS=1`
+   let any caller turn off the production code path at runtime.
+   Useful for the original differential testing during migration;
+   pure anti-feature now.
+
+**Fix (`lyric-compiler/lyric/emitter.l`):**
+
+1. `emit` simplified — `--target dotnet` always goes through
+   `emitMsilInProcess`; `--target jvm` still calls
+   `emitViaSubprocess` (JVM keeps the subprocess until its
+   self-hosted bridge gains a reachable single-file entry).  The
+   `LYRIC_FORCE_SUBPROCESS=1` env-var override is gone.
+2. `emitProject` simplified — same shape: `Dotnet → emitProjectInProcess`,
+   `Jvm → emitProjectViaSubprocess`.
+3. `useSubprocessFallback()` helper deleted.
+4. Inline restored-dep load-failure fallbacks in
+   `emitProjectInProcess` replaced with `failResult` carrying the
+   `RestoredPackages.errorMessage(e)` text.  The two former
+   `return emitProjectViaSubprocess(req)` paths now propagate the
+   original error with the offending DLL path.
+5. File-header comments and per-function docstrings updated to
+   reflect that the subprocess path is JVM-only.  Stale
+   `LYRIC_FORCE_SUBPROCESS` / `LYRIC_BIN` mentions removed where
+   no longer relevant.
+
+**Other touched files:**
+
+- `lyric-stdlib/tests/msil_project_bridge_tests.l::testRestoredDepWiringNoCrash`
+  — stale comment + panic message updated.  The test still passes;
+  it now asserts the cleaner in-process-only `DllMissing →
+  outputPath = None` shape.
+
+**Out of scope (deferred follow-ups):**
+
+- Retiring the F# `--internal-build` / `--internal-project-build`
+  handlers in `bootstrap/src/Lyric.Cli/Program.fs`.  Still required
+  for JVM single-file / project builds.  Will retire when the JVM
+  self-hosted bridge gains the matching reachable entry point.
+- Renaming `emitViaSubprocess` → `emitJvmViaSubprocess` (and the
+  project variant) to reflect their JVM-only scope.  Cosmetic;
+  picks up in a follow-up cleanup.
+
+**Acceptance criteria met:**
+
+- 844 emitter + 75 CLI tests pass.
+- No `--target dotnet` codepath in `emitter.l` reaches
+  `Process.run(cliShellExe(), ...)` anymore.
+- `LYRIC_FORCE_SUBPROCESS` is no longer read by the self-hosted
+  emitter (greppable verification).
