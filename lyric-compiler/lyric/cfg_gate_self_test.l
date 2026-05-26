@@ -1,10 +1,17 @@
-// cfg_gate_self_test.l — exercises Lyric.CfgGate.
+// cfg_gate_self_test.l — exercises Lyric.CfgGate via the native
+// `@test_module` test runner.
 //
-// Compiled and executed by SelfHostedCfgGateTests.fs.  Exit 0 + "ok" in
-// stdout means every assertion held.  Covers #1123 (comment-aware
-// detection) and #1124 (single stub for multi-file directory packages
-// where some or all files are gated out).
+// Covers #1123 (comment-aware detection) and #1124 (single stub for
+// multi-file directory packages where some or all files are gated out).
+//
+// Runs in CI via:
+//
+//   LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/cfg_gate_self_test.l
+//
+// (#1436 / CLAUDE.md no-new-F#-code policy: no `SelfHostedCfgGateTests.fs`
+// runner — discovery is the native Lyric path mirroring `weaver_self_test.l`.)
 
+@test_module
 package Lyric.CfgGateSelfTest
 
 import Std.Core
@@ -31,16 +38,15 @@ func features2(a: in String, b: in String): List[String] {
   xs
 }
 
-func assertFalseLocal(cond: in Bool, label: in String): Unit {
-  assertTrue(not cond, label)
-}
-
 // Concatenate sources the same way the test runner does (no separator —
 // each file already ends with its own newline run).
 func concatAll(xs: in List[String]): String {
   var s = ""
   var i = 0
-  while i < xs.count { s = s + xs[i]; i += 1 }
+  while i < xs.count {
+    s = s + xs[i]
+    i += 1
+  }
   s
 }
 
@@ -58,52 +64,53 @@ func countPackageDecls(src: in String, pkgName: in String): Int {
   var i = 0
   while i + needle.length < src.length {
     if src[i] == '\n' {
-      val slice = src.substring(i + 1, needle.length)
-      if slice == needle { count = count + 1 }
+      val chunk = src.substring(i + 1, needle.length)
+      if chunk == needle { count = count + 1 }
     }
     i = i + 1
   }
   count
 }
 
-func mkFile(p: in String, c: in String): CfgGateFile {
-  CfgGateFile(path = p, contents = c)
+func mkFile(p: in String, txt: in String): CfgGateFile {
+  val f = CfgGateFile(path = p, contents = txt)
+  f
 }
 
 // ---------------------------------------------------------------------------
 // isCfgGatedOut — basic cases
 // ---------------------------------------------------------------------------
 
-func testNoCfg_NotGated(): Unit {
+test "isCfgGatedOut: no @cfg → not gated" {
   val src = "package Foo\n\nfunc main(): Unit {}\n"
-  assertFalseLocal(isCfgGatedOut(src, emptyFeatures()),
+  assertTrue(not isCfgGatedOut(src, emptyFeatures()),
     "no @cfg → not gated")
 }
 
-func testNoPackageDecl_NotGated(): Unit {
-  // No package declaration → not a top-level Lyric file we can gate.
+test "isCfgGatedOut: no `package` declaration → not gated" {
+  // Not a top-level Lyric file we can gate.
   val src = "@cfg(feature = \"x\")\nfunc foo(): Unit {}\n"
-  assertFalseLocal(isCfgGatedOut(src, emptyFeatures()),
+  assertTrue(not isCfgGatedOut(src, emptyFeatures()),
     "no `package` declaration → not gated")
 }
 
-func testInactiveCfg_Gated(): Unit {
+test "isCfgGatedOut: inactive feature → gated" {
   val src = "@cfg(feature = \"redis\")\npackage Foo\n\nfunc main(): Unit {}\n"
   assertTrue(isCfgGatedOut(src, emptyFeatures()),
     "inactive feature → gated")
 }
 
-func testActiveCfg_NotGated(): Unit {
+test "isCfgGatedOut: active feature → not gated" {
   val src = "@cfg(feature = \"redis\")\npackage Foo\n\nfunc main(): Unit {}\n"
-  assertFalseLocal(isCfgGatedOut(src, features1("redis")),
+  assertTrue(not isCfgGatedOut(src, features1("redis")),
     "active feature → not gated")
 }
 
-func testCfgAfterPackage_NotGated(): Unit {
+test "isCfgGatedOut: @cfg after package → not whole-file gated" {
   // An @cfg annotation that appears AFTER the `package` declaration
   // gates only the item it precedes, not the whole file.
   val src = "package Foo\n\n@cfg(feature = \"redis\")\nfunc only(): Unit {}\n"
-  assertFalseLocal(isCfgGatedOut(src, emptyFeatures()),
+  assertTrue(not isCfgGatedOut(src, emptyFeatures()),
     "@cfg after package → not whole-file gated")
 }
 
@@ -111,24 +118,24 @@ func testCfgAfterPackage_NotGated(): Unit {
 // #1123 — line comments containing @cfg must NOT trip the detector
 // ---------------------------------------------------------------------------
 
-func testCfgInLineComment_NotGated(): Unit {
+test "isCfgGatedOut: @cfg in // line comment → not gated (#1123)" {
   // Reproduces the #1123 false positive: a line comment that mentions
   // `@cfg(feature = "x")` must not gate the package out.
   val src = "// this was @cfg(feature = \"x\") before we removed it\n" +
             "package Foo\n\nfunc main(): Unit {}\n"
-  assertFalseLocal(isCfgGatedOut(src, emptyFeatures()),
+  assertTrue(not isCfgGatedOut(src, emptyFeatures()),
     "@cfg in // line comment → not gated (#1123)")
 }
 
-func testCfgInDocComment_NotGated(): Unit {
+test "isCfgGatedOut: @cfg in /// doc comment → not gated" {
   // Doc comments use `///` which still starts with `//`.
   val src = "/// example: @cfg(feature = \"x\") used to wrap this file\n" +
             "package Foo\n\nfunc main(): Unit {}\n"
-  assertFalseLocal(isCfgGatedOut(src, emptyFeatures()),
+  assertTrue(not isCfgGatedOut(src, emptyFeatures()),
     "@cfg in /// doc comment → not gated")
 }
 
-func testCommentedCfgFollowedByRealCfg_GatedByReal(): Unit {
+test "isCfgGatedOut: commented @cfg + real inactive @cfg → still gated" {
   // A commented-out @cfg followed by a real inactive @cfg: the real one
   // should still gate the file.
   val src = "// removed: @cfg(feature = \"old\")\n" +
@@ -138,15 +145,15 @@ func testCommentedCfgFollowedByRealCfg_GatedByReal(): Unit {
     "commented @cfg + real inactive @cfg → still gated by real one")
 }
 
-func testCommentedCfgFollowedByActiveCfg_NotGated(): Unit {
+test "isCfgGatedOut: commented @cfg + real active @cfg → not gated" {
   val src = "// removed: @cfg(feature = \"old\")\n" +
             "@cfg(feature = \"redis\")\n" +
             "package Foo\n"
-  assertFalseLocal(isCfgGatedOut(src, features1("redis")),
+  assertTrue(not isCfgGatedOut(src, features1("redis")),
     "commented @cfg + real active @cfg → not gated")
 }
 
-func testTwoActiveCfgsBeforeInactive_Gated(): Unit {
+test "isCfgGatedOut: active @cfgs followed by inactive @cfg → gated" {
   // Two active @cfgs first, then an inactive one. The scanner must keep
   // walking past the actives to find the inactive that actually gates.
   val src = "@cfg(feature = \"a\")\n" +
@@ -161,7 +168,7 @@ func testTwoActiveCfgsBeforeInactive_Gated(): Unit {
 // #1124 — directory assembly produces at most one `package` declaration
 // ---------------------------------------------------------------------------
 
-func testAssembly_NoGated_AllFilesKept(): Unit {
+test "assembleDirectoryPackageSources: no gating → both sources kept" {
   val files: List[CfgGateFile] = newList()
   files.add(mkFile("a.l", "package Foo\nfunc a(): Unit {}\n"))
   files.add(mkFile("b.l", "package Foo\nfunc b(): Unit {}\n"))
@@ -173,7 +180,7 @@ func testAssembly_NoGated_AllFilesKept(): Unit {
     "merged sources should carry both real `package Foo` declarations")
 }
 
-func testAssembly_AllGated_OneStubEmitted(): Unit {
+test "assembleDirectoryPackageSources: all-gated → exactly one stub" {
   // Both files in the directory are gated by the same inactive feature.
   // Old behaviour: emitted two `package Foo` stubs (the #1124 bug).
   // New behaviour: emits exactly ONE stub.
@@ -189,7 +196,7 @@ func testAssembly_AllGated_OneStubEmitted(): Unit {
     "all-gated → exactly one `package Foo` declaration in the stub (#1124)")
 }
 
-func testAssembly_PartiallyGated_NoStubAdded(): Unit {
+test "assembleDirectoryPackageSources: partial-gated → no stub added" {
   // One gated, one kept: the kept file already carries its own
   // `package Foo` declaration, so no stub is needed.  Old behaviour
   // added a stub for the gated file producing TWO `package Foo`
@@ -208,7 +215,7 @@ func testAssembly_PartiallyGated_NoStubAdded(): Unit {
     "partial-gated → exactly one `package Foo` declaration (#1124)")
 }
 
-func testAssembly_PartiallyGated_TwoLive_OneGated_OneDecl(): Unit {
+test "assembleDirectoryPackageSources: 2 live + 1 gated → 2 decls" {
   // Three files: two live, one gated.  Both live files carry their own
   // `package Foo`; the assembler must produce two sources containing
   // two declarations total, never adding a stub for the gated entry.
@@ -228,7 +235,7 @@ func testAssembly_PartiallyGated_TwoLive_OneGated_OneDecl(): Unit {
     "partial-gated → exactly the live `package Foo` declarations")
 }
 
-func testAssembly_AllKept_WithActiveFeature(): Unit {
+test "assembleDirectoryPackageSources: active feature → both files kept" {
   // A file gated by `redis` is kept when `redis` is active.
   val gated = "@cfg(feature = \"redis\")\npackage Foo\nfunc a(): Unit {}\n"
   val live  = "package Foo\nfunc b(): Unit {}\n"
@@ -240,37 +247,10 @@ func testAssembly_AllKept_WithActiveFeature(): Unit {
   assertEqualInt(asm.gatedFiles.count, 0, "no files gated when feature active")
 }
 
-func testAssembly_EmptyInput_NoStub(): Unit {
+test "assembleDirectoryPackageSources: empty input → no sources, no stub" {
   val files: List[CfgGateFile] = newList()
   val asm = assembleDirectoryPackageSources(files, "Foo", emptyFeatures())
   assertEqualInt(asm.sources.count, 0,
     "no input files → no sources and no stub (caller is expected to error earlier)")
   assertEqualInt(asm.gatedFiles.count, 0, "no input → no gated files")
-}
-
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
-func main(): Unit {
-  testNoCfg_NotGated()
-  testNoPackageDecl_NotGated()
-  testInactiveCfg_Gated()
-  testActiveCfg_NotGated()
-  testCfgAfterPackage_NotGated()
-
-  testCfgInLineComment_NotGated()
-  testCfgInDocComment_NotGated()
-  testCommentedCfgFollowedByRealCfg_GatedByReal()
-  testCommentedCfgFollowedByActiveCfg_NotGated()
-  testTwoActiveCfgsBeforeInactive_Gated()
-
-  testAssembly_NoGated_AllFilesKept()
-  testAssembly_AllGated_OneStubEmitted()
-  testAssembly_PartiallyGated_NoStubAdded()
-  testAssembly_PartiallyGated_TwoLive_OneGated_OneDecl()
-  testAssembly_AllKept_WithActiveFeature()
-  testAssembly_EmptyInput_NoStub()
-
-  println("cfg_gate self-test: ok")
 }

@@ -303,7 +303,6 @@ let main argv =
             SelfHostedGeneratorTests.tests
             SelfHostedDerivesTests.tests
             SelfHostedMonoTests.tests
-            SelfHostedCfgGateTests.tests
             MultiFilePackageTests.tests
             ProjectAsDllTests.tests
             CfgErasureTests.tests
