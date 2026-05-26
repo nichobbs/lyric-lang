@@ -362,11 +362,11 @@ func extractPackageName(source: in String): String {
     if atLineStart and pos + prefix.length <= source.length {
       val candidate = source.substring(pos, prefix.length)
       if candidate == prefix {
-        var end = pos + prefix.length
-        while end < source.length and source.substring(end, 1) != "\n" {
-          end = end + 1
+        var nameEnd = pos + prefix.length
+        while nameEnd < source.length and source.substring(nameEnd, 1) != "\n" {
+          nameEnd = nameEnd + 1
         }
-        val nameLen = end - (pos + prefix.length)
+        val nameLen = nameEnd - (pos + prefix.length)
         if nameLen > 0 {
           return source.substring(pos + prefix.length, nameLen)
         }
