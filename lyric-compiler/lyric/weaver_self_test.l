@@ -604,6 +604,29 @@ test "config fields without a default are skipped in the prelude" {
   assertTrue(not saw, "non-defaulted field has no prelude entry")
 }
 
+test "config.<no-default> reference emits A0044 weave diagnostic" {
+  // Regression for review #1323: a body referencing
+  // `config.<f>` where `<f>` is declared but has no default
+  // previously fell through silently and surfaced as a confusing
+  // "config not declared" type error downstream.  The weaver now
+  // emits A0044 with a clear message naming the aspect, the
+  // matched function, and the offending field.
+  val src =
+    "package P\n" +
+    "aspect Limit {\n" +
+    "  config { undefaulted: Int }\n" +
+    "  matches: name like \"d\"\n" +
+    "  around(args) -> ret {\n" +
+    "    val v = config.undefaulted\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func d(): Int { 0 }\n"
+  val wr = parseWeaveDiags(src)
+  assertTrue(diagsHaveCode(wr.diagnostics, "A0044"),
+             "A0044 emitted for config.<no-default>")
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. #682 — `call` ambient prelude.

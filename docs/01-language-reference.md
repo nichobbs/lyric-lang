@@ -1378,6 +1378,7 @@ The aspect name in `@no_aspect("Name")` is a string literal matching the aspect'
 | A0013 | `wraps:`/`inside:` references an aspect not declared in the package |
 | A0042 | `@inline_template` aspect body references `args.<field>` that does not match any parameter of the matched function |
 | A0043 | `call.<field>` references an ambient field the weaver does not recognise (recognised: `shortName`, `qualifiedName`, `modulePath`, `sourceLocation`, `annotations`, `aspect`) |
+| A0044 | `config.<field>` references a `config { }` field declared without a literal default; env-var resolution per `docs/26 §8` is a follow-up — add a default or remove the reference |
 
 A0007, A0008, A0009, and A0013 are specified but not yet emitted by the current compiler. Aspects without an `around` body are silently skipped by the weaver; unresolved `wraps:`/`inside:` names are silently ignored. These checks are planned for a follow-up milestone.
 

@@ -152,6 +152,11 @@ record RewriteCtx {
   /// `config { }` block.  `config.<n>` member accesses for these names
   /// are rewritten to `__aspect_cfg_<n>` paths (#683).
   configFields:     Map[String, Bool]
+  /// Every config field name declared on the aspect, regardless of
+  /// whether it has a default.  Used so `config.<no-default>` can
+  /// surface as A0044 (review #1323) rather than a confusing
+  /// downstream "config not declared" type error.
+  configFieldsAll:  Map[String, Bool]
   /// Call-context field names that the weaver materialises into
   /// `__lyric_call_<n>` locals.  `call.<n>` for these names rewrites
   /// to the local; other `call.<n>` accesses pass through unchanged
@@ -172,15 +177,21 @@ record RewriteCtx {
   ///   - A0043 — `call.<n>` references an unknown context field
   ///             (e.g. `call.elapsed` before runtime instrumentation
   ///             lands; #682 follow-up).
+  ///   - A0044 — `config.<n>` references a declared field that has
+  ///             no default (env-var resolution is a follow-up; see
+  ///             `docs/26 §8`).  Surfaced at weave time to replace
+  ///             the confusing downstream "config not declared"
+  ///             type error (review #1323).
   weaveDiags:       List[WeaveDiagEntry]
 }
 
-/// Discriminator + payload for a weave-time diagnostic.  Two kinds
+/// Discriminator + payload for a weave-time diagnostic.  Three kinds
 /// today; new kinds can be added without changing the rewriter's
 /// signature.
 union WeaveDiagKind {
-  case WDArgsMismatch  // A0042
-  case WDCallUnknown   // A0043
+  case WDArgsMismatch    // A0042
+  case WDCallUnknown     // A0043
+  case WDConfigNoDefault // A0044
 }
 
 record WeaveDiagEntry {
@@ -195,6 +206,7 @@ func newRewriteCtx(
   targetName:       in String,
   paramNames:       in List[String],
   configFields:     in Map[String, Bool],
+  configFieldsAll:  in Map[String, Bool],
   callFields:       in Map[String, Bool],
   isInlineTemplate: in Bool,
   aspectName:       in String,
@@ -205,6 +217,7 @@ func newRewriteCtx(
     targetName       = targetName,
     paramNames       = paramNames,
     configFields     = configFields,
+    configFieldsAll  = configFieldsAll,
     callFields       = callFields,
     isInlineTemplate = isInlineTemplate,
     aspectName       = aspectName,
@@ -271,7 +284,18 @@ func tryMemberRewrite(ctx: in RewriteCtx, expr: in Expr): Option[Expr] {
             segments = singleSeg("__aspect_cfg_" + name),
             span     = expr.span)),
           span = expr.span))
+      } else if ctx.configFieldsAll.containsKey(name) {
+        // Declared in the `config { }` block but has no literal
+        // default — env-var resolution is a follow-up.  Surface
+        // A0044 so the user sees a weaver-targeted message rather
+        // than a downstream "config not declared" type error
+        // (review #1323).
+        addWeaveDiagOnce(ctx.weaveDiags, WDConfigNoDefault, ctx.aspectName,
+                         ctx.funcName, name, expr.span)
       }
+      // config.<unknown> falls through — the field isn't declared
+      // on the aspect at all, so the downstream type error is
+      // appropriate.
     }
     case None -> ()
   }
@@ -365,8 +389,9 @@ func addWeaveDiagOnce(
 
 func sameWeaveDiagKind(a: in WeaveDiagKind, b: in WeaveDiagKind): Bool {
   match a {
-    case WDArgsMismatch -> match b { case WDArgsMismatch -> true; case _ -> false }
-    case WDCallUnknown  -> match b { case WDCallUnknown  -> true; case _ -> false }
+    case WDArgsMismatch    -> match b { case WDArgsMismatch    -> true; case _ -> false }
+    case WDCallUnknown     -> match b { case WDCallUnknown     -> true; case _ -> false }
+    case WDConfigNoDefault -> match b { case WDConfigNoDefault -> true; case _ -> false }
   }
 }
 
@@ -699,22 +724,37 @@ func mkSliceTypeExpr(elemName: in String): TypeExpr {
 /// Aspects whose bodies never touch `config.*` produce byte-
 /// identical wrappers to the pre-todo-06 weaver, matching the
 /// lazy-prelude design used by `buildCallPrelude` (review #1307).
-/// Returns the names of fields that produced a prelude entry so the
-/// rewriter only substitutes those.
+/// Returns three values:
+///   - the synthetic prelude statements (one `val __aspect_cfg_<f>`
+///     per materialised field);
+///   - `present`: field names whose prelude entry was emitted
+///     (rewriter substitutes only those);
+///   - `allDeclared`: every config field name from the aspect's
+///     `config { }` block regardless of default state — used by
+///     the rewriter to emit A0044 for `config.<no-default>` accesses
+///     (review #1323).
 func buildConfigPrelude(
   aspect: in AspectDecl,
   body:   in Block
-): (List[Statement], Map[String, Bool]) {
+): (List[Statement], Map[String, Bool], Map[String, Bool]) {
   val stmts: List[Statement] = newList()
   val present: Map[String, Bool] = newMap()
-  if aspect.config.count == 0 { return (stmts, present) }
+  val allDeclared: Map[String, Bool] = newMap()
+  // Build `allDeclared` even when the body has no `config.<x>` refs,
+  // so the rewriter has the full set for A0044 detection.
+  var i = 0
+  while i < aspect.config.count {
+    allDeclared.add(aspect.config[i].name, true)
+    i = i + 1
+  }
+  if aspect.config.count == 0 { return (stmts, present, allDeclared) }
 
   // Pre-scan: which config.<field> names does the body reference?
   val refs: Map[String, Bool] = newMap()
   collectMemberRefsBlock(body, "config", refs)
-  if refs.count == 0 { return (stmts, present) }
+  if refs.count == 0 { return (stmts, present, allDeclared) }
 
-  var i = 0
+  i = 0
   while i < aspect.config.count {
     val f = aspect.config[i]
     if refs.containsKey(f.name) {
@@ -728,7 +768,7 @@ func buildConfigPrelude(
     }
     i = i + 1
   }
-  return (stmts, present)
+  return (stmts, present, allDeclared)
 }
 
 /// Walk an Expr (and any nested Block / EOB) collecting the set of
@@ -998,20 +1038,22 @@ func buildWrapper(
     pi = pi + 1
   }
 
-  // Build preludes.  Each helper returns a (statements, present-field set)
-  // pair; the present sets feed the rewriter so only materialised fields
-  // are rewritten — out-of-scope references like `config.<unknown>` stay
-  // as member accesses and surface as type errors at the use site.
-  // Both preludes are lazy: they pre-scan `around.body` for
-  // `config.<x>` / `call.<x>` refs and emit only the locals the body
-  // actually reads (review #1307).
-  val (cfgStmts, cfgPresent) = buildConfigPrelude(aspect, around.body)
+  // Build preludes.  `buildConfigPrelude` returns three sets:
+  // emitted statements, materialised field names (rewriter
+  // substitutes only those), and the full declared set (so the
+  // rewriter can emit A0044 for `config.<no-default>` references —
+  // review #1323).  Both preludes are lazy: they pre-scan
+  // `around.body` for `config.<x>` / `call.<x>` refs and emit only
+  // the locals the body actually reads (review #1307).
+  val (cfgStmts, cfgPresent, cfgAllDeclared) =
+    buildConfigPrelude(aspect, around.body)
   val (callStmts, callPresent) = buildCallPrelude(originalFn, aspect, site, around.body)
 
   val ctx = newRewriteCtx(
     callTargetName,
     paramNames,
     cfgPresent,
+    cfgAllDeclared,
     callPresent,
     site.isInlineTemplate,
     aspect.name,
@@ -1477,9 +1519,10 @@ func packagePathString(file: in SourceFile): String {
   segmentsJoin(file.packageDecl.path.segments)
 }
 
-/// Convert weave-time diagnostic entries (A0042 args mismatches and
-/// A0043 unknown `call.<field>` accesses) to user-facing Diagnostic
-/// objects.
+/// Convert weave-time diagnostic entries to user-facing Diagnostic
+/// objects.  Three kinds today: A0042 (args mismatch on
+/// `@inline_template`), A0043 (unknown `call.<field>`), A0044
+/// (`config.<field>` declared but no literal default).
 func weaveDiagsToDiagnostics(errs: in List[WeaveDiagEntry]): List[Diagnostic] {
   val diags: List[Diagnostic] = newList()
   var i = 0
@@ -1503,6 +1546,16 @@ func weaveDiagsToDiagnostics(errs: in List[WeaveDiagEntry]): List[Diagnostic] {
           "field (recognised fields: shortName, qualifiedName, " +
           "modulePath, sourceLocation, annotations, aspect)"
         diags.add(errorDiagnostic("A0043", msg, e.span))
+      }
+      case WDConfigNoDefault -> {
+        val msg =
+          "aspect '" + e.aspectName +
+          "' references config." + e.fieldName +
+          " on matched function '" + e.funcName +
+          "' but the field has no literal default (runtime env-var " +
+          "resolution per docs/26 §8 is not yet wired); add a default " +
+          "to the `config { }` block or remove the reference"
+        diags.add(errorDiagnostic("A0044", msg, e.span))
       }
     }
     i = i + 1

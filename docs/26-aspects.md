@@ -863,6 +863,7 @@ compiler.
 | `A0026` | `from` references a name that is not a template aspect (e.g. a matching aspect or an ordinary type). |
 | `A0042` | `@inline_template` aspect body references `args.<field>` that does not match any parameter of the matched function.  Surfaced by the weaver at weave time (rather than as a downstream type error) so the message names the aspect, the matched function, and the offending field. |
 | `A0043` | `call.<field>` references an ambient field the weaver does not recognise (e.g. `call.elapsed` / `call.caller` while runtime instrumentation is deferred — see #1298).  Recognised fields today: `shortName`, `qualifiedName`, `modulePath`, `sourceLocation`, `annotations`, `aspect`. |
+| `A0044` | `config.<field>` references a `config { }` field declared without a literal default.  Env-var resolution per §8 is not yet wired; until it lands, the field must have a literal default to be referenced from the aspect body.  Surfaced at weave time to replace the confusing downstream "config not declared" type error. |
 
 Plus the runtime contract codes (`C0014` etc.) gain provenance
 fields naming the aspect that introduced the failing clause (§5.3).

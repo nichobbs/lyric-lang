@@ -695,6 +695,16 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     `contract_meta_self_test.l`, `restored_packages_self_test.l`,
     `verifier_self_test.l` —
     self-test consumers run by the F# emitter test suite.
+  - `weaver_self_test.l` — `@test_module` covering the todo/06
+    weaver features (config wiring #683, call context #682,
+    `@inline_template` #681) plus regression cases for the
+    duplicate-key crash (#1296) and duplicate-diagnostic
+    emission (#1299).  **Currently not wired into CI** —
+    requires the in-process MSIL bridge to load
+    `lyric-compiler/lyric/**/*.l` so the test's `Lyric.Weaver`
+    imports resolve when run via `lyric test`.  Tracked in
+    issue #1324.  Manual-run instructions are in the test
+    file's header.
   `Lyric` is registered as a built-in head in `Emitter.fs:isBuiltinHead`,
   so `import Lyric.<X>` resolves under this directory.  The
   `Lyric.<X>` namespace is reserved for the self-hosted compiler
