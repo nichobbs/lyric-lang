@@ -246,17 +246,15 @@ pub interface StorageBucket {
 // object's content (#1011).
 
 // Internal record carrying the canonical bucket directory and its
-// constituent parts.  Not `@stable` and not part of the public
-// `Lyric.Storage` surface: callers handle `Bucket` (the trait), and the
-// `connectLocalFs` factory hands back a `LocalBucket` packaged inside
-// `Bucket.Local`.  Marked `pub` only so the impl block below can attach
-// to it — keeping it package-internal would force every `bucket: Bucket`
-// shape onto callers who never look at the underlying fields.
-//
-// (Internal mutation: if the record shape needs to grow new fields the
-// `connectLocalFs` factory and `impl StorageBucket for LocalBucket` are
-// the only call sites that need updating.)
-pub record LocalBucket {
+// constituent parts.  Deliberately *not* `pub`: external packages must
+// route through `connectLocal`, which validates and canonicalises the
+// bucket directory before constructing the record.  Exposing the record
+// publicly would let any caller bypass the constructor and hand a
+// crafted `bucketDir` (e.g. `"/"`) into `resolveLocalPath`, defeating
+// the trailing-separator escape guard — every key would match the
+// degenerate prefix and writes would escape onto the host filesystem
+// (#1407).
+record LocalBucket {
   basePath:   String   // root directory
   bucketName: String   // sub-directory under basePath (the "bucket")
   bucketDir:  String   // canonical resolved bucketDir
@@ -520,7 +518,10 @@ impl StorageBucket for LocalBucket {
     // separators) by walking the directory tree.  Sidecar `.meta.json`
     // files are excluded.
     val allKeys: List[String] = newList()
-    walkDirectoryForKeys(self.bucketDir, "", allKeys)
+    match walkDirectoryForKeys(self.bucketDir, "", allKeys) {
+      case Err(e) -> return Err(e)
+      case Ok(_)  -> ()
+    }
     // Filter by prefix and continuation token; preserve the natural
     // disk order until we sort.
     val filtered: List[String] = newList()
@@ -538,13 +539,18 @@ impl StorageBucket for LocalBucket {
     val sorted = sortKeys(filtered)
     val truncated = sorted.count > maxKeys
     val pageCount = if truncated { maxKeys } else { sorted.count }
-    var entries: slice[ListEntry] = []
+    // Accumulate into a `List` (O(1) amortised append) then convert to
+    // `slice` once at the end — the previous `slice[ListEntry] =
+    // concat(entries, [le])` inside the loop was O(n²): with the
+    // documented `maxKeys` cap of 1000, ~500K element copies before
+    // returning the page (#1409).
+    val entriesAcc: List[ListEntry] = newList()
     var j = 0
     while j < pageCount {
       val k = sorted[j]
       match listEntryForKey(self, k) {
         case Err(e)  -> return Err(e)
-        case Ok(le)  -> { entries = concat(entries, [le]) }
+        case Ok(le)  -> entriesAcc.add(le)
       }
       j = j + 1
     }
@@ -554,7 +560,7 @@ impl StorageBucket for LocalBucket {
       None
     }
     return Ok(ListResult(
-      entries                = entries,
+      entries                = entriesAcc.toArray(),
       nextContinuationToken  = nextToken,
       isTruncated            = truncated))
   }
@@ -625,12 +631,18 @@ func readSidecar(objectPath: in String, contentLength: in Long): Result[StorageM
 // Recursive directory walk that accumulates relative-key paths (with
 // '/' separators).  Excludes `*.meta.json` sidecars.  `relPrefix` is
 // the running relative path from the bucket root; `acc` collects the
-// keys.
-func walkDirectoryForKeys(dir: in String, relPrefix: in String, acc: in List[String]): Unit {
+// keys.  Returns `Err(LIST_ERROR)` when an enumeration call fails so
+// callers don't silently get short, inconsistent result pages — a
+// previous "best-effort" version (#1408) would return whatever it had
+// collected so far when a subdirectory was unreadable, breaking the
+// standard "loop while isTruncated" pagination contract.
+func walkDirectoryForKeys(dir: in String, relPrefix: in String, acc: in List[String]): Result[Unit, StorageError] {
   val files = try {
     hostGetFiles(dir)
-  } catch Bug as _ {
-    return ()
+  } catch Bug as b {
+    return Err(StorageError(
+      message = "cannot enumerate '" + dir + "': " + b.message,
+      code    = "LIST_ERROR"))
   }
   var i = 0
   while i < files.length {
@@ -644,17 +656,23 @@ func walkDirectoryForKeys(dir: in String, relPrefix: in String, acc: in List[Str
   }
   val subs = try {
     hostGetDirectories(dir)
-  } catch Bug as _ {
-    return ()
+  } catch Bug as b {
+    return Err(StorageError(
+      message = "cannot enumerate subdirs of '" + dir + "': " + b.message,
+      code    = "LIST_ERROR"))
   }
   var k = 0
   while k < subs.length {
     val full = subs[k]
     val base = basenameOf(full)
     val nextPrefix = if relPrefix.length == 0 { base } else { relPrefix + "/" + base }
-    walkDirectoryForKeys(full, nextPrefix, acc)
+    match walkDirectoryForKeys(full, nextPrefix, acc) {
+      case Err(e) -> return Err(e)
+      case Ok(_)  -> ()
+    }
     k = k + 1
   }
+  return Ok(())
 }
 
 // Extract the final path component, robust against both `/` and `\`.
@@ -937,6 +955,23 @@ pub func exists(bucket: in StorageBucket, key: in String): Result[Bool, StorageE
   requires: key.length > 0
 {
   return bucket.exists(key)
+}
+
+// ─── Audit log hook ──────────────────────────────────────────────────────────
+
+/// Emit an audit log line.  `operation` is the canonical call name,
+/// `level` is one of `"info"` / `"warn"` / `"debug"`, `detail` is an
+/// optional free-form message (empty when there is none).
+///
+/// No-op for the bootstrap; structured audit sink tracked separately.
+/// Kept as a public function so `Storage.Aspects.AuditAccess` continues
+/// to compile against a stable name.  Lives here rather than in
+/// `_kernel/net/storage_kernel.l` because kernel files are the audited
+/// BCL boundary and may only contain `@externTarget` / `extern type`
+/// declarations (#1410).
+@stable(since="0.1")
+pub func auditLog(operation: in String, level: in String, detail: in String): Unit {
+  return ()
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────

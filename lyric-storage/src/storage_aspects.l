@@ -33,7 +33,6 @@ package Storage.Aspects
 import Std.Core
 import Std.String as Str
 import Storage
-import Storage.Kernel.Net as StorageKernel
 
 // ─── AuditAccess ─────────────────────────────────────────────────────────────
 
@@ -56,11 +55,11 @@ pub aspect AuditAccess {
     if not enabled {
       ret = call.proceed()
     } else {
-      StorageKernel.auditLog(call.qualifiedName, logLevel, "")
+      Storage.auditLog(call.qualifiedName, logLevel, "")
       ret = call.proceed()
       match ret {
-        case Ok(_)  -> StorageKernel.auditLog(call.qualifiedName + ":ok",  logLevel, "")
-        case Err(e) -> StorageKernel.auditLog(call.qualifiedName + ":err", "warn",   e.message)
+        case Ok(_)  -> Storage.auditLog(call.qualifiedName + ":ok",  logLevel, "")
+        case Err(e) -> Storage.auditLog(call.qualifiedName + ":err", "warn",   e.message)
       }
     }
   }

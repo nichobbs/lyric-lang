@@ -122,21 +122,7 @@ pub func hostGetFiles(path: in String): slice[String] = ()
 @externTarget("System.IO.Directory.GetDirectories")
 pub func hostGetDirectories(path: in String): slice[String] = ()
 
-// =====================================================================
-// Audit logging hook — historically a no-op stub; `Storage.Aspects`
-// `AuditAccess` calls this on every matched handler.  Until the
-// structured audit-sink design is finalised, this writes to stderr so
-// callers see the message during local development without depending
-// on a configured logger.
-// =====================================================================
-
-/// Emit an audit log line.  `operation` is the canonical call name,
-/// `level` is one of `"info"` / `"warn"` / `"debug"`, `detail` is an
-/// optional free-form message (empty when there is none).
-@stable(since="0.1")
-pub func auditLog(operation: in String, level: in String, detail: in String): Unit {
-  // No-op for the bootstrap; structured audit sink tracked separately.
-  // Kept as a public function so `Storage.Aspects.AuditAccess` continues
-  // to compile against a stable name.
-  return ()
-}
+// Audit logging hook moved out of the kernel to `Storage.auditLog`
+// (#1410): kernel files are the audited BCL boundary and must contain
+// only `@externTarget` / `extern type` declarations.  The no-op stub
+// is pure-Lyric, so it lives in `storage.l`.
