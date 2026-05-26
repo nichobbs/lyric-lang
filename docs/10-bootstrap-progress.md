@@ -15716,3 +15716,58 @@ The first prerequisite is a JSON serialiser that round-trips through
 - **Slice 3** — Full E2E Lyric test: self-hosted bridge builds a
   library DLL, the consumer reads it back through the in-process
   loader, asserts on `dotnet exec` stdout.
+
+
+### D-progress-313 — ManifestResource table + PE Resources directory (#1229 contract emission slice 2a)
+
+**Status:** Shipped (PE-level scaffolding; bridge wiring lands in 2b).
+
+**Problem:** Slice 1 (D-progress-312) shipped a `Contract` → JSON
+serialiser, but the self-hosted PE writer had no concept of managed
+resources.  The CLR header's Resources directory entry was hard-
+coded to zero, and the metadata tables didn't carry a
+`ManifestResource` row.  This slice adds the PE-level machinery so
+the bridge can hand the assembler a JSON blob and have it land
+inside the emitted DLL as a proper embedded resource.
+
+**Fix:**
+
+1. **`lyric-compiler/msil/tables.l`** — new `pub record
+   ManifestResourceRow { offset, flags, name, implementation }`
+   matching ECMA-335 §II.22.24.  Added to `MetadataTables` as
+   `manifestResources: List[ManifestResourceRow]`, with
+   `addManifestResource` helper.  `serializeTablesStream` gains the
+   `TABLE_BIT_MANIFEST_RESOURCE` bit (table 0x28, bit 40), the
+   row-count emission, and the row-data loop (`u4 offset`,
+   `u4 flags`, `u2 name`, `u2 implementation`).
+2. **`lyric-compiler/msil/assembler.l`** — `AssemblerInput` gains
+   `resourceData: List[Byte]` carrying the concatenated resource
+   payload (length-prefix-per-resource encoding already applied by
+   the caller).  `assemblePe` reserves a 4-byte-aligned region for
+   the resources between method bodies and metadata, computes the
+   resources RVA, and threads RVA + raw size into the CLR header.
+   `writeClrHdr` gains `rsrcRva` / `rsrcSize` parameters and writes
+   them at offsets 24 / 28 of the 72-byte header (no longer zeroed
+   out).
+3. **83 call sites** of `AssemblerInput(...)` across the M-series
+   self-tests and `lowering.l` updated to pass
+   `resourceData = newList()` — empty-resources scaffolding so
+   every existing path stays byte-identical.
+
+**Acceptance criteria met:**
+
+- PE layout, CLR header, and metadata-tables stream all support
+  embedded resources end-to-end.
+- 843 emitter tests pass unchanged (every existing test path
+  emits `resourceData = newList()`, so the resources region is
+  zero-sized and the PE layout matches pre-slice byte-for-byte).
+- 73 CLI tests pass.
+
+**What's next:**
+
+- **Slice 2b** — bridge wiring: bridge synthesises a `Contract`
+  from the parsed `SourceFile`, renders via `contractToJson`,
+  encodes UTF-8 bytes + length prefix, allocates a
+  `ManifestResource` row, and passes the payload as
+  `inp.resourceData`.
+- **Slice 3** — full E2E Lyric test.

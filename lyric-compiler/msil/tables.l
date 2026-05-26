@@ -280,6 +280,23 @@ pub record AssemblyRefRow {
   hashValue:      Int  // #Blob (0 if no hash)
 }
 
+// ManifestResource (Table 0x28) — ECMA-335 §II.22.24.
+//
+// One row per managed resource exposed by the assembly.  For
+// resources embedded in the assembly itself (the only kind the
+// self-hosted bridge produces), `implementation` is the nil
+// `Implementation` coded index (value 0); for resources in another
+// file or assembly it would point into the File / AssemblyRef
+// tables.  `offset` is the byte offset of this resource's
+// length-prefixed payload inside the assembly's Resources data
+// region (the region whose RVA + size live in the CLR header).
+pub record ManifestResourceRow {
+  offset:         Int  // u4: byte offset into the Resources data region
+  flags:          Int  // u4: ManifestResourceAttributes (1 = Public, 2 = Private)
+  name:           Int  // #Strings: resource name
+  implementation: Int  // coded: Implementation (0 = embedded in this assembly)
+}
+
 // Constant (Table 0x0B) — ECMA-335 §II.22.9.
 // Records a compile-time constant value for a Field, Param, or Property.
 pub record ConstantRow {
@@ -326,6 +343,7 @@ pub record MetadataTables {
   typeSpecs:        List[TypeSpecRow]
   assemblies:       List[AssemblyRow]
   assemblyRefs:     List[AssemblyRefRow]
+  manifestResources: List[ManifestResourceRow]
 }
 
 pub func newMetadataTables(): MetadataTables {
@@ -344,7 +362,8 @@ pub func newMetadataTables(): MetadataTables {
     methodImpls    = newList(),
     typeSpecs      = newList(),
     assemblies     = newList(),
-    assemblyRefs   = newList()
+    assemblyRefs   = newList(),
+    manifestResources = newList()
   )
 }
 
@@ -426,6 +445,11 @@ pub func addAssemblyRef(t: in MetadataTables, r: in AssemblyRefRow): Int {
   t.assemblyRefs.count
 }
 
+pub func addManifestResource(t: in MetadataTables, r: in ManifestResourceRow): Int {
+  t.manifestResources.add(r)
+  t.manifestResources.count
+}
+
 /// Build the StandAloneSig metadata token for the given 1-based row index.
 /// Token = (table 0x11) << 24 | rowIndex.
 pub func standaloneToken(row: in Int): Int {
@@ -469,6 +493,7 @@ val TABLE_BIT_METHOD_IMPL     : Long = 33554432i64      // table 0x19, bit 25 (2
 val TABLE_BIT_TYPE_SPEC       : Long = 134217728i64     // table 0x1B, bit 27 (2^27)
 val TABLE_BIT_ASSEMBLY        : Long = 4294967296i64    // table 0x20, bit 32 (2^32)
 val TABLE_BIT_ASSEMBLY_REF    : Long = 34359738368i64   // table 0x23, bit 35 (2^35)
+val TABLE_BIT_MANIFEST_RESOURCE : Long = 1099511627776i64 // table 0x28, bit 40 (2^40)
 
 // Emit a 2-byte LE integer.
 func w2(buf: in ByteWriter, v: in Int): Unit {
@@ -520,6 +545,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   if t.typeSpecs.count > 0        { valid = valid + TABLE_BIT_TYPE_SPEC }
   if t.assemblies.count > 0       { valid = valid + TABLE_BIT_ASSEMBLY }
   if t.assemblyRefs.count > 0     { valid = valid + TABLE_BIT_ASSEMBLY_REF }
+  if t.manifestResources.count > 0 { valid = valid + TABLE_BIT_MANIFEST_RESOURCE }
   w8(buf, valid)
 
   // Sorted bitmask: all zero (no sorting performed here)
@@ -541,6 +567,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   if t.typeSpecs.count > 0        { w4(buf, t.typeSpecs.count) }
   if t.assemblies.count > 0       { w4(buf, t.assemblies.count) }
   if t.assemblyRefs.count > 0     { w4(buf, t.assemblyRefs.count) }
+  if t.manifestResources.count > 0 { w4(buf, t.manifestResources.count) }
 
   // Row data — each table in table-number order.
   // Row wire format: all heap indices (Strings, GUID, Blob) and simple table
@@ -716,5 +743,22 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     w2(buf, r.culture)
     w2(buf, r.hashValue)
     ari = ari + 1
+  }
+
+  // ManifestResource rows (table 0x28).  Wire format per ECMA-335
+  // §II.22.24: u4 offset, u4 flags, u2 name (Strings), u2
+  // implementation (coded Implementation: 0 = embedded in this
+  // assembly).  The 2-byte Strings index here shares the 64-KB heap-
+  // size limitation documented near the top of this function — the
+  // serializer will need widening to u4 alongside the other heap
+  // indices when the assembly's Strings heap exceeds 65 535 bytes.
+  var mri = 0
+  while mri < t.manifestResources.count {
+    val r = t.manifestResources[mri]
+    w4(buf, r.offset)
+    w4(buf, r.flags)
+    w2(buf, r.name)
+    w2(buf, r.implementation)
+    mri = mri + 1
   }
 }

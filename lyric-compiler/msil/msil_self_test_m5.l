@@ -191,7 +191,7 @@ func main(): Unit {
     strings         = sh,
     us              = uh,
     blobs           = bh,
-    guids           = gh)
+    guids           = gh, resourceData = newList())
 
   val peBuf = assemblePe(inp)
   val bs = bufToList(peBuf)
