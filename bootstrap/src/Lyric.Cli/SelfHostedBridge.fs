@@ -84,6 +84,14 @@ let findStdlibSources () : System.Collections.Generic.List<string> =
     match stdlibDir with
     | None -> ()
     | Some sd ->
+        // Within-batch order matters for first-in-wins symbol-table
+        // registration: sort by basename so two machines with different
+        // filesystem-enumeration ordering produce byte-identical
+        // builds (#1385).  Mirrors the Lyric-side
+        // `lyric-compiler/lyric/emitter.l::sortPathsByBasename`.
+        let sorted (dir: DirectoryInfo) =
+            dir.GetFiles("*.l")
+            |> Array.sortBy (fun f -> f.Name)
         // Load `_kernel/` files FIRST so their extern type declarations
         // (`extern type List[T] = "System.Collections.Generic.List`1"`,
         // `Map[K, V]`, `Random`, …) register in the self-hosted typechecker's
@@ -94,13 +102,13 @@ let findStdlibSources () : System.Collections.Generic.List<string> =
         // fail with T0013 '<name> is not a type'.
         let kernel = DirectoryInfo(Path.Combine(sd.FullName, "_kernel"))
         if kernel.Exists then
-            for f in kernel.GetFiles("*.l") do
+            for f in sorted kernel do
                 if not (f.Name.StartsWith("jvm", StringComparison.Ordinal)) then
                     try result.Add(File.ReadAllText f.FullName)
                     with ex ->
                         eprintfn "lyric: warning: could not read stdlib source '%s': %s" f.FullName ex.Message
         // Public surface: every top-level `*.l` file.
-        for f in sd.GetFiles("*.l") do
+        for f in sorted sd do
             try result.Add(File.ReadAllText f.FullName)
             with ex ->
                 eprintfn "lyric: warning: could not read stdlib source '%s': %s" f.FullName ex.Message

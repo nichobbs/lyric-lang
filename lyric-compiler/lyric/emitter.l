@@ -217,10 +217,19 @@ func findStdlibSources(): List[String] {
   sources
 }
 
-// Read every `*.l` file in `dir` (non-recursive) and append its contents
-// to `sources`.  When `skipJvmKernel` is true, files whose basename starts
+// Read every `*.l` file in `dir` (non-recursive), sort the matches by
+// basename for deterministic order, and append their contents to
+// `sources`.  When `skipJvmKernel` is true, files whose basename starts
 // with `jvm` are skipped — used for `_kernel/` to drop the JVM-only
 // `jvm.l` and `jvm_exception.l` files on MSIL builds.
+//
+// Within-batch sorting matters: `File.listFiles` returns whatever order
+// the host filesystem hands back (`Directory.GetFiles` is documented as
+// "no guarantee"), so without explicit sorting two machines could
+// register stdlib `_kernel/` items in different sequences, and the
+// typechecker's first-in-wins `symTableTryFindOne` would pick different
+// declarations on each.  Sorting by basename makes the build
+// reproducible (#1385).
 func appendLyricFiles(
   sources:       in List[String],
   dir:           in String,
@@ -231,21 +240,75 @@ func appendLyricFiles(
     case Ok(fs)  -> fs
     case Err(_)  -> newList()
   }
+  // Filter (`.l` + JVM-kernel skip) then sort by basename.  Insertion
+  // sort because the input is small (a few dozen files) and pulls in
+  // no extra dependencies.
+  val keep: List[String] = newList()
   var fi = 0
   while fi < files.count {
     val f = files[fi]
     if Str.endsWith(f, ".l") {
       val base = Path.basename(f)
       val skip = skipJvmKernel and Str.startsWith(base, "jvm")
-      if not skip {
-        match File.readText(f) {
-          case Ok(text) -> sources.add(text)
-          case Err(_)   -> ()
-        }
-      }
+      if not skip { keep.add(f) }
     }
     fi = fi + 1
   }
+  val sorted = sortPathsByBasename(keep)
+  var si = 0
+  while si < sorted.count {
+    match File.readText(sorted[si]) {
+      case Ok(text) -> sources.add(text)
+      case Err(_)   -> ()
+    }
+    si = si + 1
+  }
+}
+
+// Return a fresh list with `paths` arranged in ascending basename
+// order.  Selection sort over a copy of the input, building the output
+// one minimum-basename element at a time.  Quadratic but the input is
+// small (a few dozen `.l` files per directory); avoids depending on
+// `List[T].Insert` or indexer assignment, neither of which the bridge's
+// codegen carries dedicated arms for.
+func sortPathsByBasename(paths: in List[String]): List[String] {
+  val remaining: List[String] = newList()
+  var c = 0
+  while c < paths.count {
+    remaining.add(paths[c])
+    c = c + 1
+  }
+  val sorted: List[String] = newList()
+  while remaining.count > 0 {
+    // Find the index of the smallest basename in `remaining`.
+    var bestIdx = 0
+    var bestBase = Path.basename(remaining[0])
+    var i = 1
+    while i < remaining.count {
+      val candidate = Path.basename(remaining[i])
+      if candidate < bestBase {
+        bestIdx = i
+        bestBase = candidate
+      }
+      i = i + 1
+    }
+    val picked = remaining[bestIdx]
+    sorted.add(picked)
+    // Rebuild `remaining` with everything except index `bestIdx`.
+    val rest: List[String] = newList()
+    var k = 0
+    while k < remaining.count {
+      if k != bestIdx { rest.add(remaining[k]) }
+      k = k + 1
+    }
+    remaining.clear()
+    var rk = 0
+    while rk < rest.count {
+      remaining.add(rest[rk])
+      rk = rk + 1
+    }
+  }
+  sorted
 }
 
 // Write `source` to a temp file so `--internal-build` can read it.
