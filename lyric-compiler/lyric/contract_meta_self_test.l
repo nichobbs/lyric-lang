@@ -343,6 +343,8 @@ func testEscapeJsonBasic(): Unit {
     "escape_json_basic: backslash escapes")
   assertEqual(escapeJson("line1\nline2"), "line1\\nline2",
     "escape_json_basic: newline escapes")
+  assertEqual(escapeJson("a\rb"), "a\\rb",
+    "escape_json_basic: carriage-return escapes (#1340)")
   assertEqual(escapeJson("a\tb"), "a\\tb",
     "escape_json_basic: tab escapes")
 }
@@ -561,10 +563,12 @@ func testBuildGenericInterface(): Unit {
 }
 
 // `buildContractFromFile` covers unions with mixed positional + named
-// payloads (UFPos / UFNamed both exercised by renderUnionCase).
+// payloads — UFPos via the bare-type form (`Circle(Int)`) and UFNamed
+// via the labelled form (`Square(side: Int)`).  Both branches of
+// `renderUnionCase` are exercised (#1370).
 func testBuildUnionMixedFields(): Unit {
   val src = "package P\n\npub union Shape {\n" +
-            "  case Circle(radius: Int)\n" +
+            "  case Circle(Int)\n" +
             "  case Square(side: Int)\n" +
             "}\n"
   val pr = parse(src)

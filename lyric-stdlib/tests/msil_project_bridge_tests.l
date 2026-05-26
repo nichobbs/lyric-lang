@@ -636,6 +636,19 @@ func testRestoredDepWiringNoCrash(): Unit {
       panic("restored_wiring: missing DLL must produce no output")
     }
   }
+  // Also pin that some diagnostic mentions the missing DLL path
+  // (#1381) so a regression that swallows the failResult message
+  // would surface here.
+  var sawPath = false
+  var di = 0
+  while di < result.diagnostics.count {
+    if Str.contains(result.diagnostics[di].message, "missing.dll") {
+      sawPath = true
+    }
+    di = di + 1
+  }
+  assertTrue(sawPath,
+    "restored_wiring: a diagnostic must mention the missing DLL path")
   cleanup(tmpDir)
 }
 

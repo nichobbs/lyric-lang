@@ -289,7 +289,7 @@ func audienceMatches(json: in String, audience: in String): Bool {
 // `"é"` returns U+00E9).
 //
 // Returns "" when the key is absent or the JSON is malformed.
-pub func getStringClaimFromJson(json: in String, key: in String): String {
+func getStringClaimFromJson(json: in String, key: in String): String {
   val pfx = "\"" + key + "\":\""
   val pfxPos = json.lastIndexOf(pfx)
   if pfxPos < 0 { return "" }
@@ -313,7 +313,11 @@ func getStringClaim(payloadBytes: in slice[Byte], key: in String): String {
 
 // ─── parseLong (#1088) ────────────────────────────────────────────────────────
 
-// Parse a non-negative decimal integer string to Long.
+// Parse a non-negative decimal integer string to Long, with JWT-specific
+// semantics: rejects empty input and any non-digit character, and treats
+// any input longer than 18 digits as overflow.  Designed for JWT
+// exp/nbf claims and intentionally narrower than `Std.Parse.parseLong`;
+// not part of the kernel public API (package-private, #1159).
 //
 // Returns:
 //   Ok(value)            — successfully parsed
@@ -325,10 +329,8 @@ func getStringClaim(payloadBytes: in slice[Byte], key: in String): String {
 //
 // 18 digits is conservative (Long.MaxValue is 9223372036854775807, 19 digits)
 // but avoids per-digit overflow checks in the hot loop and keeps the spec
-// simple.  Callers needing >18-digit precision should not be using
-// Long-typed claim parsing.
-@stable(since="0.1")
-pub func parseLong(s: in String): Result[Long, String] {
+// simple.
+func parseLong(s: in String): Result[Long, String] {
   if s.length == 0  { return Err("parse_error") }
   if s.length > 18  { return Err("overflow") }
   var result: Long = 0i64
