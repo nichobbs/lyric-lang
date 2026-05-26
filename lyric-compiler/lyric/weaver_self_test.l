@@ -517,6 +517,29 @@ test "call prelude is omitted when the body never references call.<x>" {
   assertTrue(not saw, "no __lyric_call_* prelude when body ignores call.*")
 }
 
+test "duplicate call.<field> references don't crash the pre-scan" {
+  // Regression for review #1296: `collectCallRefsExpr` previously
+  // called `into.add(name, true)` without a `containsKey` guard, so
+  // the second occurrence of `call.shortName` in a body threw an
+  // ArgumentException from `Dictionary<K,V>.Add` during weave.
+  val src =
+    "package P\n" +
+    "aspect Trace {\n" +
+    "  matches: name like \"q\"\n" +
+    "  around(args) -> ret {\n" +
+    "    val a = call.shortName\n" +
+    "    val b = call.shortName\n" +
+    "    proceed(args)\n" +
+    "  }\n" +
+    "}\n" +
+    "func q(): Int { 0 }\n"
+  val woven = parseWeave(src)
+  val wrapper = firstFunction(woven, "q")
+  val body    = functionBody(wrapper)
+  assertTrue(bodyMentionsPath(body, "__lyric_call_shortName"),
+             "duplicate refs still rewrite + the prelude carries the local")
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. #681 — `@inline_template` args.<field> rewriting + A0042.

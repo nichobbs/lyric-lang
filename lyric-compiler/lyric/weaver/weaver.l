@@ -731,9 +731,12 @@ func collectCallRefsStmt(s: in Statement, into: in Map[String, Bool]): Unit {
 }
 
 func collectCallRefsExpr(e: in Expr, into: in Map[String, Bool]): Unit {
-  // Top-level: `call.<field>` member access.
+  // Top-level: `call.<field>` member access.  Guard `add` with
+  // `containsKey` so duplicate references in a body (e.g.
+  // `log(call.shortName); ...; log(call.shortName + " end")`) don't
+  // trip `Dictionary<K,V>.Add`'s ArgumentException (review #1296).
   match matchBareMemberAccess(e, "call") {
-    case Some(name) -> into.add(name, true)
+    case Some(name) -> if not into.containsKey(name) { into.add(name, true) }
     case None       -> ()
   }
   // Recurse into sub-expressions.
@@ -1552,10 +1555,23 @@ func weaveItemsCore(
   WeaveResult(items = result, diagnostics = weaveDiagsToDiagnostics(argsErrors))
 }
 
+/// Weave aspect wrappers into an items list and drop the IAspect items.
+/// Diagnostics from the weave (A0042 args-mismatch, A0043 unknown
+/// `call.<field>`) are silently discarded.
+///
+/// **Limitation:** because this overload has no `SourceFile`, the
+/// package-path is unknown — so the `call.qualifiedName` and
+/// `call.modulePath` synthesised locals are populated from an empty
+/// package string.  Callers that need correct values should use
+/// `weaveFile` or `weaveFileWithDiags` instead (review #1293).
 pub func weaveItems(items: in List[Item]): List[Item] {
   weaveItemsCore(items, "").items
 }
 
+/// As `weaveItems` but also returns weave-time diagnostics.  Same
+/// empty-package-path limitation applies; pass a non-empty string to
+/// get correct `call.qualifiedName` / `call.modulePath` values, or
+/// use `weaveFileWithDiags` if a `SourceFile` is available.
 pub func weaveItemsWithDiags(items: in List[Item], packagePath: in String): WeaveResult {
   weaveItemsCore(items, packagePath)
 }
