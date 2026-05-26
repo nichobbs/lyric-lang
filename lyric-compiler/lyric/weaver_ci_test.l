@@ -41,17 +41,7 @@ func parseWeaveDiags(src: in String): WeaveFileResult {
 }
 
 func firstFunction(file: in SourceFile, name: in String): FunctionDecl {
-  var i = 0
-  while i < file.items.count {
-    match file.items[i].kind {
-      case IFunc(fn) -> {
-        if fn.name == name { return fn }
-      }
-      case _ -> {}
-    }
-    i = i + 1
-  }
-  panic("firstFunction: no function named '" + name + "'")
+  firstFunctionFromItems(file.items, name)
 }
 
 func firstFunctionFromItems(items: in List[Item], name: in String): FunctionDecl {

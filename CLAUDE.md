@@ -766,6 +766,16 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     imports resolve when run via `lyric test`.  Tracked in
     issue #1324.  Manual-run instructions are in the test
     file's header.
+  - `weaver_ci_test.l` — regular `func main(): Int` companion program
+    (not `@test_module`) that exercises the same three todo/06 weaver
+    features: config-block prelude injection (A0044 on missing default),
+    call-context short-name injection (A0043 on unknown field), and
+    `@inline_template` argument rewriting (A0042 on arity mismatch).
+    Written as a plain program so it can be compiled and run by the
+    bootstrap F# emitter without `Lyric.TestSynth` rewriting.
+    **Not yet wired into CI** — pending the `lyric test` infrastructure
+    in #1324 that would let the CI runner resolve `Lyric.Weaver` imports.
+    Manual-run instructions are in the file's header.
   `Lyric` is registered as a built-in head in `Emitter.fs:isBuiltinHead`,
   so `import Lyric.<X>` resolves under this directory.  The
   `Lyric.<X>` namespace is reserved for the self-hosted compiler
