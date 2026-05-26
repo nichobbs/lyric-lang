@@ -5189,13 +5189,22 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   // safety net (the weaver short-circuits when no `IAspect` items
   // remain after the first weave).
   //
-  // Diagnostics from this second weave are intentionally dropped:
-  // they were already reported by the bridge.  If a future caller
-  // invokes `codegenMPackage` without weaving first, the
-  // file-as-shipped semantics still hold (the bridge contract is the
-  // source of truth), but A0042 / A0043 / A0044 will only surface
-  // here if the bridge contract is broken.
-  val weavedFile = Weaver.weaveFileWithDiags(file).file
+  // We hard-enforce the pre-condition: panic if the second weave
+  // surfaces any diagnostics.  By construction, a properly-woven file
+  // has no remaining `IAspect` items, so the weaver emits no diagnostics
+  // — a non-empty list here means a caller bypassed the bridge and
+  // is feeding raw source into codegen, which would otherwise silently
+  // drop the diagnostics and produce wrong code.  Hard-fail instead of
+  // quietly miscompiling.
+  val weaveSafety = Weaver.weaveFileWithDiags(file)
+  if weaveSafety.diagnostics.count > 0 {
+    panic("codegenMPackage: weaver produced " +
+          toString(weaveSafety.diagnostics.count) +
+          " diagnostic(s) on the second-pass weave — caller bypassed " +
+          "Msil.Bridge's pre-weave + reportAndAbort contract.  Call " +
+          "Weaver.weaveFileWithDiags(file) first and abort on errors.")
+  }
+  val weavedFile = weaveSafety.file
 
   // ── #878: IImpl pre-pass ──────────────────────────────────────────────────
   // Mirrors the JVM backend's approach (`Jvm.Codegen.codegenPackage`): scan
