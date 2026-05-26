@@ -260,6 +260,19 @@ written by hand do get lowered (`:1783-1827`).
   Band 5's open list.
 - **`@externTarget` on Lyric generic functions.**  Q022-4 (`docs/36-v1-roadmap.md`):
   not implemented — only fully-monomorphised externs resolve.
+- **Stdlib `IFunc` imports asymmetric between single-file and project
+  bridges.**  `compileToMsil` (single-file `lyric run`) imports stdlib
+  functions for typecheck resolution; `compileProjectToMsilWithRestored`
+  (multi-package builds) imports types only.  The single-file path has
+  advisory `reportDiagnostics`; the project path uses
+  `reportAndAbort`, which would fire T0010 storms when stdlib functions
+  reference types defined in other (yet-unregistered) stdlib modules.
+  Built-in calls (`println`, `panic`, `assert`, …) still resolve through
+  `tryBuiltinFunc` in both paths, so the asymmetry doesn't bite for
+  built-ins.  A multi-package user project calling a **non-builtin**
+  stdlib function (e.g. `Std.Parse.tryParseInt`) hits the gap.
+  Two-phase stdlib registration (types first, then functions) is the
+  planned fix; tracked in #1357.
 
 ### 3.6  Test coverage shape
 
