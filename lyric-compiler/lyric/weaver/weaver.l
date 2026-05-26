@@ -160,7 +160,7 @@ record RewriteCtx {
   /// because the field had no default in the `config { }` block.  Drives
   /// A0044 emission in `tryMemberRewrite` so the user sees a clear
   /// weaver-targeted message instead of a confusing downstream type
-  /// error (review #1323).
+  /// error.
   configNoDefault:  Map[String, Bool]
   /// Call-context field names that the weaver materialises into
   /// `__lyric_call_<n>` locals.  `call.<n>` for these names rewrites
@@ -186,7 +186,7 @@ record RewriteCtx {
   ///             no default (env-var resolution is a follow-up; see
   ///             `docs/26 §8`).  Surfaced at weave time to replace
   ///             the confusing downstream "config not declared"
-  ///             type error (review #1323).
+  ///             type error.
   weaveDiags:       List[WeaveDiagEntry]
 }
 
@@ -290,7 +290,7 @@ func tryMemberRewrite(ctx: in RewriteCtx, expr: in Expr): Option[Expr] {
         // type-checks and codegen succeeds for the no-default case.
         // For those, fire A0044 alongside the rewrite so the user sees
         // a weaver-targeted message rather than a confusing downstream
-        // codegen error (review #1323).
+        // codegen error.
         if ctx.configNoDefault.containsKey(name) {
           addWeaveDiagOnce(ctx.weaveDiags, WDConfigNoDefault, ctx.aspectName,
                            ctx.funcName, name, expr.span)
@@ -319,9 +319,8 @@ func tryMemberRewrite(ctx: in RewriteCtx, expr: in Expr): Option[Expr] {
       } else {
         // Unknown call.<field> — surface as A0043 so the user sees a
         // weaver-targeted message instead of a downstream "call is not
-        // declared" type error (#682 / review #1193).  Dedupe by
-        // (kind, fieldName) so a body that mentions `call.elapsed`
-        // twice doesn't emit two A0043s (review #1299).
+        // declared" type error.  Dedupe by (kind, fieldName) so a body
+        // that mentions `call.elapsed` twice doesn't emit two A0043s.
         addWeaveDiagOnce(ctx.weaveDiags, WDCallUnknown, ctx.aspectName,
                          ctx.funcName, name, expr.span)
       }
@@ -362,12 +361,12 @@ func tryMemberRewrite(ctx: in RewriteCtx, expr: in Expr): Option[Expr] {
 //   - `funcName`: `weaveDiags` is shared across every matched
 //     function in one `weaveItemsCore` invocation; an aspect that
 //     references `call.elapsed` and matches both `funcA` and `funcB`
-//     should emit one A0043 per wrapper (review #1302).
+//     should emit one A0043 per wrapper.
 //   - `aspectName`: when two aspects both apply to the same function
 //     and both reference the same unknown `call.<field>`, each
-//     aspect should produce its own diagnostic (review #1313).
-//   - `fieldName`: the original within-body dedup case
-//     (review #1299).
+//     aspect should produce its own diagnostic.
+//   - `fieldName`: dedupes within a single body so the same
+//     `call.<field>` referenced twice produces one diagnostic.
 func addWeaveDiagOnce(
   errs:       in List[WeaveDiagEntry],
   kind:       in WeaveDiagKind,
@@ -729,7 +728,7 @@ func mkSliceTypeExpr(elemName: in String): TypeExpr {
 /// `val __aspect_cfg_<field>: <ty> = <init>` for fields the body
 /// actually reads.  Aspects whose bodies never touch `config.*` produce
 /// byte-identical wrappers to the pre-todo-06 weaver, matching the
-/// lazy-prelude design used by `buildCallPrelude` (review #1307).
+/// lazy-prelude design used by `buildCallPrelude`.
 ///
 /// Fields without a default are still materialised (when referenced)
 /// with a `panic("config '<name>' has no default value...")` stub
@@ -737,8 +736,8 @@ func mkSliceTypeExpr(elemName: in String): TypeExpr {
 /// type-checks and downstream codegen succeeds; A0044 fires alongside
 /// the rewrite in `tryMemberRewrite` so the user sees a clear
 /// weaver-targeted error instead of a confusing "unknown name 'config'"
-/// codegen failure (review #1323).  Runtime env-var resolution for
-/// these fields is a follow-up — see todo/06 #683.
+/// codegen failure.  Runtime env-var resolution for these fields is a
+/// follow-up — see todo/06 #683.
 ///
 /// Returns three values:
 ///   - the synthetic prelude statements (one `val __aspect_cfg_<f>`
@@ -774,7 +773,7 @@ func buildConfigPrelude(
           // No literal default — emit a panic stub so the body
           // type-checks and codegen succeeds.  A0044 fires in
           // tryMemberRewrite, so compilation halts before the
-          // panic is ever reached at runtime (review #1323).
+          // panic is ever reached at runtime.
           val msg = "config '" + f.name +
                     "' has no default value and runtime env-var " +
                     "resolution is not yet wired (see todo/06 #683)"
@@ -866,7 +865,7 @@ func collectMemberRefsExpr(e: in Expr, receiver: in String, into: in Map[String,
   // Top-level: `<receiver>.<field>` member access.  Guard `add` with
   // `containsKey` so duplicate references in a body (e.g.
   // `log(call.shortName); ...; log(call.shortName + " end")`) don't
-  // trip `Dictionary<K,V>.Add`'s ArgumentException (review #1296).
+  // trip `Dictionary<K,V>.Add`'s ArgumentException.
   match matchBareMemberAccess(e, receiver) {
     case Some(name) -> if not into.containsKey(name) { into.add(name, true) }
     case None       -> ()
@@ -963,7 +962,7 @@ func collectCallRefsBlock(blk: in Block, into: in Map[String, Bool]): Unit {
 /// Build the `call` ambient prelude for an aspect.  Only emits a
 /// `val __lyric_call_<field>` local for fields the aspect body
 /// actually references; aspects that don't touch `call.*` produce
-/// byte-identical wrappers to the pre-todo-06 weaver (review #1196).
+/// byte-identical wrappers to the pre-todo-06 weaver.
 /// Compile-time-known fields: `shortName`, `qualifiedName`,
 /// `modulePath`, `sourceLocation`, `annotations`, `aspect`.  `elapsed`
 /// and `caller` are not yet wired — references surface as A0043
@@ -1022,7 +1021,7 @@ func buildCallPrelude(
   // type from `EList(string-literals)` matches the spec — without it
   // the synthesised val takes whatever `List[T]`-shaped type the
   // empty-list path infers, which is wrong for an empty annotations
-  // list (review #1308).
+  // list.
   if refs.containsKey("annotations") {
     val annNames: List[String] = newList()
     var ai = 0
@@ -1072,10 +1071,10 @@ func buildWrapper(
   // emitted statements, the materialised field names (rewriter
   // substitutes those), and the subset whose initializer is a
   // `panic(...)` stub because the field had no default — the
-  // rewriter fires A0044 for any reference to those (review #1323).
+  // rewriter fires A0044 for any reference to those.
   // Both preludes are lazy: they pre-scan `around.body` for
   // `config.<x>` / `call.<x>` refs and emit only the locals the
-  // body actually reads (review #1307).
+  // body actually reads.
   val (cfgStmts, cfgPresent, cfgNoDefault) =
     buildConfigPrelude(aspect, around.body)
   val (callStmts, callPresent) = buildCallPrelude(originalFn, aspect, site, around.body)
@@ -1621,9 +1620,9 @@ func weaveItemsCore(
   // per-aspect template flag at weave time.  Guard the `add` with
   // `containsKey` so duplicate aspect declarations in one file (a
   // separate A0002 issue caught upstream by the type checker) don't
-  // throw `Dictionary.Add`'s ArgumentException during the weave pass
-  // (review #1318).  First-wins is fine: A0002 fires before this code
-  // runs in any well-formed pipeline.
+  // throw `Dictionary.Add`'s ArgumentException during the weave pass.
+  // First-wins is fine: A0002 fires before this code runs in any
+  // well-formed pipeline.
   val templateByName: Map[String, Bool] = newMap()
   val declsForSort: List[AspectDecl]    = newList()
   var ci = 0
@@ -1733,7 +1732,7 @@ func weaveItemsCore(
 /// package-path is unknown — so the `call.qualifiedName` and
 /// `call.modulePath` synthesised locals are populated from an empty
 /// package string.  Callers that need correct values should use
-/// `weaveFile` or `weaveFileWithDiags` instead (review #1293).
+/// `weaveFile` or `weaveFileWithDiags` instead.
 pub func weaveItems(items: in List[Item]): List[Item] {
   weaveItemsCore(items, "").items
 }
@@ -1750,8 +1749,7 @@ pub func weaveItemsWithDiags(items: in List[Item], packagePath: in String): Weav
 /// file has no aspects.  Diagnostics from the weave (A0042 args
 /// mismatch on `@inline_template`, A0043 unknown `call.<field>`,
 /// A0044 `config.<no-default>`) are silently dropped — callers that
-/// need to surface them should use `weaveFileWithDiags` instead
-/// (review #1319, #1330).
+/// need to surface them should use `weaveFileWithDiags` instead.
 pub func weaveFile(file: in SourceFile): SourceFile {
   val newItems = weaveItemsCore(file.items, packagePathString(file)).items
   SourceFile(

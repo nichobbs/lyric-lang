@@ -5180,13 +5180,21 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
   var hasMain = false
 
   // ── Band-2: aspect pre-pass ───────────────────────────────────────────────
-  // Before lowering functions, run the aspect weaver to rename matched
-  // functions and synthesise wrapper functions.  Delegates to
-  // `Lyric.Weaver.weaveFileWithDiags` so the todo/06 features (config #683,
-  // call prelude #682, `@inline_template` args.<field> #681) apply here
-  // too (#1327).  The bridge already weaves before calling codegen, so
-  // this second pass is idempotent in practice; diagnostics are dropped
-  // here because the bridge already reported/aborted on them.
+  //
+  // **Pre-condition:** every caller of `codegenMPackage` is expected to
+  // have already woven the file via `Lyric.Weaver.weaveFileWithDiags`
+  // (or equivalent) and aborted on any A0042 / A0043 / A0044 errors.
+  // Today the only caller is `Msil.Bridge` (single-file and project
+  // paths), which does this — so the second call below is an idempotent
+  // safety net (the weaver short-circuits when no `IAspect` items
+  // remain after the first weave).
+  //
+  // Diagnostics from this second weave are intentionally dropped:
+  // they were already reported by the bridge.  If a future caller
+  // invokes `codegenMPackage` without weaving first, the
+  // file-as-shipped semantics still hold (the bridge contract is the
+  // source of truth), but A0042 / A0043 / A0044 will only surface
+  // here if the bridge contract is broken.
   val weavedFile = Weaver.weaveFileWithDiags(file).file
 
   // ── #878: IImpl pre-pass ──────────────────────────────────────────────────
