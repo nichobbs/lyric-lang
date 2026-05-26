@@ -167,15 +167,16 @@ deferred to Phase 3 by design.
 - Documentation generator (`lyric doc`) — bootstrap shipped (D-progress-023).
 - SemVer enforcement (`lyric public-api-diff`) — shipped (D-progress-062).
 - Tutorial — shipped (D-progress-065).
-- Protected types — bootstrap-grade Monitor wrap shipped
-  (D-progress-079); `when:` barriers + `invariant:` checks +
+- Protected types — initial Monitor wrap shipped (D-progress-079);
+  `when:` barriers + `invariant:` checks +
   `ReaderWriterLockSlim`/`SemaphoreSlim` lock-flavour split + generic
   protected types (`Box[T]`) + Ada-style condition-variable barrier
   waiting all shipped under D-progress-080 / 081 / 083 / 086 / 087.
-  Bootstrap concession: barrier waits use a finite timeout (currently
-  1s) so single-threaded misuses surface as exceptions instead of
-  deadlocks; Ada's infinite-wait semantics are tracked as Q008
-  follow-up.
+  Tracked gap (Q008 follow-up): barrier waits use a finite timeout
+  (currently 1s) so single-threaded misuses surface as exceptions
+  instead of deadlocks.  Ada's infinite-wait semantics require an
+  open issue + implementation pass before the gap can close;
+  production behaviour is bounded-wait until then.
 - CST formatter (`lyric fmt`) — **shipped** (`Lyric.Fmt` self-hosted package, wired via `SelfHostedFmt.fs`): round-trip-faithful printing, full `//` and `/* */` comment preservation at item / member / statement / nested-block boundaries, intentional blank-line preservation (max one per spot, Black-style), width-driven multi-line expression layout at 120-char budget. `--write` and `--check` flags.
 - Linter (`lyric lint`) — **shipped** (`Lint.fs` in `Lyric.Cli`, backed by `Lyric.SelfHostedLint.fs`): five AST-only rules: L001 PascalCase types, L002 camelCase funcs, L003 pub-doc, L004 no TODO/FIXME in docs, L005 pub block-body funcs need contracts. `--error-on-warning` flag. Runs on non-compiling code.
 - Property-based testing (`Std.Testing.Property`) — bootstrap shipped

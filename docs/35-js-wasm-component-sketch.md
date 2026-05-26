@@ -407,12 +407,12 @@ types.
 
 ## 9. Async lowering for the WASM target
 
-The bootstrap compiler currently lowers `async func` to blocking
-`.GetAwaiter().GetResult()` (a bootstrap-grade shim; see `docs/03-decision-log.md`
-D035). This is not acceptable for a WASM target where blocking the event
-loop is either forbidden or harmful.
+Today the MSIL and JVM targets share a real `IAsyncStateMachine`-style
+lowering (D-progress-033..076 chain) — the D035-era blocking shim
+(`.GetAwaiter().GetResult()`) has been retired.
 
-On the WASM target, `async func` must emit proper WASM async:
+On the WASM target, `async func` lowers differently because blocking
+the host event loop is forbidden or harmful:
 
 - Lyric `Async[T]` → WIT `future<T>`.
 - `jco` generates a JS async function returning `Promise<T>` from the
@@ -420,10 +420,11 @@ On the WASM target, `async func` must emit proper WASM async:
 - Internal `await` inside Lyric WASM code → WASM async lift/lower
   primitives per the Component Model async proposal.
 
-This requires the self-hosted emitter to implement a real async lowering
-pass. The bootstrap F# emitter's blocking shim is not a path here. The
-WASM component target therefore gates on the self-hosted emitter having a
-proper async story — this aligns it with Phase 5/6 rather than Phase 1.
+The MSIL/JVM SM lowering is not directly reusable for the WASM
+target's async ABI — WASM async needs its own backend pass that maps
+Lyric's `Async[T]` to `future<T>` / `stream<T>` and emits the
+Component Model async lift/lower intrinsics.  Designed alongside the
+WASM component emitter when the target lands.
 
 ---
 

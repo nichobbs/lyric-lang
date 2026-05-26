@@ -11,9 +11,15 @@ the `Lyric.Stdlib.dll` bundle, and describes the multi-stage bootstrap pipeline
 that produces a self-hosted distribution from source.  It is the Phase 6
 distribution-strategy decision referenced in `docs/22-distribution-and-tooling.md`.
 
-The constraint is that the bootstrap compiler is an F# program.  The distribution
-strategy must work for today's F#-hosted binary *and* for a future self-hosted
-binary that has no F# or .NET SDK dependency.
+The constraint is that the stage-0 compiler is the legacy F# bootstrap
+under `bootstrap/src/Lyric.*/`.  Today's shipping user CLI is the AOT
+entry-point binary `bootstrap/src/Lyric.Cli.Aot/` — a thin trampoline
+into the Lyric-emitted `Lyric.Cli.Program.main` produced by stage 1.
+The F# CLI (`Lyric.Cli`) only handles internal flags
+(`--internal-build` and friends) used by the bootstrap pipeline.
+The distribution strategy must work for the AOT trampoline today *and*
+for a future fully native-AOT'd Lyric binary with no .NET SDK
+dependency at runtime.
 
 ---
 
@@ -127,9 +133,12 @@ Stage 2 → recompile with stage-1 self-hosted MSIL emitter (lyric-stage2 DLLs)
 
 ### Stage 0 — F# bootstrap
 
-`dotnet publish` the `Lyric.Cli` project in Release configuration.  The output
-is a platform-native `lyric` binary (with embedded .NET runtime if `--self-
-contained true`).  This is the current shipping binary.
+`dotnet build` the `Bootstrap.sln` solution in Release configuration.
+This produces the legacy F# bootstrap compiler under
+`bootstrap/src/Lyric.*/`, which handles the `--internal-*` flags
+needed by stage 1 to compile `lyric-compiler/lyric/**/*.l` and the
+stdlib bundle.  Stage 0 does **not** serve user CLI commands directly
+(those flow through the AOT trampoline built in stage 1).
 
 ### Stage 1 — compile Lyric compiler packages
 
