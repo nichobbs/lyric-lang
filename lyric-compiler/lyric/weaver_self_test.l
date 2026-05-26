@@ -113,6 +113,28 @@ func findValInit(blk: in Block, name: in String): Expr {
   panic("findValInit: no local named '" + name + "'")
 }
 
+func findValTy(blk: in Block, name: in String): Option[TypeExpr] {
+  var i = 0
+  while i < blk.statements.count {
+    match blk.statements[i].kind {
+      case SLocal(b) -> {
+        match b {
+          case LBVal(pat, ty, _) -> {
+            match pat.kind {
+              case PBinding(n, _) -> if n == name { return ty }
+              case _              -> ()
+            }
+          }
+          case _ -> ()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  panic("findValTy: no local named '" + name + "'")
+}
+
 func isValBinding(s: in Statement, name: in String): Bool {
   match s.kind {
     case SLocal(b) -> {
@@ -765,9 +787,12 @@ test "call.sourceLocation / qualifiedName use <unknown>/funcName when packagePat
 }
 
 test "call.annotations is a string slice of the function's annotation short-names" {
-  // Review #1317: cover the `__lyric_call_annotations` path including
-  // the slice[String] type annotation that #1308 introduced for the
-  // empty-list case.
+  // Cover the `__lyric_call_annotations` path including the
+  // slice[String] type annotation that handles the empty-list case
+  // — without the annotation, `EList([])` would infer to whatever
+  // shape the resolver picks for an empty list, which is not
+  // necessarily `slice[String]`.  Pin both the init expression and
+  // the declared type so a regression that drops either is caught.
   val src =
     "package P\n" +
     "aspect Trace {\n" +
@@ -783,10 +808,7 @@ test "call.annotations is a string slice of the function's annotation short-name
   val woven = parseWeave(src)
   val wrapper = firstFunction(woven, "a")
   val body    = functionBody(wrapper)
-  // Verify the prelude carries both annotation short-names as a
-  // string slice.  The exact init expr is EList of two LString
-  // entries — we walk it manually since `findValInit` returns the
-  // raw expr.
+  // (a) verify the init expr is `EList(["stable", "pure"])`
   val annInit = findValInit(body, "__lyric_call_annotations")
   match annInit.kind {
     case EList(items) -> {
@@ -795,6 +817,25 @@ test "call.annotations is a string slice of the function's annotation short-name
       assertEqual(literalStringValue(items[1]), "pure",   "annotations[1] = pure")
     }
     case _ -> panic("annotations: expected EList init expression")
+  }
+  // (b) verify the val declaration carries an explicit
+  // `slice[String]` type annotation — this is what keeps EList of
+  // string literals type-compatible at the val boundary (esp. for
+  // the empty-list case).
+  val annTy = findValTy(body, "__lyric_call_annotations")
+  match annTy {
+    case Some(te) -> match te.kind {
+      case TSlice(elem) -> match elem.kind {
+        case TRef(mp) -> {
+          assertEqualInt(mp.segments.count, 1, "slice element type is a single-segment ref")
+          assertEqual(mp.segments[0], "String",
+                      "slice element type is `String`")
+        }
+        case _ -> panic("annotations: slice element is not a TRef")
+      }
+      case _ -> panic("annotations: declared type is not a TSlice")
+    }
+    case None -> panic("annotations: val carries no explicit type annotation")
   }
 }
 
