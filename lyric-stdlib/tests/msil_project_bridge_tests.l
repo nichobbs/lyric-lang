@@ -639,6 +639,34 @@ func testRestoredDepWiringNoCrash(): Unit {
   cleanup(tmpDir)
 }
 
+// Regression test for #1378's primary reproduction symptom.  A user
+// package that imports another in-bundle package under an alias
+// (`import X as Y`) and calls a function via the alias (`Y.fn(...)`)
+// must typecheck without `T0020 unknown name 'Y'`.  The self-hosted
+// typechecker doesn't track import aliases natively; `Lyric.AliasRewriter`
+// runs between parse and typecheck to collapse `Y.fn(...)` to bare
+// `fn(...)`, matching the F# emitter's `AliasRewriter` pre-pass.
+func testEmitProjectAliasedCrossPackageCall(): Unit {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkProjectPkg("AliasXPkg.Lib",
+    "package AliasXPkg.Lib\n" +
+    "\n" +
+    "pub func quintupled(x: in Int): Int { x + x + x + x + x }\n"))
+  pkgs.add(mkProjectPkg("AliasXPkg.App",
+    "package AliasXPkg.App\n" +
+    "\n" +
+    "import AliasXPkg.Lib as Lib\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(Lib.quintupled(8))\n" +
+    "}\n"))
+  val result = runEmitProject("alias-xpkg", pkgs, "AliasXPkg")
+  assertEqualInt(result.exitCode, 0,
+    "alias_cross_package_call: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "40",
+    "alias_cross_package_call: stdout matches expected")
+}
+
 func main(): Int {
   testTwoIndependentPackagesBundle()
   testFirstPackageWithRecordDoesNotDisturbSecond()
@@ -647,6 +675,7 @@ func main(): Int {
   testCrossPackageRecordValueRoundTrip()
   testEmitProjectInProcessIndependent()
   testEmitProjectInProcessCrossPackageCall()
+  testEmitProjectAliasedCrossPackageCall()
   testCrossPackageUnionConstructAndMatch()
   testCfgErasureFeatureInactive()
   testCfgErasureFeatureActive()

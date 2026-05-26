@@ -13,6 +13,7 @@ import Std.Collections
 import Std.File
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.AliasRewriter as Aliases
 import Lyric.TypeChecker
 import Lyric.ModeChecker
 import Lyric.ContractElaborator
@@ -73,7 +74,13 @@ pub func compileToMsilWithVersion(
   val importedItems: List[Item] = newList()
   collectStdlibTypeItems(stdlibSources, importedItems)
 
-  val file0 = parseResult.file
+  // Collapse `import X as Y` aliases: rewrite `Y.foo(...)` to bare
+  // `foo(...)` (and the same for type / pattern positions) so the
+  // self-hosted typechecker, which doesn't track import aliases
+  // natively, doesn't fire T0020 on the alias head.  Mirrors the
+  // F# `Lyric.Parser.AliasRewriter.rewriteFile` pass that the
+  // production F# emitter runs immediately after parse.
+  val file0 = Aliases.rewriteFile(parseResult.file)
 
   val tcRes = checkWithImports(file0, importedItems)
   reportDiagnostics(tcRes.diagnostics)   // advisory: type checker lacks builtin coverage
@@ -301,7 +308,10 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     // items disappear cleanly (matches the F# emitter convention).
     val cfgRes = Cfg.applyCfgErasure(activeFeatures, declaredFeatures, parseResult.file)
     if reportAndAbort(cfgRes.diagnostics) { return false }
-    val file0 = cfgRes.file
+    // Collapse `import X as Y` aliases — see the rationale at the
+    // single-package `compileToMsil` invocation above (`AuthKernelNet`
+    // / #1378 follow-up).
+    val file0 = Aliases.rewriteFile(cfgRes.file)
 
     val tcRes = checkWithImports(file0, importedItems)
     if reportAndAbort(tcRes.diagnostics) { return false }

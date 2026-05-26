@@ -16242,3 +16242,76 @@ the `findDirectSig` lookup and reject the `Int` with `T0043`.
 
 - 844 emitter + 74 CLI + 189 typechecker + 325 parser + 128 lexer
   tests pass.
+
+
+### D-progress-319 — self-hosted `Lyric.AliasRewriter` (#1378 follow-up)
+
+**Status:** Shipped.  The self-hosted MSIL bridge now collapses
+`import X as Y` package aliases before typecheck so user code that
+writes `Y.fn(...)` (qualified through an alias) typechecks correctly
+instead of aborting with `T0020 unknown name 'Y'`.  Closes the
+primary symptom in #1378's reproduction (the `T0020 'AuthKernelNet'`
+floor of the lyric-auth in-process build).
+
+**Problem:** The F# emitter ships `Lyric.Parser.AliasRewriter` (an
+AST pre-pass that rewrites `Y.fn(...)` to bare `fn(...)` after
+collecting `import X as Y` declarations).  The self-hosted MSIL
+bridge had no equivalent — its typechecker only handles
+single-segment paths in expression position, so `Y` (treated as a
+bare path head by `resolveExprPath`) raised `T0020` and aborted the
+multi-package build's `reportAndAbort(tcRes.diagnostics)`.  Any
+ecosystem library that uses `import X as Y` style aliases — and most
+do, including lyric-auth (`import Auth.Kernel.Net as AuthKernelNet`),
+lyric-session, lyric-http, lyric-mq, lyric-storage — hit this floor
+on the in-process path.
+
+**Fix:**
+
+1. **`lyric-compiler/lyric/alias_rewriter.l`** — new
+   `Lyric.AliasRewriter` package that mirrors the F# implementation.
+   Walks every `Item` in the `SourceFile`, descending into `Expr`,
+   `TypeExpr`, `Pattern`, `RangeBound`, `TypeArg`, `Block`,
+   `Statement`, `LocalBinding`, `RecordMember`, etc.  Collapses
+   - `EPath` whose first segment is a known alias (drops it).
+   - `EMember(EPath([alias]), name)` → `EPath([name])` (the
+     `Alias.foo` → `foo` case the reproduction needed).
+   - Same `ModulePath`-head collapse for `TypeExpr`'s `TRef` /
+     `TGenericApp` / `TRefined`, plus `Pattern`'s `PConstructor` /
+     `PRecord`.  Selector-level aliases (`import X.{foo as bar}`)
+     are left to the importer cloning path that the type checker
+     already handles.
+
+2. **`lyric-compiler/msil/bridge.l`** — invoke
+   `Lyric.AliasRewriter.rewriteFile` between parse and typecheck in
+   both `compileToMsilWithVersion` (single-package) and
+   `compileProjectToMsilWithRestoredAndVersion` (multi-package).
+   The rewrite happens after `Lyric.Cfg.applyCfgErasure` so feature-
+   erased items don't carry alias references into the typechecker.
+   No-op when the source has no `import X as Y` declarations.
+
+3. **`lyric-stdlib/tests/msil_project_bridge_tests.l`** — new
+   regression test `testEmitProjectAliasedCrossPackageCall`.  Two
+   packages: a library defining `pub func quintupled` and a
+   consumer that imports it as `import AliasXPkg.Lib as Lib` and
+   calls `Lib.quintupled(8)`.  Before the fix the bridge aborted
+   the consumer's typecheck with `T0020 unknown name 'Lib'`; after
+   the fix the rewrite collapses the call to `quintupled(8)`, the
+   typechecker resolves it via the imported-items list seeded with
+   `AliasXPkg.Lib`'s `pub func`, codegen emits a same-bundle MethodDef
+   call, and the DLL prints `40`.
+
+**Acceptance criteria met:**
+
+- 128 lexer + 325 parser + 189 typechecker + 74 CLI + 844 emitter
+  tests pass (including the new
+  `testEmitProjectAliasedCrossPackageCall`).
+- Multi-package builds with `import X as Y` no longer abort with
+  `T0020 unknown name 'Y'`.
+
+**What's next (still open from #1378):**
+
+- Stdlib `IFunc` collection + cross-assembly `MemberRef`
+  registration so `Std.X.foo(...)` calls (`tryDecodeBase64`,
+  `encodeUtf8`, …) reach codegen with proper tokens.
+- Per-package symbol-table filtering (#1378's architectural
+  recommendation) for better diagnostic locality.
