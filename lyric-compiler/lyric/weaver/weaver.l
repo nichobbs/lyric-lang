@@ -160,7 +160,7 @@ record RewriteCtx {
   /// True when the matching aspect carries `@inline_template`.  In that
   /// mode `args.<n>` is rewritten to `<n>` (parameter name) when `<n>`
   /// is in `paramNames`; missing names accumulate as diagnostics in
-  /// `argsErrors` (#681).
+  /// `weaveDiags` (#681).
   isInlineTemplate: Bool
   /// Short name of the aspect being woven (for diagnostic messages).
   aspectName:       String
@@ -172,7 +172,7 @@ record RewriteCtx {
   ///   - A0043 — `call.<n>` references an unknown context field
   ///             (e.g. `call.elapsed` before runtime instrumentation
   ///             lands; #682 follow-up).
-  argsErrors:       List[WeaveDiagEntry]
+  weaveDiags:       List[WeaveDiagEntry]
 }
 
 /// Discriminator + payload for a weave-time diagnostic.  Two kinds
@@ -199,7 +199,7 @@ func newRewriteCtx(
   isInlineTemplate: in Bool,
   aspectName:       in String,
   funcName:         in String,
-  argsErrors:       in List[WeaveDiagEntry]
+  weaveDiags:       in List[WeaveDiagEntry]
 ): RewriteCtx {
   RewriteCtx(
     targetName       = targetName,
@@ -209,7 +209,7 @@ func newRewriteCtx(
     isInlineTemplate = isInlineTemplate,
     aspectName       = aspectName,
     funcName         = funcName,
-    argsErrors       = argsErrors)
+    weaveDiags       = weaveDiags)
 }
 
 
@@ -290,7 +290,7 @@ func tryMemberRewrite(ctx: in RewriteCtx, expr: in Expr): Option[Expr] {
         // declared" type error (#682 / review #1193).  Dedupe by
         // (kind, fieldName) so a body that mentions `call.elapsed`
         // twice doesn't emit two A0043s (review #1299).
-        addWeaveDiagOnce(ctx.argsErrors, WDCallUnknown, ctx.aspectName,
+        addWeaveDiagOnce(ctx.weaveDiags, WDCallUnknown, ctx.aspectName,
                          ctx.funcName, name, expr.span)
       }
     }
@@ -311,7 +311,7 @@ func tryMemberRewrite(ctx: in RewriteCtx, expr: in Expr): Option[Expr] {
               span     = expr.span)),
             span = expr.span))
         } else {
-          addWeaveDiagOnce(ctx.argsErrors, WDArgsMismatch, ctx.aspectName,
+          addWeaveDiagOnce(ctx.weaveDiags, WDArgsMismatch, ctx.aspectName,
                            ctx.funcName, name, expr.span)
         }
       }
@@ -327,7 +327,7 @@ func tryMemberRewrite(ctx: in RewriteCtx, expr: in Expr): Option[Expr] {
 // distinct field name per matched function per aspect).
 //
 // The dedup key has three contextual axes besides `kind`:
-//   - `funcName`: `argsErrors` is shared across every matched
+//   - `funcName`: `weaveDiags` is shared across every matched
 //     function in one `weaveItemsCore` invocation; an aspect that
 //     references `call.elapsed` and matches both `funcA` and `funcB`
 //     should emit one A0043 per wrapper (review #1302).
@@ -640,18 +640,18 @@ record WeaveSite {
   /// Accumulator for `args.<n>` validation errors (#681).  Same
   /// reference is passed to every `buildWrapper` invocation in a
   /// `weaveItems` run; entries surface as A0042 diagnostics.
-  argsErrors:       List[WeaveDiagEntry]
+  weaveDiags:       List[WeaveDiagEntry]
 }
 
 func makeWeaveSite(
   packagePath:      in String,
   isInlineTemplate: in Bool,
-  argsErrors:       in List[WeaveDiagEntry]
+  weaveDiags:       in List[WeaveDiagEntry]
 ): WeaveSite {
   WeaveSite(
     packagePath      = packagePath,
     isInlineTemplate = isInlineTemplate,
-    argsErrors       = argsErrors)
+    weaveDiags       = weaveDiags)
 }
 
 /// Build a synthetic `val <name>: <ty> = <init>` statement at a zero
@@ -1016,7 +1016,7 @@ func buildWrapper(
     site.isInlineTemplate,
     aspect.name,
     originalFn.name,
-    site.argsErrors)
+    site.weaveDiags)
 
   val rewiredBody = rewriteBlock(ctx, around.body)
 
@@ -1516,7 +1516,7 @@ func weaveItemsCore(
   items:       in List[Item],
   packagePath: in String
 ): WeaveResult {
-  val argsErrors: List[WeaveDiagEntry] = newList()
+  val weaveDiags: List[WeaveDiagEntry] = newList()
   val collected = collectActiveAspects(items)
   if collected.count == 0 {
     val noAspectItems: List[Item] = newList()
@@ -1600,7 +1600,7 @@ func weaveItemsCore(
               case Some(b) -> b
               case None    -> false
             }
-            val site = makeWeaveSite(packagePath, isTpl, argsErrors)
+            val site = makeWeaveSite(packagePath, isTpl, weaveDiags)
             val wrapper0 = buildWrapper(fn, aspect, callTarget, site)
             val wrapper = FunctionDecl(
               docComments = wrapper0.docComments,
@@ -1630,7 +1630,7 @@ func weaveItemsCore(
     }
     idx = idx + 1
   }
-  WeaveResult(items = result, diagnostics = weaveDiagsToDiagnostics(argsErrors))
+  WeaveResult(items = result, diagnostics = weaveDiagsToDiagnostics(weaveDiags))
 }
 
 /// Weave aspect wrappers into an items list and drop the IAspect items.

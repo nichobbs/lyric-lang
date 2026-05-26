@@ -1376,16 +1376,39 @@ The aspect name in `@no_aspect("Name")` is a string literal matching the aspect'
 | A0008 | Cycle in `wraps:`/`inside:` ordering graph |
 | A0009 | Aspect defines neither `around` advice nor any contract clause |
 | A0013 | `wraps:`/`inside:` references an aspect not declared in the package |
+| A0042 | `@inline_template` aspect body references `args.<field>` that does not match any parameter of the matched function |
+| A0043 | `call.<field>` references an ambient field the weaver does not recognise (recognised: `shortName`, `qualifiedName`, `modulePath`, `sourceLocation`, `annotations`, `aspect`) |
 
 A0007, A0008, A0009, and A0013 are specified but not yet emitted by the current compiler. Aspects without an `around` body are silently skipped by the weaver; unresolved `wraps:`/`inside:` names are silently ignored. These checks are planned for a follow-up milestone.
+
+A0042 and A0043 are emitted by the self-hosted weaver at weave time
+(`lyric-compiler/lyric/weaver/weaver.l`). The L006 lint warning
+(`@inline_template has no effect`) was removed when weave-time
+`args.<field>` rewriting landed — A0042 supersedes its purpose.
+Diagnostic codes A0027 through A0041 are reserved for in-flight
+aspect work and not yet emitted; the jump from A0026 to A0042
+preserves the allocated A0040 (`call is not in scope inside
+requires:`) and A0041 (template-imports diagnostic referenced in
+`docs/27-aspect-libraries.md` §6.2.1).
 
 ### 14.7 Bootstrap limitations (current milestone)
 
 The following are specified but not yet fully woven:
 
-- The `call` ambient value (`call.shortName`, `call.elapsed`, etc.) inside the around body — not yet parsed or woven.
-- `config {}` blocks in aspects — parsed by the compiler but the weaver does not act on them.
-- `pub aspect` templates and consumer-side instantiation (`aspect X from Pkg.Y`) — parsed by the compiler but the weaver does not act on them.
+- The `call` ambient value's runtime fields — `call.elapsed`
+  (timestamp around `proceed`) and `call.caller` (caller-site
+  location) need runtime instrumentation that is deferred to
+  issue #1298. The compile-time-known fields (`shortName`,
+  `qualifiedName`, `modulePath`, `sourceLocation`, `annotations`,
+  `aspect`) are wired and rewritten by the weaver as
+  `__lyric_call_<name>` locals; references to `call.elapsed` /
+  `call.caller` surface as A0043 weave-time diagnostics.
+- `pub aspect` templates and consumer-side instantiation
+  (`aspect X from Pkg.Y`) — parsed by the compiler but the weaver
+  does not act on them.
+
+`config {}` blocks and `@inline_template` `args.<field>` rewriting
+are now fully woven by the self-hosted weaver (todo/06 #683 / #681).
 
 ---
 
