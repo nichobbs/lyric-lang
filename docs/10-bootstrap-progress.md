@@ -15547,3 +15547,52 @@ The IRecord/IFunc walker now handles both: renamed from
   `Lyric.Emitter.emit`, then a consumer project via `emitProject`
   with the library in `restoredDllPaths`.
 - Phase B — JVM JAR resource kernel.
+
+
+### D-progress-310 — restored-artifact union case ctor MemberRefs (#1229 Phase A.3.3.c.3.c)
+
+**Status:** Shipped.  Completes the Phase A.3.3.c MemberRef pass.
+
+**Problem:** After c.3.a (record ctors) and c.3.b (free functions),
+the last remaining gap on the consumer side was union construction:
+`Some(value = 1)` against a restored `pub union Option { case Some(value: Int), case None }`
+would resolve the case name to its ctor FQN via `unionCaseCtorByName`
+(seeded in c.2) but the actual MemberRef token in `recordCtorTokens`
+was never allocated.
+
+**Fix (`lyric-compiler/msil/codegen.l`):**
+
+- `ensureCaseClassTypeRefRow(cctx, pkg, caseClassName, asmRef)` —
+  allocates a TypeRef for the case-class TypeDef in the foreign DLL.
+  Case classes are named `<UnionName>$<CaseName>` per the in-bundle
+  convention.  Cached in `ffiTypeRefs` keyed by the case-class FQN.
+- `unionFieldType(uf)` — unifies the type-expression access across
+  `UFNamed` and `UFPos` union-field variants.
+- `registerRestoredUnionCase(cctx, pkg, union, c, asmRef)` — allocates
+  the case ctor's MemberRef with the same HASTHIS instance-ctor
+  signature shape used by record ctors (one param per field).
+  Registers
+  `recordCtorTokens["<pkg>.<Union>$<Case>"] = 0x0A000000 + memberRow`.
+- `registerRestoredUnion(cctx, pkg, decl, asmRef)` — walks
+  `decl.cases` and delegates per case.
+- `registerRestoredMembers` now also handles `IUnion(decl)` items.
+
+**Acceptance criteria met:**
+
+- Consumer-side construction of restored union cases resolves to a
+  working cross-assembly MemberRef.
+- All three exported member kinds (record ctor, free func, union case
+  ctor) are now registered with cross-assembly tokens; the typing
+  side from c.2 is already in place.
+- 73 CLI + 843 emitter tests green; axiom audit clean.
+
+**What's next under #1229:**
+
+- Phase A.4 — end-to-end Lyric test: compile a library DLL via
+  `Lyric.Emitter.emit`, then build a separate consumer project via
+  `Lyric.Emitter.emitProject` with the library in `restoredDllPaths`,
+  assert that consumer-side calls to the library's records / funcs /
+  union cases run cleanly.  This is what proves the entire A.3.3
+  chain works and unblocks dropping the F# subprocess for
+  restored-dep builds.
+- Phase B — JVM JAR resource kernel.
