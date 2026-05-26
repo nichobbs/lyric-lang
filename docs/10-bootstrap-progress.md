@@ -15664,3 +15664,55 @@ emission ships — see next item.
   Lyric test lands alongside.
 - **Phase B (JVM)** — analogous `jar_host.l` wrapping
   `java.util.jar.JarFile`.
+
+
+### D-progress-312 — `Lyric.ContractMeta.contractToJson` (#1229 contract emission slice 1)
+
+**Status:** Shipped.  First slice of the self-hosted contract-emission
+work — the second slice (PE-writer resource embedding) layers on top.
+
+**Problem:** Phase A's loader chain reads `Lyric.Contract` resources
+from emitted DLLs, but the self-hosted bridge can't yet produce them.
+The first prerequisite is a JSON serialiser that round-trips through
+`parseFromJson` byte-stably with the F# producer's output.
+
+**Fix (`lyric-compiler/lyric/contract_meta.l` §6):**
+
+- `escapeJson(s)` — escapes `"`, `\`, `\n`, `\r`, `\t`.  Pure-Lyric
+  character-by-character via `Std.String.substring`; bytes ≥ 0x20
+  pass through verbatim (matching the F# `toJson`'s
+  `printable-ASCII` policy).
+- `renderStringArray(xs)` — JSON array of escaped strings.
+- `renderParams(ps)` — `[{name,type}, …]` array.
+- `renderDecl(d)` — one `ContractDecl` as a JSON object; only emits
+  optional fields when they carry non-empty content (matches F#'s
+  byte-stable convention).
+- `contractToJson(c)` — full `Contract` → JSON, format-2 shape.
+  Round-trips through `parseFromJson` to the identical struct.
+
+**Tests (`lyric-compiler/lyric/contract_meta_self_test.l` §4):**
+
+- `testEscapeJsonBasic` — printable passthrough plus the five
+  always-escaped sequences.
+- `testContractToJsonRoundTrip` — non-trivial contract (pure func
+  with stability, requires/ensures, body, params) → JSON →
+  `parseFromJson` → all fields preserved.
+- `testContractToJsonOmitsDefaults` — empty optional fields produce
+  no JSON keys (byte-stable across implementations).
+
+**Acceptance criteria met:**
+
+- Round-trip preserves every field `parseFromJson` exposes.
+- Empty-optional-field omission matches F# byte-stably.
+- 73 CLI + 843 emitter tests green; axiom audit clean.
+
+**What's next:**
+
+- **Slice 2** — PE-writer resource embedding: add
+  `ManifestResourceRow` to the metadata tables, allocate a Resources
+  data region between method bodies and metadata streams, write the
+  CLR header's `Resources.VirtualAddress` / `Resources.Size`, and
+  wire the bridge to build + embed the contract JSON.
+- **Slice 3** — Full E2E Lyric test: self-hosted bridge builds a
+  library DLL, the consumer reads it back through the in-process
+  loader, asserts on `dotnet exec` stdout.
