@@ -321,7 +321,6 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
   // path which can build against the dep via reflection regardless of
   // contract presence.
   val restoredArtifacts: List[SynthesisedArtifact] = newList()
-  val emptyPreamble: List[Meta.ContractDecl] = newList()
   var ri = 0
   while ri < req.restoredDllPaths.count {
     val depEntry  = req.restoredDllPaths[ri]
@@ -336,7 +335,11 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
       case Ok(arts) -> {
         var ai = 0
         while ai < arts.count {
-          match RP.synthesiseArtifact(arts[ai], emptyPreamble) {
+          // Fresh preamble per call so a mutation by `synthesiseArtifact`
+          // (intended read-only but not enforced by the type system)
+          // can't leak across iterations.
+          val preamble: List[Meta.ContractDecl] = newList()
+          match RP.synthesiseArtifact(arts[ai], preamble) {
             case Err(_) -> return emitProjectViaSubprocess(req)
             case Ok(syn) -> restoredArtifacts.add(syn)
           }

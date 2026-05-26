@@ -15629,10 +15629,12 @@ entire A.3.3.c work was unreachable by external callers.
 
 **Tests (`lyric-stdlib/tests/msil_project_bridge_tests.l`):**
 
-`testRestoredDepSubprocessFallback` — passes a non-existent DLL path
-in `restoredDllPaths` and verifies the build either succeeds via the
-subprocess fallback or returns gracefully without crashing the
-consumer process.
+`testRestoredDepWiringNoCrash` — passes a non-existent DLL path in
+`restoredDllPaths` and verifies the in-process loader fails cleanly
+(no panic), the emitter falls through to the subprocess, and the
+subprocess in turn fails cleanly with `outputPath = None`.  This is
+a crash-safety smoke test on the new wiring, not an exercise of
+the full subprocess success path.
 
 The full end-to-end test (library DLL with embedded contract →
 consumer project with cross-package call → `dotnet exec` round-trip)
