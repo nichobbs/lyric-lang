@@ -66,48 +66,12 @@ pub func compileToMsilWithVersion(
   // contract elaborator before codegen so that source-level diagnostics surface
   // here instead of producing broken IL further down.
   //
-  // Band 6: parse each stdlib source and register only their type declarations
-  // as imported items.  Only type items (IRecord, IUnion, IEnum, IDistinctType,
-  // IInterface, ITypeAlias, IOpaque, IExposedRec) are collected — function items
-  // are skipped because multiple stdlib files define functions with the same name
-  // (e.g. toString) and checkWithImports uses a strict-insert map that throws on
-  // duplicate keys.  Type names are unique across the stdlib so safe to merge.
+  // Band 6: parse each stdlib source and register its type-shaped items as
+  // imported items so user code can reference `Std.X.Bar` (and the kernel-
+  // declared `List[T]`, `Map[K,V]`, `Random`, `Scope`, …) at typecheck.
+  // See `collectStdlibTypeItems` for the filter set and the rationale.
   val importedItems: List[Item] = newList()
-  var si = 0
-  while si < stdlibSources.count {
-    val stdPr = parse(stdlibSources[si])
-    // Surface stdlib parse diagnostics — advisory, not fatal (#914).
-    //
-    // Aborting on stdlib parse *errors* would be safer in principle
-    // (the alternative is silently dropping items from `importedItems`,
-    // which then surfaces in user code as opaque T0010 / T0014 errors
-    // far from the real cause).  But today the self-hosted
-    // `Lyric.Parser` still has known gaps relative to the actual
-    // stdlib source files — switching this to `reportAndAbort` makes
-    // every user build fail with parser errors that the F# stage-0
-    // pipeline already tolerates.  Keep advisory until the self-hosted
-    // parser reaches parity with the stdlib (tracked alongside the
-    // type-checker advisory promotion in docs/41 §9 Band 1).
-    reportDiagnostics(stdPr.diagnostics)
-    var ii = 0
-    while ii < stdPr.file.items.count {
-      val it = stdPr.file.items[ii]
-      val isType = match it.kind {
-        case IRecord(_)       -> true
-        case IExposedRec(_)   -> true
-        case IUnion(_)        -> true
-        case IEnum(_)         -> true
-        case IDistinctType(_) -> true
-        case IInterface(_)    -> true
-        case ITypeAlias(_)    -> true
-        case IOpaque(_)       -> true
-        case _                -> false
-      }
-      if isType { importedItems.add(it) }
-      ii = ii + 1
-    }
-    si = si + 1
-  }
+  collectStdlibTypeItems(stdlibSources, importedItems)
 
   val file0 = parseResult.file
 
@@ -563,13 +527,51 @@ func collectTypeItemsFromFile(
   }
 }
 
-// Helper: parse `stdlibSources`, extract type-shaped items, and append them
-// to `importedItems`.  Mirrors the per-source loop inside `compileToMsil`
-// (lines 53-88) so multi-package and single-package compile share the same
-// stdlib type-resolution rules.  Parse errors are advisory (printed but not
-// fatal) for the same reason `compileToMsil`'s loop documents: the self-
-// hosted parser still has known gaps relative to the actual stdlib source
-// files (#914).
+// Helper: parse `stdlibSources`, extract every type-shaped item, and
+// append it to `importedItems`.  Both single-package and multi-package
+// compile paths share this rule so the user's typecheck sees the same
+// view of the stdlib regardless of project shape.
+//
+// The filter set now includes `IExternType` and `IProtected` so that
+// `_kernel/` declarations like
+// `extern type List[T] = "System.Collections.Generic.List`1"`,
+// `extern type Map[K, V] = "...Dictionary`2"`, `extern type Random`,
+// `pub protected type Scope`, etc. reach the typechecker's symbol
+// table.  Without these, any user signature that references those bare
+// names (`pub func sumList(xs: in List[Int]): Int`) aborts the
+// multi-package build with T0010 / T0014.  The `findStdlibSources`
+// loader on both the Lyric and F# shim sides now reads
+// `_kernel/*.l` so the items are even visible to be collected.
+//
+// `IFunc` items remain out of scope (#1378 follow-up): user code that
+// calls a stdlib `pub func` by bare name (`tryDecodeBase64(...)` after
+// `import Std.Encoding`) still aborts the multi-package typecheck with
+// `T0020 unknown name '<fn>'`.  Including IFunc here gets the typecheck
+// past T0020 but the bridge's codegen does not yet allocate cross-
+// assembly `MemberRef`s for arbitrary stdlib functions — only the
+// hardcoded set in `lowerBuiltinOrStaticCallMsil` (`newList`, `newMap`,
+// `mapGet`, `println`, `toString`, …) gets a real `call` instruction.
+// Everything else falls through to the `MObject` arm in
+// `lowerCallMsil`, which walks the args for side effects but emits no
+// call — producing an unbalanced operand stack and an
+// `InvalidProgramException` at runtime.  Letting typecheck pass while
+// codegen silently emits broken IL would be a worse failure mode than
+// today's clean T0020.  Two follow-ups close that gap:
+//
+//   1. Promote the stdlib `IFunc` collection here (and on the user-
+//      side per-package import filter recommended in #1378).
+//   2. Extend the codegen pre-scan (`addPackageTokens` /
+//      `registerRestoredArtifactTokens`) to register `MemberRef` rows
+//      for every imported stdlib `pub func`, mirroring the F# emitter's
+//      `resolveStdlibImports` + `emitAssembly` import-table population.
+//
+// Parse errors stay advisory (printed, not fatal) for the same reason
+// the original loop documented (#914): the self-hosted parser still has
+// known gaps vs. the stdlib source tree (e.g. `try { ... } catch Bug
+// as _ { ... }` in `_kernel/http_server.l`).  Aborting here would block
+// every user build until the parser reaches stdlib parity.  Items from
+// a file whose parse failed are dropped so that partial / malformed
+// items don't pollute downstream passes.
 func collectStdlibTypeItems(
   stdlibSources: in List[String],
   importedItems: in List[Item]
@@ -578,6 +580,10 @@ func collectStdlibTypeItems(
   while si < stdlibSources.count {
     val stdPr = parse(stdlibSources[si])
     reportDiagnostics(stdPr.diagnostics)
+    if hasParseError(stdPr.diagnostics) {
+      si = si + 1
+      continue
+    }
     var ii = 0
     while ii < stdPr.file.items.count {
       val it = stdPr.file.items[ii]
@@ -590,6 +596,8 @@ func collectStdlibTypeItems(
         case IInterface(_)    -> true
         case ITypeAlias(_)    -> true
         case IOpaque(_)       -> true
+        case IProtected(_)    -> true
+        case IExternType(_)   -> true
         case _                -> false
       }
       if isType { importedItems.add(it) }
@@ -597,6 +605,21 @@ func collectStdlibTypeItems(
     }
     si = si + 1
   }
+}
+
+// Return true if `diags` contains any error-severity entry.  Used to
+// short-circuit item collection from a stdlib source whose parse
+// produced errors — see the rationale at `collectStdlibTypeItems`.
+func hasParseError(diags: in List[Diagnostic]): Bool {
+  var i = 0
+  while i < diags.count {
+    match diags[i].severity {
+      case DiagError -> return true
+      case _         -> {}
+    }
+    i = i + 1
+  }
+  false
 }
 
 // Diagnostic-printing helpers — thin wrappers over `Lyric.DiagnosticUtil`.

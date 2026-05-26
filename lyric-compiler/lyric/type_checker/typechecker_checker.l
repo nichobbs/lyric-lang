@@ -678,19 +678,44 @@ func resolveFunctionSig(
 // ─────────────────────────────────────────────────────────────────────────────
 
 func addSigsFromItems(
-  tbl:  in SymbolTable,
-  diag: in List[Diagnostic],
-  sigs: in Map[String, ResolvedSignature],
-  items: in List[Item]
+  tbl:        in SymbolTable,
+  diag:       in List[Diagnostic],
+  sigs:       in Map[String, ResolvedSignature],
+  items:      in List[Item],
+  isImported: in Bool
 ): Unit {
   var i = 0
   while i < items.count {
     match items[i].kind {
       case IFunc(decl) -> {
+        // Imported stdlib functions don't get to shadow the codegen builtins.
+        // `println`, `toString`, `panic`, `assert`, `expect`, `default`,
+        // `format1`, `format2` are wired in `codegenBuiltinType` with
+        // intentionally polymorphic `TyError` parameter types so that
+        // ergonomic forms like `println(11)` typecheck.  The stdlib's
+        // concrete `pub func println(s: in String): Unit` would, once it's
+        // in the `sigs` map, win the `findDirectSig` lookup and reject the
+        // Int argument with T0043.  Skipping these names for imports
+        // preserves the historical advisory semantics; user code that
+        // explicitly defines its own `println` still wins via the user
+        // pass that follows.
+        if isImported and isCodegenBuiltinName(decl.name) {
+          i = i + 1
+          continue
+        }
         val sg = resolveFunctionSig(tbl, diag, decl)
-        // bare key (last-wins) and arity-qualified key
         val arityKey = decl.name + "/" + toString(decl.params.count)
-        sigs.add(decl.name, sg)
+        // First-in-wins for both bare and arity-qualified keys.  Bare-name
+        // collisions arise when multiple stdlib files define functions with
+        // the same simple name (e.g. `toString`, `tryGet`) — the bridge's
+        // stdlib loader flat-merges every stdlib file's items into one
+        // `importedItems` list, so duplicates appear in this pass.  The
+        // arity-qualified key disambiguates true overloads at call sites
+        // (the typechecker's call resolver checks arityKey first).  Using
+        // `Dictionary.Add` here would throw on collision and abort the build.
+        if not sigs.containsKey(decl.name) {
+          sigs.add(decl.name, sg)
+        }
         if not sigs.containsKey(arityKey) {
           sigs.add(arityKey, sg)
         }
@@ -699,6 +724,21 @@ func addSigsFromItems(
     }
     i = i + 1
   }
+}
+
+// Names whose typecheck behaviour is owned by `codegenBuiltinType` (see
+// `typechecker_exprs.l`).  Stdlib imports must not register signatures
+// under these names because their codegen path expects the polymorphic
+// `TyError`-typed surface.
+func isCodegenBuiltinName(name: in String): Bool {
+  name == "println"
+    or name == "toString"
+    or name == "panic"
+    or name == "default"
+    or name == "expect"
+    or name == "assert"
+    or name == "format1"
+    or name == "format2"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -736,9 +776,20 @@ pub func checkWithImports(
   }
 
   // T3: resolve signatures (imported + user).
+  //
+  // Imported-item signature resolution runs against a *scratch* diagnostic
+  // list so that internal stdlib type references the bridge can't satisfy
+  // (e.g. obscure kernel-internal types like `Scope`, or wire-shape gaps
+  // the self-hosted typechecker hasn't grown coverage for yet) don't pollute
+  // the user package's diagnostics and trip `reportAndAbort` on a build the
+  // user authored cleanly.  The signatures are still recorded in `sigs`
+  // (with `TyError` for any unresolved type refs); the user's typecheck
+  // can still call any stdlib function whose signature *does* resolve, and
+  // codegen tolerates residual `TyError` via the existing fallback paths.
   val sigs: Map[String, ResolvedSignature] = newMap()
-  addSigsFromItems(tbl, diag, sigs, importedItems)
-  addSigsFromItems(tbl, diag, sigs, file.items)
+  val importedDiag: List[Diagnostic] = newList()
+  addSigsFromItems(tbl, importedDiag, sigs, importedItems, true)
+  addSigsFromItems(tbl, diag, sigs, file.items, false)
 
   // T5: check user function bodies.
   var m = 0
