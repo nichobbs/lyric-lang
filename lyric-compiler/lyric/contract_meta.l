@@ -137,7 +137,7 @@ pub func readAllContractsFromFile(path: in String): List[ContractEntry] {
   while i < names.length {
     val name = names[i]
     if Str.startsWith(name, prefix) {
-      val pkgName = name.substring(prefix.length, name.length)
+      val pkgName = name.substring(prefix.length, name.length - prefix.length)
       match AsmRes.tryReadResource(ar, name) {
         case Some(bytes) -> {
           match decodeUtf8Resource(bytes) {
