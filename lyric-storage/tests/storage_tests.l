@@ -212,6 +212,46 @@ test "list returns Ok after multiple puts" {
              "list with prefix must succeed after puts")
 }
 
+// Pagination cursor smoke test (#1460 / #1012) — exercises the
+// `bucket.list(prefix, token, maxKeys)` interface directly with a
+// small page size and asserts both pages succeed.  The first page
+// must return `isTruncated = true` plus a non-empty
+// `nextContinuationToken`; the second page must consume that token
+// without error.  Pre-fix (#1012) the cursor was always `None` even
+// when truncated, so callers paging until `isTruncated == false`
+// looped forever.
+test "list paginates with continuation token" {
+  val bRes = freshBucket()
+  assertTrue(isOk(bRes), "fresh bucket must connect")
+  val bucket = unwrapResultOr(bRes, defaultBucket())
+  assertTrue(isOk(put(bucket, "pg/a.txt", "QQ==", "text/plain")),
+             "put a must succeed")
+  assertTrue(isOk(put(bucket, "pg/b.txt", "Qg==", "text/plain")),
+             "put b must succeed")
+
+  // Page 1: maxKeys = 1 against two matching keys → truncated, with
+  // a continuation token.
+  val page1Res = bucket.list("pg/", "", 1)
+  assertTrue(isOk(page1Res), "page 1 list call must succeed")
+  val emptyPage = ListResult(entries = [], nextContinuationToken = None,
+                             isTruncated = false)
+  val page1 = unwrapResultOr(page1Res, emptyPage)
+  assertTrue(page1.isTruncated,
+             "page 1 must report isTruncated when total > maxKeys")
+  assertTrue(isSome(page1.nextContinuationToken),
+             "page 1 must populate nextContinuationToken when truncated")
+
+  // Page 2: drive the token from page 1 through to verify it resumes
+  // cleanly.  We can't pattern-match the Option payload here under
+  // the current emitter (#1140), so unwrap via `unwrapOr`.
+  val token = unwrapOr(page1.nextContinuationToken, "")
+  assertTrue(token.length > 0,
+             "unwrapped continuation token must be non-empty")
+  val page2Res = bucket.list("pg/", token, 1)
+  assertTrue(isOk(page2Res),
+             "page 2 list call must succeed when handed the cursor")
+}
+
 test "put rejects unsafe key with path traversal" {
   val bRes = freshBucket()
   assertTrue(isOk(bRes), "fresh bucket must connect")

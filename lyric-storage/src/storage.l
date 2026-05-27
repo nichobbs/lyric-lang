@@ -437,7 +437,15 @@ impl StorageBucket for LocalBucket {
         val etag          = computeEtag(bytes)
         val contentLength = intToLong(bytes.length)
         val lastModified  = nowIso8601()
-        val userMetaJson  = serialiseStringMap(userMeta)
+        // `userMeta` is always empty here — the `USER_META_UNSUPPORTED`
+        // guard at the top of `put` rejects non-empty maps before any
+        // I/O happens (#1446 / #1459).  Until bootstrap `SFor` lands
+        // and we can iterate the map, the sidecar's `userMeta` field
+        // is always the literal empty JSON object.  When the guard is
+        // removed, replace this with a real serialiser and inline a
+        // `requires: userMeta.count == 0` check on `put` to keep the
+        // failure mode loud during the transition.
+        val userMetaJson  = "{}"
         val sidecarJson   = buildSidecarJson(contentType, contentLength,
                                              lastModified, etag, userMetaJson)
         match try {
@@ -988,20 +996,14 @@ pub func auditLog(operation: in String, level: in String, detail: in String): Un
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
-// Serialise a Map[String, String] to a JSON object string.
-func serialiseStringMap(m: in Map[String, String]): String {
-  // Empty-map fast path — Map iteration via `for k in m` panics under
-  // the self-hosted MSIL bridge ("SFor not supported in bootstrap").
-  // The data plane currently only writes an empty `userMeta` Map
-  // (every public `put` overload calls `bucket.put(key, data, ct,
-  // newMap())`), so an "{}" sidecar value preserves the round-trip
-  // contract for today's call sites.  When non-empty `userMeta`
-  // becomes reachable, refactor `put` to thread an explicit
-  // List[(String, String)] alongside the Map so this serialiser
-  // can iterate without `SFor`.
-  if m.count == 0 { return "{}" }
-  return "{}"
-}
+// (The serialiseStringMap helper was deleted in #1459 — it returned
+// the empty JSON object for *every* input, which would have silently
+// discarded non-empty `userMeta` values if the `put` guard regressed.
+// The lone call site in `put` now writes the literal "{}" inline,
+// gated by the `USER_META_UNSUPPORTED` boundary check.  Reintroduce
+// a real serialiser when bootstrap `SFor` lands and the guard is
+// removed, so the rewrite-vs-runtime-iteration choice is taken in
+// one PR rather than landing in two pieces.)
 
 // Deserialise a JSON object of string-string pairs into Map[String, String].
 // Accepts raw JSON text so JsonElement does not escape this helper.
