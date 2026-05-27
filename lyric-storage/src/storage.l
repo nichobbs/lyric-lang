@@ -388,13 +388,13 @@ impl StorageBucket for LocalBucket {
   ): Result[StorageMetadata, StorageError] {
     // Non-empty `userMeta` is currently rejected at the boundary so the
     // sidecar's `userMeta` field never silently drops caller-supplied
-    // entries (#1446).  `serialiseStringMap` iterates the map via
-    // `for k in m`, which the self-hosted MSIL bridge cannot lower
-    // (`SFor` is unsupported in the bootstrap pipeline today).  Once
-    // bootstrap-grade `SFor` lands, drop this guard and restore
-    // `serialiseStringMap`'s full implementation in one PR so callers
-    // see the failure mode flip from `INVALID_ARGUMENT` to round-trip
-    // semantics atomically.
+    // entries (#1446 / #1459).  Map iteration via `for k in m` is the
+    // natural shape for serialising the map, but `SFor` is unsupported
+    // in the self-hosted MSIL bridge today, so any such loop panics at
+    // codegen time ("SFor not supported in bootstrap").  Once that
+    // lowering lands, drop this guard and add a real Map-to-JSON
+    // serialiser in the same PR so callers see the failure mode flip
+    // from `INVALID_ARGUMENT` to round-trip semantics atomically.
     if userMeta.count > 0 {
       return Err(StorageError(
         message = "user metadata round-trip is not yet implemented on the "
@@ -995,15 +995,6 @@ pub func auditLog(operation: in String, level: in String, detail: in String): Un
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
-
-// (The serialiseStringMap helper was deleted in #1459 — it returned
-// the empty JSON object for *every* input, which would have silently
-// discarded non-empty `userMeta` values if the `put` guard regressed.
-// The lone call site in `put` now writes the literal "{}" inline,
-// gated by the `USER_META_UNSUPPORTED` boundary check.  Reintroduce
-// a real serialiser when bootstrap `SFor` lands and the guard is
-// removed, so the rewrite-vs-runtime-iteration choice is taken in
-// one PR rather than landing in two pieces.)
 
 // Deserialise a JSON object of string-string pairs into Map[String, String].
 // Accepts raw JSON text so JsonElement does not escape this helper.
