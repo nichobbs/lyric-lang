@@ -208,12 +208,17 @@ pub interface StorageBucket {
 
   /// List objects whose keys begin with `prefix`.  Pass an empty string to
   /// list all objects.  Use `continuationToken` and `maxKeys` for paging.
+  /// `maxKeys` is bounded by the S3 standard page size so cross-backend
+  /// callers see a uniform shape — local-fs, S3, and Azure Blob all
+  /// reject `maxKeys > 1000` at the interface contract before reaching
+  /// the per-backend implementation (#1456).
   func list(
     prefix:            in String,
     continuationToken: in String,
     maxKeys:           in Int
   ): Result[ListResult, StorageError]
     requires: maxKeys >= 1
+    requires: maxKeys <= 1000
     requires: isSafePrefix(prefix)
 
   /// Generate a pre-signed URL granting temporary access to `key`.
@@ -371,6 +376,21 @@ impl StorageBucket for LocalBucket {
     contentType: in String,
     userMeta:    in Map[String, String]
   ): Result[StorageMetadata, StorageError] {
+    // Non-empty `userMeta` is currently rejected at the boundary so the
+    // sidecar's `userMeta` field never silently drops caller-supplied
+    // entries (#1446).  `serialiseStringMap` iterates the map via
+    // `for k in m`, which the self-hosted MSIL bridge cannot lower
+    // (`SFor` is unsupported in the bootstrap pipeline today).  Once
+    // bootstrap-grade `SFor` lands, drop this guard and restore
+    // `serialiseStringMap`'s full implementation in one PR so callers
+    // see the failure mode flip from `INVALID_ARGUMENT` to round-trip
+    // semantics atomically.
+    if userMeta.count > 0 {
+      return Err(StorageError(
+        message = "user metadata round-trip is not yet implemented on the "
+                + "local-fs backend — see lyric-lang #1446",
+        code    = "USER_META_UNSUPPORTED"))
+    }
     match resolveLocalPath(self, key) {
       case Err(e)        -> return Err(e)
       case Ok(fullPath)  -> {
@@ -588,6 +608,16 @@ impl StorageBucket for LocalBucket {
   }
 }
 
+// `Std.Json.valueKind` ordinals — the stdlib documents them in the
+// `valueKind` doc comment but doesn't expose named constants today
+// (#1454 follow-up).  A nullary `func` here gives the sidecar parsers
+// a single source of truth that survives a future stdlib refactor
+// re-numbering the ordinals.
+//
+// Source of truth: `lyric-stdlib/std/json.l` `valueKind` doc-comment
+// (0=Undefined, 1=Object, 2=Array, 3=String, 4=Number, 5=True, 6=False, 7=Null).
+func jkObject(): Int { 1 }
+
 // Read a sidecar `.meta.json` file into StorageMetadata.  Tolerates a
 // missing sidecar by returning a stub with the on-disk byte count and
 // zeroed fields — this happens for files written outside the library or
@@ -620,7 +650,7 @@ func readSidecar(objectPath: in String, contentLength: in Long): Result[StorageM
       code    = "META_PARSE_ERROR"))
   }
   val root = rootElement(doc)
-  if valueKind(root) != 1 {
+  if valueKind(root) != jkObject() {
     return Err(StorageError(
       message = "malformed metadata sidecar",
       code    = "META_PARSE_ERROR"))
@@ -754,7 +784,7 @@ func listEntryForKey(bucket: in LocalBucket, relKey: in String): Result[ListEntr
           match parsed {
             case Some(doc) -> {
               val root = rootElement(doc)
-              if valueKind(root) == 1 {
+              if valueKind(root) == jkObject() {
                 etag          = getString(getProperty(root, "etag"))
                 lastModified  = getString(getProperty(root, "lastModified"))
                 match tryGetLong(getProperty(root, "contentLength")) {
@@ -776,85 +806,22 @@ func listEntryForKey(bucket: in LocalBucket, relKey: in String): Result[ListEntr
   }
 }
 
-// ─── S3 / Azure stubs ────────────────────────────────────────────────────────
-//
-// These records keep the public `connect*` signatures stable so callers
-// can switch to a real backend without code changes.  Every method
-// currently returns `NOT_IMPLEMENTED`; replacing with NuGet-SDK bindings
-// is tracked as a separate piece of work.  The records carry the
-// connection parameters for future use rather than indirecting through
-// a removed F# host.
-
-record S3Bucket {
-  region:      String
-  bucketName:  String
-  accessKey:   String
-  secretKey:   String
-  endpointUrl: String
-}
-
-func notImplementedS3(): StorageError {
-  StorageError(
-    message = "S3 backend not yet implemented; AWSSDK.S3 native bindings tracked as follow-up",
-    code    = "NOT_IMPLEMENTED")
-}
-
-impl StorageBucket for S3Bucket {
-  func put(
-    key: in String, dataBase64: in String,
-    contentType: in String, userMeta: in Map[String, String]
-  ): Result[StorageMetadata, StorageError] { Err(notImplementedS3()) }
-
-  func get(key: in String): Result[StorageObject, StorageError] { Err(notImplementedS3()) }
-  func delete(key: in String): Result[Unit, StorageError] { Err(notImplementedS3()) }
-
-  func list(
-    prefix: in String, continuationToken: in String, maxKeys: in Int
-  ): Result[ListResult, StorageError] { Err(notImplementedS3()) }
-
-  func presignedUrl(
-    key: in String, expiresInSeconds: in Int
-  ): Result[String, StorageError] { Err(notImplementedS3()) }
-
-  func exists(key: in String): Result[Bool, StorageError] { Err(notImplementedS3()) }
-}
-
-record AzureBucket {
-  connectionString: String
-  containerName:    String
-}
-
-func notImplementedAzure(): StorageError {
-  StorageError(
-    message = "Azure Blob backend not yet implemented; Azure.Storage.Blobs native bindings tracked as follow-up",
-    code    = "NOT_IMPLEMENTED")
-}
-
-impl StorageBucket for AzureBucket {
-  func put(
-    key: in String, dataBase64: in String,
-    contentType: in String, userMeta: in Map[String, String]
-  ): Result[StorageMetadata, StorageError] { Err(notImplementedAzure()) }
-
-  func get(key: in String): Result[StorageObject, StorageError] { Err(notImplementedAzure()) }
-  func delete(key: in String): Result[Unit, StorageError] { Err(notImplementedAzure()) }
-
-  func list(
-    prefix: in String, continuationToken: in String, maxKeys: in Int
-  ): Result[ListResult, StorageError] { Err(notImplementedAzure()) }
-
-  func presignedUrl(
-    key: in String, expiresInSeconds: in Int
-  ): Result[String, StorageError] { Err(notImplementedAzure()) }
-
-  func exists(key: in String): Result[Bool, StorageError] { Err(notImplementedAzure()) }
-}
+// `S3Bucket` / `AzureBucket` record types and their unreachable
+// `impl StorageBucket` blocks were removed (#1448): `connectS3` and
+// `connectAzureBlob` now fail fast at the factory with
+// `Err(NOT_IMPLEMENTED)` and never construct a backend record, so the
+// trait implementations were dead code on every code path.  When the
+// native NuGet SDK bindings land, reintroduce both records alongside
+// their `impl` blocks in the same PR so the runtime shape and the
+// factory return type flip from fail-fast to fail-late atomically.
 
 // ─── Factory functions ────────────────────────────────────────────────────────
 
-/// Open an Amazon S3 bucket.  Currently returns a stub bucket whose
-/// operations report `NOT_IMPLEMENTED`; tracked as a follow-up to bind
-/// `AWSSDK.S3` natively in Lyric.
+/// Open an Amazon S3 bucket.  **Fails fast** with
+/// `Err(StorageError(code = "NOT_IMPLEMENTED"))` until the native
+/// `AWSSDK.S3` bindings land in Lyric — callers that defensively
+/// branch on the `Err` from this factory will continue to do so.
+/// Tracked as a follow-up.
 @stable(since="0.1")
 pub func connectS3(region: in String, bucket: in String, accessKey: in String, secretKey: in String, endpointUrl: in String): Result[StorageBucket, StorageError] {
   if region.length == 0 {
@@ -1032,7 +999,7 @@ func parseStringMap(rawJson: in String): Map[String, String] {
   var m    = newMap()
   val doc  = parseJson(rawJson)
   val elem = rootElement(doc)
-  if valueKind(elem) != 1 { return m }
+  if valueKind(elem) != jkObject() { return m }
   var en = enumerateObject(elem)
   while objectMoveNext(en) {
     val prop = objectCurrent(en)
