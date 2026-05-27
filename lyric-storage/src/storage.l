@@ -278,10 +278,20 @@ func resolveLocalPath(bucket: in LocalBucket, key: in String): Result[String, St
   // The canonicalised path of a key inside `bucketDir` always has the
   // separator between `bucketDir` and the rest, so this is exact, not
   // pessimistic.
-  val joined    = bucket.bucketDir + "/" + key
+  //
+  // Separator detection is platform-aware: on Windows, `Path.GetFullPath`
+  // returns backslash-separated paths, so `bucketTrm` must use the
+  // same separator as `canon` or the `startsWith` check would always
+  // fail (#1458 — would have broken every storage op on Windows).
+  // Probe `bucket.bucketDir` itself (already canonicalised by
+  // `connectLocal` via `hostPathGetFullPath`) for the native separator;
+  // fall back to `/` for the degenerate case where `bucketDir` is
+  // root-relative and carries no separator at all.
+  val sep = if Str.contains(bucket.bucketDir, "\\") { "\\" } else { "/" }
+  val joined    = bucket.bucketDir + sep + key
   val canon     = hostPathGetFullPath(joined)
-  val bucketTrm = if Str.endsWith(bucket.bucketDir, "/") { bucket.bucketDir }
-                  else { bucket.bucketDir + "/" }
+  val bucketTrm = if Str.endsWith(bucket.bucketDir, sep) { bucket.bucketDir }
+                  else { bucket.bucketDir + sep }
   if canon != bucket.bucketDir and not Str.startsWith(canon, bucketTrm) {
     return Err(StorageError(
       message = "resolved key path escapes bucket directory",
