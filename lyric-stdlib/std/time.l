@@ -235,5 +235,5 @@ pub func nowEpochMillis(): Long {
 pub func monotonicNanos(): Long {
   var nanoTs: Long = hostStopwatchTimestamp()
   var nanoFreq: Long = hostStopwatchFrequency()
-  return (nanoTs / nanoFreq) * 1000000000 + (nanoTs % nanoFreq) * 1000000000 / nanoFreq
+  return (nanoTs / nanoFreq) * 1000000000i64 + (nanoTs % nanoFreq) * 1000000000i64 / nanoFreq
 }

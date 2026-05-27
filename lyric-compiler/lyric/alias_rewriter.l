@@ -52,6 +52,18 @@ import Lyric.Parser
 // dedicated function with an `ImportDecl` parameter keeps the static
 // type stable for codegen.  Self-hosted bridge isn't affected; this
 // only matters when the F# stage-0 compiler builds this DLL.
+//
+// Note (#1451): the same #1140-class widening fires on bare `None`
+// match arms — `case None -> None` produces an `Option[obj]` value
+// whose stale generic arg poisons downstream type-inference for the
+// containing `match` expression.  Every Option-shaped match in this
+// file therefore returns the matched expression itself in the None
+// arm (e.g. `case None -> ty`) so the arm reuses the input's fully
+// resolved `Option[T]` static type instead of synthesising a fresh
+// `None`.  Stage-1 (self-hosted) builds aren't affected, but the F#
+// stage-0 compiler must produce a working `Lyric.AliasRewriter.dll`,
+// and bare `None` in this file breaks `lyric build --manifest
+// lyric-stdlib/lyric.toml`.
 func asAliasOf(imp: in ImportDecl): Option[String] { imp.asAlias }
 
 // Build a list of single-segment alias names from the source file's
@@ -237,7 +249,7 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
     case EIf(cond, thenBranch, elseBranch, thenForm) -> {
       val el = match elseBranch {
         case Some(eob) -> Some(value = rewriteExprOrBlock(aliases, eob))
-        case None      -> None
+        case None      -> elseBranch
       }
       EIf(cond = rewriteExpr(aliases, cond),
           thenBranch = rewriteExprOrBlock(aliases, thenBranch),
@@ -261,14 +273,14 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
     case EForall(binders, whereExpr, body) -> {
       val w = match whereExpr {
         case Some(x) -> Some(value = rewriteExpr(aliases, x))
-        case None    -> None
+        case None    -> whereExpr
       }
       EForall(binders = binders, whereExpr = w, body = rewriteExpr(aliases, body))
     }
     case EExists(binders, whereExpr, body) -> {
       val w = match whereExpr {
         case Some(x) -> Some(value = rewriteExpr(aliases, x))
-        case None    -> None
+        case None    -> whereExpr
       }
       EExists(binders = binders, whereExpr = w, body = rewriteExpr(aliases, body))
     }
@@ -336,7 +348,7 @@ func rewriteExprOrBlock(aliases: in List[String], eob: in ExprOrBlock): ExprOrBl
 func rewriteMatchArm(aliases: in List[String], arm: in MatchArm): MatchArm {
   val g = match arm.guard {
     case Some(x) -> Some(value = rewriteExpr(aliases, x))
-    case None    -> None
+    case None    -> arm.guard
   }
   MatchArm(pattern = rewritePattern(aliases, arm.pattern),
            guard   = g,
@@ -397,7 +409,7 @@ func rewritePattern(aliases: in List[String], p: in Pattern): Pattern {
     case PBinding(name, inner) -> {
       val inner2 = match inner {
         case Some(p2) -> Some(value = rewritePattern(aliases, p2))
-        case None     -> None
+        case None     -> inner
       }
       PBinding(name = name, inner = inner2)
     }
@@ -436,7 +448,7 @@ func rewriteStatement(aliases: in List[String], s: in Statement): Statement {
     case SReturn(value) -> {
       val v = match value {
         case Some(e) -> Some(value = rewriteExpr(aliases, e))
-        case None    -> None
+        case None    -> value
       }
       SReturn(value = v)
     }
@@ -452,7 +464,7 @@ func rewriteStatement(aliases: in List[String], s: in Statement): Statement {
       }
       val fn = match finally_ {
         case Some(blk) -> Some(value = rewriteBlock(aliases, blk))
-        case None      -> None
+        case None      -> finally_
       }
       STry(body = rewriteBlock(aliases, body), catches = cs, finally_ = fn)
     }
@@ -491,7 +503,7 @@ func rewriteLocalBinding(aliases: in List[String], lb: in LocalBinding): LocalBi
     case LBVal(pat, ty, init) -> {
       val t = match ty {
         case Some(te) -> Some(value = rewriteTypeExpr(aliases, te))
-        case None     -> None
+        case None     -> ty
       }
       LBVal(pat = rewritePattern(aliases, pat), ty = t,
             init = rewriteExpr(aliases, init))
@@ -499,18 +511,18 @@ func rewriteLocalBinding(aliases: in List[String], lb: in LocalBinding): LocalBi
     case LBVar(name, ty, init) -> {
       val t = match ty {
         case Some(te) -> Some(value = rewriteTypeExpr(aliases, te))
-        case None     -> None
+        case None     -> ty
       }
       val v = match init {
         case Some(e) -> Some(value = rewriteExpr(aliases, e))
-        case None    -> None
+        case None    -> init
       }
       LBVar(name = name, ty = t, init = v)
     }
     case LBLet(name, ty, init) -> {
       val t = match ty {
         case Some(te) -> Some(value = rewriteTypeExpr(aliases, te))
-        case None     -> None
+        case None     -> ty
       }
       LBLet(name = name, ty = t, init = rewriteExpr(aliases, init))
     }
@@ -524,7 +536,7 @@ func rewriteLocalBinding(aliases: in List[String], lb: in LocalBinding): LocalBi
 func rewriteParam(aliases: in List[String], p: in Param): Param {
   val d = match p.dflt {
     case Some(e) -> Some(value = rewriteExpr(aliases, e))
-    case None    -> None
+    case None    -> p.dflt
   }
   Param(mode = p.mode, name = p.name,
         ty = rewriteTypeExpr(aliases, p.ty),
@@ -547,11 +559,11 @@ func rewriteFunctionDecl(aliases: in List[String], fn: in FunctionDecl): Functio
   }
   val ret = match fn.ret {
     case Some(te) -> Some(value = rewriteTypeExpr(aliases, te))
-    case None     -> None
+    case None     -> fn.ret
   }
   val body = match fn.body {
     case Some(b) -> Some(value = rewriteFunctionBody(aliases, b))
-    case None    -> None
+    case None    -> fn.body
   }
   FunctionDecl(docComments = fn.docComments,
                annotations = fn.annotations,
@@ -570,7 +582,7 @@ func rewriteFunctionDecl(aliases: in List[String], fn: in FunctionDecl): Functio
 func rewriteFieldDecl(aliases: in List[String], f: in FieldDecl): FieldDecl {
   val d = match f.dflt {
     case Some(e) -> Some(value = rewriteExpr(aliases, e))
-    case None    -> None
+    case None    -> f.dflt
   }
   FieldDecl(docComments = f.docComments,
             annotations = f.annotations,
@@ -614,7 +626,7 @@ func rewriteItem(aliases: in List[String], it: in Item): Item {
     case IVal(decl) -> {
       val t = match decl.ty {
         case Some(te) -> Some(value = rewriteTypeExpr(aliases, te))
-        case None     -> None
+        case None     -> decl.ty
       }
       IVal(decl = ValDecl(pattern = decl.pattern,
                           ty      = t,
