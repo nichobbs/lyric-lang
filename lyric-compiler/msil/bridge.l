@@ -359,13 +359,30 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // Phase 2: typecheck + mode-check + elaborate + derive + mono per
   // package, using a per-package `importedItems` view filtered by the
   // package's declared imports.
+  //
+  // Build a set of stdlib package names so `perPackageImportedItems` can
+  // skip adding in-bundle items for packages that are already fully
+  // represented in `baseItems`.  Without this guard, a stdlib self-build
+  // (where `packages` and `stdlibSources` contain the same files) would
+  // register every Std.* type twice with distinct TypeIds, corrupting the
+  // type-variable resolution for subsequent packages and causing spurious
+  // T0033 diagnostics on `var i = 0; while i < n { … }` loops.  (#1435)
+  val baseNames: Map[String, Bool] = newMap()
+  var bn = 0
+  while bn < stdlibPkgs.count {
+    if not baseNames.containsKey(stdlibPkgs[bn].name) {
+      baseNames.add(stdlibPkgs[bn].name, true)
+    }
+    bn = bn + 1
+  }
   val perPkgFiles: List[SourceFile] = newList()
   val perPkgNames: List[String]     = newList()
   var ti = 0
   while ti < parsedPkgs.count {
     val pp: ParsedUserPkg = parsedPkgs[ti]
     val importedItems = perPackageImportedItems(baseItems, pp.file.imports,
-                                                inBundleItems, inBundleImports)
+                                                inBundleItems, inBundleImports,
+                                                baseNames)
 
     val tcRes = checkWithImports(pp.file, importedItems)
     if reportAndAbort(tcRes.diagnostics) { return false }
@@ -591,11 +608,27 @@ pub func compileProjectToMsilWithRestoredEncoded(
 // missing-import error at T0010 / T0020 (where it's actionable)
 // instead of letting it slip to codegen's `MObject` fall-through
 // (which was the long-standing #1195 leak).
+// `baseNames` is the set of package names whose items are already fully
+// represented in `baseItems` (i.e., the stdlib packages collected by
+// `collectStdlibPackages`).  Any in-bundle package whose name appears in
+// `baseNames` is skipped: its items are already in `baseItems`, and adding
+// them again via the in-bundle closure would register every type twice,
+// allocating a second distinct `TypeId` for each type.  The second
+// TypeId is never used by the codegen (first-in-wins in `symTableTryFindOne`
+// returns the first TypeId) but the duplicate `DKUnion`/`DKRecord`/...
+// symbols inflate the symbol table.  More critically, duplicate union-case
+// symbols (`Some`, `None`, `Ok`, `Err`) push extra `DKUnionCase` entries
+// whose `parentId` refers to the *second* (unused) TypeId; when the type
+// checker resolves a generic type variable for a subsequently analysed
+// function body it can end up with a stale `TyVar("")` binding instead of
+// the expected `TyPrim(PtInt)`, producing spurious T0033 diagnostics on
+// perfectly valid `var i = 0; while i < n { … }` loops.  (#1435)
 func perPackageImportedItems(
   baseItems:       in List[Item],
   importList:      in List[ImportDecl],
   inBundleItems:   in Map[String, List[Item]],
-  inBundleImports: in Map[String, List[ImportDecl]]
+  inBundleImports: in Map[String, List[ImportDecl]],
+  baseNames:       in Map[String, Bool]
 ): List[Item] {
   val result: List[Item] = newList()
   var bi = 0
@@ -608,7 +641,7 @@ func perPackageImportedItems(
   while ii < importList.count {
     val imp: ImportDecl = importList[ii]
     val depName = segmentsToString(imp.path.segments)
-    addBundleClosure(depName, inBundleItems, inBundleImports, visited, result)
+    addBundleClosure(depName, inBundleItems, inBundleImports, visited, baseNames, result)
     ii = ii + 1
   }
   result
@@ -619,14 +652,18 @@ func perPackageImportedItems(
 // packages are tracked to avoid infinite loops on cyclic imports
 // (which the typechecker / module system already rejects, but this
 // helper stays defensive in case a future relaxation lands).
+// `baseNames` packages are skipped because their items are already in
+// `baseItems` — see the comment on `perPackageImportedItems`.
 func addBundleClosure(
   pkgName:         in String,
   inBundleItems:   in Map[String, List[Item]],
   inBundleImports: in Map[String, List[ImportDecl]],
   visited:         in Map[String, Bool],
+  baseNames:       in Map[String, Bool],
   acc:             in List[Item]
 ): Unit {
   if visited.containsKey(pkgName) { return }
+  if baseNames.containsKey(pkgName)  { return }
   visited.add(pkgName, true)
   match mapGet(inBundleItems, pkgName) {
     case Some(items) -> {
@@ -643,7 +680,7 @@ func addBundleClosure(
       var ii = 0
       while ii < deps.count {
         val sub = segmentsToString(deps[ii].path.segments)
-        addBundleClosure(sub, inBundleItems, inBundleImports, visited, acc)
+        addBundleClosure(sub, inBundleItems, inBundleImports, visited, baseNames, acc)
         ii = ii + 1
       }
     }
