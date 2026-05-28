@@ -1419,12 +1419,20 @@ pub func lowerMFuncsToHostClass(hostClass: in String, funcs: in List[MFunc],
   // TypeDef matches the `(namespace, typeName)` shape that
   // cross-assembly TypeRefs (built by `splitPackageName` on the
   // consumer side via `ensureHostClassTypeRefRow`) bind against.
-  // Single-segment names (no dot) yield (namespace="", simpleName=hostClass).
-  val lastDotHc = hostClass.lastIndexOf(".")
-  val hcSimple = if lastDotHc < 0 { hostClass }
-                 else { hostClass.substring(lastDotHc + 1, hostClass.length - lastDotHc - 1) }
-  val hcNs     = if lastDotHc < 0 { "" }
-                 else { hostClass.substring(0, lastDotHc) }
+  // The free-function host class is named `<package>.Program` — the
+  // *full* package path is the CLR namespace and `Program` is the type
+  // name.  This matches the F# emitter's convention
+  // (`Emitter.fs`: `nsName + ".Program"`), which is critical because the
+  // stage-1 stdlib DLLs (`Lyric.Stdlib.*.dll`) are F#-built: a
+  // self-hosted-built consumer calling `Std.Testing.assertEqual` emits a
+  // cross-assembly TypeRef via `ensureHostClassTypeRefRow`, and that
+  // TypeRef must name the *same* `(namespace, type)` pair the producer
+  // emitted or the CLR throws "Could not load type 'Std.Testing'" at
+  // runtime.  Self-hosted-built DLLs (restored deps, test bundles) now
+  // use the same `<pkg>.Program` shape so both producers agree.
+  // Single-segment packages (no dot) yield (namespace="<pkg>", name="Program").
+  val hcSimple = "Program"
+  val hcNs     = hostClass
   val sName    = internString(sh, hcSimple)
   val sNs      = internString(sh, hcNs)
   val firstField  = t.fields.count + 1
