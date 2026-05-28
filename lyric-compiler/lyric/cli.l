@@ -2180,6 +2180,39 @@ func cmdTest(argv: in slice[String]): Int {
         case None    -> { printErr("test: build failed"); return 1 }
         case Some(_) -> ()
       }
+      // Copy stdlib DLLs from the per-PID cache dirs (/tmp/lyric-stdlib-*)
+      // into the test output directory so `dotnet exec` can find them.
+      // The in-process MSIL bridge stores compiled stdlib assemblies (e.g.
+      // Lyric.Stdlib.Testing.dll) in a per-PID temp dir; the test runner
+      // subprocess starts fresh and won't find them otherwise.
+      val testOutDir2 = Path.dirname(outPath)
+      val tmpRoot = Environment.getVarOrDefault("TMPDIR", "/tmp")
+      match File.listDirs(tmpRoot) {
+        case Err(_) -> ()
+        case Ok(tmpDirs) -> {
+          for d in tmpDirs.toArray() {
+            val base = Path.basename(d)
+            if Str.startsWith(base, "lyric-stdlib-") {
+              match File.listFiles(d) {
+                case Err(_) -> ()
+                case Ok(fs) -> {
+                  for f in fs.toArray() {
+                    if Str.endsWith(f, ".dll") {
+                      val dest = Path.join(testOutDir2, Path.basename(f))
+                      if not File.fileExists(dest) {
+                        match File.readBytes(f) {
+                          case Ok(bs)  -> { val _ = File.writeBytes(dest, bs) }
+                          case Err(_) -> ()
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
       writeRuntimeConfig(outPath)
 
       val execArgs: List[String] = newList()
@@ -2472,7 +2505,6 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
     val testSrcs: List[String] = newList()
     testSrcs.add(rewritten)
     allPkgs.add(ProjectPackage(name = testEntry.name, sources = testSrcs))
-
     val asmStem = stemOf(Path.basename(testEntry.path), 2)
     val outPath = Path.join(testOutDir, asmStem + ".dll")
 

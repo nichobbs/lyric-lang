@@ -107,6 +107,19 @@ pub func peekSpan(st: in ParseState): Span {
   peek(st).span
 }
 
+// Return the span of the last consumed token.  If no token has been
+// consumed yet (pos == 0), falls back to syntheticEofSpan so callers
+// get a well-formed Span in all cases.  Use this (rather than peekSpan)
+// when recording an end-of-production span so the item span ends at the
+// last character of the item, not at the first character of the next one.
+pub func lastSpan(st: in ParseState): Span {
+  if st.pos == 0 {
+    syntheticEofSpan(st)
+  } else {
+    st.tokens[st.pos - 1].span
+  }
+}
+
 pub func advance(st: inout ParseState): SpannedToken {
   val t = peek(st)
   if st.pos < st.tokens.count { st.pos = st.pos + 1 }

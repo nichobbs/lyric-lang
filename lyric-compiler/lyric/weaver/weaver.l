@@ -1630,13 +1630,25 @@ func weaveItemsCore(
   // throw `Dictionary.Add`'s ArgumentException during the weave pass.
   // First-wins is fine: A0002 fires before this code runs in any
   // well-formed pipeline.
-  val templateByName: Map[String, Bool] = newMap()
-  val declsForSort: List[AspectDecl]    = newList()
+  //
+  // inlineTemplateNames tracks which aspect names are inline templates as a
+  // string-keyed set (name → name) rather than Map[String, Bool], because
+  // mapGet+match on Bool values in the bootstrap codegen produces MObject (not
+  // Bool) from the unbound PConstructor binding, causing a JIT verification
+  // failure when the result is passed to a Bool parameter. containsKey returns
+  // Bool directly, avoiding that codegen path.
+  // seenAspectNames enforces first-wins for duplicate aspect names.
+  val inlineTemplateNames: Map[String, String] = newMap()
+  val seenAspectNames: Map[String, String]     = newMap()
+  val declsForSort: List[AspectDecl]           = newList()
   var ci = 0
   while ci < collected.count {
     val nm = collected[ci].decl.name
-    if not templateByName.containsKey(nm) {
-      templateByName.add(nm, collected[ci].isInlineTemplate)
+    if not seenAspectNames.containsKey(nm) {
+      seenAspectNames.add(nm, nm)
+      if collected[ci].isInlineTemplate {
+        inlineTemplateNames.add(nm, nm)
+      }
     }
     declsForSort.add(collected[ci].decl)
     ci = ci + 1
@@ -1694,10 +1706,7 @@ func weaveItemsCore(
             val aspect = ordered[n - 1 - i]
             val isOutermost = (i == n - 1)
             val wrapperName = if isOutermost { fn.name } else { fn.name + "__aspect_" + aspect.name }
-            val isTpl = match mapGet(templateByName, aspect.name) {
-              case Some(b) -> b
-              case None    -> false
-            }
+            val isTpl: Bool = inlineTemplateNames.containsKey(aspect.name)
             val site = makeWeaveSite(packagePath, isTpl, weaveDiags)
             val wrapper0 = buildWrapper(fn, aspect, callTarget, site)
             val wrapper = FunctionDecl(

@@ -605,7 +605,8 @@ func parsePrimaryPattern(st: inout ParseState): Pattern {
           mkPat(PBinding(name = path.segments[0], inner = Some(value = inner)),
                 joinSpans(path.span, inner.span))
         } else if path.segments.count == 1 {
-          mkPat(PBinding(name = path.segments[0], inner = None), path.span)
+          val noInner: Option[Pattern] = None
+          mkPat(PBinding(name = path.segments[0], inner = noInner), path.span)
         } else {
           mkPat(PConstructor(head = path, args = newList()), path.span)
         }
@@ -615,7 +616,8 @@ func parsePrimaryPattern(st: inout ParseState): Pattern {
       match k {
         case KwResult -> {
           val _ = advance(st)
-          mkPat(PBinding(name = "result", inner = None), tok.span)
+          val noInner: Option[Pattern] = None
+          mkPat(PBinding(name = "result", inner = noInner), tok.span)
         }
         case _ -> {
           // Literal-led patterns: TBool.

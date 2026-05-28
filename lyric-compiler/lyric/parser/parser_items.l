@@ -2529,7 +2529,7 @@ func parseItemOpt(st: inout ParseState): Option[Item] {
       }
     }
 
-  val endSpan = peekSpan(st)
+  val endSpan = lastSpan(st)
   val item = Item(
     docComments = docs,
     annotations = anns,

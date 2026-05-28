@@ -773,6 +773,10 @@ pub func methodBodyCodeSize(b: in MethodBody): Int {
 pub func methodBodyIsFatHeader(b: in MethodBody): Bool {
   if b.localSig != 0 { return true }
   if b.ehClauses.count > 0 { return true }
+  // ECMA-335 §II.25.4.2: tiny header has implicit maxStack = 8.
+  // Force fat header whenever the method needs more than 8 stack slots
+  // (e.g. a constructor call with ≥9 arguments).
+  if b.maxStack > 8 { return true }
   return methodBodyCodeSize(b) > 63
 }
 

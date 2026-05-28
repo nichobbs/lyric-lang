@@ -303,12 +303,8 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
     case ELiteral(lit) -> {
       match lit {
         case LInt(v, _) -> {
-          // Use LIconst for int range; LLconst for long range if needed.
-          // LLconst takes a Long, LIconst takes Int.
-          // Lyric's Long is a 64-bit int; for values that fit in Int use LIconst.
-          val asInt = longToInt(v)
-          if intToLong(asInt) == v {
-            insns.add(LIconst(v = asInt))
+          if v >= -2147483648i64 and v <= 2147483647i64 {
+            insns.add(LIconst(v = longToInt(v)))
             JInt
           } else {
             insns.add(LLconst(v = v))
@@ -734,7 +730,26 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       JRef(className = "java/lang/Object")
     }
     case EResult -> {
-      panic("Jvm.Codegen: EResult outside contract context")
+      // `result` is a contextual keyword: inside ensures clauses the contract
+      // elaborator rewrites EResult to EPath([__lyric_result_N]) before codegen
+      // sees it.  The only remaining case is a user-declared local or parameter
+      // named "result" (valid because the pattern parser accepts KwResult in
+      // binding position).  Check slots first; fall back to panic only when no
+      // such binding exists (which should never happen after elaboration).
+      match lookupSlot(ctx, "result") {
+        case Some(slot) -> {
+          val ty =
+            match lookupType(ctx, "result") {
+              case Some(t) -> t
+              case None    -> JRef(className = "java/lang/Object")
+            }
+          emitLoad(insns, slot, ty)
+          ty
+        }
+        case None -> {
+          panic("Jvm.Codegen: EResult outside contract context")
+        }
+      }
     }
     case ELambda(_, _) -> {
       // General lambda lowering (closure class generation) is deferred.
@@ -1250,9 +1265,14 @@ func lowerPatternTest(
       emitLoad(insns, scrutSlot, scrutTy)
       match lit {
         case LInt(v, _) -> {
-          val asInt = longToInt(v)
-          insns.add(LIconst(v = asInt))
-          insns.add(LIfIcmpne(label = failLabel))
+          if v >= -2147483648i64 and v <= 2147483647i64 {
+            insns.add(LIconst(v = longToInt(v)))
+            insns.add(LIfIcmpne(label = failLabel))
+          } else {
+            insns.add(LLconst(v = v))
+            insns.add(LLcmp)
+            insns.add(LIfne(label = failLabel))
+          }
         }
         case LBool(value) -> {
           if value {
