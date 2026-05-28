@@ -3407,8 +3407,9 @@ func lowerBuiltinOrStaticCallMsil(
                     case Some(rt) -> rt
                     case None     -> MObject
                   }
+                  retTyy
                 }
-                case None -> MObject  // unreachable; resolvedFqn was a hit above
+                case None -> MObject  // unreachable; effectiveFqn was a hit above
               }
             } else {
               // Cross-package call without a registered token: walk args for

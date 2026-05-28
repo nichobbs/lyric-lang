@@ -1976,10 +1976,8 @@ pub func lowerMFuncsToHostClass(hostClass: in String, funcs: in List[MFunc],
   // runtime.  Self-hosted-built DLLs (restored deps, test bundles) now
   // use the same `<pkg>.Program` shape so both producers agree.
   // Single-segment packages (no dot) yield (namespace="<pkg>", name="Program").
-  val hcSimple = "Program"
-  val hcNs     = hostClass
-  val sName    = internString(sh, hcSimple)
-  val sNs      = internString(sh, hcNs)
+  val sName    = internString(sh, "Program")
+  val sNs      = internString(sh, hostClass)
   val firstField  = t.fields.count + 1
 
   // Emit static fields (IConst → literal; IVal → init-only).
