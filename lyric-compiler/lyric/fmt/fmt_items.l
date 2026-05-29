@@ -114,7 +114,8 @@ pub func fieldDeclStr(fd: in FieldDecl): String {
     case Some(e) -> " = " + exprInline(0, e)
     case None    -> ""
   }
-  vis + fd.name + ": " + typeStr(fd.ty) + defStr
+  val mutStr = if fd.isMutable { "var " } else { "" }
+  vis + mutStr + fd.name + ": " + typeStr(fd.ty) + defStr
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

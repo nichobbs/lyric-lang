@@ -68,6 +68,13 @@ func parseFieldDecl(st: inout ParseState): FieldDecl {
         }
       }
     }
+  // A field may be prefixed with `var` to mark it mutable (language
+  // reference §3.4).  Visibility precedes the `var` marker.
+  val isMut =
+    match tryEatKw(st, KwVar) {
+      case Some(_) -> true
+      case None    -> false
+    }
   val ns = readIdent(st, "field")
   match tryEatPunct(st, Colon) {
     case Some(_) -> {}
@@ -90,6 +97,7 @@ func parseFieldDecl(st: inout ParseState): FieldDecl {
     docComments = docs,
     annotations = allAnns,
     visibility  = vis,
+    isMutable   = isMut,
     name        = ns.name,
     ty          = ty,
     dflt        = dflt,
