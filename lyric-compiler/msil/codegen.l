@@ -3755,18 +3755,17 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
     }
 
     // ── For loop ─────────────────────────────────────────────────────────────
-    // Bootstrap: iterates a List<object> (or the result of toArray(), which
-    // in the bootstrap returns the list unchanged) using get_Count / get_Item.
-    // Only simple PBinding patterns are supported; other patterns fall through
-    // without binding (body still executes once per element, as a safe stub).
+    // Iterates a List<object> (or the result of toArray(), which in the
+    // bootstrap returns the list unchanged) using get_Count / get_Item.  The
+    // loop variable is bound with the same pattern machinery as `match` arms
+    // and `val` bindings, so plain names (`for x in xs`), wildcards
+    // (`for _ in xs`), and tuple destructuring (`for (a, b) in pairs`) all
+    // bind correctly.
     case SFor(_, pat, iter, body) -> {
-      val elemName =
-        match pat.kind {
-          case PBinding(n, _) -> n
-          case _              -> "__for_elem_" + toString(freshLabelMsil(fctx))
-        }
-      val iterSlot = allocSlotMsil(fctx, "__iter_" + elemName, MObject)
-      val idxSlot  = allocSlotMsil(fctx, "__idx_"  + elemName, MInt)
+      val forId    = toString(freshLabelMsil(fctx))
+      val iterSlot = allocSlotMsil(fctx, "__iter_" + forId, MObject)
+      val idxSlot  = allocSlotMsil(fctx, "__idx_"  + forId, MInt)
+      val elemSlot = allocSlotMsil(fctx, "__for_elem_" + forId, MObject)
       // Store iter into __iter local.
       lowerExprMsil(cctx, fctx, insns, iter)
       emitStoreSlot(insns, iterSlot, fctx.paramCount)
@@ -3783,11 +3782,21 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
       insns.add(MCallvirt(methodToken = cctx.tokListObjGetCount))
       insns.add(MBrGe(label = afterL))
       // elem = __iter.get_Item(__idx)
-      val elemSlot = allocSlotMsil(fctx, elemName, MObject)
       emitLoadSlot(insns, iterSlot, fctx.paramCount)
       emitLoadSlot(insns, idxSlot,  fctx.paramCount)
       insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
       emitStoreSlot(insns, elemSlot, fctx.paramCount)
+      // Bind the loop pattern against the element.  A `for` binding is
+      // irrefutable; refutable forms (constructor/literal) cannot bind here,
+      // so reject them with a clear build error rather than silently leaving
+      // the variables unbound.
+      match pat.kind {
+        case PBinding(_, _) -> lowerPatternBindMsil(cctx, fctx, insns, pat, elemSlot, MObject)
+        case PWildcard      -> {}
+        case PTuple(_)      -> lowerPatternBindMsil(cctx, fctx, insns, pat, elemSlot, MObject)
+        case _ ->
+          panic("Msil.Codegen: a `for` loop variable must be an irrefutable pattern (a name, `_`, or a tuple of those); refutable patterns are not allowed in a `for` binding")
+      }
       fctx.loopBreak.add(afterL)
       fctx.loopCont.add(contL)
       lowerBlockMsil(cctx, fctx, insns, body)
