@@ -102,6 +102,21 @@ pub func elementTypeByte(t: in MsilType): Int {
   }
 }
 
+// Normalise a type when it appears as a *generic type argument*.  `Unit`
+// lowers to `MVoid`, but `ELEMENT_TYPE_VOID` (0x01) is illegal inside a
+// GENERICINST signature (ECMA-335 §II.23.2.14) — emitting it produces a
+// malformed blob that the CLR rejects with "The signature is incorrect"
+// when it loads any method whose signature references the instantiation
+// (e.g. `Result[Unit, E]`).  Erase it to `object`, matching how `Unit`
+// values are represented at run time.  Only applied to type arguments;
+// a `Unit`/`void` *return* type still encodes as 0x01.
+func genericArgType(t: in MsilType): MsilType {
+  match t {
+    case MVoid -> MObject
+    case _     -> t
+  }
+}
+
 // Emit an MsilType encoding into w, handling multi-byte cases.
 // MTypeVar emits 0x13 + index; MClass currently degrades to
 // ELEMENT_TYPE_OBJECT (0x1C) — same workaround the local-var sig builder
@@ -123,7 +138,7 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
       bufU1(w, typeArgs.count)
       var gi = 0
       while gi < typeArgs.count {
-        bufMsilType(w, typeArgs[gi])
+        bufMsilType(w, genericArgType(typeArgs[gi]))
         gi = gi + 1
       }
     }
@@ -856,7 +871,7 @@ pub func buildGenericInstBlob(typeDefOrRef: in Int,
   bufU1(w, argTypes.count)
   var i = 0
   while i < argTypes.count {
-    bufMsilType(w, argTypes[i])
+    bufMsilType(w, genericArgType(argTypes[i]))
     i = i + 1
   }
   bufToList(w)
@@ -895,7 +910,7 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
       bufU1(w, typeArgs.count)
       var gi = 0
       while gi < typeArgs.count {
-        bufMsilTypeWithCtx(w, typeArgs[gi], ctx)
+        bufMsilTypeWithCtx(w, genericArgType(typeArgs[gi]), ctx)
         gi = gi + 1
       }
     }
@@ -917,7 +932,7 @@ pub func buildGenericInstBlobWithCtx(ctx: in LoweringCtx,
   bufU1(w, argTypes.count)
   var i = 0
   while i < argTypes.count {
-    bufMsilTypeWithCtx(w, argTypes[i], ctx)
+    bufMsilTypeWithCtx(w, genericArgType(argTypes[i]), ctx)
     i = i + 1
   }
   bufToList(w)

@@ -17015,3 +17015,37 @@ string handling and out of scope here:
 These are tracked as the remaining `#1471` work; JVM parity for the
 String surface is a further follow-up.  (Subsequent entries in this branch
 fix the signature-incorrect and union-match items.)
+
+### D-progress-328 — self-hosted MSIL: `Unit` as a generic type argument (#1471)
+
+**Status:** Shipped.  Fixes the `The signature is incorrect.` failures in
+the `lyric-auth` suite (recovers 9 tests: the `rolesContain` group + two
+others), taking the suite from 0/29 to 8/29.
+
+**Problem:** `Unit` lowers to `MVoid`, and the GENERICINST signature
+encoder (`bufMsilType` / `bufMsilTypeWithCtx` / `buildGenericInstBlob*`,
+the #1442 generic-instance machinery) emitted each type argument verbatim
+— so a `Unit` argument became `ELEMENT_TYPE_VOID` (0x01).  `void` is
+illegal inside a GENERICINST signature (ECMA-335 §II.23.2.14), producing a
+malformed `#Blob` entry.  A function returning `Result[Unit, E]` (e.g.
+`Auth.verifyJwt`) therefore wrote a corrupt MethodDef signature; at run
+time the CLR rejected the surrounding metadata with
+`The signature is incorrect.` — and, because method signatures are encoded
+via the context-free `buildStaticMethodSig` → `bufMsilType` path, the
+corruption surfaced when *any* cross-package caller resolved a sibling
+function in the same package (e.g. the synthesised test package calling
+`Auth.rolesContain`, which compiles and runs correctly in isolation).
+Bisected to the `Unit` type argument specifically: `Result[Int, String]`,
+`Result[Int, JwtError]`, and `Option[Int]` all encode fine; only
+`Result[Unit, …]` broke.
+
+**Fix (`lyric-compiler/msil/lowering.l`):** added `genericArgType`, which
+erases `MVoid` → `MObject` (matching how `Unit` values are represented at
+run time), and applied it at all four type-argument encoding loops.  A
+`Unit`/`void` *return* type still encodes as 0x01 — only type arguments
+are normalised.
+
+**Remaining `#1471` blockers (unchanged):** the 20 `Common Language
+Runtime detected an invalid program.` failures are the cross-package /
+generic-typed union-match `isinst` gap (jwtAlg/verifyJwt), plus one
+`Std.String.split` cross-package MemberRef signature mismatch.
