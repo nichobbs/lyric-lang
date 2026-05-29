@@ -3774,6 +3774,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
       insns.add(MLdcI4(v = 0))
       emitStoreSlot(insns, idxSlot, fctx.paramCount)
       val loopL = freshLabelMsil(fctx)
+      val contL = freshLabelMsil(fctx)
       val afterL = freshLabelMsil(fctx)
       insns.add(MLabel(id = loopL))
       // if __idx >= __iter.Count goto after
@@ -3788,10 +3789,14 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
       insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
       emitStoreSlot(insns, elemSlot, fctx.paramCount)
       fctx.loopBreak.add(afterL)
-      fctx.loopCont.add(loopL)
+      fctx.loopCont.add(contL)
       lowerBlockMsil(cctx, fctx, insns, body)
       fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
       fctx.loopCont.removeAt(fctx.loopCont.count - 1)
+      // continue target: a `continue` must advance __idx, so it branches
+      // here (not to loopL). Targeting the loop header would re-fetch the
+      // same element without incrementing __idx — an infinite loop.
+      insns.add(MLabel(id = contL))
       // __idx = __idx + 1
       emitLoadSlot(insns, idxSlot, fctx.paramCount)
       insns.add(MLdcI4(v = 1))
@@ -6936,12 +6941,6 @@ pub func registerStdlibArtifactTokens(
 //                   (e.g. from fctx.declaredRetTy); used to fill generic slots
 //                   that cannot be inferred from argTypes alone (e.g. T in None)
 //
-// Returns the MethodRef token (0x0A000000 | row) on success, or 0 when
-// `ctorKey` is not a known generic stdlib case.
-//
-// Also returns the parent union MGenericInst type via the `outParentTy`
-// singleton list (populated on success, left empty otherwise) so callers
-// can set the stack type correctly without a second lookup.
 // Emit a deferred generic case constructor newobj for a stdlib generic union
 // case (e.g. `None` for `Option[Keyword]`).  The TypeSpec and TypeSpec-parented
 // MemberRef are deferred to Phase 5 via `MNewobjGenericCase` so that in-bundle
