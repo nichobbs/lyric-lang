@@ -105,6 +105,21 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
+      # Cache the stage-0 F# Release publish (`./scripts/bootstrap.sh` stage 0).
+      # Keyed on the EXACT hash of every stage-0 input with NO restore-keys
+      # fallback: a restore only happens on a byte-identical F# tree, so the
+      # cached `lyric` binary is always valid for the current sources. On any
+      # F# / fsproj / global.json / Directory.Build.props / bootstrap.sh
+      # change the key misses and stage 0 rebuilds. The stage-1 step opts into
+      # reuse via STAGE0_REUSE_PUBLISHED=1 (below); a miss safely degrades to a
+      # full rebuild. Saves a full Release publish on the common .l-only PR.
+      - name: Cache stage-0 F# publish
+        if: steps.changes.outputs.has_code_changes == 'true'
+        uses: actions/cache@v5
+        with:
+          path: .bootstrap/stage0-publish
+          key: ${{ runner.os }}-stage0-${{ hashFiles('bootstrap/src/**/*.fs', 'bootstrap/**/*.fsproj', 'bootstrap/global.json', 'bootstrap/Directory.Build.props', 'scripts/bootstrap.sh') }}
+
       - name: Restore
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: bootstrap
@@ -175,6 +190,11 @@ jobs:
         # weeks because the failure was swallowed and downstream steps
         # silently skipped.  Stage 1 now fails CI loudly.
         working-directory: ${{ github.workspace }}
+        env:
+          # Reuse the cached stage-0 publish when the "Cache stage-0 F#
+          # publish" step restored one (exact F#-hash match). Safe: a cache
+          # miss leaves nothing to reuse and stage 0 rebuilds.
+          STAGE0_REUSE_PUBLISHED: "1"
         run: ./scripts/bootstrap.sh --stage 1
 
       # Track A A1.4 (#860) deleted the F# user-facing CLI; the AOT
