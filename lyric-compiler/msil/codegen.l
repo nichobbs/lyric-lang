@@ -2710,7 +2710,22 @@ func lowerPatternTestMsil(
               emitLoadSlot(insns, scrutSlot, fctx.paramCount)
               match scrutTy {
                 case MGenericInst(_, _, typeArgs) -> {
-                  insns.add(MIsinstGeneric(className = ctorKey, typeArgs = typeArgs))
+                  // A bare `case Foo` (no payload) names a nullary union case
+                  // (e.g. `case None`).  Nullary cases have no payload field to
+                  // infer concrete type arguments from, so `buildGenericCaseCtorTok`
+                  // constructs them with every type argument erased to `object`
+                  // (`Option_None<object>`).  The isinst must therefore test the
+                  // erased `<object,…>` instance, not the scrutinee's concrete
+                  // arguments (`Option_None<String>`) — otherwise the closed
+                  // TypeSpec never matches the constructed value and the arm is
+                  // skipped, falling through to the match-exhaustiveness panic.
+                  val erasedArgs: List[MsilType] = newList()
+                  var ei = 0
+                  while ei < typeArgs.count {
+                    erasedArgs.add(MObject)
+                    ei = ei + 1
+                  }
+                  insns.add(MIsinstGeneric(className = ctorKey, typeArgs = erasedArgs))
                 }
                 case _ -> {
                   // For generic nullary cases (e.g. Option_None) with an untyped
