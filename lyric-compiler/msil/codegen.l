@@ -3425,7 +3425,6 @@ func lowerBuiltinOrStaticCallMsil(
                     case Some(rt) -> rt
                     case None     -> MObject
                   }
-                  retTyy
                 }
                 case None -> MObject  // unreachable; effectiveFqn was a hit above
               }
