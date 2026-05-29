@@ -176,7 +176,7 @@ supporting all language features."
 | H16 | `alias X = Long` unresolvable as a type — alias has no `TypeId`, so `val v: X` → T0013 "not a type". | `typechecker_symbols.l:85-98` | M |
 | H17 | `break`/`continue` out of a `try` region emit `br` instead of `leave` → unverifiable IL. | `codegen.l:3804-3808` | M |
 | H18 | Float/Char/Long literal *match patterns* fall to the wildcard arm → **always match**. | `codegen.l:2610` | M |
-| H19 | Range-for (`for i in 0..n`) and any `a..b` expression panic (`ERange`). | `codegen.l:1930-1932`, `:3736` | M |
+| H19 | ~~Range-for (`for i in 0..n`) and any `a..b` expression panic (`ERange`).~~ **Resolved (#1478):** `for i in lo .. hi` / `..= hi` / `..< hi` parse and lower to a counting loop (`lowerForMsil`/`emitCountingForMsil`). Only a *standalone* range value (`val r = lo .. hi`) still panics — no `Range` value type, unused in stdlib/ecosystem. | `codegen.l` `lowerForMsil`; `parser_exprs.l` for-iter | ✅ |
 | H20 | Capturing closures unimplemented: lambda-lifting produces plain static methods with no display class; captures reference out-of-scope locals; not even diagnosed. | `codegen.l:5601-5645,5858` | XL |
 | H21 | BCL collection method stubs return wrong results silently: `List.Contains`→false, `Dict.Remove`/`RemoveAt`→no-op, unknown method→pop+null. | `codegen.l:3482-3577` | L |
 | H22 | Compound assignment ignores the operator: string `+=` emits numeric `MAdd`; field `r.f += v` only stores. | `codegen.l:2321-2354,2421-2437` | M |
@@ -368,7 +368,7 @@ binary in CI.
 | "Neither backend invokes the middle-end; `--target dotnet` ships with NO compile-time validation." | False now. The full middle-end runs in-process; mode-check/mono/weave/parse are fatal. Type check runs but is advisory on the single-file path (C1). |
 | "`--target dotnet-legacy` is the load-bearing path." | Removed from the CLI; only stale `panic` strings reference it. Default is self-hosted in-process. |
 | §3.5 "TGenericApp defaults to MObject (`codegen.l:593`); `Lyric.Mono` not called from `Msil.Bridge`." | Stale. `monoFile` is wired (`bridge.l:103,403`); `TGenericApp` emits `MGenericInst` for cross-assembly heads (`codegen.l:1290-1313`). Erasure now applies to *user generic types* (C8), not all generics. |
-| "MSIL: no `for` loops (panics)." | `for` over List/array with simple binding works; only *range*-for and destructuring-for are gaps (H19). |
+| "MSIL: no `for` loops (panics)." | `for` over List/array and range-`for` (`lo .. hi` / `..= hi` / `..< hi`) both work (#1478); only a standalone `a .. b` *value* expression remains unsupported (H19). |
 | "`SDefer` not implemented." | Present but semantically broken — runs inline immediately (C7). |
 | "Contract elaborator defers protected-type entries and loop invariants." | Both shipped (`elaborator.l:805-819,1046-1116`). |
 | "Contract metadata embedding is F#-only." | Self-hosted (`bridge.l:986-1033`). |

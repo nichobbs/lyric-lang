@@ -1981,7 +1981,12 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
       }
     }
     case ERange(_) -> {
-      panic("Msil.Codegen: ERange not supported in bootstrap — use --target dotnet-legacy")
+      // Ranges are supported as `for` iterators (`for i in lo .. hi`, see
+      // `lowerForMsil`) and as match patterns; materialising `lo .. hi` as a
+      // first-class value is not yet modelled on --target dotnet (no `Range`
+      // value type in the self-hosted backend).  Fail loudly rather than emit
+      // a bogus value (#1478).
+      panic("Msil.Codegen: a range expression (`lo .. hi`) is only supported as a `for`-loop iterator or a match pattern on --target dotnet; first-class range values are not yet materialised (#1478).")
     }
     case EError -> {
       insns.add(MLdNull)
@@ -3745,6 +3750,181 @@ func lowerMethodCallMsil(
 // §6. Statement lowering.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── For-loop lowering (#1478) ────────────────────────────────────────────────
+//
+// `for <pat> in <iter> { body }` lowers two ways depending on the iterator:
+//   * `<iter>` is a range literal (`lo .. hi` / `lo ..= hi`) — emit a counting
+//     loop directly, with no materialised range value.
+//   * otherwise `<iter>` is a `List`/array/slice — iterate by index using
+//     `List<object>::get_Count` / `get_Item`, matching how `EIndex` reads
+//     model every `[]` receiver as `List<object>` in the bootstrap.
+//
+// Both forms route `break` / `continue` through the standard `fctx.loopBreak`
+// / `fctx.loopCont` label stacks; `continue` targets the increment step so the
+// counter still advances.
+
+// Bind a `for` loop variable from the value in `slot`.  A `for` binding is
+// irrefutable: only a name, `_`, or a tuple of those is allowed.  Refutable
+// forms (constructor / literal) cannot bind here, so reject them with a clear
+// build error rather than silently leaving the variables unbound.
+func bindForPatternMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  pat:  in Pattern,
+  slot: in Int,
+  ty:   in MsilType
+): Unit {
+  match pat.kind {
+    case PBinding(_, _) -> lowerPatternBindMsil(cctx, fctx, insns, pat, slot, ty)
+    case PWildcard      -> {}
+    case PTuple(_)      -> lowerPatternBindMsil(cctx, fctx, insns, pat, slot, ty)
+    case _ ->
+      panic("Msil.Codegen: a `for` loop variable must be an irrefutable pattern (a name, `_`, or a tuple of those); refutable patterns are not allowed in a `for` binding")
+  }
+}
+
+// Emit a counting loop for `for <pat> in lo .. hi` (inclusive=false) or
+// `lo ..= hi` (inclusive=true).  `lo` / `hi` are each evaluated exactly once.
+func emitCountingForMsil(
+  cctx:      in CodegenCtx,
+  fctx:      in FuncCtx,
+  insns:     in List[MInsn],
+  pat:       in Pattern,
+  lo:        in Expr,
+  hi:        in Expr,
+  inclusive: in Bool,
+  body:      in Block
+): Unit {
+  // counter := lo
+  val loTy  = lowerExprMsil(cctx, fctx, insns, lo)
+  val iSlot = allocSlotMsil(fctx, "__for_i_" + toString(fctx.slotTicker.count), loTy)
+  emitStoreSlot(insns, iSlot, fctx.paramCount)
+  // bound := hi (evaluated once so `for i in 0 .. f()` does not re-call f)
+  val hiTy   = lowerExprMsil(cctx, fctx, insns, hi)
+  val hiSlot = allocSlotMsil(fctx, "__for_hi_" + toString(fctx.slotTicker.count), hiTy)
+  emitStoreSlot(insns, hiSlot, fctx.paramCount)
+
+  val loopL  = freshLabelMsil(fctx)
+  val contL  = freshLabelMsil(fctx)
+  val afterL = freshLabelMsil(fctx)
+
+  insns.add(MLabel(id = loopL))
+  // Continue while i < hi (half-open) or i <= hi (closed); else exit.
+  emitLoadSlot(insns, iSlot, fctx.paramCount)
+  emitLoadSlot(insns, hiSlot, fctx.paramCount)
+  if inclusive {
+    insns.add(MCgt)                       // i > hi ?
+    insns.add(MBrTrue(label = afterL))    // exit once the counter passes hi
+  } else {
+    insns.add(MClt)                       // i < hi ?
+    insns.add(MBrFalse(label = afterL))   // exit once i is no longer below hi
+  }
+  // Bind the loop pattern from the current counter value.
+  bindForPatternMsil(cctx, fctx, insns, pat, iSlot, loTy)
+
+  fctx.loopBreak.add(afterL)
+  fctx.loopCont.add(contL)
+  lowerBlockMsil(cctx, fctx, insns, body)
+  fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
+  fctx.loopCont.removeAt(fctx.loopCont.count - 1)
+
+  // increment (continue target): i := i + 1
+  insns.add(MLabel(id = contL))
+  emitLoadSlot(insns, iSlot, fctx.paramCount)
+  match loTy {
+    case MLong -> insns.add(MLdcI8(v = 1i64))
+    case _     -> insns.add(MLdcI4(v = 1))
+  }
+  insns.add(MAdd)
+  emitStoreSlot(insns, iSlot, fctx.paramCount)
+  insns.add(MBr(label = loopL))
+  insns.add(MLabel(id = afterL))
+}
+
+// Emit an index-based loop for `for <pat> in <collection>`, modelling the
+// collection as `List<object>` (the bootstrap representation shared with the
+// `EIndex` read path).
+func emitCollectionForMsil(
+  cctx:  in CodegenCtx,
+  fctx:  in FuncCtx,
+  insns: in List[MInsn],
+  pat:   in Pattern,
+  iter:  in Expr,
+  body:  in Block
+): Unit {
+  // list := <collection>
+  val _ = lowerExprMsil(cctx, fctx, insns, iter)
+  val listSlot = allocSlotMsil(fctx, "__for_list_" + toString(fctx.slotTicker.count), MObject)
+  emitStoreSlot(insns, listSlot, fctx.paramCount)
+  // i := 0
+  val iSlot = allocSlotMsil(fctx, "__for_ci_" + toString(fctx.slotTicker.count), MInt)
+  insns.add(MLdcI4(v = 0))
+  emitStoreSlot(insns, iSlot, fctx.paramCount)
+  // count := list.Count
+  val cntSlot = allocSlotMsil(fctx, "__for_cnt_" + toString(fctx.slotTicker.count), MInt)
+  emitLoadSlot(insns, listSlot, fctx.paramCount)
+  insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
+  insns.add(MCallvirt(methodToken = cctx.tokListObjGetCount))
+  emitStoreSlot(insns, cntSlot, fctx.paramCount)
+
+  val loopL  = freshLabelMsil(fctx)
+  val contL  = freshLabelMsil(fctx)
+  val afterL = freshLabelMsil(fctx)
+
+  insns.add(MLabel(id = loopL))
+  emitLoadSlot(insns, iSlot, fctx.paramCount)
+  emitLoadSlot(insns, cntSlot, fctx.paramCount)
+  insns.add(MClt)
+  insns.add(MBrFalse(label = afterL))
+  // elem := list[i]
+  emitLoadSlot(insns, listSlot, fctx.paramCount)
+  insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
+  emitLoadSlot(insns, iSlot, fctx.paramCount)
+  insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+  val elemSlot = allocSlotMsil(fctx, "__for_elem_" + toString(fctx.slotTicker.count), MObject)
+  emitStoreSlot(insns, elemSlot, fctx.paramCount)
+  bindForPatternMsil(cctx, fctx, insns, pat, elemSlot, MObject)
+
+  fctx.loopBreak.add(afterL)
+  fctx.loopCont.add(contL)
+  lowerBlockMsil(cctx, fctx, insns, body)
+  fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
+  fctx.loopCont.removeAt(fctx.loopCont.count - 1)
+
+  insns.add(MLabel(id = contL))
+  emitLoadSlot(insns, iSlot, fctx.paramCount)
+  insns.add(MLdcI4(v = 1))
+  insns.add(MAdd)
+  emitStoreSlot(insns, iSlot, fctx.paramCount)
+  insns.add(MBr(label = loopL))
+  insns.add(MLabel(id = afterL))
+}
+
+// Dispatch a `for` statement to the range or collection lowering.
+func lowerForMsil(
+  cctx:  in CodegenCtx,
+  fctx:  in FuncCtx,
+  insns: in List[MInsn],
+  pat:   in Pattern,
+  iter:  in Expr,
+  body:  in Block
+): Unit {
+  match iter.kind {
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi)   -> emitCountingForMsil(cctx, fctx, insns, pat, lo, hi, true, body)
+        case RBHalfOpen(lo, hi) -> emitCountingForMsil(cctx, fctx, insns, pat, lo, hi, false, body)
+        case RBLowerOpen(_) ->
+          panic("Msil.Codegen: an open-start range (`..= b`) cannot drive a `for` loop — it has no lower bound to count from (#1478).")
+        case RBUpperOpen(_) ->
+          panic("Msil.Codegen: an open-end range (`a ..`) cannot drive a `for` loop — it is unbounded (#1478).")
+      }
+    }
+    case _ -> emitCollectionForMsil(cctx, fctx, insns, pat, iter, body)
+  }
+}
+
 pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
                        insns: in List[MInsn], stmt: in Statement): Unit {
   match stmt.kind {
@@ -3882,65 +4062,9 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
       insns.add(MLabel(id =afterL))
     }
 
-    // ── For loop ─────────────────────────────────────────────────────────────
-    // Iterates a List<object> (or the result of toArray(), which in the
-    // bootstrap returns the list unchanged) using get_Count / get_Item.  The
-    // loop variable is bound with the same pattern machinery as `match` arms
-    // and `val` bindings, so plain names (`for x in xs`), wildcards
-    // (`for _ in xs`), and tuple destructuring (`for (a, b) in pairs`) all
-    // bind correctly.
+    // ── For loop (range fast-path + collection iteration, #1478) ──────────────
     case SFor(_, pat, iter, body) -> {
-      val forId    = toString(freshLabelMsil(fctx))
-      val iterSlot = allocSlotMsil(fctx, "__iter_" + forId, MObject)
-      val idxSlot  = allocSlotMsil(fctx, "__idx_"  + forId, MInt)
-      val elemSlot = allocSlotMsil(fctx, "__for_elem_" + forId, MObject)
-      // Store iter into __iter local.
-      lowerExprMsil(cctx, fctx, insns, iter)
-      emitStoreSlot(insns, iterSlot, fctx.paramCount)
-      // __idx = 0
-      insns.add(MLdcI4(v = 0))
-      emitStoreSlot(insns, idxSlot, fctx.paramCount)
-      val loopL = freshLabelMsil(fctx)
-      val contL = freshLabelMsil(fctx)
-      val afterL = freshLabelMsil(fctx)
-      insns.add(MLabel(id = loopL))
-      // if __idx >= __iter.Count goto after
-      emitLoadSlot(insns, idxSlot,  fctx.paramCount)
-      emitLoadSlot(insns, iterSlot, fctx.paramCount)
-      insns.add(MCallvirt(methodToken = cctx.tokListObjGetCount))
-      insns.add(MBrGe(label = afterL))
-      // elem = __iter.get_Item(__idx)
-      emitLoadSlot(insns, iterSlot, fctx.paramCount)
-      emitLoadSlot(insns, idxSlot,  fctx.paramCount)
-      insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
-      emitStoreSlot(insns, elemSlot, fctx.paramCount)
-      // Bind the loop pattern against the element.  A `for` binding is
-      // irrefutable; refutable forms (constructor/literal) cannot bind here,
-      // so reject them with a clear build error rather than silently leaving
-      // the variables unbound.
-      match pat.kind {
-        case PBinding(_, _) -> lowerPatternBindMsil(cctx, fctx, insns, pat, elemSlot, MObject)
-        case PWildcard      -> {}
-        case PTuple(_)      -> lowerPatternBindMsil(cctx, fctx, insns, pat, elemSlot, MObject)
-        case _ ->
-          panic("Msil.Codegen: a `for` loop variable must be an irrefutable pattern (a name, `_`, or a tuple of those); refutable patterns are not allowed in a `for` binding")
-      }
-      fctx.loopBreak.add(afterL)
-      fctx.loopCont.add(contL)
-      lowerBlockMsil(cctx, fctx, insns, body)
-      fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
-      fctx.loopCont.removeAt(fctx.loopCont.count - 1)
-      // continue target: a `continue` must advance __idx, so it branches
-      // here (not to loopL). Targeting the loop header would re-fetch the
-      // same element without incrementing __idx — an infinite loop.
-      insns.add(MLabel(id = contL))
-      // __idx = __idx + 1
-      emitLoadSlot(insns, idxSlot, fctx.paramCount)
-      insns.add(MLdcI4(v = 1))
-      insns.add(MAdd)
-      emitStoreSlot(insns, idxSlot, fctx.paramCount)
-      insns.add(MBr(label = loopL))
-      insns.add(MLabel(id = afterL))
+      lowerForMsil(cctx, fctx, insns, pat, iter, body)
     }
 
     // ── Loop (unconditional) ──────────────────────────────────────────────────
