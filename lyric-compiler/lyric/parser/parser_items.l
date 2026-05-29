@@ -538,7 +538,7 @@ func parseParam(st: inout ParseState): Param {
       case _ -> PMIn
     }
   val ty = parseTypeExpr(st)
-  val dflt =
+  val dflt: Option[Expr] =
     match tryEatPunct(st, Eq) {
       case Some(_) -> Some(parseExpr(st))
       case None -> None
@@ -1632,10 +1632,15 @@ func parseConfigField(st: inout ParseState): ConfigField {
     case None -> { emitErr(st, "P0120", "expected ':' after config field name", peekSpan(st)) }
   }
   val ty = parseTypeExpr(st)
-  val dflt =
+  val dflt: Option[Expr] =
     match tryEatPunct(st, Eq) {
-      case Some(_) -> Some(parseExpr(st))
-      case None -> None
+      case Some(_) -> {
+        val e = parseExpr(st)
+        Some(e)
+      }
+      case None -> {
+        None
+      }
     }
   val trailingAnns = parseTrailingAnnotations(st)
   val allAnns = listConcat(anns, trailingAnns)
@@ -1666,16 +1671,18 @@ func parseConfigBody(st: inout ParseState): ConfigDecl {
   while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
     val before = st.pos
     fields.add(parseConfigField(st))
-    match peekToken(st) {
+    val sepTok = peekToken(st)
+    match sepTok {
       case TStmtEnd -> {
         val _ = advance(st)
         val _ = skipStmtEnds(st)
       }
-      case TPunct(Comma) -> {
-        val _ = advance(st)
-        val _ = skipStmtEnds(st)
+      case _ -> {
+        if isPunct(sepTok, Comma) {
+          val _ = advance(st)
+          val _ = skipStmtEnds(st)
+        }
       }
-      case _ -> {}
     }
     forceAdvanceIfStuck(st, before)
   }
@@ -1712,16 +1719,18 @@ func parseAspectConfigBlock(st: inout ParseState): List[ConfigField] {
   while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
     val before = st.pos
     fields.add(parseConfigField(st))
-    match peekToken(st) {
+    val sepTok = peekToken(st)
+    match sepTok {
       case TStmtEnd -> {
         val _ = advance(st)
         val _ = skipStmtEnds(st)
       }
-      case TPunct(Comma) -> {
-        val _ = advance(st)
-        val _ = skipStmtEnds(st)
+      case _ -> {
+        if isPunct(sepTok, Comma) {
+          val _ = advance(st)
+          val _ = skipStmtEnds(st)
+        }
       }
-      case _ -> {}
     }
     forceAdvanceIfStuck(st, before)
   }
@@ -1762,24 +1771,21 @@ func parseOneMatchPredicate(st: inout ParseState): Option[AspectMatcher] {
           case Some(_) -> {}
           case None -> { emitErr(st, "P0310", "expected ':' after 'annotated'", peekSpan(st)) }
         }
-        match peekToken(st) {
-          case TPunct(At) -> {
-            val _ = advance(st)
-            match peekToken(st) {
-              case TIdent(n) -> {
-                val sp = peekSpan(st); val _ = advance(st)
-                Some(value = AMAnnotated(annotName = n, span = sp))
-              }
-              case _ -> {
-                emitErr(st, "P0311", "expected annotation name after '@'", peekSpan(st))
-                None
-              }
+        if isPunct(peekToken(st), At) {
+          val _ = advance(st)
+          match peekToken(st) {
+            case TIdent(n) -> {
+              val sp = peekSpan(st); val _ = advance(st)
+              Some(value = AMAnnotated(annotName = n, span = sp))
+            }
+            case _ -> {
+              emitErr(st, "P0311", "expected annotation name after '@'", peekSpan(st))
+              None
             }
           }
-          case _ -> {
-            emitErr(st, "P0312", "expected '@AnnotName' in annotated: predicate", peekSpan(st))
-            None
-          }
+        } else {
+          emitErr(st, "P0312", "expected '@AnnotName' in annotated: predicate", peekSpan(st))
+          None
         }
       } else if s == "visibility" {
         val _ = advance(st)
@@ -1948,13 +1954,12 @@ func parseAspectAround(st: inout ParseState): AspectAround {
     case None -> { emitErr(st, "P0302", "expected ')' after around args binder", peekSpan(st)) }
   }
   val ret =
-    match peekToken(st) {
-      case TPunct(Arrow) -> {
-        val _ = advance(st)
-        val r = readIdent(st, "around return")
-        Some(value = r.name)
-      }
-      case _ -> None
+    if isPunct(peekToken(st), Arrow) {
+      val _ = advance(st)
+      val r = readIdent(st, "around return")
+      Some(value = r.name)
+    } else {
+      None
     }
   val _ = skipStmtEnds(st)
   val body = parseBlock(st)

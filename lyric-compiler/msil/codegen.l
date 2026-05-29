@@ -831,7 +831,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
                   cctx.fieldTokens.add(caseName + "/field" + toString(fi),
                                        0x04000000 + fieldDefRow)
                 }
-                val ufTyMsil = typeExprToMsil(ufTy, pkgName)
+                val ufTyMsil = typeExprToMsilCtx(cctx, ufTy, pkgName)
                 if not cctx.fieldMsilTypes.containsKey(caseName + "/" + name) {
                   cctx.fieldMsilTypes.add(caseName + "/" + name, ufTyMsil)
                 }
@@ -843,7 +843,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
               case UFPos(ufPosTy, _) -> {
                 cctx.fieldTokens.add(caseName + "/field" + toString(fi),
                                      0x04000000 + fieldDefRow)
-                val ufPosTyMsil = typeExprToMsil(ufPosTy, pkgName)
+                val ufPosTyMsil = typeExprToMsilCtx(cctx, ufPosTy, pkgName)
                 if not cctx.fieldMsilTypes.containsKey(caseName + "/field" + toString(fi)) {
                   cctx.fieldMsilTypes.add(caseName + "/field" + toString(fi), ufPosTyMsil)
                 }
@@ -1093,6 +1093,7 @@ func isLiteralI4ExprMsilWithEnv(e: in Expr, env: in Map[String, Bool]): Bool {
 pub record FuncCtx {
   pkgName:     String
   className:   String
+  funcName:    String
   slots:       Map[String, Int]
   types:       Map[String, MsilType]
   locals:      List[MsilType]       // ordered local variable types for MFunc.locals
@@ -1310,6 +1311,10 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
           }
           case TAValue(_) -> MObject
         }
+      } else if headSeg == "Map" {
+        // Map[K, V] — runtime representation is Dictionary<object,object>.
+        // Track as MMapOf so .count dispatch uses Dictionary.get_Count.
+        MMapOf(keyTy = MObject, valTy = MObject)
       } else {
         val headFqn = resolveTypeFqn(cctx, pkgName, headSeg)
         val dotIdx  = headFqn.lastIndexOf(".")
@@ -1684,6 +1689,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
                 MObject
               }
             }
+          }
+        }
+        case MMapOf(_, _) -> {
+          // Map[K, V] receiver: dispatch to Dictionary<object,object> members.
+          if memberName == "count" {
+            insns.add(MCallvirt(methodToken = cctx.tokDictObjGetCount))
+            MInt
+          } else {
+            insns.add(MPop)
+            MObject
           }
         }
         case _ -> {
@@ -2519,8 +2534,9 @@ func lowerMatchExprMsil(
     i = i + 1
   }
 
-  // If no arm matched: panic.
-  val msgTok = ctxInternUs(cctx.lctx, "Msil.Codegen: match not exhaustive")
+  // If no arm matched: panic (include function, scrutinee type, and arm count for diagnosis).
+  val matchErrMsg = "Msil.Codegen: match not exhaustive in " + fctx.className + "." + fctx.funcName + " scr=" + msilTypeKey(scrutTy) + " arms=" + toString(arms.count)
+  val msgTok = ctxInternUs(cctx.lctx, matchErrMsg)
   insns.add(MLdStr(token = msgTok))
   insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
   insns.add(MThrow)
@@ -2583,7 +2599,21 @@ func lowerPatternTestMsil(
                   insns.add(MIsinstGeneric(className = ctorKey, typeArgs = typeArgs))
                 }
                 case _ -> {
-                  insns.add(MIsinstByName(className = ctorKey))
+                  // For generic nullary cases (e.g. Option_None) with an untyped
+                  // MObject scrutinee (produced by mapGet), we cannot form a
+                  // closed TypeSpec for isinst.  In the bootstrap representation
+                  // nullary union cases are null, so a null-equality check is
+                  // both correct and avoids a runtime TypeLoadException.
+                  val nGenericParams = match mapGet(cctx.caseTypeParamCount, ctorKey) {
+                    case Some(n) -> n
+                    case None    -> 0
+                  }
+                  if nGenericParams > 0 {
+                    insns.add(MLdNull)
+                    insns.add(MCeq)
+                  } else {
+                    insns.add(MIsinstByName(className = ctorKey))
+                  }
                 }
               }
               insns.add(MBrFalse(label = failLabel))
@@ -2665,6 +2695,12 @@ func lowerPatternTestMsil(
           }
         }
         insns.add(MBrFalse(label = failLabel))
+      } else {
+        // MObject scrutinee (e.g. mapGet result): any non-null value matches a
+        // non-nullary constructor pattern.  Emit a null check and branch to
+        // failLabel when the value is null (i.e., a nullary case like None).
+        emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+        insns.add(MBrFalse(label = failLabel))
       }
     }
     case PTuple(_) -> {
@@ -2700,13 +2736,29 @@ func lowerPatternBindMsil(
   match pat.kind {
     case PWildcard -> {}
     case PBinding(name, innerOpt) -> {
-      emitLoadSlot(insns, scrutSlot, fctx.paramCount)
-      val bindSlot = allocSlotMsil(fctx, name, scrutTy)
-      emitStoreSlot(insns, bindSlot, fctx.paramCount)
       match innerOpt {
-        case Some(inner) -> lowerPatternBindMsil(cctx, fctx, insns, inner,
-                                                   bindSlot, scrutTy)
-        case None -> {}
+        case Some(inner) -> {
+          emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+          val bindSlot = allocSlotMsil(fctx, name, scrutTy)
+          emitStoreSlot(insns, bindSlot, fctx.paramCount)
+          lowerPatternBindMsil(cctx, fctx, insns, inner, bindSlot, scrutTy)
+        }
+        case None -> {
+          // `case Foo ->` with a single-segment path parses as PBinding — the
+          // parser cannot tell whether `Foo` is a nullary union case or a new
+          // variable binding.  Mirror lowerPatternTestMsil: if `name` resolves
+          // to a known nullary union case, skip slot allocation so that later
+          // EPath("Foo") references are not hijacked by an uninitialized local.
+          val localCtorKey = fctx.pkgName + "." + name
+          val isNullaryCase =
+            cctx.recordCtorTokens.containsKey(localCtorKey) or
+            cctx.unionCaseCtorByName.containsKey(name)
+          if not isNullaryCase {
+            emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+            val bindSlot = allocSlotMsil(fctx, name, scrutTy)
+            emitStoreSlot(insns, bindSlot, fctx.paramCount)
+          }
+        }
       }
     }
     case PLiteral(_) -> {}
@@ -2899,6 +2951,28 @@ func lowerPatternBindMsil(
                   ptFieldTy)
                 emitStoreSlot(insns, ptFldSlot, fctx.paramCount)
                 lowerPatternBindMsil(cctx, fctx, insns, fields[fi], ptFldSlot, ptFieldTy)
+              }
+            }
+            case _ -> {}
+          }
+          fi = fi + 1
+        }
+      } else {
+        // MObject scrutinee (e.g. from mapGet): bind each named field directly
+        // to the scrutinee slot.  In the bootstrap representation the raw
+        // mapGet value IS the inner value (e.g. Some.value), so no field load
+        // is required — we store the scrutinee slot into the binding variable.
+        var fi = 0
+        while fi < fields.count {
+          match fields[fi].kind {
+            case PBinding(fname, innerOpt) -> {
+              val fSlot = allocSlotMsil(fctx, fname, MObject)
+              emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+              emitStoreSlot(insns, fSlot, fctx.paramCount)
+              match innerOpt {
+                case Some(innerPat) ->
+                  lowerPatternBindMsil(cctx, fctx, insns, innerPat, fSlot, MObject)
+                case None -> {}
               }
             }
             case _ -> {}
@@ -3167,7 +3241,7 @@ func lowerBuiltinOrStaticCallMsil(
   } else if funcName == "newMap" {
     // Emit: newobj instance void class Dictionary`2<object,object>::.ctor()
     insns.add(MNewobj(ctorToken = cctx.tokDictObjCtor))
-    MObject
+    MMapOf(keyTy = MObject, valTy = MObject)
   } else if funcName == "mapGet" {
     // Bootstrap: use Dictionary.get_Item (returns null if missing); wrap in object.
     // Full Option[V] wrapping deferred — bootstrap returns null for None.
@@ -3408,7 +3482,7 @@ func lowerBuiltinOrStaticCallMsil(
                     case None     -> MObject
                   }
                 }
-                case None -> MObject  // unreachable; resolvedFqn was a hit above
+                case None -> MObject  // unreachable; effectiveFqn was a hit above
               }
             } else {
               // Cross-package call without a registered token: walk args for
@@ -4016,6 +4090,7 @@ pub func lowerBlockMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
 // Create a fresh FuncCtx.  Parameters are added to `slots` and `types` but
 // NOT to `locals` (they are accessed via MLdarg, not MLdloc).
 func makeFuncCtxMsil(pkgName: in String, className: in String,
+                     funcName: in String,
                      paramCount: in Int, declaredRetTy: in MsilType): FuncCtx {
   val slots:       Map[String, Int]       = newMap()
   val types:       Map[String, MsilType]  = newMap()
@@ -4029,6 +4104,7 @@ func makeFuncCtxMsil(pkgName: in String, className: in String,
   FuncCtx(
     pkgName              = pkgName,
     className            = className,
+    funcName             = funcName,
     slots                = slots,
     types                = types,
     locals               = locals,
@@ -4547,7 +4623,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
     }
 
   val className = pkgName
-  val fctx = makeFuncCtxMsil(pkgName, className, decl.params.count, retTy)
+  val fctx = makeFuncCtxMsil(pkgName, className, decl.name, decl.params.count, retTy)
   val insns: List[MInsn] = newList()
 
   // Allocate slots for parameters.  These occupy slots 0..N-1 in the
@@ -4676,7 +4752,7 @@ pub func lowerImplMethodMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
   // Use targetTypeName (e.g. "Pkg.EnglishGreeter") as className so that
   // `self.method()` dispatch via MClass(fctx.className) resolves to the
   // correct methodTokens key.
-  val fctx = makeFuncCtxMsil(pkgName, targetTypeName, 1 + decl.params.count, retTy)
+  val fctx = makeFuncCtxMsil(pkgName, targetTypeName, decl.name, 1 + decl.params.count, retTy)
   fctx.slotTicker.add(0)   // slot 0 = this, no name binding
 
   val insns: List[MInsn] = newList()
@@ -5457,7 +5533,7 @@ func lowerProtectedMsil(cctx: in CodegenCtx, decl: in ProtectedTypeDecl,
           case Some(te) -> typeExprToMsil(te, pkgName)
           case None     -> MVoid
         }
-        val entryFctx = makeFuncCtxMsil(pkgName, pkgName + "." + decl.name, ed.params.count, retTy)
+        val entryFctx = makeFuncCtxMsil(pkgName, pkgName + "." + decl.name, decl.name, ed.params.count, retTy)
         var epi = 0
         while epi < ed.params.count {
           val p     = ed.params[epi]
@@ -5532,7 +5608,7 @@ func lowerWireMsil(cctx: in CodegenCtx, decl: in WireDecl,
   // Synthesise a static factory function `<wireName>_create()` that
   // allocates each singleton in dependency order and returns the root.
   val createInsns: List[MInsn] = newList()
-  val createFctx  = makeFuncCtxMsil(pkgName, pkgName, 0, MObject)
+  val createFctx  = makeFuncCtxMsil(pkgName, pkgName, "__wire_create", 0, MObject)
   val createLocals: List[MsilType] = newList()
 
   var mi = 0
@@ -6220,7 +6296,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
       }
       case IConst(decl) -> {
         // Module-level compile-time constant → static literal field on the host class.
-        val initFctx = makeFuncCtxMsil(pkgName, pkgName, 0, MVoid)
+        val initFctx = makeFuncCtxMsil(pkgName, pkgName, "__const_" + decl.name, 0, MVoid)
         val initInsns: List[MInsn] = newList()
         lowerExprMsil(cctx, initFctx, initInsns, decl.init)
         // Fold the constant value from the first instruction (ldc.i4 for Int).
@@ -6244,7 +6320,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
       }
       case IVal(decl) -> {
         // Module-level runtime value → static readonly field initialized in .cctor.
-        val initFctx = makeFuncCtxMsil(pkgName, pkgName, 0, MVoid)
+        val initFctx = makeFuncCtxMsil(pkgName, pkgName, "__val_init", 0, MVoid)
         val initInsns: List[MInsn] = newList()
         val valTy = lowerExprMsil(cctx, initFctx, initInsns, decl.init)
         val fieldTy = match decl.ty {
@@ -6922,9 +6998,30 @@ pub func registerStdlibArtifactTokens(
   cctx: in CodegenCtx,
   pkgs: in List[StdlibPkg]
 ): Unit {
+  // Pass 1: register all type items across every package first.  This
+  // populates `typeFqnByName` and `ffiTypeRefs` before any function
+  // signature is resolved, so cross-package generic return types (e.g.
+  // `Option[Int]` in `Std.String.indexOf`) resolve to the correct
+  // `MGenericInst` regardless of package order in `pkgs`.
   var pi = 0
   while pi < pkgs.count {
     val pkg: StdlibPkg = pkgs[pi]
+    val asmRefRow = ensureStdlibAssemblyRef(cctx, pkg.name)
+    var ii = 0
+    while ii < pkg.items.count {
+      val it: Item = pkg.items[ii]
+      match it.kind {
+        case IFunc(_) -> {}
+        case _        -> registerStdlibTypeItem(cctx, pkg.name, it, asmRefRow)
+      }
+      ii = ii + 1
+    }
+    pi = pi + 1
+  }
+  // Pass 2: register all function items now that type resolution is complete.
+  var pi2 = 0
+  while pi2 < pkgs.count {
+    val pkg: StdlibPkg = pkgs[pi2]
     val asmRefRow  = ensureStdlibAssemblyRef(cctx, pkg.name)
     val hostRefRow = ensureHostClassTypeRefRow(cctx, pkg.name, asmRefRow)
     var ii = 0
@@ -6932,11 +7029,11 @@ pub func registerStdlibArtifactTokens(
       val it: Item = pkg.items[ii]
       match it.kind {
         case IFunc(decl) -> registerStdlibFunc(cctx, pkg.name, hostRefRow, decl)
-        case _           -> registerStdlibTypeItem(cctx, pkg.name, it, asmRefRow)
+        case _           -> {}
       }
       ii = ii + 1
     }
-    pi = pi + 1
+    pi2 = pi2 + 1
   }
 }
 
