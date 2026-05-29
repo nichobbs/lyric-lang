@@ -16813,3 +16813,52 @@ JVM-deferred banner.
 `--internal-manifest-build` path, Band 5 #1492/#1493) additionally
 requires `SFor`/range-for codegen (#1478) and any further gaps it
 surfaces.  This task removes the overload blocker only.
+
+### D-progress-325 — `for` loops (range + collection) in the self-hosted MSIL backend (#1478)
+
+**Status:** Shipped.  `for` loops now compile on `--target dotnet` instead
+of panicking (`Msil.Codegen: SFor not supported`).
+
+**Problem:**
+
+`SFor` panicked in `lyric-compiler/msil/codegen.l`, and the self-hosted
+parser did not accept a range in iterator position — `for i in lo .. hi`
+failed to parse (`parseExpr` stops at `lo`, then the for-loop expected
+`{`).  So neither range nor collection `for` loops worked on the default
+target; the stdlib self-build (post-#1536) hit the `SFor` panic next.
+
+**Fix:**
+
+1. **`lyric-compiler/lyric/parser/parser_exprs.l`** — the `for` parser now
+   checks for a trailing range operator after the iterator expression and
+   wraps the bounds in an `ERange` (`..` / `..<` → half-open, `..=` →
+   closed).  Plain collection iterators are unchanged.
+2. **`lyric-compiler/msil/codegen.l`** — `lowerForMsil` dispatches on the
+   iterator:
+   - **range** (`ERange`): `emitCountingForMsil` emits a counting loop with
+     the bound evaluated once; half-open uses `i < hi`, closed uses
+     `i <= hi`; the counter increments by an `i4`/`i8` `1` to match the
+     bound type.
+   - **collection**: `emitCollectionForMsil` models the iterator as
+     `List<object>` (the representation the `EIndex` read path already
+     uses) and walks it by index via `get_Count` / `get_Item`.
+   Both bind the loop pattern via `lowerPatternBindMsil` and route
+   `break` / `continue` through `fctx.loopBreak` / `fctx.loopCont`, with
+   `continue` targeting the increment so the counter still advances.
+   Standalone range *values* remain unsupported (no `Range` value type;
+   unused in stdlib/ecosystem) and now fail with a clear diagnostic.
+
+**Scope note:** MSIL (`--target dotnet`) only, per epic #1470's
+JVM-deferred banner.
+
+**Acceptance criteria met:**
+
+- Parity programs compile and run: `for i in 0 .. 5` (sum 10),
+  `for i in 1 ..= 5` (sum 15), `for x in xs` over a `List`, and
+  `break` / `continue` inside a range `for`.
+- Regression tests `shm_range_for` and `shm_collection_for_break_continue`
+  in `SelfHostedMsilBridgeTests` drive the self-hosted bridge end-to-end;
+  full suite 36 passed, 0 failed; stage-1 self-build succeeds.
+- The stdlib self-build now advances past the `SFor` panic to the next
+  distinct gap (`EResult outside contract context` — contract-elaboration
+  completeness, tracked separately).

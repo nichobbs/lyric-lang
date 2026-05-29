@@ -1879,7 +1879,31 @@ func parseStatementInner(st: inout ParseState): Statement {
               emitErr(st, "P0221", "expected 'in' in for-loop", peekSpan(st))
             }
           }
-          val iter = parseExpr(st)
+          // The iterator may be a plain collection expression (`for x in xs`)
+          // or a range (`for i in lo .. hi` / `lo ..= hi` / `lo ..< hi`).
+          // `parseExpr` stops at the range operator, so check for one here and
+          // wrap the bounds in an `ERange` (#1478).  `..` / `..<` are half-open
+          // (hi excluded); `..=` is closed.
+          val iterLo = parseExpr(st)
+          val iter =
+            if isPunct(peekToken(st), DotDotEq) {
+              val _ = advance(st)
+              val hi = parseExpr(st)
+              mkExpr(ERange(bound = RBClosed(lo = iterLo, hi = hi)),
+                     joinSpans(iterLo.span, hi.span))
+            } else if isPunct(peekToken(st), DotDotLt) {
+              val _ = advance(st)
+              val hi = parseExpr(st)
+              mkExpr(ERange(bound = RBHalfOpen(lo = iterLo, hi = hi)),
+                     joinSpans(iterLo.span, hi.span))
+            } else if isPunct(peekToken(st), DotDot) {
+              val _ = advance(st)
+              val hi = parseExpr(st)
+              mkExpr(ERange(bound = RBHalfOpen(lo = iterLo, hi = hi)),
+                     joinSpans(iterLo.span, hi.span))
+            } else {
+              iterLo
+            }
           val invs = parseLoopInvariants(st)
           val rawBody = parseBlock(st)
           val body = prependLoopInvariants(invs, rawBody)

@@ -275,6 +275,52 @@ func main(): Unit {
 """
             "X\nb"
 
+        // #1478 — range `for` loops.  `for i in lo .. hi` is half-open (hi
+        // excluded); `lo ..= hi` is closed.  Previously `SFor` panicked in
+        // codegen and the parser didn't accept a range in iterator position.
+        mkBridge "shm_range_for"
+            """package ShMRangeFor
+import Std.Core
+
+func main(): Unit {
+  var a = 0
+  for i in 0 .. 5 { a = a + i }
+  println(toString(a))
+  var b = 0
+  for i in 1 ..= 5 { b = b + i }
+  println(toString(b))
+}
+"""
+            "10\n15"
+
+        // #1478 — collection `for` loops + break / continue.  Iterating a
+        // `List` walks it by index via `get_Count` / `get_Item`; `continue`
+        // still advances the counter and `break` exits.
+        mkBridge "shm_collection_for_break_continue"
+            """package ShMCollFor
+import Std.Core
+import Std.Collections
+
+func main(): Unit {
+  val xs: List[Int] = newList()
+  xs.add(10)
+  xs.add(20)
+  xs.add(30)
+  var c = 0
+  for x in xs { c = c + 1 }
+  println(toString(c))
+  var s = 0
+  for i in 0 .. 100 {
+    if i == 4 { break }
+    if i % 2 == 0 { continue }
+    s = s + i
+  }
+  println(toString(s))
+}
+"""
+            "3\n4"
+
+
         // ── Band 1 (docs/41 §9) — middle-end gating ───────────────────────────
 
         // The mode checker now runs from the bridge.  An @axiom function with
