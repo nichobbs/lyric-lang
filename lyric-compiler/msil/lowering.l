@@ -73,6 +73,11 @@ pub union MsilType {
   // receiver emits castclass to the element type, enabling correct
   // cross-package field access on list elements (#1442).
   case MListOf(elemTy: MsilType)
+  // Lyric Map[K, V] — runtime representation is Dictionary<object,object>,
+  // serialises as MObject (0x1C).  Carried to distinguish Maps from Lists
+  // so that `.count` dispatch uses Dictionary.get_Count rather than
+  // List.get_Count.
+  case MMapOf(keyTy: MsilType, valTy: MsilType)
 }
 
 // Return the ECMA-335 ELEMENT_TYPE byte for the given MsilType.
@@ -93,6 +98,7 @@ pub func elementTypeByte(t: in MsilType): Int {
     case MNativeInt       -> 0x18
     case MGenericInst(_, _, _) -> 0x15  // prefix only; full encoding via bufMsilType
     case MListOf(_)       -> 0x1C  // same as Object: runtime rep is List<object>
+    case MMapOf(_, _)     -> 0x1C  // same as Object: runtime rep is Dictionary<object,object>
   }
 }
 
@@ -833,6 +839,7 @@ pub func msilTypeKey(t: in MsilType): String {
       key + ">"
     }
     case MListOf(e) -> "LIST[" + msilTypeKey(e) + "]"
+    case MMapOf(k, v) -> "MAP[" + msilTypeKey(k) + "," + msilTypeKey(v) + "]"
   }
 }
 

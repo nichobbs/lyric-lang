@@ -1311,6 +1311,10 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
           }
           case TAValue(_) -> MObject
         }
+      } else if headSeg == "Map" {
+        // Map[K, V] — runtime representation is Dictionary<object,object>.
+        // Track as MMapOf so .count dispatch uses Dictionary.get_Count.
+        MMapOf(keyTy = MObject, valTy = MObject)
       } else {
         val headFqn = resolveTypeFqn(cctx, pkgName, headSeg)
         val dotIdx  = headFqn.lastIndexOf(".")
@@ -1685,6 +1689,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
                 MObject
               }
             }
+          }
+        }
+        case MMapOf(_, _) -> {
+          // Map[K, V] receiver: dispatch to Dictionary<object,object> members.
+          if memberName == "count" {
+            insns.add(MCallvirt(methodToken = cctx.tokDictObjGetCount))
+            MInt
+          } else {
+            insns.add(MPop)
+            MObject
           }
         }
         case _ -> {
@@ -2585,7 +2599,21 @@ func lowerPatternTestMsil(
                   insns.add(MIsinstGeneric(className = ctorKey, typeArgs = typeArgs))
                 }
                 case _ -> {
-                  insns.add(MIsinstByName(className = ctorKey))
+                  // For generic nullary cases (e.g. Option_None) with an untyped
+                  // MObject scrutinee (produced by mapGet), we cannot form a
+                  // closed TypeSpec for isinst.  In the bootstrap representation
+                  // nullary union cases are null, so a null-equality check is
+                  // both correct and avoids a runtime TypeLoadException.
+                  val nGenericParams = match mapGet(cctx.caseTypeParamCount, ctorKey) {
+                    case Some(n) -> n
+                    case None    -> 0
+                  }
+                  if nGenericParams > 0 {
+                    insns.add(MLdNull)
+                    insns.add(MCeq)
+                  } else {
+                    insns.add(MIsinstByName(className = ctorKey))
+                  }
                 }
               }
               insns.add(MBrFalse(label = failLabel))
@@ -2666,6 +2694,12 @@ func lowerPatternTestMsil(
             insns.add(MIsinstByName(className = caseClass))
           }
         }
+        insns.add(MBrFalse(label = failLabel))
+      } else {
+        // MObject scrutinee (e.g. mapGet result): any non-null value matches a
+        // non-nullary constructor pattern.  Emit a null check and branch to
+        // failLabel when the value is null (i.e., a nullary case like None).
+        emitLoadSlot(insns, scrutSlot, fctx.paramCount)
         insns.add(MBrFalse(label = failLabel))
       }
     }
@@ -2917,6 +2951,28 @@ func lowerPatternBindMsil(
                   ptFieldTy)
                 emitStoreSlot(insns, ptFldSlot, fctx.paramCount)
                 lowerPatternBindMsil(cctx, fctx, insns, fields[fi], ptFldSlot, ptFieldTy)
+              }
+            }
+            case _ -> {}
+          }
+          fi = fi + 1
+        }
+      } else {
+        // MObject scrutinee (e.g. from mapGet): bind each named field directly
+        // to the scrutinee slot.  In the bootstrap representation the raw
+        // mapGet value IS the inner value (e.g. Some.value), so no field load
+        // is required — we store the scrutinee slot into the binding variable.
+        var fi = 0
+        while fi < fields.count {
+          match fields[fi].kind {
+            case PBinding(fname, innerOpt) -> {
+              val fSlot = allocSlotMsil(fctx, fname, MObject)
+              emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+              emitStoreSlot(insns, fSlot, fctx.paramCount)
+              match innerOpt {
+                case Some(innerPat) ->
+                  lowerPatternBindMsil(cctx, fctx, insns, innerPat, fSlot, MObject)
+                case None -> {}
               }
             }
             case _ -> {}
@@ -3185,7 +3241,7 @@ func lowerBuiltinOrStaticCallMsil(
   } else if funcName == "newMap" {
     // Emit: newobj instance void class Dictionary`2<object,object>::.ctor()
     insns.add(MNewobj(ctorToken = cctx.tokDictObjCtor))
-    MObject
+    MMapOf(keyTy = MObject, valTy = MObject)
   } else if funcName == "mapGet" {
     // Bootstrap: use Dictionary.get_Item (returns null if missing); wrap in object.
     // Full Option[V] wrapping deferred — bootstrap returns null for None.
