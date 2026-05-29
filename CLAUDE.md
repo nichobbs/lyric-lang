@@ -644,10 +644,11 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     literals (BMP `\u{…}`), punctuation, line and nested block
     comments, doc/module-doc comments, statement-end insertion, and
     diagnostics L0001–L0040 (PR #190, D-progress-093–D-progress-121).
-  - `ast.l` — self-hosted AST type declarations mirroring `Ast.fs`
-    (PR #185).
   - `parser/` — self-hosted parser as a five-file `Lyric.Parser`
-    library: `parser_ast.l`, `parser_core.l`, `parser_exprs.l`,
+    library: `parser_ast.l` (the authoritative self-hosted AST type
+    declarations, mirroring `Ast.fs`; the earlier standalone `ast.l` /
+    `Lyric.Ast` mirror from PR #185 was a never-imported duplicate and
+    was deleted), `parser_core.l`, `parser_exprs.l`,
     `parser_items.l`, `parser_cst.l` (PR #190, D-progress-128;
     CST layer added in D-progress-130).
   - `type_checker/` — self-hosted type checker `Lyric.TypeChecker`

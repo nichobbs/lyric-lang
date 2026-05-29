@@ -109,7 +109,7 @@ Snapshot tests use `assertSnapshot(actual: String, name: String)`. On first run 
 `@test_visible` on a `pub` item gives test-code in **other packages** access to the item without requiring it to be part of the public stable API. The item is compiled into the DLL but excluded from `lyric public-api-diff` output and `@stable` requirements.
 
 **Implementation:**
-1. Add `@test_visible` to the annotation set in `lyric-compiler/lyric/ast.l`.
+1. Add `@test_visible` to the annotation set in `lyric-compiler/lyric/parser/parser_ast.l` (the authoritative self-hosted AST).
 2. The type checker must permit cross-package access to `@test_visible` items only when the importing package's manifest has `[dev-dependencies]` (not `[dependencies]`) on the target package.
 3. `lyric public-api-diff` must exclude `@test_visible` items from the diff.
 4. `lyric-testing` must use `@test_visible` to expose its mock infrastructure to test files without polluting the stable API.

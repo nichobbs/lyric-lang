@@ -430,10 +430,11 @@ func normaliseEnd(s: in String): String {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. String-in / string-out façade.  Convenience wrappers that
-// internally drive `Lyric.Parser.parse` so callers (notably the F# CLI
-// crossing the language boundary by reflection) don't need to construct
-// a `ParseResult` themselves.  Mirrors the API contract advertised in
-// `compiler/lyric/lyric/cli.l` for the eventual self-hosted CLI.
+// internally drive `Lyric.Parser.parse` so callers don't need to
+// construct a `ParseResult` themselves.  `lyric fmt` calls these from
+// the self-hosted CLI dispatcher (`cli.l`, D-progress-260); the F#
+// `SelfHostedBridge.fs` test harness also reaches them by reflection
+// across the language boundary.
 // ─────────────────────────────────────────────────────────────────────────────
 
 @stable(since="0.1")

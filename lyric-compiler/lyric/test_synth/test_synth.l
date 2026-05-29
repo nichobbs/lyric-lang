@@ -18,10 +18,11 @@
 // reported by the type-checker / emitter still point at user code).
 // See `docs/24-test-runner-plan.md` for the rationale.
 //
-// Phase 5 §M5.3-equivalent port — the F# CLI continues to call its
-// own `Lyric.Cli.TestSynth` for now.  A follow-up stage will route
-// `lyric test` through this Lyric library via the in-process emit
-// + reflection pattern used elsewhere.
+// Phase 5 §M5.3-equivalent port.  `lyric test` routes through this
+// library: the self-hosted CLI dispatcher (`cli.l`) calls
+// `synthesize` / `listEntries` directly (D-progress-260).  The earlier
+// F# `Lyric.Cli.TestSynth` has been removed along with the rest of the
+// F# user-facing CLI (#860).
 package Lyric.TestSynth
 
 import Std.Core

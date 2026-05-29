@@ -125,7 +125,6 @@ COMPILER_SOURCES=(
 
   # Self-hosted lexer/parser/type-checker
   "lyric-compiler/lyric/lexer.l"
-  "lyric-compiler/lyric/ast.l"
   "lyric-compiler/lyric/parser/parser_ast.l"
   "lyric-compiler/lyric/parser/parser_core.l"
   "lyric-compiler/lyric/parser/parser_exprs.l"
