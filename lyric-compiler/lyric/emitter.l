@@ -425,9 +425,10 @@ func joinPackageFiles(fileContents: in List[String]): String {
 
 // Build `ProjectPackagePayload` entries for the self-hosted compiler
 // packages that a `@test_module` under `lyric-compiler/lyric/` may import:
-//   Lyric.Lexer  — single file (`lexer.l`), mandatory
-//   Lyric.Parser — five files combined (`parser/*.l`), optional
-//   Lyric.Weaver — single file (`weaver/weaver.l`), optional
+//   Lyric.Lexer   — single file (`lexer.l`), mandatory
+//   Lyric.Parser  — five files combined (`parser/*.l`), optional
+//   Lyric.Weaver  — single file (`weaver/weaver.l`), optional
+//   Lyric.CfgGate — single file (`cfg_gate.l`), optional
 // Returns an empty list if `Lyric.Lexer` cannot be loaded.
 func loadCompilerPayloads(compilerDir: in String): List[ProjectPackagePayload] {
   val payloads: List[ProjectPackagePayload] = newList()
@@ -467,6 +468,16 @@ func loadCompilerPayloads(compilerDir: in String): List[ProjectPackagePayload] {
   val weaverPath = Path.join(Path.join(compilerDir, "weaver"), "weaver.l")
   match File.readText(weaverPath) {
     case Ok(src) -> payloads.add(ProjectPackagePayload(name = "Lyric.Weaver", source = src))
+    case Err(_)  -> ()
+  }
+
+  // Lyric.CfgGate — single file (`cfg_gate.l`), optional.  Independent
+  // of Lexer/Parser/Weaver; only depends on Std.Core/Collections/String.
+  // Lets `cfg_gate_self_test.l` resolve `import Lyric.CfgGate` under the
+  // `LYRIC_LOAD_COMPILER=1` path.
+  val cfgGatePath = Path.join(compilerDir, "cfg_gate.l")
+  match File.readText(cfgGatePath) {
+    case Ok(src) -> payloads.add(ProjectPackagePayload(name = "Lyric.CfgGate", source = src))
     case Err(_)  -> ()
   }
 

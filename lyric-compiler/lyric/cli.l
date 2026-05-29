@@ -105,6 +105,7 @@ import Lyric.BenchSynth as BenchSynth  // synthesizeBench
 import Lyric.OpenApiParser as OAParser // parseSpec(json) -> Result[ParsedSpec, String]
 import Lyric.OpenApiGen as OAGen       // generateOpenApi(spec, clientName, packageName) -> String
 import Lyric.Lsp as Lsp                // lspRunLoop() — language server stdio loop
+import Lyric.CfgGate as CfgGate        // isCfgGatedOut, assembleDirectoryPackageSources (#1123, #1124)
 
 func VERSION(): String { "0.1.0" }
 
@@ -2192,53 +2193,10 @@ func cmdTest(argv: in slice[String]): Int {
   }
 }
 
-// Returns true when a package source is entirely gated behind a @cfg feature
-// that is not in activeFeatures, meaning the package should be compiled as an
-// empty stub rather than skipped (the import in the parent package still needs
-// to resolve; the @cfg-gated impl items in the parent are elided by the emitter).
-//
-// Detection strategy: prepend "\n" so that both the @cfg annotation and the
-// package declaration are always detectable via "\n@cfg(feature = \"" and
-// "\npackage " even when they appear at the very start of the source.  This
-// avoids false-positives from occurrences of the substring "package " inside
-// doc-comments (e.g. "extern package StackExchange.Redis") that precede the
-// real package declaration.
-func isCfgGatedOut(source: in String, activeFeatures: in List[String]): Bool {
-  val searchable = "\n" + source
-  val cfgMark   = "\n@cfg(feature = \""
-  val pkgMark   = "\npackage "
-  val cfgIdxOpt = Str.indexOf(searchable, cfgMark)
-  match cfgIdxOpt {
-    case None -> false
-    case Some(cfgIdx) -> {
-      val pkgIdxOpt = Str.indexOf(searchable, pkgMark)
-      match pkgIdxOpt {
-        case None -> false
-        case Some(pkgIdx) -> {
-          if cfgIdx >= pkgIdx { false }
-          else {
-            val cfgStart = cfgIdx + cfgMark.length
-            val afterCfg = Str.substring(searchable, cfgStart, searchable.length - cfgStart)
-            val closeOpt = Str.indexOf(afterCfg, "\"")
-            match closeOpt {
-              case None -> false
-              case Some(closeIdx) -> {
-                val featName = Str.substring(afterCfg, 0, closeIdx)
-                var featActive = false
-                var fai = 0
-                while fai < activeFeatures.count {
-                  if activeFeatures[fai] == featName { featActive = true }
-                  fai += 1
-                }
-                not featActive
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
+// isCfgGatedOut and the directory-package assembly helpers moved to
+// `Lyric.CfgGate` (#1123, #1124) so they're independently testable and
+// the duplicate-`package`-declaration bug for multi-file directory
+// packages is fixed at the assembly level.
 
 func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
   val mfText = match File.readText(mfPath) {
@@ -2292,11 +2250,11 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
     if File.fileExists(abs) {
       match File.readText(abs) {
         case Ok(t) -> {
-          if isCfgGatedOut(t, activeFeatures) {
+          if CfgGate.isCfgGatedOut(t, activeFeatures) {
             // Package is gated by an inactive feature: substitute an empty stub
             // so that imports of this package from sibling packages resolve, while
             // the @cfg-gated items in those packages are properly elided.
-            pkgSources.add("package " + pkgEntry.name + "\n")
+            pkgSources.add(CfgGate.emptyPackageStub(pkgEntry.name))
           } else {
             pkgSources.add(t)
           }
@@ -2323,20 +2281,31 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
         printErr("test: package '" + pkgEntry.name + "': no .l files found in " + abs)
         hadFatal = true
       } else {
+        // Read every file first, then hand the (path, contents) list to
+        // CfgGate so the assembly logic adds at most one empty-package
+        // stub when every file is gated — preventing the duplicate-
+        // `package` declaration bug from #1124 when two or more files
+        // in a directory package are each gated out.
+        val fileEntries: List[CfgGate.CfgGateFile] = newList()
         val sorted = Sort.sortStrings(lFiles.toArray())
+        var readFailed = false
         for f in sorted {
           match File.readText(f) {
-            case Ok(t) -> {
-              if isCfgGatedOut(t, activeFeatures) {
-                pkgSources.add("package " + pkgEntry.name + "\n")
-              } else {
-                pkgSources.add(t)
-              }
-            }
+            case Ok(t) -> fileEntries.add(CfgGate.CfgGateFile(path = f, contents = t))
             case Err(e) -> {
               printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
               hadFatal = true
+              readFailed = true
             }
+          }
+        }
+        if not readFailed {
+          val assembly = CfgGate.assembleDirectoryPackageSources(
+            fileEntries, pkgEntry.name, activeFeatures)
+          var ai = 0
+          while ai < assembly.sources.count {
+            pkgSources.add(assembly.sources[ai])
+            ai += 1
           }
         }
       }

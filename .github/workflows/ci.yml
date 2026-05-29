@@ -168,34 +168,47 @@ jobs:
 
       - name: Bootstrap stage 1 (F# → self-hosted packages)
         if: steps.changes.outputs.has_code_changes == 'true'
-        # continue-on-error is intentional during initial integration.
-        # Remove once bootstrap stage-1 passes consistently on main
-        # (tracked in lyric-lang #616).
-        continue-on-error: true
+        # Stage 1 is required: the AOT smoke test, ecosystem tests, and
+        # the cli.l re-parse guarantee all depend on the stage-1 bundle.
+        # The previous `continue-on-error: true` masked latent parse
+        # errors in cli.l (#616) — a `var out` binding sat unfixed for
+        # weeks because the failure was swallowed and downstream steps
+        # silently skipped.  Stage 1 now fails CI loudly.
         working-directory: ${{ github.workspace }}
         run: ./scripts/bootstrap.sh --stage 1
 
       # Track A A1.4 (#860) deleted the F# user-facing CLI; the AOT
       # entry-point project at `bootstrap/src/Lyric.Cli.Aot/` now
       # serves all user commands by trampolining into the Lyric-emitted
-      # `Lyric.Cli.Program.main` in the stage-1 bundle.  Build it
-      # (skips silently if stage 1 didn't finish) and use the
-      # resulting `lyric` binary for the example smoke tests.
+      # `Lyric.Cli.Program.main` in the stage-1 bundle.  Build it and
+      # use the resulting `lyric` binary for the example smoke tests.
+      #
+      # Stage 1 is required (continue-on-error was removed above), so
+      # a missing bundle here means CI infrastructure broke between
+      # steps — fail loudly instead of silently skipping.
       - name: Build AOT entry-point + smoke-test the examples
         if: steps.changes.outputs.has_code_changes == 'true'
-        continue-on-error: true
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping AOT smoke test"
-            exit 0
+            echo "::error::stage 1 bundle missing; AOT smoke test cannot run"
+            exit 1
           fi
           dotnet build bootstrap/src/Lyric.Cli.Aot --configuration $BUILD_CONFIG
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::error::AOT entry-point binary not found at $lyric_bin"
             exit 1
+          fi
+          # Route any emitProject / --target jvm / LYRIC_FORCE_SUBPROCESS hop
+          # to the F# bootstrap CLI.  Required since #1082 stripped the AOT
+          # entry point of its path-discovery shim — the AOT binary is a
+          # pure trampoline and never auto-locates lyric.dll.
+          cli_dll="$(pwd)/bootstrap/src/Lyric.Cli/bin/${BUILD_CONFIG}/net10.0/lyric.dll"
+          if [ -f "$cli_dll" ]; then
+            export LYRIC_BIN=dotnet
+            export LYRIC_CLI_DLL="$cli_dll"
           fi
           for ex in examples/*.l; do
             # `@proof_required` files are verifier-only — they have no
@@ -225,13 +238,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping ecosystem tests"
-            exit 0
+            echo "::error::stage 1 bundle missing; ecosystem tests cannot run"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping ecosystem tests"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin"
+            exit 1
           fi
           # Stage 1 compiled all Lyric.Stdlib*.dll files into .bootstrap/stage1/.
           # Copy them all to the canonical dep-resolution path so the test runner's
@@ -256,10 +269,41 @@ jobs:
           mkdir -p lyric-auth/.lyric-test lyric-session/.lyric-test
           cp "${stdlib_dlls[@]}" lyric-auth/.lyric-test/
           cp "${stdlib_dlls[@]}" lyric-session/.lyric-test/
+          # Each ecosystem library's compiled test DLL carries
+          # @externTarget references into its F# host shim (Auth.Host,
+          # Session.Host, …).  `additionalProbingPaths` in the
+          # runtimeconfig only resolves NuGet-style versioned layouts,
+          # so the host DLLs must live alongside the test DLL itself
+          # for `dotnet exec` to load them.
+          #
+          # Auth.Host is referenced directly by Lyric.Cli.fsproj so it
+          # lands in the F# CLI bin dir on `dotnet build`.  Session.Host
+          # is independent and only `dotnet publish`-ed by bootstrap.sh
+          # into .bootstrap/stage1/, so we copy from there.
+          cli_bin_dir="$(pwd)/bootstrap/src/Lyric.Cli/bin/${BUILD_CONFIG}/net10.0"
+          if [ -f "$cli_bin_dir/Lyric.Auth.Host.dll" ]; then
+            cp "$cli_bin_dir/Lyric.Auth.Host.dll" lyric-auth/.lyric-test/
+          else
+            echo "::error::Lyric.Auth.Host.dll missing from $cli_bin_dir"
+            exit 1
+          fi
+          if [ -f .bootstrap/stage1/Lyric.Session.Host.dll ]; then
+            cp .bootstrap/stage1/Lyric.Session.Host.dll lyric-session/.lyric-test/
+          else
+            echo "::error::Lyric.Session.Host.dll missing from .bootstrap/stage1"
+            exit 1
+          fi
+          # StackExchange.Redis ships next to Session.Host (bootstrap.sh
+          # copies it from the publish output).  Load is lazy — copy
+          # if present so Redis-backed tests can run.
+          if [ -f .bootstrap/stage1/StackExchange.Redis.dll ]; then
+            cp .bootstrap/stage1/StackExchange.Redis.dll lyric-session/.lyric-test/
+          fi
           # Route emitProject subprocess calls to the F# bootstrap CLI, which
           # handles --internal-project-build.  The AOT binary is a pure trampoline
-          # into the Lyric CLI dispatcher and does not handle internal flags.
-          cli_dll="$(pwd)/bootstrap/src/Lyric.Cli/bin/${BUILD_CONFIG}/net10.0/lyric.dll"
+          # into the Lyric CLI dispatcher and does not handle internal flags
+          # (#1082 stripped the AOT entry point of its path-discovery shim).
+          cli_dll="$cli_bin_dir/lyric.dll"
           if [ -f "$cli_dll" ]; then
             export LYRIC_BIN=dotnet
             export LYRIC_CLI_DLL="$cli_dll"
