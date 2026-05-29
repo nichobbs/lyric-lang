@@ -1326,6 +1326,26 @@ func resolveTypeFqn(cctx: in CodegenCtx, pkgName: in String, seg: in String): St
   }
 }
 
+// Map a `slice[T]` element type to its MSIL element type.  `Byte` lowers to
+// `MByte` (U1) rather than the scalar `MInt` so a `slice[Byte]` serialises as
+// `byte[]` (U1[]), matching the F#-compiled stdlib (`Std.Encoding.tryDecodeBase64
+// -> Option[byte[]]`).  Other element types use the normal mapping.
+func sliceElemMsilCtx(cctx: in CodegenCtx, elem: in TypeExpr, pkgName: in String): MsilType {
+  match elem.kind {
+    case TRef(path) -> if lastSegmentMsil(path) == "Byte" { MByte }
+                       else { typeExprToMsilCtx(cctx, elem, pkgName) }
+    case _          -> typeExprToMsilCtx(cctx, elem, pkgName)
+  }
+}
+
+func sliceElemMsil(elem: in TypeExpr, pkgName: in String): MsilType {
+  match elem.kind {
+    case TRef(path) -> if lastSegmentMsil(path) == "Byte" { MByte }
+                       else { typeExprToMsil(elem, pkgName) }
+    case _          -> typeExprToMsil(elem, pkgName)
+  }
+}
+
 // Map a Lyric TypeExpr to an MsilType, resolving cross-package
 // type references via the codegen context (#1183 codegen port).
 pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String): MsilType {
@@ -1409,7 +1429,7 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         }
       }
     }
-    case TSlice(_)          -> MObject
+    case TSlice(elem)       -> MArray(elemTy = sliceElemMsilCtx(cctx, elem, pkgName))
     case TNullable(_)       -> MObject
     case TTuple(_)          -> MObject
     case TFunction(_, _)    -> MObject
@@ -1455,7 +1475,7 @@ pub func typeExprToMsil(te: in TypeExpr, pkgName: in String): MsilType {
         MClass(className = pkgName + "." + seg)
       }
     }
-    case TSlice(_)          -> MObject
+    case TSlice(elem)       -> MArray(elemTy = sliceElemMsil(elem, pkgName))
     case TGenericApp(_, _)  -> MObject
     case TNullable(_)       -> MObject
     case TTuple(_)          -> MObject
@@ -2710,22 +2730,12 @@ func lowerPatternTestMsil(
               emitLoadSlot(insns, scrutSlot, fctx.paramCount)
               match scrutTy {
                 case MGenericInst(_, _, typeArgs) -> {
-                  // A bare `case Foo` (no payload) names a nullary union case
-                  // (e.g. `case None`).  Nullary cases have no payload field to
-                  // infer concrete type arguments from, so `buildGenericCaseCtorTok`
-                  // constructs them with every type argument erased to `object`
-                  // (`Option_None<object>`).  The isinst must therefore test the
-                  // erased `<object,…>` instance, not the scrutinee's concrete
-                  // arguments (`Option_None<String>`) — otherwise the closed
-                  // TypeSpec never matches the constructed value and the arm is
-                  // skipped, falling through to the match-exhaustiveness panic.
-                  val erasedArgs: List[MsilType] = newList()
-                  var ei = 0
-                  while ei < typeArgs.count {
-                    erasedArgs.add(MObject)
-                    ei = ei + 1
-                  }
-                  insns.add(MIsinstGeneric(className = ctorKey, typeArgs = erasedArgs))
+                  // Canonical representation: a nullary generic case carries the
+                  // union's concrete type arguments (e.g. `Option.None` on an
+                  // `Option[byte[]]` value is `Option_None<byte[]>`), matching the
+                  // F#-compiled stdlib and the construction side (which threads
+                  // `contextHintTyArgs`).  Test the scrutinee's concrete args.
+                  insns.add(MIsinstGeneric(className = ctorKey, typeArgs = typeArgs))
                 }
                 case _ -> {
                   // For generic nullary cases (e.g. Option_None) with an untyped

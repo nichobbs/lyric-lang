@@ -78,6 +78,15 @@ pub union MsilType {
   // so that `.count` dispatch uses Dictionary.get_Count rather than
   // List.get_Count.
   case MMapOf(keyTy: MsilType, valTy: MsilType)
+  // System.Byte (ELEMENT_TYPE_U1 = 0x05).  Used for `slice[Byte]` elements
+  // so cross-package signatures match the F# stdlib's `byte[]` (e.g.
+  // `Std.Encoding.tryDecodeBase64 -> Option[byte[]]`).
+  case MByte
+  // CLI single-dimension zero-based array `T[]` (ELEMENT_TYPE_SZARRAY = 0x1D
+  // followed by the element type).  Lyric `slice[T]` lowers to `T[]` so that
+  // cross-package MemberRef signatures agree with the F#-compiled stdlib,
+  // which represents slices as real arrays rather than erasing to object.
+  case MArray(elemTy: MsilType)
 }
 
 // Return the ECMA-335 ELEMENT_TYPE byte for the given MsilType.
@@ -99,6 +108,8 @@ pub func elementTypeByte(t: in MsilType): Int {
     case MGenericInst(_, _, _) -> 0x15  // prefix only; full encoding via bufMsilType
     case MListOf(_)       -> 0x1C  // same as Object: runtime rep is List<object>
     case MMapOf(_, _)     -> 0x1C  // same as Object: runtime rep is Dictionary<object,object>
+    case MByte            -> 0x05  // ELEMENT_TYPE_U1
+    case MArray(_)        -> 0x1D  // ELEMENT_TYPE_SZARRAY prefix; element follows (bufMsilType)
   }
 }
 
@@ -131,6 +142,10 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
       bufU1(w, idx)
     }
     case MClass(_) -> bufU1(w, 0x1C)   // Object: avoids malformed CLASS+TypeDefOrRef entry
+    case MArray(elem) -> {
+      bufU1(w, 0x1D)   // ELEMENT_TYPE_SZARRAY
+      bufMsilType(w, elem)
+    }
     case MGenericInst(typeRefCode, _, typeArgs) -> {
       bufU1(w, 0x15)   // ELEMENT_TYPE_GENERICINST
       bufU1(w, 0x12)   // ELEMENT_TYPE_CLASS (reference type)
@@ -855,6 +870,8 @@ pub func msilTypeKey(t: in MsilType): String {
     }
     case MListOf(e) -> "LIST[" + msilTypeKey(e) + "]"
     case MMapOf(k, v) -> "MAP[" + msilTypeKey(k) + "," + msilTypeKey(v) + "]"
+    case MByte -> "B"
+    case MArray(e) -> "[" + msilTypeKey(e) + "]"
   }
 }
 
@@ -902,6 +919,10 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
     case MTypeVar(idx) -> {
       bufU1(w, 0x13)
       bufU1(w, idx)
+    }
+    case MArray(elem) -> {
+      bufU1(w, 0x1D)  // ELEMENT_TYPE_SZARRAY
+      bufMsilTypeWithCtx(w, elem, ctx)
     }
     case MGenericInst(typeRefCode, _, typeArgs) -> {
       bufU1(w, 0x15)  // ELEMENT_TYPE_GENERICINST
