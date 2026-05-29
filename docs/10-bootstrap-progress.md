@@ -16695,6 +16695,67 @@ form whose overload has (correctly) been erased.
   `@cfg(feature = "jvm")` overload pair with differing arities ships
   in `cfg_self_test.l` and passes via `SelfHostedCfgTests`.
 
+### D-progress-323 — indexed assignment `a[i] = v` in the self-hosted MSIL backend (#1476)
+
+**Status:** Shipped.  The self-hosted MSIL backend now lowers indexed
+assignment (`a[i] = v`) instead of silently discarding the write.
+
+**Problem:**
+
+`lowerAssignExprMsil` (`lyric-compiler/msil/codegen.l`) matched only
+local (`EPath`) and field (`EMember`) assignment targets.  An `EIndex`
+target fell through to the wildcard arm, which evaluated the right-hand
+side and immediately `pop`ped it — so `a[i] = v` compiled to a no-op
+that silently dropped the store (docs/41 §3.2).  This is a silent
+miscompile: code mutating a collection element by index ran but left the
+element unchanged.
+
+**Fix:**
+
+1. **`lyric-compiler/msil/codegen.l`** — register a new
+   `tokListObjSetItem` MemberRef for `List<object>::set_Item(int32, !0):
+   void` (mirroring the existing `get_Item` token the `EIndex` read arm
+   uses) and add an `EIndex` arm to `lowerAssignExprMsil`.  For plain
+   assignment (`AssEq`) it pushes the receiver (cast to `List<object>`),
+   the index, and the boxed value, then emits `callvirt set_Item` — the
+   exact inverse of the read path's `get_Item`, so a mutated element
+   reads back its new value.
+2. **Compound forms** (`a[i] += v`, …) require reading the current
+   element, applying the operator at the element's static type, and
+   storing it back.  List elements are stored boxed and the element type
+   is not threaded to codegen, so a correct unbox/rebox is not yet
+   possible (arithmetic on a boxed element is itself a separate gap).
+   Rather than silently discard the write (the prior behaviour) or emit
+   invalid IL, the `EIndex` arm hard-fails the build with an actionable
+   message naming #1481 (which owns compound assignment).  No `.l`
+   source uses compound indexed assignment, so the stage-1 self-build and
+   ecosystem builds are unaffected.
+
+**Scope note:** MSIL (`--target dotnet`) only, per epic #1470's
+JVM-deferred banner.  The self-hosted JVM backend
+(`lyric-compiler/jvm/codegen.l`) is tracked separately under that epic.
+
+**Receiver-handling symmetry (#1531):** the `EIndex` *read* arm in
+`lowerExprMsil` previously emitted `callvirt get_Item` without first
+narrowing the receiver, unlike the `get_Count` / `set_Item` paths.  A
+receiver typed as `object` on the stack (e.g. an `in` parameter) would
+fail JIT verification on `List<object>::get_Item`.  The read arm now
+`castclass`-es to `List<object>` before the call, matching the write
+path and keeping read/write receiver handling symmetric.
+
+**Acceptance criteria met:**
+
+- Parity programs mutating a `List` element by index and reading it back
+  succeed in `SelfHostedMsilBridgeTests` (driving the self-hosted bridge
+  end-to-end): `shm_indexed_assign` (`Int` elements, `xs[1] = 99` reads
+  back `99`) and `shm_indexed_assign_string` (`String` elements,
+  `xs[0] = "X"`) — the latter covers the reference-element boxing path
+  (#1532).
+- No silent discard: the write now takes effect; compound indexed
+  assignment fails loudly at build time instead of dropping the store.
+- Full `SelfHostedMsil bridge` suite: 35 passed, 0 failed (no
+  regressions from the new `set_Item` token or the read-path cast).
+
 ### D-progress-324 — self-hosted MSIL backend supports same-name function overloads (#1536)
 
 **Status:** Shipped.  The self-hosted MSIL backend now compiles and

@@ -78,6 +78,7 @@ pub record CodegenCtx {
   tokListObjCtor:      Int   // List<object>::.ctor()  newobj
   tokListObjAdd:       Int   // List<object>::Add(object): void  callvirt
   tokListObjGetItem:   Int   // List<object>::get_Item(int32): object  callvirt
+  tokListObjSetItem:   Int   // List<object>::set_Item(int32, object): void  callvirt
   tokListObjGetCount:  Int   // List<object>::get_Count(): int32  callvirt
   tokListObjTypeSpec:  Int   // TypeSpec token for List<object>  castclass
   // String intrinsic members (instance HASTHIS)
@@ -400,6 +401,15 @@ pub func newCodegenCtx(packageName: in String,
   val tokListObjGetItem = 0x0A000000 + ctxAddMemberRefForTypeSpec(
     lctx, tsListObj, "get_Item", "list_obj_getitem", buildInstanceMethodSig(listGetPs, MTypeVar(0)))
 
+  // 16b. List<object>::set_Item(int32, !0): void  — indexed assignment a[i] = v.
+  // The value parameter is the generic element type (ELEMENT_TYPE_VAR 0); the
+  // index is int32, matching get_Item.
+  val listSetPs: List[MsilType] = newList()
+  listSetPs.add(MInt)
+  listSetPs.add(MTypeVar(0))
+  val tokListObjSetItem = 0x0A000000 + ctxAddMemberRefForTypeSpec(
+    lctx, tsListObj, "set_Item", "list_obj_setitem", buildInstanceMethodSig(listSetPs, MVoid))
+
   // 17. List<object>::get_Count(): int32  instance HASTHIS
   val listCntPs: List[MsilType] = newList()
   val tokListObjGetCount = 0x0A000000 + ctxAddMemberRefForTypeSpec(
@@ -550,6 +560,7 @@ pub func newCodegenCtx(packageName: in String,
     tokListObjCtor       = tokListObjCtor,
     tokListObjAdd        = tokListObjAdd,
     tokListObjGetItem    = tokListObjGetItem,
+    tokListObjSetItem    = tokListObjSetItem,
     tokListObjGetCount   = tokListObjGetCount,
     tokListObjTypeSpec   = 0x1B000000 + tsListObj,
     tokDictObjCtor       = tokDictObjCtor,
@@ -1875,6 +1886,10 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
         case _ -> {
           // List<object>.get_Item(int32): object — castclass the receiver
           // BEFORE pushing the index so the IL stack is [List<object>, int32].
+          // A receiver typed as `object` on the stack (e.g. an `in` parameter)
+          // would otherwise fail JIT verification on get_Item; this mirrors the
+          // get_Count / set_Item paths, keeping read and write receiver
+          // handling symmetric (#1531).
           insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
           if indices.count > 0 {
             lowerExprMsil(cctx, fctx, insns, indices[0])
@@ -2479,6 +2494,45 @@ func lowerAssignExprMsil(
         }
       }
       MVoid
+    }
+    case EIndex(recv, indices) -> {
+      // Indexed assignment: a[i] = v.  The bootstrap models every `[]`
+      // receiver as List<object> (the EIndex read arm calls get_Item on
+      // List<object> unconditionally), so the store mirrors it via set_Item.
+      if indices.count == 0 {
+        // Malformed index target (no index expression) — the parser does
+        // not produce this, but keep the stack balanced if it ever appears.
+        lowerExprMsil(cctx, fctx, insns, value)
+        insns.add(MPop)
+        MVoid
+      } else {
+        match op {
+          case AssEq -> {
+            // Stack for callvirt set_Item: this(List<object>), int32 index, !0 value.
+            lowerExprMsil(cctx, fctx, insns, recv)
+            insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
+            lowerExprMsil(cctx, fctx, insns, indices[0])
+            val vTy = lowerExprMsil(cctx, fctx, insns, value)
+            boxIfNeededMsil(cctx, insns, vTy)
+            insns.add(MCallvirt(methodToken = cctx.tokListObjSetItem))
+            MVoid
+          }
+          case _ -> {
+            // Compound assignment to an indexed element (a[i] += v, …) must
+            // read the current element, apply the operator at the element's
+            // static type, then store it back.  List elements are stored
+            // boxed and the element type is not threaded to codegen, so a
+            // correct unbox/rebox is not yet possible (arithmetic on a boxed
+            // element is itself a separate tracked gap).  Fail loudly at build
+            // time rather than silently discard the write — compound
+            // assignment is owned by #1481.
+            panic("Msil.Codegen: compound assignment to an indexed element " +
+                  "(a[i] op= v) is not yet supported on --target dotnet; tracked " +
+                  "in #1481 (compound assignment).  Rewrite as an explicit " +
+                  "read-modify-write (a[i] = a[i] op v) for now.")
+          }
+        }
+      }
     }
     case _ -> {
       lowerExprMsil(cctx, fctx, insns, value)

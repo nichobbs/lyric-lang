@@ -51,9 +51,9 @@ bar:
 2. **Several backend constructs silently miscompile (CRITICAL).** Not panics —
    *silent wrong code*: `?` propagation (`EPropagate`) is a no-op, `await`/`spawn`
    run synchronously and return the unwrapped/awaitable value, `async func`
-   returns a bare value instead of `Task[T]`, indexed assignment `a[i] = v` is
-   evaluated-then-discarded, `defer` runs its body inline immediately instead of
-   at scope exit, and `==` on records/distinct types is reference equality (the
+   returns a bare value instead of `Task[T]`, `defer` runs its body inline
+   immediately instead of at scope exit, and `==` on records/distinct types is
+   reference equality (the
    derived `equals` method is never dispatched). Each of these compiles without
    error and produces a wrong program — the failure mode the project standard
    most explicitly forbids.
@@ -85,7 +85,7 @@ bar:
 **Bottom line.** The pipeline is now the right shape and a large slice of the
 language works end-to-end on self-hosted .NET. But a non-trivial program can
 today (a) pass a non-gating type check, (b) hit a silent miscompile of `?`,
-`await`, `a[i]=`, `defer`, or `==`, or (c) drag two F# DLLs (one Reflection.Emit
+`await`, `defer`, or `==`, or (c) drag two F# DLLs (one Reflection.Emit
 laden) onto its runtime closure. None of those is acceptable at the project's
 production bar, and AOT is not yet wired.
 
@@ -145,7 +145,7 @@ supporting all language features."
 | C3 | `?` propagation (`EPropagate`) and `try?` (`ETry`) are no-ops — `x?` compiles as `x`, no unwrap, no early-return. | `codegen.l:1787-1793` | M |
 | C4 | `await`/`spawn` lower synchronously; `async func` returns a bare value, not `Task[T]`; no `IAsyncStateMachine`. Silent miscompile of every async program. | `codegen.l:1755-1758,1782-1784,983-999`; no state machine in `msil/*` | XL |
 | C5 | Async generators use eager collect-all into `List<object>`, not lazy `IEnumerable`/`IAsyncEnumerable`; return type forced to List; unbounded generators buffer forever. | `codegen.l:1760-1780,983` | XL |
-| C6 | Indexed assignment `a[i] = v` silently discarded (value evaluated then popped). | `codegen.l:2445-2449` | M |
+| C6 | **Fixed (#1530).** Indexed assignment `a[i] = v` previously silently discarded the store (value evaluated then popped); the `EIndex` assignment target now emits `List[object]::set_Item`. Compound indexed forms (`a[i] += v`) hard-fail with a clear build error pending element-type plumbing (#1481). | `codegen.l` `lowerAssignExprMsil` EIndex arm | Resolved |
 | C7 | `defer` runs its body inline immediately, not at scope exit (and not on early-return/exception). | `codegen.l:3817-3819` | L |
 | C8 | User-defined generic *types* are type-erased to one non-generic TypeDef with `object` fields; type-param field `T` resolves to a bogus `MClass("Pkg.T")`. No GenericParam rows; no per-type mono. | `codegen.l:4718-4791,1235,1268`; no GenericParam in `lowering.l` | L |
 | C9 | `@externTarget` whose signature mentions any class/object type emits a runtime-throw stub instead of a real call (forces the now-dead `dotnet-legacy`). | `codegen.l:4279-4290,4342-4359` | L |
@@ -259,8 +259,9 @@ rejecting valid programs.
 
 ### 5.2  Backend silent miscompiles (CRITICAL band)
 
-`?`, `await`, `spawn`, `a[i]=v`, `defer`, and `==` each compile cleanly and run
-wrong (C3–C7, H1). The root cause is that the bridge pipeline has **no
+`?`, `await`, `spawn`, `defer`, and `==` each compile cleanly and run
+wrong (C3–C5, C7, H1; indexed assignment `a[i]=v` (C6) is now fixed — #1530).
+The root cause is that the bridge pipeline has **no
 desugaring/lowering pass** for `?`, `await`/async, `defer`, or range iteration —
 those nodes arrive at codegen raw and are handled with placeholder
 pass-throughs. Per the project standard, the honest interim for anything not yet
@@ -318,12 +319,13 @@ should precede feature-completion work, because they stop *silent* wrongness.
 
 ### Band 2 — Backend correctness floor (CRITICAL)
 - Lower `?`/`try?` in the elaborator (where types are known) to match-unwrap +
-  early-return; implement `a[i]=v`, `defer`-at-scope-exit, range values +
+  early-return; implement `defer`-at-scope-exit, range values +
   range-for, capturing-closure display classes, `break`/`continue`-via-`leave`,
   real Float/Char/Long match-literal tests, compound-assignment operator
-  honoring, and the BCL stubs (Contains/Remove/RemoveAt). Where a correct
-  lowering is genuinely out of scope, replace the silent pass-through with a hard
-  diagnostic.
+  honoring, and the BCL stubs (Contains/Remove/RemoveAt). Indexed assignment
+  `a[i]=v` shipped in #1530 (compound `a[i] += v` tracked in #1481). Where a
+  correct lowering is genuinely out of scope, replace the silent pass-through
+  with a hard diagnostic.
 - Wire `==`/`GetHashCode` (and `Object.Equals` overrides) to the derived methods
   so structural equality and hashing actually work (H1).
 
