@@ -16694,3 +16694,61 @@ form whose overload has (correctly) been erased.
 - A self-test covering a `@cfg(feature = "dotnet")` /
   `@cfg(feature = "jvm")` overload pair with differing arities ships
   in `cfg_self_test.l` and passes via `SelfHostedCfgTests`.
+
+### D-progress-324 — self-hosted MSIL backend supports same-name function overloads (#1536)
+
+**Status:** Shipped.  The self-hosted MSIL backend now compiles and
+correctly dispatches same-name function overloads distinguished by arity
+(e.g. `Std.String.substring/2` vs `/3`).
+
+**Problem:**
+
+Two independent name-keyed collisions in the MSIL backend made any
+package declaring same-name overloads fail:
+
+1. **Token table (crash).**  `addPackageTokens` (`codegen.l`) registered
+   `funcTokens` / `funcRetTypes` under the bare FQN (`<pkg>.<name>`) with
+   an un-guarded `Map.add`.  The second overload's `add` threw
+   `ArgumentException: An item with the same key has already been added.
+   Key: Std.String.substring`, crashing the self-hosted stdlib bundle
+   build (`lyric build --manifest lyric-stdlib/lyric.toml`) and keeping
+   the F# `--internal-manifest-build` path load-bearing.
+2. **Signature blob (invalid IL).**  `lowerMFuncsToHostClass`
+   (`lowering.l`) interned each method's signature blob under a
+   name-only key (`"sfunc_<host>_<name>"`).  Because `internBlob` dedups
+   by key, the second overload silently inherited the first overload's
+   signature blob — emitting a MethodDef whose declared arity disagreed
+   with its call sites, producing `InvalidProgramException` at run time.
+   The same latent collision existed for record / union / interface
+   method signature keys (`meth_` / `basemeth_` / `ifmeth_`).
+
+**Fix:**
+
+- **`lyric-compiler/msil/codegen.l`** — key `funcTokens` / `funcRetTypes`
+  by an arity-qualified `<fqn>/<arity>` key (mirroring the type checker's
+  `name/arity` sig map from #1472), keeping the bare FQN as a
+  first-registered-wins alias for package resolution.  The call site in
+  `lowerBuiltinOrStaticCallMsil` narrows to the arity key matching the
+  call's argument count, falling back to the bare alias.
+- **`lyric-compiler/msil/lowering.l`** — arity-qualify the four method
+  signature-blob intern keys (`sfunc_` / `meth_` / `basemeth_` /
+  `ifmeth_`) so overloads no longer share a blob.
+
+**Scope note:** MSIL (`--target dotnet`) only, per epic #1470's
+JVM-deferred banner.
+
+**Acceptance criteria met:**
+
+- `addPackageTokens` no longer crashes on same-name overloads; the
+  stdlib bundle build now advances past the duplicate-key error to the
+  next, unrelated gap (`SFor` / range-for, tracked as #1478).
+- `shm_func_overload_by_arity` in `SelfHostedMsilBridgeTests` drives the
+  self-hosted bridge end-to-end: a package declaring `add/2` and `add/3`
+  compiles and prints `3` then `6` (correct per-arity dispatch).
+- Full `SelfHostedMsil bridge` suite: 34 passed, 0 failed; stage-1
+  self-build succeeds.
+
+**Follow-up:** the full stdlib self-build (and thus retiring the F#
+`--internal-manifest-build` path, Band 5 #1492/#1493) additionally
+requires `SFor`/range-for codegen (#1478) and any further gaps it
+surfaces.  This task removes the overload blocker only.

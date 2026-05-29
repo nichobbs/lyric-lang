@@ -209,6 +209,30 @@ func main(): Unit {
 """
             "3"
 
+        // #1536 — same-name function overloads distinguished by arity.
+        // Two regressions are pinned here: (1) `addPackageTokens` keyed the
+        // funcTokens/funcRetTypes maps by bare FQN, so the second overload's
+        // unguarded `.add` threw a duplicate-key error and crashed codegen;
+        // (2) `lowerMFuncsToHostClass` interned each method's signature blob
+        // under a name-only key, so the second overload silently inherited the
+        // first's signature (emitting a method whose arity disagreed with its
+        // call sites → invalid IL).  Both keys are now arity-qualified, so each
+        // overload gets its own token and signature, and the call site
+        // dispatches by argument count.
+        mkBridge "shm_func_overload_by_arity"
+            """package ShMOverload
+import Std.Core
+
+func add(a: in Int, b: in Int): Int { a + b }
+func add(a: in Int, b: in Int, c: in Int): Int { a + b + c }
+
+func main(): Unit {
+  println(toString(add(1, 2)))
+  println(toString(add(1, 2, 3)))
+}
+"""
+            "3\n6"
+
         // ── Band 1 (docs/41 §9) — middle-end gating ───────────────────────────
 
         // The mode checker now runs from the bridge.  An @axiom function with
