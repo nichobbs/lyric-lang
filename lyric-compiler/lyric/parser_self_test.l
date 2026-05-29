@@ -104,6 +104,49 @@ func testRecordDecl(): Unit {
   assertEqual(firstItemKindName(pr), "record", "record: kind is record")
 }
 
+// Returns the `isMutable` flag of the first field of the first record in the
+// parsed file, or panics if the shape is not a record-with-a-field.  Used by
+// the `var`-field regression tests below.
+func firstRecordFieldIsMutable(pr: in ParseResult): Bool {
+  if pr.file.items.count == 0 { panic("no items") }
+  match pr.file.items[0].kind {
+    case IRecord(decl) -> {
+      if decl.members.count == 0 { panic("record has no members") }
+      match decl.members[0] {
+        case RMField(f) -> f.isMutable
+        case _          -> panic("first member is not a field")
+      }
+    }
+    case _ -> panic("first item is not a record")
+  }
+}
+
+// Regression for #1473: `var`-prefixed mutable record fields (language
+// reference §3.4) must parse.  The self-hosted parser previously rejected
+// them with P0103/P0120/P0050 because `parseFieldDecl` did not consume the
+// `var` marker, which broke every `lyric test --manifest` build whose library
+// package declared a mutable record field (e.g. lyric-session).
+func testMutableRecordField(): Unit {
+  val pr = parse("package P\nrecord Counter {\n  var count: Int\n  step: Int\n}\n")
+  assertEqualInt(diagCount(pr), 0, "var-field: no diagnostics")
+  assertEqualInt(itemCount(pr), 1, "var-field: one item")
+  assertEqual(firstItemKindName(pr), "record", "var-field: kind is record")
+  assertTrue(firstRecordFieldIsMutable(pr), "var-field: first field is mutable")
+}
+
+func testImmutableRecordField(): Unit {
+  val pr = parse("package P\nrecord Point { x: Int; y: Int }\n")
+  assertEqualInt(diagCount(pr), 0, "plain-field: no diagnostics")
+  assertTrue(not firstRecordFieldIsMutable(pr), "plain-field: first field is immutable")
+}
+
+// `pub var` ordering: visibility precedes the `var` marker.
+func testPubMutableRecordField(): Unit {
+  val pr = parse("package P\nrecord Box {\n  pub var value: String\n}\n")
+  assertEqualInt(diagCount(pr), 0, "pub-var-field: no diagnostics")
+  assertTrue(firstRecordFieldIsMutable(pr), "pub-var-field: field is mutable")
+}
+
 func testUnionDecl(): Unit {
   val pr = parse("package P\nunion Color { case Red; case Green; case Blue }\n")
   assertEqualInt(diagCount(pr), 0, "union: no diagnostics")
@@ -570,6 +613,9 @@ func main(): Unit {
   testImport()
   testFuncDecl()
   testRecordDecl()
+  testMutableRecordField()
+  testImmutableRecordField()
+  testPubMutableRecordField()
   testUnionDecl()
   testDistinctTypeDecl()
   testTypeAliasDecl()

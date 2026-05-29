@@ -451,9 +451,12 @@ RecordMember =
       ( FieldDecl | InvariantClause ) ;
 
 FieldDecl =
-      IDENT ':' Type [ '=' Expr ] [ Annotation ] ;
-        (* default-value expression is permitted; an exposed record may
-           not have an InvariantClause — checked post-parse. *)
+      [ 'var' ] IDENT ':' Type [ '=' Expr ] [ Annotation ] ;
+        (* 'var' marks a mutable field (reference §3.4 "Mutable record
+           fields"); a field without it is immutable.  Visibility, when
+           present, precedes 'var' (see RecordMember).  A default-value
+           expression is permitted; an exposed record may not have an
+           InvariantClause — checked post-parse. *)
 
 
 (* ============================================================================

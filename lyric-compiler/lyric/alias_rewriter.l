@@ -653,6 +653,7 @@ func rewriteFieldDecl(aliases: in List[String], f: in FieldDecl): FieldDecl {
   FieldDecl(docComments = f.docComments,
             annotations = f.annotations,
             visibility  = f.visibility,
+            isMutable   = f.isMutable,
             name        = f.name,
             ty          = rewriteTypeExpr(aliases, f.ty),
             dflt        = d,

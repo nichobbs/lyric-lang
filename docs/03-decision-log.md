@@ -3818,6 +3818,47 @@ private `joinStrs` helper removed and all call sites updated to `Str.join`.
 
 ---
 
+## D-progress-262 — Self-hosted parser: `var` mutable record fields (#1473)
+
+The self-hosted parser rejected `var`-prefixed mutable record fields
+(language reference §3.4 "Mutable record fields") with `P0103` / `P0120`
+/ `P0050`: `parseFieldDecl` in `lyric-compiler/lyric/parser/parser_items.l`
+read the field name directly and choked on the `var` keyword.  This broke
+every `lyric test --manifest` build whose library package declared a mutable
+record field — the headline symptom was `error[P0103] 272:3: expected an
+identifier for field name` on all three `lyric-session` test files, which
+share `src/session.l`'s `record InProcessSessionStore { var sessions: … }`.
+The F# bootstrap parser already consumed `var` here (`Parser.fs`
+`parseRecordMembers`), so this was a self-hosted parity gap, not a spec
+question.
+
+**Fix.**
+- `FieldDecl` (`parser/parser_ast.l`) gains an `isMutable: Bool` field.
+- `parseFieldDecl` consumes an optional `var` marker after visibility and
+  records it, so `var x: T`, `pub var x: T`, and annotation/doc-prefixed
+  forms all parse.
+- `Lyric.Fmt` (`fmt/fmt_items.l` `fieldDeclStr`) renders the `var ` prefix
+  so the marker survives a format round-trip instead of being silently
+  dropped (the previous AST carried no mutability, so `lyric fmt` would have
+  rewritten a mutable field to immutable).
+- `Lyric.AliasRewriter` (`alias_rewriter.l`) threads `isMutable` through.
+- `docs/grammar.ebnf` `FieldDecl` updated to `[ 'var' ] IDENT ':' Type …`,
+  reconciling the grammar with the language reference per CLAUDE.md.
+
+Mutability *enforcement* (e.g. rejecting reassignment of a non-`var` field)
+is a separate concern handled by the mode checker and is unchanged here; the
+emitter continues to treat all record fields uniformly.
+
+**Tests.** `parser_self_test.l` gains `testMutableRecordField`,
+`testImmutableRecordField`, and `testPubMutableRecordField`;
+`fmt_self_test.l` gains `testFormatMutableRecordField` (round-trip).  With
+the fix, the `lyric-session` test files parse and build; the remaining
+runtime failures (missing `Lyric.Stdlib.Testing` probe, "invalid program"
+from cross-package generic widening) are tracked separately in #1509 and
+#1471.
+
+---
+
 ## D070 — Gap-4a: async generators with internal `await`
 
 **Status:** ACCEPTED — shipped (D-progress-261).  **Date:** 2026-05-16 (deferred); 2026-05-17 (resolved).

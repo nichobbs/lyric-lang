@@ -352,6 +352,9 @@ pub record FieldDecl {
   docComments: List[DocComment]
   annotations: List[Annotation]
   visibility:  Option[Visibility]
+  // `true` when the field was declared `var` (a mutable record/opaque field,
+  // language reference §3.4).  Plain fields are immutable.
+  isMutable:   Bool
   name:        String
   ty:          TypeExpr
   dflt:        Option[Expr]
