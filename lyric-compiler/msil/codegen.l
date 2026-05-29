@@ -1871,6 +1871,10 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
         case _ -> {
           // List<object>.get_Item(int32): object — castclass the receiver
           // BEFORE pushing the index so the IL stack is [List<object>, int32].
+          // A receiver typed as `object` on the stack (e.g. an `in` parameter)
+          // would otherwise fail JIT verification on get_Item; this mirrors the
+          // get_Count / set_Item paths, keeping read and write receiver
+          // handling symmetric (#1531).
           insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
           if indices.count > 0 {
             lowerExprMsil(cctx, fctx, insns, indices[0])

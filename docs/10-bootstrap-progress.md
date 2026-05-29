@@ -16735,16 +16735,26 @@ element unchanged.
 JVM-deferred banner.  The self-hosted JVM backend
 (`lyric-compiler/jvm/codegen.l`) is tracked separately under that epic.
 
+**Receiver-handling symmetry (#1531):** the `EIndex` *read* arm in
+`lowerExprMsil` previously emitted `callvirt get_Item` without first
+narrowing the receiver, unlike the `get_Count` / `set_Item` paths.  A
+receiver typed as `object` on the stack (e.g. an `in` parameter) would
+fail JIT verification on `List<object>::get_Item`.  The read arm now
+`castclass`-es to `List<object>` before the call, matching the write
+path and keeping read/write receiver handling symmetric.
+
 **Acceptance criteria met:**
 
-- Parity program mutating a `List` element by index and reading it back
-  succeeds (`shm_indexed_assign` in `SelfHostedMsilBridgeTests`, driving
-  the self-hosted bridge end-to-end): `xs[1] = 99` reads back `99`.
-- No silent discard: the write now takes effect (verified for `Int` and
-  `String` element lists); compound indexed assignment fails loudly at
-  build time instead of dropping the store.
-- Full `SelfHostedMsil bridge` suite: 34 passed, 0 failed (no
-  regressions from the new `set_Item` token).
+- Parity programs mutating a `List` element by index and reading it back
+  succeed in `SelfHostedMsilBridgeTests` (driving the self-hosted bridge
+  end-to-end): `shm_indexed_assign` (`Int` elements, `xs[1] = 99` reads
+  back `99`) and `shm_indexed_assign_string` (`String` elements,
+  `xs[0] = "X"`) — the latter covers the reference-element boxing path
+  (#1532).
+- No silent discard: the write now takes effect; compound indexed
+  assignment fails loudly at build time instead of dropping the store.
+- Full `SelfHostedMsil bridge` suite: 35 passed, 0 failed (no
+  regressions from the new `set_Item` token or the read-path cast).
 
 ### D-progress-324 — self-hosted MSIL backend supports same-name function overloads (#1536)
 

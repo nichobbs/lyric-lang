@@ -256,6 +256,25 @@ func main(): Unit {
 """
             "10\n99\n30"
 
+        // #1476 / #1532 — indexed assignment over a reference-element list,
+        // exercising the boxing path for a String value (distinct from the Int
+        // value path above).
+        mkBridge "shm_indexed_assign_string"
+            """package ShMIdxAssignStr
+import Std.Core
+import Std.Collections
+
+func main(): Unit {
+  val xs: List[String] = newList()
+  xs.add("a")
+  xs.add("b")
+  xs[0] = "X"
+  println(xs[0])
+  println(xs[1])
+}
+"""
+            "X\nb"
+
         // ── Band 1 (docs/41 §9) — middle-end gating ───────────────────────────
 
         // The mode checker now runs from the bridge.  An @axiom function with
