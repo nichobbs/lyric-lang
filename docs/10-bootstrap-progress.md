@@ -16862,3 +16862,12 @@ JVM-deferred banner.
 - The stdlib self-build now advances past the `SFor` panic to the next
   distinct gap (`EResult outside contract context` — contract-elaboration
   completeness, tracked separately).
+
+**Known limitation (collection `for`):** the loop variable of a collection
+`for` is bound as `object` (boxed), mirroring how `EIndex` reads model a
+`List` element.  Object-safe uses (`println(x)`, `toString(x)`, method
+calls) are correct, but *arithmetic* on a numeric element
+(`for x in nums { sum = sum + x }`) is subject to the boxed-element
+type-erasure gap (#1496) — the same limitation `nums[i] + n` has today —
+and yields a wrong value until generic element types are reified.  Range
+`for` is unaffected (the index binds as a real `Int`/`Long`).
