@@ -125,15 +125,15 @@ async func contentReadAsBytesCancel(c: in HttpContent, token: in CancellationTok
 // Creating a new HttpClient per call is the canonical .NET anti-pattern:
 // under load the per-call clients exhaust the TCP socket pool because
 // sockets stay in TIME_WAIT for two MSL after the client is GC'd.  The
-// real fix would be a Lyric `pub val` at module scope, but the bootstrap
-// emitter doesn't yet support non-constant package-level vals (only
-// integer constants and @asyncLocal vals).  Until that support lands
-// (M5.2 stage 3+), the singleton lives in a tiny F# helper exposed via
-// `Lyric.Emitter.HttpClientHost.defaultClient`, which holds a
-// thread-safe `Lazy<HttpClient>` and returns the same instance on every
-// call.  Callers that need a custom client (e.g. disabled redirects)
-// should still construct their own via `hostClientWithRedirects` /
-// `hostClientNoRedirects` and retain it.
+// natural fix is a package-level `val` initialised once in the host type's
+// `.cctor`, but the self-hosted emitter does not yet run the `.cctor` for a
+// class-typed package-level `val` — the static field stays null and the
+// first access NREs (verified via a StringBuilder-singleton repro; tracked
+// for #1493 follow-up).  Until that codegen gap is fixed, the singleton
+// stays in the F# helper `Lyric.Emitter.HttpClientHost.defaultClient`, which
+// holds a thread-safe `Lazy<HttpClient>`.  Callers that need a custom client
+// (e.g. disabled redirects) should still construct their own via
+// `hostClientWithRedirects` / `hostClientNoRedirects` and retain it.
 @externTarget("Lyric.Emitter.HttpClientHost.defaultClient")
 pub func hostDefaultClient(): HttpClient = ()
 
