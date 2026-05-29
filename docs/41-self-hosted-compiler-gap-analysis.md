@@ -71,8 +71,9 @@ bar:
    types emit **zero locking**; `@projectable` opaque twins are never generated;
    range-subtype bounds are dropped (no validation); wire blocks drop
    `bind`/`scoped`/`provided`; default/named/`out`/`inout` arguments are
-   mis-handled; and any `@externTarget` whose signature touches a class/object
-   type emits a runtime-throw stub instead of a real call.
+   mis-handled. _(An `@externTarget` whose signature touches a class/object
+   type used to emit a runtime-throw stub; that is now resolved — #1504
+   part 1 — encoding real `TypeRef`-backed MemberRefs.)_
 
 5. **Two F# DLLs are still load-bearing at runtime and AOT is unconfigured
    (HIGH).** Every emitted byte flows through `Lyric.Jvm.Hosts.dll`
@@ -148,7 +149,7 @@ supporting all language features."
 | C6 | **Fixed (#1530).** Indexed assignment `a[i] = v` previously silently discarded the store (value evaluated then popped); the `EIndex` assignment target now emits `List[object]::set_Item`. Compound indexed forms (`a[i] += v`) hard-fail with a clear build error pending element-type plumbing (#1481). | `codegen.l` `lowerAssignExprMsil` EIndex arm | Resolved |
 | C7 | `defer` runs its body inline immediately, not at scope exit (and not on early-return/exception). | `codegen.l:3817-3819` | L |
 | C8 | User-defined generic *types* are type-erased to one non-generic TypeDef with `object` fields; type-param field `T` resolves to a bogus `MClass("Pkg.T")`. No GenericParam rows; no per-type mono. | `codegen.l:4718-4791,1235,1268`; no GenericParam in `lowering.l` | L |
-| C9 | `@externTarget` whose signature mentions any class/object type emits a runtime-throw stub instead of a real call (forces the now-dead `dotnet-legacy`). | `codegen.l:4279-4290,4342-4359` | L |
+| C9 | ~~`@externTarget` whose signature mentions any class/object type emits a runtime-throw stub instead of a real call.~~ **Resolved (#1504 part 1):** class-typed params/return now encode as real `ELEMENT_TYPE_CLASS + TypeDefOrRef` MemberRefs (`buildFfiMethodSigCtx`/`resolveFfiClassTypeRef`), resolving extern types via `externTypeNames` → CLR TypeRef. Verified end-to-end (`StringBuilder` ctor + instance calls). Remaining #1504 parts: unresolved-type diagnostic (H8), instance/non-void auto-FFI (H9), generic externs (blocked on #1497). | `codegen.l` `buildFfiMethodSigCtx` | ✅ |
 | C10 | Opaque representation-hiding not enforced: fields readable and types constructable from outside the declaring package. | `typechecker_exprs.l:479-487`, `typechecker_checker.l:152-155` | M |
 | C11 | `impl`/interface conformance never checked (`IImpl(_) -> {}` no-op); missing/mismatched methods not reported; default-interface-method bodies discarded (emitted abstract). | `typechecker_checker.l:211`; `codegen.l:6275-6291` | M |
 | C12 | Protected types emit a plain record with **no lock field and no Enter/Exit** — zero mutual exclusion despite the doc-comment promising Monitor locking. | `codegen.l:5373-5482` | L |
@@ -230,9 +231,11 @@ supporting all language features."
   `GetHashCode` — H1).
 - **Contract metadata:** both reading and writing/embedding the `Lyric.Contract`
   resource are self-hosted (`bridge.l:986-1033`, `contract_meta.l`).
-- **FFI:** `@externTarget` for primitive/String static/instance/ctor calls;
-  `@externStatic`/`@externInstance` dispatch with conflict guard; unresolved
-  externs emit an actionable runtime-throw stub rather than invalid IL.
+- **FFI:** `@externTarget` for primitive/String **and class/object** (#1504
+  part 1) static/instance/ctor calls — class-typed params/return encode as real
+  `TypeRef`-backed MemberRefs; `@externStatic`/`@externInstance` dispatch with
+  conflict guard; unresolved externs emit an actionable runtime-throw stub
+  rather than invalid IL.
 - **Mode checker:** V0001–V0006, V0009–V0011 well-enforced for proof-required code
   (the strongest part of the front end).
 - **Front-end enforcement that does work:** operator typing (T0030–T0037),

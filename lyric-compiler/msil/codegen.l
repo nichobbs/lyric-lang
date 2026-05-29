@@ -37,6 +37,7 @@ import Lyric.RestoredPackages
 import Lyric.Weaver as Weaver
 import Msil.Lowering
 import Msil.Ffi
+import Msil.Kernel
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. CodegenCtx — package-level context with pre-registered external tokens.
@@ -4502,6 +4503,72 @@ func buildFuncNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
 // generic types, with-defaults trailing arguments, property getters,
 // static field reads.  Programs depending on those forms still need
 // `--target dotnet-legacy` (F# bootstrap emitter).
+// Resolve an `MClass` FQN to a TypeRef row for use in an FFI method
+// signature blob (#1504 part 1).  `className` is the FQN produced by
+// `resolveTypeFqn` — either a declared Lyric extern type (mapped to its CLR
+// FQN via `cctx.externTypeNames`) or, when it is itself a `System.*` type, a
+// direct BCL reference.  Returns -1 for any class that is NOT an
+// FFI-resolvable cross-assembly type (in-bundle user records/unions, nested
+// `Outer+Inner` types) so the caller falls back to `ELEMENT_TYPE_OBJECT` and
+// preserves the prior behaviour rather than emitting a malformed TypeRef.
+func resolveFfiClassTypeRef(cctx: in CodegenCtx, className: in String): Int {
+  val simple = splitTypeFqn(className).name
+  val clrFqn =
+    match mapGet(cctx.externTypeNames, simple) {
+      case Some(fqn) -> fqn
+      case None      -> if startsWith(className, "System.") { className } else { "" }
+    }
+  if clrFqn == "" { return 0 - 1 }
+  // Nested types (ResolutionScope = enclosing TypeRef, not AssemblyRef) need
+  // a different encoding than `internFfiTypeRef` provides; skip them safely.
+  if contains(clrFqn, "+") { return 0 - 1 }
+  val sp  = splitTypeFqn(clrFqn)
+  val asm = clrAssemblyForType(clrFqn)
+  internFfiTypeRef(cctx, asm, sp.ns, sp.name)
+}
+
+// Encode one type into an FFI method-signature blob.  `MClass` resolves to
+// `ELEMENT_TYPE_CLASS (0x12) + compressed TypeDefOrRef` when the class is an
+// FFI-resolvable cross-assembly type; otherwise it degrades to
+// `ELEMENT_TYPE_OBJECT` (the pre-#1504 behaviour).  All other types reuse the
+// shared `bufMsilType` encoder.
+func bufFfiType(cctx: in CodegenCtx, w: in ByteWriter, t: in MsilType): Unit {
+  match t {
+    case MClass(className) -> {
+      val row = resolveFfiClassTypeRef(cctx, className)
+      if row >= 0 {
+        bufU1(w, 0x12)                          // ELEMENT_TYPE_CLASS
+        writeCompressedInt(w, (row * 4) + 1)    // TypeDefOrRef coded index (TypeRef tag = 1)
+      } else {
+        bufU1(w, 0x1C)                          // ELEMENT_TYPE_OBJECT fallback
+      }
+    }
+    case _ -> bufMsilType(w, t)
+  }
+}
+
+// Build a MethodSig blob for an FFI MemberRef, encoding class-typed params /
+// return as real TypeRef-backed CLASS entries (#1504 part 1).  `hasThis`
+// selects the HASTHIS calling convention (instance methods + ctors); the
+// receiver is excluded from `params` by the caller.
+func buildFfiMethodSigCtx(
+  cctx:    in CodegenCtx,
+  params:  in List[MsilType],
+  ret:     in MsilType,
+  hasThis: in Bool
+): List[Byte] {
+  val w = bufNew()
+  bufU1(w, if hasThis { 0x20 } else { 0x00 })
+  bufU1(w, params.count)
+  bufFfiType(cctx, w, ret)
+  var i = 0
+  while i < params.count {
+    bufFfiType(cctx, w, params[i])
+    i = i + 1
+  }
+  bufToList(w)
+}
+
 func emitExternTargetBody(
   cctx:    in CodegenCtx,
   fctx:    in FuncCtx,
@@ -4568,31 +4635,22 @@ func emitExternTargetBody(
       // diagnostic message.  The build succeeds (so examples that
       // declare these externs but never call them at runtime — the
       // smoke-test case — still build cleanly), and any call site
-      // gets a clear runtime error directing the user to
-      // `--target dotnet-legacy`.
-      if mentionsMClass(paramTypes) or mentionsMClassRet(retTy) {
-        val msg = "FFI '" + target + "' on '" + decl.name
-          + "' uses class-typed params or return that the self-hosted "
-          + "MSIL emitter does not yet support; rebuild with "
-          + "--target dotnet-legacy or wrap the call in a primitive-"
-          + "typed shim."
-        val msgTok = ctxInternUs(cctx.lctx, msg)
-        insns.add(MLdStr(token = msgTok))
-        insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
-        insns.add(MThrow)
-        return true
-      }
+      // Class-typed params / return are now encoded as real TypeRef-backed
+      // CLASS entries in the signature blob (#1504 part 1) via
+      // `buildFfiMethodSigCtx`, so the runtime-throw bail that previously
+      // fired for class-typed FFI signatures is gone.
 
       val tRefRow = internFfiTypeRef(
         cctx, r.assemblyName, r.namespaceStr, r.typeName)
 
-      // Build the method signature blob.
+      // Build the method signature blob, encoding class-typed params/return
+      // against their resolved TypeRefs.
       val sig =
         if r.isStatic and not r.isCtor {
-          buildStaticMethodSig(paramTypes, retTy)
+          buildFfiMethodSigCtx(cctx, paramTypes, retTy, false)
         } else if r.isCtor {
           // .ctor: HASTHIS, void return, all params explicit.
-          buildInstanceMethodSig(paramTypes, MVoid)
+          buildFfiMethodSigCtx(cctx, paramTypes, MVoid, true)
         } else {
           // Instance method: skip the first Lyric param (it's the
           // receiver — already on the stack as `this`).
@@ -4602,7 +4660,7 @@ func emitExternTargetBody(
             instArgs.add(paramTypes[ii])
             ii = ii + 1
           }
-          buildInstanceMethodSig(instArgs, retTy)
+          buildFfiMethodSigCtx(cctx, instArgs, retTy, true)
         }
       val mrRow = ctxAddMemberRef(
         cctx.lctx, tRefRow, r.memberName,
@@ -4627,30 +4685,6 @@ func emitExternTargetBody(
       insns.add(MRet)
       true
     }
-  }
-}
-
-// Return true if the list contains an MClass — those need TypeRef-
-// encoded class tokens in the signature blob, which the bootstrap-
-// grade FFI cascade does not yet synthesise.
-func mentionsMClass(types: in List[MsilType]): Bool {
-  var i = 0
-  while i < types.count {
-    match types[i] {
-      case MClass(_) -> { return true }
-      case MObject   -> { return true }
-      case _         -> ()
-    }
-    i = i + 1
-  }
-  false
-}
-
-func mentionsMClassRet(ty: in MsilType): Bool {
-  match ty {
-    case MClass(_) -> true
-    case MObject   -> true
-    case _         -> false
   }
 }
 

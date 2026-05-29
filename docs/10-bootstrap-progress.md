@@ -16871,3 +16871,48 @@ calls) are correct, but *arithmetic* on a numeric element
 type-erasure gap (#1496) — the same limitation `nums[i] + n` has today —
 and yields a wrong value until generic element types are reified.  Range
 `for` is unaffected (the index binds as a real `Int`/`Long`).
+### D-progress-326 — FFI class/object signatures: real TypeRef MemberRefs (#1504 part 1)
+
+**Status:** Shipped.  An `@externTarget` whose signature mentions a
+class/object type now emits a real `TypeRef`-backed MemberRef and a
+working call, instead of the runtime-throw stub that previously forced
+the (now-removed) `--target dotnet-legacy`.
+
+**Problem:** the method-signature blob encoder (`lowering.l` `bufMsilType`)
+degraded every `MClass` to `ELEMENT_TYPE_OBJECT`, so `emitExternTargetBody`
+(`codegen.l`) bailed any class-typed extern to a stub that throws at call
+time.  Programs using BCL class externs (`StringBuilder`, `MemoryStream`,
+`Console`/`Process`/`HttpClient` instance methods, …) could not run on
+`--target dotnet` — the gap keeping Band 5's kernel-extern migration
+(#1492/#1493) blocked.
+
+**Fix (`lyric-compiler/msil/codegen.l`):**
+
+- `resolveFfiClassTypeRef(cctx, className)` maps an `MClass` FQN to a CLR
+  `TypeRef` row: declared extern types resolve via `cctx.externTypeNames`
+  (Lyric name → CLR FQN), direct `System.*` references resolve as-is;
+  assembly via `clrAssemblyForType`, namespace/name via `splitTypeFqn`,
+  interned through `internFfiTypeRef`.  Returns -1 for non-FFI-resolvable
+  classes (in-bundle user records/unions, nested `Outer+Inner` types) so
+  the caller falls back to `ELEMENT_TYPE_OBJECT` with no regression.
+- `bufFfiType` / `buildFfiMethodSigCtx` are context-aware sig encoders that
+  emit `ELEMENT_TYPE_CLASS (0x12) + compressed TypeDefOrRef` for resolved
+  class types and reuse the shared `bufMsilType` for everything else.
+- `emitExternTargetBody` drops the `mentionsMClass → throw` bail and builds
+  its MemberRef sig through `buildFfiMethodSigCtx` for static, ctor, and
+  instance shapes.  `bufMsilType` / `writeCompressedInt` are now `pub` in
+  `lowering.l` for reuse.
+
+**Scope note:** MSIL (`--target dotnet`) only, per epic #1470's JVM-deferred
+banner.  This is #1504 **part 1**; remaining #1504 parts — unresolved-type
+hard diagnostic (H8), instance/non-void auto-FFI (H9), and generic externs
+(blocked on the MethodSpec table #1497) — stay open.
+
+**Acceptance criteria met (part 1):**
+
+- A parity program declaring `extern type SB = "System.Text.StringBuilder"`
+  with a ctor returning the class and instance methods taking + returning
+  the class compiles **and runs** (`shm_ffi_class_extern` in
+  `SelfHostedMsilBridgeTests`): prints `hello world`.
+- Full `SelfHostedMsil bridge` suite: 41 passed, 0 failed; stage-1
+  self-build succeeds.
