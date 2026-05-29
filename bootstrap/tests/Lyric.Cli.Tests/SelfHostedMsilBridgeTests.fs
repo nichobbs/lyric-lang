@@ -233,6 +233,29 @@ func main(): Unit {
 """
             "3\n6"
 
+        // #1476 — indexed assignment a[i] = v.  Previously the assignment
+        // target match had no EIndex arm, so `xs[1] = 99` fell through to the
+        // wildcard arm that evaluated-then-popped the value: the write was
+        // silently discarded.  The EIndex arm now emits List<object>::set_Item,
+        // so the mutated element reads back its new value.
+        mkBridge "shm_indexed_assign"
+            """package ShMIdxAssign
+import Std.Core
+import Std.Collections
+
+func main(): Unit {
+  val xs: List[Int] = newList()
+  xs.add(10)
+  xs.add(20)
+  xs.add(30)
+  xs[1] = 99
+  println(toString(xs[0]))
+  println(toString(xs[1]))
+  println(toString(xs[2]))
+}
+"""
+            "10\n99\n30"
+
         // ── Band 1 (docs/41 §9) — middle-end gating ───────────────────────────
 
         // The mode checker now runs from the bridge.  An @axiom function with
