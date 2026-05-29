@@ -203,7 +203,8 @@ func inferBinop(
         diag.add(errorDiagnostic("T0030",
           "left operand of arithmetic operator is not numeric (got " + renderType(lhs) + ")", span))
       }
-      if not typeEquiv(lhs, rhs) {
+      val addEquiv = typeEquiv(lhs, rhs)
+      if not addEquiv {
         diag.add(errorDiagnostic("T0031",
           "arithmetic operands must have the same type (got " + renderType(lhs) + " and " + renderType(rhs) + ")", span))
       }
@@ -511,7 +512,7 @@ func resolveExprPath(
   }
   val name = path.segments[0]
   match scopeTryFind(sc, name) {
-    case Some(b) -> return b.ty
+    case Some(b) -> { return b.ty }
     case None    -> {}
   }
   match mapGet(sigs, name) {
