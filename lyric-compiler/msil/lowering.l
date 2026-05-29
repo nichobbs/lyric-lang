@@ -109,7 +109,7 @@ pub func elementTypeByte(t: in MsilType): Int {
 // encoding requires the LoweringCtx so the writer can look up the TypeDef
 // row by class name; that refactor is tracked alongside #1183 Phase 2/3.
 // All other types emit a single element-type byte.
-func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
+pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
   match t {
     case MTypeVar(idx) -> {
       bufU1(w, 0x13)
@@ -232,7 +232,7 @@ pub func buildInstanceMethodSig(params: in List[MsilType], ret: in MsilType): Li
 
 // Write a compressed unsigned integer (ECMA-335 §II.23.2) into a ByteWriter.
 // Used in blob payloads for TypeDefOrRef tokens.
-func writeCompressedInt(w: in ByteWriter, v: in Int): Unit {
+pub func writeCompressedInt(w: in ByteWriter, v: in Int): Unit {
   if v <= 0x7F {
     bufU1(w, v)
   } else if v <= 0x3FFF {

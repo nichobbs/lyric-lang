@@ -209,6 +209,36 @@ func main(): Unit {
 """
             "3"
 
+        // #1504 part 1 — an @externTarget whose signature mentions a BCL
+        // class type (here System.Text.StringBuilder) now emits a real
+        // TypeRef-backed MemberRef instead of a runtime-throw stub.  Exercises
+        // a ctor returning the class, an instance method taking + returning the
+        // class, and an instance method returning String.
+        mkBridge "shm_ffi_class_extern"
+            """package ShMFfiClass
+import Std.Core
+
+extern type SB = "System.Text.StringBuilder"
+
+@externTarget("System.Text.StringBuilder..ctor")
+func newSb(): SB = ()
+
+@externTarget("System.Text.StringBuilder.Append")
+@externInstance
+func sbAppend(sb: in SB, s: in String): SB = ()
+
+@externTarget("System.Text.StringBuilder.ToString")
+@externInstance
+func sbStr(sb: in SB): String = ()
+
+func main(): Unit {
+  val sb  = newSb()
+  val sb2 = sbAppend(sb, "hello ")
+  println(sbStr(sbAppend(sb2, "world")))
+}
+"""
+            "hello world"
+
         // #1536 — same-name function overloads distinguished by arity.
         // Two regressions are pinned here: (1) `addPackageTokens` keyed the
         // funcTokens/funcRetTypes maps by bare FQN, so the second overload's
