@@ -805,8 +805,23 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
         // before lookup (see `lowerBuiltinOrStaticCallMsil`); lambdas use
         // `fctx.pkgName + ".__lambda_<idx>"` for the same reason.
         val fqn = pkgName + "." + decl.name
+        // Arity-qualified key (#1536): same-name overloads (e.g.
+        // `Std.String.substring/2` vs `/3`) collide on the bare FQN, which
+        // made the unguarded `funcTokens.add(fqn, …)` below throw a
+        // duplicate-key error and crash the self-hosted stdlib bundle build.
+        // Each overload now registers under a unique `<fqn>/<arity>` key
+        // (mirroring the type checker's `name/arity` sig map); the bare FQN is
+        // kept as a first-registered-wins alias so package resolution and
+        // existing bare-FQN lookups keep working.  Call sites narrow to the
+        // arity key (see `lowerBuiltinOrStaticCallMsil`).
+        val arityKey = fqn + "/" + toString(decl.params.count)
         val funcTok = 0x06000000 + methodDefRow
-        cctx.funcTokens.add(fqn, funcTok)
+        if not cctx.funcTokens.containsKey(arityKey) {
+          cctx.funcTokens.add(arityKey, funcTok)
+        }
+        if not cctx.funcTokens.containsKey(fqn) {
+          cctx.funcTokens.add(fqn, funcTok)
+        }
         // Record the first `main()` we see as the bundle entry point.  Later
         // packages' `main()` (if any) are recorded as regular functions but
         // do not displace the entry token; the F# emitter's host-main wiring
@@ -835,7 +850,15 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
             case None     -> MVoid
           }
         }
-        cctx.funcRetTypes.add(fqn, retTy)
+        // Mirror the funcTokens keying: arity-qualified key + bare alias so
+        // the call site's return-type lookup (which uses the same key it
+        // resolved the token with) agrees per overload (#1536).
+        if not cctx.funcRetTypes.containsKey(arityKey) {
+          cctx.funcRetTypes.add(arityKey, retTy)
+        }
+        if not cctx.funcRetTypes.containsKey(fqn) {
+          cctx.funcRetTypes.add(fqn, retTy)
+        }
         methodDefRow = methodDefRow + 1
       }
       case _ -> {}
@@ -2582,7 +2605,17 @@ func lowerBuiltinOrStaticCallMsil(
                 ""
               }
             if resolvedFqn.length > 0 {
-              match mapGet(cctx.funcTokens, resolvedFqn) {
+              // Narrow to the arity-qualified token (#1536): a package may
+              // declare overloads sharing `resolvedFqn` but registered under
+              // distinct `<fqn>/<arity>` keys.  Prefer the key matching this
+              // call's argument count; fall back to the bare FQN alias when no
+              // arity-specific entry exists (non-overloaded funcs, or arities
+              // that don't line up — e.g. default/named args, handled later).
+              val callArityKey = resolvedFqn + "/" + toString(args.count)
+              val tokKey =
+                if cctx.funcTokens.containsKey(callArityKey) { callArityKey }
+                else                                          { resolvedFqn }
+              match mapGet(cctx.funcTokens, tokKey) {
                 case Some(tok) -> {
                   var i = 0
                   while i < args.count {
@@ -2590,7 +2623,7 @@ func lowerBuiltinOrStaticCallMsil(
                     i = i + 1
                   }
                   insns.add(MCall(methodToken = tok))
-                  match mapGet(cctx.funcRetTypes, resolvedFqn) {
+                  match mapGet(cctx.funcRetTypes, tokKey) {
                     case Some(rt) -> rt
                     case None     -> MObject
                   }

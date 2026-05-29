@@ -274,6 +274,17 @@ written by hand do get lowered (`:1783-1827`).
   Two-phase stdlib registration (types first, then functions) is the
   planned fix; tracked in #1357.
 
+- **Function overloads (arity).**  Same-name overloads distinguished by
+  arity (`substring/2` vs `/3`) now compile and dispatch correctly on
+  `--target dotnet` (#1536).  `addPackageTokens` keys `funcTokens` /
+  `funcRetTypes` by `<fqn>/<arity>` (with a bare-FQN alias) and
+  `lowerMFuncsToHostClass` arity-qualifies its signature-blob intern keys,
+  so overloads no longer collide on the token table (was a duplicate-key
+  crash) or share a signature blob (was invalid IL).  Overloading by
+  parameter *type* at the same arity is not modelled — codegen
+  distinguishes overloads by arity only, matching the type checker's
+  arity-keyed sig map.
+
 ### 3.6  Test coverage shape
 
 `ls lyric-compiler/msil/msil_self_test_m*.l | wc -l` reports 84 self-test
