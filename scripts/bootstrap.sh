@@ -75,10 +75,23 @@ stage0() {
   # before symlinking into it.
   mkdir -p "$(dirname "$STAGE0_BIN")"
 
-  dotnet publish "$COMPILER_DIR/src/Lyric.Cli/Lyric.Cli.fsproj" \
-    --configuration Release \
-    --output "$BUILD_DIR/stage0-publish" \
-    --nologo -v q
+  # Optional cache reuse (CI): when STAGE0_REUSE_PUBLISHED=1 and a published
+  # binary is already present (restored from an actions/cache keyed on the
+  # exact hash of every F# source), skip the Release publish.  The cache key
+  # is content-addressed with NO prefix fallback, so a restored output is
+  # guaranteed to correspond to the current F# sources; a miss restores
+  # nothing and we rebuild below.  Local dev never sets the flag, so it always
+  # rebuilds and can't be fooled by a stale `.bootstrap/`.
+  if [[ "${STAGE0_REUSE_PUBLISHED:-0}" == "1" \
+        && ( -f "$BUILD_DIR/stage0-publish/lyric" \
+             || -f "$BUILD_DIR/stage0-publish/lyric.dll" ) ]]; then
+    info "  reusing cached stage-0 publish (STAGE0_REUSE_PUBLISHED=1)"
+  else
+    dotnet publish "$COMPILER_DIR/src/Lyric.Cli/Lyric.Cli.fsproj" \
+      --configuration Release \
+      --output "$BUILD_DIR/stage0-publish" \
+      --nologo -v q
+  fi
 
   # On Linux the published output is a DLL + wrapper script; wire up a
   # convenience symlink so subsequent stages can call `$STAGE0_BIN`.
