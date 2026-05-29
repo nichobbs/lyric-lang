@@ -89,6 +89,13 @@ pub record CodegenCtx {
   tokStringReplace:     Int   // String.Replace(string,string): string
   tokStringIsNormalized: Int  // String.IsNormalized(): bool
   tokStringNormalize:   Int   // String.Normalize(): string
+  tokStringTrim:        Int   // String.Trim(): string
+  tokStringIndexOf:     Int   // String.IndexOf(string): int32  (-1 if absent)
+  tokStringLastIndexOf: Int   // String.LastIndexOf(string): int32  (-1 if absent)
+  tokStringStartsWith:  Int   // String.StartsWith(string): bool
+  tokStringEndsWith:    Int   // String.EndsWith(string): bool
+  tokStringToLower:     Int   // String.ToLower(): string
+  tokStringToUpper:     Int   // String.ToUpper(): string
   // Object.Equals(object,object): bool  static (for value-equal string comparisons)
   tokObjectStaticEquals: Int
   // Reverse lookup: simple field name → FieldDef token.  Populated by
@@ -517,6 +524,46 @@ pub func newCodegenCtx(packageName: in String,
     lctx, trString, "Normalize",
     "str_normalize", buildInstanceMethodSig(strNormPs, MString))
 
+  // 29e. Remaining String instance methods used via method syntax.
+  val strTrimPs: List[MsilType] = newList()
+  val tokStringTrim = 0x0A000000 + ctxAddMemberRef(
+    lctx, trString, "Trim",
+    "str_trim", buildInstanceMethodSig(strTrimPs, MString))
+
+  val strIndexOfPs: List[MsilType] = newList()
+  strIndexOfPs.add(MString)
+  val tokStringIndexOf = 0x0A000000 + ctxAddMemberRef(
+    lctx, trString, "IndexOf",
+    "str_indexof", buildInstanceMethodSig(strIndexOfPs, MInt))
+
+  val strLastIndexOfPs: List[MsilType] = newList()
+  strLastIndexOfPs.add(MString)
+  val tokStringLastIndexOf = 0x0A000000 + ctxAddMemberRef(
+    lctx, trString, "LastIndexOf",
+    "str_lastindexof", buildInstanceMethodSig(strLastIndexOfPs, MInt))
+
+  val strStartsWithPs: List[MsilType] = newList()
+  strStartsWithPs.add(MString)
+  val tokStringStartsWith = 0x0A000000 + ctxAddMemberRef(
+    lctx, trString, "StartsWith",
+    "str_startswith", buildInstanceMethodSig(strStartsWithPs, MBool))
+
+  val strEndsWithPs: List[MsilType] = newList()
+  strEndsWithPs.add(MString)
+  val tokStringEndsWith = 0x0A000000 + ctxAddMemberRef(
+    lctx, trString, "EndsWith",
+    "str_endswith", buildInstanceMethodSig(strEndsWithPs, MBool))
+
+  val strToLowerPs: List[MsilType] = newList()
+  val tokStringToLower = 0x0A000000 + ctxAddMemberRef(
+    lctx, trString, "ToLower",
+    "str_tolower", buildInstanceMethodSig(strToLowerPs, MString))
+
+  val strToUpperPs: List[MsilType] = newList()
+  val tokStringToUpper = 0x0A000000 + ctxAddMemberRef(
+    lctx, trString, "ToUpper",
+    "str_toupper", buildInstanceMethodSig(strToUpperPs, MString))
+
   // 30. Object.Equals(object, object): bool  static
   val objEqPs: List[MsilType] = newList()
   objEqPs.add(MObject)
@@ -589,6 +636,13 @@ pub func newCodegenCtx(packageName: in String,
     tokStringReplace     = tokStringReplace,
     tokStringIsNormalized = tokStringIsNormalized,
     tokStringNormalize   = tokStringNormalize,
+    tokStringTrim        = tokStringTrim,
+    tokStringIndexOf     = tokStringIndexOf,
+    tokStringLastIndexOf = tokStringLastIndexOf,
+    tokStringStartsWith  = tokStringStartsWith,
+    tokStringEndsWith    = tokStringEndsWith,
+    tokStringToLower     = tokStringToLower,
+    tokStringToUpper     = tokStringToUpper,
     tokObjectStaticEquals = tokObjectStaticEquals,
     fieldTokensByName    = newMap(),
     actionTypeRefs       = newMap(),
@@ -3732,6 +3786,34 @@ func lowerMethodCallMsil(
   } else if memberName == "normalize" {
     // String.Normalize(): string  instance HASTHIS
     insns.add(MCallvirt(methodToken = cctx.tokStringNormalize))
+    MString
+  } else if memberName == "trim" and args.count == 0 {
+    // String.Trim(): string  instance HASTHIS — receiver already on stack.
+    insns.add(MCallvirt(methodToken = cctx.tokStringTrim))
+    MString
+  } else if memberName == "indexOf" and args.count == 1 {
+    // String.IndexOf(string): int32 — BCL semantics (-1 when absent),
+    // distinct from the Std.String free function returning Option[Int].
+    lowerCallArgMsil(cctx, fctx, insns, args[0])
+    insns.add(MCallvirt(methodToken = cctx.tokStringIndexOf))
+    MInt
+  } else if memberName == "lastIndexOf" and args.count == 1 {
+    lowerCallArgMsil(cctx, fctx, insns, args[0])
+    insns.add(MCallvirt(methodToken = cctx.tokStringLastIndexOf))
+    MInt
+  } else if memberName == "startsWith" and args.count == 1 {
+    lowerCallArgMsil(cctx, fctx, insns, args[0])
+    insns.add(MCallvirt(methodToken = cctx.tokStringStartsWith))
+    MBool
+  } else if memberName == "endsWith" and args.count == 1 {
+    lowerCallArgMsil(cctx, fctx, insns, args[0])
+    insns.add(MCallvirt(methodToken = cctx.tokStringEndsWith))
+    MBool
+  } else if memberName == "toLower" and args.count == 0 {
+    insns.add(MCallvirt(methodToken = cctx.tokStringToLower))
+    MString
+  } else if memberName == "toUpper" and args.count == 0 {
+    insns.add(MCallvirt(methodToken = cctx.tokStringToUpper))
     MString
   } else {
     // Unknown method — pop receiver and args, return null (bootstrap stub).

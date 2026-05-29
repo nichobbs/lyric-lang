@@ -16967,3 +16967,51 @@ pre-existing F0002 conflict panic.  Adding a "compiles-then-throws" or
 panic-catching helper would require new F# test infrastructure, which the
 project standard forbids.  The CLI path (which does catch the panic → `B0001`)
 is the validated surface.
+
+### D-progress-328 — self-hosted MSIL backend: remaining String instance methods (#1471)
+
+**Status:** Shipped.  Completes the method-syntax String surface in the
+self-hosted MSIL backend.  Earlier work (re-audit branch) added
+`s.length`, `s[i]`, `s.substring(..)`, `s.replace(..)`, `s.normalize()`,
+and value-based string `==` (via `Object.Equals`).  This adds the
+remaining instance methods that fell through to the unknown-method stub
+(returning `null` → `NullReferenceException` at run time):
+`s.trim()`, `s.indexOf(x)`, `s.lastIndexOf(x)`, `s.startsWith(x)`,
+`s.endsWith(x)`, `s.toLower()`, `s.toUpper()`.
+
+**Fix (`lyric-compiler/msil/codegen.l`):** added the BCL `System.String`
+instance-method tokens (`Trim`, `IndexOf`, `LastIndexOf`, `StartsWith`,
+`EndsWith`, `ToLower`, `ToUpper`) and the matching `lowerMethodCallMsil`
+branches.  `indexOf`/`lastIndexOf` return `Int` with BCL semantics
+(`-1` when absent), distinct from the `Std.String` free functions that
+return `Option[Int]`.
+
+**Tests:** `lyric-stdlib/tests/string_methods_tests.l` (auto-discovered by
+the stdlib Lyric test runner) covers the new methods; Emitter suite
+845 passed / 0 failed.
+
+**Context — `#1471` is not primarily a string-primitives bug.**  With the
+String surface now complete, the `lyric-auth` security suite (the headline
+`#1471` reproduction) still fails on the self-hosted MSIL path because of
+**cross-package / multi-package codegen** issues that are independent of
+string handling and out of scope here:
+
+- **`The signature is incorrect.`** on the `rolesContain` tests — the
+  function compiles and runs correctly *standalone* (verified), so the
+  fault is in the cross-package call from the synthesised test package to
+  `Auth.rolesContain` (a multi-package MemberRef-signature mismatch,
+  surfaced after the #1469 generics/aspect merge).
+- **`Common Language Runtime detected an invalid program.`** on the
+  `jwtAlg`/`verifyJwt` tests — union/`Result`/`Option` matching on
+  cross-package or generic-typed scrutinees: `findTypeDefRowByName` only
+  scans the current assembly, so imported case classes
+  (`Std.Core.Option$None`) fall back to `isinst System.Object` (always
+  true), and generic union scrutinees are typed `MObject`, so the
+  `isinst` test is skipped — the first match arm wins.
+- **`lyric test` / `lyric run` runtime staging** does not co-locate the
+  stdlib DLLs with the compiled assembly (the probing path written is
+  relative + NuGet-layout, so a flat `bin/` never resolves).
+
+These are tracked as the remaining `#1471` work; JVM parity for the
+String surface is a further follow-up.  (Subsequent entries in this branch
+fix the signature-incorrect and union-match items.)
