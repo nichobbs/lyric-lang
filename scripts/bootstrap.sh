@@ -40,6 +40,15 @@ STAGE2_DIR="$BUILD_DIR/stage2"
 COMPILER_DIR="$REPO_ROOT/bootstrap"
 STDLIB_DIR="$REPO_ROOT/lyric-stdlib"
 
+# Temp base used by the F# emitter's per-process stdlib cache
+# (`Emitter.fs::stdlibCacheDir` → `Path.GetTempPath()`).  On Unix .NET's
+# GetTempPath() returns $TMPDIR when set, else "/tmp".  We mirror that exactly
+# so the CLI-bundle snapshot below globs the same directory the emitter writes
+# to — otherwise a non-/tmp $TMPDIR makes the snapshot miss the cache and the
+# build dies (this is why callers previously had to force `TMPDIR=/tmp`).
+TMP_BASE="${TMPDIR:-/tmp}"
+TMP_BASE="${TMP_BASE%/}"   # strip any trailing slash so the glob is well-formed
+
 MAX_STAGE=2
 SKIP_VERIFY="${SKIP_VERIFY:-0}"
 SKIP_CLI_BUNDLE="${SKIP_CLI_BUNDLE:-0}"
@@ -218,15 +227,15 @@ EOF
 
   local driver_out="$driver_dir/Lyric.CliBundle.dll"
 
-  # Snapshot the existing /tmp/lyric-stdlib-* directories so we can
+  # Snapshot the existing $TMP_BASE/lyric-stdlib-* directories so we can
   # identify *the one the upcoming compile creates* unambiguously.
-  # Reusing CI runners often leaves stale dirs in /tmp; `ls -dt | head -1`
-  # would happily pick one of those if filesystem mtimes were close.
-  # `|| true` swallows the non-zero exit when the glob doesn't match —
-  # `set -euo pipefail` would otherwise abort here before the post-
-  # compile check produces a useful error.
+  # Reusing CI runners often leaves stale dirs in the temp base; `ls -dt
+  # | head -1` would happily pick one of those if filesystem mtimes were
+  # close.  `|| true` swallows the non-zero exit when the glob doesn't
+  # match — `set -euo pipefail` would otherwise abort here before the
+  # post-compile check produces a useful error.
   local pre_snapshot
-  pre_snapshot="$(ls -d /tmp/lyric-stdlib-* 2>/dev/null || true)"
+  pre_snapshot="$(ls -d "$TMP_BASE"/lyric-stdlib-* 2>/dev/null || true)"
 
   # Force the F# emitter via `--internal-build`.  The driver has a
   # `func main(): Unit { }` so it satisfies the F# emitter's executable
@@ -240,9 +249,9 @@ EOF
 
   # Locate the cache dir the compile created: take all current matches,
   # subtract the pre-compile snapshot, expect exactly one new entry.
-  # Pattern: /tmp/lyric-stdlib-<pid>/ — see Emitter.fs::stdlibCacheDir.
+  # Pattern: $TMP_BASE/lyric-stdlib-<pid>/ — see Emitter.fs::stdlibCacheDir.
   local post_snapshot
-  post_snapshot="$(ls -d /tmp/lyric-stdlib-* 2>/dev/null || true)"
+  post_snapshot="$(ls -d "$TMP_BASE"/lyric-stdlib-* 2>/dev/null || true)"
   local new_dirs
   new_dirs="$(comm -13 \
     <(echo "$pre_snapshot"  | sort) \
@@ -252,7 +261,7 @@ EOF
   local cache_dir
   cache_dir="$(echo "$new_dirs" | head -1)"
   [[ -n "$cache_dir" && -d "$cache_dir" ]] || \
-    die "stage-1 CLI bundle: no new /tmp/lyric-stdlib-*/ cache found after compile (pre='$pre_snapshot', post='$post_snapshot')"
+    die "stage-1 CLI bundle: no new $TMP_BASE/lyric-stdlib-*/ cache found after compile (pre='$pre_snapshot', post='$post_snapshot')"
 
   info "  CLI bundle cache: $cache_dir"
   local copied=0

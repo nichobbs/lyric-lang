@@ -78,3 +78,6 @@ nunit-*.xml
 # scripts/manual-test.sh output and 3-stage bootstrap workdir
 .manual-test-report/
 .bootstrap/
+
+# `make lyric` symlink to the AOT entry-point binary
+/bin/

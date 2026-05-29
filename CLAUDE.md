@@ -927,6 +927,42 @@ dotnet run --project tests/Lyric.Emitter.Tests
 dotnet run --project tests/Lyric.Cli.Tests
 ```
 
+#### Iteration loops — pick the smallest one that exercises your change
+
+A full `lyric` binary rebuild is **stage-0 (F#) → stage-1 (self-hosted
+DLLs + CLI bundle) → AOT entry-point build**.  The expensive part is
+stage-1, not stage-0, so don't rebuild more than the change needs.  The
+`Makefile` at the repo root wraps these with the gotchas baked in
+(`make help` lists every target):
+
+- **Inner loop — front-end changes** (lexer / parser / type checker /
+  mode checker / formatter).  After editing a `lyric-compiler/lyric/**`
+  compiler package, rebuild only the self-hosted DLLs and run the
+  relevant self-test — no AOT binary required:
+  ```
+  make stage1-fast              # SKIP_CLI_BUNDLE=1 ./scripts/bootstrap.sh --stage 1
+  make self-test NAME=parser    # compiles parser_self_test.l vs the new DLLs (~2s)
+  ```
+  The `*_self_test.l` consumers (run by the Emitter suite) are the fast
+  feedback path: each compiles a single `.l` against the freshly built
+  stage-1 DLLs in seconds.  Prefer adding/extending a self-test over a
+  full end-to-end repro.
+- **End-to-end loop — CLI behaviour** (`lyric build/test/...`, ecosystem
+  repros).  You need the AOT binary because user commands trampoline
+  through it:
+  ```
+  make lyric                                  # stage1 + AOT -> ./bin/lyric
+  ./bin/lyric test --manifest lyric-session/lyric.toml
+  ```
+  Equivalently by hand: `./scripts/bootstrap.sh --stage 1` then
+  `dotnet build bootstrap/src/Lyric.Cli.Aot`.  **Rebuild both** after a
+  compiler `.l` change or you'll run stale DLLs.
+
+`scripts/bootstrap.sh` honours `$TMPDIR` (it mirrors the F# emitter's
+`Path.GetTempPath()`), so the old `TMPDIR=/tmp ./scripts/bootstrap.sh`
+workaround is no longer needed — run it with whatever `$TMPDIR` your
+environment sets.
+
 M1.4 shipped contract elaboration, async, FFI, variant-bearing unions,
 interfaces, and monomorphised generics in the F# bootstrap emitter.
 One construct remains bootstrap-grade per `docs/03-decision-log.md` D035:
