@@ -5591,31 +5591,16 @@ func lookupRestoredTypeRefRow(cctx: in CodegenCtx, packageName: in String,
   }
 }
 
-// Split a dotted package name into (namespace, simpleName).  The
-// namespace is everything up to the LAST '.', the simple name is
-// everything after.  Pre-allocated as a 2-element list because Lyric
-// doesn't expose tuples cleanly through extern types.  Examples:
-//   "MyLib"      → ("",      "MyLib")
-//   "MyApp.Db"   → ("MyApp", "Db")
-//   "A.B.C.D"    → ("A.B.C", "D")
-func splitPackageName(pkgName: in String): List[String] {
-  val parts: List[String] = newList()
-  val lastDot = pkgName.lastIndexOf(".")
-  if lastDot < 0 {
-    parts.add("")
-    parts.add(pkgName)
-  } else {
-    parts.add(pkgName.substring(0, lastDot))
-    parts.add(pkgName.substring(lastDot + 1, pkgName.length - lastDot - 1))
-  }
-  parts
-}
-
-// Look up (or allocate) the TypeRef row for a restored package's
-// free-function host class.  The in-bundle emitter puts every
-// free function on a TypeDef whose name matches the package name
-// (`MPFuncs(hostClass = pkgName, ...)`), so the foreign DLL has the
-// same shape.  Cached under "<pkg>/host" in `ffiTypeRefs` so multiple
+// Look up (or allocate) the TypeRef row for a foreign package's
+// free-function host class.  Both the F# emitter and the self-hosted
+// `lowerMFuncsToHostClass` name that class `<package>.Program` — the
+// full package path is the CLR namespace and `Program` is the type
+// name.  The cross-assembly TypeRef must name that exact pair or the
+// CLR throws "Could not load type '<package>'" when the consumer
+// invokes a function (this was the `Std.Testing` ecosystem-test
+// failure: the old split-at-last-dot form referenced `(Std, Testing)`
+// = full name `Std.Testing`, but the host class is `Std.Testing.Program`).
+// Cached under "<pkg>/host" in `ffiTypeRefs` so multiple
 // `registerRestoredFreeFunc` calls share one TypeRef.
 func ensureHostClassTypeRefRow(cctx: in CodegenCtx,
                                packageName: in String,
@@ -5627,10 +5612,7 @@ func ensureHostClassTypeRefRow(cctx: in CodegenCtx,
       case None      -> ()
     }
   }
-  val parts     = splitPackageName(packageName)
-  val nsPart    = parts[0]
-  val classPart = parts[1]
-  val row = ctxAddTypeRef(cctx.lctx, nsPart, classPart, asmRefRow)
+  val row = ctxAddTypeRef(cctx.lctx, packageName, "Program", asmRefRow)
   cctx.ffiTypeRefs.add(key, row)
   row
 }
@@ -6014,4 +5996,12 @@ func registerStdlibFunc(
   val memberRow = ctxAddMemberRef(cctx.lctx, hostRefRow, fn.name,
                                    sigKey, funcSig)
   cctx.funcTokens.add(fqn, 0x0A000000 + memberRow)
+  // Record the return type so call-site lowering
+  // (`lowerBuiltinOrStaticCallMsil`) emits the correct stack
+  // discipline.  Without this the call site falls back to `MObject`
+  // and pops a value that a void-returning stdlib function (Unit
+  // return → `MVoid`, e.g. `Std.Testing.assertTrue`,
+  // `Std.Console.println`) never left on the stack — the JIT then
+  // rejects the method body with InvalidProgramException.
+  cctx.funcRetTypes.add(fqn, retType)
 }

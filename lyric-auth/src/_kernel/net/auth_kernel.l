@@ -28,6 +28,7 @@ import Std.Core
 import Std.Encoding
 import Std.String
 import Std.Char
+import Std.Math
 import Std.Time
 
 // ─── BCL extern boundary ─────────────────────────────────────────────────────
@@ -333,15 +334,20 @@ func getStringClaim(payloadBytes: in slice[Byte], key: in String): String {
 func parseLong(s: in String): Result[Long, String] {
   if s.length == 0  { return Err("parse_error") }
   if s.length > 18  { return Err("overflow") }
-  var result: Long = 0i64
+  // Variable name avoids `result` because that's a reserved keyword
+  // in `ensures:` clauses; the parser/elaborator treats every
+  // occurrence as the special `EResult` expression even when the
+  // enclosing function has no `ensures:` and will hit
+  // "E11 codegen: EResult outside contract context" at lower time.
+  var acc: Long = 0i64
   var i = 0
   while i < s.length {
     if not isDigit(s[i]) { return Err("parse_error") }
     val d = toInt(s[i]) - toInt('0')
-    result = result * 10i64 + d
+    acc = acc * 10i64 + intToLong(d)
     i = i + 1
   }
-  Ok(result)
+  Ok(acc)
 }
 
 // Extract a numeric (integer) claim from a JSON object string.

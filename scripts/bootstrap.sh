@@ -317,20 +317,13 @@ EOF
     die "stage-1 CLI bundle: Lyric.Session.Host.dll not found in publish output"
   fi
 
-  # `Lyric.Storage.Host.dll` is the Phase-2 host shim for #733 — bridges
-  # the lyric-storage local-filesystem backend through `Lyric.Storage.LocalHost`.
-  # No NuGet dependencies (System.IO only); S3 / Azure Blob shims land as
-  # separate phases under #782 with their own Testcontainers infrastructure.
-  dotnet publish "$COMPILER_DIR/src/Lyric.Storage.Host/Lyric.Storage.Host.fsproj" \
-    --configuration Release \
-    --output "$BUILD_DIR/stage0-publish-storage" \
-    --nologo -v q
-  if [[ -f "$BUILD_DIR/stage0-publish-storage/Lyric.Storage.Host.dll" ]]; then
-    cp -f "$BUILD_DIR/stage0-publish-storage/Lyric.Storage.Host.dll" "$STAGE1_DIR/"
-    copied=$((copied + 1))
-  else
-    die "stage-1 CLI bundle: Lyric.Storage.Host.dll not found in publish output"
-  fi
+  # `Lyric.Storage.Host` is gone — the lyric-storage local-filesystem
+  # backend now binds the BCL externs (System.IO.File, System.IO.Directory,
+  # System.IO.Path, System.Convert, System.Security.Cryptography.MD5)
+  # directly from `Storage.Kernel.Net`.  No F# host shim is published or
+  # copied into the stage-1 bundle.  S3 / Azure Blob backends return
+  # `NOT_IMPLEMENTED` until their native NuGet SDK bindings land.
+
 
   # `Lyric.Jobs.Host.dll` is the Phase-3 host shim for #733 — bridges the
   # lyric-jobs in-process scheduler through `Lyric.Jobs.InProcessHost` and
@@ -349,20 +342,10 @@ EOF
     die "stage-1 CLI bundle: Lyric.Jobs.Host.dll not found in publish output"
   fi
 
-  # `Lyric.Mail.Host.dll` is the Phase-4 host shim for #733 — bridges the
-  # lyric-mail SMTP backend through `Lyric.Mail.SmtpHost` (BCL System.Net.Mail).
-  # No NuGet dependencies; MailKit / SES / SendGrid shims land as separate
-  # phases under #780 with their own Testcontainers infrastructure.
-  dotnet publish "$COMPILER_DIR/src/Lyric.Mail.Host/Lyric.Mail.Host.fsproj" \
-    --configuration Release \
-    --output "$BUILD_DIR/stage0-publish-mail" \
-    --nologo -v q
-  if [[ -f "$BUILD_DIR/stage0-publish-mail/Lyric.Mail.Host.dll" ]]; then
-    cp -f "$BUILD_DIR/stage0-publish-mail/Lyric.Mail.Host.dll" "$STAGE1_DIR/"
-    copied=$((copied + 1))
-  else
-    die "stage-1 CLI bundle: Lyric.Mail.Host.dll not found in publish output"
-  fi
+  # `Lyric.Mail.Host` is gone — the lyric-mail SMTP backend now binds
+  # `System.Net.Mail` directly from its kernel.  No F# host shim is
+  # published or copied into the stage-1 bundle.
+
 
   # `Lyric.Mq.Host.dll` is the Phase-5 host shim for #733 — bridges the
   # lyric-mq in-memory queue backend through `Lyric.Mq.InMemoryHost`.  No

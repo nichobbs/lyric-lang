@@ -14,12 +14,15 @@ for the existing bootstrap compiler only"):
   F# code and no `FSharp.Core.dll` runtime dep.
 - Ecosystem-library host shims still exist under
   `bootstrap/src/Lyric.<X>.Host/` for: Auth, Jobs, Jvm.Hosts, Mq,
-  Session, Storage, Web, Ws. These are on the same deletion
-  schedule as the stdlib shim was — they're tolerated until the
-  self-hosted replacement is ready, then deleted. **No new host
-  shims** are permitted; new BCL externs go in
-  `lyric-stdlib/std/_kernel/*.l` via `extern type` / `extern package`
-  declarations directly.
+  Session, Web, Ws. `Lyric.Storage.Host` was removed by PR #1170
+  (#733): the local-filesystem backend is now a fully native Lyric
+  implementation against direct BCL externs in
+  `lyric-storage/src/_kernel/net/storage_kernel.l`. The remaining
+  ecosystem shims are on the same deletion schedule as the stdlib
+  shim was — they're tolerated until the self-hosted replacement is
+  ready, then deleted. **No new host shims** are permitted; new BCL
+  externs go in `lyric-stdlib/std/_kernel/*.l` via `extern type` /
+  `extern package` declarations directly.
 - The F# stage-0 bootstrap compiler under `bootstrap/src/Lyric.{Lexer,
   Parser,TypeChecker,Emitter,Cli}/` continues to exist solely so the
   stage-0 binary can build the self-hosted Lyric compiler from `.l`

@@ -310,6 +310,13 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // `MObject` fall-through that produced `InvalidProgramException`
   // at runtime.
   val stdlibPkgs = collectStdlibPackages(stdlibSources)
+  // Pool of "always in scope" items: every stdlib package's items plus
+  // every restored-dep artifact's type items.  Per-package import
+  // filtering (#1378) only applies to in-bundle user packages; stdlib
+  // and restored-dep references are looked up via the codegen-side
+  // `funcTokens` / `recordCtorTokens` tables built from the same
+  // sources, so the typecheck-side flat view here keeps the two halves
+  // of the pipeline in sync.
   val baseItems: List[Item] = newList()
   spreadStdlibPackageItems(stdlibPkgs, baseItems)
   var ri0 = 0
@@ -646,6 +653,7 @@ func perPackageImportedItems(
   }
   result
 }
+
 
 // Walk the transitive in-bundle import closure rooted at `pkgName`,
 // adding every reachable in-bundle package's items to `acc`.  Visited
