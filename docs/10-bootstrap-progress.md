@@ -16636,3 +16636,61 @@ strings the runtime expected the missing `call` to have popped.
   (the binder reaches the AssemblyRef before the file-probing
   fails), confirming the metadata is structurally correct even
   though the test harness can't satisfy the runtime probe.
+
+### D-progress-322 — `@cfg` dotnet/jvm overload-pair resolution regression guard (#1472)
+
+**Status:** Shipped.  Adds a pipeline-level regression self-test that
+pins the resolution of `@cfg(feature = "dotnet")` / `@cfg(feature =
+"jvm")` overload pairs whose two overloads have **different arities**,
+guarding against the spurious `T0042 expected N argument(s), got M`
+failure mode #1472 describes.
+
+**Investigation:**
+
+The headline symptom — `lyric test --manifest lyric-auth/lyric.toml`
+surfacing `T0042 expected 2 argument(s), got 3` on real
+dotnet/jvm `@cfg` overload pairs — does **not** reproduce on the
+current tree.  Verified against a freshly bootstrapped stage-1 +
+AOT CLI:
+
+- `lyric build --manifest lyric-auth/lyric.toml` builds clean.
+- `lyric test --manifest lyric-auth/lyric.toml` compiles every test
+  package with zero `T0042` (the only remaining failure is an
+  unrelated `Lyric.Stdlib.Testing` runtime probing-path issue).
+- Minimal single-package, cross-package in-bundle, and
+  restored-dependency repros of a dotnet/jvm overload pair with
+  mismatched arities all resolve to the active overload and run
+  correctly.
+
+Root cause of the original bug was a cfg-erasure-vs-signature-
+registration ordering interaction; it is resolved on `main` by the
+alias-rewriter overload-resolution fix (`f1320db`) together with the
+cfg-erasure pass running **before** `checkWithImports`
+(`lyric-compiler/msil/bridge.l` — `applyCfgErasure` at the per-package
+parse phase, ahead of the typecheck phase).  The `T0042 expected 2
+argument(s), got 3` message now appears only as a *correct* diagnostic
+— e.g. when `jvm` is the active feature and source calls the 3-arg
+form whose overload has (correctly) been erased.
+
+**Change:**
+
+- **`lyric-compiler/lyric/cfg_self_test.l`** — new
+  `testCfgOverloadArityResolution` runs the real `Lyric.Cfg` erasure
+  pass followed by the `Lyric.TypeChecker` `check` entry point over a
+  source file declaring `combine/2` under `@cfg(feature = "jvm")` and
+  `combine/3` under `@cfg(feature = "dotnet")`, plus a caller using the
+  3-arg form.  Asserts: (a) with `dotnet` active the 3-arg overload
+  survives and the call type-checks with **no** `T0042`; (b) with `jvm`
+  active only the 2-arg overload survives, so the same 3-arg call is a
+  *genuine* single `T0042` — the teeth of the guard, which fails if the
+  inactive overload ever leaks back into the signature map.
+
+**Acceptance criteria met:**
+
+- No `T0042` on the `lyric-auth` build/test path (verified above).
+  The `lyric-session` path is currently gated by an unrelated parser
+  regression (#1473, tracked separately); the dotnet/jvm overload
+  concern itself is resolved and now regression-guarded.
+- A self-test covering a `@cfg(feature = "dotnet")` /
+  `@cfg(feature = "jvm")` overload pair with differing arities ships
+  in `cfg_self_test.l` and passes via `SelfHostedCfgTests`.

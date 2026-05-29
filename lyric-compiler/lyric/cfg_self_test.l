@@ -11,6 +11,7 @@ import Std.Testing
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Cfg
+import Lyric.TypeChecker
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Helpers
@@ -171,6 +172,57 @@ func testFileLevelKeepsWhenActive(): Unit {
     "file_level_keeps_when_active: item retained")
 }
 
+// Regression for #1472: a `@cfg(feature = "dotnet")` / `@cfg(feature = "jvm")`
+// overload PAIR whose two overloads have DIFFERENT arities.  The bug was that
+// the inactive-feature overload could leak into the typechecker's signature
+// map (a cfg-erasure-vs-signature-registration ordering interaction), so a
+// call using the active overload's arity mis-resolved against the inactive
+// overload and surfaced a spurious `T0042 expected N argument(s), got M`.
+//
+// The contract this guards: erasure runs BEFORE signature registration, so
+// after erasure only the active overload's arity is in scope.  We assert both
+// directions through the real `Lyric.Cfg` + `Lyric.TypeChecker` pipeline:
+//
+//   * dotnet active  → the 3-arg overload survives, and `combine(1, 2, 3)`
+//     resolves with NO T0042.
+//   * jvm active      → only the 2-arg overload survives, so the same 3-arg
+//     call is now a *genuine* arity error (exactly one T0042).  This second
+//     assertion is the real teeth: it fails if the dotnet 3-arg overload is
+//     silently kept (the inactive overload leaking back in), which is the
+//     precise failure mode #1472 describes.
+func testCfgOverloadArityResolution(): Unit {
+  val src =
+    "package P\n" +
+    "@cfg(feature = \"jvm\")\n" +
+    "pub func combine(a: in Int, b: in Int): Int { a + b }\n" +
+    "@cfg(feature = \"dotnet\")\n" +
+    "pub func combine(a: in Int, b: in Int, c: in Int): Int { a + b + c }\n" +
+    "pub func useIt(): Int { combine(1, 2, 3) }\n"
+  val sf       = parseOk(src)
+  val declared = twoFeatures("dotnet", "jvm")
+
+  // dotnet active → the 3-arg overload survives; combine(1, 2, 3) resolves.
+  val dotnetErase = applyCfgErasure(singletonList("dotnet"), declared, sf)
+  assertEqualInt(dotnetErase.diagnostics.count, 0,
+    "cfg_overload_arity: dotnet erasure emits no diagnostics")
+  assertEqualInt(dotnetErase.file.items.count, 2,
+    "cfg_overload_arity: dotnet keeps combine/3 + useIt")
+  val dotnetCheck = check(dotnetErase.file)
+  assertEqualInt(diagCount(dotnetCheck.diagnostics, "T0042"), 0,
+    "cfg_overload_arity: dotnet-active 3-arg call resolves with no T0042")
+
+  // jvm active → only the 2-arg overload survives, so the 3-arg call in useIt
+  // is now a genuine arity error — proving the dotnet overload was erased.
+  val jvmErase = applyCfgErasure(singletonList("jvm"), declared, sf)
+  assertEqualInt(jvmErase.diagnostics.count, 0,
+    "cfg_overload_arity: jvm erasure emits no diagnostics")
+  assertEqualInt(jvmErase.file.items.count, 2,
+    "cfg_overload_arity: jvm keeps combine/2 + useIt")
+  val jvmCheck = check(jvmErase.file)
+  assertEqualInt(diagCount(jvmCheck.diagnostics, "T0042"), 1,
+    "cfg_overload_arity: jvm-active leaves only combine/2, 3-arg call is T0042")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Driver
 // ─────────────────────────────────────────────────────────────────────────────
@@ -185,6 +237,7 @@ func main(): Int {
   testF0013SuppressedWhenDeclaredEmpty()
   testFileLevelErasesEntireFile()
   testFileLevelKeepsWhenActive()
+  testCfgOverloadArityResolution()
   println("cfg-self-test: ok")
   return 0
 }
