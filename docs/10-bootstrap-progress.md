@@ -17019,7 +17019,7 @@ this branch fix the signature-incorrect and union-match items.)  The
 seven method-syntax forms are documented in the language reference §12.1
 and `book/chapters/appendix-b-quick-reference.md`.
 
-### D-progress-328 — self-hosted MSIL: `Unit` as a generic type argument (#1471)
+### D-progress-329 — self-hosted MSIL: `Unit` as a generic type argument (#1471)
 
 **Status:** Shipped.  Fixes the `The signature is incorrect.` failures in
 the `lyric-auth` suite (recovers 9 tests: the `rolesContain` group + two
@@ -17053,12 +17053,12 @@ Runtime detected an invalid program.` failures are the cross-package /
 generic-typed union-match `isinst` gap (jwtAlg/verifyJwt), plus one
 `Std.String.split` cross-package MemberRef signature mismatch.
 
-### D-progress-329 — call-argument context threading for nullary generic cases (#1471/#1442)
+### D-progress-330 — call-argument context threading for nullary generic cases (#1471/#1442)
 
 **Status:** Shipped.  Completes the canonical nullary-union-case
 representation so it is consistent across *all* construction positions.
 
-**Background:** D-progress-327/328 and the slice/`MArray` work converged
+**Background:** D-progress-328/329 and the slice/`MArray` work converged
 the self-hosted backend onto the F#-stdlib representation: a nullary case
 (`None`) carries the union's concrete type arguments (`Option_None<byte[]>`),
 and the match-site tests a single scrutinee-args `isinst`.  Construction
@@ -17084,3 +17084,50 @@ forms and F#-returned (`Option[byte[]]`) Nones continue to match.  Emitter
 suite 845/0; `lyric-auth` unchanged at 8/29 (its Nones are F#-returned, so
 this position never applied — the residual 20 are the separate jwtAlg/
 verifyJwt "invalid program", investigated next).
+
+### D-progress-331 — self-hosted MSIL: degrade slice (`MArray`) locals to object in LocalVarSig (#1471)
+
+**Status:** Shipped.  `buildLocalVarSig` degrades `MClass`/`MGenericInst`
+locals to `ELEMENT_TYPE_OBJECT` (0x1C), but a slice local (`MArray`, added
+for the `slice[T]`→`T[]` signature parity in the slice/`MArray` work) fell
+through to `elementTypeByte(MArray)` = 0x1D — the SZARRAY *prefix only*, with
+no element type.  That wrote a malformed LocalVarSig (dangling prefix), which
+corrupted the evaluation stack at run time (`AccessViolationException` /
+invalid program) for any function with a slice-typed local feeding deeper
+expressions — e.g. `jwtAlg`'s `val bytes` from a nested `match` over
+`Option[slice[Byte]]` combined with an if-expression `val`.
+
+**Fix (`lyric-compiler/msil/lowering.l`):** degrade `MArray` locals to object
+(0x1C) like `MClass`/`MGenericInst`; the codegen treats slices as opaque
+references and a `byte[]` value is still a valid object.  Cross-package
+MemberRef signatures keep the precise `T[]` encoding (where F#-stdlib
+agreement is required).  Verified: `jwtAlg` extracts `HS256` standalone and
+via a multi-package build.  Emitter suite 845/0.
+
+### D-progress-332 — self-hosted MSIL: represent `Unit` payload as null in construction and binding (#1471)
+
+**Status:** Shipped.  `Result[Unit, E]` / `Option[Unit]` values broke the
+self-hosted backend because `Unit` (`MVoid`) has no runtime value but is
+still a union-case payload:
+
+1. **Construction:** `Ok(())` lowered the `()` argument to *nothing*
+   (`LUnit` → `MVoid`, no instruction), leaving a stack imbalance at the
+   enclosing `newobj` → invalid program.  `LUnit` as a value now pushes
+   `null` (`MObject`).
+2. **Binding:** `case Ok(u)` allocated `u` as a void local (the bound
+   payload's `concreteFieldTy` resolved to the `Unit` type arg = `MVoid`)
+   → invalid program.  The bound payload now erases `MVoid` → `MObject`
+   (Unit held as null/object).
+
+`lyric-auth`'s `verifyJwt`/`verifyJwtWithSkew` return `Ok(())` and match
+`case Ok(unit)` throughout, so this was the dominant `verifyJwt` "invalid
+program".  Takes `lyric-auth` from 8/29 to **16/29**.  Emitter suite 845/0;
+statement-context `()` results are popped like any other value by block /
+statement lowering (verified by the unchanged 845 suite).
+
+**Residual:** the remaining 13 `lyric-auth` failures are array *consumption*
+— F#-stdlib `split` returns a real `String[]`, but the self-hosted backend
+indexes/measures collections as `List[object]` (`.length`→get_Count,
+`[i]`→get_Item), which faults on a genuine array (`verifyJwtImpl`'s
+`split(token, ".")` + `parts[0..2]`).  Tracked for a follow-up that adds
+`ldelem`/`ldlen` support for `MArray` receivers.
