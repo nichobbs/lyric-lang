@@ -1631,7 +1631,14 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
           MBool
         }
         case LUnit -> {
-          MVoid
+          // `()` as a *value* (e.g. the payload of `Ok(())` / `Err(())`, or a
+          // `Result[Unit, E]` Ok arm) is represented as `null`/object — `Unit`
+          // has no distinct runtime value but a payload slot still needs one.
+          // Pushing nothing here left a stack imbalance at the enclosing
+          // `newobj` (invalid program).  Statement-context `()` results are
+          // popped like any other value by the block/statement lowering.
+          insns.add(MLdNull)
+          MObject
         }
         case LChar(cp) -> {
           insns.add(MLdcI4(v = cp))
@@ -3046,6 +3053,14 @@ func lowerPatternBindMsil(
                     }
                     case _ -> {}
                   }
+                }
+                // A `Unit`-typed payload (e.g. binding the Ok value of
+                // `Result[Unit, E]`) has no distinct runtime value; it is held
+                // as `null`/object.  Binding it as `MVoid` would allocate a
+                // void local and produce an invalid program, so erase to object.
+                match concreteFieldTy {
+                  case MVoid -> { concreteFieldTy = MObject }
+                  case _     -> {}
                 }
                 emitLoadSlot(insns, castSlot, fctx.paramCount)
                 match castTy {
