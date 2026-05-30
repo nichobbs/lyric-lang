@@ -682,6 +682,8 @@ output_assembly = "myapp.dll"
 
 Codegen builtins (no import needed): `println`, `panic`, `expect`, `assert`, `toString(x)`, `format1`/`format2`/`format3`/`format4`/`format5`/`format6`, `default()`.
 
+String method-syntax (UFCS) ops lower to host `String` methods, no import needed: `s.length`, `s.isEmpty`, `s[i]`, `s.substring(start[, count])`, `s.trim()`, `s.replace(old, new)`, `s.indexOf(sub)` / `s.lastIndexOf(sub)` (return `Int`, `-1` if absent — distinct from the `Option[Int]`-returning `Std.String` free functions), `s.contains/startsWith/endsWith(sub)` (`Bool`), `s.toLower()` / `s.toUpper()`. String `==`/`!=` compare by value. See language reference §12.1.
+
 ### Service libraries (early-preview; separate packages, not in stdlib)
 
 | Library | Package(s) | Purpose | Chapter |

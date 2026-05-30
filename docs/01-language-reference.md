@@ -1158,6 +1158,34 @@ The standard library is its own package set, versioned independently of the lang
 
 API surface and stability guarantees: governed by `@stable(since="1.0")` / `@experimental` annotations on each `pub` item (D040 / Q011). See `docs/10-stdlib-plan.md` §"Stability cut" for the module-by-module cut list.
 
+### 12.1 String method-syntax operations
+
+`String` supports a set of built-in method-syntax (UFCS) operations that lower
+directly to host `String` instance methods (`System.String` on .NET,
+`java.lang.String` on the JVM). These are distinct from the `Std.String`
+free functions — notably `s.indexOf(x)` / `s.lastIndexOf(x)` follow the host
+convention (return `Int`, `-1` when absent), whereas the `Std.String.indexOf`
+free function returns `Option[Int]`.
+
+| Form | Result | Notes |
+|---|---|---|
+| `s.length` | `Int` | code-unit count |
+| `s.isEmpty` | `Bool` | `s.length == 0` |
+| `s[i]` | `Char` | code unit at index `i` |
+| `s.substring(start)` | `String` | from `start` to end |
+| `s.substring(start, count)` | `String` | `count` units from `start` |
+| `s.trim()` | `String` | leading/trailing whitespace removed |
+| `s.replace(old, new)` | `String` | all occurrences |
+| `s.indexOf(sub)` | `Int` | first index, `-1` if absent |
+| `s.lastIndexOf(sub)` | `Int` | last index, `-1` if absent |
+| `s.contains(sub)` | `Bool` | |
+| `s.startsWith(prefix)` | `Bool` | |
+| `s.endsWith(suffix)` | `Bool` | |
+| `s.toLower()` | `String` | |
+| `s.toUpper()` | `String` | |
+
+String `==` / `!=` compare by value (not reference identity).
+
 ## 13. Tooling
 
 ### 13.1 Compiler

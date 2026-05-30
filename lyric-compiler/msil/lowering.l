@@ -123,8 +123,11 @@ pub func elementTypeByte(t: in MsilType): Int {
 // a `Unit`/`void` *return* type still encodes as 0x01.
 func genericArgType(t: in MsilType): MsilType {
   match t {
-    case MVoid -> MObject
-    case _     -> t
+    case MVoid          -> MObject
+    // Recurse into array elements so a `slice[Unit]` argument encodes as
+    // `object[]` rather than the illegal `void[]` (#1582).
+    case MArray(elem)   -> MArray(elemTy = genericArgType(elem))
+    case _              -> t
   }
 }
 

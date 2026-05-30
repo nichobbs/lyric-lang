@@ -17013,8 +17013,11 @@ string handling and out of scope here:
   relative + NuGet-layout, so a flat `bin/` never resolves).
 
 These are tracked as the remaining `#1471` work; JVM parity for the
-String surface is a further follow-up.  (Subsequent entries in this branch
-fix the signature-incorrect and union-match items.)
+String surface (and the `MArray`/`MByte` slice encoding and nullary-case
+call-arg threading below) is tracked in **#1585**.  (Subsequent entries in
+this branch fix the signature-incorrect and union-match items.)  The
+seven method-syntax forms are documented in the language reference §12.1
+and `book/chapters/appendix-b-quick-reference.md`.
 
 ### D-progress-328 — self-hosted MSIL: `Unit` as a generic type argument (#1471)
 
