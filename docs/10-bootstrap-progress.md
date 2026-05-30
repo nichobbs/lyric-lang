@@ -17217,22 +17217,20 @@ emission.
 
 **Validation:**
 
-- Stage-1 self-build green (the self-hosted compiler emits every DLL + the
-  stdlib bundle through the new buffer — a wrong byte would corrupt them).
-- `SelfHostedMsil bridge` suite 41/0; `stdlib Lyric tests` 30/0.
-- **Bit-identical:** a sample exercising Int (`bufU1`/`U2`/`U4`), Long
-  (`bufI8Le`), Double (`bufF8Le`), and String (`bufBytes`) compiled with the new
-  buffer is byte-for-byte identical (`cmp`, 25600 bytes) to the same program built
-  with the old `JvmByteHost` (reverting only `kernel.l`, rebuilding stage-1 + the
-  AOT CLI between the two compiles so the comparison actually exercises the
+- Stage-1 self-build green (exit 0, no parse/codegen errors): the self-hosted
+  compiler emits every DLL + the stdlib bundle through the new buffer, so a
+  wrong byte would corrupt a DLL and break the build — the strongest end-to-end
+  check available.
+- `SelfHostedMsil bridge` suite 41/0 (covers `while`/`for` loops — the negative
+  backward-branch offsets the `shr8` arithmetic-shift fix exists for); `stdlib
+  Lyric tests` 31/0.
 - MSIL tree has zero `JvmByteHost` / `Lyric.Jvm.Hosts` references.
 
 **Note:** `scripts/bootstrap.sh --stage 2` (self-hosted² byte compare) is
 currently incompatible with the A1.2 stage-1 CLI-bundle layout (it aborts asking
-for `SKIP_VERIFY=1` or a `stage2()` rewrite).  A standalone byte-for-byte `cmp`
-of the same sample built old-vs-new is therefore not part of this entry's
-evidence; the stage-1 self-build (every compiler + stdlib DLL emitted through
-the new buffer) plus the full bridge/stdlib suites are the validation of record.
+for `SKIP_VERIFY=1` or a `stage2()` rewrite), so a standalone byte-for-byte
+`cmp` is not part of this entry's evidence; the stage-1 self-build plus the full
+bridge/stdlib suites are the validation of record.
 
 **Scope note:** MSIL (`--target dotnet`) only, per epic #1470's JVM-deferred
 banner.  The JVM backend (`lyric-compiler/jvm/`) still uses `Lyric.Jvm.Hosts`
