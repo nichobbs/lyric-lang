@@ -24,6 +24,8 @@ func testSearch(): Unit {
   assertEqualInt(s.lastIndexOf("bc"), 4, "lastIndexOf last")
   assertEqualInt(s.indexOf("zz"), -1, "indexOf absent is -1")
   assertEqualInt(s.lastIndexOf("zz"), -1, "lastIndexOf absent is -1")
+  assertTrue(s.contains("cab"), "contains present")
+  assertTrue(not s.contains("zzz"), "contains absent")
   assertTrue(s.startsWith("abc"), "startsWith")
   assertTrue(not s.startsWith("zz"), "startsWith no match")
   assertTrue(s.endsWith("abc"), "endsWith")

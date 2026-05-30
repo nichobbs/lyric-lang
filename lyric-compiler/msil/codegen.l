@@ -94,8 +94,9 @@ pub record CodegenCtx {
   tokStringLastIndexOf: Int   // String.LastIndexOf(string): int32  (-1 if absent)
   tokStringStartsWith:  Int   // String.StartsWith(string): bool
   tokStringEndsWith:    Int   // String.EndsWith(string): bool
-  tokStringToLower:     Int   // String.ToLower(): string
-  tokStringToUpper:     Int   // String.ToUpper(): string
+  tokStringContains:    Int   // String.Contains(string): bool
+  tokStringToLower:     Int   // String.ToLowerInvariant(): string
+  tokStringToUpper:     Int   // String.ToUpperInvariant(): string
   // Object.Equals(object,object): bool  static (for value-equal string comparisons)
   tokObjectStaticEquals: Int
   // Reverse lookup: simple field name → FieldDef token.  Populated by
@@ -560,15 +561,25 @@ pub func newCodegenCtx(packageName: in String,
     lctx, trString, "EndsWith",
     "str_endswith", buildInstanceMethodSig(strEndsWithPs, MBool))
 
+  val strContainsPs: List[MsilType] = newList()
+  strContainsPs.add(MString)
+  val tokStringContains = 0x0A000000 + ctxAddMemberRef(
+    lctx, trString, "Contains",
+    "str_contains", buildInstanceMethodSig(strContainsPs, MBool))
+
+  // ToLowerInvariant / ToUpperInvariant (not the culture-sensitive
+  // ToLower/ToUpper): protocol strings such as JWT algorithm names must
+  // fold consistently regardless of thread culture (e.g. the Turkish-I
+  // problem, where "I".ToLower() yields "ı" under tr-TR).
   val strToLowerPs: List[MsilType] = newList()
   val tokStringToLower = 0x0A000000 + ctxAddMemberRef(
-    lctx, trString, "ToLower",
-    "str_tolower", buildInstanceMethodSig(strToLowerPs, MString))
+    lctx, trString, "ToLowerInvariant",
+    "str_tolower_inv", buildInstanceMethodSig(strToLowerPs, MString))
 
   val strToUpperPs: List[MsilType] = newList()
   val tokStringToUpper = 0x0A000000 + ctxAddMemberRef(
-    lctx, trString, "ToUpper",
-    "str_toupper", buildInstanceMethodSig(strToUpperPs, MString))
+    lctx, trString, "ToUpperInvariant",
+    "str_toupper_inv", buildInstanceMethodSig(strToUpperPs, MString))
 
   // 30. Object.Equals(object, object): bool  static
   val objEqPs: List[MsilType] = newList()
@@ -648,6 +659,7 @@ pub func newCodegenCtx(packageName: in String,
     tokStringLastIndexOf = tokStringLastIndexOf,
     tokStringStartsWith  = tokStringStartsWith,
     tokStringEndsWith    = tokStringEndsWith,
+    tokStringContains    = tokStringContains,
     tokStringToLower     = tokStringToLower,
     tokStringToUpper     = tokStringToUpper,
     tokObjectStaticEquals = tokObjectStaticEquals,
@@ -3779,16 +3791,31 @@ func lowerMethodCallMsil(
     insns.add(MCallvirt(methodToken = cctx.tokDictObjContainsKey))
     MBool
   } else if memberName == "contains" {
-    // List::Contains(object): bool  — bootstrap: always false stub
-    var i = 0
-    while i < args.count {
-      lowerCallArgMsil(cctx, fctx, insns, args[i])
-      insns.add(MPop)
-      i = i + 1
+    match recvTy {
+      case MString -> {
+        // String.Contains(string): bool — receiver string already on stack.
+        if args.count == 1 {
+          lowerCallArgMsil(cctx, fctx, insns, args[0])
+          insns.add(MCallvirt(methodToken = cctx.tokStringContains))
+        } else {
+          insns.add(MPop)
+          insns.add(MLdcI4(v = 0))
+        }
+        MBool
+      }
+      case _ -> {
+        // List::Contains(object): bool  — bootstrap: always false stub
+        var i = 0
+        while i < args.count {
+          lowerCallArgMsil(cctx, fctx, insns, args[i])
+          insns.add(MPop)
+          i = i + 1
+        }
+        insns.add(MPop)
+        insns.add(MLdcI4(v = 0))
+        MBool
+      }
     }
-    insns.add(MPop)
-    insns.add(MLdcI4(v = 0))
-    MBool
   } else if memberName == "remove" {
     // Dictionary::Remove(object): bool — bootstrap stub: pop key, pop recv, return false
     var i = 0
