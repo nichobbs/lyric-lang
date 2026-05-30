@@ -1,26 +1,26 @@
-/// Session.Kernel.Net — Redis extern boundary for distributed session storage.
-///
-/// Bridges the Session package to StackExchange.Redis via the
-/// `Lyric.Session.RedisStore` host shim (bootstrap/src/Lyric.Session.Host/):
-///   - connect()  — open a connection pool and return a store handle
-///   - create()   — allocate a new session with the given TTL
-///   - load()     — fetch a session as serialised JSON (empty string = not found)
-///   - save()     — persist serialised session JSON (preserves TTL via KeepTtl=true)
-///   - destroy()  — permanently delete a session
-///   - touch()    — refresh the session TTL without changing its contents
-///
-/// Phase-1 host-shim path (#733).  The `extern package StackExchange.Redis`
-/// block form used in the original restoration (PR #987) is metadata-only
-/// — the emitter does not emit IL for those declarations, so any user
-/// code calling through them would fail at runtime.  This file uses the
-/// `@externTarget("Lyric.Session.RedisStore.<method>")` form instead,
-/// which the emitter resolves to a real static-method call at codegen
-/// time.  The shim translates StackExchange.Redis exceptions into the
-/// Lyric `Result[T, String]` convention so failures never escape the
-/// language-level boundary.
-///
-/// Only active when compiled with feature = "redis".
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+//! Session.Kernel.Net — Redis extern boundary for distributed session storage.
+//!
+//! Bridges the Session package to StackExchange.Redis via the
+//! `Lyric.Session.RedisStore` host shim (bootstrap/src/Lyric.Session.Host/):
+//!   - connect()  — open a connection pool and return a store handle
+//!   - create()   — allocate a new session with the given TTL
+//!   - load()     — fetch a session as serialised JSON (empty string = not found)
+//!   - save()     — persist serialised session JSON (preserves TTL via KeepTtl=true)
+//!   - destroy()  — permanently delete a session
+//!   - touch()    — refresh the session TTL without changing its contents
+//!
+//! Phase-1 host-shim path (#733).  The `extern package StackExchange.Redis`
+//! block form used in the original restoration (PR #987) is metadata-only
+//! — the emitter does not emit IL for those declarations, so any user
+//! code calling through them would fail at runtime.  This file uses the
+//! `@externTarget("Lyric.Session.RedisStore.<method>")` form instead,
+//! which the emitter resolves to a real static-method call at codegen
+//! time.  The shim translates StackExchange.Redis exceptions into the
+//! Lyric `Result[T, String]` convention so failures never escape the
+//! language-level boundary.
+//!
+//! Only active when compiled with feature = "redis".
+//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 @cfg(feature = "redis")
 package Session.Kernel.Net

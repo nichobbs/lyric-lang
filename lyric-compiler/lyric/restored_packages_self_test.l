@@ -121,14 +121,34 @@ func testSynthesiseFunc(): Unit {
     "synth_func: package header present")
 }
 
-// Interface decls get an empty `{}` body appended (per F# parity).
+// A HEAD-ONLY interface repr (the form the legacy F# contract writer
+// `ContractMeta.fs` emits — `pub interface I` with no body) gets an empty
+// `{}` body appended so the re-parse sees a complete item.
 func testSynthesiseInterfaceAppendsBraces(): Unit {
   val decls: List[Meta.ContractDecl] = newList()
   decls.add(mkDecl("interface", "Drawable", "pub interface Drawable"))
   val c = mkContract("MyApp.Gfx", decls)
   val src = synthesiseSource(c, emptyDecls())
   assertTrue(Str.contains(src, "pub interface Drawable {}"),
-    "synth_interface: empty `{}` body appended")
+    "synth_interface: empty `{}` body appended to head-only repr")
+}
+
+// A FULL-BODY interface repr (the form the self-hosted contract writer
+// `contract_meta.l::reprForInterface` emits) is passed through verbatim —
+// appending `{}` would produce `... } {}`, a bare trailing block that fails
+// to re-parse as an item declaration (#1596, the bug that broke every
+// locally-built dep carrying an interface, e.g. `Cache.CacheStore`).
+func testSynthesiseInterfaceFullBodyNoDoubleBrace(): Unit {
+  val decls: List[Meta.ContractDecl] = newList()
+  decls.add(mkDecl("interface", "CacheStore",
+    "pub interface CacheStore { func get(key: in String): Option[String]; func clear(): Unit }"))
+  val c = mkContract("MyApp.Cache", decls)
+  val src = synthesiseSource(c, emptyDecls())
+  assertTrue(Str.contains(src,
+    "pub interface CacheStore { func get(key: in String): Option[String]; func clear(): Unit }"),
+    "synth_interface_body: full-body repr emitted verbatim")
+  assertTrue(not Str.contains(src, "} {}"),
+    "synth_interface_body: no double-brace `} {}` appended to a body-bearing repr")
 }
 
 // Records / unions / enums / distincts / aliases / opaques pass through
@@ -269,6 +289,7 @@ func main(): Int {
   testSynthesiseEmptyContract()
   testSynthesiseFunc()
   testSynthesiseInterfaceAppendsBraces()
+  testSynthesiseInterfaceFullBodyNoDoubleBrace()
   testSynthesiseNonInterfaceKindsPassThrough()
   testSynthesisePreambleOrdering()
   testSynthesiseTrailingNewline()

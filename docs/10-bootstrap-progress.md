@@ -17292,3 +17292,55 @@ permanent in-tree regression coverage without F#) is the gap; tracked in
 This also makes #1592 actionable: the auth kernel's `fixedTimeEquals` can
 now be a pure-Lyric constant-time compare and `hmacSha256` a direct BCL
 extern, retiring the `Lyric.Auth.Host` F# shim.
+
+### D-progress-337 — fix `lyric build --manifest lyric-session` parse failure (three root causes)
+
+**Status:** Shipped.  `lyric build --manifest lyric-session/lyric.toml`
+(and the CI `lyric test` step) failed with a misleading
+`error[P0020] 1:1: expected 'package' declaration at the head of the file`
+plus a cascade of `P0040`s.  The build is now clean.  Three independent
+root causes, each a real defect:
+
+1. **`lyric-cache/lyric.toml` stdlib-dependency typo.**  The `[dependencies]`
+   entry read `"Lyric.Stdlib" = { path = "../stdlib" }` — from `lyric-cache/`
+   that resolves to a nonexistent `stdlib/` directory (the package is
+   `lyric-stdlib/`).  `Cache.dll` therefore built without stdlib contract
+   linkage.  Fixed to `"../lyric-stdlib"` (matching the correct path
+   `lyric-session/lyric.toml` already used).
+
+2. **Restored-DLL interface synthesis double-braced body-bearing reprs.**
+   `Lyric.RestoredPackages.renderDecl` unconditionally appended ` {}` to
+   every `interface` decl, on the stale assumption (true only of the legacy
+   F# contract writer `ContractMeta.fs`) that interface `repr`s are
+   head-only.  The self-hosted contract writer
+   (`contract_meta.l::reprForInterface`) emits the **full**
+   `pub interface I { ...sigs... }` body, so the append produced
+   `pub interface I { ... } {}` — a bare trailing block that fails to
+   re-parse.  This broke synthesis of *any* locally-built dependency
+   carrying an interface (e.g. `Cache.CacheStore`).  `renderDecl` now
+   appends `{}` only when the repr is head-only (`indexOf("{") < 0`).
+   Regression test added in `restored_packages_self_test.l`
+   (`testSynthesiseInterfaceFullBodyNoDoubleBrace`).
+
+3. **`///` (item doc) before `package` in three `_kernel` files.**
+   `lyric-session/src/_kernel/{net,jvm}/session_kernel.l` and
+   `lyric-web/src/_kernel/jvm/web_kernel.l` opened with a `///` module-header
+   doc block before the `package` declaration.  `///` is an *outer/item* doc
+   comment that must attach to a following item; `parseModuleDocComments`
+   only harvests `//!` (*module/inner* docs), so the `///` was left in the
+   token stream and `parsePackageDecl` failed.  Both parsers (F# and
+   self-hosted) share this behaviour, so the source was wrong: these are
+   module-level docs and now use `//!`.  The misleading `P0020` is also
+   fixed — when a `///` precedes `package`, the parser now emits
+   `a '///' doc comment before 'package' has no item to document;
+   use '//!' for a module-level doc comment`.
+
+**Verified:** `lyric build --manifest lyric-cache/lyric.toml` and
+`--manifest lyric-session/lyric.toml` both succeed; emitter suite 845/0.
+
+**Residual (separate codegen blocker):** the `lyric-session` *tests* now
+compile and run but fault at runtime with
+`Common Language Runtime detected an invalid program` — a self-hosted MSIL
+codegen defect (interface-method dispatch + `Result` match + union
+`.message`), the same defect class as the `lyric-auth` series, **not** a
+parse issue.  Tracked in #1602.
