@@ -1217,6 +1217,12 @@ func buildLocalVarSig(locals: in List[MsilType]): List[Byte] {
     match locals[i] {
       case MClass(_)             -> bufU1(w, 0x1C)   // Object: avoids malformed CLASS+TypeDefOrRef entry
       case MGenericInst(_, _, _) -> bufU1(w, 0x1C)  // same: TypeRef token not valid in LocalVarSig
+      // A slice local degrades to Object too: the codegen treats slices as
+      // opaque references (a `byte[]` value is still an object), and
+      // `elementTypeByte(MArray)` is only the 0x1D SZARRAY *prefix* — writing
+      // it alone produces a malformed LocalVarSig (dangling prefix, no element
+      // type) that corrupts the evaluation stack at run time (AccessViolation).
+      case MArray(_)             -> bufU1(w, 0x1C)
       case other -> bufU1(w, elementTypeByte(other))
     }
     i = i + 1
