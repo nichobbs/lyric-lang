@@ -229,6 +229,26 @@ pub func tryEatIdentOrContextual(st: inout ParseState): Option[NameAndSpan] {
   }
 }
 
+// Accept an identifier OR any keyword as a member / method name after `.`.
+// A keyword is unambiguous in member position (only a member name is valid
+// after a `.`), and several built-in methods use reserved spellings — the
+// bitwise integer methods `and` / `or` / `xor` in particular (#1610).  The
+// keyword's source spelling becomes the member name.
+pub func tryEatMemberName(st: inout ParseState): Option[NameAndSpan] {
+  val t = peek(st)
+  match t.token {
+    case TIdent(name) -> {
+      st.pos = st.pos + 1
+      Some(value = NameAndSpan(name = name, span = t.span))
+    }
+    case TKeyword(k) -> {
+      st.pos = st.pos + 1
+      Some(value = NameAndSpan(name = keywordSpelling(k), span = t.span))
+    }
+    case _ -> None
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Span utilities.
 // ─────────────────────────────────────────────────────────────────────────────

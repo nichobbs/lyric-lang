@@ -3972,6 +3972,27 @@ func lowerMethodCallMsil(
   } else if memberName == "toUpper" and args.count == 0 {
     insns.add(MCallvirt(methodToken = cctx.tokStringToUpper))
     MString
+  } else if (memberName == "and" or memberName == "or" or memberName == "xor"
+             or memberName == "shl" or memberName == "shr") and args.count == 1 {
+    // Bitwise integer methods (#1610).  The receiver is already on the
+    // stack (recvTy); push the single operand, then emit the opcode.
+    // For `shl`/`shr` the operand is the Int shift count.  `shr` is an
+    // arithmetic shift (MShr) — Lyric's Int/Long/Byte are signed and the
+    // MSIL backend has no unsigned integer type yet, so logical shift
+    // (MShrUn) is not reachable here.
+    lowerCallArgMsil(cctx, fctx, insns, args[0])
+    if memberName == "and" {
+      insns.add(MAnd)
+    } else if memberName == "or" {
+      insns.add(MOr)
+    } else if memberName == "xor" {
+      insns.add(MXor)
+    } else if memberName == "shl" {
+      insns.add(MShl)
+    } else {
+      insns.add(MShr)
+    }
+    recvTy
   } else {
     // Unknown method — pop receiver and args, return null (bootstrap stub).
     var i = 0

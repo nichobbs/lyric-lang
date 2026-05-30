@@ -1136,7 +1136,7 @@ pub func parsePostfixExpr(st: inout ParseState): Expr {
       e = mkExpr(ECall(fn = e, args = args), joinSpans(e.span, endSpan))
     } else if isPunct(peekToken(st), Dot) {
       val _ = advance(st)
-      match tryEatIdent(st) {
+      match tryEatMemberName(st) {
         case Some(ns) -> {
           e = mkExpr(EMember(receiver = e, memberName = ns.name), joinSpans(e.span, ns.span))
         }
