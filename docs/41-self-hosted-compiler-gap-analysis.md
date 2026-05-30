@@ -170,7 +170,7 @@ supporting all language features."
 | H6 | `monoFileWithImports` is dead code (bridges pass empty imports) → cross-package generic *functions* never specialized. | `mono.l:1908`; `bridge.l:103,403` | M |
 | H7 | User generic-type instantiation `Box[Int]` falls to `MObject` (same-package types are in `typeFqnByName`, not `ffiTypeRefs`); `TGenericApp` in the non-ctx `typeExprToMsil` always returns `MObject`. | `codegen.l:1290-1299,1365` | M |
 | H8 | ~~Unknown extern types silently bind to `System.Runtime` with no diagnostic.~~ **Resolved (#1504 H8):** `clrAssemblyResolvable` gates the FFI cascade; a type that is neither `System.*` nor a `Lyric.*` host now fails the build with a clear, type-specific diagnostic (codegen `panic`, matching the F0002 conflict panic) instead of mis-binding to `System.Runtime` → opaque runtime `TypeLoadException`. Applied on both the `@externTarget` and auto-FFI paths. | `ffi.l` `clrAssemblyResolvable` | ✅ |
-| H9 | Auto-FFI scoring only handles static void-returning methods (all args boxed); instance/non-void need explicit `@externTarget`. | `codegen.l:5957-5997` | M |
+| H9 | Auto-FFI scoring only handles static void-returning methods (all args boxed); instance/non-void need explicit `@externTarget`. **Superseded by epic #1622** (real metadata-based resolution) — design in `docs/42-extern-metadata-resolution.md`. | `codegen.l:5957-5997` | M |
 | H10 | Custom `@generate(Pkg.Name)` source generators exist (`generator/generator.l`) but are **never called from `bridge.l`** — inert on self-hosted .NET. | `generator/generator.l:1-16`; no ref in `bridge.l` | M |
 | H11 | `old()`/`forall`/`exists` in `@runtime_checked` contracts **panic** in codegen (elaborator passes them through). | `codegen.l:1851-1858`; `elaborator.l:361-362` | M |
 | H12 | ~~`Lyric.Jvm.Hosts.dll` backs the entire PE ByteWriter~~ **Resolved for MSIL (#1492):** `Msil.Kernel.ByteWriter` is now a pure-Lyric `List[Byte]` buffer (`System.BitConverter` the only host extern); a sample exercising Int/Long/Double/String compiles **byte-identical** to the old host (verified via `cmp`), and the MSIL path has zero `Jvm.Hosts` references. `Lyric.Emitter.dll` (Reflection.Emit-laden) still hosts console/http/process/env/log kernels. JVM target retains `Lyric.Jvm.Hosts` (out of scope per #1470). | `msil/_kernel/kernel.l`; `lyric-stdlib/std/_kernel/{console,http,process_capture,verifier_env,log}_host.l`; `scripts/bootstrap.sh` | M |
@@ -350,6 +350,9 @@ should precede feature-completion work, because they stop *silent* wrongness.
   `old()`/quantifier runtime lowering, `@derive(Ord)` + union/enum derives,
   `IConfig` lowering, MethodSpec table, cross-package generic-function mono
   (`monoFileWithImports` wiring), in-bundle cross-package token resolution.
+  Metadata-based extern resolution (replacing the hardcoded `clrAssemblyForType`
+  table + the auto-FFI guess) is epic #1622 — design in
+  `docs/42-extern-metadata-resolution.md`.
 
 ### Band 5 — F# elimination + AOT (HIGH)
 - Replace the `Lyric.Jvm.Hosts` ByteWriter boundary with a pure-Lyric byte
