@@ -1,21 +1,21 @@
-/// Mail.Kernel.Jvm — JVM extern boundary for email-sending providers.
-///
-/// JVM implementation of the same contract as Mail.Kernel.Net.  Each provider
-/// maps to a JVM-side host helper namespace backed by the corresponding
-/// Java email library:
-///   jakarta.mail.Session   — SMTP client via Jakarta Mail  (@cfg feature = "smtp")
-///   software.amazon.awssdk.services.ses — Amazon SES      (@cfg feature = "ses")
-///   com.sendgrid.SendGrid  — SendGrid email API            (@cfg feature = "sendgrid")
-///
-/// Each provider exposes three functions: connect (returns an opaque Int handle),
-/// send (accepts a JSON-serialised EmailMessage), and close.
-///
-/// Message JSON format is identical to the .NET kernel — see Mail.Kernel.Net
-/// for the schema.  The public Mail package consumes either kernel without
-/// re-shaping.
-///
-/// Only active when compiled with feature = "jvm" (Phase 6).
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+//! Mail.Kernel.Jvm — JVM extern boundary for email-sending providers.
+//!
+//! JVM implementation of the same contract as Mail.Kernel.Net.  Each provider
+//! maps to a JVM-side host helper namespace backed by the corresponding
+//! Java email library:
+//!   jakarta.mail.Session   — SMTP client via Jakarta Mail  (@cfg feature = "smtp")
+//!   software.amazon.awssdk.services.ses — Amazon SES      (@cfg feature = "ses")
+//!   com.sendgrid.SendGrid  — SendGrid email API            (@cfg feature = "sendgrid")
+//!
+//! Each provider exposes three functions: connect (returns an opaque Int handle),
+//! send (accepts a JSON-serialised EmailMessage), and close.
+//!
+//! Message JSON format is identical to the .NET kernel — see Mail.Kernel.Net
+//! for the schema.  The public Mail package consumes either kernel without
+//! re-shaping.
+//!
+//! Only active when compiled with feature = "jvm" (Phase 6).
+//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 @cfg(feature = "jvm")
 package Mail.Kernel.Jvm

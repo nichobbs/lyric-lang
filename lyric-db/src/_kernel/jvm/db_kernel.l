@@ -1,23 +1,23 @@
-/// Db.Kernel.Jvm — JDBC extern boundary for database drivers.
-///
-/// JVM implementation of the same contract as Db.Kernel.Net.  Two JDBC
-/// driver families are supported:
-///
-///   Postgres.*  — org.postgresql.jdbc.Driver (PostgreSQL JDBC driver)
-///   Sqlite.*    — org.sqlite.JDBC (SQLite JDBC driver)
-///
-/// Shared functions (query/execute/transaction) are backed by
-/// `lyric.db.JdbcConnections`, a custom JVM helper that manages a
-/// connection-handle table on top of `java.sql.DriverManager`.
-/// The wire format produced by `query` / `txQuery` is identical to
-/// Db.Kernel.Net so db.l's `parseRows` helper decodes both without change.
-///
-/// Handle semantics (identical to Db.Kernel.Net):
-///   connect / connectDsn → Int connection handle
-///   beginTransaction     → Int transaction handle
-///
-/// Only active when compiled with feature = "jvm" (Phase 6).
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+//! Db.Kernel.Jvm — JDBC extern boundary for database drivers.
+//!
+//! JVM implementation of the same contract as Db.Kernel.Net.  Two JDBC
+//! driver families are supported:
+//!
+//!   Postgres.*  — org.postgresql.jdbc.Driver (PostgreSQL JDBC driver)
+//!   Sqlite.*    — org.sqlite.JDBC (SQLite JDBC driver)
+//!
+//! Shared functions (query/execute/transaction) are backed by
+//! `lyric.db.JdbcConnections`, a custom JVM helper that manages a
+//! connection-handle table on top of `java.sql.DriverManager`.
+//! The wire format produced by `query` / `txQuery` is identical to
+//! Db.Kernel.Net so db.l's `parseRows` helper decodes both without change.
+//!
+//! Handle semantics (identical to Db.Kernel.Net):
+//!   connect / connectDsn → Int connection handle
+//!   beginTransaction     → Int transaction handle
+//!
+//! Only active when compiled with feature = "jvm" (Phase 6).
+//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 @cfg(feature = "jvm")
 package Db.Kernel.Jvm

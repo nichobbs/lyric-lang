@@ -1,15 +1,15 @@
-/// Mail.Kernel.Net — extern boundary for email-sending providers.
-///
-/// BCL System.Net.Mail SMTP backend: all BCL types are declared as
-/// `extern type` so the Lyric public layer can hold them directly
-/// (no integer handle registry). Error handling uses `try/catch` in
-/// the Lyric public layer — no F# wrapper needed.
-///
-/// Amazon SES and SendGrid backends remain declarative-only — their
-/// bindings are placeholders until provider-specific Testcontainers
-/// infrastructure lands (#780 follow-up).
-///
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+//! Mail.Kernel.Net — extern boundary for email-sending providers.
+//!
+//! BCL System.Net.Mail SMTP backend: all BCL types are declared as
+//! `extern type` so the Lyric public layer can hold them directly
+//! (no integer handle registry). Error handling uses `try/catch` in
+//! the Lyric public layer — no F# wrapper needed.
+//!
+//! Amazon SES and SendGrid backends remain declarative-only — their
+//! bindings are placeholders until provider-specific Testcontainers
+//! infrastructure lands (#780 follow-up).
+//!
+//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 package Mail.Kernel.Net
 

@@ -1,20 +1,20 @@
-/// Ws.Kernel.Net — ASP.NET Core WebSockets extern boundary.
-///
-/// Phase 6 of #733: in-process connection registry + sliding-window
-/// rate limiter functional via `Lyric.Ws.RegistryHost` and
-/// `Lyric.Ws.RateLimitHost`.  Real ASP.NET Core WebSocket integration
-/// (HTTP upgrade, MessageReceived loop, Kestrel binding) is tracked
-/// under #778 as a follow-up — that path needs the lyric-web Kestrel
-/// shim to land first (Phase 8).
-///
-/// The path-finder registry tracks connection IDs and supports send /
-/// broadcast / close / connectionCount / isConnected at the bookkeeping
-/// level; `send` / `broadcast` buffer frames in per-connection queues
-/// for test inspection.  Real ASP.NET socket dispatch is a future
-/// integration.
-///
-/// Only active when compiled with feature = "dotnet".
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+//! Ws.Kernel.Net — ASP.NET Core WebSockets extern boundary.
+//!
+//! Phase 6 of #733: in-process connection registry + sliding-window
+//! rate limiter functional via `Lyric.Ws.RegistryHost` and
+//! `Lyric.Ws.RateLimitHost`.  Real ASP.NET Core WebSocket integration
+//! (HTTP upgrade, MessageReceived loop, Kestrel binding) is tracked
+//! under #778 as a follow-up — that path needs the lyric-web Kestrel
+//! shim to land first (Phase 8).
+//!
+//! The path-finder registry tracks connection IDs and supports send /
+//! broadcast / close / connectionCount / isConnected at the bookkeeping
+//! level; `send` / `broadcast` buffer frames in per-connection queues
+//! for test inspection.  Real ASP.NET socket dispatch is a future
+//! integration.
+//!
+//! Only active when compiled with feature = "dotnet".
+//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 @cfg(feature = "dotnet")
 package Ws.Kernel.Net
