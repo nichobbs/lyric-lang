@@ -2122,6 +2122,30 @@ func lowerMethodCall(
   args:       in List[CallArg]
 ): JvmType {
   val recvTy = lowerExpr(ctx, insns, recv)
+  // Bitwise integer methods (#1610).  The receiver and the single operand
+  // are pushed, then the type-appropriate JVM bitwise opcode is emitted.
+  // `shr` is arithmetic (ISHR/LSHR — sign-replicating); Lyric's Int/Long/
+  // Byte are signed and the JVM backend has no unsigned integer type, so the
+  // logical-shift opcodes (IUSHR/LUSHR) are not reachable here.  Byte uses
+  // the int opcodes (JVM byte arithmetic is int-width).  Long shifts take an
+  // int shift count per the JVM spec, matching `.shl(n: Int)` / `.shr(n: Int)`.
+  if (memberName == "and" or memberName == "or" or memberName == "xor"
+      or memberName == "shl" or memberName == "shr") and args.count == 1 {
+    lowerCallArg(ctx, insns, args[0])
+    val isLong = match recvTy { case JLong -> true; case _ -> false }
+    if memberName == "and" {
+      insns.add(if isLong { LLand } else { LIand })
+    } else if memberName == "or" {
+      insns.add(if isLong { LLor } else { LIor })
+    } else if memberName == "xor" {
+      insns.add(if isLong { LLxor } else { LIxor })
+    } else if memberName == "shl" {
+      insns.add(if isLong { LLshl } else { LIshl })
+    } else {
+      insns.add(if isLong { LLshr } else { LIshr })
+    }
+    return recvTy
+  }
   val paramTys: List[JvmType] = newList()
   var i = 0
   while i < args.count {

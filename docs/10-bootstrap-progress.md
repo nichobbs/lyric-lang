@@ -17240,3 +17240,55 @@ bridge/stdlib suites are the validation of record.
 banner.  The JVM backend (`lyric-compiler/jvm/`) still uses `Lyric.Jvm.Hosts`
 for JVM-bytecode emission; that assembly stays for the JVM target but is no
 longer load-bearing on the .NET path.
+### D-progress-336 — bitwise integer operators (`.and/.or/.xor/.shl/.shr`) in the self-hosted compiler (#1610)
+
+**Status:** Shipped (MSIL verified end-to-end; JVM symmetric).  The
+language reference §12 documents bitwise operators as methods on integer
+types (`x.and(y)`, `x.shl(n)`, …), but the self-hosted compiler did not
+implement them: the keyword-named methods failed to parse, and there was
+no codegen.  This is the prerequisite that unblocks #1592 (a correct
+constant-time `fixedTimeEquals` needs branchless bitwise XOR/OR).
+
+Three layers:
+
+1. **Parser** (`parser/parser_core.l`, `parser/parser_exprs.l`).  Member
+   access after `.` only accepted an identifier, so `x.and(y)` failed with
+   `P0081` (`and`/`or`/`xor` are reserved keywords).  A keyword is
+   unambiguous in member position — only a member name is valid after a
+   `.` — so the new `tryEatMemberName` helper accepts any keyword there,
+   using its `keywordSpelling` as the member name.  It replaces the
+   member-access site's previous `tryEatIdent`, and subsumes the `result`
+   contextual-keyword handling the site used to need.
+
+2. **MSIL codegen** (`msil/codegen.l`).  `lowerMethodCallMsil` gained a
+   branch for `and`/`or`/`xor`/`shl`/`shr` (arity 1): with the receiver
+   already on the stack, it pushes the operand and emits the matching
+   opcode (`MAnd`/`MOr`/`MXor`/`MShl`/`MShr`), returning the receiver's
+   integer type.  `shr` is arithmetic (`MShr`); Lyric's `Int`/`Long`/`Byte`
+   are signed and the MSIL backend has no unsigned integer type, so the
+   logical-shift opcode (`MShrUn`) is not reachable.
+
+3. **JVM codegen** (`jvm/codegen.l`).  `lowerMethodCall` gained the
+   symmetric branch, selecting int (`LIand`/…/`LIshr`) vs long
+   (`LLand`/…/`LLshr`) opcodes by receiver type.  Long shifts take an int
+   shift count per the JVM spec, matching `.shl(n: Int)`.
+
+**Verification.**  MSIL verified end-to-end against known values:
+`5.xor(3)==6`, `5.or(2)==7`, `6.and(3)==2`, `1.shl(4)==16`,
+`64.shr(2)==16`, arithmetic `-8.shr(1)==-4` and `-1.shr(1)==-1`; `Long`
+`255.and(15)==15`, `255.xor(15)==240`, `1.shl(10)==1024`, `1024.shr(2)==256`.
+Emitter suite 845/0; CLI suite 83/0.  The JVM lowering is structurally
+symmetric with the verified MSIL path and the CLI/JVM-bridge suite passes,
+but is **not yet executed end-to-end** — the repo has no Lyric-native
+JVM compile-and-run test harness, and adding one would require new F#
+test wiring (disallowed).  Likewise there is no executable MSIL regression
+test in-tree: `lyric-stdlib/tests/*.l` and `ArithmeticTests.fs` both
+compile through the **F# stage-0** parser, which still rejects `.xor()`,
+so a `_tests.l` there cannot cover a self-hosted-only feature.  A
+self-hosted-pipeline executable test harness (so features like this get
+permanent in-tree regression coverage without F#) is the gap; tracked in
+#1611.
+
+This also makes #1592 actionable: the auth kernel's `fixedTimeEquals` can
+now be a pure-Lyric constant-time compare and `hmacSha256` a direct BCL
+extern, retiring the `Lyric.Auth.Host` F# shim.
