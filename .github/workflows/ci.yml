@@ -380,6 +380,31 @@ jobs:
           fi
           LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/cfg_gate_self_test.l
 
+      # Bitwise self-test — first executable regression test for a
+      # self-hosted-only *language feature* (the `.and/.or/.xor/.shl/.shr`
+      # integer methods, #1610).  Run via native `lyric test`, which
+      # synthesises a program from the `test` blocks and compiles it
+      # in-process through the self-hosted `Msil.Bridge` (the F# stage-0
+      # emitter can't parse keyword-named methods — `x.xor(y)` -> P0081),
+      # then executes it and asserts every runtime value.  Resolves the
+      # MSIL half of issue #1611 with no new F#.  No `LYRIC_LOAD_COMPILER=1`
+      # here: this module imports only `Std.*`, not the compiler packages.
+      - name: Bitwise self-test (native lyric test)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping bitwise self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping bitwise self-test"
+            exit 0
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
+
       # Coverage collection — informational only, not a blocking gate (#1117).
       # Runs on push to main (not pull_request) to keep PR latency low.
       # Uses `dotnet-coverage` CLI against the same Expecto-based test
