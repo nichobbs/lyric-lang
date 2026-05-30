@@ -17131,3 +17131,37 @@ indexes/measures collections as `List[object]` (`.length`→get_Count,
 `[i]`→get_Item), which faults on a genuine array (`verifyJwtImpl`'s
 `split(token, ".")` + `parts[0..2]`).  Tracked for a follow-up that adds
 `ldelem`/`ldlen` support for `MArray` receivers.
+
+### D-progress-333 — self-hosted MSIL: array consumption (`ldelem`/`ldlen`) for `MArray` receivers (#1471)
+
+**Status:** Shipped.  Completes the slice/array story: with `slice[T]`
+lowering to `T[]` (D-progress, slice work), a real array returned from the
+F# stdlib (e.g. `Std.String.split → String[]`) could be *passed* opaquely but
+not *consumed* — indexing and length went through the `List[object]` ops
+(`get_Item` / `get_Count`), which fault on a genuine array.
+
+**Fix:**
+
+- `lyric-compiler/msil/lowering.l` — new `MLdelemRef` / `MLdelemU1` /
+  `MLdelemI4` instructions (and `MLdlen` already present), wired to the
+  existing `emitLdelem_*` / `emitLdlen` opcode helpers.
+- `lyric-compiler/msil/codegen.l` — `EIndex` on an `MArray(elem)` receiver
+  pushes the index then emits the element-typed `ldelem` (`.ref` for
+  `String[]`/object/class elements, `.u1` for `byte[]`, `.i4` for `int[]`),
+  returning the element type.  `EMember` `.length`/`.count` on `MArray`
+  emits `ldlen` + `conv.i4`.
+
+**Verified:** `split("a.b.c", ".")` → `parts.length == 3`, `parts[0..2]` =
+`a`/`b`/`c`.  Emitter suite 845/0.  `lyric-auth` 16/29 → **17/29**; the
+kernel-path tests now reach the crypto extern (their failure mode changed
+from "invalid program" to a clean `Lyric.Auth.AuthHost` host-type load
+error — a separate FFI host-shim resolution gap, below).
+
+**Residual (separate blocker):** the remaining `lyric-auth` failures are
+`Could not load type 'Lyric.Auth.AuthHost'` — the auth kernel's crypto
+externs (`@externTarget("Lyric.Auth.AuthHost.hmacSha256")`, …) point at the
+F# host shim `bootstrap/src/Lyric.Auth.Host/`, which the self-hosted MSIL FFI
+resolver does not locate (it defaults the assembly to `System.Runtime`).
+The production fix is to migrate those crypto externs to direct BCL
+`extern`s in `_kernel/` (per the no-F#-shim rule), or to teach the FFI
+resolver the host assembly — tracked separately from this codegen series.

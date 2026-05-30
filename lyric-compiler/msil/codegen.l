@@ -1827,6 +1827,19 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
             MObject
           }
         }
+        case MArray(_) -> {
+          // Real CLI array receiver: `.length` / `.count` is `ldlen` (which
+          // pushes a native int; conv.i4 narrows it to the Int the rest of the
+          // codegen expects).
+          if memberName == "length" or memberName == "count" {
+            insns.add(MLdlen)
+            insns.add(MConvI4)
+            MInt
+          } else {
+            insns.add(MPop)
+            MObject
+          }
+        }
         case _ -> {
           // TyException built-in members: .message and .typeName.
           // Catch-clause exception bindings are stored as MObject; detect by member name.
@@ -1996,6 +2009,22 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
           match elemTy {
             case MClass(cls) -> MClass(className = cls)
             case _ -> elemTy
+          }
+        }
+        case MArray(elem) -> {
+          // Real CLI array receiver (e.g. `slice[String]` → `String[]` from a
+          // stdlib call such as `Std.String.split`).  Push the index, then load
+          // the element with the opcode matching the element type — the array
+          // is already on the stack, so stack is [array, index] before ldelem.
+          if indices.count > 0 {
+            lowerExprMsil(cctx, fctx, insns, indices[0])
+          }
+          match elem {
+            case MByte     -> { insns.add(MLdelemU1);  MInt }
+            case MInt      -> { insns.add(MLdelemI4);  MInt }
+            case MString   -> { insns.add(MLdelemRef); MString }
+            case MClass(c) -> { insns.add(MLdelemRef); MClass(className = c) }
+            case _         -> { insns.add(MLdelemRef); elem }
           }
         }
         case _ -> {
