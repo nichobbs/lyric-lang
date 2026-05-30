@@ -16916,3 +16916,54 @@ hard diagnostic (H8), instance/non-void auto-FFI (H9), and generic externs
   `SelfHostedMsilBridgeTests`): prints `hello world`.
 - Full `SelfHostedMsil bridge` suite: 41 passed, 0 failed; stage-1
   self-build succeeds.
+
+### D-progress-327 — FFI unresolved-extern-type hard diagnostic (#1504 H8)
+
+**Status:** Shipped.  An `@externTarget` (or auto-FFI call) whose type cannot
+be resolved to a known reference assembly now fails the build with a clear,
+type-specific diagnostic instead of silently binding to `System.Runtime` and
+failing at runtime with an opaque `TypeLoadException`.
+
+**Problem:** `clrAssemblyForType` defaulted every unrecognised type to
+`System.Runtime` (`ffi.l`).  A typo (`Sytem.Console`) or an unsupported
+third-party type therefore produced a structurally-valid PE with a wrong
+`AssemblyRef`/`TypeRef`, and the only failure signal was a runtime
+`TypeLoadException` with no pointer back to the offending `@externTarget`.
+
+**Fix:**
+
+- `lyric-compiler/msil/ffi.l` — `clrAssemblyResolvable(typeFqn): Bool` returns
+  true only for `System.*` BCL types and `Lyric.*` internal hosts
+  (`Lyric.Emitter`, `Lyric.Stdlib`, `Lyric.Jvm.Hosts`) — the complete set the
+  cascade can actually resolve.  (Audited every extern FQN reachable across
+  `lyric-stdlib/std/_kernel/` and `lyric-compiler/msil/_kernel/`: all are
+  `System.*` or `Lyric.*`, so no live extern is affected.)
+- `lyric-compiler/msil/codegen.l` — `emitExternTargetBody` and
+  `emitAutoFfiCallMsil` consult the predicate and `panic` with a clear,
+  type-specific message when the type is unresolvable.  This is the same
+  build-time-diagnostic mechanism the `@externStatic`/`@externInstance`
+  conflict already uses (#790), and it surfaces on the CLI as `B0001` +
+  the message on stderr.
+
+**Scope note:** MSIL (`--target dotnet`) only, per epic #1470's JVM-deferred
+banner.  Part of #1504; remaining: H9 (instance/non-void auto-FFI) and generic
+externs (blocked on #1497).
+
+**Validation:**
+
+- Manual end-to-end (CLI): a program declaring `extern type Bad = "FooBar.Baz"`
+  fails `lyric build` with
+  `FFI extern 'FooBar.Baz..ctor' on 'newBad' references type 'FooBar.Baz',
+  which cannot be resolved to a known reference assembly …` instead of building
+  a mis-bound DLL.
+- Positive path unchanged: `shm_ffi_class_extern` (a `System.Text.StringBuilder`
+  extern) still compiles and runs; full `SelfHostedMsil bridge` suite 41/41.
+
+**Test-harness note:** an in-harness negative test (`mkBridgeFails`) is not
+addable for this case — the in-process bridge (`SelfHostedMsil.compileToDll`)
+does not catch codegen `panic`s (they surface as `TargetInvocationException`
+rather than a `false` return), the same limitation that applies to the
+pre-existing F0002 conflict panic.  Adding a "compiles-then-throws" or
+panic-catching helper would require new F# test infrastructure, which the
+project standard forbids.  The CLI path (which does catch the panic → `B0001`)
+is the validated surface.

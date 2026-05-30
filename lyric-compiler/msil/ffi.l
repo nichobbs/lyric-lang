@@ -186,6 +186,18 @@ pub func clrAssemblyForType(typeFqn: in String): String {
   "System.Runtime"
 }
 
+// True when `clrAssemblyForType` can resolve `typeFqn` to a real reference
+// assembly rather than guessing the `System.Runtime` default (#1504 H8).
+// Resolvable = a `System.*` BCL type (forwarded by / mapped to a concrete
+// facade) or a `Lyric.*` internal host (`Lyric.Emitter`, `Lyric.Stdlib`,
+// `Lyric.Jvm.Hosts`).  Anything else — a typo (`Sytem.Console`) or an
+// unsupported third-party type — would silently mis-bind to `System.Runtime`
+// and fail at runtime with an opaque `TypeLoadException`; callers use this to
+// emit a clear diagnostic instead.
+pub func clrAssemblyResolvable(typeFqn: in String): Bool {
+  Str.startsWith(typeFqn, "System.") or Str.startsWith(typeFqn, "Lyric.")
+}
+
 // ── Resolver ─────────────────────────────────────────────────────────────────
 
 // `paramArity` was carried over from the earlier reflection-based

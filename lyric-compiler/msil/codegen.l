@@ -4640,6 +4640,22 @@ func emitExternTargetBody(
       // `buildFfiMethodSigCtx`, so the runtime-throw bail that previously
       // fired for class-typed FFI signatures is gone.
 
+      // #1504 H8: an extern type the FFI cascade can't resolve to a known
+      // reference assembly used to silently bind to `System.Runtime`, then
+      // fail at runtime with an opaque `TypeLoadException`.  Fail the build
+      // with a clear, type-specific diagnostic instead (matching the
+      // @externStatic/@externInstance conflict panic above, #790).
+      val resolvedFqn =
+        if r.namespaceStr == "" { r.typeName }
+        else { r.namespaceStr + "." + r.typeName }
+      if not clrAssemblyResolvable(resolvedFqn) {
+        panic("Msil.Codegen: FFI extern '" + target + "' on '" + decl.name
+          + "' references type '" + resolvedFqn + "', which cannot be resolved "
+          + "to a known reference assembly (only System.* and the Lyric host "
+          + "assemblies are supported); check the @externTarget annotation for "
+          + "a typo or an unsupported type.")
+      }
+
       val tRefRow = internFfiTypeRef(
         cctx, r.assemblyName, r.namespaceStr, r.typeName)
 
@@ -6294,6 +6310,15 @@ func emitAutoFfiCallMsil(
   args:       in List[CallArg],
   clrFqn:     in String
 ): MsilType {
+  // #1504 H8: reject an extern-type CLR name the FFI cascade can't resolve to
+  // a known reference assembly, rather than silently mis-binding it to
+  // `System.Runtime` (opaque runtime `TypeLoadException`).
+  if not clrAssemblyResolvable(clrFqn) {
+    panic("Msil.Codegen: auto-FFI call '" + methodName + "' on extern type '"
+      + clrFqn + "' cannot be resolved to a known reference assembly (only "
+      + "System.* and the Lyric host assemblies are supported); check the "
+      + "extern type's CLR name for a typo or an unsupported type.")
+  }
   val sp = splitTypeFqn(clrFqn)
   val asmName = clrAssemblyForType(clrFqn)
   val tRefRow = internFfiTypeRef(cctx, asmName, sp.ns, sp.name)
