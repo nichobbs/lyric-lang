@@ -120,6 +120,8 @@ r#"contains "quotes""#         // hash delimiters for embedded quotes
 
 Doc comments are part of the contract metadata and surface in `lyric doc`. Doctest code blocks are extracted and run by the test harness.
 
+`///` (an *outer* doc comment) attaches to the **item that follows it** and so must precede an item declaration. `//!` (an *inner* doc comment) documents the **enclosing module** and is the correct form for a file-header doc block at the top of a source file — i.e. *before* the `package` declaration. A `///` placed before `package` has no item to attach to and is rejected with `error[P0020]: a '///' doc comment before 'package' has no item to document; use '//!' for a module-level doc comment`.
+
 ### 1.6 Whitespace and significance
 
 Whitespace is not significant beyond token separation. Statements are terminated by newlines; semicolons are optional but permitted for multiple statements on one line. Blocks use braces.

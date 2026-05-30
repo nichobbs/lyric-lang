@@ -546,7 +546,20 @@ pub func parsePackageDecl(st: inout ParseState): PackageDecl {
       // when there's no content at all.  Non-empty files missing 'package'
       // still get P0020.
       if not isAtEnd(st) {
-        emitErr(st, "P0020", "expected 'package' declaration at the head of the file", peekSpan(st))
+        // A leading `///` (item/outer doc) before `package` has no item to
+        // attach to — `parseModuleDocComments` only harvests `//!`
+        // (module/inner docs), so the `///` is left in the stream and lands
+        // here.  Point the author at `//!` rather than the misleading bare
+        // "expected 'package'" message (the package usually IS present, just
+        // after the stray doc comment).
+        val msg = match peekToken(st) {
+          case TDocComment(_) ->
+            "a '///' doc comment before 'package' has no item to document; " +
+            "use '//!' for a module-level doc comment"
+          case _ ->
+            "expected 'package' declaration at the head of the file"
+        }
+        emitErr(st, "P0020", msg, peekSpan(st))
       }
       val sp = peekSpan(st)
       val emptySegs: List[String] = newList()

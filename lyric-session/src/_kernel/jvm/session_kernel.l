@@ -1,17 +1,17 @@
-/// Session.Kernel.Jvm — JVM extern boundary for distributed session storage.
-///
-/// JVM implementation of the same contract as Session.Kernel.Net.  All Redis
-/// operations resolve through `lyric.session.RedisStore`, which the JVM runtime
-/// backs with Lettuce (`io.lettuce.core.RedisClient`).  In-memory operations
-/// resolve through `lyric.session.InMemoryStore`, backed by
-/// `java.util.concurrent.ConcurrentHashMap`.
-///
-/// The public re-export functions are identical to Session.Kernel.Net so that
-/// the `Session` package can call either kernel through the target-gated
-/// dispatcher helpers in session.l without reshaping.
-///
-/// Only active when compiled with feature = "jvm" (Phase 6).
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+//! Session.Kernel.Jvm — JVM extern boundary for distributed session storage.
+//!
+//! JVM implementation of the same contract as Session.Kernel.Net.  All Redis
+//! operations resolve through `lyric.session.RedisStore`, which the JVM runtime
+//! backs with Lettuce (`io.lettuce.core.RedisClient`).  In-memory operations
+//! resolve through `lyric.session.InMemoryStore`, backed by
+//! `java.util.concurrent.ConcurrentHashMap`.
+//!
+//! The public re-export functions are identical to Session.Kernel.Net so that
+//! the `Session` package can call either kernel through the target-gated
+//! dispatcher helpers in session.l without reshaping.
+//!
+//! Only active when compiled with feature = "jvm" (Phase 6).
+//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 @cfg(feature = "jvm")
 package Session.Kernel.Jvm

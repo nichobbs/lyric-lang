@@ -168,12 +168,17 @@ pub func loadRestoredPackage(dllPath: in String): Result[List[RestoredArtifact],
 //
 // Mirrors `bootstrap/src/Lyric.Emitter/RestoredPackages.fs::synthesiseSource`.
 
-// Render one decl's source-level form.  Interfaces declare in source
-// as `pub interface I {}` — the contract's `Repr` is just the head
-// (`pub interface I`) without the body, so append an empty block.
-// Every other decl kind already includes its full source-level shape.
+// Render one decl's source-level form.  Interface reprs arrive in two
+// shapes depending on which contract writer produced the DLL: the
+// self-hosted writer (`contract_meta.l::reprForInterface`) emits the
+// full `pub interface I { ...method sigs... }` body, while the legacy
+// F# writer (`ContractMeta.fs`) emits only the head `pub interface I`.
+// Append an empty block ONLY for the head-only form — doing so for a
+// repr that already carries its body produces `... } {}`, a bare
+// trailing block that fails to re-parse as an item declaration (#1596).
+// Every non-interface decl kind already includes its full shape.
 func renderDecl(d: in Meta.ContractDecl): String {
-  if d.kind == "interface" {
+  if d.kind == "interface" and d.repr.indexOf("{") < 0 {
     d.repr + " {}\n"
   } else {
     d.repr + "\n"
