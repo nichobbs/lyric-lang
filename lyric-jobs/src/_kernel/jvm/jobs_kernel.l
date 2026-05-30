@@ -1,23 +1,23 @@
-/// Jobs.Kernel.Jvm — JVM extern boundary for background job scheduler backends.
-///
-/// JVM implementation of the same contract as Jobs.Kernel.Net.
-///
-/// Hangfire has no JVM port.  Both the `hangfire` and `quartz` Lyric features
-/// are satisfied on JVM by Quartz Scheduler (org.quartz-scheduler:quartz 2.3.2).
-/// The @cfg gates are preserved so feature selection still controls which Maven
-/// artifact is activated; at runtime both map to the same Quartz Scheduler API.
-///
-/// Scheduler handle table, status strings, and results JSON format are identical
-/// to the .NET kernel:
-///   status strings: "Pending" | "Running" | "Succeeded" | "Failed" | "Cancelled"
-///   results JSON:   [{"jobId":"...","status":"...","output":"...","error":"...",
-///                     "startedAt":N,"finishedAt":N},...]
-///
-/// InProcessJobScheduler (no Maven dep) uses `lyric.jobs.InProcessScheduler`,
-/// a custom in-process scheduler helper for single-JVM use.
-///
-/// Only active when compiled with feature = "jvm" (Phase 6).
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+//! Jobs.Kernel.Jvm — JVM extern boundary for background job scheduler backends.
+//!
+//! JVM implementation of the same contract as Jobs.Kernel.Net.
+//!
+//! Hangfire has no JVM port.  Both the `hangfire` and `quartz` Lyric features
+//! are satisfied on JVM by Quartz Scheduler (org.quartz-scheduler:quartz 2.3.2).
+//! The @cfg gates are preserved so feature selection still controls which Maven
+//! artifact is activated; at runtime both map to the same Quartz Scheduler API.
+//!
+//! Scheduler handle table, status strings, and results JSON format are identical
+//! to the .NET kernel:
+//!   status strings: "Pending" | "Running" | "Succeeded" | "Failed" | "Cancelled"
+//!   results JSON:   [{"jobId":"...","status":"...","output":"...","error":"...",
+//!                     "startedAt":N,"finishedAt":N},...]
+//!
+//! InProcessJobScheduler (no Maven dep) uses `lyric.jobs.InProcessScheduler`,
+//! a custom in-process scheduler helper for single-JVM use.
+//!
+//! Only active when compiled with feature = "jvm" (Phase 6).
+//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 @cfg(feature = "jvm")
 package Jobs.Kernel.Jvm

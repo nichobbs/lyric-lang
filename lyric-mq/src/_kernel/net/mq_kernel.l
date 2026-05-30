@@ -1,27 +1,27 @@
-/// Mq.Kernel.Net — .NET extern boundary for message broker drivers.
-///
-/// Phase 5 of #733: in-memory queue backend functional via
-/// `Lyric.Mq.InMemoryHost`.  The four broker drivers (RabbitMQ, Azure
-/// Service Bus, AWSSDK.SQS, Confluent.Kafka) remain declarative-only —
-/// their bindings are routed to placeholder `*NotYet` targets that
-/// return a clear "not yet implemented" error until broker-specific
-/// Testcontainers infrastructure lands (#779 follow-up).
-///
-/// All drivers use an integer `queueId` handle issued at connect time.
-/// The in-memory backend maintains a per-process `ConcurrentDictionary`
-/// of queues with separate Pending (FIFO) and InFlight (ack-tracking)
-/// state, mirroring RabbitMQ's basic.nack(requeue) semantics.
-///
-/// `publishBatch` has been removed from the kernel boundary (#1022):
-/// it required the F# host to parse a JSON array, violating the
-/// typed-parameters contract.  The public `Mq.publishBatch` wrapper
-/// now loops over `publish` at the Lyric level.
-///
-/// Wire format for messages returned by `consume`:
-///   JSON object: {"id":"...","body":"...","headers":[],"deliveryCount":N}
-///   Empty string "" signals a timeout (no message available).
-///
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+//! Mq.Kernel.Net — .NET extern boundary for message broker drivers.
+//!
+//! Phase 5 of #733: in-memory queue backend functional via
+//! `Lyric.Mq.InMemoryHost`.  The four broker drivers (RabbitMQ, Azure
+//! Service Bus, AWSSDK.SQS, Confluent.Kafka) remain declarative-only —
+//! their bindings are routed to placeholder `*NotYet` targets that
+//! return a clear "not yet implemented" error until broker-specific
+//! Testcontainers infrastructure lands (#779 follow-up).
+//!
+//! All drivers use an integer `queueId` handle issued at connect time.
+//! The in-memory backend maintains a per-process `ConcurrentDictionary`
+//! of queues with separate Pending (FIFO) and InFlight (ack-tracking)
+//! state, mirroring RabbitMQ's basic.nack(requeue) semantics.
+//!
+//! `publishBatch` has been removed from the kernel boundary (#1022):
+//! it required the F# host to parse a JSON array, violating the
+//! typed-parameters contract.  The public `Mq.publishBatch` wrapper
+//! now loops over `publish` at the Lyric level.
+//!
+//! Wire format for messages returned by `consume`:
+//!   JSON object: {"id":"...","body":"...","headers":[],"deliveryCount":N}
+//!   Empty string "" signals a timeout (no message available).
+//!
+//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 package Mq.Kernel.Net
 

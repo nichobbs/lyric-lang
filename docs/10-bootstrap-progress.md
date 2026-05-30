@@ -17344,3 +17344,18 @@ compile and run but fault at runtime with
 codegen defect (interface-method dispatch + `Result` match + union
 `.message`), the same defect class as the `lyric-auth` series, **not** a
 parse issue.  Tracked in #1602.
+
+### D-progress-338 — audit + fix `///`-before-`package` in remaining `_kernel` files (#1609)
+
+**Status:** Shipped.  D-progress-337 fixed the three `_kernel` files whose
+`///` module-header blocks before `package` blocked the `lyric-session`
+build.  The review (#1609) flagged that other ecosystem `_kernel` files
+likely shared the latent bug.  A repo-wide audit found **12 more**
+(`lyric-db`, `lyric-feature-flags`, `lyric-i18n`, `lyric-jobs` net+jvm,
+`lyric-mail` net+jvm, `lyric-mq`, `lyric-search`, `lyric-storage`,
+`lyric-ws` net+jvm) — each opening with a `///` (outer/item) doc block
+before `package`, which the parser rejects with `P0020` since `///` has
+no following item to attach to.  All converted to `//!` (module/inner
+docs), the correct sigil for a file-header doc block.  The change is
+purely the comment prefix; no code or behaviour changes.  Post-fix audit
+is clean — no `.l` file opens with `///` before `package`.

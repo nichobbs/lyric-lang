@@ -1,23 +1,23 @@
-/// Jobs.Kernel.Net — .NET extern boundary for background job scheduler backends.
-///
-/// Phase 3 of #733: in-process scheduler functional via
-/// `Lyric.Jobs.InProcessHost`.  Hangfire and Quartz.NET backends remain
-/// declarative-only — their bindings are routed to placeholder
-/// `*NotYet` targets that return a clear "not yet implemented" error
-/// until the durable-persistence shims land (#781 follow-up).
-///
-/// Shared threading primitives (`nowMs`, `sleepMs`, `generateId`) bind to
-/// `Lyric.Jobs.Threading` — the lyric-jobs equivalent of the thread-pool
-/// utility namespace.
-///
-/// Job status strings returned by `status`:
-///   "Pending" | "Running" | "Succeeded" | "Failed" | "Cancelled"
-///
-/// Results JSON format returned by `results`:
-///   [{"jobId":"...","status":"...","output":"...","error":"...",
-///     "startedAt":N,"finishedAt":N},...]
-///
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+//! Jobs.Kernel.Net — .NET extern boundary for background job scheduler backends.
+//!
+//! Phase 3 of #733: in-process scheduler functional via
+//! `Lyric.Jobs.InProcessHost`.  Hangfire and Quartz.NET backends remain
+//! declarative-only — their bindings are routed to placeholder
+//! `*NotYet` targets that return a clear "not yet implemented" error
+//! until the durable-persistence shims land (#781 follow-up).
+//!
+//! Shared threading primitives (`nowMs`, `sleepMs`, `generateId`) bind to
+//! `Lyric.Jobs.Threading` — the lyric-jobs equivalent of the thread-pool
+//! utility namespace.
+//!
+//! Job status strings returned by `status`:
+//!   "Pending" | "Running" | "Succeeded" | "Failed" | "Cancelled"
+//!
+//! Results JSON format returned by `results`:
+//!   [{"jobId":"...","status":"...","output":"...","error":"...",
+//!     "startedAt":N,"finishedAt":N},...]
+//!
+//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 package Jobs.Kernel.Net
 

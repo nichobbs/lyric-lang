@@ -1,12 +1,12 @@
-/// Flags.Kernel.Jvm — JVM extern boundary for remote feature flag store drivers.
-///
-/// JVM implementation of the same contract as Flags.Kernel.Net.  HTTP polling
-/// uses `java.net.http.HttpClient` (JDK 11+, no external dependency required).
-/// The process-global flag registry uses `lyric.flags.Registry` backed by
-/// `java.util.concurrent.ConcurrentHashMap`.
-///
-/// Only active when compiled with feature = "jvm" (Phase 6).
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+//! Flags.Kernel.Jvm — JVM extern boundary for remote feature flag store drivers.
+//!
+//! JVM implementation of the same contract as Flags.Kernel.Net.  HTTP polling
+//! uses `java.net.http.HttpClient` (JDK 11+, no external dependency required).
+//! The process-global flag registry uses `lyric.flags.Registry` backed by
+//! `java.util.concurrent.ConcurrentHashMap`.
+//!
+//! Only active when compiled with feature = "jvm" (Phase 6).
+//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 @cfg(feature = "jvm")
 package Flags.Kernel.Jvm

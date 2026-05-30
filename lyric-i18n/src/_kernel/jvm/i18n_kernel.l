@@ -1,16 +1,16 @@
-/// I18n.Kernel.Jvm — JVM extern boundary for translation file loading and JSON parsing.
-///
-/// JVM implementation of the same contract as I18n.Kernel.Net.  All operations
-/// resolve through a single host helper namespace `lyric.i18n.FileLoader`,
-/// which the JVM runtime backs with `java.nio.file.Files` for I/O and the
-/// stdlib JSON parser for translation-file decoding.
-///
-/// Translation file format and the array-of-triples wire format produced by
-/// `parseTranslationsJson` are identical to the .NET kernel — the public
-/// `I18n` package consumes either kernel without re-shaping.
-///
-/// Only active when compiled with feature = "jvm" (Phase 6).
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+//! I18n.Kernel.Jvm — JVM extern boundary for translation file loading and JSON parsing.
+//!
+//! JVM implementation of the same contract as I18n.Kernel.Net.  All operations
+//! resolve through a single host helper namespace `lyric.i18n.FileLoader`,
+//! which the JVM runtime backs with `java.nio.file.Files` for I/O and the
+//! stdlib JSON parser for translation-file decoding.
+//!
+//! Translation file format and the array-of-triples wire format produced by
+//! `parseTranslationsJson` are identical to the .NET kernel — the public
+//! `I18n` package consumes either kernel without re-shaping.
+//!
+//! Only active when compiled with feature = "jvm" (Phase 6).
+//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 @cfg(feature = "jvm")
 package I18n.Kernel.Jvm

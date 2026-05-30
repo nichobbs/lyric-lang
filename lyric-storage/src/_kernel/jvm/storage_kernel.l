@@ -1,18 +1,18 @@
-/// Storage.Kernel.Jvm — JVM extern boundary for object/file storage providers.
-///
-/// JVM implementation of the same contract as Storage.Kernel.Net.  All operations
-/// resolve through provider-specific JVM libraries:
-///   software.amazon.awssdk:s3       — Amazon S3               (@cfg feature = "s3")
-///   com.azure:azure-storage-blob    — Azure Blob Storage       (@cfg feature = "azureblob")
-///   lyric.storage.LocalFs           — Local filesystem         (@cfg feature = "local")
-///
-/// JSON wire formats are identical to the .NET kernel — the public `Storage`
-/// package consumes either kernel without re-shaping.
-///
-/// All storage operations use opaque Int handles returned by `connect*`.
-///
-/// Only active when compiled with feature = "jvm" (Phase 6).
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+//! Storage.Kernel.Jvm — JVM extern boundary for object/file storage providers.
+//!
+//! JVM implementation of the same contract as Storage.Kernel.Net.  All operations
+//! resolve through provider-specific JVM libraries:
+//!   software.amazon.awssdk:s3       — Amazon S3               (@cfg feature = "s3")
+//!   com.azure:azure-storage-blob    — Azure Blob Storage       (@cfg feature = "azureblob")
+//!   lyric.storage.LocalFs           — Local filesystem         (@cfg feature = "local")
+//!
+//! JSON wire formats are identical to the .NET kernel — the public `Storage`
+//! package consumes either kernel without re-shaping.
+//!
+//! All storage operations use opaque Int handles returned by `connect*`.
+//!
+//! Only active when compiled with feature = "jvm" (Phase 6).
+//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 @cfg(feature = "jvm")
 package Storage.Kernel.Jvm

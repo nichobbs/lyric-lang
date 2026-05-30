@@ -1,22 +1,22 @@
-/// Search.Kernel.Jvm — Elasticsearch and Meilisearch extern boundaries for JVM.
-///
-/// JVM implementation of the same contract as Search.Kernel.Net.  Each provider
-/// is backed by its corresponding Java client library:
-///
-///   Elasticsearch (feature = "elasticsearch"):
-///     co.elastic.clients:elasticsearch-java (8.14.0)
-///     JVM host type: co.elastic.clients.elasticsearch.ElasticsearchClient
-///
-///   Meilisearch (feature = "meilisearch"):
-///     com.meilisearch.sdk:meilisearch-java (0.13.2)
-///     JVM host type: com.meilisearch.sdk.Client
-///
-/// All document payloads are passed as JSON strings to avoid tying the
-/// kernel interface to Lyric record types.  The Search package serialises
-/// and deserialises at the boundary; the kernel forwards to the Java SDK.
-///
-/// Only active when compiled with feature = "jvm" (Phase 6).
-/// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+//! Search.Kernel.Jvm — Elasticsearch and Meilisearch extern boundaries for JVM.
+//!
+//! JVM implementation of the same contract as Search.Kernel.Net.  Each provider
+//! is backed by its corresponding Java client library:
+//!
+//!   Elasticsearch (feature = "elasticsearch"):
+//!     co.elastic.clients:elasticsearch-java (8.14.0)
+//!     JVM host type: co.elastic.clients.elasticsearch.ElasticsearchClient
+//!
+//!   Meilisearch (feature = "meilisearch"):
+//!     com.meilisearch.sdk:meilisearch-java (0.13.2)
+//!     JVM host type: com.meilisearch.sdk.Client
+//!
+//! All document payloads are passed as JSON strings to avoid tying the
+//! kernel interface to Lyric record types.  The Search package serialises
+//! and deserialises at the boundary; the kernel forwards to the Java SDK.
+//!
+//! Only active when compiled with feature = "jvm" (Phase 6).
+//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
 @cfg(feature = "jvm")
 package Search.Kernel.Jvm
