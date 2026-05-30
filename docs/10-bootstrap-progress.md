@@ -17168,3 +17168,75 @@ The production fix is to migrate those crypto externs to direct BCL
 from this codegen series.  A further single test (`extractClaim` ASCII, #25)
 runs but returns empty — the kernel base64/UTF8/JSON pipeline, also noted
 in #1592.
+
+### D-progress-335 — pure-Lyric PE byte writer; Lyric.Jvm.Hosts off the .NET path (#1492)
+
+**Status:** Shipped.  `Msil.Kernel.ByteWriter` — the buffer every emitted PE
+byte flows through — is now a pure-Lyric `List[Byte]` buffer instead of the F#
+`Lyric.Jvm.Hosts.JvmByteHost` host, so `--target dotnet` builds no longer route
+bytes through `Lyric.Jvm.Hosts.dll`.
+
+**Change (`lyric-compiler/msil/_kernel/kernel.l`):**
+
+- `ByteWriter` is a `record { data: List[Byte] }`; `bufNew` allocates the list
+  and the `buf*` helpers append into it in place.
+- `bufU1` masks to `[0, 255]` (`((v % 256) + 256) % 256`) to match the former
+  host's `byte v` (`& 0xFF`) — `buildI4ConstantBlob` and friends pass
+  `v % 256`, which can be negative under Lyric's sign-of-dividend remainder.
+- `bufU2`/`bufU4` peel successive little-endian bytes with `bufU1` (which masks
+  the low byte) plus an arithmetic right-shift helper `shr8` — floor division,
+  since Lyric `/` truncates toward zero.  A naive `v / 256` corrupts the high
+  byte for a negative `Int` (e.g. a backward branch offset, or `-1` whose four
+  bytes must all be `0xFF`), which produced invalid IL
+  (`InvalidProgramException` on every loop).  `shr8` adjusts the truncated
+  quotient (`if v % 256 < 0 { v/256 - 1 } else { v/256 }`) and never negates
+  `v`, so it is correct even at `Int.MinValue` — and stays within 32-bit `Int`
+  (an earlier draft used a `2^32` literal, which is unrepresentable in Lyric's
+  32-bit `Int` and failed to parse).
+- `bufI8Le` / `bufF8Le` use the audited `System.BitConverter.GetBytes(Long)` /
+  `GetBytes(Double)` externs (returning `slice[Byte]`) for 64-bit / IEEE-754
+  binary64 little-endian extraction (impractical in Lyric without bitwise
+  primitives, #875).  `System.BitConverter` resolves via `System.Runtime`.
+- `bufF4Le` (`ldc.r4` / IEEE-754 binary32) narrows the `Double` to a `float` and
+  reinterprets its 32-bit pattern as an `Int` via
+  `System.Convert.ToSingle` → `System.BitConverter.SingleToInt32Bits`, then
+  writes it little-endian through `bufU4`.  The `Single` value flows only between
+  the two BCL calls (never into a Lyric local — Lyric has no `Single` type), so
+  the result is exactly the CLR's `(float)v` bit pattern, matching the former
+  host's `BitConverter.GetBytes(single v)`.  Verified by the float32 self-tests
+  (m70/m77/m81) which assert the exact `ldc.r4` byte layout (e.g. `42.0f` =
+  `0x42280000`).  `Convert` / `BitConverter` resolve via `System.Runtime`.
+- `bufToList` returns a **fresh copy** of the backing list, matching the former
+  host's `ToList()` (which allocated a new list).  Returning the live `w.data`
+  aliased buffers that callers snapshot and then keep appending to, which also
+  corrupted output — the copy is required for correctness, not just hygiene.
+- `bufBytes`/`bufByteList`/`bufAppend`/`bufLen`/`bufZero`/`bufPadTo`
+  are pure Lyric over the backing list.  The `buf*` API is unchanged, so the
+  `assembler.l` / `pe.l` / `lowering.l` / `heaps.l` callers are untouched.
+
+**Endianness:** `BitConverter.GetBytes` is host-endian; the compiler runs on
+little-endian targets (x64 / arm64), matching the explicit little-endian layout
+the former F# host produced and the LE assumption already pervasive in PE/MSIL
+emission.
+
+**Validation:**
+
+- Stage-1 self-build green (exit 0, no parse/codegen errors): the self-hosted
+  compiler emits every DLL + the stdlib bundle through the new buffer, so a
+  wrong byte would corrupt a DLL and break the build — the strongest end-to-end
+  check available.
+- `SelfHostedMsil bridge` suite 41/0 (covers `while`/`for` loops — the negative
+  backward-branch offsets the `shr8` arithmetic-shift fix exists for); `stdlib
+  Lyric tests` 31/0.
+- MSIL tree has zero `JvmByteHost` / `Lyric.Jvm.Hosts` references.
+
+**Note:** `scripts/bootstrap.sh --stage 2` (self-hosted² byte compare) is
+currently incompatible with the A1.2 stage-1 CLI-bundle layout (it aborts asking
+for `SKIP_VERIFY=1` or a `stage2()` rewrite), so a standalone byte-for-byte
+`cmp` is not part of this entry's evidence; the stage-1 self-build plus the full
+bridge/stdlib suites are the validation of record.
+
+**Scope note:** MSIL (`--target dotnet`) only, per epic #1470's JVM-deferred
+banner.  The JVM backend (`lyric-compiler/jvm/`) still uses `Lyric.Jvm.Hosts`
+for JVM-bytecode emission; that assembly stays for the JVM target but is no
+longer load-bearing on the .NET path.
