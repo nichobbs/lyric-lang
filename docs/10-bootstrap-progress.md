@@ -16967,3 +16967,204 @@ pre-existing F0002 conflict panic.  Adding a "compiles-then-throws" or
 panic-catching helper would require new F# test infrastructure, which the
 project standard forbids.  The CLI path (which does catch the panic → `B0001`)
 is the validated surface.
+
+### D-progress-328 — self-hosted MSIL backend: remaining String instance methods (#1471)
+
+**Status:** Shipped.  Completes the method-syntax String surface in the
+self-hosted MSIL backend.  Earlier work (re-audit branch) added
+`s.length`, `s[i]`, `s.substring(..)`, `s.replace(..)`, `s.normalize()`,
+and value-based string `==` (via `Object.Equals`).  This adds the
+remaining instance methods that fell through to the unknown-method stub
+(returning `null` → `NullReferenceException` at run time):
+`s.trim()`, `s.indexOf(x)`, `s.lastIndexOf(x)`, `s.startsWith(x)`,
+`s.endsWith(x)`, `s.toLower()`, `s.toUpper()`.
+
+**Fix (`lyric-compiler/msil/codegen.l`):** added the BCL `System.String`
+instance-method tokens (`Trim`, `IndexOf`, `LastIndexOf`, `StartsWith`,
+`EndsWith`, `ToLower`, `ToUpper`) and the matching `lowerMethodCallMsil`
+branches.  `indexOf`/`lastIndexOf` return `Int` with BCL semantics
+(`-1` when absent), distinct from the `Std.String` free functions that
+return `Option[Int]`.
+
+**Tests:** `lyric-stdlib/tests/string_methods_tests.l` (auto-discovered by
+the stdlib Lyric test runner) covers the new methods; Emitter suite
+845 passed / 0 failed.
+
+**Context — `#1471` is not primarily a string-primitives bug.**  With the
+String surface now complete, the `lyric-auth` security suite (the headline
+`#1471` reproduction) still fails on the self-hosted MSIL path because of
+**cross-package / multi-package codegen** issues that are independent of
+string handling and out of scope here:
+
+- **`The signature is incorrect.`** on the `rolesContain` tests — the
+  function compiles and runs correctly *standalone* (verified), so the
+  fault is in the cross-package call from the synthesised test package to
+  `Auth.rolesContain` (a multi-package MemberRef-signature mismatch,
+  surfaced after the #1469 generics/aspect merge).
+- **`Common Language Runtime detected an invalid program.`** on the
+  `jwtAlg`/`verifyJwt` tests — union/`Result`/`Option` matching on
+  cross-package or generic-typed scrutinees: `findTypeDefRowByName` only
+  scans the current assembly, so imported case classes
+  (`Std.Core.Option$None`) fall back to `isinst System.Object` (always
+  true), and generic union scrutinees are typed `MObject`, so the
+  `isinst` test is skipped — the first match arm wins.
+- **`lyric test` / `lyric run` runtime staging** does not co-locate the
+  stdlib DLLs with the compiled assembly (the probing path written is
+  relative + NuGet-layout, so a flat `bin/` never resolves).
+
+These are tracked as the remaining `#1471` work; JVM parity for the
+String surface (and the `MArray`/`MByte` slice encoding and nullary-case
+call-arg threading below) is tracked in **#1585**.  (Subsequent entries in
+this branch fix the signature-incorrect and union-match items.)  The
+seven method-syntax forms are documented in the language reference §12.1
+and `book/chapters/appendix-b-quick-reference.md`.
+
+### D-progress-329 — self-hosted MSIL: `Unit` as a generic type argument (#1471)
+
+**Status:** Shipped.  Fixes the `The signature is incorrect.` failures in
+the `lyric-auth` suite (recovers 9 tests: the `rolesContain` group + two
+others), taking the suite from 0/29 to 8/29.
+
+**Problem:** `Unit` lowers to `MVoid`, and the GENERICINST signature
+encoder (`bufMsilType` / `bufMsilTypeWithCtx` / `buildGenericInstBlob*`,
+the #1442 generic-instance machinery) emitted each type argument verbatim
+— so a `Unit` argument became `ELEMENT_TYPE_VOID` (0x01).  `void` is
+illegal inside a GENERICINST signature (ECMA-335 §II.23.2.14), producing a
+malformed `#Blob` entry.  A function returning `Result[Unit, E]` (e.g.
+`Auth.verifyJwt`) therefore wrote a corrupt MethodDef signature; at run
+time the CLR rejected the surrounding metadata with
+`The signature is incorrect.` — and, because method signatures are encoded
+via the context-free `buildStaticMethodSig` → `bufMsilType` path, the
+corruption surfaced when *any* cross-package caller resolved a sibling
+function in the same package (e.g. the synthesised test package calling
+`Auth.rolesContain`, which compiles and runs correctly in isolation).
+Bisected to the `Unit` type argument specifically: `Result[Int, String]`,
+`Result[Int, JwtError]`, and `Option[Int]` all encode fine; only
+`Result[Unit, …]` broke.
+
+**Fix (`lyric-compiler/msil/lowering.l`):** added `genericArgType`, which
+erases `MVoid` → `MObject` (matching how `Unit` values are represented at
+run time), and applied it at all four type-argument encoding loops.  A
+`Unit`/`void` *return* type still encodes as 0x01 — only type arguments
+are normalised.
+
+**Remaining `#1471` blockers (unchanged):** the 20 `Common Language
+Runtime detected an invalid program.` failures are the cross-package /
+generic-typed union-match `isinst` gap (jwtAlg/verifyJwt), plus one
+`Std.String.split` cross-package MemberRef signature mismatch.
+
+### D-progress-330 — call-argument context threading for nullary generic cases (#1471/#1442)
+
+**Status:** Shipped.  Completes the canonical nullary-union-case
+representation so it is consistent across *all* construction positions.
+
+**Background:** D-progress-328/329 and the slice/`MArray` work converged
+the self-hosted backend onto the F#-stdlib representation: a nullary case
+(`None`) carries the union's concrete type arguments (`Option_None<byte[]>`),
+and the match-site tests a single scrutinee-args `isinst`.  Construction
+already threaded `contextHintTyArgs` for annotated (`val x: Option[T] = None`)
+and return (`return None`) positions, so those built `Option_None<concrete>`.
+The one remaining position — a bare call-argument `f(None)` — had no context
+threaded, so it erased to `Option_None<object>` and the scrutinee-args
+`isinst` then failed (the match-exhaustiveness panic).
+
+**Fix (`lyric-compiler/msil/codegen.l`):** added `funcParamTypes` (declared
+parameter MsilTypes, keyed like `funcTokens`/`funcRetTypes`), populated for
+in-bundle functions (`addPackageTokens`) and cross-package stdlib functions
+(`registerStdlibFunc`).  The resolved-static-call arg loop now threads a
+generic parameter's type arguments into `contextHintTyArgs` (save/replace/
+restore, so an enclosing val/return context for a *different* type does not
+leak into the argument) while lowering that argument.  A bare `f(None)`
+argument therefore constructs `Option_None<concrete>` matching the callee's
+parameter type.
+
+**Verified:** `classify(None)` with `classify(o: Option[String])` (bare
+call-arg, no annotation) now matches `None` correctly; the annotated/return
+forms and F#-returned (`Option[byte[]]`) Nones continue to match.  Emitter
+suite 845/0; `lyric-auth` unchanged at 8/29 (its Nones are F#-returned, so
+this position never applied — the residual 20 are the separate jwtAlg/
+verifyJwt "invalid program", investigated next).
+
+### D-progress-331 — self-hosted MSIL: degrade slice (`MArray`) locals to object in LocalVarSig (#1471)
+
+**Status:** Shipped.  `buildLocalVarSig` degrades `MClass`/`MGenericInst`
+locals to `ELEMENT_TYPE_OBJECT` (0x1C), but a slice local (`MArray`, added
+for the `slice[T]`→`T[]` signature parity in the slice/`MArray` work) fell
+through to `elementTypeByte(MArray)` = 0x1D — the SZARRAY *prefix only*, with
+no element type.  That wrote a malformed LocalVarSig (dangling prefix), which
+corrupted the evaluation stack at run time (`AccessViolationException` /
+invalid program) for any function with a slice-typed local feeding deeper
+expressions — e.g. `jwtAlg`'s `val bytes` from a nested `match` over
+`Option[slice[Byte]]` combined with an if-expression `val`.
+
+**Fix (`lyric-compiler/msil/lowering.l`):** degrade `MArray` locals to object
+(0x1C) like `MClass`/`MGenericInst`; the codegen treats slices as opaque
+references and a `byte[]` value is still a valid object.  Cross-package
+MemberRef signatures keep the precise `T[]` encoding (where F#-stdlib
+agreement is required).  Verified: `jwtAlg` extracts `HS256` standalone and
+via a multi-package build.  Emitter suite 845/0.
+
+### D-progress-332 — self-hosted MSIL: represent `Unit` payload as null in construction and binding (#1471)
+
+**Status:** Shipped.  `Result[Unit, E]` / `Option[Unit]` values broke the
+self-hosted backend because `Unit` (`MVoid`) has no runtime value but is
+still a union-case payload:
+
+1. **Construction:** `Ok(())` lowered the `()` argument to *nothing*
+   (`LUnit` → `MVoid`, no instruction), leaving a stack imbalance at the
+   enclosing `newobj` → invalid program.  `LUnit` as a value now pushes
+   `null` (`MObject`).
+2. **Binding:** `case Ok(u)` allocated `u` as a void local (the bound
+   payload's `concreteFieldTy` resolved to the `Unit` type arg = `MVoid`)
+   → invalid program.  The bound payload now erases `MVoid` → `MObject`
+   (Unit held as null/object).
+
+`lyric-auth`'s `verifyJwt`/`verifyJwtWithSkew` return `Ok(())` and match
+`case Ok(unit)` throughout, so this was the dominant `verifyJwt` "invalid
+program".  Takes `lyric-auth` from 8/29 to **16/29**.  Emitter suite 845/0;
+statement-context `()` results are popped like any other value by block /
+statement lowering (verified by the unchanged 845 suite).
+
+**Residual:** the remaining 13 `lyric-auth` failures are array *consumption*
+— F#-stdlib `split` returns a real `String[]`, but the self-hosted backend
+indexes/measures collections as `List[object]` (`.length`→get_Count,
+`[i]`→get_Item), which faults on a genuine array (`verifyJwtImpl`'s
+`split(token, ".")` + `parts[0..2]`).  Tracked for a follow-up that adds
+`ldelem`/`ldlen` support for `MArray` receivers.
+
+### D-progress-333 — self-hosted MSIL: array consumption (`ldelem`/`ldlen`) for `MArray` receivers (#1471)
+
+**Status:** Shipped.  Completes the slice/array story: with `slice[T]`
+lowering to `T[]` (D-progress, slice work), a real array returned from the
+F# stdlib (e.g. `Std.String.split → String[]`) could be *passed* opaquely but
+not *consumed* — indexing and length went through the `List[object]` ops
+(`get_Item` / `get_Count`), which fault on a genuine array.
+
+**Fix:**
+
+- `lyric-compiler/msil/lowering.l` — new `MLdelemRef` / `MLdelemU1` /
+  `MLdelemI4` instructions (and `MLdlen` already present), wired to the
+  existing `emitLdelem_*` / `emitLdlen` opcode helpers.
+- `lyric-compiler/msil/codegen.l` — `EIndex` on an `MArray(elem)` receiver
+  pushes the index then emits the element-typed `ldelem` (`.ref` for
+  `String[]`/object/class elements, `.u1` for `byte[]`, `.i4` for `int[]`),
+  returning the element type.  `EMember` `.length`/`.count` on `MArray`
+  emits `ldlen` + `conv.i4`.
+
+**Verified:** `split("a.b.c", ".")` → `parts.length == 3`, `parts[0..2]` =
+`a`/`b`/`c`.  Emitter suite 845/0.  `lyric-auth` 16/29 → **17/29**; the
+kernel-path tests now reach the crypto extern (their failure mode changed
+from "invalid program" to a clean `Lyric.Auth.AuthHost` host-type load
+error — a separate FFI host-shim resolution gap, below).
+
+**Residual (separate blocker):** the remaining `lyric-auth` failures are
+`Could not load type 'Lyric.Auth.AuthHost'` — the auth kernel's crypto
+externs (`@externTarget("Lyric.Auth.AuthHost.hmacSha256")`, …) point at the
+F# host shim `bootstrap/src/Lyric.Auth.Host/`, which the self-hosted MSIL FFI
+resolver does not locate (it defaults the assembly to `System.Runtime`).
+The production fix is to migrate those crypto externs to direct BCL
+`extern`s in `_kernel/` (per the no-F#-shim rule; blocked on FFI
+`ReadOnlySpan<byte>` parameter support) — tracked in **#1592**, separately
+from this codegen series.  A further single test (`extractClaim` ASCII, #25)
+runs but returns empty — the kernel base64/UTF8/JSON pipeline, also noted
+in #1592.

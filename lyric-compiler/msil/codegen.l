@@ -89,6 +89,14 @@ pub record CodegenCtx {
   tokStringReplace:     Int   // String.Replace(string,string): string
   tokStringIsNormalized: Int  // String.IsNormalized(): bool
   tokStringNormalize:   Int   // String.Normalize(): string
+  tokStringTrim:        Int   // String.Trim(): string
+  tokStringIndexOf:     Int   // String.IndexOf(string): int32  (-1 if absent)
+  tokStringLastIndexOf: Int   // String.LastIndexOf(string): int32  (-1 if absent)
+  tokStringStartsWith:  Int   // String.StartsWith(string): bool
+  tokStringEndsWith:    Int   // String.EndsWith(string): bool
+  tokStringContains:    Int   // String.Contains(string): bool
+  tokStringToLower:     Int   // String.ToLowerInvariant(): string
+  tokStringToUpper:     Int   // String.ToUpperInvariant(): string
   // Object.Equals(object,object): bool  static (for value-equal string comparisons)
   tokObjectStaticEquals: Int
   // Reverse lookup: simple field name → FieldDef token.  Populated by
@@ -124,6 +132,12 @@ pub record CodegenCtx {
   fieldMsilTypes:     Map[String, MsilType]
   funcTokens:         Map[String, Int]   // funcName → MethodDef token
   funcRetTypes:       Map[String, MsilType]   // funcName → MsilType of declared return
+  // funcName → declared parameter MsilTypes (same arity-qualified + bare keys
+  // as funcTokens).  Used to thread a call argument's expected type into
+  // `contextHintTyArgs` so a bare `f(None)` constructs `Option_None<concrete>`
+  // rather than erasing to `<object>` (keeps the canonical nullary-case
+  // representation consistent across construction positions).
+  funcParamTypes:     Map[String, List[MsilType]]
   // Compile-time const values: registered by IConst pre-scan so that EPath
   // references to const names inline ldc.i4 instead of ldsfld.
   constValues:        Map[String, Int]        // constName → inlined Int value
@@ -517,6 +531,56 @@ pub func newCodegenCtx(packageName: in String,
     lctx, trString, "Normalize",
     "str_normalize", buildInstanceMethodSig(strNormPs, MString))
 
+  // 29e. Remaining String instance methods used via method syntax.
+  val strTrimPs: List[MsilType] = newList()
+  val tokStringTrim = 0x0A000000 + ctxAddMemberRef(
+    lctx, trString, "Trim",
+    "str_trim", buildInstanceMethodSig(strTrimPs, MString))
+
+  val strIndexOfPs: List[MsilType] = newList()
+  strIndexOfPs.add(MString)
+  val tokStringIndexOf = 0x0A000000 + ctxAddMemberRef(
+    lctx, trString, "IndexOf",
+    "str_indexof", buildInstanceMethodSig(strIndexOfPs, MInt))
+
+  val strLastIndexOfPs: List[MsilType] = newList()
+  strLastIndexOfPs.add(MString)
+  val tokStringLastIndexOf = 0x0A000000 + ctxAddMemberRef(
+    lctx, trString, "LastIndexOf",
+    "str_lastindexof", buildInstanceMethodSig(strLastIndexOfPs, MInt))
+
+  val strStartsWithPs: List[MsilType] = newList()
+  strStartsWithPs.add(MString)
+  val tokStringStartsWith = 0x0A000000 + ctxAddMemberRef(
+    lctx, trString, "StartsWith",
+    "str_startswith", buildInstanceMethodSig(strStartsWithPs, MBool))
+
+  val strEndsWithPs: List[MsilType] = newList()
+  strEndsWithPs.add(MString)
+  val tokStringEndsWith = 0x0A000000 + ctxAddMemberRef(
+    lctx, trString, "EndsWith",
+    "str_endswith", buildInstanceMethodSig(strEndsWithPs, MBool))
+
+  val strContainsPs: List[MsilType] = newList()
+  strContainsPs.add(MString)
+  val tokStringContains = 0x0A000000 + ctxAddMemberRef(
+    lctx, trString, "Contains",
+    "str_contains", buildInstanceMethodSig(strContainsPs, MBool))
+
+  // ToLowerInvariant / ToUpperInvariant (not the culture-sensitive
+  // ToLower/ToUpper): protocol strings such as JWT algorithm names must
+  // fold consistently regardless of thread culture (e.g. the Turkish-I
+  // problem, where "I".ToLower() yields "ı" under tr-TR).
+  val strToLowerPs: List[MsilType] = newList()
+  val tokStringToLower = 0x0A000000 + ctxAddMemberRef(
+    lctx, trString, "ToLowerInvariant",
+    "str_tolower_inv", buildInstanceMethodSig(strToLowerPs, MString))
+
+  val strToUpperPs: List[MsilType] = newList()
+  val tokStringToUpper = 0x0A000000 + ctxAddMemberRef(
+    lctx, trString, "ToUpperInvariant",
+    "str_toupper_inv", buildInstanceMethodSig(strToUpperPs, MString))
+
   // 30. Object.Equals(object, object): bool  static
   val objEqPs: List[MsilType] = newList()
   objEqPs.add(MObject)
@@ -578,6 +642,7 @@ pub func newCodegenCtx(packageName: in String,
     fieldMsilTypes       = newMap(),
     funcTokens           = funcToks,
     funcRetTypes         = newMap(),
+    funcParamTypes       = newMap(),
     constValues          = newMap(),
     ffiAsmRefs           = newMap(),
     ffiTypeRefs          = newMap(),
@@ -589,6 +654,14 @@ pub func newCodegenCtx(packageName: in String,
     tokStringReplace     = tokStringReplace,
     tokStringIsNormalized = tokStringIsNormalized,
     tokStringNormalize   = tokStringNormalize,
+    tokStringTrim        = tokStringTrim,
+    tokStringIndexOf     = tokStringIndexOf,
+    tokStringLastIndexOf = tokStringLastIndexOf,
+    tokStringStartsWith  = tokStringStartsWith,
+    tokStringEndsWith    = tokStringEndsWith,
+    tokStringContains    = tokStringContains,
+    tokStringToLower     = tokStringToLower,
+    tokStringToUpper     = tokStringToUpper,
     tokObjectStaticEquals = tokObjectStaticEquals,
     fieldTokensByName    = newMap(),
     actionTypeRefs       = newMap(),
@@ -1033,6 +1106,20 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
         if not cctx.funcRetTypes.containsKey(fqn) {
           cctx.funcRetTypes.add(fqn, retTy)
         }
+        // Record the declared parameter MsilTypes so call sites can thread an
+        // argument's expected type into `contextHintTyArgs` (see funcParamTypes).
+        val paramTys: List[MsilType] = newList()
+        var ppi = 0
+        while ppi < decl.params.count {
+          paramTys.add(typeExprToMsilCtx(cctx, decl.params[ppi].ty, pkgName))
+          ppi = ppi + 1
+        }
+        if not cctx.funcParamTypes.containsKey(arityKey) {
+          cctx.funcParamTypes.add(arityKey, paramTys)
+        }
+        if not cctx.funcParamTypes.containsKey(fqn) {
+          cctx.funcParamTypes.add(fqn, paramTys)
+        }
         methodDefRow = methodDefRow + 1
       }
       case _ -> {}
@@ -1272,6 +1359,26 @@ func resolveTypeFqn(cctx: in CodegenCtx, pkgName: in String, seg: in String): St
   }
 }
 
+// Map a `slice[T]` element type to its MSIL element type.  `Byte` lowers to
+// `MByte` (U1) rather than the scalar `MInt` so a `slice[Byte]` serialises as
+// `byte[]` (U1[]), matching the F#-compiled stdlib (`Std.Encoding.tryDecodeBase64
+// -> Option[byte[]]`).  Other element types use the normal mapping.
+func sliceElemMsilCtx(cctx: in CodegenCtx, elem: in TypeExpr, pkgName: in String): MsilType {
+  match elem.kind {
+    case TRef(path) -> if lastSegmentMsil(path) == "Byte" { MByte }
+                       else { typeExprToMsilCtx(cctx, elem, pkgName) }
+    case _          -> typeExprToMsilCtx(cctx, elem, pkgName)
+  }
+}
+
+func sliceElemMsil(elem: in TypeExpr, pkgName: in String): MsilType {
+  match elem.kind {
+    case TRef(path) -> if lastSegmentMsil(path) == "Byte" { MByte }
+                       else { typeExprToMsil(elem, pkgName) }
+    case _          -> typeExprToMsil(elem, pkgName)
+  }
+}
+
 // Map a Lyric TypeExpr to an MsilType, resolving cross-package
 // type references via the codegen context (#1183 codegen port).
 pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String): MsilType {
@@ -1355,7 +1462,7 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         }
       }
     }
-    case TSlice(_)          -> MObject
+    case TSlice(elem)       -> MArray(elemTy = sliceElemMsilCtx(cctx, elem, pkgName))
     case TNullable(_)       -> MObject
     case TTuple(_)          -> MObject
     case TFunction(_, _)    -> MObject
@@ -1401,7 +1508,7 @@ pub func typeExprToMsil(te: in TypeExpr, pkgName: in String): MsilType {
         MClass(className = pkgName + "." + seg)
       }
     }
-    case TSlice(_)          -> MObject
+    case TSlice(elem)       -> MArray(elemTy = sliceElemMsil(elem, pkgName))
     case TGenericApp(_, _)  -> MObject
     case TNullable(_)       -> MObject
     case TTuple(_)          -> MObject
@@ -1524,7 +1631,14 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
           MBool
         }
         case LUnit -> {
-          MVoid
+          // `()` as a *value* (e.g. the payload of `Ok(())` / `Err(())`, or a
+          // `Result[Unit, E]` Ok arm) is represented as `null`/object — `Unit`
+          // has no distinct runtime value but a payload slot still needs one.
+          // Pushing nothing here left a stack imbalance at the enclosing
+          // `newobj` (invalid program).  Statement-context `()` results are
+          // popped like any other value by the block/statement lowering.
+          insns.add(MLdNull)
+          MObject
         }
         case LChar(cp) -> {
           insns.add(MLdcI4(v = cp))
@@ -1713,6 +1827,19 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
             MObject
           }
         }
+        case MArray(_) -> {
+          // Real CLI array receiver: `.length` / `.count` is `ldlen` (which
+          // pushes a native int; conv.i4 narrows it to the Int the rest of the
+          // codegen expects).
+          if memberName == "length" or memberName == "count" {
+            insns.add(MLdlen)
+            insns.add(MConvI4)
+            MInt
+          } else {
+            insns.add(MPop)
+            MObject
+          }
+        }
         case _ -> {
           // TyException built-in members: .message and .typeName.
           // Catch-clause exception bindings are stored as MObject; detect by member name.
@@ -1882,6 +2009,22 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
           match elemTy {
             case MClass(cls) -> MClass(className = cls)
             case _ -> elemTy
+          }
+        }
+        case MArray(elem) -> {
+          // Real CLI array receiver (e.g. `slice[String]` → `String[]` from a
+          // stdlib call such as `Std.String.split`).  Push the index, then load
+          // the element with the opcode matching the element type — the array
+          // is already on the stack, so stack is [array, index] before ldelem.
+          if indices.count > 0 {
+            lowerExprMsil(cctx, fctx, insns, indices[0])
+          }
+          match elem {
+            case MByte     -> { insns.add(MLdelemU1);  MInt }
+            case MInt      -> { insns.add(MLdelemI4);  MInt }
+            case MString   -> { insns.add(MLdelemRef); MString }
+            case MClass(c) -> { insns.add(MLdelemRef); MClass(className = c) }
+            case _         -> { insns.add(MLdelemRef); elem }
           }
         }
         case _ -> {
@@ -2656,6 +2799,11 @@ func lowerPatternTestMsil(
               emitLoadSlot(insns, scrutSlot, fctx.paramCount)
               match scrutTy {
                 case MGenericInst(_, _, typeArgs) -> {
+                  // Canonical representation: a nullary generic case carries the
+                  // union's concrete type arguments (e.g. `Option.None` on an
+                  // `Option[byte[]]` value is `Option_None<byte[]>`), matching the
+                  // F#-compiled stdlib and the construction side (which threads
+                  // `contextHintTyArgs`).  Test the scrutinee's concrete args.
                   insns.add(MIsinstGeneric(className = ctorKey, typeArgs = typeArgs))
                 }
                 case _ -> {
@@ -2934,6 +3082,14 @@ func lowerPatternBindMsil(
                     }
                     case _ -> {}
                   }
+                }
+                // A `Unit`-typed payload (e.g. binding the Ok value of
+                // `Result[Unit, E]`) has no distinct runtime value; it is held
+                // as `null`/object.  Binding it as `MVoid` would allocate a
+                // void local and produce an invalid program, so erase to object.
+                match concreteFieldTy {
+                  case MVoid -> { concreteFieldTy = MObject }
+                  case _     -> {}
                 }
                 emitLoadSlot(insns, castSlot, fctx.paramCount)
                 match castTy {
@@ -3531,9 +3687,49 @@ func lowerBuiltinOrStaticCallMsil(
                 else                                          { resolvedFqn }
               match mapGet(cctx.funcTokens, tokKey) {
                 case Some(tok) -> {
+                  val callParamTys = match mapGet(cctx.funcParamTypes, tokKey) {
+                    case Some(pts) -> pts
+                    case None      -> newList()
+                  }
                   var i = 0
                   while i < args.count {
-                    lowerCallArgMsil(cctx, fctx, insns, args[i])
+                    // Thread a generic parameter's type args as the construction
+                    // context for this argument so a bare `None` (or other
+                    // nullary case) builds `Option_None<concrete>` rather than
+                    // erasing to `<object>`.  Save/replace/restore the hint stack
+                    // (rather than append) so an enclosing val/return context for
+                    // a *different* type doesn't leak into the argument.
+                    val pTy = if i < callParamTys.count { callParamTys[i] } else { MObject }
+                    match pTy {
+                      case MGenericInst(_, _, pArgs) -> {
+                        val savedHints: List[MsilType] = newList()
+                        var sh = 0
+                        while sh < fctx.contextHintTyArgs.count {
+                          savedHints.add(fctx.contextHintTyArgs[sh])
+                          sh = sh + 1
+                        }
+                        while fctx.contextHintTyArgs.count > 0 {
+                          fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+                        }
+                        var ph = 0
+                        while ph < pArgs.count {
+                          fctx.contextHintTyArgs.add(pArgs[ph])
+                          ph = ph + 1
+                        }
+                        val _ = lowerCallArgMsil(cctx, fctx, insns, args[i])
+                        while fctx.contextHintTyArgs.count > 0 {
+                          fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+                        }
+                        var rh = 0
+                        while rh < savedHints.count {
+                          fctx.contextHintTyArgs.add(savedHints[rh])
+                          rh = rh + 1
+                        }
+                      }
+                      case _ -> {
+                        val _ = lowerCallArgMsil(cctx, fctx, insns, args[i])
+                      }
+                    }
                     i = i + 1
                   }
                   insns.add(MCall(methodToken = tok))
@@ -3639,16 +3835,31 @@ func lowerMethodCallMsil(
     insns.add(MCallvirt(methodToken = cctx.tokDictObjContainsKey))
     MBool
   } else if memberName == "contains" {
-    // List::Contains(object): bool  — bootstrap: always false stub
-    var i = 0
-    while i < args.count {
-      lowerCallArgMsil(cctx, fctx, insns, args[i])
-      insns.add(MPop)
-      i = i + 1
+    match recvTy {
+      case MString -> {
+        // String.Contains(string): bool — receiver string already on stack.
+        if args.count == 1 {
+          lowerCallArgMsil(cctx, fctx, insns, args[0])
+          insns.add(MCallvirt(methodToken = cctx.tokStringContains))
+        } else {
+          insns.add(MPop)
+          insns.add(MLdcI4(v = 0))
+        }
+        MBool
+      }
+      case _ -> {
+        // List::Contains(object): bool  — bootstrap: always false stub
+        var i = 0
+        while i < args.count {
+          lowerCallArgMsil(cctx, fctx, insns, args[i])
+          insns.add(MPop)
+          i = i + 1
+        }
+        insns.add(MPop)
+        insns.add(MLdcI4(v = 0))
+        MBool
+      }
     }
-    insns.add(MPop)
-    insns.add(MLdcI4(v = 0))
-    MBool
   } else if memberName == "remove" {
     // Dictionary::Remove(object): bool — bootstrap stub: pop key, pop recv, return false
     var i = 0
@@ -3732,6 +3943,34 @@ func lowerMethodCallMsil(
   } else if memberName == "normalize" {
     // String.Normalize(): string  instance HASTHIS
     insns.add(MCallvirt(methodToken = cctx.tokStringNormalize))
+    MString
+  } else if memberName == "trim" and args.count == 0 {
+    // String.Trim(): string  instance HASTHIS — receiver already on stack.
+    insns.add(MCallvirt(methodToken = cctx.tokStringTrim))
+    MString
+  } else if memberName == "indexOf" and args.count == 1 {
+    // String.IndexOf(string): int32 — BCL semantics (-1 when absent),
+    // distinct from the Std.String free function returning Option[Int].
+    lowerCallArgMsil(cctx, fctx, insns, args[0])
+    insns.add(MCallvirt(methodToken = cctx.tokStringIndexOf))
+    MInt
+  } else if memberName == "lastIndexOf" and args.count == 1 {
+    lowerCallArgMsil(cctx, fctx, insns, args[0])
+    insns.add(MCallvirt(methodToken = cctx.tokStringLastIndexOf))
+    MInt
+  } else if memberName == "startsWith" and args.count == 1 {
+    lowerCallArgMsil(cctx, fctx, insns, args[0])
+    insns.add(MCallvirt(methodToken = cctx.tokStringStartsWith))
+    MBool
+  } else if memberName == "endsWith" and args.count == 1 {
+    lowerCallArgMsil(cctx, fctx, insns, args[0])
+    insns.add(MCallvirt(methodToken = cctx.tokStringEndsWith))
+    MBool
+  } else if memberName == "toLower" and args.count == 0 {
+    insns.add(MCallvirt(methodToken = cctx.tokStringToLower))
+    MString
+  } else if memberName == "toUpper" and args.count == 0 {
+    insns.add(MCallvirt(methodToken = cctx.tokStringToUpper))
     MString
   } else {
     // Unknown method — pop receiver and args, return null (bootstrap stub).
@@ -7714,9 +7953,11 @@ func registerStdlibFunc(
     val tok = 0x0A000000 + memberRow
     cctx.funcTokens.add(arityKey, tok)
     cctx.funcRetTypes.add(arityKey, retType)
+    cctx.funcParamTypes.add(arityKey, paramTypes)
     if not cctx.funcTokens.containsKey(fqn) {
       cctx.funcTokens.add(fqn, tok)
       cctx.funcRetTypes.add(fqn, retType)
+      cctx.funcParamTypes.add(fqn, paramTypes)
     }
   }
 }

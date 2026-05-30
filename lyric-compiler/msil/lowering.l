@@ -78,6 +78,15 @@ pub union MsilType {
   // so that `.count` dispatch uses Dictionary.get_Count rather than
   // List.get_Count.
   case MMapOf(keyTy: MsilType, valTy: MsilType)
+  // System.Byte (ELEMENT_TYPE_U1 = 0x05).  Used for `slice[Byte]` elements
+  // so cross-package signatures match the F# stdlib's `byte[]` (e.g.
+  // `Std.Encoding.tryDecodeBase64 -> Option[byte[]]`).
+  case MByte
+  // CLI single-dimension zero-based array `T[]` (ELEMENT_TYPE_SZARRAY = 0x1D
+  // followed by the element type).  Lyric `slice[T]` lowers to `T[]` so that
+  // cross-package MemberRef signatures agree with the F#-compiled stdlib,
+  // which represents slices as real arrays rather than erasing to object.
+  case MArray(elemTy: MsilType)
 }
 
 // Return the ECMA-335 ELEMENT_TYPE byte for the given MsilType.
@@ -99,6 +108,26 @@ pub func elementTypeByte(t: in MsilType): Int {
     case MGenericInst(_, _, _) -> 0x15  // prefix only; full encoding via bufMsilType
     case MListOf(_)       -> 0x1C  // same as Object: runtime rep is List<object>
     case MMapOf(_, _)     -> 0x1C  // same as Object: runtime rep is Dictionary<object,object>
+    case MByte            -> 0x05  // ELEMENT_TYPE_U1
+    case MArray(_)        -> 0x1D  // ELEMENT_TYPE_SZARRAY prefix; element follows (bufMsilType)
+  }
+}
+
+// Normalise a type when it appears as a *generic type argument*.  `Unit`
+// lowers to `MVoid`, but `ELEMENT_TYPE_VOID` (0x01) is illegal inside a
+// GENERICINST signature (ECMA-335 §II.23.2.14) — emitting it produces a
+// malformed blob that the CLR rejects with "The signature is incorrect"
+// when it loads any method whose signature references the instantiation
+// (e.g. `Result[Unit, E]`).  Erase it to `object`, matching how `Unit`
+// values are represented at run time.  Only applied to type arguments;
+// a `Unit`/`void` *return* type still encodes as 0x01.
+func genericArgType(t: in MsilType): MsilType {
+  match t {
+    case MVoid          -> MObject
+    // Recurse into array elements so a `slice[Unit]` argument encodes as
+    // `object[]` rather than the illegal `void[]` (#1582).
+    case MArray(elem)   -> MArray(elemTy = genericArgType(elem))
+    case _              -> t
   }
 }
 
@@ -116,6 +145,10 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
       bufU1(w, idx)
     }
     case MClass(_) -> bufU1(w, 0x1C)   // Object: avoids malformed CLASS+TypeDefOrRef entry
+    case MArray(elem) -> {
+      bufU1(w, 0x1D)   // ELEMENT_TYPE_SZARRAY
+      bufMsilType(w, elem)
+    }
     case MGenericInst(typeRefCode, _, typeArgs) -> {
       bufU1(w, 0x15)   // ELEMENT_TYPE_GENERICINST
       bufU1(w, 0x12)   // ELEMENT_TYPE_CLASS (reference type)
@@ -123,7 +156,7 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
       bufU1(w, typeArgs.count)
       var gi = 0
       while gi < typeArgs.count {
-        bufMsilType(w, typeArgs[gi])
+        bufMsilType(w, genericArgType(typeArgs[gi]))
         gi = gi + 1
       }
     }
@@ -357,7 +390,10 @@ pub union MInsn {
   case MDup
   case MPop
   case MThrow
-  case MLdlen                          // load array length
+  case MLdlen                          // load array length (pushes native int)
+  case MLdelemRef                      // ldelem.ref — reference array element (String[], object[])
+  case MLdelemU1                       // ldelem.u1  — byte array element (byte[])
+  case MLdelemI4                       // ldelem.i4  — int32 array element (int[])
   case MLdftn(methodToken: Int)        // ldftn — load function pointer (ELEMENT_TYPE_I on stack)
 
   // Exception-handling instructions and meta-instruction
@@ -840,6 +876,8 @@ pub func msilTypeKey(t: in MsilType): String {
     }
     case MListOf(e) -> "LIST[" + msilTypeKey(e) + "]"
     case MMapOf(k, v) -> "MAP[" + msilTypeKey(k) + "," + msilTypeKey(v) + "]"
+    case MByte -> "B"
+    case MArray(e) -> "[" + msilTypeKey(e) + "]"
   }
 }
 
@@ -856,7 +894,7 @@ pub func buildGenericInstBlob(typeDefOrRef: in Int,
   bufU1(w, argTypes.count)
   var i = 0
   while i < argTypes.count {
-    bufMsilType(w, argTypes[i])
+    bufMsilType(w, genericArgType(argTypes[i]))
     i = i + 1
   }
   bufToList(w)
@@ -888,6 +926,10 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
       bufU1(w, 0x13)
       bufU1(w, idx)
     }
+    case MArray(elem) -> {
+      bufU1(w, 0x1D)  // ELEMENT_TYPE_SZARRAY
+      bufMsilTypeWithCtx(w, elem, ctx)
+    }
     case MGenericInst(typeRefCode, _, typeArgs) -> {
       bufU1(w, 0x15)  // ELEMENT_TYPE_GENERICINST
       bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS
@@ -895,7 +937,7 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
       bufU1(w, typeArgs.count)
       var gi = 0
       while gi < typeArgs.count {
-        bufMsilTypeWithCtx(w, typeArgs[gi], ctx)
+        bufMsilTypeWithCtx(w, genericArgType(typeArgs[gi]), ctx)
         gi = gi + 1
       }
     }
@@ -917,7 +959,7 @@ pub func buildGenericInstBlobWithCtx(ctx: in LoweringCtx,
   bufU1(w, argTypes.count)
   var i = 0
   while i < argTypes.count {
-    bufMsilTypeWithCtx(w, argTypes[i], ctx)
+    bufMsilTypeWithCtx(w, genericArgType(argTypes[i]), ctx)
     i = i + 1
   }
   bufToList(w)
@@ -1145,6 +1187,9 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MPop               -> emitPop(mb)
     case MThrow             -> emitThrow(mb)
     case MLdlen             -> emitLdlen(mb)
+    case MLdelemRef         -> emitLdelem_Ref(mb)
+    case MLdelemU1          -> emitLdelem_U1(mb)
+    case MLdelemI4          -> emitLdelem_I4(mb)
     case MLdftn(tok)        -> emitLdftn(mb, tok)
     case MLeave(lbl)        -> emitLeave(mb, lbl)
     case MEndfinally        -> emitEndfinally(mb)
@@ -1178,6 +1223,12 @@ func buildLocalVarSig(locals: in List[MsilType]): List[Byte] {
     match locals[i] {
       case MClass(_)             -> bufU1(w, 0x1C)   // Object: avoids malformed CLASS+TypeDefOrRef entry
       case MGenericInst(_, _, _) -> bufU1(w, 0x1C)  // same: TypeRef token not valid in LocalVarSig
+      // A slice local degrades to Object too: the codegen treats slices as
+      // opaque references (a `byte[]` value is still an object), and
+      // `elementTypeByte(MArray)` is only the 0x1D SZARRAY *prefix* — writing
+      // it alone produces a malformed LocalVarSig (dangling prefix, no element
+      // type) that corrupts the evaluation stack at run time (AccessViolation).
+      case MArray(_)             -> bufU1(w, 0x1C)
       case other -> bufU1(w, elementTypeByte(other))
     }
     i = i + 1
