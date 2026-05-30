@@ -131,6 +131,12 @@ pub record CodegenCtx {
   fieldMsilTypes:     Map[String, MsilType]
   funcTokens:         Map[String, Int]   // funcName → MethodDef token
   funcRetTypes:       Map[String, MsilType]   // funcName → MsilType of declared return
+  // funcName → declared parameter MsilTypes (same arity-qualified + bare keys
+  // as funcTokens).  Used to thread a call argument's expected type into
+  // `contextHintTyArgs` so a bare `f(None)` constructs `Option_None<concrete>`
+  // rather than erasing to `<object>` (keeps the canonical nullary-case
+  // representation consistent across construction positions).
+  funcParamTypes:     Map[String, List[MsilType]]
   // Compile-time const values: registered by IConst pre-scan so that EPath
   // references to const names inline ldc.i4 instead of ldsfld.
   constValues:        Map[String, Int]        // constName → inlined Int value
@@ -625,6 +631,7 @@ pub func newCodegenCtx(packageName: in String,
     fieldMsilTypes       = newMap(),
     funcTokens           = funcToks,
     funcRetTypes         = newMap(),
+    funcParamTypes       = newMap(),
     constValues          = newMap(),
     ffiAsmRefs           = newMap(),
     ffiTypeRefs          = newMap(),
@@ -1086,6 +1093,20 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
         }
         if not cctx.funcRetTypes.containsKey(fqn) {
           cctx.funcRetTypes.add(fqn, retTy)
+        }
+        // Record the declared parameter MsilTypes so call sites can thread an
+        // argument's expected type into `contextHintTyArgs` (see funcParamTypes).
+        val paramTys: List[MsilType] = newList()
+        var ppi = 0
+        while ppi < decl.params.count {
+          paramTys.add(typeExprToMsilCtx(cctx, decl.params[ppi].ty, pkgName))
+          ppi = ppi + 1
+        }
+        if not cctx.funcParamTypes.containsKey(arityKey) {
+          cctx.funcParamTypes.add(arityKey, paramTys)
+        }
+        if not cctx.funcParamTypes.containsKey(fqn) {
+          cctx.funcParamTypes.add(fqn, paramTys)
         }
         methodDefRow = methodDefRow + 1
       }
@@ -3610,9 +3631,49 @@ func lowerBuiltinOrStaticCallMsil(
                 else                                          { resolvedFqn }
               match mapGet(cctx.funcTokens, tokKey) {
                 case Some(tok) -> {
+                  val callParamTys = match mapGet(cctx.funcParamTypes, tokKey) {
+                    case Some(pts) -> pts
+                    case None      -> newList()
+                  }
                   var i = 0
                   while i < args.count {
-                    lowerCallArgMsil(cctx, fctx, insns, args[i])
+                    // Thread a generic parameter's type args as the construction
+                    // context for this argument so a bare `None` (or other
+                    // nullary case) builds `Option_None<concrete>` rather than
+                    // erasing to `<object>`.  Save/replace/restore the hint stack
+                    // (rather than append) so an enclosing val/return context for
+                    // a *different* type doesn't leak into the argument.
+                    val pTy = if i < callParamTys.count { callParamTys[i] } else { MObject }
+                    match pTy {
+                      case MGenericInst(_, _, pArgs) -> {
+                        val savedHints: List[MsilType] = newList()
+                        var sh = 0
+                        while sh < fctx.contextHintTyArgs.count {
+                          savedHints.add(fctx.contextHintTyArgs[sh])
+                          sh = sh + 1
+                        }
+                        while fctx.contextHintTyArgs.count > 0 {
+                          fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+                        }
+                        var ph = 0
+                        while ph < pArgs.count {
+                          fctx.contextHintTyArgs.add(pArgs[ph])
+                          ph = ph + 1
+                        }
+                        val _ = lowerCallArgMsil(cctx, fctx, insns, args[i])
+                        while fctx.contextHintTyArgs.count > 0 {
+                          fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+                        }
+                        var rh = 0
+                        while rh < savedHints.count {
+                          fctx.contextHintTyArgs.add(savedHints[rh])
+                          rh = rh + 1
+                        }
+                      }
+                      case _ -> {
+                        val _ = lowerCallArgMsil(cctx, fctx, insns, args[i])
+                      }
+                    }
                     i = i + 1
                   }
                   insns.add(MCall(methodToken = tok))
@@ -7821,9 +7882,11 @@ func registerStdlibFunc(
     val tok = 0x0A000000 + memberRow
     cctx.funcTokens.add(arityKey, tok)
     cctx.funcRetTypes.add(arityKey, retType)
+    cctx.funcParamTypes.add(arityKey, paramTypes)
     if not cctx.funcTokens.containsKey(fqn) {
       cctx.funcTokens.add(fqn, tok)
       cctx.funcRetTypes.add(fqn, retType)
+      cctx.funcParamTypes.add(fqn, paramTypes)
     }
   }
 }

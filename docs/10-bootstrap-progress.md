@@ -17049,3 +17049,35 @@ are normalised.
 Runtime detected an invalid program.` failures are the cross-package /
 generic-typed union-match `isinst` gap (jwtAlg/verifyJwt), plus one
 `Std.String.split` cross-package MemberRef signature mismatch.
+
+### D-progress-329 — call-argument context threading for nullary generic cases (#1471/#1442)
+
+**Status:** Shipped.  Completes the canonical nullary-union-case
+representation so it is consistent across *all* construction positions.
+
+**Background:** D-progress-327/328 and the slice/`MArray` work converged
+the self-hosted backend onto the F#-stdlib representation: a nullary case
+(`None`) carries the union's concrete type arguments (`Option_None<byte[]>`),
+and the match-site tests a single scrutinee-args `isinst`.  Construction
+already threaded `contextHintTyArgs` for annotated (`val x: Option[T] = None`)
+and return (`return None`) positions, so those built `Option_None<concrete>`.
+The one remaining position — a bare call-argument `f(None)` — had no context
+threaded, so it erased to `Option_None<object>` and the scrutinee-args
+`isinst` then failed (the match-exhaustiveness panic).
+
+**Fix (`lyric-compiler/msil/codegen.l`):** added `funcParamTypes` (declared
+parameter MsilTypes, keyed like `funcTokens`/`funcRetTypes`), populated for
+in-bundle functions (`addPackageTokens`) and cross-package stdlib functions
+(`registerStdlibFunc`).  The resolved-static-call arg loop now threads a
+generic parameter's type arguments into `contextHintTyArgs` (save/replace/
+restore, so an enclosing val/return context for a *different* type does not
+leak into the argument) while lowering that argument.  A bare `f(None)`
+argument therefore constructs `Option_None<concrete>` matching the callee's
+parameter type.
+
+**Verified:** `classify(None)` with `classify(o: Option[String])` (bare
+call-arg, no annotation) now matches `None` correctly; the annotated/return
+forms and F#-returned (`Option[byte[]]`) Nones continue to match.  Emitter
+suite 845/0; `lyric-auth` unchanged at 8/29 (its Nones are F#-returned, so
+this position never applied — the residual 20 are the separate jwtAlg/
+verifyJwt "invalid program", investigated next).
