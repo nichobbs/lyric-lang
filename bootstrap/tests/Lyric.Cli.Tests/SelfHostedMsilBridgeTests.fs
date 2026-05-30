@@ -124,9 +124,101 @@ let private mkBridgeWithImplCounts
         finally
             try Directory.Delete(dir, recursive = true) with _ -> ()
 
+/// Like `mkBridge`, but additionally asserts the produced PE carries a
+/// MethodSpec (table 0x2B) row whose instantiation decodes to
+/// `expectedInstantiation` (e.g. `["String"]`) — used by the #1497 MethodSpec
+/// regression to confirm an open-generic BCL call (`System.Array.Empty<T>()`)
+/// emits a real MethodSpec token bound to the right element type, not a stub.
+let private mkBridgeWithMethodSpec
+        (label: string) (source: string) (expected: string)
+        (expectedInstantiation: string list) : Test =
+    testCase (sprintf "[%s]" label) <| fun () ->
+        let dir = Path.Combine(Path.GetTempPath(), "lyric-msil-bridge-test-" + label + "-" + Guid.NewGuid().ToString("N"))
+        Directory.CreateDirectory dir |> ignore
+        try
+            let dllPath = Path.Combine(dir, label + ".dll")
+            let ok = SelfHostedMsil.compileToDll source dllPath
+            Expect.isTrue ok
+                (sprintf "self-hosted MSIL compile succeeded for '%s'" label)
+            Expect.isTrue (File.Exists dllPath)
+                (sprintf "output DLL exists at %s" dllPath)
+            let dllBytes = File.ReadAllBytes dllPath
+            use peStream = new MemoryStream(dllBytes)
+            use peReader = new System.Reflection.PortableExecutable.PEReader(peStream)
+            let md : System.Reflection.Metadata.MetadataReader =
+                System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader peReader
+            // Enumerate MethodSpec rows by walking the table by handle.  The
+            // MethodSpec table has no public enumerator on MetadataReader, so we
+            // probe MetadataTokens-built handles and decode each instantiation.
+            // A minimal signature provider renders type args as their short name.
+            let provider =
+                { new System.Reflection.Metadata.ISignatureTypeProvider<string, unit> with
+                    member _.GetPrimitiveType(c) = string c
+                    member _.GetSZArrayType(e) = e + "[]"
+                    member _.GetArrayType(e, _) = e + "[]"
+                    member _.GetGenericMethodParameter(_, i) = sprintf "!!%d" i
+                    member _.GetGenericTypeParameter(_, i) = sprintf "!%d" i
+                    member _.GetByReferenceType(e) = e + "&"
+                    member _.GetPointerType(e) = e + "*"
+                    member _.GetPinnedType(e) = e
+                    member _.GetModifiedType(_, u, _) = u
+                    member _.GetFunctionPointerType(_) = "fnptr"
+                    member _.GetGenericInstantiation(g, a) = g + "<" + System.String.Join(",", a) + ">"
+                    member _.GetTypeFromDefinition(r, h, _) = md.GetString((r.GetTypeDefinition h).Name)
+                    member _.GetTypeFromReference(r, h, _) = md.GetString((r.GetMemberReference (System.Reflection.Metadata.MemberReferenceHandle())).Name)
+                    member _.GetTypeFromSpecification(_, _, _, _) = "spec" }
+            let mutable found : string list option = None
+            let mutable i = 1
+            let mutable go = true
+            while go do
+                let h = System.Reflection.Metadata.Ecma335.MetadataTokens.MethodSpecificationHandle i
+                let ok2 =
+                    try
+                        let spec = md.GetMethodSpecification h
+                        if spec.Method.IsNil then false
+                        else
+                            let args = spec.DecodeSignature(provider, ()) |> List.ofSeq
+                            found <- Some args
+                            true
+                    with _ -> false
+                if ok2 then i <- i + 1 else go <- false
+            match found with
+            | Some args ->
+                Expect.equal args expectedInstantiation
+                    (sprintf "MethodSpec instantiation for '%s'" label)
+            | None ->
+                failtestf "no MethodSpec row emitted for '%s'" label
+            let stdout, stderr, exitCode = runDll dllPath
+            Expect.equal exitCode 0
+                (sprintf "exit 0 (stderr=%s)" stderr)
+            Expect.equal (stdout.TrimEnd()) expected
+                (sprintf "stdout matches expected for '%s'" label)
+        finally
+            try Directory.Delete(dir, recursive = true) with _ -> ()
+
 let tests =
     testSequenced
     <| testList "SelfHostedMsil bridge (codegen end-to-end)" [
+
+        // #1497 — open-generic BCL call via a MethodSpec (table 0x2B): an empty
+        // typed-slice literal `val xs: slice[T] = []` lowers to a real empty
+        // `T[]` through `System.Array.Empty<T>()` (a GENERIC-convention MemberRef
+        // instantiated by a MethodSpec), instead of a `List<object>` that
+        // mis-reads as `T[]` at the MArray-typed local (which printed garbage for
+        // `.length`).  Asserts exactly one MethodSpec row is emitted and the
+        // empty slice reports length 0.
+        mkBridgeWithMethodSpec "shm_empty_slice_array_empty"
+            """package ShMEmptySlice
+import Std.Core
+
+func main(): Unit {
+  val xs: slice[String] = []
+  println(toString(xs.length))
+}
+"""
+            "0"
+            ["String"]
+
 
         mkBridge "shm_hello"
             """package ShMHello

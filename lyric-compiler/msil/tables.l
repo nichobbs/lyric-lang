@@ -313,6 +313,16 @@ pub record MethodImplRow {
   methodDeclaration:   Int  // coded: MethodDefOrRef — the interface slot being implemented
 }
 
+// MethodSpec (Table 0x2B) — ECMA-335 §II.22.29.
+// Instantiates a generic method: `method` is a MethodDefOrRef coded index to
+// the open generic method (a MemberRef or MethodDef), and `instantiation` is a
+// #Blob index to a MethodSpec signature (GENERICINST + arg count + type args,
+// §II.23.2.15).  A call site references the resulting row via a 0x2B token.
+pub record MethodSpecRow {
+  method:        Int  // coded: MethodDefOrRef
+  instantiation: Int  // #Blob: MethodSpec signature
+}
+
 // ── Coded-index helpers (additional) ─────────────────────────────────────────
 
 // HasConstant (2-bit tag, §II.24.2.6 tag table 3):
@@ -344,6 +354,7 @@ pub record MetadataTables {
   assemblies:       List[AssemblyRow]
   assemblyRefs:     List[AssemblyRefRow]
   manifestResources: List[ManifestResourceRow]
+  methodSpecs:      List[MethodSpecRow]
 }
 
 pub func newMetadataTables(): MetadataTables {
@@ -363,7 +374,8 @@ pub func newMetadataTables(): MetadataTables {
     typeSpecs      = newList(),
     assemblies     = newList(),
     assemblyRefs   = newList(),
-    manifestResources = newList()
+    manifestResources = newList(),
+    methodSpecs    = newList()
   )
 }
 
@@ -440,6 +452,11 @@ pub func addTypeSpec(t: in MetadataTables, r: in TypeSpecRow): Int {
   t.typeSpecs.count
 }
 
+pub func addMethodSpec(t: in MetadataTables, r: in MethodSpecRow): Int {
+  t.methodSpecs.add(r)
+  t.methodSpecs.count
+}
+
 pub func addAssemblyRef(t: in MetadataTables, r: in AssemblyRefRow): Int {
   t.assemblyRefs.add(r)
   t.assemblyRefs.count
@@ -494,6 +511,7 @@ val TABLE_BIT_TYPE_SPEC       : Long = 134217728i64     // table 0x1B, bit 27 (2
 val TABLE_BIT_ASSEMBLY        : Long = 4294967296i64    // table 0x20, bit 32 (2^32)
 val TABLE_BIT_ASSEMBLY_REF    : Long = 34359738368i64   // table 0x23, bit 35 (2^35)
 val TABLE_BIT_MANIFEST_RESOURCE : Long = 1099511627776i64 // table 0x28, bit 40 (2^40)
+val TABLE_BIT_METHOD_SPEC       : Long = 8796093022208i64 // table 0x2B, bit 43 (2^43)
 
 // Emit a 2-byte LE integer.
 func w2(buf: in ByteWriter, v: in Int): Unit {
@@ -546,6 +564,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   if t.assemblies.count > 0       { valid = valid + TABLE_BIT_ASSEMBLY }
   if t.assemblyRefs.count > 0     { valid = valid + TABLE_BIT_ASSEMBLY_REF }
   if t.manifestResources.count > 0 { valid = valid + TABLE_BIT_MANIFEST_RESOURCE }
+  if t.methodSpecs.count > 0      { valid = valid + TABLE_BIT_METHOD_SPEC }
   w8(buf, valid)
 
   // Sorted bitmask: all zero (no sorting performed here)
@@ -568,6 +587,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   if t.assemblies.count > 0       { w4(buf, t.assemblies.count) }
   if t.assemblyRefs.count > 0     { w4(buf, t.assemblyRefs.count) }
   if t.manifestResources.count > 0 { w4(buf, t.manifestResources.count) }
+  if t.methodSpecs.count > 0      { w4(buf, t.methodSpecs.count) }
 
   // Row data — each table in table-number order.
   // Row wire format: all heap indices (Strings, GUID, Blob) and simple table
@@ -760,5 +780,15 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     w2(buf, r.name)
     w2(buf, r.implementation)
     mri = mri + 1
+  }
+
+  // MethodSpec rows (table 0x2B).  Wire format per ECMA-335 §II.22.29:
+  // u2 method (coded MethodDefOrRef), u2 instantiation (#Blob).
+  var msi = 0
+  while msi < t.methodSpecs.count {
+    val r = t.methodSpecs[msi]
+    w2(buf, r.method)
+    w2(buf, r.instantiation)
+    msi = msi + 1
   }
 }

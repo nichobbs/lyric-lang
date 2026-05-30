@@ -836,6 +836,50 @@ pub func ctxAddTypeSpec(ctx: in LoweringCtx, sigKey: in String,
   addTypeSpec(ctx.tables, TypeSpecRow(signature = bSig))
 }
 
+// Build the #Blob encoding for a MethodSpec instantiation signature
+// (ECMA-335 §II.23.2.15): GENRICINST (0x0A), compressed generic-argument
+// count, then each argument type.  Distinct from the GENERICINST *type*
+// signature (0x15) used by TypeSpec — a MethodSpec signature names the
+// method's type arguments, not a generic type instantiation.
+pub func buildMethodSpecBlob(argTypes: in List[MsilType]): List[Byte] {
+  val w = bufNew()
+  bufU1(w, 0x0A)  // GENRICINST (method instantiation)
+  writeCompressedInt(w, argTypes.count)
+  var i = 0
+  while i < argTypes.count {
+    bufMsilType(w, genericArgType(argTypes[i]))
+    i = i + 1
+  }
+  bufToList(w)
+}
+
+// Build the open-generic method signature for `System.Array.Empty<T>(): T[]`
+// (ECMA-335 §II.23.2.1).  GENERIC calling convention (0x10), one generic
+// parameter, zero formal parameters, return type `SZARRAY MVAR 0` (`!!0[]`).
+// The concrete `T` is supplied by the MethodSpec instantiation, not here.
+pub func buildArrayEmptyOpenSig(): List[Byte] {
+  val w = bufNew()
+  bufU1(w, 0x10)             // GENERIC calling convention
+  writeCompressedInt(w, 1)   // generic parameter count
+  writeCompressedInt(w, 0)   // formal parameter count
+  bufU1(w, 0x1D)             // ELEMENT_TYPE_SZARRAY (return is T[])
+  bufU1(w, 0x1E)             // ELEMENT_TYPE_MVAR (method generic parameter)
+  writeCompressedInt(w, 0)   // method-var index 0
+  bufToList(w)
+}
+
+// Add a MethodSpec row instantiating a generic method.  `methodCoded` is a
+// MethodDefOrRef coded index (use `mdorMemberRef`/`mdorMethodDef`) naming the
+// open generic method; `sig` is a `buildMethodSpecBlob` instantiation blob.
+// Returns the 1-based row index; the call site uses `0x2B000000 + row`.
+pub func ctxAddMethodSpec(ctx: in LoweringCtx, methodCoded: in Int,
+                          sigKey: in String, sig: in List[Byte]): Int {
+  val bSig = ctxInternBlob(ctx, sigKey, sig)
+  addMethodSpec(ctx.tables, MethodSpecRow(
+    method = methodCoded,
+    instantiation = bSig))
+}
+
 // Add a MemberRef row whose parent is a TypeSpec row (for generic instantiations).
 // Returns the 1-based row index.
 pub func ctxAddMemberRefForTypeSpec(ctx: in LoweringCtx, typeSpecRow: in Int,

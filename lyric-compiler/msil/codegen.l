@@ -4209,7 +4209,22 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
             }
             case _ -> {}
           }
-          val initTy = lowerExprMsil(cctx, fctx, insns, init)
+          // Empty typed-slice literal (`val xs: slice[T] = []`): the generic
+          // `[]` otherwise lowers to a `List<object>`, which then mis-reads as
+          // a `T[]` at the MArray-typed local (#1497).  Emit a real empty
+          // `T[]` via `System.Array.Empty<T>()` (open-generic BCL call →
+          // MethodSpec).
+          val initTy = match annoTy {
+            case MArray(elem) -> {
+              if isEmptyListExprMsil(init) {
+                emitEmptyArrayMsil(cctx, insns, elem)
+                annoTy
+              } else {
+                lowerExprMsil(cctx, fctx, insns, init)
+              }
+            }
+            case _ -> lowerExprMsil(cctx, fctx, insns, init)
+          }
           while fctx.contextHintTyArgs.count > prevHintLen {
             fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
           }
@@ -4652,6 +4667,36 @@ func internFfiTypeRef(cctx: in CodegenCtx, asmName: in String,
       tRow
     }
   }
+}
+
+// True when `e` is an empty list/slice literal `[]`.
+func isEmptyListExprMsil(e: in Expr): Bool {
+  match e.kind {
+    case EList(exprs) -> exprs.count == 0
+    case _            -> false
+  }
+}
+
+// Emit `System.Array.Empty<elem>()`, leaving the resulting `elem[]` on the
+// stack (#1497).  This is the self-hosted backend's first open-generic BCL
+// call: it references `System.Array.Empty\`1` via a GENERIC-convention
+// MemberRef, instantiates it for `elem` with a MethodSpec row, and emits
+// `call <0x2B token>`.  Used to lower an empty typed-slice literal
+// (`val xs: slice[T] = []`) to a real empty `T[]` rather than a `List<object>`.
+func emitEmptyArrayMsil(cctx: in CodegenCtx, insns: in List[MInsn], elem: in MsilType): Unit {
+  // System.Array lives in System.Runtime.
+  val arrTypeRef = internFfiTypeRef(cctx, "System.Runtime", "System", "Array")
+  // Open-generic MemberRef: Array.Empty`1(): !!0[]  (GENERIC callconv).
+  val openSig = buildArrayEmptyOpenSig()
+  val mrRow = ctxAddMemberRef(cctx.lctx, arrTypeRef, "Empty", "array_empty_open", openSig)
+  // MethodSpec instantiating Empty`1 with the concrete element type.
+  val specArgs: List[MsilType] = newList()
+  specArgs.add(elem)
+  val specBlob = buildMethodSpecBlob(specArgs)
+  val msRow = ctxAddMethodSpec(
+    cctx.lctx, mdorMemberRef(mrRow),
+    "array_empty_spec_" + msilTypeKey(elem), specBlob)
+  insns.add(MCall(methodToken = 0x2B000000 + msRow))
 }
 
 // Return the TypeRef row for System.Action`N (N ≥ 1).
