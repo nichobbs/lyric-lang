@@ -17163,5 +17163,8 @@ externs (`@externTarget("Lyric.Auth.AuthHost.hmacSha256")`, …) point at the
 F# host shim `bootstrap/src/Lyric.Auth.Host/`, which the self-hosted MSIL FFI
 resolver does not locate (it defaults the assembly to `System.Runtime`).
 The production fix is to migrate those crypto externs to direct BCL
-`extern`s in `_kernel/` (per the no-F#-shim rule), or to teach the FFI
-resolver the host assembly — tracked separately from this codegen series.
+`extern`s in `_kernel/` (per the no-F#-shim rule; blocked on FFI
+`ReadOnlySpan<byte>` parameter support) — tracked in **#1592**, separately
+from this codegen series.  A further single test (`extractClaim` ASCII, #25)
+runs but returns empty — the kernel base64/UTF8/JSON pipeline, also noted
+in #1592.
