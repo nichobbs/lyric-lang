@@ -76,8 +76,11 @@ bar:
    part 1 — encoding real `TypeRef`-backed MemberRefs.)_
 
 5. **Two F# DLLs are still load-bearing at runtime and AOT is unconfigured
-   (HIGH).** Every emitted byte flows through `Lyric.Jvm.Hosts.dll`
-   (the `Msil.Kernel.ByteWriter` boundary), and core stdlib kernels
+   (HIGH).** _(The PE `Msil.Kernel.ByteWriter` was a `Lyric.Jvm.Hosts.dll`
+   boundary on every emitted byte; #1492 replaced it with a pure-Lyric
+   `List[Byte]` buffer — `System.BitConverter` is the only host extern — with
+   byte-identical output, so `--target dotnet` no longer routes bytes through
+   that F# DLL.)_  Core stdlib kernels
    (`console`/`http`/`process`/`env`/`log`) extern into `Lyric.Emitter.dll` —
    the same assembly that carries the Reflection.Emit F# emitter. No
    `<PublishAot>` is set anywhere, so the "AOT-compilable" goal is currently
@@ -170,7 +173,7 @@ supporting all language features."
 | H9 | Auto-FFI scoring only handles static void-returning methods (all args boxed); instance/non-void need explicit `@externTarget`. | `codegen.l:5957-5997` | M |
 | H10 | Custom `@generate(Pkg.Name)` source generators exist (`generator/generator.l`) but are **never called from `bridge.l`** — inert on self-hosted .NET. | `generator/generator.l:1-16`; no ref in `bridge.l` | M |
 | H11 | `old()`/`forall`/`exists` in `@runtime_checked` contracts **panic** in codegen (elaborator passes them through). | `codegen.l:1851-1858`; `elaborator.l:361-362` | M |
-| H12 | Two F# DLLs load-bearing at runtime: `Lyric.Jvm.Hosts.dll` backs the entire PE ByteWriter; `Lyric.Emitter.dll` (Reflection.Emit-laden) hosts console/http/process/env/log kernels. | `msil/_kernel/kernel.l:6-42`; `lyric-stdlib/std/_kernel/{console,http,process_capture,verifier_env,log}_host.l`; `scripts/bootstrap.sh:265-293` | M |
+| H12 | ~~`Lyric.Jvm.Hosts.dll` backs the entire PE ByteWriter~~ **Resolved for MSIL (#1492):** `Msil.Kernel.ByteWriter` is now a pure-Lyric `List[Byte]` buffer (`System.BitConverter` the only host extern); a sample exercising Int/Long/Double/String compiles **byte-identical** to the old host (verified via `cmp`), and the MSIL path has zero `Jvm.Hosts` references. `Lyric.Emitter.dll` (Reflection.Emit-laden) still hosts console/http/process/env/log kernels. JVM target retains `Lyric.Jvm.Hosts` (out of scope per #1470). | `msil/_kernel/kernel.l`; `lyric-stdlib/std/_kernel/{console,http,process_capture,verifier_env,log}_host.l`; `scripts/bootstrap.sh` | M |
 | H13 | No `<PublishAot>` configured; "AOT-compilable" unrealized and untested. | `bootstrap/src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj` | M (gated on H12) |
 | H14 | Visibility (`pub`/`internal`/`private`) stored but never enforced at use sites. | `typechecker_symbols.l:61`; no V0007/V0008 logic | M |
 | H15 | `where T: Marker` bound satisfaction never checked at call sites; qualified constraint paths rejected (T0051). | `typechecker_exprs.l:603-723`; `typechecker_checker.l:372-373` | L |
