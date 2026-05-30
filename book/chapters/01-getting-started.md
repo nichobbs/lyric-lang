@@ -275,6 +275,8 @@ Lyric supports three kinds of comments:
 //! Doc comment for the enclosing module (placed at the top of a file)
 ```
 
+Use `//!` — not `///` — for a file-header doc block at the top of a file. `///` attaches to the *item that follows it*, so a `///` before the `package` declaration has nothing to document and is rejected with `error[P0020]: a '///' doc comment before 'package' has no item to document; use '//!' for a module-level doc comment`. `//!` documents the enclosing module and belongs before `package`.
+
 Write doc comments on every `pub` declaration. The `lyric doc` command generates Markdown documentation from them, including your `requires` and `ensures` clauses.
 
 ## The library ecosystem
