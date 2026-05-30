@@ -17461,3 +17461,49 @@ their `.fsproj` `<Compile>` entries.
 
 **Scope note:** MSIL (`--target dotnet`) only, per epic #1470's JVM-deferred
 banner.  Partial #1493; `http`/`process` remain (blockers above).
+
+### D-progress-343 — auto-FFI fail-loud for unresolvable shapes (#1504 H9)
+
+**Status:** Shipped (stopgap; superseded by the metadata-resolution epic #1622).
+
+**Problem:** auto-FFI — a bare `ExternTypeName.method(args)` call with no
+`@externTarget` wrapper — has no signature to work from.  The self-hosted MSIL
+emitter has neither a declared Lyric signature nor a .NET metadata reader (it
+abandoned runtime reflection because `Type.GetType` from Lyric-emitted PEs
+returns null, D-progress-268), so `emitAutoFfiCallMsil` emitted a fixed
+`(object…) : void` MemberRef.  That faithfully matches *only* a static,
+void-returning, parameterless BCL method; any argument means the guessed
+`object` parameter can't match a typed BCL parameter, and a non-void method
+leaves a phantom value on the stack — both mis-bind at runtime
+(`MissingMethodException` / invalid program), the silent-failure mode the
+project standard forbids.  (The F# bootstrap emitter does *not* have this
+problem — `Codegen.fs` resolves the real overload via `ClrType`/`GetMethod`
+reflection; the self-hosted path regressed this.)
+
+**Fix (`lyric-compiler/msil/codegen.l`):** `emitAutoFfiCallMsil` now fails the
+build with a clear diagnostic for any argument-bearing auto-FFI call, naming
+the type/method and directing the user to an `@externTarget` wrapper (which
+supplies the real signature and, after #1504 part 1, supports instance /
+non-void / typed-parameter / class-returning calls) and citing #1622.  The one
+faithful shape — a parameterless static-void method — still emits the
+`() : void` static `call`.
+
+**Validation:**
+
+- `GC.Collect()` (static, void, no args) still builds and runs
+  (`shm_extern_type_smoke` bridge test, 41/0).
+- `Console.WriteLine("hi")` (argument-bearing) now fails the build with the H9
+  diagnostic + `@externTarget` guidance, instead of a silent runtime
+  `MissingMethodException`.
+- Stage-1 self-build green; `Lyric.Emitter` 845/0 (the `AutoFfiTests` cases run
+  on the F# emitter's reflection path and are unaffected).
+
+**Follow-up:** #1622 (metadata-based extern signature resolution) is the real
+fix — a `System.Reflection.Metadata` reader over reference assemblies that
+resolves any BCL/dependency overload, removing the guess entirely and
+restoring auto-FFI parity with the F# emitter on the self-hosted path.
+
+**Test-harness note:** the fail-loud path is a codegen `panic`, which the
+in-process `mkBridge` harness surfaces as a `TargetInvocationException` rather
+than a `false` return (same limitation as the H8 / F0002 diagnostics), so it is
+validated via the CLI build rather than an in-harness negative test.

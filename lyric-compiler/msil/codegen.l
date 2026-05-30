@@ -6624,32 +6624,34 @@ func emitAutoFfiCallMsil(
       + "System.* and the Lyric host assemblies are supported); check the "
       + "extern type's CLR name for a typo or an unsupported type.")
   }
+  // Auto-FFI cannot resolve a method's signature; fail loud on argument-bearing
+  // calls rather than emit an (object…):void guess that mis-binds (D-progress-343, #1622).
+  if args.count > 0 {
+    panic("Msil.Codegen: auto-FFI call '" + clrFqn + "." + methodName
+      + "(...)' takes arguments, which the self-hosted emitter cannot resolve "
+      + "without the method's real signature (it would emit an (object...):void "
+      + "guess that mis-binds at runtime).  Declare an @externTarget wrapper "
+      + "function with the BCL signature instead — e.g. "
+      + "`@externTarget(\"" + clrFqn + "." + methodName + "\") @externStatic "
+      + "func ...`.  (Metadata-based resolution is tracked in #1622.)")
+  }
+
   val sp = splitTypeFqn(clrFqn)
   val asmName = clrAssemblyForType(clrFqn)
   val tRefRow = internFfiTypeRef(cctx, asmName, sp.ns, sp.name)
 
   // The receiver is always a type name (the EPath matched externTypeNames), so
-  // this is a static call: no HASTHIS, no receiver load, emit `call` not `callvirt`.
-  // Bootstrap-grade: registers sig as (object…) : void — works correctly for
-  // void-returning static methods.  Methods with non-void returns require
-  // explicit @externTarget annotations or --target dotnet-legacy.
+  // this is a static call: no HASTHIS, no receiver load, emit `call` not
+  // `callvirt`.  Gated above to the only faithful shape: a parameterless
+  // static method, registered as () : void.  A non-void return would leave a
+  // phantom value on the stack; such methods need an @externTarget wrapper.
   val argTypes: List[MsilType] = newList()
-  var ai = 0
-  while ai < args.count {
-    argTypes.add(MObject)
-    ai = ai + 1
-  }
   val sig = buildStaticMethodSig(argTypes, MVoid)
   val mrRow = ctxAddMemberRef(cctx.lctx, tRefRow, methodName, "autoffi_" + methodName, sig)
   val tok = 0x0A000000 + mrRow
 
-  // Load args only (no receiver — it's a type reference, not an instance).
-  var bi = 0
-  while bi < args.count {
-    val aTy = lowerCallArgMsil(cctx, fctx, insns, args[bi])
-    boxIfNeededMsil(cctx, insns, aTy)
-    bi = bi + 1
-  }
+  // Parameterless static call: no receiver (the receiver is a type name) and
+  // no arguments (gated above).
   insns.add(MCall(methodToken = tok))
   MVoid
 }
