@@ -17193,15 +17193,19 @@ bytes through `Lyric.Jvm.Hosts.dll`.
   `v`, so it is correct even at `Int.MinValue` — and stays within 32-bit `Int`
   (an earlier draft used a `2^32` literal, which is unrepresentable in Lyric's
   32-bit `Int` and failed to parse).
-- `bufI8Le` and `bufF8Le` use the only remaining host boundary — the audited
-  `System.BitConverter.GetBytes(Long)` / `GetBytes(Double)` externs (returning
-  `slice[Byte]`) — for 64-bit / IEEE-754 binary64 little-endian extraction
-  (impractical in Lyric without bitwise primitives, #875).  `System.BitConverter`
-  resolves via `System.Runtime`.
-- `bufF4Le` (`ldc.r4` / IEEE-754 binary32) panics: it is unreachable because
-  Lyric has no `Single` type (`Float` maps to `Double`), so the emitter never
-  constructs the `OF4` opcode (verified: zero `OF4(` construction sites outside
-  `opcodes.l`).  Float constants emit as `ldc.r8` via `bufF8Le`.
+- `bufI8Le` / `bufF8Le` use the audited `System.BitConverter.GetBytes(Long)` /
+  `GetBytes(Double)` externs (returning `slice[Byte]`) for 64-bit / IEEE-754
+  binary64 little-endian extraction (impractical in Lyric without bitwise
+  primitives, #875).  `System.BitConverter` resolves via `System.Runtime`.
+- `bufF4Le` (`ldc.r4` / IEEE-754 binary32) narrows the `Double` to a `float` and
+  reinterprets its 32-bit pattern as an `Int` via
+  `System.Convert.ToSingle` → `System.BitConverter.SingleToInt32Bits`, then
+  writes it little-endian through `bufU4`.  The `Single` value flows only between
+  the two BCL calls (never into a Lyric local — Lyric has no `Single` type), so
+  the result is exactly the CLR's `(float)v` bit pattern, matching the former
+  host's `BitConverter.GetBytes(single v)`.  Verified by the float32 self-tests
+  (m70/m77/m81) which assert the exact `ldc.r4` byte layout (e.g. `42.0f` =
+  `0x42280000`).  `Convert` / `BitConverter` resolve via `System.Runtime`.
 - `bufToList` returns a **fresh copy** of the backing list, matching the former
   host's `ToList()` (which allocated a new list).  Returning the live `w.data`
   aliased buffers that callers snapshot and then keep appending to, which also

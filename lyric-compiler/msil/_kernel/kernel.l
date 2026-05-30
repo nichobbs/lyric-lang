@@ -2,10 +2,10 @@
 //
 // Replaces the F# `Lyric.Jvm.Hosts.JvmByteHost` boundary so `--target dotnet`
 // builds no longer drag `Lyric.Jvm.Hosts.dll` onto the runtime closure.  The
-// buffer is a plain `List[Byte]`; the only host boundary is the audited
-// `System.BitConverter` extern (System.Runtime) used for 64-bit / IEEE-754
-// little-endian byte extraction, impractical in Lyric without bitwise
-// primitives (#875).
+// buffer is a plain `List[Byte]`; the only host boundaries are audited
+// `System.Runtime` externs (`System.BitConverter` for 64-bit / IEEE-754
+// little-endian byte extraction, plus `System.Convert.ToSingle` for the
+// float32 narrowing) — impractical in Lyric without bitwise primitives (#875).
 //
 // Endianness: `BitConverter.GetBytes` is host-endian; the compiler runs on
 // little-endian targets (x64 / arm64), matching the explicit little-endian
@@ -130,16 +130,22 @@ pub func bufF8Le(w: in ByteWriter, v: in Double): Unit {
   bufBytes(w, f8GetBytes(v))
 }
 
-// IEEE-754 binary32 (`ldc.r4`).  Unreachable: Lyric has no `Single` type
-// (`Float` maps to `Double`), so the emitter never constructs the `OF4`
-// opcode (verified: zero `OF4(` construction sites outside `opcodes.l`) —
-// float constants emit as `ldc.r8` through `bufF8Le`.  Encoding a genuine
-// 32-bit single here would need a `Single` type or value-type FFI support
-// (neither exists); panic loudly rather than emit wrong bytes if a future
-// float32 path ever reaches this.
+// IEEE-754 binary32 (`ldc.r4`).  Narrow the `Double` to `float` and reinterpret
+// its 32-bit pattern as an Int via `System.BitConverter`, then write it
+// little-endian through `bufU4`.  `Single` flows only between the two BCL calls
+// (never into a Lyric local), so the narrowing + bit pattern are exactly the
+// CLR's `(float)v` -> `SingleToInt32Bits`, matching the former host's
+// `BitConverter.GetBytes(single v)`.
+extern type Single = "System.Single"
+
+@externTarget("System.Convert.ToSingle")
+func dblToSingle(v: in Double): Single = ()
+
+@externTarget("System.BitConverter.SingleToInt32Bits")
+func singleToInt32Bits(v: in Single): Int = ()
+
 pub func bufF4Le(w: in ByteWriter, v: in Double): Unit {
-  panic("Msil.Kernel.bufF4Le: float32 (ldc.r4) is unsupported — Lyric has no "
-    + "Single type; float constants must emit as ldc.r8 via bufF8Le.")
+  bufU4(w, singleToInt32Bits(dblToSingle(v)))
 }
 
 pub func bufZero(w: in ByteWriter, n: in Int): Unit {
