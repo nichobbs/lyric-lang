@@ -92,15 +92,24 @@ functions whose return type is a generic (`Result[List[Byte], IOError]`) do not
 currently link on the self-hosted runtime** — this is Band-0 / #1471
 ("cross-package generic-arg widening") territory.
 
-Consequence for this epic: **the metadata reader's foundation — reading the
-ref-assembly bytes — depends on either (a) #1471 being fixed so
-`Std.File.readBytes` links, or (b) a non-generic-return byte-read entry point
-in `_kernel`** (e.g. `hostReadAllBytes(path): slice[Byte]` that panics on I/O
-error, mirroring the established `assembly_resources_host.l` convention of
-panicking rather than returning `Option`/`Result` across the FFI boundary).
-Phase 1 must resolve this first. Recommended: (b) — a small kernel
-`hostReadAllBytes` is self-contained, unblocks Phase 1 immediately, does not
-wait on #1471, and matches the kernel's existing no-`Result`-across-FFI style.
+Consequence for this epic: **the metadata reader must read the ref-assembly
+bytes through a non-generic-return entry point, not through
+`Std.File.readBytes`.** Conveniently, the required primitive **already exists**:
+`Std.FileHost.hostReadAllBytes(path): slice[Byte]` (`@externTarget("System.IO.File.ReadAllBytes")`,
+`lyric-stdlib/std/_kernel/file_host.l:53`) returns a `slice[Byte]` — a
+non-generic return that links on the self-hosted runtime — and panics on I/O
+error per the kernel's established no-`Result`-across-FFI convention. The
+generic `Result`-returning `Std.File.readBytes` wrapper is what fails; the
+reader bypasses it.
+
+The only open placement decision is whether `_kernel/file_host.l` (today
+imported only by `Std.File`) may be imported by `Msil.MetadataReader`, or
+whether to expose a thin non-`_kernel` byte-read accessor for compiler-internal
+callers. Recommended: add a small `pub func readBytesOrPanic(path): slice[Byte]`
+to `Std.File` that calls `hostReadAllBytes` directly (keeping `_kernel` private
+to `Std.File` per the kernel-boundary rule), and have the reader import that.
+This unblocks Phase 1 immediately and does not wait on #1471 (the `readBytes`
+generic-return fix remains worth doing independently for stdlib consumers).
 
 ---
 
@@ -172,9 +181,33 @@ the work is "invert the existing writers."
 ## §4  Architecture
 
 A new pure-Lyric library, `Msil.MetadataReader` (under `lyric-compiler/msil/`,
-in the reserved `Msil.*` namespace alongside `Msil.Ffi`), exposing one query:
+in the reserved `Msil.*` namespace alongside `Msil.Ffi`), exposing a
+**high-level composing entry point** that integration sites call, plus the
+lower-level per-assembly query it composes:
 
 ```
+// High-level: discovery + resolution in one call. This is what the auto-FFI
+// and @externTarget integration sites use — the caller supplies only the type
+// FQN, member, and arg types; the reader internally consults the cached
+// type-FQN → owning-assembly index (see "Assembly discovery" below) to find
+// the assembly, then resolves the method. Returns None only when the type or
+// a matching overload is genuinely absent (callers turn None into a
+// diagnostic — see §6).
+resolveExtern(
+  ctx:       CodegenCtx,       // carries the memoized discovery index + caches
+  typeFqn:   String,           // "System.Math"
+  member:    String,           // "Min" | ".ctor"
+  argTypes:  List[MsilType]    // lowered Lyric arg types, for overload scoring
+): Option[ResolvedExtern]
+
+record ResolvedExtern {
+  assemblyName: String         // owning assembly's simple name (for the AssemblyRef row)
+  sig:          ResolvedSig
+}
+
+// Lower-level: resolve within one already-located assembly file. resolveExtern
+// composes refPackDir()/the index + this. Exposed for testing and for callers
+// that already know the assembly (e.g. a restored dependency DLL).
 resolveMethod(
   asmPath:   String,          // resolved reference-assembly file
   typeFqn:   String,          // "System.Math"
@@ -234,14 +267,20 @@ dependency externs resolve identically.
 ### Integration points
 
 - **Auto-FFI** (`emitAutoFfiCallMsil`, `codegen.l:6564`): replace the
-  `(object…) : void` stub with `resolveMethod(...)` → real param/return/`this`
-  shape; emit `call` vs `callvirt` from `isVirtual`/`isStatic`; box/coerce args
-  per the resolved param types. **Removes the #1504 H9 guess entirely.**
+  `(object…) : void` stub with `resolveExtern(ctx, typeFqn, member, argTypes)`
+  → real assembly + param/return/`this` shape; intern the AssemblyRef/TypeRef
+  from `assemblyName`; emit `call` vs `callvirt` from `isVirtual`/`isStatic`;
+  box/coerce args per the resolved param types. The call site needs no prior
+  knowledge of the owning assembly — `resolveExtern` discovers it.
+  **Removes the #1504 H9 guess entirely.**
 - **`@externTarget`** (`lowerFuncMsil` FFI branch + `Msil.Ffi`): resolve from
-  metadata, then *check* the author's declared Lyric signature against it; on
-  disagreement emit a clear diagnostic (new `F00xx`) rather than silently
-  trusting the transcription. The declared signature becomes a verified
-  redundancy, not the source of truth.
+  metadata via `resolveExtern`, then *check* the author's declared Lyric
+  signature against it; on disagreement emit a clear diagnostic (**F0015**,
+  reserved here — next free in the F-series after F0014; confirm against the
+  diagnostic registry at implementation time and update the catalogue in
+  `docs/09-msil-emission.md`) rather than silently trusting the transcription.
+  The declared signature becomes a verified redundancy, not the source of
+  truth.
 - **Generic methods**: route through the MethodSpec table (#1497, shipped); the
   signature decoder must handle `MVAR`/`VAR` and the GENERIC calling
   convention.
@@ -264,11 +303,14 @@ byte arrays** for the parser layers so tests don't depend on the `readBytes`
 runtime gap.
 
 - **Phase 1 — byte-read foundation + PE/metadata-root reader.**
-  Add `_kernel` `hostReadAllBytes(path): slice[Byte]` (non-generic return,
-  panic on error) to unblock byte reading independent of #1471. Implement
-  layers 1–2 (PE container + metadata root/stream/`#~` header). Self-test
-  against a hand-built minimal metadata blob and against a real ref DLL's
-  bytes. *No emitter behaviour change yet.*
+  Reading bytes is already unblocked: `Std.FileHost.hostReadAllBytes(path):
+  slice[Byte]` exists (`file_host.l:53`, non-generic return, panics on I/O
+  error). Add a thin `pub func readBytesOrPanic(path): slice[Byte]` to
+  `Std.File` over it (keeping `_kernel` private to `Std.File`) and have the
+  reader import that — independent of the #1471 `readBytes` generic-return fix.
+  Implement layers 1–2 (PE container + metadata root/stream/`#~` header).
+  Self-test against a hand-built minimal metadata blob and against a real ref
+  DLL's bytes. *No emitter behaviour change yet.*
 - **Phase 2 — heaps + table rows + signature decoder.** Layers 3–5. Self-test
   the signature decoder as the exact inverse of `bufMsilType` over a generated
   corpus of `MsilType`s (encode → decode round-trip).
@@ -297,16 +339,20 @@ User-visible, production-quality (no placeholder dumps):
 - **No overload of `Type.method` matches the argument types** — name the type,
   method, the supplied arg types, and the candidate signatures found in
   metadata.
-- **`@externTarget` declared signature disagrees with metadata** (new) — show
-  the declared vs the resolved `(paramTypes) → returnType`, and which differs.
+- **`@externTarget` declared signature disagrees with metadata** (new,
+  **F0015** — see §4) — show the declared vs the resolved
+  `(paramTypes) → returnType`, and which differs.
 
 ---
 
 ## §7  Open questions
 
-- **Q-MD-001** — `hostReadAllBytes` kernel entry (Phase 1) vs. waiting on #1471
-  to fix `Std.File.readBytes` generic-return linking. _Leaning: ship the
-  kernel entry; it is self-contained and unblocks immediately._
+- **Q-MD-001** — _Resolved in this draft:_ the byte-read primitive
+  `hostReadAllBytes` already exists; Phase 1 adds a thin `Std.File.readBytesOrPanic`
+  over it rather than waiting on the #1471 `readBytes` generic-return fix (§2,
+  §5). Remaining sub-question: confirm `readBytesOrPanic` is the right public
+  surface vs. letting `Msil.MetadataReader` import `_kernel/file_host.l`
+  directly (the kernel-boundary rule favours the wrapper)._
 - **Q-MD-002** — Ref-pack version/TFM selection when multiple packs are
   installed: pin to the SDK `global.json` runtime, or the
   highest-compatible? _Leaning: pin to the pinned runtime to match what the
