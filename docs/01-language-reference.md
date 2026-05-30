@@ -1170,7 +1170,6 @@ free function returns `Option[Int]`.
 | Form | Result | Notes |
 |---|---|---|
 | `s.length` | `Int` | code-unit count |
-| `s.isEmpty` | `Bool` | `s.length == 0` |
 | `s[i]` | `Char` | code unit at index `i` |
 | `s.substring(start)` | `String` | from `start` to end |
 | `s.substring(start, count)` | `String` | `count` units from `start` |
@@ -1184,7 +1183,9 @@ free function returns `Option[Int]`.
 | `s.toLower()` | `String` | |
 | `s.toUpper()` | `String` | |
 
-String `==` / `!=` compare by value (not reference identity).
+String `==` / `!=` compare by value (not reference identity). An empty-string
+check is the `Std.String.isEmpty(s)` free function (`s.length == 0`), not a
+method-syntax form.
 
 ## 13. Tooling
 
