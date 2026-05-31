@@ -212,6 +212,91 @@ func testMethodSigBlobs(): Unit {
   assertTrue((sig[0] * 1) < 0x80, "sig: calling-convention byte is well-formed")
 }
 
+// Extract the element-type byte of an `STPrim`, or -1 for any other shape.
+func primByte(t: in SigType): Int {
+  match t {
+    case STPrim(e) -> e
+    case _         -> -1
+  }
+}
+
+// Layer 5: the signature decoder is the inverse of the emitter's
+// `buildStaticMethodSig`/`buildInstanceMethodSig` + `bufMsilType`.  These
+// blobs are exactly what those writers emit for the given shapes.
+func testSigDecodeRoundTrip(): Unit {
+  // Static `(Int, String): Bool` → DEFAULT, 2 params, BOOLEAN ret, I4, STRING.
+  val s1: List[Byte] = newList()
+  s1.add(0x00u8)  s1.add(0x02u8)  s1.add(0x02u8)  s1.add(0x08u8)  s1.add(0x0Eu8)
+  match decodeMethodSig(s1.toArray()) {
+    case Err(e) -> panic("sigrt: static decode failed: " + e)
+    case Ok(d) -> {
+      assertTrue(not d.hasThis, "sigrt: static has no `this`")
+      assertEqualInt(d.paramTypes.count, 2, "sigrt: static param count")
+      assertEqualInt(primByte(d.returnType), 0x02, "sigrt: static returns Bool")
+      assertEqualInt(primByte(d.paramTypes[0]), 0x08, "sigrt: param0 is I4")
+      assertEqualInt(primByte(d.paramTypes[1]), 0x0E, "sigrt: param1 is String")
+    }
+  }
+  // Instance `(): Void` → HASTHIS, 0 params, VOID ret.
+  val s2: List[Byte] = newList()
+  s2.add(0x20u8)  s2.add(0x00u8)  s2.add(0x01u8)
+  match decodeMethodSig(s2.toArray()) {
+    case Err(e) -> panic("sigrt: instance decode failed: " + e)
+    case Ok(d) -> {
+      assertTrue(d.hasThis, "sigrt: instance has `this`")
+      assertEqualInt(d.paramTypes.count, 0, "sigrt: instance param count")
+      assertEqualInt(primByte(d.returnType), 0x01, "sigrt: instance returns Void")
+    }
+  }
+  // Static `(slice[Byte]): Void` → DEFAULT, 1 param, VOID ret, SZARRAY of U1.
+  val s3: List[Byte] = newList()
+  s3.add(0x00u8)  s3.add(0x01u8)  s3.add(0x01u8)  s3.add(0x1Du8)  s3.add(0x05u8)
+  match decodeMethodSig(s3.toArray()) {
+    case Err(e) -> panic("sigrt: array decode failed: " + e)
+    case Ok(d) -> {
+      assertEqualInt(d.paramTypes.count, 1, "sigrt: array param count")
+      match d.paramTypes[0] {
+        case STSzArray(elem) ->
+          assertEqualInt(primByte(elem), 0x05, "sigrt: array element is U1")
+        case _ -> panic("sigrt: expected an SZARRAY parameter")
+      }
+    }
+  }
+  // Empty blob is rejected.
+  val empty: List[Byte] = newList()
+  match decodeMethodSig(empty.toArray()) {
+    case Ok(_)  -> panic("sigrt: empty blob should be rejected")
+    case Err(_) -> ()
+  }
+}
+
+// Layer 5 oracle: every MethodDefSig in the running PE decodes, and the
+// program entry `main` decodes to a static, parameterless method.
+func testSigDecodeOnSelf(): Unit {
+  val img    = loadPe()
+  val th     = loadTables(img, loadRoot(img))
+  val layout = loadLayout(img, th)
+  val methodCount = rowCountOf(th, 0x06)
+  var mi = 1
+  var checkedMain = false
+  while mi <= methodCount {
+    val md  = readMethodDef(img, layout, mi)
+    val sig = blobAt(img, layout, md.sigBlob)
+    match decodeMethodSig(sig) {
+      case Err(e) -> panic("sigself: MethodDef[" + Str.fromInt(mi) + "] (" + md.name + ") failed: " + e)
+      case Ok(d) -> {
+        if md.name == "main" {
+          checkedMain = true
+          assertTrue(not d.hasThis, "sigself: main is static")
+          assertEqualInt(d.paramTypes.count, 0, "sigself: main has no parameters")
+        }
+      }
+    }
+    mi = mi + 1
+  }
+  assertTrue(checkedMain, "sigself: decoded the `main` signature")
+}
+
 // ── Driver ───────────────────────────────────────────────────────────────────
 
 func main(): Int {
@@ -222,6 +307,8 @@ func main(): Int {
   testCompressedUInt()
   testTableRows()
   testMethodSigBlobs()
+  testSigDecodeRoundTrip()
+  testSigDecodeOnSelf()
   println("metadata-reader self-test: ok")
   return 0
 }

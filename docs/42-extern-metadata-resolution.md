@@ -335,11 +335,15 @@ runtime gap.
   oracle: it reads the test assembly's real tables and asserts the `Program`
   TypeDef, its `main` method, `<Module>` at row 1, and non-empty MethodDefSig
   blobs.
-- **Phase 2b — signature-blob decoder.** Layer 5: decode a MethodDefSig blob
-  (calling convention incl. HASTHIS/GENERIC, generic-param count, param count,
-  return + param types over the full ECMA element-type grammar) into a typed
-  result. Self-test as the exact inverse of `bufMsilType` over a generated
-  corpus of `MsilType`s (encode → decode round-trip).
+- **Phase 2b — signature-blob decoder. _(SHIPPED.)_** Layer 5: `decodeMethodSig`
+  decodes a MethodDefSig blob (calling convention incl. HASTHIS/GENERIC,
+  generic-param count, param count, return + param types) into a `SigType` over
+  the full ECMA element-type grammar — primitives, CLASS/VALUETYPE tokens,
+  VAR/MVAR, SZARRAY/ARRAY, BYREF/PTR, GENERICINST, custom-modifier skipping,
+  vararg SENTINEL, and nested FNPTR sigs. Self-tested both as the inverse of
+  the emitter's `buildStaticMethodSig`/`buildInstanceMethodSig` + `bufMsilType`
+  (hand-built blobs → expected `SigType`) and as a running-PE oracle (every
+  MethodDefSig in the test assembly decodes; `main` → static, parameterless).
 - **Phase 3 — assembly discovery + overload resolution; wire auto-FFI.**
   Layer 6 + `refPackDir()` + the type→assembly index. Replace
   `emitAutoFfiCallMsil`'s stub; **retire #1504 H9**. Parity target: the F#
