@@ -207,6 +207,20 @@ pub func emitLoad(insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
   }
 }
 
+// Load an if/match/try result local, narrowing a reference value back to its
+// precise class.  Result locals are tracked as java/lang/Object in the
+// StackMapTable (object locals lose their class through a plain astore), so a
+// downstream `areturn` / member access requiring the precise type would
+// otherwise fail verification ("Type 'java/lang/Object' is not assignable…").
+// A checkcast restores the static type; for primitives it is a no-op load.
+pub func emitResultLoad(insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
+  emitLoad(insns, slot, ty)
+  match ty {
+    case JRef(cls) -> { if cls != "java/lang/Object" { insns.add(LCheckcast(className = cls)) } }
+    case _         -> ()
+  }
+}
+
 pub func emitStore(insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
   match ty {
     case JLong    -> insns.add(LLstore(slot = slot))
@@ -1076,21 +1090,46 @@ func lowerIfExpr(
   val elseL  = freshLabel(ctx)
   val afterL = freshLabel(ctx)
 
-  lowerBoolCond(ctx, insns, cond, elseL)
-
-  val thenTy = lowerExprOrBlock(ctx, insns, thenBranch)
-
   match elseBranchOpt {
-    case Some(elseBranch) -> {
-      insns.add(LGoto(label = afterL))
-      insns.add(LLabel(name = elseL))
-      lowerExprOrBlock(ctx, insns, elseBranch)
-      insns.add(LLabel(name = afterL))
-      thenTy
-    }
     case None -> {
+      // if-without-else is Unit-typed: the then-branch runs for its effect and
+      // the join carries no value, so the empty-stack stackmap frame is correct.
+      lowerBoolCond(ctx, insns, cond, elseL)
+      val _ = lowerExprOrBlock(ctx, insns, thenBranch)
       insns.add(LLabel(name = elseL))
-      thenTy
+      JVoid
+    }
+    case Some(elseBranch) -> {
+      lowerBoolCond(ctx, insns, cond, elseL)
+      val thenTy = lowerExprOrBlock(ctx, insns, thenBranch)
+      match thenTy {
+        case JVoid -> {
+          // Void if-expression: nothing on the stack at the `afterL` join.
+          insns.add(LGoto(label = afterL))
+          insns.add(LLabel(name = elseL))
+          val _ = lowerExprOrBlock(ctx, insns, elseBranch)
+          insns.add(LLabel(name = afterL))
+          JVoid
+        }
+        case _ -> {
+          // Value-producing if-expression: route both branch values through a
+          // result local so the operand stack is *empty* at the `afterL` join.
+          // The JVM StackMapTable this backend emits declares an empty operand
+          // stack at every branch target, so leaving a value on the stack there
+          // fails verification ("Inconsistent stackmap frames at branch target").
+          // Storing into a local in each arm and reloading after the join keeps
+          // the stack empty at the merge point.
+          val rslot = allocSlot(ctx, "__if_r_" + afterL, thenTy)
+          emitStore(insns, rslot, thenTy)
+          insns.add(LGoto(label = afterL))
+          insns.add(LLabel(name = elseL))
+          val _ = lowerExprOrBlock(ctx, insns, elseBranch)
+          emitStore(insns, rslot, thenTy)
+          insns.add(LLabel(name = afterL))
+          emitResultLoad(insns, rslot, thenTy)
+          thenTy
+        }
+      }
     }
   }
 }
@@ -1110,11 +1149,26 @@ func lowerBlockExpr(ctx: in FuncCtx, insns: in List[LInsn], block: in Block): Jv
     lowerStmt(ctx, insns, block.statements[i])
     i = i + 1
   }
-  // Last statement: if SExpr, its value is the block value.
+  // Last statement: if SExpr, its value is the block value.  An STry in tail
+  // position is `try { … } catch … ` used as an expression (e.g.
+  // `return try { … } catch … `, which the parser wraps as EBlock([STry])):
+  // lower it so its arms' values become the block value instead of being
+  // popped as a statement.
   val last = block.statements[n - 1]
   match last.kind {
     case SExpr(e) -> {
       lowerExpr(ctx, insns, e)
+    }
+    case STry(body, catches, finally_) -> {
+      match finally_ {
+        case None -> lowerTryCatchExpr(ctx, insns, body, catches)
+        case Some(_) -> {
+          // try/finally in value position is uncommon; fall back to statement
+          // lowering (value discarded) rather than mis-handling the finally.
+          lowerStmt(ctx, insns, last)
+          JVoid
+        }
+      }
     }
     case _ -> {
       lowerStmt(ctx, insns, last)
@@ -1235,6 +1289,12 @@ func lowerMatchExpr(
 
   val afterL = freshLabel(ctx)
   var resultTy: JvmType = JVoid
+  // Value-producing match arms route their value through a result local so the
+  // operand stack is empty at the `afterL` join (the StackMapTable declares an
+  // empty stack at branch targets — see lowerIfExpr).  Allocated lazily once the
+  // first arm reveals the value type; `-1` until then / for Unit-typed matches.
+  val rslotName = "__match_r_" + afterL
+  var rslot = -1
 
   var i = 0
   while i < arms.count {
@@ -1259,6 +1319,13 @@ func lowerMatchExpr(
     if i == 0 {
       resultTy = armTy
     }
+    match resultTy {
+      case JVoid -> ()
+      case _ -> {
+        if rslot < 0 { rslot = allocSlot(ctx, rslotName, resultTy) }
+        emitStore(insns, rslot, resultTy)
+      }
+    }
     insns.add(LGoto(label = afterL))
     insns.add(LLabel(name = nextArmL))
     i = i + 1
@@ -1269,6 +1336,10 @@ func lowerMatchExpr(
   emitPanicFromStack(ctx, insns)
 
   insns.add(LLabel(name = afterL))
+  match resultTy {
+    case JVoid -> ()
+    case _     -> { if rslot >= 0 { emitResultLoad(insns, rslot, resultTy) } }
+  }
   resultTy
 }
 
@@ -2508,6 +2579,74 @@ func lowerLocalPatBind(
 // ─────────────────────────────────────────────────────────────────────────────
 // §6b. Try/catch lowering.
 // ─────────────────────────────────────────────────────────────────────────────
+
+// Try/catch in *expression* position: `try { … } catch … ` whose value is the
+// trailing expression of the try body or of a matching catch body.  Each arm's
+// value is routed through a result local so the operand stack is empty at the
+// `afterL` join (the StackMapTable declares an empty stack there — see
+// lowerIfExpr).  Finally blocks are handled by the statement form only; callers
+// pass try/finally-as-value through `lowerStmt` instead.
+func lowerTryCatchExpr(
+  ctx:     in FuncCtx,
+  insns:   in List[LInsn],
+  body:    in Block,
+  catches: in List[CatchClause]
+): JvmType {
+  val startL = freshLabel(ctx)
+  val endL   = freshLabel(ctx)
+  val afterL = freshLabel(ctx)
+  val rslotName = "__try_r_" + afterL
+  var rslot = -1
+
+  insns.add(LLabel(name = startL))
+  val resultTy = lowerBlockExpr(ctx, insns, body)
+  match resultTy {
+    case JVoid -> ()
+    case _     -> { rslot = allocSlot(ctx, rslotName, resultTy); emitStore(insns, rslot, resultTy) }
+  }
+  insns.add(LGoto(label = afterL))
+  insns.add(LLabel(name = endL))
+
+  var i = 0
+  while i < catches.count {
+    val c = catches[i]
+    val handlerL = freshLabel(ctx)
+    insns.add(LLabel(name = handlerL))
+    val exTy = JRef(className = "java/lang/Throwable")
+    match c.bindName {
+      case Some(bname) -> {
+        val exSlot = allocSlot(ctx, bname, exTy)
+        emitStore(insns, exSlot, exTy)
+      }
+      case None -> insns.add(LPop)
+    }
+    val _ = lowerBlockExpr(ctx, insns, c.body)
+    match resultTy {
+      case JVoid -> ()
+      case _     -> {
+        if rslot < 0 { rslot = allocSlot(ctx, rslotName, resultTy) }
+        emitStore(insns, rslot, resultTy)
+      }
+    }
+    insns.add(LGoto(label = afterL))
+    val catchClass =
+      if c.typeName == "Bug" { "java/lang/Throwable" }
+      else { lyricNameToJvm(c.typeName) }
+    insns.add(LTryCatch(
+      startLabel   = startL,
+      endLabel     = endL,
+      handlerLabel = handlerL,
+      catchClass   = catchClass))
+    i = i + 1
+  }
+
+  insns.add(LLabel(name = afterL))
+  match resultTy {
+    case JVoid -> ()
+    case _     -> { if rslot >= 0 { emitResultLoad(insns, rslot, resultTy) } }
+  }
+  resultTy
+}
 
 func lowerTryCatch(
   ctx:      in FuncCtx,
