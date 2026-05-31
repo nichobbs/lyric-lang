@@ -39,6 +39,7 @@ import Std.Encoding as Enc
 import Std.Environment as Environment
 import Std.File as File
 import Std.Path as Path
+import Std.Parse as Parse
 
 // ── Parsed shapes ────────────────────────────────────────────────────────────
 
@@ -824,18 +825,57 @@ pub func decodeMethodSig(blob: in slice[Byte]): Result[DecodedMethodSig, String]
 // `System.Console` in `System.Console`), so a TypeDef-derived index is
 // sufficient — no ExportedType/type-forward chasing is required.
 
-// Strip a directory + ".dll" extension to the assembly's simple name.
+// Index of the last path separator (`/` or `\`), or -1 when there is none.
+func lastSepIndex(path: in String): Int {
+  val a = match Str.lastIndexOf(path, "/")  { case None -> -1  case Some(i) -> i }
+  val b = match Str.lastIndexOf(path, "\\") { case None -> -1  case Some(i) -> i }
+  if a > b { a } else { b }
+}
+
+// Strip a directory (either separator) + ".dll" extension to the assembly's
+// simple name.
 func assemblySimpleName(path: in String): String {
-  val base = match Str.lastIndexOf(path, "/") {
-    case None    -> path
-    case Some(i) -> Str.substring(path, i + 1, path.length - i - 1)
-  }
+  val cut = lastSepIndex(path)
+  val base = if cut < 0 { path } else { Str.substring(path, cut + 1, path.length - cut - 1) }
   if Str.endsWith(base, ".dll") { Str.substring(base, 0, base.length - 4) } else { base }
 }
 
-// Pick the lexicographically-greatest immediate subdirectory of `dir` (used to
-// select the reference-pack version and target-framework folders, of which
-// there is normally exactly one).
+// True when `s` is non-empty and all ASCII/Unicode digits.
+func isAllDigits(s: in String): Bool {
+  if s.length == 0 { return false }
+  var i = 0
+  while i < s.length {
+    if not Ch.isDigit(s[i]) { return false }
+    i = i + 1
+  }
+  true
+}
+
+// Natural-order "greater than": compare dot-separated components, numerically
+// when both are all-digits (so `10.0.10` > `10.0.9`, which a plain
+// lexicographic compare gets wrong), otherwise by code point.
+func dirVersionGreater(a: in String, b: in String): Bool {
+  val pa = Str.split(a, ".")
+  val pb = Str.split(b, ".")
+  var i = 0
+  while i < pa.length and i < pb.length {
+    val x = pa[i]
+    val y = pb[i]
+    if x != y {
+      if isAllDigits(x) and isAllDigits(y) {
+        return Parse.parseInt(x) > Parse.parseInt(y)
+      } else {
+        return x > y
+      }
+    }
+    i = i + 1
+  }
+  pa.length > pb.length
+}
+
+// Pick the highest-versioned immediate subdirectory of `dir` (used to select
+// the reference-pack version and target-framework folders, of which there is
+// normally exactly one).
 func pickHighestDir(dir: in String): Option[String] {
   match File.listDirs(dir) {
     case Err(_) -> None
@@ -844,7 +884,7 @@ func pickHighestDir(dir: in String): Option[String] {
       var best = names[0]
       var i = 1
       while i < names.count {
-        if names[i] > best { best = names[i] }
+        if dirVersionGreater(names[i], best) { best = names[i] }
         i = i + 1
       }
       Some(value = best)
@@ -906,35 +946,42 @@ pub func enumRefAssemblies(refDir: in String): List[String] {
   }
 }
 
-// Add every public TypeDef in the assembly at `asmPath` to `index`, mapping
-// the type's fully-qualified name to the assembly's simple name.  The first
-// assembly to claim a name wins (duplicates across facades are ignored).
-// Malformed or unreadable assemblies are skipped silently.
+// Add every public top-level TypeDef in the assembly at `asmPath` to `index`,
+// mapping the type's fully-qualified name to the assembly's simple name.  The
+// first assembly to claim a name wins (duplicates across facades are ignored).
+// Malformed or unreadable assemblies (read failure, bad PE/metadata) are
+// skipped silently — a single broken DLL must not abort building the index.
 pub func addAssemblyTypes(index: in Map[String, String], asmPath: in String): Unit {
-  match readPe(File.readBytesOrPanic(asmPath)) {
+  match File.readBytes(asmPath) {
     case Err(_) -> {}
-    case Ok(img) -> match readMetadataRoot(img) {
+    case Ok(raw) -> match readPe(raw.toArray()) {
       case Err(_) -> {}
-      case Ok(root) -> match readTablesHeader(img, root) {
+      case Ok(img) -> match readMetadataRoot(img) {
         case Err(_) -> {}
-        case Ok(th) -> match computeLayout(img, root, th) {
+        case Ok(root) -> match readTablesHeader(img, root) {
           case Err(_) -> {}
-          case Ok(layout) -> {
-            val asmName = assemblySimpleName(asmPath)
-            val n = rowCountOf(th, 0x02)
-            var i = 1
-            while i <= n {
-              val td = readTypeDef(img, layout, i)
-              if td.name != "<Module>" {
-                val fqn = if td.namespaceName.length > 0 {
-                  td.namespaceName + "." + td.name
-                } else { td.name }
-                match mapGet(index, fqn) {
-                  case Some(_) -> {}
-                  case None    -> index.add(fqn, asmName)
+          case Ok(th) -> match computeLayout(img, root, th) {
+            case Err(_) -> {}
+            case Ok(layout) -> {
+              val asmName = assemblySimpleName(asmPath)
+              val n = rowCountOf(th, 0x02)
+              var i = 1
+              while i <= n {
+                val td = readTypeDef(img, layout, i)
+                // Index only Public top-level types (TypeAttributes visibility
+                // mask 0x07 == Public); this excludes `<Module>`, nested, and
+                // non-public types, which are never extern-resolution targets.
+                if (td.flags % 8) == 1 {
+                  val fqn = if td.namespaceName.length > 0 {
+                    td.namespaceName + "." + td.name
+                  } else { td.name }
+                  match mapGet(index, fqn) {
+                    case Some(_) -> {}
+                    case None    -> index.add(fqn, asmName)
+                  }
                 }
+                i = i + 1
               }
-              i = i + 1
             }
           }
         }
