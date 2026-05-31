@@ -9,11 +9,13 @@
 // way needs no runtime type loading — it is pure byte reading, so it is
 // independent of whether the emitting assembly's types can be reflected over.
 //
-// This module currently covers layers 1–2: the PE container (DOS/PE/COFF/
+// This module currently covers layers 1–4: the PE container (DOS/PE/COFF/
 // optional header, sections, RVA→file-offset, CLI header), the metadata root
-// (stream headers), and the `#~` table-stream header (heap-size flags, the
-// valid-table bitvector, per-table row counts).  Heap readers, table-row
-// readers, the signature-blob decoder, and overload resolution build on top.
+// (stream headers), the `#~` table-stream header (heap-size flags, the
+// valid-table bitvector, per-table row counts), the `#Strings`/`#Blob` heap
+// readers, and the table layout + TypeDef/MethodDef/Param row readers (with
+// run-length method-list ownership).  The signature-blob decoder and overload
+// resolution build on top.
 //
 // All multi-byte integers in the PE/metadata format are little-endian.  Byte
 // values are widened to `Int` via mixed Byte*Int arithmetic (the same idiom
@@ -32,6 +34,7 @@ import Std.Core
 import Std.Collections
 import Std.String as Str
 import Std.Char as Ch
+import Std.Encoding as Enc
 
 // ── Parsed shapes ────────────────────────────────────────────────────────────
 
@@ -84,6 +87,7 @@ pub record TablesHeader {
   blobWide:       Bool
   presentCount:   Int          // number of tables with a row-count entry
   rowCounts:      List[Int]    // length 64, indexed by table id
+  tablesDataOff:  Int          // file offset where the table rows begin
 }
 
 // ── Little-endian byte readers (Byte→Int widening via mixed arithmetic) ──────
@@ -182,10 +186,22 @@ pub func readPe(bytes: in slice[Byte]): Result[PeImage, String] {
   if magic != 0x10B and magic != 0x20B {
     return Err(error = "metadata: unrecognised optional-header magic 0x" + toString(magic))
   }
-  // Data directories start at optBase+96 (PE32) or optBase+112 (PE32+).
-  val dataDirStart = if isPe32Plus { optBase + 112 } else { optBase + 96 }
-  // CLI header = COM descriptor = data directory index 14.
+  // NumberOfRvaAndSizes precedes the data directories (optBase+92 for PE32,
+  // optBase+108 for PE32+); the directories themselves start 4 bytes later.
+  val numRvaOff   = if isPe32Plus { optBase + 108 } else { optBase + 92 }
+  val dataDirStart = numRvaOff + 4
+  // CLI header = COM descriptor = data directory index 14, so the image must
+  // declare at least 15 directory entries and the entry must lie within the
+  // optional header (which spans [optBase, optBase+optHeaderSize)).
+  val numRvaAndSizes = rdU32(bytes, numRvaOff)
+  if numRvaAndSizes < 15 {
+    return Err(error = "metadata: image has only " + toString(numRvaAndSizes)
+      + " data directories; no CLI header (index 14)")
+  }
   val cliDirOff  = dataDirStart + 14 * 8
+  if cliDirOff + 8 > optBase + optHeaderSize {
+    return Err(error = "metadata: CLI data directory extends past the optional header")
+  }
   if cliDirOff + 8 > bytes.length {
     return Err(error = "metadata: CLI data directory out of range")
   }
@@ -329,17 +345,288 @@ pub func readTablesHeader(img: in PeImage, root: in MetadataRoot): Result[Tables
     }
     tid = tid + 1
   }
+  // Table rows begin after the row-count array.  HeapSizes bit 6 (ExtraData,
+  // present in `#-` edit-and-continue streams) inserts one extra u32 first.
+  var dataOff = rowsOff + present * 4
+  if bitSetInByte(heapSizes, 6) { dataOff = dataOff + 4 }
   Ok(value = TablesHeader(
-    heapSizes    = heapSizes,
-    stringsWide  = bitSetInByte(heapSizes, 0),
-    guidWide     = bitSetInByte(heapSizes, 1),
-    blobWide     = bitSetInByte(heapSizes, 2),
-    presentCount = present,
-    rowCounts    = rowCounts))
+    heapSizes     = heapSizes,
+    stringsWide   = bitSetInByte(heapSizes, 0),
+    guidWide      = bitSetInByte(heapSizes, 1),
+    blobWide      = bitSetInByte(heapSizes, 2),
+    presentCount  = present,
+    rowCounts     = rowCounts,
+    tablesDataOff = dataOff))
 }
 
 // Row count for an ECMA table id (0..63); 0 when the table is absent.
 pub func rowCountOf(th: in TablesHeader, tableId: in Int): Int {
   if tableId < 0 or tableId >= th.rowCounts.count { return 0 }
   th.rowCounts[tableId]
+}
+
+// ── Layer 3: heaps ───────────────────────────────────────────────────────────
+
+// Read a compressed unsigned integer (ECMA-335 §II.23.2), the inverse of the
+// emitter's `writeCompressedUInt`.  Returns (value, bytesConsumed).
+pub record CompressedUInt {
+  value:     Int
+  byteWidth: Int
+}
+
+pub func readCompressedUInt(b: in slice[Byte], o: in Int): CompressedUInt {
+  val b0 = rdU8(b, o)
+  if b0 < 0x80 {
+    CompressedUInt(value = b0, byteWidth = 1)
+  } else if b0 < 0xC0 {
+    CompressedUInt(value = (b0 - 0x80) * 256 + rdU8(b, o + 1), byteWidth = 2)
+  } else {
+    CompressedUInt(value =
+      (b0 - 0xC0) * 16777216 + rdU8(b, o + 1) * 65536
+        + rdU8(b, o + 2) * 256 + rdU8(b, o + 3),
+      byteWidth = 4)
+  }
+}
+
+// Read a UTF-8, NUL-terminated string from `b` starting at file offset `off`.
+// (`#Strings` heap entries are UTF-8; identifiers are usually ASCII but may
+// carry multi-byte code points.)
+func readUtf8Z(b: in slice[Byte], off: in Int): String {
+  val acc: List[Byte] = newList()
+  var i = off
+  while i < b.length and rdU8(b, i) != 0 {
+    acc.add(b[i])
+    i = i + 1
+  }
+  match Enc.tryDecodeUtf8(acc.toArray()) {
+    case Some(s) -> s
+    case None    -> ""
+  }
+}
+
+// ── Layer 4: table layout + row readers ──────────────────────────────────────
+
+// Computed physical layout for the metadata tables: heap-index and
+// coded-index column widths, plus each table's row size and the file offset
+// where its rows begin.  Indexed arrays are length 64 (ECMA table id).
+pub record TableLayout {
+  stringIdx:       Int          // #Strings index width (2 or 4)
+  guidIdx:         Int
+  blobIdx:         Int
+  typeDefOrRefIdx: Int          // TypeDefOrRef coded-index width
+  fieldIdx:        Int          // Field simple-index width
+  methodIdx:       Int          // MethodDef simple-index width
+  paramIdx:        Int          // Param simple-index width
+  rowSize:         List[Int]    // length 64
+  dataStart:       List[Int]    // length 64, file offset of each table's rows
+  stringsBase:     Int          // file offset of the #Strings heap (-1 if absent)
+  blobBase:        Int          // file offset of the #Blob heap (-1 if absent)
+}
+
+pub record TypeDefRow {
+  flags:           Int
+  name:            String
+  namespaceName:   String
+  fieldListStart:  Int          // 1-based Field row
+  methodListStart: Int          // 1-based MethodDef row
+}
+
+pub record MethodDefRow {
+  rva:            Int
+  implFlags:      Int
+  flags:          Int
+  name:           String
+  sigBlob:        Int          // #Blob heap index of the MethodDefSig
+  paramListStart: Int          // 1-based Param row
+}
+
+pub record ParamRow {
+  flags:    Int
+  sequence: Int
+  name:     String
+}
+
+// A coded index is 2 bytes when the largest referenced table fits in
+// (16 - tagBits) bits, else 4 bytes (ECMA-335 §II.24.2.6).
+func codedWidth(maxRows: in Int, tagBits: in Int): Int {
+  var limit = 1
+  var k = 0
+  while k < 16 - tagBits { limit = limit * 2  k = k + 1 }
+  if maxRows < limit { 2 } else { 4 }
+}
+
+// A simple table index is 2 bytes when the table has fewer than 2^16 rows.
+func simpleWidth(th: in TablesHeader, tableId: in Int): Int {
+  if rowCountOf(th, tableId) < 65536 { 2 } else { 4 }
+}
+
+func maxOf4(a: in Int, b: in Int, c: in Int, d: in Int): Int {
+  var m = a
+  if b > m { m = b }
+  if c > m { m = c }
+  if d > m { m = d }
+  m
+}
+
+// Compute the physical column widths, per-table row sizes, and table data
+// offsets.  Only tables 0x00..0x08 (Module..Param) are schema-modelled —
+// enough to locate and read TypeDef/MethodDef/Param, which is all the metadata
+// reader needs.  Rows of higher tables follow these and never shift their
+// offsets, so their sizes are not required here.
+pub func computeLayout(img: in PeImage, root: in MetadataRoot,
+                       th: in TablesHeader): Result[TableLayout, String] {
+  val stringIdx = if th.stringsWide { 4 } else { 2 }
+  val guidIdx   = if th.guidWide    { 4 } else { 2 }
+  val blobIdx   = if th.blobWide    { 4 } else { 2 }
+  val fieldIdx  = simpleWidth(th, 0x04)
+  val methodIdx = simpleWidth(th, 0x06)
+  val paramIdx  = simpleWidth(th, 0x08)
+  // ResolutionScope: Module(0x00), ModuleRef(0x1A), AssemblyRef(0x23), TypeRef(0x01).
+  val rsIdx = codedWidth(maxOf4(rowCountOf(th, 0x00), rowCountOf(th, 0x1A),
+                                rowCountOf(th, 0x23), rowCountOf(th, 0x01)), 2)
+  // TypeDefOrRef: TypeDef(0x02), TypeRef(0x01), TypeSpec(0x1B).
+  val tdrIdx = codedWidth(maxOf4(rowCountOf(th, 0x02), rowCountOf(th, 0x01),
+                                 rowCountOf(th, 0x1B), 0), 2)
+
+  val rowSize: List[Int] = newList()
+  var z = 0
+  while z < 64 { rowSize.add(0)  z = z + 1 }
+  rowSize[0x00] = 2 + stringIdx + 3 * guidIdx                              // Module
+  rowSize[0x01] = rsIdx + 2 * stringIdx                                    // TypeRef
+  rowSize[0x02] = 4 + 2 * stringIdx + tdrIdx + fieldIdx + methodIdx        // TypeDef
+  rowSize[0x03] = fieldIdx                                                 // FieldPtr
+  rowSize[0x04] = 2 + stringIdx + blobIdx                                  // Field
+  rowSize[0x05] = methodIdx                                                // MethodPtr
+  rowSize[0x06] = 4 + 2 + 2 + stringIdx + blobIdx + paramIdx               // MethodDef
+  rowSize[0x07] = paramIdx                                                 // ParamPtr
+  rowSize[0x08] = 2 + 2 + stringIdx                                        // Param
+
+  val dataStart: List[Int] = newList()
+  var z2 = 0
+  while z2 < 64 { dataStart.add(0)  z2 = z2 + 1 }
+  var off = th.tablesDataOff
+  var tid = 0
+  while tid <= 0x08 {
+    dataStart[tid] = off
+    off = off + rowCountOf(th, tid) * rowSize[tid]
+    tid = tid + 1
+  }
+
+  val stringsBase = match findStream(root, "#Strings") {
+    case Some(s) -> s.fileOff
+    case None    -> -1
+  }
+  val blobBase = match findStream(root, "#Blob") {
+    case Some(s) -> s.fileOff
+    case None    -> -1
+  }
+  Ok(value = TableLayout(
+    stringIdx = stringIdx, guidIdx = guidIdx, blobIdx = blobIdx,
+    typeDefOrRefIdx = tdrIdx, fieldIdx = fieldIdx, methodIdx = methodIdx,
+    paramIdx = paramIdx, rowSize = rowSize, dataStart = dataStart,
+    stringsBase = stringsBase, blobBase = blobBase))
+}
+
+// Read a heap or simple/coded index of `width` (2 or 4) bytes.
+func rdIdx(b: in slice[Byte], o: in Int, width: in Int): Int {
+  if width == 2 { rdU16(b, o) } else { rdU32(b, o) }
+}
+
+// Resolve a #Strings heap index to its string value ("" for index 0).
+pub func stringAt(img: in PeImage, layout: in TableLayout, strIndex: in Int): String {
+  if strIndex == 0 or layout.stringsBase < 0 { return "" }
+  readUtf8Z(img.bytes, layout.stringsBase + strIndex)
+}
+
+// Resolve a #Blob heap index to its raw bytes (length-prefixed; empty for 0).
+pub func blobAt(img: in PeImage, layout: in TableLayout, blobIndex: in Int): slice[Byte] {
+  val empty: List[Byte] = newList()
+  if blobIndex == 0 or layout.blobBase < 0 { return empty.toArray() }
+  val b = img.bytes
+  val hdr = readCompressedUInt(b, layout.blobBase + blobIndex)
+  val start = layout.blobBase + blobIndex + hdr.byteWidth
+  val acc: List[Byte] = newList()
+  var i = 0
+  while i < hdr.value and start + i < b.length {
+    acc.add(b[start + i])
+    i = i + 1
+  }
+  acc.toArray()
+}
+
+// Read TypeDef row `row` (1-based).  Columns (ECMA §II.22.37):
+// Flags(u32), Name(#String), Namespace(#String), Extends(TypeDefOrRef),
+// FieldList(Field), MethodList(MethodDef).
+pub func readTypeDef(img: in PeImage, layout: in TableLayout,
+                     row: in Int): TypeDefRow {
+  val b = img.bytes
+  val o = layout.dataStart[0x02] + (row - 1) * layout.rowSize[0x02]
+  val flags = rdU32(b, o)
+  var p = o + 4
+  val nameI = rdIdx(b, p, layout.stringIdx)
+  p = p + layout.stringIdx
+  val nsI = rdIdx(b, p, layout.stringIdx)
+  p = p + layout.stringIdx
+  p = p + layout.typeDefOrRefIdx             // skip Extends
+  val fieldL = rdIdx(b, p, layout.fieldIdx)
+  p = p + layout.fieldIdx
+  val methodL = rdIdx(b, p, layout.methodIdx)
+  TypeDefRow(
+    flags = flags, name = stringAt(img, layout, nameI),
+    namespaceName = stringAt(img, layout, nsI),
+    fieldListStart = fieldL, methodListStart = methodL)
+}
+
+// Read MethodDef row `row` (1-based).  Columns (ECMA §II.22.26):
+// RVA(u32), ImplFlags(u16), Flags(u16), Name(#String), Signature(#Blob),
+// ParamList(Param).
+pub func readMethodDef(img: in PeImage, layout: in TableLayout,
+                       row: in Int): MethodDefRow {
+  val b = img.bytes
+  val o = layout.dataStart[0x06] + (row - 1) * layout.rowSize[0x06]
+  val rva = rdU32(b, o)
+  val implFlags = rdU16(b, o + 4)
+  val flags = rdU16(b, o + 6)
+  var p = o + 8
+  val nameI = rdIdx(b, p, layout.stringIdx)
+  p = p + layout.stringIdx
+  val sigI = rdIdx(b, p, layout.blobIdx)
+  p = p + layout.blobIdx
+  val paramL = rdIdx(b, p, layout.paramIdx)
+  MethodDefRow(
+    rva = rva, implFlags = implFlags, flags = flags,
+    name = stringAt(img, layout, nameI), sigBlob = sigI, paramListStart = paramL)
+}
+
+// Read Param row `row` (1-based).  Columns (ECMA §II.22.33):
+// Flags(u16), Sequence(u16), Name(#String).
+pub func readParam(img: in PeImage, layout: in TableLayout,
+                   row: in Int): ParamRow {
+  val b = img.bytes
+  val o = layout.dataStart[0x08] + (row - 1) * layout.rowSize[0x08]
+  val flags = rdU16(b, o)
+  val seq   = rdU16(b, o + 2)
+  val nameI = rdIdx(b, o + 4, layout.stringIdx)
+  ParamRow(flags = flags, sequence = seq, name = stringAt(img, layout, nameI))
+}
+
+// Inclusive [start, end] 1-based MethodDef range owned by TypeDef `typeRow`,
+// resolved from the run-length method-list ownership (a TypeDef owns the
+// MethodDef rows from its MethodList up to the next TypeDef's MethodList, or
+// the end of the MethodDef table for the last TypeDef).
+pub record RowRange {
+  start:  Int    // 1-based, inclusive
+  endRow: Int    // 1-based, inclusive; < start means empty
+}
+
+pub func methodRange(img: in PeImage, layout: in TableLayout, th: in TablesHeader,
+                     typeRow: in Int): RowRange {
+  val start = readTypeDef(img, layout, typeRow).methodListStart
+  val typeCount = rowCountOf(th, 0x02)
+  val last = if typeRow < typeCount {
+    readTypeDef(img, layout, typeRow + 1).methodListStart - 1
+  } else {
+    rowCountOf(th, 0x06)
+  }
+  RowRange(start = start, endRow = last)
 }

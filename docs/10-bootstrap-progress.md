@@ -17554,3 +17554,36 @@ passing) and the self-hosted emitter (`lyric build`).  No emitter behaviour
 change yet — wiring the reader into the auto-FFI and `@externTarget` paths is
 Phase 3+.  Self-hosted *runtime* cross-package resolution of the byte-read
 call (#1471 family) is the Phase 3 entry criterion (see `docs/42` §2 caveat).
+
+### D-progress-345 — CLI-metadata reader, Phase 2a: heaps + table rows (epic #1622)
+
+**Status:** Shipped (Phase 2a of epic #1622; design in
+`docs/42-extern-metadata-resolution.md` §5).
+
+Builds on the Phase 1 PE/metadata-root reader (D-progress-344) with layers
+3–4 of the pure-Lyric CLI-metadata reader (`lyric-compiler/msil/metadata_reader.l`):
+
+- **Compressed-integer reader** (`readCompressedUInt`) — inverse of the
+  emitter's `writeCompressedUInt`, all three width forms.
+- **Heap readers** — `stringAt` (`#Strings`, UTF-8 NUL-terminated via
+  `Std.Encoding.tryDecodeUtf8`) and `blobAt` (`#Blob`, compressed-length-prefixed).
+- **Table layout** (`computeLayout`) — heap-index widths from the HeapSizes
+  flags, coded-index widths (ResolutionScope, TypeDefOrRef) and simple-index
+  widths from row counts, per-table row sizes for tables 0x00–0x08, and each
+  table's data offset; plus the `#~` `tablesDataOff` (honouring the ExtraData
+  flag).
+- **Row readers** — `readTypeDef`, `readMethodDef`, `readParam`, and
+  `methodRange` (run-length method-list ownership: the MethodDef rows a TypeDef
+  owns, bounded by the next TypeDef's MethodList).
+
+The self-test (`lyric-stdlib/tests/metadata_reader_tests.l`) extends the
+running-PE oracle: it reads the test assembly's real tables and asserts the
+`Program` TypeDef in this package, its `main` method, `<Module>` at TypeDef
+row 1, non-empty MethodDefSig blobs, and the compressed-uint round-trip.
+Also folds in three Phase-1 review suggestions: `#GUID` heap-width assertion,
+CLI data-directory validation against `NumberOfRvaAndSizes`/the optional-header
+size, and the test-vs-suggestion notes.
+
+Compiles through both the bootstrap and self-hosted emitters.  The
+signature-blob decoder (layer 5) is Phase 2b; wiring into the auto-FFI /
+`@externTarget` paths remains Phase 3.

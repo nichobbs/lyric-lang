@@ -5,6 +5,13 @@
 // reference-pack path.  Auto-discovered by
 // `bootstrap/tests/Lyric.Emitter.Tests/StdlibLyricTests.fs`.
 // Exit 0 + "ok" in stdout means every assertion held.
+//
+// Placement note: this test lives here, not under `lyric-compiler/`, because
+// it must compile *and run* a program that emits a real PE (then parse that
+// PE back) — and the `*_tests.l` auto-discovery harness is the only mechanism
+// that does so without adding a per-test F# runner (which the project
+// disallows).  The import direction (a stdlib-tests file depending on a
+// compiler package) is a test-harness artefact, not a library dependency.
 
 package Msil.MetadataReader.Tests
 
@@ -113,8 +120,96 @@ func testTablesHeader(): Unit {
   // Heap-width flags must agree with the raw HeapSizes byte.
   assertTrue(th.stringsWide == ((th.heapSizes / 1) % 2 == 1),
     "tables: #Strings width flag matches HeapSizes bit 0")
+  assertTrue(th.guidWide == ((th.heapSizes / 2) % 2 == 1),
+    "tables: #GUID width flag matches HeapSizes bit 1")
   assertTrue(th.blobWide == ((th.heapSizes / 4) % 2 == 1),
     "tables: #Blob width flag matches HeapSizes bit 2")
+}
+
+func loadLayout(img: in PeImage, th: in TablesHeader): TableLayout {
+  match computeLayout(img, loadRoot(img), th) {
+    case Ok(l)  -> l
+    case Err(e) -> panic("computeLayout failed: " + e)
+  }
+}
+
+// The compressed-uint reader inverts the writer's three-form encoding.
+func testCompressedUInt(): Unit {
+  // 1-byte form: 0x03 → 3.
+  val one: List[Byte] = newList()
+  one.add(0x03u8)
+  val r1 = readCompressedUInt(one.toArray(), 0)
+  assertEqualInt(r1.value, 3, "cuint: 1-byte value")
+  assertEqualInt(r1.byteWidth, 1, "cuint: 1-byte width")
+  // 2-byte form: 0x81 0x00 → 0x100 = 256.
+  val two: List[Byte] = newList()
+  two.add(0x81u8)  two.add(0x00u8)
+  val r2 = readCompressedUInt(two.toArray(), 0)
+  assertEqualInt(r2.value, 256, "cuint: 2-byte value")
+  assertEqualInt(r2.byteWidth, 2, "cuint: 2-byte width")
+  // 4-byte form: 0xC0 0x00 0x40 0x00 → 0x4000 = 16384.
+  val four: List[Byte] = newList()
+  four.add(0xC0u8)  four.add(0x00u8)  four.add(0x40u8)  four.add(0x00u8)
+  val r4 = readCompressedUInt(four.toArray(), 0)
+  assertEqualInt(r4.value, 16384, "cuint: 4-byte value")
+  assertEqualInt(r4.byteWidth, 4, "cuint: 4-byte width")
+}
+
+// Layer 4 oracle: the running test PE's metadata tables decode to the
+// expected type and method names.  The Lyric emitter compiles this program's
+// package `Msil.MetadataReader.Tests` into a TypeDef named `Program` (with the
+// package as its namespace) whose methods include the program entry `main`.
+func testTableRows(): Unit {
+  val img    = loadPe()
+  val root   = loadRoot(img)
+  val th     = loadTables(img, root)
+  val layout = loadLayout(img, th)
+  val typeCount = rowCountOf(th, 0x02)
+  assertTrue(typeCount >= 2, "rows: at least <Module> + one real TypeDef")
+
+  // Find the `Program` type and confirm its namespace and a `main` method.
+  var foundProgram = false
+  var foundMain    = false
+  var ti = 1
+  while ti <= typeCount {
+    val td = readTypeDef(img, layout, ti)
+    if td.name == "Program" and Str.contains(td.namespaceName, "MetadataReader.Tests") {
+      foundProgram = true
+      val mr = methodRange(img, layout, th, ti)
+      var mi = mr.start
+      while mi <= mr.endRow {
+        val md = readMethodDef(img, layout, mi)
+        if md.name == "main" { foundMain = true }
+        // Every method name resolves to a non-empty #Strings entry.
+        assertTrue(md.name.length > 0, "rows: method name non-empty")
+        mi = mi + 1
+      }
+    }
+    ti = ti + 1
+  }
+  assertTrue(foundProgram, "rows: found the `Program` TypeDef in this package")
+  assertTrue(foundMain, "rows: `Program` owns a `main` method")
+
+  // The very first TypeDef row is always the `<Module>` pseudo-type.
+  assertEqual(readTypeDef(img, layout, 1).name, "<Module>",
+    "rows: TypeDef[1] is <Module>")
+}
+
+// MethodDef signatures resolve to a non-empty #Blob (every method has a
+// MethodDefSig), and the blob's first byte is a valid calling convention.
+func testMethodSigBlobs(): Unit {
+  val img    = loadPe()
+  val th     = loadTables(img, loadRoot(img))
+  val layout = loadLayout(img, th)
+  val methodCount = rowCountOf(th, 0x06)
+  assertTrue(methodCount > 0, "sig: at least one MethodDef")
+  val md  = readMethodDef(img, layout, 1)
+  val sig = blobAt(img, layout, md.sigBlob)
+  assertTrue(sig.length > 0, "sig: MethodDef[1] has a non-empty signature blob")
+  // Low nibble of the calling convention is DEFAULT(0)/VARARG(5)/GENERIC(0x10)
+  // etc.; the HASTHIS(0x20)/EXPLICITTHIS(0x40) bits may also be set.  At minimum
+  // the byte is < 0x80 (no reserved high bit) for a MethodDefSig.
+  assertTrue((sig[0] * 1) < 0x80, "sig: calling-convention byte is well-formed")
 }
 
 // ── Driver ───────────────────────────────────────────────────────────────────
@@ -124,6 +219,9 @@ func main(): Int {
   testRvaMapping()
   testMetadataRoot()
   testTablesHeader()
+  testCompressedUInt()
+  testTableRows()
+  testMethodSigBlobs()
   println("metadata-reader self-test: ok")
   return 0
 }

@@ -326,8 +326,19 @@ runtime gap.
   ref-pack path) and asserts the container, RVA mapping, stream set, and
   Module/TypeDef/MethodDef row counts. Compiles cleanly through both the
   bootstrap and self-hosted emitters. *No emitter behaviour change yet.*
-- **Phase 2 — heaps + table rows + signature decoder.** Layers 3–5. Self-test
-  the signature decoder as the exact inverse of `bufMsilType` over a generated
+- **Phase 2a — heaps + table rows. _(SHIPPED.)_** Layers 3–4: the compressed-
+  integer reader (inverse of `writeCompressedUInt`), the `#Strings` (UTF-8) and
+  `#Blob` (length-prefixed) heap readers, the table layout computation
+  (heap-index and coded-index column widths, per-table row sizes, table data
+  offsets), and the TypeDef/MethodDef/Param row readers with run-length
+  method-list ownership (`methodRange`). The self-test extends the running-PE
+  oracle: it reads the test assembly's real tables and asserts the `Program`
+  TypeDef, its `main` method, `<Module>` at row 1, and non-empty MethodDefSig
+  blobs.
+- **Phase 2b — signature-blob decoder.** Layer 5: decode a MethodDefSig blob
+  (calling convention incl. HASTHIS/GENERIC, generic-param count, param count,
+  return + param types over the full ECMA element-type grammar) into a typed
+  result. Self-test as the exact inverse of `bufMsilType` over a generated
   corpus of `MsilType`s (encode → decode round-trip).
 - **Phase 3 — assembly discovery + overload resolution; wire auto-FFI.**
   Layer 6 + `refPackDir()` + the type→assembly index. Replace
