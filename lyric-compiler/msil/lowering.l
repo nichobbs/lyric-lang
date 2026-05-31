@@ -2064,8 +2064,8 @@ pub func lowerMFuncsToHostClass(hostClass: in String, funcs: in List[MFunc],
   // Split the dotted package name (`hostClass = "Lyric.Pkg.Greeter"`)
   // into (namespace="Lyric.Pkg", simpleName="Greeter") so the emitted
   // TypeDef matches the `(namespace, typeName)` shape that
-  // cross-assembly TypeRefs (built by `splitPackageName` on the
-  // consumer side via `ensureHostClassTypeRefRow`) bind against.
+  // cross-assembly TypeRefs (built by `ensureHostClassTypeRefRow` on
+  // the consumer side) bind against (#1466).
   // The free-function host class is named `<package>.Program` — the
   // *full* package path is the CLR namespace and `Program` is the type
   // name.  This matches the F# emitter's convention

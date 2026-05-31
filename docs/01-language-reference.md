@@ -1182,8 +1182,8 @@ free function returns `Option[Int]`.
 | `s.contains(sub)` | `Bool` | |
 | `s.startsWith(prefix)` | `Bool` | |
 | `s.endsWith(suffix)` | `Bool` | |
-| `s.toLower()` | `String` | |
-| `s.toUpper()` | `String` | |
+| `s.toLower()` | `String` | culture-invariant fold (`String.ToLowerInvariant` on .NET) |
+| `s.toUpper()` | `String` | culture-invariant fold (`String.ToUpperInvariant` on .NET) |
 
 String `==` / `!=` compare by value (not reference identity). An empty-string
 check is the `Std.String.isEmpty(s)` free function (`s.length == 0`), not a

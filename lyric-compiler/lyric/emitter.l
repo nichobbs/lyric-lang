@@ -440,7 +440,11 @@ func loadCompilerPayloads(compilerDir: in String): List[ProjectPackagePayload] {
     case Err(_)  -> return payloads
   }
 
-  // Lyric.Parser — five files in deterministic (alphabetical) order.
+  // Lyric.Parser — files in deterministic (alphabetical) order.
+  // Hardcoded list: adding/removing a parser source requires updating
+  // this list AND `bootstrap.sh`'s COMPILER_SOURCES.  A directory-scan
+  // glob would be more robust but `Std.File` doesn't expose `listFiles`
+  // here yet (#1432).
   val parserDir = Path.join(compilerDir, "parser")
   val parserNames: List[String] = newList()
   parserNames.add("parser_ast.l")

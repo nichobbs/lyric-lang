@@ -19,11 +19,12 @@ import Std.Testing
 
 func testLogToStderr(): Unit {
   // All four levels route through the migrated console stderr path.
+  // Test passes by virtue of not throwing — no observable return state
+  // to assert (#1577).
   debug("kernel_bcl_tests: debug line")
   info("kernel_bcl_tests: info line")
   warn("kernel_bcl_tests: warn line")
   error("kernel_bcl_tests: error line")
-  assertTrue(true, "log levels write to stderr without throwing")
 }
 
 func testVerifierEnvMissing(): Unit {
