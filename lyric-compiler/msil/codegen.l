@@ -6799,7 +6799,16 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
   while i < file.items.count {
     match file.items[i].kind {
       case IExternType(decl) -> {
-        cctx.externTypeNames.add(decl.name, decl.clrName)
+        // Guard against a duplicate key: a user file may declare the same
+        // extern (e.g. `extern type TimeSpan = "System.TimeSpan"`) that the
+        // stdlib kernel already registered into `externTypeNames` (which now
+        // happens via `registerStdlibTypeItem`, #1602).  Dictionary.Add throws
+        // on a duplicate, so register first-wins.  Same-name externs are
+        // expected to map to the same CLR type, so the surviving entry is
+        // equivalent.
+        if not cctx.externTypeNames.containsKey(decl.name) {
+          cctx.externTypeNames.add(decl.name, decl.clrName)
+        }
       }
       case _ -> {}
     }
