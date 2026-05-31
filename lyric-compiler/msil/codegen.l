@@ -156,6 +156,14 @@ pub record CodegenCtx {
   // and impl methods folded into the implementing record.  `lowerMethodCallMsil`
   // looks these up to emit `callvirt` for user-defined dispatch (#878).
   methodTokens:       Map[String, Int]
+  // Declared return MsilType per instance/interface method, keyed by the same
+  // "FQClassName/methodName" form as `methodTokens`.  `lowerMethodCallMsil`
+  // looks this up so a user-defined dispatch reports its real return type
+  // (e.g. a `Result[Unit, E]` union) to its caller instead of a bare `object`.
+  // Without it the scrutinee of a `match store.set(...)` was tracked as
+  // `MObject`, so union pattern tests/binds mis-extracted the payload and the
+  // wrong arm fired (#1602).  Mirrors `funcRetTypes` for direct static calls.
+  methodRetTypes:     Map[String, MsilType]
   // Pending interface implementations discovered by the IImpl pre-pass.  Each
   // entry maps an implementing record's FQ name to its impl block(s); used to
   // (a) inject impl methods into the target MRecord, and (b) emit MPImpl items
@@ -668,6 +676,7 @@ pub func newCodegenCtx(packageName: in String,
     externTypeNames      = newMap(),
     lambdaTicker         = newList(),
     methodTokens         = newMap(),
+    methodRetTypes       = newMap(),
     implEntries          = newList(),
     nextMethodDefRow     = newList(),
     nextFieldDefRow      = newList(),
@@ -683,6 +692,20 @@ pub func newCodegenCtx(packageName: in String,
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Token pre-scan — addPackageTokens.
 // ─────────────────────────────────────────────────────────────────────────────
+
+// Record an instance/interface method's declared return MsilType under `key`
+// ("FQClassName/methodName").  A body-less signature (`None` ret) maps to
+// MVoid.  First registration wins so a concrete impl method does not clobber an
+// already-recorded entry.  Consumed by `lowerMethodCallMsil` (#1602).
+func registerMethodRetTy(cctx: in CodegenCtx, key: in String, ret: in Option[TypeExpr], pkgName: in String): Unit {
+  if not cctx.methodRetTypes.containsKey(key) {
+    val mty = match ret {
+      case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
+      case None     -> MVoid
+    }
+    cctx.methodRetTypes.add(key, mty)
+  }
+}
 
 // Pre-scan the AST and assign MethodDef/FieldDef row numbers for every
 // record, function, union case, interface method, opaque type, and protected
@@ -757,6 +780,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
   // F# bootstrap emitter does not support.
   val implImplTargets: List[String] = newList()
   val implImplNames:   List[String] = newList()
+  // Parallel to implImplNames: each impl method's declared return MsilType, so
+  // the methodRetTypes registration below reports a real type to call sites
+  // that dispatch on the concrete receiver (e.g. `self.save(updated)`) (#1602).
+  val implImplRetTys:  List[MsilType] = newList()
   var ipi = 0
   while ipi < file.items.count {
     match file.items[ipi].kind {
@@ -768,6 +795,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
             case IMplFunc(fn) -> {
               implImplTargets.add(targetName)
               implImplNames.add(fn.name)
+              implImplRetTys.add(match fn.ret {
+                case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
+                case None     -> MVoid
+              })
             }
             case IMplAssoc(_) -> {}
           }
@@ -823,6 +854,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
             case RMFunc(fn) -> {
               cctx.methodTokens.add(className + "/" + fn.name,
                                     0x06000000 + methodDefRow)
+              registerMethodRetTy(cctx, className + "/" + fn.name, fn.ret, pkgName)
               methodDefRow = methodDefRow + 1
             }
             case _ -> {}
@@ -835,6 +867,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
           if implImplTargets[ni] == className {
             cctx.methodTokens.add(className + "/" + implImplNames[ni],
                                   0x06000000 + methodDefRow)
+            if not cctx.methodRetTypes.containsKey(className + "/" + implImplNames[ni]) {
+              cctx.methodRetTypes.add(className + "/" + implImplNames[ni], implImplRetTys[ni])
+            }
             methodDefRow = methodDefRow + 1
           }
           ni = ni + 1
@@ -876,6 +911,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
             case RMFunc(fn) -> {
               cctx.methodTokens.add(className + "/" + fn.name,
                                     0x06000000 + methodDefRow)
+              registerMethodRetTy(cctx, className + "/" + fn.name, fn.ret, pkgName)
               methodDefRow = methodDefRow + 1
             }
             case _ -> {}
@@ -887,6 +923,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
           if implImplTargets[ni] == className {
             cctx.methodTokens.add(className + "/" + implImplNames[ni],
                                   0x06000000 + methodDefRow)
+            if not cctx.methodRetTypes.containsKey(className + "/" + implImplNames[ni]) {
+              cctx.methodRetTypes.add(className + "/" + implImplNames[ni], implImplRetTys[ni])
+            }
             methodDefRow = methodDefRow + 1
           }
           ni = ni + 1
@@ -977,11 +1016,13 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
             case IMSig(sig)  -> {
               cctx.methodTokens.add(ifaceName + "/" + sig.name,
                                     0x06000000 + methodDefRow)
+              registerMethodRetTy(cctx, ifaceName + "/" + sig.name, sig.ret, pkgName)
               methodDefRow = methodDefRow + 1
             }
             case IMFunc(fn)  -> {
               cctx.methodTokens.add(ifaceName + "/" + fn.name,
                                     0x06000000 + methodDefRow)
+              registerMethodRetTy(cctx, ifaceName + "/" + fn.name, fn.ret, pkgName)
               methodDefRow = methodDefRow + 1
             }
             case IMAssoc(_) -> {}
@@ -2709,32 +2750,91 @@ func lowerMatchExprMsil(
   emitStoreSlot(insns, scrutSlot, fctx.paramCount)
 
   val afterL   = freshLabelMsil(fctx)
-  var resultTy: MsilType = MVoid
   var hasAfterBranch = false
 
+  // Pass 1: lower each arm (pattern test + bind + guard + body) into its own
+  // instruction buffer so every arm's result MsilType is known before any is
+  // committed.  Arms of a `match` join at `afterL`, so they must all leave the
+  // stack at the same depth.  When the arms' source types are all real values
+  // the depths already agree; but a Unit-typed match can mix arm shapes that
+  // disagree in MSIL — `()` lowers to a pushed `List<object>` (ETuple) while a
+  // void call like `println(...)` pushes nothing.  Committing those directly
+  // desynced the stack at `afterL` and the JIT rejected the body as an invalid
+  // program (#1602).  Mirrors the value/void reconciliation `lowerIfExprMsil`
+  // already performs across its then/else branches.
+  val armBuffers: List[List[MInsn]] = newList()
+  val armTys:     List[MsilType]    = newList()
+  val armNextLs:  List[Int]         = newList()
+  val armRets:    List[Bool]        = newList()
   var i = 0
   while i < arms.count {
     val arm       = arms[i]
     val nextArmL  = freshLabelMsil(fctx)
-    lowerPatternTestMsil(cctx, fctx, insns, arm.pattern, scrutSlot, scrutTy, nextArmL)
-    lowerPatternBindMsil(cctx, fctx, insns, arm.pattern, scrutSlot, scrutTy)
+    val armInsns: List[MInsn] = newList()
+    lowerPatternTestMsil(cctx, fctx, armInsns, arm.pattern, scrutSlot, scrutTy, nextArmL)
+    lowerPatternBindMsil(cctx, fctx, armInsns, arm.pattern, scrutSlot, scrutTy)
     match arm.guard {
       case Some(g) -> {
-        lowerExprMsil(cctx, fctx, insns, g)
-        insns.add(MBrFalse(label = nextArmL))
+        lowerExprMsil(cctx, fctx, armInsns, g)
+        armInsns.add(MBrFalse(label = nextArmL))
       }
       case None -> {}
     }
-    val armTy = lowerExprOrBlockMsil(cctx, fctx, insns, arm.body)
-    if i == 0 {
-      resultTy = armTy
+    val armTy = lowerExprOrBlockMsil(cctx, fctx, armInsns, arm.body)
+    armBuffers.add(armInsns)
+    armTys.add(armTy)
+    armNextLs.add(nextArmL)
+    armRets.add(endsWithReturnMsil(armInsns))
+    i = i + 1
+  }
+
+  // The match value type is the common type of the arms that actually FALL
+  // THROUGH to `afterL`.  Arms ending in `return` / `throw` exit the method and
+  // never reach the join, so they neither contribute a type nor need their
+  // stack depth reconciled — excluding them is what lets a `match` mix an
+  // early-return arm with a value-producing fall-through arm (the recurring
+  // shape in `maskUrlCredentials`).  Among the fall-through arms the result
+  // degrades to MVoid if any is void: those push nothing, so the
+  // value-producing fall-through arms must discard their result to agree.
+  var anyVoid = false
+  var firstFallTy: MsilType = MVoid
+  var sawFall = false
+  var av = 0
+  while av < armTys.count {
+    if not armRets[av] {
+      if not sawFall {
+        firstFallTy = armTys[av]
+        sawFall = true
+      }
+      if armTys[av] == MVoid { anyVoid = true }
     }
-    if not endsWithReturnMsil(insns) {
+    av = av + 1
+  }
+  val resultTy: MsilType = if not sawFall { MVoid }
+                           else if anyVoid { MVoid }
+                           else { firstFallTy }
+
+  // Pass 2: splice each arm's buffer in order, normalising the stack depth.
+  var k = 0
+  while k < arms.count {
+    val buf = armBuffers[k]
+    var bi = 0
+    while bi < buf.count {
+      insns.add(buf[bi])
+      bi = bi + 1
+    }
+    // A value-producing arm whose result the match discards (resultTy == MVoid)
+    // must pop, unless the arm already terminated with `return` / `throw`
+    // (nothing is live on the stack past a terminal instruction).
+    if resultTy == MVoid and armTys[k] != MVoid and not armRets[k] {
+      insns.add(MPop)
+    }
+    if not armRets[k] {
       insns.add(MBr(label = afterL))
       hasAfterBranch = true
     }
-    insns.add(MLabel(id =nextArmL))
-    i = i + 1
+    insns.add(MLabel(id = armNextLs[k]))
+    k = k + 1
   }
 
   // If no arm matched: panic (include function, scrutinee type, and arm count for diagnosis).
@@ -3805,7 +3905,15 @@ func lowerMethodCallMsil(
             i = i + 1
           }
           insns.add(MCallvirt(methodToken = tok))
-          return MObject
+          // Report the method's real declared return type so callers — most
+          // importantly a `match` scrutinee — track the actual union/record
+          // type rather than `object`.  Tracking `object` made union pattern
+          // tests/binds mis-extract the payload (the wrong arm fired) (#1602).
+          // Falls back to MObject when the return type was not pre-registered.
+          return match mapGet(cctx.methodRetTypes, cls + "/" + memberName) {
+            case Some(rty) -> rty
+            case None      -> MObject
+          }
         }
         case None -> {}   // fall through to BCL-name dispatch
       }
@@ -7488,6 +7596,23 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
   var ai = 0
   while ai < cctx.restoredArtifacts.count {
     val art = cctx.restoredArtifacts[ai]
+    // Standard-library packages (`Std.*`) are authoritatively registered by
+    // `registerStdlibArtifactTokens` from the full `lyric-stdlib/std/*.l`
+    // sources, which every project build loads unconditionally
+    // (`emitProjectInProcess` -> `findStdlibSources`).  When `Lyric.Stdlib`
+    // is also a declared `[dependencies]` entry — as it is in every project
+    // — its bundle DLL arrives here as a restored artifact too.  Registering
+    // it from the contract-repr round-trip would emit cross-assembly refs
+    // using the self-hosted IN-BUNDLE conventions (`Option$None`, raw
+    // `Std.Core` assembly name) which do not match the actually-deployed
+    // stdlib (`Option_None` in assembly `Lyric.Stdlib.Core`), so the consumer
+    // PE faults at run time with `Could not load file or assembly 'Std.Core'`
+    // / `Could not load type 'Std.Core.Option$None'`.  Skip it here and let
+    // the single, source-backed stdlib path own these symbols (#1602).
+    if startsWith(art.packageName, "Std.") {
+      ai = ai + 1
+      continue
+    }
     val asmRefRow = ensureAssemblyRefForArtifact(cctx, art.packageName)
     // Pass 1: types (TypeRef rows + name lookups).
     var di = 0
