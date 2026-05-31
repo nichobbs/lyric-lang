@@ -17408,3 +17408,56 @@ garbage — a latent miscompile this fixes.
 **Scope note:** MSIL (`--target dotnet`) only, per epic #1470's JVM-deferred
 banner.  Unblocks the generic-extern portion of #1504 and the user-generic
 reify path.
+
+### D-progress-342 — console/env/log kernels off Lyric.Emitter.dll to BCL externs (#1493 partial)
+
+**Status:** Shipped (3 of 5 kernels).  The `console` (stderr), `env`
+(verifier), and `log` stdlib kernels no longer extern into
+`Lyric.Emitter.dll`; they bind audited direct-BCL members in pure Lyric.
+The now-dead F# host types were deleted from `Lyric.Emitter`.
+
+**Migrated (`lyric-stdlib/std/_kernel/`):**
+
+- `console_host.l` — `hostConsoleErrorWriteLine` was an
+  `Lyric.Emitter.ConsoleHelper.writeErrorLine` shim (Console.Error.WriteLine
+  "not directly addressable as a static BCL call").  Now composes the static
+  property getter `System.Console.get_Error(): System.IO.TextWriter` with the
+  writer's instance `TextWriter.WriteLine(String)` — enabled by #1504 part 1
+  (class-typed extern signatures).
+- `verifier_env_host.l` — `hostGetEnv` was `Lyric.Emitter.VerifierEnv.getEnv`.
+  Now composes the existing audited
+  `Std.EnvironmentHost.hostGetEnvironmentVariable` (`String?`) with a `?? ""`
+  null-coalesce — no duplicate extern, no F# intermediary.
+- `log_host.l` — `write` was `Lyric.Emitter.LogHelper.write`.  Now composes the
+  migrated console stderr path: `Con.hostConsoleErrorWriteLine("[" +
+  Str.toUpper(level) + "] " + message)`, matching the F# helper's
+  `[LEVEL] message` stderr format exactly.
+
+**Deleted (dead F# host types, zero remaining references):**
+`bootstrap/src/Lyric.Emitter/{ConsoleHelper,LogHelper,VerifierEnv}.fs` and
+their `.fsproj` `<Compile>` entries.
+
+**Deferred (with concrete blockers):**
+
+- `http_host.l` `hostDefaultClient` — the natural fix is a package-level
+  `val defaultClientInstance = newClient()` (static field, single `.cctor`
+  init).  It compiles, but the self-hosted emitter does **not** run the
+  `.cctor` for a class-typed package-level `val`: the field stays null and the
+  first access `NRE`s (reproduced with a StringBuilder singleton — a class-typed
+  package-level `val`, appended via two calls, NREs instead of yielding "xx").
+  Reverted to the `Lyric.Emitter.HttpClientHost` shim pending that codegen fix.
+- `process_capture_host.l` — deadlock-safe concurrent stdout/stderr capture
+  needs async (Band 3 async port, #1489).
+
+**Validation:**
+
+- New `lyric-stdlib/tests/kernel_bcl_tests.l` (run by `StdlibLyricTests`):
+  drives all four `Std.Log` levels through the migrated
+  log -> log_host -> console_host stderr chain, and asserts
+  `Std.VerifierEnvHost.hostGetEnv` on an unset variable returns "".  Stdlib
+  suite 31 passed, 0 failed.
+- Stage-0 F# + stage-1 self-build clean after the F# deletions; full
+  `SelfHostedMsil bridge` suite 41/41.
+
+**Scope note:** MSIL (`--target dotnet`) only, per epic #1470's JVM-deferred
+banner.  Partial #1493; `http`/`process` remain (blockers above).

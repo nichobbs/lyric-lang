@@ -24,7 +24,18 @@ pub func hostConsoleWriteLine(text: in String): Unit = ()
 @externTarget("System.Console.ReadLine")
 pub func hostConsoleReadLine(): String? = ()
 
-// stderr — routed through a thin Lyric.Emitter shim because
-// Console.Error.WriteLine is not directly addressable as a static BCL call.
-@externTarget("Lyric.Emitter.ConsoleHelper.writeErrorLine")
-pub func hostConsoleErrorWriteLine(text: in String): Unit = ()
+// stderr — `Console.Error` is a static property returning a
+// `System.IO.TextWriter`; compose the property getter with the writer's
+// instance `WriteLine(String)` in pure Lyric (no F# shim — #1493).
+extern type TextWriter = "System.IO.TextWriter"
+
+@externTarget("System.Console.get_Error")
+func consoleErrorWriter(): TextWriter = ()
+
+@externTarget("System.IO.TextWriter.WriteLine")
+@externInstance
+func textWriterWriteLine(w: in TextWriter, text: in String): Unit = ()
+
+pub func hostConsoleErrorWriteLine(text: in String): Unit {
+  textWriterWriteLine(consoleErrorWriter(), text)
+}
