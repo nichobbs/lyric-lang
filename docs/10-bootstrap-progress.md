@@ -230,6 +230,48 @@ discharge cleanly under Z3.
 
 ## Active session decisions
 
+### D-progress-347 — extern value-type cross-package signatures (`MValueTypeRef`, #1602)
+
+*claude/cross-package-result-and-uuid-4JAyY branch.*
+
+Self-hosted MSIL codegen mis-encoded extern types that map to a BCL **value
+type** (struct or enum) in cross-package MemberRef signatures.  An extern such
+as `extern type Uuid = "System.Guid"` lowered to `MClass`, which the signature
+encoders degrade to `ELEMENT_TYPE_OBJECT` (0x1C).  So a consumer's reference to
+a stdlib `pub func` returning that type — e.g. `Std.Uuid.newUuid(): Uuid` —
+encoded `():object`, while the F#-built producer DLL emits the real
+`():valuetype System.Guid` MethodDef signature.  The CLR matches MemberRefs by
+signature identity, so the mismatch faulted at run time with
+`MissingMethodException: Method not found: 'System.Object Std.Uuid.Program.newUuid()'`.
+This blocked every cross-package consumer of `Std.Uuid` / `Std.Time` —
+including `lyric-session` (`uuidToString(newUuid())`).
+
+Fix:
+
+- **`MValueTypeRef(typeRefCode, clrFqn)`** — a new `MsilType` case
+  (`lyric-compiler/msil/lowering.l`) that encodes as `ELEMENT_TYPE_VALUETYPE`
+  (0x11) + compressed TypeRef in every signature writer (`bufMsilType`,
+  `bufMsilTypeWithCtx`, `buildLocalVarSig`) and is given a distinct
+  `msilTypeKey` / `buildLvSigKey` so two different structs (Guid vs DateTime)
+  never alias a shared blob.  Unlike `MClass`, a value-typed *local* keeps its
+  full VALUETYPE+TypeRef encoding — degrading it to `object` would mis-store
+  the unboxed struct (and produced a `BadImageFormatException` mid-fix).
+- **`clrIsValueType`** (`lyric-compiler/msil/ffi.l`) — the closed set of
+  value-typed externs the stdlib `_kernel/` boundary declares (Guid, DateTime,
+  TimeSpan, DateTimeOffset, CancellationToken, NumberStyles, RegexOptions).
+- **`externTypeNames` now populated from stdlib sources** — stdlib registration
+  (`registerStdlibTypeItem`) records `extern type` → CLR-FQN mappings, which it
+  previously dropped (only the in-bundle `scanExternTypesMsil` path recorded
+  them).  Without this the consumer couldn't tell `Uuid` was `System.Guid`.
+- **`typeExprToMsilCtx`** resolves a value-typed extern `TRef` to
+  `MValueTypeRef` (allocating/reusing the struct's TypeRef) instead of `MClass`.
+
+Reference-typed externs (HttpClient, Regex, Stream, …) are untouched — they
+keep the existing CLASS / OBJECT encoding.  Validated: minimal cross-package
+`uuidToString(newUuid())` and `Std.Time` (`now`/`plus`/`since`/`totalSeconds`)
+repros round-trip correctly; Emitter suite 847/847.  End-to-end coverage rides
+on the `lyric-session` ecosystem suite, which exercises the same path.
+
 ### D-progress-310 — Tier-6 weaver: `config { }`, ambient `call`, `@inline_template` (#683, #682, #681; PR #1172)
 
 *claude/todo-06-review-R8az7 branch.*

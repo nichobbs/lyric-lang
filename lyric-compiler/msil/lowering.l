@@ -87,6 +87,18 @@ pub union MsilType {
   // cross-package MemberRef signatures agree with the F#-compiled stdlib,
   // which represents slices as real arrays rather than erasing to object.
   case MArray(elemTy: MsilType)
+  // BCL value type referenced by a TypeRef (ELEMENT_TYPE_VALUETYPE = 0x11
+  // followed by a compressed TypeDefOrRef coded index).  Used for extern
+  // types that map to a .NET struct — e.g. `extern type Uuid = "System.Guid"`,
+  // `Instant = "System.DateTime"`, `Duration = "System.TimeSpan"`.  Without
+  // this, such a type degraded to ELEMENT_TYPE_OBJECT (0x1C) in cross-package
+  // MemberRef signatures, so a consumer's `newUuid(): Uuid` reference encoded
+  // `():object` while the producer DLL emits `():valuetype System.Guid` — the
+  // CLR signature mismatch faulted at runtime with `Method not found` (#1602).
+  // `typeRefCode` is the compressed TypeDefOrRef coded index (tdrTypeRef(row))
+  // for the struct's TypeRef; `clrFqn` is the dotted CLR FQN (e.g.
+  // "System.Guid") carried for diagnostics / box-token resolution.
+  case MValueTypeRef(typeRefCode: Int, clrFqn: String)
 }
 
 // Return the ECMA-335 ELEMENT_TYPE byte for the given MsilType.
@@ -110,6 +122,7 @@ pub func elementTypeByte(t: in MsilType): Int {
     case MMapOf(_, _)     -> 0x1C  // same as Object: runtime rep is Dictionary<object,object>
     case MByte            -> 0x05  // ELEMENT_TYPE_U1
     case MArray(_)        -> 0x1D  // ELEMENT_TYPE_SZARRAY prefix; element follows (bufMsilType)
+    case MValueTypeRef(_, _) -> 0x11  // ELEMENT_TYPE_VALUETYPE prefix; TypeRef follows (bufMsilType)
   }
 }
 
@@ -145,6 +158,10 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
       bufU1(w, idx)
     }
     case MClass(_) -> bufU1(w, 0x1C)   // Object: avoids malformed CLASS+TypeDefOrRef entry
+    case MValueTypeRef(typeRefCode, _) -> {
+      bufU1(w, 0x11)   // ELEMENT_TYPE_VALUETYPE
+      writeCompressedInt(w, typeRefCode)
+    }
     case MArray(elem) -> {
       bufU1(w, 0x1D)   // ELEMENT_TYPE_SZARRAY
       bufMsilType(w, elem)
@@ -922,6 +939,7 @@ pub func msilTypeKey(t: in MsilType): String {
     case MMapOf(k, v) -> "MAP[" + msilTypeKey(k) + "," + msilTypeKey(v) + "]"
     case MByte -> "B"
     case MArray(e) -> "[" + msilTypeKey(e) + "]"
+    case MValueTypeRef(_, clrFqn) -> "VT" + clrFqn + ";"
   }
 }
 
@@ -969,6 +987,10 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
     case MTypeVar(idx) -> {
       bufU1(w, 0x13)
       bufU1(w, idx)
+    }
+    case MValueTypeRef(typeRefCode, _) -> {
+      bufU1(w, 0x11)  // ELEMENT_TYPE_VALUETYPE
+      writeCompressedInt(w, typeRefCode)
     }
     case MArray(elem) -> {
       bufU1(w, 0x1D)  // ELEMENT_TYPE_SZARRAY
@@ -1273,6 +1295,16 @@ func buildLocalVarSig(locals: in List[MsilType]): List[Byte] {
       // it alone produces a malformed LocalVarSig (dangling prefix, no element
       // type) that corrupts the evaluation stack at run time (AccessViolation).
       case MArray(_)             -> bufU1(w, 0x1C)
+      // A value-typed extern local (e.g. `val u = newUuid()` where Uuid is
+      // System.Guid) CANNOT degrade to Object — a struct is not a reference,
+      // so an `object` slot would mis-store the unboxed value.  Emit the full
+      // VALUETYPE (0x11) + TypeRef token; unlike the MClass case above, the
+      // token IS valid here because the struct's TypeRef is already allocated
+      // (#1602).
+      case MValueTypeRef(typeRefCode, _) -> {
+        bufU1(w, 0x11)
+        writeCompressedInt(w, typeRefCode)
+      }
       case other -> bufU1(w, elementTypeByte(other))
     }
     i = i + 1
@@ -1291,12 +1323,23 @@ func buildLvSigKey(locals: in List[MsilType]): String {
   var key = "lv_"
   var i = 0
   while i < locals.count {
-    val b = match locals[i] {
-      case MClass(_)             -> 0x1C
-      case MGenericInst(_, _, _) -> 0x1C
-      case other                 -> elementTypeByte(other)
+    // Value-typed locals encode their TypeRef token, so two distinct structs
+    // (System.Guid vs System.DateTime) produce different LocalVarSig blobs and
+    // must NOT share an intern key — fold the TypeRef code into the key
+    // (#1602).  Reference / primitive locals key on the element-type byte.
+    match locals[i] {
+      case MValueTypeRef(typeRefCode, _) -> {
+        key = key + "vt" + toString(typeRefCode) + "_"
+      }
+      case _ -> {
+        val b = match locals[i] {
+          case MClass(_)             -> 0x1C
+          case MGenericInst(_, _, _) -> 0x1C
+          case other                 -> elementTypeByte(other)
+        }
+        key = key + toString(b) + "_"
+      }
     }
-    key = key + toString(b) + "_"
     i = i + 1
   }
   key

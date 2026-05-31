@@ -1421,6 +1421,24 @@ func sliceElemMsil(elem: in TypeExpr, pkgName: in String): MsilType {
 }
 
 // Map a Lyric TypeExpr to an MsilType, resolving cross-package
+// Resolve a simple type name to an `MValueTypeRef` when it is an extern type
+// mapping to a known BCL value type (struct or enum).  Returns `None` for
+// reference-typed externs and non-extern names (the caller then uses MClass).
+// Allocates / reuses a TypeRef for the CLR struct so the VALUETYPE signature
+// entry points at the right type identity (#1602).
+func externValueTypeMsil(cctx: in CodegenCtx, seg: in String): Option[MsilType] {
+  match mapGet(cctx.externTypeNames, seg) {
+    case None -> None
+    case Some(clrFqn) -> {
+      if not clrIsValueType(clrFqn) { return None }
+      val sp     = splitTypeFqn(clrFqn)
+      val asm    = clrAssemblyForType(clrFqn)
+      val refRow = internFfiTypeRef(cctx, asm, sp.ns, sp.name)
+      Some(value = MValueTypeRef(typeRefCode = tdrTypeRef(refRow), clrFqn = clrFqn))
+    }
+  }
+}
+
 // type references via the codegen context (#1183 codegen port).
 pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String): MsilType {
   match te.kind {
@@ -1449,7 +1467,15 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
       } else if seg == "Object" {
         MObject
       } else {
-        MClass(className = resolveTypeFqn(cctx, pkgName, seg))
+        // An extern type that maps to a BCL value type (e.g.
+        // `extern type Uuid = "System.Guid"`) must carry its valuetype
+        // identity so cross-package signatures encode VALUETYPE + TypeRef
+        // rather than degrading to `object` (#1602).  Reference-typed
+        // externs and ordinary user types fall through to MClass.
+        match externValueTypeMsil(cctx, seg) {
+          case Some(vt) -> vt
+          case None     -> MClass(className = resolveTypeFqn(cctx, pkgName, seg))
+        }
       }
     }
     case TGenericApp(head, args) -> {
@@ -7819,6 +7845,23 @@ func buildGenericCaseCtorTok(cctx: in CodegenCtx, ctorKey: in String,
 // Mirrors the `registerRestoredTypeDecl` + `registerRestoredUnionCase` logic.
 func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String,
                              it: in Item, asmRefRow: in Int): Unit {
+  // Extern types declared in the stdlib `_kernel/` boundary (e.g.
+  // `extern type Uuid = "System.Guid"`) carry the Lyric-name → CLR-FQN
+  // mapping a consumer needs to encode the type correctly in cross-package
+  // signatures.  Stdlib registration goes through this path (not the
+  // in-bundle `addPackageTokens` → `scanExternTypesMsil`), so record the
+  // mapping here too — otherwise a value-typed extern returned by a stdlib
+  // `pub func` (Std.Uuid.newUuid: Uuid) degrades to `object` and mis-binds
+  // at run time (#1602).
+  match it.kind {
+    case IExternType(decl) -> {
+      if not cctx.externTypeNames.containsKey(decl.name) {
+        cctx.externTypeNames.add(decl.name, decl.clrName)
+      }
+      return
+    }
+    case _ -> {}
+  }
   val typeName = match it.kind {
     case IRecord(decl)       -> decl.name
     case IExposedRec(decl)   -> decl.name
