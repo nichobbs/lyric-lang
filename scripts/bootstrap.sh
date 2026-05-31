@@ -296,6 +296,18 @@ EOF
     die "stage-1 CLI bundle: Lyric.Jvm.Hosts.dll not found in stage-0 publish"
   fi
 
+  # `FSharp.Core.dll` — `Lyric.Jvm.Hosts` (above) is F#, so the in-process
+  # `--target jvm` build path (Lyric.Emitter -> Jvm.Bridge -> Jvm.Kernel ->
+  # Jvm.Hosts) needs the F# runtime deployed beside the AOT binary.  The
+  # MSIL kernel is pure-Lyric and never loads it, so this is JVM-only.  The
+  # AOT csproj references `.bootstrap/stage1/FSharp.Core.dll`.
+  if [[ -f "$BUILD_DIR/stage0-publish/FSharp.Core.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish/FSharp.Core.dll" "$STAGE1_DIR/"
+    copied=$((copied + 1))
+  else
+    die "stage-1 CLI bundle: FSharp.Core.dll not found in stage-0 publish"
+  fi
+
   # `Lyric.Emitter.dll` (the F# bootstrap emitter) hosts a small set of
   # helper types — `ConsoleHelper`, `ProcessCapture`, `VerifierEnv`,
   # `HttpClientHost` — that the stdlib kernel modules `@externTarget`

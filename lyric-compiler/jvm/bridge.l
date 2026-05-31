@@ -204,3 +204,201 @@ pub func compileToJar(
 
   writeJarFromClasses(req, classes)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi-package JAR compilation (#1611).
+//
+// `compileToJar` above bundles only the user's own package, so a program that
+// imports `Std.Testing` (or any stdlib package whose *functions* it calls)
+// links but then faults at runtime — the callee's bytecode is absent.
+// `compileToJarBundled` closes that gap: it compiles the user package plus the
+// transitive closure of its stdlib imports into a single runnable JAR, and
+// builds one cross-package call registry (JvmFuncSig) so every call site
+// resolves its callee's host class + descriptor regardless of declaring package.
+//
+// Each package is lowered with its *own* constant pool, so a package whose
+// codegen fails (e.g. a kernel/extern package the JVM backend can't yet emit)
+// can be skipped without corrupting the rest of the JAR — and any unreachable
+// reference to its classes resolves lazily at first call, which never happens.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Join a ModulePath's segments with "." (the Lyric package-name spelling).
+func dottedPath(path: in ModulePath): String {
+  var acc = ""
+  var i = 0
+  while i < path.segments.count {
+    if i > 0 { acc = acc + "." }
+    acc = acc + path.segments[i]
+    i = i + 1
+  }
+  acc
+}
+
+// True for top-level type-declaring items (the set fed to `checkWithImports`
+// as imported items so cross-package type names resolve).
+func isTypeItem(it: in Item): Bool {
+  match it.kind {
+    case IRecord(_)       -> true
+    case IExposedRec(_)   -> true
+    case IUnion(_)        -> true
+    case IEnum(_)         -> true
+    case IDistinctType(_) -> true
+    case IInterface(_)    -> true
+    case ITypeAlias(_)    -> true
+    case IOpaque(_)       -> true
+    case _                -> false
+  }
+}
+
+// Run the middle-end (type check → mode check → contract elaborate → derive →
+// monomorphise) on one parsed file.  Returns the post-mono file, or None if a
+// fatal mode-check / mono diagnostic was raised.  Type-check diagnostics are
+// advisory (the self-hosted checker lacks full builtin coverage), mirroring
+// `compileToJar`.
+func runMiddleEnd(file0: in SourceFile, importedItems: in List[Item]): Option[SourceFile] {
+  val tcRes = checkWithImports(file0, importedItems)
+  reportDiagnostics(tcRes.diagnostics)
+  val mcRes = checkFile(file0)
+  if reportAndAbort(mcRes.diagnostics) { return None }
+  val elaborated = elaborateFile(file0)
+  val derived    = deriveFile(elaborated)
+  val monoRes    = monoFile(derived)
+  if reportAndAbort(monoRes.diagnostics) { return None }
+  Some(value = monoRes.file)
+}
+
+// Codegen one (already middle-ended) file against `registry` and append its
+// class files to `out`.  Uses an isolated constant pool per package.
+func codegenPackageInto(file: in SourceFile,
+                        registry: in Map[String, JvmFuncSig],
+                        acc: in List[BuiltClass]): Unit {
+  val pkg        = codegenPackageWithSigs(file, registry)
+  val pool       = poolNew()
+  val classFiles = lowerPackage(pkg, pool)
+  var j = 0
+  while j < classFiles.count {
+    val cf = classFiles[j]
+    acc.add(BuiltClass(binaryName = cf.thisClass, bytes = serializeClassWithPool(cf, pool)))
+    j = j + 1
+  }
+}
+
+pub func compileToJarBundled(
+  source:        in String,
+  outputPath:    in String,
+  packageName:   in String,
+  stdlibSources: in List[String]
+): Bool {
+  val parseResult = parse(source)
+  if reportAndAbort(parseResult.diagnostics) { return false }
+  match mainReturns2SlotType(parseResult.file) {
+    case Some(ty) -> {
+      Console.error("error[J001]: `func main(): " + ty + "` is not supported on the JVM target")
+      Console.error("  hint: use `func main(): Int` (exit code) or `func main(): Unit`")
+      return false
+    }
+    case None -> ()
+  }
+  val userFile = parseResult.file
+
+  // Parse every stdlib source once: collect its type items (for cross-package
+  // type resolution) and index the whole file by dotted package name (for the
+  // import-closure walk below).
+  val importedItems: List[Item] = newList()
+  val stdlibFiles:   List[SourceFile] = newList()
+  val stdlibByPkg:   Map[String, SourceFile] = newMap()
+  var si = 0
+  while si < stdlibSources.count {
+    val pr = parse(stdlibSources[si])
+    reportDiagnostics(pr.diagnostics)
+    var ii = 0
+    while ii < pr.file.items.count {
+      if isTypeItem(pr.file.items[ii]) { importedItems.add(pr.file.items[ii]) }
+      ii = ii + 1
+    }
+    stdlibFiles.add(pr.file)
+    val pn = dottedPath(pr.file.packageDecl.path)
+    if pn.length > 0 and not stdlibByPkg.containsKey(pn) { stdlibByPkg.add(pn, pr.file) }
+    si = si + 1
+  }
+
+  // Build the cross-package call registry across the user file and *every*
+  // stdlib file (resolution is cheap and harmless for packages we don't bundle).
+  val registry: Map[String, JvmFuncSig] = newMap()
+  collectFileSigs(userFile, registry)
+  var ri = 0
+  while ri < stdlibFiles.count {
+    collectFileSigs(stdlibFiles[ri], registry)
+    ri = ri + 1
+  }
+
+  // Transitive import closure: the stdlib packages whose bytecode must be
+  // bundled because the user (directly or indirectly) imports them.
+  val toBundle: List[SourceFile] = newList()
+  val seen:     Map[String, Bool] = newMap()
+  val worklist: List[String] = newList()
+  var ui = 0
+  while ui < userFile.imports.count {
+    worklist.add(dottedPath(userFile.imports[ui].path))
+    ui = ui + 1
+  }
+  var wi = 0
+  while wi < worklist.count {
+    val pkg = worklist[wi]
+    wi = wi + 1
+    if not seen.containsKey(pkg) {
+      seen.add(pkg, true)
+      match mapGet(stdlibByPkg, pkg) {
+        case Some(f) -> {
+          toBundle.add(f)
+          var fi = 0
+          while fi < f.imports.count {
+            worklist.add(dottedPath(f.imports[fi].path))
+            fi = fi + 1
+          }
+        }
+        case None -> ()   // builtin head / unavailable package — nothing to bundle
+      }
+    }
+  }
+
+  val allClasses: List[BuiltClass] = newList()
+
+  // User package first (its codegen failing is fatal).
+  match runMiddleEnd(userFile, importedItems) {
+    case Some(f) -> codegenPackageInto(f, registry, allClasses)
+    case None    -> return false
+  }
+
+  // Bundled stdlib packages, best-effort: a package the JVM backend can't yet
+  // emit (kernel/extern surfaces) is skipped rather than failing the build, so
+  // only the call-reachable packages need to compile cleanly.
+  var bi = 0
+  while bi < toBundle.count {
+    val f = toBundle[bi]
+    try {
+      match runMiddleEnd(f, importedItems) {
+        case Some(ff) -> codegenPackageInto(ff, registry, allClasses)
+        case None     -> ()
+      }
+    } catch Bug as _ {
+      Console.error("note: skipped bundling JVM package '" +
+        dottedPath(f.packageDecl.path) + "' (codegen unsupported); " +
+        "calls into it will fail only if actually reached")
+    }
+    bi = bi + 1
+  }
+
+  // Main-Class from the user package declaration.
+  val segs = userFile.packageDecl.path.segments
+  var mainClassName: String = packageName
+  if segs.count > 0 { mainClassName = dottedPath(userFile.packageDecl.path) }
+
+  val req = BuildRequest(
+    packageName = packageName,
+    mainClass   = mainClassName,
+    version     = "0.1.0",
+    outPath     = outputPath
+  )
+  writeJarFromClasses(req, allClasses)
+}

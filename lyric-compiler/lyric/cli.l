@@ -136,7 +136,7 @@ func printUsage(): Unit {
   printErr("  lyric lint    <source.l> [--error-on-warning]")
   printErr("  lyric prove   <source.l> [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]")
   printErr("  lyric doc     <source.l> [-o out.md]")
-  printErr("  lyric test    <source.l> [--filter <prefix>] [--list]")
+  printErr("  lyric test    <source.l> [--filter <prefix>] [--list] [--target dotnet|jvm]")
   printErr("  lyric bench   <source.l> [--runs N] [--warmup N] [--filter <prefix>]")
   printErr("  lyric openapi <spec.json> [-o <out.l>] [--client-name <Name>] [--package <Pkg>]")
   printErr("  lyric public-api-diff <old.dll> <new.dll>")
@@ -2062,6 +2062,7 @@ func cmdTest(argv: in slice[String]): Int {
   var filterArg: Option[String] = None
   var manifestArg: Option[String] = None
   var listMode = false
+  var targetJvm = false
   val positional: List[String] = newList()
 
   var i = 1
@@ -2073,6 +2074,17 @@ func cmdTest(argv: in slice[String]): Int {
         i += 2
       } else {
         printErr("test: --filter requires a value")
+        return 1
+      }
+    } else if arg == "--target" {
+      if i + 1 < argv.length {
+        val t = argv[i + 1]
+        if t == "jvm" { targetJvm = true }
+        else if t == "dotnet" { targetJvm = false }
+        else { printErr("test: --target must be 'dotnet' or 'jvm'"); return 1 }
+        i += 2
+      } else {
+        printErr("test: --target requires an argument (dotnet|jvm)")
         return 1
       }
     } else if arg == "--manifest" {
@@ -2132,7 +2144,8 @@ func cmdTest(argv: in slice[String]): Int {
   }
 
   val stem    = stemOf(Path.basename(sourcePath), 2)
-  val outPath = Path.join(Path.join(Path.dirname(sourcePath), ".lyric-test"), stem + ".dll")
+  val outExt  = if targetJvm { ".jar" } else { ".dll" }
+  val outPath = Path.join(Path.join(Path.dirname(sourcePath), ".lyric-test"), stem + outExt)
 
   match TestSynth.synthesize(source, filterArg) {
     case NoTestModule(span) -> {
@@ -2166,7 +2179,7 @@ func cmdTest(argv: in slice[String]): Int {
         source         = rewritten,
         assemblyName   = stem,
         outputPath     = outPath,
-        target         = Dotnet,
+        target         = if targetJvm { Jvm } else { Dotnet },
         packageVersion = ""
       )
       val result = Emitter.emit(req)
@@ -2179,6 +2192,18 @@ func cmdTest(argv: in slice[String]): Int {
       match result.outputPath {
         case None    -> { printErr("test: build failed"); return 1 }
         case Some(_) -> ()
+      }
+      // JVM: the bundled JAR is self-contained (the self-hosted JVM bridge
+      // bundles the user package plus its transitive stdlib import closure),
+      // so it runs directly via `java -jar` with no DLL staging or runtimeconfig.
+      if targetJvm {
+        val jvmArgs: List[String] = newList()
+        jvmArgs.add("-jar")
+        jvmArgs.add(outPath)
+        match Process.run("java", jvmArgs) {
+          case Ok(code) -> return code
+          case Err(e)   -> { printErr("test: failed to start java: " + IOError.message(e)); return 1 }
+        }
       }
       // Copy stdlib DLLs from the per-PID cache dirs (/tmp/lyric-stdlib-*)
       // into the test output directory so `dotnet exec` can find them.

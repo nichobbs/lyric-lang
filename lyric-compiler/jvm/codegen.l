@@ -29,6 +29,24 @@ import Jvm.Lowering
 // §1. Per-function codegen context.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Cross-package function-call resolution entry.  A free-function call
+// (`assertEqualInt(...)`) must lower to `invokestatic <owner>.<name><desc>`
+// where the owner host class and the exact JVM descriptor (param + return
+// types) come from the *callee's* declaration — not the caller's package
+// or the pushed argument types.  Without this, a call to an imported or
+// void-returning function lowered owner=ctx.className / ret=Object, which
+// fails JVM linkage (NoSuchMethodError) at the call site.  The registry is
+// built once per compilation from every package's `func` items (the
+// caller's own package plus all imported/stdlib packages) and threaded
+// read-only through `FuncCtx.funcSigs`.  Keyed by the bare function name
+// (last `package` declaring a given name wins; the stdlib's public surface
+// has unique names on the call-reachable path).
+pub record JvmFuncSig {
+  owner:  String          // JVM internal host-class name, e.g. "Std/Testing"
+  params: List[JvmType]   // declared parameter types, in order
+  ret:    JvmType         // declared return type (JVoid for Unit)
+}
+
 // FuncCtx threads mutable state through expression and statement lowering.
 // `slotTicker` and `labelTicker` are singleton lists whose `.count` is the
 // current next-slot / next-label integer; `.add` advances them.
@@ -43,6 +61,9 @@ pub record FuncCtx {
   loopCont:    List[String]      // stack of loop continue labels (innermost last)
   // Generator body context: when Some, EYield emits LYield; when None, EYield panics.
   genClass:    Option[String]
+  // Cross-package free-function call resolution (see JvmFuncSig).  Keyed by
+  // bare function name.  Empty for hand-built / generator-internal contexts.
+  funcSigs:    Map[String, JvmFuncSig]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -64,9 +85,17 @@ pub func freshLabel(ctx: in FuncCtx): String {
 // Assign the next JVM local slot to `name` with type `ty`.
 // Long and Double occupy two consecutive slots; all others occupy one.
 // Returns the assigned slot.
+//
+// Re-binding a name (a shadowed local, or a catch binding reused across
+// sequential `try`/`catch` blocks in one function — e.g. the `__lyric_e`
+// the test-runner synthesises for every `test` block) allocates a *fresh*
+// slot and overwrites the mapping rather than crashing the underlying
+// dictionary with a duplicate-key insert.
 pub func allocSlot(ctx: in FuncCtx, name: in String, ty: in JvmType): Int {
   val slot = ctx.slotTicker.count
+  if ctx.slots.containsKey(name) { ctx.slots.remove(name) }
   ctx.slots.add(name, slot)
+  if ctx.types.containsKey(name) { ctx.types.remove(name) }
   ctx.types.add(name, ty)
   // Advance the ticker.
   ctx.slotTicker.add(0)
@@ -2087,9 +2116,28 @@ func lowerGeneralStaticCall(
     i = i + 1
   }
 
-  // Determine the owner class for the call.
-  // If path has more than one segment, use all but the last as the class path,
-  // replacing "." with "/".  Otherwise, use ctx.className.
+  // Preferred path: resolve against the cross-package function registry, which
+  // carries the callee's declaring host class and its exact JVM descriptor
+  // (declared param + return types).  This is what makes an imported call
+  // (`assertEqualInt` from `Std.Testing`) and a void-returning call link
+  // correctly — the legacy guess below assumed owner=ctx.className and
+  // ret=Object, which fails JVM resolution for both.
+  match mapGet(ctx.funcSigs, funcName) {
+    case Some(sig) -> {
+      insns.add(LInvokestatic(
+        owner  = sig.owner,
+        name   = funcName,
+        params = sig.params,
+        ret    = sig.ret))
+      return sig.ret
+    }
+    case None -> ()
+  }
+
+  // Fallback (unregistered name): derive the owner from a qualified path when
+  // present, else assume the current package.  Return type is unknown, so use
+  // Object.  Reached only for names absent from every compiled package — i.e.
+  // genuinely unresolved references, which fail loudly at JVM link time.
   val owner =
     if path.segments.count > 1 {
       // Join all but last segment as the class path.
@@ -2104,7 +2152,6 @@ func lowerGeneralStaticCall(
       ctx.className
     }
 
-  // Return type is unknown at this point; use Object as a safe default.
   insns.add(LInvokestatic(
     owner  = owner,
     name   = funcName,
@@ -2499,7 +2546,14 @@ func lowerTryCatch(
     // Register exception table entry for this catch arm.
     // Specific catches only cover the try body ([startL, endL)).
     // typeName is a dotted class name string like "java.lang.Exception".
-    val catchClass = lyricNameToJvm(c.typeName)
+    // The Lyric `Bug` panic type (raised by `panic(...)`, which lowers to a
+    // `new java/lang/RuntimeException`) has no JVM class of its own — map it
+    // to `java/lang/Throwable` so the exception-table entry resolves at class
+    // load (otherwise: NoClassDefFoundError: Bug).  This mirrors the MSIL
+    // backend mapping `Bug` to `System.Exception`.
+    val catchClass =
+      if c.typeName == "Bug" { "java/lang/Throwable" }
+      else { lyricNameToJvm(c.typeName) }
     insns.add(LTryCatch(
       startLabel   = startL,
       endLabel     = endL,
@@ -2561,7 +2615,8 @@ pub func lowerBlock(ctx: in FuncCtx, insns: in List[LInsn], block: in Block): Un
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Create a fresh FuncCtx for the given function.
-func makeFuncCtx(pkgName: in String, className: in String): FuncCtx {
+func makeFuncCtx(pkgName: in String, className: in String,
+                 funcSigs: in Map[String, JvmFuncSig]): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
   val slotTicker: List[Int] = newList()
@@ -2577,12 +2632,14 @@ func makeFuncCtx(pkgName: in String, className: in String): FuncCtx {
     labelTicker = labelTicker,
     loopBreak   = loopBreak,
     loopCont    = loopCont,
-    genClass    = None)
+    genClass    = None,
+    funcSigs    = funcSigs)
 }
 
 // Create a FuncCtx for lowering a generator body (runBody instance method).
 // Slot 0 = `this` (reserved); params start at slot 1.
-func makeFuncCtxForGenerator(pkgName: in String, genClass: in String): FuncCtx {
+func makeFuncCtxForGenerator(pkgName: in String, genClass: in String,
+                             funcSigs: in Map[String, JvmFuncSig]): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
   val slotTicker: List[Int] = newList()
@@ -2599,17 +2656,19 @@ func makeFuncCtxForGenerator(pkgName: in String, genClass: in String): FuncCtx {
     labelTicker = labelTicker,
     loopBreak   = loopBreak,
     loopCont    = loopCont,
-    genClass    = Some(value = genClass))
+    genClass    = Some(value = genClass),
+    funcSigs    = funcSigs)
 }
 
-pub func lowerFunc(decl: in FunctionDecl, pkgName: in String, className: in String): LFunc {
+pub func lowerFunc(decl: in FunctionDecl, pkgName: in String, className: in String,
+                   funcSigs: in Map[String, JvmFuncSig]): LFunc {
   val retTy =
     match decl.ret {
       case Some(te) -> typeExprToJvm(te, pkgName)
       case None     -> JVoid
     }
 
-  val ctx = makeFuncCtx(pkgName, className)
+  val ctx = makeFuncCtx(pkgName, className, funcSigs)
   val insns: List[LInsn] = newList()
 
   // Allocate slots for parameters.
@@ -2626,8 +2685,25 @@ pub func lowerFunc(decl: in FunctionDecl, pkgName: in String, className: in Stri
     case Some(body) -> {
       match body {
         case FBBlock(block) -> {
-          lowerBlock(ctx, insns, block)
-          // Emit a final return if the last instruction isn't already a return.
+          match retTy {
+            case JVoid -> {
+              // Void function: every statement (including a trailing
+              // expression) is lowered in statement position and its value
+              // discarded; a bare `return` closes the method.
+              lowerBlock(ctx, insns, block)
+            }
+            case _ -> {
+              // Non-void function: the block's trailing expression IS the
+              // return value, so lower it in expression position (leaving its
+              // value on the stack) rather than popping it.  Using statement-
+              // mode `lowerBlock` here popped the tail, leaving the stack empty
+              // for the synthesised `ireturn` (VerifyError: operand stack
+              // underflow).
+              val _ = lowerBlockExpr(ctx, insns, block)
+            }
+          }
+          // Emit a final return if the body didn't already end in one.  After
+          // `lowerBlockExpr` the tail value is on the stack, so this returns it.
           if not endsWithReturn(insns) {
             emitReturn(insns, retTy)
           }
@@ -2691,7 +2767,8 @@ func endsWithReturn(insns: in List[LInsn]): Bool {
 // §9. Record lowering.
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub func lowerRecord(decl: in RecordDecl, pkgName: in String): LRecord {
+pub func lowerRecord(decl: in RecordDecl, pkgName: in String,
+                     funcSigs: in Map[String, JvmFuncSig]): LRecord {
   val className = pkgName + "/" + decl.name
 
   val fields: List[LField] = newList()
@@ -2712,7 +2789,7 @@ pub func lowerRecord(decl: in RecordDecl, pkgName: in String): LRecord {
 
   // Synthesise <init> constructor that takes all fields as params and stores them.
   val ctorInsns: List[LInsn] = newList()
-  val ctorCtx = makeFuncCtx(pkgName, className)
+  val ctorCtx = makeFuncCtx(pkgName, className, funcSigs)
 
   // Slot 0 = this.
   ctorCtx.slotTicker.add(0)
@@ -2757,7 +2834,7 @@ pub func lowerRecord(decl: in RecordDecl, pkgName: in String): LRecord {
   while mi < decl.members.count {
     match decl.members[mi] {
       case RMFunc(fn) -> {
-        methods.add(lowerFunc(fn, pkgName, className))
+        methods.add(lowerFunc(fn, pkgName, className, funcSigs))
       }
       case _ -> {}
     }
@@ -2979,10 +3056,11 @@ func funcBodyContainsYield(decl: in FunctionDecl): Bool {
 func lowerGeneratorBody(
   decl:     in FunctionDecl,
   pkgName:  in String,
-  genClass: in String
+  genClass: in String,
+  funcSigs: in Map[String, JvmFuncSig]
 ): List[LInsn] {
   val insns: List[LInsn] = newList()
-  val ctx = makeFuncCtxForGenerator(pkgName, genClass)
+  val ctx = makeFuncCtxForGenerator(pkgName, genClass, funcSigs)
 
   // Preamble: load each param from this.<field> into a local slot.
   var pi = 0
@@ -3104,7 +3182,53 @@ func constraintRefToJvmClass(cr: in ConstraintRef, pkgName: in String): String {
   }
 }
 
+// Collect every top-level `func` item's JVM call signature from `file` into
+// `into` (keyed by bare function name; first declaration of a given name
+// wins).  Owner is the file's package host class.  Used to build the
+// cross-package call registry so any package's call sites can resolve a
+// callee's owner + descriptor.  See JvmFuncSig.
+pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]): Unit {
+  val owner = segmentsToJvmPath(file.packageDecl.path.segments)
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(decl) -> {
+        if not into.containsKey(decl.name) {
+          val params: List[JvmType] = newList()
+          var pi = 0
+          while pi < decl.params.count {
+            params.add(typeExprToJvm(decl.params[pi].ty, owner))
+            pi = pi + 1
+          }
+          val ret =
+            match decl.ret {
+              case Some(te) -> typeExprToJvm(te, owner)
+              case None     -> JVoid
+            }
+          into.add(decl.name, JvmFuncSig(owner = owner, params = params, ret = ret))
+        }
+      }
+      case _ -> {}
+    }
+    i = i + 1
+  }
+}
+
+// Backward-compatible single-package entry: the registry carries only this
+// file's own functions (enough to resolve intra-package calls — including
+// void-returning ones the legacy guess mis-resolved).
 pub func codegenPackage(file: in SourceFile): LPackage {
+  val sigs: Map[String, JvmFuncSig] = newMap()
+  collectFileSigs(file, sigs)
+  codegenPackageWithSigs(file, sigs)
+}
+
+// Codegen a package against a pre-built call registry `funcSigs` spanning the
+// whole compilation (this file's funcs plus every imported / stdlib package's).
+// The multi-package bridge builds one global registry from all files and hands
+// the same map to each package, so cross-package calls resolve owner + descriptor.
+pub func codegenPackageWithSigs(file: in SourceFile,
+                                funcSigs: in Map[String, JvmFuncSig]): LPackage {
   val pkgName    = segmentsToJvmPath(file.packageDecl.path.segments)
   val funcsClass = pkgName
 
@@ -3132,7 +3256,7 @@ pub func codegenPackage(file: in SourceFile): LPackage {
         var mi2 = 0
         while mi2 < decl.members.count {
           match decl.members[mi2] {
-            case IMplFunc(fn) -> implFuncs.add(lowerFunc(fn, pkgName, targetClass))
+            case IMplFunc(fn) -> implFuncs.add(lowerFunc(fn, pkgName, targetClass, funcSigs))
             case IMplAssoc(_) -> {}
           }
           mi2 = mi2 + 1
@@ -3155,7 +3279,7 @@ pub func codegenPackage(file: in SourceFile): LPackage {
         if decl.isAsync and funcBodyContainsYield(decl) {
           // Async generator: synthesise Iterable+Iterator class via lowerAsyncGenerator.
           val genClass  = pkgName + "$" + decl.name + "$Gen"
-          val bodyInsns = lowerGeneratorBody(decl, pkgName, genClass)
+          val bodyInsns = lowerGeneratorBody(decl, pkgName, genClass, funcSigs)
           val genParams: List[LGenParam] = newList()
           var pi = 0
           while pi < decl.params.count {
@@ -3179,7 +3303,7 @@ pub func codegenPackage(file: in SourceFile): LPackage {
           // Factory method lives alongside main() in the functions class.
           fns.add(makeGeneratorFactory(decl, genClass, pkgName))
         } else {
-          fns.add(lowerFunc(decl, pkgName, funcsClass))
+          fns.add(lowerFunc(decl, pkgName, funcsClass, funcSigs))
           if isMainFunc(decl) {
             hasMain = true
             // Resolve the Lyric main's declared return type so the JVM
@@ -3207,7 +3331,7 @@ pub func codegenPackage(file: in SourceFile): LPackage {
           }
           ei = ei + 1
         }
-        val baseRec = lowerRecord(decl, pkgName)
+        val baseRec = lowerRecord(decl, pkgName, funcSigs)
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() { mergedMethods.add(fn) }
         for fn in implFuncs.toArray()      { mergedMethods.add(fn) }
@@ -3237,7 +3361,7 @@ pub func codegenPackage(file: in SourceFile): LPackage {
           }
           ei = ei + 1
         }
-        val baseRec = lowerRecord(decl, pkgName)
+        val baseRec = lowerRecord(decl, pkgName, funcSigs)
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() { mergedMethods.add(fn) }
         for fn in implFuncs.toArray()      { mergedMethods.add(fn) }
@@ -3296,7 +3420,7 @@ pub func codegenPackage(file: in SourceFile): LPackage {
                 ACC_PUBLIC + ACC_ABSTRACT, sig.name, desc, emptyAttrs))
             }
             case IMFunc(fn) -> {
-              concreteFuncs.add(lowerFunc(fn, pkgName, ifClassName))
+              concreteFuncs.add(lowerFunc(fn, pkgName, ifClassName, funcSigs))
             }
             case IMAssoc(_) -> {}
           }
