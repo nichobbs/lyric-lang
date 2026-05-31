@@ -17712,3 +17712,41 @@ resolution → composed `resolveExtern`).  The remaining epic #1622 work — wir
 retiring #1504 H9 (Phase 3c), then `clrAssemblyForType` removal + generics
 (Phase 4) — is the behaviour-changing emitter integration, gated on the
 self-hosted cross-package resolution (`docs/42` §2/§5).
+### D-progress-350 — self-hosted JVM execution of self-hosted-only features (#1611 JVM half)
+
+**Status:** Shipped.  `lyric test --target jvm` runs a `@test_module`
+end-to-end through the self-hosted JVM backend.
+
+The MSIL half of #1611 (D-progress-334-era; merged in #1623) gave the project
+its first in-tree executable regression test for a self-hosted-only language
+feature (the bitwise integer methods, #1610), run via native `lyric test`
+through the in-process `Msil.Bridge`.  This entry adds the JVM half.
+
+**What shipped:**
+
+- **In-process multi-package JVM pipeline.**  `Jvm.Bridge.compileToJarBundled`
+  compiles the user package plus the transitive closure of its stdlib imports
+  into one runnable JAR (isolated constant pool per package, so a package the
+  backend can't yet emit is skipped without corrupting the JAR).  `emitter.l`
+  routes `emit(Jvm)` in-process through it (replacing the `--internal-build`
+  subprocess into the F# emitter); `cli.l`'s `lyric test` gained `--target jvm`
+  (builds a `.jar`, runs it via `java -jar`).  FSharp.Core is staged into
+  `.bootstrap/stage1` by `bootstrap.sh` and referenced by the AOT csproj,
+  because the JVM kernel's byte-writer/constant-pool ops route through the F#
+  `Lyric.Jvm.Hosts` shim (the pure-Lyric MSIL kernel never loads it).
+- **JVM codegen hardening** (the backend had only ever been exercised by
+  hand-built bytecode + negative-path tests, so real-program constructs
+  produced invalid bytecode): a cross-package function-call registry
+  (`JvmFuncSig`); expression-position `if`/`match`/`try`-catch via result
+  locals (the StackMapTable declares an empty operand stack at branch targets);
+  union match-binding with precise field types (`JvmCaseField` registry);
+  `i64`/`u64` literal width; comparison materialization; basic-block stackmap
+  frames (a frame at every block start, incl. dead code after a `panic`'s
+  `athrow`); and String predicate methods (`contains`/`startsWith`/`endsWith`)
+  emitting their real `boolean` descriptor.
+
+`bitwise_self_test.l` now passes on both `--target dotnet` and `--target jvm`,
+each wired into CI.  Known follow-up gaps (not exercised by the test): union
+*construction* at runtime calls a not-yet-emitted case factory (verifies, but
+`NoSuchMethodError` if actually invoked) and closure (`() -> Unit`) parameter
+calls.
