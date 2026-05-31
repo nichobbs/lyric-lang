@@ -107,6 +107,8 @@ pub record CodegenCtx {
   tokDictObjCtor:     Int   // Dictionary<object,object>::.ctor()  newobj
   tokDictObjAdd:      Int   // Dictionary<object,object>::Add(object,object): void  callvirt
   tokDictObjGetItem:  Int   // Dictionary<object,object>::get_Item(object): object  callvirt
+  tokDictObjSetItem:  Int   // Dictionary<object,object>::set_Item(object,object): void  callvirt
+  tokDictObjTypeSpec: Int   // TypeSpec token for Dictionary<object,object>  castclass
   tokDictObjGetCount: Int   // Dictionary<object,object>::get_Count(): int32  callvirt
   tokDictObjContainsKey: Int  // Dictionary<object,object>::ContainsKey(object): bool  callvirt
   tokDictObjTryGetValue: Int  // Dictionary<object,object>::TryGetValue(object, object): bool
@@ -466,6 +468,17 @@ pub func newCodegenCtx(packageName: in String,
   val tokDictObjGetItem = 0x0A000000 + ctxAddMemberRefForTypeSpec(
     lctx, tsDictObj, "get_Item", "dict_obj_getitem", buildInstanceMethodSig(dictGetPs, MTypeVar(1)))
 
+  // 20b. Dictionary<object,object>::set_Item(!0, !1): void  — indexed
+  // assignment `m[k] = v` on a Map.  Distinct from List<object>::set_Item
+  // (which takes an int32 index): a Map store with a non-int key must go
+  // through the dictionary indexer, or the codegen pushes a key of the wrong
+  // stack type and the JIT rejects the body (#1602).
+  val dictSetPs: List[MsilType] = newList()
+  dictSetPs.add(MTypeVar(0))
+  dictSetPs.add(MTypeVar(1))
+  val tokDictObjSetItem = 0x0A000000 + ctxAddMemberRefForTypeSpec(
+    lctx, tsDictObj, "set_Item", "dict_obj_setitem", buildInstanceMethodSig(dictSetPs, MVoid))
+
   // 21. Dictionary<object,object>::get_Count(): int32  instance HASTHIS
   val dictCntPs: List[MsilType] = newList()
   val tokDictObjGetCount = 0x0A000000 + ctxAddMemberRefForTypeSpec(
@@ -639,6 +652,8 @@ pub func newCodegenCtx(packageName: in String,
     tokDictObjCtor       = tokDictObjCtor,
     tokDictObjAdd        = tokDictObjAdd,
     tokDictObjGetItem    = tokDictObjGetItem,
+    tokDictObjSetItem    = tokDictObjSetItem,
+    tokDictObjTypeSpec   = 0x1B000000 + tsDictObj,
     tokDictObjGetCount   = tokDictObjGetCount,
     tokDictObjContainsKey = tokDictObjContainsKey,
     tokDictObjTryGetValue = tokDictObjTryGetValue,
@@ -2063,6 +2078,26 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
           insns.add(MCallvirt(methodToken = cctx.tokStringGetChars))
           MChar
         }
+        case MMapOf(_, valTy) -> {
+          // Map[K, V] receiver: read via Dictionary<object,object>::get_Item,
+          // which takes the boxed key (not an int32 index).  Routing a Map read
+          // through List::get_Item (the historical `case _` fallthrough) pushed
+          // a non-int key where an int32 index was expected and the JIT rejected
+          // the body as invalid — the read-side counterpart of the indexed-store
+          // fix (#1602).
+          insns.add(MCastclass(typeToken = cctx.tokDictObjTypeSpec))
+          if indices.count > 0 {
+            val kTy = lowerExprMsil(cctx, fctx, insns, indices[0])
+            boxIfNeededMsil(cctx, insns, kTy)
+          }
+          insns.add(MCallvirt(methodToken = cctx.tokDictObjGetItem))
+          // get_Item returns the boxed value (object); the value type is carried
+          // for downstream tracking but the stack type is object.
+          match valTy {
+            case MClass(cls) -> MClass(className = cls)
+            case _           -> valTy
+          }
+        }
         case MListOf(elemTy) -> {
           // List[T] receiver with a known element type.  get_Item returns
           // object; we track the element type in the codegen type-flow layer
@@ -2724,13 +2759,32 @@ func lowerAssignExprMsil(
       } else {
         match op {
           case AssEq -> {
-            // Stack for callvirt set_Item: this(List<object>), int32 index, !0 value.
-            lowerExprMsil(cctx, fctx, insns, recv)
-            insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
-            lowerExprMsil(cctx, fctx, insns, indices[0])
-            val vTy = lowerExprMsil(cctx, fctx, insns, value)
-            boxIfNeededMsil(cctx, insns, vTy)
-            insns.add(MCallvirt(methodToken = cctx.tokListObjSetItem))
+            // Dispatch on the receiver type: a Map[K, V] store goes through
+            // Dictionary<object,object>::set_Item(key, value) — the key is an
+            // arbitrary boxed value, not an int32 index.  Routing a Map store
+            // through List::set_Item (the historical unconditional path) pushed
+            // a non-int key where an int32 index was expected and the JIT
+            // rejected the body as invalid (#1602).  A List[T] / `slice`
+            // receiver keeps the List::set_Item(int32, value) path.
+            val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
+            match recvTy {
+              case MMapOf(_, _) -> {
+                insns.add(MCastclass(typeToken = cctx.tokDictObjTypeSpec))
+                val kTy = lowerExprMsil(cctx, fctx, insns, indices[0])
+                boxIfNeededMsil(cctx, insns, kTy)
+                val vTy = lowerExprMsil(cctx, fctx, insns, value)
+                boxIfNeededMsil(cctx, insns, vTy)
+                insns.add(MCallvirt(methodToken = cctx.tokDictObjSetItem))
+              }
+              case _ -> {
+                // Stack for callvirt set_Item: this(List<object>), int32 index, !0 value.
+                insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
+                lowerExprMsil(cctx, fctx, insns, indices[0])
+                val vTy = lowerExprMsil(cctx, fctx, insns, value)
+                boxIfNeededMsil(cctx, insns, vTy)
+                insns.add(MCallvirt(methodToken = cctx.tokListObjSetItem))
+              }
+            }
             MVoid
           }
           case _ -> {
@@ -5410,8 +5464,24 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
 pub func lowerImplMethodMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
                               pkgName: in String,
                               targetTypeName: in String): MFunc {
+  // The method SIGNATURE keeps the legacy erased return type (generic / class
+  // returns lower to `object`) so the emitted MethodDef matches the interface
+  // slot and every existing cross-assembly consumer reference.
   val retTy = match decl.ret {
     case Some(te) -> typeExprToMsil(te, pkgName)
+    case None     -> MVoid
+  }
+  // …but `declaredRetTy` (used purely for union-case construction inference,
+  // not the signature) resolves CTX-AWARE so a generic return like
+  // `Result[String, E]` carries its full `MGenericInst` with concrete type
+  // args.  The body's `return Ok(x)` infers the case-class type arguments from
+  // `declaredRetTy` for the slots its value argument can't cover (the error
+  // slot `E`).  With the legacy erased `object` the construction baked
+  // `Result_Ok<String, object>`, while a cross-package consumer's `match`
+  // expected `Result_Ok<String, E>` — the closed generic types differed and
+  // `isinst` never matched, panicking "match not exhaustive" (#1602).
+  val declaredRetTyCtx = match decl.ret {
+    case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
     case None     -> MVoid
   }
   // paramCount = 1 (this) + declared params.  emitLoadSlot/emitStoreSlot
@@ -5419,7 +5489,7 @@ pub func lowerImplMethodMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
   // Use targetTypeName (e.g. "Pkg.EnglishGreeter") as className so that
   // `self.method()` dispatch via MClass(fctx.className) resolves to the
   // correct methodTokens key.
-  val fctx = makeFuncCtxMsil(pkgName, targetTypeName, decl.name, 1 + decl.params.count, retTy)
+  val fctx = makeFuncCtxMsil(pkgName, targetTypeName, decl.name, 1 + decl.params.count, declaredRetTyCtx)
   fctx.slotTicker.add(0)   // slot 0 = this, no name binding
 
   val insns: List[MInsn] = newList()
@@ -7608,9 +7678,205 @@ func registerRestoredMembers(cctx: in CodegenCtx,
         val asmRefRow = ensureAssemblyRefForArtifact(cctx, art.packageName)
         registerRestoredUnion(cctx, art.packageName, decl, asmRefRow)
       }
+      case IInterface(decl) -> {
+        registerRestoredInterface(cctx, art.packageName, decl)
+      }
       case _ -> ()
     }
     i = i + 1
+  }
+  // Second pass: impl blocks.  A consumer that calls a method on a value typed
+  // as the *concrete record* (e.g. `Session.inMemory(): InProcessSessionStore`
+  // then `store.set(...)`) dispatches on `<pkg>.<Record>/<method>`, which the
+  // record's own type surface does not carry.  The restored `impl I for R {}`
+  // decl (head-only) tells us R implements I; we register each of I's methods
+  // under the record key too, reusing the interface's signatures.  Runs after
+  // the first pass so the matching `IInterface` is already in `methodTokens`
+  // (#1602).
+  var ii = 0
+  while ii < items.count {
+    match items[ii].kind {
+      case IImpl(idecl) -> registerRestoredImpl(cctx, art, idecl)
+      case _            -> ()
+    }
+    ii = ii + 1
+  }
+}
+
+// Register a restored record's instance methods from an `impl I for R {}`
+// binding.  The restored impl is head-only (empty body), so the method
+// signatures come from the implemented interface `I` (looked up among the same
+// artifact's items).  Each of I's methods is registered under the RECORD key
+// `<pkg>.<Record>/<method>` — the receiver type the consumer sees when it
+// calls a method on a value of the concrete record type — pointing at a
+// MemberRef parented on the record's own TypeRef (the CLR resolves the
+// interface-implementing method through the record's slot at run time) (#1602).
+func registerRestoredImpl(cctx: in CodegenCtx,
+                          art:  in SynthesisedArtifact,
+                          idecl: in ImplDecl): Unit {
+  val targetName = implTargetNameMsil(idecl, art.packageName)
+  // implTargetNameMsil returns "<pkg>.<Name>" or a "__impl_target" sentinel.
+  if endsWith(targetName, ".__impl_target") { return }
+  val recordTypeRefRow = lookupRestoredTypeRefRowByFqn(cctx, art.packageName, targetName)
+  if recordTypeRefRow == 0 { return }
+
+  // The interface name the impl satisfies (last segment of the constraint head).
+  val ifaceSimple = lastSegmentMsil(idecl.iface.head)
+  // Find the implemented interface among the artifact's items to recover its
+  // method signatures.
+  val items = art.source.items
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IInterface(ix) -> {
+        if ix.name == ifaceSimple {
+          var mi = 0
+          while mi < ix.members.count {
+            match ix.members[mi] {
+              case IMSig(sig) -> registerRestoredRecordMethod(cctx, targetName,
+                                   recordTypeRefRow, art.packageName,
+                                   sig.name, sig.params, sig.ret)
+              case IMFunc(fn) -> registerRestoredRecordMethod(cctx, targetName,
+                                   recordTypeRefRow, art.packageName,
+                                   fn.name, fn.params, fn.ret)
+              case IMAssoc(_) -> ()
+            }
+            mi = mi + 1
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
+// Allocate the MemberRef for one restored record instance method (the concrete
+// implementation of an interface method) and record its token + return type.
+// Mirrors `registerRestoredIfaceMethod` but parents the MemberRef on the
+// record's TypeRef.  The signature uses the producer's erasing resolver
+// (`typeExprToMsil`) so the blob byte-matches the record's MethodDef; the
+// fully-resolved return type is recorded for the call site's `match` (#1602).
+func registerRestoredRecordMethod(cctx: in CodegenCtx,
+                                  recordFqn: in String,
+                                  recordTypeRefRow: in Int,
+                                  packageName: in String,
+                                  methodName: in String,
+                                  params: in List[Param],
+                                  ret: in Option[TypeExpr]): Unit {
+  val key = recordFqn + "/" + methodName
+  if cctx.methodTokens.containsKey(key) { return }
+
+  val sigParamTypes: List[MsilType] = newList()
+  var spi = 0
+  while spi < params.count {
+    sigParamTypes.add(typeExprToMsil(params[spi].ty, packageName))
+    spi = spi + 1
+  }
+  val sigRetType = match ret {
+    case Some(te) -> typeExprToMsil(te, packageName)
+    case None     -> MVoid
+  }
+  val sig       = buildInstanceMethodSig(sigParamTypes, sigRetType)
+  val sigKey    = "restored_recmethod_" + key
+  val memberRow = ctxAddMemberRef(cctx.lctx, recordTypeRefRow, methodName, sigKey, sig)
+  cctx.methodTokens.add(key, 0x0A000000 + memberRow)
+  if not cctx.methodRetTypes.containsKey(key) {
+    val realRetType = match ret {
+      case Some(te) -> typeExprToMsilCtx(cctx, te, packageName)
+      case None     -> MVoid
+    }
+    cctx.methodRetTypes.add(key, realRetType)
+  }
+}
+
+// Look up a restored type's TypeRef row by its fully-qualified `<pkg>.<Name>`
+// form (the shape `implTargetNameMsil` produces).  Returns 0 when absent.
+func lookupRestoredTypeRefRowByFqn(cctx: in CodegenCtx, packageName: in String,
+                                   fqn: in String): Int {
+  val typeRefKey = packageName + "/" + fqn
+  match mapGet(cctx.ffiTypeRefs, typeRefKey) {
+    case Some(row) -> row
+    case None      -> 0
+  }
+}
+
+// Register cross-assembly MemberRef tokens + return types for a restored
+// interface's methods.  A consumer that holds a value typed as the interface
+// (e.g. `inMemory(): Store`) dispatches `store.set(...)` via `callvirt` against
+// the interface method slot in the foreign DLL; without a registered token the
+// call fell through to the BCL-name stub returning `MObject`, so a `match` on
+// the result saw `scr=O` and panicked "match not exhaustive" (#1602).
+//
+// The interface's full method signatures are carried in the contract repr and
+// re-parsed into `art.source`, so they are available here.  Each method is
+// keyed `<pkg>.<Iface>/<method>` in `methodTokens` — the same shape
+// `lowerMethodCallMsil` looks up for an `MClass(interfaceFqn)` receiver — with
+// the declared return type recorded in `methodRetTypes` so the call reports the
+// real `Result[…]` / union type to its caller.
+func registerRestoredInterface(cctx: in CodegenCtx,
+                               packageName: in String,
+                               decl: in InterfaceDecl): Unit {
+  val ifaceFqn  = packageName + "." + decl.name
+  val typeRefRow = lookupRestoredTypeRefRow(cctx, packageName, decl.name)
+  if typeRefRow == 0 { return }
+  var mi = 0
+  while mi < decl.members.count {
+    match decl.members[mi] {
+      case IMSig(sig)  -> registerRestoredIfaceMethod(cctx, ifaceFqn, typeRefRow,
+                                                       packageName, sig.name, sig.params, sig.ret)
+      case IMFunc(fn)  -> registerRestoredIfaceMethod(cctx, ifaceFqn, typeRefRow,
+                                                       packageName, fn.name, fn.params, fn.ret)
+      case IMAssoc(_)  -> ()
+    }
+    mi = mi + 1
+  }
+}
+
+// Allocate the MemberRef for one restored interface method and record its
+// token + return type.  The signature is HASTHIS (instance dispatch); the
+// receiver is the implicit `this`, so only the declared params are encoded.
+func registerRestoredIfaceMethod(cctx: in CodegenCtx,
+                                 ifaceFqn: in String,
+                                 typeRefRow: in Int,
+                                 packageName: in String,
+                                 methodName: in String,
+                                 params: in List[Param],
+                                 ret: in Option[TypeExpr]): Unit {
+  val key = ifaceFqn + "/" + methodName
+  if cctx.methodTokens.containsKey(key) { return }
+
+  // The MemberRef signature blob must byte-match the producer DLL's interface
+  // MethodDef signature, or the CLR rejects the `callvirt` with
+  // `MissingMethodException`.  The producer (`codegenMPackage` -> MInterface)
+  // builds that signature with the *legacy* `typeExprToMsil`, which erases
+  // every generic / class / slice type to `object` (it has no codegen context
+  // to allocate TypeRefs).  Use the same erasing resolver here so the two
+  // signatures agree (#1602).
+  val sigParamTypes: List[MsilType] = newList()
+  var spi = 0
+  while spi < params.count {
+    sigParamTypes.add(typeExprToMsil(params[spi].ty, packageName))
+    spi = spi + 1
+  }
+  val sigRetType = match ret {
+    case Some(te) -> typeExprToMsil(te, packageName)
+    case None     -> MVoid
+  }
+  val sig       = buildInstanceMethodSig(sigParamTypes, sigRetType)
+  val sigKey    = "restored_iface_" + key
+  val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, methodName, sigKey, sig)
+  cctx.methodTokens.add(key, 0x0A000000 + memberRow)
+  // Record the FULLY-RESOLVED return type (ctx-aware, so `Result[T, E]` keeps
+  // its `MGenericInst` identity) for the call site.  This is what the
+  // consumer's `match` on the call result needs to emit correct isinst tests —
+  // distinct from the erased `object` used in the signature blob above.
+  if not cctx.methodRetTypes.containsKey(key) {
+    val realRetType = match ret {
+      case Some(te) -> typeExprToMsilCtx(cctx, te, packageName)
+      case None     -> MVoid
+    }
+    cctx.methodRetTypes.add(key, realRetType)
   }
 }
 

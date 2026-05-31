@@ -417,10 +417,6 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // falls back to 0.0.0.0.
   val pvParts = parseSemverMajorMinor(packageVersion)
   val cctx = newCodegenCtx(assemblyName, restoredArtifacts, pvParts[0], pvParts[1])
-  // Seed cross-package symbol tables with the restored artifacts' type
-  // surface so the per-package addPackageTokens pre-scan sees restored
-  // types as first-class lookups.
-  registerRestoredArtifactTokens(cctx)
   // Allocate cross-assembly AssemblyRef / TypeRef / MemberRef rows for
   // every `pub func` declared in the stdlib so that user code which
   // calls `Std.X.foo(...)` (e.g. `Std.Encoding.tryDecodeBase64`)
@@ -429,6 +425,16 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // (which previously produced an unbalanced operand stack and an
   // `InvalidProgramException` at runtime).  Mirrors the F# emitter's
   // `resolveStdlibImports` + `emitAssembly` import-table population.
+  //
+  // Runs BEFORE restored-artifact registration so the stdlib type
+  // surface (`Std.Core.Result`, `Std.Core.Option`, …) is in
+  // `ffiTypeRefs` / `typeFqnByName` when a restored artifact's member
+  // signatures reference it.  A restored interface method returning
+  // `Result[T, E]` would otherwise resolve the return type to `MObject`
+  // (TypeRef miss), so the consumer's `match` on the call result saw a
+  // bare `object` scrutinee and panicked "match not exhaustive" (#1602).
+  // Stdlib registration is self-contained — it never references a
+  // restored type — so this reorder is safe.
   //
   // Filter `stdlibPkgs` to exclude any package whose name matches an
   // in-bundle user package — otherwise registering MemberRefs for
@@ -441,6 +447,10 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // through the in-process path.
   registerStdlibArtifactTokens(cctx,
                                 filterStdlibPkgsByBundle(stdlibPkgs, perPkgNames))
+  // Seed cross-package symbol tables with the restored artifacts' type
+  // surface so the per-package addPackageTokens pre-scan sees restored
+  // types as first-class lookups.
+  registerRestoredArtifactTokens(cctx)
 
   val liftedFiles: List[SourceFile] = newList()
   var li = 0

@@ -230,6 +230,63 @@ discharge cleanly under Z3.
 
 ## Active session decisions
 
+### D-progress-348 — cross-package method dispatch + Map indexer + generic-case inference (#1602)
+
+*claude/cross-package-result-and-uuid-4JAyY branch.*
+
+Five linked self-hosted MSIL codegen gaps that, together, stopped a consumer
+package from calling a method on a value obtained from a *restored dependency*
+(the `lyric-session` ecosystem suite's central pattern:
+`Session.inMemory().set(...)`).  Each surfaced only once the previous was
+fixed.
+
+1. **Restored interface methods were never registered.** A consumer holding a
+   value typed as a restored interface (`inMemory(): Store`) dispatched
+   `store.set(...)` with no `methodTokens` entry, so the call fell through to
+   the BCL-name stub returning `object`; the `match` on the result then saw a
+   bare-`object` scrutinee and panicked "match not exhaustive".
+   `registerRestoredMembers` now registers each restored interface method as a
+   cross-assembly MemberRef keyed `<pkg>.<Iface>/<method>`, recording the
+   real return type in `methodRetTypes` (the signature blob uses the producer's
+   erasing `typeExprToMsil` so it byte-matches the foreign MethodDef).
+
+2. **Restored impl/record methods were never registered.** `Session.inMemory()`
+   returns the *concrete record* `InProcessSessionStore`, so dispatch keys on
+   `<pkg>.<Record>/<method>` — absent from the type surface and from the
+   contract.  `contract_meta.l` now emits a head-only `impl I for R {}` decl
+   per impl block; the consumer re-parses it, recovers the method signatures
+   from the package's `interface` decl, and registers each under the record key.
+
+3. **Map indexer compiled as a List indexer.** `m[k] = v` and `m[k]` always
+   routed through `List<object>::set_Item/get_Item(int32, …)`, pushing the
+   (non-int) key where an int32 index was expected → invalid IL.  Added
+   `Dictionary<object,object>::set_Item` + a `tokDictObjTypeSpec` castclass and
+   dispatched both the store and load EIndex arms on `MMapOf` → the dictionary
+   indexer.
+
+4. **stdlib token registration ran after restored registration.** A restored
+   member signature referencing `Std.Core.Result` resolved to `object`
+   (TypeRef miss) because `registerStdlibArtifactTokens` hadn't populated the
+   stdlib type surface yet.  Reordered the two in the project bridge (stdlib is
+   self-contained, so this is safe).
+
+5. **Impl-method bodies erased the generic-case construction context.**
+   `lowerImplMethodMsil` resolved the method's return type with the legacy
+   `typeExprToMsil`, so `fctx.declaredRetTy` collapsed `Result[String, E]` to
+   `object` and `return Ok(x)` baked `Result_Ok<String, object>` — while a
+   consumer's `match` expected `Result_Ok<String, E>`.  The closed generic
+   types differed and `isinst` never matched.  The signature keeps the erased
+   return (matching the interface slot); `declaredRetTy` now resolves
+   CTX-AWARE so construction infers the full type arguments.
+
+Impact (lyric-session ecosystem suite): fixation 0→3/5, store 0→4/15,
+sensitive-URL 8→10/11; lyric-auth holds 17/29; Emitter 847/847, Cli 84/84 — no
+regressions.  The residual session failures are gated on a **separate,
+pre-existing** nested-generic match defect — `match` on a value of type
+`Result[Option[T], E]` panics "match not exhaustive" even for in-bundle code
+(the doubly-nested generic case-class `isinst`/construction don't agree).
+Tracked as a follow-up; out of scope here.
+
 ### D-progress-347 — extern value-type cross-package signatures (`MValueTypeRef`, #1602)
 
 *claude/cross-package-result-and-uuid-4JAyY branch.*
