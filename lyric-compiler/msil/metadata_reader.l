@@ -1173,11 +1173,11 @@ pub func resolveOverload(asmPath: in String, typeFqn: in String, member: in Stri
 // ── resolveExtern: discovery + resolution composed ───────────────────────────
 //
 // The single entry point the emitter calls to resolve an extern method.  It
-// looks the owning assembly up in a prebuilt type→assembly index, then
-// resolves the best overload from that assembly.  Callers build the index once
-// (over `enumRefAssemblies(refPackDir())` plus any restored-dependency DLLs)
-// and reuse it across call sites; `refDir` is the directory the indexed
-// assemblies live in.
+// looks the owning assembly up in a prebuilt type→assembly-name index, maps
+// that name to its on-disk path via a companion name→path index, then resolves
+// the best overload from that assembly.  Callers build both indexes once (over
+// `enumRefAssemblies(refPackDir())` plus any restored-dependency DLLs) and
+// reuse them across call sites.
 
 pub record ResolvedExtern {
   assemblyName: String        // owning assembly's simple name (for the AssemblyRef)
