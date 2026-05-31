@@ -1169,3 +1169,32 @@ pub func resolveOverload(asmPath: in String, typeFqn: in String, member: in Stri
     }
   }
 }
+
+// ── resolveExtern: discovery + resolution composed ───────────────────────────
+//
+// The single entry point the emitter calls to resolve an extern method.  It
+// looks the owning assembly up in a prebuilt type→assembly index, then
+// resolves the best overload from that assembly.  Callers build the index once
+// (over `enumRefAssemblies(refPackDir())` plus any restored-dependency DLLs)
+// and reuse it across call sites; `refDir` is the directory the indexed
+// assemblies live in.
+
+pub record ResolvedExtern {
+  assemblyName: String        // owning assembly's simple name (for the AssemblyRef)
+  sig:          ResolvedMethod
+}
+
+pub func resolveExtern(index: in Map[String, String], refDir: in String,
+                       typeFqn: in String, member: in String,
+                       argTypes: in List[SigType]): Option[ResolvedExtern] {
+  match assemblyForType(index, typeFqn) {
+    case None -> None
+    case Some(asmName) -> {
+      val asmPath = Path.join(refDir, asmName + ".dll")
+      match resolveOverload(asmPath, typeFqn, member, argTypes) {
+        case None    -> None
+        case Some(m) -> Some(value = ResolvedExtern(assemblyName = asmName, sig = m))
+      }
+    }
+  }
+}
