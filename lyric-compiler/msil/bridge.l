@@ -409,12 +409,12 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     ti = ti + 1
   }
 
-  // Phase 3: weave + lambda-lift + token pre-scan for every package against
+  // Phase 2: weave + lambda-lift + token pre-scan for every package against
   // ONE shared cctx — the persistent `nextMethodDefRow` / `nextFieldDefRow`
   // counters in `CodegenCtx` thread row numbering across calls.  The cctx's
   // Assembly row is named after the bundle, not any individual package.
   // `packageVersion` populates the Assembly row's major/minor; empty
-  // falls back to 0.0.0.0 (#1421).
+  // falls back to 0.0.0.0.
   val pvParts = parseSemverMajorMinor(packageVersion)
   val cctx = newCodegenCtx(assemblyName, restoredArtifacts, pvParts[0], pvParts[1])
   // Seed cross-package symbol tables with the restored artifacts' type
@@ -671,7 +671,7 @@ func addBundleClosure(
   acc:             in List[Item]
 ): Unit {
   if visited.containsKey(pkgName) { return }
-  if baseNames.containsKey(pkgName) { return }
+  if baseNames.containsKey(pkgName)  { return }
   visited.add(pkgName, true)
   match mapGet(inBundleItems, pkgName) {
     case Some(items) -> {

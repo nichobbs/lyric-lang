@@ -4803,12 +4803,11 @@ func buildFuncNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
 //   * Static method with primitive / String parameter and return types.
 //   * Instance method (receiver = Lyric arg 0) with primitive/string args.
 //   * Constructor (..ctor) with primitive/string args.
-//   * Class-typed parameters / returns via TypeRef-backed signatures
-//     (#1504 part 1; #1570).
 //
-// Deferred: generic types, with-defaults trailing arguments, property
-// getters, static field reads.  Programs depending on those forms
-// still need `--target dotnet-legacy` (F# bootstrap emitter).
+// Deferred: extern types as parameters (need TypeRef-typed signatures),
+// generic types, with-defaults trailing arguments, property getters,
+// static field reads.  Programs depending on those forms still need
+// `--target dotnet-legacy` (F# bootstrap emitter).
 // Resolve an `MClass` FQN to a TypeRef row for use in an FFI method
 // signature blob (#1504 part 1).  `className` is the FQN produced by
 // `resolveTypeFqn` — either a declared Lyric extern type (mapped to its CLR

@@ -713,7 +713,7 @@ func addSigsFromItems(
         // a user-defined `pub func foo` in the same file MUST win over
         // any imported `foo` so the user's intent shadows the dep,
         // matching the standard import-shadowing semantics every other
-        // language's typechecker gives.  Once #1378's stdlib-IFunc
+        // languages's typechecker gives.  Once #1378's stdlib-IFunc
         // collection follow-up lands, this lets user code safely
         // redefine names that happen to overlap with the stdlib
         // (#1383).

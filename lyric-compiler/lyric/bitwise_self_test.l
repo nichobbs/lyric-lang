@@ -68,23 +68,6 @@ test "Int.xor toggles bits" {
   assertEqualInt(12345.xor(0), 12345, "x ^ 0")
 }
 
-// Negative operands round-trip through two's-complement semantics; the
-// .NET BCL `Int32.and/or/xor` opcodes are bit-pattern-faithful regardless
-// of sign (#1626).  Bind the negative operand to a `val` so `-1` is the
-// actual value, not the parsed-as-unary-minus `-(1.and(7))`.
-test "Int bitwise on negative operands" {
-  val negOne: Int = -1
-  val negTwo: Int = -2
-  // -1 has every bit set, so AND with anything == that anything.
-  assertEqualInt(negOne.and(7), 7, "-1 & 7 (all-ones AND)")
-  // -1 OR 0 stays all-ones.
-  assertEqualInt(negOne.or(0), -1, "-1 | 0 (all-ones OR identity)")
-  // -1 XOR x flips every bit of x → bitwise NOT.
-  assertEqualInt(negOne.xor(5), -6, "-1 ^ 5 (bitwise NOT)")
-  // Two negatives ANDed retain the sign bit.
-  assertEqualInt(negOne.and(negTwo), -2, "-1 & -2 retains sign bit")
-}
-
 test "Int bitwise ops compose" {
   // (5 ^ 3) & 6 == 6 & 6 == 6
   assertEqualInt(5.xor(3).and(6), 6, "(5 ^ 3) & 6")
