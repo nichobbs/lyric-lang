@@ -45,6 +45,7 @@ package Session
 
 import Std.Core
 import Std.Collections
+import Std.String
 import Std.Time
 import Std.Json
 import Std.Uuid
@@ -563,7 +564,7 @@ pub func maskUrlCredentials(url: in String): String {
       markers.add("?")
       markers.add("#")
       var mi = 0
-      while mi < markers.length {
+      while mi < markers.count {
         match indexOf(tail, markers[mi]) {
           case Some(n) -> if n < authEnd { authEnd = n }
           case None    -> ()
