@@ -778,10 +778,8 @@ All are provisional pending weaver integration.
 | `Std.EnvironmentHost`    | `environment_host.l`         | 1      | 0           |
 | `Std.ProcessHost`        | `process_host.l`             | 1      | 0           |
 | `Std.ProcessCaptureHost` | `process_capture_host.l`     | 1      | 0           |
-| `Std.VerifierEnvHost`    | `verifier_env_host.l`        | 1      | 0           |
 | `Std.JsonHost`           | `json_host.l`                | 1      | 0           |
 | `Std.UuidHost`           | `uuid_host.l`                | 1      | 0           |
-| `Std.LogHost`            | `log_host.l`                 | 1      | 0           |
 | `Std.RandomHost`         | `random_host.l`              | 1      | 0           |
 | `Std.SecureRandomHost`   | `secure_random_host.l`       | 1      | 0           |
 | `Std.HashHost`           | `hash_host.l`                | 1      | 0           |
@@ -790,7 +788,7 @@ All are provisional pending weaver integration.
 | `Std.AssemblyResourcesHost` | `assembly_resources_host.l`  | 1      | 0           |
 | `Std.Jvm`                | `jvm.l`                      | 0      | 1           |
 | `Std.JvmExceptionHost`   | `jvm_exception.l`            | 0      | 1           |
-| **Total**                |                              | **26** | **2**       |
+| **Total**                |                              | **24** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -827,7 +825,7 @@ recorded in the §19 baseline.
 
 ### Combined total
 
-25 + 22 = **47** stable + **2** provisional = **49** `@axiom`
+24 + 22 = **46** stable + **2** provisional = **48** `@axiom`
 annotations covering the entire extern boundary across both
 targets.
 
@@ -873,7 +871,6 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.JsonHost` | `json_host.l` | System.Text.Json operations conform to their documented .NET contracts |
 | `dotnet` | `Std.Jvm` | `jvm.l` | Std.Jvm provides JVM-target escape hatches for interoperating with Java exception semantics per docs/31-maven-linking.md Q-J012 |
 | `dotnet` | `Std.JvmExceptionHost` | `jvm_exception.l` | java.lang.Exception is the Java checked-exception root; JvmException wraps it for Lyric callers at the FFI boundary per docs/31-maven-linking.md §5 |
-| `dotnet` | `Std.LogHost` | `log_host.l` | Host logging writes diagnostic messages according to its configured sinks |
 | `dotnet` | `Std.MathHost` | `math_host.l` | System.Math and System.Double operations conform to their documented .NET / IEEE 754 contracts |
 | `dotnet` | `Std.ParseHost` | `parse_host.l` | System.Double/Boolean.TryParse conform to their documented .NET contracts |
 | `dotnet` | `Std.PathHost` | `path_host.l` | System.IO.Path operations conform to their documented .NET contracts |
@@ -886,7 +883,6 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.TimeHost` | `time_host.l` | System.DateTime / System.TimeSpan / System.DateTimeOffset / System.TimeZoneInfo conform to their documented .NET contracts |
 | `dotnet` | `Std.UnicodeHost` | `unicode_host.l` | System.Char.GetUnicodeCategory returns System.Globalization.UnicodeCategory whose underlying type is int32 |
 | `dotnet` | `Std.UuidHost` | `uuid_host.l` | System.Guid conforms to its documented .NET contract |
-| `dotnet` | `Std.VerifierEnvHost` | `verifier_env_host.l` | System.Environment.GetEnvironmentVariable with null → empty-string safety |
 | `jvm` | `Std.CharHost` | `char_host.l` | java.lang.Character character operations conform to their documented JVM contracts |
 | `jvm` | `Std.CollectionsHost` | `collections_host.l` | java.util.ArrayList / HashMap conform to their documented JVM contracts |
 | `jvm` | `Std.ConsoleHost` | `console_host.l` | lyric.stdlib.jvm.ConsoleHost operations conform to their documented JVM contracts |

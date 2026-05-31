@@ -49,10 +49,21 @@ jobs:
             exit 0
           fi
 
-          set -o pipefail
+          # `grep -v` returns exit 1 when nothing matches; with `pipefail`
+          # this surfaced as a pipeline failure for docs-only PRs (every
+          # changed file got filtered out), tripping the `|| changed="yes"`
+          # fallback and running the full build for docs that should have
+          # skipped it.  Drop pipefail here so the empty-match case is a
+          # clean exit-0 with empty stdin, leaving `changed` unset.
+          #
+          # `.github/` is filtered out too: CI workflow / Actions metadata
+          # tweaks are infra and don't need to re-run the full build to
+          # land (the workflow changes take effect on the next push,
+          # whether or not this push exercises them).
           changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null \
             | grep -v '^book/' \
             | grep -v '^docs/' \
+            | grep -v '^\.github/' \
             | grep -v '\.md$' \
             | head -1) || changed="yes"
 

@@ -1,6 +1,6 @@
 # Lyric Compiler Core — Code Review
 
-Scope: compiler/src/Lyric.Lexer/, compiler/src/Lyric.Parser/, compiler/src/Lyric.TypeChecker/, compiler/src/Lyric.Emitter/, compiler/lyric/lyric/{lexer.l, ast.l, parser/, type_checker/, mode_checker/, contract_elaborator/, mono.l}, and compiler/src/Lyric.Cli/{Program.fs, SelfHosted*.fs}.
+Scope: compiler/src/Lyric.Lexer/, compiler/src/Lyric.Parser/, compiler/src/Lyric.TypeChecker/, compiler/src/Lyric.Emitter/, compiler/lyric/lyric/{lexer.l, parser/, type_checker/, mode_checker/, contract_elaborator/, mono.l}, and compiler/src/Lyric.Cli/{Program.fs, SelfHosted*.fs}.
 
 Method: spec-vs-implementation read, F#-vs-self-hosted divergence diff, defensive edge-case enumeration on lexer / parser / type checker. lsp_diagnostics not available; dotnet build is too slow for an in-band run of this scope, so all findings come from source inspection.
 

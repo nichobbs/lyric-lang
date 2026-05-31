@@ -75,12 +75,13 @@ bar:
    type used to emit a runtime-throw stub; that is now resolved — #1504
    part 1 — encoding real `TypeRef`-backed MemberRefs.)_
 
-5. **Two F# DLLs are still load-bearing at runtime and AOT is unconfigured
-   (HIGH).** _(The PE `Msil.Kernel.ByteWriter` was a `Lyric.Jvm.Hosts.dll`
+5. **One F# DLL is still load-bearing at runtime and AOT is unconfigured
+   (HIGH).** _(`Msil.Kernel.ByteWriter` was a `Lyric.Jvm.Hosts.dll`
    boundary on every emitted byte; #1492 replaced it with a pure-Lyric
    `List[Byte]` buffer — `System.BitConverter` is the only host extern — with
    byte-identical output, so `--target dotnet` no longer routes bytes through
-   that F# DLL.)_  Core stdlib kernels
+   that F# DLL.  Only `Lyric.Emitter.dll` remains load-bearing today; #1600.)_
+   Core stdlib kernels
    (`http`/`process` still — `console`/`env`/`log` migrated to direct BCL
    externs in #1493) extern into `Lyric.Emitter.dll` —
    the same assembly that carries the Reflection.Emit F# emitter. No
