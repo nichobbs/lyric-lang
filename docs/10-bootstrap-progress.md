@@ -17618,3 +17618,36 @@ Compiles through both the bootstrap and self-hosted emitters.  Assembly
 discovery + overload resolution + wiring into the auto-FFI / `@externTarget`
 paths is Phase 3 (gated on the #1471-family self-hosted runtime cross-package
 resolution; see `docs/42` §2).
+
+### D-progress-347 — CLI-metadata reader, Phase 3a: assembly discovery + type→assembly index (epic #1622)
+
+**Status:** Shipped (Phase 3a of epic #1622; design in
+`docs/42-extern-metadata-resolution.md` §5).
+
+Replaces the future need for a hardcoded assembly table with a
+metadata-derived type→assembly index (`lyric-compiler/msil/metadata_reader.l`):
+
+- **`refPackDir`** — locates the .NET reference-assembly pack
+  (`<root>/packs/Microsoft.NETCore.App.Ref/<ver>/ref/<tfm>/`), probing
+  `DOTNET_ROOT`, `$HOME/.dotnet`, and the system install roots, picking the
+  highest version and target-framework subdirectory.
+- **`enumRefAssemblies`** — full paths of every `*.dll` in the ref directory.
+- **`buildTypeIndex` / `addAssemblyTypes` / `assemblyForType`** — read each
+  assembly's TypeDef table and map every public type's fully-qualified name to
+  the assembly's simple name; first writer wins.  In the .NET ref pack the BCL
+  types are real TypeDefs in their facade assembly (verified: `System.Math`,
+  `System.Object`, `System.String` are TypeDefs in `System.Runtime.dll` with
+  zero ExportedTypes; `System.Console` in `System.Console.dll`), so a
+  TypeDef-derived index suffices — no ExportedType/type-forward table needed.
+
+Self-tested two ways: hermetically (a type index over the running test DLL
+resolves this package's own `Program` type back to the test assembly) and
+against the real reference pack (discovery succeeds; an index over
+`System.Runtime.dll` resolves `System.Object` and `System.Math` to
+`System.Runtime`).
+
+Compiles through both the bootstrap and self-hosted emitters.  Overload
+resolution is Phase 3b; wiring `resolveExtern` into the auto-FFI /
+`@externTarget` paths is Phase 3c, gated on the #1471-family self-hosted
+runtime cross-package resolution (discovery uses generic-`Result`-returning
+`Std.File.listFiles`/`listDirs` at compile time; see `docs/42` §2).
