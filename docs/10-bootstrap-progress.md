@@ -17359,3 +17359,52 @@ no following item to attach to.  All converted to `//!` (module/inner
 docs), the correct sigil for a file-header doc block.  The change is
 purely the comment prefix; no code or behaviour changes.  Post-fix audit
 is clean — no `.l` file opens with `///` before `package`.
+### D-progress-340 — MethodSpec metadata table + first open-generic BCL call (#1497)
+
+**Status:** Shipped.  The self-hosted MSIL emitter can now emit MethodSpec
+(table 0x2B) tokens, enabling calls to open generic methods (the metadata tables
+previously stopped at TypeSpec 0x1B).
+
+**Table machinery (`lyric-compiler/msil/tables.l`):**
+
+- `MethodSpecRow { method: Int (coded MethodDefOrRef), instantiation: Int (#Blob) }`,
+  added to `MetadataTables` + `newMetadataTables`, with `addMethodSpec`.
+- Serializer (`serializeTablesStream`): `TABLE_BIT_METHOD_SPEC` (bit 43, 2^43)
+  in the valid bitmask, the row count (table-number order, after 0x28), and the
+  row data (u2 method coded index + u2 #Blob instantiation, per §II.22.29).
+  No GenericParam (0x2A) or other intervening tables are emitted, so 0x2B
+  appends cleanly.  Zero rows ⇒ bit unset ⇒ byte-identical output for programs
+  that don't use it.
+
+**Lowering helpers (`lyric-compiler/msil/lowering.l`):**
+
+- `buildMethodSpecBlob(argTypes)` — MethodSpec instantiation signature
+  (GENRICINST `0x0A` + arg count + type args, §II.23.2.15).
+- `ctxAddMethodSpec(ctx, methodCoded, sigKey, sig)` — interns the blob and adds
+  the row; call sites use `0x2B000000 + row`.
+- `buildArrayEmptyOpenSig()` — the GENERIC-convention (`0x10`) open method
+  signature for `System.Array.Empty\`1(): !!0[]`.
+
+**First consumer + bug fix (`lyric-compiler/msil/codegen.l`):**
+
+`emitEmptyArrayMsil` emits `System.Array.Empty<T>()` (open-generic MemberRef on
+`System.Array` + MethodSpec instantiated for `T`).  Wired into the `SLocal`
+`LBVal` arm: an empty typed-slice literal `val xs: slice[T] = []` now lowers to a
+real empty `T[]`.  Previously `[]` lowered to a `List<object>` while the local
+was `MArray`-typed, so `xs.length` emitted `ldlen` against a List and printed
+garbage — a latent miscompile this fixes.
+
+**Validation:**
+
+- Stage-1 self-build green.
+- `Lyric.Emitter` suite 845/0; `Lyric.Cli` suite 84/0 (incl. the new bridge
+  test); `SelfHostedMsil bridge` 42/0.
+- New `shm_empty_slice_array_empty` bridge test (`mkBridgeWithMethodSpec`)
+  reflects over the produced PE: confirms a MethodSpec row whose instantiation
+  decodes to `["String"]`, and that the empty slice reports length 0.
+- Verified end-to-end via the AOT CLI: `val xs: slice[String] = []` →
+  `xs.length` prints `0` (was `1686146664`).
+
+**Scope note:** MSIL (`--target dotnet`) only, per epic #1470's JVM-deferred
+banner.  Unblocks the generic-extern portion of #1504 and the user-generic
+reify path.
