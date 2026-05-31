@@ -9,13 +9,13 @@
 // way needs no runtime type loading — it is pure byte reading, so it is
 // independent of whether the emitting assembly's types can be reflected over.
 //
-// This module currently covers layers 1–4: the PE container (DOS/PE/COFF/
+// This module currently covers layers 1–5: the PE container (DOS/PE/COFF/
 // optional header, sections, RVA→file-offset, CLI header), the metadata root
 // (stream headers), the `#~` table-stream header (heap-size flags, the
 // valid-table bitvector, per-table row counts), the `#Strings`/`#Blob` heap
-// readers, and the table layout + TypeDef/MethodDef/Param row readers (with
-// run-length method-list ownership).  The signature-blob decoder and overload
-// resolution build on top.
+// readers, the table layout + TypeDef/MethodDef/Param row readers (with
+// run-length method-list ownership), and the MethodDefSig signature-blob
+// decoder.  Assembly discovery and overload resolution build on top.
 //
 // All multi-byte integers in the PE/metadata format are little-endian.  Byte
 // values are widened to `Int` via mixed Byte*Int arithmetic (the same idiom
@@ -629,4 +629,182 @@ pub func methodRange(img: in PeImage, layout: in TableLayout, th: in TablesHeade
     rowCountOf(th, 0x06)
   }
   RowRange(start = start, endRow = last)
+}
+
+// ── Layer 5: signature-blob decoder ──────────────────────────────────────────
+//
+// Decodes a MethodDefSig / MethodRefSig blob (ECMA-335 §II.23.2.1) into a
+// typed shape.  This is the inverse of the emitter's signature writers
+// (`buildStaticMethodSig` / `buildInstanceMethodSig` + `bufMsilType`), but it
+// handles the *full* element-type grammar so signatures from real reference
+// assemblies — value types, by-ref/out parameters, generics, the complete
+// primitive set — decode, not just the subset the Lyric writer emits.
+
+// A decoded signature type.  Primitives (VOID, BOOLEAN, CHAR, I1..U8, R4, R8,
+// STRING, OBJECT, I, U, TYPEDBYREF) are carried by their element-type byte;
+// structured types get their own case.
+pub union SigType {
+  case STPrim(elemByte: Int)
+  case STClass(token: Int)               // ELEMENT_TYPE_CLASS + TypeDefOrRef
+  case STValueType(token: Int)           // ELEMENT_TYPE_VALUETYPE + TypeDefOrRef
+  case STVar(index: Int)                 // generic type parameter
+  case STMVar(index: Int)                // generic method parameter
+  case STSzArray(elem: SigType)          // single-dimension zero-based array
+  case STArray(elem: SigType, rank: Int) // general (multi-dim) array
+  case STByRef(inner: SigType)           // by-ref / out / ref parameter
+  case STPtr(inner: SigType)             // unmanaged pointer
+  case STGenericInst(valueType: Bool, token: Int, args: List[SigType])
+  case STFnPtr                           // function pointer (sig skipped)
+  case STUnknown(elemByte: Int)          // unrecognised element type
+}
+
+pub record DecodedMethodSig {
+  hasThis:       Bool
+  isGeneric:     Bool
+  genParamCount: Int
+  returnType:    SigType
+  paramTypes:    List[SigType]
+}
+
+// Element-type bytes that decode to a leaf primitive `STPrim`.
+func isPrimByte(et: in Int): Bool {
+  (et >= 0x01 and et <= 0x0E) or et == 0x16 or et == 0x18 or et == 0x19 or et == 0x1C
+}
+
+// Result of decoding one type: the type plus the offset just past it.
+pub record DecodedType {
+  ty:   SigType
+  next: Int
+}
+
+// Decode one Type at offset `o`, skipping any leading custom modifiers
+// (CMOD_OPT / CMOD_REQD).
+pub func decodeType(b: in slice[Byte], o: in Int): DecodedType {
+  var p = o
+  // Skip custom modifiers: (CMOD_OPT 0x20 | CMOD_REQD 0x1F) + TypeDefOrRef.
+  while p < b.length and (rdU8(b, p) == 0x1F or rdU8(b, p) == 0x20) {
+    p = p + 1
+    val cm = readCompressedUInt(b, p)
+    p = p + cm.byteWidth
+  }
+  val et = rdU8(b, p)
+  p = p + 1
+  if et == 0x11 or et == 0x12 {
+    val tok = readCompressedUInt(b, p)
+    val ty = if et == 0x11 { STValueType(token = tok.value) } else { STClass(token = tok.value) }
+    DecodedType(ty = ty, next = p + tok.byteWidth)
+  } else if et == 0x13 or et == 0x1E {
+    val n = readCompressedUInt(b, p)
+    val ty = if et == 0x13 { STVar(index = n.value) } else { STMVar(index = n.value) }
+    DecodedType(ty = ty, next = p + n.byteWidth)
+  } else if et == 0x1D {
+    val inner = decodeType(b, p)
+    DecodedType(ty = STSzArray(elem = inner.ty), next = inner.next)
+  } else if et == 0x10 {
+    val inner = decodeType(b, p)
+    DecodedType(ty = STByRef(inner = inner.ty), next = inner.next)
+  } else if et == 0x0F {
+    val inner = decodeType(b, p)
+    DecodedType(ty = STPtr(inner = inner.ty), next = inner.next)
+  } else if et == 0x15 {
+    // GENERICINST (CLASS|VALUETYPE) TypeDefOrRef GenArgCount Type*
+    val kind = rdU8(b, p)
+    var cur = p + 1
+    val tok = readCompressedUInt(b, cur)
+    cur = cur + tok.byteWidth
+    val cnt = readCompressedUInt(b, cur)
+    cur = cur + cnt.byteWidth
+    val args: List[SigType] = newList()
+    var i = 0
+    while i < cnt.value {
+      val a = decodeType(b, cur)
+      args.add(a.ty)
+      cur = a.next
+      i = i + 1
+    }
+    DecodedType(ty = STGenericInst(valueType = kind == 0x11, token = tok.value, args = args), next = cur)
+  } else if et == 0x14 {
+    // ARRAY Type ArrayShape(rank numSizes size* numLoBounds loBound*)
+    val inner = decodeType(b, p)
+    var cur = inner.next
+    val rank = readCompressedUInt(b, cur)
+    cur = cur + rank.byteWidth
+    val numSizes = readCompressedUInt(b, cur)
+    cur = cur + numSizes.byteWidth
+    var i = 0
+    while i < numSizes.value {
+      val s = readCompressedUInt(b, cur)
+      cur = cur + s.byteWidth
+      i = i + 1
+    }
+    val numLo = readCompressedUInt(b, cur)
+    cur = cur + numLo.byteWidth
+    var j = 0
+    while j < numLo.value {
+      val s2 = readCompressedUInt(b, cur)
+      cur = cur + s2.byteWidth
+      j = j + 1
+    }
+    DecodedType(ty = STArray(elem = inner.ty, rank = rank.value), next = cur)
+  } else if et == 0x1B {
+    // FNPTR + MethodDefSig — decode the nested sig to advance past it.
+    val nested = decodeMethodSigAt(b, p)
+    DecodedType(ty = STFnPtr, next = nested.next)
+  } else if isPrimByte(et) {
+    DecodedType(ty = STPrim(elemByte = et), next = p)
+  } else {
+    DecodedType(ty = STUnknown(elemByte = et), next = p)
+  }
+}
+
+// Result of decoding a method signature: the signature plus the offset past it.
+pub record DecodedMethodSigAt {
+  sig:  DecodedMethodSig
+  next: Int
+}
+
+// Decode a MethodDefSig at offset `o` (used both at the blob root and for
+// nested FNPTR signatures).
+pub func decodeMethodSigAt(b: in slice[Byte], o: in Int): DecodedMethodSigAt {
+  val cc = rdU8(b, o)
+  var p = o + 1
+  val hasThis   = (cc / 32) % 2 == 1   // HASTHIS  (0x20)
+  val isGeneric = (cc / 16) % 2 == 1   // GENERIC  (0x10)
+  var genCount = 0
+  if isGeneric {
+    val g = readCompressedUInt(b, p)
+    genCount = g.value
+    p = p + g.byteWidth
+  }
+  val pc = readCompressedUInt(b, p)
+  p = p + pc.byteWidth
+  val ret = decodeType(b, p)
+  p = ret.next
+  val params: List[SigType] = newList()
+  var i = 0
+  while i < pc.value and p < b.length {
+    if rdU8(b, p) == 0x41 {
+      // SENTINEL marks the start of vararg arguments; it sits between
+      // parameters and does not itself consume a parameter slot.
+      p = p + 1
+    } else {
+      val a = decodeType(b, p)
+      params.add(a.ty)
+      p = a.next
+      i = i + 1
+    }
+  }
+  DecodedMethodSigAt(
+    sig = DecodedMethodSig(
+      hasThis = hasThis, isGeneric = isGeneric, genParamCount = genCount,
+      returnType = ret.ty, paramTypes = params),
+    next = p)
+}
+
+// Decode a complete MethodDefSig blob.  Returns an error for an empty blob.
+pub func decodeMethodSig(blob: in slice[Byte]): Result[DecodedMethodSig, String] {
+  if blob.length == 0 {
+    return Err(error = "metadata: empty method signature blob")
+  }
+  Ok(value = decodeMethodSigAt(blob, 0).sig)
 }

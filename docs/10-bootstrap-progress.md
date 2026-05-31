@@ -17587,3 +17587,34 @@ size, and the test-vs-suggestion notes.
 Compiles through both the bootstrap and self-hosted emitters.  The
 signature-blob decoder (layer 5) is Phase 2b; wiring into the auto-FFI /
 `@externTarget` paths remains Phase 3.
+
+### D-progress-346 — CLI-metadata reader, Phase 2b: signature decoder (epic #1622)
+
+**Status:** Shipped (Phase 2b of epic #1622; design in
+`docs/42-extern-metadata-resolution.md` §5).
+
+Layer 5 of the pure-Lyric CLI-metadata reader: the MethodDefSig signature-blob
+decoder (`lyric-compiler/msil/metadata_reader.l`), the inverse of the emitter's
+`buildStaticMethodSig`/`buildInstanceMethodSig` + `bufMsilType`.
+
+- **`SigType`** union covering the full ECMA-335 §II.23.1.16 element-type
+  grammar: primitives (carried by element-type byte), CLASS / VALUETYPE (with
+  TypeDefOrRef token), VAR / MVAR generic parameters, SZARRAY / ARRAY,
+  BYREF / PTR, GENERICINST, FNPTR, and an `STUnknown` escape.
+- **`decodeType`** recursively decodes one Type, skipping leading custom
+  modifiers (CMOD_OPT / CMOD_REQD) and advancing past nested shapes (generic
+  args, array shapes, nested function-pointer sigs).
+- **`decodeMethodSig`** / **`decodeMethodSigAt`** decode a MethodDefSig:
+  calling convention (HASTHIS / GENERIC bits), generic-parameter count, the
+  return type, and the parameter types (skipping the vararg SENTINEL).
+
+Self-tested two ways: hand-built blobs matching exactly what the emitter's
+signature writers emit (static `(Int, String): Bool`, instance `(): Void`,
+`(slice[Byte]): Void`, empty-blob rejection) decode to the expected `SigType`
+shapes; and a running-PE oracle decodes every MethodDefSig in the test
+assembly, asserting `main` resolves to a static, parameterless method.
+
+Compiles through both the bootstrap and self-hosted emitters.  Assembly
+discovery + overload resolution + wiring into the auto-FFI / `@externTarget`
+paths is Phase 3 (gated on the #1471-family self-hosted runtime cross-package
+resolution; see `docs/42` §2).
