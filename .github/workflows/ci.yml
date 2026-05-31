@@ -424,7 +424,7 @@ jobs:
           steps.changes.outputs.has_code_changes == 'true' &&
           github.event_name == 'push' &&
           github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: code-coverage
           path: coverage/
