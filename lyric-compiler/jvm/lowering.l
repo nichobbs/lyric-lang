@@ -973,6 +973,38 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
     si = si + 1
   }
 
+  // Add basic-block starts (instructions following an unconditional transfer)
+  // that are not already branch-target frame points.  The verifier requires a
+  // frame at every block start, including dead code after a `panic`'s athrow.
+  var bsi = 0
+  while bsi < ar.blockStarts.count {
+    val bso = ar.blockStarts[bsi]
+    if not seenOff.containsKey(bso) {
+      seenOff.add(bso, frameOffs.count)
+      frameOffs.add(bso)
+      frameEx.add("")
+    }
+    bsi = bsi + 1
+  }
+
+  // Frame offsets must be emitted in strictly ascending order (offset_delta is
+  // relative).  Label and block-start offsets interleave, so sort both parallel
+  // lists by offset (insertion sort — frame counts are small).
+  var a = 1
+  while a < frameOffs.count {
+    val ko = frameOffs[a]
+    val ke = frameEx[a]
+    var b = a - 1
+    while b >= 0 and frameOffs[b] > ko {
+      frameOffs[b + 1] = frameOffs[b]
+      frameEx[b + 1]   = frameEx[b]
+      b = b - 1
+    }
+    frameOffs[b + 1] = ko
+    frameEx[b + 1]   = ke
+    a = a + 1
+  }
+
   var prevOffset = -1       // initial implicit frame is at offset -1
   var fi2 = 0
   while fi2 < frameOffs.count {

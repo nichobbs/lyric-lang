@@ -2323,6 +2323,29 @@ func lowerMethodCall(
     }
     return recvTy
   }
+  // String predicate methods return `boolean` (Z), not Object.  Emitting them
+  // through the generic path below (ret = Object) makes a following `ifeq`/`ifne`
+  // pop an Object and fail verification ("Bad type on operand stack").  Pin the
+  // precise descriptor here.  `contains` takes a CharSequence (a String arg is
+  // assignable); `startsWith`/`endsWith` take a String.
+  val isStringRecv = match recvTy { case JRef(c) -> c == "java/lang/String"; case _ -> false }
+  if isStringRecv and args.count == 1 and
+     (memberName == "contains" or memberName == "startsWith" or memberName == "endsWith") {
+    lowerCallArg(ctx, insns, args[0])
+    val ps: List[JvmType] = newList()
+    if memberName == "contains" {
+      ps.add(JRef(className = "java/lang/CharSequence"))
+    } else {
+      ps.add(JRef(className = "java/lang/String"))
+    }
+    insns.add(LInvokevirtual(
+      owner  = "java/lang/String",
+      name   = memberName,
+      params = ps,
+      ret    = JBoolean))
+    return JBoolean
+  }
+
   val paramTys: List[JvmType] = newList()
   var i = 0
   while i < args.count {

@@ -781,15 +781,20 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
   - `bitwise_self_test.l` — `@test_module` and the first executable
     regression test for a self-hosted-only *language feature*: the
     bitwise integer methods `.and/.or/.xor/.shl/.shr` (#1610).  Run in
-    CI via native `lyric test` (issue #1611), which synthesises a
-    program from the `test` blocks and compiles it in-process through
-    the self-hosted `Msil.Bridge`, then asserts runtime values.  The F#
-    stage-0 emitter that backs `lyric-stdlib/tests/*_tests.l` can't host
-    this — its parser rejects keyword-named methods (`x.xor(y)` →
-    P0081).  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1` is
-    needed.  JVM-target execution of the same module is tracked
-    separately (the native CLI's `--target jvm` path still routes
-    through the F# emitter's `--internal-build`).
+    CI via native `lyric test` (issue #1611) on **both targets**:
+    `--target dotnet` compiles it in-process through the self-hosted
+    `Msil.Bridge`; `--target jvm` compiles it in-process through the
+    self-hosted `Jvm.Bridge` (`compileToJarBundled` bundles the user
+    package plus its transitive stdlib-import closure into one runnable
+    JAR) and runs it under `java`.  Both assert every runtime value.
+    The F# stage-0 emitter that backs `lyric-stdlib/tests/*_tests.l`
+    can't host this — its parser rejects keyword-named methods
+    (`x.xor(y)` → P0081).  Imports only `Std.*`, so no
+    `LYRIC_LOAD_COMPILER=1` is needed.  The JVM path required a round of
+    JVM-backend hardening (expression-position if/match/try, union
+    field binding, i64 literals, comparison materialization, basic-block
+    stackmap frames, String predicate methods) plus deploying FSharp.Core
+    beside the AOT binary for the JVM kernel's F# host shim.
   `Lyric` is registered as a built-in head in `Emitter.fs:isBuiltinHead`,
   so `import Lyric.<X>` resolves under this directory.  The
   `Lyric.<X>` namespace is reserved for the self-hosted compiler
