@@ -3430,10 +3430,19 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
             params.add(typeExprToJvm(decl.params[pi].ty, owner))
             pi = pi + 1
           }
+          // An async generator's *factory* returns the synthesised generator
+          // object (an Iterable), not its declared element type — so the call
+          // site must store/use a reference, not `decl.ret` (e.g. the `Int`
+          // element type).  Record Object for it; everything else uses the
+          // declared return.
           val ret =
-            match decl.ret {
-              case Some(te) -> typeExprToJvm(te, owner)
-              case None     -> JVoid
+            if decl.isAsync and funcBodyContainsYield(decl) {
+              JRef(className = "java/lang/Object")
+            } else {
+              match decl.ret {
+                case Some(te) -> typeExprToJvm(te, owner)
+                case None     -> JVoid
+              }
             }
           into.add(decl.name, JvmFuncSig(owner = owner, params = params, ret = ret))
         }

@@ -700,7 +700,9 @@ func collectBlockStarts(asm: in MethodAssembler): List[Int] {
       case TableSwitch(_, _, nCases, _) -> {
         if prevTransfer { starts.add(offset) }
         val pad = switchPadding(offset)
-        offset = offset + 1 + pad + 4 + 4 + 4 * nCases
+        // op + pad + default(4) + low(4) + high(4) + 4*nCases — must match
+        // buildLabelMap exactly or every later offset (and block start) drifts.
+        offset = offset + 1 + pad + 4 + 4 + 4 + 4 * nCases
         prevTransfer = true
       }
       case LookupSwitch(nPairs, _) -> {
