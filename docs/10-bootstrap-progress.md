@@ -17690,13 +17690,16 @@ solid before `codegen.l` can depend on the reader (see `docs/42` §2/§5).
 **Status:** Shipped (completes the metadata reader's resolution API; design in
 `docs/42-extern-metadata-resolution.md` §4).
 
-`resolveExtern(index, refDir, typeFqn, member, argTypes)` is the single entry
-point the emitter will call: it looks the owning assembly up in a prebuilt
-type→assembly index (`assemblyForType`), then resolves the best overload from
-that assembly (`resolveOverload`), returning a `ResolvedExtern` (the assembly's
-simple name + the `ResolvedMethod`).  Callers build the index once (over
-`enumRefAssemblies(refPackDir())` plus restored-dependency DLLs) and reuse it
-across call sites.
+`resolveExtern(typeIndex, pathIndex, typeFqn, member, argTypes)` is the single
+entry point the emitter will call: it looks the owning assembly up in a
+prebuilt type→assembly-name index (`assemblyForType`), maps that name to its
+on-disk path via a companion name→path index (`buildPathIndex`), then resolves
+the best overload from that assembly (`resolveOverload`), returning a
+`ResolvedExtern` (the assembly's simple name + the `ResolvedMethod`).  Both
+indexes are built once (over `enumRefAssemblies(refPackDir())` plus
+restored-dependency DLLs) and reused across call sites; carrying explicit paths
+means assemblies outside the reference-pack directory (e.g. restored NuGet
+packages) still resolve.
 
 Self-tested against the real reference pack: `resolveExtern(... "System.Math",
 "Max", [Int, Int])` resolves to assembly `System.Runtime` with a static method

@@ -441,10 +441,11 @@ func testResolveExtern(): Unit {
       val rt = Path.join(dir, "System.Runtime.dll")
       val one: List[String] = newList()
       one.add(rt)
-      val index = buildTypeIndex(one)
+      val typeIndex = buildTypeIndex(one)
+      val pathIndex = buildPathIndex(one)
       val i4i4: List[SigType] = newList()
       i4i4.add(prim(0x08))  i4i4.add(prim(0x08))
-      match resolveExtern(index, dir, "System.Math", "Max", i4i4) {
+      match resolveExtern(typeIndex, pathIndex, "System.Math", "Max", i4i4) {
         case None -> panic("resolveExtern: Math.Max(int,int) not resolved")
         case Some(re) -> {
           assertEqual(re.assemblyName, "System.Runtime", "resolveExtern: Math.Max owned by System.Runtime")
@@ -455,8 +456,14 @@ func testResolveExtern(): Unit {
           }
         }
       }
-      match resolveExtern(index, dir, "No.Such.Type", "X", i4i4) {
+      // Unknown type → None.
+      match resolveExtern(typeIndex, pathIndex, "No.Such.Type", "X", i4i4) {
         case Some(_) -> panic("resolveExtern: unknown type should be None")
+        case None    -> ()
+      }
+      // Assembly found in the index, but the member is absent → None.
+      match resolveExtern(typeIndex, pathIndex, "System.Math", "NoSuchMethodXyz", i4i4) {
+        case Some(_) -> panic("resolveExtern: absent member should be None")
         case None    -> ()
       }
     }
