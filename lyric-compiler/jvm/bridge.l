@@ -271,8 +271,9 @@ func runMiddleEnd(file0: in SourceFile, importedItems: in List[Item]): Option[So
 // class files to `out`.  Uses an isolated constant pool per package.
 func codegenPackageInto(file: in SourceFile,
                         registry: in Map[String, JvmFuncSig],
+                        caseReg: in Map[String, List[JvmCaseField]],
                         acc: in List[BuiltClass]): Unit {
-  val pkg        = codegenPackageWithSigs(file, registry)
+  val pkg        = codegenPackageWithSigs(file, registry, caseReg)
   val pool       = poolNew()
   val classFiles = lowerPackage(pkg, pool)
   var j = 0
@@ -326,9 +327,12 @@ pub func compileToJarBundled(
   // stdlib file (resolution is cheap and harmless for packages we don't bundle).
   val registry: Map[String, JvmFuncSig] = newMap()
   collectFileSigs(userFile, registry)
+  val caseReg: Map[String, List[JvmCaseField]] = newMap()
+  collectFileCases(userFile, caseReg)
   var ri = 0
   while ri < stdlibFiles.count {
     collectFileSigs(stdlibFiles[ri], registry)
+    collectFileCases(stdlibFiles[ri], caseReg)
     ri = ri + 1
   }
 
@@ -366,7 +370,7 @@ pub func compileToJarBundled(
 
   // User package first (its codegen failing is fatal).
   match runMiddleEnd(userFile, importedItems) {
-    case Some(f) -> codegenPackageInto(f, registry, allClasses)
+    case Some(f) -> codegenPackageInto(f, registry, caseReg, allClasses)
     case None    -> return false
   }
 
@@ -378,7 +382,7 @@ pub func compileToJarBundled(
     val f = toBundle[bi]
     try {
       match runMiddleEnd(f, importedItems) {
-        case Some(ff) -> codegenPackageInto(ff, registry, allClasses)
+        case Some(ff) -> codegenPackageInto(ff, registry, caseReg, allClasses)
         case None     -> ()
       }
     } catch Bug as _ {

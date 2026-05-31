@@ -47,6 +47,19 @@ pub record JvmFuncSig {
   ret:    JvmType         // declared return type (JVoid for Unit)
 }
 
+// One field of a union case class, in declaration order.  A match binding
+// `case Foo(x) -> …` reads the case object's i-th field; the JVM `getfield`
+// descriptor and the bound local's type must be the field's *declared* type,
+// not java/lang/Object — otherwise the read mis-resolves (NoSuchFieldError)
+// and the bound value verifies as Object (failing any precise-typed use).
+// Built once per compilation from every `union` declaration and threaded
+// read-only through `FuncCtx.caseFields`, keyed by the case class's JVM name
+// (e.g. "Std/Testing/PanicTry$PtPanicked").
+pub record JvmCaseField {
+  name: String
+  ty:   JvmType
+}
+
 // FuncCtx threads mutable state through expression and statement lowering.
 // `slotTicker` and `labelTicker` are singleton lists whose `.count` is the
 // current next-slot / next-label integer; `.add` advances them.
@@ -64,6 +77,9 @@ pub record FuncCtx {
   // Cross-package free-function call resolution (see JvmFuncSig).  Keyed by
   // bare function name.  Empty for hand-built / generator-internal contexts.
   funcSigs:    Map[String, JvmFuncSig]
+  // Union case field types for precise match-binding (see JvmCaseField).
+  // Keyed by case class JVM name, e.g. "Pkg/Union$Case".
+  caseFields:  Map[String, List[JvmCaseField]]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -345,8 +361,22 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
     // ── Literals ──────────────────────────────────────────────────────────
     case ELiteral(lit) -> {
       match lit {
-        case LInt(v, _) -> {
-          if v >= -2147483648i64 and v <= 2147483647i64 {
+        case LInt(v, suffix) -> {
+          // An `i64`/`u64` suffix makes the literal a Long regardless of
+          // magnitude: `5i64` must push a long (ldc2_w / lconst), not an int
+          // (iconst).  Storing an int with `lstore` underflows the operand
+          // stack ("Operand stack underflow"); a plain unsuffixed literal stays
+          // an int when it fits in 32 bits.
+          val isLong =
+            match suffix {
+              case I64 -> true
+              case U64 -> true
+              case _   -> false
+            }
+          if isLong {
+            insns.add(LLconst(v = v))
+            JLong
+          } else if v >= -2147483648i64 and v <= 2147483647i64 {
             insns.add(LIconst(v = longToInt(v)))
             JInt
           } else {
@@ -855,13 +885,22 @@ func lowerCmpExpr(
   lowerExpr(ctx, insns, rhs)
   val trueL  = freshLabel(ctx)
   val afterL = freshLabel(ctx)
+  // Materialise the 0/1 boolean through a result local so the operand stack is
+  // empty at the `trueL` / `afterL` branch targets.  Leaving the bool on the
+  // stack across the join fails verification ("Current frame's stack size
+  // doesn't match stackmap"), since the StackMapTable declares an empty stack
+  // at every branch target (see lowerIfExpr).
+  val rslot = allocSlot(ctx, "__cmp_r_" + afterL, JInt)
   lowerCmp(ctx, insns, op, lhsTy, trueL, afterL)
   // fall-through: comparison was false
   insns.add(LIconst(v = 0))
+  emitStore(insns, rslot, JInt)
   insns.add(LGoto(label = afterL))
   insns.add(LLabel(name = trueL))
   insns.add(LIconst(v = 1))
+  emitStore(insns, rslot, JInt)
   insns.add(LLabel(name = afterL))
+  emitLoad(insns, rslot, JInt)
   JBoolean
 }
 
@@ -1364,8 +1403,17 @@ func lowerPatternTest(
     case PLiteral(lit) -> {
       emitLoad(insns, scrutSlot, scrutTy)
       match lit {
-        case LInt(v, _) -> {
-          if v >= -2147483648i64 and v <= 2147483647i64 {
+        case LInt(v, suffix) -> {
+          // Match the scrutinee width: an `i64`/`u64`-suffixed pattern literal
+          // (or one outside Int32 range) compares as a long (lcmp), else as an
+          // int (if_icmpne).  Mixing widths corrupts the operand stack.
+          val isLong =
+            match suffix {
+              case I64 -> true
+              case U64 -> true
+              case _   -> false
+            }
+          if (not isLong) and v >= -2147483648i64 and v <= 2147483647i64 {
             insns.add(LIconst(v = longToInt(v)))
             insns.add(LIfIcmpne(label = failLabel))
           } else {
@@ -1470,20 +1518,33 @@ func lowerPatternBind(
           emitLoad(insns, scrutSlot, scrutTy)
           insns.add(LCheckcast(className = caseClass))
           emitStore(insns, castSlot, JRef(className = caseClass))
-          // Bind each positional field by reading the corresponding field from the case class.
-          // Bootstrap: bind by index only (field names unknown at this level).
+          // Bind each positional sub-pattern by reading the case class's i-th
+          // field.  The field's *declared* name and type come from the union
+          // registry (ctx.caseFields) — reading with the precise descriptor
+          // (not java/lang/Object) so the getfield resolves and the bound
+          // local carries the right static type (e.g. a String `message`
+          // usable with `.contains`, an Int usable in arithmetic).  Falls back
+          // to (binding-name, Object) only when the union is unavailable.
+          val caseInfo: Option[List[JvmCaseField]] = mapGet(ctx.caseFields, caseClass)
           var fi = 0
           while fi < fields.count {
             match fields[fi].kind {
               case PBinding(fname, _) -> {
+                var realName = fname
+                var fty: JvmType = JRef(className = "java/lang/Object")
+                match caseInfo {
+                  case Some(flds) -> {
+                    if fi < flds.count {
+                      realName = flds[fi].name
+                      fty = flds[fi].ty
+                    }
+                  }
+                  case None -> ()
+                }
                 emitLoad(insns, castSlot, JRef(className = caseClass))
-                // Read field `fname` from the case class.
-                insns.add(LGetfield(
-                  owner = caseClass,
-                  name  = fname,
-                  t     = JRef(className = "java/lang/Object")))
-                val fSlot = allocSlot(ctx, fname, JRef(className = "java/lang/Object"))
-                emitStore(insns, fSlot, JRef(className = "java/lang/Object"))
+                insns.add(LGetfield(owner = caseClass, name = realName, t = fty))
+                val fSlot = allocSlot(ctx, fname, fty)
+                emitStore(insns, fSlot, fty)
               }
               case _ -> insns.add(LNop)
             }
@@ -2755,7 +2816,8 @@ pub func lowerBlock(ctx: in FuncCtx, insns: in List[LInsn], block: in Block): Un
 
 // Create a fresh FuncCtx for the given function.
 func makeFuncCtx(pkgName: in String, className: in String,
-                 funcSigs: in Map[String, JvmFuncSig]): FuncCtx {
+                 funcSigs: in Map[String, JvmFuncSig],
+                 caseFields: in Map[String, List[JvmCaseField]]): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
   val slotTicker: List[Int] = newList()
@@ -2772,13 +2834,15 @@ func makeFuncCtx(pkgName: in String, className: in String,
     loopBreak   = loopBreak,
     loopCont    = loopCont,
     genClass    = None,
-    funcSigs    = funcSigs)
+    funcSigs    = funcSigs,
+    caseFields  = caseFields)
 }
 
 // Create a FuncCtx for lowering a generator body (runBody instance method).
 // Slot 0 = `this` (reserved); params start at slot 1.
 func makeFuncCtxForGenerator(pkgName: in String, genClass: in String,
-                             funcSigs: in Map[String, JvmFuncSig]): FuncCtx {
+                             funcSigs: in Map[String, JvmFuncSig],
+                             caseFields: in Map[String, List[JvmCaseField]]): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
   val slotTicker: List[Int] = newList()
@@ -2796,18 +2860,20 @@ func makeFuncCtxForGenerator(pkgName: in String, genClass: in String,
     loopBreak   = loopBreak,
     loopCont    = loopCont,
     genClass    = Some(value = genClass),
-    funcSigs    = funcSigs)
+    funcSigs    = funcSigs,
+    caseFields  = caseFields)
 }
 
 pub func lowerFunc(decl: in FunctionDecl, pkgName: in String, className: in String,
-                   funcSigs: in Map[String, JvmFuncSig]): LFunc {
+                   funcSigs: in Map[String, JvmFuncSig],
+                   caseFields: in Map[String, List[JvmCaseField]]): LFunc {
   val retTy =
     match decl.ret {
       case Some(te) -> typeExprToJvm(te, pkgName)
       case None     -> JVoid
     }
 
-  val ctx = makeFuncCtx(pkgName, className, funcSigs)
+  val ctx = makeFuncCtx(pkgName, className, funcSigs, caseFields)
   val insns: List[LInsn] = newList()
 
   // Allocate slots for parameters.
@@ -2907,7 +2973,8 @@ func endsWithReturn(insns: in List[LInsn]): Bool {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub func lowerRecord(decl: in RecordDecl, pkgName: in String,
-                     funcSigs: in Map[String, JvmFuncSig]): LRecord {
+                     funcSigs: in Map[String, JvmFuncSig],
+                     caseFields: in Map[String, List[JvmCaseField]]): LRecord {
   val className = pkgName + "/" + decl.name
 
   val fields: List[LField] = newList()
@@ -2928,7 +2995,7 @@ pub func lowerRecord(decl: in RecordDecl, pkgName: in String,
 
   // Synthesise <init> constructor that takes all fields as params and stores them.
   val ctorInsns: List[LInsn] = newList()
-  val ctorCtx = makeFuncCtx(pkgName, className, funcSigs)
+  val ctorCtx = makeFuncCtx(pkgName, className, funcSigs, caseFields)
 
   // Slot 0 = this.
   ctorCtx.slotTicker.add(0)
@@ -2973,7 +3040,7 @@ pub func lowerRecord(decl: in RecordDecl, pkgName: in String,
   while mi < decl.members.count {
     match decl.members[mi] {
       case RMFunc(fn) -> {
-        methods.add(lowerFunc(fn, pkgName, className, funcSigs))
+        methods.add(lowerFunc(fn, pkgName, className, funcSigs, caseFields))
       }
       case _ -> {}
     }
@@ -3196,10 +3263,11 @@ func lowerGeneratorBody(
   decl:     in FunctionDecl,
   pkgName:  in String,
   genClass: in String,
-  funcSigs: in Map[String, JvmFuncSig]
+  funcSigs: in Map[String, JvmFuncSig],
+  caseFields: in Map[String, List[JvmCaseField]]
 ): List[LInsn] {
   val insns: List[LInsn] = newList()
-  val ctx = makeFuncCtxForGenerator(pkgName, genClass, funcSigs)
+  val ctx = makeFuncCtxForGenerator(pkgName, genClass, funcSigs, caseFields)
 
   // Preamble: load each param from this.<field> into a local slot.
   var pi = 0
@@ -3353,13 +3421,52 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
   }
 }
 
+// Collect every `union` case class's field list from `file` into `into`,
+// keyed by the case class JVM name (e.g. "Pkg/Union$Case").  Mirrors the
+// case-class field generation in lowerUnion so the binding-site field names
+// and types agree.  See JvmCaseField.
+pub func collectFileCases(file: in SourceFile, into: in Map[String, List[JvmCaseField]]): Unit {
+  val owner = segmentsToJvmPath(file.packageDecl.path.segments)
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IUnion(decl) -> {
+        var ci = 0
+        while ci < decl.cases.count {
+          val c = decl.cases[ci]
+          val caseClass = owner + "/" + decl.name + "$" + c.name
+          if not into.containsKey(caseClass) {
+            val flds: List[JvmCaseField] = newList()
+            var fi = 0
+            while fi < c.fields.count {
+              match c.fields[fi] {
+                case UFNamed(name, ty, _) ->
+                  flds.add(JvmCaseField(name = name, ty = typeExprToJvm(ty, owner)))
+                case UFPos(ty, _) ->
+                  flds.add(JvmCaseField(name = "field" + toString(fi), ty = typeExprToJvm(ty, owner)))
+              }
+              fi = fi + 1
+            }
+            into.add(caseClass, flds)
+          }
+          ci = ci + 1
+        }
+      }
+      case _ -> {}
+    }
+    i = i + 1
+  }
+}
+
 // Backward-compatible single-package entry: the registry carries only this
 // file's own functions (enough to resolve intra-package calls — including
 // void-returning ones the legacy guess mis-resolved).
 pub func codegenPackage(file: in SourceFile): LPackage {
   val sigs: Map[String, JvmFuncSig] = newMap()
   collectFileSigs(file, sigs)
-  codegenPackageWithSigs(file, sigs)
+  val cases: Map[String, List[JvmCaseField]] = newMap()
+  collectFileCases(file, cases)
+  codegenPackageWithSigs(file, sigs, cases)
 }
 
 // Codegen a package against a pre-built call registry `funcSigs` spanning the
@@ -3367,7 +3474,8 @@ pub func codegenPackage(file: in SourceFile): LPackage {
 // The multi-package bridge builds one global registry from all files and hands
 // the same map to each package, so cross-package calls resolve owner + descriptor.
 pub func codegenPackageWithSigs(file: in SourceFile,
-                                funcSigs: in Map[String, JvmFuncSig]): LPackage {
+                                funcSigs: in Map[String, JvmFuncSig],
+                                caseFields: in Map[String, List[JvmCaseField]]): LPackage {
   val pkgName    = segmentsToJvmPath(file.packageDecl.path.segments)
   val funcsClass = pkgName
 
@@ -3395,7 +3503,7 @@ pub func codegenPackageWithSigs(file: in SourceFile,
         var mi2 = 0
         while mi2 < decl.members.count {
           match decl.members[mi2] {
-            case IMplFunc(fn) -> implFuncs.add(lowerFunc(fn, pkgName, targetClass, funcSigs))
+            case IMplFunc(fn) -> implFuncs.add(lowerFunc(fn, pkgName, targetClass, funcSigs, caseFields))
             case IMplAssoc(_) -> {}
           }
           mi2 = mi2 + 1
@@ -3418,7 +3526,7 @@ pub func codegenPackageWithSigs(file: in SourceFile,
         if decl.isAsync and funcBodyContainsYield(decl) {
           // Async generator: synthesise Iterable+Iterator class via lowerAsyncGenerator.
           val genClass  = pkgName + "$" + decl.name + "$Gen"
-          val bodyInsns = lowerGeneratorBody(decl, pkgName, genClass, funcSigs)
+          val bodyInsns = lowerGeneratorBody(decl, pkgName, genClass, funcSigs, caseFields)
           val genParams: List[LGenParam] = newList()
           var pi = 0
           while pi < decl.params.count {
@@ -3442,7 +3550,7 @@ pub func codegenPackageWithSigs(file: in SourceFile,
           // Factory method lives alongside main() in the functions class.
           fns.add(makeGeneratorFactory(decl, genClass, pkgName))
         } else {
-          fns.add(lowerFunc(decl, pkgName, funcsClass, funcSigs))
+          fns.add(lowerFunc(decl, pkgName, funcsClass, funcSigs, caseFields))
           if isMainFunc(decl) {
             hasMain = true
             // Resolve the Lyric main's declared return type so the JVM
@@ -3470,7 +3578,7 @@ pub func codegenPackageWithSigs(file: in SourceFile,
           }
           ei = ei + 1
         }
-        val baseRec = lowerRecord(decl, pkgName, funcSigs)
+        val baseRec = lowerRecord(decl, pkgName, funcSigs, caseFields)
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() { mergedMethods.add(fn) }
         for fn in implFuncs.toArray()      { mergedMethods.add(fn) }
@@ -3500,7 +3608,7 @@ pub func codegenPackageWithSigs(file: in SourceFile,
           }
           ei = ei + 1
         }
-        val baseRec = lowerRecord(decl, pkgName, funcSigs)
+        val baseRec = lowerRecord(decl, pkgName, funcSigs, caseFields)
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() { mergedMethods.add(fn) }
         for fn in implFuncs.toArray()      { mergedMethods.add(fn) }
@@ -3559,7 +3667,7 @@ pub func codegenPackageWithSigs(file: in SourceFile,
                 ACC_PUBLIC + ACC_ABSTRACT, sig.name, desc, emptyAttrs))
             }
             case IMFunc(fn) -> {
-              concreteFuncs.add(lowerFunc(fn, pkgName, ifClassName, funcSigs))
+              concreteFuncs.add(lowerFunc(fn, pkgName, ifClassName, funcSigs, caseFields))
             }
             case IMAssoc(_) -> {}
           }
