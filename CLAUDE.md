@@ -778,6 +778,18 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     **Not yet wired into CI** — pending the `lyric test` infrastructure
     in #1324 that would let the CI runner resolve `Lyric.Weaver` imports.
     Manual-run instructions are in the file's header.
+  - `bitwise_self_test.l` — `@test_module` and the first executable
+    regression test for a self-hosted-only *language feature*: the
+    bitwise integer methods `.and/.or/.xor/.shl/.shr` (#1610).  Run in
+    CI via native `lyric test` (issue #1611), which synthesises a
+    program from the `test` blocks and compiles it in-process through
+    the self-hosted `Msil.Bridge`, then asserts runtime values.  The F#
+    stage-0 emitter that backs `lyric-stdlib/tests/*_tests.l` can't host
+    this — its parser rejects keyword-named methods (`x.xor(y)` →
+    P0081).  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1` is
+    needed.  JVM-target execution of the same module is tracked
+    separately (the native CLI's `--target jvm` path still routes
+    through the F# emitter's `--internal-build`).
   `Lyric` is registered as a built-in head in `Emitter.fs:isBuiltinHead`,
   so `import Lyric.<X>` resolves under this directory.  The
   `Lyric.<X>` namespace is reserved for the self-hosted compiler
