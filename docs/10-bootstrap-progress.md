@@ -17168,7 +17168,6 @@ The production fix is to migrate those crypto externs to direct BCL
 from this codegen series.  A further single test (`extractClaim` ASCII, #25)
 runs but returns empty — the kernel base64/UTF8/JSON pipeline, also noted
 in #1592.
-<<<<<<< HEAD
 
 ### D-progress-335 — pure-Lyric PE byte writer; Lyric.Jvm.Hosts off the .NET path (#1492)
 
