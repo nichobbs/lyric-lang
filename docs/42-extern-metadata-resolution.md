@@ -92,24 +92,34 @@ functions whose return type is a generic (`Result[List[Byte], IOError]`) do not
 currently link on the self-hosted runtime** — this is Band-0 / #1471
 ("cross-package generic-arg widening") territory.
 
-Consequence for this epic: **the metadata reader must read the ref-assembly
-bytes through a non-generic-return entry point, not through
-`Std.File.readBytes`.** Conveniently, the required primitive **already exists**:
-`Std.FileHost.hostReadAllBytes(path): slice[Byte]` (`@externTarget("System.IO.File.ReadAllBytes")`,
-`lyric-stdlib/std/_kernel/file_host.l:53`) returns a `slice[Byte]` — a
-non-generic return that links on the self-hosted runtime — and panics on I/O
-error per the kernel's established no-`Result`-across-FFI convention. The
-generic `Result`-returning `Std.File.readBytes` wrapper is what fails; the
-reader bypasses it.
+Consequence for this epic: **the metadata reader reads bytes through a
+non-generic-return entry point, not through `Std.File.readBytes`.** The kernel
+primitive `Std.FileHost.hostReadAllBytes(path): slice[Byte]`
+(`@externTarget("System.IO.File.ReadAllBytes")`,
+`lyric-stdlib/std/_kernel/file_host.l:53`) already exists and panics on I/O
+error per the kernel's established no-`Result`-across-FFI convention. Phase 1
+exposes a thin `pub func readBytesOrPanic(path): slice[Byte]` on `Std.File`
+over it (keeping `_kernel` private to `Std.File` per the kernel-boundary rule;
+shipped in `file.l`), and the reader imports that.
 
-The only open placement decision is whether `_kernel/file_host.l` (today
-imported only by `Std.File`) may be imported by `Msil.MetadataReader`, or
-whether to expose a thin non-`_kernel` byte-read accessor for compiler-internal
-callers. Recommended: add a small `pub func readBytesOrPanic(path): slice[Byte]`
-to `Std.File` that calls `hostReadAllBytes` directly (keeping `_kernel` private
-to `Std.File` per the kernel-boundary rule), and have the reader import that.
-This unblocks Phase 1 immediately and does not wait on #1471 (the `readBytes`
-generic-return fix remains worth doing independently for stdlib consumers).
+**Caveat (honest status).** This avoids the generic-`Result` shape, but it does
+**not** by itself prove the self-hosted *runtime* resolves the cross-package
+call: a standalone consumer built with `bin/lyric` and run against the prebuilt
+stdlib DLLs still raised `MissingMethodException` for both `readBytes` (generic)
+and `readBytesOrPanic` (array `Byte[]`) — in the latter case at least partly
+because the per-package `Lyric.Stdlib.File.dll` next to the AOT binary was stale
+(predated the new method), but the original `readBytes` failure (the method was
+present in the shipped bundle) indicates a genuine #1471-family cross-package
+resolution gap for non-primitive return shapes. **Phase 1 is therefore gated on
+the bootstrap-emitter self-test** (`lyric-stdlib/tests/metadata_reader_tests.l`,
+auto-discovered by `StdlibLyricTests.fs`), which compiles and runs the reader
+end-to-end against a real PE and passes. The self-hosted *runtime* path
+(needed when the reader is wired into codegen at Phase 3) must have the
+#1471-family cross-package resolution green first; when wired, the reader runs
+*inside* the compiler bundle where in-bundle cross-package token resolution
+(#1470 Band 4) applies, which is a different resolution path than the
+standalone-consumer probe. Tracking this dependency explicitly is the Phase 3
+entry criterion.
 
 ---
 
@@ -302,15 +312,20 @@ Each phase is independently shippable and testable via the
 byte arrays** for the parser layers so tests don't depend on the `readBytes`
 runtime gap.
 
-- **Phase 1 — byte-read foundation + PE/metadata-root reader.**
-  Reading bytes is already unblocked: `Std.FileHost.hostReadAllBytes(path):
-  slice[Byte]` exists (`file_host.l:53`, non-generic return, panics on I/O
-  error). Add a thin `pub func readBytesOrPanic(path): slice[Byte]` to
-  `Std.File` over it (keeping `_kernel` private to `Std.File`) and have the
-  reader import that — independent of the #1471 `readBytes` generic-return fix.
-  Implement layers 1–2 (PE container + metadata root/stream/`#~` header).
-  Self-test against a hand-built minimal metadata blob and against a real ref
-  DLL's bytes. *No emitter behaviour change yet.*
+- **Phase 1 — byte-read foundation + PE/metadata-root reader. _(SHIPPED.)_**
+  `Std.File.readBytesOrPanic(path): slice[Byte]` added over the existing
+  `hostReadAllBytes` kernel extern. `Msil.MetadataReader`
+  (`lyric-compiler/msil/metadata_reader.l`) implements layers 1–2: the PE
+  container (DOS/PE/COFF/optional header PE32+PE32+, section table,
+  `rvaToOffset`, CLI header) → metadata root (`BSJB`, version string, stream
+  headers, `findStream`) → the `#~`/`#-` table-stream header (heap-index
+  widths, the valid bitvector read byte-wise, per-table row counts,
+  `rowCountOf`). Self-tested by `lyric-stdlib/tests/metadata_reader_tests.l`,
+  which parses the running test PE itself (a real assembly emitted by the
+  compiler's own writer — a reader-vs-writer oracle needing no version-specific
+  ref-pack path) and asserts the container, RVA mapping, stream set, and
+  Module/TypeDef/MethodDef row counts. Compiles cleanly through both the
+  bootstrap and self-hosted emitters. *No emitter behaviour change yet.*
 - **Phase 2 — heaps + table rows + signature decoder.** Layers 3–5. Self-test
   the signature decoder as the exact inverse of `bufMsilType` over a generated
   corpus of `MsilType`s (encode → decode round-trip).
@@ -347,12 +362,12 @@ User-visible, production-quality (no placeholder dumps):
 
 ## §7  Open questions
 
-- **Q-MD-001** — _Resolved in this draft:_ the byte-read primitive
-  `hostReadAllBytes` already exists; Phase 1 adds a thin `Std.File.readBytesOrPanic`
-  over it rather than waiting on the #1471 `readBytes` generic-return fix (§2,
-  §5). Remaining sub-question: confirm `readBytesOrPanic` is the right public
-  surface vs. letting `Msil.MetadataReader` import `_kernel/file_host.l`
-  directly (the kernel-boundary rule favours the wrapper)._
+- **Q-MD-001** — _Resolved + shipped (Phase 1):_ `Std.File.readBytesOrPanic`
+  (non-generic `slice[Byte]`) wraps the existing `hostReadAllBytes`, keeping
+  `_kernel` private to `Std.File`. Remaining: the self-hosted *runtime*
+  cross-package resolution of this call (#1471 family) must be green before the
+  Phase 3 codegen wiring — see the §2 caveat. Until then the reader is gated on
+  the bootstrap-emitter self-test.
 - **Q-MD-002** — Ref-pack version/TFM selection when multiple packs are
   installed: pin to the SDK `global.json` runtime, or the
   highest-compatible? _Leaning: pin to the pinned runtime to match what the

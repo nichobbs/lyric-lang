@@ -182,6 +182,26 @@ pub func readBytes(path: in String): Result[List[Byte], IOError] {
   }
 }
 
+/// Read the entire contents of `path` as a `slice[Byte]`, panicking on an
+/// empty path or any host failure (missing file, permission denied) instead
+/// of returning a `Result`.
+///
+/// Use this when a read failure is a programmer error or an unrecoverable
+/// precondition violation — the caller has already established the file
+/// exists and is readable, so a recoverable `Result.Err` would only be
+/// unwrapped-or-panicked at the call site anyway.  Returning the raw
+/// `slice[Byte]` (rather than wrapping it) keeps the value in the
+/// fixed-size buffer form callers parse directly.  When a missing or
+/// unreadable file is an expected, recoverable outcome, use `readBytes`,
+/// which reports failures as `Result.Err(IOError)`.
+@stable(since="1.0")
+pub func readBytesOrPanic(path: in String): slice[Byte] {
+  if path.length == 0 {
+    panic("Std.File.readBytesOrPanic: path must not be empty")
+  }
+  hostReadAllBytes(path)
+}
+
 /// Write raw bytes to `path` (creating or replacing).
 ///
 /// Returns `Ok(())` on success, `Err(InvalidPath)` for empty paths,

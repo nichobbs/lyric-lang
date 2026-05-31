@@ -17359,6 +17359,7 @@ no following item to attach to.  All converted to `//!` (module/inner
 docs), the correct sigil for a file-header doc block.  The change is
 purely the comment prefix; no code or behaviour changes.  Post-fix audit
 is clean — no `.l` file opens with `///` before `package`.
+
 ### D-progress-340 — MethodSpec metadata table + first open-generic BCL call (#1497)
 
 **Status:** Shipped.  The self-hosted MSIL emitter can now emit MethodSpec
@@ -17507,3 +17508,49 @@ restoring auto-FFI parity with the F# emitter on the self-hosted path.
 in-process `mkBridge` harness surfaces as a `TargetInvocationException` rather
 than a `false` return (same limitation as the H8 / F0002 diagnostics), so it is
 validated via the CLI build rather than an in-harness negative test.
+
+### D-progress-344 — pure-Lyric CLI-metadata reader, Phase 1 (epic #1622)
+
+**Status:** Shipped (Phase 1 of epic #1622; design in
+`docs/42-extern-metadata-resolution.md`).
+
+Epic #1622 (Band 4 of #1470) replaces the self-hosted MSIL emitter's
+hardcoded `clrAssemblyForType` table and the auto-FFI `(object…) : void`
+guess with metadata-derived extern resolution.  The chosen mechanism is a
+**pure-Lyric CLI-metadata reader** that parses reference-assembly bytes
+directly — inverting the emitter's own metadata *writer*
+(`pe.l`/`tables.l`/`heaps.l`) — rather than `System.Reflection.Metadata`
+(struct-heavy; Lyric `extern type` is class-only) or
+`System.Reflection.MetadataLoadContext` (absent/NuGet-only).  This sidesteps
+the D-progress-268 `Type.GetType`-null blocker by construction (no runtime
+type loading; pure byte reading).
+
+**What shipped (Phase 1 — layers 1–2):**
+
+- **`lyric-compiler/msil/metadata_reader.l`** (`Msil.MetadataReader`).
+  Little-endian byte readers that widen `Byte`→`Int` via the established
+  mixed-arithmetic idiom (`Std.Encoding`-style, no bitwise ops so the
+  bootstrap emitter compiles it).  `readPe(bytes)` parses the DOS stub,
+  PE signature, COFF header, PE32/PE32+ optional header, the section table,
+  data directory 14 (CLI header), and resolves the metadata-root file offset
+  via `rvaToOffset`.  `readMetadataRoot(img)` parses the `BSJB` root, the
+  version string, and the stream headers (`findStream` by name).
+  `readTablesHeader(img, root)` parses the `#~`/`#-` table-stream header:
+  heap-index widths, the 64-bit valid bitvector (read byte-wise to avoid
+  Int overflow), and the per-table row counts (`rowCountOf` by ECMA table id).
+  Returns `Result[_, String]` with production-quality error messages.
+- **`Std.File.readBytesOrPanic(path): slice[Byte]`** — thin non-generic-return
+  accessor over the existing `hostReadAllBytes` kernel extern, keeping
+  `_kernel` private to `Std.File`.  The reader's byte-read foundation.
+- **`lyric-stdlib/tests/metadata_reader_tests.l`** — auto-discovered by
+  `StdlibLyricTests.fs`.  Parses the running test PE itself (a real assembly
+  emitted by the compiler's own writer — a reader-vs-writer oracle needing no
+  version-specific reference-pack path) and asserts the PE container, RVA
+  mapping, the stream set (`#~`, `#Strings` present; bogus name absent), and
+  the Module(=1)/TypeDef/MethodDef row counts.
+
+Compiles cleanly through both the bootstrap F# emitter (the self-test gate,
+passing) and the self-hosted emitter (`lyric build`).  No emitter behaviour
+change yet — wiring the reader into the auto-FFI and `@externTarget` paths is
+Phase 3+.  Self-hosted *runtime* cross-package resolution of the byte-read
+call (#1471 family) is the Phase 3 entry criterion (see `docs/42` §2 caveat).
