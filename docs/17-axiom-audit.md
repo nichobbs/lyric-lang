@@ -825,7 +825,7 @@ recorded in the §19 baseline.
 
 ### Combined total
 
-25 + 22 = **47** stable + **2** provisional = **49** `@axiom`
+24 + 22 = **46** stable + **2** provisional = **48** `@axiom`
 annotations covering the entire extern boundary across both
 targets.
 
