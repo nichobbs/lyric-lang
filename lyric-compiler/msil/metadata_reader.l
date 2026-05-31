@@ -1006,3 +1006,166 @@ pub func buildTypeIndex(asmPaths: in List[String]): Map[String, String] {
 pub func assemblyForType(index: in Map[String, String], typeFqn: in String): Option[String] {
   mapGet(index, typeFqn)
 }
+
+// ── Phase 3b: overload resolution ────────────────────────────────────────────
+//
+// Given a CLR type, a method name, and the call's argument types, select the
+// best-matching MethodDef overload from metadata.  Argument and parameter
+// types are compared in `SigType` space (the caller maps its lowered argument
+// types to `SigType`s); the scoring replicates the bootstrap emitter's
+// coercion rules: an exact match beats a widening numeric conversion
+// (`Int`→`Long`, etc.), and an `object` parameter accepts any argument.
+
+// A resolved method: its calling shape and decoded signature.
+pub record ResolvedMethod {
+  name:       String
+  isStatic:   Bool
+  isVirtual:  Bool
+  returnType: SigType
+  paramTypes: List[SigType]
+}
+
+// Widening rank for the numeric primitive element types (-1 for non-numeric).
+// A narrower type implicitly converts to a wider one: I1<U1<I2<U2<Char<I4<U4
+// <I8<U8<R4<R8 (unsigned ranked alongside their signed width).
+func numericRank(elemByte: in Int): Int {
+  if elemByte == 0x04 { 1 }       // I1
+  else if elemByte == 0x05 { 1 }  // U1
+  else if elemByte == 0x06 { 2 }  // I2
+  else if elemByte == 0x07 { 2 }  // U2
+  else if elemByte == 0x03 { 3 }  // CHAR
+  else if elemByte == 0x08 { 4 }  // I4
+  else if elemByte == 0x09 { 4 }  // U4
+  else if elemByte == 0x0A { 5 }  // I8
+  else if elemByte == 0x0B { 5 }  // U8
+  else if elemByte == 0x0C { 6 }  // R4
+  else if elemByte == 0x0D { 7 }  // R8
+  else { -1 }
+}
+
+// Score one argument against one parameter: 2 = exact, 1 = widening / boxes to
+// object, -1 = incompatible.
+pub func scoreSigType(arg: in SigType, param: in SigType): Int {
+  match param {
+    case STPrim(pb) -> match arg {
+      case STPrim(ab) -> {
+        if ab == pb { 2 }
+        else if pb == 0x1C { 1 }                       // object accepts anything
+        else {
+          val ra = numericRank(ab)
+          val rp = numericRank(pb)
+          if ra >= 0 and rp >= 0 and ra <= rp { 1 } else { -1 }
+        }
+      }
+      case _ -> if pb == 0x1C { 1 } else { -1 }          // object accepts references
+    }
+    case STClass(pt) -> match arg {
+      case STClass(at) -> if at == pt { 2 } else { -1 }
+      case _ -> -1
+    }
+    case STValueType(pt) -> match arg {
+      case STValueType(at) -> if at == pt { 2 } else { -1 }
+      case _ -> -1
+    }
+    case STSzArray(pe) -> match arg {
+      case STSzArray(ae) -> scoreSigType(ae, pe)
+      case _ -> -1
+    }
+    case _ -> -1
+  }
+}
+
+// Score a whole candidate against the argument list: the sum of per-parameter
+// scores, or -1 on arity mismatch or any incompatible parameter.
+pub func scoreOverload(argTypes: in List[SigType], sig: in DecodedMethodSig): Int {
+  if sig.paramTypes.count != argTypes.count { return -1 }
+  var total = 0
+  var i = 0
+  while i < argTypes.count {
+    val s = scoreSigType(argTypes[i], sig.paramTypes[i])
+    if s < 0 { return -1 }
+    total = total + s
+    i = i + 1
+  }
+  total
+}
+
+// Find the TypeDef row (1-based) whose fully-qualified name is `typeFqn`, or
+// -1 when absent.
+pub func findTypeDefByFqn(img: in PeImage, layout: in TableLayout, th: in TablesHeader,
+                          typeFqn: in String): Int {
+  val n = rowCountOf(th, 0x02)
+  var i = 1
+  while i <= n {
+    val td = readTypeDef(img, layout, i)
+    val fqn = if td.namespaceName.length > 0 {
+      td.namespaceName + "." + td.name
+    } else { td.name }
+    if fqn == typeFqn { return i }
+    i = i + 1
+  }
+  -1
+}
+
+// MethodAttributes: Static = 0x0010, Virtual = 0x0040.
+func methodIsStatic(flags: in Int): Bool { (flags / 16) % 2 == 1 }
+func methodIsVirtual(flags: in Int): Bool { (flags / 64) % 2 == 1 }
+
+// Resolve the best-matching overload of `member` on `typeFqn` for `argTypes`,
+// reading from already-parsed metadata.  Returns None when the type is absent
+// or no overload is compatible.
+pub func resolveOverloadIn(img: in PeImage, layout: in TableLayout, th: in TablesHeader,
+                           typeFqn: in String, member: in String,
+                           argTypes: in List[SigType]): Option[ResolvedMethod] {
+  val typeRow = findTypeDefByFqn(img, layout, th, typeFqn)
+  if typeRow < 0 { return None }
+  val mr = methodRange(img, layout, th, typeRow)
+  var best: Option[ResolvedMethod] = None
+  var bestScore = -1
+  var mi = mr.start
+  while mi <= mr.endRow {
+    val md = readMethodDef(img, layout, mi)
+    if md.name == member {
+      match decodeMethodSig(blobAt(img, layout, md.sigBlob)) {
+        case Err(_) -> {}
+        case Ok(sig) -> {
+          val score = scoreOverload(argTypes, sig)
+          if score >= 0 and score > bestScore {
+            bestScore = score
+            best = Some(value = ResolvedMethod(
+              name = md.name,
+              isStatic = not sig.hasThis,
+              isVirtual = methodIsVirtual(md.flags),
+              returnType = sig.returnType,
+              paramTypes = sig.paramTypes))
+          }
+        }
+      }
+    }
+    mi = mi + 1
+  }
+  best
+}
+
+// Resolve an overload by reading the assembly at `asmPath`.  A convenience
+// wrapper over `resolveOverloadIn`; callers compiling many references should
+// parse each assembly once and call `resolveOverloadIn` directly.
+pub func resolveOverload(asmPath: in String, typeFqn: in String, member: in String,
+                         argTypes: in List[SigType]): Option[ResolvedMethod] {
+  match File.readBytes(asmPath) {
+    case Err(_) -> None
+    case Ok(raw) -> match readPe(raw.toArray()) {
+      case Err(_) -> None
+      case Ok(img) -> match readMetadataRoot(img) {
+        case Err(_) -> None
+        case Ok(root) -> match readTablesHeader(img, root) {
+          case Err(_) -> None
+          case Ok(th) -> match computeLayout(img, root, th) {
+            case Err(_) -> None
+            case Ok(layout) -> resolveOverloadIn(img, layout, th, typeFqn, member, argTypes)
+          }
+        }
+      }
+    }
+  }
+}
