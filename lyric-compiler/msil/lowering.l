@@ -2061,23 +2061,19 @@ pub func lowerMFuncsToHostClass(hostClass: in String, funcs: in List[MFunc],
   val bh = ctx.blobs
   val t  = ctx.tables
 
-  // Split the dotted package name (`hostClass = "Lyric.Pkg.Greeter"`)
-  // into (namespace="Lyric.Pkg", simpleName="Greeter") so the emitted
-  // TypeDef matches the `(namespace, typeName)` shape that
-  // cross-assembly TypeRefs (built by `splitPackageName` on the
-  // consumer side via `ensureHostClassTypeRefRow`) bind against.
-  // The free-function host class is named `<package>.Program` — the
-  // *full* package path is the CLR namespace and `Program` is the type
-  // name.  This matches the F# emitter's convention
+  // The free-function host class is named `<package>.Program`: the
+  // *full* package path (e.g. `Lyric.Pkg.Greeter`) is the CLR namespace
+  // and `Program` is the type name.  Cross-assembly consumers reach it
+  // through `ensureHostClassTypeRefRow`, which builds a TypeRef from the
+  // same `(packageName, "Program")` pair — producer and consumer must
+  // agree on this convention or the CLR throws "Could not load type" at
+  // runtime.  This also matches the F# emitter's convention
   // (`Emitter.fs`: `nsName + ".Program"`), which is critical because the
   // stage-1 stdlib DLLs (`Lyric.Stdlib.*.dll`) are F#-built: a
-  // self-hosted-built consumer calling `Std.Testing.assertEqual` emits a
-  // cross-assembly TypeRef via `ensureHostClassTypeRefRow`, and that
-  // TypeRef must name the *same* `(namespace, type)` pair the producer
-  // emitted or the CLR throws "Could not load type 'Std.Testing'" at
-  // runtime.  Self-hosted-built DLLs (restored deps, test bundles) now
-  // use the same `<pkg>.Program` shape so both producers agree.
-  // Single-segment packages (no dot) yield (namespace="<pkg>", name="Program").
+  // self-hosted-built consumer calling `Std.Testing.assertEqual` emits
+  // its TypeRef into the same `(namespace, type)` slot the F# producer
+  // emitted.  Single-segment packages (no dot) yield
+  // (namespace="<pkg>", name="Program") unchanged.
   val sName    = internString(sh, "Program")
   val sNs      = internString(sh, hostClass)
   val firstField  = t.fields.count + 1

@@ -259,9 +259,8 @@ func appendLyricFiles(
     case Ok(fs)  -> fs
     case Err(_)  -> newList()
   }
-  // Filter (`.l` + JVM-kernel skip) then sort by basename.  Insertion
-  // sort because the input is small (a few dozen files) and pulls in
-  // no extra dependencies.
+  // Filter (`.l` + JVM-kernel skip) then sort by basename.  See
+  // `sortPathsByBasename` below for the sort algorithm and rationale.
   val keep: List[String] = newList()
   var fi = 0
   while fi < files.count {
@@ -441,6 +440,14 @@ func loadCompilerPayloads(compilerDir: in String): List[ProjectPackagePayload] {
   }
 
   // Lyric.Parser — five files in deterministic (alphabetical) order.
+  // MAINTENANCE NOTE: this list must be kept in sync with `parser/*.l`.
+  // A new parser source file added without being appended here will be
+  // silently absent from the `LYRIC_LOAD_COMPILER=1` payload — the
+  // `compilerPayloads.count > 0` guard still passes because Lexer
+  // loads, and consumers fail downstream with confusing missing-symbol
+  // diagnostics rather than a clear "incomplete parser" message.
+  // Tracked in #1432; revisit when `Std.FileSystem.listDirectory` is
+  // available to enumerate `parser/*.l` directly.
   val parserDir = Path.join(compilerDir, "parser")
   val parserNames: List[String] = newList()
   parserNames.add("parser_ast.l")

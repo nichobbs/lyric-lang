@@ -75,6 +75,20 @@ test "Int bitwise ops compose" {
   assertEqualInt(8.or(4).xor(12), 0, "(8 | 4) ^ 12")
 }
 
+test "Int bitwise ops on negative operands" {
+  // Bind `-1` to a local so the method call binds to the negated value
+  // rather than parsing as `-(1.and(...))`.  Negative operands exercise
+  // the two's-complement / sign-bit paths that the all-positive cases
+  // above do not.
+  val negOne: Int = -1
+  // (-1) & 255 = 255 — masking strips the upper sign bits.
+  assertEqualInt(negOne.and(255), 255, "-1 & 255")
+  // (-1) | 0 = -1 — all-ones input dominates.
+  assertEqualInt(negOne.or(0), -1, "-1 | 0")
+  // (-1) ^ (-1) = 0 — same value cancels.
+  assertEqualInt(negOne.xor(negOne), 0, "-1 ^ -1")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Int — shifts (shl logical, shr arithmetic / sign-replicating)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -116,6 +130,8 @@ test "Long.and / .or / .xor" {
 
 test "Long.shl reaches beyond 32 bits" {
   val one: Long = 1i64
+  // 1L << 0 is a no-op, mirroring the Int.shl(0) zero-shift case.
+  assertTrue(one.shl(0) == 1i64, "1L << 0 (no-op)")
   // 1L << 40 = 1_099_511_627_776 — overflows Int32, proving 64-bit width.
   assertTrue(one.shl(40) == 1099511627776i64, "1L << 40")
 }

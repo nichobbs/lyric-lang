@@ -121,11 +121,8 @@ func firstRecordFieldIsMutable(pr: in ParseResult): Bool {
   }
 }
 
-// Regression for #1473: `var`-prefixed mutable record fields (language
-// reference §3.4) must parse.  The self-hosted parser previously rejected
-// them with P0103/P0120/P0050 because `parseFieldDecl` did not consume the
-// `var` marker, which broke every `lyric test --manifest` build whose library
-// package declared a mutable record field (e.g. lyric-session).
+// `var`-prefixed mutable record fields (language reference §3.4) must
+// parse without diagnostics.
 func testMutableRecordField(): Unit {
   val pr = parse("package P\nrecord Counter {\n  var count: Int\n  step: Int\n}\n")
   assertEqualInt(diagCount(pr), 0, "var-field: no diagnostics")

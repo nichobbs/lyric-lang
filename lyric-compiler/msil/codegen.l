@@ -2086,14 +2086,18 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
     }
 
     // ── Unsupported forms ──────────────────────────────────────────────────────
+    // Quantifier and old-state expressions are proof-only — the contract
+    // elaborator either discharges them through the verifier or removes
+    // them before codegen.  Reaching here means a `@runtime_checked`
+    // contract leaked one into an executable position; report and abort.
     case EForall(_, _, _) -> {
-      panic("Msil.Codegen: EForall not supported in bootstrap — use --target dotnet-legacy")
+      panic("Msil.Codegen: EForall is proof-only and cannot be lowered to MSIL")
     }
     case EExists(_, _, _) -> {
-      panic("Msil.Codegen: EExists not supported in bootstrap — use --target dotnet-legacy")
+      panic("Msil.Codegen: EExists is proof-only and cannot be lowered to MSIL")
     }
     case EOld(_) -> {
-      panic("Msil.Codegen: EOld not supported in bootstrap — use --target dotnet-legacy")
+      panic("Msil.Codegen: EOld is proof-only and cannot be lowered to MSIL")
     }
     case ESelf -> {
       insns.add(MLdarg(slot = 0))
@@ -4082,8 +4086,6 @@ func lowerMethodCallMsil(
     MString
   } else if (memberName == "and" or memberName == "or" or memberName == "xor"
              or memberName == "shl" or memberName == "shr") and args.count == 1 {
-    // Bitwise integer methods (#1610).  The receiver is already on the
-    // stack (recvTy); push the single operand, then emit the opcode.
     // For `shl`/`shr` the operand is the Int shift count.  `shr` is an
     // arithmetic shift (MShr) — Lyric's Int/Long/Byte are signed and the
     // MSIL backend has no unsigned integer type yet, so logical shift
@@ -4911,19 +4913,28 @@ func buildFuncNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
 //   * Static method with primitive / String parameter and return types.
 //   * Instance method (receiver = Lyric arg 0) with primitive/string args.
 //   * Constructor (..ctor) with primitive/string args.
+//   * Extern class types as parameters and return values, lowered via
+//     `resolveFfiClassTypeRef` into TypeRef-typed signature blobs
+//     (#1504 part 1).
 //
-// Deferred: extern types as parameters (need TypeRef-typed signatures),
-// generic types, with-defaults trailing arguments, property getters,
-// static field reads.  Programs depending on those forms still need
-// `--target dotnet-legacy` (F# bootstrap emitter).
+// Deferred: generic types, with-defaults trailing arguments, property
+// getters, static field reads.  Programs depending on those forms have
+// no in-bundle path yet.
 // Resolve an `MClass` FQN to a TypeRef row for use in an FFI method
 // signature blob (#1504 part 1).  `className` is the FQN produced by
 // `resolveTypeFqn` — either a declared Lyric extern type (mapped to its CLR
 // FQN via `cctx.externTypeNames`) or, when it is itself a `System.*` type, a
 // direct BCL reference.  Returns -1 for any class that is NOT an
-// FFI-resolvable cross-assembly type (in-bundle user records/unions, nested
-// `Outer+Inner` types) so the caller falls back to `ELEMENT_TYPE_OBJECT` and
-// preserves the prior behaviour rather than emitting a malformed TypeRef.
+// FFI-resolvable cross-assembly type — the caller falls back to
+// `ELEMENT_TYPE_OBJECT` and preserves the prior behaviour rather than
+// emitting a malformed TypeRef.  The -1 cases are:
+//   - in-bundle user records/unions (no extern boundary at all)
+//   - nested `Outer+Inner` types (different ResolutionScope encoding)
+//   - external non-`System.*` class types that the user forgot to declare
+//     via `extern type` — H8 (unresolved-extern-type hard diagnostic) from
+//     the remaining #1504 parts is the long-term fix; the silent
+//     `ELEMENT_TYPE_OBJECT` fallback here leaves runtime as the
+//     diagnosis surface until that lands.
 func resolveFfiClassTypeRef(cctx: in CodegenCtx, className: in String): Int {
   val simple = splitTypeFqn(className).name
   val clrFqn =
@@ -4994,7 +5005,7 @@ func emitExternTargetBody(
 
   // F0002 (also emitted by the type checker for proof/lint paths,
   // but Msil.Bridge skips type checking — panic here so the user
-  // build sees the diagnostic, #790).
+  // build sees the diagnostic).
   if hasConflictingHints(decl.annotations) {
     panic("Msil.Codegen: function '" + decl.name + "' has both "
       + "@externStatic and @externInstance — pick one (the FFI "
@@ -5053,11 +5064,11 @@ func emitExternTargetBody(
       // `buildFfiMethodSigCtx`, so the runtime-throw bail that previously
       // fired for class-typed FFI signatures is gone.
 
-      // #1504 H8: an extern type the FFI cascade can't resolve to a known
-      // reference assembly used to silently bind to `System.Runtime`, then
-      // fail at runtime with an opaque `TypeLoadException`.  Fail the build
-      // with a clear, type-specific diagnostic instead (matching the
-      // @externStatic/@externInstance conflict panic above, #790).
+      // An extern type the FFI cascade can't resolve to a known reference
+      // assembly used to silently bind to `System.Runtime`, then fail at
+      // runtime with an opaque `TypeLoadException`.  Fail the build with a
+      // clear, type-specific diagnostic instead (matching the
+      // `@externStatic`/`@externInstance` conflict panic above).
       val resolvedFqn =
         if r.namespaceStr == "" { r.typeName }
         else { r.namespaceStr + "." + r.typeName }
@@ -6723,8 +6734,8 @@ func emitAutoFfiCallMsil(
   args:       in List[CallArg],
   clrFqn:     in String
 ): MsilType {
-  // #1504 H8: reject an extern-type CLR name the FFI cascade can't resolve to
-  // a known reference assembly, rather than silently mis-binding it to
+  // Reject an extern-type CLR name the FFI cascade can't resolve to a
+  // known reference assembly, rather than silently mis-binding it to
   // `System.Runtime` (opaque runtime `TypeLoadException`).
   if not clrAssemblyResolvable(clrFqn) {
     panic("Msil.Codegen: auto-FFI call '" + methodName + "' on extern type '"

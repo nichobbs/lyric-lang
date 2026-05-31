@@ -49,22 +49,27 @@ jobs:
             exit 0
           fi
 
-          # `grep -v` returns exit 1 when nothing matches; with `pipefail`
-          # this surfaced as a pipeline failure for docs-only PRs (every
-          # changed file got filtered out), tripping the `|| changed="yes"`
-          # fallback and running the full build for docs that should have
-          # skipped it.  Drop pipefail here so the empty-match case is a
-          # clean exit-0 with empty stdin, leaving `changed` unset.
+          # Skip the full build when only documentation or repository
+          # metadata files changed.  The filter set is:
           #
-          # `.github/` is filtered out too: CI workflow / Actions metadata
-          # tweaks are infra and don't need to re-run the full build to
-          # land (the workflow changes take effect on the next push,
-          # whether or not this push exercises them).
+          # * `book/`, `docs/`, `*.md` — narrative docs.
+          # * `.github/CODEOWNERS`, `.github/PULL_REQUEST_TEMPLATE*`,
+          #   `.github/ISSUE_TEMPLATE/` — repository metadata that
+          #   doesn't affect what CI does.  `ci.yml` itself and any
+          #   shell scripts under `.github/` stay *inside* the build
+          #   set so that misconfigurations are caught on the same PR
+          #   they land in, not the next unrelated push.
+          #
+          # `pipefail` stays on so a `git diff` failure propagates and
+          # the outer `|| changed="yes"` fires the safe fallback.  A
+          # single combined `grep -vE` keeps the pipeline short so the
+          # `|| true` wrapper only has to absorb one benign exit-1
+          # (every line filtered out on a docs-only PR); `head -1`
+          # then sees empty stdin and `changed` ends up empty,
+          # correctly signalling "skip".
+          set -o pipefail
           changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null \
-            | grep -v '^book/' \
-            | grep -v '^docs/' \
-            | grep -v '^\.github/' \
-            | grep -v '\.md$' \
+            | { grep -vE '^(book/|docs/|\.github/(CODEOWNERS|PULL_REQUEST_TEMPLATE|ISSUE_TEMPLATE/))|\.md$' || true; } \
             | head -1) || changed="yes"
 
           if [ -n "$changed" ]; then

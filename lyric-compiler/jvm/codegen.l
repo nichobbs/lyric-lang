@@ -2122,8 +2122,6 @@ func lowerMethodCall(
   args:       in List[CallArg]
 ): JvmType {
   val recvTy = lowerExpr(ctx, insns, recv)
-  // Bitwise integer methods (#1610).  The receiver and the single operand
-  // are pushed, then the type-appropriate JVM bitwise opcode is emitted.
   // `shr` is arithmetic (ISHR/LSHR — sign-replicating); Lyric's Int/Long/
   // Byte are signed and the JVM backend has no unsigned integer type, so the
   // logical-shift opcodes (IUSHR/LUSHR) are not reachable here.  Byte uses
