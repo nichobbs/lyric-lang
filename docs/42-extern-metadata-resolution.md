@@ -344,10 +344,28 @@ runtime gap.
   the emitter's `buildStaticMethodSig`/`buildInstanceMethodSig` + `bufMsilType`
   (hand-built blobs → expected `SigType`) and as a running-PE oracle (every
   MethodDefSig in the test assembly decodes; `main` → static, parameterless).
-- **Phase 3 — assembly discovery + overload resolution; wire auto-FFI.**
-  Layer 6 + `refPackDir()` + the type→assembly index. Replace
-  `emitAutoFfiCallMsil`'s stub; **retire #1504 H9**. Parity target: the F#
-  emitter's `AutoFfiTests.fs` cases pass on the self-hosted path.
+- **Phase 3a — reference-assembly discovery + type→assembly index. _(SHIPPED.)_**
+  `refPackDir()` locates `<root>/packs/Microsoft.NETCore.App.Ref/<ver>/ref/<tfm>/`
+  (probing `DOTNET_ROOT`, `$HOME/.dotnet`, and the system install roots);
+  `enumRefAssemblies` lists the ref DLLs; `buildTypeIndex` reads each
+  assembly's TypeDef table and maps every public type's FQN to its assembly's
+  simple name; `assemblyForType` looks one up. In the .NET ref pack the BCL
+  types are real TypeDefs in their facade assembly (`System.Math` →
+  `System.Runtime`, `System.Console` → `System.Console`; verified empirically),
+  so a TypeDef-derived index needs no ExportedType/type-forward chasing.
+  Self-tested hermetically (the running test DLL's own `Program` type) and
+  against the real ref pack (`System.Object`/`System.Math` → `System.Runtime`).
+- **Phase 3b — overload resolution.** `decodeMethodSig` over each candidate
+  MethodDef of a type/name, scored against the call's argument `MsilType`s
+  (exact match > numeric widening, e.g. `Int`→`Long`), replicating the F#
+  emitter's coercion rules (`AutoFfiTests.fs`).
+- **Phase 3c — wire `resolveExtern` into the emitter.** Compose discovery +
+  resolution into `resolveExtern(ctx, typeFqn, member, argTypes)`; replace
+  `emitAutoFfiCallMsil`'s `(object…) : void` stub and check `@externTarget`
+  declared signatures against metadata; **retire #1504 H9**. Gated on the
+  #1471-family self-hosted runtime cross-package resolution (§2 caveat), since
+  discovery calls `Std.File.listFiles`/`listDirs` (generic `Result` returns)
+  and `readBytesOrPanic` at compile time inside the compiler bundle.
 - **Phase 4 — `@externTarget` verification + `clrAssemblyForType` removal +
   generics.** Make the declared signature a metadata *check* (new diagnostic);
   delete the hardcoded prefix table; route generic externs through MethodSpec;

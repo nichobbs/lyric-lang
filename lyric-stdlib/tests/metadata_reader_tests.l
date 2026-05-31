@@ -297,6 +297,51 @@ func testSigDecodeOnSelf(): Unit {
   assertTrue(checkedMain, "sigself: decoded the `main` signature")
 }
 
+// Phase 3a (hermetic): a type→assembly index built over the running test DLL
+// resolves this package's own `Program` type back to the test assembly.
+func testTypeIndexSelf(): Unit {
+  val dll = Path.join(Environment.appBaseDirectory(), "metadata_reader_tests.dll")
+  val paths: List[String] = newList()
+  paths.add(dll)
+  val idx = buildTypeIndex(paths)
+  match assemblyForType(idx, "Msil.MetadataReader.Tests.Program") {
+    case None    -> panic("index: own Program type not found")
+    case Some(a) -> assertEqual(a, "metadata_reader_tests", "index: Program → test assembly")
+  }
+  match assemblyForType(idx, "No.Such.Type") {
+    case Some(_) -> panic("index: bogus type should be absent")
+    case None    -> ()
+  }
+}
+
+// Phase 3a: the reference-assembly pack is discoverable, and a type→assembly
+// index over System.Runtime.dll resolves a known BCL type.  (The .NET ref pack
+// is present wherever the toolchain builds against net10.0, so discovery is
+// expected to succeed in any build environment.)
+func testRefPackDiscovery(): Unit {
+  match refPackDir() {
+    case None -> panic("discovery: reference-assembly pack not found")
+    case Some(dir) -> {
+      assertTrue(File.dirExists(dir), "discovery: ref dir exists")
+      val asms = enumRefAssemblies(dir)
+      assertTrue(asms.count > 0, "discovery: ref pack has assemblies")
+      val rt = Path.join(dir, "System.Runtime.dll")
+      assertTrue(File.fileExists(rt), "discovery: System.Runtime.dll present")
+      val one: List[String] = newList()
+      one.add(rt)
+      val idx = buildTypeIndex(one)
+      match assemblyForType(idx, "System.Object") {
+        case None    -> panic("discovery: System.Object not indexed")
+        case Some(a) -> assertEqual(a, "System.Runtime", "discovery: System.Object → System.Runtime")
+      }
+      match assemblyForType(idx, "System.Math") {
+        case None    -> panic("discovery: System.Math not indexed")
+        case Some(a) -> assertEqual(a, "System.Runtime", "discovery: System.Math → System.Runtime")
+      }
+    }
+  }
+}
+
 // ── Driver ───────────────────────────────────────────────────────────────────
 
 func main(): Int {
@@ -309,6 +354,8 @@ func main(): Int {
   testMethodSigBlobs()
   testSigDecodeRoundTrip()
   testSigDecodeOnSelf()
+  testTypeIndexSelf()
+  testRefPackDiscovery()
   println("metadata-reader self-test: ok")
   return 0
 }

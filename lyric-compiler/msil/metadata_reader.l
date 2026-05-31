@@ -9,13 +9,14 @@
 // way needs no runtime type loading — it is pure byte reading, so it is
 // independent of whether the emitting assembly's types can be reflected over.
 //
-// This module currently covers layers 1–5: the PE container (DOS/PE/COFF/
-// optional header, sections, RVA→file-offset, CLI header), the metadata root
-// (stream headers), the `#~` table-stream header (heap-size flags, the
-// valid-table bitvector, per-table row counts), the `#Strings`/`#Blob` heap
-// readers, the table layout + TypeDef/MethodDef/Param row readers (with
-// run-length method-list ownership), and the MethodDefSig signature-blob
-// decoder.  Assembly discovery and overload resolution build on top.
+// This module currently covers layers 1–5 plus reference-assembly discovery:
+// the PE container (DOS/PE/COFF/optional header, sections, RVA→file-offset,
+// CLI header), the metadata root (stream headers), the `#~` table-stream
+// header (heap-size flags, the valid-table bitvector, per-table row counts),
+// the `#Strings`/`#Blob` heap readers, the table layout + TypeDef/MethodDef/
+// Param row readers (with run-length method-list ownership), the MethodDefSig
+// signature-blob decoder, and a reference-pack discovery + type→assembly
+// index.  Overload resolution and the emitter wiring build on top.
 //
 // All multi-byte integers in the PE/metadata format are little-endian.  Byte
 // values are widened to `Int` via mixed Byte*Int arithmetic (the same idiom
@@ -35,6 +36,10 @@ import Std.Collections
 import Std.String as Str
 import Std.Char as Ch
 import Std.Encoding as Enc
+import Std.Environment as Environment
+import Std.File as File
+import Std.Path as Path
+import Std.Parse as Parse
 
 // ── Parsed shapes ────────────────────────────────────────────────────────────
 
@@ -807,4 +812,197 @@ pub func decodeMethodSig(blob: in slice[Byte]): Result[DecodedMethodSig, String]
     return Err(error = "metadata: empty method signature blob")
   }
   Ok(value = decodeMethodSigAt(blob, 0).sig)
+}
+
+// ── Phase 3a: reference-assembly discovery + type→assembly index ──────────────
+//
+// To resolve an extern method's MemberRef the emitter must know which assembly
+// hosts the CLR type.  Rather than a hardcoded prefix table, this derives the
+// mapping from the on-disk reference assemblies: each ref assembly's TypeDef
+// table is read and every public type's fully-qualified name is mapped to that
+// assembly's simple name.  In the .NET reference pack the BCL types are real
+// TypeDefs in their facade assembly (e.g. `System.Math` in `System.Runtime`,
+// `System.Console` in `System.Console`), so a TypeDef-derived index is
+// sufficient — no ExportedType/type-forward chasing is required.
+
+// Index of the last path separator (`/` or `\`), or -1 when there is none.
+func lastSepIndex(path: in String): Int {
+  val a = match Str.lastIndexOf(path, "/")  { case None -> -1  case Some(i) -> i }
+  val b = match Str.lastIndexOf(path, "\\") { case None -> -1  case Some(i) -> i }
+  if a > b { a } else { b }
+}
+
+// Strip a directory (either separator) + ".dll" extension to the assembly's
+// simple name.
+func assemblySimpleName(path: in String): String {
+  val cut = lastSepIndex(path)
+  val base = if cut < 0 { path } else { Str.substring(path, cut + 1, path.length - cut - 1) }
+  if Str.endsWith(base, ".dll") { Str.substring(base, 0, base.length - 4) } else { base }
+}
+
+// True when `s` is non-empty and all ASCII/Unicode digits.
+func isAllDigits(s: in String): Bool {
+  if s.length == 0 { return false }
+  var i = 0
+  while i < s.length {
+    if not Ch.isDigit(s[i]) { return false }
+    i = i + 1
+  }
+  true
+}
+
+// Natural-order "greater than": compare dot-separated components, numerically
+// when both are all-digits (so `10.0.10` > `10.0.9`, which a plain
+// lexicographic compare gets wrong), otherwise by code point.
+func dirVersionGreater(a: in String, b: in String): Bool {
+  val pa = Str.split(a, ".")
+  val pb = Str.split(b, ".")
+  var i = 0
+  while i < pa.length and i < pb.length {
+    val x = pa[i]
+    val y = pb[i]
+    if x != y {
+      if isAllDigits(x) and isAllDigits(y) {
+        return Parse.parseInt(x) > Parse.parseInt(y)
+      } else {
+        return x > y
+      }
+    }
+    i = i + 1
+  }
+  pa.length > pb.length
+}
+
+// Pick the highest-versioned immediate subdirectory of `dir` (used to select
+// the reference-pack version and target-framework folders, of which there is
+// normally exactly one).
+func pickHighestDir(dir: in String): Option[String] {
+  match File.listDirs(dir) {
+    case Err(_) -> None
+    case Ok(names) -> {
+      if names.count == 0 { return None }
+      var best = names[0]
+      var i = 1
+      while i < names.count {
+        if dirVersionGreater(names[i], best) { best = names[i] }
+        i = i + 1
+      }
+      Some(value = best)
+    }
+  }
+}
+
+// Candidate .NET install roots, in priority order.
+func candidateDotnetRoots(): List[String] {
+  val roots: List[String] = newList()
+  val dr = Environment.getVarOrDefault("DOTNET_ROOT", "")
+  if dr.length > 0 { roots.add(dr) }
+  val home = Environment.getVarOrDefault("HOME", "")
+  if home.length > 0 { roots.add(Path.join(home, ".dotnet")) }
+  roots.add("/usr/share/dotnet")
+  roots.add("/usr/lib/dotnet")
+  roots
+}
+
+// Locate the reference-assembly directory
+// (`<root>/packs/Microsoft.NETCore.App.Ref/<version>/ref/<tfm>/`).
+pub func refPackDir(): Option[String] {
+  val roots = candidateDotnetRoots()
+  var i = 0
+  while i < roots.count {
+    val packs = Path.join(roots[i], "packs/Microsoft.NETCore.App.Ref")
+    if File.dirExists(packs) {
+      match pickHighestDir(packs) {
+        case Some(ver) -> {
+          val refDir = Path.join(Path.join(packs, ver), "ref")
+          if File.dirExists(refDir) {
+            match pickHighestDir(refDir) {
+              case Some(tfm) -> return Some(value = Path.join(refDir, tfm))
+              case None -> {}
+            }
+          }
+        }
+        case None -> {}
+      }
+    }
+    i = i + 1
+  }
+  None
+}
+
+// Full paths of every `*.dll` reference assembly directly inside `refDir`.
+pub func enumRefAssemblies(refDir: in String): List[String] {
+  val acc: List[String] = newList()
+  match File.listFiles(refDir) {
+    case Err(_) -> acc
+    case Ok(names) -> {
+      var i = 0
+      while i < names.count {
+        if Str.endsWith(names[i], ".dll") { acc.add(Path.join(refDir, names[i])) }
+        i = i + 1
+      }
+      acc
+    }
+  }
+}
+
+// Add every public top-level TypeDef in the assembly at `asmPath` to `index`,
+// mapping the type's fully-qualified name to the assembly's simple name.  The
+// first assembly to claim a name wins (duplicates across facades are ignored).
+// Malformed or unreadable assemblies (read failure, bad PE/metadata) are
+// skipped silently — a single broken DLL must not abort building the index.
+pub func addAssemblyTypes(index: in Map[String, String], asmPath: in String): Unit {
+  match File.readBytes(asmPath) {
+    case Err(_) -> {}
+    case Ok(raw) -> match readPe(raw.toArray()) {
+      case Err(_) -> {}
+      case Ok(img) -> match readMetadataRoot(img) {
+        case Err(_) -> {}
+        case Ok(root) -> match readTablesHeader(img, root) {
+          case Err(_) -> {}
+          case Ok(th) -> match computeLayout(img, root, th) {
+            case Err(_) -> {}
+            case Ok(layout) -> {
+              val asmName = assemblySimpleName(asmPath)
+              val n = rowCountOf(th, 0x02)
+              var i = 1
+              while i <= n {
+                val td = readTypeDef(img, layout, i)
+                // Index only Public top-level types (TypeAttributes visibility
+                // mask 0x07 == Public); this excludes `<Module>`, nested, and
+                // non-public types, which are never extern-resolution targets.
+                if (td.flags % 8) == 1 {
+                  val fqn = if td.namespaceName.length > 0 {
+                    td.namespaceName + "." + td.name
+                  } else { td.name }
+                  match mapGet(index, fqn) {
+                    case Some(_) -> {}
+                    case None    -> index.add(fqn, asmName)
+                  }
+                }
+                i = i + 1
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// Build a type-FQN → assembly-simple-name index over the given assemblies.
+pub func buildTypeIndex(asmPaths: in List[String]): Map[String, String] {
+  val index: Map[String, String] = newMap()
+  var i = 0
+  while i < asmPaths.count {
+    addAssemblyTypes(index, asmPaths[i])
+    i = i + 1
+  }
+  index
+}
+
+// Resolve a CLR type's fully-qualified name to its owning assembly's simple
+// name, or None when no indexed assembly defines it.
+pub func assemblyForType(index: in Map[String, String], typeFqn: in String): Option[String] {
+  mapGet(index, typeFqn)
 }
