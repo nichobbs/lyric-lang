@@ -355,17 +355,29 @@ runtime gap.
   so a TypeDef-derived index needs no ExportedType/type-forward chasing.
   Self-tested hermetically (the running test DLL's own `Program` type) and
   against the real ref pack (`System.Object`/`System.Math` → `System.Runtime`).
-- **Phase 3b — overload resolution.** `decodeMethodSig` over each candidate
-  MethodDef of a type/name, scored against the call's argument `MsilType`s
-  (exact match > numeric widening, e.g. `Int`→`Long`), replicating the F#
-  emitter's coercion rules (`AutoFfiTests.fs`).
+- **Phase 3b — overload resolution. _(SHIPPED.)_** Resolution works in
+  `SigType` space (decoupled from `MsilType`; the caller maps its lowered
+  argument types to `SigType`s at the call boundary): `findTypeDefByFqn` locates
+  the type, `resolveOverloadIn` decodes each same-named MethodDef's signature
+  and scores it with `scoreOverload`/`scoreSigType` — exact match (2) beats a
+  widening numeric conversion (1, via a `numericRank` ladder, e.g. `Int`→`Long`),
+  an `object` parameter accepts any argument, and arity/type mismatches reject
+  (−1) — returning a `ResolvedMethod` (`isStatic`/`isVirtual` + decoded
+  return/param types). Self-tested hermetically (`addInts(Int, Int)` over the
+  running PE: exact, widening `I2`→`I4`, arity-mismatch and unknown-member/type
+  rejection) and against real BCL overloads (`System.Math.Max` binds the `int`
+  overload for `(Int, Int)` and the `long` overload for `(Long, Long)`).
 - **Phase 3c — wire `resolveExtern` into the emitter.** Compose discovery +
-  resolution into `resolveExtern(ctx, typeFqn, member, argTypes)`; replace
-  `emitAutoFfiCallMsil`'s `(object…) : void` stub and check `@externTarget`
-  declared signatures against metadata; **retire #1504 H9**. Gated on the
-  #1471-family self-hosted runtime cross-package resolution (§2 caveat), since
-  discovery calls `Std.File.listFiles`/`listDirs` (generic `Result` returns)
-  and `readBytesOrPanic` at compile time inside the compiler bundle.
+  resolution into `resolveExtern(ctx, typeFqn, member, argTypes)` (mapping
+  codegen's `MsilType` args → `SigType`); replace `emitAutoFfiCallMsil`'s
+  `(object…) : void` stub and check `@externTarget` declared signatures against
+  metadata; **retire #1504 H9**. Gated on the self-hosted cross-package
+  resolution (§2 caveat): discovery calls `Std.File.listFiles`/`listDirs`
+  (generic `Result` returns) at compile time, **and** the self-hosted
+  typechecker/codegen must resolve `Msil.MetadataReader`'s imported types
+  (`SigType`, `ResolvedMethod`) from `codegen.l` — today a consumer referencing
+  these cross-package types raises advisory `T0010`/`T0020`, which must be solid
+  before the emitter can depend on the reader's public types.
 - **Phase 4 — `@externTarget` verification + `clrAssemblyForType` removal +
   generics.** Make the declared signature a metadata *check* (new diagnostic);
   delete the hardcoded prefix table; route generic externs through MethodSpec;

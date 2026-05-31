@@ -35,6 +35,10 @@ func selfBytes(): slice[Byte] {
   File.readBytesOrPanic(p)
 }
 
+// A method with primitive parameters, used by the Phase 3b overload-resolution
+// tests to resolve against this program's own metadata.
+func addInts(a: Int, b: Int): Int { a + b }
+
 func loadPe(): PeImage {
   match readPe(selfBytes()) {
     case Ok(img) -> img
@@ -342,6 +346,92 @@ func testRefPackDiscovery(): Unit {
   }
 }
 
+func prim(b: in Int): SigType { STPrim(elemByte = b) }
+
+// Phase 3b (hermetic): overload resolution against this program's own
+// metadata.  `addInts(Int, Int): Int` resolves for matching and widening
+// argument types and rejects an arity mismatch.
+func testOverloadResolveSelf(): Unit {
+  val img    = loadPe()
+  val th     = loadTables(img, loadRoot(img))
+  val layout = loadLayout(img, th)
+  val fqn    = "Msil.MetadataReader.Tests.Program"
+
+  // Exact match: (I4, I4).
+  val i4i4: List[SigType] = newList()
+  i4i4.add(prim(0x08))  i4i4.add(prim(0x08))
+  match resolveOverloadIn(img, layout, th, fqn, "addInts", i4i4) {
+    case None -> panic("overload: addInts(Int,Int) not resolved")
+    case Some(m) -> {
+      assertTrue(m.isStatic, "overload: addInts is static")
+      assertEqualInt(m.paramTypes.count, 2, "overload: addInts arity 2")
+      match m.returnType {
+        case STPrim(e) -> assertEqualInt(e, 0x08, "overload: addInts returns Int")
+        case _         -> panic("overload: addInts return not primitive")
+      }
+    }
+  }
+
+  // Widening: (I2, I2) still binds addInts(Int, Int).
+  val i2i2: List[SigType] = newList()
+  i2i2.add(prim(0x06))  i2i2.add(prim(0x06))
+  match resolveOverloadIn(img, layout, th, fqn, "addInts", i2i2) {
+    case None    -> panic("overload: addInts should accept widening (I2→I4)")
+    case Some(_) -> ()
+  }
+
+  // Arity mismatch: a single argument does not bind the 2-parameter method.
+  val one: List[SigType] = newList()
+  one.add(prim(0x08))
+  match resolveOverloadIn(img, layout, th, fqn, "addInts", one) {
+    case Some(_) -> panic("overload: arity mismatch should not resolve")
+    case None    -> ()
+  }
+
+  // Unknown member / unknown type resolve to None.
+  match resolveOverloadIn(img, layout, th, fqn, "noSuchMethod", i4i4) {
+    case Some(_) -> panic("overload: unknown member should be None")
+    case None    -> ()
+  }
+  match resolveOverloadIn(img, layout, th, "No.Such.Type", "addInts", i4i4) {
+    case Some(_) -> panic("overload: unknown type should be None")
+    case None    -> ()
+  }
+}
+
+// Phase 3b: overload selection among real BCL overloads.  `System.Math.Max`
+// has int/long/float/double overloads; (Int,Int) must bind the int overload
+// (Int return) and (Long,Long) the long overload (Long return).
+func testOverloadResolveBcl(): Unit {
+  match refPackDir() {
+    case None -> panic("overload-bcl: reference-assembly pack not found")
+    case Some(dir) -> {
+      val rt = Path.join(dir, "System.Runtime.dll")
+      val i4i4: List[SigType] = newList()
+      i4i4.add(prim(0x08))  i4i4.add(prim(0x08))
+      match resolveOverload(rt, "System.Math", "Max", i4i4) {
+        case None -> panic("overload-bcl: Math.Max(int,int) not resolved")
+        case Some(m) -> {
+          assertTrue(m.isStatic, "overload-bcl: Math.Max is static")
+          match m.returnType {
+            case STPrim(e) -> assertEqualInt(e, 0x08, "overload-bcl: Max(int,int) returns Int")
+            case _         -> panic("overload-bcl: Max(int,int) return not primitive")
+          }
+        }
+      }
+      val i8i8: List[SigType] = newList()
+      i8i8.add(prim(0x0A))  i8i8.add(prim(0x0A))
+      match resolveOverload(rt, "System.Math", "Max", i8i8) {
+        case None -> panic("overload-bcl: Math.Max(long,long) not resolved")
+        case Some(m) -> match m.returnType {
+          case STPrim(e) -> assertEqualInt(e, 0x0A, "overload-bcl: Max(long,long) returns Long")
+          case _         -> panic("overload-bcl: Max(long,long) return not primitive")
+        }
+      }
+    }
+  }
+}
+
 // ── Driver ───────────────────────────────────────────────────────────────────
 
 func main(): Int {
@@ -356,6 +446,8 @@ func main(): Int {
   testSigDecodeOnSelf()
   testTypeIndexSelf()
   testRefPackDiscovery()
+  testOverloadResolveSelf()
+  testOverloadResolveBcl()
   println("metadata-reader self-test: ok")
   return 0
 }

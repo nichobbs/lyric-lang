@@ -17651,3 +17651,36 @@ resolution is Phase 3b; wiring `resolveExtern` into the auto-FFI /
 `@externTarget` paths is Phase 3c, gated on the #1471-family self-hosted
 runtime cross-package resolution (discovery uses generic-`Result`-returning
 `Std.File.listFiles`/`listDirs` at compile time; see `docs/42` §2).
+
+### D-progress-348 — CLI-metadata reader, Phase 3b: overload resolution (epic #1622)
+
+**Status:** Shipped (Phase 3b of epic #1622; design in
+`docs/42-extern-metadata-resolution.md` §5).
+
+Selects the best-matching MethodDef overload from metadata, working in
+`SigType` space (decoupled from `MsilType`; the eventual emitter caller maps
+its lowered argument types to `SigType`s at the call boundary):
+
+- **`findTypeDefByFqn`** — locate a TypeDef row by fully-qualified name.
+- **`scoreSigType` / `scoreOverload`** — per-parameter scoring: exact match (2)
+  beats a widening numeric conversion (1, via a `numericRank` ladder so
+  `Int`→`Long`/`Double` etc. are accepted), an `object` parameter accepts any
+  argument, and arity or type mismatches reject (−1) — mirroring the bootstrap
+  emitter's coercion rules.
+- **`resolveOverloadIn` / `resolveOverload`** — enumerate a type's same-named
+  methods, decode each signature, and return the highest-scoring
+  `ResolvedMethod` (`isStatic` from the calling convention, `isVirtual` from the
+  MethodDef flags, plus the decoded return/parameter types).
+
+Self-tested hermetically (`addInts(Int, Int)` over the running PE: exact match,
+widening `I2`→`I4`, and arity-mismatch / unknown-member / unknown-type
+rejection) and against real BCL overloads (`System.Math.Max` binds the `int`
+overload for `(Int, Int)` returning Int, and the `long` overload for
+`(Long, Long)` returning Long).
+
+Compiles through both emitters.  Wiring `resolveExtern` into the auto-FFI /
+`@externTarget` paths is Phase 3c, gated on the self-hosted cross-package
+resolution: discovery uses generic-`Result`-returning `Std.File` calls, and a
+consumer of the reader's imported types (`SigType`, `ResolvedMethod`) currently
+raises advisory `T0010`/`T0020` on the self-hosted typechecker — both must be
+solid before `codegen.l` can depend on the reader (see `docs/42` §2/§5).
