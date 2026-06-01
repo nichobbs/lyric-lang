@@ -494,9 +494,12 @@ func substExprValue(valueSubst: in Map[String, Expr], expr: in Expr): Expr {
     case EPropagate(inner) ->
       Expr(kind = EPropagate(inner = substExprValue(valueSubst, inner)), span = s)
     case EIf(cond, thenB, elseB, form) -> {
-      val newElse = match elseB {
-        case None    -> None
-        case Some(e) -> Some(value = substEOBValue(valueSubst, e))
+      // Typed `var` + assignment, not a two-arm match (#1730): a bare-`None`
+      // arm widens to `None<object>` and corrupts an else-less `if`.
+      var newElse: Option[ExprOrBlock] = None
+      match elseB {
+        case None    -> {}
+        case Some(e) -> { newElse = Some(value = substEOBValue(valueSubst, e)) }
       }
       Expr(kind = EIf(
         cond       = substExprValue(valueSubst, cond),
@@ -509,9 +512,12 @@ func substExprValue(valueSubst: in Map[String, Expr], expr: in Expr): Expr {
       var i = 0
       while i < arms.count {
         val arm = arms[i]
-        val newGuard = match arm.guard {
-          case None    -> None
-          case Some(g) -> Some(value = substExprValue(valueSubst, g))
+        // Typed `var` + assignment, not a two-arm match (#1730): a bare-`None`
+        // arm widens to `None<object>` and corrupts a guardless match arm.
+        var newGuard: Option[Expr] = None
+        match arm.guard {
+          case None    -> {}
+          case Some(g) -> { newGuard = Some(value = substExprValue(valueSubst, g)) }
         }
         newArms.add(MatchArm(
           pattern = arm.pattern,
@@ -572,9 +578,11 @@ func substStmtValue(valueSubst: in Map[String, Expr], stmt: in Statement): State
         op     = op,
         value  = substExprValue(valueSubst, value)), span = s)
     case SReturn(opt) -> {
-      val newOpt = match opt {
-        case None    -> None
-        case Some(e) -> Some(value = substExprValue(valueSubst, e))
+      // Typed `var` + assignment, not a two-arm match (#1730).
+      var newOpt: Option[Expr] = None
+      match opt {
+        case None    -> {}
+        case Some(e) -> { newOpt = Some(value = substExprValue(valueSubst, e)) }
       }
       Statement(kind = SReturn(value = newOpt), span = s)
     }
@@ -618,9 +626,11 @@ func substStmtValue(valueSubst: in Map[String, Expr], stmt: in Statement): State
           span     = cc.span))
         i = i + 1
       }
-      val newFinally = match finally_ {
-        case None     -> None
-        case Some(fb) -> Some(substBlockValue(valueSubst, fb))
+      // Typed `var` + assignment, not a two-arm match (#1730).
+      var newFinally: Option[Block] = None
+      match finally_ {
+        case None     -> {}
+        case Some(fb) -> { newFinally = Some(value = substBlockValue(valueSubst, fb)) }
       }
       Statement(kind = STry(body = newBody, catches = newCatches, finally_ = newFinally), span = s)
     }
@@ -633,9 +643,11 @@ func substBindingValue(valueSubst: in Map[String, Expr], binding: in LocalBindin
     case LBVal(pat, tyOpt, init) ->
       LBVal(pat = pat, ty = tyOpt, init = substExprValue(valueSubst, init))
     case LBVar(name, tyOpt, initOpt) -> {
-      val newInit = match initOpt {
-        case None    -> None
-        case Some(e) -> Some(value = substExprValue(valueSubst, e))
+      // Typed `var` + assignment, not a two-arm match (#1730).
+      var newInit: Option[Expr] = None
+      match initOpt {
+        case None    -> {}
+        case Some(e) -> { newInit = Some(value = substExprValue(valueSubst, e)) }
       }
       LBVar(name = name, ty = tyOpt, init = newInit)
     }
@@ -1204,9 +1216,19 @@ func specializeFunc(
       span = p.span))
     i = i + 1
   }
-  val newRet = match decl.ret {
-    case None    -> None
-    case Some(r) -> Some(value = substTypeExpr(subst, valueSubst, r))
+  // Build `newRet` via a typed `var` + assignment rather than a `match`
+  // expression whose two arms (`None` / `Some(...)`) the bootstrap F# emitter
+  // unifies to `Option<object>` instead of `Option<TypeExpr>`.  A widened
+  // `Option<object>` value stored in the `ret: Option[TypeExpr]` slot then
+  // matches neither `case Some` nor `case None` in the self-hosted codegen's
+  // `lowerFuncMsil` (isinst against `Option<TypeExpr>` fails), the match falls
+  // through, and `retTy` is left null — the #1730 NRE on every called generic.
+  // Constructing `Some(...)` in assignment position (expected type
+  // `Option[TypeExpr]`) keeps the type argument concrete.
+  var newRet: Option[TypeExpr] = None
+  match decl.ret {
+    case None    -> {}
+    case Some(r) -> { newRet = Some(value = substTypeExpr(subst, valueSubst, r)) }
   }
   val emptyDocs: List[DocComment] = newList()
   val emptyAnns: List[Annotation] = newList()
@@ -1385,9 +1407,13 @@ func rewriteMatchArms(
   var i = 0
   while i < arms.count {
     val arm = arms[i]
-    val newGuard = match arm.guard {
-      case None    -> None
-      case Some(g) -> Some(value = rewriteExpr(state, env, g))
+    // Typed `var` + assignment (not a two-arm `None`/`Some` match): the bootstrap
+    // F# emitter widens such a match to `Option<object>`, which then matches
+    // neither arm of codegen's instantiation-sensitive `match guard` (#1730).
+    var newGuard: Option[Expr] = None
+    match arm.guard {
+      case None    -> {}
+      case Some(g) -> { newGuard = Some(value = rewriteExpr(state, env, g)) }
     }
     buf.add(MatchArm(
       pattern = arm.pattern,
@@ -1575,9 +1601,16 @@ func rewriteExpr(
     }
 
     case EIf(cond, thenB, elseB, form) -> {
-      val newElse = match elseB {
-        case None    -> None
-        case Some(e) -> Some(value = rewriteEOB(state, env, e))
+      // Typed `var` + assignment, not a `match` expression: the bootstrap F#
+      // emitter unifies a `None` / `Some(...)` two-arm match to `Option<object>`
+      // instead of `Option[ExprOrBlock]`.  A widened `None<object>` stored in the
+      // `elseBranch` slot matches neither arm of codegen's `match elseBranch`,
+      // so an else-less `if` lowers with an unresolved branch target and a stray
+      // pop — corrupting any function the monomorphizer rewrites (#1730).
+      var newElse: Option[ExprOrBlock] = None
+      match elseB {
+        case None    -> {}
+        case Some(e) -> { newElse = Some(value = rewriteEOB(state, env, e)) }
       }
       Expr(kind = EIf(
         cond       = rewriteExpr(state, env, cond),
@@ -1680,9 +1713,13 @@ func rewriteStmt(
         value  = rewriteExpr(state, env, value)), span = s)
 
     case SReturn(opt) -> {
-      val newOpt = match opt {
-        case None    -> None
-        case Some(e) -> Some(value = rewriteExpr(state, env, e))
+      // Typed `var` + assignment, not a two-arm `None`/`Some` match — see the
+      // `EIf` else-branch note above (#1730): the F# emitter would otherwise
+      // widen the match to `Option<object>` and corrupt the rewritten `return`.
+      var newOpt: Option[Expr] = None
+      match opt {
+        case None    -> {}
+        case Some(e) -> { newOpt = Some(value = rewriteExpr(state, env, e)) }
       }
       Statement(kind = SReturn(value = newOpt), span = s)
     }
@@ -1736,9 +1773,13 @@ func rewriteStmt(
           span     = cc.span))
         i = i + 1
       }
-      val newFinally = match finally_ {
-        case None     -> None
-        case Some(fb) -> Some(rewriteBlock(state, env, fb))
+      // Typed `var` + assignment, not a two-arm match — see the `EIf` note
+      // above (#1730): a widened `Option<object>` would corrupt the rewritten
+      // try/finally lowering.
+      var newFinally: Option[Block] = None
+      match finally_ {
+        case None     -> {}
+        case Some(fb) -> { newFinally = Some(value = rewriteBlock(state, env, fb)) }
       }
       Statement(kind = STry(body = newBody, catches = newCatches, finally_ = newFinally), span = s)
     }
@@ -1793,9 +1834,12 @@ func rewriteBinding(
           }
         }
       }
-      val newInit = match initOpt {
-        case None    -> None
-        case Some(e) -> Some(value = rewriteExpr(state, env, e))
+      // Typed `var` + assignment, not a two-arm match (#1730): a bare-`None`
+      // arm would be `None<object>` and corrupt an init-less `var` binding.
+      var newInit: Option[Expr] = None
+      match initOpt {
+        case None    -> {}
+        case Some(e) -> { newInit = Some(value = rewriteExpr(state, env, e)) }
       }
       LBVar(name = name, ty = tyOpt, init = newInit)
     }
@@ -1852,13 +1896,19 @@ func rewriteFuncBody(
   env:    in Map[String, TypeExpr],
   body:   in Option[FunctionBody]
 ): Option[FunctionBody] {
+  // Typed `var` + assignment, not a two-arm match (#1730): a bare-`None` arm
+  // would be `None<object>` and corrupt a body-less function's `decl.body`.
+  var newBody: Option[FunctionBody] = None
   match body {
-    case None -> None
-    case Some(fb) -> Some(value = match fb {
-      case FBBlock(blk) -> FBBlock(block = rewriteBlock(state, env, blk))
-      case FBExpr(e)    -> FBExpr(expr  = rewriteExpr(state, env, e))
-    })
+    case None -> {}
+    case Some(fb) -> {
+      newBody = Some(value = match fb {
+        case FBBlock(blk) -> FBBlock(block = rewriteBlock(state, env, blk))
+        case FBExpr(e)    -> FBExpr(expr  = rewriteExpr(state, env, e))
+      })
+    }
   }
+  newBody
 }
 
 // One-shot value-generic substitution over a FunctionBody.  Replaces every
@@ -1870,13 +1920,18 @@ func substValueInBody(
   body:       in Option[FunctionBody]
 ): Option[FunctionBody] {
   if valueSubst.count == 0 { return body }
+  // Typed `var` + assignment, not a two-arm match (#1730).
+  var newBody: Option[FunctionBody] = None
   match body {
-    case None -> None
-    case Some(fb) -> Some(value = match fb {
-      case FBBlock(blk) -> FBBlock(block = substBlockValue(valueSubst, blk))
-      case FBExpr(e)    -> FBExpr(expr  = substExprValue(valueSubst, e))
-    })
+    case None -> {}
+    case Some(fb) -> {
+      newBody = Some(value = match fb {
+        case FBBlock(blk) -> FBBlock(block = substBlockValue(valueSubst, blk))
+        case FBExpr(e)    -> FBExpr(expr  = substExprValue(valueSubst, e))
+      })
+    }
   }
+  newBody
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
