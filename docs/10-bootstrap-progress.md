@@ -18244,3 +18244,35 @@ resolved entirely from metadata.  Reader self-test adds a class-return
 Validated: emitter suite green; auto-FFI self-test 8/8; reader self-test green.
 Instance-method dispatch (step 4b) builds directly on this — a class return is
 the receiver a `callvirt` dispatches on.
+
+### D-progress-360 — auto-FFI instance-method dispatch, Phase 3c step 4b (epic #1622)
+
+**Status:** Shipped (Phase 3c step 4b of epic #1622; design in
+`docs/42-extern-metadata-resolution.md` §5).  The marquee end-to-end auto-FFI
+path: a receiver-based instance call resolved entirely from .NET metadata.
+
+`lowerMethodCallMsil` (`codegen.l`) now detects an extern class-ref receiver
+(`MClassRef`, from D-progress-359 class returns or any class-typed extern
+expression) and routes `recv.method(args)` through `tryInstanceAutoFfiFromMetadata`:
+
+- It resolves the *instance* method from metadata (`resolveOverloadIn` already
+  reports `isStatic = not sig.hasThis`), builds a HASTHIS MethodSig
+  (`buildInstanceMethodSig`) via `emitResolvedInstanceAutoFfi`, and emits
+  `callvirt` against the real CLR MemberRef.  `callvirt` is valid for both
+  virtual and non-virtual instance methods on a reference receiver and performs
+  the null check.
+- Arguments are lowered into buffers *before* resolution, so a failed lookup
+  leaves the stack holding only the already-pushed receiver and the caller's
+  legacy dispatch stays correct.  A resolved *static* (the name exists only as a
+  static) also falls back rather than emit a malformed `callvirt`.
+- The MemberRef intern key (`autoffi_inst_…` + per-param/return identity) keeps
+  instance MemberRefs distinct from the static ones and from each overload.
+
+End-to-end (`auto_ffi_self_test.l`, now 9 tests):
+`Type.GetType("System.Int32").ToString() == "System.Int32"` — a class-returning
+static feeds a receiver-based instance call, both resolved entirely from
+metadata.
+
+Validated: emitter suite green; auto-FFI self-test 9/9.  Value-type instance
+methods (which need `ldloca` + `call` on a managed pointer rather than
+`callvirt`) remain a tracked follow-up.

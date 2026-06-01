@@ -1166,9 +1166,12 @@ arguments, plus widening numeric coercion (an `Int`/`Long` argument binds a
 `(long)`/`(double)` overload via `conv`), `object` parameters (the argument is
 boxed), and **value-type and class (reference-type)** parameters and returns
 (e.g. `System.TimeSpan`, `System.Type` — matched and emitted by their
-fully-qualified name).  Calls that need narrowing or a `float` parameter fall
-back to requiring an explicit `@externTarget` wrapper.  An unresolved auto-FFI
-call is a compile-time diagnostic (it is never silently mis-bound).
+fully-qualified name).  **Instance methods** on a class-typed extern receiver
+also resolve and dispatch via `callvirt` (e.g.
+`Type.GetType("System.Int32").ToString()`).  Calls that need narrowing, a
+`float` parameter, or an instance method on a *value-type* receiver fall back to
+requiring an explicit `@externTarget` wrapper.  An unresolved auto-FFI call is a
+compile-time diagnostic (it is never silently mis-bound).
 
 **JVM target.**  Metadata-based auto-FFI resolution is currently
 `--target dotnet`-only.  On `--target jvm` there is no auto-resolution: a host

@@ -95,3 +95,15 @@ test "auto-FFI resolves class (reference) returns" {
   assertTrue(not Obj.ReferenceEquals(Typ.GetType("System.Int32"), Typ.GetType("System.String")),
              "distinct types are distinct references")
 }
+
+// Phase 3c step 4b: instance-method dispatch.  `Type.GetType(string): Type`
+// returns a class reference; `.ToString()` is an instance method resolved from
+// metadata and dispatched via `callvirt` against the real CLR method.  The
+// marquee end-to-end path: a class-returning static feeds a receiver-based
+// instance call, both resolved entirely from .NET metadata.
+test "auto-FFI dispatches instance methods via callvirt" {
+  assertEqual(Typ.GetType("System.Int32").ToString(), "System.Int32",
+              "GetType(...).ToString() returns the full type name")
+  assertEqual(Typ.GetType("System.String").ToString(), "System.String",
+              "instance dispatch on a different receiver")
+}
