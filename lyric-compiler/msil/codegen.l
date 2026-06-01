@@ -2173,7 +2173,13 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
     }
     case ESelf -> {
       insns.add(MLdarg(slot = 0))
-      MObject
+      // Type `self` as its enclosing class so `self.method(...)` dispatches via
+      // the MClass arm of `lowerMethodCallMsil`; MObject went to the BCL stub.
+      if fctx.className.length > 0 {
+        MClass(className = fctx.className)
+      } else {
+        MObject
+      }
     }
     case EResult -> {
       // `result` is a contextual keyword: inside ensures clauses the contract
@@ -3978,6 +3984,28 @@ func lowerBuiltinOrStaticCallMsil(
                   }
                 }
                 case None -> MObject  // unreachable; effectiveFqn was a hit above
+              }
+            } else if fctx.className.length > 0
+                      and cctx.methodTokens.containsKey(fctx.className + "/" + funcName) {
+              // Bare call to a sibling instance method (implicit `self`, slot 0).
+              // Emit the callvirt the unresolved-call fallback below would have
+              // dropped — leaving args on the stack with no call.
+              val sibTok = match mapGet(cctx.methodTokens, fctx.className + "/" + funcName) {
+                case Some(t) -> t
+                case None    -> panic("Msil.Codegen: sibling method token vanished after containsKey for "
+                                      + fctx.className + "/" + funcName)
+              }
+              insns.add(MLdarg(slot = 0))
+              var si = 0
+              while si < args.count {
+                val aTy = lowerCallArgMsil(cctx, fctx, insns, args[si])
+                boxIfNeededMsil(cctx, insns, aTy)
+                si = si + 1
+              }
+              insns.add(MCallvirt(methodToken = sibTok))
+              match mapGet(cctx.methodRetTypes, fctx.className + "/" + funcName) {
+                case Some(rty) -> rty
+                case None      -> MObject
               }
             } else {
               // Cross-package call without a registered token: walk args for
