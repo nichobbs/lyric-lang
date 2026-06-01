@@ -60,3 +60,11 @@ test "Path.Combine resolves via the metadata type index" {
   assertEqual(Path.Combine("/tmp", "x.txt"), "/tmp/x.txt", "Combine(/tmp, x.txt)")
   assertEqual(Path.Combine("a", "b"), "a/b", "Combine(a, b)")
 }
+
+// Phase 3c step 2b: `System.Math.Sqrt` has only a `(double)` overload, so an
+// `Int`/`Long` argument is widened with `conv.r8` before the call (numeric
+// coercion).  Sqrt of a perfect square is exact in IEEE 754.
+test "auto-FFI widens Int/Long args to a Double parameter" {
+  assertTrue(Math.Sqrt(4) == 2.0, "Sqrt(int 4) = 2.0")
+  assertTrue(Math.Sqrt(9i64) == 3.0, "Sqrt(long 9) = 3.0")
+}

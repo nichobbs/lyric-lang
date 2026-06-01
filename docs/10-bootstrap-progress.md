@@ -17931,3 +17931,30 @@ Validated: emitter suite 847/0; auto-FFI self-test 5/5 (Math int/long overloads
 + Path.Combine).  Numeric coercion (`Int`→`long` overloads) and `@externTarget`
 metadata verification are step 2b; deleting `clrAssemblyForType` outright is
 Phase 4 (auto-FFI no longer reads it, but the `@externTarget` path still does).
+
+### D-progress-353 — auto-FFI numeric coercion + box, Phase 3c step 2b (epic #1622)
+
+**Status:** Shipped (Phase 3c step 2b of epic #1622; design in
+`docs/42-extern-metadata-resolution.md` §5).
+
+`emitResolvedAutoFfi` (`lyric-compiler/msil/codegen.l`) no longer requires an
+exact parameter match.  For each argument it computes a coercion
+(`argCoercionInsns`) and emits it after the argument's value:
+
+- exact match → no coercion;
+- widening numeric → `conv.i8` (→ `long`) or `conv.r8` (→ `double`), gated by an
+  `elemNumericRank` ladder so only safe widenings apply;
+- `object` parameter → `box` the value type (`boxIfNeededMsil`).
+
+The MemberRef signature is still built from the resolved parameter types, so an
+`Int` argument binding a `(double)` overload emits `conv.r8` then calls the
+`(double)` member.  This matches the bootstrap emitter's coercion behaviour.
+
+`auto_ffi_self_test.l` gains a coercion case (now 6 tests): `Math.Sqrt` has only
+a `(double)` overload, so `Math.Sqrt(4)` widens `Int`→`Double` (`conv.r8`) → 2.0
+and `Math.Sqrt(9i64)` widens `Long`→`Double` → 3.0.
+
+Validated: emitter suite 847/0; auto-FFI self-test 6/6.  Remaining auto-FFI
+fallbacks: class/value-type parameters and `→float`/narrowing conversions.
+`@externTarget`-signature verification against metadata and deleting the
+`clrAssemblyForType` table are Phase 4.

@@ -6909,6 +6909,47 @@ func ensureMetadataIndex(cctx: in CodegenCtx): Unit {
   }
 }
 
+// Widening rank for the numeric element-type bytes the auto-FFI path maps to
+// MsilTypes (-1 for non-numeric).  A narrower type implicitly converts to a
+// wider one.
+func elemNumericRank(b: in Int): Int {
+  if b == 0x05 { 1 }       // U1   (MByte)
+  else if b == 0x03 { 3 }  // CHAR (MChar)
+  else if b == 0x08 { 4 }  // I4   (MInt)
+  else if b == 0x0A { 5 }  // I8   (MLong)
+  else if b == 0x0D { 7 }  // R8   (MDouble)
+  else { -1 }
+}
+
+// Instructions to append after an `argTy`-typed value to make it a
+// `paramByte`-typed argument: empty for an exact match, a `box` for an
+// `object` parameter, or a widening `conv` (`Int`/`Long`→`Long`/`Double`).
+// None when the conversion isn't supported (caller falls back to legacy).
+func argCoercionInsns(cctx: in CodegenCtx, argTy: in MsilType, paramByte: in Int): Option[List[MInsn]] {
+  val argByte = msilToElemByte(argTy)
+  val acc: List[MInsn] = newList()
+  if argByte == paramByte {
+    Some(value = acc)                       // exact: no coercion
+  } else if paramByte == 0x1C {
+    boxIfNeededMsil(cctx, acc, argTy)       // object param: box value types
+    Some(value = acc)
+  } else {
+    val ra = elemNumericRank(argByte)
+    val rp = elemNumericRank(paramByte)
+    if ra < 0 or rp < 0 or ra > rp {
+      None                                  // not a supported widening
+    } else if paramByte == 0x0A {
+      acc.add(MConvI8)                       // → long
+      Some(value = acc)
+    } else if paramByte == 0x0D {
+      acc.add(MConvR8)                       // → double
+      Some(value = acc)
+    } else {
+      None                                  // → R4 / narrower int: unsupported
+    }
+  }
+}
+
 // Emit a metadata-resolved auto-FFI call, or None to fall back.  `argBufs`
 // carry each argument's already-lowered IL; `argTys` their MsilTypes.
 func emitResolvedAutoFfi(
@@ -6925,18 +6966,21 @@ func emitResolvedAutoFfi(
   // this way; instance overloads need an @externTarget wrapper.
   if not m.isStatic { return None }
   if m.paramTypes.count != argTys.count { return None }
-  // Require an exact primitive/string/object parameter match (no coercion yet).
-  val paramMsil: List[MsilType] = newList()
+  // Build the parameter MsilTypes (from the resolved signature) and the
+  // per-argument coercion (exact / widening conv / box) needed to adapt each
+  // argument to its parameter.  Bail to the legacy path on any unsupported
+  // parameter shape (non-primitive, or an unsupported conversion).
+  val paramMsil: List[MsilType]     = newList()
+  val coercions: List[List[MInsn]]  = newList()
   var pi = 0
   var ok = true
   while pi < m.paramTypes.count and ok {
     val pb = Mdr.sigPrimByte(m.paramTypes[pi])
-    if pb < 0 or pb != msilToElemByte(argTys[pi]) {
-      ok = false
-    } else {
-      match elemByteToMsil(pb) {
-        case None     -> { ok = false }
-        case Some(pm) -> { paramMsil.add(pm) }
+    match elemByteToMsil(pb) {
+      case None     -> { ok = false }
+      case Some(pm) -> match argCoercionInsns(cctx, argTys[pi], pb) {
+        case None        -> { ok = false }
+        case Some(cins)  -> { paramMsil.add(pm)  coercions.add(cins) }
       }
     }
     pi = pi + 1
@@ -6965,6 +7009,7 @@ func emitResolvedAutoFfi(
       var bi = 0
       while bi < argBufs.count {
         appendInsnsMsil(insns, argBufs[bi])
+        appendInsnsMsil(insns, coercions[bi])   // exact: empty; widening: conv; object: box
         bi = bi + 1
       }
       insns.add(MCall(methodToken = tok))
