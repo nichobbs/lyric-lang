@@ -492,6 +492,22 @@ extern func readFile(path: in String): String
   ensures: result != ""    // assumed by the prover, not proved
 ```
 
+### Direct BCL calls — `extern type` (auto-FFI; see chapter 13 §13.9)
+
+```lyric
+extern type Math = "System.Math"          // bind a Lyric name to a CLR type
+extern type Ts   = "System.TimeSpan"
+extern type Typ  = "System.Type"
+
+Math.Max(2, 5)                            // static overload, resolved from metadata -> 5
+Ts.Compare(Ts.FromMinutes(5.0),           // value-type params & returns
+           Ts.FromMinutes(3.0))           //   -> 1
+Typ.GetType("System.Int32").ToString()    // class return + instance dispatch (callvirt)
+                                          //   -> "System.Int32"
+```
+
+No `@axiom` block: the signature is read from the assembly. No overload match is a compile-time error (never silently mis-bound).
+
 ### Pre-state snapshots in ensures
 
 ```lyric

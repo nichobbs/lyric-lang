@@ -107,3 +107,18 @@ test "auto-FFI dispatches instance methods via callvirt" {
   assertEqual(Typ.GetType("System.String").ToString(), "System.String",
               "instance dispatch on a different receiver")
 }
+
+// Closes the Phase 3c param/return matrix for instance dispatch: an instance
+// method that itself returns a class ref (chaining), and one that takes a
+// class-ref parameter.
+test "auto-FFI instance dispatch chains class returns and takes class params" {
+  // (a) instance method returning a class ref: Type.MakeArrayType(): Type.  The
+  //     returned array Type chains into another instance call (ToString()).
+  assertEqual(Typ.GetType("System.Int32").MakeArrayType().ToString(), "System.Int32[]",
+              "MakeArrayType() returns a class ref that chains to ToString()")
+  // (b) instance method taking a class-ref parameter: Type.IsAssignableFrom(Type): bool.
+  assertTrue(Typ.GetType("System.Object").IsAssignableFrom(Typ.GetType("System.String")),
+             "Object.IsAssignableFrom(String) is true")
+  assertTrue(not Typ.GetType("System.String").IsAssignableFrom(Typ.GetType("System.Object")),
+             "String.IsAssignableFrom(Object) is false")
+}

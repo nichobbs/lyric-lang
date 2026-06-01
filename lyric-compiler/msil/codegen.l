@@ -4144,7 +4144,16 @@ func lowerMethodCallMsil(
   match recvTy {
     case MClassRef(_, fqn) -> match tryInstanceAutoFfiFromMetadata(cctx, fctx, insns, fqn, memberName, args) {
       case Some(rt) -> { return rt }
-      case None     -> {}   // resolution failed → fall through to legacy dispatch
+      // An MClassRef receiver is exclusively produced by metadata-resolved
+      // auto-FFI, so there is no other legitimate dispatch for it.  An
+      // unresolved instance method here means no matching instance method
+      // exists in .NET metadata for the argument types — diagnose rather than
+      // silently emit the null stub (the language reference guarantees an
+      // unresolved auto-FFI call is never silently mis-bound).
+      case None     -> panic("Msil.Codegen: unresolved extern instance method '" + memberName
+        + "' on '" + fqn + "' — no matching instance method found in .NET metadata for the given "
+        + "argument types.  Auto-FFI is never silently mis-bound; declare an @externTarget wrapper "
+        + "if a custom binding is intended.")
     }
     case _ -> {}
   }

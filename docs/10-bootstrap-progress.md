@@ -18245,14 +18245,14 @@ Validated: emitter suite green; auto-FFI self-test 8/8; reader self-test green.
 Instance-method dispatch (step 4b) builds directly on this — a class return is
 the receiver a `callvirt` dispatches on.
 
-### D-progress-360 — auto-FFI instance-method dispatch, Phase 3c step 4b (epic #1622)
+### D-progress-362 — auto-FFI instance-method dispatch, Phase 3c step 4b (epic #1622)
 
 **Status:** Shipped (Phase 3c step 4b of epic #1622; design in
 `docs/42-extern-metadata-resolution.md` §5).  The marquee end-to-end auto-FFI
 path: a receiver-based instance call resolved entirely from .NET metadata.
 
 `lowerMethodCallMsil` (`codegen.l`) now detects an extern class-ref receiver
-(`MClassRef`, from D-progress-359 class returns or any class-typed extern
+(`MClassRef`, from D-progress-361 class returns or any class-typed extern
 expression) and routes `recv.method(args)` through `tryInstanceAutoFfiFromMetadata`:
 
 - It resolves the *instance* method from metadata (`resolveOverloadIn` already
