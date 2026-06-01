@@ -17996,3 +17996,41 @@ tracked in #1707: the JVM backend uses type-erased `instanceof` (not closed
 generic TypeSpecs), so the specific mismatch this fix addresses is not the JVM
 blocker — JVM union case-factory emission (D-progress-350 follow-up) must land
 first, after which the nested-generic self-test should run on `--target jvm` too.
+
+### D-progress-355 — self-hosted MSIL: intra-impl method calls (#1715)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`; regression test
+`lyric-compiler/lyric/self_method_call_self_test.l`).
+
+A method calling a sibling method on the same record/impl — `self.save(k)` or a
+bare `save(k)` (implicit self) — was silently dropped by the self-hosted MSIL
+backend, two distinct ways:
+
+* `ESelf` lowered `self` to `MObject`, so `self.save(...)` missed the
+  `MClass(className)` arm of `lowerMethodCallMsil` and fell through to the
+  BCL-name stub, which popped the receiver + args and pushed `null`.  A trailing
+  `self.save(k)` thus compiled to `…; pop; pop; ldnull; ret`, returning null.
+* A bare `save(k)` (no explicit receiver) hit the unresolved-call fallback in
+  `lowerBuiltinOrStaticCallMsil`, which lowered the argument but emitted no
+  call — so `put`'s body `save(k)` compiled to `ldarg.1; ret`, returning the
+  *argument* instead of the method result.
+
+In both cases a consumer's `match` on the returned value saw the wrong runtime
+type (a raw `String`/`object`, not a `Result`/`Option`) and panicked
+"match not exhaustive" (#1715).
+
+Fix: `ESelf` is now typed as `MClass(fctx.className)` (falling back to `MObject`
+for free functions where `self` is not meaningful), so `self.method()`
+dispatches through `methodTokens[className/method]`.  And the bare-call path in
+`lowerBuiltinOrStaticCallMsil` now resolves a sibling instance method when
+`methodTokens` carries `className/funcName`, emitting `ldarg.0` + args +
+`callvirt` and reporting the method's real return type from `methodRetTypes`.
+
+Validation: the new self-test is 4/4 (`self.m()`/bare `m()` for both an `Int`
+method and a `Result[Unit, E]` method); Emitter 847/847, Cli 84/84.  This clears
+the `Result<Unit, SessionError>` (`scr=Result<V,…>`) failures in the
+lyric-session store/fixation suites (`set`/`save`/`touch`/`delete`/`clear` all
+return their inner `save(...)` result).  Stacked on the nested-generic
+construction fix (#1687, D-progress-354) in the same branch, so together they
+clear both the `Result[Unit, E]` and `Result[Option[T], E]` session defects.
+MSIL only; JVM-target parity is tracked in #1722.
