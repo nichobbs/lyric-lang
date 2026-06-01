@@ -18067,3 +18067,39 @@ extern-typed receivers.
 
 **Validated:** emitter suite 847/0; reader self-test green (token resolution);
 compiles through both emitters.
+
+### D-progress-357 — self-hosted MSIL: named-argument record construction order (#1730 spinoff)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`; regression test
+`lyric-compiler/lyric/named_arg_order_self_test.l`).
+
+Constructing a record with **named arguments listed out of field-declaration
+order** — `R(c = …, b = …, a = …)` for `record R { a; b; c }` — stored each
+value into the positional slot it was *written* in, not the field it *named*.
+The record-constructor `newobj` consumes arguments positionally in
+declaration order, but the call-site lowering walked `args` in source order and
+ignored the argument names, so the values landed in the wrong fields (and, when
+the crossed types disagreed, produced invalid IL or fields that read back as the
+wrong type — e.g. an `Option` slot holding a `Bool`, unmatchable by `case None`
+/ `case Some`).
+
+Fix: `reorderCtorNamedArgs` reorders a constructor's argument list to
+field-declaration order before lowering, using the
+`<ctorKey>/field<pos>` → declared-name map (`fieldDeclaredNames`).  That map is
+now populated for **in-bundle** records too (it was previously only registered
+for restored / stdlib records), via a field-position counter in
+`addPackageTokens`.  Positional calls, and constructors with no field-name map,
+pass through unchanged — preserving the historical behaviour for the common
+declaration-order case.
+
+Validation: `named_arg_order_self_test.l` 4/4 (declaration order, reverse order,
+scrambled order across heterogeneous field types); Emitter 847/847, Cli 84/84;
+no session-suite change (session code constructs in declaration order, so it was
+unaffected — this is a latent correctness bug fixed on its own merits).
+
+This was isolated while investigating #1730 (mono-specialised generic functions
+NRE in `lowerFuncMsil`): the named-arg ordering bug is real and independent, but
+it is **not** the #1730 root cause — `specializeFunc` already constructs its
+`FunctionDecl` in declaration order, so #1730 remains open.  A separate
+`None`-as-record-field-value defect (#1731) surfaced from the same test and is
+also tracked apart.  MSIL only.

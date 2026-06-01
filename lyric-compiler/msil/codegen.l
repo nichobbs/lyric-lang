@@ -848,6 +848,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
           cctx.typeFqnByName.add(decl.name, className)
         }
         var fi = 0
+        var fpos = 0
         while fi < decl.members.count {
           match decl.members[fi] {
             case RMField(f) -> {
@@ -866,6 +867,16 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
               if not cctx.fieldMsilTypes.containsKey(pkgName + "/" + f.name) {
                 cctx.fieldMsilTypes.add(pkgName + "/" + f.name, fty)
               }
+              // Positional name map (#1730): records the declared field name at
+              // each declaration position so a named-argument constructor call
+              // (`R(c = …, a = …)`) can be reordered to field-declaration order
+              // before the positional `newobj`.  Keyed `<className>/field<pos>`,
+              // matching the cross-package registration in registerStdlibTypeItem.
+              val byPosKey = className + "/field" + toString(fpos)
+              if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
+                cctx.fieldDeclaredNames.add(byPosKey, f.name)
+              }
+              fpos = fpos + 1
               fieldDefRow = fieldDefRow + 1
             }
             case _ -> {}
@@ -3497,6 +3508,51 @@ func lowerCallArgMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
   }
 }
 
+// Reorder a record/union-case constructor's arguments to field-declaration
+// order (#1730).  A named-argument call (`R(c = …, a = …)`) may list fields in
+// any order, but the constructor `newobj` consumes them positionally in
+// declaration order — lowering them in call-site order stored each value into
+// the wrong field slot, producing invalid IL / cross-typed fields.  Using the
+// `<ctorKey>/field<pos>` → declared-name map (`fieldDeclaredNames`, populated
+// for both in-bundle and restored records), build a new arg list where slot `i`
+// holds the call arg whose name matches field `i`.  Returns `args` unchanged
+// when: any arg is positional (no reorder possible/needed — already in order),
+// or the field-name map is absent for this ctor (defensive — preserves the
+// historical positional behaviour).
+func reorderCtorNamedArgs(cctx: in CodegenCtx, ctorKey: in String,
+                          args: in List[CallArg]): List[CallArg] {
+  if args.count == 0 { return args }
+  // Build name → arg index from the call site; bail to positional if any arg
+  // is unnamed (a mixed/positional call is already in declaration order).
+  val nameToArg: Map[String, CallArg] = newMap()
+  var i = 0
+  while i < args.count {
+    match args[i] {
+      case CANamed(nm, _, _) -> {
+        if nameToArg.containsKey(nm) { return args }  // dup name — leave as-is
+        nameToArg.add(nm, args[i])
+      }
+      case CAPositional(_)   -> { return args }
+    }
+    i = i + 1
+  }
+  // Reassemble in field-declaration order using the positional name map.
+  val ordered: List[CallArg] = newList()
+  var fp = 0
+  while fp < args.count {
+    val byPosKey = ctorKey + "/field" + toString(fp)
+    match mapGet(cctx.fieldDeclaredNames, byPosKey) {
+      case None -> return args   // no field-order info — preserve current behaviour
+      case Some(fname) -> match mapGet(nameToArg, fname) {
+        case Some(a) -> ordered.add(a)
+        case None    -> return args   // a field has no matching arg — bail safely
+      }
+    }
+    fp = fp + 1
+  }
+  ordered
+}
+
 // Lower a function call expression.
 pub func lowerCallMsil(
   cctx:  in CodegenCtx,
@@ -3752,6 +3808,11 @@ func lowerBuiltinOrStaticCallMsil(
       }
     match mapGet(cctx.recordCtorTokens, ctorKey) {
       case Some(ctorTok) -> {
+        // Reorder named arguments to field-declaration order before lowering, so
+        // `R(c = …, a = …)` stores each value into its own field rather than the
+        // positional slot it was written in (#1730).  Positional calls and
+        // ctors without a field-name map pass through unchanged.
+        val ctorArgs = reorderCtorNamedArgs(cctx, ctorKey, args)
         // Resolved before arg lowering so each payload gets its inner-type hint (#1687).
         val outerCtxTyArgs: List[MsilType] = newList()
         if fctx.contextHintTyArgs.count > 0 {
@@ -3775,7 +3836,7 @@ func lowerBuiltinOrStaticCallMsil(
         // Lower args, collecting their MSIL types for generic type inference.
         val argTypes: List[MsilType] = newList()
         var ci = 0
-        while ci < args.count {
+        while ci < ctorArgs.count {
           // Hint this slot with its concrete inner type so nested payloads instantiate right (#1687).
           val fldKeyH = ctorKey + "/field" + toString(ci)
           val viH = match mapGet(cctx.fieldVarIndices, fldKeyH) {
@@ -3801,7 +3862,7 @@ func lowerBuiltinOrStaticCallMsil(
                 fctx.contextHintTyArgs.add(innerArgs[ihi])
                 ihi = ihi + 1
               }
-              val lowered = lowerCallArgMsil(cctx, fctx, insns, args[ci])
+              val lowered = lowerCallArgMsil(cctx, fctx, insns, ctorArgs[ci])
               while fctx.contextHintTyArgs.count > 0 {
                 fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
               }
@@ -3812,7 +3873,7 @@ func lowerBuiltinOrStaticCallMsil(
               }
               lowered
             }
-            case _ -> lowerCallArgMsil(cctx, fctx, insns, args[ci])
+            case _ -> lowerCallArgMsil(cctx, fctx, insns, ctorArgs[ci])
           }
           argTypes.add(at)
           ci = ci + 1
