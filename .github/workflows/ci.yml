@@ -530,6 +530,7 @@ jobs:
       # Record-option-field self-test — pins #1731 / D-progress-359: a `None`
       # (or `Some`) value for a concrete `Option[T]` record field must carry the
       # field's type argument so a later `match` on the field finds the arm.
+      # MSIL target only; JVM-target parity is tracked in #1740.
       - name: Record-option-field self-test (native lyric test)
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}

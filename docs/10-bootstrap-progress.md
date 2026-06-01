@@ -18171,4 +18171,7 @@ from #1730 (mono's `specializeFunc` `FunctionDecl` construction corrupting `ret`
 inside `Lyric.Mono.dll` — that corruption reproduces only in the real mono
 execution context and is still open).  The lyric-session suite is unchanged by
 this fix (its remaining failures are gated on #1730 and the generic-stdlib-call
-instantiation #1727).  MSIL only.
+instantiation #1727).  MSIL only; JVM-target parity is tracked in #1740 (the
+JVM record-constructor argument loop may carry the same `Option<object>`
+erasure; verifying / fixing it and extending the self-test to `--target jvm` is
+the follow-up).
