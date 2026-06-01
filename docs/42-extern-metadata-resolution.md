@@ -367,17 +367,40 @@ runtime gap.
   running PE: exact, widening `I2`→`I4`, arity-mismatch and unknown-member/type
   rejection) and against real BCL overloads (`System.Math.Max` binds the `int`
   overload for `(Int, Int)` and the `long` overload for `(Long, Long)`).
-- **Phase 3c — wire `resolveExtern` into the emitter.** Compose discovery +
-  resolution into `resolveExtern(ctx, typeFqn, member, argTypes)` (mapping
-  codegen's `MsilType` args → `SigType`); replace `emitAutoFfiCallMsil`'s
-  `(object…) : void` stub and check `@externTarget` declared signatures against
-  metadata; **retire #1504 H9**. Gated on the self-hosted cross-package
-  resolution (§2 caveat): discovery calls `Std.File.listFiles`/`listDirs`
-  (generic `Result` returns) at compile time, **and** the self-hosted
-  typechecker/codegen must resolve `Msil.MetadataReader`'s imported types
-  (`SigType`, `ResolvedMethod`) from `codegen.l` — today a consumer referencing
-  these cross-package types raises advisory `T0010`/`T0020`, which must be solid
-  before the emitter can depend on the reader's public types.
+- **Phase 3c (step 1) — wire metadata resolution into `emitAutoFfiCallMsil`.
+  _(SHIPPED.)_** `codegen.l` now imports `Msil.MetadataReader` and, on an
+  auto-FFI call (`ExternTypeName.method(args)`), lowers each argument into its
+  own buffer to capture its `MsilType`, maps those to `SigType`s
+  (`Mdr.mkPrimSig`), and calls `Mdr.resolveOverload` against the assembly the
+  existing `clrAssemblyForType` hint names. On an exact-match **static** method
+  whose parameter/return types are primitive/string/object, it builds the real
+  MemberRef (`buildStaticMethodSig` over the resolved `MsilType`s) and emits
+  `MCall`, returning the true result type — **removing the #1504 H9
+  argument-bearing guess for these calls**. Anything else (mis-hinted assembly,
+  numeric coercion, instance methods, class/valuetype params) falls back to the
+  legacy `@externTarget` path unchanged (no regression).
+
+  **The key validation:** the reader runs *in-bundle* at compile time — the
+  self-hosted compiler reads the reference pack while compiling a user program.
+  `extern type Math = "System.Math"; Math.Max(2, 5)` resolves to
+  `Math.Max(int, int) : int` and runs (→ 5); covered in CI by
+  `lyric-compiler/lyric/auto_ffi_self_test.l` (native `lyric test`). The
+  standalone-consumer `T0010`/`T0020`/`MissingMethodException` failures in §2 do
+  **not** apply here, confirming the in-bundle resolution path the §2 caveat
+  anticipated.
+
+  Cross-package note: `codegen.l` imports the reader **aliased** (`as Mdr`)
+  because the reader's `TypeDefRow`/`MethodDefRow`/… record names collide with
+  the writer's; since the bootstrap parser rejects *package-qualified union-case
+  patterns* (`case Mdr.STPrim(b)`), `Msil.MetadataReader` exposes `mkPrimSig` /
+  `sigPrimByte` accessors so codegen never matches or constructs an imported
+  union case directly.
+- **Phase 3c (step 2) — full-index resolution + coercion + instance.** Replace
+  the `clrAssemblyForType` hint with the metadata-derived index
+  (`buildTypeIndex`/`buildPathIndex` cached on `CodegenCtx`), so mis-hinted
+  types (`System.IO.Path.Combine`) resolve; add implicit numeric coercion
+  (`conv.i8` for widening) and instance-method support; check `@externTarget`
+  declared signatures against metadata.
 - **Phase 4 — `@externTarget` verification + `clrAssemblyForType` removal +
   generics.** Make the declared signature a metadata *check* (new diagnostic);
   delete the hardcoded prefix table; route generic externs through MethodSpec;

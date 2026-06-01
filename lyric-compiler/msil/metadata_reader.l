@@ -814,6 +814,22 @@ pub func decodeMethodSig(blob: in slice[Byte]): Result[DecodedMethodSig, String]
   Ok(value = decodeMethodSigAt(blob, 0).sig)
 }
 
+// Construct a primitive `SigType` from its ECMA element-type byte.  Exposed so
+// callers in other packages (which cannot pattern-match or construct an
+// imported union case directly) can build argument types for resolution.
+pub func mkPrimSig(elemByte: in Int): SigType {
+  STPrim(elemByte = elemByte)
+}
+
+// The primitive element-type byte of a `SigType`, or -1 for any non-primitive
+// shape.  The cross-package accessor companion to `mkPrimSig`.
+pub func sigPrimByte(t: in SigType): Int {
+  match t {
+    case STPrim(b) -> b
+    case _         -> -1
+  }
+}
+
 // ── Phase 3a: reference-assembly discovery + type→assembly index ──────────────
 //
 // To resolve an extern method's MemberRef the emitter must know which assembly

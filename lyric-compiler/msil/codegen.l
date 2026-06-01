@@ -38,6 +38,7 @@ import Lyric.Weaver as Weaver
 import Msil.Lowering
 import Msil.Ffi
 import Msil.Kernel
+import Msil.MetadataReader as Mdr
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. CodegenCtx — package-level context with pre-registered external tokens.
@@ -6827,9 +6828,158 @@ func scanExternTypesMsil(cctx: in CodegenCtx, file: in SourceFile): Unit {
   }
 }
 
+// ── Metadata-based auto-FFI resolution (epic #1622, Phase 3c) ─────────────────
+//
+// Resolve an auto-FFI call (`ExternTypeName.method(args)`) against real .NET
+// metadata via `Msil.MetadataReader` instead of the legacy `(object…) : void`
+// guess.  First cut: static methods whose parameter and return types are
+// primitives / string / object and exactly match the argument types (no
+// implicit numeric coercion yet).  Anything else returns None and falls back
+// to the legacy path (`@externTarget` wrapper required).
+
+// A primitive MsilType's ECMA element-type byte, or -1 for a type the metadata
+// reader's `SigType` cannot represent exactly.
+func msilToElemByte(t: in MsilType): Int {
+  match t {
+    case MBool   -> 0x02
+    case MChar   -> 0x03
+    case MByte   -> 0x05
+    case MInt    -> 0x08
+    case MLong   -> 0x0A
+    case MDouble -> 0x0D
+    case MString -> 0x0E
+    case MObject -> 0x1C
+    case _       -> -1
+  }
+}
+
+// Inverse: an ECMA element-type byte to its MsilType, or None when unsupported.
+func elemByteToMsil(b: in Int): Option[MsilType] {
+  if b == 0x01 { Some(value = MVoid) }
+  else if b == 0x02 { Some(value = MBool) }
+  else if b == 0x03 { Some(value = MChar) }
+  else if b == 0x05 { Some(value = MByte) }
+  else if b == 0x08 { Some(value = MInt) }
+  else if b == 0x0A { Some(value = MLong) }
+  else if b == 0x0D { Some(value = MDouble) }
+  else if b == 0x0E { Some(value = MString) }
+  else if b == 0x1C { Some(value = MObject) }
+  else { None }
+}
+
+// Append every instruction of `src` to `dst`.
+func appendInsnsMsil(dst: in List[MInsn], src: in List[MInsn]): Unit {
+  var i = 0
+  while i < src.count {
+    dst.add(src[i])
+    i = i + 1
+  }
+}
+
+// Emit a metadata-resolved auto-FFI call, or None to fall back.  `argBufs`
+// carry each argument's already-lowered IL; `argTys` their MsilTypes.
+func emitResolvedAutoFfi(
+  cctx:       in CodegenCtx,
+  insns:      in List[MInsn],
+  asmName:    in String,
+  clrFqn:     in String,
+  methodName: in String,
+  argBufs:    in List[List[MInsn]],
+  argTys:     in List[MsilType],
+  m:          in Mdr.ResolvedMethod
+): Option[MsilType] {
+  // Auto-FFI's receiver is a type name, so only a static method can be called
+  // this way; instance overloads need an @externTarget wrapper.
+  if not m.isStatic { return None }
+  if m.paramTypes.count != argTys.count { return None }
+  // Require an exact primitive/string/object parameter match (no coercion yet).
+  val paramMsil: List[MsilType] = newList()
+  var pi = 0
+  var ok = true
+  while pi < m.paramTypes.count and ok {
+    val pb = Mdr.sigPrimByte(m.paramTypes[pi])
+    if pb < 0 or pb != msilToElemByte(argTys[pi]) {
+      ok = false
+    } else {
+      match elemByteToMsil(pb) {
+        case None     -> { ok = false }
+        case Some(pm) -> { paramMsil.add(pm) }
+      }
+    }
+    pi = pi + 1
+  }
+  if not ok { return None }
+  match elemByteToMsil(Mdr.sigPrimByte(m.returnType)) {
+    case None -> None
+    case Some(retMsil) -> {
+      val sp   = splitTypeFqn(clrFqn)
+      val tRef = internFfiTypeRef(cctx, asmName, sp.ns, sp.name)
+      val sig  = buildStaticMethodSig(paramMsil, retMsil)
+      val mrRow = ctxAddMemberRef(cctx.lctx, tRef, methodName,
+        "autoffi_" + methodName + "_" + toString(argTys.count), sig)
+      val tok = 0x0A000000 + mrRow
+      var bi = 0
+      while bi < argBufs.count {
+        appendInsnsMsil(insns, argBufs[bi])
+        bi = bi + 1
+      }
+      insns.add(MCall(methodToken = tok))
+      Some(value = retMsil)
+    }
+  }
+}
+
+// Try to resolve and emit an auto-FFI call from .NET metadata.  Returns the
+// real result MsilType on success, or None to fall back to the legacy path.
+// The owning assembly comes from `clrAssemblyForType` and is read from the
+// reference pack on disk.
+func tryAutoFfiFromMetadata(
+  cctx:       in CodegenCtx,
+  fctx:       in FuncCtx,
+  insns:      in List[MInsn],
+  methodName: in String,
+  args:       in List[CallArg],
+  clrFqn:     in String
+): Option[MsilType] {
+  match Mdr.refPackDir() {
+    case None -> None
+    case Some(refDir) -> {
+      val asmName = clrAssemblyForType(clrFqn)
+      val asmPath = refDir + "/" + asmName + ".dll"
+      // Lower each argument into its own buffer, capturing IL + MsilType.
+      val argBufs: List[List[MInsn]] = newList()
+      val argTys:  List[MsilType]    = newList()
+      val argSigs: List[Mdr.SigType] = newList()
+      var ai = 0
+      var bad = false
+      while ai < args.count and not bad {
+        val buf: List[MInsn] = newList()
+        val t  = lowerCallArgMsil(cctx, fctx, buf, args[ai])
+        val eb = msilToElemByte(t)
+        if eb < 0 {
+          bad = true                    // unsupported argument type → legacy path
+        } else {
+          argBufs.add(buf)
+          argTys.add(t)
+          argSigs.add(Mdr.mkPrimSig(eb))
+        }
+        ai = ai + 1
+      }
+      if bad {
+        None
+      } else {
+        match Mdr.resolveOverload(asmPath, clrFqn, methodName, argSigs) {
+          case None    -> None
+          case Some(m) -> emitResolvedAutoFfi(cctx, insns, asmName, clrFqn, methodName, argBufs, argTys, m)
+        }
+      }
+    }
+  }
+}
+
 // Emit an auto-FFI method call for an extern-type receiver.
 // `recvName` is the Lyric name; `clrFqn` is the CLR fully-qualified type name.
-// Returns the MsilType of the result (MObject for all calls in bootstrap).
+// Returns the MsilType of the result.
 func emitAutoFfiCallMsil(
   cctx:       in CodegenCtx,
   fctx:       in FuncCtx,
@@ -6839,6 +6989,13 @@ func emitAutoFfiCallMsil(
   args:       in List[CallArg],
   clrFqn:     in String
 ): MsilType {
+  // Phase 3c: prefer real metadata-based resolution (handles argument-bearing
+  // and non-void static methods).  Falls through to the legacy gating below
+  // when the shape isn't yet supported (coercion, instance, class types).
+  match tryAutoFfiFromMetadata(cctx, fctx, insns, methodName, args, clrFqn) {
+    case Some(retTy) -> return retTy
+    case None        -> {}
+  }
   // Reject an extern-type CLR name the FFI cascade can't resolve to a
   // known reference assembly, rather than silently mis-binding it to
   // `System.Runtime` (opaque runtime `TypeLoadException`).

@@ -17811,6 +17811,7 @@ resolution → composed `resolveExtern`).  The remaining epic #1622 work — wir
 retiring #1504 H9 (Phase 3c), then `clrAssemblyForType` removal + generics
 (Phase 4) — is the behaviour-changing emitter integration, gated on the
 self-hosted cross-package resolution (`docs/42` §2/§5).
+
 ### D-progress-350 — self-hosted JVM execution of self-hosted-only features (#1611 JVM half)
 
 **Status:** Shipped.  `lyric test --target jvm` runs a `@test_module`
@@ -17849,3 +17850,53 @@ each wired into CI.  Known follow-up gaps (not exercised by the test): union
 *construction* at runtime calls a not-yet-emitted case factory (verifies, but
 `NoSuchMethodError` if actually invoked) and closure (`() -> Unit`) parameter
 calls.
+
+### D-progress-351 — auto-FFI resolved from .NET metadata, Phase 3c step 1 (epic #1622)
+
+**Status:** Shipped (Phase 3c step 1 of epic #1622; design in
+`docs/42-extern-metadata-resolution.md` §5).
+
+The self-hosted MSIL emitter now resolves auto-FFI calls
+(`ExternTypeName.method(args)`) from real .NET reference-assembly metadata
+instead of the legacy `(object…) : void` guess (#1504 H9).
+
+- **`lyric-compiler/msil/codegen.l`** — `emitAutoFfiCallMsil` first tries
+  `tryAutoFfiFromMetadata`: it lowers each argument into its own buffer to
+  capture the `MsilType`, maps those to `SigType`s (`Mdr.mkPrimSig`), and calls
+  `Mdr.resolveOverload` against the assembly named by the existing
+  `clrAssemblyForType` hint.  On an exact-match **static** method whose
+  parameter/return types are primitive/string/object, it builds the real
+  MemberRef (`buildStaticMethodSig` over the resolved `MsilType`s) and emits
+  `MCall`, returning the true result type.  Anything else (mis-hinted assembly,
+  numeric coercion, instance methods, class/value-type params) falls through to
+  the legacy `@externTarget`-required path unchanged.
+- **`lyric-compiler/msil/metadata_reader.l`** — added `mkPrimSig` (construct a
+  primitive `SigType`) and `sigPrimByte` (extract its element byte) so codegen,
+  which imports the reader aliased (`as Mdr`) to avoid its `TypeDefRow`/… record
+  names colliding with the writer's, never has to pattern-match or construct an
+  imported union case (the bootstrap parser rejects package-qualified union-case
+  patterns like `case Mdr.STPrim(b)`).
+- **`lyric-compiler/lyric/auto_ffi_self_test.l`** — a `@test_module` run by
+  native `lyric test` (new CI step), compiling `extern type Math = "System.Math"`
+  / `Math.Max(2,5)` etc. in-process through the self-hosted `Msil.Bridge` and
+  asserting the runtime values (5 / 3 / 7).
+
+**Key result — the reader runs in-bundle at compile time.** The self-hosted
+compiler reads the reference pack while compiling a user program; `Math.Max(2,5)`
+resolves to `Math.Max(int,int):int` and runs (→ 5).  The standalone-consumer
+`MissingMethodException` / `T0010` failures noted earlier do not apply to
+compiler-internal use, confirming the in-bundle resolution path.
+
+Validated: emitter suite 847/847 (2 ignored, 0 failed); native `lyric test`
+auto-FFI self-test 3/3; manual `Math.Max/Min/Abs` end-to-end.  Full-index
+resolution (removing the `clrAssemblyForType` hint so mis-hinted types like
+`System.IO.Path.Combine` resolve), numeric coercion, and instance methods are
+Phase 3c step 2 / Phase 4.
+
+**Docs:** `docs/01-language-reference.md` §11.4 (new auto-FFI extern-types
+section); `docs/42` §5.
+
+**Local-build note:** `dotnet build Lyric.Cli.Aot` is incremental over the
+wildcard `Lyric.*.dll` reference, so after a new compiler package first appears
+in `.bootstrap/stage1` its `lyric.deps.json` can be stale until a clean AOT
+rebuild; a fresh CI checkout builds it correctly.

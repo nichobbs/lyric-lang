@@ -795,6 +795,15 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     field binding, i64 literals, comparison materialization, basic-block
     stackmap frames, String predicate methods) plus deploying FSharp.Core
     beside the AOT binary for the JVM kernel's F# host shim.
+  - `auto_ffi_self_test.l` — `@test_module` covering self-hosted
+    metadata-based auto-FFI resolution (epic #1622, Phase 3c): the MSIL
+    emitter resolves `ExternTypeName.method(args)` calls from real .NET
+    reference-assembly metadata (`Msil.MetadataReader`) at compile time
+    and emits the real MemberRef instead of the legacy guess.  Run in CI
+    via native `lyric test` (compiles `extern type Math = "System.Math"` /
+    `Math.Max(2,5)` through the self-hosted `Msil.Bridge`, whose codegen
+    reads the reference pack at compile time, then asserts the runtime
+    values).  Imports only `Std.*`.
   `Lyric` is registered as a built-in head in `Emitter.fs:isBuiltinHead`,
   so `import Lyric.<X>` resolves under this directory.  The
   `Lyric.<X>` namespace is reserved for the self-hosted compiler

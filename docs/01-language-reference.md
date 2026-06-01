@@ -1141,7 +1141,32 @@ pub func Integer_parseInt(s: in String): Int
 pub func stringLength(s: in String): Int
 ```
 
-### 11.4 AOT compatibility
+### 11.4 Auto-FFI extern types
+
+`extern type Name = "CLR.Type"` binds a Lyric name to a host type so that
+`Name.method(args)` calls a static method on it without a hand-written
+`@externTarget` wrapper:
+
+```
+extern type Math = "System.Math"
+
+func clamp(n: in Int): Int {
+  Math.Min(Math.Max(n, 0), 100)   // resolves System.Math.Max/Min(int, int)
+}
+```
+
+On `--target dotnet` the self-hosted MSIL emitter resolves the call's overload
+from real .NET reference-assembly **metadata** at compile time (it parses the
+reference pack's CLI metadata directly — see `docs/42-extern-metadata-resolution.md`),
+selecting the method whose parameter types match the argument types and emitting
+the correctly-typed call and return.  The first cut supports static methods
+whose parameter and return types are primitives, `String`, or `object` and
+match the arguments exactly; calls that need implicit numeric coercion, instance
+dispatch, or class/value-type parameters fall back to requiring an explicit
+`@externTarget` wrapper.  An unresolved auto-FFI call is a compile-time
+diagnostic (it is never silently mis-bound).
+
+### 11.5 AOT compatibility
 
 All Lyric code is AOT-compatible. The compiler targets either JIT or Native AOT depending on build configuration. No reflection, no runtime code generation, no `System.Reflection.Emit` usage in compiled output.
 
