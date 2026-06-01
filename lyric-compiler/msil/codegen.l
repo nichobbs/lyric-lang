@@ -3843,9 +3843,25 @@ func lowerBuiltinOrStaticCallMsil(
             case Some(v) -> v
             case None    -> -1
           }
+          // Generic-case fields (`value: T` on `Some<T>`) resolve their hint from
+          // the surrounding instantiation via the type-var slot.  Concrete generic
+          // fields (`visibility: Option[String]` on a plain record) instead carry
+          // their own `MGenericInst`; look it up by the field's declared name so a
+          // bare `None` / `Some(...)` argument instantiates with the field's type
+          // args rather than erasing to `object` — otherwise the stored nullary
+          // case is `Option<object>` and a later `match` on the field fails
+          // "match not exhaustive" (#1731 / the #1730 session blocker).
           val innerHint: MsilType =
             if viH >= 0 and viH < outerCtxTyArgs.count { outerCtxTyArgs[viH] }
-            else                                        { MObject }
+            else {
+              match mapGet(cctx.fieldDeclaredNames, fldKeyH) {
+                case Some(fname) -> match mapGet(cctx.fieldMsilTypes, ctorKey + "/" + fname) {
+                  case Some(fty) -> fty
+                  case None      -> MObject
+                }
+                case None -> MObject
+              }
+            }
           val at = match innerHint {
             case MGenericInst(_, _, innerArgs) -> {
               val savedH: List[MsilType] = newList()
