@@ -432,6 +432,44 @@ func testOverloadResolveBcl(): Unit {
   }
 }
 
+// resolveExtern composes discovery + overload resolution: given a prebuilt
+// type→assembly index it finds the owning assembly and resolves the overload.
+func testResolveExtern(): Unit {
+  match refPackDir() {
+    case None -> panic("resolveExtern: reference-assembly pack not found")
+    case Some(dir) -> {
+      val rt = Path.join(dir, "System.Runtime.dll")
+      val one: List[String] = newList()
+      one.add(rt)
+      val typeIndex = buildTypeIndex(one)
+      val pathIndex = buildPathIndex(one)
+      val i4i4: List[SigType] = newList()
+      i4i4.add(prim(0x08))  i4i4.add(prim(0x08))
+      match resolveExtern(typeIndex, pathIndex, "System.Math", "Max", i4i4) {
+        case None -> panic("resolveExtern: Math.Max(int,int) not resolved")
+        case Some(re) -> {
+          assertEqual(re.assemblyName, "System.Runtime", "resolveExtern: Math.Max owned by System.Runtime")
+          assertTrue(re.sig.isStatic, "resolveExtern: Math.Max is static")
+          match re.sig.returnType {
+            case STPrim(e) -> assertEqualInt(e, 0x08, "resolveExtern: Max(int,int) returns Int")
+            case _         -> panic("resolveExtern: return not primitive")
+          }
+        }
+      }
+      // Unknown type → None.
+      match resolveExtern(typeIndex, pathIndex, "No.Such.Type", "X", i4i4) {
+        case Some(_) -> panic("resolveExtern: unknown type should be None")
+        case None    -> ()
+      }
+      // Assembly found in the index, but the member is absent → None.
+      match resolveExtern(typeIndex, pathIndex, "System.Math", "NoSuchMethodXyz", i4i4) {
+        case Some(_) -> panic("resolveExtern: absent member should be None")
+        case None    -> ()
+      }
+    }
+  }
+}
+
 // ── Driver ───────────────────────────────────────────────────────────────────
 
 func main(): Int {
@@ -448,6 +486,7 @@ func main(): Int {
   testRefPackDiscovery()
   testOverloadResolveSelf()
   testOverloadResolveBcl()
+  testResolveExtern()
   println("metadata-reader self-test: ok")
   return 0
 }

@@ -17684,3 +17684,31 @@ resolution: discovery uses generic-`Result`-returning `Std.File` calls, and a
 consumer of the reader's imported types (`SigType`, `ResolvedMethod`) currently
 raises advisory `T0010`/`T0020` on the self-hosted typechecker — both must be
 solid before `codegen.l` can depend on the reader (see `docs/42` §2/§5).
+
+### D-progress-349 — CLI-metadata reader: `resolveExtern` composing entry point (epic #1622)
+
+**Status:** Shipped (completes the metadata reader's resolution API; design in
+`docs/42-extern-metadata-resolution.md` §4).
+
+`resolveExtern(typeIndex, pathIndex, typeFqn, member, argTypes)` is the single
+entry point the emitter will call: it looks the owning assembly up in a
+prebuilt type→assembly-name index (`assemblyForType`), maps that name to its
+on-disk path via a companion name→path index (`buildPathIndex`), then resolves
+the best overload from that assembly (`resolveOverload`), returning a
+`ResolvedExtern` (the assembly's simple name + the `ResolvedMethod`).  Both
+indexes are built once (over `enumRefAssemblies(refPackDir())` plus
+restored-dependency DLLs) and reused across call sites; carrying explicit paths
+means assemblies outside the reference-pack directory (e.g. restored NuGet
+packages) still resolve.
+
+Self-tested against the real reference pack: `resolveExtern(... "System.Math",
+"Max", [Int, Int])` resolves to assembly `System.Runtime` with a static method
+returning Int, and an unknown type resolves to None.
+
+This completes everything the reader can do as a standalone library (layers
+1–6: container → root → tables → heaps → signatures → discovery → overload
+resolution → composed `resolveExtern`).  The remaining epic #1622 work — wiring
+`resolveExtern` into `emitAutoFfiCallMsil` / the `@externTarget` path and
+retiring #1504 H9 (Phase 3c), then `clrAssemblyForType` removal + generics
+(Phase 4) — is the behaviour-changing emitter integration, gated on the
+self-hosted cross-package resolution (`docs/42` §2/§5).

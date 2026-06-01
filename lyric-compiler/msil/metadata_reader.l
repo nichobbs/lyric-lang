@@ -1169,3 +1169,58 @@ pub func resolveOverload(asmPath: in String, typeFqn: in String, member: in Stri
     }
   }
 }
+
+// ── resolveExtern: discovery + resolution composed ───────────────────────────
+//
+// The single entry point the emitter calls to resolve an extern method.  It
+// looks the owning assembly up in a prebuilt type→assembly-name index, maps
+// that name to its on-disk path via a companion name→path index, then resolves
+// the best overload from that assembly.  Callers build both indexes once (over
+// `enumRefAssemblies(refPackDir())` plus any restored-dependency DLLs) and
+// reuse them across call sites.
+
+pub record ResolvedExtern {
+  assemblyName: String        // owning assembly's simple name (for the AssemblyRef)
+  sig:          ResolvedMethod
+}
+
+// Build an assembly-simple-name → full-DLL-path index over the given
+// assemblies (the path companion to `buildTypeIndex`).  Because the path is
+// recorded per assembly rather than reconstructed from a single directory, an
+// assembly that lives outside the reference-pack directory — e.g. a restored
+// NuGet dependency in the package cache — still resolves to its real file.
+// First writer wins, matching `buildTypeIndex`.
+pub func buildPathIndex(asmPaths: in List[String]): Map[String, String] {
+  val index: Map[String, String] = newMap()
+  var i = 0
+  while i < asmPaths.count {
+    val name = assemblySimpleName(asmPaths[i])
+    match mapGet(index, name) {
+      case Some(_) -> {}
+      case None    -> index.add(name, asmPaths[i])
+    }
+    i = i + 1
+  }
+  index
+}
+
+// Resolve an extern method call: look the owning assembly up in `typeIndex`
+// (FQN → simple name), map it to its on-disk path via `pathIndex` (simple name
+// → full path), then resolve the best overload from that assembly.  Both
+// indexes are built once by the caller (over the reference pack plus any
+// restored-dependency DLLs) and reused across call sites.  Carrying explicit
+// paths means assemblies outside the reference-pack directory still resolve.
+pub func resolveExtern(typeIndex: in Map[String, String], pathIndex: in Map[String, String],
+                       typeFqn: in String, member: in String,
+                       argTypes: in List[SigType]): Option[ResolvedExtern] {
+  match assemblyForType(typeIndex, typeFqn) {
+    case None -> None
+    case Some(asmName) -> match mapGet(pathIndex, asmName) {
+      case None -> None
+      case Some(asmPath) -> match resolveOverload(asmPath, typeFqn, member, argTypes) {
+        case None    -> None
+        case Some(m) -> Some(value = ResolvedExtern(assemblyName = asmName, sig = m))
+      }
+    }
+  }
+}
