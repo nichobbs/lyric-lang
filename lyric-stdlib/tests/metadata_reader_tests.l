@@ -301,6 +301,51 @@ func testSigDecodeOnSelf(): Unit {
   assertTrue(checkedMain, "sigself: decoded the `main` signature")
 }
 
+// Resolve a CLASS / VALUETYPE SigType's TypeDefOrRef token to a name, or "".
+func resolveSigType(img: in PeImage, layout: in TableLayout, th: in TablesHeader,
+                    t: in SigType): String {
+  val tok = sigClassToken(t)
+  if tok < 0 { "" } else { resolveTypeDefOrRefName(img, layout, th, tok) }
+}
+
+// A CLASS / VALUETYPE method-signature token resolves to the referenced type's
+// fully-qualified name.  The running PE's own helper methods return records
+// (e.g. `loadPe(): PeImage`), which are emitted as classes, so their return
+// signature carries a TypeDefOrRef token naming this package's type.
+func testTypeRefResolution(): Unit {
+  val img    = loadPe()
+  val th     = loadTables(img, loadRoot(img))
+  val layout = loadLayout(img, th)
+  val methodCount = rowCountOf(th, 0x06)
+  var mi = 1
+  var resolvedSome = false
+  var sawPeImage = false
+  while mi <= methodCount {
+    val md = readMethodDef(img, layout, mi)
+    match decodeMethodSig(blobAt(img, layout, md.sigBlob)) {
+      case Err(_) -> {}
+      case Ok(d) -> {
+        val rn = resolveSigType(img, layout, th, d.returnType)
+        if rn.length > 0 {
+          resolvedSome = true
+          // A resolved type name is a real (possibly namespaced) identifier.
+          assertTrue(rn.length > 0, "typeref: resolved name non-empty")
+          if Str.contains(rn, "PeImage") { sawPeImage = true }
+        }
+        var pj = 0
+        while pj < d.paramTypes.count {
+          val pn = resolveSigType(img, layout, th, d.paramTypes[pj])
+          if pn.length > 0 { resolvedSome = true }
+          pj = pj + 1
+        }
+      }
+    }
+    mi = mi + 1
+  }
+  assertTrue(resolvedSome, "typeref: at least one class-typed signature token resolved")
+  assertTrue(sawPeImage, "typeref: a method returning PeImage resolved to its type name")
+}
+
 // Phase 3a (hermetic): a type→assembly index built over the running test DLL
 // resolves this package's own `Program` type back to the test assembly.
 func testTypeIndexSelf(): Unit {
@@ -482,6 +527,7 @@ func main(): Int {
   testMethodSigBlobs()
   testSigDecodeRoundTrip()
   testSigDecodeOnSelf()
+  testTypeRefResolution()
   testTypeIndexSelf()
   testRefPackDiscovery()
   testOverloadResolveSelf()

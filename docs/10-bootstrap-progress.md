@@ -18034,3 +18034,36 @@ return their inner `save(...)` result).  Stacked on the nested-generic
 construction fix (#1687, D-progress-354) in the same branch, so together they
 clear both the `Result[Unit, E]` and `Result[Option[T], E]` session defects.
 MSIL only; JVM-target parity is tracked in #1722.
+
+### D-progress-356 — CLI-metadata reader: TypeDefOrRef token resolution (epic #1622)
+
+**Status:** Shipped (foundation for Phase 3c step 3 — instance methods +
+class/value-type parameters; design in `docs/42-extern-metadata-resolution.md`).
+
+The signature decoder already yields `STClass(token)` / `STValueType(token)`
+carrying a TypeDefOrRef coded index, but nothing could turn that token into a
+type name.  This adds that resolution to `lyric-compiler/msil/metadata_reader.l`:
+
+- **`readTypeRef`** — reads a TypeRef row (skips the ResolutionScope coded
+  column — `resolutionScopeIdx` is now stored on `TableLayout` — and reads
+  Name/Namespace).
+- **`resolveTypeDefOrRefName`** — decodes a TypeDefOrRef token (tag 0 = TypeDef,
+  1 = TypeRef, 2 = TypeSpec) and returns the referenced type's fully-qualified
+  name (TypeSpec / out-of-range → "").
+- **`sigClassToken` / `sigIsValueType`** — cross-package accessors that extract
+  a CLASS/VALUETYPE `SigType`'s token and value-type-ness (the bootstrap parser
+  rejects package-qualified union-case patterns, so codegen can't match
+  `case Mdr.STClass(t)` directly).
+
+Self-tested hermetically: decoding the running PE's own helper-method signatures
+(e.g. `loadPe(): PeImage`, emitted as a class-returning method) and resolving
+the return/parameter TypeDefOrRef tokens recovers the type's fully-qualified
+name (a method returning `PeImage` resolves to its `…PeImage` type name).
+
+This is reader-only (no emitter behaviour change).  It unblocks Phase 3c step 3:
+wiring class/value-type parameter & return types into auto-FFI (mapping a
+resolved token to `MClass`/`MValueTypeRef`) and instance-method dispatch on
+extern-typed receivers.
+
+**Validated:** emitter suite 847/0; reader self-test green (token resolution);
+compiles through both emitters.
