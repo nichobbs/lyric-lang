@@ -467,7 +467,7 @@ jobs:
             echo "::warning::AOT binary not found at $lyric_bin; skipping auto-FFI self-test"
             exit 0
           fi
-          "$lyric_bin" test lyric-compiler/lyric/auto_ffi_self_test.l
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/auto_ffi_self_test.l
 
       # Coverage collection — informational only, not a blocking gate (#1117).
       # Runs on push to main (not pull_request) to keep PR latency low.

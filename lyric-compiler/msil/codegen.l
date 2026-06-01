@@ -6915,8 +6915,19 @@ func emitResolvedAutoFfi(
       val sp   = splitTypeFqn(clrFqn)
       val tRef = internFfiTypeRef(cctx, asmName, sp.ns, sp.name)
       val sig  = buildStaticMethodSig(paramMsil, retMsil)
-      val mrRow = ctxAddMemberRef(cctx.lctx, tRef, methodName,
-        "autoffi_" + methodName + "_" + toString(argTys.count), sig)
+      // The blob-intern key must distinguish overloads of the same name/arity
+      // (e.g. Max(int,int) vs Max(long,long)) — ctxAddMemberRef dedups the
+      // signature blob by key, so it encodes each parameter's element byte plus
+      // the return byte; otherwise the second overload would reuse the first's
+      // signature.
+      var sigKey = "autoffi_" + clrFqn + "." + methodName
+      var ki = 0
+      while ki < paramMsil.count {
+        sigKey = sigKey + "_" + toString(msilToElemByte(paramMsil[ki]))
+        ki = ki + 1
+      }
+      sigKey = sigKey + "_r" + toString(msilToElemByte(retMsil))
+      val mrRow = ctxAddMemberRef(cctx.lctx, tRef, methodName, sigKey, sig)
       val tok = 0x0A000000 + mrRow
       var bi = 0
       while bi < argBufs.count {
@@ -6945,7 +6956,7 @@ func tryAutoFfiFromMetadata(
     case None -> None
     case Some(refDir) -> {
       val asmName = clrAssemblyForType(clrFqn)
-      val asmPath = refDir + "/" + asmName + ".dll"
+      val asmPath = Mdr.refAssemblyPath(refDir, asmName)
       // Lower each argument into its own buffer, capturing IL + MsilType.
       val argBufs: List[List[MInsn]] = newList()
       val argTys:  List[MsilType]    = newList()

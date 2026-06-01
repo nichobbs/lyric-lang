@@ -1166,6 +1166,13 @@ dispatch, or class/value-type parameters fall back to requiring an explicit
 `@externTarget` wrapper.  An unresolved auto-FFI call is a compile-time
 diagnostic (it is never silently mis-bound).
 
+**JVM target.**  Metadata-based auto-FFI resolution is currently
+`--target dotnet`-only.  On `--target jvm` there is no auto-resolution: a host
+method must be bound with an explicit `@externTarget` wrapper (using the
+static/instance convention in §11.3).  JVM parity for `extern type` method
+calls is tracked in issue #1708 (epic #1622, "MSIL + JVM parity tracked
+separately").
+
 ### 11.5 AOT compatibility
 
 All Lyric code is AOT-compatible. The compiler targets either JIT or Native AOT depending on build configuration. No reflection, no runtime code generation, no `System.Reflection.Emit` usage in compiled output.

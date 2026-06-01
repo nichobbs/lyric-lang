@@ -40,3 +40,13 @@ test "Math.Abs binds the int overload" {
   assertEqualInt(Math.Abs(-7), 7, "Abs(-7)")
   assertEqualInt(Math.Abs(42), 42, "Abs(42)")
 }
+
+// Calling both the int and the long overload of the same method in one module
+// pins that each gets its own MemberRef: the signature-blob intern key encodes
+// the parameter/return element types, so Max(long, long) is not aliased to the
+// earlier Max(int, int) blob (regression guard for the overload-key fix).
+test "Math.Max int and long overloads get distinct MemberRefs" {
+  assertEqualInt(Math.Max(2, 5), 5, "Max(int) = 5")
+  assertTrue(Math.Max(2i64, 7i64) == 7i64, "Max(long) = 7")
+  assertTrue(Math.Max(100i64, 9i64) == 100i64, "Max(long) = 100")
+}

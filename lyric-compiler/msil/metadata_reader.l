@@ -1226,6 +1226,12 @@ pub func buildPathIndex(asmPaths: in List[String]): Map[String, String] {
 // indexes are built once by the caller (over the reference pack plus any
 // restored-dependency DLLs) and reused across call sites.  Carrying explicit
 // paths means assemblies outside the reference-pack directory still resolve.
+// Full path of `<asmName>.dll` inside the reference directory `refDir`,
+// joined platform-portably (the caller's `refDir` may use either separator).
+pub func refAssemblyPath(refDir: in String, asmName: in String): String {
+  Path.join(refDir, asmName + ".dll")
+}
+
 pub func resolveExtern(typeIndex: in Map[String, String], pathIndex: in Map[String, String],
                        typeFqn: in String, member: in String,
                        argTypes: in List[SigType]): Option[ResolvedExtern] {
