@@ -18215,3 +18215,32 @@ generics through `monoFileWithImports`), which in turn clears the remaining
 by this fix alone, as expected; auth unchanged at 17/29 — its failures are the
 unrelated `Lyric.Auth.AuthHost` extern-resolution issue).  MSIL only; JVM-target
 parity for same-package generic specialization is tracked in #1707.
+### D-progress-361 — auto-FFI class (reference-type) parameters & returns, Phase 3c step 4a (epic #1622)
+
+**Status:** Shipped (Phase 3c step 4a of epic #1622; design in
+`docs/42-extern-metadata-resolution.md` §5).
+
+The reference-type counterpart of the value-type work (D-progress-358).  A new
+`MClassRef(typeRefCode, clrFqn)` MsilType (`lowering.l`) carries a pre-interned
+TypeRef so a method signature encodes `CLASS + TypeRef` — a MemberRef whose
+return/param said `object` would fail to bind to a method that really returns
+the class (`MissingMethodException`).  Encoding sites mirror `MValueTypeRef`:
+`elementTypeByte` → 0x12, `bufMsilType` / `bufMsilTypeWithCtx` → `CLASS +
+TypeRef`, `typeSigKey` → `"CR"+fqn`; in local-variable signatures it degrades to
+`object` (safe — a class ref is a reference, exactly like `MClass`).
+
+Codegen (`codegen.l`): `internClassRef` builds the `MClassRef`;
+`resolvedSigToMsil` maps a resolved class `STNamed` to it; `externRefFqn` /
+`msilIsValueTypeRef` / `argTyToSig` describe a class-ref argument by FQN;
+`argCoercionInsns` matches a class argument to a class parameter by FQN (and a
+class argument still satisfies an `object` parameter with no box).
+
+End-to-end (`auto_ffi_self_test.l`, now 8 tests):
+`Object.ReferenceEquals(Type.GetType("System.Int32"), Type.GetType("System.Int32"))`
+is `true` — `Type.GetType(string): Type` returns a real, usable class reference
+resolved entirely from metadata.  Reader self-test adds a class-return
+`resolveExtern` case (`Type.GetType` → `Type`, value-type flag false).
+
+Validated: emitter suite green; auto-FFI self-test 8/8; reader self-test green.
+Instance-method dispatch (step 4b) builds directly on this — a class return is
+the receiver a `callvirt` dispatches on.

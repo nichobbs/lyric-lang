@@ -99,6 +99,12 @@ pub union MsilType {
   // for the struct's TypeRef; `clrFqn` is the dotted CLR FQN (e.g.
   // "System.Guid") carried for diagnostics / box-token resolution.
   case MValueTypeRef(typeRefCode: Int, clrFqn: String)
+  // A reference (class) type identified by a pre-interned TypeRef — the
+  // counterpart of MValueTypeRef for ref types.  Unlike MClass it carries its
+  // TypeRef, so a method signature encodes CLASS + TypeRef (required for a
+  // MemberRef return/param to bind to the real method) rather than degrading
+  // to Object.  Used by metadata-resolved auto-FFI for class returns/params.
+  case MClassRef(typeRefCode: Int, clrFqn: String)
 }
 
 // Return the ECMA-335 ELEMENT_TYPE byte for the given MsilType.
@@ -123,6 +129,7 @@ pub func elementTypeByte(t: in MsilType): Int {
     case MByte            -> 0x05  // ELEMENT_TYPE_U1
     case MArray(_)        -> 0x1D  // ELEMENT_TYPE_SZARRAY prefix; element follows (bufMsilType)
     case MValueTypeRef(_, _) -> 0x11  // ELEMENT_TYPE_VALUETYPE prefix; TypeRef follows (bufMsilType)
+    case MClassRef(_, _)     -> 0x12  // ELEMENT_TYPE_CLASS prefix; TypeRef follows (bufMsilType)
   }
 }
 
@@ -160,6 +167,10 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
     case MClass(_) -> bufU1(w, 0x1C)   // Object: avoids malformed CLASS+TypeDefOrRef entry
     case MValueTypeRef(typeRefCode, _) -> {
       bufU1(w, 0x11)   // ELEMENT_TYPE_VALUETYPE
+      writeCompressedInt(w, typeRefCode)
+    }
+    case MClassRef(typeRefCode, _) -> {
+      bufU1(w, 0x12)   // ELEMENT_TYPE_CLASS
       writeCompressedInt(w, typeRefCode)
     }
     case MArray(elem) -> {
@@ -940,6 +951,7 @@ pub func msilTypeKey(t: in MsilType): String {
     case MByte -> "B"
     case MArray(e) -> "[" + msilTypeKey(e) + "]"
     case MValueTypeRef(_, clrFqn) -> "VT" + clrFqn + ";"
+    case MClassRef(_, clrFqn) -> "CR" + clrFqn + ";"
   }
 }
 
@@ -990,6 +1002,10 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
     }
     case MValueTypeRef(typeRefCode, _) -> {
       bufU1(w, 0x11)  // ELEMENT_TYPE_VALUETYPE
+      writeCompressedInt(w, typeRefCode)
+    }
+    case MClassRef(typeRefCode, _) -> {
+      bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS
       writeCompressedInt(w, typeRefCode)
     }
     case MArray(elem) -> {
@@ -1305,6 +1321,9 @@ func buildLocalVarSig(locals: in List[MsilType]): List[Byte] {
         bufU1(w, 0x11)
         writeCompressedInt(w, typeRefCode)
       }
+      // A class-ref local is a reference, so it degrades to Object safely
+      // (like MClass above) — an object-typed slot holds any ref correctly.
+      case MClassRef(_, _)       -> bufU1(w, 0x1C)
       case other -> bufU1(w, elementTypeByte(other))
     }
     i = i + 1
@@ -1334,6 +1353,7 @@ func buildLvSigKey(locals: in List[MsilType]): String {
       case _ -> {
         val b = match locals[i] {
           case MClass(_)             -> 0x1C
+          case MClassRef(_, _)       -> 0x1C
           case MGenericInst(_, _, _) -> 0x1C
           case other                 -> elementTypeByte(other)
         }

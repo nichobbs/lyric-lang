@@ -428,8 +428,23 @@ runtime gap.
   type's identity (`sigTypeKeyFrag`).  End-to-end:
   `TimeSpan.Compare(TimeSpan.FromMinutes(5.0), TimeSpan.FromMinutes(3.0)) == 1`
   — a value-type return feeding value-type parameters, resolved entirely from
-  metadata.  Class (reference) returns still fall back (they would need a
-  `CLASS + TypeRef` return encoding); instance-method dispatch builds on this.
+  metadata.
+- **Phase 3c (step 4a) — class (reference-type) parameters & returns.
+  _(SHIPPED.)_** The reference-type counterpart of step 3.  A new `MClassRef(
+  typeRefCode, clrFqn)` MsilType carries a pre-interned TypeRef so a method
+  signature encodes `CLASS + TypeRef` (a MemberRef whose return/param said
+  `object` would fail to bind to a method that really returns the class —
+  `MissingMethodException`).  `internClassRef` builds it; `resolvedSigToMsil`
+  maps a resolved class `STNamed` to it; `argTyToSig` / `externRefFqn` describe
+  a class-ref argument by FQN; `argCoercionInsns` matches a class argument to a
+  class parameter by FQN (and a class argument still satisfies an `object`
+  parameter with no box, since it is already a reference).  In local-variable
+  signatures `MClassRef` degrades to `object` (safe — it is a reference).
+  End-to-end:
+  `Object.ReferenceEquals(Type.GetType("System.Int32"), Type.GetType("System.Int32"))`
+  is `true` — `Type.GetType(string): Type` returns a real, usable class
+  reference resolved from metadata.  **Instance-method dispatch (step 4b) builds
+  directly on this**: a class return is the receiver a `callvirt` dispatches on.
 - **Phase 4 — `@externTarget` verification + `clrAssemblyForType` removal +
   generics.** Make the declared signature a metadata *check* (new diagnostic);
   delete the hardcoded prefix table; route generic externs through MethodSpec;

@@ -547,6 +547,17 @@ func testResolveExternValueType(): Unit {
         case None -> panic("vt: TimeSpan.Compare not resolved")
         case Some(re) -> assertEqualInt(sigPrimByte(re.sig.returnType), 0x08, "vt: Compare returns Int")
       }
+      // GetType(string): Type — class (reference) return, named by FQN with the
+      // value-type flag false.
+      val sargs: List[SigType] = newList()
+      sargs.add(prim(0x0E))
+      match resolveExtern(typeIndex, pathIndex, "System.Type", "GetType", sargs) {
+        case None -> panic("vt: Type.GetType not resolved")
+        case Some(re) -> {
+          assertEqual(sigNamedFqn(re.sig.returnType), "System.Type", "vt: GetType returns Type")
+          assertTrue(not sigNamedIsValueType(re.sig.returnType), "vt: Type is a reference type")
+        }
+      }
     }
   }
 }

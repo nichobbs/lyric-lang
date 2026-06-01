@@ -27,6 +27,8 @@ import Std.Testing
 extern type Math = "System.Math"
 extern type Path = "System.IO.Path"
 extern type Ts = "System.TimeSpan"
+extern type Typ = "System.Type"
+extern type Obj = "System.Object"
 
 test "Math.Max binds the int overload" {
   assertEqualInt(Math.Max(2, 5), 5, "Max(2,5)")
@@ -78,4 +80,18 @@ test "auto-FFI resolves value-type parameters and returns" {
   assertEqualInt(Ts.Compare(Ts.FromMinutes(5.0), Ts.FromMinutes(3.0)), 1, "Compare(5m, 3m) = 1")
   assertEqualInt(Ts.Compare(Ts.FromMinutes(2.0), Ts.FromMinutes(8.0)), -1, "Compare(2m, 8m) = -1")
   assertEqualInt(Ts.Compare(Ts.FromMinutes(4.0), Ts.FromMinutes(4.0)), 0, "Compare(4m, 4m) = 0")
+}
+
+// Phase 3c step 4a: class (reference-type) returns.  `Type.GetType(string): Type`
+// returns a reference type — the resolved MemberRef must encode a CLASS return
+// (CLASS + TypeRef), not `object`, or it would fail to bind to the real method
+// at run time (MissingMethodException).  The returned `Type` flows into
+// `Object.ReferenceEquals(object, object): bool`; the runtime unifies `Type`
+// instances per type, so a passing assertion proves the class return is a real,
+// usable reference.
+test "auto-FFI resolves class (reference) returns" {
+  assertTrue(Obj.ReferenceEquals(Typ.GetType("System.Int32"), Typ.GetType("System.Int32")),
+             "GetType yields a usable class reference (same type unified)")
+  assertTrue(not Obj.ReferenceEquals(Typ.GetType("System.Int32"), Typ.GetType("System.String")),
+             "distinct types are distinct references")
 }

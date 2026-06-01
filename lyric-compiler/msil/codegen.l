@@ -7026,11 +7026,21 @@ func elemByteToMsil(b: in Int): Option[MsilType] {
   else { None }
 }
 
-// The CLR FQN of an `MValueTypeRef`, or "" for any other MsilType.
-func msilValueTypeFqn(t: in MsilType): String {
+// The CLR FQN of an extern reference (`MClassRef`) or value (`MValueTypeRef`)
+// type, or "" for any other MsilType.
+func externRefFqn(t: in MsilType): String {
   match t {
     case MValueTypeRef(_, fqn) -> fqn
+    case MClassRef(_, fqn)     -> fqn
     case _                     -> ""
+  }
+}
+
+// True when the MsilType is a value-type extern ref (vs a class-type ref).
+func msilIsValueTypeRef(t: in MsilType): Bool {
+  match t {
+    case MValueTypeRef(_, _) -> true
+    case _                   -> false
   }
 }
 
@@ -7048,31 +7058,52 @@ func internValueTypeRef(cctx: in CodegenCtx, fqn: in String): Option[MsilType] {
   }
 }
 
+// Intern a TypeRef for the class (reference) type `fqn` and return the matching
+// `MClassRef`, or None when the type's assembly isn't indexed.  The companion
+// of `internValueTypeRef` for ref types — `MClassRef` carries its TypeRef so a
+// method signature encodes CLASS + TypeRef (a MemberRef return/param that says
+// `object` would fail to bind to a method that really returns the class).
+func internClassRef(cctx: in CodegenCtx, fqn: in String): Option[MsilType] {
+  match Mdr.assemblyForType(cctx.metadataTypeIndex, fqn) {
+    case None -> None
+    case Some(asm) -> {
+      val sp     = splitTypeFqn(fqn)
+      val refRow = internFfiTypeRef(cctx, asm, sp.ns, sp.name)
+      Some(value = MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = fqn))
+    }
+  }
+}
+
 // Map a resolved parameter / return `SigType` to its MsilType: primitives via
-// the element byte, value types via an interned TypeRef.  None for class
-// (reference) types and anything else — the caller falls back to the legacy
-// path (a class return would have to encode CLASS+TypeRef, not yet supported).
+// the element byte, value types via an interned VALUETYPE TypeRef, class
+// (reference) types via an interned CLASS TypeRef.  None for anything else (or
+// when the type's assembly isn't indexed) — the caller falls back to legacy.
 func resolvedSigToMsil(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[MsilType] {
   val pb = Mdr.sigPrimByte(sig)
   if pb >= 0 {
     elemByteToMsil(pb)
-  } else if Mdr.sigNamedIsValueType(sig) {
-    internValueTypeRef(cctx, Mdr.sigNamedFqn(sig))
   } else {
-    None
+    val fqn = Mdr.sigNamedFqn(sig)
+    if fqn.length == 0 {
+      None
+    } else if Mdr.sigNamedIsValueType(sig) {
+      internValueTypeRef(cctx, fqn)
+    } else {
+      internClassRef(cctx, fqn)
+    }
   }
 }
 
 // Map a lowered argument's MsilType to the `SigType` used for overload
-// resolution: primitives by element byte, value-type externs by FQN.  None for
+// resolution: primitives by element byte, value/class externs by FQN.  None for
 // argument types the metadata path can't describe (caller falls back).
 func argTyToSig(t: in MsilType): Option[Mdr.SigType] {
   val eb = msilToElemByte(t)
   if eb >= 0 {
     Some(value = Mdr.mkPrimSig(eb))
   } else {
-    val fqn = msilValueTypeFqn(t)
-    if fqn.length > 0 { Some(value = Mdr.mkNamedSig(fqn, true)) } else { None }
+    val fqn = externRefFqn(t)
+    if fqn.length > 0 { Some(value = Mdr.mkNamedSig(fqn, msilIsValueTypeRef(t))) } else { None }
   }
 }
 
@@ -7135,9 +7166,11 @@ func argCoercionInsns(cctx: in CodegenCtx, argTy: in MsilType, paramSig: in Mdr.
   val acc: List[MInsn] = newList()
   val paramByte = Mdr.sigPrimByte(paramSig)
   if paramByte < 0 {
-    // Non-primitive parameter.  Value types must match by FQN exactly (no
-    // coercion); class/other parameters are not yet supported.
-    if Mdr.sigNamedIsValueType(paramSig) and msilValueTypeFqn(argTy) == Mdr.sigNamedFqn(paramSig) {
+    // Non-primitive parameter: an extern value or class type.  The argument
+    // must be the same extern type (matched by FQN) — no coercion is emitted
+    // (a value type is passed by value, a class by reference).
+    val pfqn = Mdr.sigNamedFqn(paramSig)
+    if pfqn.length > 0 and externRefFqn(argTy) == pfqn {
       Some(value = acc)
     } else {
       None
