@@ -799,6 +799,43 @@ func reprForEnum(decl: in EnumDecl): String {
   "pub enum " + decl.name + " { " + cases + " }"
 }
 
+// Build the head-only `impl <Iface> for <Target> {}` repr for a restored
+// impl block.  The empty body re-parses + re-typechecks in isolation; the
+// consumer recovers the impl's method signatures from the package's already-
+// emitted `interface` decl (#1602).  Returns `None` when the impl target is
+// not a plain type reference (e.g. an inherent impl on a generic application)
+// — those don't contribute a cross-package interface binding the current
+// registration handles, so they are omitted rather than emitting a malformed
+// repr.
+func reprForImplHead(decl: in ImplDecl): Option[String] {
+  val targetName = implTargetSimpleName(decl)
+  if Str.isEmpty(targetName) { return None }
+  val ifaceName = joinDots(decl.iface.head.segments)
+  if Str.isEmpty(ifaceName) { return None }
+  Some(value = "impl " + ifaceName + " for " + targetName + " {}")
+}
+
+// The contract-decl `name` for an impl: the simple target type name (the type
+// whose method table the consumer needs to populate).
+func implReprName(decl: in ImplDecl): String {
+  val t = implTargetSimpleName(decl)
+  if Str.isEmpty(t) { "__impl" } else { t }
+}
+
+// Extract the simple (last-segment) name of an impl's target type, or "" when
+// the target is not a plain `TRef` / `TGenericApp` head.
+func implTargetSimpleName(decl: in ImplDecl): String {
+  match decl.target.kind {
+    case TRef(path)          -> lastSegOf(path.segments)
+    case TGenericApp(h, _)   -> lastSegOf(h.segments)
+    case _                   -> ""
+  }
+}
+
+func lastSegOf(segs: in List[String]): String {
+  if segs.count == 0 { "" } else { segs[segs.count - 1] }
+}
+
 // Build the `pub interface Name { ... }` repr with each abstract
 // method signature.  Default-method bodies and associated types are
 // elided (their full form requires walking ImplMember).
@@ -987,6 +1024,24 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
           decls.add(basicDecl("alias", a.name, reprForTypeAlias(a)))
         case _ -> ()
       }
+    }
+    // `impl` blocks carry no visibility token (they are not pub/private), so
+    // they sit outside the `isPubVis` guard above.  Record the impl→interface
+    // binding so a cross-package consumer learns which interface a public
+    // record satisfies — the consumer needs it to register the record's
+    // instance methods (it dispatches `store.set(...)` on the concrete record
+    // type, keyed `<pkg>.<Record>/<method>`, which is absent from the type
+    // surface otherwise) (#1602).  The repr is the head-only `impl I for T {}`
+    // form: an empty body re-parses + re-typechecks cleanly, and the method
+    // signatures are recovered from the already-emitted `interface` decl.
+    match it.kind {
+      case IImpl(idecl) -> {
+        match reprForImplHead(idecl) {
+          case Some(repr) -> decls.add(basicDecl("impl", implReprName(idecl), repr))
+          case None       -> ()
+        }
+      }
+      case _ -> ()
     }
     i = i + 1
   }

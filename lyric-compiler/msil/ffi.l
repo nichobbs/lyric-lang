@@ -198,6 +198,29 @@ pub func clrAssemblyResolvable(typeFqn: in String): Bool {
   Str.startsWith(typeFqn, "System.") or Str.startsWith(typeFqn, "Lyric.")
 }
 
+// True when `typeFqn` is a known BCL *value type* (struct or enum).  Extern
+// types that map to one of these (`extern type Uuid = "System.Guid"`, etc.)
+// must encode as ELEMENT_TYPE_VALUETYPE (0x11) + TypeRef in cross-package
+// MemberRef signatures so the consumer's reference matches the producer DLL's
+// `valuetype System.X` MethodDef signature — a CLASS / OBJECT encoding mismatch
+// faults at run time with `Method not found` (#1602).
+//
+// The list is the closed set of value-typed externs the stdlib `_kernel/`
+// boundary declares today (see `lyric-stdlib/std/_kernel/*.l`).  Reference-type
+// externs (HttpClient, Regex, Stream, …) are deliberately absent — they keep
+// the existing CLASS / OBJECT encoding.  When a new value-typed extern is
+// added to the kernel, it must be added here too; an omission re-introduces the
+// signature mismatch (caught by the cross-package round-trip self-test).
+pub func clrIsValueType(typeFqn: in String): Bool {
+  typeFqn == "System.Guid"
+    or typeFqn == "System.DateTime"
+    or typeFqn == "System.TimeSpan"
+    or typeFqn == "System.DateTimeOffset"
+    or typeFqn == "System.Threading.CancellationToken"
+    or typeFqn == "System.Globalization.NumberStyles"
+    or typeFqn == "System.Text.RegularExpressions.RegexOptions"
+}
+
 // ── Resolver ─────────────────────────────────────────────────────────────────
 
 // `paramArity` was carried over from the earlier reflection-based
