@@ -52,6 +52,7 @@ import Lyric.CliShell as CliShell
 import Lyric.ContractMeta as Meta
 import Lyric.RestoredPackages as RP
 import Msil.Bridge as MsilBridge
+import Jvm.Bridge as JvmBridge
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public types  (mirrors the future-package contract in cli.l)
@@ -754,7 +755,29 @@ pub func emit(req: in EmitRequest): EmitResult {
 
   match req.target {
     case Dotnet -> emitMsilInProcess(req)
-    case Jvm    -> emitJvmViaSubprocess(req)
+    case Jvm    -> emitJvmInProcess(req)
+  }
+}
+
+// In-process single-source JVM emit — direct call into the self-hosted
+// `Jvm.Bridge.compileToJarBundled` (#1611).  Replaces the legacy
+// `--internal-build --target jvm` subprocess hop into the F# emitter, whose
+// stage-0 parser can't handle self-hosted-only surface (e.g. the bitwise
+// integer methods).  The bundled entry compiles the user package plus the
+// transitive closure of its stdlib imports into one runnable JAR, so a
+// program that calls stdlib functions (e.g. `Std.Testing` asserts) links at
+// runtime.  Diagnostics land on stderr via `Lyric.DiagnosticUtil`, matching
+// the MSIL in-process path.
+func emitJvmInProcess(req: in EmitRequest): EmitResult {
+  val stdlibSources = findStdlibSources()
+  val pkgName = extractPackageName(req.source)
+  val name = if pkgName.length > 0 { pkgName } else { req.assemblyName }
+  val ok = JvmBridge.compileToJarBundled(req.source, req.outputPath, name, stdlibSources)
+  if ok {
+    val okDiags: List[Diagnostic] = newList()
+    EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
+  } else {
+    failResult("JVM compilation failed (see stderr)")
   }
 }
 

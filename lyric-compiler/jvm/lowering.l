@@ -927,7 +927,18 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
   }
   val smBuf = writerNew()   // raw frame bytes (no leading count)
   var smCount = 0
-  var prevOffset = -1       // initial implicit frame is at offset -1
+
+  // Collect one frame per *distinct* bytecode offset.  Multiple branch-target
+  // labels can resolve to the same offset — most importantly a try-region end
+  // label (empty stack) coinciding with a catch handler label (which needs the
+  // caught exception on the stack).  Emitting both produced two frames at the
+  // same offset, so the second frame's `offset_delta = off - prevOffset - 1`
+  // underflowed to -1 and was written as 65535, shifting every later frame by
+  // 64KB (VerifyError / "Current Frame bci @65595").  Dedupe by offset, letting
+  // a handler frame win so the offset carries `[Throwable]` on its stack.
+  val frameOffs: List[Int]    = newList()   // distinct offsets, ascending
+  val frameEx:   List[String] = newList()   // "" = empty stack; else exception class
+  val seenOff:   Map[Int, Int] = newMap()   // offset -> index into frameOffs
 
   var si = 0
   while si < f.insns.count {
@@ -936,27 +947,22 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
         if branchTargets.containsKey(l) {
           match mapGet(ar.labelOffsets, l) {
             case Some(off) -> {
-              val delta = off - prevOffset - 1
-              writerByte(smBuf, 255)           // full_frame tag
-              writerU2(smBuf, delta)           // offset_delta
-              writerU2(smBuf, frameLocals.count)
-              var vi = 0
-              while vi < frameLocals.count {
-                emitVerifierTypeBc(frameLocals[vi], pool, smBuf)
-                vi = vi + 1
-              }
-              match mapGet(handlerTargets, l) {
-                case Some(cc) -> {
-                  writerU2(smBuf, 1)             // 1 stack item: the caught exception
-                  val exClass = if cc == "" { "java/lang/Throwable" } else { cc }
-                  emitVerifierTypeBc(VObject(className = exClass), pool, smBuf)
+              val ex =
+                match mapGet(handlerTargets, l) {
+                  case Some(cc) -> if cc == "" { "java/lang/Throwable" } else { cc }
+                  case None     -> ""
                 }
+              match mapGet(seenOff, off) {
                 case None -> {
-                  writerU2(smBuf, 0)             // stack items = 0 (empty)
+                  seenOff.add(off, frameOffs.count)
+                  frameOffs.add(off)
+                  frameEx.add(ex)
+                }
+                case Some(idx) -> {
+                  // Duplicate offset: a handler (non-empty stack) frame wins.
+                  if ex != "" { frameEx[idx] = ex }
                 }
               }
-              smCount = smCount + 1
-              prevOffset = off
             }
             case None -> ()
           }
@@ -965,6 +971,62 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
       case _ -> ()
     }
     si = si + 1
+  }
+
+  // Add basic-block starts (instructions following an unconditional transfer)
+  // that are not already branch-target frame points.  The verifier requires a
+  // frame at every block start, including dead code after a `panic`'s athrow.
+  var bsi = 0
+  while bsi < ar.blockStarts.count {
+    val bso = ar.blockStarts[bsi]
+    if not seenOff.containsKey(bso) {
+      seenOff.add(bso, frameOffs.count)
+      frameOffs.add(bso)
+      frameEx.add("")
+    }
+    bsi = bsi + 1
+  }
+
+  // Frame offsets must be emitted in strictly ascending order (offset_delta is
+  // relative).  Label and block-start offsets interleave, so sort both parallel
+  // lists by offset (insertion sort — frame counts are small).
+  var a = 1
+  while a < frameOffs.count {
+    val ko = frameOffs[a]
+    val ke = frameEx[a]
+    var b = a - 1
+    while b >= 0 and frameOffs[b] > ko {
+      frameOffs[b + 1] = frameOffs[b]
+      frameEx[b + 1]   = frameEx[b]
+      b = b - 1
+    }
+    frameOffs[b + 1] = ko
+    frameEx[b + 1]   = ke
+    a = a + 1
+  }
+
+  var prevOffset = -1       // initial implicit frame is at offset -1
+  var fi2 = 0
+  while fi2 < frameOffs.count {
+    val off = frameOffs[fi2]
+    val delta = off - prevOffset - 1
+    writerByte(smBuf, 255)               // full_frame tag
+    writerU2(smBuf, delta)               // offset_delta
+    writerU2(smBuf, frameLocals.count)
+    var vi = 0
+    while vi < frameLocals.count {
+      emitVerifierTypeBc(frameLocals[vi], pool, smBuf)
+      vi = vi + 1
+    }
+    if frameEx[fi2] != "" {
+      writerU2(smBuf, 1)                  // 1 stack item: the caught exception
+      emitVerifierTypeBc(VObject(className = frameEx[fi2]), pool, smBuf)
+    } else {
+      writerU2(smBuf, 0)                  // empty stack
+    }
+    smCount = smCount + 1
+    prevOffset = off
+    fi2 = fi2 + 1
   }
 
   // Build the Code attribute body.  If there are StackMapTable entries,

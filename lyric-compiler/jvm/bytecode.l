@@ -670,12 +670,64 @@ func emitAllInsns(
 
 // ── Public assembly entry point ───────────────────────────────────────────────
 
+/// True for instructions that transfer control unconditionally and so do not
+/// fall through: the instruction *after* one of these begins a new basic block.
+func isTransferInsn(insn: in AsmInsn): Bool {
+  match insn {
+    case Nullary(op) ->
+      op == OP_IRETURN or op == OP_LRETURN or op == OP_FRETURN or
+      op == OP_DRETURN or op == OP_ARETURN or op == OP_RETURN  or op == OP_ATHROW
+    case BranchInsn(op, _) -> op == OP_GOTO
+    case GotoW(_)          -> true
+    case _                 -> false
+  }
+}
+
+/// Byte offsets of instructions that begin a new basic block by following an
+/// unconditional control transfer (goto / goto_w / *return / athrow / switch).
+/// The JVM verifier requires a StackMapTable frame at every such block start —
+/// even for unreachable code, e.g. the `goto` a match/if arm emits right after
+/// a `panic`'s `athrow`.  Without a frame there the verifier rejects the method
+/// with "Expecting a stack map frame".  Offsets are computed with the same
+/// size/padding walk as `buildLabelMap` so they line up with `labelOffsets`.
+func collectBlockStarts(asm: in MethodAssembler): List[Int] {
+  val starts: List[Int] = newList()
+  var offset = 0
+  var prevTransfer = false
+  for insn in asm.insns.toArray() {
+    match insn {
+      case Label(_) -> {}   // zero width; does not interrupt the transfer flag
+      case TableSwitch(_, _, nCases, _) -> {
+        if prevTransfer { starts.add(offset) }
+        val pad = switchPadding(offset)
+        // op + pad + default(4) + low(4) + high(4) + 4*nCases — must match
+        // buildLabelMap exactly or every later offset (and block start) drifts.
+        offset = offset + 1 + pad + 4 + 4 + 4 + 4 * nCases
+        prevTransfer = true
+      }
+      case LookupSwitch(nPairs, _) -> {
+        if prevTransfer { starts.add(offset) }
+        val pad = switchPadding(offset)
+        offset = offset + 1 + pad + 4 + 4 + 8 * nPairs
+        prevTransfer = true
+      }
+      case _ -> {
+        if prevTransfer { starts.add(offset) }
+        prevTransfer = isTransferInsn(insn)
+        offset = offset + insnSize(insn)
+      }
+    }
+  }
+  starts
+}
+
 /// Raw assembly result: code bytes + label-to-offset map.
 /// Used by Jvm.Lowering (B5) to compute stack-map frames before
 /// building the Code attribute.
 pub record AssemblyResult {
   codeBytes:    List[Byte]
   labelOffsets: Map[String, Int]
+  blockStarts:  List[Int]
 }
 
 /// Assemble the instruction list to bytes and return both the code bytes
@@ -685,7 +737,10 @@ pub func assembleRaw(asm: in MethodAssembler): AssemblyResult {
   val labels = buildLabelMap(asm)
   val code   = writerNew()
   emitAllInsns(asm, labels, code)
-  AssemblyResult(codeBytes = writerToList(code), labelOffsets = labels)
+  AssemblyResult(
+    codeBytes    = writerToList(code),
+    labelOffsets = labels,
+    blockStarts  = collectBlockStarts(asm))
 }
 
 /// Run the two-pass assembler over `asm` and return a finished

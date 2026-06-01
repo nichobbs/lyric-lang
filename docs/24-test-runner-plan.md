@@ -205,9 +205,20 @@ Each stage is independently shippable. Stage 1 is the v1 cut; later
 stages can land without breaking the surface or the CLI flag set
 documented here.
 
-### 5a. JVM target (`lyric test --jvm`)
+### 5a. JVM target (`lyric test --target jvm`)
 
-**Status (D-progress-206, B126):** Bootstrap-grade stub shipped.
+**Status (D-progress-345, #1611):** Shipped, self-hosted, end-to-end.
+`lyric test --target jvm <source.l>` synthesises the test program from the
+`@test_module`'s `test` blocks, compiles it **in-process through the
+self-hosted `Jvm.Bridge`** (`compileToJarBundled` bundles the user package
+plus its transitive stdlib-import closure into one runnable JAR), then runs
+it under `java -jar` and asserts the TAP output.  `bitwise_self_test.l` runs
+green on this path in CI.  The flag spelling is `--target jvm` (matching
+`lyric build`), not the earlier proposed `--jvm`.
+
+The remainder of this section describes the superseded B126 bootstrap stub.
+
+**Status (D-progress-206, B126 — superseded by D-progress-345):** Bootstrap-grade stub shipped.
 
 The `--jvm` flag switches the test compilation from the .NET-hosted
 `Emitter.MSIL` backend to the `Emitter.Jvm` backend. The synthesised

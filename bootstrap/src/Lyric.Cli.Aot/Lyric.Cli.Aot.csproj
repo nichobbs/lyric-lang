@@ -16,6 +16,15 @@
     <Reference Include="../../../.bootstrap/stage1/Lyric.*.dll">
       <Private>true</Private>
     </Reference>
+    <!-- The self-hosted JVM backend's kernel (Jvm.Kernel) routes byte-writer
+         and constant-pool operations through the F# `Lyric.Jvm.Hosts` shim,
+         which depends on FSharp.Core.  The in-process JVM build path
+         (emitter.l into Jvm.Bridge) therefore needs FSharp.Core deployed beside
+         the AOT binary, unlike the pure-Lyric MSIL kernel.  Staged into
+         .bootstrap/stage1 by bootstrap.sh. -->
+    <Reference Include="../../../.bootstrap/stage1/FSharp.Core.dll">
+      <Private>true</Private>
+    </Reference>
   </ItemGroup>
 
 </Project>
