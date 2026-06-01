@@ -419,6 +419,7 @@ pub record TableLayout {
   guidIdx:         Int
   blobIdx:         Int
   typeDefOrRefIdx: Int          // TypeDefOrRef coded-index width
+  resolutionScopeIdx: Int       // ResolutionScope coded-index width (TypeRef col 0)
   fieldIdx:        Int          // Field simple-index width
   methodIdx:       Int          // MethodDef simple-index width
   paramIdx:        Int          // Param simple-index width
@@ -527,7 +528,8 @@ pub func computeLayout(img: in PeImage, root: in MetadataRoot,
   }
   Ok(value = TableLayout(
     stringIdx = stringIdx, guidIdx = guidIdx, blobIdx = blobIdx,
-    typeDefOrRefIdx = tdrIdx, fieldIdx = fieldIdx, methodIdx = methodIdx,
+    typeDefOrRefIdx = tdrIdx, resolutionScopeIdx = rsIdx,
+    fieldIdx = fieldIdx, methodIdx = methodIdx,
     paramIdx = paramIdx, rowSize = rowSize, dataStart = dataStart,
     stringsBase = stringsBase, blobBase = blobBase))
 }
@@ -580,6 +582,47 @@ pub func readTypeDef(img: in PeImage, layout: in TableLayout,
     flags = flags, name = stringAt(img, layout, nameI),
     namespaceName = stringAt(img, layout, nsI),
     fieldListStart = fieldL, methodListStart = methodL)
+}
+
+// A TypeRef row's name and namespace (ECMA §II.22.38).
+pub record TypeRefRow {
+  name:          String
+  namespaceName: String
+}
+
+// Read TypeRef row `row` (1-based).  Columns: ResolutionScope(coded),
+// Name(#String), Namespace(#String).  Only the name/namespace are kept (the
+// resolution scope — which assembly defines the type — is not needed to name it).
+pub func readTypeRef(img: in PeImage, layout: in TableLayout, row: in Int): TypeRefRow {
+  val b = img.bytes
+  val o = layout.dataStart[0x01] + (row - 1) * layout.rowSize[0x01]
+  var p = o + layout.resolutionScopeIdx      // skip ResolutionScope
+  val nameI = rdIdx(b, p, layout.stringIdx)
+  p = p + layout.stringIdx
+  val nsI = rdIdx(b, p, layout.stringIdx)
+  TypeRefRow(name = stringAt(img, layout, nameI), namespaceName = stringAt(img, layout, nsI))
+}
+
+// Resolve a TypeDefOrRef coded index (the 2-bit-tagged token a CLASS /
+// VALUETYPE / GENERICINST signature carries) to the referenced type's
+// fully-qualified name.  Tag 0 = TypeDef, 1 = TypeRef, 2 = TypeSpec.
+// TypeSpec (generic instantiations etc.) and out-of-range rows return "".
+pub func resolveTypeDefOrRefName(img: in PeImage, layout: in TableLayout,
+                                 th: in TablesHeader, codedToken: in Int): String {
+  val tag = codedToken % 4
+  val row = codedToken / 4
+  if row <= 0 { return "" }
+  if tag == 0 {
+    if row > rowCountOf(th, 0x02) { return "" }
+    val td = readTypeDef(img, layout, row)
+    if td.namespaceName.length > 0 { td.namespaceName + "." + td.name } else { td.name }
+  } else if tag == 1 {
+    if row > rowCountOf(th, 0x01) { return "" }
+    val tr = readTypeRef(img, layout, row)
+    if tr.namespaceName.length > 0 { tr.namespaceName + "." + tr.name } else { tr.name }
+  } else {
+    ""
+  }
 }
 
 // Read MethodDef row `row` (1-based).  Columns (ECMA §II.22.26):
@@ -827,6 +870,25 @@ pub func sigPrimByte(t: in SigType): Int {
   match t {
     case STPrim(b) -> b
     case _         -> -1
+  }
+}
+
+// The TypeDefOrRef token of a CLASS / VALUETYPE `SigType`, or -1 otherwise.
+// Cross-package accessor (the bootstrap parser rejects package-qualified
+// union-case patterns, so codegen can't match `case Mdr.STClass(t)` directly).
+pub func sigClassToken(t: in SigType): Int {
+  match t {
+    case STClass(tok)     -> tok
+    case STValueType(tok) -> tok
+    case _                -> -1
+  }
+}
+
+// True when the `SigType` is a value type (VALUETYPE), false otherwise.
+pub func sigIsValueType(t: in SigType): Bool {
+  match t {
+    case STValueType(_) -> true
+    case _              -> false
   }
 }
 
