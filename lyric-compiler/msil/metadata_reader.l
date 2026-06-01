@@ -814,6 +814,22 @@ pub func decodeMethodSig(blob: in slice[Byte]): Result[DecodedMethodSig, String]
   Ok(value = decodeMethodSigAt(blob, 0).sig)
 }
 
+// Construct a primitive `SigType` from its ECMA element-type byte.  Exposed so
+// callers in other packages (which cannot pattern-match or construct an
+// imported union case directly) can build argument types for resolution.
+pub func mkPrimSig(elemByte: in Int): SigType {
+  STPrim(elemByte = elemByte)
+}
+
+// The primitive element-type byte of a `SigType`, or -1 for any non-primitive
+// shape.  The cross-package accessor companion to `mkPrimSig`.
+pub func sigPrimByte(t: in SigType): Int {
+  match t {
+    case STPrim(b) -> b
+    case _         -> -1
+  }
+}
+
 // ── Phase 3a: reference-assembly discovery + type→assembly index ──────────────
 //
 // To resolve an extern method's MemberRef the emitter must know which assembly
@@ -1210,6 +1226,12 @@ pub func buildPathIndex(asmPaths: in List[String]): Map[String, String] {
 // indexes are built once by the caller (over the reference pack plus any
 // restored-dependency DLLs) and reused across call sites.  Carrying explicit
 // paths means assemblies outside the reference-pack directory still resolve.
+// Full path of `<asmName>.dll` inside the reference directory `refDir`,
+// joined platform-portably (the caller's `refDir` may use either separator).
+pub func refAssemblyPath(refDir: in String, asmName: in String): String {
+  Path.join(refDir, asmName + ".dll")
+}
+
 pub func resolveExtern(typeIndex: in Map[String, String], pathIndex: in Map[String, String],
                        typeFqn: in String, member: in String,
                        argTypes: in List[SigType]): Option[ResolvedExtern] {
