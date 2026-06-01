@@ -18139,3 +18139,39 @@ Validated: emitter suite 847/0; auto-FFI self-test 7/7; reader self-test green.
 Class (reference) returns still fall back (need `CLASS + TypeRef` encoding);
 instance-method dispatch builds on this (it reuses the FQN resolution + value
 type / class handling).
+
+### D-progress-359 — self-hosted MSIL: option-typed record field construction (#1731)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`; regression test
+`lyric-compiler/lyric/record_option_field_self_test.l`).
+
+A `None` (or `Some(...)`) argument for a **concrete `Option[T]` record field**
+was lowered without the field's type argument, so the stored nullary case was
+`Option<object>` while the field's static type is `Option[T]`.  A later
+`match field { case None / case Some }` then matched neither arm and panicked
+"match not exhaustive" (`scr=GStd.Core.Option<…>`).  The earlier #1687 fix
+threaded the construction hint for *generic-case* fields (`value: T` on
+`Some<T>`, via the type-var slot) but not for a plain record's concrete generic
+field.
+
+Fix: in the record-constructor argument loop, when a field is not a type-var
+slot, fall back to the field's own registered MSIL type
+(`fieldMsilTypes[ctorKey/fieldName]`, resolved via the
+`fieldDeclaredNames` positional→name map) as the per-argument
+`contextHintTyArgs` source.  A bare `None` for an `Option[String]` field thus
+instantiates `Option<String>$None`, matching the field's static type and the
+consuming `match`'s isinst.
+
+Validation: `record_option_field_self_test.l` 3/3 (mixed None/Some across a
+many-Option-field record, `Some` payload round-trip, `Option[Int]` inner);
+Emitter 847/847, Cli 84/84; no regression in the other self-tests.
+
+Scope note: this is the standalone `None`-record-field defect (#1731), distinct
+from #1730 (mono's `specializeFunc` `FunctionDecl` construction corrupting `ret`
+inside `Lyric.Mono.dll` — that corruption reproduces only in the real mono
+execution context and is still open).  The lyric-session suite is unchanged by
+this fix (its remaining failures are gated on #1730 and the generic-stdlib-call
+instantiation #1727).  MSIL only; JVM-target parity is tracked in #1740 (the
+JVM record-constructor argument loop may carry the same `Option<object>`
+erasure; verifying / fixing it and extending the self-test to `--target jvm` is
+the follow-up).
