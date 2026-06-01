@@ -26,6 +26,7 @@ import Std.Testing
 
 extern type Math = "System.Math"
 extern type Path = "System.IO.Path"
+extern type Ts = "System.TimeSpan"
 
 test "Math.Max binds the int overload" {
   assertEqualInt(Math.Max(2, 5), 5, "Max(2,5)")
@@ -67,4 +68,14 @@ test "Path.Combine resolves via the metadata type index" {
 test "auto-FFI widens Int/Long args to a Double parameter" {
   assertTrue(Math.Sqrt(4) == 2.0, "Sqrt(int 4) = 2.0")
   assertTrue(Math.Sqrt(9i64) == 3.0, "Sqrt(long 9) = 3.0")
+}
+
+// Phase 3c step 3: value-type parameters and returns.  `TimeSpan.FromMinutes`
+// returns a `TimeSpan` value type (resolved to MValueTypeRef from metadata),
+// which feeds `TimeSpan.Compare(TimeSpan, TimeSpan): int` — a value-type-in,
+// primitive-out round trip resolved entirely from metadata.
+test "auto-FFI resolves value-type parameters and returns" {
+  assertEqualInt(Ts.Compare(Ts.FromMinutes(5.0), Ts.FromMinutes(3.0)), 1, "Compare(5m, 3m) = 1")
+  assertEqualInt(Ts.Compare(Ts.FromMinutes(2.0), Ts.FromMinutes(8.0)), -1, "Compare(2m, 8m) = -1")
+  assertEqualInt(Ts.Compare(Ts.FromMinutes(4.0), Ts.FromMinutes(4.0)), 0, "Compare(4m, 4m) = 0")
 }

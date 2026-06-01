@@ -18103,3 +18103,39 @@ it is **not** the #1730 root cause — `specializeFunc` already constructs its
 `FunctionDecl` in declaration order, so #1730 remains open.  A separate
 `None`-as-record-field-value defect (#1731) surfaced from the same test and is
 also tracked apart.  MSIL only.
+
+### D-progress-358 — auto-FFI value-type parameters & returns, Phase 3c step 3 (epic #1622)
+
+**Status:** Shipped (Phase 3c step 3 of epic #1622; design in
+`docs/42-extern-metadata-resolution.md` §5).
+
+Auto-FFI now resolves and emits **value-type** parameters and returns, the first
+non-primitive types it handles.  Two halves:
+
+- **Reader — resolve non-primitives by FQN, not token** (`metadata_reader.l`):
+  a new `STNamed(fqn, valueType)` `SigType`; `resolveSigTypeFqn` normalises a
+  `CLASS`/`VALUETYPE` token (via `resolveTypeDefOrRefName`) into it;
+  `resolveOverloadIn` normalises each candidate's parameter/return types before
+  scoring (`scoreParams` + an `STNamed`-vs-`STNamed` FQN-exact rule), so a
+  caller's value-type argument (described by FQN) matches a parameter whose
+  token lives in a different assembly's metadata.  Accessors `mkNamedSig` /
+  `sigNamedFqn` / `sigNamedIsValueType`.
+- **Codegen** (`codegen.l`): `internValueTypeRef` interns a TypeRef for a value
+  type's FQN (assembly from the metadata index) → `MValueTypeRef`, whose
+  `bufMsilType` encoding is `VALUETYPE + TypeRef`; `resolvedSigToMsil` maps a
+  resolved parameter/return `SigType` → MsilType; `argTyToSig` describes a
+  value-type argument by FQN; `argCoercionInsns` accepts a value-type argument
+  that matches its parameter's FQN; and the MemberRef-intern key
+  (`sigTypeKeyFrag`) encodes each type's identity so value-type and primitive
+  overloads stay distinct.
+
+End-to-end (`auto_ffi_self_test.l`, now 7 tests):
+`TimeSpan.Compare(TimeSpan.FromMinutes(5.0), TimeSpan.FromMinutes(3.0)) == 1`
+— a value-type return feeding value-type parameters, resolved entirely from
+metadata.  Reader self-test adds a value-type `resolveExtern` case
+(`TimeSpan.FromMinutes` → TimeSpan; `TimeSpan.Compare` → Int).
+
+Validated: emitter suite 847/0; auto-FFI self-test 7/7; reader self-test green.
+Class (reference) returns still fall back (need `CLASS + TypeRef` encoding);
+instance-method dispatch builds on this (it reuses the FQN resolution + value
+type / class handling).
