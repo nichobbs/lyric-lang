@@ -7010,6 +7010,63 @@ func elemByteToMsil(b: in Int): Option[MsilType] {
   else { None }
 }
 
+// The CLR FQN of an `MValueTypeRef`, or "" for any other MsilType.
+func msilValueTypeFqn(t: in MsilType): String {
+  match t {
+    case MValueTypeRef(_, fqn) -> fqn
+    case _                     -> ""
+  }
+}
+
+// Intern a TypeRef for the value type `fqn` (its owning assembly comes from the
+// metadata index) and return the matching `MValueTypeRef`, or None when the
+// type's assembly isn't indexed.
+func internValueTypeRef(cctx: in CodegenCtx, fqn: in String): Option[MsilType] {
+  match Mdr.assemblyForType(cctx.metadataTypeIndex, fqn) {
+    case None -> None
+    case Some(asm) -> {
+      val sp     = splitTypeFqn(fqn)
+      val refRow = internFfiTypeRef(cctx, asm, sp.ns, sp.name)
+      Some(value = MValueTypeRef(typeRefCode = tdrTypeRef(refRow), clrFqn = fqn))
+    }
+  }
+}
+
+// Map a resolved parameter / return `SigType` to its MsilType: primitives via
+// the element byte, value types via an interned TypeRef.  None for class
+// (reference) types and anything else — the caller falls back to the legacy
+// path (a class return would have to encode CLASS+TypeRef, not yet supported).
+func resolvedSigToMsil(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[MsilType] {
+  val pb = Mdr.sigPrimByte(sig)
+  if pb >= 0 {
+    elemByteToMsil(pb)
+  } else if Mdr.sigNamedIsValueType(sig) {
+    internValueTypeRef(cctx, Mdr.sigNamedFqn(sig))
+  } else {
+    None
+  }
+}
+
+// Map a lowered argument's MsilType to the `SigType` used for overload
+// resolution: primitives by element byte, value-type externs by FQN.  None for
+// argument types the metadata path can't describe (caller falls back).
+func argTyToSig(t: in MsilType): Option[Mdr.SigType] {
+  val eb = msilToElemByte(t)
+  if eb >= 0 {
+    Some(value = Mdr.mkPrimSig(eb))
+  } else {
+    val fqn = msilValueTypeFqn(t)
+    if fqn.length > 0 { Some(value = Mdr.mkNamedSig(fqn, true)) } else { None }
+  }
+}
+
+// A stable key fragment identifying a resolved `SigType` (primitive byte or
+// value/class FQN) so the MemberRef blob-intern key distinguishes overloads.
+func sigTypeKeyFrag(sig: in Mdr.SigType): String {
+  val pb = Mdr.sigPrimByte(sig)
+  if pb >= 0 { "p" + toString(pb) } else { "n" + Mdr.sigNamedFqn(sig) }
+}
+
 // Append every instruction of `src` to `dst`.
 func appendInsnsMsil(dst: in List[MInsn], src: in List[MInsn]): Unit {
   var i = 0
@@ -7058,27 +7115,38 @@ func elemNumericRank(b: in Int): Int {
 // `paramByte`-typed argument: empty for an exact match, a `box` for an
 // `object` parameter, or a widening `conv` (`Int`/`Long`→`Long`/`Double`).
 // None when the conversion isn't supported (caller falls back to legacy).
-func argCoercionInsns(cctx: in CodegenCtx, argTy: in MsilType, paramByte: in Int): Option[List[MInsn]] {
-  val argByte = msilToElemByte(argTy)
+func argCoercionInsns(cctx: in CodegenCtx, argTy: in MsilType, paramSig: in Mdr.SigType): Option[List[MInsn]] {
   val acc: List[MInsn] = newList()
-  if argByte == paramByte {
-    Some(value = acc)                       // exact: no coercion
-  } else if paramByte == 0x1C {
-    boxIfNeededMsil(cctx, acc, argTy)       // object param: box value types
-    Some(value = acc)
-  } else {
-    val ra = elemNumericRank(argByte)
-    val rp = elemNumericRank(paramByte)
-    if ra < 0 or rp < 0 or ra > rp {
-      None                                  // not a supported widening
-    } else if paramByte == 0x0A {
-      acc.add(MConvI8)                       // → long
-      Some(value = acc)
-    } else if paramByte == 0x0D {
-      acc.add(MConvR8)                       // → double
+  val paramByte = Mdr.sigPrimByte(paramSig)
+  if paramByte < 0 {
+    // Non-primitive parameter.  Value types must match by FQN exactly (no
+    // coercion); class/other parameters are not yet supported.
+    if Mdr.sigNamedIsValueType(paramSig) and msilValueTypeFqn(argTy) == Mdr.sigNamedFqn(paramSig) {
       Some(value = acc)
     } else {
-      None                                  // → R4 / narrower int: unsupported
+      None
+    }
+  } else {
+    val argByte = msilToElemByte(argTy)
+    if argByte == paramByte {
+      Some(value = acc)                       // exact: no coercion
+    } else if paramByte == 0x1C {
+      boxIfNeededMsil(cctx, acc, argTy)       // object param: box value types
+      Some(value = acc)
+    } else {
+      val ra = elemNumericRank(argByte)
+      val rp = elemNumericRank(paramByte)
+      if ra < 0 or rp < 0 or ra > rp {
+        None                                  // not a supported widening
+      } else if paramByte == 0x0A {
+        acc.add(MConvI8)                       // → long
+        Some(value = acc)
+      } else if paramByte == 0x0D {
+        acc.add(MConvR8)                       // → double
+        Some(value = acc)
+      } else {
+        None                                  // → R4 / narrower int: unsupported
+      }
     }
   }
 }
@@ -7108,10 +7176,10 @@ func emitResolvedAutoFfi(
   var pi = 0
   var ok = true
   while pi < m.paramTypes.count and ok {
-    val pb = Mdr.sigPrimByte(m.paramTypes[pi])
-    match elemByteToMsil(pb) {
+    val psig = m.paramTypes[pi]
+    match resolvedSigToMsil(cctx, psig) {
       case None     -> { ok = false }
-      case Some(pm) -> match argCoercionInsns(cctx, argTys[pi], pb) {
+      case Some(pm) -> match argCoercionInsns(cctx, argTys[pi], psig) {
         case None        -> { ok = false }
         case Some(cins)  -> { paramMsil.add(pm)  coercions.add(cins) }
       }
@@ -7119,24 +7187,24 @@ func emitResolvedAutoFfi(
     pi = pi + 1
   }
   if not ok { return None }
-  match elemByteToMsil(Mdr.sigPrimByte(m.returnType)) {
+  match resolvedSigToMsil(cctx, m.returnType) {
     case None -> None
     case Some(retMsil) -> {
       val sp   = splitTypeFqn(clrFqn)
       val tRef = internFfiTypeRef(cctx, asmName, sp.ns, sp.name)
       val sig  = buildStaticMethodSig(paramMsil, retMsil)
       // The blob-intern key must distinguish overloads of the same name/arity
-      // (e.g. Max(int,int) vs Max(long,long)) — ctxAddMemberRef dedups the
-      // signature blob by key, so it encodes each parameter's element byte plus
-      // the return byte; otherwise the second overload would reuse the first's
-      // signature.
+      // (e.g. Max(int,int) vs Max(long,long), or value-type vs primitive
+      // overloads) — ctxAddMemberRef dedups the signature blob by key, so it
+      // encodes each parameter's identity plus the return's; otherwise a second
+      // overload would reuse the first's signature.
       var sigKey = "autoffi_" + clrFqn + "." + methodName
       var ki = 0
-      while ki < paramMsil.count {
-        sigKey = sigKey + "_" + toString(msilToElemByte(paramMsil[ki]))
+      while ki < m.paramTypes.count {
+        sigKey = sigKey + "_" + sigTypeKeyFrag(m.paramTypes[ki])
         ki = ki + 1
       }
-      sigKey = sigKey + "_r" + toString(msilToElemByte(retMsil))
+      sigKey = sigKey + "_r" + sigTypeKeyFrag(m.returnType)
       val mrRow = ctxAddMemberRef(cctx.lctx, tRef, methodName, sigKey, sig)
       val tok = 0x0A000000 + mrRow
       var bi = 0
@@ -7176,13 +7244,13 @@ func tryAutoFfiFromMetadata(
   while ai < args.count and not bad {
     val buf: List[MInsn] = newList()
     val t  = lowerCallArgMsil(cctx, fctx, buf, args[ai])
-    val eb = msilToElemByte(t)
-    if eb < 0 {
-      bad = true                        // unsupported argument type → legacy path
-    } else {
-      argBufs.add(buf)
-      argTys.add(t)
-      argSigs.add(Mdr.mkPrimSig(eb))
+    match argTyToSig(t) {
+      case None    -> { bad = true }    // unsupported argument type → legacy path
+      case Some(s) -> {
+        argBufs.add(buf)
+        argTys.add(t)
+        argSigs.add(s)
+      }
     }
     ai = ai + 1
   }

@@ -1163,11 +1163,12 @@ the method whose parameter types match the argument types, then emitting the
 correctly-typed call and return.  Supported today: static methods whose
 parameter and return types are primitives, `String`, or `object` and match the
 arguments, plus widening numeric coercion (an `Int`/`Long` argument binds a
-`(long)`/`(double)` overload via `conv`) and `object` parameters (the argument
-is boxed).  Calls that need class/value-type parameters, narrowing, or a
-`float` parameter fall back to requiring an explicit `@externTarget` wrapper.
-An unresolved auto-FFI call is a compile-time diagnostic (it is never silently
-mis-bound).
+`(long)`/`(double)` overload via `conv`), `object` parameters (the argument is
+boxed), and **value-type** parameters and returns (e.g. `System.TimeSpan`,
+`System.Guid` — matched and emitted by their fully-qualified name).  Calls that
+need class (reference-type) returns, narrowing, or a `float` parameter fall back
+to requiring an explicit `@externTarget` wrapper.  An unresolved auto-FFI call
+is a compile-time diagnostic (it is never silently mis-bound).
 
 **JVM target.**  Metadata-based auto-FFI resolution is currently
 `--target dotnet`-only.  On `--target jvm` there is no auto-resolution: a host

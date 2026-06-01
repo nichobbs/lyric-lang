@@ -415,6 +415,21 @@ runtime gap.
   and `→float`/narrowing conversions. (Instance methods are N/A for auto-FFI —
   the receiver is a type name — so they stay `@externTarget`-only.) Checking
   `@externTarget` declared signatures against metadata moves to Phase 4.
+- **Phase 3c (step 3) — value-type parameters & returns. _(SHIPPED.)_** Two
+  pieces.  First, the reader resolves non-primitive types by **FQN, not token**:
+  `readTypeRef` + `resolveTypeDefOrRefName` turn a `CLASS`/`VALUETYPE`
+  TypeDefOrRef token into a type name, and `resolveOverloadIn` normalises each
+  candidate's parameter/return `SigType` into `STNamed(fqn, isValueType)` before
+  scoring — so a caller's value-type argument (described by FQN) matches a
+  parameter whose token lives in a *different* assembly's metadata.  Second,
+  codegen maps a resolved value type to `MValueTypeRef` (`internValueTypeRef`,
+  whose `bufMsilType` encoding is `VALUETYPE + TypeRef`), passes a value-type
+  argument by FQN (`argTyToSig`), and the MemberRef-key fragment encodes each
+  type's identity (`sigTypeKeyFrag`).  End-to-end:
+  `TimeSpan.Compare(TimeSpan.FromMinutes(5.0), TimeSpan.FromMinutes(3.0)) == 1`
+  — a value-type return feeding value-type parameters, resolved entirely from
+  metadata.  Class (reference) returns still fall back (they would need a
+  `CLASS + TypeRef` return encoding); instance-method dispatch builds on this.
 - **Phase 4 — `@externTarget` verification + `clrAssemblyForType` removal +
   generics.** Make the declared signature a metadata *check* (new diagnostic);
   delete the hardcoded prefix table; route generic externs through MethodSpec;

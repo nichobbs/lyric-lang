@@ -515,6 +515,42 @@ func testResolveExtern(): Unit {
   }
 }
 
+// Value-type parameters and returns resolve to FQN-named SigTypes:
+// `TimeSpan.FromMinutes(double)` returns a `TimeSpan` value type, and
+// `TimeSpan.Compare(TimeSpan, TimeSpan)` accepts value-type arguments described
+// by FQN and returns Int.
+func testResolveExternValueType(): Unit {
+  match refPackDir() {
+    case None -> panic("vt: reference-assembly pack not found")
+    case Some(dir) -> {
+      val rt = Path.join(dir, "System.Runtime.dll")
+      val one: List[String] = newList()
+      one.add(rt)
+      val typeIndex = buildTypeIndex(one)
+      val pathIndex = buildPathIndex(one)
+      // FromMinutes(double): TimeSpan — value-type return.
+      val dargs: List[SigType] = newList()
+      dargs.add(prim(0x0D))
+      match resolveExtern(typeIndex, pathIndex, "System.TimeSpan", "FromMinutes", dargs) {
+        case None -> panic("vt: TimeSpan.FromMinutes not resolved")
+        case Some(re) -> {
+          assertTrue(re.sig.isStatic, "vt: FromMinutes is static")
+          assertEqual(sigNamedFqn(re.sig.returnType), "System.TimeSpan", "vt: FromMinutes returns TimeSpan")
+          assertTrue(sigNamedIsValueType(re.sig.returnType), "vt: TimeSpan is a value type")
+        }
+      }
+      // Compare(TimeSpan, TimeSpan): int — value-type params, primitive return.
+      val cargs: List[SigType] = newList()
+      cargs.add(mkNamedSig("System.TimeSpan", true))
+      cargs.add(mkNamedSig("System.TimeSpan", true))
+      match resolveExtern(typeIndex, pathIndex, "System.TimeSpan", "Compare", cargs) {
+        case None -> panic("vt: TimeSpan.Compare not resolved")
+        case Some(re) -> assertEqualInt(sigPrimByte(re.sig.returnType), 0x08, "vt: Compare returns Int")
+      }
+    }
+  }
+}
+
 // ── Driver ───────────────────────────────────────────────────────────────────
 
 func main(): Int {
@@ -533,6 +569,7 @@ func main(): Int {
   testOverloadResolveSelf()
   testOverloadResolveBcl()
   testResolveExtern()
+  testResolveExternValueType()
   println("metadata-reader self-test: ok")
   return 0
 }

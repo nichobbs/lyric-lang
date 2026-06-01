@@ -704,6 +704,11 @@ pub union SigType {
   case STGenericInst(valueType: Bool, token: Int, args: List[SigType])
   case STFnPtr                           // function pointer (sig skipped)
   case STUnknown(elemByte: Int)          // unrecognised element type
+  // A CLASS / VALUETYPE resolved to its fully-qualified type name.  The decoder
+  // never produces this (it can't name a token); `resolveOverloadIn` normalises
+  // an `STClass`/`STValueType` token into it so resolved types and the caller's
+  // argument types compare by name rather than by cross-assembly token.
+  case STNamed(fqn: String, valueType: Bool)
 }
 
 pub record DecodedMethodSig {
@@ -888,6 +893,28 @@ pub func sigClassToken(t: in SigType): Int {
 pub func sigIsValueType(t: in SigType): Bool {
   match t {
     case STValueType(_) -> true
+    case _              -> false
+  }
+}
+
+// Construct an `STNamed` (a class/value type identified by FQN).  The caller
+// (codegen) uses this to describe a non-primitive argument by name.
+pub func mkNamedSig(fqn: in String, valueType: in Bool): SigType {
+  STNamed(fqn = fqn, valueType = valueType)
+}
+
+// The FQN of an `STNamed`, or "" for any other shape.  Cross-package accessor.
+pub func sigNamedFqn(t: in SigType): String {
+  match t {
+    case STNamed(fqn, _) -> fqn
+    case _               -> ""
+  }
+}
+
+// True when the `SigType` is an `STNamed` value type.  Cross-package accessor.
+pub func sigNamedIsValueType(t: in SigType): Bool {
+  match t {
+    case STNamed(_, vt) -> vt
     case _              -> false
   }
 }
@@ -1159,12 +1186,47 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
       case STValueType(at) -> if at == pt { 2 } else { -1 }
       case _ -> -1
     }
+    case STNamed(pfqn, pvt) -> match arg {
+      case STNamed(afqn, avt) -> if afqn == pfqn and avt == pvt { 2 } else { -1 }
+      case _ -> -1
+    }
     case STSzArray(pe) -> match arg {
       case STSzArray(ae) -> scoreSigType(ae, pe)
       case _ -> -1
     }
     case _ -> -1
   }
+}
+
+// Normalise a decoded `SigType` so its non-primitive types are named by FQN
+// (resolving the TypeDefOrRef token to a fully-qualified name) — making them
+// comparable to a caller's by-name argument types and directly mappable by the
+// emitter.  Primitive and other shapes pass through unchanged.
+pub func resolveSigTypeFqn(img: in PeImage, layout: in TableLayout, th: in TablesHeader,
+                           t: in SigType): SigType {
+  val tok = sigClassToken(t)
+  if tok < 0 {
+    t
+  } else {
+    val fqn = resolveTypeDefOrRefName(img, layout, th, tok)
+    if fqn.length == 0 { t } else { STNamed(fqn = fqn, valueType = sigIsValueType(t)) }
+  }
+}
+
+// Score a candidate's (already FQN-normalised) parameter list against the
+// caller's argument types: the sum of per-parameter scores, or -1 on arity
+// mismatch or any incompatible parameter.
+pub func scoreParams(argTypes: in List[SigType], params: in List[SigType]): Int {
+  if params.count != argTypes.count { return -1 }
+  var total = 0
+  var i = 0
+  while i < argTypes.count {
+    val s = scoreSigType(argTypes[i], params[i])
+    if s < 0 { return -1 }
+    total = total + s
+    i = i + 1
+  }
+  total
 }
 
 // Score a whole candidate against the argument list: the sum of per-parameter
@@ -1221,15 +1283,23 @@ pub func resolveOverloadIn(img: in PeImage, layout: in TableLayout, th: in Table
       match decodeMethodSig(blobAt(img, layout, md.sigBlob)) {
         case Err(_) -> {}
         case Ok(sig) -> {
-          val score = scoreOverload(argTypes, sig)
+          // Normalise non-primitive parameter / return types to FQN names so
+          // matching and emission don't depend on this assembly's tokens.
+          val normParams: List[SigType] = newList()
+          var pj = 0
+          while pj < sig.paramTypes.count {
+            normParams.add(resolveSigTypeFqn(img, layout, th, sig.paramTypes[pj]))
+            pj = pj + 1
+          }
+          val score = scoreParams(argTypes, normParams)
           if score >= 0 and score > bestScore {
             bestScore = score
             best = Some(value = ResolvedMethod(
               name = md.name,
               isStatic = not sig.hasThis,
               isVirtual = methodIsVirtual(md.flags),
-              returnType = sig.returnType,
-              paramTypes = sig.paramTypes))
+              returnType = resolveSigTypeFqn(img, layout, th, sig.returnType),
+              paramTypes = normParams))
           }
         }
       }
