@@ -25,6 +25,7 @@ import Std.Core
 import Std.Testing
 
 extern type Math = "System.Math"
+extern type Path = "System.IO.Path"
 
 test "Math.Max binds the int overload" {
   assertEqualInt(Math.Max(2, 5), 5, "Max(2,5)")
@@ -49,4 +50,13 @@ test "Math.Max int and long overloads get distinct MemberRefs" {
   assertEqualInt(Math.Max(2, 5), 5, "Max(int) = 5")
   assertTrue(Math.Max(2i64, 7i64) == 7i64, "Max(long) = 7")
   assertTrue(Math.Max(100i64, 9i64) == 100i64, "Max(long) = 100")
+}
+
+// Phase 3c step 2: `System.IO.Path` is mis-hinted by the legacy
+// `clrAssemblyForType` table (→ `System.IO.FileSystem`), but the metadata
+// type→assembly index finds its real facade assembly, so `Path.Combine`
+// resolves where step 1 fell back to `@externTarget`.
+test "Path.Combine resolves via the metadata type index" {
+  assertEqual(Path.Combine("/tmp", "x.txt"), "/tmp/x.txt", "Combine(/tmp, x.txt)")
+  assertEqual(Path.Combine("a", "b"), "a/b", "Combine(a, b)")
 }

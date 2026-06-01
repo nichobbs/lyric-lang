@@ -1158,13 +1158,14 @@ func clamp(n: in Int): Int {
 On `--target dotnet` the self-hosted MSIL emitter resolves the call's overload
 from real .NET reference-assembly **metadata** at compile time (it parses the
 reference pack's CLI metadata directly — see `docs/42-extern-metadata-resolution.md`),
-selecting the method whose parameter types match the argument types and emitting
-the correctly-typed call and return.  The first cut supports static methods
-whose parameter and return types are primitives, `String`, or `object` and
-match the arguments exactly; calls that need implicit numeric coercion, instance
-dispatch, or class/value-type parameters fall back to requiring an explicit
-`@externTarget` wrapper.  An unresolved auto-FFI call is a compile-time
-diagnostic (it is never silently mis-bound).
+locating the type's owning assembly from a metadata-derived index and selecting
+the method whose parameter types match the argument types, then emitting the
+correctly-typed call and return.  Supported today: static methods whose
+parameter and return types are primitives, `String`, or `object` and match the
+arguments exactly.  Calls that need implicit numeric coercion (e.g. an `Int`
+argument to a `(long)` overload) or class/value-type parameters fall back to
+requiring an explicit `@externTarget` wrapper.  An unresolved auto-FFI call is a
+compile-time diagnostic (it is never silently mis-bound).
 
 **JVM target.**  Metadata-based auto-FFI resolution is currently
 `--target dotnet`-only.  On `--target jvm` there is no auto-resolution: a host
