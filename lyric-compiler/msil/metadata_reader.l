@@ -1017,6 +1017,20 @@ pub func buildTypeIndex(asmPaths: in List[String]): Map[String, String] {
   index
 }
 
+// Populate both a type→assembly-name index and an assembly-name→path index from
+// one assembly, reading the DLL once.  First writer wins for each name.  Lets a
+// caller (e.g. the emitter's lazy index build) fill both maps in a single pass.
+pub func addAssemblyToIndexes(typeIndex: in Map[String, String],
+                              pathIndex: in Map[String, String],
+                              asmPath: in String): Unit {
+  val nm = assemblySimpleName(asmPath)
+  match mapGet(pathIndex, nm) {
+    case Some(_) -> {}
+    case None    -> pathIndex.add(nm, asmPath)
+  }
+  addAssemblyTypes(typeIndex, asmPath)
+}
+
 // Resolve a CLR type's fully-qualified name to its owning assembly's simple
 // name, or None when no indexed assembly defines it.
 pub func assemblyForType(index: in Map[String, String], typeFqn: in String): Option[String] {

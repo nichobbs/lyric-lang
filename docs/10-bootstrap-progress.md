@@ -17900,3 +17900,34 @@ section); `docs/42` §5.
 wildcard `Lyric.*.dll` reference, so after a new compiler package first appears
 in `.bootstrap/stage1` its `lyric.deps.json` can be stale until a clean AOT
 rebuild; a fresh CI checkout builds it correctly.
+
+### D-progress-352 — auto-FFI full-index resolution, Phase 3c step 2a (epic #1622)
+
+**Status:** Shipped (Phase 3c step 2a of epic #1622; design in
+`docs/42-extern-metadata-resolution.md` §5).
+
+Auto-FFI resolution no longer depends on the hardcoded `clrAssemblyForType`
+prefix table for the owning assembly.  `emitAutoFfiCallMsil`
+(`lyric-compiler/msil/codegen.l`) now builds the metadata-derived
+type→assembly and assembly→path indexes once over the .NET reference pack
+(`ensureMetadataIndex`, cached on `CodegenCtx` via a one-shot `metadataReady`
+flag) and resolves through `Mdr.resolveExtern`, which finds the assembly that
+*actually* defines a type.
+
+- **`metadata_reader.l`** — `addAssemblyToIndexes(typeIndex, pathIndex, asmPath)`
+  fills both indexes from one DLL read (first writer wins).
+- **`codegen.l`** — `CodegenCtx` gains `metadataTypeIndex` / `metadataPathIndex`
+  / `metadataReady`; `ensureMetadataIndex` populates them lazily over
+  `enumRefAssemblies(refPackDir())`; `tryAutoFfiFromMetadata` calls
+  `resolveExtern` instead of `clrAssemblyForType` + `resolveOverload`.
+
+Effect: types the hint table mis-named now resolve.  `System.IO.Path` (which
+`clrAssemblyForType` sent to `System.IO.FileSystem` but which lives in
+`System.Runtime`) resolves, so `Path.Combine("/tmp", "x.txt")` → `/tmp/x.txt`
+compiles and runs where Phase 3c step 1 fell back to requiring `@externTarget`.
+`auto_ffi_self_test.l` gains the `Path.Combine` case (now 5 tests).
+
+Validated: emitter suite 847/0; auto-FFI self-test 5/5 (Math int/long overloads
++ Path.Combine).  Numeric coercion (`Int`→`long` overloads) and `@externTarget`
+metadata verification are step 2b; deleting `clrAssemblyForType` outright is
+Phase 4 (auto-FFI no longer reads it, but the `@externTarget` path still does).

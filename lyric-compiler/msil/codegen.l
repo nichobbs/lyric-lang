@@ -148,6 +148,13 @@ pub record CodegenCtx {
   // emitExternTargetBody as `@externTarget` declarations are walked.
   ffiAsmRefs:         Map[String, Int]   // assembly simple name → AssemblyRef row index
   ffiTypeRefs:        Map[String, Int]   // "asm/ns.name" key → TypeRef row index
+  // Auto-FFI metadata resolution (epic #1622, Phase 3c).  Lazily-built once
+  // per package: type FQN → owning assembly simple name, and assembly simple
+  // name → on-disk DLL path.  `metadataReady` is a one-shot flag holder
+  // (empty = not yet built) since record scalar fields can't be reassigned.
+  metadataTypeIndex:  Map[String, String]
+  metadataPathIndex:  Map[String, String]
+  metadataReady:      List[Bool]
   // Lambda / yield / extern-type support (Band 2, R6).
   tokActionCtor:      Int                // System.Action::.ctor(object, native int)
   tokActionInvoke:    Int                // System.Action::Invoke(): void
@@ -670,6 +677,9 @@ pub func newCodegenCtx(packageName: in String,
     constValues          = newMap(),
     ffiAsmRefs           = newMap(),
     ffiTypeRefs          = newMap(),
+    metadataTypeIndex    = newMap(),
+    metadataPathIndex    = newMap(),
+    metadataReady        = newList(),
     tokActionCtor        = tokActionCtor,
     tokActionInvoke      = tokActionInvoke,
     tokStringGetChars    = tokStringGetChars,
@@ -6876,6 +6886,29 @@ func appendInsnsMsil(dst: in List[MInsn], src: in List[MInsn]): Unit {
   }
 }
 
+// Build the metadata type→assembly / assembly→path indexes over the .NET
+// reference pack on first use, cached on `cctx` for the rest of the package.
+// The index is the source of truth for auto-FFI assembly resolution — it finds
+// the assembly that actually defines a type (e.g. `System.IO.Path` lives in
+// `System.Runtime`), unlike the hardcoded `clrAssemblyForType` prefix table.
+// A no-op after the first call; if the reference pack can't be located the
+// indexes stay empty and resolution falls back to the legacy path.
+func ensureMetadataIndex(cctx: in CodegenCtx): Unit {
+  if cctx.metadataReady.count > 0 { return }
+  cctx.metadataReady.add(true)
+  match Mdr.refPackDir() {
+    case None -> {}
+    case Some(dir) -> {
+      val asms = Mdr.enumRefAssemblies(dir)
+      var i = 0
+      while i < asms.count {
+        Mdr.addAssemblyToIndexes(cctx.metadataTypeIndex, cctx.metadataPathIndex, asms[i])
+        i = i + 1
+      }
+    }
+  }
+}
+
 // Emit a metadata-resolved auto-FFI call, or None to fall back.  `argBufs`
 // carry each argument's already-lowered IL; `argTys` their MsilTypes.
 func emitResolvedAutoFfi(
@@ -6942,8 +6975,11 @@ func emitResolvedAutoFfi(
 
 // Try to resolve and emit an auto-FFI call from .NET metadata.  Returns the
 // real result MsilType on success, or None to fall back to the legacy path.
-// The owning assembly comes from `clrAssemblyForType` and is read from the
-// reference pack on disk.
+// The owning assembly is found from the metadata-derived type→assembly index
+// (built once over the reference pack and cached on `cctx`), so the resolution
+// no longer depends on the hardcoded `clrAssemblyForType` prefix table — a type
+// whose assembly that table would mis-hint (e.g. `System.IO.Path` →
+// `System.Runtime`) now resolves correctly.
 func tryAutoFfiFromMetadata(
   cctx:       in CodegenCtx,
   fctx:       in FuncCtx,
@@ -6952,38 +6988,33 @@ func tryAutoFfiFromMetadata(
   args:       in List[CallArg],
   clrFqn:     in String
 ): Option[MsilType] {
-  match Mdr.refPackDir() {
-    case None -> None
-    case Some(refDir) -> {
-      val asmName = clrAssemblyForType(clrFqn)
-      val asmPath = Mdr.refAssemblyPath(refDir, asmName)
-      // Lower each argument into its own buffer, capturing IL + MsilType.
-      val argBufs: List[List[MInsn]] = newList()
-      val argTys:  List[MsilType]    = newList()
-      val argSigs: List[Mdr.SigType] = newList()
-      var ai = 0
-      var bad = false
-      while ai < args.count and not bad {
-        val buf: List[MInsn] = newList()
-        val t  = lowerCallArgMsil(cctx, fctx, buf, args[ai])
-        val eb = msilToElemByte(t)
-        if eb < 0 {
-          bad = true                    // unsupported argument type → legacy path
-        } else {
-          argBufs.add(buf)
-          argTys.add(t)
-          argSigs.add(Mdr.mkPrimSig(eb))
-        }
-        ai = ai + 1
-      }
-      if bad {
-        None
-      } else {
-        match Mdr.resolveOverload(asmPath, clrFqn, methodName, argSigs) {
-          case None    -> None
-          case Some(m) -> emitResolvedAutoFfi(cctx, insns, asmName, clrFqn, methodName, argBufs, argTys, m)
-        }
-      }
+  ensureMetadataIndex(cctx)
+  // Lower each argument into its own buffer, capturing IL + MsilType.
+  val argBufs: List[List[MInsn]] = newList()
+  val argTys:  List[MsilType]    = newList()
+  val argSigs: List[Mdr.SigType] = newList()
+  var ai = 0
+  var bad = false
+  while ai < args.count and not bad {
+    val buf: List[MInsn] = newList()
+    val t  = lowerCallArgMsil(cctx, fctx, buf, args[ai])
+    val eb = msilToElemByte(t)
+    if eb < 0 {
+      bad = true                        // unsupported argument type → legacy path
+    } else {
+      argBufs.add(buf)
+      argTys.add(t)
+      argSigs.add(Mdr.mkPrimSig(eb))
+    }
+    ai = ai + 1
+  }
+  if bad {
+    None
+  } else {
+    match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex,
+                            clrFqn, methodName, argSigs) {
+      case None     -> None
+      case Some(re) -> emitResolvedAutoFfi(cctx, insns, re.assemblyName, clrFqn, methodName, argBufs, argTys, re.sig)
     }
   }
 }

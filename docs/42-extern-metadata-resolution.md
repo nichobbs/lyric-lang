@@ -395,12 +395,20 @@ runtime gap.
   patterns* (`case Mdr.STPrim(b)`), `Msil.MetadataReader` exposes `mkPrimSig` /
   `sigPrimByte` accessors so codegen never matches or constructs an imported
   union case directly.
-- **Phase 3c (step 2) — full-index resolution + coercion + instance.** Replace
-  the `clrAssemblyForType` hint with the metadata-derived index
-  (`buildTypeIndex`/`buildPathIndex` cached on `CodegenCtx`), so mis-hinted
-  types (`System.IO.Path.Combine`) resolve; add implicit numeric coercion
-  (`conv.i8` for widening) and instance-method support; check `@externTarget`
-  declared signatures against metadata.
+- **Phase 3c (step 2a) — full-index resolution. _(SHIPPED.)_** `emitAutoFfiCallMsil`
+  no longer takes the assembly from the `clrAssemblyForType` hint; it builds the
+  metadata-derived type→assembly and assembly→path indexes once over the
+  reference pack (`ensureMetadataIndex`, cached on `CodegenCtx` via a one-shot
+  `metadataReady` flag and `Mdr.addAssemblyToIndexes`), then resolves with
+  `Mdr.resolveExtern`. Types the hint table mis-named — e.g. `System.IO.Path`,
+  which it sent to `System.IO.FileSystem` but actually lives in `System.Runtime`
+  — now resolve, so `Path.Combine("/tmp", "x.txt")` works where step 1 fell back
+  to `@externTarget`. Covered by `auto_ffi_self_test.l`.
+- **Phase 3c (step 2b) — coercion + instance.** Add implicit numeric coercion
+  (`conv.i8`/`conv.r8` for widening, so an `Int` argument binds a `(long)`
+  overload) and box-on-`object` params; check `@externTarget` declared
+  signatures against metadata. (Instance methods are N/A for auto-FFI — the
+  receiver is a type name — so they remain `@externTarget`-only.)
 - **Phase 4 — `@externTarget` verification + `clrAssemblyForType` removal +
   generics.** Make the declared signature a metadata *check* (new diagnostic);
   delete the hardcoded prefix table; route generic externs through MethodSpec;
