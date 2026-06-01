@@ -187,7 +187,7 @@ pub func clrAssemblyForType(typeFqn: in String): String {
 }
 
 // True when `clrAssemblyForType` can resolve `typeFqn` to a real reference
-// assembly rather than guessing the `System.Runtime` default (#1504 H8).
+// assembly rather than guessing the `System.Runtime` default.
 // Resolvable = a `System.*` BCL type (forwarded by / mapped to a concrete
 // facade) or a `Lyric.*` internal host (`Lyric.Emitter`, `Lyric.Stdlib`,
 // `Lyric.Jvm.Hosts`).  Anything else — a typo (`Sytem.Console`) or an

@@ -532,13 +532,10 @@ func renderDecl(d: in ContractDecl): String {
   sb + "}"
 }
 
-/// Render a `Contract` as JSON.  Output is the canonical format-2 shape
-/// `parseFromJson` accepts; round-trips through it without loss.
-/// Mirrors `bootstrap/src/Lyric.Emitter/ContractMeta.fs::toJson`.
-///
-/// Threads `c.formatVersion` through to the output instead of
-/// hardcoding `2` so format-1 fixtures stay byte-stable through the
-/// round-trip (#1339).
+/// Render a `Contract` as JSON, preserving `c.formatVersion` (format-1
+/// or format-2) so the output round-trips byte-stably through
+/// `parseFromJson` without loss.  Mirrors
+/// `bootstrap/src/Lyric.Emitter/ContractMeta.fs::toJson`.
 @stable(since="0.1")
 pub func contractToJson(c: in Contract): String {
   var sb = "{\n"

@@ -232,7 +232,7 @@ pub func tryEatIdentOrContextual(st: inout ParseState): Option[NameAndSpan] {
 // Accept an identifier OR any keyword as a member / method name after `.`.
 // A keyword is unambiguous in member position (only a member name is valid
 // after a `.`), and several built-in methods use reserved spellings — the
-// bitwise integer methods `and` / `or` / `xor` in particular (#1610).  The
+// bitwise integer methods `and` / `or` / `xor` in particular.  The
 // keyword's source spelling becomes the member name.
 pub func tryEatMemberName(st: inout ParseState): Option[NameAndSpan] {
   val t = peek(st)

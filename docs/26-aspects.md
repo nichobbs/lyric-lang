@@ -303,7 +303,7 @@ weave site:
 | `call.modulePath` | `String` | Package containing the target |
 | `call.sourceLocation` | `String` | `"<packagePath>:<line>"` of the target's definition (e.g. `"My.Pkg:42"`).  When `packagePath` is empty the weaver substitutes `"<unknown>:<line>"`.  A richer `SourceLoc { file, line, column }` form is tracked for follow-up alongside `call.caller`. |
 | `call.caller` | `Option[SourceLoc]` | Caller site, when available; `None` for entry points and reflective calls |
-| `call.annotations` | `[Annotation]` | The target's annotations (so an aspect can read `@deprecated`, `@public_api`, etc.) |
+| `call.annotations` | `slice[String]` | Short names of the matched function's annotations (e.g. `["deprecated", "public_api"]`).  The weaver materialises these as string literals, not full `Annotation` objects, so annotation arguments are not accessible here. |
 | `call.elapsed` | `Option[Int]` | `Some(ms)` after `proceed` returns; `None` before `proceed` is called or if the body never calls `proceed`. The earlier zero-sentinel was rejected as a footgun (Q-aspects-003). |
 | `call.aspect` | `String` | The current aspect's name (useful when one helper serves several aspects) |
 

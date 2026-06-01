@@ -21,6 +21,10 @@
 # Path.GetTempPath()), none of these targets need the old `TMPDIR=/tmp` prefix.
 
 BUILD_CONFIG ?= Release
+# `net10.0` must stay in sync with the TFM in `bootstrap/global.json` and
+# `bootstrap/Directory.Build.props`.  When the SDK is bumped, update this
+# path too — otherwise `make lyric` silently symlinks to a non-existent
+# binary and the failure looks unrelated.
 AOT_BIN := bootstrap/src/Lyric.Cli.Aot/bin/$(BUILD_CONFIG)/net10.0/lyric
 
 .PHONY: help stage0 stage1 stage1-fast aot lyric \

@@ -409,7 +409,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     ti = ti + 1
   }
 
-  // Phase 2: weave + lambda-lift + token pre-scan for every package against
+  // Phase 3: weave + lambda-lift + token pre-scan for every package against
   // ONE shared cctx — the persistent `nextMethodDefRow` / `nextFieldDefRow`
   // counters in `CodegenCtx` thread row numbering across calls.  The cctx's
   // Assembly row is named after the bundle, not any individual package.
@@ -468,7 +468,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     li = li + 1
   }
 
-  // Phase 3: codegen each package into an MPackage against the same cctx.
+  // Phase 4: codegen each package into an MPackage against the same cctx.
   val mpkgs: List[MPackage] = newList()
   var ci = 0
   while ci < liftedFiles.count {
@@ -477,12 +477,12 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     ci = ci + 1
   }
 
-  // Phase 4: pick an entry point.  When any package defined a `main` function
+  // Phase 5: pick an entry point.  When any package defined a `main` function
   // the pre-scan stored its MethodDef token on `cctx.funcTokens` under the
   // simple name "main"; otherwise the bundle is a library (token 0).
   val entryToken = resolveEntryToken(cctx)
 
-  // Phase 5: lower all MPackages into a single PE against the shared lctx.
+  // Phase 6: lower all MPackages into a single PE against the shared lctx.
   val bytes = lowerMPackagesWithCtx(mpkgs, cctx.lctx, entryToken)
 
   val result = writeBytes(outputPath, bytes)
@@ -671,7 +671,7 @@ func addBundleClosure(
   acc:             in List[Item]
 ): Unit {
   if visited.containsKey(pkgName) { return }
-  if baseNames.containsKey(pkgName)  { return }
+  if baseNames.containsKey(pkgName) { return }
   visited.add(pkgName, true)
   match mapGet(inBundleItems, pkgName) {
     case Some(items) -> {

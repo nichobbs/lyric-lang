@@ -44,10 +44,8 @@ func testFormatRecord(): Unit {
   assertTrue(Str.contains(acc, "y: Int"), "format: record y field")
 }
 
-// Regression for #1473: a `var`-prefixed mutable record field must survive a
-// format round-trip.  Before the field-mutability fix the formatter rendered
-// from a `FieldDecl` that did not carry the `var` marker, silently rewriting a
-// mutable field to an immutable one.
+// A `var`-prefixed mutable record field must survive a format
+// round-trip with its `var` marker intact.
 func testFormatMutableRecordField(): Unit {
   val src = "package P\nrecord Counter {\n  var count: Int\n  step: Int\n}\n"
   val pr = parse(src)
