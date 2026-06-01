@@ -404,11 +404,17 @@ runtime gap.
   which it sent to `System.IO.FileSystem` but actually lives in `System.Runtime`
   — now resolve, so `Path.Combine("/tmp", "x.txt")` works where step 1 fell back
   to `@externTarget`. Covered by `auto_ffi_self_test.l`.
-- **Phase 3c (step 2b) — coercion + instance.** Add implicit numeric coercion
-  (`conv.i8`/`conv.r8` for widening, so an `Int` argument binds a `(long)`
-  overload) and box-on-`object` params; check `@externTarget` declared
-  signatures against metadata. (Instance methods are N/A for auto-FFI — the
-  receiver is a type name — so they remain `@externTarget`-only.)
+- **Phase 3c (step 2b) — numeric coercion + box. _(SHIPPED.)_** `emitResolvedAutoFfi`
+  no longer requires an exact parameter match: per argument it computes a
+  coercion (`argCoercionInsns`) and emits it after the argument — empty for an
+  exact match, `conv.i8`/`conv.r8` for a widening numeric conversion (so an
+  `Int`/`Long` argument binds a `(long)`/`(double)` overload), or `box` for an
+  `object` parameter. The MemberRef is still built from the resolved parameter
+  types. Covered by `auto_ffi_self_test.l` (`Math.Sqrt(4)` / `Sqrt(9i64)` widen
+  to the `(double)` overload). Remaining fallbacks: class/value-type parameters,
+  and `→float`/narrowing conversions. (Instance methods are N/A for auto-FFI —
+  the receiver is a type name — so they stay `@externTarget`-only.) Checking
+  `@externTarget` declared signatures against metadata moves to Phase 4.
 - **Phase 4 — `@externTarget` verification + `clrAssemblyForType` removal +
   generics.** Make the declared signature a metadata *check* (new diagnostic);
   delete the hardcoded prefix table; route generic externs through MethodSpec;
