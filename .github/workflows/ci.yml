@@ -469,6 +469,25 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/auto_ffi_self_test.l
 
+      # Nested-generic self-test — pins #1687 on the MSIL target.  JVM-target
+      # parity is gated on the union case-factory gap, tracked in #1707 (so this
+      # step is `--target dotnet` only, unlike the bitwise self-test above).
+      - name: Nested-generic self-test (native lyric test)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping nested-generic self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping nested-generic self-test"
+            exit 0
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/nested_generic_self_test.l
+
       # Coverage collection — informational only, not a blocking gate (#1117).
       # Runs on push to main (not pull_request) to keep PR latency low.
       # Uses `dotnet-coverage` CLI against the same Expecto-based test

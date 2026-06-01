@@ -3746,11 +3746,68 @@ func lowerBuiltinOrStaticCallMsil(
       }
     match mapGet(cctx.recordCtorTokens, ctorKey) {
       case Some(ctorTok) -> {
+        // Resolved before arg lowering so each payload gets its inner-type hint (#1687).
+        val outerCtxTyArgs: List[MsilType] = newList()
+        if fctx.contextHintTyArgs.count > 0 {
+          var hci = 0
+          while hci < fctx.contextHintTyArgs.count {
+            outerCtxTyArgs.add(fctx.contextHintTyArgs[hci])
+            hci = hci + 1
+          }
+        } else {
+          match fctx.declaredRetTy {
+            case MGenericInst(_, _, retArgTys) -> {
+              var rci = 0
+              while rci < retArgTys.count {
+                outerCtxTyArgs.add(retArgTys[rci])
+                rci = rci + 1
+              }
+            }
+            case _ -> {}
+          }
+        }
         // Lower args, collecting their MSIL types for generic type inference.
         val argTypes: List[MsilType] = newList()
         var ci = 0
         while ci < args.count {
-          val at = lowerCallArgMsil(cctx, fctx, insns, args[ci])
+          // Hint this slot with its concrete inner type so nested payloads instantiate right (#1687).
+          val fldKeyH = ctorKey + "/field" + toString(ci)
+          val viH = match mapGet(cctx.fieldVarIndices, fldKeyH) {
+            case Some(v) -> v
+            case None    -> -1
+          }
+          val innerHint: MsilType =
+            if viH >= 0 and viH < outerCtxTyArgs.count { outerCtxTyArgs[viH] }
+            else                                        { MObject }
+          val at = match innerHint {
+            case MGenericInst(_, _, innerArgs) -> {
+              val savedH: List[MsilType] = newList()
+              var shi = 0
+              while shi < fctx.contextHintTyArgs.count {
+                savedH.add(fctx.contextHintTyArgs[shi])
+                shi = shi + 1
+              }
+              while fctx.contextHintTyArgs.count > 0 {
+                fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+              }
+              var ihi = 0
+              while ihi < innerArgs.count {
+                fctx.contextHintTyArgs.add(innerArgs[ihi])
+                ihi = ihi + 1
+              }
+              val lowered = lowerCallArgMsil(cctx, fctx, insns, args[ci])
+              while fctx.contextHintTyArgs.count > 0 {
+                fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+              }
+              var rhi = 0
+              while rhi < savedH.count {
+                fctx.contextHintTyArgs.add(savedH[rhi])
+                rhi = rhi + 1
+              }
+              lowered
+            }
+            case _ -> lowerCallArgMsil(cctx, fctx, insns, args[ci])
+          }
           argTypes.add(at)
           ci = ci + 1
         }
@@ -3759,23 +3816,10 @@ func lowerBuiltinOrStaticCallMsil(
         // Infer T from the arg types; use fctx.declaredRetTy as fallback for
         // type-param slots not covered by any arg.
         val contextTyArgs: List[MsilType] = newList()
-        if fctx.contextHintTyArgs.count > 0 {
-          var hi = 0
-          while hi < fctx.contextHintTyArgs.count {
-            contextTyArgs.add(fctx.contextHintTyArgs[hi])
-            hi = hi + 1
-          }
-        } else {
-          match fctx.declaredRetTy {
-            case MGenericInst(_, _, retArgTys) -> {
-              var rti = 0
-              while rti < retArgTys.count {
-                contextTyArgs.add(retArgTys[rti])
-                rti = rti + 1
-              }
-            }
-            case _ -> {}
-          }
+        var oci = 0
+        while oci < outerCtxTyArgs.count {
+          contextTyArgs.add(outerCtxTyArgs[oci])
+          oci = oci + 1
         }
         val outParentTy: List[MsilType] = newList()
         val genericTok = buildGenericCaseCtorTok(cctx, ctorKey, argTypes, contextTyArgs, outParentTy, insns)

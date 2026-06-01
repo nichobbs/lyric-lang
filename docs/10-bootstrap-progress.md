@@ -17958,3 +17958,41 @@ Validated: emitter suite 847/0; auto-FFI self-test 6/6.  Remaining auto-FFI
 fallbacks: class/value-type parameters and `→float`/narrowing conversions.
 `@externTarget`-signature verification against metadata and deleting the
 `clrAssemblyForType` table are Phase 4.
+
+### D-progress-354 — self-hosted MSIL: nested-generic case construction (#1687)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`; regression test
+`lyric-compiler/lyric/nested_generic_self_test.l`).
+
+Constructing a doubly-nested generic value such as `Ok(None)` where the expected
+type is `Result[Option[T], E]` mis-instantiated the inner nullary case.  The
+outer case constructor (`Ok`) lowered its argument with no per-argument
+construction hint, so the inner `None` fell back to the OUTER `declaredRetTy`
+(`Result[Option[String], …]`) and baked its `Option` type-param as
+`Option[String]` rather than `String` — storing `Option[Option[String]]$None`
+into an `Option[String]`-typed slot.  The outer `match`'s
+`isinst Result_Ok<Option<String>, …>` then disagreed with the constructed value
+and no arm fired, panicking "match not exhaustive" at run time (the symptom
+#1687 reported once the Map-indexer fix in D-progress-348 / #1688 let the
+function compile far enough to run).
+
+`lowerBuiltinOrStaticCallMsil`'s generic union-case constructor path now
+computes the outer ctor's concrete type arguments up front, then for each
+argument looks up the field's type-param slot and threads that slot's concrete
+type's *own* type arguments as `contextHintTyArgs` while the argument is
+lowered.  A nested `None` / `Some(...)` therefore instantiates with the correct
+inner type, so construction and the consuming `match`'s isinst agree.  This is
+the self-hosted port of the F# emitter fix #1140
+(`CrossPackageOptionMatchTests.fs`).
+
+Validation: the issue repro prints `NONE` / exits 0; the new self-test is 8/8
+through native `lyric test`; Emitter 847/847, Cli 84/84; the lyric-session
+ecosystem suite advances from 17/31 to 21/31 (sensitive-URL 10→11/11,
+fixation 4/5, store 6/15).  The residual store failures are a *separate*
+unresolved-type-variable defect (`scr=…Result<V,SessionError>` — the
+cross-package method return type carries an unsubstituted `MTypeVar` rather than
+a concrete arg), tracked apart from this construction fix.  JVM-target parity is
+tracked in #1707: the JVM backend uses type-erased `instanceof` (not closed
+generic TypeSpecs), so the specific mismatch this fix addresses is not the JVM
+blocker — JVM union case-factory emission (D-progress-350 follow-up) must land
+first, after which the nested-generic self-test should run on `--target jvm` too.
