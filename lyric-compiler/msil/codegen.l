@@ -112,6 +112,7 @@ pub record CodegenCtx {
   tokDictObjTypeSpec: Int   // TypeSpec token for Dictionary<object,object>  castclass
   tokDictObjGetCount: Int   // Dictionary<object,object>::get_Count(): int32  callvirt
   tokDictObjContainsKey: Int  // Dictionary<object,object>::ContainsKey(object): bool  callvirt
+  tokDictObjRemove:      Int  // Dictionary<object,object>::Remove(object): bool  callvirt
   tokDictObjTryGetValue: Int  // Dictionary<object,object>::TryGetValue(object, object): bool
   // Intra-package pre-computed tokens
   recordCtorTokens:   Map[String, Int]   // className → MethodDef token
@@ -498,6 +499,12 @@ pub func newCodegenCtx(packageName: in String,
   val tokDictObjContainsKey = 0x0A000000 + ctxAddMemberRefForTypeSpec(
     lctx, tsDictObj, "ContainsKey", "dict_obj_ck", buildInstanceMethodSig(dictCkPs, MBool))
 
+  // 22b. Dictionary<object,object>::Remove(!0): bool  HASTHIS — key is type var !0.
+  val dictRmPs: List[MsilType] = newList()
+  dictRmPs.add(MTypeVar(0))
+  val tokDictObjRemove = 0x0A000000 + ctxAddMemberRefForTypeSpec(
+    lctx, tsDictObj, "Remove", "dict_obj_remove", buildInstanceMethodSig(dictRmPs, MBool))
+
   // 23. Dictionary<object,object>::TryGetValue(object, out object): bool  HASTHIS
   // Signature: HASTHIS, 2 params, bool return, object key, byref-object value
   // For bootstrap we use get_Item instead; register as a stub pointing to get_Item sig.
@@ -664,6 +671,7 @@ pub func newCodegenCtx(packageName: in String,
     tokDictObjTypeSpec   = 0x1B000000 + tsDictObj,
     tokDictObjGetCount   = tokDictObjGetCount,
     tokDictObjContainsKey = tokDictObjContainsKey,
+    tokDictObjRemove      = tokDictObjRemove,
     tokDictObjTryGetValue = tokDictObjTryGetValue,
     recordCtorTokens     = recCtorToks,
     fieldTokens          = fieldToks,
@@ -1674,6 +1682,25 @@ func boxTypeRef(cctx: in CodegenCtx, ty: in MsilType): Int {
 func boxIfNeededMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType): Unit {
   if isValueType(ty) {
     insns.add(MBox(typeToken = 0x01000000 + boxTypeRef(cctx, ty)))
+  }
+}
+
+// Convert an `object` on the stack to `ty`: `unbox.any` for value types
+// (`Int`, `Bool`, …), `castclass` for reference types (string / user class /
+// closed generic), no-op for `object` itself.  Used when feeding a
+// `Dictionary.get_Item` result (typed `object`) into a concrete generic case
+// constructor that expects the instantiated payload type — e.g. `mapGet` on a
+// `Map[String, Int]` must `unbox.any int32` before the `Option_Some<int>` ctor.
+func castObjectToMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType): Unit {
+  if isValueType(ty) {
+    insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, ty)))
+  } else {
+    match ty {
+      case MString                       -> insns.add(MCastclassByName(className = "System.String"))
+      case MClass(c)                     -> insns.add(MCastclassByName(className = c))
+      case MGenericInst(_, headFqn, tas) -> insns.add(MCastclassGeneric(className = headFqn, typeArgs = tas))
+      case _                             -> {}
+    }
   }
 }
 
@@ -3716,16 +3743,66 @@ func lowerBuiltinOrStaticCallMsil(
     insns.add(MNewobj(ctorToken = cctx.tokDictObjCtor))
     MMapOf(keyTy = MObject, valTy = MObject)
   } else if funcName == "mapGet" {
-    // Bootstrap: use Dictionary.get_Item (returns null if missing); wrap in object.
-    // Full Option[V] wrapping deferred — bootstrap returns null for None.
+    // `mapGet(m, key): Option[V]` — emit `if m.ContainsKey(key) {
+    // Some(value = m[key]) } else { None }` with the concrete `Option[V]`
+    // instantiation, so a consumer `match` finds the right arm (#1727).  `V`
+    // comes from the call's context hint (the surrounding `Option[V]` type);
+    // it falls back to `object` when no hint is in scope (the result is then a
+    // correctly-shaped `Option<object>`, still a real Option, not a raw value).
     if args.count >= 2 {
-      lowerCallArgMsil(cctx, fctx, insns, args[0])
-      lowerCallArgMsil(cctx, fctx, insns, args[1])
-      insns.add(MCallvirt(methodToken = cctx.tokDictObjGetItem))
+      val vTy: MsilType =
+        if fctx.contextHintTyArgs.count > 0 { fctx.contextHintTyArgs[0] }
+        else { MObject }
+      // Stash m and key in temp locals — each is consumed by both ContainsKey
+      // and get_Item, and the arg exprs may have side effects.
+      val mSlot = allocSlotMsil(fctx, "__mapget_m_" + toString(fctx.slotTicker.count), MObject)
+      val _m = lowerCallArgMsil(cctx, fctx, insns, args[0])
+      emitStoreSlot(insns, mSlot, fctx.paramCount)
+      val kSlot = allocSlotMsil(fctx, "__mapget_k_" + toString(fctx.slotTicker.count), MObject)
+      val kArgTy = lowerCallArgMsil(cctx, fctx, insns, args[1])
+      boxIfNeededMsil(cctx, insns, kArgTy)
+      emitStoreSlot(insns, kSlot, fctx.paramCount)
+
+      val elseL = freshLabelMsil(fctx)
+      val endL  = freshLabelMsil(fctx)
+
+      // ContainsKey(m, key)
+      emitLoadSlot(insns, mSlot, fctx.paramCount)
+      emitLoadSlot(insns, kSlot, fctx.paramCount)
+      insns.add(MCallvirt(methodToken = cctx.tokDictObjContainsKey))
+      insns.add(MBrFalse(label = elseL))
+
+      // then: Some(value = (V) m[key])
+      emitLoadSlot(insns, mSlot, fctx.paramCount)
+      emitLoadSlot(insns, kSlot, fctx.paramCount)
+      insns.add(MCallvirt(methodToken = cctx.tokDictObjGetItem))   // -> object
+      castObjectToMsil(cctx, insns, vTy)
+      val someArgTys: List[MsilType] = newList()
+      someArgTys.add(vTy)
+      val someCtx: List[MsilType] = newList()
+      someCtx.add(vTy)
+      val someParent: List[MsilType] = newList()
+      val someOk = buildGenericCaseCtorTok(cctx, "Std.Core.Option_Some",
+                                           someArgTys, someCtx, someParent, insns)
+      insns.add(MBr(label = endL))
+
+      // else: None
+      insns.add(MLabel(id = elseL))
+      val noneArgTys: List[MsilType] = newList()
+      val noneCtx: List[MsilType] = newList()
+      noneCtx.add(vTy)
+      val noneParent: List[MsilType] = newList()
+      val noneOk = buildGenericCaseCtorTok(cctx, "Std.Core.Option_None",
+                                           noneArgTys, noneCtx, noneParent, insns)
+
+      insns.add(MLabel(id = endL))
+      if someOk == 1 and someParent.count > 0 { someParent[0] }
+      else if noneOk == 1 and noneParent.count > 0 { noneParent[0] }
+      else { MObject }
     } else {
       insns.add(MLdNull)
+      MObject
     }
-    MObject
   } else if funcName == "format1" {
     if args.count >= 2 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
@@ -4241,16 +4318,33 @@ func lowerMethodCallMsil(
       }
     }
   } else if memberName == "remove" {
-    // Dictionary::Remove(object): bool — bootstrap stub: pop key, pop recv, return false
-    var i = 0
-    while i < args.count {
-      lowerCallArgMsil(cctx, fctx, insns, args[i])
-      insns.add(MPop)
-      i = i + 1
+    // `map.remove(key)` -> Dictionary<object,object>::Remove(!0): bool.  The
+    // receiver Dictionary is already on the stack; push the boxed key and call
+    // Remove.  (Previously a bootstrap stub that popped the args and returned
+    // false, so `delete()` / `destroy()` were silent no-ops — #1602/#1727.)
+    match recvTy {
+      case MMapOf(_, _) -> {
+        if args.count > 0 {
+          val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+          boxIfNeededMsil(cctx, insns, aTy)
+        }
+        insns.add(MCallvirt(methodToken = cctx.tokDictObjRemove))
+        MBool
+      }
+      case _ -> {
+        // Non-Map receiver: retain the conservative pop-only behaviour until a
+        // real List/Set removal lowering lands.
+        var i = 0
+        while i < args.count {
+          lowerCallArgMsil(cctx, fctx, insns, args[i])
+          insns.add(MPop)
+          i = i + 1
+        }
+        insns.add(MPop)
+        insns.add(MLdcI4(v = 0))
+        MBool
+      }
     }
-    insns.add(MPop)
-    insns.add(MLdcI4(v = 0))
-    MBool
   } else if memberName == "removeAt" {
     // List::RemoveAt(int): void — bootstrap stub: pop index, pop recv
     var i = 0

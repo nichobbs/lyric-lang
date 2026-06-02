@@ -952,7 +952,16 @@ pub func collectStdlibGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl]
             case Some(fb) -> match fb { case FBBlock(_) -> true case FBExpr(_) -> false }
             case None     -> false
           }
-          if isGeneric and hasBlockBody and not annsBlockSpecialization(decl.annotations) {
+          // `mapGet` is a codegen builtin intrinsic (see the `funcName ==
+          // "mapGet"` branch in `Msil.Codegen.lowerBuiltinOrStaticCallMsil`),
+          // which wraps `Dictionary.get_Item` into `Option[V]` directly.
+          // Monomorphizing it would rename the call (`mapGet__String__String`),
+          // bypass the intrinsic, and copy a body that calls the generic kernel
+          // extern `tryGetValue` — which the consumer can't lower.  Leave it to
+          // the intrinsic.
+          if isGeneric and hasBlockBody
+             and not annsBlockSpecialization(decl.annotations)
+             and decl.name != "mapGet" {
             genFuncs.add(decl)
           }
         }
