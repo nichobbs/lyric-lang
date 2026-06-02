@@ -936,7 +936,46 @@ func inferExprTE(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
     case ECall(fn, args) -> inferCallReturnTE(state, env, fn, args)
     case ETypeApp(fn, targs) -> inferTypeAppValueTE(state, env, fn, targs)
     case EMember(recv, name) -> inferMemberTE(state, env, recv, name)
+    // `self` in an impl / interface method body — its type is seeded into
+    // `env` under the reserved "self" key by the Phase-2 IImpl / IInterface
+    // rewrite, so `self.field` projections resolve (#1727).
+    case ESelf -> mapGet(env, "self")
+    // Indexing a `Map[K, V]` yields `V`; a `List[T]` / slice / array yields
+    // the element type.  Without this, `val data = self.sessions[id]` left
+    // `data` un-typed and a later generic call on `data.field` could not
+    // infer its type arguments (#1727).
+    case EIndex(recv, _) -> inferIndexTE(state, env, recv)
     case _              -> None
+  }
+}
+
+// Infer the element type produced by indexing `recv` (`recv[i]`).  Map -> V,
+// List / slice / array -> element type.  Returns None for any other receiver
+// shape or when the receiver type can't be inferred.
+func inferIndexTE(
+  state: in MonoState,
+  env:   in Map[String, TypeExpr],
+  recv:  in Expr
+): Option[TypeExpr] {
+  match inferExprTE(state, env, recv) {
+    case None -> None
+    case Some(recvTy) -> {
+      match recvTy.kind {
+        case TGenericApp(head, args) -> {
+          if head.segments.count == 1 {
+            val h = head.segments[0]
+            if h == "Map" and args.count == 2 {
+              match args[1] { case TAType(v) -> Some(value = v) case TAValue(_) -> None }
+            } else if h == "List" and args.count == 1 {
+              match args[0] { case TAType(t) -> Some(value = t) case TAValue(_) -> None }
+            } else { None }
+          } else { None }
+        }
+        case TSlice(elem)    -> Some(value = elem)
+        case TArray(_, elem) -> Some(value = elem)
+        case _               -> None
+      }
+    }
   }
 }
 
@@ -1911,6 +1950,31 @@ func rewriteFuncBody(
   newBody
 }
 
+// Reconstruct a method `FunctionDecl` with its body rewritten (generic call
+// sites specialised), preserving every other field.  Shared by the Phase-2
+// `IImpl` / `IInterface` arms so impl and interface default-method bodies get
+// the same generic-call rewriting as free functions (#1727).
+func rewriteMethodDecl(
+  state: in MonoState,
+  env:   in Map[String, TypeExpr],
+  fn:    in FunctionDecl
+): FunctionDecl {
+  val newBody = rewriteFuncBody(state, env, fn.body)
+  FunctionDecl(
+    docComments = fn.docComments,
+    annotations = fn.annotations,
+    visibility  = fn.visibility,
+    isAsync     = fn.isAsync,
+    name        = fn.name,
+    generics    = fn.generics,
+    params      = fn.params,
+    ret         = fn.ret,
+    whereClause = fn.whereClause,
+    contracts   = fn.contracts,
+    body        = newBody,
+    span        = fn.span)
+}
+
 // One-shot value-generic substitution over a FunctionBody.  Replaces every
 // `EPath([N])` whose name `N` is in `valueSubst` with the bound Expr.
 // Skipped when the substitution map is empty (the common case for pure
@@ -2071,6 +2135,66 @@ pub func monoFileWithImports(
               span        = item.span))
           }
         }
+      }
+      // Impl / interface method bodies are rewritten too — generic call
+      // sites inside an `impl` method (e.g. `Ok(mapGet(data.entries, key))`
+      // in a `SessionStore` impl) must specialise just like calls in a
+      // free function, or the generic return erases to `object` and the
+      // consumer `match` panics "match not exhaustive" (#1727).
+      case IImpl(decl) -> {
+        val newMembers: List[ImplMember] = newList()
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMplFunc(fn) -> {
+              val env = seedEnvFromParams(fn.params)
+              // Seed `self` so `self.field` projections in the method body
+              // resolve to the impl target's record fields (#1727).
+              if not env.containsKey("self") { env.add("self", decl.target) }
+              newMembers.add(IMplFunc(fn = rewriteMethodDecl(state, env, fn)))
+            }
+            case IMplAssoc(a) -> newMembers.add(IMplAssoc(assoc = a))
+          }
+          mi = mi + 1
+        }
+        rewrittenItems.add(Item(
+          docComments = item.docComments,
+          annotations = item.annotations,
+          visibility  = item.visibility,
+          kind        = IImpl(decl = ImplDecl(
+            generics    = decl.generics,
+            iface       = decl.iface,
+            target      = decl.target,
+            whereClause = decl.whereClause,
+            members     = newMembers,
+            span        = decl.span)),
+          span = item.span))
+      }
+      case IInterface(decl) -> {
+        val newMembers: List[InterfaceMember] = newList()
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMFunc(fn) -> {
+              val env = seedEnvFromParams(fn.params)
+              newMembers.add(IMFunc(fn = rewriteMethodDecl(state, env, fn)))
+            }
+            case IMSig(sig)    -> newMembers.add(IMSig(sig = sig))
+            case IMAssoc(a)    -> newMembers.add(IMAssoc(assoc = a))
+          }
+          mi = mi + 1
+        }
+        rewrittenItems.add(Item(
+          docComments = item.docComments,
+          annotations = item.annotations,
+          visibility  = item.visibility,
+          kind        = IInterface(decl = InterfaceDecl(
+            name        = decl.name,
+            generics    = decl.generics,
+            whereClause = decl.whereClause,
+            members     = newMembers,
+            span        = decl.span)),
+          span = item.span))
       }
       case _ -> rewrittenItems.add(item)
     }
