@@ -18175,3 +18175,43 @@ instantiation #1727).  MSIL only; JVM-target parity is tracked in #1740 (the
 JVM record-constructor argument loop may carry the same `Option<object>`
 erasure; verifying / fixing it and extending the self-test to `--target jvm` is
 the follow-up).
+
+### D-progress-360 — self-hosted MSIL: mono-specialized generics NRE / corruption (#1730)
+
+**Status:** Shipped (`lyric-compiler/lyric/mono.l`; regression test
+`lyric-compiler/lyric/generic_specialization_self_test.l`).
+
+A *called* same-package generic function (even the trivial `idv[T](x: T): T`)
+faulted with a `NullReferenceException` in `lowerFuncMsil`, and once that was
+addressed every other function the monomorphizer rewrote (e.g. a synthesized
+`lyric test` `main`) emitted corrupt IL (`brfalse ->0x0000` to method start, a
+stray `pop`, a dropped `return`).  Both symptoms are one root cause: the
+bootstrap F# emitter compiles a bare `None` *match arm* as `None<object>` (the
+#1687 nullary-default), so an `Option` value built via a two-arm
+`match opt { case None -> None; case Some(x) -> Some(...) }` carries the wrong
+generic instantiation when the `None` arm fires.  Stored into a typed
+`Option[T]` AST slot (`FunctionDecl.ret`, `EIf.elseBranch`, `MatchArm.guard`,
+`SReturn.value`, `STry.finally_`, `LBVar.init`, `FunctionDecl.body`), the
+widened `Option<object>` then matches neither arm of codegen's
+instantiation-sensitive `match`, which falls through to a null and either NREs
+(`ret`) or emits an unresolved branch + stray pop (`elseBranch`).
+
+Fix: in every `Option`-reconstructing site of the monomorphizer's AST-rewrite
+and value-substitution passes, replace the two-arm `match` expression with a
+typed `var x: Option[T] = None` initializer plus a statement-position
+assignment in the `Some` arm.  The bootstrap F# emitter honors the annotation
+on the `var` initializer (`None<T>`) and infers the concrete payload type for
+the standalone `Some(...)`, so the stored value always carries the field's
+declared instantiation.
+
+Validation: `generic_specialization_self_test.l` 5/5 (trivial `idv[Int]` /
+`idv[String]`, void-returning generic, `Option[Int]` / `Option[String]`
+returns) via native `lyric test`; nested-generic (#1687), named-arg-order,
+record-option-field (#1731) self-tests still green; the standalone repro
+`lyric build idv.l` prints `5`.  The self-hosted generic specialization path now
+works end-to-end on MSIL — this was the blocker for #1727 (feeding stdlib
+generics through `monoFileWithImports`), which in turn clears the remaining
+`get()` / `mapGet`-based `lyric-session` failures (session unchanged at 24/31
+by this fix alone, as expected; auth unchanged at 17/29 — its failures are the
+unrelated `Lyric.Auth.AuthHost` extern-resolution issue).  MSIL only; JVM-target
+parity for same-package generic specialization is tracked in #1707.
