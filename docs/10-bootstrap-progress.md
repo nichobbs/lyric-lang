@@ -18268,10 +18268,12 @@ expression) and routes `recv.method(args)` through `tryInstanceAutoFfiFromMetada
 - The MemberRef intern key (`autoffi_inst_…` + per-param/return identity) keeps
   instance MemberRefs distinct from the static ones and from each overload.
 
-End-to-end (`auto_ffi_self_test.l`, now 9 tests):
+End-to-end (`auto_ffi_self_test.l`, now 10 tests):
 `Type.GetType("System.Int32").ToString() == "System.Int32"` — a class-returning
 static feeds a receiver-based instance call, both resolved entirely from
-metadata.
+metadata.  A third new test closes the matrix: an instance method returning a
+class ref and chaining (`Type.MakeArrayType().ToString() == "System.Int32[]"`)
+and an instance method taking a class-ref parameter (`Type.IsAssignableFrom`).
 
 Validated: emitter suite green; auto-FFI self-test 9/9.  Value-type instance
 methods (which need `ldloca` + `call` on a managed pointer rather than

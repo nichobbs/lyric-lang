@@ -4146,14 +4146,22 @@ func lowerMethodCallMsil(
       case Some(rt) -> { return rt }
       // An MClassRef receiver is exclusively produced by metadata-resolved
       // auto-FFI, so there is no other legitimate dispatch for it.  An
-      // unresolved instance method here means no matching instance method
-      // exists in .NET metadata for the argument types — diagnose rather than
-      // silently emit the null stub (the language reference guarantees an
-      // unresolved auto-FFI call is never silently mis-bound).
-      case None     -> panic("Msil.Codegen: unresolved extern instance method '" + memberName
-        + "' on '" + fqn + "' — no matching instance method found in .NET metadata for the given "
-        + "argument types.  Auto-FFI is never silently mis-bound; declare an @externTarget wrapper "
-        + "if a custom binding is intended.")
+      // unresolved instance method means no matching instance method exists in
+      // .NET metadata for the argument types.  Rather than abort the whole
+      // build (a panic) or silently mis-bind to the null stub, emit a runtime
+      // stub that throws a clear error at this call site — the same pattern the
+      // unresolved-@externTarget path uses (#1041), honouring the language
+      // reference's "never silently mis-bound" guarantee while keeping the
+      // failure graceful and located at the offending call.
+      case None     -> {
+        val msg = "unresolved extern instance method '" + memberName + "' on '" + fqn
+          + "': no matching instance method found in .NET metadata for the given argument "
+          + "types.  Declare an @externTarget wrapper if a custom binding is intended."
+        insns.add(MLdStr(token = ctxInternUs(cctx.lctx, msg)))
+        insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+        insns.add(MThrow)
+        return MObject
+      }
     }
     case _ -> {}
   }
