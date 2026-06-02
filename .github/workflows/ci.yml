@@ -344,6 +344,24 @@ jobs:
             export LYRIC_BIN=dotnet
             export LYRIC_CLI_DLL="$cli_dll"
           fi
+          # lyric-session depends on Lyric.Cache (a local path dep).  The test
+          # runner's local-dep resolver requires the dep's output DLL to already
+          # exist (lyric-cache/bin/Cache.dll) and errors otherwise, so build it
+          # here before running the session suite.  Copy the result next to the
+          # session test DLL so `dotnet exec` loads it at runtime — the
+          # runtimeconfig additionalProbingPaths only resolves NuGet-style
+          # versioned layouts (same reason the host-shim DLLs are copied above).
+          echo "=== building lyric-cache (lyric-session dependency) ==="
+          if ! "$lyric_bin" build --manifest lyric-cache/lyric.toml; then
+            echo "::error::failed to build lyric-cache (lyric-session dependency)"
+            exit 1
+          fi
+          if [ -f lyric-cache/bin/Cache.dll ]; then
+            cp lyric-cache/bin/Cache.dll lyric-session/.lyric-test/
+          else
+            echo "::error::lyric-cache build produced no lyric-cache/bin/Cache.dll"
+            exit 1
+          fi
           # Run both test manifests; capture exit codes so both always run
           # before we report the overall result.
           overall=0
