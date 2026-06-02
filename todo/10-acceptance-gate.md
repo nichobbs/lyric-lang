@@ -98,12 +98,12 @@ The following F# host shim projects were made redundant when their libraries mig
 
 - `bootstrap/src/Lyric.Mail.Host/` — replaced by `extern package MailKit.Net.Smtp` in `lyric-mail`
 - `bootstrap/src/Lyric.Mq.Host/` — replaced by `extern package RabbitMQ.Client` in `lyric-mq`
+- `bootstrap/src/Lyric.Auth.Host/` — removed (#1622 follow-up); `lyric-auth` binds HMAC-SHA256 directly to `System.Security.Cryptography.HMACSHA256.HashData` and implements constant-time comparison in pure Lyric
 
 Retain:
 - `bootstrap/src/Lyric.Session.Host/` — until `lyric-session` fully migrates to typed extern boundary (Tier 3 / #1022)
 - `bootstrap/src/Lyric.Jobs.Host/` — until `lyric-jobs` fully migrates (Tier 3 / #1022)
 - `bootstrap/src/Lyric.Storage.Host/` — until `lyric-storage` fully migrates (Tier 3 / #1022)
-- `bootstrap/src/Lyric.Auth.Host/` — `lyric-auth` uses BCL crypto (`System.Security.Cryptography`); retain until a pure-Lyric crypto kernel is designed
 
 **Step 4 — Delete `--internal-build` fallback path**
 
