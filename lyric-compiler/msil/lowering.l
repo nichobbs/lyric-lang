@@ -105,6 +105,13 @@ pub union MsilType {
   // MemberRef return/param to bind to the real method) rather than degrading
   // to Object.  Used by metadata-resolved auto-FFI for class returns/params.
   case MClassRef(typeRefCode: Int, clrFqn: String)
+  // A managed pointer (`T&`) to `inner` — ELEMENT_TYPE_BYREF.  Used ONLY to
+  // encode an `out`/`inout` parameter in a method signature's parameter list.
+  // It never represents a stack value, local, field, return, or generic
+  // argument, so `bufMsilType` (signature encoding) is the only consumer that
+  // must decode it; `elementTypeByte` carries a defensive case for the same
+  // reason.  See #1761.
+  case MByRef(inner: MsilType)
 }
 
 // Return the ECMA-335 ELEMENT_TYPE byte for the given MsilType.
@@ -130,6 +137,38 @@ pub func elementTypeByte(t: in MsilType): Int {
     case MArray(_)        -> 0x1D  // ELEMENT_TYPE_SZARRAY prefix; element follows (bufMsilType)
     case MValueTypeRef(_, _) -> 0x11  // ELEMENT_TYPE_VALUETYPE prefix; TypeRef follows (bufMsilType)
     case MClassRef(_, _)     -> 0x12  // ELEMENT_TYPE_CLASS prefix; TypeRef follows (bufMsilType)
+    case MByRef(_)           -> 0x10  // ELEMENT_TYPE_BYREF prefix; pointee follows (bufMsilType)
+  }
+}
+
+// Emit the `ldind.*` opcode that dereferences a managed pointer whose pointee
+// is `ty`.  Used to read an `inout` parameter (whose slot holds a `T&`).  Lyric
+// primitives load natively (i4/i8/r8); every reference-shaped type (object,
+// string, class, list/map, generic instance, type variable) uses `ldind.ref`.
+func emitLdindForType(mb: in MethodBody, ty: in MsilType): Unit {
+  match ty {
+    case MInt    -> emitLdind_I4(mb)
+    case MLong   -> emitLdind_I8(mb)
+    case MDouble -> emitLdind_R8(mb)
+    case MBool   -> emitLdind_I1(mb)
+    case MChar   -> emitLdind_U2(mb)
+    case MByte   -> emitLdind_I1(mb)
+    case _       -> emitLdind_Ref(mb)
+  }
+}
+
+// Emit the `stind.*` opcode that stores through a managed pointer whose pointee
+// is `ty`.  Counterpart of `emitLdindForType`; used to write an `out`/`inout`
+// parameter.
+func emitStindForType(mb: in MethodBody, ty: in MsilType): Unit {
+  match ty {
+    case MInt    -> emitStind_I4(mb)
+    case MLong   -> emitStind_I8(mb)
+    case MDouble -> emitStind_R8(mb)
+    case MBool   -> emitStind_I1(mb)
+    case MChar   -> emitStind_I2(mb)
+    case MByte   -> emitStind_I1(mb)
+    case _       -> emitStind_Ref(mb)
   }
 }
 
@@ -176,6 +215,10 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
     case MArray(elem) -> {
       bufU1(w, 0x1D)   // ELEMENT_TYPE_SZARRAY
       bufMsilType(w, elem)
+    }
+    case MByRef(inner) -> {
+      bufU1(w, 0x10)   // ELEMENT_TYPE_BYREF (out/inout parameter)
+      bufMsilType(w, inner)
     }
     case MGenericInst(typeRefCode, _, typeArgs) -> {
       bufU1(w, 0x15)   // ELEMENT_TYPE_GENERICINST
@@ -337,6 +380,9 @@ pub union MInsn {
   case MLdloc(slot: Int)
   case MStloc(slot: Int)
   case MLdloca(slot: Int)          // load address of local variable
+  case MLdarga(slot: Int)          // load address of argument (byref out/inout param)
+  case MLdind(ty: MsilType)        // load indirect through a managed pointer (deref)
+  case MStind(ty: MsilType)        // store indirect through a managed pointer
 
   // Arithmetic and bitwise
   case MAdd
@@ -1074,6 +1120,9 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MLdloc(slot)       -> emitLdloc(mb, slot)
     case MStloc(slot)       -> emitStloc(mb, slot)
     case MLdloca(slot)      -> emitLdloca_S(mb, slot)
+    case MLdarga(slot)      -> emitLdarga_S(mb, slot)
+    case MLdind(ty)         -> emitLdindForType(mb, ty)
+    case MStind(ty)         -> emitStindForType(mb, ty)
     case MAdd               -> emitAdd(mb)
     case MSub               -> emitSub(mb)
     case MMul               -> emitMul(mb)

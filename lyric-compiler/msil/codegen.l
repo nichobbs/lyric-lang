@@ -142,6 +142,10 @@ pub record CodegenCtx {
   // rather than erasing to `<object>` (keeps the canonical nullary-case
   // representation consistent across construction positions).
   funcParamTypes:     Map[String, List[MsilType]]
+  // Declared parameter MODES per function (same keys as funcParamTypes:
+  // arity-qualified + bare-FQN alias).  Lets a call site pass `out`/`inout`
+  // arguments by managed pointer (address-load) instead of by value.  See #1761.
+  funcParamModes:     Map[String, List[ParamMode]]
   // Compile-time const values: registered by IConst pre-scan so that EPath
   // references to const names inline ldc.i4 instead of ldsfld.
   constValues:        Map[String, Int]        // constName → inlined Int value
@@ -682,6 +686,7 @@ pub func newCodegenCtx(packageName: in String,
     funcTokens           = funcToks,
     funcRetTypes         = newMap(),
     funcParamTypes       = newMap(),
+    funcParamModes       = newMap(),
     constValues          = newMap(),
     ffiAsmRefs           = newMap(),
     ffiTypeRefs          = newMap(),
@@ -1206,6 +1211,18 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
         if not cctx.funcParamTypes.containsKey(fqn) {
           cctx.funcParamTypes.add(fqn, paramTys)
         }
+        val paramModes: List[ParamMode] = newList()
+        var pmi = 0
+        while pmi < decl.params.count {
+          paramModes.add(decl.params[pmi].mode)
+          pmi = pmi + 1
+        }
+        if not cctx.funcParamModes.containsKey(arityKey) {
+          cctx.funcParamModes.add(arityKey, paramModes)
+        }
+        if not cctx.funcParamModes.containsKey(fqn) {
+          cctx.funcParamModes.add(fqn, paramModes)
+        }
         methodDefRow = methodDefRow + 1
       }
       case _ -> {}
@@ -1300,6 +1317,12 @@ pub record FuncCtx {
   // generic case construction (None, Err, …) can produce the correct closed
   // generic type (Option_None<Int>) rather than Option_None<Object>.
   contextHintTyArgs: List[MsilType]
+  // Slots of `out`/`inout` parameters, mapped to the *pointee* MsilType (the
+  // declared value type, not the `T&`).  A slot present here is a managed
+  // pointer: reads deref it (`ldarg; ldind`), writes store through it
+  // (`ldarg; <value>; stind`), and the slot is never touched by `emitStoreSlot`
+  // (the assignment path handles byref targets before reaching it).  See #1761.
+  byrefSlotTypes: Map[Int, MsilType]
 }
 
 // Allocate a fresh label ID (0, 1, 2, …) for use with MLabel/MBr* instructions.
@@ -1365,6 +1388,104 @@ pub func allocSlotMsil(fctx: in FuncCtx, name: in String, ty: in MsilType): Int 
       }
       slot
     }
+  }
+}
+
+// True for parameter modes that pass a managed pointer (`T&`): `out` and `inout`.
+// `in` (and the default) pass by value.  See #1761.
+pub func isByrefMode(m: in ParamMode): Bool {
+  match m {
+    case PMOut   -> true
+    case PMInout -> true
+    case PMIn    -> false
+  }
+}
+
+// Wrap each `out`/`inout` parameter's MsilType in `MByRef` so a method
+// signature encodes a managed pointer (`T&`).  Result is index-aligned with
+// `baseTypes`; `in` (and default) parameters pass through unchanged.  #1761.
+func byrefWrapSigTypes(params: in List[Param], baseTypes: in List[MsilType]): List[MsilType] {
+  val acc: List[MsilType] = newList()
+  var i = 0
+  while i < baseTypes.count {
+    if i < params.count and isByrefMode(params[i].mode) {
+      acc.add(MByRef(inner = baseTypes[i]))
+    } else {
+      acc.add(baseTypes[i])
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// The arithmetic MInsn for a compound assignment op (`+=` → MAdd, …), or None
+// for plain `=`.  Used by the byref-store path so `*ptr OP= rhs` lowers
+// uniformly across ops.
+func assignOpArithInsnMsil(op: in AssignOp): Option[MInsn] {
+  match op {
+    case AssEq      -> None
+    case AssPlus    -> Some(value = MAdd)
+    case AssMinus   -> Some(value = MSub)
+    case AssStar    -> Some(value = MMul)
+    case AssSlash   -> Some(value = MDiv)
+    case AssPercent -> Some(value = MRem)
+  }
+}
+
+// The declared parameter modes, index-aligned with `params`.
+func paramModesOf(params: in List[Param]): List[ParamMode] {
+  val acc: List[ParamMode] = newList()
+  var i = 0
+  while i < params.count {
+    acc.add(params[i].mode)
+    i = i + 1
+  }
+  acc
+}
+
+// Load a variable that may be an `out`/`inout` parameter.  For a byref slot the
+// slot holds a managed pointer, so we load the pointer and dereference it; for
+// an ordinary param/local this is just `emitLoadSlot`.  Reads of `out` params
+// are rejected by the mode checker (write-before-read), so in practice only
+// `inout` reads reach the deref path.
+func emitLoadVarMsil(fctx: in FuncCtx, insns: in List[MInsn], slot: in Int): Unit {
+  match mapGet(fctx.byrefSlotTypes, slot) {
+    case Some(elemTy) -> {
+      insns.add(MLdarg(slot = slot))
+      insns.add(MLdind(ty = elemTy))
+    }
+    case None -> emitLoadSlot(insns, slot, fctx.paramCount)
+  }
+}
+
+// Push the managed pointer for an `out`/`inout` argument.  The argument must be
+// an assignable variable (the mode checker guarantees this, V0001–V0006): a
+// local → `ldloca`; a by-value parameter → `ldarga`; or an `out`/`inout`
+// parameter being forwarded, whose slot already holds the pointer → `ldarg`.
+// See #1761.
+func emitByrefArgMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
+                      insns: in List[MInsn], argExpr: in Expr): Unit {
+  match argExpr.kind {
+    case EPath(path) -> {
+      val name = lastSegmentMsil(path)
+      match mapGet(fctx.slots, name) {
+        case Some(slot) -> {
+          match mapGet(fctx.byrefSlotTypes, slot) {
+            case Some(_) -> insns.add(MLdarg(slot = slot))
+            case None    -> {
+              if slot < fctx.paramCount {
+                insns.add(MLdarga(slot = slot))
+              } else {
+                insns.add(MLdloca(slot = slot - fctx.paramCount))
+              }
+            }
+          }
+        }
+        case None -> panic("Msil.Codegen: out/inout argument '" + name
+          + "' is not a local or parameter (mode checker should have rejected this)")
+      }
+    }
+    case _ -> panic("Msil.Codegen: out/inout argument must be an assignable variable")
   }
 }
 
@@ -1793,7 +1914,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
               case Some(t) -> t
               case None    -> MObject
             }
-          emitLoadSlot(insns, slot, fctx.paramCount)
+          emitLoadVarMsil(fctx, insns, slot)
           ty
         }
         case None -> {
@@ -2676,6 +2797,30 @@ func lowerAssignExprMsil(
               case Some(t) -> t
               case None    -> MObject
             }
+          // Assignment to an `out`/`inout` parameter: the slot holds a managed
+          // pointer, so we store *through* it (`stind`) with the address pushed
+          // before the value.  Compound ops dereference the current value first
+          // (`ldarg; dup; ldind; <rhs>; <op>; stind`).  This bypasses the
+          // by-value `emitStoreSlot` path below entirely.  See #1761.
+          match mapGet(fctx.byrefSlotTypes, slot) {
+            case Some(elemTy) -> {
+              insns.add(MLdarg(slot = slot))
+              match assignOpArithInsnMsil(op) {
+                case None -> {
+                  lowerExprMsil(cctx, fctx, insns, value)
+                }
+                case Some(arith) -> {
+                  insns.add(MDup)
+                  insns.add(MLdind(ty = elemTy))
+                  lowerExprMsil(cctx, fctx, insns, value)
+                  insns.add(arith)
+                }
+              }
+              insns.add(MStind(ty = elemTy))
+              return MVoid
+            }
+            case None -> ()
+          }
           match op {
             case AssEq -> {
               lowerExprMsil(cctx, fctx, insns, value)
@@ -3535,6 +3680,15 @@ func lowerCallArgMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
   }
 }
 
+// The underlying expression of a call argument (positional or named).  Used by
+// the `out`/`inout` call path, which needs the argument as an lvalue. #1761.
+func callArgExpr(arg: in CallArg): Expr {
+  match arg {
+    case CAPositional(e)  -> e
+    case CANamed(_, e, _) -> e
+  }
+}
+
 // Reorder a record/union-case constructor's arguments to field-declaration
 // order (#1730).  A named-argument call (`R(c = …, a = …)`) may list fields in
 // any order, but the constructor `newobj` consumes them positionally in
@@ -4090,8 +4244,21 @@ func lowerBuiltinOrStaticCallMsil(
                     case Some(pts) -> pts
                     case None      -> newList()
                   }
+                  val callParamModes = match mapGet(cctx.funcParamModes, tokKey) {
+                    case Some(ms) -> ms
+                    case None     -> newList()
+                  }
                   var i = 0
                   while i < args.count {
+                    // `out`/`inout` parameter: pass the argument's address (a
+                    // managed pointer) rather than its value.  See #1761.
+                    val isByrefArg =
+                      if i < callParamModes.count { isByrefMode(callParamModes[i]) }
+                      else { false }
+                    if isByrefArg {
+                      emitByrefArgMsil(cctx, fctx, insns, callArgExpr(args[i]))
+                      i = i + 1
+                    } else {
                     // Thread a generic parameter's type args as the construction
                     // context for this argument so a bare `None` (or other
                     // nullary case) builds `Option_None<concrete>` rather than
@@ -4130,6 +4297,7 @@ func lowerBuiltinOrStaticCallMsil(
                       }
                     }
                     i = i + 1
+                    }
                   }
                   insns.add(MCall(methodToken = tok))
                   match mapGet(cctx.funcRetTypes, tokKey) {
@@ -5027,6 +5195,7 @@ func makeFuncCtxMsil(pkgName: in String, className: in String,
   val loopCont:    List[Int]              = newList()
   val yieldSlots:  List[Int]              = newList()
   val contextHintTyArgs: List[MsilType]  = newList()
+  val byrefSlotTypes: Map[Int, MsilType] = newMap()
   FuncCtx(
     pkgName              = pkgName,
     className            = className,
@@ -5041,7 +5210,8 @@ func makeFuncCtxMsil(pkgName: in String, className: in String,
     loopCont             = loopCont,
     yieldSlots           = yieldSlots,
     declaredRetTy        = declaredRetTy,
-    contextHintTyArgs    = contextHintTyArgs)
+    contextHintTyArgs    = contextHintTyArgs,
+    byrefSlotTypes       = byrefSlotTypes)
 }
 
 // Check whether the last meaningful instruction in a list is a return or throw.
@@ -5649,6 +5819,9 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
     val slot = fctx.slotTicker.count
     fctx.slots.add(p.name, slot)
     fctx.types.add(p.name, paramTy)
+    if isByrefMode(p.mode) {
+      fctx.byrefSlotTypes.add(slot, paramTy)
+    }
     fctx.slotTicker.add(0)
     pi = pi + 1
   }
@@ -5732,7 +5905,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
   MFunc(
     flags    = 0x0016,   // Public | Static | HideBySig
     name     = decl.name,
-    params   = paramTypes,
+    params   = byrefWrapSigTypes(decl.params, paramTypes),
     ret      = retTy,
     insns    = insns,
     maxStack = 16,
@@ -5795,6 +5968,9 @@ pub func lowerImplMethodMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
     val slot = fctx.slotTicker.count   // 1, 2, …
     fctx.slots.add(p.name, slot)
     fctx.types.add(p.name, paramTy)
+    if isByrefMode(p.mode) {
+      fctx.byrefSlotTypes.add(slot, paramTy)
+    }
     fctx.slotTicker.add(0)
     pi = pi + 1
   }
@@ -5837,7 +6013,7 @@ pub func lowerImplMethodMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
   MFunc(
     flags    = instanceFlags,
     name     = decl.name,
-    params   = paramTypes,
+    params   = byrefWrapSigTypes(decl.params, paramTypes),
     ret      = retTy,
     insns    = insns,
     maxStack = 16,
@@ -8271,7 +8447,7 @@ func registerRestoredFunc(cctx: in CodegenCtx,
     case None     -> MVoid
   }
 
-  val funcSig   = buildStaticMethodSig(paramTypes, retType)
+  val funcSig   = buildStaticMethodSig(byrefWrapSigTypes(fn.params, paramTypes), retType)
   val sigKey    = "restored_func_" + fqn
   val memberRow = ctxAddMemberRef(cctx.lctx, hostRefRow, fn.name,
                                    sigKey, funcSig)
@@ -8279,6 +8455,7 @@ func registerRestoredFunc(cctx: in CodegenCtx,
   // Record the return type so SExpr call sites don't emit a spurious
   // `pop` after void cross-assembly calls → InvalidProgramException.
   cctx.funcRetTypes.add(fqn, retType)
+  cctx.funcParamModes.add(fqn, paramModesOf(fn.params))
 }
 
 // Allocate a TypeRef row for a union's case class (named
@@ -9178,7 +9355,8 @@ func registerStdlibFunc(
     case Some(te) -> typeExprToMsilCtx(cctx, te, packageName)
     case None     -> MVoid
   }
-  val funcSig   = buildStaticMethodSig(paramTypes, retType)
+  val funcSig   = buildStaticMethodSig(byrefWrapSigTypes(fn.params, paramTypes), retType)
+  val fnModes   = paramModesOf(fn.params)
   // Register with an arity-specific key so overloaded stdlib functions
   // (e.g. Str.substring/2 vs Str.substring/3) each get a distinct
   // MemberRef with the correct parameter count.  The plain FQN key is
@@ -9198,10 +9376,12 @@ func registerStdlibFunc(
     cctx.funcTokens.add(arityKey, tok)
     cctx.funcRetTypes.add(arityKey, retType)
     cctx.funcParamTypes.add(arityKey, paramTypes)
+    cctx.funcParamModes.add(arityKey, fnModes)
     if not cctx.funcTokens.containsKey(fqn) {
       cctx.funcTokens.add(fqn, tok)
       cctx.funcRetTypes.add(fqn, retType)
       cctx.funcParamTypes.add(fqn, paramTypes)
+      cctx.funcParamModes.add(fqn, fnModes)
     }
   }
 }
