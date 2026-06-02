@@ -18406,3 +18406,53 @@ sole remaining ecosystem red is `lyric-auth` (27/29): two `extractClaim` tests
 codegen bug (#1761) — independent of the shim; the written `out String` never
 reaches the caller — closely related to the `out`/byref `TryGetValue` gap noted
 in D-progress-363. #1761 is being taken on in its own follow-up PR.
+
+### D-progress-366 — self-hosted MSIL: `out`/`inout` parameters pass by managed pointer (#1761)
+
+**Status:** Shipped (`lyric-compiler/msil/lowering.l`, `lyric-compiler/msil/codegen.l`;
+self-test `lyric-compiler/lyric/outparam_self_test.l`, wired into CI via native
+`lyric test --target dotnet`).
+
+The self-hosted MSIL backend emitted **every** parameter by value, ignoring its
+`ParamMode`.  A callee's write to an `out`/`inout` parameter therefore never
+reached the caller: `out String` came back empty, and `inout` mutations (the
+`pos: inout Int` shape used pervasively in `Std.Yaml` and the generator SDK,
+which work only because the F# stage-0 emitter lowers byref correctly) were
+silently dropped.  This was the root cause of the two failing `lyric-auth`
+`extractClaim` tests (#1079), whose claim flows through
+`tryExtractClaim(…, value: out String)`.
+
+`out`/`inout` parameters now use the CLR managed-pointer (`T&`) calling
+convention:
+
+- **Signature.** A new `MByRef(inner)` `MsilType` encodes `ELEMENT_TYPE_BYREF`
+  in `bufMsilType`; `byrefWrapSigTypes` wraps each `out`/`inout` parameter's
+  type when building a function's `MFunc.params` (free functions and impl
+  methods) and the cross-package / restored-package MemberRef sigs, so every
+  signature that names the method agrees on the byref.  `MByRef` appears only in
+  parameter signatures — never as a stack value — so `bufMsilType` and a
+  defensive `elementTypeByte` case are its only consumers.
+- **Callee.** `out`/`inout` parameter slots are recorded in
+  `FuncCtx.byrefSlotTypes` (slot → pointee type).  Reads deref (`ldarg; ldind.*`
+  via `emitLoadVarMsil`); writes store through the pointer with the address
+  pushed first (`ldarg; <value>; stind.*` for `=`, and `ldarg; dup; ldind;
+  <rhs>; <op>; stind` for compound assignment), bypassing the by-value
+  `emitStoreSlot` path.  New IR opcodes `MLdarga` / `MLdind` / `MStind` map to
+  the pre-existing pure-Lyric `emitLdarga_S` / `emitLdind_*` / `emitStind_*`
+  primitives in `opcodes.l`.
+- **Call site.** A new `funcParamModes` registry (populated alongside
+  `funcParamTypes` for in-bundle, cross-package, and restored functions) lets
+  the call path pass an `out`/`inout` argument by address: `ldloca` for a local,
+  `ldarga` for a by-value parameter, or `ldarg` when forwarding an existing
+  byref parameter.
+
+Validated via native `lyric test`: `outparam_self_test.l` 6/6 (`out String`,
+`out Int`, multiple `out` params, `inout Int` read-modify-write, `inout String`,
+and `inout`-forwarding to a nested call); the full `lyric-auth` suite reaches
+**29/29** when combined with the host-shim removal (#1762) — both `extractClaim`
+tests (#1079) pass.  No regression: self-hosted bridge suite 84/84,
+`bitwise_self_test` 10/10, `auto_ffi_self_test` 10/10.
+
+MSIL only; JVM-target parity (the JVM has no managed byref — the standard
+lowering is a single-element holder array or a generated box) is tracked in
+#1763.
