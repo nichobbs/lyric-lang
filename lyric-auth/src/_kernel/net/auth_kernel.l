@@ -1,17 +1,22 @@
 // Auth.Kernel.Net — .NET authentication extern boundary.
 //
-// Bridges Auth's verification functions to BCL crypto primitives via the
-// `Lyric.Auth.AuthHost` host shim (bootstrap/src/Lyric.Auth.Host/).
+// Bridges Auth's verification functions to BCL crypto primitives with no
+// host shim: the one remaining BCL-bound operation binds directly to a
+// static method on a `System.Security.Cryptography` type, exactly as
+// `Std.Hash` binds to `SHA512.HashData`.
 //
-// The host shim exposes exactly two BCL-bound operations:
-//
-//   hmacSha256       — HMAC-SHA256 signature computation (HMACSHA256.ComputeHash)
-//   fixedTimeEquals  — byte-content-constant-time comparison (FixedTimeEquals)
+//   hmacSha256          — HMAC-SHA256 signature computation, bound directly to
+//                         `System.Security.Cryptography.HMACSHA256.HashData`.
+//   fixedTimeEqualBytes — byte-content-constant-time comparison, implemented
+//                         in pure Lyric (branchless XOR-accumulate; see below).
+//                         Tracked in #1760 to rebind to the JIT-hardened
+//                         `CryptographicOperations.FixedTimeEquals` once the
+//                         emitter gains `ReadOnlySpan<byte>` extern support.
 //
 // All other JWT logic — base64url decoding, JSON claim scanning, exp/nbf
 // validation, algorithm allow-list enforcement, and API-key byte comparison —
-// is implemented here in Lyric so that only the truly BCL-bound operations
-// cross the extern boundary.
+// is implemented here in Lyric so that only the truly BCL-bound operation
+// crosses the extern boundary.
 //
 // Algorithm support:
 //   HS256 — BCL HMAC-SHA256 (no NuGet dependency).
@@ -35,20 +40,48 @@ import Std.Time
 
 /// Compute HMAC-SHA256 of `message` using `key`.
 /// Returns the raw 32-byte MAC as a byte array.
-@axiom("Lyric.Auth.AuthHost.hmacSha256 — BCL HMACSHA256.ComputeHash")
-@externTarget("Lyric.Auth.AuthHost.hmacSha256")
+///
+/// Binds directly to the BCL static `HMACSHA256.HashData(byte[] key,
+/// byte[] source)` — the same direct-extern pattern as `Std.Hash`'s
+/// `SHA512.HashData`, with no host shim.
+@axiom("System.Security.Cryptography.HMACSHA256.HashData conforms to documented .NET HMAC-SHA256 semantics; it is a pure function of (key, message)")
+@externTarget("System.Security.Cryptography.HMACSHA256.HashData")
 @stable(since="0.1")
 func hmacSha256(key: in slice[Byte], message: in slice[Byte]): slice[Byte]
   requires: key.length > 0
   = ()
 
 /// Byte-content-constant-time comparison of `a` and `b`.
-/// Constant-time for equal-length inputs; returns immediately on length mismatch.
-@axiom("Lyric.Auth.AuthHost.fixedTimeEquals — CryptographicOperations.FixedTimeEquals")
-@externTarget("Lyric.Auth.AuthHost.fixedTimeEquals")
+///
+/// Branchless XOR-accumulate: every byte position is compared and the
+/// differences are OR-folded into an accumulator, so the running time
+/// depends only on the input length — never on the byte values or on the
+/// position of the first mismatch. This is the portable constant-time
+/// equality construction (cf. Go's `crypto/subtle.ConstantTimeCompare` and
+/// libsodium's `sodium_memcmp` fallback).
+///
+/// Length is treated as non-secret: the function exits early on a length
+/// mismatch. This matches the boundary's prior `FixedTimeEquals` semantics
+/// (which documented the same property); for fixed-format secrets such as
+/// HMAC tags and API keys the length is not sensitive.
+///
+/// #1760 tracks rebinding this to the JIT-hardened BCL
+/// `CryptographicOperations.FixedTimeEquals` once the emitter supports
+/// `ReadOnlySpan<byte>` extern parameters (the BCL method has no `byte[]`
+/// overload, so the table-driven `@externTarget` resolver cannot encode it).
 @stable(since="0.1")
-func fixedTimeEqualBytes(a: in slice[Byte], b: in slice[Byte]): Bool
-  = ()
+func fixedTimeEqualBytes(a: in slice[Byte], b: in slice[Byte]): Bool {
+  if a.length != b.length { return false }
+  var diff: Int = 0
+  var i = 0
+  while i < a.length {
+    val ai: Int = 0 + a[i]
+    val bi: Int = 0 + b[i]
+    diff = diff.or(ai.xor(bi))
+    i = i + 1
+  }
+  diff == 0
+}
 
 // ─── Base64url decoding ───────────────────────────────────────────────────────
 

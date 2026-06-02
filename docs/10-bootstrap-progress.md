@@ -18359,3 +18359,50 @@ payloads.  Value-type *monomorphized* generic bodies (e.g. `unwrapOr__Int`) and
 the `Map`-store/retrieve `Option` erasure are separate and still pending;
 `lyric-auth` stays 17/29 (unrelated `Lyric.Auth.AuthHost` extern-resolution).
 MSIL only; JVM-target parity is tracked in #1707.
+
+### D-progress-365 — ecosystem CI: lyric-cache build-order + lyric-auth host-shim removal
+
+**Status:** Shipped (`.github/workflows/ci.yml`, `lyric-auth/src/_kernel/net/auth_kernel.l`;
+F# `bootstrap/src/Lyric.Auth.Host/` deleted).
+
+Two fixes to the ecosystem security-regression CI step, both surfaced by the
+self-hosted FFI resolver:
+
+- **lyric-cache build-order.** `lyric-session` declares a local path dependency
+  on `Lyric.Cache`, but CI never built it, so the `lyric test` local-dep
+  resolver aborted with "local dep 'Lyric.Cache' not built" before the
+  SessionStore / SessionFixation suites could even compile. CI now builds
+  `lyric-cache` ahead of the session suite and stages `Cache.dll` into
+  `lyric-session/.lyric-test/` (runtimeconfig `additionalProbingPaths` only
+  resolves NuGet-style layouts).
+
+- **lyric-auth host-shim removal.** The auth kernel's two BCL-bound operations
+  used `@externTarget("Lyric.Auth.AuthHost.…")` against the F# shim
+  `bootstrap/src/Lyric.Auth.Host/`. The self-hosted MSIL FFI resolver's
+  `clrAssemblyForType` only maps `Lyric.Emitter` / `Lyric.Stdlib` prefixes, so
+  `Lyric.Auth.AuthHost` fell through to the `System.Runtime` default and the
+  compiled test DLL failed to load the type at runtime. Rather than extend the
+  shim mapping, the shim is deleted: `hmacSha256` binds directly to the static
+  `System.Security.Cryptography.HMACSHA256.HashData(byte[], byte[])` (the same
+  direct-extern pattern as `Std.Hash`'s `SHA512.HashData`), and
+  `fixedTimeEqualBytes` is reimplemented in pure Lyric as a branchless
+  XOR-accumulate constant-time compare. The F# project, its `Bootstrap.sln`
+  entry, the `Lyric.Emitter` `ProjectReference` + `typeof<…>` AppDomain pin, and
+  the CI `Lyric.Auth.Host.dll` copy are all removed.
+
+Validated: `lyric test --manifest lyric-auth/lyric.toml` — every `verifyJwt`
+test passes, including the valid-HS256-signature cases (proving the direct
+`HMACSHA256.HashData` MAC and the pure-Lyric constant-time compare agree on a
+match) and the BAD_SIGNATURE cases (compare returns false on mismatch); zero
+`Could not load type 'Lyric.Auth.AuthHost'` errors. The F# `Bootstrap.sln`
+builds clean (0 warnings, warnings-as-errors).
+
+Scope / follow-ups: rebinding `fixedTimeEqualBytes` to the JIT-hardened BCL
+`CryptographicOperations.FixedTimeEquals` is deferred to #1760 (needs
+`ReadOnlySpan<byte>` extern support; the BCL method has no `byte[]` overload).
+With the session store suite now closed by #1757 (D-progress-364, 31/31), the
+sole remaining ecosystem red is `lyric-auth` (27/29): two `extractClaim` tests
+(#1079) fail on a **pre-existing** self-hosted `out`-parameter store-back
+codegen bug (#1761) — independent of the shim; the written `out String` never
+reaches the caller — closely related to the `out`/byref `TryGetValue` gap noted
+in D-progress-363. #1761 is being taken on in its own follow-up PR.

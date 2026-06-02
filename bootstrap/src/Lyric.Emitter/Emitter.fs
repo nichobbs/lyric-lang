@@ -2060,9 +2060,6 @@ let private findClrType (qualifiedName: string) : System.Type option =
     // Pin `JvmByteHost` to force-load `Lyric.Jvm.Hosts` — the JVM emitter's
     // `lyric-compiler/jvm/_kernel/kernel.l` `@externTarget`s these.
     let _ = typeof<Lyric.Jvm.Hosts.JvmByteHost>
-    // Pin `AuthHost` to force-load `Lyric.Auth.Host` — auth_kernel.l
-    // `@externTarget`s `Lyric.Auth.AuthHost.*`.
-    let _ = typeof<Lyric.Auth.AuthHost>
     let _ = typeof<System.Text.Json.JsonDocument>
     let _ = typeof<System.Text.RegularExpressions.Regex>
     let _ = typeof<System.Net.HttpListener>

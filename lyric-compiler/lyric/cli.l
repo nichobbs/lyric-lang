@@ -2441,8 +2441,8 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
   }
 
   // Include the bootstrap CLI DLL directory in the runtime probing paths so
-  // that host-shim DLLs compiled alongside it (e.g. Lyric.Auth.Host.dll) are
-  // locatable when the compiled test DLL runs via `dotnet exec`.
+  // that host-shim DLLs compiled alongside it (e.g. Lyric.Session.Host.dll)
+  // are locatable when the compiled test DLL runs via `dotnet exec`.
   // LYRIC_CLI_DLL is set by Program.fs when the CLI is a dotnet exec DLL
   // (the typical CI case); it is unset for native AOT binaries.
   val cliDll = Environment.getVarOrDefault("LYRIC_CLI_DLL", "")

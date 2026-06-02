@@ -305,24 +305,18 @@ jobs:
           mkdir -p lyric-auth/.lyric-test lyric-session/.lyric-test
           cp "${stdlib_dlls[@]}" lyric-auth/.lyric-test/
           cp "${stdlib_dlls[@]}" lyric-session/.lyric-test/
-          # Each ecosystem library's compiled test DLL carries
-          # @externTarget references into its F# host shim (Auth.Host,
-          # Session.Host, …).  `additionalProbingPaths` in the
-          # runtimeconfig only resolves NuGet-style versioned layouts,
-          # so the host DLLs must live alongside the test DLL itself
-          # for `dotnet exec` to load them.
+          # lyric-session's compiled test DLL carries @externTarget
+          # references into its F# host shim (Session.Host).
+          # `additionalProbingPaths` in the runtimeconfig only resolves
+          # NuGet-style versioned layouts, so the host DLL must live
+          # alongside the test DLL itself for `dotnet exec` to load it.
+          # Session.Host is `dotnet publish`-ed by bootstrap.sh into
+          # .bootstrap/stage1/, so we copy from there.
           #
-          # Auth.Host is referenced directly by Lyric.Cli.fsproj so it
-          # lands in the F# CLI bin dir on `dotnet build`.  Session.Host
-          # is independent and only `dotnet publish`-ed by bootstrap.sh
-          # into .bootstrap/stage1/, so we copy from there.
+          # lyric-auth no longer needs a host shim: its kernel binds
+          # HMAC-SHA256 directly to System.Security.Cryptography.HMACSHA256
+          # and implements constant-time comparison in pure Lyric.
           cli_bin_dir="$(pwd)/bootstrap/src/Lyric.Cli/bin/${BUILD_CONFIG}/net10.0"
-          if [ -f "$cli_bin_dir/Lyric.Auth.Host.dll" ]; then
-            cp "$cli_bin_dir/Lyric.Auth.Host.dll" lyric-auth/.lyric-test/
-          else
-            echo "::error::Lyric.Auth.Host.dll missing from $cli_bin_dir"
-            exit 1
-          fi
           if [ -f .bootstrap/stage1/Lyric.Session.Host.dll ]; then
             cp .bootstrap/stage1/Lyric.Session.Host.dll lyric-session/.lyric-test/
           else
