@@ -99,8 +99,12 @@ pub func compileToMsilWithVersion(
   // Synthesise @derive / @generate(Json) methods (Band 5 — docs/41 §9 #857).
   val derived = deriveFile(elaborated)
 
-  // Monomorphise same-package generic calls (Band 5 — docs/41 §9).
-  val monoRes = monoFile(derived)
+  // Monomorphise same-package generic calls (Band 5 — docs/41 §9), feeding
+  // the stdlib's pure-Lyric generic `pub func`s as imported generics so calls
+  // like `mapGet(m, "k")` specialise into a concrete copy in this bundle
+  // rather than erasing their generic return to `object` (#1727).
+  val stdlibGenFuncs = collectStdlibGenericFuncs(stdlibPkgs)
+  val monoRes = monoFileWithImports(derived, stdlibGenFuncs)
   if reportAndAbort(monoRes.diagnostics) { return false }
   val file = monoRes.file
 
@@ -382,6 +386,10 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     }
     bn = bn + 1
   }
+  // Stdlib pure-Lyric generic `pub func`s, fed to each package's monomorphizer
+  // so cross-assembly generic calls (`mapGet`, `unwrapOr`, …) specialise into
+  // the consumer bundle instead of erasing their return to `object` (#1727).
+  val stdlibGenFuncs = collectStdlibGenericFuncs(stdlibPkgs)
   val perPkgFiles: List[SourceFile] = newList()
   val perPkgNames: List[String]     = newList()
   var ti = 0
@@ -400,7 +408,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     val elaborated = elaborateFile(pp.file)
     val derived    = deriveFile(elaborated)
 
-    val monoRes = monoFile(derived)
+    val monoRes = monoFileWithImports(derived, stdlibGenFuncs)
     if reportAndAbort(monoRes.diagnostics) { return false }
 
     perPkgFiles.add(monoRes.file)
@@ -913,6 +921,67 @@ pub func collectStdlibPackages(
     si = si + 1
   }
   pkgs
+}
+
+// Collect every pure-Lyric generic `pub func` from the stdlib packages so the
+// monomorphizer can specialise consumer call sites — e.g. `mapGet(m, "k")` ->
+// a concrete `mapGet__String__String` copy emitted into the consumer bundle —
+// instead of leaving an un-instantiated cross-assembly generic call whose
+// `Option[V]` return erases to `object` and breaks the consumer's concrete
+// `match` (#1727).
+//
+// Filtered conservatively to `generic` funcs that have **no annotations** and a
+// real `{ }` block body.  This excludes kernel externs (`tryGetValue`,
+// `newMap`, …), which are `= ()` expression bodies carrying `@externTarget`:
+// `specializeFunc` drops annotations, so a specialised copy of an extern would
+// lose its `@externTarget` and emit a broken no-op body.  Those calls stay
+// un-specialised and are emitted directly by codegen's extern path.  Missing a
+// legitimately-specialisable generic here is safe (the call just stays
+// un-specialised, the status quo); including a non-specialisable one is not.
+pub func collectStdlibGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl] {
+  val genFuncs: List[FunctionDecl] = newList()
+  var pi = 0
+  while pi < pkgs.count {
+    val pkg: StdlibPkg = pkgs[pi]
+    var ii = 0
+    while ii < pkg.items.count {
+      match pkg.items[ii].kind {
+        case IFunc(decl) -> {
+          val isGeneric = match decl.generics { case Some(_) -> true case None -> false }
+          val hasBlockBody = match decl.body {
+            case Some(fb) -> match fb { case FBBlock(_) -> true case FBExpr(_) -> false }
+            case None     -> false
+          }
+          if isGeneric and hasBlockBody and not annsBlockSpecialization(decl.annotations) {
+            genFuncs.add(decl)
+          }
+        }
+        case _ -> {}
+      }
+      ii = ii + 1
+    }
+    pi = pi + 1
+  }
+  genFuncs
+}
+
+// True iff the annotation list carries a marker that makes a generic
+// unsuitable for monomorphization-by-copy.  `@externTarget` is a kernel
+// boundary whose body codegen synthesises from the BCL target (and
+// `specializeFunc` drops annotations, so a copy would lose it); `@axiom`
+// funcs are proof-only and must not be emitted as runtime code.  Benign
+// markers like `@stable` do not block specialization.
+func annsBlockSpecialization(anns: in List[Annotation]): Bool {
+  var i = 0
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count == 1 {
+      val n = segs[0]
+      if n == "externTarget" or n == "axiom" { return true }
+    }
+    i = i + 1
+  }
+  false
 }
 
 // Append every item from every `StdlibPkg` in `pkgs` to `flat`.  Used

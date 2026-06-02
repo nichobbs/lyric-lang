@@ -18215,6 +18215,7 @@ generics through `monoFileWithImports`), which in turn clears the remaining
 by this fix alone, as expected; auth unchanged at 17/29 — its failures are the
 unrelated `Lyric.Auth.AuthHost` extern-resolution issue).  MSIL only; JVM-target
 parity for same-package generic specialization is tracked in #1707.
+
 ### D-progress-361 — auto-FFI class (reference-type) parameters & returns, Phase 3c step 4a (epic #1622)
 
 **Status:** Shipped (Phase 3c step 4a of epic #1622; design in
@@ -18278,3 +18279,41 @@ and an instance method taking a class-ref parameter (`Type.IsAssignableFrom`).
 Validated: emitter suite green; auto-FFI self-test 9/9.  Value-type instance
 methods (which need `ldloca` + `call` on a managed pointer rather than
 `callvirt`) remain a tracked follow-up.
+
+### D-progress-363 — self-hosted MSIL: stdlib generic calls monomorphize (#1727, inference slice)
+
+**Status:** Shipped (`lyric-compiler/msil/bridge.l`, `lyric-compiler/lyric/mono.l`;
+regression test `lyric-compiler/lyric/stdlib_generic_mono_self_test.l`).
+
+Cross-package **generic stdlib calls** (`unwrapOr`, `isSome`, `mapGet`, …) were
+never instantiated by the self-hosted MSIL backend: the call left the generic
+return erased to `object`, so a concrete-typed consumer `match` panicked "match
+not exhaustive".  The fix (building on #1730, which made same-package
+specialization sound) feeds the stdlib's generic `pub func`s to the
+monomorphizer and adds the inference needed to specialise their call sites into
+concrete copies in the consumer bundle:
+
+- `Msil.Bridge.collectStdlibGenericFuncs` gathers the stdlib's pure-Lyric
+  generic `pub func`s (block body, no `@externTarget` / `@axiom`) and both MSIL
+  bridge paths call `monoFileWithImports` with them instead of `monoFile`.
+- `Lyric.Mono` Phase 2 now rewrites **impl- and interface-method bodies** (was
+  `IFunc`-only), so generic calls inside an `impl` method specialise too.
+- `inferExprTE` gained `ESelf` (reads the `self` type seeded into the env for
+  impl methods) and `EIndex` (`Map` -> `V`, `List`/slice/array -> element)
+  cases, so chains like `unwrapOr(b.opts[i], d)` infer their type arguments.
+
+Validated: `stdlib_generic_mono_self_test.l` 3/3 (free-function `unwrapOr` on
+`Some`/`None`, per-call-site specialisation, and an impl-method call over a
+`List[Option[String]]` field) via native `lyric test`; #1730 / nested-generic /
+record-option-field self-tests still green; no regression.
+
+Scope / follow-ups: generics whose bodies call a **kernel extern** (`mapGet` ->
+`tryGetValue`) need real self-hosted `Dictionary.TryGetValue` (out/byref)
+codegen — the current path is a deliberate bootstrap stub aliased to `get_Item`
+(`codegen.l` §"23.") — plus a `Some<object>` -> `Some<T>` instantiation fix in
+specialised bodies; **value-type** specialisations (`unwrapOr__Int`) and the
+`Map`-store/retrieve `Option` erasure still mis-lower; and **non-inferable** call
+shapes (`isSome(None)`) can't monomorphize by construction.  These keep the
+`lyric-session` store suite at 24/31 for now (its `get()` routes through
+`mapGet`); the TryGetValue + `Some`-instantiation build-out is the next step.
+MSIL only; JVM-target parity is tracked in #1707.
