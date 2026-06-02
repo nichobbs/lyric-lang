@@ -18215,3 +18215,66 @@ generics through `monoFileWithImports`), which in turn clears the remaining
 by this fix alone, as expected; auth unchanged at 17/29 — its failures are the
 unrelated `Lyric.Auth.AuthHost` extern-resolution issue).  MSIL only; JVM-target
 parity for same-package generic specialization is tracked in #1707.
+### D-progress-361 — auto-FFI class (reference-type) parameters & returns, Phase 3c step 4a (epic #1622)
+
+**Status:** Shipped (Phase 3c step 4a of epic #1622; design in
+`docs/42-extern-metadata-resolution.md` §5).
+
+The reference-type counterpart of the value-type work (D-progress-358).  A new
+`MClassRef(typeRefCode, clrFqn)` MsilType (`lowering.l`) carries a pre-interned
+TypeRef so a method signature encodes `CLASS + TypeRef` — a MemberRef whose
+return/param said `object` would fail to bind to a method that really returns
+the class (`MissingMethodException`).  Encoding sites mirror `MValueTypeRef`:
+`elementTypeByte` → 0x12, `bufMsilType` / `bufMsilTypeWithCtx` → `CLASS +
+TypeRef`, `typeSigKey` → `"CR"+fqn`; in local-variable signatures it degrades to
+`object` (safe — a class ref is a reference, exactly like `MClass`).
+
+Codegen (`codegen.l`): `internClassRef` builds the `MClassRef`;
+`resolvedSigToMsil` maps a resolved class `STNamed` to it; `externRefFqn` /
+`msilIsValueTypeRef` / `argTyToSig` describe a class-ref argument by FQN;
+`argCoercionInsns` matches a class argument to a class parameter by FQN (and a
+class argument still satisfies an `object` parameter with no box).
+
+End-to-end (`auto_ffi_self_test.l`, now 8 tests):
+`Object.ReferenceEquals(Type.GetType("System.Int32"), Type.GetType("System.Int32"))`
+is `true` — `Type.GetType(string): Type` returns a real, usable class reference
+resolved entirely from metadata.  Reader self-test adds a class-return
+`resolveExtern` case (`Type.GetType` → `Type`, value-type flag false).
+
+Validated: emitter suite green; auto-FFI self-test 8/8; reader self-test green.
+Instance-method dispatch (step 4b) builds directly on this — a class return is
+the receiver a `callvirt` dispatches on.
+
+### D-progress-362 — auto-FFI instance-method dispatch, Phase 3c step 4b (epic #1622)
+
+**Status:** Shipped (Phase 3c step 4b of epic #1622; design in
+`docs/42-extern-metadata-resolution.md` §5).  The marquee end-to-end auto-FFI
+path: a receiver-based instance call resolved entirely from .NET metadata.
+
+`lowerMethodCallMsil` (`codegen.l`) now detects an extern class-ref receiver
+(`MClassRef`, from D-progress-361 class returns or any class-typed extern
+expression) and routes `recv.method(args)` through `tryInstanceAutoFfiFromMetadata`:
+
+- It resolves the *instance* method from metadata (`resolveOverloadIn` already
+  reports `isStatic = not sig.hasThis`), builds a HASTHIS MethodSig
+  (`buildInstanceMethodSig`) via `emitResolvedInstanceAutoFfi`, and emits
+  `callvirt` against the real CLR MemberRef.  `callvirt` is valid for both
+  virtual and non-virtual instance methods on a reference receiver and performs
+  the null check.
+- Arguments are lowered into buffers *before* resolution, so a failed lookup
+  leaves the stack holding only the already-pushed receiver and the caller's
+  legacy dispatch stays correct.  A resolved *static* (the name exists only as a
+  static) also falls back rather than emit a malformed `callvirt`.
+- The MemberRef intern key (`autoffi_inst_…` + per-param/return identity) keeps
+  instance MemberRefs distinct from the static ones and from each overload.
+
+End-to-end (`auto_ffi_self_test.l`, now 10 tests):
+`Type.GetType("System.Int32").ToString() == "System.Int32"` — a class-returning
+static feeds a receiver-based instance call, both resolved entirely from
+metadata.  A third new test closes the matrix: an instance method returning a
+class ref and chaining (`Type.MakeArrayType().ToString() == "System.Int32[]"`)
+and an instance method taking a class-ref parameter (`Type.IsAssignableFrom`).
+
+Validated: emitter suite green; auto-FFI self-test 9/9.  Value-type instance
+methods (which need `ldloca` + `call` on a managed pointer rather than
+`callvirt`) remain a tracked follow-up.

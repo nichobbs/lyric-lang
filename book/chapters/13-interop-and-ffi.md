@@ -201,6 +201,52 @@ pub func parse(text: in String): Result[slice[slice[String]], ParseError] {
 
 The rest of your application imports `Csv`, not `System.Formats.Csv`. The axiom block is in one place. The exception conversion is in one place. The surface your application depends on is fully typed and exception-free.
 
+## §13.9 Calling BCL methods directly with `extern type`
+
+The `extern package` / `@externTarget` style above wraps a hand-written host signature. For calling a .NET type's **static and instance methods** directly, Lyric offers a lighter form: `extern type`.
+
+An `extern type` declaration binds a Lyric name to a fully-qualified CLR type:
+
+```lyric
+extern type Math = "System.Math"
+extern type Ts   = "System.TimeSpan"
+extern type Typ  = "System.Type"
+```
+
+Calls on that name resolve against the .NET reference assemblies at compile time. The compiler reads the type's metadata, picks the overload that matches your argument types, and emits the real `MemberRef` — no hand-written host signature, and no runtime reflection.
+
+**Static methods.** Overloads resolve by argument type, including widening (`Int`/`Long` → `Long`/`Double`) and `object` parameters:
+
+```lyric
+Math.Max(2, 5)        // binds Max(int, int): int  ->  5
+Math.Sqrt(9)          // Int widened to double; Sqrt(double): double  ->  3.0
+```
+
+**Value types and class types, as parameters and returns.** A method returning a `struct` (value type) or `class` (reference type) is matched by that type's fully-qualified name, and its result flows straight into the next call:
+
+```lyric
+// value-type return feeding value-type parameters:
+Ts.Compare(Ts.FromMinutes(5.0), Ts.FromMinutes(3.0))   //  ->  1
+
+// class return:
+Typ.GetType("System.Int32")                            //  ->  a System.Type
+```
+
+**Instance methods.** When a call's receiver is itself a class-typed extern result, its instance methods dispatch via `callvirt` against the real method:
+
+```lyric
+Typ.GetType("System.Int32").ToString()                 //  ->  "System.Int32"
+Typ.GetType("System.Int32").MakeArrayType().ToString() //  ->  "System.Int32[]"
+```
+
+Resolution is total: if no overload matches your argument types, the call is a compile-time error — it is never silently mis-bound to the wrong method. When a binding genuinely cannot be expressed this way (a method needing narrowing, a `float` parameter, or an instance method on a *value-type* receiver), fall back to an `@externTarget` wrapper as in §13.4.
+
+Because `extern type` resolves against real metadata, it carries no `@axiom` block: the signature is read from the assembly, not asserted by you. The trust boundary is narrower — you are trusting the BCL's documented behaviour of the method you named, not a hand-written signature that could drift from it.
+
+::: note
+Calling `System.Type.GetType` yourself through an `extern type` is a direct, statically-emitted `MemberRef` call — not runtime reflection, and fully AOT-compatible. This is distinct from §13.6, which is about the *compiler* never needing reflection to marshal Lyric's own opaque types.
+:::
+
 ## Exercises
 
 1. Write an `extern package System.Console` that wraps `Console.ReadLine()` and `Console.WriteLine(string)`. Provide `requires:` and `ensures:` clauses that reflect what the BCL actually guarantees. Then write a Lyric `Console` package that wraps it, returning `Option[String]` from `readLine()` — `Some(line)` when a line is read, `None` when EOF is reached.

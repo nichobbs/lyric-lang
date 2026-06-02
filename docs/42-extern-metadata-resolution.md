@@ -428,8 +428,39 @@ runtime gap.
   type's identity (`sigTypeKeyFrag`).  End-to-end:
   `TimeSpan.Compare(TimeSpan.FromMinutes(5.0), TimeSpan.FromMinutes(3.0)) == 1`
   — a value-type return feeding value-type parameters, resolved entirely from
-  metadata.  Class (reference) returns still fall back (they would need a
-  `CLASS + TypeRef` return encoding); instance-method dispatch builds on this.
+  metadata.
+- **Phase 3c (step 4a) — class (reference-type) parameters & returns.
+  _(SHIPPED.)_** The reference-type counterpart of step 3.  A new `MClassRef(
+  typeRefCode, clrFqn)` MsilType carries a pre-interned TypeRef so a method
+  signature encodes `CLASS + TypeRef` (a MemberRef whose return/param said
+  `object` would fail to bind to a method that really returns the class —
+  `MissingMethodException`).  `internClassRef` builds it; `resolvedSigToMsil`
+  maps a resolved class `STNamed` to it; `argTyToSig` / `externRefFqn` describe
+  a class-ref argument by FQN; `argCoercionInsns` matches a class argument to a
+  class parameter by FQN (and a class argument still satisfies an `object`
+  parameter with no box, since it is already a reference).  In local-variable
+  signatures `MClassRef` degrades to `object` (safe — it is a reference).
+  End-to-end:
+  `Object.ReferenceEquals(Type.GetType("System.Int32"), Type.GetType("System.Int32"))`
+  is `true` — `Type.GetType(string): Type` returns a real, usable class
+  reference resolved from metadata.  Instance-method dispatch (step 4b) builds
+  directly on this: a class return is the receiver a `callvirt` dispatches on.
+- **Phase 3c (step 4b) — instance-method dispatch. _(SHIPPED.)_** The marquee
+  end-to-end path.  `lowerMethodCallMsil` now detects an extern class-ref
+  receiver (`MClassRef`) — produced by a class-returning static or any
+  class-typed extern expression — and routes `recv.method(args)` through
+  `tryInstanceAutoFfiFromMetadata`: it resolves the *instance* method from
+  metadata (`resolveOverloadIn` already reports `isStatic = not sig.hasThis`),
+  builds a HASTHIS MethodSig (`buildInstanceMethodSig`), and emits `callvirt`
+  against the real CLR method (valid for both virtual and non-virtual instance
+  methods on a reference receiver).  Arguments are buffered before resolution so
+  a failed lookup leaves the stack holding only the already-pushed receiver and
+  the caller's legacy dispatch stays correct; a resolved *static* (no instance
+  overload) also falls back rather than emit a malformed `callvirt`.  End-to-end:
+  `Type.GetType("System.Int32").ToString() == "System.Int32"` — a class-returning
+  static feeds a receiver-based instance call, both resolved entirely from
+  metadata.  Value-type instance methods (which need `ldloca` + `call` on a
+  managed pointer rather than `callvirt`) remain a follow-up.
 - **Phase 4 — `@externTarget` verification + `clrAssemblyForType` removal +
   generics.** Make the declared signature a metadata *check* (new diagnostic);
   delete the hardcoded prefix table; route generic externs through MethodSpec;

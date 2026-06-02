@@ -4137,6 +4137,34 @@ func lowerMethodCallMsil(
     case _ -> {}
   }
   val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
+  // Auto-FFI instance dispatch: an extern class-ref receiver (e.g. the result
+  // of a class-returning static like `Type.GetType(...)`) dispatches its
+  // instance methods via `callvirt` against the real CLR method, resolved from
+  // metadata.  The receiver is already on the stack.
+  match recvTy {
+    case MClassRef(_, fqn) -> match tryInstanceAutoFfiFromMetadata(cctx, fctx, insns, fqn, memberName, args) {
+      case Some(rt) -> { return rt }
+      // An MClassRef receiver is exclusively produced by metadata-resolved
+      // auto-FFI, so there is no other legitimate dispatch for it.  An
+      // unresolved instance method means no matching instance method exists in
+      // .NET metadata for the argument types.  Rather than abort the whole
+      // build (a panic) or silently mis-bind to the null stub, emit a runtime
+      // stub that throws a clear error at this call site — the same pattern the
+      // unresolved-@externTarget path uses (#1041), honouring the language
+      // reference's "never silently mis-bound" guarantee while keeping the
+      // failure graceful and located at the offending call.
+      case None     -> {
+        val msg = "unresolved extern instance method '" + memberName + "' on '" + fqn
+          + "': no matching instance method found in .NET metadata for the given argument "
+          + "types.  Declare an @externTarget wrapper if a custom binding is intended."
+        insns.add(MLdStr(token = ctxInternUs(cctx.lctx, msg)))
+        insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+        insns.add(MThrow)
+        return MObject
+      }
+    }
+    case _ -> {}
+  }
   // User-defined instance / interface dispatch path (#878).
   match recvTy {
     case MClass(cls) -> {
@@ -7026,11 +7054,21 @@ func elemByteToMsil(b: in Int): Option[MsilType] {
   else { None }
 }
 
-// The CLR FQN of an `MValueTypeRef`, or "" for any other MsilType.
-func msilValueTypeFqn(t: in MsilType): String {
+// The CLR FQN of an extern reference (`MClassRef`) or value (`MValueTypeRef`)
+// type, or "" for any other MsilType.
+func externRefFqn(t: in MsilType): String {
   match t {
     case MValueTypeRef(_, fqn) -> fqn
+    case MClassRef(_, fqn)     -> fqn
     case _                     -> ""
+  }
+}
+
+// True when the MsilType is a value-type extern ref (vs a class-type ref).
+func msilIsValueTypeRef(t: in MsilType): Bool {
+  match t {
+    case MValueTypeRef(_, _) -> true
+    case _                   -> false
   }
 }
 
@@ -7048,31 +7086,52 @@ func internValueTypeRef(cctx: in CodegenCtx, fqn: in String): Option[MsilType] {
   }
 }
 
+// Intern a TypeRef for the class (reference) type `fqn` and return the matching
+// `MClassRef`, or None when the type's assembly isn't indexed.  The companion
+// of `internValueTypeRef` for ref types — `MClassRef` carries its TypeRef so a
+// method signature encodes CLASS + TypeRef (a MemberRef return/param that says
+// `object` would fail to bind to a method that really returns the class).
+func internClassRef(cctx: in CodegenCtx, fqn: in String): Option[MsilType] {
+  match Mdr.assemblyForType(cctx.metadataTypeIndex, fqn) {
+    case None -> None
+    case Some(asm) -> {
+      val sp     = splitTypeFqn(fqn)
+      val refRow = internFfiTypeRef(cctx, asm, sp.ns, sp.name)
+      Some(value = MClassRef(typeRefCode = tdrTypeRef(refRow), clrFqn = fqn))
+    }
+  }
+}
+
 // Map a resolved parameter / return `SigType` to its MsilType: primitives via
-// the element byte, value types via an interned TypeRef.  None for class
-// (reference) types and anything else — the caller falls back to the legacy
-// path (a class return would have to encode CLASS+TypeRef, not yet supported).
+// the element byte, value types via an interned VALUETYPE TypeRef, class
+// (reference) types via an interned CLASS TypeRef.  None for anything else (or
+// when the type's assembly isn't indexed) — the caller falls back to legacy.
 func resolvedSigToMsil(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[MsilType] {
   val pb = Mdr.sigPrimByte(sig)
   if pb >= 0 {
     elemByteToMsil(pb)
-  } else if Mdr.sigNamedIsValueType(sig) {
-    internValueTypeRef(cctx, Mdr.sigNamedFqn(sig))
   } else {
-    None
+    val fqn = Mdr.sigNamedFqn(sig)
+    if fqn.length == 0 {
+      None
+    } else if Mdr.sigNamedIsValueType(sig) {
+      internValueTypeRef(cctx, fqn)
+    } else {
+      internClassRef(cctx, fqn)
+    }
   }
 }
 
 // Map a lowered argument's MsilType to the `SigType` used for overload
-// resolution: primitives by element byte, value-type externs by FQN.  None for
+// resolution: primitives by element byte, value/class externs by FQN.  None for
 // argument types the metadata path can't describe (caller falls back).
 func argTyToSig(t: in MsilType): Option[Mdr.SigType] {
   val eb = msilToElemByte(t)
   if eb >= 0 {
     Some(value = Mdr.mkPrimSig(eb))
   } else {
-    val fqn = msilValueTypeFqn(t)
-    if fqn.length > 0 { Some(value = Mdr.mkNamedSig(fqn, true)) } else { None }
+    val fqn = externRefFqn(t)
+    if fqn.length > 0 { Some(value = Mdr.mkNamedSig(fqn, msilIsValueTypeRef(t))) } else { None }
   }
 }
 
@@ -7135,9 +7194,11 @@ func argCoercionInsns(cctx: in CodegenCtx, argTy: in MsilType, paramSig: in Mdr.
   val acc: List[MInsn] = newList()
   val paramByte = Mdr.sigPrimByte(paramSig)
   if paramByte < 0 {
-    // Non-primitive parameter.  Value types must match by FQN exactly (no
-    // coercion); class/other parameters are not yet supported.
-    if Mdr.sigNamedIsValueType(paramSig) and msilValueTypeFqn(argTy) == Mdr.sigNamedFqn(paramSig) {
+    // Non-primitive parameter: an extern value or class type.  The argument
+    // must be the same extern type (matched by FQN) — no coercion is emitted
+    // (a value type is passed by value, a class by reference).
+    val pfqn = Mdr.sigNamedFqn(paramSig)
+    if pfqn.length > 0 and externRefFqn(argTy) == pfqn {
       Some(value = acc)
     } else {
       None
@@ -7231,6 +7292,112 @@ func emitResolvedAutoFfi(
       }
       insns.add(MCall(methodToken = tok))
       Some(value = retMsil)
+    }
+  }
+}
+
+// Emit a metadata-resolved auto-FFI *instance* call, or None to fall back.  The
+// receiver is already on the stack (lowered by the caller).  Builds an instance
+// (HASTHIS) MethodSig and emits `callvirt` against the real CLR method —
+// callvirt is valid for both virtual and non-virtual instance methods on a
+// reference receiver and performs the null check.  `argBufs` carry each
+// argument's already-lowered IL; `argTys` their MsilTypes.
+func emitResolvedInstanceAutoFfi(
+  cctx:       in CodegenCtx,
+  insns:      in List[MInsn],
+  asmName:    in String,
+  clrFqn:     in String,
+  methodName: in String,
+  argBufs:    in List[List[MInsn]],
+  argTys:     in List[MsilType],
+  m:          in Mdr.ResolvedMethod
+): Option[MsilType] {
+  val paramMsil: List[MsilType]    = newList()
+  val coercions: List[List[MInsn]] = newList()
+  var pi = 0
+  var ok = true
+  while pi < m.paramTypes.count and ok {
+    val psig = m.paramTypes[pi]
+    match resolvedSigToMsil(cctx, psig) {
+      case None     -> { ok = false }
+      case Some(pm) -> match argCoercionInsns(cctx, argTys[pi], psig) {
+        case None       -> { ok = false }
+        case Some(cins) -> { paramMsil.add(pm)  coercions.add(cins) }
+      }
+    }
+    pi = pi + 1
+  }
+  if not ok { return None }
+  match resolvedSigToMsil(cctx, m.returnType) {
+    case None -> None
+    case Some(retMsil) -> {
+      val sp   = splitTypeFqn(clrFqn)
+      val tRef = internFfiTypeRef(cctx, asmName, sp.ns, sp.name)
+      val sig  = buildInstanceMethodSig(paramMsil, retMsil)
+      // Distinguish instance overloads (and from the static MemberRef key) by
+      // type identity of every parameter plus the return.
+      var sigKey = "autoffi_inst_" + clrFqn + "." + methodName
+      var ki = 0
+      while ki < m.paramTypes.count {
+        sigKey = sigKey + "_" + sigTypeKeyFrag(m.paramTypes[ki])
+        ki = ki + 1
+      }
+      sigKey = sigKey + "_r" + sigTypeKeyFrag(m.returnType)
+      val mrRow = ctxAddMemberRef(cctx.lctx, tRef, methodName, sigKey, sig)
+      val tok = 0x0A000000 + mrRow
+      // Receiver is already on the stack; push args (with coercions) then callvirt.
+      var bi = 0
+      while bi < argBufs.count {
+        appendInsnsMsil(insns, argBufs[bi])
+        appendInsnsMsil(insns, coercions[bi])
+        bi = bi + 1
+      }
+      insns.add(MCallvirt(methodToken = tok))
+      Some(value = retMsil)
+    }
+  }
+}
+
+// Try to resolve and emit a metadata-resolved instance call on an extern
+// class-ref receiver `expr.method(args)`.  The receiver is already on the
+// stack.  Returns the result MsilType on success, or None to fall back (the
+// stack is left holding just the receiver — args are buffered, not emitted —
+// so the caller's legacy dispatch stays correct).
+func tryInstanceAutoFfiFromMetadata(
+  cctx:       in CodegenCtx,
+  fctx:       in FuncCtx,
+  insns:      in List[MInsn],
+  fqn:        in String,
+  memberName: in String,
+  args:       in List[CallArg]
+): Option[MsilType] {
+  ensureMetadataIndex(cctx)
+  val argBufs: List[List[MInsn]] = newList()
+  val argTys:  List[MsilType]    = newList()
+  val argSigs: List[Mdr.SigType] = newList()
+  var ai = 0
+  var bad = false
+  while ai < args.count and not bad {
+    val buf: List[MInsn] = newList()
+    val t   = lowerCallArgMsil(cctx, fctx, buf, args[ai])
+    match argTyToSig(t) {
+      case None    -> { bad = true }
+      case Some(s) -> { argBufs.add(buf)  argTys.add(t)  argSigs.add(s) }
+    }
+    ai = ai + 1
+  }
+  if bad {
+    None
+  } else {
+    match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex,
+                            fqn, memberName, argSigs) {
+      case None     -> None
+      case Some(re) ->
+        // A receiver-based call needs an instance method; a resolved static
+        // means the name only exists as a static — fall back rather than
+        // emit a callvirt against a static (which would be malformed).
+        if re.sig.isStatic { None }
+        else { emitResolvedInstanceAutoFfi(cctx, insns, re.assemblyName, fqn, memberName, argBufs, argTys, re.sig) }
     }
   }
 }
