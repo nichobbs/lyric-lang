@@ -18456,3 +18456,36 @@ tests (#1079) pass.  No regression: self-hosted bridge suite 84/84,
 MSIL only; JVM-target parity (the JVM has no managed byref — the standard
 lowering is a single-element holder array or a generated box) is tracked in
 #1763.
+
+### D-progress-367 — self-hosted MSIL: `match` on `Char` literal patterns (#1769)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`).
+
+The self-hosted MSIL emitter's `PLiteral` pattern lowering handled `LInt`,
+`LBool`, `LString`, and `LUnit`, but had **no `LChar` arm** — char-literal
+patterns fell into the `case _ -> MPop` catch-all, which pops the scrutinee and
+emits *no* comparison and *no* branch to the fail label.  The result: every
+`match` on a `Char` unconditionally matched its **first** case arm.
+
+This silently miscompiled any char-dispatch table.  The canary was the lexer's
+`digitValue` (`match c { case '0' -> 0; case '1' -> 1; … }`): self-compiled, it
+returned `0` for every digit, so `parseDigits` produced `0`, every integer
+literal lexed to `TInt(0)`, and downstream every `ELiteral(LInt)` carried value
+`0`.  The bug only surfaced through the **in-process** `LYRIC_LOAD_COMPILER`
+path (and stage-2 self-compilation), where the self-hosted emitter recompiles
+the lexer/parser; the stage-1 DLLs that back normal `lyric build` are emitted by
+the F# stage-0 emitter, which lowers `LChar` patterns correctly, so user-facing
+compilation was unaffected and the gap stayed masked.
+
+The fix adds the `LChar(cp)` arm, mirroring `LInt`/`LBool`: a `Char` scrutinee is
+an i4 code point on the stack (same representation as the `LChar` *expression*
+case), so it loads the pattern's code point, `ceq`, and `brfalse` to the fail
+label.
+
+Caught by `weaver_self_test.l` test 2 (the only self-test asserting a concrete
+integer *value* from a self-compiled lexer), which was masked behind the
+ecosystem CI step until #1761 made that step pass.  Validated: weaver self-test
+18/18; no regression — emitter suite 847/847, self-hosted bridge 84/84, `lyric-auth`
+29/29, `bitwise`/`auto_ffi`/`outparam` self-tests green.  Other unhandled literal
+pattern kinds (`LFloat`, `LTripleString`, `LRawString`) share the same latent
+`case _ -> MPop` gap but have no current exerciser; left for a follow-up.
