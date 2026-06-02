@@ -18317,3 +18317,45 @@ shapes (`isSome(None)`) can't monomorphize by construction.  These keep the
 `lyric-session` store suite at 24/31 for now (its `get()` routes through
 `mapGet`); the TryGetValue + `Some`-instantiation build-out is the next step.
 MSIL only; JVM-target parity is tracked in #1707.
+
+### D-progress-364 — self-hosted MSIL: `mapGet` Option wrapping + real `Map.remove` (#1727 / #1602)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`; regression test
+`lyric-compiler/lyric/map_option_self_test.l`).  Closes the `lyric-session`
+store suite: **24/31 → 31/31**.
+
+Two self-hosted codegen builtins were bootstrap stubs that the `lyric-session`
+store relied on:
+
+- **`mapGet(m, key)`** emitted a bare `Dictionary.get_Item` and returned the raw
+  value as `object` ("full `Option[V]` wrapping deferred").  A consumer
+  `match` on the result (`get()` returns `Ok(mapGet(data.entries, key))`) then
+  saw a raw value, not an `Option`, and panicked "match not exhaustive".  Now
+  the builtin emits `if m.ContainsKey(key) { Some(value = (V) m[key]) } else
+  { None }`, taking `V` from the call's context hint (the surrounding
+  `Option[V]`) and building the concrete `Option_Some<V>` / `Option_None<V>`
+  via `buildGenericCaseCtorTok`.  The `get_Item` result (`object`) is converted
+  to `V` by `castObjectToMsil` — `castclass` for reference payloads,
+  `unbox.any` for value-type payloads (`Map[String, Int]` -> `Option[Int]`).
+  `mapGet` is excluded from the
+  monomorphizer feed (`Msil.Bridge.collectStdlibGenericFuncs`) so the intrinsic
+  fires rather than a copied body that calls the generic kernel extern
+  `tryGetValue`.
+- **`Map.remove(key)`** was a pop-only stub that returned `false` without
+  mutating, so `delete()` / `destroy()` were silent no-ops.  Now a Map-typed
+  receiver lowers to the real `Dictionary<object,object>::Remove(!0): bool`
+  (new `tokDictObjRemove`); non-Map receivers keep the conservative behaviour
+  pending a real List/Set removal lowering.
+
+Validated: `map_option_self_test.l` 5/5 (mapGet hit/miss, Some round-trip, a
+value-type `Map[String, Int]` payload via `unbox.any`, remove-then-miss, and the
+impl-method `Ok(mapGet(...))` + `.remove()` shape) via native `lyric test`; the
+full `lyric-session` suite is **31/31** (fixation 5/5, store 15/15,
+sensitive-url 11/11); no regression (Emitter 847/847, Cli 84/84, all other
+self-tests green, examples build).
+
+Scope: this covers the `mapGet` intrinsic path for both reference and value
+payloads.  Value-type *monomorphized* generic bodies (e.g. `unwrapOr__Int`) and
+the `Map`-store/retrieve `Option` erasure are separate and still pending;
+`lyric-auth` stays 17/29 (unrelated `Lyric.Auth.AuthHost` extern-resolution).
+MSIL only; JVM-target parity is tracked in #1707.
