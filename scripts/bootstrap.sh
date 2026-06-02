@@ -232,8 +232,19 @@ stage1_cli_bundle() {
 // Auto-generated driver for the bootstrap CLI-bundle precompile.
 // Importing Lyric.Cli forces the F# emitter to compile cli.l and
 // every transitively-imported Lyric package into its stdlib cache.
+//
+// Std.Time / Std.Math are imported *directly* so the emitter emits
+// their per-package DLLs (Lyric.Stdlib.Time(.Host) / Math(.Host)) into
+// the cache.  The compiler reaches them only transitively (Std.Time via
+// Lyric.BenchSynth), which does not trigger per-package emission, so
+// without these direct imports the DLLs never land in $STAGE1_DIR — and
+// every ecosystem library that imports Std.Time or Std.Math
+// (lyric-session, lyric-auth, lyric-cache, …) then fails at run time
+// with "Could not load file or assembly 'Lyric.Stdlib.Time'".
 package Lyric.CliBundle
 import Lyric.Cli
+import Std.Time
+import Std.Math
 func main(): Unit { }
 EOF
 
