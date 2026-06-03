@@ -335,6 +335,93 @@ func testFirstWinsOnImportFuncCollision(): Unit {
              "first-wins: same-name different-arity user overload registers cleanly")
 }
 
+// #1482 (Band-1 foundation): the `Type` union now carries refinement
+// (range) bounds via `TyRefined`, populated by the resolver for inline
+// refined types (`Int range lo .. hi`).  A binding initialised with an
+// integer literal outside those bounds is rejected with T0015.
+
+func testInlineRefinedInBounds(): Unit {
+  val src = "package P\nfunc f(): Unit {\n  val x: Int range 0 ..= 9 = 5\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0015"), "inline-range in-bounds: no T0015")
+  assertEqualInt(diagCount(cr), 0, "inline-range in-bounds: clean")
+}
+
+func testInlineRefinedAboveInclusive(): Unit {
+  val src = "package P\nfunc f(): Unit {\n  val x: Int range 0 ..= 9 = 10\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0015"), "inline-range above inclusive hi: T0015")
+}
+
+func testInlineRefinedAtInclusiveHi(): Unit {
+  // `..=` includes the upper endpoint, so 9 is in range.
+  val src = "package P\nfunc f(): Unit {\n  val x: Int range 0 ..= 9 = 9\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0015"), "inline-range at inclusive hi: no T0015")
+}
+
+func testInlineRefinedHalfOpenExcludesHi(): Unit {
+  // `..` is half-open: 10 is excluded from `0 .. 10`.
+  val src = "package P\nfunc f(): Unit {\n  val x: Int range 0 .. 10 = 10\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0015"), "inline-range half-open excludes hi: T0015")
+}
+
+func testInlineRefinedHalfOpenInBounds(): Unit {
+  val src = "package P\nfunc f(): Unit {\n  val x: Int range 0 .. 10 = 9\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0015"), "inline-range half-open in-bounds: no T0015")
+}
+
+func testInlineRefinedBelowLo(): Unit {
+  val src = "package P\nfunc f(): Unit {\n  val x: Int range 5 ..= 9 = 1\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0015"), "inline-range below lo: T0015")
+}
+
+func testInlineRefinedNegativeBounds(): Unit {
+  val ok  = "package P\nfunc f(): Unit {\n  val x: Int range -5 ..= 5 = -3\n}\n"
+  val bad = "package P\nfunc f(): Unit {\n  val x: Int range -5 ..= 5 = -9\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0015"), "neg-bound in-range: no T0015")
+  assertTrue(hasDiagCode(parseCheck(bad), "T0015"), "neg-bound out-of-range: T0015")
+}
+
+func testInlineRefinedVarAndLet(): Unit {
+  val v = "package P\nfunc f(): Unit {\n  var x: Int range 0 ..= 9 = 10\n}\n"
+  val l = "package P\nfunc f(): Unit {\n  let x: Int range 0 ..= 9 = 10\n}\n"
+  assertTrue(hasDiagCode(parseCheck(v), "T0015"), "var inline-range out-of-range: T0015")
+  assertTrue(hasDiagCode(parseCheck(l), "T0015"), "let inline-range out-of-range: T0015")
+}
+
+func testRefinementTransparentToEquiv(): Unit {
+  // Gate-safety: a refined type is equivalent to its underlying.  An
+  // in-bounds refined binding whose declared type differs only by the
+  // refinement layer must produce zero type-equivalence diagnostics
+  // (no T0060/T0015) — refinements add no equivalence false positives.
+  val src =
+    "package P\n" +
+    "func f(): Unit {\n" +
+    "  val a: Int range 0 ..= 100 = 42\n" +
+    "  val b: Int = a\n" +
+    "  val c: Int range 0 ..= 100 = b\n" +
+    "}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "refinement transparency: zero diagnostics")
+}
+
+func testInlineRefinedNonLiteralNotChecked(): Unit {
+  // The inline check only fires for statically-known integer literals;
+  // a non-literal initialiser (here a parameter) is not range-checked
+  // at compile time (that is runtime / Band-4 construction validation).
+  val src =
+    "package P\n" +
+    "func f(n: in Int): Unit {\n" +
+    "  val x: Int range 0 ..= 9 = n\n" +
+    "}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0015"), "non-literal init: no compile-time T0015")
+}
+
 func main(): Unit {
   testEmptySource()
   testFuncRegistered()
@@ -360,5 +447,15 @@ func main(): Unit {
   testRangeBoundLongMinValueFolds()
   testTyUserRendersDeclaredName()
   testFirstWinsOnImportFuncCollision()
+  testInlineRefinedInBounds()
+  testInlineRefinedAboveInclusive()
+  testInlineRefinedAtInclusiveHi()
+  testInlineRefinedHalfOpenExcludesHi()
+  testInlineRefinedHalfOpenInBounds()
+  testInlineRefinedBelowLo()
+  testInlineRefinedNegativeBounds()
+  testInlineRefinedVarAndLet()
+  testRefinementTransparentToEquiv()
+  testInlineRefinedNonLiteralNotChecked()
   println("typechecker self-test: ok")
 }

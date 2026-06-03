@@ -4258,6 +4258,61 @@ beyond this set without a new decision-log entry.
 
 ---
 
+## D077 — Widen the type checker's `Type` union with refinement (range) bounds (#1482)
+
+**Context:** `Type` (`lyric-compiler/lyric/type_checker/typechecker_types.l`) is
+`@stable(since="0.1")`, and per the editing protocol any change to a stable
+type requires a decision-log entry.  Band-1 of the self-hosted prod-readiness
+epic (#1470, `docs/41` §5.1) identified that `Type` was too coarse to carry
+declaration-time refinements to the use site: the resolver discarded the range
+bound of an inline refined type (`TRefined → underlying`,
+`typechecker_resolver.l`), so a check like inline-range construction validation
+had nothing to consult.  This is the FOUNDATION task that unblocks Band-1
+follow-ups (TyError typing #1483, alias-as-type, match exhaustiveness) and
+Band-4 range-subtype validation.
+
+**Decision:** Add one append-only case to the `Type` union:
+
+```
+case TyRefined(underlying: Type, lo: Option[Long], hi: Option[Long], hiInclusive: Bool)
+```
+
+- `lo` / `hi` carry the integer-literal endpoints when statically extractable
+  (`None` for `MIN` / `MAX` or a non-literal endpoint); `hiInclusive`
+  distinguishes `..=` (closed) from `..` (half-open).
+- **Refinement is transparent to `typeEquiv`.**  `typeEquiv` unwraps `TyRefined`
+  to its underlying representation on both operands before comparing, so a
+  refined type is equivalent to its underlying and vice versa.  This is the
+  deliberate gate-safety property: widening the union introduces **zero** new
+  type-equivalence false positives, which matters because Band-1's terminal task
+  (#1488) flips single-file typecheck to fatal.
+- The bounds are consumed by exactly one new check in this slice: **T0015**,
+  which rejects a binding (`val`/`var`/`let`) whose declared type is an inline
+  refined type and whose initialiser is an integer literal outside the bounds.
+- `renderType` (and the LSP hover renderer) render the refined form
+  (`Int range 0 ..= 9`).
+
+**Scope boundaries (deliberately deferred, not shortcuts):**
+
+- Named distinct range subtypes (`type Age = Int range 0 ..= 150`) still resolve
+  to `TyUser`, not `TyRefined`; carrying their bounds onto the named type and
+  validating their constructions is **Band-4** work and out of scope here.  The
+  T0015 check therefore fires only for *inline* refined annotations.
+- The representation tag (alias vs distinct vs opaque) and async (`Future`/
+  `Task`) / channel carrier cases named in the #1482 scope are **not** added in
+  this slice: an unconsumed union case is itself a half-measure under the
+  project's no-stubs standard.  Each downstream consumer (e.g. alias-as-type,
+  opaque hiding) adds the case it needs as append-only widening, each backed by
+  its own decision-log entry, when it has a check to consume it.  `TyArray`
+  already carries `size: Option[Int]`, so the array-size sub-part of #1482 was
+  pre-existing.
+
+**Consequence:** `Type` remains `@stable`; future additions stay append-only and
+each requires a decision-log entry.  All matches over `Type` in the self-hosted
+tree either carry a wildcard arm or were given a `TyRefined` arm in this change.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

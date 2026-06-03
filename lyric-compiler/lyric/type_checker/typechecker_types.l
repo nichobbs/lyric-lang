@@ -58,10 +58,31 @@ pub union Type {
   /// means "name lookup unavailable" — keeps the `<#id>` fallback for
   /// callers that synthesise a `TyUser` outside the resolver.
   case TyUser(id: TypeId, name: String, args: List[Type])
+  /// A refined (range-constrained) view of an underlying numeric type,
+  /// e.g. the inline form `Int range 0 ..= 9`.  `lo` / `hi` carry the
+  /// integer-literal endpoints when they are statically extractable
+  /// (`None` for a non-literal or absent endpoint, i.e. `MIN` / `MAX`).
+  /// `hiInclusive` distinguishes `..=` (closed, `true`) from `..`
+  /// (half-open, `false`).  Refinement is *transparent* to `typeEquiv`
+  /// (it unwraps to `underlying`), so widening the union introduces no
+  /// new equivalence false positives — the bounds are consulted only by
+  /// dedicated checks (e.g. T0015 inline-literal range validation).
+  /// Named distinct range subtypes (`type Age = Int range …`) resolve to
+  /// `TyUser`, not `TyRefined`; carrying their bounds is Band-4 work.
+  case TyRefined(underlying: Type, lo: Option[Long], hi: Option[Long], hiInclusive: Bool)
   case TySelf
   case TyVar(name: String)
   case TyError
   case TyException
+}
+
+// Strip any refinement layers, yielding the underlying representation
+// type.  Refinements are transparent for equivalence and most queries.
+pub func unrefine(t: in Type): Type {
+  match t {
+    case TyRefined(u, _, _, _) -> unrefine(u)
+    case _ -> t
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -126,14 +147,19 @@ func primEq(a: in PrimType, b: in PrimType): Bool {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub func typeEquiv(a: in Type, b: in Type): Bool {
-  match a {
+  // Refinements are transparent: a refined type is equivalent to its
+  // underlying representation (and vice versa).  Unwrap both sides first
+  // so the rest of the comparison never has to know about TyRefined.
+  val ua = unrefine(a)
+  val ub = unrefine(b)
+  match ua {
     case TyError  -> true
     case TyVar(_) -> true
     case _ ->
-      match b {
+      match ub {
         case TyError  -> true
         case TyVar(_) -> true
-        case _        -> typeEquivCore(a, b)
+        case _        -> typeEquivCore(ua, ub)
       }
   }
 }
@@ -192,6 +218,10 @@ func typeEquivCore(a: in Type, b: in Type): Bool {
       }
     case TyException ->
       match b { case TyException -> true; case _ -> false }
+    // `typeEquiv` strips refinements before dispatching here, so this arm
+    // is only reached if `typeEquivCore` is called directly; unwrap to be
+    // safe and keep the match exhaustive.
+    case TyRefined(u, _, _, _) -> typeEquivCore(unrefine(u), unrefine(b))
   }
 }
 
@@ -237,6 +267,12 @@ pub func renderType(t: in Type): String {
       val prefix = if fAsync { "async " } else { "" }
       val pstr   = "(" + joinTypes(ps, ", ") + ")"
       prefix + pstr + " -> " + renderType(r)
+    }
+    case TyRefined(u, lo, hi, inc) -> {
+      val loStr = match lo { case None -> ""; case Some(v) -> toString(v) }
+      val hiStr = match hi { case None -> ""; case Some(v) -> toString(v) }
+      val op    = if inc { " ..= " } else { " .. " }
+      renderType(u) + " range " + loStr + op + hiStr
     }
     case TyUser(uid, nm, args) -> {
       // #425 item 6: prefer the declared name carried in the type
