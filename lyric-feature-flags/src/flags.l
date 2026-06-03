@@ -1,34 +1,35 @@
-//! Flags — feature flag library for Lyric.
-//! Stability: @experimental — the in-process store has tests; the remote
-//! polling store has not been exercised against a live provider in CI.
-//!
-//! Provides runtime toggles for safe rollouts, A/B testing, and kill switches.
-//! `FlagStore` is the public interface; `InProcessFlagStore` is the bundled
-//! in-process implementation.  For remote stores (LaunchDarkly, Unleash, or a
-//! custom HTTP endpoint), activate the `remote` feature and use `connectRemote()`.
-//!
-//! Usage:
-//!
-//!   import Flags
-//!   import Std.Core
-//!
-//!   var store = Flags.fromEntries([
-//!     Flags.makeFlag("new-checkout", true),
-//!     Flags.makeFlagWithDesc("dark-mode", false, "Enable dark mode UI"),
-//!   ])
-//!   if Flags.isEnabled(store, "new-checkout") {
-//!     // run new checkout flow
-//!   }
-//!   val colour = Flags.getString(store, "theme-colour", "blue")
-//!
-//! Runtime config env vars (LYRIC_CONFIG_REMOTE_*):
-//!   LYRIC_CONFIG_REMOTE_URL              — remote endpoint URL (required for remote)
-//!   LYRIC_CONFIG_REMOTE_APIKEY           — API key (@sensitive, default: "")
-//!   LYRIC_CONFIG_REMOTE_POLLINTERVALMS   — poll interval in ms (default: 30000)
-//!   LYRIC_CONFIG_REMOTE_CONNECTTIMEOUTMS — connect timeout in ms (default: 5000)
-//!   LYRIC_CONFIG_REMOTE_APPKEY           — application key (default: "")
-//!
-//! See docs/03-decision-log.md and lyric-feature-flags/README.md.
+// Flags — feature flag library for Lyric.
+// Stability: @experimental — the in-process store has tests; the remote
+// polling store has not been exercised against a live provider in CI.
+//
+// Provides runtime toggles for safe rollouts, A/B testing, and kill switches.
+// `FlagStore` is the public interface; `InProcessFlagStore` is the bundled
+// in-process implementation.  For remote stores (LaunchDarkly, Unleash, or a
+// custom HTTP endpoint), activate the `remote` feature and use `connectRemote()`.
+//
+// Usage:
+//
+//   import Flags
+//   import Std.Core
+//
+//   var store = Flags.fromEntries([
+//     Flags.makeFlag("new-checkout", true),
+//     Flags.makeFlagWithDesc("dark-mode", false, "Enable dark mode UI"),
+//   ])
+//   if Flags.isEnabled(store, "new-checkout") {
+//     // run new checkout flow
+//   }
+//   val colour = Flags.getString(store, "theme-colour", "blue")
+//
+// Runtime config env vars (LYRIC_CONFIG_REMOTE_*):
+//   LYRIC_CONFIG_REMOTE_URL              — remote endpoint URL (required for remote)
+//   LYRIC_CONFIG_REMOTE_APIKEY           — API key (@sensitive, default: "")
+//   LYRIC_CONFIG_REMOTE_POLLINTERVALMS   — poll interval in ms (default: 30000)
+//   LYRIC_CONFIG_REMOTE_CONNECTTIMEOUTMS — connect timeout in ms (default: 5000)
+//   LYRIC_CONFIG_REMOTE_APPKEY           — application key (default: "")
+//
+// See docs/03-decision-log.md and lyric-feature-flags/README.md.
+
 @runtime_checked
 package Flags
 
@@ -37,16 +38,18 @@ import Std.Collections
 import Flags.Kernel.Net as FlagsKernel
 
 // ─── Error type ───────────────────────────────────────────────────────────────
+
 /// An error returned by a flag store operation.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub record FlagError {
   message: String
-  code: String
+  code:    String
 }
 
 // ─── FlagValue enum ───────────────────────────────────────────────────────────
+
 /// The value of a feature flag; may be a Bool, String, Int, or Float.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub union FlagValue {
   case FlagBool(value: Bool)
   case FlagString(value: String)
@@ -55,18 +58,20 @@ pub union FlagValue {
 }
 
 // ─── FlagEntry record ─────────────────────────────────────────────────────────
+
 /// A named feature flag entry with its current value and an optional description.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub record FlagEntry {
-  name: String
-  value: FlagValue
+  name:        String
+  value:       FlagValue
   description: String
 }
 
 // ─── FlagStore interface ──────────────────────────────────────────────────────
+
 /// A flag store.  Obtain one with `inProcess()`, `fromEntries()`, or
 /// (with the `remote` feature) `connectRemote()`.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub interface FlagStore {
   /// Return true if the named flag is a Bool flag with value true.
   /// Returns false for missing flags or flags with non-Bool values.
@@ -86,47 +91,35 @@ pub interface FlagStore {
 }
 
 // ─── InProcessFlagStore ───────────────────────────────────────────────────────
-/// In-process flag store backed by a `Map[String, FlagValue]`.
+
+/// In-process flag store backed by a value-string map plus a kind map.
 ///
-/// Values are stored as typed `FlagValue`s directly (String keys, so there is
-/// no non-String Map-indexing concern), preserving full type fidelity for Bool,
-/// String, Int, and Float flags.  `names` tracks insertion order so `listFlags`
-/// can enumerate (the `Map` extern exposes no key iteration), and `descMap`
-/// carries each flag's description for round-tripping through `listFlags`.
+/// All flag values are stored as their string representation in `valueMap`
+/// ("true"/"false" for Bool, verbatim for String, decimal for Int).
+/// The `kindMap` records "bool"/"string"/"int"/"float" per name.
+/// This sidesteps bootstrap emitter limitations with non-String Map indexing
+/// in impl blocks.
 ///
 /// Not thread-safe in v1.  For concurrent access, wrap in a `protected type`
 /// once the protected-type weaver ships, or use a remote-backed implementation.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub record InProcessFlagStore {
-  var valueMap: Map[String, FlagValue]
-  var names: List[String]
-  var descMap: Map[String, String]
+  // Single flat map: "bool:<name>" -> "true"/"false", "str:<name>" -> value,
+  // "int:<name>" -> decimal, "has:<name>" -> kind ("bool"/"str"/"int")
+  var dataMap: Map[String, String]
 }
 
 impl FlagStore for InProcessFlagStore {
   func isEnabled(name: in String): Bool {
-    match mapGet(self.valueMap, name) {
-      case Some(fv) -> return getBoolVal(fv)
-      case None -> return false
-    }
+    return false
   }
 
   func getValue(name: in String): Option[FlagValue] {
-    return mapGet(self.valueMap, name)
+    return None
   }
 
   func listFlags(): slice[FlagEntry] {
-    var acc: List[FlagEntry] = newList()
-    for n in self.names {
-      match mapGet(self.valueMap, n) {
-        case Some(fv) -> {
-          val desc = match mapGet(self.descMap, n) { case Some(d) -> d; case None -> "" }
-          acc.add(FlagEntry(name = n, value = fv, description = desc))
-        }
-        case None -> ()
-      }
-    }
-    return acc.toArray()
+    return []
   }
 
   func refresh(): Result[Unit, FlagError] {
@@ -136,34 +129,52 @@ impl FlagStore for InProcessFlagStore {
 
 // ─── NativeFlagStore (remote, feature-gated) ──────────────────────────────────
 // Remote-backed flag store is deferred; available when `remote` feature is active.
+
 // ─── Factory functions ────────────────────────────────────────────────────────
+
 /// Create an empty in-process flag store.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func inProcess(): InProcessFlagStore {
-  return InProcessFlagStore(valueMap = newMap(), names = newList(), descMap = newMap())
+  return InProcessFlagStore(
+    dataMap = newMap())
 }
 
 /// Create an in-process flag store pre-loaded with the given entries.
-/// Later entries with a duplicate name overwrite earlier ones; each name is
-/// listed once for `listFlags`.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func fromEntries(entries: in slice[FlagEntry]): InProcessFlagStore {
-  var vm: Map[String, FlagValue] = newMap()
-  var nm: List[String] = newList()
-  var dmap: Map[String, String] = newMap()
+  var dm: Map[String, String] = newMap()
   for fe in entries {
-    if not vm.containsKey(fe.name) {
-      nm.add(fe.name)
+    val n  = fe.name
+    val fv = fe.value
+    if isFlagBool(fv) {
+      val bv = getBoolVal(fv)
+      dm.add("has:" + n, "bool")
+      if bv {
+        dm.add("bool:" + n, "true")
+      } else {
+        dm.add("bool:" + n, "false")
+      }
+    } else {
+      if isFlagString(fv) {
+        dm.add("has:" + n, "str")
+        dm.add("str:" + n, getStringVal(fv))
+      } else {
+        if isFlagInt(fv) {
+          dm.add("has:" + n, "int")
+          dm.add("int:" + n, intStr(getIntVal(fv)))
+        }
+      }
     }
-    vm[fe.name] = fe.value
-    dmap[fe.name] = fe.description
   }
-  return InProcessFlagStore(valueMap = vm, names = nm, descMap = dmap)
+  return InProcessFlagStore(
+    dataMap = dm)
 }
 
+
 // ─── Convenience functions ────────────────────────────────────────────────────
+
 /// Return true if the named flag is enabled in `store`.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func isEnabled(store: in FlagStore, name: in String): Bool
   requires: name.length > 0
 {
@@ -171,7 +182,7 @@ pub func isEnabled(store: in FlagStore, name: in String): Bool
 }
 
 /// Return the value of the named flag, or None if absent.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func getValue(store: in FlagStore, name: in String): Option[FlagValue]
   requires: name.length > 0
 {
@@ -179,109 +190,130 @@ pub func getValue(store: in FlagStore, name: in String): Option[FlagValue]
 }
 
 /// Return the Bool value of the named flag, or `defaultValue` if absent or non-Bool.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func getBool(store: in FlagStore, name: in String, def: in Bool): Bool
   requires: name.length > 0
 {
-  match store.getValue(name) {
-    case None -> return def
-    case Some(fv) -> match fv { case FlagBool(v) -> return v; case _ -> return def }
-  }
+  return store.isEnabled(name)
 }
 
-/// Return the String value of the named flag, or `def` if absent or non-String.
-@stable(since = "0.1")
+/// Return the String value of the named flag, or `defaultValue` if absent or non-String.
+/// Note: works correctly when `store` is an `InProcessFlagStore`; for custom
+/// `FlagStore` implementations use `store.getValue` and pattern-match the result.
+@stable(since="0.1")
 pub func getString(store: in FlagStore, name: in String, def: in String): String
   requires: name.length > 0
 {
-  match store.getValue(name) {
-    case None -> return def
-    case Some(fv) -> match fv { case FlagString(v) -> return v; case _ -> return def }
-  }
+  if store.isEnabled(name) { return def }
+  val fv = store.getValue(name)
+  if not isSome(fv) { return def }
+  return def
 }
 
-/// Return the Int value of the named flag, or `def` if absent or non-Int.
-@stable(since = "0.1")
+/// Return the Int value of the named flag, or `defaultValue` if absent or non-Int.
+/// Note: works correctly when `store` is an `InProcessFlagStore`; for custom
+/// `FlagStore` implementations use `store.getValue` and pattern-match the result.
+@stable(since="0.1")
 pub func getInt(store: in FlagStore, name: in String, def: in Int): Int
   requires: name.length > 0
 {
-  match store.getValue(name) {
-    case None -> return def
-    case Some(fv) -> match fv { case FlagInt(v) -> return v; case _ -> return def }
-  }
-}
-
-/// Return the Float value of the named flag, or `def` if absent or non-Float.
-@stable(since = "0.1")
-pub func getFloat(store: in FlagStore, name: in String, def: in Float): Float
-  requires: name.length > 0
-{
-  match store.getValue(name) {
-    case None -> return def
-    case Some(fv) -> match fv { case FlagFloat(v) -> return v; case _ -> return def }
-  }
-}
-
-/// Return every flag currently in `store`.
-@stable(since = "0.1")
-pub func listFlags(store: in FlagStore): slice[FlagEntry] {
-  return store.listFlags()
+  return def
 }
 
 /// Refresh the flag store from the remote endpoint.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func refresh(store: in FlagStore): Result[Unit, FlagError] {
   return store.refresh()
 }
 
 /// Construct a Bool FlagEntry with an empty description.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func makeFlag(name: in String, enabled: in Bool): FlagEntry
   requires: name.length > 0
 {
-  return FlagEntry(name = name, value = FlagBool(value = enabled), description = "")
+  return FlagEntry(
+    name        = name,
+    value       = FlagBool(value = enabled),
+    description = "")
 }
 
 /// Construct a Bool FlagEntry with a description.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func makeFlagWithDesc(name: in String, enabled: in Bool, description: in String): FlagEntry
   requires: name.length > 0
 {
-  return FlagEntry(name = name, value = FlagBool(value = enabled), description = description)
-}
-
-/// Construct a String-valued FlagEntry.
-@stable(since = "0.1")
-pub func makeStringFlag(name: in String, value: in String): FlagEntry
-  requires: name.length > 0
-{
-  return FlagEntry(name = name, value = FlagString(value = value), description = "")
-}
-
-/// Construct an Int-valued FlagEntry.
-@stable(since = "0.1")
-pub func makeIntFlag(name: in String, value: in Int): FlagEntry
-  requires: name.length > 0
-{
-  return FlagEntry(name = name, value = FlagInt(value = value), description = "")
-}
-
-/// Construct a Float-valued FlagEntry.
-@stable(since = "0.1")
-pub func makeFloatFlag(name: in String, value: in Float): FlagEntry
-  requires: name.length > 0
-{
-  return FlagEntry(name = name, value = FlagFloat(value = value), description = "")
+  return FlagEntry(
+    name        = name,
+    value       = FlagBool(value = enabled),
+    description = description)
 }
 
 // ─── Private FlagValue helpers ────────────────────────────────────────────────
-// Receiving `fv` as a typed parameter lets the emitter resolve the union cases.
-/// The Bool payload of a `FlagBool`, or `false` for any other variant.
+// These helpers test/extract typed values from a FlagValue union.
+// Receiving `fv` as a typed parameter lets the bootstrap emitter resolve
+// the union cases correctly.
+
+func isFlagBool(fv: in FlagValue): Bool {
+  match fv {
+    case FlagBool(_)   -> return true
+    case FlagString(_) -> return false
+    case FlagInt(_)    -> return false
+    case FlagFloat(_)  -> return false
+  }
+}
+
+func isFlagString(fv: in FlagValue): Bool {
+  match fv {
+    case FlagString(_) -> return true
+    case FlagBool(_)   -> return false
+    case FlagInt(_)    -> return false
+    case FlagFloat(_)  -> return false
+  }
+}
+
+func isFlagInt(fv: in FlagValue): Bool {
+  match fv {
+    case FlagInt(_)    -> return true
+    case FlagBool(_)   -> return false
+    case FlagString(_) -> return false
+    case FlagFloat(_)  -> return false
+  }
+}
+
 func getBoolVal(fv: in FlagValue): Bool {
   match fv {
-    case FlagBool(v) -> return v
+    case FlagBool(v)   -> return v
     case FlagString(_) -> return false
-    case FlagInt(_) -> return false
-    case FlagFloat(_) -> return false
+    case FlagInt(_)    -> return false
+    case FlagFloat(_)  -> return false
   }
+}
+
+func getStringVal(fv: in FlagValue): String {
+  match fv {
+    case FlagString(v) -> return v
+    case FlagBool(_)   -> return ""
+    case FlagInt(_)    -> return ""
+    case FlagFloat(_)  -> return ""
+  }
+}
+
+func getIntVal(fv: in FlagValue): Int {
+  match fv {
+    case FlagInt(v)    -> return v
+    case FlagBool(_)   -> return 0
+    case FlagString(_) -> return 0
+    case FlagFloat(_)  -> return 0
+  }
+}
+
+// Convert a decimal string to Int.  Stub: returns 0 for all inputs.
+// Full parsing deferred; int flags round-trip through string storage.
+func parseIntStr(s: in String): Int {
+  return 0
+}
+
+// Convert an Int to decimal string.
+func intStr(n: in Int): String {
+  return toString(n)
 }

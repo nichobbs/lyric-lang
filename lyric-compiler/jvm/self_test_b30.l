@@ -1,11 +1,12 @@
-//! jvm/self_test_b30.l — Stage B30: multianewarray (multi-dimensional arrays).
-//!
-//! Generates Grid.class with a static makeGrid(I,I)[[I method that creates
-//! a 2D int array using multianewarray.  Main calls makeGrid(2,3), checks
-//! outer length (2) and inner length (3), and prints both.
-//!
-//! Exercises: emitMultiANewArray, multi-dim array access (aaload for inner arrays),
-//! arraylength on both dimensions.
+// jvm/self_test_b30.l — Stage B30: multianewarray (multi-dimensional arrays).
+//
+// Generates Grid.class with a static makeGrid(I,I)[[I method that creates
+// a 2D int array using multianewarray.  Main calls makeGrid(2,3), checks
+// outer length (2) and inner length (3), and prints both.
+//
+// Exercises: emitMultiANewArray, multi-dim array access (aaload for inner arrays),
+// arraylength on both dimensions.
+
 package Jvm.SelfTestB30
 
 import Std.Core
@@ -17,7 +18,7 @@ import Jvm.Driver
 
 func makeGridClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
   // makeGrid(I,I)[[I
   //   iload_0  (rows)
@@ -34,7 +35,12 @@ func makeGridClassBytes(): List[Byte] {
   val codeAttr = assembleCode(asm, 2, 2)
   val attrs: List[Attribute] = newList()
   attrs.add(codeAttr)
-  val makeGridMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "makeGrid", "(II)[[I", attrs)
+  val makeGridMethod = makeMethodInfo(
+    ACC_PUBLIC + ACC_STATIC,
+    "makeGrid",
+    "(II)[[I",
+    attrs
+  )
   val methods: List[MethodInfo] = newList()
   methods.add(makeGridMethod)
   val cf = makeClassWithMethods("Grid", methods)
@@ -43,11 +49,11 @@ func makeGridClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOut      = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val makeGridRef = poolMethodref(pool, "Grid", "makeGrid", "(II)[[I")
-  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val printlnI    = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
 
   // val grid = Grid.makeGrid(2, 3)
   emitPushInt(asm, 2)
@@ -85,7 +91,7 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b30"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
@@ -100,9 +106,9 @@ func main(): Unit {
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB30",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

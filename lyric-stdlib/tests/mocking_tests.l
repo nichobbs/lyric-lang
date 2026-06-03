@@ -1,17 +1,15 @@
-//! stdlib/tests/mocking_tests.l — Tests for Std.Testing.Mocking.
-//!
-//! Demonstrates idiomatic Lyric test isolation using @stubbable interfaces
-//! and StubCounter call-count verification. The pattern:
-//!
-//!   1. Annotate the dependency interface with @stubbable.
-//!   2. The self-hosted compiler synthesises a <Name>Stub record with one
-//!      `_value` field per non-Unit method and one `_counter: StubCounter`
-//!      field per supported method (counter auto-increments on each call).
-//!   3. For the F# bootstrap path: wrap the stub in a thin TrackedX record
-//!      that holds a StubCounter and proxies the interface calls manually.
-//!   4. Inject the stub (or TrackedX wrapper) into the unit under test.
-//!   5. After exercising the unit, read StubCounter to assert the
-//!      dependency was called the expected number of times.
+// stdlib/tests/mocking_tests.l — Tests for Std.Testing.Mocking.
+//
+// Demonstrates idiomatic Lyric test isolation using @stubbable interfaces
+// and StubCounter call-count verification. The pattern:
+//
+//   1. Annotate the dependency interface with @stubbable.
+//   2. The compiler synthesises a <Name>Stub record with _value and
+//      _counter fields for every non-Unit method.
+//   3. Inject the stub (or a thin TrackedX wrapper) into the unit under
+//      test instead of the real implementation.
+//   4. After exercising the unit, read StubCounter to assert the
+//      dependency was called the expected number of times.
 package Std.Testing.Mocking.Tests
 
 import Std.Core
@@ -23,6 +21,7 @@ import Std.Testing.Mocking
 // price feed and a tax rate provider. Both are @stubbable so tests can
 // exercise the calculator without hitting any real data source.
 // ---------------------------------------------------------------------------
+
 @stubbable
 pub interface PriceFeed {
   func priceOf(symbol: in String): Int
@@ -34,7 +33,11 @@ pub interface TaxProvider {
 }
 
 // Unit under test: compute the pre-tax subtotal + tax for a basket.
-func invoiceTotal(feed: in PriceFeed, tax: in TaxProvider, symbols: in slice[String], region: in String): Int {
+func invoiceTotal(
+        feed: in PriceFeed,
+        tax: in TaxProvider,
+        symbols: in slice[String],
+        region: in String): Int {
   var subtotal = 0
   for sym in symbols {
     subtotal += feed.priceOf(sym)
@@ -46,11 +49,11 @@ func invoiceTotal(feed: in PriceFeed, tax: in TaxProvider, symbols: in slice[Str
 // ---------------------------------------------------------------------------
 // Tracked wrappers that add per-call counter instrumentation.
 // ---------------------------------------------------------------------------
+
 record TrackedFeed {
   stub: PriceFeedStub
   calls: StubCounter
 }
-
 impl PriceFeed for TrackedFeed {
   func priceOf(symbol: in String): Int {
     stubCounterIncrement(self.calls)
@@ -62,7 +65,6 @@ record TrackedTax {
   stub: TaxProviderStub
   calls: StubCounter
 }
-
 impl TaxProvider for TrackedTax {
   func rateForRegion(region: in String): Int {
     stubCounterIncrement(self.calls)
@@ -73,6 +75,7 @@ impl TaxProvider for TrackedTax {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
 func testBasicStubCounter(): Unit {
   val c = makeStubCounter()
   assertEqualInt(stubCounterGet(c), 0, "fresh counter is 0")
@@ -93,10 +96,14 @@ func testStubValuesPassThrough(): Unit {
 
 func testCallCountTracking(): Unit {
   val feedCalls = makeStubCounter()
-  val taxCalls = makeStubCounter()
+  val taxCalls  = makeStubCounter()
 
-  val feed = TrackedFeed(stub = PriceFeedStub(priceOf_value = 100), calls = feedCalls)
-  val tax = TrackedTax(stub = TaxProviderStub(rateForRegion_value = 10), calls = taxCalls)
+  val feed = TrackedFeed(
+    stub  = PriceFeedStub(priceOf_value = 100),
+    calls = feedCalls)
+  val tax = TrackedTax(
+    stub  = TaxProviderStub(rateForRegion_value = 10),
+    calls = taxCalls)
 
   val total = invoiceTotal(feed, tax, ["AAPL", "MSFT", "GOOG"], "US")
 
@@ -110,7 +117,9 @@ func testCallCountTracking(): Unit {
 
 func testCounterReuseAcrossScenarios(): Unit {
   val calls = makeStubCounter()
-  val feed = TrackedFeed(stub = PriceFeedStub(priceOf_value = 50), calls = calls)
+  val feed = TrackedFeed(
+    stub  = PriceFeedStub(priceOf_value = 50),
+    calls = calls)
   val tax = TaxProviderStub(rateForRegion_value = 0)
 
   // Scenario A: single item basket

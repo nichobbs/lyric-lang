@@ -18,6 +18,7 @@
 //!
 //! Only active when compiled with feature = "jvm" (Phase 6).
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+
 @cfg(feature = "jvm")
 package Jobs.Kernel.Jvm
 
@@ -25,6 +26,7 @@ import Std.Core
 import Std.Log
 
 // ─── JVM threading and identity (always available) ────────────────────────────
+
 @axiom("java.lang.Thread + java.util.UUID for sleep and identity (JVM)")
 extern package lyric.jobs.Runtime {
   /// Return the current UTC wall-clock time as epoch milliseconds.
@@ -36,12 +38,13 @@ extern package lyric.jobs.Runtime {
 
   /// Generate a new random string ID (backed by UUID.randomUUID().toString()).
   pub func generateId(): String
-  // ─── Hangfire (JVM degraded fallback: Quartz Scheduler) ──────────────────────
-  // Hangfire has no JVM port.  When compiling with feature = "hangfire" on JVM,
-  // the Quartz Scheduler is used as a functional substitute.  Job semantics are
-  // preserved; SQL Server storage is not available — jobs are memory-backed.
-  // @axiom documents the substitution explicitly.
 }
+
+// ─── Hangfire (JVM degraded fallback: Quartz Scheduler) ──────────────────────
+// Hangfire has no JVM port.  When compiling with feature = "hangfire" on JVM,
+// the Quartz Scheduler is used as a functional substitute.  Job semantics are
+// preserved; SQL Server storage is not available — jobs are memory-backed.
+// @axiom documents the substitution explicitly.
 
 @axiom("org.quartz.Scheduler — degraded JVM fallback for Hangfire.Core; Hangfire has no JVM port")
 @cfg(feature = "hangfire")
@@ -54,13 +57,26 @@ extern package org.quartz.Scheduler {
     requires: workerCount >= 1
 
   /// Trigger a job for immediate execution.  Returns the assigned job ID.
-  pub func enqueue(schedulerId: Int, name: String, payload: String, maxAttempts: Int, timeoutMs: Int): Result[String, String]
+  pub func enqueue(
+    schedulerId: Int,
+    name:        String,
+    payload:     String,
+    maxAttempts: Int,
+    timeoutMs:   Int
+  ): Result[String, String]
     requires: name.length > 0
     requires: maxAttempts >= 1
     requires: timeoutMs >= 1
 
   /// Schedule a recurring job with a cron trigger.  Returns the job/trigger key.
-  pub func schedule(schedulerId: Int, name: String, payload: String, cronExpr: String, maxAttempts: Int, timeoutMs: Int): Result[String, String]
+  pub func schedule(
+    schedulerId: Int,
+    name:        String,
+    payload:     String,
+    cronExpr:    String,
+    maxAttempts: Int,
+    timeoutMs:   Int
+  ): Result[String, String]
     requires: name.length > 0
     requires: cronExpr.length > 0
     requires: maxAttempts >= 1
@@ -77,8 +93,9 @@ extern package org.quartz.Scheduler {
   /// Return a JSON array of execution history records for a job.
   pub func results(schedulerId: Int, jobId: String): Result[String, String]
     requires: jobId.length > 0
-  // ─── Quartz.NET → Quartz Scheduler (JVM) ─────────────────────────────────────
 }
+
+// ─── Quartz.NET → Quartz Scheduler (JVM) ─────────────────────────────────────
 
 @axiom("org.quartz.Scheduler — JVM implementation of Quartz.NET scheduler contract")
 @cfg(feature = "quartz")
@@ -89,13 +106,26 @@ extern package org.quartz.Scheduler {
     requires: workerCount >= 1
 
   /// Trigger a job for immediate execution.  Returns the assigned job ID.
-  pub func enqueue(schedulerId: Int, name: String, payload: String, maxAttempts: Int, timeoutMs: Int): Result[String, String]
+  pub func enqueue(
+    schedulerId: Int,
+    name:        String,
+    payload:     String,
+    maxAttempts: Int,
+    timeoutMs:   Int
+  ): Result[String, String]
     requires: name.length > 0
     requires: maxAttempts >= 1
     requires: timeoutMs >= 1
 
   /// Schedule a recurring job with a cron trigger.  Returns the job/trigger key.
-  pub func schedule(schedulerId: Int, name: String, payload: String, cronExpr: String, maxAttempts: Int, timeoutMs: Int): Result[String, String]
+  pub func schedule(
+    schedulerId: Int,
+    name:        String,
+    payload:     String,
+    cronExpr:    String,
+    maxAttempts: Int,
+    timeoutMs:   Int
+  ): Result[String, String]
     requires: name.length > 0
     requires: cronExpr.length > 0
     requires: maxAttempts >= 1
@@ -112,15 +142,17 @@ extern package org.quartz.Scheduler {
   /// Return a JSON array of execution history records for a job.
   pub func results(schedulerId: Int, jobId: String): Result[String, String]
     requires: jobId.length > 0
-  // ─── InProcessJobScheduler helper (no Maven dep) ─────────────────────────────
 }
+
+// ─── InProcessJobScheduler helper (no Maven dep) ─────────────────────────────
 
 @axiom("lyric.jobs.InProcessScheduler — custom in-process JVM helper for single-JVM testing")
 extern package lyric.jobs.InProcessScheduler {
   /// Return the current UTC wall-clock time as epoch milliseconds.
   pub func nowMs(): Long
-  // ─── Shared re-exports ────────────────────────────────────────────────────────
 }
+
+// ─── Shared re-exports ────────────────────────────────────────────────────────
 
 /// Return the current UTC wall-clock time as epoch milliseconds.
 pub func nowMs(): Long {
@@ -150,9 +182,7 @@ pub func connect(workerCount: in Int): Result[Int, String]
 {
   val conn = hangfireConnectionString()
   if conn.length > 0 {
-    Std.Log.warn(
-      "lyric-jobs: Hangfire connection string ignored on JVM; Quartz uses RAMJobStore (in-memory). Persistence configured for .NET-only Hangfire.SqlServer."
-    )
+    Std.Log.warn("lyric-jobs: Hangfire connection string ignored on JVM; Quartz uses RAMJobStore (in-memory). Persistence configured for .NET-only Hangfire.SqlServer.")
   }
   return org.quartz.Scheduler.connect(conn, workerCount)
 }
@@ -168,7 +198,11 @@ pub func connect(workerCount: in Int): Result[Int, String]
 /// Enqueue a job for immediate execution.
 @cfg(feature = "hangfire")
 pub func enqueue(
-  schedulerId: in Int, name: in String, payload: in String, maxAttempts: in Int, timeoutMs: in Int
+  schedulerId: in Int,
+  name:        in String,
+  payload:     in String,
+  maxAttempts: in Int,
+  timeoutMs:   in Int
 ): Result[String, String]
   requires: name.length > 0
   requires: maxAttempts >= 1
@@ -180,7 +214,11 @@ pub func enqueue(
 /// Enqueue a job for immediate execution.
 @cfg(feature = "quartz")
 pub func enqueue(
-  schedulerId: in Int, name: in String, payload: in String, maxAttempts: in Int, timeoutMs: in Int
+  schedulerId: in Int,
+  name:        in String,
+  payload:     in String,
+  maxAttempts: in Int,
+  timeoutMs:   in Int
 ): Result[String, String]
   requires: name.length > 0
   requires: maxAttempts >= 1
@@ -193,11 +231,11 @@ pub func enqueue(
 @cfg(feature = "hangfire")
 pub func schedule(
   schedulerId: in Int,
-  name: in String,
-  payload: in String,
-  cronExpr: in String,
+  name:        in String,
+  payload:     in String,
+  cronExpr:    in String,
   maxAttempts: in Int,
-  timeoutMs: in Int,
+  timeoutMs:   in Int
 ): Result[String, String]
   requires: name.length > 0
   requires: cronExpr.length > 0
@@ -211,11 +249,11 @@ pub func schedule(
 @cfg(feature = "quartz")
 pub func schedule(
   schedulerId: in Int,
-  name: in String,
-  payload: in String,
-  cronExpr: in String,
+  name:        in String,
+  payload:     in String,
+  cronExpr:    in String,
   maxAttempts: in Int,
-  timeoutMs: in Int,
+  timeoutMs:   in Int
 ): Result[String, String]
   requires: name.length > 0
   requires: cronExpr.length > 0
@@ -274,11 +312,12 @@ pub func results(schedulerId: in Int, jobId: in String): Result[String, String]
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
+
 // Read the Hangfire connection string from the environment.
 // On JVM this value is accepted for API parity but ignored by Quartz (RAMJobStore).
 func hangfireConnectionString(): String {
   match Std.Core.getEnv("LYRIC_CONFIG_JOBS_HANGFIRE_CONNECTIONSTRING") {
     case Some(s) -> return s
-    case None -> return ""
+    case None    -> return ""
   }
 }

@@ -1,17 +1,18 @@
-//! jvm/self_test_b52.l — Stage B52: toString() override with StringBuilder.
-//!
-//! Generates Point.class with:
-//!   int fields x and y
-//!   <init>(II)V — stores params into fields
-//!   toString()Ljava/lang/String; — builds "Point(x,y)" via StringBuilder
-//!
-//! Main creates Point(3,5) and prints its toString() → "Point(3,5)".
-//!
-//! Expected output:
-//!   Point(3,5)
-//!
-//! Exercises: instance field read via getfield inside toString, chained
-//!            StringBuilder.append calls mixing String and int args.
+// jvm/self_test_b52.l — Stage B52: toString() override with StringBuilder.
+//
+// Generates Point.class with:
+//   int fields x and y
+//   <init>(II)V — stores params into fields
+//   toString()Ljava/lang/String; — builds "Point(x,y)" via StringBuilder
+//
+// Main creates Point(3,5) and prints its toString() → "Point(3,5)".
+//
+// Expected output:
+//   Point(3,5)
+//
+// Exercises: instance field read via getfield inside toString, chained
+//            StringBuilder.append calls mixing String and int args.
+
 package Jvm.SelfTestB52
 
 import Std.Core
@@ -22,22 +23,17 @@ import Jvm.Bytecode
 import Jvm.Driver
 
 func makePointClassBytes(): List[Byte] {
-  val pool = poolNew()
+  val pool    = poolNew()
   val objInit = poolMethodref(pool, "java/lang/Object", "<init>", "()V")
 
   val xFieldref = poolFieldref(pool, "Point", "x", "I")
   val yFieldref = poolFieldref(pool, "Point", "y", "I")
 
-  val sbClass = poolClass(pool, "java/lang/StringBuilder")
-  val sbInit = poolMethodref(pool, "java/lang/StringBuilder", "<init>", "()V")
-  val sbAppendS = poolMethodref(
-    pool,
-    "java/lang/StringBuilder",
-    "append",
-    "(Ljava/lang/String;)Ljava/lang/StringBuilder;"
-  )
-  val sbAppendI = poolMethodref(pool, "java/lang/StringBuilder", "append", "(I)Ljava/lang/StringBuilder;")
-  val sbToString = poolMethodref(pool, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;")
+  val sbClass    = poolClass(pool, "java/lang/StringBuilder")
+  val sbInit     = poolMethodref(pool, "java/lang/StringBuilder", "<init>",        "()V")
+  val sbAppendS  = poolMethodref(pool, "java/lang/StringBuilder", "append",        "(Ljava/lang/String;)Ljava/lang/StringBuilder;")
+  val sbAppendI  = poolMethodref(pool, "java/lang/StringBuilder", "append",        "(I)Ljava/lang/StringBuilder;")
+  val sbToString = poolMethodref(pool, "java/lang/StringBuilder", "toString",      "()Ljava/lang/String;")
 
   // ── <init>(II)V ──────────────────────────────────────────────────────────────
   // slot 0 = this, slot 1 = x, slot 2 = y
@@ -103,13 +99,13 @@ func makePointClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOut     = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val printlnStr = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
   val pointClass = poolClass(pool, "Point")
-  val pointInit = poolMethodref(pool, "Point", "<init>", "(II)V")
-  val toStr = poolMethodref(pool, "Point", "toString", "()Ljava/lang/String;")
+  val pointInit  = poolMethodref(pool, "Point", "<init>", "(II)V")
+  val toStr      = poolMethodref(pool, "Point", "toString", "()Ljava/lang/String;")
 
   // new Point(3, 5) → local 1
   emitNew(asm, pointClass)
@@ -141,24 +137,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b52"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val pointBytes = makePointClassBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes  = makeMainClassBytes()
 
   val pointClass = BuiltClass(binaryName = "Point", bytes = pointBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass  = BuiltClass(binaryName = "Main",  bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(pointClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB52",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

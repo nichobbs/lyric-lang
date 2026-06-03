@@ -1,21 +1,22 @@
-//! jvm/self_test_b39.l — Stage B39: JDK utility calls (Integer.parseInt, String.valueOf).
-//!
-//! Generates Converter.class with:
-//!   parseAndDouble(Ljava/lang/String;)I
-//!       — Integer.parseInt(s), multiply by 2, return
-//!   intToStr(I)Ljava/lang/String;
-//!       — String.valueOf(n), return
-//!
-//! Main:
-//!   parseAndDouble("21") → 42
-//!   intToStr(99)         → "99"
-//!
-//! Expected output lines:
-//!   42
-//!   99
-//!
-//! Exercises: invokestatic on JDK methods (Integer.parseInt, String.valueOf),
-//! mixing int and String return values in a single class.
+// jvm/self_test_b39.l — Stage B39: JDK utility calls (Integer.parseInt, String.valueOf).
+//
+// Generates Converter.class with:
+//   parseAndDouble(Ljava/lang/String;)I
+//       — Integer.parseInt(s), multiply by 2, return
+//   intToStr(I)Ljava/lang/String;
+//       — String.valueOf(n), return
+//
+// Main:
+//   parseAndDouble("21") → 42
+//   intToStr(99)         → "99"
+//
+// Expected output lines:
+//   42
+//   99
+//
+// Exercises: invokestatic on JDK methods (Integer.parseInt, String.valueOf),
+// mixing int and String return values in a single class.
+
 package Jvm.SelfTestB39
 
 import Std.Core
@@ -28,8 +29,8 @@ import Jvm.Driver
 func makeConverterClassBytes(): List[Byte] {
   val pool = poolNew()
 
-  val parseIntRef = poolMethodref(pool, "java/lang/Integer", "parseInt", "(Ljava/lang/String;)I")
-  val valueOfRef = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
+  val parseIntRef  = poolMethodref(pool, "java/lang/Integer", "parseInt",  "(Ljava/lang/String;)I")
+  val valueOfRef   = poolMethodref(pool, "java/lang/String",  "valueOf",   "(I)Ljava/lang/String;")
 
   // ── parseAndDouble(Ljava/lang/String;)I ──────────────────────────────────────
   // aload_0; invokestatic Integer.parseInt; iconst_2; imul; ireturn
@@ -42,7 +43,12 @@ func makeConverterClassBytes(): List[Byte] {
   val padCode = assembleCode(asmPAD, 2, 1)
   val padAttrs: List[Attribute] = newList()
   padAttrs.add(padCode)
-  val padMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "parseAndDouble", "(Ljava/lang/String;)I", padAttrs)
+  val padMethod = makeMethodInfo(
+    ACC_PUBLIC + ACC_STATIC,
+    "parseAndDouble",
+    "(Ljava/lang/String;)I",
+    padAttrs
+  )
 
   // ── intToStr(I)Ljava/lang/String; ────────────────────────────────────────────
   // iload_0; invokestatic String.valueOf(I); areturn
@@ -53,7 +59,12 @@ func makeConverterClassBytes(): List[Byte] {
   val itsCode = assembleCode(asmITS, 1, 1)
   val itsAttrs: List[Attribute] = newList()
   itsAttrs.add(itsCode)
-  val itsMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "intToStr", "(I)Ljava/lang/String;", itsAttrs)
+  val itsMethod = makeMethodInfo(
+    ACC_PUBLIC + ACC_STATIC,
+    "intToStr",
+    "(I)Ljava/lang/String;",
+    itsAttrs
+  )
 
   val methods: List[MethodInfo] = newList()
   methods.add(padMethod)
@@ -64,13 +75,13 @@ func makeConverterClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val padRef = poolMethodref(pool, "Converter", "parseAndDouble", "(Ljava/lang/String;)I")
-  val itsRef = poolMethodref(pool, "Converter", "intToStr", "(I)Ljava/lang/String;")
-  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
-  val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val sysOut         = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val padRef         = poolMethodref(pool, "Converter", "parseAndDouble", "(Ljava/lang/String;)I")
+  val itsRef         = poolMethodref(pool, "Converter", "intToStr", "(I)Ljava/lang/String;")
+  val printlnI       = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val printlnS       = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
 
   // parseAndDouble("21") → 42
   emitGetstatic(asm, sysOut)
@@ -99,24 +110,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b39"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val converterBytes = makeConverterClassBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes      = makeMainClassBytes()
 
   val converterClass = BuiltClass(binaryName = "Converter", bytes = converterBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass      = BuiltClass(binaryName = "Main",      bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(converterClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB39",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

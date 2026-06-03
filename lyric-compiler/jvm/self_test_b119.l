@@ -1,12 +1,13 @@
-//! jvm/self_test_b119.l — Stage B119: lowerHotAsync (CompletableFuture two-stage chain).
-//!
-//! Creates a host class `Compute` with a static async method `doubleOne()`:
-//!   - Stage 1: returns Integer.valueOf(1) (wrapped in completedFuture)
-//!   - Stage 2: receives Integer(1), unboxes, multiplies by 2, boxes result
-//! Main calls Compute.doubleOne().get() and prints result=2.
-//!
-//! Java output (java -jar):
-//!   result=2
+// jvm/self_test_b119.l — Stage B119: lowerHotAsync (CompletableFuture two-stage chain).
+//
+// Creates a host class `Compute` with a static async method `doubleOne()`:
+//   - Stage 1: returns Integer.valueOf(1) (wrapped in completedFuture)
+//   - Stage 2: receives Integer(1), unboxes, multiplies by 2, boxes result
+// Main calls Compute.doubleOne().get() and prints result=2.
+//
+// Java output (java -jar):
+//   result=2
+
 package Jvm.SelfTestB119
 
 import Std.Core
@@ -18,16 +19,22 @@ import Jvm.Lowering
 import Jvm.Driver
 
 // ── Build Compute class with async doubleOne() ────────────────────────────────
+
 func makeComputeClasses(pool: in Pool): List[BuiltClass] {
   val integerType = JRef(className = "java/lang/Integer")
-  val objectType = JRef(className = "java/lang/Object")
+  val objectType  = JRef(className = "java/lang/Object")
 
   // Stage 1: push Integer.valueOf(1) onto stack
   val intValOfPs: List[JvmType] = newList()
   intValOfPs.add(JInt)
   val stage1: List[LInsn] = newList()
   stage1.add(LIconst(v = 1))
-  stage1.add(LInvokestatic(owner = "java/lang/Integer", name = "valueOf", params = intValOfPs, ret = integerType))
+  stage1.add(LInvokestatic(
+    owner  = "java/lang/Integer",
+    name   = "valueOf",
+    params = intValOfPs,
+    ret    = integerType
+  ))
 
   // Stage 2: stack has Object(Integer(1)); cast, unbox, *2, box
   val intValuePs: List[JvmType] = newList()
@@ -35,15 +42,25 @@ func makeComputeClasses(pool: in Pool): List[BuiltClass] {
   intValOf2Ps.add(JInt)
   val stage2: List[LInsn] = newList()
   stage2.add(LCheckcast(className = "java/lang/Integer"))
-  stage2.add(LInvokevirtual(owner = "java/lang/Integer", name = "intValue", params = intValuePs, ret = JInt))
+  stage2.add(LInvokevirtual(
+    owner  = "java/lang/Integer",
+    name   = "intValue",
+    params = intValuePs,
+    ret    = JInt
+  ))
   stage2.add(LIconst(v = 2))
   stage2.add(LImul)
-  stage2.add(LInvokestatic(owner = "java/lang/Integer", name = "valueOf", params = intValOf2Ps, ret = integerType))
+  stage2.add(LInvokestatic(
+    owner  = "java/lang/Integer",
+    name   = "valueOf",
+    params = intValOf2Ps,
+    ret    = integerType
+  ))
 
   val h = LHotFunc(
-    className = "Compute",
-    methodName = "doubleOne",
-    resultType = objectType,
+    className   = "Compute",
+    methodName  = "doubleOne",
+    resultType  = objectType,
     stage1Insns = stage1,
     stage2Insns = stage2
   )
@@ -57,18 +74,19 @@ func makeComputeClasses(pool: in Pool): List[BuiltClass] {
 }
 
 // ── Build Main class ──────────────────────────────────────────────────────────
+
 func makeMainBytes(pool: in Pool): List[Byte] {
   val asm = newAssembler(pool)
 
-  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOutIdx  = poolFieldref(pool,  "java/lang/System",    "out",     "Ljava/io/PrintStream;")
   val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
-  val valueOfIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(Ljava/lang/Object;)Ljava/lang/String;")
+  val concatIdx  = poolMethodref(pool, "java/lang/String",    "concat",  "(Ljava/lang/String;)Ljava/lang/String;")
+  val valueOfIdx = poolMethodref(pool, "java/lang/String",    "valueOf", "(Ljava/lang/Object;)Ljava/lang/String;")
 
-  val cfType = "java/util/concurrent/CompletableFuture"
-  val doubleOne = poolMethodref(pool, "Compute", "doubleOne", "()Ljava/util/concurrent/CompletableFuture;")
+  val cfType     = "java/util/concurrent/CompletableFuture"
+  val doubleOne  = poolMethodref(pool, "Compute", "doubleOne", "()Ljava/util/concurrent/CompletableFuture;")
   val getPs: List[JvmType] = newList()
-  val cfGetRef = poolMethodref(pool, cfType, "get", "()Ljava/lang/Object;")
+  val cfGetRef   = poolMethodref(pool, cfType, "get", "()Ljava/lang/Object;")
 
   // CompletableFuture cf = Compute.doubleOne()
   emitInvokestatic(asm, doubleOne)
@@ -100,10 +118,11 @@ func makeMainBytes(pool: in Pool): List[Byte] {
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
+
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b119"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
@@ -116,9 +135,9 @@ func main(): Unit {
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB119",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

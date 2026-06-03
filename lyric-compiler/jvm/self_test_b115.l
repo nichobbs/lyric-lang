@@ -1,12 +1,13 @@
-//! jvm/self_test_b115.l — Stage B115: makeLyricSignatureAttr (vendor class-file attribute).
-//!
-//! Builds a class with a LyricSignature class-level attribute carrying the string
-//! "Map[String, List[Int]]". Serializes the bytes, round-trips through
-//! parseClassSummary to verify the class-file structure is valid, then builds a
-//! JAR with a Main that prints the verification result.
-//!
-//! Java output (java -jar):
-//!   sig_class_valid=true
+// jvm/self_test_b115.l — Stage B115: makeLyricSignatureAttr (vendor class-file attribute).
+//
+// Builds a class with a LyricSignature class-level attribute carrying the string
+// "Map[String, List[Int]]". Serializes the bytes, round-trips through
+// parseClassSummary to verify the class-file structure is valid, then builds a
+// JAR with a Main that prints the verification result.
+//
+// Java output (java -jar):
+//   sig_class_valid=true
+
 package Jvm.SelfTestB115
 
 import Std.Core
@@ -19,6 +20,7 @@ import Jvm.Driver
 import Jvm.Reader
 
 // ── Build a class with a LyricSignature attribute ─────────────────────────────
+
 func makeSignedClassBytes(pool: in Pool): List[Byte] {
   val sig = "Map[String, List[Int]]"
   val sigAttr = makeLyricSignatureAttr(sig)
@@ -29,6 +31,7 @@ func makeSignedClassBytes(pool: in Pool): List[Byte] {
 }
 
 // ── Build Main class ──────────────────────────────────────────────────────────
+
 func makeMainBytes(signedBytes: in List[Byte], pool: in Pool): List[Byte] {
   // Round-trip: verify the serialized class is structurally valid
   val summary = parseClassSummary(signedBytes)
@@ -36,7 +39,7 @@ func makeMainBytes(signedBytes: in List[Byte], pool: in Pool): List[Byte] {
 
   val asm = newAssembler(pool)
 
-  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOutIdx  = poolFieldref(pool,  "java/lang/System",    "out",     "Ljava/io/PrintStream;")
   val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
 
   emitGetstatic(asm, sysOutIdx)
@@ -59,10 +62,11 @@ func makeMainBytes(signedBytes: in List[Byte], pool: in Pool): List[Byte] {
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
+
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b115"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
@@ -70,13 +74,13 @@ func main(): Unit {
   val signedBytes = makeSignedClassBytes(pool)
   val classes: List[BuiltClass] = newList()
   classes.add(BuiltClass(binaryName = "Signed", bytes = signedBytes))
-  classes.add(BuiltClass(binaryName = "Main", bytes = makeMainBytes(signedBytes, pool)))
+  classes.add(BuiltClass(binaryName = "Main",   bytes = makeMainBytes(signedBytes, pool)))
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB115",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

@@ -6,30 +6,23 @@
     <AssemblyName>lyric</AssemblyName>
     <RootNamespace>Lyric.Cli.Aot</RootNamespace>
     <Nullable>enable</Nullable>
-    <!-- Native AOT publish (#1494).  Only `dotnet publish` honours
-         PublishAot; regular `dotnet build` output stays a framework-
-         dependent app, so the dev inner loop is unaffected.  The Lyric
-         compile pipeline is culture-invariant (ordinal string handling
-         throughout), so invariant globalization is safe and trims ICU.
-         Restored-dependency builds are AOT-supported: the embedded
-         contract-metadata read goes through the metadata-direct reader
-         (`Msil.MetadataReader`, pure byte reading of the PE/CLI metadata),
-         not `Assembly.Load(byte[])`, so no IL loader is required at runtime
-         (#3201 / docs/45 / docs/42). -->
-    <PublishAot>true</PublishAot>
-    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
   <!-- Stage-1 DLL references.  The wildcard pulls in every artefact
        `bootstrap.sh -stage 1` deposits, which is exactly the closed
        set the AOT linker needs: Lyric.Lyric.Cli.dll + transitive
-       Lyric.Lyric.Pkg.dll + Lyric.Stdlib.Pkg.dll.
-       `Lyric.Emitter.dll` and `FSharp.Core.dll` are no longer staged here —
-       all stdlib kernel modules migrated off Lyric.Emitter.* host shims to
-       direct BCL externs; no Lyric-compiled DLL carries an AssemblyRef to
-       either assembly (docs/23-fsharp-shim-elimination.md Band 5). -->
+       Lyric.Lyric.Pkg.dll + Lyric.Stdlib.Pkg.dll. -->
   <ItemGroup>
     <Reference Include="../../../.bootstrap/stage1/Lyric.*.dll">
+      <Private>true</Private>
+    </Reference>
+    <!-- The self-hosted JVM backend's kernel (Jvm.Kernel) routes byte-writer
+         and constant-pool operations through the F# `Lyric.Jvm.Hosts` shim,
+         which depends on FSharp.Core.  The in-process JVM build path
+         (emitter.l into Jvm.Bridge) therefore needs FSharp.Core deployed beside
+         the AOT binary, unlike the pure-Lyric MSIL kernel.  Staged into
+         .bootstrap/stage1 by bootstrap.sh. -->
+    <Reference Include="../../../.bootstrap/stage1/FSharp.Core.dll">
       <Private>true</Private>
     </Reference>
   </ItemGroup>

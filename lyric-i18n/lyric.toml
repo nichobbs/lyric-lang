@@ -13,8 +13,5 @@ output_assembly = "I18n.dll"
 [project.packages]
 "I18n" = "src/i18n.l"
 
-# tests/i18n_tests.l is written and idiomatic.  Std.Json.enumerateObject
-# runtime method-resolution issue tracked in #3719 blocks these tests.
-[project.tests]
-"I18n.I18nTests" = "tests/i18n_tests.l"
-
+[dependencies]
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }

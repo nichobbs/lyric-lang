@@ -63,7 +63,7 @@ When you want the stub to always return the same value for a given call pattern,
 
 ```lyric
 val clockStub = ClockStub.returning {
-  it.now() -> unwrapResult(Instant.fromIso8601("2026-01-01T00:00:00Z"))
+  it.now() -> Instant.fromIso8601("2026-01-01T00:00:00Z").unwrap()
 }
 ```
 
@@ -193,14 +193,14 @@ wire TestWire {
 test "successful transfer saves both accounts" {
   val alice  = makeAccount(id = "A", balance = 1_000_00)
   val bob    = makeAccount(id = "B", balance = 0)
-  val now    = unwrapResult(Instant.fromIso8601("2026-04-29T00:00:00Z"))
+  val now    = Instant.fromIso8601("2026-04-29T00:00:00Z").unwrap()
 
   val w      = TestWire.bootstrap(alice, bob, now)
-  val key    = unwrapResult(IdempotencyKey.tryFrom("op-1"))
-  val amount = unwrapResult(Amount.make(unwrapResult(Cents.tryFrom(100_00))))
+  val key    = IdempotencyKey.tryFrom("op-1").unwrap()
+  val amount = Amount.make(Cents.tryFrom(100_00).unwrap()).unwrap()
 
   val result = await transfer(w.svc, alice.id, bob.id, amount, key)
-  assertTrue(isOk(result), "transfer should succeed")
+  assertTrue(result.isOk, "transfer should succeed")
 
   val saveCalls = w.accounts.recorded("saveAll")
   assertEqualInt(saveCalls.length, 1, "saveAll called exactly once")
@@ -225,7 +225,7 @@ If you change `findById`'s signature in `AccountRepository` — say, you add a s
 test "async transfer completes" {
   val w      = TestWire.bootstrap(alice, bob, now)
   val result = await transfer(w.svc, alice.id, bob.id, amount, key)
-  assertTrue(isOk(result), "transfer result")
+  assertTrue(result.isOk, "transfer result")
 }
 ```
 

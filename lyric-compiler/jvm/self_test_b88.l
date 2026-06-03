@@ -1,18 +1,19 @@
-//! jvm/self_test_b88.l — Stage B88: monitorenter / monitorexit (synchronized block).
-//!
-//! Generates Monitor.class with:
-//!   syncAdd(Object lock, int[] counter, int delta)void
-//!     — synchronized(lock) { counter[0] += delta }
-//!
-//! Main:
-//!   int[] cnt = {0}
-//!   Object lock = new Object()
-//!   syncAdd(lock, cnt, 5)
-//!   syncAdd(lock, cnt, 3)
-//!   println("count=" + cnt[0])  → "count=8"
-//!
-//! Exercises: monitorenter, monitorexit, synchronized-block pattern
-//!            (monitorenter / try { body } finally { monitorexit }).
+// jvm/self_test_b88.l — Stage B88: monitorenter / monitorexit (synchronized block).
+//
+// Generates Monitor.class with:
+//   syncAdd(Object lock, int[] counter, int delta)void
+//     — synchronized(lock) { counter[0] += delta }
+//
+// Main:
+//   int[] cnt = {0}
+//   Object lock = new Object()
+//   syncAdd(lock, cnt, 5)
+//   syncAdd(lock, cnt, 3)
+//   println("count=" + cnt[0])  → "count=8"
+//
+// Exercises: monitorenter, monitorexit, synchronized-block pattern
+//            (monitorenter / try { body } finally { monitorexit }).
+
 package Jvm.SelfTestB88
 
 import Std.Core
@@ -59,7 +60,8 @@ func makeMonitorBytes(): List[Byte] {
   val code = assembleCode(asm, 4, 3)
   val attrs: List[Attribute] = newList()
   attrs.add(code)
-  val method = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "syncAdd", "(Ljava/lang/Object;[II)V", attrs)
+  val method = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "syncAdd",
+    "(Ljava/lang/Object;[II)V", attrs)
 
   val methods: List[MethodInfo] = newList()
   methods.add(method)
@@ -68,16 +70,16 @@ func makeMonitorBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool = poolNew()
-  val asm = newAssembler(pool)
+  val pool      = poolNew()
+  val asm       = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnS  = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
   val concatRef = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
-  val valueOfI = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
-  val objClass = poolClass(pool, "java/lang/Object")
-  val objInit = poolMethodref(pool, "java/lang/Object", "<init>", "()V")
-  val syncRef = poolMethodref(pool, "Monitor", "syncAdd", "(Ljava/lang/Object;[II)V")
+  val valueOfI  = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
+  val objClass  = poolClass(pool, "java/lang/Object")
+  val objInit   = poolMethodref(pool, "java/lang/Object", "<init>", "()V")
+  val syncRef   = poolMethodref(pool, "Monitor", "syncAdd", "(Ljava/lang/Object;[II)V")
 
   // cnt = new int[1]  (slot 0)
   emitIconst(asm, 1)
@@ -127,24 +129,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b88"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val monitorBytes = makeMonitorBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes    = makeMainClassBytes()
 
   val monitorClass = BuiltClass(binaryName = "Monitor", bytes = monitorBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass    = BuiltClass(binaryName = "Main",    bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(monitorClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB88",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

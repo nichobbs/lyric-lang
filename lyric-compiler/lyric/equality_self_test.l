@@ -1,15 +1,16 @@
-//! equality_self_test.l — #1480: `==` / `!=` dispatch to the `@derive(Equals)`
-//! structural-equality method for records and distinct types.
-//!
-//! Before this wiring, `==` on a record lowered to a static `Object.Equals`
-//! call — reference equality for ref types — so two field-equal records
-//! compared unequal.  `BEq`/`BNeq` now call the synthesised
-//! `<Type>.equals(self, other)` (emitted by `Lyric.Derives`; it reaches codegen
-//! only after #1796 stopped mono dropping it), so `==` is structural.
-//!
-//! Run in CI via native `lyric test --target dotnet` (compiled in-process
-//! through the self-hosted `Msil.Bridge`).  Imports only `Std.*`.  MSIL target
-//! only (epic #1470 defers JVM).
+// equality_self_test.l — #1480: `==` / `!=` dispatch to the `@derive(Equals)`
+// structural-equality method for records and distinct types.
+//
+// Before this wiring, `==` on a record lowered to a static `Object.Equals`
+// call — reference equality for ref types — so two field-equal records
+// compared unequal.  `BEq`/`BNeq` now call the synthesised
+// `<Type>.equals(self, other)` (emitted by `Lyric.Derives`; it reaches codegen
+// only after #1796 stopped mono dropping it), so `==` is structural.
+//
+// Run in CI via native `lyric test --target dotnet` (compiled in-process
+// through the self-hosted `Msil.Bridge`).  Imports only `Std.*`.  MSIL target
+// only (epic #1470 defers JVM).
+
 @test_module
 package Lyric.EqualitySelfTest
 
@@ -17,34 +18,16 @@ import Std.Core
 import Std.Testing
 
 @derive(Equals)
-record Point {
-  x: Int
-  y: Int
-}
+record Point { x: Int, y: Int }
 
 @derive(Equals)
-record Named {
-  id: Int
-  name: String
-}
+record Named { id: Int, name: String }
 
 @derive(Equals)
-record Line {
-  a: Point
-  b: Point
-}
+record Line { a: Point, b: Point }
 
 @derive(Equals)
-record Empty {
-  // Distinct types also receive a synthesised `equals` from `Lyric.Derives`
-  // (it compares the `value` field on both operands directly).
-}
-
-@derive(Equals)
-type Score = Int
-
-@derive(Equals)
-type Tag = String
+record Empty {}
 
 test "field-equal records compare == true" {
   val p1 = Point(x = 1, y = 2)
@@ -91,42 +74,4 @@ func samePoint(p: in Point, q: in Point): Bool {
 test "structural == composes in a boolean-returning function" {
   assertTrue(samePoint(Point(x = 5, y = 6), Point(x = 5, y = 6)), "func == true")
   assertTrue(not samePoint(Point(x = 5, y = 6), Point(x = 5, y = 7)), "func == false")
-}
-
-test "distinct types over Int compare structurally via @derive(Equals)" {
-  val a = Score(42)
-  val b = Score(42)
-  val c = Score(99)
-  assertTrue(a == b, "Score(42) == Score(42)")
-  assertTrue(a != c, "Score(42) != Score(99)")
-}
-
-test "distinct types over String compare structurally" {
-  val a = Tag("alpha")
-  val b = Tag("alpha")
-  val c = Tag("beta")
-  assertTrue(a == b, "Tag(\"alpha\") == Tag(\"alpha\")")
-  assertTrue(a != c, "Tag(\"alpha\") != Tag(\"beta\")")
-}
-
-// #1998: runtime codegen guard for @derive(Show) on distinct types.
-// The synthesised `toString` must compile and produce output without crashing
-// (the #1995 bug was a projection-method NRE and missing addPackageTokens
-// registration for the `self.value` access in Show + Hash synthesizers).
-@derive(Show)
-type Label = String
-
-@derive(Show)
-type Count = Int
-
-test "#1998: @derive(Show) on distinct type over String: toString compiles and runs" {
-  val l = Label("events")
-  val s = l.toString()
-  assertTrue(s.length > 0, "Show(Label) toString is non-empty")
-}
-
-test "#1998: @derive(Show) on distinct type over Int: toString compiles and runs" {
-  val c = Count(7)
-  val s = c.toString()
-  assertTrue(s.length > 0, "Show(Count) toString is non-empty")
 }

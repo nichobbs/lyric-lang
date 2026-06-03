@@ -1,12 +1,13 @@
-//! jvm/self_test_b15.l — Stage B15: instance creation with new + invokespecial.
-//!
-//! Generates two class files:
-//!   Greeter.class — has <init>()V and greet()Ljava/lang/String;
-//!   Main.class    — main() creates a Greeter, calls greet(), prints result
-//!
-//! Exercises: new, dup, invokespecial (constructor + super), invokevirtual,
-//! areturn, and multi-method class serialization with a shared constant pool.
-//! Assembled into /tmp/lyric-jvm-b15/hello.jar; verified by JvmLoweringB15Test.
+// jvm/self_test_b15.l — Stage B15: instance creation with new + invokespecial.
+//
+// Generates two class files:
+//   Greeter.class — has <init>()V and greet()Ljava/lang/String;
+//   Main.class    — main() creates a Greeter, calls greet(), prints result
+//
+// Exercises: new, dup, invokespecial (constructor + super), invokevirtual,
+// areturn, and multi-method class serialization with a shared constant pool.
+// Assembled into /tmp/lyric-jvm-b15/hello.jar; verified by JvmLoweringB15Test.
+
 package Jvm.SelfTestB15
 
 import Std.Core
@@ -20,8 +21,8 @@ func makeGreeterClassBytes(): List[Byte] {
   val pool = poolNew()
 
   // <init>()V: aload_0, invokespecial Object.<init>()V, return
-  val asmInit = newAssembler(pool)
-  val objInit = poolMethodref(pool, "java/lang/Object", "<init>", "()V")
+  val asmInit  = newAssembler(pool)
+  val objInit  = poolMethodref(pool, "java/lang/Object", "<init>", "()V")
   emitAload(asmInit, 0)
   emitInvokespecial(asmInit, objInit)
   emitReturn(asmInit)
@@ -31,7 +32,7 @@ func makeGreeterClassBytes(): List[Byte] {
   val initMethod = makeMethodInfo(ACC_PUBLIC, "<init>", "()V", initAttrs)
 
   // greet()Ljava/lang/String;: push string, areturn
-  val asmGreet = newAssembler(pool)
+  val asmGreet  = newAssembler(pool)
   emitPushString(asmGreet, "hello from b15")
   emitAreturn(asmGreet)
   val greetCode = assembleCode(asmGreet, 1, 1)
@@ -48,13 +49,13 @@ func makeGreeterClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOut       = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val greeterClass = poolClass(pool, "Greeter")
-  val greeterInit = poolMethodref(pool, "Greeter", "<init>", "()V")
-  val greetMeth = poolMethodref(pool, "Greeter", "greet", "()Ljava/lang/String;")
-  val println_ = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val greeterInit  = poolMethodref(pool, "Greeter", "<init>", "()V")
+  val greetMeth    = poolMethodref(pool, "Greeter", "greet", "()Ljava/lang/String;")
+  val println_     = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
 
   emitGetstatic(asm, sysOut)
   emitNew(asm, greeterClass)
@@ -77,24 +78,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b15"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val greeterBytes = makeGreeterClassBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes    = makeMainClassBytes()
 
   val greeterClass = BuiltClass(binaryName = "Greeter", bytes = greeterBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass    = BuiltClass(binaryName = "Main",    bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(greeterClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB15",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

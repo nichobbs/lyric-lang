@@ -61,8 +61,9 @@ output_assembly = "Lyric.Grpc.dll"
 "Grpc.GrpcTypesTests" = "tests/grpc_types_tests.l"
 
 [dependencies]
-"Lyric.Auth"       = { workspace = true }
-"Lyric.Resilience" = { workspace = true }
+"Lyric.Stdlib"     = { path = "../lyric-stdlib" }
+"Lyric.Auth"       = { path = "../lyric-auth" }
+"Lyric.Resilience" = { path = "../lyric-resilience" }
 
 [nuget]
 # Client: Grpc.Net.Client ships with .NET 5+ but the NuGet package pins a

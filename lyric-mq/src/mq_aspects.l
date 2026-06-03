@@ -1,38 +1,39 @@
-//! Mq.Aspects — pub aspect templates for message queue cross-cutting concerns.
-//!
-//! Two templates:
-//!
-//!   Idempotent  — C-mode (@inline_template): deduplicates message handlers
-//!                 using a Cache.CacheStore keyed by `args.message.id`.  Reads
-//!                 `args.message` from the handler argument list, so the handler
-//!                 must declare a `message: Message` parameter.
-//!
-//!   DeadLetter  — B-mode: after a failed consume (handler returns Err), checks
-//!                 the delivery count against `maxDeliveries` and dead-letters
-//!                 the message when the limit is exceeded.  The dead-letter store
-//!                 must be supplied by the consumer's wire block; this aspect
-//!                 references it by the module-level `deadLetterStore` variable
-//!                 that the consumer is expected to assign before the aspect fires.
-//!
-//! Typical consumer usage:
-//!
-//!   import Mq.Aspects
-//!   import Cache
-//!   import Mq
-//!
-//!   var idemStore = Cache.inProcess()
-//!
-//!   aspect OrderIdempotent from Mq.Aspects.Idempotent {
-//!     matches: name like "handleOrder*"
-//!     config { cacheKeyPrefix: String = "mq:order:idem:", ttlSeconds: Int = 7200 }
-//!   }
-//!
-//!   aspect OrderDeadLetter from Mq.Aspects.DeadLetter {
-//!     matches: name like "handleOrder*"
-//!     config { enabled: Bool = true, maxDeliveries: Int = 3 }
-//!   }
-//!
-//! See docs/26-aspects.md §18, docs/27-aspect-libraries.md, and lyric-mq/README.md.
+// Mq.Aspects — pub aspect templates for message queue cross-cutting concerns.
+//
+// Two templates:
+//
+//   Idempotent  — C-mode (@inline_template): deduplicates message handlers
+//                 using a Cache.CacheStore keyed by `args.message.id`.  Reads
+//                 `args.message` from the handler argument list, so the handler
+//                 must declare a `message: Message` parameter.
+//
+//   DeadLetter  — B-mode: after a failed consume (handler returns Err), checks
+//                 the delivery count against `maxDeliveries` and dead-letters
+//                 the message when the limit is exceeded.  The dead-letter store
+//                 must be supplied by the consumer's wire block; this aspect
+//                 references it by the module-level `deadLetterStore` variable
+//                 that the consumer is expected to assign before the aspect fires.
+//
+// Typical consumer usage:
+//
+//   import Mq.Aspects
+//   import Cache
+//   import Mq
+//
+//   var idemStore = Cache.inProcess()
+//
+//   aspect OrderIdempotent from Mq.Aspects.Idempotent {
+//     matches: name like "handleOrder*"
+//     config { cacheKeyPrefix: String = "mq:order:idem:", ttlSeconds: Int = 7200 }
+//   }
+//
+//   aspect OrderDeadLetter from Mq.Aspects.DeadLetter {
+//     matches: name like "handleOrder*"
+//     config { enabled: Bool = true, maxDeliveries: Int = 3 }
+//   }
+//
+// See docs/26-aspects.md §18, docs/27-aspect-libraries.md, and lyric-mq/README.md.
+
 @runtime_checked
 package Mq.Aspects
 
@@ -42,6 +43,7 @@ import Cache
 import Mq
 
 // ─── Idempotent ───────────────────────────────────────────────────────────────
+
 /// Deduplicate message handler calls using a cache keyed by message ID.
 ///
 /// C-mode (@inline_template): reads `args.message.id` from the handler
@@ -63,29 +65,29 @@ import Mq
 ///   enabled        Bool   — master switch (default: true)
 ///   cacheKeyPrefix String — prepended to every message ID (default: "mq:idem:")
 ///   ttlSeconds     Int    — how long to remember processed IDs (default: 3600)
-@stable(since = "0.1")
+@stable(since="0.1")
 @inline_template
 pub aspect Idempotent {
   config {
-    enabled: Bool = true
+    enabled:        Bool   = true
     cacheKeyPrefix: String = "mq:idem:"
-    ttlSeconds: Int = 3600
+    ttlSeconds:     Int    = 3600
   }
-  requires: args.message.id != ""
-  // handler must declare a message: Message parameter
+
+  requires:
+    args.message.id != ""    // handler must declare a message: Message parameter
+
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()
     } else {
       val key = cacheKeyPrefix + args.message.id
       match Cache.get(idempotentStore, key) {
-        case Some(_) -> {
-          ret = Ok(())
-        }
+        case Some(_) -> { ret = Ok(()) }
         case None -> {
           ret = call.proceed()
           match ret {
-            case Ok(_) -> Cache.setWithTtl(idempotentStore, key, "1", ttlSeconds)
+            case Ok(_)  -> Cache.setWithTtl(idempotentStore, key, "1", ttlSeconds)
             case Err(_) -> ()
           }
         }
@@ -101,6 +103,7 @@ pub aspect Idempotent {
 val idempotentStore: CacheStore = Cache.inProcess()
 
 // ─── DeadLetter ───────────────────────────────────────────────────────────────
+
 /// Route messages that exceed their delivery limit to a dead-letter store.
 ///
 /// C-mode (@inline_template): reads `args.message` and `args.consumer` from the
@@ -126,29 +129,34 @@ val idempotentStore: CacheStore = Cache.inProcess()
 /// Config fields (env: LYRIC_ASPECT_<INSTANTIATION>_<FIELD>):
 ///   enabled       Bool — master switch (default: true)
 ///   maxDeliveries Int  — delivery attempts before dead-lettering (default: 3)
-@stable(since = "0.1")
+@stable(since="0.1")
 @inline_template
 pub aspect DeadLetter {
   config {
-    enabled: Bool = true
-    maxDeliveries: Int = 3
+    enabled:       Bool = true
+    maxDeliveries: Int  = 3
   }
-  requires: args.message.id != ""
-  // handler must declare a message: Message parameter
-  // handler must declare a consumer: QueueConsumer parameter (shape checked by A0042)
+
+  requires:
+    args.message.id != ""    // handler must declare a message: Message parameter
+    // handler must declare a consumer: QueueConsumer parameter (shape checked by A0042)
+
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()
     } else {
       ret = call.proceed()
       match ret {
-        case Ok(_) -> ()    // Successful delivery; nothing to do.
+        case Ok(_)  -> ()    // Successful delivery; nothing to do.
         case Err(reason) -> {
           // deliveryCount is 0-based; add 1 for the just-completed attempt.
           val attempts = args.message.deliveryCount + 1
           if attempts > maxDeliveries {
             val nowMs = nowEpochMillis()
-            val dlEntry = DeadLetterEntry(message = args.message, reason = reason, failedAt = nowMs)
+            val dlEntry = DeadLetterEntry(
+              message  = args.message,
+              reason   = reason,
+              failedAt = nowMs)
             deadLetterStore.append(dlEntry)
             // Tell the broker not to redeliver this message.  Ignore errors
             // since the store append already captured the message.
@@ -170,7 +178,7 @@ val deadLetterStore: DeadLetterStore = Mq.inProcessDeadLetterStore(10000)
 /// Note: module-level stores are immutable val bindings in the current
 /// implementation; this function is a no-op.  Use per-instance store injection
 /// via the wire block for custom store implementations.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func configure(idempStore: in CacheStore, dlStore: in DeadLetterStore): Unit {
   ()
 }

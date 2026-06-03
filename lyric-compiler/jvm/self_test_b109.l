@@ -1,21 +1,22 @@
-//! jvm/self_test_b109.l — Stage B109: lowerRangeType.
-//!
-//! Creates two range-subtype wrapper classes (§6.4 bootstrap form):
-//!   Age    — wraps int, range [0, 150]  (type Age = Int range 0 ..= 150)
-//!   Score  — wraps int, range [0, 100]  (type Score = Int range 0 ..= 100)
-//!
-//! A Main class:
-//!   - Constructs Age(42)  → succeeds, prints age.$value=42
-//!   - Constructs Score(99) → succeeds, prints score.$value=99
-//!   - Constructs Age(200)  → throws IllegalArgumentException, caught; prints age_bad=caught
-//!
-//! Main uses V49 (Java 5) via a raw assembly to avoid StackMapTable at
-//! the exception-handler entry point.
-//!
-//! Java output (java -jar):
-//!   age.$value=42
-//!   score.$value=99
-//!   age_bad=caught
+// jvm/self_test_b109.l — Stage B109: lowerRangeType.
+//
+// Creates two range-subtype wrapper classes (§6.4 bootstrap form):
+//   Age    — wraps int, range [0, 150]  (type Age = Int range 0 ..= 150)
+//   Score  — wraps int, range [0, 100]  (type Score = Int range 0 ..= 100)
+//
+// A Main class:
+//   - Constructs Age(42)  → succeeds, prints age.$value=42
+//   - Constructs Score(99) → succeeds, prints score.$value=99
+//   - Constructs Age(200)  → throws IllegalArgumentException, caught; prints age_bad=caught
+//
+// Main uses V49 (Java 5) via a raw assembly to avoid StackMapTable at
+// the exception-handler entry point.
+//
+// Java output (java -jar):
+//   age.$value=42
+//   score.$value=99
+//   age_bad=caught
+
 package Jvm.SelfTestB109
 
 import Std.Core
@@ -27,9 +28,10 @@ import Jvm.Lowering
 import Jvm.Driver
 
 // ── Build wrapper classes ─────────────────────────────────────────────────────
+
 func makeAgeBytes(): List[Byte] {
   val pool = poolNew()
-  val cf = lowerRangeType(LRangeType(wrapperClass = "Age", underlyingType = JInt, lo = 0, hi = 150), pool)
+  val cf = lowerRangeType(LRangeType(wrapperClass = "Age",   underlyingType = JInt, lo = 0, hi = 150), pool)
   serializeClassWithPool(cf, pool)
 }
 
@@ -40,21 +42,22 @@ func makeScoreBytes(): List[Byte] {
 }
 
 // ── Build Main class (V49, manual try-catch) ──────────────────────────────────
+
 func makeMainBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOutIdx  = poolFieldref(pool,  "java/lang/System",    "out",     "Ljava/io/PrintStream;")
   val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
-  val valueOfIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
+  val concatIdx  = poolMethodref(pool, "java/lang/String",    "concat",  "(Ljava/lang/String;)Ljava/lang/String;")
+  val valueOfIdx = poolMethodref(pool, "java/lang/String",    "valueOf", "(I)Ljava/lang/String;")
 
-  val ageNewIdx = poolClass(pool, "Age")
-  val ageCtorIdx = poolMethodref(pool, "Age", "<init>", "(I)V")
-  val ageAccIdx = poolMethodref(pool, "Age", "$value", "()I")
-  val scoreNewIdx = poolClass(pool, "Score")
+  val ageNewIdx    = poolClass(pool, "Age")
+  val ageCtorIdx   = poolMethodref(pool, "Age",   "<init>", "(I)V")
+  val ageAccIdx    = poolMethodref(pool, "Age",   "$value", "()I")
+  val scoreNewIdx  = poolClass(pool, "Score")
   val scoreCtorIdx = poolMethodref(pool, "Score", "<init>", "(I)V")
-  val scoreAccIdx = poolMethodref(pool, "Score", "$value", "()I")
+  val scoreAccIdx  = poolMethodref(pool, "Score", "$value", "()I")
 
   // Age age = new Age(42); println("age.$value=" + age.$value())
   emitNew(asm, ageNewIdx)
@@ -108,10 +111,11 @@ func makeMainBytes(): List[Byte] {
   emitReturn(asm)
 
   val iaeClass = "java/lang/IllegalArgumentException"
-  val iaeIdx = poolClass(pool, iaeClass)
+  val iaeIdx   = poolClass(pool, iaeClass)
 
   // maxStack=3 (new+dup+push or getstatic+ldc+concat), maxLocals=3 (args, age, score)
-  val codeAttr = assembleCodeWith1Handler(asm, 3, 3, "try_start", "try_end", "try_handler", iaeIdx)
+  val codeAttr = assembleCodeWith1Handler(asm, 3, 3,
+    "try_start", "try_end", "try_handler", iaeIdx)
   val attrs: List[Attribute] = newList()
   attrs.add(codeAttr)
   val mainMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "main", "([Ljava/lang/String;)V", attrs)
@@ -127,23 +131,24 @@ func makeMainBytes(): List[Byte] {
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
+
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b109"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val classes: List[BuiltClass] = newList()
-  classes.add(BuiltClass(binaryName = "Age", bytes = makeAgeBytes()))
+  classes.add(BuiltClass(binaryName = "Age",   bytes = makeAgeBytes()))
   classes.add(BuiltClass(binaryName = "Score", bytes = makeScoreBytes()))
-  classes.add(BuiltClass(binaryName = "Main", bytes = makeMainBytes()))
+  classes.add(BuiltClass(binaryName = "Main",  bytes = makeMainBytes()))
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB109",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

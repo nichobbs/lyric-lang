@@ -1,17 +1,18 @@
-//! jvm/self_test_b101.l — Stage B101: boxing/unboxing convenience insns.
-//!
-//! Adds LBoxInt/LBoxLong/LBoxFloat/LBoxDouble/LBoxBool/LBoxByte/LBoxChar/LBoxShort
-//! and LUnboxInt/LUnboxLong/LUnboxFloat/LUnboxDouble/LUnboxBool/LUnboxByte/
-//! LUnboxChar/LUnboxShort to LInsn.  Each expands to the appropriate
-//! invokestatic <Wrapper>.valueOf(...) or invokevirtual <Wrapper>.<prim>Value().
-//!
-//! Creates a Wrap class with static methods that demonstrate the boxing round-trip.
-//! Also demonstrates using a boxed value as Object (needed for generics/varargs).
-//!
-//! Java output (java -jar):
-//!   boxed_int=42
-//!   boxed_long=100
-//!   boxed_bool=true
+// jvm/self_test_b101.l — Stage B101: boxing/unboxing convenience insns.
+//
+// Adds LBoxInt/LBoxLong/LBoxFloat/LBoxDouble/LBoxBool/LBoxByte/LBoxChar/LBoxShort
+// and LUnboxInt/LUnboxLong/LUnboxFloat/LUnboxDouble/LUnboxBool/LUnboxByte/
+// LUnboxChar/LUnboxShort to LInsn.  Each expands to the appropriate
+// invokestatic <Wrapper>.valueOf(...) or invokevirtual <Wrapper>.<prim>Value().
+//
+// Creates a Wrap class with static methods that demonstrate the boxing round-trip.
+// Also demonstrates using a boxed value as Object (needed for generics/varargs).
+//
+// Java output (java -jar):
+//   boxed_int=42
+//   boxed_long=100
+//   boxed_bool=true
+
 package Jvm.SelfTestB101
 
 import Std.Core
@@ -29,23 +30,21 @@ func makeRoundTripIntMethod(): LFunc {
   // boxes n to Integer, stores, loads, unboxes to int, returns
   val insns: List[LInsn] = newList()
   insns.add(LIload(slot = 0))
-  insns.add(LBoxInt)
-  // Integer.valueOf(n)
+  insns.add(LBoxInt)                                          // Integer.valueOf(n)
   insns.add(LAstoreAs(slot = 1, className = "java/lang/Integer"))
   insns.add(LAload(slot = 1))
-  insns.add(LUnboxInt)
-  // .intValue()
+  insns.add(LUnboxInt)                                        // .intValue()
   insns.add(LIreturn)
 
   val params: List[JvmType] = newList()
   params.add(JInt)
   LFunc(
-    flags = ACC_PUBLIC + ACC_STATIC,
-    name = "roundTripInt",
-    params = params,
-    ret = JInt,
-    insns = insns,
-    maxStack = 1,
+    flags     = ACC_PUBLIC + ACC_STATIC,
+    name      = "roundTripInt",
+    params    = params,
+    ret       = JInt,
+    insns     = insns,
+    maxStack  = 1,
     maxLocals = 2
   )
 }
@@ -65,12 +64,12 @@ func makeRoundTripLongMethod(): LFunc {
   val params: List[JvmType] = newList()
   params.add(JLong)
   LFunc(
-    flags = ACC_PUBLIC + ACC_STATIC,
-    name = "roundTripLong",
-    params = params,
-    ret = JLong,
-    insns = insns,
-    maxStack = 2,
+    flags     = ACC_PUBLIC + ACC_STATIC,
+    name      = "roundTripLong",
+    params    = params,
+    ret       = JLong,
+    insns     = insns,
+    maxStack  = 2,
     maxLocals = 4
   )
 }
@@ -90,12 +89,12 @@ func makeRoundTripBoolMethod(): LFunc {
   val params: List[JvmType] = newList()
   params.add(JBoolean)
   LFunc(
-    flags = ACC_PUBLIC + ACC_STATIC,
-    name = "roundTripBool",
-    params = params,
-    ret = JBoolean,
-    insns = insns,
-    maxStack = 1,
+    flags     = ACC_PUBLIC + ACC_STATIC,
+    name      = "roundTripBool",
+    params    = params,
+    ret       = JBoolean,
+    insns     = insns,
+    maxStack  = 1,
     maxLocals = 2
   )
 }
@@ -112,17 +111,17 @@ func makeWrapBytes(): List[Byte] {
 
 func makeMainBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
-  val valOfIIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
-  val valOfJIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(J)Ljava/lang/String;")
-  val valOfBIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(Z)Ljava/lang/String;")
-  val rtIntIdx = poolMethodref(pool, "Wrap", "roundTripInt", "(I)I")
-  val rtLongIdx = poolMethodref(pool, "Wrap", "roundTripLong", "(J)J")
-  val rtBoolIdx = poolMethodref(pool, "Wrap", "roundTripBool", "(Z)Z")
+  val sysOutIdx  = poolFieldref(pool,  "java/lang/System",    "out",          "Ljava/io/PrintStream;")
+  val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println",      "(Ljava/lang/String;)V")
+  val concatIdx  = poolMethodref(pool, "java/lang/String",    "concat",       "(Ljava/lang/String;)Ljava/lang/String;")
+  val valOfIIdx  = poolMethodref(pool, "java/lang/String",    "valueOf",      "(I)Ljava/lang/String;")
+  val valOfJIdx  = poolMethodref(pool, "java/lang/String",    "valueOf",      "(J)Ljava/lang/String;")
+  val valOfBIdx  = poolMethodref(pool, "java/lang/String",    "valueOf",      "(Z)Ljava/lang/String;")
+  val rtIntIdx   = poolMethodref(pool, "Wrap",                "roundTripInt",  "(I)I")
+  val rtLongIdx  = poolMethodref(pool, "Wrap",                "roundTripLong", "(J)J")
+  val rtBoolIdx  = poolMethodref(pool, "Wrap",                "roundTripBool", "(Z)Z")
 
   // println("boxed_int=" + String.valueOf(Wrap.roundTripInt(42)))
   emitGetstatic(asm, sysOutIdx)
@@ -145,8 +144,7 @@ func makeMainBytes(): List[Byte] {
   // println("boxed_bool=" + String.valueOf(Wrap.roundTripBool(true)))
   emitGetstatic(asm, sysOutIdx)
   emitPushString(asm, "boxed_bool=")
-  emitPushInt(asm, 1)
-  // true = iconst_1
+  emitPushInt(asm, 1)                  // true = iconst_1
   emitInvokestatic(asm, rtBoolIdx)
   emitInvokestatic(asm, valOfBIdx)
   emitInvokevirtual(asm, concatIdx)
@@ -167,21 +165,21 @@ func makeMainBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b101"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
-  val wrapClass = BuiltClass(binaryName = "Wrap", bytes = makeWrapBytes())
-  val mainClass = BuiltClass(binaryName = "Main", bytes = makeMainBytes())
+  val wrapClass  = BuiltClass(binaryName = "Wrap", bytes = makeWrapBytes())
+  val mainClass  = BuiltClass(binaryName = "Main", bytes = makeMainBytes())
   val classes: List[BuiltClass] = newList()
   classes.add(wrapClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB101",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

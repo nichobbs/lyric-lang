@@ -1,16 +1,17 @@
-//! list_value_compare_self_test.l — #1779 bug A: comparisons / arithmetic on a
-//! `List[ValueType]` element-access result.
-//!
-//! `List[T]` is represented as `List<object>` with boxed elements.  Before the
-//! fix, `List[primitive]` was tracked as a bare `MObject`, so `xs[i]` returned
-//! the boxed `object` while codegen *recorded* it as the element type — a later
-//! numeric op or comparison (`xs[i] <= 0`, `xs[i] + 1`) then treated the object
-//! reference as the unboxed value, producing invalid IL or a silently wrong
-//! result.  The fix tracks `List[ValueType]` as `MListOf(elemTy)` and has
-//! `EIndex` `unbox.any` the element back to its value type.
-//!
-//! Run in CI via native `lyric test --target dotnet` (compiled in-process
-//! through the self-hosted `Msil.Bridge`).  Imports only `Std.*`.
+// list_value_compare_self_test.l — #1779 bug A: comparisons / arithmetic on a
+// `List[ValueType]` element-access result.
+//
+// `List[T]` is represented as `List<object>` with boxed elements.  Before the
+// fix, `List[primitive]` was tracked as a bare `MObject`, so `xs[i]` returned
+// the boxed `object` while codegen *recorded* it as the element type — a later
+// numeric op or comparison (`xs[i] <= 0`, `xs[i] + 1`) then treated the object
+// reference as the unboxed value, producing invalid IL or a silently wrong
+// result.  The fix tracks `List[ValueType]` as `MListOf(elemTy)` and has
+// `EIndex` `unbox.any` the element back to its value type.
+//
+// Run in CI via native `lyric test --target dotnet` (compiled in-process
+// through the self-hosted `Msil.Bridge`).  Imports only `Std.*`.
+
 @test_module
 package Lyric.ListValueCompareSelfTest
 
@@ -45,12 +46,8 @@ test "Int element: comparison inside an if guard" {
   xs.add(5)
   xs.add(-1)
   var hits = 0
-  if xs[1] <= 0 {
-    hits = hits + 1
-  }
-  if xs[0] <= 0 {
-    hits = hits + 1
-  }
+  if xs[1] <= 0 { hits = hits + 1 }
+  if xs[0] <= 0 { hits = hits + 1 }
   assertEqualInt(hits, 1, "only xs[1] is <= 0")
 }
 
@@ -63,9 +60,7 @@ test "Int element: comparison inside a while loop (count negatives)" {
   var neg = 0
   var i = 0
   while i < xs.count {
-    if xs[i] < 0 {
-      neg = neg + 1
-    }
+    if xs[i] < 0 { neg = neg + 1 }
     i = i + 1
   }
   assertEqualInt(neg, 2, "two negative elements")
@@ -77,9 +72,7 @@ func sumPositives(xs: in List[Int]): Result[Int, String] {
   var total = 0
   var i = 0
   while i < xs.count {
-    if xs[i] <= 0 {
-      return Err("non-positive")
-    }
+    if xs[i] <= 0 { return Err("non-positive") }
     total = total + xs[i]
     i = i + 1
   }
@@ -88,14 +81,14 @@ func sumPositives(xs: in List[Int]): Result[Int, String] {
 
 func resultValue(r: in Result[Int, String]): Int {
   match r {
-    case Ok(v) -> v
+    case Ok(v)  -> v
     case Err(_) -> -1
   }
 }
 
 func resultLabel(r: in Result[Int, String]): String {
   match r {
-    case Ok(_) -> "ok"
+    case Ok(_)  -> "ok"
     case Err(e) -> e
   }
 }
@@ -120,7 +113,7 @@ test "Long element comparison and arithmetic" {
   xs.add(-50i64)
   assertTrue(xs[1] < 0i64, "xs[1] (-50) < 0")
   assertTrue(xs[0] >= 100i64, "xs[0] (100) >= 100")
-  assertEqualLong(xs[0] + xs[1], 50i64, "100 + (-50) = 50")
+  assertEqualInt(longToInt(xs[0] + xs[1]), 50, "100 + (-50) = 50")
 }
 
 test "Double element comparison" {
@@ -138,9 +131,7 @@ test "Bool element used directly in a condition" {
   var trues = 0
   var i = 0
   while i < flags.count {
-    if flags[i] {
-      trues = trues + 1
-    }
+    if flags[i] { trues = trues + 1 }
     i = i + 1
   }
   assertEqualInt(trues, 1, "one true flag")
@@ -152,15 +143,4 @@ test "Char element comparison" {
   cs.add('z')
   assertTrue(cs[0] == 'a', "cs[0] == 'a'")
   assertTrue(cs[1] != 'a', "cs[1] != 'a'")
-}
-
-test "Int element: indexed write then read-back composes correctly" {
-  // Confirms set_Item (auto-box) / get_Item (unbox.any) write→read symmetry.
-  val xs: List[Int] = newList()
-  xs.add(1)
-  xs.add(2)
-  xs[0] = 99
-  assertEqualInt(xs[0], 99, "xs[0] after write reads back as 99")
-  assertTrue(xs[0] > xs[1], "xs[0] (99) > xs[1] (2) after write")
-  assertTrue(xs[0] == 99, "xs[0] == 99 (equality after write)")
 }

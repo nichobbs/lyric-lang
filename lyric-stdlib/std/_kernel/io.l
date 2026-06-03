@@ -1,9 +1,10 @@
-//! std/io.l - trusted host-runtime boundary for stdlib IO.
-//!
-//! The functions in this file are intentionally thin and unsafe from
-//! Lyric's point of view: they expose the host surface that safe
-//! wrappers convert into Result-returning APIs. Keep this file small and
-//! reviewable; adding a host call here expands the trusted base.
+// std/io.l - trusted host-runtime boundary for stdlib IO.
+//
+// The functions in this file are intentionally thin and unsafe from
+// Lyric's point of view: they expose the host surface that safe
+// wrappers convert into Result-returning APIs. Keep this file small and
+// reviewable; adding a host call here expands the trusted base.
+
 @axiom("System.Console and System.IO operations conform to their documented .NET contracts")
 package Std.IO
 

@@ -1,21 +1,21 @@
-//! Lyric OpenTelemetry library — platform-dispatch wrappers and pub aspect
-//! templates.
-//! Stability: @experimental — the OTLP exporter shipped (D069) and unit tests
-//! cover the envelope, but the end-to-end trace + metric + log pipeline has
-//! not been exercised against a live OTel collector in CI.
-//!
-//! Each wrapper function has two @cfg-gated implementations (dotnet / jvm)
-//! so the aspect templates remain platform-neutral.  Consumers bind a
-//! `matches:` selector and optionally override config defaults:
-//!
-//!   aspect HttpTracing from OTel.Tracing {
-//!     matches: name like "*/Http/*"
-//!     config {
-//!       spanKind: SpanKind = SpanKind.Server
-//!     }
-//!   }
-//!
-//! See docs/26-aspects.md §18 and docs/27-aspect-libraries.md.
+// Lyric OpenTelemetry library — platform-dispatch wrappers and pub aspect
+// templates.
+// Stability: @experimental — the OTLP exporter shipped (D069) and unit tests
+// cover the envelope, but the end-to-end trace + metric + log pipeline has
+// not been exercised against a live OTel collector in CI.
+//
+// Each wrapper function has two @cfg-gated implementations (dotnet / jvm)
+// so the aspect templates remain platform-neutral.  Consumers bind a
+// `matches:` selector and optionally override config defaults:
+//
+//   aspect HttpTracing from OTel.Tracing {
+//     matches: name like "*/Http/*"
+//     config {
+//       spanKind: SpanKind = SpanKind.Server
+//     }
+//   }
+//
+// See docs/26-aspects.md §18 and docs/27-aspect-libraries.md.
 package OTel
 
 import OTel.Types
@@ -26,6 +26,7 @@ import Std.Char as StdChar
 import Std.Log as StdLog
 
 // ─── OTel enum types (must be in same package for pattern matching) ───────────
+
 /// OpenTelemetry span kind — maps to `SpanKind` on both .NET and JVM.
 pub enum SpanKind {
   case Internal
@@ -44,6 +45,7 @@ pub enum MetricUnit {
 }
 
 // ─── Tracing wrappers ────────────────────────────────────────────────────────
+
 /// Start a new tracing span.  `kind` is the integer value of `SpanKind`.
 @cfg(feature = "dotnet")
 pub func startSpan(operationName: String, kind: Int): Span {
@@ -89,6 +91,7 @@ pub func endSpan(span: Span): Unit {
 }
 
 // ─── Metrics wrappers ────────────────────────────────────────────────────────
+
 @cfg(feature = "dotnet")
 pub func incrementCounter(name: String, delta: Int, unit: String): Unit {
   OtelKernelNet.netIncrementCounter("lyric.otel", name, delta, unit)
@@ -110,6 +113,7 @@ pub func recordHistogram(name: String, value: Float, unit: String): Unit {
 }
 
 // ─── Aspect templates ────────────────────────────────────────────────────────
+
 /// Wrap every matched call in an OTel trace span.
 /// Config fields:
 ///   enabled    — gate the whole aspect at startup; default true.
@@ -119,25 +123,25 @@ pub func recordHistogram(name: String, value: Float, unit: String): Unit {
 /// OTel SDK convention: Internal=0, Server=1, Client=2, Producer=3, Consumer=4.
 func spanKindToInt(k: SpanKind): Int {
   match k {
-    case SpanKind.Internal -> 0
-    case SpanKind.Server -> 1
-    case SpanKind.Client -> 2
-    case SpanKind.Producer -> 3
-    case SpanKind.Consumer -> 4
+    case SpanKind.Internal  -> 0
+    case SpanKind.Server    -> 1
+    case SpanKind.Client    -> 2
+    case SpanKind.Producer  -> 3
+    case SpanKind.Consumer  -> 4
   }
 }
 
 pub aspect Tracing {
   config {
-    enabled: Bool = true
-    sampleRate: Float = 1.0
-    spanKind: SpanKind = SpanKind.Internal
+    enabled:    Bool      = true
+    // sampleRate controls what fraction of calls are traced (0.0–1.0).
+    // Values below 1.0 are applied via a simple hash gate on the call
+    // name; use OTel SDK env vars (OTEL_TRACES_SAMPLER,
+    // OTEL_TRACES_SAMPLER_ARG) for head-based sampling at the exporter
+    // level when more sophisticated strategies are needed.
+    sampleRate: Float     = 1.0
+    spanKind:   SpanKind  = SpanKind.Internal
   }
-  // sampleRate controls what fraction of calls are traced (0.0–1.0).
-  // Values below 1.0 are applied via a simple hash gate on the call
-  // name; use OTel SDK env vars (OTEL_TRACES_SAMPLER,
-  // OTEL_TRACES_SAMPLER_ARG) for head-based sampling at the exporter
-  // level when more sophisticated strategies are needed.
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()
@@ -172,8 +176,8 @@ pub aspect Metrics {
 ///   level   — log level string ("debug" | "info" | "warn"); default "debug".
 pub aspect RequestLogging {
   config {
-    enabled: Bool = true
-    level: String = "debug"
+    enabled: Bool   = true
+    level:   String = "debug"
   }
   around(call) -> ret {
     if not enabled {

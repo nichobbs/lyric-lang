@@ -1,0 +1,33 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="SymbolTableTests.fs" />
+    <Compile Include="ResolverTests.fs" />
+    <Compile Include="AdditionalResolverTests.fs" />
+    <Compile Include="SignatureTests.fs" />
+    <Compile Include="ExprCheckerTests.fs" />
+    <Compile Include="AdditionalExprCheckerTests.fs" />
+    <Compile Include="StmtCheckerTests.fs" />
+    <Compile Include="AdditionalStmtCheckerTests.fs" />
+    <Compile Include="ConstFoldTests.fs" />
+    <Compile Include="T5ExprCheckerTests.fs" />
+    <Compile Include="T5PatternTests.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Lyric.TypeChecker\Lyric.TypeChecker.fsproj" />
+    <ProjectReference Include="..\..\src\Lyric.Lexer\Lyric.Lexer.fsproj" />
+    <ProjectReference Include="..\..\src\Lyric.Parser\Lyric.Parser.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Expecto" Version="10.2.3" />
+  </ItemGroup>
+
+</Project>

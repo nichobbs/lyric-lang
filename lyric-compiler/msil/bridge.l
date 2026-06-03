@@ -1,10 +1,11 @@
-//! msil/bridge.l — Self-hosted MSIL compilation pipeline (Phase R6).
-//!
-//! Public entry point that chains the self-hosted Lyric pipeline to produce a
-//! .NET PE DLL from Lyric source text.  Calls (docs/41 §9 Band 1 + Band 5):
-//!   parse → typecheck → modecheck → elaborate → mono
-//!        → newCodegenCtx → addPackageTokens
-//!        → codegenMPackage → lowerMPackageWithCtx → writeBytes
+// msil/bridge.l — Self-hosted MSIL compilation pipeline (Phase R6).
+//
+// Public entry point that chains the self-hosted Lyric pipeline to produce a
+// .NET PE DLL from Lyric source text.  Calls (docs/41 §9 Band 1 + Band 5):
+//   parse → typecheck → modecheck → elaborate → mono
+//        → newCodegenCtx → addPackageTokens
+//        → codegenMPackage → lowerMPackageWithCtx → writeBytes
+
 package Msil.Bridge
 
 import Std.Core
@@ -13,7 +14,6 @@ import Std.File
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.AliasRewriter as Aliases
-import Lyric.Stubbable as Stubbable
 import Lyric.TypeChecker
 import Lyric.ModeChecker
 import Lyric.ContractElaborator
@@ -40,33 +40,12 @@ import Msil.Heaps
 /// diagnostics from each pass are printed to stdout before the bridge
 /// returns.  The package name and assembly name are taken from the parsed
 /// `package` declaration in the source.
-pub func compileToMsil(source: in String, outputPath: in String, stdlibSources: in List[String]): Bool {
+pub func compileToMsil(
+  source:        in String,
+  outputPath:    in String,
+  stdlibSources: in List[String]
+): Bool {
   compileToMsilWithVersion(source, outputPath, stdlibSources, "")
-}
-
-// Seed lctx.stdCoreResultOk2Row / stdCoreResultErr2Row / stdCoreResultRow from
-// the ffiTypeRefs map that registerStdlibArtifactTokens just populated.  Called
-// from both compile entry points so lowerMOpaque can emit tryInto() and the
-// range-subtype tryFrom factory (#1501) can wrap Err values (#3115).
-func seedResultTypeRefs(cctx: in CodegenCtx): Unit {
-  if cctx.lctx.stdCoreResultOk2Row.count == 0 {
-    match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result_Ok") {
-      case Some(row) -> cctx.lctx.stdCoreResultOk2Row.add(row)
-      case None -> ()
-    }
-  }
-  if cctx.lctx.stdCoreResultErr2Row.count == 0 {
-    match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result_Err") {
-      case Some(row) -> cctx.lctx.stdCoreResultErr2Row.add(row)
-      case None -> ()
-    }
-  }
-  if cctx.lctx.stdCoreResultRow.count == 0 {
-    match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result") {
-      case Some(row) -> cctx.lctx.stdCoreResultRow.add(row)
-      case None -> ()
-    }
-  }
 }
 
 /// Variant of `compileToMsil` that accepts a `[package].version` string.
@@ -77,15 +56,14 @@ func seedResultTypeRefs(cctx: in CodegenCtx): Unit {
 /// full string is preserved verbatim in the contract resource).  See
 /// #1364 for the threading plan.
 pub func compileToMsilWithVersion(
-  source: in String,
-  outputPath: in String,
-  stdlibSources: in List[String],
+  source:         in String,
+  outputPath:     in String,
+  stdlibSources:  in List[String],
   packageVersion: in String,
+  buildKind:      in String
 ): Bool {
   val parseResult = parse(source)
-  if reportAndAbort(parseResult.diagnostics) {
-    return false
-  }
+  if reportAndAbort(parseResult.diagnostics) { return false }
 
   // ── Middle-end (Band 1 + Band 6 of docs/41 §9) ─────────────────────────
   // Run the self-hosted type checker with stdlib imports, mode checker, and
@@ -101,37 +79,22 @@ pub func compileToMsilWithVersion(
   // codegen `registerStdlibArtifactTokens` consumes below to wire
   // cross-assembly `MemberRef` rows for `pub func` items.
   val stdlibPkgs = collectStdlibPackages(stdlibSources)
-  // Group stdlib items by package so each resolves against its own decls,
-  // fixing the same-name cross-package type collision (#1488 category D).
-  val importedPkgs: List[ImportedPackage] = newList()
-  var spi = 0
-  while spi < stdlibPkgs.count {
-    importedPkgs.add(
-      ImportedPackage(name = stdlibPkgs[spi].name, items = stdlibPkgs[spi].items, imports = stdlibPkgs[spi].imports)
-    )
-    spi = spi + 1
-  }
+  val importedItems: List[Item] = newList()
+  spreadStdlibPackageItems(stdlibPkgs, importedItems)
 
   // Collapse `import X as Y` aliases: rewrite `Y.foo(...)` to bare
   // `foo(...)` (and the same for type / pattern positions) so the
   // self-hosted typechecker, which doesn't track import aliases
   // natively, doesn't fire T0020 on the alias head.  Mirrors the
   // F# `Lyric.Parser.AliasRewriter.rewriteFile` pass that the
-  // production F# emitter runs immediately after parse.  Then synthesise the
-  // `@stubbable` interface stubs (record + impl) so the type checker and codegen
-  // see them — mirrors the F# `Lyric.Parser.Stubbable` pre-typecheck pass.
-  val file0 = Stubbable.stubbableRewriteFile(Aliases.rewriteFile(parseResult.file))
+  // production F# emitter runs immediately after parse.
+  val file0 = Aliases.rewriteFile(parseResult.file)
 
-  val tcRes = checkWithImportedPackages(file0, importedPkgs)
-  // Type errors in a single-file build are now fatal, matching the project path.
-  if reportAndAbort(tcRes.diagnostics) {
-    return false
-  }
+  val tcRes = checkWithImports(file0, importedItems)
+  reportDiagnostics(tcRes.diagnostics)   // advisory: type checker lacks builtin coverage
 
   val mcRes = checkFile(file0)
-  if reportAndAbort(mcRes.diagnostics) {
-    return false
-  }
+  if reportAndAbort(mcRes.diagnostics) { return false }
 
   val elaborated = elaborateFile(file0)
 
@@ -139,9 +102,7 @@ pub func compileToMsilWithVersion(
   // Runs after the elaborator so a propagated Err/None short-circuit is not
   // forced through the success-shaped `ensures:` rewrite.
   val propRes = lowerPropagateFile(elaborated)
-  if reportAndAbort(propRes.diagnostics) {
-    return false
-  }
+  if reportAndAbort(propRes.diagnostics) { return false }
 
   // Synthesise @derive / @generate(Json) methods (Band 5 — docs/41 §9 #857).
   val derived = deriveFile(propRes.file)
@@ -149,18 +110,10 @@ pub func compileToMsilWithVersion(
   // Monomorphise same-package generic calls (Band 5 — docs/41 §9), feeding
   // the stdlib's pure-Lyric generic `pub func`s as imported generics so calls
   // like `mapGet(m, "k")` specialise into a concrete copy in this bundle
-  // rather than erasing their generic return to `object` (#1727).  Also feed
-  // stdlib interface and record declarations so the monomorphizer can infer
-  // method-call and field-projection return types, allowing cross-package
-  // predicates like `isOk(bucket.exists(...))` to specialise instead of
-  // staying type-erased (#3813).
+  // rather than erasing their generic return to `object` (#1727).
   val stdlibGenFuncs = collectStdlibGenericFuncs(stdlibPkgs)
-  val stdlibIfaces = collectStdlibInterfaceDecls(stdlibPkgs)
-  val stdlibRecs = collectStdlibRecordDecls(stdlibPkgs)
-  val monoRes = monoFileWithImportsAndTypeDecls(derived, stdlibGenFuncs, stdlibIfaces, stdlibRecs)
-  if reportAndAbort(monoRes.diagnostics) {
-    return false
-  }
+  val monoRes = monoFileWithImports(derived, stdlibGenFuncs)
+  if reportAndAbort(monoRes.diagnostics) { return false }
   val file = monoRes.file
 
   // Reconstruct the package name as a dotted string (e.g. "Hello" or
@@ -182,7 +135,6 @@ pub func compileToMsilWithVersion(
   // rationale (mirrors the F# emitter's `resolveStdlibImports` +
   // `emitAssembly` import-table population).
   registerStdlibArtifactTokens(cctx, stdlibPkgs)
-  seedResultTypeRefs(cctx)
 
   // Run the aspect weaver before the token pre-scan so that the pre-scan
   // sees the post-weave function list (renamed originals + synthesised wrappers).
@@ -193,9 +145,7 @@ pub func compileToMsilWithVersion(
   // on any weave-time error (A0042 / A0043 / A0044) so the user sees the
   // weaver-targeted message rather than a downstream codegen error.
   val weaveRes = Weaver.weaveFileWithDiags(file)
-  if reportAndAbort(weaveRes.diagnostics) {
-    return false
-  }
+  if reportAndAbort(weaveRes.diagnostics) { return false }
   val weavedFile = weaveRes.file
 
   // Lambda-lifting: extract ELambda nodes into synthetic __lambda_<i> IFunc items
@@ -219,16 +169,17 @@ pub func compileToMsilWithVersion(
   // without a manifest behave like the legacy path; callers threading
   // a manifest version (#1364) pass the declared semver verbatim and
   // it ends up in the embedded contract.
-  val resourceVersion = if packageVersion.length == 0 { "0.0.0" } else { packageVersion }
+  val resourceVersion = if packageVersion.length == 0 { "0.0.0" }
+                        else { packageVersion }
   embedLyricContract(cctx.lctx, liftedFile, "Lyric.Contract", resourceVersion)
 
   // Lower the package IR to raw PE bytes using the pre-seeded context.
-  val bytes = lowerMPackageWithCtx(pkg, cctx.lctx, entryToken)
+  val bytes = lowerMPackageWithCtx(pkg, cctx.lctx, entryToken, buildKind)
 
   // Write the PE to disk.
   val result = writeBytes(outputPath, bytes)
   match result {
-    case Ok(_) -> true
+    case Ok(_)  -> true
     case Err(_) -> false
   }
 }
@@ -238,7 +189,7 @@ pub func compileToMsilWithVersion(
 /// is the combined source text for that package — multi-file packages should
 /// already be merged into a single string by the caller.
 pub record ProjectPackagePayload {
-  name: String
+  name:   String
   source: String
 }
 
@@ -274,23 +225,17 @@ record ParsedUserPkg {
 /// a path to bundle multiple independent packages without subprocess-hopping
 /// through the F# emitter.
 pub func compileProjectToMsil(
-  packages: in List[ProjectPackagePayload],
-  assemblyName: in String,
-  outputPath: in String,
-  stdlibSources: in List[String],
+  packages:      in List[ProjectPackagePayload],
+  assemblyName:  in String,
+  outputPath:    in String,
+  stdlibSources: in List[String]
 ): Bool {
   // Backward-compat shim: no feature flags, no restored artifacts.
-  val noFeatures: List[String] = newList()
-  val noArtifacts: List[SynthesisedArtifact] = newList()
-  compileProjectToMsilWithRestored(
-    packages,
-    assemblyName,
-    outputPath,
-    stdlibSources,
-    noFeatures,
-    noFeatures,
-    noArtifacts
-  )
+  val noFeatures: List[String]   = newList()
+  val noArtifacts: List[SynthesisedArtifact]  = newList()
+  compileProjectToMsilWithRestored(packages, assemblyName, outputPath,
+                                   stdlibSources, noFeatures, noFeatures,
+                                   noArtifacts)
 }
 
 /// Like `compileProjectToMsil` but threads `activeFeatures` /
@@ -306,53 +251,38 @@ pub func compileProjectToMsil(
 /// route feature-bearing requests through the in-process bridge instead of
 /// the subprocess fallback.
 pub func compileProjectToMsilWithFeatures(
-  packages: in List[ProjectPackagePayload],
-  assemblyName: in String,
-  outputPath: in String,
-  stdlibSources: in List[String],
-  activeFeatures: in List[String],
-  declaredFeatures: in List[String],
+  packages:         in List[ProjectPackagePayload],
+  assemblyName:     in String,
+  outputPath:       in String,
+  stdlibSources:    in List[String],
+  activeFeatures:   in List[String],
+  declaredFeatures: in List[String]
 ): Bool {
   // Forwarder: no restored artifacts.  Callers that need them use
   // `compileProjectToMsilWithRestored` directly.
   val noArtifacts: List[SynthesisedArtifact] = newList()
-  compileProjectToMsilWithRestored(
-    packages,
-    assemblyName,
-    outputPath,
-    stdlibSources,
-    activeFeatures,
-    declaredFeatures,
-    noArtifacts
-  )
+  compileProjectToMsilWithRestored(packages, assemblyName, outputPath,
+                                   stdlibSources, activeFeatures, declaredFeatures,
+                                   noArtifacts)
 }
 
 /// Like `compileProjectToMsilWithFeatures` but accepts a list of
 /// `Lyric.RestoredPackages.SynthesisedArtifact`s for the consumer's
 /// restored dependencies and seeds them into `CodegenCtx.restoredArtifacts`.
 pub func compileProjectToMsilWithRestored(
-  packages: in List[ProjectPackagePayload],
-  assemblyName: in String,
-  outputPath: in String,
-  stdlibSources: in List[String],
-  activeFeatures: in List[String],
-  declaredFeatures: in List[String],
-  restoredArtifacts: in List[SynthesisedArtifact],
+  packages:          in List[ProjectPackagePayload],
+  assemblyName:      in String,
+  outputPath:        in String,
+  stdlibSources:     in List[String],
+  activeFeatures:    in List[String],
+  declaredFeatures:  in List[String],
+  restoredArtifacts: in List[SynthesisedArtifact]
 ): Bool {
   // Forwarder to the version-threading variant with an empty version
-  // (legacy `0.0.0.0` Assembly row).
-  val noDepTemplatePkgs: List[ProjectPackagePayload] = newList()
+  // (legacy `0.0.0.0` Assembly row) and default "lib" buildKind.
   compileProjectToMsilWithRestoredAndVersion(
-    packages,
-    assemblyName,
-    outputPath,
-    stdlibSources,
-    activeFeatures,
-    declaredFeatures,
-    restoredArtifacts,
-    "",
-    noDepTemplatePkgs
-  )
+    packages, assemblyName, outputPath, stdlibSources,
+    activeFeatures, declaredFeatures, restoredArtifacts, "", "lib")
 }
 
 /// Like `compileProjectToMsilWithRestored` but accepts a `[package].version`
@@ -360,15 +290,15 @@ pub func compileProjectToMsilWithRestored(
 /// `Lyric.Contract.<pkg>` resources.  Empty string → legacy `"0.0.0"`
 /// default (see #1364 for the threading plan).
 pub func compileProjectToMsilWithRestoredAndVersion(
-  packages: in List[ProjectPackagePayload],
-  assemblyName: in String,
-  outputPath: in String,
-  stdlibSources: in List[String],
-  activeFeatures: in List[String],
-  declaredFeatures: in List[String],
+  packages:          in List[ProjectPackagePayload],
+  assemblyName:      in String,
+  outputPath:        in String,
+  stdlibSources:     in List[String],
+  activeFeatures:    in List[String],
+  declaredFeatures:  in List[String],
   restoredArtifacts: in List[SynthesisedArtifact],
-  packageVersion: in String,
-  depTemplatePkgs: in List[ProjectPackagePayload],
+  packageVersion:    in String,
+  buildKind:         in String
 ): Bool {
   if packages.count == 0 {
     return false
@@ -393,29 +323,18 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // `MObject` fall-through that produced `InvalidProgramException`
   // at runtime.
   val stdlibPkgs = collectStdlibPackages(stdlibSources)
-  // Always-in-scope items (stdlib + restored-dep types), grouped by declaring
-  // package for scope-aware resolution.  Per-package import filtering (#1378)
-  // applies only to in-bundle user packages below; stdlib / restored-dep refs
-  // are wired via the codegen-side token tables, kept in sync with this view.
-  val baseImportedPkgs: List[ImportedPackage] = newList()
-  var sbi = 0
-  while sbi < stdlibPkgs.count {
-    baseImportedPkgs.add(
-      ImportedPackage(name = stdlibPkgs[sbi].name, items = stdlibPkgs[sbi].items, imports = stdlibPkgs[sbi].imports)
-    )
-    sbi = sbi + 1
-  }
+  // Pool of "always in scope" items: every stdlib package's items plus
+  // every restored-dep artifact's type items.  Per-package import
+  // filtering (#1378) only applies to in-bundle user packages; stdlib
+  // and restored-dep references are looked up via the codegen-side
+  // `funcTokens` / `recordCtorTokens` tables built from the same
+  // sources, so the typecheck-side flat view here keeps the two halves
+  // of the pipeline in sync.
+  val baseItems: List[Item] = newList()
+  spreadStdlibPackageItems(stdlibPkgs, baseItems)
   var ri0 = 0
   while ri0 < restoredArtifacts.count {
-    val rItems: List[Item] = newList()
-    collectTypeItemsFromFile(restoredArtifacts[ri0].source, rItems)
-    baseImportedPkgs.add(
-      ImportedPackage(
-        name = segmentsToString(restoredArtifacts[ri0].source.packageDecl.path.segments),
-        items = rItems,
-        imports = collectImportNames(restoredArtifacts[ri0].source.imports)
-      )
-    )
+    collectTypeItemsFromFile(restoredArtifacts[ri0].source, baseItems)
     ri0 = ri0 + 1
   }
 
@@ -432,14 +351,10 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   while pi < packages.count {
     val pkg = packages[pi]
     val parseResult = parse(pkg.source)
-    if reportAndAbort(parseResult.diagnostics) {
-      return false
-    }
+    if reportAndAbort(parseResult.diagnostics) { return false }
     val cfgRes = Cfg.applyCfgErasure(activeFeatures, declaredFeatures, parseResult.file)
-    if reportAndAbort(cfgRes.diagnostics) {
-      return false
-    }
-    val file0 = Stubbable.stubbableRewriteFile(Aliases.rewriteFile(cfgRes.file))
+    if reportAndAbort(cfgRes.diagnostics) { return false }
+    val file0 = Aliases.rewriteFile(cfgRes.file)
     parsedPkgs.add(ParsedUserPkg(name = pkg.name, file = file0))
     pi = pi + 1
   }
@@ -449,7 +364,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // Item lists are extracted via `collectTypeItemsFromFile` (matches
   // the historical flat-accumulation semantics: `pub func`s + every
   // type-shaped item).
-  val inBundleItems: Map[String, List[Item]] = newMap()
+  val inBundleItems:   Map[String, List[Item]] = newMap()
   val inBundleImports: Map[String, List[ImportDecl]] = newMap()
   var bi = 0
   while bi < parsedPkgs.count {
@@ -462,12 +377,12 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   }
 
   // Phase 2: typecheck + mode-check + elaborate + derive + mono per
-  // package, using a per-package grouped imports view filtered by the
+  // package, using a per-package `importedItems` view filtered by the
   // package's declared imports.
   //
-  // Build a set of stdlib package names so `perPackageImportedPackages` can
+  // Build a set of stdlib package names so `perPackageImportedItems` can
   // skip adding in-bundle items for packages that are already fully
-  // represented in `baseImportedPkgs`.  Without this guard, a stdlib self-build
+  // represented in `baseItems`.  Without this guard, a stdlib self-build
   // (where `packages` and `stdlibSources` contain the same files) would
   // register every Std.* type twice with distinct TypeIds, corrupting the
   // type-variable resolution for subsequent packages and causing spurious
@@ -484,128 +399,31 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // so cross-assembly generic calls (`mapGet`, `unwrapOr`, …) specialise into
   // the consumer bundle instead of erasing their return to `object` (#1727).
   val stdlibGenFuncs = collectStdlibGenericFuncs(stdlibPkgs)
-  // In-bundle user package generic pub funcs: same treatment so a test package
-  // calling `Validation.toResult(42, [])` specialises `toResult__Int` into its
-  // own class rather than hitting the unresolved-call fallback (#2932).
-  val inBundleGenFuncs = collectInBundleGenericFuncs(parsedPkgs)
-  // Non-generic in-bundle pub funcs: fed to the monomorphizer for type
-  // inference only (never added to the specialisation worklist), so a
-  // cross-package call like `isErr(connectLocal(...))` can resolve
-  // `connectLocal`'s declared return type and specialise the generic
-  // `isErr` for the concrete `Result[StorageBucket, StorageError]` instead of
-  // calling the type-erased generic (whose `isinst Result_Err<object,object>`
-  // never matches the concrete value, so the match falls off and the
-  // scrutinee leaks back as the `Bool` result — #3705).
-  val inBundleNonGenFuncs = collectInBundleNonGenericFuncs(parsedPkgs)
-  // Restored-dependency generic pub funcs: cross-DLL generic calls specialise
-  // into the consumer bundle rather than erasing return type to `object` (#1498).
-  val restoredGenFuncs = collectRestoredGenericFuncs(restoredArtifacts)
-  val allImportedGenFuncs: List[FunctionDecl] = newList()
-  var agfi = 0
-  while agfi < stdlibGenFuncs.count {
-    allImportedGenFuncs.add(stdlibGenFuncs[agfi])
-    agfi = agfi + 1
-  }
-  var agfj = 0
-  while agfj < inBundleGenFuncs.count {
-    allImportedGenFuncs.add(inBundleGenFuncs[agfj])
-    agfj = agfj + 1
-  }
-  var agfk = 0
-  while agfk < restoredGenFuncs.count {
-    allImportedGenFuncs.add(restoredGenFuncs[agfk])
-    agfk = agfk + 1
-  }
-  var agfm = 0
-  while agfm < inBundleNonGenFuncs.count {
-    allImportedGenFuncs.add(inBundleNonGenFuncs[agfm])
-    agfm = agfm + 1
-  }
-  // Interface decls (in-bundle + stdlib + restored), fed to the monomorphizer
-  // for method-call return inference on interface-typed receivers (#3813).
-  val allImportedIfaceDecls: List[InterfaceDecl] = newList()
-  val inBundleIfaces = collectInBundleInterfaceDecls(parsedPkgs)
-  val stdlibIfaces = collectStdlibInterfaceDecls(stdlibPkgs)
-  val restoredIfaces = collectRestoredInterfaceDecls(restoredArtifacts)
-  var aifi = 0
-  while aifi < inBundleIfaces.count {
-    allImportedIfaceDecls.add(inBundleIfaces[aifi])
-    aifi = aifi + 1
-  }
-  var aifj = 0
-  while aifj < stdlibIfaces.count {
-    allImportedIfaceDecls.add(stdlibIfaces[aifj])
-    aifj = aifj + 1
-  }
-  var aifk = 0
-  while aifk < restoredIfaces.count {
-    allImportedIfaceDecls.add(restoredIfaces[aifk])
-    aifk = aifk + 1
-  }
-  // Record decls (in-bundle + stdlib + restored), fed to the monomorphizer for
-  // cross-package field-projection inference (#3813 follow-up).
-  val allImportedRecordDecls: List[RecordDecl] = newList()
-  val inBundleRecs = collectInBundleRecordDecls(parsedPkgs)
-  val stdlibRecs = collectStdlibRecordDecls(stdlibPkgs)
-  val restoredRecs = collectRestoredRecordDecls(restoredArtifacts)
-  var areci = 0
-  while areci < inBundleRecs.count {
-    allImportedRecordDecls.add(inBundleRecs[areci])
-    areci = areci + 1
-  }
-  var arecj = 0
-  while arecj < stdlibRecs.count {
-    allImportedRecordDecls.add(stdlibRecs[arecj])
-    arecj = arecj + 1
-  }
-  var areck = 0
-  while areck < restoredRecs.count {
-    allImportedRecordDecls.add(restoredRecs[areck])
-    areck = areck + 1
-  }
   val perPkgFiles: List[SourceFile] = newList()
-  val perPkgNames: List[String] = newList()
+  val perPkgNames: List[String]     = newList()
   var ti = 0
   while ti < parsedPkgs.count {
     val pp: ParsedUserPkg = parsedPkgs[ti]
-    val importedPkgs = perPackageImportedPackages(
-      baseImportedPkgs,
-      pp.file.imports,
-      inBundleItems,
-      inBundleImports,
-      baseNames
-    )
+    val importedItems = perPackageImportedItems(baseItems, pp.file.imports,
+                                                inBundleItems, inBundleImports,
+                                                baseNames)
 
-    val tcRes = checkWithImportedPackages(pp.file, importedPkgs)
-    if reportAndAbortInPkg(pp.name, tcRes.diagnostics) {
-      return false
-    }
+    val tcRes = checkWithImports(pp.file, importedItems)
+    if reportAndAbort(tcRes.diagnostics) { return false }
 
     val mcRes = checkFile(pp.file)
-    if reportAndAbortInPkg(pp.name, mcRes.diagnostics) {
-      return false
-    }
+    if reportAndAbort(mcRes.diagnostics) { return false }
 
     val elaborated = elaborateFile(pp.file)
 
     // Lower `?` error-propagation (#1475); see the single-file path above.
     val propRes = lowerPropagateFile(elaborated)
-    if reportAndAbortInPkg(pp.name, propRes.diagnostics) {
-      return false
-    }
+    if reportAndAbort(propRes.diagnostics) { return false }
 
-    val importedItems = flattenImportedItems(importedPkgs)
-    val derived = deriveFileWithImports(propRes.file, importedItems)
+    val derived    = deriveFile(propRes.file)
 
-    val monoRes = monoFileWithImportsAndTypeDecls(
-      derived,
-      allImportedGenFuncs,
-      allImportedIfaceDecls,
-      allImportedRecordDecls
-    )
-    if reportAndAbortInPkg(pp.name, monoRes.diagnostics) {
-      return false
-    }
+    val monoRes = monoFileWithImports(derived, stdlibGenFuncs)
+    if reportAndAbort(monoRes.diagnostics) { return false }
 
     perPkgFiles.add(monoRes.file)
     perPkgNames.add(pp.name)
@@ -649,109 +467,23 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // (the F# emitter handles that), but the guard makes the bridge
   // robust to a future refactor that routes stdlib compilation
   // through the in-process path.
-  registerStdlibArtifactTokens(cctx, filterStdlibPkgsByBundle(stdlibPkgs, perPkgNames))
-  seedResultTypeRefs(cctx)
+  registerStdlibArtifactTokens(cctx,
+                                filterStdlibPkgsByBundle(stdlibPkgs, perPkgNames))
   // Seed cross-package symbol tables with the restored artifacts' type
   // surface so the per-package addPackageTokens pre-scan sees restored
   // types as first-class lookups.
   registerRestoredArtifactTokens(cctx)
 
-  // Pre-register all in-bundle user-type names as FQN candidates (seeding both
-  // `typeFqnByName` and `typeFqnCandidates` via `registerTypeFqnCandidate`) so
-  // cross-package type references resolve correctly regardless of package
-  // processing order.  `cmdTestManifest` in cli.l places the test package FIRST
-  // in allPkgs (so its synthesised main() wins the entry-point slot), which means
-  // addPackageTokens for the test package runs before addPackageTokens for the
-  // library packages.  Any specialised function placed in the test package (e.g.
-  // toResult__Int synthesised from Validation.toResult[T]) carries unqualified
-  // type refs (e.g. TRef ["ValidationError"]) whose FQN must resolve via these
-  // maps.  Without this pre-pass the lookup falls back to pkgName + "." + seg,
-  // producing the wrong FQN (e.g. Validation.ValidationTests.ValidationError) and
-  // a "match not exhaustive" panic at run time (#2932; the `typeFqnCandidates`
-  // half of the seeding was added in #3332).
-  //
-  // INVARIANT: first-registered-wins (#2941).  If two in-bundle packages
-  // declare a type with the same unqualified name the package iterated first
-  // owns the short-name mapping; the second package's type is still reachable
-  // via its FQN but not via short-name lookup.  This is intentional: Lyric
-  // source code that is ambiguous (two `Error` types in scope) should use
-  // fully-qualified names, and the monomorphizer already emits FQNs for
-  // specialised copies.  A diagnostic on collision is tracked in #2941.
-  var prtpi = 0
-  while prtpi < perPkgFiles.count {
-    val prtFile = perPkgFiles[prtpi]
-    val prtPkg = perPkgNames[prtpi]
-    var prtii = 0
-    while prtii < prtFile.items.count {
-      // Register the declaring-package FQN as both a short-name mapping
-      // (`typeFqnByName`, first-registered-wins) and an ordered candidate
-      // (`typeFqnCandidates`, accumulated) via `registerTypeFqnCandidate`.
-      // Seeding ONLY `typeFqnByName` (the previous behaviour) left
-      // `resolveTypeFqn` — which walks `typeFqnCandidates` — blind to an
-      // imported in-bundle type when the consumer package is lowered before
-      // the declaring package (the test-package-first ordering).  That made a
-      // `match` on a `Result[T, ImportedUserType]` returned from an imported
-      // generic call mis-qualify the error type to the consumer package
-      // (`Lib.LibTests.VErr` instead of `Lib.VErr`), so the closed-generic
-      // `isinst` never matched and the match panicked "not exhaustive" (#3332).
-      match prtFile.items[prtii].kind {
-        case IRecord(decl) -> registerTypeFqnCandidate(cctx, decl.name, prtPkg + "." + decl.name)
-        case IExposedRec(decl) -> registerTypeFqnCandidate(cctx, decl.name, prtPkg + "." + decl.name)
-        case IUnion(decl) -> registerTypeFqnCandidate(cctx, decl.name, prtPkg + "." + decl.name)
-        case IEnum(decl) -> registerTypeFqnCandidate(cctx, decl.name, prtPkg + "." + decl.name)
-        case IInterface(decl) -> registerTypeFqnCandidate(cctx, decl.name, prtPkg + "." + decl.name)
-        case IOpaque(decl) -> registerTypeFqnCandidate(cctx, decl.name, prtPkg + "." + decl.name)
-        case IDistinctType(decl) -> registerTypeFqnCandidate(cctx, decl.name, prtPkg + "." + decl.name)
-        case _ -> ()
-      }
-      prtii = prtii + 1
-    }
-    prtpi = prtpi + 1
-  }
-
-  // Pre-seed lctx.allProjFqns with all @projectable FQNs from every bundle
-  // package before per-package addPackageTokens calls.  This lets each
-  // per-package addPackageTokens correctly identify cross-package nested
-  // projectable fields (matching what lowerMOpaque checks via lctx.allProjFqns).
-  prescanProjectableFqns(cctx, perPkgFiles, perPkgNames)
-
-  // Collect aspect templates from every package in the bundle before the
-  // weave loop so cross-package `from`-instance aspects (e.g.
-  // `aspect Guard from Lib.Aspects.Validate { matches: ... }`) can
-  // resolve their template body.  Only `pub` aspects with an `around` body
-  // are collected; same-package private aspects are intentionally excluded
-  // (#3414 / D050).  The accumulation is a direct `dest.add` walk — no
-  // Map-iteration primitives needed.
-  val allTemplates: Map[String, AspectDecl] = newMap()
-  var tpi = 0
-  while tpi < perPkgFiles.count {
-    Weaver.collectAspectTemplates(perPkgFiles[tpi].items, perPkgNames[tpi], allTemplates)
-    tpi = tpi + 1
-  }
-  // Also collect templates from path-dependency source packages (#3498 partial fix).
-  // These are pre-compiled dependencies whose source files were passed by the CLI
-  // so cross-package `from`-instance aspects can resolve their template bodies.
-  var dti = 0
-  while dti < depTemplatePkgs.count {
-    val dtPkg = depTemplatePkgs[dti]
-    val dtParseRes = parse(dtPkg.source)
-    Weaver.collectAspectTemplates(dtParseRes.file.items, dtPkg.name, allTemplates)
-    dti = dti + 1
-  }
-
   val liftedFiles: List[SourceFile] = newList()
   var li = 0
   while li < perPkgFiles.count {
-    // Use `Lyric.Weaver.weaveFileWithDiagsAndTemplates` so the todo/06
-    // features (config wiring #683, call prelude #682, `@inline_template`
-    // args.<field> #681) ship through `lyric build` for every package in
-    // the bundle, and cross-package `from`-instance aspects are resolved
-    // against the templates collected above (#3414).  Abort on weave-time
-    // errors (A0042 / A0043 / A0044).
-    val weaveRes = Weaver.weaveFileWithDiagsAndTemplates(perPkgFiles[li], allTemplates)
-    if reportAndAbort(weaveRes.diagnostics) {
-      return false
-    }
+    // Use `Lyric.Weaver.weaveFileWithDiags` so the todo/06 features
+    // (config wiring #683, call prelude #682, `@inline_template`
+    // args.<field> #681) ship through `lyric build` for every
+    // package in the bundle, not just `lyric prove` (#1327).  Abort
+    // on weave-time errors (A0042 / A0043 / A0044).
+    val weaveRes = Weaver.weaveFileWithDiags(perPkgFiles[li])
+    if reportAndAbort(weaveRes.diagnostics) { return false }
     val weaved = weaveRes.file
     val lifted = liftLambdasMsil(weaved)
     addPackageTokens(cctx, lifted, perPkgNames[li])
@@ -761,7 +493,8 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     // `packageVersion` carries the manifest's `[package].version` for
     // the bundle; per-package versioning is out of scope for #1364 and
     // tracked separately.
-    val bundleVer = if packageVersion.length == 0 { "0.0.0" } else { packageVersion }
+    val bundleVer = if packageVersion.length == 0 { "0.0.0" }
+                    else { packageVersion }
     embedLyricContract(cctx.lctx, lifted, "Lyric.Contract." + perPkgNames[li], bundleVer)
     liftedFiles.add(lifted)
     li = li + 1
@@ -782,11 +515,11 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   val entryToken = resolveEntryToken(cctx)
 
   // Phase 6: lower all MPackages into a single PE against the shared lctx.
-  val bytes = lowerMPackagesWithCtx(mpkgs, cctx.lctx, entryToken)
+  val bytes = lowerMPackagesWithCtx(mpkgs, cctx.lctx, entryToken, buildKind)
 
   val result = writeBytes(outputPath, bytes)
   match result {
-    case Ok(_) -> true
+    case Ok(_)  -> true
     case Err(_) -> false
   }
 }
@@ -802,10 +535,10 @@ pub func compileProjectToMsilWithRestoredAndVersion(
 /// Lyric-emitted `ProjectPackagePayload` record from F# — only strings need
 /// to cross the boundary.
 pub func compileProjectToMsilEncoded(
-  specLines: in List[String],
-  assemblyName: in String,
-  outputPath: in String,
-  stdlibSources: in List[String],
+  specLines:     in List[String],
+  assemblyName:  in String,
+  outputPath:    in String,
+  stdlibSources: in List[String]
 ): Bool {
   val packages: List[ProjectPackagePayload] = newList()
   var i = 0
@@ -816,7 +549,7 @@ pub func compileProjectToMsilEncoded(
       return false
     }
     val name = line.substring(0, tabPos)
-    val src = line.substring(tabPos + 1)
+    val src  = line.substring(tabPos + 1)
     packages.add(ProjectPackagePayload(name = name, source = src))
     i = i + 1
   }
@@ -839,12 +572,12 @@ pub func compileProjectToMsilEncoded(
 /// the slice-3 E2E test that demonstrates the in-process bridge produces
 /// linkable artifacts.
 pub func compileProjectToMsilWithRestoredEncoded(
-  specLines: in List[String],
-  assemblyName: in String,
-  outputPath: in String,
-  stdlibSources: in List[String],
+  specLines:        in List[String],
+  assemblyName:     in String,
+  outputPath:       in String,
+  stdlibSources:    in List[String],
   restoredDllPaths: in List[String],
-  packageVersion: in String,
+  packageVersion:   in String
 ): Bool {
   val packages: List[ProjectPackagePayload] = newList()
   var i = 0
@@ -855,7 +588,7 @@ pub func compileProjectToMsilWithRestoredEncoded(
       return false
     }
     val name = line.substring(0, tabPos)
-    val src = line.substring(tabPos + 1)
+    val src  = line.substring(tabPos + 1)
     packages.add(ProjectPackagePayload(name = name, source = src))
     i = i + 1
   }
@@ -886,20 +619,11 @@ pub func compileProjectToMsilWithRestoredEncoded(
     ri = ri + 1
   }
 
-  val activeFeatures: List[String] = newList()
+  val activeFeatures:   List[String] = newList()
   val declaredFeatures: List[String] = newList()
-  val noDepTemplatePkgsEncoded: List[ProjectPackagePayload] = newList()
   compileProjectToMsilWithRestoredAndVersion(
-    packages,
-    assemblyName,
-    outputPath,
-    stdlibSources,
-    activeFeatures,
-    declaredFeatures,
-    restoredArtifacts,
-    packageVersion,
-    noDepTemplatePkgsEncoded
-  )
+    packages, assemblyName, outputPath, stdlibSources,
+    activeFeatures, declaredFeatures, restoredArtifacts, packageVersion, "lib")
 }
 
 // Build the typecheck's per-package `importedItems` list (#1378's
@@ -929,8 +653,8 @@ pub func compileProjectToMsilWithRestoredEncoded(
 // `baseNames` is skipped: its items are already in `baseItems`, and adding
 // them again via the in-bundle closure would register every type twice,
 // allocating a second distinct `TypeId` for each type.  The second
-// TypeId is never used by the codegen (`symTableTryFindOne` scans newest-to-oldest
-// and resolves the last-registered TypeId) but the duplicate `DKUnion`/`DKRecord`/...
+// TypeId is never used by the codegen (first-in-wins in `symTableTryFindOne`
+// returns the first TypeId) but the duplicate `DKUnion`/`DKRecord`/...
 // symbols inflate the symbol table.  More critically, duplicate union-case
 // symbols (`Some`, `None`, `Ok`, `Err`) push extra `DKUnionCase` entries
 // whose `parentId` refers to the *second* (unused) TypeId; when the type
@@ -938,24 +662,17 @@ pub func compileProjectToMsilWithRestoredEncoded(
 // function body it can end up with a stale `TyVar("")` binding instead of
 // the expected `TyPrim(PtInt)`, producing spurious T0033 diagnostics on
 // perfectly valid `var i = 0; while i < n { … }` loops.  (#1435)
-// Grouped analogue of the old flat `perPackageImportedItems`: returns the
-// imported items partitioned by their declaring package, so the scope-aware
-// type checker resolves each package's signatures against its own
-// declarations instead of one flat last-registered-wins table.
-// `baseImportedPkgs` (stdlib + restored deps) are always in scope; the
-// in-bundle import closure rooted at `importList` is appended, one
-// `ImportedPackage` per reachable in-bundle package.
-func perPackageImportedPackages(
-  baseImportedPkgs: in List[ImportedPackage],
-  importList: in List[ImportDecl],
-  inBundleItems: in Map[String, List[Item]],
+func perPackageImportedItems(
+  baseItems:       in List[Item],
+  importList:      in List[ImportDecl],
+  inBundleItems:   in Map[String, List[Item]],
   inBundleImports: in Map[String, List[ImportDecl]],
-  baseNames: in Map[String, Bool],
-): List[ImportedPackage] {
-  val result: List[ImportedPackage] = newList()
+  baseNames:       in Map[String, Bool]
+): List[Item] {
+  val result: List[Item] = newList()
   var bi = 0
-  while bi < baseImportedPkgs.count {
-    result.add(baseImportedPkgs[bi])
+  while bi < baseItems.count {
+    result.add(baseItems[bi])
     bi = bi + 1
   }
   val visited: Map[String, Bool] = newMap()
@@ -963,55 +680,51 @@ func perPackageImportedPackages(
   while ii < importList.count {
     val imp: ImportDecl = importList[ii]
     val depName = segmentsToString(imp.path.segments)
-    addBundleClosurePackages(depName, inBundleItems, inBundleImports, visited, baseNames, result)
+    addBundleClosure(depName, inBundleItems, inBundleImports, visited, baseNames, result)
     ii = ii + 1
   }
   result
 }
 
-// Walk the transitive in-bundle import closure rooted at `pkgName`, appending
-// each reachable in-bundle package as its own `ImportedPackage` to `acc`.
-// Visited packages are tracked to avoid infinite loops on cyclic imports
-// (which the typechecker / module system already rejects, but this helper
-// stays defensive in case a future relaxation lands).  `baseNames` packages
-// are skipped because their items are already in `baseImportedPkgs`.
-func addBundleClosurePackages(
-  pkgName: in String,
-  inBundleItems: in Map[String, List[Item]],
+
+// Walk the transitive in-bundle import closure rooted at `pkgName`,
+// adding every reachable in-bundle package's items to `acc`.  Visited
+// packages are tracked to avoid infinite loops on cyclic imports
+// (which the typechecker / module system already rejects, but this
+// helper stays defensive in case a future relaxation lands).
+// `baseNames` packages are skipped because their items are already in
+// `baseItems` — see the comment on `perPackageImportedItems`.
+func addBundleClosure(
+  pkgName:         in String,
+  inBundleItems:   in Map[String, List[Item]],
   inBundleImports: in Map[String, List[ImportDecl]],
-  visited: in Map[String, Bool],
-  baseNames: in Map[String, Bool],
-  acc: in List[ImportedPackage],
+  visited:         in Map[String, Bool],
+  baseNames:       in Map[String, Bool],
+  acc:             in List[Item]
 ): Unit {
-  if visited.containsKey(pkgName) {
-    return
-  }
-  if baseNames.containsKey(pkgName) {
-    return
-  }
+  if visited.containsKey(pkgName) { return }
+  if baseNames.containsKey(pkgName) { return }
   visited.add(pkgName, true)
-  // Dotted names of this package's own imports: threaded into the
-  // `ImportedPackage` so its signatures resolve through tier 2 (#2282), and
-  // reused below as the recursion frontier.
-  val depNames: List[String] = newList()
+  match mapGet(inBundleItems, pkgName) {
+    case Some(items) -> {
+      var i = 0
+      while i < items.count {
+        acc.add(items[i])
+        i = i + 1
+      }
+    }
+    case None -> return
+  }
   match mapGet(inBundleImports, pkgName) {
     case Some(deps) -> {
-      var di = 0
-      while di < deps.count {
-        depNames.add(segmentsToString(deps[di].path.segments))
-        di = di + 1
+      var ii = 0
+      while ii < deps.count {
+        val sub = segmentsToString(deps[ii].path.segments)
+        addBundleClosure(sub, inBundleItems, inBundleImports, visited, baseNames, acc)
+        ii = ii + 1
       }
     }
     case None -> ()
-  }
-  match mapGet(inBundleItems, pkgName) {
-    case Some(items) -> acc.add(ImportedPackage(name = pkgName, items = items, imports = depNames))
-    case None -> return
-  }
-  var ii = 0
-  while ii < depNames.count {
-    addBundleClosurePackages(depNames[ii], inBundleItems, inBundleImports, visited, baseNames, acc)
-    ii = ii + 1
   }
 }
 
@@ -1025,50 +738,35 @@ func addBundleClosurePackages(
 // (e.g. `toString`) across files; in-bundle packages here are user
 // packages where the same risk applies — we include `pub`-visible
 // functions only, matching the F# emitter's intra-project import policy.
-func collectTypeItemsFromFile(file: in SourceFile, importedItems: in List[Item]): Unit {
+func collectTypeItemsFromFile(
+  file:          in SourceFile,
+  importedItems: in List[Item]
+): Unit {
   var i = 0
   while i < file.items.count {
     val it = file.items[i]
     val isType = match it.kind {
-      case IRecord(_) -> true
-      case IExposedRec(_) -> true
-      case IUnion(_) -> true
-      case IEnum(_) -> true
+      case IRecord(_)       -> true
+      case IExposedRec(_)   -> true
+      case IUnion(_)        -> true
+      case IEnum(_)         -> true
       case IDistinctType(_) -> true
-      case IInterface(_) -> true
-      case ITypeAlias(_) -> true
-      case IOpaque(_) -> true
-      // Mirror `collectStdlibTypeItems`: an in-bundle package's `extern type`
-      // and `protected type` declarations must reach packages that import it,
-      // so a transitively-loaded compiler package (e.g. `Jvm.Classfile`
-      // referencing `Jvm.Kernel`'s `extern type Pool`) resolves the bare type
-      // name instead of aborting with T0010 (#1488 compiler-internal closure).
-      // Safe now that extern types dedup to a canonical `TypeId` (#2394).
-      case IExternType(_) -> true
-      case IProtected(_) -> true
-      // An `impl Iface for Record` conformance must reach packages that import
-      // this one, or a cross-package call passing the concrete `Record` where an
-      // `Iface` parameter is expected fails the interface-subsumption check with
-      // T0043 (e.g. `Cache.get(Cache.inProcess(), …)`).  `registerImplsFromItems`
-      // keys the relation by `TypeId`, and `addSigsFromItems` ignores `IImpl`, so
-      // carrying the declaration across is sound and additive.
-      case IImpl(_) -> true
-      case _ -> false
+      case IInterface(_)    -> true
+      case ITypeAlias(_)    -> true
+      case IOpaque(_)       -> true
+      case _                -> false
     }
     val isPubFunc = match it.kind {
-      case IFunc(decl) -> match decl.visibility { case Some(vis) -> match vis { case VisPub(_) -> true; case _ -> false }; case None -> false }
+      case IFunc(decl) -> match decl.visibility {
+        case Some(vis) -> match vis {
+          case VisPub(_) -> true
+          case _         -> false
+        }
+        case None -> false
+      }
       case _ -> false
     }
-    // Module-level `pub val`s (#2195) — e.g. `Jvm.Classfile`'s `pub val
-    // ACC_PUBLIC: Int = …` access-flag constants — must reach packages that
-    // import them, or a cross-package reference aborts with T0020.
-    val isPubVal = match it.kind {
-      case IVal(_) -> match it.visibility { case Some(vis) -> match vis { case VisPub(_) -> true; case _ -> false }; case None -> false }
-      case _ -> false
-    }
-    if isType or isPubFunc or isPubVal {
-      importedItems.add(it)
-    }
+    if isType or isPubFunc { importedItems.add(it) }
     i = i + 1
   }
 }
@@ -1118,7 +816,10 @@ func collectTypeItemsFromFile(file: in SourceFile, importedItems: in List[Item])
 // every user build until the parser reaches stdlib parity.  Items from
 // a file whose parse failed are dropped so that partial / malformed
 // items don't pollute downstream passes.
-func collectStdlibTypeItems(stdlibSources: in List[String], importedItems: in List[Item]): Unit {
+func collectStdlibTypeItems(
+  stdlibSources: in List[String],
+  importedItems: in List[Item]
+): Unit {
   var si = 0
   while si < stdlibSources.count {
     val stdPr = parse(stdlibSources[si])
@@ -1136,27 +837,20 @@ func collectStdlibTypeItems(stdlibSources: in List[String], importedItems: in Li
       // packages) are handled by `addSigsFromItems`'s first-wins
       // `containsKey` check rather than blowing up `Dictionary.Add`.
       val include = match it.kind {
-        case IRecord(_) -> true
-        case IExposedRec(_) -> true
-        case IUnion(_) -> true
-        case IEnum(_) -> true
+        case IRecord(_)       -> true
+        case IExposedRec(_)   -> true
+        case IUnion(_)        -> true
+        case IEnum(_)         -> true
         case IDistinctType(_) -> true
-        case IInterface(_) -> true
-        case ITypeAlias(_) -> true
-        case IOpaque(_) -> true
-        case IProtected(_) -> true
-        case IExternType(_) -> true
-        case IFunc(_) -> true
-        // Carry `impl Iface for T` so a consumer passing a concrete stdlib type
-        // where an stdlib interface is expected satisfies interface subsumption
-        // (parallels the in-bundle collector; keyed by `TypeId`, ignored by
-        // `addSigsFromItems`).
-        case IImpl(_) -> true
-        case _ -> false
+        case IInterface(_)    -> true
+        case ITypeAlias(_)    -> true
+        case IOpaque(_)       -> true
+        case IProtected(_)    -> true
+        case IExternType(_)   -> true
+        case IFunc(_)         -> true
+        case _                -> false
       }
-      if include {
-        importedItems.add(it)
-      }
+      if include { importedItems.add(it) }
       ii = ii + 1
     }
     si = si + 1
@@ -1171,8 +865,7 @@ func hasParseError(diags: in List[Diagnostic]): Bool {
   while i < diags.count {
     match diags[i].severity {
       case DiagError -> return true
-      case _ -> {
-      }
+      case _         -> {}
     }
     i = i + 1
   }
@@ -1182,6 +875,7 @@ func hasParseError(diags: in List[Diagnostic]): Bool {
 // `StdlibPkg` record is defined in `Msil.Codegen` so the codegen-side
 // `registerStdlibArtifactTokens` can consume it without a circular
 // import.  Imported into this package via `Msil.Codegen`.
+
 // Walk every `stdlibSources` entry, parse it, and group the included
 // items by the source's `package` declaration.  Items are filtered to
 // the same set `collectStdlibTypeItems` accepts (types + `pub func`s
@@ -1191,7 +885,9 @@ func hasParseError(diags: in List[Diagnostic]): Bool {
 // Parse-error files are dropped wholesale (matching the
 // `collectStdlibTypeItems` convention) so partial / malformed items
 // don't pollute the downstream codegen registration.
-pub func collectStdlibPackages(stdlibSources: in List[String]): List[StdlibPkg] {
+pub func collectStdlibPackages(
+  stdlibSources: in List[String]
+): List[StdlibPkg] {
   val pkgs: List[StdlibPkg] = newList()
   var si = 0
   while si < stdlibSources.count {
@@ -1216,25 +912,26 @@ pub func collectStdlibPackages(stdlibSources: in List[String]): List[StdlibPkg] 
       // removes the dead `isPub`-guarded iteration on the codegen
       // side (review #1429).
       val include = match it.kind {
-        case IRecord(_) -> true
-        case IExposedRec(_) -> true
-        case IUnion(_) -> true
-        case IEnum(_) -> true
+        case IRecord(_)       -> true
+        case IExposedRec(_)   -> true
+        case IUnion(_)        -> true
+        case IEnum(_)         -> true
         case IDistinctType(_) -> true
-        case IInterface(_) -> true
-        case ITypeAlias(_) -> true
-        case IOpaque(_) -> true
-        case IProtected(_) -> true
-        case IExternType(_) -> true
-        case IFunc(decl) -> match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
-        case _ -> false
+        case IInterface(_)    -> true
+        case ITypeAlias(_)    -> true
+        case IOpaque(_)       -> true
+        case IProtected(_)    -> true
+        case IExternType(_)   -> true
+        case IFunc(decl)      -> match decl.visibility {
+          case Some(VisPub(_)) -> true
+          case _               -> false
+        }
+        case _                -> false
       }
-      if include {
-        items.add(it)
-      }
+      if include { items.add(it) }
       ii = ii + 1
     }
-    pkgs.add(StdlibPkg(name = pkgName, items = items, imports = collectImportNames(stdPr.file.imports)))
+    pkgs.add(StdlibPkg(name = pkgName, items = items))
     si = si + 1
   }
   pkgs
@@ -1257,7 +954,6 @@ pub func collectStdlibPackages(stdlibSources: in List[String]): List[StdlibPkg] 
 // un-specialised and are emitted directly by codegen's extern path.  Missing
 // a legitimately-specialisable generic here is safe (the call just stays
 // un-specialised, the status quo); including a non-specialisable one is not.
-// Mirrors `collectInBundleGenericFuncs` / `collectRestoredGenericFuncs` — keep filter criteria in sync (#2940).
 pub func collectStdlibGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl] {
   val genFuncs: List[FunctionDecl] = newList()
   var pi = 0
@@ -1267,10 +963,11 @@ pub func collectStdlibGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl]
     while ii < pkg.items.count {
       match pkg.items[ii].kind {
         case IFunc(decl) -> {
-          val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
-          val hasBody = match decl.body { case Some(_) -> true; case None -> false }
-          // Note: no isPub check here (unlike collectInBundleGenericFuncs/collectRestoredGenericFuncs).
-          // All stdlib items are implicitly public; visibility filtering is not needed.
+          val isGeneric = match decl.generics { case Some(_) -> true case None -> false }
+          val hasBlockBody = match decl.body {
+            case Some(fb) -> match fb { case FBBlock(_) -> true case FBExpr(_) -> false }
+            case None     -> false
+          }
           // `mapGet` is a codegen builtin intrinsic (see the `funcName ==
           // "mapGet"` branch in `Msil.Codegen.lowerBuiltinOrStaticCallMsil`),
           // which wraps `Dictionary.get_Item` into `Option[V]` directly.
@@ -1281,245 +978,17 @@ pub func collectStdlibGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl]
           // Bare-name match: only stdlib packages enter `collectStdlibGenericFuncs`,
           // and `mapGet` is unique in `Std.Collections` today.  A future @builtin_intrinsic
           // annotation would let any module mark intrinsics declaratively.
-          if isGeneric and hasBody and not annsBlockSpecialization(decl.annotations) and not (decl.name == "mapGet" and pkg.name == "Std.Collections") {
+          if isGeneric and hasBlockBody
+             and not annsBlockSpecialization(decl.annotations)
+             and not (decl.name == "mapGet" and pkg.name == "Std.Collections") {
             genFuncs.add(decl)
           }
         }
-        case _ -> {
-        }
+        case _ -> {}
       }
       ii = ii + 1
     }
     pi = pi + 1
-  }
-  genFuncs
-}
-
-// Collect every generic `pub func` with a block body from all parsed in-bundle
-// user packages so that cross-package same-bundle generic calls (e.g.
-// `Validation.toResult(42, [])` from a test package calling a generic in the
-// `Validation` package) are specialised into the calling package instead of
-// falling through to the unresolved-call fallback that emits unbalanced IL
-// (causing `InvalidProgramException` at runtime).  Mirrors the logic of
-// `collectStdlibGenericFuncs` but operates on `ParsedUserPkg` entries (#2932).
-func collectInBundleGenericFuncs(parsedPkgs: in List[ParsedUserPkg]): List[FunctionDecl] {
-  val genFuncs: List[FunctionDecl] = newList()
-  var pi = 0
-  while pi < parsedPkgs.count {
-    val file = parsedPkgs[pi].file
-    var ii = 0
-    while ii < file.items.count {
-      match file.items[ii].kind {
-        case IFunc(decl) -> {
-          val isPub = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
-          val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
-          val hasBody = match decl.body { case Some(_) -> true; case None -> false }
-          if isPub and isGeneric and hasBody and not annsBlockSpecialization(decl.annotations) {
-            genFuncs.add(decl)
-          }
-        }
-        case _ -> ()
-      }
-      ii = ii + 1
-    }
-    pi = pi + 1
-  }
-  genFuncs
-}
-
-// Collect non-generic block-bodied pub funcs from all in-bundle parsed
-// packages.  Unlike `collectInBundleGenericFuncs`, these are fed to the
-// monomorphizer purely so it can resolve cross-package call return types
-// during inference (e.g. `isErr(connectLocal(...))` — mono needs
-// `connectLocal`'s declared return type to infer `T=StorageBucket,
-// E=StorageError` and specialise `isErr__StorageBucket__StorageError`,
-// #3705).  Because they are non-generic they only land in the monomorphizer's
-// `funcDecls` map (used for inference), never in `genDecls` (the
-// specialisation worklist), so they are never themselves rewritten.  Externs
-// and body-less signatures are excluded — they are BCL boundary stubs whose
-// return types may not be representable in the Lyric AST type system.
-func collectInBundleNonGenericFuncs(parsedPkgs: in List[ParsedUserPkg]): List[FunctionDecl] {
-  val nonGenFuncs: List[FunctionDecl] = newList()
-  var pi = 0
-  while pi < parsedPkgs.count {
-    val file = parsedPkgs[pi].file
-    var ii = 0
-    while ii < file.items.count {
-      match file.items[ii].kind {
-        case IFunc(decl) -> {
-          val isPub = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
-          val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
-          val hasBlockBody = match decl.body {
-            case Some(fb) -> match fb { case FBBlock(_) -> true; case FBExpr(_) -> false }
-            case None -> false
-          }
-          if isPub and not isGeneric and hasBlockBody and not annsBlockSpecialization(decl.annotations) {
-            nonGenFuncs.add(decl)
-          }
-        }
-        case _ -> ()
-      }
-      ii = ii + 1
-    }
-    pi = pi + 1
-  }
-  nonGenFuncs
-}
-
-// Collect interface decls from all in-bundle parsed packages.  Fed to the
-// monomorphizer so it can infer a method-call return type on an
-// interface-typed receiver (`isOk(bucket.exists(...))` where
-// `bucket: StorageBucket`) and specialise the enclosing generic predicate
-// rather than leaving it type-erased (#3813).  Interfaces only feed
-// inference; they are never specialised.
-func collectInBundleInterfaceDecls(parsedPkgs: in List[ParsedUserPkg]): List[InterfaceDecl] {
-  val ifaces: List[InterfaceDecl] = newList()
-  var pi = 0
-  while pi < parsedPkgs.count {
-    val file = parsedPkgs[pi].file
-    var ii = 0
-    while ii < file.items.count {
-      match file.items[ii].kind {
-        case IInterface(decl) -> ifaces.add(decl)
-        case _ -> ()
-      }
-      ii = ii + 1
-    }
-    pi = pi + 1
-  }
-  ifaces
-}
-
-// Counterpart of `collectInBundleInterfaceDecls` for stdlib packages.
-func collectStdlibInterfaceDecls(pkgs: in List[StdlibPkg]): List[InterfaceDecl] {
-  val ifaces: List[InterfaceDecl] = newList()
-  var pi = 0
-  while pi < pkgs.count {
-    val pkg: StdlibPkg = pkgs[pi]
-    var ii = 0
-    while ii < pkg.items.count {
-      match pkg.items[ii].kind {
-        case IInterface(decl) -> ifaces.add(decl)
-        case _ -> ()
-      }
-      ii = ii + 1
-    }
-    pi = pi + 1
-  }
-  ifaces
-}
-
-// Counterpart of `collectInBundleInterfaceDecls` for restored dependency
-// artifacts (cross-DLL imports), so a consumer importing a published library
-// interface can still infer its method returns.
-func collectRestoredInterfaceDecls(artifacts: in List[SynthesisedArtifact]): List[InterfaceDecl] {
-  val ifaces: List[InterfaceDecl] = newList()
-  var ai = 0
-  while ai < artifacts.count {
-    val file = artifacts[ai].source
-    var ii = 0
-    while ii < file.items.count {
-      match file.items[ii].kind {
-        case IInterface(decl) -> ifaces.add(decl)
-        case _ -> ()
-      }
-      ii = ii + 1
-    }
-    ai = ai + 1
-  }
-  ifaces
-}
-
-// Record decls (plain + exposed) from all in-bundle parsed packages.  Fed to
-// the monomorphizer so a `recv.field` projection where `recv`'s record type is
-// declared in another in-bundle package can be inferred, letting a generic
-// predicate over the field specialise (e.g. `isSome(page.nextContinuationToken)`
-// on an imported `ListResult`, #3813).
-func collectInBundleRecordDecls(parsedPkgs: in List[ParsedUserPkg]): List[RecordDecl] {
-  val recs: List[RecordDecl] = newList()
-  var pi = 0
-  while pi < parsedPkgs.count {
-    val file = parsedPkgs[pi].file
-    var ii = 0
-    while ii < file.items.count {
-      match file.items[ii].kind {
-        case IRecord(decl) -> recs.add(decl)
-        case IExposedRec(decl) -> recs.add(decl)
-        case _ -> ()
-      }
-      ii = ii + 1
-    }
-    pi = pi + 1
-  }
-  recs
-}
-
-// Counterpart of `collectInBundleRecordDecls` for stdlib packages.
-func collectStdlibRecordDecls(pkgs: in List[StdlibPkg]): List[RecordDecl] {
-  val recs: List[RecordDecl] = newList()
-  var pi = 0
-  while pi < pkgs.count {
-    val pkg: StdlibPkg = pkgs[pi]
-    var ii = 0
-    while ii < pkg.items.count {
-      match pkg.items[ii].kind {
-        case IRecord(decl) -> recs.add(decl)
-        case IExposedRec(decl) -> recs.add(decl)
-        case _ -> ()
-      }
-      ii = ii + 1
-    }
-    pi = pi + 1
-  }
-  recs
-}
-
-// Counterpart of `collectInBundleRecordDecls` for restored dependency artifacts.
-func collectRestoredRecordDecls(artifacts: in List[SynthesisedArtifact]): List[RecordDecl] {
-  val recs: List[RecordDecl] = newList()
-  var ai = 0
-  while ai < artifacts.count {
-    val file = artifacts[ai].source
-    var ii = 0
-    while ii < file.items.count {
-      match file.items[ii].kind {
-        case IRecord(decl) -> recs.add(decl)
-        case IExposedRec(decl) -> recs.add(decl)
-        case _ -> ()
-      }
-      ii = ii + 1
-    }
-    ai = ai + 1
-  }
-  recs
-}
-
-// Collect generic pub funcs from all restored dependency SynthesisedArtifacts.
-// Mirrors `collectInBundleGenericFuncs` but operates on the pre-synthesised
-// `source: SourceFile` from each artifact (#1498).  `@externTarget` and
-// `@axiom` funcs are excluded by `annsBlockSpecialization` — they are BCL
-// boundary stubs whose bodies must not be specialised into the consumer bundle.
-func collectRestoredGenericFuncs(artifacts: in List[SynthesisedArtifact]): List[FunctionDecl] {
-  val genFuncs: List[FunctionDecl] = newList()
-  var ai = 0
-  while ai < artifacts.count {
-    val file = artifacts[ai].source
-    var ii = 0
-    while ii < file.items.count {
-      match file.items[ii].kind {
-        case IFunc(decl) -> {
-          val isPub = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
-          val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
-          val hasBody = match decl.body { case Some(_) -> true; case None -> false }
-          if isPub and isGeneric and hasBody and not annsBlockSpecialization(decl.annotations) {
-            genFuncs.add(decl)
-          }
-        }
-        case _ -> ()
-      }
-      ii = ii + 1
-    }
-    ai = ai + 1
   }
   genFuncs
 }
@@ -1536,13 +1005,31 @@ func annsBlockSpecialization(anns: in List[Annotation]): Bool {
     val segs = anns[i].name.segments
     if segs.count == 1 {
       val n = segs[0]
-      if n == "externTarget" or n == "axiom" {
-        return true
-      }
+      if n == "externTarget" or n == "axiom" { return true }
     }
     i = i + 1
   }
   false
+}
+
+// Append every item from every `StdlibPkg` in `pkgs` to `flat`.  Used
+// by the bridge to keep the typecheck-side flat `baseItems` view in
+// sync with the codegen-side per-package map, without re-parsing the
+// stdlib sources a second time.
+pub func spreadStdlibPackageItems(
+  pkgs: in List[StdlibPkg],
+  flat: in List[Item]
+): Unit {
+  var pi = 0
+  while pi < pkgs.count {
+    val pkg: StdlibPkg = pkgs[pi]
+    var ii = 0
+    while ii < pkg.items.count {
+      flat.add(pkg.items[ii])
+      ii = ii + 1
+    }
+    pi = pi + 1
+  }
 }
 
 // Return a new `StdlibPkg` list with any package whose name matches
@@ -1550,7 +1037,10 @@ func annsBlockSpecialization(anns: in List[Annotation]): Bool {
 // `registerStdlibArtifactTokens` from clashing with `addPackageTokens`
 // when the in-bundle build set happens to include the stdlib package
 // itself (e.g. compiling the `Lyric.Stdlib` bundle).
-pub func filterStdlibPkgsByBundle(pkgs: in List[StdlibPkg], bundleNames: in List[String]): List[StdlibPkg] {
+pub func filterStdlibPkgsByBundle(
+  pkgs:        in List[StdlibPkg],
+  bundleNames: in List[String]
+): List[StdlibPkg] {
   val keep: List[StdlibPkg] = newList()
   var i = 0
   while i < pkgs.count {
@@ -1566,9 +1056,7 @@ pub func filterStdlibPkgsByBundle(pkgs: in List[StdlibPkg], bundleNames: in List
 func bundleNameMatches(bundleNames: in List[String], name: in String): Bool {
   var i = 0
   while i < bundleNames.count {
-    if bundleNames[i] == name {
-      return true
-    }
+    if bundleNames[i] == name { return true }
     i = i + 1
   }
   false
@@ -1583,10 +1071,6 @@ func reportAndAbort(diags: in List[Diagnostic]): Bool {
   DiagUtil.diagReportAndAbort(diags)
 }
 
-func reportAndAbortInPkg(pkgName: in String, diags: in List[Diagnostic]): Bool {
-  DiagUtil.diagReportAndAbortInPkg(pkgName, diags)
-}
-
 func reportDiagnostics(diags: in List[Diagnostic]): Unit {
   DiagUtil.diagReport(diags)
 }
@@ -1596,9 +1080,7 @@ func segmentsToString(segments: in List[String]): String {
   var result = ""
   var i = 0
   while i < segments.count {
-    if i > 0 {
-      result = result + "."
-    }
+    if i > 0 { result = result + "." }
     result = result + segments[i]
     i = i + 1
   }
@@ -1620,16 +1102,12 @@ func segmentsToString(segments: in List[String]): String {
 // (#1183 multi-package emission).  `version` is the manifest-declared
 // semver for the package being emitted; ad-hoc compiles without a
 // manifest pass `"0.0.0"`.
-func embedLyricContract(lctx: in LoweringCtx, file: in SourceFile, resourceName: in String, version: in String): Unit {
+func embedLyricContract(lctx: in LoweringCtx, file: in SourceFile,
+                        resourceName: in String, version: in String): Unit {
   val contract = Meta.buildContractFromFile(file, version)
-
-  // Emit contract metadata in v2 format.
-  // Phase 1.2b (v3 format with SHA-256 hashing) is shipped in Lyric.ContractMetaEmit
-  // for the self-hosted compiler path and will be integrated here once the
-  // bootstrap path supports loading self-hosted packages (tracked in #2580).
-  val json = Meta.contractToJson(contract)
+  val json     = Meta.contractToJson(contract)
   val jsonBytes = Encoding.encodeUtf8(json)
-  val jsonLen = jsonBytes.length
+  val jsonLen   = jsonBytes.length
 
   // Resources region layout: per-resource = 4-byte LE length + bytes.
   // `offset` on the ManifestResource row points at the start of this
@@ -1654,17 +1132,11 @@ func embedLyricContract(lctx: in LoweringCtx, file: in SourceFile, resourceName:
   // the row's identity is its position in `lctx.tables.manifestResources`
   // and downstream serialisation reads that list directly.
   val sName = internString(lctx.strings, resourceName)
-  val _row = addManifestResource(
-    lctx.tables,
-    ManifestResourceRow(
-      offset = offset,
-      flags = 1,
-      // Public
-      name = sName,
-      implementation = 0
-    )
-  )
-  // embedded
+  val _row = addManifestResource(lctx.tables, ManifestResourceRow(
+    offset         = offset,
+    flags          = 1,    // Public
+    name           = sName,
+    implementation = 0))   // embedded
 }
 
 // Resolve the bundle-wide entry-point MethodDef token.  Returns 0

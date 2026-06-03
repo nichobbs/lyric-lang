@@ -1,19 +1,18 @@
-//! jvm/self_test_b129.l — Stage B129: lowerAsyncGenerator (lazy VT+SynchronousQueue).
-//!
-//! Validates the bytecode shape that lowerAsyncGenerator emits for a generator
-//! function `doubles(a: int, b: int): int` that yields `a * 2` and `b * 2`:
-//!
-//!   1. Creates a generator class `Doubles$Gen` implementing Iterable+Iterator+Runnable.
-//!      run() executes the body on a virtual thread, communicating each yielded value
-//!      via a SynchronousQueue hand-off; hasNext() calls take() and checks against
-//!      a static _DONE_SENTINEL to detect exhaustion.
-//!   2. Creates a host class `Doubles` with a static kickoff method `doubles(II)`.
-//!   3. Main calls `Doubles.doubles(10, 21)`, iterates via hasNext()/next(),
-//!      and prints each element.
-//!
-//! Java output (java -jar):
-//!   20
-//!   42
+// jvm/self_test_b129.l — Stage B129: lowerAsyncGenerator (eager Iterable+Iterator).
+//
+// Validates the bytecode shape that lowerAsyncGenerator emits for a generator
+// function `doubles(a: int, b: int): int` that yields `a * 2` and `b * 2`:
+//
+//   1. Creates a generator class `Doubles$Gen` implementing Iterable+Iterator
+//      with an eager RunBody that populates an ArrayList.
+//   2. Creates a host class `Doubles` with a static kickoff method `doubles(II)`.
+//   3. Main calls `Doubles.doubles(10, 21)`, iterates via hasNext()/next(),
+//      and prints each element.
+//
+// Java output (java -jar):
+//   20
+//   42
+
 package Jvm.SelfTestB129
 
 import Std.Core
@@ -25,6 +24,7 @@ import Jvm.Lowering
 import Jvm.Driver
 
 // ── Build Doubles$Gen + Doubles classes via lowerAsyncGenerator ───────────────
+
 func makeDoublesClasses(pool: in Pool): List[BuiltClass] {
   val genClass = "Doubles$Gen"
   val hostClass = "Doubles"
@@ -54,11 +54,11 @@ func makeDoublesClasses(pool: in Pool): List[BuiltClass] {
 
   val g = LGenFunc(
     generatorClass = genClass,
-    hostClass = hostClass,
-    methodName = "doubles",
-    elemType = JInt,
-    params = params,
-    bodyInsns = bodyInsns
+    hostClass      = hostClass,
+    methodName     = "doubles",
+    elemType       = JInt,
+    params         = params,
+    bodyInsns      = bodyInsns
   )
   val cfs = lowerAsyncGenerator(g, pool)
 
@@ -76,22 +76,23 @@ func makeDoublesClasses(pool: in Pool): List[BuiltClass] {
 //
 // Calls Doubles.doubles(10, 21), iterates via hasNext()/next(),
 // and prints Integer.intValue() for each element.
+
 func makeMainBytes(pool: in Pool): List[Byte] {
   val asm = newAssembler(pool)
 
-  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val sysOutIdx   = poolFieldref(pool,  "java/lang/System",    "out",      "Ljava/io/PrintStream;")
+  val printlnIdx  = poolMethodref(pool, "java/io/PrintStream", "println",  "(I)V")
 
-  val doublesIdx = poolMethodref(pool, "Doubles", "doubles", "(II)Ljava/lang/Object;")
+  val doublesIdx  = poolMethodref(pool, "Doubles",             "doubles",  "(II)Ljava/lang/Object;")
 
-  val iterableClass = "java/lang/Iterable"
-  val iteratorClass = "java/util/Iterator"
-  val iteratorIdx = poolIfaceMethodref(pool, iterableClass, "iterator", "()Ljava/util/Iterator;")
-  val hasNextIdx = poolIfaceMethodref(pool, iteratorClass, "hasNext", "()Z")
-  val nextIdx = poolIfaceMethodref(pool, iteratorClass, "next", "()Ljava/lang/Object;")
-  val integerClass = poolClass(pool, "java/lang/Integer")
-  val intValueIdx = poolMethodref(pool, "java/lang/Integer", "intValue", "()I")
-  val iterableIdx = poolClass(pool, iterableClass)
+  val iterableClass  = "java/lang/Iterable"
+  val iteratorClass  = "java/util/Iterator"
+  val iteratorIdx    = poolIfaceMethodref(pool, iterableClass, "iterator", "()Ljava/util/Iterator;")
+  val hasNextIdx     = poolIfaceMethodref(pool, iteratorClass, "hasNext",  "()Z")
+  val nextIdx        = poolIfaceMethodref(pool, iteratorClass, "next",     "()Ljava/lang/Object;")
+  val integerClass   = poolClass(pool, "java/lang/Integer")
+  val intValueIdx    = poolMethodref(pool, "java/lang/Integer", "intValue", "()I")
+  val iterableIdx    = poolClass(pool, iterableClass)
   val iteratorClsIdx = poolClass(pool, iteratorClass)
 
   // slot 0 = String[] args
@@ -136,7 +137,8 @@ func makeMainBytes(pool: in Pool): List[Byte] {
   val codeAttr = assembleCode(asm, 3, 4)
   val attrs: List[Attribute] = newList()
   attrs.add(codeAttr)
-  val mainMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "main", "([Ljava/lang/String;)V", attrs)
+  val mainMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "main",
+    "([Ljava/lang/String;)V", attrs)
   val methods: List[MethodInfo] = newList()
   methods.add(mainMethod)
   // V49 to avoid StackMapTable for the loop branch
@@ -145,10 +147,11 @@ func makeMainBytes(pool: in Pool): List[Byte] {
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
+
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b129"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
@@ -162,9 +165,9 @@ func main(): Unit {
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB129",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/gen.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/gen.jar"
   )
 
   if writeJarFromClasses(req, classes) {

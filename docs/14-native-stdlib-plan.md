@@ -93,20 +93,14 @@ The kernel is the floor. Every language has one (Rust's `std` calls
 | Threading / Task scheduler | Lyric uses .NET TPL by D001. The scheduler stays. | ~10 methods |
 | String parsing of `Double` / `Decimal` | Correct float parsing is a research-grade problem (Bellerophon, Eisel-Lemire). Use BCL `Double.TryParse`. | 5 methods |
 
-**Actual kernel size (2026-06):** 317 total extern declarations
-(`@externTarget`, `extern type`, `extern package`) in
-`lyric-stdlib/std/_kernel/*.l`.  The original ≤120 estimate predated
-the full stdlib scope; the stdlib subsequently added `Std.Http.Server`
-(ASP.NET Core), `Std.Char` / `Std.Unicode`,
-`Std.Task` (async-local ambient slot), and testing-mock surfaces — all
-beyond the §3 table's original inventory.  The `KernelBoundaryTests.fs`
-CI ratchet enforces "no unreviewed growth": any addition must update the
-hard ceiling and add a comment explaining why.  Decision F is amended
-below to reflect this state.
+**Target kernel size:** ≤120 extern declarations, all in
+`lyric-stdlib/std/_kernel/*.l`, all `@axiom`-marked, all
+hand-audited at every release. This replaces the ad-hoc shim surface
+of `Lyric.Stdlib/Stdlib.fs` with a structured boundary.
 
-**Non-goal:** "zero externs." Anyone shipping a Lyric
+**Non-goals.** No goal of "zero externs." Anyone shipping a Lyric
 program is implicitly trusting the .NET runtime; pretending otherwise
-is a lie.  The ratchet keeps growth audited, not zero.
+is a lie.
 
 ---
 
@@ -448,7 +442,7 @@ D038 for the umbrella record. Resolutions reproduced inline.
 | **C** | **C1** | "Reasonable" perf budget — §8 "Reasonable target" column (~2-5× BCL). Verifiability and self-hosting are the wins; peak perf is not the differentiator. |
 | **D** | **A (replace)** | Native impl takes the canonical name (`Std.List[T]`); raw BCL access available via `Std.Bcl.List[T]` for users who explicitly want it. Pre-1.0 breakage is acceptable. |
 | **E** | **E1** | Decision log entry D038 added. **Q021** opened in `docs/06-open-questions.md` for G3 specifically; G1/G2/G4 stay tracked in this doc as pure compiler work. |
-| **F** | **317 (amended)** | Original cap was 150; the actual stdlib scope exceeded that estimate. Current ceiling is 317, enforced by the CI ratchet in `bootstrap/tests/Lyric.Emitter.Tests/KernelBoundaryTests.fs` (hard assertion, not informational). Any addition past 317 requires updating both the ratchet ceiling and adding a comment with justification. Path to reduction: pure-Lyric `List[T]` / `HashMap[K,V]` migrations (G1/G2) will reclaim `_kernel/collections_host.l`'s entries; trig, HTTP, JSON, time must remain extern. |
+| **F** | **150** | Hard cap of 150 extern declarations. Treated as a v1.0 release gate. Expansion past 150 requires this doc to be amended. |
 | **G** | **P0 then G3** | Begin P0 immediately (no language changes required). G3 work begins in parallel with P0's last steps so it lands before P1's primitives consume it. |
 
 ### Resolved order of operations

@@ -1,12 +1,13 @@
-//! #1727 (codegen slice): `mapGet(m, key)` now lowers to a real `Option[V]`
-//! (`m.ContainsKey(key) ? Some(value = m[key]) : None`) with the concrete `V`
-//! from the call's context hint, and `Map.remove(key)` calls the real
-//! `Dictionary.Remove` instead of the former pop-only stub.  Together these
-//! closed the `lyric-session` store suite (24/31 -> 31/31): its `get()` is
-//! `Ok(mapGet(data.entries, key))` and `delete()` / `destroy()` mutate via
-//! `.remove(...)`.
-//!
-//! MSIL target only; JVM-target parity is tracked in #1707.
+// #1727 (codegen slice): `mapGet(m, key)` now lowers to a real `Option[V]`
+// (`m.ContainsKey(key) ? Some(value = m[key]) : None`) with the concrete `V`
+// from the call's context hint, and `Map.remove(key)` calls the real
+// `Dictionary.Remove` instead of the former pop-only stub.  Together these
+// closed the `lyric-session` store suite (24/31 -> 31/31): its `get()` is
+// `Ok(mapGet(data.entries, key))` and `delete()` / `destroy()` mutate via
+// `.remove(...)`.
+//
+// MSIL target only; JVM-target parity is tracked in #1707.
+
 @test_module
 package Lyric.MapOptionSelfTest
 
@@ -16,7 +17,7 @@ import Std.Testing
 
 func tag(o: in Option[String]): Int {
   match o {
-    case None -> 0
+    case None    -> 0
     case Some(_) -> 1
   }
 }
@@ -32,14 +33,14 @@ test "mapGet Some round-trips the value" {
   val m: Map[String, String] = newMap()
   m["greeting"] = "hello"
   match mapGet(m, "greeting") {
-    case None -> assertTrue(false, "should be Some")
+    case None    -> assertTrue(false, "should be Some")
     case Some(v) -> assertEqual(v, "hello", "payload preserved")
   }
 }
 
 func tagInt(o: in Option[Int]): Int {
   match o {
-    case None -> -1
+    case None    -> -1
     case Some(n) -> n
   }
 }
@@ -63,17 +64,15 @@ test "Map.remove actually removes the key (mapGet None afterwards)" {
 // The exact lyric-session shape: a record field holding the Map, read inside an
 // impl method, with `mapGet` wrapped in `Ok(...)` (so the context hint for `V`
 // arrives through the `Result`/`Ok` payload), plus a `.remove`-based delete.
-record Store {
-  var entries: Map[String, String]
-}
+
+record Store { var entries: Map[String, String] }
 
 interface KV {
   func get(s: in Store, k: in String): Result[Option[String], String]
   func del(s: in Store, k: in String): Result[Unit, String]
 }
 
-record KVImpl {
-}
+record KVImpl {}
 
 impl KV for KVImpl {
   func get(s: in Store, k: in String): Result[Option[String], String] {
@@ -90,15 +89,21 @@ test "impl get() wraps mapGet in Ok(Option[String]); del() removes" {
   s.entries["a"] = "av"
   val kv: KV = KVImpl()
   match kv.get(s, "a") {
-    case Err(_) -> assertTrue(false, "get should be Ok")
-    case Ok(opt) -> match opt { case None -> assertTrue(false, "a should be present"); case Some(v) -> assertEqual(v, "av", "get a -> av") }
+    case Err(_)  -> assertTrue(false, "get should be Ok")
+    case Ok(opt) -> match opt {
+      case None    -> assertTrue(false, "a should be present")
+      case Some(v) -> assertEqual(v, "av", "get a -> av")
+    }
   }
   match kv.del(s, "a") {
     case Err(_) -> assertTrue(false, "del should be Ok")
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
   }
   match kv.get(s, "a") {
-    case Err(_) -> assertTrue(false, "get should be Ok")
-    case Ok(opt) -> match opt { case None -> assertTrue(true, "a removed -> None"); case Some(_) -> assertTrue(false, "a should be gone after del") }
+    case Err(_)  -> assertTrue(false, "get should be Ok")
+    case Ok(opt) -> match opt {
+      case None    -> assertTrue(true, "a removed -> None")
+      case Some(_) -> assertTrue(false, "a should be gone after del")
+    }
   }
 }

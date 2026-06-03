@@ -1,15 +1,15 @@
-//! std/xml.l — Pure-Lyric XML 1.0 parser.
-//!
-//! Parses a string containing XML and returns a document tree.
-//! No namespace support; namespace-qualified names (e.g. "ns:elem")
-//! are treated as plain names.  Entity references (&amp; &lt; &gt;
-//! &apos; &quot; &#NNN; &#xNNN;) are decoded in text and attribute
-//! values.  DOCTYPE and processing-instruction nodes are consumed but
-//! not represented in the tree.  CDATA sections and comments are
-//! preserved in the tree as CData/Comment nodes.
-//!
-//! Cross-platform: no BCL/JVM externs. Works on both MSIL and JVM
-//! targets without any kernel bridge.
+// std/xml.l — Pure-Lyric XML 1.0 parser.
+//
+// Parses a string containing XML and returns a document tree.
+// No namespace support; namespace-qualified names (e.g. "ns:elem")
+// are treated as plain names.  Entity references (&amp; &lt; &gt;
+// &apos; &quot; &#NNN; &#xNNN;) are decoded in text and attribute
+// values.  DOCTYPE and processing-instruction nodes are consumed but
+// not represented in the tree.  CDATA sections and comments are
+// preserved in the tree as CData/Comment nodes.
+//
+// Cross-platform: no BCL/JVM externs. Works on both MSIL and JVM
+// targets without any kernel bridge.
 @runtime_checked
 package Std.Xml
 
@@ -19,6 +19,7 @@ import Std.String
 import Std.Char
 
 // ── Error type ─────────────────────────────────────────────────────────────────
+
 pub union XmlError {
   case UnexpectedChar(pos: Int, expected: String)
   case UnexpectedEof(pos: Int, expected: String)
@@ -28,16 +29,22 @@ pub union XmlError {
 
 pub func XmlError.message(e: in XmlError): String {
   match e {
-    case UnexpectedChar(pos, expected) -> "unexpected character at position " + toString(pos) + "; expected " + expected
-    case UnexpectedEof(pos, expected) -> "unexpected end of input at position " + toString(pos) + "; expected " + expected
-    case MismatchedTag(pos, opened, closed) -> "mismatched tags at position " + toString(pos) + ": opened <" + opened + ">, closed </" + closed + ">"
-    case InvalidDocument(msg) -> "invalid XML document: " + msg
+    case UnexpectedChar(pos, expected) ->
+      "unexpected character at position " + toString(pos) + "; expected " + expected
+    case UnexpectedEof(pos, expected) ->
+      "unexpected end of input at position " + toString(pos) + "; expected " + expected
+    case MismatchedTag(pos, opened, closed) ->
+      "mismatched tags at position " + toString(pos) +
+      ": opened <" + opened + ">, closed </" + closed + ">"
+    case InvalidDocument(msg) ->
+      "invalid XML document: " + msg
   }
 }
 
 // ── Data model ─────────────────────────────────────────────────────────────────
+
 pub record XmlAttr {
-  name: String
+  name:  String
   value: String
 }
 
@@ -49,17 +56,19 @@ pub union XmlNode {
 }
 
 pub record XmlDoc {
-  version: Option[String]
+  version:  Option[String]
   encoding: Option[String]
-  root: XmlNode
-  // ── Parser state ───────────────────────────────────────────────────────────────
+  root:     XmlNode
 }
+
+// ── Parser state ───────────────────────────────────────────────────────────────
 
 record XmlState {
   src: String
   pos: Int
-  // ── Low-level character utilities ──────────────────────────────────────────────
 }
+
+// ── Low-level character utilities ──────────────────────────────────────────────
 
 func xAtEnd(st: in XmlState): Bool {
   st.pos >= st.src.length
@@ -116,6 +125,7 @@ func xEatStr(st: inout XmlState, s: in String): Bool {
 }
 
 // ── Name parsing ───────────────────────────────────────────────────────────────
+
 func xIsNameStart(c: in Char): Bool {
   isLetter(c) or c == '_' or c == ':'
 }
@@ -125,13 +135,9 @@ func xIsNameContinue(c: in Char): Bool {
 }
 
 func xParseName(st: inout XmlState): Option[String] {
-  if xAtEnd(st) {
-    return None
-  }
+  if xAtEnd(st) { return None }
   val c = st.src[st.pos]
-  if not xIsNameStart(c) {
-    return None
-  }
+  if not xIsNameStart(c) { return None }
   val start = st.pos
   st.pos = st.pos + 1
   while st.pos < st.src.length and xIsNameContinue(st.src[st.pos]) {
@@ -141,6 +147,7 @@ func xParseName(st: inout XmlState): Option[String] {
 }
 
 // ── Entity decoding ────────────────────────────────────────────────────────────
+
 func xDecodeNamedEntity(name: in String): Option[Char] {
   if name == "amp" {
     Some(value = '&')
@@ -250,7 +257,15 @@ func xCollectText(st: inout XmlState, stopChar: in Option[Char]): Result[String,
   var scanning = true
   while scanning and st.pos < st.src.length {
     val c = st.src[st.pos]
-    val isStop = if c == '<' { true } else { match stopChar { case Some(sc) -> c == sc; case None -> false } }
+    val isStop =
+      if c == '<' {
+        true
+      } else {
+        match stopChar {
+          case Some(sc) -> c == sc
+          case None     -> false
+        }
+      }
     if isStop {
       scanning = false
     } else if c == '&' {
@@ -260,9 +275,7 @@ func xCollectText(st: inout XmlState, stopChar: in Option[Char]): Result[String,
           scanning = false
           result = result + "?"
         }
-        case Ok(s) -> {
-          result = result + s
-        }
+        case Ok(s)  -> { result = result + s }
       }
     } else {
       result = result + "" + c
@@ -273,6 +286,7 @@ func xCollectText(st: inout XmlState, stopChar: in Option[Char]): Result[String,
 }
 
 // ── Attribute value parsing ─────────────────────────────────────────────────────
+
 func xParseAttrValue(st: inout XmlState): Result[String, XmlError] {
   if xAtEnd(st) {
     return Err(error = UnexpectedEof(pos = st.pos, expected = "attribute value"))
@@ -284,7 +298,7 @@ func xParseAttrValue(st: inout XmlState): Result[String, XmlError] {
   st.pos = st.pos + 1
   match xCollectText(st, Some(value = quote)) {
     case Err(e) -> Err(error = e)
-    case Ok(v) -> {
+    case Ok(v)  -> {
       if not xEat(st, quote) {
         Err(error = UnexpectedEof(pos = st.pos, expected = "closing quote"))
       } else {
@@ -295,6 +309,7 @@ func xParseAttrValue(st: inout XmlState): Result[String, XmlError] {
 }
 
 // ── Attribute list parsing ──────────────────────────────────────────────────────
+
 func xParseAttrs(st: inout XmlState): Result[List[XmlAttr], XmlError] {
   val attrs: List[XmlAttr] = newList()
   var ok = true
@@ -327,14 +342,11 @@ func xParseAttrs(st: inout XmlState): Result[List[XmlAttr], XmlError] {
       }
     }
   }
-  if ok {
-    Ok(value = attrs)
-  } else {
-    Err(error = err)
-  }
+  if ok { Ok(value = attrs) } else { Err(error = err) }
 }
 
 // ── Comment parsing: <!-- … --> ────────────────────────────────────────────────
+
 func xParseComment(st: inout XmlState): Result[XmlNode, XmlError] {
   // Caller has already consumed "<!--"
   val start = st.pos
@@ -350,12 +362,12 @@ func xParseComment(st: inout XmlState): Result[XmlNode, XmlError] {
     return Err(error = UnexpectedEof(pos = st.pos, expected = "'-->' to close comment"))
   }
   val content = st.src.substring(start, st.pos - start)
-  st.pos = st.pos + 3
-  // consume "-->"
+  st.pos = st.pos + 3  // consume "-->"
   Ok(value = Comment(value = content))
 }
 
 // ── CDATA parsing: <![CDATA[ … ]]> ────────────────────────────────────────────
+
 func xParseCData(st: inout XmlState): Result[XmlNode, XmlError] {
   // Caller has consumed "<![CDATA["
   val start = st.pos
@@ -371,12 +383,12 @@ func xParseCData(st: inout XmlState): Result[XmlNode, XmlError] {
     return Err(error = UnexpectedEof(pos = st.pos, expected = "']]>' to close CDATA"))
   }
   val content = st.src.substring(start, st.pos - start)
-  st.pos = st.pos + 3
-  // consume "]]>"
+  st.pos = st.pos + 3  // consume "]]>"
   Ok(value = CData(value = content))
 }
 
 // ── Processing instruction / DOCTYPE: skip ──────────────────────────────────────
+
 func xSkipToGt(st: inout XmlState): Result[Unit, XmlError] {
   var depth = 0
   var found = false
@@ -397,11 +409,7 @@ func xSkipToGt(st: inout XmlState): Result[Unit, XmlError] {
       st.pos = st.pos + 1
     }
   }
-  if found {
-    Ok(value = ())
-  } else {
-    Err(error = UnexpectedEof(pos = st.pos, expected = "'>'"))
-  }
+  if found { Ok(value = ()) } else { Err(error = UnexpectedEof(pos = st.pos, expected = "'>'")) }
 }
 
 func xSkipPI(st: inout XmlState): Result[Unit, XmlError] {
@@ -415,14 +423,11 @@ func xSkipPI(st: inout XmlState): Result[Unit, XmlError] {
       st.pos = st.pos + 1
     }
   }
-  if found {
-    Ok(value = ())
-  } else {
-    Err(error = UnexpectedEof(pos = st.pos, expected = "'?>'"))
-  }
+  if found { Ok(value = ()) } else { Err(error = UnexpectedEof(pos = st.pos, expected = "'?>'")) }
 }
 
 // ── XML declaration: <?xml version="…" encoding="…"?> ─────────────────────────
+
 // Returns (version, encoding). Caller has consumed "<?xml".
 func xParseXmlDecl(st: inout XmlState): Result[Unit, XmlError] {
   xSkipWs(st)
@@ -440,19 +445,14 @@ func xParseXmlDecl(st: inout XmlState): Result[Unit, XmlError] {
         if xEat(st, '=') {
           xSkipWs(st)
           match xParseAttrValue(st) {
-            case Err(e) -> {
-              ok = false
-              err = e
-            }
-            case Ok(_) -> xSkipWs(st)
+            case Err(e) -> { ok = false; err = e }
+            case Ok(_)  -> xSkipWs(st)
           }
         }
       }
     }
   }
-  if not ok {
-    return Err(error = err)
-  }
+  if not ok { return Err(error = err) }
   if not xEatStr(st, "?>") {
     return Err(error = UnexpectedEof(pos = st.pos, expected = "'?>' to close XML declaration"))
   }
@@ -460,6 +460,7 @@ func xParseXmlDecl(st: inout XmlState): Result[Unit, XmlError] {
 }
 
 // ── Element parsing (forward-declared via mutual recursion workaround) ──────────
+
 // Parse element content: text nodes, child elements, comments, CDATA.
 // Stops when it sees the closing tag </expectedTag> and consumes it.
 func xParseContent(st: inout XmlState, expectedTag: in String, depth: in Int): Result[List[XmlNode], XmlError] {
@@ -496,57 +497,39 @@ func xParseContent(st: inout XmlState, expectedTag: in String, depth: in Int): R
       } else if xStartsWith(st, "<!--") {
         st.pos = st.pos + 4
         match xParseComment(st) {
-          case Err(e) -> {
-            ok = false
-            err = e
-          }
-          case Ok(n) -> children.add(n)
+          case Err(e) -> { ok = false; err = e }
+          case Ok(n)  -> children.add(n)
         }
       } else if xStartsWith(st, "<![CDATA[") {
         st.pos = st.pos + 9
         match xParseCData(st) {
-          case Err(e) -> {
-            ok = false
-            err = e
-          }
-          case Ok(n) -> children.add(n)
+          case Err(e) -> { ok = false; err = e }
+          case Ok(n)  -> children.add(n)
         }
       } else if xStartsWith(st, "<?") {
         st.pos = st.pos + 2
         match xSkipPI(st) {
-          case Err(e) -> {
-            ok = false
-            err = e
-          }
-          case Ok(_) -> ()
+          case Err(e) -> { ok = false; err = e }
+          case Ok(_)  -> ()
         }
       } else if xStartsWith(st, "<!") {
         st.pos = st.pos + 1
         match xSkipToGt(st) {
-          case Err(e) -> {
-            ok = false
-            err = e
-          }
-          case Ok(_) -> ()
+          case Err(e) -> { ok = false; err = e }
+          case Ok(_)  -> ()
         }
       } else {
         // Child element
         match xParseElement(st, depth + 1) {
-          case Err(e) -> {
-            ok = false
-            err = e
-          }
-          case Ok(n) -> children.add(n)
+          case Err(e) -> { ok = false; err = e }
+          case Ok(n)  -> children.add(n)
         }
       }
     } else {
       // Text content
       match xCollectText(st, None) {
-        case Err(e) -> {
-          ok = false
-          err = e
-        }
-        case Ok(t) -> {
+        case Err(e) -> { ok = false; err = e }
+        case Ok(t)  -> {
           if t.length > 0 {
             children.add(Text(value = t))
           }
@@ -558,11 +541,7 @@ func xParseContent(st: inout XmlState, expectedTag: in String, depth: in Int): R
     ok = false
     err = UnexpectedEof(pos = st.pos, expected = "</" + expectedTag + ">")
   }
-  if ok {
-    Ok(value = children)
-  } else {
-    Err(error = err)
-  }
+  if ok { Ok(value = children) } else { Err(error = err) }
 }
 
 // Parse one element starting at '<'. Consumes through the matching closing tag.
@@ -599,6 +578,7 @@ func xParseElement(st: inout XmlState, depth: in Int): Result[XmlNode, XmlError]
 }
 
 // ── Prolog: skip misc nodes before the root element ───────────────────────────
+
 func xParseProlog(st: inout XmlState): Result[Unit, XmlError] {
   var ok = true
   var err: XmlError = InvalidDocument(message = "")
@@ -610,59 +590,43 @@ func xParseProlog(st: inout XmlState): Result[Unit, XmlError] {
     } else if xStartsWith(st, "<?xml") {
       st.pos = st.pos + 5
       match xParseXmlDecl(st) {
-        case Err(e) -> {
-          ok = false
-          err = e
-        }
-        case Ok(_) -> ()
+        case Err(e) -> { ok = false; err = e }
+        case Ok(_)  -> ()
       }
     } else if xStartsWith(st, "<!--") {
       st.pos = st.pos + 4
       match xParseComment(st) {
-        case Err(e) -> {
-          ok = false
-          err = e
-        }
-        case Ok(_) -> ()
+        case Err(e) -> { ok = false; err = e }
+        case Ok(_)  -> ()
       }
     } else if xStartsWith(st, "<?") {
       st.pos = st.pos + 2
       match xSkipPI(st) {
-        case Err(e) -> {
-          ok = false
-          err = e
-        }
-        case Ok(_) -> ()
+        case Err(e) -> { ok = false; err = e }
+        case Ok(_)  -> ()
       }
     } else if xStartsWith(st, "<!") {
       st.pos = st.pos + 1
       match xSkipToGt(st) {
-        case Err(e) -> {
-          ok = false
-          err = e
-        }
-        case Ok(_) -> ()
+        case Err(e) -> { ok = false; err = e }
+        case Ok(_)  -> ()
       }
     } else {
-      done = true
-      // hit the root element
+      done = true  // hit the root element
     }
   }
-  if ok {
-    Ok(value = ())
-  } else {
-    Err(error = err)
-  }
+  if ok { Ok(value = ()) } else { Err(error = err) }
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────────
+
 /// Parse an XML string, returning the document tree or an error.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func parseXml(src: in String): Result[XmlDoc, XmlError] {
   var st = XmlState(src = src, pos = 0)
   match xParseProlog(st) {
     case Err(e) -> Err(error = e)
-    case Ok(_) -> {
+    case Ok(_)  -> {
       xSkipWs(st)
       if xAtEnd(st) {
         return Err(error = InvalidDocument(message = "document is empty"))
@@ -676,24 +640,24 @@ pub func parseXml(src: in String): Result[XmlDoc, XmlError] {
 }
 
 /// Return the root element of the document.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func documentRoot(doc: in XmlDoc): XmlNode {
   doc.root
 }
 
 /// Return the tag name of an element node, or None if not an element.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func elementTag(node: in XmlNode): Option[String] {
   match node {
     case Element(tag, attrs, children) -> Some(value = tag)
-    case Text(_) -> None
+    case Text(_)    -> None
     case Comment(_) -> None
-    case CData(_) -> None
+    case CData(_)   -> None
   }
 }
 
 /// Return the attribute list of an element, or an empty list.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func elementAttrs(node: in XmlNode): List[XmlAttr] {
   match node {
     case Element(tag, attrs, children) -> attrs
@@ -705,7 +669,7 @@ pub func elementAttrs(node: in XmlNode): List[XmlAttr] {
 }
 
 /// Return the child nodes of an element, or an empty list.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func elementChildren(node: in XmlNode): List[XmlNode] {
   match node {
     case Element(tag, attrs, children) -> children
@@ -717,7 +681,7 @@ pub func elementChildren(node: in XmlNode): List[XmlNode] {
 }
 
 /// Return the value of a named attribute, or None if absent.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func getAttribute(node: in XmlNode, name: in String): Option[String] {
   val attrs = elementAttrs(node)
   var i = 0
@@ -732,11 +696,11 @@ pub func getAttribute(node: in XmlNode, name: in String): Option[String] {
 }
 
 /// Collect all text content within a node, depth-first.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func textContent(node: in XmlNode): String {
   match node {
-    case Text(v) -> v
-    case CData(v) -> v
+    case Text(v)    -> v
+    case CData(v)   -> v
     case Comment(_) -> ""
     case Element(tag, attrs, children) -> {
       var result = ""
@@ -751,12 +715,12 @@ pub func textContent(node: in XmlNode): String {
 }
 
 /// Find the first descendant element (depth-first) with the given tag.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func findFirst(node: in XmlNode, tag: in String): Option[XmlNode] {
   match node {
-    case Text(_) -> None
+    case Text(_)    -> None
     case Comment(_) -> None
-    case CData(_) -> None
+    case CData(_)   -> None
     case Element(t, attrs, children) -> {
       if t == tag {
         Some(value = node)
@@ -774,7 +738,7 @@ pub func findFirst(node: in XmlNode, tag: in String): Option[XmlNode] {
 }
 
 /// Collect all descendant elements (depth-first) with the given tag.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func findAll(node: in XmlNode, tag: in String): List[XmlNode] {
   val result: List[XmlNode] = newList()
   xCollectAll(node, tag, result)
@@ -783,13 +747,11 @@ pub func findAll(node: in XmlNode, tag: in String): List[XmlNode] {
 
 func xCollectAll(node: in XmlNode, tag: in String, acc: in List[XmlNode]): Unit {
   match node {
-    case Text(_) -> ()
+    case Text(_)    -> ()
     case Comment(_) -> ()
-    case CData(_) -> ()
+    case CData(_)   -> ()
     case Element(t, attrs, children) -> {
-      if t == tag {
-        acc.add(node)
-      }
+      if t == tag { acc.add(node) }
       var i = 0
       while i < children.count {
         xCollectAll(children[i], tag, acc)

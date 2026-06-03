@@ -43,13 +43,6 @@ where       while        wire         with         xor
 yield
 ```
 
-`result` is a **contextual** keyword (D086): its only language-level meaning is the
-return-value reference inside an `ensures:` clause (§9). The compiler also accepts
-`result` as an ordinary local binding / parameter name, and a `result` binding in
-scope shadows the contract reference — a read resolves to the binding before the
-return-value keyword. Outside an `ensures:` clause (where no such binding exists) a
-bare `result` has no meaning.
-
 Annotation-style keywords (always preceded by `@`):
 
 ```
@@ -112,7 +105,7 @@ r"C:\path\to\file"
 r#"contains "quotes""#         // hash delimiters for embedded quotes
 ```
 
-**Character literals**: `'a'`, `'\n'`, `'\u{20AC}'`. Single UTF-16 code unit (BMP scalar, U+0000–U+FFFF excluding the surrogate range U+D800–U+DFFF). Non-BMP code points require a string literal; use `"\u{1F600}"` to embed emoji.
+**Character literals**: `'a'`, `'\n'`, `'\u{1F600}'`. Single Unicode scalar value.
 
 **Boolean literals**: `true`, `false`.
 
@@ -148,7 +141,7 @@ Whitespace is not significant beyond token separation. Statements are terminated
 | `Nat` | non-negative Long | `0 ..= 2^63 - 1` |
 | `Float` | 32-bit IEEE 754 | per IEEE 754-2019 |
 | `Double` | 64-bit IEEE 754 | per IEEE 754-2019 |
-| `Char` | UTF-16 code unit (BMP scalar) | U+0000..U+FFFF excl. U+D800..U+DFFF |
+| `Char` | Unicode scalar | per Unicode 15+ |
 | `String` | immutable UTF-8 | unbounded |
 | `Unit` | unit type | single value `()` |
 | `Never` | bottom type | uninhabited |
@@ -174,7 +167,7 @@ val age: Age = Age.tryFrom(human.years)?
 val total: Int = age.toInt() + 5
 ```
 
-Range-violating values cause a runtime check failure on construction (`tryFrom` returns `Result`; `from` throws `System.ArgumentOutOfRangeException` on .NET). JVM bounds-checking is not yet implemented (tracked in #2997). Inside a `@proof_required` module, the prover discharges the range obligation statically; runtime checks are elided when proof succeeds.
+Range-violating values cause a runtime check failure on construction (`tryFrom` returns `Result`; `from` panics). Inside a `@proof_required` module, the prover discharges the range obligation statically; runtime checks are elided when proof succeeds.
 
 Range syntax:
 - `a ..= b` — closed range, both endpoints included
@@ -199,8 +192,6 @@ type UserId = Long             // distinct nominal type
 type OrderId = Long            // also distinct from UserId
 ```
 
-A type alias is fully transparent: `alias Distance = Long` introduces no new type, and `alias` may re-export a type from another module (`alias Random = Std.RandomHost.Random`) so callers need only import the re-exporting module. Alias targets are resolved transitively through chains (`alias B = Foo; alias C = B`); a cyclic alias chain (`alias A = B` with `alias B = A`) does not denote a type and is rejected at compile time (**T0017**).
-
 `UserId + OrderId` is a compile error. `UserId.toLong()` and `Long.toUserId(x)` (where the latter exists only if explicitly declared) are the conversion paths. Distinct types from underlying primitives may declare which arithmetic operations are inherited:
 
 ```
@@ -208,7 +199,7 @@ type Cents = Long range 0 ..= 1_000_000_000_00 derives Add, Sub, Compare
 type UserId = Long derives Compare, Hash    // no arithmetic on user IDs
 ```
 
-Available derives: `Add`, `Sub`, `Mul`, `Div`, `Mod`, `Compare`, `Ord`, `Hash`, `Equals`, `Default`. `Ord` synthesises a total ordering (`compare(self, other): Int` returning negative/zero/positive); valid on records, unions, enums, and distinct types. Numeric distinct types with `Add`/`Sub` permit operations only with values of the *same* type. `derives Default` is rejected when the underlying primitive's default value falls outside the declared range. The closed marker set is fixed by D034; see `docs/03-decision-log.md`.
+Available derives: `Add`, `Sub`, `Mul`, `Div`, `Mod`, `Compare`, `Hash`, `Equals`, `Default`. Numeric distinct types with `Add`/`Sub` permit operations only with values of the *same* type. `derives Default` is rejected when the underlying primitive's default value falls outside the declared range. The closed marker set is fixed by D034; see `docs/03-decision-log.md`.
 
 ### 2.4 Records
 
@@ -235,10 +226,6 @@ val p2 = p.copy(x = 3.0)        // non-destructive update
 
 All fields must be named at construction. Positional construction is rejected by the parser.
 
-Constructor calls must use an unqualified type name — `Point(x = 1.0, y = 2.0)`, not `Pkg.Point(x = 1.0, y = 2.0)`. A qualified path is not recognised as a constructor call; use `import` to bring the type name into scope.
-
-Every type reference in a declaration position is validated when the package is checked: record and exposed-record fields, union case fields, interface member signatures, opaque and protected type fields, member function signatures, `alias` targets, and module-level `val`/`const` annotations. A name that resolves to no type in scope is a compile error at the declaration (**T0010** for an unknown simple name, **T0014** for an unknown qualified path, **T0013** when the name resolves to a non-type) — it never degrades silently to a host `Object`.
-
 **Mutable record fields (`var`):** A field may be prefixed with `var` to signal that it is intended to be mutated by the record's owning code:
 
 ```
@@ -248,7 +235,7 @@ record Counter {
 }
 ```
 
-The `var` prefix is accepted by the parser. The self-hosted parser (`lyric-compiler/lyric/parser/`) consumes the keyword but does not yet carry a mutability flag in `FieldDecl` — the resulting AST node is identical to a non-`var` field. Full AST tracking and mutability enforcement (preventing external reassignment, restricting write sites to the owning package) are tracked as T6+ type-checker work; the emitter currently treats `var` and non-`var` fields identically at the IL/bytecode level. The syntax is intentionally similar to local `var` declarations so that the intention is clear in code review.
+The `var` prefix is accepted by the parser. Both the self-hosted parser (`lyric-compiler/lyric/parser/`) and the stage-0 F# bootstrap parser consume the keyword but do not yet carry a mutability flag in `FieldDecl` — the resulting AST node is identical to a non-`var` field. Full AST tracking and mutability enforcement (preventing external reassignment, restricting write sites to the owning package) are tracked as T6+ type-checker work; the emitter currently treats `var` and non-`var` fields identically at the IL/bytecode level. The syntax is intentionally similar to local `var` declarations so that the intention is clear in code review.
 
 ### 2.5 Unions (sum types)
 
@@ -265,7 +252,7 @@ union Result[T, E] {
 }
 ```
 
-Pattern matching is exhaustive. The compiler refuses to compile a `match` that doesn't cover all cases or include a wildcard (**T0016**); a guarded arm (`case … if …`) does not count toward coverage because its guard may fail. For union and enum scrutinees every case must be matched (or a `_`/binding catch-all supplied); a `Bool` match must cover both `true` and `false`; a match on an unbounded scalar (`Int`, `String`, `Char`, …) requires a `_` arm:
+Pattern matching is exhaustive. The compiler refuses to compile a `match` that doesn't cover all cases or include a wildcard:
 
 ```
 val area = match shape {
@@ -319,7 +306,7 @@ opaque type Account {
 An `opaque` declaration in the type's package specifies its existence; the body is only visible inside the same package. Outside the package:
 
 - Clients can declare values of the type, pass them around, store them.
-- Clients cannot read fields, construct values directly, or pattern-match on representation. The type checker enforces this: cross-package direct construction is a compile error (**T0100**), and cross-package pattern-matching of the representation (a record or constructor pattern) is a compile error (**T0102**). Binding or wildcard match arms remain legal — the value is opaque but usable.
+- Clients cannot read fields, construct values directly, or pattern-match on representation.
 - Reflection cannot inspect the type's fields. The compiler emits the type with sealed metadata: no public properties, no exposed constructor, fields marked invisible to .NET reflection (uses `[CompilerGenerated]` + sealed attribute scheme — see `docs/09-msil-emission.md` §7.2).
 - The proof system can reason about the type's invariants because they're declared in the spec.
 
@@ -397,9 +384,7 @@ func sum[T](xs: slice[T]): T
 }
 ```
 
-Constraints may be user-defined interfaces or built-in trait-like markers. The closed set of built-in markers is `Equals`, `Compare`, `Hash`, `Default`, `Copyable`, `Add`, `Sub`, `Mul`, `Div`, `Mod` (see decision log D034). All but `Copyable` are also valid in `derives` clauses; `Copyable` is structural — it asserts the type lowers to a CLR value type. An unrecognised constraint name in a `where` clause (e.g. a typo) produces a **T0111** warning — the constraint is treated as satisfied at compile time, but the warning surfaces likely typos without breaking code that references cross-package interfaces not yet visible.
-
-Type arguments in instantiations (e.g. `Box[Int]`) must be type expressions. Writing a value expression where a type argument is expected is a compile error (**T0109**). Generic record and union constructors infer their type arguments from the supplied field values when every type parameter appears in at least one field (named arguments may be given in any order); `Pair(first = 1, second = "x")` types as `Pair[Int, String]` with no annotation. When one or more type parameters cannot be inferred — a phantom parameter that appears in no field, or an uninferable argument shape — the constructor call is a compile error (**T0110**) naming the unresolved parameter(s); supply explicit type arguments (`Tagged[Int, Meters](value = 1)`) to resolve it. A missing required field is reported as a missing-field error (**T0105**), not T0110.
+Constraints may be user-defined interfaces or built-in trait-like markers. The closed set of built-in markers is `Equals`, `Compare`, `Hash`, `Default`, `Copyable`, `Add`, `Sub`, `Mul`, `Div`, `Mod` (see decision log D034). All but `Copyable` are also valid in `derives` clauses; `Copyable` is structural — it asserts the type lowers to a CLR value type.
 
 Value generics:
 
@@ -469,8 +454,6 @@ Three visibility tiers are recognised:
 | (unmarked) | Hidden | Hidden | Visible |
 
 By default, declarations are package-private (visible only within the same package). The `pub` keyword exposes a declaration as part of the package's external contract; the `internal` keyword (Phase 5 §M5.1 stage 2c addition) exposes it across packages within the same project but hides it from external consumers.
-
-Visibility is enforced at use sites: referencing a package-private declaration (no modifier) from another package is a compile error (**T0097**). `pub` and `internal` declarations are both referenceable across packages within a project; the cross-*project* hiding of `internal` is enforced by the publish/restore layer, which only includes `pub` declarations in a package's external contract. Extern types / extern packages (FFI host-binding declarations, e.g. the `List`/`Map` aliases) are not subject to these tiers — their cross-package use is governed by the kernel-boundary convention.
 
 ```
 pub type AccountId = Long range 0 ..= MAX_ACCOUNT_ID
@@ -546,7 +529,6 @@ Lyric adopts the **Swift operator precedence table** as its base, with the follo
 - Bitwise operators are not symbolic — use `.and()`, `.or()`, `.xor()`, `.shl()`, `.shr()` methods on integer types. This sidesteps the C-family precedence trap with `&` and `==`.
   - `.shl(n: Int)` — logical left shift by `n` bits.  Equivalent to multiplication by `2^n`; high bits are discarded.
   - `.shr(n: Int)` — **arithmetic** right shift on signed integer types (`Byte`, `Int`, `Long`).  Sign bit is replicated into the vacated high bits, so negative inputs stay negative (`-1.shr(1) == -1`).  Unsigned types (`UInt`, `ULong`) get **logical** right shift (zero-extended).  This matches the .NET runtime's distinction between `>>` on `int` (arithmetic) and `int.UnsignedRightShift` / `>>>` introduced in .NET 7.  Protobuf zigzag encoders rely on this signed/unsigned split — see lyric-proto #361 for the RFC vector tests that pin the behaviour.
-- **Numeric / character conversions are explicit** — Lyric performs no implicit numeric widening or narrowing.  The numeric and character primitives `Byte`, `Int`, `Long`, `Double`, and `Char` carry the conversion methods `.toByte()`, `.toInt()`, `.toLong()`, `.toChar()`, and `.toDouble()`, each yielding the named target type.  Widening (`Int.toLong()`, `Int.toDouble()`) is lossless; narrowing (`Long.toInt()`, `Double.toInt()`) truncates toward zero, and `.toByte()` reduces modulo 256 to the **unsigned** `0..255` range (`Byte` is unsigned).  These are the surface form for mixing widths — e.g. summing a `slice[Byte]` element into an `Int` accumulator is `acc + b.toInt()`, never `acc + b`.  (Conversions on the unsigned integers `UInt`/`ULong`/`Nat` and `.toFloat()` are reserved pending backend support for those representations; calling a conversion method on `String`/`Bool`/`Unit` is a `T0103` error.)
 - Chained comparisons follow **Rust's rule**: `a < b < c` is a parse error, not `(a < b) < c`. Comparison operators do not associate.
 - The ternary `?:` operator does not exist. Use `if expr then a else b`.
 - The `?` operator (error propagation) has its own precedence level immediately above postfix.
@@ -588,37 +570,16 @@ Patterns:
 - Tuple patterns: `(a, b)`
 - Record patterns: `Point { x, y }`, `Point { x = 0.0, y }` (destructure with literal match on `x`)
 - Range patterns: `0 ..= 9`
-- Const patterns: `@NAME` — compares the scrutinee against the value of a compile-time `val` or `const` named `NAME`. The `@` prefix disambiguates from a binding pattern (`case x ->` always binds a new variable; `case @X ->` compares against the existing constant `X`). The referenced name must resolve to a `val` initialized with a literal, or a `const` declaration. Diagnostic T0069 is raised when the val is not compile-time constant, T0068 when the type does not match the scrutinee, T0071 when the const is generic, and T0072 when the name is not a val or const.
 - Guard clauses: `case ... where condition`
 
 Exhaustiveness is enforced. The compiler tracks variant coverage and rejects incomplete matches without `case _`.
 
 ### 4.3 Control flow
 
-`if`/`else` is an expression whose type is the **unified type of its branches**
-— both arms must have compatible types (a mismatch is a compile error). A
-branch that diverges (`return`/`throw`/`break`/`continue`/`panic`) has the bottom
-type and does not constrain the other arm, so `if c { x } else { return d }` is
-typed by its `then` branch. An `if` *without* an `else` produces no value on the
-false path and so has type `Unit`.
+`if`/`else` is an expression:
 ```
 val x = if cond then a else b
 ```
-
-A brace-terminated `if` or `match` written in **statement position** (not as the
-right-hand side of a binding or another expression) is a *complete statement*: a
-binary operator after the closing `}` (whether on the same line or the next)
-begins a **new** statement rather than continuing the block expression. So
-```
-if cond { return x }
--1                      // a separate statement — the fall-through value
-```
-is two statements, not `(if cond { return x }) - 1`. In value position the `if`
-is an ordinary operand, so `val y = if c { a } else { b } + 1` parses as
-`(if …) + 1` — wrap the block expression in parentheses if you need it as an
-operator's left operand at statement position. (This mirrors Rust's
-"expression-with-block" rule and resolves the `}`-then-leading-operator
-ambiguity.)
 
 `while` and `for` are statements:
 ```
@@ -628,13 +589,6 @@ for x in collection { ... }
 
 for i in 0 ..< 10 { ... }
 ```
-
-The `for` binding must be an **irrefutable** pattern — a name, `_`, or a tuple
-of those (parentheses allowed). A refutable pattern (a constructor pattern such
-as `Some(v)`, a record pattern, a literal, or a range) is a compile error
-(**T0112**), because a `for` loop has no failure path for a non-matching
-element. Destructure refutable shapes with a `match` inside the loop body
-instead.
 
 `do ... while` does not exist. Use `while true { ... if cond { break } }`.
 
@@ -672,20 +626,6 @@ let z: Int = expensive()    // lazy, evaluated on first use
 `val` is the default; mutability requires explicit `var`. Lazy bindings (`let`) are thread-safe — the standard library uses .NET's `Lazy<T>` semantics.
 
 Type annotations are optional when inference can resolve the type. Function parameter types and return types are mandatory; `pub` declaration types are mandatory.
-
-**Immutability of `val` and `in` bindings is reference-level, not deep.**  A `val`
-binding or an `in` function parameter prevents *rebinding* — you cannot write
-`x = newValue` — but it does not make the *referenced object* immutable.  If `items`
-is a `val` or `in List[T]`, `items.add(x)` is a valid call because `add` mutates
-the heap-allocated list object, not the binding itself.  This is standard
-reference-immutability: the pointer is frozen, the data is not.
-
-This is a common source of confusion with `in List[T]` parameters: callers may
-expect the list to be read-only, but the callee can still append, remove, or clear
-it.  If you need a read-only view of a collection, accept `in slice[T]` (slices do
-not expose mutation methods) or copy on entry.  For the full mode rules see §5.2.
-Attempting to rebind any immutable binding — a `val`, `let`, or `in` parameter
-(e.g. `param = otherList`) — is a compile error (**T0087**).
 
 ### 4.5 Error propagation
 
@@ -727,26 +667,11 @@ async func loadUser(id: UserId): User? {
 
 Parameters carry one of three modes: `in`, `out`, or `inout`. Omitting the keyword defaults to `in`, the read-only mode used by ~all parameters; `out` and `inout` must be written explicitly when wanted.
 
-A parameter may carry leading annotations, written before the parameter name:
-
-```
-@post("/users")
-func handleCreateUser(@body req: in CreateUserRequest, authToken: String): Result[String, ApiError]
-```
-
-The language itself attaches no semantics to parameter annotations; they are
-metadata consumed by libraries and source generators. For example, lyric-web
-reads `@body` to choose which parameter receives the deserialised request body
-(falling back to the last non-path, non-query parameter when no `@body` is
-present).
-
 ### 5.2 Parameter modes
 
 - `in`: parameter is read-only inside the function. **Default mode** when no keyword is given. The compiler may pass by value or by reference; the function cannot mutate.
-- `out`: parameter must be assigned before the function returns. Used for output parameters; the caller passes an uninitialized binding. Equivalent to C# `out`. The type checker rejects an `out` parameter that is never assigned in the body (**T0086**); full all-paths definite-assignment (catching assignment on some but not all paths) is a planned refinement.
+- `out`: parameter must be assigned exactly once before the function returns. Used for output parameters; the caller passes an uninitialized binding. Equivalent to C# `out`.
 - `inout`: parameter is read/write. Caller passes a mutable binding; function may read and modify. Equivalent to C# `ref`.
-
-At a call site, an argument bound to a **value-type** `out`/`inout` parameter must be a writable l-value — a `var` local, an `out`/`inout` binding, or a mutable field access (`obj.field`, where the field is reachable for assignment) (**T0085**). A literal, a call result, or an immutable (`val`/`let`/`in`) binding is rejected, because the callee writes a value back into the argument. Reference-type by-ref parameters (records, `String`, slices) are mutated in place through the reference, so this requirement does not apply to them.
 
 ```
 func divmod(n: Int, d: Int, q: out Int, r: out Int) {
@@ -765,7 +690,7 @@ Mode rules:
 - `out` parameters must be definitely assigned on every control-flow path before return.
 - `inout` parameters must be passed mutable bindings; immutable values cannot be passed.
 - Async functions cannot have `out` or `inout` parameters that are non-record value types crossing await points (the value would be aliased across awaits — see `docs/09-msil-emission.md` §11.4).
-- `in` prohibits **rebinding** the parameter (the name cannot be assigned a new value inside the function body) but does not prevent mutation through a mutable container type. A parameter declared `in` may call mutating methods such as `list.add(x)` on a `List[T]` value — the reference itself is immutable, not the heap object it points to. Direct reassignment (`param = ...`) of an `in` parameter — like reassigning a `val`/`let` — is a compile error (**T0087**), enforced by the type checker for all packages (not only proof-required code). It fires only on direct assignment, not on mutating method calls. (The §5.2 draft originally numbered this rule `V0001`; that code is owned by the proof-import mode-checker rule, so the type-checker-enforced rule uses T0087.)
+- `in` prohibits **rebinding** the parameter (the name cannot be assigned a new value inside the function body) but does not prevent mutation through a mutable container type. A parameter declared `in` may call mutating methods such as `list.add(x)` on a `List[T]` value — the reference itself is immutable, not the heap object it points to. The mode-checker diagnostic V0001 ("cannot assign to `in` parameter") fires only on direct assignment (`param = ...`), not on method calls on `in` parameters.
 
 ### 5.3 Return values
 
@@ -789,8 +714,6 @@ val doubled = numbers.map { x -> x * 2 }
 ```
 
 Closures capture values by reference for `var` bindings, by value for `val` bindings (this matters across thread boundaries; capturing `var` across an `async` boundary requires explicit `mut` synchronization — see `docs/09-msil-emission.md` §11.5).
-
-A lambda whose body diverges (every path panics, throws, or returns out of the enclosing function) types as `() -> Never`. Because `Never` is the bottom type, such a function value satisfies a function-typed parameter with **any** declared return type, provided the parameter lists match — `assertPanics("boom", { -> panic("x") })` passes a `() -> Never` lambda where `() -> Unit` is expected. The parameter types themselves are matched invariantly (the call ABI must agree).
 
 ## 6. Contracts
 
@@ -845,8 +768,8 @@ Internal mutations may temporarily violate the invariant; the invariant is check
 Contract expressions are pure: no side effects, no I/O, no mutation. They may use:
 - Standard arithmetic and comparison operators
 - Calls to functions explicitly marked `@pure`
-- `forall` and `exists` over finite ranges or collections (decidable fragment for proof; in `@runtime_checked` modules these are approximated as `true` — a sound over-approximation that does not verify the quantified property at runtime)
-- `old(expr)` in `ensures` clauses — captures the value of `expr` at function entry; the elaborator inserts a `let __old_N = expr` snapshot before any `requires` assertions
+- `forall` and `exists` over finite ranges or collections (decidable fragment for proof; runtime checks just iterate)
+- `old(expr)` in `ensures` clauses
 - `result` in `ensures` clauses
 - `implies` (`a implies b` ≡ `not a or b`)
 
@@ -924,9 +847,9 @@ The compiler selects one of two lowering strategies based on the body's content:
 
 **Eager-producer** (body has `yield` but no `await`): the generator body runs to completion synchronously when the caller first calls `GetAsyncEnumerator`, buffering all yielded values in a `List<T>` that `MoveNextAsync` serves one at a time. Correct for generator comprehensions and producer pipelines.
 
-*Constraints for eager-producer generators:* (a) The generator class is single-use per instance — calling `GetAsyncEnumerator` on the same instance concurrently (e.g. passing the same `IAsyncEnumerable<T>` to two nested `for` loops) is unsupported and produces undefined behaviour. The `for x in f(args)` desugaring creates a fresh instance on each call to `f`, so well-formed Lyric code is unaffected. (b) The eager-producer strategy buffers *all* yielded values before the first `MoveNextAsync` returns; generators with an unbounded yield sequence will consume unbounded memory and hang the process at the `for` site. Use `await` inside the body to force the async-iterator strategy when infinite or very-large sequences are needed.
+*Bootstrap constraints for eager-producer generators:* (a) The generator class is single-use per instance — calling `GetAsyncEnumerator` on the same instance concurrently (e.g. passing the same `IAsyncEnumerable<T>` to two nested `for` loops) is unsupported and produces undefined behaviour. The `for x in f(args)` desugaring creates a fresh instance on each call to `f`, so well-formed Lyric code is unaffected. (b) The eager-producer strategy buffers *all* yielded values before the first `MoveNextAsync` returns; generators with an unbounded yield sequence will consume unbounded memory and hang the process at the `for` site. Use `await` inside the body to force the async-iterator strategy when infinite or very-large sequences are needed.
 
-**Async-iterator** (body has both `yield` and `await`): **not yet implemented** (tracked in issue #1490). The compiler synthesises a combined `IAsyncStateMachine` + `IAsyncEnumerable<T>` class per the design in D-progress-261 (§14.6.2 of `docs/09-msil-emission.md`), but the self-hosted MSIL backend does not yet lower this form. A function body containing both `yield` and `await` is currently a compile error. Use the eager-producer strategy (`yield` only) or a plain `async func` (`await` only) until this form lands.
+**Async-iterator** (body has both `yield` and `await`): the compiler synthesises a combined `IAsyncStateMachine` + `IAsyncEnumerable<T>` class. Each `MoveNextAsync` call creates a `TaskCompletionSource<bool>`, drives the state machine one step, and returns a `ValueTask<bool>` backed by the TCS. A `yield` stores the value, signals the TCS with `true`, and suspends; an `await` uses the standard Phase-B `AwaitUnsafeOnCompleted` protocol; end-of-body signals the TCS with `false` (exhausted). Any local variable live across a yield or await boundary is promoted to a field on the class so its value survives cross-`MoveNextAsync` gaps. (D-progress-261, §14.6.2 of `docs/09-msil-emission.md`.)
 
 *Note on `@hot` interaction:* if a generator function is also annotated `@hot`, `IsGenerator` takes priority and `@hot` is silently ignored — the synthesised class uses `AsyncTaskMethodBuilder`, not `AsyncValueTaskMethodBuilder`. Combining `@hot` with `yield` produces a `T0096` warning at compile time.
 
@@ -1023,12 +946,6 @@ A `Bug` raised in:
 
 `try`/`catch` exists for catching `Bug`s when absolutely needed (top-level handlers, test runners, robustness boundaries). Catching `Bug`s in normal application code is a smell; the compiler emits a warning.
 
-In value position, `try { ... } catch ... { ... }` is an expression: every
-handler must produce a type compatible with the `try` body's type, or the
-program is rejected at compile time (**T0067**). Diverging handlers (a body
-of type `Never` — e.g. a re-`throw` or `panic`) are exempt, as are
-statement-position `try` blocks whose value is discarded (`Unit`).
-
 ### 8.3 Result and panics
 
 ```
@@ -1062,7 +979,6 @@ Sub-packages live in subdirectories: `account/` is package `Account`, `account/i
 
 ### 9.2 Imports
 
-**Lyric package imports:**
 ```
 import Money.{Amount, Cents}
 import Time.Instant
@@ -1072,23 +988,13 @@ import std.collections as Coll      // alias
 
 Wildcard imports (`import Money.*`) are not permitted. Every imported name is explicit.
 
-**External type imports:**
-```
-import extern System.Net.Http.{HttpClient, HttpRequestMessage as ReqMsg}
-import extern java.lang.{Math as JMath}
-import extern System.DateTime
-```
-
-`import extern` imports types from external (host runtime) packages. The FQN specifies the host namespace; imported names can optionally be listed within a selector group `{ ... }` or imported directly as a single FQN (e.g. `import extern System.DateTime`). Type binding and resolution are fully supported. External imports are scoped to the importing package and do not re-export by default.
-
 ### 9.3 Re-exports
 
 ```
 pub use Money.Amount        // re-exports Amount as part of this package's contract
-pub use extern Docker.DotNet.{DockerClient}  // re-exports external type (D105 Q47-004)
 ```
 
-Re-exports surface a name from a dependency (Lyric or external) as if declared in the current package. Useful for facade packages. External re-exports make the external type part of the public API surface; consumers depend on the host runtime's availability.
+Re-exports surface a name from a dependency as if declared in the current package. Useful for facade packages.
 
 ## 10. Wire / Dependency Injection
 
@@ -1256,88 +1162,44 @@ pub func Integer_parseInt(s: in String): Int
 pub func stringLength(s: in String): Int
 ```
 
-> **Warning — silent miscompile risk.**  The `PascalCase_` heuristic (known
-> internally as `isStaticExternByName`) is applied at code-generation time with
-> **no diagnostic** when the name does not match the actual dispatch kind.  A
-> hand-written extern whose Lyric name starts with a PascalCase segment and
-> underscore but targets an *instance* method will silently emit `invokestatic`,
-> crashing at JVM link time or producing wrong results at runtime.  Conversely, an
-> extern targeting a *static* method whose name does not follow the convention will
-> emit `invokevirtual` and fail at runtime.  **Always annotate new externs with
-> `@externStatic` or `@externInstance` explicitly** — do not rely on the naming
-> convention.  A `kind` field on `@externTarget` is the planned long-term
-> replacement for this heuristic; track progress in #370.
+### 11.4 Auto-FFI extern types
 
-**Unresolvable extern types.**  On `--target dotnet` an `@externTarget`
-whose CLR type cannot be resolved to a known reference assembly
-(anything outside the `System.*` BCL surface and the `Lyric.*` internal
-host) fails the build with a clear diagnostic naming the unresolvable
-type, rather than silently mis-binding to `System.Runtime` and throwing
-`MissingMethodException` at runtime.  Restricting `@externTarget`
-targets to types that exist in a reference assembly the emitter can
-resolve is the stdlib author's responsibility; the compiler simply
-refuses to emit a binding it cannot verify.  On `--target jvm`, when the JDK
-jmods directory is found, an unresolvable Java class name is also a compile-time
-diagnostic; when the jmods directory is absent (no JDK found), the auto-FFI
-falls back to the legacy object-typed binding and a `NoClassDefFoundError` at
-class-load time is possible.
+`extern type Name = "CLR.Type"` binds a Lyric name to a host type so that
+`Name.method(args)` calls a static method on it without a hand-written
+`@externTarget` wrapper:
 
-### 11.4 Auto-FFI and import extern
-
-External types can be imported directly using the `import extern` syntax. This is the preferred mechanism for interacting with host runtime APIs (such as the .NET BCL or Java JDK) as it unifies package imports and external imports under one cohesive model.
-
-```lyric
-import extern System.{ Math as SystemMath }
-import extern System.Text.{ StringBuilder }
+```
+extern type Math = "System.Math"
 
 func clamp(n: in Int): Int {
-  SystemMath.Min(SystemMath.Max(n, 0), 100)   // resolves System.Math.Max/Min(int, int)
-}
-
-func makeMessage(name: in String): String {
-  val sb = StringBuilder.new(64)              // constructor shorthand (.new)
-  sb.Append("Hello, ")
-  sb.Append(name)
-  return sb.ToString()
+  Math.Min(Math.Max(n, 0), 100)   // resolves System.Math.Max/Min(int, int)
 }
 ```
 
-Alternatively, `extern type Name = "CLR.Type"` can be used to bind a Lyric name to a host type within the package, though `import extern` is preferred.
+On `--target dotnet` the self-hosted MSIL emitter resolves the call's overload
+from real .NET reference-assembly **metadata** at compile time (it parses the
+reference pack's CLI metadata directly — see `docs/42-extern-metadata-resolution.md`),
+locating the type's owning assembly from a metadata-derived index and selecting
+the method whose parameter types match the argument types, then emitting the
+correctly-typed call and return.  Supported today: static methods whose
+parameter and return types are primitives, `String`, or `object` and match the
+arguments, plus widening numeric coercion (an `Int`/`Long` argument binds a
+`(long)`/`(double)` overload via `conv`), `object` parameters (the argument is
+boxed), and **value-type and class (reference-type)** parameters and returns
+(e.g. `System.TimeSpan`, `System.Type` — matched and emitted by their
+fully-qualified name).  **Instance methods** on a class-typed extern receiver
+also resolve and dispatch via `callvirt` (e.g.
+`Type.GetType("System.Int32").ToString()`).  Calls that need narrowing, a
+`float` parameter, or an instance method on a *value-type* receiver fall back to
+requiring an explicit `@externTarget` wrapper.  An unresolved auto-FFI call is a
+compile-time diagnostic (it is never silently mis-bound).
 
-On `--target dotnet` the self-hosted MSIL emitter resolves calls and overloads from real .NET reference-assembly **metadata** at compile time (it parses the reference pack's CLI metadata directly — see `docs/42-extern-metadata-resolution.md`), locating the type's owning assembly from a metadata-derived index and selecting the method whose parameter types match the argument types, then emitting the correctly-typed call and return.
-
-Supported features:
-- **Static methods**: primitive, `String`, or `object` parameters and returns. Includes widening numeric coercion (e.g. `Int`/`Long` argument binds a `(long)`/`(double)` overload), and `object` boxing.
-- **Instance methods**: resolves and dispatches via `callvirt` (e.g., `Type.GetType("System.Int32").ToString()`).
-- **Constructors**: via the `.new(args)` constructor shorthand, which emits `newobj` with the resolved constructor signature (e.g., `StringBuilder.new(64)` → `newobj System.Text.StringBuilder..ctor(int32)`). Value-type constructors fall back to requiring an explicit `@externTarget` wrapper.
-- **Value-types and classes**: matched and emitted by their fully-qualified names.
-
-Unresolved calls, narrowing coercions, or instance methods on a value-type receiver fall back to requiring an explicit `@externTarget` wrapper. All unresolved auto-FFI calls produce a compile-time diagnostic.
-
-**JVM target.** The self-hosted JVM emitter resolves `import extern` and `extern type` method calls from real JDK **`.jmod` metadata** at compile time (epic #1622, shipped in the `Jvm.AutoFfi` / `Jvm.ZipReader` / `Jvm.ClassReader` / `Jvm.Deflate` stack under `lyric-compiler/jvm/`). It reads the `.class` entry straight out of `java.base.jmod` (a ZIP behind a 4-byte JMOD magic header) at compile time, parses the constant pool and method table, scores overloads, and emits the correctly-typed bytecode:
-
-- **`invokestatic`** for static methods (e.g. `JMath.abs(-7)` → `invokestatic`).
-- **`invokevirtual`** for instance methods on a JDK reference receiver (e.g. calling `.intValue()` on the `Integer` returned by `JInteger.valueOf(42)`).
-- **`new` + `invokespecial <init>`** for constructors via the `.new(args)` shorthand (e.g. `JStringBuilder.new("hello")` → `new java/lang/StringBuilder; dup; ldc "hello"; invokespecial java/lang/StringBuilder.<init>(Ljava/lang/String;)V`).
-
-The same overload-scoring rules as dotnet apply (exact match → numeric widening); an unresolved call when the JDK is present is a compile-time error. When `JAVA_HOME` is unset and no JDK is found on the standard search paths, the emitter silently falls back to the legacy object-typed binding (no JDK required at compile time for that mode, but resolution may fail at JVM link time).
-
-**Maven / non-JDK classes.** To resolve methods on third-party library classes, set the `LYRIC_FFI_JARS` environment variable to a colon-separated (Unix) or semicolon-separated (Windows) list of JAR file paths. The emitter scans these JARs after the JDK jmods, using the standard JAR entry path (`"com/example/Foo.class"`, without the `"classes/"` JMOD prefix):
-
-```
-export LYRIC_FFI_JARS=$(mvn -q dependency:build-classpath \
-  -DincludeTypes=jar -Dmdep.outputFile=/dev/stdout 2>/dev/null)
-```
-
-```lyric
-import extern com.example.{ Foo as JFoo }
-
-func useExternalClass(): Unit {
-  JFoo.someStaticMethod(42)        // resolved from JAR at compile time
-  val obj = JFoo.new("hello")      // constructor via .new(args) shorthand
-  obj.someInstanceMethod()         // invokevirtual via instance auto-FFI
-}
-```
+**JVM target.**  Metadata-based auto-FFI resolution is currently
+`--target dotnet`-only.  On `--target jvm` there is no auto-resolution: a host
+method must be bound with an explicit `@externTarget` wrapper (using the
+static/instance convention in §11.3).  JVM parity for `extern type` method
+calls is tracked in issue #1708 (epic #1622, "MSIL + JVM parity tracked
+separately").
 
 ### 11.5 AOT compatibility
 
@@ -1391,77 +1253,23 @@ method-syntax form.
 
 ### 13.1 Compiler
 
-`lyric build` — compiles a project to a framework-dependent `.dll` (the fast inner loop). After a successful build the compiler prints elapsed time: `built foo.dll in 342ms` for a single-package build, or `built foo.dll (3 package(s), 1204ms)` for a project build. The default output name and artifacts are **target-aware**: `--target dotnet` (the default) writes `<source-stem>.dll` alongside a `<source-stem>.runtimeconfig.json` for `dotnet exec`, while `--target jvm` writes a self-contained runnable `<source-stem>.jar` (run with `java -jar`) and emits **no** `runtimeconfig.json` (a .NET-only artifact). An explicit `-o <output>` is honoured verbatim for either target. `lyric build --release <source.l>` produces a **self-contained Native AOT binary** (no managed runtime required at the deployment target): the compiler builds the managed DLL, generates a host project that references it plus the stdlib bundle, and runs `dotnet publish -p:PublishAot=true`, surfacing ILC trim/AOT warnings. `--rid <rid>` overrides the host runtime identifier (default: auto-detected). The native binary is written to the source stem (no extension) unless `-o` overrides it.
-
-`--release` is supported for both **single-file** and **project-mode** (multi-package `lyric.toml`) programs on the **.NET** target. In project mode the entry package — the one whose source declares a zero-argument `func main()` — is auto-detected across all `[project.packages]` entries; exactly one package must declare `func main()` (zero or multiple entries are a hard error). Local path dependencies declared in `[dependencies]` are automatically collected as AOT linker references. The JVM target (GraalVM `native-image`, designed behind the same `ReleaseTarget` seam) is not yet implemented and fails loud rather than silently producing a managed artifact (#1975).
-
-`lyric run [<source.l>] [--target dotnet|jvm]` — compiles and immediately executes, mirroring `lyric build` then running the produced artifact. `--target dotnet` (the default) builds the `.dll` and runs it via `dotnet exec`; `--target jvm` builds the self-contained `.jar` and runs it via `java -jar`. On `--target dotnet`, arguments after `--` are forwarded verbatim to the program and the program's exit code becomes `lyric run`'s exit code. On `--target jvm` this works for a no-argument `main` whose output goes to stdout; a `main(slice[String])` that takes arguments currently hits a JVM `VerifyError`, and the `Int` return is not yet propagated to the process exit code (both tracked in #3303). With no source file, `lyric run` discovers the nearest `lyric.toml` and runs the project's entry artifact; `--target` applies to the project build. Intermediate artifacts are written under `.lyric-run/`.
-
-**Project-aware defaults.** Running `lyric` with no command builds the current
-project: it discovers the nearest `lyric.toml` by walking up from the working
-directory and runs `lyric build` against it. All eight dev-loop commands —
-`build`, `run`, `fmt`, `lint`, `prove`, `doc`, `test`, and `bench` — do the
-same discovery when given no source file or `--manifest`, so they work from
-any subdirectory of a project. Each command also accepts `--manifest <lyric.toml>`
-to override discovery with an explicit path. Outside a project (no `lyric.toml`
-in the directory tree) bare `lyric` prints help and exits non-zero.
-`lyric --help` (also `-h`, `help`) prints the grouped command list and exits 0;
-an unrecognised command prints a "did you mean …?" suggestion when a close
-match exists.
-
-**Scaffolding.** `lyric init [<dir>] [--name <Name>] [--lib] [--force]` scaffolds
-a new package in `<dir>` (default the current directory, created if absent): a
-`lyric.toml` with `[package]`, `[project]`, and an empty `[dependencies]` table;
-`src/main.l` (a `func main(): Int` hello-world) or `src/lib.l` with `--lib`; and
-a `.gitignore`. The package name is derived from the directory basename — with a
-lowercase leading letter capitalised to the `UpperCamelCase` convention — unless
-`--name` overrides it; a candidate that is not a valid identifier is rejected
-with a message suggesting `--name`. An existing `lyric.toml` is not overwritten
-without `--force`; a pre-existing `.gitignore` is left untouched.
-
-**Auto-restore on build.** A project-mode `lyric build` automatically resolves
-dependencies (the equivalent of `lyric restore`) when the manifest declares any
-`[dependencies]` and `lyric.lock` is missing or out of sync with the declared
-set (a dependency absent from the lock, or a registry dependency whose locked
-version differs). A clean checkout — or a just-edited dependency set — therefore
-builds without a manual `lyric restore`. Pass `--no-restore` to skip this and
-build against the lock as-is. Auto-restore tracks the `[dependencies]` table
-only; changes to `[nuget]`/`[maven]` entries are not detected, so run
-`lyric restore` explicitly after editing those.
-
-**Watch mode.** `lyric run --watch <source.l>` and `lyric build [--watch]` run the
-action once, then watch the relevant source files and re-run on every change
-until interrupted (Ctrl-C). `run --watch` watches the source file; project
-`build --watch` watches the manifest and every `[project.packages]` source;
-single-file `build --watch` watches the source. Change detection fingerprints
-each file's contents (no reliance on filesystem timestamps); the poll interval
-is fixed. The watch loop runs in the CLI process (always the .NET host).
+`lyric build` — compiles a project. `lyric build --release` for release mode. `lyric build --aot` for Native AOT _(planned; not yet implemented — `<PublishAot>` is not wired and the flag is unrecognised today. Tracked as `docs/36-v1-roadmap.md` §R7.5 / `docs/41` H13.)_
 
 ### 13.2 Test runner
 
-`lyric test [<source.l>]` compiles a `@test_module` file, synthesises a runnable program from its `test "title" { … }` items, and reports results in TAP-shaped form (`1..N`, `ok N - title` / `not ok N - title`, summary counts). Exit codes: `0` (every selected test passed), `1` (at least one failure), `2` (compilation error), `64` (usage error).
+`lyric test <source.l>` compiles a `@test_module` file, synthesises a runnable program from its `test "title" { … }` items, and reports results in TAP-shaped form (`1..N`, `ok N - title` / `not ok N - title`, summary counts). Exit codes: `0` (every selected test passed), `1` (at least one failure), `2` (compilation error), `64` (usage error).
 
-**Project mode.** When invoked with no source file, `lyric test` discovers the nearest `lyric.toml` and runs every `[project.tests]` entry in sequence. Pass `--manifest <lyric.toml>` to override discovery. The command exits non-zero if any test entry fails.
-
-**`[project.tests]` fallback.** When the manifest has a `[project]` section but no `[project.tests]` entries, `lyric test` scans all source files listed in `[project.packages]` for the `@test_module` annotation and runs each found file as a standalone single-file test. This allows projects that co-locate test modules with their source packages to run tests without explicit `[project.tests]` entries in `lyric.toml`.
-
-`--filter <substring>` runs only tests whose title contains `<substring>`; non-matching tests are reported as `# skip` lines. `--list` prints titles only without compiling. `--fail-fast` stops after the first test file that has any failing test and prints an early summary; in project mode this means remaining test entries are not run. `property` declarations parse but skip at runtime in v1 (`# skip` line); `fixture name[: T] = expr` declarations are rewritten to module-level `val` declarations in the synthesised source (D-progress-474). v2 adds cross-package non-`pub` access (§3.2), property execution (`--properties`), and doctest extraction. See `docs/24-test-runner-plan.md` for the v1 design and v2 scope.
+`--filter <substring>` runs only tests whose title contains `<substring>`; non-matching tests are reported as `# skip` lines. `--list` prints titles only without compiling. `property` declarations parse but skip at runtime in v1 (`# skip` line); `fixture` declarations are not yet supported (`T0901`). v2 adds `--manifest` discovery, cross-package non-`pub` access (§3.2), property execution (`--properties`), and doctest extraction. See `docs/24-test-runner-plan.md` for the v1 design and v2 scope.
 
 ### 13.3 Verifier
 
-`lyric prove [<source.l>]` runs the SMT-backed verifier on `@proof_required` modules. Reports unverified obligations with counterexamples.
-
-**Project mode.** When invoked with no source file, `lyric prove` discovers the nearest `lyric.toml` and proves contracts in every `[project.packages]` source file. Pass `--manifest <lyric.toml>` to override discovery. The flags `--json` and `--explain --goal N` require an explicit source file.
+`lyric prove` runs the SMT-backed verifier on `@proof_required` modules. Reports unverified obligations with counterexamples.
 
 **NaN and ±Infinity in proof goals (`V0013`):** SMT-LIB Real has no representation for non-finite IEEE 754 values. When a proof goal contains a NaN or ±Infinity float literal, the emitter substitutes `0.0` in the generated SMT-LIB and emits warning `V0013`. The verification result may be incorrect; review such goals manually.
 
-**Contracts on async/generator functions (`V0032`):** The verifier's WP/SP calculus has no model for the suspend/resume control flow of an `async func` or a `yield`-bearing generator — an `await`/`yield` expression has no Term translation and would be coerced to an uninterpreted opaque symbol, so a `requires:`/`ensures:` clause on such a function would be "discharged" against an unmodelled body (unsound). A `@proof_required` async or generator function that carries any contract clause is therefore rejected at VC-generation time with error `V0032` and produces no goals. A non-contract async function is unaffected. Move the contract to a synchronous core, or mark the package `@runtime_checked`. Effect-aware VC generation that models async/generator bodies is future work.
-
 ### 13.4 Documentation
 
-`lyric doc [<source.l>]` generates Markdown documentation from doc comments and contract metadata. Includes signatures and contracts.
-
-**Project mode.** When invoked with no source file, `lyric doc` discovers the nearest `lyric.toml` and generates documentation for every `[project.packages]` source file, writing one Markdown file per source file into a `docs/` output directory relative to the manifest. Pass `--manifest <lyric.toml>` to override discovery. Pass `-o <dir>` to override the output directory.
+`lyric doc` generates HTML/JSON documentation from doc comments and contract metadata. Includes signatures, contracts, examples (extracted from doctests), and dependency graphs.
 
 ### 13.5 Public API diff
 
@@ -1497,28 +1305,18 @@ The bootstrap formatter works directly from the parsed AST; it does not require 
 - Contract clauses (`requires:`, `ensures:`, `invariant:`) each on their own line, indented 2 spaces under the function signature.
 - Trailing newline; no trailing whitespace per line.
 
-**Project mode.** `lyric fmt` with no source file discovers the nearest `lyric.toml` and operates over every `[project.packages]` source. Pass `--manifest <lyric.toml>` to override discovery. Behaviour depends on flags: the default is a **dry-run** (lists files that would change without writing them); `--write` applies changes in place; `--check` is the silent CI gate.
-
-**Multi-file mode.** `lyric fmt <file1.l> <file2.l> …` accepts multiple positional source arguments and applies the same formatting logic to each file. Combined with `--write`, this is equivalent to running `lyric fmt --write` on each file individually.
-
-**Stdin mode.** `lyric fmt --stdin` reads the entire source from standard input, formats it, and writes the result to standard output. Intended for editor integrations that pipe the current buffer through the formatter. Combines with `--check` to check without writing.
-
 **Flags:**
 
-| Flag | Scope | Effect |
-|------|-------|--------|
-| _(default, single/multi-file)_ | File(s) | Print formatted source to stdout |
-| _(default, project mode)_ | Project | Dry-run: print which files would change; exit 1 if any; does **not** write |
-| `--write` | File(s) or project | Overwrite file(s) in place; print each reformatted path |
-| `--check` | File(s) or project | Exit 1 if any file would change; prints the unformatted paths |
-| `--diff` | File(s) or project | Print a unified diff of what would change without writing; works in dry-run mode, single-file mode, and combined with `--write` (shows diff then applies changes). Exits 1 if any file would change (same as `--check`), useful as a CI gate that also shows what changed. |
-| `--stdin` | — | Read from stdin, write formatted output to stdout (editor integration) |
+| Flag | Effect |
+|------|--------|
+| _(default)_ | Print formatted source to stdout |
+| `--write` | Overwrite the file in place |
+| `--check` | Exit 1 if the file would change; print nothing (CI use) |
+| `--legacy` | **Deprecated — removed in v1.1.** Falls back to the AST-only formatter (`Fmt.fs`). Drops all non-doc `//` comments. Use only as a temporary workaround if the CST formatter produces unexpected output. |
 
 ### 13.8 Linter
 
-`lyric lint [<source.l>]` checks source code for style and quality issues. It works entirely from the parsed AST — no type-checker context is needed — so it is fast and runs on files that do not yet compile.
-
-**Project mode.** When invoked with no source file, `lyric lint` discovers the nearest `lyric.toml` and lints every `[project.packages]` source file, prefixing each diagnostic with its source path. At the end of the run, `lyric lint` prints a summary line: either `"lint: N error(s), M warning(s) in K file(s)"` or `"lint: K file(s) clean"`. Pass `--manifest <lyric.toml>` to override discovery.
+`lyric lint` checks source code for style and quality issues. It works entirely from the parsed AST — no type-checker context is needed — so it is fast and runs on files that do not yet compile.
 
 **Diagnostic codes:**
 
@@ -1537,15 +1335,13 @@ The bootstrap formatter works directly from the parsed AST; it does not require 
 | _(default)_ | Print diagnostics; exit 0 if only warnings |
 | `--error-on-warning` | Treat warnings as errors; exit 1 |
 
-**Exit codes:** 0 = clean (or warnings-only without `--error-on-warning`); 1 = at least one error (or warning with the flag).
+**Exit codes:** 0 = clean (or warnings-only without `--error-on-warning`); 1 = at least one error (or warning with the flag); 2 = usage/IO error.
 
 **Output format:** `<code> <severity> [<line>:<col>]: <message>`, matching the compiler's own diagnostic shape.
 
 ### 13.9 Benchmark runner
 
-`lyric bench [<source.l>] [--target dotnet|jvm]` compiles a `@bench_module` file, synthesises a timing harness around each `@bench`-annotated function, and reports wall-clock statistics to stdout. `--target dotnet` (default) runs via `dotnet exec`. `--target jvm` dispatch is wired but currently blocked: the timing harness imports `Std.Time`, which does not yet compile on the JVM backend (#3302), so `lyric bench --target jvm` is not yet usable (#680 remains open).
-
-**Project mode.** When invoked with no source file, `lyric bench` discovers the nearest `lyric.toml` and runs benchmarks for every `[project.packages]` source file that contains a `@bench_module` annotation. Pass `--manifest <lyric.toml>` to override discovery. `--target` applies to all files in the project.
+`lyric bench <source.l>` compiles a `@bench_module` file, synthesises a timing harness around each `@bench`-annotated function, and reports wall-clock statistics to stdout.
 
 **Annotations:**
 
@@ -1580,52 +1376,9 @@ funcName  min=Xms  max=Xms  mean=Xms
 
 A `@bench` function whose signature does not match `func name(): Unit` passes through the synthesiser as-is; the mismatch is reported by the type checker with a standard `T`-series diagnostic.
 
-### 13.10 Type checker (check only)
-
-`lyric check [<source.l>…] [--target dotnet|jvm] [--manifest <lyric.toml>]` type-checks source files (or the discovered project) without producing a usable output artifact. Output is written to `.lyric-check/` beside the source file (or project manifest). Only diagnostics with `DiagError` severity cause exit 1; the artifact is intentionally discarded.
-
-**Use cases:** pre-commit type validation, IDE on-save checks, faster feedback in CI when the output binary is not needed.
-
-**Project mode.** When invoked with no source file, `lyric check` discovers the nearest `lyric.toml` and type-checks all `[project.packages]` entries (calls `buildProject` with output directed to `.lyric-check/`). `--no-restore` is implied in project check mode to avoid slow lock checks on each save; run `lyric restore` explicitly when dependencies change.
-
-**Exit codes:** 0 = no type errors; 1 = type errors or build failure.
-
-### 13.11 Clean
-
-`lyric clean [<dir>] [--manifest <lyric.toml>]` removes the build artifact directories produced by the dev-loop commands from the project root (or the directory specified by the positional argument):
-
-| Directory | Produced by |
-|-----------|-------------|
-| `bin/` | `lyric build` (project mode) |
-| `.lyric-run/` | `lyric run` |
-| `.lyric-test/` | `lyric test` |
-| `.lyric-bench/` | `lyric bench` |
-| `.lyric-check/` | `lyric check` |
-| `.lyric-release/` | `lyric build --release` |
-
-**Exit codes:** 0 = nothing to remove or all directories removed successfully; 1 = at least one removal failed.
-
-### 13.12 Package manager
+### 13.10 Package manager
 
 `lyric.toml` is the project manifest. Dependencies use SemVer 2.0.0. Registry: NuGet piggyback (D-progress-030); see `docs/21-nuget-linking.md`.
-
-`lyric restore [--manifest <lyric.toml>] [--locked]` resolves and locks all dependencies declared in `lyric.toml`, writing `lyric.lock`. `--locked` verifies the existing lock rather than rewriting it (for reproducible CI builds).
-
-`lyric update [--manifest <lyric.toml>]` re-resolves all dependencies from scratch: deletes the existing `lyric.lock` (workspace-root-aware), then runs a full restore to produce a fresh lock with the latest compatible versions. For git dependencies, this fetches the latest revision of the specified branch/tag.
-
-`lyric deps [--manifest <lyric.toml>]` prints the resolved dependency list from `lyric.lock` (one line per package: `<name> [<version>]  [<source>]`). Exits 1 if no lock file exists; run `lyric restore` first.
-
-`lyric add <name>[@<version>] [--path <dir>] [--git <url> [--tag|--rev|--branch <ref>]] [--nuget] [--manifest <lyric.toml>] [--no-restore]` adds or updates a dependency in the discovered manifest and then restores (unless `--no-restore`):
-
-- Bare `<name>` or `<name>@<version>` writes a registry entry to `[dependencies]` (`name = "<version>"`; a missing version is written as `"*"`).
-- `--path <dir>` writes `name = { path = "<dir>" }`; `--git <url>` with an optional `--tag`/`--rev`/`--branch` writes the git inline-table form; `--nuget` writes to the `[nuget]` table instead.
-- The edit is idempotent — re-adding a dependency updates its entry in place rather than duplicating it — and is rejected before write if the result would not parse. The table is created if absent. `--path`, `--git`, and `--nuget`/`@version` are mutually exclusive where they conflict.
-
-`lyric remove <name> [--nuget] [--manifest <lyric.toml>] [--no-restore]` removes a dependency from the discovered manifest and then restores (unless `--no-restore`):
-
-- Without `--nuget`, removes the entry from `[dependencies]`.
-- With `--nuget`, removes the entry from `[nuget]` instead.
-- The command is rejected if `<name>` is not present in the target table. `lyric remove` is the mirror of `lyric add`.
 
 ---
 
@@ -1734,24 +1487,20 @@ requires:`) and A0041 (template-imports diagnostic referenced in
 
 The following are specified but not yet fully woven:
 
-- The `call` ambient value's `call.caller` field (caller-site
-  location) needs caller-site capture that is not implemented;
-  references surface as A0043 weave-time diagnostics. The
-  compile-time-known fields (`shortName`, `qualifiedName`,
-  `modulePath`, `sourceLocation`, `annotations`, `aspect`) are
-  wired and rewritten by the weaver as `__lyric_call_<name>`
-  locals. Concrete shapes: `shortName`, `qualifiedName`,
-  `modulePath`, `aspect` are `String`; `sourceLocation` is
-  `String` of the form `"<packagePath>:<line>"` (or
-  `"<unknown>:<line>"` when the package path is empty);
-  `annotations` is `slice[String]` carrying the matched
-  function's annotation short-names. The runtime field
-  `call.elapsed` (`Option[Int]`, milliseconds) is wired (#1298 /
-  D100): the weaver captures `Std.Time.monotonicNanos()` around
-  each `proceed(args)` call and auto-injects `import Std.Time`
-  (deduplicated) into the woven file; the value is `Some(ms)`
-  after `proceed` returns and `None` before / when the body never
-  calls `proceed`.
+- The `call` ambient value's runtime fields — `call.elapsed`
+  (timestamp around `proceed`) and `call.caller` (caller-site
+  location) need runtime instrumentation that is deferred to
+  issue #1298. The compile-time-known fields (`shortName`,
+  `qualifiedName`, `modulePath`, `sourceLocation`, `annotations`,
+  `aspect`) are wired and rewritten by the weaver as
+  `__lyric_call_<name>` locals. Concrete shapes: `shortName`,
+  `qualifiedName`, `modulePath`, `aspect` are `String`;
+  `sourceLocation` is `String` of the form
+  `"<packagePath>:<line>"` (or `"<unknown>:<line>"` when the
+  package path is empty); `annotations` is `slice[String]`
+  carrying the matched function's annotation short-names.
+  References to `call.elapsed` / `call.caller` surface as A0043
+  weave-time diagnostics.
 - `pub aspect` templates and consumer-side instantiation
   (`aspect X from Pkg.Y`) — parsed by the compiler but the weaver
   does not act on them.

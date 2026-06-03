@@ -1,16 +1,17 @@
-//! jvm/self_test_b111.l — Stage B111: lowerSealedUnion (production sealed-interface form).
-//!
-//! Creates a sealed union `Shape` with two cases:
-//!   Shape$Circle: public final float radius
-//!   Shape$Rect:   public final float w, h
-//!
-//! A Main class:
-//!   - Constructs Shape$Circle(1.5) → prints "circle.radius=1.5"
-//!   - Constructs Shape$Rect(3.0, 4.0) → prints "rect.area=12.0"
-//!
-//! Java output (java -jar):
-//!   circle.radius=1.5
-//!   rect.area=12.0
+// jvm/self_test_b111.l — Stage B111: lowerSealedUnion (production sealed-interface form).
+//
+// Creates a sealed union `Shape` with two cases:
+//   Shape$Circle: public final float radius
+//   Shape$Rect:   public final float w, h
+//
+// A Main class:
+//   - Constructs Shape$Circle(1.5) → prints "circle.radius=1.5"
+//   - Constructs Shape$Rect(3.0, 4.0) → prints "rect.area=12.0"
+//
+// Java output (java -jar):
+//   circle.radius=1.5
+//   rect.area=12.0
+
 package Jvm.SelfTestB111
 
 import Std.Core
@@ -22,6 +23,7 @@ import Jvm.Lowering
 import Jvm.Driver
 
 // ── Build Shape sealed union ──────────────────────────────────────────────────
+
 func makeShapeClasses(pool: in Pool): List[BuiltClass] {
   val circleFields: List[LField] = newList()
   circleFields.add(LField(flags = ACC_PUBLIC, name = "radius", fieldType = JFloat))
@@ -32,7 +34,7 @@ func makeShapeClasses(pool: in Pool): List[BuiltClass] {
 
   val cases: List[LSealedCase] = newList()
   cases.add(LSealedCase(caseName = "Circle", fields = circleFields))
-  cases.add(LSealedCase(caseName = "Rect", fields = rectFields))
+  cases.add(LSealedCase(caseName = "Rect",   fields = rectFields))
 
   val su = LSealedUnion(baseName = "Shape", cases = cases)
   val cfs = lowerSealedUnion(su, pool)
@@ -45,22 +47,23 @@ func makeShapeClasses(pool: in Pool): List[BuiltClass] {
 }
 
 // ── Build Main class ──────────────────────────────────────────────────────────
+
 func makeMainBytes(pool: in Pool): List[Byte] {
   val asm = newAssembler(pool)
 
-  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOutIdx  = poolFieldref(pool,  "java/lang/System",    "out",     "Ljava/io/PrintStream;")
   val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
-  val vofFIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(F)Ljava/lang/String;")
+  val concatIdx  = poolMethodref(pool, "java/lang/String",    "concat",  "(Ljava/lang/String;)Ljava/lang/String;")
+  val vofFIdx    = poolMethodref(pool, "java/lang/String",    "valueOf", "(F)Ljava/lang/String;")
 
-  val circleClass = poolClass(pool, "Shape$Circle")
-  val circleCtor = poolMethodref(pool, "Shape$Circle", "<init>", "(F)V")
-  val radiusField = poolFieldref(pool, "Shape$Circle", "radius", "F")
+  val circleClass  = poolClass(pool, "Shape$Circle")
+  val circleCtor   = poolMethodref(pool, "Shape$Circle", "<init>", "(F)V")
+  val radiusField  = poolFieldref(pool, "Shape$Circle", "radius", "F")
 
   val rectClass = poolClass(pool, "Shape$Rect")
-  val rectCtor = poolMethodref(pool, "Shape$Rect", "<init>", "(FF)V")
-  val wField = poolFieldref(pool, "Shape$Rect", "w", "F")
-  val hField = poolFieldref(pool, "Shape$Rect", "h", "F")
+  val rectCtor  = poolMethodref(pool, "Shape$Rect", "<init>", "(FF)V")
+  val wField    = poolFieldref(pool, "Shape$Rect", "w", "F")
+  val hField    = poolFieldref(pool, "Shape$Rect", "h", "F")
 
   // Shape$Circle circle = new Shape$Circle(1.5f)
   emitNew(asm, circleClass)
@@ -111,10 +114,11 @@ func makeMainBytes(pool: in Pool): List[Byte] {
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
+
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b111"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
@@ -127,9 +131,9 @@ func main(): Unit {
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB111",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

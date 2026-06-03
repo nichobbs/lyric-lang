@@ -1,13 +1,14 @@
-//! jvm/self_test_b63.l — Stage B63: static fields (putstatic / getstatic) on user class.
-//!
-//! Generates Counter.class with a static int field `count` and two methods:
-//!   increment()V   — count = count + 1  (getstatic, iconst_1, iadd, putstatic)
-//!   getCount()I    — return count        (getstatic, ireturn)
-//!
-//! Main calls increment() three times then prints getCount() → 3.
-//!
-//! Exercises: putstatic on a user-defined class field, static int field declaration,
-//!            getstatic for read-back, using same pool fieldref for both.
+// jvm/self_test_b63.l — Stage B63: static fields (putstatic / getstatic) on user class.
+//
+// Generates Counter.class with a static int field `count` and two methods:
+//   increment()V   — count = count + 1  (getstatic, iconst_1, iadd, putstatic)
+//   getCount()I    — return count        (getstatic, ireturn)
+//
+// Main calls increment() three times then prints getCount() → 3.
+//
+// Exercises: putstatic on a user-defined class field, static int field declaration,
+//            getstatic for read-back, using same pool fieldref for both.
+
 package Jvm.SelfTestB63
 
 import Std.Core
@@ -18,7 +19,7 @@ import Jvm.Bytecode
 import Jvm.Driver
 
 func makeCounterBytes(): List[Byte] {
-  val pool = poolNew()
+  val pool     = poolNew()
   val countRef = poolFieldref(pool, "Counter", "count", "I")
 
   // increment()V
@@ -53,13 +54,13 @@ func makeCounterBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool = poolNew()
-  val asm = newAssembler(pool)
+  val pool      = poolNew()
+  val asm       = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
-  val incRef = poolMethodref(pool, "Counter", "increment", "()V")
-  val getRef = poolMethodref(pool, "Counter", "getCount", "()I")
+  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnI  = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val incRef    = poolMethodref(pool, "Counter", "increment", "()V")
+  val getRef    = poolMethodref(pool, "Counter", "getCount",  "()I")
 
   // Counter.increment() x3
   emitInvokestatic(asm, incRef)
@@ -87,24 +88,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b63"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val counterBytes = makeCounterBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes    = makeMainClassBytes()
 
   val counterClass = BuiltClass(binaryName = "Counter", bytes = counterBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass    = BuiltClass(binaryName = "Main",    bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(counterClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB63",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

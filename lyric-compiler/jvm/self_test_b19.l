@@ -1,11 +1,12 @@
-//! jvm/self_test_b19.l — Stage B19: backward-branch loop with StackMapTable.
-//!
-//! Implements factorial(int n) iteratively using a while-loop (backward branch).
-//! The loop requires a StackMapTable entry at the loop header.
-//! Main calls factorial(5), verifying the result is 120.
-//!
-//! Loop frame: [VInteger, VInteger] — slots 0 (n) and 1 (acc)
-//! Exercises: emitIfle (loop exit), backward goto, iimul, multi-local frame.
+// jvm/self_test_b19.l — Stage B19: backward-branch loop with StackMapTable.
+//
+// Implements factorial(int n) iteratively using a while-loop (backward branch).
+// The loop requires a StackMapTable entry at the loop header.
+// Main calls factorial(5), verifying the result is 120.
+//
+// Loop frame: [VInteger, VInteger] — slots 0 (n) and 1 (acc)
+// Exercises: emitIfle (loop exit), backward goto, iimul, multi-local frame.
+
 package Jvm.SelfTestB19
 
 import Std.Core
@@ -17,7 +18,7 @@ import Jvm.Driver
 
 func makeMathClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
   // factorial(I)I:
   //   slot 0 = n (parameter)
@@ -80,10 +81,10 @@ func makeMathClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val factRef = poolMethodref(pool, "MathB19", "factorial", "(I)I")
+  val sysOut   = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val factRef  = poolMethodref(pool, "MathB19", "factorial", "(I)I")
   val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
 
   emitGetstatic(asm, sysOut)
@@ -105,7 +106,7 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b19"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
@@ -113,16 +114,16 @@ func main(): Unit {
   val mainBytes = makeMainClassBytes()
 
   val mathClass = BuiltClass(binaryName = "MathB19", bytes = mathBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main",    bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(mathClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB19",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

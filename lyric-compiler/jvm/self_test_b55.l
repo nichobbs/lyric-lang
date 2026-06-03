@@ -1,16 +1,17 @@
-//! jvm/self_test_b55.l — Stage B55: String operations (concat, length, substring).
-//!
-//! Generates StringOps.class with static helpers:
-//!   join(String, String)String   — a.concat(b)
-//!   length(String)I              — s.length()
-//!   initial(String)String        — s.substring(0, 1)
-//!
-//! Main prints:
-//!   join("Hello, ", "World!") → "Hello, World!"
-//!   length("Lyric")           → 5
-//!   initial("Alice")          → "A"
-//!
-//! Exercises: invokevirtual String.concat, String.length, String.substring(I,I).
+// jvm/self_test_b55.l — Stage B55: String operations (concat, length, substring).
+//
+// Generates StringOps.class with static helpers:
+//   join(String, String)String   — a.concat(b)
+//   length(String)I              — s.length()
+//   initial(String)String        — s.substring(0, 1)
+//
+// Main prints:
+//   join("Hello, ", "World!") → "Hello, World!"
+//   length("Lyric")           → 5
+//   initial("Alice")          → "A"
+//
+// Exercises: invokevirtual String.concat, String.length, String.substring(I,I).
+
 package Jvm.SelfTestB55
 
 import Std.Core
@@ -23,8 +24,8 @@ import Jvm.Driver
 func makeStringOpsClassBytes(): List[Byte] {
   val pool = poolNew()
 
-  val strConcat = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
-  val strLength = poolMethodref(pool, "java/lang/String", "length", "()I")
+  val strConcat    = poolMethodref(pool, "java/lang/String", "concat",    "(Ljava/lang/String;)Ljava/lang/String;")
+  val strLength    = poolMethodref(pool, "java/lang/String", "length",    "()I")
   val strSubstring = poolMethodref(pool, "java/lang/String", "substring", "(II)Ljava/lang/String;")
 
   // ── join(String, String)String ─────────────────────────────────────────────
@@ -38,10 +39,7 @@ func makeStringOpsClassBytes(): List[Byte] {
   val joinAttrs: List[Attribute] = newList()
   joinAttrs.add(joinCode)
   val joinMethod = makeMethodInfo(
-    ACC_PUBLIC + ACC_STATIC,
-    "join",
-    "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
-    joinAttrs
+    ACC_PUBLIC + ACC_STATIC, "join", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", joinAttrs
   )
 
   // ── length(String)I ───────────────────────────────────────────────────────
@@ -53,7 +51,9 @@ func makeStringOpsClassBytes(): List[Byte] {
   val lenCode = assembleCode(asmLen, 1, 1)
   val lenAttrs: List[Attribute] = newList()
   lenAttrs.add(lenCode)
-  val lenMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "length", "(Ljava/lang/String;)I", lenAttrs)
+  val lenMethod = makeMethodInfo(
+    ACC_PUBLIC + ACC_STATIC, "length", "(Ljava/lang/String;)I", lenAttrs
+  )
 
   // ── initial(String)String ──────────────────────────────────────────────────
   // aload_0; iconst_0; iconst_1; invokevirtual substring(II); areturn
@@ -67,10 +67,7 @@ func makeStringOpsClassBytes(): List[Byte] {
   val initAttrs: List[Attribute] = newList()
   initAttrs.add(initCode)
   val initMethod = makeMethodInfo(
-    ACC_PUBLIC + ACC_STATIC,
-    "initial",
-    "(Ljava/lang/String;)Ljava/lang/String;",
-    initAttrs
+    ACC_PUBLIC + ACC_STATIC, "initial", "(Ljava/lang/String;)Ljava/lang/String;", initAttrs
   )
 
   val methods: List[MethodInfo] = newList()
@@ -83,14 +80,14 @@ func makeStringOpsClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOut     = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val printlnStr = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
-  val joinRef = poolMethodref(pool, "StringOps", "join", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;")
-  val lenRef = poolMethodref(pool, "StringOps", "length", "(Ljava/lang/String;)I")
-  val initRef = poolMethodref(pool, "StringOps", "initial", "(Ljava/lang/String;)Ljava/lang/String;")
+  val printlnI   = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val joinRef    = poolMethodref(pool, "StringOps", "join",    "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;")
+  val lenRef     = poolMethodref(pool, "StringOps", "length",  "(Ljava/lang/String;)I")
+  val initRef    = poolMethodref(pool, "StringOps", "initial", "(Ljava/lang/String;)Ljava/lang/String;")
 
   // println(StringOps.join("Hello, ", "World!"))  → "Hello, World!"
   emitGetstatic(asm, sysOut)
@@ -127,24 +124,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b55"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val stringOpsBytes = makeStringOpsClassBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes      = makeMainClassBytes()
 
   val stringOpsClass = BuiltClass(binaryName = "StringOps", bytes = stringOpsBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass      = BuiltClass(binaryName = "Main",      bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(stringOpsClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB55",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

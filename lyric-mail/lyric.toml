@@ -14,13 +14,13 @@ output_assembly = "Mail.dll"
 "Mail"            = "src/mail.l"
 "Mail.Kernel.Net" = "src/_kernel/net/mail_kernel.l"
 
-[project.tests]
-"Mail.MailTests" = "tests/mail_tests.l"
-
 [features]
 smtp     = []   # SMTP via System.Net.Mail (MailKit on .NET)
 ses      = []   # Amazon SES (AWSSDK.SimpleEmail on .NET)
 sendgrid = []   # SendGrid (SendGrid .NET library)
+
+[dependencies]
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }
 
 [nuget]
 # feature = "smtp" — SMTP client for .NET

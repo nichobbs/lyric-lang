@@ -1,8 +1,9 @@
-//! std/_kernel/path_host.l - host boundary for System.IO.Path.
-//!
-//! Pure string/path computations; never throws.  Used by Std.Path.
-//!
-//! Internal: only Std.Path should import this.
+// std/_kernel/path_host.l - host boundary for System.IO.Path.
+//
+// Pure string/path computations; never throws.  Used by Std.Path.
+//
+// Internal: only Std.Path should import this.
+
 @axiom("System.IO.Path operations conform to their documented .NET contracts")
 package Std.PathHost
 

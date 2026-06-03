@@ -174,14 +174,14 @@ run_stage() {
 }
 
 # ── Lyric invocation helper ──────────────────────────────────────────────────
-# `bootstrap-publish` sets LYRIC_BIN; until then we run the AOT CLI via dotnet.
+# `bootstrap-publish` sets LYRIC_BIN; until then we run the CLI via dotnet.
 
 LYRIC_BIN=""
 lyric() {
   if [ -n "$LYRIC_BIN" ]; then
     "$LYRIC_BIN" "$@"
   else
-    dotnet run --project "$REPO_ROOT/bootstrap/src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj" -c Release --no-build -- "$@"
+    dotnet run --project "$REPO_ROOT/bootstrap/src/Lyric.Cli/Lyric.Cli.fsproj" -c Release --no-build -- "$@"
   fi
 }
 
@@ -227,7 +227,7 @@ stage_bootstrap_publish() {
   local out="$REPORT_DIR/lyric-bin"
   rm -rf "$out"
   mkdir -p "$out"
-  dotnet publish "$REPO_ROOT/bootstrap/src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj" \
+  dotnet publish "$REPO_ROOT/bootstrap/src/Lyric.Cli/Lyric.Cli.fsproj" \
     -c Release -o "$out" --nologo -v q
   if [ -f "$out/lyric" ]; then
     chmod +x "$out/lyric"
@@ -327,14 +327,13 @@ stage_ecosystem_tests() {
     while IFS= read -r tf; do
       echo
       echo "--- $tf ---"
-      if ! ( cd "$d" && lyric test "$tf" --manifest lyric.toml ); then
+      if ! ( cd "$d" && lyric test "$tf" ); then
         rc=1
       fi
     done < <(find "$d/tests" -maxdepth 2 -name '*_tests.l' | sort)
   done < <(ecosystem_dirs)
   return $rc
 }
-
 
 # Examples that have NO `main` function and only exist for the verifier are
 # skipped from the build stages.  Keep this list in sync with examples/README.md.
@@ -393,7 +392,7 @@ stage_examples_tests() {
     while IFS= read -r tf; do
       echo
       echo "--- ${tf#"$REPO_ROOT/"} ---"
-      if ! ( cd "$d" && lyric test "$tf" --manifest lyric.toml ); then
+      if ! ( cd "$d" && lyric test "$tf" ); then
         rc=1
       fi
     done < <(find "$d/tests" -maxdepth 2 -name '*_tests.l' | sort)

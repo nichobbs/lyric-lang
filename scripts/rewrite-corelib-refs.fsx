@@ -46,7 +46,20 @@ open Mono.Cecil
 // wrong for `10.0.9` vs `10.0.10` (`9` > `1`), so parse via
 // `System.Version` and pick the maximum.
 let refPackDir =
-    // Helper to find a 10.x.y subdirectory and extract the highest version
+    // HOME may legitimately be unset (rootless containers, Windows
+    // CI runners shelling F# scripts).  `Path.Combine(null, …)`
+    // throws ArgumentNullException, so guard explicitly and skip
+    // the home-relative candidate when it's missing.
+    let homeOpt =
+        Environment.GetEnvironmentVariable("HOME")
+        |> Option.ofObj
+        |> Option.filter (fun s -> not (System.String.IsNullOrEmpty s))
+    let packRoots =
+        [ yield! homeOpt |> Option.toList
+                         |> List.map (fun h -> Path.Combine(h, ".dotnet/packs/Microsoft.NETCore.App.Ref"))
+          yield "/root/.dotnet/packs/Microsoft.NETCore.App.Ref"
+          yield "/usr/share/dotnet/packs/Microsoft.NETCore.App.Ref" ]
+        |> List.filter Directory.Exists
     let pickVersion (root: string) : string option =
         try
             Directory.GetDirectories(root)
@@ -61,83 +74,17 @@ let refPackDir =
             |> Array.tryHead
             |> Option.map snd
         with _ -> None
-    
-    // Build a list of candidate pack roots to search
-    let buildPackRoots () =
-        let roots = System.Collections.Generic.List<string>()
-        
-        // 1. Check DOTNET_ROOT environment variable (used by some installers)
-        let dotnetRoot = Environment.GetEnvironmentVariable("DOTNET_ROOT")
-        if not (System.String.IsNullOrEmpty dotnetRoot) then
-            roots.Add(Path.Combine(dotnetRoot, "packs/Microsoft.NETCore.App.Ref"))
-        
-        // 2. Try to infer from DOTNET_ROOT(x86) on Windows
-        let dotnetRootX86 = Environment.GetEnvironmentVariable("DOTNET_ROOT(x86)")
-        if not (System.String.IsNullOrEmpty dotnetRootX86) then
-            roots.Add(Path.Combine(dotnetRootX86, "packs/Microsoft.NETCore.App.Ref"))
-        
-        // 3. Check HOME/.dotnet (standard location on Unix)
-        let homeOpt =
-            Environment.GetEnvironmentVariable("HOME")
-            |> Option.ofObj
-            |> Option.filter (fun s -> not (System.String.IsNullOrEmpty s))
-        match homeOpt with
-        | Some h -> roots.Add(Path.Combine(h, ".dotnet/packs/Microsoft.NETCore.App.Ref"))
-        | None -> ()
-        
-        // 4. Check common Linux system locations
-        roots.Add("/usr/share/dotnet/packs/Microsoft.NETCore.App.Ref")
-        roots.Add("/root/.dotnet/packs/Microsoft.NETCore.App.Ref")
-        
-        // 5. Check common Homebrew location on macOS
-        roots.Add("/opt/homebrew/Cellar/dotnet")
-        
-        // 6. Check standard macOS location
-        roots.Add("/usr/local/share/dotnet/packs/Microsoft.NETCore.App.Ref")
-        
-        roots |> Seq.toList
-    
-    let findRefPackInHomebrew (baseDir: string) : string option =
-        // For Homebrew, the structure is:
-        // /opt/homebrew/Cellar/dotnet/<version>/libexec/packs/Microsoft.NETCore.App.Ref/<version>/ref/net10.0/
-        try
-            if Directory.Exists baseDir then
-                let versions = Directory.GetDirectories(baseDir)
-                                 |> Array.map Path.GetFileName
-                                 |> Array.filter (fun v -> v.Contains("."))
-                                 |> Array.map (fun v -> (v, Path.Combine(baseDir, v, "libexec/packs/Microsoft.NETCore.App.Ref")))
-                                 |> Array.filter (fun (_, path) -> Directory.Exists path)
-                versions
-                |> Array.tryPick (fun (_, packRoot) ->
-                    pickVersion packRoot
-                    |> Option.bind (fun v ->
-                        let fullPath = Path.Combine(packRoot, v, "ref/net10.0")
-                        if Directory.Exists fullPath then Some fullPath else None))
-            else None
-        with _ -> None
-    
-    let allRoots = buildPackRoots ()
     let candidate =
-        // Try standard pack root locations first
-        allRoots
-        |> List.filter (fun root -> root <> "/opt/homebrew/Cellar/dotnet")
+        packRoots
         |> List.tryPick (fun root ->
-            if Directory.Exists root then
-                pickVersion root
-                |> Option.map (fun v -> Path.Combine(root, v, "ref/net10.0"))
-                |> Option.filter Directory.Exists
-            else None)
-        |> Option.orElseWith (fun () ->
-            // Fall back to Homebrew special handling
-            findRefPackInHomebrew "/opt/homebrew/Cellar/dotnet")
-    
+            pickVersion root
+            |> Option.map (fun v -> Path.Combine(root, v, "ref/net10.0"))
+            |> Option.filter Directory.Exists)
     candidate
     |> Option.defaultWith (fun () ->
         failwithf
-            "Reference pack not found.  Searched: %A (expected a 10.x.y/ref/net10.0 directory)\n\nDotnet info:\n  DOTNET_ROOT=%s\n  SDK base: %s"
-            allRoots
-            (match Environment.GetEnvironmentVariable("DOTNET_ROOT") with null -> "(not set)" | s -> s)
-            (System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory()))
+            "Reference pack not found.  Searched roots: %A (expected a 10.x.y directory under one of them)"
+            packRoots)
 
 // Identity record for a ref-pack assembly: name + the version and
 // public-key token the runtime expects.  Version + PKT vary across

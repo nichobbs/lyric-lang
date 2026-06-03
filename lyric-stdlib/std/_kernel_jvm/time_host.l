@@ -1,29 +1,30 @@
-//! std/_kernel_jvm/time_host.l - JVM host boundary for java.time.*.
-//!
-//! Mirrors _kernel/time_host.l for the JVM target.  The java.time
-//! package (JSR-310) maps cleanly onto Lyric's time model:
-//!
-//!   Instant        = java.time.Instant        (UTC point in time)
-//!   Duration       = java.time.Duration       (elapsed time)
-//!   DateTimeOffset = java.time.OffsetDateTime  (instant + UTC offset)
-//!   TimeZone       = java.time.ZoneId          (IANA timezone name)
-//!
-//! Shims are required wherever the JVM API diverges:
-//!
-//!   - Duration constructors: java.time.Duration.ofMillis(long) takes
-//!     long, not Double; shims convert (long)(n) with truncation.
-//!   - hostSince: java.time.Duration.between(start, end) takes the
-//!     earlier arg first, opposite of the .NET op_Subtraction ordering.
-//!   - hostPlus / arithmetic: instance methods on Instant / Duration.
-//!   - hostTotalMillis / hostTotalSeconds: return long, not Double.
-//!   - Calendar arithmetic (addMonths, addYears, addDays): requires
-//!     Instant → OffsetDateTime → manipulate → toInstant roundtrip.
-//!   - Epoch DTO construction: returns OffsetDateTime (UTC offset zero).
-//!   - Comparison: isBefore / isAfter are instance methods; Duration
-//!     comparisons need compareTo.
-//!
-//! Internal: only Std.Time should import this.
-@axiom("java.time.* / java.lang.Thread operations conform to their documented JVM / ISO 8601 contracts")
+// std/_kernel_jvm/time_host.l - JVM host boundary for java.time.*.
+//
+// Mirrors _kernel/time_host.l for the JVM target.  The java.time
+// package (JSR-310) maps cleanly onto Lyric's time model:
+//
+//   Instant        = java.time.Instant        (UTC point in time)
+//   Duration       = java.time.Duration       (elapsed time)
+//   DateTimeOffset = java.time.OffsetDateTime  (instant + UTC offset)
+//   TimeZone       = java.time.ZoneId          (IANA timezone name)
+//
+// Shims are required wherever the JVM API diverges:
+//
+//   - Duration constructors: java.time.Duration.ofMillis(long) takes
+//     long, not Double; shims convert (long)(n) with truncation.
+//   - hostSince: java.time.Duration.between(start, end) takes the
+//     earlier arg first, opposite of the .NET op_Subtraction ordering.
+//   - hostPlus / arithmetic: instance methods on Instant / Duration.
+//   - hostTotalMillis / hostTotalSeconds: return long, not Double.
+//   - Calendar arithmetic (addMonths, addYears, addDays): requires
+//     Instant → OffsetDateTime → manipulate → toInstant roundtrip.
+//   - Epoch DTO construction: returns OffsetDateTime (UTC offset zero).
+//   - Comparison: isBefore / isAfter are instance methods; Duration
+//     comparisons need compareTo.
+//
+// Internal: only Std.Time should import this.
+
+@axiom("java.time.* operations conform to their documented JVM / ISO 8601 contracts")
 package Std.TimeHost
 
 import Std.Core
@@ -31,17 +32,16 @@ import Std.Core
 // =====================================================================
 // Wire-level type aliases.
 // =====================================================================
-extern type Instant = "java.time.Instant"
 
-extern type Duration = "java.time.Duration"
-
+extern type Instant        = "java.time.Instant"
+extern type Duration       = "java.time.Duration"
 extern type DateTimeOffset = "java.time.OffsetDateTime"
-
-extern type TimeZone = "java.time.ZoneId"
+extern type TimeZone       = "java.time.ZoneId"
 
 // =====================================================================
 // Construction.
 // =====================================================================
+
 // java.time.Instant.now() — UTC clock, nanosecond resolution.
 @externTarget("java.time.Instant.now")
 pub func hostNow(): Instant = ()
@@ -58,6 +58,7 @@ pub func hostTryParseInstant(s: in String, value: out Instant): Bool = ()
 // =====================================================================
 // Duration constructors.  All shims convert Double to long via (long).
 // =====================================================================
+
 @externTarget("lyric.stdlib.jvm.TimeHost.ofMillis")
 pub func hostMillis(n: in Double): Duration = ()
 
@@ -76,6 +77,7 @@ pub func hostDays(n: in Double): Duration = ()
 // =====================================================================
 // Duration arithmetic on Instant.
 // =====================================================================
+
 // Shim: Duration.between(earlier, later) — note argument order inversion
 // vs .NET's op_Subtraction(later, earlier).
 @externTarget("lyric.stdlib.jvm.TimeHost.since")
@@ -88,6 +90,7 @@ pub func hostPlus(t: in Instant, d: in Duration): Instant = ()
 // =====================================================================
 // Inspection.  Shims convert long return to Double.
 // =====================================================================
+
 @externTarget("lyric.stdlib.jvm.TimeHost.totalMillis")
 pub func hostTotalMillis(d: in Duration): Double = ()
 
@@ -98,6 +101,7 @@ pub func hostTotalSeconds(d: in Duration): Double = ()
 // Calendar arithmetic.  All require Instant → OffsetDateTime(UTC)
 // → plus/minus → toInstant roundtrip via shims.
 // =====================================================================
+
 @externTarget("lyric.stdlib.jvm.TimeHost.addMonths")
 pub func hostAddMonths(t: in Instant, n: in Int): Instant = ()
 
@@ -110,6 +114,7 @@ pub func hostAddDays(t: in Instant, n: in Double): Instant = ()
 // =====================================================================
 // Epoch conversions.  Produce OffsetDateTime at UTC offset zero.
 // =====================================================================
+
 // Shim: OffsetDateTime.ofInstant(Instant.ofEpochMilli(n), ZoneOffset.UTC).
 @externTarget("lyric.stdlib.jvm.TimeHost.dtoFromEpochMillis")
 pub func hostDtoFromEpochMillis(n: in Long): DateTimeOffset = ()
@@ -125,6 +130,7 @@ pub func hostDtoUtcDateTime(d: in DateTimeOffset): Instant = ()
 // =====================================================================
 // IANA timezone lookup.
 // =====================================================================
+
 // java.time.ZoneId.of(id) — throws ZoneRulesException for unknown ids.
 @externTarget("java.time.ZoneId.of")
 pub func hostFindTimeZone(id: in String): TimeZone = ()
@@ -132,6 +138,7 @@ pub func hostFindTimeZone(id: in String): TimeZone = ()
 // =====================================================================
 // Comparison.
 // =====================================================================
+
 // java.time.Instant.isBefore(other) — instance method.
 @externTarget("java.time.Instant.isBefore")
 pub func hostInstantBefore(a: in Instant, b: in Instant): Bool = ()
@@ -163,24 +170,16 @@ pub func hostSubDurations(a: in Duration, b: in Duration): Duration = ()
 // =====================================================================
 // ISO-8601 formatting.
 // =====================================================================
+
 // java.time.Instant.toString() returns ISO-8601 (e.g. "2021-01-01T00:00:00Z").
 @externTarget("java.time.Instant.toString")
 pub func hostInstantToString(value: in Instant): String = ()
 
 // ─── Monotonic clock ──────────────────────────────────────────────────────────
+
 // System.nanoTime() returns nanoseconds directly; model it as a
 // 1 GHz stopwatch so Std.Time.monotonicNanos uses the same formula on both platforms.
 @externTarget("java.lang.System.nanoTime")
 pub func hostStopwatchTimestamp(): Long = ()
 
-pub func hostStopwatchFrequency(): Long {
-  1000000000
-}
-
-// ─── Synchronous sleep — block the calling thread for `ms` milliseconds ───────
-// Routed through the Phase 6 shim (`static void sleepMillis(int)` →
-// `Thread.sleep((long) ms)`) rather than binding `java.lang.Thread.sleep`
-// directly: that method takes a `long`, so an `Int` argument would mismatch the
-// JVM descriptor.  Backs Std.Time.sleepMillis.
-@externTarget("lyric.stdlib.jvm.TimeHost.sleepMillis")
-pub func hostSleepMillis(ms: in Int): Unit = ()
+pub func hostStopwatchFrequency(): Long { 1000000000 }

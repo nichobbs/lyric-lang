@@ -1,30 +1,31 @@
-//! Auth.Kernel.Net — .NET authentication extern boundary.
-//!
-//! Bridges Auth's verification functions to BCL crypto primitives with no
-//! host shim: the one remaining BCL-bound operation binds directly to a
-//! static method on a `System.Security.Cryptography` type, exactly as
-//! `Std.Hash` binds to `SHA512.HashData`.
-//!
-//!   hmacSha256          — HMAC-SHA256 signature computation, bound directly to
-//!                         `System.Security.Cryptography.HMACSHA256.HashData`.
-//!   fixedTimeEqualBytes — byte-content-constant-time comparison, implemented
-//!                         in pure Lyric (branchless XOR-accumulate; see below).
-//!                         Tracked in #1760 to rebind to the JIT-hardened
-//!                         `CryptographicOperations.FixedTimeEquals` once the
-//!                         emitter gains `ReadOnlySpan<byte>` extern support.
-//!
-//! All other JWT logic — base64url decoding, JSON claim scanning, exp/nbf
-//! validation, algorithm allow-list enforcement, and API-key byte comparison —
-//! is implemented here in Lyric so that only the truly BCL-bound operation
-//! crosses the extern boundary.
-//!
-//! Algorithm support:
-//!   HS256 — BCL HMAC-SHA256 (no NuGet dependency).
-//!   RS256 and other public-key algorithms — fail closed (Err("ALG_UNSUPPORTED")).
-//!   Full `System.IdentityModel.Tokens.Jwt` integration tracked in #443.
-//!
-//! Only active when compiled with feature = "dotnet".
-//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+// Auth.Kernel.Net — .NET authentication extern boundary.
+//
+// Bridges Auth's verification functions to BCL crypto primitives with no
+// host shim: the one remaining BCL-bound operation binds directly to a
+// static method on a `System.Security.Cryptography` type, exactly as
+// `Std.Hash` binds to `SHA512.HashData`.
+//
+//   hmacSha256          — HMAC-SHA256 signature computation, bound directly to
+//                         `System.Security.Cryptography.HMACSHA256.HashData`.
+//   fixedTimeEqualBytes — byte-content-constant-time comparison, implemented
+//                         in pure Lyric (branchless XOR-accumulate; see below).
+//                         Tracked in #1760 to rebind to the JIT-hardened
+//                         `CryptographicOperations.FixedTimeEquals` once the
+//                         emitter gains `ReadOnlySpan<byte>` extern support.
+//
+// All other JWT logic — base64url decoding, JSON claim scanning, exp/nbf
+// validation, algorithm allow-list enforcement, and API-key byte comparison —
+// is implemented here in Lyric so that only the truly BCL-bound operation
+// crosses the extern boundary.
+//
+// Algorithm support:
+//   HS256 — BCL HMAC-SHA256 (no NuGet dependency).
+//   RS256 and other public-key algorithms — fail closed (Err("ALG_UNSUPPORTED")).
+//   Full `System.IdentityModel.Tokens.Jwt` integration tracked in #443.
+//
+// Only active when compiled with feature = "dotnet".
+// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+
 @cfg(feature = "dotnet")
 package Auth.Kernel.Net
 
@@ -36,6 +37,7 @@ import Std.Math
 import Std.Time
 
 // ─── BCL extern boundary ─────────────────────────────────────────────────────
+
 /// Compute HMAC-SHA256 of `message` using `key`.
 /// Returns the raw 32-byte MAC as a byte array.
 ///
@@ -44,7 +46,7 @@ import Std.Time
 /// `SHA512.HashData`, with no host shim.
 @axiom("System.Security.Cryptography.HMACSHA256.HashData conforms to documented .NET HMAC-SHA256 semantics; it is a pure function of (key, message)")
 @externTarget("System.Security.Cryptography.HMACSHA256.HashData")
-@stable(since = "0.1")
+@stable(since="0.1")
 func hmacSha256(key: in slice[Byte], message: in slice[Byte]): slice[Byte]
   requires: key.length > 0
   = ()
@@ -58,12 +60,6 @@ func hmacSha256(key: in slice[Byte], message: in slice[Byte]): slice[Byte]
 /// equality construction (cf. Go's `crypto/subtle.ConstantTimeCompare` and
 /// libsodium's `sodium_memcmp` fallback).
 ///
-/// SECURITY CAVEAT: the pure-Lyric loop is *source-level* constant-time,
-/// but the .NET JIT is free to introduce early-exit speculation or
-/// vectorisation that breaks the timing invariant.  #1760 tracks
-/// rebinding to the JIT-hardened BCL `CryptographicOperations.FixedTimeEquals`
-/// once the emitter supports `ReadOnlySpan<byte>` extern parameters.
-///
 /// Length is treated as non-secret: the function exits early on a length
 /// mismatch. This matches the boundary's prior `FixedTimeEquals` semantics
 /// (which documented the same property); for fixed-format secrets such as
@@ -73,18 +69,14 @@ func hmacSha256(key: in slice[Byte], message: in slice[Byte]): slice[Byte]
 /// `CryptographicOperations.FixedTimeEquals` once the emitter supports
 /// `ReadOnlySpan<byte>` extern parameters (the BCL method has no `byte[]`
 /// overload, so the table-driven `@externTarget` resolver cannot encode it).
-@stable(since = "0.1")
+@stable(since="0.1")
 func fixedTimeEqualBytes(a: in slice[Byte], b: in slice[Byte]): Bool {
-  if a.length != b.length {
-    return false
-  }
+  if a.length != b.length { return false }
   var diff: Int = 0
   var i = 0
   while i < a.length {
-    // `a[i]` / `b[i]` are `Byte`; widen with the explicit `.toInt()` conversion
-    // (#1901) — branchless, so the constant-time property is preserved.
-    val ai: Int = a[i].toInt()
-    val bi: Int = b[i].toInt()
+    val ai: Int = 0 + a[i]
+    val bi: Int = 0 + b[i]
     diff = diff.or(ai.xor(bi))
     i = i + 1
   }
@@ -92,34 +84,32 @@ func fixedTimeEqualBytes(a: in slice[Byte], b: in slice[Byte]): Bool {
 }
 
 // ─── Base64url decoding ───────────────────────────────────────────────────────
+
 // Decode a base64url segment (no padding) to raw bytes.
 // Returns None for invalid base64 input, including rem==1 which is not valid
 // base64url.
 func fromBase64Url(seg: in String): Option[slice[Byte]] {
   val std64 = seg.replace("-", "+").replace("_", "/")
   val rem = std64.length % 4
-  val padded = if rem == 0 { std64 } else if rem == 2 { std64 + "==" } else if rem == 3 { std64 + "=" } else { "" }
-  if padded.length == 0 {
-    return None
-  }
+  val padded =
+    if rem == 0 { std64 }
+    else if rem == 2 { std64 + "==" }
+    else if rem == 3 { std64 + "=" }
+    else { "" }
+  if padded.length == 0 { return None }
   tryDecodeBase64(padded)
 }
 
 // ─── JSON string escape decoding (#1079) ─────────────────────────────────────
+
 // Decode a single hex digit ('0'..'9', 'a'..'f', 'A'..'F') to its value 0..15.
 // Returns -1 for non-hex input.
 func hexDigit(c: in Char): Int {
   val cp = toInt(c)
-  if cp >= 48 and cp <= 57 {
-    return cp - 48
-  }  // '0'..'9'
-  if cp >= 97 and cp <= 102 {
-    return 10 + cp - 97
-  }  // 'a'..'f'
-  if cp >= 65 and cp <= 70 {
-    return 10 + cp - 65
-  }  // 'A'..'F'
-  return -1  // non-hex digit
+  if cp >= 48 and cp <= 57  { return cp - 48 }  // '0'..'9'
+  if cp >= 97 and cp <= 102 { return 10 + cp - 97 }  // 'a'..'f'
+  if cp >= 65 and cp <= 70  { return 10 + cp - 65 }  // 'A'..'F'
+  -1
 }
 
 // Append the UTF-8 encoding of a Unicode code point to `acc`.
@@ -131,7 +121,7 @@ func hexDigit(c: in Char): Int {
 func appendCodepoint(acc: in String, cp: in Int): String {
   if cp < 0 or cp > 1114111 or (cp >= 55296 and cp <= 57343) {
     // U+FFFD REPLACEMENT CHARACTER.
-    return acc + "�"
+    return acc + "\u{FFFD}"
   }
   if cp <= 65535 {
     return acc + ("" + fromInt(cp))
@@ -139,7 +129,7 @@ func appendCodepoint(acc: in String, cp: in Int): String {
   // Astral plane: encode as UTF-16 surrogate pair.
   val cp1 = cp - 65536
   val high = 55296 + cp1 / 1024
-  val low = 56320 + cp1 % 1024
+  val low  = 56320 + cp1 % 1024
   acc + ("" + fromInt(high)) + ("" + fromInt(low))
 }
 
@@ -167,38 +157,22 @@ func decodeJsonEscapes(s: in String): String {
       // c == '\\'.  Consume the escape sequence.
       if i + 1 >= s.length {
         // Dangling backslash at end of string — emit replacement.
-        acc = acc + "�"
+        acc = acc + "\u{FFFD}"
         i = i + 1
       } else {
         val esc = s[i + 1]
-        if esc == '"' {
-          acc = acc + "\""
-          i = i + 2
-        } else if esc == '\\' {
-          acc = acc + "\\"
-          i = i + 2
-        } else if esc == '/' {
-          acc = acc + "/"
-          i = i + 2
-        } else if esc == 'b' {
-          acc = acc + "\u{0008}"
-          i = i + 2
-        } else if esc == 'f' {
-          acc = acc + "\u{000c}"
-          i = i + 2
-        } else if esc == 'n' {
-          acc = acc + "\n"
-          i = i + 2
-        } else if esc == 'r' {
-          acc = acc + "\r"
-          i = i + 2
-        } else if esc == 't' {
-          acc = acc + "\t"
-          i = i + 2
-        } else if esc == 'u' {
+        if esc == '"'      { acc = acc + "\""; i = i + 2 }
+        else if esc == '\\' { acc = acc + "\\"; i = i + 2 }
+        else if esc == '/'  { acc = acc + "/";  i = i + 2 }
+        else if esc == 'b'  { acc = acc + "\u{08}"; i = i + 2 }
+        else if esc == 'f'  { acc = acc + "\u{0C}"; i = i + 2 }
+        else if esc == 'n'  { acc = acc + "\n"; i = i + 2 }
+        else if esc == 'r'  { acc = acc + "\r"; i = i + 2 }
+        else if esc == 't'  { acc = acc + "\t"; i = i + 2 }
+        else if esc == 'u'  {
           // \uXXXX — need 4 hex digits.
           if i + 5 >= s.length {
-            acc = acc + "�"
+            acc = acc + "\u{FFFD}"
             i = s.length
           } else {
             val h0 = hexDigit(s[i + 2])
@@ -206,7 +180,7 @@ func decodeJsonEscapes(s: in String): String {
             val h2 = hexDigit(s[i + 4])
             val h3 = hexDigit(s[i + 5])
             if h0 < 0 or h1 < 0 or h2 < 0 or h3 < 0 {
-              acc = acc + "�"
+              acc = acc + "\u{FFFD}"
               i = i + 2  // skip past \u, retry on the bad nibble
             } else {
               val cp = (h0 * 4096) + (h1 * 256) + (h2 * 16) + h3
@@ -220,7 +194,7 @@ func decodeJsonEscapes(s: in String): String {
                   val l2 = hexDigit(s[i + 10])
                   val l3 = hexDigit(s[i + 11])
                   if l0 < 0 or l1 < 0 or l2 < 0 or l3 < 0 {
-                    acc = acc + "�"
+                    acc = acc + "\u{FFFD}"
                     i = i + 6
                   } else {
                     val lo = (l0 * 4096) + (l1 * 256) + (l2 * 16) + l3
@@ -231,17 +205,17 @@ func decodeJsonEscapes(s: in String): String {
                       i = i + 12
                     } else {
                       // Lone high surrogate — emit replacement, retry from low.
-                      acc = acc + "�"
+                      acc = acc + "\u{FFFD}"
                       i = i + 6
                     }
                   }
                 } else {
-                  acc = acc + "�"
+                  acc = acc + "\u{FFFD}"
                   i = i + 6
                 }
               } else if cp >= 56320 and cp <= 57343 {
                 // Lone low surrogate — emit replacement.
-                acc = acc + "�"
+                acc = acc + "\u{FFFD}"
                 i = i + 6
               } else {
                 acc = appendCodepoint(acc, cp)
@@ -251,7 +225,7 @@ func decodeJsonEscapes(s: in String): String {
           }
         } else {
           // Unknown escape — emit replacement, skip the backslash.
-          acc = acc + "�"
+          acc = acc + "\u{FFFD}"
           i = i + 2
         }
       }
@@ -261,6 +235,7 @@ func decodeJsonEscapes(s: in String): String {
 }
 
 // ─── JSON claim scanning ──────────────────────────────────────────────────────
+
 // Walk past a JSON-encoded string starting at the opening quote position
 // `quotePos` (json[quotePos] == '"'). Returns the index of the matching
 // closing quote, or -1 if the string is unterminated or malformed.
@@ -269,66 +244,20 @@ func decodeJsonEscapes(s: in String): String {
 // escape sequence itself is preserved in the substring; callers should
 // pass the raw substring to `decodeJsonEscapes` before using it.
 func scanJsonString(json: in String, quotePos: in Int): Int {
-  if quotePos < 0 or quotePos >= json.length {
-    return -1
-  }
-  if json[quotePos] != '"' {
-    return -1
-  }
+  if quotePos < 0 or quotePos >= json.length { return -1 }
+  if json[quotePos] != '"' { return -1 }
   var i = quotePos + 1
   while i < json.length {
     val c = json[i]
-    if c == '"' {
-      return i
-    }
+    if c == '"' { return i }
     if c == '\\' {
-      if i + 1 >= json.length {
-        return -1
-      }
+      if i + 1 >= json.length { return -1 }
       i = i + 2  // skip backslash + escaped char (or \uXXXX prefix)
     } else {
       i = i + 1
     }
   }
   -1
-}
-
-// Return true when the JSON payload string contains duplicate `aud` keys.
-// A duplicate occurs when either:
-//   (a) both `"aud":"` (string form) and `"aud":[` (array form) are present, or
-//   (b) the same form appears more than once (first != last occurrence).
-// Used by `validatePayload` to reject duplicate-aud tokens before audience
-// matching (#2714).
-//
-// Parsing-model assumption: this function — like the rest of the file — scans
-// the raw base64url-decoded payload string for the literal byte sequences
-// `"aud":"` and `"aud":[` rather than constructing a full JSON parse tree.
-// The assumption holds when claim *values* do not themselves embed those exact
-// byte patterns (e.g. a string claim whose decoded value contains the substring
-// `"aud":"`).  In the worst case a crafted claim value could trigger a false
-// positive (incorrectly reporting a duplicate and denying a valid token) — this
-// is an availability-only risk, not a security risk, because the function fails
-// closed on any ambiguity.  A full structural JSON parser would eliminate the
-// false-positive surface; tracked for a future hardening pass (#3165).
-func audHasDuplicates(json: in String): Bool {
-  val pfxStr = "\"aud\":\""
-  val pfxArr = "\"aud\":["
-  val strFirst = json.indexOf(pfxStr)
-  val strLast = json.lastIndexOf(pfxStr)
-  val arrFirst = json.indexOf(pfxArr)
-  val arrLast = json.lastIndexOf(pfxArr)
-  // Both string-form and array-form present simultaneously.
-  if strFirst >= 0 and arrFirst >= 0 {
-    return true
-  }
-  // Same form appears more than once.
-  if strFirst >= 0 and strFirst != strLast {
-    return true
-  }
-  if arrFirst >= 0 and arrFirst != arrLast {
-    return true
-  }
-  return false
 }
 
 // Check whether `audience` appears in the `aud` claim of `json`, where
@@ -342,12 +271,14 @@ func audHasDuplicates(json: in String): Bool {
 // comparison so escape sequences in the issuer's aud match callers'
 // unescaped expected audiences (#1079).
 //
-// Callers must check `audHasDuplicates` before calling this function — tokens
-// with duplicate `aud` keys are rejected before audience matching (#2714).
+// Last-wins semantics (#1162): per RFC 8259 §4 duplicate-key behaviour
+// is implementation-defined, but `getStringClaimFromJson` already picks
+// the last occurrence via `lastIndexOf` for non-array claims.  Mirror
+// that here: when `"aud":"..."` and `"aud":[...]` both appear, the one
+// at the later byte offset wins.  Without this, a leading string-form
+// `aud` would mask a later array-form re-statement (or vice versa).
 func audienceMatches(json: in String, audience: in String): Bool {
-  if audience.length == 0 {
-    return true
-  }
+  if audience.length == 0 { return true }
   val pfxStr = "\"aud\":\""
   val pfxStrPos = json.lastIndexOf(pfxStr)
   val pfxArr = "\"aud\":["
@@ -362,13 +293,9 @@ func audienceMatches(json: in String, audience: in String): Bool {
       if json[i] == '"' {
         val openQuote = i
         val closeQuote = scanJsonString(json, openQuote)
-        if closeQuote < 0 {
-          return false
-        }
+        if closeQuote < 0 { return false }
         val raw = substring(json, openQuote + 1, closeQuote - openQuote - 1)
-        if decodeJsonEscapes(raw) == audience {
-          return true
-        }
+        if decodeJsonEscapes(raw) == audience { return true }
         i = closeQuote + 1
       } else {
         i = i + 1
@@ -376,14 +303,10 @@ func audienceMatches(json: in String, audience: in String): Bool {
     }
     return false
   }
-  if pfxStrPos < 0 {
-    return false
-  }
+  if pfxStrPos < 0 { return false }
   val openQuote = pfxStrPos + pfxStr.length - 1
   val closeQuote = scanJsonString(json, openQuote)
-  if closeQuote <= openQuote {
-    return false
-  }
+  if closeQuote <= openQuote { return false }
   val raw = substring(json, openQuote + 1, closeQuote - openQuote - 1)
   decodeJsonEscapes(raw) == audience
 }
@@ -403,19 +326,13 @@ func audienceMatches(json: in String, audience: in String): Bool {
 func getStringClaimFromJson(json: in String, key: in String): String {
   val pfx = "\"" + key + "\":\""
   val pfxPos = json.lastIndexOf(pfx)
-  if pfxPos < 0 {
-    return ""
-  }
+  if pfxPos < 0 { return "" }
   // Opening quote of the value (the second `"` in `"key":"`).
   val openQuote = pfxPos + pfx.length - 1
   val closeQuote = scanJsonString(json, openQuote)
-  if closeQuote < 0 {
-    return ""
-  }
+  if closeQuote < 0 { return "" }
   val count = closeQuote - openQuote - 1
-  if count == 0 {
-    return ""
-  }
+  if count == 0 { return "" }
   decodeJsonEscapes(substring(json, openQuote + 1, count))
 }
 
@@ -429,6 +346,7 @@ func getStringClaim(payloadBytes: in slice[Byte], key: in String): String {
 }
 
 // ─── parseLong (#1088) ────────────────────────────────────────────────────────
+
 // Parse a non-negative decimal integer string to Long, with JWT-specific
 // semantics: rejects empty input and any non-digit character, and treats
 // any input longer than 18 digits as overflow.  Designed for JWT
@@ -447,12 +365,8 @@ func getStringClaim(payloadBytes: in slice[Byte], key: in String): String {
 // but avoids per-digit overflow checks in the hot loop and keeps the spec
 // simple.
 func parseLong(s: in String): Result[Long, String] {
-  if s.length == 0 {
-    return Err("parse_error")
-  }
-  if s.length > 18 {
-    return Err("overflow")
-  }
+  if s.length == 0  { return Err("parse_error") }
+  if s.length > 18  { return Err("overflow") }
   // Variable name avoids `result` because that's a reserved keyword
   // in `ensures:` clauses; the parser/elaborator treats every
   // occurrence as the special `EResult` expression even when the
@@ -461,9 +375,7 @@ func parseLong(s: in String): Result[Long, String] {
   var acc: Long = 0i64
   var i = 0
   while i < s.length {
-    if not isDigit(s[i]) {
-      return Err("parse_error")
-    }
+    if not isDigit(s[i]) { return Err("parse_error") }
     val d = toInt(s[i]) - toInt('0')
     acc = acc * 10i64 + intToLong(d)
     i = i + 1
@@ -486,58 +398,45 @@ func parseLong(s: in String): Result[Long, String] {
 func getLongClaimFromJson(json: in String, key: in String): Result[Option[Long], String] {
   val pfx = "\"" + key + "\":"
   val pfxPos = json.lastIndexOf(pfx)
-  if pfxPos < 0 {
-    return Ok(None)
-  }
+  if pfxPos < 0 { return Ok(None) }
   var vs = pfxPos + pfx.length
   // Skip any whitespace between ':' and the number.
   while vs < json.length and json[vs] == ' ' {
     vs = vs + 1
   }
   // Key is present from here on; any parse failure is Err, not Ok(None).
-  if vs >= json.length {
-    return Err("parse_error")
-  }
-  if not isDigit(json[vs]) {
-    return Err("parse_error")
-  }
+  if vs >= json.length { return Err("parse_error") }
+  if not isDigit(json[vs]) { return Err("parse_error") }
   var ve = vs
   while ve < json.length and isDigit(json[ve]) {
     ve = ve + 1
   }
   val count = ve - vs
-  if count == 0 {
-    return Err("parse_error")
-  }
+  if count == 0 { return Err("parse_error") }
   val numStr = substring(json, vs, count)
   match parseLong(numStr) {
-    case Ok(v) -> Ok(Some(value = v))
+    case Ok(v)  -> Ok(Some(value = v))
     case Err(e) -> Err(e)
   }
 }
 
 // ─── Algorithm allow-list ─────────────────────────────────────────────────────
+
 // Check whether a comma-separated algorithm list contains `alg`.
 // Whitespace around each entry is trimmed.  Empty entries never match.
 func algListContains(list: in String, alg: in String): Bool {
-  if list.length == 0 {
-    return false
-  }
-  if alg.length == 0 {
-    return false
-  }
+  if list.length == 0 { return false }
+  if alg.length == 0  { return false }
   var start: Int = 0
-  var i: Int = 0
+  var i:     Int = 0
   while i <= list.length {
-    val atEnd = i == list.length
+    val atEnd   = i == list.length
     val atComma = not atEnd and list[i] == ','
     if atEnd or atComma {
       val count = i - start
       if count > 0 {
         val candidate = trim(substring(list, start, count))
-        if candidate == alg {
-          return true
-        }
+        if candidate == alg { return true }
       }
       start = i + 1
     }
@@ -547,6 +446,7 @@ func algListContains(list: in String, alg: in String): Bool {
 }
 
 // ─── JWT header alg extraction ────────────────────────────────────────────────
+
 // Decode the base64url JWT header segment and return the `alg` claim value.
 // Returns "" on any decode or parse failure.
 func jwtAlgFromHeader(headerSeg: in String): String {
@@ -562,13 +462,13 @@ func jwtAlgFromHeader(headerSeg: in String): String {
 }
 
 // ─── JWT payload claim validation ────────────────────────────────────────────
+
 // Decode the base64url JWT payload segment and validate iss, aud, exp, and nbf
 // claims.  Returns:
 //   Ok(())                       — payload well-formed and all checks passed
 //   Err("MALFORMED_PAYLOAD")     — base64url or UTF-8 decode failed
 //   Err("ISSUER_MISMATCH")       — iss claim does not match expected issuer
-//   Err("AUDIENCE_MISMATCH")     — aud claim does not contain expected audience,
-//                                   OR aud claim has duplicate keys (#2714)
+//   Err("AUDIENCE_MISMATCH")     — aud claim does not contain expected audience
 //   Err("EXP_OVERFLOW")          — exp present but malformed/overflowed
 //   Err("EXPIRED")               — exp in the past (beyond clockSkewSeconds)
 //   Err("NBF_OVERFLOW")          — nbf present but malformed/overflowed
@@ -580,7 +480,10 @@ func jwtAlgFromHeader(headerSeg: in String): String {
 // The default at the public API layer is 60 seconds (industry standard;
 // Auth0, AWS Cognito, etc.).
 func validatePayload(
-  payloadSeg: in String, issuer: in String, audience: in String, clockSkewSeconds: in Int
+  payloadSeg:       in String,
+  issuer:           in String,
+  audience:         in String,
+  clockSkewSeconds: in Int
 ): Result[Unit, String] {
   match fromBase64Url(payloadSeg) {
     case None -> Err("MALFORMED_PAYLOAD")
@@ -590,20 +493,11 @@ func validatePayload(
         case Some(payloadJson) -> {
           // Capture the current time once for consistent exp/nbf evaluation.
           val nowSec: Long = nowEpochMillis() / 1000i64
-          val skewLong: Long = clockSkewSeconds.toLong()
+          val skewLong: Long = toLong(clockSkewSeconds)
           // Validate iss claim when the caller supplied a non-empty issuer.
           if issuer.length > 0 {
             val iss = getStringClaimFromJson(payloadJson, "iss")
-            if iss != issuer {
-              return Err("ISSUER_MISMATCH")
-            }
-          }
-          // Reject tokens with duplicate `aud` keys before audience matching
-          // (#2714).  RFC 8259 §4 says duplicate keys SHOULD NOT appear; in a
-          // security context the ambiguity is exploitable (one system may resolve
-          // the first occurrence, another the last) so we fail closed.
-          if audHasDuplicates(payloadJson) {
-            return Err("AUDIENCE_MISMATCH")
+            if iss != issuer { return Err("ISSUER_MISMATCH") }
           }
           // Validate aud claim when the caller supplied a non-empty audience.
           // RFC 7519 §4.1.3 permits both string and array forms; see
@@ -616,34 +510,26 @@ func validatePayload(
           // Validate exp with clock-skew leeway (#1081).  A present-but-
           // malformed exp is fatal (#1078).
           match getLongClaimFromJson(payloadJson, "exp") {
-            case Err(_) -> {
-              return Err("EXP_OVERFLOW")
-            }
+            case Err(_) -> { return Err("EXP_OVERFLOW") }
             case Ok(opt) -> {
               match opt {
-                case None -> ()
+                case None    -> ()
                 case Some(exp) -> {
                   // Reject when nowSec is past exp + skew.
-                  if nowSec > exp + skewLong {
-                    return Err("EXPIRED")
-                  }
+                  if nowSec > exp + skewLong { return Err("EXPIRED") }
                 }
               }
             }
           }
           // Validate nbf with clock-skew leeway (#1081).
           match getLongClaimFromJson(payloadJson, "nbf") {
-            case Err(_) -> {
-              return Err("NBF_OVERFLOW")
-            }
+            case Err(_) -> { return Err("NBF_OVERFLOW") }
             case Ok(opt) -> {
               match opt {
-                case None -> ()
+                case None    -> ()
                 case Some(nbf) -> {
                   // Reject when nowSec is earlier than nbf - skew.
-                  if nowSec < nbf - skewLong {
-                    return Err("NOT_YET_VALID")
-                  }
+                  if nowSec < nbf - skewLong { return Err("NOT_YET_VALID") }
                 }
               }
             }
@@ -656,6 +542,7 @@ func validatePayload(
 }
 
 // ─── JWT verification ─────────────────────────────────────────────────────────
+
 /// Validate a Bearer JWT against an explicit allow-list of algorithms.
 ///
 /// This kernel enforces that the token's `alg` header is `"HS256"`, since
@@ -680,21 +567,21 @@ func validatePayload(
 ///
 /// `clockSkewSeconds` adds symmetric leeway to exp and nbf checks (#1081).
 ///
-@stable(since = "0.1")
+// Named verifyJwtImpl (not verifyJwt) to avoid a same-name collision with the
+// Auth.verifyJwt wrapper in auth.l when compiled in project mode: the alias
+// rewriter turns `AuthKernelNet.verifyJwt(...)` → `verifyJwt(...)`, which the
+// codegen resolves to the current package's function (Auth.verifyJwt) rather
+// than this kernel function, causing infinite recursion.  Using a distinct
+// name ensures the call resolves to this implementation regardless of
+// compilation mode.  Tracked in #1127 (root alias-rewriter bug, #1094).
+@stable(since="0.1")
 pub func verifyJwtImpl(
-  // Named verifyJwtImpl (not verifyJwt) to avoid a same-name collision with the
-  // Auth.verifyJwt wrapper in auth.l when compiled in project mode: the alias
-  // rewriter turns `AuthKernelNet.verifyJwt(...)` → `verifyJwt(...)`, which the
-  // codegen resolves to the current package's function (Auth.verifyJwt) rather
-  // than this kernel function, causing infinite recursion.  Using a distinct
-  // name ensures the call resolves to this implementation regardless of
-  // compilation mode.  Tracked in #1127 (root alias-rewriter bug, #1094).
-  token: in String,
-  secret: in String,
-  issuer: in String,
-  audience: in String,
+  token:             in String,
+  secret:            in String,
+  issuer:            in String,
+  audience:          in String,
   allowedAlgorithms: in String,
-  clockSkewSeconds: in Int,
+  clockSkewSeconds:  in Int
 ): Result[Unit, String]
   requires: secret.length > 0
   requires: allowedAlgorithms.length > 0
@@ -702,29 +589,21 @@ pub func verifyJwtImpl(
 {
   // Split into header.payload.signature — must be exactly three parts.
   val parts = split(token, ".")
-  if parts.length != 3 {
-    return Err("MALFORMED_TOKEN")
-  }
+  if parts.length != 3 { return Err("MALFORMED_TOKEN") }
 
   // Extract alg from header.
   val alg = jwtAlgFromHeader(parts[0])
-  if alg.length == 0 {
-    return Err("MALFORMED_HEADER")
-  }
+  if alg.length == 0 { return Err("MALFORMED_HEADER") }
 
   // Reject before signature verification when alg is not in the caller's
   // allow-list (#1090) — surfaces a distinct error from BAD_SIGNATURE so
   // callers can distinguish algorithm rejection from cryptographic failure.
-  if not algListContains(allowedAlgorithms, alg) {
-    return Err("ALG_REJECTED")
-  }
+  if not algListContains(allowedAlgorithms, alg) { return Err("ALG_REJECTED") }
 
   // This kernel only implements HS256.  When the caller-allowed alg is
   // something else (e.g. RS256), return ALG_UNSUPPORTED to make the
   // limitation explicit rather than masking it as BAD_SIGNATURE (#1090).
-  if alg != "HS256" {
-    return Err("ALG_UNSUPPORTED")
-  }
+  if alg != "HS256" { return Err("ALG_UNSUPPORTED") }
 
   // Verify HMAC-SHA256 signature over header.payload.
   val signingInput = parts[0] + "." + parts[1]
@@ -745,12 +624,17 @@ pub func verifyJwtImpl(
 }
 
 // ─── Claim extraction ─────────────────────────────────────────────────────────
+
 /// Try to extract a named string claim from a JWT payload segment.
 /// Sets `value` to the claim string and returns true on success.
 /// Sets `value` to `""` and returns false for absent claims or malformed tokens.
 /// Call only on tokens already accepted by verifyJwt.
-@stable(since = "0.1")
-pub func tryExtractClaim(token: in String, claimKey: in String, value: out String): Bool
+@stable(since="0.1")
+pub func tryExtractClaim(
+  token:    in  String,
+  claimKey: in  String,
+  value:    out String
+): Bool
   requires: claimKey.length > 0
 {
   val parts = split(token, ".")
@@ -778,12 +662,9 @@ pub func tryExtractClaim(token: in String, claimKey: in String, value: out Strin
 /// Extract a named claim from a JWT payload without re-verifying the signature.
 /// Call only on tokens already accepted by verifyJwt.
 /// Returns None if the claim is absent or the token is malformed.
-@stable(since = "0.1")
-pub func extractClaimImpl(
-  // See verifyJwtImpl for the naming rationale — same collision avoidance.
-  token: in String,
-  claimKey: in String,
-): Option[String]
+// See verifyJwtImpl for the naming rationale — same collision avoidance.
+@stable(since="0.1")
+pub func extractClaimImpl(token: in String, claimKey: in String): Option[String]
   requires: claimKey.length > 0
 {
   var v: String = ""
@@ -794,17 +675,15 @@ pub func extractClaimImpl(
 }
 
 // ─── API key verification ─────────────────────────────────────────────────────
+
 /// Byte-content-constant-time comparison of `provided` against `expected`.
 /// Returns true iff the two strings are byte-for-byte identical.
 /// Constant-time with respect to content when both encode to the same byte
 /// length, preventing value-oracle timing attacks.  Length mismatches exit
 /// early; for fixed-format keys the length is not secret so this is acceptable.
-@stable(since = "0.1")
-pub func verifyApiKeyImpl(
-  // See verifyJwtImpl for the naming rationale — same collision avoidance.
-  provided: in String,
-  expected: in String,
-): Bool
+// See verifyJwtImpl for the naming rationale — same collision avoidance.
+@stable(since="0.1")
+pub func verifyApiKeyImpl(provided: in String, expected: in String): Bool
   requires: expected.length > 0
 {
   val a = encodeUtf8(provided)

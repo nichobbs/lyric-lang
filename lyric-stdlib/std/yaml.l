@@ -1,20 +1,20 @@
-//! std/yaml.l — Pure-Lyric YAML 1.2 / JSON parser.
-//!
-//! Parses a string containing JSON or YAML and returns a value tree.
-//! YAML is a superset of JSON (YAML 1.2 §1.2 "JSON is YAML"), so the
-//! same data model and parser handle both.
-//!
-//! Supported:
-//!   JSON mode  — full JSON: objects, arrays, strings (with \uXXXX),
-//!                numbers, booleans, null.
-//!   YAML mode  — JSON flow style + YAML block mappings and sequences,
-//!                unquoted / single-quoted / double-quoted scalars, and
-//!                the YAML 1.2 null/bool literals (~, null, true, false).
-//!                Multi-document, anchors/aliases are not yet supported;
-//!                they return UnsupportedFeature.
-//!
-//! Cross-platform: no BCL/JVM externs. Works on both MSIL and JVM
-//! targets without any kernel bridge.
+// std/yaml.l — Pure-Lyric YAML 1.2 / JSON parser.
+//
+// Parses a string containing JSON or YAML and returns a value tree.
+// YAML is a superset of JSON (YAML 1.2 §1.2 "JSON is YAML"), so the
+// same data model and parser handle both.
+//
+// Supported:
+//   JSON mode  — full JSON: objects, arrays, strings (with \uXXXX),
+//                numbers, booleans, null.
+//   YAML mode  — JSON flow style + YAML block mappings and sequences,
+//                unquoted / single-quoted / double-quoted scalars, and
+//                the YAML 1.2 null/bool literals (~, null, true, false).
+//                Multi-document, anchors/aliases are not yet supported;
+//                they return UnsupportedFeature.
+//
+// Cross-platform: no BCL/JVM externs. Works on both MSIL and JVM
+// targets without any kernel bridge.
 @runtime_checked
 package Std.Yaml
 
@@ -25,6 +25,7 @@ import Std.Char
 import Std.Parse
 
 // ── Error type ─────────────────────────────────────────────────────────────────
+
 pub union YamlError {
   case UnexpectedChar(pos: Int, expected: String)
   case UnexpectedEof(pos: Int, expected: String)
@@ -36,18 +37,25 @@ pub union YamlError {
 
 pub func YamlError.message(e: in YamlError): String {
   match e {
-    case UnexpectedChar(pos, expected) -> "unexpected character at position " + toString(pos) + "; expected " + expected
-    case UnexpectedEof(pos, expected) -> "unexpected end of input at position " + toString(pos) + "; expected " + expected
-    case InvalidNumber(pos, raw) -> "invalid number at position " + toString(pos) + ": '" + raw + "'"
-    case DuplicateKey(pos, key) -> "duplicate key at position " + toString(pos) + ": '" + key + "'"
-    case UnsupportedFeature(pos, feature) -> "unsupported YAML feature at position " + toString(pos) + ": " + feature
-    case InvalidDocument(message) -> "invalid document: " + message
+    case UnexpectedChar(pos, expected) ->
+      "unexpected character at position " + toString(pos) + "; expected " + expected
+    case UnexpectedEof(pos, expected) ->
+      "unexpected end of input at position " + toString(pos) + "; expected " + expected
+    case InvalidNumber(pos, raw) ->
+      "invalid number at position " + toString(pos) + ": '" + raw + "'"
+    case DuplicateKey(pos, key) ->
+      "duplicate key at position " + toString(pos) + ": '" + key + "'"
+    case UnsupportedFeature(pos, feature) ->
+      "unsupported YAML feature at position " + toString(pos) + ": " + feature
+    case InvalidDocument(message) ->
+      "invalid document: " + message
   }
 }
 
 // ── Data model ─────────────────────────────────────────────────────────────────
+
 pub record YamlPair {
-  key: String
+  key:   String
   value: YamlValue
 }
 
@@ -62,13 +70,15 @@ pub union YamlValue {
 }
 
 // ── Parser state ───────────────────────────────────────────────────────────────
+
 record YamlState {
-  src: String
-  pos: Int
+  src:    String
+  pos:    Int
   isJson: Bool
 }
 
 // ── Low-level character utilities ──────────────────────────────────────────────
+
 func yAtEnd(st: in YamlState): Bool {
   st.pos >= st.src.length
 }
@@ -124,6 +134,7 @@ func yEatStr(st: inout YamlState, s: in String): Bool {
 }
 
 // ── Inline whitespace skip (correct approach, no sentinel) ─────────────────────
+
 func ySkipSpaces(st: inout YamlState): Unit {
   var scanning = true
   while scanning and st.pos < st.src.length {
@@ -168,6 +179,7 @@ func ySkipBlankAndComment(st: inout YamlState): Unit {
 }
 
 // ── JSON string parsing ────────────────────────────────────────────────────────
+
 func yParseHexDigit(c: in Char): Int {
   if c >= '0' and c <= '9' {
     toInt(c) - toInt('0')
@@ -230,18 +242,16 @@ func yParseDoubleQuoted(st: inout YamlState): Result[String, YamlError] {
         } else if esc == 't' {
           result = result + "\t"
         } else if esc == 'b' {
-          result = result + "\u{0008}"
+          result = result + "\u{08}"
         } else if esc == 'f' {
-          result = result + "\u{000c}"
+          result = result + "\u{0C}"
         } else if esc == 'u' {
           match yParseUnicode4(st) {
             case Err(e) -> {
               ok = false
               err = e
             }
-            case Ok(ch) -> {
-              result = result + "" + ch
-            }
+            case Ok(ch) -> { result = result + "" + ch }
           }
         } else {
           ok = false
@@ -257,11 +267,7 @@ func yParseDoubleQuoted(st: inout YamlState): Result[String, YamlError] {
     ok = false
     err = UnexpectedEof(pos = st.pos, expected = "'\"' to close string")
   }
-  if ok {
-    Ok(value = result)
-  } else {
-    Err(error = err)
-  }
+  if ok { Ok(value = result) } else { Err(error = err) }
 }
 
 // Parse a YAML single-quoted string (starting just after the opening "'").
@@ -284,17 +290,15 @@ func yParseSingleQuoted(st: inout YamlState): Result[String, YamlError] {
       st.pos = st.pos + 1
     }
   }
-  if done {
-    Ok(value = result)
-  } else {
-    Err(error = UnexpectedEof(pos = st.pos, expected = "' to close single-quoted string"))
-  }
+  if done { Ok(value = result) } else { Err(error = UnexpectedEof(pos = st.pos, expected = "' to close single-quoted string")) }
 }
 
 // ── YAML scalar classification ──────────────────────────────────────────────────
+
 // Returns true for characters that can start/continue an unquoted scalar.
 func yIsScalarChar(c: in Char): Bool {
-  not (c == ':' or c == '#' or c == '[' or c == ']' or c == '{' or c == '}' or c == ',' or c == '\n' or c == '\r')
+  not (c == ':' or c == '#' or c == '[' or c == ']' or
+       c == '{' or c == '}' or c == ',' or c == '\n' or c == '\r')
 }
 
 // Interpret a raw unquoted string as a YAML 1.2 scalar value.
@@ -314,9 +318,7 @@ func yInterpretScalar(raw: in String): YamlValue {
     var allDigits = t.length > start
     var di = start
     while di < t.length and allDigits {
-      if not isDigit(t[di]) {
-        allDigits = false
-      }
+      if not isDigit(t[di]) { allDigits = false }
       di += 1
     }
     if allDigits and t.length > start {
@@ -326,24 +328,21 @@ func yInterpretScalar(raw: in String): YamlValue {
       var ii = start
       while ii < t.length {
         val d = toInt(t[ii]) - toInt('0')
-        value = value * 10i64 + d.toLong()
+        value = value * 10i64 + d
         ii += 1
       }
-      if neg {
-        YInt(value = 0i64 - value)
-      } else {
-        YInt(value = value)
-      }
+      if neg { YInt(value = 0i64 - value) } else { YInt(value = value) }
     } else {
       match parseOptDouble(t) {
         case Some(f) -> YFloat(value = f)
-        case None -> YString(value = t)
+        case None    -> YString(value = t)
       }
     }
   }
 }
 
 // ── Number parsing (JSON-style) ────────────────────────────────────────────────
+
 func yParseNumber(st: inout YamlState): Result[YamlValue, YamlError] {
   val startPos = st.pos
   if st.pos < st.src.length and st.src[st.pos] == '-' {
@@ -377,7 +376,7 @@ func yParseNumber(st: inout YamlState): Result[YamlValue, YamlError] {
   if isFloat {
     match parseOptDouble(raw) {
       case Some(f) -> Ok(value = YFloat(value = f))
-      case None -> Err(error = InvalidNumber(pos = startPos, raw = raw))
+      case None    -> Err(error = InvalidNumber(pos = startPos, raw = raw))
     }
   } else {
     // Parse integer
@@ -386,18 +385,15 @@ func yParseNumber(st: inout YamlState): Result[YamlValue, YamlError] {
     var value = 0i64
     while ii < raw.length {
       val d = toInt(raw[ii]) - toInt('0')
-      value = value * 10i64 + d.toLong()
+      value = value * 10i64 + d
       ii += 1
     }
-    if neg {
-      Ok(value = YInt(value = 0i64 - value))
-    } else {
-      Ok(value = YInt(value = value))
-    }
+    if neg { Ok(value = YInt(value = 0i64 - value)) } else { Ok(value = YInt(value = value)) }
   }
 }
 
 // ── JSON flow value parsing ────────────────────────────────────────────────────
+
 func yParseArray(st: inout YamlState, depth: in Int): Result[YamlValue, YamlError] {
   if depth > 1024 {
     return Err(error = InvalidDocument(message = "document too deeply nested (max depth 1024)"))
@@ -431,11 +427,7 @@ func yParseArray(st: inout YamlState, depth: in Int): Result[YamlValue, YamlErro
       }
     }
   }
-  if ok {
-    Ok(value = YSequence(items = items))
-  } else {
-    Err(error = err)
-  }
+  if ok { Ok(value = YSequence(items = items)) } else { Err(error = err) }
 }
 
 func yParseObject(st: inout YamlState, depth: in Int): Result[YamlValue, YamlError] {
@@ -464,12 +456,8 @@ func yParseObject(st: inout YamlState, depth: in Int): Result[YamlValue, YamlErr
     } else if not st.isJson and st.pos < st.src.length and st.src[st.pos] == '\'' {
       st.pos = st.pos + 1
       match yParseSingleQuoted(st) {
-        case Err(e) -> {
-          keyResult = Err(error = e)
-        }
-        case Ok(s) -> {
-          keyResult = Ok(value = s)
-        }
+        case Err(e) -> { keyResult = Err(error = e) }
+        case Ok(s)  -> { keyResult = Ok(value = s) }
       }
     } else if not st.isJson {
       // Unquoted flow key: collect until ':' or '}'
@@ -531,11 +519,7 @@ func yParseObject(st: inout YamlState, depth: in Int): Result[YamlValue, YamlErr
       }
     }
   }
-  if ok {
-    Ok(value = YMapping(pairs = pairs))
-  } else {
-    Err(error = err)
-  }
+  if ok { Ok(value = YMapping(pairs = pairs)) } else { Err(error = err) }
 }
 
 func yParseValue(st: inout YamlState, depth: in Int): Result[YamlValue, YamlError] {
@@ -549,7 +533,7 @@ func yParseValue(st: inout YamlState, depth: in Int): Result[YamlValue, YamlErro
   if not st.isJson {
     match yCheckUnsupported(st) {
       case Some(e) -> return Err(error = e)
-      case None -> ()
+      case None    -> ()
     }
   }
   val c = st.src[st.pos]
@@ -557,13 +541,13 @@ func yParseValue(st: inout YamlState, depth: in Int): Result[YamlValue, YamlErro
     st.pos = st.pos + 1
     match yParseDoubleQuoted(st) {
       case Err(e) -> Err(error = e)
-      case Ok(s) -> Ok(value = YString(value = s))
+      case Ok(s)  -> Ok(value = YString(value = s))
     }
   } else if c == '\'' and not st.isJson {
     st.pos = st.pos + 1
     match yParseSingleQuoted(st) {
       case Err(e) -> Err(error = e)
-      case Ok(s) -> Ok(value = YString(value = s))
+      case Ok(s)  -> Ok(value = YString(value = s))
     }
   } else if c == '[' {
     st.pos = st.pos + 1
@@ -602,6 +586,7 @@ func yParseValue(st: inout YamlState, depth: in Int): Result[YamlValue, YamlErro
 }
 
 // ── YAML block parsing ─────────────────────────────────────────────────────────
+
 // Parse the indented content after a block sequence or mapping key.
 func yParseBlockSequence(st: inout YamlState, seqIndent: in Int, depth: in Int): Result[YamlValue, YamlError] {
   if depth > 1024 {
@@ -631,9 +616,7 @@ func yParseBlockSequence(st: inout YamlState, seqIndent: in Int, depth: in Int):
               ok = false
               err = e
             }
-            case Ok(v) -> {
-              items.add(v)
-            }
+            case Ok(v) -> { items.add(v) }
           }
         } else {
           // Inline value (scalar or flow collection on the same line)
@@ -656,11 +639,7 @@ func yParseBlockSequence(st: inout YamlState, seqIndent: in Int, depth: in Int):
       }
     }
   }
-  if ok {
-    Ok(value = YSequence(items = items))
-  } else {
-    Err(error = err)
-  }
+  if ok { Ok(value = YSequence(items = items)) } else { Err(error = err) }
 }
 
 func yParseBlockMapping(st: inout YamlState, mapIndent: in Int, depth: in Int): Result[YamlValue, YamlError] {
@@ -742,11 +721,7 @@ func yParseBlockMapping(st: inout YamlState, mapIndent: in Int, depth: in Int): 
       }
     }
   }
-  if ok {
-    Ok(value = YMapping(pairs = pairs))
-  } else {
-    Err(error = err)
-  }
+  if ok { Ok(value = YMapping(pairs = pairs)) } else { Err(error = err) }
 }
 
 func yParseBlockNode(st: inout YamlState, minIndent: in Int, depth: in Int): Result[YamlValue, YamlError] {
@@ -763,7 +738,7 @@ func yParseBlockNode(st: inout YamlState, minIndent: in Int, depth: in Int): Res
   }
   match yCheckUnsupported(st) {
     case Some(e) -> return Err(error = e)
-    case None -> ()
+    case None    -> ()
   }
   val c = st.src[st.pos]
   // Flow nodes inline
@@ -801,9 +776,7 @@ func yParseBlockNode(st: inout YamlState, minIndent: in Int, depth: in Int): Res
           scEnd = scEnd + 1
         }
       }
-      if scEnd > st.src.length {
-        scEnd = st.src.length
-      }
+      if scEnd > st.src.length { scEnd = st.src.length }
       val raw = st.src.substring(scStart, scEnd - scStart)
       st.pos = scEnd
       Ok(value = yInterpretScalar(raw))
@@ -812,6 +785,7 @@ func yParseBlockNode(st: inout YamlState, minIndent: in Int, depth: in Int): Res
 }
 
 // ── Anchor / alias guard ───────────────────────────────────────────────────────
+
 func yCheckUnsupported(st: inout YamlState): Option[YamlError] {
   if yStartsWith(st, "&") or yStartsWith(st, "*") or yStartsWith(st, "---") or yStartsWith(st, "!") {
     Some(value = UnsupportedFeature(pos = st.pos, feature = "anchors/aliases/directives/tags"))
@@ -821,8 +795,9 @@ func yCheckUnsupported(st: inout YamlState): Option[YamlError] {
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────────
+
 /// Parse a strict JSON string.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func parseJson(src: in String): Result[YamlValue, YamlError] {
   var st = YamlState(src = src, pos = 0, isJson = true)
   ySkipWs(st)
@@ -831,7 +806,7 @@ pub func parseJson(src: in String): Result[YamlValue, YamlError] {
   }
   match yParseValue(st, 0) {
     case Err(e) -> Err(error = e)
-    case Ok(v) -> {
+    case Ok(v)  -> {
       ySkipWs(st)
       if not yAtEnd(st) {
         Err(error = UnexpectedChar(pos = st.pos, expected = "end of input after JSON value"))
@@ -843,7 +818,7 @@ pub func parseJson(src: in String): Result[YamlValue, YamlError] {
 }
 
 /// Parse a YAML (or JSON) string.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func parseYaml(src: in String): Result[YamlValue, YamlError] {
   var st = YamlState(src = src, pos = 0, isJson = false)
   ySkipBlankAndComment(st)
@@ -852,26 +827,28 @@ pub func parseYaml(src: in String): Result[YamlValue, YamlError] {
   }
   match yCheckUnsupported(st) {
     case Some(e) -> Err(error = e)
-    case None -> {
+    case None    -> {
       val c = st.src[st.pos]
       // Use flow mode for explicit flow starts and plain numbers; '-' is only
       // a number prefix when immediately followed by a digit (not "- " which
       // starts a block sequence entry).
-      val nextIsDigit = if st.pos + 1 < st.src.length {
-        val nc = st.src[st.pos + 1]
-        nc >= '0' and nc <= '9'
-      } else {
-        false
-      }
-      val goFlow = if c == '[' or c == '{' or c == '"' or c == '\'' {
-        true
-      } else if c >= '0' and c <= '9' {
-        true
-      } else if c == '-' and nextIsDigit {
-        true
-      } else {
-        false
-      }
+      val nextIsDigit =
+        if st.pos + 1 < st.src.length {
+          val nc = st.src[st.pos + 1]
+          nc >= '0' and nc <= '9'
+        } else {
+          false
+        }
+      val goFlow =
+        if c == '[' or c == '{' or c == '"' or c == '\'' {
+          true
+        } else if c >= '0' and c <= '9' {
+          true
+        } else if c == '-' and nextIsDigit {
+          true
+        } else {
+          false
+        }
       if goFlow {
         yParseValue(st, 0)
       } else {
@@ -882,71 +859,72 @@ pub func parseYaml(src: in String): Result[YamlValue, YamlError] {
 }
 
 // ── Query helpers ──────────────────────────────────────────────────────────────
+
 /// True if the value is null.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func isNull(v: in YamlValue): Bool {
   match v {
     case YNull -> true
-    case _ -> false
+    case _     -> false
   }
 }
 
 /// Extract a string value, or None.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func asString(v: in YamlValue): Option[String] {
   match v {
     case YString(s) -> Some(value = s)
-    case _ -> None
+    case _          -> None
   }
 }
 
 /// Extract a boolean value, or None.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func asBool(v: in YamlValue): Option[Bool] {
   match v {
     case YBool(b) -> Some(value = b)
-    case _ -> None
+    case _        -> None
   }
 }
 
 /// Extract an integer value, or None.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func asInt(v: in YamlValue): Option[Long] {
   match v {
     case YInt(n) -> Some(value = n)
-    case _ -> None
+    case _       -> None
   }
 }
 
 /// Extract a float value, or None.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func asFloat(v: in YamlValue): Option[Double] {
   match v {
     case YFloat(f) -> Some(value = f)
-    case _ -> None
+    case _         -> None
   }
 }
 
 /// Extract a sequence, or None.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func asSequence(v: in YamlValue): Option[List[YamlValue]] {
   match v {
     case YSequence(items) -> Some(value = items)
-    case _ -> None
+    case _                -> None
   }
 }
 
 /// Extract a mapping, or None.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func asMapping(v: in YamlValue): Option[List[YamlPair]] {
   match v {
     case YMapping(pairs) -> Some(value = pairs)
-    case _ -> None
+    case _               -> None
   }
 }
 
 /// Look up a key in a mapping, or None if absent.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func getField(v: in YamlValue, key: in String): Option[YamlValue] {
   match asMapping(v) {
     case None -> None
@@ -965,37 +943,37 @@ pub func getField(v: in YamlValue, key: in String): Option[YamlValue] {
 }
 
 /// Return the string at the given key in a mapping, or None.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func getString(v: in YamlValue, key: in String): Option[String] {
   match getField(v, key) {
-    case None -> None
+    case None    -> None
     case Some(f) -> asString(f)
   }
 }
 
 /// Return the integer at the given key in a mapping, or None.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func getInt(v: in YamlValue, key: in String): Option[Long] {
   match getField(v, key) {
-    case None -> None
+    case None    -> None
     case Some(f) -> asInt(f)
   }
 }
 
 /// Return the boolean at the given key in a mapping, or None.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func getBool(v: in YamlValue, key: in String): Option[Bool] {
   match getField(v, key) {
-    case None -> None
+    case None    -> None
     case Some(f) -> asBool(f)
   }
 }
 
 /// Return the float at the given key in a mapping, or None.
-@stable(since = "0.1")
+@stable(since="0.1")
 pub func getFloat(v: in YamlValue, key: in String): Option[Double] {
   match getField(v, key) {
-    case None -> None
+    case None    -> None
     case Some(f) -> asFloat(f)
   }
 }

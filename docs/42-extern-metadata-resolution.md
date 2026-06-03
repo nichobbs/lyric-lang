@@ -470,28 +470,12 @@ runtime gap.
   metadata.  Value-type instance methods (which need `ldloca` + `call` on a
   managed pointer rather than `callvirt`) remain a follow-up.
 - **Phase 4 — `@externTarget` verification + `clrAssemblyForType` removal +
-  generics. _(SHIPPED — D-progress-485.)_** `emitExternTargetBody` in
-  `codegen.l` now verifies the declared Lyric signature against reference-assembly
-  metadata before emitting the MemberRef (diagnostic **F0015** on mismatch).
-  `ensureMetadataIndex` was extended to add all restored-dependency DLL paths to
-  the type and path indexes so that types from NuGet-restored Lyric packages are
-  included in the metadata-grounded assembly check.  The `clrAssemblyForType`
-  hardcoded table was already deleted in Phase 3a; the remaining prefix-based
-  `clrAssemblyResolvable` guard is now demoted to a fallback after a metadata-index
-  lookup so that NuGet types outside `System.*`/`Lyric.*` are accepted.  Full
-  MethodSpec routing for generic `@externTarget` declarations is deferred to a
-  follow-up — the verification block skips params whose `MsilType` has no
-  `SigType` equivalent (sets `canVerify = false`), so generic externs compile
-  without F0015 but remain unverified.  Tests in `auto_ffi_self_test.l` (`@externTarget
-  with verified signatures compile and run correctly`).
-- **Phase 5 — JVM parity. _(SHIPPED — D-progress-485.)_** `lowerExternTargetBody`
-  in `jvm/codegen/04_calls.l` now performs the analogous metadata-based overload
-  lookup via `Jvm.AutoFfi.loadClass` + `findBestMethod` / `findBestConstructor`
-  immediately after computing the JVM arg and return types.  A mismatch emits
-  **F0015-J** (panic with the descriptor signature and the target FQN).  Skipped
-  when the class is absent from the JDK jmods / LYRIC_FFI_JARS index (non-JDK
-  types with no configured JAR entry).  Tests in `auto_ffi_jvm_self_test.l`
-  (`@externTarget with verified JVM signatures compile and run correctly`).
+  generics.** Make the declared signature a metadata *check* (new diagnostic);
+  delete the hardcoded prefix table; route generic externs through MethodSpec;
+  feed restored-dependency DLLs into the index.
+- **Phase 5 — JVM parity** (tracked separately per the epic): the analogous
+  reader over `.class`/JAR constant pools for `--target jvm`, or a documented,
+  dated parity gap.
 
 ---
 
@@ -530,12 +514,8 @@ User-visible, production-quality (no placeholder dumps):
 - **Q-MD-004** — Overload-resolution fidelity vs. the F# emitter: which
   coercion rules to replicate exactly (numeric widening, `params`, optional
   args, nullable) and which to defer with a diagnostic.
-- **Q-MD-005** — _Resolved (Phase 5 — D-progress-485):_ `lowerExternTargetBody`
-  in `jvm/codegen/04_calls.l` reuses the existing `Jvm.AutoFfi` class reader
-  (which already reads `.class` files from JDK jmods / LYRIC_FFI_JARS) rather
-  than adding a separate constant-pool reader.  The auto-FFI overload scorer
-  (`findBestMethod` / `findBestConstructor`) doubles as the signature validator,
-  consistent with the auto-FFI pipeline already shipping in Phase 3c JVM.
+- **Q-MD-005** — JVM-target reader scope (Phase 5): full constant-pool reader
+  vs. a narrower signature resolver.
 
 ---
 

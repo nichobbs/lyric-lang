@@ -1,34 +1,35 @@
-//! match_compound_self_test.l — executable regression tests for two
-//! self-hosted MSIL backend correctness fixes from #1481 (epic #1470, Band 2):
-//!
-//!   Item 1 — Float literal *match* patterns.  Previously a `case 1.5 ->`
-//!   pattern fell to the `_` wildcard arm in `codegen.l` and `pop`ped the
-//!   scrutinee, so EVERY Float literal pattern matched unconditionally.  The
-//!   fix emits a real `ldc.r8; ceq` comparison.  (Char/Long/Bool/String
-//!   literal patterns already compared correctly; only Float was broken.)
-//!
-//!   Item 2 — Compound assignment honouring the operator.  Previously
-//!   `s += x` on a String emitted a numeric `add` (invalid for object refs),
-//!   `r.f op= v` on a record field ignored the operator entirely (stored only
-//!   `v`), and `a[i] op= v` hard-failed.  The fix reads the current value,
-//!   applies the operator at the target's static type (String `+=` →
-//!   `String.Concat`), and stores it back — for local, `result`, field, List
-//!   element, and Map value targets.
-//!
-//! Why this lives here and runs via native `lyric test` (not in
-//! `lyric-stdlib/tests/*_tests.l`): those files are compiled by the F#
-//! stage-0 emitter, which is on a deletion schedule and is NOT the surface
-//! under test here.  `lyric test` synthesises a runnable program from the
-//! `test` blocks and compiles it IN-PROCESS through the self-hosted
-//! `Msil.Bridge` (lexer → parser → type-checker → mode-checker → codegen →
-//! MSIL PE), then executes it and asserts every embedded assertion.  This is
-//! the only path that exercises `lyric-compiler/msil/codegen.l`.  Imports only
-//! `Std.*`, so no `LYRIC_LOAD_COMPILER=1` is needed.
-//!
-//!   lyric test lyric-compiler/lyric/match_compound_self_test.l
-//!
-//! JVM parity for these fixes is tracked under epic #1470's JVM-deferral note;
-//! this epic targets `--target dotnet`.
+// match_compound_self_test.l — executable regression tests for two
+// self-hosted MSIL backend correctness fixes from #1481 (epic #1470, Band 2):
+//
+//   Item 1 — Float literal *match* patterns.  Previously a `case 1.5 ->`
+//   pattern fell to the `_` wildcard arm in `codegen.l` and `pop`ped the
+//   scrutinee, so EVERY Float literal pattern matched unconditionally.  The
+//   fix emits a real `ldc.r8; ceq` comparison.  (Char/Long/Bool/String
+//   literal patterns already compared correctly; only Float was broken.)
+//
+//   Item 2 — Compound assignment honouring the operator.  Previously
+//   `s += x` on a String emitted a numeric `add` (invalid for object refs),
+//   `r.f op= v` on a record field ignored the operator entirely (stored only
+//   `v`), and `a[i] op= v` hard-failed.  The fix reads the current value,
+//   applies the operator at the target's static type (String `+=` →
+//   `String.Concat`), and stores it back — for local, `result`, field, List
+//   element, and Map value targets.
+//
+// Why this lives here and runs via native `lyric test` (not in
+// `lyric-stdlib/tests/*_tests.l`): those files are compiled by the F#
+// stage-0 emitter, which is on a deletion schedule and is NOT the surface
+// under test here.  `lyric test` synthesises a runnable program from the
+// `test` blocks and compiles it IN-PROCESS through the self-hosted
+// `Msil.Bridge` (lexer → parser → type-checker → mode-checker → codegen →
+// MSIL PE), then executes it and asserts every embedded assertion.  This is
+// the only path that exercises `lyric-compiler/msil/codegen.l`.  Imports only
+// `Std.*`, so no `LYRIC_LOAD_COMPILER=1` is needed.
+//
+//   lyric test lyric-compiler/lyric/match_compound_self_test.l
+//
+// JVM parity for these fixes is tracked under epic #1470's JVM-deferral note;
+// this epic targets `--target dotnet`.
+
 @test_module
 package Lyric.MatchCompoundSelfTest
 
@@ -39,11 +40,12 @@ import Std.Testing
 // ─────────────────────────────────────────────────────────────────────────────
 // Item 1 — Float literal match patterns.
 // ─────────────────────────────────────────────────────────────────────────────
+
 func classifyFloat(x: Double): Int {
   match x {
     case 1.5 -> 10
     case 2.5 -> 20
-    case _ -> 99
+    case _   -> 99
   }
 }
 
@@ -58,6 +60,7 @@ test "Float literal patterns compare instead of always-matching" {
 // ─────────────────────────────────────────────────────────────────────────────
 // Item 2 — Compound assignment to a local variable.
 // ─────────────────────────────────────────────────────────────────────────────
+
 test "String += concatenates (not numeric add)" {
   var s = "ab"
   s += "cd"
@@ -83,9 +86,10 @@ test "Numeric compound operators on a local honour the operator" {
 // ─────────────────────────────────────────────────────────────────────────────
 // Item 2 — Compound assignment to a record field.
 // ─────────────────────────────────────────────────────────────────────────────
+
 record Acc {
   var total: Int
-  var note: String
+  var note:  String
 }
 
 test "Compound assignment to a record field honours the operator" {
@@ -105,12 +109,14 @@ test "Compound assignment to a record field honours the operator" {
 // ─────────────────────────────────────────────────────────────────────────────
 // Item 2 — Compound assignment to a List element and a Map value.
 // ─────────────────────────────────────────────────────────────────────────────
+
 // Note on read-back: List[ValueType] elements unbox correctly on read so
 // the List[Int] case below asserts the post-write value directly.  Map
 // values still erase to `object` (primitive-element-erasure gap #1442), so
 // the Map test continues to observe writes via `toString` on the boxed
 // element while the underlying unbox lands.  Either way the compound-
 // assignment WRITE path under test here is independent of the read path.
+
 test "Compound assignment to a List[Int] element" {
   val xs: List[Int] = newList()
   xs.add(10)

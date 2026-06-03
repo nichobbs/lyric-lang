@@ -1,14 +1,15 @@
-//! jvm/self_test_b46.l — Stage B46: float arithmetic (fadd, fmul, fdiv, i2f, f2d).
-//!
-//! Generates FloatMath.class with two static helpers:
-//!   half(I)D  — converts int to float, divides by 2.0f, returns as double
-//!   double_(I)D — converts int to float, multiplies by 2.0f, returns as double
-//!
-//! Main prints:
-//!   half(5)    → 2.5
-//!   double_(3) → 6.0
-//!
-//! Exercises: emitFconst2, emitFdiv, emitFmul, emitI2f, emitF2d, emitFreturn-via-f2d+dreturn.
+// jvm/self_test_b46.l — Stage B46: float arithmetic (fadd, fmul, fdiv, i2f, f2d).
+//
+// Generates FloatMath.class with two static helpers:
+//   half(I)D  — converts int to float, divides by 2.0f, returns as double
+//   double_(I)D — converts int to float, multiplies by 2.0f, returns as double
+//
+// Main prints:
+//   half(5)    → 2.5
+//   double_(3) → 6.0
+//
+// Exercises: emitFconst2, emitFdiv, emitFmul, emitI2f, emitF2d, emitFreturn-via-f2d+dreturn.
+
 package Jvm.SelfTestB46
 
 import Std.Core
@@ -60,11 +61,11 @@ func makeFloatMathClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val halfRef = poolMethodref(pool, "FloatMath", "half", "(I)D")
-  val dblRef = poolMethodref(pool, "FloatMath", "double_", "(I)D")
+  val sysOut   = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val halfRef  = poolMethodref(pool, "FloatMath", "half",    "(I)D")
+  val dblRef   = poolMethodref(pool, "FloatMath", "double_", "(I)D")
   val printlnD = poolMethodref(pool, "java/io/PrintStream", "println", "(D)V")
 
   // System.out.println(FloatMath.half(5))   → 2.5
@@ -95,24 +96,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b46"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val floatMathBytes = makeFloatMathClassBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes      = makeMainClassBytes()
 
   val floatMathClass = BuiltClass(binaryName = "FloatMath", bytes = floatMathBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass      = BuiltClass(binaryName = "Main",      bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(floatMathClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB46",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

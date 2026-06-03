@@ -1,17 +1,18 @@
-//! jvm/self_test_b128.l — Stage B128: @externTarget static call with Result wrapping.
-//!
-//! Validates the bytecode shape that lowerExternTargetBody (codegen.l) emits
-//! for a static @externTarget function whose return type is Result[T, JvmException]:
-//!   1. Creates a ResultWrapper union (abstract base + Ok/Err case classes).
-//!   2. Creates ParseWrapper with a static method tryParseInt(String): Object that
-//!      replicates the @externTarget("java.lang.Integer.parseInt") bytecode:
-//!        success (valid int string)  → ResultWrapper$Ok(Integer(n))
-//!        NumberFormatException       → ResultWrapper$Err(exception)
-//!   3. Main calls tryParseInt("42") and tryParseInt("abc") and prints the results.
-//!
-//! Java output (java -jar):
-//!   parse(42)=ok:42
-//!   parse(abc)=err:NumberFormatException
+// jvm/self_test_b128.l — Stage B128: @externTarget static call with Result wrapping.
+//
+// Validates the bytecode shape that lowerExternTargetBody (codegen.l) emits
+// for a static @externTarget function whose return type is Result[T, JvmException]:
+//   1. Creates a ResultWrapper union (abstract base + Ok/Err case classes).
+//   2. Creates ParseWrapper with a static method tryParseInt(String): Object that
+//      replicates the @externTarget("java.lang.Integer.parseInt") bytecode:
+//        success (valid int string)  → ResultWrapper$Ok(Integer(n))
+//        NumberFormatException       → ResultWrapper$Err(exception)
+//   3. Main calls tryParseInt("42") and tryParseInt("abc") and prints the results.
+//
+// Java output (java -jar):
+//   parse(42)=ok:42
+//   parse(abc)=err:NumberFormatException
+
 package Jvm.SelfTestB128
 
 import Std.Core
@@ -23,6 +24,7 @@ import Jvm.Lowering
 import Jvm.Driver
 
 // ── Build ResultWrapper union (abstract base + Ok/Err case classes) ───────────
+
 func makeResultWrapperBytes(): List[List[Byte]] {
   val pool = poolNew()
 
@@ -33,7 +35,7 @@ func makeResultWrapperBytes(): List[List[Byte]] {
   errFields.add(LField(flags = ACC_PUBLIC, name = "error", fieldType = JRef(className = "java/lang/Object")))
 
   val cases: List[LUnionCase] = newList()
-  cases.add(LUnionCase(caseName = "Ok", fields = okFields))
+  cases.add(LUnionCase(caseName = "Ok",  fields = okFields))
   cases.add(LUnionCase(caseName = "Err", fields = errFields))
 
   val baseMethods: List[LFunc] = newList()
@@ -71,29 +73,31 @@ func makeResultWrapperBytes(): List[List[Byte]] {
 //   LTryCatch(try_start, try_end, catch_handler, "java/lang/Exception")
 //   [after]:
 //   areturn
+
 func makeParseWrapperBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val parseIntIdx = poolMethodref(pool, "java/lang/Integer", "parseInt", "(Ljava/lang/String;)I")
-  val valueOfIdx = poolMethodref(pool, "java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;")
-  val okClassIdx = poolClass(pool, "ResultWrapper$Ok")
-  val errClassIdx = poolClass(pool, "ResultWrapper$Err")
-  val okCtorIdx = poolMethodref(pool, "ResultWrapper$Ok", "<init>", "(Ljava/lang/Object;)V")
-  val errCtorIdx = poolMethodref(pool, "ResultWrapper$Err", "<init>", "(Ljava/lang/Object;)V")
-  val exClassIdx = poolClass(pool, "java/lang/Exception")
+  val parseIntIdx   = poolMethodref(pool, "java/lang/Integer", "parseInt",
+                        "(Ljava/lang/String;)I")
+  val valueOfIdx    = poolMethodref(pool, "java/lang/Integer", "valueOf",
+                        "(I)Ljava/lang/Integer;")
+  val okClassIdx    = poolClass(pool, "ResultWrapper$Ok")
+  val errClassIdx   = poolClass(pool, "ResultWrapper$Err")
+  val okCtorIdx     = poolMethodref(pool, "ResultWrapper$Ok",  "<init>",
+                        "(Ljava/lang/Object;)V")
+  val errCtorIdx    = poolMethodref(pool, "ResultWrapper$Err", "<init>",
+                        "(Ljava/lang/Object;)V")
+  val exClassIdx    = poolClass(pool, "java/lang/Exception")
 
   // Load String param (s at slot 0)
   emitAload(asm, 0)
 
   // try body
   emitLabel(asm, "try_start")
-  emitInvokestatic(asm, parseIntIdx)
-  // Integer.parseInt(s) → int
-  emitInvokestatic(asm, valueOfIdx)
-  // box: int → Integer
-  emitAstore(asm, 1)
-  // slot 1 = boxed result
+  emitInvokestatic(asm, parseIntIdx)             // Integer.parseInt(s) → int
+  emitInvokestatic(asm, valueOfIdx)              // box: int → Integer
+  emitAstore(asm, 1)                             // slot 1 = boxed result
 
   emitNew(asm, okClassIdx)
   emitDup(asm)
@@ -104,8 +108,7 @@ func makeParseWrapperBytes(): List[Byte] {
 
   // catch handler (java/lang/Exception on stack at entry)
   emitLabel(asm, "catch_handler")
-  emitAstore(asm, 2)
-  // slot 2 = caught exception
+  emitAstore(asm, 2)                             // slot 2 = caught exception
 
   emitNew(asm, errClassIdx)
   emitDup(asm)
@@ -119,7 +122,8 @@ func makeParseWrapperBytes(): List[Byte] {
   // maxStack=3; maxLocals=3 (slot0=s, slot1=boxed, slot2=ex)
   val parseSig: List[JvmType] = newList()
   parseSig.add(JRef(className = "java/lang/String"))
-  val codeAttr = assembleCodeWith1Handler(asm, 3, 3, "try_start", "try_end", "catch_handler", exClassIdx)
+  val codeAttr = assembleCodeWith1Handler(asm, 3, 3,
+    "try_start", "try_end", "catch_handler", exClassIdx)
   val attrs: List[Attribute] = newList()
   attrs.add(codeAttr)
   val parseMethod = makeMethodInfo(
@@ -135,22 +139,30 @@ func makeParseWrapperBytes(): List[Byte] {
 }
 
 // ── Build Main class ──────────────────────────────────────────────────────────
+
 func makeMainBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
-  val parseIdx = poolMethodref(pool, "ParseWrapper", "tryParseInt", "(Ljava/lang/String;)Ljava/lang/Object;")
-  val toStringIdx = poolMethodref(pool, "java/lang/Integer", "toString", "()Ljava/lang/String;")
-  val getClassIdx = poolMethodref(pool, "java/lang/Object", "getClass", "()Ljava/lang/Class;")
-  val simpleNameIdx = poolMethodref(pool, "java/lang/Class", "getSimpleName", "()Ljava/lang/String;")
-  val okClassIdx = poolClass(pool, "ResultWrapper$Ok")
-  val errClassIdx = poolClass(pool, "ResultWrapper$Err")
-  val intClassIdx = poolClass(pool, "java/lang/Integer")
-  val okValueIdx = poolFieldref(pool, "ResultWrapper$Ok", "value", "Ljava/lang/Object;")
-  val errErrorIdx = poolFieldref(pool, "ResultWrapper$Err", "error", "Ljava/lang/Object;")
+  val sysOutIdx     = poolFieldref(pool,  "java/lang/System",       "out",
+                        "Ljava/io/PrintStream;")
+  val printlnIdx    = poolMethodref(pool, "java/io/PrintStream",    "println",
+                        "(Ljava/lang/String;)V")
+  val concatIdx     = poolMethodref(pool, "java/lang/String",       "concat",
+                        "(Ljava/lang/String;)Ljava/lang/String;")
+  val parseIdx      = poolMethodref(pool, "ParseWrapper",           "tryParseInt",
+                        "(Ljava/lang/String;)Ljava/lang/Object;")
+  val toStringIdx   = poolMethodref(pool, "java/lang/Integer",      "toString",
+                        "()Ljava/lang/String;")
+  val getClassIdx   = poolMethodref(pool, "java/lang/Object",       "getClass",
+                        "()Ljava/lang/Class;")
+  val simpleNameIdx = poolMethodref(pool, "java/lang/Class",        "getSimpleName",
+                        "()Ljava/lang/String;")
+  val okClassIdx    = poolClass(pool, "ResultWrapper$Ok")
+  val errClassIdx   = poolClass(pool, "ResultWrapper$Err")
+  val intClassIdx   = poolClass(pool, "java/lang/Integer")
+  val okValueIdx    = poolFieldref(pool, "ResultWrapper$Ok",  "value", "Ljava/lang/Object;")
+  val errErrorIdx   = poolFieldref(pool, "ResultWrapper$Err", "error", "Ljava/lang/Object;")
 
   // res1 = ParseWrapper.tryParseInt("42")  →  ResultWrapper$Ok(42)
   emitPushString(asm, "42")
@@ -190,7 +202,8 @@ func makeMainBytes(): List[Byte] {
   val codeAttr = assembleCode(asm, 3, 3)
   val attrs: List[Attribute] = newList()
   attrs.add(codeAttr)
-  val mainMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "main", "([Ljava/lang/String;)V", attrs)
+  val mainMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "main",
+    "([Ljava/lang/String;)V", attrs)
   val methods: List[MethodInfo] = newList()
   methods.add(mainMethod)
   val cf = makeClassWithMethods("Main", methods)
@@ -198,10 +211,11 @@ func makeMainBytes(): List[Byte] {
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
+
 func main(args: in slice[String]): Int {
   val outDir = if args.length > 0 { args[0] } else { "/tmp/lyric-jvm-b128" }
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
@@ -218,13 +232,13 @@ func main(args: in slice[String]): Int {
   }
 
   classes.add(BuiltClass(binaryName = "ParseWrapper", bytes = makeParseWrapperBytes()))
-  classes.add(BuiltClass(binaryName = "Main", bytes = makeMainBytes()))
+  classes.add(BuiltClass(binaryName = "Main",         bytes = makeMainBytes()))
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB128",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/parse.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/parse.jar"
   )
 
   if writeJarFromClasses(req, classes) {

@@ -1,13 +1,14 @@
-//! jvm/self_test_b23.l — Stage B23: primitive arrays (newarray, iastore, iaload, arraylength).
-//!
-//! Generates ArrayUtil.class with a static sumFirst3() method that:
-//!   1. Creates a new int[] of length 3
-//!   2. Stores values 10, 20, 30 at indices 0, 1, 2
-//!   3. Loops over the array summing elements
-//!   4. Returns the sum (60)
-//!
-//! Exercises: newarray T_INT, dup, arraylength, iastore, iaload, backward loop.
-//! Uses assembleCodeWithFrames for the backward loop (major=65 class file).
+// jvm/self_test_b23.l — Stage B23: primitive arrays (newarray, iastore, iaload, arraylength).
+//
+// Generates ArrayUtil.class with a static sumFirst3() method that:
+//   1. Creates a new int[] of length 3
+//   2. Stores values 10, 20, 30 at indices 0, 1, 2
+//   3. Loops over the array summing elements
+//   4. Returns the sum (60)
+//
+// Exercises: newarray T_INT, dup, arraylength, iastore, iaload, backward loop.
+// Uses assembleCodeWithFrames for the backward loop (major=65 class file).
+
 package Jvm.SelfTestB23
 
 import Std.Core
@@ -19,7 +20,7 @@ import Jvm.Driver
 
 func makeArrayUtilClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
   // sumFirst3()I:
   //   slot 0 = int[] arr
@@ -113,10 +114,10 @@ func makeArrayUtilClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val sumRef = poolMethodref(pool, "ArrayUtil", "sumFirst3", "()I")
+  val sysOut   = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sumRef   = poolMethodref(pool, "ArrayUtil", "sumFirst3", "()I")
   val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
 
   emitGetstatic(asm, sysOut)
@@ -137,24 +138,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b23"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val arrayUtilBytes = makeArrayUtilClassBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes      = makeMainClassBytes()
 
   val arrayUtilClass = BuiltClass(binaryName = "ArrayUtil", bytes = arrayUtilBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass      = BuiltClass(binaryName = "Main",      bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(arrayUtilClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB23",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

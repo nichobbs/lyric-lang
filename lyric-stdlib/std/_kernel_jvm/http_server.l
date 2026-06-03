@@ -1,26 +1,25 @@
-//! std/_kernel_jvm/http_server.l - JVM host boundary for a minimal
-//! synchronous HTTP server.
-//!
-//! Mirrors _kernel/http_server.l for the JVM target.  Routes through
-//! lyric.stdlib.jvm.HttpServerHost, which wraps
-//! com.sun.net.httpserver.HttpServer (built into the JDK; not a
-//! third-party dependency).
-//!
-//! HttpServerHandle wraps com.sun.net.httpserver.HttpServer.
-//! HttpContextHandle wraps com.sun.net.httpserver.HttpExchange,
-//! providing the same get/respond API as the .NET HttpListenerContext
-//! shim.
-//!
-//! Bootstrap-grade: synchronous, single-threaded, no router, no
-//! middleware.  The server loop blocks on nextContext() (backed by a
-//! blocking queue populated by the HttpServer's handler thread).
+// std/_kernel_jvm/http_server.l - JVM host boundary for a minimal
+// synchronous HTTP server.
+//
+// Mirrors _kernel/http_server.l for the JVM target.  Routes through
+// lyric.stdlib.jvm.HttpServerHost, which wraps
+// com.sun.net.httpserver.HttpServer (built into the JDK; not a
+// third-party dependency).
+//
+// HttpServerHandle wraps com.sun.net.httpserver.HttpServer.
+// HttpContextHandle wraps com.sun.net.httpserver.HttpExchange,
+// providing the same get/respond API as the .NET HttpListenerContext
+// shim.
+//
+// Bootstrap-grade: synchronous, single-threaded, no router, no
+// middleware.  The server loop blocks on nextContext() (backed by a
+// blocking queue populated by the HttpServer's handler thread).
 package Std.HttpServer
 
 import Std.Core
 
 extern type HttpListener = "lyric.stdlib.jvm.HttpServerHandle"
-
-extern type HttpContext = "lyric.stdlib.jvm.HttpContextHandle"
+extern type HttpContext  = "lyric.stdlib.jvm.HttpContextHandle"
 
 @externTarget("lyric.stdlib.jvm.HttpServerHost.startListener")
 pub func startListener(prefix: in String): HttpListener = ()

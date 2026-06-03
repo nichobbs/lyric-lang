@@ -18,6 +18,7 @@ import Std.Collections
 // RVA base for .text section: 0x2000.
 // All multi-byte values are little-endian.
 // ---------------------------------------------------------------------------
+
 // ---------------------------------------------------------------------------
 // DOS stub (128 bytes, offsets 0x000–0x07F)
 // ---------------------------------------------------------------------------
@@ -147,118 +148,58 @@ func writeMethodBody(w: in ByteWriter): Unit {
 // ---------------------------------------------------------------------------
 // Metadata streams
 // ---------------------------------------------------------------------------
+
 // #Strings heap (68 bytes)
 func writeStringsHeap(w: in ByteWriter): Unit {
   bufU1(w, 0x00)  // empty string at offset 0
   // "<Module>\0" at offset 0x01
-  bufU1(w, 0x3C)
-  bufU1(w, 0x4D)
-  bufU1(w, 0x6F)
-  bufU1(w, 0x64)
-  bufU1(w, 0x75)
-  bufU1(w, 0x6C)
-  bufU1(w, 0x65)
-  bufU1(w, 0x3E)
+  bufU1(w, 0x3C) bufU1(w, 0x4D) bufU1(w, 0x6F) bufU1(w, 0x64)
+  bufU1(w, 0x75) bufU1(w, 0x6C) bufU1(w, 0x65) bufU1(w, 0x3E)
   bufU1(w, 0x00)
   // "Hello\0" at offset 0x0A
-  bufU1(w, 0x48)
-  bufU1(w, 0x65)
-  bufU1(w, 0x6C)
-  bufU1(w, 0x6C)
-  bufU1(w, 0x6F)
-  bufU1(w, 0x00)
+  bufU1(w, 0x48) bufU1(w, 0x65) bufU1(w, 0x6C) bufU1(w, 0x6C)
+  bufU1(w, 0x6F) bufU1(w, 0x00)
   // "Main\0" at offset 0x10
-  bufU1(w, 0x4D)
-  bufU1(w, 0x61)
-  bufU1(w, 0x69)
-  bufU1(w, 0x6E)
+  bufU1(w, 0x4D) bufU1(w, 0x61) bufU1(w, 0x69) bufU1(w, 0x6E)
   bufU1(w, 0x00)
   // "System\0" at offset 0x15
-  bufU1(w, 0x53)
-  bufU1(w, 0x79)
-  bufU1(w, 0x73)
-  bufU1(w, 0x74)
-  bufU1(w, 0x65)
-  bufU1(w, 0x6D)
-  bufU1(w, 0x00)
+  bufU1(w, 0x53) bufU1(w, 0x79) bufU1(w, 0x73) bufU1(w, 0x74)
+  bufU1(w, 0x65) bufU1(w, 0x6D) bufU1(w, 0x00)
   // "Console\0" at offset 0x1C
-  bufU1(w, 0x43)
-  bufU1(w, 0x6F)
-  bufU1(w, 0x6E)
-  bufU1(w, 0x73)
-  bufU1(w, 0x6F)
-  bufU1(w, 0x6C)
-  bufU1(w, 0x65)
-  bufU1(w, 0x00)
+  bufU1(w, 0x43) bufU1(w, 0x6F) bufU1(w, 0x6E) bufU1(w, 0x73)
+  bufU1(w, 0x6F) bufU1(w, 0x6C) bufU1(w, 0x65) bufU1(w, 0x00)
   // "System.Runtime\0" at offset 0x24
-  bufU1(w, 0x53)
-  bufU1(w, 0x79)
-  bufU1(w, 0x73)
-  bufU1(w, 0x74)
-  bufU1(w, 0x65)
-  bufU1(w, 0x6D)
-  bufU1(w, 0x2E)
-  bufU1(w, 0x52)
-  bufU1(w, 0x75)
-  bufU1(w, 0x6E)
-  bufU1(w, 0x74)
-  bufU1(w, 0x69)
-  bufU1(w, 0x6D)
-  bufU1(w, 0x65)
-  bufU1(w, 0x00)
+  bufU1(w, 0x53) bufU1(w, 0x79) bufU1(w, 0x73) bufU1(w, 0x74)
+  bufU1(w, 0x65) bufU1(w, 0x6D) bufU1(w, 0x2E) bufU1(w, 0x52)
+  bufU1(w, 0x75) bufU1(w, 0x6E) bufU1(w, 0x74) bufU1(w, 0x69)
+  bufU1(w, 0x6D) bufU1(w, 0x65) bufU1(w, 0x00)
   // "Object\0" at offset 0x33
-  bufU1(w, 0x4F)
-  bufU1(w, 0x62)
-  bufU1(w, 0x6A)
-  bufU1(w, 0x65)
-  bufU1(w, 0x63)
-  bufU1(w, 0x74)
-  bufU1(w, 0x00)
+  bufU1(w, 0x4F) bufU1(w, 0x62) bufU1(w, 0x6A) bufU1(w, 0x65)
+  bufU1(w, 0x63) bufU1(w, 0x74) bufU1(w, 0x00)
   // "WriteLine\0" at offset 0x3A
-  bufU1(w, 0x57)
-  bufU1(w, 0x72)
-  bufU1(w, 0x69)
-  bufU1(w, 0x74)
-  bufU1(w, 0x65)
-  bufU1(w, 0x4C)
-  bufU1(w, 0x69)
-  bufU1(w, 0x6E)
-  bufU1(w, 0x65)
-  bufU1(w, 0x00)
+  bufU1(w, 0x57) bufU1(w, 0x72) bufU1(w, 0x69) bufU1(w, 0x74)
+  bufU1(w, 0x65) bufU1(w, 0x4C) bufU1(w, 0x69) bufU1(w, 0x6E)
+  bufU1(w, 0x65) bufU1(w, 0x00)
 }
 
 // #US heap (32 bytes): "Hello, World!\n" in UTF-16LE
 func writeUsHeap(w: in ByteWriter): Unit {
   bufU1(w, 0x00)  // empty string blob at offset 0
   bufU1(w, 0x1D)  // blob length: 29 (28 UTF-16LE bytes + 1 ECMA marker)
-  bufU1(w, 0x48)
-  bufU1(w, 0x00)  // H
-  bufU1(w, 0x65)
-  bufU1(w, 0x00)  // e
-  bufU1(w, 0x6C)
-  bufU1(w, 0x00)  // l
-  bufU1(w, 0x6C)
-  bufU1(w, 0x00)  // l
-  bufU1(w, 0x6F)
-  bufU1(w, 0x00)  // o
-  bufU1(w, 0x2C)
-  bufU1(w, 0x00)  // ,
-  bufU1(w, 0x20)
-  bufU1(w, 0x00)  // (space)
-  bufU1(w, 0x57)
-  bufU1(w, 0x00)  // W
-  bufU1(w, 0x6F)
-  bufU1(w, 0x00)  // o
-  bufU1(w, 0x72)
-  bufU1(w, 0x00)  // r
-  bufU1(w, 0x6C)
-  bufU1(w, 0x00)  // l
-  bufU1(w, 0x64)
-  bufU1(w, 0x00)  // d
-  bufU1(w, 0x21)
-  bufU1(w, 0x00)  // !
-  bufU1(w, 0x0A)
-  bufU1(w, 0x00)  // \n
+  bufU1(w, 0x48) bufU1(w, 0x00)  // H
+  bufU1(w, 0x65) bufU1(w, 0x00)  // e
+  bufU1(w, 0x6C) bufU1(w, 0x00)  // l
+  bufU1(w, 0x6C) bufU1(w, 0x00)  // l
+  bufU1(w, 0x6F) bufU1(w, 0x00)  // o
+  bufU1(w, 0x2C) bufU1(w, 0x00)  // ,
+  bufU1(w, 0x20) bufU1(w, 0x00)  // (space)
+  bufU1(w, 0x57) bufU1(w, 0x00)  // W
+  bufU1(w, 0x6F) bufU1(w, 0x00)  // o
+  bufU1(w, 0x72) bufU1(w, 0x00)  // r
+  bufU1(w, 0x6C) bufU1(w, 0x00)  // l
+  bufU1(w, 0x64) bufU1(w, 0x00)  // d
+  bufU1(w, 0x21) bufU1(w, 0x00)  // !
+  bufU1(w, 0x0A) bufU1(w, 0x00)  // \n
   bufU1(w, 0x00)  // ECMA-335 §II.24.2.4 no-high-chars marker
   bufU1(w, 0x00)  // heap-size padding to 32 bytes
 }
@@ -267,26 +208,13 @@ func writeUsHeap(w: in ByteWriter): Unit {
 func writeBlobHeap(w: in ByteWriter): Unit {
   bufU1(w, 0x00)  // empty blob at offset 0
   // Main() method signature at offset 0x01: calling-conv=default, 0 params, void
-  bufU1(w, 0x03)
-  bufU1(w, 0x00)
-  bufU1(w, 0x00)
-  bufU1(w, 0x01)
+  bufU1(w, 0x03) bufU1(w, 0x00) bufU1(w, 0x00) bufU1(w, 0x01)
   // Console.WriteLine(string) signature at offset 0x05: default, 1 param, void, string
-  bufU1(w, 0x04)
-  bufU1(w, 0x00)
-  bufU1(w, 0x01)
-  bufU1(w, 0x01)
-  bufU1(w, 0x0E)
+  bufU1(w, 0x04) bufU1(w, 0x00) bufU1(w, 0x01) bufU1(w, 0x01) bufU1(w, 0x0E)
   // System.Runtime public key token (8 bytes) at offset 0x0A: b03f5f7f11d50a3a
   bufU1(w, 0x08)
-  bufU1(w, 0xB0)
-  bufU1(w, 0x3F)
-  bufU1(w, 0x5F)
-  bufU1(w, 0x7F)
-  bufU1(w, 0x11)
-  bufU1(w, 0xD5)
-  bufU1(w, 0x0A)
-  bufU1(w, 0x3A)
+  bufU1(w, 0xB0) bufU1(w, 0x3F) bufU1(w, 0x5F) bufU1(w, 0x7F)
+  bufU1(w, 0x11) bufU1(w, 0xD5) bufU1(w, 0x0A) bufU1(w, 0x3A)
   bufU1(w, 0x00)  // padding to 20 bytes
 }
 
@@ -391,85 +319,46 @@ func writeTildeStream(w: in ByteWriter): Unit {
 // Metadata root (BSJB header + stream headers, 108 bytes) followed by all streams
 func writeMetadata(w: in ByteWriter): Unit {
   // BSJB root header (32 bytes)
-  bufU1(w, 0x42)
-  bufU1(w, 0x53)
-  bufU1(w, 0x4A)
-  bufU1(w, 0x42)  // "BSJB"
+  bufU1(w, 0x42) bufU1(w, 0x53) bufU1(w, 0x4A) bufU1(w, 0x42)  // "BSJB"
   bufU2(w, 1)     // MajorVersion
   bufU2(w, 1)     // MinorVersion
   bufU4(w, 0)     // Reserved
   bufU4(w, 12)    // VersionLength
   // "v4.0.30319\0\0"
-  bufU1(w, 0x76)
-  bufU1(w, 0x34)
-  bufU1(w, 0x2E)
-  bufU1(w, 0x30)
-  bufU1(w, 0x2E)
-  bufU1(w, 0x33)
-  bufU1(w, 0x30)
-  bufU1(w, 0x33)
-  bufU1(w, 0x31)
-  bufU1(w, 0x39)
-  bufU1(w, 0x00)
-  bufU1(w, 0x00)
+  bufU1(w, 0x76) bufU1(w, 0x34) bufU1(w, 0x2E) bufU1(w, 0x30) bufU1(w, 0x2E)
+  bufU1(w, 0x33) bufU1(w, 0x30) bufU1(w, 0x33) bufU1(w, 0x31) bufU1(w, 0x39)
+  bufU1(w, 0x00) bufU1(w, 0x00)
   bufU2(w, 0)     // Flags
   bufU2(w, 5)     // NumberOfStreams
 
   // Stream header 1: #~ (offset=108, size=164)
   bufU4(w, 108)
   bufU4(w, 164)
-  bufU1(w, 0x23)
-  bufU1(w, 0x7E)
-  bufU1(w, 0x00)
-  bufU1(w, 0x00)  // "#~\0\0"
+  bufU1(w, 0x23) bufU1(w, 0x7E) bufU1(w, 0x00) bufU1(w, 0x00)  // "#~\0\0"
 
   // Stream header 2: #Strings (offset=272, size=68)
   bufU4(w, 272)
   bufU4(w, 68)
-  bufU1(w, 0x23)
-  bufU1(w, 0x53)
-  bufU1(w, 0x74)
-  bufU1(w, 0x72)
-  bufU1(w, 0x69)
-  bufU1(w, 0x6E)
-  bufU1(w, 0x67)
-  bufU1(w, 0x73)
-  bufU1(w, 0x00)
-  bufU1(w, 0x00)
-  bufU1(w, 0x00)
-  bufU1(w, 0x00)  // "#Strings\0\0\0\0"
+  bufU1(w, 0x23) bufU1(w, 0x53) bufU1(w, 0x74) bufU1(w, 0x72)
+  bufU1(w, 0x69) bufU1(w, 0x6E) bufU1(w, 0x67) bufU1(w, 0x73)
+  bufU1(w, 0x00) bufU1(w, 0x00) bufU1(w, 0x00) bufU1(w, 0x00)  // "#Strings\0\0\0\0"
 
   // Stream header 3: #US (offset=340, size=32)
   bufU4(w, 340)
   bufU4(w, 32)
-  bufU1(w, 0x23)
-  bufU1(w, 0x55)
-  bufU1(w, 0x53)
-  bufU1(w, 0x00)  // "#US\0"
+  bufU1(w, 0x23) bufU1(w, 0x55) bufU1(w, 0x53) bufU1(w, 0x00)  // "#US\0"
 
   // Stream header 4: #Blob (offset=372, size=20)
   bufU4(w, 372)
   bufU4(w, 20)
-  bufU1(w, 0x23)
-  bufU1(w, 0x42)
-  bufU1(w, 0x6C)
-  bufU1(w, 0x6F)
-  bufU1(w, 0x62)
-  bufU1(w, 0x00)
-  bufU1(w, 0x00)
-  bufU1(w, 0x00)  // "#Blob\0\0\0"
+  bufU1(w, 0x23) bufU1(w, 0x42) bufU1(w, 0x6C) bufU1(w, 0x6F)
+  bufU1(w, 0x62) bufU1(w, 0x00) bufU1(w, 0x00) bufU1(w, 0x00)  // "#Blob\0\0\0"
 
   // Stream header 5: #GUID (offset=392, size=16)
   bufU4(w, 392)
   bufU4(w, 16)
-  bufU1(w, 0x23)
-  bufU1(w, 0x47)
-  bufU1(w, 0x55)
-  bufU1(w, 0x49)
-  bufU1(w, 0x44)
-  bufU1(w, 0x00)
-  bufU1(w, 0x00)
-  bufU1(w, 0x00)  // "#GUID\0\0\0"
+  bufU1(w, 0x23) bufU1(w, 0x47) bufU1(w, 0x55) bufU1(w, 0x49)
+  bufU1(w, 0x44) bufU1(w, 0x00) bufU1(w, 0x00) bufU1(w, 0x00)  // "#GUID\0\0\0"
 
   // Streams in declared order
   writeTildeStream(w)    // 164 bytes
@@ -482,6 +371,7 @@ func writeMetadata(w: in ByteWriter): Unit {
 // ---------------------------------------------------------------------------
 // Public entry points
 // ---------------------------------------------------------------------------
+
 // Build the complete 1024-byte PE image into a fresh buffer and return it.
 // Callers that only need the byte count can call bufLen on the result;
 // callers that need the bytes call bufToList on the result.

@@ -1,7 +1,7 @@
-//! stdlib/tests/sort_tests.l — Tests for Std.Sort.
-//!
-//! Covers: empty slice, single element, already-sorted, reverse-sorted,
-//! duplicates, stability, sortInts, sortStrings, isSorted predicate.
+// stdlib/tests/sort_tests.l — Tests for Std.Sort.
+//
+// Covers: empty slice, single element, already-sorted, reverse-sorted,
+// duplicates, stability, sortInts, sortStrings, isSorted predicate.
 package Std.Sort.Tests
 
 import Std.Core
@@ -10,13 +10,7 @@ import Std.Testing
 
 // Comparator reused across several tests.
 func cmpInt(a: Int, b: Int): Int {
-  if a < b {
-    -1
-  } else if a > b {
-    1
-  } else {
-    0
-  }
+  if a < b { -1 } else if a > b { 1 } else { 0 }
 }
 
 func testEmpty(): Unit {
@@ -90,7 +84,9 @@ func testSortLongs(): Unit {
 
 func testCustomComparator(): Unit {
   // Sort descending by supplying a reversed comparator.
-  val sorted = sort([3, 1, 4, 1, 5], { a: Int, b: Int -> if a > b { -1 } else if a < b { 1 } else { 0 } })
+  val sorted = sort([3, 1, 4, 1, 5], { a: Int, b: Int ->
+    if a > b { -1 } else if a < b { 1 } else { 0 }
+  })
   assertEqualInt(sorted[0], 5, "desc[0]")
   assertEqualInt(sorted[4], 1, "desc[4]")
 }

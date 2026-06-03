@@ -31,3 +31,5 @@ output_assembly = "Storage.dll"
 # the NuGet refs were dead weight.  Restore both halves together when
 # the native bindings work picks up the S3 / Azure backends.
 
+[dependencies]
+"Lyric.Stdlib" = { path = "../lyric-stdlib" }

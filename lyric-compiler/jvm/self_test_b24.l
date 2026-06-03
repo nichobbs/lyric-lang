@@ -1,13 +1,14 @@
-//! jvm/self_test_b24.l — Stage B24: object arrays (anewarray, aaload, aastore).
-//!
-//! Generates StringArray.class with a static join()String method that:
-//!   1. Creates String[3] via anewarray java/lang/String
-//!   2. Stores "hello", " world", "!" at indices 0, 1, 2 (aastore)
-//!   3. Reads them back with aaload and concatenates via StringBuilder
-//!   4. Returns the joined string
-//!
-//! Main calls join() and prints "hello world!".
-//! Exercises: anewarray, aaload, aastore.
+// jvm/self_test_b24.l — Stage B24: object arrays (anewarray, aaload, aastore).
+//
+// Generates StringArray.class with a static join()String method that:
+//   1. Creates String[3] via anewarray java/lang/String
+//   2. Stores "hello", " world", "!" at indices 0, 1, 2 (aastore)
+//   3. Reads them back with aaload and concatenates via StringBuilder
+//   4. Returns the joined string
+//
+// Main calls join() and prints "hello world!".
+// Exercises: anewarray, aaload, aastore.
+
 package Jvm.SelfTestB24
 
 import Std.Core
@@ -19,7 +20,7 @@ import Jvm.Driver
 
 func makeStringArrayClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
   // join()Ljava/lang/String;
   //   bipush 3
@@ -37,16 +38,11 @@ func makeStringArrayClassBytes(): List[Byte] {
   //   invokevirtual toString()
   //   areturn
 
-  val strClass = poolClass(pool, "java/lang/String")
-  val sbClass = poolClass(pool, "java/lang/StringBuilder")
-  val sbInit = poolMethodref(pool, "java/lang/StringBuilder", "<init>", "()V")
-  val sbAppend = poolMethodref(
-    pool,
-    "java/lang/StringBuilder",
-    "append",
-    "(Ljava/lang/String;)Ljava/lang/StringBuilder;"
-  )
-  val sbToStr = poolMethodref(pool, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;")
+  val strClass  = poolClass(pool, "java/lang/String")
+  val sbClass   = poolClass(pool, "java/lang/StringBuilder")
+  val sbInit    = poolMethodref(pool, "java/lang/StringBuilder", "<init>", "()V")
+  val sbAppend  = poolMethodref(pool, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;")
+  val sbToStr   = poolMethodref(pool, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;")
 
   // Create String[3]
   emitPushInt(asm, 3)
@@ -108,9 +104,9 @@ func makeStringArrayClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOut  = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val joinRef = poolMethodref(pool, "StringArray", "join", "()Ljava/lang/String;")
   val println_ = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
 
@@ -132,24 +128,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b24"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val stringArrayBytes = makeStringArrayClassBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes        = makeMainClassBytes()
 
   val stringArrayClass = BuiltClass(binaryName = "StringArray", bytes = stringArrayBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass        = BuiltClass(binaryName = "Main",        bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(stringArrayClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB24",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

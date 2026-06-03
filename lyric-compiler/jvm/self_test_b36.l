@@ -1,14 +1,15 @@
-//! jvm/self_test_b36.l — Stage B36: lookupswitch (sparse integer dispatch).
-//!
-//! Generates Classify.class with static classify(I)Ljava/lang/String; that
-//! uses lookupswitch over sparse keys {1, 10, 100}:
-//!   1   → "one"
-//!   10  → "ten"
-//!   100 → "hundred"
-//!   otherwise → "other"
-//!
-//! Main calls classify(10), classify(1), classify(7) and prints results.
-//! Exercises: emitLookupSwitch, SwitchPair, assembleCodeWithFrames with VInteger.
+// jvm/self_test_b36.l — Stage B36: lookupswitch (sparse integer dispatch).
+//
+// Generates Classify.class with static classify(I)Ljava/lang/String; that
+// uses lookupswitch over sparse keys {1, 10, 100}:
+//   1   → "one"
+//   10  → "ten"
+//   100 → "hundred"
+//   otherwise → "other"
+//
+// Main calls classify(10), classify(1), classify(7) and prints results.
+// Exercises: emitLookupSwitch, SwitchPair, assembleCodeWithFrames with VInteger.
+
 package Jvm.SelfTestB36
 
 import Std.Core
@@ -20,7 +21,7 @@ import Jvm.Driver
 
 func makeClassifyClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
   // classify(I)Ljava/lang/String;
   //   iload_0
@@ -31,8 +32,8 @@ func makeClassifyClassBytes(): List[Byte] {
   //     default → lbl_other
 
   val pairs: List[SwitchPair] = newList()
-  pairs.add(SwitchPair(key = 1, label = "lbl_one"))
-  pairs.add(SwitchPair(key = 10, label = "lbl_ten"))
+  pairs.add(SwitchPair(key = 1,   label = "lbl_one"))
+  pairs.add(SwitchPair(key = 10,  label = "lbl_ten"))
   pairs.add(SwitchPair(key = 100, label = "lbl_hundred"))
 
   emitIload(asm, 0)
@@ -59,7 +60,12 @@ func makeClassifyClassBytes(): List[Byte] {
   val codeAttr = assembleCodeWithFrames(asm, 1, 1, frameLocals)
   val attrs: List[Attribute] = newList()
   attrs.add(codeAttr)
-  val classifyMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "classify", "(I)Ljava/lang/String;", attrs)
+  val classifyMethod = makeMethodInfo(
+    ACC_PUBLIC + ACC_STATIC,
+    "classify",
+    "(I)Ljava/lang/String;",
+    attrs
+  )
   val methods: List[MethodInfo] = newList()
   methods.add(classifyMethod)
   val cf = makeClassWithMethods("Classify", methods)
@@ -68,11 +74,11 @@ func makeClassifyClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val classifyRef = poolMethodref(pool, "Classify", "classify", "(I)Ljava/lang/String;")
-  val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val sysOut       = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val classifyRef  = poolMethodref(pool, "Classify", "classify", "(I)Ljava/lang/String;")
+  val printlnS     = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
 
   // classify(10) → "ten"
   emitGetstatic(asm, sysOut)
@@ -107,24 +113,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b36"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val classifyBytes = makeClassifyClassBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes     = makeMainClassBytes()
 
   val classifyClass = BuiltClass(binaryName = "Classify", bytes = classifyBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass     = BuiltClass(binaryName = "Main",     bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(classifyClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB36",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

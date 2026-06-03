@@ -63,8 +63,6 @@ pub func strTrim(s: in String): String
 
 `@externStatic` emits `call` / `invokestatic`; `@externInstance` emits `callvirt` / `invokevirtual` with Lyric arg 0 as the receiver. They are mutually exclusive; setting both is a diagnostic. When neither is present the .NET self-hosted MSIL emitter defaults to static — instance externs must annotate explicitly.
 
-**Unresolvable targets.** On `--target dotnet` an `@externTarget` whose CLR type cannot be resolved to a known reference assembly (anything outside the `System.*` BCL surface and the `Lyric.*` internal host) fails the build with a clear diagnostic naming the unresolvable type, rather than silently mis-binding to `System.Runtime` and throwing `MissingMethodException` at runtime.  On `--target jvm` there is no compile-time class-resolution check; an unresolvable Java class name throws `NoClassDefFoundError` at class-load time.
-
 ## §13.3 The `@axiom` social contract
 
 An `@axiom` block is not just compiler syntax. It is a commitment you record in your code review history.
@@ -200,55 +198,53 @@ pub func parse(text: in String): Result[slice[slice[String]], ParseError] {
   }
 }
 ```
+
 The rest of your application imports `Csv`, not `System.Formats.Csv`. The axiom block is in one place. The exception conversion is in one place. The surface your application depends on is fully typed and exception-free.
 
-## §13.9 Calling BCL methods directly with `import extern` and `.new`
+## §13.9 Calling BCL methods directly with `extern type`
 
-The `extern package` / `@externTarget` style wraps hand-written host signatures. For direct, lightweight calls to a .NET type's **static, instance, or constructor methods**, Lyric provides the `import extern` syntax. This is the preferred FFI mechanism, as it unifies package imports and external imports under one cohesive syntax.
+The `extern package` / `@externTarget` style above wraps a hand-written host signature. For calling a .NET type's **static and instance methods** directly, Lyric offers a lighter form: `extern type`.
 
-An `import extern` declaration imports host types from external namespaces:
-
-```lyric
-import extern System.{ Math as SystemMath, TimeSpan }
-import extern System.Text.{ StringBuilder }
-```
-
-Calls on these imported names resolve against the reference assemblies (or JDK class files) at compile time. The compiler reads the type's metadata, selects the overload that matches your argument types, and emits the real statically-typed instruction — no hand-written host signature, and no runtime reflection.
-
-Alternatively, `extern type Name = "CLR.Type"` can be used to bind a Lyric name to a CLR type within the package, though `import extern` is preferred.
-
-**Static methods.** Overloads resolve by argument type, including widening (`Int` → `Double`) and `object` parameters:
+An `extern type` declaration binds a Lyric name to a fully-qualified CLR type:
 
 ```lyric
-SystemMath.Max(2, 5)        // binds Max(int, int): int  ->  5
-SystemMath.Sqrt(9)          // Int widened to double; Sqrt(double): double  ->  3.0
+extern type Math = "System.Math"
+extern type Ts   = "System.TimeSpan"
+extern type Typ  = "System.Type"
 ```
 
-**Constructors and the `.new` shorthand.** To instantiate external reference types, call the `.new(args)` pseudo-method. This emits the real CLR `newobj` instruction under the hood, matching the resolved constructor signature:
+Calls on that name resolve against the .NET reference assemblies at compile time. The compiler reads the type's metadata, picks the overload that matches your argument types, and emits the real `MemberRef` — no hand-written host signature, and no runtime reflection.
+
+**Static methods.** Overloads resolve by argument type, including widening (`Int`/`Long` → `Long`/`Double`) and `object` parameters:
 
 ```lyric
-val sb = StringBuilder.new(64)  // constructor shorthand
-sb.Append("Hello, world!")
+Math.Max(2, 5)        // binds Max(int, int): int  ->  5
+Math.Sqrt(9)          // Int widened to double; Sqrt(double): double  ->  3.0
 ```
 
-**Value types and class types, as parameters and returns.** A method returning a `struct` (value type) or `class` (reference type) is matched by that type's fully-qualified name, and its result flows straight into subsequent calls:
+**Value types and class types, as parameters and returns.** A method returning a `struct` (value type) or `class` (reference type) is matched by that type's fully-qualified name, and its result flows straight into the next call:
 
 ```lyric
 // value-type return feeding value-type parameters:
-TimeSpan.Compare(TimeSpan.FromMinutes(5.0), TimeSpan.FromMinutes(3.0))   //  ->  1
+Ts.Compare(Ts.FromMinutes(5.0), Ts.FromMinutes(3.0))   //  ->  1
+
+// class return:
+Typ.GetType("System.Int32")                            //  ->  a System.Type
 ```
 
 **Instance methods.** When a call's receiver is itself a class-typed extern result, its instance methods dispatch via `callvirt` against the real method:
 
 ```lyric
-sb.ToString()                 //  ->  "Hello, world!"
+Typ.GetType("System.Int32").ToString()                 //  ->  "System.Int32"
+Typ.GetType("System.Int32").MakeArrayType().ToString() //  ->  "System.Int32[]"
 ```
 
 Resolution is total: if no overload matches your argument types, the call is a compile-time error — it is never silently mis-bound to the wrong method. When a binding genuinely cannot be expressed this way (a method needing narrowing, a `float` parameter, or an instance method on a *value-type* receiver), fall back to an `@externTarget` wrapper as in §13.4.
 
-Because `import extern` and `extern type` resolve against real metadata, they carry no `@axiom` block: the signature is read from the assembly, not asserted by you. The trust boundary is narrower — you are trusting the BCL's documented behaviour of the method you named, not a hand-written signature that could drift from it.
+Because `extern type` resolves against real metadata, it carries no `@axiom` block: the signature is read from the assembly, not asserted by you. The trust boundary is narrower — you are trusting the BCL's documented behaviour of the method you named, not a hand-written signature that could drift from it.
+
 ::: note
-Calling `System.Type.GetType` yourself through an `import extern` is a direct, statically-emitted `MemberRef` call — not runtime reflection, and fully AOT-compatible. This is distinct from §13.6, which is about the *compiler* never needing reflection to marshal Lyric's own opaque types.
+Calling `System.Type.GetType` yourself through an `extern type` is a direct, statically-emitted `MemberRef` call — not runtime reflection, and fully AOT-compatible. This is distinct from §13.6, which is about the *compiler* never needing reflection to marshal Lyric's own opaque types.
 :::
 
 ## Exercises

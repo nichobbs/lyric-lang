@@ -1,20 +1,21 @@
-//! jvm/self_test_b65.l — Stage B65: String.charAt + char comparisons.
-//!
-//! Generates CharOps.class with:
-//!   firstChar(String)I      — s.charAt(0) as int
-//!   isAsciiDigit(String)I   — 1 if s.charAt(0) in '0'..'9', else 0
-//!   isAsciiUpper(String)I   — 1 if s.charAt(0) in 'A'..'Z', else 0
-//!
-//! Main prints:
-//!   firstChar("Hello")     → 72   (ASCII 'H')
-//!   firstChar("Z")         → 90   (ASCII 'Z')
-//!   isAsciiDigit("7abc")   → 1
-//!   isAsciiDigit("abc7")   → 0
-//!   isAsciiUpper("Hello")  → 1
-//!   isAsciiUpper("hello")  → 0
-//!
-//! Exercises: invokevirtual String.charAt(I)C, sipush for char constants
-//!            (e.g. 'A'=65, 'Z'=90, '0'=48, '9'=57), if_icmplt/if_icmpgt.
+// jvm/self_test_b65.l — Stage B65: String.charAt + char comparisons.
+//
+// Generates CharOps.class with:
+//   firstChar(String)I      — s.charAt(0) as int
+//   isAsciiDigit(String)I   — 1 if s.charAt(0) in '0'..'9', else 0
+//   isAsciiUpper(String)I   — 1 if s.charAt(0) in 'A'..'Z', else 0
+//
+// Main prints:
+//   firstChar("Hello")     → 72   (ASCII 'H')
+//   firstChar("Z")         → 90   (ASCII 'Z')
+//   isAsciiDigit("7abc")   → 1
+//   isAsciiDigit("abc7")   → 0
+//   isAsciiUpper("Hello")  → 1
+//   isAsciiUpper("hello")  → 0
+//
+// Exercises: invokevirtual String.charAt(I)C, sipush for char constants
+//            (e.g. 'A'=65, 'Z'=90, '0'=48, '9'=57), if_icmplt/if_icmpgt.
+
 package Jvm.SelfTestB65
 
 import Std.Core
@@ -25,8 +26,8 @@ import Jvm.Bytecode
 import Jvm.Driver
 
 func makeCharOpsBytes(): List[Byte] {
-  val pool = poolNew()
-  val charAtRef = poolMethodref(pool, "java/lang/String", "charAt", "(I)C")
+  val pool       = poolNew()
+  val charAtRef  = poolMethodref(pool, "java/lang/String", "charAt", "(I)C")
 
   // firstChar(String)I  — slot 0 = s (String ref)
   val asmFirst = newAssembler(pool)
@@ -97,14 +98,14 @@ func makeCharOpsBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool = poolNew()
-  val asm = newAssembler(pool)
+  val pool       = poolNew()
+  val asm        = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
-  val firstRef = poolMethodref(pool, "CharOps", "firstChar", "(Ljava/lang/String;)I")
-  val digitRef = poolMethodref(pool, "CharOps", "isAsciiDigit", "(Ljava/lang/String;)I")
-  val upperRef = poolMethodref(pool, "CharOps", "isAsciiUpper", "(Ljava/lang/String;)I")
+  val sysOut     = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnI   = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val firstRef   = poolMethodref(pool, "CharOps", "firstChar",   "(Ljava/lang/String;)I")
+  val digitRef   = poolMethodref(pool, "CharOps", "isAsciiDigit","(Ljava/lang/String;)I")
+  val upperRef   = poolMethodref(pool, "CharOps", "isAsciiUpper","(Ljava/lang/String;)I")
 
   // println(CharOps.firstChar("Hello")) → 72
   emitGetstatic(asm, sysOut)
@@ -158,24 +159,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b65"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val charOpsBytes = makeCharOpsBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes    = makeMainClassBytes()
 
   val charOpsClass = BuiltClass(binaryName = "CharOps", bytes = charOpsBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass    = BuiltClass(binaryName = "Main",    bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(charOpsClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB65",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

@@ -1,27 +1,28 @@
-//! Flags.Aspects — pub aspect templates for feature-flag-gated execution.
-//!
-//! Two templates:
-//!
-//!   FlagGated   — B-mode: short-circuits execution when a named flag is
-//!                 disabled.  Uses the process-global registry maintained by
-//!                 `Flags.Kernel.Net.checkFlag` so that no store reference is
-//!                 needed in the aspect config.  Register flags in the global
-//!                 registry with `Flags.Kernel.Net.registerBoolFlag` at startup.
-//!
-//!   FlagVariant — B-mode: proceeds unconditionally; compares the current
-//!                 String value of a named flag against a configured variant
-//!                 string.  Intended as a stub for future A/B variant routing.
-//!
-//! Typical consumer usage:
-//!
-//!   import Flags.Aspects
-//!
-//!   aspect NewCheckout from Flags.Aspects.FlagGated {
-//!     matches: name like "handleCheckout*"
-//!     config { flagName: String = "new-checkout"; defaultOnMissing: Bool = false }
-//!   }
-//!
-//! See docs/26-aspects.md §18 and lyric-feature-flags/README.md.
+// Flags.Aspects — pub aspect templates for feature-flag-gated execution.
+//
+// Two templates:
+//
+//   FlagGated   — B-mode: short-circuits execution when a named flag is
+//                 disabled.  Uses the process-global registry maintained by
+//                 `Flags.Kernel.Net.checkFlag` so that no store reference is
+//                 needed in the aspect config.  Register flags in the global
+//                 registry with `Flags.Kernel.Net.registerBoolFlag` at startup.
+//
+//   FlagVariant — B-mode: proceeds unconditionally; compares the current
+//                 String value of a named flag against a configured variant
+//                 string.  Intended as a stub for future A/B variant routing.
+//
+// Typical consumer usage:
+//
+//   import Flags.Aspects
+//
+//   aspect NewCheckout from Flags.Aspects.FlagGated {
+//     matches: name like "handleCheckout*"
+//     config { flagName: String = "new-checkout"; defaultOnMissing: Bool = false }
+//   }
+//
+// See docs/26-aspects.md §18 and lyric-feature-flags/README.md.
+
 @runtime_checked
 package Flags.Aspects
 
@@ -30,6 +31,7 @@ import Flags
 import Flags.Kernel.Net as FlagsKernel
 
 // ─── FlagGated ────────────────────────────────────────────────────────────────
+
 /// Short-circuit execution of the matched function when a named flag is disabled.
 ///
 /// B-mode: the flag name is a scalar config field.  The flag value is read from
@@ -48,13 +50,14 @@ import Flags.Kernel.Net as FlagsKernel
 ///   enabled          Bool   — master switch; when false the handler always runs (default: true)
 ///   flagName         String — name of the flag to check (required; no default)
 ///   defaultOnMissing Bool   — value to use when the flag is absent from the registry (default: false)
-@stable(since = "0.1")
+@stable(since="0.1")
 pub aspect FlagGated {
   config {
-    enabled: Bool = true
-    flagName: String
-    defaultOnMissing: Bool = false
+    enabled:          Bool   = true
+    flagName:         String
+    defaultOnMissing: Bool   = false
   }
+
   around(call) -> ret {
     if not enabled {
       ret = call.proceed()
@@ -70,6 +73,7 @@ pub aspect FlagGated {
 }
 
 // ─── FlagVariant ──────────────────────────────────────────────────────────────
+
 /// Stub aspect template for A/B variant routing.
 ///
 /// B-mode: always proceeds unconditionally.  Full variant-specific routing
@@ -84,10 +88,11 @@ pub aspect FlagGated {
 @experimental
 pub aspect FlagVariant {
   config {
-    enabled: Bool = true
+    enabled:  Bool   = true
     flagName: String
-    variant: String
+    variant:  String
   }
+
   around(call) -> ret {
     // Stub: always proceeds. Variant-specific routing is deferred to a follow-up stage.
     ret = call.proceed()

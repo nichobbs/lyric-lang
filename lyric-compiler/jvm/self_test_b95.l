@@ -1,13 +1,14 @@
-//! jvm/self_test_b95.l — Stage B95: float fields in lowerRecord.
-//!
-//! Builds a Vector2 record with two JFloat fields (x, y) via lowerRecord,
-//! proving that the float-field fixes (LFload/LFstore/LFreturn) work correctly.
-//! Also exercises lowerFunc returning JFloat (LFreturn via returnInsn fix).
-//!
-//! Main prints:
-//!   vec.x=1.5
-//!   vec.y=2.5
-//!   len=1.5
+// jvm/self_test_b95.l — Stage B95: float fields in lowerRecord.
+//
+// Builds a Vector2 record with two JFloat fields (x, y) via lowerRecord,
+// proving that the float-field fixes (LFload/LFstore/LFreturn) work correctly.
+// Also exercises lowerFunc returning JFloat (LFreturn via returnInsn fix).
+//
+// Main prints:
+//   vec.x=1.5
+//   vec.y=2.5
+//   len=1.5
+
 package Jvm.SelfTestB95
 
 import Std.Core
@@ -35,12 +36,12 @@ func makeVector2Bytes(): List[Byte] {
 
   val getXParams: List[JvmType] = newList()
   val maxFn = LFunc(
-    flags = ACC_PUBLIC,
-    name = "getX",
-    params = getXParams,
-    ret = JFloat,
-    insns = getXInsns,
-    maxStack = 1,
+    flags     = ACC_PUBLIC,
+    name      = "getX",
+    params    = getXParams,
+    ret       = JFloat,
+    insns     = getXInsns,
+    maxStack  = 1,
     maxLocals = 1
   )
 
@@ -48,22 +49,22 @@ func makeVector2Bytes(): List[Byte] {
   methods.add(maxFn)
 
   val rec = LRecord(className = "Vector2", fields = fields, methods = methods, implementsIfaces = newList())
-  val cf = lowerRecord(rec, pool)
+  val cf  = lowerRecord(rec, pool)
   serializeClassWithPool(cf, pool)
 }
 
 func makeMainBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOutIdx  = poolFieldref(pool, "java/lang/System",    "out",     "Ljava/io/PrintStream;")
   val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
-  val valueOfFIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(F)Ljava/lang/String;")
-  val v2InitIdx = poolMethodref(pool, "Vector2", "<init>", "(FF)V")
-  val v2XIdx = poolFieldref(pool, "Vector2", "x", "F")
-  val v2YIdx = poolFieldref(pool, "Vector2", "y", "F")
-  val maxCompIdx = poolMethodref(pool, "Vector2", "getX", "()F")
+  val concatIdx  = poolMethodref(pool, "java/lang/String",    "concat",  "(Ljava/lang/String;)Ljava/lang/String;")
+  val valueOfFIdx = poolMethodref(pool, "java/lang/String",   "valueOf", "(F)Ljava/lang/String;")
+  val v2InitIdx  = poolMethodref(pool, "Vector2",             "<init>",  "(FF)V")
+  val v2XIdx     = poolFieldref(pool,  "Vector2",             "x",       "F")
+  val v2YIdx     = poolFieldref(pool,  "Vector2",             "y",       "F")
+  val maxCompIdx = poolMethodref(pool,  "Vector2",            "getX", "()F")
   val v2ClassIdx = poolClass(pool, "Vector2")
 
   // Vector2 v = new Vector2(1.5f, 2.5f);  [slot 0]
@@ -116,21 +117,21 @@ func makeMainBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b95"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val vec2Class = BuiltClass(binaryName = "Vector2", bytes = makeVector2Bytes())
-  val mainClass = BuiltClass(binaryName = "Main", bytes = makeMainBytes())
+  val mainClass = BuiltClass(binaryName = "Main",    bytes = makeMainBytes())
   val classes: List[BuiltClass] = newList()
   classes.add(vec2Class)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB95",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

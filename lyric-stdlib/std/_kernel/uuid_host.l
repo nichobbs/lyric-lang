@@ -1,17 +1,18 @@
-//! std/_kernel/uuid_host.l — host boundary for System.Guid (UUID).
-//!
-//! `Uuid` is a thin alias over `System.Guid`.  The four operations below
-//! cover the full lifecycle: generation, the nil/empty sentinel, string
-//! formatting, and round-trip parsing.
-//!
-//! `hostGuidToString` routes to the instance `System.Guid.ToString()` call
-//! which produces the canonical lowercase hyphenated form
-//! "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx".
-//!
-//! `hostTryParseGuid` uses the static `System.Guid.TryParse(string, out Guid)`
-//! overload; it accepts all standard Guid formats ("D", "N", "B", "P", "X").
-//!
-//! Internal: only Std.Uuid should import this.
+// std/_kernel/uuid_host.l — host boundary for System.Guid (UUID).
+//
+// `Uuid` is a thin alias over `System.Guid`.  The four operations below
+// cover the full lifecycle: generation, the nil/empty sentinel, string
+// formatting, and round-trip parsing.
+//
+// `hostGuidToString` routes to the instance `System.Guid.ToString()` call
+// which produces the canonical lowercase hyphenated form
+// "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx".
+//
+// `hostTryParseGuid` uses the static `System.Guid.TryParse(string, out Guid)`
+// overload; it accepts all standard Guid formats ("D", "N", "B", "P", "X").
+//
+// Internal: only Std.Uuid should import this.
+
 @axiom("System.Guid conforms to its documented .NET contract")
 package Std.UuidHost
 

@@ -1,6 +1,7 @@
-//! Classic FizzBuzz, end-to-end through the bootstrap CLI.
-//!
-//! Run: lyric run examples/fizzbuzz.l
+// Classic FizzBuzz, end-to-end through the bootstrap CLI.
+//
+// Run: lyric run examples/fizzbuzz.l
+
 package FizzBuzz
 
 func main(): Unit {

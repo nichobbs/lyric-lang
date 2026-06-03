@@ -1,13 +1,14 @@
-//! openapi_gen.l — Lyric source-code generator for OpenAPI 3.x specs.
-//!
-//! Takes a ParsedSpec from Lyric.OpenApiParser and emits a single .l file
-//! containing:
-//!  - One record per distinct object schema collected from request/response
-//!    bodies.
-//!  - A <ClientName>Client opaque type wrapping Std.Rest.RestClient.
-//!  - One async func per operation, with path parameters interpolated and
-//!    query parameters appended.
-//!  - Scalar field accessors for flat-object success-response bodies.
+// openapi_gen.l — Lyric source-code generator for OpenAPI 3.x specs.
+//
+// Takes a ParsedSpec from Lyric.OpenApiParser and emits a single .l file
+// containing:
+//  - One record per distinct object schema collected from request/response
+//    bodies.
+//  - A <ClientName>Client opaque type wrapping Std.Rest.RestClient.
+//  - One async func per operation, with path parameters interpolated and
+//    query parameters appended.
+//  - Scalar field accessors for flat-object success-response bodies.
+
 package Lyric.OpenApiGen
 
 import Std.Core
@@ -16,17 +17,16 @@ import Std.String as Str
 import Lyric.OpenApiParser
 
 // ─── Identifier helpers ───────────────────────────────────────────────────
+
 func toPascal(s: in String): String {
-  if Str.length(s) == 0 {
-    return "Unknown"
-  }
+  if Str.length(s) == 0 { return "Unknown" }
   // Replace split characters with space then capitalise each word.
-  var n = Str.replace(s, "-", " ")
-  n = Str.replace(n, "_", " ")
-  n = Str.replace(n, "/", " ")
-  n = Str.replace(n, ".", " ")
-  n = Str.replace(n, "{", " ")
-  n = Str.replace(n, "}", " ")
+  var n = Str.replace(s,   "-", " ")
+  n     = Str.replace(n,   "_", " ")
+  n     = Str.replace(n,   "/", " ")
+  n     = Str.replace(n,   ".", " ")
+  n     = Str.replace(n,   "{", " ")
+  n     = Str.replace(n,   "}", " ")
   val parts = Str.split(n, " ")
   var result = ""
   var i = 0
@@ -38,32 +38,27 @@ func toPascal(s: in String): String {
     }
     i = i + 1
   }
-  if Str.length(result) == 0 {
-    "Unknown"
-  } else {
-    result
-  }
+  if Str.length(result) == 0 { "Unknown" } else { result }
 }
 
 func toCamel(s: in String): String {
   val p = toPascal(s)
-  if Str.length(p) == 0 {
-    return "unknown"
-  }
+  if Str.length(p) == 0 { return "unknown" }
   Str.toLower(Str.substring(p, 0, 1)) + Str.substring(p, 1, Str.length(p) - 1)
 }
 
 // ─── Path and query expression builders ──────────────────────────────────
+
 func buildPathExpr(path: in String, pathParams: in List[ParsedParam]): String {
   var result = path
   var i = 0
   while i < pathParams.count {
-    val pname = pathParams[i].name
+    val pname     = pathParams[i].name
     val camelName = toCamel(pname)
     result = Str.replace(result, "{" + pname + "}", "\" + " + camelName + " + \"")
     i = i + 1
   }
-  val wrapped = "\"" + result + "\""
+  val wrapped  = "\"" + result + "\""
   val trailing = " + \"\""
   if Str.endsWith(wrapped, trailing) {
     Str.substring(wrapped, 0, Str.length(wrapped) - Str.length(trailing))
@@ -73,25 +68,20 @@ func buildPathExpr(path: in String, pathParams: in List[ParsedParam]): String {
 }
 
 func buildQueryExpr(queryParams: in List[ParsedParam]): String {
-  if queryParams.count == 0 {
-    return ""
-  }
+  if queryParams.count == 0 { return "" }
   var result = ""
   var i = 0
   while i < queryParams.count {
-    val sep = if i == 0 { "?" } else { "&" }
+    val sep  = if i == 0 { "?" } else { "&" }
     val part = "\"" + sep + queryParams[i].name + "=\" + " + toCamel(queryParams[i].name)
-    if i == 0 {
-      result = part
-    } else {
-      result = result + " + " + part
-    }
+    if i == 0 { result = part } else { result = result + " + " + part }
     i = i + 1
   }
   result
 }
 
 // ─── Record-type collection ────────────────────────────────────────────────
+
 // Collect (typeName, props) for every op that has an object-schema body.
 // De-duplicates by type name.
 func collectRecordTypes(ops: in List[ParsedOp]): List[ParsedOp] {
@@ -106,9 +96,7 @@ func collectRecordTypes(ops: in List[ParsedOp]): List[ParsedOp] {
       var already = false
       var j = 0
       while j < seen.count and not already {
-        if seen[j] == typeName {
-          already = true
-        }
+        if seen[j] == typeName { already = true }
         j = j + 1
       }
       if not already {
@@ -122,17 +110,20 @@ func collectRecordTypes(ops: in List[ParsedOp]): List[ParsedOp] {
 }
 
 // ─── Code generation ─────────────────────────────────────────────────────
-func ln(s: in String): String {
-  s + "\n"
-}
+
+func ln(s: in String): String { s + "\n" }
 
 /// Generate the full .l source for a typed REST client from a ParsedSpec.
 /// `clientNameOverride` and `packageNameOverride` may be empty (defaults
 /// derived from spec.title in that case).
-pub func generateOpenApi(spec: in ParsedSpec, clientNameOverride: in String, packageNameOverride: in String): String {
-  val title = if Str.length(spec.title) == 0 { "Api" } else { spec.title }
-  val clientBase = if Str.length(clientNameOverride) == 0 { toPascal(title) } else { clientNameOverride }
-  val pkgName = if Str.length(packageNameOverride) == 0 { "Gen." + toPascal(title) } else { packageNameOverride }
+pub func generateOpenApi(
+  spec:                in ParsedSpec,
+  clientNameOverride:  in String,
+  packageNameOverride: in String
+): String {
+  val title      = if Str.length(spec.title) == 0 { "Api" } else { spec.title }
+  val clientBase = if Str.length(clientNameOverride)  == 0 { toPascal(title)         } else { clientNameOverride }
+  val pkgName    = if Str.length(packageNameOverride) == 0 { "Gen." + toPascal(title) } else { packageNameOverride }
   val clientTypeName = clientBase + "Client"
 
   var s = ""
@@ -156,7 +147,7 @@ pub func generateOpenApi(spec: in ParsedSpec, clientNameOverride: in String, pac
   val recordOps = collectRecordTypes(spec.operations)
   var ri = 0
   while ri < recordOps.count {
-    val op = recordOps[ri]
+    val op       = recordOps[ri]
     val typeName = toPascal(op.operationId) + "Body"
     // Use request body props if available, else success response props.
     val props = if op.requestBodyIsObject { op.requestBodyProps } else { op.successRespProps }
@@ -164,7 +155,7 @@ pub func generateOpenApi(spec: in ParsedSpec, clientNameOverride: in String, pac
     s = s + ln("pub record " + typeName + " {")
     var pi = 0
     while pi < props.count {
-      val p = props[pi]
+      val p      = props[pi]
       val suffix = if p.required { "" } else { "  // optional" }
       s = s + ln("  " + toCamel(p.name) + ": " + p.lyricType + suffix)
       pi = pi + 1
@@ -206,12 +197,7 @@ pub func generateOpenApi(spec: in ParsedSpec, clientNameOverride: in String, pac
   s = s + ln("/// Attach an authentication strategy (Bearer, Basic, ApiKey).")
   s = s + ln("@pure")
   s = s + ln("@stable(since=\"1.0\")")
-  s = s +
-    ln(
-      "pub func " + clientTypeName + ".withAuth(client: in " + clientTypeName + ", auth: in RestAuth): " +
-        clientTypeName +
-        " {"
-    )
+  s = s + ln("pub func " + clientTypeName + ".withAuth(client: in " + clientTypeName + ", auth: in RestAuth): " + clientTypeName + " {")
   s = s + ln("  return " + clientTypeName + "(inner = RestClient.withAuth(client.inner, auth))")
   s = s + ln("}")
   s = s + ln("")
@@ -237,9 +223,7 @@ pub func generateOpenApi(spec: in ParsedSpec, clientNameOverride: in String, pac
       argsStr = argsStr + ", " + toCamel(p.name) + ": in " + p.lyricType
       qi = qi + 1
     }
-    if op.hasRequestBody {
-      argsStr = argsStr + ", body: in String"
-    }
+    if op.hasRequestBody { argsStr = argsStr + ", body: in String" }
 
     // Doc comment.
     if Str.length(op.summary) > 0 {
@@ -256,20 +240,10 @@ pub func generateOpenApi(spec: in ParsedSpec, clientNameOverride: in String, pac
     // URL expression: path with params + query string.
     val pathExpr = buildPathExpr(op.path, op.pathParams)
     val queryStr = buildQueryExpr(op.queryParams)
-    val urlExpr = if Str.length(queryStr) == 0 { pathExpr } else { pathExpr + " + " + queryStr }
+    val urlExpr  = if Str.length(queryStr) == 0 { pathExpr } else { pathExpr + " + " + queryStr }
 
     // Emit the underlying RestClient call.
-    val verbStr = if op.verb == "delete" {
-      "delete"
-    } else if op.verb == "post" {
-      "post"
-    } else if op.verb == "put" {
-      "put"
-    } else if op.verb == "patch" {
-      "patch"
-    } else {
-      "get"
-    }
+    val verbStr = if op.verb == "delete" { "delete" } else if op.verb == "post" { "post" } else if op.verb == "put" { "put" } else if op.verb == "patch" { "patch" } else { "get" }
     if op.verb == "post" or op.verb == "put" or op.verb == "patch" {
       val bodyExpr = if op.hasRequestBody { "body" } else { "\"\"" }
       s = s + ln("  match await RestClient." + verbStr + "(client.inner, " + urlExpr + ", " + bodyExpr + ") {")
@@ -295,23 +269,15 @@ pub func generateOpenApi(spec: in ParsedSpec, clientNameOverride: in String, pac
       var spi = 0
       while spi < op.successRespProps.count {
         val prop = op.successRespProps[spi]
-        val isScalar = prop.lyricType == "String" or prop.lyricType == "Int" or prop.lyricType == "Bool"
+        val isScalar = prop.lyricType == "String" or
+                       prop.lyricType == "Int"    or
+                       prop.lyricType == "Bool"
         if isScalar {
-          val accessorSuffix = if prop.lyricType == "String" {
-            "String"
-          } else if prop.lyricType == "Int" {
-            "Int"
-          } else {
-            "Bool"
-          }
-          val accessorName = funcName + toPascal(prop.name)
+          val accessorSuffix = if prop.lyricType == "String" { "String" } else if prop.lyricType == "Int" { "Int" } else { "Bool" }
+          val accessorName   = funcName + toPascal(prop.name)
           s = s + ln("/// Read the `" + prop.name + "` field from a `" + funcName + "` response body.")
           s = s + ln("@stable(since=\"1.0\")")
-          s = s +
-            ln(
-              "pub async func " + clientTypeName + "." + accessorName + "(" + argsStr + "): Result[" + prop.lyricType +
-                ", RestError] {"
-            )
+          s = s + ln("pub async func " + clientTypeName + "." + accessorName + "(" + argsStr + "): Result[" + prop.lyricType + ", RestError] {")
 
           // Build forwarding call args (everything except "client").
           var fwdArgs = ""
@@ -325,9 +291,7 @@ pub func generateOpenApi(spec: in ParsedSpec, clientNameOverride: in String, pac
             fwdArgs = fwdArgs + ", " + toCamel(op.queryParams[fqi].name)
             fqi = fqi + 1
           }
-          if op.hasRequestBody {
-            fwdArgs = fwdArgs + ", body"
-          }
+          if op.hasRequestBody { fwdArgs = fwdArgs + ", body" }
 
           s = s + ln("  match await " + clientTypeName + "." + funcName + "(client" + fwdArgs + ") {")
           s = s + ln("    case Err(e) -> return Err(error = e)")

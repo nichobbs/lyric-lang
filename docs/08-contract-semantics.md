@@ -928,10 +928,6 @@ verification working as intended.
 - *Lyric Open Questions* (`docs/06-open-questions.md`), entries Q020
   (solver choice), Q014 (operator overloading and `@pure`).
 
-## 15. Related Sketches
-
-- **`docs/45-contract-metadata-direct-resolution.md`** — Contract metadata distribution design for restored Lyric packages. Proposes replacing the current synthesis → parse → recheck approach with metadata-direct symbol table construction. Extends the contract distribution model described in §1 and the metadata representation implied by §13.3. _Unbacked — awaiting decision._
-
 ---
 
 ## Appendix A. Quick-reference table of `Bug` tags

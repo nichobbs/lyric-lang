@@ -89,61 +89,13 @@ dotnet hello.dll           # run the produced assembly
 
 `lyric build` is incremental: if neither the source nor the standard library has changed since the last build, it is a no-op. Pass `--force` to rebuild unconditionally.
 
-Inside a project, you can drop the arguments entirely. Running `lyric` with no
-command builds the current project, and `lyric build` / `lyric restore` find the
-project's `lyric.toml` by walking up from your working directory — so they work
-from any subdirectory. All eight dev-loop commands (`build`, `run`, `fmt`,
-`lint`, `prove`, `doc`, `test`, `bench`) do the same discovery, so they work
-from any subdirectory without arguments. Run `lyric --help` for the grouped
-command list.
-
-### Scaffolding a project — `lyric init`
-
-Rather than hand-writing `lyric.toml` and the source layout, `lyric init`
-scaffolds a new package:
-
-```
-lyric init demo
-cd demo
-lyric run src/main.l      # prints: Hello from Demo!
-lyric build               # builds demo/bin/Demo.dll
-```
-
-`lyric init [<dir>] [--name <Name>] [--lib] [--force]` creates the target
-directory (default the current one), a `lyric.toml` with `[package]`,
-`[project]`, and an empty `[dependencies]` table, a `src/main.l` hello-world
-(or `src/lib.l` with `--lib`), and a `.gitignore`. The package name is derived
-from the directory name (capitalised to the `UpperCamelCase` convention) unless
-`--name` overrides it; a name that isn't a valid identifier is rejected with a
-hint to pass `--name`. An existing `lyric.toml` is never overwritten without
-`--force`.
-
-### Native binaries — `lyric build --release`
-
-For deployment, `lyric build --release hello.l` produces a **self-contained
-Native AOT binary** — a single executable with no .NET runtime required on the
-target machine:
-
-```sh
-lyric build --release hello.l
-# Produces: hello   (a native executable)
-./hello
-```
-
-Under the hood the compiler builds the managed DLL, generates a small host
-project referencing it and the standard library, and runs
-`dotnet publish -p:PublishAot=true`; any ILC trim/AOT warnings are shown.
-`--rid <rid>` selects a runtime identifier (default: your host), and `-o`
-overrides the output path.
-
-> **Scope today.** `--release` covers single-file programs on the .NET target.
-> Project-mode `--release` and the JVM target (GraalVM `native-image`) are
-> tracked in [#1975] and fail loud rather than emitting a managed artifact. For
-> a project, build the framework-dependent DLL (`lyric build`) and run it with
-> `dotnet`, or install the compiler as a .NET global tool
-> (`dotnet tool install lyric`).
-
-[#1975]: https://github.com/nichobbs/lyric-lang/issues/1975
+> **Native AOT — not yet available.** A self-contained Native AOT binary (no
+> .NET runtime needed at deployment) is a planned deliverable, not a shipped
+> feature: there is no `--aot` flag today, and `<PublishAot>` is not yet wired
+> into the compiler (`docs/41-self-hosted-compiler-gap-analysis.md` H13,
+> sequenced as `docs/36-v1-roadmap.md` §R7.5). For now, deploy the produced
+> `hello.dll` and run it with `dotnet hello.dll`, or install the compiler as a
+> .NET global tool (`dotnet tool install lyric`).
 
 ## The anatomy of a Lyric file
 
@@ -220,47 +172,25 @@ Core commands you will use constantly:
 
 | Command | What it does |
 |---------|-------------|
-| `lyric` | Build the current project (discovers the nearest `lyric.toml`) |
-| `lyric build <file.l>` | Compile for .NET (default); produce a `.dll` + `.runtimeconfig.json`; prints elapsed time on success |
-| `lyric build --target jvm <file.l>` | Compile for the JVM; produce a runnable `.jar` (no `runtimeconfig.json`) |
-| `lyric build` | Build the discovered project (no source arg needed) |
-| `lyric run <file.l>` | Compile and immediately execute a single file |
-| `lyric run` | Build and run the discovered project (no source arg needed) |
-| `lyric run --target jvm` | Build and run the project on the JVM target |
-| `lyric --help` | Print the grouped command list |
+| `lyric build <file.l>` | Compile; produce a `.dll` |
+| `lyric run <file.l>` | Compile and immediately execute |
 | `lyric test <file.l>` | Run `test` declarations in a `@test_module` file (TAP-shaped output, exit 1 on failure) |
-| `lyric test` | Run tests for the discovered project; falls back to scanning packages for `@test_module` |
 | `lyric test <file.l> --list` | Print test titles without compiling |
 | `lyric test <file.l> --filter <substring>` | Run only tests whose title contains the substring |
-| `lyric test <file.l> --fail-fast` | Stop after the first file with failing tests; print an early summary |
-| `lyric check <file.l>` | Type-check without producing a usable output artifact |
-| `lyric check` | Type-check the discovered project (output to `.lyric-check/`, not `bin/`) |
-| `lyric clean` | Remove `bin/`, `.lyric-run/`, `.lyric-test/`, `.lyric-bench/`, `.lyric-check/`, `.lyric-release/` |
-| `lyric fmt` | Dry-run: list files that would be reformatted (exit 1 if any) |
-| `lyric fmt --write` | Reformat all project source files in place |
-| `lyric fmt --check` | Exit 1 if any file is not formatted (CI gate) |
-| `lyric fmt --diff` | Show a unified diff of what would change without writing |
-| `lyric fmt <file.l> [<file2.l> …]` | Format one or more explicit files |
-| `lyric fmt --stdin` | Read from stdin, write formatted output to stdout (editor integration) |
-| `lyric lint` | Report style diagnostics; prints summary `N error(s), M warning(s) in K file(s)` |
+| `lyric fmt` | Format source code to the standard style |
+| `lyric fmt --check` | Exit 1 if the file is not formatted (CI gate) |
+| `lyric fmt --write` | Overwrite file in place |
+| `lyric lint` | Report style and quality diagnostics |
 | `lyric lint --error-on-warning` | Treat warnings as errors (CI gate) |
 | `lyric doc <file.l>` | Generate Markdown documentation from doc comments |
-| `lyric doc` | Generate docs for all packages in the discovered project |
 | `lyric prove <file.l>` | Run the SMT-backed verifier on `@proof_required` modules |
-| `lyric prove` | Verify all packages in the discovered project |
 | `lyric bench <file.l>` | Measure runtime performance of `@bench_module` functions |
-| `lyric bench <file.l> --target jvm` | Benchmark on the JVM target (`java -jar`) |
-| `lyric bench` | Run benchmarks for all packages in the discovered project |
-| `lyric bench --target jvm` | Project mode on JVM target |
 | `lyric bench <file.l> --runs <N> --warmup <N>` | Control timed and warmup iteration counts |
 | `lyric bench <file.l> --filter <substring>` | Run only benchmarks whose name contains the substring |
 | `lyric publish` | Pack and push the current package to the configured registry |
 | `lyric publish --registry <url> --api-key <key>` | Publish to a specific feed with an API key |
 | `lyric restore` | Restore all dependencies declared in `lyric.toml`; writes `lyric.lock` |
 | `lyric restore --locked` | Restore strictly from `lyric.lock` (fail if lock is stale) |
-| `lyric update` | Re-resolve all deps to latest compatible versions; rewrites `lyric.lock` |
-| `lyric deps` | Print the resolved dependency list from `lyric.lock` |
-| `lyric remove <name>` | Remove a dependency from `[dependencies]` in `lyric.toml` and re-run restore |
 | `lyric search <query>` | Search the registry for matching packages |
 | `lyric repl` | Start an interactive read-eval-print loop |
 | `lyric repl --verbose` | REPL with diagnostic output on each evaluation |
@@ -270,7 +200,9 @@ Core commands you will use constantly:
 
 `lyric fmt` walks the parser's red/green concrete syntax tree, so **all comments are preserved**: `///` and `//!` doc comments, `//` line comments, and `/* … */` block comments — at item, member, statement, and nested-block boundaries.  Intentional blank lines are also preserved (collapsed to at most one blank per spot, Black-style).
 
-`lyric lint` catches five categories of issue without needing a full compile: PascalCase for types (L001), camelCase for functions (L002), missing doc comments on `pub` items (L003), TODO/FIXME in doc comments (L004), and `pub func` with a block body but no contracts (L005). L001/L002 are errors; L003–L005 are warnings that become errors under `--error-on-warning`. In project mode, lint prints a summary at the end: `"K file(s) clean"` or `"N error(s), M warning(s) in K file(s)"`.
+If you need the older AST-based formatter (which drops `//` comments, retained for one release as a compatibility fallback), pass `--legacy` or set the environment variable `LYRIC_FMT_LEGACY=1`.
+
+`lyric lint` catches five categories of issue without needing a full compile: PascalCase for types (L001), camelCase for functions (L002), missing doc comments on `pub` items (L003), TODO/FIXME in doc comments (L004), and `pub func` with a block body but no contracts (L005). L001/L002 are errors; L003–L005 are warnings that become errors under `--error-on-warning`.
 
 ## Your first error message
 

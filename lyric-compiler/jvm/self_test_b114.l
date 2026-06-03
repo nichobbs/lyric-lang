@@ -1,13 +1,14 @@
-//! jvm/self_test_b114.l — Stage B114: lowerNatTag (phantom nat-tag classes for value generics).
-//!
-//! Creates two nat-tag phantom classes: N_42 and N_100.
-//! Each has a public static final long VALUE and a value() accessor.
-//!
-//! A Main class calls value() on each and prints the result.
-//!
-//! Java output (java -jar):
-//!   n=42
-//!   n=100
+// jvm/self_test_b114.l — Stage B114: lowerNatTag (phantom nat-tag classes for value generics).
+//
+// Creates two nat-tag phantom classes: N_42 and N_100.
+// Each has a public static final long VALUE and a value() accessor.
+//
+// A Main class calls value() on each and prints the result.
+//
+// Java output (java -jar):
+//   n=42
+//   n=100
+
 package Jvm.SelfTestB114
 
 import Std.Core
@@ -19,26 +20,28 @@ import Jvm.Lowering
 import Jvm.Driver
 
 // ── Build nat-tag classes ─────────────────────────────────────────────────────
+
 func makeNatTagBytes(className: in String, value: in Long, pool: in Pool): List[Byte] {
   val cf = lowerNatTag(LNatTag(className = className, value = value), pool)
   serializeClassWithPool(cf, pool)
 }
 
 // ── Build Main class ──────────────────────────────────────────────────────────
+
 func makeMainBytes(pool: in Pool): List[Byte] {
   val asm = newAssembler(pool)
 
-  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOutIdx  = poolFieldref(pool,  "java/lang/System",    "out",     "Ljava/io/PrintStream;")
   val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
-  val vofLIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(J)Ljava/lang/String;")
+  val concatIdx  = poolMethodref(pool, "java/lang/String",    "concat",  "(Ljava/lang/String;)Ljava/lang/String;")
+  val vofLIdx    = poolMethodref(pool, "java/lang/String",    "valueOf", "(J)Ljava/lang/String;")
 
-  val n42Ctor = poolMethodref(pool, "N_42", "<init>", "()V")
-  val n42Value = poolMethodref(pool, "N_42", "value", "()J")
-  val n100Ctor = poolMethodref(pool, "N_100", "<init>", "()V")
-  val n100Value = poolMethodref(pool, "N_100", "value", "()J")
-  val n42Class = poolClass(pool, "N_42")
-  val n100Class = poolClass(pool, "N_100")
+  val n42Ctor    = poolMethodref(pool, "N_42",  "<init>", "()V")
+  val n42Value   = poolMethodref(pool, "N_42",  "value",  "()J")
+  val n100Ctor   = poolMethodref(pool, "N_100", "<init>", "()V")
+  val n100Value  = poolMethodref(pool, "N_100", "value",  "()J")
+  val n42Class   = poolClass(pool, "N_42")
+  val n100Class  = poolClass(pool, "N_100")
 
   // N_42 tag42 = new N_42()
   emitNew(asm, n42Class)
@@ -83,24 +86,25 @@ func makeMainBytes(pool: in Pool): List[Byte] {
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
+
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b114"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val pool = poolNew()
   val classes: List[BuiltClass] = newList()
-  classes.add(BuiltClass(binaryName = "N_42", bytes = makeNatTagBytes("N_42", 42i64, pool)))
+  classes.add(BuiltClass(binaryName = "N_42",  bytes = makeNatTagBytes("N_42",  42i64,  pool)))
   classes.add(BuiltClass(binaryName = "N_100", bytes = makeNatTagBytes("N_100", 100i64, pool)))
-  classes.add(BuiltClass(binaryName = "Main", bytes = makeMainBytes(pool)))
+  classes.add(BuiltClass(binaryName = "Main",  bytes = makeMainBytes(pool)))
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB114",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

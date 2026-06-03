@@ -1,7 +1,8 @@
-//! First N primes via trial division, end-to-end through the
-//! bootstrap CLI.
-//!
-//! Run: lyric run examples/primes.l
+// First N primes via trial division, end-to-end through the
+// bootstrap CLI.
+//
+// Run: lyric run examples/primes.l
+
 package Primes
 
 @pure

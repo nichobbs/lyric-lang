@@ -1,17 +1,18 @@
-//! jvm/self_test_b37.l — Stage B37: aconst_null, ifnull, ifnonnull.
-//!
-//! Generates NullCheck.class with:
-//!   isNull(Ljava/lang/Object;)Z  — returns 1 if arg is null, 0 otherwise
-//!   orDefault(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;
-//!       — returns first arg if non-null, second arg otherwise
-//!
-//! Main:
-//!   isNull(null)         → 1
-//!   isNull("hello")      → 0
-//!   orDefault(null,"default") → "default"
-//!   orDefault("hi","x")  → "hi"
-//!
-//! Exercises: emitAconstNull, emitIfnull, emitIfnonnull (branches with V49 to skip StackMapTable).
+// jvm/self_test_b37.l — Stage B37: aconst_null, ifnull, ifnonnull.
+//
+// Generates NullCheck.class with:
+//   isNull(Ljava/lang/Object;)Z  — returns 1 if arg is null, 0 otherwise
+//   orDefault(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;
+//       — returns first arg if non-null, second arg otherwise
+//
+// Main:
+//   isNull(null)         → 1
+//   isNull("hello")      → 0
+//   orDefault(null,"default") → "default"
+//   orDefault("hi","x")  → "hi"
+//
+// Exercises: emitAconstNull, emitIfnull, emitIfnonnull (branches with V49 to skip StackMapTable).
+
 package Jvm.SelfTestB37
 
 import Std.Core
@@ -37,7 +38,12 @@ func makeNullCheckClassBytes(): List[Byte] {
   val inCode = assembleCode(asmIN, 1, 1)
   val inAttrs: List[Attribute] = newList()
   inAttrs.add(inCode)
-  val isNullMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "isNull", "(Ljava/lang/Object;)Z", inAttrs)
+  val isNullMethod = makeMethodInfo(
+    ACC_PUBLIC + ACC_STATIC,
+    "isNull",
+    "(Ljava/lang/Object;)Z",
+    inAttrs
+  )
 
   // ── orDefault(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String; ─────
   // aload_0; ifnull lbl_isnull; aload_0; areturn; lbl_isnull: aload_1; areturn
@@ -69,18 +75,13 @@ func makeNullCheckClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm = newAssembler(pool)
+  val asm  = newAssembler(pool)
 
-  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val isNullRef = poolMethodref(pool, "NullCheck", "isNull", "(Ljava/lang/Object;)Z")
-  val orDefaultRef = poolMethodref(
-    pool,
-    "NullCheck",
-    "orDefault",
-    "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"
-  )
-  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
-  val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val sysOut        = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val isNullRef     = poolMethodref(pool, "NullCheck", "isNull",    "(Ljava/lang/Object;)Z")
+  val orDefaultRef  = poolMethodref(pool, "NullCheck", "orDefault", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;")
+  val printlnI      = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val printlnS      = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
 
   // isNull(null) → 1
   emitGetstatic(asm, sysOut)
@@ -123,24 +124,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b37"
   match createDir(outDir) {
-    case Ok(_) -> ()
+    case Ok(_)  -> ()
     case Err(_) -> ()
   }
 
   val nullCheckBytes = makeNullCheckClassBytes()
-  val mainBytes = makeMainClassBytes()
+  val mainBytes      = makeMainClassBytes()
 
   val nullCheckClass = BuiltClass(binaryName = "NullCheck", bytes = nullCheckBytes)
-  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
+  val mainClass      = BuiltClass(binaryName = "Main",      bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(nullCheckClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB37",
-    mainClass = "Main",
-    version = "0.1.0",
-    outPath = outDir + "/hello.jar"
+    mainClass   = "Main",
+    version     = "0.1.0",
+    outPath     = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {
