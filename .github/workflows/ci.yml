@@ -778,6 +778,26 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/equality_self_test.l
 
+      # Map-key self-test — #1480.  Records with `@derive(Equals)` +
+      # `@derive(Hash)` now carry synthesised `Object.Equals`/`GetHashCode`
+      # overrides, so field-equal instances are the same BCL `Map` key.  Run
+      # via native `lyric test` (in-process through Msil.Bridge).
+      - name: Map-key self-test (native lyric test)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping map-key self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping map-key self-test"
+            exit 0
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_key_self_test.l
+
       # Coverage collection — informational only, not a blocking gate (#1117).
       # Runs on push to main (not pull_request) to keep PR latency low.
       # Uses `dotnet-coverage` CLI against the same Expecto-based test

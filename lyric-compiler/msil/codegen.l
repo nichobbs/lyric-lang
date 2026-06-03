@@ -932,6 +932,22 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
           }
           ni = ni + 1
         }
+        // Reserve MethodDef rows for the synthesised @derive Equals/GetHashCode
+        // overrides (#1480), emitted last by `appendDeriveOverridesMsil`.  The
+        // count MUST match `deriveOverrideCountMsil` or later tokens shift.
+        val recAnns = file.items[i].annotations
+        if hasDeriveMarkerMsil(recAnns, "Equals") {
+          if not cctx.methodTokens.containsKey(className + "/Equals") {
+            cctx.methodTokens.add(className + "/Equals", 0x06000000 + methodDefRow)
+          }
+          methodDefRow = methodDefRow + 1
+        }
+        if hasDeriveMarkerMsil(recAnns, "Hash") {
+          if not cctx.methodTokens.containsKey(className + "/GetHashCode") {
+            cctx.methodTokens.add(className + "/GetHashCode", 0x06000000 + methodDefRow)
+          }
+          methodDefRow = methodDefRow + 1
+        }
       }
       case IExposedRec(decl) -> {
         // Same layout as IRecord.
@@ -987,6 +1003,20 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
             methodDefRow = methodDefRow + 1
           }
           ni = ni + 1
+        }
+        // Reserve rows for synthesised @derive overrides (#1480); see IRecord.
+        val recAnnsX = file.items[i].annotations
+        if hasDeriveMarkerMsil(recAnnsX, "Equals") {
+          if not cctx.methodTokens.containsKey(className + "/Equals") {
+            cctx.methodTokens.add(className + "/Equals", 0x06000000 + methodDefRow)
+          }
+          methodDefRow = methodDefRow + 1
+        }
+        if hasDeriveMarkerMsil(recAnnsX, "Hash") {
+          if not cctx.methodTokens.containsKey(className + "/GetHashCode") {
+            cctx.methodTokens.add(className + "/GetHashCode", 0x06000000 + methodDefRow)
+          }
+          methodDefRow = methodDefRow + 1
         }
       }
       case IUnion(decl) -> {
@@ -8172,7 +8202,126 @@ pub func injectImplMethodsIntoRecord(cctx: in CodegenCtx, rec: in MRecord,
     methods   = mergedMethods)
 }
 
-// Produce an `MPackage` from a parsed source file.
+// True iff `anns` carries a `@derive(<marker>)` annotation.  Mirrors
+// `Lyric.Derives.hasDeriveMarker` (codegen can't import that package).
+func hasDeriveMarkerMsil(anns: in List[Annotation], marker: in String): Bool {
+  var i = 0
+  while i < anns.count {
+    val a = anns[i]
+    if a.name.segments.count == 1 and a.name.segments[0] == "derive" and a.args.count > 0 {
+      val nm = match a.args[0] {
+        case ABare(n, _)    -> n
+        case ALiteral(v, _) -> match v {
+          case AVIdent(n, _) -> n
+          case _             -> ""
+        }
+        case AAName(_, _, _) -> ""
+      }
+      if nm == marker { return true }
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Synthesise the `Object.Equals(object)` / `GetHashCode()` *overrides* on a
+// `@derive(Equals)` / `@derive(Hash)` record so BCL `Map`/`HashSet` key lookup
+// (which dispatches these virtually) is structural rather than identity-based,
+// and `a.Equals(b)` agrees with `a == b` (#1480).  Each override is a thin
+// virtual instance method delegating to the derived free `<Type>.equals(self,
+// other)` / `<Type>.hash(self)` (emitted by `Lyric.Derives`; reachable since
+// #1796).  Appended AFTER any injected impl methods so the MethodDef rows line
+// up with the budget reserved in `addPackageTokens` (`deriveOverrideCountMsil`).
+// `recordFqn` is the type's dotted FQN (e.g. `Pkg.Point`).
+pub func appendDeriveOverridesMsil(cctx: in CodegenCtx, rec: in MRecord,
+                                   recordFqn: in String,
+                                   anns: in List[Annotation]): MRecord {
+  val methods: List[MFunc] = newList()
+  var bi = 0
+  while bi < rec.methods.count {
+    methods.add(rec.methods[bi])
+    bi = bi + 1
+  }
+
+  if hasDeriveMarkerMsil(anns, "Equals") {
+    val eqTok = match mapGet(cctx.funcTokens, recordFqn + ".equals") {
+      case Some(t) -> t
+      case None    -> panic("Msil.Codegen: @derive(Equals) record " + recordFqn
+        + " has no synthesised `.equals` token — Lyric.Derives / mono regression (#1796)")
+    }
+    // bool Equals(object obj) {
+    //   var c = obj as <Record>;       // isinst; stloc 0
+    //   if (c == null) return false;   // brfalse RETFALSE
+    //   return <Record>.equals(this, c);
+    // RETFALSE: return false; }
+    val insns: List[MInsn] = newList()
+    insns.add(MLdarg(slot = 1))                      // obj
+    insns.add(MIsinstByName(className = recordFqn))   // obj as <Record>
+    insns.add(MStloc(slot = 0))
+    insns.add(MLdloc(slot = 0))
+    insns.add(MBrFalse(label = 0))
+    insns.add(MLdarg(slot = 0))                       // this
+    insns.add(MLdloc(slot = 0))                       // c
+    insns.add(MCall(methodToken = eqTok))             // <Record>.equals(this, c): bool
+    insns.add(MRet)
+    insns.add(MLabel(id = 0))
+    insns.add(MLdcI4(v = 0))
+    insns.add(MRet)
+    val eqParams: List[MsilType] = newList()
+    eqParams.add(MObject)
+    val eqLocals: List[MsilType] = newList()
+    eqLocals.add(MClass(className = recordFqn))
+    methods.add(MFunc(
+      flags    = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG,
+      name     = "Equals",
+      params   = eqParams,
+      ret      = MBool,
+      insns    = insns,
+      maxStack = 8,
+      locals   = eqLocals))
+  }
+
+  if hasDeriveMarkerMsil(anns, "Hash") {
+    val hashTok = match mapGet(cctx.funcTokens, recordFqn + ".hash") {
+      case Some(t) -> t
+      case None    -> panic("Msil.Codegen: @derive(Hash) record " + recordFqn
+        + " has no synthesised `.hash` token — Lyric.Derives / mono regression (#1796)")
+    }
+    // int GetHashCode() { return <Record>.hash(this); }
+    val insns: List[MInsn] = newList()
+    insns.add(MLdarg(slot = 0))                       // this
+    insns.add(MCall(methodToken = hashTok))           // <Record>.hash(this): int
+    insns.add(MRet)
+    val ghParams: List[MsilType] = newList()
+    val ghLocals: List[MsilType] = newList()
+    methods.add(MFunc(
+      flags    = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG,
+      name     = "GetHashCode",
+      params   = ghParams,
+      ret      = MInt,
+      insns    = insns,
+      maxStack = 4,
+      locals   = ghLocals))
+  }
+
+  MRecord(
+    className = rec.className,
+    namespace = rec.namespace,
+    baseClass = rec.baseClass,
+    fields    = rec.fields,
+    methods   = methods)
+}
+
+// Number of MethodDef rows the `@derive`-override synthesis adds for a record
+// with these annotations.  `addPackageTokens` and `codegenMPackage` MUST agree
+// on this count or every later token shifts.
+func deriveOverrideCountMsil(anns: in List[Annotation]): Int {
+  var n = 0
+  if hasDeriveMarkerMsil(anns, "Equals") { n = n + 1 }
+  if hasDeriveMarkerMsil(anns, "Hash")   { n = n + 1 }
+  n
+}
+
 // The caller must subsequently call `lowerMPackageWithCtx(pkg, cctx.lctx, entryToken)`
 // to emit the PE bytes.
 pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
@@ -8236,12 +8385,14 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
     match item.kind {
       case IRecord(decl) -> {
         val baseRec = lowerRecordMsil(decl, pkgName)
-        val rec = injectImplMethodsIntoRecord(cctx, baseRec, pkgName + "." + decl.name)
+        val rec0 = injectImplMethodsIntoRecord(cctx, baseRec, pkgName + "." + decl.name)
+        val rec = appendDeriveOverridesMsil(cctx, rec0, pkgName + "." + decl.name, item.annotations)
         items.add(MPRecord(rec = rec))
       }
       case IExposedRec(decl) -> {
         val baseRec = lowerRecordMsil(decl, pkgName)
-        val rec = injectImplMethodsIntoRecord(cctx, baseRec, pkgName + "." + decl.name)
+        val rec0 = injectImplMethodsIntoRecord(cctx, baseRec, pkgName + "." + decl.name)
+        val rec = appendDeriveOverridesMsil(cctx, rec0, pkgName + "." + decl.name, item.annotations)
         items.add(MPRecord(rec = rec))
       }
       case IFunc(decl) -> {
