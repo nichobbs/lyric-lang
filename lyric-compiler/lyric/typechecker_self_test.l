@@ -552,9 +552,6 @@ func testMatchStringNeedsWildcard(): Unit {
   assertTrue(hasDiagCode(cr, "T0016"), "string match no wildcard: T0016")
 }
 
-// #1483 (expression-typing split 2a): EPropagate now carries a real type
-// instead of TyError, so downstream uses of `e?` are checked.
-
 func testPropagateResultUnwrap(): Unit {
   val ok =
     "package P\nunion Result[T, E] { case Ok(value: T); case Err(error: E) }\n" +
