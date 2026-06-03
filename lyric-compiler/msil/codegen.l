@@ -762,6 +762,15 @@ func registerMethodRetTy(cctx: in CodegenCtx, key: in String, ret: in Option[Typ
   }
 }
 
+// Pre-resolved-MsilType variant of `registerMethodRetTy` for impl-method
+// scan sites that already hold the resolved type (e.g. `implImplRetTys`).
+// First registration wins, matching the source-typed sibling.
+func registerMethodRetTyMsil(cctx: in CodegenCtx, key: in String, mty: in MsilType): Unit {
+  if not cctx.methodRetTypes.containsKey(key) {
+    cctx.methodRetTypes.add(key, mty)
+  }
+}
+
 // Pre-scan the AST and assign MethodDef/FieldDef row numbers for every
 // record, function, union case, interface method, opaque type, and protected
 // type in the package.  Must be called before any `lowerFuncMsil` invocations
@@ -925,9 +934,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
           if implImplTargets[ni] == className {
             cctx.methodTokens.add(className + "/" + implImplNames[ni],
                                   0x06000000 + methodDefRow)
-            if not cctx.methodRetTypes.containsKey(className + "/" + implImplNames[ni]) {
-              cctx.methodRetTypes.add(className + "/" + implImplNames[ni], implImplRetTys[ni])
-            }
+            registerMethodRetTyMsil(cctx, className + "/" + implImplNames[ni], implImplRetTys[ni])
             methodDefRow = methodDefRow + 1
           }
           ni = ni + 1
@@ -997,9 +1004,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
           if implImplTargets[ni] == className {
             cctx.methodTokens.add(className + "/" + implImplNames[ni],
                                   0x06000000 + methodDefRow)
-            if not cctx.methodRetTypes.containsKey(className + "/" + implImplNames[ni]) {
-              cctx.methodRetTypes.add(className + "/" + implImplNames[ni], implImplRetTys[ni])
-            }
+            registerMethodRetTyMsil(cctx, className + "/" + implImplNames[ni], implImplRetTys[ni])
             methodDefRow = methodDefRow + 1
           }
           ni = ni + 1
@@ -4535,10 +4540,10 @@ func lowerBuiltinOrStaticCallMsil(
               // Bare call to a sibling instance method (implicit `self`, slot 0).
               // Emit the callvirt the unresolved-call fallback below would have
               // dropped — leaving args on the stack with no call.
-              val sibTok = match mapGet(cctx.methodTokens, fctx.className + "/" + funcName) {
+              val sibKey = fctx.className + "/" + funcName
+              val sibTok = match mapGet(cctx.methodTokens, sibKey) {
                 case Some(t) -> t
-                case None    -> panic("Msil.Codegen: sibling method token vanished after containsKey for "
-                                      + fctx.className + "/" + funcName)
+                case None    -> panic("Msil.Codegen: sibling method token vanished after containsKey for " + sibKey)
               }
               insns.add(MLdarg(slot = 0))
               var si = 0
@@ -4548,7 +4553,7 @@ func lowerBuiltinOrStaticCallMsil(
                 si = si + 1
               }
               insns.add(MCallvirt(methodToken = sibTok))
-              match mapGet(cctx.methodRetTypes, fctx.className + "/" + funcName) {
+              match mapGet(cctx.methodRetTypes, sibKey) {
                 case Some(rty) -> rty
                 case None      -> MObject
               }
