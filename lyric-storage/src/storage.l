@@ -212,6 +212,13 @@ pub interface StorageBucket {
   /// callers see a uniform shape — local-fs, S3, and Azure Blob all
   /// reject `maxKeys > 1000` at the interface contract before reaching
   /// the per-backend implementation (#1456).
+  ///
+  /// Key restriction: any key whose basename ends in `.meta.json` is
+  /// silently omitted from `list` results (the local-fs backend stores
+  /// sidecar metadata under that suffix, which the lister filters).
+  /// `put`/`get`/`exists` still accept such keys, so the inconsistency
+  /// can surprise callers using `list` for inventory — avoid the
+  /// `.meta.json` suffix in user-chosen keys (#1467).
   func list(
     prefix:            in String,
     continuationToken: in String,
