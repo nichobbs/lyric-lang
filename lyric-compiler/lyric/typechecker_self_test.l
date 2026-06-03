@@ -552,6 +552,31 @@ func testMatchStringNeedsWildcard(): Unit {
   assertTrue(hasDiagCode(cr, "T0016"), "string match no wildcard: T0016")
 }
 
+// #1483 (expression-typing split 2a): EPropagate now carries a real type
+// instead of TyError, so downstream uses of `e?` are checked.
+
+func testPropagateResultUnwrap(): Unit {
+  val ok =
+    "package P\nunion Result[T, E] { case Ok(value: T); case Err(error: E) }\n" +
+    "func f(r: in Result[Int, String]): Unit { val n: Int = r? }\n"
+  val bad =
+    "package P\nunion Result[T, E] { case Ok(value: T); case Err(error: E) }\n" +
+    "func f(r: in Result[Int, String]): Unit { val s: String = r? }\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0060"), "Result[Int,_]? -> Int: no T0060")
+  assertTrue(hasDiagCode(parseCheck(bad), "T0060"), "Result[Int,_]? used as String: T0060")
+}
+
+func testPropagateOptionUnwrap(): Unit {
+  val ok =
+    "package P\nunion Option[T] { case Some(value: T); case None }\n" +
+    "func f(o: in Option[Int]): Unit { val n: Int = o? }\n"
+  val bad =
+    "package P\nunion Option[T] { case Some(value: T); case None }\n" +
+    "func f(o: in Option[Int]): Unit { val s: String = o? }\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0060"), "Option[Int]? -> Int: no T0060")
+  assertTrue(hasDiagCode(parseCheck(bad), "T0060"), "Option[Int]? used as String: T0060")
+}
+
 func main(): Unit {
   testEmptySource()
   testFuncRegistered()
@@ -599,5 +624,7 @@ func main(): Unit {
   testMatchBoolNonExhaustive()
   testMatchScalarNeedsWildcard()
   testMatchStringNeedsWildcard()
+  testPropagateResultUnwrap()
+  testPropagateOptionUnwrap()
   println("typechecker self-test: ok")
 }

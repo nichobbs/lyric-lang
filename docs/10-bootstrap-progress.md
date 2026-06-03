@@ -19172,3 +19172,40 @@ wildcard / bare-name-bind / bare-nullary-case / guarded-doesn't-cover; enum
 exhaustive / missing; Bool exhaustive / missing; scalar-needs-wildcard;
 string-needs-wildcard). Full regression green (847/847 emitter, 84/84 CLI
 bridge); native `lyric test` end-to-end verified.
+
+### D-progress-386 — self-hosted type checker: EPropagate result typing (#1483 split 2a, Band-1)
+
+**Status:** Shipped. Expression-typing split following match exhaustiveness (D-progress-385). `EIndex` is split out to 2b (see below).
+
+The `EPropagate` (`e?`) arm of `inferExpr` returned `TyError`; it now unwraps the
+operand's success type — `Result[T, E]` / `Option[T]` → `T` — recognised by
+`TyUser` name exactly like `propagate.l`'s `monadOfRet`. The `Lyric.Propagate`
+pass still owns the lowering and the enclosing-return-compat diagnostic (F0020);
+this only gives the expression its unwrapped type so downstream uses of `e?` are
+checked. A non-monadic operand yields `TyError` (no duplicate diagnostic). New
+helper `propagateUnwrap`; codegen-neutral (no change to the `?` lowering).
+
+No new diagnostic code — it makes the existing checks (`T0060`/`T0043`/…)
+reachable on propagated values.
+
+**`EIndex` deferred to split 2b — a real prerequisite, not a stub.** An earlier
+revision of this slice also typed `EIndex` (element type of `slice[T]` /
+`array[N,T]` / `List[T]` / `Map[K,V]` / `String`). That correctly typed
+`slice[Byte]` indexing as `Byte`, which exposed that **Lyric has no Byte→Int
+conversion that both type-checks and codegens**: `0 + byte` codegens but fails
+`T0031` (no implicit numeric widening), and `byte.toInt()` type-checks but has no
+MSIL intrinsic (emits a fail-loud throw-stub) — `lyric-proto` only sidesteps this
+via a `byteAt(): Int` kernel extern. With `EIndex` typed, `lyric-auth`'s
+constant-time `fixedTimeEqualBytes` (`0 + a[i]`) had no conforming migration, so
+`EIndex` is deferred until a Byte→Int conversion intrinsic lands (tracked in
+**#1901**). Shipping `EIndex` without it would force either a broken build or a
+runtime throw — neither acceptable.
+
+The remaining `TyError` forms (`EIf`/`EMatch`-branch unification, `ELambda`,
+`EBlock`/`EUnsafe`, `EResult`/`EOld`, tuple-destructure sub-bindings,
+record-ctor argument checking) need `returnTy`/`genericNames` threaded into
+`inferExpr` (block-value inference) and follow as later splits.
+
+Coverage: 2 new `typechecker_self_test.l` cases (`Result` / `Option` `?` unwrap,
+each with a positive and a negative `T0060` assertion). Full regression green
+(847/847 emitter, 84/84 CLI bridge).
