@@ -18818,3 +18818,50 @@ Map keys require **both** `@derive(Equals)` and `@derive(Hash)` (overriding
 compare).  A `Map[Record, ValueType]` *value* still trips a separate,
 pre-existing codegen bug (#1835; reproduces with a plain record key and no
 `@derive`).  MSIL target only; JVM parity is deferred (epic #1470).
+
+### D-progress-376 — self-hosted MSIL: `defer` runs at scope exit (#1477, closes C7)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`).  Closes #1477.
+
+`SDefer` lowered its body **inline at the declaration point**, so `defer { D }`
+ran immediately rather than at scope exit and never on the early-`return` or
+exception paths (docs/41 §3 C7).  `defer` is used in the stdlib for resource
+cleanup (`Std.Http`, `Std.Rest`, `Std._kernel.Task`: `defer { disposeSource(src) }`
+before a `return`), where the inline timing disposed the resource *before* the
+return value was computed.
+
+The grammar defines `defer { … }` as "runs on scope exit, success or failure".
+Codegen now lowers the statements that follow a `defer` as
+`try { rest-of-scope } finally { D }`, so the deferred block runs on:
+- normal fall-off and exception unwind (the `finally` itself);
+- early `return` — via the function-epilogue `leave` (D-progress-373), which
+  runs intervening finallys before returning;
+- `break`/`continue` out of the scope — via their `leave` lowering
+  (D-progress-371).
+
+Two block-lowering paths intercept `defer`: `lowerStmtsFromMsil` (statement /
+void context) reuses `lowerTryCatchMsil` with an empty catch list and the
+deferred block as the `finally`; `lowerStmtsExprFromMsil` (trailing-value
+context) wraps the value-producing remainder in a `try`/`finally` and stashes
+the block value in a temp across the `leave` (a `leave` requires an empty
+evaluation stack) so the scope still yields its value.  Multiple defers nest,
+giving reverse-declaration execution order; a deferred block reads its
+referenced variables at scope-exit time.
+
+Verified by `defer_self_test.l` (6/6 via native `lyric test --target dotnet`):
+reverse order on fall-off, early-`return` with the value preserved, `break` out
+of a loop, `continue`, exception unwind (cleanup runs during the unwind before
+the caller's `catch`), and `defer` inside a value-producing sub-block (the
+trailing-value path where the block value survives the `leave`).  No regression
+— full Expecto emitter suite 847/847 and every native self-test (incl.
+`cfg_gate` 16/16 and `weaver` 18/18, which exercise heavy codegen) green.  Wired
+into CI as the "Defer self-test" step.  Language reference §4.3 documents
+`defer`; book appendix-b already listed it.
+
+On `--target jvm` the lowering is not yet implemented (it needs JVM
+return-through-`finally`), so the JVM backend's `SDefer` case **hard-errors** at
+build time pointing at the parity tracking issue #1833 rather than running the
+deferred block inline (which would be a silent miscompile) — the sanctioned
+fail-loud interim per CLAUDE.md.  A separate try/catch-as-value-expression
+invalid-IL gap surfaced during this work and is filed as #1823 (independent of
+`defer`).

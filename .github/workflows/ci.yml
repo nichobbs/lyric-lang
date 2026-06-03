@@ -551,6 +551,29 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/return_in_try_self_test.l
 
+      # Defer self-test — pins `defer`-at-scope-exit (#1477, epic #1470, Band 2):
+      # `defer { D }` runs D on scope exit on every path (fall-off, early return,
+      # break/continue, exception unwind), and multiple defers run in reverse
+      # declaration order. Lowered as `try { rest } finally { D }`, reusing the
+      # function-epilogue return lowering and the break/continue-`leave` lowering.
+      # MSIL target only; JVM parity under #1470's JVM-deferral note. Imports
+      # only `Std.*`.
+      - name: Defer self-test (native lyric test)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping defer self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping defer self-test"
+            exit 0
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/defer_self_test.l
+
       # Out/inout-parameter self-test — pins the self-hosted MSIL byref calling
       # convention (#1761): `out`/`inout` parameters are passed by managed
       # pointer so a callee's write reaches the caller.  MSIL target only; JVM

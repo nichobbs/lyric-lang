@@ -2601,10 +2601,19 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
       lowerBlock(ctx, insns, body)
     }
 
-    // ── Defer (bootstrap: inline immediately — incorrect semantics but
-    //           allows code to compile) ──────────────────────────────────
-    case SDefer(body) -> {
-      lowerBlock(ctx, insns, body)
+    // ── Defer ───────────────────────────────────────────────────────────────
+    // `defer { D }` must run D at scope exit on every path (fall-off, return,
+    // break/continue, exception unwind).  The MSIL backend lowers this to
+    // `try { rest } finally { D }` (#1477); the JVM backend does not yet have
+    // the equivalent lowering (it needs JVM return-through-finally first).
+    // Running the body inline here would be a silent miscompile, so fail loudly
+    // and point at the tracking issue rather than emitting wrong code.
+    case SDefer(_) -> {
+      panic("Jvm.Codegen: `defer` is not yet supported on --target jvm — it " +
+            "would require running the deferred block at scope exit (try/finally " +
+            "lowering + return-through-finally).  Implemented for --target dotnet " +
+            "in #1477; JVM parity is tracked in #1833.  Compile this program with " +
+            "--target dotnet, or avoid `defer` on the JVM target for now.")
     }
 
     // ── Try/catch ─────────────────────────────────────────────────────────
