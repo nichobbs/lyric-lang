@@ -2548,6 +2548,27 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
 // §5a. Binary operation lowering.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Return the MethodDef token of a type's `@derive(Equals)`-synthesised
+// `equals(self, other): Bool` (named `<TypeName>.equals` by `Lyric.Derives`,
+// keyed `<typeFqn>.equals` in `funcTokens`), or -1 when the type has no derived
+// structural-equality method.  Used by `BEq`/`BNeq` so `a == b` on a record /
+// distinct type with `@derive(Equals)` compares structurally instead of by
+// reference (#1480).  Map/HashSet key dispatch additionally needs real
+// `Object.Equals`/`GetHashCode` overrides and is tracked as the remaining
+// #1480 scope.
+func derivedEqualsTokenMsil(cctx: in CodegenCtx, ty: in MsilType): Int {
+  val fqn = match ty {
+    case MClass(c)                   -> c
+    case MGenericInst(_, headFqn, _) -> headFqn
+    case _                           -> ""
+  }
+  if fqn.length == 0 { return 0 - 1 }
+  match mapGet(cctx.funcTokens, fqn + ".equals") {
+    case Some(t) -> t
+    case None    -> 0 - 1
+  }
+}
+
 func lowerBinopMsil(
   cctx:  in CodegenCtx,
   fctx:  in FuncCtx,
@@ -2597,10 +2618,19 @@ func lowerBinopMsil(
           MBool
         }
         case _ -> {
-          // Object.Equals(object, object): box rhs if it's a value type.
-          boxIfNeededMsil(cctx, insns, beqRhsTy)
-          insns.add(MCall(methodToken = cctx.tokObjectStaticEquals))
-          MBool
+          // A record / distinct type with `@derive(Equals)` compares
+          // structurally via its synthesised `equals(self, other)` (#1480);
+          // both operands are already on the stack in (self, other) order.
+          val eqTok = derivedEqualsTokenMsil(cctx, beqLhsTy)
+          if eqTok > 0 {
+            insns.add(MCall(methodToken = eqTok))
+            MBool
+          } else {
+            // Object.Equals(object, object): box rhs if it's a value type.
+            boxIfNeededMsil(cctx, insns, beqRhsTy)
+            insns.add(MCall(methodToken = cctx.tokObjectStaticEquals))
+            MBool
+          }
         }
       }
     }
@@ -2615,8 +2645,13 @@ func lowerBinopMsil(
           MBool
         }
         case _ -> {
-          boxIfNeededMsil(cctx, insns, bneqRhsTy)
-          insns.add(MCall(methodToken = cctx.tokObjectStaticEquals))
+          val neqTok = derivedEqualsTokenMsil(cctx, bneqLhsTy)
+          if neqTok > 0 {
+            insns.add(MCall(methodToken = neqTok))
+          } else {
+            boxIfNeededMsil(cctx, insns, bneqRhsTy)
+            insns.add(MCall(methodToken = cctx.tokObjectStaticEquals))
+          }
           insns.add(MLdcI4(v = 1))
           insns.add(MXor)
           MBool
