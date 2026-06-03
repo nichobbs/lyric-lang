@@ -18586,3 +18586,47 @@ Bug B of #1779 (a bare `if cond { return X }` statement in an impl/interface
 method body faults the JIT — a `match`-as-`val`-init in the same method, and
 the identical `if`-return in a top-level function, both work) is a distinct
 codegen defect split into its own issue for focused follow-up.
+
+### D-progress-370 — self-hosted MSIL: Float match literals + compound-assignment operator (#1481 items 1–2)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`).
+
+Two self-hosted MSIL backend correctness fixes (docs/41 §3 H18/H22, epic #1470
+Band 2):
+
+- **Float literal match patterns (H18, item 1).** A `case 1.5 ->` pattern fell
+  to the wildcard arm in the `PLiteral` lowering and `pop`ped the scrutinee, so
+  every `Float` literal pattern matched unconditionally — a silent miscompile of
+  any `match` selecting on a `Float`.  The `LFloat` arm now emits
+  `ldc.r8 v; ceq; brfalse failLabel`, mirroring the existing `Int`/`Long`/`Char`/
+  `Bool`/`String` arms (the `Char` arm shipped in D-progress-367; `Int`/`Long`
+  were already handled, so `Float` was the last always-match literal kind).
+
+- **Compound assignment honours the operator (H22, item 2).** Previously `s += x`
+  on a `String` emitted a numeric `MAdd` (invalid IL for object references),
+  `r.f op= v` on a record field ignored the operator entirely (stored only `v`),
+  and `a[i] op= v` hard-failed with a `panic`.  Compound assignment now performs
+  a real read-modify-write at the target's static type for every assignable
+  target — local, `result`, record field, `List` element, and `Map` value — with
+  `String` `+=` lowering to `String.Concat` (coercing a non-string rhs via
+  `ToString`) and every other op emitting its matching arithmetic instruction.
+  Two helpers (`emitCompoundCombineMsil` / `emitCompoundCombineSlotMsil`) and a
+  `materializeBoxedElemMsil` helper unify the paths.  `List`/`Map` elements are
+  stored boxed and the receiver erases primitive element types to `object`, so
+  the indexed path evaluates the rhs up-front to recover the element's
+  arithmetic type, stashes the container/index/rhs in temps, and unboxes →
+  combines → re-boxes through `get_Item`/`set_Item` (re-asserting the
+  `List`/`Dictionary` static type with `castclass` after each reload, as the
+  read path does).
+
+Verified by `match_compound_self_test.l` (7/7 via native `lyric test --target
+dotnet`, compiled in-process through the self-hosted `Msil.Bridge`): Float
+literal arms select the correct branch (and a non-matching value falls to the
+wildcard); `String`/numeric `+=`/`-=`/`*=`/`/=`/`%=` on a local; record-field
+numeric and string compound; and `List[Int]`/`List[String]`/`Map[String,Int]`
+indexed compound.  No regression — full Expecto emitter suite 847/847 and the
+existing native self-tests stay green.  Wired into CI as the "Match/compound
+self-test" step.  MSIL target only; JVM parity is tracked under epic #1470's
+JVM-deferral note.  #1481 items 3 (break/continue across a `try` region must
+emit `leave`) and 4 (`List.Contains`/`removeAt` BCL stubs) remain open on the
+issue.
