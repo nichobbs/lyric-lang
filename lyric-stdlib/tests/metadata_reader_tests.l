@@ -11,7 +11,10 @@
 // PE back) — and the `*_tests.l` auto-discovery harness is the only mechanism
 // that does so without adding a per-test F# runner (which the project
 // disallows).  The import direction (a stdlib-tests file depending on a
-// compiler package) is a test-harness artefact, not a library dependency.
+// compiler package) is a test-harness artefact, not a library dependency:
+// the stdlib library itself does not import `Msil.*`.  Moving this test
+// under `lyric-compiler/tests/` is a follow-up once that directory exists
+// and gains a parallel auto-discovery hook.
 
 package Msil.MetadataReader.Tests
 

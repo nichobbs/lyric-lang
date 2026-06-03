@@ -10,7 +10,8 @@
 // Endianness: `BitConverter.GetBytes` is host-endian; the compiler runs on
 // little-endian targets (x64 / arm64), matching the explicit little-endian
 // layout the former F# host produced and the LE assumption already pervasive
-// in PE/MSIL emission.
+// in PE/MSIL emission.  No big-endian host targets are currently supported;
+// a startup `BitConverter.IsLittleEndian` guard is tracked in #1824.
 
 package Msil.Kernel
 
