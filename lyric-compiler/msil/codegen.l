@@ -1432,6 +1432,89 @@ func assignOpArithInsnMsil(op: in AssignOp): Option[MInsn] {
   }
 }
 
+// Convert a boxed `object` (top of stack — e.g. the result of a List/Dictionary
+// `get_Item`) into a value of `elemTy` so a compound-assignment operator can be
+// applied at the element's static type.  A String element calls `ToString()` (a
+// string returns itself) to retype the stack slot from object to string without
+// needing a dedicated String TypeSpec for `castclass`; a value-type element
+// unboxes; an already-`object` element is left untouched.
+func materializeBoxedElemMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy: in MsilType): Unit {
+  match elemTy {
+    case MString -> insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+    case MObject -> {}
+    case _       -> {
+      if isValueType(elemTy) {
+        insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, elemTy)))
+      }
+    }
+  }
+}
+
+// Apply a compound-assignment operator to a current value already on the stack
+// (typed `curTy`), consuming the right-hand `value` expression and leaving the
+// combined result on the stack.  `+=` on a String performs `String.Concat`
+// (coercing a non-string rhs via `ToString`); every other op emits the matching
+// arithmetic instruction.  `AssEq` is handled by callers and never reaches here.
+func emitCompoundCombineMsil(
+  cctx:  in CodegenCtx,
+  fctx:  in FuncCtx,
+  insns: in List[MInsn],
+  op:    in AssignOp,
+  curTy: in MsilType,
+  value: in Expr
+): Unit {
+  val isStringConcat = match op {
+    case AssPlus -> match curTy { case MString -> true case _ -> false }
+    case _       -> false
+  }
+  if isStringConcat {
+    val rTy = lowerExprMsil(cctx, fctx, insns, value)
+    match rTy {
+      case MString -> {}
+      case _ -> {
+        if isValueType(rTy) { boxIfNeededMsil(cctx, insns, rTy) }
+        insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+      }
+    }
+    insns.add(MCall(methodToken = cctx.tokConcat2))
+  } else {
+    lowerExprMsil(cctx, fctx, insns, value)
+    match assignOpArithInsnMsil(op) {
+      case Some(arith) -> insns.add(arith)
+      case None        -> {}
+    }
+  }
+}
+
+// Like `emitCompoundCombineMsil`, but the right-hand operand has already been
+// evaluated into a local slot (`rSlot`, typed `rTy`).  Used by the indexed
+// compound-assignment path, which evaluates the rhs up-front to recover the
+// element's arithmetic type (List/Map elements are stored boxed and the
+// receiver erases primitive element types to `object`).  The current value is
+// already on the stack, typed `rTy`.
+func emitCompoundCombineSlotMsil(
+  cctx:  in CodegenCtx,
+  fctx:  in FuncCtx,
+  insns: in List[MInsn],
+  op:    in AssignOp,
+  rTy:   in MsilType,
+  rSlot: in Int
+): Unit {
+  val isStringConcat = match op {
+    case AssPlus -> match rTy { case MString -> true case _ -> false }
+    case _       -> false
+  }
+  emitLoadSlot(insns, rSlot, fctx.paramCount)
+  if isStringConcat {
+    insns.add(MCall(methodToken = cctx.tokConcat2))
+  } else {
+    match assignOpArithInsnMsil(op) {
+      case Some(arith) -> insns.add(arith)
+      case None        -> {}
+    }
+  }
+}
+
 // The declared parameter modes, index-aligned with `params`.
 func paramModesOf(params: in List[Param]): List[ParamMode] {
   val acc: List[ParamMode] = newList()
@@ -2834,38 +2917,12 @@ func lowerAssignExprMsil(
               lowerExprMsil(cctx, fctx, insns, value)
               emitStoreSlot(insns, slot, fctx.paramCount)
             }
-            case AssPlus -> {
+            case _ -> {
+              // Compound assignment to a local: load the current value, then
+              // apply the operator honouring the slot's static type (String
+              // `+=` concatenates rather than emitting a numeric `add`).  #1481.
               emitLoadSlot(insns, slot, fctx.paramCount)
-              lowerExprMsil(cctx, fctx, insns, value)
-              match ty {
-                case MLong   -> insns.add(MAdd)
-                case MDouble -> insns.add(MAdd)
-                case _       -> insns.add(MAdd)
-              }
-              emitStoreSlot(insns, slot, fctx.paramCount)
-            }
-            case AssMinus -> {
-              emitLoadSlot(insns, slot, fctx.paramCount)
-              lowerExprMsil(cctx, fctx, insns, value)
-              insns.add(MSub)
-              emitStoreSlot(insns, slot, fctx.paramCount)
-            }
-            case AssStar -> {
-              emitLoadSlot(insns, slot, fctx.paramCount)
-              lowerExprMsil(cctx, fctx, insns, value)
-              insns.add(MMul)
-              emitStoreSlot(insns, slot, fctx.paramCount)
-            }
-            case AssSlash -> {
-              emitLoadSlot(insns, slot, fctx.paramCount)
-              lowerExprMsil(cctx, fctx, insns, value)
-              insns.add(MDiv)
-              emitStoreSlot(insns, slot, fctx.paramCount)
-            }
-            case AssPercent -> {
-              emitLoadSlot(insns, slot, fctx.paramCount)
-              lowerExprMsil(cctx, fctx, insns, value)
-              insns.add(MRem)
+              emitCompoundCombineMsil(cctx, fctx, insns, op, ty, value)
               emitStoreSlot(insns, slot, fctx.paramCount)
             }
           }
@@ -2894,34 +2951,9 @@ func lowerAssignExprMsil(
               lowerExprMsil(cctx, fctx, insns, value)
               emitStoreSlot(insns, slot, fctx.paramCount)
             }
-            case AssPlus -> {
+            case _ -> {
               emitLoadSlot(insns, slot, fctx.paramCount)
-              lowerExprMsil(cctx, fctx, insns, value)
-              insns.add(MAdd)
-              emitStoreSlot(insns, slot, fctx.paramCount)
-            }
-            case AssMinus -> {
-              emitLoadSlot(insns, slot, fctx.paramCount)
-              lowerExprMsil(cctx, fctx, insns, value)
-              insns.add(MSub)
-              emitStoreSlot(insns, slot, fctx.paramCount)
-            }
-            case AssStar -> {
-              emitLoadSlot(insns, slot, fctx.paramCount)
-              lowerExprMsil(cctx, fctx, insns, value)
-              insns.add(MMul)
-              emitStoreSlot(insns, slot, fctx.paramCount)
-            }
-            case AssSlash -> {
-              emitLoadSlot(insns, slot, fctx.paramCount)
-              lowerExprMsil(cctx, fctx, insns, value)
-              insns.add(MDiv)
-              emitStoreSlot(insns, slot, fctx.paramCount)
-            }
-            case AssPercent -> {
-              emitLoadSlot(insns, slot, fctx.paramCount)
-              lowerExprMsil(cctx, fctx, insns, value)
-              insns.add(MRem)
+              emitCompoundCombineMsil(cctx, fctx, insns, op, ty, value)
               emitStoreSlot(insns, slot, fctx.paramCount)
             }
           }
@@ -2935,23 +2967,45 @@ func lowerAssignExprMsil(
       }
     }
     case EMember(recv, memberName) -> {
-      // Field assignment: recv.field = value
+      // Field assignment: recv.field op= value.  The receiver is lowered first
+      // (leaving the instance on the stack); the value is lowered inside each
+      // branch so a compound op can read the current field via `dup; ldfld`
+      // before combining.  Previously the `op` was ignored and `r.f += v` only
+      // stored `v` (#1481).
       val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
-      val valTy  = lowerExprMsil(cctx, fctx, insns, value)
       match recvTy {
         case MClass(cls) -> {
           val key = cls + "/" + memberName
           match mapGet(cctx.fieldTokens, key) {
             case Some(tok) -> {
-              insns.add(MStfld(fieldToken = tok))
+              match op {
+                case AssEq -> {
+                  val _vt = lowerExprMsil(cctx, fctx, insns, value)
+                  insns.add(MStfld(fieldToken = tok))
+                }
+                case _ -> {
+                  val fldTy = match mapGet(cctx.fieldMsilTypes, key) {
+                                case Some(t) -> t
+                                case None    -> MObject
+                              }
+                  insns.add(MDup)                      // recv, recv
+                  insns.add(MLdfld(fieldToken = tok))  // recv, current
+                  emitCompoundCombineMsil(cctx, fctx, insns, op, fldTy, value)
+                  insns.add(MStfld(fieldToken = tok))  // recv, newval -> stored
+                }
+              }
             }
             case None -> {
+              // Unknown field: lower the value for side effects, then balance
+              // the stack (pop value + receiver).
+              lowerExprMsil(cctx, fctx, insns, value)
               insns.add(MPop)
               insns.add(MPop)
             }
           }
         }
         case _ -> {
+          lowerExprMsil(cctx, fctx, insns, value)
           insns.add(MPop)
           insns.add(MPop)
         }
@@ -3000,18 +3054,59 @@ func lowerAssignExprMsil(
             MVoid
           }
           case _ -> {
-            // Compound assignment to an indexed element (a[i] += v, …) must
-            // read the current element, apply the operator at the element's
-            // static type, then store it back.  List elements are stored
-            // boxed and the element type is not threaded to codegen, so a
-            // correct unbox/rebox is not yet possible (arithmetic on a boxed
-            // element is itself a separate tracked gap).  Fail loudly at build
-            // time rather than silently discard the write — compound
-            // assignment is owned by #1481.
-            panic("Msil.Codegen: compound assignment to an indexed element " +
-                  "(a[i] op= v) is not yet supported on --target dotnet; tracked " +
-                  "in #1481 (compound assignment).  Rewrite as an explicit " +
-                  "read-modify-write (a[i] = a[i] op v) for now.")
+            // Compound assignment to an indexed element (a[i] op= v): read the
+            // current element via get_Item, apply the operator, store it back
+            // via set_Item.  The receiver and index are evaluated once and
+            // stashed in temps so the read and the write share them.
+            //
+            // List/Map elements are stored boxed and the receiver erases
+            // primitive element types to `object` (`List[Int]` → MObject,
+            // `Map[K,V]` → MMapOf(object,object)), so the element's arithmetic
+            // type cannot come from the receiver.  Instead the rhs is evaluated
+            // up-front: for a well-typed compound assignment the element and the
+            // rhs share a type, so the rhs type drives the unbox / combine /
+            // re-box.  The receiver's tracked type still selects the container
+            // shape (Dictionary vs List), mirroring the `AssEq` indexed path.
+            // #1481.
+            val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
+            val isMap  = match recvTy { case MMapOf(_, _) -> true case _ -> false }
+            // The container ref is stashed in an `object`-typed temp, so the
+            // static List/Dictionary type is re-asserted with `castclass` after
+            // every reload — the JIT verifier rejects a callvirt of get_Item /
+            // set_Item on a bare `object` receiver (mirrors the read path's
+            // immediate castclass at the EIndex read arm above).
+            val cTok = if isMap { cctx.tokDictObjTypeSpec } else { cctx.tokListObjTypeSpec }
+            insns.add(MCastclass(typeToken = cTok))
+            val cSlot = allocSlotMsil(fctx, "__cidx_c_" + toString(fctx.slotTicker.count), MObject)
+            emitStoreSlot(insns, cSlot, fctx.paramCount)
+            // Index/key: boxed for a Map, raw int32 for a List.
+            val kRawTy = lowerExprMsil(cctx, fctx, insns, indices[0])
+            if isMap { boxIfNeededMsil(cctx, insns, kRawTy) }
+            val kSlotTy = if isMap { MObject } else { MInt }
+            val kSlot = allocSlotMsil(fctx, "__cidx_k_" + toString(fctx.slotTicker.count), kSlotTy)
+            emitStoreSlot(insns, kSlot, fctx.paramCount)
+            // Right-hand operand up-front — its type is the element type.
+            val rTy = lowerExprMsil(cctx, fctx, insns, value)
+            val rSlot = allocSlotMsil(fctx, "__cidx_r_" + toString(fctx.slotTicker.count), rTy)
+            emitStoreSlot(insns, rSlot, fctx.paramCount)
+            // current = container[key]  (boxed object)
+            emitLoadSlot(insns, cSlot, fctx.paramCount)
+            insns.add(MCastclass(typeToken = cTok))
+            emitLoadSlot(insns, kSlot, fctx.paramCount)
+            if isMap { insns.add(MCallvirt(methodToken = cctx.tokDictObjGetItem)) }
+            else     { insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem)) }
+            materializeBoxedElemMsil(cctx, insns, rTy)
+            emitCompoundCombineSlotMsil(cctx, fctx, insns, op, rTy, rSlot)
+            boxIfNeededMsil(cctx, insns, rTy)
+            val vSlot = allocSlotMsil(fctx, "__cidx_v_" + toString(fctx.slotTicker.count), MObject)
+            emitStoreSlot(insns, vSlot, fctx.paramCount)
+            emitLoadSlot(insns, cSlot, fctx.paramCount)
+            insns.add(MCastclass(typeToken = cTok))
+            emitLoadSlot(insns, kSlot, fctx.paramCount)
+            emitLoadSlot(insns, vSlot, fctx.paramCount)
+            if isMap { insns.add(MCallvirt(methodToken = cctx.tokDictObjSetItem)) }
+            else     { insns.add(MCallvirt(methodToken = cctx.tokListObjSetItem)) }
+            MVoid
           }
         }
       }
@@ -3261,6 +3356,15 @@ func lowerPatternTestMsil(
           // A `Char` scrutinee is an i4 code point on the stack; compare
           // against the pattern's code point.
           insns.add(MLdcI4(v = cp))
+          insns.add(MCeq)
+          insns.add(MBrFalse(label = failLabel))
+        }
+        case LFloat(v, _) -> {
+          // A `Float` scrutinee is an r8 on the stack; compare with `ceq`
+          // against the pattern's value.  Previously this fell to the `_`
+          // wildcard arm below and `pop`ped the scrutinee, making every
+          // Float literal pattern match unconditionally (#1481 item 1).
+          insns.add(MLdcR8(v = v))
           insns.add(MCeq)
           insns.add(MBrFalse(label = failLabel))
         }

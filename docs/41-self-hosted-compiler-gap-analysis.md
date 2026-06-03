@@ -192,11 +192,11 @@ supporting all language features."
 | H15 | `where T: Marker` bound satisfaction never checked at call sites; qualified constraint paths rejected (T0051). | `typechecker_exprs.l:603-723`; `typechecker_checker.l:372-373` | L |
 | H16 | `alias X = Long` unresolvable as a type — alias has no `TypeId`, so `val v: X` → T0013 "not a type". | `typechecker_symbols.l:85-98` | M |
 | H17 | **NEEDS-VERIFY (2026-06-03).** Loop `break`/`continue` emit `MBr` to loop labels and `try`/`catch` exits use `MLeave` on the normal path. The specific failing case — `break`/`continue` whose jump target is **outside an enclosing `try` region** — was not confirmed to emit `leave`; add a targeted regression test before declaring resolved. | `codegen.l` loop-exit + try/catch arms | M |
-| H18 | **PARTIAL (2026-06-03).** `Char` literal match patterns now emit `MLdcI4(cp)+MCeq+MBrFalse` (resolved #1769/#1770, D-progress-367). `Float` and `Long` literal *match patterns* still fall to the wildcard arm → **always match**. | `codegen.l` `PLiteral` arm (`LChar` handled; `LFloat`/`LLong` fall through, #1772) | M |
+| H18 | ~~`Char`/`Float`/`Long` literal match patterns fall to the wildcard arm → always match.~~ **Resolved.** `Char` (#1769/#1770, D-progress-367), then `Long` (already emitting `MLdcI8+MCeq`) and `Float` (`MLdcR8+MCeq+MBrFalse`, #1481 item 1 / D-progress-370). All literal pattern kinds now emit real compares. | `codegen.l` `PLiteral` arm | ✅ |
 | H19 | ~~Range-for (`for i in 0..n`) and any `a..b` expression panic (`ERange`).~~ **Resolved (#1478):** `for i in lo .. hi` / `..= hi` / `..< hi` parse and lower to a counting loop (`lowerForMsil`/`emitCountingForMsil`). Only a *standalone* range value (`val r = lo .. hi`) still panics — no `Range` value type, unused in stdlib/ecosystem. | `codegen.l` `lowerForMsil`; `parser_exprs.l` for-iter | ✅ |
 | H20 | Capturing closures unimplemented: lambda-lifting produces plain static methods with no display class; captures reference out-of-scope locals; not even diagnosed. | `codegen.l:5601-5645,5858` | XL |
 | H21 | **PARTIAL (2026-06-03).** `mapGet` now wraps in `Option[V]` and `map.remove` calls the real `Dictionary::Remove` (#1602/#1727, D-progress-364). Still wrong silently: `List.Contains`→`false` stub, `List.removeAt`→no-op, unknown method→pop+null. | `codegen.l` (`List.Contains`/`removeAt` stubs remain) | L |
-| H22 | Compound assignment ignores the operator: string `+=` emits numeric `MAdd`; field `r.f += v` only stores. | `codegen.l:2321-2354,2421-2437` | M |
+| H22 | ~~Compound assignment ignores the operator: string `+=` emits numeric `MAdd`; field `r.f += v` only stores; `a[i] op= v` hard-fails.~~ **Resolved (#1481 item 2 / D-progress-370):** compound assignment is a real read-modify-write honouring the operator (String `+=` → `String.Concat`) for local / `result` / record-field / `List`-element / `Map`-value targets. | `codegen.l` `lowerAssignExprMsil` + `emitCompoundCombine*` | ✅ |
 
 ### MEDIUM / LOW (selected)
 
@@ -433,11 +433,12 @@ section wins.
 
 | Gap | Resolution | PR / D-progress |
 |---|---|---|
-| C6 — indexed assignment `a[i]=v` silently discarded | `EIndex` assignment emits `set_Item` (List + Map); compound `a[i]+=v` still hard-fails (#1481) | #1530 / D-progress-323 |
+| C6 — indexed assignment `a[i]=v` silently discarded | `EIndex` assignment emits `set_Item` (List + Map); compound `a[i] op= v` now a real read-modify-write (#1481 item 2) | #1530 / D-progress-323; #1481 / D-progress-370 |
 | C9 — `@externTarget` class/object signatures emit throw-stub | class-typed params/return encode real `TypeRef` MemberRefs | #1504 pt1 / D-progress-326 |
 | H8 — unknown extern types bind silently to `System.Runtime` | `clrAssemblyResolvable` fail-loud diagnostic | #1504 H8 / D-progress-327 |
 | H9 — auto-FFI arg-bearing calls mis-bind silently | fail-loud + real metadata resolution (epic #1622) | #1504 H9 + D-progress-344…362 |
-| H18 (Char) — Char literal match always matches | `PLiteral`/`LChar` emits real compare | #1769 / D-progress-367 |
+| H18 — Char/Float/Long literal match always matches | `PLiteral` emits real compares for every literal kind (Char #1769; Float/Long #1481 item 1) | #1769 / D-progress-367; #1481 / D-progress-370 |
+| H22 — compound assignment ignores the operator | read-modify-write honouring the op (String `+=` → Concat) for local/result/field/List/Map targets | #1481 item 2 / D-progress-370 |
 | H19 — range-`for` panics | `for i in lo..hi` / `..=` / `..<` lower to counting loop (standalone range value still panics) | #1478 / D-progress-325 |
 | M2 — only `Int` consts fold | all literal kinds emit correct `ldc`/`ldstr` | verified 2026-06-03 |
 | M5 — no MethodSpec table | table 0x2B + `ctxAddMethodSpec` shipped; first consumer `Array.Empty[T]` | #1497 / D-progress-340 |
@@ -460,11 +461,14 @@ section wins.
   M6 — and the front-end half of C13. The type checker is still an advisory,
   error-tolerant inference pass (`TyError` universal unifier), not a gatekeeper.
 - **Band 2 (backend correctness, CRITICAL):** C3 (`?` no-op) is now fixed
-  (#1475: `Lyric.Propagate`). Remaining: C7 (`defer`
-  inline), H1 (`==` doesn't dispatch derived `equals`), H20 (capturing
-  closures), H22 (compound-assign ignores operator — string `+=` silently emits
-  numeric add), M7 (`SItem`/`SInvariant` dropped). H17 needs a targeted
-  break-out-of-`try` test before it can be called resolved.
+  (#1475: `Lyric.Propagate`); H22 (compound-assign ignored the operator) and the
+  Float/Long half of H18 (literal match always-match) are fixed (#1481 items 1–2:
+  read-modify-write + `String.Concat` for `+=`, `ldc.r8/i8 + ceq` literal
+  compares). Remaining: C7 (`defer` inline), H1 (`==` doesn't dispatch derived
+  `equals`), H20 (capturing closures), M7 (`SItem`/`SInvariant` dropped), and
+  #1481 items 3–4 (break/continue across a `try` must emit `leave`;
+  `List.Contains`/`removeAt` BCL stubs). H17 needs a targeted break-out-of-`try`
+  test before it can be called resolved.
 - **Band 3 (async, CRITICAL):** C4, C5 — no `IAsyncStateMachine` / lazy
   `IAsyncEnumerable` in `lyric-compiler/msil/`. `await`/`spawn`/`async func`
   still lower synchronously and silently miscompile on the default self-hosted

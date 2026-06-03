@@ -22,12 +22,14 @@ sequenced as `docs/36-v1-roadmap.md` §R7.  In priority order:
    a §5.2 parameter-mode pass that runs for *all* packages; then flip the
    single-file build path from advisory to fatal and reconcile it with the
    project path. (docs/41 C1, C2, C10, C11, H14, H15, H16, M6, C13-front-end.)
-2. **Backend correctness (CRITICAL).** Lower `?`/`try?` to unwrap + early-return;
-   run `defer` at scope exit; dispatch `==` to the derived `equals`; implement
-   capturing-closure display classes; honour the operator in compound assignment
-   (string `+=` currently emits numeric add — silent corruption); stop dropping
-   `SItem`/`SInvariant`.  **Anything not yet correctly lowered must hard-error,
-   never silently pass through.** (docs/41 C3, C7, H1, H20, H22, M7; verify H17.)
+2. **Backend correctness (CRITICAL).** `?` (C3), compound-assignment operator
+   honouring (H22) and Float/Long literal match compares (H18) are done; still to
+   do: run `defer` at scope exit; dispatch `==` to the derived `equals`; implement
+   capturing-closure display classes; stop dropping `SItem`/`SInvariant`; the
+   `break`/`continue`-across-`try`-must-`leave` and `List.Contains`/`removeAt`
+   stub items of #1481.  **Anything not yet correctly lowered must hard-error,
+   never silently pass through.** (docs/41 C7, H1, H20, M7; #1481 items 3–4;
+   verify H17.)
 3. **Async (CRITICAL).** Port `AsyncStateMachine.fs` + `AsyncGenerator.fs` to
    `lyric-compiler/msil/` (state machine, `Task[T]`/`ValueTask[T]`, lazy
    `IAsyncEnumerable[T]`).  Until ported, `await`/`spawn`/async-generators must
