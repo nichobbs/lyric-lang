@@ -47,6 +47,12 @@ pub func emptyPackageStub(pkgName: in String): String {
 ///      preceding the same `package` declaration can still gate the
 ///      file out.
 ///
+/// Known limitation: the comment filter only skips `@cfg` occurrences
+/// inside `//` line comments via `cfgIsInLineComment`; `@cfg` text inside
+/// a `/* … */` block comment is treated as a real annotation.  In practice
+/// block comments before `package` are unusual, so this is left as a
+/// documented edge case rather than a full tokenizer-level filter.
+///
 /// Returns false when:
 ///   - the file has no `package` declaration at column 0;
 ///   - no eligible `@cfg(feature = "...")` annotation precedes that
@@ -175,6 +181,7 @@ pub record DirPackageAssembly {
 /// the caller wants them concatenated — typically alphabetical for
 /// determinism.  `pkgName` is the declared package name used in the
 /// stub.
+@pure
 @stable(since="0.1")
 pub func assembleDirectoryPackageSources(
   filesAndContents: in List[CfgGateFile],
