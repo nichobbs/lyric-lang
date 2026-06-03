@@ -762,9 +762,7 @@ func registerMethodRetTy(cctx: in CodegenCtx, key: in String, ret: in Option[Typ
   }
 }
 
-// Pre-resolved-MsilType variant of `registerMethodRetTy` for impl-method
-// scan sites that already hold the resolved type (e.g. `implImplRetTys`).
-// First registration wins, matching the source-typed sibling.
+// MsilType-direct variant of `registerMethodRetTy`; first registration wins.
 func registerMethodRetTyMsil(cctx: in CodegenCtx, key: in String, mty: in MsilType): Unit {
   if not cctx.methodRetTypes.containsKey(key) {
     cctx.methodRetTypes.add(key, mty)
@@ -941,7 +939,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
         }
         // Reserve MethodDef rows for the synthesised @derive Equals/GetHashCode
         // overrides (#1480), emitted last by `appendDeriveOverridesMsil`.  The
-        // count MUST match `deriveOverrideCountMsil` or later tokens shift.
+        // per-marker `hasDeriveMarkerMsil` checks here MUST stay in lock-step
+        // with the matching emission checks in `appendDeriveOverridesMsil`
+        // (and the mirror site below for protected types) — adding a new
+        // marker requires touching all three.
         val recAnns = file.items[i].annotations
         if hasDeriveMarkerMsil(recAnns, "Equals") {
           if not cctx.methodTokens.containsKey(className + "/Equals") {
@@ -1543,7 +1544,7 @@ func emitCompoundCombineMsil(
     lowerExprMsil(cctx, fctx, insns, value)
     match assignOpArithInsnMsil(op) {
       case Some(arith) -> insns.add(arith)
-      case None        -> {}
+      case None        -> panic("Msil.Codegen: unhandled compound-assignment op in emitCompoundCombineMsil")
     }
   }
 }
@@ -1572,7 +1573,7 @@ func emitCompoundCombineSlotMsil(
   } else {
     match assignOpArithInsnMsil(op) {
       case Some(arith) -> insns.add(arith)
-      case None        -> {}
+      case None        -> panic("Msil.Codegen: unhandled compound-assignment op in emitCompoundCombineSlotMsil")
     }
   }
 }
@@ -2996,7 +2997,7 @@ func lowerStmtsExprFromMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
   }
   val deferBody = match stmts[deferIdx].kind {
     case SDefer(b) -> b
-    case _         -> Block(statements = newList(), span = stmts[deferIdx].span)
+    case _         -> panic("Msil.Codegen: lowerStmtsExprFromMsil: deferIdx points at non-SDefer statement (unreachable)")
   }
   val tryStartL = freshLabelMsil(fctx)
   val afterL    = freshLabelMsil(fctx)
@@ -8340,7 +8341,7 @@ func hasDeriveMarkerMsil(anns: in List[Annotation], marker: in String): Bool {
 // virtual instance method delegating to the derived free `<Type>.equals(self,
 // other)` / `<Type>.hash(self)` (emitted by `Lyric.Derives`; reachable since
 // #1796).  Appended AFTER any injected impl methods so the MethodDef rows line
-// up with the budget reserved in `addPackageTokens` (`deriveOverrideCountMsil`).
+// up with the budget reserved in `addPackageTokens` (one row per per-marker `hasDeriveMarkerMsil` hit).
 // `recordFqn` is the type's dotted FQN (e.g. `Pkg.Point`).
 pub func appendDeriveOverridesMsil(cctx: in CodegenCtx, rec: in MRecord,
                                    recordFqn: in String,
@@ -8419,16 +8420,6 @@ pub func appendDeriveOverridesMsil(cctx: in CodegenCtx, rec: in MRecord,
     baseClass = rec.baseClass,
     fields    = rec.fields,
     methods   = methods)
-}
-
-// Number of MethodDef rows the `@derive`-override synthesis adds for a record
-// with these annotations.  `addPackageTokens` and `codegenMPackage` MUST agree
-// on this count or every later token shifts.
-func deriveOverrideCountMsil(anns: in List[Annotation]): Int {
-  var n = 0
-  if hasDeriveMarkerMsil(anns, "Equals") { n = n + 1 }
-  if hasDeriveMarkerMsil(anns, "Hash")   { n = n + 1 }
-  n
 }
 
 // The caller must subsequently call `lowerMPackageWithCtx(pkg, cctx.lctx, entryToken)`
