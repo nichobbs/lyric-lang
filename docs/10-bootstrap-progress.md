@@ -18992,6 +18992,7 @@ A separate test-infrastructure bug surfaced while writing the test: a
 `@test_module` containing a lambda (e.g. `assertPanics`) silently produces zero
 TAP output and exits 0 — filed as #1854.  The loop-invariant test sidesteps it
 via the try/catch-expression observation above.
+
 ### D-progress-381 — self-hosted: alias rewriter descends into IImpl / IInterface / IUnion (and every other compound item kind) (#1834)
 
 **Status:** Shipped (`lyric-compiler/lyric/alias_rewriter.l`).
@@ -19105,3 +19106,35 @@ Coverage: 11 new cases in `typechecker_self_test.l` (in/out of inclusive and
 half-open bounds, negative bounds, `var`/`let`, transparency-to-equiv, and the
 non-literal-not-checked boundary).  Full regression green (847/847 emitter,
 84/84 CLI bridge).
+
+### D-progress-384 — self-hosted MSIL: fail loud on capturing closures (#1479 increment 1, docs/41 H20)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`).  Increment 1 of #1479 — does **not** close it.
+
+A lambda is lifted to a `__lambda_<i>` **static** method, which is correct only
+when the lambda captures nothing.  A *capturing* lambda — one whose body refers
+to a local/parameter of the enclosing function — produced a static method that
+read out-of-scope slots, which the JIT rejected as an invalid program
+(`InvalidProgramException`) with no diagnostic (docs/41 §3 H20).
+
+This increment adds **free-variable capture analysis** (`lambdaCaptureNamesMsil`
++ `collectRefNames*` / `collectBoundNames*` walkers): it collects single-segment
+identifiers referenced in the lambda body, subtracts the names the lambda itself
+binds (its params and any locals / `for`/`match`/`catch` pattern binds), and
+intersects with the enclosing function's slots (`fctx.slots.containsKey`).  The
+`ELambda` codegen arm now **fails loudly** with an actionable diagnostic naming
+the captured local(s) and #1479, instead of emitting the silently-invalid
+program — the sanctioned fail-loud interim per CLAUDE.md.  Non-capturing lambdas
+keep the existing zero-overhead static-method path (verified: a `{ -> topFn() }`
+and a `{ x -> x + 1 }` are not flagged).
+
+The capture analysis is the infrastructure the full display-class implementation
+(capture-by-ref, nested, escaping) will reuse; that is the remaining #1479 work.
+Tested by a CI **negative compile test** ("Capturing-closure diagnostic"): a
+capturing-lambda program must fail to build with the diagnostic.  A native
+`@test_module` self-test is not yet possible — lambdas in a `@test_module`
+produce no TAP output (#1854) — and a runtime closure test also needs
+function-value invocation, which is itself a separate invalid-IL gap (#1877)
+found during this work.  No regression: full Expecto emitter suite 847/847 and
+CLI suite 84/84.  MSIL target only (the JVM backend already hard-errors on
+general lambdas).

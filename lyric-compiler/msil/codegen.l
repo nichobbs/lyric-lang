@@ -2600,7 +2600,25 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
     //   0 params → System.Action             (non-generic, tokActionCtor)
     //   N params → System.Action`N<object,…> (TypeSpec via buildActionNCtorTok)
     // All lifted lambdas have void return (Unit), so only Action variants are needed.
-    case ELambda(lparams, _) -> {
+    case ELambda(lparams, lbody) -> {
+      // Capturing closures (#1479): a lambda is lifted to a `__lambda_<i>`
+      // *static* method, which is correct only when the lambda captures
+      // nothing.  If the body refers to a local/parameter of the enclosing
+      // function, the static method would read out-of-scope slots and the JIT
+      // rejects the program (InvalidProgramException).  Until display-class
+      // synthesis lands, detect captures and fail loudly with an actionable
+      // diagnostic rather than emit a silently-invalid program.
+      val caps = lambdaCaptureNamesMsil(fctx, lparams, lbody)
+      if caps.count > 0 {
+        var capList = caps[0]
+        var ci = 1
+        while ci < caps.count { capList = capList + ", " + caps[ci]; ci = ci + 1 }
+        panic("Msil.Codegen: capturing closures are not yet supported on " +
+              "--target dotnet — this lambda captures the enclosing local(s): " +
+              capList + ".  Display-class synthesis is tracked in #1479.  As a " +
+              "workaround, pass the captured value(s) as explicit lambda " +
+              "parameters, or refactor the closure into a top-level function.")
+      }
       val idx = cctx.lambdaTicker.count
       cctx.lambdaTicker.add(0)
       val lname = "__lambda_" + toString(idx)
@@ -7846,6 +7864,227 @@ func collectLambdasBfsStmt(s: in Statement, ticker: in List[Int], synths: in Lis
     }
     case _ -> {}
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Free-variable capture analysis for lambdas (#1479).
+//
+// A lambda is lifted to a `__lambda_<i>` *static* method.  That is correct only
+// when the lambda captures nothing.  A capturing lambda — one whose body refers
+// to a local/parameter of the enclosing function — needs display-class
+// synthesis (a heap object holding the captured variables, with the lambda as
+// an instance method over it).  Until that lands, codegen must detect captures
+// and fail loudly rather than emit a static method that reads out-of-scope
+// slots (which the JIT rejects as an invalid program).
+//
+// `lambdaCaptureNamesMsil` returns the enclosing-scope names a lambda captures:
+// single-segment identifiers referenced in the body, minus the names the lambda
+// itself binds (its params and any locals / pattern binds in its body),
+// intersected with the enclosing function's slots.  Over-approximation (a
+// missed binder) only yields a spurious capture report, never a missed one, so
+// the analysis is biased toward detection.
+// ─────────────────────────────────────────────────────────────────────────────
+
+func addNameOnce(acc: in List[String], nm: in String): Unit {
+  var i = 0
+  while i < acc.count {
+    if acc[i] == nm { return }
+    i = i + 1
+  }
+  acc.add(nm)
+}
+
+func nameListContains(xs: in List[String], nm: in String): Bool {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == nm { return true }
+    i = i + 1
+  }
+  false
+}
+
+func collectRefNamesExpr(e: in Expr, acc: in List[String]): Unit {
+  match e.kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 { addNameOnce(acc, path.segments[0]) }
+    }
+    case ECall(fn, args) -> {
+      collectRefNamesExpr(fn, acc)
+      var ai = 0
+      while ai < args.count {
+        match args[ai] {
+          case CAPositional(ex)  -> { collectRefNamesExpr(ex, acc) }
+          case CANamed(_, ex, _) -> { collectRefNamesExpr(ex, acc) }
+        }
+        ai = ai + 1
+      }
+    }
+    case EBinop(_, lhs, rhs) -> { collectRefNamesExpr(lhs, acc); collectRefNamesExpr(rhs, acc) }
+    case EPrefix(_, operand) -> { collectRefNamesExpr(operand, acc) }
+    case EParen(inner)       -> { collectRefNamesExpr(inner, acc) }
+    case EMember(recv, _)    -> { collectRefNamesExpr(recv, acc) }
+    case EIf(cond, thenB, elseOpt, _) -> {
+      collectRefNamesExpr(cond, acc)
+      collectRefNamesOrdBlock(thenB, acc)
+      match elseOpt { case Some(eb) -> collectRefNamesOrdBlock(eb, acc) case None -> {} }
+    }
+    case EBlock(block)  -> { collectRefNamesBlock(block, acc) }
+    case EUnsafe(block) -> { collectRefNamesBlock(block, acc) }
+    case EMatch(scr, arms) -> {
+      collectRefNamesExpr(scr, acc)
+      var ai = 0
+      while ai < arms.count {
+        collectRefNamesOrdBlock(arms[ai].body, acc)
+        ai = ai + 1
+      }
+    }
+    case EList(exprs) -> {
+      var ei = 0
+      while ei < exprs.count { collectRefNamesExpr(exprs[ei], acc); ei = ei + 1 }
+    }
+    case ETuple(exprs) -> {
+      var ei = 0
+      while ei < exprs.count { collectRefNamesExpr(exprs[ei], acc); ei = ei + 1 }
+    }
+    case EIndex(recv, indices) -> {
+      collectRefNamesExpr(recv, acc)
+      var ii = 0
+      while ii < indices.count { collectRefNamesExpr(indices[ii], acc); ii = ii + 1 }
+    }
+    case EAwait(inner)     -> { collectRefNamesExpr(inner, acc) }
+    case EYield(inner)     -> { collectRefNamesExpr(inner, acc) }
+    case ESpawn(inner)     -> { collectRefNamesExpr(inner, acc) }
+    case ETry(inner)       -> { collectRefNamesExpr(inner, acc) }
+    case EPropagate(inner) -> { collectRefNamesExpr(inner, acc) }
+    case EAssign(target, _, v) -> { collectRefNamesExpr(target, acc); collectRefNamesExpr(v, acc) }
+    case EInterpolated(segs) -> {
+      var si = 0
+      while si < segs.count {
+        match segs[si] { case ISExpr(ex) -> { collectRefNamesExpr(ex, acc) } case _ -> {} }
+        si = si + 1
+      }
+    }
+    case ETypeApp(fn, _) -> { collectRefNamesExpr(fn, acc) }
+    case ELambda(_, body) -> { collectRefNamesBlock(body, acc) }
+    case _ -> {}
+  }
+}
+
+func collectRefNamesOrdBlock(ob: in ExprOrBlock, acc: in List[String]): Unit {
+  match ob {
+    case EOBExpr(ex)   -> { collectRefNamesExpr(ex, acc) }
+    case EOBBlock(blk) -> { collectRefNamesBlock(blk, acc) }
+  }
+}
+
+func collectRefNamesBlock(b: in Block, acc: in List[String]): Unit {
+  var i = 0
+  while i < b.statements.count {
+    collectRefNamesStmt(b.statements[i], acc)
+    i = i + 1
+  }
+}
+
+func collectRefNamesStmt(s: in Statement, acc: in List[String]): Unit {
+  match s.kind {
+    case SLocal(binding) -> match binding {
+      case LBVal(_, _, init)    -> { collectRefNamesExpr(init, acc) }
+      case LBLet(_, _, init)    -> { collectRefNamesExpr(init, acc) }
+      case LBVar(_, _, initOpt) -> match initOpt { case Some(init) -> { collectRefNamesExpr(init, acc) } case None -> {} }
+    }
+    case SAssign(target, _, v) -> { collectRefNamesExpr(target, acc); collectRefNamesExpr(v, acc) }
+    case SReturn(valOpt) -> match valOpt { case Some(e) -> { collectRefNamesExpr(e, acc) } case None -> {} }
+    case SExpr(e)  -> { collectRefNamesExpr(e, acc) }
+    case SThrow(e) -> { collectRefNamesExpr(e, acc) }
+    case SWhile(_, cond, body) -> { collectRefNamesExpr(cond, acc); collectRefNamesBlock(body, acc) }
+    case SFor(_, _, iter, body) -> { collectRefNamesExpr(iter, acc); collectRefNamesBlock(body, acc) }
+    case SLoop(_, body)  -> { collectRefNamesBlock(body, acc) }
+    case SScope(_, body) -> { collectRefNamesBlock(body, acc) }
+    case SDefer(body)    -> { collectRefNamesBlock(body, acc) }
+    case STry(body, catches, finally_) -> {
+      collectRefNamesBlock(body, acc)
+      var ci = 0
+      while ci < catches.count { collectRefNamesBlock(catches[ci].body, acc); ci = ci + 1 }
+      match finally_ { case Some(fb) -> { collectRefNamesBlock(fb, acc) } case None -> {} }
+    }
+    case SInvariant(e)   -> { collectRefNamesExpr(e, acc) }
+    case SRule(lhs, rhs) -> { collectRefNamesExpr(lhs, acc); collectRefNamesExpr(rhs, acc) }
+    case _ -> {}
+  }
+}
+
+// Names a lambda body binds locally (so a same-named enclosing slot is shadowed,
+// not captured): local bindings, `for`/`match`/`catch` pattern binds, and nested
+// lambda parameters.  Patterns contribute their bound identifiers.
+func collectBoundNamesPattern(p: in Pattern, acc: in List[String]): Unit {
+  match p.kind {
+    case PBinding(name, _) -> { addNameOnce(acc, name) }
+    case PTuple(elems) -> {
+      var i = 0
+      while i < elems.count { collectBoundNamesPattern(elems[i], acc); i = i + 1 }
+    }
+    case PConstructor(_, args) -> {
+      var i = 0
+      while i < args.count { collectBoundNamesPattern(args[i], acc); i = i + 1 }
+    }
+    case _ -> {}
+  }
+}
+
+func collectBoundNamesBlock(b: in Block, acc: in List[String]): Unit {
+  var i = 0
+  while i < b.statements.count {
+    collectBoundNamesStmt(b.statements[i], acc)
+    i = i + 1
+  }
+}
+
+func collectBoundNamesStmt(s: in Statement, acc: in List[String]): Unit {
+  match s.kind {
+    case SLocal(binding) -> match binding {
+      case LBVal(pat, _, _) -> { collectBoundNamesPattern(pat, acc) }
+      case LBLet(name, _, _) -> { addNameOnce(acc, name) }
+      case LBVar(name, _, _) -> { addNameOnce(acc, name) }
+    }
+    case SWhile(_, _, body) -> { collectBoundNamesBlock(body, acc) }
+    case SFor(_, pat, _, body) -> { collectBoundNamesPattern(pat, acc); collectBoundNamesBlock(body, acc) }
+    case SLoop(_, body)  -> { collectBoundNamesBlock(body, acc) }
+    case SScope(_, body) -> { collectBoundNamesBlock(body, acc) }
+    case SDefer(body)    -> { collectBoundNamesBlock(body, acc) }
+    case STry(body, catches, finally_) -> {
+      collectBoundNamesBlock(body, acc)
+      var ci = 0
+      while ci < catches.count {
+        match catches[ci].bindName { case Some(nm) -> { addNameOnce(acc, nm) } case None -> {} }
+        collectBoundNamesBlock(catches[ci].body, acc)
+        ci = ci + 1
+      }
+      match finally_ { case Some(fb) -> { collectBoundNamesBlock(fb, acc) } case None -> {} }
+    }
+    case _ -> {}
+  }
+}
+
+// Return the enclosing-scope variable names captured by a lambda.
+pub func lambdaCaptureNamesMsil(fctx: in FuncCtx, lparams: in List[LambdaParam], body: in Block): List[String] {
+  val refs: List[String] = newList()
+  collectRefNamesBlock(body, refs)
+  val bound: List[String] = newList()
+  var p = 0
+  while p < lparams.count { addNameOnce(bound, lparams[p].name); p = p + 1 }
+  collectBoundNamesBlock(body, bound)
+  val caps: List[String] = newList()
+  var i = 0
+  while i < refs.count {
+    val nm = refs[i]
+    if not nameListContains(bound, nm) {
+      if fctx.slots.containsKey(nm) {
+        addNameOnce(caps, nm)
+      }
+    }
+    i = i + 1
+  }
+  caps
 }
 
 // BFS-based liftLambdasMsil: extract all ELambda nodes into synthetic IFunc
