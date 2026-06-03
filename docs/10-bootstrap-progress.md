@@ -18673,3 +18673,38 @@ elements and decrements the count.  No regression — full Expecto emitter suite
 `propagate`, `list_value_compare`, `cfg_gate`, `weaver`, …) green.  Wired into
 CI as the "Loop-EH/collection self-test" step.  MSIL target only; JVM parity is
 tracked under epic #1470's JVM-deferral note.
+
+### D-progress-372 — mono retains `@derive`-synthesised helper functions (#1796)
+
+**Status:** Shipped (`lyric-compiler/lyric/mono.l`).
+
+`Lyric.Derives.deriveFile` synthesises `@derive(Equals/Hash/Show)` /
+`@generate(Json)` helper functions (`Point.equals`, `Point.hash`, …) and
+appends them to the file's items.  `Lyric.Mono.monoFileWithImports`'s Phase-2
+loop classified each `IFunc` with
+`match decl.generics { case Some(_) -> drop; case None -> keep }` — but the
+synthesised `FunctionDecl` carries a `generics = None` that lowers to a **bare
+null**, which the `Option_None` `isinst` pattern test misses.  The `match`
+therefore fell through *both* arms (no exhaustiveness panic), so the helper was
+neither dropped-as-generic nor kept — it silently **vanished before codegen**.
+Net effect: every `@derive`/`@generate` helper was dead on the self-hosted
+`--target dotnet` path (synthesised into the AST, but never emitted), which is
+why a record's derived `equals` had no MethodDef token for `==` to call (#1480).
+
+The fix replaces the explicit `case None` with a wildcard `case _`: a function
+is generic **iff** its `generics` is `Some`, so the safe, representation-
+independent default is to retain anything not provably generic.  Generic
+functions (`Some`) are still dropped and specialised exactly as before.
+
+Verified by a new `testMonoRetainsDerivedHelpers` case in
+`derives_self_test.l` (run by `SelfHostedDerivesTests.fs`): it forces mono into
+its Phase-2 path with a generic `gid[T]` and asserts the derived
+`Point.equals`/`hash`/`show` survive `monoFile`.  The case fails without the fix
+(`monoFile keeps Point.equals` panics) and passes with it.  No regression —
+native self-tests (incl. `generic_specialization`, `stdlib_generic_mono`,
+`nested_generic`), the self-hosted bridge suite (84/84), and the full emitter
+suite (847/847) all green.
+
+This unblocks the `==`→derived-`equals` wiring for #1480 (the helpers now reach
+codegen with a token); the `Object.Equals`/`GetHashCode` override synthesis
+that #1480 also needs for BCL-collection-key correctness remains a follow-up.

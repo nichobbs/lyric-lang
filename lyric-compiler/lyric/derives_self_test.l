@@ -9,6 +9,7 @@ import Std.Testing
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Derives
+import Lyric.Mono
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -365,6 +366,44 @@ func testDeriveAndAnnotationDontDuplicate(): Unit {
     "derives-and-annotation: Foo.equals synthesised exactly once (not duplicated)")
 }
 
+// #1796 regression: the monomorphizer must RETAIN the non-generic
+// `@derive`-synthesised helper functions.  Before the fix, the synthesised
+// `FunctionDecl.generics = None` lowered to a bare null that the Phase-2
+// `match decl.generics { Some -> drop; None -> keep }` matched as *neither*
+// arm (the `Option_None` `isinst` test misses null), so the helper silently
+// fell through and was dropped before codegen — `@derive(Equals/Hash/Show)` /
+// `@generate(Json)` were dead on the self-hosted path.  We force mono into its
+// Phase-2 path with a generic `gid[T]` in the source, then assert the derived
+// `Point.equals` survives `monoFile`.
+func findFuncInFile(sf: in SourceFile, name: in String): Bool {
+  var i = 0
+  while i < sf.items.count {
+    match sf.items[i].kind {
+      case IFunc(decl) -> { if decl.name == name { return true } }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
+func testMonoRetainsDerivedHelpers(): Unit {
+  val src =
+    "package P\n" +
+    "@derive(Equals)\n@derive(Hash)\n@derive(Show)\n" +
+    "record Point { x: Int; y: Int }\n" +
+    "func gid[T](v: in T): T { v }\n"
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
+  // Sanity: deriveFile produced the helpers.
+  assertTrue(findFuncInFile(sf, "Point.equals"), "mono-retain: deriveFile added Point.equals")
+  // The fix: monoFile must keep the non-generic helpers.
+  val mr = monoFile(sf)
+  assertTrue(findFuncInFile(mr.file, "Point.equals"), "mono-retain: monoFile keeps Point.equals (#1796)")
+  assertTrue(findFuncInFile(mr.file, "Point.hash"),   "mono-retain: monoFile keeps Point.hash (#1796)")
+  assertTrue(findFuncInFile(mr.file, "Point.show"),   "mono-retain: monoFile keeps Point.show (#1796)")
+}
+
 func main(): Unit {
   testNoAnnotationNoSynth()
   testDeriveEqualsRecord()
@@ -386,5 +425,6 @@ func main(): Unit {
   testExposedRecordDerive()
   testNoDerivesInListDoesNotSynth()
   testIdempotent()
+  testMonoRetainsDerivedHelpers()
   println("derives self-test: ok")
 }
