@@ -27,10 +27,12 @@ sequenced as `docs/36-v1-roadmap.md` §R7.  In priority order:
    `List.contains`/`removeAt` + unknown-method fail-loud H21), `defer` at scope
    exit (C7, #1477), `==`/`Map`-key structural equality (H1, #1480/#1837), and
    try/catch-as-value-expression IL (#1823) are done; M7 is stale (loop
-   invariants are checked via the elaborator; `SItem` is never parsed).  The
-   last open backend item is capturing-closure display classes (H20).
+   invariants are checked via the elaborator; `SItem` is never parsed).
+   Capturing closures (H20, #1479) now **fail loud** instead of silently
+   miscompiling; display-class synthesis is the remaining work, gated alongside
+   function-value invocation (#1877).
    **Anything not yet correctly lowered must hard-error, never silently pass
-   through.** (docs/41 H20.)
+   through.** (docs/41 H20 PARTIAL; #1877, #1854.)
 3. **Async (CRITICAL).** Port `AsyncStateMachine.fs` + `AsyncGenerator.fs` to
    `lyric-compiler/msil/` (state machine, `Task[T]`/`ValueTask[T]`, lazy
    `IAsyncEnumerable[T]`).  Until ported, `await`/`spawn`/async-generators must

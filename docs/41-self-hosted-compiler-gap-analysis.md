@@ -196,7 +196,7 @@ supporting all language features."
 | H17 | ~~Loop `break`/`continue` whose jump target is outside an enclosing `try` region emitted `MBr` (unverifiable IL across a protected-region boundary).~~ **Resolved (#1481 item 3 / D-progress-371):** codegen tracks protected-region nesting depth (`tryRegionStack`) and the depth each loop was entered at (`loopTryDepth`); a break/continue escaping ≥1 open region now emits `leave`. Covered by `loop_eh_collection_self_test.l`. | `codegen.l` `emitLoopJumpMsil` + `lowerTryCatchMsil` | ✅ |
 | H18 | ~~`Char`/`Float`/`Long` literal match patterns fall to the wildcard arm → always match.~~ **Resolved.** `Char` (#1769/#1770, D-progress-367), then `Long` (already emitting `MLdcI8+MCeq`) and `Float` (`MLdcR8+MCeq+MBrFalse`, #1481 item 1 / D-progress-370). All literal pattern kinds now emit real compares. | `codegen.l` `PLiteral` arm | ✅ |
 | H19 | ~~Range-for (`for i in 0..n`) and any `a..b` expression panic (`ERange`).~~ **Resolved (#1478):** `for i in lo .. hi` / `..= hi` / `..< hi` parse and lower to a counting loop (`lowerForMsil`/`emitCountingForMsil`). Only a *standalone* range value (`val r = lo .. hi`) still panics — no `Range` value type, unused in stdlib/ecosystem. | `codegen.l` `lowerForMsil`; `parser_exprs.l` for-iter | ✅ |
-| H20 | Capturing closures unimplemented: lambda-lifting produces plain static methods with no display class; captures reference out-of-scope locals; not even diagnosed. | `codegen.l:5601-5645,5858` | XL |
+| H20 | **PARTIAL (#1479).** Capturing closures still lack display-class synthesis (lambda-lifting produces static methods). They are **no longer silently miscompiled**: free-variable analysis (`lambdaCaptureNamesMsil`) now detects captured enclosing locals and the `ELambda` arm fails loudly with an actionable diagnostic referencing #1479, instead of emitting a static method that reads out-of-scope slots (an invalid program). Full display-class synthesis (capture-by-ref, nested, escaping) is the remaining work. Related: invoking a function-typed value `f()` is itself a separate invalid-IL gap (#1877), and lambdas in `@test_module` self-tests hit #1854. | `codegen.l` `ELambda` arm + `lambdaCaptureNamesMsil` | ⚠ PARTIAL |
 | H21 | ~~`mapGet`/`map.remove` (#1602/#1727), `List.Contains`→`false`, `List.removeAt`→no-op, unknown method→pop+null.~~ **Resolved.** `mapGet`/`remove` (D-progress-364); `List.contains`/`removeAt` now emit real `List<object>::Contains`/`RemoveAt` and the unknown-method catch-all throws a clear runtime error instead of returning silent `null` (#1481 item 4 / D-progress-371). | `codegen.l` `lowerMethodCallMsil` | ✅ |
 | H22 | ~~Compound assignment ignores the operator: string `+=` emits numeric `MAdd`; field `r.f += v` only stores; `a[i] op= v` hard-fails.~~ **Resolved (#1481 item 2 / D-progress-370):** compound assignment is a real read-modify-write honouring the operator (String `+=` → `String.Concat`) for local / `result` / record-field / `List`-element / `Map`-value targets. | `codegen.l` `lowerAssignExprMsil` + `emitCompoundCombine*` | ✅ |
 
@@ -481,7 +481,11 @@ section wins.
   equality, #1480/#1837), and the try/catch-as-value-expression invalid-IL gap
   (#1823) are now fixed; M7 is **stale** (loop invariants are checked via the
   elaborator's `assert` lowering; `SItem` is never produced by the parser).
-  Remaining: **H20 (capturing closures)** — the last open Band-2 backend item.
+  **H20 (capturing closures)** is now PARTIAL (#1479): captures fail loudly
+  instead of silently miscompiling; full display-class synthesis remains. Two
+  adjacent backend gaps surfaced: invoking a function-typed value `f()` emits
+  invalid IL (#1877), and lambdas in `@test_module` self-tests produce no TAP
+  output (#1854).
 - **Band 3 (async, CRITICAL):** C4, C5 — no `IAsyncStateMachine` / lazy
   `IAsyncEnumerable` in `lyric-compiler/msil/`. `await`/`spawn`/`async func`
   still lower synchronously and silently miscompile on the default self-hosted

@@ -618,6 +618,50 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/loop_invariant_self_test.l
 
+      # Capturing-closure diagnostic — pins #1479 increment 1: a lambda that
+      # captures an enclosing local must FAIL the build with a clear diagnostic
+      # (free-variable analysis), instead of silently emitting a static method
+      # that reads out-of-scope slots (an invalid program at JIT time).  This is
+      # a negative compile test (the build must fail with the message), since
+      # lambdas in a @test_module currently produce no TAP output (#1854) and
+      # invoking a function value is a separate gap (#1877).
+      - name: Capturing-closure diagnostic (negative compile test)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping capturing-closure diagnostic test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping capturing-closure diagnostic test"
+            exit 0
+          fi
+          fixture="$(mktemp -d)/capturing.l"
+          cat > "$fixture" <<'LYRIC'
+          package CapDiag
+          import Std.Core
+          func main(): Int {
+            val n = 5
+            val f = { -> n + 10 }
+            0
+          }
+          LYRIC
+          # The build MUST fail (capturing closure) with the #1479 diagnostic.
+          if "$lyric_bin" build --target dotnet "$fixture" > /tmp/capdiag.out 2>&1; then
+            echo "::error::capturing-closure program compiled successfully — the #1479 capture diagnostic did not fire"
+            cat /tmp/capdiag.out
+            exit 1
+          fi
+          if ! grep -qi "capturing closures are not yet supported" /tmp/capdiag.out; then
+            echo "::error::build failed but without the expected #1479 capture diagnostic"
+            cat /tmp/capdiag.out
+            exit 1
+          fi
+          echo "OK: capturing-closure program failed to compile with the #1479 diagnostic."
+
       # Out/inout-parameter self-test — pins the self-hosted MSIL byref calling
       # convention (#1761): `out`/`inout` parameters are passed by managed
       # pointer so a callee's write reaches the caller.  MSIL target only; JVM
