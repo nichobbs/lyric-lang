@@ -1868,6 +1868,13 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
       } else if headSeg == "Map" {
         MMapOf(keyTy = MObject, valTy = MObject)
       } else {
+        // Silent `MObject` fallback for unresolved/unregistered generic heads.
+        // Audit assumption: in-bundle generic types are always reached after
+        // their `addPackageTokens` registration (single-package compile order),
+        // and cross-package generics arrive via `registerStdlibArtifactTokens`
+        // / `registerRestoredArtifactTokens` before user code references them.
+        // A registration-ordering shift would surface here as a silent miscompile;
+        // a diagnostic-grade rejection is a tracked follow-up under epic #1622.
         val headFqn = resolveTypeFqn(cctx, pkgName, headSeg)
         val dotIdx  = headFqn.lastIndexOf(".")
         if dotIdx < 0 {
@@ -2319,6 +2326,15 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
             insns.add(MCallvirt(methodToken = cctx.tokStringGetLength))
             MInt
           } else {
+            // KNOWN IL-VERIFICATION GAP: no preceding `castclass` before `ldfld`
+            // on an `MObject` receiver; the primary `MClass` arm does emit
+            // `MCastclassByName(cls)` first.  Plumbing the declaring class
+            // name alongside the field token (so the cast can be named here
+            // too) is a follow-up.  Currently safe because every caller that
+            // reaches this fallback path holds a receiver compatible with the
+            // field's declaring class at the source level (the type checker
+            // has already verified field access); strict IL verification
+            // (`peverify`) would still flag this.
             val fbyNameKey = fctx.pkgName + "/" + memberName
             match mapGet(cctx.fieldTokensByName, fbyNameKey) {
               case Some(tok) -> {
@@ -5068,9 +5084,9 @@ func lowerMethodCallMsil(
 // Bind a `for` loop variable from the value in `slot`.  A `for` binding is
 // irrefutable: only a name, `_`, or a tuple of those is allowed.  Refutable
 // forms (constructor / literal) reach this with a `panic` — proper span-
-// carrying diagnostic (`F0xxx`) is a follow-up; in practice the parser and
-// type checker reject these earlier so the path is reached only on malformed
-// AST input from a future feature.
+// carrying diagnostic (`F0xxx`) tracked in #1865; in practice the parser
+// and type checker reject these earlier so the path is reached only on
+// malformed AST input from a future feature.
 func bindForPatternMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
