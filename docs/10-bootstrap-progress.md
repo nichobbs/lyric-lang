@@ -18865,3 +18865,34 @@ deferred block inline (which would be a silent miscompile) — the sanctioned
 fail-loud interim per CLAUDE.md.  A separate try/catch-as-value-expression
 invalid-IL gap surfaced during this work and is filed as #1823 (independent of
 `defer`).
+
+### D-progress-377 — self-hosted MSIL: track value types for `Map[K, ValueType]` so hint-less `mapGet`/`m[k]` work (#1835)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`).
+
+`Map[K, V]` lowers to `Dictionary<object, object>` and the value type was
+erased to `object`.  In a position with **no expected-type hint** — e.g. a
+`match mapGet(m, k) { case Some(v) -> … }` scrutinee — `mapGet` defaulted `V`
+to `object` and built an `Option<object>` whose boxed value-type payload then
+faulted (`InvalidProgramException`) when bound and used as the value type.  It
+worked only when a hint was present (`val r: Option[Int] = mapGet(...)`, or
+passing the result to a `func(Option[Int])`), or when the value was a reference
+type (no unbox needed) — which is why the symptom first looked like a
+"record-key" bug (it is not; the key type is irrelevant).
+
+The fix mirrors the `List[ValueType]` fix (#1779): `typeExprToMsilCtx` now
+tracks `Map[K, ValueType]` as `MMapOf(_, valTy)` for value-type `V` only
+(reference `V` stays `object`, and `K` is always boxed for the `Dictionary`);
+the `EIndex`/`MMapOf` read `unbox.any`s a value-type result after `get_Item`;
+and `mapGet` falls back to the map argument's tracked value type when no
+context hint is in scope.  All other `MMapOf` sites (`set_Item` store,
+`.count`, `map.remove`, compound-assign) match `MMapOf(_, _)` and are
+unaffected; `val m: Map[..] = newMap()` already takes the annotation type, so
+`m` carries the tracked value type.
+
+Verified by `map_value_self_test.l` (7/7 via native `lyric test --target
+dotnet`): hint-less `match mapGet` for `Int`/`Long`/`Double`/`Bool`,
+record-keyed `Int` map, direct `m[k]` index read, and a reference-valued map
+(no regression).  No regression elsewhere — full emitter suite (847/847),
+self-hosted bridge suite (84/84), and every native self-test (incl.
+`map_option`, `map_key`) green.  MSIL target only (epic #1470 defers JVM).
