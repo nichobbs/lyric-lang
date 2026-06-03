@@ -210,6 +210,14 @@ resolveExtern(
   argTypes:  List[MsilType]    // lowered Lyric arg types, for overload scoring
 ): Option[ResolvedExtern]
 
+// Implementation note: `Msil.MetadataReader` cannot `import Msil.Codegen`
+// to consume the full `CodegenCtx` (a cycle — codegen imports the reader),
+// so the reader-facing surface uses a narrower `MetadataReaderCtx` record
+// defined inside `Msil.MetadataReader` itself (assembly-path → parsed-index
+// map; ref-pack dir).  `CodegenCtx` embeds one and `resolveExtern` projects
+// it on entry; in spec-level pseudocode the `ctx: CodegenCtx` form reads
+// naturally, but the package boundary is the projected sub-record.
+
 record ResolvedExtern {
   assemblyName: String         // owning assembly's simple name (for the AssemblyRef row)
   sig:          ResolvedSig

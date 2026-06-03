@@ -1470,6 +1470,8 @@ func materializeBoxedElemMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy
     case MObject -> {}
     case _       -> {
       if isValueType(elemTy) {
+        // `0x01000000` is the ECMA-335 metadata-token prefix for the TypeRef
+        // table (table index 0x01); `boxTypeRef` returns a bare RID.
         insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, elemTy)))
       }
     }
@@ -3398,6 +3400,8 @@ func lowerPatternTestMsil(
           insns.add(MPop)
         }
         case _ -> {
+          // LATENT GAP: `LFloat`, `LTripleString`, and `LRawString` patterns
+          // fall through here and silently match unconditionally — see #1792.
           insns.add(MPop)
         }
       }
@@ -7953,8 +7957,7 @@ func emitAutoFfiCallMsil(
       + "System.* and the Lyric host assemblies are supported); check the "
       + "extern type's CLR name for a typo or an unsupported type.")
   }
-  // Auto-FFI cannot resolve a method's signature; fail loud on argument-bearing
-  // calls rather than emit an (object…):void guess that mis-binds (D-progress-343, #1622).
+  // Auto-FFI cannot resolve a method's signature; fail loud on argument-bearing calls.
   if args.count > 0 {
     panic("Msil.Codegen: auto-FFI call '" + clrFqn + "." + methodName
       + "(...)' takes arguments, which the self-hosted emitter cannot resolve "
@@ -7969,18 +7972,11 @@ func emitAutoFfiCallMsil(
   val asmName = clrAssemblyForType(clrFqn)
   val tRefRow = internFfiTypeRef(cctx, asmName, sp.ns, sp.name)
 
-  // The receiver is always a type name (the EPath matched externTypeNames), so
-  // this is a static call: no HASTHIS, no receiver load, emit `call` not
-  // `callvirt`.  Gated above to the only faithful shape: a parameterless
-  // static method, registered as () : void.  A non-void return would leave a
-  // phantom value on the stack; such methods need an @externTarget wrapper.
+  // Static `()`-shape call registered as `() : void` — see D-progress-343.
   val argTypes: List[MsilType] = newList()
   val sig = buildStaticMethodSig(argTypes, MVoid)
   val mrRow = ctxAddMemberRef(cctx.lctx, tRefRow, methodName, "autoffi_" + methodName, sig)
   val tok = 0x0A000000 + mrRow
-
-  // Parameterless static call: no receiver (the receiver is a type name) and
-  // no arguments (gated above).
   insns.add(MCall(methodToken = tok))
   MVoid
 }

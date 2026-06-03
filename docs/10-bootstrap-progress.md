@@ -18112,7 +18112,9 @@ NRE in `lowerFuncMsil`): the named-arg ordering bug is real and independent, but
 it is **not** the #1730 root cause — `specializeFunc` already constructs its
 `FunctionDecl` in declaration order, so #1730 remains open.  A separate
 `None`-as-record-field-value defect (#1731) surfaced from the same test and is
-also tracked apart.  MSIL only.
+also tracked apart.  MSIL only — the JVM backend's `lowerCallArg` has the
+same latent bug (named args lowered positionally in call-site order); JVM
+parity tracked as #1793 against `lyric-compiler/jvm/codegen.l`.
 
 ### D-progress-358 — auto-FFI value-type parameters & returns, Phase 3c step 3 (epic #1622)
 
