@@ -1647,18 +1647,23 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
     case TGenericApp(head, args) -> {
       val headSeg = lastSegmentMsil(head)
       // Special case: List[T] — carry the element type so EIndex can
-      // emit castclass to T, enabling correct cross-package field
-      // access on list elements (#1442).  Only propagate when T
-      // resolves to an MClass (user-defined record/union); primitive
-      // element types fall back to plain MObject so existing code
-      // paths are not disturbed.
+      // narrow each element to T.  For a user-defined `MClass` element this
+      // enables castclass + ldfld on list-element field access (#1442); for a
+      // *value-type* element (`Int`/`Long`/`Double`/`Bool`/`Char`) it lets
+      // EIndex `unbox.any` the boxed `List<object>` slot back to the value so
+      // a subsequent numeric op / comparison (`xs[i] <= 0`) sees the real
+      // value rather than the object reference (#1779).  String / generic /
+      // untyped elements stay plain `MObject` (their string/object operations
+      // already treat the slot as a reference).
       if headSeg == "List" and args.count == 1 {
         match args[0] {
           case TAType(elemTe) -> {
             val elemTy = typeExprToMsilCtx(cctx, elemTe, pkgName)
             match elemTy {
               case MClass(_) -> MListOf(elemTy = elemTy)
-              case _         -> MObject
+              case _         ->
+                if isValueType(elemTy) { MListOf(elemTy = elemTy) }
+                else                   { MObject }
             }
           }
           case TAValue(_) -> MObject
@@ -2275,6 +2280,15 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
             lowerExprMsil(cctx, fctx, insns, indices[0])
           }
           insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+          // get_Item returns a boxed `object`.  For a value-type element the
+          // stack must carry the *unboxed* value to match the tracked `elemTy`
+          // — otherwise a later numeric op / comparison (e.g. `xs[i] <= 0`)
+          // treats the object reference as an i4, producing invalid IL or a
+          // silently wrong result (#1779).  Reference-type elements stay as
+          // `object`; the EMember handler narrows them with castclass (#1442).
+          if isValueType(elemTy) {
+            castObjectToMsil(cctx, insns, elemTy)
+          }
           elemTy
         }
         case MArray(elem) -> {

@@ -121,11 +121,38 @@ test "Result `?` inside both arms of an if" {
   assertEqual(resultLabel(condProp(false, 5, -9)), "b", "else-arm ? Err")
 }
 
-// NOTE: `?` inside a `while`/`for` loop body, and inside an impl/interface
-// method body, is correctly lowered by this pass but does not yet run on the
-// MSIL backend — an early `return` from inside a loop is silently dropped, and
-// a control-flow expression in an impl-method body returning a union faults
-// the JIT.  Both are pre-existing codegen defects independent of `?` (they
-// reproduce with a hand-written `return` / `match` and no `?` at all) and are
-// tracked in #1779.  Once #1779 lands, `?` works in those contexts for free
-// with no change to this pass; coverage there is added with the fix.
+// `?` inside a while-loop body: a negative element early-returns Err mid-loop.
+// (The earlier "loop early-return dropped" symptom was actually #1779 bug A —
+// a `List[Int]` element comparison miscompiling; with that fixed, `?` over a
+// value-type list inside a loop works.)
+func sumPositives(xs: in List[Int]): Result[Int, String] {
+  var total = 0
+  var i = 0
+  while i < xs.count {
+    val v = okIf(xs[i] > 0, xs[i], "neg")?
+    total = total + v
+    i = i + 1
+  }
+  Ok(total)
+}
+
+test "Result `?` inside a while-loop body early-returns mid-iteration" {
+  val all: List[Int] = newList()
+  all.add(1)
+  all.add(2)
+  all.add(3)
+  assertEqualInt(resultValue(sumPositives(all)), 6, "1+2+3 = 6")
+
+  val mixed: List[Int] = newList()
+  mixed.add(1)
+  mixed.add(-2)
+  mixed.add(3)
+  assertEqual(resultLabel(sumPositives(mixed)), "neg", "negative element ? -> Err")
+}
+
+// NOTE: `?` inside an impl/interface method body is correctly lowered by this
+// pass but does not yet run on the MSIL backend — a bare early `return` in an
+// impl-method body faults the JIT (a pre-existing codegen defect independent of
+// `?`: it reproduces with a hand-written `if cond { return … }` and no `?` at
+// all), tracked in #1784.  Once #1784 lands, `?` works there for free with no
+// change to this pass.
