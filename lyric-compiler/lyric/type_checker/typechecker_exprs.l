@@ -922,12 +922,7 @@ pub func inferExpr(
     }
 
     case EPropagate(inner) -> {
-      // #1483 (expression-typing split): `e?` unwraps the success type of the
-      // operand — `Result[T, E]` / `Option[T]` -> `T`.  (The `Lyric.Propagate`
-      // pass does the lowering and the enclosing-return-compat check, F0020;
-      // here we only give the expression its unwrapped type so downstream uses
-      // are checked.)  A non-monadic operand yields TyError rather than a
-      // duplicate diagnostic.
+      // `e?` unwraps the operand to its success type (`Result[T,E]`/`Option[T]` -> `T`); the `Lyric.Propagate` pass owns the lowering and F0020.
       val it = inferExpr(sc, tbl, sigs, diag, inner)
       propagateUnwrap(it)
     }
@@ -950,10 +945,7 @@ pub func inferExpr(
     case ELambda(_, _)  -> TyError
     case EIf(_, _, _, _) -> TyError
     case EMatch(scrutinee, arms) -> {
-      // #1483 (Band-1): infer the scrutinee and check exhaustiveness.  Branch-
-      // type unification (which would give the match a real result type) is the
-      // expression-typing split of #1483; this arm still yields TyError for the
-      // match's own type but no longer leaves the scrutinee + arms unchecked.
+      // Check exhaustiveness; branch-type unification (real match result type) is the next split.
       val st = inferExpr(sc, tbl, sigs, diag, scrutinee)
       checkMatchExhaustive(tbl, diag, st, arms, e.span)
       TyError
