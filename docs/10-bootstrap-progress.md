@@ -18778,3 +18778,43 @@ record TypeDef — so BCL `Map`/`HashSet` key lookup is still identity-based.
 Real override synthesis on the record TypeDef (delegating to the now-emitted
 `equals`/`hash`) is the remaining work; #1480 stays open for it.  MSIL target
 only (epic #1470 defers JVM).
+
+### D-progress-375 — self-hosted MSIL: synthesise `Object.Equals`/`GetHashCode` overrides for `@derive` records → structural Map keys (#1480, closes it)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`).  Closes #1480.
+
+The second half of #1480 (docs/41 §3 H1): records with `@derive(Equals)` /
+`@derive(Hash)` now carry real **`Object.Equals(object)` and `GetHashCode()`
+virtual overrides** on their TypeDef, so BCL `Map`/`HashSet` key lookup — which
+dispatches `GetHashCode` + `Equals` virtually on the key — is structural.  Two
+*field-equal* record instances now hash to the same bucket and compare equal,
+so a lookup with a fresh-but-equal key hits (previously every instance was a
+distinct identity-based key).
+
+`appendDeriveOverridesMsil` (called from `codegenMPackage`, after impl-method
+injection) emits two thin virtual instance methods into the record's `MRecord`:
+`Equals(object)` does `isinst <Record>; if null -> false; else <Record>.equals(this, casted)`,
+and `GetHashCode()` does `<Record>.hash(this)` — both delegating to the free
+`<Type>.equals`/`<Type>.hash` helpers `Lyric.Derives` already synthesises (and
+that reach codegen since #1796).  `addPackageTokens` reserves the matching
+MethodDef rows (one per derived `Equals`/`Hash` marker, after the record's impl
+methods); `deriveOverrideCountMsil` keeps the budget and the emission in lock
+step so no later token shifts.  The overrides are `Public | Virtual |
+HideBySig` (no NewSlot), so the CLR binds them to the inherited
+`System.Object` slots by name + signature — no MethodImpl row needed.
+
+Verified by `map_key_self_test.l` (4/4 via native `lyric test --target
+dotnet`): a field-equal instance finds a `Map[Point, String]` entry via
+`containsKey`/`mapGet`, equal keys collapse to one entry (structural
+`GetHashCode` + `Equals`), and distinct field values stay distinct keys.
+`equality_self_test.l` (`==`, D-progress-374) still passes.  No regression — the
+full emitter suite (847/847), the self-hosted bridge suite (84/84), and every
+native self-test (incl. `derives`, `map_option`, `record_option_field`,
+generic suites) stay green, confirming the record method-token budget is
+consistent.
+
+Map keys require **both** `@derive(Equals)` and `@derive(Hash)` (overriding
+`Equals` without `GetHashCode` is a bug on .NET too — different hashes never
+compare).  A `Map[Record, ValueType]` *value* still trips a separate,
+pre-existing codegen bug (#1835; reproduces with a plain record key and no
+`@derive`).  MSIL target only; JVM parity is deferred (epic #1470).

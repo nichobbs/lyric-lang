@@ -64,9 +64,9 @@ bar:
    run synchronously and return the unwrapped/awaitable value, `async func`
    returns a bare value instead of `Task[T]`, and `defer` runs its body inline
    immediately instead of at scope exit. (`?` propagation is now fixed — #1475;
-   and `==` on `@derive(Equals)` records/distinct types now dispatches
-   structurally to the derived `equals` — #1480/#1796, though `Map`/`HashSet`
-   key lookup still needs `GetHashCode`/`Object.Equals` overrides.) Each of the
+   and `==`/`Map`-key structural equality for `@derive(Equals)`/`@derive(Hash)`
+   records is now fully wired — #1480/#1796, incl. synthesised
+   `Object.Equals`/`GetHashCode` overrides.) Each of the
    remaining items compiles without error and produces a wrong program — the
    failure mode the project standard most explicitly forbids.
 
@@ -176,7 +176,7 @@ supporting all language features."
 
 | # | Gap | Evidence | Effort |
 |---|---|---|---|
-| H1 | **PARTIAL (2026-06-03).** `==`/`!=` operator wiring is DONE: `BEq`/`BNeq` now call the derived `<Type>.equals` for records / distinct types with `@derive(Equals)` instead of static `Object.Equals`, so `a == b` is structural (recursive through nested derived records). This depended on #1796 (mono no longer drops the synthesized helper so it reaches codegen with a token). **Remaining:** `@derive(Hash)` still emits a `hash` method, not a `GetHashCode` override, and there is no `Object.Equals(object)` override — so BCL `Map`/`HashSet` key lookup is still reference/identity-based. That needs real `Object.Equals`/`GetHashCode` override synthesis on the record TypeDef (the remaining #1480 scope). | `codegen.l` `BEq`/`BNeq` → `derivedEqualsTokenMsil`; `GetHashCode` override still absent | M |
+| H1 | ~~`==` does not dispatch to derived `equals`; no `GetHashCode` override.~~ **RESOLVED (#1480).** Two parts: (1) `==`/`!=` operator wiring — `BEq`/`BNeq` call the derived `<Type>.equals` for `@derive(Equals)` records/distinct types instead of static `Object.Equals`, so `a == b` is structural (recursive through nested derived records). (2) `Object.Equals(object)` + `GetHashCode()` virtual *overrides* are now synthesised on `@derive(Equals)`/`@derive(Hash)` record TypeDefs (`appendDeriveOverridesMsil`, delegating to the derived `equals`/`hash`; rows reserved in `addPackageTokens`), so BCL `Map`/`HashSet` key lookup is structural — two field-equal record instances hash and compare as the same key. Both depended on #1796 (mono no longer drops the synthesized helper). Verified by `equality_self_test.l` + `map_key_self_test.l`. (Map keys need both `@derive(Equals)` and `@derive(Hash)`, mirroring the .NET requirement. A `Map[Record, ValueType]` *value* still trips the unrelated #1835 bug.) | `codegen.l` `BEq`/`BNeq` → `derivedEqualsTokenMsil`; `appendDeriveOverridesMsil` | M |
 | H2 | `@projectable` opaque twin + `toExposed`/`fromExposed` never generated — `isProjectable` is computed but never read in `lowerMOpaque`. | `codegen.l:6324-6330`, `lowering.l:1849-1944` | L |
 | H3 | Range-subtype bounds dropped at every layer: `IDistinctType` arm reads only `underlying`; `lowerMRangeType` is dead and also drops bounds; no construction validation. Front-end discards range in `TRefined`. | `codegen.l:6174-6180`, `lowering.l:1592-1599`, `typechecker_resolver.l:75-78` | M |
 | H4 | **PARTIAL (2026-06-03).** `WMExpose` members lower; `bind`/`scoped`/`provided` are still dropped (`case _ -> {}`) and there is no topological ordering / cycle detection. | `codegen.l` wire-block lowering (`WMExpose` only); `typechecker_checker.l` | L |
