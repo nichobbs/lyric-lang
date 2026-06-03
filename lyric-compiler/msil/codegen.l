@@ -2943,26 +2943,94 @@ func lowerBlockExprMsil(
   insns: in List[MInsn],
   block: in Block
 ): MsilType {
-  val n = block.statements.count
-  if n == 0 {
+  lowerStmtsExprFromMsil(cctx, fctx, insns, block.statements, 0)
+}
+
+// Value-producing counterpart of `lowerStmtsFromMsil`: lower statements[start..]
+// leaving the trailing value on the stack, honouring `defer`.  When a `defer`
+// precedes the value-producing statements, those statements run inside a
+// `try`/`finally(D)`; the trailing value is stashed in a temp before the `leave`
+// (a `leave` requires an empty evaluation stack) and reloaded after the region,
+// so the deferred block runs on scope exit while the block still yields its
+// value.  #1477.
+func lowerStmtsExprFromMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
+                            insns: in List[MInsn], stmts: in List[Statement],
+                            start: in Int): MsilType {
+  val n = stmts.count
+  if start >= n {
     return MVoid
   }
-  var i = 0
-  while i < n - 1 {
-    lowerStmtMsil(cctx, fctx, insns, block.statements[i])
-    i = i + 1
-  }
-  // Last statement: if SExpr its value is the block value.
-  val last = block.statements[n - 1]
-  match last.kind {
-    case SExpr(e) -> {
-      lowerExprMsil(cctx, fctx, insns, e)
+  // Locate the first `defer` at or after `start`.
+  var deferIdx = -1
+  var di = start
+  while di < n {
+    match stmts[di].kind {
+      case SDefer(_) -> { deferIdx = di; di = n }
+      case _         -> { di = di + 1 }
     }
+  }
+  if deferIdx < 0 {
+    // No defer in [start..]: lower as a plain trailing-value block.
+    var i = start
+    while i < n - 1 {
+      lowerStmtMsil(cctx, fctx, insns, stmts[i])
+      i = i + 1
+    }
+    val last = stmts[n - 1]
+    return match last.kind {
+      case SExpr(e) -> lowerExprMsil(cctx, fctx, insns, e)
+      case _        -> { lowerStmtMsil(cctx, fctx, insns, last); MVoid }
+    }
+  }
+  // Statements before the defer run normally; the rest produce the value inside
+  // a try/finally whose finally is the deferred block.
+  var k = start
+  while k < deferIdx {
+    lowerStmtMsil(cctx, fctx, insns, stmts[k])
+    k = k + 1
+  }
+  val deferBody = match stmts[deferIdx].kind {
+    case SDefer(b) -> b
+    case _         -> Block(statements = newList(), span = stmts[deferIdx].span)
+  }
+  val tryStartL = freshLabelMsil(fctx)
+  val afterL    = freshLabelMsil(fctx)
+  insns.add(MLabel(id = tryStartL))
+  fctx.tryRegionStack.add(0)
+  val valTy = lowerStmtsExprFromMsil(cctx, fctx, insns, stmts, deferIdx + 1)
+  var tmpSlot = -1
+  match valTy {
+    case MVoid -> {}
     case _ -> {
-      lowerStmtMsil(cctx, fctx, insns, last)
-      MVoid
+      tmpSlot = allocSlotMsil(fctx, "__deferval_" + toString(fctx.slotTicker.count), valTy)
+      emitStoreSlot(insns, tmpSlot, fctx.paramCount)
     }
   }
+  fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
+  insns.add(MLeave(label = afterL))
+  // NOTE: this finally region is emitted manually (rather than via
+  // lowerTryCatchMsil, which the void/statement path uses) because the block
+  // value must be captured before the `leave` and reloaded after the region.
+  // Keep this EH-clause shape in sync with lowerTryCatchMsil's finally arm if
+  // that changes (e.g. stackmap-frame or fault-region handling).  #1832.
+  val finallyStartL = freshLabelMsil(fctx)
+  val finallyEndL   = freshLabelMsil(fctx)
+  insns.add(MLabel(id = finallyStartL))
+  lowerBlockMsil(cctx, fctx, insns, deferBody)
+  insns.add(MEndfinally)
+  insns.add(MLabel(id = finallyEndL))
+  insns.add(MEHClause(
+    flags        = 2,
+    tryStart     = tryStartL,
+    tryEnd       = finallyStartL,
+    handlerStart = finallyStartL,
+    handlerEnd   = finallyEndL,
+    catchToken   = 0))
+  insns.add(MLabel(id = afterL))
+  if tmpSlot >= 0 {
+    emitLoadSlot(insns, tmpSlot, fctx.paramCount)
+  }
+  valTy
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5476,9 +5544,39 @@ func lowerTryCatchMsil(
 
 pub func lowerBlockMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
                         insns: in List[MInsn], block: in Block): Unit {
-  var i = 0
-  while i < block.statements.count {
-    lowerStmtMsil(cctx, fctx, insns, block.statements[i])
+  lowerStmtsFromMsil(cctx, fctx, insns, block.statements, 0)
+}
+
+// Lower statements[start..] (statement / void context) honouring `defer`.  A
+// `defer { D }` runs D at scope exit on every path — normal fall-off, `return`,
+// `break`/`continue`, and exception unwind (grammar: "runs on scope exit,
+// success or failure").  The statements that follow the defer are therefore
+// lowered as `try { rest } finally { D }`; the `finally` runs on fall-off and
+// exception, on `return` via the function epilogue's `leave` (D-progress-373),
+// and on `break`/`continue` via their `leave` lowering (D-progress-371).
+// Multiple defers nest, giving reverse-declaration execution order.  #1477.
+func lowerStmtsFromMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
+                        insns: in List[MInsn], stmts: in List[Statement],
+                        start: in Int): Unit {
+  var i = start
+  while i < stmts.count {
+    match stmts[i].kind {
+      case SDefer(deferBody) -> {
+        val rest: List[Statement] = newList()
+        var j = i + 1
+        while j < stmts.count {
+          rest.add(stmts[j])
+          j = j + 1
+        }
+        val restBlock = Block(statements = rest, span = stmts[i].span)
+        val noCatches: List[CatchClause] = newList()
+        lowerTryCatchMsil(cctx, fctx, insns, restBlock, noCatches, Some(value = deferBody))
+        return
+      }
+      case _ -> {
+        lowerStmtMsil(cctx, fctx, insns, stmts[i])
+      }
+    }
     i = i + 1
   }
 }

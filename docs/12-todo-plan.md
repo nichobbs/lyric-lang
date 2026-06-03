@@ -24,11 +24,12 @@ sequenced as `docs/36-v1-roadmap.md` §R7.  In priority order:
    project path. (docs/41 C1, C2, C10, C11, H14, H15, H16, M6, C13-front-end.)
 2. **Backend correctness (CRITICAL).** `?` (C3), all of #1481 (compound-assign
    operator H22, Float/Long literal match H18, break/continue-across-`try` H17,
-   `List.contains`/`removeAt` + unknown-method fail-loud H21) are done; still to
-   do: run `defer` at scope exit; dispatch `==` to the derived `equals`; implement
-   capturing-closure display classes; stop dropping `SItem`/`SInvariant`.
+   `List.contains`/`removeAt` + unknown-method fail-loud H21), and `defer` at
+   scope exit (C7, #1477) are done; still to do: dispatch `==` to the derived
+   `equals`; implement capturing-closure display classes; stop dropping
+   `SItem`/`SInvariant`; fix try/catch-as-value-expression invalid IL (#1823).
    **Anything not yet correctly lowered must hard-error, never silently pass
-   through.** (docs/41 C7, H1, H20, M7.)
+   through.** (docs/41 H1, H20, M7; #1823.)
 3. **Async (CRITICAL).** Port `AsyncStateMachine.fs` + `AsyncGenerator.fs` to
    `lyric-compiler/msil/` (state machine, `Task[T]`/`ValueTask[T]`, lazy
    `IAsyncEnumerable[T]`).  Until ported, `await`/`spawn`/async-generators must

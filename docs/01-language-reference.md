@@ -594,6 +594,20 @@ outer: for x in xs {
 }
 ```
 
+`defer { ... }` schedules a block to run when its enclosing scope exits, on
+**every** path — normal fall-off, early `return`, `break`/`continue` out of the
+scope, and exception unwind ("success or failure"). Use it for cleanup that must
+always happen:
+```
+val src = makeCancelSource()
+defer { disposeSource(src) }      // runs no matter how this scope ends
+val result = work(src)
+result
+```
+Multiple `defer`s in the same scope run in **reverse** declaration order (the
+last `defer` runs first), mirroring nested cleanup. A `defer` block reads the
+variables it references at scope-exit time, not at the point of declaration.
+
 ### 4.4 Bindings
 
 ```

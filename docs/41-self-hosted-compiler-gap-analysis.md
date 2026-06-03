@@ -7,9 +7,10 @@ delta is in **§10**. ~40 PRs (D-progress-323…367) landed between the two date
 and resolved or advanced a dozen gaps — most notably indexed assignment (C6),
 the MethodSpec table (M5), range-`for` (H19), Char match literals (H18), and the
 whole auto-FFI chain via the metadata reader (epic #1622: C9/H8/H9). The
-CRITICAL **soundness floor (Band 1) and correctness floor (Band 2/3) are
-unchanged** — the front-end is still advisory, and `?`/`await`/`defer`/`==`
-still silently miscompile. This remains the gating list for a v1.0 tag and is
+CRITICAL **soundness floor (Band 1) is unchanged** — the front-end is still
+advisory.  The Band 2/3 correctness floor has narrowed: `?` (#1475), `==`
+(#1480), and `defer` (#1477) no longer miscompile; `await`/`async` remain the
+silent-miscompile gap.  This remains the gating list for a v1.0 tag and is
 cross-linked from `docs/36-v1-roadmap.md` §R7._
 
 _This is a full re-audit of the self-hosted Lyric compiler against
@@ -60,15 +61,15 @@ bar:
    other.
 
 2. **Several backend constructs silently miscompile (CRITICAL).** Not panics —
-   *silent wrong code*: `?` propagation (`EPropagate`) is a no-op, `await`/`spawn`
-   run synchronously and return the unwrapped/awaitable value, `async func`
-   returns a bare value instead of `Task[T]`, and `defer` runs its body inline
-   immediately instead of at scope exit. (`?` propagation is now fixed — #1475;
-   and `==`/`Map`-key structural equality for `@derive(Equals)`/`@derive(Hash)`
-   records is now fully wired — #1480/#1796, incl. synthesised
-   `Object.Equals`/`GetHashCode` overrides.) Each of the
-   remaining items compiles without error and produces a wrong program — the
-   failure mode the project standard most explicitly forbids.
+   *silent wrong code*: `await`/`spawn` run synchronously and return the
+   unwrapped/awaitable value, and `async func` returns a bare value instead of
+   `Task[T]`. (Three former members of this list are now fixed: `?` propagation
+   — #1475; `==`/`Map`-key structural equality for `@derive(Equals)` /
+   `@derive(Hash)` records is now fully wired — #1480/#1796, incl. synthesised
+   `Object.Equals`/`GetHashCode` overrides; and `defer` now runs at scope exit
+   via `try`/`finally` lowering — #1477.) Each remaining item compiles without
+   error and produces a wrong program — the failure mode the project standard
+   most explicitly forbids.
 
 3. **Async/await has no self-hosted implementation (CRITICAL).** There is no
    `IAsyncStateMachine` / `ValueTask` synthesis and no lazy
@@ -164,7 +165,7 @@ supporting all language features."
 | C4 | `await`/`spawn` lower synchronously; `async func` returns a bare value, not `Task[T]`; no `IAsyncStateMachine`. Silent miscompile of every async program. | `codegen.l:1755-1758,1782-1784,983-999`; no state machine in `msil/*` | XL |
 | C5 | Async generators use eager collect-all into `List<object>`, not lazy `IEnumerable`/`IAsyncEnumerable`; return type forced to List; unbounded generators buffer forever. | `codegen.l:1760-1780,983` | XL |
 | C6 | **Fixed (#1530).** Indexed assignment `a[i] = v` previously silently discarded the store (value evaluated then popped); the `EIndex` assignment target now emits `List[object]::set_Item`. Compound indexed forms (`a[i] += v`) hard-fail with a clear build error pending element-type plumbing (#1481). | `codegen.l` `lowerAssignExprMsil` EIndex arm | Resolved |
-| C7 | `defer` runs its body inline immediately, not at scope exit (and not on early-return/exception). | `codegen.l:3817-3819` | L |
+| C7 | ~~`defer` runs its body inline immediately, not at scope exit.~~ **Resolved (#1477 / D-progress-374):** `defer { D }` lowers the rest of its scope to `try { rest } finally { D }`, so D runs on fall-off, early `return` (via the function epilogue, #1477 foundation), `break`/`continue` (via `leave`), and exception unwind; multiple defers nest in reverse order. | `codegen.l` `lowerStmtsFromMsil` / `lowerStmtsExprFromMsil` | ✅ |
 | C8 | User-defined generic *types* are type-erased to one non-generic TypeDef with `object` fields; type-param field `T` resolves to a bogus `MClass("Pkg.T")`. No GenericParam rows; no per-type mono. | `codegen.l:4718-4791,1235,1268`; no GenericParam in `lowering.l` | L |
 | C9 | ~~`@externTarget` whose signature mentions any class/object type emits a runtime-throw stub instead of a real call.~~ **Resolved (#1504 part 1):** class-typed params/return now encode as real `ELEMENT_TYPE_CLASS + TypeDefOrRef` MemberRefs (`buildFfiMethodSigCtx`/`resolveFfiClassTypeRef`), resolving extern types via `externTypeNames` → CLR TypeRef. Verified end-to-end (`StringBuilder` ctor + instance calls). Remaining #1504 parts: unresolved-type diagnostic (H8), instance/non-void auto-FFI (H9), generic externs (blocked on #1497). | `codegen.l` `buildFfiMethodSigCtx` | ✅ |
 | C10 | Opaque representation-hiding not enforced: fields readable and types constructable from outside the declaring package. | `typechecker_exprs.l:479-487`, `typechecker_checker.l:152-155` | M |
@@ -395,7 +396,7 @@ binary in CI.
 | "`--target dotnet-legacy` is the load-bearing path." | Removed from the CLI; only stale `panic` strings reference it. Default is self-hosted in-process. |
 | §3.5 "TGenericApp defaults to MObject (`codegen.l:593`); `Lyric.Mono` not called from `Msil.Bridge`." | Stale. `monoFile` is wired (`bridge.l:103,403`); `TGenericApp` emits `MGenericInst` for cross-assembly heads (`codegen.l:1290-1313`). Erasure now applies to *user generic types* (C8), not all generics. |
 | "MSIL: no `for` loops (panics)." | `for` over List/array and range-`for` (`lo .. hi` / `..= hi` / `..< hi`) both work (#1478); only a standalone `a .. b` *value* expression remains unsupported (H19). |
-| "`SDefer` not implemented." | Present but semantically broken — runs inline immediately (C7). |
+| "`SDefer` not implemented." | Resolved (#1477): runs at scope exit on all paths via `try`/`finally` lowering. |
 | "Contract elaborator defers protected-type entries and loop invariants." | Both shipped (`elaborator.l:805-819,1046-1116`). |
 | "Contract metadata embedding is F#-only." | Self-hosted (`bridge.l:986-1033`). |
 | "Both backends skip `IEnum`/`IInterface`/`IOpaque`/`IProtected`/`IAspect`." | All have MSIL lowering now; the gaps are correctness (protected locking C12, opaque twins H2, default-interface-method bodies C11), not absence. |
@@ -465,8 +466,10 @@ section wins.
   **#1481** (items 1–2: Float/Long literal match compares + compound-assignment
   operator, D-progress-370; items 3–4: break/continue-across-`try` → `leave`,
   `List.contains`/`removeAt` real calls, unknown-method fail-loud, D-progress-371),
-  and H17 are now fixed. Remaining: C7 (`defer` inline), H1 (`==` doesn't dispatch
-  derived `equals`), H20 (capturing closures), M7 (`SItem`/`SInvariant` dropped).
+  H17, and C7 (`defer` now runs at scope exit, #1477) are now fixed. Remaining:
+  H1 (`==` doesn't dispatch derived `equals`), H20 (capturing closures), M7
+  (`SItem`/`SInvariant` dropped). A separate try/catch-as-value-expression invalid-IL
+  gap was found during the `defer` work and filed as #1823.
 - **Band 3 (async, CRITICAL):** C4, C5 — no `IAsyncStateMachine` / lazy
   `IAsyncEnumerable` in `lyric-compiler/msil/`. `await`/`spawn`/`async func`
   still lower synchronously and silently miscompile on the default self-hosted
@@ -491,6 +494,9 @@ section wins.
 The backend correctness floor has improved (5 silent-miscompile/codegen gaps
 closed, auto-FFI now metadata-driven), but the **two highest-severity bands are
 untouched**: the front end still does not reject invalid programs (Band 1), and
-`?`/`await`/`defer`/`==` still silently miscompile (Bands 2–3). No `<PublishAot>`
-exists. These — not the §R1–R6 items in `docs/36`, which are all done — are the
-real remaining v1.0 blockers, and are now tracked as `docs/36` §R7.
+`await`/`async` still silently miscompile (Band 3).  The Band 2 backend
+correctness floor is now substantially closed (`?` #1475, `==` #1480, `defer`
+#1477, plus the #1481 batch); `await`/`async` is the remaining silent
+miscompile.  No `<PublishAot>` exists. These — not the §R1–R6 items in
+`docs/36`, which are all done — are the real remaining v1.0 blockers, and are
+now tracked as `docs/36` §R7.
