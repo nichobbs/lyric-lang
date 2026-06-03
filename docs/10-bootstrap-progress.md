@@ -18963,3 +18963,32 @@ and mixed reference+value params.  No regression — full emitter suite
 (847/847), self-hosted bridge suite (84/84), and every native self-test
 (`map_option`, `propagate`, `self_method_call`, generic suites, …) green.
 MSIL target only (epic #1470 defers JVM).
+
+### D-progress-380 — verify M7 is stale + loop-invariant regression test (docs/41 M7)
+
+**Status:** Verified stale; regression test added (`lyric-compiler/lyric/loop_invariant_self_test.l`).
+
+`docs/41` §3 listed M7 — "`SItem`/`SInvariant` silently dropped in codegen" — as
+a MEDIUM Band-2 gap.  Source verification on 2026-06-03 shows **neither half is
+a real gap**:
+
+- **`SInvariant`** — the contract elaborator already lowers a loop `invariant:`
+  clause to an `assert(inv)` at the top of the loop body (fires on entry and at
+  each iteration); codegen's `SInvariant -> {}` then correctly drops the
+  now-redundant marker.  Loop invariants *are* checked at runtime: a violated
+  `invariant:` panics (`assertion failed`).  This had no native self-test, so
+  one was added — `loop_invariant_self_test.l` (2/2 via `lyric test --target
+  dotnet`): a holding invariant doesn't interfere, and a violated one panics
+  (observed with a `try`/`catch` expression, itself exercising #1823).
+- **`SItem`** — the self-hosted parser never produces `SItem`: a nested
+  `func`/type declaration inside a block fails to parse (P0080).  So
+  `SItem -> {}` is unreachable dead code, not a dropped feature.
+
+M7 is marked resolved/stale in `docs/41` §3 + §10, `docs/12`, and `docs/36`;
+the last open Band-2 backend item is H20 (capturing closures).  No code change
+to the compiler (test + docs only).
+
+A separate test-infrastructure bug surfaced while writing the test: a
+`@test_module` containing a lambda (e.g. `assertPanics`) silently produces zero
+TAP output and exits 0 — filed as #1854.  The loop-invariant test sidesteps it
+via the try/catch-expression observation above.
