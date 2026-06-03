@@ -973,9 +973,12 @@ pub func collectStdlibGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl]
           // bypass the intrinsic, and copy a body that calls the generic kernel
           // extern `tryGetValue` — which the consumer can't lower.  Leave it to
           // the intrinsic.
+          // Bare-name match: only stdlib packages enter `collectStdlibGenericFuncs`,
+          // and `mapGet` is unique in `Std.Collections` today.  A future @builtin_intrinsic
+          // annotation would let any module mark intrinsics declaratively.
           if isGeneric and hasBlockBody
              and not annsBlockSpecialization(decl.annotations)
-             and decl.name != "mapGet" {
+             and not (decl.name == "mapGet" and pkg.name == "Std.Collections") {
             genFuncs.add(decl)
           }
         }

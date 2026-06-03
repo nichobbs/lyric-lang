@@ -1535,9 +1535,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
     val mRva  = rvasM[ctx.bodies.count - 1]
     val sName2 = internString(sh, m.name)
     val mSig   = buildInstanceMethodSig(m.params, m.ret)
-    // Arity-qualify the intern key (#1536): `internBlob` dedups by key, so two
-    // overloads sharing a name would otherwise collide on the same key and the
-    // second method would silently inherit the first's signature blob.
+    // Arity-qualify the intern key (#1536) so same-name overloads don't collide in `internBlob`'s dedup.
     val bMSig  = internBlob(bh, "meth_" + r.className + "_" + m.name + "/" + toString(m.params.count), mSig)
     val fp     = t.params_.count + 1
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
@@ -2261,10 +2259,7 @@ pub func lowerMFuncsToHostClass(hostClass: in String, funcs: in List[MFunc],
     val fRva = rvas[ctx.bodies.count - 1]
     val sN   = internString(sh, f.name)
     val mSig = buildStaticMethodSig(f.params, f.ret)
-    // Arity-qualify the intern key (#1536): `internBlob` dedups by key, so
-    // same-name overloads (e.g. `substring/2` vs `/3`) would otherwise collide
-    // and the second method would inherit the first's signature blob, emitting
-    // a method whose declared arity disagrees with its call sites (invalid IL).
+    // Arity-qualify the intern key (#1536) so same-name overloads don't collide and inherit the wrong signature blob.
     val bSig = internBlob(bh, "sfunc_" + hostClass + "_" + f.name + "/" + toString(f.params.count), mSig)
     val fp   = t.params_.count + 1
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))

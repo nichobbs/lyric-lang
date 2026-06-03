@@ -32,6 +32,7 @@ extern type TextWriter = "System.IO.TextWriter"
 @externTarget("System.Console.get_Error")
 func consoleErrorWriter(): TextWriter = ()
 
+// Targets the `TextWriter.WriteLine(string)` overload; the emitter resolves it by the `in String` parameter type.
 @externTarget("System.IO.TextWriter.WriteLine")
 @externInstance
 func textWriterWriteLine(w: in TextWriter, text: in String): Unit = ()

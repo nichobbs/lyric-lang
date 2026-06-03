@@ -68,8 +68,7 @@ union PropKind {
   case PropResult
   case PropOption
   case PropOther
-  // Inside a lambda body — the lambda's own return monad cannot be inferred
-  // by this pass, so `?` is rejected with a lambda-specific F0020 message.
+  // Lambda body — the lambda's own return monad is unknown; `?` here gets a lambda-specific F0020.
   case PropInLambda
 }
 
@@ -181,6 +180,9 @@ func lastSegment(path: in ModulePath): String {
   else { path.segments[path.segments.count - 1] }
 }
 
+// Known limitation: matches terminal segment only — type aliases for `Result`/`Option`
+// (e.g. `alias ParseResult[T] = Result[T, ParseError]`) yield `PropOther` and trip a
+// false F0020.  Workaround until an alias-resolution pass lands: write `Result[T, E]` directly.
 func monadOfRet(ret: in Option[TypeExpr]): PropKind {
   match ret {
     case None -> PropOther
@@ -313,10 +315,7 @@ func rewriteExpr(e: in Expr, kind: in PropKind, st: in PropState): Expr {
                      body = rewriteExpr(body, kind, st)), e.span)
     }
 
-    // A lambda has its own return monad, which the backend cannot yet infer;
-    // recurse with PropInLambda so a `?` inside surfaces a lambda-specific
-    // F0020 rather than being rewritten against the wrong (enclosing)
-    // function's return type.
+    // Lambdas carry their own return monad — switch to PropInLambda so a `?` inside surfaces the lambda-specific F0020 instead of the enclosing function's.
     case ELambda(lambdaParams, body) ->
       mkExpr(ELambda(lambdaParams = lambdaParams,
                      body = rewriteBlock(body, PropInLambda, st)), e.span)

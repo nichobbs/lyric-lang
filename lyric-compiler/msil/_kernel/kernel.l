@@ -20,13 +20,7 @@ import Std.Collections
 // Growable byte buffer.  The inner `List[Byte]` is the mutable store; the
 // `buf*` helpers append into it in place (the record wrapper gives the buffer
 // a distinct, opaque type at call sites).
-//
-// INVARIANT: callers must write through the `buf*` helpers
-// (`bufU1`/`bufI8Le`/`bufF8Le`/…), never `w.data.add(...)` directly — the
-// helpers carry the byte-range normalization (`bufU1` masks to 0..255) and
-// the little-endian byte-peel logic (`bufI8Le` / `bufF8Le`).  Field-level
-// visibility (Q-vis-001) would enforce this at the type level; until it
-// lands, this comment is the boundary.
+// INVARIANT: write through `buf*` helpers only — they carry normalization (`bufU1` masks 0..255) and the little-endian byte-peel logic.  Field-level visibility (Q-vis-001) will enforce this at the type level.
 pub record ByteWriter {
   data: List[Byte]
 }
