@@ -1162,6 +1162,15 @@ pub func Integer_parseInt(s: in String): Int
 pub func stringLength(s: in String): Int
 ```
 
+**Unresolvable extern types.**  An `@externTarget` whose CLR type cannot
+be resolved to a known reference assembly (anything outside the `System.*`
+BCL surface and the `Lyric.*` internal host) fails the build with a
+clear diagnostic naming the unresolvable type, rather than silently
+mis-binding to `System.Runtime` and throwing `MissingMethodException` at
+runtime.  Restricting `@externTarget` targets to types that exist in a
+reference assembly the emitter can resolve is the user's responsibility;
+the compiler simply refuses to emit a binding it cannot verify.
+
 ### 11.4 Auto-FFI extern types
 
 `extern type Name = "CLR.Type"` binds a Lyric name to a host type so that
