@@ -60,6 +60,12 @@ func hmacSha256(key: in slice[Byte], message: in slice[Byte]): slice[Byte]
 /// equality construction (cf. Go's `crypto/subtle.ConstantTimeCompare` and
 /// libsodium's `sodium_memcmp` fallback).
 ///
+/// SECURITY CAVEAT: the pure-Lyric loop is *source-level* constant-time,
+/// but the .NET JIT is free to introduce early-exit speculation or
+/// vectorisation that breaks the timing invariant.  #1760 tracks
+/// rebinding to the JIT-hardened BCL `CryptographicOperations.FixedTimeEquals`
+/// once the emitter supports `ReadOnlySpan<byte>` extern parameters.
+///
 /// Length is treated as non-secret: the function exits early on a length
 /// mismatch. This matches the boundary's prior `FixedTimeEquals` semantics
 /// (which documented the same property); for fixed-format secrets such as
