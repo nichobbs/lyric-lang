@@ -422,6 +422,136 @@ func testInlineRefinedNonLiteralNotChecked(): Unit {
   assertTrue(not hasDiagCode(cr, "T0015"), "non-literal init: no compile-time T0015")
 }
 
+// #1483 (Band-1): match exhaustiveness (T0016).  EMatch now infers the
+// scrutinee and verifies every possible value is matched, for union / enum /
+// Bool / unbounded-scalar scrutinees.  A bare `case Foo` counts as covering
+// case `Foo` only when `Foo` names a case of the scrutinee type (matching
+// codegen); otherwise it is an irrefutable variable bind (catch-all).
+
+func testMatchUnionExhaustive(): Unit {
+  val src =
+    "package P\n" +
+    "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
+    "func area(sh: in Shape): Int {\n" +
+    "  match sh { case Circle(r) -> r; case Square(s) -> s; case Tri -> 0 }\n" +
+    "}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0016"), "union all-cases: no T0016")
+}
+
+func testMatchUnionNonExhaustive(): Unit {
+  val src =
+    "package P\n" +
+    "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
+    "func area(sh: in Shape): Int {\n" +
+    "  match sh { case Circle(r) -> r; case Square(s) -> s }\n" +
+    "}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0016"), "union missing case: T0016")
+}
+
+func testMatchUnionWildcard(): Unit {
+  val src =
+    "package P\n" +
+    "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
+    "func area(sh: in Shape): Int {\n" +
+    "  match sh { case Circle(r) -> r; case _ -> 0 }\n" +
+    "}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0016"), "union wildcard: no T0016")
+}
+
+func testMatchUnionBareNameBind(): Unit {
+  // A bare name that is NOT a case of the scrutinee is a variable bind
+  // (catch-all), so the match is exhaustive.
+  val src =
+    "package P\n" +
+    "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
+    "func area(sh: in Shape): Int {\n" +
+    "  match sh { case Circle(r) -> r; case other -> 0 }\n" +
+    "}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0016"), "union bare-name bind catch-all: no T0016")
+}
+
+func testMatchUnionNullaryBareCase(): Unit {
+  // A bare `case Tri` (nullary) covers case Tri — proving bare-name cases are
+  // resolved against the scrutinee's case set, not treated as a catch-all.
+  val src =
+    "package P\n" +
+    "union Shape { case Circle(r: Int); case Tri }\n" +
+    "func area(sh: in Shape): Int {\n" +
+    "  match sh { case Tri -> 0 }\n" +
+    "}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0016"), "union bare nullary case covers only Tri -> missing Circle: T0016")
+}
+
+func testMatchUnionGuardDoesNotCover(): Unit {
+  // A guarded arm never counts toward coverage (the guard may fail).
+  val src =
+    "package P\n" +
+    "union Shape { case Circle(r: Int); case Tri }\n" +
+    "func area(sh: in Shape): Int {\n" +
+    "  match sh { case Circle(r) if r > 0 -> r; case Tri -> 0 }\n" +
+    "}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0016"), "guarded Circle arm does not cover -> T0016")
+}
+
+func testMatchEnumExhaustive(): Unit {
+  val src =
+    "package P\n" +
+    "enum Color { case Red; case Green; case Blue }\n" +
+    "func rank(c: in Color): Int {\n" +
+    "  match c { case Red -> 1; case Green -> 2; case Blue -> 3 }\n" +
+    "}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0016"), "enum all-cases: no T0016")
+}
+
+func testMatchEnumNonExhaustive(): Unit {
+  val src =
+    "package P\n" +
+    "enum Color { case Red; case Green; case Blue }\n" +
+    "func rank(c: in Color): Int {\n" +
+    "  match c { case Red -> 1; case Green -> 2 }\n" +
+    "}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0016"), "enum missing Blue: T0016")
+}
+
+func testMatchBoolExhaustive(): Unit {
+  val src =
+    "package P\n" +
+    "func f(b: in Bool): Int { match b { case true -> 1; case false -> 0 } }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0016"), "bool true+false: no T0016")
+}
+
+func testMatchBoolNonExhaustive(): Unit {
+  val src =
+    "package P\n" +
+    "func f(b: in Bool): Int { match b { case true -> 1 } }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0016"), "bool missing false: T0016")
+}
+
+func testMatchScalarNeedsWildcard(): Unit {
+  val bad = "package P\nfunc f(n: in Int): Int { match n { case 0 -> 0; case 1 -> 1 } }\n"
+  val ok  = "package P\nfunc f(n: in Int): Int { match n { case 0 -> 0; case _ -> 1 } }\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0016"), "int match no wildcard: T0016")
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0016"), "int match with wildcard: no T0016")
+}
+
+func testMatchStringNeedsWildcard(): Unit {
+  val src =
+    "package P\n" +
+    "func f(s: in String): Int { match s { case \"a\" -> 1; case \"b\" -> 2 } }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0016"), "string match no wildcard: T0016")
+}
+
 func main(): Unit {
   testEmptySource()
   testFuncRegistered()
@@ -457,5 +587,17 @@ func main(): Unit {
   testInlineRefinedVarAndLet()
   testRefinementTransparentToEquiv()
   testInlineRefinedNonLiteralNotChecked()
+  testMatchUnionExhaustive()
+  testMatchUnionNonExhaustive()
+  testMatchUnionWildcard()
+  testMatchUnionBareNameBind()
+  testMatchUnionNullaryBareCase()
+  testMatchUnionGuardDoesNotCover()
+  testMatchEnumExhaustive()
+  testMatchEnumNonExhaustive()
+  testMatchBoolExhaustive()
+  testMatchBoolNonExhaustive()
+  testMatchScalarNeedsWildcard()
+  testMatchStringNeedsWildcard()
   println("typechecker self-test: ok")
 }

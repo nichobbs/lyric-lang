@@ -252,7 +252,7 @@ union Result[T, E] {
 }
 ```
 
-Pattern matching is exhaustive. The compiler refuses to compile a `match` that doesn't cover all cases or include a wildcard:
+Pattern matching is exhaustive. The compiler refuses to compile a `match` that doesn't cover all cases or include a wildcard (**T0016**); a guarded arm (`case … if …`) does not count toward coverage because its guard may fail. For union and enum scrutinees every case must be matched (or a `_`/binding catch-all supplied); a `Bool` match must cover both `true` and `false`; a match on an unbounded scalar (`Int`, `String`, `Char`, …) requires a `_` arm:
 
 ```
 val area = match shape {
