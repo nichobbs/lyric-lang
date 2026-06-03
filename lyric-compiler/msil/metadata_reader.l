@@ -380,6 +380,11 @@ pub record CompressedUInt {
 }
 
 pub func readCompressedUInt(b: in slice[Byte], o: in Int): CompressedUInt {
+  // ECMA-335 §II.23.2: the 4-byte form covers `0xC0`–`0xDF`; the `0xE0`–`0xFE`
+  // range is reserved and `0xFF` is the null-blob marker.  Real metadata blobs
+  // never put a reserved byte here, so the bare `else` still produces
+  // well-formed integers for legitimate inputs; raising a distinct error on
+  // a reserved byte is tracked in #1878.
   val b0 = rdU8(b, o)
   if b0 < 0x80 {
     CompressedUInt(value = b0, byteWidth = 1)
@@ -1200,7 +1205,10 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
       case _ -> -1
     }
     case STSzArray(pe) -> match arg {
-      case STSzArray(ae) -> scoreSigType(ae, pe)
+      // CLR arrays with value-type elements are invariant — `int[]` cannot be
+      // passed where `long[]` is expected.  Only accept an exact element match
+      // (score 2); a 1 (widening) on the element kind would mis-bind at the JIT.
+      case STSzArray(ae) -> if scoreSigType(ae, pe) == 2 { 2 } else { -1 }
       case _ -> -1
     }
     case _ -> -1
