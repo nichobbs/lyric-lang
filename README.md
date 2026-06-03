@@ -2,7 +2,7 @@
 
 A safety-oriented application language targeting .NET, drawing on Ada's design principles while maintaining familiar syntax and ecosystem interoperability.
 
-**Status:** Self-hosted compiler shipping. Lyric compiles itself: the self-hosted compiler under `lyric-compiler/lyric/` lexes, parses, type-checks, mode-checks, elaborates contracts, monomorphises, weaves aspects, and emits MSIL (in-process) and JVM bytecode. A 40-module standard library and ~20 ecosystem libraries (web, mq, auth, storage, sessions, jobs, etc.) ship alongside. The legacy F# bootstrap compiler under `bootstrap/src/Lyric.*/` exists solely so stage-0 can compile the self-hosted compiler from `.l` sources; it is closed to new code and on a deletion schedule (see `docs/23-fsharp-shim-elimination.md`).
+**Status:** Self-hosted compiler shipping. Lyric compiles itself: the self-hosted compiler under `lyric-compiler/lyric/` lexes, parses, type-checks, mode-checks, elaborates contracts, monomorphises, weaves aspects, and emits MSIL (in-process) and JVM bytecode. A 40-module standard library and ~20 ecosystem libraries (web, mq, auth, storage, sessions, jobs, etc.) ship alongside. The legacy F# bootstrap compiler under `bootstrap/src/Lyric.*/` exists solely so stage-0 can compile the self-hosted compiler from `.l` sources; it is closed to new code and on a deletion schedule (see `docs/23-fsharp-shim-elimination.md`). The self-hosted `--target dotnet` path is not yet at the v1.0 production bar — the front end is still advisory and a few constructs (`?`, `await`, `defer`, `==`) need correctness work; the live gating list is `docs/41-self-hosted-compiler-gap-analysis.md` §10, sequenced as `docs/36-v1-roadmap.md` §R7.
 
 ## What Lyric is
 

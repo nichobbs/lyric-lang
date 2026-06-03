@@ -21,6 +21,17 @@ Phase 4 (proof), Phase 5 (self-hosting), and Phase 6 (JVM/VS Code/ecosystem)
 are post-v1.0 or parallel tracks; many of their milestones have already shipped
 as Phase 6 early work and are listed in §4 below.
 
+> **⚠ Critical-path correction (2026-06-03).** §R1–R6 below are all DONE, but
+> they are **not sufficient for a v1.0 tag.** Since the self-hosted compiler
+> became the default and only `--target dotnet` path (the F# `--internal-build`
+> subprocess was retired, D-progress-317), the v1.0 exit criterion "a team can
+> build, test, and deploy a real production service in Lyric" is gated on the
+> self-hosted compiler being **sound and correct**, which it is not yet. The
+> 2026-06-03 re-verification in `docs/41-self-hosted-compiler-gap-analysis.md`
+> §10 shows the front end is still advisory (does not reject invalid programs)
+> and `?` / `await` / `defer` / `==` still **silently miscompile**. These are
+> now tracked as **§R7** below and are the true remaining v1.0 blockers.
+
 ---
 
 ## §1  Gate decisions — answer these before sequencing work
@@ -299,6 +310,42 @@ Gaps below are now closed.
 (`scripts/bootstrap.sh`) producing a bit-identical binary from the self-hosted
 pipeline.  Depends on G5.  This is a Phase-7 deliverable and does NOT block
 1.0 — `dotnet tool install lyric` is the primary channel.
+
+---
+
+### R7 — Self-hosted `--target dotnet` soundness & correctness floor  *(NEW; the real v1.0 blocker)*
+
+**Status:** OPEN.  This is the gating milestone the original §R1–R6 list missed.
+Authoritative tracking and per-gap evidence live in
+`docs/41-self-hosted-compiler-gap-analysis.md` §10 (re-verified 2026-06-03).
+Because the self-hosted compiler is now the default and only non-JVM path, every
+gap below ships to users at the v1.0 tag unless closed.
+
+The work splits into the five bands from `docs/41` §6, ordered by the production
+bar (soundness/correctness before feature completion, because they stop *silent
+wrongness*):
+
+| Band | Severity | Blocks v1.0? | Summary |
+|---|---|---|---|
+| **R7.1 Front-end soundness** | CRITICAL | **Yes** | Type checker is an advisory inference pass, not a gatekeeper: `TyError` matches anything, no match-exhaustiveness, no visibility/opaque/impl-conformance enforcement, no §5.2 parameter-mode pass. Single-file path is advisory (`bridge.l`), project path is fatal — same source diverges. Gaps C1, C2, C10, C11, H14, H15, H16, M6 + front-end half of C13. |
+| **R7.2 Backend correctness** | CRITICAL | **Yes** | `?`/`try?` are no-ops (C3); `defer` runs inline not at scope exit (C7); `==` doesn't dispatch the derived `equals` (H1); capturing closures unimplemented (H20); compound-assign ignores the operator — string `+=` silently emits numeric add (H22); `SItem`/`SInvariant` dropped (M7). H17 (`break`/`continue` out of `try`) needs a targeted test. **The honest interim for any not-yet-lowered node is a hard diagnostic, never a silent pass-through.** |
+| **R7.3 Async** | CRITICAL | **Yes** | No `IAsyncStateMachine` / lazy `IAsyncEnumerable` in `lyric-compiler/msil/`. `await`/`spawn`/`async func` lower synchronously and silently miscompile (C4, C5). Largest single port (~110 KB of F# `AsyncStateMachine.fs`/`AsyncGenerator.fs` to port). Until ported, these must **panic with a tracked-issue message**, not miscompile. |
+| **R7.4 Feature completion** | HIGH | Per-feature | User generic *types* type-erased (C8); `@projectable` twins (H2); range-subtype validation (H3); custom `@generate` never invoked (H10); `old()`/quantifiers panic (H11); `config{}` no-op (M3); `@derive(Ord)`/union-enum derives (M4); cross-package generic-fn mono for user code (H6); wire `bind`/`scoped`/`provided` (H4); call-site named/default args (H5). |
+| **R7.5 F# elimination + AOT** | HIGH | **Yes** (AOT goal) | Two-plus F# DLLs still load-bearing: `Lyric.Emitter.dll` via `http_host.l` (`HttpClientHost`, blocked on package class-`val` `.cctor` codegen) and `process_capture_host.l` (needs async, R7.3); plus newly-found `StubCounterHost` (broken `@stubbable`, L5) and `Lyric.Session.Host.dll` (L6). No `<PublishAot>` is configured anywhere (H13) — the "AOT-compilable" exit criterion is unrealised and untested. |
+
+**Acceptance gate (from `docs/41` §6 Band 6):** every program in
+`docs/02-worked-examples.md` builds and runs under `--target dotnet`; the parity
+suite has one program per §§2–14 feature class; `lyric prove` /
+`public-api-diff` / `test` / `doc` on every stdlib module match a baseline; both
+F# DLLs are off the .NET runtime closure; and `<PublishAot>` produces a working
+native binary in a CI smoke test.
+
+**Sequencing:** R7.1 and R7.2 are the soundness/correctness floor and precede
+feature work.  R7.3 (async) can run in parallel.  R7.5 (AOT) is gated on R7.3
+(ProcessCapture) and the `HttpClientHost` `.cctor` fix.  Where a correct lowering
+is genuinely out of scope for the v1.0 branch, replace the silent pass-through
+with a hard diagnostic and file a dated 1.x issue — do **not** ship the silent
+miscompile.
 
 ---
 
@@ -645,13 +692,20 @@ G1, G2, G3, G4, G5   (gate decisions — no code; answer in sequence)
      │
      ├── R5  (Q022 / Q021 language gaps)    ← independent; do Q022-1 and Q021-#4 first
      │
-     └── R6  (distribution / signing)       ← independent; can run parallel with all above
+     ├── R6  (distribution / signing)       ← independent; can run parallel with all above
+     │
+     └── R7  (self-hosted soundness/correctness floor)  ← THE remaining blocker
+              R7.1 (front-end soundness) → R7.2 (backend correctness)
+              R7.3 (async) ∥  →  R7.4 (features) → R7.5 (F# elimination + AOT)
 ```
 
-The minimum critical path for the tag is:
+**§R1–R6 are all DONE.** The remaining critical path for the tag is now **R7**:
 
-`G1 + G2 + G3 → R1 → (R2 | R3 | R4 | R5 | R6 in parallel) → tag`
+`R7.1 + R7.2 (correctness floor) → R7.3 (async) → R7.5 (AOT) → tag`
+`(R7.4 feature items close per-feature; non-blocking ones defer to 1.x with a dated issue)`
 
-R4 is the longest item; start it immediately after the gate decisions are
-recorded.  R2 (per-expression CST) is the most uncertain estimate; if it
-blocks, ship 1.0 with `--legacy` documented under G3 and close it in 1.1.
+R7.3 (async state-machine port) is the longest item and can start in parallel
+with R7.1/R7.2.  The litmus test for the tag is the §R7 acceptance gate: every
+`docs/02-worked-examples.md` program builds and runs under `--target dotnet`,
+no silent miscompiles remain (anything unlowered hard-errors), and a
+`<PublishAot>` native binary passes a CI smoke test.

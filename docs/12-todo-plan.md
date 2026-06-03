@@ -8,6 +8,43 @@ this doc is the *next-sessions* tactical view.
 
 ---
 
+## Tier 0 — self-hosted `--target dotnet` soundness & correctness floor (v1.0 blocker)
+
+This is the top of the queue and the real remaining v1.0 work.  Since the
+self-hosted compiler became the default and only non-JVM path, its gaps ship to
+users.  The authoritative, source-verified list is
+`docs/41-self-hosted-compiler-gap-analysis.md` §10 (re-verified 2026-06-03),
+sequenced as `docs/36-v1-roadmap.md` §R7.  In priority order:
+
+1. **Front-end soundness (CRITICAL).** Make the type checker a gatekeeper, not an
+   advisory pass: type the ~12 `TyError` expression forms, add match
+   exhaustiveness, visibility / opaque-hiding / impl-conformance enforcement, and
+   a §5.2 parameter-mode pass that runs for *all* packages; then flip the
+   single-file build path from advisory to fatal and reconcile it with the
+   project path. (docs/41 C1, C2, C10, C11, H14, H15, H16, M6, C13-front-end.)
+2. **Backend correctness (CRITICAL).** Lower `?`/`try?` to unwrap + early-return;
+   run `defer` at scope exit; dispatch `==` to the derived `equals`; implement
+   capturing-closure display classes; honour the operator in compound assignment
+   (string `+=` currently emits numeric add — silent corruption); stop dropping
+   `SItem`/`SInvariant`.  **Anything not yet correctly lowered must hard-error,
+   never silently pass through.** (docs/41 C3, C7, H1, H20, H22, M7; verify H17.)
+3. **Async (CRITICAL).** Port `AsyncStateMachine.fs` + `AsyncGenerator.fs` to
+   `lyric-compiler/msil/` (state machine, `Task[T]`/`ValueTask[T]`, lazy
+   `IAsyncEnumerable[T]`).  Until ported, `await`/`spawn`/async-generators must
+   panic with a tracked-issue message instead of miscompiling. (docs/41 C4, C5.)
+4. **Feature completion (HIGH).** User generic *types* (C8), `@projectable`
+   twins (H2), range-subtype validation (H3), custom `@generate` wiring (H10),
+   `old()`/quantifier lowering (H11), `config{}` (M3), `@derive(Ord)`/union-enum
+   derives (M4), user cross-package generic-fn mono (H6), wire
+   `bind`/`scoped`/`provided` (H4), call-site named/default args (H5).
+5. **F# elimination + AOT (HIGH).** Close the `HttpClientHost` package class-`val`
+   `.cctor` gap, port `ProcessCapture` to async, resolve the broken
+   `StubCounterHost` externs (`@stubbable` counters, **new** — docs/41 L5),
+   migrate `Lyric.Session.Host` off F# (**new** — docs/41 L6), then add
+   `<PublishAot>` + a native-binary CI smoke test (H12, H13).
+
+---
+
 ## Band F — post-review follow-ups (resolved in D-progress-261)
 
 All tractable items below have shipped.  None were blocking v1.0.

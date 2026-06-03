@@ -733,7 +733,7 @@ String method-syntax (UFCS) ops lower to host `String` methods, no import needed
 # Build
 lyric build <file.l>                   # compile to .dll + .runtimeconfig.json
 lyric build --force <file.l>           # rebuild unconditionally (bypass incremental check)
-lyric build --aot <file.l>             # Native AOT; no .NET runtime at deployment
+# (planned, not yet available) Native AOT self-contained binary — docs/36 §R7.5 / docs/41 H13
 lyric build --target dotnet <file.l>   # target .NET (default)
 lyric build --target jvm <file.l>      # emit a runnable JAR via the self-hosted JVM emitter
                                        # (`Main-Class` derived from the source `package`
