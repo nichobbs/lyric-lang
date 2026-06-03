@@ -466,10 +466,10 @@ section wins.
   **#1481** (items 1–2: Float/Long literal match compares + compound-assignment
   operator, D-progress-370; items 3–4: break/continue-across-`try` → `leave`,
   `List.contains`/`removeAt` real calls, unknown-method fail-loud, D-progress-371),
-  H17, and C7 (`defer` now runs at scope exit, #1477) are now fixed. Remaining:
-  H1 (`==` doesn't dispatch derived `equals`), H20 (capturing closures), M7
-  (`SItem`/`SInvariant` dropped). A separate try/catch-as-value-expression invalid-IL
-  gap was found during the `defer` work and filed as #1823.
+  H17, C7 (`defer` now runs at scope exit, #1477), H1 (`==`/`Map`-key structural
+  equality, #1480/#1837), and the try/catch-as-value-expression invalid-IL gap
+  (#1823) are now fixed. Remaining: H20 (capturing closures) and M7
+  (`SItem`/`SInvariant` dropped).
 - **Band 3 (async, CRITICAL):** C4, C5 — no `IAsyncStateMachine` / lazy
   `IAsyncEnumerable` in `lyric-compiler/msil/`. `await`/`spawn`/`async func`
   still lower synchronously and silently miscompile on the default self-hosted

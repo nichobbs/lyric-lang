@@ -3004,6 +3004,11 @@ func lowerStmtsExprFromMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
     val last = stmts[n - 1]
     return match last.kind {
       case SExpr(e) -> lowerExprMsil(cctx, fctx, insns, e)
+      // A `try { … } catch … { … }` in trailing-value position yields the
+      // branch values; lower it as a value rather than a discarded statement
+      // (which left a non-void function with no return value → invalid IL, #1823).
+      case STry(tbody, tcatches, tfinally) ->
+        lowerTryCatchExprMsil(cctx, fctx, insns, tbody, tcatches, tfinally)
       case _        -> { lowerStmtMsil(cctx, fctx, insns, last); MVoid }
     }
   }
@@ -5569,6 +5574,109 @@ func lowerTryCatchMsil(
   }
 
   insns.add(MLabel(id = afterL))
+}
+
+// Value-producing counterpart of `lowerTryCatchMsil`: a `try { … } catch … { … }`
+// used as an expression yields the branch values.  Each branch (the try body and
+// every catch handler) is lowered as a value (`lowerBlockExprMsil`), stashed into
+// a shared result temp *before* its `leave` (a `leave` requires an empty
+// evaluation stack), and the temp is reloaded after the merge label.  Without
+// this the statement lowering discarded the branch values, leaving a non-void
+// function with no value on the stack → unverifiable IL (#1823).  A `finally`
+// (if present) runs as void, exactly as in `lowerTryCatchMsil`.
+func lowerTryCatchExprMsil(
+  cctx:     in CodegenCtx,
+  fctx:     in FuncCtx,
+  insns:    in List[MInsn],
+  body:     in Block,
+  catches:  in List[CatchClause],
+  finally_: in Option[Block]
+): MsilType {
+  val tryStartL = freshLabelMsil(fctx)
+  val afterL    = freshLabelMsil(fctx)
+
+  insns.add(MLabel(id = tryStartL))
+  fctx.tryRegionStack.add(0)
+  val tryTy = lowerBlockExprMsil(cctx, fctx, insns, body)
+  var resultTy   = tryTy
+  var resultSlot = -1
+  match tryTy {
+    case MVoid -> {}
+    case _ -> {
+      resultSlot = allocSlotMsil(fctx, "__tryval_" + toString(fctx.slotTicker.count), tryTy)
+      emitStoreSlot(insns, resultSlot, fctx.paramCount)
+    }
+  }
+  fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
+  insns.add(MLeave(label = afterL))
+
+  val tryBodyEndL = freshLabelMsil(fctx)
+  insns.add(MLabel(id = tryBodyEndL))
+
+  var i = 0
+  while i < catches.count {
+    val c = catches[i]
+    val handlerStartL = freshLabelMsil(fctx)
+    insns.add(MLabel(id = handlerStartL))
+    match c.bindName {
+      case Some(bname) -> {
+        val exSlot = allocSlotMsil(fctx, bname, MObject)
+        emitStoreSlot(insns, exSlot, fctx.paramCount)
+      }
+      case None -> {
+        insns.add(MPop)
+      }
+    }
+    fctx.tryRegionStack.add(0)
+    val catchTy = lowerBlockExprMsil(cctx, fctx, insns, c.body)
+    match catchTy {
+      case MVoid -> {}
+      case _ -> {
+        if resultSlot < 0 {
+          resultSlot = allocSlotMsil(fctx, "__tryval_" + toString(fctx.slotTicker.count), catchTy)
+          resultTy   = catchTy
+        }
+        emitStoreSlot(insns, resultSlot, fctx.paramCount)
+      }
+    }
+    fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
+    insns.add(MLeave(label = afterL))
+    val handlerEndL = freshLabelMsil(fctx)
+    insns.add(MLabel(id = handlerEndL))
+    insns.add(MEHClause(
+      flags        = 0,
+      tryStart     = tryStartL,
+      tryEnd       = tryBodyEndL,
+      handlerStart = handlerStartL,
+      handlerEnd   = handlerEndL,
+      catchToken   = 0x01000000 + cctx.trException))
+    i = i + 1
+  }
+
+  match finally_ {
+    case None -> {}
+    case Some(fb) -> {
+      val finallyStartL = freshLabelMsil(fctx)
+      val finallyEndL   = freshLabelMsil(fctx)
+      insns.add(MLabel(id = finallyStartL))
+      lowerBlockMsil(cctx, fctx, insns, fb)
+      insns.add(MEndfinally)
+      insns.add(MLabel(id = finallyEndL))
+      insns.add(MEHClause(
+        flags        = 2,
+        tryStart     = tryStartL,
+        tryEnd       = finallyStartL,
+        handlerStart = finallyStartL,
+        handlerEnd   = finallyEndL,
+        catchToken   = 0))
+    }
+  }
+
+  insns.add(MLabel(id = afterL))
+  if resultSlot >= 0 {
+    emitLoadSlot(insns, resultSlot, fctx.paramCount)
+  }
+  resultTy
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
