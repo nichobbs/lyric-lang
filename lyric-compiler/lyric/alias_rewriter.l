@@ -639,8 +639,8 @@ func rewriteFunctionDecl(aliases: in List[String], fn: in FunctionDecl): Functio
                generics    = fn.generics,
                params      = ps,
                ret         = ret,
-               whereClause = fn.whereClause,
-               contracts   = fn.contracts,
+               whereClause = rewriteWhereClauseOpt(aliases, fn.whereClause),
+               contracts   = rewriteContracts(aliases, fn.contracts),
                body        = body,
                span        = fn.span)
 }
@@ -675,7 +675,7 @@ func rewriteRecordDecl(aliases: in List[String], rd: in RecordDecl): RecordDecl 
   }
   RecordDecl(name        = rd.name,
              generics    = rd.generics,
-             whereClause = rd.whereClause,
+             whereClause = rewriteWhereClauseOpt(aliases, rd.whereClause),
              members     = ms,
              span        = rd.span)
 }
@@ -718,6 +718,67 @@ func rewriteConstraintRef(aliases: in List[String], cr: in ConstraintRef): Const
   ConstraintRef(head = rewritePath(aliases, cr.head), args = as2, span = cr.span)
 }
 
+// `where T: Alias.Trait` bounds reference aliased traits via ConstraintRef
+// (#1860).  Rewrite each bound's constraint list; the bound's own type-param
+// name is a binder, not an alias reference, so it is left untouched.
+func rewriteWhereBound(aliases: in List[String], b: in WhereBound): WhereBound {
+  val cs: List[ConstraintRef] = newList()
+  var i = 0
+  while i < b.constraints.count {
+    cs.add(rewriteConstraintRef(aliases, b.constraints[i]))
+    i = i + 1
+  }
+  WhereBound(name = b.name, constraints = cs, span = b.span)
+}
+
+func rewriteWhereClauseOpt(aliases: in List[String], wc: in Option[WhereClause]): Option[WhereClause] {
+  match wc {
+    case Some(w) -> {
+      val bs: List[WhereBound] = newList()
+      var i = 0
+      while i < w.bounds.count {
+        bs.add(rewriteWhereBound(aliases, w.bounds[i]))
+        i = i + 1
+      }
+      return Some(value = WhereClause(bounds = bs, span = w.span))
+    }
+    case None -> return wc
+  }
+  return wc
+}
+
+// `requires:` / `ensures:` / `when:` / `decreases:` carry an `Expr`, and
+// `raises:` carries a `List[TypeExpr]` — all of which can reference aliased
+// names (#1861).
+func rewriteContractClause(aliases: in List[String], c: in ContractClause): ContractClause {
+  match c {
+    case CCRequires(expr, span)  -> return CCRequires(expr = rewriteExpr(aliases, expr), span = span)
+    case CCEnsures(expr, span)   -> return CCEnsures(expr = rewriteExpr(aliases, expr), span = span)
+    case CCWhen(expr, span)      -> return CCWhen(expr = rewriteExpr(aliases, expr), span = span)
+    case CCDecreases(expr, span) -> return CCDecreases(expr = rewriteExpr(aliases, expr), span = span)
+    case CCRaises(types, span) -> {
+      val ts: List[TypeExpr] = newList()
+      var i = 0
+      while i < types.count {
+        ts.add(rewriteTypeExpr(aliases, types[i]))
+        i = i + 1
+      }
+      return CCRaises(types = ts, span = span)
+    }
+  }
+  return c
+}
+
+func rewriteContracts(aliases: in List[String], cs: in List[ContractClause]): List[ContractClause] {
+  val xs: List[ContractClause] = newList()
+  var i = 0
+  while i < cs.count {
+    xs.add(rewriteContractClause(aliases, cs[i]))
+    i = i + 1
+  }
+  xs
+}
+
 func rewriteFunctionSig(aliases: in List[String], sig: in FunctionSig): FunctionSig {
   val ps: List[Param] = newList()
   var i = 0
@@ -730,8 +791,8 @@ func rewriteFunctionSig(aliases: in List[String], sig: in FunctionSig): Function
               generics    = sig.generics,
               params      = ps,
               ret         = rewriteOptType(aliases, sig.ret),
-              whereClause = sig.whereClause,
-              contracts   = sig.contracts,
+              whereClause = rewriteWhereClauseOpt(aliases, sig.whereClause),
+              contracts   = rewriteContracts(aliases, sig.contracts),
               span        = sig.span)
 }
 
@@ -752,7 +813,7 @@ func rewriteEntryDecl(aliases: in List[String], ed: in EntryDecl): EntryDecl {
             name        = ed.name,
             params      = ps,
             ret         = rewriteOptType(aliases, ed.ret),
-            contracts   = ed.contracts,
+            contracts   = rewriteContracts(aliases, ed.contracts),
             body        = rewriteFunctionBody(aliases, ed.body),
             span        = ed.span)
 }
@@ -777,7 +838,7 @@ func rewriteImplDecl(aliases: in List[String], d: in ImplDecl): ImplDecl {
   ImplDecl(generics    = d.generics,
            iface       = rewriteConstraintRef(aliases, d.iface),
            target      = rewriteTypeExpr(aliases, d.target),
-           whereClause = d.whereClause,
+           whereClause = rewriteWhereClauseOpt(aliases, d.whereClause),
            members     = ms,
            span        = d.span)
 }
@@ -800,7 +861,7 @@ func rewriteInterfaceDecl(aliases: in List[String], d: in InterfaceDecl): Interf
     ms.add(rewriteInterfaceMember(aliases, d.members[i]))
     i = i + 1
   }
-  InterfaceDecl(name = d.name, generics = d.generics, whereClause = d.whereClause,
+  InterfaceDecl(name = d.name, generics = d.generics, whereClause = rewriteWhereClauseOpt(aliases, d.whereClause),
                 members = ms, span = d.span)
 }
 
@@ -834,7 +895,7 @@ func rewriteUnionDecl(aliases: in List[String], d: in UnionDecl): UnionDecl {
     cs.add(rewriteUnionCase(aliases, d.cases[i]))
     i = i + 1
   }
-  UnionDecl(name = d.name, generics = d.generics, whereClause = d.whereClause,
+  UnionDecl(name = d.name, generics = d.generics, whereClause = rewriteWhereClauseOpt(aliases, d.whereClause),
             cases = cs, span = d.span)
 }
 
@@ -857,7 +918,7 @@ func rewriteOpaqueTypeDecl(aliases: in List[String], d: in OpaqueTypeDecl): Opaq
     ms.add(rewriteOpaqueMember(aliases, d.members[i]))
     i = i + 1
   }
-  OpaqueTypeDecl(name = d.name, generics = d.generics, whereClause = d.whereClause,
+  OpaqueTypeDecl(name = d.name, generics = d.generics, whereClause = rewriteWhereClauseOpt(aliases, d.whereClause),
                  annotations = d.annotations, members = ms, hasBody = d.hasBody, span = d.span)
 }
 
@@ -896,7 +957,7 @@ func rewriteProtectedTypeDecl(aliases: in List[String], d: in ProtectedTypeDecl)
     ms.add(rewriteProtectedMember(aliases, d.members[i]))
     i = i + 1
   }
-  ProtectedTypeDecl(name = d.name, generics = d.generics, whereClause = d.whereClause,
+  ProtectedTypeDecl(name = d.name, generics = d.generics, whereClause = rewriteWhereClauseOpt(aliases, d.whereClause),
                     members = ms, span = d.span)
 }
 
@@ -1014,7 +1075,7 @@ func rewriteAspectDecl(aliases: in List[String], d: in AspectDecl): AspectDecl {
   }
   AspectDecl(name = d.name, from = d.from, config = rewriteConfigFields(aliases, d.config),
              matches = d.matches, exceptNames = d.exceptNames, around = ar,
-             contracts = d.contracts, wraps = d.wraps, inside = d.inside, span = d.span)
+             contracts = rewriteContracts(aliases, d.contracts), wraps = d.wraps, inside = d.inside, span = d.span)
 }
 
 // IExtern ─────────────────────────────────────────────────────────────────────────
