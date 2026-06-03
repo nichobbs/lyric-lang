@@ -177,6 +177,12 @@ pub func loadRestoredPackage(dllPath: in String): Result[List[RestoredArtifact],
 // repr that already carries its body produces `... } {}`, a bare
 // trailing block that fails to re-parse as an item declaration (#1596).
 // Every non-interface decl kind already includes its full shape.
+//
+// Detection assumption: an interface head never contains `{` (no inline
+// type-parameter bounds or `where` clauses are emitted into the head by
+// either writer today).  An explicit `hasBody: Bool` field on `ContractDecl`
+// would be more robust if a future repr extension puts braces in the
+// head — tracked alongside other contract-metadata refactors.
 func renderDecl(d: in Meta.ContractDecl): String {
   if d.kind == "interface" and d.repr.indexOf("{") < 0 {
     d.repr + " {}\n"
