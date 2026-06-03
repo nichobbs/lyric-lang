@@ -63,7 +63,7 @@ pub func strTrim(s: in String): String
 
 `@externStatic` emits `call` / `invokestatic`; `@externInstance` emits `callvirt` / `invokevirtual` with Lyric arg 0 as the receiver. They are mutually exclusive; setting both is a diagnostic. When neither is present the .NET self-hosted MSIL emitter defaults to static — instance externs must annotate explicitly.
 
-**Unresolvable targets.** An `@externTarget` whose CLR type cannot be resolved to a known reference assembly (anything outside the `System.*` BCL surface and the `Lyric.*` internal host) fails the build with a clear diagnostic naming the unresolvable type, rather than silently mis-binding to `System.Runtime` and throwing `MissingMethodException` at runtime.
+**Unresolvable targets.** On `--target dotnet` an `@externTarget` whose CLR type cannot be resolved to a known reference assembly (anything outside the `System.*` BCL surface and the `Lyric.*` internal host) fails the build with a clear diagnostic naming the unresolvable type, rather than silently mis-binding to `System.Runtime` and throwing `MissingMethodException` at runtime.  On `--target jvm` there is no compile-time class-resolution check; an unresolvable Java class name throws `NoClassDefFoundError` at class-load time.
 
 ## §13.3 The `@axiom` social contract
 
