@@ -205,6 +205,7 @@ func walkUpForCompilerDir(start: in String): String {
 // skipped by name so `Std.Jvm.catch` and its `JvmException` extern type
 // don't leak into the .NET symbol table.  A future JVM in-process
 // bridge will need its own target-aware source loader.
+// No caching yet — re-reads ~30 stdlib files per emit call; see #1907.
 func findStdlibSources(): List[String] {
   val sources: List[String] = newList()
   // 1. Explicit override.
