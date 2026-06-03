@@ -2330,7 +2330,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
             // on an `MObject` receiver; the primary `MClass` arm does emit
             // `MCastclassByName(cls)` first.  Plumbing the declaring class
             // name alongside the field token (so the cast can be named here
-            // too) is a follow-up.  Currently safe because every caller that
+            // too) is tracked in #1868.  Currently safe because every caller that
             // reaches this fallback path holds a receiver compatible with the
             // field's declaring class at the source level (the type checker
             // has already verified field access); strict IL verification
@@ -4860,16 +4860,26 @@ func lowerMethodCallMsil(
           lowerCallArgMsil(cctx, fctx, insns, args[0])
           insns.add(MCallvirt(methodToken = cctx.tokStringContains))
         } else {
+          // Wrong arity: walk args for side effects, pop receiver, throw.
+          var i = 0
+          while i < args.count {
+            lowerCallArgMsil(cctx, fctx, insns, args[i])
+            insns.add(MPop)
+            i = i + 1
+          }
           insns.add(MPop)
-          insns.add(MLdcI4(v = 0))
+          val msgTok = ctxInternUs(cctx.lctx, "Msil.Codegen: String.contains expects 1 argument, got " + toString(args.count))
+          insns.add(MLdStr(token = msgTok))
+          insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+          insns.add(MThrow)
         }
         MBool
       }
       case _ -> {
         // List<object>::Contains(!0): bool — receiver List already on stack;
-        // push the boxed element and call Contains.  (Previously a stub that
-        // popped the arg + receiver and pushed `false`, silently breaking every
-        // membership test — #1481 item 4.)
+        // push the boxed element and call Contains.  Wrong-arity falls through
+        // to a runtime-throw stub matching the unknown-method catch-all
+        // (formerly a silent `false` return — #1481 item 4 / #1799).
         if args.count == 1 {
           val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
           boxIfNeededMsil(cctx, insns, aTy)
@@ -4882,7 +4892,10 @@ func lowerMethodCallMsil(
             i = i + 1
           }
           insns.add(MPop)
-          insns.add(MLdcI4(v = 0))
+          val msgTok = ctxInternUs(cctx.lctx, "Msil.Codegen: List.contains expects 1 argument, got " + toString(args.count))
+          insns.add(MLdStr(token = msgTok))
+          insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+          insns.add(MThrow)
         }
         MBool
       }
@@ -4917,9 +4930,9 @@ func lowerMethodCallMsil(
     }
   } else if memberName == "removeAt" {
     // List<object>::RemoveAt(int32): void — receiver List already on stack;
-    // push the int32 index and call RemoveAt.  (Previously a stub that popped
-    // the index + receiver and did nothing, so `removeAt` was a silent no-op —
-    // #1481 item 4.)
+    // push the int32 index and call RemoveAt.  Wrong-arity falls through to
+    // a runtime-throw stub matching the unknown-method catch-all (formerly
+    // a silent no-op — #1481 item 4 / #1799).
     if args.count == 1 {
       lowerCallArgMsil(cctx, fctx, insns, args[0])
       insns.add(MCallvirt(methodToken = cctx.tokListObjRemoveAt))
@@ -4932,6 +4945,10 @@ func lowerMethodCallMsil(
         i = i + 1
       }
       insns.add(MPop)
+      val msgTok = ctxInternUs(cctx.lctx, "Msil.Codegen: List.removeAt expects 1 argument, got " + toString(args.count))
+      insns.add(MLdStr(token = msgTok))
+      insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+      insns.add(MThrow)
       MVoid
     }
   } else if memberName == "toArray" {
