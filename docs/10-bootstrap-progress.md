@@ -18545,3 +18545,44 @@ but blocked from running by a **pre-existing** early-return codegen defect
 tail in an impl-method body returning a union faults the JIT) — both reproduce
 with a hand-written `return`/`match` and no `?`, and are tracked in #1779.
 JVM-target `?` parity is deferred (epic #1470 defers JVM).
+
+### D-progress-369 — self-hosted MSIL: unbox `List[ValueType]` element access (#1779 bug A)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`).
+
+`List[T]` is represented at runtime as `List<object>` with boxed elements.  The
+codegen tracked `List[T]` as `MListOf(elemTy)` only when `T` was a user
+`MClass` (#1442); for a **value-type** element (`Int`/`Long`/`Double`/`Bool`/
+`Char`) it fell back to a bare `MObject`.  As a result `xs[i]` returned the
+boxed `object` from `List<object>::get_Item` while the codegen *recorded* the
+stack type as the element type — so a later numeric op or comparison
+(`xs[i] <= 0`, `xs[i] + 1`) treated the object reference as the unboxed value.
+The JIT either rejected the body (`InvalidProgramException`) or silently
+produced the wrong result.  This was the actual root cause behind the
+"early-return dropped in a loop" symptom in #1779: a loop guard such as
+`while i < n { if xs[i] <= 0 { return Err(...) } … }` never took the branch,
+so the `return` appeared to be ignored.
+
+The fix is two-part: (1) `typeExprToMsilCtx` now tracks `List[ValueType]` as
+`MListOf(elemTy)` (alongside the existing `List[MClass]` case), and (2) the
+`EIndex` `MListOf` arm emits `unbox.any elemTy` after `get_Item` when the
+element is a value type, so the stack carries the real value matching the
+tracked type.  Reference/string/generic element lists keep their `MObject`
+tracking (their slot is genuinely a reference); `.add`/`.count`/`set_Item`/
+for-loop dispatch is unchanged because `MListOf` serialises as `object` and
+those paths already treat it as a `List<object>`, and `.add`/store sites
+already `box` value-type arguments.
+
+Verified by `list_value_compare_self_test.l` (9/9 via native `lyric test
+--target dotnet`): Int/Long/Double comparison + arithmetic, `Bool`/`Char`
+elements, comparisons in `if` and `while` guards, and the #1779 origin shape
+(a value-type list scanned with an early-return on a bad element).  No
+regression — `propagate`, `map_option`, `named_arg_order`, `outparam`,
+`nested_generic`, `generic_specialization`, `stdlib_generic_mono`,
+`record_option_field`, `self_method_call`, `bitwise`, `auto_ffi` self-tests all
+green.
+
+Bug B of #1779 (a bare `if cond { return X }` statement in an impl/interface
+method body faults the JIT — a `match`-as-`val`-init in the same method, and
+the identical `if`-return in a top-level function, both work) is a distinct
+codegen defect split into its own issue for focused follow-up.
