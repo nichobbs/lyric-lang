@@ -44,9 +44,7 @@ pub func typeOfLiteral(lit: in Literal): Type {
 // §2. Codegen builtins.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// IMPORTANT: keep the recognised-name set in lock-step with
-// `isCodegenBuiltinName` in `typechecker_checker.l` — that helper prevents
-// imported stdlib signatures from shadowing the names registered here.
+// Keep in sync with `isCodegenBuiltinName` in `typechecker_checker.l` (shadow-prevention).
 func codegenBuiltinType(name: in String): Option[Type] {
   if name == "println" {
     val ps: List[Type] = newList()
