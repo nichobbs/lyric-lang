@@ -642,10 +642,15 @@ func renderType(cr: in CheckResult, ty: in Type): String {
       }
     }
     case TyRefined(u, lo, hi, inc) -> {
+      // Render lo/hi conditionally so open-ended forms produce
+      // `Int range 5 ..` / `Int range ..= 9` instead of trailing-op /
+      // leading-double-space output.
       val loStr = match lo { case None -> ""; case Some(v) -> "" + v }
       val hiStr = match hi { case None -> ""; case Some(v) -> "" + v }
-      val op    = if inc { " ..= " } else { " .. " }
-      renderType(cr, u) + " range " + loStr + op + hiStr
+      val opBare = if inc { "..=" } else { ".." }
+      val left   = if loStr.length > 0 { loStr + " " } else { "" }
+      val right  = if hiStr.length > 0 { " " + hiStr } else { "" }
+      renderType(cr, u) + " range " + left + opBare + right
     }
     case TySelf  -> "Self"
     case TyVar(n) -> n

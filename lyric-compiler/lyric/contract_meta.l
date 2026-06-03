@@ -137,6 +137,9 @@ pub func readAllContractsFromFile(path: in String): List[ContractEntry] {
   while i < names.length {
     val name = names[i]
     if Str.startsWith(name, prefix) {
+      // `String.substring(start, count)`: the second arg is a length, NOT an
+      // end-index — passing `name.length` directly triggered an
+      // `ArgumentOutOfRangeException` (`requires: start + count <= s.length`).
       val pkgName = name.substring(prefix.length, name.length - prefix.length)
       match AsmRes.tryReadResource(ar, name) {
         case Some(bytes) -> {
