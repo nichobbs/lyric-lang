@@ -210,7 +210,7 @@ supporting all language features."
 | M4 | `@derive(Ord)` missing on all type kinds; union/enum derives deferred to F#. | `derives.l:25-26` | MED |
 | M5 | ~~No MethodSpec table (tables stop at TypeSpec 0x1B) → cannot call open generic BCL methods.~~ **Resolved (#1497):** MethodSpec (table 0x2B) + `MethodSpecRow`/`addMethodSpec`/`ctxAddMethodSpec`/`buildMethodSpecBlob` shipped in `tables.l`/`lowering.l`, with serializer wiring (bitmask bit 43, row counts, row data). First consumer: an empty typed-slice literal `val xs: slice[T] = []` lowers to `System.Array.Empty<T>()` (a GENERIC-convention MemberRef instantiated by a MethodSpec) — fixing a latent miscompile (it previously emitted a `List<object>` that mis-read as `T[]`). Verified: PE carries a MethodSpec row decoding to the concrete element type; `shm_empty_slice_array_empty` bridge test. Generic-extern (#1504) and user-generic reify paths can now build on this. | `tables.l` `MethodSpecRow`; `lowering.l` `ctxAddMethodSpec` | ✅ |
 | M6 | Numeric widening not applied (arithmetic requires exact `typeEquiv`); no checked-overflow awareness. | `typechecker_exprs.l:206-211` | MED |
-| M7 | `SItem` (nested item decls) and `SInvariant` runtime-check silently dropped in codegen. | `codegen.l:3827-3830` | MED |
+| M7 | ~~`SItem`/`SInvariant` silently dropped in codegen.~~ **Stale (verified 2026-06-03):** `SInvariant` is lowered to `assert(inv)` at the loop-body top by the contract elaborator, so codegen's `SInvariant -> {}` correctly drops the redundant marker — loop invariants *are* checked at runtime (a violated `invariant:` panics; covered by `loop_invariant_self_test.l`). `SItem` is **never produced by the parser** (a nested `func`/type inside a block fails to parse, P0080), so `SItem -> {}` is unreachable dead code, not a dropped feature. Neither is a real gap. | `codegen.l` (`SInvariant`/`SItem` arms); elaborator | ✅ |
 | M8 | Weaver `config`-fields-without-default emit a `panic` stub; `call.elapsed`/`call.caller` deferred (A0043 at weave time). | `weaver.l:24,30-35,773-780` | MED |
 | M9 | `pub use Foo.bar` symbol-level re-export (Q022-1): an `ImportDecl.isPubUse` flag exists and the formatter renders it, but there is still **no item-level AST node** carrying the re-exported symbol, so the typechecker/codegen can't surface a named re-export. | `parser_ast.l` (`isPubUse` flag only; no `IPubUse` item kind) | MED |
 | M10 | Stdlib-source parse errors swallowed during type-item collection → dropped symbols. | `bridge.l:780-786,795-798` | MED |
@@ -468,8 +468,9 @@ section wins.
   `List.contains`/`removeAt` real calls, unknown-method fail-loud, D-progress-371),
   H17, C7 (`defer` now runs at scope exit, #1477), H1 (`==`/`Map`-key structural
   equality, #1480/#1837), and the try/catch-as-value-expression invalid-IL gap
-  (#1823) are now fixed. Remaining: H20 (capturing closures) and M7
-  (`SItem`/`SInvariant` dropped).
+  (#1823) are now fixed; M7 is **stale** (loop invariants are checked via the
+  elaborator's `assert` lowering; `SItem` is never produced by the parser).
+  Remaining: **H20 (capturing closures)** — the last open Band-2 backend item.
 - **Band 3 (async, CRITICAL):** C4, C5 — no `IAsyncStateMachine` / lazy
   `IAsyncEnumerable` in `lyric-compiler/msil/`. `await`/`spawn`/`async func`
   still lower synchronously and silently miscompile on the default self-hosted
