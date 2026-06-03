@@ -68,7 +68,7 @@ pub record CodegenCtx {
   tokWriteStr:        Int   // Console.Write(string)
   tokConcat2:         Int   // String.Concat(string,string)
   tokConcat3:         Int   // String.Concat(string,string,string)
-  tokExceptionCtor:   Int   // Exception..ctor(string)
+  tokExceptionCtor:   Int   // Exception..ctor(string) — one-arg ctor (callers emit ldstr+newobj+throw and rely on this arity)
   tokStringFormat1:   Int   // String.Format(string,object)
   tokStringFormat2:   Int   // String.Format(string,object,object)
   tokStringFormat3:   Int   // String.Format(string,object,object,object)
@@ -5067,8 +5067,10 @@ func lowerMethodCallMsil(
 
 // Bind a `for` loop variable from the value in `slot`.  A `for` binding is
 // irrefutable: only a name, `_`, or a tuple of those is allowed.  Refutable
-// forms (constructor / literal) cannot bind here, so reject them with a clear
-// build error rather than silently leaving the variables unbound.
+// forms (constructor / literal) reach this with a `panic` — proper span-
+// carrying diagnostic (`F0xxx`) is a follow-up; in practice the parser and
+// type checker reject these earlier so the path is reached only on malformed
+// AST input from a future feature.
 func bindForPatternMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -6525,7 +6527,6 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
   // always ends in a terminal `ret`, so there is no fall-through into it.
   emitEpilogueMsil(fctx, insns)
 
-
   // Build parameter type list for MFunc.
   val paramTypes: List[MsilType] = newList()
   var pi2 = 0
@@ -6636,7 +6637,6 @@ pub func lowerImplMethodMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
 
   // Function epilogue for any `return` that escaped a protected region (#1477).
   emitEpilogueMsil(fctx, insns)
-
 
   val paramTypes: List[MsilType] = newList()
   var pi2 = 0
