@@ -2833,7 +2833,8 @@ func lowerExprOrBlockMsil(
   }
 }
 
-// INVARIANT: each branch must be self-contained label-wise — no `MBr` to a label defined outside the branch.  Today `lowerBlockMsil` honours this; adding cross-frame control flow (break/continue/return across this boundary) would risk silent JIT failures because branch instructions are emitted into temp lists with global label IDs.
+// INVARIANT: each branch must be label-self-contained (no MBr to a label defined outside).
+// Cross-frame control flow across this boundary risks silent JIT failures (global label IDs in temp lists).
 func lowerIfExprMsil(
   cctx:          in CodegenCtx,
   fctx:          in FuncCtx,
@@ -5162,11 +5163,16 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
 
     // ── Return ─────────────────────────────────────────────────────────────────
     case SReturn(valOpt) -> {
-      if fctx.tryRegionStack.count > 0 and fctx.epilogueLabel >= 0 {
+      if fctx.tryRegionStack.count > 0 {
         // Inside a protected region: a bare `ret` is invalid IL.  Stash the
         // value (if any) and `leave` to the function epilogue, which runs any
         // intervening `finally` handlers before loading the value and returning.
-        // #1477.
+        // #1477.  `epilogueLabel` is always reserved by `lowerFuncMsil` /
+        // `lowerImplMethodMsil` before body lowering; a missing label here
+        // would silently emit a bare `ret` inside the protected region.
+        if fctx.epilogueLabel < 0 {
+          panic("Msil.Codegen: SReturn inside protected region but FuncCtx.epilogueLabel was not reserved (caller must invoke lowerFuncMsil / lowerImplMethodMsil)")
+        }
         match valOpt {
           case Some(e) -> {
             lowerExprMsil(cctx, fctx, insns, e)

@@ -967,6 +967,10 @@ func collectCallRefsBlock(blk: in Block, into: in Map[String, Bool]): Unit {
 /// `modulePath`, `sourceLocation`, `annotations`, `aspect`.  `elapsed`
 /// and `caller` are not yet wired — references surface as A0043
 /// diagnostics handled by the rewriter.
+/// DRIFT WARNING: keep this set in lockstep with the A0043 "recognised
+/// fields" list in `weaveDiagsToDiagnostics::WDCallUnknown` — adding a
+/// field here without removing it from that list yields a diagnostic
+/// that names the field as unrecognised even after it works.
 func buildCallPrelude(
   originalFn: in FunctionDecl,
   aspect:     in AspectDecl,
