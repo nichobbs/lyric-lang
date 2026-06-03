@@ -205,6 +205,13 @@ func walkUpForCompilerDir(start: in String): String {
 // skipped by name so `Std.Jvm.catch` and its `JvmException` extern type
 // don't leak into the .NET symbol table.  A future JVM in-process
 // bridge will need its own target-aware source loader.
+//
+// No caching today (parity with the legacy F# shim's `findStdlibSources`):
+// every emit call walks the filesystem and re-reads the ~30 stdlib `.l`
+// files.  For `lyric test` running the full emitter suite this is
+// hundreds of redundant reads.  Process-lifetime caching (e.g. a
+// module-level `var` populated on first hit) is a tracked follow-up
+// before it becomes a latency complaint (#1209).
 func findStdlibSources(): List[String] {
   val sources: List[String] = newList()
   // 1. Explicit override.
