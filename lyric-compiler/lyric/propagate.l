@@ -180,7 +180,7 @@ func lastSegment(path: in ModulePath): String {
   else { path.segments[path.segments.count - 1] }
 }
 
-// Known limitation: matches terminal segment only — type aliases for `Result`/`Option`
+// Known limitation (#1814): matches terminal segment only — type aliases for `Result`/`Option`
 // (e.g. `alias ParseResult[T] = Result[T, ParseError]`) yield `PropOther` and trip a
 // false F0020.  Workaround until an alias-resolution pass lands: write `Result[T, E]` directly.
 func monadOfRet(ret: in Option[TypeExpr]): PropKind {

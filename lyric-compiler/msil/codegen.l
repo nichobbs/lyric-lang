@@ -1361,6 +1361,14 @@ func localVarSlotByte(t: in MsilType): Int {
 // two match arms typed `MLong` and `MDouble`), a fresh slot is allocated and
 // the name mapping is retargeted so subsequent EPath lookups in this arm see
 // the correctly-typed local.
+//
+// CALLER CONSTRAINT: the retargeting path is only safe when no live code
+// holds a cached reference to the old slot.  Today only `lowerPatternBindMsil`
+// retargets (its `scrutSlot` snapshot is captured before bind), and cross-arm
+// uses re-resolve via `lookupSlot` per arm.  A pattern that cross-references a
+// pre-retargeting slot from a common after-block would emit a load from the
+// wrong location; add a diagnostic at the cross-reference site if that pattern
+// is ever introduced.
 pub func allocSlotMsil(fctx: in FuncCtx, name: in String, ty: in MsilType): Int {
   match mapGet(fctx.slots, name) {
     case Some(existing) -> {
@@ -1660,6 +1668,11 @@ func resolveTypeFqn(cctx: in CodegenCtx, pkgName: in String, seg: in String): St
 // `MByte` (U1) rather than the scalar `MInt` so a `slice[Byte]` serialises as
 // `byte[]` (U1[]), matching the F#-compiled stdlib (`Std.Encoding.tryDecodeBase64
 // -> Option[byte[]]`).  Other element types use the normal mapping.
+//
+// ASSUMPTION: the bare name `Byte` is reserved for the stdlib primitive (no
+// user package may shadow it).  A user-defined `MyPkg.Byte` would also match
+// the terminal-segment check and be mis-encoded as U1 — preventing that is
+// the type checker's job via the reserved-name table.
 func sliceElemMsilCtx(cctx: in CodegenCtx, elem: in TypeExpr, pkgName: in String): MsilType {
   match elem.kind {
     case TRef(path) -> if lastSegmentMsil(path) == "Byte" { MByte }
@@ -9001,6 +9014,10 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
     // PE faults at run time with `Could not load file or assembly 'Std.Core'`
     // / `Could not load type 'Std.Core.Option$None'`.  Skip it here and let
     // the single, source-backed stdlib path own these symbols (#1602).
+    //
+    // The `Std.*` prefix is reserved for the standard library (the type
+    // checker rejects user packages declaring it); see Q-name-001 for the
+    // formal reservation note.
     if startsWith(art.packageName, "Std.") {
       ai = ai + 1
       continue

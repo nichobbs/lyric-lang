@@ -960,7 +960,7 @@ func isAllDigits(s: in String): Bool {
 // when both are all-digits (so `10.0.10` > `10.0.9`, which a plain
 // lexicographic compare gets wrong), otherwise by code point.
 //
-// KNOWN LIMITATION: TFM monikers like `net10.0` / `net9.0` split into `net10`
+// KNOWN LIMITATION (#1813): TFM monikers like `net10.0` / `net9.0` split into `net10`
 // / `net9`, which aren't all-digits, so the fallback lexicographic compare
 // gets them backwards (`net10` < `net9`).  Today this doesn't trigger because
 // `ref/` typically contains a single TFM subdir; if multiple TFMs ever

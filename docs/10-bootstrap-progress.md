@@ -13269,7 +13269,8 @@ route it to the unknown-command handler.
 The parser now accepts `var name: Type` in record member declarations,
 preserving the `var` annotation in the AST. Mutability enforcement is deferred
 to the T6+ type-checker tier; the emitter currently treats `var` fields
-identically to non-`var` fields at the IL level.
+identically to non-`var` fields at the IL level.  Mode-checker enforcement of
+write-to-non-`var` rejection is tracked in #1815.
 
 **Test results:** 792/792 emitter tests pass, 237/237 CLI tests pass.
 

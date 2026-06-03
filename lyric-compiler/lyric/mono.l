@@ -2111,16 +2111,7 @@ pub func monoFileWithImports(
             // Generic functions are dropped here; specialisations are added below.
             ()
           }
-          // A function is generic iff `generics` is `Some`; everything else is
-          // non-generic and must be retained.  This is a wildcard (not an
-          // explicit `case None`) on purpose: a `@derive`-synthesised
-          // `FunctionDecl` carries a `generics = None` that does NOT match the
-          // `Option_None` pattern — the synthesised `None` lowers to a bare
-          // null that the `isinst`-based None test misses, so the `match` fell
-          // through both arms and silently dropped the derived
-          // `equals`/`hash`/`show`/`toJson` helpers before codegen (#1796).
-          // Retaining when not provably generic fixes that without depending
-          // on the `None` representation.
+          // Wildcard (not `case None`): a `@derive`-synthesised `None` lowers to a bare null that `isinst` misses — see #1796.
           case _ -> {
             val env  = seedEnvFromParams(decl.params)
             val newBody = rewriteFuncBody(state, env, decl.body)
