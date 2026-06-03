@@ -17888,7 +17888,7 @@ resolves to `Math.Max(int,int):int` and runs (→ 5).  The standalone-consumer
 compiler-internal use, confirming the in-bundle resolution path.
 
 Validated: emitter suite 847/847 (2 ignored, 0 failed); native `lyric test`
-auto-FFI self-test 3/3; manual `Math.Max/Min/Abs` end-to-end.  Full-index
+auto-FFI self-test 4/4; manual `Math.Max/Min/Abs` end-to-end.  Full-index
 resolution (removing the `clrAssemblyForType` hint so mis-hinted types like
 `System.IO.Path.Combine` resolve), numeric coercion, and instance methods are
 Phase 3c step 2 / Phase 4.
@@ -18026,8 +18026,9 @@ dispatches through `methodTokens[className/method]`.  And the bare-call path in
 `methodTokens` carries `className/funcName`, emitting `ldarg.0` + args +
 `callvirt` and reporting the method's real return type from `methodRetTypes`.
 
-Validation: the new self-test is 4/4 (`self.m()`/bare `m()` for both an `Int`
-method and a `Result[Unit, E]` method); Emitter 847/847, Cli 84/84.  This clears
+Validation: the new self-test is 5/5 (`self.m()`/bare `m()` for both an `Int`
+method and a `Result[Unit, E]` method, plus a bare-sibling-call case with a
+`String` argument); Emitter 847/847, Cli 84/84.  This clears
 the `Result<Unit, SessionError>` (`scr=Result<V,…>`) failures in the
 lyric-session store/fixation suites (`set`/`save`/`touch`/`delete`/`clear` all
 return their inner `save(...)` result).  Stacked on the nested-generic
@@ -18276,7 +18277,7 @@ metadata.  A third new test closes the matrix: an instance method returning a
 class ref and chaining (`Type.MakeArrayType().ToString() == "System.Int32[]"`)
 and an instance method taking a class-ref parameter (`Type.IsAssignableFrom`).
 
-Validated: emitter suite green; auto-FFI self-test 9/9.  Value-type instance
+Validated: emitter suite green; auto-FFI self-test 10/10.  Value-type instance
 methods (which need `ldloca` + `call` on a managed pointer rather than
 `callvirt`) remain a tracked follow-up.
 

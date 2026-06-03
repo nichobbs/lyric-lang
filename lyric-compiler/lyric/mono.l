@@ -494,7 +494,7 @@ func substExprValue(valueSubst: in Map[String, Expr], expr: in Expr): Expr {
     case EPropagate(inner) ->
       Expr(kind = EPropagate(inner = substExprValue(valueSubst, inner)), span = s)
     case EIf(cond, thenB, elseB, form) -> {
-      // Typed `var` + assignment, not a two-arm match (#1730): a bare-`None`
+      // Typed `var` + assignment, not a two-arm match: a bare-`None`
       // arm widens to `None<object>` and corrupts an else-less `if`.
       var newElse: Option[ExprOrBlock] = None
       match elseB {
@@ -512,7 +512,7 @@ func substExprValue(valueSubst: in Map[String, Expr], expr: in Expr): Expr {
       var i = 0
       while i < arms.count {
         val arm = arms[i]
-        // Typed `var` + assignment, not a two-arm match (#1730): a bare-`None`
+        // Typed `var` + assignment, not a two-arm match: a bare-`None`
         // arm widens to `None<object>` and corrupts a guardless match arm.
         var newGuard: Option[Expr] = None
         match arm.guard {
@@ -578,7 +578,7 @@ func substStmtValue(valueSubst: in Map[String, Expr], stmt: in Statement): State
         op     = op,
         value  = substExprValue(valueSubst, value)), span = s)
     case SReturn(opt) -> {
-      // Typed `var` + assignment, not a two-arm match (#1730).
+      // Typed `var` + assignment, not a two-arm match.
       var newOpt: Option[Expr] = None
       match opt {
         case None    -> {}
@@ -626,7 +626,7 @@ func substStmtValue(valueSubst: in Map[String, Expr], stmt: in Statement): State
           span     = cc.span))
         i = i + 1
       }
-      // Typed `var` + assignment, not a two-arm match (#1730).
+      // Typed `var` + assignment, not a two-arm match.
       var newFinally: Option[Block] = None
       match finally_ {
         case None     -> {}
@@ -643,7 +643,7 @@ func substBindingValue(valueSubst: in Map[String, Expr], binding: in LocalBindin
     case LBVal(pat, tyOpt, init) ->
       LBVal(pat = pat, ty = tyOpt, init = substExprValue(valueSubst, init))
     case LBVar(name, tyOpt, initOpt) -> {
-      // Typed `var` + assignment, not a two-arm match (#1730).
+      // Typed `var` + assignment, not a two-arm match.
       var newInit: Option[Expr] = None
       match initOpt {
         case None    -> {}
@@ -1261,7 +1261,7 @@ func specializeFunc(
   // `Option<object>` value stored in the `ret: Option[TypeExpr]` slot then
   // matches neither `case Some` nor `case None` in the self-hosted codegen's
   // `lowerFuncMsil` (isinst against `Option<TypeExpr>` fails), the match falls
-  // through, and `retTy` is left null — the #1730 NRE on every called generic.
+  // through, and `retTy` is left null — an NRE on every called generic.
   // Constructing `Some(...)` in assignment position (expected type
   // `Option[TypeExpr]`) keeps the type argument concrete.
   var newRet: Option[TypeExpr] = None
@@ -1448,7 +1448,7 @@ func rewriteMatchArms(
     val arm = arms[i]
     // Typed `var` + assignment (not a two-arm `None`/`Some` match): the bootstrap
     // F# emitter widens such a match to `Option<object>`, which then matches
-    // neither arm of codegen's instantiation-sensitive `match guard` (#1730).
+    // neither arm of codegen's instantiation-sensitive `match guard`.
     var newGuard: Option[Expr] = None
     match arm.guard {
       case None    -> {}
@@ -1645,7 +1645,7 @@ func rewriteExpr(
       // instead of `Option[ExprOrBlock]`.  A widened `None<object>` stored in the
       // `elseBranch` slot matches neither arm of codegen's `match elseBranch`,
       // so an else-less `if` lowers with an unresolved branch target and a stray
-      // pop — corrupting any function the monomorphizer rewrites (#1730).
+      // pop — corrupting any function the monomorphizer rewrites.
       var newElse: Option[ExprOrBlock] = None
       match elseB {
         case None    -> {}
@@ -1753,7 +1753,7 @@ func rewriteStmt(
 
     case SReturn(opt) -> {
       // Typed `var` + assignment, not a two-arm `None`/`Some` match — see the
-      // `EIf` else-branch note above (#1730): the F# emitter would otherwise
+      // `EIf` else-branch note above: the F# emitter would otherwise
       // widen the match to `Option<object>` and corrupt the rewritten `return`.
       var newOpt: Option[Expr] = None
       match opt {
@@ -1813,7 +1813,7 @@ func rewriteStmt(
         i = i + 1
       }
       // Typed `var` + assignment, not a two-arm match — see the `EIf` note
-      // above (#1730): a widened `Option<object>` would corrupt the rewritten
+      // above: a widened `Option<object>` would corrupt the rewritten
       // try/finally lowering.
       var newFinally: Option[Block] = None
       match finally_ {
@@ -1873,7 +1873,7 @@ func rewriteBinding(
           }
         }
       }
-      // Typed `var` + assignment, not a two-arm match (#1730): a bare-`None`
+      // Typed `var` + assignment, not a two-arm match: a bare-`None`
       // arm would be `None<object>` and corrupt an init-less `var` binding.
       var newInit: Option[Expr] = None
       match initOpt {
@@ -1935,7 +1935,7 @@ func rewriteFuncBody(
   env:    in Map[String, TypeExpr],
   body:   in Option[FunctionBody]
 ): Option[FunctionBody] {
-  // Typed `var` + assignment, not a two-arm match (#1730): a bare-`None` arm
+  // Typed `var` + assignment, not a two-arm match: a bare-`None` arm
   // would be `None<object>` and corrupt a body-less function's `decl.body`.
   var newBody: Option[FunctionBody] = None
   match body {
@@ -1984,7 +1984,7 @@ func substValueInBody(
   body:       in Option[FunctionBody]
 ): Option[FunctionBody] {
   if valueSubst.count == 0 { return body }
-  // Typed `var` + assignment, not a two-arm match (#1730).
+  // Typed `var` + assignment, not a two-arm match.
   var newBody: Option[FunctionBody] = None
   match body {
     case None -> {}
@@ -2149,8 +2149,9 @@ pub func monoFileWithImports(
             case IMplFunc(fn) -> {
               val env = seedEnvFromParams(fn.params)
               // Seed `self` so `self.field` projections in the method body
-              // resolve to the impl target's record fields (#1727).
-              if not env.containsKey("self") { env.add("self", decl.target) }
+              // resolve to the impl target's record fields.  `self` is a
+              // keyword so it cannot collide with a parameter name.
+              env.add("self", decl.target)
               newMembers.add(IMplFunc(fn = rewriteMethodDecl(state, env, fn)))
             }
             case IMplAssoc(a) -> newMembers.add(IMplAssoc(assoc = a))

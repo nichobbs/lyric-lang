@@ -2263,10 +2263,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
           insns.add(MCallvirt(methodToken = cctx.tokDictObjGetItem))
           // get_Item returns the boxed value (object); the value type is carried
           // for downstream tracking but the stack type is object.
-          match valTy {
-            case MClass(cls) -> MClass(className = cls)
-            case _           -> valTy
-          }
+          valTy
         }
         case MListOf(elemTy) -> {
           // List[T] receiver with a known element type.  get_Item returns
@@ -2278,10 +2275,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
             lowerExprMsil(cctx, fctx, insns, indices[0])
           }
           insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
-          match elemTy {
-            case MClass(cls) -> MClass(className = cls)
-            case _ -> elemTy
-          }
+          elemTy
         }
         case MArray(elem) -> {
           // Real CLI array receiver (e.g. `slice[String]` → `String[]` from a
@@ -3250,12 +3244,8 @@ func lowerPatternTestMsil(
           insns.add(MBrFalse(label = failLabel))
         }
         case LChar(cp) -> {
-          // A `Char` scrutinee is an i4 code point on the stack (see the
-          // `LChar` expression case); compare against the pattern's code
-          // point.  Without this arm, char-literal patterns fell into the
-          // `case _ -> MPop` catch-all below — popping the scrutinee with no
-          // test, so every `match` on a `Char` unconditionally took its first
-          // arm (e.g. `digitValue` returned 0 for every digit).  See #1769.
+          // A `Char` scrutinee is an i4 code point on the stack; compare
+          // against the pattern's code point.
           insns.add(MLdcI4(v = cp))
           insns.add(MCeq)
           insns.add(MBrFalse(label = failLabel))
@@ -5457,8 +5447,7 @@ func buildFuncNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
 //   * Instance method (receiver = Lyric arg 0) with primitive/string args.
 //   * Constructor (..ctor) with primitive/string args.
 //   * Extern class types as parameters and return values, lowered via
-//     `resolveFfiClassTypeRef` into TypeRef-typed signature blobs
-//     (#1504 part 1).
+//     `resolveFfiClassTypeRef` into TypeRef-typed signature blobs.
 //
 // Deferred: generic types, with-defaults trailing arguments, property
 // getters, static field reads.  Programs depending on those forms have

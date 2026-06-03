@@ -447,8 +447,8 @@ func loadCompilerPayloads(compilerDir: in String): List[ProjectPackagePayload] {
   // `compilerPayloads.count > 0` guard still passes because Lexer
   // loads, and consumers fail downstream with confusing missing-symbol
   // diagnostics rather than a clear "incomplete parser" message.
-  // Tracked in #1432; revisit when `Std.FileSystem.listDirectory` is
-  // available to enumerate `parser/*.l` directly.
+  // Revisit when `Std.FileSystem.listDirectory` is available to
+  // enumerate `parser/*.l` directly.
   val parserDir = Path.join(compilerDir, "parser")
   val parserNames: List[String] = newList()
   parserNames.add("parser_ast.l")

@@ -930,13 +930,15 @@ pub func collectStdlibPackages(
 // `Option[V]` return erases to `object` and breaks the consumer's concrete
 // `match` (#1727).
 //
-// Filtered conservatively to `generic` funcs that have **no annotations** and a
-// real `{ }` block body.  This excludes kernel externs (`tryGetValue`,
-// `newMap`, …), which are `= ()` expression bodies carrying `@externTarget`:
-// `specializeFunc` drops annotations, so a specialised copy of an extern would
-// lose its `@externTarget` and emit a broken no-op body.  Those calls stay
-// un-specialised and are emitted directly by codegen's extern path.  Missing a
-// legitimately-specialisable generic here is safe (the call just stays
+// Filtered conservatively to `generic` funcs with a real `{ }` block body
+// and no blocking annotations — `annsBlockSpecialization` rejects
+// `@externTarget` and `@axiom` while allowing benign markers like `@stable`.
+// This excludes kernel externs (`tryGetValue`, `newMap`, …), which are `= ()`
+// expression bodies carrying `@externTarget`: `specializeFunc` drops
+// annotations, so a specialised copy of an extern would lose its
+// `@externTarget` and emit a broken no-op body.  Those calls stay
+// un-specialised and are emitted directly by codegen's extern path.  Missing
+// a legitimately-specialisable generic here is safe (the call just stays
 // un-specialised, the status quo); including a non-specialisable one is not.
 pub func collectStdlibGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl] {
   val genFuncs: List[FunctionDecl] = newList()
