@@ -8316,6 +8316,9 @@ func emitAutoFfiCallMsil(
   // Phase 3c: prefer real metadata-based resolution (handles argument-bearing
   // and non-void static methods).  Falls through to the legacy gating below
   // when the shape isn't yet supported (coercion, instance, class types).
+  // The silent fallback is intentional for backward compatibility; emitting
+  // a note-level diagnostic ("auto-FFI: could not resolve from metadata —
+  // explicit @externTarget required") is tracked separately.
   match tryAutoFfiFromMetadata(cctx, fctx, insns, methodName, args, clrFqn) {
     case Some(retTy) -> return retTy
     case None        -> {}
@@ -8476,7 +8479,7 @@ func hasDeriveMarkerMsil(anns: in List[Annotation], marker: in String): Bool {
 // virtual instance method delegating to the derived free `<Type>.equals(self,
 // other)` / `<Type>.hash(self)` (emitted by `Lyric.Derives`; reachable since
 // #1796).  Appended AFTER any injected impl methods so the MethodDef rows line
-// up with the budget reserved in `addPackageTokens` (one row per per-marker `hasDeriveMarkerMsil` hit).
+// up with the budget reserved in `addPackageTokens` (one row per `hasDeriveMarkerMsil` hit).
 // `recordFqn` is the type's dotted FQN (e.g. `Pkg.Point`).
 pub func appendDeriveOverridesMsil(cctx: in CodegenCtx, rec: in MRecord,
                                    recordFqn: in String,
