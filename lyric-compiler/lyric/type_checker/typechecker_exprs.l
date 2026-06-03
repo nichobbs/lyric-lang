@@ -785,6 +785,22 @@ func resolveExprPath(
 // §6. Top-level inference.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// The success/element type unwrapped by `?` from a `Result[T, E]` / `Option[T]`
+// operand.  Built-ins are recognised by their declared `TyUser` name, matching
+// the established convention in `propagate.l` (`monadOfRet`) and the codegen
+// side.  A non-monadic operand yields TyError (the propagate pass owns the
+// F0020 diagnostic for a `?` in a non-Result/Option context).
+func propagateUnwrap(t: in Type): Type {
+  match unrefine(t) {
+    case TyUser(_, name, args) -> {
+      if name == "Result" and args.count >= 1 { args[0] }
+      else if name == "Option" and args.count >= 1 { args[0] }
+      else { TyError }
+    }
+    case _ -> TyError
+  }
+}
+
 pub func inferExpr(
   sc:   in Scope,
   tbl:  in SymbolTable,
@@ -906,8 +922,14 @@ pub func inferExpr(
     }
 
     case EPropagate(inner) -> {
-      val _ = inferExpr(sc, tbl, sigs, diag, inner)
-      TyError
+      // #1483 (expression-typing split): `e?` unwraps the success type of the
+      // operand — `Result[T, E]` / `Option[T]` -> `T`.  (The `Lyric.Propagate`
+      // pass does the lowering and the enclosing-return-compat check, F0020;
+      // here we only give the expression its unwrapped type so downstream uses
+      // are checked.)  A non-monadic operand yields TyError rather than a
+      // duplicate diagnostic.
+      val it = inferExpr(sc, tbl, sigs, diag, inner)
+      propagateUnwrap(it)
     }
 
     case EAwait(inner)  -> inferExpr(sc, tbl, sigs, diag, inner)
@@ -918,6 +940,11 @@ pub func inferExpr(
     case ESelf          -> TySelf
     case EResult        -> TyError
 
+    // EIndex element typing is deferred to #1901 (#1483 split 2b): it needs a
+    // Byte->Int conversion intrinsic first (indexing `slice[Byte]` would yield
+    // `Byte`, but there is currently no surface conversion that both type-checks
+    // and codegens — `0 + byte` fails T0031, `byte.toInt()` has no MSIL
+    // intrinsic and lowers to a fail-loud throw-stub).
     case EIndex(_, _)   -> TyError
     case ETypeApp(_, _) -> TyError
     case ELambda(_, _)  -> TyError
