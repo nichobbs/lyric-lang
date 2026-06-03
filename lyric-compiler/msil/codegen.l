@@ -2245,7 +2245,13 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
             insns.add(MCallvirt(methodToken = cctx.tokDictObjGetCount))
             MInt
           } else {
+            // Unimplemented Map member: pop the receiver and emit a runtime
+            // throw so the failure is loud rather than a silent miscompile.
             insns.add(MPop)
+            val msgTok = ctxInternUs(cctx.lctx, "Msil.Codegen: unimplemented Map member access: " + memberName)
+            insns.add(MLdStr(token = msgTok))
+            insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+            insns.add(MThrow)
             MObject
           }
         }
@@ -5592,6 +5598,8 @@ func lowerTryCatchExprMsil(
   catches:  in List[CatchClause],
   finally_: in Option[Block]
 ): MsilType {
+  val hasCatch   = catches.count > 0
+  val hasFinally = match finally_ { case Some(_) -> true case None -> false }
   val tryStartL = freshLabelMsil(fctx)
   val afterL    = freshLabelMsil(fctx)
 
@@ -5608,7 +5616,12 @@ func lowerTryCatchExprMsil(
     }
   }
   fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
-  insns.add(MLeave(label = afterL))
+  // `leave` is only valid inside a protected region; mirror the statement-path
+  // guard in `lowerTryCatchMsil` so a bare `try { … }` (no catch / no finally)
+  // never emits an unverifiable `leave` if the parser is ever relaxed.
+  if hasCatch or hasFinally {
+    insns.add(MLeave(label = afterL))
+  }
 
   val tryBodyEndL = freshLabelMsil(fctx)
   insns.add(MLabel(id = tryBodyEndL))
