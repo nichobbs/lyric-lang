@@ -574,6 +574,29 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/defer_self_test.l
 
+      # try/catch-as-value self-test — pins #1823 (epic #1470, Band 2): a
+      # `try { … } catch … { … }` used as a value-producing expression now
+      # stashes each branch value into a temp before the `leave` and reloads it
+      # after the merge label, instead of discarding the value (which left a
+      # non-void function emitting a bare `ret` → InvalidProgramException). Also
+      # unblocks the `assertPanics` try/catch shape on the self-hosted backend.
+      # MSIL target only; JVM parity under #1470's JVM-deferral note.
+      - name: Try-catch-expr self-test (native lyric test)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping try-catch-expr self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping try-catch-expr self-test"
+            exit 0
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/try_catch_expr_self_test.l
+
       # Out/inout-parameter self-test — pins the self-hosted MSIL byref calling
       # convention (#1761): `out`/`inout` parameters are passed by managed
       # pointer so a callee's write reaches the caller.  MSIL target only; JVM

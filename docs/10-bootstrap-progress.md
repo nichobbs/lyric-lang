@@ -18896,3 +18896,37 @@ record-keyed `Int` map, direct `m[k]` index read, and a reference-valued map
 (no regression).  No regression elsewhere — full emitter suite (847/847),
 self-hosted bridge suite (84/84), and every native self-test (incl.
 `map_option`, `map_key`) green.  MSIL target only (epic #1470 defers JVM).
+
+### D-progress-378 — self-hosted MSIL: `try`/`catch` as a value-producing expression (#1823)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`).  Closes #1823.
+
+A `try { … } catch … { … }` whose result is consumed (a function's trailing
+value, a `val` initializer, a sub-expression) lowered as a discarded statement:
+the trailing-value path's `lowerStmtsExprFromMsil` hit its `case _` arm, which
+ran the `STry` via `lowerStmtMsil` (void) and returned `MVoid`.  The branch
+values never reached the stack, so a non-void function emitted a bare `MRet`
+with nothing to return — unverifiable IL (`InvalidProgramException` at JIT
+time).  Only the value-producing position was affected; statement-position
+`try`/`catch` (result unused) already worked.
+
+The fix adds `lowerTryCatchExprMsil`, the value counterpart of
+`lowerTryCatchMsil`: each branch (the try body and every catch handler) is
+lowered with `lowerBlockExprMsil`, its value stashed into a shared result temp
+**before** the branch's `leave` (a `leave` requires an empty evaluation stack),
+and the temp is reloaded after the merge label.  A `finally`, if present, runs
+as void exactly as in the statement path.  `lowerStmtsExprFromMsil` routes a
+trailing `STry` here instead of to the discarding `case _`.  This reuses the
+same value-survives-`leave` technique introduced for the `defer` value context
+(#1477).
+
+Verified by `try_catch_expr_self_test.l` (5/5 via native `lyric test --target
+dotnet`): fall-through vs caught value, a catch handler using the bound
+exception to compute the value, a value-yielding `try`/`catch`/`finally` (the
+finally still runs), the `assertPanics` Bool shape (`try { … false } catch { true }`),
+and a `try`/`catch` expression as a `val` initializer.  This also unblocks the
+`Std.Testing.assertPanics` try/catch shape on the self-hosted backend.  No
+regression — full Expecto emitter suite 847/847 and every native self-test
+green.  Wired into CI as the "Try-catch-expr self-test" step.  MSIL target only;
+JVM parity (the JVM backend already has `lowerTryCatchExpr`) is tracked under
+epic #1470's JVM-deferral note.
