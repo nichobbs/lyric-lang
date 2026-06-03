@@ -700,10 +700,11 @@ func rewriteItem(aliases: in List[String], it: in Item): Item {
                           init    = rewriteExpr(aliases, decl.init),
                           span    = decl.span))
     }
-    // The remaining item kinds either have no alias-rewriteable bodies
-    // (extern declarations, scope-kind decls, interfaces / impl bodies,
-    // tests, properties, fixtures, wires, configs, aspects) or are
-    // handled by the parser's earlier passes.  Leave them untouched.
+    // INCOMPLETE: the remaining item kinds (IImpl / IInterface / IEnum /
+    // IUnion / ITest / IProperty / IFixture / IWire / IConfig / IAspect)
+    // are passed through unrewritten.  Any alias-qualified reference inside
+    // an `impl` method body, an interface method signature, or a union case
+    // payload still trips T0020 — tracked in #1834 for the full descent.
     case _ -> it.kind
   }
   Item(docComments = it.docComments,

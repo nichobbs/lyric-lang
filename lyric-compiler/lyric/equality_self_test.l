@@ -15,7 +15,6 @@
 package Lyric.EqualitySelfTest
 
 import Std.Core
-import Std.Collections
 import Std.Testing
 
 @derive(Equals)
