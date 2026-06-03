@@ -3249,6 +3249,17 @@ func lowerPatternTestMsil(
           insns.add(MCeq)
           insns.add(MBrFalse(label = failLabel))
         }
+        case LChar(cp) -> {
+          // A `Char` scrutinee is an i4 code point on the stack (see the
+          // `LChar` expression case); compare against the pattern's code
+          // point.  Without this arm, char-literal patterns fell into the
+          // `case _ -> MPop` catch-all below — popping the scrutinee with no
+          // test, so every `match` on a `Char` unconditionally took its first
+          // arm (e.g. `digitValue` returned 0 for every digit).  See #1769.
+          insns.add(MLdcI4(v = cp))
+          insns.add(MCeq)
+          insns.add(MBrFalse(label = failLabel))
+        }
         case LUnit -> {
           insns.add(MPop)
         }
