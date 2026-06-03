@@ -191,11 +191,11 @@ supporting all language features."
 | H14 | Visibility (`pub`/`internal`/`private`) stored but never enforced at use sites. | `typechecker_symbols.l:61`; no V0007/V0008 logic | M |
 | H15 | `where T: Marker` bound satisfaction never checked at call sites; qualified constraint paths rejected (T0051). | `typechecker_exprs.l:603-723`; `typechecker_checker.l:372-373` | L |
 | H16 | `alias X = Long` unresolvable as a type — alias has no `TypeId`, so `val v: X` → T0013 "not a type". | `typechecker_symbols.l:85-98` | M |
-| H17 | **NEEDS-VERIFY (2026-06-03).** Loop `break`/`continue` emit `MBr` to loop labels and `try`/`catch` exits use `MLeave` on the normal path. The specific failing case — `break`/`continue` whose jump target is **outside an enclosing `try` region** — was not confirmed to emit `leave`; add a targeted regression test before declaring resolved. | `codegen.l` loop-exit + try/catch arms | M |
+| H17 | ~~Loop `break`/`continue` whose jump target is outside an enclosing `try` region emitted `MBr` (unverifiable IL across a protected-region boundary).~~ **Resolved (#1481 item 3 / D-progress-371):** codegen tracks protected-region nesting depth (`tryRegionStack`) and the depth each loop was entered at (`loopTryDepth`); a break/continue escaping ≥1 open region now emits `leave`. Covered by `loop_eh_collection_self_test.l`. | `codegen.l` `emitLoopJumpMsil` + `lowerTryCatchMsil` | ✅ |
 | H18 | ~~`Char`/`Float`/`Long` literal match patterns fall to the wildcard arm → always match.~~ **Resolved.** `Char` (#1769/#1770, D-progress-367), then `Long` (already emitting `MLdcI8+MCeq`) and `Float` (`MLdcR8+MCeq+MBrFalse`, #1481 item 1 / D-progress-370). All literal pattern kinds now emit real compares. | `codegen.l` `PLiteral` arm | ✅ |
 | H19 | ~~Range-for (`for i in 0..n`) and any `a..b` expression panic (`ERange`).~~ **Resolved (#1478):** `for i in lo .. hi` / `..= hi` / `..< hi` parse and lower to a counting loop (`lowerForMsil`/`emitCountingForMsil`). Only a *standalone* range value (`val r = lo .. hi`) still panics — no `Range` value type, unused in stdlib/ecosystem. | `codegen.l` `lowerForMsil`; `parser_exprs.l` for-iter | ✅ |
 | H20 | Capturing closures unimplemented: lambda-lifting produces plain static methods with no display class; captures reference out-of-scope locals; not even diagnosed. | `codegen.l:5601-5645,5858` | XL |
-| H21 | **PARTIAL (2026-06-03).** `mapGet` now wraps in `Option[V]` and `map.remove` calls the real `Dictionary::Remove` (#1602/#1727, D-progress-364). Still wrong silently: `List.Contains`→`false` stub, `List.removeAt`→no-op, unknown method→pop+null. | `codegen.l` (`List.Contains`/`removeAt` stubs remain) | L |
+| H21 | ~~`mapGet`/`map.remove` (#1602/#1727), `List.Contains`→`false`, `List.removeAt`→no-op, unknown method→pop+null.~~ **Resolved.** `mapGet`/`remove` (D-progress-364); `List.contains`/`removeAt` now emit real `List<object>::Contains`/`RemoveAt` and the unknown-method catch-all throws a clear runtime error instead of returning silent `null` (#1481 item 4 / D-progress-371). | `codegen.l` `lowerMethodCallMsil` | ✅ |
 | H22 | ~~Compound assignment ignores the operator: string `+=` emits numeric `MAdd`; field `r.f += v` only stores; `a[i] op= v` hard-fails.~~ **Resolved (#1481 item 2 / D-progress-370):** compound assignment is a real read-modify-write honouring the operator (String `+=` → `String.Concat`) for local / `result` / record-field / `List`-element / `Map`-value targets. | `codegen.l` `lowerAssignExprMsil` + `emitCompoundCombine*` | ✅ |
 
 ### MEDIUM / LOW (selected)
@@ -460,15 +460,12 @@ section wins.
 - **Band 1 (front-end soundness, CRITICAL):** C1, C2, C10, C11, H14, H15, H16,
   M6 — and the front-end half of C13. The type checker is still an advisory,
   error-tolerant inference pass (`TyError` universal unifier), not a gatekeeper.
-- **Band 2 (backend correctness, CRITICAL):** C3 (`?` no-op) is now fixed
-  (#1475: `Lyric.Propagate`); H22 (compound-assign ignored the operator) and the
-  Float/Long half of H18 (literal match always-match) are fixed (#1481 items 1–2:
-  read-modify-write + `String.Concat` for `+=`, `ldc.r8/i8 + ceq` literal
-  compares). Remaining: C7 (`defer` inline), H1 (`==` doesn't dispatch derived
-  `equals`), H20 (capturing closures), M7 (`SItem`/`SInvariant` dropped), and
-  #1481 items 3–4 (break/continue across a `try` must emit `leave`;
-  `List.Contains`/`removeAt` BCL stubs). H17 needs a targeted break-out-of-`try`
-  test before it can be called resolved.
+- **Band 2 (backend correctness, CRITICAL):** C3 (`?` no-op, #1475), all of
+  **#1481** (items 1–2: Float/Long literal match compares + compound-assignment
+  operator, D-progress-370; items 3–4: break/continue-across-`try` → `leave`,
+  `List.contains`/`removeAt` real calls, unknown-method fail-loud, D-progress-371),
+  and H17 are now fixed. Remaining: C7 (`defer` inline), H1 (`==` doesn't dispatch
+  derived `equals`), H20 (capturing closures), M7 (`SItem`/`SInvariant` dropped).
 - **Band 3 (async, CRITICAL):** C4, C5 — no `IAsyncStateMachine` / lazy
   `IAsyncEnumerable` in `lyric-compiler/msil/`. `await`/`spawn`/`async func`
   still lower synchronously and silently miscompile on the default self-hosted

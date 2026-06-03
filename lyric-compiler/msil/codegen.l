@@ -82,6 +82,8 @@ pub record CodegenCtx {
   tokListObjGetItem:   Int   // List<object>::get_Item(int32): object  callvirt
   tokListObjSetItem:   Int   // List<object>::set_Item(int32, object): void  callvirt
   tokListObjGetCount:  Int   // List<object>::get_Count(): int32  callvirt
+  tokListObjContains:  Int   // List<object>::Contains(object): bool  callvirt
+  tokListObjRemoveAt:  Int   // List<object>::RemoveAt(int32): void  callvirt
   tokListObjTypeSpec:  Int   // TypeSpec token for List<object>  castclass
   // String intrinsic members (instance HASTHIS)
   tokStringGetChars:    Int   // String.get_Chars(int32): char
@@ -453,6 +455,18 @@ pub func newCodegenCtx(packageName: in String,
   val tokListObjGetCount = 0x0A000000 + ctxAddMemberRefForTypeSpec(
     lctx, tsListObj, "get_Count", "list_obj_count", buildInstanceMethodSig(listCntPs, MInt))
 
+  // 17b. List<object>::Contains(!0): bool  — element param is type var !0
+  val listContainsPs: List[MsilType] = newList()
+  listContainsPs.add(MTypeVar(index = 0))
+  val tokListObjContains = 0x0A000000 + ctxAddMemberRefForTypeSpec(
+    lctx, tsListObj, "Contains", "list_obj_contains", buildInstanceMethodSig(listContainsPs, MBool))
+
+  // 17c. List<object>::RemoveAt(int32): void  instance HASTHIS
+  val listRemoveAtPs: List[MsilType] = newList()
+  listRemoveAtPs.add(MInt)
+  val tokListObjRemoveAt = 0x0A000000 + ctxAddMemberRefForTypeSpec(
+    lctx, tsListObj, "RemoveAt", "list_obj_removeat", buildInstanceMethodSig(listRemoveAtPs, MVoid))
+
   // ── Dictionary<object,object> via TypeSpec ────────────────────────────────
   val trDict2 = ctxAddTypeRef(lctx, "System.Collections.Generic", "Dictionary`2", arCollections)
 
@@ -667,6 +681,8 @@ pub func newCodegenCtx(packageName: in String,
     tokListObjGetItem    = tokListObjGetItem,
     tokListObjSetItem    = tokListObjSetItem,
     tokListObjGetCount   = tokListObjGetCount,
+    tokListObjContains   = tokListObjContains,
+    tokListObjRemoveAt   = tokListObjRemoveAt,
     tokListObjTypeSpec   = 0x1B000000 + tsListObj,
     tokDictObjCtor       = tokDictObjCtor,
     tokDictObjAdd        = tokDictObjAdd,
@@ -1304,6 +1320,16 @@ pub record FuncCtx {
   paramCount:  Int                  // number of parameters (fixed at creation)
   loopBreak:   List[Int]            // stack: top = innermost loop's exit label
   loopCont:    List[Int]            // stack: top = innermost loop's back-edge label
+  // Parallel to loopBreak/loopCont: the protected-region (try) nesting depth in
+  // effect when each loop was entered.  A `break`/`continue` whose innermost
+  // loop was entered at a *shallower* try depth than the current one is jumping
+  // out of one or more CLR protected regions and must emit `leave`, not `br`
+  // (a `br` across a protected-region boundary is unverifiable IL).  #1481.
+  loopTryDepth:  List[Int]
+  // Open protected-region marker stack: `.count` is the current try/catch
+  // nesting depth.  Pushed around each `try` body and each `catch` handler body
+  // in lowerTryCatchMsil.
+  tryRegionStack: List[Int]
   // EYield support: slot of the List<object> yield collector when inside a generator.
   // Empty when the function is not a generator; singleton when it is.
   yieldSlots:    List[Int]
@@ -4592,15 +4618,24 @@ func lowerMethodCallMsil(
         MBool
       }
       case _ -> {
-        // List::Contains(object): bool  — bootstrap: always false stub
-        var i = 0
-        while i < args.count {
-          lowerCallArgMsil(cctx, fctx, insns, args[i])
+        // List<object>::Contains(!0): bool — receiver List already on stack;
+        // push the boxed element and call Contains.  (Previously a stub that
+        // popped the arg + receiver and pushed `false`, silently breaking every
+        // membership test — #1481 item 4.)
+        if args.count == 1 {
+          val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+          boxIfNeededMsil(cctx, insns, aTy)
+          insns.add(MCallvirt(methodToken = cctx.tokListObjContains))
+        } else {
+          var i = 0
+          while i < args.count {
+            lowerCallArgMsil(cctx, fctx, insns, args[i])
+            insns.add(MPop)
+            i = i + 1
+          }
           insns.add(MPop)
-          i = i + 1
+          insns.add(MLdcI4(v = 0))
         }
-        insns.add(MPop)
-        insns.add(MLdcI4(v = 0))
         MBool
       }
     }
@@ -4633,15 +4668,24 @@ func lowerMethodCallMsil(
       }
     }
   } else if memberName == "removeAt" {
-    // List::RemoveAt(int): void — bootstrap stub: pop index, pop recv
-    var i = 0
-    while i < args.count {
-      lowerCallArgMsil(cctx, fctx, insns, args[i])
+    // List<object>::RemoveAt(int32): void — receiver List already on stack;
+    // push the int32 index and call RemoveAt.  (Previously a stub that popped
+    // the index + receiver and did nothing, so `removeAt` was a silent no-op —
+    // #1481 item 4.)
+    if args.count == 1 {
+      lowerCallArgMsil(cctx, fctx, insns, args[0])
+      insns.add(MCallvirt(methodToken = cctx.tokListObjRemoveAt))
+      MVoid
+    } else {
+      var i = 0
+      while i < args.count {
+        lowerCallArgMsil(cctx, fctx, insns, args[i])
+        insns.add(MPop)
+        i = i + 1
+      }
       insns.add(MPop)
-      i = i + 1
+      MVoid
     }
-    insns.add(MPop)
-    MVoid
   } else if memberName == "toArray" {
     // List::toArray(): return the list itself as the iterable (bootstrap).
     // The SFor codegen iterates via get_Count / get_Item, which work on
@@ -4753,15 +4797,21 @@ func lowerMethodCallMsil(
     }
     recvTy
   } else {
-    // Unknown method — pop receiver and args, return null (bootstrap stub).
-    var i = 0
-    while i < args.count {
-      lowerCallArgMsil(cctx, fctx, insns, args[i])
-      insns.add(MPop)
-      i = i + 1
-    }
-    insns.add(MPop)
-    insns.add(MLdNull)
+    // Unrecognised method on this receiver.  Previously this popped the
+    // receiver/args and pushed `null` — a silent miscompile: the call appeared
+    // to succeed and yielded a bogus null.  Instead emit a stub that throws a
+    // clear error at this call site if it is ever reached, mirroring the
+    // unresolved auto-FFI / @externTarget pattern above (#1041) and honouring
+    // the language reference's "never silently mis-bound" guarantee.  Lowering
+    // a runtime throw rather than a compile-time abort keeps programs whose
+    // unreachable paths mention such a call compilable, while any path that
+    // actually executes it fails loudly and located.  #1481 item 4.
+    val msg = "unsupported method '" + memberName
+      + "' on the receiver type at this call site (no matching user method, "
+      + "extern binding, or built-in intrinsic)"
+    insns.add(MLdStr(token = ctxInternUs(cctx.lctx, msg)))
+    insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+    insns.add(MThrow)
     MObject
   }
 }
@@ -4845,7 +4895,9 @@ func emitCountingForMsil(
 
   fctx.loopBreak.add(afterL)
   fctx.loopCont.add(contL)
+  fctx.loopTryDepth.add(fctx.tryRegionStack.count)
   lowerBlockMsil(cctx, fctx, insns, body)
+  fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
   fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
   fctx.loopCont.removeAt(fctx.loopCont.count - 1)
 
@@ -4908,7 +4960,9 @@ func emitCollectionForMsil(
 
   fctx.loopBreak.add(afterL)
   fctx.loopCont.add(contL)
+  fctx.loopTryDepth.add(fctx.tryRegionStack.count)
   lowerBlockMsil(cctx, fctx, insns, body)
+  fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
   fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
   fctx.loopCont.removeAt(fctx.loopCont.count - 1)
 
@@ -5090,7 +5144,9 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
       insns.add(MBrFalse(label = afterL))
       fctx.loopBreak.add(afterL)
       fctx.loopCont.add(loopL)
+      fctx.loopTryDepth.add(fctx.tryRegionStack.count)
       lowerBlockMsil(cctx, fctx, insns, body)
+      fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
       fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
       fctx.loopCont.removeAt(fctx.loopCont.count - 1)
       insns.add(MBr(label = loopL))
@@ -5109,7 +5165,9 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
       insns.add(MLabel(id =loopL2))
       fctx.loopBreak.add(afterL2)
       fctx.loopCont.add(loopL2)
+      fctx.loopTryDepth.add(fctx.tryRegionStack.count)
       lowerBlockMsil(cctx, fctx, insns, body)
+      fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
       fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
       fctx.loopCont.removeAt(fctx.loopCont.count - 1)
       insns.add(MBr(label = loopL2))
@@ -5128,11 +5186,15 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
     }
 
     // ── Break / continue ─────────────────────────────────────────────────────
+    // A `break`/`continue` whose target loop was entered outside the current
+    // protected region(s) jumps across a CLR try/catch boundary and must use
+    // `leave` rather than `br` (a `br` out of a protected region is
+    // unverifiable IL).  #1481.
     case SBreak(_) -> {
-      insns.add(MBr(label = fctx.loopBreak[fctx.loopBreak.count - 1]))
+      emitLoopJumpMsil(fctx, insns, fctx.loopBreak[fctx.loopBreak.count - 1])
     }
     case SContinue(_) -> {
-      insns.add(MBr(label = fctx.loopCont[fctx.loopCont.count - 1]))
+      emitLoopJumpMsil(fctx, insns, fctx.loopCont[fctx.loopCont.count - 1])
     }
 
     // ── Scope block ───────────────────────────────────────────────────────────
@@ -5202,6 +5264,21 @@ func lowerLocalPatBindMsil(
 // §6b. Try/catch lowering.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Emit a `break`/`continue` jump to `target`.  When the innermost loop was
+// entered at a shallower protected-region (try/catch) depth than the current
+// one — i.e. the jump escapes one or more open `try`/`catch` regions — the CLR
+// requires `leave`; otherwise a plain `br` suffices.  #1481 (H17).
+func emitLoopJumpMsil(fctx: in FuncCtx, insns: in List[MInsn], target: in Int): Unit {
+  val loopDepth =
+    if fctx.loopTryDepth.count > 0 { fctx.loopTryDepth[fctx.loopTryDepth.count - 1] }
+    else                          { 0 }
+  if fctx.tryRegionStack.count > loopDepth {
+    insns.add(MLeave(label = target))
+  } else {
+    insns.add(MBr(label = target))
+  }
+}
+
 func lowerTryCatchMsil(
   cctx:     in CodegenCtx,
   fctx:     in FuncCtx,
@@ -5216,7 +5293,11 @@ func lowerTryCatchMsil(
   val afterL     = freshLabelMsil(fctx)
 
   insns.add(MLabel(id = tryStartL))
+  // The try body is a protected region: a break/continue out of it to an outer
+  // loop must `leave` (tracked via tryRegionStack; see emitLoopJumpMsil).
+  fctx.tryRegionStack.add(0)
   lowerBlockMsil(cctx, fctx, insns, body)
+  fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
   if hasCatch or hasFinally {
     // `leave` is required (not `br`) when exiting a CLR protected region.
     insns.add(MLeave(label = afterL))
@@ -5242,7 +5323,11 @@ func lowerTryCatchMsil(
         insns.add(MPop)
       }
     }
+    // A catch handler is itself a protected-region context: a break/continue
+    // out of it to an outer loop must also `leave`.
+    fctx.tryRegionStack.add(0)
     lowerBlockMsil(cctx, fctx, insns, c.body)
+    fctx.tryRegionStack.removeAt(fctx.tryRegionStack.count - 1)
     insns.add(MLeave(label = afterL))
     val handlerEndL = freshLabelMsil(fctx)
     insns.add(MLabel(id = handlerEndL))
@@ -5312,6 +5397,8 @@ func makeFuncCtxMsil(pkgName: in String, className: in String,
   val labelTicker: List[Int]              = newList()
   val loopBreak:   List[Int]              = newList()
   val loopCont:    List[Int]              = newList()
+  val loopTryDepth: List[Int]             = newList()
+  val tryRegionStack: List[Int]           = newList()
   val yieldSlots:  List[Int]              = newList()
   val contextHintTyArgs: List[MsilType]  = newList()
   val byrefSlotTypes: Map[Int, MsilType] = newMap()
@@ -5327,6 +5414,8 @@ func makeFuncCtxMsil(pkgName: in String, className: in String,
     paramCount           = paramCount,
     loopBreak            = loopBreak,
     loopCont             = loopCont,
+    loopTryDepth         = loopTryDepth,
+    tryRegionStack       = tryRegionStack,
     yieldSlots           = yieldSlots,
     declaredRetTy        = declaredRetTy,
     contextHintTyArgs    = contextHintTyArgs,

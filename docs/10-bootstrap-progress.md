@@ -18630,3 +18630,44 @@ self-test" step.  MSIL target only; JVM parity is tracked under epic #1470's
 JVM-deferral note.  #1481 items 3 (break/continue across a `try` region must
 emit `leave`) and 4 (`List.Contains`/`removeAt` BCL stubs) remain open on the
 issue.
+
+### D-progress-371 — self-hosted MSIL: break/continue-across-`try` + List BCL calls (#1481 items 3–4)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`).  Closes #1481.
+
+The remaining two #1481 (docs/41 §3 H17/H21, epic #1470 Band 2) backend
+correctness fixes:
+
+- **`break`/`continue` across a `try` region (H17, item 3).** A `break`/
+  `continue` whose target loop was entered *outside* an enclosing `try`/`catch`
+  jumps across a CLR protected-region boundary; codegen unconditionally emitted
+  `MBr`, which is unverifiable IL (`InvalidProgramException` at JIT time).
+  `FuncCtx` now carries a `tryRegionStack` (its `.count` = current open
+  protected-region depth, pushed around each `try` body and each `catch`
+  handler body) and a `loopTryDepth` stack (parallel to `loopBreak`/`loopCont`,
+  recording the region depth in effect when each loop was entered).  A new
+  `emitLoopJumpMsil` helper emits `leave` when the jump escapes ≥1 open region
+  (`tryRegionStack.count > loopTryDepth[top]`) and `br` otherwise.  Normal-path
+  break/continue (no enclosing `try`) is unchanged.
+
+- **`List.contains` / `List.removeAt` + unknown-method fail-loud (H21, item 4).**
+  `xs.contains(v)` popped its argument and pushed `false` (every membership test
+  silently wrong); `xs.removeAt(i)` popped and did nothing (silent no-op).  Both
+  now emit the real `List<object>::Contains(!0): bool` / `RemoveAt(int32): void`
+  MemberRefs (new `tokListObjContains` / `tokListObjRemoveAt`), with the element
+  boxed for `Contains`.  The unrecognised-method catch-all in `lowerMethodCallMsil`
+  — previously a silent `pop receiver/args; ldnull` — now emits a stub that
+  throws a clear runtime error at the offending call site, mirroring the
+  unresolved auto-FFI / `@externTarget` pattern already used in that function
+  (#1041) and honouring the "never silently mis-bound" guarantee.  (`mapGet` /
+  `map.remove` were already real calls — D-progress-364.)
+
+Verified by `loop_eh_collection_self_test.l` (5/5 via native `lyric test
+--target dotnet`): `break` and `continue` out of a `try` body inside a `while`
+loop produce the correct sums (the old `br` faulted the JIT); `List.contains`
+membership for Int and String elements; `List.removeAt` shifts subsequent
+elements and decrements the count.  No regression — full Expecto emitter suite
+847/847 and every native self-test (`match_compound`, `bitwise`, `auto_ffi`,
+`propagate`, `list_value_compare`, `cfg_gate`, `weaver`, …) green.  Wired into
+CI as the "Loop-EH/collection self-test" step.  MSIL target only; JVM parity is
+tracked under epic #1470's JVM-deferral note.
