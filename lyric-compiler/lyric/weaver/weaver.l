@@ -1033,6 +1033,10 @@ func buildCallPrelude(
       annNames.add(annotationShortName(originalFn.annotations[ai]))
       ai = ai + 1
     }
+    // The declared `slice[String]` type is mandatory: language reference §4.6
+    // allows a string-list literal `["a", "b"]` to coerce to `slice[String]` at
+    // a typed binding site (the empty-list path would otherwise infer a
+    // `List[T]`-shaped type and reject the synthetic statement).
     stmts.add(mkValStmt(
       "__lyric_call_annotations",
       Some(value = mkSliceTypeExpr("String")),

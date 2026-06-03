@@ -2357,6 +2357,11 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
             }
           }
         }
+        // All-or-nothing assembly: a partial source list would confuse `@cfg`
+        // detection (one missing file can flip the gated-out decision) and
+        // produce a misleading downstream "unresolved import" cascade instead
+        // of a clear "read failed" error.  `hadFatal` is already set; downstream
+        // packages skip importing this one.
         if not readFailed {
           val assembly = CfgGate.assembleDirectoryPackageSources(
             fileEntries, pkgEntry.name, activeFeatures)
