@@ -18992,3 +18992,42 @@ A separate test-infrastructure bug surfaced while writing the test: a
 `@test_module` containing a lambda (e.g. `assertPanics`) silently produces zero
 TAP output and exits 0 — filed as #1854.  The loop-invariant test sidesteps it
 via the try/catch-expression observation above.
+### D-progress-381 — self-hosted: alias rewriter descends into IImpl / IInterface / IUnion (and every other compound item kind) (#1834)
+
+**Status:** Shipped (`lyric-compiler/lyric/alias_rewriter.l`).
+
+`Lyric.AliasRewriter.rewriteItem` rewrote only `IFunc` / `IRecord` /
+`IExposedRec` / `IConst` / `IVal`; every other `ItemKind` fell through a
+`case _ -> it.kind` catch-all and was passed through unrewritten.  So an
+`import X as Y` reference inside an `impl` method **body** (e.g.
+`Y.someFunc(...)`) survived the rewrite as the bare alias segment `Y` and the
+self-hosted MSIL backend rejected it ("unsupported method … on the receiver
+type" / `T0020`), even though the headline top-level `Y.foo(...)` call form was
+already handled.  (Type-position aliased references — interface/`impl`
+signatures, union payloads — happened to resolve through the type-checker's own
+qualified-name resolver, so only body/value positions actually broke; the
+rewriter now closes the gap uniformly regardless.)
+
+`rewriteItem` is now an exhaustive `match` over every `ItemKind` variant.  New
+descent helpers (`rewriteImplDecl`, `rewriteInterfaceDecl`, `rewriteUnionDecl`,
+`rewriteOpaqueTypeDecl`, `rewriteProtectedTypeDecl`, `rewriteWireDecl`,
+`rewriteTypeAliasDecl`, `rewriteDistinctTypeDecl`, `rewriteTestDecl`,
+`rewritePropertyDecl`, `rewriteFixtureDecl`, `rewriteConfigDecl`,
+`rewriteAspectDecl`, `rewriteExternPackageDecl`, plus the member-union helpers
+and `rewriteConstraintRef` / `rewriteFunctionSig` / `rewriteAssociatedTypeDecl`
+/ `rewriteEntryDecl`) walk each item's bodies, signatures, payload types,
+`config` defaults, `around` blocks, and wire members through the existing
+`rewriteExpr` / `rewriteTypeExpr` / `rewriteBlock` machinery.  `IEnum`,
+`IScopeKind`, `IExternType`, and `IError` carry no `TypeExpr` / `Expr` payload
+and are documented pass-throughs.  This goes beyond the F# reference
+(`bootstrap/src/Lyric.Parser/AliasRewriter.fs`, which only added `IImpl`).
+
+Verified by the new `alias_rewriter_self_test.l` (4/4 via native `lyric test
+--target dotnet`): an aliased call in an `impl` method body (red→green —
+fails "unsupported method 'repeat'" on the pre-fix compiler), an aliased
+generic parameter type across an interface signature + `impl`, and an aliased
+generic union-case payload that round-trips.  Two pre-existing,
+alias-independent generic-union MSIL codegen miscompiles uncovered while
+writing the test (`Some`-first match arm order over a fn-returned `Option`;
+member methods returning a generic union) are filed as #1855 and sidestepped in
+the test with a pointer.  MSIL target only (epic #1470 defers JVM).
