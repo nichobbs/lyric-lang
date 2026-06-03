@@ -218,7 +218,8 @@ pub interface StorageBucket {
   /// sidecar metadata under that suffix, which the lister filters).
   /// `put`/`get`/`exists` still accept such keys, so the inconsistency
   /// can surprise callers using `list` for inventory — avoid the
-  /// `.meta.json` suffix in user-chosen keys (#1467).
+  /// `.meta.json` suffix in user-chosen keys.  Tracker #1911 covers the
+  /// behavioural fix that unifies handling across put/get/exists/list.
   func list(
     prefix:            in String,
     continuationToken: in String,
