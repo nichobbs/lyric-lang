@@ -1818,9 +1818,23 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
           }
           case TAValue(_) -> MObject
         }
-      } else if headSeg == "Map" {
+      } else if headSeg == "Map" and args.count == 2 {
         // Map[K, V] — runtime representation is Dictionary<object,object>.
-        // Track as MMapOf so .count dispatch uses Dictionary.get_Count.
+        // Track as MMapOf so `.count` dispatches to Dictionary.get_Count and so
+        // the read path / `mapGet` know the value type.  Like List[T] (#1779),
+        // only a *value-type* V is tracked (so the boxed `get_Item` result is
+        // unboxed back to it); reference V stays `object` (its slot is genuinely
+        // a reference).  The key is always boxed for `Dictionary<object,_>`, so
+        // K is not tracked.
+        val mapValTy = match args[1] {
+          case TAType(vte) -> {
+            val vt = typeExprToMsilCtx(cctx, vte, pkgName)
+            if isValueType(vt) { vt } else { MObject }
+          }
+          case TAValue(_) -> MObject
+        }
+        MMapOf(keyTy = MObject, valTy = mapValTy)
+      } else if headSeg == "Map" {
         MMapOf(keyTy = MObject, valTy = MObject)
       } else {
         val headFqn = resolveTypeFqn(cctx, pkgName, headSeg)
@@ -2416,8 +2430,13 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
             boxIfNeededMsil(cctx, insns, kTy)
           }
           insns.add(MCallvirt(methodToken = cctx.tokDictObjGetItem))
-          // get_Item returns the boxed value (object); the value type is carried
-          // for downstream tracking but the stack type is object.
+          // get_Item returns the boxed value (object).  For a value-type V the
+          // stack must carry the unboxed value to match the tracked `valTy`,
+          // otherwise a later numeric op / comparison treats the object
+          // reference as the value (#1779 / #1835).  Reference V stays object.
+          if isValueType(valTy) {
+            castObjectToMsil(cctx, insns, valTy)
+          }
           valTy
         }
         case MListOf(elemTy) -> {
@@ -4196,18 +4215,26 @@ func lowerBuiltinOrStaticCallMsil(
     // `mapGet(m, key): Option[V]` — emit `if m.ContainsKey(key) {
     // Some(value = m[key]) } else { None }` with the concrete `Option[V]`
     // instantiation, so a consumer `match` finds the right arm (#1727).  `V`
-    // comes from the call's context hint (the surrounding `Option[V]` type);
-    // it falls back to `object` when no hint is in scope (the result is then a
-    // correctly-shaped `Option<object>`, still a real Option, not a raw value).
+    // comes from the call's context hint (the surrounding `Option[V]` type),
+    // then the map argument's tracked value type (`Map[K, ValueType]` →
+    // `MMapOf(_, valTy)`, #1835), and finally `object` when neither is known
+    // (a correctly-shaped `Option<object>`, still a real Option).  The
+    // map-type fallback is what makes a hint-less `match mapGet(m, k)` over a
+    // value-type-valued map produce `Option[Int]` rather than an
+    // `Option<object>` whose boxed payload faults when used as `Int`.
     if args.count >= 2 {
-      val vTy: MsilType =
-        if fctx.contextHintTyArgs.count > 0 { fctx.contextHintTyArgs[0] }
-        else { MObject }
       // Stash m and key in temp locals — each is consumed by both ContainsKey
       // and get_Item, and the arg exprs may have side effects.
       val mSlot = allocSlotMsil(fctx, "__mapget_m_" + toString(fctx.slotTicker.count), MObject)
-      val _m = lowerCallArgMsil(cctx, fctx, insns, args[0])
+      val mArgTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
       emitStoreSlot(insns, mSlot, fctx.paramCount)
+      val mapValTy = match mArgTy {
+        case MMapOf(_, vt) -> vt
+        case _             -> MObject
+      }
+      val vTy: MsilType =
+        if fctx.contextHintTyArgs.count > 0 { fctx.contextHintTyArgs[0] }
+        else { mapValTy }
       val kSlot = allocSlotMsil(fctx, "__mapget_k_" + toString(fctx.slotTicker.count), MObject)
       val kArgTy = lowerCallArgMsil(cctx, fctx, insns, args[1])
       boxIfNeededMsil(cctx, insns, kArgTy)
