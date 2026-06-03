@@ -269,10 +269,17 @@ pub func renderType(t: in Type): String {
       prefix + pstr + " -> " + renderType(r)
     }
     case TyRefined(u, lo, hi, inc) -> {
+      // Render lo/hi conditionally so open-ended forms produce
+      // `Int range 5 ..` / `Int range ..= 9` instead of the malformed
+      // `Int range 5 ..= ` (trailing operator) or `Int range  ..= 9`
+      // (leading double space) the old all-fields-always-emitted code
+      // produced.
       val loStr = match lo { case None -> ""; case Some(v) -> toString(v) }
       val hiStr = match hi { case None -> ""; case Some(v) -> toString(v) }
-      val op    = if inc { " ..= " } else { " .. " }
-      renderType(u) + " range " + loStr + op + hiStr
+      val opBare = if inc { "..=" } else { ".." }
+      val left   = if loStr.length > 0 { loStr + " " } else { "" }
+      val right  = if hiStr.length > 0 { " " + hiStr } else { "" }
+      renderType(u) + " range " + left + opBare + right
     }
     case TyUser(uid, nm, args) -> {
       // #425 item 6: prefer the declared name carried in the type
