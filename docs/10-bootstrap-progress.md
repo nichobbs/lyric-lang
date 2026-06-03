@@ -27,6 +27,15 @@ deferred to Phase 3 by design.
 
 ### Phase 5 — self-hosting
 
+> **Production-readiness note (2026-06-03).** The self-hosted compiler is the
+> default and only `--target dotnet` path, but it is **not yet sound or
+> correct** for a v1.0 tag.  The front end is advisory (does not reject invalid
+> programs) and `?` / `await` / `defer` / `==` still silently miscompile.  The
+> authoritative, source-verified gap list is
+> `docs/41-self-hosted-compiler-gap-analysis.md` §10 (re-verified 2026-06-03),
+> sequenced for release as `docs/36-v1-roadmap.md` §R7.  The "Shipped" rows
+> below record self-hosting *milestones*, not production completeness.
+
 | Milestone | Status | Lands in |
 |---|---|---|
 | Supply-chain integrity — `lyric.lock` SHA-512 populated + verified (`--locked`): `Std.HashHost` (`SHA512.HashData` + `Convert.ToHexString`) + `Std.Hash` (`sha512OfBytes`, `sha512OfFile`); CLI restore writes digest for every dep (path/workspace/git on `lyric.toml`, registry on `.nupkg` post `dotnet restore` honouring `NUGET_PACKAGES`); four-way mismatch matrix in `--locked` mode | **Shipped** (PR #804) | #738 |

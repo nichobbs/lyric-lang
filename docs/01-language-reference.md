@@ -1232,7 +1232,7 @@ method-syntax form.
 
 ### 13.1 Compiler
 
-`lyric build` — compiles a project. `lyric build --release` for release mode. `lyric build --aot` for Native AOT.
+`lyric build` — compiles a project. `lyric build --release` for release mode. `lyric build --aot` for Native AOT _(planned; not yet implemented — `<PublishAot>` is not wired and the flag is unrecognised today. Tracked as `docs/36-v1-roadmap.md` §R7.5 / `docs/41` H13.)_
 
 ### 13.2 Test runner
 

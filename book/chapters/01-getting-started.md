@@ -89,11 +89,13 @@ dotnet hello.dll           # run the produced assembly
 
 `lyric build` is incremental: if neither the source nor the standard library has changed since the last build, it is a no-op. Pass `--force` to rebuild unconditionally.
 
-For a Native AOT binary (no .NET runtime needed at deployment):
-
-```sh
-lyric build --aot hello.l
-```
+> **Native AOT — not yet available.** A self-contained Native AOT binary (no
+> .NET runtime needed at deployment) is a planned deliverable, not a shipped
+> feature: there is no `--aot` flag today, and `<PublishAot>` is not yet wired
+> into the compiler (`docs/41-self-hosted-compiler-gap-analysis.md` H13,
+> sequenced as `docs/36-v1-roadmap.md` §R7.5). For now, deploy the produced
+> `hello.dll` and run it with `dotnet hello.dll`, or install the compiler as a
+> .NET global tool (`dotnet tool install lyric`).
 
 ## The anatomy of a Lyric file
 
