@@ -1310,6 +1310,18 @@ pub record FuncCtx {
   loopTryDepth:  List[Int]
   // Try/catch nesting depth counter (values unused; only `.count` matters).  Pushed around each `try` body and each `catch` handler in lowerTryCatchMsil.
   tryRegionStack: List[Int]
+  // Return-through-protected-region support.  A `return` lowered while inside
+  // one or more open try/catch/finally regions cannot emit `ret` directly (a
+  // `ret` out of a CLR protected region is invalid IL); it stores the value into
+  // `retvalSlot` and `leave`s to `epilogueLabel`, a single function epilogue
+  // that loads the value (if any) and rets.  `epilogueLabel` is allocated by
+  // lowerFuncMsil / lowerImplMethodMsil; `retvalSlot` is lazily allocated on the
+  // first value-returning escape; `epilogueUsed` is non-empty once any return
+  // routed through the epilogue, so the epilogue block is only emitted when
+  // needed.  #1477.
+  var epilogueLabel: Int
+  var retvalSlot:    Int
+  epilogueUsed:      List[Int]
   // EYield support: slot of the List<object> yield collector when inside a generator.
   // Empty when the function is not a generator; singleton when it is.
   yieldSlots:    List[Int]
@@ -5097,13 +5109,32 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
 
     // ── Return ─────────────────────────────────────────────────────────────────
     case SReturn(valOpt) -> {
-      match valOpt {
-        case Some(e) -> {
-          lowerExprMsil(cctx, fctx, insns, e)
-          insns.add(MRet)
+      if fctx.tryRegionStack.count > 0 and fctx.epilogueLabel >= 0 {
+        // Inside a protected region: a bare `ret` is invalid IL.  Stash the
+        // value (if any) and `leave` to the function epilogue, which runs any
+        // intervening `finally` handlers before loading the value and returning.
+        // #1477.
+        match valOpt {
+          case Some(e) -> {
+            val _ = lowerExprMsil(cctx, fctx, insns, e)
+            if fctx.retvalSlot < 0 {
+              fctx.retvalSlot = allocSlotMsil(fctx, "__retval", fctx.declaredRetTy)
+            }
+            emitStoreSlot(insns, fctx.retvalSlot, fctx.paramCount)
+          }
+          case None -> {}
         }
-        case None -> {
-          insns.add(MRet)
+        fctx.epilogueUsed.add(0)
+        insns.add(MLeave(label = fctx.epilogueLabel))
+      } else {
+        match valOpt {
+          case Some(e) -> {
+            lowerExprMsil(cctx, fctx, insns, e)
+            insns.add(MRet)
+          }
+          case None -> {
+            insns.add(MRet)
+          }
         }
       }
     }
@@ -5381,6 +5412,7 @@ func makeFuncCtxMsil(pkgName: in String, className: in String,
   val loopCont:    List[Int]              = newList()
   val loopTryDepth: List[Int]             = newList()
   val tryRegionStack: List[Int]           = newList()
+  val epilogueUsed: List[Int]             = newList()
   val yieldSlots:  List[Int]              = newList()
   val contextHintTyArgs: List[MsilType]  = newList()
   val byrefSlotTypes: Map[Int, MsilType] = newMap()
@@ -5398,6 +5430,9 @@ func makeFuncCtxMsil(pkgName: in String, className: in String,
     loopCont             = loopCont,
     loopTryDepth         = loopTryDepth,
     tryRegionStack       = tryRegionStack,
+    epilogueLabel        = -1,
+    retvalSlot           = -1,
+    epilogueUsed         = epilogueUsed,
     yieldSlots           = yieldSlots,
     declaredRetTy        = declaredRetTy,
     contextHintTyArgs    = contextHintTyArgs,
@@ -5967,6 +6002,20 @@ func funcBodyContainsYieldMsil(decl: in FunctionDecl): Bool {
   }
 }
 
+// Emit the function epilogue block when at least one `return` escaped a
+// protected region through `leave` (#1477).  The epilogue loads the stashed
+// return value (for non-void functions) and rets.  No-op when no return used
+// it, so functions without a `return`-inside-`try` are byte-identical.
+func emitEpilogueMsil(fctx: in FuncCtx, insns: in List[MInsn]): Unit {
+  if fctx.epilogueUsed.count > 0 {
+    insns.add(MLabel(id = fctx.epilogueLabel))
+    if fctx.retvalSlot >= 0 {
+      emitLoadSlot(insns, fctx.retvalSlot, fctx.paramCount)
+    }
+    insns.add(MRet)
+  }
+}
+
 pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
                        pkgName: in String): MFunc {
   val isGenerator = decl.isAsync and funcBodyContainsYieldMsil(decl)
@@ -6014,6 +6063,11 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
     fctx.slotTicker.add(0)
     pi = pi + 1
   }
+
+  // Reserve the function epilogue label up-front so a `return` inside a
+  // protected region can `leave` to it (see SReturn / #1477).  The epilogue
+  // block is only emitted below when at least one return actually used it.
+  fctx.epilogueLabel = freshLabelMsil(fctx)
 
   // Generator preamble: allocate a List<object> yield collector and record
   // its slot index in fctx.yieldSlots so that EYield lowering can append to it.
@@ -6082,6 +6136,11 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
       }
     }
   }
+
+  // Function epilogue: target of every `return` that escaped a protected region
+  // via `leave` (#1477).  Reached only through those `leave`s — the body above
+  // always ends in a terminal `ret`, so there is no fall-through into it.
+  emitEpilogueMsil(fctx, insns)
 
   // Build parameter type list for MFunc.
   val paramTypes: List[MsilType] = newList()
@@ -6164,6 +6223,10 @@ pub func lowerImplMethodMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
     pi = pi + 1
   }
 
+  // Reserve the epilogue label so a `return` inside a protected region can
+  // `leave` to it (see SReturn / #1477).
+  fctx.epilogueLabel = freshLabelMsil(fctx)
+
   // Lower the body — mirrors `lowerFuncMsil`'s logic but always non-extern.
   match decl.body {
     case Some(body) -> {
@@ -6186,6 +6249,9 @@ pub func lowerImplMethodMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
     }
     case None -> insns.add(MRet)
   }
+
+  // Function epilogue for any `return` that escaped a protected region (#1477).
+  emitEpilogueMsil(fctx, insns)
 
   val paramTypes: List[MsilType] = newList()
   var pi2 = 0
