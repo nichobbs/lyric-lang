@@ -1261,8 +1261,8 @@ pub func findTypeDefByFqn(img: in PeImage, layout: in TableLayout, th: in Tables
   -1
 }
 
-// MethodAttributes: Static = 0x0010, Virtual = 0x0040.
-func methodIsStatic(flags: in Int): Bool { (flags / 16) % 2 == 1 }
+// MethodAttributes: Virtual = 0x0040.  Static (0x0010) is read off the
+// `hasThis` bit of the method signature instead, so no helper here.
 func methodIsVirtual(flags: in Int): Bool { (flags / 64) % 2 == 1 }
 
 // Resolve the best-matching overload of `member` on `typeFqn` for `argTypes`,

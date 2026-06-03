@@ -233,14 +233,16 @@ stage1_cli_bundle() {
 // Importing Lyric.Cli forces the F# emitter to compile cli.l and
 // every transitively-imported Lyric package into its stdlib cache.
 //
-// Std.Time / Std.Math are imported *directly* so the emitter emits
-// their per-package DLLs (Lyric.Stdlib.Time(.Host) / Math(.Host)) into
-// the cache.  The compiler reaches them only transitively (Std.Time via
-// Lyric.BenchSynth), which does not trigger per-package emission, so
-// without these direct imports the DLLs never land in $STAGE1_DIR — and
-// every ecosystem library that imports Std.Time or Std.Math
-// (lyric-session, lyric-auth, lyric-cache, …) then fails at run time
-// with "Could not load file or assembly 'Lyric.Stdlib.Time'".
+// Std.Time / Std.Math are imported *directly* because neither appears in
+// the direct or transitive import closure of Lyric.Cli.  (Lyric.BenchSynth
+// emits the string "import Std.Time" into synthesised benchmark source,
+// but that is a code-generation artefact, not an import edge the emitter
+// sees here.)  Without a direct import the F# emitter never visits these
+// modules during the CLI-bundle precompile, so Lyric.Stdlib.Time(.Host) /
+// Math(.Host) DLLs never land in $STAGE1_DIR — and every ecosystem library
+// that imports Std.Time or Std.Math (lyric-session, lyric-auth,
+// lyric-cache, …) then fails at run time with "Could not load file or
+// assembly 'Lyric.Stdlib.Time'".
 package Lyric.CliBundle
 import Lyric.Cli
 import Std.Time

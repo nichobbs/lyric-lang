@@ -802,11 +802,10 @@ func reprForEnum(decl: in EnumDecl): String {
 // Build the head-only `impl <Iface> for <Target> {}` repr for a restored
 // impl block.  The empty body re-parses + re-typechecks in isolation; the
 // consumer recovers the impl's method signatures from the package's already-
-// emitted `interface` decl (#1602).  Returns `None` when the impl target is
-// not a plain type reference (e.g. an inherent impl on a generic application)
-// — those don't contribute a cross-package interface binding the current
-// registration handles, so they are omitted rather than emitting a malformed
-// repr.
+// emitted `interface` decl.  Returns `None` when the impl target's kind is
+// neither `TRef` nor `TGenericApp` (e.g. a tuple or slice type — corner
+// cases with no interface-binding relevance) so a malformed repr is never
+// emitted.
 func reprForImplHead(decl: in ImplDecl): Option[String] {
   val targetName = implTargetSimpleName(decl)
   if Str.isEmpty(targetName) { return None }

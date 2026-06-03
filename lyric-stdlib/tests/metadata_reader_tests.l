@@ -328,8 +328,9 @@ func testTypeRefResolution(): Unit {
         val rn = resolveSigType(img, layout, th, d.returnType)
         if rn.length > 0 {
           resolvedSome = true
-          // A resolved type name is a real (possibly namespaced) identifier.
-          assertTrue(rn.length > 0, "typeref: resolved name non-empty")
+          // A resolved type name is a real (possibly namespaced) identifier
+          // — it never contains an embedded space.
+          assertTrue(not Str.contains(rn, " "), "typeref: resolved name contains no spaces")
           if Str.contains(rn, "PeImage") { sawPeImage = true }
         }
         var pj = 0

@@ -1,5 +1,5 @@
 // Named-argument record construction must store each value into its own field
-// regardless of call-site argument order (D-progress-356).
+// regardless of call-site argument order (D-progress-357).
 
 @test_module
 package Lyric.NamedArgOrderSelfTest
