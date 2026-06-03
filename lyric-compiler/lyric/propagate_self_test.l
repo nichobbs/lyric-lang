@@ -150,9 +150,7 @@ test "Result `?` inside a while-loop body early-returns mid-iteration" {
   assertEqual(resultLabel(sumPositives(mixed)), "neg", "negative element ? -> Err")
 }
 
-// NOTE: `?` inside an impl/interface method body is correctly lowered by this
-// pass but does not yet run on the MSIL backend — a bare early `return` in an
-// impl-method body faults the JIT (a pre-existing codegen defect independent of
-// `?`: it reproduces with a hand-written `if cond { return … }` and no `?` at
-// all), tracked in #1784.  Once #1784 lands, `?` works there for free with no
-// change to this pass.
+// NOTE: `?` inside an impl/interface method body now runs correctly — what
+// blocked it was #1784 (a value-type *parameter* on an interface/impl method
+// faulted the JIT, unrelated to `?`), fixed separately.  End-to-end coverage of
+// `?` in an impl method lives in `impl_method_self_test.l`.
