@@ -1636,7 +1636,8 @@ func weaveItemsCore(
   // mapGet+match on Bool values in the bootstrap codegen produces MObject (not
   // Bool) from the unbound PConstructor binding, causing a JIT verification
   // failure when the result is passed to a Bool parameter. containsKey returns
-  // Bool directly, avoiding that codegen path.
+  // Bool directly, avoiding that codegen path.  Revert to `Map[String, Bool]`
+  // once #1826 is fixed.
   // seenAspectNames enforces first-wins for duplicate aspect names.
   val inlineTemplateNames: Map[String, String] = newMap()
   val seenAspectNames: Map[String, String]     = newMap()

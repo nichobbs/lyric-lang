@@ -2798,6 +2798,7 @@ func lowerExprOrBlockMsil(
   }
 }
 
+// INVARIANT: each branch must be self-contained label-wise — no `MBr` to a label defined outside the branch.  Today `lowerBlockMsil` honours this; adding cross-frame control flow (break/continue/return across this boundary) would risk silent JIT failures because branch instructions are emitted into temp lists with global label IDs.
 func lowerIfExprMsil(
   cctx:          in CodegenCtx,
   fctx:          in FuncCtx,
@@ -3443,6 +3444,8 @@ func lowerPatternTestMsil(
         // MObject scrutinee (e.g. mapGet result): any non-null value matches a
         // non-nullary constructor pattern.  Emit a null check and branch to
         // failLabel when the value is null (i.e., a nullary case like None).
+        // TODO(#1825): bootstrap runtime assumption — null == nullary case;
+        // revisit when the F# shim is eliminated.
         emitLoadSlot(insns, scrutSlot, fctx.paramCount)
         insns.add(MBrFalse(label = failLabel))
       }
@@ -3714,6 +3717,8 @@ func lowerPatternBindMsil(
         // to the scrutinee slot.  In the bootstrap representation the raw
         // mapGet value IS the inner value (e.g. Some.value), so no field load
         // is required — we store the scrutinee slot into the binding variable.
+        // TODO(#1825): bootstrap runtime assumption — mapGet returns the
+        // inner value unboxed; revisit when the F# shim is eliminated.
         var fi = 0
         while fi < fields.count {
           match fields[fi].kind {
@@ -5129,7 +5134,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
         // #1477.
         match valOpt {
           case Some(e) -> {
-            val _ = lowerExprMsil(cctx, fctx, insns, e)
+            lowerExprMsil(cctx, fctx, insns, e)
             if fctx.retvalSlot < 0 {
               fctx.retvalSlot = allocSlotMsil(fctx, "__retval", fctx.declaredRetTy)
             }
