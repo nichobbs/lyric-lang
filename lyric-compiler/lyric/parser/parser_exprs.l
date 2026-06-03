@@ -605,6 +605,8 @@ func parsePrimaryPattern(st: inout ParseState): Pattern {
           mkPat(PBinding(name = path.segments[0], inner = Some(value = inner)),
                 joinSpans(path.span, inner.span))
         } else if path.segments.count == 1 {
+          // TODO(#1891): workaround for PConstructor MObject codegen bug —
+          // an inline `None` would route through the buggy lowering path.
           val noInner: Option[Pattern] = None
           mkPat(PBinding(name = path.segments[0], inner = noInner), path.span)
         } else {
@@ -616,6 +618,7 @@ func parsePrimaryPattern(st: inout ParseState): Pattern {
       match k {
         case KwResult -> {
           val _ = advance(st)
+          // TODO(#1891): workaround for PConstructor MObject codegen bug.
           val noInner: Option[Pattern] = None
           mkPat(PBinding(name = "result", inner = noInner), tok.span)
         }

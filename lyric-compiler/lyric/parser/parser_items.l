@@ -538,6 +538,9 @@ func parseParam(st: inout ParseState): Param {
       case _ -> PMIn
     }
   val ty = parseTypeExpr(st)
+  // TODO(#1891): workaround for PConstructor MObject codegen bug — the
+  // explicit `Option[Expr]` ascription routes the result through the
+  // typed-bind path instead of the buggy inferred-MObject path.
   val dflt: Option[Expr] =
     match tryEatPunct(st, Eq) {
       case Some(_) -> Some(parseExpr(st))
@@ -1632,6 +1635,10 @@ func parseConfigField(st: inout ParseState): ConfigField {
     case None -> { emitErr(st, "P0120", "expected ':' after config field name", peekSpan(st)) }
   }
   val ty = parseTypeExpr(st)
+  // TODO(#1891): workaround for PConstructor MObject codegen bug — the
+  // `Option[Expr]` ascription plus the brace-wrapped `case None -> { None }`
+  // shape avoids the inferred-MObject path that a bare `case None -> None`
+  // would route through.
   val dflt: Option[Expr] =
     match tryEatPunct(st, Eq) {
       case Some(_) -> {
