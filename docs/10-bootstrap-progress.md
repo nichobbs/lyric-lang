@@ -18930,3 +18930,36 @@ regression — full Expecto emitter suite 847/847 and every native self-test
 green.  Wired into CI as the "Try-catch-expr self-test" step.  MSIL target only;
 JVM parity (the JVM backend already has `lowerTryCatchExpr`) is tracked under
 epic #1470's JVM-deferral note.
+
+### D-progress-379 — self-hosted MSIL: don't box value-type args to value-type interface/impl method params (#1784)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`).  Closes #1784.
+
+An interface/impl method with a **value-type parameter** (`Int`/`Bool`/
+`Double`/`Char`/…) faulted the JIT (`InvalidProgramException`) when dispatched
+virtually.  `lowerMethodCallMsil`'s user-method / interface dispatch boxed
+*every* argument (`boxIfNeededMsil`), but the interface and impl method
+signatures declare each parameter's **concrete** type (`typeExprToMsil(Bool)` →
+`MBool`), and the body reads it as that value type via `ldarg`.  So the
+`callvirt` pushed a boxed `object` where the signature expected `bool`/`int32`
+— invalid IL.  Reference-type params (records/strings) were unaffected (no
+boxing needed), which is why `map_option`'s record/string-param impl methods
+worked; the symptom was originally mis-attributed to an early `return` / `?` in
+the body (the repro's `m(ok: Bool)` parameter was the real cause).
+
+Fix: a new `methodParamTypes` registry (flat `<FQClass>/<method>#<idx>` keys,
+populated in `addPackageTokens` for record / impl / interface methods) lets the
+dispatch box an argument **only when the declared parameter is a
+reference/object type**; a value-type parameter takes the value as-is.  A
+missing entry falls back to the prior box-if-value behaviour.
+
+This also unblocks `?` and early `return` inside impl/interface methods (they
+were only ever blocked by a value-type parameter on the same method).
+
+Verified by `impl_method_self_test.l` (5/5 via native `lyric test --target
+dotnet`): `Int`+`Bool` interface params with an early `return`; `?` inside an
+impl method; `Double`/`Char` params; a reference-type param (no regression);
+and mixed reference+value params.  No regression — full emitter suite
+(847/847), self-hosted bridge suite (84/84), and every native self-test
+(`map_option`, `propagate`, `self_method_call`, generic suites, …) green.
+MSIL target only (epic #1470 defers JVM).

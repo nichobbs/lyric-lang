@@ -181,6 +181,14 @@ pub record CodegenCtx {
   // `MObject`, so union pattern tests/binds mis-extracted the payload and the
   // wrong arm fired (#1602).  Mirrors `funcRetTypes` for direct static calls.
   methodRetTypes:     Map[String, MsilType]
+  // Declared MSIL parameter type per instance/interface/impl method parameter,
+  // keyed `<FQClassName>/<methodName>#<paramIndex>` (0-based, excluding the
+  // implicit `this`).  `lowerMethodCallMsil` consults it so a value-type
+  // argument is passed as-is to a value-type parameter instead of being boxed —
+  // the method signature declares the concrete value type, so boxing produced
+  // `object` where `bool`/`int32` was expected (invalid IL, #1784).  A missing
+  // entry falls back to the conservative box-if-value-type behaviour.
+  methodParamTypes:   Map[String, MsilType]
   // Pending interface implementations discovered by the IImpl pre-pass.  Each
   // entry maps an implementing record's FQ name to its impl block(s); used to
   // (a) inject impl methods into the target MRecord, and (b) emit MPImpl items
@@ -732,6 +740,7 @@ pub func newCodegenCtx(packageName: in String,
     lambdaTicker         = newList(),
     methodTokens         = newMap(),
     methodRetTypes       = newMap(),
+    methodParamTypes     = newMap(),
     implEntries          = newList(),
     nextMethodDefRow     = newList(),
     nextFieldDefRow      = newList(),
@@ -759,6 +768,21 @@ func registerMethodRetTy(cctx: in CodegenCtx, key: in String, ret: in Option[Typ
       case None     -> MVoid
     }
     cctx.methodRetTypes.add(key, mty)
+  }
+}
+
+// Record each declared parameter's MsilType under `<keyBase>#<idx>` so
+// `lowerMethodCallMsil` can avoid boxing a value-type argument passed to a
+// value-type parameter (#1784).  First registration wins (matches the
+// interface signature when an impl re-registers the same slot).
+func registerMethodParamTypes(cctx: in CodegenCtx, keyBase: in String, params: in List[Param], pkgName: in String): Unit {
+  var i = 0
+  while i < params.count {
+    val pk = keyBase + "#" + toString(i)
+    if not cctx.methodParamTypes.containsKey(pk) {
+      cctx.methodParamTypes.add(pk, typeExprToMsilCtx(cctx, params[i].ty, pkgName))
+    }
+    i = i + 1
   }
 }
 
@@ -853,6 +877,8 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
                 case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
                 case None     -> MVoid
               })
+              // Param types for the concrete-receiver dispatch key (#1784).
+              registerMethodParamTypes(cctx, targetName + "/" + fn.name, fn.params, pkgName)
             }
             case IMplAssoc(_) -> {}
           }
@@ -920,6 +946,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
               cctx.methodTokens.add(className + "/" + fn.name,
                                     0x06000000 + methodDefRow)
               registerMethodRetTy(cctx, className + "/" + fn.name, fn.ret, pkgName)
+              registerMethodParamTypes(cctx, className + "/" + fn.name, fn.params, pkgName)
               methodDefRow = methodDefRow + 1
             }
             case _ -> {}
@@ -994,6 +1021,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
               cctx.methodTokens.add(className + "/" + fn.name,
                                     0x06000000 + methodDefRow)
               registerMethodRetTy(cctx, className + "/" + fn.name, fn.ret, pkgName)
+              registerMethodParamTypes(cctx, className + "/" + fn.name, fn.params, pkgName)
               methodDefRow = methodDefRow + 1
             }
             case _ -> {}
@@ -1111,12 +1139,14 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
               cctx.methodTokens.add(ifaceName + "/" + sig.name,
                                     0x06000000 + methodDefRow)
               registerMethodRetTy(cctx, ifaceName + "/" + sig.name, sig.ret, pkgName)
+              registerMethodParamTypes(cctx, ifaceName + "/" + sig.name, sig.params, pkgName)
               methodDefRow = methodDefRow + 1
             }
             case IMFunc(fn)  -> {
               cctx.methodTokens.add(ifaceName + "/" + fn.name,
                                     0x06000000 + methodDefRow)
               registerMethodRetTy(cctx, ifaceName + "/" + fn.name, fn.ret, pkgName)
+              registerMethodParamTypes(cctx, ifaceName + "/" + fn.name, fn.params, pkgName)
               methodDefRow = methodDefRow + 1
             }
             case IMAssoc(_) -> {}
@@ -4747,7 +4777,19 @@ func lowerMethodCallMsil(
           var i = 0
           while i < args.count {
             val aTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
-            boxIfNeededMsil(cctx, insns, aTy)
+            // The method signature declares each parameter's concrete type
+            // (`typeExprToMsil`).  Box a value-type argument ONLY when the
+            // parameter is a reference/object type — boxing it for a value-type
+            // parameter passed `object` where `bool`/`int32` was expected, which
+            // is invalid IL (#1784).  A missing registry entry falls back to the
+            // conservative box-if-value behaviour.
+            val paramIsValue = match mapGet(cctx.methodParamTypes, cls + "/" + memberName + "#" + toString(i)) {
+              case Some(pt) -> isValueType(pt)
+              case None     -> false
+            }
+            if not paramIsValue {
+              boxIfNeededMsil(cctx, insns, aTy)
+            }
             i = i + 1
           }
           insns.add(MCallvirt(methodToken = tok))
@@ -6470,6 +6512,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
   // always ends in a terminal `ret`, so there is no fall-through into it.
   emitEpilogueMsil(fctx, insns)
 
+
   // Build parameter type list for MFunc.
   val paramTypes: List[MsilType] = newList()
   var pi2 = 0
@@ -6580,6 +6623,7 @@ pub func lowerImplMethodMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
 
   // Function epilogue for any `return` that escaped a protected region (#1477).
   emitEpilogueMsil(fctx, insns)
+
 
   val paramTypes: List[MsilType] = newList()
   var pi2 = 0
