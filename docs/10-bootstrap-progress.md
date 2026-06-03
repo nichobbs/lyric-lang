@@ -18744,3 +18744,37 @@ emitter suite 847/847 and every native self-test green.  Wired into CI as the
 "Return-in-try self-test" step.  MSIL target only; JVM parity is tracked under
 epic #1470's JVM-deferral note.  `defer`-at-scope-exit itself (the remaining
 half of #1477) follows in a separate PR.
+
+### D-progress-374 — self-hosted MSIL: `==`/`!=` dispatch to derived structural equality (#1480, partial — docs/41 §3 H1)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`).
+
+`==`/`!=` on a record (or distinct type) lowered to a static `Object.Equals`
+call — reference equality for reference types — so two field-equal
+`@derive(Equals)` records compared **unequal**, contradicting the language
+reference (records have structural equality).  `Lyric.Derives` already
+synthesises a `<Type>.equals(self, other): Bool` field-comparison method, but
+`==` never called it.
+
+`BEq`/`BNeq`'s non-primitive arm now looks up the type's derived
+`<typeFqn>.equals` in `funcTokens` (via a new `derivedEqualsTokenMsil` helper)
+and, when present, emits a direct `call` to it (both operands are already on
+the stack in `(self, other)` order); types without a derived `equals` keep the
+`Object.Equals` fallback unchanged.  Because the derived `equals` body itself
+compares fields with `==`, nested derived records compare structurally and
+recursively.  This wiring only became reachable after #1796 stopped the
+monomorphizer from dropping the synthesized helper before codegen.
+
+Verified by `equality_self_test.l` (6/6 via native `lyric test --target
+dotnet`): field-equal records `==`, field-different `==`/`!=` (Int and String
+fields), nested-record recursion, the empty record, and `==` composed inside a
+`Bool`-returning function.  No regression — native self-tests, the self-hosted
+bridge suite (84/84), and the full emitter suite (847/847) all green; a record
+without `@derive(Equals)` still uses reference `Object.Equals`.
+
+**Remaining #1480 scope:** `@derive(Hash)` emits a `hash` method, not a
+`GetHashCode` override, and there is no `Object.Equals(object)` override on the
+record TypeDef — so BCL `Map`/`HashSet` key lookup is still identity-based.
+Real override synthesis on the record TypeDef (delegating to the now-emitted
+`equals`/`hash`) is the remaining work; #1480 stays open for it.  MSIL target
+only (epic #1470 defers JVM).

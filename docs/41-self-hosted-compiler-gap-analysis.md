@@ -62,12 +62,13 @@ bar:
 2. **Several backend constructs silently miscompile (CRITICAL).** Not panics —
    *silent wrong code*: `?` propagation (`EPropagate`) is a no-op, `await`/`spawn`
    run synchronously and return the unwrapped/awaitable value, `async func`
-   returns a bare value instead of `Task[T]`, `defer` runs its body inline
-   immediately instead of at scope exit, and `==` on records/distinct types is
-   reference equality (the
-   derived `equals` method is never dispatched). Each of these compiles without
-   error and produces a wrong program — the failure mode the project standard
-   most explicitly forbids.
+   returns a bare value instead of `Task[T]`, and `defer` runs its body inline
+   immediately instead of at scope exit. (`?` propagation is now fixed — #1475;
+   and `==` on `@derive(Equals)` records/distinct types now dispatches
+   structurally to the derived `equals` — #1480/#1796, though `Map`/`HashSet`
+   key lookup still needs `GetHashCode`/`Object.Equals` overrides.) Each of the
+   remaining items compiles without error and produces a wrong program — the
+   failure mode the project standard most explicitly forbids.
 
 3. **Async/await has no self-hosted implementation (CRITICAL).** There is no
    `IAsyncStateMachine` / `ValueTask` synthesis and no lazy
@@ -175,7 +176,7 @@ supporting all language features."
 
 | # | Gap | Evidence | Effort |
 |---|---|---|---|
-| H1 | **OPEN (verified 2026-06-03).** The derived `equals`/`hash` *methods* are now synthesized field-by-field (`derives.l` `equalsExprForFields`), **but `==` still does not dispatch to them**: `BEq`/`BNeq` emit static `Object.Equals` (reference equality for records/distinct), and `@derive(Hash)` emits a `hash` method, not a `GetHashCode` override. The remaining work is operator/override *wiring*, not synthesis. | `codegen.l` `BEq`/`BNeq` arm (static `Object.Equals`); `derives.l` synth present | M |
+| H1 | **PARTIAL (2026-06-03).** `==`/`!=` operator wiring is DONE: `BEq`/`BNeq` now call the derived `<Type>.equals` for records / distinct types with `@derive(Equals)` instead of static `Object.Equals`, so `a == b` is structural (recursive through nested derived records). This depended on #1796 (mono no longer drops the synthesized helper so it reaches codegen with a token). **Remaining:** `@derive(Hash)` still emits a `hash` method, not a `GetHashCode` override, and there is no `Object.Equals(object)` override — so BCL `Map`/`HashSet` key lookup is still reference/identity-based. That needs real `Object.Equals`/`GetHashCode` override synthesis on the record TypeDef (the remaining #1480 scope). | `codegen.l` `BEq`/`BNeq` → `derivedEqualsTokenMsil`; `GetHashCode` override still absent | M |
 | H2 | `@projectable` opaque twin + `toExposed`/`fromExposed` never generated — `isProjectable` is computed but never read in `lowerMOpaque`. | `codegen.l:6324-6330`, `lowering.l:1849-1944` | L |
 | H3 | Range-subtype bounds dropped at every layer: `IDistinctType` arm reads only `underlying`; `lowerMRangeType` is dead and also drops bounds; no construction validation. Front-end discards range in `TRefined`. | `codegen.l:6174-6180`, `lowering.l:1592-1599`, `typechecker_resolver.l:75-78` | M |
 | H4 | **PARTIAL (2026-06-03).** `WMExpose` members lower; `bind`/`scoped`/`provided` are still dropped (`case _ -> {}`) and there is no topological ordering / cycle detection. | `codegen.l` wire-block lowering (`WMExpose` only); `typechecker_checker.l` | L |
