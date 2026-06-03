@@ -799,15 +799,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
   var methodDefRow = cctx.nextMethodDefRow.count + 1
   var fieldDefRow  = cctx.nextFieldDefRow.count + 1
 
-  // Pre-scan: does any IVal need a `.cctor` (non-literal init)?
-  // After the literal-IVal inlining fix, only non-literal IVals produce
-  // a non-empty initInsns list and therefore a .cctor MethodDef row.
-  //
-  // Threading a `constEnv` of `val` names seen so far lets us treat
-  // `val b = a` (where `a` is itself literal) as literal too — without
-  // this, every later val that references an earlier literal val forces
-  // `hasValCctor = true`, allocating a phantom `.cctor` MethodDef and
-  // shifting every subsequent IFunc token by one (silent miscompile).
+  // Threading `constEnv` lets `val b = a` (a literal val) stay literal; without it a phantom .cctor MethodDef row would shift every later IFunc token.
   val constEnv: Map[String, Bool] = newMap()
   var hasValCctor = false
   var pi = 0
@@ -1159,15 +1151,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
         // before lookup (see `lowerBuiltinOrStaticCallMsil`); lambdas use
         // `fctx.pkgName + ".__lambda_<idx>"` for the same reason.
         val fqn = pkgName + "." + decl.name
-        // Arity-qualified key (#1536): same-name overloads (e.g.
-        // `Std.String.substring/2` vs `/3`) collide on the bare FQN, which
-        // made the unguarded `funcTokens.add(fqn, …)` below throw a
-        // duplicate-key error and crash the self-hosted stdlib bundle build.
-        // Each overload now registers under a unique `<fqn>/<arity>` key
-        // (mirroring the type checker's `name/arity` sig map); the bare FQN is
-        // kept as a first-registered-wins alias so package resolution and
-        // existing bare-FQN lookups keep working.  Call sites narrow to the
-        // arity key (see `lowerBuiltinOrStaticCallMsil`).
+        // Arity-qualified key (#1536) so same-name overloads don't collide on the bare FQN; bare FQN kept as a first-wins alias.
         val arityKey = fqn + "/" + toString(decl.params.count)
         val funcTok = 0x06000000 + methodDefRow
         if not cctx.funcTokens.containsKey(arityKey) {
@@ -1204,9 +1188,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
             case None     -> MVoid
           }
         }
-        // Mirror the funcTokens keying: arity-qualified key + bare alias so
-        // the call site's return-type lookup (which uses the same key it
-        // resolved the token with) agrees per overload (#1536).
+        // Mirror funcTokens' arity-qualified key + bare alias so the call site's lookup picks the matching overload's return type.
         if not cctx.funcRetTypes.containsKey(arityKey) {
           cctx.funcRetTypes.add(arityKey, retTy)
         }
@@ -1326,9 +1308,7 @@ pub record FuncCtx {
   // out of one or more CLR protected regions and must emit `leave`, not `br`
   // (a `br` across a protected-region boundary is unverifiable IL).  #1481.
   loopTryDepth:  List[Int]
-  // Open protected-region marker stack: `.count` is the current try/catch
-  // nesting depth.  Pushed around each `try` body and each `catch` handler body
-  // in lowerTryCatchMsil.
+  // Try/catch nesting depth counter (values unused; only `.count` matters).  Pushed around each `try` body and each `catch` handler in lowerTryCatchMsil.
   tryRegionStack: List[Int]
   // EYield support: slot of the List<object> yield collector when inside a generator.
   // Empty when the function is not a generator; singleton when it is.
@@ -1470,8 +1450,7 @@ func materializeBoxedElemMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy
     case MObject -> {}
     case _       -> {
       if isValueType(elemTy) {
-        // `0x01000000` is the ECMA-335 metadata-token prefix for the TypeRef
-        // table (table index 0x01); `boxTypeRef` returns a bare RID.
+        // 0x01000000 = ECMA-335 TypeRef table token prefix; boxTypeRef returns a bare RID.
         insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, elemTy)))
       }
     }
@@ -3400,8 +3379,7 @@ func lowerPatternTestMsil(
           insns.add(MPop)
         }
         case _ -> {
-          // LATENT GAP: `LFloat`, `LTripleString`, and `LRawString` patterns
-          // fall through here and silently match unconditionally — see #1792.
+          // LATENT GAP: LFloat/LTripleString/LRawString silently match unconditionally — see #1792.
           insns.add(MPop)
         }
       }

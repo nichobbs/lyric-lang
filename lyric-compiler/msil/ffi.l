@@ -210,7 +210,8 @@ pub func clrAssemblyResolvable(typeFqn: in String): Bool {
 // externs (HttpClient, Regex, Stream, …) are deliberately absent — they keep
 // the existing CLASS / OBJECT encoding.  When a new value-typed extern is
 // added to the kernel, it must be added here too; an omission re-introduces the
-// signature mismatch (caught by the cross-package round-trip self-test).
+// signature mismatch.  A CI-time cross-check against the `_kernel/` externs is
+// tracked in #1802 (today there is no automated guard).
 pub func clrIsValueType(typeFqn: in String): Bool {
   typeFqn == "System.Guid"
     or typeFqn == "System.DateTime"

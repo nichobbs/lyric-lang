@@ -959,6 +959,12 @@ func isAllDigits(s: in String): Bool {
 // Natural-order "greater than": compare dot-separated components, numerically
 // when both are all-digits (so `10.0.10` > `10.0.9`, which a plain
 // lexicographic compare gets wrong), otherwise by code point.
+//
+// KNOWN LIMITATION: TFM monikers like `net10.0` / `net9.0` split into `net10`
+// / `net9`, which aren't all-digits, so the fallback lexicographic compare
+// gets them backwards (`net10` < `net9`).  Today this doesn't trigger because
+// `ref/` typically contains a single TFM subdir; if multiple TFMs ever
+// co-install, strip the leading non-digit prefix before comparing.
 func dirVersionGreater(a: in String, b: in String): Bool {
   val pa = Str.split(a, ".")
   val pb = Str.split(b, ".")
@@ -998,6 +1004,9 @@ func pickHighestDir(dir: in String): Option[String] {
 }
 
 // Candidate .NET install roots, in priority order.
+// KNOWN LIMITATION: the fallback set after `DOTNET_ROOT` is Unix-only (uses `$HOME`,
+// not `%USERPROFILE%`; hardcodes `/usr/{share,lib}/dotnet`).  Windows support without
+// `DOTNET_ROOT` set is tracked separately — set `DOTNET_ROOT` explicitly on Windows.
 func candidateDotnetRoots(): List[String] {
   val roots: List[String] = newList()
   val dr = Environment.getVarOrDefault("DOTNET_ROOT", "")
@@ -1231,6 +1240,12 @@ pub func scoreParams(argTypes: in List[SigType], params: in List[SigType]): Int 
 
 // Score a whole candidate against the argument list: the sum of per-parameter
 // scores, or -1 on arity mismatch or any incompatible parameter.
+//
+// CALLER NOTE: this entry point does NOT normalize `sig.paramTypes` from raw
+// `STClass`/`STValueType` tokens to `STNamed`.  `resolveOverloadIn` does that
+// pre-normalization before delegating to the internal `scoreParams`; direct
+// callers supplying `STNamed` args must pre-normalize too, or go through
+// `resolveOverloadIn` / `resolveExtern`.
 pub func scoreOverload(argTypes: in List[SigType], sig: in DecodedMethodSig): Int {
   if sig.paramTypes.count != argTypes.count { return -1 }
   var total = 0
