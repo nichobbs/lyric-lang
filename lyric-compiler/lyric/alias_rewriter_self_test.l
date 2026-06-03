@@ -45,6 +45,15 @@ import Std.Testing
 // ── Control: IFunc bodies were already descended pre-#1834 ────────────────────
 func ctrlLen(s: in String): Int { Str.length(s) }
 
+// ── Contract clause descent (#1861): an aliased call inside a `requires:`
+//    clause must be rewritten too (the clause is type-checked, so a surviving
+//    `Str.` reference would trip T0020).  `requires:`-only (no `ensures:`) — the
+//    self-hosted MSIL `ensures:`/`result` lowering NRE's in the `lyric test`
+//    path independently of aliasing, tracked in #1871. ──────────────────────────
+func checkedLen(s: in String): Int
+  requires: Str.length(s) >= 0
+{ Str.length(s) }
+
 // Top-level helper reading an aliased generic Option (IFunc, already worked).
 // The `None` arm is first deliberately (see the #1855 footnote above).
 func unwrapOr(o: in Core.Option[Int], dflt: in Int): Int {
@@ -84,6 +93,10 @@ func boxedTag(b: in Boxed): Int {
 
 test "IFunc control: aliased call in a top-level body still works" {
   assertEqualInt(ctrlLen("abc"), 3, "Str.length via alias")
+}
+
+test "contract clause: aliased call inside a requires: clause resolves (#1861)" {
+  assertEqualInt(checkedLen("hello"), 5, "Str.length in requires + body")
 }
 
 test "IImpl: aliased call inside an impl method body resolves (T0020 repro)" {

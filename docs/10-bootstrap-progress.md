@@ -19031,3 +19031,41 @@ alias-independent generic-union MSIL codegen miscompiles uncovered while
 writing the test (`Some`-first match arm order over a fn-returned `Option`;
 member methods returning a generic union) are filed as #1855 and sidestepped in
 the test with a pointer.  MSIL target only (epic #1470 defers JVM).
+
+### D-progress-382 — self-hosted: alias rewriter also descends into `where`-clause bounds and contract clauses (#1860, #1861)
+
+**Status:** Shipped (`lyric-compiler/lyric/alias_rewriter.l`).
+
+Follow-up to D-progress-381 (#1834), closing the two remaining alias-descent
+gaps the review flagged:
+
+- **#1860 — `where T: Alias.Trait` bounds.** Every decl's `whereClause` was
+  passed through unrewritten (`rewriteFunctionDecl`, `rewriteFunctionSig`,
+  `rewriteRecordDecl`, `rewriteImplDecl`, `rewriteInterfaceDecl`,
+  `rewriteUnionDecl`, `rewriteOpaqueTypeDecl`, `rewriteProtectedTypeDecl`), so a
+  trait bound written through an alias tripped `T0051`/`T0020`.  New
+  `rewriteWhereClauseOpt` / `rewriteWhereBound` route each bound's
+  `ConstraintRef` list through the existing `rewriteConstraintRef`.
+- **#1861 — `requires:` / `ensures:` / `when:` / `decreases:` / `raises:`
+  contract clauses.** `FunctionDecl` / `FunctionSig` / `EntryDecl` / `AspectDecl`
+  passed `contracts` through unrewritten, so an aliased call in a contract
+  expression (e.g. `requires: Alias.isValid(x)`) survived as the bare alias
+  segment.  New `rewriteContracts` / `rewriteContractClause` rewrite each
+  clause's `Expr` (and `raises:`'s `List[TypeExpr]`) through `rewriteExpr` /
+  `rewriteTypeExpr`.
+
+The review's third finding (#1862, `derives`) was closed as not-applicable:
+`derives` markers parse as single bare identifiers, so an alias-qualified derive
+is not representable in the grammar — nothing to rewrite.
+
+Verified by extending `alias_rewriter_self_test.l` with a `requires:`-clause
+case (red→green: reverting the `rewriteContracts` call makes it fail to compile
+the aliased `Str.length` in the `requires:` clause).  The `where`-bound fix is
+verified manually (an aliased `where T: Stream.Closable` resolves; a bogus
+`where T: Stream.NoSuchTrait` still raises `T0051`) but is not given a hard CI
+guard: a runtime guard needs an aliased-trait fixture whose interface method
+returns a generic union, which currently collides with the orthogonal codegen
+bugs #1855 and #1871, and an uncalled generic's `where`-clause error does not
+fail `lyric test`.  A `requires:`+`ensures:` test is blocked by the
+pre-existing `ensures:` codegen NRE (#1871), so the contract guard is
+`requires:`-only.  MSIL target only (epic #1470 defers JVM).
