@@ -204,6 +204,9 @@ func inferBinop(
         diag.add(errorDiagnostic("T0030",
           "left operand of arithmetic operator is not numeric (got " + renderType(lhs) + ")", span))
       }
+      // TODO(#1891): the `val addEquiv = …; if not addEquiv { … }` shape
+      // avoids inlining the `typeEquiv` call inside the `if` directly, which
+      // would otherwise route through the PConstructor MObject codegen bug.
       val addEquiv = typeEquiv(lhs, rhs)
       if not addEquiv {
         diag.add(errorDiagnostic("T0031",
