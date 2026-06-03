@@ -21,7 +21,7 @@ Phase 4 (proof), Phase 5 (self-hosting), and Phase 6 (JVM/VS Code/ecosystem)
 are post-v1.0 or parallel tracks; many of their milestones have already shipped
 as Phase 6 early work and are listed in §4 below.
 
-> **⚠ Critical-path correction (2026-06-03).** §R1–R6 below are all DONE, but
+> **Critical-path correction (2026-06-03).** §R1–R6 below are all DONE, but
 > they are **not sufficient for a v1.0 tag.** Since the self-hosted compiler
 > became the default and only `--target dotnet` path (the F# `--internal-build`
 > subprocess was retired, D-progress-317), the v1.0 exit criterion "a team can

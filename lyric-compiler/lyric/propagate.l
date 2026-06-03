@@ -68,6 +68,9 @@ union PropKind {
   case PropResult
   case PropOption
   case PropOther
+  // Inside a lambda body — the lambda's own return monad cannot be inferred
+  // by this pass, so `?` is rejected with a lambda-specific F0020 message.
+  case PropInLambda
 }
 
 // Mutable state threaded through the walk by reference.  `counter` is a
@@ -227,9 +230,15 @@ func rewriteExpr(e: in Expr, kind: in PropKind, st: in PropState): Expr {
     case EPropagate(inner) -> {
       val inner2 = rewriteExpr(inner, kind, st)
       match kind {
-        case PropResult -> buildResultMatch(inner2, e.span, st)
-        case PropOption -> buildOptionMatch(inner2, e.span, st)
-        case PropOther  -> {
+        case PropResult   -> buildResultMatch(inner2, e.span, st)
+        case PropOption   -> buildOptionMatch(inner2, e.span, st)
+        case PropInLambda -> {
+          st.diagnostics.add(errorDiagnostic("F0020",
+            "the `?` operator is not yet supported inside a lambda body (the lambda's return type cannot be inferred; use an explicit `match` instead)",
+            e.span))
+          inner2
+        }
+        case PropOther    -> {
           st.diagnostics.add(errorDiagnostic("F0020",
             "the `?` operator requires the enclosing function to return Result[T, E] or Option[T]",
             e.span))
@@ -305,11 +314,12 @@ func rewriteExpr(e: in Expr, kind: in PropKind, st: in PropState): Expr {
     }
 
     // A lambda has its own return monad, which the backend cannot yet infer;
-    // recurse with PropOther so a `?` inside surfaces F0020 rather than being
-    // rewritten against the wrong (enclosing) function's return type.
+    // recurse with PropInLambda so a `?` inside surfaces a lambda-specific
+    // F0020 rather than being rewritten against the wrong (enclosing)
+    // function's return type.
     case ELambda(lambdaParams, body) ->
       mkExpr(ELambda(lambdaParams = lambdaParams,
-                     body = rewriteBlock(body, PropOther, st)), e.span)
+                     body = rewriteBlock(body, PropInLambda, st)), e.span)
 
     case ECall(fn, args) -> {
       val newArgs: List[CallArg] = newList()

@@ -110,12 +110,12 @@ test "Compound assignment to a record field honours the operator" {
 // Item 2 — Compound assignment to a List element and a Map value.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Note on read-back: a direct `xs[i]` / `m[k]` used where an `Int` is expected
-// is blocked by the separate primitive-element-erasure gap (#1442) — List/Map
-// store elements boxed and reading one back as a primitive does not unbox.  The
-// compound-assignment WRITE path under test here is independent of that; the
-// result is observed via `toString` on the boxed element (which round-trips
-// correctly) so these assertions stay tied to #1481 alone.
+// Note on read-back: List[ValueType] elements unbox correctly on read so
+// the List[Int] case below asserts the post-write value directly.  Map
+// values still erase to `object` (primitive-element-erasure gap #1442), so
+// the Map test continues to observe writes via `toString` on the boxed
+// element while the underlying unbox lands.  Either way the compound-
+// assignment WRITE path under test here is independent of the read path.
 
 test "Compound assignment to a List[Int] element" {
   val xs: List[Int] = newList()
