@@ -18499,3 +18499,49 @@ ecosystem CI step until #1761 made that step pass.  Validated: weaver self-test
 29/29, `bitwise`/`auto_ffi`/`outparam` self-tests green.  Other unhandled literal
 pattern kinds (`LFloat`, `LTripleString`, `LRawString`) share the same latent
 `case _ -> MPop` gap but have no current exerciser; left for a follow-up.
+
+### D-progress-368 — self-hosted MSIL: `?` error-propagation lowering (#1475)
+
+**Status:** Shipped (`lyric-compiler/lyric/propagate.l`, `lyric-compiler/msil/bridge.l`).
+
+The self-hosted MSIL backend lowered `EPropagate` (the `?` operator) as a
+pass-through — `x?` compiled as `x`, with no unwrap and no early return — a
+silent miscompile of every program using `?` (docs/41 §3 C3, Band 2).
+
+The fix is a new middle-end pass, `Lyric.Propagate`, run from the MSIL bridge
+(both the single-file and multi-package paths) **after the contract
+elaborator** and before derive/mono/weave.  It rewrites each `e?` into a
+`match`, keyed off the enclosing function's declared return type (language
+reference §4.5: "the signature must declare a compatible return type, or the
+compiler rejects the use"):
+
+- `Result[T, E]` → `match e { case Ok(v) -> v; case Err(x) -> { return Err(x) } }`
+- `Option[T]` → `match e { case Some(v) -> v; case None -> { return None } }`
+
+The synthesised AST is exactly what the parser produces for a hand-written
+`match` / `return`, so codegen lowers it through tested machinery:
+`lowerMatchExprMsil` already reconciles an early-return arm with a
+value-producing fall-through arm, and the reconstructed `Err(x)` / `None`
+constructors pick up their concrete type arguments from `fctx.declaredRetTy`
+exactly as a user-written `return Err(x)` / `return None` does.  Running after
+the elaborator keeps a propagated `Err`/`None` short-circuit out of the
+success-shaped `ensures:` rewrite.  A `?` in a function returning neither
+`Result` nor `Option` (or inside a lambda, whose return monad the backend
+cannot yet infer) is rejected with a hard `F0020` diagnostic, never a silent
+pass-through; nullable (`T?`) propagation takes the same diagnostic and is
+deferred.  (`try?`/`ETry` is never produced by the self-hosted parser, so its
+dead codegen arm is left untouched.)
+
+Verified by `propagate_self_test.l` (7/7 via native `lyric test --target
+dotnet`, compiled in-process through the self-hosted `Msil.Bridge`): Result
+and Option `?` in tail and non-tail position, short-circuit ordering, and `?`
+in both arms of an `if`.  No regression — `map_option`, `named_arg_order`,
+`outparam`, `nested_generic`, `generic_specialization`, `stdlib_generic_mono`
+self-tests all green.
+
+`?` inside a loop body or an impl/interface method body is correctly lowered
+but blocked from running by a **pre-existing** early-return codegen defect
+(an early `return` from inside a `while` is silently dropped; a control-flow
+tail in an impl-method body returning a union faults the JIT) — both reproduce
+with a hand-written `return`/`match` and no `?`, and are tracked in #1779.
+JVM-target `?` parity is deferred (epic #1470 defers JVM).

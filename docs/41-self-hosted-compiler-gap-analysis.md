@@ -159,7 +159,7 @@ supporting all language features."
 |---|---|---|---|
 | C1 | Type checker is advisory on the single-file build path (`reportDiagnostics`), fatal on the project path (`reportAndAbort`). Type-broken single files compile to broken IL silently; same source diverges between paths. | `bridge.l:92` vs `bridge.l:395` | S (flip) gated on C2 |
 | C2 | Type checker is unsound: ~12 expr forms infer `TyError`, a universal unifier; no match exhaustiveness; no record-ctor checking; `?`/lambda/tuple-destructure/index/`if`/`match` results untyped. | `typechecker_exprs.l:680-693`, `typechecker_types.l:130-131`, `typechecker_stmts.l:14-51` | L |
-| C3 | `?` propagation (`EPropagate`) and `try?` (`ETry`) are no-ops — `x?` compiles as `x`, no unwrap, no early-return. | `codegen.l:1787-1793` | M |
+| C3 | ~~`?` propagation (`EPropagate`) is a no-op — `x?` compiles as `x`, no unwrap, no early-return.~~ **RESOLVED (#1475).** The `Lyric.Propagate` middle-end pass (`lyric-compiler/lyric/propagate.l`, run from `bridge.l` after the elaborator) rewrites `e?` into a `match` that unwraps `Ok`/`Some` and early-returns `Err`/`None`, keyed off the enclosing function's declared return type; a non-`Result`/`Option` enclosing function is rejected with `F0020`. (`try?`/`ETry` is never produced by the self-hosted parser, so its codegen arm is dead.) Verified by `propagate_self_test.l`. Note: `?` inside a loop or impl-method body is blocked by a pre-existing early-return codegen defect, #1779. | `propagate.l`; `bridge.l` | M |
 | C4 | `await`/`spawn` lower synchronously; `async func` returns a bare value, not `Task[T]`; no `IAsyncStateMachine`. Silent miscompile of every async program. | `codegen.l:1755-1758,1782-1784,983-999`; no state machine in `msil/*` | XL |
 | C5 | Async generators use eager collect-all into `List<object>`, not lazy `IEnumerable`/`IAsyncEnumerable`; return type forced to List; unbounded generators buffer forever. | `codegen.l:1760-1780,983` | XL |
 | C6 | **Fixed (#1530).** Indexed assignment `a[i] = v` previously silently discarded the store (value evaluated then popped); the `EIndex` assignment target now emits `List[object]::set_Item`. Compound indexed forms (`a[i] += v`) hard-fail with a clear build error pending element-type plumbing (#1481). | `codegen.l` `lowerAssignExprMsil` EIndex arm | Resolved |
@@ -280,8 +280,9 @@ rejecting valid programs.
 
 ### 5.2  Backend silent miscompiles (CRITICAL band)
 
-`?`, `await`, `spawn`, `defer`, and `==` each compile cleanly and run
-wrong (C3–C5, C7, H1; indexed assignment `a[i]=v` (C6) is now fixed — #1530).
+`await`, `spawn`, `defer`, and `==` each compile cleanly and run
+wrong (C4–C5, C7, H1; `?` propagation (C3) is now fixed — #1475; indexed
+assignment `a[i]=v` (C6) is now fixed — #1530).
 The root cause is that the bridge pipeline has **no
 desugaring/lowering pass** for `?`, `await`/async, `defer`, or range iteration —
 those nodes arrive at codegen raw and are handled with placeholder
@@ -458,7 +459,8 @@ section wins.
 - **Band 1 (front-end soundness, CRITICAL):** C1, C2, C10, C11, H14, H15, H16,
   M6 — and the front-end half of C13. The type checker is still an advisory,
   error-tolerant inference pass (`TyError` universal unifier), not a gatekeeper.
-- **Band 2 (backend correctness, CRITICAL):** C3 (`?` no-op), C7 (`defer`
+- **Band 2 (backend correctness, CRITICAL):** C3 (`?` no-op) is now fixed
+  (#1475: `Lyric.Propagate`). Remaining: C7 (`defer`
   inline), H1 (`==` doesn't dispatch derived `equals`), H20 (capturing
   closures), H22 (compound-assign ignores operator — string `+=` silently emits
   numeric add), M7 (`SItem`/`SInvariant` dropped). H17 needs a targeted

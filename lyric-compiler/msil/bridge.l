@@ -17,6 +17,7 @@ import Lyric.AliasRewriter as Aliases
 import Lyric.TypeChecker
 import Lyric.ModeChecker
 import Lyric.ContractElaborator
+import Lyric.Propagate
 import Lyric.Cfg as Cfg
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.Mono
@@ -96,8 +97,14 @@ pub func compileToMsilWithVersion(
 
   val elaborated = elaborateFile(file0)
 
+  // Lower `?` error-propagation into match-unwrap + early-return (#1475).
+  // Runs after the elaborator so a propagated Err/None short-circuit is not
+  // forced through the success-shaped `ensures:` rewrite.
+  val propRes = lowerPropagateFile(elaborated)
+  if reportAndAbort(propRes.diagnostics) { return false }
+
   // Synthesise @derive / @generate(Json) methods (Band 5 — docs/41 §9 #857).
-  val derived = deriveFile(elaborated)
+  val derived = deriveFile(propRes.file)
 
   // Monomorphise same-package generic calls (Band 5 — docs/41 §9), feeding
   // the stdlib's pure-Lyric generic `pub func`s as imported generics so calls
@@ -406,7 +413,12 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     if reportAndAbort(mcRes.diagnostics) { return false }
 
     val elaborated = elaborateFile(pp.file)
-    val derived    = deriveFile(elaborated)
+
+    // Lower `?` error-propagation (#1475); see the single-file path above.
+    val propRes = lowerPropagateFile(elaborated)
+    if reportAndAbort(propRes.diagnostics) { return false }
+
+    val derived    = deriveFile(propRes.file)
 
     val monoRes = monoFileWithImports(derived, stdlibGenFuncs)
     if reportAndAbort(monoRes.diagnostics) { return false }
