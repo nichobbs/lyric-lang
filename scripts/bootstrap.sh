@@ -154,6 +154,7 @@ COMPILER_SOURCES=(
   "lyric-compiler/lyric/mode_checker/modechecker_mode.l"
   "lyric-compiler/lyric/mode_checker/modechecker_check.l"
   "lyric-compiler/lyric/contract_elaborator/elaborator.l"
+  "lyric-compiler/lyric/propagate.l"
   "lyric-compiler/lyric/test_synth/test_synth.l"
 
   # MSIL backend

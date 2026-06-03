@@ -619,7 +619,7 @@ async func handleTransfer(req: TransferRequest): HttpResponse {
 }
 ```
 
-`?` works on `Result[T, E]` and `T?` (nullable). For `Result`, it returns `Err(e)` from the enclosing function on `Err`. For nullable, it returns `None` (or panics if the enclosing function does not return a nullable — see `docs/03-decision-log.md` D027 for the resolved rule). The signature must declare a compatible return type, or the compiler rejects the use.
+`?` works on `Result[T, E]` and `Option[T]` (and `T?` nullable, which lowers to `Option`). For `Result`, `e?` evaluates `e`: on `Ok(v)` it yields `v` and execution continues; on `Err(x)` the enclosing function immediately returns `Err(x)`. For `Option`, `e?` yields `v` on `Some(v)` and returns `None` from the enclosing function on `None`. The signature must declare a compatible return type, or the compiler rejects the use with `F0020` (the enclosing function returns neither `Result` nor `Option`). See `docs/03-decision-log.md` D027 for the resolved nullable rule.
 
 The `??` operator is null-coalescing:
 ```
