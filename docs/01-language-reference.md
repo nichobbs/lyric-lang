@@ -175,6 +175,13 @@ Range syntax:
 - `..= b` — `MIN ..= b`
 - `a ..` — `a ..= MAX`
 
+A range refinement may also appear inline as a type annotation
+(`val x: Int range 0 ..= 9 = 5`). An inline refinement is transparent for type
+equivalence — it is interchangeable with its underlying numeric type — but when
+the initialiser is an integer literal outside the declared bounds the compiler
+rejects it at compile time (**T0015**). (Validating *non-literal* constructions
+of a refined type is a runtime/proof obligation, as above.)
+
 ### 2.3 Distinct types
 
 Type aliases vs. distinct types:

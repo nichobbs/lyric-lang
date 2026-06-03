@@ -19069,3 +19069,39 @@ bugs #1855 and #1871, and an uncalled generic's `where`-clause error does not
 fail `lyric test`.  A `requires:`+`ensures:` test is blocked by the
 pre-existing `ensures:` codegen NRE (#1871), so the contract guard is
 `requires:`-only.  MSIL target only (epic #1470 defers JVM).
+
+### D-progress-383 — self-hosted type checker: widen `Type` with refinement (range) bounds (#1482, Band-1 foundation)
+
+**Status:** Shipped (D077). Band-1 FOUNDATION task complete.
+
+The self-hosted type checker's `Type` union (`@stable(since="0.1")`) gained one
+append-only case, `TyRefined(underlying, lo, hi, hiInclusive)`, so a refined
+type's range bounds survive from declaration to use site.  Previously the
+resolver discarded an inline refined type's bound (`TRefined → underlying`),
+leaving construction checks nothing to consult.
+
+- **Resolver** (`typechecker_resolver.l`) now populates `TyRefined` for the
+  `TRefined` type form, extracting integer-literal endpoints from the
+  `RangeBound` (peeling unary minus / parens via the new `exprLiteralLong`),
+  and mapping `..=`/`..` to `hiInclusive`.
+- **Equivalence** (`typechecker_types.l`): `typeEquiv` unwraps `TyRefined` to
+  its underlying on both sides (`unrefine`), so a refined type is transparently
+  equivalent to its representation — **zero new equivalence false positives**,
+  which keeps the Band-1 gate (#1488) safe.
+- **New check T0015** (`typechecker_stmts.l`): a `val`/`var`/`let` binding whose
+  declared type is an inline refined type and whose initialiser is an integer
+  literal outside the bounds is rejected.  Member access unwraps refinements too
+  (`builtinMember`/`inferMember`).
+- **Rendering**: `renderType` and the LSP hover renderer print the refined form
+  (`Int range 0 ..= 9`).
+- **Out of scope (Band-4):** named distinct range subtypes
+  (`type Age = Int range …`) still resolve to `TyUser`; carrying their bounds
+  and validating their constructions is deferred.  The representation tag and
+  `Future`/channel carrier cases from the #1482 scope are deferred to their
+  consuming tasks (each adds the case it consumes, append-only, with its own
+  decision-log entry) rather than landing unconsumed.
+
+Coverage: 11 new cases in `typechecker_self_test.l` (in/out of inclusive and
+half-open bounds, negative bounds, `var`/`let`, transparency-to-equiv, and the
+non-literal-not-checked boundary).  Full regression green (847/847 emitter,
+84/84 CLI bridge).

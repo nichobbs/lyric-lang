@@ -271,14 +271,21 @@ supporting all language features."
 ### 5.1  Front-end soundness (CRITICAL band)
 
 Root cause (verified): `TyError` is a universal unifier (`typechecker_types.l:130-131`)
-and the `Type` union is too coarse to carry range bounds, the
-alias/distinct/opaque distinction, fixed array size, `Future`/`Task`, or
-channels (`typechecker_types.l:47-65`). So even checks that exist at declaration
-time (range bounds) are discarded at use, and ~12 expression forms short-circuit
+and the `Type` union is too coarse to carry the alias/distinct/opaque
+distinction, `Future`/`Task`, or channels. So ~12 expression forms short-circuit
 the whole `typeEquiv` machinery. The checker is a lint-grade advisory pass, not a
 gatekeeper — and on the single-file path it isn't even allowed to gate the build.
 Fixing this is a prerequisite for flipping `bridge.l:92` to fatal (C1) without
 rejecting valid programs.
+
+**Foundation shipped (#1482, D077):** the `Type` union now carries refinement
+(range) bounds via an append-only `TyRefined(underlying, lo, hi, hiInclusive)`
+case, populated by the resolver for inline refined types and consumed by a new
+inline-literal range check (T0015).  Refinement is *transparent* to `typeEquiv`
+(unwraps to underlying), so the widening adds no equivalence false positives —
+gate-safe for C1.  `TyArray` already carried `size`.  The remaining coarseness
+(representation tag, `Future`/`Task`/channel carriers) is deferred to its
+consuming Band-1/Band-4 tasks, each adding the case it consumes append-only.
 
 ### 5.2  Backend silent miscompiles (CRITICAL band)
 
@@ -330,7 +337,11 @@ should precede feature-completion work, because they stop *silent* wrongness.
 ### Band 1 — Front-end soundness floor (CRITICAL)
 - Widen the `Type` union to carry range bounds, a representation tag
   (alias/distinct/opaque), array size, and `Future`/`Task`/channel (touches an
-  `@stable` surface — needs a decision-log entry).
+  `@stable` surface — needs a decision-log entry).  **FOUNDATION shipped
+  (#1482, D077):** range bounds (`TyRefined`, transparent to `typeEquiv`) +
+  inline-literal range check (T0015); `TyArray.size` pre-existing.  Remaining
+  carriers (representation tag, `Future`/`Task`/channel) land append-only with
+  their consuming tasks.
 - Type the `TyError` expression forms: `EMatch`/`EIf` branch unification, `EIndex`
   element type, `ELambda` param/return inference, `EPropagate` return-compat,
   tuple-destructure sub-bindings, record-constructor argument checking.

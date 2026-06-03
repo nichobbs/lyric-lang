@@ -50,6 +50,38 @@ func bindPattern(
   }
 }
 
+// When a binding is declared with an inline refined type (`Int range lo .. hi`)
+// and initialised with an integer literal, reject a literal that falls outside
+// the statically-known bounds (T0015).  This is the inline-refined-type
+// construction check; validating constructions of *named* distinct range
+// subtypes (`type Age = Int range …`) is Band-4 work and is not covered here.
+func checkRefinedLiteralBound(
+  declT: in Type,
+  init:  in Expr,
+  diag:  in List[Diagnostic]
+): Unit {
+  match declT {
+    case TyRefined(_, lo, hi, inc) ->
+      match exprLiteralLong(init) {
+        case None -> {}
+        case Some(v) -> {
+          val belowLo = match lo { case None -> false; case Some(l) -> v < l }
+          val aboveHi =
+            match hi {
+              case None    -> false
+              case Some(h) -> if inc { v > h } else { v >= h }
+            }
+          if belowLo or aboveHi {
+            diag.add(errorDiagnostic("T0015",
+              "literal " + toString(v) + " is out of range for type " +
+              renderType(declT), init.span))
+          }
+        }
+      }
+    case _ -> {}
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Statement checking.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -80,6 +112,7 @@ pub func checkStatement(
                     "val binding declared as " + renderType(declT) +
                     " but initialiser has type " + renderType(initType), stmt.span))
                 }
+                checkRefinedLiteralBound(declT, init, diag)
                 declT
               }
             }
@@ -100,12 +133,13 @@ pub func checkStatement(
                 gctxPush(ctx, genericNames)
                 val declT = resolveType(tbl, ctx, diag, te)
                 match initOpt {
-                  case Some(_) -> {
+                  case Some(initE) -> {
                     if not typeEquiv(declT, initType) {
                       diag.add(errorDiagnostic("T0061",
                         "var binding declared as " + renderType(declT) +
                         " but initialiser has type " + renderType(initType), stmt.span))
                     }
+                    checkRefinedLiteralBound(declT, initE, diag)
                   }
                   case None -> {}
                 }
@@ -129,6 +163,7 @@ pub func checkStatement(
                     "let binding declared as " + renderType(declT) +
                     " but initialiser has type " + renderType(initType), stmt.span))
                 }
+                checkRefinedLiteralBound(declT, init, diag)
                 declT
               }
             }

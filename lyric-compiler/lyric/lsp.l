@@ -641,6 +641,12 @@ func renderType(cr: in CheckResult, ty: in Type): String {
         s + "]"
       }
     }
+    case TyRefined(u, lo, hi, inc) -> {
+      val loStr = match lo { case None -> ""; case Some(v) -> "" + v }
+      val hiStr = match hi { case None -> ""; case Some(v) -> "" + v }
+      val op    = if inc { " ..= " } else { " .. " }
+      renderType(cr, u) + " range " + loStr + op + hiStr
+    }
     case TySelf  -> "Self"
     case TyVar(n) -> n
     case TyError -> "<error>"

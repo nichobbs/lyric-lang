@@ -72,10 +72,73 @@ pub func resolveType(
       resolveTypePath(tbl, ctx, diag, head, te.span, resolvedArgs)
     }
 
-    case TRefined(under, _) -> {
+    case TRefined(under, range) -> {
       val args: List[Type] = newList()
-      resolveTypePath(tbl, ctx, diag, under, te.span, args)
+      val baseTy = resolveTypePath(tbl, ctx, diag, under, te.span, args)
+      val lo  = rangeLo(range)
+      val hi  = rangeHi(range)
+      val inc = rangeHiInclusive(range)
+      TyRefined(underlying = baseTy, lo = lo, hi = hi, hiInclusive = inc)
     }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §1a. Range-bound extraction (for inline refined types `T range lo .. hi`).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Extract a compile-time integer value from a bound expression, peeling a
+// unary minus and parentheses.  Returns `None` for any non-integer-literal
+// endpoint (those are out of scope for the inline range check; named
+// distinct range subtypes with computed bounds are Band-4 work).
+pub func exprLiteralLong(e: in Expr): Option[Long] {
+  match e.kind {
+    case ELiteral(lit) ->
+      match lit {
+        case LInt(v, _) -> Some(value = v)
+        case _          -> None
+      }
+    case EParen(inner) -> exprLiteralLong(inner)
+    case EPrefix(op, operand) ->
+      match op {
+        case PreNeg ->
+          match exprLiteralLong(operand) {
+            case Some(v) -> Some(value = 0i64 - v)
+            case None    -> None
+          }
+        case _ -> None
+      }
+    case _ -> None
+  }
+}
+
+func rangeLo(rb: in RangeBound): Option[Long] {
+  match rb {
+    case RBClosed(lo, _)   -> exprLiteralLong(lo)
+    case RBHalfOpen(lo, _) -> exprLiteralLong(lo)
+    case RBLowerOpen(_)    -> None
+    case RBUpperOpen(lo)   -> exprLiteralLong(lo)
+  }
+}
+
+func rangeHi(rb: in RangeBound): Option[Long] {
+  match rb {
+    case RBClosed(_, hi)   -> exprLiteralLong(hi)
+    case RBHalfOpen(_, hi) -> exprLiteralLong(hi)
+    case RBLowerOpen(hi)   -> exprLiteralLong(hi)
+    case RBUpperOpen(_)    -> None
+  }
+}
+
+// `..=` / `..= b` are inclusive; `..` / `..< b` are half-open.  An
+// upper-open bound (`a ..`) has no hi endpoint, so inclusivity is moot —
+// report `true` (the `MAX` end is inclusive).
+func rangeHiInclusive(rb: in RangeBound): Bool {
+  match rb {
+    case RBClosed(_, _)   -> true
+    case RBHalfOpen(_, _) -> false
+    case RBLowerOpen(_)   -> true
+    case RBUpperOpen(_)   -> true
   }
 }
 

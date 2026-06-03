@@ -398,7 +398,8 @@ func inferPrefix(
 // §4. Member access.
 // ─────────────────────────────────────────────────────────────────────────────
 
-func builtinMember(recv: in Type, name: in String): Option[Type] {
+func builtinMember(recvRaw: in Type, name: in String): Option[Type] {
+  val recv = unrefine(recvRaw)
   match recv {
     case TySlice(_) -> {
       if name == "length" { return Some(value = TyPrim(pt = PtInt)) }
@@ -472,10 +473,11 @@ func extractRecordFields(tbl: in SymbolTable, rd: in RecordDecl, result: in List
 func inferMember(
   tbl:  in SymbolTable,
   diag: in List[Diagnostic],
-  recv: in Type,
+  recvRaw: in Type,
   name: in String,
   span: in Span
 ): Type {
+  val recv = unrefine(recvRaw)
   match recv {
     case TyUser(tid, _, _) -> {
       val fs = fieldsOfRecord(tbl, tid)
