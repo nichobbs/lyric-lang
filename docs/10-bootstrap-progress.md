@@ -18708,3 +18708,38 @@ suite (847/847) all green.
 This unblocks the `==`→derived-`equals` wiring for #1480 (the helpers now reach
 codegen with a token); the `Object.Equals`/`GetHashCode` override synthesis
 that #1480 also needs for BCL-collection-key correctness remains a follow-up.
+
+### D-progress-373 — self-hosted MSIL: return out of a protected region via a function epilogue (#1477 foundation)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`).
+
+A `return` lowered inside a `try`/`catch`/`finally` emitted a bare `MRet`, which
+is unverifiable IL out of a CLR protected region — every `try { return x }
+finally { … }` (or `catch`, or a `return` from a `catch` body) faulted the JIT
+with `InvalidProgramException`.  This is the enabling fix for `defer`-at-scope-
+exit (#1477), which lowers to `try { rest-of-scope } finally { deferred }` and
+therefore needs returns to escape the try correctly; it lands separately as an
+independent correctness fix.
+
+`FuncCtx` gains a reserved `epilogueLabel` (allocated by `lowerFuncMsil` /
+`lowerImplMethodMsil`), a lazily-allocated `retvalSlot`, and an `epilogueUsed`
+marker.  A `return` lowered while `tryRegionStack.count > 0` stashes its value
+into `retvalSlot` and emits `leave epilogueLabel` instead of `ret`; the CLR runs
+every intervening `finally` before transferring.  A single epilogue block
+(`MLabel epilogueLabel; [ldloc retvalSlot;] ret`) is appended after the body,
+and only when at least one return used it — so functions without a
+return-inside-`try` are byte-identical.  Returns outside any protected region
+keep the direct `ret`.  This reuses the `tryRegionStack` protected-region
+tracking added for break/continue-`leave` in D-progress-371.
+
+Verified by `return_in_try_self_test.l` (8/8 via native `lyric test --target
+dotnet`): return out of `try`/`finally` (value survives the finally), out of
+`try`/`catch`, from inside a `catch` body, out of nested `try`/`finally` (both
+finallys run, inner value propagates), a conditional return then trailing
+fall-through value, a void (`Unit`) return inside a `try`/`finally` (the
+`retvalSlot = -1` epilogue path), a return inside a combined `try`/`catch`/
+`finally`, and a plain return unaffected.  No regression — full Expecto
+emitter suite 847/847 and every native self-test green.  Wired into CI as the
+"Return-in-try self-test" step.  MSIL target only; JVM parity is tracked under
+epic #1470's JVM-deferral note.  `defer`-at-scope-exit itself (the remaining
+half of #1477) follows in a separate PR.
