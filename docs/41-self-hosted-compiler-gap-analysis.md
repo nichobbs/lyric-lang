@@ -52,7 +52,8 @@ bar:
    self-hosted type checker is a bottom-up, error-tolerant *inference* pass, not
    a sound gatekeeper. ~12 expression forms infer `TyError`, which `typeEquiv`
    treats as "matches anything", so entire classes of type error are
-   unreachable. There is no match exhaustiveness check, no visibility
+   unreachable. Match exhaustiveness now exists (T0016, #1483 split 1 — unions,
+   enums, `Bool`, unbounded scalars); still missing: visibility
    enforcement, no opaque representation-hiding, no impl/interface conformance,
    and no §5.2 parameter-mode enforcement. Worse, on the **single-file** build
    path the checker's diagnostics are downgraded to advisory
@@ -160,7 +161,7 @@ supporting all language features."
 | # | Gap | Evidence | Effort |
 |---|---|---|---|
 | C1 | Type checker is advisory on the single-file build path (`reportDiagnostics`), fatal on the project path (`reportAndAbort`). Type-broken single files compile to broken IL silently; same source diverges between paths. | `bridge.l:92` vs `bridge.l:395` | S (flip) gated on C2 |
-| C2 | Type checker is unsound: ~12 expr forms infer `TyError`, a universal unifier; no match exhaustiveness; no record-ctor checking; `?`/lambda/tuple-destructure/index/`if`/`match` results untyped. | `typechecker_exprs.l:680-693`, `typechecker_types.l:130-131`, `typechecker_stmts.l:14-51` | L |
+| C2 | Type checker is unsound: ~12 expr forms infer `TyError`, a universal unifier; no record-ctor checking; `?`/lambda/tuple-destructure/index/`if`/`match` results untyped. **Match exhaustiveness now shipped** (T0016, #1483 split 1: unions/enums/`Bool`/unbounded scalars; `EMatch` infers its scrutinee). Remaining: the `TyError` expr forms (#1483 split 2+). | `typechecker_exprs.l:680-693`, `typechecker_types.l:130-131`, `typechecker_stmts.l:14-51` | L |
 | C3 | ~~`?` propagation (`EPropagate`) is a no-op — `x?` compiles as `x`, no unwrap, no early-return.~~ **RESOLVED (#1475).** The `Lyric.Propagate` middle-end pass (`lyric-compiler/lyric/propagate.l`, run from `bridge.l` after the elaborator) rewrites `e?` into a `match` that unwraps `Ok`/`Some` and early-returns `Err`/`None`, keyed off the enclosing function's declared return type; a non-`Result`/`Option` enclosing function is rejected with `F0020`. (`try?`/`ETry` is never produced by the self-hosted parser, so its codegen arm is dead.) Verified by `propagate_self_test.l` (incl. `?` inside a `while` loop, after #1779 fixed the `List[ValueType]` element-comparison miscompile). Note: `?` inside an impl/interface method body is still blocked by a pre-existing early-`return` codegen defect, #1784. | `propagate.l`; `bridge.l` | M |
 | C4 | `await`/`spawn` lower synchronously; `async func` returns a bare value, not `Task[T]`; no `IAsyncStateMachine`. Silent miscompile of every async program. | `codegen.l:1755-1758,1782-1784,983-999`; no state machine in `msil/*` | XL |
 | C5 | Async generators use eager collect-all into `List<object>`, not lazy `IEnumerable`/`IAsyncEnumerable`; return type forced to List; unbounded generators buffer forever. | `codegen.l:1760-1780,983` | XL |
@@ -345,7 +346,8 @@ should precede feature-completion work, because they stop *silent* wrongness.
 - Type the `TyError` expression forms: `EMatch`/`EIf` branch unification, `EIndex`
   element type, `ELambda` param/return inference, `EPropagate` return-compat,
   tuple-destructure sub-bindings, record-constructor argument checking.
-- Add match exhaustiveness, visibility enforcement, opaque hiding, impl/interface
+- Add match exhaustiveness (**shipped** — T0016, #1483 split 1), visibility
+  enforcement, opaque hiding, impl/interface
   conformance, and call-site `where`-bound satisfaction.
 - Add a §5.2 parameter-mode pass that runs for **all** packages (not just
   proof-required).

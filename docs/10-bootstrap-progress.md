@@ -19138,3 +19138,37 @@ function-value invocation, which is itself a separate invalid-IL gap (#1877)
 found during this work.  No regression: full Expecto emitter suite 847/847 and
 CLI suite 84/84.  MSIL target only (the JVM backend already hard-errors on
 general lambdas).
+
+### D-progress-385 — self-hosted type checker: match exhaustiveness (#1483 split 1, Band-1)
+
+**Status:** Shipped. First of the #1483 splits (exhaustiveness; expression typing follows).
+
+The self-hosted `EMatch` arm previously returned `TyError` and checked nothing —
+neither the scrutinee nor the arms. It now infers the scrutinee and runs a new
+exhaustiveness check (**T0016**), implementing the language reference's "pattern
+matching is exhaustive" guarantee (docs/01 §2 / §4.2) in the self-hosted checker.
+
+- **Covered scrutinee kinds:** unions and enums (every case must be matched, or a
+  catch-all supplied), `Bool` (both `true` and `false`, or catch-all), and
+  unbounded primitive scalars (`Int`/`Long`/`UInt`/`ULong`/`Nat`/`Byte`/`Float`/
+  `Double`/`Char`/`String`, which require a `_`/binding catch-all). Records,
+  tuples, `Unit`/`Never`, type variables, and unresolved/extern types are skipped
+  — conservative by construction, so a valid match is never rejected.
+- **Bare-name resolution matches codegen.** A bare `case Foo` parses as
+  `PBinding("Foo")`; it counts as covering case `Foo` only when `Foo` names a case
+  of the scrutinee type, otherwise it is an irrefutable variable bind (catch-all).
+  This mirrors `msil/codegen.l:3507-3566` (PBinding → isinst when the name is a
+  known case, else bind-anything), so the checker never disagrees with runtime.
+- **Guards don't cover.** An arm with a `if` guard contributes neither coverage
+  nor a catch-all (the guard may fail).
+
+New helpers in `typechecker_exprs.l`: `finiteCaseNames`, `patternIsCatchAll`,
+`collectCoveredCases`, `armsHaveCatchAll`, `isUnboundedScalar`,
+`checkMatchExhaustive`. Branch-type unification (giving the match a real result
+type) remains part of the #1483 expression-typing split.
+
+Coverage: 12 new cases in `typechecker_self_test.l` (union exhaustive / missing /
+wildcard / bare-name-bind / bare-nullary-case / guarded-doesn't-cover; enum
+exhaustive / missing; Bool exhaustive / missing; scalar-needs-wildcard;
+string-needs-wildcard). Full regression green (847/847 emitter, 84/84 CLI
+bridge); native `lyric test` end-to-end verified.

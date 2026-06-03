@@ -181,6 +181,241 @@ func listContainsStr(xs: in List[String], s: in String): Bool {
   false
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §3a. Match exhaustiveness (#1483, Band-1).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// The finite set of constructor case names for a union/enum scrutinee type, or
+// `None` if `t` is not a type whose value space is a known finite set of named
+// cases (records, tuples, externs, unresolved ids — anything we can't enumerate
+// — return `None` so exhaustiveness is skipped rather than mis-reported).
+func finiteCaseNames(tbl: in SymbolTable, t: in Type): Option[List[String]] {
+  match t {
+    case TyUser(id, _, _) -> {
+      var i = 0
+      while i < tbl.symbols.count {
+        match tbl.symbols[i].kind {
+          case DKUnion(uid, decl) -> {
+            if typeIdEq(uid, id) {
+              val names: List[String] = newList()
+              var c = 0
+              while c < decl.cases.count { names.add(decl.cases[c].name); c = c + 1 }
+              return Some(value = names)
+            }
+          }
+          case DKEnum(eid, decl) -> {
+            if typeIdEq(eid, id) {
+              val names: List[String] = newList()
+              var c = 0
+              while c < decl.cases.count { names.add(decl.cases[c].name); c = c + 1 }
+              return Some(value = names)
+            }
+          }
+          case _ -> {}
+        }
+        i = i + 1
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
+// A pattern is a catch-all (irrefutable) iff it matches every value.  A bare
+// `case Foo` parses as `PBinding("Foo", None)`; it is a *variable bind*
+// (catch-all) only when `Foo` does NOT name a case of the scrutinee type —
+// otherwise it is a nullary-constructor test (matches just that case).  This
+// mirrors the codegen rule in `msil/codegen.l` (PBinding → isinst when the name
+// is a known case, else bind-anything).
+func patternIsCatchAll(p: in Pattern, caseNames: in List[String]): Bool {
+  match p.kind {
+    case PWildcard -> true
+    case PBinding(name, inner) ->
+      match inner {
+        case Some(ip) -> patternIsCatchAll(ip, caseNames)
+        case None     -> not listContainsStr(caseNames, name)
+      }
+    case PParen(ip) -> patternIsCatchAll(ip, caseNames)
+    case POr(ps) -> {
+      var any = false
+      var i = 0
+      while i < ps.count {
+        if patternIsCatchAll(ps[i], caseNames) { any = true }
+        i = i + 1
+      }
+      any
+    }
+    case _ -> false
+  }
+}
+
+// Add to `covered` any top-level constructor case names this pattern matches.
+func collectCoveredCases(p: in Pattern, caseNames: in List[String], covered: in List[String]): Unit {
+  match p.kind {
+    case PBinding(name, inner) ->
+      match inner {
+        case Some(ip) -> collectCoveredCases(ip, caseNames, covered)
+        case None     ->
+          if listContainsStr(caseNames, name) and not listContainsStr(covered, name) {
+            covered.add(name)
+          }
+      }
+    case PConstructor(head, _) -> {
+      if head.segments.count > 0 {
+        val nm = head.segments[head.segments.count - 1]
+        if listContainsStr(caseNames, nm) and not listContainsStr(covered, nm) {
+          covered.add(nm)
+        }
+      }
+    }
+    case PRecord(head, _, _) -> {
+      if head.segments.count > 0 {
+        val nm = head.segments[head.segments.count - 1]
+        if listContainsStr(caseNames, nm) and not listContainsStr(covered, nm) {
+          covered.add(nm)
+        }
+      }
+    }
+    case PParen(ip) -> collectCoveredCases(ip, caseNames, covered)
+    case POr(ps) -> {
+      var i = 0
+      while i < ps.count { collectCoveredCases(ps[i], caseNames, covered); i = i + 1 }
+    }
+    case _ -> {}
+  }
+}
+
+// Does any unguarded arm of the match supply an irrefutable catch-all?  Guarded
+// arms never count (the guard may fail at runtime).
+func armsHaveCatchAll(arms: in List[MatchArm], caseNames: in List[String]): Bool {
+  var i = 0
+  while i < arms.count {
+    match arms[i].guard {
+      case None    -> if patternIsCatchAll(arms[i].pattern, caseNames) { return true }
+      case Some(_) -> {}
+    }
+    i = i + 1
+  }
+  false
+}
+
+func joinStrs(xs: in List[String], sep: in String): String {
+  if xs.count == 0 { return "" }
+  var s = xs[0]
+  var i = 1
+  while i < xs.count { s = s + sep + xs[i]; i = i + 1 }
+  s
+}
+
+// Is `pt` a primitive whose value space is unbounded (so a match is exhaustive
+// only via a catch-all)?  Bool is finite and handled separately; Unit/Never are
+// skipped (a one-value / zero-value space needs no wildcard rule here).
+func isUnboundedScalar(pt: in PrimType): Bool {
+  match pt {
+    case PtByte   -> true
+    case PtInt    -> true
+    case PtLong   -> true
+    case PtUInt   -> true
+    case PtULong  -> true
+    case PtNat    -> true
+    case PtFloat  -> true
+    case PtDouble -> true
+    case PtChar   -> true
+    case PtString -> true
+    case _        -> false
+  }
+}
+
+// Emit T0016 when a `match` cannot match every possible scrutinee value.
+// Conservative by construction: only unions, enums, `Bool`, and unbounded
+// primitive scalars are judged; every other scrutinee shape is skipped, so a
+// valid match is never rejected.
+func checkMatchExhaustive(
+  tbl:  in SymbolTable,
+  diag: in List[Diagnostic],
+  st0:  in Type,
+  arms: in List[MatchArm],
+  span: in Span
+): Unit {
+  val st = unrefine(st0)
+  match st {
+    case TyError  -> {}        // scrutinee type unknown — already diagnosed
+    case TyVar(_) -> {}        // generic type parameter — cannot enumerate
+    case TyPrim(pt) -> {
+      match pt {
+        case PtBool -> {
+          val noNames: List[String] = newList()
+          if not armsHaveCatchAll(arms, noNames) {
+            var sawTrue  = false
+            var sawFalse = false
+            var i = 0
+            while i < arms.count {
+              match arms[i].guard {
+                case Some(_) -> {}
+                case None ->
+                  match arms[i].pattern.kind {
+                    case PLiteral(lit) ->
+                      match lit {
+                        case LBool(b) -> if b { sawTrue = true } else { sawFalse = true }
+                        case _        -> {}
+                      }
+                    case _ -> {}
+                  }
+              }
+              i = i + 1
+            }
+            if not (sawTrue and sawFalse) {
+              val missing: List[String] = newList()
+              if not sawTrue  { missing.add("true") }
+              if not sawFalse { missing.add("false") }
+              diag.add(errorDiagnostic("T0016",
+                "non-exhaustive match on Bool: missing " + joinStrs(missing, ", ") +
+                " (add a `_` arm or cover both)", span))
+            }
+          }
+        }
+        case _ ->
+          if isUnboundedScalar(pt) {
+            val noNames: List[String] = newList()
+            if not armsHaveCatchAll(arms, noNames) {
+              diag.add(errorDiagnostic("T0016",
+                "non-exhaustive match on " + renderType(st) +
+                ": add a wildcard `_` arm", span))
+            }
+          }
+      }
+    }
+    case _ ->
+      match finiteCaseNames(tbl, st) {
+        case None -> {}        // not a finite-case type — skip
+        case Some(caseNames) -> {
+          if not armsHaveCatchAll(arms, caseNames) {
+            val covered: List[String] = newList()
+            var i = 0
+            while i < arms.count {
+              match arms[i].guard {
+                case None    -> collectCoveredCases(arms[i].pattern, caseNames, covered)
+                case Some(_) -> {}
+              }
+              i = i + 1
+            }
+            val missing: List[String] = newList()
+            var c = 0
+            while c < caseNames.count {
+              if not listContainsStr(covered, caseNames[c]) { missing.add(caseNames[c]) }
+              c = c + 1
+            }
+            if missing.count > 0 {
+              diag.add(errorDiagnostic("T0016",
+                "non-exhaustive match on " + renderType(st) +
+                ": missing case(s) " + joinStrs(missing, ", "), span))
+            }
+          }
+        }
+      }
+  }
+}
+
 func inferBinop(
   tbl:  in SymbolTable,
   diag: in List[Diagnostic],
@@ -684,7 +919,15 @@ pub func inferExpr(
     case ETypeApp(_, _) -> TyError
     case ELambda(_, _)  -> TyError
     case EIf(_, _, _, _) -> TyError
-    case EMatch(_, _)   -> TyError
+    case EMatch(scrutinee, arms) -> {
+      // #1483 (Band-1): infer the scrutinee and check exhaustiveness.  Branch-
+      // type unification (which would give the match a real result type) is the
+      // expression-typing split of #1483; this arm still yields TyError for the
+      // match's own type but no longer leaves the scrutinee + arms unchecked.
+      val st = inferExpr(sc, tbl, sigs, diag, scrutinee)
+      checkMatchExhaustive(tbl, diag, st, arms, e.span)
+      TyError
+    }
     case EBlock(_)      -> TyError
     case EUnsafe(_)     -> TyError
     case ETry(_)        -> TyError
