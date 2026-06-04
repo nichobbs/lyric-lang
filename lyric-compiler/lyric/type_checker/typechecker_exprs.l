@@ -1725,7 +1725,19 @@ pub func inferExpr(
     case ESelf          -> TySelf
     // `result` in an `ensures:` clause has the enclosing function's declared
     // return type, carried on the scope (D081).
-    case EResult        -> sc.returnTy
+    // `result` is a contextual keyword (codegen.l:2833 agrees): a user-declared
+    // local / parameter named `result` shadows the contract return-value
+    // reference.  The pattern parser accepts `KwResult` in binding position, so
+    // `val result = …` is a real binding whose reads must take its type — not the
+    // enclosing function's return type.  Only when no such binding is in scope
+    // (a genuine `ensures:` clause, pre-elaboration) does `EResult` mean the
+    // return value.  This mirrors codegen, which loads `fctx.slots["result"]`
+    // first and falls back to the result temp only inside contracts.
+    case EResult        ->
+      match scopeTryFind(sc, "result") {
+        case Some(b) -> b.ty
+        case None    -> sc.returnTy
+      }
 
     // Index expression `recv[i]` yields the receiver's element type (#1901
     // part B): `slice[T]`/`array[N,T]` -> `T`, `String` -> `Char`,

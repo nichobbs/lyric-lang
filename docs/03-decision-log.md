@@ -4944,6 +4944,40 @@ Full detail: `native/plan/07-stdlib-port.md` §target-conditional imports and
 
 ---
 
+### D086 — `result` is contextual: an in-scope `result` binding shadows the contract return-value keyword (#1488, Band-1 of #1470)
+
+**Context.** `result` is a hard keyword (§1.3): the lexer always tokenises it as
+`KwResult` and the parser produces an `EResult` node in expression position.  Its
+only language-level meaning is the *return-value reference* inside an `ensures:`
+clause (grammar §9, `ResultExpr = 'result'` — "only inside ensures clauses").
+However, the pattern/binding parser also accepts `KwResult` in binding position,
+so `val result = …` / a parameter named `result` is a legal local.  The MSIL and
+JVM codegen have always resolved such a read against the function's `result`
+*slot* first (`codegen.l:2833` — "`result` is a contextual keyword… the only
+remaining case is a user-declared local"), falling back to the contract
+return-value temp only when no binding exists.  The self-hosted **type checker**
+did not match this: `EResult` typed unconditionally as the enclosing function's
+return type, so a local `result` whose value type differed from the return type
+was mis-typed.  Bodies using the common `var result = …; … ; result` accumulator
+idiom only type-checked because `result`'s type *coincidentally equalled* the
+return type; a `Unit`-returning function binding `result : String` produced a
+spurious `T0032`/`T0060`.  This blocked the #1488 single-file-fatal gate, since
+several stdlib tests (`environment_tests`, `path_tests`, …) use `result` as an
+ordinary local.
+
+**Decision.** `result` resolves as a **contextual keyword**: a reference resolves
+to an in-scope binding named `result` (most-recent-first) before falling back to
+the contract return-value reference.  The type checker now mirrors codegen
+(`case EResult -> scopeTryFind(sc, "result")` then `returnTy`).  Inside an
+`ensures:` clause — where no user `result` binding is in scope — the fallback
+still yields the return type, so contract semantics are unchanged.  This is a
+clarification of existing behaviour (codegen already did this), not a new
+language rule: `result` remains a hard keyword, but its binding-position use and
+in-scope-shadow resolution are now specified.  `docs/01` §1.3 and the grammar
+gain a note to this effect.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

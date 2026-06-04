@@ -43,6 +43,13 @@ where       while        wire         with         xor
 yield
 ```
 
+`result` is a **contextual** keyword (D086): its only language-level meaning is the
+return-value reference inside an `ensures:` clause (§9). The compiler also accepts
+`result` as an ordinary local binding / parameter name, and a `result` binding in
+scope shadows the contract reference — a read resolves to the binding before the
+return-value keyword. Outside an `ensures:` clause (where no such binding exists) a
+bare `result` has no meaning.
+
 Annotation-style keywords (always preceded by `@`):
 
 ```
