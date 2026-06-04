@@ -86,6 +86,7 @@ import Lyric.Pack as Pack     // publishCsproj, restoreCsproj, xmlEscape, saniti
 import Lyric.Lexer             // Diagnostic, DiagnosticSeverity, DiagError, DiagWarning, Span, Position
 import Lyric.Workspace as Ws   // findWorkspaceRoot, findMember, resolveDep, WorkspaceContext
 import Lyric.Discovery as Disc // findNearestManifest — nearest lyric.toml walking up from cwd
+import Lyric.Release as Release // buildRelease — `--release` Native AOT native-binary pipeline
 import Lyric.GitDep as GitDep  // resolve(url, ref, subdir) -> Result[GitDepResult, String]
 import Lyric.Lockfile as LF    // emptyLockFile, addOrUpdatePackage, serializeLockFile, parseLockFile
 import Std.ProcessCapture as ProcessCapture  // runCapture(exe, args, stdin) -> String
@@ -140,6 +141,8 @@ func usageText(): String {
   "Project:\n" +
   "  lyric build   [<source.l>] [-o <output>] [--force] [--manifest <lyric.toml>] [--target dotnet|jvm]\n" +
   "                (no source: builds the discovered project's [project.packages] into one DLL)\n" +
+  "  lyric build   --release [<source.l>] [--rid <rid>] [-o <bin>]\n" +
+  "                (self-contained Native AOT binary; single-file today, see #1975)\n" +
   "  lyric restore [--manifest <lyric.toml>] [--locked]\n" +
   "  lyric publish [--manifest <lyric.toml>] [--dll <path>] [-o <dir>] [--registry <url>] [--api-key <key>]\n" +
   "  lyric search  <term>\n" +
@@ -377,6 +380,8 @@ func cmdBuild(argv: in slice[String]): Int {
   val cliFeatures: List[String] = newList()
   var noDefaultFeatures: Bool = false
   var allFeatures: Bool = false
+  var release: Bool = false
+  var ridArg: Option[String] = None
   val positional: List[String] = newList()
 
   var i = 1
@@ -421,6 +426,17 @@ func cmdBuild(argv: in slice[String]): Int {
     } else if arg == "--all-features" {
       allFeatures = true
       i += 1
+    } else if arg == "--release" {
+      release = true
+      i += 1
+    } else if arg == "--rid" {
+      if i + 1 < argv.length {
+        ridArg = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("build: --rid requires an argument")
+        return 1
+      }
     } else if arg == "--target" {
       if i + 1 < argv.length {
         val t = argv[i + 1]
@@ -439,6 +455,12 @@ func cmdBuild(argv: in slice[String]): Int {
       i += 1
     }
   }
+  // `--rid` only applies to `--release` (Native AOT); warn rather than ignore
+  // it silently on a normal build (#2022).
+  match ridArg {
+    case Some(_) -> if not release { printErr("build: warning: --rid has no effect without --release") }
+    case None    -> ()
+  }
   // Project-mode: `lyric build --manifest lyric.toml`, or no positional source
   // at all (discover the nearest lyric.toml by walking up from the cwd).
   if positional.count == 0 {
@@ -450,6 +472,13 @@ func cmdBuild(argv: in slice[String]): Int {
         return 1
       }
     }
+    if release {
+      // Project-mode Native AOT is a focused follow-up (needs entry-package
+      // detection across the bundle + path-dependency referencing); tracked in
+      // #1975.  Fail loud rather than silently producing a managed DLL.
+      printErr("build: --release for project mode is not yet supported; build a single-file entry with `lyric build --release <main.l>` (tracked in #1975)")
+      return 1
+    }
     return buildProject(mfPath, explicitOut, target, cliFeatures, noDefaultFeatures, allFeatures)
   }
 
@@ -457,6 +486,10 @@ func cmdBuild(argv: in slice[String]): Int {
   if not File.fileExists(sourcePath) {
     printErr("build: source file not found: " + sourcePath)
     return 1
+  }
+
+  if release {
+    return buildReleaseSingle(sourcePath, explicitOut, target, ridArg, manifestArg)
   }
 
   val outPath = match explicitOut {
@@ -469,6 +502,53 @@ func cmdBuild(argv: in slice[String]): Int {
   }
 
   buildOne(sourcePath, outPath, target, manifestArg)
+}
+
+// Single-file `lyric build --release <source.l>`: compile to a staging DLL,
+// then produce a self-contained native binary via Lyric.Release.  The default
+// output is the source stem with no extension (an executable), next to the
+// source unless `-o` overrides it.
+func buildReleaseSingle(
+  sourcePath:  in String,
+  explicitOut: in Option[String],
+  target:      in CompileTarget,
+  ridArg:      in Option[String],
+  manifestArg: in Option[String]
+): Int {
+  val releaseTarget = match target {
+    case Jvm    -> Release.JvmNativeImage
+    case Dotnet -> Release.DotnetAot
+  }
+  // JVM (GraalVM) release fails loud without doing a wasted .NET build.
+  match releaseTarget {
+    case JvmNativeImage ->
+      return Release.buildRelease(releaseTarget, "", "", newList(), ridArg, "")
+    case DotnetAot -> ()
+  }
+
+  val srcText = match File.readText(sourcePath) {
+    case Ok(t)  -> t
+    case Err(e) -> { printErr("build: " + IOError.message(e)); return 1 }
+  }
+  val pkgName = Release.packageNameOf(srcText)
+  // Validate the entry package up front — before the (slow) managed build —
+  // so a source with no `package` declaration fails fast (#2021).
+  if pkgName == "" {
+    printErr("build: --release: no `package` declaration found in " + sourcePath)
+    return 1
+  }
+
+  val srcDir = Path.dirname(sourcePath)
+  val stem   = stemOf(Path.basename(sourcePath), 2)  // strip ".l"
+  val stagingDll = Path.join(Path.join(srcDir, ".lyric-release"), stem + ".dll")
+  val buildExit = buildOne(sourcePath, stagingDll, Dotnet, manifestArg)
+  if buildExit != 0 { return buildExit }
+
+  val outNative = match explicitOut {
+    case Some(o) -> o
+    case None    -> Path.join(srcDir, stem)
+  }
+  Release.buildRelease(releaseTarget, stagingDll, pkgName, newList(), ridArg, outNative)
 }
 
 // Project-mode build: reads [project.packages] from lyric.toml and

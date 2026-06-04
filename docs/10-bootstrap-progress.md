@@ -19742,3 +19742,36 @@ Verified: multi-capture (`a * b + 1` → 13), String capture (`"hi " + name`),
 capture + own param (105), non-capturing unaffected (42).  CI step added
 (positive immutable-capture assertions + the `var` fail-loud check).  No
 regression: emitter 847/847, CLI 84/84.  MSIL target only.
+### D-progress-403 — `lyric build --release`: self-contained Native AOT binaries (#1968 epic; #1975; D079)
+
+**Status:** Shipped for single-file programs on the .NET target (`lyric-compiler/lyric/release.l`, `lyric-compiler/lyric/cli.l`).  Project-mode `--release` and the JVM (GraalVM) target remain (#1975).
+
+`lyric build --release <source.l>` produces a self-contained Native AOT
+executable — no managed runtime required at the deployment target:
+
+- **`Lyric.Release`** (`release.l`) mirrors the compiler's own AOT pattern
+  (`bootstrap/src/Lyric.Cli.Aot`): build the managed DLL, generate a host
+  project (`host.csproj` + C# `Trampoline.cs` into the program's emitted
+  `<package>.Program.main()`) referencing the program DLL + `Lyric.Stdlib.dll`,
+  then `dotnet publish -p:PublishAot=true`.  The host assembly is named
+  `__lyric_aot_host` (distinct from any user package — ILC resolves assembly
+  identities case-insensitively, so a same-name host would shadow the program's
+  entry type and fail to load at runtime).  ILC trim/AOT warnings are surfaced,
+  not swallowed.
+- **Target seam:** `union ReleaseTarget { DotnetAot | JvmNativeImage }` +
+  target-agnostic `buildRelease`.  `DotnetAot` implemented; `JvmNativeImage`
+  (GraalVM `native-image`) defined but fails loud (#1975) — no silent managed
+  fallback.  Project-mode `--release` likewise emits a clear non-zero error.
+- **CLI:** `--release` / `--rid <rid>` flags on `lyric build`; default output is
+  the source stem (no extension), `-o` overrides.
+
+Verified end-to-end against `bin/lyric` (full `make lyric`): `lyric build
+--release hello.l` (a program exercising `Std.Collections.List` + `Console` +
+`toString`) produces a stripped native ELF that runs and prints the expected
+value; `--rid linux-x64` and `-o <path>` both work; `--release --target jvm` and
+project-mode `--release` fail loud with their tracked-issue messages.  Stage-1 +
+AOT clean.  MSIL target.
+
+Docs: D079 (decision log), language reference §13.1 (AOT note moved from
+"planned" to "shipped single-file/.NET"), book getting-started (native-binaries
+section) + appendix-b CLI reference.
