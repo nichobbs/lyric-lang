@@ -88,6 +88,7 @@ import Lyric.Lexer             // Diagnostic, DiagnosticSeverity, DiagError, Dia
 import Lyric.Workspace as Ws   // findWorkspaceRoot, findMember, resolveDep, WorkspaceContext
 import Lyric.Discovery as Disc // findNearestManifest — nearest lyric.toml walking up from cwd
 import Lyric.Release as Release // buildRelease — `--release` Native AOT native-binary pipeline
+import Lyric.Init as Init       // runInit — `lyric init` project scaffolder (#1972)
 import Lyric.GitDep as GitDep  // resolve(url, ref, subdir) -> Result[GitDepResult, String]
 import Lyric.Lockfile as LF    // emptyLockFile, addOrUpdatePackage, serializeLockFile, parseLockFile
 import Std.ProcessCapture as ProcessCapture  // runCapture(exe, args, stdin) -> String
@@ -140,6 +141,8 @@ func usageText(): String {
   "  Run `lyric` with no command inside a project to build it.\n" +
   "\n" +
   "Project:\n" +
+  "  lyric init    [<dir>] [--name <Name>] [--lib] [--force]\n" +
+  "                (scaffold a new app (or --lib library) package: lyric.toml + src + .gitignore)\n" +
   "  lyric build   [<source.l>] [-o <output>] [--force] [--manifest <lyric.toml>] [--target dotnet|jvm] [--no-restore] [--watch]\n" +
   "                (no source: builds the discovered project's [project.packages] into one DLL;\n" +
   "                 auto-restores deps when lyric.lock is missing or stale unless --no-restore)\n" +
@@ -1579,6 +1582,35 @@ func lockSha512OfNupkg(name: in String, version: in String): Option[String] {
     case Ok(hex) -> Some(value = hex)
     case Err(_)  -> None
   }
+}
+
+// `lyric init [<dir>] [--name <Name>] [--lib] [--force]` — scaffold a new
+// application (or `--lib` library) package in <dir> (default the current
+// directory): a lyric.toml, src/main.l (or src/lib.l), and a .gitignore (#1972).
+func cmdInit(argv: in slice[String]): Int {
+  var dir = "."
+  var haveDir = false
+  var nameOverride: Option[String] = None
+  var isLib = false
+  var force = false
+
+  var i = 1
+  while i < argv.length {
+    val arg = argv[i]
+    if arg == "--name" {
+      if i + 1 < argv.length { nameOverride = Some(value = argv[i + 1]); i += 2 }
+      else { printErr("init: --name requires an argument"); return 1 }
+    } else if arg == "--lib" {
+      isLib = true; i += 1
+    } else if arg == "--force" {
+      force = true; i += 1
+    } else {
+      if not haveDir { dir = arg; haveDir = true; i += 1 }
+      else { printErr("init: unexpected extra argument '" + arg + "'"); return 1 }
+    }
+  }
+
+  Init.runInit(InitOptions(dir = dir, nameOverride = nameOverride, isLib = isLib, force = force))
 }
 
 // Whether a TOML line defines the bare key `key` (its left-of-`=` token,
@@ -3390,6 +3422,10 @@ pub func main(argv: in slice[String]): Int {
 
   if cmd == "add" {
     return cmdAdd(argv)
+  }
+
+  if cmd == "init" {
+    return cmdInit(argv)
   }
 
   if cmd == "publish" {

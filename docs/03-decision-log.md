@@ -4526,6 +4526,36 @@ no new file-watch OS binding and no mtime primitive.
 
 ---
 
+## D084 — `lyric init` — project scaffolder (#1968, #1972)
+
+**Context:** A newcomer had to hand-write `lyric.toml` and the source layout —
+the steepest part of the first-run experience. `lyric init` removes it.
+
+**Decision:**
+
+- **`lyric init [<dir>] [--name <Name>] [--lib] [--force]`** scaffolds a package
+  in `<dir>` (default the current directory, created via
+  `Std.Directory.createRecursive` if absent): a `lyric.toml`
+  (`[package]` + `[project]` + `[project.packages]` + empty `[dependencies]`),
+  `src/main.l` (a `func main(): Int` hello-world) or `src/lib.l` with `--lib`,
+  and a `.gitignore`.
+- **Name derivation:** the package name comes from the directory basename, with a
+  lowercase leading letter capitalised to the `UpperCamelCase` convention (so
+  `lyric init demo` yields package `Demo`). `--name` overrides it. A candidate
+  that is not a valid identifier (e.g. contains `-`) is rejected with a message
+  pointing at `--name` rather than emitting a manifest the formatter would reject.
+- **Non-destructive:** an existing `lyric.toml` is not overwritten without
+  `--force`; a pre-existing `.gitignore` is always left untouched.
+- Implemented as a new `Lyric.Init` package (`lyric-compiler/lyric/init.l`)
+  dispatched from `cli.l`, and registered in `knownCommands` for did-you-mean.
+- The scaffold includes a `[project]` section so the result builds with bare
+  `lyric` / `lyric build` immediately, and `lyric run src/main.l` runs it.
+
+**Consequence:** `lyric init demo && cd demo && lyric run src/main.l` works
+end-to-end with no hand-editing.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
