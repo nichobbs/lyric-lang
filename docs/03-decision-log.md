@@ -4353,6 +4353,46 @@ behaviour, not just help. Future command additions must be added to
 
 ---
 
+## D079 — `lyric build --release`: self-contained Native AOT binaries, with a target seam for GraalVM (#1968, #1975)
+
+**Context:** `lyric build` emitted only a framework-dependent `.dll` run via
+`dotnet exec`; there was no command to produce a deployable standalone native
+binary. The compiler already AOT-publishes *itself* (`bootstrap/src/Lyric.Cli.Aot`),
+so the pipeline is proven — we expose the same capability for user programs.
+
+**Decision:**
+
+- **`lyric build --release <source.l>`** produces a self-contained Native AOT
+  executable. Plain `lyric build` is unchanged (fast managed DLL — the inner
+  loop); `--release` is the deployable-artifact path. `--rid` overrides the host
+  RID (default: MSBuild `$(NETCoreSdkPortableRuntimeIdentifier)`); `-o` overrides
+  the output (default: the source stem with no extension).
+- **Mechanism** (`Lyric.Release`, `lyric-compiler/lyric/release.l`): build the
+  managed DLL, generate a host project (`host.csproj` + a C# `Trampoline.cs`
+  into the program's emitted `<package>.Program.main()`) referencing the program
+  DLL + `Lyric.Stdlib.dll`, then run `dotnet publish -p:PublishAot=true`. The
+  host assembly is named `__lyric_aot_host` — deliberately distinct from any
+  user package, because ILC resolves assembly identities case-insensitively and
+  a same-name host would shadow the program's entry type. ILC trim/AOT warnings
+  are surfaced (`IlcTreatWarningsAsErrors=false`), not swallowed.
+- **Target seam:** `union ReleaseTarget { DotnetAot | JvmNativeImage }` with a
+  target-agnostic `buildRelease`. `DotnetAot` is implemented; `JvmNativeImage`
+  (GraalVM `native-image` over the bundled JAR) is defined but **fails loud**
+  (`#1975`) rather than silently producing a managed artifact — honouring the
+  no-silent-one-platform rule. Adding GraalVM later fills the `JvmNativeImage`
+  arm without touching the dispatcher or the .NET path.
+- **Scope this slice:** single-file programs on .NET. **Project-mode `--release`**
+  (entry-package detection across a bundle + path-dependency referencing) and the
+  JVM path are tracked in #1975; both emit a clear non-zero error today.
+
+**Consequence:** `lyric build` now has two artifact modes — debug DLL (default)
+and release native binary (`--release`). This is a user-facing surface addition
+touching the Q011 freeze (`docs/36-v1-roadmap.md` §R7.5 / `docs/41` H13, which
+move from "planned" to "shipped for single-file/.NET"). Recorded here per the
+freeze protocol.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

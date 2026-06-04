@@ -502,6 +502,15 @@ func loadCompilerPayloads(compilerDir: in String): List[ProjectPackagePayload] {
     case Err(_)  -> ()
   }
 
+  // Lyric.Release — single file (`release.l`), optional.  Lets
+  // `release_self_test.l` resolve `import Lyric.Release` for the pure
+  // entry-detection helpers (packageNameOf / declaresEntryMain).
+  val releasePath = Path.join(compilerDir, "release.l")
+  match File.readText(releasePath) {
+    case Ok(src) -> payloads.add(ProjectPackagePayload(name = "Lyric.Release", source = src))
+    case Err(_)  -> ()
+  }
+
   payloads
 }
 
