@@ -558,6 +558,38 @@ Rules for where new code goes:
 - Don't write code comments that restate what code does — only comments
   for non-obvious *why*.
 
+### Formatting — run `lyric fmt` before every commit
+
+Before committing, run the **self-hosted** formatter over every `.l`
+file you changed:
+
+```sh
+# after `make lyric` (gives ./bin/lyric):
+for f in $(git diff --name-only --diff-filter=ACM -- '*.l'); do
+  ./bin/lyric fmt --write "$f" || echo "SKIPPED (unsafe to format): $f"
+done
+```
+
+`lyric fmt` (the self-hosted formatter in `lyric-compiler/lyric/fmt/`) is
+the single source of truth for Lyric source layout. Key properties:
+
+- It **auto-fixes** a file's module-level header comment block to the
+  canonical `//!` form (the language reference, §1.3, makes `//!` the
+  inner/module doc form; a plain `//` banner before `package` is
+  otherwise discarded by the AST).
+- It is **loss-checked**: `--write` re-parses its own output and
+  **refuses to write** (non-zero exit, prints the reason, leaves the file
+  untouched) if formatting would drop a comment, a contract clause
+  (`requires:`/`ensures:`/…), or any token such as a `pub` modifier or
+  identifier, or if the input or output does not parse cleanly. See
+  `Lyric.Fmt.formatSourceChecked`.
+
+A refusal means the file hit a self-hosted parser gap or a formatter bug
+— **fix the underlying issue or leave the file unstaged; never
+hand-format around a refusal**, and never reintroduce an ad-hoc
+formatter (the F# bootstrap formatter that stripped `//` comments was
+removed). Do not use any other formatter on `.l` files.
+
 ### Branches
 
 The user assigns the working branch via the session prompt

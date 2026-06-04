@@ -15,7 +15,7 @@
 ///                                  yet (e.g. during stage 1 bundle
 ///                                  precompile).
 ///   * `--internal-project-build` — multi-package project compile.
-///   * `--internal-contract-meta` — read / diff embedded contract JSON.
+///   * `--internal-contract-meta` — diff embedded contract JSON.
 ///
 /// Anything else returns a one-line error pointing at the AOT binary,
 /// because the F# dispatcher no longer exists.
@@ -123,24 +123,17 @@ let private internalBuild (rest: string list) : int =
             writeRuntimeConfig outPath
             0
 
-/// `lyric --internal-contract-meta read <dll>`
-/// Outputs the embedded Lyric.Contract JSON to stdout, or nothing if absent.
-///
 /// `lyric --internal-contract-meta diff`
 /// Reads old and new JSON from stdin (separated by `\n---\n`), diffs them,
 /// and prints each rendered entry followed by a blank line.
 /// Used by the Lyric `Lyric.ContractMeta` package.
+///
+/// The former `read` subcommand was removed: the self-hosted
+/// `Lyric.ContractMeta` package now reads embedded contract resources
+/// in-process via `Std.AssemblyResources` (D-progress-302), so no caller
+/// shells out for `read` any more.  `diff` is the last remaining hop.
 let private internalContractMeta (rest: string list) : int =
     match rest with
-    | "read" :: dllPath :: _ ->
-        if not (File.Exists dllPath) then
-            printErr (sprintf "internal-contract-meta read: file not found: %s" dllPath)
-            1
-        else
-            match Lyric.Emitter.ContractMeta.readFromAssembly dllPath with
-            | None      -> ()   // empty stdout = no contract
-            | Some json -> printfn "%s" json
-            0
     | "diff" :: _ ->
         let stdin  = Console.In.ReadToEnd()
         let parts  = stdin.Split([| "\n---\n" |], StringSplitOptions.None)
@@ -164,7 +157,7 @@ let private internalContractMeta (rest: string list) : int =
                 printErr "internal-contract-meta diff: could not parse new contract JSON"
                 1
     | _ ->
-        printErr "internal-contract-meta: unknown subcommand (expected 'read' or 'diff')"
+        printErr "internal-contract-meta: unknown subcommand (expected 'diff')"
         1
 
 /// `lyric --internal-project-build <specFile> -o <outFile> [--target dotnet|jvm]`
