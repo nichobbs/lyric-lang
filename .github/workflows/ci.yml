@@ -528,8 +528,7 @@ jobs:
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/auto_ffi_self_test.l
 
       # Async extern unwrapping self-test — pins the Band 3 Phase A fix for the
-      # @externTarget async silent miscompile (epic #2070, D085, D-progress-415).
-      # Before this fix, @externTarget async func left Task<T> on the stack where
+      # @externTarget async silent miscompile (epic #2070, D085, D-progress-415).      # Before this fix, @externTarget async func left Task<T> on the stack where
       # callers expected T.  Exercises both unwrap paths: the non-void path
       # (Task<T>::get_Result() via StringReader.ReadToEndAsync) and the void path
       # (Task::Wait() via Task.Delay(0)).  MSIL target only; JVM async (IAsyncEnumerable
