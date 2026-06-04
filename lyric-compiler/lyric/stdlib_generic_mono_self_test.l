@@ -68,3 +68,37 @@ test "impl method specialises unwrapOr on a List[Option[String]] field" {
   val r: Reader = BagReader()
   assertEqual(r.firstOr(bag, "missing"), "present", "firstOr -> Some payload")
 }
+
+// ── ESelf inference path ─────────────────────────────────────────────────────
+//
+// The previous impl test projects through a *named parameter* `b.opts`, which
+// resolves via the regular field-projection arm in `inferExprTE`.  This case
+// reaches the generic call through `self.store.items[i]` instead, exercising
+// the `ESelf -> mapGet(env, "self")` branch that PR #1753 added specifically
+// for this pattern.
+
+record Store { items: List[Option[String]] }
+
+interface Lookup {
+  func first(fallback: in String): String
+}
+
+record StoreImpl { store: Store }
+
+impl Lookup for StoreImpl {
+  func first(fallback: in String): String {
+    if self.store.items.count > 0 {
+      unwrapOr(self.store.items[0], fallback)
+    } else {
+      fallback
+    }
+  }
+}
+
+test "impl method specialises unwrapOr via self.field projection" {
+  val items: List[Option[String]] = newList()
+  items.add(Some(value = "found"))
+  val store = Store(items = items)
+  val l: Lookup = StoreImpl(store = store)
+  assertEqual(l.first("absent"), "found", "self.store.items[0] -> Some payload")
+}
