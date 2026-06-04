@@ -762,6 +762,74 @@ func isCodegenBuiltinName(name: in String): Bool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §8a. impl/interface conformance (#1486).
+// ─────────────────────────────────────────────────────────────────────────────
+
+func findInterfaceDecl(tbl: in SymbolTable, name: in String): Option[InterfaceDecl] {
+  var i = 0
+  while i < tbl.symbols.count {
+    match tbl.symbols[i].kind {
+      case DKInterface(_, d) -> { if tbl.symbols[i].name == name { return Some(value = d) } }
+      case _                 -> {}
+    }
+    i = i + 1
+  }
+  None
+}
+
+func findImplMethod(decl: in ImplDecl, name: in String): Option[FunctionDecl] {
+  var i = 0
+  while i < decl.members.count {
+    match decl.members[i] {
+      case IMplFunc(fn) -> { if fn.name == name { return Some(value = fn) } }
+      case _            -> {}
+    }
+    i = i + 1
+  }
+  None
+}
+
+// Structural conformance for an `impl Iface for Target { … }`: every abstract
+// interface method (`IMSig`) must be implemented (T0098), and an implemented
+// method's parameter arity must match the interface declaration (T0099).
+// Default methods (`IMFunc`) are optional, so they are not required.  Only
+// parameter *counts* are compared — full type matching (with generic / `Self`
+// substitution) and impl-body type-checking are deferred (they overlap with the
+// record-ctor / expression-typing forms still pending in #1483), so this check
+// is generic-safe and never false-positives on a conforming impl.
+func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in ImplDecl): Unit {
+  val segs = decl.iface.head.segments
+  if segs.count == 0 { return }
+  val ifaceName = segs[segs.count - 1]
+  match findInterfaceDecl(tbl, ifaceName) {
+    case None -> {}   // unresolved interface — already diagnosed at resolution
+    case Some(ifaceDecl) -> {
+      var i = 0
+      while i < ifaceDecl.members.count {
+        match ifaceDecl.members[i] {
+          case IMSig(sig) ->
+            match findImplMethod(decl, sig.name) {
+              case None ->
+                diag.add(errorDiagnostic("T0098",
+                  "impl of interface '" + ifaceName + "' is missing method '" +
+                  sig.name + "'", decl.span))
+              case Some(fn) ->
+                if fn.params.count != sig.params.count {
+                  diag.add(errorDiagnostic("T0099",
+                    "impl method '" + sig.name + "' has " +
+                    toString(fn.params.count) + " parameter(s) but interface '" +
+                    ifaceName + "' declares " + toString(sig.params.count), fn.span))
+                }
+            }
+          case _ -> {}   // IMFunc (default, optional) / IMAssoc handled elsewhere
+        }
+        i = i + 1
+      }
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §9. Public entry points.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -826,6 +894,7 @@ pub func checkWithImports(
             }
         }
       }
+      case IImpl(decl) -> checkImplConformance(tbl, diag, decl)
       case _ -> {}
     }
     m = m + 1

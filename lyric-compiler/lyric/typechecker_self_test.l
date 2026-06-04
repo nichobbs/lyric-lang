@@ -733,6 +733,52 @@ func testVisibilitySamePackageUnaffected(): Unit {
   assertTrue(not hasDiagCode(cr, "T0097"), "same-package private ref: no T0097")
 }
 
+// #1486: impl/interface structural conformance — every abstract interface
+// method must be implemented (T0098) with matching parameter arity (T0099).
+
+func testImplConforming(): Unit {
+  val src =
+    "package P\n" +
+    "interface Greeter { func greet(name: in String): String }\n" +
+    "record G {}\n" +
+    "impl Greeter for G { func greet(name: in String): String { name } }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0098"), "conforming impl: no T0098")
+  assertTrue(not hasDiagCode(cr, "T0099"), "conforming impl: no T0099")
+}
+
+func testImplMissingMethod(): Unit {
+  val src =
+    "package P\n" +
+    "interface Greeter { func greet(name: in String): String }\n" +
+    "record G {}\n" +
+    "impl Greeter for G {}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0098"), "impl missing abstract method: T0098")
+}
+
+func testImplArityMismatch(): Unit {
+  val src =
+    "package P\n" +
+    "interface Greeter { func greet(name: in String): String }\n" +
+    "record G {}\n" +
+    "impl Greeter for G { func greet(): String { \"hi\" } }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0099"), "impl method arity mismatch: T0099")
+}
+
+func testImplDefaultMethodOptional(): Unit {
+  // An interface method WITH a body is a default (IMFunc) — an impl need not
+  // override it, so omitting it must not produce T0098.
+  val src =
+    "package P\n" +
+    "interface Greeter { func greet(name: in String): String { \"hi \" + name } }\n" +
+    "record G {}\n" +
+    "impl Greeter for G {}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0098"), "default interface method not required: no T0098")
+}
+
 func main(): Unit {
   testEmptySource()
   testFuncRegistered()
@@ -796,5 +842,9 @@ func main(): Unit {
   testVisibilityPrivateFuncRejected()
   testVisibilityExternTypeAllowed()
   testVisibilitySamePackageUnaffected()
+  testImplConforming()
+  testImplMissingMethod()
+  testImplArityMismatch()
+  testImplDefaultMethodOptional()
   println("typechecker self-test: ok")
 }

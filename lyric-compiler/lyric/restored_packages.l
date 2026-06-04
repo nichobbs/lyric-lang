@@ -294,6 +294,17 @@ func isWhitelistedT0010(d: in Diagnostic): Bool {
   isWhitelistedStdlibType(name)
 }
 
+// True iff `d` is an impl/interface conformance diagnostic (#1486).  The
+// synthesised contract source reconstructs a restored package's public API
+// from metadata; its `impl` blocks are type anchors, not full recompilations,
+// so an impl may legitimately omit interface methods (T0098) or differ in
+// arity (T0099).  Conformance was already enforced when the package was
+// originally compiled, so these are expected here and must not fail the
+// restored-dep load — same rationale as the whitelisted-T0010 stdlib anchors.
+func isConformanceDiag(d: in Diagnostic): Bool {
+  d.code == "T0098" or d.code == "T0099"
+}
+
 // True iff `d` is a DiagError (vs DiagWarning).
 func isErrorDiag(d: in Diagnostic): Bool {
   var isErr = false
@@ -313,7 +324,7 @@ func filterRealErrors(diags: in List[Diagnostic]): List[Diagnostic] {
   var i = 0
   while i < diags.count {
     val d = diags[i]
-    if isErrorDiag(d) and not isWhitelistedT0010(d) {
+    if isErrorDiag(d) and not isWhitelistedT0010(d) and not isConformanceDiag(d) {
       kept.add(d)
     }
     i = i + 1
