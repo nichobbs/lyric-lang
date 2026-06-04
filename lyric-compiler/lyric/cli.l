@@ -192,6 +192,7 @@ func knownCommands(): List[String] {
   cmds.add("bench")
   cmds.add("openapi")
   cmds.add("lsp")
+  cmds.add("help")
   cmds
 }
 
@@ -2879,9 +2880,12 @@ pub func main(argv: in slice[String]): Int {
   // Outside a project it is still a usage error, not a silent no-op.
   if argv.length == 0 {
     match Ws.findNearestManifest(Environment.currentDirectory()) {
-      case Some(_) -> {
+      case Some(p) -> {
+        // Forward the discovered path so cmdBuild doesn't walk the tree again.
         val buildArgv: List[String] = newList()
         buildArgv.add("build")
+        buildArgv.add("--manifest")
+        buildArgv.add(p)
         return cmdBuild(buildArgv.toArray())
       }
       case None -> {

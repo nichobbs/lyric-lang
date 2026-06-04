@@ -7,6 +7,7 @@
 //
 // Public API:
 //   pub func findWorkspaceRoot(startDir: in String): Option[WorkspaceContext]
+//   pub func findNearestManifest(startDir: in String): Option[String]
 //   pub func findMember(members: in List[WorkspaceMember], name: in String): Option[WorkspaceMember]
 //   pub func resolveDep(name: in String, ctx: in WorkspaceContext): Option[String]
 
