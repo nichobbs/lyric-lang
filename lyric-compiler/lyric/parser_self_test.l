@@ -591,6 +591,25 @@ func testBareMinValueAbsKeepsDiagnostic(): Unit {
              "bare 9223372036854775808: L0010 preserved (no PreNeg wrapper)")
 }
 
+// `///` (item/outer doc) before `package` is left in the stream by
+// `parseModuleDocComments` (which only harvests `//!`) — `parsePackageDecl`
+// then surfaces a targeted P0020 pointing at `//!` instead of the bare
+// "expected 'package'" message.  Without this assertion, a future refactor
+// renaming `TDocComment` could silently revert the improved message.
+func testDocCommentBeforePackageDiagnostic(): Unit {
+  val src = "/// stray doc\npackage Foo\n"
+  val pr = parse(src)
+  var sawTargeted = false
+  var i = 0
+  while i < pr.diagnostics.count {
+    val d = pr.diagnostics[i]
+    if d.code == "P0020" and d.message.contains("//!") { sawTargeted = true }
+    i = i + 1
+  }
+  assertTrue(sawTargeted,
+             "P0020 for '///' before package mentions '//!' module-doc form")
+}
+
 func testPeekAtNegativeReturnsSyntheticEof(): Unit {
   // `peekAt(st, k)` with k that places `pos + k` outside the token
   // window must also return the source-end-anchored synthetic EOF
@@ -647,5 +666,6 @@ func main(): Unit {
   testPeekAtNegativeReturnsSyntheticEof()
   testNegationCancelsMinValueAbsDiagnostic()
   testBareMinValueAbsKeepsDiagnostic()
+  testDocCommentBeforePackageDiagnostic()
   println("parser self-test: ok")
 }
