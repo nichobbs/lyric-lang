@@ -101,4 +101,11 @@ test "impl method specialises unwrapOr via self.field projection" {
   val store = Store(items = items)
   val l: Lookup = StoreImpl(store = store)
   assertEqual(l.first("absent"), "found", "self.store.items[0] -> Some payload")
+  // None arm of the same specialisation: the impl method returns the fallback
+  // when `items[0]` is None, exercising the None branch of unwrapOr__String.
+  val items2: List[Option[String]] = newList()
+  items2.add(None)
+  val store2 = Store(items = items2)
+  val l2: Lookup = StoreImpl(store = store2)
+  assertEqual(l2.first("missing"), "missing", "self.store.items[0] -> None -> fallback")
 }
