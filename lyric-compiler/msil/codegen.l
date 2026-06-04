@@ -6711,7 +6711,7 @@ func patchBodyRetsNonVoid(insns: in List[MInsn], rSlot: in Int, lbl: in Int): Li
         out.add(MStloc(slot = rSlot))
         out.add(MBr(label = lbl))
       }
-      case insn -> out.add(insn)
+      case _ -> out.add(insns[i])
     }
     i = i + 1
   }
@@ -6726,7 +6726,7 @@ func patchBodyRetsVoid(insns: in List[MInsn], lbl: in Int): List[MInsn] {
   while i < insns.count {
     match insns[i] {
       case MRet -> out.add(MBr(label = lbl))
-      case insn -> out.add(insn)
+      case _ -> out.add(insns[i])
     }
     i = i + 1
   }
