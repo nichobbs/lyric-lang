@@ -20181,6 +20181,49 @@ Remaining Band-1 `TyError` forms: `EMatch`-branch unification (needs
 pattern-variable binding so arm bodies see their bound names), `ELambda`,
 `ETypeApp`, `EForall`/`EExists`, `EAssign`; then the #1488 gate.
 
+### D-progress-406: JVM auto-FFI metadata resolution works end-to-end (epic #1622, JVM analog)
+
+Brought the self-hosted JVM auto-FFI from written-but-non-functional to working
+end-to-end: `extern type T = "java.lang.Math"` / `T.method(args)` now resolves
+the overload from real JDK `.jmod` metadata at compile time and emits the real
+`invokestatic owner.name(desc)` instead of the legacy `([Object…])Object` guess.
+Five defects were fixed across the pure-Lyric resolver stack
+(`lyric-compiler/jvm/{auto_ffi,zip_reader,class_reader,deflate}.l`) and the JVM
+codegen (`codegen.l`):
+
+- **Call-site routing.** `T.method(args)` parses as `EMember(EPath{T}, method)`
+  → `lowerMethodCall`, but the auto-FFI fast path lived only in
+  `lowerGeneralStaticCall` (never reached).  Added the extern-type detection to
+  `lowerMethodCall`, mirroring `lowerMethodCallMsil`.
+- **JMOD magic header.** `.jmod` files prefix the embedded ZIP with a 4-byte
+  `"JM"` + version header, so the ZIP signature starts at offset 4;
+  `readZipEntries` was scanning from offset 0 and finding zero entries.
+- **ZIP central directory.** JMOD entries are written with streaming data
+  descriptors (general-purpose flag bit 3), so local-header sizes are zero —
+  sequential local-header scanning recovered at most one entry.  Rewrote
+  `readZipEntries` to parse the central directory (authoritative sizes +
+  local-header offsets, with the JMOD offset shift recovered from the EOCD
+  position).
+- **CRC32 Int overflow.** The CD's CRC32 field is a full unsigned 32-bit value
+  that routinely exceeds `Int32.MaxValue`; reading it through the
+  little-endian `rdU32Le` helper overflowed Lyric's checked Int arithmetic and
+  panicked mid-parse.  The CRC is unused downstream, so it is no longer read.
+- **Stage-0-hostile `Map`/`Option` threading.** The stage-0 bootstrap emitter
+  that compiles this self-hosted package miscompiles `Map[String, …]` /
+  `Option[…]` value threading for cross-package record element types (it drops
+  the hit, yielding a spurious `None`), and miscompiles `try`-expression and
+  `return`-inside-`match`-arm value positions for those types.  Rewrote the
+  loading chain (`tryLoadFromJmod` / `loadClassInfo` / `loadClass`) to read each
+  JMOD directly and thread results through plain `var` accumulators, and
+  replaced the `Map[String, ClassInfo]` class cache with two parallel `List`s.
+
+New regression test `lyric-compiler/lyric/auto_ffi_jvm_self_test.l`
+(`@test_module`, 10 tests) is run in CI via native `lyric test --target jvm`:
+it compiles `java.lang.Math` / `java.lang.Integer` int / long / double overloads
+in-process through the self-hosted `Jvm.Bridge` (`compileToJarBundled`) and runs
+the resulting JAR under `java`, asserting every runtime value.  No new F#;
+imports only `Std.*`.  No regression: emitter 847/847, CLI 84/84.
+
 ### D-progress-415 — Band 3 Phase A: fix `@externTarget async` silent miscompile (#2070, D085)
 
 **What shipped:**
@@ -20195,7 +20238,7 @@ pattern-variable binding so arm bodies see their bound names), `ELambda`,
   `CodegenCtx` fields: `trTask`, `trTask1`, `tokTaskWait`):
   - `System.Threading.Tasks.Task` (non-generic) — for `Task::Wait()` on void
     async externs.
-  - `System.Threading.Tasks.Task`1` (open generic) — anchor for
+  - `System.Threading.Tasks.Task\`1` (open generic) — anchor for
     `Task<T>::get_Result()` TypeSpec+MemberRef built lazily per return type.
   - `Task::Wait(): void` MemberRef — used for void `@externTarget async func`.
 
@@ -20204,8 +20247,8 @@ pattern-variable binding so arm bodies see their bound names), `ELambda`,
   duplicate blobs from the same return type are stable cache keys.
 
 - **`emitExternTargetBody` async unwrap** — after the BCL call instruction:
-  - Non-void return: lazily build TypeSpec for `Task`1<T>` +
-    `get_Result(): !0` MemberRef; emit `callvirt Task`1<T>::get_Result()`.
+  - Non-void return: lazily build TypeSpec for `Task\`1<T>` +
+    `get_Result(): !0` MemberRef; emit `callvirt Task\`1<T>::get_Result()`.
   - Void return: emit `callvirt Task::Wait()`.
   - Result: `@externTarget async func f(): T` now correctly returns T (the
     declared Lyric type) at runtime.  Previously it returned `Task<T>` as T
