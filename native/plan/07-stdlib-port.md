@@ -72,10 +72,10 @@ modification:
 @nativeLib("libc")
 package Std.ConsoleNativeHost
 
-extern func write_fd(fd: Int32, buf: NativePtr[Byte], n: UInt64): Int64 = "write"
+extern func write_fd(fd: Int, buf: NativePtr[Byte], n: Long): Long = "write"
 
-pub val STDOUT: Int32 = 1
-pub val STDERR: Int32 = 2
+pub val STDOUT: Int = 1
+pub val STDERR: Int = 2
 
 pub func consoleWriteln(s: String): Unit {
   withCString(s, func(cs: NativePtr[Byte]): Unit {
@@ -110,13 +110,13 @@ package Std.TimeNativeHost
 
 // struct timespec { time_t tv_sec; long tv_nsec; }
 // On 64-bit: both fields are i64
-extern func clock_gettime(clockId: Int32, ts: NativePtr[Int64]): Int32 = "clock_gettime"
+extern func clock_gettime(clockId: Int, ts: NativePtr[Long]): Int = "clock_gettime"
 
-pub val CLOCK_REALTIME: Int32 = 0
-pub val CLOCK_MONOTONIC: Int32 = 1
+pub val CLOCK_REALTIME: Int = 0
+pub val CLOCK_MONOTONIC: Int = 1
 
-pub func epochMillis(): Int64 {
-  var ts: slice[Int64] = newSlice(2)
+pub func epochMillis(): Long {
+  var ts: slice[Long] = newSlice(2)
   clock_gettime(CLOCK_REALTIME, ts.ptr)
   ts[0] * 1000 + ts[1] / 1000000
 }
@@ -129,23 +129,23 @@ pub func epochMillis(): Int64 {
 package Std.FileNativeHost
 
 // Open flags (POSIX)
-pub val O_RDONLY: Int32 = 0
-pub val O_WRONLY: Int32 = 1
-pub val O_RDWR:   Int32 = 2
-pub val O_CREAT:  Int32 = 64   // 0100 octal
-pub val O_TRUNC:  Int32 = 512  // 01000 octal
+pub val O_RDONLY: Int = 0
+pub val O_WRONLY: Int = 1
+pub val O_RDWR:   Int = 2
+pub val O_CREAT:  Int = 64   // 0100 octal
+pub val O_TRUNC:  Int = 512  // 01000 octal
 
-extern func open(path: NativePtr[Byte], flags: Int32, mode: Int32): Int32 = "open"
-extern func close(fd: Int32): Int32 = "close"
-extern func read(fd: Int32, buf: NativePtr[Byte], n: UInt64): Int64 = "read"
-extern func write(fd: Int32, buf: NativePtr[Byte], n: UInt64): Int64 = "write"
-extern func unlink(path: NativePtr[Byte]): Int32 = "unlink"
-extern func mkdir(path: NativePtr[Byte], mode: Int32): Int32 = "mkdir"
-extern func rmdir(path: NativePtr[Byte]): Int32 = "rmdir"
+extern func open(path: NativePtr[Byte], flags: Int, mode: Int): Int = "open"
+extern func close(fd: Int): Int = "close"
+extern func read(fd: Int, buf: NativePtr[Byte], n: Long): Long = "read"
+extern func write(fd: Int, buf: NativePtr[Byte], n: Long): Long = "write"
+extern func unlink(path: NativePtr[Byte]): Int = "unlink"
+extern func mkdir(path: NativePtr[Byte], mode: Int): Int = "mkdir"
+extern func rmdir(path: NativePtr[Byte]): Int = "rmdir"
 
 // stat64 is architecture-specific; provide only the fields we need:
 // offset of st_size in struct stat varies by platform → use a helper
-extern func lyric_file_size(path: NativePtr[Byte]): Int64 = "lyric_file_size"
+extern func lyric_file_size(path: NativePtr[Byte]): Long = "lyric_file_size"
 // ^ defined in lyric-rt/src/lyric_posix.c: returns st_size via stat(2)
 ```
 
@@ -158,10 +158,10 @@ The `lyric_file_size` helper is one of a small number of C wrappers in
 package Std.UuidNativeHost
 
 // getrandom(2) fills a buffer with cryptographically secure random bytes
-extern func getrandom(buf: NativePtr[Byte], buflen: UInt64, flags: UInt32): Int64 = "getrandom"
+extern func getrandom(buf: NativePtr[Byte], buflen: Long, flags: Int): Long = "getrandom"
 
 pub func fillRandomBytes(buf: slice[Byte]): Bool {
-  val n = getrandom(buf.ptr, buf.length.toUInt64(), 0)
+  val n = getrandom(buf.ptr, buf.length.toLong(), 0)
   n == buf.length.toLong()
 }
 ```
@@ -175,15 +175,15 @@ The most complex kernel port. Provides:
 
 - `lyric_list_new() → List*`
 - `lyric_list_push(list: List*, val: i8*)` — retains val
-- `lyric_list_get(list: List*, idx: Int64) → i8*` — returns retained value
-- `lyric_list_len(list: List*) → Int64`
+- `lyric_list_get(list: List*, idx: Long) → i8*` — returns retained value
+- `lyric_list_len(list: List*) → Long`
 - `lyric_list_dtor(obj: i8*) → void` — releases all elements, frees data array
 
 - `lyric_map_new() → Map*`
 - `lyric_map_set(map: Map*, key: i8*, val: i8*)` — retains both
 - `lyric_map_get(map: Map*, key: i8*) → Option[i8*]`
 - `lyric_map_remove(map: Map*, key: i8*) → Bool`
-- `lyric_map_len(map: Map*) → Int64`
+- `lyric_map_len(map: Map*) → Long`
 
 These are implemented in `lyric-rt/src/lyric_collections.c` in C (for correctness
 and to bootstrap before `Std.Collections` itself is compilable from Lyric source).

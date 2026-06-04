@@ -54,16 +54,16 @@ Lyric values of type `String` are `%LyricString*` — a pointer to this struct.
 
 ```llvm
 ; For "hello":
-@.strdata.0 = private unnamed_addr constant [5 x i8] c"hello", align 1
-@.strobj.0 = private constant { i32, i8*, i64, i64 } {
+@.strobj.0 = private unnamed_addr constant { i32, i8*, i64, i64, [6 x i8] } {
   i32 2147483647,   ; INT32_MAX — saturated rc, never freed
   i8* null,         ; no destructor (static allocation)
-  i64 5,
-  i64 5
+  i64 5,            ; len (byte count, excluding null)
+  i64 6,            ; cap (allocated bytes, including null terminator)
+  [6 x i8] c"hello\00"
 }, align 8
 
 ; At use site, bitcast to %LyricString*:
-%str = bitcast { i32, i8*, i64, i64 }* @.strobj.0 to %LyricString*
+%str = bitcast { i32, i8*, i64, i64, [6 x i8] }* @.strobj.0 to %LyricString*
 ```
 
 Because static strings and heap strings are the same layout, call sites that

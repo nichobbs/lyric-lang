@@ -16,17 +16,17 @@ calling convention rules, callback trampolines, and the `_kernel_native/` bounda
 package Std.LibcHost
 
 // Simple C functions:
-extern func strlen(s: NativePtr[Byte]): UInt64 = "strlen"
-extern func write(fd: Int32, buf: NativePtr[Byte], n: UInt64): Int64 = "write"
-extern func read(fd: Int32, buf: NativePtr[Byte], n: UInt64): Int64 = "read"
-extern func open(path: NativePtr[Byte], flags: Int32, mode: Int32): Int32 = "open"
-extern func close(fd: Int32): Int32 = "close"
-extern func malloc(n: UInt64): NativePtr[Byte] = "malloc"
+extern func strlen(s: NativePtr[Byte]): Long = "strlen"
+extern func write(fd: Int, buf: NativePtr[Byte], n: Long): Long = "write"
+extern func read(fd: Int, buf: NativePtr[Byte], n: Long): Long = "read"
+extern func open(path: NativePtr[Byte], flags: Int, mode: Int): Int = "open"
+extern func close(fd: Int): Int = "close"
+extern func malloc(n: Long): NativePtr[Byte] = "malloc"
 extern func free(ptr: NativePtr[Byte]): Unit = "free"
-extern func exit(code: Int32): Unit = "exit"  // noreturn — tagged in Phase 2
+extern func exit(code: Int): Unit = "exit"  // noreturn — tagged in Phase 2
 
 // Variadic C functions (Phase 2 — see below):
-// extern func printf(fmt: NativePtr[Byte], ...): Int32 = "printf"
+// extern func printf(fmt: NativePtr[Byte], ...): Int = "printf"
 ```
 
 ### Parser change: `IExternFunc` AST node
@@ -144,9 +144,9 @@ safety rules for its body. It may:
 
 ```lyric
 @unsafe_ffi
-func openFile(path: String): Int32 {
+func openFile(path: String): Int {
   // withCString returns a NativePtr[Byte] valid for the duration of the call
-  withCString(path, func(cpath: NativePtr[Byte]): Int32 {
+  withCString(path, func(cpath: NativePtr[Byte]): Int {
     LibcHost.open(cpath, O_RDONLY, 0)
   })
 }
@@ -176,18 +176,19 @@ Each file declares:
 2. A thin safe Lyric wrapper that maps the C API to Lyric types (e.g., returns
    `Result[T, String]` instead of `-1` + errno).
 
-Example (`libc.l`):
+Example (safe-wrapper pattern, from `process.l`):
 
 ```lyric
 @nativeLib("libc")
-package Std.LibcHost
+package Std.ProcessNativeHost
 
-extern func write(fd: Int32, buf: NativePtr[Byte], n: UInt64): Int64 = "write"
+extern func waitpid(pid: Int, status: NativePtr[Int], options: Int): Int = "waitpid"
 
 // Safe wrapper (not extern — pure Lyric):
-pub func safeWrite(fd: Int32, data: slice[Byte]): Result[UInt64, String] {
-  val n = write(fd, data.ptr, data.length.toUInt64())
-  if n < 0 { Err(strerrorString(errno())) } else { Ok(n.toUInt64()) }
+pub func waitForProcess(pid: Int): Result[Int, String] {
+  var status: Int = 0
+  val ret = waitpid(pid, nativeAddrOf(status), 0)
+  if ret < 0 { Err("waitpid failed") } else { Ok(exitCodeFrom(status)) }
 }
 ```
 

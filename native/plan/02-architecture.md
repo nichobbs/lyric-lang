@@ -321,12 +321,12 @@ target triple = "x86_64-unknown-linux-gnu"
 
 %LyricString = type { i32, i8*, i64, i64 }
 
-@.str.0 = private unnamed_addr constant [13 x i8] c"Hello, world\00", align 1
-@.strobj.0 = private constant { i32, i8*, i64, i64 } {
-  i32 2147483647,      ; rc = INT32_MAX (static, never freed)
-  i8* null,            ; dtor = null (static strings have no destructor)
-  i64 13,              ; len
-  i64 13               ; cap
+@.strobj.0 = private unnamed_addr constant { i32, i8*, i64, i64, [13 x i8] } {
+  i32 2147483647,           ; rc = INT32_MAX (static, never freed)
+  i8* null,                 ; dtor = null (static strings have no destructor)
+  i64 12,                   ; len (byte count, excluding null)
+  i64 13,                   ; cap (allocated, including null terminator)
+  [13 x i8] c"Hello, world\00"
 }, align 8
 
 declare void @lyric_retain(i8* %obj)
@@ -335,7 +335,7 @@ declare void @Std.Console.println(%LyricString* %str)
 
 define void @Hello.main() {
 entry:
-  %str = bitcast { i32, i8*, i64, i64 }* @.strobj.0 to %LyricString*
+  %str = bitcast { i32, i8*, i64, i64, [13 x i8] }* @.strobj.0 to %LyricString*
   call void @Std.Console.println(%LyricString* %str)
   ret void
 }
