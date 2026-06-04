@@ -1195,7 +1195,31 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
           mi = mi + 1
         }
       }
-      // IDistinctType, IRangeType, IEnum, IImpl: 0 MethodDef rows in non-MPFuncs.
+      // IDistinctType: lowerMDistinctType synthesises an MRecord with one
+      // `value` field + a one-arg `.ctor(inner)`.  Reserve those rows AND
+      // register the field token / ctor token / type FQN so member access
+      // (`self.value` in derive-synthesised methods) and construction
+      // (`Score(42)`) resolve correctly (#1917).
+      case IDistinctType(decl) -> {
+        val className = pkgName + "." + decl.name
+        if not cctx.typeFqnByName.containsKey(decl.name) {
+          cctx.typeFqnByName.add(decl.name, className)
+        }
+        val valueTok = 0x04000000 + fieldDefRow
+        if not cctx.fieldTokens.containsKey(className + "/value") {
+          cctx.fieldTokens.add(className + "/value", valueTok)
+        }
+        val innerTy = typeExprToMsilCtx(cctx, decl.underlying, pkgName)
+        if not cctx.fieldMsilTypes.containsKey(className + "/value") {
+          cctx.fieldMsilTypes.add(className + "/value", innerTy)
+        }
+        fieldDefRow = fieldDefRow + 1
+        if not cctx.recordCtorTokens.containsKey(className) {
+          cctx.recordCtorTokens.add(className, 0x06000000 + methodDefRow)
+        }
+        methodDefRow = methodDefRow + 1
+      }
+      // IRangeType, IEnum, IImpl: 0 MethodDef rows in non-MPFuncs.
       // IConst, IVal, IFunc: handled below (go to MPFuncs, emitted last).
       case _ -> {}
     }

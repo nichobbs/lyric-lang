@@ -253,9 +253,16 @@ func synthesizeEqualsRecord(typeName: in String, decl: in RecordDecl, vis: in Op
   funcItem(makeFuncDecl(typeName + ".equals", params, typeRef("Bool"), body, vis), vis)
 }
 
-// `TypeName.equals(self, other): Bool` for distinct types via projection method.
+// `TypeName.equals(self, other): Bool` for distinct types via the `value`
+// field directly.  The lowered MDistinctType has a single `value: Inner`
+// field (added in `lowerMDistinctType`); the `projMethod` parameter is
+// kept for callers' API stability but the body bypasses it — projection
+// methods like `toInt`/`toString` are not synthesised on the lowered CLR
+// class (#1917), and the F# emitter's own `equals` synthesis uses the
+// same field-direct pattern (`ldfld value`).
 func synthesizeEqualsDistinct(typeName: in String, projMethod: in String, vis: in Option[Visibility]): Item {
-  val cmp  = binop(BEq, call1(projMethod, pathExpr("self")), call1(projMethod, pathExpr("other")))
+  val cmp  = binop(BEq, memberOf(pathExpr("self"), "value"),
+                        memberOf(pathExpr("other"), "value"))
   val body = blockReturn(cmp)
   val params: List[Param] = newList()
   params.add(makeParam("self",  typeRef(typeName)))
@@ -294,8 +301,10 @@ func synthesizeHashRecord(typeName: in String, decl: in RecordDecl, vis: in Opti
 }
 
 // `TypeName.hash(self: in TypeName): Int` for distinct types.
+// Same `value`-field-direct strategy as `synthesizeEqualsDistinct` (see
+// note there); `projMethod` is kept for API stability but unused.
 func synthesizeHashDistinct(typeName: in String, projMethod: in String, vis: in Option[Visibility]): Item {
-  val body = blockReturn(call1("hashCode", call1(projMethod, pathExpr("self"))))
+  val body = blockReturn(call1("hashCode", memberOf(pathExpr("self"), "value")))
   val params: List[Param] = newList()
   params.add(makeParam("self", typeRef(typeName)))
   funcItem(makeFuncDecl(typeName + ".hash", params, typeRef("Int"), body, vis), vis)
@@ -333,10 +342,12 @@ func synthesizeShowRecord(typeName: in String, decl: in RecordDecl, vis: in Opti
 }
 
 // `TypeName.show(self: in TypeName): String` for distinct types.
+// Same `value`-field-direct strategy as the equals/hash synthesisers
+// above; `projMethod` is kept for API stability but unused.
 func synthesizeShowDistinct(typeName: in String, projMethod: in String, vis: in Option[Visibility]): Item {
   val body = blockReturn(
     strCat(strCat(strLit(typeName + "("),
-                  call1("toString", call1(projMethod, pathExpr("self")))),
+                  call1("toString", memberOf(pathExpr("self"), "value"))),
            strLit(")")))
   val params: List[Param] = newList()
   params.add(makeParam("self", typeRef(typeName)))
