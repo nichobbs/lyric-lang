@@ -210,5 +210,6 @@ test "return-in-try inside an impl method routes through the epilogue" {
   assertEqualInt(log1[0], 99, "finally marker on early return")
   val log2: List[Int] = newList()
   assertEqualInt(c.step(-3, log2), 0, "x<=0 returns 0")
+  assertEqualInt(log2.count, 1, "finally ran exactly once on second return")
   assertEqualInt(log2[0], 99, "finally marker on second return")
 }
