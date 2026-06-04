@@ -19209,3 +19209,40 @@ record-ctor argument checking) need `returnTy`/`genericNames` threaded into
 Coverage: 2 new `typechecker_self_test.l` cases (`Result` / `Option` `?` unwrap,
 each with a positive and a negative `T0060` assertion). Full regression green
 (847/847 emitter, 84/84 CLI bridge).
+
+### D-progress-387 — self-hosted MSIL: function-value invocation via a uniform Func ABI (#1877)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`).  Closes #1877 for zero-argument lambdas.
+
+Invoking a function-typed value — `f()` where `f: (…) -> R` holds a lambda —
+emitted invalid IL (the slot-callee arm of `ECall` loaded a function-typed
+*parameter* with `ldloc(slot - paramCount)` → `ldloc.-1`), and the underlying
+delegate model was inconsistent: lambdas were lifted to **void** methods
+(`lowerFuncMsil` hardcoded `retTy = MVoid` for `__lambda_*`) yet constructed as
+`System.Func` for value-returning bodies, so a value-returning lambda discarded
+its result and invoking it through its declared type mismatched.
+
+This change makes lambdas use a **uniform `Func`(N+1)<object,…,object>` ABI**:
+
+- The lift gives every lambda an `object` return; `lowerFuncMsil` lowers
+  `__lambda_*` with `retTy = MObject` (not the hardcoded `MVoid`), and a new
+  `coerceTrailingToRetMsil` boxes a value-type trailing result / pushes `null`
+  for a void body so the method always returns a valid `object`.
+- Construction already selects `System.Func` for a non-void `funcRetTypes`
+  entry, so it now agrees with the emitted signature.
+- The `ECall` slot-callee arm loads the delegate with `emitLoadSlot` (correct
+  for params *and* locals), `callvirt`s `Func::Invoke` (new
+  `buildFuncNInvokeTok`), and materialises the boxed result to the call's
+  declared return type — tracked per function-typed param in a new
+  `FuncCtx.funcValRetTypes` (populated from `(…) -> R` annotations); `MVoid`
+  pops the result, a value type unboxes, otherwise the `object` is kept.
+
+Zero-argument lambdas now work end-to-end through higher-order functions:
+`() -> Int`/`() -> String` suppliers, `() -> Unit` callbacks, and a lambda
+invoked twice (`f() + f()`) all produce correct values.  **Parameter-using**
+lambdas remain unsupported — their boxed arguments are read without unboxing
+(untyped params) — and now **fail loud** at construction (referencing #1939)
+rather than silently reading garbage; lambdas that ignore their parameters are
+allowed.  Tested by a CI step (positive runtime HOF assertions + a negative
+compile check for the #1939 diagnostic).  No regression: emitter 847/847, CLI
+84/84 (incl. the `shm_lambda_*` self-hosted-bridge cases).  MSIL target only.

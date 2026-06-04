@@ -1407,6 +1407,12 @@ pub record FuncCtx {
   // (`ldarg; <value>; stind`), and the slot is never touched by `emitStoreSlot`
   // (the assignment path handles byref targets before reaching it).  See #1761.
   byrefSlotTypes: Map[Int, MsilType]
+  // Declared return MsilType of function-typed locals/params (a `(A,...) -> R`
+  // value), keyed by name.  `MVoid` means a void-returning delegate (the result
+  // of `Func::Invoke` is discarded); a non-void entry materialises the boxed
+  // result to `R`.  Consulted when a function-typed value is invoked (`f()`) so
+  // the call yields the declared type.  Absent ⇒ default to `object`.  #1877.
+  funcValRetTypes: Map[String, MsilType]
 }
 
 // Allocate a fresh label ID (0, 1, 2, …) for use with MLabel/MBr* instructions.
@@ -1540,6 +1546,26 @@ func materializeBoxedElemMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy
         insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, elemTy)))
       }
     }
+  }
+}
+
+// Coerce the trailing value already on the stack (typed `valTy`) to a function's
+// declared return type `retTy` before `ret`.  Only acts when the declared return
+// is a reference type (`object`) but the produced value is a value type (box it)
+// or absent (`MVoid` → push `null`).  This is what makes a lifted lambda whose
+// body yields an `Int`/`Bool`/etc. return a valid boxed `object` to its `Func`
+// delegate, and a void-bodied lambda return `null` (#1877).  Concrete value-type
+// or reference returns are left untouched (the body already produced a matching
+// value).
+func coerceTrailingToRetMsil(cctx: in CodegenCtx, insns: in List[MInsn], valTy: in MsilType, retTy: in MsilType): Unit {
+  match retTy {
+    case MObject -> match valTy {
+      case MVoid   -> insns.add(MLdNull)
+      case MObject -> {}
+      case MString -> {}
+      case _       -> if isValueType(valTy) { boxIfNeededMsil(cctx, insns, valTy) }
+    }
+    case _ -> {}
   }
 }
 
@@ -2596,10 +2622,10 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
     // Lambda-lifting pre-pass (liftLambdasMsil) has already extracted each
     // ELambda into a synthetic IFunc named __lambda_<i>.  Here we allocate
     // the next index from lambdaTicker and look up the pre-assigned MethodDef.
-    // Delegate type selection based on param count:
-    //   0 params → System.Action             (non-generic, tokActionCtor)
-    //   N params → System.Action`N<object,…> (TypeSpec via buildActionNCtorTok)
-    // All lifted lambdas have void return (Unit), so only Action variants are needed.
+    // Uniform Func ABI (#1877): every lambda is built as System.Func`(N+1)
+    // <object,…,object> (the lifted method returns a boxed object / null), so
+    // construction and invocation agree.  Parameter-taking lambdas are not yet
+    // supported (params arrive boxed and untyped — #1939) and are rejected below.
     case ELambda(lparams, lbody) -> {
       // Capturing closures (#1479): a lambda is lifted to a `__lambda_<i>`
       // *static* method, which is correct only when the lambda captures
@@ -2618,6 +2644,29 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
               capList + ".  Display-class synthesis is tracked in #1479.  As a " +
               "workaround, pass the captured value(s) as explicit lambda " +
               "parameters, or refactor the closure into a top-level function.")
+      }
+      // Parameter-taking lambdas (#1939): the delegate is Func<object,…,object>,
+      // so arguments arrive boxed, but lambda params are untyped and the body
+      // reads them without unboxing — a referenced value-type param would
+      // silently read garbage.  Reject only when a parameter is actually used in
+      // the body; an unused param is harmless (its boxed value is ignored).
+      if lparams.count > 0 {
+        val lpRefs: List[String] = newList()
+        collectRefNamesBlock(lbody, lpRefs)
+        var anyParamUsed = false
+        var lpi2 = 0
+        while lpi2 < lparams.count {
+          if nameListContains(lpRefs, lparams[lpi2].name) { anyParamUsed = true }
+          lpi2 = lpi2 + 1
+        }
+        if anyParamUsed {
+          panic("Msil.Codegen: lambdas that use their parameters are not yet " +
+                "supported on --target dotnet — argument unboxing for boxed " +
+                "lambda parameters is tracked in #1939.  Zero-argument lambdas " +
+                "(`{ -> … }`, thunks and callbacks) and lambdas that ignore their " +
+                "parameters are supported.  As a workaround, lift the lambda to a " +
+                "top-level function.")
+        }
       }
       val idx = cctx.lambdaTicker.count
       cctx.lambdaTicker.add(0)
@@ -4565,24 +4614,35 @@ func lowerBuiltinOrStaticCallMsil(
         }
       }
       case None -> {
-        // Check if funcName is a local variable (e.g. a lambda stored as Action/Action`N).
-        // Load the delegate, push args, then callvirt Invoke.  Select the correct
-        // Invoke MemberRef based on argument count to match the delegate arity.
+        // Invoke a function-typed value (`f()` where `f` is a local/param holding
+        // a lambda).  Lambdas use the uniform `Func`(N+1)<object,…,object>` ABI
+        // (#1877), so load the delegate, push the (boxed) args, `callvirt
+        // Func::Invoke`, then materialise the boxed `object` result to the call's
+        // declared return type.
         match mapGet(fctx.slots, funcName) {
           case Some(slot) -> {
-            insns.add(MLdloc(slot = slot - fctx.paramCount))
+            // `emitLoadSlot` selects `ldarg` for a parameter and `ldloc` for a
+            // local — a function-typed *parameter* was previously loaded with
+            // `ldloc(slot - paramCount)`, which is invalid IL (#1877).
+            emitLoadSlot(insns, slot, fctx.paramCount)
             var i = 0
             while i < args.count {
               val argTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
-              // Action<object,...>.Invoke expects object for every param — box value types.
+              // Func<object,...>.Invoke expects object for every param — box value types.
               boxIfNeededMsil(cctx, insns, argTy)
               i = i + 1
             }
-            val invokeTok =
-              if args.count == 0 { cctx.tokActionInvoke }
-              else               { buildActionNInvokeTok(cctx, args.count) }
-            insns.add(MCallvirt(methodToken = invokeTok))
-            MVoid
+            insns.add(MCallvirt(methodToken = buildFuncNInvokeTok(cctx, args.count)))
+            // The delegate's declared return type (tracked for function-typed
+            // params/locals) drives result materialisation: a void delegate
+            // discards the `object`; otherwise it is unboxed/cast to R.
+            match mapGet(fctx.funcValRetTypes, funcName) {
+              case Some(rt) -> match rt {
+                case MVoid -> { insns.add(MPop); MVoid }
+                case _     -> { materializeBoxedElemMsil(cctx, insns, rt); rt }
+              }
+              case None -> MObject
+            }
           }
           case None -> {
             // Static call resolution.  Functions are registered FQN-keyed
@@ -5852,6 +5912,7 @@ func makeFuncCtxMsil(pkgName: in String, className: in String,
   val yieldSlots:  List[Int]              = newList()
   val contextHintTyArgs: List[MsilType]  = newList()
   val byrefSlotTypes: Map[Int, MsilType] = newMap()
+  val funcValRetTypes: Map[String, MsilType] = newMap()
   FuncCtx(
     pkgName              = pkgName,
     className            = className,
@@ -5872,7 +5933,8 @@ func makeFuncCtxMsil(pkgName: in String, className: in String,
     yieldSlots           = yieldSlots,
     declaredRetTy        = declaredRetTy,
     contextHintTyArgs    = contextHintTyArgs,
-    byrefSlotTypes       = byrefSlotTypes)
+    byrefSlotTypes       = byrefSlotTypes,
+    funcValRetTypes      = funcValRetTypes)
 }
 
 // Check whether the last meaningful instruction in a list is a return or throw.
@@ -6095,6 +6157,27 @@ func buildFuncNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
   val mrRow = ctxAddMemberRefForTypeSpec(
     cctx.lctx, tsRow, ".ctor",
     "func_ctor_" + toString(nparams), ctorSig)
+  0x0A000000 + mrRow
+}
+
+// Build a callvirt token for System.Func`(nparams+1)<object,...,object>::Invoke(object,...): object.
+// Params are type vars 0..nparams-1; the return type is the last type var (nparams).
+func buildFuncNInvokeTok(cctx: in CodegenCtx, nparams: in Int): Int {
+  val trN = internFuncTypeRef(cctx, nparams)
+  val codedIdx = (trN * 4) + 1
+  val objArgs: List[MsilType] = newList()
+  var ai = 0
+  while ai < nparams + 1 { objArgs.add(MObject); ai = ai + 1 }
+  val gblob = buildGenericInstBlob(codedIdx, objArgs)
+  val specKey = "FuncSpec_invoke_" + toString(nparams)
+  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
+  val invokePs: List[MsilType] = newList()
+  var pi = 0
+  while pi < nparams { invokePs.add(MTypeVar(index = pi)); pi = pi + 1 }
+  val invokeSig = buildInstanceMethodSig(invokePs, MTypeVar(index = nparams))
+  val mrRow = ctxAddMemberRefForTypeSpec(
+    cctx.lctx, tsRow, "Invoke",
+    "func_invoke_" + toString(nparams), invokeSig)
   0x0A000000 + mrRow
 }
 
@@ -6462,14 +6545,14 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
     if isGenerator {
       MObject
     } else if startsWith(decl.name, "__lambda_") {
-      // Synthetic lambda functions always return void.  We bypass decl.ret
-      // entirely here: the bootstrap F# emitter may construct the FunctionDecl
-      // with None<object> rather than None<TypeExpr> in the ret slot, causing
-      // both `case Some` and `case None` arms to fail their isinst checks.
-      // When emitMatch falls through it emits ldnull, giving retTy = null, which
-      // yields 0x00 (ELEMENT_TYPE_END) in the method signature and triggers a
-      // BadImageFormatException at load time.
-      MVoid
+      // Uniform Func ABI (#1877): synthetic lambdas return `object` (a boxed
+      // value, or `null` for a void body — coerced in the return path below).
+      // liftLambdasMsil sets decl.ret to Object, and the funcRetTypes mirror
+      // (used to pick the System.Func delegate at the construction site) reads
+      // the same Object, so construction and the emitted method signature agree.
+      // The earlier hardcoded `MVoid` made every lambda a void method wrapped in
+      // a Func delegate, so invoking it returned garbage and faulted on use.
+      MObject
     } else {
       match decl.ret {
         case Some(te) -> {
@@ -6495,6 +6578,14 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
     fctx.types.add(p.name, paramTy)
     if isByrefMode(p.mode) {
       fctx.byrefSlotTypes.add(slot, paramTy)
+    }
+    // Record the declared return type of a function-typed param (a `(A,...) -> R`
+    // value) so invoking it (`f()`) yields R rather than a bare object (#1877).
+    match p.ty.kind {
+      case TFunction(_, retTe) -> {
+        fctx.funcValRetTypes.add(p.name, typeExprToMsilCtx(cctx, retTe, pkgName))
+      }
+      case _ -> {}
     }
     fctx.slotTicker.add(0)
     pi = pi + 1
@@ -6541,8 +6632,12 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
                 insns.add(MRet)
               }
             } else if retTy != MVoid {
-              val _ = lowerBlockExprMsil(cctx, fctx, insns, block)
+              val trailTy = lowerBlockExprMsil(cctx, fctx, insns, block)
               if not endsWithReturnMsil(insns) {
+                // Coerce the trailing value to the declared return type — boxes a
+                // value-type result when the declared return is `object` (a
+                // lifted lambda), or pushes `null` for a void body (#1877).
+                coerceTrailingToRetMsil(cctx, insns, trailTy, retTy)
                 insns.add(MRet)
               }
             } else {
@@ -6654,6 +6749,14 @@ pub func lowerImplMethodMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
     fctx.types.add(p.name, paramTy)
     if isByrefMode(p.mode) {
       fctx.byrefSlotTypes.add(slot, paramTy)
+    }
+    // Record the declared return type of a function-typed param (a `(A,...) -> R`
+    // value) so invoking it (`f()`) yields R rather than a bare object (#1877).
+    match p.ty.kind {
+      case TFunction(_, retTe) -> {
+        fctx.funcValRetTypes.add(p.name, typeExprToMsilCtx(cctx, retTe, pkgName))
+      }
+      case _ -> {}
     }
     fctx.slotTicker.add(0)
     pi = pi + 1
@@ -7624,17 +7727,19 @@ func collectLambdasBfsExpr(e: in Expr, ticker: in List[Int], synths: in List[Ite
         params.add(lambdaParamToParam(lparams[lpi]))
         lpi = lpi + 1
       }
-      // Infer return type: if the body ends with SExpr, the lambda implicitly returns that value (Object in bootstrap).
-      // Otherwise, it returns Unit (void, ret = None).
+      // Uniform Func ABI (#1877): every lambda is lowered to a delegate that
+      // returns `object`.  A trailing value-expr returns the boxed value; a
+      // statement-only or void-bodied lambda returns `null` (coerced in
+      // lowerFuncMsil's return path).  This keeps construction (always
+      // `System.Func`) and invocation (always `Func::Invoke`) consistent — the
+      // earlier split (Func for trailing-expr bodies, Action otherwise) let a
+      // value-returning lambda be built as a void delegate that discarded its
+      // result, so invoking it through its declared `(…) -> R` type mismatched.
+      val retSeg: List[String] = newList()
+      retSeg.add("Object")
       val retTy: Option[TypeExpr] =
-        if blockEndsWithExpr(body) {
-          val seg: List[String] = newList()
-          seg.add("Object")
-          Some(TypeExpr(kind = TRef(path = ModulePath(segments = seg, span = syntheticSpan())),
-                        span = syntheticSpan()))
-        } else {
-          None
-        }
+        Some(TypeExpr(kind = TRef(path = ModulePath(segments = retSeg, span = syntheticSpan())),
+                      span = syntheticSpan()))
       val decl = FunctionDecl(
         docComments = newList(),
         annotations = newList(),
