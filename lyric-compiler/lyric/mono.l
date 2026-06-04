@@ -2073,19 +2073,30 @@ pub func monoFileWithImports(
 
   // Merge imported generic decls (cross-package surface).  Same-package
   // wins on name collision so user-local shadows take precedence.
+  //
+  // The `genDecls.add` MUST stay inside the `not funcDecls.containsKey`
+  // guard: a local function of the same name — generic OR non-generic —
+  // shadows the imported generic.  A non-generic local is recorded in
+  // `funcDecls` but not `genDecls`, so seeding the import into `genDecls`
+  // unconditionally would let the import hijack the local call site and
+  // mis-specialise it.  #1855: a user `func tag(o: in Opt): Int` was
+  // monomorphised against the stdlib proof generic `tag[T](x: in T): T`
+  // (from `Std.Core` via `core_proof.l`), producing a broken identity
+  // specialisation `tag__Opt` that the call site then targeted instead of
+  // the user's `match`-bearing function.
   var ig = 0
   while ig < importedGenDecls.count {
     val idecl = importedGenDecls[ig]
     if not funcDecls.containsKey(idecl.name) {
       funcDecls.add(idecl.name, idecl)
-    }
-    match idecl.generics {
-      case Some(_) -> {
-        if not genDecls.containsKey(idecl.name) {
-          genDecls.add(idecl.name, idecl)
+      match idecl.generics {
+        case Some(_) -> {
+          if not genDecls.containsKey(idecl.name) {
+            genDecls.add(idecl.name, idecl)
+          }
         }
+        case None -> ()
       }
-      case None -> ()
     }
     ig = ig + 1
   }
