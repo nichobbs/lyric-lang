@@ -19553,3 +19553,34 @@ root and from a nested subdirectory both build the discovered project (`Demo.dll
 runs); bare `lyric` outside any project prints help and exits 1; `lyric restore`
 and explicit single-file `lyric build src/main.l` still work.  Stage-1 build
 clean (cli.l compiles), AOT entry-point clean.  MSIL target.
+### D-progress-397 — self-hosted: `lyric test --manifest` co-locates split stdlib DLLs so ecosystem tests run unaided (#1468 / #1841)
+
+**Status:** Shipped (`lyric-compiler/lyric/cli.l`).
+
+`lyric test --manifest <lib>/lyric.toml` failed at run time with `Could not load
+file or assembly 'Lyric.Stdlib.Core'` for every test that touched a stdlib type.
+The self-hosted codegen references the stdlib under its **split** per-package
+assembly names (`Lyric.Stdlib.Core`, `Lyric.Stdlib.Testing`, …;
+`stdlibAssemblyName`), but a manifest dependency build ships only the **bundled**
+`Lyric.Stdlib.dll` in the dep's `bin/`.  `cmdTestManifest` tried to satisfy the
+split refs via `additionalProbingPaths` pointing at the dep `bin/` — but (a)
+that dir has only the bundle, and (b) `additionalProbingPaths` resolves only
+NuGet-structured layouts, not a flat lib dir.
+
+The split DLLs (plus their `*Host` shims and `FSharp.Core`) ship beside the
+running `lyric` binary (`appBaseDirectory()` — the publish/SDK lib dir).  New
+`copyRuntimeDepsBeside` co-locates them next to each compiled test assembly
+before `dotnet exec`, mirroring the single-file `cmdTest` path.  (#1468's
+layer-3a AssemblyRef naming and layer-3b `_` union-case separator were already
+resolved by intervening PRs — confirmed by the IL: refs read
+`[Lyric.Stdlib.Core]Std.Core.Option_Some`; only the deployment half remained.)
+
+This makes the in-process self-hosted bridge functionally complete for
+ecosystem-library tests: `lyric test --manifest lyric-auth/lyric.toml` (29/29)
+and `lyric test --manifest lyric-session/lyric.toml` (11/11) now pass with **no
+manual DLL staging**.  The CI ecosystem step's per-test-dir stdlib pre-copy
+workaround is removed accordingly (the runner self-deploys); the `lyric-stdlib/bin`
+compile-time copy and the `Lyric.Session.Host` ecosystem-shim copy stay (a
+separate `@externTarget` host-shim concern).  This resolves the deployment
+blocker called out in #1841's remaining-work note.  Full emitter suite 847/847.
+MSIL target only (epic #1470 defers JVM).
