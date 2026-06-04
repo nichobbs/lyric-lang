@@ -908,6 +908,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0099` | `impl` method parameter arity does not match the interface declaration |
 | `T0100` | Opaque type constructed outside its declaring package |
 | `T0101` | Constructor names a field the type does not have |
+| `T0102` | Pattern-matching an opaque type's representation outside its declaring package |
 
 ### Emitter (E-series)
 

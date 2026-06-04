@@ -330,6 +330,74 @@ func isUnboundedScalar(pt: in PrimType): Bool {
 // Conservative by construction: only unions, enums, `Bool`, and unbounded
 // primitive scalars are judged; every other scrutinee shape is skipped, so a
 // valid match is never rejected.
+// #1485: the declared name of an *imported* opaque type that `ty` resolves to,
+// or `None`.  Used to forbid cross-package pattern-matching of an opaque type's
+// hidden representation.
+func importedOpaqueName(tbl: in SymbolTable, ty: in Type): Option[String] {
+  match unrefine(ty) {
+    case TyUser(id, _, _) -> {
+      var i = 0
+      while i < tbl.symbols.count {
+        match tbl.symbols[i].kind {
+          case DKOpaque(oid, _) -> {
+            if typeIdEq(oid, id) and tbl.symbols[i].isImported {
+              return Some(value = tbl.symbols[i].name)
+            }
+          }
+          case _ -> {}
+        }
+        i = i + 1
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
+// Does this pattern crack a value's representation (destructure its fields),
+// as opposed to binding/ignoring the whole value?  A record pattern, or a
+// constructor pattern with sub-patterns, reads the representation; a bare
+// binding or wildcard does not.
+func patternCracksRepr(p: in Pattern): Bool {
+  match p.kind {
+    case PRecord(_, _, _)   -> true
+    case PConstructor(_, a) -> a.count > 0
+    case PParen(ip)         -> patternCracksRepr(ip)
+    case POr(ps) -> {
+      var any = false
+      var i = 0
+      while i < ps.count {
+        if patternCracksRepr(ps[i]) { any = true }
+        i = i + 1
+      }
+      any
+    }
+    case _ -> false
+  }
+}
+
+// #1485: pattern-matching the hidden representation of an opaque type is only
+// permitted inside its declaring package.  A cross-package match that
+// destructures the representation (record/constructor pattern) is rejected
+// with T0102; binding or wildcard arms remain legal (the value is opaque but
+// usable).
+func checkOpaquePatternHiding(tbl: in SymbolTable, diag: in List[Diagnostic], st: in Type, arms: in List[MatchArm]): Unit {
+  match importedOpaqueName(tbl, st) {
+    case None -> {}
+    case Some(nm) -> {
+      var i = 0
+      while i < arms.count {
+        if patternCracksRepr(arms[i].pattern) {
+          diag.add(errorDiagnostic("T0102",
+            "cannot pattern-match the representation of opaque type '" + nm +
+            "' outside its declaring package", arms[i].pattern.span))
+        }
+        i = i + 1
+      }
+    }
+  }
+}
+
 func checkMatchExhaustive(
   tbl:  in SymbolTable,
   diag: in List[Diagnostic],
@@ -1171,6 +1239,7 @@ pub func inferExpr(
       // Check exhaustiveness; branch-type unification (real match result type) is the next split.
       val st = inferExpr(sc, tbl, sigs, diag, scrutinee)
       checkMatchExhaustive(tbl, diag, st, arms, e.span)
+      checkOpaquePatternHiding(tbl, diag, st, arms)
       TyError
     }
     case EBlock(_)      -> TyError
