@@ -5048,11 +5048,43 @@ func lowerMethodCallMsil(
   }
   if memberName == "add" {
     // List<object>::Add(object): void  OR  Dict::Add(key,value): void
+    //
+    // Propagate the receiver's element generic-type args as a construction
+    // hint so a bare `xs.add(None)` on a `List[Option[String]]` builds
+    // `Option_None<String>` rather than `Option_None<Object>` (#1964).  The
+    // typed val/return hint already covers cases where the call sits in
+    // assignment position, but a bare statement like `items.add(None)`
+    // bypasses that path entirely.
+    val addPrevHintLen = fctx.contextHintTyArgs.count
+    val addHintsPushed = match recvTy {
+      case MListOf(MGenericInst(_, _, elemArgs)) -> {
+        var ai = 0
+        while ai < elemArgs.count {
+          fctx.contextHintTyArgs.add(elemArgs[ai])
+          ai = ai + 1
+        }
+        true
+      }
+      case MMapOf(_, MGenericInst(_, _, valArgs)) -> {
+        var vi = 0
+        while vi < valArgs.count {
+          fctx.contextHintTyArgs.add(valArgs[vi])
+          vi = vi + 1
+        }
+        true
+      }
+      case _ -> false
+    }
     var i = 0
     while i < args.count {
       val aTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
       boxIfNeededMsil(cctx, insns, aTy)
       i = i + 1
+    }
+    if addHintsPushed {
+      while fctx.contextHintTyArgs.count > addPrevHintLen {
+        fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+      }
     }
     if args.count >= 2 {
       insns.add(MCallvirt(methodToken = cctx.tokDictObjAdd))
