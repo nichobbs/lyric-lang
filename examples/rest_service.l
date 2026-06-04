@@ -1,18 +1,18 @@
-// examples/rest_service.l — minimal in-memory REST service.
-//
-// Endpoints:
-//   GET  /              -> "Hello from Lyric!"
-//   GET  /counter        -> { "count": <n> }
-//   POST /counter/inc    -> { "count": <new-n> }   (increments)
-//   GET  /time           -> { "now": "<ISO-ish>" }
-//
-// Run:
-//   lyric run examples/rest_service.l
-//   curl http://localhost:8080/counter
-//   curl -X POST http://localhost:8080/counter/inc
-//
-// Single-threaded, synchronous accept loop — fine for a demo, not
-// a production server.
+//! examples/rest_service.l — minimal in-memory REST service.
+//!
+//! Endpoints:
+//!   GET  /              -> "Hello from Lyric!"
+//!   GET  /counter        -> { "count": <n> }
+//!   POST /counter/inc    -> { "count": <new-n> }   (increments)
+//!   GET  /time           -> { "now": "<ISO-ish>" }
+//!
+//! Run:
+//!   lyric run examples/rest_service.l
+//!   curl http://localhost:8080/counter
+//!   curl -X POST http://localhost:8080/counter/inc
+//!
+//! Single-threaded, synchronous accept loop — fine for a demo, not
+//! a production server.
 package RestService
 
 import Std.Core

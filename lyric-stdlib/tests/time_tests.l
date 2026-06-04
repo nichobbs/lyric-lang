@@ -1,8 +1,8 @@
-// stdlib/tests/time_tests.l — Tests for Std.Time.monotonicNanos().
-//
-// Verifies that monotonicNanos() returns non-decreasing values across successive
-// calls and that the value advances across observable work.  Also checks that
-// now() returns a positive epoch via totalMillis.
+//! stdlib/tests/time_tests.l — Tests for Std.Time.monotonicNanos().
+//!
+//! Verifies that monotonicNanos() returns non-decreasing values across successive
+//! calls and that the value advances across observable work.  Also checks that
+//! now() returns a positive epoch via totalMillis.
 package Std.Time.Tests
 
 import Std.Core
@@ -12,9 +12,9 @@ import Std.Testing
 func testNowReturnsPositiveEpoch(): Unit {
   // now() returns a time after the Unix epoch.  We verify by computing elapsed
   // milliseconds since epoch 0 using the stdlib's own fromEpochMillis / totalMillis.
-  val t      = now()
+  val t = now()
   val epoch0 = fromEpochMillis(0i64)
-  val ms     = totalMillis(since(t, epoch0))
+  val ms = totalMillis(since(t, epoch0))
   assertTrue(ms > 0.0, "now() must represent a time after the Unix epoch")
 }
 
@@ -30,7 +30,9 @@ func testMonotonicNanosTwoCallsDiffer(): Unit {
   // Assertion is >= (not >) to avoid flakiness on coarse-clock platforms
   // where the resolution is coarser than the spin duration.
   var i = 0
-  while i < 100000 { i = i + 1 }
+  while i < 100000 {
+    i = i + 1
+  }
   val b = monotonicNanos()
   assertTrue(b >= a, "monotonicNanos() must not go backwards across non-trivial work")
 }

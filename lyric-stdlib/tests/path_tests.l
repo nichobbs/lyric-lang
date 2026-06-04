@@ -1,9 +1,9 @@
-// stdlib/tests/path_tests.l — Tests for Std.Path.
-//
-// Covers: join (two non-empty components, one empty), extension
-// (with and without), basename, dirname, isAbsolute, isRelative.
-// All tests use POSIX-style paths; the BCL normalises separators
-// transparently on the CI platform (Linux).
+//! stdlib/tests/path_tests.l — Tests for Std.Path.
+//!
+//! Covers: join (two non-empty components, one empty), extension
+//! (with and without), basename, dirname, isAbsolute, isRelative.
+//! All tests use POSIX-style paths; the BCL normalises separators
+//! transparently on the CI platform (Linux).
 package Std.Path.Tests
 
 import Std.Core
@@ -27,7 +27,7 @@ func testJoinEmptyRelative(): Unit {
 }
 
 func testExtensionPresent(): Unit {
-  assertTrue(extension("file.txt")  == ".txt",  "txt extension")
+  assertTrue(extension("file.txt") == ".txt", "txt extension")
   assertTrue(extension("archive.tar.gz") == ".gz", "last extension only")
 }
 

@@ -1,18 +1,17 @@
-// std/_kernel_jvm/process_capture_host.l — JVM host boundary for piped
-// process execution (stdout + stderr capture, exit code, timeout flag).
-//
-// Mirrors _kernel/process_capture_host.l for the JVM target.  Used by
-// the self-hosted verifier (`Lyric.Verifier`) to invoke z3/cvc5 and
-// by the source-generator runtime when running under `--target jvm`.
-//
-// Routes through lyric.stdlib.jvm.ProcessCaptureHost, which wraps
-// java.lang.ProcessBuilder.  The implementation captures stdout and
-// stderr on separate threads to prevent pipe-buffer deadlock, and
-// returns a ProcessCaptureResult POJO with `stdout`, `stderr`,
-// `exitCode`, and `timedOut` fields.
-//
-// Internal: only Std.ProcessCapture and Std.Process should import this.
-
+//! std/_kernel_jvm/process_capture_host.l — JVM host boundary for piped
+//! process execution (stdout + stderr capture, exit code, timeout flag).
+//!
+//! Mirrors _kernel/process_capture_host.l for the JVM target.  Used by
+//! the self-hosted verifier (`Lyric.Verifier`) to invoke z3/cvc5 and
+//! by the source-generator runtime when running under `--target jvm`.
+//!
+//! Routes through lyric.stdlib.jvm.ProcessCaptureHost, which wraps
+//! java.lang.ProcessBuilder.  The implementation captures stdout and
+//! stderr on separate threads to prevent pipe-buffer deadlock, and
+//! returns a ProcessCaptureResult POJO with `stdout`, `stderr`,
+//! `exitCode`, and `timedOut` fields.
+//!
+//! Internal: only Std.ProcessCapture and Std.Process should import this.
 @axiom("lyric.stdlib.jvm.ProcessCaptureHost piped stdout/stderr capture")
 package Std.ProcessCaptureHost
 
@@ -25,7 +24,6 @@ import Std.Core
 extern type ProcessCaptureResult = "lyric.stdlib.jvm.ProcessCaptureResult"
 
 // ── Field accessors ────────────────────────────────────────────────────────
-
 @externTarget("lyric.stdlib.jvm.ProcessCaptureResult.getStdout")
 pub func pcResultStdout(r: in ProcessCaptureResult): String = ()
 
@@ -39,7 +37,6 @@ pub func pcResultExitCode(r: in ProcessCaptureResult): Int = ()
 pub func pcResultTimedOut(r: in ProcessCaptureResult): Bool = ()
 
 // ── Subprocess entry point ─────────────────────────────────────────────────
-
 // Run `executable` with a pre-formed `arguments` string (whitespace-
 // split by the JVM shim), write `stdinContent` to the child's stdin,
 // close stdin, and return a `ProcessCaptureResult` with stdout, stderr,
@@ -75,4 +72,6 @@ pub func hostRunCapture(executable: in String, arguments: in String, stdinConten
 // this kernel will see a `NoSuchMethodError` at load time — surfacing the
 // gap loudly rather than silently dropping the timeout argument.
 @externTarget("lyric.stdlib.jvm.ProcessCaptureHost.runCaptureWithTimeout")
-pub func hostRunCaptureTimeout(executable: in String, arguments: in String, stdinContent: in String, timeoutMs: in Int): ProcessCaptureResult = ()
+pub func hostRunCaptureTimeout(
+  executable: in String, arguments: in String, stdinContent: in String, timeoutMs: in Int
+): ProcessCaptureResult = ()

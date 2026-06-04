@@ -1,14 +1,13 @@
-// stdlib/tests/process_tests.l — tests for Std.Process piped-capture API.
-//
-// Covers: successful stdout capture, non-zero exit code, stderr capture,
-// stdin passthrough via `runCaptureWithInput`, and timeout enforcement.
-// All subprocess invocations use `sh -c "..."` and are therefore
-// POSIX-only.  On Windows the body of `main` short-circuits to
-// `exit 0` (with an informational println) so the file remains a
-// no-op there instead of breaking the harness with `sh: not found`.
-// Windows-compatible fixtures (`cmd /c` equivalents, or a portable
-// helper executable) are tracked in #1116.
-
+//! stdlib/tests/process_tests.l — tests for Std.Process piped-capture API.
+//!
+//! Covers: successful stdout capture, non-zero exit code, stderr capture,
+//! stdin passthrough via `runCaptureWithInput`, and timeout enforcement.
+//! All subprocess invocations use `sh -c "..."` and are therefore
+//! POSIX-only.  On Windows the body of `main` short-circuits to
+//! `exit 0` (with an informational println) so the file remains a
+//! no-op there instead of breaking the harness with `sh: not found`.
+//! Windows-compatible fixtures (`cmd /c` equivalents, or a portable
+//! helper executable) are tracked in #1116.
 package Std.Process.Tests
 
 import Std.Core
@@ -97,7 +96,7 @@ func testCaptureSpawnFailure(): Unit {
   // A deliberately nonexistent executable must return Err, not Ok with exitCode = -1.
   val args: List[String] = newList()
   match runCapture("__lyric_definitely_nonexistent_exe_xyz__", args, 5000) {
-    case Ok(_)  -> assertTrue(false, "nonexistent executable must return Err")
+    case Ok(_) -> assertTrue(false, "nonexistent executable must return Err")
     case Err(_) -> assertTrue(true, "spawn failure returns Err")
   }
 }

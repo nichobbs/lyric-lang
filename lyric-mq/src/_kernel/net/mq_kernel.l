@@ -22,7 +22,6 @@
 //!   Empty string "" signals a timeout (no message available).
 //!
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-
 package Mq.Kernel.Net
 
 import Std.Core
@@ -32,7 +31,6 @@ import Std.Core
 // Active when `feature = "inmemory"` is enabled or when no feature is
 // explicitly set.  Broker drivers below shadow with their own externs
 // gated by the relevant feature.
-
 @axiom("Lyric.Mq.InMemoryHost.connect — registers a fresh ConcurrentQueue + ConcurrentDictionary pair per queueName")
 @externTarget("Lyric.Mq.InMemoryHost.connect")
 @cfg(feature = "inmemory")
@@ -75,7 +73,6 @@ pub func nack(queueId: in Int, deliveryTag: in String, requeue: in Bool): Result
 pub func close(queueId: in Int): Unit = ()
 
 // ─── Broker driver placeholders (#733 follow-ups) ────────────────────────────
-
 @axiom("RabbitMQ backend not yet implemented (#733 follow-up)")
 @externTarget("Lyric.Mq.InMemoryHost.rabbitmqConnectNotYet")
 @cfg(feature = "rabbitmq")

@@ -21,20 +21,18 @@
 //!
 //! Only active when compiled with feature = "redis".
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-
 @cfg(feature = "redis")
 package Session.Kernel.Net
 
 import Std.Core
 
 // ─── Redis session backend (host-shim bindings) ───────────────────────────────
-
 /// Open a connection pool to the Redis server at `url`.
 /// `keyPrefix` is prepended to every session key (e.g. "session:").
 /// Returns an opaque handle used in subsequent calls.
 @axiom("Lyric.Session.RedisStore.connect — StackExchange.Redis ConnectionMultiplexer.Connect + per-process handle registration")
 @externTarget("Lyric.Session.RedisStore.connect")
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func connect(url: in String, keyPrefix: in String): Result[Int, String]
   requires: url.length > 0
   = ()
@@ -44,7 +42,7 @@ pub func connect(url: in String, keyPrefix: in String): Result[Int, String]
 /// Returns the new session ID (a UUID string).
 @axiom("Lyric.Session.RedisStore.create — StringSet new UUID key with TTL")
 @externTarget("Lyric.Session.RedisStore.create")
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func create(storeHandle: in Int, ttlSeconds: in Int): Result[String, String]
   requires: ttlSeconds >= 0
   = ()
@@ -53,7 +51,7 @@ pub func create(storeHandle: in Int, ttlSeconds: in Int): Result[String, String]
 /// Returns an empty string if the session does not exist or has expired.
 @axiom("Lyric.Session.RedisStore.load — StringGet; '' on miss")
 @externTarget("Lyric.Session.RedisStore.load")
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func load(storeHandle: in Int, sessionId: in String): Result[String, String]
   requires: sessionId.length > 0
   = ()
@@ -64,7 +62,7 @@ pub func load(storeHandle: in Int, sessionId: in String): Result[String, String]
 /// Redis key directly without parsing the JSON payload.
 @axiom("Lyric.Session.RedisStore.save — StringSet keepTtl=true")
 @externTarget("Lyric.Session.RedisStore.save")
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func save(storeHandle: in Int, sessionId: in String, sessionJson: in String): Result[Unit, String]
   requires: sessionId.length > 0
   requires: sessionJson.length > 0
@@ -73,7 +71,7 @@ pub func save(storeHandle: in Int, sessionId: in String, sessionJson: in String)
 /// Permanently delete a session.  No-op if the key is absent.
 @axiom("Lyric.Session.RedisStore.destroy — KeyDelete")
 @externTarget("Lyric.Session.RedisStore.destroy")
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func destroy(storeHandle: in Int, sessionId: in String): Result[Unit, String]
   requires: sessionId.length > 0
   = ()
@@ -82,7 +80,7 @@ pub func destroy(storeHandle: in Int, sessionId: in String): Result[Unit, String
 /// `ttlSeconds = 0` leaves the TTL unchanged.
 @axiom("Lyric.Session.RedisStore.touch — KeyExpire; ttlSeconds=0 is a no-op")
 @externTarget("Lyric.Session.RedisStore.touch")
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func touch(storeHandle: in Int, sessionId: in String, ttlSeconds: in Int): Result[Unit, String]
   requires: sessionId.length > 0
   requires: ttlSeconds >= 0

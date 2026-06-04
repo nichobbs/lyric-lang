@@ -17,7 +17,6 @@
 //!     "startedAt":N,"finishedAt":N},...]
 //!
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-
 package Jobs.Kernel.Net
 
 import Std.Core
@@ -25,7 +24,6 @@ import Std.Time
 import Std.Uuid
 
 // ─── BCL threading and identity (always available) ────────────────────────────
-
 pub func nowMs(): Long {
   return nowEpochMillis()
 }
@@ -49,7 +47,6 @@ pub func generateId(): String {
 // Active when no feature flag is set OR when `feature = "inprocess"` is
 // explicitly enabled.  The Hangfire / Quartz arms below shadow these
 // with their own externs gated by the relevant feature.
-
 @axiom("Lyric.Jobs.InProcessHost.connect — opens an in-process scheduler with a per-handle Jobs dictionary")
 @externTarget("Lyric.Jobs.InProcessHost.connect")
 @cfg(feature = "inprocess")
@@ -61,11 +58,7 @@ pub func connect(workerCount: in Int): Result[Int, String]
 @externTarget("Lyric.Jobs.InProcessHost.enqueue")
 @cfg(feature = "inprocess")
 pub func enqueue(
-  schedulerId: in Int,
-  name:        in String,
-  payload:     in String,
-  maxAttempts: in Int,
-  timeoutMs:   in Int
+  schedulerId: in Int, name: in String, payload: in String, maxAttempts: in Int, timeoutMs: in Int
 ): Result[String, String]
   requires: name.length > 0
   requires: maxAttempts >= 1
@@ -77,11 +70,11 @@ pub func enqueue(
 @cfg(feature = "inprocess")
 pub func schedule(
   schedulerId: in Int,
-  name:        in String,
-  payload:     in String,
-  cronExpr:    in String,
+  name: in String,
+  payload: in String,
+  cronExpr: in String,
   maxAttempts: in Int,
-  timeoutMs:   in Int
+  timeoutMs: in Int,
 ): Result[String, String]
   requires: name.length > 0
   requires: cronExpr.length > 0
@@ -111,7 +104,6 @@ pub func results(schedulerId: in Int, jobId: in String): Result[String, String]
   = ()
 
 // ─── Hangfire (Phase 3 follow-up of #733) ────────────────────────────────────
-
 @axiom("Hangfire backend not yet implemented (#733 follow-up)")
 @externTarget("Lyric.Jobs.InProcessHost.hangfireConnectNotYet")
 @cfg(feature = "hangfire")
@@ -120,7 +112,6 @@ pub func connect(workerCount: in Int): Result[Int, String]
   = ()
 
 // ─── Quartz.NET (Phase 3 follow-up of #733) ──────────────────────────────────
-
 @axiom("Quartz.NET backend not yet implemented (#733 follow-up)")
 @externTarget("Lyric.Jobs.InProcessHost.quartzConnectNotYet")
 @cfg(feature = "quartz")

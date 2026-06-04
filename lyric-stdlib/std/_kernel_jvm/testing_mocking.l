@@ -1,11 +1,11 @@
-// std/_kernel_jvm/testing_mocking.l - JVM host boundary for test-mocking
-// helpers.
-//
-// Mirrors _kernel/testing_mocking.l for the JVM target.  The
-// StubCounter type and all host methods are provided by
-// lyric.stdlib.jvm.StubCounter / StubCounterHost, which are
-// functionally identical to Lyric.Stdlib.StubCounter on .NET.
-// (The counter is a plain AtomicInteger wrapped in a final class.)
+//! std/_kernel_jvm/testing_mocking.l - JVM host boundary for test-mocking
+//! helpers.
+//!
+//! Mirrors _kernel/testing_mocking.l for the JVM target.  The
+//! StubCounter type and all host methods are provided by
+//! lyric.stdlib.jvm.StubCounter / StubCounterHost, which are
+//! functionally identical to Lyric.Stdlib.StubCounter on .NET.
+//! (The counter is a plain AtomicInteger wrapped in a final class.)
 package Std.Testing.Mocking
 
 extern type StubCounter = "lyric.stdlib.jvm.StubCounter"

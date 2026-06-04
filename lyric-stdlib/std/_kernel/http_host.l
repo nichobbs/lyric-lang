@@ -1,17 +1,16 @@
-// std/_kernel/http_host.l - host boundary for HTTP.
-//
-// This file is the audited extern boundary for `Std.Http`.  Every
-// host-facing function below is either:
-//
-//   * a direct `@externTarget` to a single BCL method / property /
-//     constructor (the trivial pass-through case), or
-//   * a native Lyric helper that composes a sequence of those
-//     primitives (the multi-step orchestration case — `hostMakeRequest`,
-//     `hostWithStringBody`, etc.).
-//
-// G12 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-NNN):
-// the F# `Lyric.Stdlib.HttpClientHost` shim retires entirely.
-
+//! std/_kernel/http_host.l - host boundary for HTTP.
+//!
+//! This file is the audited extern boundary for `Std.Http`.  Every
+//! host-facing function below is either:
+//!
+//!   * a direct `@externTarget` to a single BCL method / property /
+//!     constructor (the trivial pass-through case), or
+//!   * a native Lyric helper that composes a sequence of those
+//!     primitives (the multi-step orchestration case — `hostMakeRequest`,
+//!     `hostWithStringBody`, etc.).
+//!
+//! G12 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-NNN):
+//! the F# `Lyric.Stdlib.HttpClientHost` shim retires entirely.
 @axiom("System.Net.Http operations conform to their documented .NET contracts")
 package Std.HttpHost
 
@@ -23,25 +22,31 @@ import Std.Task
 // is the host-side type for a value that flows through Std.Http but
 // stays opaque from the user's perspective.
 // =====================================================================
+extern type HttpClient = "System.Net.Http.HttpClient"
 
-extern type HttpClient          = "System.Net.Http.HttpClient"
-extern type HttpClientHandler   = "System.Net.Http.HttpClientHandler"
-extern type HttpRequestMessage  = "System.Net.Http.HttpRequestMessage"
+extern type HttpClientHandler = "System.Net.Http.HttpClientHandler"
+
+extern type HttpRequestMessage = "System.Net.Http.HttpRequestMessage"
+
 extern type HttpResponseMessage = "System.Net.Http.HttpResponseMessage"
-extern type HttpContent         = "System.Net.Http.HttpContent"
-extern type StringContent       = "System.Net.Http.StringContent"
+
+extern type HttpContent = "System.Net.Http.HttpContent"
+
+extern type StringContent = "System.Net.Http.StringContent"
+
 // `BclHttpMethod` rather than `HttpMethod` because `Std.Http`
 // declares its own user-facing `pub enum HttpMethod { Get, Post, … }`
 // and would shadow this extern.
-extern type BclHttpMethod       = "System.Net.Http.HttpMethod"
-extern type HttpHeaders         = "System.Net.Http.Headers.HttpHeaders"
-extern type Encoding            = "System.Text.Encoding"
+extern type BclHttpMethod = "System.Net.Http.HttpMethod"
+
+extern type HttpHeaders = "System.Net.Http.Headers.HttpHeaders"
+
+extern type Encoding = "System.Text.Encoding"
 
 // =====================================================================
 // Primitive externs (private to this kernel file).  These bind the
 // individual BCL members; the public `host*` helpers compose them.
 // =====================================================================
-
 @externTarget("System.Text.Encoding.UTF8")
 func utf8(): Encoding = ()
 
@@ -82,7 +87,9 @@ func setMaxAutomaticRedirections(h: in HttpClientHandler, n: in Int): Unit = ()
 async func clientSendAsync(client: in HttpClient, request: in HttpRequestMessage): HttpResponseMessage = ()
 
 @externTarget("System.Net.Http.HttpClient.SendAsync")
-async func clientSendAsyncCancel(client: in HttpClient, request: in HttpRequestMessage, token: in CancellationToken): HttpResponseMessage = ()
+async func clientSendAsyncCancel(
+  client: in HttpClient, request: in HttpRequestMessage, token: in CancellationToken
+): HttpResponseMessage = ()
 
 @externTarget("System.Net.Http.HttpClient.GetAsync")
 async func clientGetAsync(client: in HttpClient, url: in String): HttpResponseMessage = ()
@@ -94,7 +101,12 @@ async func clientGetAsyncCancel(client: in HttpClient, url: in String, token: in
 async func clientPostAsync(client: in HttpClient, url: in String, content: in StringContent): HttpResponseMessage = ()
 
 @externTarget("System.Net.Http.HttpClient.PostAsync")
-async func clientPostAsyncCancel(client: in HttpClient, url: in String, content: in StringContent, token: in CancellationToken): HttpResponseMessage = ()
+async func clientPostAsyncCancel(
+  client: in HttpClient,
+  url: in String,
+  content: in StringContent,
+  token: in CancellationToken,
+): HttpResponseMessage = ()
 
 @externTarget("System.Net.Http.HttpResponseMessage.StatusCode")
 func responseStatusInt(response: in HttpResponseMessage): Int = ()
@@ -119,7 +131,6 @@ async func contentReadAsBytesCancel(c: in HttpContent, token: in CancellationTok
 // `import Std.HttpHost as HostHttp`.  Each is either a thin alias or
 // a multi-step composition that wraps the primitives above.
 // =====================================================================
-
 // #333: process-wide HttpClient singleton.
 //
 // Creating a new HttpClient per call is the canonical .NET anti-pattern:
@@ -141,43 +152,26 @@ pub func hostMakeRequest(httpMethod: in String, url: in String): HttpRequestMess
   newRequest(newHttpMethod(httpMethod), url)
 }
 
-pub func hostWithHeader(
-  request: in HttpRequestMessage,
-  key: in String,
-  value: in String
-): HttpRequestMessage {
+pub func hostWithHeader(request: in HttpRequestMessage, key: in String, value: in String): HttpRequestMessage {
   val _ = headersTryAdd(requestHeaders(request), key, value)
   request
 }
 
-pub func hostWithStringBody(
-  request: in HttpRequestMessage,
-  contentType: in String,
-  body: in String
-): HttpRequestMessage {
+pub func hostWithStringBody(request: in HttpRequestMessage, contentType: in String, body: in String): HttpRequestMessage {
   setRequestContent(request, newStringContent(body, utf8(), contentType))
   request
 }
 
-pub async func hostSend(
-  client: in HttpClient,
-  request: in HttpRequestMessage
-): HttpResponseMessage {
+pub async func hostSend(client: in HttpClient, request: in HttpRequestMessage): HttpResponseMessage {
   await clientSendAsync(client, request)
 }
 
-pub async func hostGet(
-  client: in HttpClient,
-  url: in String
-): HttpResponseMessage {
+pub async func hostGet(client: in HttpClient, url: in String): HttpResponseMessage {
   await clientGetAsync(client, url)
 }
 
 pub async func hostPostString(
-  client: in HttpClient,
-  url: in String,
-  body: in String,
-  contentType: in String
+  client: in HttpClient, url: in String, body: in String, contentType: in String
 ): HttpResponseMessage {
   await clientPostAsync(client, url, newStringContent(body, utf8(), contentType))
 }
@@ -197,19 +191,14 @@ pub async func hostReadBodyBytes(response: in HttpResponseMessage): slice[Byte] 
 // ---------------------------------------------------------------------------
 // Phase C cancellation-aware overloads (D-progress-070).
 // ---------------------------------------------------------------------------
-
 pub async func hostSendWithCancel(
-  client: in HttpClient,
-  request: in HttpRequestMessage,
-  token: in CancellationToken
+  client: in HttpClient, request: in HttpRequestMessage, token: in CancellationToken
 ): HttpResponseMessage {
   await clientSendAsyncCancel(client, request, token)
 }
 
 pub async func hostGetWithCancel(
-  client: in HttpClient,
-  url: in String,
-  token: in CancellationToken
+  client: in HttpClient, url: in String, token: in CancellationToken
 ): HttpResponseMessage {
   await clientGetAsyncCancel(client, url, token)
 }
@@ -219,15 +208,12 @@ pub async func hostPostStringWithCancel(
   url: in String,
   body: in String,
   contentType: in String,
-  token: in CancellationToken
+  token: in CancellationToken,
 ): HttpResponseMessage {
   await clientPostAsyncCancel(client, url, newStringContent(body, utf8(), contentType), token)
 }
 
-pub async func hostReadBodyTextWithCancel(
-  response: in HttpResponseMessage,
-  token: in CancellationToken
-): String {
+pub async func hostReadBodyTextWithCancel(response: in HttpResponseMessage, token: in CancellationToken): String {
   await contentReadAsStringCancel(responseContent(response), token)
 }
 
@@ -252,8 +238,10 @@ pub func hostClientNoRedirects(): HttpClient {
 // `response.Content.Headers` (Content-Type, Content-Length, …) — try
 // the former first, then fall through to the latter, then `""`.
 extern type HttpResponseHeaders = "System.Net.Http.Headers.HttpResponseHeaders"
-extern type HttpContentHeaders  = "System.Net.Http.Headers.HttpContentHeaders"
-extern type IEnumerableStr      = "System.Collections.Generic.IEnumerable`1[System.String]"
+
+extern type HttpContentHeaders = "System.Net.Http.Headers.HttpContentHeaders"
+
+extern type IEnumerableStr = "System.Collections.Generic.IEnumerable`1[System.String]"
 
 @externTarget("System.Net.Http.HttpResponseMessage.Headers")
 func responseHeadersOf(r: in HttpResponseMessage): HttpResponseHeaders = ()
@@ -279,10 +267,7 @@ func firstOrEmpty(values: in slice[String]): String {
   }
 }
 
-pub func hostResponseHeader(
-  response: in HttpResponseMessage,
-  name: in String
-): String {
+pub func hostResponseHeader(response: in HttpResponseMessage, name: in String): String {
   val respHeaders = responseHeadersOf(response)
   var responseValues: IEnumerableStr = default()
   if responseHeadersTryGet(respHeaders, name, responseValues) {
