@@ -20257,3 +20257,22 @@ regression step gains a successful-resolution case.  Stage-1 + AOT clean.
 
 Root cause (the F# emitter union-field defect) tracked in #2126; #2125 covers
 the related qualified-name collision.
+### D-progress-417 — guardrail for the Str/Char qualified-name collision (#2125)
+
+**Status:** Shipped (`scripts/audit-strchar-collision.sh`, CI).
+
+The F# stage-0 emitter resolves a qualified `Alias.method` call by the bare
+method name, ignoring the import alias.  In a compiler source importing both
+`Std.String` (as `Str`) and `Std.Char` — which share `fromInt`/`toUpper`/
+`toLower` — a `Str.fromInt`/`Str.toUpper`/`Str.toLower` call silently
+mis-resolves to `Std.Char.<same>` (the `urlToHash` crash #2082; the `init.l`
+`Str.toUpper` type error).  The self-hosted MSIL emitter resolves these
+correctly, so only stage-0-compiled compiler sources are affected.
+
+All known call sites are already fixed (`git_dep.l`/`manifest.l` `fromInt` →
+`toString` in #2082; `init.l` `toUpper` → string lookup in #1972).  A tree audit
+confirmed no remaining triggers.  `scripts/audit-strchar-collision.sh` (wired
+into CI alongside the #335/#733 guardrails) fails if any `lyric-compiler/lyric/`
+file imports both modules and uses a colliding `Str.*` call, so the footgun
+cannot be reintroduced before the emitter root cause (#2125) is fixed or retired
+by self-hosting.
