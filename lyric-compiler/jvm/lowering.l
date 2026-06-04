@@ -3289,40 +3289,44 @@ pub func lowerScopeBlock(
   scopeSlot:     in Int,
   firstTaskSlot: in Int
 ): Unit {
-  val scopeClass = "java/util/concurrent/StructuredTaskScope$ShutdownOnFailure"
-  val scopePs:   List[JvmType] = newList()
+  // Java 23+ finalized StructuredTaskScope as an interface.
+  // StructuredTaskScope$ShutdownOnFailure no longer exists; use the
+  // static factory open() and the interface's fork/join/close methods.
+  val scopeIface = "java/util/concurrent/StructuredTaskScope"
 
-  // new ShutdownOnFailure(); store to scopeSlot
-  emitNew(asm, poolClass(asm.pool, scopeClass))
-  emitDup(asm)
-  emitInvokespecial(asm, poolMethodref(asm.pool, scopeClass, "<init>", "()V"))
+  // StructuredTaskScope.open() — static method declared on an interface,
+  // so the pool entry must be InterfaceMethodref (tag 11).
+  val openRef = poolIfaceMethodref(asm.pool, scopeIface, "open", "()Ljava/util/concurrent/StructuredTaskScope;")
+  emitInvokestatic(asm, openRef)
   emitAstore(asm, scopeSlot)
 
-  // fork each callable
+  // fork each callable — invokeinterface on the StructuredTaskScope interface
+  val forkDesc = "(Ljava/util/concurrent/Callable;)Ljava/util/concurrent/StructuredTaskScope$Subtask;"
+  val forkRef  = poolIfaceMethodref(asm.pool, scopeIface, "fork", forkDesc)
   var taskSlot = firstTaskSlot
   for callableName in callableNames.toArray() {
     val callableClass = poolClass(asm.pool, callableName)
     val callableCtor  = poolMethodref(asm.pool, callableName, "<init>", "()V")
-    val forkDesc = "(Ljava/util/concurrent/Callable;)Ljava/util/concurrent/StructuredTaskScope$Subtask;"
-    val forkRef  = poolMethodref(asm.pool, scopeClass, "fork", forkDesc)
 
     emitAload(asm, scopeSlot)
     emitNew(asm, callableClass)
     emitDup(asm)
     emitInvokespecial(asm, callableCtor)
-    emitInvokevirtual(asm, forkRef)
+    emitInvokeinterface(asm, forkRef, 2)
     emitAstore(asm, taskSlot)
     taskSlot = taskSlot + 1
   }
 
-  // join() and throwIfFailed()
-  val joinRef = poolMethodref(asm.pool, scopeClass, "join", "()Ljava/util/concurrent/StructuredTaskScope;")
-  val throwRef = poolMethodref(asm.pool, scopeClass, "throwIfFailed", "()V")
+  // join() — R erases to Object; returns Void for open() but we discard it
+  val joinRef  = poolIfaceMethodref(asm.pool, scopeIface, "join",  "()Ljava/lang/Object;")
+  val closeRef = poolIfaceMethodref(asm.pool, scopeIface, "close", "()V")
   emitAload(asm, scopeSlot)
-  emitInvokevirtual(asm, joinRef)
+  emitInvokeinterface(asm, joinRef, 1)
   emitPop(asm)
+
+  // close() — StructuredTaskScope implements AutoCloseable
   emitAload(asm, scopeSlot)
-  emitInvokevirtual(asm, throwRef)
+  emitInvokeinterface(asm, closeRef, 1)
 }
 
 // ── B121: lowerFuncWithContract (inline requires/ensures bytecode) ────────────
