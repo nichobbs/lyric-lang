@@ -216,7 +216,9 @@ to include the current target as a pseudo-feature named `target.<name>`:
 
 The `@cfg(target = "native")` predicate is parsed as a feature predicate with
 key `"target"` and value `"native"`, which resolves to the pseudo-feature
-`"target.native"`. This requires a minor update to `Lyric.Cfg` and `Cfg.fs`.
+`"target.native"`. This requires a minor update to `lyric-compiler/lyric/cfg.l` (`Lyric.Cfg`).
+The F# bootstrap `Cfg.fs` does **not** need updating — the native target is
+only reachable through the self-hosted Lyric CLI (see N4.6).
 
 ---
 

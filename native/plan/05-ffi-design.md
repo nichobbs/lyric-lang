@@ -179,8 +179,6 @@ Each file declares:
 Example (`libc.l`):
 
 ```lyric
-package Std.LibcHost
-
 @nativeLib("libc")
 package Std.LibcHost
 

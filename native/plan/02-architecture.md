@@ -122,10 +122,14 @@ parse(source)
   → return success/failure
 ```
 
-**F# side** (`bootstrap/src/Lyric.Cli/SelfHostedLlvm.fs`):
-
-Mirrors `SelfHostedMsil.fs` exactly. Uses `SelfHostedBridge.compileBridgeDriver`
-to load `Llvm.Bridge` via reflection, then caches the delegate.
+**No F# shim.** Unlike the test-infrastructure shims `SelfHostedMsil.fs` /
+`SelfHostedJvm.fs` (which drive those backends from the F# test harness during
+bootstrap), the native target requires no F# bridge. `--target native` is a
+user-facing flag dispatched entirely through the self-hosted Lyric CLI
+(`lyric-compiler/lyric/cli.l`), which calls `Llvm.Bridge.compileToNative`
+directly. The AOT entry point (`Lyric.Cli.Aot`) trampolines into
+`Lyric.Cli.Program.main`, so the native case is automatically available with
+no F# changes.
 
 ---
 
