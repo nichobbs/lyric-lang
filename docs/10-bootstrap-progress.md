@@ -20226,3 +20226,34 @@ pattern-variable binding so arm bodies see their bound names), `ELambda`,
 **Regression gate:** 847/847 emitter tests green.  The two changed files are
 `lyric-compiler/msil/codegen.l` (+77 lines) and
 `lyric-compiler/msil/lowering.l` (+3 lines).
+
+### D-progress-416 — git dependency resolution: flatten `GitRef` to dodge the F# union-field bug (#2126)
+
+**Status:** Shipped (`lyric-compiler/lyric/manifest.l`,
+`lyric-compiler/lyric/git_dep/git_dep.l`, `cli.l`, `manifest_self_test.l`).
+
+Git dependencies (`{ git = "...", tag/rev/branch }`) now resolve end-to-end.
+Previously the parsed git `ref` read back **null** at the resolver: the F#
+stage-0 emitter reads a union-typed field of a union case (`DepSource.Git.ref:
+GitRef`) back as null (#2126), so every git dep failed (and, before #2082, crashed).
+
+Fix (Lyric-side, no F# changes — the self-hosted emitter already handles this):
+
+- **`DepSource.Git`** stores the ref as two primitive fields
+  `refKind` (∈ "tag"/"rev"/"branch") + `refValue` instead of a nested `GitRef`
+  union.  The flat encoding round-trips on both emitters.
+- **`GitDep.resolve`** takes `(url, refKind, refValue, subdir)` strings and
+  dispatches the clone strategy by `refKind` (no union crosses the boundary);
+  `refDirName` likewise.  The dead `GitRef` unions, `gitRefLabel`, and
+  `Lyric.Cli.toGitDepRef` were removed.
+- All `DepSource.Git` consumers (restore, publish ref/version extraction,
+  `manifest_self_test`) updated to the four-field form.
+
+Verified end-to-end against a real local `file://` repo: `lyric restore`
+clones the tag, records the resolved SHA + sha512 in `lyric.lock`, and caches
+the clone.  An unreachable repo now reports `git clone failed` (it reaches the
+clone) rather than the old "could not determine ref kind".  CI's git-dep
+regression step gains a successful-resolution case.  Stage-1 + AOT clean.
+
+Root cause (the F# emitter union-field defect) tracked in #2126; #2125 covers
+the related qualified-name collision.

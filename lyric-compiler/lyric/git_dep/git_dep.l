@@ -31,19 +31,6 @@ import Std.Errors
 // §1. Public types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A reference that pins a git dependency to a specific point in history.
-pub union GitRef {
-  /// A git tag (e.g. `v1.2.3`).  Resolved with a shallow clone so the
-  /// network transfer is minimal.
-  case Tag(name: String)
-  /// An exact commit SHA.  The full history is cloned so the SHA is
-  /// guaranteed to be reachable.
-  case Rev(sha: String)
-  /// A branch name (e.g. `main`).  Always refreshed with `git pull` so
-  /// the working copy reflects the latest remote state.
-  case Branch(name: String)
-}
-
 /// The result of a successful `resolve` call.
 pub record GitDepResult {
   /// Absolute path to the resolved directory.  This is either the clone
@@ -118,22 +105,18 @@ pub func urlToHash(url: in String): String {
 // §3. Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Derive the subdirectory name for a given ref variant.
-func refDirName(ref: in GitRef): String {
-  // Assign into a non-null-initialised `var` rather than returning the `match`
-  // directly: `resolve` treats an empty result as "ref kind undetermined" and
-  // fails gracefully.  (Returning the match expression directly would yield a
-  // null on a malformed ref and NUL-poison the downstream Path.join.)
-  var result = ""
-  match ref {
-    case Tag(name)    -> { result = "tag-" + name }
-    case Rev(sha)     ->
-      // Use only the first 12 characters of the SHA for readability.
-      if sha.length >= 12 { result = "rev-" + Str.substring(sha, 0, 12) }
-      else                { result = "rev-" + sha }
-    case Branch(name) -> { result = "branch-" + name }
+// Derive the cache subdirectory name for a `(refKind, refValue)` pair.  Returns
+// "" for an unknown kind so `resolve` can fail gracefully.  Takes flat strings
+// rather than a `GitRef` union — see the note on `resolve`.
+func refDirName(refKind: in String, refValue: in String): String {
+  if refKind == "tag"    { return "tag-" + refValue }
+  if refKind == "branch" { return "branch-" + refValue }
+  if refKind == "rev" {
+    // Use only the first 12 characters of the SHA for readability.
+    if refValue.length >= 12 { return "rev-" + Str.substring(refValue, 0, 12) }
+    return "rev-" + refValue
   }
-  result
+  ""
 }
 
 // True when `dir` looks like an already-initialised git clone.
@@ -249,17 +232,6 @@ func pullBranch(targetDir: in String): Result[Unit, String] {
 // §5. Public API
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Return a human-readable label for a `GitRef` value.
-///
-/// Used in diagnostic messages and lock-file annotations.
-pub func gitRefLabel(ref: in GitRef): String {
-  match ref {
-    case Tag(name)    -> "tag:" + name
-    case Rev(sha)     -> "rev:" + sha
-    case Branch(name) -> "branch:" + name
-  }
-}
-
 /// Resolve a git dependency by cloning (or updating) into the local cache.
 ///
 /// Steps:
@@ -269,16 +241,22 @@ pub func gitRefLabel(ref: in GitRef): String {
 ///      or pull if the ref is a `Branch` (mutable) and it is already cached.
 ///   4. Optionally descend into `subdir` and verify it exists.
 ///   5. Return `Ok(GitDepResult)` or `Err(message)`.
-pub func resolve(url: in String, ref: in GitRef, subdir: in Option[String]): Result[GitDepResult, String] {
+/// `refKind` is one of "tag" / "rev" / "branch"; `refValue` the name or SHA.
+/// Flat strings rather than a `GitRef` union: a union-typed field of the
+/// `Lyric.Manifest.DepSource.Git` union read back null under the F# stage-0
+/// emitter (#2126), so the typed ref never reached here.  The flat encoding
+/// round-trips on both emitters.
+pub func resolve(url: in String, refKind: in String, refValue: in String,
+                 subdir: in Option[String]): Result[GitDepResult, String] {
   // Derive cache paths.
   val cacheRoot  = Path.join(cacheDir(), urlToHash(url))
-  val refName    = refDirName(ref)
+  val refName    = refDirName(refKind, refValue)
   // Guard: an empty ref name means the ref kind (tag/rev/branch) could not be
   // determined.  Fail with a clean diagnostic rather than letting the resulting
   // `Path.join(cacheRoot, "")` NUL-join produce a confusing path or panic.
   if Str.length(refName) == 0 {
     return Err(error = "git dependency '" + url +
-                       "': could not determine the ref kind (tag/rev/branch)")
+                       "': unknown ref kind '" + refKind + "' (expected tag/rev/branch)")
   }
   val targetDir  = Path.join(cacheRoot, refName)
 
@@ -293,44 +271,41 @@ pub func resolve(url: in String, ref: in GitRef, subdir: in Option[String]): Res
   val alreadyCloned = isGitClone(targetDir)
   var resolvedRev = ""
 
-  match ref {
-    case Tag(name) -> {
-      if not alreadyCloned {
-        match cloneTag(url, name, targetDir) {
-          case Err(msg) -> return Err(error = msg)
-          case Ok(_)    -> ()
-        }
+  if refKind == "tag" {
+    if not alreadyCloned {
+      match cloneTag(url, refValue, targetDir) {
+        case Err(msg) -> return Err(error = msg)
+        case Ok(_)    -> ()
       }
-      // Tag refs are immutable: once cloned, no refresh needed.
-      // Capture the pinned SHA for the lock file.
-      resolvedRev = revParseHead(targetDir)
     }
-    case Rev(sha) -> {
-      if not alreadyCloned {
-        match cloneRev(url, sha, targetDir) {
-          case Err(msg) -> return Err(error = msg)
-          case Ok(_)    -> ()
-        }
+    // Tag refs are immutable: once cloned, no refresh needed.
+    // Capture the pinned SHA for the lock file.
+    resolvedRev = revParseHead(targetDir)
+  } else if refKind == "rev" {
+    if not alreadyCloned {
+      match cloneRev(url, refValue, targetDir) {
+        case Err(msg) -> return Err(error = msg)
+        case Ok(_)    -> ()
       }
-      // Rev refs are immutable: the SHA is already known from the manifest.
-      resolvedRev = sha
     }
-    case Branch(name) -> {
-      if not alreadyCloned {
-        match cloneBranch(url, name, targetDir) {
-          case Err(msg) -> return Err(error = msg)
-          case Ok(_)    -> ()
-        }
-      } else {
-        // Branch refs are mutable: pull to get the latest commit.
-        match pullBranch(targetDir) {
-          case Err(msg) -> return Err(error = msg)
-          case Ok(_)    -> ()
-        }
+    // Rev refs are immutable: the SHA is already known from the manifest.
+    resolvedRev = refValue
+  } else {
+    // refKind == "branch" (refDirName already rejected unknown kinds).
+    if not alreadyCloned {
+      match cloneBranch(url, refValue, targetDir) {
+        case Err(msg) -> return Err(error = msg)
+        case Ok(_)    -> ()
       }
-      // Capture the current HEAD SHA so the lock file records a specific commit.
-      resolvedRev = revParseHead(targetDir)
+    } else {
+      // Branch refs are mutable: pull to get the latest commit.
+      match pullBranch(targetDir) {
+        case Err(msg) -> return Err(error = msg)
+        case Ok(_)    -> ()
+      }
     }
+    // Capture the current HEAD SHA so the lock file records a specific commit.
+    resolvedRev = revParseHead(targetDir)
   }
 
   // Verify the clone root exists after the operation.

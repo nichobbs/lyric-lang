@@ -1446,6 +1446,32 @@ jobs:
           fi
           bin_abs="$(pwd)/$lyric_bin"
           work="$(mktemp -d)"
+          # (0) git dep -> successful resolution against a real local repo (#2126).
+          #     The parsed git ref (tag/rev/branch) must round-trip to the resolver;
+          #     it previously read back null and git deps never resolved.
+          gitc="git -c commit.gpgsign=false -c tag.gpgsign=false -c user.email=t@t -c user.name=t"
+          mkdir -p "$work/remote"
+          ( cd "$work/remote" && git init -q -b main . && echo seed > f && $gitc add -A && $gitc commit -q -m init --no-gpg-sign && $gitc tag v1.0 )
+          mkdir -p "$work/ok/src"
+          cat > "$work/ok/lyric.toml" <<TOML
+          [package]
+          name = "Ok"
+          version = "0.1.0"
+          [project]
+          name = "Ok"
+          output = "single"
+          output_assembly = "Ok.dll"
+          [project.packages]
+          "Ok" = "src/main.l"
+          [dependencies]
+          Dep = { git = "file://$work/remote", tag = "v1.0" }
+          TOML
+          printf 'package Ok\nimport Std.Core\npub func main(): Int { 0 }\n' > "$work/ok/src/main.l"
+          ( cd "$work/ok" && HOME="$work/home" timeout 120 "$bin_abs" restore ) > "$work/ok.out" 2>&1
+          okrc=$?
+          echo "--- ok restore (rc=$okrc) ---"; cat "$work/ok.out"
+          test "$okrc" -eq 0 || { echo "git-dep restore against a real repo should succeed"; exit 1; }
+          grep -q "git:file://" "$work/ok/lyric.lock" || { echo "expected a git: lock entry for the resolved dep"; cat "$work/ok/lyric.lock"; exit 1; }
           # (a) git dep -> graceful failure, no crash.
           mkdir -p "$work/app/src"
           cat > "$work/app/lyric.toml" <<'TOML'
