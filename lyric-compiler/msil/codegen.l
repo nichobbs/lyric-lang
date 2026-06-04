@@ -6103,26 +6103,6 @@ func buildActionNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
   0x0A000000 + mrRow
 }
 
-// Build a callvirt token for System.Action`N<object,...>::Invoke(object,...).
-func buildActionNInvokeTok(cctx: in CodegenCtx, nparams: in Int): Int {
-  val trN = internActionTypeRef(cctx, nparams)
-  val codedIdx = (trN * 4) + 1
-  val objArgs: List[MsilType] = newList()
-  var ai = 0
-  while ai < nparams { objArgs.add(MObject); ai = ai + 1 }
-  val gblob = buildGenericInstBlob(codedIdx, objArgs)
-  val specKey = "ActionSpec_invoke_" + toString(nparams)
-  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
-  val invokePs: List[MsilType] = newList()
-  var pi = 0
-  while pi < nparams { invokePs.add(MTypeVar(pi)); pi = pi + 1 }
-  val invokeSig = buildInstanceMethodSig(invokePs, MVoid)
-  val mrRow = ctxAddMemberRefForTypeSpec(
-    cctx.lctx, tsRow, "Invoke",
-    "action_invoke_" + toString(nparams), invokeSig)
-  0x0A000000 + mrRow
-}
-
 // Get or create a TypeRef for System.Func`(nparams+1) where nparams is the lambda parameter count.
 // Reuses the actionTypeRefs map with a "func_N" key to avoid collisions.
 func internFuncTypeRef(cctx: in CodegenCtx, nparams: in Int): Int {
