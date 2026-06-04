@@ -139,9 +139,11 @@ func poolEntryEnd(b: in List[Int], pos: in Int): PoolStep {
 // ACC_ENUM      = 0x4000 = 16384
 // ACC_ANNOTATION= 0x2000 = 8192
 
-/// Parse a Java class file (bytes as List[Int]) and return its public-method
-/// surface.  Returns None if the class is non-public, an interface, an enum,
-/// an annotation, or the data is too short to be a valid class file.
+/// Parse a Java class file (bytes as List[Int]) and return its method surface.
+/// Returns None if the class is an interface, an enum, an annotation, or the
+/// data is too short to be a valid class file.  Package-private and abstract
+/// classes are included: they appear in superclass chains (e.g.
+/// `AbstractStringBuilder` is package-private but declares `length()`).
 pub func parseClass(b: in List[Int]): Option[ClassInfo] {
   if b.count < 8 { return None }
 
@@ -181,9 +183,7 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
   val superClassNameIdx = getS(classMap, toString(superClassIdx))
   val superName         = getSStr(utf8Map, toString(superClassNameIdx))
 
-  // Skip if not public or if interface/enum/annotation.
-  // ACC_PUBLIC=1: accessFlags % 2 == 0 means not public
-  if accessFlags % 2 == 0 { return None }
+  // Skip interfaces, enums, and annotations; include public and package-private classes.
   // ACC_INTERFACE=512: (accessFlags/512) % 2 != 0 means interface
   if (accessFlags / 512) % 2 != 0 { return None }
   // ACC_ENUM=16384: (accessFlags/16384) % 2 != 0 means enum
