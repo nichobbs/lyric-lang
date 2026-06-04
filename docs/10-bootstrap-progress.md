@@ -20120,3 +20120,62 @@ TOML parse error renders a numeric `:line:col:`.
 
 Functional git-dep resolution (parsed `ref` reads back null) is a separate
 emitter defect tracked in #2126.  Stage-1 + AOT clean.  MSIL target.
+### D-progress-414 — self-hosted type checker: `EIf`-branch value typing (#1943, #1483, Band-1 of #1470)
+
+**Status:** Shipped — type-checker-only.
+
+An `if`/`else` expression now takes the **unified type of its branches** instead
+of the universal `TyError`.  Each branch is an `ExprOrBlock` typed by the new
+`inferExprOrBlock` (a bare expression via `inferExpr`, a brace block via the
+divergence-aware `checkBlock` from D081, threading the scope's `returnTy`/
+`genericNames`).  `unifyBranchTypes` then combines them:
+
+- a `Never` branch (one that diverges via `return`/`throw`/`break`/`continue` or
+  `panic`) is **absorbed** — the `if` takes the other branch's type, so
+  `if c { 1 } else { return 0 }` is cleanly `Int`;
+- a `TyError` branch is absorbed (no cascade off an already-diagnosed branch);
+- a **`Unit`** branch (one ending in a statement / value-discarding call) means
+  the `if` is used statement-like — its value is discarded, so the branches need
+  not agree and the result is `Unit`.  The type checker cannot tell statement
+  position from value position, and a statement-position
+  `if c { x = 1 } else { f() }` (where `f()` returns a discarded non-`Unit`
+  value) is valid and pervasive — so only two **non-`Unit`** branches with
+  distinct types are a real mismatch (**T0067**), e.g. `if c { 1 } else { "s" }`.
+  On a mismatch the result is `TyError` (the universal unifier), not one arm's
+  type, so the containing expression context does not cascade follow-on
+  diagnostics off an arbitrary pick.
+
+An `if` *without* an `else` produces no value on the false path, so it is `Unit`.
+This depends on the #1943 parser fix (D-progress-410): a statement-position
+brace-`if` is a complete statement, so a trailing operator no longer glues into
+the `if`, and the branch types are what the type checker sees.
+
+**Module-receiver leniency (a required companion fix):** type-checking `if`/block
+branch bodies became newly reachable, and those bodies can contain
+`Module.member(...)` calls.  When such a call's module head is a bare
+single-segment path that follows the **UpperCamelCase module/type naming
+convention** and does not resolve — e.g. a `Std.String as Str` alias that
+survived alias-rewriting in a multi-file / `LYRIC_LOAD_COMPILER` bundle — the
+`EMember` receiver is treated as a **module reference** (`TyError`, lenient)
+rather than a hard `T0020`, consistent with multi-segment qualified paths which
+were already lenient.  A *lowercase* receiver is a value, so a typo like
+`stirng.method()` still surfaces its `T0020` (the leniency is narrow by design,
+#2127).  Without this the `weaver_self_test.l` self-
+application (compiling the whole compiler through itself) false-failed on a
+surviving `Str` alias once branch bodies were checked.
+
+Coverage: 7 new `typechecker_self_test.l` cases (matching branches unify to `Int`;
+`Int` vs `String` branches → T0067; a no-`else` `if` bound to a `String` `val`
+→ T0060; an `else`-`return` branch is `Never` and unifies to `Int`; an
+`Int`-vs-`Unit` branch pair is **not** a mismatch; an unresolved `Foo.bar()`
+upper-receiver does **not** error while a lowercase `stirng.bar()` typo still
+does).  Ecosystem sweep: **zero** new failures, **zero** T0067 false positives,
+and no library's build status changed across every `lyric-*` package;
+`lyric-auth` (heavy `if`/`else-if` chains) 29/29; `weaver_self_test.l` 18/18
+(`LYRIC_LOAD_COMPILER=1`).  Full regression green: 847/847 emitter, 84/84 CLI,
+typechecker self-test.  Book chapter 4 updated for the unified-`if`-type
+behaviour (#2128).
+
+Remaining Band-1 `TyError` forms: `EMatch`-branch unification (needs
+pattern-variable binding so arm bodies see their bound names), `ELambda`,
+`ETypeApp`, `EForall`/`EExists`, `EAssign`; then the #1488 gate.

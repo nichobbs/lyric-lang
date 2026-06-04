@@ -112,6 +112,54 @@ func testDivergingBlockIsNever(): Unit {
   assertEqualInt(diagCount(parseCheck(src)), 0, "diverging-block: unsafe { return 3 } is Never, no mismatch")
 }
 
+// #1943: an `if`/`else` expression takes the unified type of its branches.
+func testIfBranchesUnify(): Unit {
+  val ok = "package P\nfunc f(c: in Bool): Int { if c { 1 } else { 2 } }\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "if-unify: matching branches type as Int")
+  val bad = "package P\nfunc f(c: in Bool): Int { if c { 1 } else { \"x\" } }\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0067"), "if-mismatch: Int vs String branches rejected")
+}
+
+// An `if` without `else` is `Unit` — binding it to a typed `val` mismatches
+// (were it still `TyError`, the binding would unify silently).
+func testIfWithoutElseIsUnit(): Unit {
+  val src = "package P\nfunc f(c: in Bool): Unit {\n  val x: String = if c { \"x\" }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0060"), "if-no-else: Unit value mismatches a String val binding")
+}
+
+// A diverging branch (`return`) is `Never` and is absorbed — the `if` takes the
+// other branch's type, so this is a clean `Int`.
+func testIfDivergingBranchAbsorbed(): Unit {
+  val src = "package P\nfunc f(c: in Bool): Int { if c { 1 } else { return 0 } }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "if-diverge: else-return is Never, unifies to Int")
+}
+
+// When one branch produces no value (`Unit` — here a block ending in a `val`
+// statement), the `if` is used statement-like: the branches need not agree and
+// the result is `Unit`, so there is no spurious mismatch even though the other
+// branch is `Int`.  (A statement-position `if c { x } else { stmt }` where `x`
+// is a discarded non-`Unit` value is valid and pervasive — e.g. a branch ending
+// in a value-returning call whose result is dropped.)
+func testIfUnitBranchNoMismatch(): Unit {
+  val src = "package P\nfunc f(c: in Bool): Unit {\n  if c { 1 } else { val x = 2 }\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "if-unit-branch: Int-vs-Unit branches are not a mismatch")
+}
+
+// #2127/#2129: a bare UpperCamelCase member-call receiver that does not resolve
+// is treated as a module reference (e.g. a `Std.String as Str` alias that
+// survived rewriting), so it does NOT emit T0020 …
+func testUppercaseModuleReceiverLenient(): Unit {
+  val src = "package P\nfunc f(): Int { Foo.bar() }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0020"), "upper-receiver: unresolved `Foo.bar()` does not error T0020")
+}
+
+// … but a lowercase receiver is a value, so a typo still surfaces its T0020 —
+// the leniency must not swallow real unknown-name errors.
+func testLowercaseReceiverStillErrors(): Unit {
+  val src = "package P\nfunc f(): Int { stirng.bar() }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0020"), "lower-receiver: typo'd `stirng.bar()` still errors T0020")
+}
+
 // #1901: numeric/character conversion methods are typed as their target
 // primitive, not the universal `TyError` unifier.  The distinguishing case:
 // a `.toLong()` body in an `Int`-returning function MUST mismatch (T0070) —
@@ -1030,6 +1078,12 @@ func main(): Unit {
   testValTypeMismatch()
   testUnsafeBlockTyped()
   testDivergingBlockIsNever()
+  testIfBranchesUnify()
+  testIfWithoutElseIsUnit()
+  testIfDivergingBranchAbsorbed()
+  testIfUnitBranchNoMismatch()
+  testUppercaseModuleReceiverLenient()
+  testLowercaseReceiverStillErrors()
   testConvMethodTypedAsTarget()
   testConvMethodWideningAccepted()
   testConvMethodNarrowingAccepted()

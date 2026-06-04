@@ -855,6 +855,79 @@ func extractRecordFields(tbl: in SymbolTable, rd: in RecordDecl, result: in List
   }
 }
 
+// Is `t` the bottom type `Never`?  A `Never` branch (one that diverges via
+// `return`/`throw`/`break`/`continue` or `panic`) is absorbed in branch
+// unification: the `if`/`match` takes the *other* branch's type.
+func isNeverType(t: in Type): Bool {
+  match unrefine(t) {
+    case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }
+    case _          -> false
+  }
+}
+
+// Type an `ExprOrBlock` (an `if`/`match` branch body): a bare expression via
+// `inferExpr`, a brace block via the divergence-aware `checkBlock` (D081), which
+// threads the enclosing function's `returnTy`/`genericNames` off the scope.
+pub func inferExprOrBlock(
+  sc:   in Scope,
+  tbl:  in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  eob:  in ExprOrBlock
+): Type {
+  match eob {
+    case EOBExpr(ex)  -> inferExpr(sc, tbl, sigs, diag, ex)
+    case EOBBlock(bl) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, diag, bl)
+  }
+}
+
+func isUnitType(t: in Type): Bool {
+  match unrefine(t) {
+    case TyPrim(pt) -> match pt { case PtUnit -> true; case _ -> false }
+    case _          -> false
+  }
+}
+
+// Does `name` begin with an ASCII uppercase letter (the UpperCamelCase
+// module/type naming convention)?  Used to distinguish a module-reference
+// receiver (`Str.foo`) from a value receiver (`str.foo`) so the former can be
+// treated leniently while a lowercase typo still errors.
+func startsUppercase(name: in String): Bool {
+  if name.length == 0 { return false }
+  val c = name[0]
+  c >= 'A' and c <= 'Z'
+}
+
+// Unify two branch types (the arms of an `if`/`match`).  `Never` and `TyError`
+// are absorbed (the other branch wins), so an early-exit branch never forces a
+// false mismatch and an already-diagnosed branch does not cascade.  When either
+// branch produces **no value** (`Unit` — e.g. it ends in an assignment or a
+// `Unit`-returning call), the construct is being used statement-like: its value
+// is discarded, so the branches need not agree and the result is `Unit`.  This
+// matters because the type checker cannot distinguish statement position from
+// value position, and a statement-position `if c { x = 1 } else { f() }` (where
+// `f()` returns a non-`Unit` value that is discarded) is perfectly valid.  Only
+// two *value*-producing branches with **distinct non-`Unit`** types are a real
+// mismatch (T0067) — e.g. `if c { 1 } else { "s" }`.
+func unifyBranchTypes(a: in Type, b: in Type, span: in Span, diag: in List[Diagnostic]): Type {
+  if isNeverType(a) { return b }
+  if isNeverType(b) { return a }
+  match a { case TyError -> { return b }; case _ -> {} }
+  match b { case TyError -> { return a }; case _ -> {} }
+  if isUnitType(a) or isUnitType(b) { return TyPrim(pt = PtUnit) }
+  if typeEquiv(a, b) {
+    a
+  } else {
+    diag.add(errorDiagnostic("T0067",
+      "incompatible branch types: one branch has type " + renderType(a) +
+      ", the other " + renderType(b), span))
+    // Yield `TyError` (the universal unifier), not one arm's type, so the
+    // containing expression context does not cascade follow-on diagnostics off
+    // an arbitrary pick (#2099).
+    TyError
+  }
+}
+
 func inferMember(
   tbl:  in SymbolTable,
   diag: in List[Diagnostic],
@@ -1312,7 +1385,26 @@ pub func inferExpr(
     }
 
     case EMember(recv, name) -> {
-      val rt = inferExpr(sc, tbl, sigs, diag, recv)
+      // A bare single-segment receiver whose name follows the **module/type
+      // naming convention** (UpperCamelCase) and does not resolve is treated as
+      // a *module reference* (e.g. `Str.substring(...)` where a `Std.String as
+      // Str` alias survived alias-rewriting in a multi-file bundle), not a hard
+      // unknown-name error — qualified resolution is owned by the member/call
+      // layer, and multi-segment qualified paths are already lenient here.  A
+      // *lowercase* single-segment receiver is a value (a `val`/`var`/param), so
+      // a typo like `stirng.method()` still surfaces its T0020.  Other receiver
+      // shapes keep their diagnostics.  (This became reachable once `if`/block
+      // branch bodies are type-checked, #1943.)
+      val rt = match recv.kind {
+        case EPath(p) ->
+          if p.segments.count == 1 and startsUppercase(p.segments[0]) {
+            val scratch: List[Diagnostic] = newList()
+            inferExpr(sc, tbl, sigs, scratch, recv)
+          } else {
+            inferExpr(sc, tbl, sigs, diag, recv)
+          }
+        case _ -> inferExpr(sc, tbl, sigs, diag, recv)
+      }
       inferMember(tbl, diag, rt, name, e.span)
     }
 
@@ -1348,7 +1440,23 @@ pub func inferExpr(
     }
     case ETypeApp(_, _) -> TyError
     case ELambda(_, _)  -> TyError
-    case EIf(_, _, _, _) -> TyError
+    // An `if`/`else` expression takes the unified type of its branches.  An
+    // `if` without an `else` produces no value on the false path, so it is
+    // `Unit` (the parser desugars a statement-position brace-`if` so a trailing
+    // operator does not glue — #1943).  Each branch is an `ExprOrBlock`: a block
+    // branch is typed (divergence-aware) by `checkBlock` (D081), so an
+    // early-`return` branch is `Never` and unifies cleanly.
+    case EIf(cond, thenBranch, elseBranch, _) -> {
+      inferExpr(sc, tbl, sigs, diag, cond)
+      val tt = inferExprOrBlock(sc, tbl, sigs, diag, thenBranch)
+      match elseBranch {
+        case None      -> TyPrim(pt = PtUnit)
+        case Some(eb)  -> {
+          val et = inferExprOrBlock(sc, tbl, sigs, diag, eb)
+          unifyBranchTypes(tt, et, e.span, diag)
+        }
+      }
+    }
     case EMatch(scrutinee, arms) -> {
       // Check exhaustiveness; branch-type unification (real match result type) is the next split.
       val st = inferExpr(sc, tbl, sigs, diag, scrutinee)

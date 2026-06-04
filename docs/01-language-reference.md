@@ -579,7 +579,12 @@ Exhaustiveness is enforced. The compiler tracks variant coverage and rejects inc
 
 ### 4.3 Control flow
 
-`if`/`else` is an expression:
+`if`/`else` is an expression whose type is the **unified type of its branches**
+— both arms must have compatible types (a mismatch is a compile error). A
+branch that diverges (`return`/`throw`/`break`/`continue`/`panic`) has the bottom
+type and does not constrain the other arm, so `if c { x } else { return d }` is
+typed by its `then` branch. An `if` *without* an `else` produces no value on the
+false path and so has type `Unit`.
 ```
 val x = if cond then a else b
 ```
