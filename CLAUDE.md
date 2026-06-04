@@ -808,17 +808,19 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     epic #1622: the self-hosted JVM emitter resolves
     `extern type T = "java.lang.Math"` / `T.method(args)` calls from real JDK
     metadata at compile time and emits the real
-    `invokestatic owner.name(desc)` instead of the legacy
-    `([Object…])Object` guess.  The resolver (`lyric-compiler/jvm/auto_ffi.l`
+    `invokestatic owner.name(desc)` (static), `invokevirtual` (instance), or
+    `new + invokespecial <init>` (constructor via `T.new(args)`) instead of the
+    legacy `([Object…])Object` guess.  Also covers Maven/non-JDK JAR resolution
+    via `LYRIC_FFI_JARS`.  The resolver (`lyric-compiler/jvm/auto_ffi.l`
     + `zip_reader.l` + `class_reader.l` + `deflate.l`) is a pure-Lyric stack
     that reads the `.class` entry straight out of `java.base.jmod` (a ZIP of
     DEFLATE-compressed class files behind a 4-byte JMOD magic header),
     enumerating entries via the ZIP **central directory** (JMOD entries use
     streaming data descriptors, so local-header sizes are zero) and scoring
-    overloads in `Jvm.AutoFfi.findBestMethod`.  Run in CI via native
-    `lyric test --target jvm` (compiles the module in-process through the
-    self-hosted `Jvm.Bridge` `compileToJarBundled` and runs it under `java`).
-    Imports only `Std.*`.  The loading chain deliberately avoids
+    overloads in `Jvm.AutoFfi.findBestMethod` / `findBestConstructor`.  Run in
+    CI via native `lyric test --target jvm` (compiles the module in-process
+    through the self-hosted `Jvm.Bridge` `compileToJarBundled` and runs it
+    under `java`).  Imports only `Std.*`.  The loading chain deliberately avoids
     `Map`/`Option` value threading for cross-package record types (parallel
     `List` cache, `var`-accumulator control flow) because the stage-0
     bootstrap emitter miscompiles those patterns.

@@ -40,8 +40,9 @@ pub record ClassMethod {
 }
 
 pub record ClassInfo {
-  binaryName: String             // JVM binary name, e.g. "java/lang/Math"
-  methods:    List[ClassMethod]  // public non-synthetic methods
+  binaryName:   String             // JVM binary name, e.g. "java/lang/Math"
+  methods:      List[ClassMethod]  // public non-synthetic non-constructor methods
+  constructors: List[ClassMethod]  // public <init> constructors (isStatic=false)
 }
 
 // ── Constant pool helpers ─────────────────────────────────────────────────────
@@ -218,7 +219,8 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
   if pos + 2 > b.count { return None }
   val methodCount = rdU16(b, pos)
   pos = pos + 2
-  val methods: List[ClassMethod] = newList()
+  val methods:      List[ClassMethod] = newList()
+  val constructors: List[ClassMethod] = newList()
 
   var mi = 0
   while mi < methodCount {
@@ -232,7 +234,7 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
     // Skip attributes.
     var ai = 0
     while ai < attrCount {
-      if pos + 6 > b.count { return Some(value = ClassInfo(binaryName = binaryName, methods = methods)) }
+      if pos + 6 > b.count { return Some(value = ClassInfo(binaryName = binaryName, methods = methods, constructors = constructors)) }
       val attrLen = rdU32(b, pos + 2)
       pos = pos + 6 + attrLen
       ai = ai + 1
@@ -247,7 +249,9 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
     if isPublic and not isSynthetic and not isBridge {
       val mName = getSStr(utf8Map, toString(nameIdx))
       val mDesc = getSStr(utf8Map, toString(descIdx))
-      if mName != "<init>" and mName != "<clinit>" and mName.length > 0 {
+      if mName == "<init>" {
+        constructors.add(ClassMethod(name = "<init>", descriptor = mDesc, isStatic = false))
+      } else if mName != "<clinit>" and mName.length > 0 {
         methods.add(ClassMethod(name = mName, descriptor = mDesc, isStatic = isStatic))
       }
     }
@@ -255,5 +259,5 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
     mi = mi + 1
   }
 
-  Some(value = ClassInfo(binaryName = binaryName, methods = methods))
+  Some(value = ClassInfo(binaryName = binaryName, methods = methods, constructors = constructors))
 }

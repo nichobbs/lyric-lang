@@ -4,8 +4,8 @@
 // JVM target (epic #1622, Phase 3c JVM analog).  Exercises `extern type` aliases
 // whose method calls are resolved from JDK .jmod metadata at compile time and
 // emitted as correctly-typed bytecode (`invokestatic` for static methods,
-// `invokevirtual` for instance dispatch) instead of the legacy
-// `([Object…])Object` guess.
+// `invokevirtual` for instance dispatch, `invokespecial <init>` for `T.new(args)`)
+// instead of the legacy `([Object…])Object` guess.
 //
 // Run via `lyric test --target jvm` so the self-hosted Jvm.Bridge pipeline
 // (compileToJarBundled) is exercised end-to-end with `buildAutoFfiCtx()`.
@@ -25,8 +25,9 @@ package Lyric.AutoFfiJvmSelfTest
 import Std.Core
 import Std.Testing
 
-extern type JMath    = "java.lang.Math"
-extern type JInteger = "java.lang.Integer"
+extern type JMath          = "java.lang.Math"
+extern type JInteger       = "java.lang.Integer"
+extern type JStringBuilder = "java.lang.StringBuilder"
 
 // ── Math int overloads ────────────────────────────────────────────────────────
 
@@ -107,4 +108,22 @@ test "Integer.valueOf then intValue (instance method dispatch)" {
   assertEqualInt(JInteger.valueOf(42).intValue(),  42, "Integer.valueOf(42).intValue()==42")
   assertEqualInt(JInteger.valueOf(-7).intValue(),  -7, "Integer.valueOf(-7).intValue()==-7")
   assertEqualInt(JInteger.valueOf(0).intValue(),    0, "Integer.valueOf(0).intValue()==0")
+}
+
+// ── Constructor binding ───────────────────────────────────────────────────────
+//
+// Exercises lowerAutoFfiConstructorCall: `T.new(args)` maps to the JVM
+// sequence `new <class>; dup; <args>; invokespecial <init>`.  The produced
+// reference is a `JRef("java/lang/StringBuilder")` so subsequent instance
+// calls on the result are routed through `lowerAutoFfiInstanceCall`.
+
+test "StringBuilder.new(String) constructor binding" {
+  val sb = JStringBuilder.new("hello")
+  assertEqualInt(sb.length(), 5, "length of StringBuilder(\"hello\")")
+  assertEqual(sb.toString(), "hello", "toString() of StringBuilder(\"hello\")")
+}
+
+test "StringBuilder.new() no-arg constructor binding" {
+  val sb = JStringBuilder.new()
+  assertEqualInt(sb.length(), 0, "empty StringBuilder length")
 }

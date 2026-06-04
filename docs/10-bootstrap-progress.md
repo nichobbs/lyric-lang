@@ -20468,3 +20468,62 @@ This closes false-positive category (C) of the #1488 gate.  Category (B)
 generic-return instantiation, plus the cross-package duplicate-`TypeId` and
 interface-subtyping surfaces, remain before the `bridge.l:93`
 `reportDiagnostics` → `reportAndAbort` flip.
+
+### D-progress-422 — JVM auto-FFI: Maven/JAR class resolution + constructor binding (epic #1622 follow-on)
+
+**Status:** Shipped — JVM target.
+
+Three JVM auto-FFI capabilities added on top of the epic #1622 static-method
+foundation:
+
+**1. Maven / non-JDK JAR class resolution (`LYRIC_FFI_JARS`).**
+`buildAutoFfiCtx()` now reads the `LYRIC_FFI_JARS` environment variable (a
+colon/semicolon-separated list of JAR paths) and scans those JARs after the JDK
+jmods when resolving a class.  JAR entries use the flat
+`"com/example/Foo.class"` path (no `"classes/"` JMOD prefix).
+`tryLoadFromArchive` is the unified entry point for both JMOD and JAR loading;
+`tryLoadFromJmod` delegates to it.  `javaFqnToJarEntry` produces the JAR-layout
+path.  `splitPathList` handles both `:` (Unix) and `;` (Windows) separators.
+
+To integrate Maven-resolved dependencies:
+```
+export LYRIC_FFI_JARS=$(mvn -q dependency:build-classpath \
+  -DincludeTypes=jar -Dmdep.outputFile=/dev/stdout 2>/dev/null)
+```
+
+The `case None -> panic(...)` guard in `lowerAutoFfiStaticCall` was extended to
+include `ctx.autoFfi.jarPaths.count > 0` so that a class absent from *any*
+configured metadata source (jmods or JARs) is always a compile-time error.
+
+**2. Constructor binding (`T.new(args)` → `new + dup + invokespecial <init>`).**
+`ClassReader.parseClass` now populates `ClassInfo.constructors` with public
+`<init>` entries (previously excluded) alongside the existing `methods` list.
+`findBestConstructor(ci, argDescs)` scores constructor overloads using the same
+`scoreMethod` machinery as `findBestMethod`.  `lowerAutoFfiConstructorCall` emits
+the standard JVM constructor sequence: `LNew; LDup; <buffered args + coercions>;
+LInvokespecial(<init>, ..., JVoid)` and returns `JRef(ci.binaryName)`.  The
+`T.new(args)` call site reaches this path via `lowerAutoFfiStaticCall`'s
+`methodName == "new"` intercept in the `Some(ci) ->` branch.  The no-metadata
+fallback path also emits `LNew; LDup` before args (not after), matching the
+required JVM operand-stack ordering.
+
+**3. Self-tests.**  `auto_ffi_jvm_self_test.l` gains two constructor tests:
+`StringBuilder.new(String)` (verifies `.length()` and `.toString()`) and
+`StringBuilder.new()` (verifies empty construction).
+
+**4. Inherited method resolution fix.**  `findBestInstanceMethod` previously
+accessed superclass `ClassInfo` fields in a match-arm block body, which the
+stage-0 bootstrap emitter drops for cross-package record types.  Fixed by:
+adding `addClassToCache` (passes `ci` as direct function argument from match
+arm — the known-safe pattern), `findCacheIdx` (linear scan of cacheKeys), and
+`scoreAndGetSuper` (scores `sci.methods` + returns `sci.superName` via a
+`ClassInfo` function parameter).  After `loadClass` populates the cache,
+`findBestInstanceMethod` accesses `cacheVals[idx]` directly and passes it to
+`scoreAndGetSuper` — no `Option[ClassInfo]` binding in the hot path.
+
+**5. Package-private superclass fix.**  `parseClass` in `class_reader.l` previously
+filtered out classes without `ACC_PUBLIC`, preventing `AbstractStringBuilder`
+(package-private) from being parsed.  Removed the `ACC_PUBLIC` filter; only
+interfaces, enums, and annotations are rejected.  Covered by the existing
+`StringBuilder.length()` test which traverses the `AbstractStringBuilder`
+superclass chain.

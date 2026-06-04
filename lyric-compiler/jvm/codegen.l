@@ -2360,12 +2360,12 @@ func lowerAutoFfiStaticCall(
 
   match loadClass(ctx.autoFfi, javaFqn) {
     case None -> {
-      if ctx.autoFfi.jmodsDir.length > 0 {
-        // JDK was found but the class isn't in any jmod — hard compile error.
-        panic("JVM auto-FFI: class '" + javaFqn + "' not found in JDK jmods at '" + ctx.autoFfi.jmodsDir + "'")
+      if ctx.autoFfi.jmodsDir.length > 0 or ctx.autoFfi.jarPaths.count > 0 {
+        // Metadata was available but the class wasn't found — hard compile error.
+        panic("JVM auto-FFI: class '" + javaFqn + "' not found in JDK jmods or LYRIC_FFI_JARS")
       }
-      // No JDK found (JAVA_HOME unset, no standard path).  Fall back to the
-      // legacy object-typed binding; resolution may fail at JVM link time.
+      // No JDK / JARs found.  Fall back to the legacy object-typed binding;
+      // resolution may fail at JVM link time.
       val paramTys: List[JvmType] = newList()
       var j = 0
       while j < argBufs.count {
@@ -2375,14 +2375,30 @@ func lowerAutoFfiStaticCall(
         paramTys.add(JRef(className = "java/lang/Object"))
         j = j + 1
       }
-      insns.add(LInvokestatic(
-        owner  = binaryName,
-        name   = methodName,
-        params = paramTys,
-        ret    = JRef(className = "java/lang/Object")))
-      JRef(className = "java/lang/Object")
+      if methodName == "new" {
+        // No-metadata constructor fallback: new + dup + Object-typed invokespecial.
+        insns.add(LNew(className = binaryName))
+        insns.add(LDup)
+        insns.add(LInvokespecial(
+          owner  = binaryName,
+          name   = "<init>",
+          params = paramTys,
+          ret    = JVoid))
+        JRef(className = binaryName)
+      } else {
+        insns.add(LInvokestatic(
+          owner  = binaryName,
+          name   = methodName,
+          params = paramTys,
+          ret    = JRef(className = "java/lang/Object")))
+        JRef(className = "java/lang/Object")
+      }
     }
     case Some(ci) -> {
+      // Intercept "new" pseudo-method: T.new(args) → new + dup + invokespecial <init>.
+      if methodName == "new" {
+        return lowerAutoFfiConstructorCall(ctx, insns, ci, args)
+      }
       match findBestMethod(ci, methodName, argDescs, true) {
         case None -> {
           // No static overload matches — compile-time diagnostic.
@@ -2480,6 +2496,64 @@ func lowerAutoFfiInstanceCall(
         params = paramJvms,
         ret    = retJvm))
       retJvm
+    }
+  }
+}
+
+// Constructor call on a JDK class through auto-FFI.  `T.new(args)` maps to
+// `new <class>; dup; <args>; invokespecial <init>`.  Receiver reference is
+// produced by the `new` opcode and duplicated so the initialised reference
+// remains on the stack after `invokespecial` consumes the bottom copy.
+func lowerAutoFfiConstructorCall(
+  ctx:  in FuncCtx,
+  insns: in List[LInsn],
+  ci:   in ClassInfo,
+  args: in List[CallArg]
+): JvmType {
+  val argBufs:  List[List[LInsn]] = newList()
+  val argDescs: List[String]      = newList()
+  var i = 0
+  while i < args.count {
+    val buf: List[LInsn] = newList()
+    val aTy = lowerCallArg(ctx, buf, args[i])
+    argBufs.add(buf)
+    argDescs.add(jvmTypeToDescStr(aTy))
+    i = i + 1
+  }
+  match findBestConstructor(ci, argDescs) {
+    case None -> {
+      var argStr = ""
+      var ai = 0
+      while ai < argDescs.count {
+        if ai > 0 { argStr = argStr + ", " }
+        argStr = argStr + argDescs[ai]
+        ai = ai + 1
+      }
+      val fqn = ci.binaryName.replace("/", ".")
+      panic("JVM auto-FFI: no matching constructor for 'new " + fqn + "(" + argStr + ")' — check argument types")
+    }
+    case Some(ctor) -> {
+      insns.add(LNew(className = ci.binaryName))
+      insns.add(LDup)
+      val paramDescs = parseDescriptorParams(ctor.descriptor)
+      val paramJvms: List[JvmType] = newList()
+      var j = 0
+      while j < argBufs.count {
+        val buf = argBufs[j]
+        var k = 0
+        while k < buf.count { insns.add(buf[k]); k = k + 1 }
+        val paramDesc =
+          if j < paramDescs.count { paramDescs[j] } else { argDescs[j] }
+        emitFfiCoerce(insns, argDescs[j], paramDesc)
+        paramJvms.add(descStrToJvmType(paramDesc))
+        j = j + 1
+      }
+      insns.add(LInvokespecial(
+        owner  = ci.binaryName,
+        name   = "<init>",
+        params = paramJvms,
+        ret    = JVoid))
+      JRef(className = ci.binaryName)
     }
   }
 }

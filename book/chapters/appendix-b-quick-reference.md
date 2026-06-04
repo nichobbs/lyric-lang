@@ -513,15 +513,20 @@ Typ.GetType("System.Int32").ToString()    // class return + instance dispatch (c
 **`--target jvm`** — signature read from JDK `.jmod` metadata (epic #1622):
 
 ```lyric
-extern type JMath    = "java.lang.Math"
-extern type JInteger = "java.lang.Integer"
+extern type JMath          = "java.lang.Math"
+extern type JInteger       = "java.lang.Integer"
+extern type JStringBuilder = "java.lang.StringBuilder"
 
-JMath.max(3, 7)          // -> invokestatic java/lang/Math.max(II)I  -> 7
-JMath.floor(3.7)         // -> invokestatic java/lang/Math.floor(D)D -> 3.0
-JInteger.sum(5, 6)       // -> invokestatic java/lang/Integer.sum(II)I -> 11
+JMath.max(3, 7)                  // invokestatic Math.max(II)I -> 7
+JMath.floor(3.7)                 // invokestatic Math.floor(D)D -> 3.0
+JInteger.valueOf(42).intValue()  // invokestatic + invokevirtual -> 42
+JStringBuilder.new("hi")         // new + invokespecial <init> -> StringBuilder("hi")
+JStringBuilder.new("hi").length() // constructor + instance method -> 2
 ```
 
-No `@axiom` block needed: the signature is read from the assembly/jmod at compile time. No overload match is a compile-time error (never silently mis-bound).
+For third-party classes, set `LYRIC_FFI_JARS` to a colon-separated JAR classpath; the emitter scans those JARs after the JDK jmods.
+
+No `@axiom` block needed: the signature is read from the assembly/jmod/JAR at compile time. No overload match is a compile-time error (never silently mis-bound).
 
 ### Pre-state snapshots in ensures
 
