@@ -1,8 +1,8 @@
-// stdlib/tests/core_tests.l — Tests for Std.Core.
-//
-// Covers Option, Result, slice helpers, and higher-order combinators.
-// Each test function panics on failure via Std.Testing assertions, so a
-// clean exit (code 0) means every assertion held.
+//! stdlib/tests/core_tests.l — Tests for Std.Core.
+//!
+//! Covers Option, Result, slice helpers, and higher-order combinators.
+//! Each test function panics on failure via Std.Testing assertions, so a
+//! clean exit (code 0) means every assertion held.
 package Std.Core.Tests
 
 import Std.Core

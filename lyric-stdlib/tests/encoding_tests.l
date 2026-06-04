@@ -1,8 +1,8 @@
-// stdlib/tests/encoding_tests.l — Tests for Std.Encoding.
-//
-// Covers Base64 encode/decode round-trip, hex encode/decode round-trip,
-// UTF-8 encode/decode round-trip, and the error paths (invalid Base64,
-// invalid hex, invalid UTF-8 byte sequence).
+//! stdlib/tests/encoding_tests.l — Tests for Std.Encoding.
+//!
+//! Covers Base64 encode/decode round-trip, hex encode/decode round-trip,
+//! UTF-8 encode/decode round-trip, and the error paths (invalid Base64,
+//! invalid hex, invalid UTF-8 byte sequence).
 package Std.Encoding.Tests
 
 import Std.Core
@@ -10,7 +10,8 @@ import Std.Encoding
 import Std.Testing
 
 func testBase64RoundTrip(): Unit {
-  val bytes: slice[Byte] = [72u8, 101u8, 108u8, 108u8, 111u8]  // "Hello"
+  val bytes: slice[Byte] = [72u8, 101u8, 108u8, 108u8, 111u8]
+  // "Hello"
   val encoded = encodeBase64(bytes)
   assertEqual(encoded, "SGVsbG8=", "base64 encode Hello")
 

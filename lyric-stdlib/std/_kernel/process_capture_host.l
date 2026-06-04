@@ -1,14 +1,13 @@
-// std/_kernel/process_capture_host.l — trusted host boundary for piped
-// process execution (stdout + stderr capture, exit code, timeout flag).
-//
-// Used by the self-hosted verifier (`Lyric.Verifier`) to invoke z3/cvc5
-// and by the source-generator runtime (`Lyric.Generator`) to invoke
-// generator DLLs.  The implementation lives in
-// `Lyric.Emitter.ProcessCapture.runCapture` (always loaded in the
-// AppDomain when emitting or running self-hosted Lyric code).
-//
-// Internal: only Std.ProcessCapture and Std.Process should import this.
-
+//! std/_kernel/process_capture_host.l — trusted host boundary for piped
+//! process execution (stdout + stderr capture, exit code, timeout flag).
+//!
+//! Used by the self-hosted verifier (`Lyric.Verifier`) to invoke z3/cvc5
+//! and by the source-generator runtime (`Lyric.Generator`) to invoke
+//! generator DLLs.  The implementation lives in
+//! `Lyric.Emitter.ProcessCapture.runCapture` (always loaded in the
+//! AppDomain when emitting or running self-hosted Lyric code).
+//!
+//! Internal: only Std.ProcessCapture and Std.Process should import this.
 @axiom("System.Diagnostics.Process piped stdout/stderr capture")
 package Std.ProcessCaptureHost
 
@@ -21,7 +20,6 @@ import Std.Core
 extern type ProcessCaptureResult = "Lyric.Emitter.ProcessCapture+CaptureResult"
 
 // ── Field accessors ────────────────────────────────────────────────────────
-
 @externTarget("Lyric.Emitter.ProcessCapture+CaptureResult.Stdout")
 pub func pcResultStdout(r: in ProcessCaptureResult): String = ()
 
@@ -35,7 +33,6 @@ pub func pcResultExitCode(r: in ProcessCaptureResult): Int = ()
 pub func pcResultTimedOut(r: in ProcessCaptureResult): Bool = ()
 
 // ── Subprocess entry point ─────────────────────────────────────────────────
-
 // Run `executable` with a pre-formed `arguments` string, write
 // `stdinContent` to the child's stdin, close stdin, and return a
 // `ProcessCaptureResult` with stdout, stderr, exit code, and whether the
@@ -48,4 +45,6 @@ pub func hostRunCapture(executable: in String, arguments: in String, stdinConten
 // cap.  Used by `Std.Process.runCapture` and `Std.Process.runCaptureWithInput`
 // (#1023 / #743).
 @externTarget("Lyric.Emitter.ProcessCapture.runCaptureWithTimeout")
-pub func hostRunCaptureTimeout(executable: in String, arguments: in String, stdinContent: in String, timeoutMs: in Int): ProcessCaptureResult = ()
+pub func hostRunCaptureTimeout(
+  executable: in String, arguments: in String, stdinContent: in String, timeoutMs: in Int
+): ProcessCaptureResult = ()

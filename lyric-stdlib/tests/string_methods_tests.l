@@ -1,10 +1,10 @@
-// stdlib/tests/string_methods_tests.l — Tests for method-syntax string ops.
-//
-// `string_tests.l` covers the free-function forms (`substring(s, ..)`);
-// this file covers the UFCS/method-syntax forms (`s.trim()`, `s.indexOf(..)`,
-// `s.lastIndexOf(..)`, `s.startsWith(..)`, `s.toLower()`, ...) that lower to
-// BCL `System.String` instance methods.  `substring`/`replace`/`length`/
-// indexing landed earlier; this adds the remaining methods.
+//! stdlib/tests/string_methods_tests.l — Tests for method-syntax string ops.
+//!
+//! `string_tests.l` covers the free-function forms (`substring(s, ..)`);
+//! this file covers the UFCS/method-syntax forms (`s.trim()`, `s.indexOf(..)`,
+//! `s.lastIndexOf(..)`, `s.startsWith(..)`, `s.toLower()`, ...) that lower to
+//! BCL `System.String` instance methods.  `substring`/`replace`/`length`/
+//! indexing landed earlier; this adds the remaining methods.
 package Std.String.MethodTests
 
 import Std.Core

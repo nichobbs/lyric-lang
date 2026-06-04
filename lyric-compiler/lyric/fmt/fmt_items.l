@@ -239,10 +239,28 @@ func whereClauseLines(wc: in Option[WhereClause]): List[String] {
 
 pub func recordMemberLines(m: in RecordMember, ctx: inout FmtCtx): List[String] {
   match m {
-    case RMField(field)   -> singleLineDoc(fieldDeclStr(field))
+    case RMField(field)   -> fieldMemberLines(field)
     case RMInvariant(inv) -> singleLineDoc("invariant: " + exprInline(0, inv.expr))
     case RMFunc(fn)       -> funcDoc("", fn, ctx)
   }
+}
+
+/// Render a record/opaque field with its leading `///` doc comments and
+/// `@annotation` lines.  The parser binds these into `FieldDecl`
+/// (`docComments` / `annotations`); unlike union and enum cases — whose
+/// `unionDoc` / `enumDoc` printers already emit them — the field printer
+/// historically dropped them, silently losing per-field documentation
+/// on every `lyric fmt` pass.
+func fieldMemberLines(field: in FieldDecl): List[String] {
+  val acc: List[String] = newList()
+  val docs = docLines(field.docComments)
+  var i = 0
+  while i < docs.count { acc.add(docs[i]); i = i + 1 }
+  val annos = annotationLines(field.annotations)
+  i = 0
+  while i < annos.count { acc.add(annos[i]); i = i + 1 }
+  acc.add(fieldDeclStr(field))
+  acc
 }
 
 @pure
@@ -395,7 +413,7 @@ func protectedFieldStr(pf: in ProtectedField): List[String] {
       }
       singleLineDoc("let " + n + ": " + typeStr(ty) + initStr)
     }
-    case PFImmutable(field) -> singleLineDoc(fieldDeclStr(field))
+    case PFImmutable(field) -> fieldMemberLines(field)
   }
 }
 
@@ -508,7 +526,11 @@ func opaqueDoc(visStr: in String, item: in Item, od: in OpaqueTypeDecl, ctx: ino
     var i = 0
     while i < od.members.count {
       match od.members[i] {
-        case OMField(fd)    -> mLines.add(fieldDeclStr(fd))
+        case OMField(fd)    -> {
+          val fl = fieldMemberLines(fd)
+          var z = 0
+          while z < fl.count { mLines.add(fl[z]); z = z + 1 }
+        }
         case OMInvariant(ic)-> mLines.add("invariant: " + exprInline(0, ic.expr))
       }
       i = i + 1
@@ -643,7 +665,7 @@ func wireDoc(wd: in WireDecl, ctx: inout FmtCtx): List[String] {
       case WMProvided(n, ty, _) -> mLines.add("provided " + n + ": " + typeStr(ty))
       case WMSingleton(n, ty, init, _) -> mLines.add("singleton " + n + ": " + typeStr(ty) + " = " + exprInline(0, init))
       case WMScoped(sk, n, ty, init, _) -> mLines.add("scoped " + sk + " " + n + ": " + typeStr(ty) + " = " + exprInline(0, init))
-      case WMBind(iface, prov, _) -> mLines.add("bindStr " + typeStr(iface) + " = " + exprInline(0, prov))
+      case WMBind(iface, prov, _) -> mLines.add("bind " + typeStr(iface) + " = " + exprInline(0, prov))
       case WMExpose(n, _) -> mLines.add("expose " + n)
       case WMLocal(n, ty, init, _) -> {
         val tyStr = match ty {
@@ -755,9 +777,9 @@ func fixtureDoc(fd: in FixtureDecl): List[String] {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func configFieldLine(f: in ConfigField): String {
-  val annPrefix: List[String] = annotationLines(f.annotations)
-  // Annotations on a config field render on their own preceding lines;
-  // the field itself is one line with `name: T = default?`.
+  // Annotations on a config field render on their own preceding lines
+  // (emitted by `configDoc`); the field itself is one line with
+  // `name: T = default?`.
   val dflt = match f.default {
     case Some(e) -> " = " + exprInline(0, e)
     case None    -> ""

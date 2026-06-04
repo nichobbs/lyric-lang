@@ -1,21 +1,20 @@
-// std/_kernel/time_host.l - host boundary for System.DateTime / System.TimeSpan.
-//
-// Holds every `@externTarget` and `extern type` declaration that
-// `Std.Time` formerly declared inline.  Kernel function names carry a
-// `host` prefix so they don't collide with the user-facing names in
-// `Std.Time` when the test inliner merges every stdlib file into one
-// user package.
-//
-// The extern types (`Instant`, `Duration`, `DateTimeOffset`,
-// `TimeZone`) keep their canonical names because they're the user-
-// facing types — `Std.Time` re-exports them implicitly via the
-// trampoline (the type aliases are visible package-wide once
-// declared in this file and `Std.Time` imports it).
-//
-// Internal: only `Std.Time` should import this; per
-// `compiler/lyric/std/_kernel/README.md` the kernel is the audited
-// extern boundary, not a general-purpose API.
-
+//! std/_kernel/time_host.l - host boundary for System.DateTime / System.TimeSpan.
+//!
+//! Holds every `@externTarget` and `extern type` declaration that
+//! `Std.Time` formerly declared inline.  Kernel function names carry a
+//! `host` prefix so they don't collide with the user-facing names in
+//! `Std.Time` when the test inliner merges every stdlib file into one
+//! user package.
+//!
+//! The extern types (`Instant`, `Duration`, `DateTimeOffset`,
+//! `TimeZone`) keep their canonical names because they're the user-
+//! facing types — `Std.Time` re-exports them implicitly via the
+//! trampoline (the type aliases are visible package-wide once
+//! declared in this file and `Std.Time` imports it).
+//!
+//! Internal: only `Std.Time` should import this; per
+//! `compiler/lyric/std/_kernel/README.md` the kernel is the audited
+//! extern boundary, not a general-purpose API.
 @axiom("System.DateTime / System.TimeSpan / System.DateTimeOffset / System.TimeZoneInfo / System.Threading.Thread conform to their documented .NET contracts")
 package Std.TimeHost
 
@@ -24,16 +23,17 @@ import Std.Core
 // =====================================================================
 // Wire-level type aliases.
 // =====================================================================
+extern type Instant = "System.DateTime"
 
-extern type Instant         = "System.DateTime"
-extern type Duration        = "System.TimeSpan"
-extern type DateTimeOffset  = "System.DateTimeOffset"
-extern type TimeZone        = "System.TimeZoneInfo"
+extern type Duration = "System.TimeSpan"
+
+extern type DateTimeOffset = "System.DateTimeOffset"
+
+extern type TimeZone = "System.TimeZoneInfo"
 
 // =====================================================================
 // Construction.
 // =====================================================================
-
 @externTarget("System.DateTime.UtcNow")
 pub func hostNow(): Instant = ()
 
@@ -46,7 +46,6 @@ pub func hostTryParseInstant(s: in String, value: out Instant): Bool = ()
 // =====================================================================
 // Duration constructors (in fractional units).
 // =====================================================================
-
 @externTarget("System.TimeSpan.FromMilliseconds")
 pub func hostMillis(n: in Double): Duration = ()
 
@@ -65,7 +64,6 @@ pub func hostDays(n: in Double): Duration = ()
 // =====================================================================
 // Duration arithmetic.
 // =====================================================================
-
 @externTarget("System.DateTime.op_Subtraction")
 pub func hostSince(later: in Instant, earlier: in Instant): Duration = ()
 
@@ -75,7 +73,6 @@ pub func hostPlus(t: in Instant, d: in Duration): Instant = ()
 // =====================================================================
 // Inspection.
 // =====================================================================
-
 @externTarget("System.TimeSpan.TotalMilliseconds")
 pub func hostTotalMillis(d: in Duration): Double = ()
 
@@ -85,7 +82,6 @@ pub func hostTotalSeconds(d: in Duration): Double = ()
 // =====================================================================
 // Calendar arithmetic.
 // =====================================================================
-
 @externTarget("System.DateTime.AddMonths")
 pub func hostAddMonths(t: in Instant, n: in Int): Instant = ()
 
@@ -98,7 +94,6 @@ pub func hostAddDays(t: in Instant, n: in Double): Instant = ()
 // =====================================================================
 // Epoch conversions.
 // =====================================================================
-
 @externTarget("System.DateTimeOffset.FromUnixTimeMilliseconds")
 pub func hostDtoFromEpochMillis(n: in Long): DateTimeOffset = ()
 
@@ -111,14 +106,12 @@ pub func hostDtoUtcDateTime(d: in DateTimeOffset): Instant = ()
 // =====================================================================
 // IANA / Windows timezone lookup.
 // =====================================================================
-
 @externTarget("System.TimeZoneInfo.FindSystemTimeZoneById")
 pub func hostFindTimeZone(id: in String): TimeZone = ()
 
 // =====================================================================
 // Comparison.
 // =====================================================================
-
 @externTarget("System.DateTime.op_LessThan")
 pub func hostInstantBefore(a: in Instant, b: in Instant): Bool = ()
 
@@ -143,12 +136,10 @@ pub func hostSubDurations(a: in Duration, b: in Duration): Duration = ()
 // =====================================================================
 // ISO-8601 formatting.
 // =====================================================================
-
 @externTarget("System.Convert.ToString")
 pub func hostInstantToString(value: in Instant): String = ()
 
 // ─── Monotonic clock ──────────────────────────────────────────────────────────
-
 @externTarget("System.Diagnostics.Stopwatch.GetTimestamp")
 pub func hostStopwatchTimestamp(): Long = ()
 
@@ -157,9 +148,7 @@ pub func hostStopwatchFrequency(): Long = ()
 
 // Consumers: compute nanos in Std.Time.monotonicNanos using these two
 // building blocks so the formula lives in non-axiom Lyric code.
-
 // ─── Epoch millis — current time as Unix milliseconds ────────────────────────
-
 @externTarget("System.DateTimeOffset.get_UtcNow")
 pub func hostDtoUtcNow(): DateTimeOffset = ()
 
@@ -168,6 +157,5 @@ pub func hostDtoToEpochMillis(d: in DateTimeOffset): Long = ()
 
 // ─── Synchronous sleep — block the calling thread for `ms` milliseconds ───────
 // Backs Std.Time.sleepMillis (used by `lyric run/build --watch`'s poll loop).
-
 @externTarget("System.Threading.Thread.Sleep")
 pub func hostSleepMillis(ms: in Int): Unit = ()

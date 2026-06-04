@@ -1,11 +1,10 @@
-// std/_kernel/secure_random_host.l - host boundary for
-// System.Security.Cryptography.RandomNumberGenerator (CSPRNG).
-//
-// All methods here use the OS-level cryptographic entropy source and are
-// safe for security-sensitive values (tokens, keys, nonces, session IDs).
-//
-// Internal: only Std.SecureRandom should import this.
-
+//! std/_kernel/secure_random_host.l - host boundary for
+//! System.Security.Cryptography.RandomNumberGenerator (CSPRNG).
+//!
+//! All methods here use the OS-level cryptographic entropy source and are
+//! safe for security-sensitive values (tokens, keys, nonces, session IDs).
+//!
+//! Internal: only Std.SecureRandom should import this.
 @axiom("System.Security.Cryptography.RandomNumberGenerator conforms to its documented .NET contracts and produces cryptographically strong output")
 package Std.SecureRandomHost
 

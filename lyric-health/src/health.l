@@ -1,51 +1,50 @@
-// Health — liveness and readiness health-check endpoints for lyric-web services.
-//
-// Stability: @experimental — the registry API compiles and shape-tests
-// pass, but the kernel dispatcher that actually invokes registered
-// check functions has not landed yet.  `runChecks` panics rather than
-// silently reporting "ok" so that production callers cannot accidentally
-// ship a service whose health endpoints fail to exercise the registered
-// checks.  WARNING: experimental — once the dispatcher lands, the
-// `__handleLiveness` / `__handleReadiness` exit point and the `runChecks`
-// internal will change shape.
-//
-// Registers `/health/live` and `/health/ready` routes on a `Router`.
-// Check functions are stored in a `HealthRegistry` value and run on each
-// request to the corresponding endpoint.
-//
-// Usage:
-//
-//   import Health
-//   import Web
-//
-//   func checkDb(conn: in DbConnection): Result[Unit, String] {
-//     match conn.execute("SELECT 1", []) {
-//       case Ok(_) -> Ok(())
-//       case Err(e) -> Err("db: " + e.message)
-//     }
-//   }
-//
-//   func main(): Unit {
-//     var router = Web.create()
-//     router = addGet(router, "/users/{id}", "MyService.Handlers.getUser")
-//
-//     var health = Health.create()
-//     health = Health.addReadinessCheck(health, "db", "MyService.checkDb")
-//     router = Health.registerRoutes(router, health)
-//
-//     Web.start(router)
-//   }
-//
-// Response shape (JSON):
-//   { "status": "ok" | "degraded",
-//     "checks": { "<name>": { "status": "ok" | "fail", "detail": "..." } } }
-//
-// Runtime config env vars (LYRIC_CONFIG_HEALTH_ENDPOINTS_*):
-//   LYRIC_CONFIG_HEALTH_ENDPOINTS_LIVEPATH   — liveness path  (default: /health/live)
-//   LYRIC_CONFIG_HEALTH_ENDPOINTS_READYPATH  — readiness path (default: /health/ready)
-//
-// See docs/03-decision-log.md D057 and lyric-health/README.md.
-
+//! Health — liveness and readiness health-check endpoints for lyric-web services.
+//!
+//! Stability: @experimental — the registry API compiles and shape-tests
+//! pass, but the kernel dispatcher that actually invokes registered
+//! check functions has not landed yet.  `runChecks` panics rather than
+//! silently reporting "ok" so that production callers cannot accidentally
+//! ship a service whose health endpoints fail to exercise the registered
+//! checks.  WARNING: experimental — once the dispatcher lands, the
+//! `__handleLiveness` / `__handleReadiness` exit point and the `runChecks`
+//! internal will change shape.
+//!
+//! Registers `/health/live` and `/health/ready` routes on a `Router`.
+//! Check functions are stored in a `HealthRegistry` value and run on each
+//! request to the corresponding endpoint.
+//!
+//! Usage:
+//!
+//!   import Health
+//!   import Web
+//!
+//!   func checkDb(conn: in DbConnection): Result[Unit, String] {
+//!     match conn.execute("SELECT 1", []) {
+//!       case Ok(_) -> Ok(())
+//!       case Err(e) -> Err("db: " + e.message)
+//!     }
+//!   }
+//!
+//!   func main(): Unit {
+//!     var router = Web.create()
+//!     router = addGet(router, "/users/{id}", "MyService.Handlers.getUser")
+//!
+//!     var health = Health.create()
+//!     health = Health.addReadinessCheck(health, "db", "MyService.checkDb")
+//!     router = Health.registerRoutes(router, health)
+//!
+//!     Web.start(router)
+//!   }
+//!
+//! Response shape (JSON):
+//!   { "status": "ok" | "degraded",
+//!     "checks": { "<name>": { "status": "ok" | "fail", "detail": "..." } } }
+//!
+//! Runtime config env vars (LYRIC_CONFIG_HEALTH_ENDPOINTS_*):
+//!   LYRIC_CONFIG_HEALTH_ENDPOINTS_LIVEPATH   — liveness path  (default: /health/live)
+//!   LYRIC_CONFIG_HEALTH_ENDPOINTS_READYPATH  — readiness path (default: /health/ready)
+//!
+//! See docs/03-decision-log.md D057 and lyric-health/README.md.
 @runtime_checked
 package Health
 
@@ -54,12 +53,13 @@ import Std.Iter
 import Web
 
 // ─── Check descriptor ─────────────────────────────────────────────────────────
-
 /// The group a health check belongs to.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub enum CheckGroup {
-  case Liveness    // always runs; indicates whether the process should be killed
-  case Readiness   // indicates whether the process is ready to receive traffic
+  case Liveness
+  // always runs; indicates whether the process should be killed
+  case Readiness
+  // indicates whether the process is ready to receive traffic
 }
 
 /// A registered health check: a name, the group it belongs to, and the
@@ -68,25 +68,25 @@ pub enum CheckGroup {
 /// The check function must have signature `(): Result[Unit, String]`.
 /// The kernel resolves it via DLL reflection when the health endpoint is hit,
 /// matching the same dispatch model as `Web.Route.handlerName`.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record HealthCheck {
-  name:        String
-  group:       CheckGroup
-  handlerName: String    // fully-qualified Lyric function name
+  name: String
+  group: CheckGroup
+  handlerName: String
+  // fully-qualified Lyric function name
+  // ─── Registry ─────────────────────────────────────────────────────────────────
 }
-
-// ─── Registry ─────────────────────────────────────────────────────────────────
 
 /// An immutable collection of health checks.  Build with `Health.create()`,
 /// extend with `addLivenessCheck` / `addReadinessCheck`, then call
 /// `Health.registerRoutes(router, registry)`.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record HealthRegistry {
   checks: slice[HealthCheck]
 }
 
 /// Create an empty registry.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func create(): HealthRegistry {
   val empty: slice[HealthCheck] = []
   return HealthRegistry(checks = empty)
@@ -97,19 +97,12 @@ pub func create(): HealthRegistry {
 /// `handlerName` must be the fully-qualified Lyric function name of a function
 /// with signature `(): Result[Unit, String]`.
 /// Returns Ok(()) when healthy; Err(detail) when unhealthy.
-@stable(since="0.1")
-pub func addLivenessCheck(
-  registry:    in HealthRegistry,
-  name:        in String,
-  handlerName: in String
-): HealthRegistry
+@stable(since = "0.1")
+pub func addLivenessCheck(registry: in HealthRegistry, name: in String, handlerName: in String): HealthRegistry
   requires: name.length > 0
   requires: handlerName.length > 0
 {
-  val check = HealthCheck(
-    name        = name,
-    group       = CheckGroup.Liveness,
-    handlerName = handlerName)
+  val check = HealthCheck(name = name, group = CheckGroup.Liveness, handlerName = handlerName)
   return HealthRegistry(checks = concat(registry.checks, [check]))
 }
 
@@ -118,35 +111,27 @@ pub func addLivenessCheck(
 /// `handlerName` must be the fully-qualified Lyric function name of a function
 /// with signature `(): Result[Unit, String]`.
 /// Returns Ok(()) when ready; Err(detail) when not ready.
-@stable(since="0.1")
-pub func addReadinessCheck(
-  registry:    in HealthRegistry,
-  name:        in String,
-  handlerName: in String
-): HealthRegistry
+@stable(since = "0.1")
+pub func addReadinessCheck(registry: in HealthRegistry, name: in String, handlerName: in String): HealthRegistry
   requires: name.length > 0
   requires: handlerName.length > 0
 {
-  val check = HealthCheck(
-    name        = name,
-    group       = CheckGroup.Readiness,
-    handlerName = handlerName)
+  val check = HealthCheck(name = name, group = CheckGroup.Readiness, handlerName = handlerName)
   return HealthRegistry(checks = concat(registry.checks, [check]))
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────
-
 /// URL paths for the two health endpoints.
 config Endpoints {
-  livePath:  String = "/health/live"
+  livePath: String = "/health/live"
   readyPath: String = "/health/ready"
 }
 
 // ─── Route registration ───────────────────────────────────────────────────────
-
 /// The liveness handler name used internally.  The kernel resolves this to the
 /// built-in handler that runs liveness checks from the registry.
-val livenessHandlerName  = "Health.__handleLiveness"
+val livenessHandlerName = "Health.__handleLiveness"
+
 val readinessHandlerName = "Health.__handleReadiness"
 
 /// Register the liveness and readiness routes on `router` and attach the
@@ -155,15 +140,14 @@ val readinessHandlerName = "Health.__handleReadiness"
 /// The registered routes are:
 ///   GET <Endpoints.livePath>   → run all Liveness checks
 ///   GET <Endpoints.readyPath>  → run all Readiness checks
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func registerRoutes(router: in Router, registry: in HealthRegistry): Router {
-  val r1 = addGet(router, "/health/live",  "Health.__handleLiveness")
-  val r2 = addGet(r1,     "/health/ready", "Health.__handleReadiness")
+  val r1 = addGet(router, "/health/live", "Health.__handleLiveness")
+  val r2 = addGet(r1, "/health/ready", "Health.__handleReadiness")
   return attachRegistry(r2, registry)
 }
 
 // ─── Internal handlers (called by the kernel dispatcher) ─────────────────────
-
 /// Built-in liveness handler.  Runs all `CheckGroup.Liveness` checks and
 /// returns the aggregated JSON response.
 ///
@@ -184,7 +168,6 @@ pub func __handleReadiness(): Result[String, ApiError] {
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
-
 // Run all checks for the given group and build a JSON response string.
 //
 // NOT YET FUNCTIONAL.  The kernel dispatcher (pending milestone) will
@@ -199,7 +182,7 @@ func runChecks(group: in CheckGroup): Result[String, ApiError] {
   // the requested group; today's Lyric panic does not interpolate, so
   // we encode it in the literal string.
   match group {
-    case Liveness  -> panic("Health.runChecks(Liveness): kernel dispatcher not yet implemented — see docs/14 and #367.  Do not deploy lyric-health as a production health endpoint until this lands.")
+    case Liveness -> panic("Health.runChecks(Liveness): kernel dispatcher not yet implemented — see docs/14 and #367.  Do not deploy lyric-health as a production health endpoint until this lands.")
     case Readiness -> panic("Health.runChecks(Readiness): kernel dispatcher not yet implemented — see docs/14 and #367.  Do not deploy lyric-health as a production health endpoint until this lands.")
   }
 }

@@ -665,7 +665,64 @@ func testFBExprWithContracts(): Unit {
   assertTrue(Str.contains(acc, "= if x >= 0"), "FBExpr+contracts: expr body preserved")
 }
 
+// ─── Loss-checked guard + module-comment auto-fix + field-doc preservation ───
+
+func testFormatSourceCheckedOk(): Unit {
+  val c = formatSourceChecked("package P\n\nfunc f(x: in Int): Int {\n  x\n}\n")
+  assertTrue(fmtCheckIsOk(c), "checked: clean source is FmtOk")
+}
+
+func testFormatSourceCheckedInputParseError(): Unit {
+  // A `///` doc comment before `package` has no item to attach to (P0020),
+  // so the input is rejected and never reformatted.
+  val c = formatSourceChecked("/// orphan doc\npackage P\n")
+  assertTrue(not fmtCheckIsOk(c), "checked: parse-error input is refused")
+  assertTrue(Str.contains(fmtCheckMessage(c), "parse error"),
+    "checked: input-parse message")
+}
+
+func testFormatSourceCheckedStructureChange(): Unit {
+  // The formatter canonicalises `0xFF` -> `255`, changing the code-token
+  // sequence; the guard must refuse rather than silently rewrite the
+  // literal's spelling.
+  val c = formatSourceChecked("package P\n\nfunc f(): Int {\n  0xFF\n}\n")
+  assertTrue(not fmtCheckIsOk(c), "checked: literal canonicalisation is refused")
+  assertTrue(Str.contains(fmtCheckMessage(c), "code-token sequence"),
+    "checked: structure-change message")
+}
+
+func testFormatSourceCheckedOutputParseError(): Unit {
+  // The formatter cannot yet render an `extern package` losslessly (it drops
+  // the `package` keyword), so the output fails to re-parse and the guard
+  // refuses rather than emitting non-compiling source.
+  val c = formatSourceChecked(
+    "package P\n\nextern package Host.X {\n  pub func f(): Int\n}\n")
+  assertTrue(not fmtCheckIsOk(c), "checked: extern-package output is refused")
+}
+
+func testModuleHeaderAutoFix(): Unit {
+  // A plain `//` header block before `package` is promoted to `//!`.
+  val acc = format(parse("// my module\n// second line\npackage P\n"))
+  assertTrue(Str.contains(acc, "//! my module"), "auto-fix: // header -> //!")
+  assertTrue(Str.contains(acc, "//! second line"), "auto-fix: multi-line header")
+  assertTrue(not Str.contains(acc, "// my module"), "auto-fix: old // form gone")
+}
+
+func testFieldDocCommentPreserved(): Unit {
+  // A `///` doc comment on a record field survives formatting (the field
+  // printer historically dropped it).
+  val acc = format(parse("package P\n\nrecord R {\n  /// the x coordinate\n  x: Int\n}\n"))
+  assertTrue(Str.contains(acc, "/// the x coordinate"), "field doc: comment preserved")
+  assertTrue(Str.contains(acc, "x: Int"), "field doc: field preserved")
+}
+
 func main(): Unit {
+  testFormatSourceCheckedOk()
+  testFormatSourceCheckedInputParseError()
+  testFormatSourceCheckedStructureChange()
+  testFormatSourceCheckedOutputParseError()
+  testModuleHeaderAutoFix()
+  testFieldDocCommentPreserved()
   testFormatPackageOnly()
   testFormatPackageAndImports()
   testFormatTypeAlias()

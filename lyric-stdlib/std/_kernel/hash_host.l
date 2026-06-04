@@ -1,13 +1,12 @@
-// std/_kernel/hash_host.l — host boundary for cryptographic hashing
-// primitives.
-//
-// Two .NET externs:
-//   * `System.Security.Cryptography.SHA512.HashData(byte[]) -> byte[]`
-//   * `System.Convert.ToHexString(byte[]) -> string`
-//
-// Composed by `Std.Hash.sha512OfBytes` into a single public helper.
-// Internal: only `Std.Hash` should import this.
-
+//! std/_kernel/hash_host.l — host boundary for cryptographic hashing
+//! primitives.
+//!
+//! Two .NET externs:
+//!   * `System.Security.Cryptography.SHA512.HashData(byte[]) -> byte[]`
+//!   * `System.Convert.ToHexString(byte[]) -> string`
+//!
+//! Composed by `Std.Hash.sha512OfBytes` into a single public helper.
+//! Internal: only `Std.Hash` should import this.
 @axiom("System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics; both are pure functions")
 package Std.HashHost
 

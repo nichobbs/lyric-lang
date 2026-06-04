@@ -1,8 +1,8 @@
-// stdlib/tests/math_tests.l — Tests for Std.Math.
-//
-// Covers native integer functions (abs, min/max, gcd, lcm, sign) and
-// the Double trampolines (sqrt, floor, ceiling, round). Floating-point
-// comparisons use integer-valued inputs so exact equality is safe.
+//! stdlib/tests/math_tests.l — Tests for Std.Math.
+//!
+//! Covers native integer functions (abs, min/max, gcd, lcm, sign) and
+//! the Double trampolines (sqrt, floor, ceiling, round). Floating-point
+//! comparisons use integer-valued inputs so exact equality is safe.
 package Std.Math.Tests
 
 import Std.Math
