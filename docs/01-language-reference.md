@@ -584,6 +584,21 @@ Exhaustiveness is enforced. The compiler tracks variant coverage and rejects inc
 val x = if cond then a else b
 ```
 
+A brace-terminated `if` or `match` written in **statement position** (not as the
+right-hand side of a binding or another expression) is a *complete statement*: a
+binary operator on the following line begins a **new** statement rather than
+continuing the block expression. So
+```
+if cond { return x }
+-1                      // a separate statement — the fall-through value
+```
+is two statements, not `(if cond { return x }) - 1`. In value position the `if`
+is an ordinary operand, so `val y = if c { a } else { b } + 1` parses as
+`(if …) + 1` — wrap the block expression in parentheses if you need it as an
+operator's left operand at statement position. (This mirrors Rust's
+"expression-with-block" rule and resolves the `}`-then-leading-operator
+ambiguity.)
+
 `while` and `for` are statements:
 ```
 while condition { ... }
