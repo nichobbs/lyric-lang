@@ -19649,3 +19649,20 @@ zero false positives.
 (Build note: a clean `Lyric.Cli.Aot` rebuild was needed locally — an incremental
 build had stale-globbed `stage1/Lyric.*.dll` and omitted a newly-added
 `Lyric.CliSuggest` from `deps.json`; unrelated to this change.)
+
+### D-progress-400 — verify #1977 fixed + add `ensures:`-over-String-`if` regression guard
+
+**Status:** Verified fixed; guard added (`lyric-compiler/lyric/ensures_self_test.l`).
+
+#1977 (`ensures:` on a String-returning function with a bare `if`-expression
+body emitting invalid IL) no longer reproduces on current `main`.  The original
+repro function was named `tag`, which collides with the stdlib proof generic
+`Std.Core.tag[T]`; the monomorphizer name-shadow fix (#1855 / D-progress-394)
+is the most likely cause, since that hijack was the source of the "invalid
+program" symptom.  Confirmed across non-colliding and colliding names and an
+`ensures: result == …` String predicate — all pass.
+
+`ensures_self_test.l` previously sidestepped the case with a constant-String
+body; it now includes an explicit `if`-expression String-body function
+(`pickStr`, `ensures: result == "yes" or result == "no"`) so the scenario stays
+covered (7/7 via native `lyric test --target dotnet`).  MSIL target only.
