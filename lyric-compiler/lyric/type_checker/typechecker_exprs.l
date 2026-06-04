@@ -1328,7 +1328,9 @@ pub func inferExpr(
     case EOld(inner)    -> inferExpr(sc, tbl, sigs, diag, inner)
 
     case ESelf          -> TySelf
-    case EResult        -> TyError
+    // `result` in an `ensures:` clause has the enclosing function's declared
+    // return type, carried on the scope (D081).
+    case EResult        -> sc.returnTy
 
     // Index expression `recv[i]` yields the receiver's element type (#1901
     // part B): `slice[T]`/`array[N,T]` -> `T`, `String` -> `Char`,
@@ -1354,8 +1356,11 @@ pub func inferExpr(
       checkOpaquePatternHiding(tbl, diag, st, arms)
       TyError
     }
-    case EBlock(_)      -> TyError
-    case EUnsafe(_)     -> TyError
+    // A value-position brace block / `unsafe { … }` has the type of its trailing
+    // expression (or `Unit` if it ends in a statement, or `Never` if it diverges)
+    // — `checkBlock` walks the statements (binding locals) and returns that type.
+    case EBlock(blk)    -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, diag, blk)
+    case EUnsafe(blk)   -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, diag, blk)
     case ETry(_)        -> TyError
     case EForall(_, _, _) -> TyError
     case EExists(_, _, _) -> TyError

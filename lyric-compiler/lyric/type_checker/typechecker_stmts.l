@@ -316,6 +316,23 @@ pub func checkStatement(
 // §3. Block checking.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// A statement after which control never falls through to a block value: an
+// explicit `return`/`throw`, or a loop `break`/`continue` (which transfers out
+// of the enclosing loop).  A block whose last statement is one of these has type
+// `Never` (bottom), so it unifies cleanly as a branch — `if c { return x } else
+// { y }` is typed by its `else` branch rather than false-mismatching `Unit` vs
+// the value type.  A trailing `SExpr` of type `Never` (e.g. `panic(...)`) is
+// already captured by `lastExprType`, so it is not listed here.
+func statementDiverges(stmt: in Statement): Bool {
+  match stmt.kind {
+    case SReturn(_)   -> true
+    case SThrow(_)    -> true
+    case SBreak(_)    -> true
+    case SContinue(_) -> true
+    case _            -> false
+  }
+}
+
 pub func checkBlock(
   sc:           in Scope,
   tbl:          in SymbolTable,
@@ -342,6 +359,11 @@ pub func checkBlock(
     i = i + 1
   }
   scopePop(sc)
+  // A block whose final statement transfers control away (return/throw/break/
+  // continue) yields no fall-through value: its type is `Never`.
+  if blk.statements.count > 0 and statementDiverges(blk.statements[blk.statements.count - 1]) {
+    return TyPrim(pt = PtNever)
+  }
   lastExprType
 }
 
@@ -552,7 +574,7 @@ pub func checkFunctionBody(
     return
   }
 
-  val sc = newScope()
+  val sc = newScopeForFunction(sig.returnTy, sig.generics)
   var i = 0
   while i < sig.params.count {
     val p = sig.params[i]

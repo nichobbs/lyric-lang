@@ -94,6 +94,24 @@ func testValTypeMismatch(): Unit {
   assertTrue(hasDiagCode(cr, "T0060"), "val-mismatch: T0060 emitted")
 }
 
+// D081 / #1943: a value-position `unsafe { … }` block has the type of its
+// trailing expression, not the universal `TyError`.  Distinguishing case: an
+// `unsafe { 5 }` body (`Int`) in a `String`-returning function MUST mismatch
+// (T0070) — were the block still `TyError`, it would unify silently.
+func testUnsafeBlockTyped(): Unit {
+  val bad = "package P\nfunc f(): String { unsafe { 5 } }\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0070"), "unsafe-block: Int trailing expr mismatches String return")
+  val ok = "package P\nfunc g(): Int { unsafe { 5 } }\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "unsafe-block-ok: Int trailing expr matches Int return")
+}
+
+// A block whose final statement is `return` has type `Never` (bottom), so a
+// function whose body block diverges does not false-mismatch its return type.
+func testDivergingBlockIsNever(): Unit {
+  val src = "package P\nfunc f(): Int { unsafe { return 3 } }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "diverging-block: unsafe { return 3 } is Never, no mismatch")
+}
+
 // #1901: numeric/character conversion methods are typed as their target
 // primitive, not the universal `TyError` unifier.  The distinguishing case:
 // a `.toLong()` body in an `Int`-returning function MUST mismatch (T0070) —
@@ -989,6 +1007,8 @@ func main(): Unit {
   testDuplicateNameError()
   testReturnTypeMismatch()
   testValTypeMismatch()
+  testUnsafeBlockTyped()
+  testDivergingBlockIsNever()
   testConvMethodTypedAsTarget()
   testConvMethodWideningAccepted()
   testConvMethodNarrowingAccepted()
