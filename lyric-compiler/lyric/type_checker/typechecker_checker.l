@@ -894,10 +894,8 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
 // §9. Public entry points.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// A group of imported items tagged with the package that declared them.
-// `checkWithImportedPackages` resolves each group's signatures with that
-// package preferred, so two sibling packages that both export a same-named
-// type don't collide under a single flat last-registered-wins table.
+// Imported items tagged with their declaring package, so each package's
+// signatures resolve against its own declarations (not one flat table).
 @stable(since="0.1")
 pub record ImportedPackage {
   name:  String
@@ -906,14 +904,7 @@ pub record ImportedPackage {
 
 // Dotted spelling of a module path (`Std.Regex`), or "" for the empty path.
 func dottedPackageName(path: in ModulePath): String {
-  if path.segments.count == 0 { return "" }
-  var s = path.segments[0]
-  var i = 1
-  while i < path.segments.count {
-    s = s + "." + path.segments[i]
-    i = i + 1
-  }
-  s
+  joinSegments(path.segments)
 }
 
 // The dotted names of every package a file explicitly imports.
@@ -986,12 +977,8 @@ pub func checkWithImportedPackages(
   // (with `TyError` for any unresolved type refs); the user's typecheck
   // can still call any stdlib function whose signature *does* resolve, and
   // codegen tolerates residual `TyError` via the existing fallback paths.
-  //
-  // Each imported package's signatures resolve with that package set as the
-  // current scope, so a type reference inside the signature (e.g.
-  // `Result[CompiledRegex, RegexError]` in `Std.Regex.tryCompile`) binds to
-  // the *declaring* package's type rather than to whichever same-named
-  // sibling-package symbol happened to be registered last.
+  // Each package's sigs resolve under its own scope so a type ref binds to the
+  // declaring package's type, not a same-named sibling's (the RegexError case).
   val sigs: Map[String, ResolvedSignature] = newMap()
   val importedDiag: List[Diagnostic] = newList()
   val noImports: List[String] = newList()

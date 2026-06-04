@@ -60,15 +60,8 @@ pub record Symbol {
   declSpan:   Span
   visibility: Option[Visibility]
   isImported: Bool
-  /// Dotted name of the package that declared this symbol (e.g.
-  /// `"Std.Regex"`).  Empty string means "no package context": that is the
-  /// state the flat `checkWithImports` shim produces, and it preserves the
-  /// historical last-registered-wins resolution.  Scoped resolution
-  /// (`symTableTryFindOne`) prefers a symbol whose `originPackage` matches the
-  /// table's current resolution package, so two sibling packages that each
-  /// export a same-named type (the `Std.Regex` / `Std.RegexSafe` `RegexError`
-  /// collision) no longer shadow one another inside the other package's
-  /// signatures.
+  /// Dotted declaring-package name; empty = no package context (the flat
+  /// `checkWithImports` shim, i.e. historical last-registered-wins).
   originPackage: String
 }
 
@@ -114,17 +107,10 @@ pub func symbolTypeIdOpt(s: in Symbol): Option[TypeId] {
 @stable(since="0.1")
 pub record SymbolTable {
   symbols: List[Symbol]
-  /// One-element box (the `TypeIdCounter.ticks` idiom — Lyric records do not
-  /// reassign scalar fields, so a `List` carries the mutable marker) holding
-  /// the dotted name of the package whose declarations resolution should
-  /// prefer.  Empty list means "no scope" → pure last-registered-wins, which
-  /// is exactly the historical behaviour.  Set via `symTableSetScope` around
-  /// each package's signature/body resolution.
+  /// Preferred-package marker, boxed as a 0/1-element list (the
+  /// `TypeIdCounter.ticks` idiom); empty = no scope = last-registered-wins.
   scopePkg: List[String]
-  /// The dotted names of packages the current scope explicitly imports.  When
-  /// a reference's simple name is ambiguous across imported packages,
-  /// resolution prefers a symbol declared in one of these packages before
-  /// falling back to last-registered-wins.
+  /// Dotted names the current scope imports (second-tier resolution preference).
   scopeImports: List[String]
 }
 
@@ -188,39 +174,31 @@ pub func symTableTryFindAll(tbl: in SymbolTable, name: in String): List[Symbol] 
 }
 
 // Resolve `name` to a single symbol, honouring the current resolution scope.
-// Tiers, in order of preference (each scans newest-to-oldest so a later
-// declaration still shadows an earlier one of the same tier):
-//   1. a symbol declared in the current package (`scopePkg`);
-//   2. a symbol declared in a package the current scope imports
-//      (`scopeImports`);
-//   3. any symbol with a matching name (last-registered-wins).
-// With no scope set (the flat `checkWithImports` shim, where every symbol's
-// `originPackage` is empty), tiers 1 and 2 never match and resolution reduces
-// to tier 3 — byte-for-byte the historical behaviour.
+// Preference, highest first: (1) current package, (2) an imported package,
+// (3) any match (last-registered-wins).  A single newest-to-oldest pass keeps
+// the newest candidate in each tier, returning early on a tier-1 hit.  With no
+// scope set every symbol's `originPackage` is empty, so only tier 3 fires —
+// byte-for-byte the historical behaviour.
 pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol] {
-  val curPkg = symTableScopePkg(tbl)
-  if curPkg.length > 0 {
-    var i1 = tbl.symbols.count - 1
-    while i1 >= 0 {
-      val s = tbl.symbols[i1]
-      if s.name == name and s.originPackage == curPkg { return Some(value = s) }
-      i1 = i1 - 1
-    }
-  }
-  if tbl.scopeImports.count > 0 {
-    var i2 = tbl.symbols.count - 1
-    while i2 >= 0 {
-      val s = tbl.symbols[i2]
-      if s.name == name and symTableScopeAllows(tbl, s.originPackage) {
-        return Some(value = s)
+  val curPkg     = symTableScopePkg(tbl)
+  val hasScope   = curPkg.length > 0
+  val hasImports = tbl.scopeImports.count > 0
+  var best2: Option[Symbol] = None
+  var best3: Option[Symbol] = None
+  var i = tbl.symbols.count - 1
+  while i >= 0 {
+    val s = tbl.symbols[i]
+    if s.name == name {
+      if hasScope and s.originPackage == curPkg { return Some(value = s) }
+      if hasImports and symTableScopeAllows(tbl, s.originPackage) {
+        match best2 { case None -> { best2 = Some(value = s) }; case Some(_) -> {} }
       }
-      i2 = i2 - 1
+      match best3 { case None -> { best3 = Some(value = s) }; case Some(_) -> {} }
     }
+    i = i - 1
   }
-  var i3 = tbl.symbols.count - 1
-  while i3 >= 0 {
-    if tbl.symbols[i3].name == name { return Some(value = tbl.symbols[i3]) }
-    i3 = i3 - 1
+  match best2 {
+    case Some(_) -> best2
+    case None    -> best3
   }
-  None
 }

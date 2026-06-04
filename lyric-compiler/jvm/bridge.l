@@ -111,17 +111,10 @@ pub func compileToJar(
   // Run the self-hosted type checker with stdlib imports, mode checker, and
   // contract elaborator before codegen.
   //
-  // Band 6: parse each stdlib source and register only their type declarations
-  // as imported items.  Only type items (IRecord, IUnion, IEnum, IDistinctType,
-  // IInterface, ITypeAlias, IOpaque, IExposedRec) are collected — function items
-  // are skipped because multiple stdlib files define functions with the same name
-  // (e.g. toString) and checkWithImports uses a strict-insert map that throws on
-  // duplicate keys.  Type names are unique across the stdlib so safe to merge.
-  // Group each stdlib source's type items under its declaring package so the
-  // type checker resolves each package's signatures against its own
-  // declarations.  A flat merge let two sibling packages that both export a
-  // same-named type (e.g. `Std.Regex` / `Std.RegexSafe` both declaring
-  // `RegexError`) shadow one another under last-registered-wins.
+  // Band 6: collect each stdlib source's type declarations (functions are
+  // skipped — many share a name, e.g. toString), grouped by declaring package
+  // so same-named cross-package types (Std.Regex/Std.RegexSafe RegexError)
+  // resolve against their own package rather than colliding.
   val importedPkgs: List[ImportedPackage] = newList()
   var si = 0
   while si < stdlibSources.count {
@@ -303,10 +296,8 @@ pub func compileToJarBundled(
   // Parse every stdlib source once: collect its type items (for cross-package
   // type resolution) and index the whole file by dotted package name (for the
   // import-closure walk below).
-  // Group each stdlib source's type items under its declaring package so the
-  // type checker resolves each package's signatures against its own
-  // declarations (see `compileToJar` for the `RegexError` collision this
-  // fixes).
+  // Type items grouped by declaring package (see `compileToJar` for the
+  // RegexError collision this scope-aware grouping fixes).
   val importedPkgs:  List[ImportedPackage] = newList()
   val stdlibFiles:   List[SourceFile] = newList()
   val stdlibByPkg:   Map[String, SourceFile] = newMap()

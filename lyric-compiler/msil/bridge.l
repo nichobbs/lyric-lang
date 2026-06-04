@@ -78,14 +78,8 @@ pub func compileToMsilWithVersion(
   // codegen `registerStdlibArtifactTokens` consumes below to wire
   // cross-assembly `MemberRef` rows for `pub func` items.
   val stdlibPkgs = collectStdlibPackages(stdlibSources)
-  // Cross-package type-name collisions (#1488 category D): two stdlib packages
-  // can export the same simple name — e.g. `Std.Regex.RegexError`
-  // {TimedOut, InvalidPattern} and `Std.RegexSafe.RegexError`
-  // {TimedOut, RegexBug}.  Rather than reorder a single flat last-registered-
-  // wins table (which only made a file's imported package win *globally*),
-  // hand the type checker the stdlib items grouped by their declaring package
-  // so each package's signatures resolve against its own declarations — see
-  // `checkWithImportedPackages` for the scoped resolution this enables.
+  // Group stdlib items by package so each resolves against its own decls,
+  // fixing the same-name cross-package type collision (#1488 category D).
   val importedPkgs: List[ImportedPackage] = newList()
   var spi = 0
   while spi < stdlibPkgs.count {
@@ -333,16 +327,10 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // `MObject` fall-through that produced `InvalidProgramException`
   // at runtime.
   val stdlibPkgs = collectStdlibPackages(stdlibSources)
-  // Pool of "always in scope" items: every stdlib package's items plus
-  // every restored-dep artifact's type items.  Per-package import
-  // filtering (#1378) only applies to in-bundle user packages; stdlib
-  // and restored-dep references are looked up via the codegen-side
-  // `funcTokens` / `recordCtorTokens` tables built from the same
-  // sources, so the typecheck-side grouped view here keeps the two halves
-  // of the pipeline in sync.  Items are grouped by declaring package (not
-  // flattened) so the scope-aware type checker resolves each package's
-  // signatures against its own declarations — see the single-file path above
-  // for the `RegexError` collision this fixes.
+  // Always-in-scope items (stdlib + restored-dep types), grouped by declaring
+  // package for scope-aware resolution.  Per-package import filtering (#1378)
+  // applies only to in-bundle user packages below; stdlib / restored-dep refs
+  // are wired via the codegen-side token tables, kept in sync with this view.
   val baseImportedPkgs: List[ImportedPackage] = newList()
   var sbi = 0
   while sbi < stdlibPkgs.count {
