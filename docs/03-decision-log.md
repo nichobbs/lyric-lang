@@ -4390,6 +4390,35 @@ and release native binary (`--release`). This is a user-facing surface addition
 touching the Q011 freeze (`docs/36-v1-roadmap.md` §R7.5 / `docs/41` H13, which
 move from "planned" to "shipped for single-file/.NET"). Recorded here per the
 freeze protocol.
+## D080 — Auto-restore on `lyric build` when the lock is missing or stale (#1968, #1971)
+
+**Context:** `lyric build` did not resolve dependencies — a clean checkout (or a
+just-edited `[dependencies]` set) required a manual `lyric restore` first, or the
+build failed on unresolved deps. `cmdRestore` already did the full job; builds
+should trigger it automatically.
+
+**Decision:**
+
+- **`cmdRestore` is split** into argument parsing + a reusable
+  `runRestore(mfPath, lockedMode)` that does the resolve-and-lock work. The CLI
+  command and the build path share it.
+- **Project-mode `lyric build` auto-restores** when the manifest declares
+  `[dependencies]` and `lockNeedsRestore` reports the lock missing or out of
+  sync. The staleness check is cheap and read-only: `lyric.lock` absent → restore;
+  otherwise every declared dependency must be present in the lock (and a registry
+  dependency's locked version must match), else restore. It is conservative — any
+  lock read/parse failure triggers a fresh restore. The lock is resolved at the
+  workspace root when one is found, else beside the manifest (matching
+  `runRestore`'s own placement).
+- **`--no-restore`** opts out and builds against the lock as-is.
+- Single-file builds are unaffected (dependencies live in a project manifest).
+  `[nuget]`-table changes do not trigger auto-restore in this slice (only
+  `[dependencies]`); documented, revisit if needed.
+
+**Consequence:** `lyric build` and bare `lyric` "just work" on a fresh checkout
+with dependencies. The staleness heuristic favours a redundant restore over a
+stale build; `--locked` (on `lyric restore`) remains the strict-verification path
+for CI.
 
 ---
 

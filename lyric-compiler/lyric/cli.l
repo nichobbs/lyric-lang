@@ -139,8 +139,9 @@ func usageText(): String {
   "  Run `lyric` with no command inside a project to build it.\n" +
   "\n" +
   "Project:\n" +
-  "  lyric build   [<source.l>] [-o <output>] [--force] [--manifest <lyric.toml>] [--target dotnet|jvm]\n" +
-  "                (no source: builds the discovered project's [project.packages] into one DLL)\n" +
+  "  lyric build   [<source.l>] [-o <output>] [--force] [--manifest <lyric.toml>] [--target dotnet|jvm] [--no-restore]\n" +
+  "                (no source: builds the discovered project's [project.packages] into one DLL;\n" +
+  "                 auto-restores deps when lyric.lock is missing or stale unless --no-restore)\n" +
   "  lyric build   --release [<source.l>] [--rid <rid>] [-o <bin>]\n" +
   "                (self-contained Native AOT binary; single-file today, see #1975)\n" +
   "  lyric restore [--manifest <lyric.toml>] [--locked]\n" +
@@ -186,6 +187,45 @@ func discoverManifest(explicit: in Option[String]): Option[String] {
     case Some(p) -> Some(value = p)
     case None    -> Disc.findNearestManifest(Environment.currentDirectory())
   }
+}
+
+// Whether `lyric build` should auto-restore before building: true when the
+// manifest declares dependencies and `lyric.lock` is missing or out of sync
+// with the `[dependencies]` table (a dep is absent from the lock, or a
+// registry dep's locked version differs).  Conservative — returns true on any
+// lock read/parse failure so a fresh restore corrects a corrupt lock.  The
+// lock is resolved at the workspace root when one is found, else beside the
+// manifest, matching `runRestore`'s own lock placement.
+func lockNeedsRestore(mfPath: in String, manifest: in Manifest): Bool {
+  if manifest.deps.count == 0 { return false }
+  val mfDir = Path.dirname(mfPath)
+  val lockPath = match Ws.findWorkspaceRoot(mfDir) {
+    case Some(ctx) -> Path.join(ctx.rootDir, "lyric.lock")
+    case None      -> Path.join(mfDir, "lyric.lock")
+  }
+  if not File.fileExists(lockPath) { return true }
+  val lf = match File.readText(lockPath) {
+    case Err(_)     -> return true
+    case Ok(text)   ->
+      match LF.parseLockFile(text) {
+        case Err(_)  -> return true
+        case Ok(clf) -> clf
+      }
+  }
+  var di = 0
+  while di < manifest.deps.count {
+    val dep = manifest.deps[di]
+    di += 1
+    match LF.findPackage(lf, dep.name) {
+      case None -> return true   // declared dependency not in the lock → stale
+      case Some(locked) ->
+        match dep.source {
+          case Registry(v) -> if locked.version != v { return true }
+          case _           -> ()  // path / workspace / git: presence suffices for the cheap check
+        }
+    }
+  }
+  false
 }
 
 // Return the stem of a filename (basename without final extension).
@@ -382,6 +422,7 @@ func cmdBuild(argv: in slice[String]): Int {
   var allFeatures: Bool = false
   var release: Bool = false
   var ridArg: Option[String] = None
+  var noRestore: Bool = false
   val positional: List[String] = newList()
 
   var i = 1
@@ -437,6 +478,9 @@ func cmdBuild(argv: in slice[String]): Int {
         printErr("build: --rid requires an argument")
         return 1
       }
+    } else if arg == "--no-restore" {
+      noRestore = true
+      i += 1
     } else if arg == "--target" {
       if i + 1 < argv.length {
         val t = argv[i + 1]
@@ -461,6 +505,11 @@ func cmdBuild(argv: in slice[String]): Int {
     case Some(_) -> if not release { printErr("build: warning: --rid has no effect without --release") }
     case None    -> ()
   }
+  // `--no-restore` only affects project-mode auto-restore; warn rather than
+  // silently ignore it on a single-file build (#2048).
+  if noRestore and positional.count > 0 {
+    printErr("build: warning: --no-restore has no effect without a project manifest")
+  }
   // Project-mode: `lyric build --manifest lyric.toml`, or no positional source
   // at all (discover the nearest lyric.toml by walking up from the cwd).
   if positional.count == 0 {
@@ -479,7 +528,7 @@ func cmdBuild(argv: in slice[String]): Int {
       printErr("build: --release for project mode is not yet supported; build a single-file entry with `lyric build --release <main.l>` (tracked in #1975)")
       return 1
     }
-    return buildProject(mfPath, explicitOut, target, cliFeatures, noDefaultFeatures, allFeatures)
+    return buildProject(mfPath, explicitOut, target, cliFeatures, noDefaultFeatures, allFeatures, noRestore)
   }
 
   val sourcePath = positional[0]
@@ -559,7 +608,8 @@ func buildProject(
   target:           in CompileTarget,
   cliFeatures:      in List[String],
   noDefaultFeatures: in Bool,
-  allFeatures:      in Bool
+  allFeatures:      in Bool,
+  noRestore:        in Bool
 ): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
@@ -580,6 +630,19 @@ func buildProject(
     case None    -> {
       printErr("build: " + mfPath + " has no [project] section")
       return 1
+    }
+  }
+
+  // Auto-restore: when the manifest declares dependencies and lyric.lock is
+  // missing or out of sync with the [dependencies] table, resolve them before
+  // building so a clean checkout (or a just-edited dependency set) builds
+  // without a manual `lyric restore` (#1971).  `--no-restore` opts out.
+  if not noRestore and lockNeedsRestore(mfPath, manifest) {
+    Console.println("build: resolving dependencies (lyric.lock missing or stale) ...")
+    val rc = runRestore(mfPath, false)
+    if rc != 0 {
+      printErr("build: dependency restore failed")
+      return rc
     }
   }
 
@@ -1417,6 +1480,14 @@ func cmdRestore(argv: in slice[String]): Int {
     case None    -> "lyric.toml"
   }
 
+  return runRestore(mfPath, lockedMode)
+}
+
+// Resolve and lock every dependency declared in the manifest at `mfPath`,
+// writing `lyric.lock` (or verifying it under `lockedMode`).  Extracted from
+// cmdRestore so `lyric build` can auto-restore when the lock is missing or
+// stale (#1971).
+func runRestore(mfPath: in String, lockedMode: in Bool): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
     case Err(e)   -> {

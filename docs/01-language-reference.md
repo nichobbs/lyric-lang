@@ -1285,6 +1285,16 @@ remains the build-and-execute dev loop and still takes an explicit source file.
 an unrecognised command prints a "did you mean …?" suggestion when a close
 match exists.
 
+**Auto-restore on build.** A project-mode `lyric build` automatically resolves
+dependencies (the equivalent of `lyric restore`) when the manifest declares any
+`[dependencies]` and `lyric.lock` is missing or out of sync with the declared
+set (a dependency absent from the lock, or a registry dependency whose locked
+version differs). A clean checkout — or a just-edited dependency set — therefore
+builds without a manual `lyric restore`. Pass `--no-restore` to skip this and
+build against the lock as-is. Auto-restore tracks the `[dependencies]` table
+only; changes to `[nuget]`/`[maven]` entries are not detected, so run
+`lyric restore` explicitly after editing those.
+
 ### 13.2 Test runner
 
 `lyric test <source.l>` compiles a `@test_module` file, synthesises a runnable program from its `test "title" { … }` items, and reports results in TAP-shaped form (`1..N`, `ok N - title` / `not ok N - title`, summary counts). Exit codes: `0` (every selected test passed), `1` (at least one failure), `2` (compilation error), `64` (usage error).

@@ -755,6 +755,9 @@ lyric build --manifest lyric.toml      # build from project manifest
                                        # (with [project] output = "single", bundles every
                                        # [project.packages] entry into one DLL with one
                                        # Lyric.Contract.<Pkg> resource per package)
+                                       # auto-restores [dependencies] when lyric.lock is missing/stale
+                                       # ([nuget]/[maven] edits aren't detected — run `lyric restore`)
+lyric build --no-restore               # build against the lock as-is (skip auto-restore)
 
 # Build features (compile-time gating; see chapter 20 §20.7)
 lyric build --features X,Y <file.l>    # additive over manifest's [features] default
