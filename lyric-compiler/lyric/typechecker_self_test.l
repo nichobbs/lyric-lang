@@ -131,6 +131,26 @@ func testMatchNullaryNoShadow(): Unit {
   assertEqualInt(diagCount(parseCheck(src)), 0, "match-no-shadow: case Nn does not shadow the Nn constructor")
 }
 
+// #1488 (B): a generic function's return type is instantiated from the
+// argument types at the call site — `unwrapOr(o: Opt[T], d: T): T` called on an
+// `Opt[Int]` returns `Int`, not the raw `TyVar("T")`.  A `String`-typed binding
+// of the result must mismatch (T0060); were the return still `TyVar`, `typeEquiv`
+// would treat it as a wildcard and the binding would pass silently.
+func testGenericReturnInstantiatedMismatch(): Unit {
+  val src = "package P\nunion Opt[T] {\n  case Sm(value: T)\n  case Nn\n}\ngeneric[T] func unwrapOr(o: in Opt[T], d: in T): T { d }\nfunc f(o: in Opt[Int]): Unit {\n  val s: String = unwrapOr(o, 0)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0060"),
+    "generic-return: unwrapOr(Opt[Int], Int) returns Int, mismatches String")
+}
+
+// The complementary clean case: the instantiated `Int` return is usable in an
+// `Int` comparison.  Were the return still `TyVar("T")`, `T < 0` would raise
+// T0033 (comparison of `T` and `Int`).
+func testGenericReturnInstantiatedClean(): Unit {
+  val src = "package P\nunion Opt[T] {\n  case Sm(value: T)\n  case Nn\n}\ngeneric[T] func unwrapOr(o: in Opt[T], d: in T): T { d }\nfunc f(o: in Opt[Int]): Bool {\n  unwrapOr(o, 0) < 0\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0,
+    "generic-return: instantiated Int return compares cleanly with Int")
+}
+
 // #1488 (A): `result` is a contextual keyword.  A user-declared local named
 // `result` shadows the contract return-value reference, so its reads take the
 // *binding's* type — not the enclosing function's return type.  Here `f`
@@ -1173,6 +1193,8 @@ func main(): Unit {
   testMatchBranchDestructuredMismatch()
   testMatchBranchClean()
   testMatchNullaryNoShadow()
+  testGenericReturnInstantiatedMismatch()
+  testGenericReturnInstantiatedClean()
   testResultLocalShadowsKeyword()
   testResultLocalKeepsBindingType()
   testValTypeMismatch()
