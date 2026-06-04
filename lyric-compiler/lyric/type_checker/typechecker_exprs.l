@@ -733,6 +733,62 @@ func builtinMember(recvRaw: in Type, name: in String): Option[Type] {
   }
 }
 
+// Numeric / character conversion methods (#1901): `b.toInt()`, `c.toLong()`,
+// etc.  The target primitive each one yields; `None` for any other name.
+// `toFloat` is intentionally absent — the MSIL backend has no R4 representation
+// distinct from `Double`, so a `Float` conversion is not offered until that
+// gap is closed (Band 4).
+func numericConvTarget(name: in String): Option[PrimType] {
+  if name == "toByte"   { return Some(value = PtByte) }
+  if name == "toInt"    { return Some(value = PtInt) }
+  if name == "toLong"   { return Some(value = PtLong) }
+  if name == "toChar"   { return Some(value = PtChar) }
+  if name == "toDouble" { return Some(value = PtDouble) }
+  None
+}
+
+// A receiver type the numeric conversion methods accept.  Restricted to the
+// primitives the backend can actually represent and convert — `Byte`, `Int`,
+// `Long`, `Double`, `Char` — so the type checker never accepts a `.toX()` call
+// the codegen cannot lower.  The unsigned integers (`UInt`, `ULong`, `Nat`) have
+// no backend representation yet (no unsigned-integer support on either target),
+// and `Float` has no R4 representation distinct from `Double`; conversion
+// support for them is tracked in #2050 / Band 4 and must land with real backend
+// support, not a checker-only claim.
+func isNumericOrCharType(t: in Type): Bool {
+  match unrefine(t) {
+    case TyPrim(pt) ->
+      match pt {
+        case PtByte   -> true
+        case PtInt    -> true
+        case PtLong   -> true
+        case PtDouble -> true
+        case PtChar   -> true
+        case _        -> false
+      }
+    case _ -> false
+  }
+}
+
+// A well-typed primitive that is *definitively* not a numeric conversion
+// receiver and cannot carry a user-defined method either (`String`, `Bool`,
+// `Unit`) — so a `.toInt()`-style call on it is unambiguously a mistake worth a
+// targeted diagnostic rather than a bare downstream type mismatch.  The
+// unsigned integers are deliberately NOT here: they are numeric (just
+// unimplemented), so flagging them as "not applicable" would mislead.
+func isNonConvertiblePrimitive(t: in Type): Bool {
+  match unrefine(t) {
+    case TyPrim(pt) ->
+      match pt {
+        case PtString -> true
+        case PtBool   -> true
+        case PtUnit   -> true
+        case _        -> false
+      }
+    case _ -> false
+  }
+}
+
 func fieldsOfRecord(tbl: in SymbolTable, tid: in TypeId): List[FieldEntry] {
   val result: List[FieldEntry] = newList()
   var i = 0
@@ -1136,6 +1192,31 @@ pub func inferExpr(
     }
 
     case ECall(fn, args) -> {
+      // Numeric / character conversion-method intrinsics (#1901): `x.toInt()`,
+      // `b.toLong()`, etc.  Recognised only on a numeric/char receiver so a
+      // user-defined method of the same name on some other type still falls
+      // through to the general (lenient) dispatch.  A non-numeric receiver
+      // yields `TyError`, exactly what the general path would produce — so the
+      // receiver is inferred once, with no duplicate diagnostics.
+      match fn.kind {
+        case EMember(recvE, mname) ->
+          match numericConvTarget(mname) {
+            case Some(target) ->
+              if args.count == 0 {
+                val rt = inferExpr(sc, tbl, sigs, diag, recvE)
+                if isNumericOrCharType(rt) { return TyPrim(pt = target) }
+                // A `String`/`Bool`/`Unit` receiver can be neither converted nor
+                // host a user method of this name — report it precisely.
+                if isNonConvertiblePrimitive(rt) {
+                  diag.add(errorDiagnostic("T0103",
+                    "conversion method '" + mname + "' is not applicable to " + renderType(rt), recvE.span))
+                }
+                return TyError
+              }
+            case None -> {}
+          }
+        case _ -> {}
+      }
       val fnT = inferExpr(sc, tbl, sigs, diag, fn)
       val argTypes: List[Type] = newList()
       var i = 0

@@ -19742,6 +19742,7 @@ Verified: multi-capture (`a * b + 1` → 13), String capture (`"hi " + name`),
 capture + own param (105), non-capturing unaffected (42).  CI step added
 (positive immutable-capture assertions + the `var` fail-loud check).  No
 regression: emitter 847/847, CLI 84/84.  MSIL target only.
+
 ### D-progress-403 — `lyric build --release`: self-contained Native AOT binaries (#1968 epic; #1975; D079)
 
 **Status:** Shipped for single-file programs on the .NET target (`lyric-compiler/lyric/release.l`, `lyric-compiler/lyric/cli.l`).  Project-mode `--release` and the JVM (GraalVM) target remain (#1975).
@@ -19775,3 +19776,91 @@ AOT clean.  MSIL target.
 Docs: D079 (decision log), language reference §13.1 (AOT note moved from
 "planned" to "shipped single-file/.NET"), book getting-started (native-binaries
 section) + appendix-b CLI reference.
+
+### D-progress-404 — self-hosted MSIL: capturing closures v2 — by-reference `var` capture via hoisted heap cells (#1479, docs/41 H20, Band 2 complete)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`).  #1479 v2 — completes the
+Band 2 "capturing-closure display classes" item; H20 → ✅.
+
+v1 (D-progress-402) captured **immutable** bindings by value and failed loud on a
+captured `var`.  v2 lifts that restriction: a `var` referenced by any closure in
+its function is **hoisted to a heap cell** so the closure and enclosing scope
+share one mutable location — reassignments are visible in both directions.  This
+is the classic display-class technique, implemented without synthesising a
+TypeDef: the cell is a one-element `List[object]` (reusing the existing
+`get_Item`/`set_Item`/`Add`/ctor tokens), and the closure captures the cell
+reference through the v1 `object[] __caps` channel.
+
+Mechanism:
+
+- **Pre-pass** (`collectInLambdaNamesExpr/Block/Stmt`, mirrors `collectRefNamesExpr`):
+  before lowering a function body, collect every name referenced inside any
+  lambda → `fctx.hoistedVarNames`.  A `var` local in this set is hoisted.
+- **Declaration** (`LBVar`): a hoisted `var` builds a cell — `newobj List; dup;
+  <init>; box; Add` — stored to an object-typed slot; `finishHoistedCellMsil`
+  records `hoistedCellSlot`/`hoistedCellType`.
+- **Read** (`EPath`, value position): a hoisted name loads the cell and reads
+  element 0 (`get_Item(0)` + unbox) — checked before the plain-slot path.
+- **Write** (`lowerAssignExprMsil`, `EPath` target): `set_Item(0, box v)` for
+  `AssEq`; compound `+=` reads-modifies-writes through the cell honouring the
+  operator (`emitCellAssignMsil` / `emitCellLoadMsil`).
+- **Capture site** (`ELambda` arm): a captured hoisted `var` stores the **cell
+  reference itself** (no box) into `object[] __caps`; recorded in
+  `cctx.lambdaCaptureCells`.  A captured `var` that was somehow *not* hoisted
+  fails loud (safety net — never a silent by-value miscompile).
+- **Lifted body**: `fctx.captureCellNames` marks which `__caps[i]` slots are
+  cells; reads emit `__caps[i]; get_Item(0); unbox` and writes
+  `__caps[i]; set_Item(0, box v)`.
+
+Verified: mutate-inside-observe-outside (count=2), external-mutate-observe-inside
+(get=10), two vars captured in a loop seeing the live loop variable (total=6),
+String `+=` capture (s="ab"), non-captured `var` unaffected (plain local),
+escaping closure returned from its defining function (makeAdder=15), and all v1
+immutable cases.  CI step updated to assert by-reference sharing.  No regression:
+emitter 847/847, CLI 84/84.  MSIL target only.  Remaining for #1479: multi-level
+nesting (a lambda capturing an enclosing *lambda*'s locals).
+### D-progress-405 — numeric / character conversion-method intrinsics `.toByte()`/`.toInt()`/`.toLong()`/`.toChar()`/`.toDouble()` (#1901, Band-1 of #1470)
+
+**Status:** Shipped on both targets — the unblocker half of #1901 (the `EIndex`
+element-typing half follows separately).
+
+Lyric performs no implicit numeric widening (`inferBinop` requires
+`typeEquiv` operands), so moving between numeric/character widths needs an
+explicit surface conversion.  Until now the only conversions were the
+free-function intrinsics (`intToLong`/`longToInt`/`intToDouble`) used by the
+compiler's own sources, plus per-library kernel externs (`lyric-proto`'s
+`byteAt`).  A `.toInt()`-style *method* hit the unknown-method throw-stub.
+
+This adds a real conversion-method family on the numeric / character
+primitives the backend can faithfully represent — `Byte`, `Int`, `Long`,
+`Double`, `Char`:
+
+- **Type checker** (`typechecker_exprs.l`): the `ECall` arm recognises
+  `recv.toByte()/.toInt()/.toLong()/.toChar()/.toDouble()` with zero arguments
+  on one of those five receiver types and yields the named target primitive
+  (`numericConvTarget` / `isNumericOrCharType`).  The accepted set is kept in
+  exact lock-step with the codegen's `isNumericMsil`/`isNumericJvm`, so the
+  checker never accepts a `.toX()` call the backend cannot lower.  A same-named
+  method on any *other* receiver still falls through to the general (lenient)
+  dispatch (preserving user-defined methods), with the receiver inferred exactly
+  once (no duplicate diagnostic); a `String`/`Bool`/`Unit` receiver — which can
+  neither convert nor host such a method — gets a targeted **T0103**.  The
+  unsigned integers (`UInt`/`ULong`/`Nat`) and `.toFloat()` are deliberately
+  excluded: neither target has an unsigned-integer or distinct-R4 representation,
+  so conversion support for them must land with real backend support (#2050),
+  not a checker-only claim.
+- **MSIL codegen** (`msil/codegen.l`, `msil/lowering.l`): lowers each to the CLI
+  `conv.*` opcode — `conv.i4` / `conv.i8` / `conv.r8` / `conv.u1` / `conv.u2`
+  (the `MConvU1`/`MConvU2` `MInsn` cases were added).
+- **JVM codegen** (`jvm/codegen.l`): parity via `i2l`/`l2i`/`d2i`/`l2d`/… with a
+  source-type-aware normalisation (`emitToIntJvm`/`emitToLongJvm`/
+  `emitToDoubleJvm`).  `.toByte()` masks `& 0xFF` rather than using the *signed*
+  `i2b`, so the JVM result matches MSIL's **unsigned** `conv.u1` for values
+  128..255 (`200.toByte()` is 200 on both targets, not −56).
+
+Coverage: `lyric-compiler/lyric/conv_methods_self_test.l` — a `@test_module`
+asserting widening, truncating narrowing, the unsigned-`Byte` wrap, `Char`
+round-trips, and chained conversions (9/9 on **both** `--target dotnet` and
+`--target jvm`, wired into CI).  Full regression green: 847/847 emitter,
+typechecker self-test, conv self-test 9/9 each target.  Parity is asserted, not
+deferred — both backends run the same suite in CI.
