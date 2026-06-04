@@ -1438,8 +1438,10 @@ jobs:
           Bar = { git = "https://example.invalid/bar.git", tag = "v1.0" }
           TOML
           printf 'package App\nimport Std.Core\npub func main(): Int { 0 }\n' > "$work/app/src/main.l"
-          ( cd "$work/app" && timeout 90 "$bin_abs" restore ) > "$work/restore.out" 2>&1
-          rc=$?
+          # `|| rc=$?` keeps the (expected) non-zero restore from tripping the
+          # step's `bash -e` errexit before we can inspect the exit code.
+          rc=0
+          ( cd "$work/app" && timeout 90 "$bin_abs" restore ) > "$work/restore.out" 2>&1 || rc=$?
           echo "--- restore output (rc=$rc) ---"; cat "$work/restore.out"
           if grep -qiE "Unhandled exception|requires failed|fromInt|NullReferenceException" "$work/restore.out"; then
             echo "git-dep restore crashed instead of failing gracefully"; exit 1
