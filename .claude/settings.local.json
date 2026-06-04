@@ -1,5 +1,0 @@
-{
-  "permissions": {
-    "allow": ["Read(//private/tmp/**)", "Bash(java*)"]
-  }
-}
