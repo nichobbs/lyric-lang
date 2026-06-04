@@ -19454,3 +19454,38 @@ type — the propagated-type bindings are left un-annotated, matching the existi
 `callParamTys` pattern.)  CI step updated (annotated + propagated runtime
 assertions, plus the non-HOF fail-loud check).  No regression: emitter 847/847,
 CLI 84/84.  MSIL target only.
+### D-progress-394 — self-hosted: user function shadows an imported generic of the same name in the monomorphizer (#1855)
+
+**Status:** Shipped (`lyric-compiler/lyric/mono.l`).
+
+A user-defined `func tag(o: in Option[Int]): Int` call was monomorphised
+against the **stdlib** proof generic `Std.Core.tag[T](x: in T): T` (from
+`core_proof.l`), producing a broken identity specialisation `tag__Option_Int`
+(return type `Option<Int>` instead of `Int`, body forwarding its argument, the
+`match` dropped) that the call site then targeted — `Common Language Runtime
+detected an invalid program.` at run time.
+
+Root cause: `monoFileWithImports` seeds its `genDecls` worklist with imported
+generics keyed by **bare name**.  The merge already intended "same-package
+wins on name collision", but the `genDecls.add` sat *outside* the
+`not funcDecls.containsKey` guard.  A non-generic local function is recorded in
+`funcDecls` but not `genDecls`, so the imported generic was still seeded into
+`genDecls` and hijacked the local call site.  The symptom required an
+explicitly type-annotated argument (`val o: Option[Int] = Some(7); tag(o)`),
+because the annotation is what let the bogus type-arg inference complete; the
+inferred-type and argument-position paths happened to dodge it.  This was the
+real cause behind #1855's originally-reported "Some-first match arm order"
+and "if-branch order" symptoms — all were just whichever path landed the
+annotated value into the hijacked call.
+
+Fix: move the `genDecls.add` inside the `not funcDecls.containsKey` guard so a
+local definition — generic or non-generic — shadows the imported generic.
+
+Verified by the new `mono_shadow_self_test.l` (5/5 via native `lyric test
+--target dotnet`, wired into CI), red→green: the annotated-local and
+annotated-`if` cases fail with invalid IL on the pre-fix compiler and pass
+after.  Legitimate cross-package monomorphisation is unaffected
+(`generic_specialization`, `stdlib_generic_mono` self-tests green; full emitter
+suite 847/847).  #1855's other half (member methods returning a generic union)
+was already fixed by earlier Band-2 work.  MSIL target only (epic #1470 defers
+JVM).
