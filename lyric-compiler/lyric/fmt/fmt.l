@@ -415,11 +415,14 @@ pub func format(parsed: in ParseResult): String {
 }
 
 /// Auto-fix a pre-`package` header comment into the canonical module-doc
-/// form `//!`.  A plain `//` line, a stray `///` (which the parser does
-/// not bind to any item before `package` and would otherwise drop), or
-/// an already-`//!` line all normalise to `//!`, preserving any text and
-/// alignment that followed the marker.  Block-comment fragments and
-/// non-comment lines pass through untouched.
+/// form `//!`.  In practice this only ever sees plain `//` lines: those
+/// are the trivia that precede `package`.  A `///` before `package` is a
+/// P0020 parse error (it has no item to document), so `--write` rejects
+/// the file via `formatSourceChecked` before `format` is ever called —
+/// the `///` normalisation here is a defensive fallback, not a supported
+/// `--write` path.  A `//` line and an already-`//!` line normalise to
+/// `//!`, preserving any text and alignment after the marker; block-comment
+/// fragments and non-comment lines pass through untouched.
 @pure
 func promoteModuleComment(line: in String): String {
   var i = 0

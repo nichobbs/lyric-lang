@@ -573,10 +573,12 @@ done
 `lyric fmt` (the self-hosted formatter in `lyric-compiler/lyric/fmt/`) is
 the single source of truth for Lyric source layout. Key properties:
 
-- It **auto-fixes** a file's module-level header comment block to the
+- It **auto-fixes** a file's plain `//` module-level header block to the
   canonical `//!` form (the language reference, §1.3, makes `//!` the
   inner/module doc form; a plain `//` banner before `package` is
-  otherwise discarded by the AST).
+  otherwise discarded by the AST). A `///` before `package` is a P0020
+  parse error (no item to document) — `fmt` refuses such a file rather
+  than auto-fixing it; change the `///` to `//!` yourself.
 - It is **loss-checked**: `--write` re-parses its own output and
   **refuses to write** (non-zero exit, prints the reason, leaves the file
   untouched) if formatting would drop a comment, a contract clause

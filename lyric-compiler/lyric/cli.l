@@ -1075,17 +1075,9 @@ func cmdFmt(argv: in slice[String]): Int {
     }
   }
 
-  // Loss-checked format: refuse to print or write output that would drop
-  // a comment, change the code-token sequence, or that the formatter
-  // cannot round-trip through the parser.  See
-  // `Lyric.Fmt.formatSourceChecked`.
-  val checkResult = Fmt.formatSourceChecked(source)
-  if not Fmt.fmtCheckIsOk(checkResult) {
-    printErr(sourcePath + ": " + Fmt.fmtCheckMessage(checkResult))
-    return 1
-  }
-  val formatted = Fmt.fmtCheckText(checkResult)
-
+  // `--check` is a read-only "is this already formatted?" probe: it must
+  // never abort on a file the formatter cannot round-trip (it writes
+  // nothing), so it stays on the plain `isFormattedSource` comparison.
   if checkMode {
     if Fmt.isFormattedSource(source) {
       return 0
@@ -1094,6 +1086,16 @@ func cmdFmt(argv: in slice[String]): Int {
       return 1
     }
   }
+
+  // Write / print: route through the loss-checked path so we never emit
+  // or persist output that would drop a comment, change the code-token
+  // sequence, or fail to re-parse.  See `Lyric.Fmt.formatSourceChecked`.
+  val checkResult = Fmt.formatSourceChecked(source)
+  if not Fmt.fmtCheckIsOk(checkResult) {
+    printErr(sourcePath + ": " + Fmt.fmtCheckMessage(checkResult))
+    return 1
+  }
+  val formatted = Fmt.fmtCheckText(checkResult)
 
   if writeMode {
     match File.writeText(sourcePath, formatted) {
