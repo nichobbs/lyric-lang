@@ -455,6 +455,8 @@ Three visibility tiers are recognised:
 
 By default, declarations are package-private (visible only within the same package). The `pub` keyword exposes a declaration as part of the package's external contract; the `internal` keyword (Phase 5 §M5.1 stage 2c addition) exposes it across packages within the same project but hides it from external consumers.
 
+Visibility is enforced at use sites: referencing a package-private declaration (no modifier) from another package is a compile error (**T0097**). `pub` and `internal` declarations are both referenceable across packages within a project; the cross-*project* hiding of `internal` is enforced by the publish/restore layer, which only includes `pub` declarations in a package's external contract. Extern types / extern packages (FFI host-binding declarations, e.g. the `List`/`Map` aliases) are not subject to these tiers — their cross-package use is governed by the kernel-boundary convention.
+
 ```
 pub type AccountId = Long range 0 ..= MAX_ACCOUNT_ID
 pub func openAccount(owner: in CustomerId): AccountId

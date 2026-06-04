@@ -19246,3 +19246,41 @@ rather than silently reading garbage; lambdas that ignore their parameters are
 allowed.  Tested by a CI step (positive runtime HOF assertions + a negative
 compile check for the #1939 diagnostic).  No regression: emitter 847/847, CLI
 84/84 (incl. the `shm_lambda_*` self-hosted-bridge cases).  MSIL target only.
+
+### D-progress-388 — self-hosted type checker: enforce cross-package visibility (#1484, Band-1, docs/41 H14)
+
+**Status:** Shipped.
+
+Visibility was stored on every symbol (`Symbol.visibility`, `Symbol.isImported`) but
+never enforced — a package-private declaration in one package was freely
+referenceable from another. `checkImportedVisibility` (`typechecker_resolver.l`)
+now rejects a reference to an **imported** (cross-package, `isImported = true`)
+symbol that is **package-private** (no `pub`/`internal` modifier) with **T0097**.
+
+- Per language reference §3.1, `pub` and `internal` are both visible across
+  packages within a project, so both are allowed here; only the unmarked
+  (package-private) tier is rejected cross-package. The cross-*project* hiding of
+  `internal` is enforced by the publish/restore layer (only `pub` symbols enter a
+  package's external contract), not the type checker.
+- Wired into `resolveTypePath` (single- and multi-segment type references) and
+  `resolveExprPath` (function references via `sigs`, and value/const references
+  via the symbol table). Same-package references (`isImported = false`) are never
+  flagged — a package is checked as one compilation unit, so sibling-file symbols
+  are in-package.
+- **Extern types / extern packages are exempt.** These are FFI-boundary
+  host-binding declarations to which the pub/internal/package-private tiers do
+  not apply; e.g. `List`/`Map` are `extern type` aliases (no `pub`) referenced
+  directly across every package. Without the exemption the cross-package
+  `LYRIC_LOAD_COMPILER=1` weaver self-test (and all `List`/`Map` use) would
+  false-positive. Their cross-package accessibility is governed by the
+  kernel-boundary convention, not the visibility check.
+- **Diagnostic code:** the issue suggested `V0007`/`V0008`, but those are already
+  owned by the verifier (solver-unknown / proof-failed), and the whole V-series
+  (V0001–V0013) is taken by the mode checker + verifier. Visibility is enforced
+  in the type checker, so it uses the type-checker code **T0097**.
+
+Coverage: 6 new `typechecker_self_test.l` cases (pub type/func allowed, internal
+type allowed cross-package, package-private type/func rejected → T0097,
+same-package private ref unaffected). Full regression green (847/847 emitter,
+84/84 CLI bridge); the auth + session ecosystem manifests build and run green
+with **zero** false positives (29/29 and 31/31).

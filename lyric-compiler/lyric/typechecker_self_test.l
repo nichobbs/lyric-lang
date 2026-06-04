@@ -659,6 +659,80 @@ func testPropagateNonMonadicNoT0060(): Unit {
     "non-monadic ? yields TyError: no T0060 cascade")
 }
 
+// #1484: visibility enforcement at use sites.  Per language reference §3.1,
+// `pub` and `internal` are visible across packages within a project; an
+// unmarked (package-private) symbol is not.  A cross-package reference to a
+// package-private imported symbol is rejected with T0097.  (The V0007/V0008
+// codes suggested in the issue are already owned by the verifier.)
+
+func importedItemsOf(libSrc: in String): List[Item] {
+  val libPr = parse(libSrc)
+  val items: List[Item] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    items.add(libPr.file.items[i])
+    i = i + 1
+  }
+  items
+}
+
+func testVisibilityPubTypeAllowed(): Unit {
+  val imp = importedItemsOf("package Lib\npub record Widget { x: Int }\n")
+  val pr  = parse("package App\nfunc f(w: in Widget): Int { 0 }\n")
+  val cr  = checkWithImports(pr.file, imp)
+  assertTrue(not hasDiagCode(cr, "T0097"), "pub imported type: no T0097")
+}
+
+func testVisibilityInternalTypeAllowed(): Unit {
+  // `internal` is visible across packages within a project.
+  val imp = importedItemsOf("package Lib\ninternal record Widget { x: Int }\n")
+  val pr  = parse("package App\nfunc f(w: in Widget): Int { 0 }\n")
+  val cr  = checkWithImports(pr.file, imp)
+  assertTrue(not hasDiagCode(cr, "T0097"), "internal imported type cross-package: no T0097")
+}
+
+func testVisibilityPrivateTypeRejected(): Unit {
+  val imp = importedItemsOf("package Lib\nrecord Widget { x: Int }\n")
+  val pr  = parse("package App\nfunc f(w: in Widget): Int { 0 }\n")
+  val cr  = checkWithImports(pr.file, imp)
+  assertTrue(hasDiagCode(cr, "T0097"), "package-private imported type referenced cross-package: T0097")
+}
+
+func testVisibilityPubFuncAllowed(): Unit {
+  val imp = importedItemsOf("package Lib\npub func helper(x: in Int): Int { x }\n")
+  val pr  = parse("package App\nfunc f(): Int { helper(3) }\n")
+  val cr  = checkWithImports(pr.file, imp)
+  assertTrue(not hasDiagCode(cr, "T0097"), "pub imported func: no T0097")
+}
+
+func testVisibilityPrivateFuncRejected(): Unit {
+  val imp = importedItemsOf("package Lib\nfunc helper(x: in Int): Int { x }\n")
+  val pr  = parse("package App\nfunc f(): Int { helper(3) }\n")
+  val cr  = checkWithImports(pr.file, imp)
+  assertTrue(hasDiagCode(cr, "T0097"), "package-private imported func referenced cross-package: T0097")
+}
+
+func testVisibilityExternTypeAllowed(): Unit {
+  // Extern types are FFI-boundary bindings (no `pub`), but are referenced
+  // directly across packages (e.g. `List`/`Map`).  They must not be flagged.
+  val imp = importedItemsOf("package Lib\nextern type Box = \"System.Object\"\n")
+  val pr  = parse("package App\nfunc f(b: in Box): Int { 0 }\n")
+  val cr  = checkWithImports(pr.file, imp)
+  assertTrue(not hasDiagCode(cr, "T0097"), "extern type cross-package: no T0097 (FFI boundary)")
+}
+
+func testVisibilitySamePackageUnaffected(): Unit {
+  // A package-private symbol referenced within the same package (not imported)
+  // must never be flagged.
+  val src =
+    "package P\n" +
+    "record Widget { x: Int }\n" +
+    "func helper(n: in Int): Int { n }\n" +
+    "func f(w: in Widget): Int { helper(w.x) }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0097"), "same-package private ref: no T0097")
+}
+
 func main(): Unit {
   testEmptySource()
   testFuncRegistered()
@@ -715,5 +789,12 @@ func main(): Unit {
   testPropagateResultUnwrap()
   testPropagateOptionUnwrap()
   testPropagateNonMonadicNoT0060()
+  testVisibilityPubTypeAllowed()
+  testVisibilityInternalTypeAllowed()
+  testVisibilityPrivateTypeRejected()
+  testVisibilityPubFuncAllowed()
+  testVisibilityPrivateFuncRejected()
+  testVisibilityExternTypeAllowed()
+  testVisibilitySamePackageUnaffected()
   println("typechecker self-test: ok")
 }
