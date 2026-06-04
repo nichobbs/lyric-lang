@@ -1012,14 +1012,25 @@ func resolveExprPath(
   match symTableTryFindOne(tbl, name) {
     case Some(sym) -> {
       checkImportedVisibility(sym, span, diag)
-      // A bare union-case reference (`None`, or a no-arg case) is the parent
-      // union with uninferable (`TyError`) type args (#2142 prerequisite).
       match sym.kind {
         case DKUnionCase(_, _) -> return inferUnionCaseConstruction(tbl, diag, sym, newList(), span)
-        case _                 -> {}
+        case DKConst(cd) -> {
+          val ctx = newGenericContext()
+          return resolveType(tbl, ctx, diag, cd.ty)
+        }
+        case DKVal(vd) -> {
+          match vd.ty {
+            case Some(te) -> {
+              val ctx = newGenericContext()
+              return resolveType(tbl, ctx, diag, te)
+            }
+            case None -> return inferExpr(sc, tbl, sigs, diag, vd.init)
+          }
+        }
+        case _ -> {}
       }
     }
-    case None    -> {
+    case None -> {
       diag.add(errorDiagnostic("T0020", "unknown name '" + name + "'", span))
     }
   }
