@@ -107,6 +107,30 @@ func testGenericUnionNullaryLenient(): Unit {
   assertEqualInt(diagCount(parseCheck(src)), 0, "union-nullary: Nn3 leniently matches Opt3[Int]")
 }
 
+// #2142: a `match` used as a value takes the unified type of its arm bodies,
+// with pattern variables bound to their destructured types.  Distinguishing
+// case: `case Sm(v) -> v` binds `v : Int` (the case field instantiated against
+// `Opt[Int]`), so a `String`-returning function whose other arm is `""` MUST
+// mismatch (T0067) — were `v` still `TyError`, the arms would unify silently.
+func testMatchBranchDestructuredMismatch(): Unit {
+  val src = "package P\nunion Opt[T] {\n  case Sm(value: T)\n  case Nn\n}\nfunc f(o: in Opt[Int]): String {\n  match o {\n    case Sm(v) -> v\n    case Nn -> \"\"\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0067"), "match-destructure: Sm(v) binds v:Int, mismatches the String arm")
+}
+
+// Matching arms unify cleanly: `Sm(v) -> v` (Int) and `Nn -> 0` (Int) → Int.
+func testMatchBranchClean(): Unit {
+  val src = "package P\nunion Opt[T] {\n  case Sm(value: T)\n  case Nn\n}\nfunc f(o: in Opt[Int]): Int {\n  match o {\n    case Sm(v) -> v\n    case Nn -> 0\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "match-clean: Sm(v:Int) and Nn(0) unify to Int")
+}
+
+// A nullary case in pattern position (`case Nn`) must not shadow the `Nn`
+// constructor used in the arm body — so the reconstruction round-trips and the
+// match types as `Opt[Int]`.
+func testMatchNullaryNoShadow(): Unit {
+  val src = "package P\nunion Opt[T] {\n  case Sm(value: T)\n  case Nn\n}\nfunc f(o: in Opt[Int]): Opt[Int] {\n  match o {\n    case Sm(v) -> Sm(value = v)\n    case Nn -> Nn\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "match-no-shadow: case Nn does not shadow the Nn constructor")
+}
+
 func testValTypeMismatch(): Unit {
   val src = "package P\nfunc f(): Unit {\n  val x: Int = \"oops\"\n}\n"
   val cr = parseCheck(src)
@@ -1096,6 +1120,9 @@ func main(): Unit {
   testReturnTypeMismatch()
   testGenericUnionCtorTyped()
   testGenericUnionNullaryLenient()
+  testMatchBranchDestructuredMismatch()
+  testMatchBranchClean()
+  testMatchNullaryNoShadow()
   testValTypeMismatch()
   testUnsafeBlockTyped()
   testDivergingBlockIsNever()

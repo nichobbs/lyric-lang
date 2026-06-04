@@ -20353,3 +20353,43 @@ Coverage: 3 new `typechecker_self_test.l` cases on a local generic union
 leniently matches any instantiation).  Full regression green: 847/847 emitter,
 typechecker self-test, `weaver_self_test.l` 18/18 (`LYRIC_LOAD_COMPILER=1`), and
 a clean `lyric-*` ecosystem sweep with zero new failures.
+
+### D-progress-419 — self-hosted type checker: `EMatch`-branch value typing (#2142, #1483, Band-1 of #1470)
+
+**Status:** Shipped — type-checker-only (plus one latent ecosystem bug fixed).
+
+`EMatch` in value position returned `TyError` unconditionally, so a `match`
+used as an expression never contributed a real type and arm-body errors went
+undetected.  It now takes the **unified type of its arm bodies**, completing
+the branch-typing slice that D-progress-418 unblocked:
+
+- Each arm is checked in a fresh scope (`scopePush`/`scopePop`) with its
+  pattern variables bound to their *destructured* types via the new
+  `bindPatternTyped`: `Some(ns)` on `Option[T]` binds `ns : T`, a tuple
+  pattern binds each element type, a constructor sub-pattern recurses with
+  the case's field types **instantiated** against the scrutinee's type args
+  (`caseFieldTypesInstantiated` + `substituteTyVars`).
+- Arm-body types fold through the existing `unifyBranchTypes` (Never/`TyError`
+  absorbed, a Unit arm yields Unit, a genuine value mismatch raises T0067).
+- Two soundness guards on the binder: a bare uppercase pattern (`case None`,
+  `case Red`) that resolves to a nullary union/enum *case* is a constructor
+  pattern, not a fresh variable, so it must **not** bind a local that would
+  shadow the constructor in the arm body (`isConstructorPatternName`); and a
+  variable bound to a still-generic field type (`Some(v)` on `Option[V]`
+  inside a generic function) is erased to `TyError` (`eraseTyVars`) because
+  the type checker does not yet track `where V: …` bounds, so it must stay
+  lenient rather than emit a false "not numeric" / mismatch.
+
+This precise typing also surfaced (and fixed) a latent ecosystem bug:
+`lyric-auth`'s `validatePayload` used `toLong(clockSkewSeconds)` — a
+free-function form that does not exist (there is no `func toLong(Int): Long`;
+the codegen-supported conversion is the `.toLong()` *method* intrinsic, #1901).
+The old unchecked-arm-body behaviour hid it; it now uses the blessed
+`clockSkewSeconds.toLong()` form.
+
+Coverage: 3 new `typechecker_self_test.l` cases (a destructured `Sm(v) -> v`
+binding `v:Int` that mismatches a `String` arm → T0067; a clean `Int`/`Int`
+unification; a nullary `case Nn` that does not shadow the `Nn` constructor in
+the arm body).  Full regression green: 847/847 emitter, typechecker self-test,
+`weaver_self_test.l` 18/18 (`LYRIC_LOAD_COMPILER=1`), and `lyric-auth` 29/29
+through the self-hosted pipeline.
