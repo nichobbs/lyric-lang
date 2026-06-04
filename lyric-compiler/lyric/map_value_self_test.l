@@ -52,6 +52,27 @@ test "direct m[k] index read of a value-type map value" {
   assertEqualInt(v + 1, 6, "5 + 1 = 6 (unboxed)")
 }
 
+test "direct m[k] index read: Map[String,Long]" {
+  val m: Map[String, Long] = newMap()
+  m["x"] = 9000000000i64
+  val v = m["x"]
+  assertTrue(v == 9000000000i64, "long unboxed via m[k]")
+}
+
+test "direct m[k] index read: Map[String,Double]" {
+  val m: Map[String, Double] = newMap()
+  m["pi"] = 3.5
+  val v = m["pi"]
+  assertTrue(v > 3.0, "double unboxed via m[k]")
+}
+
+test "direct m[k] index read: Map[String,Bool]" {
+  val m: Map[String, Bool] = newMap()
+  m["on"] = true
+  val v = m["on"]
+  assertTrue(v, "bool unboxed via m[k]")
+}
+
 test "mapGet Map[String,Long]" {
   val m: Map[String, Long] = newMap()
   m["x"] = 9000000000i64
