@@ -19489,3 +19489,34 @@ after.  Legitimate cross-package monomorphisation is unaffected
 suite 847/847).  #1855's other half (member methods returning a generic union)
 was already fixed by earlier Band-2 work.  MSIL target only (epic #1470 defers
 JVM).
+
+### D-progress-395 — self-hosted type checker: §5.2 out/inout argument l-value check (#1487, Band-1, docs/41 C13)
+
+**Status:** Shipped (`out`/`inout` value-type argument rule; `out` definite-assignment still deferred).
+
+Second §5.2 increment after the `in` no-rebind rule (D-progress-391). At a call
+site, an argument bound to an `out`/`inout` parameter must be a writable l-value
+— rejected with **T0085** otherwise. The check is in the `ECall` directSig branch
+of `inferExpr` (the resolved signature carries `ParamMode`).
+
+- **Restricted to value-type by-ref params** (`isByRefValueType`: numeric / `Bool`
+  / `Char`; not `String`/records/slices). A value-type `out`/`inout` writes a
+  value back into the caller's binding, so the argument must be assignable.
+  Reference-type `inout` params are mutated *in place* through the reference —
+  the idiomatic `inout LexerState`/`inout ParseState` pattern passes a `val`-bound
+  record and mutates its fields without rebinding — so requiring a mutable
+  l-value there would false-positive across the self-hosted lexer/parser (caught
+  by the `LYRIC_LOAD_COMPILER=1` weaver self-test during development). Restricting
+  to value types is conservative and still catches `out Int` / `inout Bool`
+  mis-arguments.
+- **l-value test** (`argIsValidByRefTarget`): conservative — flag only arguments
+  that are *definitely not* writable (literals, call results, operator
+  expressions) or are single-segment locals known immutable (`val`/`let`/`in`).
+  Member access (`x.field`), element access (`x[i]`), qualified paths, and
+  non-local names are accepted as potential l-values.
+
+Coverage: 5 new `typechecker_self_test.l` cases (`out`/`inout` var arg clean,
+`out` val/literal arg → T0085, `in` arg any-expr clean). Full regression green
+(847/847 emitter, 84/84 CLI bridge); auth (29/29), session (31/31), and the
+`LYRIC_LOAD_COMPILER=1` weaver self-test (18/18) all green with zero false
+positives. Remaining §5.2 rule: `out` definite-assignment (dataflow pass).

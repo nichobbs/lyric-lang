@@ -807,6 +807,68 @@ func propagateUnwrap(t: in Type): Type {
   }
 }
 
+// #1487 (§5.2): the expression behind a call argument.
+func callArgExpr(arg: in CallArg): Expr {
+  match arg {
+    case CAPositional(ae)  -> ae
+    case CANamed(_, ae, _) -> ae
+  }
+}
+
+// #1487 (§5.2): an argument bound to an `out`/`inout` parameter must be a
+// writable l-value.  Conservative by construction (zero false positives): flag
+// only arguments that are *definitely not* assignable targets — literals, call
+// results, operator expressions — and single-segment locals that are *known
+// immutable* (`val` / `let` / `in`).  Member access (`x.field`), element access
+// (`x[i]`), qualified paths, and non-local names are accepted as potential
+// l-values; precise mutability of fields / elements is deferred rather than
+// risk a false positive on valid by-ref code.
+func argIsValidByRefTarget(sc: in Scope, e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> argIsValidByRefTarget(sc, inner)
+    case EPath(p) ->
+      if p.segments.count == 1 {
+        match scopeTryFind(sc, p.segments[0]) {
+          case Some(b) -> b.isMutable     // a local binding must be mutable
+          case None    -> true            // not a local (global / unknown) — accept
+        }
+      } else { true }                     // qualified path — accept
+    case EMember(_, _) -> true            // field access — potential l-value
+    case EIndex(_, _)  -> true            // element access — potential l-value
+    case _             -> false           // literal / call / operator / … — not an l-value
+  }
+}
+
+func modeNeedsLValue(m: in ParamMode): Bool {
+  match m {
+    case PMOut   -> true
+    case PMInout -> true
+    case PMIn    -> false
+  }
+}
+
+// The mutable-l-value requirement for an `out`/`inout` argument applies only to
+// *value-type* parameters, where the callee writes a value back into the
+// caller's binding (so it must be assignable).  Reference-type parameters
+// (records, `String`, slices, arrays, …) are mutated in place through the
+// reference — the idiomatic `inout RecordState` pattern passes a `val`-bound
+// record and mutates its fields without rebinding — so requiring a mutable
+// l-value there would false-positive on valid by-ref code.  Restricting to
+// value types is conservative (it never rejects valid code) and still catches
+// the common `out Int` / `inout Bool` mis-argument.
+func isByRefValueType(t: in Type): Bool {
+  match unrefine(t) {
+    case TyPrim(pt) ->
+      match pt {
+        case PtString -> false
+        case PtUnit   -> false
+        case PtNever  -> false
+        case _        -> true
+      }
+    case _ -> false
+  }
+}
+
 pub func inferExpr(
   sc:   in Scope,
   tbl:  in SymbolTable,
@@ -888,6 +950,15 @@ pub func inferExpr(
               if not typeEquiv(p.ty, argTypes[k]) {
                 diag.add(errorDiagnostic("T0043",
                   "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(p.ty), e.span))
+              }
+              // #1487 (§5.2): a value-type `out`/`inout` argument must be a
+              // writable l-value (reference-type by-ref params are mutated in
+              // place — see `isByRefValueType`).
+              if modeNeedsLValue(p.mode) and isByRefValueType(p.ty)
+                 and not argIsValidByRefTarget(sc, callArgExpr(args[k])) {
+                diag.add(errorDiagnostic("T0085",
+                  "argument for `out`/`inout` parameter '" + p.name +
+                  "' must be a mutable l-value (a `var`, or an `out`/`inout` binding)", e.span))
               }
               k = k + 1
             }
