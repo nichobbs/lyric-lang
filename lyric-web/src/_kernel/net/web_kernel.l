@@ -1,14 +1,18 @@
 // Web.Kernel.Net — ASP.NET Core / Kestrel extern boundary.
 //
-// Bridges Lyric's Web package to the .NET HTTP stack:
-//   - serve()           — starts the Kestrel server with the given router data
-//   - checkRateLimit()  — sliding-window rate limiter (in-process)
+// Bridges Lyric's Web.Aspects package to the .NET HTTP stack.
+// The `serve` function lives in `web.l` (declared inline rather than
+// imported here because intra-project import resolution does not yet
+// propagate function signatures to the caller's type-checker; see
+// the comment in web.l for details).
 //
-// JWT verification lives in Auth.Kernel.Net (lyric-auth); call Auth.verifyJwt
-// rather than accessing the extern directly.
+// This package exposes only what Web.Aspects needs:
+//   checkRateLimit — per-endpoint sliding-window rate limiter,
+//                    reusing the process-global ConcurrentDictionary
+//                    implementation in Lyric.Ws.RateLimitHost (WsHost.fs).
 //
-// All functions are @cfg(feature = "dotnet") so they are erased when the
-// dotnet feature is not active (e.g. during JVM builds — Phase 6).
+// All functions are @cfg(feature = "dotnet") so they are erased when
+// the dotnet feature is not active (e.g. during JVM builds — Phase 6).
 //
 // See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 
@@ -17,39 +21,25 @@ package Web.Kernel.Net
 
 import Std.Core
 
-// ─── HTTP server ──────────────────────────────────────────────────────────────
-
-/// Start the HTTP server.  Blocks until SIGTERM / SIGINT.
-/// Routes are passed as parallel slices (method, pattern, handlerName, summary).
-/// Workers are passed as parallel slices (name, intervalMs, handlerName).
-@axiom("ASP.NET Core Kestrel HTTP server and minimal-API routing")
-pub func serve(
-  host:            String,
-  port:            Int,
-  swaggerEnabled:  Bool,
-  specPath:        String,
-  corsEnabled:     Bool,
-  corsOrigins:     String,
-  corsMethods:     String,
-  corsHeaders:     String,
-  corsMaxAge:      Int,
-  routeMethods:    slice[String],
-  routePatterns:   slice[String],
-  routeHandlers:   slice[String],
-  routeSummaries:  slice[String],
-  workerNames:     slice[String],
-  workerIntervals: slice[Int],
-  workerHandlers:  slice[String]
-): Unit = ()
-
 // ─── Rate limiting ────────────────────────────────────────────────────────────
 
 /// Check whether a call from this endpoint is within the rate limit.
-/// Returns true (allow) or false (deny).
-/// State is per-process and per-endpoint; resets on process restart.
-@axiom("In-process sliding-window rate limiter (System.Threading.RateLimiting)")
+/// Returns true (allow) or false (deny).  State is per-process and
+/// per-endpoint; resets on process restart.
+///
+/// Backed by `Lyric.Ws.RateLimitHost.checkRateLimit` — the same
+/// 60-second sliding-window implementation used by the WebSocket
+/// rate limiter (`Ws.Kernel.Net.checkRateLimit`).  Both `lyric-web`
+/// and `lyric-ws` share this process-global state, keyed by the
+/// supplied `endpoint` / `key` string.
+@axiom("Lyric.Ws.RateLimitHost.checkRateLimit — per-key 60s sliding-window + burst budget; state is per-process, shared with Ws.Kernel.Net")
+@externTarget("Lyric.Ws.RateLimitHost.checkRateLimit")
 pub func checkRateLimit(
   endpoint:          String,
   requestsPerMinute: Int,
   burstSize:         Int
-): Bool = false
+): Bool
+  requires: endpoint.length > 0
+  requires: requestsPerMinute > 0
+  requires: burstSize > 0
+  = ()
