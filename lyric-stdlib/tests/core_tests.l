@@ -99,6 +99,28 @@ func testAndThenResult(): Unit {
   assertEqualInt(unwrapErrOr(passThrough, 0), 7, "andThenResult Err payload preserved")
 }
 
+func testMapResultErr(): Unit {
+  val r: Result[Int, Int] = Ok(value = 5)
+  val mapped = mapResultErr(r, { e: Int -> e * 2 })
+  assertTrue(isOk(mapped), "mapResultErr Ok stays Ok")
+  assertEqualInt(unwrapResultOr(mapped, 0), 5, "mapResultErr Ok value preserved")
+
+  val rErr: Result[Int, Int] = Err(error = 21)
+  val mapped2 = mapResultErr(rErr, { e: Int -> e * 2 })
+  assertTrue(isErr(mapped2), "mapResultErr Err transforms")
+  assertEqualInt(unwrapErrOr(mapped2, 0), 42, "mapResultErr Err value doubled")
+}
+
+func testUnwrapResult(): Unit {
+  val r: Result[Int, String] = Ok(value = 42)
+  assertEqualInt(unwrapResult(r), 42, "unwrapResult Ok returns value")
+}
+
+func testUnwrapOption(): Unit {
+  val o: Option[Int] = Some(value = 99)
+  assertEqualInt(unwrapOption(o), 99, "unwrapOption Some returns value")
+}
+
 func main(): Unit {
   testOption()
   testResult()
@@ -106,5 +128,8 @@ func main(): Unit {
   testAndThen()
   testOrElse()
   testAndThenResult()
+  testMapResultErr()
+  testUnwrapResult()
+  testUnwrapOption()
   println("core: ok")
 }

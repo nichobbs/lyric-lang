@@ -494,6 +494,36 @@ extern func readFile(path: in String): String
   ensures: result != ""    // assumed by the prover, not proved
 ```
 
+### Error-handling helpers (Std.Core)
+
+```lyric
+import Std.Core
+
+// Map success value of a Result
+mapResult(r, { v -> v * 2 })           // Result[Int, E]
+
+// Map error value of a Result (e.g. at package boundaries)
+mapResultErr(r, { e -> MyError(e) })   // Result[T, MyError]
+
+// Chain a fallible operation on the Ok value
+andThenResult(r, { v -> doMore(v) })   // Result[U, E]
+
+// Unwrap with a default on Err
+unwrapResultOr(r, 0)                    // T
+
+// Unwrap; panic if Err (use only when Err is impossible by construction)
+unwrapResult(r)                         // T
+
+// Option equivalents
+mapOption(opt, { v -> v * 2 })         // Option[Int]
+unwrapOr(opt, "default")               // T
+unwrapOption(opt)                      // T (panics if None)
+isSome(opt)                            // Bool
+isNone(opt)                            // Bool
+isOk(r)                                // Bool
+isErr(r)                               // Bool
+```
+
 ### Direct BCL/JDK calls — `extern type` (auto-FFI; see chapter 13 §13.9)
 
 **`--target dotnet`** — signature read from .NET reference-assembly metadata:
@@ -638,7 +668,7 @@ output_assembly = "myapp.dll"
 
 | Module | Provides | Key names |
 |---|---|---|
-| `Std.Core` | `Result`, `Option`, built-in ops | `Ok`, `Err`, `Some`, `None`, `println`, `panic`, `assert`, `expect`, `toString`, `default` |
+| `Std.Core` | `Result`, `Option`, built-in ops | `Ok`, `Err`, `Some`, `None`, `println`, `panic`, `assert`, `expect`, `toString`, `default`, `mapResult`, `mapResultErr`, `mapOption`, `andThenResult`, `unwrapResultOr`, `unwrapResult`, `unwrapOption`, `unwrapOr`, `isOk`, `isErr`, `isSome`, `isNone` |
 | `Std.Core.Proof` | Proof-required witness functions | `identity`, `fst`, `snd`, `minInt`, `maxInt` (all `@pure @experimental`) |
 | `Std.String` | String manipulation | `trim`, `split`, `join`, `contains`, `startsWith`, `toUpperCase`, `substring` |
 | `Std.Parse` | Numeric parsing | `tryParseInt`, `tryParseLong`, `tryParseDouble`, `tryParseBool` |
