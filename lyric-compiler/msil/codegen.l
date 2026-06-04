@@ -6933,7 +6933,9 @@ func emitExternTargetBody(
       val paramTypes: List[MsilType] = newList()
       var pi = 0
       while pi < decl.params.count {
-        paramTypes.add(typeExprToMsilCtx(cctx, decl.params[pi].ty, pkgName))
+        val baseTy = typeExprToMsilCtx(cctx, decl.params[pi].ty, pkgName)
+        val finalTy = if isByrefMode(decl.params[pi].mode) { MByRef(inner = baseTy) } else { baseTy }
+        paramTypes.add(finalTy)
         pi = pi + 1
       }
       val retTy = match decl.ret {

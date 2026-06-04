@@ -20604,3 +20604,42 @@ This closes false-positive category (B) of the #1488 gate.  Remaining before the
 vs `RegexError` in `regex_tests`), interface/impl subtyping (`mocking_tests`),
 and the compiler-internal-test import swarms (`metadata_reader_tests`,
 `msil_project_bridge_tests`).
+
+### D-progress-425 — resilience shim elimination: replace CircuitStoreHost.fs with pure Lyric (Item 2 of F# shim plan)
+
+`bootstrap/src/Lyric.Emitter/CircuitStoreHost.fs` — the F# runtime backing the
+`lyric-resilience` circuit-breaker state machine — is deleted and replaced with a
+pure-Lyric implementation in
+`lyric-resilience/src/_kernel/net/resilience_kernel.l`.
+
+**What shipped:**
+
+- New `resilience_kernel.l` (replacing the three `@externTarget` stubs that
+  pointed at `Lyric.Resilience.CircuitStore`):
+  - `extern type ConcurrentDict[K, V]` + `newConcurrentDict`, `cdTryGetValue`,
+    `cdTryAdd` wrappers
+  - `record CircuitEntry` — four mutable fields mirroring the F# `Entry` type
+  - `monitorEnter[T]` / `monitorExit[T]` — per-entry locking via
+    `System.Threading.Monitor`
+  - `val circuitRegistry: ConcurrentDict[String, CircuitEntry]` — process-global
+    module-level val (M5.2 stage 3, PR #2195)
+  - `getOrCreateEntry` — TryGetValue → TryAdd → TryGetValue read-or-create pattern
+  - `circuitIsOpen` / `circuitRecordSuccess` / `circuitRecordFailure` — full state
+    machine, semantically identical to the deleted F# shim
+
+- `bootstrap/src/Lyric.Emitter/CircuitStoreHost.fs` **deleted** (F# shim retired)
+- `bootstrap/tests/Lyric.Emitter.Tests/CircuitStoreHostTests.fs` **deleted** (11 F# tests retired; state-machine coverage lives in `resilience_tests.l` + the `CircuitBreakerState` formal-model tests)
+- Project file updates: `Lyric.Emitter.fsproj`, `Lyric.Emitter.Tests.fsproj`, `Program.fs`
+- Stale comment in `resilience.l` updated to remove F# shim reference
+
+**Codegen fix shipped alongside:**
+
+`emitExternTargetBody` in `lyric-compiler/msil/codegen.l` was not applying byref
+wrapping for `out`/`inout` parameters in FFI method-signature blobs.  The param
+type for `value: out V` resolved to `MObject` (correct base type) but was NOT
+wrapped in `MByRef` — so the MemberRef signature would encode `object` instead of
+`object&`, causing `MissingMethodException` at runtime for any `@externTarget`
+function with an `out` parameter (e.g. `ConcurrentDictionary.TryGetValue`).
+Fixed by wrapping each param's type with `MByRef` when `isByrefMode(param.mode)`
+is true.  The call-site already correctly emits `ldloca` for `out`/`inout` args;
+this fix makes the MemberRef signature consistent.
