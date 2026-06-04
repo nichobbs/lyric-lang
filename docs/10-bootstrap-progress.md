@@ -20223,7 +20223,6 @@ it compiles `java.lang.Math` / `java.lang.Integer` int / long / double overloads
 in-process through the self-hosted `Jvm.Bridge` (`compileToJarBundled`) and runs
 the resulting JAR under `java`, asserting every runtime value.  No new F#;
 imports only `Std.*`.  No regression: emitter 847/847, CLI 84/84.
-
 ### D-progress-415 — Band 3 Phase A: fix `@externTarget async` silent miscompile (#2070, D085)
 
 **What shipped:**
@@ -20817,3 +20816,63 @@ package's own function signatures**.  `Std.Regex.tryCompile`'s
   `RegexError` resolves to its own union — distinct, correctly-bound type ids)
   and `testFlatImportsPreserveLastWins` (pins the flat-shim back-compat
   contract).  Full Emitter (843) and Cli (84) suites stay green.
+
+---
+
+### D-progress-430 — Band 3 Phase B.0: `IAsyncStateMachine` synthesis for user-defined `async func` (no-await path, #2070, D086)
+
+**What shipped:**
+
+- **`synthesizeAsyncSmMsil`** in `lyric-compiler/msil/codegen.l` — synthesises an
+  `IAsyncStateMachine` sealed class per `async func` whose body has no `EAwait`
+  nodes.  Emits:
+  - SM TypeDef (via `MPRecord(rec = MRecord(useDefaultCtor = true, ...))`):
+    fields `__state: Int`, `__builder: ATMB / ATMB<T>`, `__p0..N: <param types>`.
+  - `MoveNext`: preamble loads SM fields into locals, lowers user body, epilogue
+    sets `__state = -2` and calls `SetResult`.
+  - `SetStateMachine`: no-op stub.
+  - `MPImpl` wiring to `IAsyncStateMachine`.
+  - Kickoff `MFunc`: `newobj SM; __state=-1; copy params; Start<SM>; [get_Task; get_Result]`.
+
+- **`buildValueTypeGenericInstBlobWithCtx`** in `lyric-compiler/msil/lowering.l` —
+  emits `0x11` (ELEMENT_TYPE_VALUETYPE) instead of `0x12` (CLASS) for
+  GENERICINST TypeSpec blobs.  Required because `AsyncTaskMethodBuilder<T>` is a
+  struct.
+
+- **`buildLocalVarSigWithCtx`** in `lyric-compiler/msil/lowering.l` — context-aware
+  LocalVarSig builder that encodes `MClass(fqn)` locals with their real
+  `CLASS TypeDef(row)` token.  Required for the kickoff local (SM instance) so
+  `ldloca` gives `byref SM` rather than `byref Object`.
+
+- **VAR 0 in TypeSpec-parented MemberRef signatures** — `SetResult(VAR 0): void`
+  and `get_Task(): Task<VAR 0>` MemberRefs on `ATMB<T>` TypeSpecs use `MTypeVar(index=0)`
+  instead of the concrete type argument, per ECMA-335 §II.23.2.1.
+
+- **`lowerMRecord` TypeDef-first ordering** in `lowering.l` — the TypeDef row is
+  now registered in the PE tables *before* fields and method bodies, so
+  `findTypeDefRowByName` + `findFieldDefRowOfType` succeed when `lowerMFunc` runs
+  for instance methods that use `MLdfldByName`/`MStfldByName` on the enclosing type.
+
+- **`addPackageTokens` SM pre-reservation** — for each async SM, 3 extra MethodDef
+  rows (`.ctor`, `MoveNext`, `SetStateMachine`) are reserved in Pass 1 so Pass 2
+  token assignments don't collide with the kickoff function.
+
+- **`lowerMImpl` TypeRef fallback** — when the interface TypeDef row is 0 (cross-
+  assembly interface like `IAsyncStateMachine`), falls back to a TypeRef lookup so
+  the interface implementation is correctly wired.
+
+- **`async_sm_self_test.l`** — `@test_module` with 7 tests covering non-void
+  (`Int`, `String` return), void (no-op, local val), sequential async calls
+  (tests 1–5), and explicit-return epilogue paths (`asyncReturnExplicit`,
+  `asyncReturnFromBranch` — tests 6–7, added to fix #2256).
+  All 7 pass end-to-end through the self-hosted MSIL bridge.
+
+**What did NOT ship (Phase B.1+, still tracked in #2070):**
+- Async funcs with `EAwait` nodes (real suspension, `IAsyncStateMachine` state
+  transitions, `AwaitOnCompleted`, `SetException`).
+- Async funcs returning `Task<T>` to C# callers (Phase B.0 kickoff unwraps
+  synchronously and returns T directly).
+- Type-checker propagation of `async func` return types through call sites
+  (currently inferred as `Unit` — tracked in #2070 as a follow-up).
+
+**Regression gate:** 847/847 emitter tests + 84/84 CLI tests green.

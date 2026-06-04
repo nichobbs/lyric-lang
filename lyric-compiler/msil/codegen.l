@@ -313,6 +313,19 @@ pub record CodegenCtx {
   // for nullary union cases.
   staticValTokens:     Map[String, Int]       // valName → 0x04000000 | fieldDefRow
   staticValMsilTypes:  Map[String, MsilType]  // valName → declared MsilType
+  // Async SM synthesis (Phase B, Epic #2070).
+  // TypeRef rows for System.Runtime.CompilerServices types.
+  trAtmb:           Int   // AsyncTaskMethodBuilder (void variant, row)
+  trAtmb1:          Int   // AsyncTaskMethodBuilder`1 (open generic, row)
+  trIAsm:           Int   // IAsyncStateMachine (interface, row)
+  // MemberRef tokens for ATMB (void) instance methods.
+  tokAtmbCreate:    Int   // registered for MemberRef table ordering; not emitted (ATMB.Create() removed in .NET 7+, replaced by newobj zero-init)
+  tokAtmbSetResult: Int   // ATMB::SetResult(): void  call (instance, on managed ptr)
+  tokAtmbGetTask:   Int   // registered for MemberRef table ordering; not emitted directly (get_Task() is called via TypeSpec-parented MemberRef in the kickoff, not through this field)
+  tokAtmbStartMr:   Int   // ATMB.Start<!!0>(ref !!0): void  open-generic MemberRef
+  // Monotonically-increasing counter for unique SM class names.
+  // Pattern: "<funcName>__SM_<ticker>".  Matches AsyncStateMachine.fs convention.
+  smTicker: List[Int]
 }
 
 // One impl block (`impl Iface for Target { … }`) captured by the pre-pass.
@@ -747,6 +760,43 @@ pub func newCodegenCtx(packageName: in String,
     lctx, trDateTime, "ToString",
     "dt_tostring_inv", buildInstanceMethodSig(dtToStrPs, MString))
 
+  // Async SM synthesis (Phase B, Epic #2070).
+  // AsyncTaskMethodBuilder and IAsyncStateMachine live in System.Runtime.
+  val trAtmb  = ctxAddTypeRef(lctx, "System.Runtime.CompilerServices",
+                               "AsyncTaskMethodBuilder",   lctx.arRuntime)
+  val trAtmb1 = ctxAddTypeRef(lctx, "System.Runtime.CompilerServices",
+                               "AsyncTaskMethodBuilder`1", lctx.arRuntime)
+  val trIAsm  = ctxAddTypeRef(lctx, "System.Runtime.CompilerServices",
+                               "IAsyncStateMachine",       lctx.arRuntime)
+
+  // Void builder method signatures (struct methods — HASTHIS, called via `call`
+  // on a managed pointer produced by `ldflda`).
+  // ATMB.Create(): ATMB  (static)
+  val atmbMsilTy   = MValueTypeRef(typeRefCode = tdrTypeRef(trAtmb),
+                                   clrFqn = "System.Runtime.CompilerServices.AsyncTaskMethodBuilder")
+  val atmbCreateSig = buildStaticMethodSig(newList(), atmbMsilTy)
+  val tokAtmbCreate = 0x0A000000 + ctxAddMemberRef(
+    lctx, trAtmb, "Create", "atmb_create", atmbCreateSig)
+
+  // ATMB.SetResult(): void  (instance HASTHIS)
+  val tokAtmbSetResult = 0x0A000000 + ctxAddMemberRef(
+    lctx, trAtmb, "SetResult",
+    "atmb_setresult", buildInstanceMethodSig(newList(), MVoid))
+
+  // ATMB.get_Task(): Task  (instance HASTHIS; property getter)
+  val taskMsilTy    = MClassRef(typeRefCode = tdrTypeRef(trTask),
+                                clrFqn = "System.Threading.Tasks.Task")
+  val getTaskArgs: List[MsilType] = newList()
+  val tokAtmbGetTask = 0x0A000000 + ctxAddMemberRef(
+    lctx, trAtmb, "get_Task",
+    "atmb_gettask", buildInstanceMethodSig(getTaskArgs, taskMsilTy))
+
+  // ATMB.Start<!!0>(ref !!0): void  (open-generic instance; method is
+  // instantiated per-SM at Phase 5 lowering via MCallAtmbStart).
+  val tokAtmbStartMr = ctxAddMemberRef(
+    lctx, trAtmb, "Start",
+    "atmb_start_open", buildAtmbStartOpenSig())
+
   val recCtorToks: Map[String, Int] = newMap()
   val fieldToks:   Map[String, Int] = newMap()
   val funcToks:    Map[String, Int] = newMap()
@@ -857,7 +907,15 @@ pub func newCodegenCtx(packageName: in String,
     restoredArtifacts    = restoredArtifacts,
     singletonFieldTokens = newMap(),
     staticValTokens      = newMap(),
-    staticValMsilTypes   = newMap())
+    staticValMsilTypes   = newMap(),
+    trAtmb               = trAtmb,
+    trAtmb1              = trAtmb1,
+    trIAsm               = trIAsm,
+    tokAtmbCreate        = tokAtmbCreate,
+    tokAtmbSetResult     = tokAtmbSetResult,
+    tokAtmbGetTask       = tokAtmbGetTask,
+    tokAtmbStartMr       = tokAtmbStartMr,
+    smTicker             = newList())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1384,7 +1442,30 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
     }
     pv = pv + 1
   }
-
+  // Phase B.0: Reserve MethodDef rows for synthesised SM classes.
+  // Each async func that uses SM synthesis (isAsync, no yield, no @externTarget)
+  // contributes 3 MethodDef rows emitted by MPRecord *before* MPFuncs:
+  //   .ctor (no-arg), MoveNext, SetStateMachine.
+  // These rows appear in the MethodDef table before the host-class .cctor and
+  // kickoff functions, so we must advance methodDefRow past them here so that
+  // funcTok for each kickoff (and main) points to the correct actual row.
+  var smClassCountPts = 0
+  var smkPts = 0
+  while smkPts < file.items.count {
+    match file.items[smkPts].kind {
+      case IFunc(decl) -> {
+        if decl.isAsync
+           and not funcBodyContainsYieldMsil(decl)
+           and not funcBodyContainsAwaitMsil(decl)
+           and not hasExternTargetMsil(decl.annotations) {
+          smClassCountPts = smClassCountPts + 1
+        }
+      }
+      case _ -> {}
+    }
+    smkPts = smkPts + 1
+  }
+  methodDefRow = methodDefRow + smClassCountPts * 3
   // Pass 2: MPFuncs — optional .cctor then IFunc items (in source order).
   if hasValCctor {
     methodDefRow = methodDefRow + 1
@@ -7240,6 +7321,557 @@ func funcBodyContainsYieldMsil(decl: in FunctionDecl): Bool {
   }
 }
 
+func exprContainsAwaitMsil(e: in Expr): Bool {
+  match e.kind {
+    case EAwait(_)         -> true
+    case EBlock(b)         -> blockContainsAwaitMsil(b)
+    case EUnsafe(b)        -> blockContainsAwaitMsil(b)
+    case EIf(c, t, el, _) -> {
+      if exprContainsAwaitMsil(c) { return true }
+      val tRes = match t {
+        case EOBExpr(ex)   -> exprContainsAwaitMsil(ex)
+        case EOBBlock(blk) -> blockContainsAwaitMsil(blk)
+      }
+      if tRes { return true }
+      match el {
+        case Some(elB) -> match elB {
+          case EOBExpr(ex)   -> exprContainsAwaitMsil(ex)
+          case EOBBlock(blk) -> blockContainsAwaitMsil(blk)
+        }
+        case None -> false
+      }
+    }
+    case ECall(fn, args) -> {
+      if exprContainsAwaitMsil(fn) { return true }
+      var ai = 0
+      while ai < args.count {
+        val res = match args[ai] {
+          case CAPositional(ex) -> exprContainsAwaitMsil(ex)
+          case CANamed(_, ex, _) -> exprContainsAwaitMsil(ex)
+        }
+        if res { return true }
+        ai = ai + 1
+      }
+      false
+    }
+    case EBinop(_, l, r)  -> exprContainsAwaitMsil(l) or exprContainsAwaitMsil(r)
+    case EPrefix(_, op)   -> exprContainsAwaitMsil(op)
+    case EParen(inner)    -> exprContainsAwaitMsil(inner)
+    case EMember(recv, _) -> exprContainsAwaitMsil(recv)
+    case ESpawn(inner)    -> exprContainsAwaitMsil(inner)
+    case ETry(inner)      -> exprContainsAwaitMsil(inner)
+    case EPropagate(inner) -> exprContainsAwaitMsil(inner)
+    case EMatch(scr, arms) -> {
+      if exprContainsAwaitMsil(scr) { return true }
+      var ai = 0
+      while ai < arms.count {
+        val res = match arms[ai].body {
+          case EOBExpr(ex)   -> exprContainsAwaitMsil(ex)
+          case EOBBlock(blk) -> blockContainsAwaitMsil(blk)
+        }
+        if res { return true }
+        ai = ai + 1
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
+func stmtContainsAwaitMsil(s: in Statement): Bool {
+  match s.kind {
+    case SExpr(e)  -> exprContainsAwaitMsil(e)
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init)    -> exprContainsAwaitMsil(init)
+        case LBLet(_, _, init)    -> exprContainsAwaitMsil(init)
+        case LBVar(_, _, initOpt) -> match initOpt {
+          case Some(init) -> exprContainsAwaitMsil(init)
+          case None       -> false
+        }
+      }
+    }
+    case SReturn(valOpt) -> match valOpt {
+      case Some(e) -> exprContainsAwaitMsil(e)
+      case None    -> false
+    }
+    case SAssign(_, _, v) -> exprContainsAwaitMsil(v)
+    case SThrow(e)        -> exprContainsAwaitMsil(e)
+    case SWhile(_, c, b)  -> exprContainsAwaitMsil(c) or blockContainsAwaitMsil(b)
+    case SFor(_, _, i, b) -> exprContainsAwaitMsil(i) or blockContainsAwaitMsil(b)
+    case SLoop(_, b)      -> blockContainsAwaitMsil(b)
+    case SScope(_, b)     -> blockContainsAwaitMsil(b)
+    case SDefer(b)        -> blockContainsAwaitMsil(b)
+    case STry(b, catches, finally_) -> {
+      if blockContainsAwaitMsil(b) { return true }
+      var ci = 0
+      while ci < catches.count {
+        if blockContainsAwaitMsil(catches[ci].body) { return true }
+        ci = ci + 1
+      }
+      match finally_ {
+        case None     -> false
+        case Some(fb) -> blockContainsAwaitMsil(fb)
+      }
+    }
+    case _ -> false
+  }
+}
+
+func blockContainsAwaitMsil(block: in Block): Bool {
+  var i = 0
+  while i < block.statements.count {
+    if stmtContainsAwaitMsil(block.statements[i]) { return true }
+    i = i + 1
+  }
+  false
+}
+
+func funcBodyContainsAwaitMsil(decl: in FunctionDecl): Bool {
+  match decl.body {
+    case Some(body) -> match body {
+      case FBBlock(blk) -> blockContainsAwaitMsil(blk)
+      case FBExpr(e)    -> exprContainsAwaitMsil(e)
+    }
+    case None -> false
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §9b. IAsyncStateMachine synthesis for user-defined `async func` (Phase B.0).
+//
+// Synthesises a sealed class (SM) implementing `IAsyncStateMachine` and
+// rewrites the user function as a kickoff stub.  Phase B.0 covers the
+// no-await case only: MoveNext runs the user body synchronously, sets
+// state = -2, calls SetResult, and returns.  Phase B.1 (real suspension)
+// is deferred to a follow-up.
+//
+// The synthesised SM class layout:
+//   __state:   Int            state machine state (-1 = initial, -2 = done)
+//   __builder: ATMB or ATMB<T>  task builder (void or non-void)
+//   __p0..N:   param types   copy of the user function's parameters
+//
+// MoveNext body:
+//   preamble: ldarg.0; ldfld __p_i; stloc local_i   (for each user param)
+//   user body (normal lowering, params read from locals)
+//   epilogue:
+//     ldarg.0; ldc.i4 -2; stfld __state
+//     ldarg.0; ldflda __builder; [result if non-void]; call SetResult
+//     ret
+//
+// Kickoff body (replaces the user func declaration):
+//   newobj SM; stloc sm
+//   ldloc sm; call ATMB.Create(); stfld __builder   (or ATMB<T>.Create())
+//   ldloc sm; ldc.i4 -1; stfld __state
+//   ldloc sm; ldarg.0; stfld __p0   (for each user param)
+//   ...
+//   ldloc sm; ldflda __builder; ldloca sm; call ATMB.Start<SM>(ref SM)
+//   ldloc sm; ldflda __builder; call get_Task
+//   ret
+// ─────────────────────────────────────────────────────────────────────────────
+
+func synthesizeAsyncSmMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
+                            pkgName: in String,
+                            items: in List[MPackageItem],
+                            fns:   in List[MFunc]): Unit {
+
+  val tick  = cctx.smTicker.count
+  cctx.smTicker.add(0)
+
+  val smSimple = "<" + decl.name + ">__SM_" + toString(tick)
+  val smFqn    = pkgName + "." + smSimple
+
+  // Determine return type of the async func (the T in Task<T>, or void).
+  val retTy = match decl.ret {
+    case Some(te) -> {
+      val r = typeExprToMsilCtx(cctx, te, pkgName)
+      if elementTypeByte(r) == 0 { MVoid } else { r }
+    }
+    case None -> MVoid
+  }
+  val isVoid = retTy == MVoid
+
+  // ── SM field list ─────────────────────────────────────────────────────────
+  val smFields: List[MField] = newList()
+
+  // field 0: __state
+  smFields.add(MField(
+    flags     = FDA_PUBLIC,
+    name      = "__state",
+    fieldType = MInt))
+
+  // field 1: __builder (ATMB for void, ATMB<T> for non-void)
+  val builderTy: MsilType =
+    if isVoid {
+      MValueTypeRef(
+        typeRefCode = tdrTypeRef(cctx.trAtmb),
+        clrFqn      = "System.Runtime.CompilerServices.AsyncTaskMethodBuilder")
+    } else {
+      val tArgs: List[MsilType] = newList()
+      tArgs.add(retTy)
+      MValueTypeGenericInst(
+        typeRefCode = tdrTypeRef(cctx.trAtmb1),
+        headFqn     = "System.Runtime.CompilerServices.AsyncTaskMethodBuilder`1",
+        typeArgs    = tArgs)
+    }
+  smFields.add(MField(flags = FDA_PUBLIC, name = "__builder", fieldType = builderTy))
+
+  // fields 2+: one per user param
+  var smPi = 0
+  while smPi < decl.params.count {
+    val p    = decl.params[smPi]
+    val pTy  = typeExprToMsilCtx(cctx, p.ty, pkgName)
+    smFields.add(MField(flags = FDA_PUBLIC, name = "__p" + toString(smPi), fieldType = pTy))
+    smPi = smPi + 1
+  }
+
+  // ── MoveNext() ────────────────────────────────────────────────────────────
+  // paramCount = 1 (this = ldarg.0).
+  // User params are pre-loaded from SM fields into LOCAL slots [0, N-1].
+  val mnInsns: List[MInsn] = newList()
+  val mnFctx = makeFuncCtxMsil(pkgName, smFqn, "MoveNext", 1, MVoid)
+
+  // Pre-populate slotTicker with one entry for the `this` arg (slot 0) so
+  // that the first allocSlotMsil call below gets slot 1 (a local, not an arg).
+  // Without this, slot 0 < paramCount(1) causes the user-param local to be
+  // misclassified as an arg, never added to fctx.locals, and the resulting
+  // MStloc(slot = 0-1 = -1) encodes as stloc 65535 → UnrecognizedLocalNumber.
+  mnFctx.slotTicker.add(0)
+
+  // Preamble: load user params from SM fields into local slots.
+  var mpre = 0
+  while mpre < decl.params.count {
+    val p    = decl.params[mpre]
+    val pTy  = typeExprToMsilCtx(cctx, p.ty, pkgName)
+    val pSlot = allocSlotMsil(mnFctx, p.name, pTy)
+    // ldarg.0; ldfldByName (deferred); stloc <local-index>
+    mnInsns.add(MLdarg(slot = 0))
+    mnInsns.add(MLdfldByName(ownerFqn = smFqn, fieldName = "__p" + toString(mpre)))
+    mnInsns.add(MStloc(slot = pSlot - 1))  // pSlot - paramCount(1) = local index
+    mpre = mpre + 1
+  }
+
+  // Reserve the epilogue label.  Bind to a local so all references below are
+  // provably the allocated value, not a default-zero coincidence (#2273).
+  val epilogueLabel = freshLabelMsil(mnFctx)
+  mnFctx.epilogueLabel = epilogueLabel
+
+  // Lower the user body (Phase B.0: no EAwait nodes in the body).
+  match decl.body {
+    case Some(body) -> {
+      match body {
+        case FBBlock(block) -> {
+          if retTy != MVoid {
+            // Allocate the result stash slot before lowering the body: the stash
+            // MStloc instructions emitted during patching reference this slot.
+            val rSlot = allocSlotMsil(mnFctx, "__sm_result", retTy)
+            val bodyInsns: List[MInsn] = newList()
+            val trailTy = lowerBlockExprMsil(cctx, mnFctx, bodyInsns, block)
+            // Inline patch: replace every MRet with [MStloc(rSlot-1); MBr(epilogueLabel)]
+            // so that explicit `return` statements stash the result and branch to the SM
+            // epilogue rather than exiting MoveNext before SetResult is called (#2256).
+            // Track whether the last copied instruction was a patched-return to determine
+            // whether the trailing-expression value is still on the stack.
+            var lastWasPatchedRet = false
+            var pbi = 0
+            while pbi < bodyInsns.count {
+              match bodyInsns[pbi] {
+                case MRet -> {
+                  mnInsns.add(MStloc(slot = rSlot - 1))
+                  mnInsns.add(MBr(label = epilogueLabel))
+                  lastWasPatchedRet = true
+                }
+                case _ -> {
+                  mnInsns.add(bodyInsns[pbi])
+                  lastWasPatchedRet = false
+                }
+              }
+              pbi = pbi + 1
+            }
+            if not lastWasPatchedRet {
+              // Trailing-expression path: value still on stack — coerce and stash.
+              coerceTrailingToRetMsil(cctx, mnInsns, trailTy, retTy)
+              mnInsns.add(MStloc(slot = rSlot - 1))
+            }
+            // SM epilogue — always reached (fall-through or patched branch).
+            mnInsns.add(MLabel(id = epilogueLabel))
+            mnInsns.add(MLdarg(slot = 0))
+            mnInsns.add(MLdcI4(v = -2))
+            mnInsns.add(MStfldByName(ownerFqn = smFqn, fieldName = "__state"))
+            mnInsns.add(MLdarg(slot = 0))
+            mnInsns.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
+            mnInsns.add(MLdloc(slot = rSlot - 1))
+            // call ATMB`1<T>.SetResult(T): void via TypeSpec-parented MemberRef.
+            // Signature uses VAR 0 per ECMA-335 §II.23.2.1.
+            val tsArgs: List[MsilType] = newList()
+            tsArgs.add(retTy)
+            val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trAtmb1), tsArgs)
+            var taKey = msilTypeKey(retTy)
+            val tsKey  = "atmb1_ts_" + taKey
+            val tsRow  = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+            val srArgs: List[MsilType] = newList()
+            srArgs.add(MTypeVar(index = 0))  // VAR 0, not the concrete retTy — see FBBlock note above
+            val srSig  = buildInstanceMethodSig(srArgs, MVoid)
+            val srKey  = "atmb1_setresult_mr_" + taKey
+            val srMrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "SetResult", srKey, srSig)
+            mnInsns.add(MCall(methodToken = 0x0A000000 + srMrRow))
+            mnInsns.add(MRet)
+          } else {
+            val bodyInsns2: List[MInsn] = newList()
+            lowerBlockMsil(cctx, mnFctx, bodyInsns2, block)
+            // Inline patch: replace every MRet with MBr(epilogueLabel) (#2256).
+            var pbi2 = 0
+            while pbi2 < bodyInsns2.count {
+              match bodyInsns2[pbi2] {
+                case MRet -> mnInsns.add(MBr(label = epilogueLabel))
+                case _ -> mnInsns.add(bodyInsns2[pbi2])
+              }
+              pbi2 = pbi2 + 1
+            }
+            // SM epilogue — always reached.
+            mnInsns.add(MLabel(id = epilogueLabel))
+            mnInsns.add(MLdarg(slot = 0))
+            mnInsns.add(MLdcI4(v = -2))
+            mnInsns.add(MStfldByName(ownerFqn = smFqn, fieldName = "__state"))
+            mnInsns.add(MLdarg(slot = 0))
+            mnInsns.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
+            mnInsns.add(MCall(methodToken = cctx.tokAtmbSetResult))
+            mnInsns.add(MRet)
+          }
+        }
+        case FBExpr(e) -> {
+          if retTy != MVoid {
+            val eTy = lowerExprMsil(cctx, mnFctx, mnInsns, e)
+            coerceTrailingToRetMsil(cctx, mnInsns, eTy, retTy)
+            val rSlot2 = allocSlotMsil(mnFctx, "__sm_result2", retTy)
+            mnInsns.add(MStloc(slot = rSlot2 - 1))
+            mnInsns.add(MLdarg(slot = 0))
+            mnInsns.add(MLdcI4(v = -2))
+            mnInsns.add(MStfldByName(ownerFqn = smFqn, fieldName = "__state"))
+            mnInsns.add(MLdarg(slot = 0))
+            mnInsns.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
+            mnInsns.add(MLdloc(slot = rSlot2 - 1))
+            val tsArgs2: List[MsilType] = newList()
+            tsArgs2.add(retTy)
+            val tsBlob2 = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trAtmb1), tsArgs2)
+            val taKey2  = msilTypeKey(retTy)
+            val tsKey2  = "atmb1_ts_" + taKey2
+            val tsRow2  = ctxAddTypeSpec(cctx.lctx, tsKey2, tsBlob2)
+            val srArgs2: List[MsilType] = newList()
+            srArgs2.add(MTypeVar(index = 0))  // VAR 0, not the concrete retTy — see FBBlock note above
+            val srSig2  = buildInstanceMethodSig(srArgs2, MVoid)
+            val srKey2  = "atmb1_setresult_mr_" + taKey2
+            val srMrRow2 = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow2, "SetResult", srKey2, srSig2)
+            mnInsns.add(MCall(methodToken = 0x0A000000 + srMrRow2))
+            mnInsns.add(MRet)
+          } else {
+            lowerExprMsil(cctx, mnFctx, mnInsns, e)
+            mnInsns.add(MPop)
+            mnInsns.add(MLdarg(slot = 0))
+            mnInsns.add(MLdcI4(v = -2))
+            mnInsns.add(MStfldByName(ownerFqn = smFqn, fieldName = "__state"))
+            mnInsns.add(MLdarg(slot = 0))
+            mnInsns.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
+            mnInsns.add(MCall(methodToken = cctx.tokAtmbSetResult))
+            mnInsns.add(MRet)
+          }
+        }
+      }
+    }
+    case None -> {
+      // Body-less async func: just complete immediately.
+      mnInsns.add(MLdarg(slot = 0))
+      mnInsns.add(MLdcI4(v = -2))
+      mnInsns.add(MStfldByName(ownerFqn = smFqn, fieldName = "__state"))
+      mnInsns.add(MLdarg(slot = 0))
+      mnInsns.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
+      mnInsns.add(MCall(methodToken = cctx.tokAtmbSetResult))
+      mnInsns.add(MRet)
+    }
+  }
+
+  val mnFunc = MFunc(
+    flags    = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_FINAL,
+    name     = "MoveNext",
+    params   = newList(),
+    ret      = MVoid,
+    insns    = mnInsns,
+    maxStack = 8,
+    locals   = mnFctx.locals)
+
+  // ── SetStateMachine() stub ─────────────────────────────────────────────────
+  // The CLR calls this to notify the SM that it's been boxed; we don't
+  // use the passed-in IAsyncStateMachine reference.  Emit a no-op body.
+  val ssmInsns: List[MInsn] = newList()
+  ssmInsns.add(MRet)
+  val ssmParams: List[MsilType] = newList()
+  ssmParams.add(MClassRef(
+    typeRefCode = tdrTypeRef(cctx.trIAsm),
+    clrFqn      = "System.Runtime.CompilerServices.IAsyncStateMachine"))
+  val ssmFunc = MFunc(
+    flags    = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_FINAL,
+    name     = "SetStateMachine",
+    params   = ssmParams,
+    ret      = MVoid,
+    insns    = ssmInsns,
+    maxStack = 1,
+    locals   = newList())
+
+  // ── SM MRecord ────────────────────────────────────────────────────────────
+  val smMethods: List[MFunc] = newList()
+  smMethods.add(mnFunc)
+  smMethods.add(ssmFunc)
+  val smRec = MRecord(
+    className      = smFqn,
+    namespace      = pkgName,
+    baseClass      = "System.Object",
+    fields         = smFields,
+    methods        = smMethods,
+    useDefaultCtor = true)
+  items.add(MPRecord(rec = smRec))
+
+  // ── IAsyncStateMachine MPImpl ─────────────────────────────────────────────
+  val slots: List[MImplSlot] = newList()
+  slots.add(MImplSlot(
+    ifaceMethodToken = 0,
+    implMethodToken  = 0,
+    ifaceMethodName  = "MoveNext",
+    implMethodName   = "MoveNext"))
+  slots.add(MImplSlot(
+    ifaceMethodToken = 0,
+    implMethodToken  = 0,
+    ifaceMethodName  = "SetStateMachine",
+    implMethodName   = "SetStateMachine"))
+  items.add(MPImpl(implData = MImplData(
+    targetTypeDefRow = 0,
+    ifaceTypeToken   = 0,
+    slots            = slots,
+    targetTypeName   = smFqn,
+    ifaceTypeName    = "System.Runtime.CompilerServices.IAsyncStateMachine")))
+
+  // ── Kickoff MFunc ─────────────────────────────────────────────────────────
+  // The user-visible function signature is preserved (same name/params/ret).
+  // The kickoff allocates the SM, wires it up, calls Start, and returns Task/Task<T>.
+  val kfInsns: List[MInsn] = newList()
+  val kfLocals: List[MsilType] = newList()
+  kfLocals.add(MClass(smFqn))  // local 0: SM instance; typed as the SM class so ldloca → byref SM
+
+  // newobj SM (no-arg ctor) — newobj zero-initialises all fields, so __builder
+  // is already a valid default ATMB / ATMB<T> struct without any Create() call.
+  // AsyncTaskMethodBuilder.Create() and AsyncTaskMethodBuilder`1.Create() were
+  // removed from the .NET BCL in .NET 7+ (they returned `default` anyway).
+  kfInsns.add(MNewobjByName(className = smFqn))
+  kfInsns.add(MStloc(slot = 0))
+
+  // sm.__state = -1
+  kfInsns.add(MLdloc(slot = 0))
+  kfInsns.add(MLdcI4(v = -1))
+  kfInsns.add(MStfldByName(ownerFqn = smFqn, fieldName = "__state"))
+
+  // Copy user params into SM fields: ldloc sm; ldarg <i>; stfld __p<i>
+  var kpi = 0
+  while kpi < decl.params.count {
+    kfInsns.add(MLdloc(slot = 0))
+    kfInsns.add(MLdarg(slot = kpi))
+    kfInsns.add(MStfldByName(ownerFqn = smFqn, fieldName = "__p" + toString(kpi)))
+    kpi = kpi + 1
+  }
+
+  // sm.__builder.Start<SM>(ref sm)
+  //   ldloc sm; ldflda __builder; ldloca sm; call MethodSpec
+  // For void path: MemberRef on TypeRef(ATMB).
+  // For non-void path: MemberRef on TypeSpec(ATMB`1<T>) — ATMB and ATMB`1 have
+  //   independent Start methods; using the wrong parent causes a CLR type mismatch.
+  kfInsns.add(MLdloc(slot = 0))
+  kfInsns.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
+  kfInsns.add(MLdloca(slot = 0))
+  val startMrRow =
+    if isVoid {
+      cctx.tokAtmbStartMr
+    } else {
+      val tsArgsS: List[MsilType] = newList()
+      tsArgsS.add(retTy)
+      val tsBlobS = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trAtmb1), tsArgsS)
+      val tsKeyS  = "atmb1_ts_" + msilTypeKey(retTy)
+      val tsRowS  = ctxAddTypeSpec(cctx.lctx, tsKeyS, tsBlobS)
+      val startOpenSig = buildAtmbStartOpenSig()
+      val startMrKey   = "atmb1_start_mr_" + msilTypeKey(retTy)
+      ctxAddMemberRefForTypeSpec(cctx.lctx, tsRowS, "Start", startMrKey, startOpenSig)
+    }
+  kfInsns.add(MCallAtmbStart(
+    smFqn     = smFqn,
+    atmbMrRow = startMrRow,
+    isGeneric = not isVoid))
+
+  // Phase B.0 synchronous unwrap: since MoveNext runs to completion without
+  // suspension, we can safely call get_Task() + get_Result() (or just Wait())
+  // immediately after Start() returns.  This makes the kickoff return T (not
+  // Task<T>) — matching the declared Lyric return type and avoiding any call-
+  // site changes.  Phase B.1 (real suspension) will skip this unwrap and
+  // expose the Task<T> to callers via Lyric's `await` expression.
+  if isVoid {
+    // Void path: MoveNext already called SetResult() → task is Done.
+    // No value to return; just fall through to MRet.
+  } else {
+    // Non-void path: Task<T> = sm.__builder.get_Task(); T = Task<T>.get_Result()
+    val taKey4  = msilTypeKey(retTy)
+    // get_Task(): Task<T>  — ldloc sm; ldflda __builder; call get_Task (struct instance)
+    kfInsns.add(MLdloc(slot = 0))
+    kfInsns.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
+    val tsArgs4: List[MsilType] = newList()
+    tsArgs4.add(retTy)
+    val tsBlob4 = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trAtmb1), tsArgs4)
+    val tsKey4  = "atmb1_ts_" + taKey4
+    val tsRow4  = ctxAddTypeSpec(cctx.lctx, tsKey4, tsBlob4)
+    // Method signature must use VAR 0, not the concrete retTy — the TypeSpec parent
+    // already captures the concrete type arg; see ECMA-335 II.23.2.1.
+    val taskVarArgs: List[MsilType] = newList()
+    taskVarArgs.add(MTypeVar(index = 0))
+    val taskRetTy: MsilType = MGenericInst(
+      typeRefCode = tdrTypeRef(cctx.trTask1),
+      headFqn     = "System.Threading.Tasks.Task`1",
+      typeArgs    = taskVarArgs)
+    val gtArgsTys4: List[MsilType] = newList()
+    val gtSig4  = buildInstanceMethodSig(gtArgsTys4, taskRetTy)
+    val gtKey4  = "atmb1_gettask_mr_" + taKey4
+    val gtMrRow4 = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow4, "get_Task", gtKey4, gtSig4)
+    kfInsns.add(MCall(methodToken = 0x0A000000 + gtMrRow4))
+    // Task<T>.get_Result(): T  — callvirt (uses same pattern as Phase A)
+    val tsArgs5: List[MsilType] = newList()
+    tsArgs5.add(retTy)
+    val tsBlob5 = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trTask1), tsArgs5)
+    val tsKey5  = "ts_task1_result_" + taKey4
+    val tsRow5  = ctxAddTypeSpec(cctx.lctx, tsKey5, tsBlob5)
+    val grSig5  = buildInstanceMethodSig(newList(), MTypeVar(0))
+    val grKey5  = "mr_task_getresult_" + tsKey5
+    val grMrRow5 = ctxAddMemberRefForTypeSpec(
+      cctx.lctx, tsRow5, "get_Result", grKey5, grSig5)
+    kfInsns.add(MCallvirt(methodToken = 0x0A000000 + grMrRow5))
+  }
+  kfInsns.add(MRet)
+
+  // Kickoff return type matches the declared Lyric type: T for non-void, void for void.
+  // (Phase B.0 only — Phase B.1 will expose Task<T> and require `await` at call sites.)
+  val kfRetTy: MsilType = retTy
+
+  // Build parameter type list matching the user func.
+  val kfParamTypes: List[MsilType] = newList()
+  var kpi2 = 0
+  while kpi2 < decl.params.count {
+    kfParamTypes.add(typeExprToMsilCtx(cctx, decl.params[kpi2].ty, pkgName))
+    kpi2 = kpi2 + 1
+  }
+
+  fns.add(MFunc(
+    flags    = MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG,
+    name     = decl.name,
+    params   = byrefWrapSigTypes(decl.params, kfParamTypes),
+    ret      = kfRetTy,
+    insns    = kfInsns,
+    maxStack = 4,
+    locals   = kfLocals))
+}
+
 // Emit the function epilogue block when at least one `return` escaped a
 // protected region through `leave` (#1477).  The epilogue loads the stashed
 // return value (for non-void functions) and rets.  No-op when no return used
@@ -7640,11 +8272,12 @@ pub func lowerRecordMsil(decl: in RecordDecl, pkgName: in String): MRecord {
 
   val methods: List[MFunc] = newList()
   MRecord(
-    className = className,
-    namespace = pkgName,
-    baseClass = "System.Object",
-    fields    = fields,
-    methods   = methods)
+    className      = className,
+    namespace      = pkgName,
+    baseClass      = "System.Object",
+    fields         = fields,
+    methods        = methods,
+    useDefaultCtor = false)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -8374,11 +9007,12 @@ func lowerProtectedMsil(cctx: in CodegenCtx, decl: in ProtectedTypeDecl,
   }
 
   items.add(MPRecord(rec = MRecord(
-    className = pkgName + "." + decl.name,
-    namespace = pkgName,
-    baseClass = "System.Object",
-    fields    = recFields,
-    methods   = recMethods)))
+    className      = pkgName + "." + decl.name,
+    namespace      = pkgName,
+    baseClass      = "System.Object",
+    fields         = recFields,
+    methods        = recMethods,
+    useDefaultCtor = false)))
 }
 
 // ── Wire block lowering ───────────────────────────────────────────────────────
@@ -9818,11 +10452,12 @@ pub func injectImplMethodsIntoRecord(cctx: in CodegenCtx, rec: in MRecord,
     ei = ei + 1
   }
   MRecord(
-    className = rec.className,
-    namespace = rec.namespace,
-    baseClass = rec.baseClass,
-    fields    = rec.fields,
-    methods   = mergedMethods)
+    className      = rec.className,
+    namespace      = rec.namespace,
+    baseClass      = rec.baseClass,
+    fields         = rec.fields,
+    methods        = mergedMethods,
+    useDefaultCtor = rec.useDefaultCtor)
 }
 
 // True iff `anns` carries a `@derive(<marker>)` annotation.  Mirrors
@@ -9928,11 +10563,12 @@ pub func appendDeriveOverridesMsil(cctx: in CodegenCtx, rec: in MRecord,
   }
 
   MRecord(
-    className = rec.className,
-    namespace = rec.namespace,
-    baseClass = rec.baseClass,
-    fields    = rec.fields,
-    methods   = methods)
+    className      = rec.className,
+    namespace      = rec.namespace,
+    baseClass      = rec.baseClass,
+    fields         = rec.fields,
+    methods        = methods,
+    useDefaultCtor = rec.useDefaultCtor)
 }
 
 // The caller must subsequently call `lowerMPackageWithCtx(pkg, cctx.lctx, entryToken)`
@@ -10009,7 +10645,17 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
         items.add(MPRecord(rec = rec))
       }
       case IFunc(decl) -> {
-        fns.add(lowerFuncMsil(cctx, decl, pkgName))
+        // Phase B.0: synthesise IAsyncStateMachine for async func (no-await path).
+        // Generators and @externTarget async funcs use their existing paths.
+        val useSm = decl.isAsync
+                    and not funcBodyContainsYieldMsil(decl)
+                    and not funcBodyContainsAwaitMsil(decl)
+                    and not hasExternTargetMsil(decl.annotations)
+        if useSm {
+          synthesizeAsyncSmMsil(cctx, decl, pkgName, items, fns)
+        } else {
+          fns.add(lowerFuncMsil(cctx, decl, pkgName))
+        }
         if isMainFuncMsil(decl) {
           hasMain = true
         }
