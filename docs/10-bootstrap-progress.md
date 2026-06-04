@@ -20914,20 +20914,27 @@ only ran `typeEquiv`, which compares `TyUser` by `TypeId`, so a conforming
 concrete type never matched its interface.  This was the interface-subtyping
 half of the `mocking_tests` false positives blocking the #1488 gate.
 
-Fix: `registerItem`'s `IImpl` arm now records each `(target, iface)` conformance
-in a new `SymbolTable.impls` list (`symTableAddImpl`), and a new
+Fix: `registerImplsFromItems` (run per-package, under each package's scope,
+after signature resolution) resolves each `impl I for T`'s interface and target
+to their **`TypeId`s** and records the `(targetId, ifaceId)` conformance in a new
+`SymbolTable.impls` list (`symTableAddImpl`); a new
 `argSatisfiesParam(tbl, paramTy, argTy)` accepts an argument either by
-`typeEquiv` or by interface subtyping — `argTy` is a user type `T`, `paramTy` is
-an interface `I`, and `impl I for T` was registered (`symTableTypeImplements`).
-Both `ECall` argument-check sites (the resolved-sig path and the
-function-type-value path) use it.  The relation is by simple name, populated
-during item registration (T1), so it is fully available at body checking (T5);
-conformance *checking* (T0098/T0099) stays in `checkImplConformance`.
+`typeEquiv` or by interface subtyping — `paramTy`/`argTy` are user types whose
+`TypeId`s satisfy a registered conformance (`symTableTypeImplements`).  Keying on
+`TypeId` (not simple name) keeps it sound across packages (#2303): a
+same-simple-name interface in another package has a distinct id and can never
+satisfy the check.  Both `ECall` argument-check sites and the overload-candidate
+predicate `paramsMatchArgs` (#2304) use `argSatisfiesParam`, so overload
+selection agrees with argument checking.  Conformance *checking* (T0098/T0099)
+stays in `checkImplConformance`.
 
-Coverage: 2 new `typechecker_self_test.l` cases (a `Hello` that `impl`s
+Coverage: 3 new `typechecker_self_test.l` cases (a `Hello` that `impl`s
 `Greeter` is accepted where `Greeter` is expected; a non-implementing `Other` is
-still rejected — T0043, proving the relation is precise).  Full regression
-green: 843/843 emitter, typechecker self-test, `weaver_self_test.l` 18/18.  This
+still rejected — T0043, proving the relation is precise; and a cross-package
+case where `Hello` impls `PkgA.Greeter` but is rejected for a `PkgB.Greeter`
+parameter, proving the `TypeId` keying is sound across same-simple-name
+interfaces).  Full regression green: 843/843 emitter, typechecker self-test,
+`weaver_self_test.l` 18/18.  This
 clears the `T0043` interface-subtyping errors on `mocking_tests`; the remaining
 `mocking_tests` errors are `@stubbable`-synthesised `*Stub` records not yet
 visible to the self-hosted type checker (the `@stubbable` synthesis pass —

@@ -115,34 +115,37 @@ pub record SymbolTable {
   /// Interface-conformance relations from `impl I for T` declarations, used
   /// for interface subtyping at argument positions (#1488): an arg of type `T`
   /// is accepted where the parameter is interface `I` when `(T, I)` is present.
+  /// Keyed by `TypeId` (not simple name) so a same-simple-name interface in a
+  /// different package can never satisfy the check (#2303 soundness).
   impls: List[ImplPair]
 }
 
-// One `impl Iface for Target` conformance, by simple type name.
+// One `impl Iface for Target` conformance, by resolved `TypeId`.
 pub record ImplPair {
-  target: String
-  iface:  String
+  target: TypeId
+  iface:  TypeId
 }
 
 pub func newSymbolTable(): SymbolTable {
   SymbolTable(symbols = newList(), scopePkg = newList(), scopeImports = newList(), impls = newList())
 }
 
-// Record that `target` implements interface `iface` (idempotent).
-pub func symTableAddImpl(tbl: in SymbolTable, target: in String, iface: in String): Unit {
+// Record that the type with id `target` implements the interface with id
+// `iface` (idempotent).
+pub func symTableAddImpl(tbl: in SymbolTable, target: in TypeId, iface: in TypeId): Unit {
   var i = 0
   while i < tbl.impls.count {
-    if tbl.impls[i].target == target and tbl.impls[i].iface == iface { return }
+    if typeIdEq(tbl.impls[i].target, target) and typeIdEq(tbl.impls[i].iface, iface) { return }
     i = i + 1
   }
   tbl.impls.add(ImplPair(target = target, iface = iface))
 }
 
 // True when some `impl iface for target` was registered.
-pub func symTableTypeImplements(tbl: in SymbolTable, target: in String, iface: in String): Bool {
+pub func symTableTypeImplements(tbl: in SymbolTable, target: in TypeId, iface: in TypeId): Bool {
   var i = 0
   while i < tbl.impls.count {
-    if tbl.impls[i].target == target and tbl.impls[i].iface == iface { return true }
+    if typeIdEq(tbl.impls[i].target, target) and typeIdEq(tbl.impls[i].iface, iface) { return true }
     i = i + 1
   }
   false

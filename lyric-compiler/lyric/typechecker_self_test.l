@@ -446,6 +446,23 @@ func testInterfaceSubtypingRejectsNonImpl(): Unit {
     "interface-subtyping: Other (no impl) is rejected where Greeter is expected")
 }
 
+// #2303 soundness: conformance is keyed by `TypeId`, not simple name.  `PkgA`
+// and `PkgB` both declare a `Greeter` interface (distinct ids).  `Hello` impls
+// `PkgA.Greeter` (the user imports `PkgA`), so passing it to `PkgB.wantB`, whose
+// parameter is `PkgB.Greeter`, MUST still be rejected — a simple-name key would
+// have wrongly accepted it.
+func testInterfaceSubtypingCrossPackageSound(): Unit {
+  val pkgA = parse("package PkgA\npub interface Greeter {\n  func greet(): String\n}\n")
+  val pkgB = parse("package PkgB\npub interface Greeter {\n  func greet(): String\n}\npub func wantB(g: in Greeter): String { \"\" }\n")
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items))
+  packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items))
+  val src = "package App\nimport PkgA\nrecord Hello { x: Int }\nimpl Greeter for Hello {\n  func greet(): String { \"hi\" }\n}\nfunc f(): Unit {\n  val s = wantB(Hello(x = 1))\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, packages)
+  assertTrue(hasDiagCode(cr, "T0043"),
+    "interface-subtyping cross-package: impl of PkgA.Greeter does not satisfy a PkgB.Greeter parameter")
+}
+
 // #1488 category D: two imported packages can export the same simple type name
 // (`Std.Regex.RegexError` {TimedOut, InvalidPattern} vs `Std.RegexSafe.RegexError`
 // {TimedOut, RegexBug}).  Through the flat `checkWithImports` shim, every
@@ -1391,6 +1408,7 @@ func main(): Unit {
   testCollidingTypeNameLastRegisteredWins()
   testInterfaceSubtypingAccepted()
   testInterfaceSubtypingRejectsNonImpl()
+  testInterfaceSubtypingCrossPackageSound()
   testOverloadDispatchByArgType()
   testQualifiedTypeUnknownEmitsT0014()
   testQualifiedTypeMisqualifiedResolvesPermissively()

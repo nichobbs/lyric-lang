@@ -211,32 +211,58 @@ func registerItem(
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKAspect(decl = decl), vis, span)
     }
     case IExtern(_) -> {}
-    case IImpl(decl) -> {
-      // Record the `impl Iface for Target` conformance by simple name so the
-      // argument-position interface subtyping check (#1488) can accept a
-      // `Target` value where an `Iface` parameter is expected.  Conformance
-      // *checking* (T0098/T0099) stays in `checkImplConformance` (T5).
-      val ifaceSegs = decl.iface.head.segments
-      if ifaceSegs.count > 0 {
-        val targetName = typeExprHeadName(decl.target)
-        if targetName.length > 0 {
-          symTableAddImpl(tbl, targetName, ifaceSegs[ifaceSegs.count - 1])
-        }
-      }
-    }
+    case IImpl(_)   -> {}   // conformance registered post-resolution; see registerImplsFromItems
     case IError     -> {}
   }
 }
 
-// The simple (last-segment) type name at the head of a `TypeExpr`, or "" when
-// the shape carries no nameable head (tuple, function, slice, …).
-func typeExprHeadName(te: in TypeExpr): String {
-  match te.kind {
-    case TRef(path) ->
-      if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "" }
-    case TGenericApp(head, _) ->
-      if head.segments.count > 0 { head.segments[head.segments.count - 1] } else { "" }
-    case _ -> ""
+// Record each `impl Iface for Target` conformance keyed by resolved `TypeId`,
+// so the argument-position interface-subtyping check (#1488) can accept a
+// `Target` value where an `Iface` parameter is expected.  Keying on `TypeId`
+// (not simple name) keeps it sound across packages: a same-simple-name
+// interface in another package has a distinct id and can't satisfy the check
+// (#2303).  Must run with the table fully populated and under the items'
+// package scope (so the iface/target names resolve to the same ids the call
+// site sees); conformance *checking* (T0098/T0099) stays in
+// `checkImplConformance`.
+func registerImplsFromItems(
+  tbl:   in SymbolTable,
+  ctx:   in GenericContext,
+  diag:  in List[Diagnostic],
+  items: in List[Item]
+): Unit {
+  var i = 0
+  while i < items.count {
+    match items[i].kind {
+      case IImpl(decl) -> {
+        val ifaceTy  = resolveType(tbl, ctx, diag, mkTypeRef(decl.iface.head, decl.span))
+        val targetTy = resolveType(tbl, ctx, diag, decl.target)
+        match typeIdOfType(ifaceTy) {
+          case Some(ifaceId) ->
+            match typeIdOfType(targetTy) {
+              case Some(targetId) -> symTableAddImpl(tbl, targetId, ifaceId)
+              case None           -> {}
+            }
+          case None -> {}
+        }
+      }
+      case _ -> {}
+    }
+    i = i + 1
+  }
+}
+
+// Wrap a `ModulePath` as a `TypeExpr` reference so `resolveType` can resolve an
+// interface head (a `ConstraintRef`) the same way it resolves a type position.
+func mkTypeRef(path: in ModulePath, span: in Span): TypeExpr {
+  TypeExpr(kind = TRef(path = path), span = span)
+}
+
+// The `TypeId` of a resolved user type, or `None` for non-`TyUser` types.
+func typeIdOfType(t: in Type): Option[TypeId] {
+  match unrefine(t) {
+    case TyUser(id, _, _) -> Some(value = id)
+    case _                -> None
   }
 }
 
@@ -1006,17 +1032,23 @@ pub func checkWithImportedPackages(
   val sigs: Map[String, ResolvedSignature] = newMap()
   val importedDiag: List[Diagnostic] = newList()
   val noImports: List[String] = newList()
+  // Interface-conformance registration resolves impl iface/target names purely
+  // to key the subtyping relation, so its diagnostics are discarded (genuine
+  // unresolved-type errors surface via sig resolution / checkImplConformance).
+  val implDiag: List[Diagnostic] = newList()
   var sp = 0
   while sp < importedPackages.count {
     val ip2 = importedPackages[sp]
     symTableSetScope(tbl, ip2.name, noImports)
     addSigsFromItems(tbl, importedDiag, sigs, ip2.items, true)
+    registerImplsFromItems(tbl, newGenericContext(), implDiag, ip2.items)
     sp = sp + 1
   }
 
   // User signatures + bodies resolve under the user package's scope.
   symTableSetScope(tbl, userPkg, userImports)
   addSigsFromItems(tbl, diag, sigs, file.items, false)
+  registerImplsFromItems(tbl, newGenericContext(), implDiag, file.items)
 
   // T5: check user function bodies.
   var m = 0
