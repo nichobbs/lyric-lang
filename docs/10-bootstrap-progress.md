@@ -20393,3 +20393,39 @@ unification; a nullary `case Nn` that does not shadow the `Nn` constructor in
 the arm body).  Full regression green: 847/847 emitter, typechecker self-test,
 `weaver_self_test.l` 18/18 (`LYRIC_LOAD_COMPILER=1`), and `lyric-auth` 29/29
 through the self-hosted pipeline.
+
+### D-progress-420 — self-hosted type checker: `result` is contextual (#1488 gate sub-fix, D086, Band-1 of #1470)
+
+**Status:** Shipped — type-checker-only.
+
+The type checker typed `EResult` unconditionally as the enclosing function's
+return type (`case EResult -> sc.returnTy`), ignoring any in-scope binding named
+`result`.  `result` is a hard keyword whose only language meaning is the
+`ensures:` return-value reference, but the binding parser accepts it as a local
+name and codegen has always resolved a read against the `result` *slot* first
+(`codegen.l:2833`), treating it as contextual.  The checker's inconsistency meant
+a `result` local whose type differed from the return type was mis-typed; the
+common `var result = …; … ; result` accumulator idiom only passed because
+`result`'s type coincidentally equalled the return type.  A `Unit`-returning
+function binding `result : String` emitted a spurious `T0032`/`T0060` — one of
+the false-positive categories blocking the #1488 single-file-fatal gate
+(`environment_tests`, `path_tests`).
+
+Fix: `case EResult -> match scopeTryFind(sc, "result") { Some(b) -> b.ty; None ->
+sc.returnTy }`, mirroring codegen.  Inside an `ensures:` clause (no user `result`
+binding) the fallback still yields the return type, so contract semantics are
+unchanged.  Codified as **D086**; `docs/01` §1.3 and the grammar's `ResultExpr`
+gain a contextual-keyword note.
+
+Coverage: 2 new `typechecker_self_test.l` cases (a `Unit`-returning function
+binding `result : String` reads cleanly; an `Int`-returning function binding
+`result : String` still mismatches `val n: Int = result` → T0060, proving the
+read takes the *binding* type, not the return type).  Full regression green:
+847/847 emitter, typechecker self-test, `weaver_self_test.l` 18/18 (the
+self-hosted compiler uses `result` as a local ~200×), and the previously-failing
+`environment_tests` / `path_tests` single-file builds now clean.
+
+This closes false-positive category (A) of the #1488 gate.  Categories (B)
+generic-return instantiation and (C) same-name/same-arity overload resolution
+(plus the cross-package duplicate-`TypeId` and interface-subtyping surfaces)
+remain before the `bridge.l:93` `reportDiagnostics` → `reportAndAbort` flip.

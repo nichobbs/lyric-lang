@@ -914,6 +914,11 @@ PrimaryExpr =
     | Path ;                                  (* IDENT or qualified path like Foo.Bar *)
 
 SelfExpr   = 'self' ;
+(* 'result' is contextual (D086): meaningful as the return-value reference only
+ * inside an ensures clause. It is also accepted as an ordinary binding name, and
+ * an in-scope `result` binding shadows this reference (the type checker and
+ * codegen resolve the binding first, then fall back to the contract return
+ * value). *)
 ResultExpr = 'result' ;
 
 Path = ModulePath ;

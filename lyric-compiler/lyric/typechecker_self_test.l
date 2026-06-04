@@ -131,6 +131,27 @@ func testMatchNullaryNoShadow(): Unit {
   assertEqualInt(diagCount(parseCheck(src)), 0, "match-no-shadow: case Nn does not shadow the Nn constructor")
 }
 
+// #1488 (A): `result` is a contextual keyword.  A user-declared local named
+// `result` shadows the contract return-value reference, so its reads take the
+// *binding's* type — not the enclosing function's return type.  Here `f`
+// returns `Unit` but `result` holds a `String`; reading it into a `String`
+// binding must be clean.  Before the fix, `result` typed as `Unit` (the return
+// type), producing a spurious T0060.  Mirrors codegen, which already loads the
+// `result` slot first (codegen.l:2833).
+func testResultLocalShadowsKeyword(): Unit {
+  val src = "package P\nfunc f(): Unit {\n  val result = \"hi\"\n  val s: String = result\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "result-local: a `val result` shadows the return-value keyword")
+}
+
+// The same shadow with a value type distinct from the return type the other
+// way: `f` returns `Int`, `result` holds a `String`, and assigning `result`
+// into an `Int` binding must now mismatch (T0060) — proving the read takes the
+// String binding type, not the Int return type (which would spuriously pass).
+func testResultLocalKeepsBindingType(): Unit {
+  val src = "package P\nfunc f(): Int {\n  val result = \"hi\"\n  val n: Int = result\n  n\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0060"), "result-local: read takes the String binding type, not Int return type")
+}
+
 func testValTypeMismatch(): Unit {
   val src = "package P\nfunc f(): Unit {\n  val x: Int = \"oops\"\n}\n"
   val cr = parseCheck(src)
@@ -1123,6 +1144,8 @@ func main(): Unit {
   testMatchBranchDestructuredMismatch()
   testMatchBranchClean()
   testMatchNullaryNoShadow()
+  testResultLocalShadowsKeyword()
+  testResultLocalKeepsBindingType()
   testValTypeMismatch()
   testUnsafeBlockTyped()
   testDivergingBlockIsNever()
