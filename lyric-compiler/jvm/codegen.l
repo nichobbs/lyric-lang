@@ -2366,7 +2366,12 @@ func lowerAutoFfiStaticCall(
       }
       // No JDK / JARs found.  Fall back to the legacy object-typed binding;
       // resolution may fail at JVM link time.
+      // For constructors, LNew + LDup must appear before args on the operand stack.
       val paramTys: List[JvmType] = newList()
+      if methodName == "new" {
+        insns.add(LNew(className = binaryName))
+        insns.add(LDup)
+      }
       var j = 0
       while j < argBufs.count {
         val buf = argBufs[j]
@@ -2376,9 +2381,7 @@ func lowerAutoFfiStaticCall(
         j = j + 1
       }
       if methodName == "new" {
-        // No-metadata constructor fallback: new + dup + Object-typed invokespecial.
-        insns.add(LNew(className = binaryName))
-        insns.add(LDup)
+        // No-metadata constructor fallback: Object-typed invokespecial <init>.
         insns.add(LInvokespecial(
           owner  = binaryName,
           name   = "<init>",
