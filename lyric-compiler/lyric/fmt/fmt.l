@@ -297,6 +297,16 @@ pub func format(parsed: in ParseResult): String {
 
   val sb: List[String] = newList()
 
+  // File-header comments that precede the `package` declaration.  The
+  // language reference (§1.3) makes `//!` the canonical form for a
+  // module-level doc block, so `lyric fmt` auto-fixes a plain `//`
+  // (or stray `///`) header into `//!` rather than dropping it or
+  // leaving it in a non-doc form that the AST discards.  Block comments
+  // (`/* … */`) are left verbatim.  See `promoteModuleComment`.
+  val preHeader = popCommentsBefore(ctx, file.packageDecl.span.startPos.offset)
+  var ph = 0
+  while ph < preHeader.count { sb.add(promoteModuleComment(preHeader[ph])); ph = ph + 1 }
+
   // Module-doc comments.
   var i = 0
   while i < file.moduleDoc.count {
@@ -317,12 +327,14 @@ pub func format(parsed: in ParseResult): String {
   // `package …`.
   sb.add("package " + pathStr(file.packageDecl.path))
 
-  // The header (module doc + file annotations + package decl) ends at
-  // the package decl's last token.  Skip past any harvested comments
-  // that fall inside the header — they'd only be doc-comments which we
-  // already emit via `file.moduleDoc`, but the cursor must move past
-  // them so subsequent lookups stay honest.
-  skipCommentsBefore(ctx, file.packageDecl.span.endPos.offset)
+  // Any comment that still sits inside the `package` declaration's own
+  // span — e.g. a trailing `// note` on the `package` line — is emitted
+  // rather than skipped so no comment is lost.  Doc comments here were
+  // already rendered above via `file.moduleDoc`; only plain trivia can
+  // remain.
+  val pkgTail = popCommentsBefore(ctx, file.packageDecl.span.endPos.offset)
+  var pt = 0
+  while pt < pkgTail.count { sb.add(pkgTail[pt]); pt = pt + 1 }
 
   // Imports.
   if file.imports.count > 0 {
@@ -402,6 +414,28 @@ pub func format(parsed: in ParseResult): String {
   joinLines(sb)
 }
 
+/// Auto-fix a pre-`package` header comment into the canonical module-doc
+/// form `//!`.  A plain `//` line, a stray `///` (which the parser does
+/// not bind to any item before `package` and would otherwise drop), or
+/// an already-`//!` line all normalise to `//!`, preserving any text and
+/// alignment that followed the marker.  Block-comment fragments and
+/// non-comment lines pass through untouched.
+@pure
+func promoteModuleComment(line: in String): String {
+  var i = 0
+  while i < line.length and (line[i] == ' ' or line[i] == '\t') { i = i + 1 }
+  // Must begin with `//`; otherwise (block-comment body, blank) leave as-is.
+  if i + 1 >= line.length or line[i] != '/' or line[i + 1] != '/' {
+    return line
+  }
+  val ws = Str.substring(line, 0, i)
+  var j = i
+  while j < line.length and line[j] == '/' { j = j + 1 }
+  if j < line.length and line[j] == '!' { j = j + 1 }
+  val rest = Str.substring(line, j, line.length - j)
+  ws + "//!" + rest
+}
+
 func joinLines(lines: in List[String]): String {
   var acc = ""
   var i = 0
@@ -445,4 +479,295 @@ pub func formatSource(source: in String): String {
 @stable(since="0.1")
 pub func isFormattedSource(source: in String): Bool {
   isFormatted(source, parse(source))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §7. Loss-checked formatting.  `formatSourceChecked` formats a source
+// string and then PROVES the result is lossless before returning it:
+//
+//   1. the input must parse without error diagnostics,
+//   2. the formatted output must re-parse without error diagnostics,
+//   3. every comment / doc-comment payload in the input must survive in
+//      the output (marker-agnostic, so the `//` → `//!` module-comment
+//      auto-fix does not count as a loss), and
+//   4. the sequence of CODE tokens (everything but whitespace, comments,
+//      commas, statement-end, and EOF) must be IDENTICAL — so a dropped
+//      `pub`, a dropped `requires:` clause, a mangled `\u{…}` escape, or
+//      an inserted `{ }` block that rescopes a binding is all refused.
+//
+// `lyric fmt --write` routes through this so it can never silently change
+// a file's meaning: on any failure it refuses to overwrite and reports
+// the reason, leaving the file untouched.
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub union FmtCheck {
+  /// Formatting succeeded and was proven lossless.
+  case FmtOk(text: String)
+  /// The input source has parse errors; it is not safe to reformat.
+  case FmtInputParseError(diagnostics: List[Diagnostic])
+  /// The formatted output failed to re-parse — a formatter bug.
+  case FmtOutputParseError(diagnostics: List[Diagnostic])
+  /// One or more comment payloads present in the input are absent from
+  /// the formatted output.
+  case FmtCommentLoss(dropped: List[String])
+  /// The code-token sequence changed between input and output — a token
+  /// was dropped, added, or reordered (so the formatter altered meaning,
+  /// not just layout).  `detail` describes the first divergence.
+  case FmtStructureChanged(detail: String)
+}
+
+@stable(since="0.1")
+pub func formatSourceChecked(source: in String): FmtCheck {
+  val parsedIn = parse(source)
+  val inErrs = errorDiagnostics(parsedIn.diagnostics)
+  if inErrs.count > 0 { return FmtInputParseError(diagnostics = inErrs) }
+
+  val formatted = format(parsedIn)
+
+  val parsedOut = parse(formatted)
+  val outErrs = errorDiagnostics(parsedOut.diagnostics)
+  if outErrs.count > 0 { return FmtOutputParseError(diagnostics = outErrs) }
+
+  val droppedComments =
+    multisetMissing(commentPayloads(source), commentPayloads(formatted))
+  if droppedComments.count > 0 { return FmtCommentLoss(dropped = droppedComments) }
+
+  val structDiff = structuralSequenceDiff(parsedIn.source, formatted)
+  if structDiff != "" { return FmtStructureChanged(detail = structDiff) }
+
+  FmtOk(text = formatted)
+}
+
+func errorDiagnostics(ds: in List[Diagnostic]): List[Diagnostic] {
+  val acc: List[Diagnostic] = newList()
+  var i = 0
+  while i < ds.count {
+    match ds[i].severity {
+      case DiagError   -> acc.add(ds[i])
+      case DiagWarning -> {}
+    }
+    i = i + 1
+  }
+  acc
+}
+
+/// The ordered code tokens of `source`: every lexed token's source text,
+/// excluding whitespace/newline trivia (never tokens), statement-end and
+/// EOF sentinels, doc/line/block comments, and commas.  Token text is
+/// sliced from the (CR/LF-normalised) source by span so punctuation,
+/// keywords, identifiers, and literals all compare by their exact
+/// spelling without a per-kind spelling table.  Commas are excluded so
+/// the "magic trailing comma" the formatter may add when breaking a list
+/// across lines is not flagged as a change (a comma that truly separated
+/// two items cannot vanish without breaking the re-parse, caught above).
+func codeTokens(source: in String): List[String] {
+  val lr = lex(source)
+  val acc: List[String] = newList()
+  var i = 0
+  while i < lr.tokens.count {
+    val t = lr.tokens[i]
+    val include = match t.token {
+      case TStmtEnd             -> false
+      case TEof                 -> false
+      case TDocComment(_)       -> false
+      case TModuleDocComment(_) -> false
+      case _                    -> true
+    }
+    if include {
+      val st = t.span.startPos.offset
+      val en = t.span.endPos.offset
+      val text =
+        if en > st and st >= 0 and en <= source.length {
+          Str.substring(source, st, en - st)
+        } else {
+          tokenKindTag(t.token)
+        }
+      if text != "," { acc.add(text) }
+    }
+    i = i + 1
+  }
+  acc
+}
+
+@pure
+func tokenKindTag(tok: in Token): String {
+  match tok {
+    case TKeyword(kw) -> "kw:" + keywordSpelling(kw)
+    case TIdent(name) -> "id:" + name
+    case TString(s)   -> "s:" + s
+    case TBool(b)     -> if b { "true" } else { "false" }
+    case _            -> "<tok>"
+  }
+}
+
+/// Compare the code-token sequences of two sources.  Returns "" when they
+/// are identical, otherwise a one-line description of the first
+/// divergence (1-based token index and the differing texts).
+func structuralSequenceDiff(a: in String, b: in String): String {
+  val ta = codeTokens(a)
+  val tb = codeTokens(b)
+  val n = if ta.count < tb.count { ta.count } else { tb.count }
+  var i = 0
+  while i < n {
+    if ta[i] != tb[i] {
+      return "token " + toString(i + 1) + " changed: `" + ta[i] +
+             "` -> `" + tb[i] + "`"
+    }
+    i = i + 1
+  }
+  if ta.count != tb.count {
+    return "token count changed: " + toString(ta.count) + " -> " +
+           toString(tb.count)
+  }
+  ""
+}
+
+/// True when the checked format succeeded losslessly.
+@stable(since="0.1")
+pub func fmtCheckIsOk(c: in FmtCheck): Bool {
+  match c {
+    case FmtOk(_) -> true
+    case _        -> false
+  }
+}
+
+/// The formatted text — valid only when `fmtCheckIsOk` is true (empty
+/// string otherwise).
+@stable(since="0.1")
+pub func fmtCheckText(c: in FmtCheck): String {
+  match c {
+    case FmtOk(t) -> t
+    case _        -> ""
+  }
+}
+
+/// A human-readable explanation of why a checked format was refused, or
+/// the empty string on success.  Drives the `lyric fmt` diagnostic.
+@stable(since="0.1")
+pub func fmtCheckMessage(c: in FmtCheck): String {
+  match c {
+    case FmtOk(_) -> ""
+    case FmtInputParseError(ds) ->
+      "fmt skipped — source has " + toString(ds.count) +
+      " parse error(s); not safe to reformat:\n" + diagsMessage(ds)
+    case FmtOutputParseError(ds) ->
+      "fmt aborted — formatter output does not parse (" + toString(ds.count) +
+      " error(s)); file left unchanged (formatter bug):\n" + diagsMessage(ds)
+    case FmtCommentLoss(dropped) ->
+      "fmt aborted — would drop " + toString(dropped.count) +
+      " comment(s); file left unchanged:\n" + droppedMessage(dropped)
+    case FmtStructureChanged(detail) ->
+      "fmt aborted — formatting would change the code-token sequence " +
+      "(formatter bug); file left unchanged:\n  " + detail
+  }
+}
+
+func diagsMessage(ds: in List[Diagnostic]): String {
+  var s = ""
+  var i = 0
+  while i < ds.count {
+    val d = ds[i]
+    s = s + "  " + d.code + " [" + toString(d.span.startPos.line) + ":" +
+        toString(d.span.startPos.column) + "]: " + d.message + "\n"
+    i = i + 1
+  }
+  s
+}
+
+func droppedMessage(xs: in List[String]): String {
+  var s = ""
+  var i = 0
+  while i < xs.count and i < 10 {
+    s = s + "  - " + xs[i] + "\n"
+    i = i + 1
+  }
+  if xs.count > 10 {
+    s = s + "  ... and " + toString(xs.count - 10) + " more\n"
+  }
+  s
+}
+
+/// Collapse internal whitespace runs and strip the comment marker so two
+/// comments compare equal modulo reflow and the `//` → `//!` auto-fix.
+@pure
+func normComment(raw: in String): String {
+  var s = Str.trim(raw)
+  if Str.startsWith(s, "/*") {
+    s = Str.substring(s, 2, s.length - 2)
+    if Str.endsWith(s, "*/") { s = Str.substring(s, 0, s.length - 2) }
+  } else {
+    var k = 0
+    while k < s.length and s[k] == '/' { k = k + 1 }
+    if k < s.length and s[k] == '!' { k = k + 1 }
+    s = Str.substring(s, k, s.length - k)
+  }
+  collapseWs(Str.trim(s))
+}
+
+@pure
+func collapseWs(s: in String): String {
+  val noTabs = Str.replace(s, "\t", " ")
+  val parts = Str.split(noTabs, " ")
+  val acc: List[String] = newList()
+  var i = 0
+  while i < parts.length {
+    if parts[i] != "" { acc.add(parts[i]) }
+    i = i + 1
+  }
+  joinStrings(acc, " ")
+}
+
+/// Every comment and doc-comment payload in `source`, normalised and with
+/// empties dropped, in document order.
+func commentPayloads(source: in String): List[String] {
+  val lr = lex(source)
+  val acc: List[String] = newList()
+  var i = 0
+  while i < lr.tokens.count {
+    val t = lr.tokens[i]
+    var k = 0
+    while k < t.leadingTrivia.count {
+      val tr = t.leadingTrivia[k]
+      match tr.kind {
+        case TKLineComment  -> { val p = normComment(tr.text); if p != "" { acc.add(p) } }
+        case TKBlockComment -> { val p = normComment(tr.text); if p != "" { acc.add(p) } }
+        case TKWhitespace   -> {}
+        case TKNewline      -> {}
+      }
+      k = k + 1
+    }
+    match t.token {
+      case TDocComment(txt)       -> { val p = normComment(txt); if p != "" { acc.add(p) } }
+      case TModuleDocComment(txt) -> { val p = normComment(txt); if p != "" { acc.add(p) } }
+      case _ -> {}
+    }
+    i = i + 1
+  }
+  acc
+}
+
+/// Multiset difference `a \ b`: every element of `a` that appears more
+/// often in `a` than in `b`, with the surplus multiplicity.
+func multisetMissing(a: in List[String], b: in List[String]): List[String] {
+  val missing: List[String] = newList()
+  var i = 0
+  while i < a.count {
+    val v = a[i]
+    var seen = false
+    var p = 0
+    while p < i { if a[p] == v { seen = true } p = p + 1 }
+    if not seen {
+      var d = countOf(a, v) - countOf(b, v)
+      while d > 0 { missing.add(v) d = d - 1 }
+    }
+    i = i + 1
+  }
+  missing
+}
+
+func countOf(xs: in List[String], v: in String): Int {
+  var c = 0
+  var i = 0
+  while i < xs.count { if xs[i] == v { c = c + 1 } i = i + 1 }
+  c
 }
