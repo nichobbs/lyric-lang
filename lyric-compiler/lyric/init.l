@@ -38,10 +38,18 @@ pub func derivePackageName(raw: in String): Result[String, String] {
   if Str.length(raw) == 0 {
     return Err(error = "empty package name; pass --name <Name>")
   }
+  // Capitalise an ASCII lowercase leading letter via a lookup table.  This
+  // deliberately avoids `toUpper` and `"" + Char` concatenation: `Str.toUpper`
+  // collides with `Char.toUpper` under the F# emitter's name resolution (this
+  // file imports both Std.String and Std.Char), and `"" + Char.toUpper(first)`
+  // tripped a self-hosted MSIL codegen bug.  Pure string ops compile on both.
+  val lowers  = "abcdefghijklmnopqrstuvwxyz"
+  val uppers  = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  val firstStr = Str.substring(raw, 0, 1)
   var name = raw
-  val first = raw[0]
-  if Char.isLetter(first) and not Char.isUpper(first) {
-    name = ("" + Char.toUpper(first)) + Str.substring(raw, 1, Str.length(raw) - 1)
+  match Str.indexOf(lowers, firstStr) {
+    case Some(idx) -> { name = Str.substring(uppers, idx, 1) + Str.substring(raw, 1, Str.length(raw) - 1) }
+    case None      -> ()  // already uppercase, or not an ASCII letter (validated below)
   }
   if not Char.isLetter(name[0]) {
     return Err(error = "package name must start with a letter (got '" + raw + "'); pass --name <Name>")
@@ -143,7 +151,7 @@ pub func runInit(opts: in InitOptions): Int {
     case Some(n) -> n
     case None    -> {
       val base = Path.basename(targetDir)
-      if base == "." or base == "" or Str.length(base) == 0 {
+      if base == "." or Str.length(base) == 0 {
         Path.basename(Environment.currentDirectory())
       } else {
         base
@@ -175,7 +183,14 @@ pub func runInit(opts: in InitOptions): Int {
   val srcContent = if opts.isLib { libSource(name) } else { mainSource(name) }
 
   if not writeOrErr(manifestPath, manifestContent(name, opts.isLib)) { return 1 }
-  if not writeOrErr(srcFile, srcContent) { return 1 }
+
+  // Never clobber existing user source — even under --force, which targets the
+  // manifest, not hand-written code.  Leave an existing src/main.l|lib.l in place.
+  if File.fileExists(srcFile) {
+    Console.println("init: " + srcFile + " already exists; leaving it untouched")
+  } else {
+    if not writeOrErr(srcFile, srcContent) { return 1 }
+  }
 
   // Only write .gitignore when absent — never clobber a user's existing one.
   val gitignorePath = Path.join(targetDir, ".gitignore")

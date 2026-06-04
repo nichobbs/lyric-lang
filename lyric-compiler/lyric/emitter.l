@@ -508,6 +508,14 @@ func loadCompilerPayloads(compilerDir: in String): List[ProjectPackagePayload] {
     case Err(_)  -> ()
   }
 
+  // Lyric.Init — single file (`init.l`), optional.  Lets `init_self_test.l`
+  // resolve `import Lyric.Init` for the pure `derivePackageName` helper.
+  val initPath = Path.join(compilerDir, "init.l")
+  match File.readText(initPath) {
+    case Ok(src) -> payloads.add(ProjectPackagePayload(name = "Lyric.Init", source = src))
+    case Err(_)  -> ()
+  }
+
   payloads
 }
 
