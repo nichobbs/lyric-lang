@@ -123,20 +123,20 @@ test "Int.shr is an arithmetic (sign-replicating) shift" {
 test "Long.and / .or / .xor" {
   val a: Long = 5i64
   val b: Long = 3i64
-  assertTrue(a.and(b) == 1i64, "5L & 3L == 1L")
-  assertTrue(a.or(b) == 7i64, "5L | 3L == 7L")
-  assertTrue(a.xor(b) == 6i64, "5L ^ 3L == 6L")
+  assertEqualLong(a.and(b), 1i64, "5L & 3L == 1L")
+  assertEqualLong(a.or(b), 7i64, "5L | 3L == 7L")
+  assertEqualLong(a.xor(b), 6i64, "5L ^ 3L == 6L")
 }
 
 test "Long.shl reaches beyond 32 bits" {
   val one: Long = 1i64
   // 1L << 0 is a no-op, mirroring the Int.shl(0) zero-shift case.
-  assertTrue(one.shl(0) == 1i64, "1L << 0 (no-op)")
+  assertEqualLong(one.shl(0), 1i64, "1L << 0 (no-op)")
   // 1L << 40 = 1_099_511_627_776 — overflows Int32, proving 64-bit width.
-  assertTrue(one.shl(40) == 1099511627776i64, "1L << 40")
+  assertEqualLong(one.shl(40), 1099511627776i64, "1L << 40")
 }
 
 test "Long.shr is arithmetic (sign-replicating)" {
   val neg8: Long = -8i64
-  assertTrue(neg8.shr(1) == -4i64, "-8L >> 1 (arithmetic)")
+  assertEqualLong(neg8.shr(1), -4i64, "-8L >> 1 (arithmetic)")
 }

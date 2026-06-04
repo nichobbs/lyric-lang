@@ -5,6 +5,7 @@
 //   * `assertEqual(actual, expected, label)` — panics on mismatch
 //     with a structured message including both values.
 //   * `assertEqualInt(actual, expected, label)` — integer variant.
+//   * `assertEqualLong(actual, expected, label)` — long variant.
 //   * `assertTrue(cond, label)` — generic predicate assertion.
 //   * `assertPanics(label, fn)` — runs `fn()` inside a `try` and
 //     asserts that it panicked (raised a `Bug`); fails the test
@@ -63,6 +64,22 @@ pub func assertEqualInt(
   } else {
     panic(
       "assertEqualInt '" + label + "' failed: expected=" +
+      toString(expected) + " actual=" + toString(actual))
+  }
+}
+
+/// Panic with a structured "expected/actual" message when the
+/// two `Long` values differ.
+@stable(since="1.0")
+pub func assertEqualLong(
+        actual: in Long,
+        expected: in Long,
+        label: in String): Unit {
+  if actual == expected {
+    ()
+  } else {
+    panic(
+      "assertEqualLong '" + label + "' failed: expected=" +
       toString(expected) + " actual=" + toString(actual))
   }
 }
