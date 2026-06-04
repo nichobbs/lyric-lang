@@ -455,6 +455,12 @@ func cmdBuild(argv: in slice[String]): Int {
       i += 1
     }
   }
+  // `--rid` only applies to `--release` (Native AOT); warn rather than ignore
+  // it silently on a normal build (#2022).
+  match ridArg {
+    case Some(_) -> if not release { printErr("build: warning: --rid has no effect without --release") }
+    case None    -> ()
+  }
   // Project-mode: `lyric build --manifest lyric.toml`, or no positional source
   // at all (discover the nearest lyric.toml by walking up from the cwd).
   if positional.count == 0 {
@@ -525,6 +531,12 @@ func buildReleaseSingle(
     case Err(e) -> { printErr("build: " + IOError.message(e)); return 1 }
   }
   val pkgName = Release.packageNameOf(srcText)
+  // Validate the entry package up front — before the (slow) managed build —
+  // so a source with no `package` declaration fails fast (#2021).
+  if pkgName == "" {
+    printErr("build: --release: no `package` declaration found in " + sourcePath)
+    return 1
+  }
 
   val srcDir = Path.dirname(sourcePath)
   val stem   = stemOf(Path.basename(sourcePath), 2)  // strip ".l"

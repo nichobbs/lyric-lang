@@ -206,8 +206,13 @@ pub func buildReleaseDotnet(
   while i < extraRefs.count { refs.add(extraRefs[i]); i += 1 }
   match locateStdlib(programDir) {
     case Some(p) -> refs.add(p)
-    case None    -> releaseErr("warning: Lyric.Stdlib.dll not found near " + programDir +
-                               " or the lyric binary; the link may fail if the program uses Std.*")
+    case None    -> {
+      // Fail with a clear Lyric diagnostic rather than letting `dotnet
+      // publish` fail later with a cryptic ILC link error (#2020).
+      releaseErr("Lyric.Stdlib.dll not found near " + programDir +
+                 " or the lyric binary (" + Environment.appBaseDirectory() + ")")
+      return 1
+    }
   }
 
   val ridValue = match ridOpt {
