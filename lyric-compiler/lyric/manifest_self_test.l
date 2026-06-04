@@ -158,12 +158,10 @@ func testGitDepTag(): Unit {
   val m = parseOk(toml)
   assertEqualInt(m.deps.count, 1, "git-dep-tag: one entry")
   match m.deps[0].source {
-    case Git(url, ref, subdir) -> {
+    case Git(url, refKind, refValue, subdir) -> {
       assertEqual(url, "https://github.com/user/repo", "git-dep-tag: url")
-      match ref {
-        case Tag(name) -> assertEqual(name, "v1.0.0", "git-dep-tag: tag name")
-        case _         -> assertTrue(false, "git-dep-tag: ref should be Tag")
-      }
+      assertEqual(refKind, "tag", "git-dep-tag: ref kind")
+      assertEqual(refValue, "v1.0.0", "git-dep-tag: tag name")
       match subdir {
         case None    -> ()
         case Some(_) -> assertTrue(false, "git-dep-tag: no subdir")
@@ -178,12 +176,10 @@ func testGitDepSubdir(): Unit {
   val m = parseOk(toml)
   assertEqualInt(m.deps.count, 1, "git-dep-subdir: one entry")
   match m.deps[0].source {
-    case Git(url, ref, subdir) -> {
+    case Git(url, refKind, refValue, subdir) -> {
       assertEqual(url, "https://github.com/nichobbs/lyric-lang", "git-dep-subdir: url")
-      match ref {
-        case Tag(name) -> assertEqual(name, "v0.1.0", "git-dep-subdir: tag name")
-        case _         -> assertTrue(false, "git-dep-subdir: ref should be Tag")
-      }
+      assertEqual(refKind, "tag", "git-dep-subdir: ref kind")
+      assertEqual(refValue, "v0.1.0", "git-dep-subdir: tag name")
       match subdir {
         case Some(d) -> assertEqual(d, "lyric-cache", "git-dep-subdir: subdir")
         case None    -> assertTrue(false, "git-dep-subdir: should have subdir")

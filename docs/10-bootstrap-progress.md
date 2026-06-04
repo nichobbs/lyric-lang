@@ -20092,3 +20092,187 @@ MSIL target.
 
 Docs: D084 (decision log), language reference §13.1, book getting-started
 (scaffolding section) + appendix-b CLI reference.
+
+### D-progress-413 — fix `lyric restore` git-dep crash + manifest error rendering (#2082)
+
+**Status:** Shipped (`lyric-compiler/lyric/git_dep/git_dep.l`,
+`lyric-compiler/lyric/manifest.l`).
+
+Bug fix for the `Std.Char.fromInt: requires failed` core dump on
+`lyric restore` of a git dependency.  Root cause (filed as #2125): the F#
+stage-0 emitter mis-resolves the qualified call `Str.fromInt` to
+`Std.Char.fromInt` in files importing both `Std.String` and `Std.Char`;
+`Char.fromInt` requires `n <= 65535`, so `urlToHash`'s ~2-billion DJB2 hash
+panicked.  The same collision rendered `Lyric.Manifest` TOML parse-error
+`line:col` as garbled control characters.
+
+- `urlToHash` / `gitErrMsg` use the unambiguous `toString` builtin instead of
+  `Str.fromInt`; `urlToHash` now returns the correct decimal-suffixed cache name.
+- `ManifestError.message` uses `toString` — parse errors render a real
+  `lyric.toml:<line>:<col>:` location for every user.
+- `refDirName` assigns into a non-null-initialised `var`; `resolve` guards the
+  empty result and returns a clean `Err`, so a git-dep restore fails gracefully
+  (exit 1, clear message) instead of an NRE/core dump.
+
+New CI "Git-dep / manifest-error regression e2e" step covers both: a git-dep
+restore exits non-zero with no unhandled-exception/`fromInt`/NRE text, and a
+TOML parse error renders a numeric `:line:col:`.
+
+Functional git-dep resolution (parsed `ref` reads back null) is a separate
+emitter defect tracked in #2126.  Stage-1 + AOT clean.  MSIL target.
+
+### D-progress-414 — self-hosted type checker: `EIf`-branch value typing (#1943, #1483, Band-1 of #1470)
+
+**Status:** Shipped — type-checker-only.
+
+An `if`/`else` expression now takes the **unified type of its branches** instead
+of the universal `TyError`.  Each branch is an `ExprOrBlock` typed by the new
+`inferExprOrBlock` (a bare expression via `inferExpr`, a brace block via the
+divergence-aware `checkBlock` from D081, threading the scope's `returnTy`/
+`genericNames`).  `unifyBranchTypes` then combines them:
+
+- a `Never` branch (one that diverges via `return`/`throw`/`break`/`continue` or
+  `panic`) is **absorbed** — the `if` takes the other branch's type, so
+  `if c { 1 } else { return 0 }` is cleanly `Int`;
+- a `TyError` branch is absorbed (no cascade off an already-diagnosed branch);
+- a **`Unit`** branch (one ending in a statement / value-discarding call) means
+  the `if` is used statement-like — its value is discarded, so the branches need
+  not agree and the result is `Unit`.  The type checker cannot tell statement
+  position from value position, and a statement-position
+  `if c { x = 1 } else { f() }` (where `f()` returns a discarded non-`Unit`
+  value) is valid and pervasive — so only two **non-`Unit`** branches with
+  distinct types are a real mismatch (**T0067**), e.g. `if c { 1 } else { "s" }`.
+  On a mismatch the result is `TyError` (the universal unifier), not one arm's
+  type, so the containing expression context does not cascade follow-on
+  diagnostics off an arbitrary pick.
+
+An `if` *without* an `else` produces no value on the false path, so it is `Unit`.
+This depends on the #1943 parser fix (D-progress-410): a statement-position
+brace-`if` is a complete statement, so a trailing operator no longer glues into
+the `if`, and the branch types are what the type checker sees.
+
+**Module-receiver leniency (a required companion fix):** type-checking `if`/block
+branch bodies became newly reachable, and those bodies can contain
+`Module.member(...)` calls.  When such a call's module head is a bare
+single-segment path that follows the **UpperCamelCase module/type naming
+convention** and does not resolve — e.g. a `Std.String as Str` alias that
+survived alias-rewriting in a multi-file / `LYRIC_LOAD_COMPILER` bundle — the
+`EMember` receiver is treated as a **module reference** (`TyError`, lenient)
+rather than a hard `T0020`, consistent with multi-segment qualified paths which
+were already lenient.  A *lowercase* receiver is a value, so a typo like
+`stirng.method()` still surfaces its `T0020` (the leniency is narrow by design,
+#2127).  Without this the `weaver_self_test.l` self-
+application (compiling the whole compiler through itself) false-failed on a
+surviving `Str` alias once branch bodies were checked.
+
+Coverage: 7 new `typechecker_self_test.l` cases (matching branches unify to `Int`;
+`Int` vs `String` branches → T0067; a no-`else` `if` bound to a `String` `val`
+→ T0060; an `else`-`return` branch is `Never` and unifies to `Int`; an
+`Int`-vs-`Unit` branch pair is **not** a mismatch; an unresolved `Foo.bar()`
+upper-receiver does **not** error while a lowercase `stirng.bar()` typo still
+does).  Ecosystem sweep: **zero** new failures, **zero** T0067 false positives,
+and no library's build status changed across every `lyric-*` package;
+`lyric-auth` (heavy `if`/`else-if` chains) 29/29; `weaver_self_test.l` 18/18
+(`LYRIC_LOAD_COMPILER=1`).  Full regression green: 847/847 emitter, 84/84 CLI,
+typechecker self-test.  Book chapter 4 updated for the unified-`if`-type
+behaviour (#2128).
+
+Remaining Band-1 `TyError` forms: `EMatch`-branch unification (needs
+pattern-variable binding so arm bodies see their bound names), `ELambda`,
+`ETypeApp`, `EForall`/`EExists`, `EAssign`; then the #1488 gate.
+
+### D-progress-415 — Band 3 Phase A: fix `@externTarget async` silent miscompile (#2070, D085)
+
+**What shipped:**
+
+- **`MLdflda(fieldToken: Int)`** added to the `MInsn` union in
+  `lyric-compiler/msil/lowering.l` and wired through the lowering dispatch
+  (`lowerMInsn` match arm `MLdflda(tok) -> emitLdflda(mb, tok)`).  Required by
+  the future Phase B SM builder field mutation (`ldarg.0; ldflda __sm_builder;
+  value; call SetResult`).
+
+- **BCL async TypeRefs and MemberRef registered** in `newCodegenCtx` (three new
+  `CodegenCtx` fields: `trTask`, `trTask1`, `tokTaskWait`):
+  - `System.Threading.Tasks.Task` (non-generic) — for `Task::Wait()` on void
+    async externs.
+  - `System.Threading.Tasks.Task`1` (open generic) — anchor for
+    `Task<T>::get_Result()` TypeSpec+MemberRef built lazily per return type.
+  - `Task::Wait(): void` MemberRef — used for void `@externTarget async func`.
+
+- **`msilTypeKeyStr` helper** added to `codegen.l` — produces a stable string
+  key for any `MsilType`, used as the TypeSpec/MemberRef blob-intern key so
+  duplicate blobs from the same return type are stable cache keys.
+
+- **`emitExternTargetBody` async unwrap** — after the BCL call instruction:
+  - Non-void return: lazily build TypeSpec for `Task`1<T>` +
+    `get_Result(): !0` MemberRef; emit `callvirt Task`1<T>::get_Result()`.
+  - Void return: emit `callvirt Task::Wait()`.
+  - Result: `@externTarget async func f(): T` now correctly returns T (the
+    declared Lyric type) at runtime.  Previously it returned `Task<T>` as T
+    — a silent miscompile that produced a garbage value on any real call.
+
+- **`EAwait` unchanged** (no-op pass-through).  This is now correct: every
+  async callee (extern or user-defined) returns T directly (synchronous), so
+  `await callResult` = `callResult` without unwrapping.
+
+**What did NOT ship (Phase B, still tracked in #2070):**
+- `IAsyncStateMachine` / `AsyncTaskMethodBuilder<T>` synthesis (SM TypeDef,
+  fields, kickoff method, MoveNext body).
+- Async funcs returning `Task<T>` to callers (needed for C# interop and proper
+  concurrent async).
+- `ESpawn` implementation (still a no-op).
+- Lazy `IAsyncEnumerable<T>` generators (C5 in `docs/41`).
+
+**Regression gate:** 847/847 emitter tests green.  The two changed files are
+`lyric-compiler/msil/codegen.l` (+77 lines) and
+`lyric-compiler/msil/lowering.l` (+3 lines).
+
+### D-progress-416 — git dependency resolution: flatten `GitRef` to dodge the F# union-field bug (#2126)
+
+**Status:** Shipped (`lyric-compiler/lyric/manifest.l`,
+`lyric-compiler/lyric/git_dep/git_dep.l`, `cli.l`, `manifest_self_test.l`).
+
+Git dependencies (`{ git = "...", tag/rev/branch }`) now resolve end-to-end.
+Previously the parsed git `ref` read back **null** at the resolver: the F#
+stage-0 emitter reads a union-typed field of a union case (`DepSource.Git.ref:
+GitRef`) back as null (#2126), so every git dep failed (and, before #2082, crashed).
+
+Fix (Lyric-side, no F# changes — the self-hosted emitter already handles this):
+
+- **`DepSource.Git`** stores the ref as two primitive fields
+  `refKind` (∈ "tag"/"rev"/"branch") + `refValue` instead of a nested `GitRef`
+  union.  The flat encoding round-trips on both emitters.
+- **`GitDep.resolve`** takes `(url, refKind, refValue, subdir)` strings and
+  dispatches the clone strategy by `refKind` (no union crosses the boundary);
+  `refDirName` likewise.  The dead `GitRef` unions, `gitRefLabel`, and
+  `Lyric.Cli.toGitDepRef` were removed.
+- All `DepSource.Git` consumers (restore, publish ref/version extraction,
+  `manifest_self_test`) updated to the four-field form.
+
+Verified end-to-end against a real local `file://` repo: `lyric restore`
+clones the tag, records the resolved SHA + sha512 in `lyric.lock`, and caches
+the clone.  An unreachable repo now reports `git clone failed` (it reaches the
+clone) rather than the old "could not determine ref kind".  CI's git-dep
+regression step gains a successful-resolution case.  Stage-1 + AOT clean.
+
+Root cause (the F# emitter union-field defect) tracked in #2126; #2125 covers
+the related qualified-name collision.
+### D-progress-417 — guardrail for the Str/Char qualified-name collision (#2125)
+
+**Status:** Shipped (`scripts/audit-strchar-collision.sh`, CI).
+
+The F# stage-0 emitter resolves a qualified `Alias.method` call by the bare
+method name, ignoring the import alias.  In a compiler source importing both
+`Std.String` (as `Str`) and `Std.Char` — which share `fromInt`/`toUpper`/
+`toLower` — a `Str.fromInt`/`Str.toUpper`/`Str.toLower` call silently
+mis-resolves to `Std.Char.<same>` (the `urlToHash` crash #2082; the `init.l`
+`Str.toUpper` type error).  The self-hosted MSIL emitter resolves these
+correctly, so only stage-0-compiled compiler sources are affected.
+
+All known call sites are already fixed (`git_dep.l`/`manifest.l` `fromInt` →
+`toString` in #2082; `init.l` `toUpper` → string lookup in #1972).  A tree audit
+confirmed no remaining triggers.  `scripts/audit-strchar-collision.sh` (wired
+into CI alongside the #335/#733 guardrails) fails if any `lyric-compiler/lyric/`
+file imports both modules and uses a colliding `Str.*` call, so the footgun
+cannot be reintroduced before the emitter root cause (#2125) is fixed or retired
+by self-hosting.

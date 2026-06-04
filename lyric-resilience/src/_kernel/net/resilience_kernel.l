@@ -28,33 +28,28 @@ package Resilience.Kernel.Net
 
 import Std.Core
 
-@axiom("System.Threading for sleep and System.Collections.Concurrent for circuit state")
-extern package System.Threading {
-  /// Block the calling thread for `ms` milliseconds.  Used for retry backoff.
-  pub func sleepMs(ms: Int): Unit
-    requires: ms >= 0
-}
+@axiom("System.Threading.Thread.Sleep — blocks the calling thread for the given number of milliseconds")
+@externTarget("System.Threading.Thread.Sleep")
+pub func sleepMs(ms: in Int): Unit
+  requires: ms >= 0
+  = ()
 
-@axiom("In-process circuit-breaker state machine implemented in F# at bootstrap/src/Lyric.Emitter/CircuitStoreHost.fs as Lyric.Resilience.CircuitStore; mirrors the protected-type model in lyric-resilience/src/resilience.l (issue #365)")
-extern package Lyric.Resilience.CircuitStore {
-  /// Returns true if the named circuit is currently open (rejecting calls).
-  /// When the circuit is open and `cooldownMs` has elapsed since the last
-  /// open, the first caller is granted a half-open probe (returns false);
-  /// concurrent callers continue to see true until the probe records its
-  /// outcome via circuitRecordSuccess or circuitRecordFailure.
-  pub func circuitIsOpen(name: String, cooldownMs: Int): Bool
-    requires: name.length > 0
-    requires: cooldownMs > 0
+@axiom("Lyric.Resilience.CircuitStore.circuitIsOpen — per-process sliding-window half-open state machine in CircuitStoreHost.fs")
+@externTarget("Lyric.Resilience.CircuitStore.circuitIsOpen")
+pub func circuitIsOpen(name: in String, cooldownMs: in Int): Bool
+  requires: name.length > 0
+  requires: cooldownMs > 0
+  = ()
 
-  /// Record a successful call.  Closes the circuit and resets the failure count.
-  pub func circuitRecordSuccess(name: String): Unit
-    requires: name.length > 0
+@axiom("Lyric.Resilience.CircuitStore.circuitRecordSuccess — closes the circuit and resets the consecutive-failure count")
+@externTarget("Lyric.Resilience.CircuitStore.circuitRecordSuccess")
+pub func circuitRecordSuccess(name: in String): Unit
+  requires: name.length > 0
+  = ()
 
-  /// Record a failed call.  Increments the failure count and opens the circuit
-  /// when the count reaches `failureThreshold`.  When the circuit is already
-  /// open (a half-open probe failed), refreshes `openedAtMs` so the cooldown
-  /// window restarts.
-  pub func circuitRecordFailure(name: String, failureThreshold: Int): Unit
-    requires: name.length > 0
-    requires: failureThreshold > 0
-}
+@axiom("Lyric.Resilience.CircuitStore.circuitRecordFailure — increments the failure count and opens the circuit when the threshold is reached")
+@externTarget("Lyric.Resilience.CircuitStore.circuitRecordFailure")
+pub func circuitRecordFailure(name: in String, failureThreshold: in Int): Unit
+  requires: name.length > 0
+  requires: failureThreshold > 0
+  = ()

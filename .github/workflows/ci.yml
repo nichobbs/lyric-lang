@@ -95,6 +95,14 @@ jobs:
         if: steps.changes.outputs.has_code_changes == 'true'
         run: bash scripts/audit-axioms.sh
 
+      # Guardrail for #2125: the F# stage-0 emitter mis-resolves a qualified
+      # `Str.fromInt`/`Str.toUpper`/`Str.toLower` call to `Std.Char.<same>` in a
+      # compiler source importing both Std.String and Std.Char (the names
+      # collide).  Use `toString` / string-only ops until the emitter is fixed.
+      - name: Audit Str/Char qualified-name collision (#2125 guardrail)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        run: bash scripts/audit-strchar-collision.sh
+
       - name: Set up .NET (uses bootstrap/global.json)
         if: steps.changes.outputs.has_code_changes == 'true'
         uses: actions/setup-dotnet@v5
@@ -518,6 +526,30 @@ jobs:
             exit 0
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/auto_ffi_self_test.l
+
+      # Async extern unwrapping self-test — pins the Band 3 Phase A fix for the
+      # @externTarget async silent miscompile (epic #2070, D085, D-progress-415).
+      # Before this fix, @externTarget async func left Task<T> on the stack where
+      # callers expected T.  Exercises both unwrap paths: the non-void path
+      # (Task<T>::get_Result() via StringReader.ReadToEndAsync) and the void path
+      # (Task::Wait() via Task.Delay(0)).  MSIL target only; JVM async (IAsyncEnumerable
+      # synthesis) is Phase B and tracked in epic #2070.  Imports only Std.*, so
+      # no LYRIC_LOAD_COMPILER=1 needed.
+      - name: Async extern unwrapping self-test (native lyric test)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping async extern self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping async extern self-test"
+            exit 0
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/async_extern_self_test.l
 
       # Match-literal + compound-assignment self-test — pins two self-hosted
       # MSIL backend correctness fixes from #1481 (epic #1470, Band 2): Float
@@ -1402,6 +1434,85 @@ jobs:
           if grep -q "resolving dependencies" /tmp/ar4.out; then echo "--no-restore should skip restore"; exit 1; fi
           test ! -f "$work/app/lyric.lock" || { echo "--no-restore should not recreate the lock"; exit 1; }
           echo "Auto-restore-on-build e2e passed"
+
+      # Git-dependency restore + manifest-error rendering regression (#2082).
+      # The F# emitter mis-resolved `Str.fromInt` to `Std.Char.fromInt` (both
+      # imported), so urlToHash crashed (Char.fromInt requires n<=65535 vs a
+      # ~2-billion hash) and manifest line:col rendered as garbled control
+      # chars.  This step asserts: (a) a git-dep restore fails gracefully (no
+      # unhandled exception / fromInt panic) with a non-zero exit; (b) a TOML
+      # parse error renders a real `:<line>:<col>:` location.
+      - name: Git-dep / manifest-error regression e2e
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -uo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping git-dep regression"
+            exit 0
+          fi
+          bin_abs="$(pwd)/$lyric_bin"
+          work="$(mktemp -d)"
+          # (0) git dep -> successful resolution against a real local repo (#2126).
+          #     The parsed git ref (tag/rev/branch) must round-trip to the resolver;
+          #     it previously read back null and git deps never resolved.
+          gitc="git -c commit.gpgsign=false -c tag.gpgsign=false -c user.email=t@t -c user.name=t"
+          mkdir -p "$work/remote"
+          ( cd "$work/remote" && git init -q -b main . && echo seed > f && $gitc add -A && $gitc commit -q -m init --no-gpg-sign && $gitc tag v1.0 )
+          mkdir -p "$work/ok/src"
+          cat > "$work/ok/lyric.toml" <<TOML
+          [package]
+          name = "Ok"
+          version = "0.1.0"
+          [project]
+          name = "Ok"
+          output = "single"
+          output_assembly = "Ok.dll"
+          [project.packages]
+          "Ok" = "src/main.l"
+          [dependencies]
+          Dep = { git = "file://$work/remote", tag = "v1.0" }
+          TOML
+          printf 'package Ok\nimport Std.Core\npub func main(): Int { 0 }\n' > "$work/ok/src/main.l"
+          ( cd "$work/ok" && HOME="$work/home" timeout 120 "$bin_abs" restore ) > "$work/ok.out" 2>&1
+          okrc=$?
+          echo "--- ok restore (rc=$okrc) ---"; cat "$work/ok.out"
+          test "$okrc" -eq 0 || { echo "git-dep restore against a real repo should succeed"; exit 1; }
+          grep -q "git:file://" "$work/ok/lyric.lock" || { echo "expected a git: lock entry for the resolved dep"; cat "$work/ok/lyric.lock"; exit 1; }
+          # (a) git dep -> graceful failure, no crash.
+          mkdir -p "$work/app/src"
+          cat > "$work/app/lyric.toml" <<'TOML'
+          [package]
+          name = "App"
+          version = "0.1.0"
+          [project]
+          name = "App"
+          output = "single"
+          output_assembly = "App.dll"
+          [project.packages]
+          "App" = "src/main.l"
+          [dependencies]
+          Bar = { git = "https://example.invalid/bar.git", tag = "v1.0" }
+          TOML
+          printf 'package App\nimport Std.Core\npub func main(): Int { 0 }\n' > "$work/app/src/main.l"
+          # `|| rc=$?` keeps the (expected) non-zero restore from tripping the
+          # step's `bash -e` errexit before we can inspect the exit code.
+          rc=0
+          ( cd "$work/app" && timeout 90 "$bin_abs" restore ) > "$work/restore.out" 2>&1 || rc=$?
+          echo "--- restore output (rc=$rc) ---"; cat "$work/restore.out"
+          if grep -qiE "Unhandled exception|requires failed|fromInt|NullReferenceException" "$work/restore.out"; then
+            echo "git-dep restore crashed instead of failing gracefully"; exit 1
+          fi
+          test "$rc" -ne 0 || { echo "git-dep restore of an unreachable repo should exit non-zero"; exit 1; }
+          # (b) manifest parse error -> real :line:col: location, not garbled chars.
+          mkdir -p "$work/bad"
+          printf '[package]\nname = "X"\nversion = "0.1.0"\n[dependencies]\nFoo = { git = \n' > "$work/bad/lyric.toml"
+          ( cd "$work/bad" && "$bin_abs" restore ) > "$work/bad.out" 2>&1 || true
+          echo "--- manifest-error output ---"; cat "$work/bad.out"
+          grep -qE 'lyric\.toml:[0-9]+:[0-9]+:' "$work/bad.out" || {
+            echo "manifest parse error did not render a numeric :line:col: location"; exit 1; }
+          echo "Git-dep / manifest-error regression e2e passed"
 
       # `lyric add` end-to-end — adds/updates dependency entries in the manifest
       # (registry / path / git / nuget), is idempotent, and refuses to write an

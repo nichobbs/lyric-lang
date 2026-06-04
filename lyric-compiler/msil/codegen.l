@@ -102,6 +102,12 @@ pub record CodegenCtx {
   tokStringToUpper:     Int   // String.ToUpperInvariant(): string
   // Object.Equals(object,object): bool  static (for value-equal string comparisons)
   tokObjectStaticEquals: Int
+  // Async support (Phase A, Band 3).
+  // Task and Task`1 TypeRef rows — used to build TypeSpec+MemberRef tokens lazily
+  // in `emitExternTargetBody` for `@externTarget async func` unwrapping.
+  trTask:      Int   // System.Threading.Tasks.Task (non-generic)
+  trTask1:     Int   // System.Threading.Tasks.Task`1 (open generic)
+  tokTaskWait: Int   // Task::Wait(): void  instance HASTHIS (void async externs)
   // Reverse lookup: simple field name → FieldDef token.  Populated by
   // addPackageTokens for IRecord and IExposedRec fields so EMember can emit
   // ldfld on an MObject receiver when the static type is unknown.
@@ -181,12 +187,15 @@ pub record CodegenCtx {
   // emitExternTargetBody as `@externTarget` declarations are walked.
   ffiAsmRefs:         Map[String, Int]   // assembly simple name → AssemblyRef row index
   ffiTypeRefs:        Map[String, Int]   // "asm/ns.name" key → TypeRef row index
-  // Auto-FFI metadata resolution (epic #1622, Phase 3c).  Lazily-built once
-  // per package: type FQN → owning assembly simple name, and assembly simple
-  // name → on-disk DLL path.  `metadataReady` is a one-shot flag holder
-  // (empty = not yet built) since record scalar fields can't be reassigned.
+  // Auto-FFI metadata resolution (epic #1622, Phase 3c + 4).  Lazily-built
+  // once per package over the reference pack; `metadataReady` is a one-shot
+  // flag holder (empty = not yet built) since record scalar fields can't be
+  // reassigned.  `metadataVtypeSet` maps public value-type FQNs (structs /
+  // enums) to true — used by externValueTypeMsil to detect value types from
+  // metadata instead of the retired clrIsValueType hardcoded list (#1802).
   metadataTypeIndex:  Map[String, String]
   metadataPathIndex:  Map[String, String]
+  metadataVtypeSet:   Map[String, Bool]
   metadataReady:      List[Bool]
   // Lambda / yield / extern-type support (Band 2, R6).
   tokActionCtor:      Int                // System.Action::.ctor(object, native int)
@@ -686,6 +695,17 @@ pub func newCodegenCtx(packageName: in String,
   // System.Action`N TypeRefs are registered lazily on first use for each N
   // (see internActionTypeRef); no static entries here.
 
+  // Async support (Phase A, Band 3): Task and Task::Wait().
+  // Task is in the System.Threading.Tasks assembly (per clrAssemblyForType).
+  val arTasks = ctxAddAssemblyRef(lctx, "System.Threading.Tasks", 10, 0)
+  val trTask  = ctxAddTypeRef(lctx, "System.Threading.Tasks", "Task",   arTasks)
+  val trTask1 = ctxAddTypeRef(lctx, "System.Threading.Tasks", "Task`1", arTasks)
+  // Task::Wait(): void  instance HASTHIS — used to block on void async externs.
+  val tokTaskWait = 0x0A000000 + ctxAddMemberRef(
+    lctx, trTask, "Wait",
+    "task_wait", buildInstanceMethodSig(newList(), MVoid))
+
+
   val recCtorToks: Map[String, Int] = newMap()
   val fieldToks:   Map[String, Int] = newMap()
   val funcToks:    Map[String, Int] = newMap()
@@ -753,6 +773,7 @@ pub func newCodegenCtx(packageName: in String,
     ffiTypeRefs          = newMap(),
     metadataTypeIndex    = newMap(),
     metadataPathIndex    = newMap(),
+    metadataVtypeSet     = newMap(),
     metadataReady        = newList(),
     tokActionCtor        = tokActionCtor,
     tokActionInvoke      = tokActionInvoke,
@@ -771,6 +792,9 @@ pub func newCodegenCtx(packageName: in String,
     tokStringToLower     = tokStringToLower,
     tokStringToUpper     = tokStringToUpper,
     tokObjectStaticEquals = tokObjectStaticEquals,
+    trTask               = trTask,
+    trTask1              = trTask1,
+    tokTaskWait          = tokTaskWait,
     fieldTokensByName    = newMap(),
     actionTypeRefs       = newMap(),
     externTypeNames      = newMap(),
@@ -1950,9 +1974,13 @@ func externValueTypeMsil(cctx: in CodegenCtx, seg: in String): Option[MsilType] 
   match mapGet(cctx.externTypeNames, seg) {
     case None -> None
     case Some(clrFqn) -> {
-      if not clrIsValueType(clrFqn) { return None }
+      ensureMetadataIndex(cctx)
+      val isVtype = Mdr.isValueTypeFqn(cctx.metadataVtypeSet, clrFqn)
+      // Fall back to the hardcoded list when the ref pack isn't available
+      // so value-type externs still encode correctly in SDK-less environments.
+      if not isVtype and not clrIsValueType(clrFqn) { return None }
       val sp     = splitTypeFqn(clrFqn)
-      val asm    = clrAssemblyForType(clrFqn)
+      val asm    = assemblyForTypeMsil(cctx, clrFqn)
       val refRow = internFfiTypeRef(cctx, asm, sp.ns, sp.name)
       Some(value = MValueTypeRef(typeRefCode = tdrTypeRef(refRow), clrFqn = clrFqn))
     }
@@ -6673,7 +6701,7 @@ func resolveFfiClassTypeRef(cctx: in CodegenCtx, className: in String): Int {
   // a different encoding than `internFfiTypeRef` provides; skip them safely.
   if contains(clrFqn, "+") { return 0 - 1 }
   val sp  = splitTypeFqn(clrFqn)
-  val asm = clrAssemblyForType(clrFqn)
+  val asm = assemblyForTypeMsil(cctx, clrFqn)
   internFfiTypeRef(cctx, asm, sp.ns, sp.name)
 }
 
@@ -6694,6 +6722,41 @@ func bufFfiType(cctx: in CodegenCtx, w: in ByteWriter, t: in MsilType): Unit {
       }
     }
     case _ -> bufMsilType(w, t)
+  }
+}
+
+// Produce a short, stable string key for a MsilType — used to derive unique
+// blob-intern keys for lazily-built TypeSpec / MemberRef tokens (e.g. for
+// Task<T>::get_Result() in async extern emission).
+func msilTypeKeyStr(t: in MsilType): String {
+  match t {
+    case MInt             -> "i4"
+    case MLong            -> "i8"
+    case MDouble          -> "r8"
+    case MBool            -> "bool"
+    case MChar            -> "char"
+    case MString          -> "str"
+    case MVoid            -> "void"
+    case MObject          -> "obj"
+    case MByte            -> "u1"
+    case MNativeInt       -> "nint"
+    case MArray(elem)     -> "arr_" + msilTypeKeyStr(elem)
+    case MClass(name)     -> "cls_" + name
+    case MClassRef(_, fqn) -> "clsref_" + fqn
+    case MValueTypeRef(_, fqn) -> "vt_" + fqn
+    case MTypeVar(idx)    -> "tv" + toString(idx)
+    case MByRef(inner)    -> "byref_" + msilTypeKeyStr(inner)
+    case MListOf(elem)    -> "list_" + msilTypeKeyStr(elem)
+    case MMapOf(k, v)     -> "map_" + msilTypeKeyStr(k) + "_" + msilTypeKeyStr(v)
+    case MGenericInst(_, fqn, args) -> {
+      var k = "gi_" + fqn
+      var ai = 0
+      while ai < args.count {
+        k = k + "_" + msilTypeKeyStr(args[ai])
+        ai = ai + 1
+      }
+      k
+    }
   }
 }
 
@@ -6806,14 +6869,36 @@ func emitExternTargetBody(
           + "a typo or an unsupported type.")
       }
 
+      val asmName = assemblyForTypeMsil(cctx, resolvedFqn)
       val tRefRow = internFfiTypeRef(
-        cctx, r.assemblyName, r.namespaceStr, r.typeName)
+        cctx, asmName, r.namespaceStr, r.typeName)
 
       // Build the method signature blob, encoding class-typed params/return
       // against their resolved TypeRefs.
+      //
+      // For async externs the BCL method returns Task (void) or Task<T> (non-void T).
+      // Encode the actual BCL return type in the MemberRef so the CLR can resolve the
+      // method at JIT time.  retTy (the Lyric-declared T) is used only for the unwrap
+      // callvirt appended below.  Ctors are never async in the BCL; skip them.
+      val bclRetTy =
+        if decl.isAsync and not r.isCtor {
+          val isVoidRet = match retTy { case MVoid -> true case _ -> false }
+          if isVoidRet {
+            MClassRef(typeRefCode = tdrTypeRef(cctx.trTask),
+                      clrFqn = "System.Threading.Tasks.Task")
+          } else {
+            val taskArgs: List[MsilType] = newList()
+            taskArgs.add(retTy)
+            MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1),
+                         headFqn = "System.Threading.Tasks.Task",
+                         typeArgs = taskArgs)
+          }
+        } else {
+          retTy
+        }
       val sig =
         if r.isStatic and not r.isCtor {
-          buildFfiMethodSigCtx(cctx, paramTypes, retTy, false)
+          buildFfiMethodSigCtx(cctx, paramTypes, bclRetTy, false)
         } else if r.isCtor {
           // .ctor: HASTHIS, void return, all params explicit.
           buildFfiMethodSigCtx(cctx, paramTypes, MVoid, true)
@@ -6826,7 +6911,7 @@ func emitExternTargetBody(
             instArgs.add(paramTypes[ii])
             ii = ii + 1
           }
-          buildFfiMethodSigCtx(cctx, instArgs, retTy, true)
+          buildFfiMethodSigCtx(cctx, instArgs, bclRetTy, true)
         }
       val mrRow = ctxAddMemberRef(
         cctx.lctx, tRefRow, r.memberName,
@@ -6847,6 +6932,29 @@ func emitExternTargetBody(
         insns.add(MCall(methodToken = tok))
       } else {
         insns.add(MCallvirt(methodToken = tok))
+      }
+      // For `@externTarget async func`, the BCL method returns Task / Task<T>.
+      // Synchronously unwrap to T so the Lyric caller sees the declared return
+      // type directly — callers use `await` which is a no-op for synchronous
+      // results, so the stack type is always T after this point (Phase A).
+      if decl.isAsync {
+        val isVoidRet = match retTy { case MVoid -> true case _ -> false }
+        if isVoidRet {
+          // BCL method returned Task (void). Call Task::Wait() to block.
+          insns.add(MCallvirt(methodToken = cctx.tokTaskWait))
+        } else {
+          // BCL method returned Task<T>. Call Task<T>.get_Result() to unwrap to T.
+          val tsArgs: List[MsilType] = newList()
+          tsArgs.add(retTy)
+          val tsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trTask1), tsArgs)
+          val tsKey = "ts_task1_result_" + msilTypeKeyStr(retTy)
+          val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+          val mrSig = buildInstanceMethodSig(newList(), MTypeVar(0))
+          val mrRow = ctxAddMemberRefForTypeSpec(
+            cctx.lctx, tsRow, "get_Result",
+            "mr_task_getresult_" + tsKey, mrSig)
+          insns.add(MCallvirt(methodToken = 0x0A000000 + mrRow))
+        }
       }
       insns.add(MRet)
       true
@@ -9001,6 +9109,26 @@ func msilIsValueTypeRef(t: in MsilType): Bool {
   }
 }
 
+// Resolve a CLR FQN to its owning assembly's simple name via the metadata
+// type-index (built once over the reference pack and cached on `cctx`).
+// Falls back to "Lyric.Emitter" for Lyric host types (F# shims that are
+// compiled into Lyric.Emitter.dll and never appear in the reference pack),
+// and to "System.Runtime" for any remaining System.* types (core types that
+// are type-forwarded from System.Private.CoreLib via the System.Runtime
+// facade).  The call to ensureMetadataIndex is a no-op after the first use.
+func assemblyForTypeMsil(cctx: in CodegenCtx, clrFqn: in String): String {
+  ensureMetadataIndex(cctx)
+  match Mdr.assemblyForType(cctx.metadataTypeIndex, clrFqn) {
+    case Some(asm) -> asm
+    case None      ->
+      if startsWith(clrFqn, "Lyric.Emitter") or startsWith(clrFqn, "Lyric.Stdlib") {
+        "Lyric.Emitter"
+      } else {
+        "System.Runtime"
+      }
+  }
+}
+
 // Intern a TypeRef for the value type `fqn` (its owning assembly comes from the
 // metadata index) and return the matching `MValueTypeRef`, or None when the
 // type's assembly isn't indexed.
@@ -9082,11 +9210,11 @@ func appendInsnsMsil(dst: in List[MInsn], src: in List[MInsn]): Unit {
 
 // Build the metadata type→assembly / assembly→path indexes over the .NET
 // reference pack on first use, cached on `cctx` for the rest of the package.
-// The index is the source of truth for auto-FFI assembly resolution — it finds
-// the assembly that actually defines a type (e.g. `System.IO.Path` lives in
-// `System.Runtime`), unlike the hardcoded `clrAssemblyForType` prefix table.
+// The index is the source of truth for all assembly resolution (auto-FFI and
+// @externTarget) — it finds the assembly that actually defines a type.
 // A no-op after the first call; if the reference pack can't be located the
-// indexes stay empty and resolution falls back to the legacy path.
+// indexes stay empty and assemblyForTypeMsil falls back to "System.Runtime"
+// (adequate for Lyric-host types and System.* core types).
 func ensureMetadataIndex(cctx: in CodegenCtx): Unit {
   if cctx.metadataReady.count > 0 { return }
   cctx.metadataReady.add(true)
@@ -9097,6 +9225,7 @@ func ensureMetadataIndex(cctx: in CodegenCtx): Unit {
       var i = 0
       while i < asms.count {
         Mdr.addAssemblyToIndexes(cctx.metadataTypeIndex, cctx.metadataPathIndex, asms[i])
+        Mdr.addAssemblyValueTypes(cctx.metadataVtypeSet, asms[i])
         i = i + 1
       }
     }
@@ -9334,10 +9463,9 @@ func tryInstanceAutoFfiFromMetadata(
 // Try to resolve and emit an auto-FFI call from .NET metadata.  Returns the
 // real result MsilType on success, or None to fall back to the legacy path.
 // The owning assembly is found from the metadata-derived type→assembly index
-// (built once over the reference pack and cached on `cctx`), so the resolution
-// no longer depends on the hardcoded `clrAssemblyForType` prefix table — a type
-// whose assembly that table would mis-hint (e.g. `System.IO.Path` →
-// `System.Runtime`) now resolves correctly.
+// (built once over the reference pack and cached on `cctx`) via
+// assemblyForTypeMsil, so resolution is accurate for types the old prefix
+// table would mis-hint (e.g. `System.IO.Path` lives in `System.Runtime`).
 func tryAutoFfiFromMetadata(
   cctx:       in CodegenCtx,
   fctx:       in FuncCtx,
@@ -9420,7 +9548,7 @@ func emitAutoFfiCallMsil(
   }
 
   val sp = splitTypeFqn(clrFqn)
-  val asmName = clrAssemblyForType(clrFqn)
+  val asmName = assemblyForTypeMsil(cctx, clrFqn)
   val tRefRow = internFfiTypeRef(cctx, asmName, sp.ns, sp.name)
 
   // Static `()`-shape call registered as `() : void` — see D-progress-343.

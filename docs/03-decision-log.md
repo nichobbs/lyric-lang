@@ -1087,7 +1087,7 @@ together, summarised here:
 | **C: Perf budget** | C1 — "reasonable" (~2-5× BCL). |
 | **D: Naming** | A — replace (`Std.List[T]` is native; `Std.Bcl.List[T]` for raw BCL). |
 | **E: Tracking** | E1 — D038 (this entry); Q021 opened for G3 specifically. |
-| **F: Kernel cap** | 150 extern declarations as a v1.0 release gate. |
+| **F: Kernel cap** | Original: 150 extern declarations as a v1.0 release gate. **Amended (2026-06):** actual ceiling raised to 317 as stdlib scope exceeded the original estimate; see `docs/14-native-stdlib-plan.md` §10 Decision F annotation and `KernelBoundaryTests.fs`. |
 | **G: Start order** | P0 immediately; G3 begins toward end of P0. |
 
 **Alternatives considered:**
@@ -1120,8 +1120,9 @@ together, summarised here:
   cannot tell this story.
 - **Self-hosting (Phase 5).** Doing data structures in Lyric earlier
   de-risks the Phase 5 rewrite of the bootstrap compiler in Lyric.
-- **Audit cost is finite.** A hard cap of 150 extern declarations
-  (Decision F) keeps the trusted boundary tractable.
+- **Audit cost is finite.** Decision F caps the trusted extern boundary;
+  the CI ratchet in `KernelBoundaryTests.fs` enforces it by requiring every
+  addition to update the hard ceiling with a justification comment.
 - **Bootstrap-grade is not v1.0.** D035 explicitly framed the F#
   shim as a Phase 1 / M1.4 expedient. D038 sets the direction for
   the post-bootstrap stdlib without contradicting D035.
@@ -1138,7 +1139,14 @@ offers (API surface, error model, phasing of Result/Option). D038 +
 `14-native-stdlib-plan.md` own *how deep* each surface is implemented
 in Lyric. Both docs coexist; cross-references added.
 
-**Revisions:** None.
+**Revisions:**
+- **2026-06 (Decision F amendment):** The original ≤150 cap predated the
+  full stdlib scope. After shipping `Std.Http.Server`, `Std.Char` / `Std.Unicode`,
+  `Std.AssemblyResources`, `Std.Task` async-local, and testing-mock surfaces, the
+  actual ceiling stands at 317.  `KernelBoundaryTests.fs` now enforces this as a
+  hard ratchet (any addition must update the ceiling constant and add a comment).
+  The v1.0 gate is "no unreviewed growth" (ratchet passes), not "≤150."  See
+  `docs/14-native-stdlib-plan.md` §3 and §10.
 
 ---
 
@@ -4553,6 +4561,50 @@ the steepest part of the first-run experience. `lyric init` removes it.
 
 **Consequence:** `lyric init demo && cd demo && lyric run src/main.l` works
 end-to-end with no hand-editing.
+
+---
+
+## D085 — Band 3 Phase A: synchronous async unwrapping for `@externTarget async` (#2070)
+
+**Context:** Epic #2070 (self-hosted async/await) identified that
+`@externTarget async func` functions were a silent miscompile — the BCL method
+returns `Task<T>` but the function's declared return type is `T`, and the
+emitter was returning the Task object as if it were T.  The original plan
+(described in `docs/41-self-hosted-compiler-gap-analysis.md` §Band 3) called
+for full `IAsyncStateMachine` synthesis as the first step.
+
+**Decision (Phase A):** Ship a correct, production-quality Phase A that fixes the
+silent miscompile without introducing full SM synthesis:
+
+1. **`@externTarget async func f(): T`** — after calling the BCL method (which
+   returns `Task<T>`), emit `callvirt Task<T>::get_Result()` (for non-void) or
+   `callvirt Task::Wait()` (for `Unit` return) to synchronously unwrap the result.
+   The function's declared Lyric return type T is now what's actually on the stack.
+2. **User-defined `async func f(): T { body }`** — compile the body normally.
+   All inner `await` calls receive T (since inner async funcs all return T
+   directly); `EAwait` is a semantic no-op (correct because every async func is
+   synchronous in the caller's view).
+3. **`EAwait`** — remains a no-op pass-through.  This is now correct: every async
+   callee already returns T directly, so `await callResult` = `callResult`.
+4. **`IAsyncStateMachine` synthesis** — deferred to Phase B (future PR).
+   Phase B will make async funcs return `Task<T>` for C# interop and proper async
+   concurrency.
+
+**Rationale for synchronous-first:** The stdlib has no tests that exercise
+real-network async (HTTP); all async tests are pinned to synchronous paths or
+explicitly excluded.  The synchronous approach:
+- Is correct for Lyric-only call chains (no C# interop needed yet).
+- Fixes the "silent miscompile" immediately — `@externTarget async` now produces
+  valid MSIL where the stack type matches the declared return.
+- Keeps all 847 stdlib tests green.
+- Does NOT use `Task.Run` blocking (which would be deadlock-prone in sync
+  contexts); `get_Result()`/`Wait()` on a Task that has already completed returns
+  immediately without blocking.
+- Provides the `MLdflda` instruction needed by Phase B (already added).
+
+**Consequence:** `@externTarget async func` no longer silently miscompiles.
+`EAwait` is correct for Lyric-to-Lyric async chains.  Phase B (SM synthesis,
+`Task<T>` return types, proper concurrency) remains a tracked TODO in epic #2070.
 
 ---
 
