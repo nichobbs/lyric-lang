@@ -652,23 +652,28 @@ Trampoline signatures must match the `extern func` parameter types exactly.
 
 **Depends on:** Nothing from native.
 
-**Files to modify:** `lyric-compiler/lyric/cfg.l`
+**Files to modify:** `lyric-compiler/lyric/cfg.l`, `lyric-compiler/lyric/cli.l`
 
-**What to implement:**
+**What to implement (D-N-013 — pseudo-feature injection):**
 
-Extend `applyCfgErasure` in `cfg.l` to accept a `target: String` field in the
-erasure input. When evaluating a `@cfg(target = "X")` predicate, check if
-`target == X`.
+Do **not** add a `target: String` field to `CfgErasureInput` and do **not** add
+a new predicate branch to the erasure loop. D-N-013 explicitly rejects that
+approach. Instead:
 
-The predicate `@cfg(target = "native")` evaluates to true only when
-`target == "native"` in the erasure input.
+1. In `cli.l`, when building the `CfgErasureInput` for any compilation, inject
+   a pseudo-feature `"target.<name>"` into the existing `activeFeatures` set:
+   - `--target dotnet` → add `"target.dotnet"`
+   - `--target jvm`    → add `"target.jvm"`
+   - `--target native` → add `"target.native"`
 
-Update the CLI (`cli.l`) to pass `target = "native"` in the erasure request when
-`--target native` is specified.
+2. No changes to the erasure loop or predicate grammar in `cfg.l` are needed.
+   The existing `@cfg(feature = "X")` evaluation already handles the
+   `@cfg(target = "native")` predicate by treating `target` as the key and
+   `"native"` as the value, resolving to the pseudo-feature `"target.native"`.
 
 The F# bootstrap `Cfg.fs` does **not** need to be updated. The native target is
-only reachable through the self-hosted Lyric CLI (`cli.l`); the F# bootstrap
-emitter does not emit native code and never evaluates `@cfg(target = "native")`.
+only reachable through the self-hosted Lyric CLI; the F# bootstrap emitter does
+not emit native code and never evaluates `@cfg(target = "native")`.
 
 ---
 

@@ -203,6 +203,52 @@ The synthesised destructor for a record/union/closure:
 
 ---
 
+### Rule 8: Interface fat pointer values
+
+An interface fat pointer (`%Lyric.IAnimal = type { i8*, vtable* }`) is a
+**value type** — it has no ARC header and is never heap-allocated. However, the
+`i8* obj_ptr` field inside it points to an ARC-managed heap object. The
+codegen must retain and release that underlying object wherever the fat pointer
+is created, copied, or dropped:
+
+1. **Upcast (object → interface):** When a concrete object `Dog*` is upcast to
+   `IAnimal`, retain the underlying object and store its pointer in the fat
+   pointer's `obj_ptr` slot. The fat pointer now co-owns the object.
+
+   ```llvm
+   call void @lyric_retain(i8* %dog_as_i8)   ; fat pointer takes ownership
+   %fat.obj  = insertvalue %Lyric.IAnimal undef, i8* %dog_as_i8, 0
+   %fat.vtbl = insertvalue %Lyric.IAnimal %fat.obj, %Lyric.IAnimal.vtable* @Lyric.Dog.IAnimal.vtable, 1
+   ```
+
+2. **Fat pointer copy (assignment / store / pass by value):** When a fat
+   pointer value is assigned to a local, stored into a field, or passed to a
+   function, retain the `obj_ptr` of the source:
+
+   ```llvm
+   %obj = extractvalue %Lyric.IAnimal %fat, 0
+   call void @lyric_retain(i8* %obj)   ; new owner
+   ```
+
+3. **Fat pointer drop (local out of scope / field overwritten):** Release the
+   `obj_ptr` of the fat pointer being dropped:
+
+   ```llvm
+   %obj = extractvalue %Lyric.IAnimal %fat, 0
+   call void @lyric_release(i8* %obj)
+   ```
+
+4. **Return:** A function returning an interface value retains the `obj_ptr`
+   before returning, consistent with Rule 6 (return transfers ownership). The
+   caller is responsible for releasing it when done.
+
+The fat pointer struct itself is never passed to `lyric_retain` or
+`lyric_release` — only the embedded `obj_ptr` is. Rule 7 (destructor
+composition) does not apply to fat pointer values; Rule 8 supplies the
+complete ARC protocol for them.
+
+---
+
 ## ARC optimisation (Phase 2)
 
 In Phase 1, retain/release calls are emitted according to the rules above without
