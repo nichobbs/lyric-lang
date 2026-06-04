@@ -81,8 +81,10 @@ func fixedTimeEqualBytes(a: in slice[Byte], b: in slice[Byte]): Bool {
   var diff: Int = 0
   var i = 0
   while i < a.length {
-    val ai: Int = 0 + a[i]
-    val bi: Int = 0 + b[i]
+    // `a[i]` / `b[i]` are `Byte`; widen with the explicit `.toInt()` conversion
+    // (#1901) — branchless, so the constant-time property is preserved.
+    val ai: Int = a[i].toInt()
+    val bi: Int = b[i].toInt()
     diff = diff.or(ai.xor(bi))
     i = i + 1
   }
