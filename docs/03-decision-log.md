@@ -4564,6 +4564,50 @@ end-to-end with no hand-editing.
 
 ---
 
+## D085 — Band 3 Phase A: synchronous async unwrapping for `@externTarget async` (#2070)
+
+**Context:** Epic #2070 (self-hosted async/await) identified that
+`@externTarget async func` functions were a silent miscompile — the BCL method
+returns `Task<T>` but the function's declared return type is `T`, and the
+emitter was returning the Task object as if it were T.  The original plan
+(described in `docs/41-self-hosted-compiler-gap-analysis.md` §Band 3) called
+for full `IAsyncStateMachine` synthesis as the first step.
+
+**Decision (Phase A):** Ship a correct, production-quality Phase A that fixes the
+silent miscompile without introducing full SM synthesis:
+
+1. **`@externTarget async func f(): T`** — after calling the BCL method (which
+   returns `Task<T>`), emit `callvirt Task<T>::get_Result()` (for non-void) or
+   `callvirt Task::Wait()` (for `Unit` return) to synchronously unwrap the result.
+   The function's declared Lyric return type T is now what's actually on the stack.
+2. **User-defined `async func f(): T { body }`** — compile the body normally.
+   All inner `await` calls receive T (since inner async funcs all return T
+   directly); `EAwait` is a semantic no-op (correct because every async func is
+   synchronous in the caller's view).
+3. **`EAwait`** — remains a no-op pass-through.  This is now correct: every async
+   callee already returns T directly, so `await callResult` = `callResult`.
+4. **`IAsyncStateMachine` synthesis** — deferred to Phase B (future PR).
+   Phase B will make async funcs return `Task<T>` for C# interop and proper async
+   concurrency.
+
+**Rationale for synchronous-first:** The stdlib has no tests that exercise
+real-network async (HTTP); all async tests are pinned to synchronous paths or
+explicitly excluded.  The synchronous approach:
+- Is correct for Lyric-only call chains (no C# interop needed yet).
+- Fixes the "silent miscompile" immediately — `@externTarget async` now produces
+  valid MSIL where the stack type matches the declared return.
+- Keeps all 847 stdlib tests green.
+- Does NOT use `Task.Run` blocking (which would be deadlock-prone in sync
+  contexts); `get_Result()`/`Wait()` on a Task that has already completed returns
+  immediately without blocking.
+- Provides the `MLdflda` instruction needed by Phase B (already added).
+
+**Consequence:** `@externTarget async func` no longer silently miscompiles.
+`EAwait` is correct for Lyric-to-Lyric async chains.  Phase B (SM synthesis,
+`Task<T>` return types, proper concurrency) remains a tracked TODO in epic #2070.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

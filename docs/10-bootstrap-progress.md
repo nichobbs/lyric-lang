@@ -20120,6 +20120,7 @@ TOML parse error renders a numeric `:line:col:`.
 
 Functional git-dep resolution (parsed `ref` reads back null) is a separate
 emitter defect tracked in #2126.  Stage-1 + AOT clean.  MSIL target.
+
 ### D-progress-414 — self-hosted type checker: `EIf`-branch value typing (#1943, #1483, Band-1 of #1470)
 
 **Status:** Shipped — type-checker-only.
@@ -20179,3 +20180,49 @@ behaviour (#2128).
 Remaining Band-1 `TyError` forms: `EMatch`-branch unification (needs
 pattern-variable binding so arm bodies see their bound names), `ELambda`,
 `ETypeApp`, `EForall`/`EExists`, `EAssign`; then the #1488 gate.
+
+### D-progress-415 — Band 3 Phase A: fix `@externTarget async` silent miscompile (#2070, D085)
+
+**What shipped:**
+
+- **`MLdflda(fieldToken: Int)`** added to the `MInsn` union in
+  `lyric-compiler/msil/lowering.l` and wired through the lowering dispatch
+  (`lowerMInsn` match arm `MLdflda(tok) -> emitLdflda(mb, tok)`).  Required by
+  the future Phase B SM builder field mutation (`ldarg.0; ldflda __sm_builder;
+  value; call SetResult`).
+
+- **BCL async TypeRefs and MemberRef registered** in `newCodegenCtx` (three new
+  `CodegenCtx` fields: `trTask`, `trTask1`, `tokTaskWait`):
+  - `System.Threading.Tasks.Task` (non-generic) — for `Task::Wait()` on void
+    async externs.
+  - `System.Threading.Tasks.Task`1` (open generic) — anchor for
+    `Task<T>::get_Result()` TypeSpec+MemberRef built lazily per return type.
+  - `Task::Wait(): void` MemberRef — used for void `@externTarget async func`.
+
+- **`msilTypeKeyStr` helper** added to `codegen.l` — produces a stable string
+  key for any `MsilType`, used as the TypeSpec/MemberRef blob-intern key so
+  duplicate blobs from the same return type are stable cache keys.
+
+- **`emitExternTargetBody` async unwrap** — after the BCL call instruction:
+  - Non-void return: lazily build TypeSpec for `Task`1<T>` +
+    `get_Result(): !0` MemberRef; emit `callvirt Task`1<T>::get_Result()`.
+  - Void return: emit `callvirt Task::Wait()`.
+  - Result: `@externTarget async func f(): T` now correctly returns T (the
+    declared Lyric type) at runtime.  Previously it returned `Task<T>` as T
+    — a silent miscompile that produced a garbage value on any real call.
+
+- **`EAwait` unchanged** (no-op pass-through).  This is now correct: every
+  async callee (extern or user-defined) returns T directly (synchronous), so
+  `await callResult` = `callResult` without unwrapping.
+
+**What did NOT ship (Phase B, still tracked in #2070):**
+- `IAsyncStateMachine` / `AsyncTaskMethodBuilder<T>` synthesis (SM TypeDef,
+  fields, kickoff method, MoveNext body).
+- Async funcs returning `Task<T>` to callers (needed for C# interop and proper
+  concurrent async).
+- `ESpawn` implementation (still a no-op).
+- Lazy `IAsyncEnumerable<T>` generators (C5 in `docs/41`).
+
+**Regression gate:** 847/847 emitter tests green.  The two changed files are
+`lyric-compiler/msil/codegen.l` (+77 lines) and
+`lyric-compiler/msil/lowering.l` (+3 lines).
