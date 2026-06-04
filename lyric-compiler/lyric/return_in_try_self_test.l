@@ -175,3 +175,40 @@ test "a plain return (no enclosing try) is unaffected" {
   assertEqualInt(plainReturn(1), 100, "x>0")
   assertEqualInt(plainReturn(0), 200, "fall-through")
 }
+
+// ── Impl-method epilogue path (lowerImplMethodMsil) ──────────────────────────
+//
+// `return`-in-try in a free function exercises `lowerFuncMsil`'s epilogue
+// reservation; the parallel `lowerImplMethodMsil` path is wired identically
+// but otherwise untested by this file.  An interface impl with a `return`
+// inside a `try`/`finally` pins that second code path.
+
+interface Compute {
+  func step(x: in Int, log: in List[Int]): Int
+}
+
+record ComputeImpl {}
+
+impl Compute for ComputeImpl {
+  func step(x: in Int, log: in List[Int]): Int {
+    try {
+      if x > 0 {
+        return x * 2
+      }
+      return 0
+    } finally {
+      log.add(99)
+    }
+  }
+}
+
+test "return-in-try inside an impl method routes through the epilogue" {
+  val c: Compute = ComputeImpl()
+  val log1: List[Int] = newList()
+  assertEqualInt(c.step(5, log1), 10, "x>0 returns x*2")
+  assertEqualInt(log1.count, 1, "finally ran exactly once on early return")
+  assertEqualInt(log1[0], 99, "finally marker on early return")
+  val log2: List[Int] = newList()
+  assertEqualInt(c.step(-3, log2), 0, "x<=0 returns 0")
+  assertEqualInt(log2[0], 99, "finally marker on second return")
+}
