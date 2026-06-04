@@ -95,6 +95,68 @@ test "continue out of a try region re-tests the loop (emits leave, not br)" {
   assertEqualInt(sumSkipNeg(xs), 20, "sum skipping negatives")
 }
 
+// `continue` from inside a *catch handler* body — the catch is itself a CLR
+// protected region, so the escape must also lower to `leave`, not `br`.  Each
+// negative element raises a `Bug` (via `panic`); the catch handler skips it
+// with `continue`.
+func sumSkipBugs(xs: in List[Int]): Int {
+  var total = 0
+  var i = 0
+  while i < xs.count {
+    val cur = xs[i]
+    i += 1
+    try {
+      if cur < 0 {
+        panic("neg")
+      }
+      total += cur
+    } catch Bug as _ {
+      continue
+    }
+  }
+  total
+}
+
+// `break` from inside a *catch handler* body — same protected-region escape
+// rule as above, exiting the loop entirely on the first raised Bug.
+func sumUntilBug(xs: in List[Int]): Int {
+  var total = 0
+  var i = 0
+  while i < xs.count {
+    try {
+      if xs[i] < 0 {
+        panic("neg")
+      }
+      total += xs[i]
+      i += 1
+    } catch Bug as _ {
+      break
+    }
+  }
+  total
+}
+
+test "continue inside a catch handler emits leave, not br" {
+  val xs: List[Int] = newList()
+  xs.add(5)
+  xs.add(-1)
+  xs.add(7)
+  xs.add(-2)
+  xs.add(8)
+  // 5 + 7 + 8 — the catch handler `continue`s past the two negatives.
+  assertEqualInt(sumSkipBugs(xs), 20, "sum skipping bugs from catch continue")
+}
+
+test "break inside a catch handler emits leave, not br" {
+  val xs: List[Int] = newList()
+  xs.add(1)
+  xs.add(2)
+  xs.add(-9)
+  xs.add(100)
+  // 1 + 2 then the catch handler `break`s out on -9 (100 never reached).
+  assertEqualInt(sumUntilBug(xs), 3, "sum until break from catch")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Item 4 — List.contains / List.removeAt real BCL calls.
 // ─────────────────────────────────────────────────────────────────────────────
