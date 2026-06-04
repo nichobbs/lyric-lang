@@ -1275,6 +1275,11 @@ jobs:
       # `dotnet publish -p:PublishAot=true`); it downloads the ILCompiler
       # package on first run, so it is the heaviest CLI step.
       - name: Release Native AOT e2e (lyric build --release)
+      # Auto-restore-on-build end-to-end — `lyric build` resolves dependencies
+      # when lyric.lock is missing or stale, and `--no-restore` opts out (#1971).
+      # Driven through the real binary because the staleness check reads the
+      # filesystem (can't be a `lyric test` self-test, #2001).
+      - name: Auto-restore-on-build e2e
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
@@ -1282,6 +1287,7 @@ jobs:
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::warning::AOT binary not found at $lyric_bin; skipping release e2e"
+            echo "::warning::AOT binary not found at $lyric_bin; skipping auto-restore e2e"
             exit 0
           fi
           bin_abs="$(pwd)/$lyric_bin"
@@ -1308,6 +1314,47 @@ jobs:
             echo "expected non-zero exit for --release --target jvm"; exit 1
           fi
           echo "Release Native AOT e2e passed"
+          mkdir -p "$work/lib/src" "$work/app/src"
+          cat > "$work/lib/lyric.toml" <<'TOML'
+          [package]
+          name = "Lib"
+          version = "0.1.0"
+          [project]
+          name = "Lib"
+          output = "single"
+          output_assembly = "Lib.dll"
+          [project.packages]
+          "Lib" = "src/lib.l"
+          TOML
+          printf 'package Lib\nimport Std.Core\npub func answer(): Int { 42 }\n' > "$work/lib/src/lib.l"
+          cat > "$work/app/lyric.toml" <<'TOML'
+          [package]
+          name = "App"
+          version = "0.1.0"
+          [project]
+          name = "App"
+          output = "single"
+          output_assembly = "App.dll"
+          [project.packages]
+          "App" = "src/main.l"
+          [dependencies]
+          Lib = { path = "../lib" }
+          TOML
+          printf 'package App\nimport Std.Core\nimport Std.Console as Console\npub func main(): Int { Console.println("app built"); 0 }\n' > "$work/app/src/main.l"
+          ( cd "$work/lib" && "$bin_abs" build )
+          # 1. No lock -> auto-restore writes it and the build succeeds.
+          ( cd "$work/app" && "$bin_abs" build 2>&1 | tee /tmp/ar1.out )
+          grep -q "resolving dependencies" /tmp/ar1.out || { echo "expected auto-restore message"; exit 1; }
+          test -f "$work/app/lyric.lock" || { echo "expected lyric.lock to be created"; exit 1; }
+          # 2. In-sync lock -> no re-restore.
+          ( cd "$work/app" && "$bin_abs" build 2>&1 | tee /tmp/ar2.out )
+          if grep -q "resolving dependencies" /tmp/ar2.out; then echo "should not re-restore an in-sync lock"; exit 1; fi
+          # 3. --no-restore after deleting the lock -> no restore, lock not recreated.
+          rm -f "$work/app/lyric.lock"
+          ( cd "$work/app" && "$bin_abs" build --no-restore 2>&1 | tee /tmp/ar3.out )
+          if grep -q "resolving dependencies" /tmp/ar3.out; then echo "--no-restore should skip restore"; exit 1; fi
+          test ! -f "$work/app/lyric.lock" || { echo "--no-restore should not recreate the lock"; exit 1; }
+          echo "Auto-restore-on-build e2e passed"
 
       # Coverage collection — informational only, not a blocking gate (#1117).
       # Runs on push to main (not pull_request) to keep PR latency low.

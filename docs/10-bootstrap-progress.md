@@ -19864,3 +19864,31 @@ round-trips, and chained conversions (9/9 on **both** `--target dotnet` and
 `--target jvm`, wired into CI).  Full regression green: 847/847 emitter,
 typechecker self-test, conv self-test 9/9 each target.  Parity is asserted, not
 deferred — both backends run the same suite in CI.
+### D-progress-406 — auto-restore on `lyric build` when the lock is missing or stale (#1968 epic; #1971; D080)
+
+**Status:** Shipped (`lyric-compiler/lyric/cli.l`).
+
+`lyric build` (project mode) now resolves dependencies automatically so a clean
+checkout — or a just-edited `[dependencies]` set — builds without a manual
+`lyric restore`:
+
+- **`cmdRestore` split** into arg-parsing + a reusable
+  `runRestore(mfPath, lockedMode)` (the resolve-and-lock body).  Shared by the
+  `restore` command and the build path.
+- **`lockNeedsRestore(mfPath, manifest)`** — cheap, read-only staleness check:
+  `lyric.lock` missing → restore; otherwise every declared dependency must be in
+  the lock (registry deps must match version), else restore.  Conservative on any
+  read/parse failure.  Lock path follows the workspace root when present, else the
+  manifest dir.
+- **`buildProject`** auto-restores before emit when deps are declared and the lock
+  is missing/stale; **`--no-restore`** opts out.
+
+Verified end-to-end against `bin/lyric`: a two-project setup (app with a `path`
+dependency on lib) auto-restores on first build (writes `lyric.lock`), skips
+re-restore on an in-sync second build, and `--no-restore` skips restore without
+recreating the lock.  CI gains an "Auto-restore-on-build e2e" step exercising all
+three cases.  Stage-1 + AOT clean.  MSIL target.
+
+Docs: D080 (decision log), language reference §13.1, book appendix-b CLI
+reference.  (Numbered D080 / D-progress-406 to follow #2013's in-flight D079 /
+D-progress-403.)
