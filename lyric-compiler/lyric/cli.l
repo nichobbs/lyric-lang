@@ -257,6 +257,39 @@ func writeRuntimeConfigWithProbing(dllPath: in String, probingPaths: in List[Str
   }
 }
 
+// Co-locate the split stdlib runtime assemblies (`Lyric.Stdlib.*.dll` — the
+// per-package façades, their `*Host` shims) plus `FSharp.Core.dll` from the
+// SDK/publish lib dir `srcDir` next to the assembly at `outPath`.  The
+// self-hosted codegen references the stdlib under split per-package assembly
+// names, but a manifest dependency build only ships the bundled
+// `Lyric.Stdlib.dll`; co-locating the split DLLs lets `dotnet exec` resolve
+// them (flat `additionalProbingPaths` do not work for a non-NuGet layout).
+// Best-effort: existing files are left in place and copy failures are
+// non-fatal — the run then surfaces the original assembly-load error.
+func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
+  if srcDir.length == 0 { return }
+  val destDir = Path.dirname(outPath)
+  match File.listFiles(srcDir) {
+    case Err(_) -> ()
+    case Ok(fs) -> {
+      for f in fs.toArray() {
+        val base = Path.basename(f)
+        val wanted = (Str.startsWith(base, "Lyric.Stdlib") and Str.endsWith(base, ".dll"))
+                     or base == "FSharp.Core.dll"
+        if wanted {
+          val dest = Path.join(destDir, base)
+          if not File.fileExists(dest) {
+            match File.readBytes(f) {
+              case Ok(bs) -> { val _ = File.writeBytes(dest, bs) }
+              case Err(_) -> ()
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 // Compile `sourcePath` to a DLL at `outPath`.
 // Returns the exit code: 0 on success, 1 on error.
 // `manifestPath` is forwarded to the generator pre-processor so custom
@@ -2597,10 +2630,17 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
       ti += 1
       continue
     }
-    // Stdlib DLLs compiled on-demand during --internal-project-build are
-    // already in testOutDir: Program.fs copies every DLL from the
-    // subprocess's per-PID stdlib cache to Path.GetDirectoryName(outPath)
-    // before the subprocess exits.  No /tmp scanning needed here.
+    // The self-hosted codegen references the stdlib under its split
+    // per-package assembly names (`Lyric.Stdlib.Core`, `Lyric.Stdlib.Testing`,
+    // …), but a manifest dependency build ships only the bundled
+    // `Lyric.Stdlib.dll` in the dep's bin dir.  The split DLLs (and their host
+    // shims + `FSharp.Core`) ship beside the running `lyric` binary
+    // (`appBaseDirectory()` — the publish/SDK lib dir).  `additionalProbingPaths`
+    // only resolves NuGet-structured layouts, not a flat lib dir, so co-locate
+    // the referenced assemblies next to the test instead — mirroring the
+    // single-file `cmdTest` path.  Without this `dotnet exec` fails with
+    // `Could not load file or assembly 'Lyric.Stdlib.Core'` (#1468 / #1841).
+    copyRuntimeDepsBeside(outPath, Environment.appBaseDirectory())
     writeRuntimeConfigWithProbing(outPath, depBinDirs)
 
     val execArgs: List[String] = newList()
