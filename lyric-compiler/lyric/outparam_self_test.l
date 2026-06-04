@@ -106,3 +106,43 @@ test "inout param forwarded as an inout argument to a nested call" {
   bumpTwice(p)
   assertEqualInt(p, 2, "nested inout forwarding must compose")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Impl-method side: `lowerImplMethodMsil` received the same byref wiring as
+// `lowerFuncMsil`, but the instance-call convention shifts every Lyric
+// parameter by one slot (slot 0 = `this`).  An impl method with an `out` /
+// `inout` parameter pins that the slot offset interacts correctly with
+// `byrefSlotTypes`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface Counter {
+  func bumpBy(n: in Int, total: inout Int): Unit
+  func snapshot(into: out Int): Unit
+}
+
+record CounterImpl { tag: Int }
+
+impl Counter for CounterImpl {
+  func bumpBy(n: in Int, total: inout Int): Unit {
+    total = total + n
+  }
+  func snapshot(into: out Int): Unit {
+    into = self.tag
+  }
+}
+
+test "impl method with inout param: write reaches the caller through interface dispatch" {
+  val c: Counter = CounterImpl(tag = 42)
+  var total: Int = 0
+  c.bumpBy(7, total)
+  assertEqualInt(total, 7, "first bump: 0 + 7 = 7")
+  c.bumpBy(3, total)
+  assertEqualInt(total, 10, "second bump: 7 + 3 = 10")
+}
+
+test "impl method with out param reads self.field and writes through the byref" {
+  val c: Counter = CounterImpl(tag = 99)
+  var dst: Int = 0
+  c.snapshot(dst)
+  assertEqualInt(dst, 99, "snapshot writes self.tag (99) through the out byref")
+}
