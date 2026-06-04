@@ -895,6 +895,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0090` | Range bounds are inverted or produce an empty range |
 | `T0091` | `range` applied to a non-numeric underlying type |
 | `T0093` | Range bound expression cannot be evaluated at compile time |
+| `T0097` | Package-private symbol referenced from another package (mark it `pub` or `internal`) |
 
 ### Emitter (E-series)
 

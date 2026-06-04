@@ -176,7 +176,10 @@ func resolveTypePath(
     match symTableTryFindOne(tbl, name) {
       case Some(sym) ->
         match symbolTypeIdOpt(sym) {
-          case Some(tid) -> return TyUser(id = tid, name = sym.name, args = args)
+          case Some(tid) -> {
+            checkImportedVisibility(sym, span, diag)
+            return TyUser(id = tid, name = sym.name, args = args)
+          }
           case None -> {
             diag.add(errorDiagnostic("T0013", "'" + name + "' is not a type", span))
             return TyError
@@ -196,7 +199,10 @@ func resolveTypePath(
   match symTableTryFindOne(tbl, last) {
     case Some(sym) ->
       match symbolTypeIdOpt(sym) {
-        case Some(tid) -> return TyUser(id = tid, name = sym.name, args = args)
+        case Some(tid) -> {
+          checkImportedVisibility(sym, span, diag)
+          return TyUser(id = tid, name = sym.name, args = args)
+        }
         case None -> {}
       }
     case None -> {}
@@ -214,6 +220,43 @@ func resolveTypePath(
       diag.add(errorDiagnostic("T0014",
         "unknown qualified type '" + joined + "' ('" + last + "' not found in scope)", span))
       TyError
+    }
+  }
+}
+
+// #1484: enforce visibility at use sites.  A reference to an *imported*
+// (cross-package) symbol is rejected (T0097) only when the symbol is
+// package-private (no modifier) — per language reference §3.1, `pub` and
+// `internal` are both visible across packages within a project, while an
+// unmarked declaration is visible only inside its own package.  The
+// cross-*project* hiding of `internal` is enforced at the link/restore layer
+// (only `pub` symbols are published in a package's external contract), so it is
+// out of scope here.  Same-package references (`isImported = false`) are
+// unaffected — a package is checked as one unit, so every sibling-file symbol
+// is in-package.  (The `V0007`/`V0008` codes suggested in #1484 are already
+// owned by the verifier; visibility uses the type-checker code T0097.)
+pub func checkImportedVisibility(sym: in Symbol, span: in Span, diag: in List[Diagnostic]): Unit {
+  if sym.isImported {
+    // Extern types / extern packages are host-binding (FFI boundary)
+    // declarations: the pub/internal/package-private tiers do not apply to
+    // them.  Collection types such as `List`/`Map` are `extern type` aliases
+    // (no `pub` modifier) yet are referenced directly across every package, so
+    // they must not be flagged.  Their cross-package accessibility is governed
+    // by the kernel-boundary convention, not the visibility check.
+    val isExternBinding =
+      match sym.kind {
+        case DKExternType(_, _) -> true
+        case DKExtern(_)        -> true
+        case _                  -> false
+      }
+    if not isExternBinding {
+      match sym.visibility {
+        case Some(_) -> {}   // pub or internal — visible cross-package in a project
+        case None    ->
+          diag.add(errorDiagnostic("T0097",
+            "'" + sym.name + "' is package-private and cannot be referenced from " +
+            "another package (mark it `pub` or `internal`)", span))
+      }
     }
   }
 }
