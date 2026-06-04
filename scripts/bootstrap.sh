@@ -409,22 +409,6 @@ EOF
     die "stage-1 CLI bundle: Lyric.Mq.Host.dll not found in publish output"
   fi
 
-  # `Lyric.Ws.Host.dll` is the Phase-6 host shim for #733 — bridges the
-  # lyric-ws in-process connection registry and the sliding-window rate
-  # limiter through `Lyric.Ws.RegistryHost` and `Lyric.Ws.RateLimitHost`.
-  # No NuGet dependencies; real ASP.NET Core WebSocket integration lands
-  # as a follow-up under #778 once the lyric-web Kestrel shim is ready.
-  dotnet publish "$COMPILER_DIR/src/Lyric.Ws.Host/Lyric.Ws.Host.fsproj" \
-    --configuration Release \
-    --output "$BUILD_DIR/stage0-publish-ws" \
-    --nologo -v q
-  if [[ -f "$BUILD_DIR/stage0-publish-ws/Lyric.Ws.Host.dll" ]]; then
-    cp -f "$BUILD_DIR/stage0-publish-ws/Lyric.Ws.Host.dll" "$STAGE1_DIR/"
-    copied=$((copied + 1))
-  else
-    die "stage-1 CLI bundle: Lyric.Ws.Host.dll not found in publish output"
-  fi
-
   # `Lyric.Web.Host.dll` is the Phase-8 host shim for #733 — bridges the
   # lyric-web `Web.start` entry point through `Lyric.Web.HttpListenerHost`
   # using BCL System.Net.HttpListener.  The path-finder actually binds
@@ -653,17 +637,6 @@ EOF
     copied=$((copied + 1))
   else
     die "stage-2 CLI bundle: Lyric.Mq.Host.dll not found in publish output"
-  fi
-
-  dotnet publish "$COMPILER_DIR/src/Lyric.Ws.Host/Lyric.Ws.Host.fsproj" \
-    --configuration Release \
-    --output "$BUILD_DIR/stage0-publish-ws" \
-    --nologo -v q
-  if [[ -f "$BUILD_DIR/stage0-publish-ws/Lyric.Ws.Host.dll" ]]; then
-    cp -f "$BUILD_DIR/stage0-publish-ws/Lyric.Ws.Host.dll" "$STAGE2_DIR/"
-    copied=$((copied + 1))
-  else
-    die "stage-2 CLI bundle: Lyric.Ws.Host.dll not found in publish output"
   fi
 
   dotnet publish "$COMPILER_DIR/src/Lyric.Web.Host/Lyric.Web.Host.fsproj" \

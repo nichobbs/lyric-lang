@@ -300,6 +300,13 @@ pub record CodegenCtx {
   // comparisons (BEq / Object.Equals) succeed when the same nullary case is used
   // in multiple places.
   singletonFieldTokens: Map[String, Int]
+  // Module-level `val` static fields.  Pre-computed in `addPackageTokens`
+  // (after all type FieldDef rows, in IVal source order) so that `EPath`
+  // references inside function bodies can emit `ldsfld` rather than falling
+  // through to the null-as-unknown fallback.  Parallels `singletonFieldTokens`
+  // for nullary union cases.
+  staticValTokens:     Map[String, Int]       // valName → 0x04000000 | fieldDefRow
+  staticValMsilTypes:  Map[String, MsilType]  // valName → declared MsilType
 }
 
 // One impl block (`impl Iface for Target { … }`) captured by the pre-pass.
@@ -812,7 +819,9 @@ pub func newCodegenCtx(packageName: in String,
     typeFqnByName        = newMap(),
     caseTypeParamCount   = newMap(),
     restoredArtifacts    = restoredArtifacts,
-    singletonFieldTokens = newMap())
+    singletonFieldTokens = newMap(),
+    staticValTokens      = newMap(),
+    staticValMsilTypes   = newMap())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1301,6 +1310,38 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
       case _ -> {}
     }
     i = i + 1
+  }
+
+  // Pass 1b: MPFuncs static fields — IConst and non-literal IVal items emit
+  // FieldDef rows into the host class (after all type FieldDef rows from Pass 1).
+  // Record the token for each non-literal IVal so `EPath` can emit `ldsfld`.
+  var pv = 0
+  while pv < file.items.count {
+    match file.items[pv].kind {
+      case IConst(decl) -> {
+        // IConst emits a single FieldDef row (literal).
+        fieldDefRow = fieldDefRow + 1
+      }
+      case IVal(decl) -> {
+        val valName = match decl.pattern.kind {
+          case PBinding(n, _) -> n
+          case _              -> "__val_" + toString(fieldDefRow)
+        }
+        val isLit = isLiteralI4ExprMsilWithEnv(decl.init, constEnv)
+        if not isLit {
+          val fieldTok = 0x04000000 + fieldDefRow
+          val valTy = match decl.ty {
+            case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
+            case None     -> MObject
+          }
+          cctx.staticValTokens.add(valName, fieldTok)
+          cctx.staticValMsilTypes.add(valName, valTy)
+        }
+        fieldDefRow = fieldDefRow + 1
+      }
+      case _ -> {}
+    }
+    pv = pv + 1
   }
 
   // Pass 2: MPFuncs — optional .cctor then IFunc items (in source order).
@@ -2461,9 +2502,21 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
                   }
                 }
                 case None -> {
-                  // Unknown name — emit null as a safe fallback.
-                  insns.add(MLdNull)
-                  MObject
+                  // Module-level val: load from the static field emitted for this IVal.
+                  match mapGet(cctx.staticValTokens, name) {
+                    case Some(fieldTok) -> {
+                      val ty = match mapGet(cctx.staticValMsilTypes, name) {
+                        case Some(t) -> t
+                        case None    -> MObject
+                      }
+                      insns.add(MLdsfld(fieldToken = fieldTok))
+                      ty
+                    }
+                    case None -> {
+                      insns.add(MLdNull)
+                      MObject
+                    }
+                  }
                 }
               }
             }
@@ -6880,7 +6933,9 @@ func emitExternTargetBody(
       val paramTypes: List[MsilType] = newList()
       var pi = 0
       while pi < decl.params.count {
-        paramTypes.add(typeExprToMsilCtx(cctx, decl.params[pi].ty, pkgName))
+        val baseTy = typeExprToMsilCtx(cctx, decl.params[pi].ty, pkgName)
+        val finalTy = if isByrefMode(decl.params[pi].mode) { MByRef(inner = baseTy) } else { baseTy }
+        paramTypes.add(finalTy)
         pi = pi + 1
       }
       val retTy = match decl.ret {

@@ -31,16 +31,12 @@
 //   deterministic without a real clock.
 //
 //   The aspect's runtime path goes through the process-global registry
-//   exposed by the kernel (`Resilience.Kernel.Net.{circuitIsOpen,
-//   circuitRecordSuccess, circuitRecordFailure}`).  That registry is
-//   implemented in F# at `bootstrap/src/Lyric.Emitter/CircuitStoreHost.fs`
-//   as `Lyric.Resilience.CircuitStore` and mirrors the protected type
-//   entry-for-entry — issue #365 closed the gap where the registry's
-//   half-open semantics lived entirely behind an un-audited extern.
-//
-//   Once non-constant package-level vals (M5.2 stage 3+) and wire-
-//   singleton emit support land, the protected type below can own the
-//   process-global map itself and the F# shim retires.
+//   exposed by `Resilience.Kernel.Net.{circuitIsOpen, circuitRecordSuccess,
+//   circuitRecordFailure}`.  The registry is implemented in pure Lyric in
+//   `lyric-resilience/src/_kernel/net/resilience_kernel.l` using a
+//   process-global ConcurrentDictionary of CircuitEntry records with
+//   per-entry Monitor locking — matching the state-machine invariants
+//   declared on the CircuitBreakerState protected type below.
 //
 // See docs/26-aspects.md §18, docs/27-aspect-libraries.md, D056.
 

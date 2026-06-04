@@ -20604,3 +20604,84 @@ This closes false-positive category (B) of the #1488 gate.  Remaining before the
 vs `RegexError` in `regex_tests`), interface/impl subtyping (`mocking_tests`),
 and the compiler-internal-test import swarms (`metadata_reader_tests`,
 `msil_project_bridge_tests`).
+
+### D-progress-425 — resilience shim elimination: replace CircuitStoreHost.fs with pure Lyric (Item 2 of F# shim plan)
+
+`bootstrap/src/Lyric.Emitter/CircuitStoreHost.fs` — the F# runtime backing the
+`lyric-resilience` circuit-breaker state machine — is deleted and replaced with a
+pure-Lyric implementation in
+`lyric-resilience/src/_kernel/net/resilience_kernel.l`.
+
+**What shipped:**
+
+- New `resilience_kernel.l` (replacing the three `@externTarget` stubs that
+  pointed at `Lyric.Resilience.CircuitStore`):
+  - `extern type ConcurrentDict[K, V]` + `newConcurrentDict`, `cdTryGetValue`,
+    `cdTryAdd` wrappers
+  - `record CircuitEntry` — four mutable fields mirroring the F# `Entry` type
+  - `monitorEnter[T]` / `monitorExit[T]` — per-entry locking via
+    `System.Threading.Monitor`
+  - `val circuitRegistry: ConcurrentDict[String, CircuitEntry]` — process-global
+    module-level val (M5.2 stage 3, PR #2195)
+  - `getOrCreateEntry` — TryGetValue → TryAdd → TryGetValue read-or-create pattern
+  - `circuitIsOpen` / `circuitRecordSuccess` / `circuitRecordFailure` — full state
+    machine, semantically identical to the deleted F# shim
+
+- `bootstrap/src/Lyric.Emitter/CircuitStoreHost.fs` **deleted** (F# shim retired)
+- `bootstrap/tests/Lyric.Emitter.Tests/CircuitStoreHostTests.fs` **deleted** (11 F# tests retired; state-machine coverage lives in `resilience_tests.l` + the `CircuitBreakerState` formal-model tests)
+- Project file updates: `Lyric.Emitter.fsproj`, `Lyric.Emitter.Tests.fsproj`, `Program.fs`
+- Stale comment in `resilience.l` updated to remove F# shim reference
+
+**Codegen fix shipped alongside:**
+
+`emitExternTargetBody` in `lyric-compiler/msil/codegen.l` was not applying byref
+wrapping for `out`/`inout` parameters in FFI method-signature blobs.  The param
+type for `value: out V` resolved to `MObject` (correct base type) but was NOT
+wrapped in `MByRef` — so the MemberRef signature would encode `object` instead of
+`object&`, causing `MissingMethodException` at runtime for any `@externTarget`
+function with an `out` parameter (e.g. `ConcurrentDictionary.TryGetValue`).
+Fixed by wrapping each param's type with `MByRef` when `isByrefMode(param.mode)`
+is true.  The call-site already correctly emits `ldloca` for `out`/`inout` args;
+this fix makes the MemberRef signature consistent.
+
+### D-progress-426 — ws shim elimination: replace WsHost.fs with pure Lyric (Items 3–4 of F# shim plan)
+
+`bootstrap/src/Lyric.Ws.Host/WsHost.fs` — the F# runtime backing the `lyric-ws`
+connection registry and sliding-window rate limiter — is deleted and replaced with
+a pure-Lyric implementation in
+`lyric-ws/src/_kernel/net/ws_kernel.l`.
+
+**What shipped:**
+
+- New `ws_kernel.l` (replacing all `@externTarget` stubs that pointed at
+  `Lyric.Ws.RegistryHost.*` and `Lyric.Ws.RateLimitHost.checkRateLimit`):
+  - Shared BCL externs: `extern type ConcurrentDict[K, V]`, `newConcurrentDict`,
+    `cdTryGetValue`, `cdTryAdd`, `monitorEnter[T]`, `monitorExit[T]`
+  - Connection registry:
+    - `record RegistryMeta` (maxMsgSizeBytes, pingIntervalMs, openCount),
+      `record ConnState` (isOpen), `record HandleCounter` (next)
+    - `val handleCounter`, `val registryMap`, `val connMap` — module-level vals
+      (M5.2 stage 3, PR #2195)
+    - `connKey` composite-key helper; `tryCloseConn` / `decrementOpenCount`
+      helpers with one defer each to avoid nested defer complexity
+    - `createRegistry` — Monitor-locked sequential handle allocation
+    - `send` — validates connection exists and is open
+    - `broadcast` — validates registry exists; per-connection frame dispatch
+      deferred to #778 (path-finder scope)
+    - `close` — marks connection closed, decrements openCount; idempotent for
+      unknown connections
+    - `connectionCount` — reads `meta.openCount`
+    - `isConnected` — reads `connState.isOpen`
+  - Sliding-window rate limiter:
+    - `record RateEntry` (windowStartMs Long, usedInWindow Int, burstAvailable Int),
+      `record RateLock {}` (lock sentinel)
+    - `val rateLock`, `val rateLimitMap` — module-level vals
+    - `checkRateLimit` — fixed 60s window with one-shot burst budget; burst does
+      not refill on window reset (matches F# path-finder semantics)
+
+- `bootstrap/src/Lyric.Ws.Host/WsHost.fs` **deleted** (F# shim retired)
+- `bootstrap/src/Lyric.Ws.Host/Lyric.Ws.Host.fsproj` **deleted** (project retired)
+- `Bootstrap.sln` — `Lyric.Ws.Host` project entry and all 12 build-configuration
+  lines removed
+- `scripts/bootstrap.sh` — `Lyric.Ws.Host.dll` publish+copy removed from both
+  stage-1 and stage-2 CLI bundle assembly steps

@@ -6,9 +6,8 @@
 //! `*NotYet` targets that return a clear "not yet implemented" error
 //! until the durable-persistence shims land (#781 follow-up).
 //!
-//! Shared threading primitives (`nowMs`, `sleepMs`, `generateId`) bind to
-//! `Lyric.Jobs.Threading` — the lyric-jobs equivalent of the thread-pool
-//! utility namespace.
+//! Shared threading primitives (`nowMs`, `sleepMs`, `generateId`) are thin
+//! wrappers over `Std.Time` and `Std.Uuid` — no F# shim required.
 //!
 //! Job status strings returned by `status`:
 //!   "Pending" | "Running" | "Succeeded" | "Failed" | "Cancelled"
@@ -22,22 +21,24 @@
 package Jobs.Kernel.Net
 
 import Std.Core
+import Std.Time
+import Std.Uuid
 
 // ─── BCL threading and identity (always available) ────────────────────────────
 
-@axiom("Lyric.Jobs.Threading.nowMs — DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()")
-@externTarget("Lyric.Jobs.Threading.nowMs")
-pub func nowMs(): Long = ()
+pub func nowMs(): Long {
+  return nowEpochMillis()
+}
 
-@axiom("Lyric.Jobs.Threading.sleepMs — Thread.Sleep(ms) when ms > 0")
-@externTarget("Lyric.Jobs.Threading.sleepMs")
 pub func sleepMs(ms: in Int): Unit
   requires: ms >= 0
-  = ()
+{
+  sleepMillis(ms)
+}
 
-@axiom("Lyric.Jobs.Threading.generateId — Guid.NewGuid().ToString(\"N\")")
-@externTarget("Lyric.Jobs.Threading.generateId")
-pub func generateId(): String = ()
+pub func generateId(): String {
+  return uuidToString(newUuid())
+}
 
 // ─── In-process scheduler (Phase 3 functional path) ──────────────────────────
 //
