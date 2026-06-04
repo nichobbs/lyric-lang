@@ -730,6 +730,13 @@ String method-syntax (UFCS) ops lower to host `String` methods, no import needed
 ## B.10 CLI commands
 
 ```sh
+# Project-aware defaults
+lyric                                  # build the current project (discovers nearest lyric.toml)
+lyric --help                           # grouped command list (also -h / help); exits 0
+                                       # build / restore with no source or --manifest discover
+                                       # the nearest lyric.toml by walking up from the cwd, so
+                                       # they work from any subdirectory of a project
+
 # Build
 lyric build <file.l>                   # compile to .dll + .runtimeconfig.json
 lyric build --force <file.l>           # rebuild unconditionally (bypass incremental check)

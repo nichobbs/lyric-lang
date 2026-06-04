@@ -1271,6 +1271,17 @@ method-syntax form.
 
 `lyric build` — compiles a project. `lyric build --release` for release mode. `lyric build --aot` for Native AOT _(planned; not yet implemented — `<PublishAot>` is not wired and the flag is unrecognised today. Tracked as `docs/36-v1-roadmap.md` §R7.5 / `docs/41` H13.)_
 
+**Project-aware defaults.** Running `lyric` with no command builds the current
+project: it discovers the nearest `lyric.toml` by walking up from the working
+directory and runs `lyric build` against it. `lyric build` and `lyric restore`
+do the same discovery when given no source file or `--manifest`, so they work
+from any subdirectory of a project. Outside a project (no `lyric.toml` in the
+directory tree) bare `lyric` prints help and exits non-zero. `lyric run`
+remains the build-and-execute dev loop and still takes an explicit source file.
+`lyric --help` (also `-h`, `help`) prints the grouped command list and exits 0;
+an unrecognised command prints a "did you mean …?" suggestion when a close
+match exists.
+
 ### 13.2 Test runner
 
 `lyric test <source.l>` compiles a `@test_module` file, synthesises a runnable program from its `test "title" { … }` items, and reports results in TAP-shaped form (`1..N`, `ok N - title` / `not ok N - title`, summary counts). Exit codes: `0` (every selected test passed), `1` (at least one failure), `2` (compilation error), `64` (usage error).
