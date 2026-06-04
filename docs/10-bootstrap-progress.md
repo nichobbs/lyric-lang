@@ -19962,3 +19962,32 @@ Deferred to follow-ups: `EIf`-branch unification (needs the parser statement-end
 fix for the `if { … }`-then-operator ambiguity, #1943) and `EMatch`-branch
 unification (needs pattern-variable type binding so arm bodies see their bound
 names).
+### D-progress-409 — `lyric add`: cargo-style dependency insertion (#1968 epic; #1973; D082)
+
+**Status:** Shipped (`lyric-compiler/lyric/cli.l`, `cli_suggest.l`).
+
+`lyric add <name>[@<version>] [--path <dir>] [--git <url> [--tag|--rev|--branch <ref>]]
+[--nuget] [--manifest <m>] [--no-restore]` adds or updates a single dependency in
+the discovered manifest and restores afterward (unless `--no-restore`), sharing
+D080's `runRestore`:
+
+- **Source forms** map to the TOML shapes `Lyric.Manifest.parseManifest` accepts:
+  registry string (`name = "<v>"`, missing version → `"*"`), `{ path = ... }`,
+  git inline-table (`{ git = ..., tag/rev/branch = ... }`), or a `[nuget]` entry.
+- **`upsertTomlEntry`** edits at the text level to preserve the rest of the file:
+  replace an existing key line in place (idempotent re-add), append to the table
+  if present, or append a new section at EOF; keeps one trailing newline. The
+  edited manifest is re-parsed and the write is refused if it would not parse.
+- Conflicting selectors rejected; `--tag`/`--rev`/`--branch` require `--git`.
+  `add` registered in the dispatcher and in `knownCommands` (did-you-mean).
+
+Verified end-to-end against `bin/lyric`: path/registry/nuget/git adds, in-place
+update (no duplicate), trailing-newline hygiene, did-you-mean for `addd`,
+validation errors, and `add Lib --path ../lib && build` round-trip (auto-restore
+picks up the new path dep). Stage-1 + AOT clean.  MSIL target.
+
+Deferred (tracked follow-ups): `--registry <url>` (manifest has no per-dep
+registry field — it is a global `[registry]` setting) and `lyric remove`.
+
+Docs: D081 (decision log), language reference §13.10, book appendix-b CLI
+reference.

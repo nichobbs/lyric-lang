@@ -145,6 +145,9 @@ func usageText(): String {
   "  lyric build   --release [<source.l>] [--rid <rid>] [-o <bin>]\n" +
   "                (self-contained Native AOT binary; single-file today, see #1975)\n" +
   "  lyric restore [--manifest <lyric.toml>] [--locked]\n" +
+  "  lyric add     <name>[@<version>] [--path <dir>] [--git <url> [--tag|--rev|--branch <ref>]]\n" +
+  "                [--nuget] [--manifest <lyric.toml>] [--no-restore]\n" +
+  "                (adds/updates a dependency in [dependencies] (or [nuget]) and restores)\n" +
   "  lyric publish [--manifest <lyric.toml>] [--dll <path>] [-o <dir>] [--registry <url>] [--api-key <key>]\n" +
   "  lyric search  <term>\n" +
   "\n" +
@@ -1449,6 +1452,205 @@ func lockSha512OfNupkg(name: in String, version: in String): Option[String] {
     case Ok(hex) -> Some(value = hex)
     case Err(_)  -> None
   }
+}
+
+// Whether a TOML line defines the bare key `key` (its left-of-`=` token,
+// trimmed, equals `key`).  Comment lines and table headers never match.
+func lineDefinesKey(line: in String, key: in String): Bool {
+  val t = Str.trim(line)
+  if Str.startsWith(t, "#") { return false }
+  if Str.startsWith(t, "[") { return false }
+  match Str.indexOf(t, "=") {
+    case None     -> false
+    case Some(eq) -> Str.trim(Str.substring(t, 0, eq)) == key
+  }
+}
+
+// Insert or update `key = rhs` inside the `[table]` section of a TOML document,
+// preserving the rest of the file.  If the key already exists in that table its
+// line is replaced (idempotent re-add); if the table exists the entry is
+// appended to it; if the table is absent a new section is appended at EOF.
+func upsertTomlEntry(text: in String, table: in String, key: in String, rhs: in String): String {
+  val newLine = key + " = " + rhs
+  val header  = "[" + table + "]"
+  val lines   = Str.split(text, "\n")
+  val n       = lines.length
+
+  var secIdx = -1
+  var idx = 0
+  while idx < n {
+    if Str.trim(lines[idx]) == header { secIdx = idx; idx = n } else { idx += 1 }
+  }
+
+  val outLines: List[String] = newList()
+  if secIdx < 0 {
+    // Table absent — append a fresh section at EOF.
+    var p = 0
+    while p < n { outLines.add(lines[p]); p += 1 }
+    if n > 0 and Str.length(Str.trim(lines[n - 1])) > 0 { outLines.add("") }
+    outLines.add(header)
+    outLines.add(newLine)
+    return Str.joinList("\n", outLines)
+  }
+
+  // Locate an existing key line and the section's end (next header or EOF).
+  var keyIdx = -1
+  var secEnd = n
+  var q = secIdx + 1
+  while q < n {
+    val t = Str.trim(lines[q])
+    if Str.startsWith(t, "[") { secEnd = q; q = n } else {
+      if keyIdx < 0 and lineDefinesKey(lines[q], key) { keyIdx = q }
+      q += 1
+    }
+  }
+
+  if keyIdx >= 0 {
+    var r = 0
+    while r < n {
+      if r == keyIdx { outLines.add(newLine) } else { outLines.add(lines[r]) }
+      r += 1
+    }
+    return Str.joinList("\n", outLines)
+  }
+
+  // No existing key: insert after the last non-blank line of the section.
+  var insertAt = secIdx + 1
+  var s = secIdx + 1
+  while s < secEnd {
+    if Str.length(Str.trim(lines[s])) > 0 { insertAt = s + 1 }
+    s += 1
+  }
+  var w = 0
+  while w < n {
+    if w == insertAt { outLines.add(newLine) }
+    outLines.add(lines[w])
+    w += 1
+  }
+  if insertAt >= n { outLines.add(newLine) }
+  Str.joinList("\n", outLines)
+}
+
+// `lyric add <name>[@<version>] [--path <p>] [--git <url> [--tag|--rev|--branch <ref>]]
+//   [--nuget] [--manifest <m>] [--no-restore]` — add or update a dependency in the
+// discovered manifest's [dependencies] (or [nuget]) table, then restore (#1973).
+func cmdAdd(argv: in slice[String]): Int {
+  var manifestArg: Option[String] = None
+  var pathArg:     Option[String] = None
+  var gitArg:      Option[String] = None
+  var gitRefKind:  String = ""    // "tag" | "rev" | "branch"
+  var gitRef:      String = ""
+  var isNuget:     Bool = false
+  var noRestore:   Bool = false
+  var spec:        Option[String] = None
+
+  var i = 1
+  while i < argv.length {
+    val arg = argv[i]
+    if arg == "--manifest" {
+      if i + 1 < argv.length { manifestArg = Some(value = argv[i + 1]); i += 2 }
+      else { printErr("add: --manifest requires an argument"); return 1 }
+    } else if arg == "--path" {
+      if i + 1 < argv.length { pathArg = Some(value = argv[i + 1]); i += 2 }
+      else { printErr("add: --path requires an argument"); return 1 }
+    } else if arg == "--git" {
+      if i + 1 < argv.length { gitArg = Some(value = argv[i + 1]); i += 2 }
+      else { printErr("add: --git requires an argument"); return 1 }
+    } else if arg == "--tag" {
+      if i + 1 < argv.length { gitRefKind = "tag"; gitRef = argv[i + 1]; i += 2 }
+      else { printErr("add: --tag requires an argument"); return 1 }
+    } else if arg == "--rev" {
+      if i + 1 < argv.length { gitRefKind = "rev"; gitRef = argv[i + 1]; i += 2 }
+      else { printErr("add: --rev requires an argument"); return 1 }
+    } else if arg == "--branch" {
+      if i + 1 < argv.length { gitRefKind = "branch"; gitRef = argv[i + 1]; i += 2 }
+      else { printErr("add: --branch requires an argument"); return 1 }
+    } else if arg == "--nuget" {
+      isNuget = true; i += 1
+    } else if arg == "--no-restore" {
+      noRestore = true; i += 1
+    } else {
+      match spec {
+        case None    -> { spec = Some(value = arg); i += 1 }
+        case Some(_) -> { printErr("add: unexpected extra argument '" + arg + "'"); return 1 }
+      }
+    }
+  }
+
+  val rawSpec = match spec {
+    case Some(s) -> s
+    case None    -> { printErr("add: missing <name>[@version]"); printUsage(); return 1 }
+  }
+
+  // Split `name@version`.
+  var name    = rawSpec
+  var version = ""
+  match Str.indexOf(rawSpec, "@") {
+    case Some(at) -> {
+      name    = Str.substring(rawSpec, 0, at)
+      version = Str.substring(rawSpec, at + 1, Str.length(rawSpec) - at - 1)
+    }
+    case None -> ()
+  }
+  if Str.length(name) == 0 { printErr("add: empty dependency name"); return 1 }
+
+  // Validate mutually-exclusive source selectors.
+  val hasPath = match pathArg { case Some(_) -> true; case None -> false }
+  val hasGit  = match gitArg  { case Some(_) -> true; case None -> false }
+  if hasPath and hasGit { printErr("add: --path and --git are mutually exclusive"); return 1 }
+  if isNuget and (hasPath or hasGit) { printErr("add: --nuget cannot be combined with --path/--git"); return 1 }
+  if gitRefKind != "" and not hasGit { printErr("add: --tag/--rev/--branch require --git"); return 1 }
+  if Str.length(version) > 0 and (hasPath or hasGit) {
+    printErr("add: @version cannot be combined with --path/--git"); return 1
+  }
+
+  // Render the TOML right-hand side for the chosen source form.
+  val rhs = match pathArg {
+    case Some(p) -> "{ path = \"" + p + "\" }"
+    case None    ->
+      match gitArg {
+        case Some(url) ->
+          if gitRefKind != "" { "{ git = \"" + url + "\", " + gitRefKind + " = \"" + gitRef + "\" }" }
+          else { "{ git = \"" + url + "\" }" }
+        case None ->
+          "\"" + (if Str.length(version) > 0 { version } else { "*" }) + "\""
+      }
+  }
+
+  val table = if isNuget { "nuget" } else { "dependencies" }
+
+  val mfPath = match discoverManifest(manifestArg) {
+    case Some(p) -> p
+    case None    -> {
+      printErr("add: no lyric.toml found in this directory or any parent (use --manifest)")
+      return 1
+    }
+  }
+  val mfText = match File.readText(mfPath) {
+    case Ok(t)  -> t
+    case Err(e) -> { printErr("add: " + IOError.message(e)); return 1 }
+  }
+
+  var updated = upsertTomlEntry(mfText, table, name, rhs)
+  // Keep the file POSIX-clean: end with exactly one trailing newline.
+  if not Str.endsWith(updated, "\n") { updated = updated + "\n" }
+
+  // Guard: the edited manifest must still parse before we commit it to disk.
+  match Mf.parseManifest(updated, mfPath) {
+    case Ok(_)  -> ()
+    case Err(e) -> {
+      printErr("add: refusing to write — resulting manifest is invalid: " + ManifestError.message(e))
+      return 1
+    }
+  }
+  match File.writeText(mfPath, updated) {
+    case Ok(_)  -> ()
+    case Err(e) -> { printErr("add: could not write " + mfPath + ": " + IOError.message(e)); return 1 }
+  }
+  Console.println("add: " + name + " = " + rhs + " -> [" + table + "] in " + mfPath)
+
+  if noRestore { return 0 }
+  runRestore(mfPath, false)
 }
 
 func cmdRestore(argv: in slice[String]): Int {
@@ -3057,6 +3259,10 @@ pub func main(argv: in slice[String]): Int {
 
   if cmd == "restore" {
     return cmdRestore(argv)
+  }
+
+  if cmd == "add" {
+    return cmdAdd(argv)
   }
 
   if cmd == "publish" {

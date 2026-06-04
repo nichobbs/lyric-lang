@@ -27,6 +27,7 @@ pub func knownCommands(): List[String] {
   cmds.add("doc")
   cmds.add("public-api-diff")
   cmds.add("restore")
+  cmds.add("add")
   cmds.add("publish")
   cmds.add("search")
   cmds.add("repl")
