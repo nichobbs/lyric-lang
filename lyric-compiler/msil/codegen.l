@@ -169,6 +169,11 @@ pub record CodegenCtx {
   // the array at the capture site and the array is the delegate's (closed) target.
   lambdaCaptureNames: Map[String, List[String]]
   lambdaCaptureTypes: Map[String, List[MsilType]]
+  // Subset of lambdaCaptureNames[name] that are by-reference cells (a hoisted
+  // enclosing `var`): the `object[] __caps` slot holds the `List[object]` cell
+  // itself, so the lifted body reads/writes it via `get_Item(0)`/`set_Item(0)`
+  // (#1479 v2).  Captures absent from this list are by-value boxed copies.
+  lambdaCaptureCells: Map[String, List[String]]
   // Compile-time const values: registered by IConst pre-scan so that EPath
   // references to const names inline ldc.i4 instead of ldsfld.
   constValues:        Map[String, Int]        // constName → inlined Int value
@@ -742,6 +747,7 @@ pub func newCodegenCtx(packageName: in String,
     lambdaParamTypes     = newMap(),
     lambdaCaptureNames   = newMap(),
     lambdaCaptureTypes   = newMap(),
+    lambdaCaptureCells   = newMap(),
     constValues          = newMap(),
     ffiAsmRefs           = newMap(),
     ffiTypeRefs          = newMap(),
@@ -1521,8 +1527,22 @@ pub record FuncCtx {
   captureNameToType:  Map[String, MsilType]
   // Names of `var` (reassignable) locals declared in this function.  A closure
   // that captures one of these cannot use by-value capture (mutations would not
-  // be shared) — by-ref capture is #1479 v2, so such captures fail loud.
+  // be shared) — such a `var` is instead hoisted to a heap cell (see below).
   mutableLocals:      List[String]
+  // By-reference closure capture (#1479 v2).  `hoistedVarNames` is the pre-pass
+  // set of names referenced inside any lambda in this function; a `var` local in
+  // this set is hoisted to a one-element `List[object]` heap **cell** so the
+  // closure and enclosing scope share one mutable location.  When such a `var`
+  // is declared, its cell slot + logical element type are recorded in
+  // `hoistedCellSlot`/`hoistedCellType`; reads/writes of the name (here and in
+  // the closure) route through `get_Item(0)`/`set_Item(0)`.
+  hoistedVarNames:    List[String]
+  hoistedCellSlot:    Map[String, Int]
+  hoistedCellType:    Map[String, MsilType]
+  // Inside a lifted `__lambda_*`: capture names whose `__caps[i]` slot holds a
+  // by-reference **cell** (a hoisted `var`) rather than a by-value boxed copy.
+  // Reads emit `__caps[i]; get_Item(0); unbox`; writes emit `set_Item(0)`.
+  captureCellNames:   List[String]
 }
 
 // Allocate a fresh label ID (0, 1, 2, …) for use with MLabel/MBr* instructions.
@@ -1597,6 +1617,23 @@ pub func allocSlotMsil(fctx: in FuncCtx, name: in String, ty: in MsilType): Int 
       slot
     }
   }
+}
+
+// Finish a hoisted-`var` heap cell (#1479 v2).  Precondition: the stack holds
+// `(cell, cell, rawValue)` — i.e. a freshly `newobj`'d `List[object]` duplicated,
+// with the initial value on top.  Boxes the value, `Add`s it as element 0,
+// allocates an object-typed slot for the cell, stores it, and records the cell
+// slot + logical element type so reads/writes of the name route through it.
+pub func finishHoistedCellMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
+                               insns: in List[MInsn], name: in String,
+                               elemTy: in MsilType): Unit {
+  boxIfNeededMsil(cctx, insns, elemTy)
+  insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
+  val cellSlot = allocSlotMsil(fctx, name, MObject)
+  emitStoreSlot(insns, cellSlot, fctx.paramCount)
+  fctx.mutableLocals.add(name)
+  fctx.hoistedCellSlot.add(name, cellSlot)
+  fctx.hoistedCellType.add(name, elemTy)
 }
 
 // True for parameter modes that pass a managed pointer (`T&`): `out` and `inout`.
@@ -2257,6 +2294,20 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
     // ── Path (variable or function reference) ─────────────────────────────────
     case EPath(path) -> {
       val name = lastSegmentMsil(path)
+      // A `var` hoisted to a heap cell (#1479 v2): read element 0 of the cell
+      // and unbox/cast.  Checked before the plain-slot path (the slot holds the
+      // cell reference, not the value).
+      match mapGet(fctx.hoistedCellSlot, name) {
+        case Some(cellSlot) -> {
+          val elemTy = match mapGet(fctx.hoistedCellType, name) { case Some(t) -> t case None -> MObject }
+          emitLoadVarMsil(fctx, insns, cellSlot)
+          insns.add(MLdcI4(v = 0))
+          insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+          castObjectToMsil(cctx, insns, elemTy)
+          return elemTy
+        }
+        case None -> {}
+      }
       match mapGet(fctx.slots, name) {
         case Some(slot) -> {
           val ty =
@@ -2275,12 +2326,18 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
         case None -> {
           // Captured enclosing variable inside a lifted closure body (#1479):
           // read it from `object[] __caps` (slot 0) and unbox/cast to its type.
+          // A by-reference capture (`captureCellNames`) holds a `List[object]`
+          // cell in that slot — read element 0 of the cell instead of the slot.
           match mapGet(fctx.captureNameToIndex, name) {
             case Some(capIdx) -> {
               emitLoadVarMsil(fctx, insns, 0)
               insns.add(MLdcI4(v = capIdx))
               insns.add(MLdelemRef)
               val capTy = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t case None -> MObject }
+              if nameListContains(fctx.captureCellNames, name) {
+                insns.add(MLdcI4(v = 0))
+                insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+              }
               castObjectToMsil(cctx, insns, capTy)
               return capTy
             }
@@ -2771,25 +2828,31 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
       // computes the capture set (free idents ∩ enclosing slots); their types
       // come from the enclosing scope.
       val caps = lambdaCaptureNamesMsil(fctx, lparams, lbody)
-      // v1 captures by value, which is correct only for immutable bindings.
-      // Capturing a `var` would silently drop reassignments (by-ref capture is
-      // #1479 v2), so fail loud instead.
-      var capMut = 0
-      while capMut < caps.count {
-        if nameListContains(fctx.mutableLocals, caps[capMut]) {
-          panic("Msil.Codegen: a closure that captures the mutable (`var`) local '" +
-                caps[capMut] + "' is not yet supported on --target dotnet — " +
-                "by-value capture would not share reassignments, and by-reference " +
-                "capture is tracked in #1479.  As a workaround, capture an " +
-                "immutable copy (`val c = " + caps[capMut] + "`) if you don't need " +
-                "to observe later mutations.")
-        }
-        capMut = capMut + 1
-      }
+      // Capture types (parallel to `caps`) and the subset captured by reference.
+      // A captured `var` was hoisted to a heap cell at its declaration (#1479 v2,
+      // pre-pass): its capture is the cell itself (by reference, element type =
+      // `hoistedCellType`).  An immutable binding is captured by value (its
+      // `fctx.types`).  A captured `var` that was *not* hoisted (a pre-pass miss)
+      // must never be silently captured by value — fail loud as a safety net.
       val capTypes: List[MsilType] = newList()
+      val capCells: List[String] = newList()
       var capTyI = 0
       while capTyI < caps.count {
-        capTypes.add(match mapGet(fctx.types, caps[capTyI]) { case Some(t) -> t case None -> MObject })
+        val cn = caps[capTyI]
+        match mapGet(fctx.hoistedCellSlot, cn) {
+          case Some(_) -> {
+            capTypes.add(match mapGet(fctx.hoistedCellType, cn) { case Some(t) -> t case None -> MObject })
+            capCells.add(cn)
+          }
+          case None -> {
+            if nameListContains(fctx.mutableLocals, cn) {
+              panic("Msil.Codegen: internal error — captured mutable (`var`) local '" +
+                    cn + "' was not hoisted to a heap cell (#1479 v2 closure-capture " +
+                    "pre-pass missed it).  Please report this with a reproducer.")
+            }
+            capTypes.add(match mapGet(fctx.types, cn) { case Some(t) -> t case None -> MObject })
+          }
+        }
         capTyI = capTyI + 1
       }
       // Parameter-taking lambdas (#1939): the delegate is Func<object,…,object>,
@@ -2832,6 +2895,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
       if caps.count > 0 {
         cctx.lambdaCaptureNames.add(lname, caps)
         cctx.lambdaCaptureTypes.add(lname, capTypes)
+        cctx.lambdaCaptureCells.add(lname, capCells)
       }
       // FQN key (#1183 Phase 2): lambdas are package-scoped, registered by
       // `addPackageTokens` as `<pkg>.__lambda_<idx>`.
@@ -2862,11 +2926,20 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
             while capStI < caps.count {
               insns.add(MDup)
               insns.add(MLdcI4(v = capStI))
-              match mapGet(fctx.slots, caps[capStI]) {
-                case Some(s) -> emitLoadVarMsil(fctx, insns, s)
-                case None    -> insns.add(MLdNull)
+              if nameListContains(capCells, caps[capStI]) {
+                // By-reference: store the cell (a `List[object]` reference) itself
+                // so the closure and enclosing scope share it — no box (#1479 v2).
+                match mapGet(fctx.hoistedCellSlot, caps[capStI]) {
+                  case Some(s) -> emitLoadVarMsil(fctx, insns, s)
+                  case None    -> insns.add(MLdNull)
+                }
+              } else {
+                match mapGet(fctx.slots, caps[capStI]) {
+                  case Some(s) -> emitLoadVarMsil(fctx, insns, s)
+                  case None    -> insns.add(MLdNull)
+                }
+                boxIfNeededMsil(cctx, insns, capTypes[capStI])
               }
-              boxIfNeededMsil(cctx, insns, capTypes[capStI])
               insns.add(MStelemRef)
               capStI = capStI + 1
             }
@@ -3362,6 +3435,44 @@ func lowerStmtsExprFromMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
   valTy
 }
 
+// Push a hoisted-`var` cell onto the stack (#1479 v2): either an enclosing-scope
+// cell at a local slot (`isCapture=false`, `idx`=slot) or a by-reference cell
+// captured into `object[] __caps` (`isCapture=true`, `idx`=capture index).
+func emitCellLoadMsil(fctx: in FuncCtx, insns: in List[MInsn],
+                      isCapture: in Bool, idx: in Int): Unit {
+  if isCapture {
+    emitLoadVarMsil(fctx, insns, 0)
+    insns.add(MLdcI4(v = idx))
+    insns.add(MLdelemRef)
+  } else {
+    emitLoadVarMsil(fctx, insns, idx)
+  }
+}
+
+// Store to element 0 of a hoisted-`var` cell, honouring compound operators
+// (#1479 v2).  `AssEq` overwrites; a compound op reads the current element,
+// combines it with the rhs (String `+=` concatenates), and writes back.
+func emitCellAssignMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn],
+                        isCapture: in Bool, idx: in Int, elemTy: in MsilType,
+                        op: in AssignOp, value: in Expr): Unit {
+  emitCellLoadMsil(fctx, insns, isCapture, idx)
+  insns.add(MLdcI4(v = 0))
+  match op {
+    case AssEq -> {
+      val _ = lowerExprMsil(cctx, fctx, insns, value)
+    }
+    case _ -> {
+      emitCellLoadMsil(fctx, insns, isCapture, idx)
+      insns.add(MLdcI4(v = 0))
+      insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+      castObjectToMsil(cctx, insns, elemTy)
+      emitCompoundCombineMsil(cctx, fctx, insns, op, elemTy, value)
+    }
+  }
+  boxIfNeededMsil(cctx, insns, elemTy)
+  insns.add(MCallvirt(methodToken = cctx.tokListObjSetItem))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §5d. Assignment expression lowering.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3377,6 +3488,16 @@ func lowerAssignExprMsil(
   match target.kind {
     case EPath(path) -> {
       val name = lastSegmentMsil(path)
+      // Write to a `var` hoisted to a heap cell (#1479 v2) — checked before the
+      // plain-slot path (the slot holds the cell reference, not the value).
+      match mapGet(fctx.hoistedCellSlot, name) {
+        case Some(cellSlot) -> {
+          val elemTy = match mapGet(fctx.hoistedCellType, name) { case Some(t) -> t case None -> MObject }
+          emitCellAssignMsil(cctx, fctx, insns, false, cellSlot, elemTy, op, value)
+          return MVoid
+        }
+        case None -> {}
+      }
       match mapGet(fctx.slots, name) {
         case Some(slot) -> {
           val ty =
@@ -3425,6 +3546,18 @@ func lowerAssignExprMsil(
           MVoid
         }
         case None -> {
+          // Write to a by-reference cell captured into `object[] __caps` (a
+          // hoisted enclosing `var` reassigned from inside the closure) — #1479 v2.
+          match mapGet(fctx.captureNameToIndex, name) {
+            case Some(capIdx) -> {
+              if nameListContains(fctx.captureCellNames, name) {
+                val capTy = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t case None -> MObject }
+                emitCellAssignMsil(cctx, fctx, insns, true, capIdx, capTy, op, value)
+                return MVoid
+              }
+            }
+            case None -> {}
+          }
           lowerExprMsil(cctx, fctx, insns, value)
           insns.add(MPop)
           MVoid
@@ -5662,11 +5795,19 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
           emitStoreSlot(insns, slot, fctx.paramCount)
         }
         case LBVar(name, tyOpt, initOpt) -> {
+          // A `var` captured by a closure is hoisted to a heap cell (#1479 v2):
+          // newobj List; dup; <value>; finishHoistedCell.  Reads/writes route
+          // through the cell so the closure and this scope share the location.
+          val isHoisted = nameListContains(fctx.hoistedVarNames, name)
           match initOpt {
             case Some(init) -> {
               val annoTy = match tyOpt {
                 case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName)
                 case None     -> MObject
+              }
+              if isHoisted {
+                insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+                insns.add(MDup)
               }
               val prevHintLen = fctx.contextHintTyArgs.count
               match annoTy {
@@ -5684,9 +5825,13 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
                 fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
               }
               val ty = if annoTy != MObject { annoTy } else { initTy }
-              val slot = allocSlotMsil(fctx, name, ty)
-              emitStoreSlot(insns, slot, fctx.paramCount)
-              fctx.mutableLocals.add(name)
+              if isHoisted {
+                finishHoistedCellMsil(cctx, fctx, insns, name, ty)
+              } else {
+                val slot = allocSlotMsil(fctx, name, ty)
+                emitStoreSlot(insns, slot, fctx.paramCount)
+                fctx.mutableLocals.add(name)
+              }
             }
             case None -> {
               val ty =
@@ -5694,13 +5839,24 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
                   case Some(te) -> typeExprToMsilCtx(cctx, te, fctx.pkgName)
                   case None     -> MInt
                 }
-              val slot = allocSlotMsil(fctx, name, ty)
-              fctx.mutableLocals.add(name)
-              match ty {
-                case MLong   -> { insns.add(MLdcI8(v = intToLong(0))); emitStoreSlot(insns, slot, fctx.paramCount) }
-                case MDouble -> { insns.add(MLdcR8(v = 0.0)); emitStoreSlot(insns, slot, fctx.paramCount) }
-                case MVoid   -> {}
-                case _       -> { insns.add(MLdcI4(v = 0)); emitStoreSlot(insns, slot, fctx.paramCount) }
+              if isHoisted and ty != MVoid {
+                insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+                insns.add(MDup)
+                match ty {
+                  case MLong   -> { insns.add(MLdcI8(v = intToLong(0))) }
+                  case MDouble -> { insns.add(MLdcR8(v = 0.0)) }
+                  case _       -> { insns.add(MLdcI4(v = 0)) }
+                }
+                finishHoistedCellMsil(cctx, fctx, insns, name, ty)
+              } else {
+                val slot = allocSlotMsil(fctx, name, ty)
+                fctx.mutableLocals.add(name)
+                match ty {
+                  case MLong   -> { insns.add(MLdcI8(v = intToLong(0))); emitStoreSlot(insns, slot, fctx.paramCount) }
+                  case MDouble -> { insns.add(MLdcR8(v = 0.0)); emitStoreSlot(insns, slot, fctx.paramCount) }
+                  case MVoid   -> {}
+                  case _       -> { insns.add(MLdcI4(v = 0)); emitStoreSlot(insns, slot, fctx.paramCount) }
+                }
               }
             }
           }
@@ -6167,6 +6323,10 @@ func makeFuncCtxMsil(pkgName: in String, className: in String,
   val captureNameToIndex: Map[String, Int] = newMap()
   val captureNameToType: Map[String, MsilType] = newMap()
   val mutableLocals: List[String] = newList()
+  val hoistedVarNames: List[String] = newList()
+  val hoistedCellSlot: Map[String, Int] = newMap()
+  val hoistedCellType: Map[String, MsilType] = newMap()
+  val captureCellNames: List[String] = newList()
   FuncCtx(
     pkgName              = pkgName,
     className            = className,
@@ -6192,7 +6352,11 @@ func makeFuncCtxMsil(pkgName: in String, className: in String,
     boxedParamTypes      = boxedParamTypes,
     captureNameToIndex   = captureNameToIndex,
     captureNameToType    = captureNameToType,
-    mutableLocals        = mutableLocals)
+    mutableLocals        = mutableLocals,
+    hoistedVarNames      = hoistedVarNames,
+    hoistedCellSlot      = hoistedCellSlot,
+    hoistedCellType      = hoistedCellType,
+    captureCellNames     = captureCellNames)
 }
 
 // Check whether the last meaningful instruction in a list is a return or throw.
@@ -6833,10 +6997,13 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
     fctx.slots.add("__caps", capsSlot)
     fctx.types.add("__caps", MArray(elemTy = MObject))
     fctx.slotTicker.add(0)
+    val capCells = match mapGet(cctx.lambdaCaptureCells, decl.name) { case Some(c) -> c case None -> newList() }
     var cni = 0
     while cni < lambdaCaps.count {
       fctx.captureNameToIndex.add(lambdaCaps[cni], cni)
       fctx.captureNameToType.add(lambdaCaps[cni], match (if cni < lambdaCapTys.count { Some(value = lambdaCapTys[cni]) } else { None }) { case Some(t) -> t case None -> MObject })
+      // A by-reference capture: `__caps[cni]` holds the hoisted `var`'s cell.
+      if nameListContains(capCells, lambdaCaps[cni]) { fctx.captureCellNames.add(lambdaCaps[cni]) }
       cni = cni + 1
     }
   }
@@ -6881,6 +7048,15 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
     }
     fctx.slotTicker.add(0)
     pi = pi + 1
+  }
+
+  // By-reference closure capture pre-pass (#1479 v2): collect every name used
+  // inside a lambda in this body.  A `var` local in this set is hoisted to a
+  // heap cell at its declaration so the closure shares the mutable location.
+  match decl.body {
+    case Some(FBBlock(blk)) -> { collectInLambdaNamesBlock(blk, fctx.hoistedVarNames) }
+    case Some(FBExpr(e))    -> { collectInLambdaNamesExpr(e, fctx.hoistedVarNames) }
+    case None -> {}
   }
 
   // Reserve the function epilogue label up-front so a `return` inside a
@@ -8426,6 +8602,122 @@ func collectRefNamesStmt(s: in Statement, acc: in List[String]): Unit {
     }
     case SInvariant(e)   -> { collectRefNamesExpr(e, acc) }
     case SRule(lhs, rhs) -> { collectRefNamesExpr(lhs, acc); collectRefNamesExpr(rhs, acc) }
+    case _ -> {}
+  }
+}
+
+// Pre-pass for by-reference closure capture (#1479 v2): collect every name
+// referenced *inside* a lambda body anywhere in this expression/block.  A `var`
+// local whose name appears here is captured by some closure and must be hoisted
+// to a heap cell (so the closure and the enclosing scope share one mutable
+// location).  Mirrors `collectRefNamesExpr`'s case structure exactly; the only
+// collecting action is at `ELambda`, where `collectRefNamesBlock` dumps every
+// name the lambda body uses (it already descends into nested lambdas).  This
+// over-approximates (a same-named non-captured var may be hoisted — harmless,
+// reads/writes still route through the cell correctly).
+func collectInLambdaNamesExpr(e: in Expr, acc: in List[String]): Unit {
+  match e.kind {
+    case ELambda(_, body) -> { collectRefNamesBlock(body, acc) }
+    case ECall(fn, args) -> {
+      collectInLambdaNamesExpr(fn, acc)
+      var ai = 0
+      while ai < args.count {
+        match args[ai] {
+          case CAPositional(ex)  -> { collectInLambdaNamesExpr(ex, acc) }
+          case CANamed(_, ex, _) -> { collectInLambdaNamesExpr(ex, acc) }
+        }
+        ai = ai + 1
+      }
+    }
+    case EBinop(_, lhs, rhs) -> { collectInLambdaNamesExpr(lhs, acc); collectInLambdaNamesExpr(rhs, acc) }
+    case EPrefix(_, operand) -> { collectInLambdaNamesExpr(operand, acc) }
+    case EParen(inner)       -> { collectInLambdaNamesExpr(inner, acc) }
+    case EMember(recv, _)    -> { collectInLambdaNamesExpr(recv, acc) }
+    case EIf(cond, thenB, elseOpt, _) -> {
+      collectInLambdaNamesExpr(cond, acc)
+      collectInLambdaNamesOrdBlock(thenB, acc)
+      match elseOpt { case Some(eb) -> collectInLambdaNamesOrdBlock(eb, acc) case None -> {} }
+    }
+    case EBlock(block)  -> { collectInLambdaNamesBlock(block, acc) }
+    case EUnsafe(block) -> { collectInLambdaNamesBlock(block, acc) }
+    case EMatch(scr, arms) -> {
+      collectInLambdaNamesExpr(scr, acc)
+      var ai = 0
+      while ai < arms.count {
+        collectInLambdaNamesOrdBlock(arms[ai].body, acc)
+        ai = ai + 1
+      }
+    }
+    case EList(exprs) -> {
+      var ei = 0
+      while ei < exprs.count { collectInLambdaNamesExpr(exprs[ei], acc); ei = ei + 1 }
+    }
+    case ETuple(exprs) -> {
+      var ei = 0
+      while ei < exprs.count { collectInLambdaNamesExpr(exprs[ei], acc); ei = ei + 1 }
+    }
+    case EIndex(recv, indices) -> {
+      collectInLambdaNamesExpr(recv, acc)
+      var ii = 0
+      while ii < indices.count { collectInLambdaNamesExpr(indices[ii], acc); ii = ii + 1 }
+    }
+    case EAwait(inner)     -> { collectInLambdaNamesExpr(inner, acc) }
+    case EYield(inner)     -> { collectInLambdaNamesExpr(inner, acc) }
+    case ESpawn(inner)     -> { collectInLambdaNamesExpr(inner, acc) }
+    case ETry(inner)       -> { collectInLambdaNamesExpr(inner, acc) }
+    case EPropagate(inner) -> { collectInLambdaNamesExpr(inner, acc) }
+    case EAssign(target, _, v) -> { collectInLambdaNamesExpr(target, acc); collectInLambdaNamesExpr(v, acc) }
+    case EInterpolated(segs) -> {
+      var si = 0
+      while si < segs.count {
+        match segs[si] { case ISExpr(ex) -> { collectInLambdaNamesExpr(ex, acc) } case _ -> {} }
+        si = si + 1
+      }
+    }
+    case ETypeApp(fn, _) -> { collectInLambdaNamesExpr(fn, acc) }
+    case _ -> {}
+  }
+}
+
+func collectInLambdaNamesOrdBlock(ob: in ExprOrBlock, acc: in List[String]): Unit {
+  match ob {
+    case EOBExpr(ex)   -> { collectInLambdaNamesExpr(ex, acc) }
+    case EOBBlock(blk) -> { collectInLambdaNamesBlock(blk, acc) }
+  }
+}
+
+func collectInLambdaNamesBlock(b: in Block, acc: in List[String]): Unit {
+  var i = 0
+  while i < b.statements.count {
+    collectInLambdaNamesStmt(b.statements[i], acc)
+    i = i + 1
+  }
+}
+
+func collectInLambdaNamesStmt(s: in Statement, acc: in List[String]): Unit {
+  match s.kind {
+    case SLocal(binding) -> match binding {
+      case LBVal(_, _, init)    -> { collectInLambdaNamesExpr(init, acc) }
+      case LBLet(_, _, init)    -> { collectInLambdaNamesExpr(init, acc) }
+      case LBVar(_, _, initOpt) -> match initOpt { case Some(init) -> { collectInLambdaNamesExpr(init, acc) } case None -> {} }
+    }
+    case SAssign(target, _, v) -> { collectInLambdaNamesExpr(target, acc); collectInLambdaNamesExpr(v, acc) }
+    case SReturn(valOpt) -> match valOpt { case Some(e) -> { collectInLambdaNamesExpr(e, acc) } case None -> {} }
+    case SExpr(e)  -> { collectInLambdaNamesExpr(e, acc) }
+    case SThrow(e) -> { collectInLambdaNamesExpr(e, acc) }
+    case SWhile(_, cond, body) -> { collectInLambdaNamesExpr(cond, acc); collectInLambdaNamesBlock(body, acc) }
+    case SFor(_, _, iter, body) -> { collectInLambdaNamesExpr(iter, acc); collectInLambdaNamesBlock(body, acc) }
+    case SLoop(_, body)  -> { collectInLambdaNamesBlock(body, acc) }
+    case SScope(_, body) -> { collectInLambdaNamesBlock(body, acc) }
+    case SDefer(body)    -> { collectInLambdaNamesBlock(body, acc) }
+    case STry(body, catches, finally_) -> {
+      collectInLambdaNamesBlock(body, acc)
+      var ci = 0
+      while ci < catches.count { collectInLambdaNamesBlock(catches[ci].body, acc); ci = ci + 1 }
+      match finally_ { case Some(fb) -> { collectInLambdaNamesBlock(fb, acc) } case None -> {} }
+    }
+    case SInvariant(e)   -> { collectInLambdaNamesExpr(e, acc) }
+    case SRule(lhs, rhs) -> { collectInLambdaNamesExpr(lhs, acc); collectInLambdaNamesExpr(rhs, acc) }
     case _ -> {}
   }
 }

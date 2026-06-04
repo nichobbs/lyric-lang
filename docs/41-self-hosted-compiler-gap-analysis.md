@@ -197,7 +197,7 @@ supporting all language features."
 | H17 | ~~Loop `break`/`continue` whose jump target is outside an enclosing `try` region emitted `MBr` (unverifiable IL across a protected-region boundary).~~ **Resolved (#1481 item 3 / D-progress-371):** codegen tracks protected-region nesting depth (`tryRegionStack`) and the depth each loop was entered at (`loopTryDepth`); a break/continue escaping ≥1 open region now emits `leave`. Covered by `loop_eh_collection_self_test.l`. | `codegen.l` `emitLoopJumpMsil` + `lowerTryCatchMsil` | ✅ |
 | H18 | ~~`Char`/`Float`/`Long` literal match patterns fall to the wildcard arm → always match.~~ **Resolved.** `Char` (#1769/#1770, D-progress-367), then `Long` (already emitting `MLdcI8+MCeq`) and `Float` (`MLdcR8+MCeq+MBrFalse`, #1481 item 1 / D-progress-370). All literal pattern kinds now emit real compares. | `codegen.l` `PLiteral` arm | ✅ |
 | H19 | ~~Range-for (`for i in 0..n`) and any `a..b` expression panic (`ERange`).~~ **Resolved (#1478):** `for i in lo .. hi` / `..= hi` / `..< hi` parse and lower to a counting loop (`lowerForMsil`/`emitCountingForMsil`). Only a *standalone* range value (`val r = lo .. hi`) still panics — no `Range` value type, unused in stdlib/ecosystem. | `codegen.l` `lowerForMsil`; `parser_exprs.l` for-iter | ✅ |
-| H20 | **PARTIAL (#1479).** Capturing closures **work for immutable bindings** (v1): `lambdaCaptureNamesMsil` computes the capture set, the values are captured **by value** into an `object[]` bound as the delegate's closed target, and the lifted `__lambda_*` reads each from a leading `object[] __caps` parameter (`ldelem.ref` + unbox). Capturing a `var` fails loud (by-**reference** capture is v2). Related: invoking a function-typed value `f()` (#1877) works via a uniform `Func` ABI (thunks/suppliers/`() -> Unit` callbacks); parameter-taking lambdas passed directly to a typed `(…) -> R` parameter work (#1939) — boxed args unboxed via annotation or HOF-signature propagation; combine freely with captures. Remaining: by-ref (`var`) capture, nested closures. Lambdas in `@test_module` self-tests hit #1854. | `codegen.l` `ELambda` arm + `lowerFuncMsil` `__caps` path | ⚠ PARTIAL |
+| H20 | **RESOLVED (#1479 v1+v2).** Capturing closures work for both immutable and mutable captures, single level (including escaping closures returned from their defining function). **v1 (by value):** `lambdaCaptureNamesMsil` computes the capture set; immutable values are boxed into an `object[]` bound as the delegate's closed target, and the lifted `__lambda_*` reads each from a leading `object[] __caps` parameter (`ldelem.ref` + unbox). **v2 (by reference):** a captured `var` is hoisted (per a pre-pass over the function body) to a one-element `List[object]` heap **cell**; the closure captures the cell reference, so reassignments are shared in both directions (closure↔enclosing scope). Reads/writes route through `get_Item(0)`/`set_Item(0)`; compound `+=` honoured. Related: invoking a function-typed value `f()` (#1877) works via a uniform `Func` ABI; parameter-taking lambdas passed directly to a typed `(…) -> R` parameter work (#1939) — boxed args unboxed via annotation or HOF-signature propagation; combine freely with captures. Remaining (tracked in #1479): a lambda capturing from an enclosing **lambda**'s locals (multi-level nesting), and returned lambdas with un-annotated params (the orthogonal #1939 gap, fail-loud). Lambdas in `@test_module` self-tests hit #1854. | `codegen.l` `ELambda` arm + `lowerFuncMsil` `__caps`/cell path | ✅ |
 | H21 | ~~`mapGet`/`map.remove` (#1602/#1727), `List.Contains`→`false`, `List.removeAt`→no-op, unknown method→pop+null.~~ **Resolved.** `mapGet`/`remove` (D-progress-364); `List.contains`/`removeAt` now emit real `List<object>::Contains`/`RemoveAt` and the unknown-method catch-all throws a clear runtime error instead of returning silent `null` (#1481 item 4 / D-progress-371). | `codegen.l` `lowerMethodCallMsil` | ✅ |
 | H22 | ~~Compound assignment ignores the operator: string `+=` emits numeric `MAdd`; field `r.f += v` only stores; `a[i] op= v` hard-fails.~~ **Resolved (#1481 item 2 / D-progress-370):** compound assignment is a real read-modify-write honouring the operator (String `+=` → `String.Concat`) for local / `result` / record-field / `List`-element / `Map`-value targets. | `codegen.l` `lowerAssignExprMsil` + `emitCompoundCombine*` | ✅ |
 
@@ -483,11 +483,16 @@ section wins.
   equality, #1480/#1837), and the try/catch-as-value-expression invalid-IL gap
   (#1823) are now fixed; M7 is **stale** (loop invariants are checked via the
   elaborator's `assert` lowering; `SItem` is never produced by the parser).
-  **H20 (capturing closures)** is now PARTIAL (#1479): capturing an **immutable**
-  binding works (v1) — captured by value into an `object[]` bound as the
-  delegate's closed target, read back in the lifted body from a leading
-  `object[] __caps` parameter; capturing a `var` fails loud (by-ref capture is
-  v2, along with nested closures).
+  **H20 (capturing closures)** is now RESOLVED (#1479 v1+v2): capturing an
+  **immutable** binding works by value (v1) — boxed into an `object[]` bound as
+  the delegate's closed target, read back in the lifted body from a leading
+  `object[] __caps` parameter; capturing a **`var`** works by reference (v2) —
+  the `var` is hoisted to a shared one-element `List[object]` heap cell, so
+  reassignments are visible across the closure boundary in both directions
+  (verified with mutate-inside-observe-outside, external-mutate-observe-inside,
+  loop-variable capture, String `+=`, and escaping closures returned from their
+  defining function). Multi-level nesting (a lambda capturing an enclosing
+  *lambda*'s locals) remains tracked in #1479.
   Invoking a function-typed value `f()` (#1877) is **fixed** for zero-argument
   lambdas via a uniform `Func` ABI — thunks, suppliers, and `() -> Unit`
   callbacks run correctly through higher-order functions. **Parameter-taking**
