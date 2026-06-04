@@ -19284,3 +19284,36 @@ type allowed cross-package, package-private type/func rejected → T0097,
 same-package private ref unaffected). Full regression green (847/847 emitter,
 84/84 CLI bridge); the auth + session ecosystem manifests build and run green
 with **zero** false positives (29/29 and 31/31).
+
+### D-progress-389 — self-hosted MSIL: annotated parameter-taking lambdas via unbox-on-load (#1939 increment 1)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`).  Increment 1 of #1939 — does **not** close it.
+
+Follows #1877 (function-value invocation): lambdas use a uniform
+`Func`(N+1)<object,…,object>` delegate, so a lambda's arguments arrive **boxed**.
+A parameter-using lambda previously read its params as raw `object` references
+without unboxing — garbage for value-type params — and was rejected wholesale.
+
+This increment adds the **unbox-on-load** machinery and turns it on for
+**annotated** params:
+
+- `lambdaParamToParam` preserves an explicit `{ x: Int -> … }` annotation as the
+  param's logical type (unannotated params stay `object`).
+- `lowerFuncMsil` forces a lifted lambda's **signature** params to `object` (to
+  match the `Func<object,…>` delegate) while recording each annotated param's
+  logical type in a new `FuncCtx.boxedParamTypes` slot map.
+- The value-position `EPath` load `unbox.any`s / `castclass`es a boxed param to
+  its logical type on use (`castObjectToMsil`).
+- The construction-time guard now rejects only a lambda that **uses an
+  un-annotated parameter** (no type to unbox to); annotated params and unused
+  params are allowed.
+
+`apply1({ x: Int -> x + 1 }, 10)` → `11`, `apply2({ a: Int, b: Int -> a * b },
+6, 7)` → `42`, and an `(Int) -> Bool` predicate all produce correct values.
+**Unannotated** param-using lambdas (`{ x -> x + 1 }`) still fail loud — the
+boxed argument has no type to unbox to — pending **HOF-type propagation** (the
+type checker returns `TyError` for lambdas, so the param type must come from the
+higher-order function's signature at the call site), which is the #1939
+remainder and reuses this same `boxedParamTypes` machinery.  CI step extended
+(annotated-param runtime assertions + the unannotated fail-loud check).  No
+regression: emitter 847/847, CLI 84/84.  MSIL target only.
