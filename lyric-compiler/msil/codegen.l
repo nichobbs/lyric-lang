@@ -161,6 +161,14 @@ pub record CodegenCtx {
   // the lambda arg is lowered; consumed by lowerFuncMsil's `__lambda_*` path to
   // seed boxedParamTypes for un-annotated params.  #1939.
   lambdaParamTypes:   Map[String, List[MsilType]]
+  // Capturing closures (#1479).  Keyed by lambda name ("__lambda_<idx>"): the
+  // enclosing-scope variable names a lambda captures, and their MsilTypes
+  // (parallel lists).  Recorded at the capture site; consumed by lowerFuncMsil's
+  // `__lambda_*` path, which prepends an `object[] __caps` parameter and resolves
+  // each captured name to `__caps[i]` (unboxed).  Captured values are bound into
+  // the array at the capture site and the array is the delegate's (closed) target.
+  lambdaCaptureNames: Map[String, List[String]]
+  lambdaCaptureTypes: Map[String, List[MsilType]]
   // Compile-time const values: registered by IConst pre-scan so that EPath
   // references to const names inline ldc.i4 instead of ldsfld.
   constValues:        Map[String, Int]        // constName → inlined Int value
@@ -732,6 +740,8 @@ pub func newCodegenCtx(packageName: in String,
     funcParamModes       = newMap(),
     funcParamFnInner     = newMap(),
     lambdaParamTypes     = newMap(),
+    lambdaCaptureNames   = newMap(),
+    lambdaCaptureTypes   = newMap(),
     constValues          = newMap(),
     ffiAsmRefs           = newMap(),
     ffiTypeRefs          = newMap(),
@@ -1502,6 +1512,17 @@ pub record FuncCtx {
   // load.  Populated for `__lambda_*` from the param's annotation (or, later,
   // the propagated HOF parameter type).  #1939.
   boxedParamTypes: Map[Int, MsilType]
+  // Capturing-closure resolution (#1479) inside a lifted `__lambda_*` body: a
+  // captured enclosing variable's name maps to its index in the `object[] __caps`
+  // parameter (slot 0) and its logical MsilType, so an `EPath` read emits
+  // `ldarg.0; ldc.i4 i; ldelem.ref; <unbox/cast>`.  Empty for non-capturing
+  // functions.
+  captureNameToIndex: Map[String, Int]
+  captureNameToType:  Map[String, MsilType]
+  // Names of `var` (reassignable) locals declared in this function.  A closure
+  // that captures one of these cannot use by-value capture (mutations would not
+  // be shared) — by-ref capture is #1479 v2, so such captures fail loud.
+  mutableLocals:      List[String]
 }
 
 // Allocate a fresh label ID (0, 1, 2, …) for use with MLabel/MBr* instructions.
@@ -2252,6 +2273,19 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
           }
         }
         case None -> {
+          // Captured enclosing variable inside a lifted closure body (#1479):
+          // read it from `object[] __caps` (slot 0) and unbox/cast to its type.
+          match mapGet(fctx.captureNameToIndex, name) {
+            case Some(capIdx) -> {
+              emitLoadVarMsil(fctx, insns, 0)
+              insns.add(MLdcI4(v = capIdx))
+              insns.add(MLdelemRef)
+              val capTy = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t case None -> MObject }
+              castObjectToMsil(cctx, insns, capTy)
+              return capTy
+            }
+            case None -> {}
+          }
           // Check for a module-level compile-time const (inline ldc.i4).
           match mapGet(cctx.constValues, name) {
             case Some(v) -> {
@@ -2729,22 +2763,34 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
     // supported (params arrive boxed and untyped — #1939) and are rejected below.
     case ELambda(lparams, lbody) -> {
       // Capturing closures (#1479): a lambda is lifted to a `__lambda_<i>`
-      // *static* method, which is correct only when the lambda captures
-      // nothing.  If the body refers to a local/parameter of the enclosing
-      // function, the static method would read out-of-scope slots and the JIT
-      // rejects the program (InvalidProgramException).  Until display-class
-      // synthesis lands, detect captures and fail loudly with an actionable
-      // diagnostic rather than emit a silently-invalid program.
+      // static method.  When its body refers to a local/parameter of the
+      // enclosing function, those values are captured by-value into an
+      // `object[] __caps` that is bound as the delegate's (closed) target; the
+      // lifted method takes `__caps` as its first parameter and reads each
+      // capture from it (see lowerFuncMsil + EPath).  `lambdaCaptureNamesMsil`
+      // computes the capture set (free idents ∩ enclosing slots); their types
+      // come from the enclosing scope.
       val caps = lambdaCaptureNamesMsil(fctx, lparams, lbody)
-      if caps.count > 0 {
-        var capList = caps[0]
-        var ci = 1
-        while ci < caps.count { capList = capList + ", " + caps[ci]; ci = ci + 1 }
-        panic("Msil.Codegen: capturing closures are not yet supported on " +
-              "--target dotnet — this lambda captures the enclosing local(s): " +
-              capList + ".  Display-class synthesis is tracked in #1479.  As a " +
-              "workaround, pass the captured value(s) as explicit lambda " +
-              "parameters, or refactor the closure into a top-level function.")
+      // v1 captures by value, which is correct only for immutable bindings.
+      // Capturing a `var` would silently drop reassignments (by-ref capture is
+      // #1479 v2), so fail loud instead.
+      var capMut = 0
+      while capMut < caps.count {
+        if nameListContains(fctx.mutableLocals, caps[capMut]) {
+          panic("Msil.Codegen: a closure that captures the mutable (`var`) local '" +
+                caps[capMut] + "' is not yet supported on --target dotnet — " +
+                "by-value capture would not share reassignments, and by-reference " +
+                "capture is tracked in #1479.  As a workaround, capture an " +
+                "immutable copy (`val c = " + caps[capMut] + "`) if you don't need " +
+                "to observe later mutations.")
+        }
+        capMut = capMut + 1
+      }
+      val capTypes: List[MsilType] = newList()
+      var capTyI = 0
+      while capTyI < caps.count {
+        capTypes.add(match mapGet(fctx.types, caps[capTyI]) { case Some(t) -> t case None -> MObject })
+        capTyI = capTyI + 1
       }
       // Parameter-taking lambdas (#1939): the delegate is Func<object,…,object>,
       // so arguments arrive boxed.  A param's logical type can come from an
@@ -2781,6 +2827,12 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
       cctx.lambdaTicker.add(0)
       val lname = "__lambda_" + toString(idx)
       val nparams = lparams.count
+      // Record the capture set so lowerFuncMsil's `__lambda_*` path prepends the
+      // `object[] __caps` parameter and resolves captured reads (#1479).
+      if caps.count > 0 {
+        cctx.lambdaCaptureNames.add(lname, caps)
+        cctx.lambdaCaptureTypes.add(lname, capTypes)
+      }
       // FQN key (#1183 Phase 2): lambdas are package-scoped, registered by
       // `addPackageTokens` as `<pkg>.__lambda_<idx>`.
       val lambdaKey = fctx.pkgName + "." + lname
@@ -2801,7 +2853,26 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
             } else {
               buildFuncNCtorTok(cctx, nparams)
             }
-          insns.add(MLdNull)
+          // Delegate target: a closed-over `object[]` of captured values for a
+          // capturing lambda (each boxed), else `null` for a static delegate.
+          if caps.count > 0 {
+            insns.add(MLdcI4(v = caps.count))
+            insns.add(MNewarr(typeToken = 0x01000000 + boxTypeRef(cctx, MObject)))
+            var capStI = 0
+            while capStI < caps.count {
+              insns.add(MDup)
+              insns.add(MLdcI4(v = capStI))
+              match mapGet(fctx.slots, caps[capStI]) {
+                case Some(s) -> emitLoadVarMsil(fctx, insns, s)
+                case None    -> insns.add(MLdNull)
+              }
+              boxIfNeededMsil(cctx, insns, capTypes[capStI])
+              insns.add(MStelemRef)
+              capStI = capStI + 1
+            }
+          } else {
+            insns.add(MLdNull)
+          }
           insns.add(MLdftn(methodToken = tok))
           insns.add(MNewobj(ctorToken = ctorTok))
           MObject
@@ -5615,6 +5686,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
               val ty = if annoTy != MObject { annoTy } else { initTy }
               val slot = allocSlotMsil(fctx, name, ty)
               emitStoreSlot(insns, slot, fctx.paramCount)
+              fctx.mutableLocals.add(name)
             }
             case None -> {
               val ty =
@@ -5623,6 +5695,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
                   case None     -> MInt
                 }
               val slot = allocSlotMsil(fctx, name, ty)
+              fctx.mutableLocals.add(name)
               match ty {
                 case MLong   -> { insns.add(MLdcI8(v = intToLong(0))); emitStoreSlot(insns, slot, fctx.paramCount) }
                 case MDouble -> { insns.add(MLdcR8(v = 0.0)); emitStoreSlot(insns, slot, fctx.paramCount) }
@@ -6091,6 +6164,9 @@ func makeFuncCtxMsil(pkgName: in String, className: in String,
   val byrefSlotTypes: Map[Int, MsilType] = newMap()
   val funcValRetTypes: Map[String, MsilType] = newMap()
   val boxedParamTypes: Map[Int, MsilType] = newMap()
+  val captureNameToIndex: Map[String, Int] = newMap()
+  val captureNameToType: Map[String, MsilType] = newMap()
+  val mutableLocals: List[String] = newList()
   FuncCtx(
     pkgName              = pkgName,
     className            = className,
@@ -6113,7 +6189,10 @@ func makeFuncCtxMsil(pkgName: in String, className: in String,
     contextHintTyArgs    = contextHintTyArgs,
     byrefSlotTypes       = byrefSlotTypes,
     funcValRetTypes      = funcValRetTypes,
-    boxedParamTypes      = boxedParamTypes)
+    boxedParamTypes      = boxedParamTypes,
+    captureNameToIndex   = captureNameToIndex,
+    captureNameToType    = captureNameToType,
+    mutableLocals        = mutableLocals)
 }
 
 // Check whether the last meaningful instruction in a list is a return or throw.
@@ -6734,12 +6813,33 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
     }
 
   val className = pkgName
-  val fctx = makeFuncCtxMsil(pkgName, className, decl.name, decl.params.count, retTy)
+  // Capturing closure (#1479): a capturing `__lambda_*` takes a synthetic leading
+  // `object[] __caps` parameter (the closed-over delegate target).  It occupies
+  // slot 0, shifting the lambda's own params to 1+, so paramCount grows by one.
+  val lambdaCaps = match mapGet(cctx.lambdaCaptureNames, decl.name) { case Some(c) -> c case None -> newList() }
+  val lambdaCapTys = match mapGet(cctx.lambdaCaptureTypes, decl.name) { case Some(t) -> t case None -> newList() }
+  val hasCaps = lambdaCaps.count > 0
+  val effectiveParamCount = if hasCaps { decl.params.count + 1 } else { decl.params.count }
+  val fctx = makeFuncCtxMsil(pkgName, className, decl.name, effectiveParamCount, retTy)
   val insns: List[MInsn] = newList()
 
   // Allocate slots for parameters.  These occupy slots 0..N-1 in the
   // combined slot space but are NOT added to fctx.locals.
   val isLambdaFn = startsWith(decl.name, "__lambda_")
+  // Reserve slot 0 for `object[] __caps` and register each captured name's array
+  // index + logical type so EPath reads resolve to `__caps[i]` (#1479).
+  if hasCaps {
+    val capsSlot = fctx.slotTicker.count
+    fctx.slots.add("__caps", capsSlot)
+    fctx.types.add("__caps", MArray(elemTy = MObject))
+    fctx.slotTicker.add(0)
+    var cni = 0
+    while cni < lambdaCaps.count {
+      fctx.captureNameToIndex.add(lambdaCaps[cni], cni)
+      fctx.captureNameToType.add(lambdaCaps[cni], match (if cni < lambdaCapTys.count { Some(value = lambdaCapTys[cni]) } else { None }) { case Some(t) -> t case None -> MObject })
+      cni = cni + 1
+    }
+  }
   // Parameter types propagated from a higher-order-function call site (#1939),
   // used when a lambda param is un-annotated.  Empty for non-lambdas (decl.name
   // is never a "__lambda_*" key) and lambdas not passed directly to a typed
@@ -6870,6 +6970,9 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
   // in (#1939) — its annotated/inferred logical types live in boxedParamTypes
   // and are unboxed on use, not in the signature.
   val paramTypes: List[MsilType] = newList()
+  // Capturing lambda: the leading `object[] __caps` (closed-over target) is the
+  // method's first parameter (#1479).
+  if hasCaps { paramTypes.add(MArray(elemTy = MObject)) }
   var pi2 = 0
   while pi2 < decl.params.count {
     if isLambdaFn {

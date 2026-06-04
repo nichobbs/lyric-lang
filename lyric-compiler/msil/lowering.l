@@ -459,6 +459,8 @@ pub union MInsn {
   case MNewobjGenericCase(typeRefRow: Int, typeArgs: List[MsilType], ctorParams: List[MsilType])
   case MBox(typeToken: Int)            // box value type
   case MUnboxAny(typeToken: Int)       // unbox.any
+  case MNewarr(typeToken: Int)         // newarr — allocate a 1-D array of the element type token
+  case MStelemRef                      // stelem.ref — store into a reference-typed array element
 
   // Misc
   case MDup
@@ -1314,6 +1316,8 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     }
     case MBox(tok)          -> emitBox(mb, tok)
     case MUnboxAny(tok)     -> emitUnbox_Any(mb, tok)
+    case MNewarr(tok)       -> emitNewarr(mb, tok)
+    case MStelemRef         -> emitStelem_Ref(mb)
     case MDup               -> emitDup(mb)
     case MPop               -> emitPop(mb)
     case MThrow             -> emitThrow(mb)

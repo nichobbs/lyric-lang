@@ -28,8 +28,9 @@ sequenced as `docs/36-v1-roadmap.md` §R7.  In priority order:
    exit (C7, #1477), `==`/`Map`-key structural equality (H1, #1480/#1837), and
    try/catch-as-value-expression IL (#1823) are done; M7 is stale (loop
    invariants are checked via the elaborator; `SItem` is never parsed).
-   Capturing closures (H20, #1479) now **fail loud** instead of silently
-   miscompiling; display-class synthesis is the remaining work.  Function-value
+   Capturing closures (H20, #1479) work for **immutable** bindings (by-value
+   into an `object[]` closed delegate target); capturing a `var` fails loud
+   (by-ref capture + nested closures are v2).  Function-value
    invocation (#1877) is fixed for zero-argument lambdas via a uniform `Func`
    ABI (thunks/suppliers/`() -> Unit` callbacks work through HOFs); param-using
    lambdas passed directly to a typed `(…) -> R` parameter work — boxed args
