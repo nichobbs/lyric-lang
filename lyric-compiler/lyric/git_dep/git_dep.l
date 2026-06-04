@@ -107,7 +107,11 @@ pub func urlToHash(url: in String): String {
     h = (h % 65000000) * 33 + (Char.toInt(url[ui]) % 128)
     ui += 1
   }
-  trimmed + "-" + Str.fromInt(h)
+  // Use the `toString` builtin, NOT `Str.fromInt`: this file imports both
+  // Std.String and Std.Char, and the F# emitter's qualified-name resolution
+  // mis-resolves `Str.fromInt` to `Std.Char.fromInt` (whose `requires n<=65535`
+  // panics for the ~2-billion DJB2 hash — the original crash; #2082).
+  trimmed + "-" + toString(h)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -116,14 +120,20 @@ pub func urlToHash(url: in String): String {
 
 // Derive the subdirectory name for a given ref variant.
 func refDirName(ref: in GitRef): String {
+  // Assign into a non-null-initialised `var` rather than returning the `match`
+  // directly: `resolve` treats an empty result as "ref kind undetermined" and
+  // fails gracefully.  (Returning the match expression directly would yield a
+  // null on a malformed ref and NUL-poison the downstream Path.join.)
+  var result = ""
   match ref {
-    case Tag(name)    -> "tag-" + name
+    case Tag(name)    -> { result = "tag-" + name }
     case Rev(sha)     ->
       // Use only the first 12 characters of the SHA for readability.
-      if sha.length >= 12 { "rev-" + Str.substring(sha, 0, 12) }
-      else                { "rev-" + sha }
-    case Branch(name) -> "branch-" + name
+      if sha.length >= 12 { result = "rev-" + Str.substring(sha, 0, 12) }
+      else                { result = "rev-" + sha }
+    case Branch(name) -> { result = "branch-" + name }
   }
+  result
 }
 
 // True when `dir` looks like an already-initialised git clone.
@@ -140,7 +150,8 @@ func runGit(args: in List[String]): Result[Int, IOError] {
 
 // Build an Err string from a git command result.
 func gitErrMsg(op: in String, code: in Int): String {
-  "git " + op + " failed (exit " + Str.fromInt(code) + ")"
+  // `toString`, not `Str.fromInt` (Std.String/Std.Char name collision; #2082).
+  "git " + op + " failed (exit " + toString(code) + ")"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -261,7 +272,15 @@ pub func gitRefLabel(ref: in GitRef): String {
 pub func resolve(url: in String, ref: in GitRef, subdir: in Option[String]): Result[GitDepResult, String] {
   // Derive cache paths.
   val cacheRoot  = Path.join(cacheDir(), urlToHash(url))
-  val targetDir  = Path.join(cacheRoot, refDirName(ref))
+  val refName    = refDirName(ref)
+  // Guard: an empty ref name means the ref kind (tag/rev/branch) could not be
+  // determined.  Fail with a clean diagnostic rather than letting the resulting
+  // `Path.join(cacheRoot, "")` NUL-join produce a confusing path or panic.
+  if Str.length(refName) == 0 {
+    return Err(error = "git dependency '" + url +
+                       "': could not determine the ref kind (tag/rev/branch)")
+  }
+  val targetDir  = Path.join(cacheRoot, refName)
 
   // Ensure the cache root directory exists.
   match Dir.createRecursive(cacheRoot) {

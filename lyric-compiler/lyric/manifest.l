@@ -52,7 +52,10 @@ pub union ManifestError {
 pub func ManifestError.message(e: in ManifestError): String {
   match e {
     case ParseError(fp, ln, col, msg) ->
-      fp + ":" + Str.fromInt(ln) + ":" + Str.fromInt(col) + ": " + msg
+      // `toString`, not `Str.fromInt`: this file imports Std.String and Std.Char,
+      // and the F# emitter mis-resolves `Str.fromInt` to `Std.Char.fromInt`,
+      // rendering line/column as garbled characters (same root as #2082).
+      fp + ":" + toString(ln) + ":" + toString(col) + ": " + msg
     case MissingField(section, field) ->
       "[" + section + "] missing required field '" + field + "'"
     case InvalidField(section, field, msg) ->
