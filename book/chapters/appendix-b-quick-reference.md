@@ -822,6 +822,11 @@ lyric openapi <spec.json> --package <Pkg.Name>   # override the generated packag
 # Package management
 lyric restore                          # download all dependencies declared in lyric.toml
 lyric restore --locked                 # restore strictly from lyric.lock (fail if lock is stale)
+lyric add Foo@1.2.0                     # add/update a [dependencies] registry entry, then restore
+lyric add Lib --path ../lib            # add a path dependency
+lyric add Bar --git <url> --tag v1     # add a git dependency (or --rev/--branch)
+lyric add Pkg@1.0 --nuget              # add to the [nuget] table instead
+lyric add Foo@1.2.0 --no-restore       # edit the manifest without restoring
 lyric publish                          # publish package to the configured registry
 lyric publish --registry <url>         # publish to a specific registry feed URL
 lyric publish --api-key <key>          # supply an API key (NuGet push token / GitHub PAT)

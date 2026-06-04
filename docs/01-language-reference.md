@@ -1420,6 +1420,12 @@ A `@bench` function whose signature does not match `func name(): Unit` passes th
 
 `lyric.toml` is the project manifest. Dependencies use SemVer 2.0.0. Registry: NuGet piggyback (D-progress-030); see `docs/21-nuget-linking.md`.
 
+`lyric add <name>[@<version>] [--path <dir>] [--git <url> [--tag|--rev|--branch <ref>]] [--nuget] [--manifest <lyric.toml>] [--no-restore]` adds or updates a dependency in the discovered manifest and then restores (unless `--no-restore`):
+
+- Bare `<name>` or `<name>@<version>` writes a registry entry to `[dependencies]` (`name = "<version>"`; a missing version is written as `"*"`).
+- `--path <dir>` writes `name = { path = "<dir>" }`; `--git <url>` with an optional `--tag`/`--rev`/`--branch` writes the git inline-table form; `--nuget` writes to the `[nuget]` table instead.
+- The edit is idempotent — re-adding a dependency updates its entry in place rather than duplicating it — and is rejected before write if the result would not parse. The table is created if absent. `--path`, `--git`, and `--nuget`/`@version` are mutually exclusive where they conflict.
+
 ---
 
 ## 14. Aspects

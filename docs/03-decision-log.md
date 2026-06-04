@@ -4459,6 +4459,36 @@ branch typing is in place. `EBlock`/`EUnsafe`/`EResult` ship with it;
 `EIf`/`EMatch` branch unification (which additionally needs the parser
 statement-end fix for `EIf`, #1943, and pattern-variable binding for `EMatch`)
 build on the same divergence-aware `checkBlock` in follow-ups.
+## D082 — `lyric add` — cargo-style dependency insertion (#1968, #1973)
+
+**Context:** Adding a dependency meant hand-editing the `lyric.toml`
+`[dependencies]`/`[nuget]` tables. A cargo-style `add` command is a large
+ergonomics win and pairs with auto-restore (D080).
+
+**Decision:**
+
+- **`lyric add <name>[@<version>] [--path <dir>] [--git <url> [--tag|--rev|--branch <ref>]]
+  [--nuget] [--manifest <m>] [--no-restore]`** discovers the manifest (like
+  `build`/`restore`), inserts or updates a single dependency entry, and runs
+  `runRestore` afterward (D080's shared body) unless `--no-restore`.
+- **Source forms** map to the TOML shapes `parseManifest` accepts: bare/`@version`
+  → registry string (`name = "<v>"`, missing version written as `"*"`); `--path`
+  → `{ path = "..." }`; `--git` + optional ref → git inline-table; `--nuget` →
+  `[nuget]` table entry.
+- **Editing is text-level, not a re-serialize**, to preserve the rest of the file:
+  `upsertTomlEntry` replaces an existing key line in place (idempotent re-add),
+  appends to the table if present, or appends a new section at EOF, and keeps a
+  single trailing newline. The result is re-parsed and the write is **refused**
+  if it would not parse — no half-written manifest.
+- Conflicting selectors (`--path`/`--git`/`--nuget`/`@version`) are rejected;
+  `--tag`/`--rev`/`--branch` require `--git`.
+
+**Deferred:** `--registry <url>` (no per-dependency registry field exists in the
+manifest — registry is a global `[registry]` setting), and `lyric remove`. Both
+tracked as follow-ups.
+
+**Consequence:** `lyric add Foo@1.2.0 && lyric build` resolves `Foo` with no
+manual TOML editing. Path/git/nuget forms round-trip through `parseManifest`.
 
 ---
 
