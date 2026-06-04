@@ -4977,6 +4977,70 @@ in-scope-shadow resolution are now specified.  `docs/01` §1.3 and the grammar
 gain a note to this effect.
 
 ---
+## D086 — Band 3 Phase B.0: `IAsyncStateMachine` synthesis for user-defined `async func` (no-await path, #2070)
+
+**Context:** D085 (Phase A) fixed the `@externTarget async` silent miscompile. The
+next step in epic #2070 is synthesising real `IAsyncStateMachine` state machines
+for user-defined `async func` declarations so that the self-hosted MSIL backend
+produces standards-conformant async code.  Phase B.0 covers the simplest case:
+async function bodies that contain **no `EAwait` nodes** — the entire body runs
+synchronously inside `MoveNext`, so no suspension machinery is needed.
+
+**Decision (Phase B.0 — no-await IAsyncStateMachine synthesis):**
+
+1. **SM TypeDef** — a sealed class `<funcName>__SM_N` (namespace = pkg) implementing
+   `System.Runtime.CompilerServices.IAsyncStateMachine` is synthesised for each
+   user-defined `async func` whose body contains no `EAwait` nodes.
+   - Field `__state: Int` — state machine state (-1 = initial, -2 = done).
+   - Field `__builder: AsyncTaskMethodBuilder` (void path) or
+     `AsyncTaskMethodBuilder<T>` (non-void path) — task builder.
+   - Fields `__p0..N` — one copy of each user-function parameter.
+
+2. **MoveNext** — runs the user body synchronously and then calls `SetResult`:
+   - Preamble: `ldarg.0; ldfld __pN; stloc N` for each user param (restores them
+     from SM fields into local slots so the body lowering sees them by name).
+   - User body lowered exactly as a normal function body.
+   - Epilogue: `ldarg.0; ldc.i4 -2; stfld __state; ldarg.0; ldflda __builder;
+     [result]; call SetResult; ret`.
+
+3. **SetStateMachine** — no-op stub (the CLR calls this when boxing a struct SM;
+   we use a class SM so boxing doesn't apply).
+
+4. **Kickoff function** — replaces the original user func declaration:
+   - `newobj SM; stloc 0` — allocate (no Create() needed; zero-init by newobj).
+   - `ldloc 0; ldc.i4 -1; stfld __state` — initialise state.
+   - Copy user params into SM fields.
+   - `ldloc 0; ldflda __builder; ldloca 0; call ATMB[<T>].Start<SM>(ref SM)`.
+   - **Void path** — falls through to `ret` (no unwrap needed; MoveNext already
+     called SetResult before Start returned).
+   - **Non-void path** — `ldloc 0; ldflda __builder; call ATMB<T>.get_Task();
+     callvirt Task<T>.get_Result(); ret` — synchronous unwrap (task completes
+     immediately since MoveNext ran to completion before Start returned).
+
+5. **TypeSpec-parented MemberRef signatures** — `SetResult(T)` and `get_Task()`
+   MemberRefs on `ATMB<T>` TypeSpecs use `VAR 0` (ECMA-335 II.23.2.1: the
+   TypeSpec parent captures the concrete type argument; method signatures use the
+   class type parameter placeholder).
+
+6. **`lowerMRecord` TypeDef-first ordering** — the TypeDef row is now registered
+   in the PE tables **before** field rows and method bodies are emitted.  This is
+   required so that `findTypeDefRowByName` + `findFieldDefRowOfType` succeed inside
+   `lowerMFunc` for MoveNext (which uses `MLdfldByName`/`MStfldByName`).  The row
+   values are identical; only the insertion point moves earlier.
+
+**Type-checker gap (tracked):** The self-hosted type checker does not yet
+propagate the return type of `async func f(): T` through call sites — it infers
+`Unit` instead of `T` for `val x = f()`.  This causes false T0043 diagnostics
+when the result is used with typed assertions (`assertEqualInt`), but does not
+affect runtime correctness or code generation (the codegen emits the correct type
+from the function declaration).  Fixing the type-checker async return-type
+inference is tracked as a follow-up in #2070.
+
+**Regression gate:** 847/847 emitter tests + 84/84 CLI tests green.  All 5 Phase
+B.0 tests in `lyric-compiler/lyric/async_sm_self_test.l` pass.  Phase A tests
+(`async_extern_self_test.l`) unaffected.
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
