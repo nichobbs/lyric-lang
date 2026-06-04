@@ -89,6 +89,12 @@ dotnet hello.dll           # run the produced assembly
 
 `lyric build` is incremental: if neither the source nor the standard library has changed since the last build, it is a no-op. Pass `--force` to rebuild unconditionally.
 
+Inside a project, you can drop the arguments entirely. Running `lyric` with no
+command builds the current project, and `lyric build` / `lyric restore` find the
+project's `lyric.toml` by walking up from your working directory — so they work
+from any subdirectory. (`lyric run` still takes an explicit source file.) Run
+`lyric --help` for the grouped command list.
+
 > **Native AOT — not yet available.** A self-contained Native AOT binary (no
 > .NET runtime needed at deployment) is a planned deliverable, not a shipped
 > feature: there is no `--aot` flag today, and `<PublishAot>` is not yet wired
@@ -172,8 +178,11 @@ Core commands you will use constantly:
 
 | Command | What it does |
 |---------|-------------|
+| `lyric` | Build the current project (discovers the nearest `lyric.toml`) |
 | `lyric build <file.l>` | Compile; produce a `.dll` |
+| `lyric build` | Build the discovered project (no source arg needed) |
 | `lyric run <file.l>` | Compile and immediately execute |
+| `lyric --help` | Print the grouped command list |
 | `lyric test <file.l>` | Run `test` declarations in a `@test_module` file (TAP-shaped output, exit 1 on failure) |
 | `lyric test <file.l> --list` | Print test titles without compiling |
 | `lyric test <file.l> --filter <substring>` | Run only tests whose title contains the substring |

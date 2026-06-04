@@ -127,29 +127,132 @@ func printDiag(d: in Diagnostic): Unit {
     toString(d.span.startPos.column) + "]: " + d.message)
 }
 
+// Single source of truth for the help text, grouped by workflow so it stays
+// scannable.  `printUsage` writes it to stderr (the error/no-args paths);
+// `lyric --help` writes the same text to stdout and exits 0.
+func usageText(): String {
+  "Usage: lyric [command] [args]\n" +
+  "\n" +
+  "  Run `lyric` with no command inside a project to build it.\n" +
+  "\n" +
+  "Project:\n" +
+  "  lyric build   [<source.l>] [-o <output>] [--force] [--manifest <lyric.toml>] [--target dotnet|jvm]\n" +
+  "                (no source: builds the discovered project's [project.packages] into one DLL)\n" +
+  "  lyric restore [--manifest <lyric.toml>] [--locked]\n" +
+  "  lyric publish [--manifest <lyric.toml>] [--dll <path>] [-o <dir>] [--registry <url>] [--api-key <key>]\n" +
+  "  lyric search  <term>\n" +
+  "\n" +
+  "Dev loop:\n" +
+  "  lyric run     <source.l> [-- <args>...]\n" +
+  "  lyric test    <source.l> [--filter <prefix>] [--list] [--target dotnet|jvm]\n" +
+  "  lyric bench   <source.l> [--runs N] [--warmup N] [--filter <prefix>]\n" +
+  "  lyric repl\n" +
+  "\n" +
+  "Quality:\n" +
+  "  lyric fmt     <source.l> [--check] [--write]\n" +
+  "  lyric lint    <source.l> [--error-on-warning]\n" +
+  "  lyric prove   <source.l> [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]\n" +
+  "  lyric doc     <source.l> [-o out.md]\n" +
+  "  lyric public-api-diff <old.dll> <new.dll>\n" +
+  "\n" +
+  "Codegen:\n" +
+  "  lyric openapi <spec.json> [-o <out.l>] [--client-name <Name>] [--package <Pkg>]\n" +
+  "\n" +
+  "  lyric --version | --help\n" +
+  "\n" +
+  "Notes:\n" +
+  "  build is incremental — same source + stdlib skips emit; --force rebuilds.\n" +
+  "  build/restore discover the nearest lyric.toml by walking up from the\n" +
+  "  current directory, so they work from any subdirectory of a project.\n" +
+  "  fmt:  --write overwrites in place; --check exits 1 if would change.\n" +
+  "        Non-doc comments (//) are not preserved — only /// and //!.\n" +
+  "  lint: L001-L005 style checks. --error-on-warning exits 1 on warnings."
+}
+
 func printUsage(): Unit {
-  printErr("Usage:")
-  printErr("  lyric build   <source.l> [-o <output>] [--force] [--manifest <lyric.toml>] [--target dotnet|jvm]")
-  printErr("  lyric build   --manifest <lyric.toml>  (project mode: bundles [project.packages] into one DLL)")
-  printErr("  lyric run     <source.l> [-- <args>...]")
-  printErr("  lyric fmt     <source.l> [--check] [--write]")
-  printErr("  lyric lint    <source.l> [--error-on-warning]")
-  printErr("  lyric prove   <source.l> [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]")
-  printErr("  lyric doc     <source.l> [-o out.md]")
-  printErr("  lyric test    <source.l> [--filter <prefix>] [--list] [--target dotnet|jvm]")
-  printErr("  lyric bench   <source.l> [--runs N] [--warmup N] [--filter <prefix>]")
-  printErr("  lyric openapi <spec.json> [-o <out.l>] [--client-name <Name>] [--package <Pkg>]")
-  printErr("  lyric public-api-diff <old.dll> <new.dll>")
-  printErr("  lyric restore [--manifest <lyric.toml>] [--locked]")
-  printErr("  lyric publish [--manifest <lyric.toml>] [--dll <path>] [-o <dir>] [--registry <url>] [--api-key <key>]")
-  printErr("  lyric search  <term>")
-  printErr("  lyric repl")
-  printErr("  lyric --version")
-  printErr("")
-  printErr("  build is incremental — same source + stdlib skips emit; --force rebuilds.")
-  printErr("  fmt:  --write overwrites in place; --check exits 1 if would change.")
-  printErr("        Non-doc comments (//) are not preserved — only /// and //!.")
-  printErr("  lint: L001-L005 style checks. --error-on-warning exits 1 on warnings.")
+  printErr(usageText())
+}
+
+// The set of dispatchable command names, used both for did-you-mean
+// suggestions and to keep the suggestion list in sync with the dispatcher.
+func knownCommands(): List[String] {
+  val cmds: List[String] = newList()
+  cmds.add("build")
+  cmds.add("run")
+  cmds.add("fmt")
+  cmds.add("lint")
+  cmds.add("prove")
+  cmds.add("doc")
+  cmds.add("public-api-diff")
+  cmds.add("restore")
+  cmds.add("publish")
+  cmds.add("search")
+  cmds.add("repl")
+  cmds.add("test")
+  cmds.add("bench")
+  cmds.add("openapi")
+  cmds.add("lsp")
+  cmds
+}
+
+func minInt(a: in Int, b: in Int): Int { if a < b { a } else { b } }
+
+// Levenshtein edit distance — small two-row DP.  Inputs are short command
+// names, so the O(n*m) cost is negligible.
+func editDistance(a: in String, b: in String): Int {
+  val n = a.length
+  val m = b.length
+  if n == 0 { return m }
+  if m == 0 { return n }
+  var prev: List[Int] = newList()
+  var j = 0
+  while j <= m { prev.add(j); j += 1 }
+  var i = 1
+  while i <= n {
+    val cur: List[Int] = newList()
+    cur.add(i)
+    var k = 1
+    while k <= m {
+      val cost = if a[i - 1] == b[k - 1] { 0 } else { 1 }
+      val del = prev[k] + 1
+      val ins = cur[k - 1] + 1
+      val sub = prev[k - 1] + cost
+      cur.add(minInt(minInt(del, ins), sub))
+      k += 1
+    }
+    prev = cur
+    i += 1
+  }
+  prev[m]
+}
+
+// Return the closest known command to `cmd` when it is within edit distance 2,
+// for "did you mean 'build'?" suggestions on an unknown command.
+func suggestCommand(cmd: in String): Option[String] {
+  val cmds = knownCommands()
+  var best: Option[String] = None
+  var bestDist = 1000000
+  var i = 0
+  while i < cmds.count {
+    val c = cmds[i]
+    val d = editDistance(cmd, c)
+    if d < bestDist {
+      bestDist = d
+      best = Some(value = c)
+    }
+    i += 1
+  }
+  if bestDist <= 2 { best } else { None }
+}
+
+// Resolve the manifest a manifest-consuming command should use: an explicit
+// --manifest wins; otherwise discover the nearest lyric.toml by walking up
+// from the current directory (the project-aware default).
+func discoverManifest(explicit: in Option[String]): Option[String] {
+  match explicit {
+    case Some(p) -> Some(value = p)
+    case None    -> Ws.findNearestManifest(Environment.currentDirectory())
+  }
 }
 
 // Return the stem of a filename (basename without final extension).
@@ -373,12 +476,13 @@ func cmdBuild(argv: in slice[String]): Int {
       i += 1
     }
   }
-  // Project-mode: `lyric build --manifest lyric.toml` with no positional source.
+  // Project-mode: `lyric build --manifest lyric.toml`, or no positional source
+  // at all (discover the nearest lyric.toml by walking up from the cwd).
   if positional.count == 0 {
-    val mfPath = match manifestArg {
+    val mfPath = match discoverManifest(manifestArg) {
       case Some(p) -> p
       case None    -> {
-        printErr("build: missing source file or --manifest")
+        printErr("build: no source file given and no lyric.toml found in this directory or any parent")
         printUsage()
         return 1
       }
@@ -1265,7 +1369,7 @@ func cmdRestore(argv: in slice[String]): Int {
     }
   }
 
-  val mfPath = match manifestArg {
+  val mfPath = match discoverManifest(manifestArg) {
     case Some(p) -> p
     case None    -> "lyric.toml"
   }
@@ -2771,15 +2875,31 @@ func cmdOpenApi(argv: in slice[String]): Int {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub func main(argv: in slice[String]): Int {
+  // Bare `lyric` builds the discovered project (the project-aware default).
+  // Outside a project it is still a usage error, not a silent no-op.
   if argv.length == 0 {
-    printUsage()
-    return 1
+    match Ws.findNearestManifest(Environment.currentDirectory()) {
+      case Some(_) -> {
+        val buildArgv: List[String] = newList()
+        buildArgv.add("build")
+        return cmdBuild(buildArgv.toArray())
+      }
+      case None -> {
+        printUsage()
+        return 1
+      }
+    }
   }
 
   val cmd = argv[0]
 
   if cmd == "--version" or cmd == "-v" {
     Console.println("lyric " + VERSION())
+    return 0
+  }
+
+  if cmd == "--help" or cmd == "-h" or cmd == "help" {
+    Console.println(usageText())
     return 0
   }
 
@@ -2849,6 +2969,10 @@ pub func main(argv: in slice[String]): Int {
   }
 
   printErr("unknown command: " + cmd)
+  match suggestCommand(cmd) {
+    case Some(s) -> printErr("did you mean '" + s + "'?")
+    case None    -> ()
+  }
   printUsage()
   1
 }

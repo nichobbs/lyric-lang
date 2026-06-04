@@ -165,6 +165,42 @@ pub func findWorkspaceRoot(startDir: in String): Option[WorkspaceContext] {
   None
 }
 
+/// Walk up from startDir looking for the nearest lyric.toml that parses as a
+/// package manifest (i.e. has a `[package]` section).  Returns the absolute
+/// path to that lyric.toml, or None when none is found before the filesystem
+/// root.
+///
+/// Unlike `findWorkspaceRoot`, this matches an ordinary project/package
+/// manifest rather than only a `[workspace]` root — it is the discovery
+/// primitive that lets the CLI run a command from any subdirectory of a
+/// project.  A pure `[workspace]` root (no `[package]`) does not parse via
+/// `parseManifest` and is skipped, so the walk continues past it.
+pub func findNearestManifest(startDir: in String): Option[String] {
+  var current = startDir
+  var keepWalking = true
+  while keepWalking {
+    val tomlPath = Path.join(current, "lyric.toml")
+    if File.fileExists(tomlPath) {
+      match File.readText(tomlPath) {
+        case Err(_) -> ()  // unreadable; keep walking up
+        case Ok(text) ->
+          match Mf.parseManifest(text, tomlPath) {
+            case Err(_) -> ()  // not a package manifest (e.g. virtual workspace root); keep walking
+            case Ok(_)  -> return Some(value = tomlPath)
+          }
+      }
+    }
+    // Advance to parent directory; stop when we reach the filesystem root.
+    val parent = Path.dirname(current)
+    if parent == current or parent == "." {
+      keepWalking = false
+    } else {
+      current = parent
+    }
+  }
+  None
+}
+
 /// Linear scan of a members list by package name.
 pub func findMember(members: in List[WorkspaceMember], name: in String): Option[WorkspaceMember] {
   var i = 0

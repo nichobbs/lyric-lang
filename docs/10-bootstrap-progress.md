@@ -19520,3 +19520,28 @@ Coverage: 5 new `typechecker_self_test.l` cases (`out`/`inout` var arg clean,
 (847/847 emitter, 84/84 CLI bridge); auth (29/29), session (31/31), and the
 `LYRIC_LOAD_COMPILER=1` weaver self-test (18/18) all green with zero false
 positives. Remaining §5.2 rule: `out` definite-assignment (dataflow pass).
+### D-progress-396 — project-aware CLI defaults: bare `lyric` builds, manifest auto-discovery (#1968 epic; #1969, #1970, #1976; D078)
+
+**Status:** Shipped (`lyric-compiler/lyric/cli.l`, `lyric-compiler/lyric/workspace/workspace.l`).  Foundational slice of the ecosystem-DX epic #1968; init/add (#1972/#1973), `--watch` (#1974), auto-restore-on-build (#1971), and `--release` AOT (#1975) remain.
+
+First increment of the modern-toolchain CLI experience:
+
+- **`Lyric.Workspace.findNearestManifest(startDir)`** — new discovery primitive
+  that walks up the directory tree returning the nearest `lyric.toml` parsing
+  with a `[package]` section (a virtual `[workspace]` root is skipped).  Mirrors
+  the `findWorkspaceRoot` walk shape.
+- **Bare `lyric`** discovers the project and dispatches to `lyric build`; outside
+  a project it prints help and exits non-zero.  `lyric build` / `lyric restore`
+  use the same discovery when given no source/`--manifest` (work from any
+  subdirectory).  `lyric run` unchanged.
+- **UX:** `usageText()` is now the single grouped help source shared by the
+  stderr error paths and the new `--help`/`-h`/`help` (stdout, exit 0).  Unknown
+  commands get a Levenshtein "did you mean '…'?" suggestion (`knownCommands()`,
+  `editDistance`, `suggestCommand`).
+
+Verified end-to-end against `bin/lyric` (full `make lyric`): `--help` exits 0
+with grouped output; `lyric buld` suggests `build`; bare `lyric` from a project
+root and from a nested subdirectory both build the discovered project (`Demo.dll`
+runs); bare `lyric` outside any project prints help and exits 1; `lyric restore`
+and explicit single-file `lyric build src/main.l` still work.  Stage-1 build
+clean (cli.l compiles), AOT entry-point clean.  MSIL target.
