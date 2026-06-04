@@ -4313,6 +4313,46 @@ tree either carry a wildcard arm or were given a `TyRefined` arm in this change.
 
 ---
 
+## D078 — Project-aware CLI defaults: bare `lyric` builds, manifest auto-discovery (#1968, #1969, #1970, #1976)
+
+**Context:** The everyday CLI flow required either `cd`-ing to the manifest
+directory or passing `--manifest`/a positional source. Bare `lyric` printed
+usage and exited non-zero (`lyric-compiler/lyric/cli.l`), and only
+`Lyric.Workspace.findWorkspaceRoot` walked the directory tree — and only for a
+`[workspace]` root, not an ordinary package manifest. This is the foundational
+slice of the ecosystem-DX epic #1968.
+
+**Decision:**
+
+- **Bare `lyric` builds the discovered project.** With no command, the CLI
+  discovers the nearest `lyric.toml` by walking up from the current directory
+  and dispatches to `lyric build`. Outside a project (no manifest in the tree)
+  it prints help and exits non-zero — a usage error, not a silent no-op.
+- **`lyric run` is unchanged** and remains the build-and-execute dev loop with
+  an explicit source file. The build/run split is deliberate: bare `lyric`
+  produces an artifact predictably; execution stays opt-in.
+- **Manifest auto-discovery** is a new `Lyric.Discovery.findNearestManifest`
+  that returns the nearest `lyric.toml` parsing with a `[package]` section
+  (a pure `[workspace]` root is skipped). `lyric build` and `lyric restore`
+  use it when given no source/`--manifest`. Explicit `--manifest`/positional
+  always wins.
+- **Improved UX:** `lyric --help`/`-h`/`help` print the grouped command list
+  to stdout and exit 0 (`usageText` is the single source of truth shared with
+  the stderr error paths); an unknown command prints a Levenshtein
+  "did you mean '…'?" suggestion when within edit distance 2.
+
+This is a user-facing surface change that touches the Q011 CLI freeze
+(`docs/36-v1-roadmap.md`); it is additive (no existing invocation changes
+meaning) and recorded here per the surface-freeze protocol. AOT release
+binaries (`--release`), `lyric init`/`add`, `--watch`, and auto-restore-on-build
+are tracked as the remaining children of #1968 and land in their own slices.
+
+**Consequence:** The CLI dispatcher's no-args and unknown-command paths now have
+behaviour, not just help. Future command additions must be added to
+`knownCommands()` so the suggestion list stays in sync with the dispatcher.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

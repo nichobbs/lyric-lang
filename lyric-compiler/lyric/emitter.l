@@ -493,6 +493,15 @@ func loadCompilerPayloads(compilerDir: in String): List[ProjectPackagePayload] {
     case Err(_)  -> ()
   }
 
+  // Lyric.CliSuggest — single file (`cli_suggest.l`), optional.  Only depends
+  // on Std.Core/Collections.  Lets `cli_suggest_self_test.l` resolve
+  // `import Lyric.CliSuggest`.
+  val cliSuggestPath = Path.join(compilerDir, "cli_suggest.l")
+  match File.readText(cliSuggestPath) {
+    case Ok(src) -> payloads.add(ProjectPackagePayload(name = "Lyric.CliSuggest", source = src))
+    case Err(_)  -> ()
+  }
+
   payloads
 }
 
