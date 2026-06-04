@@ -46,6 +46,7 @@ No code has been written. Work items in `08-work-items.md` are ready to execute.
 | D-N-010 | Generics | Full monomorphization via existing `Lyric.Mono` |
 | D-N-011 | ARC intrinsics | External C symbols in `lyric-rt` static library |
 | D-N-012 | Collection repr | `List[T]`: RC heap (data + len + cap); `slice[T]`: borrowed (ptr + len) |
+| D-N-013 | `@cfg(target=X)` | Pseudo-feature `"target.X"` injected into `activeFeatures`; no new predicate branch |
 
 ## New top-level directories
 

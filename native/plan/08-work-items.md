@@ -542,8 +542,11 @@ destructuring. ARC follows the same rules as records.
 **What to implement:**
 
 `protected type Counter { val: Int; ... }` lowers as a record type with an
-embedded `pthread_mutex_t`. The mutex size is obtained at codegen time by
-looking up the target triple in a table (`40` for Linux, `56` for macOS).
+embedded `pthread_mutex_t`. The mutex size is obtained at codegen time by calling
+`lyric_mutex_size()` (already implemented in N0.4) — do **not** hardcode a table.
+The correct platform values for reference only: 40 bytes on Linux x86-64/AArch64,
+64 bytes on macOS AArch64/x86-64 (not 56 — that is wrong and causes memory
+corruption).
 
 - Constructor: call `lyric_mutex_init` after allocation.
 - Each `protected` method call: `lyric_mutex_lock`, call the body, `lyric_mutex_unlock`.

@@ -384,5 +384,8 @@ The dtor iterates all `len` elements and releases each.
 The mutex is embedded inline. `lyric-rt` provides `lyric_mutex_init`,
 `lyric_mutex_lock`, `lyric_mutex_unlock` wrappers around `pthread_mutex_*`.
 
-`pthread_mutex_t` size is platform-specific (40 bytes on Linux x86-64, 56 on
-macOS). The codegen uses a compile-time constant from the target triple.
+`pthread_mutex_t` size is platform-specific (40 bytes on Linux x86-64/AArch64, 64 on
+macOS AArch64/x86-64). The codegen obtains the size at compile time from the
+`lyric_mutex_size()` C helper (N0.4, `lyric-rt/src/lyric_posix.c`, returns
+`sizeof(pthread_mutex_t)`), not by hardcoding a constant. The values above are for
+documentation only — do not hardcode them in the codegen.

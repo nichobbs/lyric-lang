@@ -52,7 +52,12 @@ The compiler never calls `malloc` directly. All heap allocation goes through
 
 ### `lyric_retain`
 
+> **Note:** The snippet below is simplified for exposition. The required
+> `INT32_MAX` sentinel guard is added in the §Static object sentinel section
+> below. Implement only the complete version from that section.
+
 ```c
+// SIMPLIFIED — missing INT32_MAX guard. See §Static object sentinel.
 void lyric_retain(void* obj) {
     if (!obj) return;
     LyricObjectHeader* h = (LyricObjectHeader*)obj;
@@ -65,7 +70,12 @@ when the caller already holds a strong reference, which implies the object is al
 
 ### `lyric_release`
 
+> **Note:** The snippet below is simplified for exposition. The required
+> `INT32_MAX` sentinel guard is added in the §Static object sentinel section
+> below. Implement only the complete version from that section.
+
 ```c
+// SIMPLIFIED — missing INT32_MAX guard. See §Static object sentinel.
 void lyric_release(void* obj) {
     if (!obj) return;
     LyricObjectHeader* h = (LyricObjectHeader*)obj;
