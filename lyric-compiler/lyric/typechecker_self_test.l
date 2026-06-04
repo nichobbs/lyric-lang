@@ -566,6 +566,14 @@ func testMatchAtBindExhaustive(): Unit {
     "}\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0016"),
     "@-bound Circle covers union case: no T0016")
+  val bad =
+    "package P\n" +
+    "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
+    "func area(sh: in Shape): Int {\n" +
+    "  match sh { case x@Circle(r) -> r }\n" +
+    "}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0016"),
+    "@-bound Circle alone leaves Square/Tri uncovered: T0016")
 }
 
 func testMatchEnumExhaustive(): Unit {
