@@ -1413,6 +1413,12 @@ pub record FuncCtx {
   // result to `R`.  Consulted when a function-typed value is invoked (`f()`) so
   // the call yields the declared type.  Absent ⇒ default to `object`.  #1877.
   funcValRetTypes: Map[String, MsilType]
+  // Logical type of a lifted lambda's parameter slot.  Lambda params arrive
+  // boxed (`object`) in the `Func<object,…>` delegate signature; this records
+  // the type each is logically used as so reads `unbox.any`/`castclass` it on
+  // load.  Populated for `__lambda_*` from the param's annotation (or, later,
+  // the propagated HOF parameter type).  #1939.
+  boxedParamTypes: Map[Int, MsilType]
 }
 
 // Allocate a fresh label ID (0, 1, 2, …) for use with MLabel/MBr* instructions.
@@ -2148,7 +2154,12 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
               case None    -> MObject
             }
           emitLoadVarMsil(fctx, insns, slot)
-          ty
+          // A lifted lambda's parameter is stored boxed (`object`); unbox/cast it
+          // to its logical type on load (#1939).
+          match mapGet(fctx.boxedParamTypes, slot) {
+            case Some(logicalTy) -> { castObjectToMsil(cctx, insns, logicalTy); logicalTy }
+            case None            -> ty
+          }
         }
         case None -> {
           // Check for a module-level compile-time const (inline ldc.i4).
@@ -2646,26 +2657,27 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
               "parameters, or refactor the closure into a top-level function.")
       }
       // Parameter-taking lambdas (#1939): the delegate is Func<object,…,object>,
-      // so arguments arrive boxed, but lambda params are untyped and the body
-      // reads them without unboxing — a referenced value-type param would
-      // silently read garbage.  Reject only when a parameter is actually used in
-      // the body; an unused param is harmless (its boxed value is ignored).
+      // so arguments arrive boxed.  An *annotated* param (`{ x: Int -> … }`)
+      // carries a logical type and is unboxed on use; an *unannotated* used
+      // param has no type to unbox to and would read garbage.  Reject only when
+      // an unannotated parameter is actually used; unused or annotated params
+      // are fine.
       if lparams.count > 0 {
         val lpRefs: List[String] = newList()
         collectRefNamesBlock(lbody, lpRefs)
-        var anyParamUsed = false
         var lpi2 = 0
         while lpi2 < lparams.count {
-          if nameListContains(lpRefs, lparams[lpi2].name) { anyParamUsed = true }
+          val lp = lparams[lpi2]
+          val isUsed = nameListContains(lpRefs, lp.name)
+          val isAnnotated = match lp.ty { case Some(_) -> true case None -> false }
+          if isUsed and not isAnnotated {
+            panic("Msil.Codegen: a lambda that uses an un-annotated parameter " +
+                  "('" + lp.name + "') is not yet supported on --target dotnet — " +
+                  "the boxed argument has no type to unbox to (#1939).  Annotate " +
+                  "the parameter type (e.g. `{ " + lp.name + ": Int -> … }`), use a " +
+                  "zero-argument lambda, or lift the lambda to a top-level function.")
+          }
           lpi2 = lpi2 + 1
-        }
-        if anyParamUsed {
-          panic("Msil.Codegen: lambdas that use their parameters are not yet " +
-                "supported on --target dotnet — argument unboxing for boxed " +
-                "lambda parameters is tracked in #1939.  Zero-argument lambdas " +
-                "(`{ -> … }`, thunks and callbacks) and lambdas that ignore their " +
-                "parameters are supported.  As a workaround, lift the lambda to a " +
-                "top-level function.")
         }
       }
       val idx = cctx.lambdaTicker.count
@@ -5913,6 +5925,7 @@ func makeFuncCtxMsil(pkgName: in String, className: in String,
   val contextHintTyArgs: List[MsilType]  = newList()
   val byrefSlotTypes: Map[Int, MsilType] = newMap()
   val funcValRetTypes: Map[String, MsilType] = newMap()
+  val boxedParamTypes: Map[Int, MsilType] = newMap()
   FuncCtx(
     pkgName              = pkgName,
     className            = className,
@@ -5934,7 +5947,8 @@ func makeFuncCtxMsil(pkgName: in String, className: in String,
     declaredRetTy        = declaredRetTy,
     contextHintTyArgs    = contextHintTyArgs,
     byrefSlotTypes       = byrefSlotTypes,
-    funcValRetTypes      = funcValRetTypes)
+    funcValRetTypes      = funcValRetTypes,
+    boxedParamTypes      = boxedParamTypes)
 }
 
 // Check whether the last meaningful instruction in a list is a return or throw.
@@ -6580,6 +6594,7 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
 
   // Allocate slots for parameters.  These occupy slots 0..N-1 in the
   // combined slot space but are NOT added to fctx.locals.
+  val isLambdaFn = startsWith(decl.name, "__lambda_")
   var pi = 0
   while pi < decl.params.count {
     val p = decl.params[pi]
@@ -6589,6 +6604,13 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
     fctx.types.add(p.name, paramTy)
     if isByrefMode(p.mode) {
       fctx.byrefSlotTypes.add(slot, paramTy)
+    }
+    // A lambda parameter arrives boxed (`object`) in the Func delegate; when it
+    // has a known non-object logical type (an explicit annotation), record it so
+    // reads unbox/cast on load (#1939).  The signature itself stays `object`
+    // (forced below).
+    if isLambdaFn and paramTy != MObject {
+      fctx.boxedParamTypes.add(slot, paramTy)
     }
     // Record the declared return type of a function-typed param (a `(A,...) -> R`
     // value) so invoking it (`f()`) yields R rather than a bare object (#1877).
@@ -6684,11 +6706,18 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
   // always ends in a terminal `ret`, so there is no fall-through into it.
   emitEpilogueMsil(fctx, insns)
 
-  // Build parameter type list for MFunc.
+  // Build parameter type list for MFunc.  A lifted lambda's signature params are
+  // always `object` to match the `Func<object,…,object>` delegate it is wrapped
+  // in (#1939) — its annotated/inferred logical types live in boxedParamTypes
+  // and are unboxed on use, not in the signature.
   val paramTypes: List[MsilType] = newList()
   var pi2 = 0
   while pi2 < decl.params.count {
-    paramTypes.add(typeExprToMsil(decl.params[pi2].ty, pkgName))
+    if isLambdaFn {
+      paramTypes.add(MObject)
+    } else {
+      paramTypes.add(typeExprToMsil(decl.params[pi2].ty, pkgName))
+    }
     pi2 = pi2 + 1
   }
 
@@ -7709,10 +7738,20 @@ func blockEndsWithExpr(block: in Block): Bool {
 // body works regardless (bootstrap-grade: unboxing is implicit via object field
 // access or is unnecessary for void-body lambdas like the test cases here).
 func lambdaParamToParam(lp: in LambdaParam): Param {
-  val seg: List[String] = newList()
-  seg.add("Object")
-  val ty = TypeExpr(kind = TRef(path = ModulePath(segments = seg, span = syntheticSpan())),
-                    span = syntheticSpan())
+  // Preserve an explicit param annotation (`{ x: Int -> … }`) as the param's
+  // logical type — lowerFuncMsil forces the lifted method's *signature* params
+  // to `object` (to match the `Func<object,…>` delegate) but uses this type to
+  // unbox the boxed argument on use (#1939).  Unannotated params default to
+  // `object` (still rejected at construction until HOF-type propagation lands).
+  val ty = match lp.ty {
+    case Some(t) -> t
+    case None    -> {
+      val seg: List[String] = newList()
+      seg.add("Object")
+      TypeExpr(kind = TRef(path = ModulePath(segments = seg, span = syntheticSpan())),
+               span = syntheticSpan())
+    }
+  }
   Param(mode = PMIn, name = lp.name, ty = ty, dflt = None, span = lp.span)
 }
 

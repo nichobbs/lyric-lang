@@ -32,9 +32,10 @@ sequenced as `docs/36-v1-roadmap.md` §R7.  In priority order:
    miscompiling; display-class synthesis is the remaining work.  Function-value
    invocation (#1877) is fixed for zero-argument lambdas via a uniform `Func`
    ABI (thunks/suppliers/`() -> Unit` callbacks work through HOFs); param-using
-   lambdas fail loud pending arg unboxing (#1939).
+   lambdas: annotated `{ x: Int -> … }` work via unbox-on-load, unannotated
+   fail loud pending HOF-type propagation (#1939).
    **Anything not yet correctly lowered must hard-error, never silently pass
-   through.** (docs/41 H20 PARTIAL; #1877 done (zero-arg), #1939, #1854.)
+   through.** (docs/41 H20 PARTIAL; #1877 done (zero-arg), #1939 partial, #1854.)
 3. **Async (CRITICAL).** Port `AsyncStateMachine.fs` + `AsyncGenerator.fs` to
    `lyric-compiler/msil/` (state machine, `Task[T]`/`ValueTask[T]`, lazy
    `IAsyncEnumerable[T]`).  Until ported, `await`/`spawn`/async-generators must
