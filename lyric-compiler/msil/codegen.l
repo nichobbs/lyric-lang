@@ -1956,7 +1956,14 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
           case TAType(elemTe) -> {
             val elemTy = typeExprToMsilCtx(cctx, elemTe, pkgName)
             match elemTy {
-              case MClass(_) -> MListOf(elemTy = elemTy)
+              case MClass(_)             -> MListOf(elemTy = elemTy)
+              // A generic-instance element (e.g. `Option[String]`, `Result[E, T]`)
+              // lowers to `List<object>` at the IL level but is tracked as
+              // `MListOf(MGenericInst(...))` so `.add` lowering can propagate
+              // the element's concrete type arguments as a construction hint
+              // (a bare `xs.add(None)` builds `Option_None<String>` instead of
+              // `Option_None<Object>`, #1964).
+              case MGenericInst(_, _, _) -> MListOf(elemTy = elemTy)
               case _         ->
                 if isValueType(elemTy) { MListOf(elemTy = elemTy) }
                 else                   { MObject }
