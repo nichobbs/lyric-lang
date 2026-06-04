@@ -758,6 +758,12 @@ func resolveExprPath(
   }
   match mapGet(sigs, name) {
     case Some(sig) -> {
+      // #1484: a function resolves via `sigs` (no visibility there) — consult
+      // the symbol table for the same name to enforce cross-package visibility.
+      match symTableTryFindOne(tbl, name) {
+        case Some(sym) -> checkImportedVisibility(sym, span, diag)
+        case None      -> {}
+      }
       val pts: List[Type] = newList()
       var i = 0
       while i < sig.params.count {
@@ -773,7 +779,7 @@ func resolveExprPath(
     case None    -> {}
   }
   match symTableTryFindOne(tbl, name) {
-    case Some(_) -> {}
+    case Some(sym) -> checkImportedVisibility(sym, span, diag)
     case None    -> {
       diag.add(errorDiagnostic("T0020", "unknown name '" + name + "'", span))
     }
