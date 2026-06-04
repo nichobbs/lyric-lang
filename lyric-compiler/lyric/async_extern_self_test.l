@@ -1,5 +1,5 @@
 // async_extern_self_test.l — regression test for @externTarget async
-// synchronous unwrap (Band 3 Phase A, D084 / D-progress-412, epic #2070).
+// synchronous unwrap (Band 3 Phase A, D085 / D-progress-415, epic #2070).
 //
 // Before this fix, @externTarget async func silently left a Task<T> on the
 // stack where callers expected T — a silent miscompile on every async BCL
