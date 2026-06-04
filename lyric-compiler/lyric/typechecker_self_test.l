@@ -94,6 +94,35 @@ func testValTypeMismatch(): Unit {
   assertTrue(hasDiagCode(cr, "T0060"), "val-mismatch: T0060 emitted")
 }
 
+// #1901: numeric/character conversion methods are typed as their target
+// primitive, not the universal `TyError` unifier.  The distinguishing case:
+// a `.toLong()` body in an `Int`-returning function MUST mismatch (T0070) —
+// were the conversion still `TyError`, it would unify with `Int` and slip
+// through silently.
+func testConvMethodTypedAsTarget(): Unit {
+  val src = "package P\nfunc f(x: in Int): Int { x.toLong() }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0070"), "conv-target: Int body of Long conversion is a mismatch")
+}
+
+func testConvMethodWideningAccepted(): Unit {
+  val src = "package P\nfunc f(x: in Int): Long { x.toLong() }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "conv-widen: Int.toLong() in a Long context type-checks")
+}
+
+func testConvMethodNarrowingAccepted(): Unit {
+  val src = "package P\nfunc g(x: in Long): Int { x.toInt() }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "conv-narrow: Long.toInt() in an Int context type-checks")
+}
+
+func testConvMethodOnNonNumericRejected(): Unit {
+  val src = "package P\nfunc f(s: in String): Int { s.toInt() }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0103"), "conv-nonnumeric: String.toInt() rejected with T0103")
+}
+
 func testReturnWithoutValueError(): Unit {
   val src = "package P\nfunc f(): Int { return }\n"
   val cr = parseCheck(src)
@@ -935,6 +964,10 @@ func main(): Unit {
   testDuplicateNameError()
   testReturnTypeMismatch()
   testValTypeMismatch()
+  testConvMethodTypedAsTarget()
+  testConvMethodWideningAccepted()
+  testConvMethodNarrowingAccepted()
+  testConvMethodOnNonNumericRejected()
   testReturnWithoutValueError()
   testRangeSubtypeValid()
   testRangeSubtypeEmptyBounds()

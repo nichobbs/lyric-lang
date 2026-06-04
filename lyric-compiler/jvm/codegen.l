@@ -2344,6 +2344,51 @@ func lowerGeneralStaticCall(
 }
 
 // Lower a method call on a receiver: recv.memberName(args...).
+// Numeric / character primitives accepted by the conversion intrinsics
+// (`.toInt()` etc., #1901).  `JBoolean` is excluded — not a numeric type.
+func isNumericJvm(ty: in JvmType): Bool {
+  match ty {
+    case JByte   -> true
+    case JChar   -> true
+    case JShort  -> true
+    case JInt    -> true
+    case JLong   -> true
+    case JFloat  -> true
+    case JDouble -> true
+    case _       -> false
+  }
+}
+
+// Normalise a numeric value already on the stack to an `int` (JVM `I`).  Byte /
+// char / short / int already occupy an int slot (no-op); long / float / double
+// narrow with the matching conversion opcode.
+func emitToIntJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
+  match srcTy {
+    case JLong   -> insns.add(LL2i)
+    case JFloat  -> insns.add(LF2i)
+    case JDouble -> insns.add(LD2i)
+    case _       -> {}   // JByte / JChar / JShort / JInt are int-on-stack
+  }
+}
+
+func emitToLongJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
+  match srcTy {
+    case JLong   -> {}            // already long
+    case JFloat  -> insns.add(LF2l)
+    case JDouble -> insns.add(LD2l)
+    case _       -> insns.add(LI2l)   // int-like → long
+  }
+}
+
+func emitToDoubleJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
+  match srcTy {
+    case JDouble -> {}            // already double
+    case JLong   -> insns.add(LL2d)
+    case JFloat  -> insns.add(LF2d)
+    case _       -> insns.add(LI2d)   // int-like → double
+  }
+}
+
 func lowerMethodCall(
   ctx:        in FuncCtx,
   insns:      in List[LInsn],
@@ -2373,6 +2418,40 @@ func lowerMethodCall(
       insns.add(if isLong { LLshr } else { LIshr })
     }
     return recvTy
+  }
+  // Numeric / character primitive conversion intrinsics (#1901): `x.toInt()`,
+  // `b.toLong()`, etc.  Mirrors the MSIL `conv.*` path.  On the JVM, byte / char
+  // / short all occupy an int operand slot, so the int-target conversions are a
+  // no-op from an int-like source; `toByte` / `toChar` first normalise to int,
+  // then narrow.  `toFloat` is intentionally absent (parity with the type
+  // checker, which does not offer it).
+  if (memberName == "toInt" or memberName == "toLong" or memberName == "toByte"
+      or memberName == "toChar" or memberName == "toDouble")
+     and args.count == 0 and isNumericJvm(recvTy) {
+    if memberName == "toLong" {
+      emitToLongJvm(insns, recvTy)
+      return JLong
+    } else if memberName == "toDouble" {
+      emitToDoubleJvm(insns, recvTy)
+      return JDouble
+    } else if memberName == "toByte" {
+      // Lyric `Byte` is UNSIGNED (the MSIL backend uses `conv.u1` / U1, range
+      // 0..255).  The JVM `i2b` opcode produces a *signed* byte (-128..127) and
+      // sign-extends on reload, which would diverge from MSIL for values 128..255
+      // (e.g. `300.toByte()` is 44 on both, but `200.toByte()` must stay 200, not
+      // -56).  Mask to the low 8 bits to reproduce the unsigned result.
+      emitToIntJvm(insns, recvTy)
+      insns.add(LIconst(v = 255))
+      insns.add(LIand)
+      return JByte
+    } else if memberName == "toChar" {
+      emitToIntJvm(insns, recvTy)
+      insns.add(LI2c)
+      return JChar
+    } else {
+      emitToIntJvm(insns, recvTy)
+      return JInt
+    }
   }
   // String predicate methods return `boolean` (Z), not Object.  Emitting them
   // through the generic path below (ret = Object) makes a following `ifeq`/`ifne`

@@ -358,6 +358,8 @@ wire ProductionApp {
 
 Bitwise ops are methods: `.and()` `.or()` `.xor()` `.shl()` `.shr()`. No `?:` ternary; use `if … then … else …`.
 
+Numeric / character conversions are explicit methods (no implicit widening): `.toByte()` `.toInt()` `.toLong()` `.toChar()` `.toDouble()` on `Byte`/`Int`/`Long`/`Double`/`Char`. Widening is lossless; narrowing truncates toward zero; `.toByte()` reduces modulo 256 (`Byte` is unsigned 0..255). Mix widths via `acc + b.toInt()`, never `acc + b`. (Unsigned `UInt`/`ULong`/`Nat` and `.toFloat()` reserved pending backend support; `.toX()` on `String`/`Bool`/`Unit` is a `T0103` error.)
+
 ### Pattern matching
 
 ```lyric

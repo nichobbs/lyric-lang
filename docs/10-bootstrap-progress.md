@@ -19819,3 +19819,48 @@ escaping closure returned from its defining function (makeAdder=15), and all v1
 immutable cases.  CI step updated to assert by-reference sharing.  No regression:
 emitter 847/847, CLI 84/84.  MSIL target only.  Remaining for #1479: multi-level
 nesting (a lambda capturing an enclosing *lambda*'s locals).
+### D-progress-405 — numeric / character conversion-method intrinsics `.toByte()`/`.toInt()`/`.toLong()`/`.toChar()`/`.toDouble()` (#1901, Band-1 of #1470)
+
+**Status:** Shipped on both targets — the unblocker half of #1901 (the `EIndex`
+element-typing half follows separately).
+
+Lyric performs no implicit numeric widening (`inferBinop` requires
+`typeEquiv` operands), so moving between numeric/character widths needs an
+explicit surface conversion.  Until now the only conversions were the
+free-function intrinsics (`intToLong`/`longToInt`/`intToDouble`) used by the
+compiler's own sources, plus per-library kernel externs (`lyric-proto`'s
+`byteAt`).  A `.toInt()`-style *method* hit the unknown-method throw-stub.
+
+This adds a real conversion-method family on the numeric / character
+primitives the backend can faithfully represent — `Byte`, `Int`, `Long`,
+`Double`, `Char`:
+
+- **Type checker** (`typechecker_exprs.l`): the `ECall` arm recognises
+  `recv.toByte()/.toInt()/.toLong()/.toChar()/.toDouble()` with zero arguments
+  on one of those five receiver types and yields the named target primitive
+  (`numericConvTarget` / `isNumericOrCharType`).  The accepted set is kept in
+  exact lock-step with the codegen's `isNumericMsil`/`isNumericJvm`, so the
+  checker never accepts a `.toX()` call the backend cannot lower.  A same-named
+  method on any *other* receiver still falls through to the general (lenient)
+  dispatch (preserving user-defined methods), with the receiver inferred exactly
+  once (no duplicate diagnostic); a `String`/`Bool`/`Unit` receiver — which can
+  neither convert nor host such a method — gets a targeted **T0103**.  The
+  unsigned integers (`UInt`/`ULong`/`Nat`) and `.toFloat()` are deliberately
+  excluded: neither target has an unsigned-integer or distinct-R4 representation,
+  so conversion support for them must land with real backend support (#2050),
+  not a checker-only claim.
+- **MSIL codegen** (`msil/codegen.l`, `msil/lowering.l`): lowers each to the CLI
+  `conv.*` opcode — `conv.i4` / `conv.i8` / `conv.r8` / `conv.u1` / `conv.u2`
+  (the `MConvU1`/`MConvU2` `MInsn` cases were added).
+- **JVM codegen** (`jvm/codegen.l`): parity via `i2l`/`l2i`/`d2i`/`l2d`/… with a
+  source-type-aware normalisation (`emitToIntJvm`/`emitToLongJvm`/
+  `emitToDoubleJvm`).  `.toByte()` masks `& 0xFF` rather than using the *signed*
+  `i2b`, so the JVM result matches MSIL's **unsigned** `conv.u1` for values
+  128..255 (`200.toByte()` is 200 on both targets, not −56).
+
+Coverage: `lyric-compiler/lyric/conv_methods_self_test.l` — a `@test_module`
+asserting widening, truncating narrowing, the unsigned-`Byte` wrap, `Char`
+round-trips, and chained conversions (9/9 on **both** `--target dotnet` and
+`--target jvm`, wired into CI).  Full regression green: 847/847 emitter,
+typechecker self-test, conv self-test 9/9 each target.  Parity is asserted, not
+deferred — both backends run the same suite in CI.
