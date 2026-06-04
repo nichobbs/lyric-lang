@@ -146,10 +146,7 @@ test "Char element comparison" {
 }
 
 test "Int element: indexed write then read-back composes correctly" {
-  // Confirms the write path (set_Item with auto-box) composes with the
-  // read path (get_Item with unbox.any) so that round-trip equality
-  // holds.  Guards against future refactors breaking the write→read
-  // symmetry the #1779 fix established.
+  // Confirms set_Item (auto-box) / get_Item (unbox.any) write→read symmetry.
   val xs: List[Int] = newList()
   xs.add(1)
   xs.add(2)
