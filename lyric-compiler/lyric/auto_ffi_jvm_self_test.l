@@ -3,7 +3,8 @@
 // @test_module covering self-hosted metadata-based auto-FFI resolution for the
 // JVM target (epic #1622, Phase 3c JVM analog).  Exercises `extern type` aliases
 // whose method calls are resolved from JDK .jmod metadata at compile time and
-// emitted as correctly-typed `invokestatic` instead of the legacy
+// emitted as correctly-typed bytecode (`invokestatic` for static methods,
+// `invokevirtual` for instance dispatch) instead of the legacy
 // `([Object…])Object` guess.
 //
 // Run via `lyric test --target jvm` so the self-hosted Jvm.Bridge pipeline
@@ -92,4 +93,18 @@ test "Integer.min returns smaller int" {
 test "Integer.sum adds two ints" {
   assertEqualInt(JInteger.sum(5, 6), 11, "Integer.sum(5,6)")
   assertEqualInt(JInteger.sum(0, 0),  0, "Integer.sum(0,0)")
+}
+
+// ── Instance method dispatch ──────────────────────────────────────────────────
+//
+// Exercises lowerAutoFfiInstanceCall: JInteger.valueOf(n) is a static auto-FFI
+// call that returns JRef("java/lang/Integer"); the subsequent .intValue() call
+// is resolved as an instance method via the new instance auto-FFI path.
+// The assertEqualInt wrapper constrains the return type to Int, which is how
+// the type-checker accepts the chained extern call.
+
+test "Integer.valueOf then intValue (instance method dispatch)" {
+  assertEqualInt(JInteger.valueOf(42).intValue(),  42, "Integer.valueOf(42).intValue()==42")
+  assertEqualInt(JInteger.valueOf(-7).intValue(),  -7, "Integer.valueOf(-7).intValue()==-7")
+  assertEqualInt(JInteger.valueOf(0).intValue(),    0, "Integer.valueOf(0).intValue()==0")
 }

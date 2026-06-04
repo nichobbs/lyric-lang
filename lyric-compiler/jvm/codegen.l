@@ -2360,7 +2360,12 @@ func lowerAutoFfiStaticCall(
 
   match loadClass(ctx.autoFfi, javaFqn) {
     case None -> {
-      // JDK unavailable: flush buffered args without coercions and guess descriptor.
+      if ctx.autoFfi.jmodsDir.length > 0 {
+        // JDK was found but the class isn't in any jmod — hard compile error.
+        panic("JVM auto-FFI: class '" + javaFqn + "' not found in JDK jmods at '" + ctx.autoFfi.jmodsDir + "'")
+      }
+      // No JDK found (JAVA_HOME unset, no standard path).  Fall back to the
+      // legacy object-typed binding; resolution may fail at JVM link time.
       val paramTys: List[JvmType] = newList()
       var j = 0
       while j < argBufs.count {
@@ -2380,24 +2385,20 @@ func lowerAutoFfiStaticCall(
     case Some(ci) -> {
       match findBestMethod(ci, methodName, argDescs, true) {
         case None -> {
-          // Overload not found: same fallback.
-          val paramTys: List[JvmType] = newList()
-          var j = 0
-          while j < argBufs.count {
-            val buf = argBufs[j]
-            var k = 0
-            while k < buf.count { insns.add(buf[k]); k = k + 1 }
-            paramTys.add(JRef(className = "java/lang/Object"))
-            j = j + 1
+          // No static overload matches — compile-time diagnostic.
+          var argStr = ""
+          var ai = 0
+          while ai < argDescs.count {
+            if ai > 0 { argStr = argStr + ", " }
+            argStr = argStr + argDescs[ai]
+            ai = ai + 1
           }
-          insns.add(LInvokestatic(
-            owner  = ci.binaryName,
-            name   = methodName,
-            params = paramTys,
-            ret    = JRef(className = "java/lang/Object")))
-          JRef(className = "java/lang/Object")
+          panic("JVM auto-FFI: no matching static overload for '" + javaFqn + "." + methodName + "(" + argStr + ")' — check the method name, argument types, and that it is a static method")
         }
         case Some(method) -> {
+          if not method.isStatic {
+            panic("JVM auto-FFI: '" + javaFqn + "." + methodName + "' is an instance method, not static; call it on an instance value, not on the type name")
+          }
           val paramDescs = parseDescriptorParams(method.descriptor)
           val retDesc    = returnDescFromMethodDesc(method.descriptor)
           val retJvm     = descStrToJvmType(retDesc)
@@ -2413,22 +2414,72 @@ func lowerAutoFfiStaticCall(
             paramJvms.add(descStrToJvmType(paramDesc))
             j = j + 1
           }
-          if method.isStatic {
-            insns.add(LInvokestatic(
-              owner  = ci.binaryName,
-              name   = methodName,
-              params = paramJvms,
-              ret    = retJvm))
-          } else {
-            insns.add(LInvokevirtual(
-              owner  = ci.binaryName,
-              name   = methodName,
-              params = paramJvms,
-              ret    = retJvm))
-          }
+          insns.add(LInvokestatic(
+            owner  = ci.binaryName,
+            name   = methodName,
+            params = paramJvms,
+            ret    = retJvm))
           retJvm
         }
       }
+    }
+  }
+}
+
+// Instance method call on a JDK class through auto-FFI.  The receiver is
+// already on the operand stack when this is called; this function lowers
+// `args`, resolves the overload from metadata, and emits `invokevirtual`.
+func lowerAutoFfiInstanceCall(
+  ctx:        in FuncCtx,
+  insns:      in List[LInsn],
+  ci:         in ClassInfo,
+  methodName: in String,
+  args:       in List[CallArg]
+): JvmType {
+  val argBufs:  List[List[LInsn]] = newList()
+  val argDescs: List[String]      = newList()
+  var i = 0
+  while i < args.count {
+    val buf: List[LInsn] = newList()
+    val aTy = lowerCallArg(ctx, buf, args[i])
+    argBufs.add(buf)
+    argDescs.add(jvmTypeToDescStr(aTy))
+    i = i + 1
+  }
+  match findBestMethod(ci, methodName, argDescs, false) {
+    case None -> {
+      var argStr = ""
+      var ai = 0
+      while ai < argDescs.count {
+        if ai > 0 { argStr = argStr + ", " }
+        argStr = argStr + argDescs[ai]
+        ai = ai + 1
+      }
+      val fqn = ci.binaryName.replace("/", ".")
+      panic("JVM auto-FFI: no matching instance overload for '" + fqn + "." + methodName + "(" + argStr + ")'")
+    }
+    case Some(method) -> {
+      val paramDescs = parseDescriptorParams(method.descriptor)
+      val retDesc    = returnDescFromMethodDesc(method.descriptor)
+      val retJvm     = descStrToJvmType(retDesc)
+      val paramJvms: List[JvmType] = newList()
+      var j = 0
+      while j < argBufs.count {
+        val buf = argBufs[j]
+        var k = 0
+        while k < buf.count { insns.add(buf[k]); k = k + 1 }
+        val paramDesc =
+          if j < paramDescs.count { paramDescs[j] } else { argDescs[j] }
+        emitFfiCoerce(insns, argDescs[j], paramDesc)
+        paramJvms.add(descStrToJvmType(paramDesc))
+        j = j + 1
+      }
+      insns.add(LInvokevirtual(
+        owner  = ci.binaryName,
+        name   = methodName,
+        params = paramJvms,
+        ret    = retJvm))
+      retJvm
     }
   }
 }
@@ -2441,17 +2492,6 @@ func lowerGeneralStaticCall(
   path:     in ModulePath,
   args:     in List[CallArg]
 ): JvmType {
-  // Auto-FFI fast path: if the leading qualifier is a known extern type, resolve
-  // the real method descriptor from JDK metadata instead of guessing.
-  if path.segments.count >= 2 {
-    match mapGet(ctx.externTypes, path.segments[0]) {
-      case Some(javaFqn) -> {
-        return lowerAutoFfiStaticCall(ctx, insns, javaFqn, funcName, args)
-      }
-      case None -> ()
-    }
-  }
-
   // Collect parameter types and emit args.
   val paramTys: List[JvmType] = newList()
   var i = 0
@@ -2679,6 +2719,22 @@ func lowerMethodCall(
       params = ps,
       ret    = JBoolean))
     return JBoolean
+  }
+
+  // Instance auto-FFI: when the receiver is a JRef to a JDK class (returned
+  // by a prior static auto-FFI call, e.g. JInteger.valueOf(42).toString()),
+  // resolve the instance method from JDK metadata and emit a correctly-typed
+  // invokevirtual.  Receiver is already on the stack from lowerExpr above.
+  match recvTy {
+    case JRef(cls) -> {
+      val fqn = cls.replace("/", ".")
+      match loadClass(ctx.autoFfi, fqn) {
+        case Some(ci) ->
+          return lowerAutoFfiInstanceCall(ctx, insns, ci, memberName, args)
+        case None -> ()
+      }
+    }
+    case _ -> ()
   }
 
   val paramTys: List[JvmType] = newList()
