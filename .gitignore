@@ -85,3 +85,6 @@ nunit-*.xml
 /bin/
 lyric.lock
 *-restore.csproj
+book/*.pdf
+book/*.html
+.claude/settings.local.json

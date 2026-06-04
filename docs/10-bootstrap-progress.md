@@ -20723,3 +20723,47 @@ regression green: 855/855 emitter, typechecker self-test, `weaver_self_test.l`
 subtyping (`mocking_tests`), range-subtype arithmetic (`isNumericType` doesn't
 unwrap `TyRefined` — `prove_demo`), and the compiler-internal-test import swarms
 (`metadata_reader_tests`, `msil_project_bridge_tests`).
+
+### D-progress-428 — self-hosted parity: culture-invariant `toString(DateTime)` (MSIL) + JDK-gated structured-scope lowering (JVM) (#2184, #2177)
+
+**Status:** Shipped — self-hosted MSIL emitter + self-hosted JVM emitter.
+
+Two self-hosted-emitter changes that bring the self-hosted compiler to parity
+with the stage-0 F# bootstrap and unbreak the JVM structured-scope lowering on
+the current toolchain.
+
+1. **MSIL — culture-invariant `toString(DateTime)` (#2184).**  The stage-0 F#
+   emitter's `toString` builtin pins `CultureInfo.InvariantCulture` when
+   formatting a `DateTime` (`value.ToString(IFormatProvider)`), producing the
+   locale-stable "MM/dd/yyyy HH:mm:ss" invariant form.  The self-hosted MSIL
+   emitter previously boxed the value and called the parameterless
+   `Object.ToString()`, which uses the *current* culture and so diverged from
+   stage-0 on non-invariant locales.  `lyric-compiler/msil/codegen.l` now
+   detects a `System.DateTime` value (`MValueTypeRef`/`MClassRef`) in the
+   `toString` builtin and emits `dt.ToString(CultureInfo.InvariantCulture)`
+   via three new external refs (`CultureInfo.get_InvariantCulture`,
+   `DateTime.ToString(IFormatProvider)`), taking the value's address (`ldloca`)
+   for the value-type instance call.  Stage-0 and stage-1 now render DateTime
+   byte-identically.  New `@test_module` `datetime_tostring_self_test.l`
+   (2 tests, deterministic epoch instants) runs via native `lyric test` in CI.
+
+2. **JVM — JDK-gated `lowerScopeBlock` (#2177 carry-forward).**
+   `java.util.concurrent.StructuredTaskScope` changed shape across JDK
+   previews: a *class* opened via `new …ShutdownOnFailure()` on JDK 21..23,
+   versus a sealed *interface* opened via the static `open()` factory on
+   JDK 24+ (where `ShutdownOnFailure` no longer exists).  The two bytecode
+   encodings are mutually incompatible — emitting the interface `open()` form
+   against a JDK-21 runtime throws `IncompatibleClassChangeError` (PR #2177's
+   ungated interface rewrite regressed the B120 scope-block test this way).
+   `lyric-compiler/jvm/lowering.l` now detects the runtime JDK feature version
+   (reads `$JAVA_HOME/release`) and emits the verified `ShutdownOnFailure` form
+   on JDK 21..23 (the emitter's target class-file version is Java 21).  The
+   JDK-24+ interface lowering is **deferred** (tracked in #2263): rather than
+   shipping hardcoded bytecode for a still-preview, still-changing API that
+   cannot be tested on the Java 21 toolchain, JDK 24+ raises a clear,
+   actionable compiler error pointing at the tracking issue.  The B120
+   scope-block smoke test (`java -jar`) passes on the Java 21 toolchain.
+
+Regression green: 843/843 emitter suite (incl. B120), 84/84 CLI suite, and the
+new DateTime self-test 2/2.  Supersedes PR #2177, whose ungated interface
+rewrite regressed B120 on Java 21.
