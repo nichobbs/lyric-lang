@@ -19892,3 +19892,35 @@ three cases.  Stage-1 + AOT clean.  MSIL target.
 Docs: D080 (decision log), language reference §13.1, book appendix-b CLI
 reference.  (Numbered D080 / D-progress-406 to follow #2013's in-flight D079 /
 D-progress-403.)
+### D-progress-407 — self-hosted type checker: `EIndex` element typing (#1901 part B, #1483, Band-1 of #1470)
+
+**Status:** Shipped — type-checker-only (the codegen already lowered indexing on both targets).
+
+`recv[i]` previously inferred the universal `TyError` unifier, so a whole class
+of index-result type errors was unreachable.  The `EIndex` arm of `inferExpr`
+now yields the receiver's element type (`indexElementType`): `slice[T]` /
+`array[N,T]` → `T`, `String` → `Char`, `List[T]` → `T`, `Map[K,V]` → `V`
+(the last two read the resolved `TyUser` type arguments).  Unknown / non-indexable
+receivers stay `TyError` (lenient — codegen owns exotic receivers); the index
+expressions are inferred too, so their own diagnostics surface.
+
+This is the second half of #1901: part A added the conversion methods, and with
+those in place byte/character indexing becomes sound.  `slice[Byte]` indexing
+now types as `Byte`, so arithmetic on an element requires the explicit `.toInt()`
+widening — `lyric-auth`'s constant-time `fixedTimeEqualBytes` migrated
+`0 + a[i]` → `a[i].toInt()` (branchless, constant-time preserved).
+
+Ecosystem impact: a full sweep of every `lyric-*` library found **`lyric-auth`
+the only one** needing migration — the other indexing sites already flow their
+precise element type into compatible uses (`s[i] == '-'`, `isDigit(s[i])`, …).
+The two libraries that fail with an `T0043` on indexing-adjacent lines
+(`lyric-mq`, `lyric-storage`) were verified to fail **identically without** this
+change — pre-existing `join`/`concat` and `Str.replace`-overload issues, not
+regressions.
+
+Coverage: 4 new `typechecker_self_test.l` cases (the distinguishing ones —
+`slice[Byte]` element is `Byte` and mismatches an `Int` return T0070;
+`a[0].toInt()` type-checks; `String` index is `Char`, clean for a `Char` return
+and a mismatch for an `Int` return).  Runtime: `lyric-auth` 29/29 (exercises the
+migrated byte-slice comparison).  Full regression green: 847/847 emitter, 84/84
+CLI.

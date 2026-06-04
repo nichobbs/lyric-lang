@@ -789,6 +789,29 @@ func isNonConvertiblePrimitive(t: in Type): Bool {
   }
 }
 
+// Element type produced by indexing `recv[i]` (#1901 part B).  `slice[T]` and
+// `array[N,T]` yield `T`; `String` yields `Char`; `List[T]` yields `T` and
+// `Map[K,V]` yields `V` (both modelled as `TyUser` with resolved type args).
+// An unknown / non-indexable receiver yields `TyError` (lenient — the codegen
+// owns the runtime behaviour for exotic receivers).
+func indexElementType(recvRaw: in Type): Type {
+  match unrefine(recvRaw) {
+    case TySlice(elem)    -> elem
+    case TyArray(_, elem) -> elem
+    case TyPrim(pt) ->
+      match pt {
+        case PtString -> TyPrim(pt = PtChar)
+        case _        -> TyError
+      }
+    case TyUser(_, nm, targs) -> {
+      if nm == "List" and targs.count == 1 { targs[0] }
+      else if nm == "Map" and targs.count == 2 { targs[1] }
+      else { TyError }
+    }
+    case _ -> TyError
+  }
+}
+
 func fieldsOfRecord(tbl: in SymbolTable, tid: in TypeId): List[FieldEntry] {
   val result: List[FieldEntry] = newList()
   var i = 0
@@ -1307,12 +1330,20 @@ pub func inferExpr(
     case ESelf          -> TySelf
     case EResult        -> TyError
 
-    // EIndex element typing is deferred to #1901 (#1483 split 2b): it needs a
-    // Byte->Int conversion intrinsic first (indexing `slice[Byte]` would yield
-    // `Byte`, but there is currently no surface conversion that both type-checks
-    // and codegens — `0 + byte` fails T0031, `byte.toInt()` has no MSIL
-    // intrinsic and lowers to a fail-loud throw-stub).
-    case EIndex(_, _)   -> TyError
+    // Index expression `recv[i]` yields the receiver's element type (#1901
+    // part B): `slice[T]`/`array[N,T]` -> `T`, `String` -> `Char`,
+    // `List[T]` -> `T`, `Map[K,V]` -> `V`.  An unknown / non-indexable receiver
+    // stays `TyError` (lenient — codegen owns exotic receivers).  The index
+    // expressions are inferred so their own diagnostics surface.
+    case EIndex(recvE, indices) -> {
+      val rt = inferExpr(sc, tbl, sigs, diag, recvE)
+      var ii = 0
+      while ii < indices.count {
+        inferExpr(sc, tbl, sigs, diag, indices[ii])
+        ii = ii + 1
+      }
+      indexElementType(rt)
+    }
     case ETypeApp(_, _) -> TyError
     case ELambda(_, _)  -> TyError
     case EIf(_, _, _, _) -> TyError
