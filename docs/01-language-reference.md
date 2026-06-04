@@ -1246,15 +1246,38 @@ from real JDK **`.jmod` metadata** at compile time (epic #1622, shipped in the
 `lyric-compiler/jvm/`).  It reads the `.class` entry straight out of
 `java.base.jmod` (a ZIP behind a 4-byte JMOD magic header) at compile time,
 parses the constant pool and method table, scores overloads, and emits the
-correctly-typed bytecode — `invokestatic` for static methods (e.g. `(II)I` for
-`Math.max(int,int)`) and `invokevirtual` for instance methods on a JDK reference
-receiver (e.g. calling `.toString()` on the `Integer` returned by
-`JInteger.valueOf(42)`).  The same overload-scoring rules as dotnet apply (exact
-match → numeric widening); an unresolved call when the JDK is present is a
-compile-time error.  When `JAVA_HOME` is unset and no JDK is found on the
-standard search paths, the emitter silently falls back to the legacy
-object-typed binding (no JDK required at compile time for that mode, but
-resolution may fail at JVM link time).
+correctly-typed bytecode:
+
+- **`invokestatic`** for static methods (e.g. `Math.max(int,int)` → `(II)I`).
+- **`invokevirtual`** for instance methods on a JDK reference receiver
+  (e.g. calling `.intValue()` on the `Integer` returned by `JInteger.valueOf(42)`).
+- **`new` + `invokespecial <init>`** for constructors via the `T.new(args)` pseudo-method
+  (e.g. `JStringBuilder.new("hello")` → `new java/lang/StringBuilder; dup; ldc "hello";
+  invokespecial java/lang/StringBuilder.<init>(Ljava/lang/String;)V`).
+
+The same overload-scoring rules as dotnet apply (exact match → numeric widening);
+an unresolved call when the JDK is present is a compile-time error.  When
+`JAVA_HOME` is unset and no JDK is found on the standard search paths, the emitter
+silently falls back to the legacy object-typed binding (no JDK required at compile
+time for that mode, but resolution may fail at JVM link time).
+
+**Maven / non-JDK classes.**  To resolve methods on third-party library classes,
+set the `LYRIC_FFI_JARS` environment variable to a colon-separated (Unix) or
+semicolon-separated (Windows) list of JAR file paths.  The emitter scans these
+JARs after the JDK jmods, using the standard JAR entry path
+(`"com/example/Foo.class"`, without the `"classes/"` JMOD prefix):
+
+```
+export LYRIC_FFI_JARS=$(mvn -q dependency:build-classpath \
+  -DincludeTypes=jar -Dmdep.outputFile=/dev/stdout 2>/dev/null)
+```
+
+```lyric
+extern type JFoo = "com.example.Foo"
+JFoo.someStaticMethod(42)        // resolved from JAR at compile time
+val obj = JFoo.new("hello")      // constructor via T.new(args)
+obj.someInstanceMethod()         // invokevirtual via instance auto-FFI
+```
 
 ### 11.5 AOT compatibility
 

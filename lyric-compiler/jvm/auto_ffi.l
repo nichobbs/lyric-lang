@@ -30,6 +30,9 @@ import Jvm.ClassReader
 
 pub record AutoFfiCtx {
   jmodsDir:   String
+  // Colon-separated list of additional JAR paths for Maven/non-JDK classes.
+  // Populated from the LYRIC_FFI_JARS environment variable at context creation.
+  jarPaths:   List[String]
   // Resolved-class cache as two parallel lists (binaryName → ClassInfo) rather
   // than a `Map`: the stage-0 bootstrap emitter miscompiles `Map`/`Option`
   // value threading for cross-package record element types (e.g.
@@ -98,11 +101,43 @@ func findJmodsDir(): String {
   if found.count > 0 { found[0] } else { "" }
 }
 
+// Split a colon/semicolon-delimited path string into individual paths.
+// Handles both `:` (Unix) and `;` (Windows) separators.
+func splitPathList(s: in String): List[String] {
+  val parts: List[String] = newList()
+  var start = 0
+  var i = 0
+  while i < s.length {
+    val c = s[i]
+    if c == ':' or c == ';' {
+      if i > start { parts.add(s.substring(start, i - start)) }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  if s.length > start { parts.add(s.substring(start, s.length - start)) }
+  parts
+}
+
+// Discover additional JAR paths from the LYRIC_FFI_JARS environment variable.
+// LYRIC_FFI_JARS is a colon-separated (Unix) or semicolon-separated (Windows)
+// list of absolute paths to JAR files to include in auto-FFI class resolution.
+// Set it to the classpath of resolved Maven dependencies, e.g.:
+//   export LYRIC_FFI_JARS=$(mvn -q dependency:build-classpath \
+//     -DincludeTypes=jar -Dmdep.outputFile=/dev/stdout 2>/dev/null)
+func findJarPaths(): List[String] {
+  val raw = Env.getVarOrDefault("LYRIC_FFI_JARS", "")
+  if raw.length == 0 { return newList() }
+  splitPathList(raw)
+}
+
 /// Build the auto-FFI context.  Discovers the JDK jmods directory via
-/// $JAVA_HOME and common system paths.  The class cache starts empty.
+/// $JAVA_HOME and common system paths, and reads additional JAR paths from
+/// the LYRIC_FFI_JARS environment variable.  The class cache starts empty.
 pub func buildAutoFfiCtx(): AutoFfiCtx {
   AutoFfiCtx(
     jmodsDir  = findJmodsDir(),
+    jarPaths  = findJarPaths(),
     cacheKeys = newList(),
     cacheVals = newList())
 }
@@ -117,9 +152,14 @@ pub func buildAutoFfiCtx(): AutoFfiCtx {
 // record types (it drops the value, yielding a spurious `None`), so the
 // loading chain sticks to assign-into-`var` control flow it lowers correctly.
 
-// Convert "java.lang.Math" → "classes/java/lang/Math.class"
+// Convert "java.lang.Math" → "classes/java/lang/Math.class"  (JMOD layout)
 func javaFqnToJmodEntry(javaFqn: in String): String {
   "classes/" + javaFqn.replace(".", "/") + ".class"
+}
+
+// Convert "java.lang.Math" → "java/lang/Math.class"  (JAR layout — no classes/ prefix)
+func javaFqnToJarEntry(javaFqn: in String): String {
+  javaFqn.replace(".", "/") + ".class"
 }
 
 // True when `opt` carries a value.  Used in place of an `Option`-returning
@@ -133,13 +173,15 @@ func classFound(opt: in Option[ClassInfo]): Bool {
   found
 }
 
-// Try to load and parse a class entry from a specific JMOD.  Returns the
-// parsed `ClassInfo` or `None` when the entry is absent / unparsable.
-func tryLoadFromJmod(jmodPath: in String, entryPath: in String): Option[ClassInfo] {
+// Try to load and parse a class entry from a specific JMOD or JAR archive.
+// Returns the parsed `ClassInfo` or `None` when the entry is absent or
+// the archive is unreadable.  Both JMODs (ZIP + 4-byte magic header) and
+// plain JARs (standard ZIP) are handled by `readZipEntries`.
+func tryLoadFromArchive(archivePath: in String, entryPath: in String): Option[ClassInfo] {
   var result: Option[ClassInfo] = None
-  if File.fileExists(jmodPath) {
+  if File.fileExists(archivePath) {
     try {
-      val bytes   = File.readBytesOrPanic(jmodPath)
+      val bytes   = File.readBytesOrPanic(archivePath)
       val entries = readZipEntries(bytes)
       match extractByName(bytes, entries, entryPath) {
         case Some(classBytes) -> { result = parseClass(classBytes) }
@@ -150,31 +192,62 @@ func tryLoadFromJmod(jmodPath: in String, entryPath: in String): Option[ClassInf
   result
 }
 
+// Convenience wrapper: try to load a class from a JMOD using the JMOD entry
+// path convention ("classes/...").
+func tryLoadFromJmod(jmodPath: in String, entryPath: in String): Option[ClassInfo] {
+  tryLoadFromArchive(jmodPath, entryPath)
+}
+
 func loadClassInfo(ctx: in AutoFfiCtx, javaFqn: in String): Option[ClassInfo] {
-  if ctx.jmodsDir.length == 0 { return None }
-  val entryPath = javaFqnToJmodEntry(javaFqn)
-  val baseJmod  = ctx.jmodsDir + "/java.base.jmod"
+  val jmodEntryPath = javaFqnToJmodEntry(javaFqn)
+  val jarEntryPath  = javaFqnToJarEntry(javaFqn)
 
-  // java.base.jmod holds the vast majority of JDK classes; try it first.
-  var result: Option[ClassInfo] = tryLoadFromJmod(baseJmod, entryPath)
+  // ── JDK jmods ─────────────────────────────────────────────────────────────
+  var result: Option[ClassInfo] = None
+  if ctx.jmodsDir.length > 0 {
+    val baseJmod = ctx.jmodsDir + "/java.base.jmod"
+    // java.base.jmod holds the vast majority of JDK classes; try it first.
+    result = tryLoadFromJmod(baseJmod, jmodEntryPath)
 
-  // Otherwise scan the remaining JMODs in listing order.
-  if not classFound(result) {
-    match File.listFiles(ctx.jmodsDir) {
-      case Ok(jmodFiles) -> {
-        var ji = 0
-        while ji < jmodFiles.count and not classFound(result) {
-          val jmod = jmodFiles[ji]
-          if jmod != baseJmod and jmod.endsWith(".jmod") {
-            result = tryLoadFromJmod(jmod, entryPath)
+    // Otherwise scan the remaining JMODs in listing order.
+    if not classFound(result) {
+      match File.listFiles(ctx.jmodsDir) {
+        case Ok(jmodFiles) -> {
+          var ji = 0
+          while ji < jmodFiles.count and not classFound(result) {
+            val jmod = jmodFiles[ji]
+            if jmod != baseJmod and jmod.endsWith(".jmod") {
+              result = tryLoadFromJmod(jmod, jmodEntryPath)
+            }
+            ji = ji + 1
           }
-          ji = ji + 1
         }
+        case Err(_) -> ()
       }
-      case Err(_) -> ()
     }
   }
+
+  // ── Maven / additional JARs (LYRIC_FFI_JARS) ──────────────────────────────
+  // Scan each JAR path if the class was not found in the JDK jmods.  JAR
+  // entries use the flat "com/example/Foo.class" path (no "classes/" prefix).
+  if not classFound(result) {
+    var ji = 0
+    while ji < ctx.jarPaths.count and not classFound(result) {
+      result = tryLoadFromArchive(ctx.jarPaths[ji], jarEntryPath)
+      ji = ji + 1
+    }
+  }
+
   result
+}
+
+// Adds a freshly loaded ClassInfo to the parallel-list cache.  Called with
+// `ci` as a direct function-argument from the loadClass match arm — the
+// known-safe pattern under stage-0, which drops cross-package record bindings
+// when they are accessed inside a block body (`case Some(ci) -> { ci.field }`).
+func addClassToCache(ctx: in AutoFfiCtx, binaryName: in String, ci: in ClassInfo): Unit {
+  ctx.cacheKeys.add(binaryName)
+  ctx.cacheVals.add(ci)
 }
 
 /// Load (and cache) the public-method surface for a Java class.
@@ -192,11 +265,10 @@ pub func loadClass(ctx: in AutoFfiCtx, javaFqn: in String): Option[ClassInfo] {
   }
 
   val loaded = loadClassInfo(ctx, javaFqn)
+  // Pass `ci` as a direct function argument from the match arm expression
+  // (not inside a block body) so stage-0 lowers the binding correctly.
   match loaded {
-    case Some(ci) -> {
-      ctx.cacheKeys.add(binaryName)
-      ctx.cacheVals.add(ci)
-    }
+    case Some(ci) -> addClassToCache(ctx, binaryName, ci)
     case None -> ()
   }
   loaded
@@ -305,6 +377,119 @@ pub func findBestMethod(ci: in ClassInfo, methodName: in String,
       }
     }
     i = i + 1
+  }
+  best
+}
+
+/// Find the best-matching constructor in `ci` for the given argument descriptor
+/// strings.  Searches the `constructors` list (public `<init>` entries).
+pub func findBestConstructor(ci: in ClassInfo,
+                              argDescs: in List[String]): Option[ClassMethod] {
+  var best:      Option[ClassMethod] = None
+  var bestScore: Int                 = -1
+  var i = 0
+  while i < ci.constructors.count {
+    val m = ci.constructors[i]
+    val s = scoreMethod(m, argDescs, false)
+    if s > bestScore {
+      bestScore = s
+      best = Some(value = m)
+    }
+    i = i + 1
+  }
+  best
+}
+
+// Returns the cache index for `binaryName` (e.g. "java/lang/Math"), or -1.
+func findCacheIdx(autoFfi: in AutoFfiCtx, binaryName: in String): Int {
+  var i = 0
+  while i < autoFfi.cacheKeys.count {
+    if autoFfi.cacheKeys[i] == binaryName { return i }
+    i = i + 1
+  }
+  -1
+}
+
+// Score instance methods of `sci` for the given name and args, appending each
+// compatible (method, score) pair to the accumulator lists.  Returns
+// `sci.superName` for the next chain iteration.
+// `sci` is received as a function parameter — the only stage-0-safe way to
+// access fields of a cross-package record type that arrived via an Option match.
+func scoreAndGetSuper(
+  sci:        in ClassInfo,
+  methodName: in String,
+  argDescs:   in List[String],
+  allMethods: in List[ClassMethod],
+  allScores:  in List[Int]
+): String {
+  var j = 0
+  while j < sci.methods.count {
+    val m = sci.methods[j]
+    if m.name == methodName {
+      val s = scoreMethod(m, argDescs, false)
+      if s >= 0 { allMethods.add(m); allScores.add(s) }
+    }
+    j = j + 1
+  }
+  sci.superName
+}
+
+/// Find the best-matching instance method in `ci`, walking up the superclass
+/// chain when the method is declared in a superclass (e.g. `length()` on
+/// `StringBuilder` is declared in `AbstractStringBuilder`).
+///
+/// Uses the parallel-list cache to avoid the stage-0 Option[ClassInfo]
+/// match-arm binding bug: each superclass is loaded into the cache via
+/// `loadClass`, then accessed directly via `cacheVals[idx]` and passed to
+/// `scoreAndGetSuper` as a function parameter — the known-safe pattern.
+pub func findBestInstanceMethod(
+  autoFfi:    in AutoFfiCtx,
+  ci:         in ClassInfo,
+  methodName: in String,
+  argDescs:   in List[String]
+): Option[ClassMethod] {
+  val allMethods: List[ClassMethod] = newList()
+  val allScores:  List[Int]         = newList()
+
+  // Score the declared class directly (ci is a function parameter — safe).
+  var i = 0
+  while i < ci.methods.count {
+    val m = ci.methods[i]
+    if m.name == methodName {
+      val s = scoreMethod(m, argDescs, false)
+      if s >= 0 { allMethods.add(m); allScores.add(s) }
+    }
+    i = i + 1
+  }
+
+  // Walk the superclass chain.  Each iteration:
+  //   1. Calls loadClass to populate the parallel-list cache.
+  //   2. Locates the entry by key scan (avoids Option[ClassInfo] binding).
+  //   3. Passes cacheVals[idx] directly to scoreAndGetSuper as a function
+  //      argument — the known-safe pattern for cross-package record types
+  //      under stage-0 (which drops bindings accessed in block bodies).
+  var superBin = ci.superName
+  while superBin.length > 0 and superBin != "java/lang/Object" {
+    val superFqn = superBin.replace("/", ".")
+    loadClass(autoFfi, superFqn)   // populate cache; return value intentionally unused
+    val superIdx = findCacheIdx(autoFfi, superBin)
+    var nextSuper = ""
+    if superIdx >= 0 {
+      nextSuper = scoreAndGetSuper(autoFfi.cacheVals[superIdx], methodName, argDescs, allMethods, allScores)
+    }
+    superBin = nextSuper
+  }
+
+  // Pick the best candidate from all collected methods.
+  var best:      Option[ClassMethod] = None
+  var bestScore: Int                 = -1
+  var k = 0
+  while k < allMethods.count {
+    if allScores[k] > bestScore {
+      bestScore = allScores[k]
+      best = Some(value = allMethods[k])
+    }
+    k = k + 1
   }
   best
 }

@@ -40,8 +40,10 @@ pub record ClassMethod {
 }
 
 pub record ClassInfo {
-  binaryName: String             // JVM binary name, e.g. "java/lang/Math"
-  methods:    List[ClassMethod]  // public non-synthetic methods
+  binaryName:   String             // JVM binary name, e.g. "java/lang/Math"
+  superName:    String             // JVM binary name of superclass, e.g. "java/lang/AbstractStringBuilder"; "" for Object
+  methods:      List[ClassMethod]  // public non-synthetic non-constructor methods
+  constructors: List[ClassMethod]  // public <init> constructors (isStatic=false)
 }
 
 // ── Constant pool helpers ─────────────────────────────────────────────────────
@@ -137,9 +139,11 @@ func poolEntryEnd(b: in List[Int], pos: in Int): PoolStep {
 // ACC_ENUM      = 0x4000 = 16384
 // ACC_ANNOTATION= 0x2000 = 8192
 
-/// Parse a Java class file (bytes as List[Int]) and return its public-method
-/// surface.  Returns None if the class is non-public, an interface, an enum,
-/// an annotation, or the data is too short to be a valid class file.
+/// Parse a Java class file (bytes as List[Int]) and return its method surface.
+/// Returns None if the class is an interface, an enum, an annotation, or the
+/// data is too short to be a valid class file.  Package-private and abstract
+/// classes are included: they appear in superclass chains (e.g.
+/// `AbstractStringBuilder` is package-private but declares `length()`).
 pub func parseClass(b: in List[Int]): Option[ClassInfo] {
   if b.count < 8 { return None }
 
@@ -172,13 +176,14 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
 
   // access_flags, this_class, super_class
   if pos + 6 > b.count { return None }
-  val accessFlags  = rdU16(b, pos)
-  val thisClassIdx = rdU16(b, pos + 2)
-  pos = pos + 6   // skip super_class too
+  val accessFlags   = rdU16(b, pos)
+  val thisClassIdx  = rdU16(b, pos + 2)
+  val superClassIdx = rdU16(b, pos + 4)
+  pos = pos + 6
+  val superClassNameIdx = getS(classMap, toString(superClassIdx))
+  val superName         = getSStr(utf8Map, toString(superClassNameIdx))
 
-  // Skip if not public or if interface/enum/annotation.
-  // ACC_PUBLIC=1: accessFlags % 2 == 0 means not public
-  if accessFlags % 2 == 0 { return None }
+  // Skip interfaces, enums, and annotations; include public and package-private classes.
   // ACC_INTERFACE=512: (accessFlags/512) % 2 != 0 means interface
   if (accessFlags / 512) % 2 != 0 { return None }
   // ACC_ENUM=16384: (accessFlags/16384) % 2 != 0 means enum
@@ -218,7 +223,8 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
   if pos + 2 > b.count { return None }
   val methodCount = rdU16(b, pos)
   pos = pos + 2
-  val methods: List[ClassMethod] = newList()
+  val methods:      List[ClassMethod] = newList()
+  val constructors: List[ClassMethod] = newList()
 
   var mi = 0
   while mi < methodCount {
@@ -232,7 +238,7 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
     // Skip attributes.
     var ai = 0
     while ai < attrCount {
-      if pos + 6 > b.count { return Some(value = ClassInfo(binaryName = binaryName, methods = methods)) }
+      if pos + 6 > b.count { return Some(value = ClassInfo(binaryName = binaryName, superName = superName, methods = methods, constructors = constructors)) }
       val attrLen = rdU32(b, pos + 2)
       pos = pos + 6 + attrLen
       ai = ai + 1
@@ -247,7 +253,9 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
     if isPublic and not isSynthetic and not isBridge {
       val mName = getSStr(utf8Map, toString(nameIdx))
       val mDesc = getSStr(utf8Map, toString(descIdx))
-      if mName != "<init>" and mName != "<clinit>" and mName.length > 0 {
+      if mName == "<init>" {
+        constructors.add(ClassMethod(name = "<init>", descriptor = mDesc, isStatic = false))
+      } else if mName != "<clinit>" and mName.length > 0 {
         methods.add(ClassMethod(name = mName, descriptor = mDesc, isStatic = isStatic))
       }
     }
@@ -255,5 +263,5 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
     mi = mi + 1
   }
 
-  Some(value = ClassInfo(binaryName = binaryName, methods = methods))
+  Some(value = ClassInfo(binaryName = binaryName, superName = superName, methods = methods, constructors = constructors))
 }
