@@ -869,6 +869,148 @@ func isByRefValueType(t: in Type): Bool {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §5a. Record / opaque construction (#1483 record-ctor, #1485 opaque hiding).
+// ─────────────────────────────────────────────────────────────────────────────
+
+record CtorField {
+  name:       String
+  ty:         Type
+  hasDefault: Bool
+}
+
+func ctorIsGeneric(sym: in Symbol): Bool {
+  match sym.kind {
+    case DKRecord(_, rd)     -> match rd.generics { case Some(_) -> true; case None -> false }
+    case DKExposedRec(_, rd) -> match rd.generics { case Some(_) -> true; case None -> false }
+    case DKOpaque(_, od)     -> match od.generics { case Some(_) -> true; case None -> false }
+    case _                   -> false
+  }
+}
+
+func ctorIsOpaque(sym: in Symbol): Bool {
+  match sym.kind { case DKOpaque(_, _) -> true; case _ -> false }
+}
+
+func fieldHasName(fields: in List[CtorField], name: in String): Bool {
+  var i = 0
+  while i < fields.count {
+    if fields[i].name == name { return true }
+    i = i + 1
+  }
+  false
+}
+
+// Append the constructor fields of a record/opaque member list to `out`
+// (mirrors `extractRecordFields`).  A field with a default is optional.
+func collectCtorFieldsFromRecord(tbl: in SymbolTable, ctx: in GenericContext, scratch: in List[Diagnostic], members: in List[RecordMember], acc: in List[CtorField]): Unit {
+  var i = 0
+  while i < members.count {
+    match members[i] {
+      case RMField(fd) -> {
+        val t = resolveType(tbl, ctx, scratch, fd.ty)
+        var hasDef = false
+        match fd.dflt { case Some(_) -> { hasDef = true } case None -> {} }
+        acc.add(CtorField(name = fd.name, ty = t, hasDefault = hasDef))
+      }
+      case _ -> {}
+    }
+    i = i + 1
+  }
+}
+
+func collectCtorFieldsFromOpaque(tbl: in SymbolTable, ctx: in GenericContext, scratch: in List[Diagnostic], members: in List[OpaqueMember], acc: in List[CtorField]): Unit {
+  var i = 0
+  while i < members.count {
+    match members[i] {
+      case OMField(fd) -> {
+        val t = resolveType(tbl, ctx, scratch, fd.ty)
+        var hasDef = false
+        match fd.dflt { case Some(_) -> { hasDef = true } case None -> {} }
+        acc.add(CtorField(name = fd.name, ty = t, hasDefault = hasDef))
+      }
+      case _ -> {}
+    }
+    i = i + 1
+  }
+}
+
+// Fill `out` with the constructor fields of `sym`; returns true if `sym` is a
+// constructible type (record / exposed-record / opaque).
+func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorField]): Bool {
+  val ctx = newGenericContext()
+  val scratch: List[Diagnostic] = newList()
+  match sym.kind {
+    case DKRecord(_, rd)     -> { collectCtorFieldsFromRecord(tbl, ctx, scratch, rd.members, acc); true }
+    case DKExposedRec(_, rd) -> { collectCtorFieldsFromRecord(tbl, ctx, scratch, rd.members, acc); true }
+    case DKOpaque(_, od)     -> { collectCtorFieldsFromOpaque(tbl, ctx, scratch, od.members, acc); true }
+    case _                   -> false
+  }
+}
+
+func ctorResultType(sym: in Symbol): Type {
+  if ctorIsGeneric(sym) { return TyError }
+  match symbolTypeIdOpt(sym) {
+    case Some(tid) -> TyUser(id = tid, name = sym.name, args = newList())
+    case None      -> TyError
+  }
+}
+
+func inferConstruction(
+  tbl:  in SymbolTable,
+  diag: in List[Diagnostic],
+  sym:  in Symbol,
+  args: in List[CallArg],
+  span: in Span
+): Type {
+  val resultTy = ctorResultType(sym)
+  // #1485: an opaque type's representation is hidden — it cannot be constructed
+  // from outside its declaring package.
+  if ctorIsOpaque(sym) and sym.isImported {
+    diag.add(errorDiagnostic("T0100",
+      "cannot construct opaque type '" + sym.name +
+      "' outside its declaring package", span))
+    return resultTy
+  }
+  // Named arguments must reference a real field (T0101).  Full arg validation
+  // (missing-required, positional arity, value-type matching) is a follow-up.
+  val fields: List[CtorField] = newList()
+  val _ = collectCtorFields(tbl, sym, fields)
+  var i = 0
+  while i < args.count {
+    match args[i] {
+      case CANamed(nm, _, asp) -> {
+        if not fieldHasName(fields, nm) {
+          diag.add(errorDiagnostic("T0101",
+            "'" + sym.name + "' has no field '" + nm + "'", asp))
+        }
+      }
+      case CAPositional(_) -> {}
+    }
+    i = i + 1
+  }
+  resultTy
+}
+
+func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
+  match fn.kind {
+    case EPath(p) ->
+      if p.segments.count == 1 {
+        match symTableTryFindOne(tbl, p.segments[0]) {
+          case Some(sym) ->
+            match sym.kind {
+              case DKRecord(_, _)     -> Some(value = sym)
+              case DKExposedRec(_, _) -> Some(value = sym)
+              case DKOpaque(_, _)     -> Some(value = sym)
+              case _                  -> None
+            }
+          case None -> None
+        }
+      } else { None }
+    case _ -> None
+  }
+}
+
 pub func inferExpr(
   sc:   in Scope,
   tbl:  in SymbolTable,
@@ -966,29 +1108,33 @@ pub func inferExpr(
           sig.returnTy
         }
         case None ->
-          match fnT {
-            case TyFunction(paramTypes, ret, _) -> {
-              if paramTypes.count != argTypes.count {
-                diag.add(errorDiagnostic("T0042",
-                  "expected " + toString(paramTypes.count) + " argument(s), got " + toString(argTypes.count), e.span))
-              } else {
-                var k = 0
-                while k < paramTypes.count {
-                  if not typeEquiv(paramTypes[k], argTypes[k]) {
-                    diag.add(errorDiagnostic("T0043",
-                      "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(paramTypes[k]), e.span))
+          match constructorSymbolOf(tbl, fn) {
+            case Some(ctorSym) -> inferConstruction(tbl, diag, ctorSym, args, e.span)
+            case None ->
+              match fnT {
+                case TyFunction(paramTypes, ret, _) -> {
+                  if paramTypes.count != argTypes.count {
+                    diag.add(errorDiagnostic("T0042",
+                      "expected " + toString(paramTypes.count) + " argument(s), got " + toString(argTypes.count), e.span))
+                  } else {
+                    var k = 0
+                    while k < paramTypes.count {
+                      if not typeEquiv(paramTypes[k], argTypes[k]) {
+                        diag.add(errorDiagnostic("T0043",
+                          "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(paramTypes[k]), e.span))
+                      }
+                      k = k + 1
+                    }
                   }
-                  k = k + 1
+                  ret
+                }
+                case TyError -> TyError
+                case _ -> {
+                  diag.add(errorDiagnostic("T0044",
+                    "called value of non-function type " + renderType(fnT), e.span))
+                  TyError
                 }
               }
-              ret
-            }
-            case TyError -> TyError
-            case _ -> {
-              diag.add(errorDiagnostic("T0044",
-                "called value of non-function type " + renderType(fnT), e.span))
-              TyError
-            }
           }
       }
     }

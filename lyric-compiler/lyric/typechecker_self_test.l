@@ -841,6 +841,40 @@ func testInArgAnyExprOk(): Unit {
   assertTrue(not hasDiagCode(parseCheck(src), "T0085"), "in arg literal: no T0085")
 }
 
+// #1483 (record-ctor) / #1485 (opaque hiding): a record/opaque construction
+// call now yields the constructed type (non-generic records); a named argument
+// must reference a real field (T0101); an opaque type cannot be constructed
+// outside its declaring package (T0100).
+
+func testCtorReturnsRecordType(): Unit {
+  val ok  = "package P\nrecord Point { x: Int; y: Int }\nfunc f(): Unit { val p: Point = Point(x = 1, y = 2) }\n"
+  val bad = "package P\nrecord Point { x: Int; y: Int }\nfunc f(): Unit { val q: Int = Point(x = 1, y = 2) }\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0060"), "ctor returns the record type: no T0060")
+  assertTrue(hasDiagCode(parseCheck(bad), "T0060"), "record ctor used as Int: T0060")
+}
+
+func testCtorUnknownField(): Unit {
+  val src = "package P\nrecord Point { x: Int; y: Int }\nfunc f(): Unit { val p = Point(z = 3) }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0101"), "unknown ctor field: T0101")
+}
+
+func testCtorKnownFieldsOk(): Unit {
+  val src = "package P\nrecord Point { x: Int; y: Int }\nfunc f(): Unit { val p = Point(x = 1, y = 2) }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0101"), "known ctor fields: no T0101")
+}
+
+func testOpaqueConstructCrossPackage(): Unit {
+  val imp = importedItemsOf("package Lib\npub opaque type Secret { token: String }\n")
+  val pr  = parse("package App\nfunc f(): Unit { val s = Secret(token = \"x\") }\n")
+  val cr  = checkWithImports(pr.file, imp)
+  assertTrue(hasDiagCode(cr, "T0100"), "opaque construction cross-package: T0100")
+}
+
+func testOpaqueConstructSamePackage(): Unit {
+  val src = "package P\nopaque type Secret { token: String }\nfunc f(): Unit { val s = Secret(token = \"x\") }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0100"), "opaque construction same-package: no T0100")
+}
+
 func main(): Unit {
   testEmptySource()
   testFuncRegistered()
@@ -918,5 +952,10 @@ func main(): Unit {
   testOutArgLiteralRejected()
   testInoutArgMutableOk()
   testInArgAnyExprOk()
+  testCtorReturnsRecordType()
+  testCtorUnknownField()
+  testCtorKnownFieldsOk()
+  testOpaqueConstructCrossPackage()
+  testOpaqueConstructSamePackage()
   println("typechecker self-test: ok")
 }
