@@ -202,6 +202,12 @@ pub record CodegenCtx {
   // `object` where `bool`/`int32` was expected (invalid IL, #1784).  A missing
   // entry falls back to the conservative box-if-value-type behaviour.
   methodParamTypes:   Map[String, MsilType]
+  // Per-method param-mode list keyed by `<className>/<methodName>`.  Used by
+  // the interface/impl dispatch in `lowerMethodCallMsil` to emit a byref
+  // (managed pointer) load for `out`/`inout` arguments instead of the
+  // by-value load — without it interface calls with byref params bound to
+  // signatures missing the `&` qualifier (#1955).
+  methodParamModes:   Map[String, List[ParamMode]]
   // Pending interface implementations discovered by the IImpl pre-pass.  Each
   // entry maps an implementing record's FQ name to its impl block(s); used to
   // (a) inject impl methods into the target MRecord, and (b) emit MPImpl items
@@ -756,6 +762,7 @@ pub func newCodegenCtx(packageName: in String,
     methodTokens         = newMap(),
     methodRetTypes       = newMap(),
     methodParamTypes     = newMap(),
+    methodParamModes     = newMap(),
     implEntries          = newList(),
     nextMethodDefRow     = newList(),
     nextFieldDefRow      = newList(),
@@ -798,6 +805,15 @@ func registerMethodParamTypes(cctx: in CodegenCtx, keyBase: in String, params: i
       cctx.methodParamTypes.add(pk, typeExprToMsilCtx(cctx, params[i].ty, pkgName))
     }
     i = i + 1
+  }
+}
+
+// Track each method's parameter modes so an interface/impl call site in
+// `lowerMethodCallMsil` can emit a byref (managed pointer) load for `out`/
+// `inout` arguments — paralleling `registerMethodParamTypes` (#1955).
+func registerMethodParamModes(cctx: in CodegenCtx, key: in String, params: in List[Param]): Unit {
+  if not cctx.methodParamModes.containsKey(key) {
+    cctx.methodParamModes.add(key, paramModesOf(params))
   }
 }
 
@@ -894,6 +910,8 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
               })
               // Param types for the concrete-receiver dispatch key (#1784).
               registerMethodParamTypes(cctx, targetName + "/" + fn.name, fn.params, pkgName)
+              // Param modes so a byref argument is passed by address (#1955).
+              registerMethodParamModes(cctx, targetName + "/" + fn.name, fn.params)
             }
             case IMplAssoc(_) -> {}
           }
@@ -962,6 +980,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
                                     0x06000000 + methodDefRow)
               registerMethodRetTy(cctx, className + "/" + fn.name, fn.ret, pkgName)
               registerMethodParamTypes(cctx, className + "/" + fn.name, fn.params, pkgName)
+              registerMethodParamModes(cctx, className + "/" + fn.name, fn.params)
               methodDefRow = methodDefRow + 1
             }
             case _ -> {}
@@ -1037,6 +1056,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
                                     0x06000000 + methodDefRow)
               registerMethodRetTy(cctx, className + "/" + fn.name, fn.ret, pkgName)
               registerMethodParamTypes(cctx, className + "/" + fn.name, fn.params, pkgName)
+              registerMethodParamModes(cctx, className + "/" + fn.name, fn.params)
               methodDefRow = methodDefRow + 1
             }
             case _ -> {}
@@ -1155,6 +1175,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
                                     0x06000000 + methodDefRow)
               registerMethodRetTy(cctx, ifaceName + "/" + sig.name, sig.ret, pkgName)
               registerMethodParamTypes(cctx, ifaceName + "/" + sig.name, sig.params, pkgName)
+              registerMethodParamModes(cctx, ifaceName + "/" + sig.name, sig.params)
               methodDefRow = methodDefRow + 1
             }
             case IMFunc(fn)  -> {
@@ -1162,6 +1183,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
                                     0x06000000 + methodDefRow)
               registerMethodRetTy(cctx, ifaceName + "/" + fn.name, fn.ret, pkgName)
               registerMethodParamTypes(cctx, ifaceName + "/" + fn.name, fn.params, pkgName)
+              registerMethodParamModes(cctx, ifaceName + "/" + fn.name, fn.params)
               methodDefRow = methodDefRow + 1
             }
             case IMAssoc(_) -> {}
@@ -4975,21 +4997,36 @@ func lowerMethodCallMsil(
     case MClass(cls) -> {
       match mapGet(cctx.methodTokens, cls + "/" + memberName) {
         case Some(tok) -> {
+          val methodModes = match mapGet(cctx.methodParamModes, cls + "/" + memberName) {
+            case Some(ms) -> ms
+            case None     -> newList()
+          }
           var i = 0
           while i < args.count {
-            val aTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
-            // The method signature declares each parameter's concrete type
-            // (`typeExprToMsil`).  Box a value-type argument ONLY when the
-            // parameter is a reference/object type — boxing it for a value-type
-            // parameter passed `object` where `bool`/`int32` was expected, which
-            // is invalid IL (#1784).  A missing registry entry falls back to the
-            // conservative box-if-value behaviour.
-            val paramIsValue = match mapGet(cctx.methodParamTypes, cls + "/" + memberName + "#" + toString(i)) {
-              case Some(pt) -> isValueType(pt)
-              case None     -> false
-            }
-            if not paramIsValue {
-              boxIfNeededMsil(cctx, insns, aTy)
+            // `out`/`inout` argument: load the argument's address (a managed
+            // pointer) rather than its value so the impl method can write
+            // back through it (#1955).  Without this the by-value load
+            // mismatches the `int32&` parameter the interface slot declares.
+            val isByrefArg =
+              if i < methodModes.count { isByrefMode(methodModes[i]) }
+              else { false }
+            if isByrefArg {
+              emitByrefArgMsil(cctx, fctx, insns, callArgExpr(args[i]))
+            } else {
+              val aTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+              // The method signature declares each parameter's concrete type
+              // (`typeExprToMsil`).  Box a value-type argument ONLY when the
+              // parameter is a reference/object type — boxing it for a value-type
+              // parameter passed `object` where `bool`/`int32` was expected, which
+              // is invalid IL (#1784).  A missing registry entry falls back to the
+              // conservative box-if-value behaviour.
+              val paramIsValue = match mapGet(cctx.methodParamTypes, cls + "/" + memberName + "#" + toString(i)) {
+                case Some(pt) -> isValueType(pt)
+                case None     -> false
+              }
+              if not paramIsValue {
+                boxIfNeededMsil(cctx, insns, aTy)
+              }
             }
             i = i + 1
           }
@@ -9307,7 +9344,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
               }
               ifaceMethods.add(MInterfaceMethod(
                 name   = sig.name,
-                params = pTypes,
+                params = byrefWrapSigTypes(sig.params, pTypes),
                 ret    = retTy))
             }
             case IMFunc(fn) -> {
@@ -9324,7 +9361,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
               }
               ifaceMethods.add(MInterfaceMethod(
                 name   = fn.name,
-                params = pTypes,
+                params = byrefWrapSigTypes(fn.params, pTypes),
                 ret    = retTy))
             }
             case IMAssoc(_) -> {}
