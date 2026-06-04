@@ -1447,9 +1447,26 @@ jobs:
           # git inline-table
           ( cd "$work/app" && "$bin_abs" add Bar --git https://example.com/bar.git --tag v1.0 --no-restore )
           grep -q '^Bar = { git = "https://example.com/bar.git", tag = "v1.0" }$' "$work/app/lyric.toml" || { echo "git entry missing"; cat "$work/app/lyric.toml"; exit 1; }
-          # the edited manifest must still parse end-to-end (build the no-dep app)
-          ( cd "$work/app" && "$bin_abs" add Lib --path ../lib )
-          ( cd "$work/app" && "$bin_abs" build )
+          # restore + build round-trip on a CLEAN manifest: add a path dep that
+          # resolves offline and let the implicit restore run.  (The asserts
+          # above use --no-restore, so the bogus registry/nuget/git entries are
+          # never fetched — restoring them would hit the network.)
+          mkdir -p "$work/app2/src"
+          cat > "$work/app2/lyric.toml" <<'TOML'
+          [package]
+          name = "App2"
+          version = "0.1.0"
+          [project]
+          name = "App2"
+          output = "single"
+          output_assembly = "App2.dll"
+          [project.packages]
+          "App2" = "src/main.l"
+          TOML
+          printf 'package App2\nimport Std.Core\nimport Std.Console as Console\npub func main(): Int { Console.println("ok"); 0 }\n' > "$work/app2/src/main.l"
+          ( cd "$work/app2" && "$bin_abs" add Lib --path ../lib )
+          test -f "$work/app2/lyric.lock" || { echo "expected the implicit restore to write lyric.lock"; exit 1; }
+          ( cd "$work/app2" && "$bin_abs" build )
           # validation: --tag without --git fails
           if ( cd "$work/app" && "$bin_abs" add X --tag v1 --no-restore ); then
             echo "expected failure for --tag without --git"; exit 1
