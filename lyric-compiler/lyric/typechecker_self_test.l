@@ -94,6 +94,24 @@ func testValTypeMismatch(): Unit {
   assertTrue(hasDiagCode(cr, "T0060"), "val-mismatch: T0060 emitted")
 }
 
+// D081 / #1943: a value-position `unsafe { … }` block has the type of its
+// trailing expression, not the universal `TyError`.  Distinguishing case: an
+// `unsafe { 5 }` body (`Int`) in a `String`-returning function MUST mismatch
+// (T0070) — were the block still `TyError`, it would unify silently.
+func testUnsafeBlockTyped(): Unit {
+  val bad = "package P\nfunc f(): String { unsafe { 5 } }\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0070"), "unsafe-block: Int trailing expr mismatches String return")
+  val ok = "package P\nfunc g(): Int { unsafe { 5 } }\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "unsafe-block-ok: Int trailing expr matches Int return")
+}
+
+// A block whose final statement is `return` has type `Never` (bottom), so a
+// function whose body block diverges does not false-mismatch its return type.
+func testDivergingBlockIsNever(): Unit {
+  val src = "package P\nfunc f(): Int { unsafe { return 3 } }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "diverging-block: unsafe { return 3 } is Never, no mismatch")
+}
+
 // #1901: numeric/character conversion methods are typed as their target
 // primitive, not the universal `TyError` unifier.  The distinguishing case:
 // a `.toLong()` body in an `Int`-returning function MUST mismatch (T0070) —
@@ -121,6 +139,31 @@ func testConvMethodOnNonNumericRejected(): Unit {
   val src = "package P\nfunc f(s: in String): Int { s.toInt() }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0103"), "conv-nonnumeric: String.toInt() rejected with T0103")
+}
+
+// #1901 part B: an index expression `recv[i]` carries the receiver's element
+// type, not the universal `TyError`.  Distinguishing case: a `slice[Byte]`
+// element returned where `Int` is expected MUST mismatch (T0070) — `Byte != Int`
+// (no implicit widening) — whereas `TyError` would have unified silently.
+func testIndexByteElementTyped(): Unit {
+  val src = "package P\nfunc f(a: in slice[Byte]): Int { a[0] }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0070"), "index-byte: slice[Byte] element is Byte, mismatches Int return")
+}
+
+func testIndexByteWithConversionAccepted(): Unit {
+  val src = "package P\nfunc f(a: in slice[Byte]): Int { a[0].toInt() }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "index-byte-conv: a[0].toInt() type-checks to Int")
+}
+
+// String indexing yields `Char`; a `Char` in a `Char`-returning function is
+// clean, but in an `Int`-returning function it mismatches.
+func testIndexStringElementIsChar(): Unit {
+  val ok = "package P\nfunc f(s: in String): Char { s[0] }\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "index-string-char: s[0] is Char")
+  val bad = "package P\nfunc g(s: in String): Int { s[0] }\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0070"), "index-string-int: Char element mismatches Int return")
 }
 
 func testReturnWithoutValueError(): Unit {
@@ -985,10 +1028,15 @@ func main(): Unit {
   testDuplicateNameError()
   testReturnTypeMismatch()
   testValTypeMismatch()
+  testUnsafeBlockTyped()
+  testDivergingBlockIsNever()
   testConvMethodTypedAsTarget()
   testConvMethodWideningAccepted()
   testConvMethodNarrowingAccepted()
   testConvMethodOnNonNumericRejected()
+  testIndexByteElementTyped()
+  testIndexByteWithConversionAccepted()
+  testIndexStringElementIsChar()
   testReturnWithoutValueError()
   testRangeSubtypeValid()
   testRangeSubtypeEmptyBounds()

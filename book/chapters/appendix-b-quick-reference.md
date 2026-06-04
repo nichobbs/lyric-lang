@@ -732,6 +732,12 @@ String method-syntax (UFCS) ops lower to host `String` methods, no import needed
 ## B.10 CLI commands
 
 ```sh
+# Scaffold a new project
+lyric init demo                        # app package in ./demo (lyric.toml + src/main.l + .gitignore)
+lyric init                             # scaffold in the current directory
+lyric init mylib --lib                 # library skeleton (src/lib.l)
+lyric init demo --name Demo --force    # override the package name; overwrite an existing lyric.toml
+
 # Project-aware defaults
 lyric                                  # build the current project (discovers nearest lyric.toml)
 lyric --help                           # grouped command list (also -h / help); exits 0
@@ -755,6 +761,9 @@ lyric build --manifest lyric.toml      # build from project manifest
                                        # (with [project] output = "single", bundles every
                                        # [project.packages] entry into one DLL with one
                                        # Lyric.Contract.<Pkg> resource per package)
+                                       # auto-restores [dependencies] when lyric.lock is missing/stale
+                                       # ([nuget]/[maven] edits aren't detected — run `lyric restore`)
+lyric build --no-restore               # build against the lock as-is (skip auto-restore)
 
 # Build features (compile-time gating; see chapter 20 §20.7)
 lyric build --features X,Y <file.l>    # additive over manifest's [features] default
@@ -766,6 +775,8 @@ lyric build --all-features             # transitive closure of every declared fe
 # Run
 lyric run <file.l>                     # compile and immediately execute
 lyric run <file.l> -- arg1 arg2        # pass arguments to the program
+lyric run <file.l> --watch             # rebuild & re-run on source changes (Ctrl-C to stop)
+lyric build --watch                    # project/single build: rebuild on source changes
 
 # Test  (single-file; --manifest, --doctests, --update-snapshots, property execution: v2)
 lyric test <file.l>                    # run test blocks in a @test_module file
@@ -819,6 +830,11 @@ lyric openapi <spec.json> --package <Pkg.Name>   # override the generated packag
 # Package management
 lyric restore                          # download all dependencies declared in lyric.toml
 lyric restore --locked                 # restore strictly from lyric.lock (fail if lock is stale)
+lyric add Foo@1.2.0                     # add/update a [dependencies] registry entry, then restore
+lyric add Lib --path ../lib            # add a path dependency
+lyric add Bar --git <url> --tag v1     # add a git dependency (or --rev/--branch)
+lyric add Pkg@1.0 --nuget              # add to the [nuget] table instead
+lyric add Foo@1.2.0 --no-restore       # edit the manifest without restoring
 lyric publish                          # publish package to the configured registry
 lyric publish --registry <url>         # publish to a specific registry feed URL
 lyric publish --api-key <key>          # supply an API key (NuGet push token / GitHub PAT)

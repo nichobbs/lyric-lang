@@ -81,8 +81,10 @@ func fixedTimeEqualBytes(a: in slice[Byte], b: in slice[Byte]): Bool {
   var diff: Int = 0
   var i = 0
   while i < a.length {
-    val ai: Int = 0 + a[i]
-    val bi: Int = 0 + b[i]
+    // `a[i]` / `b[i]` are `Byte`; widen with the explicit `.toInt()` conversion
+    // (#1901) — branchless, so the constant-time property is preserved.
+    val ai: Int = a[i].toInt()
+    val bi: Int = b[i].toInt()
     diff = diff.or(ai.xor(bi))
     i = i + 1
   }
@@ -115,7 +117,7 @@ func hexDigit(c: in Char): Int {
   if cp >= 48 and cp <= 57  { return cp - 48 }  // '0'..'9'
   if cp >= 97 and cp <= 102 { return 10 + cp - 97 }  // 'a'..'f'
   if cp >= 65 and cp <= 70  { return 10 + cp - 65 }  // 'A'..'F'
-  -1
+  return -1  // non-hex (explicit; see #1943 — a brace-`if` then a bare `-1` once mis-parsed as a binop)
 }
 
 // Append the UTF-8 encoding of a Unicode code point to `acc`.

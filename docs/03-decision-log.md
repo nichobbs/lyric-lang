@@ -4390,6 +4390,169 @@ and release native binary (`--release`). This is a user-facing surface addition
 touching the Q011 freeze (`docs/36-v1-roadmap.md` §R7.5 / `docs/41` H13, which
 move from "planned" to "shipped for single-file/.NET"). Recorded here per the
 freeze protocol.
+## D080 — Auto-restore on `lyric build` when the lock is missing or stale (#1968, #1971)
+
+**Context:** `lyric build` did not resolve dependencies — a clean checkout (or a
+just-edited `[dependencies]` set) required a manual `lyric restore` first, or the
+build failed on unresolved deps. `cmdRestore` already did the full job; builds
+should trigger it automatically.
+
+**Decision:**
+
+- **`cmdRestore` is split** into argument parsing + a reusable
+  `runRestore(mfPath, lockedMode)` that does the resolve-and-lock work. The CLI
+  command and the build path share it.
+- **Project-mode `lyric build` auto-restores** when the manifest declares
+  `[dependencies]` and `lockNeedsRestore` reports the lock missing or out of
+  sync. The staleness check is cheap and read-only: `lyric.lock` absent → restore;
+  otherwise every declared dependency must be present in the lock (and a registry
+  dependency's locked version must match), else restore. It is conservative — any
+  lock read/parse failure triggers a fresh restore. The lock is resolved at the
+  workspace root when one is found, else beside the manifest (matching
+  `runRestore`'s own placement).
+- **`--no-restore`** opts out and builds against the lock as-is.
+- Single-file builds are unaffected (dependencies live in a project manifest).
+  `[nuget]`-table changes do not trigger auto-restore in this slice (only
+  `[dependencies]`); documented, revisit if needed.
+
+**Consequence:** `lyric build` and bare `lyric` "just work" on a fresh checkout
+with dependencies. The staleness heuristic favours a redundant restore over a
+stale build; `--locked` (on `lyric restore`) remains the strict-verification path
+for CI.
+
+---
+
+## D081 — Carry enclosing-function context (`returnTy` / `genericNames`) on the type checker's `Scope` (#1483, #1943)
+
+**Context:** Several value-position expression forms — `EBlock` / `EUnsafe`
+brace blocks, `EResult` (`result` in `ensures:`), and the forthcoming branch
+unification of `EIf` / `EMatch` — need the enclosing function's declared return
+type and type-parameter names in order to type their bodies (a block's
+statements are checked via `checkBlock`, which already takes `genericNames` /
+`returnTy`; `result` *is* the return type). `inferExpr` did not have that
+context, so these forms inferred the universal `TyError` unifier, leaving whole
+classes of error unreachable. `inferExpr` has ~34 call sites, so adding a
+parameter would ripple widely; the `Scope` it already threads is constructed in
+exactly one place.
+
+**Decision:** Add `returnTy: Type` and `genericNames: List[String]` to the
+`@stable(since="0.1")` `Scope` record. They are **Scope-level**, set once at
+function entry (`newScopeForFunction`, called from `checkFunctionBody`) and left
+untouched by frame `push`/`pop`, so a nested block sees the same enclosing
+context. `newScope()` (the context-free constructor used outside a function
+body) defaults `returnTy` to `TyError` (keeping a stray read lenient) and an
+empty generic list. With this, `inferExpr` types `EBlock`/`EUnsafe` via
+`checkBlock` and `EResult` as `sc.returnTy`. `checkBlock` is also made
+**divergence-aware**: a block whose final statement is `return`/`throw`/`break`/
+`continue` has type `Never` (bottom), so an early-exit branch unifies cleanly
+once `EIf`/`EMatch` branch typing lands.
+
+**Stability note:** `Scope` is `@stable`; this widens the record with two new
+fields. It is an additive, source-compatible change for every in-tree
+constructor (the sole construction site is `newScope`/`newScopeForFunction`),
+and `Scope` is an internal compiler type, not a published API surface — so the
+`@stable` contract (no breaking change to consumers) holds. Logged here per the
+`@stable` editing protocol.
+
+**Consequence:** the type-checker infrastructure for value-position block and
+branch typing is in place. `EBlock`/`EUnsafe`/`EResult` ship with it;
+`EIf`/`EMatch` branch unification (which additionally needs the parser
+statement-end fix for `EIf`, #1943, and pattern-variable binding for `EMatch`)
+build on the same divergence-aware `checkBlock` in follow-ups.
+## D082 — `lyric add` — cargo-style dependency insertion (#1968, #1973)
+
+**Context:** Adding a dependency meant hand-editing the `lyric.toml`
+`[dependencies]`/`[nuget]` tables. A cargo-style `add` command is a large
+ergonomics win and pairs with auto-restore (D080).
+
+**Decision:**
+
+- **`lyric add <name>[@<version>] [--path <dir>] [--git <url> [--tag|--rev|--branch <ref>]]
+  [--nuget] [--manifest <m>] [--no-restore]`** discovers the manifest (like
+  `build`/`restore`), inserts or updates a single dependency entry, and runs
+  `runRestore` afterward (D080's shared body) unless `--no-restore`.
+- **Source forms** map to the TOML shapes `parseManifest` accepts: bare/`@version`
+  → registry string (`name = "<v>"`, missing version written as `"*"`); `--path`
+  → `{ path = "..." }`; `--git` + optional ref → git inline-table; `--nuget` →
+  `[nuget]` table entry.
+- **Editing is text-level, not a re-serialize**, to preserve the rest of the file:
+  `upsertTomlEntry` replaces an existing key line in place (idempotent re-add),
+  appends to the table if present, or appends a new section at EOF, and keeps a
+  single trailing newline. The result is re-parsed and the write is **refused**
+  if it would not parse — no half-written manifest.
+- Conflicting selectors (`--path`/`--git`/`--nuget`/`@version`) are rejected;
+  `--tag`/`--rev`/`--branch` require `--git`.
+
+**Deferred:** `--registry <url>` (no per-dependency registry field exists in the
+manifest — registry is a global `[registry]` setting), and `lyric remove`. Both
+tracked as follow-ups.
+
+**Consequence:** `lyric add Foo@1.2.0 && lyric build` resolves `Foo` with no
+manual TOML editing. Path/git/nuget forms round-trip through `parseManifest`.
+
+---
+
+## D083 — `lyric run/build --watch` — rebuild-on-change dev loop (#1968, #1974)
+
+**Context:** No watch loop existed; iterating meant re-running `lyric run`/`build`
+by hand. The stdlib exposed neither a file-modified-time getter nor a
+synchronous sleep, so a watch loop needed new primitives.
+
+**Decision:**
+
+- **Change detection by content hash, not mtime.** The watch loop fingerprints
+  each watched file with `Std.Hash.sha512OfFile` (already cross-target, reused
+  from lock integrity) rather than adding a file-metadata/`mtime` primitive.
+  This sidesteps the cross-target `DateTime`/`FileTime` conversion mismatch and
+  reuses proven infrastructure.
+- **One new stdlib primitive: `Std.Time.sleepMillis(ms: Int)`** (synchronous
+  thread sleep), backing the poll interval. `.NET` binds
+  `System.Threading.Thread.Sleep`; JVM routes through the
+  `lyric.stdlib.jvm.TimeHost.sleepMillis` Phase 6 shim (`Thread.sleep((long)ms)`)
+  because `java.lang.Thread.sleep` takes a `long` and an `Int` argument would
+  mismatch the descriptor. Both kernels declare it; the JVM runtime shim is part
+  of the existing Phase 6 host-shim deliverable (the JVM host layer is uniformly
+  Phase-6-pending, not a new gap).
+- **Scope of watched files:** `run --watch` → the source file; project
+  `build --watch` → the manifest + every `[project.packages]` source; single
+  `build --watch` → the source. The loop runs the action once, then re-runs on
+  any fingerprint change until interrupted.
+- **The watch loop runs in the CLI process** (always the .NET AOT host), so the
+  feature is fully functional today regardless of the JVM host-shim status; only
+  the `sleepMillis` primitive's JVM *runtime* awaits the Phase 6 shim.
+
+**Consequence:** `lyric run --watch app.l` gives an edit-rebuild-rerun loop with
+no new file-watch OS binding and no mtime primitive.
+
+---
+
+## D084 — `lyric init` — project scaffolder (#1968, #1972)
+
+**Context:** A newcomer had to hand-write `lyric.toml` and the source layout —
+the steepest part of the first-run experience. `lyric init` removes it.
+
+**Decision:**
+
+- **`lyric init [<dir>] [--name <Name>] [--lib] [--force]`** scaffolds a package
+  in `<dir>` (default the current directory, created via
+  `Std.Directory.createRecursive` if absent): a `lyric.toml`
+  (`[package]` + `[project]` + `[project.packages]` + empty `[dependencies]`),
+  `src/main.l` (a `func main(): Int` hello-world) or `src/lib.l` with `--lib`,
+  and a `.gitignore`.
+- **Name derivation:** the package name comes from the directory basename, with a
+  lowercase leading letter capitalised to the `UpperCamelCase` convention (so
+  `lyric init demo` yields package `Demo`). `--name` overrides it. A candidate
+  that is not a valid identifier (e.g. contains `-`) is rejected with a message
+  pointing at `--name` rather than emitting a manifest the formatter would reject.
+- **Non-destructive:** an existing `lyric.toml` is not overwritten without
+  `--force`; a pre-existing `.gitignore` is always left untouched.
+- Implemented as a new `Lyric.Init` package (`lyric-compiler/lyric/init.l`)
+  dispatched from `cli.l`, and registered in `knownCommands` for did-you-mean.
+- The scaffold includes a `[project]` section so the result builds with bare
+  `lyric` / `lyric build` immediately, and `lyric run src/main.l` runs it.
+
+**Consequence:** `lyric init demo && cd demo && lyric run src/main.l` works
+end-to-end with no hand-editing.
 
 ---
 

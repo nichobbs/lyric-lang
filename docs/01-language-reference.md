@@ -584,6 +584,21 @@ Exhaustiveness is enforced. The compiler tracks variant coverage and rejects inc
 val x = if cond then a else b
 ```
 
+A brace-terminated `if` or `match` written in **statement position** (not as the
+right-hand side of a binding or another expression) is a *complete statement*: a
+binary operator on the following line begins a **new** statement rather than
+continuing the block expression. So
+```
+if cond { return x }
+-1                      // a separate statement — the fall-through value
+```
+is two statements, not `(if cond { return x }) - 1`. In value position the `if`
+is an ordinary operand, so `val y = if c { a } else { b } + 1` parses as
+`(if …) + 1` — wrap the block expression in parentheses if you need it as an
+operator's left operand at statement position. (This mirrors Rust's
+"expression-with-block" rule and resolves the `}`-then-leading-operator
+ambiguity.)
+
 `while` and `for` are statements:
 ```
 while condition { ... }
@@ -1285,6 +1300,34 @@ remains the build-and-execute dev loop and still takes an explicit source file.
 an unrecognised command prints a "did you mean …?" suggestion when a close
 match exists.
 
+**Scaffolding.** `lyric init [<dir>] [--name <Name>] [--lib] [--force]` scaffolds
+a new package in `<dir>` (default the current directory, created if absent): a
+`lyric.toml` with `[package]`, `[project]`, and an empty `[dependencies]` table;
+`src/main.l` (a `func main(): Int` hello-world) or `src/lib.l` with `--lib`; and
+a `.gitignore`. The package name is derived from the directory basename — with a
+lowercase leading letter capitalised to the `UpperCamelCase` convention — unless
+`--name` overrides it; a candidate that is not a valid identifier is rejected
+with a message suggesting `--name`. An existing `lyric.toml` is not overwritten
+without `--force`; a pre-existing `.gitignore` is left untouched.
+
+**Auto-restore on build.** A project-mode `lyric build` automatically resolves
+dependencies (the equivalent of `lyric restore`) when the manifest declares any
+`[dependencies]` and `lyric.lock` is missing or out of sync with the declared
+set (a dependency absent from the lock, or a registry dependency whose locked
+version differs). A clean checkout — or a just-edited dependency set — therefore
+builds without a manual `lyric restore`. Pass `--no-restore` to skip this and
+build against the lock as-is. Auto-restore tracks the `[dependencies]` table
+only; changes to `[nuget]`/`[maven]` entries are not detected, so run
+`lyric restore` explicitly after editing those.
+
+**Watch mode.** `lyric run --watch <source.l>` and `lyric build [--watch]` run the
+action once, then watch the relevant source files and re-run on every change
+until interrupted (Ctrl-C). `run --watch` watches the source file; project
+`build --watch` watches the manifest and every `[project.packages]` source;
+single-file `build --watch` watches the source. Change detection fingerprints
+each file's contents (no reliance on filesystem timestamps); the poll interval
+is fixed. The watch loop runs in the CLI process (always the .NET host).
+
 ### 13.2 Test runner
 
 `lyric test <source.l>` compiles a `@test_module` file, synthesises a runnable program from its `test "title" { … }` items, and reports results in TAP-shaped form (`1..N`, `ok N - title` / `not ok N - title`, summary counts). Exit codes: `0` (every selected test passed), `1` (at least one failure), `2` (compilation error), `64` (usage error).
@@ -1409,6 +1452,12 @@ A `@bench` function whose signature does not match `func name(): Unit` passes th
 ### 13.10 Package manager
 
 `lyric.toml` is the project manifest. Dependencies use SemVer 2.0.0. Registry: NuGet piggyback (D-progress-030); see `docs/21-nuget-linking.md`.
+
+`lyric add <name>[@<version>] [--path <dir>] [--git <url> [--tag|--rev|--branch <ref>]] [--nuget] [--manifest <lyric.toml>] [--no-restore]` adds or updates a dependency in the discovered manifest and then restores (unless `--no-restore`):
+
+- Bare `<name>` or `<name>@<version>` writes a registry entry to `[dependencies]` (`name = "<version>"`; a missing version is written as `"*"`).
+- `--path <dir>` writes `name = { path = "<dir>" }`; `--git <url>` with an optional `--tag`/`--rev`/`--branch` writes the git inline-table form; `--nuget` writes to the `[nuget]` table instead.
+- The edit is idempotent — re-adding a dependency updates its entry in place rather than duplicating it — and is rejected before write if the result would not parse. The table is created if absent. `--path`, `--git`, and `--nuget`/`@version` are mutually exclusive where they conflict.
 
 ---
 

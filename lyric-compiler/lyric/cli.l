@@ -79,6 +79,7 @@ import Std.Errors
 import Std.Parse
 import Std.Sort as Sort
 import Std.Hash as Hash       // sha512OfFile / sha512OfBytes for #738 lock integrity
+import Std.Time as Time       // sleepMillis — the --watch poll interval (#1974)
 import Std.Json as Json       // encodeString — RFC 8259 string literal escaping (#1093)
 
 import Lyric.Manifest as Mf   // parseManifest(text, filePath) -> Result[Manifest, ManifestError]
@@ -87,6 +88,7 @@ import Lyric.Lexer             // Diagnostic, DiagnosticSeverity, DiagError, Dia
 import Lyric.Workspace as Ws   // findWorkspaceRoot, findMember, resolveDep, WorkspaceContext
 import Lyric.Discovery as Disc // findNearestManifest — nearest lyric.toml walking up from cwd
 import Lyric.Release as Release // buildRelease — `--release` Native AOT native-binary pipeline
+import Lyric.Init as Init       // runInit — `lyric init` project scaffolder (#1972)
 import Lyric.GitDep as GitDep  // resolve(url, ref, subdir) -> Result[GitDepResult, String]
 import Lyric.Lockfile as LF    // emptyLockFile, addOrUpdatePackage, serializeLockFile, parseLockFile
 import Std.ProcessCapture as ProcessCapture  // runCapture(exe, args, stdin) -> String
@@ -139,16 +141,23 @@ func usageText(): String {
   "  Run `lyric` with no command inside a project to build it.\n" +
   "\n" +
   "Project:\n" +
-  "  lyric build   [<source.l>] [-o <output>] [--force] [--manifest <lyric.toml>] [--target dotnet|jvm]\n" +
-  "                (no source: builds the discovered project's [project.packages] into one DLL)\n" +
+  "  lyric init    [<dir>] [--name <Name>] [--lib] [--force]\n" +
+  "                (scaffold a new app (or --lib library) package: lyric.toml + src + .gitignore)\n" +
+  "  lyric build   [<source.l>] [-o <output>] [--force] [--manifest <lyric.toml>] [--target dotnet|jvm] [--no-restore] [--watch]\n" +
+  "                (no source: builds the discovered project's [project.packages] into one DLL;\n" +
+  "                 auto-restores deps when lyric.lock is missing or stale unless --no-restore)\n" +
   "  lyric build   --release [<source.l>] [--rid <rid>] [-o <bin>]\n" +
   "                (self-contained Native AOT binary; single-file today, see #1975)\n" +
   "  lyric restore [--manifest <lyric.toml>] [--locked]\n" +
+  "  lyric add     <name>[@<version>] [--path <dir>] [--git <url> [--tag|--rev|--branch <ref>]]\n" +
+  "                [--nuget] [--manifest <lyric.toml>] [--no-restore]\n" +
+  "                (adds/updates a dependency in [dependencies] (or [nuget]) and restores)\n" +
   "  lyric publish [--manifest <lyric.toml>] [--dll <path>] [-o <dir>] [--registry <url>] [--api-key <key>]\n" +
   "  lyric search  <term>\n" +
   "\n" +
   "Dev loop:\n" +
-  "  lyric run     <source.l> [-- <args>...]\n" +
+  "  lyric run     <source.l> [--watch] [-- <args>...]\n" +
+  "                (--watch: rebuild & re-run on source changes; Ctrl-C to stop)\n" +
   "  lyric test    <source.l> [--filter <prefix>] [--list] [--target dotnet|jvm]\n" +
   "  lyric bench   <source.l> [--runs N] [--warmup N] [--filter <prefix>]\n" +
   "  lyric repl\n" +
@@ -186,6 +195,45 @@ func discoverManifest(explicit: in Option[String]): Option[String] {
     case Some(p) -> Some(value = p)
     case None    -> Disc.findNearestManifest(Environment.currentDirectory())
   }
+}
+
+// Whether `lyric build` should auto-restore before building: true when the
+// manifest declares dependencies and `lyric.lock` is missing or out of sync
+// with the `[dependencies]` table (a dep is absent from the lock, or a
+// registry dep's locked version differs).  Conservative — returns true on any
+// lock read/parse failure so a fresh restore corrects a corrupt lock.  The
+// lock is resolved at the workspace root when one is found, else beside the
+// manifest, matching `runRestore`'s own lock placement.
+func lockNeedsRestore(mfPath: in String, manifest: in Manifest): Bool {
+  if manifest.deps.count == 0 { return false }
+  val mfDir = Path.dirname(mfPath)
+  val lockPath = match Ws.findWorkspaceRoot(mfDir) {
+    case Some(ctx) -> Path.join(ctx.rootDir, "lyric.lock")
+    case None      -> Path.join(mfDir, "lyric.lock")
+  }
+  if not File.fileExists(lockPath) { return true }
+  val lf = match File.readText(lockPath) {
+    case Err(_)     -> return true
+    case Ok(text)   ->
+      match LF.parseLockFile(text) {
+        case Err(_)  -> return true
+        case Ok(clf) -> clf
+      }
+  }
+  var di = 0
+  while di < manifest.deps.count {
+    val dep = manifest.deps[di]
+    di += 1
+    match LF.findPackage(lf, dep.name) {
+      case None -> return true   // declared dependency not in the lock → stale
+      case Some(locked) ->
+        match dep.source {
+          case Registry(v) -> if locked.version != v { return true }
+          case _           -> ()  // path / workspace / git: presence suffices for the cheap check
+        }
+    }
+  }
+  false
 }
 
 // Return the stem of a filename (basename without final extension).
@@ -382,6 +430,8 @@ func cmdBuild(argv: in slice[String]): Int {
   var allFeatures: Bool = false
   var release: Bool = false
   var ridArg: Option[String] = None
+  var noRestore: Bool = false
+  var watch: Bool = false
   val positional: List[String] = newList()
 
   var i = 1
@@ -437,6 +487,12 @@ func cmdBuild(argv: in slice[String]): Int {
         printErr("build: --rid requires an argument")
         return 1
       }
+    } else if arg == "--no-restore" {
+      noRestore = true
+      i += 1
+    } else if arg == "--watch" {
+      watch = true
+      i += 1
     } else if arg == "--target" {
       if i + 1 < argv.length {
         val t = argv[i + 1]
@@ -461,6 +517,11 @@ func cmdBuild(argv: in slice[String]): Int {
     case Some(_) -> if not release { printErr("build: warning: --rid has no effect without --release") }
     case None    -> ()
   }
+  // `--no-restore` only affects project-mode auto-restore; warn rather than
+  // silently ignore it on a single-file build (#2048).
+  if noRestore and positional.count > 0 {
+    printErr("build: warning: --no-restore has no effect without a project manifest")
+  }
   // Project-mode: `lyric build --manifest lyric.toml`, or no positional source
   // at all (discover the nearest lyric.toml by walking up from the cwd).
   if positional.count == 0 {
@@ -479,7 +540,13 @@ func cmdBuild(argv: in slice[String]): Int {
       printErr("build: --release for project mode is not yet supported; build a single-file entry with `lyric build --release <main.l>` (tracked in #1975)")
       return 1
     }
-    return buildProject(mfPath, explicitOut, target, cliFeatures, noDefaultFeatures, allFeatures)
+    if watch {
+      return watchLoop(projectWatchFiles(mfPath),
+                       BuildProj(mfPath = mfPath, outArg = explicitOut, target = target,
+                                 feats = cliFeatures, noDef = noDefaultFeatures,
+                                 allF = allFeatures, noRestore = noRestore))
+    }
+    return buildProject(mfPath, explicitOut, target, cliFeatures, noDefaultFeatures, allFeatures, noRestore)
   }
 
   val sourcePath = positional[0]
@@ -499,6 +566,13 @@ func cmdBuild(argv: in slice[String]): Int {
       val stem = stemOf(Path.basename(sourcePath), 2)  // strip ".l"
       Path.join(dir, stem + ".dll")
     }
+  }
+
+  if watch {
+    val files: List[String] = newList()
+    files.add(sourcePath)
+    return watchLoop(files, BuildFile(sourcePath = sourcePath, outArg = outPath,
+                                      target = target, manifest = manifestArg))
   }
 
   buildOne(sourcePath, outPath, target, manifestArg)
@@ -559,7 +633,8 @@ func buildProject(
   target:           in CompileTarget,
   cliFeatures:      in List[String],
   noDefaultFeatures: in Bool,
-  allFeatures:      in Bool
+  allFeatures:      in Bool,
+  noRestore:        in Bool
 ): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
@@ -580,6 +655,19 @@ func buildProject(
     case None    -> {
       printErr("build: " + mfPath + " has no [project] section")
       return 1
+    }
+  }
+
+  // Auto-restore: when the manifest declares dependencies and lyric.lock is
+  // missing or out of sync with the [dependencies] table, resolve them before
+  // building so a clean checkout (or a just-edited dependency set) builds
+  // without a manual `lyric restore` (#1971).  `--no-restore` opts out.
+  if not noRestore and lockNeedsRestore(mfPath, manifest) {
+    Console.println("build: resolving dependencies (lyric.lock missing or stale) ...")
+    val rc = runRestore(mfPath, false)
+    if rc != 0 {
+      printErr("build: dependency restore failed")
+      return rc
     }
   }
 
@@ -786,50 +874,39 @@ func buildProject(
 // §4. Run command
 // ─────────────────────────────────────────────────────────────────────────────
 
-func cmdRun(argv: in slice[String]): Int {
-  if argv.length < 2 {
-    printErr("run: missing source file")
-    printUsage()
-    return 1
-  }
+// ── --watch support (#1974) ──────────────────────────────────────────────────
+//
+// The watch loop runs in the CLI process (the .NET AOT binary), polling a set
+// of source files and re-running the action when any of them changes.  Change
+// detection fingerprints each file with sha512 (reused from lock integrity) so
+// it needs no new file-metadata primitive; the only new stdlib primitive is the
+// synchronous Std.Time.sleepMillis poll interval.  The loop runs until the user
+// interrupts it (Ctrl-C).
 
-  val sourcePath = argv[1]
-  if not File.fileExists(sourcePath) {
-    printErr("run: source file not found: " + sourcePath)
-    return 1
-  }
+val WATCH_POLL_MS: Int = 400
 
-  // Collect user args (everything after optional "--" separator).
-  val userArgs: List[String] = newList()
-  var i = 2
-  var pastSep = false
-  while i < argv.length {
-    val arg = argv[i]
-    if not pastSep and arg == "--" {
-      pastSep = true
-    } else {
-      userArgs.add(arg)
-    }
-    i += 1
-  }
+// The deferred action a watch loop re-runs on each detected change.
+union WatchAction {
+  case RunFile(sourcePath: String, userArgs: List[String])
+  case BuildProj(mfPath: String, outArg: Option[String], target: CompileTarget,
+                 feats: List[String], noDef: Bool, allF: Bool, noRestore: Bool)
+  case BuildFile(sourcePath: String, outArg: String, target: CompileTarget, manifest: Option[String])
+}
 
-  // Build to a `.lyric-run/` temp path next to the source file.
+// Build the program once and `dotnet exec` it.  Extracted from cmdRun so the
+// watch loop can re-run it.
+func runOnce(sourcePath: in String, userArgs: in List[String]): Int {
   val srcDir  = Path.dirname(sourcePath)
   val stem    = stemOf(Path.basename(sourcePath), 2)
   val outPath = Path.join(Path.join(srcDir, ".lyric-run"), stem + ".dll")
 
   val buildExit = buildOne(sourcePath, outPath, Dotnet, None)
-  if buildExit != 0 {
-    return buildExit
-  }
+  if buildExit != 0 { return buildExit }
 
-  // `dotnet exec <dll> [user args...]`
   val execArgs: List[String] = newList()
   execArgs.add("exec")
   execArgs.add(outPath)
-  for a in userArgs.toArray() {
-    execArgs.add(a)
-  }
+  for a in userArgs.toArray() { execArgs.add(a) }
 
   match Process.run("dotnet", execArgs) {
     case Ok(code) -> code
@@ -838,6 +915,125 @@ func cmdRun(argv: in slice[String]): Int {
       1
     }
   }
+}
+
+func runWatchAction(a: in WatchAction): Int {
+  match a {
+    case RunFile(sp, ua)                  -> runOnce(sp, ua)
+    case BuildProj(mf, o, t, f, nd, af, nr) -> buildProject(mf, o, t, f, nd, af, nr)
+    case BuildFile(sp, o, t, m)           -> buildOne(sp, o, t, m)
+  }
+}
+
+// A change-detection fingerprint over `files`: each file's sha512 (or "∅" when
+// missing) joined together, so adding, removing, or editing any watched file
+// flips the value.
+func watchFingerprint(files: in List[String]): String {
+  var fp = ""
+  var i = 0
+  while i < files.count {
+    val f = files[i]
+    val h = match Hash.sha512OfFile(f) {
+      case Ok(x)  -> x
+      case Err(_) -> "∅"
+    }
+    fp = fp + f + "=" + h + ";"
+    i += 1
+  }
+  fp
+}
+
+// Run `action` once, then poll `files` and re-run on every change until the
+// process is interrupted.  Never returns under normal use.
+func watchLoop(files: in List[String], action: in WatchAction): Int {
+  Console.println("watch: watching " + toString(files.count) +
+                  " file(s); press Ctrl-C to stop")
+  runWatchAction(action)
+  Console.println("watch: waiting for changes ...")
+  var fp = watchFingerprint(files)
+  while true {
+    Time.sleepMillis(WATCH_POLL_MS)
+    val cur = watchFingerprint(files)
+    if cur != fp {
+      fp = cur
+      Console.println("")
+      Console.println("watch: change detected — rerunning ...")
+      val rc = runWatchAction(action)
+      Console.println("watch: done (exit " + toString(rc) + "); waiting for changes ...")
+    }
+  }
+  0
+}
+
+// The files a project `build --watch` should watch: the manifest plus every
+// `[project.packages]` source path (resolved relative to the manifest dir).
+func projectWatchFiles(mfPath: in String): List[String] {
+  val files: List[String] = newList()
+  files.add(mfPath)
+  val mfDir = Path.dirname(mfPath)
+  match File.readText(mfPath) {
+    case Err(_) -> ()
+    case Ok(txt) ->
+      match Mf.parseManifest(txt, mfPath) {
+        case Err(_) -> ()
+        case Ok(m)  ->
+          match m.project {
+            case None    -> ()
+            case Some(p) -> {
+              var i = 0
+              while i < p.packages.count {
+                files.add(Path.join(mfDir, p.packages[i].path))
+                i += 1
+              }
+            }
+          }
+      }
+  }
+  files
+}
+
+func cmdRun(argv: in slice[String]): Int {
+  var watch = false
+  var sourcePath = ""
+  var haveSource = false
+  val userArgs: List[String] = newList()
+
+  var i = 1
+  var pastSep = false
+  while i < argv.length {
+    val arg = argv[i]
+    if pastSep {
+      userArgs.add(arg)
+    } else if arg == "--" {
+      pastSep = true
+    } else if arg == "--watch" {
+      watch = true
+    } else if not haveSource {
+      sourcePath = arg
+      haveSource = true
+    } else {
+      userArgs.add(arg)
+    }
+    i += 1
+  }
+
+  if not haveSource {
+    printErr("run: missing source file")
+    printUsage()
+    return 1
+  }
+  if not File.fileExists(sourcePath) {
+    printErr("run: source file not found: " + sourcePath)
+    return 1
+  }
+
+  if watch {
+    val files: List[String] = newList()
+    files.add(sourcePath)
+    return watchLoop(files, RunFile(sourcePath = sourcePath, userArgs = userArgs))
+  }
+
+  runOnce(sourcePath, userArgs)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1388,6 +1584,234 @@ func lockSha512OfNupkg(name: in String, version: in String): Option[String] {
   }
 }
 
+// `lyric init [<dir>] [--name <Name>] [--lib] [--force]` — scaffold a new
+// application (or `--lib` library) package in <dir> (default the current
+// directory): a lyric.toml, src/main.l (or src/lib.l), and a .gitignore (#1972).
+func cmdInit(argv: in slice[String]): Int {
+  var dir = "."
+  var haveDir = false
+  var nameOverride: Option[String] = None
+  var isLib = false
+  var force = false
+
+  var i = 1
+  while i < argv.length {
+    val arg = argv[i]
+    if arg == "--name" {
+      if i + 1 < argv.length { nameOverride = Some(value = argv[i + 1]); i += 2 }
+      else { printErr("init: --name requires an argument"); return 1 }
+    } else if arg == "--lib" {
+      isLib = true; i += 1
+    } else if arg == "--force" {
+      force = true; i += 1
+    } else {
+      if not haveDir { dir = arg; haveDir = true; i += 1 }
+      else { printErr("init: unexpected extra argument '" + arg + "'"); return 1 }
+    }
+  }
+
+  Init.runInit(InitOptions(dir = dir, nameOverride = nameOverride, isLib = isLib, force = force))
+}
+
+// Whether a TOML line defines the bare key `key` (its left-of-`=` token,
+// trimmed, equals `key`).  Comment lines and table headers never match.
+func lineDefinesKey(line: in String, key: in String): Bool {
+  val t = Str.trim(line)
+  if Str.startsWith(t, "#") { return false }
+  if Str.startsWith(t, "[") { return false }
+  match Str.indexOf(t, "=") {
+    case None     -> false
+    case Some(eq) -> Str.trim(Str.substring(t, 0, eq)) == key
+  }
+}
+
+// Insert or update `key = rhs` inside the `[table]` section of a TOML document,
+// preserving the rest of the file.  If the key already exists in that table its
+// line is replaced (idempotent re-add); if the table exists the entry is
+// appended to it; if the table is absent a new section is appended at EOF.
+func upsertTomlEntry(text: in String, table: in String, key: in String, rhs: in String): String {
+  val newLine = key + " = " + rhs
+  val header  = "[" + table + "]"
+  val lines   = Str.split(text, "\n")
+  val n       = lines.length
+
+  var secIdx = -1
+  var idx = 0
+  while idx < n {
+    if Str.trim(lines[idx]) == header { secIdx = idx; idx = n } else { idx += 1 }
+  }
+
+  val outLines: List[String] = newList()
+  if secIdx < 0 {
+    // Table absent — append a fresh section at EOF.
+    var p = 0
+    while p < n { outLines.add(lines[p]); p += 1 }
+    if n > 0 and Str.length(Str.trim(lines[n - 1])) > 0 { outLines.add("") }
+    outLines.add(header)
+    outLines.add(newLine)
+    return Str.joinList("\n", outLines)
+  }
+
+  // Locate an existing key line and the section's end (next header or EOF).
+  var keyIdx = -1
+  var secEnd = n
+  var q = secIdx + 1
+  while q < n {
+    val t = Str.trim(lines[q])
+    if Str.startsWith(t, "[") { secEnd = q; q = n } else {
+      if keyIdx < 0 and lineDefinesKey(lines[q], key) { keyIdx = q }
+      q += 1
+    }
+  }
+
+  if keyIdx >= 0 {
+    var r = 0
+    while r < n {
+      if r == keyIdx { outLines.add(newLine) } else { outLines.add(lines[r]) }
+      r += 1
+    }
+    return Str.joinList("\n", outLines)
+  }
+
+  // No existing key: insert after the last non-blank line of the section.
+  var insertAt = secIdx + 1
+  var s = secIdx + 1
+  while s < secEnd {
+    if Str.length(Str.trim(lines[s])) > 0 { insertAt = s + 1 }
+    s += 1
+  }
+  var w = 0
+  while w < n {
+    if w == insertAt { outLines.add(newLine) }
+    outLines.add(lines[w])
+    w += 1
+  }
+  if insertAt >= n { outLines.add(newLine) }
+  Str.joinList("\n", outLines)
+}
+
+// `lyric add <name>[@<version>] [--path <p>] [--git <url> [--tag|--rev|--branch <ref>]]
+//   [--nuget] [--manifest <m>] [--no-restore]` — add or update a dependency in the
+// discovered manifest's [dependencies] (or [nuget]) table, then restore (#1973).
+func cmdAdd(argv: in slice[String]): Int {
+  var manifestArg: Option[String] = None
+  var pathArg:     Option[String] = None
+  var gitArg:      Option[String] = None
+  var gitRefKind:  String = ""    // "tag" | "rev" | "branch"
+  var gitRef:      String = ""
+  var isNuget:     Bool = false
+  var noRestore:   Bool = false
+  var spec:        Option[String] = None
+
+  var i = 1
+  while i < argv.length {
+    val arg = argv[i]
+    if arg == "--manifest" {
+      if i + 1 < argv.length { manifestArg = Some(value = argv[i + 1]); i += 2 }
+      else { printErr("add: --manifest requires an argument"); return 1 }
+    } else if arg == "--path" {
+      if i + 1 < argv.length { pathArg = Some(value = argv[i + 1]); i += 2 }
+      else { printErr("add: --path requires an argument"); return 1 }
+    } else if arg == "--git" {
+      if i + 1 < argv.length { gitArg = Some(value = argv[i + 1]); i += 2 }
+      else { printErr("add: --git requires an argument"); return 1 }
+    } else if arg == "--tag" {
+      if i + 1 < argv.length { gitRefKind = "tag"; gitRef = argv[i + 1]; i += 2 }
+      else { printErr("add: --tag requires an argument"); return 1 }
+    } else if arg == "--rev" {
+      if i + 1 < argv.length { gitRefKind = "rev"; gitRef = argv[i + 1]; i += 2 }
+      else { printErr("add: --rev requires an argument"); return 1 }
+    } else if arg == "--branch" {
+      if i + 1 < argv.length { gitRefKind = "branch"; gitRef = argv[i + 1]; i += 2 }
+      else { printErr("add: --branch requires an argument"); return 1 }
+    } else if arg == "--nuget" {
+      isNuget = true; i += 1
+    } else if arg == "--no-restore" {
+      noRestore = true; i += 1
+    } else {
+      match spec {
+        case None    -> { spec = Some(value = arg); i += 1 }
+        case Some(_) -> { printErr("add: unexpected extra argument '" + arg + "'"); return 1 }
+      }
+    }
+  }
+
+  val rawSpec = match spec {
+    case Some(s) -> s
+    case None    -> { printErr("add: missing <name>[@version]"); printUsage(); return 1 }
+  }
+
+  // Split `name@version`.
+  var name    = rawSpec
+  var version = ""
+  match Str.indexOf(rawSpec, "@") {
+    case Some(at) -> {
+      name    = Str.substring(rawSpec, 0, at)
+      version = Str.substring(rawSpec, at + 1, Str.length(rawSpec) - at - 1)
+    }
+    case None -> ()
+  }
+  if Str.length(name) == 0 { printErr("add: empty dependency name"); return 1 }
+
+  // Validate mutually-exclusive source selectors.
+  val hasPath = match pathArg { case Some(_) -> true; case None -> false }
+  val hasGit  = match gitArg  { case Some(_) -> true; case None -> false }
+  if hasPath and hasGit { printErr("add: --path and --git are mutually exclusive"); return 1 }
+  if isNuget and (hasPath or hasGit) { printErr("add: --nuget cannot be combined with --path/--git"); return 1 }
+  if gitRefKind != "" and not hasGit { printErr("add: --tag/--rev/--branch require --git"); return 1 }
+  if Str.length(version) > 0 and (hasPath or hasGit) {
+    printErr("add: @version cannot be combined with --path/--git"); return 1
+  }
+
+  // Render the TOML right-hand side for the chosen source form.
+  val rhs = match pathArg {
+    case Some(p) -> "{ path = \"" + p + "\" }"
+    case None    ->
+      match gitArg {
+        case Some(url) ->
+          if gitRefKind != "" { "{ git = \"" + url + "\", " + gitRefKind + " = \"" + gitRef + "\" }" }
+          else { "{ git = \"" + url + "\" }" }
+        case None ->
+          "\"" + (if Str.length(version) > 0 { version } else { "*" }) + "\""
+      }
+  }
+
+  val table = if isNuget { "nuget" } else { "dependencies" }
+
+  val mfPath = match discoverManifest(manifestArg) {
+    case Some(p) -> p
+    case None    -> {
+      printErr("add: no lyric.toml found in this directory or any parent (use --manifest)")
+      return 1
+    }
+  }
+  val mfText = match File.readText(mfPath) {
+    case Ok(t)  -> t
+    case Err(e) -> { printErr("add: " + IOError.message(e)); return 1 }
+  }
+
+  var updated = upsertTomlEntry(mfText, table, name, rhs)
+  // Keep the file POSIX-clean: end with exactly one trailing newline.
+  if not Str.endsWith(updated, "\n") { updated = updated + "\n" }
+
+  // Guard: the edited manifest must still parse before we commit it to disk.
+  match Mf.parseManifest(updated, mfPath) {
+    case Ok(_)  -> ()
+    case Err(e) -> {
+      printErr("add: refusing to write — resulting manifest is invalid: " + ManifestError.message(e))
+      return 1
+    }
+  }
+  match File.writeText(mfPath, updated) {
+    case Ok(_)  -> ()
+    case Err(e) -> { printErr("add: could not write " + mfPath + ": " + IOError.message(e)); return 1 }
+  }
+  Console.println("add: " + name + " = " + rhs + " -> [" + table + "] in " + mfPath)
+
+  if noRestore { return 0 }
+  runRestore(mfPath, false)
+}
+
 func cmdRestore(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
   var lockedMode = false
@@ -1417,6 +1841,14 @@ func cmdRestore(argv: in slice[String]): Int {
     case None    -> "lyric.toml"
   }
 
+  return runRestore(mfPath, lockedMode)
+}
+
+// Resolve and lock every dependency declared in the manifest at `mfPath`,
+// writing `lyric.lock` (or verifying it under `lockedMode`).  Extracted from
+// cmdRestore so `lyric build` can auto-restore when the lock is missing or
+// stale (#1971).
+func runRestore(mfPath: in String, lockedMode: in Bool): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
     case Err(e)   -> {
@@ -2986,6 +3418,14 @@ pub func main(argv: in slice[String]): Int {
 
   if cmd == "restore" {
     return cmdRestore(argv)
+  }
+
+  if cmd == "add" {
+    return cmdAdd(argv)
+  }
+
+  if cmd == "init" {
+    return cmdInit(argv)
   }
 
   if cmd == "publish" {

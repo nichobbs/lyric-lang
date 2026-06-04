@@ -95,6 +95,27 @@ project's `lyric.toml` by walking up from your working directory — so they wor
 from any subdirectory. (`lyric run` still takes an explicit source file.) Run
 `lyric --help` for the grouped command list.
 
+### Scaffolding a project — `lyric init`
+
+Rather than hand-writing `lyric.toml` and the source layout, `lyric init`
+scaffolds a new package:
+
+```
+lyric init demo
+cd demo
+lyric run src/main.l      # prints: Hello from Demo!
+lyric build               # builds demo/bin/Demo.dll
+```
+
+`lyric init [<dir>] [--name <Name>] [--lib] [--force]` creates the target
+directory (default the current one), a `lyric.toml` with `[package]`,
+`[project]`, and an empty `[dependencies]` table, a `src/main.l` hello-world
+(or `src/lib.l` with `--lib`), and a `.gitignore`. The package name is derived
+from the directory name (capitalised to the `UpperCamelCase` convention) unless
+`--name` overrides it; a name that isn't a valid identifier is rejected with a
+hint to pass `--name`. An existing `lyric.toml` is never overwritten without
+`--force`.
+
 ### Native binaries — `lyric build --release`
 
 For deployment, `lyric build --release hello.l` produces a **self-contained

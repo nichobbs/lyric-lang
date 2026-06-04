@@ -24,7 +24,7 @@
 //
 // Internal: only Std.Time should import this.
 
-@axiom("java.time.* operations conform to their documented JVM / ISO 8601 contracts")
+@axiom("java.time.* / java.lang.Thread operations conform to their documented JVM / ISO 8601 contracts")
 package Std.TimeHost
 
 import Std.Core
@@ -183,3 +183,11 @@ pub func hostInstantToString(value: in Instant): String = ()
 pub func hostStopwatchTimestamp(): Long = ()
 
 pub func hostStopwatchFrequency(): Long { 1000000000 }
+
+// ─── Synchronous sleep — block the calling thread for `ms` milliseconds ───────
+// Routed through the Phase 6 shim (`static void sleepMillis(int)` →
+// `Thread.sleep((long) ms)`) rather than binding `java.lang.Thread.sleep`
+// directly: that method takes a `long`, so an `Int` argument would mismatch the
+// JVM descriptor.  Backs Std.Time.sleepMillis.
+@externTarget("lyric.stdlib.jvm.TimeHost.sleepMillis")
+pub func hostSleepMillis(ms: in Int): Unit = ()

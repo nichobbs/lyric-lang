@@ -1269,6 +1269,18 @@ jobs:
           fi
           LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/release_self_test.l
 
+      - name: Init self-test (native lyric test)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping init self-test"
+            exit 0
+          fi
+          LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/init_self_test.l
+
       # Release Native AOT end-to-end — `lyric build --release` produces a
       # self-contained native binary and runs it (#1975 / D079).  This is the
       # integration test for the AOT pipeline (host project + trampoline +
@@ -1308,6 +1320,238 @@ jobs:
             echo "expected non-zero exit for --release --target jvm"; exit 1
           fi
           echo "Release Native AOT e2e passed"
+
+      # Auto-restore-on-build end-to-end — `lyric build` resolves dependencies
+      # when lyric.lock is missing or stale, and `--no-restore` opts out (#1971).
+      # Driven through the real binary because the staleness check reads the
+      # filesystem (can't be a `lyric test` self-test, #2001).
+      - name: Auto-restore-on-build e2e
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping auto-restore e2e"
+            exit 0
+          fi
+          bin_abs="$(pwd)/$lyric_bin"
+          work="$(mktemp -d)"
+          mkdir -p "$work/lib/src" "$work/app/src"
+          cat > "$work/lib/lyric.toml" <<'TOML'
+          [package]
+          name = "Lib"
+          version = "0.1.0"
+          [project]
+          name = "Lib"
+          output = "single"
+          output_assembly = "Lib.dll"
+          [project.packages]
+          "Lib" = "src/lib.l"
+          TOML
+          printf 'package Lib\nimport Std.Core\npub func answer(): Int { 42 }\n' > "$work/lib/src/lib.l"
+          cat > "$work/app/lyric.toml" <<'TOML'
+          [package]
+          name = "App"
+          version = "0.1.0"
+          [project]
+          name = "App"
+          output = "single"
+          output_assembly = "App.dll"
+          [project.packages]
+          "App" = "src/main.l"
+          [dependencies]
+          Lib = { path = "../lib" }
+          TOML
+          printf 'package App\nimport Std.Core\nimport Std.Console as Console\npub func main(): Int { Console.println("app built"); 0 }\n' > "$work/app/src/main.l"
+          # A second library, declared as a dependency only in the stale-lock
+          # case below so the lock written for the first build is out of date.
+          mkdir -p "$work/lib2/src"
+          cat > "$work/lib2/lyric.toml" <<'TOML'
+          [package]
+          name = "Lib2"
+          version = "0.1.0"
+          [project]
+          name = "Lib2"
+          output = "single"
+          output_assembly = "Lib2.dll"
+          [project.packages]
+          "Lib2" = "src/lib2.l"
+          TOML
+          printf 'package Lib2\nimport Std.Core\npub func two(): Int { 2 }\n' > "$work/lib2/src/lib2.l"
+          ( cd "$work/lib" && "$bin_abs" build )
+          ( cd "$work/lib2" && "$bin_abs" build )
+          # 1. No lock -> auto-restore writes it and the build succeeds.
+          ( cd "$work/app" && "$bin_abs" build 2>&1 | tee /tmp/ar1.out )
+          grep -q "resolving dependencies" /tmp/ar1.out || { echo "expected auto-restore message"; exit 1; }
+          test -f "$work/app/lyric.lock" || { echo "expected lyric.lock to be created"; exit 1; }
+          # 2. In-sync lock -> no re-restore.
+          ( cd "$work/app" && "$bin_abs" build 2>&1 | tee /tmp/ar2.out )
+          if grep -q "resolving dependencies" /tmp/ar2.out; then echo "should not re-restore an in-sync lock"; exit 1; fi
+          # 3. Stale lock -> a dependency added after the lock was written triggers
+          #    a re-restore (the new dep is absent from lyric.lock).
+          printf 'Lib2 = { path = "../lib2" }\n' >> "$work/app/lyric.toml"
+          ( cd "$work/app" && "$bin_abs" build 2>&1 | tee /tmp/ar3.out )
+          grep -q "resolving dependencies" /tmp/ar3.out || { echo "expected re-restore on a stale lock (new dep)"; exit 1; }
+          # 4. --no-restore after deleting the lock -> no restore, lock not recreated.
+          #    The build still succeeds (exit 0): both path deps are already built
+          #    above, so no resolution is needed to compile against them.
+          rm -f "$work/app/lyric.lock"
+          ( cd "$work/app" && "$bin_abs" build --no-restore ) > /tmp/ar4.out 2>&1; rc=$?
+          test "$rc" -eq 0 || { echo "--no-restore build should still succeed (exit 0), got $rc"; cat /tmp/ar4.out; exit 1; }
+          if grep -q "resolving dependencies" /tmp/ar4.out; then echo "--no-restore should skip restore"; exit 1; fi
+          test ! -f "$work/app/lyric.lock" || { echo "--no-restore should not recreate the lock"; exit 1; }
+          echo "Auto-restore-on-build e2e passed"
+
+      # `lyric add` end-to-end — adds/updates dependency entries in the manifest
+      # (registry / path / git / nuget), is idempotent, and refuses to write an
+      # unparseable manifest (#1973).  Binary-driven because the command reads
+      # and writes the filesystem (can't be a `lyric test` self-test, #2001).
+      - name: lyric add e2e
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping lyric add e2e"
+            exit 0
+          fi
+          bin_abs="$(pwd)/$lyric_bin"
+          work="$(mktemp -d)"
+          mkdir -p "$work/lib/src" "$work/app/src"
+          cat > "$work/lib/lyric.toml" <<'TOML'
+          [package]
+          name = "Lib"
+          version = "0.1.0"
+          [project]
+          name = "Lib"
+          output = "single"
+          output_assembly = "Lib.dll"
+          [project.packages]
+          "Lib" = "src/lib.l"
+          TOML
+          printf 'package Lib\nimport Std.Core\npub func answer(): Int { 42 }\n' > "$work/lib/src/lib.l"
+          cat > "$work/app/lyric.toml" <<'TOML'
+          [package]
+          name = "App"
+          version = "0.1.0"
+          [project]
+          name = "App"
+          output = "single"
+          output_assembly = "App.dll"
+          [project.packages]
+          "App" = "src/main.l"
+          TOML
+          printf 'package App\nimport Std.Core\nimport Std.Console as Console\npub func main(): Int { Console.println("ok"); 0 }\n' > "$work/app/src/main.l"
+          ( cd "$work/lib" && "$bin_abs" build )
+          # registry @version (no restore — offline)
+          ( cd "$work/app" && "$bin_abs" add Foo@1.2.0 --no-restore )
+          grep -q '^Foo = "1.2.0"$' "$work/app/lyric.toml" || { echo "registry add missing"; cat "$work/app/lyric.toml"; exit 1; }
+          # idempotent update in place (no duplicate)
+          ( cd "$work/app" && "$bin_abs" add Foo@2.0.0 --no-restore )
+          [ "$(grep -c '^Foo = ' "$work/app/lyric.toml")" = "1" ] || { echo "re-add duplicated Foo"; exit 1; }
+          grep -q '^Foo = "2.0.0"$' "$work/app/lyric.toml" || { echo "re-add did not update Foo"; exit 1; }
+          # nuget table created
+          ( cd "$work/app" && "$bin_abs" add Newtonsoft.Json@13.0.3 --nuget --no-restore )
+          grep -q '^\[nuget\]$' "$work/app/lyric.toml" || { echo "nuget table not created"; exit 1; }
+          grep -q '^Newtonsoft.Json = "13.0.3"$' "$work/app/lyric.toml" || { echo "nuget entry missing"; exit 1; }
+          # git inline-table
+          ( cd "$work/app" && "$bin_abs" add Bar --git https://example.com/bar.git --tag v1.0 --no-restore )
+          grep -q '^Bar = { git = "https://example.com/bar.git", tag = "v1.0" }$' "$work/app/lyric.toml" || { echo "git entry missing"; cat "$work/app/lyric.toml"; exit 1; }
+          # restore + build round-trip on a CLEAN manifest: add a path dep that
+          # resolves offline and let the implicit restore run.  (The asserts
+          # above use --no-restore, so the bogus registry/nuget/git entries are
+          # never fetched — restoring them would hit the network.)
+          mkdir -p "$work/app2/src"
+          cat > "$work/app2/lyric.toml" <<'TOML'
+          [package]
+          name = "App2"
+          version = "0.1.0"
+          [project]
+          name = "App2"
+          output = "single"
+          output_assembly = "App2.dll"
+          [project.packages]
+          "App2" = "src/main.l"
+          TOML
+          printf 'package App2\nimport Std.Core\nimport Std.Console as Console\npub func main(): Int { Console.println("ok"); 0 }\n' > "$work/app2/src/main.l"
+          ( cd "$work/app2" && "$bin_abs" add Lib --path ../lib )
+          test -f "$work/app2/lyric.lock" || { echo "expected the implicit restore to write lyric.lock"; exit 1; }
+          ( cd "$work/app2" && "$bin_abs" build )
+          # validation: --tag without --git fails
+          if ( cd "$work/app" && "$bin_abs" add X --tag v1 --no-restore ); then
+            echo "expected failure for --tag without --git"; exit 1
+          fi
+          echo "lyric add e2e passed"
+
+      # `lyric init` end-to-end — scaffold an app, run + build it, and check the
+      # --lib / --force / bad-name / overwrite-refusal behaviours (#1972).
+      - name: lyric init e2e
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping init e2e"
+            exit 0
+          fi
+          bin_abs="$(pwd)/$lyric_bin"
+          work="$(mktemp -d)"
+          cd "$work"
+          # 1. scaffold an app, run it, build it.
+          "$bin_abs" init demo
+          test -f demo/lyric.toml || { echo "lyric.toml not scaffolded"; exit 1; }
+          test -f demo/src/main.l || { echo "src/main.l not scaffolded"; exit 1; }
+          test -f demo/.gitignore || { echo ".gitignore not scaffolded"; exit 1; }
+          grep -q 'package Demo' demo/src/main.l || { echo "package name not capitalised"; exit 1; }
+          out="$( cd demo && "$bin_abs" run src/main.l )"
+          echo "run output: $out"
+          echo "$out" | grep -q "Hello from Demo!" || { echo "scaffolded app did not run"; exit 1; }
+          ( cd demo && "$bin_abs" build )
+          # 2. --lib scaffolds a buildable library.
+          "$bin_abs" init mylib --lib
+          test -f mylib/src/lib.l || { echo "--lib did not scaffold src/lib.l"; exit 1; }
+          ( cd mylib && "$bin_abs" build )
+          # 3. overwrite refused without --force.
+          if "$bin_abs" init demo; then echo "expected refusal to overwrite lyric.toml"; exit 1; fi
+          # 4. --force + --name overwrites.
+          "$bin_abs" init demo --force --name Renamed
+          grep -q 'name = "Renamed"' demo/lyric.toml || { echo "--name/--force did not apply"; exit 1; }
+          # 5. bad name rejected.
+          if "$bin_abs" init weird --name "bad-name"; then echo "expected rejection of invalid name"; exit 1; fi
+          echo "lyric init e2e passed"
+
+      # `lyric run --watch` end-to-end — runs once, then re-runs when the source
+      # changes (#1974).  Driven in the background; we edit the file, wait for a
+      # poll cycle, then kill the watcher and assert the re-run happened.
+      - name: lyric run --watch e2e
+        if: steps.changes.outputs.has_code_changes == 'true'
+        timeout-minutes: 2
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping watch e2e"
+            exit 0
+          fi
+          bin_abs="$(pwd)/$lyric_bin"
+          work="$(mktemp -d)"
+          printf 'package Hello\nimport Std.Core\nimport Std.Console as Console\npub func main(): Int { Console.println("watch-v1"); 0 }\n' > "$work/hello.l"
+          ( "$bin_abs" run "$work/hello.l" --watch > "$work/out.log" 2>&1 ) &
+          wpid=$!
+          sleep 8
+          printf 'package Hello\nimport Std.Core\nimport Std.Console as Console\npub func main(): Int { Console.println("watch-v2"); 0 }\n' > "$work/hello.l"
+          sleep 6
+          kill "$wpid" 2>/dev/null || true
+          wait "$wpid" 2>/dev/null || true
+          echo "--- watch output ---"; cat "$work/out.log"
+          grep -q "watch-v1" "$work/out.log" || { echo "expected initial run output"; exit 1; }
+          grep -q "change detected" "$work/out.log" || { echo "expected change detection"; exit 1; }
+          grep -q "watch-v2" "$work/out.log" || { echo "expected re-run after edit"; exit 1; }
+          echo "lyric run --watch e2e passed"
 
       # Coverage collection — informational only, not a blocking gate (#1117).
       # Runs on push to main (not pull_request) to keep PR latency low.

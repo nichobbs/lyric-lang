@@ -19864,3 +19864,231 @@ round-trips, and chained conversions (9/9 on **both** `--target dotnet` and
 `--target jvm`, wired into CI).  Full regression green: 847/847 emitter,
 typechecker self-test, conv self-test 9/9 each target.  Parity is asserted, not
 deferred — both backends run the same suite in CI.
+### D-progress-406 — auto-restore on `lyric build` when the lock is missing or stale (#1968 epic; #1971; D080)
+
+**Status:** Shipped (`lyric-compiler/lyric/cli.l`).
+
+`lyric build` (project mode) now resolves dependencies automatically so a clean
+checkout — or a just-edited `[dependencies]` set — builds without a manual
+`lyric restore`:
+
+- **`cmdRestore` split** into arg-parsing + a reusable
+  `runRestore(mfPath, lockedMode)` (the resolve-and-lock body).  Shared by the
+  `restore` command and the build path.
+- **`lockNeedsRestore(mfPath, manifest)`** — cheap, read-only staleness check:
+  `lyric.lock` missing → restore; otherwise every declared dependency must be in
+  the lock (registry deps must match version), else restore.  Conservative on any
+  read/parse failure.  Lock path follows the workspace root when present, else the
+  manifest dir.
+- **`buildProject`** auto-restores before emit when deps are declared and the lock
+  is missing/stale; **`--no-restore`** opts out.
+
+Verified end-to-end against `bin/lyric`: a two-project setup (app with a `path`
+dependency on lib) auto-restores on first build (writes `lyric.lock`), skips
+re-restore on an in-sync second build, and `--no-restore` skips restore without
+recreating the lock.  CI gains an "Auto-restore-on-build e2e" step exercising all
+three cases.  Stage-1 + AOT clean.  MSIL target.
+
+Docs: D080 (decision log), language reference §13.1, book appendix-b CLI
+reference.  (Numbered D080 / D-progress-406 to follow #2013's in-flight D079 /
+D-progress-403.)
+### D-progress-407 — self-hosted type checker: `EIndex` element typing (#1901 part B, #1483, Band-1 of #1470)
+
+**Status:** Shipped — type-checker-only (the codegen already lowered indexing on both targets).
+
+`recv[i]` previously inferred the universal `TyError` unifier, so a whole class
+of index-result type errors was unreachable.  The `EIndex` arm of `inferExpr`
+now yields the receiver's element type (`indexElementType`): `slice[T]` /
+`array[N,T]` → `T`, `String` → `Char`, `List[T]` → `T`, `Map[K,V]` → `V`
+(the last two read the resolved `TyUser` type arguments).  Unknown / non-indexable
+receivers stay `TyError` (lenient — codegen owns exotic receivers); the index
+expressions are inferred too, so their own diagnostics surface.
+
+This is the second half of #1901: part A added the conversion methods, and with
+those in place byte/character indexing becomes sound.  `slice[Byte]` indexing
+now types as `Byte`, so arithmetic on an element requires the explicit `.toInt()`
+widening — `lyric-auth`'s constant-time `fixedTimeEqualBytes` migrated
+`0 + a[i]` → `a[i].toInt()` (branchless, constant-time preserved).
+
+Ecosystem impact: a full sweep of every `lyric-*` library found **`lyric-auth`
+the only one** needing migration — the other indexing sites already flow their
+precise element type into compatible uses (`s[i] == '-'`, `isDigit(s[i])`, …).
+The two libraries that fail with an `T0043` on indexing-adjacent lines
+(`lyric-mq`, `lyric-storage`) were verified to fail **identically without** this
+change — pre-existing `join`/`concat` and `Str.replace`-overload issues, not
+regressions.
+
+Coverage: 4 new `typechecker_self_test.l` cases (the distinguishing ones —
+`slice[Byte]` element is `Byte` and mismatches an `Int` return T0070;
+`a[0].toInt()` type-checks; `String` index is `Char`, clean for a `Char` return
+and a mismatch for an `Int` return).  Runtime: `lyric-auth` 29/29 (exercises the
+migrated byte-slice comparison).  Full regression green: 847/847 emitter, 84/84
+CLI.
+
+### D-progress-408 — self-hosted type checker: value-position `EBlock`/`EUnsafe`/`EResult` typing + divergence-aware `checkBlock` (#1483, #1943 infra, Band-1 of #1470, D081)
+
+**Status:** Shipped — type-checker-only.
+
+Three more `TyError` expression forms now carry real types, and the
+infrastructure that the remaining branch forms need is in place.
+
+- **`Scope` context (D081):** the `@stable` `Scope` record gains `returnTy` and
+  `genericNames`, set once at function entry (`newScopeForFunction`, from
+  `checkFunctionBody`) and untouched by frame push/pop.  This lets `inferExpr`
+  type value-position blocks/branches without threading the context through its
+  ~34 call sites.  `newScope()` keeps a context-free default (`returnTy =
+  TyError`).  Decision-log entry D081 records the `@stable` widening (additive;
+  sole construction site is `newScope`/`newScopeForFunction`).
+- **`EBlock` / `EUnsafe`:** a value-position brace block / `unsafe { … }` types as
+  its trailing expression via `checkBlock` (which walks the statements, binding
+  locals).  This also covers the parser's `return`/`throw`/`break`/`continue`-in-
+  expression-position desugaring (each is an `EBlock` around the single
+  statement).
+- **`EResult`:** `result` in an `ensures:` clause types as `sc.returnTy`.
+- **Divergence-aware `checkBlock`:** a block whose final statement is
+  `return`/`throw`/`break`/`continue` has type `Never` (bottom), so an early-exit
+  block unifies cleanly — the keystone for the upcoming `EIf`/`EMatch` branch
+  unification (`if c { return x } else { y }` will type by its `else`).
+
+Coverage: 3 new `typechecker_self_test.l` cases (an `unsafe { 5 }` body mismatches
+a `String` return T0070 but matches an `Int` return; an `unsafe { return 3 }`
+body is `Never` and does not mismatch).  Ecosystem sweep clean: a full
+`lyric-*` build found no new failures (the two restored-dep synthesis failures,
+`lyric-db`→`lyric-logging` and `lyric-jobs`→`lyric-resilience`, were verified to
+fail identically without this change — pre-existing, surfaced by the auto-restore
+in D080).  Full regression green: 847/847 emitter, typechecker self-test.
+
+Deferred to follow-ups: `EIf`-branch unification (needs the parser statement-end
+fix for the `if { … }`-then-operator ambiguity, #1943) and `EMatch`-branch
+unification (needs pattern-variable type binding so arm bodies see their bound
+names).
+### D-progress-409 — `lyric add`: cargo-style dependency insertion (#1968 epic; #1973; D082)
+
+**Status:** Shipped (`lyric-compiler/lyric/cli.l`, `cli_suggest.l`).
+
+`lyric add <name>[@<version>] [--path <dir>] [--git <url> [--tag|--rev|--branch <ref>]]
+[--nuget] [--manifest <m>] [--no-restore]` adds or updates a single dependency in
+the discovered manifest and restores afterward (unless `--no-restore`), sharing
+D080's `runRestore`:
+
+- **Source forms** map to the TOML shapes `Lyric.Manifest.parseManifest` accepts:
+  registry string (`name = "<v>"`, missing version → `"*"`), `{ path = ... }`,
+  git inline-table (`{ git = ..., tag/rev/branch = ... }`), or a `[nuget]` entry.
+- **`upsertTomlEntry`** edits at the text level to preserve the rest of the file:
+  replace an existing key line in place (idempotent re-add), append to the table
+  if present, or append a new section at EOF; keeps one trailing newline. The
+  edited manifest is re-parsed and the write is refused if it would not parse.
+- Conflicting selectors rejected; `--tag`/`--rev`/`--branch` require `--git`.
+  `add` registered in the dispatcher and in `knownCommands` (did-you-mean).
+
+Verified end-to-end against `bin/lyric`: path/registry/nuget/git adds, in-place
+update (no duplicate), trailing-newline hygiene, did-you-mean for `addd`,
+validation errors, and `add Lib --path ../lib && build` round-trip (auto-restore
+picks up the new path dep). Stage-1 + AOT clean.  MSIL target.
+
+Deferred (tracked follow-ups): `--registry <url>` (manifest has no per-dep
+registry field — it is a global `[registry]` setting) and `lyric remove`.
+
+Docs: D081 (decision log), language reference §13.10, book appendix-b CLI
+reference.
+### D-progress-410 — self-hosted parser: brace-`if`/`match` in statement position is a complete statement (#1943, Band-1 of #1470)
+
+**Status:** Shipped — fixes a real silent miscompile.
+
+Inside a block the lexer emits no `STMT_END` separators (the block parser
+separates statements structurally), so a brace-terminated `if`/`match` followed
+by an operator-led line glued into a single `EBinop`:
+
+```
+func hexDigit(c: in Char): Int {
+  ...
+  if cp >= 65 and cp <= 70 { return 10 + cp - 65 }   // 'A'..'F'
+  -1                                                  // intended fall-through
+}
+```
+
+parsed as `(if … { return … }) - 1` — a single subtraction whose left operand is
+a `Unit`-typed no-else `if`.  The fall-through `-1` was silently miscompiled
+(an invalid program on the `--target dotnet` path once the no-else `if` is typed,
+and a wrong value before that).
+
+`parseStatementInner` now handles `KwIf` / `KwMatch` in **statement position**
+directly (via `parseIfExpr` / `parseMatchExpr` wrapped as an `SExpr`), so a
+following binary operator on the next line begins a new statement — the
+"expression-with-block" rule (mirroring Rust).  **Value position is unaffected:**
+`val x = if c { a } else { b } + 1` still flows through the `KwVal` path's
+`parseExpr`, where the `if` is an ordinary operand.
+
+Coverage: 3 new `parser_self_test.l` cases (a brace-`if`-then-`-1` and a
+brace-`match`-then-`-1` each parse as **two** statements; a `val x = if … else …`
+initialiser stays a single expression).  `lyric-auth`'s `hexDigit` made its
+fall-through explicit (`return -1`) defensively, and auth's 29/29 tests pass.
+Full `lyric-*` ecosystem sweep: **zero new parse failures** (the only sweep
+failures are pre-existing NuGet-restore/synthesis issues from the D080
+auto-restore).  Regression green: 325/325 self-hosted parser self-test path
+(via the 847-test emitter suite), 847/847 emitter.
+
+This clears the prerequisite for `EIf`-branch value typing (the typing itself is
+a follow-up that reuses the divergence-aware `checkBlock` from D081).
+
+### D-progress-411 — `lyric run/build --watch`: rebuild-on-change dev loop (#1968 epic; #1974; D083)
+
+**Status:** Shipped (`lyric-compiler/lyric/cli.l`, `lyric-stdlib/std/time.l`,
+`lyric-stdlib/std/_kernel/time_host.l`, `lyric-stdlib/std/_kernel_jvm/time_host.l`).
+
+`lyric run --watch <source.l>` and `lyric build [--watch]` run the action once,
+then watch the relevant source files and re-run on every change until Ctrl-C:
+
+- **Change detection by content hash** — the loop fingerprints each watched file
+  with `Std.Hash.sha512OfFile` (already cross-target, reused from lock
+  integrity), so no `mtime`/file-metadata primitive was needed.
+- **New stdlib primitive `Std.Time.sleepMillis(ms: Int)`** (synchronous sleep)
+  backs the poll interval: `.NET` binds `System.Threading.Thread.Sleep`; JVM
+  routes through the `lyric.stdlib.jvm.TimeHost.sleepMillis` Phase 6 shim
+  (`Thread.sleep((long) ms)`) because `Thread.sleep` takes a `long`. Both kernel
+  axioms broadened to cover `Thread`; `docs/17-axiom-audit.md` §19 baseline
+  regenerated.
+- **Watched files:** `run --watch` → the source; project `build --watch` → the
+  manifest + every `[project.packages]` source (via `projectWatchFiles`); single
+  `build --watch` → the source. A `WatchAction` union carries the deferred
+  run/build action; `watchLoop` runs it, then polls and re-runs on change.
+- The watch loop runs in the CLI process (the .NET AOT host), so the feature is
+  fully functional today; only `sleepMillis`'s JVM *runtime* awaits the existing
+  Phase 6 host-shim deliverable.
+
+Verified end-to-end against `bin/lyric`: `run --watch` (initial run + re-run on
+edit) and project `build --watch` (watches manifest + source = 2 files, rebuilds
+on change). Stage-1 + AOT clean.  MSIL target (JVM `sleepMillis` runtime pends
+Phase 6 shims).
+
+Docs: D083 (decision log), language reference §13.1, book appendix-b CLI
+reference.
+
+### D-progress-412 — `lyric init`: project scaffolder (#1968 epic; #1972; D084)
+
+**Status:** Shipped (`lyric-compiler/lyric/init.l`, `lyric-compiler/lyric/cli.l`,
+`cli_suggest.l`).
+
+`lyric init [<dir>] [--name <Name>] [--lib] [--force]` scaffolds a new package so
+a newcomer never hand-writes `lyric.toml` or the source layout:
+
+- Creates `<dir>` (default the current directory) via
+  `Std.Directory.createRecursive`, then writes a `lyric.toml` (`[package]` +
+  `[project]` + `[project.packages]` + empty `[dependencies]`), `src/main.l`
+  (hello-world `func main(): Int`) or `src/lib.l` with `--lib`, and a
+  `.gitignore`.
+- **`derivePackageName`** capitalises a lowercase leading letter to the
+  `UpperCamelCase` convention (`demo` → `Demo`) and rejects non-identifier
+  candidates with a `--name` hint. `--name` overrides; `--force` overwrites an
+  existing `lyric.toml`; a pre-existing `.gitignore` is left untouched.
+- New `Lyric.Init` package dispatched from `cli.l`; registered in
+  `knownCommands` (did-you-mean) and the usage text.
+
+Verified end-to-end against `bin/lyric`: `init demo` → `run src/main.l`
+("Hello from Demo!") + `build` (Demo.dll); `--lib` builds a library; overwrite
+refused without `--force`; `--force`/`--name` work; `bad-name` rejected;
+lowercase dir capitalised. New "lyric init e2e" CI step. Stage-1 + AOT clean.
+MSIL target.
+
+Docs: D084 (decision log), language reference §13.1, book getting-started
+(scaffolding section) + appendix-b CLI reference.
