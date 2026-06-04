@@ -193,6 +193,9 @@ func testErrorPropagation(): Unit {
 func main(): Unit {
   testBasicFunctions()
   testTupleReturn()
+  testOutParameters()
+  testInoutParameters()
+  testInoutSlice()
   testClosures()
   testClosureCapture()
   testFirstClassClosures()

@@ -44,6 +44,7 @@ func testUnitReturn(): Unit {
 
 func testToString(): Unit {
   assertEqual(toString(42), "42", "toString Int")
+  // Bool toString uses .NET's Boolean.ToString() which capitalises: "True"/"False"
   assertEqual(toString(true), "True", "toString Bool")
   assertEqual(toString(3.14), "3.14", "toString Double")
 }

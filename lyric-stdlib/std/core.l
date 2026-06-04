@@ -3,12 +3,6 @@
 // This package defines the small algebraic types and helpers that the
 // rest of the stdlib builds on. Keep these APIs boring and stable:
 // Option and Result appear in almost every safe wrapper.
-//
-// Tracked for the next stdlib slices:
-//   * Higher-order combinators (`mapOption`, `mapResult`, `filter`,
-//     `fold`).
-//   * `Map[K, V]` and `Set[T]` once collections have a real CLR
-//     shape.
 
 package Std.Core
 
