@@ -813,6 +813,34 @@ func testInoutParamReassignOk(): Unit {
   assertTrue(not hasDiagCode(cr, "T0087"), "assigning an `inout` param: no T0087")
 }
 
+// #1487 (§5.2): an argument bound to an `out`/`inout` parameter must be a
+// mutable l-value (T0085); `in` arguments may be any expression.
+
+func testOutArgMutableOk(): Unit {
+  val src = "package P\nfunc g(x: out Int): Unit { x = 5 }\nfunc f(): Unit {\n  var y = 0\n  g(y)\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0085"), "out arg is a var: no T0085")
+}
+
+func testOutArgImmutableRejected(): Unit {
+  val src = "package P\nfunc g(x: out Int): Unit { x = 5 }\nfunc f(): Unit {\n  val y = 0\n  g(y)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0085"), "out arg is a val: T0085")
+}
+
+func testOutArgLiteralRejected(): Unit {
+  val src = "package P\nfunc g(x: out Int): Unit { x = 5 }\nfunc f(): Unit { g(0) }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0085"), "out arg is a literal: T0085")
+}
+
+func testInoutArgMutableOk(): Unit {
+  val src = "package P\nfunc g(x: inout Int): Unit { x = 5 }\nfunc f(): Unit {\n  var y = 0\n  g(y)\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0085"), "inout arg is a var: no T0085")
+}
+
+func testInArgAnyExprOk(): Unit {
+  val src = "package P\nfunc g(x: in Int): Unit {}\nfunc f(): Unit { g(0) }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0085"), "in arg literal: no T0085")
+}
+
 func main(): Unit {
   testEmptySource()
   testFuncRegistered()
@@ -885,5 +913,10 @@ func main(): Unit {
   testVarReassignOk()
   testOutParamReassignOk()
   testInoutParamReassignOk()
+  testOutArgMutableOk()
+  testOutArgImmutableRejected()
+  testOutArgLiteralRejected()
+  testInoutArgMutableOk()
+  testInArgAnyExprOk()
   println("typechecker self-test: ok")
 }
