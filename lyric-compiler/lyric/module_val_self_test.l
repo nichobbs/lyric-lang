@@ -26,8 +26,11 @@ import Std.Core
 import Std.Testing
 
 // ── Literal inits (inline ldc.i4 path) ────────────────────────────────────────
-// These do NOT emit a static FieldDef — isLiteralI4ExprMsilWithEnv returns true,
-// the pre-scan skips token allocation, and EPath emits ldc.i4 directly.
+// Literal IVal items (Int/Bool in the ldc.i4 range) DO emit a FieldDef row
+// (fieldDefRow increments unconditionally in Pass 1b), but they are NOT entered
+// into staticValTokens.  EPath reads them via constValues and emits ldc.i4
+// directly — no ldsfld.  The FieldDef row allocation is required for correct
+// token alignment of all subsequent IVal/IConst/IFunc items.
 
 val literalInt: Int = 42
 val literalBool: Bool = true

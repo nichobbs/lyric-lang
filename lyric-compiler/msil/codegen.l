@@ -1323,6 +1323,11 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
         fieldDefRow = fieldDefRow + 1
       }
       case IVal(decl) -> {
+        // Package-scope destructuring (e.g. `val (a, b) = f()`) is not supported
+        // by the type checker or parser: only PBinding patterns are accepted at
+        // item scope.  The `_` branch is therefore unreachable; it emits a
+        // synthetic name to avoid a row-count mismatch if the invariant is ever
+        // violated.  Each IVal item allocates exactly one FieldDef row.
         val valName = match decl.pattern.kind {
           case PBinding(n, _) -> n
           case _              -> "__val_" + toString(fieldDefRow)

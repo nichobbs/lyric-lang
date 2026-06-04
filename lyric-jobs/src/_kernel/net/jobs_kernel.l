@@ -36,6 +36,10 @@ pub func sleepMs(ms: in Int): Unit
   sleepMillis(ms)
 }
 
+// Returns a hyphenated UUID string: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" (36 chars).
+// Note: the pre-PR format was 32-char no-dash ("N" form); callers that stored IDs
+// with a VARCHAR(32) constraint must migrate before upgrading.  IDs are opaque
+// scheduler handles; no caller should parse their format.
 pub func generateId(): String {
   return uuidToString(newUuid())
 }
