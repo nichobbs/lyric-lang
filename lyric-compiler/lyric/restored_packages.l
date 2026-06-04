@@ -357,6 +357,10 @@ func filterRealErrors(diags: in List[Diagnostic]): List[Diagnostic] {
 @stable(since="0.1")
 pub func synthesiseArtifact(art:      in RestoredArtifact,
                             preamble: in List[Meta.ContractDecl]): Result[SynthesisedArtifact, RestoredLoadError] {
+  // Validation source includes the sibling-type `preamble` so the
+  // standalone re-typecheck resolves cross-package references in this
+  // package's signatures (e.g. `originX(p: Point)` where `Point` is
+  // declared by a sibling restored DLL).
   val src = synthesiseSource(art.contract, preamble)
   val pr  = parse(src)
 
@@ -373,11 +377,29 @@ pub func synthesiseArtifact(art:      in RestoredArtifact,
     return Err(error = SynthesisDiagnostics(path = art.dllPath, diags = checkErrors))
   }
 
+  // The STORED `source` carries only this package's OWN declarations —
+  // the preamble was a validation aid, not part of this package's
+  // surface.  Including it would double-register the sibling types in
+  // the consuming bridge's item pool (one copy here, one in the
+  // sibling's own artifact), corrupting type resolution.  When
+  // `preamble` is empty (every caller before cross-DLL preamble
+  // support) this is byte-identical to `pr.file`, so the change is
+  // backward-compatible.  Cross-package references in the own decls
+  // resolve at bundle time against the sibling artifacts' items.
+  val ownSrc  = synthesiseSource(art.contract, emptyPreamble())
+  val ownPr   = parse(ownSrc)
+
   Ok(value = SynthesisedArtifact(
     packageName = art.packageName,
     version     = art.version,
     dllPath     = art.dllPath,
     contract    = art.contract,
-    source      = pr.file,
+    source      = ownPr.file,
     checkResult = cr))
+}
+
+// Empty preamble — a fresh list each call so no caller can alias it.
+func emptyPreamble(): List[Meta.ContractDecl] {
+  val e: List[Meta.ContractDecl] = newList()
+  e
 }

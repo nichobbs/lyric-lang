@@ -308,6 +308,63 @@ func writeRuntimeConfigWithProbing(dllPath: in String, probingPaths: in List[Str
   }
 }
 
+// True when `dir` holds the fully-compiled stdlib bundle.
+func dirHasCompiledStdlib(dir: in String): Bool {
+  dir.length > 0 and File.fileExists(Path.join(dir, "Lyric.Stdlib.dll"))
+}
+
+// Walk up from `start` (max 32 hops) looking for `<dir>/<rel>` that holds
+// the compiled stdlib bundle; returns that directory or "".
+func walkUpForCompiledStdlib(start: in String, rel: in String): String {
+  if start.length == 0 { return "" }
+  var dir = start
+  var hop = 0
+  while hop < 32 {
+    val candidate = Path.join(dir, rel)
+    if dirHasCompiledStdlib(candidate) { return candidate }
+    val parent = Path.dirname(dir)
+    if parent.length == 0 or parent == dir { return "" }
+    dir = parent
+    hop = hop + 1
+  }
+  ""
+}
+
+// Locate the directory holding the fully-compiled stdlib runtime assemblies
+// (`Lyric.Stdlib*.dll`).  Discovery is layout-agnostic — NO path is hardcoded
+// — so a single-file `build` / `run` / `test` finds the *already-compiled*
+// stdlib whether the CLI is the in-tree AOT binary (DLLs beside it), an
+// installed SDK (`lib/` subdir), or a dev checkout (`.bootstrap/stage1` /
+// `lyric-stdlib/bin`).  This replaces the previous reliance on the per-PID
+// `/tmp/lyric-stdlib-*` recompile byproduct for runtime co-location.  First
+// hit wins:
+//   1. $LYRIC_STDLIB_BIN          — explicit override
+//   2. <appBaseDir>               — DLLs ship beside the binary
+//   3. <appBaseDir>/lib           — installed SDK layout
+//   4. walk up (appBase, cwd) for .bootstrap/stage1   — dev bootstrap output
+//   5. walk up (appBase, cwd) for lyric-stdlib/bin     — dev manifest build
+// Returns "" when no candidate holds `Lyric.Stdlib.dll`.
+func findCompiledLibDir(): String {
+  val env = Environment.getVarOrDefault("LYRIC_STDLIB_BIN", "")
+  if dirHasCompiledStdlib(env) { return env }
+  val appBase = Environment.appBaseDirectory()
+  if dirHasCompiledStdlib(appBase) { return appBase }
+  val appLib = Path.join(appBase, "lib")
+  if dirHasCompiledStdlib(appLib) { return appLib }
+  val cwd = Environment.currentDirectory()
+  val stage1 = Path.join(".bootstrap", "stage1")
+  val libBin = Path.join("lyric-stdlib", "bin")
+  var hit = walkUpForCompiledStdlib(appBase, stage1)
+  if hit.length > 0 { return hit }
+  hit = walkUpForCompiledStdlib(cwd, stage1)
+  if hit.length > 0 { return hit }
+  hit = walkUpForCompiledStdlib(appBase, libBin)
+  if hit.length > 0 { return hit }
+  hit = walkUpForCompiledStdlib(cwd, libBin)
+  if hit.length > 0 { return hit }
+  ""
+}
+
 // Co-locate the split stdlib runtime assemblies (`Lyric.Stdlib.*.dll` — the
 // per-package façades, their `*Host` shims) plus `FSharp.Core.dll` from the
 // SDK/publish lib dir `srcDir` next to the assembly at `outPath`.  The
@@ -336,6 +393,36 @@ func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
             }
           }
         }
+      }
+    }
+  }
+}
+
+// Co-locate each restored-dependency output DLL beside the assembly at
+// `outPath`.  `restoredDlls` entries are "<depName>\t<dllPath>" (the same
+// encoding threaded into `EmitProjectRequest.restoredDllPaths`).  A
+// flat `additionalProbingPaths` does not resolve a non-NuGet dep bin layout,
+// so the referenced DLL must sit next to the consumer for `dotnet exec` to
+// load it.  Best-effort: failures are non-fatal (the run then surfaces the
+// original load error).
+func copyRestoredDepDlls(outPath: in String, restoredDlls: in List[String]): Unit {
+  val destDir = Path.dirname(outPath)
+  var i = 0
+  while i < restoredDlls.count {
+    val depEntry = restoredDlls[i]
+    i = i + 1
+    val tabPos = depEntry.indexOf("\t")
+    val dllPath = if tabPos >= 0 {
+      depEntry.substring(tabPos + 1, depEntry.length - tabPos - 1)
+    } else {
+      depEntry
+    }
+    if dllPath.length == 0 or not File.fileExists(dllPath) { continue }
+    val dest = Path.join(destDir, Path.basename(dllPath))
+    if not File.fileExists(dest) {
+      match File.readBytes(dllPath) {
+        case Ok(bs) -> { val _ = File.writeBytes(dest, bs) }
+        case Err(_) -> ()
       }
     }
   }
@@ -902,6 +989,12 @@ func runOnce(sourcePath: in String, userArgs: in List[String]): Int {
 
   val buildExit = buildOne(sourcePath, outPath, Dotnet, None)
   if buildExit != 0 { return buildExit }
+
+  // Co-locate the fully-compiled stdlib runtime assemblies beside the output
+  // so a program using real stdlib `pub func`s (Std.Testing / Std.Json /
+  // Std.Time / … — anything not lowered to a BCL intrinsic) resolves them
+  // under `dotnet exec`.  Discovery is non-hardcoded (see findCompiledLibDir).
+  copyRuntimeDepsBeside(outPath, findCompiledLibDir())
 
   val execArgs: List[String] = newList()
   execArgs.add("exec")
@@ -2780,29 +2873,38 @@ func cmdTest(argv: in slice[String]): Int {
           case Err(e)   -> { printErr("test: failed to start java: " + IOError.message(e)); return 1 }
         }
       }
-      // Copy stdlib DLLs from the per-PID cache dirs (/tmp/lyric-stdlib-*)
-      // into the test output directory so `dotnet exec` can find them.
-      // The in-process MSIL bridge stores compiled stdlib assemblies (e.g.
-      // Lyric.Stdlib.Testing.dll) in a per-PID temp dir; the test runner
-      // subprocess starts fresh and won't find them otherwise.
+      // Co-locate the fully-compiled stdlib runtime assemblies beside the
+      // test DLL so `dotnet exec` resolves the real stdlib `pub func`s
+      // (Std.Testing.assertEqualInt, …).  Discovery is non-hardcoded
+      // (findCompiledLibDir): the already-compiled stdlib beside the binary /
+      // in the SDK `lib/` / in the dev `.bootstrap/stage1` tree is the source
+      // of truth — not the per-PID `/tmp/lyric-stdlib-*` recompile byproduct.
       val testOutDir2 = Path.dirname(outPath)
-      val tmpRoot = Environment.getVarOrDefault("TMPDIR", "/tmp")
-      match File.listDirs(tmpRoot) {
-        case Err(_) -> ()
-        case Ok(tmpDirs) -> {
-          for d in tmpDirs.toArray() {
-            val base = Path.basename(d)
-            if Str.startsWith(base, "lyric-stdlib-") {
-              match File.listFiles(d) {
-                case Err(_) -> ()
-                case Ok(fs) -> {
-                  for f in fs.toArray() {
-                    if Str.endsWith(f, ".dll") {
-                      val dest = Path.join(testOutDir2, Path.basename(f))
-                      if not File.fileExists(dest) {
-                        match File.readBytes(f) {
-                          case Ok(bs)  -> { val _ = File.writeBytes(dest, bs) }
-                          case Err(_) -> ()
+      val libDir = findCompiledLibDir()
+      if libDir.length > 0 {
+        copyRuntimeDepsBeside(outPath, libDir)
+      } else {
+        // Fallback for environments without a discoverable compiled stdlib
+        // (e.g. an isolated temp checkout): recover the DLLs the in-process
+        // bridge just wrote to its per-PID `/tmp/lyric-stdlib-*` cache.
+        val tmpRoot = Environment.getVarOrDefault("TMPDIR", "/tmp")
+        match File.listDirs(tmpRoot) {
+          case Err(_) -> ()
+          case Ok(tmpDirs) -> {
+            for d in tmpDirs.toArray() {
+              val base = Path.basename(d)
+              if Str.startsWith(base, "lyric-stdlib-") {
+                match File.listFiles(d) {
+                  case Err(_) -> ()
+                  case Ok(fs) -> {
+                    for f in fs.toArray() {
+                      if Str.endsWith(f, ".dll") {
+                        val dest = Path.join(testOutDir2, Path.basename(f))
+                        if not File.fileExists(dest) {
+                          match File.readBytes(f) {
+                            case Ok(bs)  -> { val _ = File.writeBytes(dest, bs) }
+                            case Err(_) -> ()
+                          }
                         }
                       }
                     }
@@ -3149,6 +3251,11 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
     // single-file `cmdTest` path.  Without this `dotnet exec` fails with
     // `Could not load file or assembly 'Lyric.Stdlib.Core'` (#1468 / #1841).
     copyRuntimeDepsBeside(outPath, Environment.appBaseDirectory())
+    // Co-locate each local-path dependency's output DLL (e.g. a sibling
+    // package's `Cache.dll`) beside the test assembly — a flat probing path
+    // can't resolve the dep's non-NuGet bin layout.  This subsumes the manual
+    // dep-DLL copy the CI ecosystem step used to do by hand.
+    copyRestoredDepDlls(outPath, restoredDlls)
     writeRuntimeConfigWithProbing(outPath, depBinDirs)
 
     val execArgs: List[String] = newList()
