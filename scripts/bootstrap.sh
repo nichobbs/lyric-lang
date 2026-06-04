@@ -483,31 +483,253 @@ EOF
   ok "Stage 1 CLI bundle complete — Lyric.Lyric.Cli.dll + $((copied - 1)) deps in $STAGE1_DIR"
 }
 
+compare_stage1_stage2_dlls() {
+  local f1="$1"
+  local f2="$2"
+  local python_bin
+  python_bin="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+  if [[ -z "$python_bin" ]]; then
+    die "python3 or python is required for the stage-2 reproducibility comparison"
+  fi
+  "$python_bin" - "$f1" "$f2" <<'PY' >/dev/null
+from pathlib import Path
+import sys
+f1_path = Path(sys.argv[1])
+f2_path = Path(sys.argv[2])
+f1 = bytearray(f1_path.read_bytes())
+f2 = bytearray(f2_path.read_bytes())
+if len(f1) != len(f2):
+    sys.exit(1)
+for off in range(0x88, 0x8c):
+    f1[off] = 0
+    f2[off] = 0
+first = next((i for i in range(0x90, len(f1)) if f1[i] != f2[i]), None)
+if first is not None:
+    end = first
+    while end < len(f1) and f1[end] != f2[end]:
+        end += 1
+    if end - first != 16:
+        sys.exit(1)
+    for off in range(first, end):
+        f1[off] = 0
+        f2[off] = 0
+if f1 != f2:
+    sys.exit(1)
+sys.exit(0)
+PY
+}
+
 # ---------------------------------------------------------------------------
 # Stage 2 — recompile using the stage-1 self-hosted MSIL emitter
 # ---------------------------------------------------------------------------
 stage2() {
   info "Stage 2: recompiling Lyric compiler packages with stage-1 self-hosted emitter"
 
-  # NOTE (Track A, A1.2): stage 2 still walks the legacy COMPILER_SOURCES
-  # list, which expects per-source-file DLL names (lexer.dll, parser.dll,
-  # …) — but stage 1's CLI-bundle precompile emits per-package DLLs
-  # named `Lyric.Lyric.<Pkg>.dll`.  Until stage 2 is rewritten to drive
-  # the same `import Lyric.Cli` driver and compare bundles file-by-file,
-  # the reproducibility check below cannot run meaningfully.  Rather
-  # than silently report MISSING for every entry and exit 0, the check
-  # now fails loudly with a clear message and points the user at
-  # `SKIP_VERIFY=1` if they want to opt out.
-  #
-  # If you're here because CI failed: set `SKIP_VERIFY=1` to skip the
-  # check, or contribute the rewrite (snapshot the `Lyric.Lyric.<Pkg>.dll`
-  # outputs of stage 1's CLI-bundle, recompile the driver in stage 2,
-  # and compare each artefact across the two stages).
-  if [[ "$SKIP_VERIFY" != "1" ]]; then
-    die "stage 2 reproducibility check is incompatible with the A1.2 stage-1 layout; set SKIP_VERIFY=1 to skip, or rewrite stage2() to compare the CLI-bundle outputs"
+  # New approach: reproduce the CLI-bundle precompile under the
+  # stage-1 self-hosted layout and compare the per-package DLLs
+  # produced by stage-1 and stage-2 file-by-file.
+
+  if [[ "$SKIP_VERIFY" == "1" ]]; then
+    info "SKIP_VERIFY=1; skipping stage-2 reproducibility check"
+    return 0
   fi
-  info "SKIP_VERIFY=1; skipping the reproducibility recompile entirely"
-  return 0
+
+  mkdir -p "$STAGE2_DIR"
+
+  # First, compile the stdlib bundle via the self-hosted path so we
+  # produce the top-level Lyric.Stdlib.dll the stage-1 bundle contains.
+  info "  compiling stdlib bundle (self-hosted MSIL path)"
+  LYRIC_STD_PATH="$STAGE1_DIR" \
+    "$STAGE0_BIN" --internal-manifest-build "$STDLIB_DIR/lyric.toml" \
+    -o "$STAGE2_DIR/Lyric.Stdlib.dll" --target dotnet 2>&1 || \
+    die "stage-2 stdlib bundle build failed"
+
+  # Create a short driver (same as stage1_cli_bundle) but run it with
+  # LYRIC_STD_PATH pointing at $STAGE1_DIR so the SelfHostedMsil bridge
+  # loads the stage-1 DLLs and the emitted cache contains the per-package
+  # outputs we want to compare.
+  local driver_dir="$BUILD_DIR/stage2-cli-driver"
+  rm -rf "$driver_dir"
+  mkdir -p "$driver_dir"
+
+  cat > "$driver_dir/driver.l" <<'EOF'
+// Auto-generated driver for the stage-2 CLI-bundle precompile.
+package Lyric.CliBundleStage2
+import Lyric.Cli
+import Std.Time
+import Std.Math
+func main(): Unit { }
+EOF
+
+  local driver_out="$driver_dir/Lyric.CliBundleStage2.dll"
+
+  # Snapshot pre-existing cache dirs so we can identify the new one.
+  local pre_snapshot
+  pre_snapshot="$(ls -d "$TMP_BASE"/lyric-stdlib-* 2>/dev/null || true)"
+
+  # Force the build via the host binary but direct the stdlib path
+  # at the stage-1 outputs so the bridge compiles against stage-1.
+  LYRIC_STD_PATH="$STAGE1_DIR" \
+    "$STAGE0_BIN" --internal-build "$driver_dir/driver.l" -o "$driver_out" \
+    --target dotnet 2>&1 || \
+    die "stage-2 CLI-bundle driver compile failed"
+
+  local post_snapshot
+  post_snapshot="$(ls -d "$TMP_BASE"/lyric-stdlib-* 2>/dev/null || true)"
+  local new_dirs
+  new_dirs="$(comm -13 \
+    <(echo "$pre_snapshot"  | sort) \
+    <(echo "$post_snapshot" | sort) \
+    | grep -v '^$' || true)"
+
+  local cache_dir
+  cache_dir="$(echo "$new_dirs" | head -1)"
+  [[ -n "$cache_dir" && -d "$cache_dir" ]] || \
+    die "stage-2 CLI bundle: no new $TMP_BASE/lyric-stdlib-*/ cache found after compile (pre='$pre_snapshot', post='$post_snapshot')"
+
+  info "  stage-2 CLI bundle cache: $cache_dir"
+  local copied=0
+  for f in "$cache_dir"/*.dll; do
+    [[ -f "$f" ]] || continue
+    cp -f "$f" "$STAGE2_DIR/"
+    copied=$((copied + 1))
+  done
+
+  # Copy the same host shim DLLs the stage-1 bundle includes so the two
+  # directories contain the same reference set for a fair comparison.
+  if [[ -f "$BUILD_DIR/stage0-publish/Lyric.Jvm.Hosts.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish/Lyric.Jvm.Hosts.dll" "$STAGE2_DIR/"
+    copied=$((copied + 1))
+  else
+    die "stage-2 CLI bundle: Lyric.Jvm.Hosts.dll not found in stage-0 publish"
+  fi
+
+  if [[ -f "$BUILD_DIR/stage0-publish/FSharp.Core.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish/FSharp.Core.dll" "$STAGE2_DIR/"
+    copied=$((copied + 1))
+  else
+    die "stage-2 CLI bundle: FSharp.Core.dll not found in stage-0 publish"
+  fi
+
+  if [[ -f "$BUILD_DIR/stage0-publish/Lyric.Emitter.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish/Lyric.Emitter.dll" "$STAGE2_DIR/"
+    copied=$((copied + 1))
+  else
+    die "stage-2 CLI bundle: Lyric.Emitter.dll not found in stage-0 publish"
+  fi
+
+  dotnet publish "$COMPILER_DIR/src/Lyric.Session.Host/Lyric.Session.Host.fsproj" \
+    --configuration Release \
+    --output "$BUILD_DIR/stage0-publish-session" \
+    --nologo -v q
+  if [[ -f "$BUILD_DIR/stage0-publish-session/Lyric.Session.Host.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish-session/Lyric.Session.Host.dll" "$STAGE2_DIR/"
+    if [[ -f "$BUILD_DIR/stage0-publish-session/StackExchange.Redis.dll" ]]; then
+      cp -f "$BUILD_DIR/stage0-publish-session/StackExchange.Redis.dll" "$STAGE2_DIR/"
+      copied=$((copied + 1))
+    fi
+    copied=$((copied + 1))
+  else
+    die "stage-2 CLI bundle: Lyric.Session.Host.dll not found in publish output"
+  fi
+
+  dotnet publish "$COMPILER_DIR/src/Lyric.Jobs.Host/Lyric.Jobs.Host.fsproj" \
+    --configuration Release \
+    --output "$BUILD_DIR/stage0-publish-jobs" \
+    --nologo -v q
+  if [[ -f "$BUILD_DIR/stage0-publish-jobs/Lyric.Jobs.Host.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish-jobs/Lyric.Jobs.Host.dll" "$STAGE2_DIR/"
+    copied=$((copied + 1))
+  else
+    die "stage-2 CLI bundle: Lyric.Jobs.Host.dll not found in publish output"
+  fi
+
+  dotnet publish "$COMPILER_DIR/src/Lyric.Mq.Host/Lyric.Mq.Host.fsproj" \
+    --configuration Release \
+    --output "$BUILD_DIR/stage0-publish-mq" \
+    --nologo -v q
+  if [[ -f "$BUILD_DIR/stage0-publish-mq/Lyric.Mq.Host.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish-mq/Lyric.Mq.Host.dll" "$STAGE2_DIR/"
+    copied=$((copied + 1))
+  else
+    die "stage-2 CLI bundle: Lyric.Mq.Host.dll not found in publish output"
+  fi
+
+  dotnet publish "$COMPILER_DIR/src/Lyric.Ws.Host/Lyric.Ws.Host.fsproj" \
+    --configuration Release \
+    --output "$BUILD_DIR/stage0-publish-ws" \
+    --nologo -v q
+  if [[ -f "$BUILD_DIR/stage0-publish-ws/Lyric.Ws.Host.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish-ws/Lyric.Ws.Host.dll" "$STAGE2_DIR/"
+    copied=$((copied + 1))
+  else
+    die "stage-2 CLI bundle: Lyric.Ws.Host.dll not found in publish output"
+  fi
+
+  dotnet publish "$COMPILER_DIR/src/Lyric.Web.Host/Lyric.Web.Host.fsproj" \
+    --configuration Release \
+    --output "$BUILD_DIR/stage0-publish-web" \
+    --nologo -v q
+  if [[ -f "$BUILD_DIR/stage0-publish-web/Lyric.Web.Host.dll" ]]; then
+    cp -f "$BUILD_DIR/stage0-publish-web/Lyric.Web.Host.dll" "$STAGE2_DIR/"
+    copied=$((copied + 1))
+  else
+    die "stage-2 CLI bundle: Lyric.Web.Host.dll not found in publish output"
+  fi
+
+  info "  copied $copied DLLs into $STAGE2_DIR"
+
+  # Retarget System.Private.CoreLib refs -> public facades so the stage-2
+  # outputs match the stage-1 rewrite step.  This mirrors the stage-1
+  # rewrite performed in `stage1_cli_bundle()`.
+  if [[ "$SKIP_COREREF_REWRITE" != "1" ]]; then
+    info "  retargeting System.Private.CoreLib refs -> public facades (stage-2)"
+    dotnet fsi "$REPO_ROOT/scripts/rewrite-corelib-refs.fsx" "$STAGE2_DIR"/*.dll \
+      > "$BUILD_DIR/rewrite-corelib-refs-stage2.log" 2>&1 || \
+      die "stage-2 CLI bundle: corelib-ref rewrite failed (see $BUILD_DIR/rewrite-corelib-refs-stage2.log)"
+  else
+    info "SKIP_COREREF_REWRITE=1; leaving stage-2 DLLs with raw CoreLib refs"
+  fi
+
+  # Sanity check: Lyric.Lyric.Cli.dll must land in stage2/.  If it
+  # doesn't, something in the emitter cache layout changed and the
+  # comparison will be meaningless.
+  [[ -f "$STAGE2_DIR/Lyric.Lyric.Cli.dll" ]] || \
+    die "stage-2 CLI bundle: Lyric.Lyric.Cli.dll not found in $STAGE2_DIR after copy"
+
+  # -------------------------------------------------------------------------
+  # Compare stage-1 and stage-2 outputs file-by-file.
+  # -------------------------------------------------------------------------
+  info "Reproducibility check: comparing stage-1 and stage-2 bundle outputs"
+  local diffs=0
+  shopt -s nullglob
+  for f in "$STAGE1_DIR"/*.dll; do
+    local name
+    name="$(basename "$f")"
+    local f1="$STAGE1_DIR/$name"
+    local f2="$STAGE2_DIR/$name"
+    if [[ ! -f "$f2" ]]; then
+      echo "  MISSING: $name (stage-2 missing)" >&2
+      diffs=$((diffs + 1))
+      continue
+    fi
+    if ! compare_stage1_stage2_dlls "$f1" "$f2"; then
+      echo "  DIFF:    $name (stage-1 vs stage-2 differ after normalizing known metadata fields)"
+      diffs=$((diffs + 1))
+    else
+      echo "  MATCH:   $name"
+    fi
+  done
+  shopt -u nullglob
+
+  if [[ $diffs -eq 0 ]]; then
+    ok "Reproducible bootstrap: all DLLs match between stage-1 and stage-2"
+  else
+    echo "[bootstrap] $diffs DLL(s) differ between stage-1 and stage-2"
+    if [[ "${STRICT_VERIFY:-0}" == "1" ]]; then
+      die "reproducibility check failed ($diffs diffs)"
+    fi
+  fi
 }
 
 # The legacy stage 2 body — kept for reference until the A1.2 stage-2

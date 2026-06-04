@@ -83,3 +83,5 @@ nunit-*.xml
 
 # `make lyric` symlink to the AOT entry-point binary
 /bin/
+lyric.lock
+*-restore.csproj
