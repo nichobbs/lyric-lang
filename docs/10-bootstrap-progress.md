@@ -20643,3 +20643,45 @@ function with an `out` parameter (e.g. `ConcurrentDictionary.TryGetValue`).
 Fixed by wrapping each param's type with `MByRef` when `isByrefMode(param.mode)`
 is true.  The call-site already correctly emits `ldloca` for `out`/`inout` args;
 this fix makes the MemberRef signature consistent.
+
+### D-progress-426 — ws shim elimination: replace WsHost.fs with pure Lyric (Items 3–4 of F# shim plan)
+
+`bootstrap/src/Lyric.Ws.Host/WsHost.fs` — the F# runtime backing the `lyric-ws`
+connection registry and sliding-window rate limiter — is deleted and replaced with
+a pure-Lyric implementation in
+`lyric-ws/src/_kernel/net/ws_kernel.l`.
+
+**What shipped:**
+
+- New `ws_kernel.l` (replacing all `@externTarget` stubs that pointed at
+  `Lyric.Ws.RegistryHost.*` and `Lyric.Ws.RateLimitHost.checkRateLimit`):
+  - Shared BCL externs: `extern type ConcurrentDict[K, V]`, `newConcurrentDict`,
+    `cdTryGetValue`, `cdTryAdd`, `monitorEnter[T]`, `monitorExit[T]`
+  - Connection registry:
+    - `record RegistryMeta` (maxMsgSizeBytes, pingIntervalMs, openCount),
+      `record ConnState` (isOpen), `record HandleCounter` (next)
+    - `val handleCounter`, `val registryMap`, `val connMap` — module-level vals
+      (M5.2 stage 3, PR #2195)
+    - `connKey` composite-key helper; `tryCloseConn` / `decrementOpenCount`
+      helpers with one defer each to avoid nested defer complexity
+    - `createRegistry` — Monitor-locked sequential handle allocation
+    - `send` — validates connection exists and is open
+    - `broadcast` — validates registry exists; per-connection frame dispatch
+      deferred to #778 (path-finder scope)
+    - `close` — marks connection closed, decrements openCount; idempotent for
+      unknown connections
+    - `connectionCount` — reads `meta.openCount`
+    - `isConnected` — reads `connState.isOpen`
+  - Sliding-window rate limiter:
+    - `record RateEntry` (windowStartMs Long, usedInWindow Int, burstAvailable Int),
+      `record RateLock {}` (lock sentinel)
+    - `val rateLock`, `val rateLimitMap` — module-level vals
+    - `checkRateLimit` — fixed 60s window with one-shot burst budget; burst does
+      not refill on window reset (matches F# path-finder semantics)
+
+- `bootstrap/src/Lyric.Ws.Host/WsHost.fs` **deleted** (F# shim retired)
+- `bootstrap/src/Lyric.Ws.Host/Lyric.Ws.Host.fsproj` **deleted** (project retired)
+- `Bootstrap.sln` — `Lyric.Ws.Host` project entry and all 12 build-configuration
+  lines removed
+- `scripts/bootstrap.sh` — `Lyric.Ws.Host.dll` publish+copy removed from both
+  stage-1 and stage-2 CLI bundle assembly steps
