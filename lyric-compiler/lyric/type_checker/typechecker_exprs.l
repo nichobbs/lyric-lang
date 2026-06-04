@@ -1409,6 +1409,109 @@ func substituteTyVars(t: in Type, names: in List[String], args: in List[Type]): 
   }
 }
 
+// Deep generic-argument inference (#1488 category B): structurally match a
+// parameter type against an argument type to find the concrete binding for the
+// generic `name`.  `Option[T]` vs `Option[Int]` binds `T = Int`; `slice[T]` vs
+// `slice[String]` binds `T = String`; a bare `T` vs `Int` binds directly.
+// Returns the first binding found (depth-first), or `None` when `name` does not
+// occur in `paramTy` or the shapes don't align.
+func findGenericInPair(name: in String, paramTy: in Type, argTy: in Type): Option[Type] {
+  match paramTy {
+    case TyVar(nm) -> if nm == name { Some(value = argTy) } else { None }
+    case TyUser(_, _, pargs) -> {
+      val aargs = match unrefine(argTy) { case TyUser(_, _, a) -> a; case _ -> newList() }
+      findGenericInPairs(name, pargs, aargs)
+    }
+    case TySlice(pe) ->
+      match unrefine(argTy) { case TySlice(ae) -> findGenericInPair(name, pe, ae); case _ -> None }
+    case TyArray(_, pe) ->
+      match unrefine(argTy) { case TyArray(_, ae) -> findGenericInPair(name, pe, ae); case _ -> None }
+    case TyNullable(pi) ->
+      match unrefine(argTy) { case TyNullable(ai) -> findGenericInPair(name, pi, ai); case _ -> None }
+    case TyTuple(pes) -> {
+      val aes = match unrefine(argTy) { case TyTuple(a) -> a; case _ -> newList() }
+      findGenericInPairs(name, pes, aes)
+    }
+    case TyFunction(pps, pr, _) ->
+      match unrefine(argTy) {
+        case TyFunction(aps, ar, _) ->
+          match findGenericInPairs(name, pps, aps) {
+            case Some(v) -> Some(value = v)
+            case None    -> findGenericInPair(name, pr, ar)
+          }
+        case _ -> None
+      }
+    case _ -> None
+  }
+}
+
+// Find `name`'s binding across positionally-paired parameter / argument type
+// lists, returning the first match.
+func findGenericInPairs(name: in String, paramTys: in List[Type], argTys: in List[Type]): Option[Type] {
+  var i = 0
+  while i < paramTys.count and i < argTys.count {
+    match findGenericInPair(name, paramTys[i], argTys[i]) {
+      case Some(v) -> return Some(value = v)
+      case None    -> {}
+    }
+    i = i + 1
+  }
+  None
+}
+
+// For each generic `name`, its inferred concrete type from the call's
+// parameter / argument types (or `TyError` when it can't be inferred — kept
+// lenient so an unconstrained generic return stays a wildcard rather than a
+// spurious mismatch).  When a name occurs in more than one parameter position
+// (`pair(a: T, b: T): T`) the occurrences must agree: a second binding that is
+// not `typeEquiv` to the first yields `TyError` for that name (#2228), so an
+// inconsistent call (already a T0043 at the argument check) doesn't produce a
+// misleading concrete return type.
+func inferGenericArgsDeep(names: in List[String], paramTys: in List[Type], argTys: in List[Type]): List[Type] {
+  val result: List[Type] = newList()
+  var g = 0
+  while g < names.count {
+    result.add(inferOneGenericArg(names[g], paramTys, argTys))
+    g = g + 1
+  }
+  result
+}
+
+// Infer the binding for a single generic `name` across all parameter/argument
+// pairs, returning `TyError` when unbound or when two occurrences disagree.
+func inferOneGenericArg(name: in String, paramTys: in List[Type], argTys: in List[Type]): Type {
+  var bound: Type = TyError
+  var haveBinding = false
+  var i = 0
+  while i < paramTys.count and i < argTys.count {
+    match findGenericInPair(name, paramTys[i], argTys[i]) {
+      case Some(v) ->
+        if not haveBinding {
+          bound = v
+          haveBinding = true
+        } else {
+          if not typeEquiv(bound, v) { return TyError }
+        }
+      case None -> {}
+    }
+    i = i + 1
+  }
+  bound
+}
+
+// A generic function's return type instantiated from the call's argument types:
+// `unwrapOr(o: Option[T], default: T): T` called with an `Option[Int]` / `Int`
+// pair yields `Int` instead of the raw `TyVar("T")` (#1488 category B).  A
+// non-generic sig is returned unchanged.
+func instantiateReturnType(sig: in ResolvedSignature, argTypes: in List[Type]): Type {
+  if sig.generics.count == 0 { return sig.returnTy }
+  val paramTys: List[Type] = newList()
+  var i = 0
+  while i < sig.params.count { paramTys.add(sig.params[i].ty); i = i + 1 }
+  val targs = inferGenericArgsDeep(sig.generics, paramTys, argTypes)
+  substituteTyVars(sig.returnTy, sig.generics, targs)
+}
+
 // The union case's field types *instantiated* against the scrutinee's type args:
 // `Some` (`value: T`) on `Option[NameAndSpan]` → `[NameAndSpan]`.
 func caseFieldTypesInstantiated(tbl: in SymbolTable, diag: in List[Diagnostic], caseSym: in Symbol, scrutTy: in Type): List[Type] {
@@ -1660,7 +1763,9 @@ pub func inferExpr(
               k = k + 1
             }
           }
-          sig.returnTy
+          // Instantiate a generic return type from the argument types (#1488
+          // category B) so `unwrapOr(opt, 0): T` yields `Int`, not `TyVar("T")`.
+          instantiateReturnType(sig, argTypes)
         }
         case None ->
           match unionCaseSymbolOf(tbl, fn) {

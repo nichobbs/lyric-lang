@@ -20566,3 +20566,41 @@ via native `lyric test`) covers it.  Full Emitter.Tests (847) + Cli.Tests
 The #2158 `DepSource.Git` flatten (refKind/refValue) remains in place as a
 harmless workaround; it can be reverted to the typed `GitRef` union as a
 follow-up now that the emitter handles it.
+
+### D-progress-424 — self-hosted type checker: generic return-type instantiation (#1488 gate, category B, Band-1 of #1470)
+
+**Status:** Shipped — type-checker-only.
+
+A call to a generic function returned the function's *uninstantiated* return
+type: `unwrapOr(o: Option[T], default: T): T` typed as the raw `TyVar("T")`
+rather than the `T` inferred from the argument types.  Because `typeEquiv`
+treats `TyVar` as a universal wildcard, the bad return slipped past some checks
+but tripped others — `unwrapOr(parseOptInt(s), 0) < 0` raised `T0033`
+("comparison of `T` and `Int`").  This was false-positive category (B) of the
+#1488 gate (`parse_tests`).
+
+Fix: when `findDirectSig` resolves a generic sig, the `ECall` arm now
+instantiates the return type via `instantiateReturnType` — `inferGenericArgsDeep`
+structurally matches each parameter type against its argument type to bind the
+generic names (`Option[T]` vs `Option[Int]` → `T = Int`; `slice[T]` vs
+`slice[String]` → `T = String`; a bare `T` vs `Int` directly), then
+`substituteTyVars` rewrites the return type with those bindings.  A generic name
+that can't be inferred stays `TyError` (lenient), so an unconstrained generic
+return remains a wildcard rather than a spurious mismatch.  The earlier
+`inferGenericArgs` (shipped for union constructors, D-progress-418) only matched
+a parameter that *was* exactly `TyVar(name)`; the new deep version also handles
+generics nested inside `Option`/`slice`/tuple/function parameter shapes.
+
+Coverage: 2 new `typechecker_self_test.l` cases on a local generic `unwrapOr`
+over `Opt[T]` (a `String` binding of an `Opt[Int]` call's result mismatches —
+T0060 — proving the return is `Int` not a wildcard; the same result compares
+cleanly against `Int`).  Full regression green: 847/847 emitter, typechecker
+self-test, `weaver_self_test.l` 18/18 (`LYRIC_LOAD_COMPILER=1`, exercises generic
+stdlib calls across the whole compiler), `lyric-auth` 29/29, and `parse_tests`
+single-file builds now clean.
+
+This closes false-positive category (B) of the #1488 gate.  Remaining before the
+`bridge.l:93` flip: the cross-package duplicate-`TypeId` surface (`RegexError`
+vs `RegexError` in `regex_tests`), interface/impl subtyping (`mocking_tests`),
+and the compiler-internal-test import swarms (`metadata_reader_tests`,
+`msil_project_bridge_tests`).
