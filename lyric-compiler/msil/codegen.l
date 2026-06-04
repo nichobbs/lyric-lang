@@ -102,6 +102,12 @@ pub record CodegenCtx {
   tokStringToUpper:     Int   // String.ToUpperInvariant(): string
   // Object.Equals(object,object): bool  static (for value-equal string comparisons)
   tokObjectStaticEquals: Int
+  // Async support (Phase A, Band 3).
+  // Task and Task`1 TypeRef rows — used to build TypeSpec+MemberRef tokens lazily
+  // in `emitExternTargetBody` for `@externTarget async func` unwrapping.
+  trTask:      Int   // System.Threading.Tasks.Task (non-generic)
+  trTask1:     Int   // System.Threading.Tasks.Task`1 (open generic)
+  tokTaskWait: Int   // Task::Wait(): void  instance HASTHIS (void async externs)
   // Reverse lookup: simple field name → FieldDef token.  Populated by
   // addPackageTokens for IRecord and IExposedRec fields so EMember can emit
   // ldfld on an MObject receiver when the static type is unknown.
@@ -686,6 +692,17 @@ pub func newCodegenCtx(packageName: in String,
   // System.Action`N TypeRefs are registered lazily on first use for each N
   // (see internActionTypeRef); no static entries here.
 
+  // Async support (Phase A, Band 3): Task and Task::Wait().
+  // Task is in the System.Threading.Tasks assembly (per clrAssemblyForType).
+  val arTasks = ctxAddAssemblyRef(lctx, "System.Threading.Tasks", 10, 0)
+  val trTask  = ctxAddTypeRef(lctx, "System.Threading.Tasks", "Task",   arTasks)
+  val trTask1 = ctxAddTypeRef(lctx, "System.Threading.Tasks", "Task`1", arTasks)
+  // Task::Wait(): void  instance HASTHIS — used to block on void async externs.
+  val tokTaskWait = 0x0A000000 + ctxAddMemberRef(
+    lctx, trTask, "Wait",
+    "task_wait", buildInstanceMethodSig(newList(), MVoid))
+
+
   val recCtorToks: Map[String, Int] = newMap()
   val fieldToks:   Map[String, Int] = newMap()
   val funcToks:    Map[String, Int] = newMap()
@@ -771,6 +788,9 @@ pub func newCodegenCtx(packageName: in String,
     tokStringToLower     = tokStringToLower,
     tokStringToUpper     = tokStringToUpper,
     tokObjectStaticEquals = tokObjectStaticEquals,
+    trTask               = trTask,
+    trTask1              = trTask1,
+    tokTaskWait          = tokTaskWait,
     fieldTokensByName    = newMap(),
     actionTypeRefs       = newMap(),
     externTypeNames      = newMap(),
@@ -6697,6 +6717,41 @@ func bufFfiType(cctx: in CodegenCtx, w: in ByteWriter, t: in MsilType): Unit {
   }
 }
 
+// Produce a short, stable string key for a MsilType — used to derive unique
+// blob-intern keys for lazily-built TypeSpec / MemberRef tokens (e.g. for
+// Task<T>::get_Result() in async extern emission).
+func msilTypeKeyStr(t: in MsilType): String {
+  match t {
+    case MInt             -> "i4"
+    case MLong            -> "i8"
+    case MDouble          -> "r8"
+    case MBool            -> "bool"
+    case MChar            -> "char"
+    case MString          -> "str"
+    case MVoid            -> "void"
+    case MObject          -> "obj"
+    case MByte            -> "u1"
+    case MNativeInt       -> "nint"
+    case MArray(elem)     -> "arr_" + msilTypeKeyStr(elem)
+    case MClass(name)     -> "cls_" + name
+    case MClassRef(_, fqn) -> "clsref_" + fqn
+    case MValueTypeRef(_, fqn) -> "vt_" + fqn
+    case MTypeVar(idx)    -> "tv" + toString(idx)
+    case MByRef(inner)    -> "byref_" + msilTypeKeyStr(inner)
+    case MListOf(elem)    -> "list_" + msilTypeKeyStr(elem)
+    case MMapOf(k, v)     -> "map_" + msilTypeKeyStr(k) + "_" + msilTypeKeyStr(v)
+    case MGenericInst(_, fqn, args) -> {
+      var k = "gi_" + fqn
+      var ai = 0
+      while ai < args.count {
+        k = k + "_" + msilTypeKeyStr(args[ai])
+        ai = ai + 1
+      }
+      k
+    }
+  }
+}
+
 // Build a MethodSig blob for an FFI MemberRef, encoding class-typed params /
 // return as real TypeRef-backed CLASS entries (#1504 part 1).  `hasThis`
 // selects the HASTHIS calling convention (instance methods + ctors); the
@@ -6847,6 +6902,29 @@ func emitExternTargetBody(
         insns.add(MCall(methodToken = tok))
       } else {
         insns.add(MCallvirt(methodToken = tok))
+      }
+      // For `@externTarget async func`, the BCL method returns Task / Task<T>.
+      // Synchronously unwrap to T so the Lyric caller sees the declared return
+      // type directly — callers use `await` which is a no-op for synchronous
+      // results, so the stack type is always T after this point (Phase A).
+      if decl.isAsync {
+        val isVoidRet = match retTy { case MVoid -> true case _ -> false }
+        if isVoidRet {
+          // BCL method returned Task (void). Call Task::Wait() to block.
+          insns.add(MCallvirt(methodToken = cctx.tokTaskWait))
+        } else {
+          // BCL method returned Task<T>. Call Task<T>.get_Result() to unwrap to T.
+          val tsArgs: List[MsilType] = newList()
+          tsArgs.add(retTy)
+          val tsBlob = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trTask1), tsArgs)
+          val tsKey = "ts_task1_result_" + msilTypeKeyStr(retTy)
+          val tsRow = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+          val mrSig = buildInstanceMethodSig(newList(), MTypeVar(0))
+          val mrRow = ctxAddMemberRefForTypeSpec(
+            cctx.lctx, tsRow, "get_Result",
+            "mr_task_getresult_" + tsKey, mrSig)
+          insns.add(MCallvirt(methodToken = 0x0A000000 + mrRow))
+        }
       }
       insns.add(MRet)
       true

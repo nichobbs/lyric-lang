@@ -412,6 +412,7 @@ pub union MInsn {
   // Object model
   case MNewobj(ctorToken: Int)         // new T; call .ctor
   case MLdfld(fieldToken: Int)         // load instance field
+  case MLdflda(fieldToken: Int)        // ldflda — managed pointer to instance field (for struct mutations)
   case MStfld(fieldToken: Int)         // store instance field
   case MLdsfld(fieldToken: Int)        // load static field
   case MStsfld(fieldToken: Int)        // store static field
@@ -1150,6 +1151,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MConvU2            -> emitConv_U2(mb)
     case MNewobj(tok)       -> emitNewobj(mb, tok)
     case MLdfld(tok)        -> emitLdfld(mb, tok)
+    case MLdflda(tok)       -> emitLdflda(mb, tok)
     case MStfld(tok)        -> emitStfld(mb, tok)
     case MLdsfld(tok)       -> emitLdsfld(mb, tok)
     case MStsfld(tok)       -> emitStsfld(mb, tok)
