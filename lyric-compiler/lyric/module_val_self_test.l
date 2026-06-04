@@ -12,6 +12,9 @@
 // The tests below exercise both paths and verify that function bodies can
 // read module-level vals of each kind at runtime.
 //
+// JVM target parity is tracked in issue #2210.  The JVM emitter currently
+// no-ops on `IVal` items at package scope; this CI step covers MSIL only.
+//
 // Runs in CI via:
 //
 //   lyric test lyric-compiler/lyric/module_val_self_test.l
