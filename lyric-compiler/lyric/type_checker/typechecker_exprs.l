@@ -1763,7 +1763,7 @@ pub func inferExpr(
             var k = 0
             while k < sig.params.count {
               val p = sig.params[k]
-              if not typeEquiv(p.ty, argTypes[k]) {
+              if not argSatisfiesParam(tbl, p.ty, argTypes[k]) {
                 diag.add(errorDiagnostic("T0043",
                   "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(p.ty), e.span))
               }
@@ -1798,7 +1798,7 @@ pub func inferExpr(
                   } else {
                     var k = 0
                     while k < paramTypes.count {
-                      if not typeEquiv(paramTypes[k], argTypes[k]) {
+                      if not argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) {
                         diag.add(errorDiagnostic("T0043",
                           "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(paramTypes[k]), e.span))
                       }
@@ -1954,6 +1954,30 @@ func paramsMatchArgs(params: in List[ResolvedParam], argTypes: in List[Type]): B
     i = i + 1
   }
   true
+}
+
+// The simple name of a (possibly refined) user type, or "" for non-`TyUser`.
+func userTypeName(t: in Type): String {
+  match unrefine(t) {
+    case TyUser(_, nm, _) -> nm
+    case _                -> ""
+  }
+}
+
+// True when an argument of type `argTy` is acceptable for a parameter of type
+// `paramTy` — either `typeEquiv` (the usual case), or interface subtyping
+// (#1488): `argTy` is a user type `T` and `paramTy` is an interface `I` with a
+// registered `impl I for T`.  Used at argument-position checks so a concrete
+// type that conforms to an interface can be passed where the interface is
+// expected (`invoiceTotal(feed: PriceFeed, …)` called with a `TrackedFeed`).
+func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): Bool {
+  if typeEquiv(paramTy, argTy) { return true }
+  val ifaceName = userTypeName(paramTy)
+  val argName   = userTypeName(argTy)
+  if ifaceName.length > 0 and argName.length > 0 {
+    if symTableTypeImplements(tbl, argName, ifaceName) { return true }
+  }
+  false
 }
 
 func findDirectSig(

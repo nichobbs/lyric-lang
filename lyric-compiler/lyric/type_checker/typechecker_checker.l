@@ -211,8 +211,32 @@ func registerItem(
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKAspect(decl = decl), vis, span)
     }
     case IExtern(_) -> {}
-    case IImpl(_)   -> {}
+    case IImpl(decl) -> {
+      // Record the `impl Iface for Target` conformance by simple name so the
+      // argument-position interface subtyping check (#1488) can accept a
+      // `Target` value where an `Iface` parameter is expected.  Conformance
+      // *checking* (T0098/T0099) stays in `checkImplConformance` (T5).
+      val ifaceSegs = decl.iface.head.segments
+      if ifaceSegs.count > 0 {
+        val targetName = typeExprHeadName(decl.target)
+        if targetName.length > 0 {
+          symTableAddImpl(tbl, targetName, ifaceSegs[ifaceSegs.count - 1])
+        }
+      }
+    }
     case IError     -> {}
+  }
+}
+
+// The simple (last-segment) type name at the head of a `TypeExpr`, or "" when
+// the shape carries no nameable head (tuple, function, slice, …).
+func typeExprHeadName(te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) ->
+      if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "" }
+    case TGenericApp(head, _) ->
+      if head.segments.count > 0 { head.segments[head.segments.count - 1] } else { "" }
+    case _ -> ""
   }
 }
 
