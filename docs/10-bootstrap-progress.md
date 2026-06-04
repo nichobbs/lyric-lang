@@ -19353,3 +19353,32 @@ method → T0098, arity mismatch → T0099, default method optional). Full
 regression green (847/847 emitter, 84/84 CLI bridge); auth (29/29), session
 (31/31, incl. the restored-Cache path), and the `LYRIC_LOAD_COMPILER=1` weaver
 self-test (18/18) all green with zero false positives.
+
+### D-progress-391 — self-hosted type checker: §5.2 `in` no-rebind enforcement (#1487, Band-1, docs/41 C13)
+
+**Status:** Shipped (`in` no-rebind rule; `out`/`inout` rules deferred).
+
+§5.2 parameter modes were unenforced for non-proof code (the mode checker
+early-returns unless the file is `@proof_required`). The type checker — which
+runs for every package — now enforces the **`in` no-rebind** rule: it already
+binds `in` parameters as immutable (`isMutable = false`, the same as `val`/`let`),
+so an `SAssign` whose target is a single-segment path resolving to an immutable
+binding is rejected with **T0087**. `var` locals and `out`/`inout` parameters are
+mutable and unaffected; the check fires only on direct reassignment, not on
+mutating method calls (`list.add(x)` on an `in List` stays legal).
+
+**Diagnostic code:** the §5.2 draft numbered this rule `V0001`, colliding with
+the proof-import mode-checker `V0001`. Visibility/mode rules enforced in the type
+checker use the T-series (the whole V-series is owned by the mode checker +
+verifier), so this is **T0087** — resolving the collision docs/41 flagged.
+
+**Deferred (still OPEN in C13):** `out` definite-assignment (needs a
+definite-assignment dataflow pass) and `out`/`inout` argument-must-be-a-mutable-
+l-value at call sites (needs param modes threaded into call-site argument
+checking). The codegen by-ref emission for `out`/`inout` already shipped (#1761).
+
+Coverage: 5 new `typechecker_self_test.l` cases (`in` rebind → T0087, `val`
+reassign → T0087, `var`/`out`/`inout` reassign clean). Full regression green
+(847/847 emitter, 84/84 CLI bridge); auth (29/29), session (31/31), and the
+`LYRIC_LOAD_COMPILER=1` weaver self-test (18/18) all green with zero false
+positives.
