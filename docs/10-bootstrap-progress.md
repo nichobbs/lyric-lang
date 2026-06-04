@@ -19454,6 +19454,7 @@ type — the propagated-type bindings are left un-annotated, matching the existi
 `callParamTys` pattern.)  CI step updated (annotated + propagated runtime
 assertions, plus the non-HOF fail-loud check).  No regression: emitter 847/847,
 CLI 84/84.  MSIL target only.
+
 ### D-progress-394 — self-hosted: user function shadows an imported generic of the same name in the monomorphizer (#1855)
 
 **Status:** Shipped (`lyric-compiler/lyric/mono.l`).
@@ -19553,6 +19554,7 @@ root and from a nested subdirectory both build the discovered project (`Demo.dll
 runs); bare `lyric` outside any project prints help and exits 1; `lyric restore`
 and explicit single-file `lyric build src/main.l` still work.  Stage-1 build
 clean (cli.l compiles), AOT entry-point clean.  MSIL target.
+
 ### D-progress-397 — self-hosted: `lyric test --manifest` co-locates split stdlib DLLs so ecosystem tests run unaided (#1468 / #1841)
 
 **Status:** Shipped (`lyric-compiler/lyric/cli.l`).
@@ -19701,3 +19703,42 @@ assigned → T0086; out assigned in if-branches / loop body clean; in-param no
 check). Full regression green (847/847 emitter, 84/84 CLI bridge); auth (29/29),
 session (31/31, incl. the restored-`lyric-cache`→`Lyric.Stdlib` path), and the
 `LYRIC_LOAD_COMPILER=1` weaver self-test (18/18) green with zero false positives.
+
+### D-progress-402 — self-hosted MSIL: capturing closures v1 — by-value capture of immutable bindings (#1479)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`, `lowering.l`).  #1479 v1 — does **not** close it (by-ref/`var` capture + nested closures remain v2).
+
+Capturing closures now compile and run on `--target dotnet` for **immutable**
+captures, completing the lambda story (after #1877 invocation + #1939 params).
+A lambda that references an enclosing local/parameter captures those values
+**by value** into an `object[]` that is bound as the delegate's **closed
+target**; the lifted `__lambda_*` takes a leading `object[] __caps` parameter and
+reads each capture from it.  This reuses the uniform `Func` ABI (#1877) and the
+unbox machinery (#1939) — **no display-class TypeDef synthesis** and no AST
+rewrite.
+
+Mechanism:
+
+- Two IL opcodes (already encoded in `opcodes.l`) are wired into the `MInsn`
+  layer: `MNewarr` and `MStelemRef` (`lowering.l`).
+- **Capture site** (`ELambda` arm): `lambdaCaptureNamesMsil` (#1883) gives the
+  capture set; their types come from the enclosing `fctx`.  Build `object[]` of
+  the boxed captured values, then `newobj Func`(N+1)(array, ldftn __lambda)` —
+  a verifiable closed-over-first-argument static delegate (validated at runtime:
+  `applyIt({ -> n + 10 })` with `n=5` returns `15`).  The capture set + types are
+  recorded in `cctx.lambdaCaptureNames`/`Types` keyed by lambda name.
+- **Lifted body** (`lowerFuncMsil`): a capturing `__lambda_*` prepends an
+  `object[] __caps` parameter (slot 0; `paramCount` grows by one) and registers
+  each captured name's array index + logical type in `fctx.captureNameToIndex`/
+  `Type`; the `EPath` read emits `ldarg.0; ldc.i4 i; ldelem.ref; <unbox/cast>`.
+  Captures compose with own params (the #1939 unbox path) — `apply1({ x -> x +
+  base }, 5)` with `base=100` returns `105`.
+- **Correctness boundary:** by-value capture is correct only for immutable
+  bindings.  A new `fctx.mutableLocals` (populated on `var` declaration) makes a
+  closure capturing a `var` **fail loud** (by-ref capture would be needed —
+  #1479 v2), never a silent dropped-reassignment miscompile.
+
+Verified: multi-capture (`a * b + 1` → 13), String capture (`"hi " + name`),
+capture + own param (105), non-capturing unaffected (42).  CI step added
+(positive immutable-capture assertions + the `var` fail-loud check).  No
+regression: emitter 847/847, CLI 84/84.  MSIL target only.
