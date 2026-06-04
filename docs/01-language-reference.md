@@ -306,7 +306,7 @@ opaque type Account {
 An `opaque` declaration in the type's package specifies its existence; the body is only visible inside the same package. Outside the package:
 
 - Clients can declare values of the type, pass them around, store them.
-- Clients cannot read fields, construct values directly, or pattern-match on representation.
+- Clients cannot read fields, construct values directly, or pattern-match on representation. Direct construction from another package is a compile error (**T0100**); the type checker enforces this. (Cross-package field-read and pattern-match hiding are enforced separately.)
 - Reflection cannot inspect the type's fields. The compiler emits the type with sealed metadata: no public properties, no exposed constructor, fields marked invisible to .NET reflection (uses `[CompilerGenerated]` + sealed attribute scheme — see `docs/09-msil-emission.md` §7.2).
 - The proof system can reason about the type's invariants because they're declared in the spec.
 
