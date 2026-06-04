@@ -113,7 +113,7 @@ test "Long element comparison and arithmetic" {
   xs.add(-50i64)
   assertTrue(xs[1] < 0i64, "xs[1] (-50) < 0")
   assertTrue(xs[0] >= 100i64, "xs[0] (100) >= 100")
-  assertEqualInt(longToInt(xs[0] + xs[1]), 50, "100 + (-50) = 50")
+  assertEqualLong(xs[0] + xs[1], 50i64, "100 + (-50) = 50")
 }
 
 test "Double element comparison" {
