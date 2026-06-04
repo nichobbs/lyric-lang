@@ -107,12 +107,12 @@ let refPackDir =
                                  |> Array.filter (fun v -> v.Contains("."))
                                  |> Array.map (fun v -> (v, Path.Combine(baseDir, v, "libexec/packs/Microsoft.NETCore.App.Ref")))
                                  |> Array.filter (fun (_, path) -> Directory.Exists path)
-                if versions.Length > 0 then
-                    let (_, packRoot) = versions.[0]
+                versions
+                |> Array.tryPick (fun (_, packRoot) ->
                     pickVersion packRoot
-                    |> Option.map (fun v -> Path.Combine(packRoot, v, "ref/net10.0"))
-                    |> Option.filter Directory.Exists
-                else None
+                    |> Option.bind (fun v -> 
+                        let fullPath = Path.Combine(packRoot, v, "ref/net10.0")
+                        if Directory.Exists fullPath then Some fullPath else None))
             else None
         with _ -> None
     
@@ -133,10 +133,9 @@ let refPackDir =
     
     candidate
     |> Option.defaultWith (fun () ->
-        let searchedRoots = buildPackRoots ()
         failwithf
             "Reference pack not found.  Searched: %A (expected a 10.x.y/ref/net10.0 directory)\n\nDotnet info:\n  DOTNET_ROOT=%s\n  SDK base: %s"
-            searchedRoots
+            allRoots
             (match Environment.GetEnvironmentVariable("DOTNET_ROOT") with null -> "(not set)" | s -> s)
             (System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory()))
 
