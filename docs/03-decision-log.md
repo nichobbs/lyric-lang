@@ -4498,8 +4498,6 @@ tracked as follow-ups.
 **Consequence:** `lyric add Foo@1.2.0 && lyric build` resolves `Foo` with no
 manual TOML editing. Path/git/nuget forms round-trip through `parseManifest`.
 
----
-
 ## D083 — `lyric run/build --watch` — rebuild-on-change dev loop (#1968, #1974)
 
 **Context:** No watch loop existed; iterating meant re-running `lyric run`/`build`
@@ -4977,7 +4975,6 @@ in-scope-shadow resolution are now specified.  `docs/01` §1.3 and the grammar
 gain a note to this effect.
 
 ---
-
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

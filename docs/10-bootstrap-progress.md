@@ -20223,7 +20223,6 @@ it compiles `java.lang.Math` / `java.lang.Integer` int / long / double overloads
 in-process through the self-hosted `Jvm.Bridge` (`compileToJarBundled`) and runs
 the resulting JAR under `java`, asserting every runtime value.  No new F#;
 imports only `Std.*`.  No regression: emitter 847/847, CLI 84/84.
-
 ### D-progress-415 — Band 3 Phase A: fix `@externTarget async` silent miscompile (#2070, D085)
 
 **What shipped:**
