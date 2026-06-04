@@ -1341,6 +1341,18 @@ jobs:
           fi
           LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/init_self_test.l
 
+      - name: Union-in-list match self-test (native lyric test, #2126)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping union-list-match self-test"
+            exit 0
+          fi
+          LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/union_list_match_self_test.l
+
       # Release Native AOT end-to-end — `lyric build --release` produces a
       # self-contained native binary and runs it (#1975 / D079).  This is the
       # integration test for the AOT pipeline (host project + trampoline +

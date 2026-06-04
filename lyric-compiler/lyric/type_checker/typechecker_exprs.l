@@ -729,6 +729,17 @@ func builtinMember(recvRaw: in Type, name: in String): Option[Type] {
       if name == "typeName" { return Some(value = TyPrim(pt = PtString)) }
       None
     }
+    case TyUser(_, nm, targs) -> {
+      // Generic collection methods that must carry their element type through so
+      // downstream uses (notably `for x in xs.toArray()` + `match x`) see the
+      // real element type rather than `TyError` — an unknown-typed match
+      // scrutinee silently degenerates to the first case (#2126).
+      if nm == "List" and targs.count == 1 {
+        if name == "toArray" { return Some(value = TySlice(element = targs[0])) }
+        if name == "count"   { return Some(value = TyPrim(pt = PtInt)) }
+      }
+      None
+    }
     case _ -> None
   }
 }

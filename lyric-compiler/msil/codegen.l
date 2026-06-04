@@ -4079,13 +4079,42 @@ func lowerPatternTestMsil(
         }
         insns.add(MBrFalse(label = failLabel))
       } else {
-        // MObject scrutinee (e.g. mapGet result): any non-null value matches a
-        // non-nullary constructor pattern.  Emit a null check and branch to
-        // failLabel when the value is null (i.e., a nullary case like None).
-        // TODO(#1825): bootstrap runtime assumption — null == nullary case;
-        // revisit when the F# shim is eliminated.
+        // MObject scrutinee (e.g. an erased `slice` element from
+        // `list.toArray()`, or a `mapGet` result): the static type doesn't name
+        // the union, so derive the case class from the PATTERN's case name (the
+        // same resolution the nullary PBinding path uses) and emit a real
+        // isinst.  The old behaviour here — "any non-null value matches a
+        // non-nullary constructor pattern" — made `case Reg(v)` match a `Git`
+        // value pulled out of a `for x in list.toArray()` loop, silently taking
+        // the wrong arm (#2126).
+        val mobjLocalCtorKey = fctx.pkgName + "." + caseName
+        val mobjCtorKeyOpt =
+          if cctx.recordCtorTokens.containsKey(mobjLocalCtorKey) {
+            Some(value = mobjLocalCtorKey)
+          } else {
+            mapGet(cctx.unionCaseCtorByName, caseName)
+          }
         emitLoadSlot(insns, scrutSlot, fctx.paramCount)
-        insns.add(MBrFalse(label = failLabel))
+        match mobjCtorKeyOpt {
+          case Some(mobjCtorKey) -> {
+            val mobjNGen = match mapGet(cctx.caseTypeParamCount, mobjCtorKey) {
+              case Some(n) -> n
+              case None    -> 0
+            }
+            if mobjNGen > 0 {
+              // Generic case with an erased scrutinee: we can't form a closed
+              // TypeSpec for isinst, so keep the bootstrap non-null check.
+              insns.add(MBrFalse(label = failLabel))
+            } else {
+              insns.add(MIsinstByName(className = mobjCtorKey))
+              insns.add(MBrFalse(label = failLabel))
+            }
+          }
+          case None -> {
+            // Truly unknown case name: fall back to the non-null check.
+            insns.add(MBrFalse(label = failLabel))
+          }
+        }
       }
     }
     case PTuple(_) -> {
@@ -5454,9 +5483,13 @@ func lowerMethodCallMsil(
     }
   } else if memberName == "toArray" {
     // List::toArray(): return the list itself as the iterable (bootstrap).
-    // The SFor codegen iterates via get_Count / get_Item, which work on
-    // the List<object> directly, so no conversion is needed.
-    MObject
+    // The SFor codegen iterates via get_Count / get_Item, which work on the
+    // List<object> directly, so no conversion is needed.  Return the receiver's
+    // tracked type (e.g. `MListOf(elem)`) rather than erasing to `MObject`, so a
+    // `for x in xs.toArray()` loop can recover the element type and bind `x`
+    // with it — an erased loop variable broke `match x` / field access on `x`
+    // (#2126).
+    recvTy
   } else if memberName == "toString" {
     insns.add(MCallvirt(methodToken = cctx.tokObjToString))
     MString
@@ -5717,8 +5750,23 @@ func emitCollectionForMsil(
   iter:  in Expr,
   body:  in Block
 ): Unit {
-  // list := <collection>
-  val _ = lowerExprMsil(cctx, fctx, insns, iter)
+  // list := <collection>.  Keep the iterable's tracked type so the loop
+  // variable can be bound with its real element type rather than erased
+  // `object` (#2126): a `for x in xs.toArray()` element bound as `MObject` made
+  // `match x` / field access on `x` see an untyped scrutinee and misbehave.
+  val iterTy = lowerExprMsil(cctx, fctx, insns, iter)
+  // Narrow only reference (`MClass`) elements — user records / unions, the
+  // affected case.  Value-type and unknown elements keep the existing
+  // `MObject` binding to avoid changing their (working) lowering.
+  val forElemRaw = match iterTy {
+    case MArray(e)  -> e
+    case MListOf(e) -> e
+    case _          -> MObject
+  }
+  val forElemTy = match forElemRaw {
+    case MClass(_) -> forElemRaw
+    case _         -> MObject
+  }
   val listSlot = allocSlotMsil(fctx, "__for_list_" + toString(fctx.slotTicker.count), MObject)
   emitStoreSlot(insns, listSlot, fctx.paramCount)
   // i := 0
@@ -5746,9 +5794,12 @@ func emitCollectionForMsil(
   insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
   emitLoadSlot(insns, iSlot, fctx.paramCount)
   insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
-  val elemSlot = allocSlotMsil(fctx, "__for_elem_" + toString(fctx.slotTicker.count), MObject)
+  // get_Item returns `object`; narrow to the real element type (castclass) when
+  // it is a known reference type so the loop variable is correctly typed.
+  if forElemTy != MObject { castObjectToMsil(cctx, insns, forElemTy) }
+  val elemSlot = allocSlotMsil(fctx, "__for_elem_" + toString(fctx.slotTicker.count), forElemTy)
   emitStoreSlot(insns, elemSlot, fctx.paramCount)
-  bindForPatternMsil(cctx, fctx, insns, pat, elemSlot, MObject)
+  bindForPatternMsil(cctx, fctx, insns, pat, elemSlot, forElemTy)
 
   fctx.loopBreak.add(afterL)
   fctx.loopCont.add(contL)

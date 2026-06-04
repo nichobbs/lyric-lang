@@ -20527,3 +20527,42 @@ filtered out classes without `ACC_PUBLIC`, preventing `AbstractStringBuilder`
 interfaces, enums, and annotations are rejected.  Covered by the existing
 `StringBuilder.length()` test which traverses the `AbstractStringBuilder`
 superclass chain.
+### D-progress-423 — self-hosted MSIL emitter: type `for`-loop elements from a List so union matches don't degenerate (#2126)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`,
+`lyric-compiler/lyric/type_checker/typechecker_exprs.l`).
+
+`for x in xs.toArray()` bound the loop variable as erased `object`, so a
+`match x` over a `List[Union]` element saw an untyped scrutinee and silently
+took the **first** union case (and a field read on `x` returned garbage).  This
+mishandled any value of a union stored in a record carried in a list, matched
+across a package boundary — the production-emitter manifestation of #2126
+(distinct from the F# stage-0 manifestation, which #2125's analysis closed
+won't-fix).
+
+Fix (self-hosted only — the F# stage-0 emitter is intentionally untouched):
+
+- **`emitCollectionForMsil`** now recovers the iterable's element type
+  (`MListOf(e)` / `MArray(e)`) and, for reference (`MClass`) elements,
+  narrows the `get_Item` result with `castObjectToMsil` and binds the loop
+  variable with the real element type instead of `MObject`.  Value-type and
+  unknown elements keep the existing `MObject` binding.
+- **`lowerMethodCallMsil`**'s `toArray` returns the receiver's tracked type
+  (`MListOf(e)`) rather than erasing to `MObject`, so the loop can recover the
+  element type.
+- **`lowerPatternTestMsil`**'s `PConstructor` MObject-scrutinee arm now resolves
+  the case class from the pattern's case name (via `unionCaseCtorByName`) and
+  emits a real `isinst`, instead of "any non-null value matches" — defence for
+  genuinely-erased scrutinees (e.g. `mapGet` results).
+- **`builtinMember`** types `List[T].toArray()` as `slice[T]` and
+  `List[T].count` as `Int` (was `TyError`), so the self-hosted type checker also
+  carries the element type.
+
+Verified: `for s in list.toArray()` + `match s` (direct and via a record field)
+now selects the correct case; `union_list_match_self_test.l` (3 cases, CI-wired
+via native `lyric test`) covers it.  Full Emitter.Tests (847) + Cli.Tests
+(self-hosted bridge, 84) pass; stage-1 + AOT clean; compiler self-compiles.
+
+The #2158 `DepSource.Git` flatten (refKind/refValue) remains in place as a
+harmless workaround; it can be reverted to the typed `GitRef` union as a
+follow-up now that the emitter handles it.
