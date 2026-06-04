@@ -19991,3 +19991,42 @@ registry field — it is a global `[registry]` setting) and `lyric remove`.
 
 Docs: D081 (decision log), language reference §13.10, book appendix-b CLI
 reference.
+### D-progress-410 — self-hosted parser: brace-`if`/`match` in statement position is a complete statement (#1943, Band-1 of #1470)
+
+**Status:** Shipped — fixes a real silent miscompile.
+
+Inside a block the lexer emits no `STMT_END` separators (the block parser
+separates statements structurally), so a brace-terminated `if`/`match` followed
+by an operator-led line glued into a single `EBinop`:
+
+```
+func hexDigit(c: in Char): Int {
+  ...
+  if cp >= 65 and cp <= 70 { return 10 + cp - 65 }   // 'A'..'F'
+  -1                                                  // intended fall-through
+}
+```
+
+parsed as `(if … { return … }) - 1` — a single subtraction whose left operand is
+a `Unit`-typed no-else `if`.  The fall-through `-1` was silently miscompiled
+(an invalid program on the `--target dotnet` path once the no-else `if` is typed,
+and a wrong value before that).
+
+`parseStatementInner` now handles `KwIf` / `KwMatch` in **statement position**
+directly (via `parseIfExpr` / `parseMatchExpr` wrapped as an `SExpr`), so a
+following binary operator on the next line begins a new statement — the
+"expression-with-block" rule (mirroring Rust).  **Value position is unaffected:**
+`val x = if c { a } else { b } + 1` still flows through the `KwVal` path's
+`parseExpr`, where the `if` is an ordinary operand.
+
+Coverage: 3 new `parser_self_test.l` cases (a brace-`if`-then-`-1` and a
+brace-`match`-then-`-1` each parse as **two** statements; a `val x = if … else …`
+initialiser stays a single expression).  `lyric-auth`'s `hexDigit` made its
+fall-through explicit (`return -1`) defensively, and auth's 29/29 tests pass.
+Full `lyric-*` ecosystem sweep: **zero new parse failures** (the only sweep
+failures are pre-existing NuGet-restore/synthesis issues from the D080
+auto-restore).  Regression green: 325/325 self-hosted parser self-test path
+(via the 847-test emitter suite), 847/847 emitter.
+
+This clears the prerequisite for `EIf`-branch value typing (the typing itself is
+a follow-up that reuses the divergence-aware `checkBlock` from D081).

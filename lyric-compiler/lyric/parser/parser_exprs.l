@@ -1922,6 +1922,26 @@ func parseStatementInner(st: inout ParseState): Statement {
           mkStmt(SWhile(label = None, cond = cond, body = body),
                  joinSpans(startSpan, body.span))
         }
+        // A brace-terminated `if`/`match` in *statement* position is a complete
+        // statement: it does not become the left operand of a trailing binary
+        // operator (the "expr-with-block" rule, mirroring Rust).  Inside a block
+        // the lexer emits no STMT_END separators (it relies on the block parser),
+        // so without this an idiomatic
+        //     if cond { return x }
+        //     -1
+        // would mis-parse as `(if cond { return x }) - 1` — a single `EBinop`
+        // that silently miscompiles the fall-through value (#1943).  Value
+        // position is unaffected: `val x = if c { a } else { b } - 1` still goes
+        // through the `KwVal` path's `parseExpr`, where the `if` is an ordinary
+        // operand.
+        case KwIf -> {
+          val e = parseIfExpr(st)
+          mkStmt(SExpr(expr = e), joinSpans(startSpan, e.span))
+        }
+        case KwMatch -> {
+          val e = parseMatchExpr(st)
+          mkStmt(SExpr(expr = e), joinSpans(startSpan, e.span))
+        }
         case _ -> {
           parseExprStatement(st, startSpan)
         }

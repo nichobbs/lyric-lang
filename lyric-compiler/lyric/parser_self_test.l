@@ -56,6 +56,25 @@ func firstItemKindName(pr: in ParseResult): String {
   }
 }
 
+// Number of statements in the first item's function-body block (-1/-2/-3/-4
+// for the various "not a block-bodied function" shapes).  Used to assert that a
+// brace-`if` statement does not glue a following operator into one binop (#1943).
+func firstFuncBodyStmtCount(pr: in ParseResult): Int {
+  if pr.file.items.count == 0 { return -1 }
+  match pr.file.items[0].kind {
+    case IFunc(fd) ->
+      match fd.body {
+        case Some(b) ->
+          match b {
+            case FBBlock(blk) -> blk.statements.count
+            case FBExpr(_)    -> -2
+          }
+        case None -> -3
+      }
+    case _ -> -4
+  }
+}
+
 func packageName(pr: in ParseResult): String {
   val segs = pr.file.packageDecl.path.segments
   if segs.count == 0 { return "" }
@@ -95,6 +114,31 @@ func testFuncDecl(): Unit {
   assertEqualInt(diagCount(pr), 0, "func: no diagnostics")
   assertEqualInt(itemCount(pr), 1, "func: one item")
   assertEqual(firstItemKindName(pr), "func", "func: kind is func")
+}
+
+// #1943: a brace-terminated `if` in statement position is a complete statement,
+// not the left operand of a following binary operator.  `if n > 10 { return
+// 100 }` then a bare `-1` on the next line must parse as TWO statements (the
+// if-statement and the `-1` fall-through value), not one glued `(if …) - 1`.
+func testIfStmtDoesNotGlueOperator(): Unit {
+  val pr = parse("package P\nfunc f(n: in Int): Int {\n  if n > 10 { return 100 }\n  -1\n}\n")
+  assertEqualInt(diagCount(pr), 0, "if-stmt-sei: no diagnostics")
+  assertEqualInt(firstFuncBodyStmtCount(pr), 2, "if-stmt-sei: two statements, not a glued binop")
+}
+
+// The same for `match` in statement position.
+func testMatchStmtDoesNotGlueOperator(): Unit {
+  val pr = parse("package P\nfunc f(n: in Int): Int {\n  match n { case _ -> { return 1 } }\n  -1\n}\n")
+  assertEqualInt(diagCount(pr), 0, "match-stmt-sei: no diagnostics")
+  assertEqualInt(firstFuncBodyStmtCount(pr), 2, "match-stmt-sei: two statements, not a glued binop")
+}
+
+// Value position is unaffected: an `if` after `=` is an ordinary operand, so the
+// initialiser is a single expression (one `val` statement).
+func testValueIfStillSingleExpr(): Unit {
+  val pr = parse("package P\nfunc f(c: in Bool): Int {\n  val x = if c { 1 } else { 2 }\n  x\n}\n")
+  assertEqualInt(diagCount(pr), 0, "value-if: no diagnostics")
+  assertEqualInt(firstFuncBodyStmtCount(pr), 2, "value-if: val-stmt + trailing x")
 }
 
 func testRecordDecl(): Unit {
@@ -628,6 +672,9 @@ func main(): Unit {
   testPackageDecl()
   testImport()
   testFuncDecl()
+  testIfStmtDoesNotGlueOperator()
+  testMatchStmtDoesNotGlueOperator()
+  testValueIfStillSingleExpr()
   testRecordDecl()
   testMutableRecordField()
   testImmutableRecordField()

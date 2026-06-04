@@ -117,7 +117,7 @@ func hexDigit(c: in Char): Int {
   if cp >= 48 and cp <= 57  { return cp - 48 }  // '0'..'9'
   if cp >= 97 and cp <= 102 { return 10 + cp - 97 }  // 'a'..'f'
   if cp >= 65 and cp <= 70  { return 10 + cp - 65 }  // 'A'..'F'
-  -1
+  return -1  // non-hex (explicit; see #1943 — a brace-`if` then a bare `-1` once mis-parsed as a binop)
 }
 
 // Append the UTF-8 encoding of a Unicode code point to `acc`.
