@@ -382,6 +382,156 @@ func hasConflictingExternHints(anns: in List[Annotation]): Bool {
   hasStatic and hasInstance
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §3a. `out` definite-assignment support (#1487 §5.2).
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Collect the names assigned anywhere in a function body.  Used to enforce that
+// every `out` parameter is assigned before the function returns (T0086).  The
+// check is the sound subset "never assigned anywhere is a definite violation";
+// full all-paths definite-assignment (partial-assignment detection) is a
+// follow-up.  The walk is complete over statement and block-bearing forms (so a
+// param assigned in any branch / loop / nested block is not falsely flagged).
+
+func addAssignedTarget(target: in Expr, acc: in List[String]): Unit {
+  match target.kind {
+    case EPath(p)      -> if p.segments.count == 1 { acc.add(p.segments[0]) }
+    case EParen(inner) -> addAssignedTarget(inner, acc)
+    case _             -> {}
+  }
+}
+
+func collectAssignedExpr(e: in Expr, acc: in List[String]): Unit {
+  match e.kind {
+    case EAssign(t, _, v) -> { addAssignedTarget(t, acc); collectAssignedExpr(v, acc) }
+    case EParen(inner)    -> collectAssignedExpr(inner, acc)
+    case EIf(c, tb, eb, _) -> {
+      collectAssignedExpr(c, acc)
+      collectAssignedEOB(tb, acc)
+      match eb { case Some(x) -> collectAssignedEOB(x, acc); case None -> {} }
+    }
+    case EMatch(s, arms) -> {
+      collectAssignedExpr(s, acc)
+      var i = 0
+      while i < arms.count {
+        match arms[i].guard { case Some(g) -> collectAssignedExpr(g, acc); case None -> {} }
+        collectAssignedEOB(arms[i].body, acc)
+        i = i + 1
+      }
+    }
+    case EBlock(b)      -> collectAssignedBlock(b, acc)
+    case EUnsafe(b)     -> collectAssignedBlock(b, acc)
+    case EBinop(_, l, r) -> { collectAssignedExpr(l, acc); collectAssignedExpr(r, acc) }
+    case EPrefix(_, x)  -> collectAssignedExpr(x, acc)
+    case ECall(f, args) -> {
+      collectAssignedExpr(f, acc)
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CAPositional(ae)  -> collectAssignedExpr(ae, acc)
+          case CANamed(_, ae, _) -> collectAssignedExpr(ae, acc)
+        }
+        i = i + 1
+      }
+    }
+    case EMember(r, _)  -> collectAssignedExpr(r, acc)
+    case EIndex(r, idx) -> {
+      collectAssignedExpr(r, acc)
+      var i = 0
+      while i < idx.count { collectAssignedExpr(idx[i], acc); i = i + 1 }
+    }
+    case EPropagate(x)  -> collectAssignedExpr(x, acc)
+    case EAwait(x)      -> collectAssignedExpr(x, acc)
+    case EYield(x)      -> collectAssignedExpr(x, acc)
+    case ESpawn(x)      -> collectAssignedExpr(x, acc)
+    case EOld(x)        -> collectAssignedExpr(x, acc)
+    case ETry(x)        -> collectAssignedExpr(x, acc)
+    case ETuple(xs)     -> { var i = 0; while i < xs.count { collectAssignedExpr(xs[i], acc); i = i + 1 } }
+    case EList(xs)      -> { var i = 0; while i < xs.count { collectAssignedExpr(xs[i], acc); i = i + 1 } }
+    case ELambda(_, b)  -> collectAssignedBlock(b, acc)
+    case _              -> {}
+  }
+}
+
+func collectAssignedEOB(eob: in ExprOrBlock, acc: in List[String]): Unit {
+  match eob {
+    case EOBExpr(e)  -> collectAssignedExpr(e, acc)
+    case EOBBlock(b) -> collectAssignedBlock(b, acc)
+  }
+}
+
+func collectAssignedStmt(s: in Statement, acc: in List[String]): Unit {
+  match s.kind {
+    case SAssign(t, _, v) -> { addAssignedTarget(t, acc); collectAssignedExpr(v, acc) }
+    case SLocal(b) ->
+      match b {
+        case LBVal(_, _, init) -> collectAssignedExpr(init, acc)
+        case LBLet(_, _, init) -> collectAssignedExpr(init, acc)
+        case LBVar(_, _, initOpt) -> match initOpt { case Some(e) -> collectAssignedExpr(e, acc); case None -> {} }
+      }
+    case SReturn(vo) -> match vo { case Some(e) -> collectAssignedExpr(e, acc); case None -> {} }
+    case SThrow(e)   -> collectAssignedExpr(e, acc)
+    case SExpr(e)    -> collectAssignedExpr(e, acc)
+    case SInvariant(e) -> collectAssignedExpr(e, acc)
+    case SRule(l, r) -> { collectAssignedExpr(l, acc); collectAssignedExpr(r, acc) }
+    case STry(body, catches, fin) -> {
+      collectAssignedBlock(body, acc)
+      var i = 0
+      while i < catches.count { collectAssignedBlock(catches[i].body, acc); i = i + 1 }
+      match fin { case Some(fb) -> collectAssignedBlock(fb, acc); case None -> {} }
+    }
+    case SDefer(b)        -> collectAssignedBlock(b, acc)
+    case SScope(_, b)     -> collectAssignedBlock(b, acc)
+    case SFor(_, _, it, b) -> { collectAssignedExpr(it, acc); collectAssignedBlock(b, acc) }
+    case SWhile(_, c, b)  -> { collectAssignedExpr(c, acc); collectAssignedBlock(b, acc) }
+    case SLoop(_, b)      -> collectAssignedBlock(b, acc)
+    case _                -> {}
+  }
+}
+
+func collectAssignedBlock(blk: in Block, acc: in List[String]): Unit {
+  var i = 0
+  while i < blk.statements.count {
+    collectAssignedStmt(blk.statements[i], acc)
+    i = i + 1
+  }
+}
+
+// #1487 (§5.2): every `out` parameter must be assigned before the function
+// returns.  Flag any out param never assigned anywhere in the body (T0086).
+func checkOutDefiniteAssignment(diag: in List[Diagnostic], fn: in FunctionDecl, sig: in ResolvedSignature): Unit {
+  var hasOut = false
+  var pi = 0
+  while pi < sig.params.count {
+    match sig.params[pi].mode { case PMOut -> { hasOut = true } case _ -> {} }
+    pi = pi + 1
+  }
+  if not hasOut { return }
+  val assigned: List[String] = newList()
+  match fn.body {
+    case None -> {}
+    case Some(b) ->
+      match b {
+        case FBBlock(blk) -> collectAssignedBlock(blk, assigned)
+        case FBExpr(e)    -> collectAssignedExpr(e, assigned)
+      }
+  }
+  var k = 0
+  while k < sig.params.count {
+    val p = sig.params[k]
+    match p.mode {
+      case PMOut ->
+        if not listContainsStr(assigned, p.name) {
+          diag.add(errorDiagnostic("T0086",
+            "`out` parameter '" + p.name +
+            "' is never assigned before the function returns", fn.span))
+        }
+      case _ -> {}
+    }
+    k = k + 1
+  }
+}
+
 pub func checkFunctionBody(
   tbl:  in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
@@ -436,4 +586,5 @@ pub func checkFunctionBody(
         }
       }
   }
+  checkOutDefiniteAssignment(diag, fn, sig)
 }
