@@ -56,7 +56,7 @@ test "direct m[k] index read: Map[String,Long]" {
   val m: Map[String, Long] = newMap()
   m["x"] = 9000000000i64
   val v = m["x"]
-  assertTrue(v == 9000000000i64, "long unboxed via m[k]")
+  assertEqualLong(v, 9000000000i64, "long unboxed via m[k]")
 }
 
 test "direct m[k] index read: Map[String,Double]" {
