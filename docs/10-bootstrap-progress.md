@@ -19382,3 +19382,39 @@ reassign → T0087, `var`/`out`/`inout` reassign clean). Full regression green
 (847/847 emitter, 84/84 CLI bridge); auth (29/29), session (31/31), and the
 `LYRIC_LOAD_COMPILER=1` weaver self-test (18/18) all green with zero false
 positives.
+### D-progress-392 — self-hosted: `ensures:` contract clauses compile + run (fix codegen NRE) (#1871)
+
+**Status:** Shipped (`lyric-compiler/lyric/contract_elaborator/elaborator.l`).
+
+Any function carrying an `ensures:` clause crashed the self-hosted MSIL codegen
+with a `NullReferenceException` in `lowerStmtMsil`'s `LBLet` arm.  The contract
+elaborator lowers each `ensures:` into a synthesised
+`let __lyric_result_<n> = <body value>` binding plus `assert(<ensures>)`
+statements; `mkLetBinding` built that binding with a bare
+`LBLet(..., ty = None, ...)`.  When the stage-0 F# compiler builds the
+elaborator package, the bare `None` hits the #1451 cross-package generic-arg
+widening bug — it widens to `Option[obj]` with a stale generic arg — so the
+value reaching codegen's `match binding.ty` could not dispatch: `annoTy`
+resolved to **null** and `annoTy != MObject` threw.  `requires:`-only functions
+were unaffected (no `result` binding).
+
+The fix pins the static type at the synthesis site
+(`val noTy: Option[TypeExpr] = None; LBLet(..., ty = noTy, ...)`), the same
+#1451 workaround already used throughout `alias_rewriter.l`, so a proper
+`Option[TypeExpr].None` reaches codegen.
+
+This was a **high-impact** crash: it also broke `lyric build --manifest` /
+`lyric test --manifest` on any package whose sources use `ensures:` — including
+the whole standard library (`lyric build --manifest lyric-stdlib/lyric.toml`
+now succeeds where it previously NRE'd), which in turn unblocked the
+`lyric-auth` manifest repro in #1841 (the original `T0042` there is gone).
+
+Verified by the new `ensures_self_test.l` (6/6 via native `lyric test --target
+dotnet`, wired into CI): `ensures:` on trailing-expression, explicit-`return`,
+multi-statement, String-result, and `Option`-result bodies, plus the
+`requires:`+`ensures:` #1871 repro.  No prior test caught this — the existing
+`contract_elaborator_self_test.l` checks the elaborated AST *shape* but never
+compiles + runs it, and the verifier tests use `lyric prove`.  One orthogonal
+codegen issue surfaced and was filed: `ensures:` on a String-returning function
+with a bare `if`-expression body emits invalid IL (#1977; the self-test uses a
+constant-String body to sidestep it).  MSIL target only (epic #1470 defers JVM).

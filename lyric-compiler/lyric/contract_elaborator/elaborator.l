@@ -284,7 +284,16 @@ func mkAssertCall(cond: in Expr, sp: in Span): Statement {
 
 // `let <name> = <init>` with type inferred.
 func mkLetBinding(name: in String, init: in Expr, sp: in Span): Statement {
-  val binding = LBLet(name = name, ty = None, init = init)
+  // The `ty` field MUST be bound through an explicitly-typed `None` local.
+  // A bare `LBLet(..., ty = None, ...)` hits the #1451 cross-package
+  // generic-arg widening bug when the stage-0 F# compiler builds this
+  // package: the fresh `None` widens to `Option[obj]` with a stale generic
+  // arg, so the value reaching the MSIL codegen's `match binding.ty` can't
+  // dispatch — `annoTy` resolves to null and `annoTy != MObject` NREs in
+  // `lowerStmtMsil`'s LBLet arm (#1871).  Pinning the static type here emits
+  // a proper `Option[TypeExpr].None`.
+  val noTy: Option[TypeExpr] = None
+  val binding = LBLet(name = name, ty = noTy, init = init)
   mkStmt(SLocal(binding = binding), sp)
 }
 
