@@ -103,7 +103,6 @@ pub func splitTypeFqn(typeFqn: in String): TypeFqnSplit {
 // ── Resolved-target shape ────────────────────────────────────────────────────
 
 pub record FfiResolved {
-  assemblyName: String
   namespaceStr: String
   typeName:     String
   memberName:   String
@@ -111,89 +110,12 @@ pub record FfiResolved {
   isCtor:       Bool
 }
 
-// ── Type → assembly table ────────────────────────────────────────────────────
-
-// Look up the simple assembly name hosting a given CLR type.  Prefix
-// matches are checked longest-first so `System.Console` wins over
-// `System` (which falls back to System.Runtime).
-//
-// The table covers every BCL surface the stdlib actually externs into
-// today.  Anything not matched defaults to `System.Runtime`, which is
-// the .NET facade that type-forwards into System.Private.CoreLib —
-// safe for `System.*` core types like Math, String, Int32, etc.
-pub func clrAssemblyForType(typeFqn: in String): String {
-  // System.Console (System.Console.dll)
-  if Str.startsWith(typeFqn, "System.Console") { return "System.Console" }
-  // I/O surfaces (System.IO.FileSystem.dll)
-  if Str.startsWith(typeFqn, "System.IO.File")
-      or Str.startsWith(typeFqn, "System.IO.Directory")
-      or Str.startsWith(typeFqn, "System.IO.Path") { return "System.IO.FileSystem" }
-  // Streams (System.IO is in System.Runtime; the specific Streams
-  // helpers live in System.Runtime.Extensions on .NET 6+ but the
-  // forwarder makes them resolvable via System.Runtime).
-  // Net (System.Net.Primitives / System.Net.Http)
-  if Str.startsWith(typeFqn, "System.Net.Http") { return "System.Net.Http" }
-  if Str.startsWith(typeFqn, "System.Net") { return "System.Net.Primitives" }
-  // Regex (System.Text.RegularExpressions.dll)
-  if Str.startsWith(typeFqn, "System.Text.RegularExpressions") {
-    return "System.Text.RegularExpressions"
-  }
-  // JSON (System.Text.Json.dll)
-  if Str.startsWith(typeFqn, "System.Text.Json") { return "System.Text.Json" }
-  // Encoding (System.Runtime.Extensions / System.Runtime)
-  // Linq (System.Linq.dll)
-  if Str.startsWith(typeFqn, "System.Linq") { return "System.Linq" }
-  // Collections — generic types are in System.Collections, concurrent
-  // in System.Collections.Concurrent.
-  if Str.startsWith(typeFqn, "System.Collections.Concurrent") {
-    return "System.Collections.Concurrent"
-  }
-  if Str.startsWith(typeFqn, "System.Collections.Generic") {
-    return "System.Collections"
-  }
-  if Str.startsWith(typeFqn, "System.Collections") {
-    return "System.Collections.NonGeneric"
-  }
-  // Threading / tasks
-  if Str.startsWith(typeFqn, "System.Threading.Tasks") {
-    return "System.Threading.Tasks"
-  }
-  if Str.startsWith(typeFqn, "System.Threading") {
-    return "System.Threading"
-  }
-  // Process / diagnostics
-  if Str.startsWith(typeFqn, "System.Diagnostics.Process") {
-    return "System.Diagnostics.Process"
-  }
-  if Str.startsWith(typeFqn, "System.Diagnostics") {
-    return "System.Runtime.Extensions"
-  }
-  // Security cryptography
-  if Str.startsWith(typeFqn, "System.Security.Cryptography") {
-    return "System.Security.Cryptography"
-  }
-  // Globalization (in System.Runtime)
-  // Reflection (System.Reflection / Runtime.Loader for some)
-  if Str.startsWith(typeFqn, "System.Reflection") {
-    return "System.Runtime"
-  }
-  // Lyric host helpers — same DLL as the emitter.
-  if Str.startsWith(typeFqn, "Lyric.Emitter")
-      or Str.startsWith(typeFqn, "Lyric.Stdlib") { return "Lyric.Emitter" }
-  // Default: System.Runtime is the .NET facade that type-forwards
-  // most System.* types (String, Int32, Math, Object, Type, Exception,
-  // DateTime, TimeSpan, Guid, Uri, etc.).  This covers the long tail.
-  "System.Runtime"
-}
-
-// True when `clrAssemblyForType` can resolve `typeFqn` to a real reference
-// assembly rather than guessing the `System.Runtime` default.
-// Resolvable = a `System.*` BCL type (forwarded by / mapped to a concrete
-// facade) or a `Lyric.*` internal host (`Lyric.Emitter`, `Lyric.Stdlib`,
-// `Lyric.Jvm.Hosts`).  Anything else — a typo (`Sytem.Console`) or an
-// unsupported third-party type — would silently mis-bind to `System.Runtime`
-// and fail at runtime with an opaque `TypeLoadException`; callers use this to
-// emit a clear diagnostic instead.
+// True when the assembly for `typeFqn` can be resolved — either from the
+// metadata type-index (the authoritative source) or from the Lyric-host
+// fallback (Lyric.Emitter / Lyric.Stdlib).  Anything else — a typo
+// (`Sytem.Console`) or an unsupported third-party type — would silently
+// mis-bind and fail at runtime; callers use this to emit a clear diagnostic.
+// `Lyric.Jvm.Hosts` is covered by the Lyric.* prefix check.
 pub func clrAssemblyResolvable(typeFqn: in String): Bool {
   Str.startsWith(typeFqn, "System.") or Str.startsWith(typeFqn, "Lyric.")
 }
@@ -240,7 +162,6 @@ pub func resolveExternTarget(
       val sp = splitTypeFqn(ts.typeName)
       val ns = sp.ns
       val tyName = sp.name
-      val asmName = clrAssemblyForType(ts.typeName)
       val isStatic = match hint {
         case RHStaticOnly   -> true
         case RHInstanceOnly -> false
@@ -254,7 +175,6 @@ pub func resolveExternTarget(
       // FfiResolved — the codegen branches on `isCtor`).
       val isStaticFinal = if ts.isCtor { true } else { isStatic }
       Some(value = FfiResolved(
-        assemblyName = asmName,
         namespaceStr = ns,
         typeName     = tyName,
         memberName   = ts.memberName,

@@ -1087,7 +1087,7 @@ together, summarised here:
 | **C: Perf budget** | C1 — "reasonable" (~2-5× BCL). |
 | **D: Naming** | A — replace (`Std.List[T]` is native; `Std.Bcl.List[T]` for raw BCL). |
 | **E: Tracking** | E1 — D038 (this entry); Q021 opened for G3 specifically. |
-| **F: Kernel cap** | 150 extern declarations as a v1.0 release gate. |
+| **F: Kernel cap** | Original: 150 extern declarations as a v1.0 release gate. **Amended (2026-06):** actual ceiling raised to 317 as stdlib scope exceeded the original estimate; see `docs/14-native-stdlib-plan.md` §10 Decision F annotation and `KernelBoundaryTests.fs`. |
 | **G: Start order** | P0 immediately; G3 begins toward end of P0. |
 
 **Alternatives considered:**
@@ -1120,8 +1120,9 @@ together, summarised here:
   cannot tell this story.
 - **Self-hosting (Phase 5).** Doing data structures in Lyric earlier
   de-risks the Phase 5 rewrite of the bootstrap compiler in Lyric.
-- **Audit cost is finite.** A hard cap of 150 extern declarations
-  (Decision F) keeps the trusted boundary tractable.
+- **Audit cost is finite.** Decision F caps the trusted extern boundary;
+  the CI ratchet in `KernelBoundaryTests.fs` enforces it by requiring every
+  addition to update the hard ceiling with a justification comment.
 - **Bootstrap-grade is not v1.0.** D035 explicitly framed the F#
   shim as a Phase 1 / M1.4 expedient. D038 sets the direction for
   the post-bootstrap stdlib without contradicting D035.
@@ -1138,7 +1139,14 @@ offers (API surface, error model, phasing of Result/Option). D038 +
 `14-native-stdlib-plan.md` own *how deep* each surface is implemented
 in Lyric. Both docs coexist; cross-references added.
 
-**Revisions:** None.
+**Revisions:**
+- **2026-06 (Decision F amendment):** The original ≤150 cap predated the
+  full stdlib scope. After shipping `Std.Http.Server`, `Std.Char` / `Std.Unicode`,
+  `Std.AssemblyResources`, `Std.Task` async-local, and testing-mock surfaces, the
+  actual ceiling stands at 317.  `KernelBoundaryTests.fs` now enforces this as a
+  hard ratchet (any addition must update the ceiling constant and add a comment).
+  The v1.0 gate is "no unreviewed growth" (ratchet passes), not "≤150."  See
+  `docs/14-native-stdlib-plan.md` §3 and §10.
 
 ---
 

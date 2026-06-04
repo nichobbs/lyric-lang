@@ -438,6 +438,7 @@ pub record TypeDefRow {
   flags:           Int
   name:            String
   namespaceName:   String
+  extendsToken:    Int          // TypeDefOrRef coded index (0 = no base class)
   fieldListStart:  Int          // 1-based Field row
   methodListStart: Int          // 1-based MethodDef row
 }
@@ -579,13 +580,15 @@ pub func readTypeDef(img: in PeImage, layout: in TableLayout,
   p = p + layout.stringIdx
   val nsI = rdIdx(b, p, layout.stringIdx)
   p = p + layout.stringIdx
-  p = p + layout.typeDefOrRefIdx             // skip Extends
+  val ext = rdIdx(b, p, layout.typeDefOrRefIdx)
+  p = p + layout.typeDefOrRefIdx
   val fieldL = rdIdx(b, p, layout.fieldIdx)
   p = p + layout.fieldIdx
   val methodL = rdIdx(b, p, layout.methodIdx)
   TypeDefRow(
     flags = flags, name = stringAt(img, layout, nameI),
     namespaceName = stringAt(img, layout, nsI),
+    extendsToken = ext,
     fieldListStart = fieldL, methodListStart = methodL)
 }
 
@@ -1138,6 +1141,59 @@ pub func addAssemblyToIndexes(typeIndex: in Map[String, String],
 // name, or None when no indexed assembly defines it.
 pub func assemblyForType(index: in Map[String, String], typeFqn: in String): Option[String] {
   mapGet(index, typeFqn)
+}
+
+// Scan the public TypeDef rows of `asmPath` and record each value type (any
+// type whose Extends field resolves to "System.ValueType" or "System.Enum")
+// in `vtypeSet` (FQN → true).  First writer wins.  The vtypeSet is populated
+// alongside the type-index in ensureMetadataIndex so value-type detection
+// from metadata is free (same I/O pass, no extra assembly reads).
+pub func addAssemblyValueTypes(vtypeSet: in Map[String, Bool], asmPath: in String): Unit {
+  match File.readBytes(asmPath) {
+    case Err(_) -> {}
+    case Ok(raw) -> match readPe(raw.toArray()) {
+      case Err(_) -> {}
+      case Ok(img) -> match readMetadataRoot(img) {
+        case Err(_) -> {}
+        case Ok(root) -> match readTablesHeader(img, root) {
+          case Err(_) -> {}
+          case Ok(th) -> match computeLayout(img, root, th) {
+            case Err(_) -> {}
+            case Ok(layout) -> {
+              val n = rowCountOf(th, 0x02)
+              var i = 1
+              while i <= n {
+                val td = readTypeDef(img, layout, i)
+                // Only public top-level types can be extern targets.
+                if (td.flags % 8) == 1 and td.extendsToken > 0 {
+                  val extName = resolveTypeDefOrRefName(img, layout, th, td.extendsToken)
+                  if extName == "System.ValueType" or extName == "System.Enum" {
+                    val fqn = if td.namespaceName.length > 0 {
+                      td.namespaceName + "." + td.name
+                    } else { td.name }
+                    match mapGet(vtypeSet, fqn) {
+                      case Some(_) -> {}
+                      case None    -> vtypeSet.add(fqn, true)
+                    }
+                  }
+                }
+                i = i + 1
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// True when `typeFqn` is a value type (struct or enum) according to the
+// metadata-derived vtypeSet built by addAssemblyValueTypes.
+pub func isValueTypeFqn(vtypeSet: in Map[String, Bool], typeFqn: in String): Bool {
+  match mapGet(vtypeSet, typeFqn) {
+    case None    -> false
+    case Some(_) -> true
+  }
 }
 
 // ── Phase 3b: overload resolution ────────────────────────────────────────────
