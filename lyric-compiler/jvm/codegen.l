@@ -2462,7 +2462,7 @@ func lowerAutoFfiInstanceCall(
     argDescs.add(jvmTypeToDescStr(aTy))
     i = i + 1
   }
-  match findBestMethod(ci, methodName, argDescs, false) {
+  match findBestInstanceMethod(ctx.autoFfi, ci, methodName, argDescs) {
     case None -> {
       var argStr = ""
       var ai = 0
@@ -2472,7 +2472,7 @@ func lowerAutoFfiInstanceCall(
         ai = ai + 1
       }
       val fqn = ci.binaryName.replace("/", ".")
-      panic("JVM auto-FFI: no matching instance overload for '" + fqn + "." + methodName + "(" + argStr + ")'")
+      panic("JVM auto-FFI: no matching instance or inherited method for '" + fqn + "." + methodName + "(" + argStr + ")'")
     }
     case Some(method) -> {
       val paramDescs = parseDescriptorParams(method.descriptor)

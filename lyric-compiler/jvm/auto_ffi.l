@@ -391,3 +391,53 @@ pub func findBestConstructor(ci: in ClassInfo,
   }
   best
 }
+
+/// Find the best-matching instance method in `ci`, walking up the superclass
+/// chain when the method is declared in a superclass (e.g. `length()` on
+/// `StringBuilder` is declared in `AbstractStringBuilder`).
+pub func findBestInstanceMethod(
+  autoFfi:    in AutoFfiCtx,
+  ci:         in ClassInfo,
+  methodName: in String,
+  argDescs:   in List[String]
+): Option[ClassMethod] {
+  var best:      Option[ClassMethod] = None
+  var bestScore: Int                 = -1
+  // Score the declared class first.
+  var i = 0
+  while i < ci.methods.count {
+    val m = ci.methods[i]
+    if m.name == methodName {
+      val s = scoreMethod(m, argDescs, false)
+      if s > bestScore { bestScore = s; best = Some(value = m) }
+    }
+    i = i + 1
+  }
+  // Walk superclasses until a match is found or the chain ends.
+  // Uses assign-into-`var` control flow to stay within stage-0 safe patterns:
+  // `nextSuper` is a `String` accumulated from the match arm body, avoiding
+  // the `Option[ClassInfo]` threading bug (which only affects Map/Option of
+  // cross-package record element types; direct match arm field access is fine).
+  var superBin = ci.superName
+  while bestScore < 0 and superBin.length > 0 and superBin != "java/lang/Object" {
+    val superFqn = superBin.replace("/", ".")
+    var nextSuper = ""
+    match loadClass(autoFfi, superFqn) {
+      case Some(sc) -> {
+        var j = 0
+        while j < sc.methods.count {
+          val m = sc.methods[j]
+          if m.name == methodName {
+            val s = scoreMethod(m, argDescs, false)
+            if s > bestScore { bestScore = s; best = Some(value = m) }
+          }
+          j = j + 1
+        }
+        nextSuper = sc.superName
+      }
+      case None -> ()
+    }
+    if bestScore < 0 { superBin = nextSuper }
+  }
+  best
+}

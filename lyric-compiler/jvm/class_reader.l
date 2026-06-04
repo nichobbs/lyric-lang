@@ -41,6 +41,7 @@ pub record ClassMethod {
 
 pub record ClassInfo {
   binaryName:   String             // JVM binary name, e.g. "java/lang/Math"
+  superName:    String             // JVM binary name of superclass, e.g. "java/lang/AbstractStringBuilder"; "" for Object
   methods:      List[ClassMethod]  // public non-synthetic non-constructor methods
   constructors: List[ClassMethod]  // public <init> constructors (isStatic=false)
 }
@@ -173,9 +174,12 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
 
   // access_flags, this_class, super_class
   if pos + 6 > b.count { return None }
-  val accessFlags  = rdU16(b, pos)
-  val thisClassIdx = rdU16(b, pos + 2)
-  pos = pos + 6   // skip super_class too
+  val accessFlags   = rdU16(b, pos)
+  val thisClassIdx  = rdU16(b, pos + 2)
+  val superClassIdx = rdU16(b, pos + 4)
+  pos = pos + 6
+  val superClassNameIdx = getS(classMap, toString(superClassIdx))
+  val superName         = getSStr(utf8Map, toString(superClassNameIdx))
 
   // Skip if not public or if interface/enum/annotation.
   // ACC_PUBLIC=1: accessFlags % 2 == 0 means not public
@@ -234,7 +238,7 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
     // Skip attributes.
     var ai = 0
     while ai < attrCount {
-      if pos + 6 > b.count { return Some(value = ClassInfo(binaryName = binaryName, methods = methods, constructors = constructors)) }
+      if pos + 6 > b.count { return Some(value = ClassInfo(binaryName = binaryName, superName = superName, methods = methods, constructors = constructors)) }
       val attrLen = rdU32(b, pos + 2)
       pos = pos + 6 + attrLen
       ai = ai + 1
@@ -259,5 +263,5 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
     mi = mi + 1
   }
 
-  Some(value = ClassInfo(binaryName = binaryName, methods = methods, constructors = constructors))
+  Some(value = ClassInfo(binaryName = binaryName, superName = superName, methods = methods, constructors = constructors))
 }
