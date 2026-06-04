@@ -702,11 +702,12 @@ jobs:
           fi
           echo "OK: un-typed param-using lambda (no annotation, no HOF propagation) fails loud (#1939)."
 
-      # Capturing closures (#1479 v1) — a lambda that captures an immutable
+      # Capturing closures (#1479 v1+v2) — a lambda that captures an immutable
       # enclosing binding is captured by value into an object[] bound as the
-      # delegate target; it must run and produce correct results.  Capturing a
-      # `var` (which would need by-reference capture) must fail loud.
-      - name: Capturing closures (#1479 v1)
+      # delegate target (v1); a captured `var` is hoisted to a shared heap cell
+      # so reassignments are observable across the closure boundary in both
+      # directions (v2).  Both must run and produce correct results.
+      - name: Capturing closures (#1479 v1+v2)
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
@@ -746,21 +747,35 @@ jobs:
             fi
           done
           echo "OK: by-value capture of immutable bindings produces correct results."
-          # Capturing a `var` must fail loud (#1479 v2 = by-ref capture).
-          neg="$dir/capvar.l"
-          cat > "$neg" <<'LYRIC'
-          package CapVar
+          # By-reference capture of a `var` (#1479 v2): a hoisted heap cell is
+          # shared, so a mutation inside the closure is visible outside (m1=2) and
+          # an external mutation is visible inside a closure captured earlier
+          # (m2=10).
+          ref="$dir/capref.l"
+          cat > "$ref" <<'LYRIC'
+          package CapRef
           import Std.Core
+          func run(f: in () -> Unit): Unit { f() }
           func apply0(f: in () -> Int): Int { f() }
-          func main(): Int { var n = 5; println(toString(apply0({ -> n + 10 }))); 0 }
+          func main(): Int {
+            var count = 0
+            run({ -> count = count + 1 })
+            run({ -> count = count + 1 })
+            println("m1=" + toString(count))
+            var n = 1
+            val get = { -> n + 0 }
+            n = 10
+            println("m2=" + toString(apply0(get)))
+            0
+          }
           LYRIC
-          if "$lyric_bin" build --target dotnet "$neg" > "$dir/capvar.out" 2>&1; then
-            echo "::error::var-capturing closure compiled — the #1479 by-ref diagnostic did not fire"; cat "$dir/capvar.out"; exit 1
-          fi
-          if ! grep -qi "mutable (.var.) local" "$dir/capvar.out"; then
-            echo "::error::var-capturing closure failed without the expected #1479 diagnostic"; cat "$dir/capvar.out"; exit 1
-          fi
-          echo "OK: var-capturing closure fails loud (#1479 v2)."
+          rout="$("$lyric_bin" run "$ref" 2>&1)" || { echo "::error::by-ref capturing closure failed to run"; echo "$rout"; exit 1; }
+          for expect in "m1=2" "m2=10"; do
+            if ! printf '%s\n' "$rout" | grep -qx "$expect"; then
+              echo "::error::expected '$expect' in by-ref capture output"; echo "$rout"; exit 1
+            fi
+          done
+          echo "OK: by-reference (\`var\`) capture shares a mutable cell across the closure boundary."
 
       # Out/inout-parameter self-test — pins the self-hosted MSIL byref calling
       # convention (#1761): `out`/`inout` parameters are passed by managed

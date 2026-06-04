@@ -19742,6 +19742,7 @@ Verified: multi-capture (`a * b + 1` → 13), String capture (`"hi " + name`),
 capture + own param (105), non-capturing unaffected (42).  CI step added
 (positive immutable-capture assertions + the `var` fail-loud check).  No
 regression: emitter 847/847, CLI 84/84.  MSIL target only.
+
 ### D-progress-403 — `lyric build --release`: self-contained Native AOT binaries (#1968 epic; #1975; D079)
 
 **Status:** Shipped for single-file programs on the .NET target (`lyric-compiler/lyric/release.l`, `lyric-compiler/lyric/cli.l`).  Project-mode `--release` and the JVM (GraalVM) target remain (#1975).
@@ -19775,3 +19776,46 @@ AOT clean.  MSIL target.
 Docs: D079 (decision log), language reference §13.1 (AOT note moved from
 "planned" to "shipped single-file/.NET"), book getting-started (native-binaries
 section) + appendix-b CLI reference.
+
+### D-progress-404 — self-hosted MSIL: capturing closures v2 — by-reference `var` capture via hoisted heap cells (#1479, docs/41 H20, Band 2 complete)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`).  #1479 v2 — completes the
+Band 2 "capturing-closure display classes" item; H20 → ✅.
+
+v1 (D-progress-402) captured **immutable** bindings by value and failed loud on a
+captured `var`.  v2 lifts that restriction: a `var` referenced by any closure in
+its function is **hoisted to a heap cell** so the closure and enclosing scope
+share one mutable location — reassignments are visible in both directions.  This
+is the classic display-class technique, implemented without synthesising a
+TypeDef: the cell is a one-element `List[object]` (reusing the existing
+`get_Item`/`set_Item`/`Add`/ctor tokens), and the closure captures the cell
+reference through the v1 `object[] __caps` channel.
+
+Mechanism:
+
+- **Pre-pass** (`collectInLambdaNamesExpr/Block/Stmt`, mirrors `collectRefNamesExpr`):
+  before lowering a function body, collect every name referenced inside any
+  lambda → `fctx.hoistedVarNames`.  A `var` local in this set is hoisted.
+- **Declaration** (`LBVar`): a hoisted `var` builds a cell — `newobj List; dup;
+  <init>; box; Add` — stored to an object-typed slot; `finishHoistedCellMsil`
+  records `hoistedCellSlot`/`hoistedCellType`.
+- **Read** (`EPath`, value position): a hoisted name loads the cell and reads
+  element 0 (`get_Item(0)` + unbox) — checked before the plain-slot path.
+- **Write** (`lowerAssignExprMsil`, `EPath` target): `set_Item(0, box v)` for
+  `AssEq`; compound `+=` reads-modifies-writes through the cell honouring the
+  operator (`emitCellAssignMsil` / `emitCellLoadMsil`).
+- **Capture site** (`ELambda` arm): a captured hoisted `var` stores the **cell
+  reference itself** (no box) into `object[] __caps`; recorded in
+  `cctx.lambdaCaptureCells`.  A captured `var` that was somehow *not* hoisted
+  fails loud (safety net — never a silent by-value miscompile).
+- **Lifted body**: `fctx.captureCellNames` marks which `__caps[i]` slots are
+  cells; reads emit `__caps[i]; get_Item(0); unbox` and writes
+  `__caps[i]; set_Item(0, box v)`.
+
+Verified: mutate-inside-observe-outside (count=2), external-mutate-observe-inside
+(get=10), two vars captured in a loop seeing the live loop variable (total=6),
+String `+=` capture (s="ab"), non-captured `var` unaffected (plain local),
+escaping closure returned from its defining function (makeAdder=15), and all v1
+immutable cases.  CI step updated to assert by-reference sharing.  No regression:
+emitter 847/847, CLI 84/84.  MSIL target only.  Remaining for #1479: multi-level
+nesting (a lambda capturing an enclosing *lambda*'s locals).
