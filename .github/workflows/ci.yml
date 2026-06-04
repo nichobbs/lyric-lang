@@ -297,14 +297,13 @@ jobs:
           fi
           mkdir -p lyric-stdlib/bin
           cp "${stdlib_dlls[@]}" lyric-stdlib/bin/
-          # Pre-populate each test output directory with the individual stdlib DLLs
-          # so `dotnet exec <test>.dll` finds Lyric.Stdlib.Testing and other
-          # per-package assemblies that aren't merged into Lyric.Stdlib.dll.
-          # These dirs are created here ahead of `lyric test --manifest`; the
-          # test runner's `File.createDir` call is idempotent and won't clobber them.
-          mkdir -p lyric-auth/.lyric-test lyric-session/.lyric-test
-          cp "${stdlib_dlls[@]}" lyric-auth/.lyric-test/
-          cp "${stdlib_dlls[@]}" lyric-session/.lyric-test/
+          # NOTE: the per-test-dir stdlib pre-copy that used to live here is no
+          # longer needed — `lyric test --manifest` now co-locates the split
+          # `Lyric.Stdlib.*.dll` assemblies next to each compiled test DLL
+          # itself (cmdTestManifest -> copyRuntimeDepsBeside, #1468 / #1841).
+          # The `mkdir` stays because the Session.Host pre-copy below runs
+          # before `lyric test` creates the directory.
+          mkdir -p lyric-session/.lyric-test
           # lyric-session's compiled test DLL carries @externTarget
           # references into its F# host shim (Session.Host).
           # `additionalProbingPaths` in the runtimeconfig only resolves
