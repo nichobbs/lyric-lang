@@ -1275,11 +1275,6 @@ jobs:
       # `dotnet publish -p:PublishAot=true`); it downloads the ILCompiler
       # package on first run, so it is the heaviest CLI step.
       - name: Release Native AOT e2e (lyric build --release)
-      # Auto-restore-on-build end-to-end — `lyric build` resolves dependencies
-      # when lyric.lock is missing or stale, and `--no-restore` opts out (#1971).
-      # Driven through the real binary because the staleness check reads the
-      # filesystem (can't be a `lyric test` self-test, #2001).
-      - name: Auto-restore-on-build e2e
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
@@ -1287,7 +1282,6 @@ jobs:
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
             echo "::warning::AOT binary not found at $lyric_bin; skipping release e2e"
-            echo "::warning::AOT binary not found at $lyric_bin; skipping auto-restore e2e"
             exit 0
           fi
           bin_abs="$(pwd)/$lyric_bin"
@@ -1314,6 +1308,23 @@ jobs:
             echo "expected non-zero exit for --release --target jvm"; exit 1
           fi
           echo "Release Native AOT e2e passed"
+
+      # Auto-restore-on-build end-to-end — `lyric build` resolves dependencies
+      # when lyric.lock is missing or stale, and `--no-restore` opts out (#1971).
+      # Driven through the real binary because the staleness check reads the
+      # filesystem (can't be a `lyric test` self-test, #2001).
+      - name: Auto-restore-on-build e2e
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping auto-restore e2e"
+            exit 0
+          fi
+          bin_abs="$(pwd)/$lyric_bin"
+          work="$(mktemp -d)"
           mkdir -p "$work/lib/src" "$work/app/src"
           cat > "$work/lib/lyric.toml" <<'TOML'
           [package]
