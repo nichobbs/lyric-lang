@@ -20876,3 +20876,29 @@ package's own function signatures**.  `Std.Regex.tryCompile`'s
   (currently inferred as `Unit` — tracked in #2070 as a follow-up).
 
 **Regression gate:** 847/847 emitter tests + 84/84 CLI tests green.
+
+### D-progress-431 — self-hosted type checker: range-subtype arithmetic / comparison (#1488 gate, Band-1 of #1470)
+
+**Status:** Shipped — type-checker-only.
+
+`isNumericType` / `isOrderedType` matched `TyPrim` (and `TyError`) but not
+`TyRefined`, so an *inline* range subtype — `a: Int range 0 ..= 100` (parsed as
+`TyRefined(Int, 0, 100)`, distinct from a nominal `type Age = …` distinct type) —
+was treated as non-numeric.  Arithmetic or comparison on a range-typed parameter
+(`a + b`, `a < 100`) raised a spurious `T0030` ("operand is not numeric") /
+`T0031` / `T0033`, breaking `examples/prove_demo.l` (`addsOk(a: Int range 0 ..= 100,
+b: Int range 0 ..= 100) = a + b`).  `typeEquiv` already strips refinements
+(via `unrefine`), so the operand-equality side was fine; only the
+numeric/ordered predicates lacked the unwrap.
+
+Fix: `isNumericType` and `isOrderedType` recurse through `TyRefined(u, …)` into
+the underlying representation `u`.  A range over a numeric/ordered prim is now
+numeric/ordered.
+
+Coverage: 1 new `typechecker_self_test.l` case (`f(a: Int range 0 ..= 150)` with
+`a + 1` and `a < 100` is clean).  Full regression green: 843/843 emitter,
+typechecker self-test, `weaver_self_test.l` 18/18, and `prove_demo` /
+`token_bucket_proof` single-file builds now clean.  Remaining before the
+`bridge.l:93` flip: interface/impl subtyping (`mocking_tests`) and the
+compiler-internal-test import swarms (`metadata_reader_tests`,
+`msil_project_bridge_tests`).

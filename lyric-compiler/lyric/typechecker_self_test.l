@@ -131,6 +131,16 @@ func testMatchNullaryNoShadow(): Unit {
   assertEqualInt(diagCount(parseCheck(src)), 0, "match-no-shadow: case Nn does not shadow the Nn constructor")
 }
 
+// #1488: a range subtype (`Int range 0 ..= 150`) is numeric and ordered when
+// its underlying representation is, so arithmetic and comparison on a
+// range-typed value type-check cleanly.  Before `isNumericType`/`isOrderedType`
+// unwrapped `TyRefined`, `a + 1` / `a < 100` raised a spurious T0030/T0033.
+func testRangeSubtypeArithmetic(): Unit {
+  val src = "package P\nfunc f(a: in Int range 0 ..= 150): Bool {\n  val n = a + 1\n  a < 100\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0,
+    "range-subtype: arithmetic and comparison on `Int range 0 ..= 150` are clean")
+}
+
 // #1488 (B): a generic function's return type is instantiated from the
 // argument types at the call site — `unwrapOr(o: Opt[T], d: T): T` called on an
 // `Opt[Int]` returns `Int`, not the raw `TyVar("T")`.  A `String`-typed binding
@@ -1328,6 +1338,7 @@ func main(): Unit {
   testMatchBranchDestructuredMismatch()
   testMatchBranchClean()
   testMatchNullaryNoShadow()
+  testRangeSubtypeArithmetic()
   testGenericReturnInstantiatedMismatch()
   testGenericReturnInstantiatedClean()
   testGenericMultiOccurrenceConsistent()
