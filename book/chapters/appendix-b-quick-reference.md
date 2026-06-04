@@ -494,7 +494,9 @@ extern func readFile(path: in String): String
   ensures: result != ""    // assumed by the prover, not proved
 ```
 
-### Direct BCL calls — `extern type` (auto-FFI; see chapter 13 §13.9)
+### Direct BCL/JDK calls — `extern type` (auto-FFI; see chapter 13 §13.9)
+
+**`--target dotnet`** — signature read from .NET reference-assembly metadata:
 
 ```lyric
 extern type Math = "System.Math"          // bind a Lyric name to a CLR type
@@ -508,7 +510,18 @@ Typ.GetType("System.Int32").ToString()    // class return + instance dispatch (c
                                           //   -> "System.Int32"
 ```
 
-No `@axiom` block: the signature is read from the assembly. No overload match is a compile-time error (never silently mis-bound).
+**`--target jvm`** — signature read from JDK `.jmod` metadata (epic #1622):
+
+```lyric
+extern type JMath    = "java.lang.Math"
+extern type JInteger = "java.lang.Integer"
+
+JMath.max(3, 7)          // -> invokestatic java/lang/Math.max(II)I  -> 7
+JMath.floor(3.7)         // -> invokestatic java/lang/Math.floor(D)D -> 3.0
+JInteger.sum(5, 6)       // -> invokestatic java/lang/Integer.sum(II)I -> 11
+```
+
+No `@axiom` block needed: the signature is read from the assembly/jmod at compile time. No overload match is a compile-time error (never silently mis-bound).
 
 ### Pre-state snapshots in ensures
 

@@ -24,6 +24,7 @@ import Std.String
 import Lyric.Parser
 import Jvm.Classfile
 import Jvm.Lowering
+import Jvm.AutoFfi
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Per-function codegen context.
@@ -80,6 +81,10 @@ pub record FuncCtx {
   // Union case field types for precise match-binding (see JvmCaseField).
   // Keyed by case class JVM name, e.g. "Pkg/Union$Case".
   caseFields:  Map[String, List[JvmCaseField]]
+  // Extern-type alias → Java FQN, e.g. "Math" → "java.lang.Math".
+  externTypes: Map[String, String]
+  // Auto-FFI resolution context for JDK class loading.
+  autoFfi:     AutoFfiCtx
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2256,6 +2261,229 @@ func lowerBuiltinOrStaticCall(
   }
 }
 
+// ── Auto-FFI helpers ──────────────────────────────────────────────────────────
+
+// Convert a JvmType to a JVM descriptor string, e.g. JInt → "I".
+func jvmTypeToDescStr(ty: JvmType): String {
+  match ty {
+    case JInt        -> "I"
+    case JLong       -> "J"
+    case JDouble     -> "D"
+    case JFloat      -> "F"
+    case JBoolean    -> "Z"
+    case JByte       -> "B"
+    case JChar       -> "C"
+    case JShort      -> "S"
+    case JVoid       -> "V"
+    case JRef(cn)    -> "L" + cn + ";"
+    case JArray(elem) -> "[" + jvmTypeToDescStr(elem)
+  }
+}
+
+// Convert a single JVM descriptor string to a JvmType.
+func descStrToJvmType(desc: String): JvmType {
+  if desc == "I" { JInt }
+  else if desc == "J" { JLong }
+  else if desc == "D" { JDouble }
+  else if desc == "F" { JFloat }
+  else if desc == "Z" { JBoolean }
+  else if desc == "B" { JByte }
+  else if desc == "C" { JChar }
+  else if desc == "S" { JShort }
+  else if desc == "V" { JVoid }
+  else if desc.length > 0 and desc[0] == '[' {
+    JArray(elem = descStrToJvmType(desc.substring(1, desc.length - 1)))
+  } else if desc.length > 1 and desc[0] == 'L' {
+    JRef(className = desc.substring(1, desc.length - 2))
+  } else {
+    JRef(className = "java/lang/Object")
+  }
+}
+
+// Extract the return-type descriptor from a JVM method descriptor "(params)ret".
+func returnDescFromMethodDesc(descriptor: String): String {
+  val len = descriptor.length
+  var i = 0
+  while i < len {
+    if descriptor[i] == ')' {
+      if i + 1 < len { return descriptor.substring(i + 1, len - i - 1) }
+      return "V"
+    }
+    i = i + 1
+  }
+  "V"
+}
+
+// Emit a widening numeric coercion instruction from `fromDesc` to `toDesc`.
+// No-op when the types are identical or the widening is handled at the JVM
+// reference level (reference → Object).
+func emitFfiCoerce(insns: in List[LInsn], fromDesc: in String, toDesc: in String): Unit {
+  if fromDesc == toDesc { return () }
+  if fromDesc == "I" {
+    if toDesc == "J" { insns.add(LI2l); return () }
+    if toDesc == "D" { insns.add(LI2d); return () }
+    if toDesc == "F" { insns.add(LI2f); return () }
+  }
+  if fromDesc == "J" {
+    if toDesc == "D" { insns.add(LL2d); return () }
+    if toDesc == "F" { insns.add(LL2f); return () }
+  }
+  if fromDesc == "F" {
+    if toDesc == "D" { insns.add(LF2d); return () }
+  }
+}
+
+// Lower a static auto-FFI call where `javaFqn` is the dotted Java class name
+// and `methodName` is the Java method.  Resolves the best-matching overload
+// from JDK metadata and emits invokestatic / invokevirtual with the real
+// descriptor.  Falls back to an Object-typed guess when the JDK is unavailable.
+func lowerAutoFfiStaticCall(
+  ctx:        in FuncCtx,
+  insns:      in List[LInsn],
+  javaFqn:    in String,
+  methodName: in String,
+  args:       in List[CallArg]
+): JvmType {
+  // Buffer each arg's lowering so coercions can be inserted per-overload.
+  val argBufs:  List[List[LInsn]] = newList()
+  val argDescs: List[String]      = newList()
+  var i = 0
+  while i < args.count {
+    val buf: List[LInsn] = newList()
+    val aTy = lowerCallArg(ctx, buf, args[i])
+    argBufs.add(buf)
+    argDescs.add(jvmTypeToDescStr(aTy))
+    i = i + 1
+  }
+
+  val binaryName = javaFqn.replace(".", "/")
+
+  match loadClass(ctx.autoFfi, javaFqn) {
+    case None -> {
+      if ctx.autoFfi.jmodsDir.length > 0 {
+        // JDK was found but the class isn't in any jmod — hard compile error.
+        panic("JVM auto-FFI: class '" + javaFqn + "' not found in JDK jmods at '" + ctx.autoFfi.jmodsDir + "'")
+      }
+      // No JDK found (JAVA_HOME unset, no standard path).  Fall back to the
+      // legacy object-typed binding; resolution may fail at JVM link time.
+      val paramTys: List[JvmType] = newList()
+      var j = 0
+      while j < argBufs.count {
+        val buf = argBufs[j]
+        var k = 0
+        while k < buf.count { insns.add(buf[k]); k = k + 1 }
+        paramTys.add(JRef(className = "java/lang/Object"))
+        j = j + 1
+      }
+      insns.add(LInvokestatic(
+        owner  = binaryName,
+        name   = methodName,
+        params = paramTys,
+        ret    = JRef(className = "java/lang/Object")))
+      JRef(className = "java/lang/Object")
+    }
+    case Some(ci) -> {
+      match findBestMethod(ci, methodName, argDescs, true) {
+        case None -> {
+          // No static overload matches — compile-time diagnostic.
+          var argStr = ""
+          var ai = 0
+          while ai < argDescs.count {
+            if ai > 0 { argStr = argStr + ", " }
+            argStr = argStr + argDescs[ai]
+            ai = ai + 1
+          }
+          panic("JVM auto-FFI: no matching static overload for '" + javaFqn + "." + methodName + "(" + argStr + ")' — check the method name, argument types, and that it is a static method")
+        }
+        case Some(method) -> {
+          if not method.isStatic {
+            panic("JVM auto-FFI: '" + javaFqn + "." + methodName + "' is an instance method, not static; call it on an instance value, not on the type name")
+          }
+          val paramDescs = parseDescriptorParams(method.descriptor)
+          val retDesc    = returnDescFromMethodDesc(method.descriptor)
+          val retJvm     = descStrToJvmType(retDesc)
+          val paramJvms: List[JvmType] = newList()
+          var j = 0
+          while j < argBufs.count {
+            val buf = argBufs[j]
+            var k = 0
+            while k < buf.count { insns.add(buf[k]); k = k + 1 }
+            val paramDesc =
+              if j < paramDescs.count { paramDescs[j] } else { argDescs[j] }
+            emitFfiCoerce(insns, argDescs[j], paramDesc)
+            paramJvms.add(descStrToJvmType(paramDesc))
+            j = j + 1
+          }
+          insns.add(LInvokestatic(
+            owner  = ci.binaryName,
+            name   = methodName,
+            params = paramJvms,
+            ret    = retJvm))
+          retJvm
+        }
+      }
+    }
+  }
+}
+
+// Instance method call on a JDK class through auto-FFI.  The receiver is
+// already on the operand stack when this is called; this function lowers
+// `args`, resolves the overload from metadata, and emits `invokevirtual`.
+func lowerAutoFfiInstanceCall(
+  ctx:        in FuncCtx,
+  insns:      in List[LInsn],
+  ci:         in ClassInfo,
+  methodName: in String,
+  args:       in List[CallArg]
+): JvmType {
+  val argBufs:  List[List[LInsn]] = newList()
+  val argDescs: List[String]      = newList()
+  var i = 0
+  while i < args.count {
+    val buf: List[LInsn] = newList()
+    val aTy = lowerCallArg(ctx, buf, args[i])
+    argBufs.add(buf)
+    argDescs.add(jvmTypeToDescStr(aTy))
+    i = i + 1
+  }
+  match findBestMethod(ci, methodName, argDescs, false) {
+    case None -> {
+      var argStr = ""
+      var ai = 0
+      while ai < argDescs.count {
+        if ai > 0 { argStr = argStr + ", " }
+        argStr = argStr + argDescs[ai]
+        ai = ai + 1
+      }
+      val fqn = ci.binaryName.replace("/", ".")
+      panic("JVM auto-FFI: no matching instance overload for '" + fqn + "." + methodName + "(" + argStr + ")'")
+    }
+    case Some(method) -> {
+      val paramDescs = parseDescriptorParams(method.descriptor)
+      val retDesc    = returnDescFromMethodDesc(method.descriptor)
+      val retJvm     = descStrToJvmType(retDesc)
+      val paramJvms: List[JvmType] = newList()
+      var j = 0
+      while j < argBufs.count {
+        val buf = argBufs[j]
+        var k = 0
+        while k < buf.count { insns.add(buf[k]); k = k + 1 }
+        val paramDesc =
+          if j < paramDescs.count { paramDescs[j] } else { argDescs[j] }
+        emitFfiCoerce(insns, argDescs[j], paramDesc)
+        paramJvms.add(descStrToJvmType(paramDesc))
+        j = j + 1
+      }
+      insns.add(LInvokevirtual(
+        owner  = ci.binaryName,
+        name   = methodName,
+        params = paramJvms,
+        ret    = retJvm))
+      retJvm
+    }
+  }
+}
+
 // Resolve a general (non-builtin) static function call.
 func lowerGeneralStaticCall(
   ctx:      in FuncCtx,
@@ -2396,6 +2624,23 @@ func lowerMethodCall(
   memberName: in String,
   args:       in List[CallArg]
 ): JvmType {
+  // Auto-FFI: a call whose receiver is an extern-type name (e.g. `JMath` for
+  // `extern type JMath = "java.lang.Math"`) is a static method on the Java
+  // class, not an instance dispatch.  `A.b(args)` parses as
+  // `EMember(EPath{A}, b)`, so the static auto-FFI fast path must live here —
+  // resolve the overload from JDK metadata and emit a typed invokestatic
+  // rather than lowering the type name as a value (which yields a bogus
+  // `java/lang/Object.b` guess).  Mirrors `lowerMethodCallMsil`.
+  match recv.kind {
+    case EPath(path) -> {
+      match mapGet(ctx.externTypes, lastSegment(path)) {
+        case Some(javaFqn) ->
+          return lowerAutoFfiStaticCall(ctx, insns, javaFqn, memberName, args)
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
   val recvTy = lowerExpr(ctx, insns, recv)
   // `shr` is arithmetic (ISHR/LSHR — sign-replicating); Lyric's Int/Long/
   // Byte are signed and the JVM backend has no unsigned integer type, so the
@@ -2474,6 +2719,22 @@ func lowerMethodCall(
       params = ps,
       ret    = JBoolean))
     return JBoolean
+  }
+
+  // Instance auto-FFI: when the receiver is a JRef to a JDK class (returned
+  // by a prior static auto-FFI call, e.g. JInteger.valueOf(42).toString()),
+  // resolve the instance method from JDK metadata and emit a correctly-typed
+  // invokevirtual.  Receiver is already on the stack from lowerExpr above.
+  match recvTy {
+    case JRef(cls) -> {
+      val fqn = cls.replace("/", ".")
+      match loadClass(ctx.autoFfi, fqn) {
+        case Some(ci) ->
+          return lowerAutoFfiInstanceCall(ctx, insns, ci, memberName, args)
+        case None -> ()
+      }
+    }
+    case _ -> ()
   }
 
   val paramTys: List[JvmType] = newList()
@@ -2988,7 +3249,9 @@ pub func lowerBlock(ctx: in FuncCtx, insns: in List[LInsn], block: in Block): Un
 // Create a fresh FuncCtx for the given function.
 func makeFuncCtx(pkgName: in String, className: in String,
                  funcSigs: in Map[String, JvmFuncSig],
-                 caseFields: in Map[String, List[JvmCaseField]]): FuncCtx {
+                 caseFields: in Map[String, List[JvmCaseField]],
+                 externTypes: in Map[String, String],
+                 autoFfi: in AutoFfiCtx): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
   val slotTicker: List[Int] = newList()
@@ -3006,14 +3269,18 @@ func makeFuncCtx(pkgName: in String, className: in String,
     loopCont    = loopCont,
     genClass    = None,
     funcSigs    = funcSigs,
-    caseFields  = caseFields)
+    caseFields  = caseFields,
+    externTypes = externTypes,
+    autoFfi     = autoFfi)
 }
 
 // Create a FuncCtx for lowering a generator body (runBody instance method).
 // Slot 0 = `this` (reserved); params start at slot 1.
 func makeFuncCtxForGenerator(pkgName: in String, genClass: in String,
                              funcSigs: in Map[String, JvmFuncSig],
-                             caseFields: in Map[String, List[JvmCaseField]]): FuncCtx {
+                             caseFields: in Map[String, List[JvmCaseField]],
+                             externTypes: in Map[String, String],
+                             autoFfi: in AutoFfiCtx): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
   val slotTicker: List[Int] = newList()
@@ -3032,19 +3299,23 @@ func makeFuncCtxForGenerator(pkgName: in String, genClass: in String,
     loopCont    = loopCont,
     genClass    = Some(value = genClass),
     funcSigs    = funcSigs,
-    caseFields  = caseFields)
+    caseFields  = caseFields,
+    externTypes = externTypes,
+    autoFfi     = autoFfi)
 }
 
 pub func lowerFunc(decl: in FunctionDecl, pkgName: in String, className: in String,
                    funcSigs: in Map[String, JvmFuncSig],
-                   caseFields: in Map[String, List[JvmCaseField]]): LFunc {
+                   caseFields: in Map[String, List[JvmCaseField]],
+                   externTypes: in Map[String, String],
+                   autoFfi: in AutoFfiCtx): LFunc {
   val retTy =
     match decl.ret {
       case Some(te) -> typeExprToJvm(te, pkgName)
       case None     -> JVoid
     }
 
-  val ctx = makeFuncCtx(pkgName, className, funcSigs, caseFields)
+  val ctx = makeFuncCtx(pkgName, className, funcSigs, caseFields, externTypes, autoFfi)
   val insns: List[LInsn] = newList()
 
   // Allocate slots for parameters.
@@ -3158,7 +3429,9 @@ func endsWithReturn(insns: in List[LInsn]): Bool {
 
 pub func lowerRecord(decl: in RecordDecl, pkgName: in String,
                      funcSigs: in Map[String, JvmFuncSig],
-                     caseFields: in Map[String, List[JvmCaseField]]): LRecord {
+                     caseFields: in Map[String, List[JvmCaseField]],
+                     externTypes: in Map[String, String],
+                     autoFfi: in AutoFfiCtx): LRecord {
   val className = pkgName + "/" + decl.name
 
   val fields: List[LField] = newList()
@@ -3179,7 +3452,7 @@ pub func lowerRecord(decl: in RecordDecl, pkgName: in String,
 
   // Synthesise <init> constructor that takes all fields as params and stores them.
   val ctorInsns: List[LInsn] = newList()
-  val ctorCtx = makeFuncCtx(pkgName, className, funcSigs, caseFields)
+  val ctorCtx = makeFuncCtx(pkgName, className, funcSigs, caseFields, externTypes, autoFfi)
 
   // Slot 0 = this.
   ctorCtx.slotTicker.add(0)
@@ -3224,7 +3497,7 @@ pub func lowerRecord(decl: in RecordDecl, pkgName: in String,
   while mi < decl.members.count {
     match decl.members[mi] {
       case RMFunc(fn) -> {
-        methods.add(lowerFunc(fn, pkgName, className, funcSigs, caseFields))
+        methods.add(lowerFunc(fn, pkgName, className, funcSigs, caseFields, externTypes, autoFfi))
       }
       case _ -> {}
     }
@@ -3444,14 +3717,16 @@ func funcBodyContainsYield(decl: in FunctionDecl): Bool {
 // Params are accessed as fields on `this` (slot 0); the preamble loads
 // each param field into a local slot so the body can use them normally.
 func lowerGeneratorBody(
-  decl:     in FunctionDecl,
-  pkgName:  in String,
-  genClass: in String,
-  funcSigs: in Map[String, JvmFuncSig],
-  caseFields: in Map[String, List[JvmCaseField]]
+  decl:        in FunctionDecl,
+  pkgName:     in String,
+  genClass:    in String,
+  funcSigs:    in Map[String, JvmFuncSig],
+  caseFields:  in Map[String, List[JvmCaseField]],
+  externTypes: in Map[String, String],
+  autoFfi:     in AutoFfiCtx
 ): List[LInsn] {
   val insns: List[LInsn] = newList()
-  val ctx = makeFuncCtxForGenerator(pkgName, genClass, funcSigs, caseFields)
+  val ctx = makeFuncCtxForGenerator(pkgName, genClass, funcSigs, caseFields, externTypes, autoFfi)
 
   // Preamble: load each param from this.<field> into a local slot.
   var pi = 0
@@ -3667,7 +3942,8 @@ pub func codegenPackage(file: in SourceFile): LPackage {
   collectFileSigs(file, sigs)
   val cases: Map[String, List[JvmCaseField]] = newMap()
   collectFileCases(file, cases)
-  codegenPackageWithSigs(file, sigs, cases)
+  val autoFfi = buildAutoFfiCtx()
+  codegenPackageWithSigs(file, sigs, cases, autoFfi)
 }
 
 // Codegen a package against a pre-built call registry `funcSigs` spanning the
@@ -3676,9 +3952,25 @@ pub func codegenPackage(file: in SourceFile): LPackage {
 // the same map to each package, so cross-package calls resolve owner + descriptor.
 pub func codegenPackageWithSigs(file: in SourceFile,
                                 funcSigs: in Map[String, JvmFuncSig],
-                                caseFields: in Map[String, List[JvmCaseField]]): LPackage {
+                                caseFields: in Map[String, List[JvmCaseField]],
+                                autoFfi: in AutoFfiCtx): LPackage {
   val pkgName    = segmentsToJvmPath(file.packageDecl.path.segments)
   val funcsClass = pkgName
+
+  // Collect extern-type declarations: alias → Java FQN.
+  val externTypes: Map[String, String] = newMap()
+  var eti = 0
+  while eti < file.items.count {
+    match file.items[eti].kind {
+      case IExternType(decl) -> {
+        if not externTypes.containsKey(decl.name) {
+          externTypes.add(decl.name, decl.clrName)
+        }
+      }
+      case _ -> {}
+    }
+    eti = eti + 1
+  }
 
   val fns:   List[LFunc]        = newList()
   val items: List[LPackageItem] = newList()
@@ -3704,7 +3996,7 @@ pub func codegenPackageWithSigs(file: in SourceFile,
         var mi2 = 0
         while mi2 < decl.members.count {
           match decl.members[mi2] {
-            case IMplFunc(fn) -> implFuncs.add(lowerFunc(fn, pkgName, targetClass, funcSigs, caseFields))
+            case IMplFunc(fn) -> implFuncs.add(lowerFunc(fn, pkgName, targetClass, funcSigs, caseFields, externTypes, autoFfi))
             case IMplAssoc(_) -> {}
           }
           mi2 = mi2 + 1
@@ -3727,7 +4019,7 @@ pub func codegenPackageWithSigs(file: in SourceFile,
         if decl.isAsync and funcBodyContainsYield(decl) {
           // Async generator: synthesise Iterable+Iterator class via lowerAsyncGenerator.
           val genClass  = pkgName + "$" + decl.name + "$Gen"
-          val bodyInsns = lowerGeneratorBody(decl, pkgName, genClass, funcSigs, caseFields)
+          val bodyInsns = lowerGeneratorBody(decl, pkgName, genClass, funcSigs, caseFields, externTypes, autoFfi)
           val genParams: List[LGenParam] = newList()
           var pi = 0
           while pi < decl.params.count {
@@ -3751,7 +4043,7 @@ pub func codegenPackageWithSigs(file: in SourceFile,
           // Factory method lives alongside main() in the functions class.
           fns.add(makeGeneratorFactory(decl, genClass, pkgName))
         } else {
-          fns.add(lowerFunc(decl, pkgName, funcsClass, funcSigs, caseFields))
+          fns.add(lowerFunc(decl, pkgName, funcsClass, funcSigs, caseFields, externTypes, autoFfi))
           if isMainFunc(decl) {
             hasMain = true
             // Resolve the Lyric main's declared return type so the JVM
@@ -3779,7 +4071,7 @@ pub func codegenPackageWithSigs(file: in SourceFile,
           }
           ei = ei + 1
         }
-        val baseRec = lowerRecord(decl, pkgName, funcSigs, caseFields)
+        val baseRec = lowerRecord(decl, pkgName, funcSigs, caseFields, externTypes, autoFfi)
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() { mergedMethods.add(fn) }
         for fn in implFuncs.toArray()      { mergedMethods.add(fn) }
@@ -3809,7 +4101,7 @@ pub func codegenPackageWithSigs(file: in SourceFile,
           }
           ei = ei + 1
         }
-        val baseRec = lowerRecord(decl, pkgName, funcSigs, caseFields)
+        val baseRec = lowerRecord(decl, pkgName, funcSigs, caseFields, externTypes, autoFfi)
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() { mergedMethods.add(fn) }
         for fn in implFuncs.toArray()      { mergedMethods.add(fn) }
@@ -3868,7 +4160,7 @@ pub func codegenPackageWithSigs(file: in SourceFile,
                 ACC_PUBLIC + ACC_ABSTRACT, sig.name, desc, emptyAttrs))
             }
             case IMFunc(fn) -> {
-              concreteFuncs.add(lowerFunc(fn, pkgName, ifClassName, funcSigs, caseFields))
+              concreteFuncs.add(lowerFunc(fn, pkgName, ifClassName, funcSigs, caseFields, externTypes, autoFfi))
             }
             case IMAssoc(_) -> {}
           }
