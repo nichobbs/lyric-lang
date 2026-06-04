@@ -95,6 +95,14 @@ jobs:
         if: steps.changes.outputs.has_code_changes == 'true'
         run: bash scripts/audit-axioms.sh
 
+      # Guardrail for #2125: the F# stage-0 emitter mis-resolves a qualified
+      # `Str.fromInt`/`Str.toUpper`/`Str.toLower` call to `Std.Char.<same>` in a
+      # compiler source importing both Std.String and Std.Char (the names
+      # collide).  Use `toString` / string-only ops until the emitter is fixed.
+      - name: Audit Str/Char qualified-name collision (#2125 guardrail)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        run: bash scripts/audit-strchar-collision.sh
+
       - name: Set up .NET (uses bootstrap/global.json)
         if: steps.changes.outputs.has_code_changes == 'true'
         uses: actions/setup-dotnet@v5
