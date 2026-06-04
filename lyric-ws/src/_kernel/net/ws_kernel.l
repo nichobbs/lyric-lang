@@ -55,10 +55,34 @@ record HandleCounter {
 
 val handleCounter: HandleCounter                     = HandleCounter()
 val registryMap:  ConcurrentDict[Int, RegistryMeta]  = newConcurrentDict()
+// connMap is populated by registerConnection (the HTTP upgrade entry point).
+// That function is deferred to #778 (lyric-web Kestrel shim); until then,
+// send/isConnected/connectionCount operate on an empty map in path-finder scope.
 val connMap:      ConcurrentDict[String, ConnState]   = newConcurrentDict()
 
 func connKey(registryHandle: in Int, connectionId: in String): String {
   return registryHandle.toString() + ":" + connectionId
+}
+
+// registerConnection is the HTTP upgrade entry point for #778.  It populates
+// connMap so that send / isConnected / connectionCount become functional.
+// Deferred until lyric-web provides the Kestrel HTTP upgrade shim.
+func registerConnection(registryHandle: in Int, connectionId: in String): Result[Unit, String]
+  requires: connectionId.length > 0
+{
+  var meta: RegistryMeta = default()
+  if not cdTryGetValue(registryMap, registryHandle, meta) {
+    return Err("unknown registry handle " + registryHandle.toString())
+  }
+  monitorEnter(meta)
+  defer { monitorExit(meta) }
+  val key = connKey(registryHandle, connectionId)
+  val state = ConnState(isOpen = true)
+  if not cdTryAdd(connMap, key, state) {
+    return Err("connection '" + connectionId + "' already registered")
+  }
+  meta.openCount = meta.openCount + 1
+  Ok(())
 }
 
 // Close a single connection under its per-entry lock.  Returns true if the
@@ -174,11 +198,14 @@ pub func isConnected(registryHandle: in Int, connectionId: in String): Bool
   false
 }
 
-// ─── Sliding-window rate limiter ──────────────────────────────────────────────
+// ─── Rate limiter (tumbling window) ──────────────────────────────────────────
 //
-// Fixed 60-second window per key.  Burst budget is one-shot: it does not
-// refill when the window resets (matching the F# path-finder semantics noted
-// in the ws stability comment).
+// Uses a tumbling (fixed-reset) 60-second window per key, NOT the sliding
+// window that the deleted F# WsHost.fs used (which maintained per-message
+// timestamps and filtered to the trailing 60s).  The tumbling window allows
+// up to 2× the nominal rate at window boundaries; the production rate limiter
+// (#778) should implement the sliding window if boundary bursting is a concern.
+// The burst budget is one-shot: it does not refill when the window resets.
 
 record RateEntry {
   var windowStartMs:  Long = 0i64
