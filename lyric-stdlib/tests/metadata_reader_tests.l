@@ -275,6 +275,80 @@ func testSigDecodeRoundTrip(): Unit {
     case Ok(_)  -> panic("sigrt: empty blob should be rejected")
     case Err(_) -> ()
   }
+  // Static `(ByRef Int): Void` → DEFAULT, 1 param, VOID ret, BYREF I4.
+  val sByRef: List[Byte] = newList()
+  sByRef.add(0x00u8)  sByRef.add(0x01u8)  sByRef.add(0x01u8)
+  sByRef.add(0x10u8)  sByRef.add(0x08u8)
+  match decodeMethodSig(sByRef.toArray()) {
+    case Err(e) -> panic("sigrt: byref decode failed: " + e)
+    case Ok(d) -> {
+      assertEqualInt(d.paramTypes.count, 1, "sigrt: byref param count")
+      match d.paramTypes[0] {
+        case STByRef(inner) ->
+          assertEqualInt(primByte(inner), 0x08, "sigrt: byref inner is I4")
+        case _ -> panic("sigrt: expected an STByRef parameter")
+      }
+    }
+  }
+  // Static `(Ptr Bool): Void` → DEFAULT, 1 param, VOID ret, PTR Bool.
+  val sPtr: List[Byte] = newList()
+  sPtr.add(0x00u8)  sPtr.add(0x01u8)  sPtr.add(0x01u8)
+  sPtr.add(0x0Fu8)  sPtr.add(0x02u8)
+  match decodeMethodSig(sPtr.toArray()) {
+    case Err(e) -> panic("sigrt: ptr decode failed: " + e)
+    case Ok(d) -> {
+      match d.paramTypes[0] {
+        case STPtr(inner) ->
+          assertEqualInt(primByte(inner), 0x02, "sigrt: ptr inner is Bool")
+        case _ -> panic("sigrt: expected an STPtr parameter")
+      }
+    }
+  }
+  // Static `(Var 0): Void` → DEFAULT, 1 param, VOID ret, VAR 0.
+  val sVar: List[Byte] = newList()
+  sVar.add(0x00u8)  sVar.add(0x01u8)  sVar.add(0x01u8)
+  sVar.add(0x13u8)  sVar.add(0x00u8)
+  match decodeMethodSig(sVar.toArray()) {
+    case Err(e) -> panic("sigrt: var decode failed: " + e)
+    case Ok(d) -> {
+      match d.paramTypes[0] {
+        case STVar(idx) -> assertEqualInt(idx, 0, "sigrt: var index is 0")
+        case _ -> panic("sigrt: expected an STVar parameter")
+      }
+    }
+  }
+  // Static `(MVar 1): Void` → DEFAULT, 1 param, VOID ret, MVAR 1.
+  val sMVar: List[Byte] = newList()
+  sMVar.add(0x00u8)  sMVar.add(0x01u8)  sMVar.add(0x01u8)
+  sMVar.add(0x1Eu8)  sMVar.add(0x01u8)
+  match decodeMethodSig(sMVar.toArray()) {
+    case Err(e) -> panic("sigrt: mvar decode failed: " + e)
+    case Ok(d) -> {
+      match d.paramTypes[0] {
+        case STMVar(idx) -> assertEqualInt(idx, 1, "sigrt: mvar index is 1")
+        case _ -> panic("sigrt: expected an STMVar parameter")
+      }
+    }
+  }
+  // Static `(GenericInst Class(tok=5) [Int]): Void` → DEFAULT, 1 param, VOID
+  // ret, GENERICINST CLASS token 1 arg I4.
+  val sGi: List[Byte] = newList()
+  sGi.add(0x00u8)  sGi.add(0x01u8)  sGi.add(0x01u8)
+  sGi.add(0x15u8)  sGi.add(0x12u8)  sGi.add(0x05u8)
+  sGi.add(0x01u8)  sGi.add(0x08u8)
+  match decodeMethodSig(sGi.toArray()) {
+    case Err(e) -> panic("sigrt: gi decode failed: " + e)
+    case Ok(d) -> {
+      match d.paramTypes[0] {
+        case STGenericInst(_, tok, args) -> {
+          assertEqualInt(tok, 5, "sigrt: gi token is 5")
+          assertEqualInt(args.count, 1, "sigrt: gi has 1 arg")
+          assertEqualInt(primByte(args[0]), 0x08, "sigrt: gi arg0 is I4")
+        }
+        case _ -> panic("sigrt: expected an STGenericInst parameter")
+      }
+    }
+  }
 }
 
 // Layer 5 oracle: every MethodDefSig in the running PE decodes, and the
