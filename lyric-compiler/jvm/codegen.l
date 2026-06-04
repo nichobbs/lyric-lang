@@ -106,21 +106,46 @@ pub func freshLabel(ctx: in FuncCtx): String {
 // sequential `try`/`catch` blocks in one function — e.g. the `__lyric_e`
 // the test-runner synthesises for every `test` block) allocates a *fresh*
 // slot and overwrites the mapping rather than crashing the underlying
-// dictionary with a duplicate-key insert.
+// dictionary with a duplicate-key insert.  When the rebound type has the
+// same width as the original (1 slot for refs/int/float/etc., 2 slots
+// for `JLong`/`JDouble`) the existing slot is reused so `max_locals`
+// doesn't grow per re-bind — keeping the StackMapTable frame-locals
+// list lean (#1682).
 pub func allocSlot(ctx: in FuncCtx, name: in String, ty: in JvmType): Int {
+  val width = jvmTypeSlotWidth(ty)
+  match mapGet(ctx.slots, name) {
+    case Some(existing) -> {
+      val prevTy = match mapGet(ctx.types, name) {
+        case Some(t) -> t
+        case None    -> ty
+      }
+      if jvmTypeSlotWidth(prevTy) == width {
+        ctx.types.remove(name)
+        ctx.types.add(name, ty)
+        return existing
+      }
+      ctx.slots.remove(name)
+    }
+    case None -> {}
+  }
   val slot = ctx.slotTicker.count
-  if ctx.slots.containsKey(name) { ctx.slots.remove(name) }
   ctx.slots.add(name, slot)
   if ctx.types.containsKey(name) { ctx.types.remove(name) }
   ctx.types.add(name, ty)
   // Advance the ticker.
   ctx.slotTicker.add(0)
-  match ty {
-    case JLong   -> { ctx.slotTicker.add(0) }
-    case JDouble -> { ctx.slotTicker.add(0) }
-    case _       -> {}
-  }
+  if width == 2 { ctx.slotTicker.add(0) }
   slot
+}
+
+// Slot width in JVM local-variable units: 2 for `JLong`/`JDouble`, 1 for
+// everything else.  Mirrors ECMA JVMS §2.6.1.
+func jvmTypeSlotWidth(ty: in JvmType): Int {
+  match ty {
+    case JLong   -> 2
+    case JDouble -> 2
+    case _       -> 1
+  }
 }
 
 // Look up the slot assigned to `name`.
@@ -2254,6 +2279,32 @@ func lowerGeneralStaticCall(
   // (`assertEqualInt` from `Std.Testing`) and a void-returning call link
   // correctly — the legacy guess below assumed owner=ctx.className and
   // ret=Object, which fails JVM resolution for both.
+  //
+  // Two-stage lookup: a qualified call site (`Std.Testing.assertEqualInt`)
+  // tries the `owner/funcName` key first so it resolves to the explicit
+  // package, even if another package in the bundle exports the same short
+  // name; an unqualified call falls back to the bare-name key (the legacy
+  // single-package shape).  #1680.
+  if path.segments.count > 1 {
+    val ownerSegs: List[String] = newList()
+    var si = 0
+    while si < path.segments.count - 1 {
+      ownerSegs.add(path.segments[si])
+      si = si + 1
+    }
+    val qkey = joinSegments(ownerSegs, "/") + "/" + funcName
+    match mapGet(ctx.funcSigs, qkey) {
+      case Some(sig) -> {
+        insns.add(LInvokestatic(
+          owner  = sig.owner,
+          name   = funcName,
+          params = sig.params,
+          ret    = sig.ret))
+        return sig.ret
+      }
+      case None -> ()
+    }
+  }
   match mapGet(ctx.funcSigs, funcName) {
     case Some(sig) -> {
       insns.add(LInvokestatic(
@@ -2713,12 +2764,21 @@ func lowerTryCatchExpr(
       }
       case None -> insns.add(LPop)
     }
-    val _ = lowerBlockExpr(ctx, insns, c.body)
+    val catchBodyTy = lowerBlockExpr(ctx, insns, c.body)
     match resultTy {
       case JVoid -> ()
       case _     -> {
         if rslot < 0 { rslot = allocSlot(ctx, rslotName, resultTy) }
-        emitStore(insns, rslot, resultTy)
+        // Use the lowered catch-body type for the store so an arm whose
+        // actual produced kind differs from the try-body type (a documented
+        // type-checker gap) emits the matching `istore`/`astore` variant
+        // and the JVM verifier doesn't reject a mismatched store (#1681).
+        // The result slot is sized by `resultTy`; widths must match, which
+        // the type-checker normally guarantees.
+        match catchBodyTy {
+          case JVoid -> emitStore(insns, rslot, resultTy)
+          case _     -> emitStore(insns, rslot, catchBodyTy)
+        }
       }
     }
     insns.add(LGoto(label = afterL))
@@ -2936,12 +2996,25 @@ pub func lowerFunc(decl: in FunctionDecl, pkgName: in String, className: in Stri
               // mode `lowerBlock` here popped the tail, leaving the stack empty
               // for the synthesised `ireturn` (VerifyError: operand stack
               // underflow).
-              val _ = lowerBlockExpr(ctx, insns, block)
+              val tailTy = lowerBlockExpr(ctx, insns, block)
+              // `try { … } finally { … }` in tail position falls back to
+              // statement-mode lowering inside `lowerBlockExpr` and reports
+              // `JVoid` (value discarded by the fallback).  Emitting a typed
+              // `ireturn`/`areturn` next would underflow the operand stack
+              // (VerifyError) — so a tail value of `JVoid` requires the
+              // value-less `return` instead (#1683).
+              if not endsWithReturn(insns) {
+                match tailTy {
+                  case JVoid -> emitReturn(insns, JVoid)
+                  case _     -> emitReturn(insns, retTy)
+                }
+              }
             }
           }
-          // Emit a final return if the body didn't already end in one.  After
-          // `lowerBlockExpr` the tail value is on the stack, so this returns it.
-          if not endsWithReturn(insns) {
+          // For the void path the inner `lowerBlock` did not leave a value on
+          // the stack; close the method with `return` if it didn't already end
+          // in one.  The non-void path returned above.
+          if retTy == JVoid and not endsWithReturn(insns) {
             emitReturn(insns, retTy)
           }
         }
@@ -3432,29 +3505,37 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
   while i < file.items.count {
     match file.items[i].kind {
       case IFunc(decl) -> {
-        if not into.containsKey(decl.name) {
-          val params: List[JvmType] = newList()
-          var pi = 0
-          while pi < decl.params.count {
-            params.add(typeExprToJvm(decl.params[pi].ty, owner))
-            pi = pi + 1
-          }
-          // An async generator's *factory* returns the synthesised generator
-          // object (an Iterable), not its declared element type — so the call
-          // site must store/use a reference, not `decl.ret` (e.g. the `Int`
-          // element type).  Record Object for it; everything else uses the
-          // declared return.
-          val ret =
-            if decl.isAsync and funcBodyContainsYield(decl) {
-              JRef(className = "java/lang/Object")
-            } else {
-              match decl.ret {
-                case Some(te) -> typeExprToJvm(te, owner)
-                case None     -> JVoid
-              }
-            }
-          into.add(decl.name, JvmFuncSig(owner = owner, params = params, ret = ret))
+        val params: List[JvmType] = newList()
+        var pi = 0
+        while pi < decl.params.count {
+          params.add(typeExprToJvm(decl.params[pi].ty, owner))
+          pi = pi + 1
         }
+        // An async generator's *factory* returns the synthesised generator
+        // object (an Iterable), not its declared element type — so the call
+        // site must store/use a reference, not `decl.ret` (e.g. the `Int`
+        // element type).  Record Object for it; everything else uses the
+        // declared return.
+        val ret =
+          if decl.isAsync and funcBodyContainsYield(decl) {
+            JRef(className = "java/lang/Object")
+          } else {
+            match decl.ret {
+              case Some(te) -> typeExprToJvm(te, owner)
+              case None     -> JVoid
+            }
+          }
+        val sig = JvmFuncSig(owner = owner, params = params, ret = ret)
+        // Qualified key (`Std/Testing/assertEqualInt`) is unique across the
+        // bundle, so two packages exporting the same short name (e.g.
+        // `fromString` in `Std.Json` and `Std.Yaml`) no longer collide
+        // silently — call sites with a qualified path resolve via this key
+        // (#1680).
+        val qkey = owner + "/" + decl.name
+        if not into.containsKey(qkey) { into.add(qkey, sig) }
+        // Bare key kept for unqualified intra-package calls (first-wins on
+        // collision, matching pre-1680 behaviour for compatibility).
+        if not into.containsKey(decl.name) { into.add(decl.name, sig) }
       }
       case _ -> {}
     }
