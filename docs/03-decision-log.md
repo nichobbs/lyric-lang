@@ -5036,9 +5036,10 @@ affect runtime correctness or code generation (the codegen emits the correct typ
 from the function declaration).  Fixing the type-checker async return-type
 inference is tracked as a follow-up in #2070.
 
-**Regression gate:** 847/847 emitter tests + 84/84 CLI tests green.  All 5 Phase
-B.0 tests in `lyric-compiler/lyric/async_sm_self_test.l` pass.  Phase A tests
-(`async_extern_self_test.l`) unaffected.
+**Regression gate:** 847/847 emitter tests + 84/84 CLI tests green.  All 7 Phase
+B.0 tests in `lyric-compiler/lyric/async_sm_self_test.l` pass (tests 1–5 cover
+non-void, void, and sequential paths; tests 6–7 cover explicit-return epilogue
+paths added for #2256).  Phase A tests (`async_extern_self_test.l`) unaffected.
 
 ---
 ## Decisions deferred to v2 or later

@@ -321,7 +321,7 @@ pub record CodegenCtx {
   // MemberRef tokens for ATMB (void) instance methods.
   tokAtmbCreate:    Int   // registered for MemberRef table ordering; not emitted (ATMB.Create() removed in .NET 7+, replaced by newobj zero-init)
   tokAtmbSetResult: Int   // ATMB::SetResult(): void  call (instance, on managed ptr)
-  tokAtmbGetTask:   Int   // ATMB::get_Task(): Task  callvirt (instance, on managed ptr)
+  tokAtmbGetTask:   Int   // registered for MemberRef table ordering; not emitted directly (get_Task() is called via TypeSpec-parented MemberRef in the kickoff, not through this field)
   tokAtmbStartMr:   Int   // ATMB.Start<!!0>(ref !!0): void  open-generic MemberRef
   // Monotonically-increasing counter for unique SM class names.
   // Pattern: "<funcName>__SM_<ticker>".  Matches AsyncStateMachine.fs convention.
@@ -6682,57 +6682,6 @@ func endsWithReturnMsil(insns: in List[MInsn]): Bool {
   false
 }
 
-// Returns true iff the last non-Nop instruction in `insns` is an unconditional
-// branch to `lbl`.  Used by Phase B.0 SM synthesis to distinguish an
-// explicit-return path (where the patch already stashed the result and branched)
-// from a trailing-expression path (where the value is still on the stack).
-func endsWithBrToLabel(insns: in List[MInsn], lbl: in Int): Bool {
-  var i = insns.count - 1
-  while i >= 0 {
-    match insns[i] {
-      case MBr(l)    -> { return l == lbl }
-      case MNop      -> { i = i - 1 }
-      case _         -> { return false }
-    }
-  }
-  false
-}
-
-// Rebuild `insns` replacing every MRet with [MStloc(rSlot); MBr(lbl)].
-// Used for the non-void Phase B.0 MoveNext body so that explicit `return`
-// statements inside the user body stash their value and branch to the SM
-// epilogue rather than exiting MoveNext before SetResult is called (#2256).
-func patchBodyRetsNonVoid(insns: in List[MInsn], rSlot: in Int, lbl: in Int): List[MInsn] {
-  val out: List[MInsn] = newList()
-  var i = 0
-  while i < insns.count {
-    match insns[i] {
-      case MRet -> {
-        out.add(MStloc(slot = rSlot))
-        out.add(MBr(label = lbl))
-      }
-      case _ -> out.add(insns[i])
-    }
-    i = i + 1
-  }
-  out
-}
-
-// Rebuild `insns` replacing every MRet with MBr(lbl).
-// Used for the void Phase B.0 MoveNext body (#2256).
-func patchBodyRetsVoid(insns: in List[MInsn], lbl: in Int): List[MInsn] {
-  val out: List[MInsn] = newList()
-  var i = 0
-  while i < insns.count {
-    match insns[i] {
-      case MRet -> out.add(MBr(label = lbl))
-      case _ -> out.add(insns[i])
-    }
-    i = i + 1
-  }
-  out
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // §8b. FFI emission for `@externTarget` (#370 + Phase R6).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -7579,7 +7528,7 @@ func synthesizeAsyncSmMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
   // ── MoveNext() ────────────────────────────────────────────────────────────
   // paramCount = 1 (this = ldarg.0).
   // User params are pre-loaded from SM fields into LOCAL slots [0, N-1].
-  var mnInsns: List[MInsn] = newList()
+  val mnInsns: List[MInsn] = newList()
   val mnFctx = makeFuncCtxMsil(pkgName, smFqn, "MoveNext", 1, MVoid)
 
   // Pre-populate slotTicker with one entry for the `this` arg (slot 0) so
@@ -7602,8 +7551,10 @@ func synthesizeAsyncSmMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
     mpre = mpre + 1
   }
 
-  // Reserve the epilogue label.
-  mnFctx.epilogueLabel = freshLabelMsil(mnFctx)
+  // Reserve the epilogue label.  Bind to a local so all references below are
+  // provably the allocated value, not a default-zero coincidence (#2273).
+  val epilogueLabel = freshLabelMsil(mnFctx)
+  mnFctx.epilogueLabel = epilogueLabel
 
   // Lower the user body (Phase B.0: no EAwait nodes in the body).
   match decl.body {
@@ -7611,15 +7562,33 @@ func synthesizeAsyncSmMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
       match body {
         case FBBlock(block) -> {
           if retTy != MVoid {
-            val trailTy = lowerBlockExprMsil(cctx, mnFctx, mnInsns, block)
-            // Allocate result slot before patching so it's available for the
-            // stash instructions inserted by the patch (#2256).
+            // Allocate the result stash slot before lowering the body: the stash
+            // MStloc instructions emitted during patching reference this slot.
             val rSlot = allocSlotMsil(mnFctx, "__sm_result", retTy)
-            // Patch all explicit-return MRet in the body so they stash the
-            // result and branch to the epilogue rather than exiting MoveNext
-            // before SetResult is called (fixes #2256).
-            mnInsns = patchBodyRetsNonVoid(mnInsns, rSlot - 1, epilogueLabel)
-            if not endsWithBrToLabel(mnInsns, epilogueLabel) {
+            val bodyInsns: List[MInsn] = newList()
+            val trailTy = lowerBlockExprMsil(cctx, mnFctx, bodyInsns, block)
+            // Inline patch: replace every MRet with [MStloc(rSlot-1); MBr(epilogueLabel)]
+            // so that explicit `return` statements stash the result and branch to the SM
+            // epilogue rather than exiting MoveNext before SetResult is called (#2256).
+            // Track whether the last copied instruction was a patched-return to determine
+            // whether the trailing-expression value is still on the stack.
+            var lastWasPatchedRet = false
+            var pbi = 0
+            while pbi < bodyInsns.count {
+              match bodyInsns[pbi] {
+                case MRet -> {
+                  mnInsns.add(MStloc(slot = rSlot - 1))
+                  mnInsns.add(MBr(label = epilogueLabel))
+                  lastWasPatchedRet = true
+                }
+                case _ -> {
+                  mnInsns.add(bodyInsns[pbi])
+                  lastWasPatchedRet = false
+                }
+              }
+              pbi = pbi + 1
+            }
+            if not lastWasPatchedRet {
               // Trailing-expression path: value still on stack — coerce and stash.
               coerceTrailingToRetMsil(cctx, mnInsns, trailTy, retTy)
               mnInsns.add(MStloc(slot = rSlot - 1))
@@ -7641,16 +7610,24 @@ func synthesizeAsyncSmMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
             val tsKey  = "atmb1_ts_" + taKey
             val tsRow  = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
             val srArgs: List[MsilType] = newList()
-            srArgs.add(MTypeVar(index = 0))
+            srArgs.add(MTypeVar(index = 0))  // VAR 0, not the concrete retTy — see FBBlock note above
             val srSig  = buildInstanceMethodSig(srArgs, MVoid)
             val srKey  = "atmb1_setresult_mr_" + taKey
             val srMrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "SetResult", srKey, srSig)
             mnInsns.add(MCall(methodToken = 0x0A000000 + srMrRow))
             mnInsns.add(MRet)
           } else {
-            lowerBlockMsil(cctx, mnFctx, mnInsns, block)
-            // Patch all explicit-return MRet to branch to epilogue (#2256).
-            mnInsns = patchBodyRetsVoid(mnInsns, epilogueLabel)
+            val bodyInsns2: List[MInsn] = newList()
+            lowerBlockMsil(cctx, mnFctx, bodyInsns2, block)
+            // Inline patch: replace every MRet with MBr(epilogueLabel) (#2256).
+            var pbi2 = 0
+            while pbi2 < bodyInsns2.count {
+              match bodyInsns2[pbi2] {
+                case MRet -> mnInsns.add(MBr(label = epilogueLabel))
+                case _ -> mnInsns.add(bodyInsns2[pbi2])
+              }
+              pbi2 = pbi2 + 1
+            }
             // SM epilogue — always reached.
             mnInsns.add(MLabel(id = epilogueLabel))
             mnInsns.add(MLdarg(slot = 0))

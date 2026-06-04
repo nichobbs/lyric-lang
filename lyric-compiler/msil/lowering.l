@@ -961,13 +961,13 @@ pub func ctxAddTypeSpec(ctx: in LoweringCtx, sigKey: in String,
 }
 
 // Build the #Blob encoding for a MethodSpec instantiation signature
-// (ECMA-335 §II.23.2.15): GENRICINST (0x0A), compressed generic-argument
+// (ECMA-335 §II.23.2.15): GENERICINST (0x0A), compressed generic-argument
 // count, then each argument type.  Distinct from the GENERICINST *type*
 // signature (0x15) used by TypeSpec — a MethodSpec signature names the
 // method's type arguments, not a generic type instantiation.
 pub func buildMethodSpecBlob(argTypes: in List[MsilType]): List[Byte] {
   val w = bufNew()
-  bufU1(w, 0x0A)  // GENRICINST (method instantiation)
+  bufU1(w, 0x0A)  // GENERICINST (method instantiation)
   writeCompressedInt(w, argTypes.count)
   var i = 0
   while i < argTypes.count {
@@ -1003,7 +1003,7 @@ pub func buildMethodSpecBlobWithCtx(ctx: in LoweringCtx,
   val smRow    = findTypeDefRowByName(ctx, smFqn)
   val smCoded  = tdrTypeDef(smRow)  // TypeDefOrRef coded-index: row*4+0
   val w = bufNew()
-  bufU1(w, 0x0A)                 // GENRICINST (method instantiation)
+  bufU1(w, 0x0A)                 // GENERICINST (method instantiation)
   writeCompressedInt(w, 1)       // 1 generic argument
   bufU1(w, 0x12)                 // ELEMENT_TYPE_CLASS (SM is a sealed class)
   writeCompressedInt(w, smCoded)
