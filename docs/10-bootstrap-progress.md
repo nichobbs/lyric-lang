@@ -19623,3 +19623,29 @@ opaque cross-package → T0100; opaque same-package clean). Full regression gree
 (847/847 emitter, 84/84 CLI bridge); auth (29/29), session (31/31), and the
 `LYRIC_LOAD_COMPILER=1` weaver self-test (18/18) — all green with zero false
 positives across the compiler's many record constructions.
+
+### D-progress-399 — self-hosted type checker: opaque pattern-match representation-hiding (#1485, docs/41 C10)
+
+**Status:** Shipped — completes #1485 (cross-package opaque representation-hiding).
+
+Building on the cross-package opaque *construction* block (T0100, #2006), the
+`EMatch` arm now also rejects cross-package pattern-matching of an opaque type's
+hidden representation (**T0102**). `checkOpaquePatternHiding` resolves the
+scrutinee type to an *imported* opaque symbol (`importedOpaqueName`) and flags
+any arm whose pattern *cracks the representation* — a record pattern, or a
+constructor pattern with sub-patterns (`patternCracksRepr`). Bare bindings and
+wildcards are legal (the value is opaque but usable), and same-package matches
+are unaffected.
+
+With this, C10 is resolved: construction (T0100), pattern-match (T0102), and
+field reads (already non-resolving `TyError`) are all hidden cross-package.
+
+Coverage: 3 new `typechecker_self_test.l` cases (cross-package destructure →
+T0102, cross-package binding arm clean, same-package destructure clean). Full
+regression green (847/847 emitter, 84/84 CLI bridge); auth (29/29), session
+(31/31), and the `LYRIC_LOAD_COMPILER=1` weaver self-test (18/18) all green with
+zero false positives.
+
+(Build note: a clean `Lyric.Cli.Aot` rebuild was needed locally — an incremental
+build had stale-globbed `stage1/Lyric.*.dll` and omitted a newly-added
+`Lyric.CliSuggest` from `deps.json`; unrelated to this change.)

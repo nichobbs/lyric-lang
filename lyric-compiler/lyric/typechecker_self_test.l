@@ -875,6 +875,29 @@ func testOpaqueConstructSamePackage(): Unit {
   assertTrue(not hasDiagCode(parseCheck(src), "T0100"), "opaque construction same-package: no T0100")
 }
 
+// #1485: pattern-matching an opaque type's representation (record/constructor
+// pattern) is forbidden outside its declaring package (T0102); binding /
+// wildcard arms remain legal.
+
+func testOpaquePatternMatchCrossPackage(): Unit {
+  val imp = importedItemsOf("package Lib\npub opaque type Box { item: Int }\n")
+  val pr  = parse("package App\nfunc f(b: in Box): Int { match b { case Box(x) -> 1; case _ -> 0 } }\n")
+  val cr  = checkWithImports(pr.file, imp)
+  assertTrue(hasDiagCode(cr, "T0102"), "cross-package opaque representation match: T0102")
+}
+
+func testOpaqueBindingMatchCrossPackageOk(): Unit {
+  val imp = importedItemsOf("package Lib\npub opaque type Box { item: Int }\n")
+  val pr  = parse("package App\nfunc f(b: in Box): Int { match b { case other -> 0 } }\n")
+  val cr  = checkWithImports(pr.file, imp)
+  assertTrue(not hasDiagCode(cr, "T0102"), "cross-package opaque binding match: no T0102")
+}
+
+func testOpaquePatternMatchSamePackageOk(): Unit {
+  val src = "package P\nopaque type Box { item: Int }\nfunc f(b: in Box): Int { match b { case Box(x) -> 1; case _ -> 0 } }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0102"), "same-package opaque destructure: no T0102")
+}
+
 func main(): Unit {
   testEmptySource()
   testFuncRegistered()
@@ -957,5 +980,8 @@ func main(): Unit {
   testCtorKnownFieldsOk()
   testOpaqueConstructCrossPackage()
   testOpaqueConstructSamePackage()
+  testOpaquePatternMatchCrossPackage()
+  testOpaqueBindingMatchCrossPackageOk()
+  testOpaquePatternMatchSamePackageOk()
   println("typechecker self-test: ok")
 }
