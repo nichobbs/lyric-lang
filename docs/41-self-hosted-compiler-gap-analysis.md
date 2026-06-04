@@ -163,7 +163,7 @@ supporting all language features."
 | C1 | Type checker is advisory on the single-file build path (`reportDiagnostics`), fatal on the project path (`reportAndAbort`). Type-broken single files compile to broken IL silently; same source diverges between paths. | `bridge.l:92` vs `bridge.l:395` | S (flip) gated on C2 |
 | C2 | Type checker is unsound: several expr forms infer `TyError`, a universal unifier; no record-ctor checking; `index`/`lambda`/`if`/`match`-branch results untyped. **Shipped:** match exhaustiveness (T0016, #1483 split 1: unions/enums/`Bool`/unbounded scalars; `EMatch` infers its scrutinee); `EPropagate` (`?`) unwrap typing (#1483 split 2a). **`EIndex` unblocker shipped (2b, #1901, D-progress-405):** the numeric/character conversion-method family `.toByte()`/`.toInt()`/`.toLong()`/`.toChar()`/`.toDouble()` now type-checks (target primitive) and codegens to native width conversions on **both** targets (MSIL `conv.*`; JVM `i2l`/`l2i`/… with `.toByte()` masked to MSIL's unsigned `conv.u1` semantics), replacing the throw-stub. **`EIndex` element typing shipped (2b, #1901, D-progress-407):** `recv[i]` now carries the receiver's element type — `slice[T]`/`array[N,T]` → `T`, `String` → `Char`, `List[T]` → `T`, `Map[K,V]` → `V` — so byte/char indexing is sound (`a[i].toInt()` migrations in `lyric-auth`). **`EBlock`/`EUnsafe`/`EResult` shipped (D-progress-408, D081):** enclosing-function context (`returnTy`/`genericNames`) is now carried on `Scope`, so a value-position brace/`unsafe` block types as its trailing expression via a divergence-aware `checkBlock` (a `return`/`throw`/`break`/`continue`-terminated block is `Never`), and `result` types as the return type. **Parser statement-end fix shipped (#1943, D-progress-410):** a brace-terminated `if`/`match` in statement position is now a complete statement (not a binary-operator LHS), fixing the `if { return … }`-then-`-1` mis-parse that silently miscompiled the fall-through value — clearing the prerequisite for `EIf`-branch typing. **`EIf`-branch typing shipped (#1943, D-progress-414):** an `if`/`else` takes the unified type of its branches (T0067 on a mismatch); an `if` without `else` is `Unit`; a diverging branch is `Never` and is absorbed. Remaining `TyError` forms: `EMatch`-branch unification (needs pattern-variable binding), `ELambda`, `ETypeApp`, `EForall`/`EExists`, `EAssign`, tuple-destructure sub-bindings, record-ctor argument checking. | `typechecker_exprs.l`, `typechecker_types.l:130-131`, `typechecker_stmts.l:14-51` | L |
 | C3 | ~~`?` propagation (`EPropagate`) is a no-op — `x?` compiles as `x`, no unwrap, no early-return.~~ **RESOLVED (#1475).** The `Lyric.Propagate` middle-end pass (`lyric-compiler/lyric/propagate.l`, run from `bridge.l` after the elaborator) rewrites `e?` into a `match` that unwraps `Ok`/`Some` and early-returns `Err`/`None`, keyed off the enclosing function's declared return type; a non-`Result`/`Option` enclosing function is rejected with `F0020`. (`try?`/`ETry` is never produced by the self-hosted parser, so its codegen arm is dead.) Verified by `propagate_self_test.l` (incl. `?` inside a `while` loop, after #1779 fixed the `List[ValueType]` element-comparison miscompile). Note: `?` inside an impl/interface method body is still blocked by a pre-existing early-`return` codegen defect, #1784. | `propagate.l`; `bridge.l` | M |
-| C4 | `await`/`spawn` lower synchronously; `async func` returns a bare value, not `Task[T]`; no `IAsyncStateMachine`. Silent miscompile of every async program. **Planned/de-risked in epic #2070** (full IL blueprint, class-SM + AST-pre-pass synthesis, sequenced slices). | `codegen.l` `EAwait`/`ESpawn` (2625-2653); no state machine in `msil/*` | XL (#2070) |
+| C4 | ~~Silent miscompile of `@externTarget async func`~~ **Phase A shipped (D-progress-415 / D085):** `@externTarget async func` now correctly unwraps `Task<T>→T` via `Task<T>::get_Result()` / `Task::Wait()` after the BCL call; `EAwait` is correct as a no-op (all callees return T synchronously). **Remaining:** user-defined `async func` still returns T (not `Task<T>`), so C# interop and proper concurrent async are blocked; no `IAsyncStateMachine` synthesis; `ESpawn` no-op. Phase B (SM synthesis, `Task<T>` return, concurrency) tracked in epic #2070. | `codegen.l` `EAwait`/`ESpawn`; `async_sm.l` not yet created | L (#2070 Phase B) |
 | C5 | Async generators use eager collect-all into `List<object>`, not lazy `IEnumerable`/`IAsyncEnumerable`; return type forced to List; unbounded generators buffer forever. **Planned in epic #2070** (slice 5: eager-producer `IAsyncEnumerable[T]` class first, then async-iterator on the await engine). | `codegen.l` generator path (6953-7135) | XL (#2070) |
 | C6 | **Fixed (#1530).** Indexed assignment `a[i] = v` previously silently discarded the store (value evaluated then popped); the `EIndex` assignment target now emits `List[object]::set_Item`. Compound indexed forms (`a[i] += v`) hard-fail with a clear build error pending element-type plumbing (#1481). | `codegen.l` `lowerAssignExprMsil` EIndex arm | Resolved |
 | C7 | ~~`defer` runs its body inline immediately, not at scope exit.~~ **Resolved (#1477 / D-progress-374):** `defer { D }` lowers the rest of its scope to `try { rest } finally { D }`, so D runs on fall-off, early `return` (via the function epilogue, #1477 foundation), `break`/`continue` (via `leave`), and exception unwind; multiple defers nest in reverse order. | `codegen.l` `lowerStmtsFromMsil` / `lowerStmtsExprFromMsil` | ✅ |
@@ -366,28 +366,29 @@ should precede feature-completion work, because they stop *silent* wrongness.
 - Wire `==`/`GetHashCode` (and `Object.Equals` overrides) to the derived methods
   so structural equality and hashing actually work (H1).
 
-### Band 3 — Async (CRITICAL)
-- Port `AsyncStateMachine.fs` + `AsyncGenerator.fs` to self-hosted MSIL codegen
-  (state machine, `Task[T]`/`ValueTask[T]` builders, lazy `IAsyncEnumerable[T]`,
-  `CancellationToken` threading). **Tracked, planned, and de-risked in epic
-  #2070** — which carries the full IL blueprint (from a deep read of the F#
-  sources), the settled design decisions (class state machine; synthesize it as
-  an AST pre-pass in the `liftLambdasMsil` slot so `addPackageTokens` budgets its
-  rows), the ranked emitter-capability gaps (`MLdflda`; BCL async
-  `TypeRef`/`MemberRef`/`MethodSpec` wiring — the generic-instance substrate is
-  already present; `MethodImpl` rows for `SetStateMachine`), and a five-slice
-  sequence (Phase A → single await → multi-await + promoted locals → extern
-  pass-throughs + `spawn` → lazy generators).
-- **Correction to the earlier "make it panic" recommendation:** a fail-loud
-  interim is **not** viable. 139 async funcs across `Std.Http`/`Std.Process`/
-  `Std.Rest`/`Std.Task` + ecosystem compile today via the no-op synchronous
-  lowering and their tests pass; panicking would break the stdlib build. Because
-  every one of those uses `await`, the real-state-machine flip is **all-or-
-  nothing**: async codegen cannot emit `Task[T]`-returning machines until `await`
-  unwraps correctly everywhere. The first landable PR is therefore the whole core
-  engine (Phase A + single/multi await + extern pass-throughs), with the stdlib
-  async tests as the regression gate. A `Task.Run`-blocking shortcut is a
-  regression from the F# path's real `IAsyncStateMachine` and is out of bounds.
+### Band 3 — Async (HIGH, Phase A complete)
+
+**Phase A shipped (D-progress-415):** `@externTarget async func` silent
+miscompile fixed.  `MLdflda` instruction added.  `Task`/`Task`1` TypeRefs and
+`Task::Wait()` MemberRef registered.  `emitExternTargetBody` now unwraps
+`Task<T>→T` synchronously after the BCL call.  All 847 stdlib tests pass.
+
+**Remaining for Phase B (still tracked in #2070):**
+- Port `AsyncStateMachine.fs` to self-hosted MSIL codegen: synthesise
+  `IAsyncStateMachine`-implementing SM struct TypeDef + fields + MoveNext (with
+  `GetAwaiter()`/`GetResult()` for each inner await) + kickoff that returns
+  `Task<T>`.
+- `AsyncTaskMethodBuilder<T>`: `Create()`, `Start<SM>(ref SM)`, `SetResult(T)`,
+  `SetException(Exception)`, `get_Task()` MemberRef/MethodSpec tokens.
+- `Task<T>`-returning user-defined `async func` (needed for C# interop and
+  concurrent async).
+- `MethodImpl` rows for `IAsyncStateMachine::MoveNext` /
+  `IAsyncStateMachine::SetStateMachine`.
+- `ESpawn` implementation.
+- Lazy `IAsyncEnumerable<T>` generators (C5).
+
+The `addMethodImpl` function in `lowering.l` exists but is never called; wiring
+it for SM synthesis is the main remaining lowering gap.
 
 ### Band 4 — Feature completion (HIGH)
 - User generic types (monomorphize or reify — decision required), protected-type
