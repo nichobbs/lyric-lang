@@ -652,19 +652,23 @@ Trampoline signatures must match the `extern func` parameter types exactly.
 
 **Depends on:** Nothing from native.
 
-**Files to modify:** `lyric-compiler/lyric/cfg.l`, `bootstrap/src/Lyric.Emitter/Cfg.fs`
+**Files to modify:** `lyric-compiler/lyric/cfg.l`
 
 **What to implement:**
 
-Extend `applyCfgErasure` to accept a `target: String` field in the erasure input.
-When evaluating a `@cfg(target = "X")` predicate, check if `target == X`.
+Extend `applyCfgErasure` in `cfg.l` to accept a `target: String` field in the
+erasure input. When evaluating a `@cfg(target = "X")` predicate, check if
+`target == X`.
 
 The predicate `@cfg(target = "native")` evaluates to true only when
 `target == "native"` in the erasure input.
 
-Update `bootstrap/src/Lyric.Emitter/Cfg.fs` (the F# counterpart) to match.
 Update the CLI (`cli.l`) to pass `target = "native"` in the erasure request when
 `--target native` is specified.
+
+The F# bootstrap `Cfg.fs` does **not** need to be updated. The native target is
+only reachable through the self-hosted Lyric CLI (`cli.l`); the F# bootstrap
+emitter does not emit native code and never evaluates `@cfg(target = "native")`.
 
 ---
 
@@ -809,17 +813,34 @@ val result = Process.run("clang", clangArgs ++ ["--target=" ++ triple, "-o", out
 
 ---
 
-### N6.2 — `SelfHostedLlvm.fs` (F# bridge shim)
+### N6.2 — Verify `Llvm.Bridge` is discoverable from the Lyric CLI
 
 **Depends on:** N6.1
 
-**Files to create:** `bootstrap/src/Lyric.Cli/SelfHostedLlvm.fs`
+**No new files.** The native target is a user-facing compilation target invoked
+exclusively through the self-hosted Lyric CLI (`lyric-compiler/lyric/cli.l`),
+which dispatches into `Llvm.Bridge.compileToNative` directly — the same pattern
+used for MSIL and JVM bridges within the Lyric CLI package.
 
-Mirror `SelfHostedMsil.fs` exactly. Expose:
-```fsharp
-let compileToNative (source: string) (outputPath: string)
-                    (triple: string) (optLevel: string) : bool
-```
+No F# shim (analogous to `SelfHostedMsil.fs`) is needed or permitted. The
+`SelfHostedMsil.fs` / `SelfHostedJvm.fs` F# shims exist solely to drive the
+self-hosted MSIL and JVM pipelines **from the F# test harness** during bootstrap.
+The native target does not participate in the bootstrap pipeline; it is compiled
+and run end-to-end through the AOT Lyric CLI binary.
+
+**What to verify:**
+
+- The `Llvm` package is listed in the `Lyric.Cli` import closure so that
+  `lyric-compiler/llvm/bridge.l` is compiled into the stage-1 DLL bundle when
+  `INCLUDE_LLVM_BRIDGE=1` is set in `scripts/bootstrap.sh`.
+- `lyric build hello.l --target native` routes to `Llvm.Bridge.compileToNative`
+  and produces a runnable ELF / Mach-O binary.
+
+**Acceptance criteria:**
+
+- `./bin/lyric build examples/hello.l --target native -o hello` exits 0 and
+  `./hello` prints "Hello, world!".
+- No new F# files are created.
 
 ---
 
@@ -830,8 +851,16 @@ let compileToNative (source: string) (outputPath: string)
 **Files to modify:**
 - `lyric-compiler/lyric/cli.l` — add `case Native` to `CompileTarget`, parse
   `--target native`, parse `--triple`, parse `--opt`, route to `Llvm.Bridge`.
-- `bootstrap/src/Lyric.Emitter/Emitter.fs` — add `| Native` to `CompileTarget` F# type.
-- `bootstrap/src/Lyric.Cli/Program.fs` — route `--target native` to `SelfHostedLlvm`.
+
+The F# bootstrap files (`Emitter.fs`, `Program.fs`) do **not** need changes.
+The F# `CompileTarget` type is an internal bootstrap implementation detail used
+only for the `.NET` and `.jvm` bootstrap paths; `--target native` is exclusively
+a user-facing flag dispatched through the self-hosted Lyric CLI. Adding `| Native`
+to the F# type would create dead code and violate the no-new-F# policy.
+
+The AOT entry point (`Lyric.Cli.Aot`) already trampolines into
+`Lyric.Cli.Program.main`, so any new `--target` case added to `cli.l` is
+automatically available to the user without F# changes.
 
 ---
 
@@ -896,14 +925,26 @@ Steps:
 
 ---
 
-### N7.2 — Emitter test suite integration
+### N7.2 — Native self-test discovery via `lyric test`
 
-**Files to modify:**
-`bootstrap/tests/Lyric.Emitter.Tests/StdlibLyricTests.fs` or equivalent runner.
+**No F# changes.** Native self-tests (`llvm_self_test_n*.l`) are run via
+`lyric test --target native`, exactly as the CI workflow in N7.1 does. The
+`lyric test` discovery mechanism in `lyric-compiler/lyric/test_synth/test_synth.l`
+handles `@test_module` files generically; it does not need extending for the
+native target.
 
-Discover `lyric-compiler/llvm/llvm_self_test_n*.l` and add them to the F# test
-suite under a "Native backend" category, gated on `LYRIC_NATIVE_ENABLED=1`
-environment variable (so existing CI doesn't need clang to pass).
+If the existing `lyric test --target native` discovery path has a gap (e.g., it
+does not yet accept `--target` for native), fix the gap in
+`lyric-compiler/lyric/cli.l` and/or `test_synth.l` — do not route around it via
+an F# test runner shim.
+
+**Files to modify (only if a gap is found):** `lyric-compiler/lyric/cli.l`,
+`lyric-compiler/lyric/test_synth/test_synth.l`.
+
+**Acceptance criteria:**
+
+- `lyric test lyric-compiler/llvm/llvm_self_test_n1.l --target native` exits 0.
+- No modifications to any file under `bootstrap/tests/`.
 
 ---
 
@@ -953,6 +994,7 @@ N3.1 ─── N3.2 ─── N3.3 ─── N3.4 ─── N3.5
                                                 │
                                                 ▼
                                         N7.1 ─ N7.2 ─ N7.3
+
 ```
 
 Within each phase, items with no intra-phase dependencies can be worked in parallel.

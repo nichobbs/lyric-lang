@@ -4608,6 +4608,292 @@ explicitly excluded.  The synchronous approach:
 
 ---
 
+## D-N-001 — LLVM integration strategy: emit `.ll` text, shell out to clang
+
+**Status:** ACCEPTED — native backend Phase 1.
+
+**Decision:** The native backend emits textual LLVM IR (`.ll` files) and shells
+out to `clang` as a universal driver to compile and link the result. No LLVM
+library headers or linkage are required by the Lyric compiler itself.
+
+**Alternatives:**
+- Link against `libLLVM` and call the LLVM C API directly.
+- Use `llc` and `lld` separately.
+- Emit native assembly by hand without LLVM.
+
+**Rationale:**
+- `clang` is universally available (macOS ships with Xcode CLI tools; Linux
+  needs one `apt install clang`). `llc` and `lld` are NOT bundled with clang.
+- Zero runtime dependency on LLVM headers — LLVM version upgrades do not require
+  recompiling the Lyric compiler.
+- `clang` handles optimization, object emission, linking, ABI, and startup code
+  with a single invocation.
+- The `.ll` format is stable across LLVM major versions.
+
+Full detail: `native/plan/01-design-decisions.md` §D-N-001.
+
+---
+
+## D-N-002 — Union/tagged-union memory layout: in-place tagged struct
+
+**Status:** ACCEPTED — native backend Phase 1.
+
+**Decision:** Union values are heap-allocated structs with: ARC header (rc +
+dtor), a 32-bit discriminant, and an inline payload sized to the largest case.
+
+**Alternatives:**
+- Pointer-to-payload (indirect boxing of case data — extra allocation per case).
+- Fat pointer with out-of-line storage.
+
+**Rationale:**
+- No extra allocation beyond the union itself.
+- Discriminant and payload are in the same cache line for the common case.
+- Matches Rust `enum`, Swift `enum with associated values`, C tagged union.
+- The monomorphizer knows all payload sizes at compile time.
+- Stack allocation (escape analysis) is a clean future optimisation (Phase 3).
+
+Full detail: `native/plan/01-design-decisions.md` §D-N-002.
+
+---
+
+## D-N-003 — Panic / exception model: `abort()`, no stack unwinding
+
+**Status:** ACCEPTED — native backend Phase 1.
+
+**Decision:** All runtime panics (contract violations, bounds failures, OOM) call
+`lyric_panic_msg()` which writes a diagnostic to stderr then calls `abort()`. No
+LLVM landingpads, no DWARF unwind tables, no `defer` in Phase 1.
+
+**Alternatives:**
+- LLVM `landingpad` / C++ exception ABI (enables `defer` / structured cleanup).
+- `longjmp`-based panic recovery.
+
+**Rationale:**
+- Landingpads require DWARF unwind tables in every function (~20% binary size),
+  a personality function, and `libunwind`.
+- `abort()` is one instruction after the diagnostic write.
+- If `defer` is added in Phase 2, cleanup-only landingpads can be added without
+  changing the abort architecture — the designs are compatible.
+
+Full detail: `native/plan/01-design-decisions.md` §D-N-003.
+
+---
+
+## D-N-004 — Async / await strategy: LLVM coro.* stackless coroutines (Phase 2)
+
+**Status:** ACCEPTED — mechanism designed in Phase 1; implementation is Phase 2.
+
+**Decision:** `async func` / `await` on the native target use LLVM's built-in
+coroutine intrinsics (`llvm.coro.*`). The `CoroSplit` pass synthesises the
+ramp / resume / destroy functions. Phase 1 emits a hard error (N0099) for any
+`async func` targeting native.
+
+**Alternatives:**
+- Green threads / fibers (requires a full runtime stack switcher).
+- Hand-synthesised state machine (the MSIL approach) without coro intrinsics.
+- POSIX `ucontext` / `setjmp`-based coroutines.
+
+**Rationale:**
+- LLVM coro is the most principled approach: the compiler emits a flat function;
+  the optimiser does the frame extraction and split.
+- No platform-specific stack-switching code.
+- Compatible with LLVM's ARC analysis passes in Phase 2.
+- The mechanism is fully designed in `native/plan/06-async-design.md`; Phase 2
+  agents have no design work to do.
+
+Full detail: `native/plan/01-design-decisions.md` §D-N-004 and
+`native/plan/06-async-design.md`.
+
+---
+
+## D-N-005 — ARC cycle-collection policy: NativeWeak only, no background collector
+
+**Status:** ACCEPTED — native backend Phase 1.
+
+**Decision:** `NativeWeak[T]` is the only cycle-breaking primitive. There is no
+background cycle detector in Phase 1. A strong reference increments RC;
+`NativeWeak[T]` does not. `NativeWeak[T].upgrade()` returns `Option[T]`.
+
+**Alternatives:**
+- Tracing cycle detector running periodically (Swift's cycle collector approach).
+- Trial deletion (CPython-style reference-counted cycle detection).
+
+**Rationale:**
+- A background cycle detector adds latency variability; `NativeWeak` gives
+  deterministic performance.
+- Static cycle prevention (mode checker detects self-referential strong field
+  graphs and requires `NativeWeak`) is a purely additive Phase 2 analysis that
+  does not change runtime behaviour.
+
+Full detail: `native/plan/01-design-decisions.md` §D-N-005.
+
+---
+
+## D-N-006 — String representation: RC-managed heap object with inline UTF-8 data
+
+**Status:** ACCEPTED — native backend Phase 1.
+
+**Decision:** `String` values are `%LyricString*` — a heap object carrying an ARC
+header, a byte-length, a capacity, and inline UTF-8 data. String literals are
+emitted as static constants with `rc = INT32_MAX` (saturated, never freed).
+
+**Alternatives:**
+- Small-string optimisation (SSO) — inline strings up to 15 bytes in the pointer
+  slot.
+- Immutable interned strings (intern pool with de-duplication).
+- C-style NUL-terminated strings (no length).
+
+**Rationale:**
+- Uniform `%LyricString*` type at every call site; static and heap strings have
+  the same layout so `Std.Console.println` works transparently with both.
+- SSO adds a branch in every string operation; complexity cost exceeds benefit
+  for Phase 1.
+- Interning requires a global hash table; not appropriate for general-purpose strings.
+
+Full detail: `native/plan/01-design-decisions.md` §D-N-006 and
+`native/plan/03-type-mapping.md` §String.
+
+---
+
+## D-N-007 — FFI syntax: new `extern func name(args): Ret = "symbol"` declaration form
+
+**Status:** ACCEPTED — native backend Phase 1.
+
+**Decision:** A new `extern func name(params): Ret = "symbol"` item form is added
+to the parser (`IExternFunc` in the AST), emitted as an LLVM `declare`. This form
+is only permitted in `_kernel_native/` files and `@unsafe_ffi`-annotated functions.
+The existing `@externTarget` annotation machinery is NOT reused.
+
+**Alternatives:**
+- Reuse `@externTarget` (the .NET BCL binding mechanism) with a new attribute value.
+- C `#include`-style header import.
+
+**Rationale:**
+- `@externTarget` encodes BCL member-qualified names (`System.IO.File.ReadAllText`);
+  `extern func` carries a bare C symbol name (`"write"`). The two are orthogonal
+  and coexist in the same codebase.
+- A dedicated syntax makes it obvious which declarations cross the native ABI
+  boundary.
+
+Full detail: `native/plan/01-design-decisions.md` §D-N-007 and
+`native/plan/05-ffi-design.md`.
+
+---
+
+## D-N-008 — Platform Phase 1 scope: Linux x86-64 + AArch64, macOS AArch64
+
+**Status:** ACCEPTED — native backend Phase 1.
+
+**Decision:** Phase 1 targets three LLVM triples:
+`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`.
+Windows (PE/COFF, Win32 API, MSVC/MinGW toolchain) is deferred to Phase 2.
+
+**Alternatives:**
+- Add Windows Phase 1 (requires Win32 API `_kernel_native/` layer and PE/COFF testing).
+- Target only x86-64 Linux for Phase 1.
+
+**Rationale:**
+- All three Phase 1 targets share the POSIX syscall interface and the clang
+  toolchain, minimising the `_kernel_native/` surface.
+- CI matrix maps directly to available GitHub Actions runners
+  (`ubuntu-latest`, `ubuntu-24.04-arm`, `macos-14`).
+- Windows requires a separate `_kernel_native/win32/` layer and different linker
+  conventions; the added scope is not justified for Phase 1.
+
+Full detail: `native/plan/01-design-decisions.md` §D-N-008.
+
+---
+
+## D-N-009 — Linking strategy: clang as universal driver
+
+**Status:** ACCEPTED — native backend Phase 1.
+
+**Decision:** The compiler invokes `clang` for linking, passing the emitted `.ll`
+file, `lyric_rt.a`, and standard libraries. The `lyric_rt.a` path is resolved
+from `<compiler_bin>/../lib/` (installed) or `<repo_root>/lyric-rt/build/` (dev).
+
+**Rationale:** See D-N-001 — this is the same clang-as-driver decision applied to
+the link step. No separate `lld` or `ld` invocation is needed.
+
+Full detail: `native/plan/01-design-decisions.md` §D-N-009.
+
+---
+
+## D-N-010 — Generics strategy: full monomorphization via existing `Lyric.Mono`
+
+**Status:** ACCEPTED — native backend Phase 1.
+
+**Decision:** The native backend consumes the already-monomorphized AST produced
+by `Lyric.Mono.monoFile`. No new generics work is needed in the codegen layer.
+Monomorphized type names follow the existing convention (e.g., `Lyric.Option__Int`).
+
+**Alternatives:**
+- Dict-passing (pass type-class dictionaries at runtime, as in Haskell).
+- LLVM-level generic instantiation (generate generic IR and let LLVM specialise).
+
+**Rationale:**
+- `Lyric.Mono` already runs before MSIL and JVM backends; reusing it for native
+  means zero new infrastructure.
+- Full monomorphization produces better-optimised code than dict-passing.
+- The LLVM backend gets concrete types with no erasure.
+
+Full detail: `native/plan/01-design-decisions.md` §D-N-010.
+
+---
+
+## D-N-011 — ARC runtime intrinsics: external C symbols in `lyric-rt` static library
+
+**Status:** ACCEPTED — native backend Phase 1.
+
+**Decision:** Four runtime functions are `declare`d in LLVM IR and defined in
+`lyric-rt.a` (C): `lyric_retain`, `lyric_release`, `lyric_alloc`,
+`lyric_panic_msg`. All other operations (strings, collections) are in
+Lyric-compiled code.
+
+**Alternatives:**
+- Use LLVM's ObjC ARC intrinsics (`@llvm.objc.retain`, etc.).
+- Inline the retain/release increment/decrement in the emitter.
+
+**Rationale:**
+- ObjC ARC intrinsics are tied to Objective-C runtime metadata and require
+  `libobjc` on non-Apple platforms.
+- Four well-named external symbols are easy to reason about and audit.
+- LLVM function attributes (`nounwind`, `willreturn`, `memory(argmem: readwrite)`)
+  allow LLVM to reason about them in a future optimisation pass.
+
+Full detail: `native/plan/01-design-decisions.md` §D-N-011 and
+`native/plan/04-arc-design.md`.
+
+---
+
+## D-N-012 — Collection and slice representation
+
+**Status:** ACCEPTED — native backend Phase 1.
+
+**Decision:**
+- `slice[T]`: borrowed fat pointer `{ T*, i64 }` — no ARC header, no ownership.
+  Lifetime enforced by convention in Phase 1; lifetime annotations in Phase 2.
+- `List[T]`: RC heap object `{ header, T* data, i64 len, i64 cap }`.
+- `Map[K,V]`: RC heap object with open-addressing hash table (SipHash-2-4, seeded
+  from `getrandom` to prevent hash-flooding attacks).
+
+**Alternatives:**
+- `slice[T]` as a heap-allocated view object (would require ARC and defeat the
+  purpose of a cheap borrowed view).
+- `List[T]` as a linked list (poor cache performance for random access).
+
+**Rationale:**
+- Fat pointer slices match the Rust `&[T]` / Go slice model and allow zero-copy
+  passing to C functions that accept `(ptr, len)` pairs.
+- RC heap `List[T]` gives deterministic lifetimes with mutable semantics.
+- SipHash-2-4 with a random seed is the standard defence against hash-flooding
+  DoS on map keys.
+
+Full detail: `native/plan/01-design-decisions.md` §D-N-012 and
+`native/plan/03-type-mapping.md` §slice and §List.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

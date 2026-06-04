@@ -324,19 +324,10 @@ It is never retained or released.
 ; [0] i8* raw pointer (NOT retained; may point to freed memory)
 ```
 
-`NativeWeak[T]` stores the raw pointer without incrementing RC. `upgrade()`:
-
-```llvm
-; upgrade() → load rc, check > 0, conditionally return Some or None
-%rc_ptr = bitcast i8* %raw_ptr to i32*
-%rc     = load atomic i32, i32* %rc_ptr acquire
-%alive  = icmp sgt i32 %rc, 0
-; if alive: call lyric_retain, return Some(obj); else return None
-```
-
-There is a TOCTOU window between the rc check and the retain. This is safe only
-if the retain is atomic and the caller holds the strong reference of the object
-that introduced the weak ref. Phase 2 can strengthen this if needed.
+`NativeWeak[T]` stores the raw pointer without incrementing RC. `upgrade()` uses a
+`cmpxchg` loop to atomically increment the RC only if it is still non-zero, so no
+TOCTOU window exists between the liveness check and the retain. The full correct
+implementation is specified in `04-arc-design.md` §NativeWeak upgrade algorithm.
 
 ---
 
