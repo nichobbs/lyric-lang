@@ -398,6 +398,36 @@ func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
   }
 }
 
+// Co-locate each restored-dependency output DLL beside the assembly at
+// `outPath`.  `restoredDlls` entries are "<depName>\t<dllPath>" (the same
+// encoding threaded into `EmitProjectRequest.restoredDllPaths`).  A
+// flat `additionalProbingPaths` does not resolve a non-NuGet dep bin layout,
+// so the referenced DLL must sit next to the consumer for `dotnet exec` to
+// load it.  Best-effort: failures are non-fatal (the run then surfaces the
+// original load error).
+func copyRestoredDepDlls(outPath: in String, restoredDlls: in List[String]): Unit {
+  val destDir = Path.dirname(outPath)
+  var i = 0
+  while i < restoredDlls.count {
+    val depEntry = restoredDlls[i]
+    i = i + 1
+    val tabPos = depEntry.indexOf("\t")
+    val dllPath = if tabPos >= 0 {
+      depEntry.substring(tabPos + 1, depEntry.length - tabPos - 1)
+    } else {
+      depEntry
+    }
+    if dllPath.length == 0 or not File.fileExists(dllPath) { continue }
+    val dest = Path.join(destDir, Path.basename(dllPath))
+    if not File.fileExists(dest) {
+      match File.readBytes(dllPath) {
+        case Ok(bs) -> { val _ = File.writeBytes(dest, bs) }
+        case Err(_) -> ()
+      }
+    }
+  }
+}
+
 // Compile `sourcePath` to a DLL at `outPath`.
 // Returns the exit code: 0 on success, 1 on error.
 // `manifestPath` is forwarded to the generator pre-processor so custom
@@ -3209,6 +3239,11 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
     // single-file `cmdTest` path.  Without this `dotnet exec` fails with
     // `Could not load file or assembly 'Lyric.Stdlib.Core'` (#1468 / #1841).
     copyRuntimeDepsBeside(outPath, Environment.appBaseDirectory())
+    // Co-locate each local-path dependency's output DLL (e.g. a sibling
+    // package's `Cache.dll`) beside the test assembly — a flat probing path
+    // can't resolve the dep's non-NuGet bin layout.  This subsumes the manual
+    // dep-DLL copy the CI ecosystem step used to do by hand.
+    copyRestoredDepDlls(outPath, restoredDlls)
     writeRuntimeConfigWithProbing(outPath, depBinDirs)
 
     val execArgs: List[String] = newList()

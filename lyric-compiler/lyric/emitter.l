@@ -672,6 +672,59 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
   }
 }
 
+// True when a contract decl kind declares a *type* (vs a function).  Such
+// decls are what a sibling package's signatures may reference, so they make
+// up the cross-DLL validation preamble.
+func isTypeDeclKind(kind: in String): Bool {
+  kind == "record" or kind == "union" or kind == "enum"
+    or kind == "extern_type" or kind == "interface" or kind == "alias"
+    or kind == "distinct" or kind == "opaque" or kind == "type"
+}
+
+// Collect the type-declaring decls of every restored artifact whose package
+// is NOT `selfPkg`, de-duplicated by declaration name.  Names that `selfPkg`
+// itself declares are excluded too: a shared `extern type` (e.g. several
+// stdlib packages each declaring `TextWriter`) would otherwise appear both in
+// the preamble and in the target's own decls, producing a `duplicate name`
+// error when the synthesised source re-type-checks.  Used as the validation
+// preamble when synthesising one restored package so its signatures can name
+// sibling packages' types.
+func siblingTypeDecls(arts: in List[RestoredArtifact], selfPkg: in String): List[Meta.ContractDecl] {
+  val acc:   List[Meta.ContractDecl] = newList()
+  val seen:  List[String]            = newList()
+  // Seed the seen-set with every name `selfPkg` declares so they are never
+  // re-emitted into its own validation preamble.
+  var sa = 0
+  while sa < arts.count {
+    val art = arts[sa]
+    sa = sa + 1
+    if art.packageName != selfPkg { continue }
+    val ownDecls = art.contract.decls
+    var oi = 0
+    while oi < ownDecls.count {
+      if indexOfString(seen, ownDecls[oi].name) < 0 { seen.add(ownDecls[oi].name) }
+      oi = oi + 1
+    }
+  }
+  var ai = 0
+  while ai < arts.count {
+    val art = arts[ai]
+    ai = ai + 1
+    if art.packageName == selfPkg { continue }
+    val decls = art.contract.decls
+    var di = 0
+    while di < decls.count {
+      val d = decls[di]
+      di = di + 1
+      if not isTypeDeclKind(d.kind) { continue }
+      if indexOfString(seen, d.name) >= 0 { continue }
+      seen.add(d.name)
+      acc.add(d)
+    }
+  }
+  acc
+}
+
 // In-process project emit — direct call into `Msil.Bridge.compileProjectToMsil`
 // (#1183 Phase 4).  Each `ProjectPackage`'s multiple sources are joined with
 // a newline boundary before being handed to the bridge, matching the F#
@@ -710,7 +763,11 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
   // back to the F# `--internal-project-build` subprocess was retired
   // once slice 3 (#1372) proved the self-hosted bridge round-trips
   // restored deps end-to-end.
-  val restoredArtifacts: List[SynthesisedArtifact] = newList()
+  // Pass 1: load every restored DLL into its `RestoredArtifact`s (a
+  // bundled DLL yields one per contained package).  Defer synthesis so
+  // we can first gather the union of all packages' type declarations —
+  // the cross-DLL preamble.
+  val allArts: List[RestoredArtifact] = newList()
   var ri = 0
   while ri < req.restoredDllPaths.count {
     val depEntry  = req.restoredDllPaths[ri]
@@ -726,23 +783,31 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
                           "' failed to load: " + RP.errorMessage(e))
       case Ok(arts) -> {
         var ai = 0
-        while ai < arts.count {
-          // Fresh preamble per call so a mutation by `synthesiseArtifact`
-          // (intended read-only but not enforced by the type system)
-          // can't leak across iterations.
-          val preamble: List[Meta.ContractDecl] = newList()
-          match RP.synthesiseArtifact(arts[ai], preamble) {
-            case Err(e) ->
-              return failResult("restored dep '" + dllPath +
-                                "' failed to synthesise: " +
-                                RP.errorMessage(e))
-            case Ok(syn) -> restoredArtifacts.add(syn)
-          }
-          ai = ai + 1
-        }
+        while ai < arts.count { allArts.add(arts[ai]); ai = ai + 1 }
       }
     }
     ri = ri + 1
+  }
+
+  // Pass 2: synthesise each artifact, supplying the type declarations of
+  // every OTHER restored package as a validation preamble so a signature
+  // that names a sibling's type (e.g. `Lyric.ModeChecker.checkFile(file:
+  // SourceFile)` referencing `Lyric.Parser.SourceFile`) re-type-checks in
+  // isolation.  The stored source still carries only own decls
+  // (synthesiseArtifact strips the preamble), so the bundle's item pool
+  // registers each type exactly once.
+  val restoredArtifacts: List[SynthesisedArtifact] = newList()
+  var si2 = 0
+  while si2 < allArts.count {
+    val art = allArts[si2]
+    val preamble = siblingTypeDecls(allArts, art.packageName)
+    match RP.synthesiseArtifact(art, preamble) {
+      case Err(e) ->
+        return failResult("restored dep '" + art.dllPath +
+                          "' failed to synthesise: " + RP.errorMessage(e))
+      case Ok(syn) -> restoredArtifacts.add(syn)
+    }
+    si2 = si2 + 1
   }
 
   val ok = MsilBridge.compileProjectToMsilWithRestoredAndVersion(
