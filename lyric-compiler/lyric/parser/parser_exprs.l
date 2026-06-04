@@ -743,7 +743,7 @@ func parseLiteralOrRangePat(st: inout ParseState, firstExpr: in Expr): Pattern {
               case ELiteral(lit) -> {
                 match lit {
                   case LInt(v, sfx) -> {
-                    val negV = 0 - v
+                    val negV = 0i64 - v
                     mkPat(PLiteral(lit = LInt(value = negV, suffix = sfx)), firstExpr.span)
                   }
                   case LFloat(v, sfx) -> {

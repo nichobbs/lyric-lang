@@ -501,7 +501,7 @@ func validatePayload(
         case Some(payloadJson) -> {
           // Capture the current time once for consistent exp/nbf evaluation.
           val nowSec: Long = nowEpochMillis() / 1000i64
-          val skewLong: Long = toLong(clockSkewSeconds)
+          val skewLong: Long = clockSkewSeconds.toLong()
           // Validate iss claim when the caller supplied a non-empty issuer.
           if issuer.length > 0 {
             val iss = getStringClaimFromJson(payloadJson, "iss")

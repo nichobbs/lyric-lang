@@ -1354,6 +1354,182 @@ func inferUnionCaseConstruction(tbl: in SymbolTable, diag: in List[Diagnostic], 
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §5c. Typed pattern binding for `match` arms (#2142).
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Destructures the scrutinee *type* so each pattern variable gets its real type:
+// `Some(ns)` on `Option[NameAndSpan]` binds `ns : NameAndSpan`.  Used by the
+// `EMatch` arm so arm-body types are correct for branch unification.
+
+// Replace generic type variables in `t`: each `TyVar(names[i])` becomes `args[i]`.
+func substituteTyVars(t: in Type, names: in List[String], args: in List[Type]): Type {
+  match t {
+    case TyVar(nm) -> {
+      var i = 0
+      while i < names.count and i < args.count {
+        if names[i] == nm { return args[i] }
+        i = i + 1
+      }
+      t
+    }
+    case TyUser(id, name, targs) -> {
+      val na: List[Type] = newList()
+      var i = 0
+      while i < targs.count { na.add(substituteTyVars(targs[i], names, args)); i = i + 1 }
+      TyUser(id = id, name = name, args = na)
+    }
+    case TySlice(e)        -> TySlice(element = substituteTyVars(e, names, args))
+    case TyArray(sz, e)    -> TyArray(size = sz, element = substituteTyVars(e, names, args))
+    case TyNullable(inner) -> TyNullable(inner = substituteTyVars(inner, names, args))
+    case TyTuple(elems) -> {
+      val ne: List[Type] = newList()
+      var i = 0
+      while i < elems.count { ne.add(substituteTyVars(elems[i], names, args)); i = i + 1 }
+      TyTuple(elems = ne)
+    }
+    case TyFunction(ps, ret, isA) -> {
+      val np: List[Type] = newList()
+      var i = 0
+      while i < ps.count { np.add(substituteTyVars(ps[i], names, args)); i = i + 1 }
+      TyFunction(params = np, ret = substituteTyVars(ret, names, args), isAsync = isA)
+    }
+    case _ -> t
+  }
+}
+
+// The union case's field types *instantiated* against the scrutinee's type args:
+// `Some` (`value: T`) on `Option[NameAndSpan]` → `[NameAndSpan]`.
+func caseFieldTypesInstantiated(tbl: in SymbolTable, diag: in List[Diagnostic], caseSym: in Symbol, scrutTy: in Type): List[Type] {
+  match caseSym.kind {
+    case DKUnionCase(parentId, uc) ->
+      match parentUnionDeclOf(tbl, parentId) {
+        case Some(decl) -> {
+          val gnames = unionDeclGenericNames(decl)
+          val ftypes = unionCaseFieldTypes(tbl, diag, uc, gnames)
+          val targs  = match unrefine(scrutTy) { case TyUser(_, _, a) -> a; case _ -> newList() }
+          val result: List[Type] = newList()
+          var i = 0
+          while i < ftypes.count { result.add(substituteTyVars(ftypes[i], gnames, targs)); i = i + 1 }
+          result
+        }
+        case None -> newList()
+      }
+    case _ -> newList()
+  }
+}
+
+// Bind a pattern's variables to their *destructured* types from the scrutinee
+// type `ty`.  Constructor / tuple sub-patterns recurse with the instantiated
+// field / element types; record-pattern fields and unresolved positions bind
+// leniently (`TyError`) so an arm body never emits a false unknown-name error.
+// A bare uppercase pattern like `case None` / `case Red` parses as a
+// `PBinding`, but if the name resolves to a nullary union/enum *case* it is a
+// constructor pattern, not a fresh variable — it must NOT bind a local (which
+// would shadow the constructor in the arm body, e.g. `case None -> None`).
+func isConstructorPatternName(tbl: in SymbolTable, name: in String): Bool {
+  match symTableTryFindOne(tbl, name) {
+    case Some(sym) ->
+      match sym.kind {
+        case DKUnionCase(_, _) -> true
+        case DKEnumCase(_, _)  -> true
+        case _                 -> false
+      }
+    case None -> false
+  }
+}
+
+// Replace unresolved generic type variables with `TyError` (the lenient
+// unifier).  A pattern variable bound to a still-generic type (e.g. `v` from
+// `Some(v)` on `Option[V]` inside a generic function) must not later trip a
+// false "not numeric" / type-mismatch — the type checker does not track the
+// `where V: Add`-style bounds that make such uses valid.
+func eraseTyVars(t: in Type): Type {
+  match t {
+    case TyVar(_) -> TyError
+    case TyUser(id, name, targs) -> {
+      val na: List[Type] = newList()
+      var i = 0
+      while i < targs.count { na.add(eraseTyVars(targs[i])); i = i + 1 }
+      TyUser(id = id, name = name, args = na)
+    }
+    case TySlice(e)        -> TySlice(element = eraseTyVars(e))
+    case TyArray(sz, e)    -> TyArray(size = sz, element = eraseTyVars(e))
+    case TyNullable(inner) -> TyNullable(inner = eraseTyVars(inner))
+    case TyTuple(elems) -> {
+      val ne: List[Type] = newList()
+      var i = 0
+      while i < elems.count { ne.add(eraseTyVars(elems[i])); i = i + 1 }
+      TyTuple(elems = ne)
+    }
+    case TyFunction(ps, ret, isA) -> {
+      val np: List[Type] = newList()
+      var i = 0
+      while i < ps.count { np.add(eraseTyVars(ps[i])); i = i + 1 }
+      TyFunction(params = np, ret = eraseTyVars(ret), isAsync = isA)
+    }
+    case _ -> t
+  }
+}
+
+func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnostic], pat: in Pattern, ty: in Type): Unit {
+  match pat.kind {
+    case PBinding(name, inner) -> {
+      if name != "_" and not isConstructorPatternName(tbl, name) {
+        scopeAdd(sc, LocalBinding(name = name, ty = eraseTyVars(ty), isMutable = false))
+      }
+      match inner {
+        case None    -> {}
+        case Some(p) -> bindPatternTyped(sc, tbl, diag, p, ty)
+      }
+    }
+    case PWildcard   -> {}
+    case PLiteral(_) -> {}
+    case PConstructor(head, args) -> {
+      val ftypes =
+        match unionCaseSymbolOf(tbl, pat2fnExpr(head, pat.span)) {
+          case Some(caseSym) -> caseFieldTypesInstantiated(tbl, diag, caseSym, ty)
+          case None          -> newList()
+        }
+      var i = 0
+      while i < args.count {
+        val at = if i < ftypes.count { ftypes[i] } else { TyError }
+        bindPatternTyped(sc, tbl, diag, args[i], at)
+        i = i + 1
+      }
+    }
+    case PTuple(patterns) -> {
+      val elems = match unrefine(ty) { case TyTuple(es) -> es; case _ -> newList() }
+      var i = 0
+      while i < patterns.count {
+        val et = if i < elems.count { elems[i] } else { TyError }
+        bindPatternTyped(sc, tbl, diag, patterns[i], et)
+        i = i + 1
+      }
+    }
+    case PRecord(_, fields, _) -> {
+      var i = 0
+      while i < fields.count {
+        match fields[i] {
+          case RPFNamed(_, p, _) -> bindPatternTyped(sc, tbl, diag, p, TyError)
+          case RPFShort(nm, _)   -> scopeAdd(sc, LocalBinding(name = nm, ty = TyError, isMutable = false))
+        }
+        i = i + 1
+      }
+    }
+    case POr(patterns) -> {
+      if patterns.count > 0 { bindPatternTyped(sc, tbl, diag, patterns[0], ty) }
+    }
+    case _ -> {}
+  }
+}
+
+// Wrap a constructor head `ModulePath` as an `EPath` expression so the existing
+// `unionCaseSymbolOf` (which takes an `Expr`) can resolve the case symbol.
+func pat2fnExpr(head: in ModulePath, span: in Span): Expr {
+  Expr(kind = EPath(path = head), span = span)
+}
+
 pub func inferExpr(
   sc:   in Scope,
   tbl:  in SymbolTable,
@@ -1585,11 +1761,26 @@ pub func inferExpr(
       }
     }
     case EMatch(scrutinee, arms) -> {
-      // Check exhaustiveness; branch-type unification (real match result type) is the next split.
       val st = inferExpr(sc, tbl, sigs, diag, scrutinee)
       checkMatchExhaustive(tbl, diag, st, arms, e.span)
       checkOpaquePatternHiding(tbl, diag, st, arms)
-      TyError
+      // Branch-type unification (#2142): a `match` used as a value takes the
+      // unified type of its arm bodies.  Each arm is checked in a fresh scope
+      // with its pattern variables bound to their destructured types
+      // (`bindPatternTyped` — `Some(ns)` on `Option[T]` binds `ns : T`), then the
+      // bodies fold through `unifyBranchTypes` (Never/TyError/Unit absorbed;
+      // T0067 on a genuine value mismatch).  Guards are not inferred here.
+      var acc: Type = TyError
+      var ai = 0
+      while ai < arms.count {
+        scopePush(sc)
+        bindPatternTyped(sc, tbl, diag, arms[ai].pattern, st)
+        val bt = inferExprOrBlock(sc, tbl, sigs, diag, arms[ai].body)
+        scopePop(sc)
+        acc = unifyBranchTypes(acc, bt, e.span, diag)
+        ai = ai + 1
+      }
+      acc
     }
     // A value-position brace block / `unsafe { … }` has the type of its trailing
     // expression (or `Unit` if it ends in a statement, or `Never` if it diverges)
