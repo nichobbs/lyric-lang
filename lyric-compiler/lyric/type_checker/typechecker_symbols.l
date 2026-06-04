@@ -60,6 +60,16 @@ pub record Symbol {
   declSpan:   Span
   visibility: Option[Visibility]
   isImported: Bool
+  /// Dotted name of the package that declared this symbol (e.g.
+  /// `"Std.Regex"`).  Empty string means "no package context": that is the
+  /// state the flat `checkWithImports` shim produces, and it preserves the
+  /// historical last-registered-wins resolution.  Scoped resolution
+  /// (`symTableTryFindOne`) prefers a symbol whose `originPackage` matches the
+  /// table's current resolution package, so two sibling packages that each
+  /// export a same-named type (the `Std.Regex` / `Std.RegexSafe` `RegexError`
+  /// collision) no longer shadow one another inside the other package's
+  /// signatures.
+  originPackage: String
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -104,14 +114,67 @@ pub func symbolTypeIdOpt(s: in Symbol): Option[TypeId] {
 @stable(since="0.1")
 pub record SymbolTable {
   symbols: List[Symbol]
+  /// One-element box (the `TypeIdCounter.ticks` idiom — Lyric records do not
+  /// reassign scalar fields, so a `List` carries the mutable marker) holding
+  /// the dotted name of the package whose declarations resolution should
+  /// prefer.  Empty list means "no scope" → pure last-registered-wins, which
+  /// is exactly the historical behaviour.  Set via `symTableSetScope` around
+  /// each package's signature/body resolution.
+  scopePkg: List[String]
+  /// The dotted names of packages the current scope explicitly imports.  When
+  /// a reference's simple name is ambiguous across imported packages,
+  /// resolution prefers a symbol declared in one of these packages before
+  /// falling back to last-registered-wins.
+  scopeImports: List[String]
 }
 
 pub func newSymbolTable(): SymbolTable {
-  SymbolTable(symbols = newList())
+  SymbolTable(symbols = newList(), scopePkg = newList(), scopeImports = newList())
 }
 
 pub func symTableAdd(tbl: in SymbolTable, sym: in Symbol): Unit {
   tbl.symbols.add(sym)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4a. Resolution scope — package preference for name lookup.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Set the current resolution scope: `pkg` is the package whose declarations
+// take precedence, and `imports` are the packages it explicitly imports (used
+// as the second-tier preference).  Passing `pkg = ""` clears the
+// current-package preference, restoring pure last-registered-wins resolution.
+pub func symTableSetScope(
+  tbl:     in SymbolTable,
+  pkg:     in String,
+  imports: in List[String]
+): Unit {
+  while tbl.scopePkg.count > 0 {
+    tbl.scopePkg.removeAt(tbl.scopePkg.count - 1)
+  }
+  if pkg.length > 0 { tbl.scopePkg.add(pkg) }
+  while tbl.scopeImports.count > 0 {
+    tbl.scopeImports.removeAt(tbl.scopeImports.count - 1)
+  }
+  var i = 0
+  while i < imports.count {
+    tbl.scopeImports.add(imports[i])
+    i = i + 1
+  }
+}
+
+func symTableScopePkg(tbl: in SymbolTable): String {
+  if tbl.scopePkg.count > 0 { tbl.scopePkg[0] } else { "" }
+}
+
+func symTableScopeAllows(tbl: in SymbolTable, pkg: in String): Bool {
+  if pkg.length == 0 { return false }
+  var i = 0
+  while i < tbl.scopeImports.count {
+    if tbl.scopeImports[i] == pkg { return true }
+    i = i + 1
+  }
+  false
 }
 
 pub func symTableTryFindAll(tbl: in SymbolTable, name: in String): List[Symbol] {
@@ -124,11 +187,40 @@ pub func symTableTryFindAll(tbl: in SymbolTable, name: in String): List[Symbol] 
   result
 }
 
+// Resolve `name` to a single symbol, honouring the current resolution scope.
+// Tiers, in order of preference (each scans newest-to-oldest so a later
+// declaration still shadows an earlier one of the same tier):
+//   1. a symbol declared in the current package (`scopePkg`);
+//   2. a symbol declared in a package the current scope imports
+//      (`scopeImports`);
+//   3. any symbol with a matching name (last-registered-wins).
+// With no scope set (the flat `checkWithImports` shim, where every symbol's
+// `originPackage` is empty), tiers 1 and 2 never match and resolution reduces
+// to tier 3 — byte-for-byte the historical behaviour.
 pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol] {
-  var i = tbl.symbols.count - 1
-  while i >= 0 {
-    if tbl.symbols[i].name == name { return Some(value = tbl.symbols[i]) }
-    i = i - 1
+  val curPkg = symTableScopePkg(tbl)
+  if curPkg.length > 0 {
+    var i1 = tbl.symbols.count - 1
+    while i1 >= 0 {
+      val s = tbl.symbols[i1]
+      if s.name == name and s.originPackage == curPkg { return Some(value = s) }
+      i1 = i1 - 1
+    }
+  }
+  if tbl.scopeImports.count > 0 {
+    var i2 = tbl.symbols.count - 1
+    while i2 >= 0 {
+      val s = tbl.symbols[i2]
+      if s.name == name and symTableScopeAllows(tbl, s.originPackage) {
+        return Some(value = s)
+      }
+      i2 = i2 - 1
+    }
+  }
+  var i3 = tbl.symbols.count - 1
+  while i3 >= 0 {
+    if tbl.symbols[i3].name == name { return Some(value = tbl.symbols[i3]) }
+    i3 = i3 - 1
   }
   None
 }

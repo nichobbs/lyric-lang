@@ -93,6 +93,7 @@ func addSym(
   tbl:        in SymbolTable,
   diag:       in List[Diagnostic],
   isImported: in Bool,
+  originPkg:  in String,
   name:       in String,
   kind:       in DeclKind,
   vis:        in Option[Visibility],
@@ -102,11 +103,12 @@ func addSym(
     checkDuplicate(tbl, diag, name, kind, span)
   }
   val sym = Symbol(
-    name       = name,
-    kind       = kind,
-    declSpan   = span,
-    visibility = vis,
-    isImported = isImported)
+    name          = name,
+    kind          = kind,
+    declSpan      = span,
+    visibility    = vis,
+    isImported    = isImported,
+    originPackage = originPkg)
   symTableAdd(tbl, sym)
   sym
 }
@@ -116,6 +118,7 @@ func registerItem(
   ctr:        in TypeIdCounter,
   diag:       in List[Diagnostic],
   isImported: in Bool,
+  originPkg:  in String,
   it:         in Item
 ): Unit {
   val vis  = it.visibility
@@ -123,89 +126,89 @@ func registerItem(
   match it.kind {
     case IRecord(decl) -> {
       val tid = freshTypeId(ctr)
-      val _ = addSym(tbl, diag, isImported, decl.name, DKRecord(id = tid, decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKRecord(id = tid, decl = decl), vis, span)
     }
     case IExposedRec(decl) -> {
       val tid = freshTypeId(ctr)
-      val _ = addSym(tbl, diag, isImported, decl.name, DKExposedRec(id = tid, decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKExposedRec(id = tid, decl = decl), vis, span)
     }
     case IUnion(decl) -> {
       val tid = freshTypeId(ctr)
-      val _ = addSym(tbl, diag, isImported, decl.name, DKUnion(id = tid, decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKUnion(id = tid, decl = decl), vis, span)
       var i = 0
       while i < decl.cases.count {
         val c = decl.cases[i]
-        val _ = addSym(tbl, diag, isImported, c.name, DKUnionCase(parentId = tid, uc = c), vis, c.span)
+        val _ = addSym(tbl, diag, isImported, originPkg, c.name, DKUnionCase(parentId = tid, uc = c), vis, c.span)
         i = i + 1
       }
     }
     case IEnum(decl) -> {
       val tid = freshTypeId(ctr)
-      val _ = addSym(tbl, diag, isImported, decl.name, DKEnum(id = tid, decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKEnum(id = tid, decl = decl), vis, span)
       var i = 0
       while i < decl.cases.count {
         val c = decl.cases[i]
-        val _ = addSym(tbl, diag, isImported, c.name, DKEnumCase(parentId = tid, ec = c), vis, c.span)
+        val _ = addSym(tbl, diag, isImported, originPkg, c.name, DKEnumCase(parentId = tid, ec = c), vis, c.span)
         i = i + 1
       }
     }
     case IOpaque(decl) -> {
       val tid = freshTypeId(ctr)
-      val _ = addSym(tbl, diag, isImported, decl.name, DKOpaque(id = tid, decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKOpaque(id = tid, decl = decl), vis, span)
     }
     case IProtected(decl) -> {
       val tid = freshTypeId(ctr)
-      val _ = addSym(tbl, diag, isImported, decl.name, DKProtected(id = tid, decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKProtected(id = tid, decl = decl), vis, span)
     }
     case IDistinctType(decl) -> {
       val tid = freshTypeId(ctr)
-      val _ = addSym(tbl, diag, isImported, decl.name, DKDistinctType(id = tid, decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKDistinctType(id = tid, decl = decl), vis, span)
     }
     case ITypeAlias(decl) -> {
-      val _ = addSym(tbl, diag, isImported, decl.name, DKTypeAlias(decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKTypeAlias(decl = decl), vis, span)
     }
     case IInterface(decl) -> {
       val tid = freshTypeId(ctr)
-      val _ = addSym(tbl, diag, isImported, decl.name, DKInterface(id = tid, decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKInterface(id = tid, decl = decl), vis, span)
     }
     case IExternType(decl) -> {
       val tid = freshTypeId(ctr)
-      val _ = addSym(tbl, diag, isImported, decl.name, DKExternType(id = tid, decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKExternType(id = tid, decl = decl), vis, span)
     }
     case IFunc(decl) -> {
-      val _ = addSym(tbl, diag, isImported, decl.name, DKFunc(decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKFunc(decl = decl), vis, span)
     }
     case IConst(decl) -> {
-      val _ = addSym(tbl, diag, isImported, decl.name, DKConst(decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKConst(decl = decl), vis, span)
     }
     case IVal(decl) -> {
       match decl.pattern.kind {
         case PBinding(name, None) -> {
-          val _ = addSym(tbl, diag, isImported, name, DKVal(decl = decl), vis, span)
+          val _ = addSym(tbl, diag, isImported, originPkg, name, DKVal(decl = decl), vis, span)
         }
         case _ -> {}
       }
     }
     case IWire(decl) -> {
-      val _ = addSym(tbl, diag, isImported, decl.name, DKWire(decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKWire(decl = decl), vis, span)
     }
     case IScopeKind(decl) -> {
-      val _ = addSym(tbl, diag, isImported, decl.name, DKScopeKind(decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKScopeKind(decl = decl), vis, span)
     }
     case ITest(decl) -> {
-      val _ = addSym(tbl, diag, isImported, decl.title, DKTest(decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.title, DKTest(decl = decl), vis, span)
     }
     case IProperty(decl) -> {
-      val _ = addSym(tbl, diag, isImported, decl.title, DKProperty(decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.title, DKProperty(decl = decl), vis, span)
     }
     case IFixture(decl) -> {
-      val _ = addSym(tbl, diag, isImported, decl.name, DKFixture(decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKFixture(decl = decl), vis, span)
     }
     case IConfig(decl) -> {
-      val _ = addSym(tbl, diag, isImported, decl.name, DKConfig(decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKConfig(decl = decl), vis, span)
     }
     case IAspect(decl) -> {
-      val _ = addSym(tbl, diag, isImported, decl.name, DKAspect(decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKAspect(decl = decl), vis, span)
     }
     case IExtern(_) -> {}
     case IImpl(_)   -> {}
@@ -891,25 +894,76 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
 // §9. Public entry points.
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub func checkWithImports(
-  file:          in SourceFile,
-  importedItems: in List[Item]
+// A group of imported items tagged with the package that declared them.
+// `checkWithImportedPackages` resolves each group's signatures with that
+// package preferred, so two sibling packages that both export a same-named
+// type don't collide under a single flat last-registered-wins table.
+@stable(since="0.1")
+pub record ImportedPackage {
+  name:  String
+  items: List[Item]
+}
+
+// Dotted spelling of a module path (`Std.Regex`), or "" for the empty path.
+func dottedPackageName(path: in ModulePath): String {
+  if path.segments.count == 0 { return "" }
+  var s = path.segments[0]
+  var i = 1
+  while i < path.segments.count {
+    s = s + "." + path.segments[i]
+    i = i + 1
+  }
+  s
+}
+
+// The dotted names of every package a file explicitly imports.
+func collectImportNames(imports: in List[ImportDecl]): List[String] {
+  val names: List[String] = newList()
+  var i = 0
+  while i < imports.count {
+    names.add(dottedPackageName(imports[i].path))
+    i = i + 1
+  }
+  names
+}
+
+// Scope-aware type check.  Imported items are supplied grouped by their
+// declaring package so each package's signatures resolve against its own
+// declarations (and its imports), instead of one flat table where the
+// last-registered symbol of a given simple name wins every reference —
+// including references inside other packages' signatures.
+pub func checkWithImportedPackages(
+  file:             in SourceFile,
+  importedPackages: in List[ImportedPackage]
 ): CheckResult {
   val diag: List[Diagnostic] = newList()
   val tbl  = newSymbolTable()
   val ctr  = newTypeIdCounter()
 
-  // T1: register imported items first (shadow without error).
-  var i = 0
-  while i < importedItems.count {
-    registerItem(tbl, ctr, diag, true, importedItems[i])
-    i = i + 1
+  val userPkg     = dottedPackageName(file.packageDecl.path)
+  val userImports = collectImportNames(file.imports)
+
+  // T1: register imported items first (shadow without error), tagging each
+  // symbol with its declaring package so scoped resolution can prefer it.
+  var p = 0
+  while p < importedPackages.count {
+    val ip = importedPackages[p]
+    var ii = 0
+    while ii < ip.items.count {
+      registerItem(tbl, ctr, diag, true, ip.name, ip.items[ii])
+      ii = ii + 1
+    }
+    p = p + 1
   }
   var j = 0
   while j < file.items.count {
-    registerItem(tbl, ctr, diag, false, file.items[j])
+    registerItem(tbl, ctr, diag, false, userPkg, file.items[j])
     j = j + 1
   }
+
+  // From here on, resolve under the user package's scope by default: the
+  // user's own declarations win, then its imports, then last-registered.
+  symTableSetScope(tbl, userPkg, userImports)
 
   // T2.5: validate range subtypes.
   var k = 0
@@ -932,9 +986,25 @@ pub func checkWithImports(
   // (with `TyError` for any unresolved type refs); the user's typecheck
   // can still call any stdlib function whose signature *does* resolve, and
   // codegen tolerates residual `TyError` via the existing fallback paths.
+  //
+  // Each imported package's signatures resolve with that package set as the
+  // current scope, so a type reference inside the signature (e.g.
+  // `Result[CompiledRegex, RegexError]` in `Std.Regex.tryCompile`) binds to
+  // the *declaring* package's type rather than to whichever same-named
+  // sibling-package symbol happened to be registered last.
   val sigs: Map[String, ResolvedSignature] = newMap()
   val importedDiag: List[Diagnostic] = newList()
-  addSigsFromItems(tbl, importedDiag, sigs, importedItems, true)
+  val noImports: List[String] = newList()
+  var sp = 0
+  while sp < importedPackages.count {
+    val ip2 = importedPackages[sp]
+    symTableSetScope(tbl, ip2.name, noImports)
+    addSigsFromItems(tbl, importedDiag, sigs, ip2.items, true)
+    sp = sp + 1
+  }
+
+  // User signatures + bodies resolve under the user package's scope.
+  symTableSetScope(tbl, userPkg, userImports)
   addSigsFromItems(tbl, diag, sigs, file.items, false)
 
   // T5: check user function bodies.
@@ -965,7 +1035,23 @@ pub func checkWithImports(
     diagnostics = diag)
 }
 
+// Flat-imports compatibility shim.  Wraps every imported item into one
+// nameless package, which leaves every imported symbol with an empty
+// `originPackage`: scoped resolution's tier-1/tier-2 preferences never match,
+// so lookup falls through to last-registered-wins — identical to the
+// behaviour before scoped resolution existed.  Callers that can group their
+// imports by package (the MSIL / JVM bridges) should call
+// `checkWithImportedPackages` directly to get the collision fix.
+pub func checkWithImports(
+  file:          in SourceFile,
+  importedItems: in List[Item]
+): CheckResult {
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "", items = importedItems))
+  checkWithImportedPackages(file, packages)
+}
+
 pub func check(file: in SourceFile): CheckResult {
-  val empty: List[Item] = newList()
-  checkWithImports(file, empty)
+  val empty: List[ImportedPackage] = newList()
+  checkWithImportedPackages(file, empty)
 }

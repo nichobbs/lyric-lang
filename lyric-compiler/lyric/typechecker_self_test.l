@@ -421,13 +421,16 @@ func testQualifiedTypeResolvesViaImport(): Unit {
 
 // #1488 category D: two imported packages can export the same simple type name
 // (`Std.Regex.RegexError` {TimedOut, InvalidPattern} vs `Std.RegexSafe.RegexError`
-// {TimedOut, RegexBug}).  Name resolution is last-registered-wins
-// (`symTableTryFindOne` scans the table backwards), so the package whose items
-// are spread last wins every reference to the shared name.  The single-file MSIL
-// bridge exploits this by spreading the file's imported packages last
-// (`orderStdlibPkgsByImports`).  This test documents the resolution invariant the
-// fix depends on: when `LibB`'s `E` is registered after `LibA`'s, a `match` over
-// `E` is exhaustive against `LibB`'s cases (and `LibA`'s cases are unknown).
+// {TimedOut, RegexBug}).  Through the flat `checkWithImports` shim, every
+// imported symbol carries an empty origin package, so package-scoped resolution
+// never engages and lookup is last-registered-wins (`symTableTryFindOne` scans
+// the table backwards): the package whose items are spread last wins every
+// reference to the shared name.  This test pins that flat-shim invariant — the
+// scope-aware fix for the collision (D-progress-428) lives behind
+// `checkWithImportedPackages` and is covered by
+// `testScopedResolutionNoCrossPackageTypeCollision`.  Here, when `LibB`'s `E` is
+// registered after `LibA`'s, a `match` over `E` is exhaustive against `LibB`'s
+// cases (and `LibA`'s cases are unknown).
 func testCollidingTypeNameLastRegisteredWins(): Unit {
   val libA = parse("package LibA\npub union E { case A1(x: Int) }\n")
   val libB = parse("package LibB\npub union E { case B1(x: Int)\n  case B2(y: Int) }\n")
@@ -1218,6 +1221,100 @@ func testInParamNoOutCheck(): Unit {
   assertTrue(not hasDiagCode(parseCheck(src), "T0086"), "in param: no T0086")
 }
 
+// Scope-aware symbol resolution (cross-package same-named type collision).
+//
+// `RegexError` is declared by two sibling packages.  Under the old single
+// flat last-registered-wins symbol table, whichever `RegexError` was
+// registered last won EVERY reference — including the return type inside the
+// other package's own function signature.  `checkWithImportedPackages`
+// resolves each package's signatures with that package preferred, so the two
+// `tryX` functions bind their return type to their OWN package's union.
+
+func sigReturnUserId(cr: in CheckResult, name: in String): Int {
+  match mapGet(cr.sigs, name) {
+    case None      -> 0 - 1
+    case Some(sig) ->
+      match sig.returnTy {
+        case TyUser(id, _, _) -> id.id
+        case _                -> 0 - 1
+      }
+  }
+}
+
+func typeSymIdByOrigin(cr: in CheckResult, name: in String, origin: in String): Int {
+  var i = 0
+  while i < cr.symbols.symbols.count {
+    val s = cr.symbols.symbols[i]
+    if s.name == name and s.originPackage == origin {
+      match symbolTypeIdOpt(s) {
+        case Some(tid) -> return tid.id
+        case None      -> {}
+      }
+    }
+    i = i + 1
+  }
+  0 - 1
+}
+
+func regexErrorPkgA(): ParseResult {
+  parse(
+    "package Pa\n" +
+    "pub union RegexError { case Bad }\n" +
+    "pub func tryA(): RegexError { Bad }\n")
+}
+
+func regexErrorPkgB(): ParseResult {
+  parse(
+    "package Pb\n" +
+    "pub union RegexError { case Worse }\n" +
+    "pub func tryB(): RegexError { Worse }\n")
+}
+
+func testScopedResolutionNoCrossPackageTypeCollision(): Unit {
+  val pkgA = regexErrorPkgA()
+  val pkgB = regexErrorPkgB()
+  val imports: List[ImportedPackage] = newList()
+  imports.add(ImportedPackage(name = "Pa", items = pkgA.file.items))
+  imports.add(ImportedPackage(name = "Pb", items = pkgB.file.items))
+  val app = parse("package App\nfunc main(): Int { 0 }\n")
+  val cr  = checkWithImportedPackages(app.file, imports)
+
+  val idA = sigReturnUserId(cr, "tryA")
+  val idB = sigReturnUserId(cr, "tryB")
+  assertTrue(idA > 0, "scoped: tryA resolves to a user type")
+  assertTrue(idB > 0, "scoped: tryB resolves to a user type")
+  assertTrue(idA != idB,
+    "scoped: each package's RegexError resolves to its own union (distinct type ids)")
+  // Each return type binds to ITS package's union, not a sibling's.
+  assertEqualInt(idA, typeSymIdByOrigin(cr, "RegexError", "Pa"),
+    "scoped: tryA return type is Pa's RegexError")
+  assertEqualInt(idB, typeSymIdByOrigin(cr, "RegexError", "Pb"),
+    "scoped: tryB return type is Pb's RegexError")
+}
+
+func testFlatImportsPreserveLastWins(): Unit {
+  // The flat `checkWithImports` shim leaves imported symbols with an empty
+  // origin package, so scoped resolution's package preference never engages
+  // and the historical last-registered-wins behaviour is preserved: both
+  // signatures resolve their return type to the SAME (last) RegexError.
+  // This pins the back-compat contract — scoped resolution activates only
+  // through `checkWithImportedPackages`.
+  val pkgA = regexErrorPkgA()
+  val pkgB = regexErrorPkgB()
+  val flat: List[Item] = newList()
+  var ia = 0
+  while ia < pkgA.file.items.count { flat.add(pkgA.file.items[ia]); ia = ia + 1 }
+  var ib = 0
+  while ib < pkgB.file.items.count { flat.add(pkgB.file.items[ib]); ib = ib + 1 }
+  val app = parse("package App\nfunc main(): Int { 0 }\n")
+  val cr  = checkWithImports(app.file, flat)
+  val idA = sigReturnUserId(cr, "tryA")
+  val idB = sigReturnUserId(cr, "tryB")
+  assertTrue(idA > 0 and idB > 0, "flat: both signatures resolve to a user type")
+  assertEqualInt(idA, idB,
+    "flat imports: last-registered RegexError wins both signatures (back-compat)")
+}
+
 func main(): Unit {
   testEmptySource()
   testFuncRegistered()
@@ -1335,5 +1432,7 @@ func main(): Unit {
   testOutAssignedInBranchesOk()
   testOutAssignedInLoopOk()
   testInParamNoOutCheck()
+  testScopedResolutionNoCrossPackageTypeCollision()
+  testFlatImportsPreserveLastWins()
   println("typechecker self-test: ok")
 }

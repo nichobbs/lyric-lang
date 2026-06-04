@@ -117,7 +117,12 @@ pub func compileToJar(
   // are skipped because multiple stdlib files define functions with the same name
   // (e.g. toString) and checkWithImports uses a strict-insert map that throws on
   // duplicate keys.  Type names are unique across the stdlib so safe to merge.
-  val importedItems: List[Item] = newList()
+  // Group each stdlib source's type items under its declaring package so the
+  // type checker resolves each package's signatures against its own
+  // declarations.  A flat merge let two sibling packages that both export a
+  // same-named type (e.g. `Std.Regex` / `Std.RegexSafe` both declaring
+  // `RegexError`) shadow one another under last-registered-wins.
+  val importedPkgs: List[ImportedPackage] = newList()
   var si = 0
   while si < stdlibSources.count {
     val stdPr = parse(stdlibSources[si])
@@ -127,29 +132,20 @@ pub func compileToJar(
     // stdlib source files, so promoting these to fatal would break
     // every user build until the parser reaches stdlib parity.
     reportDiagnostics(stdPr.diagnostics)
+    val pkgItems: List[Item] = newList()
     var ii = 0
     while ii < stdPr.file.items.count {
       val it = stdPr.file.items[ii]
-      val isType = match it.kind {
-        case IRecord(_)       -> true
-        case IExposedRec(_)   -> true
-        case IUnion(_)        -> true
-        case IEnum(_)         -> true
-        case IDistinctType(_) -> true
-        case IInterface(_)    -> true
-        case ITypeAlias(_)    -> true
-        case IOpaque(_)       -> true
-        case _                -> false
-      }
-      if isType { importedItems.add(it) }
+      if isTypeItem(it) { pkgItems.add(it) }
       ii = ii + 1
     }
+    importedPkgs.add(ImportedPackage(name = dottedPath(stdPr.file.packageDecl.path), items = pkgItems))
     si = si + 1
   }
 
   val file0 = parseResult.file
 
-  val tcRes = checkWithImports(file0, importedItems)
+  val tcRes = checkWithImportedPackages(file0, importedPkgs)
   reportDiagnostics(tcRes.diagnostics)   // advisory: type checker lacks builtin coverage
 
   val mcRes = checkFile(file0)
@@ -256,8 +252,8 @@ func isTypeItem(it: in Item): Bool {
 // fatal mode-check / mono diagnostic was raised.  Type-check diagnostics are
 // advisory (the self-hosted checker lacks full builtin coverage), mirroring
 // `compileToJar`.
-func runMiddleEnd(file0: in SourceFile, importedItems: in List[Item]): Option[SourceFile] {
-  val tcRes = checkWithImports(file0, importedItems)
+func runMiddleEnd(file0: in SourceFile, importedPkgs: in List[ImportedPackage]): Option[SourceFile] {
+  val tcRes = checkWithImportedPackages(file0, importedPkgs)
   reportDiagnostics(tcRes.diagnostics)
   val mcRes = checkFile(file0)
   if reportAndAbort(mcRes.diagnostics) { return None }
@@ -307,20 +303,26 @@ pub func compileToJarBundled(
   // Parse every stdlib source once: collect its type items (for cross-package
   // type resolution) and index the whole file by dotted package name (for the
   // import-closure walk below).
-  val importedItems: List[Item] = newList()
+  // Group each stdlib source's type items under its declaring package so the
+  // type checker resolves each package's signatures against its own
+  // declarations (see `compileToJar` for the `RegexError` collision this
+  // fixes).
+  val importedPkgs:  List[ImportedPackage] = newList()
   val stdlibFiles:   List[SourceFile] = newList()
   val stdlibByPkg:   Map[String, SourceFile] = newMap()
   var si = 0
   while si < stdlibSources.count {
     val pr = parse(stdlibSources[si])
     reportDiagnostics(pr.diagnostics)
+    val pkgItems: List[Item] = newList()
     var ii = 0
     while ii < pr.file.items.count {
-      if isTypeItem(pr.file.items[ii]) { importedItems.add(pr.file.items[ii]) }
+      if isTypeItem(pr.file.items[ii]) { pkgItems.add(pr.file.items[ii]) }
       ii = ii + 1
     }
-    stdlibFiles.add(pr.file)
     val pn = dottedPath(pr.file.packageDecl.path)
+    importedPkgs.add(ImportedPackage(name = pn, items = pkgItems))
+    stdlibFiles.add(pr.file)
     if pn.length > 0 and not stdlibByPkg.containsKey(pn) { stdlibByPkg.add(pn, pr.file) }
     si = si + 1
   }
@@ -372,7 +374,7 @@ pub func compileToJarBundled(
   val allClasses: List[BuiltClass] = newList()
 
   // User package first (its codegen failing is fatal).
-  match runMiddleEnd(userFile, importedItems) {
+  match runMiddleEnd(userFile, importedPkgs) {
     case Some(f) -> codegenPackageInto(f, registry, caseReg, autoFfi, allClasses)
     case None    -> return false
   }
@@ -384,7 +386,7 @@ pub func compileToJarBundled(
   while bi < toBundle.count {
     val f = toBundle[bi]
     try {
-      match runMiddleEnd(f, importedItems) {
+      match runMiddleEnd(f, importedPkgs) {
         case Some(ff) -> codegenPackageInto(ff, registry, caseReg, autoFfi, allClasses)
         case None     -> ()
       }
