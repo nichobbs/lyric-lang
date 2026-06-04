@@ -112,3 +112,34 @@ test "try/catch expression as a val initializer" {
   assertEqualInt(viaLocal(0), 101, "try-body value + 1")
   assertEqualInt(viaLocal(5), 201, "catch value + 1")
 }
+
+// Nested `try`/`catch` expression — both layers are value-producing and the
+// inner expression is the outer try body.  Exercises the interaction between
+// two `tryRegionStack` push/pop cycles and ensures the outer resultSlot
+// receives the inner expression's stashed value.
+func nested(innerPanic: Bool, outerPanic: Bool): Int {
+  try {
+    val inner = try {
+      if innerPanic { panic("i") }
+      1
+    } catch Bug as _ {
+      2
+    }
+    if outerPanic { panic("o") }
+    inner
+  } catch Bug as _ {
+    3
+  }
+}
+
+test "nested try/catch expression: each layer yields the right branch value" {
+  // No panic anywhere: outer try-body returns the inner try-body value (1).
+  assertEqualInt(nested(false, false), 1, "no panic -> inner try value")
+  // Inner panics, outer doesn't: inner's catch -> 2; outer propagates 2.
+  assertEqualInt(nested(true, false), 2, "inner panic -> inner catch value")
+  // Outer panics after the inner runs: outer's catch -> 3.
+  assertEqualInt(nested(false, true), 3, "outer panic -> outer catch value")
+  // Both panic: inner's catch swallows the inner panic (2 propagates upward),
+  // outer panic then fires its own catch -> 3.
+  assertEqualInt(nested(true, true), 3, "both panic -> outer catch value")
+}
