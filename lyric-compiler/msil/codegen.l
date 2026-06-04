@@ -6139,17 +6139,35 @@ func internFuncTypeRef(cctx: in CodegenCtx, nparams: in Int): Int {
   }
 }
 
+// Intern the TypeSpec row for `System.Func`(nparams+1)<object,...,object>`.
+// Both the .ctor and the Invoke MemberRef use the same generic-instantiation
+// TypeSpec; caching the row here keeps the metadata heap lean (a HOF that
+// both constructs and invokes a lambda hits this twice).  Cached in the
+// existing `actionTypeRefs` map under a `funcSpec_N` key prefix so the
+// underlying `Func`(N+1)` TypeRef cache and this TypeSpec cache share
+// storage without colliding.
+func internFuncNTypeSpec(cctx: in CodegenCtx, nparams: in Int): Int {
+  val cacheKey = "funcSpec_" + toString(nparams)
+  match mapGet(cctx.actionTypeRefs, cacheKey) {
+    case Some(r) -> r
+    case None -> {
+      val trN = internFuncTypeRef(cctx, nparams)
+      val codedIdx = (trN * 4) + 1
+      val objArgs: List[MsilType] = newList()
+      var ai = 0
+      while ai < nparams + 1 { objArgs.add(MObject); ai = ai + 1 }
+      val gblob = buildGenericInstBlob(codedIdx, objArgs)
+      val tsRow = ctxAddTypeSpec(cctx.lctx, "FuncSpec_" + toString(nparams), gblob)
+      cctx.actionTypeRefs.add(cacheKey, tsRow)
+      tsRow
+    }
+  }
+}
+
 // Build a newobj token for System.Func`(nparams+1)<object,...,object>::.ctor(object, nativeint).
 // All type parameters are object: nparams input parameters + 1 return type.
 func buildFuncNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
-  val trN = internFuncTypeRef(cctx, nparams)
-  val codedIdx = (trN * 4) + 1
-  val objArgs: List[MsilType] = newList()
-  var ai = 0
-  while ai < nparams + 1 { objArgs.add(MObject); ai = ai + 1 }
-  val gblob = buildGenericInstBlob(codedIdx, objArgs)
-  val specKey = "FuncSpec_ctor_" + toString(nparams)
-  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
+  val tsRow = internFuncNTypeSpec(cctx, nparams)
   val ctorPs: List[MsilType] = newList()
   ctorPs.add(MObject)
   ctorPs.add(MNativeInt)
@@ -6163,14 +6181,7 @@ func buildFuncNCtorTok(cctx: in CodegenCtx, nparams: in Int): Int {
 // Build a callvirt token for System.Func`(nparams+1)<object,...,object>::Invoke(object,...): object.
 // Params are type vars 0..nparams-1; the return type is the last type var (nparams).
 func buildFuncNInvokeTok(cctx: in CodegenCtx, nparams: in Int): Int {
-  val trN = internFuncTypeRef(cctx, nparams)
-  val codedIdx = (trN * 4) + 1
-  val objArgs: List[MsilType] = newList()
-  var ai = 0
-  while ai < nparams + 1 { objArgs.add(MObject); ai = ai + 1 }
-  val gblob = buildGenericInstBlob(codedIdx, objArgs)
-  val specKey = "FuncSpec_invoke_" + toString(nparams)
-  val tsRow = ctxAddTypeSpec(cctx.lctx, specKey, gblob)
+  val tsRow = internFuncNTypeSpec(cctx, nparams)
   val invokePs: List[MsilType] = newList()
   var pi = 0
   while pi < nparams { invokePs.add(MTypeVar(index = pi)); pi = pi + 1 }
