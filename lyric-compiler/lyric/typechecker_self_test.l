@@ -419,6 +419,33 @@ func testQualifiedTypeResolvesViaImport(): Unit {
     "qualified-type-import: no T0050 generic-arity for Lib.Point")
 }
 
+// #1488 category D: two imported packages can export the same simple type name
+// (`Std.Regex.RegexError` {TimedOut, InvalidPattern} vs `Std.RegexSafe.RegexError`
+// {TimedOut, RegexBug}).  Name resolution is last-registered-wins
+// (`symTableTryFindOne` scans the table backwards), so the package whose items
+// are spread last wins every reference to the shared name.  The single-file MSIL
+// bridge exploits this by spreading the file's imported packages last
+// (`orderStdlibPkgsByImports`).  This test documents the resolution invariant the
+// fix depends on: when `LibB`'s `E` is registered after `LibA`'s, a `match` over
+// `E` is exhaustive against `LibB`'s cases (and `LibA`'s cases are unknown).
+func testCollidingTypeNameLastRegisteredWins(): Unit {
+  val libA = parse("package LibA\npub union E { case A1(x: Int) }\n")
+  val libB = parse("package LibB\npub union E { case B1(x: Int)\n  case B2(y: Int) }\n")
+  val importedItems: List[Item] = newList()
+  var a = 0
+  while a < libA.file.items.count { importedItems.add(libA.file.items[a]); a = a + 1 }
+  var b = 0
+  while b < libB.file.items.count { importedItems.add(libB.file.items[b]); b = b + 1 }
+  // `E` resolves to LibB's (registered last); a match over its cases is clean.
+  val okSrc = "package App\nfunc f(e: in E): Unit {\n  match e {\n    case B1(_) -> ()\n    case B2(_) -> ()\n  }\n}\n"
+  assertEqualInt(diagCount(checkWithImports(parse(okSrc).file, importedItems)), 0,
+    "collision: E resolves to the last-registered (LibB) union; B1/B2 match is exhaustive")
+  // Matching LibA's `A1` is non-exhaustive against LibB's `E` (missing B1/B2).
+  val badSrc = "package App\nfunc g(e: in E): Unit {\n  match e {\n    case A1(_) -> ()\n  }\n}\n"
+  assertTrue(hasDiagCode(checkWithImports(parse(badSrc).file, importedItems), "T0016"),
+    "collision: matching LibA's A1 is non-exhaustive against the last-registered E")
+}
+
 // #1488 category C: two imported functions sharing a name and arity but
 // differing in parameter type (the `Std.Char.toUpper(Char)` vs
 // `Std.String.toUpper(String)` collision) must dispatch by argument type, not
@@ -1236,6 +1263,7 @@ func main(): Unit {
   testAsyncGeneratorFlags()
   testHotAnnotationFlag()
   testQualifiedTypeResolvesViaImport()
+  testCollidingTypeNameLastRegisteredWins()
   testOverloadDispatchByArgType()
   testQualifiedTypeUnknownEmitsT0014()
   testQualifiedTypeMisqualifiedResolvesPermissively()

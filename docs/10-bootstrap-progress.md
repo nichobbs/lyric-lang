@@ -20685,3 +20685,41 @@ a pure-Lyric implementation in
   lines removed
 - `scripts/bootstrap.sh` — `Lyric.Ws.Host.dll` publish+copy removed from both
   stage-1 and stage-2 CLI bundle assembly steps
+
+### D-progress-427 — single-file MSIL bridge: import-ordered stdlib spread for cross-package name collisions (#1488 gate, category D, Band-1 of #1470)
+
+**Status:** Shipped — single-file bridge + type-checker self-test.
+
+Two stdlib packages can export the same simple type name: `Std.Regex.RegexError`
+({`TimedOut`, `InvalidPattern`}) and `Std.RegexSafe.RegexError` ({`TimedOut`,
+`RegexBug`}).  The self-hosted type checker resolves names through one flat
+symbol table whose `symTableTryFindOne` is **last-registered-wins**, and the
+single-file MSIL path's `spreadStdlibPackageItems` flattened **every** stdlib
+package into that table in parse order.  So whichever `RegexError` happened to
+be spread last won *every* reference — including inside the other package's
+function signatures.  `regex_tests` (which imports only `Std.Regex`) saw
+`Std.RegexSafe`'s `RegexError`: `tryCompile`'s `Result[_, RegexError]` resolved
+to the wrong union, producing a phantom `T0016` (non-exhaustive: "missing
+`RegexBug`") and a `T0043` `RegexError`-vs-`RegexError` mismatch on
+`errorMessage(InvalidPattern(...))`.  This was false-positive category (D) of
+the #1488 gate.
+
+Fix: `compileToMsilWithVersion` now spreads the file's imported packages
+**last** via the new `orderStdlibPkgsByImports`, so a file importing
+`Std.Regex` resolves `RegexError` to `Std.Regex`'s union (correct exhaustiveness,
+no spurious mismatch).  This is pure reordering — no package is excluded, so
+implicitly-available kernel / `Std.Core` types are unaffected.  The project path
+(`compileProjectToMsil`) already filters per-package via
+`perPackageImportedItems` and is untouched.
+
+Coverage: 1 new `typechecker_self_test.l` case documenting the last-registered-
+wins resolution invariant the fix relies on (two imported `LibA`/`LibB` unions
+both named `E`; with `LibB` registered last, a `match` over `E` is exhaustive
+against `LibB`'s cases and `LibA`'s `A1` is non-exhaustive → `T0016`).  Full
+regression green: 855/855 emitter, typechecker self-test, `weaver_self_test.l`
+18/18 (project path), `Lyric.Cli` self-hosted-bridge tests 84/84, and
+`regex_tests` single-file build now clean (`environment`/`path`/`string`/`parse`/
+`regex` all clean).  Remaining before the `bridge.l:93` flip: interface/impl
+subtyping (`mocking_tests`), range-subtype arithmetic (`isNumericType` doesn't
+unwrap `TyRefined` — `prove_demo`), and the compiler-internal-test import swarms
+(`metadata_reader_tests`, `msil_project_bridge_tests`).

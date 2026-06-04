@@ -79,7 +79,19 @@ pub func compileToMsilWithVersion(
   // cross-assembly `MemberRef` rows for `pub func` items.
   val stdlibPkgs = collectStdlibPackages(stdlibSources)
   val importedItems: List[Item] = newList()
-  spreadStdlibPackageItems(stdlibPkgs, importedItems)
+  // Cross-package type-name collisions (#1488 category D): two stdlib packages
+  // can export the same simple name — e.g. `Std.Regex.RegexError`
+  // {TimedOut, InvalidPattern} and `Std.RegexSafe.RegexError`
+  // {TimedOut, RegexBug}.  The self-hosted type checker resolves names through
+  // a single flat symbol table whose `symTableTryFindOne` is last-registered-
+  // wins, so the package that happens to be spread last wins every `RegexError`
+  // reference — including inside the *other* package's function signatures.
+  // Spreading the file's imported packages **last** makes the imported
+  // package's type win, so a file importing only `Std.Regex` resolves
+  // `RegexError` to `Std.Regex`'s (correct exhaustiveness + no spurious
+  // `RegexError`-vs-`RegexError` mismatch).  Pure reordering — no package is
+  // excluded, so implicitly-available kernel/`Std.Core` types are unaffected.
+  spreadStdlibPackageItems(orderStdlibPkgsByImports(stdlibPkgs, parseResult.file.imports), importedItems)
 
   // Collapse `import X as Y` aliases: rewrite `Y.foo(...)` to bare
   // `foo(...)` (and the same for type / pattern positions) so the
@@ -1014,6 +1026,37 @@ func annsBlockSpecialization(anns: in List[Annotation]): Bool {
 // by the bridge to keep the typecheck-side flat `baseItems` view in
 // sync with the codegen-side per-package map, without re-parsing the
 // stdlib sources a second time.
+// Reorder `pkgs` so the packages named in `imports` come **last**, preserving
+// the original relative order within each group.  Used by the single-file MSIL
+// path so a file's imported packages win the last-registered-wins name
+// resolution for cross-package simple-name collisions (#1488 category D).
+pub func orderStdlibPkgsByImports(
+  pkgs:    in List[StdlibPkg],
+  imports: in List[ImportDecl]
+): List[StdlibPkg] {
+  val importedNames: Map[String, Bool] = newMap()
+  var ii = 0
+  while ii < imports.count {
+    val nm = segmentsToString(imports[ii].path.segments)
+    if not importedNames.containsKey(nm) { importedNames.add(nm, true) }
+    ii = ii + 1
+  }
+  val ordered: List[StdlibPkg] = newList()
+  // Non-imported packages first.
+  var i = 0
+  while i < pkgs.count {
+    if not importedNames.containsKey(pkgs[i].name) { ordered.add(pkgs[i]) }
+    i = i + 1
+  }
+  // Imported packages last, so their types win last-registered-wins resolution.
+  var j = 0
+  while j < pkgs.count {
+    if importedNames.containsKey(pkgs[j].name) { ordered.add(pkgs[j]) }
+    j = j + 1
+  }
+  ordered
+}
+
 pub func spreadStdlibPackageItems(
   pkgs: in List[StdlibPkg],
   flat: in List[Item]
