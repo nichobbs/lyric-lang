@@ -1623,7 +1623,7 @@ pub func inferExpr(
         i = i + 1
       }
       // Try direct-sig lookup first.
-      val directSig = findDirectSig(sc, sigs, fn, args.count)
+      val directSig = findDirectSig(sc, sigs, fn, args.count, argTypes)
       match directSig {
         case Some(sig) -> {
           if sig.params.count != args.count {
@@ -1809,29 +1809,70 @@ pub func inferExpr(
   }
 }
 
+// True when `params` and `argTypes` have the same count and every parameter
+// type is `typeEquiv` to the corresponding argument type.  `typeEquiv` treats
+// `TyError`/`TyVar` as wildcards, so an unresolved argument matches any
+// parameter at that position — the leniency that lets an empty-literal arg
+// still select the structurally-correct overload (#1488 category C).
+func paramsMatchArgs(params: in List[ResolvedParam], argTypes: in List[Type]): Bool {
+  if params.count != argTypes.count { return false }
+  var i = 0
+  while i < params.count {
+    if not typeEquiv(params[i].ty, argTypes[i]) { return false }
+    i = i + 1
+  }
+  true
+}
+
 func findDirectSig(
-  sc:    in Scope,
-  sigs:  in Map[String, ResolvedSignature],
-  fn:    in Expr,
-  arity: in Int
+  sc:       in Scope,
+  sigs:     in Map[String, ResolvedSignature],
+  fn:       in Expr,
+  arity:    in Int,
+  argTypes: in List[Type]
 ): Option[ResolvedSignature] {
   match fn.kind {
     case EPath(path) -> {
       if path.segments.count != 1 { return None }
       val name = path.segments[0]
-      // Prefer the arity-qualified signature so overloaded functions
-      // (e.g. Std.String.substring/2 and substring/3) dispatch to the
-      // overload that actually matches the call's arity.  The bare
-      // `name` key carries the first-in-wins entry from
-      // `addSigsFromItems` (and stays as a fallback for callers that
-      // expect the historical lookup) — using it before the arity
-      // key would misfire as T0042 every time a 3-arg call hits a
-      // bare key registered for the 2-arg overload.
       val arityKey = name + "/" + toString(arity)
-      match mapGet(sigs, arityKey) {
-        case Some(s) -> Some(value = s)
-        case None    -> mapGet(sigs, name)
+      // The arity-key "primary" is the historical lookup: a user definition
+      // overwrites it (so it shadows an imported same-name function), and
+      // imported items register it first-in-wins.  The bare `name` key is the
+      // legacy fallback — using it before the arity key would misfire as T0042
+      // every time a 3-arg call hits a bare key registered for the 2-arg
+      // overload, so it stays second.
+      val primary =
+        match mapGet(sigs, arityKey) {
+          case Some(s) -> Some(value = s)
+          case None    -> mapGet(sigs, name)
+        }
+      // Preserve shadowing and the common case: if the primary's params match
+      // the arguments, use it.  Only when it does *not* match do we consult the
+      // overload candidates — this is the disambiguation for #1488 category C.
+      match primary {
+        case Some(s) -> if paramsMatchArgs(s.params, argTypes) { return Some(value = s) }
+        case None    -> {}
       }
+      // Overload pick (#1488 category C): the primary didn't match the argument
+      // types, so select the same-arity candidate (registered by
+      // `registerOverloadCandidate`) whose params do.  This dispatches
+      // `toUpper("s")` to `Std.String.toUpper(String)` when the primary
+      // `Std.Char.toUpper(Char)` mismatches, and — because `typeEquiv` treats
+      // `TyError`/`TyVar` as wildcards — resolves `join(",", [])` (an
+      // empty-literal `slice[<error>]` arg) to `Std.String.join(String,
+      // slice[String])` over `Std.Path.join(String, String)`.
+      val candidates = gatherOverloadCandidates(sigs, arityKey)
+      var ci = 0
+      while ci < candidates.count {
+        val cand = candidates[ci]
+        if paramsMatchArgs(cand.params, argTypes) { return Some(value = cand) }
+        ci = ci + 1
+      }
+      // No candidate matched the arguments — fall back to the primary so the
+      // `ECall` arm still reports any T0042/T0043 against the historical
+      // first-in-wins signature (the pre-#1488 behaviour).
+      primary
     }
     case _ -> None
   }

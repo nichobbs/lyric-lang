@@ -677,6 +677,48 @@ func resolveFunctionSig(
 // §8. Build signatures map for a list of items.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Register `sg` as an overload candidate for `arityKey`, placing it in the next
+// free indexed slot (`arityKey@0`, `arityKey@1`, …).  Probing for the first
+// absent index means candidate registration auto-continues across the
+// imported-then-user `addSigsFromItems` passes that share one `sigs` map, so a
+// user overload is appended after the imported ones rather than colliding.
+pub func registerOverloadCandidate(
+  sigs:     in Map[String, ResolvedSignature],
+  arityKey: in String,
+  sg:       in ResolvedSignature
+): Unit {
+  var i = 0
+  var placed = false
+  while not placed {
+    val k = arityKey + "@" + toString(i)
+    if not sigs.containsKey(k) {
+      sigs.add(k, sg)
+      placed = true
+    } else {
+      i = i + 1
+    }
+  }
+}
+
+// Gather every overload candidate registered for `arityKey` (the indexed
+// `arityKey@0…` slots written by `registerOverloadCandidate`), stopping at the
+// first gap.  Returns the candidates in registration order.
+pub func gatherOverloadCandidates(
+  sigs:     in Map[String, ResolvedSignature],
+  arityKey: in String
+): List[ResolvedSignature] {
+  val acc: List[ResolvedSignature] = newList()
+  var i = 0
+  var more = true
+  while more {
+    match mapGet(sigs, arityKey + "@" + toString(i)) {
+      case Some(s) -> { acc.add(s); i = i + 1 }
+      case None    -> { more = false }
+    }
+  }
+  acc
+}
+
 func addSigsFromItems(
   tbl:        in SymbolTable,
   diag:       in List[Diagnostic],
@@ -729,6 +771,22 @@ func addSigsFromItems(
           sigs.add(decl.name, sg)
           if sigs.containsKey(arityKey) { sigs.remove(arityKey) }
           sigs.add(arityKey, sg)
+        }
+        // Overload candidates (#1488 category C): same-name/same-arity functions
+        // that differ only in parameter types (e.g. `Std.Char.toUpper(Char)` vs
+        // `Std.String.toUpper(String)`) collide on `arityKey` under first-in-
+        // wins, so a `toUpper("s")` call could be checked against the `Char`
+        // overload and wrongly rejected (T0043).  Register every non-generic sig
+        // under an indexed `arityKey@i` key so the call site can gather the full
+        // candidate set and pick the overload whose params match the argument
+        // types via `typeEquiv` (which honours `TyError`/`TyVar` wildcards, so an
+        // empty-literal `slice[<error>]` arg still selects the `slice[String]`
+        // overload).  Indexing auto-continues across the imported-then-user
+        // registration passes (we probe for the next free slot).  Generic sigs
+        // are skipped: their `TyVar` params match any argument under `typeEquiv`
+        // and would shadow a concrete overload — they keep the arity-key path.
+        if sg.generics.count == 0 {
+          registerOverloadCandidate(sigs, arityKey, sg)
         }
       }
       case _ -> {}
