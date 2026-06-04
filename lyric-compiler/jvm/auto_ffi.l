@@ -241,6 +241,15 @@ func loadClassInfo(ctx: in AutoFfiCtx, javaFqn: in String): Option[ClassInfo] {
   result
 }
 
+// Adds a freshly loaded ClassInfo to the parallel-list cache.  Called with
+// `ci` as a direct function-argument from the loadClass match arm — the
+// known-safe pattern under stage-0, which drops cross-package record bindings
+// when they are accessed inside a block body (`case Some(ci) -> { ci.field }`).
+func addClassToCache(ctx: in AutoFfiCtx, binaryName: in String, ci: in ClassInfo): Unit {
+  ctx.cacheKeys.add(binaryName)
+  ctx.cacheVals.add(ci)
+}
+
 /// Load (and cache) the public-method surface for a Java class.
 /// `javaFqn` is the dotted name e.g. "java.lang.Math".
 pub func loadClass(ctx: in AutoFfiCtx, javaFqn: in String): Option[ClassInfo] {
@@ -256,11 +265,10 @@ pub func loadClass(ctx: in AutoFfiCtx, javaFqn: in String): Option[ClassInfo] {
   }
 
   val loaded = loadClassInfo(ctx, javaFqn)
+  // Pass `ci` as a direct function argument from the match arm expression
+  // (not inside a block body) so stage-0 lowers the binding correctly.
   match loaded {
-    case Some(ci) -> {
-      ctx.cacheKeys.add(binaryName)
-      ctx.cacheVals.add(ci)
-    }
+    case Some(ci) -> addClassToCache(ctx, binaryName, ci)
     case None -> ()
   }
   loaded
@@ -392,52 +400,96 @@ pub func findBestConstructor(ci: in ClassInfo,
   best
 }
 
+// Returns the cache index for `binaryName` (e.g. "java/lang/Math"), or -1.
+func findCacheIdx(autoFfi: in AutoFfiCtx, binaryName: in String): Int {
+  var i = 0
+  while i < autoFfi.cacheKeys.count {
+    if autoFfi.cacheKeys[i] == binaryName { return i }
+    i = i + 1
+  }
+  -1
+}
+
+// Score instance methods of `sci` for the given name and args, appending each
+// compatible (method, score) pair to the accumulator lists.  Returns
+// `sci.superName` for the next chain iteration.
+// `sci` is received as a function parameter — the only stage-0-safe way to
+// access fields of a cross-package record type that arrived via an Option match.
+func scoreAndGetSuper(
+  sci:        in ClassInfo,
+  methodName: in String,
+  argDescs:   in List[String],
+  allMethods: in List[ClassMethod],
+  allScores:  in List[Int]
+): String {
+  var j = 0
+  while j < sci.methods.count {
+    val m = sci.methods[j]
+    if m.name == methodName {
+      val s = scoreMethod(m, argDescs, false)
+      if s >= 0 { allMethods.add(m); allScores.add(s) }
+    }
+    j = j + 1
+  }
+  sci.superName
+}
+
 /// Find the best-matching instance method in `ci`, walking up the superclass
 /// chain when the method is declared in a superclass (e.g. `length()` on
 /// `StringBuilder` is declared in `AbstractStringBuilder`).
+///
+/// Uses the parallel-list cache to avoid the stage-0 Option[ClassInfo]
+/// match-arm binding bug: each superclass is loaded into the cache via
+/// `loadClass`, then accessed directly via `cacheVals[idx]` and passed to
+/// `scoreAndGetSuper` as a function parameter — the known-safe pattern.
 pub func findBestInstanceMethod(
   autoFfi:    in AutoFfiCtx,
   ci:         in ClassInfo,
   methodName: in String,
   argDescs:   in List[String]
 ): Option[ClassMethod] {
-  var best:      Option[ClassMethod] = None
-  var bestScore: Int                 = -1
-  // Score the declared class first.
+  val allMethods: List[ClassMethod] = newList()
+  val allScores:  List[Int]         = newList()
+
+  // Score the declared class directly (ci is a function parameter — safe).
   var i = 0
   while i < ci.methods.count {
     val m = ci.methods[i]
     if m.name == methodName {
       val s = scoreMethod(m, argDescs, false)
-      if s > bestScore { bestScore = s; best = Some(value = m) }
+      if s >= 0 { allMethods.add(m); allScores.add(s) }
     }
     i = i + 1
   }
-  // Walk superclasses until a match is found or the chain ends.
-  // Uses assign-into-`var` control flow to stay within stage-0 safe patterns:
-  // `nextSuper` is a `String` accumulated from the match arm body, avoiding
-  // the `Option[ClassInfo]` threading bug (which only affects Map/Option of
-  // cross-package record element types; direct match arm field access is fine).
+
+  // Walk the superclass chain.  Each iteration:
+  //   1. Calls loadClass to populate the parallel-list cache.
+  //   2. Locates the entry by key scan (avoids Option[ClassInfo] binding).
+  //   3. Passes cacheVals[idx] directly to scoreAndGetSuper as a function
+  //      argument — the known-safe pattern for cross-package record types
+  //      under stage-0 (which drops bindings accessed in block bodies).
   var superBin = ci.superName
-  while bestScore < 0 and superBin.length > 0 and superBin != "java/lang/Object" {
+  while superBin.length > 0 and superBin != "java/lang/Object" {
     val superFqn = superBin.replace("/", ".")
+    loadClass(autoFfi, superFqn)   // populate cache; return value intentionally unused
+    val superIdx = findCacheIdx(autoFfi, superBin)
     var nextSuper = ""
-    match loadClass(autoFfi, superFqn) {
-      case Some(sc) -> {
-        var j = 0
-        while j < sc.methods.count {
-          val m = sc.methods[j]
-          if m.name == methodName {
-            val s = scoreMethod(m, argDescs, false)
-            if s > bestScore { bestScore = s; best = Some(value = m) }
-          }
-          j = j + 1
-        }
-        nextSuper = sc.superName
-      }
-      case None -> ()
+    if superIdx >= 0 {
+      nextSuper = scoreAndGetSuper(autoFfi.cacheVals[superIdx], methodName, argDescs, allMethods, allScores)
     }
-    if bestScore < 0 { superBin = nextSuper }
+    superBin = nextSuper
+  }
+
+  // Pick the best candidate from all collected methods.
+  var best:      Option[ClassMethod] = None
+  var bestScore: Int                 = -1
+  var k = 0
+  while k < allMethods.count {
+    if allScores[k] > bestScore {
+      bestScore = allScores[k]
+      best = Some(value = allMethods[k])
+    }
+    k = k + 1
   }
   best
 }
