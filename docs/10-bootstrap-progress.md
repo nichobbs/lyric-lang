@@ -19666,3 +19666,38 @@ program" symptom.  Confirmed across non-colliding and colliding names and an
 body; it now includes an explicit `if`-expression String-body function
 (`pickStr`, `ensures: result == "yes" or result == "no"`) so the scenario stays
 covered (7/7 via native `lyric test --target dotnet`).  MSIL target only.
+
+### D-progress-401 — self-hosted type checker: `out` definite-assignment (#1487 §5.2 complete, docs/41 C13)
+
+**Status:** Shipped — completes #1487's front-end §5.2 enforcement (all three rules).
+
+`checkFunctionBody` now flags an `out` parameter never assigned anywhere in the
+function body with **T0086** (`checkOutDefiniteAssignment`). A complete recursive
+collector (`collectAssignedBlock` / `collectAssignedStmt` / `collectAssignedExpr`
+/ `collectAssignedEOB`) gathers every assignment target across statements,
+block-bearing statements (`STry` + catches/finally, `SDefer`, `SScope`, `SFor`,
+`SWhile`, `SLoop`), and expression-embedded blocks (`EIf`/`EMatch`/`EBlock`/
+`EUnsafe`/`ELambda` …), so a param assigned in any branch / loop / nested block
+is never falsely flagged. This is the sound "never assigned" subset; full
+all-paths definite-assignment (assigned on some-but-not-all paths) is a planned
+refinement. The check is skipped entirely when a function has no `out` params.
+
+With this, **#1487 is complete**: `in` no-rebind (T0087, #1978), `out`/`inout`
+value-type argument l-value (T0085, #1992), and `out` definite-assignment
+(T0086) are all enforced by the type checker for every package; docs/41 C13's
+front-end half is resolved (codegen by-ref already shipped, #1761).
+
+**Restored-dependency interaction:** a synthesised contract source reconstructs
+a restored package's public API from metadata with *stub* function bodies, so an
+`out` param appears never-assigned → T0086.  `restored_packages.l::filterRealErrors`
+now whitelists the body-semantics diagnostics (T0085/T0086/T0087 mode rules,
+T0098/T0099 conformance, T0100/T0101/T0102 ctor/opaque) on synthesised sources —
+those checks ran when the package was originally compiled and don't apply to a
+metadata stub.  Without this, building `lyric-cache` (which restores
+`Lyric.Stdlib`) false-failed on a stub `out` parameter.
+
+Coverage: 5 new `typechecker_self_test.l` cases (out assigned clean; out never
+assigned → T0086; out assigned in if-branches / loop body clean; in-param no
+check). Full regression green (847/847 emitter, 84/84 CLI bridge); auth (29/29),
+session (31/31, incl. the restored-`lyric-cache`→`Lyric.Stdlib` path), and the
+`LYRIC_LOAD_COMPILER=1` weaver self-test (18/18) green with zero false positives.

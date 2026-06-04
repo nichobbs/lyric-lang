@@ -294,15 +294,26 @@ func isWhitelistedT0010(d: in Diagnostic): Bool {
   isWhitelistedStdlibType(name)
 }
 
-// True iff `d` is an impl/interface conformance diagnostic (#1486).  The
-// synthesised contract source reconstructs a restored package's public API
-// from metadata; its `impl` blocks are type anchors, not full recompilations,
-// so an impl may legitimately omit interface methods (T0098) or differ in
-// arity (T0099).  Conformance was already enforced when the package was
-// originally compiled, so these are expected here and must not fail the
-// restored-dep load — same rationale as the whitelisted-T0010 stdlib anchors.
+// True iff `d` is a *body-semantics* diagnostic that cannot meaningfully apply
+// to a synthesised contract source.  That source reconstructs a restored
+// package's public API from metadata: `impl` blocks are bare type anchors and
+// function bodies are stubs, so checks that depend on real bodies / call sites
+// legitimately "fail" here even though the package compiled cleanly when it was
+// originally built.  Whitelisting them keeps the restored-dep load from
+// false-failing — same rationale as the whitelisted-T0010 stdlib anchors.
+//
+//   T0085 — `out`/`inout` argument must be a mutable l-value (call sites)
+//   T0086 — `out` parameter never assigned (stub bodies assign nothing)
+//   T0087 — reassigning an immutable binding
+//   T0098 — `impl` missing an interface method (anchor impls omit them)
+//   T0099 — `impl` method arity mismatch
+//   T0100 — opaque construction outside its package
+//   T0101 — constructor names an unknown field
+//   T0102 — opaque representation pattern-match outside its package
 func isConformanceDiag(d: in Diagnostic): Bool {
-  d.code == "T0098" or d.code == "T0099"
+  d.code == "T0085" or d.code == "T0086" or d.code == "T0087" or
+  d.code == "T0098" or d.code == "T0099" or
+  d.code == "T0100" or d.code == "T0101" or d.code == "T0102"
 }
 
 // True iff `d` is a DiagError (vs DiagWarning).

@@ -898,6 +898,34 @@ func testOpaquePatternMatchSamePackageOk(): Unit {
   assertTrue(not hasDiagCode(parseCheck(src), "T0102"), "same-package opaque destructure: no T0102")
 }
 
+// #1487 (§5.2): an `out` parameter must be assigned before the function
+// returns; one never assigned anywhere in the body is rejected (T0086).
+
+func testOutAssignedOk(): Unit {
+  val src = "package P\nfunc f(x: out Int): Unit { x = 5 }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0086"), "out param assigned: no T0086")
+}
+
+func testOutNeverAssigned(): Unit {
+  val src = "package P\nfunc f(x: out Int): Unit { val y = 1 }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0086"), "out param never assigned: T0086")
+}
+
+func testOutAssignedInBranchesOk(): Unit {
+  val src = "package P\nfunc f(c: in Bool, x: out Int): Unit { if c { x = 1 } else { x = 2 } }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0086"), "out assigned in if-branches: no T0086")
+}
+
+func testOutAssignedInLoopOk(): Unit {
+  val src = "package P\nfunc f(x: out Int): Unit {\n  var i = 0\n  while i < 3 { x = i; i = i + 1 }\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0086"), "out assigned in loop body: no T0086")
+}
+
+func testInParamNoOutCheck(): Unit {
+  val src = "package P\nfunc f(x: in Int): Unit { val y = 1 }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0086"), "in param: no T0086")
+}
+
 func main(): Unit {
   testEmptySource()
   testFuncRegistered()
@@ -983,5 +1011,10 @@ func main(): Unit {
   testOpaquePatternMatchCrossPackage()
   testOpaqueBindingMatchCrossPackageOk()
   testOpaquePatternMatchSamePackageOk()
+  testOutAssignedOk()
+  testOutNeverAssigned()
+  testOutAssignedInBranchesOk()
+  testOutAssignedInLoopOk()
+  testInParamNoOutCheck()
   println("typechecker self-test: ok")
 }
