@@ -361,7 +361,7 @@ func testSigDecodeRoundTrip(): Unit {
     }
   }
   // Static `(GenericInst Class(tok=5) [Int]): Void` → DEFAULT, 1 param, VOID
-  // ret, GENERICINST CLASS token 1 arg I4.
+  // ret, GENERICINST CLASS token=5, 1 arg I4.
   val sGi: List[Byte] = newList()
   sGi.add(0x00u8)  sGi.add(0x01u8)  sGi.add(0x01u8)
   sGi.add(0x15u8)  sGi.add(0x12u8)  sGi.add(0x05u8)
@@ -504,7 +504,6 @@ func prim(b: in Int): SigType { STPrim(elemByte = b) }
 // scoreSigType invariance for `STSzArray`: CLR single-dimension arrays
 // are invariant at the IL level, so `int[]` must NOT score positively
 // against `long[]` (a widening on the element would mis-bind at JIT).
-// Direct unit-test of the matcher PR #1881 hardened.
 func testScoreSigTypeArrayInvariance(): Unit {
   val i4Arr = STSzArray(elem = prim(0x08))   // int32[]
   val i8Arr = STSzArray(elem = prim(0x0A))   // int64[]
