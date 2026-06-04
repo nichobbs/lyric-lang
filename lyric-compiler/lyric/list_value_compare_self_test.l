@@ -144,3 +144,14 @@ test "Char element comparison" {
   assertTrue(cs[0] == 'a', "cs[0] == 'a'")
   assertTrue(cs[1] != 'a', "cs[1] != 'a'")
 }
+
+test "Int element: indexed write then read-back composes correctly" {
+  // Confirms set_Item (auto-box) / get_Item (unbox.any) write→read symmetry.
+  val xs: List[Int] = newList()
+  xs.add(1)
+  xs.add(2)
+  xs[0] = 99
+  assertEqualInt(xs[0], 99, "xs[0] after write reads back as 99")
+  assertTrue(xs[0] > xs[1], "xs[0] (99) > xs[1] (2) after write")
+  assertTrue(xs[0] == 99, "xs[0] == 99 (equality after write)")
+}
