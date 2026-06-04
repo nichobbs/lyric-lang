@@ -1952,7 +1952,7 @@ func externValueTypeMsil(cctx: in CodegenCtx, seg: in String): Option[MsilType] 
     case Some(clrFqn) -> {
       if not clrIsValueType(clrFqn) { return None }
       val sp     = splitTypeFqn(clrFqn)
-      val asm    = clrAssemblyForType(clrFqn)
+      val asm    = assemblyForTypeMsil(cctx, clrFqn)
       val refRow = internFfiTypeRef(cctx, asm, sp.ns, sp.name)
       Some(value = MValueTypeRef(typeRefCode = tdrTypeRef(refRow), clrFqn = clrFqn))
     }
@@ -6673,7 +6673,7 @@ func resolveFfiClassTypeRef(cctx: in CodegenCtx, className: in String): Int {
   // a different encoding than `internFfiTypeRef` provides; skip them safely.
   if contains(clrFqn, "+") { return 0 - 1 }
   val sp  = splitTypeFqn(clrFqn)
-  val asm = clrAssemblyForType(clrFqn)
+  val asm = assemblyForTypeMsil(cctx, clrFqn)
   internFfiTypeRef(cctx, asm, sp.ns, sp.name)
 }
 
@@ -6806,8 +6806,9 @@ func emitExternTargetBody(
           + "a typo or an unsupported type.")
       }
 
+      val asmName = assemblyForTypeMsil(cctx, resolvedFqn)
       val tRefRow = internFfiTypeRef(
-        cctx, r.assemblyName, r.namespaceStr, r.typeName)
+        cctx, asmName, r.namespaceStr, r.typeName)
 
       // Build the method signature blob, encoding class-typed params/return
       // against their resolved TypeRefs.
@@ -9001,6 +9002,26 @@ func msilIsValueTypeRef(t: in MsilType): Bool {
   }
 }
 
+// Resolve a CLR FQN to its owning assembly's simple name via the metadata
+// type-index (built once over the reference pack and cached on `cctx`).
+// Falls back to "Lyric.Emitter" for Lyric host types (F# shims that are
+// compiled into Lyric.Emitter.dll and never appear in the reference pack),
+// and to "System.Runtime" for any remaining System.* types (core types that
+// are type-forwarded from System.Private.CoreLib via the System.Runtime
+// facade).  The call to ensureMetadataIndex is a no-op after the first use.
+func assemblyForTypeMsil(cctx: in CodegenCtx, clrFqn: in String): String {
+  ensureMetadataIndex(cctx)
+  match Mdr.assemblyForType(cctx.metadataTypeIndex, clrFqn) {
+    case Some(asm) -> asm
+    case None      ->
+      if startsWith(clrFqn, "Lyric.Emitter") or startsWith(clrFqn, "Lyric.Stdlib") {
+        "Lyric.Emitter"
+      } else {
+        "System.Runtime"
+      }
+  }
+}
+
 // Intern a TypeRef for the value type `fqn` (its owning assembly comes from the
 // metadata index) and return the matching `MValueTypeRef`, or None when the
 // type's assembly isn't indexed.
@@ -9082,11 +9103,11 @@ func appendInsnsMsil(dst: in List[MInsn], src: in List[MInsn]): Unit {
 
 // Build the metadata type→assembly / assembly→path indexes over the .NET
 // reference pack on first use, cached on `cctx` for the rest of the package.
-// The index is the source of truth for auto-FFI assembly resolution — it finds
-// the assembly that actually defines a type (e.g. `System.IO.Path` lives in
-// `System.Runtime`), unlike the hardcoded `clrAssemblyForType` prefix table.
+// The index is the source of truth for all assembly resolution (auto-FFI and
+// @externTarget) — it finds the assembly that actually defines a type.
 // A no-op after the first call; if the reference pack can't be located the
-// indexes stay empty and resolution falls back to the legacy path.
+// indexes stay empty and assemblyForTypeMsil falls back to "System.Runtime"
+// (adequate for Lyric-host types and System.* core types).
 func ensureMetadataIndex(cctx: in CodegenCtx): Unit {
   if cctx.metadataReady.count > 0 { return }
   cctx.metadataReady.add(true)
@@ -9334,10 +9355,9 @@ func tryInstanceAutoFfiFromMetadata(
 // Try to resolve and emit an auto-FFI call from .NET metadata.  Returns the
 // real result MsilType on success, or None to fall back to the legacy path.
 // The owning assembly is found from the metadata-derived type→assembly index
-// (built once over the reference pack and cached on `cctx`), so the resolution
-// no longer depends on the hardcoded `clrAssemblyForType` prefix table — a type
-// whose assembly that table would mis-hint (e.g. `System.IO.Path` →
-// `System.Runtime`) now resolves correctly.
+// (built once over the reference pack and cached on `cctx`) via
+// assemblyForTypeMsil, so resolution is accurate for types the old prefix
+// table would mis-hint (e.g. `System.IO.Path` lives in `System.Runtime`).
 func tryAutoFfiFromMetadata(
   cctx:       in CodegenCtx,
   fctx:       in FuncCtx,
@@ -9420,7 +9440,7 @@ func emitAutoFfiCallMsil(
   }
 
   val sp = splitTypeFqn(clrFqn)
-  val asmName = clrAssemblyForType(clrFqn)
+  val asmName = assemblyForTypeMsil(cctx, clrFqn)
   val tRefRow = internFfiTypeRef(cctx, asmName, sp.ns, sp.name)
 
   // Static `()`-shape call registered as `() : void` — see D-progress-343.
