@@ -20092,3 +20092,31 @@ MSIL target.
 
 Docs: D084 (decision log), language reference §13.1, book getting-started
 (scaffolding section) + appendix-b CLI reference.
+
+### D-progress-413 — fix `lyric restore` git-dep crash + manifest error rendering (#2082)
+
+**Status:** Shipped (`lyric-compiler/lyric/git_dep/git_dep.l`,
+`lyric-compiler/lyric/manifest.l`).
+
+Bug fix for the `Std.Char.fromInt: requires failed` core dump on
+`lyric restore` of a git dependency.  Root cause (filed as #2125): the F#
+stage-0 emitter mis-resolves the qualified call `Str.fromInt` to
+`Std.Char.fromInt` in files importing both `Std.String` and `Std.Char`;
+`Char.fromInt` requires `n <= 65535`, so `urlToHash`'s ~2-billion DJB2 hash
+panicked.  The same collision rendered `Lyric.Manifest` TOML parse-error
+`line:col` as garbled control characters.
+
+- `urlToHash` / `gitErrMsg` use the unambiguous `toString` builtin instead of
+  `Str.fromInt`; `urlToHash` now returns the correct decimal-suffixed cache name.
+- `ManifestError.message` uses `toString` — parse errors render a real
+  `lyric.toml:<line>:<col>:` location for every user.
+- `refDirName` assigns into a non-null-initialised `var`; `resolve` guards the
+  empty result and returns a clean `Err`, so a git-dep restore fails gracefully
+  (exit 1, clear message) instead of an NRE/core dump.
+
+New CI "Git-dep / manifest-error regression e2e" step covers both: a git-dep
+restore exits non-zero with no unhandled-exception/`fromInt`/NRE text, and a
+TOML parse error renders a numeric `:line:col:`.
+
+Functional git-dep resolution (parsed `ref` reads back null) is a separate
+emitter defect tracked in #2126.  Stage-1 + AOT clean.  MSIL target.
