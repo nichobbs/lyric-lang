@@ -144,3 +144,17 @@ test "Char element comparison" {
   assertTrue(cs[0] == 'a', "cs[0] == 'a'")
   assertTrue(cs[1] != 'a', "cs[1] != 'a'")
 }
+
+test "Int element: indexed write then read-back composes correctly" {
+  // Confirms the write path (set_Item with auto-box) composes with the
+  // read path (get_Item with unbox.any) so that round-trip equality
+  // holds.  Guards against future refactors breaking the write→read
+  // symmetry the #1779 fix established.
+  val xs: List[Int] = newList()
+  xs.add(1)
+  xs.add(2)
+  xs[0] = 99
+  assertEqualInt(xs[0], 99, "xs[0] after write reads back as 99")
+  assertTrue(xs[0] > xs[1], "xs[0] (99) > xs[1] (2) after write")
+  assertTrue(xs[0] == 99, "xs[0] == 99 (equality after write)")
+}

@@ -29,6 +29,14 @@ record Line { a: Point, b: Point }
 @derive(Equals)
 record Empty {}
 
+// Distinct types also receive a synthesised `equals` from `Lyric.Derives`
+// (`synthesizeEqualsDistinct` projects both operands and compares).
+@derive(Equals)
+type Score = Int
+
+@derive(Equals)
+type Tag = String
+
 test "field-equal records compare == true" {
   val p1 = Point(x = 1, y = 2)
   val p2 = Point(x = 1, y = 2)
@@ -74,4 +82,20 @@ func samePoint(p: in Point, q: in Point): Bool {
 test "structural == composes in a boolean-returning function" {
   assertTrue(samePoint(Point(x = 5, y = 6), Point(x = 5, y = 6)), "func == true")
   assertTrue(not samePoint(Point(x = 5, y = 6), Point(x = 5, y = 7)), "func == false")
+}
+
+test "distinct types over Int compare structurally via @derive(Equals)" {
+  val a = Score(42)
+  val b = Score(42)
+  val c = Score(99)
+  assertTrue(a == b, "Score(42) == Score(42)")
+  assertTrue(a != c, "Score(42) != Score(99)")
+}
+
+test "distinct types over String compare structurally" {
+  val a = Tag("alpha")
+  val b = Tag("alpha")
+  val c = Tag("beta")
+  assertTrue(a == b, "Tag(\"alpha\") == Tag(\"alpha\")")
+  assertTrue(a != c, "Tag(\"alpha\") != Tag(\"beta\")")
 }

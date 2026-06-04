@@ -393,6 +393,27 @@ func testInlineRefinedVarAndLet(): Unit {
   assertTrue(hasDiagCode(parseCheck(l), "T0015"), "let inline-range out-of-range: T0015")
 }
 
+func testInlineRefinedUpperOpenBelowLo(): Unit {
+  // Upper-open `range 5 ..`: 3 is below the lower bound — T0015.
+  val src = "package P\nfunc f(): Unit {\n  val x: Int range 5 .. = 3\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0015"),
+    "upper-open below lo: T0015")
+}
+
+func testInlineRefinedUpperOpenAtLo(): Unit {
+  // Upper-open `range 5 ..`: 5 is at the lower bound, no upper to check.
+  val src = "package P\nfunc f(): Unit {\n  val x: Int range 5 .. = 5\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0015"),
+    "upper-open at lo: no T0015")
+}
+
+func testInlineRefinedLowerOpenAboveHi(): Unit {
+  // Lower-open `range ..= 9`: 12 is above the inclusive upper bound — T0015.
+  val src = "package P\nfunc f(): Unit {\n  val x: Int range ..= 9 = 12\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0015"),
+    "lower-open above hi: T0015")
+}
+
 func testRefinementTransparentToEquiv(): Unit {
   // Gate-safety: a refined type is equivalent to its underlying.  An
   // in-bounds refined binding whose declared type differs only by the
@@ -499,6 +520,54 @@ func testMatchUnionGuardDoesNotCover(): Unit {
   assertTrue(hasDiagCode(cr, "T0016"), "guarded Circle arm does not cover -> T0016")
 }
 
+func testMatchGenericUnionExhaustive(): Unit {
+  // Generic-union scrutinees (`Option[Int]`) should resolve to the union
+  // declaration via `typeIdEq` regardless of type arguments.
+  val ok =
+    "package P\nunion Option[T] { case Some(value: T); case None }\n" +
+    "func f(o: in Option[Int]): Int {\n" +
+    "  match o { case Some(x) -> x; case None -> 0 }\n" +
+    "}\n"
+  val bad =
+    "package P\nunion Option[T] { case Some(value: T); case None }\n" +
+    "func f(o: in Option[Int]): Int {\n" +
+    "  match o { case Some(x) -> x }\n" +
+    "}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0016"), "Option[Int] all cases: no T0016")
+  assertTrue(hasDiagCode(parseCheck(bad), "T0016"), "Option[Int] missing None: T0016")
+}
+
+func testMatchOrPatternExhaustive(): Unit {
+  // POr arms enumerate multiple union cases at once.
+  val ok =
+    "package P\n" +
+    "union Shape { case Circle; case Square; case Tri }\n" +
+    "func area(sh: in Shape): Int {\n" +
+    "  match sh { case Circle | Square -> 0; case Tri -> 1 }\n" +
+    "}\n"
+  val bad =
+    "package P\n" +
+    "union Shape { case Circle; case Square; case Tri }\n" +
+    "func area(sh: in Shape): Int {\n" +
+    "  match sh { case Circle | Square -> 0 }\n" +
+    "}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0016"), "Or-pattern + Tri: no T0016")
+  assertTrue(hasDiagCode(parseCheck(bad), "T0016"), "Or-pattern missing Tri: T0016")
+}
+
+func testMatchAtBindExhaustive(): Unit {
+  // `case x@Circle(r)` should credit `Circle` to the coverage set via the
+  // `Some(inner)` branch of `collectCoveredCases`.
+  val src =
+    "package P\n" +
+    "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
+    "func area(sh: in Shape): Int {\n" +
+    "  match sh { case x@Circle(r) -> r; case Square(s) -> s; case Tri -> 0 }\n" +
+    "}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0016"),
+    "@-bound Circle covers union case: no T0016")
+}
+
 func testMatchEnumExhaustive(): Unit {
   val src =
     "package P\n" +
@@ -574,6 +643,14 @@ func testPropagateOptionUnwrap(): Unit {
   assertTrue(hasDiagCode(parseCheck(bad), "T0060"), "Option[Int]? used as String: T0060")
 }
 
+func testPropagateNonMonadicNoT0060(): Unit {
+  val src =
+    "package P\n" +
+    "func f(n: in Int): Unit { val _x = n? }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0060"),
+    "non-monadic ? yields TyError: no T0060 cascade")
+}
+
 func main(): Unit {
   testEmptySource()
   testFuncRegistered()
@@ -607,6 +684,9 @@ func main(): Unit {
   testInlineRefinedBelowLo()
   testInlineRefinedNegativeBounds()
   testInlineRefinedVarAndLet()
+  testInlineRefinedUpperOpenBelowLo()
+  testInlineRefinedUpperOpenAtLo()
+  testInlineRefinedLowerOpenAboveHi()
   testRefinementTransparentToEquiv()
   testInlineRefinedNonLiteralNotChecked()
   testMatchUnionExhaustive()
@@ -615,6 +695,9 @@ func main(): Unit {
   testMatchUnionBareNameBind()
   testMatchUnionNullaryBareCase()
   testMatchUnionGuardDoesNotCover()
+  testMatchGenericUnionExhaustive()
+  testMatchOrPatternExhaustive()
+  testMatchAtBindExhaustive()
   testMatchEnumExhaustive()
   testMatchEnumNonExhaustive()
   testMatchBoolExhaustive()
@@ -623,5 +706,6 @@ func main(): Unit {
   testMatchStringNeedsWildcard()
   testPropagateResultUnwrap()
   testPropagateOptionUnwrap()
+  testPropagateNonMonadicNoT0060()
   println("typechecker self-test: ok")
 }
