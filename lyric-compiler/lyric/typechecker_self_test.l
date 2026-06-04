@@ -388,6 +388,35 @@ func testQualifiedTypeResolvesViaImport(): Unit {
     "qualified-type-import: no T0050 generic-arity for Lib.Point")
 }
 
+// #1488 category C: two imported functions sharing a name and arity but
+// differing in parameter type (the `Std.Char.toUpper(Char)` vs
+// `Std.String.toUpper(String)` collision) must dispatch by argument type, not
+// by first-in-wins.  `mk(String)` returns `Int`; `mk(Int)` returns `String`.
+// A `String`-typed argument must select the `Int`-returning overload, so
+// binding the call into an `Int` is clean and into a `String` mismatches.
+func testOverloadDispatchByArgType(): Unit {
+  val libSrc = "package Lib\npub func mk(s: in String): Int { 0 }\npub func mk(n: in Int): String { \"\" }\n"
+  val libPr  = parse(libSrc)
+  val importedItems: List[Item] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    importedItems.add(libPr.file.items[i])
+    i = i + 1
+  }
+  // `mk("x")` selects `mk(String): Int`; the `Int` binding is clean.
+  val okSrc = "package App\nfunc f(): Unit {\n  val n: Int = mk(\"x\")\n}\n"
+  val okPr  = parse(okSrc)
+  assertEqualInt(diagCount(checkWithImports(okPr.file, importedItems)), 0,
+    "overload: mk(String) selects the Int-returning overload")
+  // `mk(7)` selects `mk(Int): String`; binding into `Int` must mismatch (T0060),
+  // proving the *other* overload was chosen — a first-in-wins map would have
+  // returned the same overload for both calls.
+  val badSrc = "package App\nfunc f(): Unit {\n  val n: Int = mk(7)\n}\n"
+  val badPr  = parse(badSrc)
+  assertTrue(hasDiagCode(checkWithImports(badPr.file, importedItems), "T0060"),
+    "overload: mk(Int) selects the String-returning overload (mismatches Int)")
+}
+
 func testQualifiedTypeUnknownEmitsT0014(): Unit {
   // A qualified name whose last segment is not in scope should still
   // emit T0014, not resolve silently.
@@ -1173,6 +1202,7 @@ func main(): Unit {
   testAsyncGeneratorFlags()
   testHotAnnotationFlag()
   testQualifiedTypeResolvesViaImport()
+  testOverloadDispatchByArgType()
   testQualifiedTypeUnknownEmitsT0014()
   testQualifiedTypeMisqualifiedResolvesPermissively()
   testRangeBoundLongMinValueFolds()

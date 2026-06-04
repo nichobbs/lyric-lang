@@ -20429,3 +20429,42 @@ This closes false-positive category (A) of the #1488 gate.  Categories (B)
 generic-return instantiation and (C) same-name/same-arity overload resolution
 (plus the cross-package duplicate-`TypeId` and interface-subtyping surfaces)
 remain before the `bridge.l:93` `reportDiagnostics` → `reportAndAbort` flip.
+
+### D-progress-421 — self-hosted type checker: argument-type overload resolution (#1488 gate, category C, Band-1 of #1470)
+
+**Status:** Shipped — type-checker-only.
+
+The signature map (`addSigsFromItems`) keyed each function by `name` and
+`name/arity` under first-in-wins, so two functions sharing a name and arity but
+differing in parameter type — `Std.Char.toUpper(Char): Char` vs
+`Std.String.toUpper(String): String`, or `Std.Path.join(String, String)` vs
+`Std.String.join(String, slice[String])` — collided.  `toUpper("hello")` was
+checked against the `Char` overload and rejected with `T0043`; this was
+false-positive category (C) of the #1488 gate (`string_tests`).
+
+Fix: each non-generic sig is additionally registered under an indexed
+`arityKey@i` slot (`registerOverloadCandidate`), and `findDirectSig` resolves a
+call by (1) trying the `arityKey` primary — the user-overwrite / first-in-wins
+sig, which preserves import shadowing — and, only when its params do **not**
+`typeEquiv`-match the argument types, (2) scanning the candidate set for one
+whose params do.  Because `typeEquiv` treats `TyError`/`TyVar` as wildcards, an
+empty-literal `slice[<error>]` argument still selects the `slice[String]`
+overload, so `join(",", [])` resolves to `Std.String.join` rather than
+`Std.Path.join`.  Generic sigs are excluded from the candidate set (their
+`TyVar` params match any argument and would shadow a concrete overload).  The
+primary-first ordering is essential: a user function that shadows an
+imported same-name function stays the primary, so the whole-compiler self-build
+(which defines many helpers that shadow stdlib names) is unaffected.
+
+Coverage: 1 new `typechecker_self_test.l` case (two imported `mk/1` overloads,
+`mk(String): Int` and `mk(Int): String`; a `String` arg selects the
+`Int`-returning overload, an `Int` arg the `String`-returning one — proving
+argument-type dispatch, not first-in-wins).  Full regression green: 847/847
+emitter, typechecker self-test, `weaver_self_test.l` 18/18 (`LYRIC_LOAD_COMPILER=1`,
+exercises import shadowing across the whole compiler), `lyric-auth` 29/29, and
+`string_tests` (`toUpper`/`toLower`/`join`) single-file builds now clean.
+
+This closes false-positive category (C) of the #1488 gate.  Category (B)
+generic-return instantiation, plus the cross-package duplicate-`TypeId` and
+interface-subtyping surfaces, remain before the `bridge.l:93`
+`reportDiagnostics` → `reportAndAbort` flip.
