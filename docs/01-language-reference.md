@@ -1310,6 +1310,14 @@ build against the lock as-is. Auto-restore tracks the `[dependencies]` table
 only; changes to `[nuget]`/`[maven]` entries are not detected, so run
 `lyric restore` explicitly after editing those.
 
+**Watch mode.** `lyric run --watch <source.l>` and `lyric build [--watch]` run the
+action once, then watch the relevant source files and re-run on every change
+until interrupted (Ctrl-C). `run --watch` watches the source file; project
+`build --watch` watches the manifest and every `[project.packages]` source;
+single-file `build --watch` watches the source. Change detection fingerprints
+each file's contents (no reliance on filesystem timestamps); the poll interval
+is fixed. The watch loop runs in the CLI process (always the .NET host).
+
 ### 13.2 Test runner
 
 `lyric test <source.l>` compiles a `@test_module` file, synthesises a runnable program from its `test "title" { … }` items, and reports results in TAP-shaped form (`1..N`, `ok N - title` / `not ok N - title`, summary counts). Exit codes: `0` (every selected test passed), `1` (at least one failure), `2` (compilation error), `64` (usage error).

@@ -4492,6 +4492,40 @@ manual TOML editing. Path/git/nuget forms round-trip through `parseManifest`.
 
 ---
 
+## D083 — `lyric run/build --watch` — rebuild-on-change dev loop (#1968, #1974)
+
+**Context:** No watch loop existed; iterating meant re-running `lyric run`/`build`
+by hand. The stdlib exposed neither a file-modified-time getter nor a
+synchronous sleep, so a watch loop needed new primitives.
+
+**Decision:**
+
+- **Change detection by content hash, not mtime.** The watch loop fingerprints
+  each watched file with `Std.Hash.sha512OfFile` (already cross-target, reused
+  from lock integrity) rather than adding a file-metadata/`mtime` primitive.
+  This sidesteps the cross-target `DateTime`/`FileTime` conversion mismatch and
+  reuses proven infrastructure.
+- **One new stdlib primitive: `Std.Time.sleepMillis(ms: Int)`** (synchronous
+  thread sleep), backing the poll interval. `.NET` binds
+  `System.Threading.Thread.Sleep`; JVM routes through the
+  `lyric.stdlib.jvm.TimeHost.sleepMillis` Phase 6 shim (`Thread.sleep((long)ms)`)
+  because `java.lang.Thread.sleep` takes a `long` and an `Int` argument would
+  mismatch the descriptor. Both kernels declare it; the JVM runtime shim is part
+  of the existing Phase 6 host-shim deliverable (the JVM host layer is uniformly
+  Phase-6-pending, not a new gap).
+- **Scope of watched files:** `run --watch` → the source file; project
+  `build --watch` → the manifest + every `[project.packages]` source; single
+  `build --watch` → the source. The loop runs the action once, then re-runs on
+  any fingerprint change until interrupted.
+- **The watch loop runs in the CLI process** (always the .NET AOT host), so the
+  feature is fully functional today regardless of the JVM host-shim status; only
+  the `sleepMillis` primitive's JVM *runtime* awaits the Phase 6 shim.
+
+**Consequence:** `lyric run --watch app.l` gives an edit-rebuild-rerun loop with
+no new file-watch OS binding and no mtime primitive.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

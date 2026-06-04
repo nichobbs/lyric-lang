@@ -162,7 +162,11 @@ let tests =
             //               consumers reading many resources release
             //               unmanaged buffers deterministically rather
             //               than waiting for GC.
-            Expect.isLessThanOrEqual total 316
+            //   316 → 317 — `Std.TimeHost.hostSleepMillis`: synchronous
+            //               `System.Threading.Thread.Sleep` backing
+            //               `Std.Time.sleepMillis`, the poll interval for
+            //               `lyric run/build --watch` (#1974).
+            Expect.isLessThanOrEqual total 317
                 "total extern surface unexpectedly large"
         }
     ]

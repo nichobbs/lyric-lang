@@ -237,3 +237,11 @@ pub func monotonicNanos(): Long {
   var nanoFreq: Long = hostStopwatchFrequency()
   return (nanoTs / nanoFreq) * 1000000000i64 + (nanoTs % nanoFreq) * 1000000000i64 / nanoFreq
 }
+
+/// Block the calling thread for `ms` milliseconds.  A non-positive `ms` returns
+/// immediately.  Synchronous (unlike `Std.Task.delay`, which is awaitable);
+/// intended for simple poll loops such as `lyric run/build --watch`.
+pub func sleepMillis(ms: in Int): Unit {
+  if ms <= 0 { return }
+  hostSleepMillis(ms)
+}
