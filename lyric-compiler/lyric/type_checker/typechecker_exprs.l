@@ -133,6 +133,10 @@ func isNumericType(t: in Type): Bool {
         case PtDouble -> true
         case _        -> false
       }
+    // A range subtype (`Int range 0 ..= 100`) is numeric/ordered when its
+    // underlying representation is — otherwise arithmetic / comparison on a
+    // range-typed value would spuriously fail T0030/T0033 (#1488).
+    case TyRefined(u, _, _, _) -> isNumericType(u)
     case TyError -> true
     case _       -> false
   }
@@ -147,6 +151,7 @@ func isOrderedType(t: in Type): Bool {
         case PtString -> true
         case _        -> false
       }
+    case TyRefined(u, _, _, _) -> isOrderedType(u)
     case _ -> false
   }
 }
