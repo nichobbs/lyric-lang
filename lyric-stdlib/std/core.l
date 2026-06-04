@@ -199,3 +199,34 @@ pub generic[T, U, E] func andThenResult(r: in Result[T, E], f: in (T) -> Result[
     case Err(e) -> Err(error = e)
   }
 }
+
+/// Map the `Err` value of a Result, leaving `Ok` unchanged.
+/// Use at package boundaries to convert an upstream error type to a local one.
+@stable(since="1.0")
+pub generic[T, E, F] func mapResultErr(r: in Result[T, E], f: in (E) -> F): Result[T, F] {
+  match r {
+    case Ok(v)  -> Ok(value = v)
+    case Err(e) -> Err(error = f(e))
+  }
+}
+
+/// Unwrap the `Ok` value of a Result, raising a `Bug` if the result is `Err`.
+/// Only appropriate when the `Err` case is impossible by construction (e.g.
+/// parsing a compile-time constant string). For user input, use match or `?`.
+@stable(since="1.0")
+pub generic[T, E] func unwrapResult(r: in Result[T, E]): T {
+  match r {
+    case Ok(v)  -> v
+    case Err(_) -> panic("unwrapResult called on Err")
+  }
+}
+
+/// Unwrap the `Some` value of an Option, raising a `Bug` if the option is `None`.
+/// Only appropriate when `None` is impossible by construction.
+@stable(since="1.0")
+pub generic[T] func unwrapOption(o: in Option[T]): T {
+  match o {
+    case Some(v) -> v
+    case None    -> panic("unwrapOption called on None")
+  }
+}

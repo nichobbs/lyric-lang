@@ -111,10 +111,12 @@ pub opaque type AppConfig @projectable {
 }
 
 pub func load(raw: in RawConfig): Result[AppConfig, ConfigError] {
-  val dbUrl = Url.tryFrom(raw.databaseUrl)
-      .mapErr { _ -> InvalidUrl("databaseUrl", raw.databaseUrl) }?
-  val poolSize = (Nat range 1 ..= 100).tryFrom(raw.databasePoolSize)
-      .mapErr { _ -> OutOfRange("databasePoolSize", raw.databasePoolSize.toString(), "1-100") }?
+  val dbUrl = mapResultErr(
+      Url.tryFrom(raw.databaseUrl),
+      { _ -> InvalidUrl("databaseUrl", raw.databaseUrl) })?
+  val poolSize = mapResultErr(
+      (Nat range 1 ..= 100).tryFrom(raw.databasePoolSize),
+      { _ -> OutOfRange("databasePoolSize", raw.databasePoolSize.toString(), "1-100") })?
   return Ok(AppConfig(
     dbUrl = dbUrl,
     dbPoolSize = poolSize,

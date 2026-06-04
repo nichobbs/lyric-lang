@@ -57,29 +57,33 @@ The `Std.Core` module is special: `println`, `panic`, `assert`, `toString`, and 
 `Result[T, E]` and `Option[T]` are the backbone of Lyric's error handling and optional-value story. Both are always in scope; you do not need to import them. The key operations on `Result`:
 
 ```lyric
-val r: Result[Int, String] = Ok(42)
-val doubled   = r.map     { v -> v * 2 }           // Result[Int, String]
-val mapped    = r.mapErr  { e -> e.length }         // Result[Int, Int]
-val flattened = r.flatMap { v -> Ok(v + 1) }        // Result[Int, String]
-val orDefault = r.unwrapOr(0)                       // Int
+import Std.Core
+
+val r: Result[Int, String] = Ok(value = 42)
+val doubled   = mapResult(r, { v -> v * 2 })           // Result[Int, String]
+val mapped    = mapResultErr(r, { e -> e.length })      // Result[Int, Int]
+val flattened = andThenResult(r, { v -> Ok(value = v + 1) })  // Result[Int, String]
+val orDefault = unwrapResultOr(r, 0)                   // Int
 ```
 
-`map` transforms the success value, `mapErr` transforms the error value, `flatMap` chains a fallible operation. `unwrapOr` extracts the value or returns a default if the result is `Err`. If you want to propagate an error rather than handle it, the `?` operator does that:
+`mapResult` transforms the success value, `mapResultErr` transforms the error value, `andThenResult` chains a fallible operation. `unwrapResultOr` extracts the value or returns a default if the result is `Err`. If you want to propagate an error rather than handle it, the `?` operator does that:
 
 ```lyric
 func doWork(): Result[Int, String] {
   val x = riskyOperation()?      // returns Err early if riskyOperation fails
-  return Ok(x + 1)
+  return Ok(value = x + 1)
 }
 ```
 
 `Option` works analogously:
 
 ```lyric
-val opt: Option[String] = Some("hello")
-val upper    = opt.map     { s -> s.toUpper() }    // Option[String]
-val fallback = opt.unwrapOr("default")             // String
-val found    = opt.isSome                          // Bool
+import Std.Core
+
+val opt: Option[String] = Some(value = "hello")
+val upper    = mapOption(opt, { s -> s.toUpper() })    // Option[String]
+val fallback = unwrapOr(opt, "default")                // String
+val found    = isSome(opt)                             // Bool
 ```
 
 The codegen builtins available without any import:
