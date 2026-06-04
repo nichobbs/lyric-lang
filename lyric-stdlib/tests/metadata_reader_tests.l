@@ -501,6 +501,21 @@ func testRefPackDiscovery(): Unit {
 
 func prim(b: in Int): SigType { STPrim(elemByte = b) }
 
+// scoreSigType invariance for `STSzArray`: CLR single-dimension arrays
+// are invariant at the IL level, so `int[]` must NOT score positively
+// against `long[]` (a widening on the element would mis-bind at JIT).
+// Direct unit-test of the matcher PR #1881 hardened.
+func testScoreSigTypeArrayInvariance(): Unit {
+  val i4Arr = STSzArray(elem = prim(0x08))   // int32[]
+  val i8Arr = STSzArray(elem = prim(0x0A))   // int64[]
+  assertEqualInt(scoreSigType(i4Arr, i4Arr), 2,
+    "score: int[] vs int[] is exact (2)")
+  assertEqualInt(scoreSigType(i4Arr, i8Arr), -1,
+    "score: int[] vs long[] is reject (-1) — arrays invariant")
+  assertEqualInt(scoreSigType(i8Arr, i4Arr), -1,
+    "score: long[] vs int[] is reject (-1) — arrays invariant")
+}
+
 // Phase 3b (hermetic): overload resolution against this program's own
 // metadata.  `addInts(Int, Int): Int` resolves for matching and widening
 // argument types and rejects an arity mismatch.
@@ -697,6 +712,7 @@ func main(): Int {
   testOverloadResolveBcl()
   testResolveExtern()
   testResolveExternValueType()
+  testScoreSigTypeArrayInvariance()
   println("metadata-reader self-test: ok")
   return 0
 }
