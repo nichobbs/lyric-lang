@@ -705,8 +705,10 @@ jobs:
             fi
           done
           echo "OK: zero-argument function-value invocation produces correct results."
-          # Annotated parameter-taking lambdas (#1939): boxed args are unboxed to
-          # the param's annotated type — must run and produce correct results.
+          # Parameter-taking lambdas (#1939): a lambda passed directly to a typed
+          # `(…) -> R` parameter has its boxed args unboxed — both an explicit
+          # annotation and an un-annotated param (type propagated from the HOF
+          # signature) must run and produce correct results.
           ann="$dir/ann.l"
           cat > "$ann" <<'LYRIC'
           package Ann
@@ -716,34 +718,34 @@ jobs:
           func applyB(f: in (Int) -> Bool, x: in Int): Bool { f(x) }
           func main(): Int {
             println("a1=" + toString(apply1({ x: Int -> x + 1 }, 10)))
-            println("a2=" + toString(apply2({ a: Int, b: Int -> a * b }, 6, 7)))
-            println("aB=" + toString(applyB({ x: Int -> x > 5 }, 3)))
+            println("u1=" + toString(apply1({ x -> x + 1 }, 10)))
+            println("u2=" + toString(apply2({ a, b -> a * b }, 6, 7)))
+            println("uB=" + toString(applyB({ x -> x > 5 }, 3)))
             0
           }
           LYRIC
-          aout="$("$lyric_bin" run "$ann" 2>&1)" || { echo "::error::annotated-param HOF program failed to run"; echo "$aout"; exit 1; }
-          for expect in "a1=11" "a2=42" "aB=False"; do
+          aout="$("$lyric_bin" run "$ann" 2>&1)" || { echo "::error::param-taking HOF program failed to run"; echo "$aout"; exit 1; }
+          for expect in "a1=11" "u1=11" "u2=42" "uB=False"; do
             if ! printf '%s\n' "$aout" | grep -qx "$expect"; then
-              echo "::error::expected '$expect' in annotated-param HOF output"; echo "$aout"; exit 1
+              echo "::error::expected '$expect' in param-taking HOF output"; echo "$aout"; exit 1
             fi
           done
-          echo "OK: annotated parameter-taking lambdas produce correct results."
-          # An UNANNOTATED parameter-using lambda must fail loud (#1939), not
-          # silently read garbage.
+          echo "OK: annotated and propagated parameter-taking lambdas produce correct results."
+          # An un-annotated param-using lambda NOT passed directly to a HOF (so no
+          # type can be propagated) must fail loud (#1939), not read garbage.
           neg="$dir/pneg.l"
           cat > "$neg" <<'LYRIC'
           package PNeg
           import Std.Core
-          func apply1(f: in (Int) -> Int, x: in Int): Int { f(x) }
-          func main(): Int { println(toString(apply1({ x -> x + 1 }, 10))); 0 }
+          func main(): Int { val f = { x -> x + 1 }; println("made"); 0 }
           LYRIC
           if "$lyric_bin" build --target dotnet "$neg" > "$dir/pneg.out" 2>&1; then
-            echo "::error::unannotated parameter-using lambda compiled — the #1939 diagnostic did not fire"; cat "$dir/pneg.out"; exit 1
+            echo "::error::un-typed param-using lambda compiled — the #1939 diagnostic did not fire"; cat "$dir/pneg.out"; exit 1
           fi
           if ! grep -qi "un-annotated parameter" "$dir/pneg.out"; then
-            echo "::error::unannotated parameter-using lambda failed without the expected #1939 diagnostic"; cat "$dir/pneg.out"; exit 1
+            echo "::error::un-typed param-using lambda failed without the expected #1939 diagnostic"; cat "$dir/pneg.out"; exit 1
           fi
-          echo "OK: unannotated parameter-using lambda fails loud (#1939)."
+          echo "OK: un-typed param-using lambda (no annotation, no HOF propagation) fails loud (#1939)."
 
       # Out/inout-parameter self-test — pins the self-hosted MSIL byref calling
       # convention (#1761): `out`/`inout` parameters are passed by managed

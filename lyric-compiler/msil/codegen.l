@@ -148,6 +148,19 @@ pub record CodegenCtx {
   // arity-qualified + bare-FQN alias).  Lets a call site pass `out`/`inout`
   // arguments by managed pointer (address-load) instead of by value.  See #1761.
   funcParamModes:     Map[String, List[ParamMode]]
+  // Inner parameter MsilTypes of a function-typed parameter (`(A,B) -> R` ⇒
+  // [MsilType(A), MsilType(B)]), keyed `"<fqn>#<paramIdx>"` (both the
+  // arity-qualified and bare-FQN aliases).  Only function-typed parameters have
+  // an entry.  Lets a call site propagate the expected parameter types of a
+  // lambda passed directly as an argument into that lambda's body so its boxed
+  // params unbox correctly (#1939).  Flat (not nested) to sidestep the stage-0
+  // emitter's List[List[_]] indexing inference.
+  funcParamFnInner:   Map[String, List[MsilType]]
+  // Propagated parameter MsilTypes for a lifted lambda, keyed by lambda name
+  // ("__lambda_<idx>").  Recorded at the call site (from funcParamFnInner) before
+  // the lambda arg is lowered; consumed by lowerFuncMsil's `__lambda_*` path to
+  // seed boxedParamTypes for un-annotated params.  #1939.
+  lambdaParamTypes:   Map[String, List[MsilType]]
   // Compile-time const values: registered by IConst pre-scan so that EPath
   // references to const names inline ldc.i4 instead of ldsfld.
   constValues:        Map[String, Int]        // constName → inlined Int value
@@ -711,6 +724,8 @@ pub func newCodegenCtx(packageName: in String,
     funcRetTypes         = newMap(),
     funcParamTypes       = newMap(),
     funcParamModes       = newMap(),
+    funcParamFnInner     = newMap(),
+    lambdaParamTypes     = newMap(),
     constValues          = newMap(),
     ffiAsmRefs           = newMap(),
     ffiTypeRefs          = newMap(),
@@ -1274,6 +1289,28 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
         }
         if not cctx.funcParamTypes.containsKey(fqn) {
           cctx.funcParamTypes.add(fqn, paramTys)
+        }
+        // Inner parameter types of each function-typed parameter (#1939), so a
+        // call site can propagate them into a lambda passed directly as an arg.
+        // Keyed "<fqn>#<paramIdx>" (flat List value) for both fqn aliases.
+        var pfi = 0
+        while pfi < decl.params.count {
+          match decl.params[pfi].ty.kind {
+            case TFunction(fnParams, _) -> {
+              val inner: List[MsilType] = newList()
+              var fpj = 0
+              while fpj < fnParams.count {
+                inner.add(typeExprToMsilCtx(cctx, fnParams[fpj], pkgName))
+                fpj = fpj + 1
+              }
+              val aKey = arityKey + "#" + toString(pfi)
+              val fKey = fqn + "#" + toString(pfi)
+              if not cctx.funcParamFnInner.containsKey(aKey) { cctx.funcParamFnInner.add(aKey, inner) }
+              if not cctx.funcParamFnInner.containsKey(fKey) { cctx.funcParamFnInner.add(fKey, inner) }
+            }
+            case _ -> {}
+          }
+          pfi = pfi + 1
         }
         val paramModes: List[ParamMode] = newList()
         var pmi = 0
@@ -2657,25 +2694,32 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
               "parameters, or refactor the closure into a top-level function.")
       }
       // Parameter-taking lambdas (#1939): the delegate is Func<object,…,object>,
-      // so arguments arrive boxed.  An *annotated* param (`{ x: Int -> … }`)
-      // carries a logical type and is unboxed on use; an *unannotated* used
-      // param has no type to unbox to and would read garbage.  Reject only when
-      // an unannotated parameter is actually used; unused or annotated params
-      // are fine.
+      // so arguments arrive boxed.  A param's logical type can come from an
+      // annotation (`{ x: Int -> … }`) or be *propagated* from the higher-order
+      // function's signature when the lambda is passed directly as an argument
+      // (recorded in lambdaParamTypes under this lambda's index).  Reject only a
+      // used param that has neither — its boxed value has no type to unbox to.
       if lparams.count > 0 {
         val lpRefs: List[String] = newList()
         collectRefNamesBlock(lbody, lpRefs)
+        val propagated = match mapGet(cctx.lambdaParamTypes, "__lambda_" + toString(cctx.lambdaTicker.count)) {
+          case Some(ts) -> ts
+          case None     -> newList()
+        }
         var lpi2 = 0
         while lpi2 < lparams.count {
           val lp = lparams[lpi2]
           val isUsed = nameListContains(lpRefs, lp.name)
           val isAnnotated = match lp.ty { case Some(_) -> true case None -> false }
-          if isUsed and not isAnnotated {
+          val isPropagated = lpi2 < propagated.count
+          if isUsed and not isAnnotated and not isPropagated {
             panic("Msil.Codegen: a lambda that uses an un-annotated parameter " +
-                  "('" + lp.name + "') is not yet supported on --target dotnet — " +
-                  "the boxed argument has no type to unbox to (#1939).  Annotate " +
-                  "the parameter type (e.g. `{ " + lp.name + ": Int -> … }`), use a " +
-                  "zero-argument lambda, or lift the lambda to a top-level function.")
+                  "('" + lp.name + "') outside a direct higher-order-function call " +
+                  "is not yet supported on --target dotnet — the boxed argument has " +
+                  "no type to unbox to (#1939).  Annotate the parameter type (e.g. " +
+                  "`{ " + lp.name + ": Int -> … }`), pass the lambda directly to a " +
+                  "function with a typed `(…) -> R` parameter, use a zero-argument " +
+                  "lambda, or lift the lambda to a top-level function.")
           }
           lpi2 = lpi2 + 1
         }
@@ -4721,6 +4765,27 @@ func lowerBuiltinOrStaticCallMsil(
                   }
                   var i = 0
                   while i < args.count {
+                    // #1939: a lambda passed *directly* to a function-typed
+                    // parameter inherits that parameter's inner types — record
+                    // them under the lambda's index (the next lambdaTicker value,
+                    // which the ELambda arm will consume) so the lambda body
+                    // unboxes its boxed params to the propagated types.
+                    match callArgExpr(args[i]).kind {
+                      case ELambda(_, _) -> {
+                        match mapGet(cctx.funcParamFnInner, tokKey + "#" + toString(i)) {
+                          case Some(inner) -> {
+                            if inner.count > 0 {
+                              val predName = "__lambda_" + toString(cctx.lambdaTicker.count)
+                              if not cctx.lambdaParamTypes.containsKey(predName) {
+                                cctx.lambdaParamTypes.add(predName, inner)
+                              }
+                            }
+                          }
+                          case None -> {}
+                        }
+                      }
+                      case _ -> {}
+                    }
                     // `out`/`inout` parameter: pass the argument's address (a
                     // managed pointer) rather than its value.  See #1761.
                     val isByrefArg =
@@ -6575,10 +6640,24 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
   // Allocate slots for parameters.  These occupy slots 0..N-1 in the
   // combined slot space but are NOT added to fctx.locals.
   val isLambdaFn = startsWith(decl.name, "__lambda_")
+  // Parameter types propagated from a higher-order-function call site (#1939),
+  // used when a lambda param is un-annotated.  Empty for non-lambdas (decl.name
+  // is never a "__lambda_*" key) and lambdas not passed directly to a typed
+  // `(…) -> R` parameter.
+  val lambdaPropagated =
+    match mapGet(cctx.lambdaParamTypes, decl.name) {
+      case Some(ts) -> ts
+      case None     -> newList()
+    }
   var pi = 0
   while pi < decl.params.count {
     val p = decl.params[pi]
-    val paramTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
+    // A lambda parameter's logical type is its annotation if present, else the
+    // type propagated from the call site (#1939); the signature stays `object`.
+    val annotTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
+    val paramTy =
+      if isLambdaFn and annotTy == MObject and pi < lambdaPropagated.count { lambdaPropagated[pi] }
+      else { annotTy }
     val slot = fctx.slotTicker.count
     fctx.slots.add(p.name, slot)
     fctx.types.add(p.name, paramTy)
@@ -6586,8 +6665,8 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
       fctx.byrefSlotTypes.add(slot, paramTy)
     }
     // A lambda parameter arrives boxed (`object`) in the Func delegate; when it
-    // has a known non-object logical type (an explicit annotation), record it so
-    // reads unbox/cast on load (#1939).  The signature itself stays `object`
+    // has a known non-object logical type (annotation or propagated), record it
+    // so reads unbox/cast on load (#1939).  The signature itself stays `object`
     // (forced below).
     if isLambdaFn and paramTy != MObject {
       fctx.boxedParamTypes.add(slot, paramTy)

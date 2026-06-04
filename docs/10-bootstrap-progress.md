@@ -19382,6 +19382,7 @@ reassign → T0087, `var`/`out`/`inout` reassign clean). Full regression green
 (847/847 emitter, 84/84 CLI bridge); auth (29/29), session (31/31), and the
 `LYRIC_LOAD_COMPILER=1` weaver self-test (18/18) all green with zero false
 positives.
+
 ### D-progress-392 — self-hosted: `ensures:` contract clauses compile + run (fix codegen NRE) (#1871)
 
 **Status:** Shipped (`lyric-compiler/lyric/contract_elaborator/elaborator.l`).
@@ -19418,3 +19419,38 @@ compiles + runs it, and the verifier tests use `lyric prove`.  One orthogonal
 codegen issue surfaced and was filed: `ensures:` on a String-returning function
 with a bare `if`-expression body emits invalid IL (#1977; the self-test uses a
 constant-String body to sidestep it).  MSIL target only (epic #1470 defers JVM).
+
+### D-progress-393 — self-hosted MSIL: HOF-type propagation completes parameter-taking lambdas (#1939)
+
+**Status:** Shipped (`lyric-compiler/msil/codegen.l`).  Closes #1939.
+
+Completes #1939 on top of the unbox-on-load machinery (D-progress-389): an
+**un-annotated** lambda parameter now gets its logical type **propagated from the
+higher-order function's signature** when the lambda is passed directly as an
+argument, so `apply1({ x -> x + 1 }, 10)` → `11` and `apply2({ a, b -> a * b },
+6, 7)` → `42` without any annotation.
+
+Mechanism (the type checker returns `TyError` for lambdas, so the type must come
+from the call site):
+
+- `addPackageTokens` records each function-typed parameter's inner MsilTypes in a
+  new `CodegenCtx.funcParamFnInner` map, keyed `"<fqn>#<paramIdx>"`.
+- At a static call, when an argument is *directly* an `ELambda` bound to a
+  function-typed parameter, the inner types are recorded in a new
+  `lambdaParamTypes` map under the lambda's name (`"__lambda_<idx>"`, where the
+  index is the next `lambdaTicker` value the `ELambda` arm will consume) — the
+  lift appends lifted lambdas after all user items, so every call site is lowered
+  before the lambda body it feeds.
+- `lowerFuncMsil`'s `__lambda_*` path seeds `boxedParamTypes` from
+  `lambdaParamTypes` for any param without an annotation, so the existing
+  unbox-on-load `EPath` path materialises it correctly.
+- The construction-time guard now accepts a used param that is annotated **or**
+  propagated; a param-using lambda with neither (e.g. one stored in a `val`,
+  outside a direct HOF call) still fails loud.
+
+(Implementation note: the stage-0 F# emitter mis-infers an explicit
+`: List[MsilType]` annotation on a `match mapGet(...)` binding as the element
+type — the propagated-type bindings are left un-annotated, matching the existing
+`callParamTys` pattern.)  CI step updated (annotated + propagated runtime
+assertions, plus the non-HOF fail-loud check).  No regression: emitter 847/847,
+CLI 84/84.  MSIL target only.
