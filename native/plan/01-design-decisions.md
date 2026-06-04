@@ -200,10 +200,10 @@ of inputs).
 @nativeLib("libc")
 package Std.LibcHost
 
-extern func write(fd: Int32, buf: NativePtr[Byte], n: UInt64): Int64 = "write"
-extern func read(fd: Int32, buf: NativePtr[Byte], n: UInt64): Int64 = "read"
-extern func open(path: NativePtr[Byte], flags: Int32, mode: Int32): Int32 = "open"
-extern func close(fd: Int32): Int32 = "close"
+extern func write(fd: Int, buf: NativePtr[Byte], n: Long): Long = "write"
+extern func read(fd: Int, buf: NativePtr[Byte], n: Long): Long = "read"
+extern func open(path: NativePtr[Byte], flags: Int, mode: Int): Int = "open"
+extern func close(fd: Int): Int = "close"
 ```
 
 **Emitted LLVM IR:**

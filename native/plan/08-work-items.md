@@ -356,7 +356,7 @@ For if/else as an expression (producing a value), use a `NPhi` node at the merge
 **Format:** `@test_module` so it runs via `lyric test --target native`.
 
 **Acceptance criteria:**
-- `lyric test llvm-compiler/llvm/llvm_self_test_n1.l --target native` exits 0.
+- `lyric test lyric-compiler/llvm/llvm_self_test_n1.l --target native` exits 0.
 - All test cases pass on x86-64 Linux.
 
 ---

@@ -128,12 +128,20 @@ pub func epochMillis(): Long {
 @nativeLib("libc")
 package Std.FileNativeHost
 
-// Open flags (POSIX)
-pub val O_RDONLY: Int = 0
-pub val O_WRONLY: Int = 1
-pub val O_RDWR:   Int = 2
-pub val O_CREAT:  Int = 64   // 0100 octal
-pub val O_TRUNC:  Int = 512  // 01000 octal
+// Open flags: values are platform-specific (e.g. O_CREAT is 0x40 on Linux x86-64
+// but 0x200 on macOS). lyric-rt exposes them via C helper functions defined in
+// lyric-rt/src/lyric_posix.c so the Lyric layer never hardcodes platform constants.
+extern func lyric_o_rdonly(): Int = "lyric_o_rdonly"
+extern func lyric_o_wronly(): Int = "lyric_o_wronly"
+extern func lyric_o_rdwr():   Int = "lyric_o_rdwr"
+extern func lyric_o_creat():  Int = "lyric_o_creat"
+extern func lyric_o_trunc():  Int = "lyric_o_trunc"
+
+pub val O_RDONLY: Int = lyric_o_rdonly()
+pub val O_WRONLY: Int = lyric_o_wronly()
+pub val O_RDWR:   Int = lyric_o_rdwr()
+pub val O_CREAT:  Int = lyric_o_creat()
+pub val O_TRUNC:  Int = lyric_o_trunc()
 
 extern func open(path: NativePtr[Byte], flags: Int, mode: Int): Int = "open"
 extern func close(fd: Int): Int = "close"
@@ -143,14 +151,14 @@ extern func unlink(path: NativePtr[Byte]): Int = "unlink"
 extern func mkdir(path: NativePtr[Byte], mode: Int): Int = "mkdir"
 extern func rmdir(path: NativePtr[Byte]): Int = "rmdir"
 
-// stat64 is architecture-specific; provide only the fields we need:
-// offset of st_size in struct stat varies by platform → use a helper
+// stat64 layout is architecture-specific; use a helper for st_size
 extern func lyric_file_size(path: NativePtr[Byte]): Long = "lyric_file_size"
-// ^ defined in lyric-rt/src/lyric_posix.c: returns st_size via stat(2)
 ```
 
-The `lyric_file_size` helper is one of a small number of C wrappers in
-`lyric-rt/src/lyric_posix.c` that abstract platform-specific struct layouts.
+The `lyric_o_*` and `lyric_file_size` helpers are C wrappers in
+`lyric-rt/src/lyric_posix.c` that return the correct platform constants and
+abstract platform-specific struct layouts. This pattern is required for all
+values that differ between Linux x86-64 and macOS AArch64 (Phase 1 targets).
 
 ### `uuid_native.l`
 
@@ -202,6 +210,9 @@ to support a `target` predicate:
 ```lyric
 @cfg(target = "dotnet")
 import Std.ConsoleHost as ConsoleImpl
+
+@cfg(target = "jvm")
+import Std.ConsoleJvmHost as ConsoleImpl
 
 @cfg(target = "native")
 import Std.ConsoleNativeHost as ConsoleImpl
