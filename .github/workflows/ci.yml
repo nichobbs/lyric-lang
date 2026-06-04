@@ -456,6 +456,45 @@ jobs:
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/bitwise_self_test.l
 
+      # Numeric / character conversion-method self-test (#1901, Band-1 of epic
+      # #1470).  Exercises `.toByte()` / `.toInt()` / `.toLong()` / `.toChar()`
+      # / `.toDouble()` end-to-end: the type checker types each conversion and
+      # both backends lower it to native width-conversion opcodes (`conv.*` on
+      # MSIL; `i2l`/`l2i`/`d2i`/… on the JVM, with `.toByte()` masked to the
+      # unsigned 0..255 range to match MSIL's `conv.u1`).  Run on BOTH targets —
+      # parity is asserted, not deferred.  Imports only `Std.*`.
+      - name: Conversion-method self-test (native lyric test, dotnet)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping conversion-method self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping conversion-method self-test"
+            exit 0
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/conv_methods_self_test.l
+
+      - name: Conversion-method self-test on JVM (native lyric test --target jvm)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping conversion-method JVM self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping conversion-method JVM self-test"
+            exit 0
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/conv_methods_self_test.l
+
       # Auto-FFI metadata-resolution self-test — exercises the self-hosted
       # MSIL emitter resolving `ExternTypeName.method(args)` calls against
       # real .NET reference-assembly metadata (epic #1622, Phase 3c) and

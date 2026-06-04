@@ -406,6 +406,8 @@ pub union MInsn {
   case MConvI4
   case MConvI8
   case MConvR8
+  case MConvU1
+  case MConvU2
 
   // Object model
   case MNewobj(ctorToken: Int)         // new T; call .ctor
@@ -1144,6 +1146,8 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MConvI4            -> emitConv_I4(mb)
     case MConvI8            -> emitConv_I8(mb)
     case MConvR8            -> emitConv_R8(mb)
+    case MConvU1            -> emitConv_U1(mb)
+    case MConvU2            -> emitConv_U2(mb)
     case MNewobj(tok)       -> emitNewobj(mb, tok)
     case MLdfld(tok)        -> emitLdfld(mb, tok)
     case MStfld(tok)        -> emitStfld(mb, tok)

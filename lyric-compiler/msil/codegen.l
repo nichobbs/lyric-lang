@@ -2154,6 +2154,20 @@ func isValueType(ty: in MsilType): Bool {
   }
 }
 
+// Numeric / character primitives that the conversion-method intrinsics
+// (`.toInt()`/`.toLong()`/`.toByte()`/`.toChar()`/`.toDouble()`, #1901) accept
+// as a receiver.  `Bool` is deliberately excluded — it is not a numeric type.
+func isNumericMsil(ty: in MsilType): Bool {
+  match ty {
+    case MInt    -> true
+    case MLong   -> true
+    case MDouble -> true
+    case MChar   -> true
+    case MByte   -> true
+    case _       -> false
+  }
+}
+
 // Cross-package call resolution helper (#1183 Phase 2).  Walks `imports`
 // — the dotted-name list of packages imported by the calling site's
 // package — and returns the first `<imp>.<funcName>` key that exists in
@@ -5520,6 +5534,30 @@ func lowerMethodCallMsil(
       insns.add(MShr)
     }
     recvTy
+  } else if (memberName == "toInt" or memberName == "toLong" or memberName == "toByte"
+             or memberName == "toChar" or memberName == "toDouble")
+            and args.count == 0 and isNumericMsil(recvTy) {
+    // Numeric / character primitive conversion intrinsics (#1901).  The receiver
+    // value is already on the stack; emit the CLI `conv.*` opcode for the target
+    // width.  These are the surface conversions for moving between Lyric's
+    // numeric primitives (e.g. `slice[Byte]` element -> `Int` for arithmetic),
+    // replacing the legacy free-function forms (`intToLong`/`longToInt`).
+    if memberName == "toByte" {
+      insns.add(MConvU1)
+      MByte
+    } else if memberName == "toChar" {
+      insns.add(MConvU2)
+      MChar
+    } else if memberName == "toLong" {
+      insns.add(MConvI8)
+      MLong
+    } else if memberName == "toDouble" {
+      insns.add(MConvR8)
+      MDouble
+    } else {
+      insns.add(MConvI4)
+      MInt
+    }
   } else {
     // Unrecognised method on this receiver.  Previously this popped the
     // receiver/args and pushed `null` — a silent miscompile: the call appeared
