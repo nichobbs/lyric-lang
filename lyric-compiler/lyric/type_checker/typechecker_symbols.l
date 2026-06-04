@@ -60,6 +60,9 @@ pub record Symbol {
   declSpan:   Span
   visibility: Option[Visibility]
   isImported: Bool
+  /// Dotted declaring-package name; empty = no package context (the flat
+  /// `checkWithImports` shim, i.e. historical last-registered-wins).
+  originPackage: String
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -104,14 +107,60 @@ pub func symbolTypeIdOpt(s: in Symbol): Option[TypeId] {
 @stable(since="0.1")
 pub record SymbolTable {
   symbols: List[Symbol]
+  /// Preferred-package marker, boxed as a 0/1-element list (the
+  /// `TypeIdCounter.ticks` idiom); empty = no scope = last-registered-wins.
+  scopePkg: List[String]
+  /// Dotted names the current scope imports (second-tier resolution preference).
+  scopeImports: List[String]
 }
 
 pub func newSymbolTable(): SymbolTable {
-  SymbolTable(symbols = newList())
+  SymbolTable(symbols = newList(), scopePkg = newList(), scopeImports = newList())
 }
 
 pub func symTableAdd(tbl: in SymbolTable, sym: in Symbol): Unit {
   tbl.symbols.add(sym)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §4a. Resolution scope — package preference for name lookup.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Set the current resolution scope: `pkg` is the package whose declarations
+// take precedence, and `imports` are the packages it explicitly imports (used
+// as the second-tier preference).  Passing `pkg = ""` clears the
+// current-package preference, restoring pure last-registered-wins resolution.
+pub func symTableSetScope(
+  tbl:     in SymbolTable,
+  pkg:     in String,
+  imports: in List[String]
+): Unit {
+  while tbl.scopePkg.count > 0 {
+    tbl.scopePkg.removeAt(tbl.scopePkg.count - 1)
+  }
+  if pkg.length > 0 { tbl.scopePkg.add(pkg) }
+  while tbl.scopeImports.count > 0 {
+    tbl.scopeImports.removeAt(tbl.scopeImports.count - 1)
+  }
+  var i = 0
+  while i < imports.count {
+    tbl.scopeImports.add(imports[i])
+    i = i + 1
+  }
+}
+
+func symTableScopePkg(tbl: in SymbolTable): String {
+  if tbl.scopePkg.count > 0 { tbl.scopePkg[0] } else { "" }
+}
+
+func symTableScopeAllows(tbl: in SymbolTable, pkg: in String): Bool {
+  if pkg.length == 0 { return false }
+  var i = 0
+  while i < tbl.scopeImports.count {
+    if tbl.scopeImports[i] == pkg { return true }
+    i = i + 1
+  }
+  false
 }
 
 pub func symTableTryFindAll(tbl: in SymbolTable, name: in String): List[Symbol] {
@@ -124,11 +173,32 @@ pub func symTableTryFindAll(tbl: in SymbolTable, name: in String): List[Symbol] 
   result
 }
 
+// Resolve `name` to a single symbol, honouring the current resolution scope.
+// Preference, highest first: (1) current package, (2) an imported package,
+// (3) any match (last-registered-wins).  A single newest-to-oldest pass keeps
+// the newest candidate in each tier, returning early on a tier-1 hit.  With no
+// scope set every symbol's `originPackage` is empty, so only tier 3 fires —
+// byte-for-byte the historical behaviour.
 pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol] {
+  val curPkg     = symTableScopePkg(tbl)
+  val hasScope   = curPkg.length > 0
+  val hasImports = tbl.scopeImports.count > 0
+  var best2: Option[Symbol] = None
+  var best3: Option[Symbol] = None
   var i = tbl.symbols.count - 1
   while i >= 0 {
-    if tbl.symbols[i].name == name { return Some(value = tbl.symbols[i]) }
+    val s = tbl.symbols[i]
+    if s.name == name {
+      if hasScope and s.originPackage == curPkg { return Some(value = s) }
+      if hasImports and symTableScopeAllows(tbl, s.originPackage) {
+        match best2 { case None -> { best2 = Some(value = s) }; case Some(_) -> {} }
+      }
+      match best3 { case None -> { best3 = Some(value = s) }; case Some(_) -> {} }
+    }
     i = i - 1
   }
-  None
+  match best2 {
+    case Some(_) -> best2
+    case None    -> best3
+  }
 }

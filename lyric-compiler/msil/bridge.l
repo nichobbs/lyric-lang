@@ -78,20 +78,14 @@ pub func compileToMsilWithVersion(
   // codegen `registerStdlibArtifactTokens` consumes below to wire
   // cross-assembly `MemberRef` rows for `pub func` items.
   val stdlibPkgs = collectStdlibPackages(stdlibSources)
-  val importedItems: List[Item] = newList()
-  // Cross-package type-name collisions (#1488 category D): two stdlib packages
-  // can export the same simple name — e.g. `Std.Regex.RegexError`
-  // {TimedOut, InvalidPattern} and `Std.RegexSafe.RegexError`
-  // {TimedOut, RegexBug}.  The self-hosted type checker resolves names through
-  // a single flat symbol table whose `symTableTryFindOne` is last-registered-
-  // wins, so the package that happens to be spread last wins every `RegexError`
-  // reference — including inside the *other* package's function signatures.
-  // Spreading the file's imported packages **last** makes the imported
-  // package's type win, so a file importing only `Std.Regex` resolves
-  // `RegexError` to `Std.Regex`'s (correct exhaustiveness + no spurious
-  // `RegexError`-vs-`RegexError` mismatch).  Pure reordering — no package is
-  // excluded, so implicitly-available kernel/`Std.Core` types are unaffected.
-  spreadStdlibPackageItems(orderStdlibPkgsByImports(stdlibPkgs, parseResult.file.imports), importedItems)
+  // Group stdlib items by package so each resolves against its own decls,
+  // fixing the same-name cross-package type collision (#1488 category D).
+  val importedPkgs: List[ImportedPackage] = newList()
+  var spi = 0
+  while spi < stdlibPkgs.count {
+    importedPkgs.add(ImportedPackage(name = stdlibPkgs[spi].name, items = stdlibPkgs[spi].items))
+    spi = spi + 1
+  }
 
   // Collapse `import X as Y` aliases: rewrite `Y.foo(...)` to bare
   // `foo(...)` (and the same for type / pattern positions) so the
@@ -101,7 +95,7 @@ pub func compileToMsilWithVersion(
   // production F# emitter runs immediately after parse.
   val file0 = Aliases.rewriteFile(parseResult.file)
 
-  val tcRes = checkWithImports(file0, importedItems)
+  val tcRes = checkWithImportedPackages(file0, importedPkgs)
   reportDiagnostics(tcRes.diagnostics)   // advisory: type checker lacks builtin coverage
 
   val mcRes = checkFile(file0)
@@ -333,18 +327,23 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // `MObject` fall-through that produced `InvalidProgramException`
   // at runtime.
   val stdlibPkgs = collectStdlibPackages(stdlibSources)
-  // Pool of "always in scope" items: every stdlib package's items plus
-  // every restored-dep artifact's type items.  Per-package import
-  // filtering (#1378) only applies to in-bundle user packages; stdlib
-  // and restored-dep references are looked up via the codegen-side
-  // `funcTokens` / `recordCtorTokens` tables built from the same
-  // sources, so the typecheck-side flat view here keeps the two halves
-  // of the pipeline in sync.
-  val baseItems: List[Item] = newList()
-  spreadStdlibPackageItems(stdlibPkgs, baseItems)
+  // Always-in-scope items (stdlib + restored-dep types), grouped by declaring
+  // package for scope-aware resolution.  Per-package import filtering (#1378)
+  // applies only to in-bundle user packages below; stdlib / restored-dep refs
+  // are wired via the codegen-side token tables, kept in sync with this view.
+  val baseImportedPkgs: List[ImportedPackage] = newList()
+  var sbi = 0
+  while sbi < stdlibPkgs.count {
+    baseImportedPkgs.add(ImportedPackage(name = stdlibPkgs[sbi].name, items = stdlibPkgs[sbi].items))
+    sbi = sbi + 1
+  }
   var ri0 = 0
   while ri0 < restoredArtifacts.count {
-    collectTypeItemsFromFile(restoredArtifacts[ri0].source, baseItems)
+    val rItems: List[Item] = newList()
+    collectTypeItemsFromFile(restoredArtifacts[ri0].source, rItems)
+    baseImportedPkgs.add(ImportedPackage(
+      name  = segmentsToString(restoredArtifacts[ri0].source.packageDecl.path.segments),
+      items = rItems))
     ri0 = ri0 + 1
   }
 
@@ -387,12 +386,12 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   }
 
   // Phase 2: typecheck + mode-check + elaborate + derive + mono per
-  // package, using a per-package `importedItems` view filtered by the
+  // package, using a per-package grouped imports view filtered by the
   // package's declared imports.
   //
-  // Build a set of stdlib package names so `perPackageImportedItems` can
+  // Build a set of stdlib package names so `perPackageImportedPackages` can
   // skip adding in-bundle items for packages that are already fully
-  // represented in `baseItems`.  Without this guard, a stdlib self-build
+  // represented in `baseImportedPkgs`.  Without this guard, a stdlib self-build
   // (where `packages` and `stdlibSources` contain the same files) would
   // register every Std.* type twice with distinct TypeIds, corrupting the
   // type-variable resolution for subsequent packages and causing spurious
@@ -414,11 +413,11 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   var ti = 0
   while ti < parsedPkgs.count {
     val pp: ParsedUserPkg = parsedPkgs[ti]
-    val importedItems = perPackageImportedItems(baseItems, pp.file.imports,
-                                                inBundleItems, inBundleImports,
-                                                baseNames)
+    val importedPkgs = perPackageImportedPackages(baseImportedPkgs, pp.file.imports,
+                                                  inBundleItems, inBundleImports,
+                                                  baseNames)
 
-    val tcRes = checkWithImports(pp.file, importedItems)
+    val tcRes = checkWithImportedPackages(pp.file, importedPkgs)
     if reportAndAbort(tcRes.diagnostics) { return false }
 
     val mcRes = checkFile(pp.file)
@@ -672,17 +671,24 @@ pub func compileProjectToMsilWithRestoredEncoded(
 // function body it can end up with a stale `TyVar("")` binding instead of
 // the expected `TyPrim(PtInt)`, producing spurious T0033 diagnostics on
 // perfectly valid `var i = 0; while i < n { … }` loops.  (#1435)
-func perPackageImportedItems(
-  baseItems:       in List[Item],
-  importList:      in List[ImportDecl],
-  inBundleItems:   in Map[String, List[Item]],
-  inBundleImports: in Map[String, List[ImportDecl]],
-  baseNames:       in Map[String, Bool]
-): List[Item] {
-  val result: List[Item] = newList()
+// Grouped analogue of the old flat `perPackageImportedItems`: returns the
+// imported items partitioned by their declaring package, so the scope-aware
+// type checker resolves each package's signatures against its own
+// declarations instead of one flat last-registered-wins table.
+// `baseImportedPkgs` (stdlib + restored deps) are always in scope; the
+// in-bundle import closure rooted at `importList` is appended, one
+// `ImportedPackage` per reachable in-bundle package.
+func perPackageImportedPackages(
+  baseImportedPkgs: in List[ImportedPackage],
+  importList:       in List[ImportDecl],
+  inBundleItems:    in Map[String, List[Item]],
+  inBundleImports:  in Map[String, List[ImportDecl]],
+  baseNames:        in Map[String, Bool]
+): List[ImportedPackage] {
+  val result: List[ImportedPackage] = newList()
   var bi = 0
-  while bi < baseItems.count {
-    result.add(baseItems[bi])
+  while bi < baseImportedPkgs.count {
+    result.add(baseImportedPkgs[bi])
     bi = bi + 1
   }
   val visited: Map[String, Bool] = newMap()
@@ -690,39 +696,32 @@ func perPackageImportedItems(
   while ii < importList.count {
     val imp: ImportDecl = importList[ii]
     val depName = segmentsToString(imp.path.segments)
-    addBundleClosure(depName, inBundleItems, inBundleImports, visited, baseNames, result)
+    addBundleClosurePackages(depName, inBundleItems, inBundleImports, visited, baseNames, result)
     ii = ii + 1
   }
   result
 }
 
 
-// Walk the transitive in-bundle import closure rooted at `pkgName`,
-// adding every reachable in-bundle package's items to `acc`.  Visited
-// packages are tracked to avoid infinite loops on cyclic imports
-// (which the typechecker / module system already rejects, but this
-// helper stays defensive in case a future relaxation lands).
-// `baseNames` packages are skipped because their items are already in
-// `baseItems` — see the comment on `perPackageImportedItems`.
-func addBundleClosure(
+// Walk the transitive in-bundle import closure rooted at `pkgName`, appending
+// each reachable in-bundle package as its own `ImportedPackage` to `acc`.
+// Visited packages are tracked to avoid infinite loops on cyclic imports
+// (which the typechecker / module system already rejects, but this helper
+// stays defensive in case a future relaxation lands).  `baseNames` packages
+// are skipped because their items are already in `baseImportedPkgs`.
+func addBundleClosurePackages(
   pkgName:         in String,
   inBundleItems:   in Map[String, List[Item]],
   inBundleImports: in Map[String, List[ImportDecl]],
   visited:         in Map[String, Bool],
   baseNames:       in Map[String, Bool],
-  acc:             in List[Item]
+  acc:             in List[ImportedPackage]
 ): Unit {
   if visited.containsKey(pkgName) { return }
   if baseNames.containsKey(pkgName) { return }
   visited.add(pkgName, true)
   match mapGet(inBundleItems, pkgName) {
-    case Some(items) -> {
-      var i = 0
-      while i < items.count {
-        acc.add(items[i])
-        i = i + 1
-      }
-    }
+    case Some(items) -> acc.add(ImportedPackage(name = pkgName, items = items))
     case None -> return
   }
   match mapGet(inBundleImports, pkgName) {
@@ -730,7 +729,7 @@ func addBundleClosure(
       var ii = 0
       while ii < deps.count {
         val sub = segmentsToString(deps[ii].path.segments)
-        addBundleClosure(sub, inBundleItems, inBundleImports, visited, baseNames, acc)
+        addBundleClosurePackages(sub, inBundleItems, inBundleImports, visited, baseNames, acc)
         ii = ii + 1
       }
     }
@@ -1020,57 +1019,6 @@ func annsBlockSpecialization(anns: in List[Annotation]): Bool {
     i = i + 1
   }
   false
-}
-
-// Append every item from every `StdlibPkg` in `pkgs` to `flat`.  Used
-// by the bridge to keep the typecheck-side flat `baseItems` view in
-// sync with the codegen-side per-package map, without re-parsing the
-// stdlib sources a second time.
-// Reorder `pkgs` so the packages named in `imports` come **last**, preserving
-// the original relative order within each group.  Used by the single-file MSIL
-// path so a file's imported packages win the last-registered-wins name
-// resolution for cross-package simple-name collisions (#1488 category D).
-pub func orderStdlibPkgsByImports(
-  pkgs:    in List[StdlibPkg],
-  imports: in List[ImportDecl]
-): List[StdlibPkg] {
-  val importedNames: Map[String, Bool] = newMap()
-  var ii = 0
-  while ii < imports.count {
-    val nm = segmentsToString(imports[ii].path.segments)
-    if not importedNames.containsKey(nm) { importedNames.add(nm, true) }
-    ii = ii + 1
-  }
-  val ordered: List[StdlibPkg] = newList()
-  // Non-imported packages first.
-  var i = 0
-  while i < pkgs.count {
-    if not importedNames.containsKey(pkgs[i].name) { ordered.add(pkgs[i]) }
-    i = i + 1
-  }
-  // Imported packages last, so their types win last-registered-wins resolution.
-  var j = 0
-  while j < pkgs.count {
-    if importedNames.containsKey(pkgs[j].name) { ordered.add(pkgs[j]) }
-    j = j + 1
-  }
-  ordered
-}
-
-pub func spreadStdlibPackageItems(
-  pkgs: in List[StdlibPkg],
-  flat: in List[Item]
-): Unit {
-  var pi = 0
-  while pi < pkgs.count {
-    val pkg: StdlibPkg = pkgs[pi]
-    var ii = 0
-    while ii < pkg.items.count {
-      flat.add(pkg.items[ii])
-      ii = ii + 1
-    }
-    pi = pi + 1
-  }
 }
 
 // Return a new `StdlibPkg` list with any package whose name matches

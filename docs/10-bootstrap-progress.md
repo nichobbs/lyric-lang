@@ -20688,7 +20688,13 @@ a pure-Lyric implementation in
 
 ### D-progress-427 — single-file MSIL bridge: import-ordered stdlib spread for cross-package name collisions (#1488 gate, category D, Band-1 of #1470)
 
-**Status:** Shipped — single-file bridge + type-checker self-test.
+**Status:** SUPERSEDED by D-progress-429 — the import-reordering heuristic
+(`orderStdlibPkgsByImports`) and the flat `spreadStdlibPackageItems` it relied
+on were replaced by package-scoped name resolution in the type checker, which
+fixes the collision generally (including inside each package's own signatures
+and on every compile path) rather than only making a file's imported package
+win a single flat last-registered-wins table.  The original entry is retained
+below for history.
 
 Two stdlib packages can export the same simple type name: `Std.Regex.RegexError`
 ({`TimedOut`, `InvalidPattern`}) and `Std.RegexSafe.RegexError` ({`TimedOut`,
@@ -20767,3 +20773,47 @@ the current toolchain.
 Regression green: 843/843 emitter suite (incl. B120), 84/84 CLI suite, and the
 new DateTime self-test 2/2.  Supersedes PR #2177, whose ungated interface
 rewrite regressed B120 on Java 21.
+
+### D-progress-429 — self-hosted type checker: package-scoped name resolution (supersedes D-progress-427)
+
+The self-hosted `Lyric.TypeChecker` resolved every name through one flat
+`SymbolTable` whose `symTableTryFindOne` was last-registered-wins, and the
+MSIL / JVM bridges flattened every stdlib package's items into that one table
+in parse order.  So when two sibling packages each exported a same-named type —
+the canonical case is `Std.Regex` and `Std.RegexSafe` both declaring
+`pub union RegexError` — whichever was registered last won *every* reference to
+that simple name, **including the return/parameter types inside the other
+package's own function signatures**.  `Std.Regex.tryCompile`'s
+`Result[CompiledRegex, RegexError]` could bind to `Std.RegexSafe`'s unrelated
+`RegexError`, corrupting the resolved signature.
+
+**What shipped:**
+
+- `Symbol` gains an `originPackage` field (the dotted name of the declaring
+  package; empty for the flat-import shim).
+- `SymbolTable` gains a resolution scope (`scopePkg` / `scopeImports`, boxed in
+  one-element lists per the `TypeIdCounter.ticks` idiom).  `symTableSetScope`
+  sets it; `symTableTryFindOne` now resolves in three tiers — current package,
+  then the current scope's imports, then last-registered-wins.  With no scope
+  set (every symbol's origin empty) it reduces to tier 3, i.e. byte-for-byte
+  the historical behaviour.
+- New `ImportedPackage { name, items }` record and `checkWithImportedPackages`
+  entry point.  Each imported package's signatures resolve with that package
+  set as the current scope, so a type reference inside a signature binds to its
+  *declaring* package's type rather than a same-named sibling's.  User
+  signatures and bodies resolve under the user package's scope (own
+  declarations, then imports, then fallback).
+- `checkWithImports` is retained as a flat-imports compatibility shim (wraps
+  everything in one nameless package → empty origins → tier-3 fallback), so
+  every existing caller and test keeps identical behaviour.
+- MSIL bridge (`compileToMsil…` single-file and `compileProjectToMsil…`
+  multi-package) and JVM bridge (`compileToJar`, `compileToJarBundled`) now
+  hand the type checker imports grouped by declaring package via
+  `checkWithImportedPackages`.  The flat helpers `spreadStdlibPackageItems`,
+  `perPackageImportedItems`, and `addBundleClosure` are replaced by grouped
+  equivalents (`perPackageImportedPackages` / `addBundleClosurePackages`).
+- Tests: `typechecker_self_test.l` gains
+  `testScopedResolutionNoCrossPackageTypeCollision` (each package's
+  `RegexError` resolves to its own union — distinct, correctly-bound type ids)
+  and `testFlatImportsPreserveLastWins` (pins the flat-shim back-compat
+  contract).  Full Emitter (843) and Cli (84) suites stay green.
