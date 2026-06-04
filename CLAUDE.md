@@ -960,6 +960,18 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   bootstrap (F# → self-hosted → self-hosted² binary comparison).
 - `examples/` — standalone Lyric example programs referenced from the
   book and README.
+- `native/` — native (LLVM) backend planning documents.
+  - `native/plan/` — complete implementation plan for the LLVM native backend:
+    `README.md` (overview), `01-design-decisions.md` (D-N-001–D-N-013),
+    `02-architecture.md` (IR types, pipeline, Hello World example),
+    `03-type-mapping.md` (Lyric → LLVM IR type map),
+    `04-arc-design.md` (ARC runtime, lyric_rt.h),
+    `05-ffi-design.md` (extern func, NativePtr, _kernel_native/),
+    `06-async-design.md` (LLVM coro.*, Phase 2 async),
+    `07-stdlib-port.md` (@cfg(target=...) conditional imports),
+    `08-work-items.md` (43 ordered work items, N0–N8).
+    All 13 decisions are mirrored in `docs/03-decision-log.md` (D-N-001–D-N-013).
+    **Agents implementing the native backend must read this directory before starting.**
 
 Build: `cd bootstrap && dotnet build Bootstrap.sln`.
 
