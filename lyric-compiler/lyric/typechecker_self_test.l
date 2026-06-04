@@ -779,6 +779,40 @@ func testImplDefaultMethodOptional(): Unit {
   assertTrue(not hasDiagCode(cr, "T0098"), "default interface method not required: no T0098")
 }
 
+// #1487 (§5.2): `in` parameters (and `val`/`let`) are immutable and cannot be
+// reassigned (T0087); `var` locals and `out`/`inout` params are mutable.
+
+func testInParamNoRebind(): Unit {
+  val src = "package P\nfunc f(x: in Int): Unit { x = 5 }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0087"), "reassigning an `in` param: T0087")
+}
+
+func testValNoReassign(): Unit {
+  val src = "package P\nfunc f(): Unit {\n  val x = 1\n  x = 2\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0087"), "reassigning a `val`: T0087")
+}
+
+func testVarReassignOk(): Unit {
+  val src = "package P\nfunc f(): Unit {\n  var x = 1\n  x = 2\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0087"), "reassigning a `var`: no T0087")
+}
+
+func testOutParamReassignOk(): Unit {
+  // `out` params are mutable (they must be assigned), so assigning is fine.
+  val src = "package P\nfunc f(x: out Int): Unit { x = 5 }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0087"), "assigning an `out` param: no T0087")
+}
+
+func testInoutParamReassignOk(): Unit {
+  val src = "package P\nfunc f(x: inout Int): Unit { x = 5 }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0087"), "assigning an `inout` param: no T0087")
+}
+
 func main(): Unit {
   testEmptySource()
   testFuncRegistered()
@@ -846,5 +880,10 @@ func main(): Unit {
   testImplMissingMethod()
   testImplArityMismatch()
   testImplDefaultMethodOptional()
+  testInParamNoRebind()
+  testValNoReassign()
+  testVarReassignOk()
+  testOutParamReassignOk()
+  testInoutParamReassignOk()
   println("typechecker self-test: ok")
 }

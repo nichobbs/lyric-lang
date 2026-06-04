@@ -692,7 +692,7 @@ Mode rules:
 - `out` parameters must be definitely assigned on every control-flow path before return.
 - `inout` parameters must be passed mutable bindings; immutable values cannot be passed.
 - Async functions cannot have `out` or `inout` parameters that are non-record value types crossing await points (the value would be aliased across awaits — see `docs/09-msil-emission.md` §11.4).
-- `in` prohibits **rebinding** the parameter (the name cannot be assigned a new value inside the function body) but does not prevent mutation through a mutable container type. A parameter declared `in` may call mutating methods such as `list.add(x)` on a `List[T]` value — the reference itself is immutable, not the heap object it points to. The mode-checker diagnostic V0001 ("cannot assign to `in` parameter") fires only on direct assignment (`param = ...`), not on method calls on `in` parameters.
+- `in` prohibits **rebinding** the parameter (the name cannot be assigned a new value inside the function body) but does not prevent mutation through a mutable container type. A parameter declared `in` may call mutating methods such as `list.add(x)` on a `List[T]` value — the reference itself is immutable, not the heap object it points to. Direct reassignment (`param = ...`) of an `in` parameter — like reassigning a `val`/`let` — is a compile error (**T0087**), enforced by the type checker for all packages (not only proof-required code). It fires only on direct assignment, not on mutating method calls. (The §5.2 draft originally numbered this rule `V0001`; that code is owned by the proof-import mode-checker rule, so the type-checker-enforced rule uses T0087.)
 
 ### 5.3 Return values
 
