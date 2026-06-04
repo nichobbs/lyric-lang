@@ -19584,3 +19584,42 @@ compile-time copy and the `Lyric.Session.Host` ecosystem-shim copy stay (a
 separate `@externTarget` host-shim concern).  This resolves the deployment
 blocker called out in #1841's remaining-work note.  Full emitter suite 847/847.
 MSIL target only (epic #1470 defers JVM).
+
+### D-progress-398 — self-hosted type checker: record/opaque constructor checking + opaque construction-hiding (#1483, #1485, docs/41 C2/C10)
+
+**Status:** Shipped (constructor type-return + opaque cross-package block + named-field validation). Full arg validation + pattern-field hiding are follow-ups.
+
+A record/opaque construction call (`Point(x = 1, y = 2)`) previously resolved to
+`TyError` — the callee type-name was unresolvable, args unchecked, and the
+result untyped. `inferExpr`'s `ECall` arm now recognises a single-segment callee
+naming a record / exposed-record / opaque type (`constructorSymbolOf`) and routes
+to `inferConstruction`:
+
+- **Returns the constructed type** — a non-generic record yields its precise
+  `TyUser`; generic records / opaque types yield `TyError` (deferring
+  type-argument inference rather than risk a unify mismatch). This is the
+  foundation unblock: a constructed value now has its real type, so downstream
+  bindings / field access / propagation are checked.
+- **#1485 opaque construction-hiding (T0100):** constructing an opaque type whose
+  symbol is `isImported` (declared in another package) is rejected. Same-package
+  construction is unaffected.
+- **Named-field validation (T0101):** a named argument must reference a declared
+  field. Field types resolve against a scratch diagnostic (unresolvable → `TyError`,
+  lenient), and the field collectors mirror the proven `extractRecordFields`
+  shape.
+
+Deferred (follow-ups): full positional/named arg validation (missing-required,
+arity, value-type matching) — the rest of #1483's record-ctor form — and
+cross-package **pattern-match** representation-hiding for opaque types, which
+needs the pattern-field type-checking that also unblocks `EMatch`-branch
+unification.
+
+Implementation note: a parameter/local named `out` (a reserved param-mode
+keyword) initially mis-parsed; the field collectors use `acc`.
+
+Coverage: 5 new `typechecker_self_test.l` cases (ctor returns record type;
+record-ctor used as Int → T0060; unknown field → T0101; known fields clean;
+opaque cross-package → T0100; opaque same-package clean). Full regression green
+(847/847 emitter, 84/84 CLI bridge); auth (29/29), session (31/31), and the
+`LYRIC_LOAD_COMPILER=1` weaver self-test (18/18) — all green with zero false
+positives across the compiler's many record constructions.
