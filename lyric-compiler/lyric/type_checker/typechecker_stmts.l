@@ -179,6 +179,26 @@ pub func checkStatement(
           "assigned value of type " + renderType(valueType) +
           " does not match target of type " + renderType(targetType), stmt.span))
       }
+      // #1487 (§5.2): an `in` parameter — like a `val`/`let` binding — is
+      // immutable and cannot be reassigned.  The checker records this as
+      // `isMutable = false` (in-params and val/let), so a simple-path
+      // assignment whose target is an immutable binding is rejected (T0087).
+      // `var` locals and `out`/`inout` params are mutable and unaffected.
+      match target.kind {
+        case EPath(p) ->
+          if p.segments.count == 1 {
+            match scopeTryFind(sc, p.segments[0]) {
+              case Some(b) ->
+                if not b.isMutable {
+                  diag.add(errorDiagnostic("T0087",
+                    "cannot reassign immutable binding '" + p.segments[0] +
+                    "' (a `val`/`let` or an `in` parameter)", stmt.span))
+                }
+              case None -> {}
+            }
+          }
+        case _ -> {}
+      }
     }
 
     case SReturn(valueOpt) ->
