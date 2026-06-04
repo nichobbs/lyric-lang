@@ -93,12 +93,6 @@ pub record ProjectSection {
 
 // ── Dependency source forms ──────────────────────────────────────────────────
 
-pub union GitRef {
-  case Tag(name: String)
-  case Rev(sha: String)
-  case Branch(name: String)
-}
-
 pub union DepSource {
   /// Plain version string resolved from the configured registry.
   case Registry(version: String)
@@ -107,8 +101,13 @@ pub union DepSource {
   case Workspace(version: Option[String])
   /// Local filesystem path (relative to the manifest directory).
   case Path(dir: String)
-  /// Git repository source.
-  case Git(url: String, ref: GitRef, subdir: Option[String])
+  /// Git repository source.  The ref is stored as two primitive fields
+  /// (`refKind` in {"tag","rev","branch"}, `refValue` the name/SHA) rather than
+  /// a nested `GitRef` union: the F# stage-0 emitter reads a union-typed field
+  /// of a union case back as null (#2126), so the typed `ref: GitRef` arrived
+  /// null at consumers.  The flat encoding round-trips correctly on both
+  /// emitters; `Lyric.Cli.toGitDepRef` reconstructs the kind at the call site.
+  case Git(url: String, refKind: String, refValue: String, subdir: Option[String])
 }
 
 pub record DependencyEntry {
@@ -721,21 +720,28 @@ func buildDepSource(depName: in String, pairs: in List[InlinePair], section: in 
   match findInlineStr(pairs, "git") {
     case Some(url) -> {
       val subdir = findInlineStr(pairs, "subdir")
-      val ref: GitRef = match findInlineStr(pairs, "tag") {
-        case Some(t) -> Tag(name = t)
-        case None    -> match findInlineStr(pairs, "rev") {
-          case Some(r) -> Rev(sha = r)
-          case None    -> match findInlineStr(pairs, "branch") {
-            case Some(b) -> Branch(name = b)
-            case None    ->
-              return Err(error = InvalidField(
-                section = section,
-                field   = depName,
-                message = "git dep requires one of: tag, rev, branch"))
-          }
-        }
+      // Construct the GitRef inline in each branch and return immediately,
+      // rather than binding `val ref: GitRef = match ...` and storing it in the
+      // record afterwards.  The F# stage-0 emitter reads a union value produced
+      // by a nested `match` expression back as null when it lands in a record
+      // field, so `Git.ref` arrived null at the consumer (#2126); the
+      // early-return form sidesteps that.
+      match findInlineStr(pairs, "tag") {
+        case Some(t) -> return Ok(value = Git(url = url, refKind = "tag", refValue = t, subdir = subdir))
+        case None    -> ()
       }
-      return Ok(value = Git(url = url, ref = ref, subdir = subdir))
+      match findInlineStr(pairs, "rev") {
+        case Some(r) -> return Ok(value = Git(url = url, refKind = "rev", refValue = r, subdir = subdir))
+        case None    -> ()
+      }
+      match findInlineStr(pairs, "branch") {
+        case Some(b) -> return Ok(value = Git(url = url, refKind = "branch", refValue = b, subdir = subdir))
+        case None    -> ()
+      }
+      return Err(error = InvalidField(
+        section = section,
+        field   = depName,
+        message = "git dep requires one of: tag, rev, branch"))
     }
     case None -> ()
   }

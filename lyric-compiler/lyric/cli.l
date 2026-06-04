@@ -1479,14 +1479,6 @@ func cmdPublicApiDiff(argv: in slice[String]): Int {
 
 // Emit the <PackageReference> elements for a manifest's registry Lyric deps +
 // all [nuget] entries.  Used in the generated restore csproj.
-// Convert a Lyric.Manifest.GitRef to the Lyric.GitDep.GitRef expected by GitDep.resolve.
-func toGitDepRef(r: in Mf.GitRef): GitDep.GitRef {
-  match r {
-    case Mf.Tag(name)    -> GitDep.Tag(name = name)
-    case Mf.Rev(sha)     -> GitDep.Rev(sha = sha)
-    case Mf.Branch(name) -> GitDep.Branch(name = name)
-  }
-}
 
 func buildRestoreCsproj(manifest: in Manifest, target: in String): String {
   var refs = ""
@@ -1982,9 +1974,9 @@ func runRestore(mfPath: in String, lockedMode: in Bool): Int {
           path    = Some(value = absDir)))
         Console.println("restore: " + dep.name + " -> " + absDir + " (path)")
       }
-      case Git(url, ref, subdir) -> {
+      case Git(url, refKind, refValue, subdir) -> {
         Console.println("restore: fetching " + dep.name + " from git " + url + "...")
-        match GitDep.resolve(url, toGitDepRef(ref), subdir) {
+        match GitDep.resolve(url, refKind, refValue, subdir) {
           case Err(e) -> {
             printErr("restore: git dep '" + dep.name + "': " + e)
             exitCode = 1
@@ -2271,14 +2263,11 @@ func cmdPublish(argv: in slice[String]): Int {
   while di < manifest.deps.count {
     val dep = manifest.deps[di]
     match dep.source {
-      case Git(url, ref, _) ->
-        match ref {
-          case Branch(name) -> {
-            printErr("publish: dep '" + dep.name + "' uses git branch '" + name +
-              "' — mutable refs are not allowed in published packages")
-            return 1
-          }
-          case _ -> ()
+      case Git(_, refKind, refValue, _) ->
+        if refKind == "branch" {
+          printErr("publish: dep '" + dep.name + "' uses git branch '" + refValue +
+            "' — mutable refs are not allowed in published packages")
+          return 1
         }
       case _ -> ()
     }
@@ -2353,12 +2342,7 @@ func cmdPublish(argv: in slice[String]): Int {
         printErr("publish: dep '" + dep.name + "' uses path source — not allowed in published packages")
         return 1
       }
-      case Git(_, gitRef, _) ->
-        match gitRef {
-          case Tag(tagName)  -> tagName
-          case Rev(sha)      -> sha
-          case Branch(bName) -> bName  // already rejected above; should not reach here
-        }
+      case Git(_, _, refValue, _) -> refValue  // tag name / SHA / branch (branch rejected above)
     }
     nuspecDeps = nuspecDeps +
       "    <PackageReference Include=\"" + dep.name + "\" Version=\"" + version + "\" />\n"
