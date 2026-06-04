@@ -4422,6 +4422,46 @@ for CI.
 
 ---
 
+## D081 — Carry enclosing-function context (`returnTy` / `genericNames`) on the type checker's `Scope` (#1483, #1943)
+
+**Context:** Several value-position expression forms — `EBlock` / `EUnsafe`
+brace blocks, `EResult` (`result` in `ensures:`), and the forthcoming branch
+unification of `EIf` / `EMatch` — need the enclosing function's declared return
+type and type-parameter names in order to type their bodies (a block's
+statements are checked via `checkBlock`, which already takes `genericNames` /
+`returnTy`; `result` *is* the return type). `inferExpr` did not have that
+context, so these forms inferred the universal `TyError` unifier, leaving whole
+classes of error unreachable. `inferExpr` has ~34 call sites, so adding a
+parameter would ripple widely; the `Scope` it already threads is constructed in
+exactly one place.
+
+**Decision:** Add `returnTy: Type` and `genericNames: List[String]` to the
+`@stable(since="0.1")` `Scope` record. They are **Scope-level**, set once at
+function entry (`newScopeForFunction`, called from `checkFunctionBody`) and left
+untouched by frame `push`/`pop`, so a nested block sees the same enclosing
+context. `newScope()` (the context-free constructor used outside a function
+body) defaults `returnTy` to `TyError` (keeping a stray read lenient) and an
+empty generic list. With this, `inferExpr` types `EBlock`/`EUnsafe` via
+`checkBlock` and `EResult` as `sc.returnTy`. `checkBlock` is also made
+**divergence-aware**: a block whose final statement is `return`/`throw`/`break`/
+`continue` has type `Never` (bottom), so an early-exit branch unifies cleanly
+once `EIf`/`EMatch` branch typing lands.
+
+**Stability note:** `Scope` is `@stable`; this widens the record with two new
+fields. It is an additive, source-compatible change for every in-tree
+constructor (the sole construction site is `newScope`/`newScopeForFunction`),
+and `Scope` is an internal compiler type, not a published API surface — so the
+`@stable` contract (no breaking change to consumers) holds. Logged here per the
+`@stable` editing protocol.
+
+**Consequence:** the type-checker infrastructure for value-position block and
+branch typing is in place. `EBlock`/`EUnsafe`/`EResult` ship with it;
+`EIf`/`EMatch` branch unification (which additionally needs the parser
+statement-end fix for `EIf`, #1943, and pattern-variable binding for `EMatch`)
+build on the same divergence-aware `checkBlock` in follow-ups.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

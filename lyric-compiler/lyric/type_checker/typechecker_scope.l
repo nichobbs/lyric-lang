@@ -21,17 +21,38 @@ pub record LocalBinding {
 // §2. Scope — stack of lexical frames (flat list + watermark indices).
 // ─────────────────────────────────────────────────────────────────────────────
 
+// `returnTy` / `genericNames` carry the enclosing function's declared return
+// type and type-parameter names so that value-position blocks and branch
+// expressions (`EBlock`/`EUnsafe`/`EIf`/`EMatch`/`EResult`) can be typed inside
+// `inferExpr` without re-threading them through every call site (D081).  They
+// are Scope-level (set once at function entry, untouched by frame push/pop), so
+// a nested block sees the same enclosing context.
 @stable(since="0.1")
 pub record Scope {
-  bindings:    List[LocalBinding]
-  frameStarts: List[Int]
+  bindings:     List[LocalBinding]
+  frameStarts:  List[Int]
+  returnTy:     Type
+  genericNames: List[String]
 }
 
+// A scope with no enclosing-function context — `returnTy` defaults to `TyError`
+// (the universal unifier, so a stray `EResult`/block read stays lenient) and no
+// generic names.  Used by callers that type expressions outside a function body.
 pub func newScope(): Scope {
   val bindings: List[LocalBinding] = newList()
   val starts: List[Int] = newList()
   starts.add(0)
-  Scope(bindings = bindings, frameStarts = starts)
+  Scope(bindings = bindings, frameStarts = starts, returnTy = TyError, genericNames = newList())
+}
+
+// A scope seeded with the enclosing function's return type and generic-parameter
+// names, used by `checkFunctionBody` so value-position blocks/branches inside
+// the body type against the real return context.
+pub func newScopeForFunction(returnTy: in Type, genericNames: in List[String]): Scope {
+  val bindings: List[LocalBinding] = newList()
+  val starts: List[Int] = newList()
+  starts.add(0)
+  Scope(bindings = bindings, frameStarts = starts, returnTy = returnTy, genericNames = genericNames)
 }
 
 pub func scopePush(sc: in Scope): Unit {

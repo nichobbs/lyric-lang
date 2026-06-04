@@ -19924,3 +19924,41 @@ Coverage: 4 new `typechecker_self_test.l` cases (the distinguishing ones —
 and a mismatch for an `Int` return).  Runtime: `lyric-auth` 29/29 (exercises the
 migrated byte-slice comparison).  Full regression green: 847/847 emitter, 84/84
 CLI.
+
+### D-progress-408 — self-hosted type checker: value-position `EBlock`/`EUnsafe`/`EResult` typing + divergence-aware `checkBlock` (#1483, #1943 infra, Band-1 of #1470, D081)
+
+**Status:** Shipped — type-checker-only.
+
+Three more `TyError` expression forms now carry real types, and the
+infrastructure that the remaining branch forms need is in place.
+
+- **`Scope` context (D081):** the `@stable` `Scope` record gains `returnTy` and
+  `genericNames`, set once at function entry (`newScopeForFunction`, from
+  `checkFunctionBody`) and untouched by frame push/pop.  This lets `inferExpr`
+  type value-position blocks/branches without threading the context through its
+  ~34 call sites.  `newScope()` keeps a context-free default (`returnTy =
+  TyError`).  Decision-log entry D081 records the `@stable` widening (additive;
+  sole construction site is `newScope`/`newScopeForFunction`).
+- **`EBlock` / `EUnsafe`:** a value-position brace block / `unsafe { … }` types as
+  its trailing expression via `checkBlock` (which walks the statements, binding
+  locals).  This also covers the parser's `return`/`throw`/`break`/`continue`-in-
+  expression-position desugaring (each is an `EBlock` around the single
+  statement).
+- **`EResult`:** `result` in an `ensures:` clause types as `sc.returnTy`.
+- **Divergence-aware `checkBlock`:** a block whose final statement is
+  `return`/`throw`/`break`/`continue` has type `Never` (bottom), so an early-exit
+  block unifies cleanly — the keystone for the upcoming `EIf`/`EMatch` branch
+  unification (`if c { return x } else { y }` will type by its `else`).
+
+Coverage: 3 new `typechecker_self_test.l` cases (an `unsafe { 5 }` body mismatches
+a `String` return T0070 but matches an `Int` return; an `unsafe { return 3 }`
+body is `Never` and does not mismatch).  Ecosystem sweep clean: a full
+`lyric-*` build found no new failures (the two restored-dep synthesis failures,
+`lyric-db`→`lyric-logging` and `lyric-jobs`→`lyric-resilience`, were verified to
+fail identically without this change — pre-existing, surfaced by the auto-restore
+in D080).  Full regression green: 847/847 emitter, typechecker self-test.
+
+Deferred to follow-ups: `EIf`-branch unification (needs the parser statement-end
+fix for the `if { … }`-then-operator ambiguity, #1943) and `EMatch`-branch
+unification (needs pattern-variable type binding so arm bodies see their bound
+names).
