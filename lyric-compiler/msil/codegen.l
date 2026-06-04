@@ -181,12 +181,15 @@ pub record CodegenCtx {
   // emitExternTargetBody as `@externTarget` declarations are walked.
   ffiAsmRefs:         Map[String, Int]   // assembly simple name → AssemblyRef row index
   ffiTypeRefs:        Map[String, Int]   // "asm/ns.name" key → TypeRef row index
-  // Auto-FFI metadata resolution (epic #1622, Phase 3c).  Lazily-built once
-  // per package: type FQN → owning assembly simple name, and assembly simple
-  // name → on-disk DLL path.  `metadataReady` is a one-shot flag holder
-  // (empty = not yet built) since record scalar fields can't be reassigned.
+  // Auto-FFI metadata resolution (epic #1622, Phase 3c + 4).  Lazily-built
+  // once per package over the reference pack; `metadataReady` is a one-shot
+  // flag holder (empty = not yet built) since record scalar fields can't be
+  // reassigned.  `metadataVtypeSet` maps public value-type FQNs (structs /
+  // enums) to true — used by externValueTypeMsil to detect value types from
+  // metadata instead of the retired clrIsValueType hardcoded list (#1802).
   metadataTypeIndex:  Map[String, String]
   metadataPathIndex:  Map[String, String]
+  metadataVtypeSet:   Map[String, Bool]
   metadataReady:      List[Bool]
   // Lambda / yield / extern-type support (Band 2, R6).
   tokActionCtor:      Int                // System.Action::.ctor(object, native int)
@@ -753,6 +756,7 @@ pub func newCodegenCtx(packageName: in String,
     ffiTypeRefs          = newMap(),
     metadataTypeIndex    = newMap(),
     metadataPathIndex    = newMap(),
+    metadataVtypeSet     = newMap(),
     metadataReady        = newList(),
     tokActionCtor        = tokActionCtor,
     tokActionInvoke      = tokActionInvoke,
@@ -1950,7 +1954,11 @@ func externValueTypeMsil(cctx: in CodegenCtx, seg: in String): Option[MsilType] 
   match mapGet(cctx.externTypeNames, seg) {
     case None -> None
     case Some(clrFqn) -> {
-      if not clrIsValueType(clrFqn) { return None }
+      ensureMetadataIndex(cctx)
+      val isVtype = Mdr.isValueTypeFqn(cctx.metadataVtypeSet, clrFqn)
+      // Fall back to the hardcoded list when the ref pack isn't available
+      // so value-type externs still encode correctly in SDK-less environments.
+      if not isVtype and not clrIsValueType(clrFqn) { return None }
       val sp     = splitTypeFqn(clrFqn)
       val asm    = assemblyForTypeMsil(cctx, clrFqn)
       val refRow = internFfiTypeRef(cctx, asm, sp.ns, sp.name)
@@ -9118,6 +9126,7 @@ func ensureMetadataIndex(cctx: in CodegenCtx): Unit {
       var i = 0
       while i < asms.count {
         Mdr.addAssemblyToIndexes(cctx.metadataTypeIndex, cctx.metadataPathIndex, asms[i])
+        Mdr.addAssemblyValueTypes(cctx.metadataVtypeSet, asms[i])
         i = i + 1
       }
     }
