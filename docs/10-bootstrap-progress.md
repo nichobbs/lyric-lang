@@ -19317,3 +19317,39 @@ higher-order function's signature at the call site), which is the #1939
 remainder and reuses this same `boxedParamTypes` machinery.  CI step extended
 (annotated-param runtime assertions + the unannotated fail-loud check).  No
 regression: emitter 847/847, CLI 84/84.  MSIL target only.
+
+### D-progress-390 — self-hosted type checker: impl/interface structural conformance (#1486, Band-1, docs/41 C11)
+
+**Status:** Shipped (structural conformance; full type-matching + body-checking deferred).
+
+`IImpl(_) -> {}` was a no-op — impl blocks were never checked, so a missing or
+mis-shaped interface method went unreported. `checkImplConformance`
+(`typechecker_checker.l`, run in the T5 body-check pass) now reports:
+
+- **T0098** — an `impl Iface for T` that omits an *abstract* interface method
+  (`IMSig`). Default methods (`IMFunc`, declared with a body) are optional and
+  not required.
+- **T0099** — an implemented method whose parameter *arity* differs from the
+  interface declaration.
+
+Only parameter counts are compared, so the check is generic/`Self`-safe and
+never false-positives on a conforming impl. Full signature *type* matching
+(with generic / `Self` substitution) and impl-body type-checking are deferred —
+they overlap with the record-ctor / expression-typing forms still pending in
+#1483 (impl bodies are function bodies; checking them needs `Self`-type wiring
+and the not-yet-built constructor/pattern-field checking).
+
+**Restored-dependency interaction:** the synthesised contract source for a
+restored DLL reconstructs the package's public API from metadata; its `impl`
+blocks are type anchors, not full recompilations, so they legitimately omit
+methods. `restored_packages.l::filterRealErrors` now drops T0098/T0099 from the
+synthesised-source type-check (alongside the existing whitelisted-T0010 stdlib
+anchors) — conformance was already enforced when the package was originally
+compiled. Without this, `lyric test --manifest lyric-session` (which restores
+`lyric-cache`) false-failed on the synthesised `impl CacheStore`.
+
+Coverage: 4 new `typechecker_self_test.l` cases (conforming impl clean, missing
+method → T0098, arity mismatch → T0099, default method optional). Full
+regression green (847/847 emitter, 84/84 CLI bridge); auth (29/29), session
+(31/31, incl. the restored-Cache path), and the `LYRIC_LOAD_COMPILER=1` weaver
+self-test (18/18) all green with zero false positives.
