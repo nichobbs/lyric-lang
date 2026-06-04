@@ -20,6 +20,7 @@ import Lyric.Derives
 import Jvm.Kernel
 import Jvm.Classfile
 import Jvm.Lowering
+import Jvm.AutoFfi
 import Jvm.Codegen
 import Jvm.Driver
 
@@ -272,8 +273,9 @@ func runMiddleEnd(file0: in SourceFile, importedItems: in List[Item]): Option[So
 func codegenPackageInto(file: in SourceFile,
                         registry: in Map[String, JvmFuncSig],
                         caseReg: in Map[String, List[JvmCaseField]],
+                        autoFfi: in AutoFfiCtx,
                         acc: in List[BuiltClass]): Unit {
-  val pkg        = codegenPackageWithSigs(file, registry, caseReg)
+  val pkg        = codegenPackageWithSigs(file, registry, caseReg, autoFfi)
   val pool       = poolNew()
   val classFiles = lowerPackage(pkg, pool)
   var j = 0
@@ -366,11 +368,12 @@ pub func compileToJarBundled(
     }
   }
 
+  val autoFfi    = buildAutoFfiCtx()
   val allClasses: List[BuiltClass] = newList()
 
   // User package first (its codegen failing is fatal).
   match runMiddleEnd(userFile, importedItems) {
-    case Some(f) -> codegenPackageInto(f, registry, caseReg, allClasses)
+    case Some(f) -> codegenPackageInto(f, registry, caseReg, autoFfi, allClasses)
     case None    -> return false
   }
 
@@ -382,7 +385,7 @@ pub func compileToJarBundled(
     val f = toBundle[bi]
     try {
       match runMiddleEnd(f, importedItems) {
-        case Some(ff) -> codegenPackageInto(ff, registry, caseReg, allClasses)
+        case Some(ff) -> codegenPackageInto(ff, registry, caseReg, autoFfi, allClasses)
         case None     -> ()
       }
     } catch Bug as _ {
