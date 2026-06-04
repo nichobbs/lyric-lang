@@ -20030,3 +20030,36 @@ auto-restore).  Regression green: 325/325 self-hosted parser self-test path
 
 This clears the prerequisite for `EIf`-branch value typing (the typing itself is
 a follow-up that reuses the divergence-aware `checkBlock` from D081).
+
+### D-progress-411 — `lyric run/build --watch`: rebuild-on-change dev loop (#1968 epic; #1974; D083)
+
+**Status:** Shipped (`lyric-compiler/lyric/cli.l`, `lyric-stdlib/std/time.l`,
+`lyric-stdlib/std/_kernel/time_host.l`, `lyric-stdlib/std/_kernel_jvm/time_host.l`).
+
+`lyric run --watch <source.l>` and `lyric build [--watch]` run the action once,
+then watch the relevant source files and re-run on every change until Ctrl-C:
+
+- **Change detection by content hash** — the loop fingerprints each watched file
+  with `Std.Hash.sha512OfFile` (already cross-target, reused from lock
+  integrity), so no `mtime`/file-metadata primitive was needed.
+- **New stdlib primitive `Std.Time.sleepMillis(ms: Int)`** (synchronous sleep)
+  backs the poll interval: `.NET` binds `System.Threading.Thread.Sleep`; JVM
+  routes through the `lyric.stdlib.jvm.TimeHost.sleepMillis` Phase 6 shim
+  (`Thread.sleep((long) ms)`) because `Thread.sleep` takes a `long`. Both kernel
+  axioms broadened to cover `Thread`; `docs/17-axiom-audit.md` §19 baseline
+  regenerated.
+- **Watched files:** `run --watch` → the source; project `build --watch` → the
+  manifest + every `[project.packages]` source (via `projectWatchFiles`); single
+  `build --watch` → the source. A `WatchAction` union carries the deferred
+  run/build action; `watchLoop` runs it, then polls and re-runs on change.
+- The watch loop runs in the CLI process (the .NET AOT host), so the feature is
+  fully functional today; only `sleepMillis`'s JVM *runtime* awaits the existing
+  Phase 6 host-shim deliverable.
+
+Verified end-to-end against `bin/lyric`: `run --watch` (initial run + re-run on
+edit) and project `build --watch` (watches manifest + source = 2 files, rebuilds
+on change). Stage-1 + AOT clean.  MSIL target (JVM `sleepMillis` runtime pends
+Phase 6 shims).
+
+Docs: D083 (decision log), language reference §13.1, book appendix-b CLI
+reference.

@@ -769,6 +769,8 @@ lyric build --all-features             # transitive closure of every declared fe
 # Run
 lyric run <file.l>                     # compile and immediately execute
 lyric run <file.l> -- arg1 arg2        # pass arguments to the program
+lyric run <file.l> --watch             # rebuild & re-run on source changes (Ctrl-C to stop)
+lyric build --watch                    # project/single build: rebuild on source changes
 
 # Test  (single-file; --manifest, --doctests, --update-snapshots, property execution: v2)
 lyric test <file.l>                    # run test blocks in a @test_module file

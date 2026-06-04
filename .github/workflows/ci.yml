@@ -1473,6 +1473,36 @@ jobs:
           fi
           echo "lyric add e2e passed"
 
+      # `lyric run --watch` end-to-end — runs once, then re-runs when the source
+      # changes (#1974).  Driven in the background; we edit the file, wait for a
+      # poll cycle, then kill the watcher and assert the re-run happened.
+      - name: lyric run --watch e2e
+        if: steps.changes.outputs.has_code_changes == 'true'
+        timeout-minutes: 2
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping watch e2e"
+            exit 0
+          fi
+          bin_abs="$(pwd)/$lyric_bin"
+          work="$(mktemp -d)"
+          printf 'package Hello\nimport Std.Core\nimport Std.Console as Console\npub func main(): Int { Console.println("watch-v1"); 0 }\n' > "$work/hello.l"
+          ( "$bin_abs" run "$work/hello.l" --watch > "$work/out.log" 2>&1 ) &
+          wpid=$!
+          sleep 8
+          printf 'package Hello\nimport Std.Core\nimport Std.Console as Console\npub func main(): Int { Console.println("watch-v2"); 0 }\n' > "$work/hello.l"
+          sleep 6
+          kill "$wpid" 2>/dev/null || true
+          wait "$wpid" 2>/dev/null || true
+          echo "--- watch output ---"; cat "$work/out.log"
+          grep -q "watch-v1" "$work/out.log" || { echo "expected initial run output"; exit 1; }
+          grep -q "change detected" "$work/out.log" || { echo "expected change detection"; exit 1; }
+          grep -q "watch-v2" "$work/out.log" || { echo "expected re-run after edit"; exit 1; }
+          echo "lyric run --watch e2e passed"
+
       # Coverage collection — informational only, not a blocking gate (#1117).
       # Runs on push to main (not pull_request) to keep PR latency low.
       # Uses `dotnet-coverage` CLI against the same Expecto-based test

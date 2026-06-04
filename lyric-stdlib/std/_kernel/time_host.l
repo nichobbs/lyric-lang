@@ -16,7 +16,7 @@
 // `compiler/lyric/std/_kernel/README.md` the kernel is the audited
 // extern boundary, not a general-purpose API.
 
-@axiom("System.DateTime / System.TimeSpan / System.DateTimeOffset / System.TimeZoneInfo conform to their documented .NET contracts")
+@axiom("System.DateTime / System.TimeSpan / System.DateTimeOffset / System.TimeZoneInfo / System.Threading.Thread conform to their documented .NET contracts")
 package Std.TimeHost
 
 import Std.Core
@@ -165,3 +165,9 @@ pub func hostDtoUtcNow(): DateTimeOffset = ()
 
 @externTarget("System.DateTimeOffset.ToUnixTimeMilliseconds")
 pub func hostDtoToEpochMillis(d: in DateTimeOffset): Long = ()
+
+// ─── Synchronous sleep — block the calling thread for `ms` milliseconds ───────
+// Backs Std.Time.sleepMillis (used by `lyric run/build --watch`'s poll loop).
+
+@externTarget("System.Threading.Thread.Sleep")
+pub func hostSleepMillis(ms: in Int): Unit = ()

@@ -79,6 +79,7 @@ import Std.Errors
 import Std.Parse
 import Std.Sort as Sort
 import Std.Hash as Hash       // sha512OfFile / sha512OfBytes for #738 lock integrity
+import Std.Time as Time       // sleepMillis — the --watch poll interval (#1974)
 import Std.Json as Json       // encodeString — RFC 8259 string literal escaping (#1093)
 
 import Lyric.Manifest as Mf   // parseManifest(text, filePath) -> Result[Manifest, ManifestError]
@@ -139,7 +140,7 @@ func usageText(): String {
   "  Run `lyric` with no command inside a project to build it.\n" +
   "\n" +
   "Project:\n" +
-  "  lyric build   [<source.l>] [-o <output>] [--force] [--manifest <lyric.toml>] [--target dotnet|jvm] [--no-restore]\n" +
+  "  lyric build   [<source.l>] [-o <output>] [--force] [--manifest <lyric.toml>] [--target dotnet|jvm] [--no-restore] [--watch]\n" +
   "                (no source: builds the discovered project's [project.packages] into one DLL;\n" +
   "                 auto-restores deps when lyric.lock is missing or stale unless --no-restore)\n" +
   "  lyric build   --release [<source.l>] [--rid <rid>] [-o <bin>]\n" +
@@ -152,7 +153,8 @@ func usageText(): String {
   "  lyric search  <term>\n" +
   "\n" +
   "Dev loop:\n" +
-  "  lyric run     <source.l> [-- <args>...]\n" +
+  "  lyric run     <source.l> [--watch] [-- <args>...]\n" +
+  "                (--watch: rebuild & re-run on source changes; Ctrl-C to stop)\n" +
   "  lyric test    <source.l> [--filter <prefix>] [--list] [--target dotnet|jvm]\n" +
   "  lyric bench   <source.l> [--runs N] [--warmup N] [--filter <prefix>]\n" +
   "  lyric repl\n" +
@@ -426,6 +428,7 @@ func cmdBuild(argv: in slice[String]): Int {
   var release: Bool = false
   var ridArg: Option[String] = None
   var noRestore: Bool = false
+  var watch: Bool = false
   val positional: List[String] = newList()
 
   var i = 1
@@ -484,6 +487,9 @@ func cmdBuild(argv: in slice[String]): Int {
     } else if arg == "--no-restore" {
       noRestore = true
       i += 1
+    } else if arg == "--watch" {
+      watch = true
+      i += 1
     } else if arg == "--target" {
       if i + 1 < argv.length {
         val t = argv[i + 1]
@@ -531,6 +537,12 @@ func cmdBuild(argv: in slice[String]): Int {
       printErr("build: --release for project mode is not yet supported; build a single-file entry with `lyric build --release <main.l>` (tracked in #1975)")
       return 1
     }
+    if watch {
+      return watchLoop(projectWatchFiles(mfPath),
+                       BuildProj(mfPath = mfPath, outArg = explicitOut, target = target,
+                                 feats = cliFeatures, noDef = noDefaultFeatures,
+                                 allF = allFeatures, noRestore = noRestore))
+    }
     return buildProject(mfPath, explicitOut, target, cliFeatures, noDefaultFeatures, allFeatures, noRestore)
   }
 
@@ -551,6 +563,13 @@ func cmdBuild(argv: in slice[String]): Int {
       val stem = stemOf(Path.basename(sourcePath), 2)  // strip ".l"
       Path.join(dir, stem + ".dll")
     }
+  }
+
+  if watch {
+    val files: List[String] = newList()
+    files.add(sourcePath)
+    return watchLoop(files, BuildFile(sourcePath = sourcePath, outArg = outPath,
+                                      target = target, manifest = manifestArg))
   }
 
   buildOne(sourcePath, outPath, target, manifestArg)
@@ -852,50 +871,39 @@ func buildProject(
 // §4. Run command
 // ─────────────────────────────────────────────────────────────────────────────
 
-func cmdRun(argv: in slice[String]): Int {
-  if argv.length < 2 {
-    printErr("run: missing source file")
-    printUsage()
-    return 1
-  }
+// ── --watch support (#1974) ──────────────────────────────────────────────────
+//
+// The watch loop runs in the CLI process (the .NET AOT binary), polling a set
+// of source files and re-running the action when any of them changes.  Change
+// detection fingerprints each file with sha512 (reused from lock integrity) so
+// it needs no new file-metadata primitive; the only new stdlib primitive is the
+// synchronous Std.Time.sleepMillis poll interval.  The loop runs until the user
+// interrupts it (Ctrl-C).
 
-  val sourcePath = argv[1]
-  if not File.fileExists(sourcePath) {
-    printErr("run: source file not found: " + sourcePath)
-    return 1
-  }
+val WATCH_POLL_MS: Int = 400
 
-  // Collect user args (everything after optional "--" separator).
-  val userArgs: List[String] = newList()
-  var i = 2
-  var pastSep = false
-  while i < argv.length {
-    val arg = argv[i]
-    if not pastSep and arg == "--" {
-      pastSep = true
-    } else {
-      userArgs.add(arg)
-    }
-    i += 1
-  }
+// The deferred action a watch loop re-runs on each detected change.
+union WatchAction {
+  case RunFile(sourcePath: String, userArgs: List[String])
+  case BuildProj(mfPath: String, outArg: Option[String], target: CompileTarget,
+                 feats: List[String], noDef: Bool, allF: Bool, noRestore: Bool)
+  case BuildFile(sourcePath: String, outArg: String, target: CompileTarget, manifest: Option[String])
+}
 
-  // Build to a `.lyric-run/` temp path next to the source file.
+// Build the program once and `dotnet exec` it.  Extracted from cmdRun so the
+// watch loop can re-run it.
+func runOnce(sourcePath: in String, userArgs: in List[String]): Int {
   val srcDir  = Path.dirname(sourcePath)
   val stem    = stemOf(Path.basename(sourcePath), 2)
   val outPath = Path.join(Path.join(srcDir, ".lyric-run"), stem + ".dll")
 
   val buildExit = buildOne(sourcePath, outPath, Dotnet, None)
-  if buildExit != 0 {
-    return buildExit
-  }
+  if buildExit != 0 { return buildExit }
 
-  // `dotnet exec <dll> [user args...]`
   val execArgs: List[String] = newList()
   execArgs.add("exec")
   execArgs.add(outPath)
-  for a in userArgs.toArray() {
-    execArgs.add(a)
-  }
+  for a in userArgs.toArray() { execArgs.add(a) }
 
   match Process.run("dotnet", execArgs) {
     case Ok(code) -> code
@@ -904,6 +912,125 @@ func cmdRun(argv: in slice[String]): Int {
       1
     }
   }
+}
+
+func runWatchAction(a: in WatchAction): Int {
+  match a {
+    case RunFile(sp, ua)                  -> runOnce(sp, ua)
+    case BuildProj(mf, o, t, f, nd, af, nr) -> buildProject(mf, o, t, f, nd, af, nr)
+    case BuildFile(sp, o, t, m)           -> buildOne(sp, o, t, m)
+  }
+}
+
+// A change-detection fingerprint over `files`: each file's sha512 (or "∅" when
+// missing) joined together, so adding, removing, or editing any watched file
+// flips the value.
+func watchFingerprint(files: in List[String]): String {
+  var fp = ""
+  var i = 0
+  while i < files.count {
+    val f = files[i]
+    val h = match Hash.sha512OfFile(f) {
+      case Ok(x)  -> x
+      case Err(_) -> "∅"
+    }
+    fp = fp + f + "=" + h + ";"
+    i += 1
+  }
+  fp
+}
+
+// Run `action` once, then poll `files` and re-run on every change until the
+// process is interrupted.  Never returns under normal use.
+func watchLoop(files: in List[String], action: in WatchAction): Int {
+  Console.println("watch: watching " + toString(files.count) +
+                  " file(s); press Ctrl-C to stop")
+  runWatchAction(action)
+  Console.println("watch: waiting for changes ...")
+  var fp = watchFingerprint(files)
+  while true {
+    Time.sleepMillis(WATCH_POLL_MS)
+    val cur = watchFingerprint(files)
+    if cur != fp {
+      fp = cur
+      Console.println("")
+      Console.println("watch: change detected — rerunning ...")
+      val rc = runWatchAction(action)
+      Console.println("watch: done (exit " + toString(rc) + "); waiting for changes ...")
+    }
+  }
+  0
+}
+
+// The files a project `build --watch` should watch: the manifest plus every
+// `[project.packages]` source path (resolved relative to the manifest dir).
+func projectWatchFiles(mfPath: in String): List[String] {
+  val files: List[String] = newList()
+  files.add(mfPath)
+  val mfDir = Path.dirname(mfPath)
+  match File.readText(mfPath) {
+    case Err(_) -> ()
+    case Ok(txt) ->
+      match Mf.parseManifest(txt, mfPath) {
+        case Err(_) -> ()
+        case Ok(m)  ->
+          match m.project {
+            case None    -> ()
+            case Some(p) -> {
+              var i = 0
+              while i < p.packages.count {
+                files.add(Path.join(mfDir, p.packages[i].path))
+                i += 1
+              }
+            }
+          }
+      }
+  }
+  files
+}
+
+func cmdRun(argv: in slice[String]): Int {
+  var watch = false
+  var sourcePath = ""
+  var haveSource = false
+  val userArgs: List[String] = newList()
+
+  var i = 1
+  var pastSep = false
+  while i < argv.length {
+    val arg = argv[i]
+    if pastSep {
+      userArgs.add(arg)
+    } else if arg == "--" {
+      pastSep = true
+    } else if arg == "--watch" {
+      watch = true
+    } else if not haveSource {
+      sourcePath = arg
+      haveSource = true
+    } else {
+      userArgs.add(arg)
+    }
+    i += 1
+  }
+
+  if not haveSource {
+    printErr("run: missing source file")
+    printUsage()
+    return 1
+  }
+  if not File.fileExists(sourcePath) {
+    printErr("run: source file not found: " + sourcePath)
+    return 1
+  }
+
+  if watch {
+    val files: List[String] = newList()
+    files.add(sourcePath)
+    return watchLoop(files, RunFile(sourcePath = sourcePath, userArgs = userArgs))
+  }
+
+  runOnce(sourcePath, userArgs)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
