@@ -12,6 +12,8 @@ package Jvm.Lowering
 
 import Std.Core
 import Std.Collections
+import Std.File as File
+import Std.Environment as Env
 import Jvm.Kernel
 import Jvm.Classfile
 import Jvm.Bytecode
@@ -3276,21 +3278,60 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   result
 }
 
-// ── B120: lowerStructuredScope (StructuredTaskScope.ShutdownOnFailure) ────────
+// ── B120: lowerStructuredScope (StructuredTaskScope) ──────────────────────────
+//
+// `java.util.concurrent.StructuredTaskScope` changed shape across JDK previews:
+//   • JDK 21..23 (JEP 453/462/480): a *class* opened via
+//     `new StructuredTaskScope.ShutdownOnFailure()`, joined with `join()` and
+//     `throwIfFailed()`, all dispatched with `invokevirtual`.  This is the
+//     form the emitter targets today (Java 21 class-file version, major 65).
+//   • JDK 24+   (JEP 499 onward):  a sealed *interface* opened via the static
+//     factory `StructuredTaskScope.open()`, with `fork`/`join`/`close`
+//     dispatched via `invokeinterface`.  `ShutdownOnFailure` no longer exists.
+//
+// The two encodings are mutually incompatible: emitting the interface form
+// against a JDK-21 runtime throws `IncompatibleClassChangeError` (the JVM
+// resolves `open()` as a class Methodref, not an InterfaceMethodref), and the
+// `ShutdownOnFailure` class is absent on JDK 24+.  The JDK-24+ interface
+// lowering is deferred until the toolchain can build/run on that JDK and the
+// (still-preview, still-changing) method descriptors can be verified end-to-end
+// rather than guessed — tracked in #2263.  Until then the lowering is gated on
+// the detected runtime JDK: JDK 21..23 emits the verified `ShutdownOnFailure`
+// form; JDK 24+ raises a clear, actionable compiler error instead of shipping
+// untestable bytecode.
 
-/// Emit bytecode to open a `StructuredTaskScope.ShutdownOnFailure`, fork
-/// each callable class (which must implement `Callable`), call join() and
-/// throwIfFailed(), then close the scope.
-/// The scope reference is stored in `scopeSlot`; each forked task is stored
-/// in successive local slots starting at `firstTaskSlot`.
+/// Emit bytecode to open a structured-concurrency scope, fork each callable
+/// class (which must implement `Callable`), await the subtasks, propagate any
+/// failure, then close the scope.  Supported on JDK 21..23
+/// (`StructuredTaskScope.ShutdownOnFailure`); JDK 24+ support is tracked in
+/// #2263.  The scope reference is stored in `scopeSlot`; each forked task is
+/// stored in successive local slots starting at `firstTaskSlot`.
 pub func lowerScopeBlock(
   asm:           in MethodAssembler,
   callableNames: in List[String],
   scopeSlot:     in Int,
   firstTaskSlot: in Int
 ): Unit {
+  if detectJavaFeatureVersion() >= 24 {
+    panic("Jvm.Lowering: structured-concurrency 'scope' blocks are not yet "
+      + "supported when targeting JDK 24+. java.util.concurrent."
+      + "StructuredTaskScope became a sealed interface (JEP 499) whose "
+      + "still-preview method descriptors cannot be verified on this Java 21 "
+      + "toolchain; build with a JDK 21..23 toolchain for now. "
+      + "JDK 24+ support is tracked in "
+      + "https://github.com/nichobbs/lyric-lang/issues/2263")
+  }
+  lowerScopeBlockShutdownOnFailure(asm, callableNames, scopeSlot, firstTaskSlot)
+}
+
+// JDK 21..23: StructuredTaskScope.ShutdownOnFailure (class API, invokevirtual).
+func lowerScopeBlockShutdownOnFailure(
+  asm:           in MethodAssembler,
+  callableNames: in List[String],
+  scopeSlot:     in Int,
+  firstTaskSlot: in Int
+): Unit {
   val scopeClass = "java/util/concurrent/StructuredTaskScope$ShutdownOnFailure"
-  val scopePs:   List[JvmType] = newList()
 
   // new ShutdownOnFailure(); store to scopeSlot
   emitNew(asm, poolClass(asm.pool, scopeClass))
@@ -3323,6 +3364,67 @@ pub func lowerScopeBlock(
   emitPop(asm)
   emitAload(asm, scopeSlot)
   emitInvokevirtual(asm, throwRef)
+}
+
+// ── JDK feature-version detection ─────────────────────────────────────────────
+//
+// Reads `$JAVA_HOME/release` (`JAVA_VERSION="21.0.10"` → 21) so the scope
+// lowering targets the API the runtime actually provides.  Anchored solely to
+// `JAVA_HOME` — the variable that pins the active JDK in CI and production
+// builds — rather than scanning `/usr/lib/jvm`, whose directory order is
+// filesystem-dependent and could non-deterministically pick the wrong JDK on a
+// multi-JDK machine (#2259).  Falls back to 21 (the emitter's target class-file
+// version) whenever `JAVA_HOME` is unset or its `release` file is missing /
+// unparseable — the safe default, since the only supported lowering today is
+// the JDK 21..23 `ShutdownOnFailure` form.
+func detectJavaFeatureVersion(): Int {
+  val javaHome = Env.getVarOrDefault("JAVA_HOME", "")
+  if javaHome.length == 0 { return 21 }
+  match File.readText(javaHome + "/release") {
+    case Err(_)   -> 21
+    case Ok(text) -> parseJavaFeatureVersion(text)
+  }
+}
+
+// Extract the leading integer of the JDK feature version from a `release`
+// file's `JAVA_VERSION="X.Y.Z"` line (e.g. `21.0.10` → 21, `24` → 24).
+// Returns 21 when the marker is absent or unparseable.
+func parseJavaFeatureVersion(text: in String): Int {
+  val marker = "JAVA_VERSION=\""
+  val idx = text.indexOf(marker)
+  if idx < 0 { return 21 }
+  var i = idx + marker.length
+  var n = 0
+  var sawDigit = false
+  var done = false
+  while i < text.length and not done {
+    val d = asciiDigit(text[i])
+    if d < 0 {
+      done = true
+    } else {
+      n = n * 10 + d
+      sawDigit = true
+      i = i + 1
+    }
+  }
+  if sawDigit { n } else { 21 }
+}
+
+// ASCII digit value (0..9) or -1 for a non-digit char.
+func asciiDigit(c: in Char): Int {
+  match c {
+    case '0' -> 0
+    case '1' -> 1
+    case '2' -> 2
+    case '3' -> 3
+    case '4' -> 4
+    case '5' -> 5
+    case '6' -> 6
+    case '7' -> 7
+    case '8' -> 8
+    case '9' -> 9
+    case _   -> -1
+  }
 }
 
 // ── B121: lowerFuncWithContract (inline requires/ensures bytecode) ────────────

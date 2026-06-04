@@ -1369,6 +1369,24 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/module_val_self_test.l
 
+      # Culture-invariant toString(DateTime) self-test (#2184).  Pins the
+      # self-hosted MSIL emitter's `toString` builtin to InvariantCulture for
+      # DateTime values so stage-0 (F#) and stage-1 (self-hosted) render
+      # DateTime byte-identically regardless of the CI host locale.  Compiled
+      # in-process through the self-hosted `Msil.Bridge`.  Imports only
+      # `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: DateTime-toString self-test (native lyric test, #2184)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping datetime-toString self-test"
+            exit 0
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/datetime_tostring_self_test.l
+
       # Release Native AOT end-to-end — `lyric build --release` produces a
       # self-contained native binary and runs it (#1975 / D079).  This is the
       # integration test for the AOT pipeline (host project + trampoline +

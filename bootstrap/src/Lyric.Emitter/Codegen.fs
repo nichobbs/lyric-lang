@@ -3591,11 +3591,10 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         if argTy = typeof<string> then
             // Already a string — no boxing or call needed.
             ()
-        elif argTy = typeof<double> || argTy = typeof<single> then
-            // Culture-invariant formatting for floating-point.  On .NET 10
-            // the default format is the shortest round-trip representation,
-            // and InvariantCulture pins the decimal separator to "." so the
-            // output is locale-stable and JSON-safe.
+        elif argTy = typeof<double> || argTy = typeof<single> || argTy = typeof<System.DateTime> then
+            // Culture-invariant formatting for floating-point and DateTime.
+            // InvariantCulture pins the decimal separator to "." for floats and
+            // produces "MM/dd/yyyy HH:mm:ss" for DateTime regardless of OS locale.
             let invariantGetter =
                 let p = typeof<System.Globalization.CultureInfo>.GetProperty("InvariantCulture")
                 match Option.ofObj p with
@@ -3608,7 +3607,7 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                 match Option.ofObj
                           (argTy.GetMethod("ToString", [| typeof<System.IFormatProvider> |])) with
                 | Some m -> m
-                | None   -> failwith "Floating-point ToString(IFormatProvider) not found"
+                | None   -> failwith "ToString(IFormatProvider) not found"
             let tmp = il.DeclareLocal(argTy)
             il.Emit(OpCodes.Stloc, tmp)
             il.Emit(OpCodes.Ldloca, tmp)

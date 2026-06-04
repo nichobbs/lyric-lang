@@ -108,6 +108,12 @@ pub record CodegenCtx {
   trTask:      Int   // System.Threading.Tasks.Task (non-generic)
   trTask1:     Int   // System.Threading.Tasks.Task`1 (open generic)
   tokTaskWait: Int   // Task::Wait(): void  instance HASTHIS (void async externs)
+  // Culture-invariant toString(DateTime).  Mirrors the F# bootstrap emitter's
+  // InvariantCulture ToString(IFormatProvider) path (Codegen.fs) so stage-0
+  // and stage-1 render DateTime byte-identically regardless of host locale
+  // (#2184).
+  tokInvariantCulture:    Int  // CultureInfo.get_InvariantCulture(): CultureInfo  static
+  tokDateTimeToStringInv: Int  // DateTime.ToString(IFormatProvider): string  instance HASTHIS
   // Reverse lookup: simple field name → FieldDef token.  Populated by
   // addPackageTokens for IRecord and IExposedRec fields so EMember can emit
   // ldfld on an MObject receiver when the static type is unknown.
@@ -712,6 +718,34 @@ pub func newCodegenCtx(packageName: in String,
     lctx, trTask, "Wait",
     "task_wait", buildInstanceMethodSig(newList(), MVoid))
 
+  // ── Culture-invariant toString(DateTime) (#2184) ───────────────────────────
+  // Counterpart of the F# bootstrap emitter's culture-invariant `toString`
+  // path: pin InvariantCulture so a DateTime renders identically (the
+  // "MM/dd/yyyy HH:mm:ss" invariant form) regardless of the host OS locale,
+  // keeping stage-0 (F#) and stage-1 (self-hosted) output in lockstep.
+  // CultureInfo / IFormatProvider / DateTime are type-forwarded from
+  // System.Runtime, so the runtime AssemblyRef resolves all three.
+  val trCultureInfo     = ctxAddTypeRef(lctx, "System.Globalization", "CultureInfo",     lctx.arRuntime)
+  val trIFormatProvider = ctxAddTypeRef(lctx, "System",              "IFormatProvider", lctx.arRuntime)
+  val trDateTime        = ctxAddTypeRef(lctx, "System",              "DateTime",        lctx.arRuntime)
+
+  // CultureInfo.get_InvariantCulture(): CultureInfo  — static
+  val ciRet: MsilType = MClassRef(typeRefCode = tdrTypeRef(trCultureInfo),
+                                  clrFqn = "System.Globalization.CultureInfo")
+  val tokInvariantCulture = 0x0A000000 + ctxAddMemberRef(
+    lctx, trCultureInfo, "get_InvariantCulture",
+    "ci_get_invariant", buildStaticMethodSig(newList(), ciRet))
+
+  // DateTime.ToString(IFormatProvider): string  — instance HASTHIS.  The
+  // value lives on the stack as an unboxed `valuetype System.DateTime`, so the
+  // call site takes its address (ldloca) and uses `call` (value-type instance
+  // dispatch), passing the CultureInfo as the IFormatProvider argument.
+  val dtToStrPs: List[MsilType] = newList()
+  dtToStrPs.add(MClassRef(typeRefCode = tdrTypeRef(trIFormatProvider),
+                          clrFqn = "System.IFormatProvider"))
+  val tokDateTimeToStringInv = 0x0A000000 + ctxAddMemberRef(
+    lctx, trDateTime, "ToString",
+    "dt_tostring_inv", buildInstanceMethodSig(dtToStrPs, MString))
 
   val recCtorToks: Map[String, Int] = newMap()
   val fieldToks:   Map[String, Int] = newMap()
@@ -743,6 +777,8 @@ pub func newCodegenCtx(packageName: in String,
     tokExcGetMessage     = tokExcGetMessage,
     tokObjGetType        = tokObjGetType,
     tokTypeGetName       = tokTypeGetName,
+    tokInvariantCulture     = tokInvariantCulture,
+    tokDateTimeToStringInv  = tokDateTimeToStringInv,
     tokListObjCtor       = tokListObjCtor,
     tokListObjAdd        = tokListObjAdd,
     tokListObjGetItem    = tokListObjGetItem,
@@ -4734,8 +4770,21 @@ func lowerBuiltinOrStaticCallMsil(
           insns.add(MLdStr(token = emptyTok))
         }
         case _ -> {
-          boxIfNeededMsil(cctx, insns, argTy)
-          insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+          if isClrDateTimeMsil(argTy) {
+            // Culture-invariant: dt.ToString(CultureInfo.InvariantCulture).
+            // The DateTime is an unboxed value type on the stack; stash it in
+            // a value-type local so we can take its address for the instance
+            // call, then push the InvariantCulture argument (#2184).
+            val dtSlot = allocSlotMsil(fctx,
+              "__inv_dt_" + toString(fctx.slotTicker.count), argTy)
+            emitStoreSlot(insns, dtSlot, fctx.paramCount)
+            insns.add(MLdloca(slot = dtSlot - fctx.paramCount))
+            insns.add(MCall(methodToken = cctx.tokInvariantCulture))
+            insns.add(MCall(methodToken = cctx.tokDateTimeToStringInv))
+          } else {
+            boxIfNeededMsil(cctx, insns, argTy)
+            insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+          }
         }
       }
     } else {
@@ -9217,6 +9266,17 @@ func msilIsValueTypeRef(t: in MsilType): Bool {
   match t {
     case MValueTypeRef(_, _) -> true
     case _                   -> false
+  }
+}
+
+// True when `t` is the CLR `System.DateTime` value type, routed through either
+// the VALUETYPE (`MValueTypeRef`) or CLASS (`MClassRef`) encoding.  Used by the
+// `toString` builtin to pin InvariantCulture formatting (#2184).
+func isClrDateTimeMsil(t: in MsilType): Bool {
+  match t {
+    case MValueTypeRef(_, fqn) -> fqn == "System.DateTime"
+    case MClassRef(_, fqn)     -> fqn == "System.DateTime"
+    case _                     -> false
   }
 }
 
