@@ -20276,3 +20276,37 @@ into CI alongside the #335/#733 guardrails) fails if any `lyric-compiler/lyric/`
 file imports both modules and uses a colliding `Str.*` call, so the footgun
 cannot be reintroduced before the emitter root cause (#2125) is fixed or retired
 by self-hosting.
+### D-progress-418 — self-hosted type checker: generic union-constructor result typing (#2142 prerequisite, #1483, Band-1 of #1470)
+
+**Status:** Shipped — type-checker-only.
+
+Union-case constructors (`Some`/`None`/`Ok`/`Err` and any user `union` case) were
+not registered as callable signatures and `constructorSymbolOf` only matched
+records, so `Some(value = x)` fell through to `TyError`.  They are now typed as
+the **parent union instantiated with the type arguments inferred from the
+constructor arguments**:
+
+- `unionCaseSymbolOf` recognises a `DKUnionCase` constructor reference; the new
+  `ECall` arm (before the record-ctor path) builds the parent type via
+  `inferUnionCaseConstruction`.
+- `inferGenericArgs` does single-level inference: for each parent generic name,
+  the argument at the field position that is exactly `TyVar(name)` supplies the
+  type arg (`Some(value: T)` with a `String` arg → `Option[String]`).  Nested
+  generic positions (e.g. a `List[T]` field) and no-field cases (`None`) yield
+  `TyError` args — kept lenient, since `None` is `Option[?]` for any `?`.
+- A bare union-case reference (`None`) resolves through `resolveExprPath` to the
+  parent union with `TyError` args, so `return None` / `val x = None` stay
+  lenient against any `Option[…]`.
+
+This was the real blocker behind the `EMatch`-branch attempt (#2142): the prior
+shortcut mis-typed `match … { case Some(ns) -> Some(value = ns.name); case None
+-> None }` because the arm bodies' `Some`/`None` were `TyError`/scrutinee-typed.
+With constructors typed, `Some(value = ns.name)` is `Option[String]` as expected;
+the `EMatch`-branch unification itself follows in the next slice.
+
+Coverage: 3 new `typechecker_self_test.l` cases on a local generic union
+(`Sm(value: T)` on `Opt[T]` is `Opt[String]` for a `String` arg → mismatches an
+`Opt[Int]` return T0070; matches an `Opt[String]` return; a no-field `Nn` case
+leniently matches any instantiation).  Full regression green: 847/847 emitter,
+typechecker self-test, `weaver_self_test.l` 18/18 (`LYRIC_LOAD_COMPILER=1`), and
+a clean `lyric-*` ecosystem sweep with zero new failures.
