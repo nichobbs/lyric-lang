@@ -20867,13 +20867,57 @@ package's own function signatures**.  `Std.Regex.tryCompile`'s
   `asyncReturnFromBranch` — tests 6–7, added to fix #2256).
   All 7 pass end-to-end through the self-hosted MSIL bridge.
 
-**What did NOT ship (Phase B.1+, still tracked in #2070):**
-- Async funcs with `EAwait` nodes (real suspension, `IAsyncStateMachine` state
-  transitions, `AwaitOnCompleted`, `SetException`).
-- Async funcs returning `Task<T>` to C# callers (Phase B.0 kickoff unwraps
-  synchronously and returns T directly).
+**What did NOT ship (see D-progress-431 for Phase B.1 completion):**
+- Phase B.1 shipped in D-progress-431.
+- Async funcs returning `Task<T>` to C# callers: the kickoff still returns T
+  directly (synchronous unwrap); full `Task<T>` return is tracked in #2070.
 - Type-checker propagation of `async func` return types through call sites
   (currently inferred as `Unit` — tracked in #2070 as a follow-up).
+
+### D-progress-431 — Band 3 Phase B.1: `IAsyncStateMachine` synthesis for user-defined `async func` (await path, #2070, D086)
+
+**What shipped:**
+
+- **`synthesizeAsyncSmPhaseBMsil`** in `lyric-compiler/msil/codegen.l` — full
+  Phase B.1 async SM synthesis for `async func` whose body contains one or more
+  `EAwait` nodes.  Emits:
+  - SM TypeDef with all Phase B.0 fields (`__state`, `__builder`, `__p0..N`) plus
+    per-await awaiter fields (`__aw0`, `__aw1`, …) typed as `TaskAwaiter<T>`.
+  - `MoveNext`: state-dispatch switch (state 0..awCount-1 resume labels), try/catch
+    wrapper, suspend prologue per await point (`AwaitUnsafeOnCompleted` MethodSpec,
+    `leave afterTryL`), resume epilogue (restore awaiter from field, `initobj` field,
+    reset state to -1, call `GetResult`), normal done path (`SetResult`), catch
+    handler (`SetException`).
+  - `SetStateMachine` stub.
+  - `MPImpl` wiring to `IAsyncStateMachine`.
+  - Kickoff `MFunc` identical in structure to Phase B.0.
+
+- **Phase B.1 instruction lowering** in `lyric-compiler/msil/lowering.l`:
+  `MCallAwaitUnsafeOnCompleted` now generates a MethodSpec with a **TypeSpec-
+  parented MemberRef** for the non-void case (`ATMB<T>.AwaitUnsafeOnCompleted`).
+  Previously the MemberRef parent was an open TypeRef (`AsyncTaskMethodBuilder`1`),
+  which caused a `TypeLoadException` at runtime — ECMA-335 §II.22.25 requires the
+  MemberRef parent for a generic type's method to be a closed TypeSpec instantiation.
+
+- **`buildLocalVarSigWithCtx` VTGI fix** in `lyric-compiler/msil/lowering.l`:
+  `MValueTypeGenericInst` locals (e.g. `TaskAwaiter<Int>`) now emit the full
+  `GENERICINST VALUETYPE typeRef<argCount args...>` signature instead of degrading
+  to `0x1C` (Object).  Storing an unboxed struct value to an Object-typed local slot
+  is not supported by the JIT; the degradation caused "Common Language Runtime
+  detected an invalid program" for every method with an awaiter local.
+  `buildLvSigKey` updated accordingly to key on typeRefCode + arg types for VTGI
+  entries, preventing different generic instantiations from aliasing the same blob.
+
+- **`async_sm_self_test.l` extended** — 8 new tests (tests 8–15) covering
+  Phase B.1: `asyncAddTwo` (2 awaits), `asyncAddThree` (3 awaits),
+  `asyncVoidChain` (void with 1 await), `asyncSumViaAwait` (2 awaits, 2 params).
+  All 15 tests (B.0 + B.1) pass end-to-end through the self-hosted MSIL bridge.
+
+**What does NOT ship yet (still tracked in #2070):**
+- Async funcs returning `Task<T>` to C# callers: the kickoff returns T directly
+  (synchronous unwrap via `GetAwaiter().GetResult()`); returning a live `Task<T>`
+  requires a separate kickoff shape.
+- Type-checker propagation of `async func` return types through call sites.
 
 **Regression gate:** 847/847 emitter tests + 84/84 CLI tests green.
 

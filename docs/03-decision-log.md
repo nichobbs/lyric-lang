@@ -5042,6 +5042,39 @@ non-void, void, and sequential paths; tests 6–7 cover explicit-return epilogue
 paths added for #2256).  Phase A tests (`async_extern_self_test.l`) unaffected.
 
 ---
+## D087 — Band 3 Phase B.1: `IAsyncStateMachine` synthesis for user-defined `async func` (await path, #2070)
+
+**Context:** D086 shipped Phase B.0 (no-await SM synthesis).  Phase B.1 handles the
+real suspension case: an `async func` body contains one or more `EAwait` nodes, each
+of which may suspend execution.  Two correctness bugs blocked Phase B.1 from working.
+
+**Decisions:**
+
+1. **AwaitUnsafeOnCompleted MemberRef parent must be a TypeSpec (closed generic).**
+   ECMA-335 §II.22.25 requires that when a method is called on a generic type instance,
+   the MemberRef's parent column is a TypeSpec (closed instantiation), NOT an open
+   TypeRef.  The Phase B.1 codegen was using `cctx.tokAtmb1AwaitUnsafeMr` whose parent
+   was the open TypeRef `AsyncTaskMethodBuilder`1`.  The CLR rejected this at runtime
+   with `TypeLoadException: Could not load type 'AsyncTaskMethodBuilder`1'` — a
+   misleading error whose root cause is the malformed MemberRef parent.  Fix: compute a
+   per-function `ctxAddMemberRefForTypeSpec(tsRow, "AwaitUnsafeOnCompleted", ...)` where
+   `tsRow` is a TypeSpec for `GENERICINST VALUETYPE AsyncTaskMethodBuilder`1 <retTy>`.
+
+2. **`MValueTypeGenericInst` locals must NOT degrade to Object in `buildLocalVarSigWithCtx`.**
+   The CLR JIT cannot store an unboxed struct value (e.g. `TaskAwaiter<Int>`) into a
+   local slot declared as `Object`.  Doing so via `stloc` causes "Common Language
+   Runtime detected an invalid program".  The fix: emit the full
+   `GENERICINST VALUETYPE typeRef<args>` encoding for `MValueTypeGenericInst` locals in
+   `buildLocalVarSigWithCtx`, using `bufMsilTypeWithCtx` (which already handles this
+   case).  `MGenericInst` (CLASS) types may still degrade to Object because reference
+   types are assignment-compatible with Object.  The intern key function `buildLvSigKey`
+   was updated to include typeRefCode and arg types for VTGI entries.
+
+**Result:** All 15 tests in `async_sm_self_test.l` pass (tests 1–7 are Phase B.0;
+tests 8–15 are Phase B.1 covering 2-await, 3-await, void-await, and
+two-parameter variants).
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

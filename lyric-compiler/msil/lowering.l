@@ -525,6 +525,17 @@ pub union MInsn {
   // `isGeneric` — true when the kickoff returns Task<T> (uses ATMB<T>.Start),
   //               false for void path (uses AsyncTaskMethodBuilder.Start).
   case MCallAtmbStart(smFqn: String, atmbMrRow: Int, isGeneric: Bool)
+
+  // Phase B.1: switch instruction for state dispatch in MoveNext.
+  case MSwitch(labels: List[Int])
+  // Phase B.1: initobj — zero-initialise a value-type field/local (e.g. clear
+  // the awaiter SM field after restoring it at a resume point).
+  case MInitobj(typeToken: Int)
+  // Phase B.1 deferred: call ATMB[<T>].AwaitUnsafeOnCompleted<TAwaiter,SM>(ref TAwaiter, ref SM).
+  // At Phase 5 lowering the SM TypeDef row is looked up from smFqn so the
+  // 2-arg MethodSpec [awaiterMsilTy, CLASS SM] can be built and emitted.
+  // `atmbMrRow` is the 1-based MemberRef row for the open-generic method.
+  case MCallAwaitUnsafeOnCompleted(smFqn: String, atmbMrRow: Int, awaiterMsilTy: MsilType)
 }
 
 // ── MField / MFunc / MRecord ──────────────────────────────────────────────────
@@ -1217,6 +1228,48 @@ pub func buildValueTypeGenericInstBlobWithCtx(ctx: in LoweringCtx,
   bufToList(w)
 }
 
+// Open-generic method signature for
+// `ATMB[<T>].AwaitUnsafeOnCompleted<TAwaiter,TStateMachine>(ref TAwaiter, ref TStateMachine): void`
+// (ECMA-335 §II.23.2.1).
+// Calling convention: HASTHIS(0x20) | GENERIC(0x10) = 0x30.
+// 2 generic type parameters (TAwaiter = !!0, TStateMachine = !!1).
+// 2 formal parameters, void return.
+// Param 0: BYREF MVAR 0   (ref TAwaiter)
+// Param 1: BYREF MVAR 1   (ref TStateMachine)
+pub func buildAwaitUnsafeOnCompletedOpenSig(): List[Byte] {
+  val w = bufNew()
+  bufU1(w, 0x30)            // HASTHIS | GENERIC
+  writeCompressedInt(w, 2)  // 2 generic type parameters
+  writeCompressedInt(w, 2)  // 2 formal parameters
+  bufU1(w, 0x01)            // ELEMENT_TYPE_VOID (return)
+  bufU1(w, 0x10)            // ELEMENT_TYPE_BYREF (ref TAwaiter)
+  bufU1(w, 0x1E)            // ELEMENT_TYPE_MVAR
+  writeCompressedInt(w, 0)  // index 0 (!!0 = TAwaiter)
+  bufU1(w, 0x10)            // ELEMENT_TYPE_BYREF (ref TStateMachine)
+  bufU1(w, 0x1E)            // ELEMENT_TYPE_MVAR
+  writeCompressedInt(w, 1)  // index 1 (!!1 = TStateMachine)
+  bufToList(w)
+}
+
+// Build a 2-arg GENERICINST MethodSpec blob for
+// `AwaitUnsafeOnCompleted<arg0, SM>`.
+// arg0 is the concrete awaiter type (e.g. TaskAwaiter<Int>).
+// SM is the in-bundle state machine sealed class identified by smFqn; its
+// TypeDef token is resolved at Phase 5 lowering time.
+func buildMethodSpec2ArgBlobWithCtx(ctx: in LoweringCtx,
+                                     arg0: in MsilType,
+                                     smFqn: in String): List[Byte] {
+  val smRow   = findTypeDefRowByName(ctx, smFqn)
+  val smCoded = tdrTypeDef(smRow)
+  val w = bufNew()
+  bufU1(w, 0x0A)              // GENERICINST (method instantiation)
+  writeCompressedInt(w, 2)    // 2 generic arguments
+  bufMsilTypeWithCtx(w, arg0, ctx)  // arg 0: TAwaiter
+  bufU1(w, 0x12)              // ELEMENT_TYPE_CLASS (SM is a sealed class)
+  writeCompressedInt(w, smCoded)    // arg 1: SM TypeDef
+  bufToList(w)
+}
+
 // ── Method body lowering ──────────────────────────────────────────────────────
 
 // Lower one MInsn to opcode bytes in `mb`.
@@ -1499,6 +1552,21 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
       val specRow = ctxAddMethodSpec(ctx, mdorMemberRef(atmbMrRow), specKey, specSig)
       emitCall(mb, 0x2B000000 + specRow)
     }
+
+    // ── Phase B.1 instructions ────────────────────────────────────────────────
+
+    case MSwitch(labels) -> emitSwitch(mb, labels)
+
+    case MInitobj(typeToken) -> emitInitobj(mb, typeToken)
+
+    case MCallAwaitUnsafeOnCompleted(smFqn, atmbMrRow, awaiterMsilTy) -> {
+      // Build a 2-arg MethodSpec for `ATMB[<T>].AwaitUnsafeOnCompleted<TAwaiter, SM>`.
+      // arg0 = concrete awaiter type; arg1 = SM class (TypeDef row looked up from smFqn).
+      val specBlob = buildMethodSpec2ArgBlobWithCtx(ctx, awaiterMsilTy, smFqn)
+      val specKey  = "ms_atmbawunafe_" + smFqn + "_" + msilTypeKey(awaiterMsilTy)
+      val specRow  = ctxAddMethodSpec(ctx, mdorMemberRef(atmbMrRow), specKey, specBlob)
+      emitCall(mb, 0x2B000000 + specRow)
+    }
   }
 }
 
@@ -1548,12 +1616,15 @@ func buildLocalVarSig(locals: in List[MsilType]): List[Byte] {
   bufToList(w)
 }
 
-// Context-aware variant of buildLocalVarSig.  Unlike the base function,
-// MClass(fqn) locals are encoded with their real CLASS + TypeDef token so
-// that `ldloca` on such a local pushes `byref SM` rather than `byref Object`.
-// This is required for the async SM kickoff: the CLR verifier rejects
-// `byref Object` when the MethodSpec for ATMB.Start<SM>(ref SM) expects
-// `byref SM`.  All other degradations are preserved from buildLocalVarSig.
+// Context-aware variant of buildLocalVarSig.  Unlike the base function:
+// - MClass(fqn) locals are encoded with their real CLASS + TypeDef token so
+//   that `ldloca` on such a local pushes `byref SM` rather than `byref Object`.
+//   Required for the async SM kickoff: ATMB.Start<SM>(ref SM) needs `byref SM`.
+// - MValueTypeGenericInst locals (e.g. TaskAwaiter<Int>) are encoded with the
+//   full GENERICINST VALUETYPE signature so that `stloc` to an awaiter local
+//   does not cause a struct-to-object store type mismatch ("invalid program").
+//   Struct generics cannot degrade to Object in LocalVarSig because the JIT
+//   cannot store an unboxed struct value into an object-typed slot.
 func buildLocalVarSigWithCtx(locals: in List[MsilType], ctx: in LoweringCtx): List[Byte] {
   val w = bufNew()
   bufU1(w, 0x07)  // LOCAL_SIG
@@ -1570,8 +1641,8 @@ func buildLocalVarSigWithCtx(locals: in List[MsilType], ctx: in LoweringCtx): Li
           bufU1(w, 0x1C)  // fallback to Object (TypeDef not found in bundle)
         }
       }
-      case MGenericInst(_, _, _)          -> bufU1(w, 0x1C)
-      case MValueTypeGenericInst(_, _, _) -> bufU1(w, 0x1C)
+      case MGenericInst(_, _, _) -> bufU1(w, 0x1C)
+      case MValueTypeGenericInst(_, _, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MArray(_)                      -> bufU1(w, 0x1C)
       case MClassRef(_, _)                -> bufU1(w, 0x1C)
       case MValueTypeRef(typeRefCode, _) -> {
@@ -1609,6 +1680,18 @@ func buildLvSigKey(locals: in List[MsilType]): String {
       // aliasing two different SM classes to the same LocalVarSig blob.
       case MClass(fqn) -> {
         key = key + "cls_" + fqn + "_"
+      }
+      // MValueTypeGenericInst locals are encoded with the full GENERICINST
+      // VALUETYPE signature in buildLocalVarSigWithCtx; key on typeRefCode +
+      // arg types so distinct instantiations (e.g. TaskAwaiter<Int> vs
+      // TaskAwaiter<String>) don't alias to the same LocalVarSig blob.
+      case MValueTypeGenericInst(typeRefCode, _, typeArgs) -> {
+        key = key + "vtgi" + toString(typeRefCode) + "_"
+        var tai = 0
+        while tai < typeArgs.count {
+          key = key + msilTypeKey(typeArgs[tai]) + "_"
+          tai = tai + 1
+        }
       }
       case _ -> {
         val b = match locals[i] {
