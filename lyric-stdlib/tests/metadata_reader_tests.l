@@ -195,6 +195,7 @@ func testTableRows(): Unit {
   // Find the `Program` type and confirm its namespace and a `main` method.
   var foundProgram = false
   var foundMain    = false
+  var foundAddInts = false
   var ti = 1
   while ti <= typeCount {
     val td = readTypeDef(img, layout, ti)
@@ -212,6 +213,7 @@ func testTableRows(): Unit {
         // `readParam`.  Row[paramListStart] is `a` (sequence 1), the next
         // row is `b` (sequence 2).
         if md.name == "addInts" {
+          foundAddInts = true
           val p1 = readParam(img, layout, md.paramListStart)
           assertEqualInt(p1.sequence, 1, "rows: addInts param0 sequence=1")
           assertEqual(p1.name, "a", "rows: addInts param0 name")
@@ -226,6 +228,7 @@ func testTableRows(): Unit {
   }
   assertTrue(foundProgram, "rows: found the `Program` TypeDef in this package")
   assertTrue(foundMain, "rows: `Program` owns a `main` method")
+  assertTrue(foundAddInts, "rows: `Program` owns the `addInts` overload-oracle method")
 
   // The very first TypeDef row is always the `<Module>` pseudo-type.
   assertEqual(readTypeDef(img, layout, 1).name, "<Module>",
@@ -327,6 +330,7 @@ func testSigDecodeRoundTrip(): Unit {
   match decodeMethodSig(sPtr.toArray()) {
     case Err(e) -> panic("sigrt: ptr decode failed: " + e)
     case Ok(d) -> {
+      assertEqualInt(d.paramTypes.count, 1, "sigrt: ptr param count")
       match d.paramTypes[0] {
         case STPtr(inner) ->
           assertEqualInt(primByte(inner), 0x02, "sigrt: ptr inner is Bool")
@@ -341,6 +345,7 @@ func testSigDecodeRoundTrip(): Unit {
   match decodeMethodSig(sVar.toArray()) {
     case Err(e) -> panic("sigrt: var decode failed: " + e)
     case Ok(d) -> {
+      assertEqualInt(d.paramTypes.count, 1, "sigrt: var param count")
       match d.paramTypes[0] {
         case STVar(idx) -> assertEqualInt(idx, 0, "sigrt: var index is 0")
         case _ -> panic("sigrt: expected an STVar parameter")
@@ -354,6 +359,7 @@ func testSigDecodeRoundTrip(): Unit {
   match decodeMethodSig(sMVar.toArray()) {
     case Err(e) -> panic("sigrt: mvar decode failed: " + e)
     case Ok(d) -> {
+      assertEqualInt(d.paramTypes.count, 1, "sigrt: mvar param count")
       match d.paramTypes[0] {
         case STMVar(idx) -> assertEqualInt(idx, 1, "sigrt: mvar index is 1")
         case _ -> panic("sigrt: expected an STMVar parameter")
@@ -369,6 +375,7 @@ func testSigDecodeRoundTrip(): Unit {
   match decodeMethodSig(sGi.toArray()) {
     case Err(e) -> panic("sigrt: gi decode failed: " + e)
     case Ok(d) -> {
+      assertEqualInt(d.paramTypes.count, 1, "sigrt: gi param count")
       match d.paramTypes[0] {
         case STGenericInst(_, tok, args) -> {
           assertEqualInt(tok, 5, "sigrt: gi token is 5")
