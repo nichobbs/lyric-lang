@@ -404,119 +404,233 @@ func stripPackageAndImports(source: in String): String {
   Str.joinList("\n", lines)
 }
 
-// Combine multiple source files of the same package into one source string.
-// File 0 is kept verbatim (its `package` / `import` preamble is canonical);
-// files 1-N have their `package` and `import` lines stripped before
-// concatenation.  The result is a valid single-file representation of the
-// multi-file package.
-func joinPackageFiles(fileContents: in List[String]): String {
-  if fileContents.count == 0 { return "" }
-  if fileContents.count == 1 { return fileContents[0] }
-  var combined = fileContents[0]
-  var i = 1
-  while i < fileContents.count {
-    val stripped = stripPackageAndImports(fileContents[i])
-    if stripped.length > 0 {
-      combined = combined + "\n" + stripped
+// Given an `import ...` line, return the imported package path (the
+// segment before any ` as <alias>` suffix).  Returns "" for any line
+// that is not an import.  E.g. `import Lyric.ContractMeta as Meta` ->
+// "Lyric.ContractMeta"; `import Std.Core` -> "Std.Core".
+func importLinePackage(line: in String): String {
+  val trimmed = Str.trim(line)
+  val prefix  = "import "
+  if not Str.startsWith(trimmed, prefix) { return "" }
+  val rest = Str.trim(trimmed.substring(prefix.length))
+  // The package path is the first whitespace-delimited token; an ` as
+  // <alias>` clause (or a trailing comment) follows a space.
+  val parts = Str.split(rest, " ")
+  if parts.length == 0 { return "" }
+  Str.trim(parts[0])
+}
+
+// Append every distinct raw `import ...` line in `source` to `acc`
+// (preserving the source text verbatim, including any ` as <alias>`
+// clause).  Used to union the import preambles across the several
+// source files that make up a multi-file compiler package.
+func collectImportLines(source: in String, acc: in List[String]) {
+  val lines = Str.split(source, "\n")
+  var i = 0
+  while i < lines.length {
+    val line    = lines[i]
+    val trimmed = Str.trim(line)
+    if Str.startsWith(trimmed, "import ") {
+      var seen = false
+      var j = 0
+      while j < acc.count {
+        if acc[j] == trimmed { seen = true }
+        j = j + 1
+      }
+      if not seen { acc.add(trimmed) }
     }
     i = i + 1
   }
-  combined
 }
 
-// Build `ProjectPackagePayload` entries for the self-hosted compiler
-// packages that a `@test_module` under `lyric-compiler/lyric/` may import:
-//   Lyric.Lexer   — single file (`lexer.l`), mandatory
-//   Lyric.Parser  — five files combined (`parser/*.l`), optional
-//   Lyric.Weaver  — single file (`weaver/weaver.l`), optional
-//   Lyric.CfgGate — single file (`cfg_gate.l`), optional
-// Returns an empty list if `Lyric.Lexer` cannot be loaded.
-func loadCompilerPayloads(compilerDir: in String): List[ProjectPackagePayload] {
-  val payloads: List[ProjectPackagePayload] = newList()
+// Linear lookup of `s` in `list`; returns the index or -1.
+func indexOfString(list: in List[String], s: in String): Int {
+  var i = 0
+  while i < list.count {
+    if list[i] == s { return i }
+    i = i + 1
+  }
+  -1
+}
 
-  // Lyric.Lexer — mandatory base.
-  val lexerPath = Path.join(compilerDir, "lexer.l")
-  match File.readText(lexerPath) {
-    case Ok(src) -> payloads.add(ProjectPackagePayload(name = "Lyric.Lexer", source = src))
-    case Err(_)  -> return payloads
+// True when `pkg` is one of the self-hosted compiler namespaces that
+// `loadCompilerPayloads` discovers from disk (as opposed to a `Std.*`
+// package, which the bridge resolves from `lyric-stdlib/std/`).
+func isCompilerPackage(pkg: in String): Bool {
+  Str.startsWith(pkg, "Lyric.") or Str.startsWith(pkg, "Msil.")
+    or Str.startsWith(pkg, "Jvm.")
+}
+
+// Discover the self-hosted compiler packages under `compilerDir` and
+// return `ProjectPackagePayload` entries for exactly the import-closure
+// of `testSource` — the packages it `import`s, plus their transitive
+// compiler-package dependencies.  Each package's several source files
+// are merged into one payload (union of import preambles + each file
+// body with its `package`/`import` lines stripped), so a multi-file
+// package such as `Lyric.Parser` or `Lyric.TypeChecker` resolves
+// without any hand-maintained file list.
+//
+// `*_self_test.l` / `*_ci_test.l` files are excluded from discovery
+// (they are programs, not library packages, and the module under test
+// is added separately by the caller).  Returns an empty list if the
+// directory cannot be read or `Lyric.Lexer` is absent.
+func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[ProjectPackagePayload] {
+  val empty: List[ProjectPackagePayload] = newList()
+
+  val files = match File.listFilesRecursive(compilerDir) {
+    case Ok(fs) -> fs
+    case Err(_) -> return empty
   }
 
-  // Lyric.Parser — five files in deterministic (alphabetical) order.
-  // MAINTENANCE NOTE: this list must be kept in sync with `parser/*.l`.
-  // A new parser source file added without being appended here will be
-  // silently absent from the `LYRIC_LOAD_COMPILER=1` payload — the
-  // `compilerPayloads.count > 0` guard still passes because Lexer
-  // loads, and consumers fail downstream with confusing missing-symbol
-  // diagnostics rather than a clear "incomplete parser" message.
-  // Revisit when `Std.FileSystem.listDirectory` is available to
-  // enumerate `parser/*.l` directly.
-  val parserDir = Path.join(compilerDir, "parser")
-  val parserNames: List[String] = newList()
-  parserNames.add("parser_ast.l")
-  parserNames.add("parser_core.l")
-  parserNames.add("parser_cst.l")
-  parserNames.add("parser_exprs.l")
-  parserNames.add("parser_items.l")
-  val parserContents: List[String] = newList()
-  var pi = 0
-  var parserOk = true
-  while pi < parserNames.count and parserOk {
-    val fp = Path.join(parserDir, parserNames[pi])
-    match File.readText(fp) {
-      case Ok(src) -> parserContents.add(src)
-      case Err(_)  -> { parserOk = false }
+  // Pass 1: build a registry of every compiler package, grouping each
+  // package's source files (sorted for determinism) into parallel
+  // lists: name, accumulated body text, and the union of import lines.
+  val regNames:   List[String]       = newList()
+  val regBodies:  List[String]       = newList()
+  val regImports: List[List[String]] = newList()
+
+  val sortedFiles = sortStrings(files)
+  var fi = 0
+  while fi < sortedFiles.count {
+    val path = sortedFiles[fi]
+    fi = fi + 1
+    if not Str.endsWith(path, ".l") { continue }
+    if Str.endsWith(path, "_self_test.l") or Str.endsWith(path, "_ci_test.l") {
+      continue
     }
-    pi = pi + 1
-  }
-  if parserOk and parserContents.count > 0 {
-    val parserSrc = joinPackageFiles(parserContents)
-    payloads.add(ProjectPackagePayload(name = "Lyric.Parser", source = parserSrc))
+    val src = match File.readText(path) {
+      case Ok(s)  -> s
+      case Err(_) -> ""
+    }
+    if Str.length(src) == 0 { continue }
+    val pkg = extractPackageName(src)
+    if Str.length(pkg) == 0 or not isCompilerPackage(pkg) { continue }
+
+    var idx = indexOfString(regNames, pkg)
+    if idx < 0 {
+      regNames.add(pkg)
+      regBodies.add("")
+      val imps: List[String] = newList()
+      regImports.add(imps)
+      idx = regNames.count - 1
+    }
+    val body = stripPackageAndImports(src)
+    val prior = regBodies[idx]
+    regBodies[idx] = if Str.length(prior) == 0 { body } else { prior + "\n" + body }
+    collectImportLines(src, regImports[idx])
   }
 
-  // Lyric.Weaver — optional; skip silently if absent.
-  val weaverPath = Path.join(Path.join(compilerDir, "weaver"), "weaver.l")
-  match File.readText(weaverPath) {
-    case Ok(src) -> payloads.add(ProjectPackagePayload(name = "Lyric.Weaver", source = src))
-    case Err(_)  -> ()
+  // `Lyric.Lexer` is the mandatory base — every compiler package depends
+  // on it transitively.  Its absence means the discovery root is wrong.
+  if indexOfString(regNames, "Lyric.Lexer") < 0 { return empty }
+
+  // Pass 2: compute the import-closure of `testSource` over the registry.
+  val needed: List[String] = newList()
+  val queue:  List[String] = newList()
+  val testImports: List[String] = newList()
+  collectImportLines(testSource, testImports)
+  var qi = 0
+  while qi < testImports.count {
+    val p = importLinePackage(testImports[qi])
+    if isCompilerPackage(p) and indexOfString(regNames, p) >= 0 { queue.add(p) }
+    qi = qi + 1
+  }
+  while queue.count > 0 {
+    val name = queue[queue.count - 1]
+    queue.removeAt(queue.count - 1)
+    if indexOfString(needed, name) >= 0 { continue }
+    val ridx = indexOfString(regNames, name)
+    if ridx < 0 { continue }
+    needed.add(name)
+    val imps = regImports[ridx]
+    var ii = 0
+    while ii < imps.count {
+      val dep = importLinePackage(imps[ii])
+      if isCompilerPackage(dep) and indexOfString(regNames, dep) >= 0
+         and indexOfString(needed, dep) < 0 {
+        queue.add(dep)
+      }
+      ii = ii + 1
+    }
   }
 
-  // Lyric.CfgGate — single file (`cfg_gate.l`), optional.  Independent
-  // of Lexer/Parser/Weaver; only depends on Std.Core/Collections/String.
-  // Lets `cfg_gate_self_test.l` resolve `import Lyric.CfgGate` under the
-  // `LYRIC_LOAD_COMPILER=1` path.
-  val cfgGatePath = Path.join(compilerDir, "cfg_gate.l")
-  match File.readText(cfgGatePath) {
-    case Ok(src) -> payloads.add(ProjectPackagePayload(name = "Lyric.CfgGate", source = src))
-    case Err(_)  -> ()
+  // Pass 3: topologically order the needed packages so a dependency is
+  // always emitted before the package that imports it.  The bridge's
+  // codegen threads one shared `CodegenCtx` across packages in list
+  // order (phase 3 token pre-scan), so a dependent compiled before its
+  // dependency would reference not-yet-allocated TypeRef / MemberRef
+  // rows and emit invalid IL (a runtime `InvalidProgramException`).
+  // Repeated "emit when all in-closure deps are already emitted" passes
+  // suffice for the acyclic compiler-package graph; any residue from an
+  // unexpected cycle is appended verbatim so we never loop forever.
+  val ordered: List[String] = newList()
+  var madeProgress = true
+  while ordered.count < needed.count and madeProgress {
+    madeProgress = false
+    var oi = 0
+    while oi < needed.count {
+      val name = needed[oi]
+      oi = oi + 1
+      if indexOfString(ordered, name) >= 0 { continue }
+      val ridx = indexOfString(regNames, name)
+      val imps = regImports[ridx]
+      var depsReady = true
+      var di2 = 0
+      while di2 < imps.count {
+        val dep = importLinePackage(imps[di2])
+        if indexOfString(needed, dep) >= 0 and indexOfString(ordered, dep) < 0 {
+          depsReady = false
+        }
+        di2 = di2 + 1
+      }
+      if depsReady {
+        ordered.add(name)
+        madeProgress = true
+      }
+    }
+  }
+  var fi2 = 0
+  while fi2 < needed.count {
+    if indexOfString(ordered, needed[fi2]) < 0 { ordered.add(needed[fi2]) }
+    fi2 = fi2 + 1
   }
 
-  // Lyric.CliSuggest — single file (`cli_suggest.l`), optional.  Only depends
-  // on Std.Core/Collections.  Lets `cli_suggest_self_test.l` resolve
-  // `import Lyric.CliSuggest`.
-  val cliSuggestPath = Path.join(compilerDir, "cli_suggest.l")
-  match File.readText(cliSuggestPath) {
-    case Ok(src) -> payloads.add(ProjectPackagePayload(name = "Lyric.CliSuggest", source = src))
-    case Err(_)  -> ()
+  // Pass 4: materialise a payload per package in dependency order —
+  // `package <name>`, the unioned import preamble, then merged bodies.
+  val payloads: List[ProjectPackagePayload] = newList()
+  var ni = 0
+  while ni < ordered.count {
+    val name = ordered[ni]
+    val ridx = indexOfString(regNames, name)
+    val combined = "package " + name + "\n"
+                 + Str.joinList("\n", regImports[ridx]) + "\n"
+                 + regBodies[ridx]
+    payloads.add(ProjectPackagePayload(name = name, source = combined))
+    ni = ni + 1
   }
-
-  // Lyric.Release — single file (`release.l`), optional.  Lets
-  // `release_self_test.l` resolve `import Lyric.Release` for the pure
-  // entry-detection helpers (packageNameOf / declaresEntryMain).
-  val releasePath = Path.join(compilerDir, "release.l")
-  match File.readText(releasePath) {
-    case Ok(src) -> payloads.add(ProjectPackagePayload(name = "Lyric.Release", source = src))
-    case Err(_)  -> ()
-  }
-
-  // Lyric.Init — single file (`init.l`), optional.  Lets `init_self_test.l`
-  // resolve `import Lyric.Init` for the pure `derivePackageName` helper.
-  val initPath = Path.join(compilerDir, "init.l")
-  match File.readText(initPath) {
-    case Ok(src) -> payloads.add(ProjectPackagePayload(name = "Lyric.Init", source = src))
-    case Err(_)  -> ()
-  }
-
   payloads
+}
+
+// Selection sort over a copy of `xs` — small inputs (the compiler-tree
+// file list), so an O(n^2) sort is fine and keeps the discovery order
+// deterministic across platforms regardless of `listFilesRecursive`'s
+// traversal order.
+func sortStrings(xs: in List[String]): List[String] {
+  val remaining: List[String] = newList()
+  var c = 0
+  while c < xs.count { remaining.add(xs[c]); c = c + 1 }
+  val sorted: List[String] = newList()
+  while remaining.count > 0 {
+    var bestIdx = 0
+    var k = 1
+    while k < remaining.count {
+      if remaining[k] < remaining[bestIdx] { bestIdx = k }
+      k = k + 1
+    }
+    sorted.add(remaining[bestIdx])
+    remaining.removeAt(bestIdx)
+  }
+  sorted
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -817,10 +931,12 @@ func emitJvmInProcess(req: in EmitRequest): EmitResult {
 // type-check, mode-check, codegen).
 //
 // When `LYRIC_LOAD_COMPILER=1` is set, switches to the multi-package
-// bridge path: loads `Lyric.Lexer`, `Lyric.Parser`, and `Lyric.Weaver`
-// from `lyric-compiler/lyric/` and compiles together with the requested
-// source so @test_module files in that tree can import those packages
-// (issue #1324).
+// bridge path: `loadCompilerPayloads` discovers the self-hosted
+// compiler packages under `lyric-compiler/lyric/` and loads the
+// import-closure of the requested source, compiling them together so
+// `@test_module` files in that tree can import any front/middle-end
+// compiler package (`Lyric.Lexer`, `Lyric.Parser`, `Lyric.TypeChecker`,
+// `Lyric.Verifier`, …) directly (issue #1324).
 func emitMsilInProcess(req: in EmitRequest): EmitResult {
   // Auto-resolve `lyric-stdlib/std/*.l` so the bridge's typechecker sees
   // stdlib types at typecheck.  Mirrors the F# bootstrap shim
@@ -834,7 +950,7 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
       compilerDir = walkUpForCompilerDir(Environment.currentDirectory())
     }
     if compilerDir.length > 0 {
-      val compilerPayloads = loadCompilerPayloads(compilerDir)
+      val compilerPayloads = loadCompilerPayloads(compilerDir, req.source)
       if compilerPayloads.count > 0 {
         val testPkgName = extractPackageName(req.source)
         val pkgName = if testPkgName.length > 0 { testPkgName } else { req.assemblyName }
