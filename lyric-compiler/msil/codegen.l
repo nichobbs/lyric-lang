@@ -323,13 +323,6 @@ pub record CodegenCtx {
   tokAtmbSetResult: Int   // ATMB::SetResult(): void  call (instance, on managed ptr)
   tokAtmbGetTask:   Int   // ATMB::get_Task(): Task  callvirt (instance, on managed ptr)
   tokAtmbStartMr:   Int   // ATMB.Start<!!0>(ref !!0): void  open-generic MemberRef
-  // MemberRef rows for ATMB<T> instance methods (TypeSpec-parented; built lazily).
-  // We store the open MemberRef row rather than the TypeSpec-parented one; the
-  // MethodSpec is built per-SM at Phase 5 by MCallAtmbStart.
-  tokAtmb1CreateMr:    Int  // ATMB`1.Create(): ATMB`1  (TypeSpec-parented MemberRef)
-  tokAtmb1SetResultMr: Int  // ATMB`1.SetResult(T): void  (TypeSpec-parented MemberRef)
-  tokAtmb1GetTaskMr:   Int  // ATMB`1.get_Task(): Task`1  (TypeSpec-parented MemberRef)
-  tokAtmb1StartMr:     Int  // ATMB`1.Start<!!0>(ref !!0): void  open-generic MemberRef
   // Monotonically-increasing counter for unique SM class names.
   // Pattern: "<funcName>__SM_<ticker>".  Matches AsyncStateMachine.fs convention.
   smTicker: List[Int]
@@ -804,14 +797,6 @@ pub func newCodegenCtx(packageName: in String,
     lctx, trAtmb, "Start",
     "atmb_start_open", buildAtmbStartOpenSig())
 
-  // ATMB`1.* method tokens (TypeSpec-parented): built lazily per function in
-  // synthesizeAsyncSmMsil since the concrete T is known only then.
-  // Stored as 0 here; callers always rebuild them from trAtmb1 + the SM return type.
-  val tokAtmb1CreateMr    = 0
-  val tokAtmb1SetResultMr = 0
-  val tokAtmb1GetTaskMr   = 0
-  val tokAtmb1StartMr     = 0
-
   val recCtorToks: Map[String, Int] = newMap()
   val fieldToks:   Map[String, Int] = newMap()
   val funcToks:    Map[String, Int] = newMap()
@@ -930,10 +915,6 @@ pub func newCodegenCtx(packageName: in String,
     tokAtmbSetResult     = tokAtmbSetResult,
     tokAtmbGetTask       = tokAtmbGetTask,
     tokAtmbStartMr       = tokAtmbStartMr,
-    tokAtmb1CreateMr     = tokAtmb1CreateMr,
-    tokAtmb1SetResultMr  = tokAtmb1SetResultMr,
-    tokAtmb1GetTaskMr    = tokAtmb1GetTaskMr,
-    tokAtmb1StartMr      = tokAtmb1StartMr,
     smTicker             = newList())
 }
 
@@ -1475,6 +1456,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
       case IFunc(decl) -> {
         if decl.isAsync
            and not funcBodyContainsYieldMsil(decl)
+           and not funcBodyContainsAwaitMsil(decl)
            and not hasExternTargetMsil(decl.annotations) {
           smClassCountPts = smClassCountPts + 1
         }
@@ -10646,6 +10628,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
         // Generators and @externTarget async funcs use their existing paths.
         val useSm = decl.isAsync
                     and not funcBodyContainsYieldMsil(decl)
+                    and not funcBodyContainsAwaitMsil(decl)
                     and not hasExternTargetMsil(decl.annotations)
         if useSm {
           synthesizeAsyncSmMsil(cctx, decl, pkgName, items, fns)
