@@ -319,7 +319,7 @@ pub record CodegenCtx {
   trAtmb1:          Int   // AsyncTaskMethodBuilder`1 (open generic, row)
   trIAsm:           Int   // IAsyncStateMachine (interface, row)
   // MemberRef tokens for ATMB (void) instance methods.
-  tokAtmbCreate:    Int   // ATMB::Create(): ATMB  call (static)
+  tokAtmbCreate:    Int   // registered for MemberRef table ordering; not emitted (ATMB.Create() removed in .NET 7+, replaced by newobj zero-init)
   tokAtmbSetResult: Int   // ATMB::SetResult(): void  call (instance, on managed ptr)
   tokAtmbGetTask:   Int   // ATMB::get_Task(): Task  callvirt (instance, on managed ptr)
   tokAtmbStartMr:   Int   // ATMB.Start<!!0>(ref !!0): void  open-generic MemberRef
@@ -6682,6 +6682,57 @@ func endsWithReturnMsil(insns: in List[MInsn]): Bool {
   false
 }
 
+// Returns true iff the last non-Nop instruction in `insns` is an unconditional
+// branch to `lbl`.  Used by Phase B.0 SM synthesis to distinguish an
+// explicit-return path (where the patch already stashed the result and branched)
+// from a trailing-expression path (where the value is still on the stack).
+func endsWithBrToLabel(insns: in List[MInsn], lbl: in Int): Bool {
+  var i = insns.count - 1
+  while i >= 0 {
+    match insns[i] {
+      case MBr(l)    -> { return l == lbl }
+      case MNop      -> { i = i - 1 }
+      case _         -> { return false }
+    }
+  }
+  false
+}
+
+// Rebuild `insns` replacing every MRet with [MStloc(rSlot); MBr(lbl)].
+// Used for the non-void Phase B.0 MoveNext body so that explicit `return`
+// statements inside the user body stash their value and branch to the SM
+// epilogue rather than exiting MoveNext before SetResult is called (#2256).
+func patchBodyRetsNonVoid(insns: in List[MInsn], rSlot: in Int, lbl: in Int): List[MInsn] {
+  val out: List[MInsn] = newList()
+  var i = 0
+  while i < insns.count {
+    match insns[i] {
+      case MRet -> {
+        out.add(MStloc(slot = rSlot))
+        out.add(MBr(label = lbl))
+      }
+      case insn -> out.add(insn)
+    }
+    i = i + 1
+  }
+  out
+}
+
+// Rebuild `insns` replacing every MRet with MBr(lbl).
+// Used for the void Phase B.0 MoveNext body (#2256).
+func patchBodyRetsVoid(insns: in List[MInsn], lbl: in Int): List[MInsn] {
+  val out: List[MInsn] = newList()
+  var i = 0
+  while i < insns.count {
+    match insns[i] {
+      case MRet -> out.add(MBr(label = lbl))
+      case insn -> out.add(insn)
+    }
+    i = i + 1
+  }
+  out
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §8b. FFI emission for `@externTarget` (#370 + Phase R6).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -7528,7 +7579,7 @@ func synthesizeAsyncSmMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
   // ── MoveNext() ────────────────────────────────────────────────────────────
   // paramCount = 1 (this = ldarg.0).
   // User params are pre-loaded from SM fields into LOCAL slots [0, N-1].
-  val mnInsns: List[MInsn] = newList()
+  var mnInsns: List[MInsn] = newList()
   val mnFctx = makeFuncCtxMsil(pkgName, smFqn, "MoveNext", 1, MVoid)
 
   // Pre-populate slotTicker with one entry for the `this` arg (slot 0) so
@@ -7561,61 +7612,54 @@ func synthesizeAsyncSmMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
         case FBBlock(block) -> {
           if retTy != MVoid {
             val trailTy = lowerBlockExprMsil(cctx, mnFctx, mnInsns, block)
-            if not endsWithReturnMsil(mnInsns) {
+            // Allocate result slot before patching so it's available for the
+            // stash instructions inserted by the patch (#2256).
+            val rSlot = allocSlotMsil(mnFctx, "__sm_result", retTy)
+            // Patch all explicit-return MRet in the body so they stash the
+            // result and branch to the epilogue rather than exiting MoveNext
+            // before SetResult is called (fixes #2256).
+            mnInsns = patchBodyRetsNonVoid(mnInsns, rSlot - 1, epilogueLabel)
+            if not endsWithBrToLabel(mnInsns, epilogueLabel) {
+              // Trailing-expression path: value still on stack — coerce and stash.
               coerceTrailingToRetMsil(cctx, mnInsns, trailTy, retTy)
-              // Don't emit MRet here — we emit the SM epilogue instead.
-              // Stash the result in a dedicated local.
-              val rSlot = allocSlotMsil(mnFctx, "__sm_result", retTy)
               mnInsns.add(MStloc(slot = rSlot - 1))
-              // SM epilogue: state = -2
-              mnInsns.add(MLdarg(slot = 0))
-              mnInsns.add(MLdcI4(v = -2))
-              mnInsns.add(MStfldByName(ownerFqn = smFqn, fieldName = "__state"))
-              // ldflda __builder
-              mnInsns.add(MLdarg(slot = 0))
-              mnInsns.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
-              // result value
-              mnInsns.add(MLdloc(slot = rSlot - 1))
-              // call SetResult(T)
-              if isVoid {
-                mnInsns.add(MCall(methodToken = cctx.tokAtmbSetResult))
-              } else {
-                // For ATMB<T>, SetResult is TypeSpec-parented — build lazily.
-                // We store the MemberRef row so lowerMInsn can find the MethodSpec.
-                // For now emit via a helper token built at codegen time.
-                // Build TypeSpec + MemberRef for ATMB`1<retTy>.SetResult(retTy): void.
-                val tsArgs: List[MsilType] = newList()
-                tsArgs.add(retTy)
-                val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trAtmb1), tsArgs)
-                var taKey = msilTypeKey(retTy)
-                val tsKey  = "atmb1_ts_" + taKey
-                val tsRow  = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
-                // SetResult(T): void — instance HASTHIS.
-                // Signature must use VAR 0 (the class type parameter !0), NOT the
-                // concrete retTy — ECMA-335 II.23.2.1: TypeSpec-parented MemberRef
-                // sigs use VAR/MVAR tokens; the TypeSpec parent captures the concrete arg.
-                val srArgs: List[MsilType] = newList()
-                srArgs.add(MTypeVar(index = 0))
-                val srSig  = buildInstanceMethodSig(srArgs, MVoid)
-                val srKey  = "atmb1_setresult_mr_" + taKey
-                val srMrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "SetResult", srKey, srSig)
-                mnInsns.add(MCall(methodToken = 0x0A000000 + srMrRow))
-              }
-              mnInsns.add(MRet)
             }
+            // SM epilogue — always reached (fall-through or patched branch).
+            mnInsns.add(MLabel(id = epilogueLabel))
+            mnInsns.add(MLdarg(slot = 0))
+            mnInsns.add(MLdcI4(v = -2))
+            mnInsns.add(MStfldByName(ownerFqn = smFqn, fieldName = "__state"))
+            mnInsns.add(MLdarg(slot = 0))
+            mnInsns.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
+            mnInsns.add(MLdloc(slot = rSlot - 1))
+            // call ATMB`1<T>.SetResult(T): void via TypeSpec-parented MemberRef.
+            // Signature uses VAR 0 per ECMA-335 §II.23.2.1.
+            val tsArgs: List[MsilType] = newList()
+            tsArgs.add(retTy)
+            val tsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trAtmb1), tsArgs)
+            var taKey = msilTypeKey(retTy)
+            val tsKey  = "atmb1_ts_" + taKey
+            val tsRow  = ctxAddTypeSpec(cctx.lctx, tsKey, tsBlob)
+            val srArgs: List[MsilType] = newList()
+            srArgs.add(MTypeVar(index = 0))
+            val srSig  = buildInstanceMethodSig(srArgs, MVoid)
+            val srKey  = "atmb1_setresult_mr_" + taKey
+            val srMrRow = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, "SetResult", srKey, srSig)
+            mnInsns.add(MCall(methodToken = 0x0A000000 + srMrRow))
+            mnInsns.add(MRet)
           } else {
             lowerBlockMsil(cctx, mnFctx, mnInsns, block)
-            if not endsWithReturnMsil(mnInsns) {
-              // SM epilogue: state = -2
-              mnInsns.add(MLdarg(slot = 0))
-              mnInsns.add(MLdcI4(v = -2))
-              mnInsns.add(MStfldByName(ownerFqn = smFqn, fieldName = "__state"))
-              // ldflda __builder; call ATMB.SetResult(): void
-              mnInsns.add(MLdarg(slot = 0))
-              mnInsns.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
-              mnInsns.add(MCall(methodToken = cctx.tokAtmbSetResult))
-              mnInsns.add(MRet)
-            }
+            // Patch all explicit-return MRet to branch to epilogue (#2256).
+            mnInsns = patchBodyRetsVoid(mnInsns, epilogueLabel)
+            // SM epilogue — always reached.
+            mnInsns.add(MLabel(id = epilogueLabel))
+            mnInsns.add(MLdarg(slot = 0))
+            mnInsns.add(MLdcI4(v = -2))
+            mnInsns.add(MStfldByName(ownerFqn = smFqn, fieldName = "__state"))
+            mnInsns.add(MLdarg(slot = 0))
+            mnInsns.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
+            mnInsns.add(MCall(methodToken = cctx.tokAtmbSetResult))
+            mnInsns.add(MRet)
           }
         }
         case FBExpr(e) -> {

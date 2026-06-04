@@ -45,6 +45,19 @@ async func asyncDoubleAndDiscard(n: in Int): Unit {
   val _ = doubled
 }
 
+// ── Explicit-return paths (regression for #2256) ─────────────────────────────
+// These exercise the MoveNext epilogue reachability fix: explicit `return`
+// inside the body must stash the result and branch to the epilogue so that
+// SetResult is always called before MoveNext returns.
+async func asyncReturnExplicit(n: in Int): Int {
+  return n * 2
+}
+
+async func asyncReturnFromBranch(n: in Int): Int {
+  if n > 0 { return n }
+  0 - n
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 test "non-void async func: Int return" {
@@ -72,4 +85,16 @@ test "non-void async func: result matches synchronous computation" {
   val b = asyncAddOne(a)
   val c = asyncAddOne(b)
   assertEqualInt(c, 3, "three sequential asyncAddOne calls should give 3")
+}
+
+test "non-void async func: explicit return computes correct value" {
+  val result = asyncReturnExplicit(21)
+  assertEqualInt(result, 42, "asyncReturnExplicit(21) should return 42")
+}
+
+test "non-void async func: explicit return from branch computes correct value" {
+  val pos = asyncReturnFromBranch(5)
+  val neg = asyncReturnFromBranch(-3)
+  assertEqualInt(pos, 5, "asyncReturnFromBranch(5) should return 5")
+  assertEqualInt(neg, 3, "asyncReturnFromBranch(-3) should return 3")
 }

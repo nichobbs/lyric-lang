@@ -1468,16 +1468,19 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
       val tdRow  = findTypeDefRowByName(ctx, ownerFqn)
       val fdRow  = findFieldDefRowOfType(ctx, tdRow, fieldName)
       if fdRow > 0 { emitLdfld(mb, 0x04000000 + fdRow) }
+      else { panic("Msil.Lowering: MLdfldByName could not resolve field '" + fieldName + "' on type '" + ownerFqn + "'") }
     }
     case MLdfldaByName(ownerFqn, fieldName) -> {
       val tdRow  = findTypeDefRowByName(ctx, ownerFqn)
       val fdRow  = findFieldDefRowOfType(ctx, tdRow, fieldName)
       if fdRow > 0 { emitLdflda(mb, 0x04000000 + fdRow) }
+      else { panic("Msil.Lowering: MLdfldaByName could not resolve field '" + fieldName + "' on type '" + ownerFqn + "'") }
     }
     case MStfldByName(ownerFqn, fieldName) -> {
       val tdRow  = findTypeDefRowByName(ctx, ownerFqn)
       val fdRow  = findFieldDefRowOfType(ctx, tdRow, fieldName)
       if fdRow > 0 { emitStfld(mb, 0x04000000 + fdRow) }
+      else { panic("Msil.Lowering: MStfldByName could not resolve field '" + fieldName + "' on type '" + ownerFqn + "'") }
     }
     case MNewobjByName(className) -> {
       // Find (or build) a no-arg .ctor MemberRef for the SM class.
@@ -1485,6 +1488,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
       val tdRow   = findTypeDefRowByName(ctx, className)
       val ctorRow = findMethodDefRowOfType(ctx, tdRow, ".ctor")
       if ctorRow > 0 { emitNewobj(mb, 0x06000000 + ctorRow) }
+      else { panic("Msil.Lowering: MNewobjByName could not resolve .ctor for type '" + className + "'") }
     }
     case MCallAtmbStart(smFqn, atmbMrRow, isGeneric) -> {
       // Resolve MethodSpec for `ATMB[<T>].Start<SM>(ref SM)` at Phase 5.
