@@ -898,7 +898,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0070` | Function body type does not match declared return type |
 | `T0080` | `old(…)` used outside an `ensures` clause |
 | `T0085` | `out`/`inout` argument (value-type) must be a mutable l-value |
-| `T0086` | `out` parameter not assigned on all paths before return |
+| `T0086` | `out` parameter is never assigned before the function returns |
 | `T0087` | Reassigning an immutable binding (`val`/`let` or an `in` parameter) |
 | `T0090` | Range bounds are inverted or produce an empty range |
 | `T0091` | `range` applied to a non-numeric underlying type |
