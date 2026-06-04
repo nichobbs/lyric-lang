@@ -160,6 +160,24 @@ func testCompressedUInt(): Unit {
   val r4 = readCompressedUInt(four.toArray(), 0)
   assertEqualInt(r4.value, 16384, "cuint: 4-byte value")
   assertEqualInt(r4.byteWidth, 4, "cuint: 4-byte width")
+  // Boundary: 0x7F → 127 — last value still in the 1-byte form.
+  val max1: List[Byte] = newList()
+  max1.add(0x7Fu8)
+  val rMax1 = readCompressedUInt(max1.toArray(), 0)
+  assertEqualInt(rMax1.value, 127, "cuint: max 1-byte (0x7F)")
+  assertEqualInt(rMax1.byteWidth, 1, "cuint: width at 1-byte ceiling")
+  // Boundary: 0x80 0x80 → 128 — first value that requires the 2-byte form.
+  val min2: List[Byte] = newList()
+  min2.add(0x80u8)  min2.add(0x80u8)
+  val rMin2 = readCompressedUInt(min2.toArray(), 0)
+  assertEqualInt(rMin2.value, 128, "cuint: min 2-byte (0x80 0x80)")
+  assertEqualInt(rMin2.byteWidth, 2, "cuint: width at 2-byte floor")
+  // Boundary: 0xBF 0xFF → 16383 — last value still in the 2-byte form.
+  val max2: List[Byte] = newList()
+  max2.add(0xBFu8)  max2.add(0xFFu8)
+  val rMax2 = readCompressedUInt(max2.toArray(), 0)
+  assertEqualInt(rMax2.value, 16383, "cuint: max 2-byte (0xBF 0xFF)")
+  assertEqualInt(rMax2.byteWidth, 2, "cuint: width at 2-byte ceiling")
 }
 
 // Layer 4 oracle: the running test PE's metadata tables decode to the
@@ -189,6 +207,18 @@ func testTableRows(): Unit {
         if md.name == "main" { foundMain = true }
         // Every method name resolves to a non-empty #Strings entry.
         assertTrue(md.name.length > 0, "rows: method name non-empty")
+        // `addInts(a: Int, b: Int): Int` is defined here for the overload-
+        // resolution tests; its Param rows give the running-PE oracle for
+        // `readParam`.  Row[paramListStart] is `a` (sequence 1), the next
+        // row is `b` (sequence 2).
+        if md.name == "addInts" {
+          val p1 = readParam(img, layout, md.paramListStart)
+          assertEqualInt(p1.sequence, 1, "rows: addInts param0 sequence=1")
+          assertEqual(p1.name, "a", "rows: addInts param0 name")
+          val p2 = readParam(img, layout, md.paramListStart + 1)
+          assertEqualInt(p2.sequence, 2, "rows: addInts param1 sequence=2")
+          assertEqual(p2.name, "b", "rows: addInts param1 name")
+        }
         mi = mi + 1
       }
     }
@@ -587,6 +617,14 @@ func testResolveExtern(): Unit {
       // Assembly found in the index, but the member is absent → None.
       match resolveExtern(typeIndex, pathIndex, "System.Math", "NoSuchMethodXyz", i4i4) {
         case Some(_) -> panic("resolveExtern: absent member should be None")
+        case None    -> ()
+      }
+      // Type known to `typeIndex` but its owning assembly missing from
+      // `pathIndex` → the middle None arm in the nested match (between the
+      // "no such type" and "no such method" cases).
+      val emptyPaths: Map[String, String] = newMap()
+      match resolveExtern(typeIndex, emptyPaths, "System.Math", "Max", i4i4) {
+        case Some(_) -> panic("resolveExtern: empty pathIndex should be None")
         case None    -> ()
       }
     }
