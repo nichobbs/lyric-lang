@@ -59,15 +59,20 @@ func sum3(a: in Int, b: in Int, c: in Int): Int
 }
 
 // `ensures:` on a String return — exercises a non-Int `result` binding.
-// (A constant body, not an `if`-expression: binding an `if`-as-value into the
-// synthesised `let` for a String result trips a separate codegen issue, #1977,
-// orthogonal to the #1871 None-widening fix under test here.)
 func greet(name: in String): String
   ensures: true
 {
   val msg = "hi " + name
   msg
 }
+
+// `ensures:` on a String return whose body is a bare `if`-expression — the
+// synthesised `let __lyric_result = if … else …` binds an `if`-as-value of
+// String type.  This was the #1977 repro (invalid IL); it is fixed and guarded
+// here so it stays fixed.
+func pickStr(ok: in Bool): String
+  ensures: result == "yes" or result == "no"
+{ if ok { "yes" } else { "no" } }
 
 // `ensures:` over an Option return — exercises the result binding on a
 // generic-union value (None-first match in the helper, per #1855).
@@ -101,6 +106,11 @@ test "ensures on a multi-statement body" {
 
 test "ensures over a String result" {
   assertEqual(greet("ann"), "hi ann", "greet(ann)")
+}
+
+test "ensures over a String result from an if-expression body (#1977)" {
+  assertEqual(pickStr(true), "yes", "pickStr(true)")
+  assertEqual(pickStr(false), "no", "pickStr(false)")
 }
 
 test "ensures over an Option result" {
