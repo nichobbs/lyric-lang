@@ -505,6 +505,11 @@ func cmdBuild(argv: in slice[String]): Int {
     case Some(_) -> if not release { printErr("build: warning: --rid has no effect without --release") }
     case None    -> ()
   }
+  // `--no-restore` only affects project-mode auto-restore; warn rather than
+  // silently ignore it on a single-file build (#2048).
+  if noRestore and positional.count > 0 {
+    printErr("build: warning: --no-restore has no effect without a project manifest")
+  }
   // Project-mode: `lyric build --manifest lyric.toml`, or no positional source
   // at all (discover the nearest lyric.toml by walking up from the cwd).
   if positional.count == 0 {

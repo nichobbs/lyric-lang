@@ -1291,7 +1291,9 @@ dependencies (the equivalent of `lyric restore`) when the manifest declares any
 set (a dependency absent from the lock, or a registry dependency whose locked
 version differs). A clean checkout — or a just-edited dependency set — therefore
 builds without a manual `lyric restore`. Pass `--no-restore` to skip this and
-build against the lock as-is.
+build against the lock as-is. Auto-restore tracks the `[dependencies]` table
+only; changes to `[nuget]`/`[maven]` entries are not detected, so run
+`lyric restore` explicitly after editing those.
 
 ### 13.2 Test runner
 
