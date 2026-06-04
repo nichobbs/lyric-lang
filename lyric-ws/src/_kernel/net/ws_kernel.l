@@ -74,11 +74,13 @@ func registerConnection(registryHandle: in Int, connectionId: in String): Result
   if not cdTryGetValue(registryMap, registryHandle, meta) {
     return Err("unknown registry handle " + registryHandle.toString())
   }
-  val key = connKey(registryHandle, connectionId)
-  val state = ConnState(isOpen = true)
-  val _ = cdTryAdd(connMap, key, state)
   monitorEnter(meta)
   defer { monitorExit(meta) }
+  val key = connKey(registryHandle, connectionId)
+  val state = ConnState(isOpen = true)
+  if not cdTryAdd(connMap, key, state) {
+    return Err("connection '" + connectionId + "' already registered")
+  }
   meta.openCount = meta.openCount + 1
   Ok(())
 }

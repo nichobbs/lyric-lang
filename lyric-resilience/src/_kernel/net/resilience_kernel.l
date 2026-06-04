@@ -69,7 +69,7 @@ func getOrCreateEntry(name: in String): CircuitEntry {
   if cdTryGetValue(circuitRegistry, name, found2) {
     return found2
   }
-  // @axiom: unreachable — circuitRegistry is append-only (no Remove/Clear calls),
+  // Invariant: unreachable — circuitRegistry is append-only (no Remove/Clear calls),
   // so a key added via TryAdd is always present for the immediately following
   // TryGetValue.  The fallback returns newEntry to satisfy the type checker; any
   // caller that somehow reaches this path will operate on an unregistered
