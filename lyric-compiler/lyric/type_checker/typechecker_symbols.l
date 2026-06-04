@@ -125,10 +125,10 @@ pub func symTableTryFindAll(tbl: in SymbolTable, name: in String): List[Symbol] 
 }
 
 pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol] {
-  var i = 0
-  while i < tbl.symbols.count {
+  var i = tbl.symbols.count - 1
+  while i >= 0 {
     if tbl.symbols[i].name == name { return Some(value = tbl.symbols[i]) }
-    i = i + 1
+    i = i - 1
   }
   None
 }

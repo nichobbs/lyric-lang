@@ -174,14 +174,14 @@ run_stage() {
 }
 
 # ── Lyric invocation helper ──────────────────────────────────────────────────
-# `bootstrap-publish` sets LYRIC_BIN; until then we run the CLI via dotnet.
+# `bootstrap-publish` sets LYRIC_BIN; until then we run the AOT CLI via dotnet.
 
 LYRIC_BIN=""
 lyric() {
   if [ -n "$LYRIC_BIN" ]; then
     "$LYRIC_BIN" "$@"
   else
-    dotnet run --project "$REPO_ROOT/bootstrap/src/Lyric.Cli/Lyric.Cli.fsproj" -c Release --no-build -- "$@"
+    dotnet run --project "$REPO_ROOT/bootstrap/src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj" -c Release --no-build -- "$@"
   fi
 }
 
@@ -227,7 +227,7 @@ stage_bootstrap_publish() {
   local out="$REPORT_DIR/lyric-bin"
   rm -rf "$out"
   mkdir -p "$out"
-  dotnet publish "$REPO_ROOT/bootstrap/src/Lyric.Cli/Lyric.Cli.fsproj" \
+  dotnet publish "$REPO_ROOT/bootstrap/src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj" \
     -c Release -o "$out" --nologo -v q
   if [ -f "$out/lyric" ]; then
     chmod +x "$out/lyric"
