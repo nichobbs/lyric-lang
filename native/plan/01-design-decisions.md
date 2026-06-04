@@ -331,3 +331,22 @@ Phase 2 via a custom optimization pass.
 `slice[T]` cannot outlive the object it borrows from. In Phase 1 this is enforced
 by convention (kernel layer only borrows slices from live locals or static data).
 Phase 2 can add lifetime annotations to enforce this statically.
+
+---
+
+## D-N-013: `@cfg(target = "X")` via pseudo-feature injection
+
+**Decision:** The `@cfg(target = "X")` predicate is implemented by injecting a
+pseudo-feature `"target.<name>"` into `CfgErasureInput.activeFeatures` at the
+start of compilation. The existing feature-erasure loop in `Lyric.Cfg` then
+handles `@cfg(target = "X")` identically to `@cfg(feature = "X")` without any
+new predicate grammar or erasure logic.
+
+- `--target dotnet` → `"target.dotnet"` in active set
+- `--target jvm`    → `"target.jvm"` in active set
+- `--target native` → `"target.native"` in active set
+
+Only `lyric-compiler/lyric/cfg.l` is modified. `Cfg.fs` is **not** touched.
+
+Full detail: `docs/03-decision-log.md` §D-N-013 and
+`native/plan/07-stdlib-port.md` §target-conditional imports.

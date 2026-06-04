@@ -4894,6 +4894,56 @@ Full detail: `native/plan/01-design-decisions.md` §D-N-012 and
 
 ---
 
+## D-N-013 — `@cfg(target = "X")` implemented via pseudo-feature injection
+
+**Status:** ACCEPTED — native backend Phase 1 (N4.6).
+
+**Context:** Stdlib modules such as `Std.Console`, `Std.File`, and `Std.Math`
+must import different kernel packages depending on the compilation target:
+`_kernel/` for dotnet and jvm, `_kernel_native/` for native. The existing
+`@cfg(feature = "X")` erasure pass (D045, `Lyric.Cfg`) already drops
+`@cfg`-annotated items whose feature is not in the active set. The question is
+how to extend it so `@cfg(target = "native")` works alongside
+`@cfg(feature = "myFeature")`.
+
+**Decision:** Extend `CfgErasureInput.activeFeatures` to include the current
+target as a pseudo-feature named `"target.<name>"`:
+
+- `--target dotnet` injects `"target.dotnet"` into the active set.
+- `--target jvm`    injects `"target.jvm"` into the active set.
+- `--target native` injects `"target.native"` into the active set.
+
+The predicate `@cfg(target = "native")` is parsed as a key/value predicate
+where `key = "target"` and `value = "native"`, resolving to the pseudo-feature
+`"target.native"`. This reuses the existing predicate grammar and erasure loop
+without any new AST node or erasure logic.
+
+**Rejected alternative — first-class `target` field in `CfgErasureInput`:**
+Adding a separate `target: String` field to `CfgErasureInput` and a separate
+`@cfg(target = "X")` predicate branch would require new AST nodes, a new
+`Cfg.fs`-equivalent path in `Lyric.Cfg`, and callers that populate the new
+field. The pseudo-feature approach is strictly simpler: one injection line in
+`CfgErasureInput` construction, zero new predicate grammar, zero changes to
+the erasure loop. The downside (pseudo-features mixing with real features in
+`activeFeatures`) is acceptable because pseudo-feature names are namespaced
+under `"target."` and cannot collide with user-declared `[features]` entries
+(which the `F0013` diagnostic already validates against the manifest table).
+
+**Scope:** This change applies to all three targets, not only native. In stdlib
+modules that already have a `@cfg(target = "dotnet")` import, the jvm and
+native branches must also be annotated (`@cfg(target = "jvm")` /
+`@cfg(target = "native")`). All three are required; omitting any branch means
+that target sees no import for the aliased identifier, which is a type error.
+
+**Implementation:** `lyric-compiler/lyric/cfg.l` (`Lyric.Cfg`) only.
+The F# bootstrap `Cfg.fs` does **not** need updating — the native target is
+only reachable through the self-hosted Lyric CLI.
+
+Full detail: `native/plan/07-stdlib-port.md` §target-conditional imports and
+`native/plan/08-work-items.md` §N4.6.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

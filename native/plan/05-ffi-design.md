@@ -94,7 +94,56 @@ contexts is a compile error.
 - `NativePtr[Byte]` ← from a `String`: `lyric_string_data_ptr(s)` returns the raw
   UTF-8 data pointer (valid only while `s` is alive).
 - `NativePtr[Byte]` ← from a `slice[Byte]`: access the `.ptr` field.
+- `NativePtr[T]` ← from a local variable: `nativeAddrOf(x)` (see below).
 - `NativePtr[T]` arithmetic (pointer add/sub): only in `@unsafe_ffi` functions.
+
+---
+
+## `nativeAddrOf` builtin
+
+`nativeAddrOf(x: T): NativePtr[T]` is a compiler builtin that takes the address
+of a mutable local variable and returns a raw pointer to it. It is the Lyric
+equivalent of the C unary `&` address-of operator.
+
+```lyric
+@unsafe_ffi
+pub func waitForProcess(pid: Int): Result[Int, String] {
+  var status: Int = 0
+  val ret = waitpid(pid, nativeAddrOf(status), 0)
+  if ret < 0 { Err("waitpid failed") } else { Ok(exitCodeFrom(status)) }
+}
+```
+
+**Rules:**
+1. `nativeAddrOf` is only valid in `_kernel_native/` package files and in
+   functions annotated `@unsafe_ffi`. The mode checker enforces this.
+2. The operand must be a mutable local (`var`) binding. Taking the address of
+   an immutable binding (`val`) or a record field is a compile error.
+3. The returned `NativePtr[T]` is valid only for the lifetime of the enclosing
+   function frame. It must not be stored in a heap object or returned.
+
+**LLVM IR lowering:**
+
+```llvm
+; var status: Int = 0  →  alloca i32 + store 0
+%status = alloca i32
+store i32 0, i32* %status
+
+; nativeAddrOf(status)  →  the alloca pointer directly
+; (no extra instruction needed — %status already is a NativePtr[Int])
+call i32 @waitpid(i32 %pid, i32* %status, i32 0)
+
+; Reading status back after the call:
+%status_val = load i32, i32* %status
+```
+
+Because `alloca` in LLVM already produces a pointer to the stack slot, the
+backend emits nothing extra for `nativeAddrOf(x)` — it simply uses the alloca
+result where the `NativePtr[T]` is expected.
+
+**Work item:** N4.2 (mode checker `@unsafe_ffi` enforcement) is extended to
+include `nativeAddrOf` validation. N4.3 (codegen for `NativePtr[T]`) covers the
+IR lowering (no-op beyond normal `var` alloca handling).
 
 ---
 

@@ -129,19 +129,16 @@ pub func epochMillis(): Long {
 package Std.FileNativeHost
 
 // Open flags: values are platform-specific (e.g. O_CREAT is 0x40 on Linux x86-64
-// but 0x200 on macOS). lyric-rt exposes them via C helper functions defined in
-// lyric-rt/src/lyric_posix.c so the Lyric layer never hardcodes platform constants.
+// but 0x200 on macOS). lyric-rt exposes them as zero-argument extern functions
+// defined in lyric-rt/src/lyric_posix.c. Callers use them inline at call sites:
+//   open(path, lyric_o_creat() | lyric_o_wronly(), 0o644)
+// This avoids module-level runtime-initialized globals (pub val = expr) and
+// the @llvm.global_ctors mechanism they would require.
 extern func lyric_o_rdonly(): Int = "lyric_o_rdonly"
 extern func lyric_o_wronly(): Int = "lyric_o_wronly"
 extern func lyric_o_rdwr():   Int = "lyric_o_rdwr"
 extern func lyric_o_creat():  Int = "lyric_o_creat"
 extern func lyric_o_trunc():  Int = "lyric_o_trunc"
-
-pub val O_RDONLY: Int = lyric_o_rdonly()
-pub val O_WRONLY: Int = lyric_o_wronly()
-pub val O_RDWR:   Int = lyric_o_rdwr()
-pub val O_CREAT:  Int = lyric_o_creat()
-pub val O_TRUNC:  Int = lyric_o_trunc()
 
 extern func open(path: NativePtr[Byte], flags: Int, mode: Int): Int = "open"
 extern func close(fd: Int): Int = "close"
