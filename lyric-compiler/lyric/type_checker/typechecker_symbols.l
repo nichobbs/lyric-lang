@@ -112,10 +112,43 @@ pub record SymbolTable {
   scopePkg: List[String]
   /// Dotted names the current scope imports (second-tier resolution preference).
   scopeImports: List[String]
+  /// Interface-conformance relations from `impl I for T` declarations, used
+  /// for interface subtyping at argument positions (#1488): an arg of type `T`
+  /// is accepted where the parameter is interface `I` when `(T, I)` is present.
+  /// Keyed by `TypeId` (not simple name) so a same-simple-name interface in a
+  /// different package can never satisfy the check (#2303 soundness).
+  impls: List[ImplPair]
+}
+
+// One `impl Iface for Target` conformance, by resolved `TypeId`.
+pub record ImplPair {
+  target: TypeId
+  iface:  TypeId
 }
 
 pub func newSymbolTable(): SymbolTable {
-  SymbolTable(symbols = newList(), scopePkg = newList(), scopeImports = newList())
+  SymbolTable(symbols = newList(), scopePkg = newList(), scopeImports = newList(), impls = newList())
+}
+
+// Record that the type with id `target` implements the interface with id
+// `iface` (idempotent).
+pub func symTableAddImpl(tbl: in SymbolTable, target: in TypeId, iface: in TypeId): Unit {
+  var i = 0
+  while i < tbl.impls.count {
+    if typeIdEq(tbl.impls[i].target, target) and typeIdEq(tbl.impls[i].iface, iface) { return }
+    i = i + 1
+  }
+  tbl.impls.add(ImplPair(target = target, iface = iface))
+}
+
+// True when some `impl iface for target` was registered.
+pub func symTableTypeImplements(tbl: in SymbolTable, target: in TypeId, iface: in TypeId): Bool {
+  var i = 0
+  while i < tbl.impls.count {
+    if typeIdEq(tbl.impls[i].target, target) and typeIdEq(tbl.impls[i].iface, iface) { return true }
+    i = i + 1
+  }
+  false
 }
 
 pub func symTableAdd(tbl: in SymbolTable, sym: in Symbol): Unit {

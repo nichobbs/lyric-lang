@@ -20902,3 +20902,41 @@ typechecker self-test, `weaver_self_test.l` 18/18, and `prove_demo` /
 `bridge.l:93` flip: interface/impl subtyping (`mocking_tests`) and the
 compiler-internal-test import swarms (`metadata_reader_tests`,
 `msil_project_bridge_tests`).
+
+### D-progress-432 — self-hosted type checker: interface subtyping at argument positions (#1488 gate, Band-1 of #1470)
+
+**Status:** Shipped — type-checker-only.
+
+A value whose type `T` has an `impl I for T` was rejected where the parameter
+type is the interface `I` — `invoiceTotal(feed: in PriceFeed, …)` called with a
+`TrackedFeed` (which `impl`s `PriceFeed`) raised `T0043`.  The argument check
+only ran `typeEquiv`, which compares `TyUser` by `TypeId`, so a conforming
+concrete type never matched its interface.  This was the interface-subtyping
+half of the `mocking_tests` false positives blocking the #1488 gate.
+
+Fix: `registerImplsFromItems` (run per-package, under each package's scope,
+after signature resolution) resolves each `impl I for T`'s interface and target
+to their **`TypeId`s** and records the `(targetId, ifaceId)` conformance in a new
+`SymbolTable.impls` list (`symTableAddImpl`); a new
+`argSatisfiesParam(tbl, paramTy, argTy)` accepts an argument either by
+`typeEquiv` or by interface subtyping — `paramTy`/`argTy` are user types whose
+`TypeId`s satisfy a registered conformance (`symTableTypeImplements`).  Keying on
+`TypeId` (not simple name) keeps it sound across packages (#2303): a
+same-simple-name interface in another package has a distinct id and can never
+satisfy the check.  Both `ECall` argument-check sites and the overload-candidate
+predicate `paramsMatchArgs` (#2304) use `argSatisfiesParam`, so overload
+selection agrees with argument checking.  Conformance *checking* (T0098/T0099)
+stays in `checkImplConformance`.
+
+Coverage: 3 new `typechecker_self_test.l` cases (a `Hello` that `impl`s
+`Greeter` is accepted where `Greeter` is expected; a non-implementing `Other` is
+still rejected — T0043, proving the relation is precise; and a cross-package
+case where `Hello` impls `PkgA.Greeter` but is rejected for a `PkgB.Greeter`
+parameter, proving the `TypeId` keying is sound across same-simple-name
+interfaces).  Full regression green: 843/843 emitter, typechecker self-test,
+`weaver_self_test.l` 18/18.  This
+clears the `T0043` interface-subtyping errors on `mocking_tests`; the remaining
+`mocking_tests` errors are `@stubbable`-synthesised `*Stub` records not yet
+visible to the self-hosted type checker (the `@stubbable` synthesis pass —
+`bootstrap/src/Lyric.Parser/Stubbable.fs` — is not yet ported to the self-hosted
+pipeline; tracked as the next #1488 sub-task).

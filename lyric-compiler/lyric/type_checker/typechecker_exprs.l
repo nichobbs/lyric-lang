@@ -1753,7 +1753,7 @@ pub func inferExpr(
         i = i + 1
       }
       // Try direct-sig lookup first.
-      val directSig = findDirectSig(sc, sigs, fn, args.count, argTypes)
+      val directSig = findDirectSig(sc, tbl, sigs, fn, args.count, argTypes)
       match directSig {
         case Some(sig) -> {
           if sig.params.count != args.count {
@@ -1763,7 +1763,7 @@ pub func inferExpr(
             var k = 0
             while k < sig.params.count {
               val p = sig.params[k]
-              if not typeEquiv(p.ty, argTypes[k]) {
+              if not argSatisfiesParam(tbl, p.ty, argTypes[k]) {
                 diag.add(errorDiagnostic("T0043",
                   "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(p.ty), e.span))
               }
@@ -1798,7 +1798,7 @@ pub func inferExpr(
                   } else {
                     var k = 0
                     while k < paramTypes.count {
-                      if not typeEquiv(paramTypes[k], argTypes[k]) {
+                      if not argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) {
                         diag.add(errorDiagnostic("T0043",
                           "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(paramTypes[k]), e.span))
                       }
@@ -1941,23 +1941,53 @@ pub func inferExpr(
   }
 }
 
-// True when `params` and `argTypes` have the same count and every parameter
-// type is `typeEquiv` to the corresponding argument type.  `typeEquiv` treats
-// `TyError`/`TyVar` as wildcards, so an unresolved argument matches any
-// parameter at that position — the leniency that lets an empty-literal arg
-// still select the structurally-correct overload (#1488 category C).
-func paramsMatchArgs(params: in List[ResolvedParam], argTypes: in List[Type]): Bool {
+// True when `params` and `argTypes` have the same count and every argument is
+// acceptable for its parameter (`argSatisfiesParam`): `typeEquiv` — which treats
+// `TyError`/`TyVar` as wildcards, the leniency that lets an empty-literal arg
+// still select the structurally-correct overload (#1488 category C) — or
+// interface subtyping, so overload selection agrees with the argument check
+// (#2304).
+func paramsMatchArgs(tbl: in SymbolTable, params: in List[ResolvedParam], argTypes: in List[Type]): Bool {
   if params.count != argTypes.count { return false }
   var i = 0
   while i < params.count {
-    if not typeEquiv(params[i].ty, argTypes[i]) { return false }
+    if not argSatisfiesParam(tbl, params[i].ty, argTypes[i]) { return false }
     i = i + 1
   }
   true
 }
 
+// The `TypeId` of a (possibly refined) user type, or `None` for non-`TyUser`.
+func userTypeId(t: in Type): Option[TypeId] {
+  match unrefine(t) {
+    case TyUser(id, _, _) -> Some(value = id)
+    case _                -> None
+  }
+}
+
+// True when an argument of type `argTy` is acceptable for a parameter of type
+// `paramTy` — either `typeEquiv` (the usual case), or interface subtyping
+// (#1488): `argTy` is a user type `T` and `paramTy` is an interface `I` with a
+// registered `impl I for T`.  Conformance is keyed by `TypeId`, so a
+// same-simple-name interface from another package never satisfies the check
+// (#2303).  Used at argument-position checks so a concrete type that conforms
+// to an interface can be passed where the interface is expected
+// (`invoiceTotal(feed: PriceFeed, …)` called with a `TrackedFeed`).
+func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): Bool {
+  if typeEquiv(paramTy, argTy) { return true }
+  match userTypeId(paramTy) {
+    case Some(ifaceId) ->
+      match userTypeId(argTy) {
+        case Some(argId) -> symTableTypeImplements(tbl, argId, ifaceId)
+        case None        -> false
+      }
+    case None -> false
+  }
+}
+
 func findDirectSig(
   sc:       in Scope,
+  tbl:      in SymbolTable,
   sigs:     in Map[String, ResolvedSignature],
   fn:       in Expr,
   arity:    in Int,
@@ -1983,7 +2013,7 @@ func findDirectSig(
       // the arguments, use it.  Only when it does *not* match do we consult the
       // overload candidates — this is the disambiguation for #1488 category C.
       match primary {
-        case Some(s) -> if paramsMatchArgs(s.params, argTypes) { return Some(value = s) }
+        case Some(s) -> if paramsMatchArgs(tbl, s.params, argTypes) { return Some(value = s) }
         case None    -> {}
       }
       // Overload pick (#1488 category C): the primary didn't match the argument
@@ -1998,7 +2028,7 @@ func findDirectSig(
       var ci = 0
       while ci < candidates.count {
         val cand = candidates[ci]
-        if paramsMatchArgs(cand.params, argTypes) { return Some(value = cand) }
+        if paramsMatchArgs(tbl, cand.params, argTypes) { return Some(value = cand) }
         ci = ci + 1
       }
       // No candidate matched the arguments — fall back to the primary so the
