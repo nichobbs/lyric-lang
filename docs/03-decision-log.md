@@ -4331,7 +4331,7 @@ slice of the ecosystem-DX epic #1968.
 - **`lyric run` is unchanged** and remains the build-and-execute dev loop with
   an explicit source file. The build/run split is deliberate: bare `lyric`
   produces an artifact predictably; execution stays opt-in.
-- **Manifest auto-discovery** is a new `Lyric.Workspace.findNearestManifest`
+- **Manifest auto-discovery** is a new `Lyric.Discovery.findNearestManifest`
   that returns the nearest `lyric.toml` parsing with a `[package]` section
   (a pure `[workspace]` root is skipped). `lyric build` and `lyric restore`
   use it when given no source/`--manifest`. Explicit `--manifest`/positional

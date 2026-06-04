@@ -85,6 +85,7 @@ import Lyric.Manifest as Mf   // parseManifest(text, filePath) -> Result[Manifes
 import Lyric.Pack as Pack     // publishCsproj, restoreCsproj, xmlEscape, sanitisedPackageName
 import Lyric.Lexer             // Diagnostic, DiagnosticSeverity, DiagError, DiagWarning, Span, Position
 import Lyric.Workspace as Ws   // findWorkspaceRoot, findMember, resolveDep, WorkspaceContext
+import Lyric.Discovery as Disc // findNearestManifest — nearest lyric.toml walking up from cwd
 import Lyric.GitDep as GitDep  // resolve(url, ref, subdir) -> Result[GitDepResult, String]
 import Lyric.Lockfile as LF    // emptyLockFile, addOrUpdatePackage, serializeLockFile, parseLockFile
 import Std.ProcessCapture as ProcessCapture  // runCapture(exe, args, stdin) -> String
@@ -106,6 +107,7 @@ import Lyric.OpenApiParser as OAParser // parseSpec(json) -> Result[ParsedSpec, 
 import Lyric.OpenApiGen as OAGen       // generateOpenApi(spec, clientName, packageName) -> String
 import Lyric.Lsp as Lsp                // lspRunLoop() — language server stdio loop
 import Lyric.CfgGate as CfgGate        // isCfgGatedOut, assembleDirectoryPackageSources (#1123, #1124)
+import Lyric.CliSuggest as Suggest     // suggestCommand — did-you-mean for unknown commands
 
 func VERSION(): String { "0.1.0" }
 
@@ -173,86 +175,13 @@ func printUsage(): Unit {
   printErr(usageText())
 }
 
-// The set of dispatchable command names, used both for did-you-mean
-// suggestions and to keep the suggestion list in sync with the dispatcher.
-func knownCommands(): List[String] {
-  val cmds: List[String] = newList()
-  cmds.add("build")
-  cmds.add("run")
-  cmds.add("fmt")
-  cmds.add("lint")
-  cmds.add("prove")
-  cmds.add("doc")
-  cmds.add("public-api-diff")
-  cmds.add("restore")
-  cmds.add("publish")
-  cmds.add("search")
-  cmds.add("repl")
-  cmds.add("test")
-  cmds.add("bench")
-  cmds.add("openapi")
-  cmds.add("lsp")
-  cmds.add("help")
-  cmds
-}
-
-func minInt(a: in Int, b: in Int): Int { if a < b { a } else { b } }
-
-// Levenshtein edit distance — small two-row DP.  Inputs are short command
-// names, so the O(n*m) cost is negligible.
-func editDistance(a: in String, b: in String): Int {
-  val n = a.length
-  val m = b.length
-  if n == 0 { return m }
-  if m == 0 { return n }
-  var prev: List[Int] = newList()
-  var j = 0
-  while j <= m { prev.add(j); j += 1 }
-  var i = 1
-  while i <= n {
-    val cur: List[Int] = newList()
-    cur.add(i)
-    var k = 1
-    while k <= m {
-      val cost = if a[i - 1] == b[k - 1] { 0 } else { 1 }
-      val del = prev[k] + 1
-      val ins = cur[k - 1] + 1
-      val sub = prev[k - 1] + cost
-      cur.add(minInt(minInt(del, ins), sub))
-      k += 1
-    }
-    prev = cur
-    i += 1
-  }
-  prev[m]
-}
-
-// Return the closest known command to `cmd` when it is within edit distance 2,
-// for "did you mean 'build'?" suggestions on an unknown command.
-func suggestCommand(cmd: in String): Option[String] {
-  val cmds = knownCommands()
-  var best: Option[String] = None
-  var bestDist = 1000000
-  var i = 0
-  while i < cmds.count {
-    val c = cmds[i]
-    val d = editDistance(cmd, c)
-    if d < bestDist {
-      bestDist = d
-      best = Some(value = c)
-    }
-    i += 1
-  }
-  if bestDist <= 2 { best } else { None }
-}
-
 // Resolve the manifest a manifest-consuming command should use: an explicit
 // --manifest wins; otherwise discover the nearest lyric.toml by walking up
 // from the current directory (the project-aware default).
 func discoverManifest(explicit: in Option[String]): Option[String] {
   match explicit {
     case Some(p) -> Some(value = p)
-    case None    -> Ws.findNearestManifest(Environment.currentDirectory())
+    case None    -> Disc.findNearestManifest(Environment.currentDirectory())
   }
 }
 
@@ -2879,7 +2808,7 @@ pub func main(argv: in slice[String]): Int {
   // Bare `lyric` builds the discovered project (the project-aware default).
   // Outside a project it is still a usage error, not a silent no-op.
   if argv.length == 0 {
-    match Ws.findNearestManifest(Environment.currentDirectory()) {
+    match Disc.findNearestManifest(Environment.currentDirectory()) {
       case Some(p) -> {
         // Forward the discovered path so cmdBuild doesn't walk the tree again.
         val buildArgv: List[String] = newList()
@@ -2973,7 +2902,7 @@ pub func main(argv: in slice[String]): Int {
   }
 
   printErr("unknown command: " + cmd)
-  match suggestCommand(cmd) {
+  match Suggest.suggestCommand(cmd) {
     case Some(s) -> printErr("did you mean '" + s + "'?")
     case None    -> ()
   }

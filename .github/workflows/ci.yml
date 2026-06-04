@@ -1102,6 +1102,85 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/mono_shadow_self_test.l
 
+      # CLI did-you-mean suggestion self-test — exercises Lyric.CliSuggest
+      # (editDistance / suggestCommand) via native `lyric test` with
+      # `LYRIC_LOAD_COMPILER=1` (imports the compiler package Lyric.CliSuggest).
+      # Pure logic (Std.Core/Collections only), so it runs cleanly through the
+      # in-process bundle.  Part of the ecosystem-DX epic #1968 (#1976/#1988).
+      - name: CLI-suggest self-test (native lyric test)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping cli-suggest self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping cli-suggest self-test"
+            exit 0
+          fi
+          LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/cli_suggest_self_test.l
+
+      # CLI project-aware-defaults end-to-end smoke test — exercises
+      # findNearestManifest (Lyric.Discovery), the bare-`lyric` build default,
+      # and the did-you-mean / --help UX through the real binary (#1968:
+      # #1969/#1970/#1976/#1988).  This is the integration counterpart to the
+      # cli-suggest unit self-test: findNearestManifest itself can't be a
+      # `lyric test` self-test because that path can't yet run host-backed
+      # stdlib (Std.File) at runtime (#2001), so we drive the behaviour
+      # end-to-end via the compiled CLI instead.
+      - name: CLI project-aware-defaults e2e smoke test
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping CLI e2e smoke test"
+            exit 0
+          fi
+          bin_abs="$(pwd)/$lyric_bin"
+          work="$(mktemp -d)"
+          mkdir -p "$work/src/nested"
+          cat > "$work/lyric.toml" <<'TOML'
+          [package]
+          name    = "Demo"
+          version = "0.1.0"
+
+          [project]
+          name            = "Demo"
+          output          = "single"
+          output_assembly = "Demo.dll"
+
+          [project.packages]
+          "Demo" = "src/main.l"
+          TOML
+          cat > "$work/src/main.l" <<'LYR'
+          package Demo
+          import Std.Core
+          import Std.Console as Console
+          pub func main(): Int { Console.println("ok"); 0 }
+          LYR
+          # 1. Bare `lyric` from a nested subdir discovers the project and builds it.
+          ( cd "$work/src/nested" && "$bin_abs" )
+          test -f "$work/bin/Demo.dll" || { echo "expected $work/bin/Demo.dll"; exit 1; }
+          # 2. --help exits 0.
+          "$bin_abs" --help >/dev/null
+          # 3. Unknown command exits non-zero and suggests the nearest command.
+          if "$bin_abs" buld >/tmp/lyric_buld.out 2>&1; then
+            echo "expected non-zero exit for unknown command"; exit 1
+          fi
+          grep -q "did you mean 'build'?" /tmp/lyric_buld.out || {
+            echo "expected did-you-mean suggestion"; cat /tmp/lyric_buld.out; exit 1; }
+          # 4. Bare `lyric` outside any project exits non-zero (usage).
+          empty="$(mktemp -d)"
+          if ( cd "$empty" && "$bin_abs" ); then
+            echo "expected non-zero exit for bare lyric outside a project"; exit 1
+          fi
+          echo "CLI project-aware-defaults e2e smoke test passed"
+
       # Coverage collection — informational only, not a blocking gate (#1117).
       # Runs on push to main (not pull_request) to keep PR latency low.
       # Uses `dotnet-coverage` CLI against the same Expecto-based test
