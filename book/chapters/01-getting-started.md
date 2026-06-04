@@ -95,13 +95,32 @@ project's `lyric.toml` by walking up from your working directory — so they wor
 from any subdirectory. (`lyric run` still takes an explicit source file.) Run
 `lyric --help` for the grouped command list.
 
-> **Native AOT — not yet available.** A self-contained Native AOT binary (no
-> .NET runtime needed at deployment) is a planned deliverable, not a shipped
-> feature: there is no `--aot` flag today, and `<PublishAot>` is not yet wired
-> into the compiler (`docs/41-self-hosted-compiler-gap-analysis.md` H13,
-> sequenced as `docs/36-v1-roadmap.md` §R7.5). For now, deploy the produced
-> `hello.dll` and run it with `dotnet hello.dll`, or install the compiler as a
-> .NET global tool (`dotnet tool install lyric`).
+### Native binaries — `lyric build --release`
+
+For deployment, `lyric build --release hello.l` produces a **self-contained
+Native AOT binary** — a single executable with no .NET runtime required on the
+target machine:
+
+```sh
+lyric build --release hello.l
+# Produces: hello   (a native executable)
+./hello
+```
+
+Under the hood the compiler builds the managed DLL, generates a small host
+project referencing it and the standard library, and runs
+`dotnet publish -p:PublishAot=true`; any ILC trim/AOT warnings are shown.
+`--rid <rid>` selects a runtime identifier (default: your host), and `-o`
+overrides the output path.
+
+> **Scope today.** `--release` covers single-file programs on the .NET target.
+> Project-mode `--release` and the JVM target (GraalVM `native-image`) are
+> tracked in [#1975] and fail loud rather than emitting a managed artifact. For
+> a project, build the framework-dependent DLL (`lyric build`) and run it with
+> `dotnet`, or install the compiler as a .NET global tool
+> (`dotnet tool install lyric`).
+
+[#1975]: https://github.com/nichobbs/lyric-lang/issues/1975
 
 ## The anatomy of a Lyric file
 

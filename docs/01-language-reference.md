@@ -1269,7 +1269,9 @@ method-syntax form.
 
 ### 13.1 Compiler
 
-`lyric build` — compiles a project. `lyric build --release` for release mode. `lyric build --aot` for Native AOT _(planned; not yet implemented — `<PublishAot>` is not wired and the flag is unrecognised today. Tracked as `docs/36-v1-roadmap.md` §R7.5 / `docs/41` H13.)_
+`lyric build` — compiles a project to a framework-dependent `.dll` (the fast inner loop). `lyric build --release <source.l>` produces a **self-contained Native AOT binary** (no managed runtime required at the deployment target): the compiler builds the managed DLL, generates a host project that references it plus the stdlib bundle, and runs `dotnet publish -p:PublishAot=true`, surfacing ILC trim/AOT warnings. `--rid <rid>` overrides the host runtime identifier (default: auto-detected). The native binary is written to the source stem (no extension) unless `-o` overrides it.
+
+Currently `--release` covers **single-file** programs on the **.NET** target. Project-mode `--release` (multi-package bundles) and the JVM target (GraalVM `native-image`, designed behind the same `ReleaseTarget` seam) are tracked in #1975; both fail loud rather than silently producing a managed artifact.
 
 **Project-aware defaults.** Running `lyric` with no command builds the current
 project: it discovers the nearest `lyric.toml` by walking up from the working
