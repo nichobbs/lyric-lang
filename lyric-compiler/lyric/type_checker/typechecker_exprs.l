@@ -999,7 +999,15 @@ func resolveExprPath(
     case None    -> {}
   }
   match symTableTryFindOne(tbl, name) {
-    case Some(sym) -> checkImportedVisibility(sym, span, diag)
+    case Some(sym) -> {
+      checkImportedVisibility(sym, span, diag)
+      // A bare union-case reference (`None`, or a no-arg case) is the parent
+      // union with uninferable (`TyError`) type args (#2142 prerequisite).
+      match sym.kind {
+        case DKUnionCase(_, _) -> return inferUnionCaseConstruction(tbl, diag, sym, newList(), span)
+        case _                 -> {}
+      }
+    }
     case None    -> {
       diag.add(errorDiagnostic("T0020", "unknown name '" + name + "'", span))
     }
@@ -1231,6 +1239,121 @@ func constructorSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §5b. Union-case constructor typing (#2142 prerequisite).
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `Some(value = x)` / `Ok(v)` / `None` are union-case constructors, not
+// functions or record ctors — they were resolving to `TyError`.  Type them as
+// the *parent union instantiated with the type args inferred from the
+// arguments*: `Some(value: String)` -> `Option[String]`.  A case with no fields
+// (`None`) or an uninferable generic position yields `TyError` type-args (kept
+// lenient — `None` is `Option[?]` for any `?`).
+
+// The union-case symbol for a constructor reference `fn` (last path segment).
+func unionCaseSymbolOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
+  match fn.kind {
+    case EPath(p) ->
+      if p.segments.count >= 1 {
+        match symTableTryFindOne(tbl, p.segments[p.segments.count - 1]) {
+          case Some(sym) ->
+            match sym.kind {
+              case DKUnionCase(_, _) -> Some(value = sym)
+              case _                 -> None
+            }
+          case None -> None
+        }
+      } else { None }
+    case _ -> None
+  }
+}
+
+func parentUnionDeclOf(tbl: in SymbolTable, parentId: in TypeId): Option[UnionDecl] {
+  var i = 0
+  while i < tbl.symbols.count {
+    match tbl.symbols[i].kind {
+      case DKUnion(uid, decl) -> if typeIdEq(uid, parentId) { return Some(value = decl) }
+      case _ -> {}
+    }
+    i = i + 1
+  }
+  None
+}
+
+func unionDeclGenericNames(decl: in UnionDecl): List[String] {
+  val names: List[String] = newList()
+  match decl.generics {
+    case None    -> {}
+    case Some(g) -> {
+      var j = 0
+      while j < g.params.count {
+        match g.params[j] {
+          case GPType(nm, _)     -> names.add(nm)
+          case GPValue(nm, _, _) -> names.add(nm)
+        }
+        j = j + 1
+      }
+    }
+  }
+  names
+}
+
+func unionCaseFieldTypes(tbl: in SymbolTable, diag: in List[Diagnostic], uc: in UnionCase, genericNames: in List[String]): List[Type] {
+  val ctx = newGenericContext()
+  gctxPush(ctx, genericNames)
+  val result: List[Type] = newList()
+  var i = 0
+  while i < uc.fields.count {
+    val fty = match uc.fields[i] {
+      case UFNamed(_, te, _) -> resolveType(tbl, ctx, diag, te)
+      case UFPos(te, _)      -> resolveType(tbl, ctx, diag, te)
+    }
+    result.add(fty)
+    i = i + 1
+  }
+  result
+}
+
+// For each parent generic name, take the argument type at the field position
+// that is exactly `TyVar(name)` (single-level inference; nested generic
+// positions fall back to `TyError`).
+func inferGenericArgs(genericNames: in List[String], fieldTypes: in List[Type], argTypes: in List[Type]): List[Type] {
+  val result: List[Type] = newList()
+  var g = 0
+  while g < genericNames.count {
+    var found: Type = TyError
+    var i = 0
+    while i < fieldTypes.count and i < argTypes.count {
+      match fieldTypes[i] {
+        case TyVar(nm) -> if nm == genericNames[g] { found = argTypes[i] }
+        case _ -> {}
+      }
+      i = i + 1
+    }
+    result.add(found)
+    g = g + 1
+  }
+  result
+}
+
+// The parent union type for a union-case symbol, instantiated with the type args
+// inferred from `argTypes` (empty for a bare-name reference like `None`).
+func inferUnionCaseConstruction(tbl: in SymbolTable, diag: in List[Diagnostic], caseSym: in Symbol, argTypes: in List[Type], span: in Span): Type {
+  match caseSym.kind {
+    case DKUnionCase(parentId, uc) ->
+      match parentUnionDeclOf(tbl, parentId) {
+        case Some(decl) -> {
+          val gnames = unionDeclGenericNames(decl)
+          val ftypes = unionCaseFieldTypes(tbl, diag, uc, gnames)
+          val targs  = inferGenericArgs(gnames, ftypes, argTypes)
+          TyUser(id = parentId, name = decl.name, args = targs)
+        }
+        case None -> TyError
+      }
+    case _ -> TyError
+  }
+}
+
 pub func inferExpr(
   sc:   in Scope,
   tbl:  in SymbolTable,
@@ -1353,6 +1476,9 @@ pub func inferExpr(
           sig.returnTy
         }
         case None ->
+          match unionCaseSymbolOf(tbl, fn) {
+            case Some(caseSym) -> inferUnionCaseConstruction(tbl, diag, caseSym, argTypes, e.span)
+            case None ->
           match constructorSymbolOf(tbl, fn) {
             case Some(ctorSym) -> inferConstruction(tbl, diag, ctorSym, args, e.span)
             case None ->
@@ -1380,6 +1506,7 @@ pub func inferExpr(
                   TyError
                 }
               }
+          }
           }
       }
     }

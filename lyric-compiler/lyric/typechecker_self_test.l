@@ -88,6 +88,25 @@ func testReturnTypeMismatch(): Unit {
   assertTrue(hasDiagCode(cr, "T0070"), "ret-mismatch: T0070 emitted")
 }
 
+// #2142 prerequisite: a generic union-case constructor is typed as the parent
+// union instantiated from the argument types — `Sm(value: String)` on
+// `union Opt[T] { Sm(value: T) … }` is `Opt[String]`, not `TyError`.  The
+// distinguishing case: an `Opt[Int]` return with an `Sm(value = "s")` body MUST
+// mismatch (T0070) — were the constructor still `TyError`, it would unify.
+func testGenericUnionCtorTyped(): Unit {
+  val bad = "package P\nunion Opt[T] {\n  case Sm(value: T)\n  case Nn\n}\nfunc f(): Opt[Int] { Sm(value = \"s\") }\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0070"), "union-ctor: Sm(String) is Opt[String], mismatches Opt[Int]")
+  val ok = "package P\nunion Opt2[T] {\n  case Sm2(value: T)\n  case Nn2\n}\nfunc g(): Opt2[String] { Sm2(value = \"s\") }\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "union-ctor-ok: Sm2(String) matches Opt2[String]")
+}
+
+// A no-field case (`Nn` — like `None`) has uninferable type args, so it is the
+// parent union with `TyError` args and leniently matches any instantiation.
+func testGenericUnionNullaryLenient(): Unit {
+  val src = "package P\nunion Opt3[T] {\n  case Sm3(value: T)\n  case Nn3\n}\nfunc f(): Opt3[Int] { Nn3 }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "union-nullary: Nn3 leniently matches Opt3[Int]")
+}
+
 func testValTypeMismatch(): Unit {
   val src = "package P\nfunc f(): Unit {\n  val x: Int = \"oops\"\n}\n"
   val cr = parseCheck(src)
@@ -1075,6 +1094,8 @@ func main(): Unit {
   testUnionCasesRegistered()
   testDuplicateNameError()
   testReturnTypeMismatch()
+  testGenericUnionCtorTyped()
+  testGenericUnionNullaryLenient()
   testValTypeMismatch()
   testUnsafeBlockTyped()
   testDivergingBlockIsNever()
