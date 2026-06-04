@@ -30,6 +30,7 @@ extern type StringReader = "System.IO.StringReader"
 func newStringReader(content: in String): StringReader = ()
 
 @externTarget("System.IO.StringReader.ReadToEndAsync")
+@externInstance
 async func stringReaderReadToEnd(reader: in StringReader): String = ()
 
 // Void async path: Task.Delay(int) returns Task (non-generic); the emitter

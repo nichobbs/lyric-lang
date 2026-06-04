@@ -6866,9 +6866,30 @@ func emitExternTargetBody(
 
       // Build the method signature blob, encoding class-typed params/return
       // against their resolved TypeRefs.
+      //
+      // For async externs the BCL method returns Task (void) or Task<T> (non-void T).
+      // Encode the actual BCL return type in the MemberRef so the CLR can resolve the
+      // method at JIT time.  retTy (the Lyric-declared T) is used only for the unwrap
+      // callvirt appended below.  Ctors are never async in the BCL; skip them.
+      val bclRetTy =
+        if decl.isAsync and not r.isCtor {
+          val isVoidRet = match retTy { case MVoid -> true case _ -> false }
+          if isVoidRet {
+            MClassRef(typeRefCode = tdrTypeRef(cctx.trTask),
+                      clrFqn = "System.Threading.Tasks.Task")
+          } else {
+            val taskArgs: List[MsilType] = newList()
+            taskArgs.add(retTy)
+            MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1),
+                         headFqn = "System.Threading.Tasks.Task",
+                         typeArgs = taskArgs)
+          }
+        } else {
+          retTy
+        }
       val sig =
         if r.isStatic and not r.isCtor {
-          buildFfiMethodSigCtx(cctx, paramTypes, retTy, false)
+          buildFfiMethodSigCtx(cctx, paramTypes, bclRetTy, false)
         } else if r.isCtor {
           // .ctor: HASTHIS, void return, all params explicit.
           buildFfiMethodSigCtx(cctx, paramTypes, MVoid, true)
@@ -6881,7 +6902,7 @@ func emitExternTargetBody(
             instArgs.add(paramTypes[ii])
             ii = ii + 1
           }
-          buildFfiMethodSigCtx(cctx, instArgs, retTy, true)
+          buildFfiMethodSigCtx(cctx, instArgs, bclRetTy, true)
         }
       val mrRow = ctxAddMemberRef(
         cctx.lctx, tRefRow, r.memberName,
