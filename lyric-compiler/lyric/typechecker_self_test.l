@@ -151,6 +151,17 @@ func testGenericReturnInstantiatedClean(): Unit {
     "generic-return: instantiated Int return compares cleanly with Int")
 }
 
+// #2228: a generic that occurs in multiple parameter positions resolves
+// consistently — `pick(a: T, b: T): T` called with two `Int`s returns `Int`,
+// so a `String` binding mismatches (T0060).  (When the occurrences disagree the
+// inference falls back to `TyError`; that case is already a T0043 at the
+// argument check, so it needs no separate assertion here.)
+func testGenericMultiOccurrenceConsistent(): Unit {
+  val src = "package P\ngeneric[T] func pick(a: in T, b: in T): T { a }\nfunc f(): Unit {\n  val s: String = pick(1, 2)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0060"),
+    "generic-multi: pick(Int, Int) returns Int, mismatches String")
+}
+
 // #1488 (A): `result` is a contextual keyword.  A user-declared local named
 // `result` shadows the contract return-value reference, so its reads take the
 // *binding's* type — not the enclosing function's return type.  Here `f`
@@ -1195,6 +1206,7 @@ func main(): Unit {
   testMatchNullaryNoShadow()
   testGenericReturnInstantiatedMismatch()
   testGenericReturnInstantiatedClean()
+  testGenericMultiOccurrenceConsistent()
   testResultLocalShadowsKeyword()
   testResultLocalKeepsBindingType()
   testValTypeMismatch()

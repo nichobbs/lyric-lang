@@ -1462,19 +1462,41 @@ func findGenericInPairs(name: in String, paramTys: in List[Type], argTys: in Lis
 // For each generic `name`, its inferred concrete type from the call's
 // parameter / argument types (or `TyError` when it can't be inferred — kept
 // lenient so an unconstrained generic return stays a wildcard rather than a
-// spurious mismatch).
+// spurious mismatch).  When a name occurs in more than one parameter position
+// (`pair(a: T, b: T): T`) the occurrences must agree: a second binding that is
+// not `typeEquiv` to the first yields `TyError` for that name (#2228), so an
+// inconsistent call (already a T0043 at the argument check) doesn't produce a
+// misleading concrete return type.
 func inferGenericArgsDeep(names: in List[String], paramTys: in List[Type], argTys: in List[Type]): List[Type] {
   val result: List[Type] = newList()
   var g = 0
   while g < names.count {
-    val found = match findGenericInPairs(names[g], paramTys, argTys) {
-      case Some(v) -> v
-      case None    -> TyError
-    }
-    result.add(found)
+    result.add(inferOneGenericArg(names[g], paramTys, argTys))
     g = g + 1
   }
   result
+}
+
+// Infer the binding for a single generic `name` across all parameter/argument
+// pairs, returning `TyError` when unbound or when two occurrences disagree.
+func inferOneGenericArg(name: in String, paramTys: in List[Type], argTys: in List[Type]): Type {
+  var bound: Type = TyError
+  var haveBinding = false
+  var i = 0
+  while i < paramTys.count and i < argTys.count {
+    match findGenericInPair(name, paramTys[i], argTys[i]) {
+      case Some(v) ->
+        if not haveBinding {
+          bound = v
+          haveBinding = true
+        } else {
+          if not typeEquiv(bound, v) { return TyError }
+        }
+      case None -> {}
+    }
+    i = i + 1
+  }
+  bound
 }
 
 // A generic function's return type instantiated from the call's argument types:
