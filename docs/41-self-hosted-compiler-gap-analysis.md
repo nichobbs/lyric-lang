@@ -163,8 +163,8 @@ supporting all language features."
 | C1 | Type checker is advisory on the single-file build path (`reportDiagnostics`), fatal on the project path (`reportAndAbort`). Type-broken single files compile to broken IL silently; same source diverges between paths. | `bridge.l:92` vs `bridge.l:395` | S (flip) gated on C2 |
 | C2 | Type checker is unsound: several expr forms infer `TyError`, a universal unifier; no record-ctor checking; `index`/`lambda`/`if`/`match`-branch results untyped. **Shipped:** match exhaustiveness (T0016, #1483 split 1: unions/enums/`Bool`/unbounded scalars; `EMatch` infers its scrutinee); `EPropagate` (`?`) unwrap typing (#1483 split 2a). **`EIndex` unblocker shipped (2b, #1901, D-progress-405):** the numeric/character conversion-method family `.toByte()`/`.toInt()`/`.toLong()`/`.toChar()`/`.toDouble()` now type-checks (target primitive) and codegens to native width conversions on **both** targets (MSIL `conv.*`; JVM `i2l`/`l2i`/… with `.toByte()` masked to MSIL's unsigned `conv.u1` semantics), replacing the throw-stub. `slice[Byte]` indexing is now migratable via `acc + b.toInt()`; the `EIndex` element-typing itself follows in the second #1901 PR. Remaining `TyError` forms: `EIndex`, `EIf`/`EMatch`-branch unification, `ELambda`, `EBlock`/`EUnsafe`, `EResult`/`EOld`, tuple-destructure sub-bindings, record-ctor argument checking (most need `returnTy`/`genericNames` threaded into `inferExpr`). | `typechecker_exprs.l`, `typechecker_types.l:130-131`, `typechecker_stmts.l:14-51` | L |
 | C3 | ~~`?` propagation (`EPropagate`) is a no-op — `x?` compiles as `x`, no unwrap, no early-return.~~ **RESOLVED (#1475).** The `Lyric.Propagate` middle-end pass (`lyric-compiler/lyric/propagate.l`, run from `bridge.l` after the elaborator) rewrites `e?` into a `match` that unwraps `Ok`/`Some` and early-returns `Err`/`None`, keyed off the enclosing function's declared return type; a non-`Result`/`Option` enclosing function is rejected with `F0020`. (`try?`/`ETry` is never produced by the self-hosted parser, so its codegen arm is dead.) Verified by `propagate_self_test.l` (incl. `?` inside a `while` loop, after #1779 fixed the `List[ValueType]` element-comparison miscompile). Note: `?` inside an impl/interface method body is still blocked by a pre-existing early-`return` codegen defect, #1784. | `propagate.l`; `bridge.l` | M |
-| C4 | `await`/`spawn` lower synchronously; `async func` returns a bare value, not `Task[T]`; no `IAsyncStateMachine`. Silent miscompile of every async program. | `codegen.l:1755-1758,1782-1784,983-999`; no state machine in `msil/*` | XL |
-| C5 | Async generators use eager collect-all into `List<object>`, not lazy `IEnumerable`/`IAsyncEnumerable`; return type forced to List; unbounded generators buffer forever. | `codegen.l:1760-1780,983` | XL |
+| C4 | `await`/`spawn` lower synchronously; `async func` returns a bare value, not `Task[T]`; no `IAsyncStateMachine`. Silent miscompile of every async program. **Planned/de-risked in epic #2070** (full IL blueprint, class-SM + AST-pre-pass synthesis, sequenced slices). | `codegen.l` `EAwait`/`ESpawn` (2625-2653); no state machine in `msil/*` | XL (#2070) |
+| C5 | Async generators use eager collect-all into `List<object>`, not lazy `IEnumerable`/`IAsyncEnumerable`; return type forced to List; unbounded generators buffer forever. **Planned in epic #2070** (slice 5: eager-producer `IAsyncEnumerable[T]` class first, then async-iterator on the await engine). | `codegen.l` generator path (6953-7135) | XL (#2070) |
 | C6 | **Fixed (#1530).** Indexed assignment `a[i] = v` previously silently discarded the store (value evaluated then popped); the `EIndex` assignment target now emits `List[object]::set_Item`. Compound indexed forms (`a[i] += v`) hard-fail with a clear build error pending element-type plumbing (#1481). | `codegen.l` `lowerAssignExprMsil` EIndex arm | Resolved |
 | C7 | ~~`defer` runs its body inline immediately, not at scope exit.~~ **Resolved (#1477 / D-progress-374):** `defer { D }` lowers the rest of its scope to `try { rest } finally { D }`, so D runs on fall-off, early `return` (via the function epilogue, #1477 foundation), `break`/`continue` (via `leave`), and exception unwind; multiple defers nest in reverse order. | `codegen.l` `lowerStmtsFromMsil` / `lowerStmtsExprFromMsil` | ✅ |
 | C8 | User-defined generic *types* are type-erased to one non-generic TypeDef with `object` fields; type-param field `T` resolves to a bogus `MClass("Pkg.T")`. No GenericParam rows; no per-type mono. | `codegen.l:4718-4791,1235,1268`; no GenericParam in `lowering.l` | L |
@@ -369,8 +369,25 @@ should precede feature-completion work, because they stop *silent* wrongness.
 ### Band 3 — Async (CRITICAL)
 - Port `AsyncStateMachine.fs` + `AsyncGenerator.fs` to self-hosted MSIL codegen
   (state machine, `Task[T]`/`ValueTask[T]` builders, lazy `IAsyncEnumerable[T]`,
-  `CancellationToken` threading). Until then, make `await`/`spawn`/async-generators
-  **panic with a tracked-issue message** rather than miscompile.
+  `CancellationToken` threading). **Tracked, planned, and de-risked in epic
+  #2070** — which carries the full IL blueprint (from a deep read of the F#
+  sources), the settled design decisions (class state machine; synthesize it as
+  an AST pre-pass in the `liftLambdasMsil` slot so `addPackageTokens` budgets its
+  rows), the ranked emitter-capability gaps (`MLdflda`; BCL async
+  `TypeRef`/`MemberRef`/`MethodSpec` wiring — the generic-instance substrate is
+  already present; `MethodImpl` rows for `SetStateMachine`), and a five-slice
+  sequence (Phase A → single await → multi-await + promoted locals → extern
+  pass-throughs + `spawn` → lazy generators).
+- **Correction to the earlier "make it panic" recommendation:** a fail-loud
+  interim is **not** viable. 139 async funcs across `Std.Http`/`Std.Process`/
+  `Std.Rest`/`Std.Task` + ecosystem compile today via the no-op synchronous
+  lowering and their tests pass; panicking would break the stdlib build. Because
+  every one of those uses `await`, the real-state-machine flip is **all-or-
+  nothing**: async codegen cannot emit `Task[T]`-returning machines until `await`
+  unwraps correctly everywhere. The first landable PR is therefore the whole core
+  engine (Phase A + single/multi await + extern pass-throughs), with the stdlib
+  async tests as the regression gate. A `Task.Run`-blocking shortcut is a
+  regression from the F# path's real `IAsyncStateMachine` and is out of bounds.
 
 ### Band 4 — Feature completion (HIGH)
 - User generic types (monomorphize or reify — decision required), protected-type
