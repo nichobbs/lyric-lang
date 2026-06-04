@@ -1300,6 +1300,16 @@ remains the build-and-execute dev loop and still takes an explicit source file.
 an unrecognised command prints a "did you mean …?" suggestion when a close
 match exists.
 
+**Scaffolding.** `lyric init [<dir>] [--name <Name>] [--lib] [--force]` scaffolds
+a new package in `<dir>` (default the current directory, created if absent): a
+`lyric.toml` with `[package]`, `[project]`, and an empty `[dependencies]` table;
+`src/main.l` (a `func main(): Int` hello-world) or `src/lib.l` with `--lib`; and
+a `.gitignore`. The package name is derived from the directory basename — with a
+lowercase leading letter capitalised to the `UpperCamelCase` convention — unless
+`--name` overrides it; a candidate that is not a valid identifier is rejected
+with a message suggesting `--name`. An existing `lyric.toml` is not overwritten
+without `--force`; a pre-existing `.gitignore` is left untouched.
+
 **Auto-restore on build.** A project-mode `lyric build` automatically resolves
 dependencies (the equivalent of `lyric restore`) when the manifest declares any
 `[dependencies]` and `lyric.lock` is missing or out of sync with the declared

@@ -20063,3 +20063,32 @@ Phase 6 shims).
 
 Docs: D083 (decision log), language reference §13.1, book appendix-b CLI
 reference.
+
+### D-progress-412 — `lyric init`: project scaffolder (#1968 epic; #1972; D084)
+
+**Status:** Shipped (`lyric-compiler/lyric/init.l`, `lyric-compiler/lyric/cli.l`,
+`cli_suggest.l`).
+
+`lyric init [<dir>] [--name <Name>] [--lib] [--force]` scaffolds a new package so
+a newcomer never hand-writes `lyric.toml` or the source layout:
+
+- Creates `<dir>` (default the current directory) via
+  `Std.Directory.createRecursive`, then writes a `lyric.toml` (`[package]` +
+  `[project]` + `[project.packages]` + empty `[dependencies]`), `src/main.l`
+  (hello-world `func main(): Int`) or `src/lib.l` with `--lib`, and a
+  `.gitignore`.
+- **`derivePackageName`** capitalises a lowercase leading letter to the
+  `UpperCamelCase` convention (`demo` → `Demo`) and rejects non-identifier
+  candidates with a `--name` hint. `--name` overrides; `--force` overwrites an
+  existing `lyric.toml`; a pre-existing `.gitignore` is left untouched.
+- New `Lyric.Init` package dispatched from `cli.l`; registered in
+  `knownCommands` (did-you-mean) and the usage text.
+
+Verified end-to-end against `bin/lyric`: `init demo` → `run src/main.l`
+("Hello from Demo!") + `build` (Demo.dll); `--lib` builds a library; overwrite
+refused without `--force`; `--force`/`--name` work; `bad-name` rejected;
+lowercase dir capitalised. New "lyric init e2e" CI step. Stage-1 + AOT clean.
+MSIL target.
+
+Docs: D084 (decision log), language reference §13.1, book getting-started
+(scaffolding section) + appendix-b CLI reference.

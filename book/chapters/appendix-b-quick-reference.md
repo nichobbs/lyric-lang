@@ -732,6 +732,12 @@ String method-syntax (UFCS) ops lower to host `String` methods, no import needed
 ## B.10 CLI commands
 
 ```sh
+# Scaffold a new project
+lyric init demo                        # app package in ./demo (lyric.toml + src/main.l + .gitignore)
+lyric init                             # scaffold in the current directory
+lyric init mylib --lib                 # library skeleton (src/lib.l)
+lyric init demo --name Demo --force    # override the package name; overwrite an existing lyric.toml
+
 # Project-aware defaults
 lyric                                  # build the current project (discovers nearest lyric.toml)
 lyric --help                           # grouped command list (also -h / help); exits 0
