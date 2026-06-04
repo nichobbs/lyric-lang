@@ -108,6 +108,18 @@ test "auto-FFI dispatches instance methods via callvirt" {
               "instance dispatch on a different receiver")
 }
 
+// `Object.Equals(object, object): bool` accepts two `object` parameters
+// (paramByte == 0x1C).  Passing two Int args forces the boxing path
+// (`box int32` before the call) added by PR #1713 — without it the call
+// would push raw i4 values where the IL signature expects `object`,
+// failing IL verification at JIT time.  `Object.Equals` then unboxes and
+// compares structurally, so equal Ints return true and unequal Ints return
+// false.
+test "auto-FFI boxes value-type args to object parameters" {
+  assertTrue(Obj.Equals(42, 42), "Equals(boxed 42, boxed 42) = true")
+  assertTrue(not Obj.Equals(42, 43), "Equals(boxed 42, boxed 43) = false")
+}
+
 // Closes the Phase 3c param/return matrix for instance dispatch: an instance
 // method that itself returns a class ref (chaining), and one that takes a
 // class-ref parameter.
