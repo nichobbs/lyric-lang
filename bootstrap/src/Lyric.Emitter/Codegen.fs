@@ -817,6 +817,22 @@ let rec peekExprType (ctx: FunctionCtx) (e: Lyric.Parser.Ast.Expr) : ClrType =
         match items with
         | [] -> typeof<obj[]>
         | first :: _ -> (peekExprType ctx first).MakeArrayType()
+    | EIndex (recv, [_]) ->
+        // Mirror emitExpr's element-type inference so a peek of `xs[i]` sees
+        // the element type (needed by the primitive-conversion-method guard:
+        // `back[0].toInt()` where `back : slice[Byte]` must peek `back[0]` as
+        // `Byte`).  Arrays → element type; strings → Char; otherwise the BCL
+        // `get_Item` return type (List[T] etc.), substituted for the receiver.
+        let recvTy = peekExprType ctx recv
+        if recvTy.IsArray then
+            match Option.ofObj (recvTy.GetElementType()) with
+            | Some t -> t
+            | None   -> typeof<obj>
+        elif recvTy = typeof<string> then typeof<char>
+        else
+            match (try Option.ofObj (recvTy.GetMethod "get_Item") with _ -> None) with
+            | Some m when not m.ReturnType.ContainsGenericParameters -> m.ReturnType
+            | _ -> typeof<obj>
     | ECall ({ Kind = EPath { Segments = [name] } }, args) ->
         // Builtins with a known result type (codegen-only, not in
         // ctx.Funcs) take precedence so peek matches the actual emit.
@@ -1756,6 +1772,34 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         | None ->
             failwithf "M2.2 codegen: receiver %s is not a known projectable view type"
                 recvTy.Name
+
+    // ---- primitive numeric / char conversion methods ------------------
+    //
+    // `b.toInt()` / `.toLong()` / `.toDouble()` / `.toByte()` / `.toChar()`
+    // on a primitive receiver.  Language reference §541: numeric/character
+    // conversions are explicit (no implicit widening).  The self-hosted
+    // compiler already implements these; this restores the same surface in
+    // the stage-0 emitter so spec-correct code like summing a `slice[Byte]`
+    // element into an `Int` (`b[o].toInt()`) compiles here too instead of
+    // hitting E0012.  `Byte` is stored as int32 on the CLR, so `.toInt()` is
+    // a `conv.i4` no-op; `.toByte()` is `conv.u1` (reduce modulo 256, the
+    // unsigned 0..255 spec); narrowing truncates toward zero (CLR `conv`
+    // semantics).  A side-effect-free `peekExprType` guard keeps non-primitive
+    // receivers on their existing dispatch paths.
+    | ECall ({ Kind = EMember (recv, methodName) }, [])
+        when (methodName = "toInt" || methodName = "toLong" || methodName = "toDouble"
+              || methodName = "toByte" || methodName = "toChar")
+             && (let rt = peekExprType ctx recv in
+                 rt = typeof<byte> || rt = typeof<int> || rt = typeof<int64>
+                 || rt = typeof<double> || rt = typeof<char>) ->
+        let _ = emitExpr ctx recv
+        match methodName with
+        | "toInt"    -> il.Emit(OpCodes.Conv_I4); typeof<int>
+        | "toLong"   -> il.Emit(OpCodes.Conv_I8); typeof<int64>
+        | "toDouble" -> il.Emit(OpCodes.Conv_R8); typeof<double>
+        | "toByte"   -> il.Emit(OpCodes.Conv_U1); typeof<byte>
+        | "toChar"   -> il.Emit(OpCodes.Conv_U2); typeof<char>
+        | _          -> typeof<int>
 
     // ---- distinct type static factory / derive helper -----------------
     //
