@@ -393,7 +393,15 @@ func stripPackageAndImports(source: in String): String {
     if atEnd or isNewline {
       val lineLen = pos - lineStart
       val line = if lineLen > 0 { source.substring(lineStart, lineLen) } else { "" }
+      // Skip `package` / `import` lines (each file re-declares them) and
+      // `//!` module-doc header lines.  A multi-file package's bodies are
+      // concatenated into one source; a `//!` is only valid *before*
+      // `package`, so any `//!` left in a stripped body would land
+      // mid-stream once concatenated and parse as `P0040` "expected an
+      // item declaration".  The on-disk files keep their `//!`; only this
+      // in-memory concatenation drops it.
       val skip = Str.startsWith(line, "package ") or Str.startsWith(line, "import ")
+        or Str.startsWith(line, "//!")
       if not skip {
         lines.add(line)
       }
