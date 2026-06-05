@@ -20918,8 +20918,43 @@ package's own function signatures**.  `Std.Regex.tryCompile`'s
   (synchronous unwrap via `GetAwaiter().GetResult()`); returning a live `Task<T>`
   requires a separate kickoff shape.
 - Type-checker propagation of `async func` return types through call sites.
+- `var`-binding promotion (only `val`/`LBLet` bindings are promoted in Phase B.2).
+- Stack-spill for `await` nested in a binary expression (e.g. `x + await f()`).
 
 **Regression gate:** 847/847 emitter tests + 84/84 CLI tests green.
+
+### D-progress-433 — Band 3 Phase B.2: promoted locals for `async func` with awaits (#2070, D088)
+
+**What shipped:**
+
+- **Promoted-locals protocol** in `lyric-compiler/msil/codegen.l`:
+
+  - `PhaseBCtx` record extended with four new fields: `smFields` (reference to the
+    SM class's live field list), `promotedLocalNames`, `promotedLocalSlots`,
+    `promotedLocalTypes` (parallel lists tracking every promoted `val` binding).
+
+  - `synthesizeAsyncSmPhaseBMsil`: passes `smFields` into the `PhaseBCtx` constructor
+    so that the field list can be mutated during body lowering (the `MRecord` is built
+    from `smFields` AFTER all lowering completes, so on-the-fly additions are visible).
+
+  - `emitPhaseBAwait`: after the awaiter restore / `initobj` / state-reset sequence,
+    emits `ldarg.0; ldfld __local_<name>; stloc <slot>` for every promoted local in
+    `pbc.promotedLocalNames` at the time the resume label is emitted.  Since the list
+    grows sequentially during body lowering, resume label N covers exactly the locals
+    from segments 0..N-1.
+
+  - `lowerStmtMsil` `LBLet` case: when inside a Phase B.1 MoveNext (`fctx.phaseBCtx`
+    non-empty), after the normal `emitStoreSlot`, registers the binding (if not already
+    registered) and emits `ldarg.0; ldloc <slot>; stfld __local_<name>`.
+
+- **`async_sm_self_test.l` extended** — 4 new tests (tests 16–19):
+  - `asyncLocalSurvivesAwait`: `val x = n * 2` used after one await.
+  - `asyncMultiLocalSurvivesAwaits`: two vals survive two awaits.
+  - `asyncLocalBetweenAwaits`: val defined between two awaits survives the second.
+  - `asyncLocalSurvivesThreeAwaits`: val survives three awaits.
+  All 19 tests (7 Phase B.0 + 8 Phase B.1 + 4 Phase B.2) pass.
+
+**Regression gate:** 24/24 emitter async tests green; 19/19 async_sm_self_test.l green.
 
 ### D-progress-431 — self-hosted type checker: range-subtype arithmetic / comparison (#1488 gate, Band-1 of #1470)
 

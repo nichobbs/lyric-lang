@@ -1,19 +1,16 @@
 //! async_sm_self_test.l — regression test for user-defined `async func`
-//! IAsyncStateMachine synthesis (Phase B.0 + B.1, Epic #2070 / D086).
+//! IAsyncStateMachine synthesis (Phase B.0 + B.1 + promoted locals, Epic #2070).
 //!
 //! Phase B.0 covers async functions whose bodies contain NO EAwait nodes.
 //! Phase B.1 covers async functions whose bodies contain one or more EAwait
 //! nodes: real AwaitUnsafeOnCompleted suspension with a state-dispatch switch,
 //! typed awaiter fields, and resume labels.
+//! Promoted locals: val-bindings computed before an await point and used after
+//! it are hoisted to SM fields so they survive between MoveNext invocations.
 //!
 //! Test callers use `await asyncXxx(...)` because the kickoff returns Task<T>
 //! (or Task for void); `emitBlockingAwait` in non-SM contexts synchronously
 //! resolves via GetAwaiter().GetResult().
-//!
-//! Phase B.1 functions (`asyncAddTwo`, `asyncAddThree`, `asyncVoidChain`,
-//! `asyncSumViaAwait`) await other async functions in their bodies, exercising
-//! the full SM machinery including state dispatch, AwaitUnsafeOnCompleted,
-//! resume labels, and awaiter-field stash/restore.
 //!
 //!   lyric test lyric-compiler/lyric/async_sm_self_test.l
 @test_module
@@ -163,4 +160,62 @@ test "Phase B.1: two B.1 functions composed" {
 test "Phase B.1: asyncSumViaAwait correctness" {
   val result = await asyncSumViaAwait(3, 4)
   assertEqualInt(result, 7, "asyncSumViaAwait(3,4) should return 7")
+}
+
+// ── Promoted locals: val-bindings that span await points ─────────────────────
+// val x is defined before the await and used after it.
+// asyncLocalSurvivesAwait(5): x=10, a=6, result=16
+async func asyncLocalSurvivesAwait(n: in Int): Int {
+  val x = n * 2
+  val a = await asyncAddOne(n)
+  x + a
+}
+
+// Two locals before two awaits; both must survive both suspensions.
+// asyncMultiLocalSurvivesAwaits(5): x=10, y=15, a=6, b=6, result=37
+async func asyncMultiLocalSurvivesAwaits(n: in Int): Int {
+  val x = n * 2
+  val y = n + 10
+  val a = await asyncAddOne(n)
+  val b = await asyncAddOne(n)
+  x + y + a + b
+}
+
+// Local defined between two awaits must survive the second suspension.
+// asyncLocalBetweenAwaits(5): a=6, x=18, b=6, result=24
+async func asyncLocalBetweenAwaits(n: in Int): Int {
+  val a = await asyncAddOne(n)
+  val x = a * 3
+  val b = await asyncAddOne(n)
+  x + b
+}
+
+// Local defined before three awaits; must survive all three suspensions.
+// asyncLocalSurvivesThreeAwaits(5): x=15, a=6, b=6, c=6, result=33
+async func asyncLocalSurvivesThreeAwaits(n: in Int): Int {
+  val x = n * 3
+  val a = await asyncAddOne(n)
+  val b = await asyncAddOne(n)
+  val c = await asyncAddOne(n)
+  x + a + b + c
+}
+
+test "promoted locals: val survives one await" {
+  val result = await asyncLocalSurvivesAwait(5)
+  assertEqualInt(result, 16, "asyncLocalSurvivesAwait(5) should return 16")
+}
+
+test "promoted locals: two vals survive two awaits" {
+  val result = await asyncMultiLocalSurvivesAwaits(5)
+  assertEqualInt(result, 37, "asyncMultiLocalSurvivesAwaits(5) should return 37")
+}
+
+test "promoted locals: val defined between awaits survives second await" {
+  val result = await asyncLocalBetweenAwaits(5)
+  assertEqualInt(result, 24, "asyncLocalBetweenAwaits(5) should return 24")
+}
+
+test "promoted locals: val survives three awaits" {
+  val result = await asyncLocalSurvivesThreeAwaits(5)
+  assertEqualInt(result, 33, "asyncLocalSurvivesThreeAwaits(5) should return 33")
 }
