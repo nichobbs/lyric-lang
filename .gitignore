@@ -20,7 +20,7 @@ target/
 
 # lyric test output directories (compiled test DLLs and runtimeconfig)
 .lyric-test/
-
+ 
 # Compiled test DLLs and runtimeconfig files emitted alongside source files
 # by `lyric test` when run without --manifest (standalone mode).
 lyric-compiler/**/*.dll
