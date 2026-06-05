@@ -5148,6 +5148,53 @@ to match the current stage1 glob.
 loop with n=3 (result=6) and n=0 (result=0).  All 21 tests pass.
 
 ---
+## D090 — Band 3 Phase B.3: stack-spill for `EAwait` in expression-position operands (#2070)
+
+**Context:** D088–D089 covered promoted locals for named bindings.  A complementary gap
+existed for *anonymous* intermediate values: when `await expr` appears as a sub-expression
+of a binary operator (e.g. `(await f()) + (await g())`), the left-operand result sits on
+the eval stack while the right operand is being computed.  If the right operand contains an
+`await` that actually suspends, the CLR's `leave` instruction clears the evaluation stack
+at the suspension point — the left-operand value is irrecoverably lost.
+
+**Decision:** Extend `lowerBinopMsil` with stack-spill logic for all binary operators:
+
+- Before lowering the RHS, call `exprContainsAwaitMsil(rhs)` to check whether RHS contains
+  any `EAwait` node.
+- If true, call `phaseBSpillToLocal(pbc, fctx, insns, lhsTy)`:
+  - Allocates a new local slot.
+  - Emits `stloc` to pop the LHS value from the stack into that slot.
+  - Calls `phaseBRegisterAndSyncLocal` to register the slot as a promoted SM field and
+    emit `ldarg.0; ldloc; stfld __local___spill_N` — saving it to the SM immediately so
+    it survives any suspension inside the RHS.
+  - Returns the local index for the caller to use.
+- Lower RHS normally (including any awaits within it).
+- After RHS is complete, reload the spilled LHS if needed:
+  - **Commutative operators** (`+`, `*`, `xor`, `==`, `!=`): emit `ldloc spillIdx` after
+    RHS; stack becomes [rhs_result, lhs_result]; the op produces the correct result.
+  - **Non-commutative operators** (`-`, `/`, `%`, `<`, `>`, `<=`, `>=`): allocate a
+    temporary RHS slot, emit `stloc rhsTemp; ldloc spillIdx; ldloc rhsTemp`  to restore
+    [lhs, rhs] order before the op.  The RHS temp does not need to be promoted (it is
+    only used within the same MoveNext invocation, after the await completes).
+- **String concatenation** (`BAdd` on `MString`): the LHS is already stored to a named
+  local (`__sadd_N`) before lowering the RHS.  When RHS contains an await, that local is
+  additionally registered/synced as a promoted SM field via `phaseBRegisterAndSyncLocal`.
+- Guard: all spill-path branches are gated on `fctx.phaseBCtx.count > 0` so non-async
+  functions are unaffected.
+
+**New helper:** `phaseBSpillToLocal(pbc, fctx, insns, ty): Int` — one-stop spill that
+allocates, stores, and promotes; returns the local index.
+
+**Tests:** `async_sm_self_test.l` Phase B.3 section (5 new test functions + 5 test cases):
+`asyncAddBothAwaited` (commutative add), `asyncSubBothAwaited` (non-commutative sub),
+`asyncLtBothAwaited` (comparison), `asyncAddRhsAwaited` (literal lhs, awaited rhs), and
+`asyncStrConcatBothAwaited` (string concat with both sides awaited).
+
+**Result:** All 26 tests in `async_sm_self_test.l` pass.  Existing `stack_spill_two_await_args`
+and `stack_spill_await_in_binop` F# inline tests continue to pass.  All 24 async F# tests pass.
+843/843 emitter tests green.  Tracked as D-progress-438.
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

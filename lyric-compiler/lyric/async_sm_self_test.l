@@ -243,3 +243,65 @@ test "promoted locals: var bindings in while loop with zero iterations" {
   val result = await asyncSumWithLoop(0)
   assertEqualInt(result, 0, "asyncSumWithLoop(0) should return 0")
 }
+
+// ── Phase B.3: stack-spill for awaits in expression-position operands ─────────
+// When an await appears as a sub-expression of a binary op, any earlier
+// operand already computed onto the eval stack must be spilled to a promoted SM
+// field local before the `leave` instruction clears the stack at suspension.
+// Both operands awaited in an addition (commutative; spill+reload only).
+// asyncAddBothAwaited(5): (5+1) + (5+1) = 12
+async func asyncAddBothAwaited(n: in Int): Int {
+  (await asyncAddOne(n)) + (await asyncAddOne(n))
+}
+
+// Both operands awaited in a subtraction (non-commutative; spill + rhs-temp).
+// asyncSubBothAwaited(5, 3): (5+1) - (3+1) = 2
+async func asyncSubBothAwaited(a: in Int, b: in Int): Int {
+  (await asyncAddOne(a)) - (await asyncAddOne(b))
+}
+
+// Both operands awaited in a less-than comparison (non-commutative).
+// asyncLtBothAwaited(3, 5): (3+1) < (5+1) = true
+async func asyncLtBothAwaited(a: in Int, b: in Int): Bool {
+  (await asyncAddOne(a)) < (await asyncAddOne(b))
+}
+
+// Only the rhs operand awaited (lhs is a literal): tests the spill path where
+// lhs has no await but rhs does.
+// asyncAddRhsAwaited(5): 10 + (5+1) = 16
+async func asyncAddRhsAwaited(n: in Int): Int {
+  10 + (await asyncAddOne(n))
+}
+
+// String concatenation with both sides awaited (BAdd/MString promotion path).
+// asyncStrConcatBothAwaited: "Hello, A!" + "Hello, B!" = "Hello, A!Hello, B!"
+async func asyncStrConcatBothAwaited(): String {
+  (await asyncGreet("A")) + (await asyncGreet("B"))
+}
+
+test "Phase B.3: commutative add with both operands awaited" {
+  val result = await asyncAddBothAwaited(5)
+  assertEqualInt(result, 12, "asyncAddBothAwaited(5) should return 12")
+}
+
+test "Phase B.3: non-commutative sub with both operands awaited" {
+  val result = await asyncSubBothAwaited(5, 3)
+  assertEqualInt(result, 2, "asyncSubBothAwaited(5,3) should return 2")
+}
+
+test "Phase B.3: comparison (lt) with both operands awaited" {
+  val lt = await asyncLtBothAwaited(3, 5)
+  val gt = await asyncLtBothAwaited(5, 3)
+  assertTrue(lt, "asyncLtBothAwaited(3,5) should be true")
+  assertTrue(not gt, "asyncLtBothAwaited(5,3) should be false")
+}
+
+test "Phase B.3: rhs-only await in add (lhs is literal)" {
+  val result = await asyncAddRhsAwaited(5)
+  assertEqualInt(result, 16, "asyncAddRhsAwaited(5) should return 16")
+}
+
+test "Phase B.3: string concat with both operands awaited" {
+  val result = await asyncStrConcatBothAwaited()
+  assertEqual(result, "Hello, A!Hello, B!", "asyncStrConcatBothAwaited should return concatenated greetings")
+}
