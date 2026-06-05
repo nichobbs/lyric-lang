@@ -21362,3 +21362,43 @@ not-applicable in issue #2356.
 **Regression gate:** All 24 F# async emitter tests pass.  All 26 `async_sm_self_test.l`
 tests pass (7 Phase B.0 + 8 Phase B.1 + 4 Phase B.2 + 2 Phase B.2+ + 5 Phase B.3).
 843/843 emitter tests green.
+
+### D-progress-439 — in-bundle cross-package threading of extern types + module-level pub vals (#1488)
+
+**Status:** Shipped — `compileProjectToMsil` cross-package type-resolution fix.
+
+When the `LYRIC_LOAD_COMPILER` loader compiles a test whose closure spans many
+compiler packages, each package's imports are resolved against the *other*
+in-bundle packages via `perPackageImportedPackages` → `collectTypeItemsFromFile`.
+That collector threaded type declarations + `pub func`s but **not** `extern type`,
+`protected type`, or module-level `pub val` items — even though its stdlib
+sibling `collectStdlibTypeItems` already threads `extern type` / `protected type`.
+So a transitively-loaded compiler package couldn't see another's kernel boundary:
+`Jvm.Classfile` referencing `Jvm.Kernel`'s `extern type Pool = "…JvmConstantPool"`
+aborted with `T0010 unknown type 'Pool'`, and its `pub val ACC_PUBLIC: Int = …`
+access-flag constants with `T0020 unknown name`.
+
+Fix: `collectTypeItemsFromFile` now also threads `IExternType`, `IProtected`, and
+`pub`-visible `IVal` items, matching the stdlib path.  `msil_project_bridge_tests`
+via `LYRIC_LOAD_COMPILER` drops from **38 → 1** error and `metadata_reader_tests`
+stays clean (0).  Regression: emitter 843/843, cli 84/84 (incl. the
+`SelfHostedMsilProjectBridgeTests` project-bridge suite).
+
+The investigation also confirmed why the originally-proposed `@cfg(target = "X")`
+bridge-gating (so a `--target dotnet` compile never pulls `Jvm.Bridge` →
+`Jvm.Kernel`) is **not** viable today: it requires annotations on `import`
+declarations, which neither the self-hosted nor the F# stage-0 parser accepts
+(`ImportDecl` has no annotations field in either AST), and teaching the **F#
+stage-0** parser that surface — needed because the unified compiler is built by
+stage-0 and emits both targets in-process — is new F# *functionality*, barred by
+the no-new-F# rule until stage-0 retires.  D-N-013 (accepted, native Phase 1)
+specifies the mechanism; it can land once `@cfg(target)` + import-annotation
+support exist on the self-hosted side and stage-0 is gone.
+
+Remaining for full `msil_project_bridge_tests` cleanliness: the last error
+(`T0043 AssignOp` vs `Expr`) is the first of a **whole-compiler self-type-check
+long tail** — type-checking `Lyric.Emitter`'s entire closure (both backends) via
+the self-hosted checker surfaces latent per-package gaps (Byte/Int sites in
+`Msil.Codegen`, a forward-reference in `Jvm.Codegen`, …).  Clearing it is a
+self-contained follow-up epic ("make the self-hosted compiler self-type-check
+clean"), distinct from the #1488 single-file gate (closed in D-progress-438).
