@@ -129,6 +129,35 @@ pub record CodegenCtx {
   tokDictObjContainsKey: Int  // Dictionary<object,object>::ContainsKey(object): bool  callvirt
   tokDictObjRemove:      Int  // Dictionary<object,object>::Remove(object): bool  callvirt
   tokDictObjTryGetValue: Int  // Dictionary<object,object>::TryGetValue(object, object): bool
+  // ── Concrete generic instantiation caches (Stage 2) ─────────────────────────
+  // The legacy `tokListObj*` / `tokDictObj*` tokens model List/Dictionary as
+  // <object>-typed.  Stage 2 introduces concrete `List<T>` / `Dictionary<K,V>`
+  // emission: at every call site that touches a known-element list/map we
+  // emit a MemberRef on a TypeSpec built for the concrete element types, so
+  // value-type elements stay in their native slot (no box round-trip).  The
+  // element type is dynamic per use site, so we cache the resulting TypeSpec
+  // / MemberRef rows under a `msilTypeKey` fingerprint — repeated uses of the
+  // same `List[Int]` / `Map[String, Foo]` share one TypeSpec and one set of
+  // MemberRef rows.  Keys use the existing `msilTypeKey` helper so the cache
+  // distinguishes every concrete encoding.
+  tsListByElem:     Map[String, Int]  // List<T> TypeSpec row by elem-MsilType key
+  tsDictByKeyVal:   Map[String, Int]  // Dictionary<K,V> TypeSpec row by key/val MsilType key
+  // MemberRef caches: every member takes a fingerprint derived from the
+  // TypeSpec key plus a method-name tag.  Token = 0x0A000000 | row.
+  mrListCtorBySpec:    Map[String, Int]
+  mrListAddBySpec:     Map[String, Int]
+  mrListGetItemBySpec: Map[String, Int]
+  mrListSetItemBySpec: Map[String, Int]
+  mrListCountBySpec:   Map[String, Int]
+  mrListContainsBySpec: Map[String, Int]
+  mrListRemoveAtBySpec: Map[String, Int]
+  mrDictCtorBySpec:    Map[String, Int]
+  mrDictAddBySpec:     Map[String, Int]
+  mrDictGetItemBySpec: Map[String, Int]
+  mrDictSetItemBySpec: Map[String, Int]
+  mrDictCountBySpec:   Map[String, Int]
+  mrDictContainsKeyBySpec: Map[String, Int]
+  mrDictRemoveBySpec:  Map[String, Int]
   // Intra-package pre-computed tokens
   recordCtorTokens:   Map[String, Int]   // className → MethodDef token
   fieldTokens:        Map[String, Int]   // "ClassName/fieldName" → FieldDef token
@@ -869,6 +898,22 @@ pub func newCodegenCtx(packageName: in String,
     tokDictObjContainsKey = tokDictObjContainsKey,
     tokDictObjRemove      = tokDictObjRemove,
     tokDictObjTryGetValue = tokDictObjTryGetValue,
+    tsListByElem         = newMap(),
+    tsDictByKeyVal       = newMap(),
+    mrListCtorBySpec     = newMap(),
+    mrListAddBySpec      = newMap(),
+    mrListGetItemBySpec  = newMap(),
+    mrListSetItemBySpec  = newMap(),
+    mrListCountBySpec    = newMap(),
+    mrListContainsBySpec = newMap(),
+    mrListRemoveAtBySpec = newMap(),
+    mrDictCtorBySpec     = newMap(),
+    mrDictAddBySpec      = newMap(),
+    mrDictGetItemBySpec  = newMap(),
+    mrDictSetItemBySpec  = newMap(),
+    mrDictCountBySpec    = newMap(),
+    mrDictContainsKeyBySpec = newMap(),
+    mrDictRemoveBySpec   = newMap(),
     recordCtorTokens     = recCtorToks,
     fieldTokens          = fieldToks,
     fieldSigBytes        = newMap(),
@@ -1760,6 +1805,13 @@ pub record FuncCtx {
   // generic case construction (None, Err, …) can produce the correct closed
   // generic type (Option_None<Int>) rather than Option_None<Object>.
   contextHintTyArgs: List[MsilType]
+  // Transient expected element type set by a local-binding annotation
+  // `val xs: List[T] = […]` or `val m: Map[K, V] = […]`.  `EList` consults
+  // the top of this stack to instantiate the concrete `List<T>` /
+  // `Dictionary<K,V>` (Stage 2) instead of falling back to `List<object>`.
+  // `EList` is the only consumer — separate from `contextHintTyArgs` so the
+  // two hint streams don't confuse generic-arity-aware construction code.
+  expectedListElem: List[MsilType]
   // Slots of `out`/`inout` parameters, mapped to the *pointee* MsilType (the
   // declared value type, not the `T&`).  A slot present here is a managed
   // pointer: reads deref it (`ldarg; ldind`), writes store through it
@@ -2269,50 +2321,37 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
     case TGenericApp(head, args) -> {
       val headSeg = lastSegmentMsil(head)
       // Special case: List[T] — carry the element type so EIndex can
-      // narrow each element to T.  For a user-defined `MClass` element this
-      // enables castclass + ldfld on list-element field access (#1442); for a
-      // *value-type* element (`Int`/`Long`/`Double`/`Bool`/`Char`) it lets
-      // EIndex `unbox.any` the boxed `List<object>` slot back to the value so
-      // a subsequent numeric op / comparison (`xs[i] <= 0`) sees the real
-      // value rather than the object reference (#1779).  String / generic /
-      // untyped elements stay plain `MObject` (their string/object operations
-      // already treat the slot as a reference).
+      // narrow each element to T.  Concrete `List<T>` lowering (Stage 2)
+      // requires *every* element type to be tracked: the IL TypeSpec and
+      // MemberRef cache keys are derived from the element's full MsilType,
+      // so a `List[String]` lookup must find the `MString`-keyed cache slot,
+      // not the legacy `MObject` one.  The fallthrough to `MObject` here
+      // would route a value-typed-list back to the legacy `tokListObj*`
+      // tokens and the box/unbox round-trip would re-emerge (#1779, #2126).
       if headSeg == "List" and args.count == 1 {
         match args[0] {
           case TAType(elemTe) -> {
             val elemTy = typeExprToMsilCtx(cctx, elemTe, pkgName)
-            match elemTy {
-              case MClass(_)             -> MListOf(elemTy = elemTy)
-              // A generic-instance element (e.g. `Option[String]`, `Result[E, T]`)
-              // lowers to `List<object>` at the IL level but is tracked as
-              // `MListOf(MGenericInst(...))` so `.add` lowering can propagate
-              // the element's concrete type arguments as a construction hint
-              // (a bare `xs.add(None)` builds `Option_None<String>` instead of
-              // `Option_None<Object>`, #1964).
-              case MGenericInst(_, _, _) -> MListOf(elemTy = elemTy)
-              case _         ->
-                if isValueType(elemTy) { MListOf(elemTy = elemTy) }
-                else                   { MObject }
-            }
+            MListOf(elemTy = elemTy)
           }
           case TAValue(_) -> MObject
         }
       } else if headSeg == "Map" and args.count == 2 {
-        // Map[K, V] — runtime representation is Dictionary<object,object>.
-        // Track as MMapOf so `.count` dispatches to Dictionary.get_Count and so
-        // the read path / `mapGet` know the value type.  Like List[T] (#1779),
-        // only a *value-type* V is tracked (so the boxed `get_Item` result is
-        // unboxed back to it); reference V stays `object` (its slot is genuinely
-        // a reference).  The key is always boxed for `Dictionary<object,_>`, so
-        // K is not tracked.
-        val mapValTy = match args[1] {
-          case TAType(vte) -> {
-            val vt = typeExprToMsilCtx(cctx, vte, pkgName)
-            if isValueType(vt) { vt } else { MObject }
-          }
-          case TAValue(_) -> MObject
+        // Map[K, V] — concrete `Dictionary<K,V>` lowering.  The element-keyed
+        // cache keys apply to both K and V (a value-type V is unboxed on
+        // read; a value-type K is boxed on add and stays boxed on read
+        // because Dictionary hashes the boxed value).  Both arguments are
+        // tracked so the dynamic TypeSpec and MemberRef cache return the
+        // correct instantiation.
+        val mapKeyTy = match args[0] {
+          case TAType(kte) -> typeExprToMsilCtx(cctx, kte, pkgName)
+          case TAValue(_)  -> MObject
         }
-        MMapOf(keyTy = MObject, valTy = mapValTy)
+        val mapValTy = match args[1] {
+          case TAType(vte) -> typeExprToMsilCtx(cctx, vte, pkgName)
+          case TAValue(_)  -> MObject
+        }
+        MMapOf(keyTy = mapKeyTy, valTy = mapValTy)
       } else if headSeg == "Map" {
         MMapOf(keyTy = MObject, valTy = MObject)
       } else {
@@ -2490,6 +2529,456 @@ func castObjectToMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilTyp
       case MClass(c)                     -> insns.add(MCastclassByName(className = c))
       case MGenericInst(_, headFqn, tas) -> insns.add(MCastclassGeneric(className = headFqn, typeArgs = tas))
       case _                             -> {}
+    }
+  }
+}
+
+// Generic stack coercion: convert whatever value is on the stack to match
+// `targetTy`.  `sourceTy` is the value's *static* type as tracked by the
+// codegen type-flow layer (the value's stack shape after `lowerExprMsil`).
+//   * `sourceTy == targetTy` → no-op (already in the right slot).
+//   * `targetTy == MObject` and `sourceTy` is a value type → box (push
+//     the value type up to `object`).
+//   * `targetTy` is a value type and `sourceTy == MObject` (or any reference
+//     type) → unbox.any (down to the value type).
+//   * Both reference types, different → castclass (or unbox for an
+//     `MGenericInst` value type).
+//   * `MListOf` / `MMapOf` → castclass to the concrete TypeSpec when the
+//     reference shape is the legacy `<object>`-typed list/dict, no-op when
+//     the source is already the concrete instantiation.
+// Used at every call site that crosses a type boundary (e.g. passing a value
+// to a parameter whose declared type is `object`, or pulling a value from a
+// `Dictionary.get_Item` and feeding it to a numeric op).
+func coerceMsilType(cctx: in CodegenCtx, insns: in List[MInsn],
+                    sourceTy: in MsilType, targetTy: in MsilType): Unit {
+  if typesMatchMsil(sourceTy, targetTy) { return }
+  // Boxing: source is a value type, target is a reference type (object,
+  // string, class, generic instance, list, map).  Match the new
+  // `isValueType` primitive set so a value-type source gets boxed in every
+  // widening case (including to a generic / list / map target).
+  if isValueType(sourceTy) and not isValueType(targetTy) {
+    boxIfNeededMsil(cctx, insns, sourceTy)
+    return
+  }
+  // Unboxing: source is a reference type (object), target is a value type.
+  // `Dictionary.get_Item` / `List.get_Item` return `object`; pulling a
+  // value-type element back to its native slot requires unbox.any.
+  if not isValueType(sourceTy) and isValueType(targetTy) {
+    castObjectToMsil(cctx, insns, targetTy)
+    return
+  }
+  // Reference-to-reference coercion: both `MObject` and the legacy
+  // `MObject`-shaped `MListOf(_)` / `MMapOf(_, _)` need `castclass` to the
+  // concrete TypeSpec to satisfy the JIT verifier (a `callvirt` on a
+  // receiver of static type `object` is rejected).  An `MListOf` / `MMapOf`
+  // source with a *concrete* element type is already the right shape; the
+  // cross-Typespec castclass below is what bridges the legacy-to-concrete
+  // transition.
+  match targetTy {
+    case MListOf(elem) -> {
+      val tsTok = ensureListTypeSpecMsil(cctx, elem)
+      insns.add(MCastclass(typeToken = tsTok))
+    }
+    case MMapOf(key, valTy) -> {
+      val tsTok = ensureDictTypeSpecMsil(cctx, key, valTy)
+      insns.add(MCastclass(typeToken = tsTok))
+    }
+    case MString                       -> insns.add(MCastclassByName(className = "System.String"))
+    case MClass(c)                     -> insns.add(MCastclassByName(className = c))
+    case MGenericInst(_, headFqn, tas) -> insns.add(MCastclassGeneric(className = headFqn, typeArgs = tas))
+    case _                             -> {}
+  }
+}
+
+// Returns true if two MsilTypes lower to the same CLI slot.  Used by
+// `coerceMsilType` to elide the no-op case.  `MListOf(elem1)` and
+// `MListOf(elem2)` match only when the elements match (the TypeSpec
+// fingerprint is element-dependent).
+func typesMatchMsil(a: in MsilType, b: in MsilType): Bool {
+  match a {
+    case MListOf(e1) -> {
+      match b {
+        case MListOf(e2) -> typesMatchMsil(e1, e2)
+        case _           -> false
+      }
+    }
+    case MMapOf(k1, v1) -> {
+      match b {
+        case MMapOf(k2, v2) -> typesMatchMsil(k1, k2) and typesMatchMsil(v1, v2)
+        case _              -> false
+      }
+    }
+    case MClass(c1) -> {
+      match b {
+        case MClass(c2) -> c1 == c2
+        case _          -> false
+      }
+    }
+    case MGenericInst(_, h1, args1) -> {
+      match b {
+        case MGenericInst(_, h2, args2) -> {
+          if h1 != h2 or args1.count != args2.count { return false }
+          var i = 0
+          while i < args1.count {
+            if not typesMatchMsil(args1[i], args2[i]) { return false }
+            i = i + 1
+          }
+          true
+        }
+        case _ -> false
+      }
+    }
+    case MValueTypeRef(_, c1) -> {
+      match b {
+        case MValueTypeRef(_, c2) -> c1 == c2
+        case _                    -> false
+      }
+    }
+    case MClassRef(_, c1) -> {
+      match b {
+        case MClassRef(_, c2) -> c1 == c2
+        case _                -> false
+      }
+    }
+    case MValueTypeGenericInst(_, h1, args1) -> {
+      match b {
+        case MValueTypeGenericInst(_, h2, args2) -> h1 == h2 and args1.count == args2.count
+        case _                                   -> false
+      }
+    }
+    case MTypeVar(i1) -> {
+      match b {
+        case MTypeVar(i2) -> i1 == i2
+        case _            -> false
+      }
+    }
+    case _ -> a == b
+  }
+}
+
+// Build (or fetch from cache) the TypeSpec row for `List<T>`.  The
+// TypeSpec is a GENERICINST encoding over the open `List`1` TypeRef (already
+// pre-populated in `LoweringCtx.trList1`).  Re-using the same `elem`
+// fingerprint returns the same TypeSpec row, so repeated uses of a
+// `List[Int]` / `List[String]` etc. share one row and one set of MemberRef
+// rows.
+func ensureListTypeSpecMsil(cctx: in CodegenCtx, elem: in MsilType): Int {
+  val key = msilTypeKey(elem)
+  match mapGet(cctx.tsListByElem, key) {
+    case Some(row) -> 0x1B000000 + row
+    case None      -> {
+      val argTypes: List[MsilType] = newList()
+      argTypes.add(elem)
+      val blob = buildGenericInstBlob(tdrTypeRef(cctx.lctx.trList1), argTypes)
+      val row  = ctxAddTypeSpec(cctx.lctx, "ts_list_" + key, blob)
+      cctx.tsListByElem.add(key, row)
+      0x1B000000 + row
+    }
+  }
+}
+
+// Build (or fetch from cache) the TypeSpec row for `Dictionary<K,V>`.
+// Same caching discipline as `ensureListTypeSpecMsil`.
+func ensureDictTypeSpecMsil(cctx: in CodegenCtx, key: in MsilType, valTy: in MsilType): Int {
+  val keyStr = msilTypeKey(key) + "|" + msilTypeKey(valTy)
+  match mapGet(cctx.tsDictByKeyVal, keyStr) {
+    case Some(row) -> 0x1B000000 + row
+    case None      -> {
+      val argTypes: List[MsilType] = newList()
+      argTypes.add(key)
+      argTypes.add(valTy)
+      val blob = buildGenericInstBlob(tdrTypeRef(cctx.lctx.trDict2), argTypes)
+      val row  = ctxAddTypeSpec(cctx.lctx, "ts_dict_" + keyStr, blob)
+      cctx.tsDictByKeyVal.add(keyStr, row)
+      0x1B000000 + row
+    }
+  }
+}
+
+// Add a MemberRef whose parent is a `List<T>` TypeSpec.  `paramTypes` uses
+// `MTypeVar(0)` for the element parameter (the open generic head's !0).
+func addListTypeSpecMemberRefMsil(cctx: in CodegenCtx,
+                                  tsRow: in Int, methodName: in String,
+                                  sigKey: in String,
+                                  paramTypes: in List[MsilType],
+                                  retTy: in MsilType): Int {
+  val sig   = buildInstanceMethodSig(paramTypes, retTy)
+  val mRow  = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, methodName, sigKey, sig)
+  0x0A000000 + mRow
+}
+
+// Add a MemberRef whose parent is a `Dictionary<K,V>` TypeSpec.  Element
+// parameters use `MTypeVar(0)` (key) and `MTypeVar(1)` (value).
+func addDictTypeSpecMemberRefMsil(cctx: in CodegenCtx,
+                                  tsRow: in Int, methodName: in String,
+                                  sigKey: in String,
+                                  paramTypes: in List[MsilType],
+                                  retTy: in MsilType): Int {
+  val sig   = buildInstanceMethodSig(paramTypes, retTy)
+  val mRow  = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow, methodName, sigKey, sig)
+  0x0A000000 + mRow
+}
+
+// Get-or-emit the `List<T>::.ctor()` MemberRef token.  Element type is
+// carried in the cache key; returns the legacy `tokListObjCtor` token when
+// `elem` is MObject (the bootstrap default for an untyped list).
+func ensureListCtorMsil(cctx: in CodegenCtx, elem: in MsilType): Int {
+  if elem == MObject { return cctx.tokListObjCtor }
+  val key = msilTypeKey(elem) + "|.ctor"
+  match mapGet(cctx.mrListCtorBySpec, key) {
+    case Some(tok) -> tok
+    case None      -> {
+      val tsRow = ensureListTypeSpecMsil(cctx, elem)
+      val tsIdx = tsRow - 0x1B000000
+      val tok   = addListTypeSpecMemberRefMsil(cctx, tsIdx, ".ctor",
+                                                "list_" + key, newList(), MVoid)
+      cctx.mrListCtorBySpec.add(key, tok)
+      tok
+    }
+  }
+}
+
+// Get-or-emit the `List<T>::Add(T): void` MemberRef token.
+func ensureListAddMsil(cctx: in CodegenCtx, elem: in MsilType): Int {
+  if elem == MObject { return cctx.tokListObjAdd }
+  val key = msilTypeKey(elem) + "|Add"
+  match mapGet(cctx.mrListAddBySpec, key) {
+    case Some(tok) -> tok
+    case None      -> {
+      val tsRow = ensureListTypeSpecMsil(cctx, elem)
+      val tsIdx = tsRow - 0x1B000000
+      val ps: List[MsilType] = newList()
+      ps.add(MTypeVar(0))
+      val tok = addListTypeSpecMemberRefMsil(cctx, tsIdx, "Add",
+                                              "list_" + key, ps, MVoid)
+      cctx.mrListAddBySpec.add(key, tok)
+      tok
+    }
+  }
+}
+
+// Get-or-emit the `List<T>::get_Item(int32): T` MemberRef token.
+func ensureListGetItemMsil(cctx: in CodegenCtx, elem: in MsilType): Int {
+  if elem == MObject { return cctx.tokListObjGetItem }
+  val key = msilTypeKey(elem) + "|get_Item"
+  match mapGet(cctx.mrListGetItemBySpec, key) {
+    case Some(tok) -> tok
+    case None      -> {
+      val tsRow = ensureListTypeSpecMsil(cctx, elem)
+      val tsIdx = tsRow - 0x1B000000
+      val ps: List[MsilType] = newList()
+      ps.add(MInt)
+      val tok = addListTypeSpecMemberRefMsil(cctx, tsIdx, "get_Item",
+                                              "list_" + key, ps, MTypeVar(0))
+      cctx.mrListGetItemBySpec.add(key, tok)
+      tok
+    }
+  }
+}
+
+// Get-or-emit the `List<T>::set_Item(int32, T): void` MemberRef token.
+func ensureListSetItemMsil(cctx: in CodegenCtx, elem: in MsilType): Int {
+  if elem == MObject { return cctx.tokListObjSetItem }
+  val key = msilTypeKey(elem) + "|set_Item"
+  match mapGet(cctx.mrListSetItemBySpec, key) {
+    case Some(tok) -> tok
+    case None      -> {
+      val tsRow = ensureListTypeSpecMsil(cctx, elem)
+      val tsIdx = tsRow - 0x1B000000
+      val ps: List[MsilType] = newList()
+      ps.add(MInt)
+      ps.add(MTypeVar(0))
+      val tok = addListTypeSpecMemberRefMsil(cctx, tsIdx, "set_Item",
+                                              "list_" + key, ps, MVoid)
+      cctx.mrListSetItemBySpec.add(key, tok)
+      tok
+    }
+  }
+}
+
+// Get-or-emit the `List<T>::get_Count(): int32` MemberRef token.
+func ensureListCountMsil(cctx: in CodegenCtx, elem: in MsilType): Int {
+  if elem == MObject { return cctx.tokListObjGetCount }
+  val key = msilTypeKey(elem) + "|get_Count"
+  match mapGet(cctx.mrListCountBySpec, key) {
+    case Some(tok) -> tok
+    case None      -> {
+      val tsRow = ensureListTypeSpecMsil(cctx, elem)
+      val tsIdx = tsRow - 0x1B000000
+      val tok = addListTypeSpecMemberRefMsil(cctx, tsIdx, "get_Count",
+                                              "list_" + key, newList(), MInt)
+      cctx.mrListCountBySpec.add(key, tok)
+      tok
+    }
+  }
+}
+
+// Get-or-emit the `List<T>::Contains(T): bool` MemberRef token.
+func ensureListContainsMsil(cctx: in CodegenCtx, elem: in MsilType): Int {
+  if elem == MObject { return cctx.tokListObjContains }
+  val key = msilTypeKey(elem) + "|Contains"
+  match mapGet(cctx.mrListContainsBySpec, key) {
+    case Some(tok) -> tok
+    case None      -> {
+      val tsRow = ensureListTypeSpecMsil(cctx, elem)
+      val tsIdx = tsRow - 0x1B000000
+      val ps: List[MsilType] = newList()
+      ps.add(MTypeVar(0))
+      val tok = addListTypeSpecMemberRefMsil(cctx, tsIdx, "Contains",
+                                              "list_" + key, ps, MBool)
+      cctx.mrListContainsBySpec.add(key, tok)
+      tok
+    }
+  }
+}
+
+// Get-or-emit the `List<T>::RemoveAt(int32): void` MemberRef token.
+func ensureListRemoveAtMsil(cctx: in CodegenCtx, elem: in MsilType): Int {
+  if elem == MObject { return cctx.tokListObjRemoveAt }
+  val key = msilTypeKey(elem) + "|RemoveAt"
+  match mapGet(cctx.mrListRemoveAtBySpec, key) {
+    case Some(tok) -> tok
+    case None      -> {
+      val tsRow = ensureListTypeSpecMsil(cctx, elem)
+      val tsIdx = tsRow - 0x1B000000
+      val ps: List[MsilType] = newList()
+      ps.add(MInt)
+      val tok = addListTypeSpecMemberRefMsil(cctx, tsIdx, "RemoveAt",
+                                              "list_" + key, ps, MVoid)
+      cctx.mrListRemoveAtBySpec.add(key, tok)
+      tok
+    }
+  }
+}
+
+// Get-or-emit the `Dictionary<K,V>::.ctor()` MemberRef token.  Falls back
+// to the legacy `tokDictObjCtor` when both arguments are MObject.
+func ensureDictCtorMsil(cctx: in CodegenCtx, key: in MsilType, valTy: in MsilType): Int {
+  if key == MObject and valTy == MObject { return cctx.tokDictObjCtor }
+  val keyStr = msilTypeKey(key) + "|" + msilTypeKey(valTy) + "|.ctor"
+  match mapGet(cctx.mrDictCtorBySpec, keyStr) {
+    case Some(tok) -> tok
+    case None      -> {
+      val tsRow = ensureDictTypeSpecMsil(cctx, key, valTy)
+      val tsIdx = tsRow - 0x1B000000
+      val tok   = addDictTypeSpecMemberRefMsil(cctx, tsIdx, ".ctor",
+                                                "dict_" + keyStr, newList(), MVoid)
+      cctx.mrDictCtorBySpec.add(keyStr, tok)
+      tok
+    }
+  }
+}
+
+// Get-or-emit the `Dictionary<K,V>::Add(K, V): void` MemberRef token.
+func ensureDictAddMsil(cctx: in CodegenCtx, key: in MsilType, valTy: in MsilType): Int {
+  if key == MObject and valTy == MObject { return cctx.tokDictObjAdd }
+  val keyStr = msilTypeKey(key) + "|" + msilTypeKey(valTy) + "|Add"
+  match mapGet(cctx.mrDictAddBySpec, keyStr) {
+    case Some(tok) -> tok
+    case None      -> {
+      val tsRow = ensureDictTypeSpecMsil(cctx, key, valTy)
+      val tsIdx = tsRow - 0x1B000000
+      val ps: List[MsilType] = newList()
+      ps.add(MTypeVar(0))
+      ps.add(MTypeVar(1))
+      val tok = addDictTypeSpecMemberRefMsil(cctx, tsIdx, "Add",
+                                              "dict_" + keyStr, ps, MVoid)
+      cctx.mrDictAddBySpec.add(keyStr, tok)
+      tok
+    }
+  }
+}
+
+// Get-or-emit the `Dictionary<K,V>::get_Item(K): V` MemberRef token.
+func ensureDictGetItemMsil(cctx: in CodegenCtx, key: in MsilType, valTy: in MsilType): Int {
+  if key == MObject and valTy == MObject { return cctx.tokDictObjGetItem }
+  val keyStr = msilTypeKey(key) + "|" + msilTypeKey(valTy) + "|get_Item"
+  match mapGet(cctx.mrDictGetItemBySpec, keyStr) {
+    case Some(tok) -> tok
+    case None      -> {
+      val tsRow = ensureDictTypeSpecMsil(cctx, key, valTy)
+      val tsIdx = tsRow - 0x1B000000
+      val ps: List[MsilType] = newList()
+      ps.add(MTypeVar(0))
+      val tok = addDictTypeSpecMemberRefMsil(cctx, tsIdx, "get_Item",
+                                              "dict_" + keyStr, ps, MTypeVar(1))
+      cctx.mrDictGetItemBySpec.add(keyStr, tok)
+      tok
+    }
+  }
+}
+
+// Get-or-emit the `Dictionary<K,V>::set_Item(K, V): void` MemberRef token.
+func ensureDictSetItemMsil(cctx: in CodegenCtx, key: in MsilType, valTy: in MsilType): Int {
+  if key == MObject and valTy == MObject { return cctx.tokDictObjSetItem }
+  val keyStr = msilTypeKey(key) + "|" + msilTypeKey(valTy) + "|set_Item"
+  match mapGet(cctx.mrDictSetItemBySpec, keyStr) {
+    case Some(tok) -> tok
+    case None      -> {
+      val tsRow = ensureDictTypeSpecMsil(cctx, key, valTy)
+      val tsIdx = tsRow - 0x1B000000
+      val ps: List[MsilType] = newList()
+      ps.add(MTypeVar(0))
+      ps.add(MTypeVar(1))
+      val tok = addDictTypeSpecMemberRefMsil(cctx, tsIdx, "set_Item",
+                                              "dict_" + keyStr, ps, MVoid)
+      cctx.mrDictSetItemBySpec.add(keyStr, tok)
+      tok
+    }
+  }
+}
+
+// Get-or-emit the `Dictionary<K,V>::get_Count(): int32` MemberRef token.
+func ensureDictCountMsil(cctx: in CodegenCtx, key: in MsilType, valTy: in MsilType): Int {
+  if key == MObject and valTy == MObject { return cctx.tokDictObjGetCount }
+  val keyStr = msilTypeKey(key) + "|" + msilTypeKey(valTy) + "|get_Count"
+  match mapGet(cctx.mrDictCountBySpec, keyStr) {
+    case Some(tok) -> tok
+    case None      -> {
+      val tsRow = ensureDictTypeSpecMsil(cctx, key, valTy)
+      val tsIdx = tsRow - 0x1B000000
+      val tok = addDictTypeSpecMemberRefMsil(cctx, tsIdx, "get_Count",
+                                              "dict_" + keyStr, newList(), MInt)
+      cctx.mrDictCountBySpec.add(keyStr, tok)
+      tok
+    }
+  }
+}
+
+// Get-or-emit the `Dictionary<K,V>::ContainsKey(K): bool` MemberRef token.
+func ensureDictContainsKeyMsil(cctx: in CodegenCtx, key: in MsilType, valTy: in MsilType): Int {
+  if key == MObject and valTy == MObject { return cctx.tokDictObjContainsKey }
+  val keyStr = msilTypeKey(key) + "|" + msilTypeKey(valTy) + "|ContainsKey"
+  match mapGet(cctx.mrDictContainsKeyBySpec, keyStr) {
+    case Some(tok) -> tok
+    case None      -> {
+      val tsRow = ensureDictTypeSpecMsil(cctx, key, valTy)
+      val tsIdx = tsRow - 0x1B000000
+      val ps: List[MsilType] = newList()
+      ps.add(MTypeVar(0))
+      val tok = addDictTypeSpecMemberRefMsil(cctx, tsIdx, "ContainsKey",
+                                              "dict_" + keyStr, ps, MBool)
+      cctx.mrDictContainsKeyBySpec.add(keyStr, tok)
+      tok
+    }
+  }
+}
+
+// Get-or-emit the `Dictionary<K,V>::Remove(K): bool` MemberRef token.
+func ensureDictRemoveMsil(cctx: in CodegenCtx, key: in MsilType, valTy: in MsilType): Int {
+  if key == MObject and valTy == MObject { return cctx.tokDictObjRemove }
+  val keyStr = msilTypeKey(key) + "|" + msilTypeKey(valTy) + "|Remove"
+  match mapGet(cctx.mrDictRemoveBySpec, keyStr) {
+    case Some(tok) -> tok
+    case None      -> {
+      val tsRow = ensureDictTypeSpecMsil(cctx, key, valTy)
+      val tsIdx = tsRow - 0x1B000000
+      val ps: List[MsilType] = newList()
+      ps.add(MTypeVar(0))
+      val tok = addDictTypeSpecMemberRefMsil(cctx, tsIdx, "Remove",
+                                              "dict_" + keyStr, ps, MBool)
+      cctx.mrDictRemoveBySpec.add(keyStr, tok)
+      tok
     }
   }
 }
@@ -2902,17 +3391,33 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
 
     // ── List literal ───────────────────────────────────────────────────────────
     case EList(exprs) -> {
-      // newobj List<object>(); then add each element.
-      insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+      // Concrete `List<T>` instantiation (Stage 2).  When a surrounding
+      // binding / parameter type annotation supplies the element type via
+      // `expectedListElem` we instantiate the element-typed list directly
+      // (no `box` round-trip on every add for value-type elements).
+      // Otherwise fall back to the legacy `List<object>` shape.
+      val elemTy = if fctx.expectedListElem.count > 0 {
+                     fctx.expectedListElem[fctx.expectedListElem.count - 1]
+                   } else {
+                     MObject
+                   }
+      val ctorTok = ensureListCtorMsil(cctx, elemTy)
+      val addTok  = ensureListAddMsil(cctx, elemTy)
+      insns.add(MNewobj(ctorToken = ctorTok))
       var eli = 0
       while eli < exprs.count {
         insns.add(MDup)
         val eTy = lowerExprMsil(cctx, fctx, insns, exprs[eli])
-        boxIfNeededMsil(cctx, insns, eTy)
-        insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
+        // Element coercion: the `List<T>::Add(T)` parameter expects T, so a
+        // value-typed element must be passed unboxed (no-op for MObject on
+        // the legacy path).  A reference-typed element whose source is
+        // `MObject` needs no cast (every reference is already an `object`).
+        if elemTy != MObject { coerceMsilType(cctx, insns, eTy, elemTy) }
+        else                 { boxIfNeededMsil(cctx, insns, eTy) }
+        insns.add(MCallvirt(methodToken = addTok))
         eli = eli + 1
       }
-      MObject
+      MListOf(elemTy = elemTy)
     }
 
     // ── Await ─────────────────────────────────────────────────────────────────
@@ -2986,6 +3491,75 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
           if indices.count > 0 {
             lowerExprMsil(cctx, fctx, insns, indices[0])
           }
+          insns.add(MCallvirt(methodToken = cctx.tokStringGetChars))
+          MChar
+        }
+        case MMapOf(keyTy, valTy) -> {
+          // Concrete `Dictionary<K,V>::get_Item(K)` (Stage 2): cast the
+          // receiver to the element-typed TypeSpec and call the
+          // element-typed get_Item MemberRef.  The key is boxed (the
+          // dictionary's hash table stores boxed keys); the value is
+          // returned in its native slot (or `object` for reference V).
+          insns.add(MCastclass(typeToken = ensureDictTypeSpecMsil(cctx, keyTy, valTy)))
+          if indices.count > 0 {
+            val kTy = lowerExprMsil(cctx, fctx, insns, indices[0])
+            coerceMsilType(cctx, insns, kTy, keyTy)
+          }
+          insns.add(MCallvirt(methodToken = ensureDictGetItemMsil(cctx, keyTy, valTy)))
+          // get_Item returns `V`.  For a value-type V the stack must carry
+          // the *unboxed* value to match the tracked `valTy`, otherwise a
+          // later numeric op / comparison treats the object reference as
+          // the value (#1779 / #1835).  The `Dictionary<V>` MemberRef
+          // signature already returns `MTypeVar(1)` (the value type), so
+          // a value-type V's slot is loaded as the value directly.
+          valTy
+        }
+        case MListOf(elemTy) -> {
+          // Concrete `List<T>::get_Item(int32)` (Stage 2).  The element-typed
+          // get_Item MemberRef returns `MTypeVar(0)` (T), so a value-type
+          // element is loaded in its native slot — no unbox needed, no
+          // boxing on the subsequent op.  The legacy `castObjectToMsil`
+          // path is gone because the MemberRef signature carries the
+          // concrete element type.
+          insns.add(MCastclass(typeToken = ensureListTypeSpecMsil(cctx, elemTy)))
+          if indices.count > 0 {
+            lowerExprMsil(cctx, fctx, insns, indices[0])
+          }
+          insns.add(MCallvirt(methodToken = ensureListGetItemMsil(cctx, elemTy)))
+          elemTy
+        }
+        case MArray(elem) -> {
+          // Real CLI array receiver (e.g. `slice[String]` → `String[]` from a
+          // stdlib call such as `Std.String.split`).  Push the index, then load
+          // the element with the opcode matching the element type — the array
+          // is already on the stack, so stack is [array, index] before ldelem.
+          if indices.count > 0 {
+            lowerExprMsil(cctx, fctx, insns, indices[0])
+          }
+          match elem {
+            case MByte     -> { insns.add(MLdelemU1);  MInt }
+            case MInt      -> { insns.add(MLdelemI4);  MInt }
+            case MString   -> { insns.add(MLdelemRef); MString }
+            case MClass(c) -> { insns.add(MLdelemRef); MClass(className = c) }
+            case _         -> { insns.add(MLdelemRef); elem }
+          }
+        }
+        case _ -> {
+          // Untracked / `object` receiver: fall back to the legacy
+          // `List<object>` shape.  A receiver typed as `object` on the
+          // stack (e.g. an `in` parameter) would otherwise fail JIT
+          // verification on get_Item; this mirrors the get_Count / set_Item
+          // paths, keeping read and write receiver handling symmetric
+          // (#1531).
+          insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
+          if indices.count > 0 {
+            lowerExprMsil(cctx, fctx, insns, indices[0])
+          }
+          insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+          MObject
+        }
+      }
+    }
           insns.add(MCallvirt(methodToken = cctx.tokStringGetChars))
           MChar
         }
@@ -4060,9 +4634,10 @@ func lowerAssignExprMsil(
       MVoid
     }
     case EIndex(recv, indices) -> {
-      // Indexed assignment: a[i] = v.  The bootstrap models every `[]`
-      // receiver as List<object> (the EIndex read arm calls get_Item on
-      // List<object> unconditionally), so the store mirrors it via set_Item.
+      // Indexed assignment: a[i] = v.  Concrete-generic store (Stage 2):
+      // emit the element-typed `List<T>::set_Item` / `Dictionary<K,V>::set_Item`
+      // MemberRef so a value-type element is stored in its native slot
+      // (no box round-trip, matches the F# bootstrap emitter).
       if indices.count == 0 {
         // Malformed index target (no index expression) — the parser does
         // not produce this, but keep the stack balanced if it ever appears.
@@ -4073,24 +4648,32 @@ func lowerAssignExprMsil(
         match op {
           case AssEq -> {
             // Dispatch on the receiver type: a Map[K, V] store goes through
-            // Dictionary<object,object>::set_Item(key, value) — the key is an
-            // arbitrary boxed value, not an int32 index.  Routing a Map store
-            // through List::set_Item (the historical unconditional path) pushed
-            // a non-int key where an int32 index was expected and the JIT
-            // rejected the body as invalid (#1602).  A List[T] / `slice`
-            // receiver keeps the List::set_Item(int32, value) path.
+            // Dictionary<K,V>::set_Item(K, V) — the key is typed K, the value
+            // is typed V.  Both args are coerced to the dictionary's
+            // declared types so a value-type V is stored unboxed.
             val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
             match recvTy {
-              case MMapOf(_, _) -> {
-                insns.add(MCastclass(typeToken = cctx.tokDictObjTypeSpec))
+              case MMapOf(keyTy, valTy) -> {
+                insns.add(MCastclass(typeToken = ensureDictTypeSpecMsil(cctx, keyTy, valTy)))
                 val kTy = lowerExprMsil(cctx, fctx, insns, indices[0])
-                boxIfNeededMsil(cctx, insns, kTy)
+                coerceMsilType(cctx, insns, kTy, keyTy)
                 val vTy = lowerExprMsil(cctx, fctx, insns, value)
-                boxIfNeededMsil(cctx, insns, vTy)
-                insns.add(MCallvirt(methodToken = cctx.tokDictObjSetItem))
+                coerceMsilType(cctx, insns, vTy, valTy)
+                insns.add(MCallvirt(methodToken = ensureDictSetItemMsil(cctx, keyTy, valTy)))
+              }
+              case MListOf(elemTy) -> {
+                // Stack for callvirt set_Item: this(List<T>), int32 index, T value.
+                insns.add(MCastclass(typeToken = ensureListTypeSpecMsil(cctx, elemTy)))
+                lowerExprMsil(cctx, fctx, insns, indices[0])
+                val vTy = lowerExprMsil(cctx, fctx, insns, value)
+                coerceMsilType(cctx, insns, vTy, elemTy)
+                insns.add(MCallvirt(methodToken = ensureListSetItemMsil(cctx, elemTy)))
               }
               case _ -> {
-                // Stack for callvirt set_Item: this(List<object>), int32 index, !0 value.
+                // Untracked / `object` receiver: fall back to the legacy
+                // `List<object>` shape (the JIT verifier still requires
+                // castclass to a concrete TypeSpec; the cast target is
+                // `<object>` here so the runtime type check is a no-op).
                 insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
                 lowerExprMsil(cctx, fctx, insns, indices[0])
                 val vTy = lowerExprMsil(cctx, fctx, insns, value)
@@ -4106,53 +4689,57 @@ func lowerAssignExprMsil(
             // via set_Item.  The receiver and index are evaluated once and
             // stashed in temps so the read and the write share them.
             //
-            // List/Map elements are stored boxed and the receiver erases
-            // primitive element types to `object` (`List[Int]` → MObject,
-            // `Map[K,V]` → MMapOf(object,object)), so the element's arithmetic
-            // type cannot come from the receiver.  Instead the rhs is evaluated
-            // up-front: for a well-typed compound assignment the element and the
-            // rhs share a type, so the rhs type drives the unbox / combine /
-            // re-box.  The receiver's tracked type still selects the container
-            // shape (Dictionary vs List), mirroring the `AssEq` indexed path.
-            // #1481.
+            // With concrete generics the rhs already shares the container's
+            // element type, so the box/unbox dance is gone — the rhs value
+            // sits in its native slot, the read returns it in its native
+            // slot, the combine operates on the native type, and the store
+            // writes it back unboxed.
             val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
             val isMap  = match recvTy { case MMapOf(_, _) -> true case _ -> false }
-            // The container ref is stashed in an `object`-typed temp, so the
-            // static List/Dictionary type is re-asserted with `castclass` after
-            // every reload — the JIT verifier rejects a callvirt of get_Item /
-            // set_Item on a bare `object` receiver (mirrors the read path's
-            // immediate castclass at the EIndex read arm above).
-            val cTok = if isMap { cctx.tokDictObjTypeSpec } else { cctx.tokListObjTypeSpec }
+            // The container ref is stashed in a typed temp (the element type
+            // for List, the value type for Map) so the static List/Dictionary
+            // type is re-asserted with `castclass` after every reload — the
+            // JIT verifier rejects a callvirt of get_Item / set_Item on a
+            // bare `object` receiver.
+            val cTok = if isMap { ensureDictTypeSpecMsil(cctx,
+                              match recvTy { case MMapOf(k, _) -> k case _ -> MObject },
+                              match recvTy { case MMapOf(_, v) -> v case _ -> MObject }) }
+                       else     { ensureListTypeSpecMsil(cctx,
+                              match recvTy { case MListOf(e) -> e case _ -> MObject }) }
+            val mapKeyTy  = match recvTy { case MMapOf(k, _) -> k case _ -> MObject }
+            val mapValTy  = match recvTy { case MMapOf(_, v) -> v case _ -> MObject }
+            val listElemTy = match recvTy { case MListOf(e) -> e case _ -> MObject }
             insns.add(MCastclass(typeToken = cTok))
-            val cSlot = allocSlotMsil(fctx, "__cidx_c_" + toString(fctx.slotTicker.count), MObject)
+            val cSlotTy = if isMap { mapValTy } else { listElemTy }
+            val cSlot = allocSlotMsil(fctx, "__cidx_c_" + toString(fctx.slotTicker.count), cSlotTy)
             emitStoreSlot(insns, cSlot, fctx.paramCount)
-            // Index/key: boxed for a Map, raw int32 for a List.
+            // Index/key: typed for the concrete container.
             val kRawTy = lowerExprMsil(cctx, fctx, insns, indices[0])
-            if isMap { boxIfNeededMsil(cctx, insns, kRawTy) }
-            val kSlotTy = if isMap { MObject } else { MInt }
+            if isMap { coerceMsilType(cctx, insns, kRawTy, mapKeyTy) }
+            val kSlotTy = if isMap { mapKeyTy } else { MInt }
             val kSlot = allocSlotMsil(fctx, "__cidx_k_" + toString(fctx.slotTicker.count), kSlotTy)
             emitStoreSlot(insns, kSlot, fctx.paramCount)
             // Right-hand operand up-front — its type is the element type.
             val rTy = lowerExprMsil(cctx, fctx, insns, value)
             val rSlot = allocSlotMsil(fctx, "__cidx_r_" + toString(fctx.slotTicker.count), rTy)
             emitStoreSlot(insns, rSlot, fctx.paramCount)
-            // current = container[key]  (boxed object)
+            // current = container[key]  (already in native slot for value-type V)
             emitLoadSlot(insns, cSlot, fctx.paramCount)
             insns.add(MCastclass(typeToken = cTok))
             emitLoadSlot(insns, kSlot, fctx.paramCount)
-            if isMap { insns.add(MCallvirt(methodToken = cctx.tokDictObjGetItem)) }
-            else     { insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem)) }
-            materializeBoxedElemMsil(cctx, insns, rTy)
+            if isMap { insns.add(MCallvirt(methodToken = ensureDictGetItemMsil(cctx, mapKeyTy, mapValTy))) }
+            else     { insns.add(MCallvirt(methodToken = ensureListGetItemMsil(cctx, listElemTy))) }
             emitCompoundCombineSlotMsil(cctx, fctx, insns, op, rTy, rSlot)
-            boxIfNeededMsil(cctx, insns, rTy)
-            val vSlot = allocSlotMsil(fctx, "__cidx_v_" + toString(fctx.slotTicker.count), MObject)
+            val newValTy = if isMap { mapValTy } else { listElemTy }
+            coerceMsilType(cctx, insns, rTy, newValTy)
+            val vSlot = allocSlotMsil(fctx, "__cidx_v_" + toString(fctx.slotTicker.count), newValTy)
             emitStoreSlot(insns, vSlot, fctx.paramCount)
             emitLoadSlot(insns, cSlot, fctx.paramCount)
             insns.add(MCastclass(typeToken = cTok))
             emitLoadSlot(insns, kSlot, fctx.paramCount)
             emitLoadSlot(insns, vSlot, fctx.paramCount)
-            if isMap { insns.add(MCallvirt(methodToken = cctx.tokDictObjSetItem)) }
-            else     { insns.add(MCallvirt(methodToken = cctx.tokListObjSetItem)) }
+            if isMap { insns.add(MCallvirt(methodToken = ensureDictSetItemMsil(cctx, mapKeyTy, mapValTy))) }
+            else     { insns.add(MCallvirt(methodToken = ensureListSetItemMsil(cctx, listElemTy))) }
             MVoid
           }
         }
@@ -5733,7 +6320,12 @@ func lowerMethodCallMsil(
     case _ -> {}
   }
   if memberName == "add" {
-    // List<object>::Add(object): void  OR  Dict::Add(key,value): void
+    // List<T>::Add(T): void  OR  Dictionary<K,V>::Add(K, V): void
+    //
+    // Concrete-generic dispatch (Stage 2): the receiver's static type
+    // carries the element / value type, so the `Add` MemberRef can be the
+    // element-typed one.  A value-type element is passed unboxed; a
+    // reference-type element is passed as-is.
     //
     // Propagate the receiver's element generic-type args as a construction
     // hint so a bare `xs.add(None)` on a `List[Option[String]]` builds
@@ -5761,30 +6353,77 @@ func lowerMethodCallMsil(
       }
       case _ -> false
     }
-    var i = 0
-    while i < args.count {
-      val aTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
-      boxIfNeededMsil(cctx, insns, aTy)
-      i = i + 1
+    val addTok = match recvTy {
+      case MListOf(elem)   -> {
+        val t = ensureListAddMsil(cctx, elem)
+        if args.count > 0 {
+          val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+          coerceMsilType(cctx, insns, aTy, elem)
+        }
+        t
+      }
+      case MMapOf(key, valTy) -> {
+        val t = ensureDictAddMsil(cctx, key, valTy)
+        if args.count > 1 {
+          val kTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+          coerceMsilType(cctx, insns, kTy, key)
+          val vTy = lowerCallArgMsil(cctx, fctx, insns, args[1])
+          coerceMsilType(cctx, insns, vTy, valTy)
+        } else {
+          // Wrong arity for a Dictionary Add: evaluate remaining args for
+          // side effects, balance the stack, fall back to a runtime throw.
+          var i = 0
+          while i < args.count {
+            lowerCallArgMsil(cctx, fctx, insns, args[i])
+            insns.add(MPop)
+            i = i + 1
+          }
+          insns.add(MPop)
+          insns.add(MLdStr(token = ctxInternUs(cctx.lctx,
+            "Msil.Codegen: Dictionary.add expects 2 arguments, got " + toString(args.count))))
+          insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+          insns.add(MThrow)
+        }
+        t
+      }
+      case _ -> {
+        // Untracked receiver: fall back to the legacy `List<object>` /
+        // `Dictionary<object,object>` MemberRefs.
+        var i = 0
+        while i < args.count {
+          val aTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+          boxIfNeededMsil(cctx, insns, aTy)
+          i = i + 1
+        }
+        if args.count >= 2 { cctx.tokDictObjAdd } else { cctx.tokListObjAdd }
+      }
     }
     if addHintsPushed {
       while fctx.contextHintTyArgs.count > addPrevHintLen {
         fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
       }
     }
-    if args.count >= 2 {
-      insns.add(MCallvirt(methodToken = cctx.tokDictObjAdd))
-    } else {
-      insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
-    }
+    insns.add(MCallvirt(methodToken = addTok))
     MVoid
   } else if memberName == "containsKey" {
-    // Dictionary::ContainsKey(object): bool
-    if args.count > 0 {
-      val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
-      boxIfNeededMsil(cctx, insns, aTy)
+    // Dictionary<K,V>::ContainsKey(K): bool
+    val ckTok = match recvTy {
+      case MMapOf(key, valTy) -> {
+        if args.count > 0 {
+          val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+          coerceMsilType(cctx, insns, aTy, key)
+        }
+        ensureDictContainsKeyMsil(cctx, key, valTy)
+      }
+      case _ -> {
+        if args.count > 0 {
+          val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+          boxIfNeededMsil(cctx, insns, aTy)
+        }
+        cctx.tokDictObjContainsKey
+      }
     }
-    insns.add(MCallvirt(methodToken = cctx.tokDictObjContainsKey))
+    insns.add(MCallvirt(methodToken = ckTok))
     MBool
   } else if memberName == "contains" {
     match recvTy {
@@ -5809,11 +6448,32 @@ func lowerMethodCallMsil(
         }
         MBool
       }
+      case MListOf(elem) -> {
+        // List<T>::Contains(T): bool — coerce the argument to T and call
+        // the element-typed Contains MemberRef.  Wrong-arity falls through
+        // to a runtime-throw stub.
+        if args.count == 1 {
+          val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+          coerceMsilType(cctx, insns, aTy, elem)
+          insns.add(MCallvirt(methodToken = ensureListContainsMsil(cctx, elem)))
+        } else {
+          var i = 0
+          while i < args.count {
+            lowerCallArgMsil(cctx, fctx, insns, args[i])
+            insns.add(MPop)
+            i = i + 1
+          }
+          insns.add(MPop)
+          val msgTok = ctxInternUs(cctx.lctx, "Msil.Codegen: List.contains expects 1 argument, got " + toString(args.count))
+          insns.add(MLdStr(token = msgTok))
+          insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
+          insns.add(MThrow)
+        }
+        MBool
+      }
       case _ -> {
-        // List<object>::Contains(!0): bool — receiver List already on stack;
-        // push the boxed element and call Contains.  Wrong-arity falls through
-        // to a runtime-throw stub matching the unknown-method catch-all
-        // (formerly a silent `false` return — #1481 item 4 / #1799).
+        // Untracked receiver: fall back to the legacy `List<object>`
+        // MemberRef.
         if args.count == 1 {
           val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
           boxIfNeededMsil(cctx, insns, aTy)
@@ -5835,17 +6495,16 @@ func lowerMethodCallMsil(
       }
     }
   } else if memberName == "remove" {
-    // `map.remove(key)` -> Dictionary<object,object>::Remove(!0): bool.  The
-    // receiver Dictionary is already on the stack; push the boxed key and call
-    // Remove.  (Previously a bootstrap stub that popped the args and returned
-    // false, so `delete()` / `destroy()` were silent no-ops — #1602/#1727.)
+    // `map.remove(key)` -> Dictionary<K,V>::Remove(K): bool.  Concrete
+    // dispatch: coerce the key to K and call the element-typed Remove
+    // MemberRef.
     match recvTy {
-      case MMapOf(_, _) -> {
+      case MMapOf(key, valTy) -> {
         if args.count > 0 {
           val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
-          boxIfNeededMsil(cctx, insns, aTy)
+          coerceMsilType(cctx, insns, aTy, key)
         }
-        insns.add(MCallvirt(methodToken = cctx.tokDictObjRemove))
+        insns.add(MCallvirt(methodToken = ensureDictRemoveMsil(cctx, key, valTy)))
         MBool
       }
       case _ -> {
@@ -5863,13 +6522,31 @@ func lowerMethodCallMsil(
       }
     }
   } else if memberName == "removeAt" {
-    // List<object>::RemoveAt(int32): void — receiver List already on stack;
-    // push the int32 index and call RemoveAt.  Wrong-arity falls through to
-    // a runtime-throw stub matching the unknown-method catch-all (formerly
-    // a silent no-op — #1481 item 4 / #1799).
-    if args.count == 1 {
-      lowerCallArgMsil(cctx, fctx, insns, args[0])
-      insns.add(MCallvirt(methodToken = cctx.tokListObjRemoveAt))
+    // List<T>::RemoveAt(int32): void.  Concrete dispatch when the receiver
+    // is a `MListOf`; otherwise fall back to the legacy `List<object>`
+    // MemberRef.  Wrong-arity falls through to a runtime-throw stub
+    // (formerly a silent no-op — #1481 item 4 / #1799).
+    val raTok = match recvTy {
+      case MListOf(elem) -> {
+        if args.count == 1 {
+          lowerCallArgMsil(cctx, fctx, insns, args[0])
+          ensureListRemoveAtMsil(cctx, elem)
+        } else {
+          // Wrong arity: stub.
+          0
+        }
+      }
+      case _ -> {
+        if args.count == 1 {
+          lowerCallArgMsil(cctx, fctx, insns, args[0])
+          cctx.tokListObjRemoveAt
+        } else {
+          0
+        }
+      }
+    }
+    if raTok > 0 {
+      insns.add(MCallvirt(methodToken = raTok))
       MVoid
     } else {
       var i = 0
@@ -6259,6 +6936,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
             case None     -> MObject
           }
           val prevHintLen = fctx.contextHintTyArgs.count
+          val prevExpElemLen = fctx.expectedListElem.count
           match annoTy {
             case MGenericInst(_, _, typeArgs) -> {
               var hi = 0
@@ -6267,6 +6945,13 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
                 hi = hi + 1
               }
             }
+            // Concrete `List<T>` annotation: hint the EList init so the
+            // instantiated runtime is the element-typed `List<T>` (Stage 2).
+            // Without this hint an `EList` lowers to the legacy
+            // `List<object>` shape and every subsequent `add` / index
+            // access / `for` loop has to box value-type elements (#1779).
+            case MListOf(elem) -> fctx.expectedListElem.add(elem)
+            case MMapOf(_, valTy) -> fctx.expectedListElem.add(valTy)
             case _ -> {}
           }
           // Empty typed-slice literal (`val xs: slice[T] = []`): the generic
@@ -6288,6 +6973,9 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
           while fctx.contextHintTyArgs.count > prevHintLen {
             fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
           }
+          while fctx.expectedListElem.count > prevExpElemLen {
+            fctx.expectedListElem.removeAt(fctx.expectedListElem.count - 1)
+          }
           val effectiveTy = if annoTy != MObject { annoTy } else { initTy }
           lowerLocalPatBindMsil(cctx, fctx, insns, pat, effectiveTy, tyOpt)
         }
@@ -6297,6 +6985,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
             case None     -> MObject
           }
           val prevHintLen = fctx.contextHintTyArgs.count
+          val prevExpElemLen = fctx.expectedListElem.count
           match annoTy {
             case MGenericInst(_, _, typeArgs) -> {
               var hi = 0
@@ -6305,11 +6994,16 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
                 hi = hi + 1
               }
             }
+            case MListOf(elem) -> fctx.expectedListElem.add(elem)
+            case MMapOf(_, valTy) -> fctx.expectedListElem.add(valTy)
             case _ -> {}
           }
           val initTy = lowerExprMsil(cctx, fctx, insns, init)
           while fctx.contextHintTyArgs.count > prevHintLen {
             fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+          }
+          while fctx.expectedListElem.count > prevExpElemLen {
+            fctx.expectedListElem.removeAt(fctx.expectedListElem.count - 1)
           }
           val ty = if annoTy != MObject { annoTy } else { initTy }
           val slot = allocSlotMsil(fctx, name, ty)
@@ -6337,6 +7031,7 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
                 insns.add(MDup)
               }
               val prevHintLen = fctx.contextHintTyArgs.count
+              val prevExpElemLen = fctx.expectedListElem.count
               match annoTy {
                 case MGenericInst(_, _, typeArgs) -> {
                   var hi = 0
@@ -6345,11 +7040,16 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
                     hi = hi + 1
                   }
                 }
+                case MListOf(elem) -> fctx.expectedListElem.add(elem)
+                case MMapOf(_, valTy) -> fctx.expectedListElem.add(valTy)
                 case _ -> {}
               }
               val initTy = lowerExprMsil(cctx, fctx, insns, init)
               while fctx.contextHintTyArgs.count > prevHintLen {
                 fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+              }
+              while fctx.expectedListElem.count > prevExpElemLen {
+                fctx.expectedListElem.removeAt(fctx.expectedListElem.count - 1)
               }
               val ty = if annoTy != MObject { annoTy } else { initTy }
               if isHoisted {
@@ -6880,6 +7580,7 @@ func makeFuncCtxMsil(pkgName: in String, className: in String,
     yieldSlots           = yieldSlots,
     declaredRetTy        = declaredRetTy,
     contextHintTyArgs    = contextHintTyArgs,
+    expectedListElem     = newList(),
     byrefSlotTypes       = byrefSlotTypes,
     funcValRetTypes      = funcValRetTypes,
     boxedParamTypes      = boxedParamTypes,
@@ -11048,7 +11749,7 @@ func msilIsValueTypeRef(t: in MsilType): Bool {
 
 // True when `t` is the CLR `System.DateTime` value type, routed through either
 // the VALUETYPE (`MValueTypeRef`) or CLASS (`MClassRef`) encoding.  Used by the
-// `toString` builtin to pin InvariantCulture formatting (#2184).
+// `toString` builtin to pin ISO-8601 round-trip formatting (#2184).
 func isClrDateTimeMsil(t: in MsilType): Bool {
   match t {
     case MValueTypeRef(_, fqn) -> fqn == "System.DateTime"

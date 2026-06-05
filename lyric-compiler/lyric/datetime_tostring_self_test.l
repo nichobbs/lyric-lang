@@ -4,7 +4,7 @@
 //! Why this lives here and not in `lyric-stdlib/tests/*_tests.l`:
 //! those `_tests.l` files are compiled and run by the **F# stage-0** emitter
 //! (`Lyric.Emitter.Emitter` via `EmitTestKit.compileAndRun`), whose
-//! `toString` builtin already pins InvariantCulture for DateTime — so they
+//! `toString` builtin already pins ISO-8601 round-trip formatting for DateTime — so they
 //! would not exercise the *self-hosted* code path at all.  The fix in
 //! `lyric-compiler/msil/codegen.l` only runs when the program is compiled by
 //! the self-hosted pipeline, so the test program itself must be compiled by

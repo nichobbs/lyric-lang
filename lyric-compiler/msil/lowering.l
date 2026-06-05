@@ -138,8 +138,8 @@ pub func elementTypeByte(t: in MsilType): Int {
     case MTypeVar(_)      -> 0x13  // prefix only; index byte emitted separately by bufMsilType
     case MNativeInt       -> 0x18
     case MGenericInst(_, _, _) -> 0x15  // prefix only; full encoding via bufMsilType
-    case MListOf(_)       -> 0x1C  // same as Object: runtime rep is List<object>
-    case MMapOf(_, _)     -> 0x1C  // same as Object: runtime rep is Dictionary<object,object>
+    case MListOf(_)       -> 0x15  // ELEMENT_TYPE_GENERICINST prefix; full encoding via bufMsilTypeWithCtx
+    case MMapOf(_, _)     -> 0x15  // ELEMENT_TYPE_GENERICINST prefix; full encoding via bufMsilTypeWithCtx
     case MByte            -> 0x05  // ELEMENT_TYPE_U1
     case MArray(_)        -> 0x1D  // ELEMENT_TYPE_SZARRAY prefix; element follows (bufMsilType)
     case MValueTypeRef(_, _) -> 0x11  // ELEMENT_TYPE_VALUETYPE prefix; TypeRef follows (bufMsilType)
@@ -250,6 +250,8 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
         gi = gi + 1
       }
     }
+    case MListOf(_)       -> bufU1(w, 0x1C)  // context-free fallback: degrade to Object (concrete GENERICINST requires ctx)
+    case MMapOf(_, _)     -> bufU1(w, 0x1C)  // context-free fallback: degrade to Object (concrete GENERICINST requires ctx)
     case other -> bufU1(w, elementTypeByte(other))
   }
 }
@@ -758,6 +760,10 @@ pub record LoweringCtx {
   trEnum:      Int     // System.Enum in System.Runtime (for CLR enum types)
   // Well-known AssemblyRef row indices (1-based)
   arRuntime:   Int     // System.Runtime
+  // Well-known collection TypeRef / AssemblyRef rows
+  arCollections: Int
+  trList1:       Int
+  trDict2:       Int
   // Well-known MemberRef row indices (1-based)
   mrObjectCtor: Int    // System.Object::.ctor() — called by synthesised record constructors
   // Resource payload to embed in the PE.  Each resource is encoded as
@@ -850,6 +856,32 @@ pub func newLoweringCtx(packageName: in String,
     resolutionScope = rsAssemblyRef(arRuntime),
     typeName = sEnum, typeNamespace = sSystem))
 
+  // AssemblyRef[2]: System.Collections (houses List`1 / Dictionary`2 contracts in .NET 10).
+  // Populates `LoweringCtx.arCollections` so `bufMsilTypeWithCtx` can encode
+  // concrete `List<T>` / `Dictionary<K,V>` instantiations as
+  // ELEMENT_TYPE_GENERICINST over `trList1` / `trDict2`.  Allocated here so
+  // signature blobs produced before any user TypeDef (e.g. local var sigs in
+  // synthesised record constructors) still resolve their open generic head.
+  val sColl = internString(sh, "System.Collections")
+  val arCollections = addAssemblyRef(t, AssemblyRefRow(
+    majorVersion = 10, minorVersion = 0,
+    buildNumber = 0, revisionNumber = 0,
+    flags = 0, publicKeyToken = msKey,
+    name = sColl, culture = 0, hashValue = 0))
+
+  // TypeRef[3]: System.Collections.Generic.List`1 (open generic definition)
+  val sList1 = internString(sh, "List`1")
+  val sCollGen = internString(sh, "System.Collections.Generic")
+  val trList1 = addTypeRef(t, TypeRefRow(
+    resolutionScope = rsAssemblyRef(arCollections),
+    typeName = sList1, typeNamespace = sCollGen))
+
+  // TypeRef[4]: System.Collections.Generic.Dictionary`2 (open generic definition)
+  val sDict2 = internString(sh, "Dictionary`2")
+  val trDict2 = addTypeRef(t, TypeRefRow(
+    resolutionScope = rsAssemblyRef(arCollections),
+    typeName = sDict2, typeNamespace = sCollGen))
+
   // MemberRef[1]: System.Object::.ctor() — called from synthesised record constructors
   // to satisfy the CLR verifier rule that every .ctor must call a base constructor
   // before returning (ECMA-335 §I.8.9.6.6; ilverify error ThisUninitReturn).
@@ -885,6 +917,9 @@ pub func newLoweringCtx(packageName: in String,
     trObject     = trObject,
     trEnum       = trEnum,
     arRuntime    = arRuntime,
+    arCollections = arCollections,
+    trList1      = trList1,
+    trDict2      = trDict2,
     mrObjectCtor = mrObjectCtor,
     resourceData = newList(),
     typeDefRowByFqn = newMap(),
@@ -1259,6 +1294,42 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
       while gi < typeArgs.count {
         bufMsilTypeWithCtx(w, genericArgType(typeArgs[gi]), ctx)
         gi = gi + 1
+      }
+    }
+    case MListOf(elem) -> {
+      // Concrete `List<T>` instantiation: GENERICINST + CLASS + trList1 coded
+      // index + 1 type arg.  Eliminates dynamic boxing of value-type elements
+      // in cross-package signatures (matches the F# bootstrap emitter's
+      // behaviour for `List[Int]` / `List[String]` / etc.).  The `ctx.trList1`
+      // row is pre-populated by `newLoweringCtx` so this encoding is always
+      // available; `findTypeRefRowByName` provides a defensive fallback for
+      // any context where the row wasn't pre-allocated.
+      val trRow = if ctx.trList1 > 0 { ctx.trList1 } else { findTypeRefRowByName(ctx, "System.Collections.Generic.List`1") }
+      if trRow == 0 {
+        bufU1(w, 0x1C)  // defensive fallback: degrade to Object
+      } else {
+        bufU1(w, 0x15)  // ELEMENT_TYPE_GENERICINST
+        bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS
+        writeCompressedInt(w, tdrTypeRef(trRow))
+        bufU1(w, 1)     // 1 type argument
+        bufMsilTypeWithCtx(w, genericArgType(elem), ctx)
+      }
+    }
+    case MMapOf(key, valTy) -> {
+      // Concrete `Dictionary<K,V>` instantiation: GENERICINST + CLASS +
+      // trDict2 coded index + 2 type args.  Same rationale as MListOf — the
+      // bootstrap emitter stored the value type in the dictionary's value
+      // slot directly, no boxing round-trip.
+      val trRow = if ctx.trDict2 > 0 { ctx.trDict2 } else { findTypeRefRowByName(ctx, "System.Collections.Generic.Dictionary`2") }
+      if trRow == 0 {
+        bufU1(w, 0x1C)  // defensive fallback: degrade to Object
+      } else {
+        bufU1(w, 0x15)  // ELEMENT_TYPE_GENERICINST
+        bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS
+        writeCompressedInt(w, tdrTypeRef(trRow))
+        bufU1(w, 2)     // 2 type arguments
+        bufMsilTypeWithCtx(w, genericArgType(key), ctx)
+        bufMsilTypeWithCtx(w, genericArgType(valTy), ctx)
       }
     }
     case other -> bufU1(w, elementTypeByte(other))

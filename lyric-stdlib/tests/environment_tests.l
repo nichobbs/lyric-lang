@@ -1,7 +1,8 @@
 //! stdlib/tests/environment_tests.l — Tests for Std.Environment.
 //!
 //! Covers: getVar for an unknown variable, getVar for an empty key,
-//! getVarOrDefault, and args (returns a slice without panicking).
+//! getVarOrDefault, args (returns a slice without panicking), and
+//! runtimeDirectory (links on every target).
 package Std.Environment.Tests
 
 import Std.Core
@@ -37,11 +38,17 @@ func testArgsReturnsSlice(): Unit {
   assertTrue(a.length >= 0, "args returns a valid slice")
 }
 
+func testRuntimeDirectoryLinks(): Unit {
+  val dir = runtimeDirectory()
+  assertTrue(dir.length >= 0, "runtimeDirectory returns a valid string")
+}
+
 func main(): Unit {
   testGetVarMissing()
   testGetVarEmptyKey()
   testGetVarOrDefaultFallback()
   testGetVarOrDefaultEmpty()
   testArgsReturnsSlice()
+  testRuntimeDirectoryLinks()
   println("environment_tests: ok")
 }
