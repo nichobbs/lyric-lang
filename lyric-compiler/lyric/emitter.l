@@ -171,7 +171,12 @@ func walkUpForCompilerDir(start: in String): String {
   var dir = start
   var hop = 0
   while hop < 32 {
-    val candidate = Path.join(Path.join(dir, "lyric-compiler"), "lyric")
+    // Return the `lyric-compiler/` root (not `lyric-compiler/lyric/`) so the
+    // loader's recursive scan covers every backend subtree — `lyric/`
+    // (`Lyric.*`), `msil/` (`Msil.*`), and `jvm/` (`Jvm.*`).  A test that
+    // imports `Msil.MetadataReader` / `Msil.Bridge` / `Lyric.Emitter` then
+    // resolves its full compiler-package closure (#1488 compiler-internal tests).
+    val candidate = Path.join(dir, "lyric-compiler")
     if File.dirExists(candidate) { return candidate }
     val parent = Path.dirname(dir)
     if parent.length == 0 or parent == dir { return "" }
@@ -387,6 +392,7 @@ func stripPackageAndImports(source: in String): String {
   val lines: List[String] = newList()
   var lineStart = 0
   var pos = 0
+  var seenPackage = false
   while pos <= source.length {
     val atEnd = pos == source.length
     val isNewline = not atEnd and source.substring(pos, 1) == "\n"
@@ -400,8 +406,17 @@ func stripPackageAndImports(source: in String): String {
       // mid-stream once concatenated and parse as `P0040` "expected an
       // item declaration".  The on-disk files keep their `//!`; only this
       // in-memory concatenation drops it.
-      val skip = Str.startsWith(line, "package ") or Str.startsWith(line, "import ")
+      //
+      // The same applies to a **file-level annotation** before `package`
+      // (`@runtime_checked`, `@proof_required`, …): it annotates the module,
+      // so once `package` is stripped it would dangle and parse as `P0040`.
+      // Item-level annotations (after `package`) must be kept, so only `@`
+      // lines seen *before* the package decl are dropped.
+      val isPackage = Str.startsWith(line, "package ")
+      val skip = isPackage or Str.startsWith(line, "import ")
         or Str.startsWith(line, "//!")
+        or (not seenPackage and Str.startsWith(line, "@"))
+      if isPackage { seenPackage = true }
       if not skip {
         lines.add(line)
       }

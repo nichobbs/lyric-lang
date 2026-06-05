@@ -21110,3 +21110,40 @@ hand-formatting; the other changed files format cleanly.
 This clears the `regex_safe_tests` blocker.  Remaining before the `bridge.l:93`
 flip: `encoding_tests` (the `Byte`-index `.toInt()` bootstrap tension) and the
 compiler-internal tests (`metadata_reader_tests`, `msil_project_bridge_tests`).
+
+### D-progress-435 — LYRIC_LOAD_COMPILER loader: scan all backend subtrees + strip file-level annotations (#1488 gate prep)
+
+**Status:** Shipped — loader infrastructure (two fixes).
+
+The `LYRIC_LOAD_COMPILER` loader (`loadCompilerPayloads`, used by `lyric test` /
+`lyric build` to compile a test against the in-tree compiler packages) had two
+gaps that blocked the compiler-internal tests (`metadata_reader_tests`,
+`msil_project_bridge_tests`) from resolving their imports:
+
+1. **Scan root too narrow.** `walkUpForCompilerDir` returned
+   `lyric-compiler/lyric/`, so the recursive package scan never saw
+   `lyric-compiler/msil/` (`Msil.*`) or `lyric-compiler/jvm/` (`Jvm.*`).  A test
+   importing `Msil.MetadataReader` / `Msil.Bridge` / `Lyric.Emitter` therefore
+   hit `T0010` "unknown type `PeImage`/`MetadataRoot`" for every type defined in
+   those subtrees.  Now returns the `lyric-compiler/` root so the scan covers
+   `lyric/`, `msil/`, and `jvm/`.  (`metadata_reader_tests`: 115 → 2 errors;
+   `msil_project_bridge_tests`: 38 → 4.)
+
+2. **File-level annotations dangled in merged payloads.**
+   `stripPackageAndImports` drops each file's `package`/`import`/`//!` lines when
+   concatenating a multi-file package's bodies, but kept a file-level annotation
+   (`@runtime_checked` on `emitter.l`, etc.) that precedes `package` — so once
+   the package line was stripped the annotation dangled and parsed as `P0040`
+   "expected an item declaration".  Now strips `@…` lines seen *before* the
+   package decl (item-level annotations after `package` are kept).
+
+Regression: `weaver_self_test.l` 18/18, `cfg_gate_self_test.l` 16/16 (both run
+through the loader), 843/843 emitter.
+
+Remaining for both compiler-internal tests: the residual errors are all the
+**Byte/Int spec-vs-stage-0 tension** — the self-hosted checker correctly rejects
+non-spec mixed `Byte`/`Int` arithmetic/args (language reference §541: no implicit
+widening; `rdU8`'s `b[o] * 1`, etc.), which the F# stage-0 emitter tolerates and
+whose spec-correct `.toInt()` form the F# stage-0 cannot compile (it lacks
+`Byte.toInt()`).  This is the same root cause as `encoding_tests` and is the
+gate's final blocker; tracked separately.
