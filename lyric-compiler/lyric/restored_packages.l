@@ -1,24 +1,23 @@
-// lyric/restored_packages.l — Lyric.RestoredPackages bootstrap package.
-//
-// Walks a restored-dependency DLL on disk and returns its embedded
-// `Lyric.Contract` surface(s) as structured artifacts the
-// self-hosted MSIL bridge will consume to resolve cross-package
-// references against compiled deps without re-parsing source.
-//
-// Mirrors `bootstrap/src/Lyric.Emitter/RestoredPackages.fs::loadRestoredPackage`:
-//
-//   * Single-package DLL (one `Lyric.Contract` resource) → one
-//     `RestoredArtifact` with `packageName` taken from the contract
-//     JSON's own `packageName` field (since the legacy resource is
-//     unnamed).
-//   * Project-as-DLL bundle (N `Lyric.Contract.<Pkg>` resources) →
-//     one artifact per resource, keyed by the suffix.
-//
-// Used by the bridge (Phase A.3.2+) to thread restored types and
-// functions into `CodegenCtx`'s symbol tables so a consumer package
-// importing a restored dep can resolve its `pub` surface without
-// the dep's source.
-
+//! lyric/restored_packages.l — Lyric.RestoredPackages bootstrap package.
+//!
+//! Walks a restored-dependency DLL on disk and returns its embedded
+//! `Lyric.Contract` surface(s) as structured artifacts the
+//! self-hosted MSIL bridge will consume to resolve cross-package
+//! references against compiled deps without re-parsing source.
+//!
+//! Mirrors `bootstrap/src/Lyric.Emitter/RestoredPackages.fs::loadRestoredPackage`:
+//!
+//!   * Single-package DLL (one `Lyric.Contract` resource) → one
+//!     `RestoredArtifact` with `packageName` taken from the contract
+//!     JSON's own `packageName` field (since the legacy resource is
+//!     unnamed).
+//!   * Project-as-DLL bundle (N `Lyric.Contract.<Pkg>` resources) →
+//!     one artifact per resource, keyed by the suffix.
+//!
+//! Used by the bridge (Phase A.3.2+) to thread restored types and
+//! functions into `CodegenCtx`'s symbol tables so a consumer package
+//! importing a restored dep can resolve its `pub` surface without
+//! the dep's source.
 @runtime_checked
 package Lyric.RestoredPackages
 
@@ -34,7 +33,6 @@ import Lyric.ContractMeta as Meta
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public types
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// One restored package's externally-visible contract surface,
 /// resolved from a compiled `.dll` on disk.
 ///
@@ -43,17 +41,17 @@ import Lyric.ContractMeta as Meta
 /// cross-assembly `TypeRef` / `MemberRef` rows.  `contract` is the
 /// fully-parsed `Lyric.ContractMeta.Contract` (records / functions /
 /// unions etc. with their public signatures).
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record RestoredArtifact {
   packageName: String
-  version:     String
-  dllPath:     String
-  contract:    Meta.Contract
+  version: String
+  dllPath: String
+  contract: Meta.Contract
 }
 
 /// Errors that surface from `loadRestoredPackage`.  Each carries
 /// enough info to render a useful diagnostic at the caller's site.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub union RestoredLoadError {
   /// The path provided doesn't exist on disk.
   case DllMissing(path: String)
@@ -73,29 +71,19 @@ pub union RestoredLoadError {
 
 /// Render a `RestoredLoadError` as a short single-line string for
 /// CLI diagnostics / error propagation.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func errorMessage(e: in RestoredLoadError): String {
   match e {
-    case DllMissing(p) ->
-      "restored DLL not found: " + p
-    case NoContractResource(p) ->
-      "restored DLL has no Lyric.Contract resource (not a Lyric assembly?): " + p
-    case MalformedContract(p, k) ->
-      "restored DLL " + p + ": Lyric.Contract" +
-      (if Str.isEmpty(k) { "" } else { "." + k }) +
-      " resource is not valid JSON"
-    case SynthesisDiagnostics(p, ds) ->
-      "restored DLL " + p + ": synthesised contract source did not type-check (" +
-      Str.fromInt(ds.count) + " diagnostic" +
-      (if ds.count == 1 { "" } else { "s" }) + ")" +
-      (if ds.count > 0 { "; first: " + ds[0].message } else { "" })
+    case DllMissing(p) -> "restored DLL not found: " + p
+    case NoContractResource(p) -> "restored DLL has no Lyric.Contract resource (not a Lyric assembly?): " + p
+    case MalformedContract(p, k) -> "restored DLL " + p + ": Lyric.Contract" + (if Str.isEmpty(k) { "" } else { "." + k }) + " resource is not valid JSON"
+    case SynthesisDiagnostics(p, ds) -> "restored DLL " + p + ": synthesised contract source did not type-check (" + Str.fromInt(ds.count) + " diagnostic" + (if ds.count == 1 { "" } else { "s" }) + ")" + (if ds.count > 0 { "; first: " + ds[0].message } else { "" })
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Loader
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// Load every `Lyric.Contract` / `Lyric.Contract.<Pkg>` resource
 /// from `dllPath`, parse each into a `RestoredArtifact`, and return
 /// the list.  Returns `Err(DllMissing)` when the file doesn't exist,
@@ -105,7 +93,7 @@ pub func errorMessage(e: in RestoredLoadError): String {
 ///
 /// Single-package DLLs surface as a one-element list; project-as-DLL
 /// bundles surface one artifact per package.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func loadRestoredPackage(dllPath: in String): Result[List[RestoredArtifact], RestoredLoadError] {
   // The pre-flight `fileExists` check carries a narrow TOCTOU window —
   // the file could be deleted between the check and the read — but
@@ -128,8 +116,7 @@ pub func loadRestoredPackage(dllPath: in String): Result[List[RestoredArtifact],
   while i < entries.count {
     val e = entries[i]
     match Meta.parseFromJson(e.json) {
-      case None ->
-        return Err(error = MalformedContract(path = dllPath, pkgKey = e.packageName))
+      case None -> return Err(error = MalformedContract(path = dllPath, pkgKey = e.packageName))
       case Some(c) -> {
         // For the legacy single-package form the resource name's
         // package suffix is "" — recover the canonical package name
@@ -137,13 +124,8 @@ pub func loadRestoredPackage(dllPath: in String): Result[List[RestoredArtifact],
         // the project-as-DLL form, the resource-suffix name and
         // the contract's `packageName` should match; prefer the
         // contract's (it's the source of truth).
-        val pkgName =
-          if Str.isNotEmpty(c.packageName) { c.packageName } else { e.packageName }
-        artifacts.add(RestoredArtifact(
-          packageName = pkgName,
-          version     = c.version,
-          dllPath     = dllPath,
-          contract    = c))
+        val pkgName = if Str.isNotEmpty(c.packageName) { c.packageName } else { e.packageName }
+        artifacts.add(RestoredArtifact(packageName = pkgName, version = c.version, dllPath = dllPath, contract = c))
       }
     }
     i = i + 1
@@ -167,7 +149,6 @@ pub func loadRestoredPackage(dllPath: in String): Result[List[RestoredArtifact],
 // would fail with `T0010 unknown type name 'X'`.
 //
 // Mirrors `bootstrap/src/Lyric.Emitter/RestoredPackages.fs::synthesiseSource`.
-
 // Render one decl's source-level form.  Interface reprs arrive in two
 // shapes depending on which contract writer produced the DLL: the
 // self-hosted writer (`contract_meta.l::reprForInterface`) emits the
@@ -197,9 +178,8 @@ func renderDecl(d: in Meta.ContractDecl): String {
 /// bodies in the contract are stubs (`= ()` axiom-style); every
 /// public type and signature is preserved verbatim from the contract's
 /// `Repr` strings.
-@stable(since="0.1")
-pub func synthesiseSource(contract: in Meta.Contract,
-                          preamble: in List[Meta.ContractDecl]): String {
+@stable(since = "0.1")
+pub func synthesiseSource(contract: in Meta.Contract, preamble: in List[Meta.ContractDecl]): String {
   var sb = "package " + contract.packageName + "\n\n"
   // Preamble decls first — typically extern types / opaques from
   // sibling packages whose names appear in this package's signatures.
@@ -234,38 +214,50 @@ pub func synthesiseSource(contract: in Meta.Contract,
 // A.3.3.c.
 //
 // Mirrors `bootstrap/src/Lyric.Emitter/RestoredPackages.fs::artifactOfContract`.
-
 /// One restored package augmented with its parsed Lyric source and
 /// type-checker output.  `source` is the synthesised `SourceFile`
 /// (`Lyric.Parser` AST shape); `checkResult` carries the
 /// `SymbolTable` + signatures consumers need to resolve cross-
 /// package references against this package.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record SynthesisedArtifact {
   packageName: String
-  version:     String
-  dllPath:     String
-  contract:    Meta.Contract
-  source:      SourceFile
+  version: String
+  dllPath: String
+  contract: Meta.Contract
+  source: SourceFile
   checkResult: CheckResult
+  // Known stdlib type anchors that legitimately appear unresolved in a
+  // standalone contract type-check.  T0010 "unknown type name 'X'" for
+  // one of these is expected — the imports inside the contract aren't
+  // preserved by the synthesised source (the contract Repr loses
+  // cross-package qualifications), so we whitelist the names that
+  // every Lyric stdlib consumer would have in scope.  Matches
+  // `bootstrap/src/Lyric.Emitter/RestoredPackages.fs::knownStdlibTypeNames`.
 }
 
-// Known stdlib type anchors that legitimately appear unresolved in a
-// standalone contract type-check.  T0010 "unknown type name 'X'" for
-// one of these is expected — the imports inside the contract aren't
-// preserved by the synthesised source (the contract Repr loses
-// cross-package qualifications), so we whitelist the names that
-// every Lyric stdlib consumer would have in scope.  Matches
-// `bootstrap/src/Lyric.Emitter/RestoredPackages.fs::knownStdlibTypeNames`.
 func isWhitelistedStdlibType(name: in String): Bool {
-  name == "Option" or name == "Result" or name == "List" or name == "Map" or
-  name == "Set" or name == "Iter" or name == "Slice" or name == "String" or
-  name == "Int" or name == "Bool" or name == "Double" or name == "Long" or
-  name == "Byte" or name == "Char" or name == "Unit" or name == "Never" or
-  name == "Float" or name == "IOError" or name == "ParseError" or
-  name == "ParseResult" or name == "Instant" or name == "Duration" or
-  name == "Clock" or name == "Uuid" or name == "JsonValue" or
-  name == "Diagnostic"
+  name == "Option" or name == "Result" or name == "List" or name == "Map" or name == "Set" or name == "Iter" or
+    name == "Slice" or
+    name == "String" or
+    name == "Int" or
+    name == "Bool" or
+    name == "Double" or
+    name == "Long" or
+    name == "Byte" or
+    name == "Char" or
+    name == "Unit" or
+    name == "Never" or
+    name == "Float" or
+    name == "IOError" or
+    name == "ParseError" or
+    name == "ParseResult" or
+    name == "Instant" or
+    name == "Duration" or
+    name == "Clock" or
+    name == "Uuid" or
+    name == "JsonValue" or
+    name == "Diagnostic"
 }
 
 // Extract the name from a T0010 message of shape `unknown type name 'X'`.
@@ -274,7 +266,9 @@ func isWhitelistedStdlibType(name: in String): Bool {
 // `Lyric.TypeChecker.Resolver`.
 func extractT0010Name(msg: in String): String {
   val openQ = msg.indexOf("'")
-  if openQ < 0 { return "" }
+  if openQ < 0 {
+    return ""
+  }
   // Scan for the next quote AFTER openQ.
   var i = openQ + 1
   while i < msg.length {
@@ -288,9 +282,13 @@ func extractT0010Name(msg: in String): String {
 
 // True iff `d` is a T0010 about a whitelisted stdlib anchor.
 func isWhitelistedT0010(d: in Diagnostic): Bool {
-  if d.code != "T0010" { return false }
+  if d.code != "T0010" {
+    return false
+  }
   val name = extractT0010Name(d.message)
-  if Str.isEmpty(name) { return false }
+  if Str.isEmpty(name) {
+    return false
+  }
   isWhitelistedStdlibType(name)
 }
 
@@ -311,16 +309,19 @@ func isWhitelistedT0010(d: in Diagnostic): Bool {
 //   T0101 — constructor names an unknown field
 //   T0102 — opaque representation pattern-match outside its package
 func isConformanceDiag(d: in Diagnostic): Bool {
-  d.code == "T0085" or d.code == "T0086" or d.code == "T0087" or
-  d.code == "T0098" or d.code == "T0099" or
-  d.code == "T0100" or d.code == "T0101" or d.code == "T0102"
+  d.code == "T0085" or d.code == "T0086" or d.code == "T0087" or d.code == "T0098" or d.code == "T0099" or
+    d.code == "T0100" or
+    d.code == "T0101" or
+    d.code == "T0102"
 }
 
 // True iff `d` is a DiagError (vs DiagWarning).
 func isErrorDiag(d: in Diagnostic): Bool {
   var isErr = false
   match d.severity {
-    case DiagError   -> { isErr = true }
+    case DiagError -> {
+      isErr = true
+    }
     case DiagWarning -> ()
   }
   isErr
@@ -354,15 +355,16 @@ func filterRealErrors(diags: in List[Diagnostic]): List[Diagnostic] {
 /// an empty list for single-package DLLs (no siblings); the bundled-
 /// DLL caller (#1229 Phase A.3.3.c) will pass the union of every
 /// sibling's type-declaring decls.
-@stable(since="0.1")
-pub func synthesiseArtifact(art:      in RestoredArtifact,
-                            preamble: in List[Meta.ContractDecl]): Result[SynthesisedArtifact, RestoredLoadError] {
+@stable(since = "0.1")
+pub func synthesiseArtifact(
+  art: in RestoredArtifact, preamble: in List[Meta.ContractDecl]
+): Result[SynthesisedArtifact, RestoredLoadError] {
   // Validation source includes the sibling-type `preamble` so the
   // standalone re-typecheck resolves cross-package references in this
   // package's signatures (e.g. `originX(p: Point)` where `Point` is
   // declared by a sibling restored DLL).
   val src = synthesiseSource(art.contract, preamble)
-  val pr  = parse(src)
+  val pr = parse(src)
 
   // Parse errors are always real — contract Repr should be valid
   // Lyric source by construction.
@@ -371,8 +373,8 @@ pub func synthesiseArtifact(art:      in RestoredArtifact,
     return Err(error = SynthesisDiagnostics(path = art.dllPath, diags = parseErrors))
   }
 
-  val cr           = check(pr.file)
-  val checkErrors  = filterRealErrors(cr.diagnostics)
+  val cr = check(pr.file)
+  val checkErrors = filterRealErrors(cr.diagnostics)
   if checkErrors.count > 0 {
     return Err(error = SynthesisDiagnostics(path = art.dllPath, diags = checkErrors))
   }
@@ -386,16 +388,19 @@ pub func synthesiseArtifact(art:      in RestoredArtifact,
   // support) this is byte-identical to `pr.file`, so the change is
   // backward-compatible.  Cross-package references in the own decls
   // resolve at bundle time against the sibling artifacts' items.
-  val ownSrc  = synthesiseSource(art.contract, emptyPreamble())
-  val ownPr   = parse(ownSrc)
+  val ownSrc = synthesiseSource(art.contract, emptyPreamble())
+  val ownPr = parse(ownSrc)
 
-  Ok(value = SynthesisedArtifact(
-    packageName = art.packageName,
-    version     = art.version,
-    dllPath     = art.dllPath,
-    contract    = art.contract,
-    source      = ownPr.file,
-    checkResult = cr))
+  Ok(
+    value = SynthesisedArtifact(
+      packageName = art.packageName,
+      version = art.version,
+      dllPath = art.dllPath,
+      contract = art.contract,
+      source = ownPr.file,
+      checkResult = cr
+    )
+  )
 }
 
 // Empty preamble — a fresh list each call so no caller can alias it.

@@ -1,35 +1,32 @@
-// lyric/cfg_gate.l — @cfg-feature gating helpers used by the test runner.
-//
-// Detects when a package source file is entirely guarded by an inactive
-// `@cfg(feature = "X")` annotation so the test runner can substitute an
-// empty stub (allowing sibling-package imports to resolve) instead of
-// concatenating the gated source verbatim.
-//
-// The heuristic is intentionally lightweight (no full lex/parse) but it
-// must not produce false positives on text that happens to look like an
-// annotation while sitting inside a line comment.  See `isCfgGatedOut`
-// and `assembleDirectoryPackageSources` for the contracts.
-//
-// Extracted from `Lyric.Cli` (#1124) so the dedup + comment-aware
-// behaviour is testable from a self-test consumer rather than coupled
-// to the full CLI dispatcher.
-
+//! lyric/cfg_gate.l — @cfg-feature gating helpers used by the test runner.
+//!
+//! Detects when a package source file is entirely guarded by an inactive
+//! `@cfg(feature = "X")` annotation so the test runner can substitute an
+//! empty stub (allowing sibling-package imports to resolve) instead of
+//! concatenating the gated source verbatim.
+//!
+//! The heuristic is intentionally lightweight (no full lex/parse) but it
+//! must not produce false positives on text that happens to look like an
+//! annotation while sitting inside a line comment.  See `isCfgGatedOut`
+//! and `assembleDirectoryPackageSources` for the contracts.
+//!
+//! Extracted from `Lyric.Cli` (#1124) so the dedup + comment-aware
+//! behaviour is testable from a self-test consumer rather than coupled
+//! to the full CLI dispatcher.
 package Lyric.CfgGate
 
 import Std.Core
 import Std.Collections
 import Std.String as Str
 
-
 /// Returns the package-stub source used when an entire file is gated
 /// out: a single `package <name>\n` line with no items.  Sibling packages
 /// can still import `<name>` and resolve to an empty assembly.
 @pure
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func emptyPackageStub(pkgName: in String): String {
   "package " + pkgName + "\n"
 }
-
 
 /// True when `source` is a Lyric file that begins with an
 /// `@cfg(feature = "X")` annotation whose feature is NOT in
@@ -59,14 +56,14 @@ pub func emptyPackageStub(pkgName: in String): String {
 ///     `package` declaration;
 ///   - every eligible annotation references a currently-active feature.
 @pure
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func isCfgGatedOut(source: in String, activeFeatures: in List[String]): Bool {
   // Prepend "\n" so a leading "package " or "@cfg" line still has a
   // preceding newline we can anchor against.  Indices below are into
   // `searchable`, not `source`.
   val searchable = "\n" + source
-  val cfgMark    = "@cfg(feature = \""
-  val pkgMark    = "\npackage "
+  val cfgMark = "@cfg(feature = \""
+  val pkgMark = "\npackage "
 
   val pkgIdxOpt = Str.indexOf(searchable, pkgMark)
   match pkgIdxOpt {
@@ -83,7 +80,9 @@ pub func isCfgGatedOut(source: in String, activeFeatures: in List[String]): Bool
         val tail = Str.substring(searchable, scan, pkgIdx - scan)
         val relOpt = Str.indexOf(tail, cfgMark)
         match relOpt {
-          case None -> { done = true }
+          case None -> {
+            done = true
+          }
           case Some(relIdx) -> {
             val cfgIdx = scan + relIdx
             if cfgIsInLineComment(searchable, cfgIdx) {
@@ -97,7 +96,9 @@ pub func isCfgGatedOut(source: in String, activeFeatures: in List[String]): Bool
               val afterCfg = Str.substring(searchable, cfgStart, searchable.length - cfgStart)
               val closeOpt = Str.indexOf(afterCfg, "\"")
               match closeOpt {
-                case None -> { done = true }
+                case None -> {
+                  done = true
+                }
                 case Some(closeIdx) -> {
                   val featName = Str.substring(afterCfg, 0, closeIdx)
                   if featureIsActive(featName, activeFeatures) {
@@ -106,7 +107,7 @@ pub func isCfgGatedOut(source: in String, activeFeatures: in List[String]): Bool
                     scan = cfgIdx + cfgMark.length
                   } else {
                     result = true
-                    done   = true
+                    done = true
                   }
                 }
               }
@@ -119,41 +120,43 @@ pub func isCfgGatedOut(source: in String, activeFeatures: in List[String]): Bool
   }
 }
 
-
 /// True when `pos` in `s` lies after a `//` line-comment marker on the
 /// same physical line.
 func cfgIsInLineComment(s: in String, pos: in Int): Bool {
   // Walk back to the start of the current physical line.
   var lineStart = pos
-  while lineStart > 0 and s[lineStart - 1] != '\n' { lineStart = lineStart - 1 }
+  while lineStart > 0 and s[lineStart - 1] != '\n' {
+    lineStart = lineStart - 1
+  }
   // Look for "//" in [lineStart, pos).
   var i = lineStart
   while i + 1 < pos {
-    if s[i] == '/' and s[i + 1] == '/' { return true }
+    if s[i] == '/' and s[i + 1] == '/' {
+      return true
+    }
     i = i + 1
   }
   false
 }
-
 
 func featureIsActive(name: in String, activeFeatures: in List[String]): Bool {
   var i = 0
   while i < activeFeatures.count {
-    if activeFeatures[i] == name { return true }
+    if activeFeatures[i] == name {
+      return true
+    }
     i = i + 1
   }
   false
 }
-
 
 /// A single (path, contents) pair input to
 /// `assembleDirectoryPackageSources`.  Plain record because the
 /// stdlib has no general tuple type.
 pub record CfgGateFile {
-  path:     String
+  path: String
   contents: String
 }
-
 
 /// Result of assembling a directory package's source files with
 /// `@cfg`-gated files filtered out.  When every file in the directory
@@ -170,7 +173,6 @@ pub record DirPackageAssembly {
   gatedFiles: List[String]
 }
 
-
 /// Assemble the source list for a directory package, dropping any file
 /// that is entirely gated by an inactive `@cfg` feature.  If every file
 /// is gated, returns a single-element list with the empty-package stub
@@ -182,14 +184,14 @@ pub record DirPackageAssembly {
 /// determinism.  `pkgName` is the declared package name used in the
 /// stub.
 @pure
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func assembleDirectoryPackageSources(
   filesAndContents: in List[CfgGateFile],
   pkgName: in String,
-  activeFeatures: in List[String]
+  activeFeatures: in List[String],
 ): DirPackageAssembly {
   val keptSources: List[String] = newList()
-  val gatedFiles:  List[String] = newList()
+  val gatedFiles: List[String] = newList()
 
   var i = 0
   while i < filesAndContents.count {

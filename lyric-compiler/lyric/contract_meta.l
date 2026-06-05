@@ -1,30 +1,29 @@
-// lyric/contract_meta.l — Lyric.ContractMeta bootstrap package.
-//
-// Public surface:
-//   readFromFile(path)             — extract the `Lyric.Contract`
-//                                    JSON resource from a DLL.
-//   readAllContractsFromFile(path) — every `Lyric.Contract.<Pkg>`
-//                                    resource in a bundled DLL.
-//   parseFromJson(json)            — structured Contract / ContractDecl.
-//   diffContracts(oldJson, newJson)— rendered diff entries.
-//   hasBreakingChanges(entries)    — pure check on the diff entries.
-//
-// IN-PROCESS RESOURCE READS (#1229 Phase A.3): `readFromFile` and
-// `readAllContractsFromFile` now use `Std.AssemblyResources` to walk
-// embedded resources directly via `System.Reflection.Assembly`, with
-// `Std.Encoding.tryDecodeUtf8` converting the bytes to JSON strings
-// in-process.  Replaces the `lyric --internal-contract-meta read`
-// subprocess shellout that the previous versions used.  Mirrors
-// `bootstrap/src/Lyric.Emitter/ContractMeta.fs::readFromAssembly` and
-// `readAllContractsFromAssembly`.
-//
-// IN-PROCESS PARSER (#1229 Phase A.1): `parseFromJson(json)` parses
-// the JSON blob into structured records using `Std.Json` directly.
-//
-// SUBPROCESS RESIDUE: `diffContracts` is the only subprocess hop
-// remaining in this package — porting the diff logic to Lyric is
-// tracked under #1229 follow-ups.
-
+//! lyric/contract_meta.l — Lyric.ContractMeta bootstrap package.
+//!
+//! Public surface:
+//!   readFromFile(path)             — extract the `Lyric.Contract`
+//!                                    JSON resource from a DLL.
+//!   readAllContractsFromFile(path) — every `Lyric.Contract.<Pkg>`
+//!                                    resource in a bundled DLL.
+//!   parseFromJson(json)            — structured Contract / ContractDecl.
+//!   diffContracts(oldJson, newJson)— rendered diff entries.
+//!   hasBreakingChanges(entries)    — pure check on the diff entries.
+//!
+//! IN-PROCESS RESOURCE READS (#1229 Phase A.3): `readFromFile` and
+//! `readAllContractsFromFile` now use `Std.AssemblyResources` to walk
+//! embedded resources directly via `System.Reflection.Assembly`, with
+//! `Std.Encoding.tryDecodeUtf8` converting the bytes to JSON strings
+//! in-process.  Replaces the `lyric --internal-contract-meta read`
+//! subprocess shellout that the previous versions used.  Mirrors
+//! `bootstrap/src/Lyric.Emitter/ContractMeta.fs::readFromAssembly` and
+//! `readAllContractsFromAssembly`.
+//!
+//! IN-PROCESS PARSER (#1229 Phase A.1): `parseFromJson(json)` parses
+//! the JSON blob into structured records using `Std.Json` directly.
+//!
+//! SUBPROCESS RESIDUE: `diffContracts` is the only subprocess hop
+//! remaining in this package — porting the diff logic to Lyric is
+//! tracked under #1229 follow-ups.
 @runtime_checked
 package Lyric.ContractMeta
 
@@ -51,8 +50,9 @@ import Lyric.CliShell as CliShell
 // surface: when the local function and the cross-package alias share
 // a name, the bootstrap resolver shadows the call site with the
 // enclosing module's symbol, producing infinite recursion at runtime.
-
-func cliShellExe(): String { CliShell.lyrExe() }
+func cliShellExe(): String {
+  CliShell.lyrExe()
+}
 
 func cliShellArgs(subcmd: in List[String]): List[String] {
   CliShell.lyrArgs(subcmd)
@@ -61,22 +61,21 @@ func cliShellArgs(subcmd: in List[String]): List[String] {
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. readFromFile / readAllContractsFromFile (in-process)
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// One entry from a bundled DLL's per-package contract resources.
 /// Single-package assemblies surface as one entry with
 /// `packageName = ""` (legacy `Lyric.Contract` resource form).
 /// Project-as-DLL bundles surface one entry per package
 /// (`Lyric.Contract.<PackageName>` resources).
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record ContractEntry {
   packageName: String
-  json:        String
+  json: String
+  // Decode a UTF-8 byte slice to a string, or None when the bytes aren't
+  // valid UTF-8.  The slice is a Lyric.Contract resource payload — JSON
+  // in practice — but this helper does no JSON-aware parsing; the name
+  // reflects the byte-level operation (#1251).
 }
 
-// Decode a UTF-8 byte slice to a string, or None when the bytes aren't
-// valid UTF-8.  The slice is a Lyric.Contract resource payload — JSON
-// in practice — but this helper does no JSON-aware parsing; the name
-// reflects the byte-level operation (#1251).
 func decodeUtf8Resource(bytes: in slice[Byte]): Option[String] {
   Encoding.tryDecodeUtf8(bytes)
 }
@@ -94,11 +93,11 @@ func decodeUtf8Resource(bytes: in slice[Byte]): Option[String] {
 /// `Assembly.LoadFrom` raises `FileNotFoundException` /
 /// `BadImageFormatException`); callers that need a typed-error shape
 /// should wrap the call in `try` (#1252).
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func readFromFile(path: in String): Option[String] {
   val ar = AsmRes.openAssembly(path)
   match AsmRes.tryReadResource(ar, "Lyric.Contract") {
-    case None        -> None
+    case None -> None
     case Some(bytes) -> decodeUtf8Resource(bytes)
   }
 }
@@ -112,10 +111,10 @@ pub func readFromFile(path: in String): Option[String] {
 ///
 /// In-process via `Std.AssemblyResources`.  Mirrors F#
 /// `Lyric.Emitter.ContractMeta.readAllContractsFromAssembly`.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func readAllContractsFromFile(path: in String): List[ContractEntry] {
-  val ar     = AsmRes.openAssembly(path)
-  val names  = AsmRes.resourceNames(ar)
+  val ar = AsmRes.openAssembly(path)
+  val names = AsmRes.resourceNames(ar)
   val result: List[ContractEntry] = newList()
 
   // 1. Legacy single-package form: a bare `Lyric.Contract`.
@@ -123,7 +122,7 @@ pub func readAllContractsFromFile(path: in String): List[ContractEntry] {
     case Some(bytes) -> {
       match decodeUtf8Resource(bytes) {
         case Some(json) -> result.add(ContractEntry(packageName = "", json = json))
-        case None       -> ()
+        case None -> ()
       }
     }
     case None -> ()
@@ -144,8 +143,7 @@ pub func readAllContractsFromFile(path: in String): List[ContractEntry] {
       match AsmRes.tryReadResource(ar, name) {
         case Some(bytes) -> {
           match decodeUtf8Resource(bytes) {
-            case Some(json) ->
-              result.add(ContractEntry(packageName = pkgName, json = json))
+            case Some(json) -> result.add(ContractEntry(packageName = pkgName, json = json))
             case None -> ()
           }
         }
@@ -161,12 +159,11 @@ pub func readAllContractsFromFile(path: in String): List[ContractEntry] {
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. diffContracts
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// Diff two Lyric.Contract JSON blobs.
 /// Returns a list of rendered diff entries (each entry may be multi-line).
 /// Entries are separated by blank lines in the subprocess output;
 /// this function splits on `\n\n` and returns one entry per element.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func diffContracts(oldJson: in String, newJson: in String): List[String] {
   val subcmd: List[String] = newList()
   subcmd.add("--internal-contract-meta")
@@ -191,20 +188,18 @@ pub func diffContracts(oldJson: in String, newJson: in String): List[String] {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. hasBreakingChanges
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// Return true if any rendered entry represents a breaking change.
 ///
 /// Breaking entries are those that:
 ///   - start with "  - " (removed item) and are not @experimental
 ///   - start with "  ~ " (changed signature) and are not @experimental
 ///   - contain "[breaking]" (contract-clause breaking change)
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func hasBreakingChanges(entries: in List[String]): Bool {
   var breaking = false
   for e in entries.toArray() {
-    val isStructuralBreak =
-      (Str.startsWith(e, "  - ") or Str.startsWith(e, "  ~ "))
-      and not Str.contains(e, "[experimental]")
+    val isStructuralBreak = (Str.startsWith(e, "  - ") or Str.startsWith(e, "  ~ ")) and
+      not Str.contains(e, "[experimental]")
     val isContractBreak = Str.contains(e, "[breaking]")
     if isStructuralBreak or isContractBreak {
       breaking = true
@@ -222,102 +217,115 @@ pub func hasBreakingChanges(entries: in List[String]): Bool {
 // `parseFromJson` produces these directly from a JSON string via
 // `Std.Json`, with no subprocess hop, so the self-hosted MSIL bridge can
 // consume restored-dependency contract surfaces in-process.
-
 /// One serialised public declaration.  Mirrors F#
 /// `Lyric.Emitter.ContractMeta.ContractDecl`.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record ContractParam {
   name: String
   /// Signature type-string (e.g. "Int", "in slice[Byte]").
-  ty:   String
+  ty: String
 }
 
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record ContractDecl {
   /// "func" | "record" | "union" | "enum" | "extern_type" | …
-  kind:           String
-  name:           String
+  kind: String
+  name: String
   /// Canonical signature / shape, free-form.
-  repr:           String
+  repr: String
   /// @pure annotation present on this declaration.
-  isPure:         Bool
+  isPure: Bool
   /// Stability level (D040 / Q011):
   ///   ""               — unannotated (treated as stable for enforcement).
   ///   "stable:X.Y"     — `@stable(since="X.Y")`.
   ///   "experimental"   — `@experimental`.
-  stability:      String
+  stability: String
   /// Source-level strings of the function's `requires:` clauses.
   /// Field name is `requiresClauses` (not `requires`) because
   /// `requires` is a Lyric reserved word.
   requiresClauses: List[String]
   /// Source-level strings of the function's `ensures:` clauses.
   /// Field name is `ensuresClauses` (not `ensures`) for the same reason.
-  ensuresClauses:  List[String]
+  ensuresClauses: List[String]
   /// Source-level string of the function's body (only populated when
   /// `isPure = true` and the body is an expression form suitable for
   /// one-level unfolding).
-  body:            Option[String]
+  body: Option[String]
   /// Structured parameters: (name, type-string).
-  params:          List[ContractParam]
+  params: List[ContractParam]
 }
 
 /// Serialised contract for one emitted assembly.  Mirrors F#
 /// `Lyric.Emitter.ContractMeta.Contract`.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record Contract {
-  packageName:   String
-  version:       String
+  packageName: String
+  version: String
   /// Verification level: `runtime_checked` / `proof_required` /
   /// `proof_required(unsafe_blocks_allowed)` /
   /// `proof_required(checked_arithmetic)` / `axiom`.
-  level:         String
+  level: String
   formatVersion: Int
-  decls:         List[ContractDecl]
+  decls: List[ContractDecl]
+  // JsonValueKind ordinals (matches `System.Text.Json.JsonValueKind`):
+  //   0=Undefined  1=Object  2=Array  3=String  4=Number  5=True  6=False  7=Null
 }
 
-// JsonValueKind ordinals (matches `System.Text.Json.JsonValueKind`):
-//   0=Undefined  1=Object  2=Array  3=String  4=Number  5=True  6=False  7=Null
 val JK_OBJECT = 1
-val JK_ARRAY  = 2
+
+val JK_ARRAY = 2
+
 val JK_STRING = 3
+
 val JK_NUMBER = 4
-val JK_TRUE   = 5
+
+val JK_TRUE = 5
 
 func getStr(elem: in JsonElement, name: in String, fallback: in String): String {
   match tryGetProperty(elem, name) {
-    case None    -> fallback
+    case None -> fallback
     case Some(e) -> {
-      if valueKind(e) == JK_STRING { getString(e) } else { fallback }
+      if valueKind(e) == JK_STRING {
+        getString(e)
+      } else {
+        fallback
+      }
     }
   }
 }
 
 func getOptStr(elem: in JsonElement, name: in String): Option[String] {
   match tryGetProperty(elem, name) {
-    case None    -> None
+    case None -> None
     case Some(e) -> {
-      if valueKind(e) == JK_STRING { Some(value = getString(e)) } else { None }
+      if valueKind(e) == JK_STRING {
+        Some(value = getString(e))
+      } else {
+        None
+      }
     }
   }
 }
 
 func getBool(elem: in JsonElement, name: in String): Bool {
   match tryGetProperty(elem, name) {
-    case None    -> false
+    case None -> false
     case Some(e) -> valueKind(e) == JK_TRUE
   }
 }
 
 func getInt(elem: in JsonElement, name: in String, fallback: in Int): Int {
   match tryGetProperty(elem, name) {
-    case None    -> fallback
+    case None -> fallback
     case Some(e) -> {
       if valueKind(e) == JK_NUMBER {
         match tryGetInt(e) {
           case Some(v) -> v
-          case None    -> fallback
+          case None -> fallback
         }
-      } else { fallback }
+      } else {
+        fallback
+      }
     }
   }
 }
@@ -328,14 +336,17 @@ func getInt(elem: in JsonElement, name: in String, fallback: in Int): Int {
 func getStrArray(elem: in JsonElement, name: in String): List[String] {
   val result: List[String] = newList()
   match tryGetProperty(elem, name) {
-    case None    -> result
+    case None -> result
     case Some(a) -> {
       if valueKind(a) == JK_ARRAY {
         var en = enumerateArray(a)
         while arrayMoveNext(en) {
           val v = arrayCurrent(en)
-          if valueKind(v) == JK_STRING { result.add(getString(v)) }
-          else                          { result.add("") }
+          if valueKind(v) == JK_STRING {
+            result.add(getString(v))
+          } else {
+            result.add("")
+          }
         }
       }
       result
@@ -346,16 +357,14 @@ func getStrArray(elem: in JsonElement, name: in String): List[String] {
 func getParams(elem: in JsonElement): List[ContractParam] {
   val result: List[ContractParam] = newList()
   match tryGetProperty(elem, "params") {
-    case None    -> result
+    case None -> result
     case Some(a) -> {
       if valueKind(a) == JK_ARRAY {
         var en = enumerateArray(a)
         while arrayMoveNext(en) {
           val v = arrayCurrent(en)
           if valueKind(v) == JK_OBJECT {
-            result.add(ContractParam(
-              name = getStr(v, "name", ""),
-              ty   = getStr(v, "type", "")))
+            result.add(ContractParam(name = getStr(v, "name", ""), ty = getStr(v, "type", "")))
           }
         }
       }
@@ -366,15 +375,16 @@ func getParams(elem: in JsonElement): List[ContractParam] {
 
 func parseDecl(el: in JsonElement): ContractDecl {
   ContractDecl(
-    kind            = getStr(el, "kind", ""),
-    name            = getStr(el, "name", ""),
-    repr            = getStr(el, "repr", ""),
-    isPure          = getBool(el, "pure"),
-    stability       = getStr(el, "stability", ""),
+    kind = getStr(el, "kind", ""),
+    name = getStr(el, "name", ""),
+    repr = getStr(el, "repr", ""),
+    isPure = getBool(el, "pure"),
+    stability = getStr(el, "stability", ""),
     requiresClauses = getStrArray(el, "requires"),
-    ensuresClauses  = getStrArray(el, "ensures"),
-    body            = getOptStr(el, "body"),
-    params          = getParams(el))
+    ensuresClauses = getStrArray(el, "ensures"),
+    body = getOptStr(el, "body"),
+    params = getParams(el)
+  )
 }
 
 // Walk the parsed root.  Returns None when the root isn't a JSON object
@@ -383,28 +393,35 @@ func parseDecl(el: in JsonElement): ContractDecl {
 // bootstrap emitter does not currently hoist defers from inside try
 // blocks.
 func parseFromRoot(root: in JsonElement): Option[Contract] {
-  if valueKind(root) != JK_OBJECT { return None }
+  if valueKind(root) != JK_OBJECT {
+    return None
+  }
 
   val decls: List[ContractDecl] = newList()
   match tryGetProperty(root, "decls") {
-    case None    -> ()
+    case None -> ()
     case Some(a) -> {
       if valueKind(a) == JK_ARRAY {
         var en = enumerateArray(a)
         while arrayMoveNext(en) {
           val el = arrayCurrent(en)
-          if valueKind(el) == JK_OBJECT { decls.add(parseDecl(el)) }
+          if valueKind(el) == JK_OBJECT {
+            decls.add(parseDecl(el))
+          }
         }
       }
     }
   }
 
-  Some(value = Contract(
-    packageName   = getStr(root, "packageName", ""),
-    version       = getStr(root, "version", "0.0.0"),
-    level         = getStr(root, "level", "runtime_checked"),
-    formatVersion = getInt(root, "formatVersion", 1),
-    decls         = decls))
+  Some(
+    value = Contract(
+      packageName = getStr(root, "packageName", ""),
+      version = getStr(root, "version", "0.0.0"),
+      level = getStr(root, "level", "runtime_checked"),
+      formatVersion = getInt(root, "formatVersion", 1),
+      decls = decls
+    )
+  )
 }
 
 // Parse + walk + dispose, with no try/catch.  Caller wraps in try.
@@ -414,7 +431,9 @@ func parseFromRoot(root: in JsonElement): Option[Contract] {
 // Tracked in #1241.
 func parseAndWalk(json: in String): Option[Contract] {
   val doc = parseJson(json)
-  defer { disposeJson(doc) }
+  defer {
+    disposeJson(doc)
+  }
   parseFromRoot(rootElement(doc))
 }
 
@@ -425,9 +444,11 @@ func parseAndWalk(json: in String): Option[Contract] {
 /// exactly so format-1 and format-2 payloads round-trip identically.
 ///
 /// Used by the self-hosted MSIL bridge's restored-dependency loader.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func parseFromJson(json: in String): Option[Contract] {
-  if Str.isEmpty(Str.trim(json)) { return None }
+  if Str.isEmpty(Str.trim(json)) {
+    return None
+  }
   // `parseJson` is backed by `System.Text.Json.JsonDocument.Parse`,
   // which throws on syntactically invalid input — surface those as
   // `None` so callers don't need their own try/catch (matches the F#
@@ -448,7 +469,6 @@ pub func parseFromJson(json: in String): Option[Contract] {
 // `bootstrap/src/Lyric.Emitter/ContractMeta.fs::toJson`.  Used by the
 // bridge to build the `Lyric.Contract` resource that gets embedded in
 // every emitted assembly.
-
 // Escape one character for inclusion in a JSON string literal.  Returns
 // the escaped sequence (length ≥ 1).  Handles `"`, `\`, `\n`, `\r`, `\t`;
 // every other character passes through verbatim.  Control characters
@@ -457,18 +477,30 @@ pub func parseFromJson(json: in String): Option[Contract] {
 // names), so a full `\u00XX` escaper is unnecessary.  Matches the F#
 // `ContractMeta.toJson` minimal-set policy (#1338).
 func escapeJsonChar(c: in String): String {
-  if c.length == 0 { return "" }
-  if c == "\"" { return "\\\"" }
-  if c == "\\" { return "\\\\" }
-  if c == "\n" { return "\\n" }
-  if c == "\r" { return "\\r" }
-  if c == "\t" { return "\\t" }
+  if c.length == 0 {
+    return ""
+  }
+  if c == "\"" {
+    return "\\\""
+  }
+  if c == "\\" {
+    return "\\\\"
+  }
+  if c == "\n" {
+    return "\\n"
+  }
+  if c == "\r" {
+    return "\\r"
+  }
+  if c == "\t" {
+    return "\\t"
+  }
   c
 }
 
 // Escape a string for inclusion in a JSON string literal.  Walks
 // the characters via `Std.String.substring(i, 1)`.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func escapeJson(s: in String): String {
   var result = ""
   var i = 0
@@ -485,7 +517,9 @@ func renderStringArray(xs: in List[String]): String {
   var sb = "["
   var i = 0
   while i < xs.count {
-    if i > 0 { sb = sb + "," }
+    if i > 0 {
+      sb = sb + ","
+    }
     sb = sb + "\"" + escapeJson(xs[i]) + "\""
     i = i + 1
   }
@@ -497,7 +531,9 @@ func renderParams(ps: in List[ContractParam]): String {
   var sb = "["
   var i = 0
   while i < ps.count {
-    if i > 0 { sb = sb + "," }
+    if i > 0 {
+      sb = sb + ","
+    }
     sb = sb + "{\"name\":\"" + escapeJson(ps[i].name) + "\""
     sb = sb + ",\"type\":\"" + escapeJson(ps[i].ty) + "\"}"
     i = i + 1
@@ -526,8 +562,10 @@ func renderDecl(d: in ContractDecl): String {
     sb = sb + ",\"ensures\":" + renderStringArray(d.ensuresClauses)
   }
   match d.body {
-    case Some(body) -> { sb = sb + ",\"body\":\"" + escapeJson(body) + "\"" }
-    case None       -> ()
+    case Some(body) -> {
+      sb = sb + ",\"body\":\"" + escapeJson(body) + "\""
+    }
+    case None -> ()
   }
   if d.params.count > 0 {
     sb = sb + ",\"params\":" + renderParams(d.params)
@@ -539,7 +577,7 @@ func renderDecl(d: in ContractDecl): String {
 /// or format-2) so the output round-trips byte-stably through
 /// `parseFromJson` without loss.  Mirrors
 /// `bootstrap/src/Lyric.Emitter/ContractMeta.fs::toJson`.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func contractToJson(c: in Contract): String {
   var sb = "{\n"
   sb = sb + "  \"formatVersion\": " + toString(c.formatVersion) + ",\n"
@@ -549,7 +587,9 @@ pub func contractToJson(c: in Contract): String {
   sb = sb + "  \"decls\": [\n"
   var i = 0
   while i < c.decls.count {
-    if i > 0 { sb = sb + ",\n" }
+    if i > 0 {
+      sb = sb + ",\n"
+    }
     sb = sb + "    " + renderDecl(c.decls[i])
     i = i + 1
   }
@@ -575,14 +615,15 @@ pub func contractToJson(c: in Contract): String {
 // during restored-dep loading: a parseable Lyric declaration that the
 // type-checker can re-consume.  For the bootstrap, we hand-render each
 // kind (proper formatter integration is a follow-up).
-
 // True iff `vis` is `Some(VisPub(_))`.
 func isPubVis(vis: in Option[Visibility]): Bool {
   var isPub = false
   match vis {
     case Some(v) -> {
       match v {
-        case VisPub(_)      -> { isPub = true }
+        case VisPub(_) -> {
+          isPub = true
+        }
         case VisInternal(_) -> ()
       }
     }
@@ -597,22 +638,19 @@ func isPubVis(vis: in Option[Visibility]): Bool {
 // cleanly.
 func renderTypeExpr(te: in TypeExpr): String {
   match te.kind {
-    case TUnit              -> "Unit"
-    case TNever             -> "Never"
-    case TSelf              -> "Self"
-    case TRef(path)         -> joinDots(path.segments)
-    case TGenericApp(h, args) ->
-      joinDots(h.segments) + "[" + renderTypeArgList(args) + "]"
-    case TSlice(elem)       -> "slice[" + renderTypeExpr(elem) + "]"
-    case TNullable(inner)   -> renderTypeExpr(inner) + "?"
-    case TParen(inner)      -> renderTypeExpr(inner)
-    case TArray(size, elem) ->
-      "array[" + renderTypeArg(size) + ", " + renderTypeExpr(elem) + "]"
-    case TTuple(ts)         -> "(" + renderTypeExprList(ts) + ")"
-    case TFunction(ps, r)   ->
-      "(" + renderTypeExprList(ps) + ") -> " + renderTypeExpr(r)
-    case TRefined(p, _)     -> joinDots(p.segments)
-    case TError             -> "Unit"
+    case TUnit -> "Unit"
+    case TNever -> "Never"
+    case TSelf -> "Self"
+    case TRef(path) -> joinDots(path.segments)
+    case TGenericApp(h, args) -> joinDots(h.segments) + "[" + renderTypeArgList(args) + "]"
+    case TSlice(elem) -> "slice[" + renderTypeExpr(elem) + "]"
+    case TNullable(inner) -> renderTypeExpr(inner) + "?"
+    case TParen(inner) -> renderTypeExpr(inner)
+    case TArray(size, elem) -> "array[" + renderTypeArg(size) + ", " + renderTypeExpr(elem) + "]"
+    case TTuple(ts) -> "(" + renderTypeExprList(ts) + ")"
+    case TFunction(ps, r) -> "(" + renderTypeExprList(ps) + ") -> " + renderTypeExpr(r)
+    case TRefined(p, _) -> joinDots(p.segments)
+    case TError -> "Unit"
   }
 }
 
@@ -621,7 +659,9 @@ func renderTypeExprList(ts: in List[TypeExpr]): String {
   var s = ""
   var i = 0
   while i < ts.count {
-    if i > 0 { s = s + ", " }
+    if i > 0 {
+      s = s + ", "
+    }
     s = s + renderTypeExpr(ts[i])
     i = i + 1
   }
@@ -648,7 +688,7 @@ func renderConstExpr(e: in Expr): String {
     case ELiteral(lit) -> {
       match lit {
         case LInt(v, _) -> toString(v)
-        case _          -> "0"
+        case _ -> "0"
       }
     }
     case _ -> "0"
@@ -660,7 +700,9 @@ func renderTypeArgList(args: in List[TypeArg]): String {
   var s = ""
   var i = 0
   while i < args.count {
-    if i > 0 { s = s + ", " }
+    if i > 0 {
+      s = s + ", "
+    }
     s = s + renderTypeArg(args[i])
     i = i + 1
   }
@@ -672,7 +714,9 @@ func joinDots(segs: in List[String]): String {
   var s = ""
   var i = 0
   while i < segs.count {
-    if i > 0 { s = s + "." }
+    if i > 0 {
+      s = s + "."
+    }
     s = s + segs[i]
     i = i + 1
   }
@@ -684,11 +728,7 @@ func joinDots(segs: in List[String]): String {
 // bootstrap parser is happy with either form, and the contract
 // surface is read-only anyway).
 func renderParam(p: in Param): String {
-  val modeStr = match p.mode {
-    case PMIn    -> "in "
-    case PMOut   -> "out "
-    case PMInout -> "inout "
-  }
+  val modeStr = match p.mode { case PMIn -> "in "; case PMOut -> "out "; case PMInout -> "inout " }
   p.name + ": " + modeStr + renderTypeExpr(p.ty)
 }
 
@@ -696,7 +736,7 @@ func renderParam(p: in Param): String {
 // `GPType` → bare name; `GPValue` → `name: constraint`.
 func renderGenericParam(gp: in GenericParam): String {
   match gp {
-    case GPType(name, _)             -> name
+    case GPType(name, _) -> name
     case GPValue(name, constraint, _) -> name + ": " + renderTypeExpr(constraint)
   }
 }
@@ -709,11 +749,15 @@ func renderGenerics(g: in Option[GenericParams]): String {
   match g {
     case None -> ""
     case Some(gp) -> {
-      if gp.params.count == 0 { return "" }
+      if gp.params.count == 0 {
+        return ""
+      }
       var s = "["
       var i = 0
       while i < gp.params.count {
-        if i > 0 { s = s + ", " }
+        if i > 0 {
+          s = s + ", "
+        }
         s = s + renderGenericParam(gp.params[i])
         i = i + 1
       }
@@ -731,7 +775,9 @@ func reprForRecord(decl: in RecordDecl): String {
   while i < decl.members.count {
     match decl.members[i] {
       case RMField(f) -> {
-        if emittedAny { fields = fields + ", " }
+        if emittedAny {
+          fields = fields + ", "
+        }
         fields = fields + f.name + ": " + renderTypeExpr(f.ty)
         emittedAny = true
       }
@@ -750,16 +796,14 @@ func reprForFunc(fn: in FunctionDecl): String {
   var params = ""
   var i = 0
   while i < fn.params.count {
-    if i > 0 { params = params + ", " }
+    if i > 0 {
+      params = params + ", "
+    }
     params = params + renderParam(fn.params[i])
     i = i + 1
   }
-  val retStr = match fn.ret {
-    case Some(t) -> ": " + renderTypeExpr(t)
-    case None    -> ""
-  }
-  "pub func " + fn.name + renderGenerics(fn.generics) +
-    "(" + params + ")" + retStr
+  val retStr = match fn.ret { case Some(t) -> ": " + renderTypeExpr(t); case None -> "" }
+  "pub func " + fn.name + renderGenerics(fn.generics) + "(" + params + ")" + retStr
 }
 
 // Build the `pub union Name { case A, case B(x: T) }` repr for a union.
@@ -767,7 +811,9 @@ func reprForUnion(decl: in UnionDecl): String {
   var cases = ""
   var i = 0
   while i < decl.cases.count {
-    if i > 0 { cases = cases + ", " }
+    if i > 0 {
+      cases = cases + ", "
+    }
     val c = decl.cases[i]
     if c.fields.count == 0 {
       cases = cases + "case " + c.name
@@ -775,10 +821,16 @@ func reprForUnion(decl: in UnionDecl): String {
       var fs = ""
       var j = 0
       while j < c.fields.count {
-        if j > 0 { fs = fs + ", " }
+        if j > 0 {
+          fs = fs + ", "
+        }
         match c.fields[j] {
-          case UFNamed(n, ty, _) -> { fs = fs + n + ": " + renderTypeExpr(ty) }
-          case UFPos(ty, _)      -> { fs = fs + renderTypeExpr(ty) }
+          case UFNamed(n, ty, _) -> {
+            fs = fs + n + ": " + renderTypeExpr(ty)
+          }
+          case UFPos(ty, _) -> {
+            fs = fs + renderTypeExpr(ty)
+          }
         }
         j = j + 1
       }
@@ -795,7 +847,9 @@ func reprForEnum(decl: in EnumDecl): String {
   var cases = ""
   var i = 0
   while i < decl.cases.count {
-    if i > 0 { cases = cases + ", " }
+    if i > 0 {
+      cases = cases + ", "
+    }
     cases = cases + decl.cases[i].name
     i = i + 1
   }
@@ -811,9 +865,13 @@ func reprForEnum(decl: in EnumDecl): String {
 // emitted.
 func reprForImplHead(decl: in ImplDecl): Option[String] {
   val targetName = implTargetSimpleName(decl)
-  if Str.isEmpty(targetName) { return None }
+  if Str.isEmpty(targetName) {
+    return None
+  }
   val ifaceName = joinDots(decl.iface.head.segments)
-  if Str.isEmpty(ifaceName) { return None }
+  if Str.isEmpty(ifaceName) {
+    return None
+  }
   Some(value = "impl " + ifaceName + " for " + targetName + " {}")
 }
 
@@ -821,21 +879,29 @@ func reprForImplHead(decl: in ImplDecl): Option[String] {
 // whose method table the consumer needs to populate).
 func implReprName(decl: in ImplDecl): String {
   val t = implTargetSimpleName(decl)
-  if Str.isEmpty(t) { "__impl" } else { t }
+  if Str.isEmpty(t) {
+    "__impl"
+  } else {
+    t
+  }
 }
 
 // Extract the simple (last-segment) name of an impl's target type, or "" when
 // the target is not a plain `TRef` / `TGenericApp` head.
 func implTargetSimpleName(decl: in ImplDecl): String {
   match decl.target.kind {
-    case TRef(path)          -> lastSegOf(path.segments)
-    case TGenericApp(h, _)   -> lastSegOf(h.segments)
-    case _                   -> ""
+    case TRef(path) -> lastSegOf(path.segments)
+    case TGenericApp(h, _) -> lastSegOf(h.segments)
+    case _ -> ""
   }
 }
 
 func lastSegOf(segs: in List[String]): String {
-  if segs.count == 0 { "" } else { segs[segs.count - 1] }
+  if segs.count == 0 {
+    ""
+  } else {
+    segs[segs.count - 1]
+  }
 }
 
 // Build the `pub interface Name { ... }` repr with each abstract
@@ -847,15 +913,16 @@ func reprForInterface(decl: in InterfaceDecl): String {
   while i < decl.members.count {
     match decl.members[i] {
       case IMSig(sig) -> {
-        if Str.isNotEmpty(members) { members = members + "; " }
+        if Str.isNotEmpty(members) {
+          members = members + "; "
+        }
         members = members + reprForFunctionSig(sig)
       }
       case _ -> ()
     }
     i = i + 1
   }
-  "pub interface " + decl.name + renderGenerics(decl.generics) +
-    " { " + members + " }"
+  "pub interface " + decl.name + renderGenerics(decl.generics) + " { " + members + " }"
 }
 
 // Render a FunctionSig (interface-method head form, no body).
@@ -863,23 +930,20 @@ func reprForFunctionSig(sig: in FunctionSig): String {
   var params = ""
   var i = 0
   while i < sig.params.count {
-    if i > 0 { params = params + ", " }
+    if i > 0 {
+      params = params + ", "
+    }
     params = params + renderParam(sig.params[i])
     i = i + 1
   }
-  val retStr = match sig.ret {
-    case Some(t) -> ": " + renderTypeExpr(t)
-    case None    -> ""
-  }
-  "func " + sig.name + renderGenerics(sig.generics) +
-    "(" + params + ")" + retStr
+  val retStr = match sig.ret { case Some(t) -> ": " + renderTypeExpr(t); case None -> "" }
+  "func " + sig.name + renderGenerics(sig.generics) + "(" + params + ")" + retStr
 }
 
 // `pub type Name = <underlying>` for distinct types.  Renders the
 // declared underlying type rather than guessing `Int`.
 func reprForDistinct(decl: in DistinctTypeDecl): String {
-  "pub type " + decl.name + renderGenerics(decl.generics) +
-    " = " + renderTypeExpr(decl.underlying)
+  "pub type " + decl.name + renderGenerics(decl.generics) + " = " + renderTypeExpr(decl.underlying)
 }
 
 // `pub opaque type Name { f1: T1, ... }` — emits the structural
@@ -893,7 +957,9 @@ func reprForOpaque(decl: in OpaqueTypeDecl): String {
   while i < decl.members.count {
     match decl.members[i] {
       case OMField(f) -> {
-        if emittedAny { fields = fields + ", " }
+        if emittedAny {
+          fields = fields + ", "
+        }
         fields = fields + f.name + ": " + renderTypeExpr(f.ty)
         emittedAny = true
       }
@@ -901,29 +967,28 @@ func reprForOpaque(decl: in OpaqueTypeDecl): String {
     }
     i = i + 1
   }
-  "pub opaque type " + decl.name + renderGenerics(decl.generics) +
-    " { " + fields + " }"
+  "pub opaque type " + decl.name + renderGenerics(decl.generics) + " { " + fields + " }"
 }
 
 // `pub alias Name = <rhs>` — renders the actual aliased TypeExpr.
 func reprForTypeAlias(decl: in TypeAliasDecl): String {
-  "pub alias " + decl.name + renderGenerics(decl.generics) +
-    " = " + renderTypeExpr(decl.rhs)
+  "pub alias " + decl.name + renderGenerics(decl.generics) + " = " + renderTypeExpr(decl.rhs)
 }
 
 // Construct a default ContractDecl with the three required fields and
 // everything else zeroed.  Mirrors F# `ContractDecl.basic`.
 func basicDecl(kind: in String, name: in String, repr: in String): ContractDecl {
   ContractDecl(
-    kind            = kind,
-    name            = name,
-    repr            = repr,
-    isPure          = false,
-    stability       = "",
+    kind = kind,
+    name = name,
+    repr = repr,
+    isPure = false,
+    stability = "",
     requiresClauses = newList(),
-    ensuresClauses  = newList(),
-    body            = None,
-    params          = newList())
+    ensuresClauses = newList(),
+    body = None,
+    params = newList()
+  )
 }
 
 // Find a single-segment file-level annotation by name.  Returns the
@@ -953,8 +1018,10 @@ func proofRequiredModifier(ann: in Annotation): String {
   while i < ann.args.count {
     if Str.isEmpty(modifier) {
       match ann.args[i] {
-        case ABare(name, _) -> { modifier = name }
-        case _              -> ()
+        case ABare(name, _) -> {
+          modifier = name
+        }
+        case _ -> ()
       }
     }
     i = i + 1
@@ -968,7 +1035,7 @@ func proofRequiredModifier(ann: in Annotation): String {
 /// → "proof_required" or "proof_required(<modifier>)"; otherwise
 /// "runtime_checked" (the default for both `@runtime_checked` and
 /// unannotated files).
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func levelOfFile(file: in SourceFile): String {
   match findFileAnnotation(file, "axiom") {
     case Some(_) -> "axiom"
@@ -976,9 +1043,13 @@ pub func levelOfFile(file: in SourceFile): String {
       match findFileAnnotation(file, "proof_required") {
         case Some(ann) -> {
           val m = proofRequiredModifier(ann)
-          if m == "unsafe_blocks_allowed" { "proof_required(unsafe_blocks_allowed)" }
-          else if m == "checked_arithmetic" { "proof_required(checked_arithmetic)" }
-          else { "proof_required" }
+          if m == "unsafe_blocks_allowed" {
+            "proof_required(unsafe_blocks_allowed)"
+          } else if m == "checked_arithmetic" {
+            "proof_required(checked_arithmetic)"
+          } else {
+            "proof_required"
+          }
         }
         case None -> "runtime_checked"
       }
@@ -1000,7 +1071,7 @@ pub func levelOfFile(file: in SourceFile): String {
 ///
 /// Used by the self-hosted MSIL bridge to build the `Lyric.Contract`
 /// resource payload before assembly emission.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func buildContractFromFile(file: in SourceFile, version: in String): Contract {
   val decls: List[ContractDecl] = newList()
   var i = 0
@@ -1008,22 +1079,14 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
     val it = file.items[i]
     if isPubVis(it.visibility) {
       match it.kind {
-        case IRecord(r) ->
-          decls.add(basicDecl("record", r.name, reprForRecord(r)))
-        case IFunc(f) ->
-          decls.add(basicDecl("func", f.name, reprForFunc(f)))
-        case IUnion(u) ->
-          decls.add(basicDecl("union", u.name, reprForUnion(u)))
-        case IEnum(e) ->
-          decls.add(basicDecl("enum", e.name, reprForEnum(e)))
-        case IInterface(ix) ->
-          decls.add(basicDecl("interface", ix.name, reprForInterface(ix)))
-        case IDistinctType(d) ->
-          decls.add(basicDecl("distinct", d.name, reprForDistinct(d)))
-        case IOpaque(o) ->
-          decls.add(basicDecl("opaque", o.name, reprForOpaque(o)))
-        case ITypeAlias(a) ->
-          decls.add(basicDecl("alias", a.name, reprForTypeAlias(a)))
+        case IRecord(r) -> decls.add(basicDecl("record", r.name, reprForRecord(r)))
+        case IFunc(f) -> decls.add(basicDecl("func", f.name, reprForFunc(f)))
+        case IUnion(u) -> decls.add(basicDecl("union", u.name, reprForUnion(u)))
+        case IEnum(e) -> decls.add(basicDecl("enum", e.name, reprForEnum(e)))
+        case IInterface(ix) -> decls.add(basicDecl("interface", ix.name, reprForInterface(ix)))
+        case IDistinctType(d) -> decls.add(basicDecl("distinct", d.name, reprForDistinct(d)))
+        case IOpaque(o) -> decls.add(basicDecl("opaque", o.name, reprForOpaque(o)))
+        case ITypeAlias(a) -> decls.add(basicDecl("alias", a.name, reprForTypeAlias(a)))
         case _ -> ()
       }
     }
@@ -1040,7 +1103,7 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
       case IImpl(idecl) -> {
         match reprForImplHead(idecl) {
           case Some(repr) -> decls.add(basicDecl("impl", implReprName(idecl), repr))
-          case None       -> ()
+          case None -> ()
         }
       }
       case _ -> ()
@@ -1048,9 +1111,10 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
     i = i + 1
   }
   Contract(
-    packageName   = joinDots(file.packageDecl.path.segments),
-    version       = version,
-    level         = levelOfFile(file),
+    packageName = joinDots(file.packageDecl.path.segments),
+    version = version,
+    level = levelOfFile(file),
     formatVersion = 2,
-    decls         = decls)
+    decls = decls
+  )
 }

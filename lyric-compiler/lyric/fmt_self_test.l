@@ -580,6 +580,38 @@ func testFormatSourceCheckedOutputParseError(): Unit {
   assertTrue(not fmtCheckIsOk(c), "checked: extern-package output is refused")
 }
 
+func testReturnTryRoundTrips(): Unit {
+  // The parser models `return try { … } catch { … }` as a `return` whose
+  // value is a single-statement block wrapping the `try`.  The formatter
+  // must render the bare `return try …` rather than injecting an extra
+  // `{ … }` and collapsing the multi-statement body onto one line.
+  val src = "package P\n\nfunc run(): Int {\n  return try {\n    f(1)\n  } catch Bug as e {\n    0\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "return-try: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "return try {"), "return-try: bare try preserved")
+  assertTrue(not Str.contains(acc, "return {"), "return-try: no injected wrapping brace")
+}
+
+func testMatchArmBareReturnRoundTrips(): Unit {
+  // A bare `case P -> return e` arm body is also a parser-synthesised
+  // single-statement block; it must render without injected braces.
+  val src = "package P\n\nfunc f(o: in Option[Int]): Int {\n  match o {\n    case Some(e) -> return e\n    case None -> 0\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "match-arm bare return: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "case Some(e) -> return e"), "match-arm bare return: stays bare")
+}
+
+func testMatchArmExplicitBracePreserved(): Unit {
+  // When the author *did* write braces around a single `return`, the span
+  // check distinguishes them from the bare form so they are preserved
+  // (no token change) rather than unwrapped.
+  val src = "package P\n\nfunc f(o: in Option[Int]): Int {\n  match o {\n    case Some(e) -> { return e }\n    case None -> 0\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "match-arm explicit braces: round-trips")
+}
+
 func testModuleHeaderAutoFix(): Unit {
   // A plain `//` header block before `package` is promoted to `//!`.
   val acc = format(parse("// my module\n// second line\npackage P\n"))
@@ -615,6 +647,9 @@ func main(): Unit {
   testFormatSourceCheckedInputParseError()
   testFormatSourceCheckedStructureChange()
   testFormatSourceCheckedOutputParseError()
+  testReturnTryRoundTrips()
+  testMatchArmBareReturnRoundTrips()
+  testMatchArmExplicitBracePreserved()
   testModuleHeaderAutoFix()
   testFieldDocCommentPreserved()
   testFormatPackageOnly()

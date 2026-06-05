@@ -880,10 +880,78 @@ func harvestedItemOffset(h: in HarvestedItem): Int {
   }
 }
 
+/// True when `s` is a statement the parser wraps in a single-statement
+/// `EBlock` to use it in expression position (see parser_exprs.l: the
+/// `return` / `throw` / `try` / `break` / `continue` keyword-as-expression
+/// forms).  Rendering such a wrapper as `{ <stmt> }` would inject braces
+/// the author never wrote and collapse a multi-statement `try` body onto
+/// one line; instead we unwrap and render the bare statement.
+@pure
+func isKeywordExprStmt(s: in Statement): Bool {
+  match s.kind {
+    case STry(_, _, _) -> true
+    case SThrow(_)     -> true
+    case SBreak(_)     -> true
+    case SContinue(_)  -> true
+    case SReturn(_)    -> true
+    case _             -> false
+  }
+}
+
+/// True when `b` is a parser-synthesised wrapper around a single
+/// keyword-as-expression statement *and the source wrote no braces*.  The
+/// parser gives such a wrapper the bare statement's span (parser_exprs.l),
+/// whereas an author-written `{ return e }` block's span starts at the `{`
+/// before the statement.  Comparing the two start offsets distinguishes
+/// `return e` (unwrap) from `{ return e }` (keep the braces) even though
+/// both share the `Block`-of-one-statement shape.
+@pure
+func isBareKeywordExprBlock(b: in Block): Bool {
+  b.statements.count == 1
+    and isKeywordExprStmt(b.statements[0])
+    and b.span.startPos.offset == b.statements[0].span.startPos.offset
+}
+
+/// Multi-line rendering of an `EBlock` expression.  A bare keyword-as-
+/// expression wrapper is unwrapped to the statement (round-tripping
+/// `return try { … } catch { … }`); any other block renders as a normal
+/// brace-delimited multi-line block.
+func blockExprDoc(col: in Int, ctx: inout FmtCtx, b: in Block): List[String] {
+  if isBareKeywordExprBlock(b) {
+    return stmtLines(b.statements[0], ctx)
+  }
+  concatDoc3(singleLineDoc("{"), indentDoc(2, blockLines(b, ctx)), singleLineDoc("}"))
+}
+
+/// Inline rendering of an `EBlock`: unwrap a bare keyword-as-expression
+/// wrapper to its bare form, mirroring `blockExprDoc`.
+func blockExprInline(b: in Block): String {
+  if isBareKeywordExprBlock(b) {
+    return stmtInline(b.statements[0])
+  }
+  "{ " + blockInline(b) + " }"
+}
+
 /// Width-driven multi-line entry point.  Always returns a non-empty
 /// `Doc`; the first line never has leading whitespace (the caller
 /// owns the outer indent).
 pub func exprAtCol(col: in Int, ctx: inout FmtCtx, e: in Expr): List[String] {
+  // A block with several statements has no faithful one-line form
+  // (`blockInline` would fuse them with `; ` separators the source never
+  // had), and a `try` is always a multi-line construct.  Route those to
+  // the multi-line block printer before the width-driven inline attempt;
+  // single-statement non-`try` blocks may still inline below.
+  match e.kind {
+    case EBlock(b) -> {
+      val single = b.statements.count == 1
+      val isTry = single and (match b.statements[0].kind {
+        case STry(_, _, _) -> true
+        case _             -> false
+      })
+      if (not single) or isTry { return blockExprDoc(col, ctx, b) }
+    }
+    case _ -> {}
+  }
   val inline = exprInline(0, e)
   if exprFitsInline(col, ctx, e, inline) {
     return singleLineDoc(inline)
@@ -910,6 +978,7 @@ pub func exprAtCol(col: in Int, ctx: inout FmtCtx, e: in Expr): List[String] {
       else { ifBlockLines(cond, thn, els, ctx) }
     }
     case EMatch(scrut, arms)        -> matchLines(scrut, arms, ctx)
+    case EBlock(b)                  -> blockExprDoc(col, ctx, b)
     case _                          -> singleLineDoc(inline)
   }
 }
@@ -1217,7 +1286,7 @@ pub func exprInline(minPrec: in Int, e: in Expr): String {
     case EBinop(op, lhs, rhs) -> binopInlineStr(minPrec, op, lhs, rhs)
     case ERange(rb)         -> rangeBoundStr(rb)
     case EAssign(t, op, v)  -> exprInline(0, t) + " " + assignStr(op) + " " + exprInline(0, v)
-    case EBlock(b)          -> "{ " + blockInline(b) + " }"
+    case EBlock(b)          -> blockExprInline(b)
     case EUnsafe(b)         -> "unsafe { " + blockInline(b) + " }"
     case EError             -> "<error>"
   }
@@ -1319,7 +1388,7 @@ func binopInlineStr(minPrec: in Int, op: in BinOp, lhs: in Expr, rhs: in Expr): 
 func eobInline(eob: in ExprOrBlock): String {
   match eob {
     case EOBExpr(e)  -> exprInline(0, e)
-    case EOBBlock(b) -> "{ " + blockInline(b) + " }"
+    case EOBBlock(b) -> blockExprInline(b)
   }
 }
 
@@ -1681,11 +1750,22 @@ func matchLines(scrut: in Expr, arms: in List[MatchArm], ctx: inout FmtCtx): Lis
         armLines.add("case " + patStr(a.pattern) + guard + " -> " + exprInline(0, body))
       }
       case EOBBlock(blk) -> {
-        armLines.add("case " + patStr(a.pattern) + guard + " -> {")
-        val inner = indentDoc(2, blockLines(blk, ctx))
-        var j = 0
-        while j < inner.count { armLines.add(inner[j]); j = j + 1 }
-        armLines.add("}")
+        if isBareKeywordExprBlock(blk) {
+          // Bare statement-as-arm-body: the parser wraps `-> return e` /
+          // `-> throw …` in a single-statement block.  Render the bare
+          // statement without injecting braces the source never had.
+          val sl = stmtLines(blk.statements[0], ctx)
+          val arrow = "case " + patStr(a.pattern) + guard + " -> "
+          armLines.add(arrow + sl[0])
+          var j = 1
+          while j < sl.count { armLines.add(sl[j]); j = j + 1 }
+        } else {
+          armLines.add("case " + patStr(a.pattern) + guard + " -> {")
+          val inner = indentDoc(2, blockLines(blk, ctx))
+          var j = 0
+          while j < inner.count { armLines.add(inner[j]); j = j + 1 }
+          armLines.add("}")
+        }
       }
     }
     i = i + 1

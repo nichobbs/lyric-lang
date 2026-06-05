@@ -1,6 +1,6 @@
-// typechecker_self_test.l — exercises the self-hosted Lyric.TypeChecker library.
-// Compiled and executed by SelfHostedTypeCheckerTests.fs.
-// Exit 0 + "ok" in stdout means all checks held.
+//! typechecker_self_test.l — exercises the self-hosted Lyric.TypeChecker library.
+//! Compiled and executed by SelfHostedTypeCheckerTests.fs.
+//! Exit 0 + "ok" in stdout means all checks held.
 package Lyric.TypeCheckerSelfTest
 
 import Std.Core
@@ -13,7 +13,6 @@ import Lyric.TypeChecker
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func parseCheck(src: in String): CheckResult {
   val pr = parse(src)
   check(pr.file)
@@ -30,7 +29,9 @@ func symCount(cr: in CheckResult): Int {
 func hasDiagCode(cr: in CheckResult, code: in String): Bool {
   var i = 0
   while i < cr.diagnostics.count {
-    if cr.diagnostics[i].code == code { return true }
+    if cr.diagnostics[i].code == code {
+      return true
+    }
     i = i + 1
   }
   false
@@ -39,7 +40,6 @@ func hasDiagCode(cr: in CheckResult, code: in String): Bool {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testEmptySource(): Unit {
   val cr = parseCheck("")
   assertEqualInt(diagCount(cr), 0, "empty: no diagnostics")
@@ -137,8 +137,11 @@ func testMatchNullaryNoShadow(): Unit {
 // unwrapped `TyRefined`, `a + 1` / `a < 100` raised a spurious T0030/T0033.
 func testRangeSubtypeArithmetic(): Unit {
   val src = "package P\nfunc f(a: in Int range 0 ..= 150): Bool {\n  val n = a + 1\n  a < 100\n}\n"
-  assertEqualInt(diagCount(parseCheck(src)), 0,
-    "range-subtype: arithmetic and comparison on `Int range 0 ..= 150` are clean")
+  assertEqualInt(
+    diagCount(parseCheck(src)),
+    0,
+    "range-subtype: arithmetic and comparison on `Int range 0 ..= 150` are clean"
+  )
 }
 
 // #1488 (B): a generic function's return type is instantiated from the
@@ -148,8 +151,10 @@ func testRangeSubtypeArithmetic(): Unit {
 // would treat it as a wildcard and the binding would pass silently.
 func testGenericReturnInstantiatedMismatch(): Unit {
   val src = "package P\nunion Opt[T] {\n  case Sm(value: T)\n  case Nn\n}\ngeneric[T] func unwrapOr(o: in Opt[T], d: in T): T { d }\nfunc f(o: in Opt[Int]): Unit {\n  val s: String = unwrapOr(o, 0)\n}\n"
-  assertTrue(hasDiagCode(parseCheck(src), "T0060"),
-    "generic-return: unwrapOr(Opt[Int], Int) returns Int, mismatches String")
+  assertTrue(
+    hasDiagCode(parseCheck(src), "T0060"),
+    "generic-return: unwrapOr(Opt[Int], Int) returns Int, mismatches String"
+  )
 }
 
 // The complementary clean case: the instantiated `Int` return is usable in an
@@ -157,8 +162,7 @@ func testGenericReturnInstantiatedMismatch(): Unit {
 // T0033 (comparison of `T` and `Int`).
 func testGenericReturnInstantiatedClean(): Unit {
   val src = "package P\nunion Opt[T] {\n  case Sm(value: T)\n  case Nn\n}\ngeneric[T] func unwrapOr(o: in Opt[T], d: in T): T { d }\nfunc f(o: in Opt[Int]): Bool {\n  unwrapOr(o, 0) < 0\n}\n"
-  assertEqualInt(diagCount(parseCheck(src)), 0,
-    "generic-return: instantiated Int return compares cleanly with Int")
+  assertEqualInt(diagCount(parseCheck(src)), 0, "generic-return: instantiated Int return compares cleanly with Int")
 }
 
 // #2228: a generic that occurs in multiple parameter positions resolves
@@ -168,8 +172,7 @@ func testGenericReturnInstantiatedClean(): Unit {
 // argument check, so it needs no separate assertion here.)
 func testGenericMultiOccurrenceConsistent(): Unit {
   val src = "package P\ngeneric[T] func pick(a: in T, b: in T): T { a }\nfunc f(): Unit {\n  val s: String = pick(1, 2)\n}\n"
-  assertTrue(hasDiagCode(parseCheck(src), "T0060"),
-    "generic-multi: pick(Int, Int) returns Int, mismatches String")
+  assertTrue(hasDiagCode(parseCheck(src), "T0060"), "generic-multi: pick(Int, Int) returns Int, mismatches String")
 }
 
 // #1488 (A): `result` is a contextual keyword.  A user-declared local named
@@ -190,7 +193,10 @@ func testResultLocalShadowsKeyword(): Unit {
 // String binding type, not the Int return type (which would spuriously pass).
 func testResultLocalKeepsBindingType(): Unit {
   val src = "package P\nfunc f(): Int {\n  val result = \"hi\"\n  val n: Int = result\n  n\n}\n"
-  assertTrue(hasDiagCode(parseCheck(src), "T0060"), "result-local: read takes the String binding type, not Int return type")
+  assertTrue(
+    hasDiagCode(parseCheck(src), "T0060"),
+    "result-local: read takes the String binding type, not Int return type"
+  )
 }
 
 func testValTypeMismatch(): Unit {
@@ -379,9 +385,9 @@ func testAsyncGeneratorFlags(): Unit {
   val noT0094 = not hasDiagCode(cr, "T0094")
   assertTrue(noT0094, "async-gen: no T0094 for valid async generator")
   match mapGet(cr.sigs, "g") {
-    case None      -> assertTrue(false, "async-gen: sig 'g' not found")
+    case None -> assertTrue(false, "async-gen: sig 'g' not found")
     case Some(sig) -> {
-      assertTrue(sig.isAsync,     "async-gen: isAsync=true")
+      assertTrue(sig.isAsync, "async-gen: isAsync=true")
       assertTrue(sig.isGenerator, "async-gen: isGenerator=true")
     }
   }
@@ -392,9 +398,9 @@ func testHotAnnotationFlag(): Unit {
   val src = "package P\n@hot\nasync func h(): Int { return 42 }\n"
   val cr = parseCheck(src)
   match mapGet(cr.sigs, "h") {
-    case None      -> assertTrue(false, "hot: sig 'h' not found")
+    case None -> assertTrue(false, "hot: sig 'h' not found")
     case Some(sig) -> {
-      assertTrue(sig.isHot,          "hot: isHot=true")
+      assertTrue(sig.isHot, "hot: isHot=true")
       assertTrue(not sig.isGenerator, "hot: isGenerator=false")
     }
   }
@@ -405,7 +411,7 @@ func testQualifiedTypeResolvesViaImport(): Unit {
   // type registered by checkWithImports — no T0014 "qualified type not
   // resolved".
   val libSrc = "package Lib\npub record Point { x: Int; y: Int }\n"
-  val libPr  = parse(libSrc)
+  val libPr = parse(libSrc)
   val importedItems: List[Item] = newList()
   var i = 0
   while i < libPr.file.items.count {
@@ -413,20 +419,16 @@ func testQualifiedTypeResolvesViaImport(): Unit {
     i = i + 1
   }
   val src = "package App\nfunc f(p: Lib.Point): Int { 0 }\n"
-  val pr  = parse(src)
-  val cr  = checkWithImports(pr.file, importedItems)
+  val pr = parse(src)
+  val cr = checkWithImports(pr.file, importedItems)
   // Stronger than just `not hasDiagCode T0014` (#924): assert there
   // are no type-resolution diagnostics at all.  The previous form
   // would have passed even if a different type-resolution error
   // (T0010 / T0020 / T0050) had surfaced, masking a regression.
-  assertTrue(not hasDiagCode(cr, "T0014"),
-    "qualified-type-import: no T0014 for Lib.Point when Point is imported")
-  assertTrue(not hasDiagCode(cr, "T0010"),
-    "qualified-type-import: no T0010 unknown-type for Lib.Point")
-  assertTrue(not hasDiagCode(cr, "T0020"),
-    "qualified-type-import: no T0020 unknown-name for Lib.Point")
-  assertTrue(not hasDiagCode(cr, "T0050"),
-    "qualified-type-import: no T0050 generic-arity for Lib.Point")
+  assertTrue(not hasDiagCode(cr, "T0014"), "qualified-type-import: no T0014 for Lib.Point when Point is imported")
+  assertTrue(not hasDiagCode(cr, "T0010"), "qualified-type-import: no T0010 unknown-type for Lib.Point")
+  assertTrue(not hasDiagCode(cr, "T0020"), "qualified-type-import: no T0020 unknown-name for Lib.Point")
+  assertTrue(not hasDiagCode(cr, "T0050"), "qualified-type-import: no T0050 generic-arity for Lib.Point")
 }
 
 // #1488: interface subtyping at argument positions — a value whose type `T`
@@ -434,16 +436,21 @@ func testQualifiedTypeResolvesViaImport(): Unit {
 // `Hello` impls `Greeter`, so `useGreeter(Hello(...))` is clean.
 func testInterfaceSubtypingAccepted(): Unit {
   val src = "package P\npub interface Greeter {\n  func greet(): String\n}\nrecord Hello { name: String }\nimpl Greeter for Hello {\n  func greet(): String { \"hi\" }\n}\nfunc useGreeter(g: in Greeter): String { g.greet() }\nfunc f(): Unit {\n  val s = useGreeter(Hello(name = \"x\"))\n}\n"
-  assertEqualInt(diagCount(parseCheck(src)), 0,
-    "interface-subtyping: Hello (impl Greeter) is accepted where Greeter is expected")
+  assertEqualInt(
+    diagCount(parseCheck(src)),
+    0,
+    "interface-subtyping: Hello (impl Greeter) is accepted where Greeter is expected"
+  )
 }
 
 // The subtyping is precise: a record that does NOT implement the interface is
 // still rejected (T0043), so the relation isn't a blanket "any user type".
 func testInterfaceSubtypingRejectsNonImpl(): Unit {
   val src = "package P\npub interface Greeter {\n  func greet(): String\n}\nrecord Other { x: Int }\nfunc useGreeter(g: in Greeter): String { \"\" }\nfunc f(): Unit {\n  val s = useGreeter(Other(x = 1))\n}\n"
-  assertTrue(hasDiagCode(parseCheck(src), "T0043"),
-    "interface-subtyping: Other (no impl) is rejected where Greeter is expected")
+  assertTrue(
+    hasDiagCode(parseCheck(src), "T0043"),
+    "interface-subtyping: Other (no impl) is rejected where Greeter is expected"
+  )
 }
 
 // #2303 soundness: conformance is keyed by `TypeId`, not simple name.  `PkgA`
@@ -453,14 +460,18 @@ func testInterfaceSubtypingRejectsNonImpl(): Unit {
 // have wrongly accepted it.
 func testInterfaceSubtypingCrossPackageSound(): Unit {
   val pkgA = parse("package PkgA\npub interface Greeter {\n  func greet(): String\n}\n")
-  val pkgB = parse("package PkgB\npub interface Greeter {\n  func greet(): String\n}\npub func wantB(g: in Greeter): String { \"\" }\n")
+  val pkgB = parse(
+    "package PkgB\npub interface Greeter {\n  func greet(): String\n}\npub func wantB(g: in Greeter): String { \"\" }\n"
+  )
   val packages: List[ImportedPackage] = newList()
   packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items))
   packages.add(ImportedPackage(name = "PkgB", items = pkgB.file.items))
   val src = "package App\nimport PkgA\nrecord Hello { x: Int }\nimpl Greeter for Hello {\n  func greet(): String { \"hi\" }\n}\nfunc f(): Unit {\n  val s = wantB(Hello(x = 1))\n}\n"
   val cr = checkWithImportedPackages(parse(src).file, packages)
-  assertTrue(hasDiagCode(cr, "T0043"),
-    "interface-subtyping cross-package: impl of PkgA.Greeter does not satisfy a PkgB.Greeter parameter")
+  assertTrue(
+    hasDiagCode(cr, "T0043"),
+    "interface-subtyping cross-package: impl of PkgA.Greeter does not satisfy a PkgB.Greeter parameter"
+  )
 }
 
 // #1488 category D: two imported packages can export the same simple type name
@@ -480,17 +491,28 @@ func testCollidingTypeNameLastRegisteredWins(): Unit {
   val libB = parse("package LibB\npub union E { case B1(x: Int)\n  case B2(y: Int) }\n")
   val importedItems: List[Item] = newList()
   var a = 0
-  while a < libA.file.items.count { importedItems.add(libA.file.items[a]); a = a + 1 }
+  while a < libA.file.items.count {
+    importedItems.add(libA.file.items[a])
+    a = a + 1
+  }
   var b = 0
-  while b < libB.file.items.count { importedItems.add(libB.file.items[b]); b = b + 1 }
+  while b < libB.file.items.count {
+    importedItems.add(libB.file.items[b])
+    b = b + 1
+  }
   // `E` resolves to LibB's (registered last); a match over its cases is clean.
   val okSrc = "package App\nfunc f(e: in E): Unit {\n  match e {\n    case B1(_) -> ()\n    case B2(_) -> ()\n  }\n}\n"
-  assertEqualInt(diagCount(checkWithImports(parse(okSrc).file, importedItems)), 0,
-    "collision: E resolves to the last-registered (LibB) union; B1/B2 match is exhaustive")
+  assertEqualInt(
+    diagCount(checkWithImports(parse(okSrc).file, importedItems)),
+    0,
+    "collision: E resolves to the last-registered (LibB) union; B1/B2 match is exhaustive"
+  )
   // Matching LibA's `A1` is non-exhaustive against LibB's `E` (missing B1/B2).
   val badSrc = "package App\nfunc g(e: in E): Unit {\n  match e {\n    case A1(_) -> ()\n  }\n}\n"
-  assertTrue(hasDiagCode(checkWithImports(parse(badSrc).file, importedItems), "T0016"),
-    "collision: matching LibA's A1 is non-exhaustive against the last-registered E")
+  assertTrue(
+    hasDiagCode(checkWithImports(parse(badSrc).file, importedItems), "T0016"),
+    "collision: matching LibA's A1 is non-exhaustive against the last-registered E"
+  )
 }
 
 // #1488 category C: two imported functions sharing a name and arity but
@@ -501,7 +523,7 @@ func testCollidingTypeNameLastRegisteredWins(): Unit {
 // binding the call into an `Int` is clean and into a `String` mismatches.
 func testOverloadDispatchByArgType(): Unit {
   val libSrc = "package Lib\npub func mk(s: in String): Int { 0 }\npub func mk(n: in Int): String { \"\" }\n"
-  val libPr  = parse(libSrc)
+  val libPr = parse(libSrc)
   val importedItems: List[Item] = newList()
   var i = 0
   while i < libPr.file.items.count {
@@ -510,16 +532,21 @@ func testOverloadDispatchByArgType(): Unit {
   }
   // `mk("x")` selects `mk(String): Int`; the `Int` binding is clean.
   val okSrc = "package App\nfunc f(): Unit {\n  val n: Int = mk(\"x\")\n}\n"
-  val okPr  = parse(okSrc)
-  assertEqualInt(diagCount(checkWithImports(okPr.file, importedItems)), 0,
-    "overload: mk(String) selects the Int-returning overload")
+  val okPr = parse(okSrc)
+  assertEqualInt(
+    diagCount(checkWithImports(okPr.file, importedItems)),
+    0,
+    "overload: mk(String) selects the Int-returning overload"
+  )
   // `mk(7)` selects `mk(Int): String`; binding into `Int` must mismatch (T0060),
   // proving the *other* overload was chosen — a first-in-wins map would have
   // returned the same overload for both calls.
   val badSrc = "package App\nfunc f(): Unit {\n  val n: Int = mk(7)\n}\n"
-  val badPr  = parse(badSrc)
-  assertTrue(hasDiagCode(checkWithImports(badPr.file, importedItems), "T0060"),
-    "overload: mk(Int) selects the String-returning overload (mismatches Int)")
+  val badPr = parse(badSrc)
+  assertTrue(
+    hasDiagCode(checkWithImports(badPr.file, importedItems), "T0060"),
+    "overload: mk(Int) selects the String-returning overload (mismatches Int)"
+  )
 }
 
 func testQualifiedTypeUnknownEmitsT0014(): Unit {
@@ -529,8 +556,7 @@ func testQualifiedTypeUnknownEmitsT0014(): Unit {
   val empty: List[Item] = newList()
   val pr = parse(src)
   val cr = checkWithImports(pr.file, empty)
-  assertTrue(hasDiagCode(cr, "T0014"),
-    "qualified-unknown: T0014 for Unknown.Pkg.Blorp not in scope")
+  assertTrue(hasDiagCode(cr, "T0014"), "qualified-unknown: T0014 for Unknown.Pkg.Blorp not in scope")
 }
 
 func testQualifiedTypeMisqualifiedResolvesPermissively(): Unit {
@@ -547,7 +573,7 @@ func testQualifiedTypeMisqualifiedResolvesPermissively(): Unit {
   // `assertTrue(hasDiagCode(cr, "T0014"))` and tighten the test name
   // to `testQualifiedTypeMisqualifiedEmitsT0014`.
   val libSrc = "package Lib\npub record Point { x: Int; y: Int }\n"
-  val libPr  = parse(libSrc)
+  val libPr = parse(libSrc)
   val importedItems: List[Item] = newList()
   var i = 0
   while i < libPr.file.items.count {
@@ -555,10 +581,12 @@ func testQualifiedTypeMisqualifiedResolvesPermissively(): Unit {
     i = i + 1
   }
   val src = "package App\nfunc f(p: Wrong.Prefix.Point): Int { 0 }\n"
-  val pr  = parse(src)
-  val cr  = checkWithImports(pr.file, importedItems)
-  assertTrue(not hasDiagCode(cr, "T0014"),
-    "qualified-misqualified: last-segment lookup currently accepts Wrong.Prefix.Point when Point is imported (Band 6 interim — #923)")
+  val pr = parse(src)
+  val cr = checkWithImports(pr.file, importedItems)
+  assertTrue(
+    not hasDiagCode(cr, "T0014"),
+    "qualified-misqualified: last-segment lookup currently accepts Wrong.Prefix.Point when Point is imported (Band 6 interim — #923)"
+  )
 }
 
 func testOpaqueConstructSamePackageWithDuplicateImportedSymbol(): Unit {
@@ -566,9 +594,7 @@ func testOpaqueConstructSamePackageWithDuplicateImportedSymbol(): Unit {
   // When a package is compiled with imported stdlib items, the current file's
   // declarations appear after the imported items in the symbol table and
   // must therefore take precedence.
-  val src =
-    "package P\n" +
-    "opaque type Secret { token: String }\n" +
+  val src = "package P\n" + "opaque type Secret { token: String }\n" +
     "func f(): Unit { val s = Secret(token = \"x\") }\n"
   val pr: ParseResult = parse(src)
   val importedItems: List[Item] = newList()
@@ -578,8 +604,7 @@ func testOpaqueConstructSamePackageWithDuplicateImportedSymbol(): Unit {
     i = i + 1
   }
   val cr = checkWithImports(pr.file, importedItems)
-  assertTrue(not hasDiagCode(cr, "T0100"),
-    "same-package opaque construction with duplicate imported symbol: no T0100")
+  assertTrue(not hasDiagCode(cr, "T0100"), "same-package opaque construction with duplicate imported symbol: no T0100")
 }
 
 // #425 item 6: T0031 ("arithmetic operands must have the same type")
@@ -590,10 +615,7 @@ func testOpaqueConstructSamePackageWithDuplicateImportedSymbol(): Unit {
 // mismatch (a Bool + Point pair).  T0031's payload must include the
 // declared name "Point" rather than the synthetic `<#N>` placeholder.
 func testTyUserRendersDeclaredName(): Unit {
-  val src =
-    "package P\n" +
-    "record Point { x: Int; y: Int }\n" +
-    "func f(p: in Point, b: in Bool): Int { p + b }\n"
+  val src = "package P\n" + "record Point { x: Int; y: Int }\n" + "func f(p: in Point, b: in Bool): Int { p + b }\n"
   val cr = parseCheck(src)
   // Pull every diagnostic message and assert at least one mentions
   // "Point" rather than the synthetic `<#…>`.
@@ -602,13 +624,16 @@ func testTyUserRendersDeclaredName(): Unit {
   var i = 0
   while i < cr.diagnostics.count {
     val m = cr.diagnostics[i].message
-    if Str.contains(m, "Point") { sawName = true }
-    if Str.contains(m, "<#") { sawPlaceholder = true }
+    if Str.contains(m, "Point") {
+      sawName = true
+    }
+    if Str.contains(m, "<#") {
+      sawPlaceholder = true
+    }
     i = i + 1
   }
   assertTrue(sawName, "TyUser render: 'Point' surfaces in a diagnostic")
-  assertTrue(not sawPlaceholder,
-             "TyUser render: no `<#…>` placeholder leaked to diagnostics")
+  assertTrue(not sawPlaceholder, "TyUser render: no `<#…>` placeholder leaked to diagnostics")
 }
 
 // #425 item 5: a range bound of `-9223372036854775808` (Long.MinValue)
@@ -618,15 +643,11 @@ func testTyUserRendersDeclaredName(): Unit {
 // as Long.MinValue's bit pattern and the fold recognises the
 // PreNeg + literal pair as a single Long.MinValue unit.
 func testRangeBoundLongMinValueFolds(): Unit {
-  val src =
-    "package P\n" +
-    "type Limit = Long range -9223372036854775808 ..= 0\n"
+  val src = "package P\n" + "type Limit = Long range -9223372036854775808 ..= 0\n"
   val cr = parseCheck(src)
   // T0093 = "symbolic bound that cannot be folded" — must not fire.
-  assertTrue(not hasDiagCode(cr, "T0093"),
-             "Long.MinValue range bound folds without T0093")
-  assertEqualInt(diagCount(cr), 0,
-                 "Long.MinValue range bound: no diagnostics at all")
+  assertTrue(not hasDiagCode(cr, "T0093"), "Long.MinValue range bound folds without T0093")
+  assertEqualInt(diagCount(cr), 0, "Long.MinValue range bound: no diagnostics at all")
 }
 
 func testFirstWinsOnImportFuncCollision(): Unit {
@@ -642,10 +663,8 @@ func testFirstWinsOnImportFuncCollision(): Unit {
   // at the same arity (would have crashed the typechecker before the
   // first-wins guard); (b) a user overload at a different arity gets
   // its own arity-qualified slot and resolves cleanly.
-  val libSrc =
-    "package Lib\n" +
-    "pub func collide(x: in Int): Int { x }\n"
-  val libPr  = parse(libSrc)
+  val libSrc = "package Lib\n" + "pub func collide(x: in Int): Int { x }\n"
+  val libPr = parse(libSrc)
   val importedItems: List[Item] = newList()
   var i = 0
   while i < libPr.file.items.count {
@@ -653,32 +672,27 @@ func testFirstWinsOnImportFuncCollision(): Unit {
     i = i + 1
   }
   // (a) same name + same arity: must not crash; check completes.
-  val srcSame =
-    "package App\n" +
-    "func collide(x: in Int): Int { x + 1 }\n" +
-    "func use(): Int { collide(7) }\n"
+  val srcSame = "package App\n" + "func collide(x: in Int): Int { x + 1 }\n" + "func use(): Int { collide(7) }\n"
   val prSame = parse(srcSame)
   val crSame = checkWithImports(prSame.file, importedItems)
-  assertTrue(diagCount(crSame) == 0,
-             "first-wins: same-name same-arity user redeclaration does not crash and emits no diagnostics")
+  assertTrue(
+    diagCount(crSame) == 0,
+    "first-wins: same-name same-arity user redeclaration does not crash and emits no diagnostics"
+  )
 
   // (b) same name + different arity: user overload registers on its
   // own arity-qualified key; both calls resolve.
-  val srcDiff =
-    "package App2\n" +
-    "func collide(x: in Int, y: in Int): Int { x + y }\n" +
+  val srcDiff = "package App2\n" + "func collide(x: in Int, y: in Int): Int { x + y }\n" +
     "func use(): Int { collide(7, 8) }\n"
   val prDiff = parse(srcDiff)
   val crDiff = checkWithImports(prDiff.file, importedItems)
-  assertTrue(diagCount(crDiff) == 0,
-             "first-wins: same-name different-arity user overload registers cleanly")
+  assertTrue(diagCount(crDiff) == 0, "first-wins: same-name different-arity user overload registers cleanly")
 }
 
 // #1482 (Band-1 foundation): the `Type` union now carries refinement
 // (range) bounds via `TyRefined`, populated by the resolver for inline
 // refined types (`Int range lo .. hi`).  A binding initialised with an
 // integer literal outside those bounds is rejected with T0015.
-
 func testInlineRefinedInBounds(): Unit {
   val src = "package P\nfunc f(): Unit {\n  val x: Int range 0 ..= 9 = 5\n}\n"
   val cr = parseCheck(src)
@@ -719,7 +733,7 @@ func testInlineRefinedBelowLo(): Unit {
 }
 
 func testInlineRefinedNegativeBounds(): Unit {
-  val ok  = "package P\nfunc f(): Unit {\n  val x: Int range -5 ..= 5 = -3\n}\n"
+  val ok = "package P\nfunc f(): Unit {\n  val x: Int range -5 ..= 5 = -3\n}\n"
   val bad = "package P\nfunc f(): Unit {\n  val x: Int range -5 ..= 5 = -9\n}\n"
   assertTrue(not hasDiagCode(parseCheck(ok), "T0015"), "neg-bound in-range: no T0015")
   assertTrue(hasDiagCode(parseCheck(bad), "T0015"), "neg-bound out-of-range: T0015")
@@ -735,22 +749,19 @@ func testInlineRefinedVarAndLet(): Unit {
 func testInlineRefinedUpperOpenBelowLo(): Unit {
   // Upper-open `range 5 ..`: 3 is below the lower bound — T0015.
   val src = "package P\nfunc f(): Unit {\n  val x: Int range 5 .. = 3\n}\n"
-  assertTrue(hasDiagCode(parseCheck(src), "T0015"),
-    "upper-open below lo: T0015")
+  assertTrue(hasDiagCode(parseCheck(src), "T0015"), "upper-open below lo: T0015")
 }
 
 func testInlineRefinedUpperOpenAtLo(): Unit {
   // Upper-open `range 5 ..`: 5 is at the lower bound, no upper to check.
   val src = "package P\nfunc f(): Unit {\n  val x: Int range 5 .. = 5\n}\n"
-  assertTrue(not hasDiagCode(parseCheck(src), "T0015"),
-    "upper-open at lo: no T0015")
+  assertTrue(not hasDiagCode(parseCheck(src), "T0015"), "upper-open at lo: no T0015")
 }
 
 func testInlineRefinedLowerOpenAboveHi(): Unit {
   // Lower-open `range ..= 9`: 12 is above the inclusive upper bound — T0015.
   val src = "package P\nfunc f(): Unit {\n  val x: Int range ..= 9 = 12\n}\n"
-  assertTrue(hasDiagCode(parseCheck(src), "T0015"),
-    "lower-open above hi: T0015")
+  assertTrue(hasDiagCode(parseCheck(src), "T0015"), "lower-open above hi: T0015")
 }
 
 func testRefinementTransparentToEquiv(): Unit {
@@ -758,11 +769,7 @@ func testRefinementTransparentToEquiv(): Unit {
   // in-bounds refined binding whose declared type differs only by the
   // refinement layer must produce zero type-equivalence diagnostics
   // (no T0060/T0015) — refinements add no equivalence false positives.
-  val src =
-    "package P\n" +
-    "func f(): Unit {\n" +
-    "  val a: Int range 0 ..= 100 = 42\n" +
-    "  val b: Int = a\n" +
+  val src = "package P\n" + "func f(): Unit {\n" + "  val a: Int range 0 ..= 100 = 42\n" + "  val b: Int = a\n" +
     "  val c: Int range 0 ..= 100 = b\n" +
     "}\n"
   val cr = parseCheck(src)
@@ -773,11 +780,7 @@ func testInlineRefinedNonLiteralNotChecked(): Unit {
   // The inline check only fires for statically-known integer literals;
   // a non-literal initialiser (here a parameter) is not range-checked
   // at compile time (that is runtime / Band-4 construction validation).
-  val src =
-    "package P\n" +
-    "func f(n: in Int): Unit {\n" +
-    "  val x: Int range 0 ..= 9 = n\n" +
-    "}\n"
+  val src = "package P\n" + "func f(n: in Int): Unit {\n" + "  val x: Int range 0 ..= 9 = n\n" + "}\n"
   val cr = parseCheck(src)
   assertTrue(not hasDiagCode(cr, "T0015"), "non-literal init: no compile-time T0015")
 }
@@ -787,11 +790,8 @@ func testInlineRefinedNonLiteralNotChecked(): Unit {
 // Bool / unbounded-scalar scrutinees.  A bare `case Foo` counts as covering
 // case `Foo` only when `Foo` names a case of the scrutinee type (matching
 // codegen); otherwise it is an irrefutable variable bind (catch-all).
-
 func testMatchUnionExhaustive(): Unit {
-  val src =
-    "package P\n" +
-    "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
+  val src = "package P\n" + "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
     "func area(sh: in Shape): Int {\n" +
     "  match sh { case Circle(r) -> r; case Square(s) -> s; case Tri -> 0 }\n" +
     "}\n"
@@ -800,9 +800,7 @@ func testMatchUnionExhaustive(): Unit {
 }
 
 func testMatchUnionNonExhaustive(): Unit {
-  val src =
-    "package P\n" +
-    "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
+  val src = "package P\n" + "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
     "func area(sh: in Shape): Int {\n" +
     "  match sh { case Circle(r) -> r; case Square(s) -> s }\n" +
     "}\n"
@@ -811,9 +809,7 @@ func testMatchUnionNonExhaustive(): Unit {
 }
 
 func testMatchUnionWildcard(): Unit {
-  val src =
-    "package P\n" +
-    "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
+  val src = "package P\n" + "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
     "func area(sh: in Shape): Int {\n" +
     "  match sh { case Circle(r) -> r; case _ -> 0 }\n" +
     "}\n"
@@ -824,9 +820,7 @@ func testMatchUnionWildcard(): Unit {
 func testMatchUnionBareNameBind(): Unit {
   // A bare name that is NOT a case of the scrutinee is a variable bind
   // (catch-all), so the match is exhaustive.
-  val src =
-    "package P\n" +
-    "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
+  val src = "package P\n" + "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
     "func area(sh: in Shape): Int {\n" +
     "  match sh { case Circle(r) -> r; case other -> 0 }\n" +
     "}\n"
@@ -837,10 +831,7 @@ func testMatchUnionBareNameBind(): Unit {
 func testMatchUnionNullaryBareCase(): Unit {
   // A bare `case Tri` (nullary) covers case Tri — proving bare-name cases are
   // resolved against the scrutinee's case set, not treated as a catch-all.
-  val src =
-    "package P\n" +
-    "union Shape { case Circle(r: Int); case Tri }\n" +
-    "func area(sh: in Shape): Int {\n" +
+  val src = "package P\n" + "union Shape { case Circle(r: Int); case Tri }\n" + "func area(sh: in Shape): Int {\n" +
     "  match sh { case Tri -> 0 }\n" +
     "}\n"
   val cr = parseCheck(src)
@@ -849,10 +840,7 @@ func testMatchUnionNullaryBareCase(): Unit {
 
 func testMatchUnionGuardDoesNotCover(): Unit {
   // A guarded arm never counts toward coverage (the guard may fail).
-  val src =
-    "package P\n" +
-    "union Shape { case Circle(r: Int); case Tri }\n" +
-    "func area(sh: in Shape): Int {\n" +
+  val src = "package P\n" + "union Shape { case Circle(r: Int); case Tri }\n" + "func area(sh: in Shape): Int {\n" +
     "  match sh { case Circle(r) if r > 0 -> r; case Tri -> 0 }\n" +
     "}\n"
   val cr = parseCheck(src)
@@ -862,14 +850,10 @@ func testMatchUnionGuardDoesNotCover(): Unit {
 func testMatchGenericUnionExhaustive(): Unit {
   // Generic-union scrutinees (`Option[Int]`) should resolve to the union
   // declaration via `typeIdEq` regardless of type arguments.
-  val ok =
-    "package P\nunion Option[T] { case Some(value: T); case None }\n" +
-    "func f(o: in Option[Int]): Int {\n" +
+  val ok = "package P\nunion Option[T] { case Some(value: T); case None }\n" + "func f(o: in Option[Int]): Int {\n" +
     "  match o { case Some(x) -> x; case None -> 0 }\n" +
     "}\n"
-  val bad =
-    "package P\nunion Option[T] { case Some(value: T); case None }\n" +
-    "func f(o: in Option[Int]): Int {\n" +
+  val bad = "package P\nunion Option[T] { case Some(value: T); case None }\n" + "func f(o: in Option[Int]): Int {\n" +
     "  match o { case Some(x) -> x }\n" +
     "}\n"
   assertTrue(not hasDiagCode(parseCheck(ok), "T0016"), "Option[Int] all cases: no T0016")
@@ -878,16 +862,10 @@ func testMatchGenericUnionExhaustive(): Unit {
 
 func testMatchOrPatternExhaustive(): Unit {
   // POr arms enumerate multiple union cases at once.
-  val ok =
-    "package P\n" +
-    "union Shape { case Circle; case Square; case Tri }\n" +
-    "func area(sh: in Shape): Int {\n" +
+  val ok = "package P\n" + "union Shape { case Circle; case Square; case Tri }\n" + "func area(sh: in Shape): Int {\n" +
     "  match sh { case Circle | Square -> 0; case Tri -> 1 }\n" +
     "}\n"
-  val bad =
-    "package P\n" +
-    "union Shape { case Circle; case Square; case Tri }\n" +
-    "func area(sh: in Shape): Int {\n" +
+  val bad = "package P\n" + "union Shape { case Circle; case Square; case Tri }\n" + "func area(sh: in Shape): Int {\n" +
     "  match sh { case Circle | Square -> 0 }\n" +
     "}\n"
   assertTrue(not hasDiagCode(parseCheck(ok), "T0016"), "Or-pattern + Tri: no T0016")
@@ -897,29 +875,20 @@ func testMatchOrPatternExhaustive(): Unit {
 func testMatchAtBindExhaustive(): Unit {
   // `case x@Circle(r)` should credit `Circle` to the coverage set via the
   // `Some(inner)` branch of `collectCoveredCases`.
-  val src =
-    "package P\n" +
-    "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
+  val src = "package P\n" + "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
     "func area(sh: in Shape): Int {\n" +
     "  match sh { case x@Circle(r) -> r; case Square(s) -> s; case Tri -> 0 }\n" +
     "}\n"
-  assertTrue(not hasDiagCode(parseCheck(src), "T0016"),
-    "@-bound Circle covers union case: no T0016")
-  val bad =
-    "package P\n" +
-    "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
+  assertTrue(not hasDiagCode(parseCheck(src), "T0016"), "@-bound Circle covers union case: no T0016")
+  val bad = "package P\n" + "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
     "func area(sh: in Shape): Int {\n" +
     "  match sh { case x@Circle(r) -> r }\n" +
     "}\n"
-  assertTrue(hasDiagCode(parseCheck(bad), "T0016"),
-    "@-bound Circle alone leaves Square/Tri uncovered: T0016")
+  assertTrue(hasDiagCode(parseCheck(bad), "T0016"), "@-bound Circle alone leaves Square/Tri uncovered: T0016")
 }
 
 func testMatchEnumExhaustive(): Unit {
-  val src =
-    "package P\n" +
-    "enum Color { case Red; case Green; case Blue }\n" +
-    "func rank(c: in Color): Int {\n" +
+  val src = "package P\n" + "enum Color { case Red; case Green; case Blue }\n" + "func rank(c: in Color): Int {\n" +
     "  match c { case Red -> 1; case Green -> 2; case Blue -> 3 }\n" +
     "}\n"
   val cr = parseCheck(src)
@@ -927,10 +896,7 @@ func testMatchEnumExhaustive(): Unit {
 }
 
 func testMatchEnumNonExhaustive(): Unit {
-  val src =
-    "package P\n" +
-    "enum Color { case Red; case Green; case Blue }\n" +
-    "func rank(c: in Color): Int {\n" +
+  val src = "package P\n" + "enum Color { case Red; case Green; case Blue }\n" + "func rank(c: in Color): Int {\n" +
     "  match c { case Red -> 1; case Green -> 2 }\n" +
     "}\n"
   val cr = parseCheck(src)
@@ -938,64 +904,51 @@ func testMatchEnumNonExhaustive(): Unit {
 }
 
 func testMatchBoolExhaustive(): Unit {
-  val src =
-    "package P\n" +
-    "func f(b: in Bool): Int { match b { case true -> 1; case false -> 0 } }\n"
+  val src = "package P\n" + "func f(b: in Bool): Int { match b { case true -> 1; case false -> 0 } }\n"
   val cr = parseCheck(src)
   assertTrue(not hasDiagCode(cr, "T0016"), "bool true+false: no T0016")
 }
 
 func testMatchBoolNonExhaustive(): Unit {
-  val src =
-    "package P\n" +
-    "func f(b: in Bool): Int { match b { case true -> 1 } }\n"
+  val src = "package P\n" + "func f(b: in Bool): Int { match b { case true -> 1 } }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0016"), "bool missing false: T0016")
 }
 
 func testMatchScalarNeedsWildcard(): Unit {
   val bad = "package P\nfunc f(n: in Int): Int { match n { case 0 -> 0; case 1 -> 1 } }\n"
-  val ok  = "package P\nfunc f(n: in Int): Int { match n { case 0 -> 0; case _ -> 1 } }\n"
+  val ok = "package P\nfunc f(n: in Int): Int { match n { case 0 -> 0; case _ -> 1 } }\n"
   assertTrue(hasDiagCode(parseCheck(bad), "T0016"), "int match no wildcard: T0016")
   assertTrue(not hasDiagCode(parseCheck(ok), "T0016"), "int match with wildcard: no T0016")
 }
 
 func testMatchStringNeedsWildcard(): Unit {
-  val src =
-    "package P\n" +
-    "func f(s: in String): Int { match s { case \"a\" -> 1; case \"b\" -> 2 } }\n"
+  val src = "package P\n" + "func f(s: in String): Int { match s { case \"a\" -> 1; case \"b\" -> 2 } }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0016"), "string match no wildcard: T0016")
 }
 
 func testPropagateResultUnwrap(): Unit {
-  val ok =
-    "package P\nunion Result[T, E] { case Ok(value: T); case Err(error: E) }\n" +
+  val ok = "package P\nunion Result[T, E] { case Ok(value: T); case Err(error: E) }\n" +
     "func f(r: in Result[Int, String]): Unit { val n: Int = r? }\n"
-  val bad =
-    "package P\nunion Result[T, E] { case Ok(value: T); case Err(error: E) }\n" +
+  val bad = "package P\nunion Result[T, E] { case Ok(value: T); case Err(error: E) }\n" +
     "func f(r: in Result[Int, String]): Unit { val s: String = r? }\n"
   assertTrue(not hasDiagCode(parseCheck(ok), "T0060"), "Result[Int,_]? -> Int: no T0060")
   assertTrue(hasDiagCode(parseCheck(bad), "T0060"), "Result[Int,_]? used as String: T0060")
 }
 
 func testPropagateOptionUnwrap(): Unit {
-  val ok =
-    "package P\nunion Option[T] { case Some(value: T); case None }\n" +
+  val ok = "package P\nunion Option[T] { case Some(value: T); case None }\n" +
     "func f(o: in Option[Int]): Unit { val n: Int = o? }\n"
-  val bad =
-    "package P\nunion Option[T] { case Some(value: T); case None }\n" +
+  val bad = "package P\nunion Option[T] { case Some(value: T); case None }\n" +
     "func f(o: in Option[Int]): Unit { val s: String = o? }\n"
   assertTrue(not hasDiagCode(parseCheck(ok), "T0060"), "Option[Int]? -> Int: no T0060")
   assertTrue(hasDiagCode(parseCheck(bad), "T0060"), "Option[Int]? used as String: T0060")
 }
 
 func testPropagateNonMonadicNoT0060(): Unit {
-  val src =
-    "package P\n" +
-    "func f(n: in Int): Unit { val _x = n? }\n"
-  assertTrue(not hasDiagCode(parseCheck(src), "T0060"),
-    "non-monadic ? yields TyError: no T0060 cascade")
+  val src = "package P\n" + "func f(n: in Int): Unit { val _x = n? }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0060"), "non-monadic ? yields TyError: no T0060 cascade")
 }
 
 // #1484: visibility enforcement at use sites.  Per language reference §3.1,
@@ -1003,7 +956,6 @@ func testPropagateNonMonadicNoT0060(): Unit {
 // unmarked (package-private) symbol is not.  A cross-package reference to a
 // package-private imported symbol is rejected with T0097.  (The V0007/V0008
 // codes suggested in the issue are already owned by the verifier.)
-
 func importedItemsOf(libSrc: in String): List[Item] {
   val libPr = parse(libSrc)
   val items: List[Item] = newList()
@@ -1017,37 +969,37 @@ func importedItemsOf(libSrc: in String): List[Item] {
 
 func testVisibilityPubTypeAllowed(): Unit {
   val imp = importedItemsOf("package Lib\npub record Widget { x: Int }\n")
-  val pr  = parse("package App\nfunc f(w: in Widget): Int { 0 }\n")
-  val cr  = checkWithImports(pr.file, imp)
+  val pr = parse("package App\nfunc f(w: in Widget): Int { 0 }\n")
+  val cr = checkWithImports(pr.file, imp)
   assertTrue(not hasDiagCode(cr, "T0097"), "pub imported type: no T0097")
 }
 
 func testVisibilityInternalTypeAllowed(): Unit {
   // `internal` is visible across packages within a project.
   val imp = importedItemsOf("package Lib\ninternal record Widget { x: Int }\n")
-  val pr  = parse("package App\nfunc f(w: in Widget): Int { 0 }\n")
-  val cr  = checkWithImports(pr.file, imp)
+  val pr = parse("package App\nfunc f(w: in Widget): Int { 0 }\n")
+  val cr = checkWithImports(pr.file, imp)
   assertTrue(not hasDiagCode(cr, "T0097"), "internal imported type cross-package: no T0097")
 }
 
 func testVisibilityPrivateTypeRejected(): Unit {
   val imp = importedItemsOf("package Lib\nrecord Widget { x: Int }\n")
-  val pr  = parse("package App\nfunc f(w: in Widget): Int { 0 }\n")
-  val cr  = checkWithImports(pr.file, imp)
+  val pr = parse("package App\nfunc f(w: in Widget): Int { 0 }\n")
+  val cr = checkWithImports(pr.file, imp)
   assertTrue(hasDiagCode(cr, "T0097"), "package-private imported type referenced cross-package: T0097")
 }
 
 func testVisibilityPubFuncAllowed(): Unit {
   val imp = importedItemsOf("package Lib\npub func helper(x: in Int): Int { x }\n")
-  val pr  = parse("package App\nfunc f(): Int { helper(3) }\n")
-  val cr  = checkWithImports(pr.file, imp)
+  val pr = parse("package App\nfunc f(): Int { helper(3) }\n")
+  val cr = checkWithImports(pr.file, imp)
   assertTrue(not hasDiagCode(cr, "T0097"), "pub imported func: no T0097")
 }
 
 func testVisibilityPrivateFuncRejected(): Unit {
   val imp = importedItemsOf("package Lib\nfunc helper(x: in Int): Int { x }\n")
-  val pr  = parse("package App\nfunc f(): Int { helper(3) }\n")
-  val cr  = checkWithImports(pr.file, imp)
+  val pr = parse("package App\nfunc f(): Int { helper(3) }\n")
+  val cr = checkWithImports(pr.file, imp)
   assertTrue(hasDiagCode(cr, "T0097"), "package-private imported func referenced cross-package: T0097")
 }
 
@@ -1055,18 +1007,15 @@ func testVisibilityExternTypeAllowed(): Unit {
   // Extern types are FFI-boundary bindings (no `pub`), but are referenced
   // directly across packages (e.g. `List`/`Map`).  They must not be flagged.
   val imp = importedItemsOf("package Lib\nextern type Box = \"System.Object\"\n")
-  val pr  = parse("package App\nfunc f(b: in Box): Int { 0 }\n")
-  val cr  = checkWithImports(pr.file, imp)
+  val pr = parse("package App\nfunc f(b: in Box): Int { 0 }\n")
+  val cr = checkWithImports(pr.file, imp)
   assertTrue(not hasDiagCode(cr, "T0097"), "extern type cross-package: no T0097 (FFI boundary)")
 }
 
 func testVisibilitySamePackageUnaffected(): Unit {
   // A package-private symbol referenced within the same package (not imported)
   // must never be flagged.
-  val src =
-    "package P\n" +
-    "record Widget { x: Int }\n" +
-    "func helper(n: in Int): Int { n }\n" +
+  val src = "package P\n" + "record Widget { x: Int }\n" + "func helper(n: in Int): Int { n }\n" +
     "func f(w: in Widget): Int { helper(w.x) }\n"
   val cr = parseCheck(src)
   assertTrue(not hasDiagCode(cr, "T0097"), "same-package private ref: no T0097")
@@ -1074,12 +1023,8 @@ func testVisibilitySamePackageUnaffected(): Unit {
 
 // #1486: impl/interface structural conformance — every abstract interface
 // method must be implemented (T0098) with matching parameter arity (T0099).
-
 func testImplConforming(): Unit {
-  val src =
-    "package P\n" +
-    "interface Greeter { func greet(name: in String): String }\n" +
-    "record G {}\n" +
+  val src = "package P\n" + "interface Greeter { func greet(name: in String): String }\n" + "record G {}\n" +
     "impl Greeter for G { func greet(name: in String): String { name } }\n"
   val cr = parseCheck(src)
   assertTrue(not hasDiagCode(cr, "T0098"), "conforming impl: no T0098")
@@ -1087,20 +1032,14 @@ func testImplConforming(): Unit {
 }
 
 func testImplMissingMethod(): Unit {
-  val src =
-    "package P\n" +
-    "interface Greeter { func greet(name: in String): String }\n" +
-    "record G {}\n" +
+  val src = "package P\n" + "interface Greeter { func greet(name: in String): String }\n" + "record G {}\n" +
     "impl Greeter for G {}\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0098"), "impl missing abstract method: T0098")
 }
 
 func testImplArityMismatch(): Unit {
-  val src =
-    "package P\n" +
-    "interface Greeter { func greet(name: in String): String }\n" +
-    "record G {}\n" +
+  val src = "package P\n" + "interface Greeter { func greet(name: in String): String }\n" + "record G {}\n" +
     "impl Greeter for G { func greet(): String { \"hi\" } }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0099"), "impl method arity mismatch: T0099")
@@ -1109,9 +1048,7 @@ func testImplArityMismatch(): Unit {
 func testImplDefaultMethodOptional(): Unit {
   // An interface method WITH a body is a default (IMFunc) — an impl need not
   // override it, so omitting it must not produce T0098.
-  val src =
-    "package P\n" +
-    "interface Greeter { func greet(name: in String): String { \"hi \" + name } }\n" +
+  val src = "package P\n" + "interface Greeter { func greet(name: in String): String { \"hi \" + name } }\n" +
     "record G {}\n" +
     "impl Greeter for G {}\n"
   val cr = parseCheck(src)
@@ -1120,7 +1057,6 @@ func testImplDefaultMethodOptional(): Unit {
 
 // #1487 (§5.2): `in` parameters (and `val`/`let`) are immutable and cannot be
 // reassigned (T0087); `var` locals and `out`/`inout` params are mutable.
-
 func testInParamNoRebind(): Unit {
   val src = "package P\nfunc f(x: in Int): Unit { x = 5 }\n"
   val cr = parseCheck(src)
@@ -1154,7 +1090,6 @@ func testInoutParamReassignOk(): Unit {
 
 // #1487 (§5.2): an argument bound to an `out`/`inout` parameter must be a
 // mutable l-value (T0085); `in` arguments may be any expression.
-
 func testOutArgMutableOk(): Unit {
   val src = "package P\nfunc g(x: out Int): Unit { x = 5 }\nfunc f(): Unit {\n  var y = 0\n  g(y)\n}\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0085"), "out arg is a var: no T0085")
@@ -1184,9 +1119,8 @@ func testInArgAnyExprOk(): Unit {
 // call now yields the constructed type (non-generic records); a named argument
 // must reference a real field (T0101); an opaque type cannot be constructed
 // outside its declaring package (T0100).
-
 func testCtorReturnsRecordType(): Unit {
-  val ok  = "package P\nrecord Point { x: Int; y: Int }\nfunc f(): Unit { val p: Point = Point(x = 1, y = 2) }\n"
+  val ok = "package P\nrecord Point { x: Int; y: Int }\nfunc f(): Unit { val p: Point = Point(x = 1, y = 2) }\n"
   val bad = "package P\nrecord Point { x: Int; y: Int }\nfunc f(): Unit { val q: Int = Point(x = 1, y = 2) }\n"
   assertTrue(not hasDiagCode(parseCheck(ok), "T0060"), "ctor returns the record type: no T0060")
   assertTrue(hasDiagCode(parseCheck(bad), "T0060"), "record ctor used as Int: T0060")
@@ -1204,8 +1138,8 @@ func testCtorKnownFieldsOk(): Unit {
 
 func testOpaqueConstructCrossPackage(): Unit {
   val imp = importedItemsOf("package Lib\npub opaque type Secret { token: String }\n")
-  val pr  = parse("package App\nfunc f(): Unit { val s = Secret(token = \"x\") }\n")
-  val cr  = checkWithImports(pr.file, imp)
+  val pr = parse("package App\nfunc f(): Unit { val s = Secret(token = \"x\") }\n")
+  val cr = checkWithImports(pr.file, imp)
   assertTrue(hasDiagCode(cr, "T0100"), "opaque construction cross-package: T0100")
 }
 
@@ -1217,18 +1151,17 @@ func testOpaqueConstructSamePackage(): Unit {
 // #1485: pattern-matching an opaque type's representation (record/constructor
 // pattern) is forbidden outside its declaring package (T0102); binding /
 // wildcard arms remain legal.
-
 func testOpaquePatternMatchCrossPackage(): Unit {
   val imp = importedItemsOf("package Lib\npub opaque type Box { item: Int }\n")
-  val pr  = parse("package App\nfunc f(b: in Box): Int { match b { case Box(x) -> 1; case _ -> 0 } }\n")
-  val cr  = checkWithImports(pr.file, imp)
+  val pr = parse("package App\nfunc f(b: in Box): Int { match b { case Box(x) -> 1; case _ -> 0 } }\n")
+  val cr = checkWithImports(pr.file, imp)
   assertTrue(hasDiagCode(cr, "T0102"), "cross-package opaque representation match: T0102")
 }
 
 func testOpaqueBindingMatchCrossPackageOk(): Unit {
   val imp = importedItemsOf("package Lib\npub opaque type Box { item: Int }\n")
-  val pr  = parse("package App\nfunc f(b: in Box): Int { match b { case other -> 0 } }\n")
-  val cr  = checkWithImports(pr.file, imp)
+  val pr = parse("package App\nfunc f(b: in Box): Int { match b { case other -> 0 } }\n")
+  val cr = checkWithImports(pr.file, imp)
   assertTrue(not hasDiagCode(cr, "T0102"), "cross-package opaque binding match: no T0102")
 }
 
@@ -1239,7 +1172,6 @@ func testOpaquePatternMatchSamePackageOk(): Unit {
 
 // #1487 (§5.2): an `out` parameter must be assigned before the function
 // returns; one never assigned anywhere in the body is rejected (T0086).
-
 func testOutAssignedOk(): Unit {
   val src = "package P\nfunc f(x: out Int): Unit { x = 5 }\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0086"), "out param assigned: no T0086")
@@ -1273,15 +1205,10 @@ func testInParamNoOutCheck(): Unit {
 // other package's own function signature.  `checkWithImportedPackages`
 // resolves each package's signatures with that package preferred, so the two
 // `tryX` functions bind their return type to their OWN package's union.
-
 func sigReturnUserId(cr: in CheckResult, name: in String): Int {
   match mapGet(cr.sigs, name) {
-    case None      -> 0 - 1
-    case Some(sig) ->
-      match sig.returnTy {
-        case TyUser(id, _, _) -> id.id
-        case _                -> 0 - 1
-      }
+    case None -> 0 - 1
+    case Some(sig) -> match sig.returnTy { case TyUser(id, _, _) -> id.id; case _ -> 0 - 1 }
   }
 }
 
@@ -1292,7 +1219,8 @@ func typeSymIdByOrigin(cr: in CheckResult, name: in String, origin: in String): 
     if s.name == name and s.originPackage == origin {
       match symbolTypeIdOpt(s) {
         case Some(tid) -> return tid.id
-        case None      -> {}
+        case None -> {
+        }
       }
     }
     i = i + 1
@@ -1301,17 +1229,11 @@ func typeSymIdByOrigin(cr: in CheckResult, name: in String, origin: in String): 
 }
 
 func regexErrorPkgA(): ParseResult {
-  parse(
-    "package Pa\n" +
-    "pub union RegexError { case Bad }\n" +
-    "pub func tryA(): RegexError { Bad }\n")
+  parse("package Pa\n" + "pub union RegexError { case Bad }\n" + "pub func tryA(): RegexError { Bad }\n")
 }
 
 func regexErrorPkgB(): ParseResult {
-  parse(
-    "package Pb\n" +
-    "pub union RegexError { case Worse }\n" +
-    "pub func tryB(): RegexError { Worse }\n")
+  parse("package Pb\n" + "pub union RegexError { case Worse }\n" + "pub func tryB(): RegexError { Worse }\n")
 }
 
 func testScopedResolutionNoCrossPackageTypeCollision(): Unit {
@@ -1321,19 +1243,16 @@ func testScopedResolutionNoCrossPackageTypeCollision(): Unit {
   imports.add(ImportedPackage(name = "Pa", items = pkgA.file.items))
   imports.add(ImportedPackage(name = "Pb", items = pkgB.file.items))
   val app = parse("package App\nfunc main(): Int { 0 }\n")
-  val cr  = checkWithImportedPackages(app.file, imports)
+  val cr = checkWithImportedPackages(app.file, imports)
 
   val idA = sigReturnUserId(cr, "tryA")
   val idB = sigReturnUserId(cr, "tryB")
   assertTrue(idA > 0, "scoped: tryA resolves to a user type")
   assertTrue(idB > 0, "scoped: tryB resolves to a user type")
-  assertTrue(idA != idB,
-    "scoped: each package's RegexError resolves to its own union (distinct type ids)")
+  assertTrue(idA != idB, "scoped: each package's RegexError resolves to its own union (distinct type ids)")
   // Each return type binds to ITS package's union, not a sibling's.
-  assertEqualInt(idA, typeSymIdByOrigin(cr, "RegexError", "Pa"),
-    "scoped: tryA return type is Pa's RegexError")
-  assertEqualInt(idB, typeSymIdByOrigin(cr, "RegexError", "Pb"),
-    "scoped: tryB return type is Pb's RegexError")
+  assertEqualInt(idA, typeSymIdByOrigin(cr, "RegexError", "Pa"), "scoped: tryA return type is Pa's RegexError")
+  assertEqualInt(idB, typeSymIdByOrigin(cr, "RegexError", "Pb"), "scoped: tryB return type is Pb's RegexError")
 }
 
 func testFlatImportsPreserveLastWins(): Unit {
@@ -1347,16 +1266,21 @@ func testFlatImportsPreserveLastWins(): Unit {
   val pkgB = regexErrorPkgB()
   val flat: List[Item] = newList()
   var ia = 0
-  while ia < pkgA.file.items.count { flat.add(pkgA.file.items[ia]); ia = ia + 1 }
+  while ia < pkgA.file.items.count {
+    flat.add(pkgA.file.items[ia])
+    ia = ia + 1
+  }
   var ib = 0
-  while ib < pkgB.file.items.count { flat.add(pkgB.file.items[ib]); ib = ib + 1 }
+  while ib < pkgB.file.items.count {
+    flat.add(pkgB.file.items[ib])
+    ib = ib + 1
+  }
   val app = parse("package App\nfunc main(): Int { 0 }\n")
-  val cr  = checkWithImports(app.file, flat)
+  val cr = checkWithImports(app.file, flat)
   val idA = sigReturnUserId(cr, "tryA")
   val idB = sigReturnUserId(cr, "tryB")
   assertTrue(idA > 0 and idB > 0, "flat: both signatures resolve to a user type")
-  assertEqualInt(idA, idB,
-    "flat imports: last-registered RegexError wins both signatures (back-compat)")
+  assertEqualInt(idA, idB, "flat imports: last-registered RegexError wins both signatures (back-compat)")
 }
 
 func main(): Unit {

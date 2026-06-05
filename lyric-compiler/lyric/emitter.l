@@ -1,39 +1,38 @@
-// lyric/emitter.l — Lyric.Emitter bootstrap package.
-//
-// Implements the `emit(req): EmitResult` contract that cli.l and repl.l
-// depend on.
-//
-// `--target dotnet` compilation — both single-source and multi-package
-// — runs IN-PROCESS via `Msil.Bridge.compileToMsilWithVersion` /
-// `compileProjectToMsilWithRestoredAndVersion`.  No subprocess hop, no
-// F# emitter touched at runtime.  Restored-deps, feature flags, and
-// manifest-threaded `[package].version` all flow through the same
-// in-process path.
-//
-// `--target jvm` still shells out to `lyric --internal-build` (single)
-// or `lyric --internal-project-build` (project) because the
-// self-hosted JVM bridge does not yet have a multi-package entry
-// point.  The F# CLI handlers in `bootstrap/src/Lyric.Cli/Program.fs`
-// are kept alive solely for this path; the `--target dotnet` arms of
-// those handlers are unreachable from this file's `emit` /
-// `emitProject` after the slice 3+ retirements.  They survive until
-// the JVM in-process bridge lands.
-//
-// Environment variables:
-//   LYRIC_BIN              — path to the dotnet (or lyric) executable.
-//                            Used by the JVM subprocess shim only.
-//                            Set automatically by Program.fs before
-//                            routing to the self-hosted CLI.
-//                            Defaults to "lyric".
-//   LYRIC_CLI_DLL          — when the CLI is a dotnet exec DLL rather
-//                            than a native binary, this is set to the
-//                            DLL path.  JVM subprocess shim only.
-//                            Program.fs populates it from
-//                            Assembly.GetEntryAssembly.
-//
-// Thread safety: emit() has no shared mutable state; it is safe to call
-// concurrently.
-
+//! lyric/emitter.l — Lyric.Emitter bootstrap package.
+//!
+//! Implements the `emit(req): EmitResult` contract that cli.l and repl.l
+//! depend on.
+//!
+//! `--target dotnet` compilation — both single-source and multi-package
+//! — runs IN-PROCESS via `Msil.Bridge.compileToMsilWithVersion` /
+//! `compileProjectToMsilWithRestoredAndVersion`.  No subprocess hop, no
+//! F# emitter touched at runtime.  Restored-deps, feature flags, and
+//! manifest-threaded `[package].version` all flow through the same
+//! in-process path.
+//!
+//! `--target jvm` still shells out to `lyric --internal-build` (single)
+//! or `lyric --internal-project-build` (project) because the
+//! self-hosted JVM bridge does not yet have a multi-package entry
+//! point.  The F# CLI handlers in `bootstrap/src/Lyric.Cli/Program.fs`
+//! are kept alive solely for this path; the `--target dotnet` arms of
+//! those handlers are unreachable from this file's `emit` /
+//! `emitProject` after the slice 3+ retirements.  They survive until
+//! the JVM in-process bridge lands.
+//!
+//! Environment variables:
+//!   LYRIC_BIN              — path to the dotnet (or lyric) executable.
+//!                            Used by the JVM subprocess shim only.
+//!                            Set automatically by Program.fs before
+//!                            routing to the self-hosted CLI.
+//!                            Defaults to "lyric".
+//!   LYRIC_CLI_DLL          — when the CLI is a dotnet exec DLL rather
+//!                            than a native binary, this is set to the
+//!                            DLL path.  JVM subprocess shim only.
+//!                            Program.fs populates it from
+//!                            Assembly.GetEntryAssembly.
+//!
+//! Thread safety: emit() has no shared mutable state; it is safe to call
+//! concurrently.
 @runtime_checked
 package Lyric.Emitter
 
@@ -41,11 +40,11 @@ import Std.Core
 import Std.Collections
 import Std.Errors
 import Std.File as File
-import Std.String as Str      // before Path so Path.join/2 wins over Str.join/2
+import Std.String as Str
+// before Path so Path.join/2 wins over Str.join/2
 import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
-
 import Std.Uuid as Uuid
 import Lyric.Lexer
 import Lyric.CliShell as CliShell
@@ -57,17 +56,16 @@ import Jvm.Bridge as JvmBridge
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public types  (mirrors the future-package contract in cli.l)
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub union CompileTarget {
   case Dotnet
   case Jvm
 }
 
 pub record EmitRequest {
-  source:       String
+  source: String
   assemblyName: String
-  outputPath:   String
-  target:       CompileTarget
+  outputPath: String
+  target: CompileTarget
   /// `[package].version` from the manifest, threaded through to the
   /// bridge so the Assembly row + embedded `Lyric.Contract` resource
   /// carry the real semver instead of the bootstrap-grade `0.0.0.0`.
@@ -78,7 +76,7 @@ pub record EmitRequest {
 }
 
 pub record EmitResult {
-  outputPath:  Option[String]
+  outputPath: Option[String]
   diagnostics: List[Diagnostic]
 }
 
@@ -86,21 +84,21 @@ pub record EmitResult {
 /// holds the `.l` file contents in deterministic order (multi-file packages
 /// should already be resolved by the caller).
 pub record ProjectPackage {
-  name:    String
+  name: String
   sources: List[String]
 }
 
 pub record EmitProjectRequest {
-  packages:         List[ProjectPackage]
-  assemblyName:     String
-  outputPath:       String
-  target:           CompileTarget
+  packages: List[ProjectPackage]
+  assemblyName: String
+  outputPath: String
+  target: CompileTarget
   /// Restored dependency DLL paths.  Each entry is "depName\tdllPath".
   /// Written to the spec file as `DEP\tdepName\tdllPath` lines.
   restoredDllPaths: List[String]
   /// Active feature flags for @cfg erasure.  Each entry is a feature name.
   /// Written to the spec file as `FEATURE\t<name>` lines.
-  activeFeatures:   List[String]
+  activeFeatures: List[String]
   /// Declared feature flags from the manifest's `[features]` table.
   /// Used by `@cfg` erasure to fire `F0013` when a feature reference
   /// names a feature absent from this set (typo guard).  Distinct from
@@ -114,20 +112,21 @@ pub record EmitProjectRequest {
   /// `Lyric.Contract.<Pkg>` resources carry the real semver.  Empty
   /// string falls back to the bootstrap-grade `0.0.0.0` (#1364).
   packageVersion: String
+  // ─────────────────────────────────────────────────────────────────────────────
+  // §2. Subprocess helpers — thin wrappers over Lyric.CliShell.
+  // ─────────────────────────────────────────────────────────────────────────────
+  //
+  // The wrapper names below are deliberately distinct from CliShell's
+  // public surface: when the local function and the cross-package
+  // callee share a name, the bootstrap parser shadows the call site
+  // with the enclosing module's symbol, producing infinite recursion
+  // at runtime (observed via stack-overflow when both were named
+  // `lyrExe`).
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// §2. Subprocess helpers — thin wrappers over Lyric.CliShell.
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// The wrapper names below are deliberately distinct from CliShell's
-// public surface: when the local function and the cross-package
-// callee share a name, the bootstrap parser shadows the call site
-// with the enclosing module's symbol, producing infinite recursion
-// at runtime (observed via stack-overflow when both were named
-// `lyrExe`).
-
-func cliShellExe(): String { CliShell.lyrExe() }
+func cliShellExe(): String {
+  CliShell.lyrExe()
+}
 
 func cliShellArgs(subcmd: in List[String]): List[String] {
   CliShell.lyrArgs(subcmd)
@@ -136,11 +135,8 @@ func cliShellArgs(subcmd: in List[String]): List[String] {
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Temporary source file
 // ─────────────────────────────────────────────────────────────────────────────
-
 func tempBase(): String {
-  Environment.getVarOrDefault("TMPDIR",
-    Environment.getVarOrDefault("TEMP",
-      Environment.getVarOrDefault("TMP", "/tmp")))
+  Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
 }
 
 // Walk up from `start` looking for a directory whose direct child
@@ -148,14 +144,20 @@ func tempBase(): String {
 // within 32 hops.  Used by `findStdlibSources` to try multiple anchor
 // points (app-base directory first, then CWD).
 func walkUpForStdlib(start: in String): String {
-  if start.length == 0 { return "" }
+  if start.length == 0 {
+    return ""
+  }
   var dir = start
   var hop = 0
   while hop < 32 {
     val candidate = Path.join(Path.join(dir, "lyric-stdlib"), "std")
-    if File.dirExists(candidate) { return candidate }
+    if File.dirExists(candidate) {
+      return candidate
+    }
     val parent = Path.dirname(dir)
-    if parent.length == 0 or parent == dir { return "" }
+    if parent.length == 0 or parent == dir {
+      return ""
+    }
     dir = parent
     hop = hop + 1
   }
@@ -167,7 +169,9 @@ func walkUpForStdlib(start: in String): String {
 // Used by `emitMsilInProcess` (LYRIC_LOAD_COMPILER=1) to locate compiler
 // source packages at runtime.
 func walkUpForCompilerDir(start: in String): String {
-  if start.length == 0 { return "" }
+  if start.length == 0 {
+    return ""
+  }
   var dir = start
   var hop = 0
   while hop < 32 {
@@ -177,9 +181,13 @@ func walkUpForCompilerDir(start: in String): String {
     // imports `Msil.MetadataReader` / `Msil.Bridge` / `Lyric.Emitter` then
     // resolves its full compiler-package closure (#1488 compiler-internal tests).
     val candidate = Path.join(dir, "lyric-compiler")
-    if File.dirExists(candidate) { return candidate }
+    if File.dirExists(candidate) {
+      return candidate
+    }
     val parent = Path.dirname(dir)
-    if parent.length == 0 or parent == dir { return "" }
+    if parent.length == 0 or parent == dir {
+      return ""
+    }
     dir = parent
     hop = hop + 1
   }
@@ -227,7 +235,9 @@ func findStdlibSources(): List[String] {
   if stdlibDir.length == 0 {
     stdlibDir = walkUpForStdlib(Environment.currentDirectory())
   }
-  if stdlibDir.length == 0 { return sources }
+  if stdlibDir.length == 0 {
+    return sources
+  }
   // Load `_kernel/` files FIRST so their extern type declarations
   // (`extern type List[T] = "System.Collections.Generic.List`1"`,
   // `Map[K, V]`, `Random`, `HttpClient`, …) reach the typechecker's
@@ -256,16 +266,11 @@ func findStdlibSources(): List[String] {
 // typechecker's first-in-wins `symTableTryFindOne` would pick different
 // declarations on each.  Sorting by basename makes the build
 // reproducible (#1385).
-func appendLyricFiles(
-  sources:       in List[String],
-  dir:           in String,
-  skipJvmKernel: in Bool
-): Unit {
-  if not File.dirExists(dir) { return }
-  val files = match File.listFiles(dir) {
-    case Ok(fs)  -> fs
-    case Err(_)  -> newList()
+func appendLyricFiles(sources: in List[String], dir: in String, skipJvmKernel: in Bool): Unit {
+  if not File.dirExists(dir) {
+    return
   }
+  val files = match File.listFiles(dir) { case Ok(fs) -> fs; case Err(_) -> newList() }
   // Filter (`.l` + JVM-kernel skip) then sort by basename.  See
   // `sortPathsByBasename` below for the sort algorithm and rationale.
   val keep: List[String] = newList()
@@ -275,7 +280,9 @@ func appendLyricFiles(
     if Str.endsWith(f, ".l") {
       val base = Path.basename(f)
       val skip = skipJvmKernel and Str.startsWith(base, "jvm")
-      if not skip { keep.add(f) }
+      if not skip {
+        keep.add(f)
+      }
     }
     fi = fi + 1
   }
@@ -284,7 +291,7 @@ func appendLyricFiles(
   while si < sorted.count {
     match File.readText(sorted[si]) {
       case Ok(text) -> sources.add(text)
-      case Err(_)   -> ()
+      case Err(_) -> ()
     }
     si = si + 1
   }
@@ -323,7 +330,9 @@ func sortPathsByBasename(paths: in List[String]): List[String] {
     val rest: List[String] = newList()
     var k = 0
     while k < remaining.count {
-      if k != bestIdx { rest.add(remaining[k]) }
+      if k != bestIdx {
+        rest.add(remaining[k])
+      }
       k = k + 1
     }
     remaining.clear()
@@ -341,12 +350,13 @@ func sortPathsByBasename(paths: in List[String]): List[String] {
 func writeTempSource(source: in String, assemblyName: in String): Result[String, IOError] {
   val dir = Path.join(tempBase(), "lyric-emit")
   match File.createDir(dir) {
-    case Ok(_)  -> ()
-    case Err(_) -> ()   // ignore; dir may already exist
+    case Ok(_) -> ()
+    case Err(_) -> ()
   }
+  // ignore; dir may already exist
   val path = Path.join(dir, assemblyName + "__src.l")
   match File.writeText(path, source) {
-    case Ok(_)  -> Ok(value = path)
+    case Ok(_) -> Ok(value = path)
     case Err(e) -> Err(error = e)
   }
 }
@@ -354,7 +364,6 @@ func writeTempSource(source: in String, assemblyName: in String): Result[String,
 // ─────────────────────────────────────────────────────────────────────────────
 // §3b. LYRIC_LOAD_COMPILER helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Scan `source` for the first line that starts with "package " and return
 // the declared package name.  Returns "" if no such line is found.
 // Used by `emitMsilInProcess` (LYRIC_LOAD_COMPILER=1) to build the correct
@@ -413,10 +422,11 @@ func stripPackageAndImports(source: in String): String {
       // Item-level annotations (after `package`) must be kept, so only `@`
       // lines seen *before* the package decl are dropped.
       val isPackage = Str.startsWith(line, "package ")
-      val skip = isPackage or Str.startsWith(line, "import ")
-        or Str.startsWith(line, "//!")
-        or (not seenPackage and Str.startsWith(line, "@"))
-      if isPackage { seenPackage = true }
+      val skip = isPackage or Str.startsWith(line, "import ") or Str.startsWith(line, "//!") or
+        (not seenPackage and Str.startsWith(line, "@"))
+      if isPackage {
+        seenPackage = true
+      }
       if not skip {
         lines.add(line)
       }
@@ -433,13 +443,17 @@ func stripPackageAndImports(source: in String): String {
 // "Lyric.ContractMeta"; `import Std.Core` -> "Std.Core".
 func importLinePackage(line: in String): String {
   val trimmed = Str.trim(line)
-  val prefix  = "import "
-  if not Str.startsWith(trimmed, prefix) { return "" }
+  val prefix = "import "
+  if not Str.startsWith(trimmed, prefix) {
+    return ""
+  }
   val rest = Str.trim(trimmed.substring(prefix.length))
   // The package path is the first whitespace-delimited token; an ` as
   // <alias>` clause (or a trailing comment) follows a space.
   val parts = Str.split(rest, " ")
-  if parts.length == 0 { return "" }
+  if parts.length == 0 {
+    return ""
+  }
   Str.trim(parts[0])
 }
 
@@ -451,16 +465,20 @@ func collectImportLines(source: in String, acc: in List[String]) {
   val lines = Str.split(source, "\n")
   var i = 0
   while i < lines.length {
-    val line    = lines[i]
+    val line = lines[i]
     val trimmed = Str.trim(line)
     if Str.startsWith(trimmed, "import ") {
       var seen = false
       var j = 0
       while j < acc.count {
-        if acc[j] == trimmed { seen = true }
+        if acc[j] == trimmed {
+          seen = true
+        }
         j = j + 1
       }
-      if not seen { acc.add(trimmed) }
+      if not seen {
+        acc.add(trimmed)
+      }
     }
     i = i + 1
   }
@@ -470,7 +488,9 @@ func collectImportLines(source: in String, acc: in List[String]) {
 func indexOfString(list: in List[String], s: in String): Int {
   var i = 0
   while i < list.count {
-    if list[i] == s { return i }
+    if list[i] == s {
+      return i
+    }
     i = i + 1
   }
   -1
@@ -480,8 +500,7 @@ func indexOfString(list: in List[String], s: in String): Int {
 // `loadCompilerPayloads` discovers from disk (as opposed to a `Std.*`
 // package, which the bridge resolves from `lyric-stdlib/std/`).
 func isCompilerPackage(pkg: in String): Bool {
-  Str.startsWith(pkg, "Lyric.") or Str.startsWith(pkg, "Msil.")
-    or Str.startsWith(pkg, "Jvm.")
+  Str.startsWith(pkg, "Lyric.") or Str.startsWith(pkg, "Msil.") or Str.startsWith(pkg, "Jvm.")
 }
 
 // Discover the self-hosted compiler packages under `compilerDir` and
@@ -500,16 +519,13 @@ func isCompilerPackage(pkg: in String): Bool {
 func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[ProjectPackagePayload] {
   val empty: List[ProjectPackagePayload] = newList()
 
-  val files = match File.listFilesRecursive(compilerDir) {
-    case Ok(fs) -> fs
-    case Err(_) -> return empty
-  }
+  val files = match File.listFilesRecursive(compilerDir) { case Ok(fs) -> fs; case Err(_) -> return empty }
 
   // Pass 1: build a registry of every compiler package, grouping each
   // package's source files (sorted for determinism) into parallel
   // lists: name, accumulated body text, and the union of import lines.
-  val regNames:   List[String]       = newList()
-  val regBodies:  List[String]       = newList()
+  val regNames: List[String] = newList()
+  val regBodies: List[String] = newList()
   val regImports: List[List[String]] = newList()
 
   val sortedFiles = sortStrings(files)
@@ -517,17 +533,20 @@ func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[P
   while fi < sortedFiles.count {
     val path = sortedFiles[fi]
     fi = fi + 1
-    if not Str.endsWith(path, ".l") { continue }
+    if not Str.endsWith(path, ".l") {
+      continue
+    }
     if Str.endsWith(path, "_self_test.l") or Str.endsWith(path, "_ci_test.l") {
       continue
     }
-    val src = match File.readText(path) {
-      case Ok(s)  -> s
-      case Err(_) -> ""
+    val src = match File.readText(path) { case Ok(s) -> s; case Err(_) -> "" }
+    if Str.length(src) == 0 {
+      continue
     }
-    if Str.length(src) == 0 { continue }
     val pkg = extractPackageName(src)
-    if Str.length(pkg) == 0 or not isCompilerPackage(pkg) { continue }
+    if Str.length(pkg) == 0 or not isCompilerPackage(pkg) {
+      continue
+    }
 
     var idx = indexOfString(regNames, pkg)
     if idx < 0 {
@@ -545,32 +564,39 @@ func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[P
 
   // `Lyric.Lexer` is the mandatory base — every compiler package depends
   // on it transitively.  Its absence means the discovery root is wrong.
-  if indexOfString(regNames, "Lyric.Lexer") < 0 { return empty }
+  if indexOfString(regNames, "Lyric.Lexer") < 0 {
+    return empty
+  }
 
   // Pass 2: compute the import-closure of `testSource` over the registry.
   val needed: List[String] = newList()
-  val queue:  List[String] = newList()
+  val queue: List[String] = newList()
   val testImports: List[String] = newList()
   collectImportLines(testSource, testImports)
   var qi = 0
   while qi < testImports.count {
     val p = importLinePackage(testImports[qi])
-    if isCompilerPackage(p) and indexOfString(regNames, p) >= 0 { queue.add(p) }
+    if isCompilerPackage(p) and indexOfString(regNames, p) >= 0 {
+      queue.add(p)
+    }
     qi = qi + 1
   }
   while queue.count > 0 {
     val name = queue[queue.count - 1]
     queue.removeAt(queue.count - 1)
-    if indexOfString(needed, name) >= 0 { continue }
+    if indexOfString(needed, name) >= 0 {
+      continue
+    }
     val ridx = indexOfString(regNames, name)
-    if ridx < 0 { continue }
+    if ridx < 0 {
+      continue
+    }
     needed.add(name)
     val imps = regImports[ridx]
     var ii = 0
     while ii < imps.count {
       val dep = importLinePackage(imps[ii])
-      if isCompilerPackage(dep) and indexOfString(regNames, dep) >= 0
-         and indexOfString(needed, dep) < 0 {
+      if isCompilerPackage(dep) and indexOfString(regNames, dep) >= 0 and indexOfString(needed, dep) < 0 {
         queue.add(dep)
       }
       ii = ii + 1
@@ -594,7 +620,9 @@ func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[P
     while oi < needed.count {
       val name = needed[oi]
       oi = oi + 1
-      if indexOfString(ordered, name) >= 0 { continue }
+      if indexOfString(ordered, name) >= 0 {
+        continue
+      }
       val ridx = indexOfString(regNames, name)
       val imps = regImports[ridx]
       var depsReady = true
@@ -614,7 +642,9 @@ func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[P
   }
   var fi2 = 0
   while fi2 < needed.count {
-    if indexOfString(ordered, needed[fi2]) < 0 { ordered.add(needed[fi2]) }
+    if indexOfString(ordered, needed[fi2]) < 0 {
+      ordered.add(needed[fi2])
+    }
     fi2 = fi2 + 1
   }
 
@@ -625,9 +655,7 @@ func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[P
   while ni < ordered.count {
     val name = ordered[ni]
     val ridx = indexOfString(regNames, name)
-    val combined = "package " + name + "\n"
-                 + Str.joinList("\n", regImports[ridx]) + "\n"
-                 + regBodies[ridx]
+    val combined = "package " + name + "\n" + Str.joinList("\n", regImports[ridx]) + "\n" + regBodies[ridx]
     payloads.add(ProjectPackagePayload(name = name, source = combined))
     ni = ni + 1
   }
@@ -641,13 +669,18 @@ func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[P
 func sortStrings(xs: in List[String]): List[String] {
   val remaining: List[String] = newList()
   var c = 0
-  while c < xs.count { remaining.add(xs[c]); c = c + 1 }
+  while c < xs.count {
+    remaining.add(xs[c])
+    c = c + 1
+  }
   val sorted: List[String] = newList()
   while remaining.count > 0 {
     var bestIdx = 0
     var k = 1
     while k < remaining.count {
-      if remaining[k] < remaining[bestIdx] { bestIdx = k }
+      if remaining[k] < remaining[bestIdx] {
+        bestIdx = k
+      }
       k = k + 1
     }
     sorted.add(remaining[bestIdx])
@@ -659,9 +692,8 @@ func sortStrings(xs: in List[String]): List[String] {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. emit
 // ─────────────────────────────────────────────────────────────────────────────
-
 func failResult(msg: in String): EmitResult {
-  val sp   = pointSpan(initialPosition())
+  val sp = pointSpan(initialPosition())
   val diag = errorDiagnostic("B0001", msg, sp)
   val diags: List[Diagnostic] = newList()
   diags.add(diag)
@@ -679,19 +711,19 @@ func failResult(msg: in String): EmitResult {
 /// `--target jvm` still shells out to `lyric --internal-project-build`
 /// because the self-hosted JVM bridge has no project-level entry point
 /// yet.  Will retire when the JVM in-process bridge lands.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func emitProject(req: in EmitProjectRequest): EmitResult {
   val outDir = Path.dirname(req.outputPath)
   if Str.isNotEmpty(outDir) {
     match File.createDir(outDir) {
-      case Ok(_)  -> ()
+      case Ok(_) -> ()
       case Err(_) -> ()
     }
   }
 
   match req.target {
     case Dotnet -> emitProjectInProcess(req)
-    case Jvm    -> emitProjectJvmViaSubprocess(req)
+    case Jvm -> emitProjectJvmViaSubprocess(req)
   }
 }
 
@@ -699,9 +731,11 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
 // decls are what a sibling package's signatures may reference, so they make
 // up the cross-DLL validation preamble.
 func isTypeDeclKind(kind: in String): Bool {
-  kind == "record" or kind == "union" or kind == "enum"
-    or kind == "extern_type" or kind == "interface" or kind == "alias"
-    or kind == "distinct" or kind == "opaque" or kind == "type"
+  kind == "record" or kind == "union" or kind == "enum" or kind == "extern_type" or kind == "interface" or
+    kind == "alias" or
+    kind == "distinct" or
+    kind == "opaque" or
+    kind == "type"
 }
 
 // Collect the type-declaring decls of every restored artifact whose package
@@ -713,19 +747,23 @@ func isTypeDeclKind(kind: in String): Bool {
 // preamble when synthesising one restored package so its signatures can name
 // sibling packages' types.
 func siblingTypeDecls(arts: in List[RestoredArtifact], selfPkg: in String): List[Meta.ContractDecl] {
-  val acc:   List[Meta.ContractDecl] = newList()
-  val seen:  List[String]            = newList()
+  val acc: List[Meta.ContractDecl] = newList()
+  val seen: List[String] = newList()
   // Seed the seen-set with every name `selfPkg` declares so they are never
   // re-emitted into its own validation preamble.
   var sa = 0
   while sa < arts.count {
     val art = arts[sa]
     sa = sa + 1
-    if art.packageName != selfPkg { continue }
+    if art.packageName != selfPkg {
+      continue
+    }
     val ownDecls = art.contract.decls
     var oi = 0
     while oi < ownDecls.count {
-      if indexOfString(seen, ownDecls[oi].name) < 0 { seen.add(ownDecls[oi].name) }
+      if indexOfString(seen, ownDecls[oi].name) < 0 {
+        seen.add(ownDecls[oi].name)
+      }
       oi = oi + 1
     }
   }
@@ -733,14 +771,20 @@ func siblingTypeDecls(arts: in List[RestoredArtifact], selfPkg: in String): List
   while ai < arts.count {
     val art = arts[ai]
     ai = ai + 1
-    if art.packageName == selfPkg { continue }
+    if art.packageName == selfPkg {
+      continue
+    }
     val decls = art.contract.decls
     var di = 0
     while di < decls.count {
       val d = decls[di]
       di = di + 1
-      if not isTypeDeclKind(d.kind) { continue }
-      if indexOfString(seen, d.name) >= 0 { continue }
+      if not isTypeDeclKind(d.kind) {
+        continue
+      }
+      if indexOfString(seen, d.name) >= 0 {
+        continue
+      }
       seen.add(d.name)
       acc.add(d)
     }
@@ -761,7 +805,9 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
     var combined = ""
     var si = 0
     while si < pkg.sources.count {
-      if si > 0 { combined = combined + "\n" }
+      if si > 0 {
+        combined = combined + "\n"
+      }
       combined = combined + pkg.sources[si]
       si += 1
     }
@@ -793,20 +839,17 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
   val allArts: List[RestoredArtifact] = newList()
   var ri = 0
   while ri < req.restoredDllPaths.count {
-    val depEntry  = req.restoredDllPaths[ri]
+    val depEntry = req.restoredDllPaths[ri]
     val tabPos = depEntry.indexOf("\t")
-    val dllPath = if tabPos >= 0 {
-      depEntry.substring(tabPos + 1, depEntry.length - tabPos - 1)
-    } else {
-      depEntry
-    }
+    val dllPath = if tabPos >= 0 { depEntry.substring(tabPos + 1, depEntry.length - tabPos - 1) } else { depEntry }
     match RP.loadRestoredPackage(dllPath) {
-      case Err(e) ->
-        return failResult("restored dep '" + dllPath +
-                          "' failed to load: " + RP.errorMessage(e))
+      case Err(e) -> return failResult("restored dep '" + dllPath + "' failed to load: " + RP.errorMessage(e))
       case Ok(arts) -> {
         var ai = 0
-        while ai < arts.count { allArts.add(arts[ai]); ai = ai + 1 }
+        while ai < arts.count {
+          allArts.add(arts[ai])
+          ai = ai + 1
+        }
       }
     }
     ri = ri + 1
@@ -825,18 +868,22 @@ func emitProjectInProcess(req: in EmitProjectRequest): EmitResult {
     val art = allArts[si2]
     val preamble = siblingTypeDecls(allArts, art.packageName)
     match RP.synthesiseArtifact(art, preamble) {
-      case Err(e) ->
-        return failResult("restored dep '" + art.dllPath +
-                          "' failed to synthesise: " + RP.errorMessage(e))
+      case Err(e) -> return failResult("restored dep '" + art.dllPath + "' failed to synthesise: " + RP.errorMessage(e))
       case Ok(syn) -> restoredArtifacts.add(syn)
     }
     si2 = si2 + 1
   }
 
   val ok = MsilBridge.compileProjectToMsilWithRestoredAndVersion(
-    payloads, req.assemblyName, req.outputPath,
-    stdlibSources, req.activeFeatures, req.declaredFeatures,
-    restoredArtifacts, req.packageVersion)
+    payloads,
+    req.assemblyName,
+    req.outputPath,
+    stdlibSources,
+    req.activeFeatures,
+    req.declaredFeatures,
+    restoredArtifacts,
+    req.packageVersion
+  )
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
@@ -856,12 +903,12 @@ func emitProjectJvmViaSubprocess(req: in EmitProjectRequest): EmitResult {
   // namespace and a clean tree to delete on completion.
   val tmpRoot = Path.join(tempBase(), "lyric-emit")
   match File.createDir(tmpRoot) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
   val tmpDir = Path.join(tmpRoot, Uuid.uuidToString(Uuid.newUuid()))
   match File.createDir(tmpDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(e) -> return failResult("cannot create temp build directory: " + IOError.message(e))
   }
 
@@ -884,8 +931,10 @@ func emitProjectJvmViaSubprocess(req: in EmitProjectRequest): EmitResult {
       val srcName = req.assemblyName + "__" + pkg.name + "__" + toString(si) + "__src.l"
       val srcPath = Path.join(tmpDir, srcName)
       match File.writeText(srcPath, pkg.sources[si]) {
-        case Ok(_)  -> ()
-        case Err(e) -> { failMsg = "cannot write temp source: " + IOError.message(e) }
+        case Ok(_) -> ()
+        case Err(e) -> {
+          failMsg = "cannot write temp source: " + IOError.message(e)
+        }
       }
       line = line + "\t" + srcPath
       si += 1
@@ -895,7 +944,10 @@ func emitProjectJvmViaSubprocess(req: in EmitProjectRequest): EmitResult {
   }
 
   if failMsg != "" {
-    match File.deleteDirRecursive(tmpDir) { case Ok(_) -> () case Err(_) -> () }
+    match File.deleteDirRecursive(tmpDir) {
+      case Ok(_) -> ()
+      case Err(_) -> ()
+    }
     return failResult(failMsg)
   }
 
@@ -923,19 +975,21 @@ func emitProjectJvmViaSubprocess(req: in EmitProjectRequest): EmitResult {
   val specContent = Str.joinList("\n", specLines)
   val specPath = Path.join(tmpDir, req.assemblyName + "__project_spec.txt")
   match File.writeText(specPath, specContent) {
-    case Ok(_)  -> ()
-    case Err(e) -> { failMsg = "cannot write project spec: " + IOError.message(e) }
+    case Ok(_) -> ()
+    case Err(e) -> {
+      failMsg = "cannot write project spec: " + IOError.message(e)
+    }
   }
 
   if failMsg != "" {
-    match File.deleteDirRecursive(tmpDir) { case Ok(_) -> () case Err(_) -> () }
+    match File.deleteDirRecursive(tmpDir) {
+      case Ok(_) -> ()
+      case Err(_) -> ()
+    }
     return failResult(failMsg)
   }
 
-  val targetStr = match req.target {
-    case Dotnet -> "dotnet"
-    case Jvm    -> "jvm"
-  }
+  val targetStr = match req.target { case Dotnet -> "dotnet"; case Jvm -> "jvm" }
 
   val subcmd: List[String] = newList()
   subcmd.add("--internal-project-build")
@@ -954,11 +1008,13 @@ func emitProjectJvmViaSubprocess(req: in EmitProjectRequest): EmitResult {
         EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
       }
     }
-    case Err(e) ->
-      failResult("cannot launch compiler: " + IOError.message(e))
+    case Err(e) -> failResult("cannot launch compiler: " + IOError.message(e))
   }
 
-  match File.deleteDirRecursive(tmpDir) { case Ok(_) -> () case Err(_) -> () }
+  match File.deleteDirRecursive(tmpDir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
 
   result
 }
@@ -970,21 +1026,22 @@ func emitProjectJvmViaSubprocess(req: in EmitProjectRequest): EmitResult {
 /// shells out to `lyric --internal-build` because the self-hosted JVM
 /// bridge does not yet have a single-file entry point reachable from
 /// here.  Will retire when the JVM in-process bridge lands.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func emit(req: in EmitRequest): EmitResult {
   // Ensure the output directory exists so the bridges' raw byte-write
   // doesn't fail with ENOENT on the first build into a fresh tree.
   val outDir = Path.dirname(req.outputPath)
   if Str.isNotEmpty(outDir) {
     match File.createDir(outDir) {
-      case Ok(_)  -> ()
-      case Err(_) -> ()   // non-fatal; the bridge / subprocess will report
+      case Ok(_) -> ()
+      case Err(_) -> ()
     }
+    // non-fatal; the bridge / subprocess will report
   }
 
   match req.target {
     case Dotnet -> emitMsilInProcess(req)
-    case Jvm    -> emitJvmInProcess(req)
+    case Jvm -> emitJvmInProcess(req)
   }
 }
 
@@ -1052,8 +1109,15 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
         val noFeatures: List[String] = newList()
         val noArtifacts: List[SynthesisedArtifact] = newList()
         val ok = MsilBridge.compileProjectToMsilWithRestoredAndVersion(
-          allPayloads, req.assemblyName, req.outputPath,
-          stdlibSources, noFeatures, noFeatures, noArtifacts, req.packageVersion)
+          allPayloads,
+          req.assemblyName,
+          req.outputPath,
+          stdlibSources,
+          noFeatures,
+          noFeatures,
+          noArtifacts,
+          req.packageVersion
+        )
         if ok {
           val okDiags: List[Diagnostic] = newList()
           return EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
@@ -1063,8 +1127,7 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
       }
     }
   }
-  val ok = MsilBridge.compileToMsilWithVersion(
-    req.source, req.outputPath, stdlibSources, req.packageVersion)
+  val ok = MsilBridge.compileToMsilWithVersion(req.source, req.outputPath, stdlibSources, req.packageVersion)
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
@@ -1081,15 +1144,11 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
 func emitJvmViaSubprocess(req: in EmitRequest): EmitResult {
   // Write source text to a temp file.
   val srcPath = match writeTempSource(req.source, req.assemblyName) {
-    case Ok(p)  -> p
-    case Err(e) ->
-      return failResult("cannot write temp source: " + IOError.message(e))
+    case Ok(p) -> p
+    case Err(e) -> return failResult("cannot write temp source: " + IOError.message(e))
   }
 
-  val targetStr = match req.target {
-    case Dotnet -> "dotnet"
-    case Jvm    -> "jvm"
-  }
+  val targetStr = match req.target { case Dotnet -> "dotnet"; case Jvm -> "jvm" }
 
   val subcmd: List[String] = newList()
   subcmd.add("--internal-build")
@@ -1107,7 +1166,6 @@ func emitJvmViaSubprocess(req: in EmitRequest): EmitResult {
       val okDiags: List[Diagnostic] = newList()
       EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)
     }
-    case Err(e) ->
-      return failResult("cannot launch compiler: " + IOError.message(e))
+    case Err(e) -> return failResult("cannot launch compiler: " + IOError.message(e))
   }
 }
