@@ -19,8 +19,8 @@ func testBase64RoundTrip(): Unit {
   assertTrue(isSome(decoded), "base64 decode succeeds")
   val back = unwrapOr(decoded, [])
   assertEqualInt(back.length, 5, "base64 round-trip length")
-  assertEqualInt(back[0], 72, "byte[0] H")
-  assertEqualInt(back[4], 111, "byte[4] o")
+  assertEqualInt(back[0].toInt(), 72, "byte[0] H")
+  assertEqualInt(back[4].toInt(), 111, "byte[4] o")
 }
 
 func testBase64Empty(): Unit {
@@ -45,9 +45,9 @@ func testHexRoundTrip(): Unit {
   assertTrue(isSome(decoded), "hex decode succeeds")
   val back = unwrapOr(decoded, [])
   assertEqualInt(back.length, 4, "hex round-trip length")
-  assertEqualInt(back[0], 0, "hex byte[0]")
-  assertEqualInt(back[1], 255, "hex byte[1]")
-  assertEqualInt(back[2], 16, "hex byte[2]")
+  assertEqualInt(back[0].toInt(), 0, "hex byte[0]")
+  assertEqualInt(back[1].toInt(), 255, "hex byte[1]")
+  assertEqualInt(back[2].toInt(), 16, "hex byte[2]")
 }
 
 func testHexLowerCase(): Unit {

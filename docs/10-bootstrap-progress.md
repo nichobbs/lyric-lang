@@ -21147,3 +21147,40 @@ widening; `rdU8`'s `b[o] * 1`, etc.), which the F# stage-0 emitter tolerates and
 whose spec-correct `.toInt()` form the F# stage-0 cannot compile (it lacks
 `Byte.toInt()`).  This is the same root cause as `encoding_tests` and is the
 gate's final blocker; tracked separately.
+
+### D-progress-436 — stage-0 emitter: primitive conversion methods (.toInt/.toLong/.toDouble/.toByte/.toChar) (#1488 gate)
+
+**Status:** Shipped — stage-0 (F#) emitter spec-restoration, authorised exception
+to the no-new-F# rule.
+
+Language reference §541 defines explicit numeric/character conversions
+(`.toByte()`, `.toInt()`, `.toLong()`, `.toChar()`, `.toDouble()`) as *the* surface
+for mixing widths — `acc + b.toInt()`, never `acc + b` (no implicit widening).
+The self-hosted compiler implements these; the **F# stage-0 emitter did not** —
+`b.toInt()` hit `E0012 no method 'toInt' on type Byte` at codegen.  Because the
+stage-0 emitter still compiles the stdlib + compiler sources during bootstrap and
+runs `lyric-stdlib/tests/*.l` via `StdlibLyricTests`, spec-correct conversion code
+could not be used in those files: the codebase instead leaned on the stage-0's
+*non-spec* leniency (`b[o] * 1` "Byte→Int widening" idioms), which the
+self-hosted checker correctly rejects (`T0031`/`T0043`/`T0070`).  This was the
+shared root cause of the remaining #1488 single-file false positives
+(`encoding_tests`, and the compiler-internal `metadata_reader`/`msil_project_bridge`
+closures).
+
+Fix (`bootstrap/src/Lyric.Emitter/Codegen.fs`): a dedicated method-call codegen
+arm emits the matching `conv.*` opcode for a conversion method on a primitive
+receiver (`Byte` is `int32` on the CLR, so `.toInt()` is `conv.i4`; `.toByte()` is
+`conv.u1` for the unsigned 0..255 reduction; narrowing truncates toward zero per
+CLR `conv` semantics).  A side-effect-free `peekExprType` guard restricts the arm
+to primitive receivers; a parallel `peekExprType` index-expression case lets the
+guard see `slice[Byte]` element types (`back[0]` peeks as `Byte`).
+
+This is an explicitly **authorised** exception to the no-new-F# policy: it
+restores a spec-defined surface the stage-0 emitter was missing (mechanical,
+no design implications, already correct in the self-hosted compiler) so that
+spec-correct `.toInt()` code compiles on both the stage-0 and self-hosted paths.
+
+`encoding_tests` is now spec-correct (`back[i].toInt()`) and clean on both paths.
+Regression: 843/843 emitter, `weaver_self_test.l` 18/18, every single-file gate
+stdlib build (encoding/regex/regex_safe/mocking/string/parse/environment/path)
+diagnostic-clean.
