@@ -1,7 +1,6 @@
-// manifest_self_test.l — exercises the self-hosted `Lyric.Manifest` TOML
-// parser.  Compiled and executed by SelfHostedManifestTests.fs.
-// Exit 0 + "ok" in stdout means every assertion held.
-
+//! manifest_self_test.l — exercises the self-hosted `Lyric.Manifest` TOML
+//! parser.  Compiled and executed by SelfHostedManifestTests.fs.
+//! Exit 0 + "ok" in stdout means every assertion held.
 package Lyric.Manifest.SelfTest
 
 import Std.Core
@@ -12,17 +11,16 @@ import Lyric.Manifest
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
 func parseOk(toml: in String): Manifest {
   match parseManifest(toml, "<test>") {
-    case Ok(m)  -> m
+    case Ok(m) -> m
     case Err(e) -> panic("parseOk: unexpected error: " + ManifestError.message(e))
   }
 }
 
 func parseErr(toml: in String): ManifestError {
   match parseManifest(toml, "<test>") {
-    case Ok(_)  -> panic("parseErr: expected error but got Ok")
+    case Ok(_) -> panic("parseErr: expected error but got Ok")
     case Err(e) -> e
   }
 }
@@ -30,21 +28,20 @@ func parseErr(toml: in String): ManifestError {
 func isParseError(e: in ManifestError): Bool {
   match e {
     case ParseError(_, _, _, _) -> true
-    case _                      -> false
+    case _ -> false
   }
 }
 
 func isMissingField(e: in ManifestError, section: in String, field: in String): Bool {
   match e {
     case MissingField(s, f) -> s == section and f == field
-    case _                  -> false
+    case _ -> false
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Minimal manifest — only [package] section
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testMinimal(): Unit {
   val toml = "[package]\nname = \"hello\"\nversion = \"1.0.0\"\n"
   val m = parseOk(toml)
@@ -54,16 +51,16 @@ func testMinimal(): Unit {
   assertEqual(m.packageSection.license, "", "minimal: license defaults to empty")
   assertTrue(m.packageSection.authors.count == 0, "minimal: no authors")
   match m.project {
-    case None    -> ()
+    case None -> ()
     case Some(_) -> assertTrue(false, "minimal: no project section")
   }
   assertTrue(m.deps.count == 0, "minimal: no deps")
   match m.nuget {
-    case None    -> ()
+    case None -> ()
     case Some(_) -> assertTrue(false, "minimal: no nuget section")
   }
   match m.features {
-    case None    -> ()
+    case None -> ()
     case Some(_) -> assertTrue(false, "minimal: no features section")
   }
 }
@@ -71,7 +68,6 @@ func testMinimal(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Full [package] section with all optional fields
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testFullPackage(): Unit {
   val toml = "[package]\nname = \"my-pkg\"\nversion = \"0.2.1\"\ndescription = \"A sample package\"\nauthors = [\"Alice\", \"Bob\"]\nlicense = \"MIT\"\n"
   val m = parseOk(toml)
@@ -87,7 +83,6 @@ func testFullPackage(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. [dependencies] section — registry (version string) form
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testDependencies(): Unit {
   val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nFoo = \"1.2.3\"\nBar.Baz = \"^0.5\"\n"
   val m = parseOk(toml)
@@ -95,19 +90,18 @@ func testDependencies(): Unit {
   assertEqual(m.deps[0].name, "Foo", "deps: first name")
   match m.deps[0].source {
     case Registry(version) -> assertEqual(version, "1.2.3", "deps: first version")
-    case _                 -> assertTrue(false, "deps: first source should be Registry")
+    case _ -> assertTrue(false, "deps: first source should be Registry")
   }
   assertEqual(m.deps[1].name, "Bar.Baz", "deps: second name")
   match m.deps[1].source {
     case Registry(version) -> assertEqual(version, "^0.5", "deps: second version")
-    case _                 -> assertTrue(false, "deps: second source should be Registry")
+    case _ -> assertTrue(false, "deps: second source should be Registry")
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §4b. [dependencies] — workspace dep form
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testWorkspaceDep(): Unit {
   val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"Lyric.Cache\" = { workspace = true }\n\"Lyric.Web\" = { workspace = true, version = \"0.1.0\" }\n"
   val m = parseOk(toml)
@@ -116,7 +110,7 @@ func testWorkspaceDep(): Unit {
   match m.deps[0].source {
     case Workspace(versionOpt) -> {
       match versionOpt {
-        case None    -> ()
+        case None -> ()
         case Some(_) -> assertTrue(false, "workspace-dep: first dep has no version constraint")
       }
     }
@@ -127,7 +121,7 @@ func testWorkspaceDep(): Unit {
     case Workspace(versionOpt) -> {
       match versionOpt {
         case Some(v) -> assertEqual(v, "0.1.0", "workspace-dep: version constraint")
-        case None    -> assertTrue(false, "workspace-dep: second dep should have version constraint")
+        case None -> assertTrue(false, "workspace-dep: second dep should have version constraint")
       }
     }
     case _ -> assertTrue(false, "workspace-dep: second source should be Workspace")
@@ -137,7 +131,6 @@ func testWorkspaceDep(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4c. [dependencies] — path dep form
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testPathDep(): Unit {
   val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nMyLib = { path = \"../mylib\" }\n"
   val m = parseOk(toml)
@@ -145,14 +138,13 @@ func testPathDep(): Unit {
   assertEqual(m.deps[0].name, "MyLib", "path-dep: name")
   match m.deps[0].source {
     case Path(dir) -> assertEqual(dir, "../mylib", "path-dep: dir")
-    case _         -> assertTrue(false, "path-dep: source should be Path")
+    case _ -> assertTrue(false, "path-dep: source should be Path")
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §4d. [dependencies] — git dep forms (tag, rev, branch, subdir)
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testGitDepTag(): Unit {
   val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nSomeLib = { git = \"https://github.com/user/repo\", tag = \"v1.0.0\" }\n"
   val m = parseOk(toml)
@@ -163,7 +155,7 @@ func testGitDepTag(): Unit {
       assertEqual(refKind, "tag", "git-dep-tag: ref kind")
       assertEqual(refValue, "v1.0.0", "git-dep-tag: tag name")
       match subdir {
-        case None    -> ()
+        case None -> ()
         case Some(_) -> assertTrue(false, "git-dep-tag: no subdir")
       }
     }
@@ -182,7 +174,7 @@ func testGitDepSubdir(): Unit {
       assertEqual(refValue, "v0.1.0", "git-dep-subdir: tag name")
       match subdir {
         case Some(d) -> assertEqual(d, "lyric-cache", "git-dep-subdir: subdir")
-        case None    -> assertTrue(false, "git-dep-subdir: should have subdir")
+        case None -> assertTrue(false, "git-dep-subdir: should have subdir")
       }
     }
     case _ -> assertTrue(false, "git-dep-subdir: source should be Git")
@@ -192,12 +184,11 @@ func testGitDepSubdir(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4e. [workspace] section
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testWorkspaceSection(): Unit {
   val toml = "[workspace]\nexclude = [\"bootstrap\", \"docs\"]\n"
   match parseWorkspaceRoot(toml, "<test>") {
-    case Err(e)       -> assertTrue(false, "workspace-section: " + ManifestError.message(e))
-    case Ok(None)     -> assertTrue(false, "workspace-section: expected Some")
+    case Err(e) -> assertTrue(false, "workspace-section: " + ManifestError.message(e))
+    case Ok(None) -> assertTrue(false, "workspace-section: expected Some")
     case Ok(Some(wr)) -> {
       assertEqualInt(wr.workspace.exclude.count, 2, "workspace-section: exclude count")
       assertEqual(wr.workspace.exclude[0], "bootstrap", "workspace-section: exclude[0]")
@@ -209,16 +200,15 @@ func testWorkspaceSection(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4f. [registry] section
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testRegistrySection(): Unit {
   val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[registry]\ndotnet = \"https://pkgs.dev.azure.com/my-org/_packaging/my-feed/nuget/v3/index.json\"\n"
   val m = parseOk(toml)
   match m.registry {
-    case None     -> assertTrue(false, "registry: expected Some")
+    case None -> assertTrue(false, "registry: expected Some")
     case Some(rc) -> {
       match rc.dotnet {
         case Some(url) -> assertEqual(url, "https://pkgs.dev.azure.com/my-org/_packaging/my-feed/nuget/v3/index.json", "registry: dotnet url")
-        case None      -> assertTrue(false, "registry: expected dotnet url")
+        case None -> assertTrue(false, "registry: expected dotnet url")
       }
     }
   }
@@ -227,19 +217,18 @@ func testRegistrySection(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. [nuget] section
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testNuget(): Unit {
   val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[nuget]\nNewtonsoft.Json = \"13.0.1\"\nSerilog = \"3.1.1\"\n\n[nuget.options]\ntarget = \"net10.0\"\nallow_native = true\n"
   val m = parseOk(toml)
   match m.nuget {
-    case None    -> assertTrue(false, "nuget: expected Some")
+    case None -> assertTrue(false, "nuget: expected Some")
     case Some(n) -> {
       assertEqualInt(n.entries.count, 2, "nuget: entry count")
       assertEqual(n.entries[0].name, "Newtonsoft.Json", "nuget: entry[0].name")
       assertEqual(n.entries[0].version, "13.0.1", "nuget: entry[0].version")
       assertEqual(n.entries[1].name, "Serilog", "nuget: entry[1].name")
       match n.target {
-        case None    -> assertTrue(false, "nuget: expected target")
+        case None -> assertTrue(false, "nuget: expected target")
         case Some(t) -> assertEqual(t, "net10.0", "nuget: target")
       }
       assertTrue(n.allowNative, "nuget: allow_native")
@@ -250,12 +239,11 @@ func testNuget(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. [project] section
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testProject(): Unit {
   val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[project]\nname = \"MyApp\"\noutput = \"exe\"\n\n[project.packages]\nCore = \"../core\"\nUtils = \"../utils\"\n"
   val m = parseOk(toml)
   match m.project {
-    case None    -> assertTrue(false, "project: expected Some")
+    case None -> assertTrue(false, "project: expected Some")
     case Some(p) -> {
       assertEqual(p.name, "MyApp", "project: name")
       assertEqual(p.output, "exe", "project: output")
@@ -270,12 +258,11 @@ func testProject(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §7. [features] section
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testFeatures(): Unit {
   val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[features]\ndefault = [\"logging\"]\nlogging = []\nmetrics = []\n"
   val m = parseOk(toml)
   match m.features {
-    case None    -> assertTrue(false, "features: expected Some")
+    case None -> assertTrue(false, "features: expected Some")
     case Some(f) -> {
       assertTrue(f.declared.count >= 2, "features: at least 2 declared")
       assertTrue(f.defaults.count >= 1, "features: at least 1 default")
@@ -286,7 +273,6 @@ func testFeatures(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §8. Comments and whitespace tolerance
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testComments(): Unit {
   val toml = "# Top-level comment\n[package]\n# inline comment\nname = \"hello\" # trailing comment\nversion = \"1.0.0\"\n"
   val m = parseOk(toml)
@@ -297,7 +283,6 @@ func testComments(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §9. Error: missing required [package] section fields
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testMissingName(): Unit {
   val toml = "[package]\nversion = \"1.0.0\"\n"
   val e = parseErr(toml)
@@ -313,7 +298,6 @@ func testMissingVersion(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §10. filePath is recorded correctly
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testFilePath(): Unit {
   val toml = "[package]\nname = \"x\"\nversion = \"0.0.1\"\n"
   val m = parseOk(toml)
@@ -323,7 +307,6 @@ func testFilePath(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §11. ManifestError.message smoke test
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testErrorMessage(): Unit {
   val e = MissingField(section = "package", field = "name")
   val msg = ManifestError.message(e)
@@ -333,7 +316,6 @@ func testErrorMessage(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §12. Unknown sections are silently ignored
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testUnknownSectionIgnored(): Unit {
   val toml = "[package]\nname = \"app\"\nversion = \"1.0.0\"\n\n[unknown_section]\nsome_key = \"some_value\"\n"
   val m = parseOk(toml)
@@ -343,7 +325,6 @@ func testUnknownSectionIgnored(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // Entry point
 // ─────────────────────────────────────────────────────────────────────────────
-
 func main(): Unit {
   testMinimal()
   testFullPackage()

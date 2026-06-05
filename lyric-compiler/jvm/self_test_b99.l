@@ -1,18 +1,17 @@
-// jvm/self_test_b99.l — Stage B99: reference arrays (LAnewarray/LAaload/LAastore/LArraylength).
-//
-// Adds LAnewarray/LNewarray/LArraylength/LIaload/LLaload/LFaload/LDaload/
-// LAaload/LBaload/LCaload/LSaload/LIastore/LLastore/LFastore/LDastore/
-// LAastore/LBastore/LCastore/LSastore to the LInsn union.
-//
-// Creates a StringUtils class via lowerFunc with a `join(String[], String): String`
-// method that iterates over the array, concatenating elements with a separator.
-//
-// Also creates an int array test via LNewarray / LIaload / LIastore: sumArray(int[]).
-//
-// Java output (java -jar):
-//   join=a,b,c
-//   sum=6
-
+//! jvm/self_test_b99.l — Stage B99: reference arrays (LAnewarray/LAaload/LAastore/LArraylength).
+//!
+//! Adds LAnewarray/LNewarray/LArraylength/LIaload/LLaload/LFaload/LDaload/
+//! LAaload/LBaload/LCaload/LSaload/LIastore/LLastore/LFastore/LDastore/
+//! LAastore/LBastore/LCastore/LSastore to the LInsn union.
+//!
+//! Creates a StringUtils class via lowerFunc with a `join(String[], String): String`
+//! method that iterates over the array, concatenating elements with a separator.
+//!
+//! Also creates an int array test via LNewarray / LIaload / LIastore: sumArray(int[]).
+//!
+//! Java output (java -jar):
+//!   join=a,b,c
+//!   sum=6
 package Jvm.SelfTestB99
 
 import Std.Core
@@ -42,42 +41,71 @@ func makeJoinMethod(): LFunc {
   val insns: List[LInsn] = newList()
 
   insns.add(LPushString(s = ""))
-  insns.add(LAstoreAs(slot = 2, className = "java/lang/String"))   // result = ""
+  insns.add(LAstoreAs(slot = 2, className = "java/lang/String"))
+  // result = ""
   insns.add(LIconst(v = 0))
-  insns.add(LIstore(slot = 3))   // i = 0
+  insns.add(LIstore(slot = 3))
+  // i = 0
 
-  insns.add(LLabel(name = "loop"))      // <- branch target
-  insns.add(LIload(slot = 3))           // i
-  insns.add(LAload(slot = 0))           // arr
-  insns.add(LArraylength)               // arr.length
-  insns.add(LIfIcmpge(label = "done"))  // if i >= arr.length goto done
+  insns.add(LLabel(name = "loop"))
+  // <- branch target
+  insns.add(LIload(slot = 3))
+  // i
+  insns.add(LAload(slot = 0))
+  // arr
+  insns.add(LArraylength)
+  // arr.length
+  insns.add(LIfIcmpge(label = "done"))
+  // if i >= arr.length goto done
 
-  insns.add(LIload(slot = 3))           // i
-  insns.add(LIfeq(label = "no_sep"))    // if i == 0, skip sep
+  insns.add(LIload(slot = 3))
+  // i
+  insns.add(LIfeq(label = "no_sep"))
+  // if i == 0, skip sep
 
   // result = result.concat(sep)
   insns.add(LAload(slot = 2))
   insns.add(LAload(slot = 1))
   val concatPsSep: List[JvmType] = newList()
   concatPsSep.add(JRef(className = "java/lang/String"))
-  insns.add(LInvokevirtual(owner = "java/lang/String", name = "concat", params = concatPsSep, ret = JRef(className = "java/lang/String")))
+  insns.add(
+    LInvokevirtual(
+      owner = "java/lang/String",
+      name = "concat",
+      params = concatPsSep,
+      ret = JRef(className = "java/lang/String")
+    )
+  )
   insns.add(LAstore(slot = 2))
 
-  insns.add(LLabel(name = "no_sep"))    // <- branch target
+  insns.add(LLabel(name = "no_sep"))
+  // <- branch target
   // result = result.concat(arr[i])
   insns.add(LAload(slot = 2))
-  insns.add(LAload(slot = 0))           // arr
-  insns.add(LIload(slot = 3))           // i
-  insns.add(LAaload)                    // arr[i]
+  insns.add(LAload(slot = 0))
+  // arr
+  insns.add(LIload(slot = 3))
+  // i
+  insns.add(LAaload)
+  // arr[i]
   val concatPsElem: List[JvmType] = newList()
   concatPsElem.add(JRef(className = "java/lang/String"))
-  insns.add(LInvokevirtual(owner = "java/lang/String", name = "concat", params = concatPsElem, ret = JRef(className = "java/lang/String")))
+  insns.add(
+    LInvokevirtual(
+      owner = "java/lang/String",
+      name = "concat",
+      params = concatPsElem,
+      ret = JRef(className = "java/lang/String")
+    )
+  )
   insns.add(LAstore(slot = 2))
 
-  insns.add(LIinc(slot = 3, delta = 1))  // i++
+  insns.add(LIinc(slot = 3, delta = 1))
+  // i++
   insns.add(LGoto(label = "loop"))
 
-  insns.add(LLabel(name = "done"))      // <- branch target
+  insns.add(LLabel(name = "done"))
+  // <- branch target
   insns.add(LAload(slot = 2))
   insns.add(LAreturn)
 
@@ -85,12 +113,12 @@ func makeJoinMethod(): LFunc {
   params.add(JArray(elem = JRef(className = "java/lang/String")))
   params.add(JRef(className = "java/lang/String"))
   LFunc(
-    flags     = ACC_PUBLIC + ACC_STATIC,
-    name      = "join",
-    params    = params,
-    ret       = JRef(className = "java/lang/String"),
-    insns     = insns,
-    maxStack  = 3,
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "join",
+    params = params,
+    ret = JRef(className = "java/lang/String"),
+    insns = insns,
+    maxStack = 3,
     maxLocals = 4
   )
 }
@@ -102,21 +130,31 @@ func makeSumArrayMethod(): LFunc {
   //   slot 2 = i
   val insns: List[LInsn] = newList()
   insns.add(LIconst(v = 0))
-  insns.add(LIstore(slot = 1))          // sum = 0
+  insns.add(LIstore(slot = 1))
+  // sum = 0
   insns.add(LIconst(v = 0))
-  insns.add(LIstore(slot = 2))          // i = 0
+  insns.add(LIstore(slot = 2))
+  // i = 0
   insns.add(LLabel(name = "loop2"))
   insns.add(LIload(slot = 2))
   insns.add(LAload(slot = 0))
   insns.add(LArraylength)
-  insns.add(LIfIcmpge(label = "done2")) // if i >= arr.length goto done
-  insns.add(LIload(slot = 1))           // sum
-  insns.add(LAload(slot = 0))           // arr
-  insns.add(LIload(slot = 2))           // i
-  insns.add(LIaload)                    // arr[i]
-  insns.add(LIadd)                      // sum + arr[i]
-  insns.add(LIstore(slot = 1))          // sum = ...
-  insns.add(LIinc(slot = 2, delta = 1)) // i++
+  insns.add(LIfIcmpge(label = "done2"))
+  // if i >= arr.length goto done
+  insns.add(LIload(slot = 1))
+  // sum
+  insns.add(LAload(slot = 0))
+  // arr
+  insns.add(LIload(slot = 2))
+  // i
+  insns.add(LIaload)
+  // arr[i]
+  insns.add(LIadd)
+  // sum + arr[i]
+  insns.add(LIstore(slot = 1))
+  // sum = ...
+  insns.add(LIinc(slot = 2, delta = 1))
+  // i++
   insns.add(LGoto(label = "loop2"))
   insns.add(LLabel(name = "done2"))
   insns.add(LIload(slot = 1))
@@ -125,12 +163,12 @@ func makeSumArrayMethod(): LFunc {
   val params: List[JvmType] = newList()
   params.add(JArray(elem = JInt))
   LFunc(
-    flags     = ACC_PUBLIC + ACC_STATIC,
-    name      = "sumArray",
-    params    = params,
-    ret       = JInt,
-    insns     = insns,
-    maxStack  = 3,
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "sumArray",
+    params = params,
+    ret = JInt,
+    insns = insns,
+    maxStack = 3,
     maxLocals = 3
   )
 }
@@ -146,14 +184,14 @@ func makeStringUtilsBytes(): List[Byte] {
 
 func makeMainBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOutIdx   = poolFieldref(pool,  "java/lang/System",    "out",       "Ljava/io/PrintStream;")
-  val printlnIdx  = poolMethodref(pool, "java/io/PrintStream", "println",   "(Ljava/lang/String;)V")
-  val concatIdx   = poolMethodref(pool, "java/lang/String",    "concat",    "(Ljava/lang/String;)Ljava/lang/String;")
-  val valOfIIdx   = poolMethodref(pool, "java/lang/String",    "valueOf",   "(I)Ljava/lang/String;")
-  val joinIdx     = poolMethodref(pool, "StringUtils", "join",     "([Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;")
-  val sumArrIdx   = poolMethodref(pool, "StringUtils", "sumArray", "([I)I")
+  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
+  val valOfIIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
+  val joinIdx = poolMethodref(pool, "StringUtils", "join", "([Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;")
+  val sumArrIdx = poolMethodref(pool, "StringUtils", "sumArray", "([I)I")
   val strArrClass = poolClass(pool, "java/lang/String")
 
   // Build String[] {"a", "b", "c"}
@@ -176,7 +214,8 @@ func makeMainBytes(): List[Byte] {
   emitPushInt(asm, 2)
   emitPushString(asm, "c")
   emitAastore(asm)
-  emitAstore(asm, 1)   // store arr -> slot 1
+  emitAstore(asm, 1)
+  // store arr -> slot 1
 
   // println("join=" + StringUtils.join(arr, ","))
   emitGetstatic(asm, sysOutIdx)
@@ -203,7 +242,8 @@ func makeMainBytes(): List[Byte] {
   emitPushInt(asm, 2)
   emitPushInt(asm, 3)
   emitIastore(asm)
-  emitAstore(asm, 2)   // store int[] -> slot 2
+  emitAstore(asm, 2)
+  // store int[] -> slot 2
 
   // println("sum=" + String.valueOf(StringUtils.sumArray(intArr)))
   emitGetstatic(asm, sysOutIdx)
@@ -229,21 +269,21 @@ func makeMainBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b99"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val utilsClass = BuiltClass(binaryName = "StringUtils", bytes = makeStringUtilsBytes())
-  val mainClass  = BuiltClass(binaryName = "Main",        bytes = makeMainBytes())
+  val mainClass = BuiltClass(binaryName = "Main", bytes = makeMainBytes())
   val classes: List[BuiltClass] = newList()
   classes.add(utilsClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB99",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

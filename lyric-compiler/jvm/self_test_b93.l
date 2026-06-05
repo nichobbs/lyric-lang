@@ -1,13 +1,12 @@
-// jvm/self_test_b93.l — Stage B93: lowerProtected smoke test.
-//
-// Builds a Counter protected type (ReentrantLock-guarded) via lowerProtected.
-// Entry methods: increment()V (inc count field) and get():int (read count).
-//
-// Main creates a Counter, increments it 3 times, and prints the value.
-//
-// Main prints:
-//   count=3
-
+//! jvm/self_test_b93.l — Stage B93: lowerProtected smoke test.
+//!
+//! Builds a Counter protected type (ReentrantLock-guarded) via lowerProtected.
+//! Entry methods: increment()V (inc count field) and get():int (read count).
+//!
+//! Main creates a Counter, increments it 3 times, and prints the value.
+//!
+//! Main prints:
+//!   count=3
 package Jvm.SelfTestB93
 
 import Std.Core
@@ -36,12 +35,12 @@ func makeCounterBytes(): List[Byte] {
   incInsns.add(LPutfield(owner = "Counter", name = "count", t = JInt))
   val incParams: List[JvmType] = newList()
   val incFn = LFunc(
-    flags     = ACC_PUBLIC,
-    name      = "increment",
-    params    = incParams,
-    ret       = JVoid,
-    insns     = incInsns,
-    maxStack  = 3,
+    flags = ACC_PUBLIC,
+    name = "increment",
+    params = incParams,
+    ret = JVoid,
+    insns = incInsns,
+    maxStack = 3,
     maxLocals = 1
   )
 
@@ -51,12 +50,12 @@ func makeCounterBytes(): List[Byte] {
   getInsns.add(LGetfield(owner = "Counter", name = "count", t = JInt))
   val getParams: List[JvmType] = newList()
   val getFn = LFunc(
-    flags     = ACC_PUBLIC,
-    name      = "get",
-    params    = getParams,
-    ret       = JInt,
-    insns     = getInsns,
-    maxStack  = 1,
+    flags = ACC_PUBLIC,
+    name = "get",
+    params = getParams,
+    ret = JInt,
+    insns = getInsns,
+    maxStack = 1,
     maxLocals = 1
   )
 
@@ -65,22 +64,22 @@ func makeCounterBytes(): List[Byte] {
   entries.add(getFn)
 
   val prot = LProtected(className = "Counter", fields = fields, entries = entries)
-  val cf   = lowerProtected(prot, pool)
+  val cf = lowerProtected(prot, pool)
   serializeClassWithPool(cf, pool)
 }
 
 func makeMainBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOutIdx  = poolFieldref(pool, "java/lang/System",    "out",     "Ljava/io/PrintStream;")
+  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx  = poolMethodref(pool, "java/lang/String",    "concat",  "(Ljava/lang/String;)Ljava/lang/String;")
-  val valueOfIdx = poolMethodref(pool, "java/lang/String",    "valueOf", "(I)Ljava/lang/String;")
+  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
+  val valueOfIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
 
-  val ctrInitIdx = poolMethodref(pool, "Counter", "<init>",    "()V")
-  val incIdx     = poolMethodref(pool, "Counter", "increment", "()V")
-  val getIdx     = poolMethodref(pool, "Counter", "get",       "()I")
+  val ctrInitIdx = poolMethodref(pool, "Counter", "<init>", "()V")
+  val incIdx = poolMethodref(pool, "Counter", "increment", "()V")
+  val getIdx = poolMethodref(pool, "Counter", "get", "()I")
   val ctrClassIdx = poolClass(pool, "Counter")
 
   // Counter ctr = new Counter();  [slot 0]
@@ -121,21 +120,21 @@ func makeMainBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b93"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val counterClass = BuiltClass(binaryName = "Counter", bytes = makeCounterBytes())
-  val mainClass    = BuiltClass(binaryName = "Main",    bytes = makeMainBytes())
+  val mainClass = BuiltClass(binaryName = "Main", bytes = makeMainBytes())
   val classes: List[BuiltClass] = newList()
   classes.add(counterClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB93",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

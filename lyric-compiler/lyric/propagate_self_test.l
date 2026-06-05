@@ -1,17 +1,16 @@
-// propagate_self_test.l — #1475 (Band 2): the `?` error-propagation operator.
-//
-// Exercises the self-hosted `Lyric.Propagate` lowering end-to-end: each `?`
-// is rewritten into a match-unwrap + early-return of the wrapped Err/None,
-// keyed off the enclosing function's declared return type.  Before this pass
-// shipped, `EPropagate` was a codegen no-op (`x?` compiled as `x`) — a silent
-// miscompile of every program using `?`.
-//
-// Run in CI via native `lyric test --target dotnet`, which compiles this
-// module in-process through the self-hosted `Msil.Bridge` (so the `?`
-// lowering under test is the one that runs).  Imports only `Std.*`, so no
-// LYRIC_LOAD_COMPILER=1 is needed.  MSIL target only; JVM-target `?` parity
-// is tracked separately (epic #1470 defers JVM).
-
+//! propagate_self_test.l — #1475 (Band 2): the `?` error-propagation operator.
+//!
+//! Exercises the self-hosted `Lyric.Propagate` lowering end-to-end: each `?`
+//! is rewritten into a match-unwrap + early-return of the wrapped Err/None,
+//! keyed off the enclosing function's declared return type.  Before this pass
+//! shipped, `EPropagate` was a codegen no-op (`x?` compiled as `x`) — a silent
+//! miscompile of every program using `?`.
+//!
+//! Run in CI via native `lyric test --target dotnet`, which compiles this
+//! module in-process through the self-hosted `Msil.Bridge` (so the `?`
+//! lowering under test is the one that runs).  Imports only `Std.*`, so no
+//! LYRIC_LOAD_COMPILER=1 is needed.  MSIL target only; JVM-target `?` parity
+//! is tracked separately (epic #1470 defers JVM).
 @test_module
 package Lyric.PropagateSelfTest
 
@@ -22,7 +21,11 @@ import Std.Testing
 // A Result-producing helper whose Err carries a distinguishing label, so the
 // tests can prove WHICH `?` short-circuited (i.e. evaluation order).
 func okIf(cond: in Bool, v: in Int, label: in String): Result[Int, String] {
-  if cond { Ok(v) } else { Err(label) }
+  if cond {
+    Ok(v)
+  } else {
+    Err(label)
+  }
 }
 
 // Two `?` in sequence in a Result-returning function.  On the first Err the
@@ -35,14 +38,14 @@ func chain(a: in Int, b: in Int): Result[Int, String] {
 
 func resultLabel(r: in Result[Int, String]): String {
   match r {
-    case Ok(_)  -> "ok"
+    case Ok(_) -> "ok"
     case Err(e) -> e
   }
 }
 
 func resultValue(r: in Result[Int, String]): Int {
   match r {
-    case Ok(v)  -> v
+    case Ok(v) -> v
     case Err(_) -> -1
   }
 }
@@ -73,9 +76,12 @@ test "Result `?`: nested non-tail position unwraps then continues" {
 }
 
 // ── Option propagation ───────────────────────────────────────────────────────
-
 func optDiv(n: in Int, d: in Int): Option[Int] {
-  if d == 0 { None } else { Some(n / d) }
+  if d == 0 {
+    None
+  } else {
+    Some(n / d)
+  }
 }
 
 func compute(a: in Int, b: in Int): Option[Int] {
@@ -86,7 +92,7 @@ func compute(a: in Int, b: in Int): Option[Int] {
 
 func optTag(o: in Option[Int]): Int {
   match o {
-    case None    -> -1
+    case None -> -1
     case Some(v) -> v
   }
 }
@@ -103,7 +109,6 @@ test "Option `?`: a None short-circuits to None" {
 // ── `?` inside nested statement forms (if branch, while body) ─────────────────
 // Exercises the rewriter's recursion through `if` / `while` bodies, and the
 // early-return from inside a loop.
-
 func condProp(useA: in Bool, a: in Int, b: in Int): Result[Int, String] {
   if useA {
     val x = okIf(a > 0, a, "a")?

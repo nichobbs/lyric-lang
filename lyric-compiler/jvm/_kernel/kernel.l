@@ -1,13 +1,12 @@
-// jvm/_kernel/jvm_io.l — trusted host boundary for JVM class-file emission.
-//
-// Declares the two opaque BCL handles (`Pool`, `ByteWriter`) and routes all
-// mutation operations through `@externTarget` to `Lyric.Jvm.Hosts.JvmByteHost`
-// and `Lyric.Jvm.Hosts.JvmPoolHost`.  Because Lyric record fields are readonly,
-// mutable state lives entirely inside the BCL objects; Lyric code only holds
-// references and calls these functions.
-//
-// Internal: only `Jvm.*` packages should import this.
-
+//! jvm/_kernel/jvm_io.l — trusted host boundary for JVM class-file emission.
+//!
+//! Declares the two opaque BCL handles (`Pool`, `ByteWriter`) and routes all
+//! mutation operations through `@externTarget` to `Lyric.Jvm.Hosts.JvmByteHost`
+//! and `Lyric.Jvm.Hosts.JvmPoolHost`.  Because Lyric record fields are readonly,
+//! mutable state lives entirely inside the BCL objects; Lyric code only holds
+//! references and calls these functions.
+//!
+//! Internal: only `Jvm.*` packages should import this.
 @axiom("JvmByteBuilder and JvmConstantPool conform to their documented contracts")
 package Jvm.Kernel
 
@@ -15,7 +14,6 @@ import Std.Core
 import Std.Collections
 
 // ── Opaque BCL handle types ───────────────────────────────────────────────────
-
 /// Mutable big-endian byte buffer used to build class-file sections.
 /// All state is in-place; the reference held by Lyric code is stable.
 extern type ByteWriter = "Lyric.Jvm.Hosts.JvmByteBuilder"
@@ -26,7 +24,6 @@ extern type ByteWriter = "Lyric.Jvm.Hosts.JvmByteBuilder"
 extern type Pool = "Lyric.Jvm.Hosts.JvmConstantPool"
 
 // ── ByteWriter operations ─────────────────────────────────────────────────────
-
 /// Construct a fresh, empty `ByteWriter`.
 @externTarget("Lyric.Jvm.Hosts.JvmByteHost.New")
 pub func writerNew(): ByteWriter = ()
@@ -99,14 +96,12 @@ pub func writerU4Le(w: in ByteWriter, v: in Int): Unit = ()
 pub func writerToList(w: in ByteWriter): List[Byte] = ()
 
 // ── ZIP / CRC32 ───────────────────────────────────────────────────────────────
-
 /// CRC32 (ISO 3309, reflected polynomial) of a `List[Byte]`.
 /// Returns the checksum value; the bit pattern is the standard uint32 CRC32.
 @externTarget("Lyric.Jvm.Hosts.JvmZipHost.Crc32")
 pub func crc32(data: in List[Byte]): Int = ()
 
 // ── Constant-pool operations ──────────────────────────────────────────────────
-
 /// Construct a fresh, empty constant pool (slot 0 is reserved; first
 /// usable slot is 1).
 @externTarget("Lyric.Jvm.Hosts.JvmPoolHost.New")
@@ -161,7 +156,9 @@ pub func poolIfaceMethodref(pool: in Pool, className: in String, name: in String
 /// Intern a CONSTANT_MethodHandle (tag 15).
 /// `refKind` is one of the REF_* constants (1–9; see JVMS §5.4.3.5).
 @externTarget("Lyric.Jvm.Hosts.JvmPoolHost.MethodHandle")
-pub func poolMethodHandle(pool: in Pool, refKind: in Int, className: in String, name: in String, descriptor: in String): Int = ()
+pub func poolMethodHandle(
+  pool: in Pool, refKind: in Int, className: in String, name: in String, descriptor: in String
+): Int = ()
 
 /// Intern a CONSTANT_MethodType (tag 16).
 @externTarget("Lyric.Jvm.Hosts.JvmPoolHost.MethodType")

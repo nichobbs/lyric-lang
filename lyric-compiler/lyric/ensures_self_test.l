@@ -1,30 +1,29 @@
-// ensures_self_test.l — #1871: a function carrying an `ensures:` contract
-// clause must compile and run through the self-hosted MSIL path.
-//
-// The contract elaborator (`Lyric.ContractElaborator`) lowers each `ensures:`
-// clause into a synthesised `let __lyric_result_<n> = <body value>` binding
-// plus `assert(<ensures>)` statements at the function exit.  That `let`
-// binding was built with a bare `LBLet(..., ty = None, ...)`; when the
-// stage-0 F# compiler builds the elaborator package, the bare `None` widens
-// to `Option[obj]` with a stale generic arg (#1451), so the value reaching
-// the MSIL codegen's `match binding.ty` could not dispatch — `annoTy`
-// resolved to null and `annoTy != MObject` threw a `NullReferenceException`
-// in `lowerStmtMsil`'s `LBLet` arm.  Every `ensures:`-bearing function
-// therefore crashed codegen (a hard NRE, not a diagnostic), which also broke
-// `lyric build --manifest` on any package whose sources use `ensures:` (the
-// whole stdlib).  `requires:`-only functions were unaffected (no `result`
-// binding).  Pinning `val noTy: Option[TypeExpr] = None` in the elaborator's
-// `mkLetBinding` fixes it.
-//
-// No prior test caught this: `contract_elaborator_self_test.l` checks the
-// elaborated AST *shape* but never compiles + runs the result, and the
-// verifier tests use `lyric prove`, not codegen.  This module closes that gap
-// by running `ensures:`-bearing functions end-to-end and asserting their
-// return values.
-//
-// Run in CI via native `lyric test --target dotnet` (compiles in-process
-// through the self-hosted `Msil.Bridge`).  Imports only `Std.*`.
-
+//! ensures_self_test.l — #1871: a function carrying an `ensures:` contract
+//! clause must compile and run through the self-hosted MSIL path.
+//!
+//! The contract elaborator (`Lyric.ContractElaborator`) lowers each `ensures:`
+//! clause into a synthesised `let __lyric_result_<n> = <body value>` binding
+//! plus `assert(<ensures>)` statements at the function exit.  That `let`
+//! binding was built with a bare `LBLet(..., ty = None, ...)`; when the
+//! stage-0 F# compiler builds the elaborator package, the bare `None` widens
+//! to `Option[obj]` with a stale generic arg (#1451), so the value reaching
+//! the MSIL codegen's `match binding.ty` could not dispatch — `annoTy`
+//! resolved to null and `annoTy != MObject` threw a `NullReferenceException`
+//! in `lowerStmtMsil`'s `LBLet` arm.  Every `ensures:`-bearing function
+//! therefore crashed codegen (a hard NRE, not a diagnostic), which also broke
+//! `lyric build --manifest` on any package whose sources use `ensures:` (the
+//! whole stdlib).  `requires:`-only functions were unaffected (no `result`
+//! binding).  Pinning `val noTy: Option[TypeExpr] = None` in the elaborator's
+//! `mkLetBinding` fixes it.
+//!
+//! No prior test caught this: `contract_elaborator_self_test.l` checks the
+//! elaborated AST *shape* but never compiles + runs the result, and the
+//! verifier tests use `lyric prove`, not codegen.  This module closes that gap
+//! by running `ensures:`-bearing functions end-to-end and asserting their
+//! return values.
+//!
+//! Run in CI via native `lyric test --target dotnet` (compiles in-process
+//! through the self-hosted `Msil.Bridge`).  Imports only `Std.*`.
 @test_module
 package Lyric.EnsuresSelfTest
 
@@ -36,19 +35,25 @@ import Std.Testing
 // trailing value into `__lyric_result_0` and asserts the ensures over it.
 func inc(x: in Int): Int
   ensures: result > x
-{ x + 1 }
+{
+  x + 1
+}
 
 // requires: + ensures: together (the exact #1871 repro shape).
 func incPos(x: in Int): Int
   requires: x > 0
   ensures: result > 0
-{ x + 1 }
+{
+  x + 1
+}
 
 // Explicit `return` body — the elaborator rewrites `return e` into a bind +
 // asserts + `return __lyric_result_0`.
 func five(): Int
   ensures: result == 5
-{ return 5 }
+{
+  return 5
+}
 
 // Multi-statement body so the trailing `SExpr` is preceded by real locals.
 func sum3(a: in Int, b: in Int, c: in Int): Int
@@ -72,17 +77,29 @@ func greet(name: in String): String
 // here so it stays fixed.
 func pickStr(ok: in Bool): String
   ensures: result == "yes" or result == "no"
-{ if ok { "yes" } else { "no" } }
+{
+  if ok {
+    "yes"
+  } else {
+    "no"
+  }
+}
 
 // `ensures:` over an Option return — exercises the result binding on a
 // generic-union value (None-first match in the helper, per #1855).
 func maybe(n: in Int): Option[Int]
   ensures: true
-{ if n > 0 { Some(n) } else { None } }
+{
+  if n > 0 {
+    Some(n)
+  } else {
+    None
+  }
+}
 
 func optOr(o: in Option[Int], d: in Int): Int {
   match o {
-    case None    -> d
+    case None -> d
     case Some(v) -> v
   }
 }

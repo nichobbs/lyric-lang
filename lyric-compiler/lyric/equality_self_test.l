@@ -1,16 +1,15 @@
-// equality_self_test.l — #1480: `==` / `!=` dispatch to the `@derive(Equals)`
-// structural-equality method for records and distinct types.
-//
-// Before this wiring, `==` on a record lowered to a static `Object.Equals`
-// call — reference equality for ref types — so two field-equal records
-// compared unequal.  `BEq`/`BNeq` now call the synthesised
-// `<Type>.equals(self, other)` (emitted by `Lyric.Derives`; it reaches codegen
-// only after #1796 stopped mono dropping it), so `==` is structural.
-//
-// Run in CI via native `lyric test --target dotnet` (compiled in-process
-// through the self-hosted `Msil.Bridge`).  Imports only `Std.*`.  MSIL target
-// only (epic #1470 defers JVM).
-
+//! equality_self_test.l — #1480: `==` / `!=` dispatch to the `@derive(Equals)`
+//! structural-equality method for records and distinct types.
+//!
+//! Before this wiring, `==` on a record lowered to a static `Object.Equals`
+//! call — reference equality for ref types — so two field-equal records
+//! compared unequal.  `BEq`/`BNeq` now call the synthesised
+//! `<Type>.equals(self, other)` (emitted by `Lyric.Derives`; it reaches codegen
+//! only after #1796 stopped mono dropping it), so `==` is structural.
+//!
+//! Run in CI via native `lyric test --target dotnet` (compiled in-process
+//! through the self-hosted `Msil.Bridge`).  Imports only `Std.*`.  MSIL target
+//! only (epic #1470 defers JVM).
 @test_module
 package Lyric.EqualitySelfTest
 
@@ -18,19 +17,29 @@ import Std.Core
 import Std.Testing
 
 @derive(Equals)
-record Point { x: Int, y: Int }
+record Point {
+  x: Int
+  y: Int
+}
 
 @derive(Equals)
-record Named { id: Int, name: String }
+record Named {
+  id: Int
+  name: String
+}
 
 @derive(Equals)
-record Line { a: Point, b: Point }
+record Line {
+  a: Point
+  b: Point
+}
 
 @derive(Equals)
-record Empty {}
+record Empty {
+  // Distinct types also receive a synthesised `equals` from `Lyric.Derives`
+  // (it compares the `value` field on both operands directly).
+}
 
-// Distinct types also receive a synthesised `equals` from `Lyric.Derives`
-// (it compares the `value` field on both operands directly).
 @derive(Equals)
 type Score = Int
 

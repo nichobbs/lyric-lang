@@ -1,12 +1,13 @@
-// Intra-impl method call regression (self.m / bare m); see D-progress-355.
-
+//! Intra-impl method call regression (self.m / bare m); see D-progress-355.
 @test_module
 package Lyric.SelfMethodCallSelfTest
 
 import Std.Core
 import Std.Testing
 
-record SErr { code: String }
+record SErr {
+  code: String
+}
 
 interface Svc {
   func base(): Int
@@ -19,29 +20,51 @@ interface Svc {
   func putBare(): Result[Unit, SErr]
 }
 
-record Impl { tag: Int }
-
-impl Svc for Impl {
-  func base(): Int { return 42 }
-  // Explicit `self.base()` must dispatch to base(), not return null/0.
-  func viaSelf(): Int { self.base() }
-  // Bare `base()` (implicit self) must resolve the sibling method too.
-  func viaBare(): Int { base() }
-  func echo(s: in String): String { return s + s }
-  // Bare sibling call passing an argument — exercises the arg-lowering loop.
-  func viaBareArg(s: in String): String { echo(s) }
-  func save(): Result[Unit, SErr] { return Ok(()) }
-  // The returned Result must be the value save() built, not a dropped call.
-  func putSelf(): Result[Unit, SErr] { self.save() }
-  func putBare(): Result[Unit, SErr] { save() }
+record Impl {
+  tag: Int
 }
 
-func mk(): Impl { return Impl(tag = 0) }
+impl Svc for Impl {
+  func base(): Int {
+    return 42
+  }
+  func viaSelf(): Int {
+    // Explicit `self.base()` must dispatch to base(), not return null/0.
+    self.base()
+  }
+  func viaBare(): Int {
+    // Bare `base()` (implicit self) must resolve the sibling method too.
+    base()
+  }
+  func echo(s: in String): String {
+    return s + s
+  }
+  func viaBareArg(
+    // Bare sibling call passing an argument — exercises the arg-lowering loop.
+    s: in String,
+  ): String {
+    echo(s)
+  }
+  func save(): Result[Unit, SErr] {
+    return Ok(())
+  }
+  func putSelf(): Result[Unit, SErr] {
+    // The returned Result must be the value save() built, not a dropped call.
+    self.save()
+  }
+  func putBare(): Result[Unit, SErr] {
+    save()
+  }
+}
+
+func mk(): Impl {
+  return Impl(tag = 0)
+}
 
 func classify(r: in Result[Unit, SErr]): Int {
   match r {
     case Err(_) -> 0
-    case Ok(_)  -> 1
+    case Ok(_) -> 1
   }
 }
 

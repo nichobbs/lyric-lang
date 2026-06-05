@@ -1,13 +1,12 @@
-// jvm/self_test_b90.l — Stage B90: lowerFunc + Java 21 (B5 stack-map proof).
-//
-// Generates IntUtils.class (Java 21, major=65) via lowerFunc.  The max(II)I
-// method has an if_icmpge branch; lowerFunc's B5 path auto-computes the
-// StackMapTable for "take_b" and "done".
-//
-// Main prints:
-//   max(3,7)=7
-//   max(9,2)=9
-
+//! jvm/self_test_b90.l — Stage B90: lowerFunc + Java 21 (B5 stack-map proof).
+//!
+//! Generates IntUtils.class (Java 21, major=65) via lowerFunc.  The max(II)I
+//! method has an if_icmpge branch; lowerFunc's B5 path auto-computes the
+//! StackMapTable for "take_b" and "done".
+//!
+//! Main prints:
+//!   max(3,7)=7
+//!   max(9,2)=9
 package Jvm.SelfTestB90
 
 import Std.Core
@@ -46,12 +45,12 @@ func makeIntUtilsBytes(): List[Byte] {
   maxParams.add(JInt)
 
   val maxFn = LFunc(
-    flags     = ACC_PUBLIC + ACC_STATIC,
-    name      = "max",
-    params    = maxParams,
-    ret       = JInt,
-    insns     = maxInsns,
-    maxStack  = 2,
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "max",
+    params = maxParams,
+    ret = JInt,
+    insns = maxInsns,
+    maxStack = 2,
     maxLocals = 3
   )
 
@@ -65,13 +64,13 @@ func makeIntUtilsBytes(): List[Byte] {
 
 func makeMainBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOutIdx  = poolFieldref(pool, "java/lang/System",    "out",     "Ljava/io/PrintStream;")
+  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx  = poolMethodref(pool, "java/lang/String",    "concat",  "(Ljava/lang/String;)Ljava/lang/String;")
-  val valueOfIdx = poolMethodref(pool, "java/lang/String",    "valueOf", "(I)Ljava/lang/String;")
-  val maxIdx     = poolMethodref(pool, "IntUtils",            "max",     "(II)I")
+  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
+  val valueOfIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
+  val maxIdx = poolMethodref(pool, "IntUtils", "max", "(II)I")
 
   // System.out.println("max(3,7)=" + String.valueOf(IntUtils.max(3, 7)))
   emitGetstatic(asm, sysOutIdx)
@@ -108,21 +107,21 @@ func makeMainBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b90"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val intUtilsClass = BuiltClass(binaryName = "IntUtils", bytes = makeIntUtilsBytes())
-  val mainClass     = BuiltClass(binaryName = "Main",     bytes = makeMainBytes())
+  val mainClass = BuiltClass(binaryName = "Main", bytes = makeMainBytes())
   val classes: List[BuiltClass] = newList()
   classes.add(intUtilsClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB90",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

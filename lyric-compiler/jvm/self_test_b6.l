@@ -1,16 +1,15 @@
-// jvm/self_test_b6.l — Stage B6 smoke test: protected types and wire blocks.
-//
-// Builds three class files in /tmp/lyric-jvm-b6/:
-//   B6Counter.class  — a protected-type counter with increment() / getCount()
-//   B6Services.class — a wire class that exposes a counter binding
-//   B6Driver.class   — a main-method driver that exercises both
-//
-// The Expecto test (JvmLoweringB6Test.fs) runs this program to write the
-// class files, then executes `java -cp /tmp/lyric-jvm-b6 B6Driver` and
-// verifies exit code 0.  A malformed class (bad StackMapTable, wrong lock
-// descriptor, missing method) causes a VerifyError or NoSuchMethodError at
-// load time (exit != 0).
-
+//! jvm/self_test_b6.l — Stage B6 smoke test: protected types and wire blocks.
+//!
+//! Builds three class files in /tmp/lyric-jvm-b6/:
+//!   B6Counter.class  — a protected-type counter with increment() / getCount()
+//!   B6Services.class — a wire class that exposes a counter binding
+//!   B6Driver.class   — a main-method driver that exercises both
+//!
+//! The Expecto test (JvmLoweringB6Test.fs) runs this program to write the
+//! class files, then executes `java -cp /tmp/lyric-jvm-b6 B6Driver` and
+//! verifies exit code 0.  A malformed class (bad StackMapTable, wrong lock
+//! descriptor, missing method) causes a VerifyError or NoSuchMethodError at
+//! load time (exit != 0).
 package Jvm.SelfTestB6
 
 import Std.Core
@@ -27,7 +26,6 @@ import Jvm.Lowering
 //   entry increment(): Unit  -> _count = _count + 1
 //   entry getCount(): Int    -> _count
 // }
-
 func makeCounterProtected(): LProtected {
   val countFld: List[LField] = newList()
   countFld.add(LField(flags = ACC_PRIVATE, name = "_count", fieldType = JInt))
@@ -35,12 +33,18 @@ func makeCounterProtected(): LProtected {
   // increment() insns: push `this`, push `this._count + 1`, putfield _count.
   // Stack at end: empty (void return).
   val incrInsns: List[LInsn] = newList()
-  incrInsns.add(LAload(slot = 0))          // [this]
-  incrInsns.add(LAload(slot = 0))          // [this, this]
-  incrInsns.add(LGetfield(owner = "B6Counter", name = "_count", t = JInt)) // [this, count]
-  incrInsns.add(LIconst(v = 1))            // [this, count, 1]
-  incrInsns.add(LIadd)                     // [this, count+1]
-  incrInsns.add(LPutfield(owner = "B6Counter", name = "_count", t = JInt)) // []
+  incrInsns.add(LAload(slot = 0))
+  // [this]
+  incrInsns.add(LAload(slot = 0))
+  // [this, this]
+  incrInsns.add(LGetfield(owner = "B6Counter", name = "_count", t = JInt))
+  // [this, count]
+  incrInsns.add(LIconst(v = 1))
+  // [this, count, 1]
+  incrInsns.add(LIadd)
+  // [this, count+1]
+  incrInsns.add(LPutfield(owner = "B6Counter", name = "_count", t = JInt))
+  // []
 
   // getCount() insns: push `this._count`.  Stack at end: [count].
   val getCountInsns: List[LInsn] = newList()
@@ -49,23 +53,23 @@ func makeCounterProtected(): LProtected {
 
   val incrParams: List[JvmType] = newList()
   val incrEntry = LFunc(
-    flags     = ACC_PUBLIC,
-    name      = "increment",
-    params    = incrParams,
-    ret       = JVoid,
-    insns     = incrInsns,
-    maxStack  = 3,
+    flags = ACC_PUBLIC,
+    name = "increment",
+    params = incrParams,
+    ret = JVoid,
+    insns = incrInsns,
+    maxStack = 3,
     maxLocals = 1
   )
 
   val getCountParams: List[JvmType] = newList()
   val getCountEntry = LFunc(
-    flags     = ACC_PUBLIC,
-    name      = "getCount",
-    params    = getCountParams,
-    ret       = JInt,
-    insns     = getCountInsns,
-    maxStack  = 2,
+    flags = ACC_PUBLIC,
+    name = "getCount",
+    params = getCountParams,
+    ret = JInt,
+    insns = getCountInsns,
+    maxStack = 2,
     maxLocals = 1
   )
 
@@ -73,11 +77,7 @@ func makeCounterProtected(): LProtected {
   entries.add(incrEntry)
   entries.add(getCountEntry)
 
-  LProtected(
-    className = "B6Counter",
-    fields    = countFld,
-    entries   = entries
-  )
+  LProtected(className = "B6Counter", fields = countFld, entries = entries)
 }
 
 // ── B6Services (wire block) ───────────────────────────────────────────────────
@@ -86,25 +86,15 @@ func makeCounterProtected(): LProtected {
 //   singleton counter = new B6Counter()
 //   expose counter
 // }
-
 func makeServicesWire(): LWire {
   // Insns that push a new B6Counter: new B6Counter; dup; invokespecial <init>()V
   val counterInsns: List[LInsn] = newList()
   counterInsns.add(LNew(className = "B6Counter"))
   counterInsns.add(LDup)
   val initPs: List[JvmType] = newList()
-  counterInsns.add(LInvokespecial(
-    owner  = "B6Counter",
-    name   = "<init>",
-    params = initPs,
-    ret    = JVoid
-  ))
+  counterInsns.add(LInvokespecial(owner = "B6Counter", name = "<init>", params = initPs, ret = JVoid))
 
-  val counterBinding = LWireBinding(
-    name    = "counter",
-    valType = JRef(className = "B6Counter"),
-    insns   = counterInsns
-  )
+  val counterBinding = LWireBinding(name = "counter", valType = JRef(className = "B6Counter"), insns = counterInsns)
 
   val bindings: List[LWireBinding] = newList()
   bindings.add(counterBinding)
@@ -112,11 +102,7 @@ func makeServicesWire(): LWire {
   val exposes: List[String] = newList()
   exposes.add("counter")
 
-  LWire(
-    className = "B6Services",
-    bindings  = bindings,
-    exposes   = exposes
-  )
+  LWire(className = "B6Services", bindings = bindings, exposes = exposes)
 }
 
 // ── B6Driver (test driver) ────────────────────────────────────────────────────
@@ -131,7 +117,6 @@ func makeServicesWire(): LWire {
 //                                        // exercises wire bootstrap + accessor
 //   }
 // }
-
 func makeDriverClass(pool: in Pool): ClassFile {
   val counterRef = JRef(className = "B6Counter")
   val stringArrRef = JRef(className = "java/lang/String")
@@ -175,12 +160,12 @@ func makeDriverClass(pool: in Pool): ClassFile {
   mainParamsList.add(JArray(elem = stringArrRef))
 
   val mainFunc = LFunc(
-    flags     = ACC_PUBLIC + ACC_STATIC,
-    name      = "main",
-    params    = mainParamsList,
-    ret       = JVoid,
-    insns     = mainInsns,
-    maxStack  = 2,
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "main",
+    params = mainParamsList,
+    ret = JVoid,
+    insns = mainInsns,
+    maxStack = 2,
     maxLocals = 2
   )
 
@@ -192,7 +177,6 @@ func makeDriverClass(pool: in Pool): ClassFile {
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
-
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b6"
   val _ = createDir(outDir)
@@ -202,21 +186,21 @@ func main(): Unit {
   val counterCf = lowerProtected(makeCounterProtected(), pool)
   val counterBytes = serializeClassWithPool(counterCf, pool)
   match writeBytes(outDir + "/B6Counter.class", counterBytes) {
-    case Ok(_)  -> println("wrote B6Counter.class (" + toString(counterBytes.count) + " bytes)")
+    case Ok(_) -> println("wrote B6Counter.class (" + toString(counterBytes.count) + " bytes)")
     case Err(_) -> println("writeBytes failed for B6Counter.class")
   }
 
   val servicesCf = lowerWire(makeServicesWire(), pool)
   val servicesBytes = serializeClassWithPool(servicesCf, pool)
   match writeBytes(outDir + "/B6Services.class", servicesBytes) {
-    case Ok(_)  -> println("wrote B6Services.class (" + toString(servicesBytes.count) + " bytes)")
+    case Ok(_) -> println("wrote B6Services.class (" + toString(servicesBytes.count) + " bytes)")
     case Err(_) -> println("writeBytes failed for B6Services.class")
   }
 
   val driverCf = makeDriverClass(pool)
   val driverBytes = serializeClassWithPool(driverCf, pool)
   match writeBytes(outDir + "/B6Driver.class", driverBytes) {
-    case Ok(_)  -> println("wrote B6Driver.class (" + toString(driverBytes.count) + " bytes)")
+    case Ok(_) -> println("wrote B6Driver.class (" + toString(driverBytes.count) + " bytes)")
     case Err(_) -> println("writeBytes failed for B6Driver.class")
   }
 }

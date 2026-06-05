@@ -1,12 +1,11 @@
-// jvm/self_test_b113.l — Stage B113: out-parameter lowering via int[] arrays.
-//
-// Demonstrates emitOutAllocInt / emitOutStoreInt / emitOutLoadInt helpers.
-// A static method `addAndReturn(int a, int[] result)` stores a+1 into result[0].
-// Main allocates int[1], calls addAndReturn(5, slot), reads back, prints result=6.
-//
-// Java output (java -jar):
-//   result=6
-
+//! jvm/self_test_b113.l — Stage B113: out-parameter lowering via int[] arrays.
+//!
+//! Demonstrates emitOutAllocInt / emitOutStoreInt / emitOutLoadInt helpers.
+//! A static method `addAndReturn(int a, int[] result)` stores a+1 into result[0].
+//! Main allocates int[1], calls addAndReturn(5, slot), reads back, prints result=6.
+//!
+//! Java output (java -jar):
+//!   result=6
 package Jvm.SelfTestB113
 
 import Std.Core
@@ -18,7 +17,6 @@ import Jvm.Lowering
 import Jvm.Driver
 
 // ── Build Helper class with addAndReturn(int a, int[] result): void ───────────
-
 func makeHelperBytes(pool: in Pool): List[Byte] {
   val asm = newAssembler(pool)
 
@@ -30,9 +28,12 @@ func makeHelperBytes(pool: in Pool): List[Byte] {
   emitIadd(asm)
   emitIstore(asm, 2)
 
-  emitAload(asm, 1)     // result array
-  emitIconst(asm, 0)    // index
-  emitIload(asm, 2)     // a+1
+  emitAload(asm, 1)
+  // result array
+  emitIconst(asm, 0)
+  // index
+  emitIload(asm, 2)
+  // a+1
   emitIastore(asm)
 
   emitReturn(asm)
@@ -47,15 +48,14 @@ func makeHelperBytes(pool: in Pool): List[Byte] {
 }
 
 // ── Build Main class ──────────────────────────────────────────────────────────
-
 func makeMainBytes(pool: in Pool): List[Byte] {
   val asm = newAssembler(pool)
 
-  val sysOutIdx  = poolFieldref(pool,  "java/lang/System",    "out",     "Ljava/io/PrintStream;")
+  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx  = poolMethodref(pool, "java/lang/String",    "concat",  "(Ljava/lang/String;)Ljava/lang/String;")
-  val valueOfIdx = poolMethodref(pool, "java/lang/String",    "valueOf", "(I)Ljava/lang/String;")
-  val helperRef  = poolMethodref(pool, "Helper", "addAndReturn", "(I[I)V")
+  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
+  val valueOfIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
+  val helperRef = poolMethodref(pool, "Helper", "addAndReturn", "(I[I)V")
 
   // slot 0 = args[], slot 1 = result (int[])
   // int[] result = new int[1]
@@ -87,24 +87,23 @@ func makeMainBytes(pool: in Pool): List[Byte] {
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
-
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b113"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val pool = poolNew()
   val classes: List[BuiltClass] = newList()
   classes.add(BuiltClass(binaryName = "Helper", bytes = makeHelperBytes(pool)))
-  classes.add(BuiltClass(binaryName = "Main",   bytes = makeMainBytes(pool)))
+  classes.add(BuiltClass(binaryName = "Main", bytes = makeMainBytes(pool)))
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB113",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

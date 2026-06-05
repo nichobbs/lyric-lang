@@ -1,12 +1,11 @@
-// jvm/self_test_b35.l — Stage B35: tableswitch integer dispatch.
-//
-// Generates Categorize.class with static category(I)Ljava/lang/String; that
-// uses tableswitch over the range [0..3]:
-//   0 → "zero", 1 → "one", 2 → "two", 3 → "three", otherwise → "other"
-//
-// Main calls category(0), category(2), and category(5) and prints the results.
-// Exercises: emitTableSwitch, assembleCodeWithFrames with VInteger local frame.
-
+//! jvm/self_test_b35.l — Stage B35: tableswitch integer dispatch.
+//!
+//! Generates Categorize.class with static category(I)Ljava/lang/String; that
+//! uses tableswitch over the range [0..3]:
+//!   0 → "zero", 1 → "one", 2 → "two", 3 → "three", otherwise → "other"
+//!
+//! Main calls category(0), category(2), and category(5) and prints the results.
+//! Exercises: emitTableSwitch, assembleCodeWithFrames with VInteger local frame.
 package Jvm.SelfTestB35
 
 import Std.Core
@@ -18,7 +17,7 @@ import Jvm.Driver
 
 func makeCategorizeClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
   // category(I)Ljava/lang/String;
   //   iload_0
@@ -66,12 +65,7 @@ func makeCategorizeClassBytes(): List[Byte] {
   val codeAttr = assembleCodeWithFrames(asm, 1, 1, frameLocals)
   val attrs: List[Attribute] = newList()
   attrs.add(codeAttr)
-  val categoryMethod = makeMethodInfo(
-    ACC_PUBLIC + ACC_STATIC,
-    "category",
-    "(I)Ljava/lang/String;",
-    attrs
-  )
+  val categoryMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "category", "(I)Ljava/lang/String;", attrs)
   val methods: List[MethodInfo] = newList()
   methods.add(categoryMethod)
   val cf = makeClassWithMethods("Categorize", methods)
@@ -80,11 +74,11 @@ func makeCategorizeClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOut       = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val categoryRef  = poolMethodref(pool, "Categorize", "category", "(I)Ljava/lang/String;")
-  val printlnS     = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val categoryRef = poolMethodref(pool, "Categorize", "category", "(I)Ljava/lang/String;")
+  val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
 
   // category(0) → "zero"
   emitGetstatic(asm, sysOut)
@@ -119,24 +113,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b35"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val categorizeBytes = makeCategorizeClassBytes()
-  val mainBytes       = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val categorizeClass = BuiltClass(binaryName = "Categorize", bytes = categorizeBytes)
-  val mainClass       = BuiltClass(binaryName = "Main",       bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(categorizeClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB35",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

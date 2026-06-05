@@ -1,5 +1,5 @@
-// typechecker_symbols.l — symbol table entries and symbol table.
-// Mirrors compiler/src/Lyric.TypeChecker/Symbol.fs.
+//! typechecker_symbols.l — symbol table entries and symbol table.
+//! Mirrors compiler/src/Lyric.TypeChecker/Symbol.fs.
 package Lyric.TypeChecker
 
 import Std.Core
@@ -10,8 +10,7 @@ import Lyric.Parser
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. DeclKind — what kind of declaration each symbol represents.
 // ─────────────────────────────────────────────────────────────────────────────
-
-@stable(since="0.1")
+@stable(since = "0.1")
 pub union DeclKind {
   // Type-level declarations.
   case DKRecord(id: TypeId, decl: RecordDecl)
@@ -47,64 +46,61 @@ pub union DeclKind {
   // Union / enum variant cases.
   case DKUnionCase(parentId: TypeId, uc: UnionCase)
   case DKEnumCase(parentId: TypeId, ec: EnumCase)
+  // ─────────────────────────────────────────────────────────────────────────────
+  // §2. Symbol — one entry in the symbol table.
+  // ─────────────────────────────────────────────────────────────────────────────
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// §2. Symbol — one entry in the symbol table.
-// ─────────────────────────────────────────────────────────────────────────────
-
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record Symbol {
-  name:       String
-  kind:       DeclKind
-  declSpan:   Span
+  name: String
+  kind: DeclKind
+  declSpan: Span
   visibility: Option[Visibility]
   isImported: Bool
   /// Dotted declaring-package name; empty = no package context (the flat
   /// `checkWithImports` shim, i.e. historical last-registered-wins).
   originPackage: String
+  // ─────────────────────────────────────────────────────────────────────────────
+  // §3. Symbol helpers.
+  // ─────────────────────────────────────────────────────────────────────────────
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §3. Symbol helpers.
-// ─────────────────────────────────────────────────────────────────────────────
 
 pub func symbolIsType(s: in Symbol): Bool {
   match s.kind {
-    case DKRecord(_,_)       -> true
-    case DKExposedRec(_,_)   -> true
-    case DKUnion(_,_)        -> true
-    case DKEnum(_,_)         -> true
-    case DKOpaque(_,_)       -> true
-    case DKProtected(_,_)    -> true
-    case DKDistinctType(_,_) -> true
-    case DKTypeAlias(_)      -> true
-    case DKInterface(_,_)    -> true
-    case DKExternType(_,_)   -> true
-    case _                   -> false
+    case DKRecord(_, _) -> true
+    case DKExposedRec(_, _) -> true
+    case DKUnion(_, _) -> true
+    case DKEnum(_, _) -> true
+    case DKOpaque(_, _) -> true
+    case DKProtected(_, _) -> true
+    case DKDistinctType(_, _) -> true
+    case DKTypeAlias(_) -> true
+    case DKInterface(_, _) -> true
+    case DKExternType(_, _) -> true
+    case _ -> false
   }
 }
 
 pub func symbolTypeIdOpt(s: in Symbol): Option[TypeId] {
   match s.kind {
-    case DKRecord(id,_)       -> Some(value = id)
-    case DKExposedRec(id,_)   -> Some(value = id)
-    case DKUnion(id,_)        -> Some(value = id)
-    case DKEnum(id,_)         -> Some(value = id)
-    case DKOpaque(id,_)       -> Some(value = id)
-    case DKProtected(id,_)    -> Some(value = id)
-    case DKDistinctType(id,_) -> Some(value = id)
-    case DKInterface(id,_)    -> Some(value = id)
-    case DKExternType(id,_)   -> Some(value = id)
-    case _                    -> None
+    case DKRecord(id, _) -> Some(value = id)
+    case DKExposedRec(id, _) -> Some(value = id)
+    case DKUnion(id, _) -> Some(value = id)
+    case DKEnum(id, _) -> Some(value = id)
+    case DKOpaque(id, _) -> Some(value = id)
+    case DKProtected(id, _) -> Some(value = id)
+    case DKDistinctType(id, _) -> Some(value = id)
+    case DKInterface(id, _) -> Some(value = id)
+    case DKExternType(id, _) -> Some(value = id)
+    case _ -> None
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. SymbolTable — package-level symbol store (bootstrap: linear scan).
 // ─────────────────────────────────────────────────────────────────────────────
-
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record SymbolTable {
   symbols: List[Symbol]
   /// Preferred-package marker, boxed as a 0/1-element list (the
@@ -118,12 +114,12 @@ pub record SymbolTable {
   /// Keyed by `TypeId` (not simple name) so a same-simple-name interface in a
   /// different package can never satisfy the check (#2303 soundness).
   impls: List[ImplPair]
+  // One `impl Iface for Target` conformance, by resolved `TypeId`.
 }
 
-// One `impl Iface for Target` conformance, by resolved `TypeId`.
 pub record ImplPair {
   target: TypeId
-  iface:  TypeId
+  iface: TypeId
 }
 
 pub func newSymbolTable(): SymbolTable {
@@ -135,7 +131,9 @@ pub func newSymbolTable(): SymbolTable {
 pub func symTableAddImpl(tbl: in SymbolTable, target: in TypeId, iface: in TypeId): Unit {
   var i = 0
   while i < tbl.impls.count {
-    if typeIdEq(tbl.impls[i].target, target) and typeIdEq(tbl.impls[i].iface, iface) { return }
+    if typeIdEq(tbl.impls[i].target, target) and typeIdEq(tbl.impls[i].iface, iface) {
+      return
+    }
     i = i + 1
   }
   tbl.impls.add(ImplPair(target = target, iface = iface))
@@ -145,7 +143,9 @@ pub func symTableAddImpl(tbl: in SymbolTable, target: in TypeId, iface: in TypeI
 pub func symTableTypeImplements(tbl: in SymbolTable, target: in TypeId, iface: in TypeId): Bool {
   var i = 0
   while i < tbl.impls.count {
-    if typeIdEq(tbl.impls[i].target, target) and typeIdEq(tbl.impls[i].iface, iface) { return true }
+    if typeIdEq(tbl.impls[i].target, target) and typeIdEq(tbl.impls[i].iface, iface) {
+      return true
+    }
     i = i + 1
   }
   false
@@ -158,20 +158,17 @@ pub func symTableAdd(tbl: in SymbolTable, sym: in Symbol): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4a. Resolution scope — package preference for name lookup.
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Set the current resolution scope: `pkg` is the package whose declarations
 // take precedence, and `imports` are the packages it explicitly imports (used
 // as the second-tier preference).  Passing `pkg = ""` clears the
 // current-package preference, restoring pure last-registered-wins resolution.
-pub func symTableSetScope(
-  tbl:     in SymbolTable,
-  pkg:     in String,
-  imports: in List[String]
-): Unit {
+pub func symTableSetScope(tbl: in SymbolTable, pkg: in String, imports: in List[String]): Unit {
   while tbl.scopePkg.count > 0 {
     tbl.scopePkg.removeAt(tbl.scopePkg.count - 1)
   }
-  if pkg.length > 0 { tbl.scopePkg.add(pkg) }
+  if pkg.length > 0 {
+    tbl.scopePkg.add(pkg)
+  }
   while tbl.scopeImports.count > 0 {
     tbl.scopeImports.removeAt(tbl.scopeImports.count - 1)
   }
@@ -183,14 +180,22 @@ pub func symTableSetScope(
 }
 
 func symTableScopePkg(tbl: in SymbolTable): String {
-  if tbl.scopePkg.count > 0 { tbl.scopePkg[0] } else { "" }
+  if tbl.scopePkg.count > 0 {
+    tbl.scopePkg[0]
+  } else {
+    ""
+  }
 }
 
 func symTableScopeAllows(tbl: in SymbolTable, pkg: in String): Bool {
-  if pkg.length == 0 { return false }
+  if pkg.length == 0 {
+    return false
+  }
   var i = 0
   while i < tbl.scopeImports.count {
-    if tbl.scopeImports[i] == pkg { return true }
+    if tbl.scopeImports[i] == pkg {
+      return true
+    }
     i = i + 1
   }
   false
@@ -200,7 +205,9 @@ pub func symTableTryFindAll(tbl: in SymbolTable, name: in String): List[Symbol] 
   val result: List[Symbol] = newList()
   var i = 0
   while i < tbl.symbols.count {
-    if tbl.symbols[i].name == name { result.add(tbl.symbols[i]) }
+    if tbl.symbols[i].name == name {
+      result.add(tbl.symbols[i])
+    }
     i = i + 1
   }
   result
@@ -213,8 +220,8 @@ pub func symTableTryFindAll(tbl: in SymbolTable, name: in String): List[Symbol] 
 // scope set every symbol's `originPackage` is empty, so only tier 3 fires —
 // byte-for-byte the historical behaviour.
 pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol] {
-  val curPkg     = symTableScopePkg(tbl)
-  val hasScope   = curPkg.length > 0
+  val curPkg = symTableScopePkg(tbl)
+  val hasScope = curPkg.length > 0
   val hasImports = tbl.scopeImports.count > 0
   var best2: Option[Symbol] = None
   var best3: Option[Symbol] = None
@@ -222,16 +229,30 @@ pub func symTableTryFindOne(tbl: in SymbolTable, name: in String): Option[Symbol
   while i >= 0 {
     val s = tbl.symbols[i]
     if s.name == name {
-      if hasScope and s.originPackage == curPkg { return Some(value = s) }
-      if hasImports and symTableScopeAllows(tbl, s.originPackage) {
-        match best2 { case None -> { best2 = Some(value = s) }; case Some(_) -> {} }
+      if hasScope and s.originPackage == curPkg {
+        return Some(value = s)
       }
-      match best3 { case None -> { best3 = Some(value = s) }; case Some(_) -> {} }
+      if hasImports and symTableScopeAllows(tbl, s.originPackage) {
+        match best2 {
+          case None -> {
+            best2 = Some(value = s)
+          }
+          case Some(_) -> {
+          }
+        }
+      }
+      match best3 {
+        case None -> {
+          best3 = Some(value = s)
+        }
+        case Some(_) -> {
+        }
+      }
     }
     i = i - 1
   }
   match best2 {
     case Some(_) -> best2
-    case None    -> best3
+    case None -> best3
   }
 }

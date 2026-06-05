@@ -1,18 +1,17 @@
-// jvm/self_test_b58.l — Stage B58: union dispatch via instanceof + checkcast.
-//
-// Generates an abstract Shape hierarchy:
-//   Shape.class    — abstract base
-//   Circle.class   — extends Shape; int radius field; area = radius*radius
-//   Rectangle.class — extends Shape; int width + height fields; area = width*height
-//   Measurer.class  — static area(Shape)I dispatches via instanceof
-//
-// Main prints:
-//   area(new Circle(5))       → 25
-//   area(new Rectangle(3,4))  → 12
-//
-// Exercises: instanceof (ifeq branch), checkcast, getfield on cast object,
-//            two-return method with early ireturn path.
-
+//! jvm/self_test_b58.l — Stage B58: union dispatch via instanceof + checkcast.
+//!
+//! Generates an abstract Shape hierarchy:
+//!   Shape.class    — abstract base
+//!   Circle.class   — extends Shape; int radius field; area = radius*radius
+//!   Rectangle.class — extends Shape; int width + height fields; area = width*height
+//!   Measurer.class  — static area(Shape)I dispatches via instanceof
+//!
+//! Main prints:
+//!   area(new Circle(5))       → 25
+//!   area(new Rectangle(3,4))  → 12
+//!
+//! Exercises: instanceof (ifeq branch), checkcast, getfield on cast object,
+//!            two-return method with early ireturn path.
 package Jvm.SelfTestB58
 
 import Std.Core
@@ -23,7 +22,7 @@ import Jvm.Bytecode
 import Jvm.Driver
 
 func makeShapeBytes(): List[Byte] {
-  val pool    = poolNew()
+  val pool = poolNew()
   val objInit = poolMethodref(pool, "java/lang/Object", "<init>", "()V")
   val asmInit = newAssembler(pool)
   emitAload(asmInit, 0)
@@ -41,9 +40,9 @@ func makeShapeBytes(): List[Byte] {
 }
 
 func makeCircleBytes(): List[Byte] {
-  val pool       = poolNew()
-  val shapeInit  = poolMethodref(pool, "Shape", "<init>", "()V")
-  val radiusRef  = poolFieldref(pool, "Circle", "radius", "I")
+  val pool = poolNew()
+  val shapeInit = poolMethodref(pool, "Shape", "<init>", "()V")
+  val radiusRef = poolFieldref(pool, "Circle", "radius", "I")
 
   val asmInit = newAssembler(pool)
   emitAload(asmInit, 0)
@@ -67,9 +66,9 @@ func makeCircleBytes(): List[Byte] {
 }
 
 func makeRectangleBytes(): List[Byte] {
-  val pool      = poolNew()
+  val pool = poolNew()
   val shapeInit = poolMethodref(pool, "Shape", "<init>", "()V")
-  val widthRef  = poolFieldref(pool, "Rectangle", "width",  "I")
+  val widthRef = poolFieldref(pool, "Rectangle", "width", "I")
   val heightRef = poolFieldref(pool, "Rectangle", "height", "I")
 
   val asmInit = newAssembler(pool)
@@ -89,7 +88,7 @@ func makeRectangleBytes(): List[Byte] {
 
   val methods: List[MethodInfo] = newList()
   methods.add(initMethod)
-  val widthField  = makeFieldInfo(ACC_PUBLIC, "width",  "I", newList())
+  val widthField = makeFieldInfo(ACC_PUBLIC, "width", "I", newList())
   val heightField = makeFieldInfo(ACC_PUBLIC, "height", "I", newList())
   val fields: List[FieldInfo] = newList()
   fields.add(widthField)
@@ -99,12 +98,12 @@ func makeRectangleBytes(): List[Byte] {
 }
 
 func makeMeasurerBytes(): List[Byte] {
-  val pool        = poolNew()
+  val pool = poolNew()
   val circleClass = poolClass(pool, "Circle")
-  val rectClass   = poolClass(pool, "Rectangle")
-  val radiusRef   = poolFieldref(pool, "Circle", "radius", "I")
-  val widthRef    = poolFieldref(pool, "Rectangle", "width",  "I")
-  val heightRef   = poolFieldref(pool, "Rectangle", "height", "I")
+  val rectClass = poolClass(pool, "Rectangle")
+  val radiusRef = poolFieldref(pool, "Circle", "radius", "I")
+  val widthRef = poolFieldref(pool, "Rectangle", "width", "I")
+  val heightRef = poolFieldref(pool, "Rectangle", "height", "I")
 
   // ── area(Shape)I ─────────────────────────────────────────────────────────────
   // slot 0 = shape (Shape ref)
@@ -120,9 +119,11 @@ func makeMeasurerBytes(): List[Byte] {
   // Circle branch:
   emitAload(asm, 0)
   emitCheckcast(asm, circleClass)
-  emitGetfield(asm, radiusRef)    // radius
+  emitGetfield(asm, radiusRef)
+  // radius
   emitDup(asm)
-  emitImul(asm)                   // radius * radius
+  emitImul(asm)
+  // radius * radius
   emitIreturn(asm)
   // Rectangle branch:
   emitLabel(asm, "NOT_CIRCLE")
@@ -130,10 +131,13 @@ func makeMeasurerBytes(): List[Byte] {
   emitCheckcast(asm, rectClass)
   emitAstore(asm, 1)
   emitAload(asm, 1)
-  emitGetfield(asm, widthRef)     // width
+  emitGetfield(asm, widthRef)
+  // width
   emitAload(asm, 1)
-  emitGetfield(asm, heightRef)    // height
-  emitImul(asm)                   // width * height
+  emitGetfield(asm, heightRef)
+  // height
+  emitImul(asm)
+  // width * height
   emitIreturn(asm)
 
   // maxStack: aload(1) + instanceof(1) or checkcast+getfield+dup(2) peak
@@ -150,15 +154,15 @@ func makeMeasurerBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOut       = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnI     = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
-  val areaRef      = poolMethodref(pool, "Measurer", "area", "(LShape;)I")
-  val circleClass  = poolClass(pool, "Circle")
-  val circleInit   = poolMethodref(pool, "Circle", "<init>", "(I)V")
-  val rectClass    = poolClass(pool, "Rectangle")
-  val rectInit     = poolMethodref(pool, "Rectangle", "<init>", "(II)V")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val areaRef = poolMethodref(pool, "Measurer", "area", "(LShape;)I")
+  val circleClass = poolClass(pool, "Circle")
+  val circleInit = poolMethodref(pool, "Circle", "<init>", "(I)V")
+  val rectClass = poolClass(pool, "Rectangle")
+  val rectInit = poolMethodref(pool, "Rectangle", "<init>", "(II)V")
 
   // println(Measurer.area(new Circle(5)))     → 25
   emitGetstatic(asm, sysOut)
@@ -195,21 +199,21 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b58"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
-  val shapeBytes     = makeShapeBytes()
-  val circleBytes    = makeCircleBytes()
+  val shapeBytes = makeShapeBytes()
+  val circleBytes = makeCircleBytes()
   val rectangleBytes = makeRectangleBytes()
-  val measurerBytes  = makeMeasurerBytes()
-  val mainBytes      = makeMainClassBytes()
+  val measurerBytes = makeMeasurerBytes()
+  val mainBytes = makeMainClassBytes()
 
-  val shapeClass     = BuiltClass(binaryName = "Shape",     bytes = shapeBytes)
-  val circleClass    = BuiltClass(binaryName = "Circle",    bytes = circleBytes)
+  val shapeClass = BuiltClass(binaryName = "Shape", bytes = shapeBytes)
+  val circleClass = BuiltClass(binaryName = "Circle", bytes = circleBytes)
   val rectangleClass = BuiltClass(binaryName = "Rectangle", bytes = rectangleBytes)
-  val measurerClass  = BuiltClass(binaryName = "Measurer",  bytes = measurerBytes)
-  val mainClass      = BuiltClass(binaryName = "Main",      bytes = mainBytes)
+  val measurerClass = BuiltClass(binaryName = "Measurer", bytes = measurerBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(shapeClass)
   classes.add(circleClass)
@@ -219,9 +223,9 @@ func main(): Unit {
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB58",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

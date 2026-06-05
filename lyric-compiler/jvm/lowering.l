@@ -1,13 +1,12 @@
-// jvm/lowering.l — Stage B3 JVM type descriptors and instruction lowering.
-//
-// Provides:
-//   • `JvmType` — typed representation of JVM field/return types.
-//   • `LInsn` — high-level instruction union; `lowerInsn` resolves pool refs.
-//   • `LField` / `LFunc` / `LRecord` — typed class/method/field descriptors.
-//   • `lowerFunc` — lowers an LFunc to a MethodInfo with a Code attribute.
-//   • `lowerRecord` — lowers an LRecord to a ClassFile with a synthesised ctor.
-//   • `LPTestModule` (B126) — test-module package item; see `Jvm.TestEngine`.
-
+//! jvm/lowering.l — Stage B3 JVM type descriptors and instruction lowering.
+//!
+//! Provides:
+//!   • `JvmType` — typed representation of JVM field/return types.
+//!   • `LInsn` — high-level instruction union; `lowerInsn` resolves pool refs.
+//!   • `LField` / `LFunc` / `LRecord` — typed class/method/field descriptors.
+//!   • `lowerFunc` — lowers an LFunc to a MethodInfo with a Code attribute.
+//!   • `lowerRecord` — lowers an LRecord to a ClassFile with a synthesised ctor.
+//!   • `LPTestModule` (B126) — test-module package item; see `Jvm.TestEngine`.
 package Jvm.Lowering
 
 import Std.Core
@@ -20,7 +19,6 @@ import Jvm.Bytecode
 import Jvm.TestEngine
 
 // ── JvmType ───────────────────────────────────────────────────────────────────
-
 pub union JvmType {
   case JBoolean
   case JByte
@@ -37,17 +35,17 @@ pub union JvmType {
 
 pub func typeDescriptor(t: in JvmType): String {
   match t {
-    case JBoolean         -> "Z"
-    case JByte            -> "B"
-    case JChar            -> "C"
-    case JShort           -> "S"
-    case JInt             -> "I"
-    case JLong            -> "J"
-    case JFloat           -> "F"
-    case JDouble          -> "D"
-    case JVoid            -> "V"
-    case JRef(cls)        -> "L" + cls + ";"
-    case JArray(el)       -> "[" + typeDescriptor(el)
+    case JBoolean -> "Z"
+    case JByte -> "B"
+    case JChar -> "C"
+    case JShort -> "S"
+    case JInt -> "I"
+    case JLong -> "J"
+    case JFloat -> "F"
+    case JDouble -> "D"
+    case JVoid -> "V"
+    case JRef(cls) -> "L" + cls + ";"
+    case JArray(el) -> "[" + typeDescriptor(el)
   }
 }
 
@@ -63,7 +61,6 @@ pub func buildDescriptor(params: in List[JvmType], ret: in JvmType): String {
 }
 
 // ── LInsn ─────────────────────────────────────────────────────────────────────
-
 pub union LInsn {
   case LLabel(name: String)
   case LNop
@@ -246,23 +243,22 @@ pub union LInsn {
   // one value on the stack.  `lowerInsn` panics on this; use only inside
   // `lowerAsyncGenerator`'s `runBody` emission (handled specially there).
   case LYield
+  // ── Type helpers (no OR patterns) ────────────────────────────────────────────
+  // Returns 2 for double-width types (long, double), 1 for all others.
 }
 
-// ── Type helpers (no OR patterns) ────────────────────────────────────────────
-
-// Returns 2 for double-width types (long, double), 1 for all others.
 pub func fieldSlotSize(t: in JvmType): Int {
   match t {
-    case JLong   -> 2
+    case JLong -> 2
     case JDouble -> 2
     case JBoolean -> 1
-    case JByte    -> 1
-    case JChar    -> 1
-    case JShort   -> 1
-    case JInt     -> 1
-    case JFloat   -> 1
-    case JVoid    -> 0
-    case JRef(_)  -> 1
+    case JByte -> 1
+    case JChar -> 1
+    case JShort -> 1
+    case JInt -> 1
+    case JFloat -> 1
+    case JVoid -> 0
+    case JRef(_) -> 1
     case JArray(_) -> 1
   }
 }
@@ -280,117 +276,369 @@ pub func slotSum(ps: in List[JvmType]): Int {
 
 pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
   match insn {
-    case LLabel(n)      -> { emitLabel(asm, n); resetStack(asm) }
-    case LNop           -> emitNop(asm)
-    case LReturn        -> emitReturn(asm)
-    case LIreturn       -> { emitIreturn(asm); trackStack(asm, -1) }
-    case LLreturn       -> { emitLreturn(asm); trackStack(asm, -2) }
-    case LDreturn       -> { emitDreturn(asm); trackStack(asm, -2) }
-    case LAreturn       -> { emitAreturn(asm); trackStack(asm, -1) }
-    case LAthrow        -> { emitAthrow(asm);  trackStack(asm, -1) }
+    case LLabel(n) -> {
+      emitLabel(asm, n)
+      resetStack(asm)
+    }
+    case LNop -> emitNop(asm)
+    case LReturn -> emitReturn(asm)
+    case LIreturn -> {
+      emitIreturn(asm)
+      trackStack(asm, -1)
+    }
+    case LLreturn -> {
+      emitLreturn(asm)
+      trackStack(asm, -2)
+    }
+    case LDreturn -> {
+      emitDreturn(asm)
+      trackStack(asm, -2)
+    }
+    case LAreturn -> {
+      emitAreturn(asm)
+      trackStack(asm, -1)
+    }
+    case LAthrow -> {
+      emitAthrow(asm)
+      trackStack(asm, -1)
+    }
 
-    case LIconst(v)     -> { emitPushInt(asm, v);    trackStack(asm, 1)  }
-    case LLconst(v)     -> { emitPushLong(asm, v);   trackStack(asm, 2)  }
-    case LFconst(v)     -> { emitPushFloat(asm, v);  trackStack(asm, 1)  }
-    case LDconst(v)     -> { emitPushDouble(asm, v); trackStack(asm, 2)  }
-    case LPushString(s) -> { emitPushString(asm, s); trackStack(asm, 1)  }
+    case LIconst(v) -> {
+      emitPushInt(asm, v)
+      trackStack(asm, 1)
+    }
+    case LLconst(v) -> {
+      emitPushLong(asm, v)
+      trackStack(asm, 2)
+    }
+    case LFconst(v) -> {
+      emitPushFloat(asm, v)
+      trackStack(asm, 1)
+    }
+    case LDconst(v) -> {
+      emitPushDouble(asm, v)
+      trackStack(asm, 2)
+    }
+    case LPushString(s) -> {
+      emitPushString(asm, s)
+      trackStack(asm, 1)
+    }
 
-    case LIload(s)      -> { emitIload(asm, s); trackStack(asm, 1)  }
-    case LLload(s)      -> { emitLload(asm, s); trackStack(asm, 2)  }
-    case LDload(s)      -> { emitDload(asm, s); trackStack(asm, 2)  }
-    case LAload(s)      -> { emitAload(asm, s); trackStack(asm, 1)  }
-    case LIstore(s)     -> { emitIstore(asm, s); trackStack(asm, -1) }
-    case LLstore(s)     -> { emitLstore(asm, s); trackStack(asm, -2) }
-    case LDstore(s)     -> { emitDstore(asm, s); trackStack(asm, -2) }
-    case LAstore(s)         -> { emitAstore(asm, s); trackStack(asm, -1) }
-    case LAstoreAs(s, _cls) -> { emitAstore(asm, s); trackStack(asm, -1) }
+    case LIload(s) -> {
+      emitIload(asm, s)
+      trackStack(asm, 1)
+    }
+    case LLload(s) -> {
+      emitLload(asm, s)
+      trackStack(asm, 2)
+    }
+    case LDload(s) -> {
+      emitDload(asm, s)
+      trackStack(asm, 2)
+    }
+    case LAload(s) -> {
+      emitAload(asm, s)
+      trackStack(asm, 1)
+    }
+    case LIstore(s) -> {
+      emitIstore(asm, s)
+      trackStack(asm, -1)
+    }
+    case LLstore(s) -> {
+      emitLstore(asm, s)
+      trackStack(asm, -2)
+    }
+    case LDstore(s) -> {
+      emitDstore(asm, s)
+      trackStack(asm, -2)
+    }
+    case LAstore(s) -> {
+      emitAstore(asm, s)
+      trackStack(asm, -1)
+    }
+    case LAstoreAs(s, _cls) -> {
+      emitAstore(asm, s)
+      trackStack(asm, -1)
+    }
 
-    case LPop           -> { emitPop(asm); trackStack(asm, -1) }
-    case LDup           -> { emitDup(asm); trackStack(asm, 1)  }
+    case LPop -> {
+      emitPop(asm)
+      trackStack(asm, -1)
+    }
+    case LDup -> {
+      emitDup(asm)
+      trackStack(asm, 1)
+    }
 
-    case LIadd          -> { emitIadd(asm);  trackStack(asm, -1) }
-    case LIsub          -> { emitIsub(asm);  trackStack(asm, -1) }
-    case LImul          -> { emitImul(asm);  trackStack(asm, -1) }
-    case LIdiv          -> { emitIdiv(asm);  trackStack(asm, -1) }
-    case LIrem          -> { emitIrem(asm);  trackStack(asm, -1) }
-    case LIneg          -> emitIneg(asm)
-    case LIinc(s, d)    -> emitIinc(asm, s, d)
-    case LI2l           -> { emitI2l(asm); trackStack(asm, 1)  }
-    case LI2d           -> { emitI2d(asm); trackStack(asm, 1)  }
-    case LL2i           -> { emitL2i(asm); trackStack(asm, -1) }
+    case LIadd -> {
+      emitIadd(asm)
+      trackStack(asm, -1)
+    }
+    case LIsub -> {
+      emitIsub(asm)
+      trackStack(asm, -1)
+    }
+    case LImul -> {
+      emitImul(asm)
+      trackStack(asm, -1)
+    }
+    case LIdiv -> {
+      emitIdiv(asm)
+      trackStack(asm, -1)
+    }
+    case LIrem -> {
+      emitIrem(asm)
+      trackStack(asm, -1)
+    }
+    case LIneg -> emitIneg(asm)
+    case LIinc(s, d) -> emitIinc(asm, s, d)
+    case LI2l -> {
+      emitI2l(asm)
+      trackStack(asm, 1)
+    }
+    case LI2d -> {
+      emitI2d(asm)
+      trackStack(asm, 1)
+    }
+    case LL2i -> {
+      emitL2i(asm)
+      trackStack(asm, -1)
+    }
 
-    case LLadd          -> { emitLadd(asm); trackStack(asm, -2) }
-    case LLsub          -> { emitLsub(asm); trackStack(asm, -2) }
-    case LLmul          -> { emitLmul(asm); trackStack(asm, -2) }
-    case LLdiv          -> { emitLdiv(asm); trackStack(asm, -2) }
+    case LLadd -> {
+      emitLadd(asm)
+      trackStack(asm, -2)
+    }
+    case LLsub -> {
+      emitLsub(asm)
+      trackStack(asm, -2)
+    }
+    case LLmul -> {
+      emitLmul(asm)
+      trackStack(asm, -2)
+    }
+    case LLdiv -> {
+      emitLdiv(asm)
+      trackStack(asm, -2)
+    }
 
-    case LDadd          -> { emitDadd(asm); trackStack(asm, -2) }
-    case LDsub          -> { emitDsub(asm); trackStack(asm, -2) }
-    case LDmul          -> { emitDmul(asm); trackStack(asm, -2) }
-    case LDdiv          -> { emitDdiv(asm); trackStack(asm, -2) }
+    case LDadd -> {
+      emitDadd(asm)
+      trackStack(asm, -2)
+    }
+    case LDsub -> {
+      emitDsub(asm)
+      trackStack(asm, -2)
+    }
+    case LDmul -> {
+      emitDmul(asm)
+      trackStack(asm, -2)
+    }
+    case LDdiv -> {
+      emitDdiv(asm)
+      trackStack(asm, -2)
+    }
 
-    case LFload(s)      -> { emitFload(asm, s); trackStack(asm, 1)  }
-    case LFstore(s)     -> { emitFstore(asm, s); trackStack(asm, -1) }
-    case LFreturn       -> { emitFreturn(asm); trackStack(asm, -1) }
-    case LFadd          -> { emitFadd(asm); trackStack(asm, -1) }
-    case LFsub          -> { emitFsub(asm); trackStack(asm, -1) }
-    case LFmul          -> { emitFmul(asm); trackStack(asm, -1) }
-    case LFdiv          -> { emitFdiv(asm); trackStack(asm, -1) }
-    case LFrem          -> { emitFrem(asm); trackStack(asm, -1) }
-    case LFneg          -> emitFneg(asm)
+    case LFload(s) -> {
+      emitFload(asm, s)
+      trackStack(asm, 1)
+    }
+    case LFstore(s) -> {
+      emitFstore(asm, s)
+      trackStack(asm, -1)
+    }
+    case LFreturn -> {
+      emitFreturn(asm)
+      trackStack(asm, -1)
+    }
+    case LFadd -> {
+      emitFadd(asm)
+      trackStack(asm, -1)
+    }
+    case LFsub -> {
+      emitFsub(asm)
+      trackStack(asm, -1)
+    }
+    case LFmul -> {
+      emitFmul(asm)
+      trackStack(asm, -1)
+    }
+    case LFdiv -> {
+      emitFdiv(asm)
+      trackStack(asm, -1)
+    }
+    case LFrem -> {
+      emitFrem(asm)
+      trackStack(asm, -1)
+    }
+    case LFneg -> emitFneg(asm)
 
-    case LIand          -> { emitIand(asm);  trackStack(asm, -1) }
-    case LIor           -> { emitIor(asm);   trackStack(asm, -1) }
-    case LIxor          -> { emitIxor(asm);  trackStack(asm, -1) }
-    case LIshl          -> { emitIshl(asm);  trackStack(asm, -1) }
-    case LIshr          -> { emitIshr(asm);  trackStack(asm, -1) }
-    case LIushr         -> { emitIushr(asm); trackStack(asm, -1) }
+    case LIand -> {
+      emitIand(asm)
+      trackStack(asm, -1)
+    }
+    case LIor -> {
+      emitIor(asm)
+      trackStack(asm, -1)
+    }
+    case LIxor -> {
+      emitIxor(asm)
+      trackStack(asm, -1)
+    }
+    case LIshl -> {
+      emitIshl(asm)
+      trackStack(asm, -1)
+    }
+    case LIshr -> {
+      emitIshr(asm)
+      trackStack(asm, -1)
+    }
+    case LIushr -> {
+      emitIushr(asm)
+      trackStack(asm, -1)
+    }
 
-    case LLneg          -> emitLneg(asm)
-    case LLrem          -> { emitLrem(asm);  trackStack(asm, -2) }
-    case LLand          -> { emitLand(asm);  trackStack(asm, -2) }
-    case LLor           -> { emitLor(asm);   trackStack(asm, -2) }
-    case LLxor          -> { emitLxor(asm);  trackStack(asm, -2) }
-    case LLshl          -> { emitLshl(asm);  trackStack(asm, -1) }
-    case LLshr          -> { emitLshr(asm);  trackStack(asm, -1) }
-    case LLushr         -> { emitLushr(asm); trackStack(asm, -1) }
-    case LLcmp          -> { emitLcmp(asm);  trackStack(asm, -3) }
+    case LLneg -> emitLneg(asm)
+    case LLrem -> {
+      emitLrem(asm)
+      trackStack(asm, -2)
+    }
+    case LLand -> {
+      emitLand(asm)
+      trackStack(asm, -2)
+    }
+    case LLor -> {
+      emitLor(asm)
+      trackStack(asm, -2)
+    }
+    case LLxor -> {
+      emitLxor(asm)
+      trackStack(asm, -2)
+    }
+    case LLshl -> {
+      emitLshl(asm)
+      trackStack(asm, -1)
+    }
+    case LLshr -> {
+      emitLshr(asm)
+      trackStack(asm, -1)
+    }
+    case LLushr -> {
+      emitLushr(asm)
+      trackStack(asm, -1)
+    }
+    case LLcmp -> {
+      emitLcmp(asm)
+      trackStack(asm, -3)
+    }
 
-    case LDrem          -> { emitDrem(asm);  trackStack(asm, -2) }
-    case LDneg          -> emitDneg(asm)
-    case LFcmpl         -> { emitFcmpl(asm); trackStack(asm, -1) }
-    case LFcmpg         -> { emitFcmpg(asm); trackStack(asm, -1) }
-    case LDcmpl         -> { emitDcmpl(asm); trackStack(asm, -3) }
-    case LDcmpg         -> { emitDcmpg(asm); trackStack(asm, -3) }
+    case LDrem -> {
+      emitDrem(asm)
+      trackStack(asm, -2)
+    }
+    case LDneg -> emitDneg(asm)
+    case LFcmpl -> {
+      emitFcmpl(asm)
+      trackStack(asm, -1)
+    }
+    case LFcmpg -> {
+      emitFcmpg(asm)
+      trackStack(asm, -1)
+    }
+    case LDcmpl -> {
+      emitDcmpl(asm)
+      trackStack(asm, -3)
+    }
+    case LDcmpg -> {
+      emitDcmpg(asm)
+      trackStack(asm, -3)
+    }
 
-    case LL2f           -> { emitL2f(asm); trackStack(asm, -1) }
-    case LL2d           -> emitL2d(asm)
-    case LI2f           -> emitI2f(asm)
-    case LI2b           -> emitI2b(asm)
-    case LI2c           -> emitI2c(asm)
-    case LI2s           -> emitI2s(asm)
-    case LF2i           -> emitF2i(asm)
-    case LF2l           -> { emitF2l(asm); trackStack(asm, 1) }
-    case LF2d           -> { emitF2d(asm); trackStack(asm, 1) }
-    case LD2i           -> { emitD2i(asm); trackStack(asm, -1) }
-    case LD2l           -> emitD2l(asm)
-    case LD2f           -> { emitD2f(asm); trackStack(asm, -1) }
+    case LL2f -> {
+      emitL2f(asm)
+      trackStack(asm, -1)
+    }
+    case LL2d -> emitL2d(asm)
+    case LI2f -> emitI2f(asm)
+    case LI2b -> emitI2b(asm)
+    case LI2c -> emitI2c(asm)
+    case LI2s -> emitI2s(asm)
+    case LF2i -> emitF2i(asm)
+    case LF2l -> {
+      emitF2l(asm)
+      trackStack(asm, 1)
+    }
+    case LF2d -> {
+      emitF2d(asm)
+      trackStack(asm, 1)
+    }
+    case LD2i -> {
+      emitD2i(asm)
+      trackStack(asm, -1)
+    }
+    case LD2l -> emitD2l(asm)
+    case LD2f -> {
+      emitD2f(asm)
+      trackStack(asm, -1)
+    }
 
-    case LGoto(l)           -> emitGoto(asm, l)
-    case LIfeq(l)           -> { emitIfeq(asm, l);     trackStack(asm, -1) }
-    case LIfne(l)           -> { emitIfne(asm, l);     trackStack(asm, -1) }
-    case LIflt(l)           -> { emitIflt(asm, l);     trackStack(asm, -1) }
-    case LIfge(l)           -> { emitIfge(asm, l);     trackStack(asm, -1) }
-    case LIfgt(l)           -> { emitIfgt(asm, l);     trackStack(asm, -1) }
-    case LIfle(l)           -> { emitIfle(asm, l);     trackStack(asm, -1) }
-    case LIfIcmpeq(l)       -> { emitIfIcmpeq(asm, l); trackStack(asm, -2) }
-    case LIfIcmpne(l)       -> { emitIfIcmpne(asm, l); trackStack(asm, -2) }
-    case LIfIcmplt(l)       -> { emitIfIcmplt(asm, l); trackStack(asm, -2) }
-    case LIfIcmpge(l)       -> { emitIfIcmpge(asm, l); trackStack(asm, -2) }
-    case LIfIcmpgt(l)       -> { emitIfIcmpgt(asm, l); trackStack(asm, -2) }
-    case LIfIcmple(l)       -> { emitIfIcmple(asm, l); trackStack(asm, -2) }
-    case LIfAcmpeq(l)       -> { emitIfAcmpeq(asm, l); trackStack(asm, -2) }
-    case LIfAcmpne(l)       -> { emitIfAcmpne(asm, l); trackStack(asm, -2) }
+    case LGoto(l) -> emitGoto(asm, l)
+    case LIfeq(l) -> {
+      emitIfeq(asm, l)
+      trackStack(asm, -1)
+    }
+    case LIfne(l) -> {
+      emitIfne(asm, l)
+      trackStack(asm, -1)
+    }
+    case LIflt(l) -> {
+      emitIflt(asm, l)
+      trackStack(asm, -1)
+    }
+    case LIfge(l) -> {
+      emitIfge(asm, l)
+      trackStack(asm, -1)
+    }
+    case LIfgt(l) -> {
+      emitIfgt(asm, l)
+      trackStack(asm, -1)
+    }
+    case LIfle(l) -> {
+      emitIfle(asm, l)
+      trackStack(asm, -1)
+    }
+    case LIfIcmpeq(l) -> {
+      emitIfIcmpeq(asm, l)
+      trackStack(asm, -2)
+    }
+    case LIfIcmpne(l) -> {
+      emitIfIcmpne(asm, l)
+      trackStack(asm, -2)
+    }
+    case LIfIcmplt(l) -> {
+      emitIfIcmplt(asm, l)
+      trackStack(asm, -2)
+    }
+    case LIfIcmpge(l) -> {
+      emitIfIcmpge(asm, l)
+      trackStack(asm, -2)
+    }
+    case LIfIcmpgt(l) -> {
+      emitIfIcmpgt(asm, l)
+      trackStack(asm, -2)
+    }
+    case LIfIcmple(l) -> {
+      emitIfIcmple(asm, l)
+      trackStack(asm, -2)
+    }
+    case LIfAcmpeq(l) -> {
+      emitIfAcmpeq(asm, l)
+      trackStack(asm, -2)
+    }
+    case LIfAcmpne(l) -> {
+      emitIfAcmpne(asm, l)
+      trackStack(asm, -2)
+    }
 
     case LGetfield(owner, name, t) -> {
       val idx = poolFieldref(asm.pool, owner, name, typeDescriptor(t))
@@ -447,77 +695,168 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
       val idx = poolClass(asm.pool, cls)
       emitInstanceof(asm, idx)
     }
-    case LAconstNull -> { emitAconstNull(asm); trackStack(asm, 1) }
+    case LAconstNull -> {
+      emitAconstNull(asm)
+      trackStack(asm, 1)
+    }
 
     case LAnewarray(cls) -> {
       val idx = poolClass(asm.pool, cls)
       emitAnewarray(asm, idx)
     }
     case LNewarray(tc) -> emitNewarray(asm, tc)
-    case LArraylength  -> emitArraylength(asm)
+    case LArraylength -> emitArraylength(asm)
 
-    case LIaload  -> { emitIaload(asm); trackStack(asm, -1) }
-    case LLaload  -> emitLaload(asm)
-    case LFaload  -> { emitFaload(asm); trackStack(asm, -1) }
-    case LDaload  -> emitDaload(asm)
-    case LAaload  -> { emitAaload(asm); trackStack(asm, -1) }
-    case LBaload  -> { emitBaload(asm); trackStack(asm, -1) }
-    case LCaload  -> { emitCaload(asm); trackStack(asm, -1) }
-    case LSaload  -> { emitSaload(asm); trackStack(asm, -1) }
+    case LIaload -> {
+      emitIaload(asm)
+      trackStack(asm, -1)
+    }
+    case LLaload -> emitLaload(asm)
+    case LFaload -> {
+      emitFaload(asm)
+      trackStack(asm, -1)
+    }
+    case LDaload -> emitDaload(asm)
+    case LAaload -> {
+      emitAaload(asm)
+      trackStack(asm, -1)
+    }
+    case LBaload -> {
+      emitBaload(asm)
+      trackStack(asm, -1)
+    }
+    case LCaload -> {
+      emitCaload(asm)
+      trackStack(asm, -1)
+    }
+    case LSaload -> {
+      emitSaload(asm)
+      trackStack(asm, -1)
+    }
 
-    case LIastore  -> { emitIastore(asm); trackStack(asm, -3) }
-    case LLastore  -> { emitLastore(asm); trackStack(asm, -4) }
-    case LFastore  -> { emitFastore(asm); trackStack(asm, -3) }
-    case LDastore  -> { emitDastore(asm); trackStack(asm, -4) }
-    case LAastore  -> { emitAastore(asm); trackStack(asm, -3) }
-    case LBastore  -> { emitBastore(asm); trackStack(asm, -3) }
-    case LCastore  -> { emitCastore(asm); trackStack(asm, -3) }
-    case LSastore  -> { emitSastore(asm); trackStack(asm, -3) }
+    case LIastore -> {
+      emitIastore(asm)
+      trackStack(asm, -3)
+    }
+    case LLastore -> {
+      emitLastore(asm)
+      trackStack(asm, -4)
+    }
+    case LFastore -> {
+      emitFastore(asm)
+      trackStack(asm, -3)
+    }
+    case LDastore -> {
+      emitDastore(asm)
+      trackStack(asm, -4)
+    }
+    case LAastore -> {
+      emitAastore(asm)
+      trackStack(asm, -3)
+    }
+    case LBastore -> {
+      emitBastore(asm)
+      trackStack(asm, -3)
+    }
+    case LCastore -> {
+      emitCastore(asm)
+      trackStack(asm, -3)
+    }
+    case LSastore -> {
+      emitSastore(asm)
+      trackStack(asm, -3)
+    }
 
-    case LTableswitch(lo, hi, def, cases) -> { emitTableSwitch(asm, lo, hi, def, cases); trackStack(asm, -1) }
-    case LLookupswitch(def, pairs) -> { emitLookupSwitch(asm, def, pairs); trackStack(asm, -1) }
+    case LTableswitch(lo, hi, def, cases) -> {
+      emitTableSwitch(asm, lo, hi, def, cases)
+      trackStack(asm, -1)
+    }
+    case LLookupswitch(def, pairs) -> {
+      emitLookupSwitch(asm, def, pairs)
+      trackStack(asm, -1)
+    }
 
-    case LTryCatch(_, _, _, _) -> ()  // meta-insn: collected by lowerFunc, no bytecode
+    case LTryCatch(_, _, _, _) -> ()
+    // meta-insn: collected by lowerFunc, no bytecode
 
     case LBoxInt -> {
       val ps: List[JvmType] = newList()
       ps.add(JInt)
-      lowerInsn(LInvokestatic(owner = "java/lang/Integer", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Integer")), asm)
+      lowerInsn(
+        LInvokestatic(
+          owner = "java/lang/Integer",
+          name = "valueOf",
+          params = ps,
+          ret = JRef(className = "java/lang/Integer")
+        ),
+        asm
+      )
     }
     case LBoxLong -> {
       val ps: List[JvmType] = newList()
       ps.add(JLong)
-      lowerInsn(LInvokestatic(owner = "java/lang/Long", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Long")), asm)
+      lowerInsn(
+        LInvokestatic(owner = "java/lang/Long", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Long")),
+        asm
+      )
     }
     case LBoxFloat -> {
       val ps: List[JvmType] = newList()
       ps.add(JFloat)
-      lowerInsn(LInvokestatic(owner = "java/lang/Float", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Float")), asm)
+      lowerInsn(
+        LInvokestatic(owner = "java/lang/Float", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Float")),
+        asm
+      )
     }
     case LBoxDouble -> {
       val ps: List[JvmType] = newList()
       ps.add(JDouble)
-      lowerInsn(LInvokestatic(owner = "java/lang/Double", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Double")), asm)
+      lowerInsn(
+        LInvokestatic(owner = "java/lang/Double", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Double")),
+        asm
+      )
     }
     case LBoxBool -> {
       val ps: List[JvmType] = newList()
       ps.add(JBoolean)
-      lowerInsn(LInvokestatic(owner = "java/lang/Boolean", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Boolean")), asm)
+      lowerInsn(
+        LInvokestatic(
+          owner = "java/lang/Boolean",
+          name = "valueOf",
+          params = ps,
+          ret = JRef(className = "java/lang/Boolean")
+        ),
+        asm
+      )
     }
     case LBoxByte -> {
       val ps: List[JvmType] = newList()
       ps.add(JByte)
-      lowerInsn(LInvokestatic(owner = "java/lang/Byte", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Byte")), asm)
+      lowerInsn(
+        LInvokestatic(owner = "java/lang/Byte", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Byte")),
+        asm
+      )
     }
     case LBoxChar -> {
       val ps: List[JvmType] = newList()
       ps.add(JChar)
-      lowerInsn(LInvokestatic(owner = "java/lang/Character", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Character")), asm)
+      lowerInsn(
+        LInvokestatic(
+          owner = "java/lang/Character",
+          name = "valueOf",
+          params = ps,
+          ret = JRef(className = "java/lang/Character")
+        ),
+        asm
+      )
     }
     case LBoxShort -> {
       val ps: List[JvmType] = newList()
       ps.add(JShort)
-      lowerInsn(LInvokestatic(owner = "java/lang/Short", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Short")), asm)
+      lowerInsn(
+        LInvokestatic(owner = "java/lang/Short", name = "valueOf", params = ps, ret = JRef(className = "java/lang/Short")),
+        asm
+      )
     }
     case LUnboxInt -> {
       val ps: List[JvmType] = newList()
@@ -551,54 +890,51 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
       val ps: List[JvmType] = newList()
       lowerInsn(LInvokevirtual(owner = "java/lang/Short", name = "shortValue", params = ps, ret = JShort), asm)
     }
-    case LYield ->
-      // LYield is a meta-insn for async generators; it must not appear in
-      // general-purpose lowering.  Callers should use lowerAsyncGenerator
-      // which handles LYield inside RunBody bodies.
-      panic("LYield used outside an async-generator body")
+    case LYield -> panic("LYield used outside an async-generator body")
   }
+  // LYield is a meta-insn for async generators; it must not appear in
+  // general-purpose lowering.  Callers should use lowerAsyncGenerator
+  // which handles LYield inside RunBody bodies.
 }
 
 // ── LField / LFunc / LRecord ─────────────────────────────────────────────────
-
 pub record LField {
-  flags:      Int
-  name:       String
-  fieldType:  JvmType
+  flags: Int
+  name: String
+  fieldType: JvmType
 }
 
 pub record LFunc {
-  flags:      Int
-  name:       String
-  params:     List[JvmType]
-  ret:        JvmType
-  insns:      List[LInsn]
-  maxStack:   Int
-  maxLocals:  Int
+  flags: Int
+  name: String
+  params: List[JvmType]
+  ret: JvmType
+  insns: List[LInsn]
+  maxStack: Int
+  maxLocals: Int
 }
 
 pub record LRecord {
-  className:        String
-  fields:           List[LField]
-  methods:          List[LFunc]
+  className: String
+  fields: List[LField]
+  methods: List[LFunc]
   implementsIfaces: List[String]
+  // ── Type helpers (no OR patterns) ────────────────────────────────────────────
+  // Emit the appropriate load instruction for parameter slot `slot` of type `t`.
 }
 
-// ── Type helpers (no OR patterns) ────────────────────────────────────────────
-
-// Emit the appropriate load instruction for parameter slot `slot` of type `t`.
 func emitFieldLoad(t: in JvmType, slot: in Int, asm: in MethodAssembler): Unit {
   match t {
-    case JLong    -> lowerInsn(LLload(slot = slot), asm)
-    case JDouble  -> lowerInsn(LDload(slot = slot), asm)
+    case JLong -> lowerInsn(LLload(slot = slot), asm)
+    case JDouble -> lowerInsn(LDload(slot = slot), asm)
     case JBoolean -> lowerInsn(LIload(slot = slot), asm)
-    case JByte    -> lowerInsn(LIload(slot = slot), asm)
-    case JChar    -> lowerInsn(LIload(slot = slot), asm)
-    case JShort   -> lowerInsn(LIload(slot = slot), asm)
-    case JInt     -> lowerInsn(LIload(slot = slot), asm)
-    case JFloat   -> lowerInsn(LFload(slot = slot), asm)
-    case JVoid    -> ()
-    case JRef(_)  -> lowerInsn(LAload(slot = slot), asm)
+    case JByte -> lowerInsn(LIload(slot = slot), asm)
+    case JChar -> lowerInsn(LIload(slot = slot), asm)
+    case JShort -> lowerInsn(LIload(slot = slot), asm)
+    case JInt -> lowerInsn(LIload(slot = slot), asm)
+    case JFloat -> lowerInsn(LFload(slot = slot), asm)
+    case JVoid -> ()
+    case JRef(_) -> lowerInsn(LAload(slot = slot), asm)
     case JArray(_) -> lowerInsn(LAload(slot = slot), asm)
   }
 }
@@ -613,23 +949,21 @@ func emitFieldLoad(t: in JvmType, slot: in Int, asm: in MethodAssembler): Unit {
 //   • Locals that equal the method's initial parameter frame (no inter-branch
 //     local variable stores occur in the generated code).
 // Both invariants hold for B3/B4 lowerings and the B5 self-test.
-
 // VerifierType is defined in Jvm.Bytecode (imported above) and re-used here.
 // VTop, VInteger, VFloat, VLong, VDouble, VNull, VObject come from that import.
-
 // Convert a JvmType to its VerifierType equivalent.
 pub func jvmToVerifier(t: in JvmType): VerifierType {
   match t {
-    case JBoolean   -> VInteger
-    case JByte      -> VInteger
-    case JChar      -> VInteger
-    case JShort     -> VInteger
-    case JInt       -> VInteger
-    case JFloat     -> VFloat
-    case JLong      -> VLong
-    case JDouble    -> VDouble
-    case JVoid      -> VTop
-    case JRef(cls)  -> VObject(className = cls)
+    case JBoolean -> VInteger
+    case JByte -> VInteger
+    case JChar -> VInteger
+    case JShort -> VInteger
+    case JInt -> VInteger
+    case JFloat -> VFloat
+    case JLong -> VLong
+    case JDouble -> VDouble
+    case JVoid -> VTop
+    case JRef(cls) -> VObject(className = cls)
     case JArray(el) -> VObject(className = "[" + typeDescriptor(el))
   }
 }
@@ -637,7 +971,7 @@ pub func jvmToVerifier(t: in JvmType): VerifierType {
 // Add `l` to the Map-as-set `targets` if not already present.
 func addTarget(targets: in Map[String, Bool], l: in String): Unit {
   match mapGet(targets, l) {
-    case None    -> targets.add(l, true)
+    case None -> targets.add(l, true)
     case Some(_) -> ()
   }
 }
@@ -679,22 +1013,22 @@ func collectBranchTargets(insns: in List[LInsn]): Map[String, Bool] {
   var i = 0
   while i < insns.count {
     match insns[i] {
-      case LLabel(l)      -> addTarget(targets, l)
-      case LGoto(l)       -> addTarget(targets, l)
-      case LIfeq(l)       -> addTarget(targets, l)
-      case LIfne(l)       -> addTarget(targets, l)
-      case LIflt(l)       -> addTarget(targets, l)
-      case LIfge(l)       -> addTarget(targets, l)
-      case LIfgt(l)       -> addTarget(targets, l)
-      case LIfle(l)       -> addTarget(targets, l)
-      case LIfIcmpeq(l)   -> addTarget(targets, l)
-      case LIfIcmpne(l)   -> addTarget(targets, l)
-      case LIfIcmplt(l)   -> addTarget(targets, l)
-      case LIfIcmpge(l)   -> addTarget(targets, l)
-      case LIfIcmpgt(l)   -> addTarget(targets, l)
-      case LIfIcmple(l)   -> addTarget(targets, l)
-      case LIfAcmpeq(l)   -> addTarget(targets, l)
-      case LIfAcmpne(l)   -> addTarget(targets, l)
+      case LLabel(l) -> addTarget(targets, l)
+      case LGoto(l) -> addTarget(targets, l)
+      case LIfeq(l) -> addTarget(targets, l)
+      case LIfne(l) -> addTarget(targets, l)
+      case LIflt(l) -> addTarget(targets, l)
+      case LIfge(l) -> addTarget(targets, l)
+      case LIfgt(l) -> addTarget(targets, l)
+      case LIfle(l) -> addTarget(targets, l)
+      case LIfIcmpeq(l) -> addTarget(targets, l)
+      case LIfIcmpne(l) -> addTarget(targets, l)
+      case LIfIcmplt(l) -> addTarget(targets, l)
+      case LIfIcmpge(l) -> addTarget(targets, l)
+      case LIfIcmpgt(l) -> addTarget(targets, l)
+      case LIfIcmple(l) -> addTarget(targets, l)
+      case LIfAcmpeq(l) -> addTarget(targets, l)
+      case LIfAcmpne(l) -> addTarget(targets, l)
       case LTableswitch(_, _, def, cases) -> {
         addTarget(targets, def)
         addLabelTargets(targets, cases)
@@ -703,7 +1037,7 @@ func collectBranchTargets(insns: in List[LInsn]): Map[String, Bool] {
         addTarget(targets, def)
         addPairLabelTargets(targets, pairs)
       }
-      case _              -> ()
+      case _ -> ()
     }
     i = i + 1
   }
@@ -711,7 +1045,6 @@ func collectBranchTargets(insns: in List[LInsn]): Map[String, Bool] {
 }
 
 // ── Lowering ──────────────────────────────────────────────────────────────────
-
 // Infer the minimum maxLocals needed by scanning the instruction list for the
 // highest slot index used by any load/store instruction.
 func inferMaxLocals(f: in LFunc): Int {
@@ -719,28 +1052,80 @@ func inferMaxLocals(f: in LFunc): Int {
   var i = 0
   while i < f.insns.count {
     match f.insns[i] {
-      case LIload(s)       -> { if s + 1 > maxSlot { maxSlot = s + 1 } }
-      case LLload(s)       -> { if s + 2 > maxSlot { maxSlot = s + 2 } }
-      case LFload(s)       -> { if s + 1 > maxSlot { maxSlot = s + 1 } }
-      case LDload(s)       -> { if s + 2 > maxSlot { maxSlot = s + 2 } }
-      case LAload(s)       -> { if s + 1 > maxSlot { maxSlot = s + 1 } }
-      case LIstore(s)      -> { if s + 1 > maxSlot { maxSlot = s + 1 } }
-      case LLstore(s)      -> { if s + 2 > maxSlot { maxSlot = s + 2 } }
-      case LFstore(s)      -> { if s + 1 > maxSlot { maxSlot = s + 1 } }
-      case LDstore(s)      -> { if s + 2 > maxSlot { maxSlot = s + 2 } }
-      case LAstore(s)      -> { if s + 1 > maxSlot { maxSlot = s + 1 } }
-      case LAstoreAs(s, _) -> { if s + 1 > maxSlot { maxSlot = s + 1 } }
-      case LIinc(s, _)     -> { if s + 1 > maxSlot { maxSlot = s + 1 } }
-      case _               -> ()
+      case LIload(s) -> {
+        if s + 1 > maxSlot {
+          maxSlot = s + 1
+        }
+      }
+      case LLload(s) -> {
+        if s + 2 > maxSlot {
+          maxSlot = s + 2
+        }
+      }
+      case LFload(s) -> {
+        if s + 1 > maxSlot {
+          maxSlot = s + 1
+        }
+      }
+      case LDload(s) -> {
+        if s + 2 > maxSlot {
+          maxSlot = s + 2
+        }
+      }
+      case LAload(s) -> {
+        if s + 1 > maxSlot {
+          maxSlot = s + 1
+        }
+      }
+      case LIstore(s) -> {
+        if s + 1 > maxSlot {
+          maxSlot = s + 1
+        }
+      }
+      case LLstore(s) -> {
+        if s + 2 > maxSlot {
+          maxSlot = s + 2
+        }
+      }
+      case LFstore(s) -> {
+        if s + 1 > maxSlot {
+          maxSlot = s + 1
+        }
+      }
+      case LDstore(s) -> {
+        if s + 2 > maxSlot {
+          maxSlot = s + 2
+        }
+      }
+      case LAstore(s) -> {
+        if s + 1 > maxSlot {
+          maxSlot = s + 1
+        }
+      }
+      case LAstoreAs(s, _) -> {
+        if s + 1 > maxSlot {
+          maxSlot = s + 1
+        }
+      }
+      case LIinc(s, _) -> {
+        if s + 1 > maxSlot {
+          maxSlot = s + 1
+        }
+      }
+      case _ -> ()
     }
     i = i + 1
   }
   // Account for parameter slots (always allocated at 0..N-1).
   val paramSlots = slotSum(f.params)
-  if paramSlots > maxSlot { maxSlot = paramSlots }
+  if paramSlots > maxSlot {
+    maxSlot = paramSlots
+  }
   // For virtual methods slot 0 is `this`; ACC_STATIC = 0x0008.
   val isStatic = (f.flags / 8) % 2 == 1
-  if not isStatic and maxSlot < 1 { maxSlot = 1 }
+  if not isStatic and maxSlot < 1 {
+    maxSlot = 1
+  }
   maxSlot
 }
 
@@ -764,11 +1149,12 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
   // Pre-pass: collect types for any local slots assigned via store instructions.
   // Also collect LTryCatch meta-insns for the exception table and StackMapTable.
   val storeTypes: Map[Int, VerifierType] = newMap()
-  val tcStartLabels:   List[String] = newList()
-  val tcEndLabels:     List[String] = newList()
+  val tcStartLabels: List[String] = newList()
+  val tcEndLabels: List[String] = newList()
   val tcHandlerLabels: List[String] = newList()
-  val tcCatchClasses:  List[String] = newList()
-  val handlerTargets:  Map[String, String] = newMap()  // handlerLabel -> catchClass
+  val tcCatchClasses: List[String] = newList()
+  val handlerTargets: Map[String, String] = newMap()
+  // handlerLabel -> catchClass
   var pi3 = 0
   while pi3 < f.insns.count {
     match f.insns[pi3] {
@@ -834,9 +1220,15 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
   var ili = if isStatic then 0 else 1
   while ili < initialLocals.count {
     match initialLocals[ili] {
-      case VLong   -> { paramSlotCount = paramSlotCount + 2 }
-      case VDouble -> { paramSlotCount = paramSlotCount + 2 }
-      case _       -> { paramSlotCount = paramSlotCount + 1 }
+      case VLong -> {
+        paramSlotCount = paramSlotCount + 2
+      }
+      case VDouble -> {
+        paramSlotCount = paramSlotCount + 2
+      }
+      case _ -> {
+        paramSlotCount = paramSlotCount + 1
+      }
     }
     ili = ili + 1
   }
@@ -877,7 +1269,9 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
         lowerInsn(LAstore(slot = preSlot), asm)
         preSlot = preSlot + 1
       }
-      case _ -> { preSlot = preSlot + 1 }
+      case _ -> {
+        preSlot = preSlot + 1
+      }
     }
   }
   for insn in f.insns.toArray() {
@@ -905,12 +1299,20 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
       case Some(vt) -> {
         frameLocals.add(vt)
         match vt {
-          case VLong   -> { slotIdx = slotIdx + 2 }
-          case VDouble -> { slotIdx = slotIdx + 2 }
-          case _       -> { slotIdx = slotIdx + 1 }
+          case VLong -> {
+            slotIdx = slotIdx + 2
+          }
+          case VDouble -> {
+            slotIdx = slotIdx + 2
+          }
+          case _ -> {
+            slotIdx = slotIdx + 1
+          }
         }
       }
-      case None -> { slotIdx = slotIdx + 1 }
+      case None -> {
+        slotIdx = slotIdx + 1
+      }
     }
   }
 
@@ -927,7 +1329,8 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
     }
     hti = hti + 1
   }
-  val smBuf = writerNew()   // raw frame bytes (no leading count)
+  val smBuf = writerNew()
+  // raw frame bytes (no leading count)
   var smCount = 0
 
   // Collect one frame per *distinct* bytecode offset.  Multiple branch-target
@@ -938,9 +1341,12 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
   // underflowed to -1 and was written as 65535, shifting every later frame by
   // 64KB (VerifyError / "Current Frame bci @65595").  Dedupe by offset, letting
   // a handler frame win so the offset carries `[Throwable]` on its stack.
-  val frameOffs: List[Int]    = newList()   // distinct offsets, ascending
-  val frameEx:   List[String] = newList()   // "" = empty stack; else exception class
-  val seenOff:   Map[Int, Int] = newMap()   // offset -> index into frameOffs
+  val frameOffs: List[Int] = newList()
+  // distinct offsets, ascending
+  val frameEx: List[String] = newList()
+  // "" = empty stack; else exception class
+  val seenOff: Map[Int, Int] = newMap()
+  // offset -> index into frameOffs
 
   var si = 0
   while si < f.insns.count {
@@ -949,11 +1355,10 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
         if branchTargets.containsKey(l) {
           match mapGet(ar.labelOffsets, l) {
             case Some(off) -> {
-              val ex =
-                match mapGet(handlerTargets, l) {
-                  case Some(cc) -> if cc == "" { "java/lang/Throwable" } else { cc }
-                  case None     -> ""
-                }
+              val ex = match mapGet(handlerTargets, l) {
+                case Some(cc) -> if cc == "" { "java/lang/Throwable" } else { cc }
+                case None -> ""
+              }
               match mapGet(seenOff, off) {
                 case None -> {
                   seenOff.add(off, frameOffs.count)
@@ -962,7 +1367,9 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
                 }
                 case Some(idx) -> {
                   // Duplicate offset: a handler (non-empty stack) frame wins.
-                  if ex != "" { frameEx[idx] = ex }
+                  if ex != "" {
+                    frameEx[idx] = ex
+                  }
                 }
               }
             }
@@ -999,21 +1406,24 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
     var b = a - 1
     while b >= 0 and frameOffs[b] > ko {
       frameOffs[b + 1] = frameOffs[b]
-      frameEx[b + 1]   = frameEx[b]
+      frameEx[b + 1] = frameEx[b]
       b = b - 1
     }
     frameOffs[b + 1] = ko
-    frameEx[b + 1]   = ke
+    frameEx[b + 1] = ke
     a = a + 1
   }
 
-  var prevOffset = -1       // initial implicit frame is at offset -1
+  var prevOffset = -1
+  // initial implicit frame is at offset -1
   var fi2 = 0
   while fi2 < frameOffs.count {
     val off = frameOffs[fi2]
     val delta = off - prevOffset - 1
-    writerByte(smBuf, 255)               // full_frame tag
-    writerU2(smBuf, delta)               // offset_delta
+    writerByte(smBuf, 255)
+    // full_frame tag
+    writerU2(smBuf, delta)
+    // offset_delta
     writerU2(smBuf, frameLocals.count)
     var vi = 0
     while vi < frameLocals.count {
@@ -1021,10 +1431,12 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
       vi = vi + 1
     }
     if frameEx[fi2] != "" {
-      writerU2(smBuf, 1)                  // 1 stack item: the caught exception
+      writerU2(smBuf, 1)
+      // 1 stack item: the caught exception
       emitVerifierTypeBc(VObject(className = frameEx[fi2]), pool, smBuf)
     } else {
-      writerU2(smBuf, 0)                  // empty stack
+      writerU2(smBuf, 0)
+      // empty stack
     }
     smCount = smCount + 1
     prevOffset = off
@@ -1038,14 +1450,15 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
   writerU2(codeW, actualMaxLocals)
   writerU4(codeW, ar.codeBytes.count)
   writerByteList(codeW, ar.codeBytes)
-  writerU2(codeW, tcStartLabels.count)   // exception_table_length
+  writerU2(codeW, tcStartLabels.count)
+  // exception_table_length
   var tci = 0
   while tci < tcStartLabels.count {
-    val spOff = match mapGet(ar.labelOffsets, tcStartLabels[tci]) { case Some(v) -> v case None -> 0 }
-    val epOff = match mapGet(ar.labelOffsets, tcEndLabels[tci])   { case Some(v) -> v case None -> 0 }
-    val hpOff = match mapGet(ar.labelOffsets, tcHandlerLabels[tci]) { case Some(v) -> v case None -> 0 }
-    val cc    = tcCatchClasses[tci]
-    val ct    = if cc == "" { 0 } else { poolClass(pool, cc) }
+    val spOff = match mapGet(ar.labelOffsets, tcStartLabels[tci]) { case Some(v) -> v; case None -> 0 }
+    val epOff = match mapGet(ar.labelOffsets, tcEndLabels[tci]) { case Some(v) -> v; case None -> 0 }
+    val hpOff = match mapGet(ar.labelOffsets, tcHandlerLabels[tci]) { case Some(v) -> v; case None -> 0 }
+    val cc = tcCatchClasses[tci]
+    val ct = if cc == "" { 0 } else { poolClass(pool, cc) }
     writerU2(codeW, spOff)
     writerU2(codeW, epOff)
     writerU2(codeW, hpOff)
@@ -1053,14 +1466,17 @@ func lowerFuncImpl(f: in LFunc, thisTypeName: in String, pool: in Pool): MethodI
     tci = tci + 1
   }
   if smCount > 0 {
-    writerU2(codeW, 1)             // attributes_count = 1
+    writerU2(codeW, 1)
+    // attributes_count = 1
     writerU2(codeW, poolUtf8(pool, "StackMapTable"))
     val smBytes = writerToList(smBuf)
-    writerU4(codeW, 2 + smBytes.count)  // length = u2(count) + frames
+    writerU4(codeW, 2 + smBytes.count)
+    // length = u2(count) + frames
     writerU2(codeW, smCount)
     writerByteList(codeW, smBytes)
   } else {
-    writerU2(codeW, 0)             // attributes_count = 0
+    writerU2(codeW, 0)
+    // attributes_count = 0
   }
 
   val codeAttr = attrFromWriter("Code", codeW)
@@ -1088,12 +1504,7 @@ pub func lowerRecord(r: in LRecord, pool: in Pool): ClassFile {
   // aload_0; invokespecial java/lang/Object.<init>:()V
   lowerInsn(LAload(slot = 0), ctorAsm)
   val objInitPs: List[JvmType] = newList()
-  lowerInsn(LInvokespecial(
-    owner  = "java/lang/Object",
-    name   = "<init>",
-    params = objInitPs,
-    ret    = JVoid
-  ), ctorAsm)
+  lowerInsn(LInvokespecial(owner = "java/lang/Object", name = "<init>", params = objInitPs, ret = JVoid), ctorAsm)
 
   // For each field: aload_0; load param at slot; putfield
   var slot = 1
@@ -1113,9 +1524,7 @@ pub func lowerRecord(r: in LRecord, pool: in Pool): ClassFile {
   for fld in r.fields.toArray() {
     ctorParams.add(fld.fieldType)
   }
-  val ctorMethod = makeMethodInfo(
-    ACC_PUBLIC, "<init>", buildDescriptor(ctorParams, JVoid), ctorAttrs
-  )
+  val ctorMethod = makeMethodInfo(ACC_PUBLIC, "<init>", buildDescriptor(ctorParams, JVoid), ctorAttrs)
   methods.add(ctorMethod)
 
   // ── Emit explicit methods ──────────────────────────────────────────────────
@@ -1127,9 +1536,7 @@ pub func lowerRecord(r: in LRecord, pool: in Pool): ClassFile {
   val cfFields: List[FieldInfo] = newList()
   for fld in r.fields.toArray() {
     val fa: List[Attribute] = newList()
-    cfFields.add(makeFieldInfo(
-      ACC_PUBLIC, fld.name, typeDescriptor(fld.fieldType), fa
-    ))
+    cfFields.add(makeFieldInfo(ACC_PUBLIC, fld.name, typeDescriptor(fld.fieldType), fa))
   }
 
   if r.implementsIfaces.count > 0 {
@@ -1154,38 +1561,41 @@ pub func lowerRecord(r: in LRecord, pool: in Pool): ClassFile {
 //   stop — no explicit return instruction.  For void entries, the stack is
 //   left empty.  `lowerEntry` prepends lock acquisition, appends lock
 //   release, saves/restores the return value, and emits the return opcode.
-
 pub record LProtected {
   className: String
-  fields:    List[LField]   // non-lock data fields (will be emitted as private)
-  entries:   List[LFunc]    // each insns list pushes the result; no return insn
+  fields: List[LField]
+  // non-lock data fields (will be emitted as private)
+  entries: List[LFunc]
+  // each insns list pushes the result; no return insn
 }
 
 pub record LWireBinding {
-  name:    String
+  name: String
   valType: JvmType
-  insns:   List[LInsn]      // push the constructed value; no return insn
+  insns: List[LInsn]
+  // push the constructed value; no return insn
 }
 
 pub record LWire {
   className: String
-  bindings:  List[LWireBinding]
-  exposes:   List[String]   // binding names to expose as public static accessors
+  bindings: List[LWireBinding]
+  exposes: List[String]
+  // binding names to expose as public static accessors
+  // Store a value of type `t` to local slot `slot`.
 }
 
-// Store a value of type `t` to local slot `slot`.
 func storeInsn(t: in JvmType, slot: in Int): LInsn {
   match t {
-    case JLong    -> LLstore(slot = slot)
-    case JDouble  -> LDstore(slot = slot)
+    case JLong -> LLstore(slot = slot)
+    case JDouble -> LDstore(slot = slot)
     case JBoolean -> LIstore(slot = slot)
-    case JByte    -> LIstore(slot = slot)
-    case JChar    -> LIstore(slot = slot)
-    case JShort   -> LIstore(slot = slot)
-    case JInt     -> LIstore(slot = slot)
-    case JFloat   -> LFstore(slot = slot)
-    case JVoid    -> LNop
-    case JRef(_)  -> LAstore(slot = slot)
+    case JByte -> LIstore(slot = slot)
+    case JChar -> LIstore(slot = slot)
+    case JShort -> LIstore(slot = slot)
+    case JInt -> LIstore(slot = slot)
+    case JFloat -> LFstore(slot = slot)
+    case JVoid -> LNop
+    case JRef(_) -> LAstore(slot = slot)
     case JArray(_) -> LAstore(slot = slot)
   }
 }
@@ -1193,16 +1603,16 @@ func storeInsn(t: in JvmType, slot: in Int): LInsn {
 // Load a value of type `t` from local slot `slot`.
 func loadInsn(t: in JvmType, slot: in Int): LInsn {
   match t {
-    case JLong    -> LLload(slot = slot)
-    case JDouble  -> LDload(slot = slot)
+    case JLong -> LLload(slot = slot)
+    case JDouble -> LDload(slot = slot)
     case JBoolean -> LIload(slot = slot)
-    case JByte    -> LIload(slot = slot)
-    case JChar    -> LIload(slot = slot)
-    case JShort   -> LIload(slot = slot)
-    case JInt     -> LIload(slot = slot)
-    case JFloat   -> LFload(slot = slot)
-    case JVoid    -> LNop
-    case JRef(_)  -> LAload(slot = slot)
+    case JByte -> LIload(slot = slot)
+    case JChar -> LIload(slot = slot)
+    case JShort -> LIload(slot = slot)
+    case JInt -> LIload(slot = slot)
+    case JFloat -> LFload(slot = slot)
+    case JVoid -> LNop
+    case JRef(_) -> LAload(slot = slot)
     case JArray(_) -> LAload(slot = slot)
   }
 }
@@ -1210,16 +1620,16 @@ func loadInsn(t: in JvmType, slot: in Int): LInsn {
 // Return instruction appropriate for return type `t`.
 func returnInsn(t: in JvmType): LInsn {
   match t {
-    case JLong    -> LLreturn
-    case JDouble  -> LDreturn
+    case JLong -> LLreturn
+    case JDouble -> LDreturn
     case JBoolean -> LIreturn
-    case JByte    -> LIreturn
-    case JChar    -> LIreturn
-    case JShort   -> LIreturn
-    case JInt     -> LIreturn
-    case JFloat   -> LFreturn
-    case JVoid    -> LReturn
-    case JRef(_)  -> LAreturn
+    case JByte -> LIreturn
+    case JChar -> LIreturn
+    case JShort -> LIreturn
+    case JInt -> LIreturn
+    case JFloat -> LFreturn
+    case JVoid -> LReturn
+    case JRef(_) -> LAreturn
     case JArray(_) -> LAreturn
   }
 }
@@ -1250,12 +1660,9 @@ func lowerEntry(ef: in LFunc, className: in String, pool: in Pool): MethodInfo {
   // Acquire: aload_0; getfield _lock; invokevirtual lock()
   wInsns.add(LAload(slot = 0))
   wInsns.add(LGetfield(owner = className, name = "_lock", t = lockType))
-  wInsns.add(LInvokevirtual(
-    owner  = "java/util/concurrent/locks/ReentrantLock",
-    name   = "lock",
-    params = lockPs,
-    ret    = JVoid
-  ))
+  wInsns.add(
+    LInvokevirtual(owner = "java/util/concurrent/locks/ReentrantLock", name = "lock", params = lockPs, ret = JVoid)
+  )
 
   // Body (pushes return value or leaves stack empty for void)
   var bi = 0
@@ -1273,12 +1680,9 @@ func lowerEntry(ef: in LFunc, className: in String, pool: in Pool): MethodInfo {
   // Release: aload_0; getfield _lock; invokevirtual unlock()
   wInsns.add(LAload(slot = 0))
   wInsns.add(LGetfield(owner = className, name = "_lock", t = lockType))
-  wInsns.add(LInvokevirtual(
-    owner  = "java/util/concurrent/locks/ReentrantLock",
-    name   = "unlock",
-    params = lockPs,
-    ret    = JVoid
-  ))
+  wInsns.add(
+    LInvokevirtual(owner = "java/util/concurrent/locks/ReentrantLock", name = "unlock", params = lockPs, ret = JVoid)
+  )
 
   // Reload result and return
   if fieldSlotSize(ef.ret) > 0 {
@@ -1287,12 +1691,13 @@ func lowerEntry(ef: in LFunc, className: in String, pool: in Pool): MethodInfo {
   wInsns.add(returnInsn(ef.ret))
 
   val wFunc = LFunc(
-    flags     = ef.flags,
-    name      = ef.name,
-    params    = ef.params,
-    ret       = ef.ret,
-    insns     = wInsns,
-    maxStack  = ef.maxStack + 2,   // +2 headroom for lock acquire/release
+    flags = ef.flags,
+    name = ef.name,
+    params = ef.params,
+    ret = ef.ret,
+    insns = wInsns,
+    maxStack = ef.maxStack + 2,
+    // +2 headroom for lock acquire/release
     maxLocals = ef.maxLocals + fieldSlotSize(ef.ret)
   )
   lowerFuncForClass(wFunc, className, pool)
@@ -1317,42 +1722,44 @@ pub func lowerProtected(p: in LProtected, pool: in Pool): ClassFile {
   val ctorAsm = newAssembler(pool)
   lowerInsn(LAload(slot = 0), ctorAsm)
   val objPs: List[JvmType] = newList()
-  lowerInsn(LInvokespecial(
-    owner = "java/lang/Object", name = "<init>", params = objPs, ret = JVoid
-  ), ctorAsm)
+  lowerInsn(LInvokespecial(owner = "java/lang/Object", name = "<init>", params = objPs, ret = JVoid), ctorAsm)
 
   // aload_0; new RL; dup; invokespecial RL.<init>; putfield _lock
   lowerInsn(LAload(slot = 0), ctorAsm)
   lowerInsn(LNew(className = "java/util/concurrent/locks/ReentrantLock"), ctorAsm)
   lowerInsn(LDup, ctorAsm)
   val rlPs: List[JvmType] = newList()
-  lowerInsn(LInvokespecial(
-    owner  = "java/util/concurrent/locks/ReentrantLock",
-    name   = "<init>",
-    params = rlPs,
-    ret    = JVoid
-  ), ctorAsm)
+  lowerInsn(
+    LInvokespecial(owner = "java/util/concurrent/locks/ReentrantLock", name = "<init>", params = rlPs, ret = JVoid),
+    ctorAsm
+  )
   lowerInsn(LPutfield(owner = p.className, name = "_lock", t = lockType), ctorAsm)
 
   // Zero-initialise each data field
   for fld in p.fields.toArray() {
     lowerInsn(LAload(slot = 0), ctorAsm)
     match fld.fieldType {
-      case JInt     -> lowerInsn(LIconst(v = 0), ctorAsm)
+      case JInt -> lowerInsn(LIconst(v = 0), ctorAsm)
       case JBoolean -> lowerInsn(LIconst(v = 0), ctorAsm)
-      case JByte    -> lowerInsn(LIconst(v = 0), ctorAsm)
-      case JChar    -> lowerInsn(LIconst(v = 0), ctorAsm)
-      case JShort   -> lowerInsn(LIconst(v = 0), ctorAsm)
-      case JFloat   -> lowerInsn(LFconst(v = 0.0), ctorAsm)
-      case JLong    -> { lowerInsn(LIconst(v = 0), ctorAsm); lowerInsn(LI2l, ctorAsm) }
-      case JDouble  -> { lowerInsn(LIconst(v = 0), ctorAsm); lowerInsn(LI2d, ctorAsm) }
-      case JVoid    -> ()
-      case JRef(_)  -> lowerInsn(LAconstNull, ctorAsm)
+      case JByte -> lowerInsn(LIconst(v = 0), ctorAsm)
+      case JChar -> lowerInsn(LIconst(v = 0), ctorAsm)
+      case JShort -> lowerInsn(LIconst(v = 0), ctorAsm)
+      case JFloat -> lowerInsn(LFconst(v = 0.0), ctorAsm)
+      case JLong -> {
+        lowerInsn(LIconst(v = 0), ctorAsm)
+        lowerInsn(LI2l, ctorAsm)
+      }
+      case JDouble -> {
+        lowerInsn(LIconst(v = 0), ctorAsm)
+        lowerInsn(LI2d, ctorAsm)
+      }
+      case JVoid -> ()
+      case JRef(_) -> lowerInsn(LAconstNull, ctorAsm)
       case JArray(_) -> lowerInsn(LAconstNull, ctorAsm)
     }
     match fld.fieldType {
       case JVoid -> ()
-      case _     -> lowerInsn(LPutfield(owner = p.className, name = fld.name, t = fld.fieldType), ctorAsm)
+      case _ -> lowerInsn(LPutfield(owner = p.className, name = fld.name, t = fld.fieldType), ctorAsm)
     }
   }
 
@@ -1363,9 +1770,7 @@ pub func lowerProtected(p: in LProtected, pool: in Pool): ClassFile {
   val ctorAttrs: List[Attribute] = newList()
   ctorAttrs.add(ctorCode)
   val ctorParamsEmpty: List[JvmType] = newList()
-  val ctorMethod = makeMethodInfo(
-    ACC_PUBLIC, "<init>", buildDescriptor(ctorParamsEmpty, JVoid), ctorAttrs
-  )
+  val ctorMethod = makeMethodInfo(ACC_PUBLIC, "<init>", buildDescriptor(ctorParamsEmpty, JVoid), ctorAttrs)
   methods.add(ctorMethod)
 
   // Entry methods (wrapped with lock acquire / release)
@@ -1383,26 +1788,20 @@ pub func lowerWire(w: in LWire, pool: in Pool): ClassFile {
   // Static fields (private static), one per binding
   for b in w.bindings.toArray() {
     val fa: List[Attribute] = newList()
-    cfFields.add(makeFieldInfo(
-      ACC_PRIVATE + ACC_STATIC, b.name, typeDescriptor(b.valType), fa
-    ))
+    cfFields.add(makeFieldInfo(ACC_PRIVATE + ACC_STATIC, b.name, typeDescriptor(b.valType), fa))
   }
 
   // Private constructor (prevents external instantiation)
   val ctorAsm = newAssembler(pool)
   lowerInsn(LAload(slot = 0), ctorAsm)
   val objPs: List[JvmType] = newList()
-  lowerInsn(LInvokespecial(
-    owner = "java/lang/Object", name = "<init>", params = objPs, ret = JVoid
-  ), ctorAsm)
+  lowerInsn(LInvokespecial(owner = "java/lang/Object", name = "<init>", params = objPs, ret = JVoid), ctorAsm)
   lowerInsn(LReturn, ctorAsm)
   val ctorCode = assembleCode(ctorAsm, 1, 1)
   val ctorAttrs: List[Attribute] = newList()
   ctorAttrs.add(ctorCode)
   val ctorParamsEmpty: List[JvmType] = newList()
-  val ctorMethod = makeMethodInfo(
-    ACC_PRIVATE, "<init>", buildDescriptor(ctorParamsEmpty, JVoid), ctorAttrs
-  )
+  val ctorMethod = makeMethodInfo(ACC_PRIVATE, "<init>", buildDescriptor(ctorParamsEmpty, JVoid), ctorAttrs)
   methods.add(ctorMethod)
 
   // bootstrap()V — run each binding's insns and store to the static field
@@ -1418,12 +1817,7 @@ pub func lowerWire(w: in LWire, pool: in Pool): ClassFile {
   val bsAttrs: List[Attribute] = newList()
   bsAttrs.add(bsCode)
   val bsParamsEmpty: List[JvmType] = newList()
-  val bsMethod = makeMethodInfo(
-    ACC_PUBLIC + ACC_STATIC,
-    "bootstrap",
-    buildDescriptor(bsParamsEmpty, JVoid),
-    bsAttrs
-  )
+  val bsMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "bootstrap", buildDescriptor(bsParamsEmpty, JVoid), bsAttrs)
   methods.add(bsMethod)
 
   // Public static accessor for each exposed binding: getstatic + return
@@ -1436,12 +1830,7 @@ pub func lowerWire(w: in LWire, pool: in Pool): ClassFile {
       val accAttrs: List[Attribute] = newList()
       accAttrs.add(accCode)
       val accParamsEmpty: List[JvmType] = newList()
-      val accMethod = makeMethodInfo(
-        ACC_PUBLIC + ACC_STATIC,
-        b.name,
-        buildDescriptor(accParamsEmpty, b.valType),
-        accAttrs
-      )
+      val accMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, b.name, buildDescriptor(accParamsEmpty, b.valType), accAttrs)
       methods.add(accMethod)
     }
   }
@@ -1458,16 +1847,19 @@ pub func lowerWire(w: in LWire, pool: in Pool): ClassFile {
 //
 // Pattern matching is performed at the call site using `instanceof` checks
 // and `checkcast` to the specific case class.
-
 pub record LUnionCase {
-  caseName:   String         // simple case name (e.g. "Some")
-  fields:     List[LField]   // case payload fields
+  caseName: String
+  // simple case name (e.g. "Some")
+  fields: List[LField]
+  // case payload fields
 }
 
 pub record LUnion {
-  baseName:   String           // JVM internal binary name (e.g. "Option")
-  cases:      List[LUnionCase]
-  methods:    List[LFunc]      // methods on the base class
+  baseName: String
+  // JVM internal binary name (e.g. "Option")
+  cases: List[LUnionCase]
+  methods: List[LFunc]
+  // methods on the base class
 }
 
 /// Returns the JVM internal name for a case class:
@@ -1484,21 +1876,14 @@ func lowerCase(baseName: in String, c: in LUnionCase, pool: in Pool): ClassFile 
   val cfFields: List[FieldInfo] = newList()
   for fld in c.fields.toArray() {
     val fa: List[Attribute] = newList()
-    cfFields.add(makeFieldInfo(
-      ACC_PUBLIC, fld.name, typeDescriptor(fld.fieldType), fa
-    ))
+    cfFields.add(makeFieldInfo(ACC_PUBLIC, fld.name, typeDescriptor(fld.fieldType), fa))
   }
 
   // Synthesise <init>(field…)V — same logic as lowerRecord but super is baseName
   val ctorAsm = newAssembler(pool)
   lowerInsn(LAload(slot = 0), ctorAsm)
   val superPs: List[JvmType] = newList()
-  lowerInsn(LInvokespecial(
-    owner  = baseName,
-    name   = "<init>",
-    params = superPs,
-    ret    = JVoid
-  ), ctorAsm)
+  lowerInsn(LInvokespecial(owner = baseName, name = "<init>", params = superPs, ret = JVoid), ctorAsm)
 
   var slot = 1
   for fld in c.fields.toArray() {
@@ -1516,9 +1901,7 @@ func lowerCase(baseName: in String, c: in LUnionCase, pool: in Pool): ClassFile 
   for fld in c.fields.toArray() {
     ctorParams.add(fld.fieldType)
   }
-  val ctorMethod = makeMethodInfo(
-    ACC_PUBLIC, "<init>", buildDescriptor(ctorParams, JVoid), ctorAttrs
-  )
+  val ctorMethod = makeMethodInfo(ACC_PUBLIC, "<init>", buildDescriptor(ctorParams, JVoid), ctorAttrs)
 
   val methods: List[MethodInfo] = newList()
   methods.add(ctorMethod)
@@ -1538,21 +1921,14 @@ pub func lowerUnion(u: in LUnion, pool: in Pool): List[ClassFile] {
   val baseCtorAsm = newAssembler(pool)
   lowerInsn(LAload(slot = 0), baseCtorAsm)
   val objPs: List[JvmType] = newList()
-  lowerInsn(LInvokespecial(
-    owner  = "java/lang/Object",
-    name   = "<init>",
-    params = objPs,
-    ret    = JVoid
-  ), baseCtorAsm)
+  lowerInsn(LInvokespecial(owner = "java/lang/Object", name = "<init>", params = objPs, ret = JVoid), baseCtorAsm)
   lowerInsn(LReturn, baseCtorAsm)
 
   val baseCtorCode = assembleCode(baseCtorAsm, 1, 1)
   val baseCtorAttrs: List[Attribute] = newList()
   baseCtorAttrs.add(baseCtorCode)
   val baseCtorPs: List[JvmType] = newList()
-  val baseCtor = makeMethodInfo(
-    ACC_PUBLIC, "<init>", buildDescriptor(baseCtorPs, JVoid), baseCtorAttrs
-  )
+  val baseCtor = makeMethodInfo(ACC_PUBLIC, "<init>", buildDescriptor(baseCtorPs, JVoid), baseCtorAttrs)
   baseMethods.add(baseCtor)
 
   for fn in u.methods.toArray() {
@@ -1571,12 +1947,11 @@ pub func lowerUnion(u: in LUnion, pool: in Pool): List[ClassFile] {
 }
 
 // ── Union match dispatch ──────────────────────────────────────────────────────
-
 pub record LMatchArm {
   caseClass: String
-  boundSlot:  Int
-  skipLabel:  String
-  bodyInsns:  List[LInsn]
+  boundSlot: Int
+  skipLabel: String
+  bodyInsns: List[LInsn]
 }
 
 func lowerBodyInsns(asm: in MethodAssembler, insns: in List[LInsn]): Unit {
@@ -1591,10 +1966,7 @@ func lowerBodyInsns(asm: in MethodAssembler, insns: in List[LInsn]): Unit {
 // For each arm: test instanceof caseClass; if false jump to skipLabel;
 // checkcast caseClass into boundSlot; run bodyInsns; goto endLabel.
 pub func lowerMatchUnion(
-  asm:       in MethodAssembler,
-  scrutSlot: in Int,
-  arms:      in List[LMatchArm],
-  endLabel:  in String
+  asm: in MethodAssembler, scrutSlot: in Int, arms: in List[LMatchArm], endLabel: in String
 ): Unit {
   var i = 0
   while i < arms.count {
@@ -1613,24 +1985,23 @@ pub func lowerMatchUnion(
 }
 
 // ── Int match dispatch ────────────────────────────────────────────────────────
-
 pub record LIntArm {
-  key:       Int
+  key: Int
   caseLabel: String
   bodyInsns: List[LInsn]
+  // Emit a lookupswitch dispatch over integer cases.  Each arm is emitted as:
+  //   caseLabel: [bodyInsns] goto endLabel
+  // The default case follows all arms:
+  //   defaultLabel: [defaultInsns] goto endLabel
 }
 
-// Emit a lookupswitch dispatch over integer cases.  Each arm is emitted as:
-//   caseLabel: [bodyInsns] goto endLabel
-// The default case follows all arms:
-//   defaultLabel: [defaultInsns] goto endLabel
 pub func lowerMatchInt(
-  asm:          in MethodAssembler,
-  scrutSlot:    in Int,
-  arms:         in List[LIntArm],
+  asm: in MethodAssembler,
+  scrutSlot: in Int,
+  arms: in List[LIntArm],
   defaultLabel: in String,
   defaultInsns: in List[LInsn],
-  endLabel:     in String
+  endLabel: in String,
 ): Unit {
   val pairs: List[SwitchPair] = newList()
   var i = 0
@@ -1653,23 +2024,22 @@ pub func lowerMatchInt(
 }
 
 // ── String match dispatch ─────────────────────────────────────────────────────
-
 pub record LStrArm {
-  key:       String
+  key: String
   skipLabel: String
   bodyInsns: List[LInsn]
+  // Emit a linear equals-chain dispatch over string cases.
+  // For each arm: aload scrutSlot; ldc key; invokevirtual equals; ifeq skipLabel;
+  //   [bodyInsns] goto endLabel; skipLabel:
+  // Followed by [defaultInsns] goto endLabel.
 }
 
-// Emit a linear equals-chain dispatch over string cases.
-// For each arm: aload scrutSlot; ldc key; invokevirtual equals; ifeq skipLabel;
-//   [bodyInsns] goto endLabel; skipLabel:
-// Followed by [defaultInsns] goto endLabel.
 pub func lowerMatchStr(
-  asm:          in MethodAssembler,
-  scrutSlot:    in Int,
-  arms:         in List[LStrArm],
+  asm: in MethodAssembler,
+  scrutSlot: in Int,
+  arms: in List[LStrArm],
   defaultInsns: in List[LInsn],
-  endLabel:     in String
+  endLabel: in String,
 ): Unit {
   val eqIdx = poolMethodref(asm.pool, "java/lang/String", "equals", "(Ljava/lang/Object;)Z")
   var i = 0
@@ -1689,7 +2059,6 @@ pub func lowerMatchStr(
 }
 
 // ── Closure / inner-class lowering ────────────────────────────────────────────
-
 pub record LClosureCapture {
   captureName: String
   captureType: JvmType
@@ -1697,12 +2066,12 @@ pub record LClosureCapture {
 
 pub record LClosure {
   closureClass: String
-  ifaceClass:   String
-  ifaceMethod:  String
-  captures:     List[LClosureCapture]
+  ifaceClass: String
+  ifaceMethod: String
+  captures: List[LClosureCapture]
   methodParams: List[JvmType]
-  methodRet:    JvmType
-  bodyInsns:    List[LInsn]
+  methodRet: JvmType
+  bodyInsns: List[LInsn]
 }
 
 func lowerClosureCaptures(captures: in List[LClosureCapture], pool: in Pool): List[FieldInfo] {
@@ -1730,17 +2099,47 @@ func lowerClosureCtor(c: in LClosure, pool: in Pool): MethodInfo {
     val fIdx = poolFieldref(pool, c.closureClass, cap.captureName, capDesc)
     emitAload(asm, 0)
     match cap.captureType {
-      case JInt     -> { emitIload(asm, slot); slot = slot + 1 }
-      case JLong    -> { emitLload(asm, slot); slot = slot + 2 }
-      case JFloat   -> { emitFload(asm, slot); slot = slot + 1 }
-      case JDouble  -> { emitDload(asm, slot); slot = slot + 2 }
-      case JBoolean -> { emitIload(asm, slot); slot = slot + 1 }
-      case JByte    -> { emitIload(asm, slot); slot = slot + 1 }
-      case JChar    -> { emitIload(asm, slot); slot = slot + 1 }
-      case JShort   -> { emitIload(asm, slot); slot = slot + 1 }
-      case JVoid    -> ()
-      case JRef(_)   -> { emitAload(asm, slot); slot = slot + 1 }
-      case JArray(_) -> { emitAload(asm, slot); slot = slot + 1 }
+      case JInt -> {
+        emitIload(asm, slot)
+        slot = slot + 1
+      }
+      case JLong -> {
+        emitLload(asm, slot)
+        slot = slot + 2
+      }
+      case JFloat -> {
+        emitFload(asm, slot)
+        slot = slot + 1
+      }
+      case JDouble -> {
+        emitDload(asm, slot)
+        slot = slot + 2
+      }
+      case JBoolean -> {
+        emitIload(asm, slot)
+        slot = slot + 1
+      }
+      case JByte -> {
+        emitIload(asm, slot)
+        slot = slot + 1
+      }
+      case JChar -> {
+        emitIload(asm, slot)
+        slot = slot + 1
+      }
+      case JShort -> {
+        emitIload(asm, slot)
+        slot = slot + 1
+      }
+      case JVoid -> ()
+      case JRef(_) -> {
+        emitAload(asm, slot)
+        slot = slot + 1
+      }
+      case JArray(_) -> {
+        emitAload(asm, slot)
+        slot = slot + 1
+      }
     }
     emitPutfield(asm, fIdx)
     i = i + 1
@@ -1770,9 +2169,9 @@ func lowerClosureMethod(c: in LClosure, pool: in Pool): MethodInfo {
 }
 
 pub func lowerClosure(c: in LClosure, pool: in Pool): ClassFile {
-  val fields  = lowerClosureCaptures(c.captures, pool)
-  val ctor    = lowerClosureCtor(c, pool)
-  val method  = lowerClosureMethod(c, pool)
+  val fields = lowerClosureCaptures(c.captures, pool)
+  val ctor = lowerClosureCtor(c, pool)
+  val method = lowerClosureMethod(c, pool)
   val methods: List[MethodInfo] = newList()
   methods.add(ctor)
   methods.add(method)
@@ -1782,11 +2181,14 @@ pub func lowerClosure(c: in LClosure, pool: in Pool): ClassFile {
 }
 
 // ── Virtual-thread async helpers ──────────────────────────────────────────────
-
 // Emits Thread.startVirtualThread(runnable) — pops Runnable, pushes Thread.
 pub func lowerSpawnVirtualThread(asm: in MethodAssembler): Unit {
-  val idx = poolMethodref(asm.pool, "java/lang/Thread", "startVirtualThread",
-    "(Ljava/lang/Runnable;)Ljava/lang/Thread;")
+  val idx = poolMethodref(
+    asm.pool,
+    "java/lang/Thread",
+    "startVirtualThread",
+    "(Ljava/lang/Runnable;)Ljava/lang/Thread;"
+  )
   emitInvokestatic(asm, idx)
   trackStack(asm, 0)
 }
@@ -1804,37 +2206,36 @@ pub func lowerThreadJoin(asm: in MethodAssembler): Unit {
 // single private final field `$value` of the underlying JVM type, a public
 // canonical constructor, and a public `$value()` accessor.
 // This is the bootstrap approximation of §6.2 (Java record shape deferred).
-
 pub record LDistinctType {
-  wrapperClass:   String
+  wrapperClass: String
   underlyingType: JvmType
 }
 
 pub func lowerDistinctType(d: in LDistinctType, pool: in Pool): ClassFile {
   val valueDesc = typeDescriptor(d.underlyingType)
-  val fieldIdx  = poolFieldref(pool, d.wrapperClass, "$value", valueDesc)
+  val fieldIdx = poolFieldref(pool, d.wrapperClass, "$value", valueDesc)
 
   // private final <underlying> $value
   val fAttrs: List[Attribute] = newList()
   val valueField = makeFieldInfo(ACC_PRIVATE + ACC_FINAL, "$value", valueDesc, fAttrs)
 
   // public <init>(<underlying>)V
-  val ctorAsm    = newAssembler(pool)
+  val ctorAsm = newAssembler(pool)
   val objCtorIdx = poolMethodref(pool, "java/lang/Object", "<init>", "()V")
   emitAload(ctorAsm, 0)
   emitInvokespecial(ctorAsm, objCtorIdx)
   emitAload(ctorAsm, 0)
   match d.underlyingType {
-    case JLong    -> emitLload(ctorAsm, 1)
-    case JDouble  -> emitDload(ctorAsm, 1)
-    case JFloat   -> emitFload(ctorAsm, 1)
+    case JLong -> emitLload(ctorAsm, 1)
+    case JDouble -> emitDload(ctorAsm, 1)
+    case JFloat -> emitFload(ctorAsm, 1)
     case JBoolean -> emitIload(ctorAsm, 1)
-    case JByte    -> emitIload(ctorAsm, 1)
-    case JChar    -> emitIload(ctorAsm, 1)
-    case JShort   -> emitIload(ctorAsm, 1)
-    case JInt     -> emitIload(ctorAsm, 1)
-    case JVoid    -> ()
-    case JRef(_)  -> emitAload(ctorAsm, 1)
+    case JByte -> emitIload(ctorAsm, 1)
+    case JChar -> emitIload(ctorAsm, 1)
+    case JShort -> emitIload(ctorAsm, 1)
+    case JInt -> emitIload(ctorAsm, 1)
+    case JVoid -> ()
+    case JRef(_) -> emitAload(ctorAsm, 1)
     case JArray(_) -> emitAload(ctorAsm, 1)
   }
   emitPutfield(ctorAsm, fieldIdx)
@@ -1852,16 +2253,16 @@ pub func lowerDistinctType(d: in LDistinctType, pool: in Pool): ClassFile {
   emitAload(accAsm, 0)
   emitGetfield(accAsm, fieldIdx)
   match d.underlyingType {
-    case JLong    -> emitLreturn(accAsm)
-    case JDouble  -> emitDreturn(accAsm)
-    case JFloat   -> emitFreturn(accAsm)
+    case JLong -> emitLreturn(accAsm)
+    case JDouble -> emitDreturn(accAsm)
+    case JFloat -> emitFreturn(accAsm)
     case JBoolean -> emitIreturn(accAsm)
-    case JByte    -> emitIreturn(accAsm)
-    case JChar    -> emitIreturn(accAsm)
-    case JShort   -> emitIreturn(accAsm)
-    case JInt     -> emitIreturn(accAsm)
-    case JVoid    -> ()
-    case JRef(_)  -> emitAreturn(accAsm)
+    case JByte -> emitIreturn(accAsm)
+    case JChar -> emitIreturn(accAsm)
+    case JShort -> emitIreturn(accAsm)
+    case JInt -> emitIreturn(accAsm)
+    case JVoid -> ()
+    case JRef(_) -> emitAreturn(accAsm)
     case JArray(_) -> emitAreturn(accAsm)
   }
   val accCode = assembleCode(accAsm, fieldSlotSize(d.underlyingType), 1)
@@ -1879,13 +2280,13 @@ pub func lowerDistinctType(d: in LDistinctType, pool: in Pool): ClassFile {
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags        = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
-    thisClass    = d.wrapperClass,
-    superClass   = "java/lang/Object",
-    interfaces   = newList(),
-    fields       = fields,
-    methods      = methods,
-    attrs        = newList()
+    flags = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
+    thisClass = d.wrapperClass,
+    superClass = "java/lang/Object",
+    interfaces = newList(),
+    fields = fields,
+    methods = methods,
+    attrs = newList()
   )
 }
 
@@ -1897,19 +2298,18 @@ pub func lowerDistinctType(d: in LDistinctType, pool: in Pool): ClassFile {
 // value is outside [lo, hi].  Uses V49 (Java 5) to avoid StackMapTable
 // complexity at the two branch merge points.
 // Only JInt and JLong underlying types are supported.
-
 pub record LRangeType {
-  wrapperClass:   String
+  wrapperClass: String
   underlyingType: JvmType
-  lo:             Int
-  hi:             Int
+  lo: Int
+  hi: Int
 }
 
 pub func lowerRangeType(r: in LRangeType, pool: in Pool): ClassFile {
   val valueDesc = typeDescriptor(r.underlyingType)
-  val fieldIdx  = poolFieldref(pool, r.wrapperClass, "$value", valueDesc)
-  val iaeClass  = "java/lang/IllegalArgumentException"
-  val iaeIdx    = poolClass(pool, iaeClass)
+  val fieldIdx = poolFieldref(pool, r.wrapperClass, "$value", valueDesc)
+  val iaeClass = "java/lang/IllegalArgumentException"
+  val iaeIdx = poolClass(pool, iaeClass)
   val iaeCtorIdx = poolMethodref(pool, iaeClass, "<init>", "(Ljava/lang/String;)V")
   val objCtorIdx = poolMethodref(pool, "java/lang/Object", "<init>", "()V")
 
@@ -1971,10 +2371,10 @@ pub func lowerRangeType(r: in LRangeType, pool: in Pool): ClassFile {
   emitAload(accAsm, 0)
   emitGetfield(accAsm, fieldIdx)
   match r.underlyingType {
-    case JLong   -> emitLreturn(accAsm)
+    case JLong -> emitLreturn(accAsm)
     case JDouble -> emitDreturn(accAsm)
-    case JFloat  -> emitFreturn(accAsm)
-    case _       -> emitIreturn(accAsm)
+    case JFloat -> emitFreturn(accAsm)
+    case _ -> emitIreturn(accAsm)
   }
   val accCode = assembleCode(accAsm, fieldSlotSize(r.underlyingType), 1)
   val accAttrs: List[Attribute] = newList()
@@ -1991,13 +2391,13 @@ pub func lowerRangeType(r: in LRangeType, pool: in Pool): ClassFile {
   ClassFile(
     minorVersion = 0,
     majorVersion = 49,
-    flags        = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
-    thisClass    = r.wrapperClass,
-    superClass   = "java/lang/Object",
-    interfaces   = newList(),
-    fields       = fields,
-    methods      = methods,
-    attrs        = newList()
+    flags = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
+    thisClass = r.wrapperClass,
+    superClass = "java/lang/Object",
+    interfaces = newList(),
+    fields = fields,
+    methods = methods,
+    attrs = newList()
   )
 }
 
@@ -2007,11 +2407,10 @@ pub func lowerRangeType(r: in LRangeType, pool: in Pool): ClassFile {
 // ClassFile.  Abstract method headers are emitted with ACC_ABSTRACT; default
 // method bodies (from IMFunc) are emitted as concrete MethodInfos via the
 // pre-resolved LFunc list.
-
 pub record LInterface {
-  className:       String
+  className: String
   abstractMethods: List[MethodInfo]
-  concreteFuncs:   List[LFunc]
+  concreteFuncs: List[LFunc]
 }
 
 pub func lowerInterface(i: in LInterface, pool: in Pool): ClassFile {
@@ -2038,18 +2437,17 @@ pub func lowerInterface(i: in LInterface, pool: in Pool): ClassFile {
 //   • Bootstrap-grade: each field also gets a public `$<name>()T` accessor so
 //     the self-test can verify field values without JVM reflection.
 //     Full opacity (no accessors) is a Phase-6 deliverable.
-
 pub record LOpaqueField {
-  name:      String
+  name: String
   fieldType: JvmType
 }
 
 pub record LOpaqueType {
   className: String
-  fields:    List[LOpaqueField]
+  fields: List[LOpaqueField]
+  // Package-private constructor: aload_0 → Object.<init>() → for each field: aload_0, load param, putfield → return.
 }
 
-// Package-private constructor: aload_0 → Object.<init>() → for each field: aload_0, load param, putfield → return.
 func lowerOpaqueCtor(o: in LOpaqueType, pool: in Pool): MethodInfo {
   val asm = newAssembler(pool)
   val objCtorIdx = poolMethodref(pool, "java/lang/Object", "<init>", "()V")
@@ -2064,23 +2462,54 @@ func lowerOpaqueCtor(o: in LOpaqueType, pool: in Pool): MethodInfo {
     val fIdx = poolFieldref(pool, o.className, mangledName, desc)
     emitAload(asm, 0)
     match f.fieldType {
-      case JInt     -> { emitIload(asm, slot); slot = slot + 1 }
-      case JLong    -> { emitLload(asm, slot); slot = slot + 2 }
-      case JFloat   -> { emitFload(asm, slot); slot = slot + 1 }
-      case JDouble  -> { emitDload(asm, slot); slot = slot + 2 }
-      case JBoolean -> { emitIload(asm, slot); slot = slot + 1 }
-      case JByte    -> { emitIload(asm, slot); slot = slot + 1 }
-      case JChar    -> { emitIload(asm, slot); slot = slot + 1 }
-      case JShort   -> { emitIload(asm, slot); slot = slot + 1 }
-      case JVoid    -> ()
-      case JRef(_)   -> { emitAload(asm, slot); slot = slot + 1 }
-      case JArray(_) -> { emitAload(asm, slot); slot = slot + 1 }
+      case JInt -> {
+        emitIload(asm, slot)
+        slot = slot + 1
+      }
+      case JLong -> {
+        emitLload(asm, slot)
+        slot = slot + 2
+      }
+      case JFloat -> {
+        emitFload(asm, slot)
+        slot = slot + 1
+      }
+      case JDouble -> {
+        emitDload(asm, slot)
+        slot = slot + 2
+      }
+      case JBoolean -> {
+        emitIload(asm, slot)
+        slot = slot + 1
+      }
+      case JByte -> {
+        emitIload(asm, slot)
+        slot = slot + 1
+      }
+      case JChar -> {
+        emitIload(asm, slot)
+        slot = slot + 1
+      }
+      case JShort -> {
+        emitIload(asm, slot)
+        slot = slot + 1
+      }
+      case JVoid -> ()
+      case JRef(_) -> {
+        emitAload(asm, slot)
+        slot = slot + 1
+      }
+      case JArray(_) -> {
+        emitAload(asm, slot)
+        slot = slot + 1
+      }
     }
     emitPutfield(asm, fIdx)
     i = i + 1
   }
   emitReturn(asm)
-  val maxL = slot  // this + all param slots
+  val maxL = slot
+  // this + all param slots
   val codeAttr = assembleCode(asm, 3, maxL)
   val attrs: List[Attribute] = newList()
   attrs.add(codeAttr)
@@ -2102,16 +2531,16 @@ func lowerOpaqueAcc(className: in String, f: in LOpaqueField, pool: in Pool): Me
   emitAload(asm, 0)
   emitGetfield(asm, fIdx)
   match f.fieldType {
-    case JLong    -> emitLreturn(asm)
-    case JDouble  -> emitDreturn(asm)
-    case JFloat   -> emitFreturn(asm)
+    case JLong -> emitLreturn(asm)
+    case JDouble -> emitDreturn(asm)
+    case JFloat -> emitFreturn(asm)
     case JBoolean -> emitIreturn(asm)
-    case JByte    -> emitIreturn(asm)
-    case JChar    -> emitIreturn(asm)
-    case JShort   -> emitIreturn(asm)
-    case JInt     -> emitIreturn(asm)
-    case JVoid    -> ()
-    case JRef(_)   -> emitAreturn(asm)
+    case JByte -> emitIreturn(asm)
+    case JChar -> emitIreturn(asm)
+    case JShort -> emitIreturn(asm)
+    case JInt -> emitIreturn(asm)
+    case JVoid -> ()
+    case JRef(_) -> emitAreturn(asm)
     case JArray(_) -> emitAreturn(asm)
   }
   val code = assembleCode(asm, fieldSlotSize(f.fieldType), 1)
@@ -2145,13 +2574,13 @@ pub func lowerOpaqueType(o: in LOpaqueType, pool: in Pool): ClassFile {
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags        = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
-    thisClass    = o.className,
-    superClass   = "java/lang/Object",
-    interfaces   = newList(),
-    fields       = fields,
-    methods      = allMethods,
-    attrs        = newList()
+    flags = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
+    thisClass = o.className,
+    superClass = "java/lang/Object",
+    interfaces = newList(),
+    fields = fields,
+    methods = allMethods,
+    attrs = newList()
   )
 }
 
@@ -2167,7 +2596,6 @@ pub func lowerOpaqueType(o: in LOpaqueType, pool: in Pool): ClassFile {
 //
 // The facade delegates to the package-private ctor and the `$name()T` accessor
 // methods already emitted by lowerOpaqueType.
-
 func lowerOpaqueFacadeAcc(opaqueName: in String, f: in LOpaqueField, pool: in Pool): MethodInfo {
   val mangledAcc = "$" + f.name
   val noPs: List[JvmType] = newList()
@@ -2176,16 +2604,16 @@ func lowerOpaqueFacadeAcc(opaqueName: in String, f: in LOpaqueField, pool: in Po
   emitAload(asm, 0)
   emitInvokevirtual(asm, accMethodIdx)
   match f.fieldType {
-    case JLong    -> emitLreturn(asm)
-    case JDouble  -> emitDreturn(asm)
-    case JFloat   -> emitFreturn(asm)
+    case JLong -> emitLreturn(asm)
+    case JDouble -> emitDreturn(asm)
+    case JFloat -> emitFreturn(asm)
     case JBoolean -> emitIreturn(asm)
-    case JByte    -> emitIreturn(asm)
-    case JChar    -> emitIreturn(asm)
-    case JShort   -> emitIreturn(asm)
-    case JInt     -> emitIreturn(asm)
-    case JVoid    -> emitReturn(asm)
-    case JRef(_)   -> emitAreturn(asm)
+    case JByte -> emitIreturn(asm)
+    case JChar -> emitIreturn(asm)
+    case JShort -> emitIreturn(asm)
+    case JInt -> emitIreturn(asm)
+    case JVoid -> emitReturn(asm)
+    case JRef(_) -> emitAreturn(asm)
     case JArray(_) -> emitAreturn(asm)
   }
   val code = assembleCode(asm, fieldSlotSize(f.fieldType), 1)
@@ -2213,17 +2641,47 @@ func lowerOpaqueFacadeFactory(o: in LOpaqueType, pool: in Pool): MethodInfo {
   while fi < o.fields.count {
     val f = o.fields[fi]
     match f.fieldType {
-      case JInt     -> { emitIload(asm, slot); slot = slot + 1 }
-      case JLong    -> { emitLload(asm, slot); slot = slot + 2 }
-      case JFloat   -> { emitFload(asm, slot); slot = slot + 1 }
-      case JDouble  -> { emitDload(asm, slot); slot = slot + 2 }
-      case JBoolean -> { emitIload(asm, slot); slot = slot + 1 }
-      case JByte    -> { emitIload(asm, slot); slot = slot + 1 }
-      case JChar    -> { emitIload(asm, slot); slot = slot + 1 }
-      case JShort   -> { emitIload(asm, slot); slot = slot + 1 }
-      case JVoid    -> ()
-      case JRef(_)   -> { emitAload(asm, slot); slot = slot + 1 }
-      case JArray(_) -> { emitAload(asm, slot); slot = slot + 1 }
+      case JInt -> {
+        emitIload(asm, slot)
+        slot = slot + 1
+      }
+      case JLong -> {
+        emitLload(asm, slot)
+        slot = slot + 2
+      }
+      case JFloat -> {
+        emitFload(asm, slot)
+        slot = slot + 1
+      }
+      case JDouble -> {
+        emitDload(asm, slot)
+        slot = slot + 2
+      }
+      case JBoolean -> {
+        emitIload(asm, slot)
+        slot = slot + 1
+      }
+      case JByte -> {
+        emitIload(asm, slot)
+        slot = slot + 1
+      }
+      case JChar -> {
+        emitIload(asm, slot)
+        slot = slot + 1
+      }
+      case JShort -> {
+        emitIload(asm, slot)
+        slot = slot + 1
+      }
+      case JVoid -> ()
+      case JRef(_) -> {
+        emitAload(asm, slot)
+        slot = slot + 1
+      }
+      case JArray(_) -> {
+        emitAload(asm, slot)
+        slot = slot + 1
+      }
     }
     fi = fi + 1
   }
@@ -2250,27 +2708,29 @@ pub func lowerOpaqueFacade(o: in LOpaqueType, pool: in Pool): ClassFile {
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags        = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
-    thisClass    = facadeName,
-    superClass   = "java/lang/Object",
-    interfaces   = newList(),
-    fields       = newList(),
-    methods      = methods,
-    attrs        = newList()
+    flags = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
+    thisClass = facadeName,
+    superClass = "java/lang/Object",
+    interfaces = newList(),
+    fields = newList(),
+    methods = methods,
+    attrs = newList()
   )
 }
 
 // ── B111: lowerSealedUnion (production sealed-interface form) ─────────────────
-
 /// Sealed case (same shape as LUnionCase but targets the sealed-interface form).
 pub record LSealedCase {
-  caseName: String       // simple case name (e.g. "Circle")
-  fields:   List[LField] // payload fields
+  caseName: String
+  // simple case name (e.g. "Circle")
+  fields: List[LField]
+  // payload fields
 }
 
 pub record LSealedUnion {
-  baseName: String           // sealed interface JVM internal name
-  cases:    List[LSealedCase]
+  baseName: String
+  // sealed interface JVM internal name
+  cases: List[LSealedCase]
 }
 
 /// Lower one sealed case class: a final class implementing the sealed interface.
@@ -2356,15 +2816,14 @@ pub func lowerSealedUnion(u: in LSealedUnion, pool: in Pool): List[ClassFile] {
 }
 
 // ── B112: lowerEnum (JVM enum class) ─────────────────────────────────────────
-
 pub record LEnumType {
   className: String
-  variants:  List[String]
+  variants: List[String]
 }
 
 /// Lower a payload-free enum type to a single JVM enum ClassFile.
 pub func lowerEnum(e: in LEnumType, pool: in Pool): ClassFile {
-  val cls  = e.className
+  val cls = e.className
   val clsDesc = "L" + cls + ";"
   val arrDesc = "[" + clsDesc
 
@@ -2385,8 +2844,10 @@ pub func lowerEnum(e: in LEnumType, pool: in Pool): ClassFile {
   // Private <init>(String name, int ordinal): super(name, ordinal)
   val ctorAsm = newAssembler(pool)
   lowerInsn(LAload(slot = 0), ctorAsm)
-  lowerInsn(LAload(slot = 1), ctorAsm)   // name
-  lowerInsn(LIload(slot = 2), ctorAsm)   // ordinal
+  lowerInsn(LAload(slot = 1), ctorAsm)
+  // name
+  lowerInsn(LIload(slot = 2), ctorAsm)
+  // ordinal
   val enumPs: List[JvmType] = newList()
   enumPs.add(JRef(className = "java/lang/String"))
   enumPs.add(JInt)
@@ -2402,9 +2863,9 @@ pub func lowerEnum(e: in LEnumType, pool: in Pool): ClassFile {
 
   // <clinit>: initialise each variant field, then $VALUES array
   val clinitAsm = newAssembler(pool)
-  val enumNewIdx   = poolClass(pool, cls)
+  val enumNewIdx = poolClass(pool, cls)
   val enumCtorDesc = "(Ljava/lang/String;I)V"
-  val enumCtorRef  = poolMethodref(pool, cls, "<init>", enumCtorDesc)
+  val enumCtorRef = poolMethodref(pool, cls, "<init>", enumCtorDesc)
   var ordinal = 0
   for v in e.variants.toArray() {
     // new E("V", ordinal)
@@ -2439,17 +2900,24 @@ pub func lowerEnum(e: in LEnumType, pool: in Pool): ClassFile {
   // values(): E[]
   val valAsm = newAssembler(pool)
   lowerInsn(LGetstatic(owner = cls, name = "$VALUES", t = JArray(JRef(className = cls))), valAsm)
-  lowerInsn(LInvokevirtual(
-    owner = "java/lang/Object", name = "clone",
-    params = clinitPs, ret = JRef(className = "java/lang/Object")
-  ), valAsm)
+  lowerInsn(
+    LInvokevirtual(
+      owner = "java/lang/Object",
+      name = "clone",
+      params = clinitPs,
+      ret = JRef(className = "java/lang/Object")
+    ),
+    valAsm
+  )
   lowerInsn(LCheckcast(className = "[" + clsDesc), valAsm)
   lowerInsn(LAreturn, valAsm)
   val valCode = assembleCode(valAsm, 1, 0)
   val valAttrs: List[Attribute] = newList()
   valAttrs.add(valCode)
   val valRet: List[JvmType] = newList()
-  methods.add(makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "values", buildDescriptor(valRet, JArray(JRef(className = cls))), valAttrs))
+  methods.add(
+    makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "values", buildDescriptor(valRet, JArray(JRef(className = cls))), valAttrs)
+  )
 
   // valueOf(String): E — delegates to Enum.valueOf(Class, String)
   val voAsm = newAssembler(pool)
@@ -2458,7 +2926,10 @@ pub func lowerEnum(e: in LEnumType, pool: in Pool): ClassFile {
   val voPs: List[JvmType] = newList()
   voPs.add(JRef(className = "java/lang/Class"))
   voPs.add(JRef(className = "java/lang/String"))
-  lowerInsn(LInvokestatic(owner = "java/lang/Enum", name = "valueOf", params = voPs, ret = JRef(className = "java/lang/Enum")), voAsm)
+  lowerInsn(
+    LInvokestatic(owner = "java/lang/Enum", name = "valueOf", params = voPs, ret = JRef(className = "java/lang/Enum")),
+    voAsm
+  )
   lowerInsn(LCheckcast(className = cls), voAsm)
   lowerInsn(LAreturn, voAsm)
   val voCode = assembleCode(voAsm, 2, 1)
@@ -2466,26 +2937,28 @@ pub func lowerEnum(e: in LEnumType, pool: in Pool): ClassFile {
   voAttrs.add(voCode)
   val voParamPs: List[JvmType] = newList()
   voParamPs.add(JRef(className = "java/lang/String"))
-  methods.add(makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "valueOf", buildDescriptor(voParamPs, JRef(className = cls)), voAttrs))
+  methods.add(
+    makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "valueOf", buildDescriptor(voParamPs, JRef(className = cls)), voAttrs)
+  )
 
   ClassFile(
     minorVersion = 0,
     majorVersion = 65,
-    flags        = ACC_PUBLIC + ACC_SUPER + ACC_FINAL + ACC_ENUM,
-    thisClass    = cls,
-    superClass   = "java/lang/Enum",
-    interfaces   = newList(),
-    fields       = cfFields,
-    methods      = methods,
-    attrs        = newList()
+    flags = ACC_PUBLIC + ACC_SUPER + ACC_FINAL + ACC_ENUM,
+    thisClass = cls,
+    superClass = "java/lang/Enum",
+    interfaces = newList(),
+    fields = cfFields,
+    methods = methods,
+    attrs = newList()
   )
 }
 
 // ── B114: lowerNatTag (phantom N_<value> class for value generics) ────────────
-
 pub record LNatTag {
-  className: String    // e.g. "N_42"
-  value:     Long
+  className: String
+  // e.g. "N_42"
+  value: Long
 }
 
 /// Lower a nat-tag phantom class with a public static final long VALUE field
@@ -2536,7 +3009,6 @@ pub func lowerNatTag(n: in LNatTag, pool: in Pool): ClassFile {
 }
 
 // ── B115: makeLyricSignatureAttr ──────────────────────────────────────────────
-
 /// Build a `LyricSignature` vendor attribute whose info bytes are the
 /// modified-UTF-8 encoding of `sig`.
 pub func makeLyricSignatureAttr(sig: in String): Attribute {
@@ -2546,10 +3018,9 @@ pub func makeLyricSignatureAttr(sig: in String): Attribute {
 }
 
 // ── B116: lowerExposedRecord (unmangled fields + Record class attribute) ───────
-
 pub record LExposedRecord {
   className: String
-  fields:    List[LField]
+  fields: List[LField]
 }
 
 /// Lower an `exposed record` to a ClassFile:
@@ -2559,7 +3030,7 @@ pub record LExposedRecord {
 /// - A `Record` class-level attribute listing all components
 pub func lowerExposedRecord(r: in LExposedRecord, pool: in Pool): ClassFile {
   val cfFields: List[FieldInfo] = newList()
-  val methods:  List[MethodInfo] = newList()
+  val methods: List[MethodInfo] = newList()
   val fieldNames: List[String] = newList()
   val fieldDescs: List[String] = newList()
 
@@ -2612,11 +3083,10 @@ pub func lowerExposedRecord(r: in LExposedRecord, pool: in Pool): ClassFile {
 }
 
 // ── B117: lowerProjectable (@projectable opaque + view twin + toView()) ────────
-
 pub record LProjectable {
   opaqueTypeName: String
-  viewTypeName:   String
-  fields:         List[LOpaqueField]
+  viewTypeName: String
+  fields: List[LOpaqueField]
 }
 
 /// Lower a `@projectable` opaque type:
@@ -2667,7 +3137,10 @@ pub func lowerProjectable(p: in LProjectable, pool: in Pool): List[ClassFile] {
   val toViewAttrs: List[Attribute] = newList()
   toViewAttrs.add(toViewCode)
   val toViewMethod = makeMethodInfo(
-    ACC_PUBLIC, "toView", buildDescriptor(toViewPs, JRef(className = p.viewTypeName)), toViewAttrs
+    ACC_PUBLIC,
+    "toView",
+    buildDescriptor(toViewPs, JRef(className = p.viewTypeName)),
+    toViewAttrs
   )
 
   // Patch the opaque ClassFile to add toView()
@@ -2680,13 +3153,13 @@ pub func lowerProjectable(p: in LProjectable, pool: in Pool): List[ClassFile] {
   val opaqueWithView = ClassFile(
     minorVersion = opaqueCf.minorVersion,
     majorVersion = opaqueCf.majorVersion,
-    flags        = opaqueCf.flags,
-    thisClass    = opaqueCf.thisClass,
-    superClass   = opaqueCf.superClass,
-    interfaces   = opaqueCf.interfaces,
-    fields       = opaqueCf.fields,
-    methods      = opaqueMethods,
-    attrs        = opaqueCf.attrs
+    flags = opaqueCf.flags,
+    thisClass = opaqueCf.thisClass,
+    superClass = opaqueCf.superClass,
+    interfaces = opaqueCf.interfaces,
+    fields = opaqueCf.fields,
+    methods = opaqueMethods,
+    attrs = opaqueCf.attrs
   )
 
   result.add(opaqueWithView)
@@ -2695,17 +3168,19 @@ pub func lowerProjectable(p: in LProjectable, pool: in Pool): List[ClassFile] {
 }
 
 // ── B118: lowerProtectedWithBarriers (when: Condition-variable barriers) ───────
-
 pub record LBarrierEntry {
-  entryFunc:      LFunc        // the wrapped entry method (body insns only; no lock/unlock)
-  conditionName:  String       // name for the Condition field (e.g. "_cond_push")
-  predicateInsns: List[LInsn]  // pushes Bool: 1=can proceed, 0=must wait
+  entryFunc: LFunc
+  // the wrapped entry method (body insns only; no lock/unlock)
+  conditionName: String
+  // name for the Condition field (e.g. "_cond_push")
+  predicateInsns: List[LInsn]
+  // pushes Bool: 1=can proceed, 0=must wait
 }
 
 pub record LProtectedWithBarriers {
   className: String
-  fields:    List[LField]
-  barriers:  List[LBarrierEntry]
+  fields: List[LField]
+  barriers: List[LBarrierEntry]
 }
 
 /// Lower a protected type with `when:` Condition-variable barriers.
@@ -2714,7 +3189,7 @@ pub record LProtectedWithBarriers {
 pub func lowerProtectedWithBarriers(p: in LProtectedWithBarriers, pool: in Pool): ClassFile {
   val lockType = JRef(className = "java/util/concurrent/locks/ReentrantLock")
   val condType = JRef(className = "java/util/concurrent/locks/Condition")
-  val methods:  List[MethodInfo] = newList()
+  val methods: List[MethodInfo] = newList()
   val cfFields: List[FieldInfo] = newList()
 
   // _lock field
@@ -2744,7 +3219,10 @@ pub func lowerProtectedWithBarriers(p: in LProtectedWithBarriers, pool: in Pool)
   lowerInsn(LNew(className = "java/util/concurrent/locks/ReentrantLock"), ctorAsm)
   lowerInsn(LDup, ctorAsm)
   val rlPs: List[JvmType] = newList()
-  lowerInsn(LInvokespecial(owner = "java/util/concurrent/locks/ReentrantLock", name = "<init>", params = rlPs, ret = JVoid), ctorAsm)
+  lowerInsn(
+    LInvokespecial(owner = "java/util/concurrent/locks/ReentrantLock", name = "<init>", params = rlPs, ret = JVoid),
+    ctorAsm
+  )
   lowerInsn(LPutfield(owner = p.className, name = "_lock", t = lockType), ctorAsm)
 
   // For each barrier: _lock.newCondition() → condition field
@@ -2753,10 +3231,15 @@ pub func lowerProtectedWithBarriers(p: in LProtectedWithBarriers, pool: in Pool)
     lowerInsn(LAload(slot = 0), ctorAsm)
     lowerInsn(LGetfield(owner = p.className, name = "_lock", t = lockType), ctorAsm)
     val ncPs: List[JvmType] = newList()
-    lowerInsn(LInvokevirtual(
-      owner = "java/util/concurrent/locks/ReentrantLock", name = "newCondition",
-      params = ncPs, ret = condType
-    ), ctorAsm)
+    lowerInsn(
+      LInvokevirtual(
+        owner = "java/util/concurrent/locks/ReentrantLock",
+        name = "newCondition",
+        params = ncPs,
+        ret = condType
+      ),
+      ctorAsm
+    )
     lowerInsn(LPutfield(owner = p.className, name = be.conditionName, t = condType), ctorAsm)
   }
 
@@ -2764,14 +3247,17 @@ pub func lowerProtectedWithBarriers(p: in LProtectedWithBarriers, pool: in Pool)
   for fld in p.fields.toArray() {
     lowerInsn(LAload(slot = 0), ctorAsm)
     match fld.fieldType {
-      case JInt  -> lowerInsn(LIconst(v = 0), ctorAsm)
-      case JLong -> { lowerInsn(LIconst(v = 0), ctorAsm); lowerInsn(LI2l, ctorAsm) }
+      case JInt -> lowerInsn(LIconst(v = 0), ctorAsm)
+      case JLong -> {
+        lowerInsn(LIconst(v = 0), ctorAsm)
+        lowerInsn(LI2l, ctorAsm)
+      }
       case JRef(_) -> lowerInsn(LAconstNull, ctorAsm)
-      case _       -> lowerInsn(LIconst(v = 0), ctorAsm)
+      case _ -> lowerInsn(LIconst(v = 0), ctorAsm)
     }
     match fld.fieldType {
       case JVoid -> ()
-      case _     -> lowerInsn(LPutfield(owner = p.className, name = fld.name, t = fld.fieldType), ctorAsm)
+      case _ -> lowerInsn(LPutfield(owner = p.className, name = fld.name, t = fld.fieldType), ctorAsm)
     }
   }
 
@@ -2784,7 +3270,7 @@ pub func lowerProtectedWithBarriers(p: in LProtectedWithBarriers, pool: in Pool)
 
   // Entry methods with barrier guard
   val lockPs: List[JvmType] = newList()
-  val noPs:   List[JvmType] = newList()
+  val noPs: List[JvmType] = newList()
   for be in p.barriers.toArray() {
     val ef = be.entryFunc
     val wInsns: List[LInsn] = newList()
@@ -2794,19 +3280,39 @@ pub func lowerProtectedWithBarriers(p: in LProtectedWithBarriers, pool: in Pool)
     val resultSlot = ef.maxLocals
     if fieldSlotSize(ef.ret) > 0 {
       match ef.ret {
-        case JLong    -> { wInsns.add(LLconst(v = 0i64)); wInsns.add(LLstore(slot = resultSlot)) }
-        case JDouble  -> { wInsns.add(LDconst(v = 0.0));  wInsns.add(LDstore(slot = resultSlot)) }
-        case JFloat   -> { wInsns.add(LFconst(v = 0.0));  wInsns.add(LFstore(slot = resultSlot)) }
-        case JRef(cls) -> { wInsns.add(LAconstNull); wInsns.add(LAstoreAs(slot = resultSlot, className = cls)) }
-        case JArray(_) -> { wInsns.add(LAconstNull); wInsns.add(LAstore(slot = resultSlot)) }
-        case _ -> { wInsns.add(LIconst(v = 0)); wInsns.add(LIstore(slot = resultSlot)) }
+        case JLong -> {
+          wInsns.add(LLconst(v = 0i64))
+          wInsns.add(LLstore(slot = resultSlot))
+        }
+        case JDouble -> {
+          wInsns.add(LDconst(v = 0.0))
+          wInsns.add(LDstore(slot = resultSlot))
+        }
+        case JFloat -> {
+          wInsns.add(LFconst(v = 0.0))
+          wInsns.add(LFstore(slot = resultSlot))
+        }
+        case JRef(cls) -> {
+          wInsns.add(LAconstNull)
+          wInsns.add(LAstoreAs(slot = resultSlot, className = cls))
+        }
+        case JArray(_) -> {
+          wInsns.add(LAconstNull)
+          wInsns.add(LAstore(slot = resultSlot))
+        }
+        case _ -> {
+          wInsns.add(LIconst(v = 0))
+          wInsns.add(LIstore(slot = resultSlot))
+        }
       }
     }
 
     // lock.lock()
     wInsns.add(LAload(slot = 0))
     wInsns.add(LGetfield(owner = p.className, name = "_lock", t = lockType))
-    wInsns.add(LInvokevirtual(owner = "java/util/concurrent/locks/ReentrantLock", name = "lock", params = lockPs, ret = JVoid))
+    wInsns.add(
+      LInvokevirtual(owner = "java/util/concurrent/locks/ReentrantLock", name = "lock", params = lockPs, ret = JVoid)
+    )
 
     // while !predicate() { condition.await() }  (no exception handling for bootstrap)
     wInsns.add(LLabel(name = "barrier_check_" + be.conditionName))
@@ -2820,7 +3326,15 @@ pub func lowerProtectedWithBarriers(p: in LProtectedWithBarriers, pool: in Pool)
     wInsns.add(LAload(slot = 0))
     wInsns.add(LGetfield(owner = p.className, name = be.conditionName, t = condType))
     val awaitPs: List[JvmType] = newList()
-    wInsns.add(LInvokeinterface(owner = "java/util/concurrent/locks/Condition", name = "awaitUninterruptibly", params = awaitPs, ret = JVoid, argCount = 1))
+    wInsns.add(
+      LInvokeinterface(
+        owner = "java/util/concurrent/locks/Condition",
+        name = "awaitUninterruptibly",
+        params = awaitPs,
+        ret = JVoid,
+        argCount = 1
+      )
+    )
     wInsns.add(LGoto(label = "barrier_check_" + be.conditionName))
     wInsns.add(LLabel(name = "barrier_body_" + be.conditionName))
 
@@ -2840,12 +3354,22 @@ pub func lowerProtectedWithBarriers(p: in LProtectedWithBarriers, pool: in Pool)
     wInsns.add(LAload(slot = 0))
     wInsns.add(LGetfield(owner = p.className, name = be.conditionName, t = condType))
     val sigPs: List[JvmType] = newList()
-    wInsns.add(LInvokeinterface(owner = "java/util/concurrent/locks/Condition", name = "signalAll", params = sigPs, ret = JVoid, argCount = 1))
+    wInsns.add(
+      LInvokeinterface(
+        owner = "java/util/concurrent/locks/Condition",
+        name = "signalAll",
+        params = sigPs,
+        ret = JVoid,
+        argCount = 1
+      )
+    )
 
     // lock.unlock()
     wInsns.add(LAload(slot = 0))
     wInsns.add(LGetfield(owner = p.className, name = "_lock", t = lockType))
-    wInsns.add(LInvokevirtual(owner = "java/util/concurrent/locks/ReentrantLock", name = "unlock", params = lockPs, ret = JVoid))
+    wInsns.add(
+      LInvokevirtual(owner = "java/util/concurrent/locks/ReentrantLock", name = "unlock", params = lockPs, ret = JVoid)
+    )
 
     // Return result
     if fieldSlotSize(ef.ret) > 0 {
@@ -2854,12 +3378,12 @@ pub func lowerProtectedWithBarriers(p: in LProtectedWithBarriers, pool: in Pool)
     wInsns.add(returnInsn(ef.ret))
 
     val wFunc = LFunc(
-      flags     = ef.flags,
-      name      = ef.name,
-      params    = ef.params,
-      ret       = ef.ret,
-      insns     = wInsns,
-      maxStack  = ef.maxStack + 3,
+      flags = ef.flags,
+      name = ef.name,
+      params = ef.params,
+      ret = ef.ret,
+      insns = wInsns,
+      maxStack = ef.maxStack + 3,
       maxLocals = ef.maxLocals + fieldSlotSize(ef.ret)
     )
     methods.add(lowerFuncForClass(wFunc, p.className, pool))
@@ -2869,13 +3393,17 @@ pub func lowerProtectedWithBarriers(p: in LProtectedWithBarriers, pool: in Pool)
 }
 
 // ── B119: lowerHotAsync (CompletableFuture thenCompose chain) ────────────────
-
 pub record LHotFunc {
-  className:    String       // host class for the async method
-  methodName:   String       // name of the async method
-  resultType:   JvmType      // the T in CompletableFuture<T>
-  stage1Insns:  List[LInsn]  // first stage: pushes the initial value (no return)
-  stage2Insns:  List[LInsn]  // second stage: pops one slot, pushes the result (no return)
+  className: String
+  // host class for the async method
+  methodName: String
+  // name of the async method
+  resultType: JvmType
+  // the T in CompletableFuture<T>
+  stage1Insns: List[LInsn]
+  // first stage: pushes the initial value (no return)
+  stage2Insns: List[LInsn]
+  // second stage: pops one slot, pushes the result (no return)
 }
 
 /// Bootstrap-grade lowering of a two-stage @hot async function.
@@ -2890,7 +3418,8 @@ pub func lowerHotAsync(h: in LHotFunc, pool: in Pool): List[ClassFile] {
   // thenApply uses this to transform the stage1 result to the final result.
   val appInsns: List[LInsn] = newList()
   // stage2Insns expect the arg on stack; slot 1 = the Object argument
-  appInsns.add(LAload(slot = 1))    // push Object arg
+  appInsns.add(LAload(slot = 1))
+  // push Object arg
   var s2i = 0
   while s2i < h.stage2Insns.count {
     appInsns.add(h.stage2Insns[s2i])
@@ -2900,18 +3429,18 @@ pub func lowerHotAsync(h: in LHotFunc, pool: in Pool): List[ClassFile] {
   appInsns.add(LAreturn)
 
   val appCaptures: List[LClosureCapture] = newList()
-  val appParams:   List[JvmType] = newList()
+  val appParams: List[JvmType] = newList()
   appParams.add(JRef(className = "java/lang/Object"))
 
   val applyFuncClass = h.className + "$Stage2"
   val appClosure = LClosure(
     closureClass = applyFuncClass,
-    ifaceClass   = "java/util/function/Function",
-    ifaceMethod  = "apply",
-    captures     = appCaptures,
+    ifaceClass = "java/util/function/Function",
+    ifaceMethod = "apply",
+    captures = appCaptures,
     methodParams = appParams,
-    methodRet    = JRef(className = "java/lang/Object"),
-    bodyInsns    = appInsns
+    methodRet = JRef(className = "java/lang/Object"),
+    bodyInsns = appInsns
   )
   result.add(lowerClosure(appClosure, pool))
 
@@ -2927,12 +3456,15 @@ pub func lowerHotAsync(h: in LHotFunc, pool: in Pool): List[ClassFile] {
   // stage1 must push an Object (box int for bootstrap)
   val cfPs1: List[JvmType] = newList()
   cfPs1.add(JRef(className = "java/lang/Object"))
-  lowerInsn(LInvokestatic(
-    owner = "java/util/concurrent/CompletableFuture",
-    name  = "completedFuture",
-    params = cfPs1,
-    ret   = cfType
-  ), hostAsm)
+  lowerInsn(
+    LInvokestatic(
+      owner = "java/util/concurrent/CompletableFuture",
+      name = "completedFuture",
+      params = cfPs1,
+      ret = cfType
+    ),
+    hostAsm
+  )
   // .thenCompose(new Stage2())
   lowerInsn(LNew(className = applyFuncClass), hostAsm)
   lowerInsn(LDup, hostAsm)
@@ -2940,22 +3472,17 @@ pub func lowerHotAsync(h: in LHotFunc, pool: in Pool): List[ClassFile] {
   lowerInsn(LInvokespecial(owner = applyFuncClass, name = "<init>", params = stage2CtorPs, ret = JVoid), hostAsm)
   val thenPs: List[JvmType] = newList()
   thenPs.add(JRef(className = "java/util/function/Function"))
-  lowerInsn(LInvokevirtual(
-    owner  = "java/util/concurrent/CompletableFuture",
-    name   = "thenApply",
-    params = thenPs,
-    ret    = cfType
-  ), hostAsm)
+  lowerInsn(
+    LInvokevirtual(owner = "java/util/concurrent/CompletableFuture", name = "thenApply", params = thenPs, ret = cfType),
+    hostAsm
+  )
   lowerInsn(LAreturn, hostAsm)
 
-  val hostPs:   List[JvmType] = newList()
-  val hostCode  = assembleCode(hostAsm, 4, 0)
+  val hostPs: List[JvmType] = newList()
+  val hostCode = assembleCode(hostAsm, 4, 0)
   val hostAttrs: List[Attribute] = newList()
   hostAttrs.add(hostCode)
-  val hostMethod = makeMethodInfo(
-    ACC_PUBLIC + ACC_STATIC, h.methodName,
-    buildDescriptor(hostPs, cfType), hostAttrs
-  )
+  val hostMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, h.methodName, buildDescriptor(hostPs, cfType), hostAttrs)
   val hostMethods: List[MethodInfo] = newList()
   hostMethods.add(hostMethod)
   result.add(makeClassWithMethods(h.className, hostMethods))
@@ -2963,7 +3490,6 @@ pub func lowerHotAsync(h: in LHotFunc, pool: in Pool): List[ClassFile] {
 }
 
 // ── B129: lowerAsyncGenerator (Iterable<Object>+Iterator<Object> collect-all) ─
-
 pub record LGenParam {
   paramName: String
   paramType: JvmType
@@ -3000,22 +3526,22 @@ pub record LGenFunc {
 /// all `yield` expressions execute eagerly before the first `hasNext()`.
 pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   val result: List[ClassFile] = newList()
-  val genClass  = g.generatorClass
-  val objClass  = "java/lang/Object"
+  val genClass = g.generatorClass
+  val objClass = "java/lang/Object"
   val listClass = "java/util/ArrayList"
   val iterClass = "java/util/Iterator"
   val iterableClass = "java/lang/Iterable"
-  val listType  = JRef(className = listClass)
-  val objType   = JRef(className = objClass)
+  val listType = JRef(className = listClass)
+  val objType = JRef(className = objClass)
 
   // ── 1. Field declarations ───────────────────────────────────────────────────
   val emptyAttrs: List[Attribute] = newList()
   val valuesDesc = typeDescriptor(listType)
-  val posDesc    = typeDescriptor(JInt)
+  val posDesc = typeDescriptor(JInt)
 
   val fieldsOut: List[FieldInfo] = newList()
   fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_values", valuesDesc, emptyAttrs))
-  fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_pos",    posDesc,    emptyAttrs))
+  fieldsOut.add(makeFieldInfo(ACC_PRIVATE, "_pos", posDesc, emptyAttrs))
   var pi = 0
   while pi < g.params.count {
     val p = g.params[pi]
@@ -3039,15 +3565,21 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
     emitFieldLoad(p.paramType, slot, ctorAsm)
     emitPutfield(ctorAsm, fIdx)
     match p.paramType {
-      case JLong   -> { slot = slot + 2 }
-      case JDouble -> { slot = slot + 2 }
-      case _       -> { slot = slot + 1 }
+      case JLong -> {
+        slot = slot + 2
+      }
+      case JDouble -> {
+        slot = slot + 2
+      }
+      case _ -> {
+        slot = slot + 1
+      }
     }
     qi = qi + 1
   }
   // initialize _values = new ArrayList()
   val listCtorIdx = poolMethodref(pool, listClass, "<init>", "()V")
-  val valuesIdx   = poolFieldref(pool, genClass, "_values", valuesDesc)
+  val valuesIdx = poolFieldref(pool, genClass, "_values", valuesDesc)
   emitAload(ctorAsm, 0)
   emitNew(ctorAsm, poolClass(pool, listClass))
   emitDup(ctorAsm)
@@ -3076,17 +3608,57 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   var bsi = 0
   while bsi < g.bodyInsns.count {
     match g.bodyInsns[bsi] {
-      case LIload(s)  -> { if s + 1 > bodyMaxSlot { bodyMaxSlot = s + 1 } }
-      case LLload(s)  -> { if s + 2 > bodyMaxSlot { bodyMaxSlot = s + 2 } }
-      case LFload(s)  -> { if s + 1 > bodyMaxSlot { bodyMaxSlot = s + 1 } }
-      case LDload(s)  -> { if s + 2 > bodyMaxSlot { bodyMaxSlot = s + 2 } }
-      case LAload(s)  -> { if s + 1 > bodyMaxSlot { bodyMaxSlot = s + 1 } }
-      case LIstore(s) -> { if s + 1 > bodyMaxSlot { bodyMaxSlot = s + 1 } }
-      case LLstore(s) -> { if s + 2 > bodyMaxSlot { bodyMaxSlot = s + 2 } }
-      case LFstore(s) -> { if s + 1 > bodyMaxSlot { bodyMaxSlot = s + 1 } }
-      case LDstore(s) -> { if s + 2 > bodyMaxSlot { bodyMaxSlot = s + 2 } }
-      case LAstore(s) -> { if s + 1 > bodyMaxSlot { bodyMaxSlot = s + 1 } }
-      case _          -> ()
+      case LIload(s) -> {
+        if s + 1 > bodyMaxSlot {
+          bodyMaxSlot = s + 1
+        }
+      }
+      case LLload(s) -> {
+        if s + 2 > bodyMaxSlot {
+          bodyMaxSlot = s + 2
+        }
+      }
+      case LFload(s) -> {
+        if s + 1 > bodyMaxSlot {
+          bodyMaxSlot = s + 1
+        }
+      }
+      case LDload(s) -> {
+        if s + 2 > bodyMaxSlot {
+          bodyMaxSlot = s + 2
+        }
+      }
+      case LAload(s) -> {
+        if s + 1 > bodyMaxSlot {
+          bodyMaxSlot = s + 1
+        }
+      }
+      case LIstore(s) -> {
+        if s + 1 > bodyMaxSlot {
+          bodyMaxSlot = s + 1
+        }
+      }
+      case LLstore(s) -> {
+        if s + 2 > bodyMaxSlot {
+          bodyMaxSlot = s + 2
+        }
+      }
+      case LFstore(s) -> {
+        if s + 1 > bodyMaxSlot {
+          bodyMaxSlot = s + 1
+        }
+      }
+      case LDstore(s) -> {
+        if s + 2 > bodyMaxSlot {
+          bodyMaxSlot = s + 2
+        }
+      }
+      case LAstore(s) -> {
+        if s + 1 > bodyMaxSlot {
+          bodyMaxSlot = s + 1
+        }
+      }
+      case _ -> ()
     }
     bsi = bsi + 1
   }
@@ -3094,7 +3666,7 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   val yieldTempSlot = bodyMaxSlot
   val bodyMaxLocals = yieldTempSlot + 1
 
-  val bodyAsm  = newAssembler(pool)
+  val bodyAsm = newAssembler(pool)
   val listAddIdx = poolMethodref(pool, listClass, "add", "(Ljava/lang/Object;)Z")
   var bi = 0
   while bi < g.bodyInsns.count {
@@ -3104,24 +3676,31 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
         // Stack top = yielded value (already evaluated by preceding insns).
         // Box primitive types to Object before storing in ArrayList.
         match g.elemType {
-          case JInt     -> lowerInsn(LBoxInt,    bodyAsm)
-          case JLong    -> lowerInsn(LBoxLong,   bodyAsm)
-          case JFloat   -> lowerInsn(LBoxFloat,  bodyAsm)
-          case JDouble  -> lowerInsn(LBoxDouble, bodyAsm)
-          case JBoolean -> lowerInsn(LBoxBool,   bodyAsm)
-          case JByte    -> lowerInsn(LBoxByte,   bodyAsm)
-          case JChar    -> lowerInsn(LBoxChar,   bodyAsm)
-          case JShort   -> lowerInsn(LBoxShort,  bodyAsm)
-          case _        -> ()   // reference types need no boxing
+          case JInt -> lowerInsn(LBoxInt, bodyAsm)
+          case JLong -> lowerInsn(LBoxLong, bodyAsm)
+          case JFloat -> lowerInsn(LBoxFloat, bodyAsm)
+          case JDouble -> lowerInsn(LBoxDouble, bodyAsm)
+          case JBoolean -> lowerInsn(LBoxBool, bodyAsm)
+          case JByte -> lowerInsn(LBoxByte, bodyAsm)
+          case JChar -> lowerInsn(LBoxChar, bodyAsm)
+          case JShort -> lowerInsn(LBoxShort, bodyAsm)
+          case _ -> ()
         }
+        // reference types need no boxing
         // Stack: [..., Object(value)]
         // Emit: this._values.add(value)
-        emitAstore(bodyAsm, yieldTempSlot)      // temp = value; stack: [...]
-        emitAload(bodyAsm, 0)                   // stack: [this]
-        emitGetfield(bodyAsm, valuesIdx)        // stack: [ArrayList]
-        emitAload(bodyAsm, yieldTempSlot)       // stack: [ArrayList, value]
-        emitInvokevirtual(bodyAsm, listAddIdx)  // stack: [boolean]
-        emitPop(bodyAsm)                        // stack: []
+        emitAstore(bodyAsm, yieldTempSlot)
+        // temp = value; stack: [...]
+        emitAload(bodyAsm, 0)
+        // stack: [this]
+        emitGetfield(bodyAsm, valuesIdx)
+        // stack: [ArrayList]
+        emitAload(bodyAsm, yieldTempSlot)
+        // stack: [ArrayList, value]
+        emitInvokevirtual(bodyAsm, listAddIdx)
+        // stack: [boolean]
+        emitPop(bodyAsm)
+        // stack: []
       }
       case _ -> lowerInsn(insn, bodyAsm)
     }
@@ -3140,8 +3719,8 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   // Reinitialise _values = new ArrayList() and reset _pos before running body,
   // matching the MSIL GetAsyncEnumerator path so a second iterator() call
   // produces a fresh sequence instead of appending to the old one.
-  val iterAsm   = newAssembler(pool)
-  val posIdx    = poolFieldref(pool, genClass, "_pos", posDesc)
+  val iterAsm = newAssembler(pool)
+  val posIdx = poolFieldref(pool, genClass, "_pos", posDesc)
   val runBodyIdx = poolMethodref(pool, genClass, "runBody", "()V")
   emitAload(iterAsm, 0)
   emitNew(iterAsm, poolClass(pool, listClass))
@@ -3157,11 +3736,11 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   emitAreturn(iterAsm)
   val iterPs: List[JvmType] = newList()
   val iterRetType = JRef(className = iterClass)
-  val iterCode = assembleCode(iterAsm, 3, 1)   // maxStack=3: new+dup before invokespecial
+  val iterCode = assembleCode(iterAsm, 3, 1)
+  // maxStack=3: new+dup before invokespecial
   val iterAttrs: List[Attribute] = newList()
   iterAttrs.add(iterCode)
-  val iterMethod = makeMethodInfo(ACC_PUBLIC, "iterator",
-    buildDescriptor(iterPs, iterRetType), iterAttrs)
+  val iterMethod = makeMethodInfo(ACC_PUBLIC, "iterator", buildDescriptor(iterPs, iterRetType), iterAttrs)
 
   // ── 5. hasNext(): boolean ───────────────────────────────────────────────────
   val hnAsm = newAssembler(pool)
@@ -3182,8 +3761,7 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   val hnCode = assembleCode(hnAsm, 2, 1)
   val hnAttrs: List[Attribute] = newList()
   hnAttrs.add(hnCode)
-  val hasNextMethod = makeMethodInfo(ACC_PUBLIC, "hasNext",
-    buildDescriptor(hnPs, JBoolean), hnAttrs)
+  val hasNextMethod = makeMethodInfo(ACC_PUBLIC, "hasNext", buildDescriptor(hnPs, JBoolean), hnAttrs)
 
   // ── 6. next(): Object ───────────────────────────────────────────────────────
   // Returns _values.get(_pos), then increments _pos.
@@ -3196,7 +3774,8 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   emitAload(nextAsm, 0)
   emitGetfield(nextAsm, posIdx)
   emitInvokevirtual(nextAsm, listGetIdx)
-  emitAstore(nextAsm, 1)   // stash result before incrementing _pos (field, not local)
+  emitAstore(nextAsm, 1)
+  // stash result before incrementing _pos (field, not local)
   // Increment _pos via getfield + iadd + putfield.
   emitAload(nextAsm, 0)
   emitAload(nextAsm, 0)
@@ -3207,11 +3786,11 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   emitAload(nextAsm, 1)
   emitAreturn(nextAsm)
   val nextPs: List[JvmType] = newList()
-  val nextCode = assembleCode(nextAsm, 3, 2)   // maxStack=3: peak during _pos increment (aload,aload,getfield,iconst+iadd,putfield)
+  val nextCode = assembleCode(nextAsm, 3, 2)
+  // maxStack=3: peak during _pos increment (aload,aload,getfield,iconst+iadd,putfield)
   val nextAttrs: List[Attribute] = newList()
   nextAttrs.add(nextCode)
-  val nextMethod = makeMethodInfo(ACC_PUBLIC, "next",
-    buildDescriptor(nextPs, objType), nextAttrs)
+  val nextMethod = makeMethodInfo(ACC_PUBLIC, "next", buildDescriptor(nextPs, objType), nextAttrs)
 
   // ── 7. Assemble generator class ────────────────────────────────────────────
   val genMethods: List[MethodInfo] = newList()
@@ -3225,17 +3804,19 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
   genIfaces.add(iterClass)
   // Use Java 5 (version 49) so the verifier does not require StackMapTable
   // for hasNext()'s branch — bootstrap quality, matching lowerRangeType.
-  result.add(ClassFile(
-    minorVersion = 0,
-    majorVersion = 49,
-    flags        = ACC_PUBLIC + ACC_SUPER,
-    thisClass    = genClass,
-    superClass   = "java/lang/Object",
-    interfaces   = genIfaces,
-    fields       = fieldsOut,
-    methods      = genMethods,
-    attrs        = newList()
-  ))
+  result.add(
+    ClassFile(
+      minorVersion = 0,
+      majorVersion = 49,
+      flags = ACC_PUBLIC + ACC_SUPER,
+      thisClass = genClass,
+      superClass = "java/lang/Object",
+      interfaces = genIfaces,
+      fields = fieldsOut,
+      methods = genMethods,
+      attrs = newList()
+    )
+  )
 
   // ── 8. Kickoff method on host class ────────────────────────────────────────
   // When hostClass is empty the caller (codegenPackage full pipeline) has
@@ -3247,13 +3828,20 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
     emitNew(kickAsm, genClassIdx)
     emitDup(kickAsm)
     var ki = 0
-    var kslot = 0   // static method: params start at slot 0 (no `this`)
+    var kslot = 0
+    // static method: params start at slot 0 (no `this`)
     while ki < g.params.count {
       emitFieldLoad(g.params[ki].paramType, kslot, kickAsm)
       match g.params[ki].paramType {
-        case JLong   -> { kslot = kslot + 2 }
-        case JDouble -> { kslot = kslot + 2 }
-        case _       -> { kslot = kslot + 1 }
+        case JLong -> {
+          kslot = kslot + 2
+        }
+        case JDouble -> {
+          kslot = kslot + 2
+        }
+        case _ -> {
+          kslot = kslot + 1
+        }
       }
       ki = ki + 1
     }
@@ -3269,8 +3857,7 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
     val kickCode = assembleCode(kickAsm, 4, kslot)
     val kickAttrs: List[Attribute] = newList()
     kickAttrs.add(kickCode)
-    val kickMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, g.methodName,
-      buildDescriptor(kickPs, objType), kickAttrs)
+    val kickMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, g.methodName, buildDescriptor(kickPs, objType), kickAttrs)
     val kickMethods: List[MethodInfo] = newList()
     kickMethods.add(kickMethod)
     result.add(makeClassWithMethods(g.hostClass, kickMethods))
@@ -3299,7 +3886,6 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
 // the detected runtime JDK: JDK 21..23 emits the verified `ShutdownOnFailure`
 // form; JDK 24+ raises a clear, actionable compiler error instead of shipping
 // untestable bytecode.
-
 /// Emit bytecode to open a structured-concurrency scope, fork each callable
 /// class (which must implement `Callable`), await the subtasks, propagate any
 /// failure, then close the scope.  Supported on JDK 21..23
@@ -3307,29 +3893,31 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
 /// #2263.  The scope reference is stored in `scopeSlot`; each forked task is
 /// stored in successive local slots starting at `firstTaskSlot`.
 pub func lowerScopeBlock(
-  asm:           in MethodAssembler,
+  asm: in MethodAssembler,
   callableNames: in List[String],
-  scopeSlot:     in Int,
-  firstTaskSlot: in Int
+  scopeSlot: in Int,
+  firstTaskSlot: in Int,
 ): Unit {
   if detectJavaFeatureVersion() >= 24 {
-    panic("Jvm.Lowering: structured-concurrency 'scope' blocks are not yet "
-      + "supported when targeting JDK 24+. java.util.concurrent."
-      + "StructuredTaskScope became a sealed interface (JEP 499) whose "
-      + "still-preview method descriptors cannot be verified on this Java 21 "
-      + "toolchain; build with a JDK 21..23 toolchain for now. "
-      + "JDK 24+ support is tracked in "
-      + "https://github.com/nichobbs/lyric-lang/issues/2263")
+    panic(
+      "Jvm.Lowering: structured-concurrency 'scope' blocks are not yet " +
+        "supported when targeting JDK 24+. java.util.concurrent." +
+        "StructuredTaskScope became a sealed interface (JEP 499) whose " +
+        "still-preview method descriptors cannot be verified on this Java 21 " +
+        "toolchain; build with a JDK 21..23 toolchain for now. " +
+        "JDK 24+ support is tracked in " +
+        "https://github.com/nichobbs/lyric-lang/issues/2263"
+    )
   }
   lowerScopeBlockShutdownOnFailure(asm, callableNames, scopeSlot, firstTaskSlot)
 }
 
 // JDK 21..23: StructuredTaskScope.ShutdownOnFailure (class API, invokevirtual).
 func lowerScopeBlockShutdownOnFailure(
-  asm:           in MethodAssembler,
+  asm: in MethodAssembler,
   callableNames: in List[String],
-  scopeSlot:     in Int,
-  firstTaskSlot: in Int
+  scopeSlot: in Int,
+  firstTaskSlot: in Int,
 ): Unit {
   val scopeClass = "java/util/concurrent/StructuredTaskScope$ShutdownOnFailure"
 
@@ -3343,9 +3931,9 @@ func lowerScopeBlockShutdownOnFailure(
   var taskSlot = firstTaskSlot
   for callableName in callableNames.toArray() {
     val callableClass = poolClass(asm.pool, callableName)
-    val callableCtor  = poolMethodref(asm.pool, callableName, "<init>", "()V")
+    val callableCtor = poolMethodref(asm.pool, callableName, "<init>", "()V")
     val forkDesc = "(Ljava/util/concurrent/Callable;)Ljava/util/concurrent/StructuredTaskScope$Subtask;"
-    val forkRef  = poolMethodref(asm.pool, scopeClass, "fork", forkDesc)
+    val forkRef = poolMethodref(asm.pool, scopeClass, "fork", forkDesc)
 
     emitAload(asm, scopeSlot)
     emitNew(asm, callableClass)
@@ -3379,9 +3967,11 @@ func lowerScopeBlockShutdownOnFailure(
 // the JDK 21..23 `ShutdownOnFailure` form.
 func detectJavaFeatureVersion(): Int {
   val javaHome = Env.getVarOrDefault("JAVA_HOME", "")
-  if javaHome.length == 0 { return 21 }
+  if javaHome.length == 0 {
+    return 21
+  }
   match File.readText(javaHome + "/release") {
-    case Err(_)   -> 21
+    case Err(_) -> 21
     case Ok(text) -> parseJavaFeatureVersion(text)
   }
 }
@@ -3392,7 +3982,9 @@ func detectJavaFeatureVersion(): Int {
 func parseJavaFeatureVersion(text: in String): Int {
   val marker = "JAVA_VERSION=\""
   val idx = text.indexOf(marker)
-  if idx < 0 { return 21 }
+  if idx < 0 {
+    return 21
+  }
   var i = idx + marker.length
   var n = 0
   var sawDigit = false
@@ -3407,7 +3999,11 @@ func parseJavaFeatureVersion(text: in String): Int {
       i = i + 1
     }
   }
-  if sawDigit { n } else { 21 }
+  if sawDigit {
+    n
+  } else {
+    21
+  }
 }
 
 // ASCII digit value (0..9) or -1 for a non-digit char.
@@ -3423,15 +4019,16 @@ func asciiDigit(c: in Char): Int {
     case '7' -> 7
     case '8' -> 8
     case '9' -> 9
-    case _   -> -1
+    case _ -> -1
   }
 }
 
 // ── B121: lowerFuncWithContract (inline requires/ensures bytecode) ────────────
-
 pub record LContract {
-  requiresInsns: List[LInsn]   // pushes Bool (1=ok, 0=violated); evaluated at entry
-  ensuresInsns:  List[LInsn]   // same, evaluated before return
+  requiresInsns: List[LInsn]
+  // pushes Bool (1=ok, 0=violated); evaluated at entry
+  ensuresInsns: List[LInsn]
+  // same, evaluated before return
 }
 
 /// Like lowerFunc but splices contract guard bytecode around the body:
@@ -3499,23 +4096,23 @@ pub func lowerFuncWithContract(f: in LFunc, contract: in LContract, pool: in Poo
 
   val extraLocals = if hasEnsures then fieldSlotSize(f.ret) else 0
   val wFunc = LFunc(
-    flags     = f.flags,
-    name      = f.name,
-    params    = f.params,
-    ret       = f.ret,
-    insns     = wInsns,
-    maxStack  = f.maxStack + 4,  // +4 for new AssertionError + dup + ldc + invokespecial
+    flags = f.flags,
+    name = f.name,
+    params = f.params,
+    ret = f.ret,
+    insns = wInsns,
+    maxStack = f.maxStack + 4,
+    // +4 for new AssertionError + dup + ldc + invokespecial
     maxLocals = f.maxLocals + extraLocals
   )
   lowerFunc(wFunc, pool)
 }
 
 // ── B122: lowerDeriveEquality (@generate(Equals) + @generate(Hash)) ──────────────
-
 pub record LRecordWithDerives {
-  className:  String
-  fields:     List[LField]
-  deriveEq:   Bool
+  className: String
+  fields: List[LField]
+  deriveEq: Bool
   deriveHash: Bool
 }
 
@@ -3524,12 +4121,7 @@ pub record LRecordWithDerives {
 /// and `hashCode(): int` with a prime-multiply accumulator.
 pub func lowerDeriveEquality(d: in LRecordWithDerives, pool: in Pool): ClassFile {
   // First build the base record
-  val r = LRecord(
-    className        = d.className,
-    fields           = d.fields,
-    methods          = newList(),
-    implementsIfaces = newList()
-  )
+  val r = LRecord(className = d.className, fields = d.fields, methods = newList(), implementsIfaces = newList())
   val cf = lowerRecord(r, pool)
 
   val extraMethods: List[MethodInfo] = newList()
@@ -3575,12 +4167,12 @@ pub func lowerDeriveEquality(d: in LRecordWithDerives, pool: in Pool): ClassFile
       eqInsns.add(LAload(slot = 2))
       eqInsns.add(LGetfield(owner = d.className, name = fld.name, t = fld.fieldType))
       match fld.fieldType {
-        case JInt     -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+        case JInt -> eqInsns.add(LIfIcmpeq(label = skipLabel))
         case JBoolean -> eqInsns.add(LIfIcmpeq(label = skipLabel))
-        case JByte    -> eqInsns.add(LIfIcmpeq(label = skipLabel))
-        case JChar    -> eqInsns.add(LIfIcmpeq(label = skipLabel))
-        case JShort   -> eqInsns.add(LIfIcmpeq(label = skipLabel))
-        case _        -> eqInsns.add(LIfAcmpeq(label = skipLabel))
+        case JByte -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+        case JChar -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+        case JShort -> eqInsns.add(LIfIcmpeq(label = skipLabel))
+        case _ -> eqInsns.add(LIfAcmpeq(label = skipLabel))
       }
       eqInsns.add(LIconst(v = 0))
       eqInsns.add(LIreturn)
@@ -3592,12 +4184,12 @@ pub func lowerDeriveEquality(d: in LRecordWithDerives, pool: in Pool): ClassFile
     val eqPs: List[JvmType] = newList()
     eqPs.add(JRef(className = "java/lang/Object"))
     val eqFunc = LFunc(
-      flags     = ACC_PUBLIC,
-      name      = "equals",
-      params    = eqPs,
-      ret       = JBoolean,
-      insns     = eqInsns,
-      maxStack  = 4,
+      flags = ACC_PUBLIC,
+      name = "equals",
+      params = eqPs,
+      ret = JBoolean,
+      insns = eqInsns,
+      maxStack = 4,
       maxLocals = 3
     )
     extraMethods.add(lowerFuncForClass(eqFunc, d.className, pool))
@@ -3606,7 +4198,8 @@ pub func lowerDeriveEquality(d: in LRecordWithDerives, pool: in Pool): ClassFile
   if d.deriveHash {
     // hashCode(): int  — hash = 31 * hash + field_hash for each field
     val hashAsm = newAssembler(pool)
-    lowerInsn(LIconst(v = 1), hashAsm)     // hash = 1
+    lowerInsn(LIconst(v = 1), hashAsm)
+    // hash = 1
     lowerInsn(LIstore(slot = 1), hashAsm)
 
     for fld in d.fields.toArray() {
@@ -3616,12 +4209,12 @@ pub func lowerDeriveEquality(d: in LRecordWithDerives, pool: in Pool): ClassFile
       lowerInsn(LAload(slot = 0), hashAsm)
       lowerInsn(LGetfield(owner = d.className, name = fld.name, t = fld.fieldType), hashAsm)
       match fld.fieldType {
-        case JInt     -> ()
+        case JInt -> ()
         case JBoolean -> ()
-        case JByte    -> ()
-        case JChar    -> ()
-        case JShort   -> ()
-        case _        -> {
+        case JByte -> ()
+        case JChar -> ()
+        case JShort -> ()
+        case _ -> {
           // For reference fields, call .hashCode()
           val hcPs: List[JvmType] = newList()
           lowerInsn(LInvokevirtual(owner = "java/lang/Object", name = "hashCode", params = hcPs, ret = JInt), hashAsm)
@@ -3651,24 +4244,23 @@ pub func lowerDeriveEquality(d: in LRecordWithDerives, pool: in Pool): ClassFile
   ClassFile(
     minorVersion = cf.minorVersion,
     majorVersion = cf.majorVersion,
-    flags        = cf.flags,
-    thisClass    = cf.thisClass,
-    superClass   = cf.superClass,
-    interfaces   = cf.interfaces,
-    fields       = cf.fields,
-    methods      = allMethods,
-    attrs        = cf.attrs
+    flags = cf.flags,
+    thisClass = cf.thisClass,
+    superClass = cf.superClass,
+    interfaces = cf.interfaces,
+    fields = cf.fields,
+    methods = allMethods,
+    attrs = cf.attrs
   )
 }
 
 // ── B123: lowerDeriveOrd (@generate(Compare/Add/Sub) on distinct types) ─────────
-
 pub record LDistinctWithDerives {
-  wrapperClass:  String
+  wrapperClass: String
   underlyingType: JvmType
   deriveCompare: Bool
-  deriveAdd:     Bool
-  deriveSub:     Bool
+  deriveAdd: Bool
+  deriveSub: Bool
 }
 
 /// Lower a distinct type with optional @generate(Compare), @generate(Add), @generate(Sub).
@@ -3676,10 +4268,7 @@ pub record LDistinctWithDerives {
 /// underlying primitive.
 pub func lowerDeriveOrd(d: in LDistinctWithDerives, pool: in Pool): ClassFile {
   // Build base distinct type
-  val base = LDistinctType(
-    wrapperClass   = d.wrapperClass,
-    underlyingType = d.underlyingType
-  )
+  val base = LDistinctType(wrapperClass = d.wrapperClass, underlyingType = d.underlyingType)
   val cf = lowerDistinctType(base, pool)
 
   val extraMethods: List[MethodInfo] = newList()
@@ -3720,7 +4309,7 @@ pub func lowerDeriveOrd(d: in LDistinctWithDerives, pool: in Pool): ClassFile {
     lowerInsn(LGetfield(owner = d.wrapperClass, name = "$value", t = d.underlyingType), addAsm)
     match d.underlyingType {
       case JLong -> lowerInsn(LLadd, addAsm)
-      case _     -> lowerInsn(LIadd, addAsm)
+      case _ -> lowerInsn(LIadd, addAsm)
     }
     val wrapperPs: List[JvmType] = newList()
     wrapperPs.add(d.underlyingType)
@@ -3729,7 +4318,9 @@ pub func lowerDeriveOrd(d: in LDistinctWithDerives, pool: in Pool): ClassFile {
     val addCode = assembleCode(addAsm, 6, 2)
     val addAttrs: List[Attribute] = newList()
     addAttrs.add(addCode)
-    extraMethods.add(makeMethodInfo(ACC_PUBLIC, "$add", buildDescriptor(selfParam, JRef(className = d.wrapperClass)), addAttrs))
+    extraMethods.add(
+      makeMethodInfo(ACC_PUBLIC, "$add", buildDescriptor(selfParam, JRef(className = d.wrapperClass)), addAttrs)
+    )
   }
 
   if d.deriveSub {
@@ -3743,7 +4334,7 @@ pub func lowerDeriveOrd(d: in LDistinctWithDerives, pool: in Pool): ClassFile {
     lowerInsn(LGetfield(owner = d.wrapperClass, name = "$value", t = d.underlyingType), subAsm)
     match d.underlyingType {
       case JLong -> lowerInsn(LLsub, subAsm)
-      case _     -> lowerInsn(LIsub, subAsm)
+      case _ -> lowerInsn(LIsub, subAsm)
     }
     val wrapperPsSub: List[JvmType] = newList()
     wrapperPsSub.add(d.underlyingType)
@@ -3752,7 +4343,9 @@ pub func lowerDeriveOrd(d: in LDistinctWithDerives, pool: in Pool): ClassFile {
     val subCode = assembleCode(subAsm, 6, 2)
     val subAttrs: List[Attribute] = newList()
     subAttrs.add(subCode)
-    extraMethods.add(makeMethodInfo(ACC_PUBLIC, "$sub", buildDescriptor(selfParam, JRef(className = d.wrapperClass)), subAttrs))
+    extraMethods.add(
+      makeMethodInfo(ACC_PUBLIC, "$sub", buildDescriptor(selfParam, JRef(className = d.wrapperClass)), subAttrs)
+    )
   }
 
   // Rebuild ClassFile with extra methods
@@ -3766,18 +4359,17 @@ pub func lowerDeriveOrd(d: in LDistinctWithDerives, pool: in Pool): ClassFile {
   ClassFile(
     minorVersion = cf.minorVersion,
     majorVersion = cf.majorVersion,
-    flags        = cf.flags,
-    thisClass    = cf.thisClass,
-    superClass   = cf.superClass,
-    interfaces   = cf.interfaces,
-    fields       = cf.fields,
-    methods      = allMethods,
-    attrs        = cf.attrs
+    flags = cf.flags,
+    thisClass = cf.thisClass,
+    superClass = cf.superClass,
+    interfaces = cf.interfaces,
+    fields = cf.fields,
+    methods = allMethods,
+    attrs = cf.attrs
   )
 }
 
 // ── B124: lowerPackage (top-level integration entry point) ────────────────────
-
 pub union LPackageItem {
   case LPRecord(rec: LRecord)
   case LPSealedUnion(su: LSealedUnion)
@@ -3801,7 +4393,7 @@ pub union LPackageItem {
 
 pub record LPackage {
   packageName: String
-  items:       List[LPackageItem]
+  items: List[LPackageItem]
 }
 
 func lowerFuncsToClass(funcsClass: in String, fns: in List[LFunc], pool: in Pool): ClassFile {

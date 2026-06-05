@@ -1,15 +1,14 @@
-// cli_suggest.l — command-name suggestion helpers for the Lyric CLI.
-//
-// Extracted from cli.l so the pure suggestion logic is unit-testable in
-// isolation (see cli_suggest_self_test.l) without importing the whole
-// Lyric.Cli package and its heavy emitter/bridge dependency graph.
-//
-// `knownCommands` lists the user-facing commands eligible for a
-// "did you mean …?" suggestion.  It deliberately excludes `lsp`: the
-// language-server command is editor-invoked, not hand-typed, and is not
-// shown in the CLI help text, so suggesting it would point a user at an
-// undocumented command (#1989).
-
+//! cli_suggest.l — command-name suggestion helpers for the Lyric CLI.
+//!
+//! Extracted from cli.l so the pure suggestion logic is unit-testable in
+//! isolation (see cli_suggest_self_test.l) without importing the whole
+//! Lyric.Cli package and its heavy emitter/bridge dependency graph.
+//!
+//! `knownCommands` lists the user-facing commands eligible for a
+//! "did you mean …?" suggestion.  It deliberately excludes `lsp`: the
+//! language-server command is editor-invoked, not hand-typed, and is not
+//! shown in the CLI help text, so suggesting it would point a user at an
+//! undocumented command (#1989).
 package Lyric.CliSuggest
 
 import Std.Core
@@ -39,18 +38,31 @@ pub func knownCommands(): List[String] {
   cmds
 }
 
-func minInt(a: in Int, b: in Int): Int { if a < b { a } else { b } }
+func minInt(a: in Int, b: in Int): Int {
+  if a < b {
+    a
+  } else {
+    b
+  }
+}
 
 // Levenshtein edit distance — small two-row DP.  Inputs are short command
 // names, so the O(n*m) cost is negligible.
 pub func editDistance(a: in String, b: in String): Int {
   val n = a.length
   val m = b.length
-  if n == 0 { return m }
-  if m == 0 { return n }
+  if n == 0 {
+    return m
+  }
+  if m == 0 {
+    return n
+  }
   var prev: List[Int] = newList()
   var j = 0
-  while j <= m { prev.add(j); j += 1 }
+  while j <= m {
+    prev.add(j)
+    j += 1
+  }
   var i = 1
   while i <= n {
     val cur: List[Int] = newList()
@@ -86,5 +98,9 @@ pub func suggestCommand(cmd: in String): Option[String] {
     }
     i += 1
   }
-  if bestDist <= 2 { best } else { None }
+  if bestDist <= 2 {
+    best
+  } else {
+    None
+  }
 }

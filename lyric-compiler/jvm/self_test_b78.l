@@ -1,16 +1,15 @@
-// jvm/self_test_b78.l — Stage B78: long[] arrays (newarray T_LONG, laload, lastore).
-//
-// Generates LongArrays.class with:
-//   makeLongs()[J   — builds {1000000000, 2000000000, 3000000000} via lastore
-//   sumLongs([J)J   — sums elements via laload
-//   getAt([JI)J     — returns element at index
-//
-// Main prints:
-//   sum=6000000000
-//   at1=2000000000
-//
-// Exercises: newarray T_LONG, lastore, laload, lreturn, ldc2_w, arraylength.
-
+//! jvm/self_test_b78.l — Stage B78: long[] arrays (newarray T_LONG, laload, lastore).
+//!
+//! Generates LongArrays.class with:
+//!   makeLongs()[J   — builds {1000000000, 2000000000, 3000000000} via lastore
+//!   sumLongs([J)J   — sums elements via laload
+//!   getAt([JI)J     — returns element at index
+//!
+//! Main prints:
+//!   sum=6000000000
+//!   at1=2000000000
+//!
+//! Exercises: newarray T_LONG, lastore, laload, lreturn, ldc2_w, arraylength.
 package Jvm.SelfTestB78
 
 import Std.Core
@@ -96,16 +95,16 @@ func makeLongArraysBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool      = poolNew()
-  val asm       = newAssembler(pool)
+  val pool = poolNew()
+  val asm = newAssembler(pool)
 
-  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnS  = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
   val concatRef = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
-  val valueOfJ  = poolMethodref(pool, "java/lang/String", "valueOf", "(J)Ljava/lang/String;")
-  val makeRef   = poolMethodref(pool, "LongArrays", "makeLongs", "()[J")
-  val sumRef    = poolMethodref(pool, "LongArrays", "sumLongs",  "([J)J")
-  val getRef    = poolMethodref(pool, "LongArrays", "getAt",     "([JI)J")
+  val valueOfJ = poolMethodref(pool, "java/lang/String", "valueOf", "(J)Ljava/lang/String;")
+  val makeRef = poolMethodref(pool, "LongArrays", "makeLongs", "()[J")
+  val sumRef = poolMethodref(pool, "LongArrays", "sumLongs", "([J)J")
+  val getRef = poolMethodref(pool, "LongArrays", "getAt", "([JI)J")
 
   // arr = LongArrays.makeLongs()   (slot 0)
   emitInvokestatic(asm, makeRef)
@@ -145,24 +144,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b78"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val longArraysBytes = makeLongArraysBytes()
-  val mainBytes       = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val longArraysClass = BuiltClass(binaryName = "LongArrays", bytes = longArraysBytes)
-  val mainClass       = BuiltClass(binaryName = "Main",       bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(longArraysClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB78",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

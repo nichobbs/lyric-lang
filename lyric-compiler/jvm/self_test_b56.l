@@ -1,17 +1,16 @@
-// jvm/self_test_b56.l — Stage B56: throw + catch with getMessage().
-//
-// Generates Validator.class (Java 5) with validate(I)V that throws
-// IllegalArgumentException("must be positive") when n <= 0.
-//
-// Main tries validate(-1) in a try/catch, catches the IAE, calls getMessage(),
-// prints the message.
-//
-// Expected output:
-//   must be positive
-//
-// Exercises: new java/lang/IllegalArgumentException, invokespecial <init>(String)V,
-//            athrow, exception handler table, invokevirtual Throwable.getMessage().
-
+//! jvm/self_test_b56.l — Stage B56: throw + catch with getMessage().
+//!
+//! Generates Validator.class (Java 5) with validate(I)V that throws
+//! IllegalArgumentException("must be positive") when n <= 0.
+//!
+//! Main tries validate(-1) in a try/catch, catches the IAE, calls getMessage(),
+//! prints the message.
+//!
+//! Expected output:
+//!   must be positive
+//!
+//! Exercises: new java/lang/IllegalArgumentException, invokespecial <init>(String)V,
+//!            athrow, exception handler table, invokevirtual Throwable.getMessage().
 package Jvm.SelfTestB56
 
 import Std.Core
@@ -22,9 +21,9 @@ import Jvm.Bytecode
 import Jvm.Driver
 
 func makeValidatorClassBytes(): List[Byte] {
-  val pool    = poolNew()
+  val pool = poolNew()
   val iaeClass = poolClass(pool, "java/lang/IllegalArgumentException")
-  val iaeInit  = poolMethodref(pool, "java/lang/IllegalArgumentException", "<init>", "(Ljava/lang/String;)V")
+  val iaeInit = poolMethodref(pool, "java/lang/IllegalArgumentException", "<init>", "(Ljava/lang/String;)V")
 
   // ── validate(I)V ─────────────────────────────────────────────────────────────
   // if n > 0: return
@@ -55,10 +54,10 @@ func makeValidatorClassBytes(): List[Byte] {
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
 
-  val sysOut      = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnStr  = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnStr = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
   val validateRef = poolMethodref(pool, "Validator", "validate", "(I)V")
-  val getMessage  = poolMethodref(pool, "java/lang/Throwable", "getMessage", "()Ljava/lang/String;")
+  val getMessage = poolMethodref(pool, "java/lang/Throwable", "getMessage", "()Ljava/lang/String;")
   val iaeClassIdx = poolClass(pool, "java/lang/IllegalArgumentException")
 
   // Try block code:
@@ -74,19 +73,28 @@ func makeMainClassBytes(): List[Byte] {
   //   invokevirtual println    (3 bytes, offset 13-15)
   //   return           (1 byte, offset 16)
   val asmTry = newAssembler(pool)
-  emitPushInt(asmTry, -1)           // iconst_m1 (1 byte)
-  emitInvokestatic(asmTry, validateRef) // 3 bytes
-  emitReturn(asmTry)                // 1 byte — normal-path return (offset 4)
+  emitPushInt(asmTry, -1)
+  // iconst_m1 (1 byte)
+  emitInvokestatic(asmTry, validateRef)
+  // 3 bytes
+  emitReturn(asmTry)
+  // 1 byte — normal-path return (offset 4)
 
   val ar = assembleRaw(asmTry)
 
   val asmHandler = newAssembler(pool)
-  emitAstore(asmHandler, 1)         // store exception; (1 byte)
-  emitGetstatic(asmHandler, sysOut) // 3 bytes
-  emitAload(asmHandler, 1)          // 1 byte
-  emitInvokevirtual(asmHandler, getMessage) // 3 bytes
-  emitInvokevirtual(asmHandler, printlnStr) // 3 bytes
-  emitReturn(asmHandler)            // 1 byte
+  emitAstore(asmHandler, 1)
+  // store exception; (1 byte)
+  emitGetstatic(asmHandler, sysOut)
+  // 3 bytes
+  emitAload(asmHandler, 1)
+  // 1 byte
+  emitInvokevirtual(asmHandler, getMessage)
+  // 3 bytes
+  emitInvokevirtual(asmHandler, printlnStr)
+  // 3 bytes
+  emitReturn(asmHandler)
+  // 1 byte
 
   val arH = assembleRaw(asmHandler)
 
@@ -113,24 +121,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b56"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val validatorBytes = makeValidatorClassBytes()
-  val mainBytes      = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val validatorClass = BuiltClass(binaryName = "Validator", bytes = validatorBytes)
-  val mainClass      = BuiltClass(binaryName = "Main",      bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(validatorClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB56",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

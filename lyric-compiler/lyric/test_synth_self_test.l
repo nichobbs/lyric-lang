@@ -1,8 +1,8 @@
-// test_synth_self_test.l — exercises the self-hosted Lyric.TestSynth
-// library.  Compiled and executed by the F# Expecto runner at
-// compiler/tests/Lyric.Emitter.Tests/SelfHostedTestSynthTests.fs.
-// Each in-program assertion panics on mismatch; exit 0 + an "ok"
-// line in stdout means every check held.
+//! test_synth_self_test.l — exercises the self-hosted Lyric.TestSynth
+//! library.  Compiled and executed by the F# Expecto runner at
+//! compiler/tests/Lyric.Emitter.Tests/SelfHostedTestSynthTests.fs.
+//! Each in-program assertion panics on mismatch; exit 0 + an "ok"
+//! line in stdout means every check held.
 package Lyric.TestSynthSelfTest
 
 import Std.Core
@@ -51,22 +51,25 @@ func testSynthesisesPassingTwoTests(): Unit {
 
 func testRejectsMissingTestModule(): Unit {
   match synthesize(noModuleSource(), None) {
-    case NoTestModule(_) -> {}
-    case _               -> panic("expected NoTestModule")
+    case NoTestModule(_) -> {
+    }
+    case _ -> panic("expected NoTestModule")
   }
 }
 
 func testRejectsUserMain(): Unit {
   match synthesize(userMainSource(), None) {
-    case UserMainExists(_) -> {}
-    case _                 -> panic("expected UserMainExists")
+    case UserMainExists(_) -> {
+    }
+    case _ -> panic("expected UserMainExists")
   }
 }
 
 func testRejectsFixture(): Unit {
   match synthesize(fixtureSource(), None) {
-    case FixtureUnsupported(_) -> {}
-    case _                     -> panic("expected FixtureUnsupported")
+    case FixtureUnsupported(_) -> {
+    }
+    case _ -> panic("expected FixtureUnsupported")
   }
 }
 
@@ -76,9 +79,7 @@ func testPropertyReportedAsSkip(): Unit {
       assertEqualInt(n, 1, "one runnable test")
       assertEqualInt(sk, 1, "one skip")
       assertTrue(Str.contains(rewritten, "ok 1 - unit"), "test runs")
-      assertTrue(
-        Str.contains(rewritten, "# skip 2 - prop: property: not implemented in v1"),
-        "property skip line")
+      assertTrue(Str.contains(rewritten, "# skip 2 - prop: property: not implemented in v1"), "property skip line")
     }
     case _ -> panic("expected Synthesised outcome")
   }
@@ -101,12 +102,12 @@ func testListEntriesEnumerates(): Unit {
     case Ok(xs) -> {
       assertEqualInt(xs.count, 2, "test + property entry")
       match xs[0] {
-        case TestEntry(t)        -> assertEqual(t, "unit", "first entry is test 'unit'")
-        case _                   -> panic("expected TestEntry first")
+        case TestEntry(t) -> assertEqual(t, "unit", "first entry is test 'unit'")
+        case _ -> panic("expected TestEntry first")
       }
       match xs[1] {
         case PropertyEntry(t, _) -> assertEqual(t, "prop", "second entry is property 'prop'")
-        case _                   -> panic("expected PropertyEntry second")
+        case _ -> panic("expected PropertyEntry second")
       }
     }
     case Err(_) -> panic("listEntries unexpectedly errored")

@@ -1,6 +1,6 @@
-// parser_ast.l — AST type definitions for the self-hosted Lyric parser.
-// Mirrors compiler/src/Lyric.Parser/Ast.fs.  All types are pub so the
-// compiler pipeline can import Lyric.Parser and access them.
+//! parser_ast.l — AST type definitions for the self-hosted Lyric parser.
+//! Mirrors compiler/src/Lyric.Parser/Ast.fs.  All types are pub so the
+//! compiler pipeline can import Lyric.Parser and access them.
 package Lyric.Parser
 
 import Std.Core
@@ -10,10 +10,9 @@ import Lyric.Lexer
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Paths, visibility, doc-comments, annotations, literals.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub record ModulePath {
   segments: List[String]
-  span:     Span
+  span: Span
 }
 
 pub union Visibility {
@@ -23,8 +22,8 @@ pub union Visibility {
 
 pub record DocComment {
   isModule: Bool
-  text:     String
-  span:     Span
+  text: String
+  span: Span
 }
 
 pub union AnnotationValue {
@@ -55,11 +54,10 @@ pub union Literal {
   case LRawString(text: String)
   case LBool(value: Bool)
   case LUnit
+  // ─────────────────────────────────────────────────────────────────────────────
+  // §2. Type arguments and range bounds (forward-reference Expr).
+  // ─────────────────────────────────────────────────────────────────────────────
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §2. Type arguments and range bounds (forward-reference Expr).
-// ─────────────────────────────────────────────────────────────────────────────
 
 pub union RangeBound {
   case RBClosed(lo: Expr, hi: Expr)
@@ -71,11 +69,10 @@ pub union RangeBound {
 pub union TypeArg {
   case TAType(ty: TypeExpr)
   case TAValue(expr: Expr)
+  // ─────────────────────────────────────────────────────────────────────────────
+  // §3. Type expressions.
+  // ─────────────────────────────────────────────────────────────────────────────
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §3. Type expressions.
-// ─────────────────────────────────────────────────────────────────────────────
 
 pub record TypeExpr {
   kind: TypeExprKind
@@ -96,11 +93,10 @@ pub union TypeExprKind {
   case TNever
   case TParen(inner: TypeExpr)
   case TError
+  // ─────────────────────────────────────────────────────────────────────────────
+  // §4. Patterns.
+  // ─────────────────────────────────────────────────────────────────────────────
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §4. Patterns.
-// ─────────────────────────────────────────────────────────────────────────────
 
 pub union RecordPatternField {
   case RPFNamed(name: String, pattern: Pattern, span: Span)
@@ -124,11 +120,10 @@ pub union PatternKind {
   case PTypeTest(inner: Pattern, ty: TypeExpr)
   case POr(patterns: List[Pattern])
   case PError
+  // ─────────────────────────────────────────────────────────────────────────────
+  // §5. Contracts.
+  // ─────────────────────────────────────────────────────────────────────────────
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §5. Contracts.
-// ─────────────────────────────────────────────────────────────────────────────
 
 pub record InvariantClause {
   expr: Expr
@@ -141,15 +136,14 @@ pub union ContractClause {
   case CCWhen(expr: Expr, span: Span)
   case CCDecreases(expr: Expr, span: Span)
   case CCRaises(types: List[TypeExpr], span: Span)
+  // ─────────────────────────────────────────────────────────────────────────────
+  // §6. Generics, where-clauses, parameters.
+  // ─────────────────────────────────────────────────────────────────────────────
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §6. Generics, where-clauses, parameters.
-// ─────────────────────────────────────────────────────────────────────────────
 
 pub record PropertyBinder {
   name: String
-  ty:   TypeExpr
+  ty: TypeExpr
   span: Span
 }
 
@@ -160,14 +154,14 @@ pub record ConstraintRef {
 }
 
 pub record WhereBound {
-  name:        String
+  name: String
   constraints: List[ConstraintRef]
-  span:        Span
+  span: Span
 }
 
 pub record WhereClause {
   bounds: List[WhereBound]
-  span:   Span
+  span: Span
 }
 
 pub union GenericParam {
@@ -177,7 +171,7 @@ pub union GenericParam {
 
 pub record GenericParams {
   params: List[GenericParam]
-  span:   Span
+  span: Span
 }
 
 pub union ParamMode {
@@ -187,16 +181,15 @@ pub union ParamMode {
 }
 
 pub record Param {
-  mode:    ParamMode
-  name:    String
-  ty:      TypeExpr
-  dflt:    Option[Expr]
-  span:    Span
+  mode: ParamMode
+  name: String
+  ty: TypeExpr
+  dflt: Option[Expr]
+  span: Span
+  // ─────────────────────────────────────────────────────────────────────────────
+  // §7. Expressions.
+  // ─────────────────────────────────────────────────────────────────────────────
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §7. Expressions.
-// ─────────────────────────────────────────────────────────────────────────────
 
 pub union PrefixOp {
   case PreNeg
@@ -249,15 +242,15 @@ pub union CallArg {
 
 pub record LambdaParam {
   name: String
-  ty:   Option[TypeExpr]
+  ty: Option[TypeExpr]
   span: Span
 }
 
 pub record MatchArm {
   pattern: Pattern
-  guard:   Option[Expr]
-  body:    ExprOrBlock
-  span:    Span
+  guard: Option[Expr]
+  body: ExprOrBlock
+  span: Span
 }
 
 pub record Expr {
@@ -296,15 +289,14 @@ pub union ExprKind {
   case EBlock(block: Block)
   case EUnsafe(block: Block)
   case EError
+  // ─────────────────────────────────────────────────────────────────────────────
+  // §8. Blocks and statements.
+  // ─────────────────────────────────────────────────────────────────────────────
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §8. Blocks and statements.
-// ─────────────────────────────────────────────────────────────────────────────
 
 pub record Block {
   statements: List[Statement]
-  span:       Span
+  span: Span
 }
 
 pub union LocalBinding {
@@ -316,8 +308,8 @@ pub union LocalBinding {
 pub record CatchClause {
   typeName: String
   bindName: Option[String]
-  body:     Block
-  span:     Span
+  body: Block
+  span: Span
 }
 
 pub union StatementKind {
@@ -342,23 +334,22 @@ pub union StatementKind {
 pub record Statement {
   kind: StatementKind
   span: Span
+  // ─────────────────────────────────────────────────────────────────────────────
+  // §9. Declaration types.
+  // ─────────────────────────────────────────────────────────────────────────────
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §9. Declaration types.
-// ─────────────────────────────────────────────────────────────────────────────
 
 pub record FieldDecl {
   docComments: List[DocComment]
   annotations: List[Annotation]
-  visibility:  Option[Visibility]
+  visibility: Option[Visibility]
   // `true` when the field was declared `var` (a mutable record/opaque field,
   // language reference §3.4).  Plain fields are immutable.
-  isMutable:   Bool
-  name:        String
-  ty:          TypeExpr
-  dflt:        Option[Expr]
-  span:        Span
+  isMutable: Bool
+  name: String
+  ty: TypeExpr
+  dflt: Option[Expr]
+  span: Span
 }
 
 pub union RecordMember {
@@ -368,11 +359,11 @@ pub union RecordMember {
 }
 
 pub record RecordDecl {
-  name:        String
-  generics:    Option[GenericParams]
+  name: String
+  generics: Option[GenericParams]
   whereClause: Option[WhereClause]
-  members:     List[RecordMember]
-  span:        Span
+  members: List[RecordMember]
+  span: Span
 }
 
 pub union UnionField {
@@ -383,30 +374,30 @@ pub union UnionField {
 pub record UnionCase {
   docComments: List[DocComment]
   annotations: List[Annotation]
-  name:        String
-  fields:      List[UnionField]
-  span:        Span
+  name: String
+  fields: List[UnionField]
+  span: Span
 }
 
 pub record UnionDecl {
-  name:        String
-  generics:    Option[GenericParams]
+  name: String
+  generics: Option[GenericParams]
   whereClause: Option[WhereClause]
-  cases:       List[UnionCase]
-  span:        Span
+  cases: List[UnionCase]
+  span: Span
 }
 
 pub record EnumCase {
   docComments: List[DocComment]
   annotations: List[Annotation]
-  name:        String
-  span:        Span
+  name: String
+  span: Span
 }
 
 pub record EnumDecl {
-  name:  String
+  name: String
   cases: List[EnumCase]
-  span:  Span
+  span: Span
 }
 
 pub union OpaqueMember {
@@ -415,13 +406,13 @@ pub union OpaqueMember {
 }
 
 pub record OpaqueTypeDecl {
-  name:        String
-  generics:    Option[GenericParams]
+  name: String
+  generics: Option[GenericParams]
   whereClause: Option[WhereClause]
   annotations: List[Annotation]
-  members:     List[OpaqueMember]
-  hasBody:     Bool
-  span:        Span
+  members: List[OpaqueMember]
+  hasBody: Bool
+  span: Span
 }
 
 pub union ProtectedField {
@@ -438,28 +429,28 @@ pub union FunctionBody {
 pub record FunctionDecl {
   docComments: List[DocComment]
   annotations: List[Annotation]
-  visibility:  Option[Visibility]
-  isAsync:     Bool
-  name:        String
-  generics:    Option[GenericParams]
-  params:      List[Param]
-  ret:         Option[TypeExpr]
+  visibility: Option[Visibility]
+  isAsync: Bool
+  name: String
+  generics: Option[GenericParams]
+  params: List[Param]
+  ret: Option[TypeExpr]
   whereClause: Option[WhereClause]
-  contracts:   List[ContractClause]
-  body:        Option[FunctionBody]
-  span:        Span
+  contracts: List[ContractClause]
+  body: Option[FunctionBody]
+  span: Span
 }
 
 pub record EntryDecl {
   docComments: List[DocComment]
   annotations: List[Annotation]
-  visibility:  Option[Visibility]
-  name:        String
-  params:      List[Param]
-  ret:         Option[TypeExpr]
-  contracts:   List[ContractClause]
-  body:        FunctionBody
-  span:        Span
+  visibility: Option[Visibility]
+  name: String
+  params: List[Param]
+  ret: Option[TypeExpr]
+  contracts: List[ContractClause]
+  body: FunctionBody
+  span: Span
 }
 
 pub union ProtectedMember {
@@ -470,38 +461,38 @@ pub union ProtectedMember {
 }
 
 pub record ProtectedTypeDecl {
-  name:        String
-  generics:    Option[GenericParams]
+  name: String
+  generics: Option[GenericParams]
   whereClause: Option[WhereClause]
-  members:     List[ProtectedMember]
-  span:        Span
+  members: List[ProtectedMember]
+  span: Span
 }
 
 pub record TypeAliasDecl {
-  name:     String
+  name: String
   generics: Option[GenericParams]
-  rhs:      TypeExpr
-  span:     Span
+  rhs: TypeExpr
+  span: Span
 }
 
 pub record DistinctTypeDecl {
-  name:       String
-  generics:   Option[GenericParams]
+  name: String
+  generics: Option[GenericParams]
   underlying: TypeExpr
   rangeClause: Option[RangeBound]
-  derives:    List[String]
-  span:       Span
+  derives: List[String]
+  span: Span
 }
 
 pub record FunctionSig {
-  isAsync:     Bool
-  name:        String
-  generics:    Option[GenericParams]
-  params:      List[Param]
-  ret:         Option[TypeExpr]
+  isAsync: Bool
+  name: String
+  generics: Option[GenericParams]
+  params: List[Param]
+  ret: Option[TypeExpr]
   whereClause: Option[WhereClause]
-  contracts:   List[ContractClause]
-  span:        Span
+  contracts: List[ContractClause]
+  span: Span
 }
 
 pub record AssociatedTypeDecl {
@@ -517,11 +508,11 @@ pub union InterfaceMember {
 }
 
 pub record InterfaceDecl {
-  name:        String
-  generics:    Option[GenericParams]
+  name: String
+  generics: Option[GenericParams]
   whereClause: Option[WhereClause]
-  members:     List[InterfaceMember]
-  span:        Span
+  members: List[InterfaceMember]
+  span: Span
 }
 
 pub union ImplMember {
@@ -530,12 +521,12 @@ pub union ImplMember {
 }
 
 pub record ImplDecl {
-  generics:    Option[GenericParams]
-  iface:       ConstraintRef
-  target:      TypeExpr
+  generics: Option[GenericParams]
+  iface: ConstraintRef
+  target: TypeExpr
   whereClause: Option[WhereClause]
-  members:     List[ImplMember]
-  span:        Span
+  members: List[ImplMember]
+  span: Span
 }
 
 pub union WireMember {
@@ -548,10 +539,10 @@ pub union WireMember {
 }
 
 pub record WireDecl {
-  name:    String
-  params:  List[Param]
+  name: String
+  params: List[Param]
   members: List[WireMember]
-  span:    Span
+  span: Span
 }
 
 pub record ScopeKindDecl {
@@ -571,56 +562,55 @@ pub union ExternMember {
 }
 
 pub record ExternPackageDecl {
-  path:        ModulePath
+  path: ModulePath
   annotations: List[Annotation]
-  members:     List[ExternMember]
-  span:        Span
+  members: List[ExternMember]
+  span: Span
 }
 
 pub record ExternTypeDecl {
-  name:     String
+  name: String
   generics: Option[GenericParams]
-  clrName:  String
-  span:     Span
+  clrName: String
+  span: Span
 }
 
 pub record TestDecl {
   title: String
-  body:  Block
-  span:  Span
+  body: Block
+  span: Span
 }
 
 pub record PropertyDecl {
-  title:    String
-  forAll:   List[PropertyBinder]
+  title: String
+  forAll: List[PropertyBinder]
   guardExpr: Option[Expr]
-  body:     Block
-  span:     Span
+  body: Block
+  span: Span
 }
 
 pub record FixtureDecl {
   name: String
-  ty:   Option[TypeExpr]
+  ty: Option[TypeExpr]
   init: Expr
   span: Span
+  // ─────────────────────────────────────────────────────────────────────────────
+  // §10. Items.
+  // ─────────────────────────────────────────────────────────────────────────────
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §10. Items.
-// ─────────────────────────────────────────────────────────────────────────────
 
 pub record ConstDecl {
   name: String
-  ty:   TypeExpr
+  ty: TypeExpr
   init: Expr
   span: Span
 }
 
 pub record ValDecl {
   pattern: Pattern
-  ty:      Option[TypeExpr]
-  init:    Expr
-  span:    Span
+  ty: Option[TypeExpr]
+  init: Expr
+  span: Span
 }
 
 pub union ItemKind {
@@ -658,16 +648,16 @@ pub union ItemKind {
 pub record ConfigField {
   docComments: List[DocComment]
   annotations: List[Annotation]
-  name:        String
-  ty:          TypeExpr
-  default:     Option[Expr]
-  span:        Span
+  name: String
+  ty: TypeExpr
+  default: Option[Expr]
+  span: Span
 }
 
 pub record ConfigDecl {
-  name:   String
+  name: String
   fields: List[ConfigField]
-  span:   Span
+  span: Span
 }
 
 /// `matches:` predicate for D047 aspect blocks.  All predicates within
@@ -682,47 +672,48 @@ pub union AspectMatcher {
 
 pub record AspectAround {
   argsName: String
-  retName:  Option[String]
-  body:     Block
-  span:     Span
+  retName: Option[String]
+  body: Block
+  span: Span
 }
 
 pub record AspectDecl {
-  name:        String
+  name: String
   /// `from Pkg.Template` — present only on instantiation-form aspects (D051).
-  from:        Option[ModulePath]
+  from: Option[ModulePath]
   /// Anonymous `config { }` block inside the aspect body (D047/D051).
-  config:      List[ConfigField]
+  config: List[ConfigField]
   /// Predicates that all must hold (AND) for a function to be matched.
-  matches:     List[AspectMatcher]
+  matches: List[AspectMatcher]
   /// Short names excluded from matching even when all predicates hold.
   exceptNames: List[String]
-  around:      Option[AspectAround]
-  contracts:   List[ContractClause]   // §5 composition: requires:/ensures: on aspect body
-  wraps:       List[String]           // §6 ordering: this aspect wraps the named aspects
-  inside:      List[String]           // §6 ordering: this aspect runs inside the named aspects
-  span:        Span
+  around: Option[AspectAround]
+  contracts: List[ContractClause]
+  // §5 composition: requires:/ensures: on aspect body
+  wraps: List[String]
+  // §6 ordering: this aspect wraps the named aspects
+  inside: List[String]
+  // §6 ordering: this aspect runs inside the named aspects
+  span: Span
+  // D046 / D047 self-hosted parser dispatch + bodies are added in
+  // `parser_items.l` alongside the AST shapes above.
 }
-
-// D046 / D047 self-hosted parser dispatch + bodies are added in
-// `parser_items.l` alongside the AST shapes above.
 
 pub record Item {
   docComments: List[DocComment]
   annotations: List[Annotation]
-  visibility:  Option[Visibility]
-  kind:        ItemKind
-  span:        Span
+  visibility: Option[Visibility]
+  kind: ItemKind
+  span: Span
+  // ─────────────────────────────────────────────────────────────────────────────
+  // §11. Imports and source file.
+  // ─────────────────────────────────────────────────────────────────────────────
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// §11. Imports and source file.
-// ─────────────────────────────────────────────────────────────────────────────
-
 pub record ImportItem {
-  name:    String
+  name: String
   asAlias: Option[String]
-  span:    Span
+  span: Span
 }
 
 pub union ImportSelector {
@@ -731,11 +722,11 @@ pub union ImportSelector {
 }
 
 pub record ImportDecl {
-  path:     ModulePath
+  path: ModulePath
   selector: Option[ImportSelector]
-  asAlias:  Option[String]
+  asAlias: Option[String]
   isPubUse: Bool
-  span:     Span
+  span: Span
 }
 
 pub record PackageDecl {
@@ -744,16 +735,16 @@ pub record PackageDecl {
 }
 
 pub record SourceFile {
-  moduleDoc:       List[DocComment]
+  moduleDoc: List[DocComment]
   fileAnnotations: List[Annotation]
-  packageDecl:     PackageDecl
-  imports:         List[ImportDecl]
-  items:           List[Item]
-  span:            Span
+  packageDecl: PackageDecl
+  imports: List[ImportDecl]
+  items: List[Item]
+  span: Span
 }
 
 pub record ParseResult {
-  file:        SourceFile
+  file: SourceFile
   diagnostics: List[Diagnostic]
   /// Concrete syntax tree — lossless red/green representation that
   /// preserves every byte of the original source (including comments
@@ -762,10 +753,10 @@ pub record ParseResult {
   /// or LSP walks it to render or refactor without losing trivia.
   /// See `parser_cst.l` for the data model and `nodeSourceText` for
   /// byte-faithful reconstruction.
-  cst:         GreenNode
+  cst: GreenNode
   /// Original source string (post CR/LF normalisation by `lex`).
   /// Carried alongside the CST so callers can render token text via
   /// `tokenSourceText` / `nodeSourceText` without retaining the file
   /// contents themselves.
-  source:      String
+  source: String
 }

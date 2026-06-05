@@ -1,6 +1,6 @@
-// modechecker_self_test.l — exercises the self-hosted Lyric.ModeChecker library.
-// Compiled and executed by SelfHostedModeCheckerTests.fs.
-// Exit 0 + "ok" in stdout means all checks held.
+//! modechecker_self_test.l — exercises the self-hosted Lyric.ModeChecker library.
+//! Compiled and executed by SelfHostedModeCheckerTests.fs.
+//! Exit 0 + "ok" in stdout means all checks held.
 package Lyric.ModeCheckerSelfTest
 
 import Std.Core
@@ -12,7 +12,6 @@ import Lyric.ModeChecker
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func parseCheck(src: in String): ModeCheckResult {
   val pr = parse(src)
   checkFile(pr.file)
@@ -21,7 +20,9 @@ func parseCheck(src: in String): ModeCheckResult {
 func hasDiagCode(result: in ModeCheckResult, code: in String): Bool {
   var i = 0
   while i < result.diagnostics.count {
-    if result.diagnostics[i].code == code { return true }
+    if result.diagnostics[i].code == code {
+      return true
+    }
     i = i + 1
   }
   false
@@ -34,12 +35,14 @@ func diagCount(result: in ModeCheckResult): Int {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testRuntimeCheckedDefault(): Unit {
   val result = parseCheck("package P\nfunc f(): Int { 1 }\n")
   match result.level {
-    case VLRuntimeChecked -> {}
-    case _ -> { assertTrue(false, "default-level: expected VLRuntimeChecked") }
+    case VLRuntimeChecked -> {
+    }
+    case _ -> {
+      assertTrue(false, "default-level: expected VLRuntimeChecked")
+    }
   }
   assertEqualInt(diagCount(result), 0, "default-level: no diagnostics")
 }
@@ -47,8 +50,11 @@ func testRuntimeCheckedDefault(): Unit {
 func testExplicitRuntimeChecked(): Unit {
   val result = parseCheck("@runtime_checked\npackage P\nfunc f(): Int { 1 }\n")
   match result.level {
-    case VLRuntimeChecked -> {}
-    case _ -> { assertTrue(false, "explicit-rc: expected VLRuntimeChecked") }
+    case VLRuntimeChecked -> {
+    }
+    case _ -> {
+      assertTrue(false, "explicit-rc: expected VLRuntimeChecked")
+    }
   }
   assertEqualInt(diagCount(result), 0, "explicit-rc: no diagnostics")
 }
@@ -56,8 +62,11 @@ func testExplicitRuntimeChecked(): Unit {
 func testProofRequired(): Unit {
   val result = parseCheck("@proof_required\npackage P\nfunc f(): Int { 1 }\n")
   match result.level {
-    case VLProofRequired -> {}
-    case _ -> { assertTrue(false, "proof-req: expected VLProofRequired") }
+    case VLProofRequired -> {
+    }
+    case _ -> {
+      assertTrue(false, "proof-req: expected VLProofRequired")
+    }
   }
   assertEqualInt(diagCount(result), 0, "proof-req: no diagnostics")
 }
@@ -65,8 +74,11 @@ func testProofRequired(): Unit {
 func testProofRequiredUnsafe(): Unit {
   val result = parseCheck("@proof_required(unsafe_blocks_allowed)\npackage P\nfunc f(): Unit {}\n")
   match result.level {
-    case VLProofRequiredUnsafe -> {}
-    case _ -> { assertTrue(false, "pr-unsafe: expected VLProofRequiredUnsafe") }
+    case VLProofRequiredUnsafe -> {
+    }
+    case _ -> {
+      assertTrue(false, "pr-unsafe: expected VLProofRequiredUnsafe")
+    }
   }
   assertEqualInt(diagCount(result), 0, "pr-unsafe: no diagnostics")
 }
@@ -74,8 +86,11 @@ func testProofRequiredUnsafe(): Unit {
 func testAxiomLevel(): Unit {
   val result = parseCheck("@axiom\npackage P\nfunc f(): Int\n")
   match result.level {
-    case VLAxiom -> {}
-    case _ -> { assertTrue(false, "axiom-level: expected VLAxiom") }
+    case VLAxiom -> {
+    }
+    case _ -> {
+      assertTrue(false, "axiom-level: expected VLAxiom")
+    }
   }
   assertEqualInt(diagCount(result), 0, "axiom-level: no diagnostics")
 }
@@ -166,8 +181,7 @@ func testCrossPackageCallV0002(): Unit {
   // V0002 at the call site, in addition to V0001 at the import.
   val imports: List[ImportedMeta] = newList()
   imports.add(ImportedMeta(name = "Ext.Lib", level = "runtime_checked"))
-  val src =
-    "@proof_required\npackage P\nimport Ext.Lib\nfunc f(): Unit { Ext.Lib.someFunc() }\n"
+  val src = "@proof_required\npackage P\nimport Ext.Lib\nfunc f(): Unit { Ext.Lib.someFunc() }\n"
   val pr = parse(src)
   val result = checkFileWithImports(pr.file, imports)
   assertTrue(hasDiagCode(result, "V0002"), "cross-pkg: V0002 emitted for cross-package call")
@@ -177,8 +191,7 @@ func testCrossPackageCallProofOk(): Unit {
   // Calling into a proof_required package from proof_required is fine.
   val imports: List[ImportedMeta] = newList()
   imports.add(ImportedMeta(name = "Safe.Lib", level = "proof_required"))
-  val src =
-    "@proof_required\npackage P\nimport Safe.Lib\nfunc f(): Unit { Safe.Lib.helper() }\n"
+  val src = "@proof_required\npackage P\nimport Safe.Lib\nfunc f(): Unit { Safe.Lib.helper() }\n"
   val pr = parse(src)
   val result = checkFileWithImports(pr.file, imports)
   assertTrue(not (hasDiagCode(result, "V0002")), "cross-pkg-ok: V0002 not emitted for proof_required callee")
@@ -188,11 +201,13 @@ func testCrossPackageSingleSegmentV0002(): Unit {
   // Covers the EPath-receiver branch (single-segment package name).
   val imports: List[ImportedMeta] = newList()
   imports.add(ImportedMeta(name = "Pkg", level = "runtime_checked"))
-  val src =
-    "@proof_required\npackage P\nimport Pkg\nfunc f(): Unit { Pkg.someFunc() }\n"
+  val src = "@proof_required\npackage P\nimport Pkg\nfunc f(): Unit { Pkg.someFunc() }\n"
   val pr = parse(src)
   val result = checkFileWithImports(pr.file, imports)
-  assertTrue(hasDiagCode(result, "V0002"), "single-seg-pkg: V0002 emitted for single-segment runtime_checked package call")
+  assertTrue(
+    hasDiagCode(result, "V0002"),
+    "single-seg-pkg: V0002 emitted for single-segment runtime_checked package call"
+  )
 }
 
 func main(): Unit {

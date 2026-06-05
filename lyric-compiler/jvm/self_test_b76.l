@@ -1,16 +1,15 @@
-// jvm/self_test_b76.l — Stage B76: char[] arrays (newarray T_CHAR, caload, castore).
-//
-// Generates CharArrays.class with:
-//   reverse(char[])char[] — allocates new array, copies src reversed
-//   makeHello()char[]     — builds {'H','e','l','l','o'} via castore
-//   fromArray(char[])String — calls new String(char[])
-//
-// Main prints:
-//   fromArray(reverse(makeHello())) → "olleH"
-//
-// Exercises: newarray T_CHAR, castore (store int as char), caload,
-//            arraylength, String constructor taking char[].
-
+//! jvm/self_test_b76.l — Stage B76: char[] arrays (newarray T_CHAR, caload, castore).
+//!
+//! Generates CharArrays.class with:
+//!   reverse(char[])char[] — allocates new array, copies src reversed
+//!   makeHello()char[]     — builds {'H','e','l','l','o'} via castore
+//!   fromArray(char[])String — calls new String(char[])
+//!
+//! Main prints:
+//!   fromArray(reverse(makeHello())) → "olleH"
+//!
+//! Exercises: newarray T_CHAR, castore (store int as char), caload,
+//!            arraylength, String constructor taking char[].
 package Jvm.SelfTestB76
 
 import Std.Core
@@ -21,9 +20,9 @@ import Jvm.Bytecode
 import Jvm.Driver
 
 func makeCharArraysBytes(): List[Byte] {
-  val pool      = poolNew()
+  val pool = poolNew()
   val strFromCA = poolMethodref(pool, "java/lang/String", "<init>", "([C)V")
-  val strClass  = poolClass(pool, "java/lang/String")
+  val strClass = poolClass(pool, "java/lang/String")
 
   // makeHello()char[]  — builds {'H','e','l','l','o'}
   // H=72, e=101, l=108, l=108, o=111
@@ -107,8 +106,7 @@ func makeCharArraysBytes(): List[Byte] {
   val fromCode = assembleCode(asmFrom, 3, 1)
   val fromAttrs: List[Attribute] = newList()
   fromAttrs.add(fromCode)
-  val fromMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "fromArray",
-    "([C)Ljava/lang/String;", fromAttrs)
+  val fromMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "fromArray", "([C)Ljava/lang/String;", fromAttrs)
 
   val methods: List[MethodInfo] = newList()
   methods.add(helloMethod)
@@ -119,14 +117,14 @@ func makeCharArraysBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool      = poolNew()
-  val asm       = newAssembler(pool)
+  val pool = poolNew()
+  val asm = newAssembler(pool)
 
-  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnS  = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val helloRef  = poolMethodref(pool, "CharArrays", "makeHello",  "()[C")
-  val revRef    = poolMethodref(pool, "CharArrays", "reverse",    "([C)[C")
-  val fromRef   = poolMethodref(pool, "CharArrays", "fromArray",  "([C)Ljava/lang/String;")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val helloRef = poolMethodref(pool, "CharArrays", "makeHello", "()[C")
+  val revRef = poolMethodref(pool, "CharArrays", "reverse", "([C)[C")
+  val fromRef = poolMethodref(pool, "CharArrays", "fromArray", "([C)Ljava/lang/String;")
 
   // println(CharArrays.fromArray(CharArrays.reverse(CharArrays.makeHello()))) → "olleH"
   emitGetstatic(asm, sysOut)
@@ -150,24 +148,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b76"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val charArraysBytes = makeCharArraysBytes()
-  val mainBytes       = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val charArraysClass = BuiltClass(binaryName = "CharArrays", bytes = charArraysBytes)
-  val mainClass       = BuiltClass(binaryName = "Main",       bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(charArraysClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB76",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {
