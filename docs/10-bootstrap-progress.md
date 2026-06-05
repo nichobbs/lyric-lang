@@ -21417,3 +21417,66 @@ Not in this stage (later in epic #2359): concrete `List<T>` / `Dictionary<K,V>`
 case-class naming `Union_Case` vs `Union$Case` (Stage 4, #2363), and routing the
 *restored*-dependency registration path (`codegen.l`) through the same concrete
 encoding + DLL linking (Stage 5, #2364).
+
+### D-progress-441 — Band 3 Phase 4: `spawn` lowering + `await` extern pass-through (#2070, D091)
+
+**What shipped:**
+
+- **`isTaskTypeMsil` helper** (`lyric-compiler/msil/codegen.l`):
+
+  New predicate that checks whether a `MsilType` is `Task` (non-generic) or
+  `Task<T>` (generic): matches `MGenericInst(trCode, _, _)` against `trTask1`
+  and `MClassRef(trCode, _)` against `trTask`.  Used to gate `EAwait` lowering
+  so that already-resolved values pass through unchanged.
+
+- **`ESpawn(inner)` lowering**:
+
+  `ESpawn` is lowered by delegating straight to `lowerExprMsil` for the inner
+  expression.  The inner expression is always an async function call whose
+  kickoff already returns `Task<T>` (the F# emitter routes the kickoff via the
+  state-machine `.Start()` + return pattern); no additional wrapping is needed.
+
+- **`EAwait` gating via `isTaskTypeMsil`**:
+
+  After lowering the inner expression, the `EAwait` case checks
+  `isTaskTypeMsil(taskTy)`:
+  - If **false** (e.g. `await externFn()` where the blocking wrapper already
+    resolved `T`): emit nothing extra — pass the value through unchanged.
+  - If **true** and inside a Phase B SM context (`fctx.phaseBCtx.count > 0`):
+    call `emitPhaseBAwait` (the existing suspension + resume path).
+  - If **true** and outside a SM context: call `emitBlockingAwait` (the
+    existing `.get_Result()` / `.Wait()` blocking path).
+
+- **Two-phase `collectAwaitTypesPhaseBMsil` pre-scan**:
+
+  The pre-scan that discovers `await`-typed locals for Phase B field promotion
+  now includes a first pass that collects `val h = spawn f()` bindings into
+  parallel lists `spawnNms: List[String]` and `spawnTys: List[MsilType]`.
+  A subsequent recursive scan resolves `EPath` references against this spawn
+  environment so that `await handle` correctly promotes the `Task<T>` field
+  rather than failing to infer its type.
+
+- **`inferCallReturnTypePB` extended for `ESpawn` and `EPath`**:
+
+  The helper that infers return types for pre-scan purposes now handles:
+  - `ESpawn(inner)` — delegates to the inner call's return-type inference,
+    since the kickoff result is already `Task<T>`.
+  - `EPath([name])` — looks up `name` in the spawn environment (parallel
+    `spawnNms` / `spawnTys` lists) and returns the stored `Task<T>` type,
+    enabling correct field-promotion for stored spawn handles.
+
+- **`async_sm_self_test.l` Phase 4** — 3 new async functions and 3 new test
+  cases (tests 27–29):
+  - `asyncSpawnImmediate(7)` → 8 (`await spawn asyncAddOne(n)` inline)
+  - `asyncSpawnAndStore(4)` → 5 (`val handle = spawn asyncAddOne(n); await handle`)
+  - `asyncSpawnTwoAndAdd(3, 6)` → 11 (two handles, sequential `await`, then `r1 + r2`)
+
+- **`async_extern_self_test.l` Phase 4** (tests 3–4) — `await` on a blocking
+  `@externTarget` async extern is a pass-through:
+  - `await stringReaderReadToEnd(reader)` returns `String` (non-Task `isTaskTypeMsil`
+    → false), value flows through unchanged.
+  - `await taskDelay(0)` likewise: void blocking extern, pass-through, no error.
+
+**Regression gate:** 29/29 `async_sm_self_test.l` tests pass (26 Phase B.0–B.3 +
+3 Phase 4 spawn).  4/4 `async_extern_self_test.l` tests pass.  843/843 emitter
+tests green.

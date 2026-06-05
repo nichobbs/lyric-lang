@@ -5207,6 +5207,82 @@ and `stack_spill_await_in_binop` F# inline tests continue to pass.  All 24 async
 
 ---
 
+## D091 — Band 3 Phase 4: `spawn` semantics and `await externFn()` pass-through (#2070)
+
+**Context:** D090 completed the synchronous-context stack-spill work for complex `await`
+sub-expressions.  Two remaining Phase 4 items were identified in the epic:
+
+1. **`spawn asyncFn(args)`** — kick off an async function and return its `Task<T>` handle to
+   the caller without blocking.  The caller can store the handle in a `val` and later
+   `await handle` to block for the result.
+
+2. **`await externFn()` pass-through** — `@externTarget` async functions (e.g.
+   `stringReaderReadToEnd`, `taskDelay`) already block synchronously via an appended
+   `.get_Result()` or `.Wait()` call; their Lyric return type is `T`, not `Task<T>`.  An
+   explicit `await` on such a call should be a no-op pass-through — the value is already
+   resolved and `isTaskTypeMsil(T)` returns false.
+
+**Decisions:**
+
+**`ESpawn(inner)` lowering (MSIL):** `lowerExprMsil(ESpawn(inner))` lowers the inner
+expression (which may be an `ECall` or another `ESpawn`) and returns the resulting
+`MsilType` unchanged.  The call-site kick-off already produces a `Task<T>` on the stack (the
+async kick-off returns a running `Task<T>` immediately), so no additional wrapping is needed.
+`spawn asyncFn(args)` in a non-SM context stores the `Task<T>` on the stack; `await handle`
+then calls `emitBlockingAwait` to block for the result.
+
+**`EAwait(inner)` gating via `isTaskTypeMsil`:** A new helper `isTaskTypeMsil(cctx, ty)`
+checks whether an `MsilType` is `Task` (non-generic) or `Task<T>` (generic).  The `EAwait`
+lowering path now gates on this check:
+- If `isTaskTypeMsil(ty)` is false: the inner expression already produced `T` — emit
+  nothing extra (pass-through).
+- If true and `phaseBCtx.count > 0`: emit full Phase B suspension via `emitPhaseBAwait`.
+- If true and `phaseBCtx.count == 0`: emit blocking unwrap via `emitBlockingAwait`.
+
+This correctly handles `await externFn()` (inner type is `T`, not `Task<T>`) as a
+pass-through, and handles `await spawnedHandle` (inner type is `Task<T>`) via blocking.
+
+**Pre-scan for spawn bindings (`collectAwaitTypesPhaseBMsil`):** A two-phase pre-scan was
+introduced to track `val h = spawn asyncFn(x)` bindings so that a later `await h` inside
+an async SM knows to allocate a `TaskAwaiter<T>` awaiter field:
+
+- **Phase 1 (flat top-level scan):** Walks only the outermost block's statements, looking for
+  `SLocal(LBVal(PBinding(name), None, ESpawn(inner)))`.  For each such binding, calls
+  `inferCallReturnTypePB(inner)` to obtain the `Task<T>` type and adds `(name, Task<T>)` to
+  parallel `spawnNms: List[String]` / `spawnTys: List[MsilType]` locals.  Mutation happens
+  only on LOCAL variables (never on `in` parameters) to work around an F# bootstrap emitter
+  limitation where `.add()` on `in List[T]` parameters fails for non-BCL type arguments.
+
+- **Phase 2 (recursive scan):** The full body is scanned read-only, passing the pre-built
+  `spawnNms`/`spawnTys` lists as `in` parameters (no mutation).  `collectAwaitTypesExprPB`
+  checks `EAwait(EPath(name))` against the spawn list to allocate the correct awaiter type.
+
+Nested `spawn` bindings (inside `if`/`match`/loops) are deferred; the flat pre-scan covers
+all Phase 4 test patterns.
+
+**`inferCallReturnTypePB` extension:** Added `ESpawn(inner)` → delegate to inner, and
+`EPath(name)` linear scan of `spawnNms`/`spawnTys` (replacing the earlier `Map[String, MsilType]`
+spawn-env which failed due to the same F# bootstrap emitter `.add()` limitation on `in Map`
+parameters).
+
+**Alternatives considered:**
+- Registering `Task<T>` as the Lyric type-level return type of `spawn`: rejected — Lyric's
+  type system treats `spawn f(x)` as having the same type as `f(x)` (the `ESpawn` type checker
+  path delegates to the inner expression).  The `Task<T>` wrapping is an MSIL implementation
+  detail only.
+- Using a `Map[String, MsilType]` spawn environment: attempted first but blocked by the F#
+  bootstrap emitter's BCL dispatch failure for two-arg `.add(k,v)` on `in Map[K,V]`
+  parameters when `V` is a non-BCL Lyric type.  Replaced with the parallel-list approach.
+
+**Tests:**
+- `async_sm_self_test.l`: 3 new `async func` helpers (`asyncSpawnImmediate`,
+  `asyncSpawnAndStore`, `asyncSpawnTwoAndAdd`) + 3 test cases (Phase 4 section, tests 27–29).
+  All 29 tests pass.
+- `async_extern_self_test.l`: 2 new test cases covering `await externFn()` pass-through
+  (tests 3–4).  All 4 tests pass.  843/843 emitter tests green.  Tracked as D-progress-441.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
