@@ -96,8 +96,17 @@ pub func compileToMsilWithVersion(
   val file0 = Stubbable.stubbableRewriteFile(Aliases.rewriteFile(parseResult.file))
 
   val tcRes = checkWithImportedPackages(file0, importedPkgs)
-  reportDiagnostics(tcRes.diagnostics)
-  // advisory: type checker lacks builtin coverage
+  // #1488 gate: single-file type-check diagnostics are now fatal, matching the
+  // already-gating project path (`compileProjectToMsil`).  The Band-1
+  // single-file false-positive surface was closed category by category
+  // (D-progress-420..437: `result` shadowing, argument-type overloads, generic
+  // return inference, package-scoped resolution, range-subtype arithmetic,
+  // interface subtyping, `@stubbable` synthesis, alias-aware qualified calls,
+  // Byte/Int conversions) and Band 6 cross-package resolution landed (#2271), so
+  // type errors in a single-file build now abort instead of emitting broken IL.
+  if reportAndAbort(tcRes.diagnostics) {
+    return false
+  }
 
   val mcRes = checkFile(file0)
   if reportAndAbort(mcRes.diagnostics) {

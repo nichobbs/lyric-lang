@@ -74,7 +74,7 @@ pub func checkStatement(
   stmt: in Statement,
 ): Unit {
   match stmt.kind {
-    case SLocal(binding) -> match binding { case LBVal(pat, tyOpt, init) -> { val initType = inferExpr(sc, tbl, sigs, diag, init); val bindType = match tyOpt { case None -> initType; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); if not typeEquiv(declT, initType) { diag.add(errorDiagnostic("T0060", "val binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); declT } }; bindPattern(sc, pat, bindType) }; case LBVar(name, tyOpt, initOpt) -> { val initType = match initOpt { case None -> TyError; case Some(e) -> inferExpr(sc, tbl, sigs, diag, e) }; val bindType = match tyOpt { case None -> initType; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); match initOpt { case Some(initE) -> { if not typeEquiv(declT, initType) { diag.add(errorDiagnostic("T0061", "var binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, initE, diag) }; case None -> {  } }; declT } }; scopeAdd(sc, LocalBinding(name = name, ty = bindType, isMutable = true)) }; case LBLet(name, tyOpt, init) -> { val initType = inferExpr(sc, tbl, sigs, diag, init); val bindType = match tyOpt { case None -> initType; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); if not typeEquiv(declT, initType) { diag.add(errorDiagnostic("T0062", "let binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); declT } }; scopeAdd(sc, LocalBinding(name = name, ty = bindType, isMutable = false)) } }
+    case SLocal(binding) -> match binding { case LBVal(pat, tyOpt, init) -> { val initType = inferExpr(sc, tbl, sigs, diag, init); val bindType = match tyOpt { case None -> initType; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0060", "val binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); declT } }; bindPattern(sc, pat, bindType) }; case LBVar(name, tyOpt, initOpt) -> { val initType = match initOpt { case None -> TyError; case Some(e) -> inferExpr(sc, tbl, sigs, diag, e) }; val bindType = match tyOpt { case None -> initType; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); match initOpt { case Some(initE) -> { if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0061", "var binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, initE, diag) }; case None -> {  } }; declT } }; scopeAdd(sc, LocalBinding(name = name, ty = bindType, isMutable = true)) }; case LBLet(name, tyOpt, init) -> { val initType = inferExpr(sc, tbl, sigs, diag, init); val bindType = match tyOpt { case None -> initType; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0062", "let binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); declT } }; scopeAdd(sc, LocalBinding(name = name, ty = bindType, isMutable = false)) } }
 
     case SAssign(target, _, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
@@ -238,6 +238,42 @@ pub func checkBlock(
     match stmt.kind {
       case SExpr(e) -> {
         lastExprType = inferExpr(sc, tbl, sigs, diag, e)
+      }
+      // A `try`/`catch` in value position (e.g. a trailing `try`/`catch` bound
+      // to a `val`) yields the branch value, not `Unit`.  Check the body, each
+      // catch handler (with the exception bound), and `finally` here — mirroring
+      // checkStatement's STry arm — and join the branch types: the try body's
+      // type wins, except a `Never` (always-diverging) body defers to a handler.
+      // The bootstrap codegen lowers this via a shared temp, so a `val r = try …`
+      // must type `r` as the branch value rather than `Unit` (#1488 flip).
+      case STry(body, catches, fin) -> {
+        var resultTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body)
+        var ci = 0
+        while ci < catches.count {
+          val c = catches[ci]
+          scopePush(sc)
+          match c.bindName {
+            case None -> {
+            }
+            case Some(bname) -> {
+              scopeAdd(sc, LocalBinding(name = bname, ty = TyException, isMutable = false))
+            }
+          }
+          val hTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, c.body)
+          scopePop(sc)
+          if typeEquiv(resultTy, TyPrim(pt = PtNever)) {
+            resultTy = hTy
+          }
+          ci = ci + 1
+        }
+        match fin {
+          case None -> {
+          }
+          case Some(fb) -> {
+            val _ = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, fb)
+          }
+        }
+        lastExprType = resultTy
       }
       case _ -> {
         checkStatement(sc, tbl, sigs, genericNames, returnTy, diag, stmt)
