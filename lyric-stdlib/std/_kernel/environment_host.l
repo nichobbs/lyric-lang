@@ -1,8 +1,9 @@
-//! std/_kernel/environment_host.l - trusted host boundary for process state.
-//!
-//! Environment variables, command-line arguments, and process exit are
-//! host-global effects. Public wrappers in Std.Environment keep the
-//! recoverable parts Result-based and make process termination explicit.
+// std/_kernel/environment_host.l - trusted host boundary for process state.
+//
+// Environment variables, command-line arguments, and process exit are
+// host-global effects. Public wrappers in Std.Environment keep the
+// recoverable parts Result-based and make process termination explicit.
+
 @axiom("System.Environment operations conform to their documented .NET contracts")
 package Std.EnvironmentHost
 
@@ -29,6 +30,16 @@ pub func hostAppBaseDirectory(): String = ()
 // development tree).
 @externTarget("System.IO.Directory.GetCurrentDirectory")
 pub func hostCurrentDirectory(): String = ()
+
+// Directory of the active .NET runtime shared framework, e.g.
+// `/usr/share/dotnet/shared/Microsoft.NETCore.App/10.0.x/`.  Used by
+// the self-hosted metadata reader to discover the reference-pack root on
+// installations where DOTNET_ROOT is unset and the root is not in the
+// standard `/usr/share/dotnet` or `~/.dotnet` paths (e.g. Homebrew macOS).
+// May return an empty string in native-AOT scenarios.
+@axiom("System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory conforms to its documented .NET contract")
+@externTarget("System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory")
+pub func hostRuntimeDirectory(): String = ()
 
 // Terminates the current process. The BCL method is void; Lyric callers
 // see Never because Environment.Exit does not return in practice.

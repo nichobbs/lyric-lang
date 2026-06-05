@@ -81,3 +81,4 @@ pub func appBaseDirectory(): String {
 pub func currentDirectory(): String {
   hostCurrentDirectory()
 }
+

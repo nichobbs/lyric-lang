@@ -20,6 +20,7 @@ let private mk (label: string, source: string, expected: string) : Test =
 let private cases : (string * string * string) list = [
 
     // 1714521600 seconds = 2024-05-01T00:00:00Z.
+    // Codegen.fs uses ToString("o") — ISO 8601 round-trip format.
     "fromEpochSeconds_round_trip",
     """
 package T1
@@ -31,7 +32,7 @@ func main(): Unit {
   println(toString(t))
 }
 """,
-    "05/01/2024 00:00:00"
+    "2024-05-01T00:00:00.0000000Z"
 
     "fromEpochMillis_round_trip",
     """
@@ -44,7 +45,7 @@ func main(): Unit {
   println(toString(t))
 }
 """,
-    "05/01/2024 00:00:00"
+    "2024-05-01T00:00:00.0000000Z"
 
     // BCL `AddMonths` preserves day-of-month where possible.
     "addMonths_basic",
@@ -59,7 +60,7 @@ func main(): Unit {
   println(toString(u))
 }
 """,
-    "07/01/2024 00:00:00"
+    "2024-07-01T00:00:00.0000000Z"
 
     "addYears_basic",
     """
@@ -73,7 +74,7 @@ func main(): Unit {
   println(toString(u))
 }
 """,
-    "05/01/2029 00:00:00"
+    "2029-05-01T00:00:00.0000000Z"
 
     "addDays_basic",
     """
@@ -87,7 +88,7 @@ func main(): Unit {
   println(toString(u))
 }
 """,
-    "05/31/2024 00:00:00"
+    "2024-05-31T00:00:00.0000000Z"
 
     // IANA / Windows-name lookup.  "UTC" is universally recognised.
     "hostFindTimeZone_utc",
