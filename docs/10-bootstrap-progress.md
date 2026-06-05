@@ -20956,6 +20956,44 @@ package's own function signatures**.  `Std.Regex.tryCompile`'s
 
 **Regression gate:** 24/24 emitter async tests green; 19/19 async_sm_self_test.l green.
 
+### D-progress-434 — Band 3 Phase B.2+: `var` promotion and while-loop await scan fix (#2070, D089)
+
+**What shipped:**
+
+- **`LBVar` promotion** in `lyric-compiler/msil/codegen.l`:
+
+  - `lowerStmtMsil` `LBVar` non-hoisted `Some(init)` branch: calls
+    `phaseBRegisterAndSyncLocal` after `emitStoreSlot` so mutable locals
+    with initializers are promoted to SM fields.
+
+  - `lowerStmtMsil` `LBVar` non-hoisted `None` branch (zero-init): calls
+    `phaseBRegisterAndSyncLocal` after the zero-fill so loop counters
+    (`var i = 0`) are promoted to SM fields.
+
+  - `lowerAssignExprMsil` EPath `Some(slot)` case: both `AssEq` and
+    compound-op paths now call `phaseBSyncLocalIfPromoted` after each
+    `emitStoreSlot` to keep the SM field current after every assignment.
+
+- **`collectAwaitTypesStmtPB` completeness fix**: added explicit cases for
+  `SWhile`, `SFor`, `SLoop`, `SScope`, `STry`, `SAssign`, and `SThrow` so
+  every `EAwait` inside nested control-flow blocks is counted.  Previously
+  `case _ -> {}` silently skipped these, causing `resumeLabels[0]` to be
+  accessed on an empty list (`ArgumentOutOfRangeException`) for any async
+  function whose body contains a while loop with an `await`.
+
+- **Makefile `aot` target**: `--no-incremental` ensures `lyric.deps.json`
+  is always regenerated after stage1 adds new DLLs.  Prevents the stale-
+  TPA crash introduced by the `Lyric.Lyric.Stubbable` addition.
+
+- **`async_sm_self_test.l` extended** — 2 new tests (tests 20–21):
+  - `asyncSumWithLoop(3)`: `var i`, `var acc` in a while-loop body with
+    one `await asyncAddOne(i)` per iteration; result = 6.
+  - `asyncSumWithLoop(0)`: zero-iteration case; result = 0.
+  All 21 tests (7 Phase B.0 + 8 Phase B.1 + 4 Phase B.2 + 2 new) pass.
+
+**Regression gate:** 843/843 emitter tests green; 84/84 CLI tests green;
+21/21 async_sm_self_test.l green.
+
 ### D-progress-431 — self-hosted type checker: range-subtype arithmetic / comparison (#1488 gate, Band-1 of #1470)
 
 **Status:** Shipped — type-checker-only.
@@ -21275,3 +21313,52 @@ Remaining (tracked separately, **not** gate blockers):
   its closure pulls in `Lyric.Emitter` → `Jvm.Bridge` → `Jvm.Kernel`.
 - The JVM single-file path (`jvm/bridge.l`) advisory→fatal flip, once the JVM
   `lyric test` path's pre-existing environment issue is resolved.
+
+### D-progress-439 — Band 3 Phase B.3: stack-spill for `EAwait` in expression-position operands (#2070, D090)
+
+**What shipped:**
+
+- **Stack-spill logic in `lowerBinopMsil`** (`lyric-compiler/msil/codegen.l`):
+
+  All binary operators (`BAdd`, `BSub`, `BMul`, `BDiv`, `BMod`, `BXor`, `BEq`,
+  `BNeq`, `BLt`, `BGt`, `BLte`, `BGte`) now check `exprContainsAwaitMsil(rhs)`
+  before lowering the RHS.  When true (and inside a Phase B.1 SM context,
+  `fctx.phaseBCtx.count > 0`):
+
+  - **Commutative ops** (`+`, `*`, `xor`, `==`, `!=`): call `phaseBSpillToLocal`
+    to pop the LHS result from TOS into a promoted SM field; after the RHS is
+    computed, `ldloc spillIdx` reloads it.  Stack order `[rhs, lhs]` is fine for
+    commutative ops.
+
+  - **Non-commutative ops** (`-`, `/`, `%`, `<`, `>`, `<=`, `>=`): call
+    `phaseBSpillToLocal` for LHS, then after RHS push allocate a second
+    (non-promoted) temp slot and emit `stloc rhsTemp; ldloc spillIdx;
+    ldloc rhsTemp` to restore `[lhs, rhs]` order.
+
+  - **String concatenation** (`BAdd MString`): the existing `__sadd_N` local is
+    registered as a promoted SM field (via `phaseBRegisterAndSyncLocal`) when the
+    RHS contains an await, so the stored LHS string survives any suspension.
+
+- **New helper `phaseBSpillToLocal`**: allocates a local slot, emits `stloc`,
+  calls `phaseBRegisterAndSyncLocal` to promote it, and returns the local index.
+  All call sites use the guard `fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs)`.
+
+- **`async_sm_self_test.l` Phase B.3 section** — 5 new async functions and
+  5 new test cases (tests 22–26):
+  - `asyncAddBothAwaited(5)` → 12 (commutative add, both operands awaited)
+  - `asyncSubBothAwaited(5,3)` → 2 (non-commutative sub, both awaited)
+  - `asyncLtBothAwaited(3,5)` → true / `asyncLtBothAwaited(5,3)` → false
+  - `asyncAddRhsAwaited(5)` → 16 (literal lhs, awaited rhs)
+  - `asyncStrConcatBothAwaited()` → "Hello, A!Hello, B!"
+
+**JVM target note:** Both the Phase B.2+ promoted-locals fixes and the Phase B.3
+binop stack-spill fix are **structurally inapplicable** to the JVM backend.  The JVM
+`EAwait` lowering (`lyric-compiler/jvm/codegen.l:780`) is bootstrap-synchronous:
+`await expr` is lowered as a plain pass-through with no state machine, no `leave`,
+and no between-invocation stack clearing.  JVM locals persist for the full lifetime
+of a method activation, so promoted-field saving is unnecessary.  Closed as
+not-applicable in issue #2356.
+
+**Regression gate:** All 24 F# async emitter tests pass.  All 26 `async_sm_self_test.l`
+tests pass (7 Phase B.0 + 8 Phase B.1 + 4 Phase B.2 + 2 Phase B.2+ + 5 Phase B.3).
+843/843 emitter tests green.

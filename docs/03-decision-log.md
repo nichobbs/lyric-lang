@@ -5115,6 +5115,97 @@ await, two-vals-survive-two-awaits, val-defined-between-awaits-survives-second, 
 val-survives-three-awaits.  All 19 tests pass.
 
 ---
+
+## D089 — Band 3 Phase B.2+: `var` promotion and while-loop await scanning fix (#2070)
+
+**Context:** D088 extended Phase B.2 promoted locals to `LBLet` (`val`) bindings.  Two
+further correctness gaps remained:
+
+1. **`LBVar` bindings not promoted:** `var i = 0` in an async function body allocated a
+   plain MoveNext local slot.  After suspension+resume the CLR zeroed the slot, corrupting
+   the loop counter.  Fix: `LBVar` non-hoisted branches (both `Some(init)` and `None`)
+   now call `phaseBRegisterAndSyncLocal` to register the var as a promoted field.
+   Reassignment handlers (`lowerAssignExprMsil` EPath `AssEq` and compound-op paths) now
+   call `phaseBSyncLocalIfPromoted` to keep the SM field current after every write.
+
+2. **`collectAwaitTypesStmtPB` missing `SWhile` (and other control-flow forms):** The
+   pre-scan that counts `EAwait` nodes (to pre-allocate `resumeLabels` and
+   `awaiterFieldNames`) had `case _ -> {}` for all statement kinds not explicitly listed,
+   silently skipping `SWhile`, `SFor`, `SLoop`, `SScope`, `STry`, `SAssign`, and `SThrow`.
+   An `EAwait` inside a while-loop body was therefore never counted; `emitPhaseBAwait`
+   accessed `resumeLabels[0]` on an empty list and crashed with `ArgumentOutOfRangeException`.
+   Fix: added explicit cases for every statement kind that contains sub-blocks or
+   sub-expressions, matching the completeness already in `collectAwaitTypesExprPB`.
+
+**Bonus fix — stale `deps.json` with new stage1 DLLs:** After the stubbable port
+(`Lyric.Lyric.Stubbable.dll` added to stage1), the `Makefile` `aot` target ran
+`dotnet build` incrementally, skipping `deps.json` regeneration.  The new DLL was absent
+from the TPA list, causing `FileNotFoundException` on any `lyric test` run.  Fix:
+`dotnet build --no-incremental` in the `aot` target so `deps.json` is always regenerated
+to match the current stage1 glob.
+
+**Result:** 2 new tests in `async_sm_self_test.l` (tests 20–21) cover var-bindings-in-while-
+loop with n=3 (result=6) and n=0 (result=0).  All 21 tests pass.
+
+---
+## D090 — Band 3 Phase B.3: stack-spill for `EAwait` in expression-position operands (#2070)
+
+**Context:** D088–D089 covered promoted locals for named bindings.  A complementary gap
+existed for *anonymous* intermediate values: when `await expr` appears as a sub-expression
+of a binary operator (e.g. `(await f()) + (await g())`), the left-operand result sits on
+the eval stack while the right operand is being computed.  If the right operand contains an
+`await` that actually suspends, the CLR's `leave` instruction clears the evaluation stack
+at the suspension point — the left-operand value is irrecoverably lost.
+
+**Decision:** Extend `lowerBinopMsil` with stack-spill logic for all binary operators:
+
+- Before lowering the RHS, call `exprContainsAwaitMsil(rhs)` to check whether RHS contains
+  any `EAwait` node.
+- If true, call `phaseBSpillToLocal(pbc, fctx, insns, lhsTy)`:
+  - Allocates a new local slot.
+  - Emits `stloc` to pop the LHS value from the stack into that slot.
+  - Calls `phaseBRegisterAndSyncLocal` to register the slot as a promoted SM field and
+    emit `ldarg.0; ldloc; stfld __local___spill_N` — saving it to the SM immediately so
+    it survives any suspension inside the RHS.
+  - Returns the local index for the caller to use.
+- Lower RHS normally (including any awaits within it).
+- After RHS is complete, reload the spilled LHS if needed:
+  - **Commutative operators** (`+`, `*`, `xor`, `==`, `!=`): emit `ldloc spillIdx` after
+    RHS; stack becomes [rhs_result, lhs_result]; the op produces the correct result.
+  - **Non-commutative operators** (`-`, `/`, `%`, `<`, `>`, `<=`, `>=`): allocate a
+    temporary RHS slot, emit `stloc rhsTemp; ldloc spillIdx; ldloc rhsTemp`  to restore
+    [lhs, rhs] order before the op.  The RHS temp does not need to be promoted (it is
+    only used within the same MoveNext invocation, after the await completes).
+- **String concatenation** (`BAdd` on `MString`): the LHS is already stored to a named
+  local (`__sadd_N`) before lowering the RHS.  When RHS contains an await, that local is
+  additionally registered/synced as a promoted SM field via `phaseBRegisterAndSyncLocal`.
+- Guard: all spill-path branches are gated on `fctx.phaseBCtx.count > 0` so non-async
+  functions are unaffected.
+
+**New helper:** `phaseBSpillToLocal(pbc, fctx, insns, ty): Int` — one-stop spill that
+allocates, stores, and promotes; returns the local index.
+
+**Tests:** `async_sm_self_test.l` Phase B.3 section (5 new test functions + 5 test cases):
+`asyncAddBothAwaited` (commutative add), `asyncSubBothAwaited` (non-commutative sub),
+`asyncLtBothAwaited` (comparison), `asyncAddRhsAwaited` (literal lhs, awaited rhs), and
+`asyncStrConcatBothAwaited` (string concat with both sides awaited).
+
+**JVM target:** Both D088–D090 fixes (promoted locals and binop stack-spill) are
+**structurally inapplicable** to the JVM backend.  The JVM `EAwait` lowering
+(`lyric-compiler/jvm/codegen.l:780`) is bootstrap-synchronous — `await expr` lowers
+as a pass-through `lowerExpr(ctx, insns, inner)` with no state machine, no suspend/
+resume protocol, and no `leave` instruction.  JVM locals are never zeroed between
+"invocations" of a single method activation, so the promoted-field pattern is
+unnecessary.  True JVM async will be a separate effort (virtual-thread continuations
+or bytecode transformation) when Phase B equivalent work is scoped for that target;
+at that point a dedicated D-progress entry will track it.  Closed as not-applicable
+in issue #2356.
+
+**Result:** All 26 tests in `async_sm_self_test.l` pass.  Existing `stack_spill_two_await_args`
+and `stack_spill_await_in_binop` F# inline tests continue to pass.  All 24 async F# tests pass.
+843/843 emitter tests green.  Tracked as D-progress-439.
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

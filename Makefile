@@ -48,7 +48,7 @@ stage1-fast: ## Stage 1 without the CLI bundle — fastest loop for a single com
 	SKIP_CLI_BUNDLE=1 ./scripts/bootstrap.sh --stage 1
 
 aot: ## Build the AOT entry-point project (requires a prior `make stage1`)
-	dotnet build bootstrap/src/Lyric.Cli.Aot --configuration $(BUILD_CONFIG)
+	dotnet build bootstrap/src/Lyric.Cli.Aot --configuration $(BUILD_CONFIG) --no-incremental
 
 lyric: stage1 aot ## Build the end-to-end `lyric` binary and symlink it to ./bin/lyric
 	@mkdir -p bin

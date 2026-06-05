@@ -3340,7 +3340,12 @@ func lowerBinopMsil(
     // Comparison operators — produce 0 or 1.
     case BEq -> {
       val beqLhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
+      // Equality is symmetric: treat as commutative — just ldloc spill after rhs.
+      val beqSpillIdx = if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
+        phaseBSpillToLocal(fctx.phaseBCtx[0], fctx, insns, beqLhsTy)
+      } else { -1 }
       val beqRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+      if beqSpillIdx >= 0 { insns.add(MLdloc(slot = beqSpillIdx)) }
       match beqLhsTy {
         case MInt | MBool | MChar | MLong | MDouble -> {
           insns.add(MCeq)
@@ -3365,7 +3370,11 @@ func lowerBinopMsil(
     }
     case BNeq -> {
       val bneqLhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
+      val bneqSpillIdx = if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
+        phaseBSpillToLocal(fctx.phaseBCtx[0], fctx, insns, bneqLhsTy)
+      } else { -1 }
       val bneqRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+      if bneqSpillIdx >= 0 { insns.add(MLdloc(slot = bneqSpillIdx)) }
       match bneqLhsTy {
         case MInt | MBool | MChar | MLong | MDouble -> {
           insns.add(MCeq)
@@ -3387,9 +3396,21 @@ func lowerBinopMsil(
         }
       }
     }
+    // For non-commutative comparison/arithmetic ops, spill lhs before rhs evaluation,
+    // then stash rhs result and reload [lhs, rhs] in correct order for the op.
     case BLt -> {
       val bltLhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
+      val bltSpillIdx = if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
+        phaseBSpillToLocal(fctx.phaseBCtx[0], fctx, insns, bltLhsTy)
+      } else { -1 }
       val bltRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+      if bltSpillIdx >= 0 {
+        val rN = "__spill_r_" + toString(fctx.slotTicker.count)
+        val rS = allocSlotMsil(fctx, rN, bltRhsTy)
+        insns.add(MStloc(slot = rS - fctx.paramCount))
+        insns.add(MLdloc(slot = bltSpillIdx))
+        insns.add(MLdloc(slot = rS - fctx.paramCount))
+      }
       if bltRhsTy == MObject and isValueType(bltLhsTy) {
         insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, bltLhsTy)))
       }
@@ -3398,7 +3419,17 @@ func lowerBinopMsil(
     }
     case BGt -> {
       val bgtLhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
+      val bgtSpillIdx = if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
+        phaseBSpillToLocal(fctx.phaseBCtx[0], fctx, insns, bgtLhsTy)
+      } else { -1 }
       val bgtRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+      if bgtSpillIdx >= 0 {
+        val rN = "__spill_r_" + toString(fctx.slotTicker.count)
+        val rS = allocSlotMsil(fctx, rN, bgtRhsTy)
+        insns.add(MStloc(slot = rS - fctx.paramCount))
+        insns.add(MLdloc(slot = bgtSpillIdx))
+        insns.add(MLdloc(slot = rS - fctx.paramCount))
+      }
       if bgtRhsTy == MObject and isValueType(bgtLhsTy) {
         insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, bgtLhsTy)))
       }
@@ -3408,7 +3439,17 @@ func lowerBinopMsil(
     case BLte -> {
       // a <= b  ≡  !(a > b)
       val blteLhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
+      val blteSpillIdx = if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
+        phaseBSpillToLocal(fctx.phaseBCtx[0], fctx, insns, blteLhsTy)
+      } else { -1 }
       val blteRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+      if blteSpillIdx >= 0 {
+        val rN = "__spill_r_" + toString(fctx.slotTicker.count)
+        val rS = allocSlotMsil(fctx, rN, blteRhsTy)
+        insns.add(MStloc(slot = rS - fctx.paramCount))
+        insns.add(MLdloc(slot = blteSpillIdx))
+        insns.add(MLdloc(slot = rS - fctx.paramCount))
+      }
       if blteRhsTy == MObject and isValueType(blteLhsTy) {
         insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, blteLhsTy)))
       }
@@ -3420,7 +3461,17 @@ func lowerBinopMsil(
     case BGte -> {
       // a >= b  ≡  !(a < b)
       val bgteLhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
+      val bgteSpillIdx = if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
+        phaseBSpillToLocal(fctx.phaseBCtx[0], fctx, insns, bgteLhsTy)
+      } else { -1 }
       val bgteRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+      if bgteSpillIdx >= 0 {
+        val rN = "__spill_r_" + toString(fctx.slotTicker.count)
+        val rS = allocSlotMsil(fctx, rN, bgteRhsTy)
+        insns.add(MStloc(slot = rS - fctx.paramCount))
+        insns.add(MLdloc(slot = bgteSpillIdx))
+        insns.add(MLdloc(slot = rS - fctx.paramCount))
+      }
       if bgteRhsTy == MObject and isValueType(bgteLhsTy) {
         insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, bgteLhsTy)))
       }
@@ -3435,10 +3486,16 @@ func lowerBinopMsil(
       match lhsTy {
         case MString -> {
           // String concatenation via String.Concat(string,string).
-          // Store lhs temporarily, lower rhs (converting to string if needed), then Concat2.
-          val saddLhsSlot = allocSlotMsil(fctx,
-            "__sadd_" + toString(fctx.slotTicker.count), MString)
-          insns.add(MStloc(slot = saddLhsSlot - fctx.paramCount))
+          // Store lhs temporarily; promote to SM field if rhs has an await so it
+          // survives any suspension.  Then lower rhs (converting to string if needed),
+          // stash rhs, and call Concat2(lhs, rhs).
+          val saddName    = "__sadd_" + toString(fctx.slotTicker.count)
+          val saddLhsSlot = allocSlotMsil(fctx, saddName, MString)
+          val saddLhsLocalIdx = saddLhsSlot - fctx.paramCount
+          insns.add(MStloc(slot = saddLhsLocalIdx))
+          if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
+            phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, saddName, MString, saddLhsLocalIdx)
+          }
           val saddRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
           match saddRhsTy {
             case MString -> {}
@@ -3453,66 +3510,120 @@ func lowerBinopMsil(
           val saddRhsSlot = allocSlotMsil(fctx,
             "__sadd_r_" + toString(fctx.slotTicker.count), MString)
           insns.add(MStloc(slot = saddRhsSlot - fctx.paramCount))
-          insns.add(MLdloc(slot = saddLhsSlot - fctx.paramCount))
+          insns.add(MLdloc(slot = saddLhsLocalIdx))
           insns.add(MLdloc(slot = saddRhsSlot - fctx.paramCount))
           insns.add(MCall(methodToken = cctx.tokConcat2))
           MString
         }
+        // Commutative numeric adds: spill lhs before rhs if rhs has await, then
+        // reload lhs after rhs (operand order doesn't matter for add).
         case MLong -> {
+          val baddLSpillIdx = if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
+            phaseBSpillToLocal(fctx.phaseBCtx[0], fctx, insns, MLong)
+          } else { -1 }
           lowerExprMsil(cctx, fctx, insns, rhs)
+          if baddLSpillIdx >= 0 { insns.add(MLdloc(slot = baddLSpillIdx)) }
           insns.add(MAdd)
           MLong
         }
         case MDouble -> {
+          val baddDSpillIdx = if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
+            phaseBSpillToLocal(fctx.phaseBCtx[0], fctx, insns, MDouble)
+          } else { -1 }
           lowerExprMsil(cctx, fctx, insns, rhs)
+          if baddDSpillIdx >= 0 { insns.add(MLdloc(slot = baddDSpillIdx)) }
           insns.add(MAdd)
           MDouble
         }
         case _ -> {
+          val baddISpillIdx = if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
+            phaseBSpillToLocal(fctx.phaseBCtx[0], fctx, insns, MInt)
+          } else { -1 }
           lowerExprMsil(cctx, fctx, insns, rhs)
+          if baddISpillIdx >= 0 { insns.add(MLdloc(slot = baddISpillIdx)) }
           insns.add(MAdd)
           MInt
         }
       }
     }
     case BSub -> {
-      val lhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
-      lowerExprMsil(cctx, fctx, insns, rhs)
-      match lhsTy {
+      val bsubLhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
+      val bsubSpillIdx = if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
+        phaseBSpillToLocal(fctx.phaseBCtx[0], fctx, insns, bsubLhsTy)
+      } else { -1 }
+      val bsubRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+      if bsubSpillIdx >= 0 {
+        val rN = "__spill_r_" + toString(fctx.slotTicker.count)
+        val rS = allocSlotMsil(fctx, rN, bsubRhsTy)
+        insns.add(MStloc(slot = rS - fctx.paramCount))
+        insns.add(MLdloc(slot = bsubSpillIdx))
+        insns.add(MLdloc(slot = rS - fctx.paramCount))
+      }
+      match bsubLhsTy {
         case MLong   -> { insns.add(MSub); MLong }
         case MDouble -> { insns.add(MSub); MDouble }
         case _       -> { insns.add(MSub); MInt }
       }
     }
     case BMul -> {
-      val lhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
+      val bmulLhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
+      // mul is commutative: just reload spill after rhs.
+      val bmulSpillIdx = if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
+        phaseBSpillToLocal(fctx.phaseBCtx[0], fctx, insns, bmulLhsTy)
+      } else { -1 }
       lowerExprMsil(cctx, fctx, insns, rhs)
-      match lhsTy {
+      if bmulSpillIdx >= 0 { insns.add(MLdloc(slot = bmulSpillIdx)) }
+      match bmulLhsTy {
         case MLong   -> { insns.add(MMul); MLong }
         case MDouble -> { insns.add(MMul); MDouble }
         case _       -> { insns.add(MMul); MInt }
       }
     }
     case BDiv -> {
-      val lhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
-      lowerExprMsil(cctx, fctx, insns, rhs)
-      match lhsTy {
+      val bdivLhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
+      val bdivSpillIdx = if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
+        phaseBSpillToLocal(fctx.phaseBCtx[0], fctx, insns, bdivLhsTy)
+      } else { -1 }
+      val bdivRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+      if bdivSpillIdx >= 0 {
+        val rN = "__spill_r_" + toString(fctx.slotTicker.count)
+        val rS = allocSlotMsil(fctx, rN, bdivRhsTy)
+        insns.add(MStloc(slot = rS - fctx.paramCount))
+        insns.add(MLdloc(slot = bdivSpillIdx))
+        insns.add(MLdloc(slot = rS - fctx.paramCount))
+      }
+      match bdivLhsTy {
         case MLong   -> { insns.add(MDiv); MLong }
         case MDouble -> { insns.add(MDiv); MDouble }
         case _       -> { insns.add(MDiv); MInt }
       }
     }
     case BMod -> {
-      val lhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
-      lowerExprMsil(cctx, fctx, insns, rhs)
-      match lhsTy {
+      val bmodLhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
+      val bmodSpillIdx = if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
+        phaseBSpillToLocal(fctx.phaseBCtx[0], fctx, insns, bmodLhsTy)
+      } else { -1 }
+      val bmodRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+      if bmodSpillIdx >= 0 {
+        val rN = "__spill_r_" + toString(fctx.slotTicker.count)
+        val rS = allocSlotMsil(fctx, rN, bmodRhsTy)
+        insns.add(MStloc(slot = rS - fctx.paramCount))
+        insns.add(MLdloc(slot = bmodSpillIdx))
+        insns.add(MLdloc(slot = rS - fctx.paramCount))
+      }
+      match bmodLhsTy {
         case MLong -> { insns.add(MRem); MLong }
         case _     -> { insns.add(MRem); MInt }
       }
     }
     case BXor -> {
-      lowerExprMsil(cctx, fctx, insns, lhs)
+      val bxorLhsTy = lowerExprMsil(cctx, fctx, insns, lhs)
+      // xor is commutative: just reload spill after rhs.
+      val bxorSpillIdx = if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
+        phaseBSpillToLocal(fctx.phaseBCtx[0], fctx, insns, bxorLhsTy)
+      } else { -1 }
       lowerExprMsil(cctx, fctx, insns, rhs)
+      if bxorSpillIdx >= 0 { insns.add(MLdloc(slot = bxorSpillIdx)) }
       insns.add(MXor)
       MInt
     }
@@ -3835,6 +3946,9 @@ func lowerAssignExprMsil(
             case AssEq -> {
               lowerExprMsil(cctx, fctx, insns, value)
               emitStoreSlot(insns, slot, fctx.paramCount)
+              if fctx.phaseBCtx.count > 0 {
+                phaseBSyncLocalIfPromoted(fctx.phaseBCtx[0], insns, name, slot - fctx.paramCount)
+              }
             }
             case _ -> {
               // Compound assignment to a local: load the current value, then
@@ -3843,6 +3957,9 @@ func lowerAssignExprMsil(
               emitLoadSlot(insns, slot, fctx.paramCount)
               emitCompoundCombineMsil(cctx, fctx, insns, op, ty, value)
               emitStoreSlot(insns, slot, fctx.paramCount)
+              if fctx.phaseBCtx.count > 0 {
+                phaseBSyncLocalIfPromoted(fctx.phaseBCtx[0], insns, name, slot - fctx.paramCount)
+              }
             }
           }
           MVoid
@@ -6183,36 +6300,11 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
           val ty = if annoTy != MObject { annoTy } else { initTy }
           val slot = allocSlotMsil(fctx, name, ty)
           emitStoreSlot(insns, slot, fctx.paramCount)
-          // Phase B.1 promoted-local: hoist val-binding to SM field so the
-          // value survives suspension and is available on every MoveNext resume.
-          // The field is added to pbc.smFields here (before smRec is built) so
-          // smRec sees it.  emitPhaseBAwait reloads all registered locals at
+          // Phase B.1 promoted-local: hoist val-binding to SM field so the value
+          // survives suspension.  emitPhaseBAwait reloads all registered locals at
           // each resume label.
           if fctx.phaseBCtx.count > 0 {
-            val pbc2      = fctx.phaseBCtx[0]
-            val localIdx2 = slot - fctx.paramCount
-            val fldName2  = "__local_" + name
-            // Check if already registered (re-binding the same name in a nested
-            // scope — allocSlotMsil may reuse the same slot).
-            var alreadyReg = false
-            var regChk = 0
-            while regChk < pbc2.promotedLocalNames.count {
-              if pbc2.promotedLocalNames[regChk] == name {
-                alreadyReg = true
-                regChk = pbc2.promotedLocalNames.count  // break
-              }
-              regChk = regChk + 1
-            }
-            if not alreadyReg {
-              pbc2.promotedLocalNames.add(name)
-              pbc2.promotedLocalSlots.add(localIdx2)
-              pbc2.promotedLocalTypes.add(ty)
-              pbc2.smFields.add(MField(flags = FDA_PUBLIC, name = fldName2, fieldType = ty))
-            }
-            // Always emit the field store regardless of registration state.
-            insns.add(MLdarg(slot = 0))
-            insns.add(MLdloc(slot = localIdx2))
-            insns.add(MStfldByName(ownerFqn = pbc2.smFqn, fieldName = fldName2))
+            phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, name, ty, slot - fctx.paramCount)
           }
         }
         case LBVar(name, tyOpt, initOpt) -> {
@@ -6252,6 +6344,9 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
                 val slot = allocSlotMsil(fctx, name, ty)
                 emitStoreSlot(insns, slot, fctx.paramCount)
                 fctx.mutableLocals.add(name)
+                if fctx.phaseBCtx.count > 0 {
+                  phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, name, ty, slot - fctx.paramCount)
+                }
               }
             }
             case None -> {
@@ -6277,6 +6372,9 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
                   case MDouble -> { insns.add(MLdcR8(v = 0.0)); emitStoreSlot(insns, slot, fctx.paramCount) }
                   case MVoid   -> {}
                   case _       -> { insns.add(MLdcI4(v = 0)); emitStoreSlot(insns, slot, fctx.paramCount) }
+                }
+                if fctx.phaseBCtx.count > 0 and ty != MVoid {
+                  phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, name, ty, slot - fctx.paramCount)
                 }
               }
             }
@@ -7843,10 +7941,34 @@ func collectAwaitTypesStmtPB(cctx: in CodegenCtx, pkgName: in String,
         case None       -> {}
       }
     }
-    case SExpr(e)            -> collectAwaitTypesExprPB(cctx, pkgName, e, acc)
-    case SReturn(valOpt)     -> match valOpt {
+    case SExpr(e)        -> collectAwaitTypesExprPB(cctx, pkgName, e, acc)
+    case SReturn(valOpt) -> match valOpt {
       case Some(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, acc)
       case None    -> {}
+    }
+    case SAssign(_, _, value) -> collectAwaitTypesExprPB(cctx, pkgName, value, acc)
+    case SThrow(expr)         -> collectAwaitTypesExprPB(cctx, pkgName, expr, acc)
+    case SWhile(_, cond, body) -> {
+      collectAwaitTypesExprPB(cctx, pkgName, cond, acc)
+      collectAwaitTypesBlockPB(cctx, pkgName, body, acc)
+    }
+    case SFor(_, _, iter, body) -> {
+      collectAwaitTypesExprPB(cctx, pkgName, iter, acc)
+      collectAwaitTypesBlockPB(cctx, pkgName, body, acc)
+    }
+    case SLoop(_, body)  -> collectAwaitTypesBlockPB(cctx, pkgName, body, acc)
+    case SScope(_, body) -> collectAwaitTypesBlockPB(cctx, pkgName, body, acc)
+    case STry(body, catches, finally_) -> {
+      collectAwaitTypesBlockPB(cctx, pkgName, body, acc)
+      var ci = 0
+      while ci < catches.count {
+        collectAwaitTypesBlockPB(cctx, pkgName, catches[ci].body, acc)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> collectAwaitTypesBlockPB(cctx, pkgName, fb, acc)
+        case None     -> {}
+      }
     }
     case _ -> {}
   }
@@ -7865,6 +7987,58 @@ func collectAwaitTypesPhaseBMsil(cctx: in CodegenCtx, pkgName: in String,
     }
   }
   result
+}
+
+// Register a local as a promoted SM field (first time only) and emit a store
+// from the local slot to the SM field.  Called from LBLet and LBVar handlers
+// inside a Phase B.1 MoveNext context.
+func phaseBRegisterAndSyncLocal(pbc: in PhaseBCtx, insns: in List[MInsn],
+                                 name: in String, ty: in MsilType, localIdx: in Int): Unit {
+  val fldName = "__local_" + name
+  var alreadyReg = false
+  var chk = 0
+  while chk < pbc.promotedLocalNames.count {
+    if pbc.promotedLocalNames[chk] == name {
+      alreadyReg = true
+      chk = pbc.promotedLocalNames.count
+    }
+    chk = chk + 1
+  }
+  if not alreadyReg {
+    pbc.promotedLocalNames.add(name)
+    pbc.promotedLocalSlots.add(localIdx)
+    pbc.promotedLocalTypes.add(ty)
+    pbc.smFields.add(MField(flags = FDA_PUBLIC, name = fldName, fieldType = ty))
+  }
+  insns.add(MLdarg(slot = 0))
+  insns.add(MLdloc(slot = localIdx))
+  insns.add(MStfldByName(ownerFqn = pbc.smFqn, fieldName = fldName))
+}
+
+// Sync an already-promoted local's slot value back to its SM field.  Called
+// after each assignment to a `var` local that was registered by
+// phaseBRegisterAndSyncLocal.
+func phaseBSyncLocalIfPromoted(pbc: in PhaseBCtx, insns: in List[MInsn],
+                                name: in String, localIdx: in Int): Unit {
+  if nameListContains(pbc.promotedLocalNames, name) {
+    insns.add(MLdarg(slot = 0))
+    insns.add(MLdloc(slot = localIdx))
+    insns.add(MStfldByName(ownerFqn = pbc.smFqn, fieldName = "__local_" + name))
+  }
+}
+
+// Spill the current TOS value to a promoted SM field local so it survives
+// any suspension that occurs while evaluating a subsequent sub-expression
+// that contains EAwait.  Stack effect: pops the TOS.
+// Returns localIdx (= slot - paramCount) for caller-side reload after rhs.
+func phaseBSpillToLocal(pbc: in PhaseBCtx, fctx: in FuncCtx,
+                         insns: in List[MInsn], ty: in MsilType): Int {
+  val name     = "__spill_" + toString(fctx.slotTicker.count)
+  val slot     = allocSlotMsil(fctx, name, ty)
+  val localIdx = slot - fctx.paramCount
+  insns.add(MStloc(slot = localIdx))
+  phaseBRegisterAndSyncLocal(pbc, insns, name, ty, localIdx)
+  localIdx
 }
 
 // Full Phase B.1 suspend/resume for one `await` point inside MoveNext.
