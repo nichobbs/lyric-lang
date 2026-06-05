@@ -140,7 +140,7 @@ func strLit(s: in String): Expr {
 }
 
 func longLitOf(n: in Long): Expr {
-  mkExpr(ELiteral(lit = LInt(value = n, suffix = NoIntSuffix)), sp())
+  mkExpr(ELiteral(lit = LInt(value = n, suffix = NoIntSuffix, raw = "")), sp())
 }
 
 func stmtLocal(name: in String, ty: in Option[TypeExpr], initExpr: in Expr): Statement {

@@ -368,7 +368,7 @@ func parseAnnotationArg(st: inout ParseState): AnnotationArg {
         // '='
         val valueTok = advance(st)
         val value = match valueTok.token {
-          case TInt(v, _) -> AVInt(value = v, span = valueTok.span)
+          case TInt(v, _, _) -> AVInt(value = v, span = valueTok.span)
           case TString(s) -> AVString(value = s, span = valueTok.span)
           case TBool(b) -> AVBool(value = b, span = valueTok.span)
           case TIdent(id) -> AVIdent(value = id, span = valueTok.span)
@@ -388,7 +388,7 @@ func parseAnnotationArg(st: inout ParseState): AnnotationArg {
         ABare(name = name, span = startSp)
       }
     }
-    case TInt(v, _) -> {
+    case TInt(v, _, _) -> {
       val t = advance(st)
       ALiteral(value = AVInt(value = v, span = t.span), span = t.span)
     }

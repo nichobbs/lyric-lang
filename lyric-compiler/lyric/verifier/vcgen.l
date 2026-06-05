@@ -168,8 +168,8 @@ func appendTermList(dst: in List[Term], src: in List[Term]): Unit {
 func translateLit(lit: in Literal): Term {
   match lit {
     case LBool(v) -> TLit(value = VLBool(b = v), sort = SBool)
-    case LInt(v, _) -> TLit(value = VLInt(n = v), sort = SInt)
-    case LFloat(v, _) -> TLit(value = VLFloat(f = v), sort = SFloat64)
+    case LInt(v, _, _) -> TLit(value = VLInt(n = v), sort = SInt)
+    case LFloat(v, _, _) -> TLit(value = VLFloat(f = v), sort = SFloat64)
     case LString(s) -> TLit(value = VLString(s = s), sort = SString)
     case LTripleString(s) -> TLit(value = VLString(s = s), sort = SString)
     case LRawString(s) -> TLit(value = VLString(s = s), sort = SString)

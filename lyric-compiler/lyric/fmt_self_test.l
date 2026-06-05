@@ -147,6 +147,22 @@ func testFormatVal(): Unit {
   assertTrue(Str.contains(acc, "val pi: Double = 3.14"), "format: val")
 }
 
+func testNumericLiteralSpellingRoundTrips(): Unit {
+  // Numeric literals keep their verbatim source spelling rather than
+  // canonicalising the parsed value: `0xFF` must not become `255`,
+  // `100_000` must keep its underscore, the `i64` suffix must survive,
+  // and `2.99` must not widen to `2.9899999999999998`.
+  val src = "package P\n\nfunc f(): Int {\n  val a = 0xFF\n  val b = 100_000\n  val c = 1i64\n  val d = 2.99\n  a\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "numeric literals: round-trip")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "= 0xFF"), "numeric: hex spelling preserved")
+  assertTrue(Str.contains(acc, "= 100_000"), "numeric: underscore preserved")
+  assertTrue(Str.contains(acc, "= 1i64"), "numeric: suffix preserved")
+  assertTrue(Str.contains(acc, "= 2.99"), "numeric: float spelling preserved")
+  assertTrue(not Str.contains(acc, "255"), "numeric: hex not canonicalised")
+}
+
 func testFormatModuleDoc(): Unit {
   val src = "//! Module-level doc.\npackage P\n"
   val pr = parse(src)
@@ -578,11 +594,14 @@ func testFormatSourceCheckedInputParseError(): Unit {
 }
 
 func testFormatSourceCheckedStructureChange(): Unit {
-  // The formatter canonicalises `0xFF` -> `255`, changing the code-token
-  // sequence; the guard must refuse rather than silently rewrite the
-  // literal's spelling.
-  val c = formatSourceChecked("package P\n\nfunc f(): Int {\n  0xFF\n}\n")
-  assertTrue(not fmtCheckIsOk(c), "checked: literal canonicalisation is refused")
+  // A `\u{..}` escape inside a string literal is still re-rendered by the
+  // formatter's `escapeStr`, changing the code-token sequence; the guard
+  // must refuse rather than silently rewrite it.  (Numeric-literal
+  // canonicalisation no longer triggers this — see
+  // `testNumericLiteralSpellingRoundTrips` — so the structure-change guard
+  // is exercised here via the still-open string-escape gap.)
+  val c = formatSourceChecked("package P\n\nfunc f(): Unit {\n  val s = \"a\\u{80}b\"\n}\n")
+  assertTrue(not fmtCheckIsOk(c), "checked: string-escape rewrite is refused")
   assertTrue(Str.contains(fmtCheckMessage(c), "code-token sequence"), "checked: structure-change message")
 }
 
@@ -690,6 +709,7 @@ func main(): Unit {
   testFormatUnion()
   testFormatEnum()
   testFormatVal()
+  testNumericLiteralSpellingRoundTrips()
   testFormatModuleDoc()
   testFormatSourceFacade()
   testCommentInsideFunctionBody()

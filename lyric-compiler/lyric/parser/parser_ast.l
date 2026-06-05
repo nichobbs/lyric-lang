@@ -46,8 +46,13 @@ pub record Annotation {
 }
 
 pub union Literal {
-  case LInt(value: Long, suffix: IntSuffix)
-  case LFloat(value: Double, suffix: FloatSuffix)
+  // `raw` is the verbatim source spelling (e.g. `0xFF`, `100_000`,
+  // `2.99`, `1i64`) so the formatter can round-trip it instead of
+  // re-rendering the parsed value (which would canonicalise `0xFF` to
+  // `255` and `2.99` to `2.9899999999999998`).  Empty for literals the
+  // compiler synthesises (no source text).
+  case LInt(value: Long, suffix: IntSuffix, raw: String)
+  case LFloat(value: Double, suffix: FloatSuffix, raw: String)
   case LChar(codepoint: Int)
   case LString(text: String)
   case LTripleString(text: String)
