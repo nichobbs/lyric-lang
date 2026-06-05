@@ -117,10 +117,16 @@ let prepareOutputDir (name: string) : string =
     dir
 
 /// Run `action` on a dedicated OS thread with `stackBytes` of stack.
-/// The F# bootstrap emitter's `emitBranchValueWith`/`emitExpr` recursion can
-/// exhaust the 1 MB thread-pool stack when compiling large Lyric packages such
-/// as `Lyric.TypeChecker` or `Lyric.Parser`.  64 MB is sufficient for the
-/// deepest transitive-import compile paths seen so far.
+///
+/// CLAUDE.md exception: the F# bootstrap emitter's `emitBranchValueWith`/
+/// `emitExpr` recursion crashes with StackOverflowException on the default
+/// 1 MB thread-pool stack when compiling large Lyric packages such as
+/// `Lyric.TypeChecker` or `Lyric.Parser`.  This is a latent bug in the
+/// existing F# code (not new logic); the helper mechanically works around
+/// it by running the emit on a dedicated thread with a larger stack.
+/// No equivalent Lyric-side fix is possible yet: the self-hosted emitter
+/// does not yet compile these packages directly in the test harness.
+/// Remove once the self-hosted emitter is the primary test path (#1470).
 let private runOnLargerStack (stackBytes: int) (action: unit -> 'a) : 'a =
     let mutable result : 'a option = None
     let mutable exn    : exn option = None

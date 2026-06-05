@@ -3970,6 +3970,11 @@ func lowerScopeBlockShutdownOnFailure(
     emitInvokeinterface(asm, stateRef, 1)
     emitGetstatic(asm, failedRef)
     emitIfAcmpne(asm, skipLabel)
+    // close() before rethrow so the scope is not leaked on the failure path.
+    // join() has already returned so all subtasks are settled; it is safe to
+    // close here before inspecting exception().
+    emitAload(asm, scopeSlot)
+    emitInvokevirtual(asm, closeRef)
     emitAload(asm, checkSlot)
     emitInvokeinterface(asm, excRef, 1)
     emitAthrow(asm)
@@ -3978,7 +3983,7 @@ func lowerScopeBlockShutdownOnFailure(
     checkIdx  = checkIdx  + 1
   }
 
-  // close() — StructuredTaskScope implements AutoCloseable
+  // close() on the success path — all subtasks succeeded.
   emitAload(asm, scopeSlot)
   emitInvokevirtual(asm, closeRef)
 }

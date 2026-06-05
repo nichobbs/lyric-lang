@@ -87,7 +87,7 @@ pub func currentDirectory(): String {
 /// Used by the self-hosted compiler to discover reference assemblies on
 /// installations where `DOTNET_ROOT` is unset.  May return an empty string
 /// in native-AOT scenarios.
-@stable(since = "0.1")
+@stable(since = "1.0")
 pub func runtimeDirectory(): String {
   hostRuntimeDirectory()
 }

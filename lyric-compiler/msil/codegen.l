@@ -5074,6 +5074,9 @@ func lowerBuiltinOrStaticCallMsil(
           insns.add(MLdStr(token = emptyTok))
         }
         case MDouble -> {
+          // Covers both Double and Float: the self-hosted type system maps Lyric's
+          // Float to MDouble (see lowerTypeMsil, "Float" -> MDouble), so no
+          // separate MFloat arm is needed here.
           val tmpSlot = allocSlotMsil(fctx, "__tostring_dbl_tmp", MDouble)
           emitStoreSlot(insns, tmpSlot, fctx.paramCount)
           insns.add(MLdloca(slot = tmpSlot - fctx.paramCount))
@@ -5088,6 +5091,9 @@ func lowerBuiltinOrStaticCallMsil(
             insns.add(MCall(methodToken = cctx.tokInvariantCulture))
             insns.add(MCall(methodToken = cctx.tokDateTimeToStringInv))
           } else {
+            // typeRefCode is TypeDefOrRef-encoded (ECMA-335 §II.23.2.8) with TypeRef
+            // tag 1: encoded = (row << 2) | 1.  Strip the tag to get the 1-based
+            // TypeRef row, then build a 0x01xxxxxx metadata token (ECMA-335 §II.22.38).
             val rawRow = (typeRefCode - 1) / 4
             insns.add(MBox(typeToken = 16777216 + rawRow))
             insns.add(MCallvirt(methodToken = cctx.tokObjToString))

@@ -1,26 +1,34 @@
-// std/encoding.l - Byte-level encoding: Base64, hexadecimal, and UTF-8.
-//
-// encodeHex produces uppercase two-hex-chars-per-byte output (e.g. "DEAD").
-// tryDecodeHex accepts both upper and lower-case hex.
-//
-// encodeBase64 / tryDecodeBase64 implement RFC 4648 §4 standard Base64
-// (alphabet A–Z a–z 0–9 + /, with = padding).  tryDecodeBase64 validates
-// every character and the padding structure; any malformed input returns None.
-//
-// encodeUtf8 / tryDecodeUtf8 implement UTF-8 per RFC 3629.  Lyric strings
-// are UTF-16 internally; surrogate pairs are encoded as 4-byte UTF-8
-// sequences (the correct Unicode encoding, not CESU-8).  tryDecodeUtf8
-// rejects overlong sequences, lone surrogates, and code points > U+10FFFF.
-//
-// Platform notes:
-//   encodeUtf8 and tryDecodeBase64 use BCL externs on .NET so that the
-//   result is always a genuine byte[] regardless of which emitter compiled
-//   this module.  Both the F# bootstrap emitter and the self-hosted MSIL
-//   emitter represent List[Byte] as List<object>; .toArray() on that type
-//   would produce object[] rather than byte[], breaking any BCL method that
-//   expects byte[].  The JVM versions use the pure-Lyric accumulator path
-//   (the JVM backend's list representation does not have this type-erasure
-//   mismatch).
+//! std/encoding.l - Byte-level encoding: Base64, hexadecimal, and UTF-8.
+//!
+//! encodeHex produces uppercase two-hex-chars-per-byte output (e.g. "DEAD").
+//! tryDecodeHex accepts both upper and lower-case hex.
+//!
+//! encodeBase64 / tryDecodeBase64 implement RFC 4648 §4 standard Base64
+//! (alphabet A–Z a–z 0–9 + /, with = padding).  tryDecodeBase64 validates
+//! every character and the padding structure; any malformed input returns None.
+//!
+//! encodeUtf8 / tryDecodeUtf8 implement UTF-8 per RFC 3629.  Lyric strings
+//! are UTF-16 internally; surrogate pairs are encoded as 4-byte UTF-8
+//! sequences (the correct Unicode encoding, not CESU-8).  tryDecodeUtf8
+//! rejects overlong sequences, lone surrogates, and code points > U+10FFFF.
+//!
+//! Platform notes:
+//!   encodeUtf8 and tryDecodeBase64 use BCL externs on .NET so that the
+//!   result is always a genuine byte[] regardless of which emitter compiled
+//!   this module.  Both the F# bootstrap emitter and the self-hosted MSIL
+//!   emitter represent List[Byte] as List<object>; .toArray() on that type
+//!   would produce object[] rather than byte[], breaking any BCL method that
+//!   expects byte[].  The JVM versions use the pure-Lyric accumulator path
+//!   (the JVM backend's list representation does not have this type-erasure
+//!   mismatch).
+//!
+//! Lone-surrogate behaviour: a Lyric String may contain isolated UTF-16
+//! surrogates (U+D800..U+DFFF) that do not form a valid surrogate pair.
+//! encodeUtf8 does not validate its input for this case; the resulting
+//! byte sequence is platform-specific (.NET replaces lone surrogates with
+//! U+FFFD; the JVM accumulator encodes them as WTF-8 3-byte sequences).
+//! Callers that need portable round-trip behaviour should reject lone
+//! surrogates before encoding.
 
 package Std.Encoding
 

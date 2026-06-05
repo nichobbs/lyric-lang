@@ -31,6 +31,15 @@ let private runJar (jarPath: string) : string * int =
 
 // Detect the JDK major version from `java -version` stderr output.
 // Returns 21 on parse failure (safe fallback).
+//
+// CLAUDE.md exception: `detectJavaFeatureVersion()` in lowering.l already
+// implements the same detection on the Lyric side, but it runs inside the
+// generated Lyric program (not in the F# test harness).  This function
+// gates a skip in the F# test before the Lyric program is even compiled —
+// a point where Lyric cannot act.  It is not new domain logic; it is a
+// thin structural guard that cannot be replaced by the Lyric-side equivalent
+// without rearchitecting how the test harness skips tests.  Remove when
+// JDK 24+ scope support lands (#2263) and the guard is no longer needed.
 let private detectJavaMajorVersion () : int =
     try
         let psi = System.Diagnostics.ProcessStartInfo("java", "-version")
