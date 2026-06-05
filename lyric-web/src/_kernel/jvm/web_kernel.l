@@ -31,74 +31,59 @@
 //!
 //! Only active when compiled with feature = "jvm" (Phase 6).
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-
 @cfg(feature = "jvm")
 package Web.Kernel.Jvm
 
 import Web
 
 // ─── HTTP server ──────────────────────────────────────────────────────────────
-
 @axiom("io.undertow.Undertow HTTP server and routing for JVM")
 extern package lyric.web.UndertowServer {
   /// Start the HTTP server.  Blocks until the JVM receives SIGTERM / SIGINT.
-  pub func serve(
-    host:              String,
-    port:              Int,
-    swaggerEnabled:    Bool,
-    specPath:          String,
-    corsEnabled:       Bool,
-    corsOrigins:       String,
-    corsMethods:       String,
-    corsHeaders:       String,
-    corsMaxAge:        Int,
-    router:            Web.Router
-  ): Unit
+  pub func serve(host: String, port: Int, swaggerEnabled: Bool, specPath: String, corsEnabled: Bool, corsOrigins: String, corsMethods: String, corsHeaders: String, corsMaxAge: Int, router: Web.Router): Unit
+  // ─── Rate limiting ────────────────────────────────────────────────────────────
 }
-
-// ─── Rate limiting ────────────────────────────────────────────────────────────
 
 @axiom("lyric.web.RateLimiter in-process sliding-window rate limiter for JVM")
 extern package lyric.web.RateLimiter {
   /// Check whether a call from this endpoint is within the rate limit.
   /// Returns true (allow) or false (deny).
   /// State is per-process and per-endpoint; resets on process restart.
-  pub func checkRateLimit(
-    endpoint:          String,
-    requestsPerMinute: Int,
-    burstSize:         Int
-  ): Bool
+  pub func checkRateLimit(endpoint: String, requestsPerMinute: Int, burstSize: Int): Bool
     requires: requestsPerMinute > 0
     requires: burstSize > 0
+  // ─── Re-exports ───────────────────────────────────────────────────────────────
 }
-
-// ─── Re-exports ───────────────────────────────────────────────────────────────
 
 /// Start the HTTP server.  Blocks until shutdown.
 pub func serve(
-  host:           in String,
-  port:           in Int,
+  host: in String,
+  port: in Int,
   swaggerEnabled: in Bool,
-  specPath:       in String,
-  corsEnabled:    in Bool,
-  corsOrigins:    in String,
-  corsMethods:    in String,
-  corsHeaders:    in String,
-  corsMaxAge:     in Int,
-  router:         in Web.Router
+  specPath: in String,
+  corsEnabled: in Bool,
+  corsOrigins: in String,
+  corsMethods: in String,
+  corsHeaders: in String,
+  corsMaxAge: in Int,
+  router: in Web.Router,
 ): Unit {
   return lyric.web.UndertowServer.serve(
-    host, port, swaggerEnabled, specPath,
-    corsEnabled, corsOrigins, corsMethods, corsHeaders, corsMaxAge,
-    router)
+    host,
+    port,
+    swaggerEnabled,
+    specPath,
+    corsEnabled,
+    corsOrigins,
+    corsMethods,
+    corsHeaders,
+    corsMaxAge,
+    router
+  )
 }
 
 /// Check whether a call from this endpoint is within the rate limit.
-pub func checkRateLimit(
-  endpoint:          in String,
-  requestsPerMinute: in Int,
-  burstSize:         in Int
-): Bool
+pub func checkRateLimit(endpoint: in String, requestsPerMinute: in Int, burstSize: in Int): Bool
   requires: requestsPerMinute > 0
   requires: burstSize > 0
 {

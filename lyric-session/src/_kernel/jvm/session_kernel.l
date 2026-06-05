@@ -12,14 +12,12 @@
 //!
 //! Only active when compiled with feature = "jvm" (Phase 6).
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-
 @cfg(feature = "jvm")
 package Session.Kernel.Jvm
 
 import Std.Core
 
 // ─── Redis session backend ────────────────────────────────────────────────────
-
 @cfg(feature = "redis")
 @axiom("io.lettuce.core.RedisClient via lyric.session.RedisStore for distributed session storage")
 extern package lyric.session.RedisStore {
@@ -53,17 +51,16 @@ extern package lyric.session.RedisStore {
   pub func touch(storeHandle: Int, sessionId: String, ttlSeconds: Int): Result[Unit, String]
     requires: sessionId.length > 0
     requires: ttlSeconds >= 0
+  // ─── In-memory session backend ────────────────────────────────────────────────
+  //
+  // NOTE (Q-session-inmemory): the public `InProcessSessionStore` in
+  // `lyric-session/src/session.l` is implemented entirely in Lyric (a pure
+  // `Map[String, Session]`), so the `inmemory` feature does not call into this
+  // kernel today.  The extern block below is reserved for a future host-backed
+  // in-memory store (e.g. a concurrent shared store across multiple workers in
+  // the same JVM) and keeps wire-format / handle conventions aligned with the
+  // Redis backend so the switch is mechanical when it lands.
 }
-
-// ─── In-memory session backend ────────────────────────────────────────────────
-//
-// NOTE (Q-session-inmemory): the public `InProcessSessionStore` in
-// `lyric-session/src/session.l` is implemented entirely in Lyric (a pure
-// `Map[String, Session]`), so the `inmemory` feature does not call into this
-// kernel today.  The extern block below is reserved for a future host-backed
-// in-memory store (e.g. a concurrent shared store across multiple workers in
-// the same JVM) and keeps wire-format / handle conventions aligned with the
-// Redis backend so the switch is mechanical when it lands.
 
 @cfg(feature = "inmemory")
 @axiom("lyric.session.InMemoryStore backed by java.util.concurrent.ConcurrentHashMap — reserved; not currently called from the public Session package")
@@ -94,13 +91,12 @@ extern package lyric.session.InMemoryStore {
   pub func touch(storeHandle: Int, sessionId: String, ttlSeconds: Int): Result[Unit, String]
     requires: sessionId.length > 0
     requires: ttlSeconds >= 0
+  // ─── Re-export wrappers (Redis) ───────────────────────────────────────────────
 }
-
-// ─── Re-export wrappers (Redis) ───────────────────────────────────────────────
 
 /// Open a Redis connection pool for session storage.
 @cfg(feature = "redis")
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func connect(url: in String, keyPrefix: in String): Result[Int, String]
   requires: url.length > 0
 {
@@ -109,7 +105,7 @@ pub func connect(url: in String, keyPrefix: in String): Result[Int, String]
 
 /// Allocate a new session and return its ID (Redis backend).
 @cfg(feature = "redis")
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func create(storeHandle: in Int, ttlSeconds: in Int): Result[String, String]
   requires: ttlSeconds >= 0
 {
@@ -118,7 +114,7 @@ pub func create(storeHandle: in Int, ttlSeconds: in Int): Result[String, String]
 
 /// Fetch a session as serialised JSON (Redis backend).  Returns "" if not found.
 @cfg(feature = "redis")
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func load(storeHandle: in Int, sessionId: in String): Result[String, String]
   requires: sessionId.length > 0
 {
@@ -127,7 +123,7 @@ pub func load(storeHandle: in Int, sessionId: in String): Result[String, String]
 
 /// Persist serialised session JSON (Redis backend).
 @cfg(feature = "redis")
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func save(storeHandle: in Int, sessionJson: in String): Result[Unit, String]
   requires: sessionJson.length > 0
 {
@@ -136,7 +132,7 @@ pub func save(storeHandle: in Int, sessionJson: in String): Result[Unit, String]
 
 /// Permanently delete a session (Redis backend).
 @cfg(feature = "redis")
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func destroy(storeHandle: in Int, sessionId: in String): Result[Unit, String]
   requires: sessionId.length > 0
 {
@@ -145,7 +141,7 @@ pub func destroy(storeHandle: in Int, sessionId: in String): Result[Unit, String
 
 /// Refresh a session's TTL without changing its content (Redis backend).
 @cfg(feature = "redis")
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func touch(storeHandle: in Int, sessionId: in String, ttlSeconds: in Int): Result[Unit, String]
   requires: sessionId.length > 0
   requires: ttlSeconds >= 0

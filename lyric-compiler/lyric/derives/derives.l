@@ -177,7 +177,7 @@ func emptyList[A](): List[A] {
 }
 
 func makeParam(nm: in String, ty: in TypeExpr): Param {
-  Param(mode = PMIn, name = nm, ty = ty, dflt = None, span = sp())
+  Param(mode = PMIn, modeExplicit = true, name = nm, ty = ty, dflt = None, span = sp())
 }
 
 func makeFuncDecl(

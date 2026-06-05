@@ -1,10 +1,10 @@
-// lyric-proto — Pure-Lyric Protocol Buffer (proto3) wire-format encoder and decoder.
-//
-// This file merges Proto.Types, Proto.Encoding, Proto.Decoding, Proto, and the
-// .NET kernel boundary into a single package for bootstrap compatibility.
-// Cross-package union/enum access and TypeId alignment across intra-artifact
-// packages are not supported by the bootstrap emitter; everything must be in
-// one package.
+//! lyric-proto — Pure-Lyric Protocol Buffer (proto3) wire-format encoder and decoder.
+//!
+//! This file merges Proto.Types, Proto.Encoding, Proto.Decoding, Proto, and the
+//! .NET kernel boundary into a single package for bootstrap compatibility.
+//! Cross-package union/enum access and TypeId alignment across intra-artifact
+//! packages are not supported by the bootstrap emitter; everything must be in
+//! one package.
 package Proto
 
 import Std.Core
@@ -13,7 +13,6 @@ import Std.Collections
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── .NET kernel boundary (inlined from Proto.Kernel.Net) ────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
-
 /// An opaque mutable byte accumulator backed by System.IO.MemoryStream.
 pub extern type ProtoBuffer = "System.IO.MemoryStream"
 
@@ -122,29 +121,28 @@ pub func xorInt(a: in Int, b: in Int): Int {
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── Wire types ──────────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
-
 // Wire type constants (replaces pub enum WireType).
 // Bootstrap limitation: cross-package enum access is unsupported; use Int
 // constants directly to avoid the cross-package restriction.
+val WIRE_VARINT: Int = 0
 
-val WIRE_VARINT:    Int = 0
-val WIRE_FIXED64:   Int = 1
+val WIRE_FIXED64: Int = 1
+
 val WIRE_LENGTH_DELIMITED: Int = 2
-val WIRE_FIXED32:   Int = 5
+
+val WIRE_FIXED32: Int = 5
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── Field values for encoding ───────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
-
 /// A field value ready to be written to a ProtoBuffer.
 pub union ProtoField {
   case VarField(number: Int, v: Long)
   case Fix32Field(number: Int, bits: Int)
   case Fix64Field(number: Int, bits: Long)
   case BytesField(number: Int, data: slice[Byte])
+  // ─── Field values for decoding ───────────────────────────────────────────────
 }
-
-// ─── Field values for decoding ───────────────────────────────────────────────
 
 /// A field decoded from a raw protobuf byte stream.
 pub union DecodedField {
@@ -156,24 +154,22 @@ pub union DecodedField {
 
 /// One step of the streaming decoder.
 pub record DecodeStep {
-  field:      DecodedField
+  field: DecodedField
   nextOffset: Int
+  // ─── Varint decode scratch record ─────────────────────────────────────────────
 }
-
-// ─── Varint decode scratch record ─────────────────────────────────────────────
 
 record VarintResult {
-  value:      Long
+  value: Long
   nextOffset: Int
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // ─── ZigZag helpers ──────────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════════
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ─── ZigZag helpers ──────────────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════════════════
 
 /// ZigZag-encode a signed 32-bit integer for sint32 fields.
 pub func zigzag32(n: Int): Long {
-  val nL  = intAsLong(n)
+  val nL = intAsLong(n)
   val sh1 = shlLong(nL, 1)
   val sh2 = shrLong(nL, 31)
   xorLong(sh1, sh2)
@@ -187,7 +183,7 @@ pub func zigzag64(n: Long): Long {
 /// ZigZag-decode a sint32 value.
 pub func unzigzag32(n: Long): Int {
   val shifted = shrLong(n, 1)
-  val mask    = -(bitandLong(n, 1i64))
+  val mask = -(bitandLong(n, 1i64))
   longAsInt(xorLong(shifted, mask))
 }
 
@@ -199,11 +195,10 @@ pub func unzigzag64(n: Long): Long {
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── VarInt encoding ─────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
-
 func writeVarint(buf: ProtoBuffer, v: Long): Unit {
   var remaining = v
   while remaining >= 128i64 {
-    val lo7  = bitandLong(remaining, 127i64)
+    val lo7 = bitandLong(remaining, 127i64)
     val more = bitorLong(lo7, 128i64)
     bufWriteByte(buf, longAsInt(more))
     remaining = shrLong(remaining, 7)
@@ -212,16 +207,14 @@ func writeVarint(buf: ProtoBuffer, v: Long): Unit {
 }
 
 // ─── Field tag encoding ───────────────────────────────────────────────────────
-
 func writeTag(buf: ProtoBuffer, fieldNumber: Int, wireTypeId: Int): Unit {
-  val fnL  = intAsLong(fieldNumber)
-  val wtL  = intAsLong(wireTypeId)
-  val tag  = bitorLong(shlLong(fnL, 3), wtL)
+  val fnL = intAsLong(fieldNumber)
+  val wtL = intAsLong(wireTypeId)
+  val tag = bitorLong(shlLong(fnL, 3), wtL)
   writeVarint(buf, tag)
 }
 
 // ─── Fixed-width encoding ─────────────────────────────────────────────────────
-
 func writeFixed32(buf: ProtoBuffer, bits: Int): Unit {
   bufWriteByte(buf, bitandInt(bits, 255))
   bufWriteByte(buf, bitandInt(shrInt(bits, 8), 255))
@@ -241,7 +234,6 @@ func writeFixed64(buf: ProtoBuffer, bits: Long): Unit {
 }
 
 // ─── Single-field encoding ────────────────────────────────────────────────────
-
 func writeField(buf: ProtoBuffer, field: ProtoField): Unit {
   match field {
     case VarField(number, v) -> {
@@ -268,7 +260,6 @@ func writeField(buf: ProtoBuffer, field: ProtoField): Unit {
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── Message encoding ────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
-
 /// Encode a proto3 message from a list of fields.
 pub func encodeMessage(fields: List[ProtoField]): slice[Byte] {
   val buf = newProtoBuffer()
@@ -279,7 +270,6 @@ pub func encodeMessage(fields: List[ProtoField]): slice[Byte] {
 }
 
 // ─── Convenience constructors ─────────────────────────────────────────────────
-
 pub func floatField(number: Int, v: Float): ProtoField {
   Fix32Field(number, floatToInt32Bits(v))
 }
@@ -315,17 +305,16 @@ pub func sint64Field(number: Int, v: Long): ProtoField {
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── VarInt decoding ─────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
-
 func readVarint(data: in slice[Byte], offset: Int): Result[VarintResult, String] {
-  var acc: Long  = 0i64
+  var acc: Long = 0i64
   var shift: Int = 0
-  var pos: Int   = offset
+  var pos: Int = offset
   while pos < data.length {
-    val b   = byteAt(data, pos)
-    pos     = pos + 1
+    val b = byteAt(data, pos)
+    pos = pos + 1
     val lo7 = intAsLong(bitandInt(b, 127))
-    acc     = bitorLong(acc, shlLong(lo7, shift))
-    shift   = shift + 7
+    acc = bitorLong(acc, shlLong(lo7, shift))
+    shift = shift + 7
     if bitandInt(b, 128) == 0 {
       return Ok(value = VarintResult(value = acc, nextOffset = pos))
     }
@@ -339,7 +328,6 @@ func readVarint(data: in slice[Byte], offset: Int): Result[VarintResult, String]
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── Field decoding ──────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
-
 /// Attempt to decode one field starting at `offset`.
 pub func decodeStep(data: in slice[Byte], offset: Int): Result[DecodeStep, String] {
   if offset >= data.length {
@@ -348,58 +336,28 @@ pub func decodeStep(data: in slice[Byte], offset: Int): Result[DecodeStep, Strin
   match readVarint(data, offset) {
     case Err(e) -> Err(error = "tag read failed: " + e)
     case Ok(tagResult) -> {
-      val tag        = tagResult.value
-      val fieldNum   = longAsInt(shrLong(tag, 3))
+      val tag = tagResult.value
+      val fieldNum = longAsInt(shrLong(tag, 3))
       val wireTypeId = longAsInt(bitandLong(tag, 7i64))
-      val afterTag   = tagResult.nextOffset
+      val afterTag = tagResult.nextOffset
       match wireTypeId {
-        case 0 ->
-          match readVarint(data, afterTag) {
-            case Err(e) -> Err(error = "varint field " + fieldNum.toString() + ": " + e)
-            case Ok(vr) ->
-              Ok(value = DecodeStep(
-                field      = DecodedVarint(fieldNum, vr.value),
-                nextOffset = vr.nextOffset
-              ))
-          }
+        case 0 -> match readVarint(data, afterTag) { case Err(e) -> Err(error = "varint field " + fieldNum.toString() + ": " + e); case Ok(vr) -> Ok(value = DecodeStep(field = DecodedVarint(fieldNum, vr.value), nextOffset = vr.nextOffset)) }
         case 1 -> {
           if afterTag + 8 > data.length {
             Err(error = "truncated fixed64 at field " + fieldNum.toString())
           } else {
-            Ok(value = DecodeStep(
-              field      = DecodedFixed64(fieldNum, int64LE(data, afterTag)),
-              nextOffset = afterTag + 8
-            ))
+            Ok(value = DecodeStep(field = DecodedFixed64(fieldNum, int64LE(data, afterTag)), nextOffset = afterTag + 8))
           }
         }
-        case 2 ->
-          match readVarint(data, afterTag) {
-            case Err(e) -> Err(error = "length prefix at field " + fieldNum.toString() + ": " + e)
-            case Ok(lenResult) -> {
-              val length    = longAsInt(lenResult.value)
-              val dataStart = lenResult.nextOffset
-              if dataStart + length > data.length {
-                Err(error = "truncated bytes field " + fieldNum.toString())
-              } else {
-                Ok(value = DecodeStep(
-                  field      = DecodedBytes(fieldNum, sliceCopy(data, dataStart, length)),
-                  nextOffset = dataStart + length
-                ))
-              }
-            }
-          }
+        case 2 -> match readVarint(data, afterTag) { case Err(e) -> Err(error = "length prefix at field " + fieldNum.toString() + ": " + e); case Ok(lenResult) -> { val length = longAsInt(lenResult.value); val dataStart = lenResult.nextOffset; if dataStart + length > data.length { Err(error = "truncated bytes field " + fieldNum.toString()) } else { Ok(value = DecodeStep(field = DecodedBytes(fieldNum, sliceCopy(data, dataStart, length)), nextOffset = dataStart + length)) } } }
         case 5 -> {
           if afterTag + 4 > data.length {
             Err(error = "truncated fixed32 at field " + fieldNum.toString())
           } else {
-            Ok(value = DecodeStep(
-              field      = DecodedFixed32(fieldNum, int32LE(data, afterTag)),
-              nextOffset = afterTag + 4
-            ))
+            Ok(value = DecodeStep(field = DecodedFixed32(fieldNum, int32LE(data, afterTag)), nextOffset = afterTag + 4))
           }
         }
-        case _ ->
-          Err(error = "unsupported wire type " + wireTypeId.toString() + " at field " + fieldNum.toString())
+        case _ -> Err(error = "unsupported wire type " + wireTypeId.toString() + " at field " + fieldNum.toString())
       }
     }
   }
@@ -411,8 +369,8 @@ pub func decodeMessage(data: in slice[Byte]): Result[List[DecodedField], String]
   val fields = newList()
   while offset < data.length {
     match decodeStep(data, offset) {
-      case Err(e)    -> return Err(error = e)
-      case Ok(step)  -> {
+      case Err(e) -> return Err(error = e)
+      case Ok(step) -> {
         fields.add(step.field)
         offset = step.nextOffset
       }
@@ -422,14 +380,15 @@ pub func decodeMessage(data: in slice[Byte]): Result[List[DecodedField], String]
 }
 
 // ─── Typed field extraction helpers ──────────────────────────────────────────
-
 /// Find the first varint field with the given field number, or None.
 pub func findVarint(fields: in List[DecodedField], number: Int): Option[Long] {
   val arr = fields.toArray()
   for f in arr {
     match f {
       case DecodedVarint(n, v) -> {
-        if n == number { return Some(value = v) }
+        if n == number {
+          return Some(value = v)
+        }
       }
       case _ -> ()
     }
@@ -443,7 +402,9 @@ pub func findBytes(fields: in List[DecodedField], number: Int): Option[slice[Byt
   for f in arr {
     match f {
       case DecodedBytes(n, data) -> {
-        if n == number { return Some(value = data) }
+        if n == number {
+          return Some(value = data)
+        }
       }
       case _ -> ()
     }
@@ -454,11 +415,13 @@ pub func findBytes(fields: in List[DecodedField], number: Int): Option[slice[Byt
 /// Collect all bytes fields with the given field number (repeated field).
 pub func collectBytes(fields: in List[DecodedField], number: Int): List[slice[Byte]] {
   val res = newList()
-  val arr    = fields.toArray()
+  val arr = fields.toArray()
   for f in arr {
     match f {
       case DecodedBytes(n, data) -> {
-        if n == number { res.add(data) }
+        if n == number {
+          res.add(data)
+        }
       }
       case _ -> ()
     }
