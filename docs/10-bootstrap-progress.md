@@ -21028,3 +21028,50 @@ resolution when two packages export an identically-named overloaded function),
 and the compiler-internal tests (`metadata_reader_tests`,
 `msil_project_bridge_tests`) which need `LYRIC_LOAD_COMPILER` cross-compiler-
 package type resolution.
+
+### D-progress-434 — alias-aware qualified-call resolution (#1488 gate)
+
+**Status:** Shipped — type-checker + alias-rewriter change.
+
+`regex_safe_tests` imports `Std.Regex as Re` and `Std.RegexSafe as Rx`; both
+packages export `tryCompile(String): Result[CompiledRegex, RegexError]` with
+*identical* signatures but *different* `RegexError` unions.  A call to
+`Rx.tryCompile(...)` must resolve to `Std.RegexSafe`, otherwise the `Err(e)`
+payload types as `Std.Regex.RegexError` and the test's `match e { RegexBug |
+TimedOut }` reports `T0016` (missing `InvalidPattern`).
+
+The alias rewriter (`Lyric.AliasRewriter`) previously *collapsed*
+`Rx.tryCompile` to a bare `tryCompile`, discarding the package — so argument-type
+overload resolution (D-progress-421) saw two `String`-param candidates and picked
+one arbitrarily.
+
+Fix, in three parts:
+
+1. **Alias rewriter → full package path.**  `collectAliases` now records each
+   `import X as A` as `"A=<dotted X>"`, and `rewritePath` / the `EMember` arm
+   substitute the alias head with the *declaring package's* segments
+   (`Rx.tryCompile` → `Std.RegexSafe.tryCompile`) instead of dropping it.  Type
+   and value paths still resolve by last segment (unchanged lookup), so existing
+   aliases are unaffected.
+2. **`ResolvedSignature.originPackage`.**  Each function signature now carries the
+   dotted name of its declaring package, set per-package in `addSigsFromItems`
+   (`resolveFunctionSig` takes the package name).
+3. **Package-aware `findDirectSig`.**  A multi-segment call path's leading
+   segments name the target package; the resolver first prefers the same-arity
+   overload candidate whose `originPackage` matches, then falls back to the
+   existing bare-name resolution (so intra-project aliases that don't register a
+   candidate slot still resolve).
+
+`regex_safe_tests` now builds clean self-hosted and runs green via the emitter
+suite.  Full regression: 843/843 emitter, `weaver_self_test.l` 18/18,
+`mocking_tests`/`regex_tests`/`string_tests`/`parse_tests`/`environment_tests`/
+`path_tests` single-file builds all clean.
+
+Note: `alias_rewriter.l` and `typechecker_exprs.l` both hit a **pre-existing**
+`lyric fmt` formatter bug (loss-check aborts with `return` → `{`; identical token
+position on the pre-change `origin/main` files), so those two files keep their
+hand-formatting; the other changed files format cleanly.
+
+This clears the `regex_safe_tests` blocker.  Remaining before the `bridge.l:93`
+flip: `encoding_tests` (the `Byte`-index `.toInt()` bootstrap tension) and the
+compiler-internal tests (`metadata_reader_tests`, `msil_project_bridge_tests`).

@@ -647,7 +647,9 @@ func funcBodyContainsYield(fn: in FunctionDecl): Bool {
   }
 }
 
-func resolveFunctionSig(tbl: in SymbolTable, diag: in List[Diagnostic], fn: in FunctionDecl): ResolvedSignature {
+func resolveFunctionSig(
+  tbl: in SymbolTable, diag: in List[Diagnostic], pkgName: in String, fn: in FunctionDecl
+): ResolvedSignature {
   val genericNames = extractGenericNames(fn.generics)
   val ctx = newGenericContext()
   if genericNames.count > 0 {
@@ -701,6 +703,7 @@ func resolveFunctionSig(tbl: in SymbolTable, diag: in List[Diagnostic], fn: in F
     isAsync = fn.isAsync,
     isHot = isHot,
     isGenerator = fn.isAsync and isGen,
+    originPackage = pkgName,
     span = fn.span
   )
 }
@@ -758,6 +761,7 @@ func addSigsFromItems(
   sigs: in Map[String, ResolvedSignature],
   items: in List[Item],
   isImported: in Bool,
+  pkgName: in String,
 ): Unit {
   var i = 0
   while i < items.count {
@@ -778,7 +782,7 @@ func addSigsFromItems(
           i = i + 1
           continue
         }
-        val sg = resolveFunctionSig(tbl, diag, decl)
+        val sg = resolveFunctionSig(tbl, diag, pkgName, decl)
         val arityKey = decl.name + "/" + toString(decl.params.count)
         // Sig-map insertion policy.  Imported items use first-in-wins
         // because bare-name collisions across stdlib files (e.g.
@@ -1020,14 +1024,14 @@ pub func checkWithImportedPackages(file: in SourceFile, importedPackages: in Lis
   while sp < importedPackages.count {
     val ip2 = importedPackages[sp]
     symTableSetScope(tbl, ip2.name, noImports)
-    addSigsFromItems(tbl, importedDiag, sigs, ip2.items, true)
+    addSigsFromItems(tbl, importedDiag, sigs, ip2.items, true, ip2.name)
     registerImplsFromItems(tbl, newGenericContext(), implDiag, ip2.items)
     sp = sp + 1
   }
 
   // User signatures + bodies resolve under the user package's scope.
   symTableSetScope(tbl, userPkg, userImports)
-  addSigsFromItems(tbl, diag, sigs, file.items, false)
+  addSigsFromItems(tbl, diag, sigs, file.items, false, userPkg)
   registerImplsFromItems(tbl, newGenericContext(), implDiag, file.items)
 
   // T5: check user function bodies.

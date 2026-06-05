@@ -40,5 +40,10 @@ pub record ResolvedSignature {
   isAsync: Bool
   isHot: Bool
   isGenerator: Bool
+  /// Dotted name of the package that declared this function (empty for the
+  /// flat `checkWithImports` shim).  Disambiguates a qualified call
+  /// `Pkg.func(...)` between two same-name/same-signature overloads in
+  /// different packages (the alias-rewritten `Rx.tryCompile` case, #1488).
+  originPackage: String
   span: Span
 }

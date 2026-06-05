@@ -1995,9 +1995,36 @@ func findDirectSig(
 ): Option[ResolvedSignature] {
   match fn.kind {
     case EPath(path) -> {
-      if path.segments.count != 1 { return None }
-      val name = path.segments[0]
+      if path.segments.count == 0 { return None }
+      val name = path.segments[path.segments.count - 1]
       val arityKey = name + "/" + toString(arity)
+      // Qualified call (e.g. the alias-rewritten `Std.RegexSafe.tryCompile`):
+      // the leading segments name the declaring package.  Prefer the same-arity
+      // candidate whose `originPackage` matches, disambiguating two same-name /
+      // same-signature overloads in different packages (#1488 regex_safe — both
+      // `Std.Regex.tryCompile` and `Std.RegexSafe.tryCompile` take `String` and
+      // would otherwise be picked arbitrarily by argument-type matching alone).
+      // No package match falls through to the bare-name resolution below, so an
+      // intra-project alias whose target package didn't register a candidate
+      // slot still resolves as before.
+      if path.segments.count > 1 {
+        val prefix: List[String] = newList()
+        var pi = 0
+        while pi < path.segments.count - 1 {
+          prefix.add(path.segments[pi])
+          pi = pi + 1
+        }
+        val wantPkg = joinSegments(prefix)
+        val qcands = gatherOverloadCandidates(sigs, arityKey)
+        var qi = 0
+        while qi < qcands.count {
+          val qc = qcands[qi]
+          if qc.originPackage == wantPkg and paramsMatchArgs(tbl, qc.params, argTypes) {
+            return Some(value = qc)
+          }
+          qi = qi + 1
+        }
+      }
       // The arity-key "primary" is the historical lookup: a user definition
       // overwrites it (so it shadows an imported same-name function), and
       // imported items register it first-in-wins.  The bare `name` key is the
