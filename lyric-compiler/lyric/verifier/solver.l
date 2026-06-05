@@ -1,13 +1,13 @@
-// verifier/solver.l — solver back-end: discharge a Goal to {unsat, sat, unknown}.
-//
-// Ships two implementations:
-//   * Trivial syntactic discharger: closes tautological goals.
-//   * z3/cvc5 shell-output via Std.ProcessCapture.
-//
-// Persistent session (decision 5c) is deferred: the initial port uses
-// one subprocess invocation per goal.
-//
-// Mirrors compiler/src/Lyric.Verifier/Solver.fs.
+//! verifier/solver.l — solver back-end: discharge a Goal to {unsat, sat, unknown}.
+//!
+//! Ships two implementations:
+//!   * Trivial syntactic discharger: closes tautological goals.
+//!   * z3/cvc5 shell-output via Std.ProcessCapture.
+//!
+//! Persistent session (decision 5c) is deferred: the initial port uses
+//! one subprocess invocation per goal.
+//!
+//! Mirrors compiler/src/Lyric.Verifier/Solver.fs.
 package Lyric.Verifier
 
 import Std.Core
@@ -19,7 +19,6 @@ import Std.VerifierEnvHost
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Solver outcome.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub union SolverOutcome {
   case Discharged
   case Counterexample(model: String)
@@ -28,19 +27,18 @@ pub union SolverOutcome {
 
 pub func solverOutcomeDisplay(o: in SolverOutcome): String {
   match o {
-    case Discharged        -> "discharged"
+    case Discharged -> "discharged"
     case Counterexample(m) -> "counterexample:\n" + m
-    case Unknown(r)        -> "unknown (" + r + ")"
+    case Unknown(r) -> "unknown (" + r + ")"
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Counterexample binding (parsed from Z3 model).
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub record CounterexampleBinding {
-  pub name:  String
-  pub sort:  String
+  pub name: String
+  pub sort: String
   pub value: String
 }
 
@@ -85,28 +83,35 @@ pub func parseModel(modelText: in String): List[CounterexampleBinding] {
             while kk < rawLine.length and not done {
               match charAt(rawLine, kk) {
                 case Some(c) -> {
-                  if c == '(' { depth = depth + 1 }
-                  else if c == ')' {
+                  if c == '(' {
+                    depth = depth + 1
+                  } else if c == ')' {
                     depth = depth - 1
                     if depth == 0 {
-                      cutAt = kk   // exclude the define-fun closing ')'
+                      cutAt = kk
+                      // exclude the define-fun closing ')'
                       done = true
                     }
                   }
                 }
-                case None -> {}
+                case None -> {
+                }
               }
               kk = kk + 1
             }
             val part = rawLine.substring(0, cutAt).trimEnd()
-            if part.length > 0 { valueParts.add(part) }
+            if part.length > 0 {
+              valueParts.add(part)
+            }
           }
           j = j + 1
         }
         var allValue: String = ""
         var k: Int = 0
         while k < valueParts.count {
-          if k > 0 { allValue = allValue + " " }
+          if k > 0 {
+            allValue = allValue + " "
+          }
           allValue = allValue + valueParts[k]
           k = k + 1
         }
@@ -130,7 +135,9 @@ pub func renderCounterexample(bindings: in List[CounterexampleBinding]): String 
     var i = 0
     while i < bindings.count {
       val b = bindings[i]
-      if i > 0 { output = output + "\n" }
+      if i > 0 {
+        output = output + "\n"
+      }
       output = output + "  " + b.name + " : " + b.sort + " = " + b.value
       i = i + 1
     }
@@ -153,7 +160,9 @@ func splitSpaces(s: in String, maxParts: in Int): List[String] {
             if result.count >= maxParts - 1 {
               // Remainder goes into last part.
               val rest = s.substring(i + 1).trim()
-              if rest.length > 0 { result.add(rest) }
+              if rest.length > 0 {
+                result.add(rest)
+              }
               return result
             }
           }
@@ -161,18 +170,20 @@ func splitSpaces(s: in String, maxParts: in Int): List[String] {
           current = current + charToString(c)
         }
       }
-      case None -> {}
+      case None -> {
+      }
     }
     i = i + 1
   }
-  if current.length > 0 { result.add(current) }
+  if current.length > 0 {
+    result.add(current)
+  }
   result
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Trivial syntactic discharger.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func trivialDischarge(g: in Goal): Option[SolverOutcome] {
   if closesGiven(g.hypotheses, g.conclusion) {
     Some(value = Discharged)
@@ -184,13 +195,13 @@ pub func trivialDischarge(g: in Goal): Option[SolverOutcome] {
 func isTautology(t: in Term): Bool {
   match t {
     case TLit(VLBool(true), _) -> true
-    case TBuiltin(BOpEq,  args) -> args.count == 2 and termEq(args[0], args[1])
+    case TBuiltin(BOpEq, args) -> args.count == 2 and termEq(args[0], args[1])
     case TBuiltin(BOpIff, args) -> args.count == 2 and termEq(args[0], args[1])
     case TBuiltin(BOpLte, args) -> args.count == 2 and termEq(args[0], args[1])
     case TBuiltin(BOpGte, args) -> args.count == 2 and termEq(args[0], args[1])
     case TBuiltin(BOpImplies, args) -> args.count == 2 and termEq(args[0], args[1])
     case TBuiltin(BOpAnd, args) -> allTautologies(args)
-    case TBuiltin(BOpOr,  args) -> anyTautology(args)
+    case TBuiltin(BOpOr, args) -> anyTautology(args)
     case TIte(_, a, b) -> termEq(a, b) or (isTautology(a) and isTautology(b))
     case _ -> false
   }
@@ -199,7 +210,9 @@ func isTautology(t: in Term): Bool {
 func allTautologies(xs: in List[Term]): Bool {
   var i = 0
   while i < xs.count {
-    if not isTautology(xs[i]) { return false }
+    if not isTautology(xs[i]) {
+      return false
+    }
     i = i + 1
   }
   true
@@ -208,7 +221,9 @@ func allTautologies(xs: in List[Term]): Bool {
 func anyTautology(xs: in List[Term]): Bool {
   var i = 0
   while i < xs.count {
-    if isTautology(xs[i]) { return true }
+    if isTautology(xs[i]) {
+      return true
+    }
     i = i + 1
   }
   false
@@ -217,7 +232,9 @@ func anyTautology(xs: in List[Term]): Bool {
 func termInList(t: in Term, xs: in List[Term]): Bool {
   var i = 0
   while i < xs.count {
-    if termEq(t, xs[i]) { return true }
+    if termEq(t, xs[i]) {
+      return true
+    }
     i = i + 1
   }
   false
@@ -244,14 +261,20 @@ func flattenAndInto(t: in Term, output: in List[Term]): Unit {
 }
 
 func closesGiven(hyps: in List[Term], conclusion: in Term): Bool {
-  if isTautology(conclusion) { return true }
-  if termInList(conclusion, hyps) { return true }
+  if isTautology(conclusion) {
+    return true
+  }
+  if termInList(conclusion, hyps) {
+    return true
+  }
   match conclusion {
     case TBuiltin(BOpAnd, conjuncts) -> {
       // All conjuncts must close individually.
       var i = 0
       while i < conjuncts.count {
-        if not closesGiven(hyps, conjuncts[i]) { return false }
+        if not closesGiven(hyps, conjuncts[i]) {
+          return false
+        }
         i = i + 1
       }
       true
@@ -260,7 +283,9 @@ func closesGiven(hyps: in List[Term], conclusion: in Term): Bool {
       if args.count == 2 {
         val p = args[0]
         val q = args[1]
-        if termEq(p, q) { return true }
+        if termEq(p, q) {
+          return true
+        }
         // Adopt p (flattened) as a hypothesis and check q.
         val hyps2: List[Term] = newList()
         var i = 0
@@ -286,39 +311,52 @@ func closesGiven(hyps: in List[Term], conclusion: in Term): Bool {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Solver binary lookup.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func findBinary(envVar: in String, name: in String): Option[String] {
   // Check explicit environment variable.
   val explicit = getEnv(envVar)
   if explicit.length > 0 {
-    if fileExists(explicit) { return Some(value = explicit) }
+    if fileExists(explicit) {
+      return Some(value = explicit)
+    }
   }
   // Walk PATH.
   val pathVal = getEnv("PATH")
-  if pathVal.length == 0 { return None }
+  if pathVal.length == 0 {
+    return None
+  }
   val sep = if isWindows() { ";" } else { ":" }
   val rawDirs = pathVal.split(sep)
   val dirs: List[String] = newList()
-  for d in rawDirs { dirs.add(d) }
+  for d in rawDirs {
+    dirs.add(d)
+  }
   var i = 0
   while i < dirs.count {
     val dir = dirs[i]
     val candidate = pathJoin(dir, name)
-    if fileExists(candidate) { return Some(value = candidate) }
+    if fileExists(candidate) {
+      return Some(value = candidate)
+    }
     val candidateExe = pathJoin(dir, name + ".exe")
-    if fileExists(candidateExe) { return Some(value = candidateExe) }
+    if fileExists(candidateExe) {
+      return Some(value = candidateExe)
+    }
     i = i + 1
   }
   None
 }
 
-pub func findZ3(): Option[String]   { findBinary("LYRIC_Z3",   "z3") }
-pub func findCvc5(): Option[String] { findBinary("LYRIC_CVC5", "cvc5") }
+pub func findZ3(): Option[String] {
+  findBinary("LYRIC_Z3", "z3")
+}
+
+pub func findCvc5(): Option[String] {
+  findBinary("LYRIC_CVC5", "cvc5")
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Solver invocation.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func invokeSolver(binPath: in String, args: in List[String], smtSource: in String): SolverOutcome {
   val captured = runCaptureWithDiagnostics(binPath, args, smtSource)
   if captured.timedOut {
@@ -326,7 +364,7 @@ func invokeSolver(binPath: in String, args: in List[String], smtSource: in Strin
   }
   if captured.stdout.length == 0 {
     val stderrDetail = if captured.stderr != "" { ": " + captured.stderr } else { "" }
-    val exitDetail   = if captured.exitCode != 0 { " (exit " + intToString(captured.exitCode) + ")" } else { "" }
+    val exitDetail = if captured.exitCode != 0 { " (exit " + intToString(captured.exitCode) + ")" } else { "" }
     return Unknown(reason = "solver produced no output" + exitDetail + stderrDetail)
   }
   val firstLine = firstNonEmptyLine(captured.stdout)
@@ -346,7 +384,9 @@ func firstNonEmptyLine(s: in String): String {
   var i = 0
   while i < lines.count {
     val t = lines[i].trim()
-    if t.length > 0 { return t }
+    if t.length > 0 {
+      return t
+    }
     i = i + 1
   }
   ""
@@ -371,7 +411,6 @@ pub func invokeCvc5(cvc5Path: in String, smtSource: in String): SolverOutcome {
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. Public discharge function.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func discharge(g: in Goal): SolverOutcome {
   match trivialDischarge(g) {
     case Some(outcome) -> outcome
@@ -393,10 +432,8 @@ pub func discharge(g: in Goal): SolverOutcome {
 // ─────────────────────────────────────────────────────────────────────────────
 // §7. OS/path helpers.
 // ─────────────────────────────────────────────────────────────────────────────
-
 // These are thin wrappers; actual env/file ops come from kernel externs
 // via Std.Environment and Std.File (assumed already imported transitively).
-
 func getEnv(name: in String): String {
   hostGetEnv(name)
 }
@@ -406,7 +443,9 @@ func isWindows(): Bool {
 }
 
 func pathJoin(dir: in String, file: in String): String {
-  if dir.length == 0 { return file }
+  if dir.length == 0 {
+    return file
+  }
   val last = charAt(dir, dir.length - 1)
   val sep = if isWindows() { "\\" } else { "/" }
   match last {

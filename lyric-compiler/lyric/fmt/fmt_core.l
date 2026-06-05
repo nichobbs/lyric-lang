@@ -13,6 +13,7 @@ package Lyric.Fmt
 import Std.Core
 import Std.Collections
 import Std.String as Str
+import Std.Char as Ch
 import Lyric.Lexer
 import Lyric.Parser
 
@@ -238,7 +239,12 @@ func intToChar(n: in Int): Char {
   else if n == 100 { 'd' }
   else if n == 101 { 'e' }
   else if n == 102 { 'f' }
-  else { '?' }
+  // Every other code point (ordinary printable ASCII — letters, space,
+  // punctuation) goes through the BCL-backed `Std.Char.fromInt`.  The
+  // table above predates that helper; without this fallback any char
+  // literal outside 0-31 / digits / a-f rendered as `'?'`, corrupting
+  // `'z'`, `' '`, `'/'`, every uppercase letter, etc. on every format.
+  else { Ch.fromInt(n) }
 }
 
 /// Format a code-point as `\uXXXX` (zero-padded 4-digit hex).
