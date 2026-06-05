@@ -1,22 +1,21 @@
-// jvm/auto_ffi.l — JDK metadata-based auto-FFI resolution for the JVM backend.
-//
-// Resolves `extern type Math = "java.lang.Math"` call sites at compile time by
-// reading the actual method signatures from JDK reference assemblies (.jmod
-// files).  The resolved signature drives correct `invokestatic` / `invokevirtual`
-// emission instead of the legacy `([Object...])Object` guess.
-//
-// JDK discovery: JAVA_HOME → /usr/lib/jvm/* → /Library/Java/JavaVirtualMachines/*
-// → C:/Program Files/Java/*.  The first directory containing java.base.jmod wins.
-//
-// Class loading: classes are loaded lazily on first request and cached.
-// java.base.jmod is tried first (contains the vast majority of JDK classes);
-// other JMODs are tried in listing order when the class is not found there.
-//
-// Overload resolution: argument types from the Lyric call site (expressed as
-// JVM descriptor strings: "I", "J", "D", "F", "Z", "Ljava/lang/String;", etc.)
-// are scored against each candidate overload.  Widening numeric conversions are
-// accepted at a lower score than exact matches.
-
+//! jvm/auto_ffi.l — JDK metadata-based auto-FFI resolution for the JVM backend.
+//!
+//! Resolves `extern type Math = "java.lang.Math"` call sites at compile time by
+//! reading the actual method signatures from JDK reference assemblies (.jmod
+//! files).  The resolved signature drives correct `invokestatic` / `invokevirtual`
+//! emission instead of the legacy `([Object...])Object` guess.
+//!
+//! JDK discovery: JAVA_HOME → /usr/lib/jvm/* → /Library/Java/JavaVirtualMachines/*
+//! → C:/Program Files/Java/*.  The first directory containing java.base.jmod wins.
+//!
+//! Class loading: classes are loaded lazily on first request and cached.
+//! java.base.jmod is tried first (contains the vast majority of JDK classes);
+//! other JMODs are tried in listing order when the class is not found there.
+//!
+//! Overload resolution: argument types from the Lyric call site (expressed as
+//! JVM descriptor strings: "I", "J", "D", "F", "Z", "Ljava/lang/String;", etc.)
+//! are scored against each candidate overload.  Widening numeric conversions are
+//! accepted at a lower score than exact matches.
 package Jvm.AutoFfi
 
 import Std.Core
@@ -27,22 +26,20 @@ import Jvm.ZipReader
 import Jvm.ClassReader
 
 // ── Auto-FFI context ──────────────────────────────────────────────────────────
-
 pub record AutoFfiCtx {
-  jmodsDir:   String
+  jmodsDir: String
   // Colon-separated list of additional JAR paths for Maven/non-JDK classes.
   // Populated from the LYRIC_FFI_JARS environment variable at context creation.
-  jarPaths:   List[String]
+  jarPaths: List[String]
   // Resolved-class cache as two parallel lists (binaryName → ClassInfo) rather
   // than a `Map`: the stage-0 bootstrap emitter miscompiles `Map`/`Option`
   // value threading for cross-package record element types (e.g.
   // `Map[String, ClassInfo]` lookups silently drop the hit), so the loading
   // chain uses plain `List` accumulators it compiles correctly.
-  cacheKeys:  List[String]
-  cacheVals:  List[ClassInfo]
+  cacheKeys: List[String]
+  cacheVals: List[ClassInfo]
+  // ── JDK discovery ─────────────────────────────────────────────────────────────
 }
-
-// ── JDK discovery ─────────────────────────────────────────────────────────────
 
 func probeJmodsDir(dir: in String, found: in List[String]): Unit {
   if found.count == 0 and File.fileExists(dir + "/java.base.jmod") {
@@ -54,7 +51,9 @@ func findJmodsDir(): String {
   val found: List[String] = newList()
 
   val javaHome = Env.getVarOrDefault("JAVA_HOME", "")
-  if javaHome.length > 0 { probeJmodsDir(javaHome + "/jmods", found) }
+  if javaHome.length > 0 {
+    probeJmodsDir(javaHome + "/jmods", found)
+  }
 
   // Linux: /usr/lib/jvm/<jdk-dir>/jmods
   if found.count == 0 {
@@ -98,7 +97,11 @@ func findJmodsDir(): String {
     }
   }
 
-  if found.count > 0 { found[0] } else { "" }
+  if found.count > 0 {
+    found[0]
+  } else {
+    ""
+  }
 }
 
 // Split a colon/semicolon-delimited path string into individual paths.
@@ -110,12 +113,16 @@ func splitPathList(s: in String): List[String] {
   while i < s.length {
     val c = s[i]
     if c == ':' or c == ';' {
-      if i > start { parts.add(s.substring(start, i - start)) }
+      if i > start {
+        parts.add(s.substring(start, i - start))
+      }
       start = i + 1
     }
     i = i + 1
   }
-  if s.length > start { parts.add(s.substring(start, s.length - start)) }
+  if s.length > start {
+    parts.add(s.substring(start, s.length - start))
+  }
   parts
 }
 
@@ -127,7 +134,9 @@ func splitPathList(s: in String): List[String] {
 //     -DincludeTypes=jar -Dmdep.outputFile=/dev/stdout 2>/dev/null)
 func findJarPaths(): List[String] {
   val raw = Env.getVarOrDefault("LYRIC_FFI_JARS", "")
-  if raw.length == 0 { return newList() }
+  if raw.length == 0 {
+    return newList()
+  }
   splitPathList(raw)
 }
 
@@ -135,11 +144,7 @@ func findJarPaths(): List[String] {
 /// $JAVA_HOME and common system paths, and reads additional JAR paths from
 /// the LYRIC_FFI_JARS environment variable.  The class cache starts empty.
 pub func buildAutoFfiCtx(): AutoFfiCtx {
-  AutoFfiCtx(
-    jmodsDir  = findJmodsDir(),
-    jarPaths  = findJarPaths(),
-    cacheKeys = newList(),
-    cacheVals = newList())
+  AutoFfiCtx(jmodsDir = findJmodsDir(), jarPaths = findJarPaths(), cacheKeys = newList(), cacheVals = newList())
 }
 
 // ── Class loading ─────────────────────────────────────────────────────────────
@@ -151,7 +156,6 @@ pub func buildAutoFfiCtx(): AutoFfiCtx {
 // self-hosted compiler package miscompiles those patterns for cross-package
 // record types (it drops the value, yielding a spurious `None`), so the
 // loading chain sticks to assign-into-`var` control flow it lowers correctly.
-
 // Convert "java.lang.Math" → "classes/java/lang/Math.class"  (JMOD layout)
 func javaFqnToJmodEntry(javaFqn: in String): String {
   "classes/" + javaFqn.replace(".", "/") + ".class"
@@ -167,8 +171,10 @@ func javaFqnToJarEntry(javaFqn: in String): String {
 func classFound(opt: in Option[ClassInfo]): Bool {
   var found = false
   match opt {
-    case Some(_) -> { found = true }
-    case None    -> ()
+    case Some(_) -> {
+      found = true
+    }
+    case None -> ()
   }
   found
 }
@@ -181,13 +187,17 @@ func tryLoadFromArchive(archivePath: in String, entryPath: in String): Option[Cl
   var result: Option[ClassInfo] = None
   if File.fileExists(archivePath) {
     try {
-      val bytes   = File.readBytesOrPanic(archivePath)
+      val bytes = File.readBytesOrPanic(archivePath)
       val entries = readZipEntries(bytes)
       match extractByName(bytes, entries, entryPath) {
-        case Some(classBytes) -> { result = parseClass(classBytes) }
-        case None             -> ()
+        case Some(classBytes) -> {
+          result = parseClass(classBytes)
+        }
+        case None -> ()
       }
-    } catch Bug as _ { result = None }
+    } catch Bug as _ {
+      result = None
+    }
   }
   result
 }
@@ -200,7 +210,7 @@ func tryLoadFromJmod(jmodPath: in String, entryPath: in String): Option[ClassInf
 
 func loadClassInfo(ctx: in AutoFfiCtx, javaFqn: in String): Option[ClassInfo] {
   val jmodEntryPath = javaFqnToJmodEntry(javaFqn)
-  val jarEntryPath  = javaFqnToJarEntry(javaFqn)
+  val jarEntryPath = javaFqnToJarEntry(javaFqn)
 
   // ── JDK jmods ─────────────────────────────────────────────────────────────
   var result: Option[ClassInfo] = None
@@ -275,19 +285,22 @@ pub func loadClass(ctx: in AutoFfiCtx, javaFqn: in String): Option[ClassInfo] {
 }
 
 // ── Overload resolution ───────────────────────────────────────────────────────
-
 // Parse parameter descriptor list from a JVM method descriptor "(params)ret".
 // Each element is a raw descriptor string: "I", "J", "Ljava/lang/String;", etc.
 pub func parseDescriptorParams(descriptor: in String): List[String] {
   val params: List[String] = newList()
   val len = descriptor.length
-  if len < 2 or descriptor[0] != '(' { return params }
+  if len < 2 or descriptor[0] != '(' {
+    return params
+  }
   var i = 1
   while i < len and descriptor[i] != ')' {
     val ch = descriptor[i]
     if ch == 'L' {
       var j = i + 1
-      while j < len and descriptor[j] != ';' { j = j + 1 }
+      while j < len and descriptor[j] != ';' {
+        j = j + 1
+      }
       // Include the full "L...;" form: start=i, count=j-i+1
       params.add(descriptor.substring(i, j - i + 1))
       i = j + 1
@@ -296,7 +309,9 @@ pub func parseDescriptorParams(descriptor: in String): List[String] {
       val start = i
       i = i + 1
       if i < len and descriptor[i] == 'L' {
-        while i < len and descriptor[i] != ';' { i = i + 1 }
+        while i < len and descriptor[i] != ';' {
+          i = i + 1
+        }
         i = i + 1
       } else {
         i = i + 1
@@ -317,41 +332,65 @@ pub func parseDescriptorParams(descriptor: in String): List[String] {
 //   "B"=byte, "C"=char, "S"=short,
 //   "Ljava/lang/String;" or other "L...;" for references, "" for unknown.
 pub func scoreParamMatch(argDesc: in String, paramDesc: in String): Int {
-  if argDesc == paramDesc { return 10 }    // exact match
+  if argDesc == paramDesc {
+    return 10
+  }
+  // exact match
   // Numeric widening
   if argDesc == "I" {
-    if paramDesc == "J" { return 7 }
-    if paramDesc == "D" { return 5 }
-    if paramDesc == "F" { return 5 }
+    if paramDesc == "J" {
+      return 7
+    }
+    if paramDesc == "D" {
+      return 5
+    }
+    if paramDesc == "F" {
+      return 5
+    }
     return -1
   }
   if argDesc == "J" {
-    if paramDesc == "D" { return 5 }
-    if paramDesc == "F" { return 3 }
+    if paramDesc == "D" {
+      return 5
+    }
+    if paramDesc == "F" {
+      return 3
+    }
     return -1
   }
   if argDesc == "F" {
-    if paramDesc == "D" { return 5 }
+    if paramDesc == "D" {
+      return 5
+    }
     return -1
   }
   // Any reference type → java/lang/Object
-  if paramDesc == "Ljava/lang/Object;" and argDesc.startsWith("L") { return 3 }
-  if argDesc == "" and paramDesc.startsWith("L") { return 3 }
+  if paramDesc == "Ljava/lang/Object;" and argDesc.startsWith("L") {
+    return 3
+  }
+  if argDesc == "" and paramDesc.startsWith("L") {
+    return 3
+  }
   return -1
 }
 
 // Score a method against a list of argument descriptor strings.
 // Returns -1 for incompatible, else the sum of per-parameter scores.
-func scoreMethod(method: in ClassMethod, argDescs: in List[String],
-                 wantStatic: in Bool): Int {
-  if wantStatic and not method.isStatic { return -1 }
+func scoreMethod(method: in ClassMethod, argDescs: in List[String], wantStatic: in Bool): Int {
+  if wantStatic and not method.isStatic {
+    return -1
+  }
   val params = parseDescriptorParams(method.descriptor)
-  if params.count != argDescs.count { return -1 }
+  if params.count != argDescs.count {
+    return -1
+  }
   var total = 0
   var i = 0
   while i < params.count {
     val s = scoreParamMatch(argDescs[i], params[i])
-    if s < 0 { return -1 }
+    if s < 0 {
+      return -1
+    }
     total = total + s
     i = i + 1
   }
@@ -361,11 +400,11 @@ func scoreMethod(method: in ClassMethod, argDescs: in List[String],
 /// Find the best-matching method in `ci` for the given name and argument
 /// descriptor strings.  Each element of `argDescs` is a JVM type descriptor
 /// produced by `jvmTypeToDescStr` in Jvm.Codegen.
-pub func findBestMethod(ci: in ClassInfo, methodName: in String,
-                        argDescs: in List[String],
-                        wantStatic: in Bool): Option[ClassMethod] {
-  var best:      Option[ClassMethod] = None
-  var bestScore: Int                 = -1
+pub func findBestMethod(
+  ci: in ClassInfo, methodName: in String, argDescs: in List[String], wantStatic: in Bool
+): Option[ClassMethod] {
+  var best: Option[ClassMethod] = None
+  var bestScore: Int = -1
   var i = 0
   while i < ci.methods.count {
     val m = ci.methods[i]
@@ -383,10 +422,9 @@ pub func findBestMethod(ci: in ClassInfo, methodName: in String,
 
 /// Find the best-matching constructor in `ci` for the given argument descriptor
 /// strings.  Searches the `constructors` list (public `<init>` entries).
-pub func findBestConstructor(ci: in ClassInfo,
-                              argDescs: in List[String]): Option[ClassMethod] {
-  var best:      Option[ClassMethod] = None
-  var bestScore: Int                 = -1
+pub func findBestConstructor(ci: in ClassInfo, argDescs: in List[String]): Option[ClassMethod] {
+  var best: Option[ClassMethod] = None
+  var bestScore: Int = -1
   var i = 0
   while i < ci.constructors.count {
     val m = ci.constructors[i]
@@ -404,7 +442,9 @@ pub func findBestConstructor(ci: in ClassInfo,
 func findCacheIdx(autoFfi: in AutoFfiCtx, binaryName: in String): Int {
   var i = 0
   while i < autoFfi.cacheKeys.count {
-    if autoFfi.cacheKeys[i] == binaryName { return i }
+    if autoFfi.cacheKeys[i] == binaryName {
+      return i
+    }
     i = i + 1
   }
   -1
@@ -416,18 +456,21 @@ func findCacheIdx(autoFfi: in AutoFfiCtx, binaryName: in String): Int {
 // `sci` is received as a function parameter — the only stage-0-safe way to
 // access fields of a cross-package record type that arrived via an Option match.
 func scoreAndGetSuper(
-  sci:        in ClassInfo,
+  sci: in ClassInfo,
   methodName: in String,
-  argDescs:   in List[String],
+  argDescs: in List[String],
   allMethods: in List[ClassMethod],
-  allScores:  in List[Int]
+  allScores: in List[Int],
 ): String {
   var j = 0
   while j < sci.methods.count {
     val m = sci.methods[j]
     if m.name == methodName {
       val s = scoreMethod(m, argDescs, false)
-      if s >= 0 { allMethods.add(m); allScores.add(s) }
+      if s >= 0 {
+        allMethods.add(m)
+        allScores.add(s)
+      }
     }
     j = j + 1
   }
@@ -443,13 +486,13 @@ func scoreAndGetSuper(
 /// `loadClass`, then accessed directly via `cacheVals[idx]` and passed to
 /// `scoreAndGetSuper` as a function parameter — the known-safe pattern.
 pub func findBestInstanceMethod(
-  autoFfi:    in AutoFfiCtx,
-  ci:         in ClassInfo,
+  autoFfi: in AutoFfiCtx,
+  ci: in ClassInfo,
   methodName: in String,
-  argDescs:   in List[String]
+  argDescs: in List[String],
 ): Option[ClassMethod] {
   val allMethods: List[ClassMethod] = newList()
-  val allScores:  List[Int]         = newList()
+  val allScores: List[Int] = newList()
 
   // Score the declared class directly (ci is a function parameter — safe).
   var i = 0
@@ -457,7 +500,10 @@ pub func findBestInstanceMethod(
     val m = ci.methods[i]
     if m.name == methodName {
       val s = scoreMethod(m, argDescs, false)
-      if s >= 0 { allMethods.add(m); allScores.add(s) }
+      if s >= 0 {
+        allMethods.add(m)
+        allScores.add(s)
+      }
     }
     i = i + 1
   }
@@ -471,7 +517,8 @@ pub func findBestInstanceMethod(
   var superBin = ci.superName
   while superBin.length > 0 and superBin != "java/lang/Object" {
     val superFqn = superBin.replace("/", ".")
-    loadClass(autoFfi, superFqn)   // populate cache; return value intentionally unused
+    loadClass(autoFfi, superFqn)
+    // populate cache; return value intentionally unused
     val superIdx = findCacheIdx(autoFfi, superBin)
     var nextSuper = ""
     if superIdx >= 0 {
@@ -481,8 +528,8 @@ pub func findBestInstanceMethod(
   }
 
   // Pick the best candidate from all collected methods.
-  var best:      Option[ClassMethod] = None
-  var bestScore: Int                 = -1
+  var best: Option[ClassMethod] = None
+  var bestScore: Int = -1
   var k = 0
   while k < allMethods.count {
     if allScores[k] > bestScore {

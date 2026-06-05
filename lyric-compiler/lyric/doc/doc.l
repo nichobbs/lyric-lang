@@ -1,6 +1,6 @@
-// doc/doc.l — self-hosted `lyric doc` documentation generator.
-// Mirrors compiler/src/Lyric.Cli/Doc.fs (Phase 5 §M5.3 shim elimination).
-// Generates Markdown from the public surface of a Lyric source file.
+//! doc/doc.l — self-hosted `lyric doc` documentation generator.
+//! Mirrors compiler/src/Lyric.Cli/Doc.fs (Phase 5 §M5.3 shim elimination).
+//! Generates Markdown from the public surface of a Lyric source file.
 package Lyric.Doc
 
 import Std.Core
@@ -10,7 +10,9 @@ import Lyric.Lexer
 import Lyric.Parser
 
 func pathStr(mp: in ModulePath): String {
-  if mp.segments.count == 0 { return "" }
+  if mp.segments.count == 0 {
+    return ""
+  }
   var s = mp.segments[0]
   var i = 1
   while i < mp.segments.count {
@@ -21,16 +23,17 @@ func pathStr(mp: in ModulePath): String {
 }
 
 // ─── Type expression → string ─────────────────────────────────────────────────
-
 func typeArgStr(ta: in TypeArg): String {
   match ta {
-    case TAType(ty)  -> typeStr(ty)
-    case TAValue(_)  -> "<expr>"
+    case TAType(ty) -> typeStr(ty)
+    case TAValue(_) -> "<expr>"
   }
 }
 
 func typeArgsStr(args: in List[TypeArg]): String {
-  if args.count == 0 { return "" }
+  if args.count == 0 {
+    return ""
+  }
   var s = typeArgStr(args[0])
   var i = 1
   while i < args.count {
@@ -42,24 +45,26 @@ func typeArgsStr(args: in List[TypeArg]): String {
 
 func typeStr(te: in TypeExpr): String {
   match te.kind {
-    case TRef(path)               -> pathStr(path)
-    case TGenericApp(head, args)  -> pathStr(head) + "[" + typeArgsStr(args) + "]"
-    case TArray(_, elem)          -> "array[..., " + typeStr(elem) + "]"
-    case TSlice(elem)             -> "slice[" + typeStr(elem) + "]"
-    case TRefined(under, _)       -> pathStr(under) + " range ..."
-    case TTuple(types)            -> "(" + typesStr(types) + ")"
-    case TNullable(inner)         -> typeStr(inner) + "?"
+    case TRef(path) -> pathStr(path)
+    case TGenericApp(head, args) -> pathStr(head) + "[" + typeArgsStr(args) + "]"
+    case TArray(_, elem) -> "array[..., " + typeStr(elem) + "]"
+    case TSlice(elem) -> "slice[" + typeStr(elem) + "]"
+    case TRefined(under, _) -> pathStr(under) + " range ..."
+    case TTuple(types) -> "(" + typesStr(types) + ")"
+    case TNullable(inner) -> typeStr(inner) + "?"
     case TFunction(params, retTy) -> "(" + typesStr(params) + ") -> " + typeStr(retTy)
-    case TUnit                    -> "Unit"
-    case TSelf                    -> "Self"
-    case TNever                   -> "Never"
-    case TParen(inner)            -> "(" + typeStr(inner) + ")"
-    case TError                   -> "<?>"
+    case TUnit -> "Unit"
+    case TSelf -> "Self"
+    case TNever -> "Never"
+    case TParen(inner) -> "(" + typeStr(inner) + ")"
+    case TError -> "<?>"
   }
 }
 
 func typesStr(ts: in List[TypeExpr]): String {
-  if ts.count == 0 { return "" }
+  if ts.count == 0 {
+    return ""
+  }
   var s = typeStr(ts[0])
   var i = 1
   while i < ts.count {
@@ -70,17 +75,16 @@ func typesStr(ts: in List[TypeExpr]): String {
 }
 
 // ─── Generics + params ────────────────────────────────────────────────────────
-
 func genParamName(gp: in GenericParam): String {
   match gp {
-    case GPType(n, _)          -> n
-    case GPValue(n, _, _)      -> n
+    case GPType(n, _) -> n
+    case GPValue(n, _, _) -> n
   }
 }
 
 func genericsStr(g: in Option[GenericParams]): String {
   match g {
-    case None     -> ""
+    case None -> ""
     case Some(gp) -> {
       val parts: List[String] = newList()
       var i = 0
@@ -95,8 +99,8 @@ func genericsStr(g: in Option[GenericParams]): String {
 
 func modeStr(m: in ParamMode): String {
   match m {
-    case PMIn    -> "in"
-    case PMOut   -> "out"
+    case PMIn -> "in"
+    case PMOut -> "out"
     case PMInout -> "inout"
   }
 }
@@ -106,7 +110,9 @@ func paramStr(p: in Param): String {
 }
 
 func paramsStr(ps: in List[Param]): String {
-  if ps.count == 0 { return "" }
+  if ps.count == 0 {
+    return ""
+  }
   val parts: List[String] = newList()
   var i = 0
   while i < ps.count {
@@ -117,18 +123,14 @@ func paramsStr(ps: in List[Param]): String {
 }
 
 // ─── Signature builders ───────────────────────────────────────────────────────
-
 func functionSignature(fn: in FunctionDecl): String {
-  val ret = match fn.ret {
-    case None     -> ""
-    case Some(te) -> ": " + typeStr(te)
-  }
+  val ret = match fn.ret { case None -> ""; case Some(te) -> ": " + typeStr(te) }
   val asyncTok = if fn.isAsync { "async " } else { "" }
   asyncTok + "pub func " + fn.name + genericsStr(fn.generics) + "(" + paramsStr(fn.params) + ")" + ret
 }
 
 func fieldStr(f: in FieldDecl): String {
-  val vis = match f.visibility { case None -> "" case Some(_) -> "pub " }
+  val vis = match f.visibility { case None -> ""; case Some(_) -> "pub " }
   "  " + vis + f.name + ": " + typeStr(f.ty)
 }
 
@@ -137,8 +139,10 @@ func recordSignature(kind: in String, rd: in RecordDecl): String {
   var i = 0
   while i < rd.members.count {
     match rd.members[i] {
-      case RMField(f) -> { fields.add(fieldStr(f)) }
-      case _          -> ()
+      case RMField(f) -> {
+        fields.add(fieldStr(f))
+      }
+      case _ -> ()
     }
     i = i + 1
   }
@@ -157,10 +161,7 @@ func caseStr(c: in UnionCase): String {
     val parts: List[String] = newList()
     var i = 0
     while i < c.fields.count {
-      val fs = match c.fields[i] {
-        case UFNamed(n, te, _) -> n + ": " + typeStr(te)
-        case UFPos(te, _)      -> typeStr(te)
-      }
+      val fs = match c.fields[i] { case UFNamed(n, te, _) -> n + ": " + typeStr(te); case UFPos(te, _) -> typeStr(te) }
       parts.add(fs)
       i = i + 1
     }
@@ -203,7 +204,7 @@ func interfaceMethodStr(m: in InterfaceMember): String {
   match m {
     case IMSig(sg) -> {
       val ps = paramsStr(sg.params)
-      val ret = match sg.ret { case None -> "" case Some(te) -> ": " + typeStr(te) }
+      val ret = match sg.ret { case None -> ""; case Some(te) -> ": " + typeStr(te) }
       val asyncTok = if sg.isAsync { "async " } else { "" }
       "  " + asyncTok + "func " + sg.name + genericsStr(sg.generics) + "(" + ps + ")" + ret
     }
@@ -223,9 +224,7 @@ func interfaceSignature(id: in InterfaceDecl): String {
 }
 
 func distinctSignature(dt: in DistinctTypeDecl): String {
-  val derives = if dt.derives.count == 0 { "" } else {
-    " derives " + Str.joinList(", ", dt.derives)
-  }
+  val derives = if dt.derives.count == 0 { "" } else { " derives " + Str.joinList(", ", dt.derives) }
   "pub distinct type " + dt.name + genericsStr(dt.generics) + " = " + typeStr(dt.underlying) + derives
 }
 
@@ -238,7 +237,6 @@ func constSignature(c: in ConstDecl): String {
 }
 
 // ─── Doc comment rendering ────────────────────────────────────────────────────
-
 func docText(d: in DocComment): String {
   val s = d.text
   if s.length > 0 and s[0] == ' ' {
@@ -249,7 +247,9 @@ func docText(d: in DocComment): String {
 }
 
 func renderDocComments(docs: in List[DocComment]): String {
-  if docs.count == 0 { return "" }
+  if docs.count == 0 {
+    return ""
+  }
   var s = ""
   var i = 0
   while i < docs.count {
@@ -260,73 +260,54 @@ func renderDocComments(docs: in List[DocComment]): String {
 }
 
 // ─── Item rendering ───────────────────────────────────────────────────────────
-
 func renderItem(item: in Item): String {
   match item.visibility {
-    case None    -> ""
+    case None -> ""
     case Some(_) -> {
       val docs = item.docComments
       match item.kind {
-        case IFunc(fn)         -> {
-          "### func `" + fn.name + "`\n\n" +
-          "```lyric\n" + functionSignature(fn) + "\n```\n\n" +
-          renderDocComments(docs)
+        case IFunc(fn) -> {
+          "### func `" + fn.name + "`\n\n" + "```lyric\n" + functionSignature(fn) + "\n```\n\n" + renderDocComments(docs)
         }
-        case IRecord(rd)       -> {
-          "### record `" + rd.name + "`\n\n" +
-          "```lyric\n" + recordSignature("record", rd) + "\n```\n\n" +
-          renderDocComments(docs)
+        case IRecord(rd) -> {
+          "### record `" + rd.name + "`\n\n" + "```lyric\n" + recordSignature("record", rd) + "\n```\n\n" +
+            renderDocComments(docs)
         }
-        case IExposedRec(rd)   -> {
-          "### exposed record `" + rd.name + "`\n\n" +
-          "```lyric\n" + recordSignature("exposed record", rd) + "\n```\n\n" +
-          renderDocComments(docs)
+        case IExposedRec(rd) -> {
+          "### exposed record `" + rd.name + "`\n\n" + "```lyric\n" + recordSignature("exposed record", rd) + "\n```\n\n" +
+            renderDocComments(docs)
         }
-        case IUnion(ud)        -> {
-          "### union `" + ud.name + "`\n\n" +
-          "```lyric\n" + unionSignature(ud) + "\n```\n\n" +
-          renderDocComments(docs)
+        case IUnion(ud) -> {
+          "### union `" + ud.name + "`\n\n" + "```lyric\n" + unionSignature(ud) + "\n```\n\n" + renderDocComments(docs)
         }
-        case IEnum(ed)         -> {
-          "### enum `" + ed.name + "`\n\n" +
-          "```lyric\n" + enumSignature(ed) + "\n```\n\n" +
-          renderDocComments(docs)
+        case IEnum(ed) -> {
+          "### enum `" + ed.name + "`\n\n" + "```lyric\n" + enumSignature(ed) + "\n```\n\n" + renderDocComments(docs)
         }
-        case IOpaque(od)       -> {
-          "### opaque type `" + od.name + "`\n\n" +
-          "```lyric\n" + opaqueSignature(od) + "\n```\n\n" +
-          renderDocComments(docs)
+        case IOpaque(od) -> {
+          "### opaque type `" + od.name + "`\n\n" + "```lyric\n" + opaqueSignature(od) + "\n```\n\n" + renderDocComments(docs)
         }
-        case IInterface(id)    -> {
-          "### interface `" + id.name + "`\n\n" +
-          "```lyric\n" + interfaceSignature(id) + "\n```\n\n" +
-          renderDocComments(docs)
+        case IInterface(id) -> {
+          "### interface `" + id.name + "`\n\n" + "```lyric\n" + interfaceSignature(id) + "\n```\n\n" + renderDocComments(docs)
         }
         case IDistinctType(dt) -> {
-          "### distinct type `" + dt.name + "`\n\n" +
-          "```lyric\n" + distinctSignature(dt) + "\n```\n\n" +
-          renderDocComments(docs)
+          "### distinct type `" + dt.name + "`\n\n" + "```lyric\n" + distinctSignature(dt) + "\n```\n\n" +
+            renderDocComments(docs)
         }
-        case ITypeAlias(ta)    -> {
-          "### type alias `" + ta.name + "`\n\n" +
-          "```lyric\n" + typeAliasSignature(ta) + "\n```\n\n" +
-          renderDocComments(docs)
+        case ITypeAlias(ta) -> {
+          "### type alias `" + ta.name + "`\n\n" + "```lyric\n" + typeAliasSignature(ta) + "\n```\n\n" + renderDocComments(docs)
         }
-        case IConst(c)         -> {
-          "### const `" + c.name + "`\n\n" +
-          "```lyric\n" + constSignature(c) + "\n```\n\n" +
-          renderDocComments(docs)
+        case IConst(c) -> {
+          "### const `" + c.name + "`\n\n" + "```lyric\n" + constSignature(c) + "\n```\n\n" + renderDocComments(docs)
         }
-        case _                 -> ""
+        case _ -> ""
       }
     }
   }
 }
 
 // ─── Top-level entry ──────────────────────────────────────────────────────────
-
 pub func generate(source: in String): String {
-  val pr  = parse(source)
+  val pr = parse(source)
   val file = pr.file
   val pkgName = pathStr(file.packageDecl.path)
   var s = "# Package `" + pkgName + "`\n\n"
@@ -343,8 +324,10 @@ pub func generate(source: in String): String {
   var i = 0
   while i < file.items.count {
     match file.items[i].visibility {
-      case Some(_) -> { pubCount = pubCount + 1 }
-      case None    -> ()
+      case Some(_) -> {
+        pubCount = pubCount + 1
+      }
+      case None -> ()
     }
     i = i + 1
   }

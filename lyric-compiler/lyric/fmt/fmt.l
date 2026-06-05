@@ -1,18 +1,18 @@
-// fmt/fmt.l — top-level entry points for the self-hosted Lyric formatter.
-//
-// `format(parsed)` walks the AST to produce canonical Lyric source, mirroring
-// the F# bootstrap formatter at `compiler/src/Lyric.Cli/Fmt.fs`, and uses the
-// red/green CST attached to `ParseResult` (Phase 5 §M5.1 stage 5′) to
-// preserve line and block comments at item boundaries — the comments today's
-// F# `lyric fmt` drops.  Item-internal comment preservation (inside function
-// bodies, record fields, etc.) is intentionally deferred until the CST is
-// refined to per-statement / per-expression granularity.
-//
-// Public API (matches the Future-package contract advertised in
-// compiler/lyric/lyric/cli.l):
-//
-//     pub func format(parsed: in ParseResult): String
-//     pub func isFormatted(source: in String, parsed: in ParseResult): Bool
+//! fmt/fmt.l — top-level entry points for the self-hosted Lyric formatter.
+//!
+//! `format(parsed)` walks the AST to produce canonical Lyric source, mirroring
+//! the F# bootstrap formatter at `compiler/src/Lyric.Cli/Fmt.fs`, and uses the
+//! red/green CST attached to `ParseResult` (Phase 5 §M5.1 stage 5′) to
+//! preserve line and block comments at item boundaries — the comments today's
+//! F# `lyric fmt` drops.  Item-internal comment preservation (inside function
+//! bodies, record fields, etc.) is intentionally deferred until the CST is
+//! refined to per-statement / per-expression granularity.
+//!
+//! Public API (matches the Future-package contract advertised in
+//! compiler/lyric/lyric/cli.l):
+//!
+//!     pub func format(parsed: in ParseResult): String
+//!     pub func isFormatted(source: in String, parsed: in ParseResult): Bool
 package Lyric.Fmt
 
 import Std.Core
@@ -29,7 +29,6 @@ import Lyric.Parser
 // appropriate boundary.  The list is in source order because the CST
 // visit is in source order.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub union HarvestedItem {
   /// A `//` or `/* */` comment.  `text` includes the leading prefix.
   case HiComment(text: String, offset: Int)
@@ -44,7 +43,7 @@ pub union HarvestedItem {
 func harvestedOffset(h: in HarvestedItem): Int {
   match h {
     case HiComment(_, o) -> o
-    case HiBlank(o)      -> o
+    case HiBlank(o) -> o
   }
 }
 
@@ -56,7 +55,7 @@ func harvestedOffset(h: in HarvestedItem): Int {
 /// record / union / enum member).  Inline printers don't take it
 /// because nothing emits across multiple source lines.
 pub record FmtCtx {
-  items:  List[HarvestedItem]
+  items: List[HarvestedItem]
   cursor: Int
 }
 
@@ -70,8 +69,7 @@ pub func newFmtCtx(items: in List[HarvestedItem]): FmtCtx {
 /// alongside comments.
 pub func popTriviaBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
   val acc: List[String] = newList()
-  while ctx.cursor < ctx.items.count
-        and harvestedOffset(ctx.items[ctx.cursor]) < hi {
+  while ctx.cursor < ctx.items.count and harvestedOffset(ctx.items[ctx.cursor]) < hi {
     match ctx.items[ctx.cursor] {
       case HiComment(text, _) -> {
         val parts = Str.split(text, "\n")
@@ -81,7 +79,9 @@ pub func popTriviaBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
           j = j + 1
         }
       }
-      case HiBlank(_) -> { acc.add("") }
+      case HiBlank(_) -> {
+        acc.add("")
+      }
     }
     ctx.cursor = ctx.cursor + 1
   }
@@ -94,8 +94,7 @@ pub func popTriviaBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
 /// already emits its own spacing rules.
 pub func popCommentsBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
   val acc: List[String] = newList()
-  while ctx.cursor < ctx.items.count
-        and harvestedOffset(ctx.items[ctx.cursor]) < hi {
+  while ctx.cursor < ctx.items.count and harvestedOffset(ctx.items[ctx.cursor]) < hi {
     match ctx.items[ctx.cursor] {
       case HiComment(text, _) -> {
         val parts = Str.split(text, "\n")
@@ -105,7 +104,8 @@ pub func popCommentsBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
           j = j + 1
         }
       }
-      case HiBlank(_) -> {}
+      case HiBlank(_) -> {
+      }
     }
     ctx.cursor = ctx.cursor + 1
   }
@@ -116,8 +116,7 @@ pub func popCommentsBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
 /// `< hi` without emission.  Used at item end to drop leftovers from
 /// expression sub-trees that are not yet ctx-aware.
 pub func skipCommentsBefore(ctx: inout FmtCtx, hi: in Int): Unit {
-  while ctx.cursor < ctx.items.count
-        and harvestedOffset(ctx.items[ctx.cursor]) < hi {
+  while ctx.cursor < ctx.items.count and harvestedOffset(ctx.items[ctx.cursor]) < hi {
     ctx.cursor = ctx.cursor + 1
   }
 }
@@ -143,7 +142,9 @@ func harvestTriviaFromToken(t: in SpannedToken, acc: inout List[HarvestedItem]):
     val tr = t.leadingTrivia[i]
     match tr.kind {
       case TKNewline -> {
-        if newlineRun == 0 { runStart = tr.span.startPos.offset }
+        if newlineRun == 0 {
+          runStart = tr.span.startPos.offset
+        }
         newlineRun = newlineRun + 1
         if newlineRun >= 2 and not blankRecorded {
           acc.add(HiBlank(offset = runStart))
@@ -173,7 +174,7 @@ func harvestTriviaFromNode(n: in GreenNode, acc: inout List[HarvestedItem]): Uni
   var i = 0
   while i < n.children.count {
     match n.children[i] {
-      case GcToken(t)    -> harvestTriviaFromToken(t, acc)
+      case GcToken(t) -> harvestTriviaFromToken(t, acc)
       case GcNode(child) -> harvestTriviaFromNode(child, acc)
     }
     i = i + 1
@@ -192,17 +193,21 @@ func harvestTrivia(cst: in GreenNode): List[HarvestedItem] {
 // lock-step by the parser, so the n-th `SkItem` corresponds to the n-th AST
 // item.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func collectItemNodes(n: in GreenNode, acc: inout List[GreenNode]): Unit {
   match n.kind {
-    case SkItem -> { acc.add(n); return }
-    case _      -> {}
+    case SkItem -> {
+      acc.add(n)
+      return
+    }
+    case _ -> {
+    }
   }
   var i = 0
   while i < n.children.count {
     match n.children[i] {
       case GcNode(child) -> collectItemNodes(child, acc)
-      case GcToken(_)    -> {}
+      case GcToken(_) -> {
+      }
     }
     i = i + 1
   }
@@ -229,7 +234,9 @@ func nodeStartOffset(n: in GreenNode): Int {
       }
       case GcNode(child) -> {
         val o = nodeStartOffset(child)
-        if o >= 0 { return o }
+        if o >= 0 {
+          return o
+        }
       }
     }
     i = i + 1
@@ -241,10 +248,14 @@ func nodeFirstTokenOffset(n: in GreenNode): Int {
   var i = 0
   while i < n.children.count {
     match n.children[i] {
-      case GcToken(t)    -> { return t.span.startPos.offset }
+      case GcToken(t) -> {
+        return t.span.startPos.offset
+      }
       case GcNode(child) -> {
         val o = nodeFirstTokenOffset(child)
-        if o >= 0 { return o }
+        if o >= 0 {
+          return o
+        }
       }
     }
     i = i + 1
@@ -261,18 +272,23 @@ func nodeLastTokenEndOffset(n: in GreenNode): Int {
   var i = n.children.count - 1
   while i >= 0 {
     match n.children[i] {
-      case GcToken(t)    -> {
+      case GcToken(t) -> {
         // Skip synthetic STMT_END tokens — their span is zero-width and
         // also at the next-token offset.  Real tokens have non-zero
         // span lengths.
         match t.token {
-          case TStmtEnd -> {}
-          case _ -> { return t.span.endPos.offset }
+          case TStmtEnd -> {
+          }
+          case _ -> {
+            return t.span.endPos.offset
+          }
         }
       }
       case GcNode(child) -> {
         val o = nodeLastTokenEndOffset(child)
-        if o >= 0 { return o }
+        if o >= 0 {
+          return o
+        }
       }
     }
     i = i - 1
@@ -287,13 +303,12 @@ func nodeLastTokenEndOffset(n: in GreenNode): Int {
 // between cases in a union, etc.) get woven in alongside the
 // already-handled inter-item comments.
 // ─────────────────────────────────────────────────────────────────────────────
-
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func format(parsed: in ParseResult): String {
   val file = parsed.file
-  val cst  = parsed.cst
+  val cst = parsed.cst
   val nodes = itemNodes(cst)
-  var ctx  = newFmtCtx(harvestTrivia(cst))
+  var ctx = newFmtCtx(harvestTrivia(cst))
 
   val sb: List[String] = newList()
 
@@ -305,15 +320,21 @@ pub func format(parsed: in ParseResult): String {
   // (`/* … */`) are left verbatim.  See `promoteModuleComment`.
   val preHeader = popCommentsBefore(ctx, file.packageDecl.span.startPos.offset)
   var ph = 0
-  while ph < preHeader.count { sb.add(promoteModuleComment(preHeader[ph])); ph = ph + 1 }
+  while ph < preHeader.count {
+    sb.add(promoteModuleComment(preHeader[ph]))
+    ph = ph + 1
+  }
 
   // Module-doc comments.
   var i = 0
   while i < file.moduleDoc.count {
     val d = file.moduleDoc[i]
     val prefix = if d.isModule { "//!" } else { "///" }
-    if d.text == "" { sb.add(prefix) }
-    else { sb.add(prefix + " " + d.text) }
+    if d.text == "" {
+      sb.add(prefix)
+    } else {
+      sb.add(prefix + " " + d.text)
+    }
     i = i + 1
   }
 
@@ -334,7 +355,10 @@ pub func format(parsed: in ParseResult): String {
   // remain.
   val pkgTail = popCommentsBefore(ctx, file.packageDecl.span.endPos.offset)
   var pt = 0
-  while pt < pkgTail.count { sb.add(pkgTail[pt]); pt = pt + 1 }
+  while pt < pkgTail.count {
+    sb.add(pkgTail[pt])
+    pt = pt + 1
+  }
 
   // Imports.
   if file.imports.count > 0 {
@@ -345,10 +369,16 @@ pub func format(parsed: in ParseResult): String {
       // Comments before this import (e.g. an explanatory line comment).
       val pre = popCommentsBefore(ctx, imp.span.startPos.offset)
       var k = 0
-      while k < pre.count { sb.add(pre[k]); k = k + 1 }
+      while k < pre.count {
+        sb.add(pre[k])
+        k = k + 1
+      }
       val ds = importDoc(imp)
       var j = 0
-      while j < ds.count { sb.add(ds[j]); j = j + 1 }
+      while j < ds.count {
+        sb.add(ds[j])
+        j = j + 1
+      }
       i = i + 1
     }
   }
@@ -360,22 +390,27 @@ pub func format(parsed: in ParseResult): String {
     var idx = 0
     while idx < n {
       val item = file.items[idx]
-      val itemStart =
-        if idx < nodes.count { nodeFirstTokenOffset(nodes[idx]) }
-        else                  { item.span.startPos.offset }
+      val itemStart = if idx < nodes.count { nodeFirstTokenOffset(nodes[idx]) } else { item.span.startPos.offset }
 
       // Comments between the previous item / header and this item's
       // first token (excluding any item-internal comments — those are
       // popped *during* `itemDoc` traversal).
-      val between =
-        popCommentsBefore(ctx, if itemStart >= 0 { itemStart } else { item.span.startPos.offset })
-      if idx > 0 { sb.add("") }
+      val between = popCommentsBefore(ctx, if itemStart >= 0 { itemStart } else { item.span.startPos.offset })
+      if idx > 0 {
+        sb.add("")
+      }
       var k = 0
-      while k < between.count { sb.add(between[k]); k = k + 1 }
+      while k < between.count {
+        sb.add(between[k])
+        k = k + 1
+      }
 
       val ds = itemDoc(item, ctx)
       var j = 0
-      while j < ds.count { sb.add(ds[j]); j = j + 1 }
+      while j < ds.count {
+        sb.add(ds[j])
+        j = j + 1
+      }
 
       // After emitting the item, fast-forward the cursor past any
       // comments that still sit inside the item's source range — those
@@ -383,13 +418,16 @@ pub func format(parsed: in ParseResult): String {
       // walk, but if a deeper construct is not yet ctx-aware (e.g. an
       // expression sub-tree), we don't want them re-emitting at the
       // next item boundary.
-      val itemEnd =
-        if idx < nodes.count {
-          val o = nodeLastTokenEndOffset(nodes[idx])
-          if o >= 0 { o } else { item.span.endPos.offset }
+      val itemEnd = if idx < nodes.count {
+        val o = nodeLastTokenEndOffset(nodes[idx])
+        if o >= 0 {
+          o
         } else {
           item.span.endPos.offset
         }
+      } else {
+        item.span.endPos.offset
+      }
       skipCommentsBefore(ctx, itemEnd)
       idx = idx + 1
     }
@@ -399,14 +437,20 @@ pub func format(parsed: in ParseResult): String {
     if tail.count > 0 {
       sb.add("")
       var k = 0
-      while k < tail.count { sb.add(tail[k]); k = k + 1 }
+      while k < tail.count {
+        sb.add(tail[k])
+        k = k + 1
+      }
     }
   } else {
     val tail = popCommentsBefore(ctx, parsed.source.length + 1)
     if tail.count > 0 {
       sb.add("")
       var k = 0
-      while k < tail.count { sb.add(tail[k]); k = k + 1 }
+      while k < tail.count {
+        sb.add(tail[k])
+        k = k + 1
+      }
     }
   }
 
@@ -426,15 +470,21 @@ pub func format(parsed: in ParseResult): String {
 @pure
 func promoteModuleComment(line: in String): String {
   var i = 0
-  while i < line.length and (line[i] == ' ' or line[i] == '\t') { i = i + 1 }
+  while i < line.length and (line[i] == ' ' or line[i] == '\t') {
+    i = i + 1
+  }
   // Must begin with `//`; otherwise (block-comment body, blank) leave as-is.
   if i + 1 >= line.length or line[i] != '/' or line[i + 1] != '/' {
     return line
   }
   val ws = Str.substring(line, 0, i)
   var j = i
-  while j < line.length and line[j] == '/' { j = j + 1 }
-  if j < line.length and line[j] == '!' { j = j + 1 }
+  while j < line.length and line[j] == '/' {
+    j = j + 1
+  }
+  if j < line.length and line[j] == '!' {
+    j = j + 1
+  }
   val rest = Str.substring(line, j, line.length - j)
   ws + "//!" + rest
 }
@@ -453,8 +503,7 @@ func joinLines(lines: in List[String]): String {
 // §5. `isFormatted` — true when `source` already matches its canonical form.
 // Mirrors the same helper in F# Fmt.fs.
 // ─────────────────────────────────────────────────────────────────────────────
-
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func isFormatted(source: in String, parsed: in ParseResult): Bool {
   val canonical = format(parsed)
   normaliseEnd(source) == normaliseEnd(canonical)
@@ -473,13 +522,12 @@ func normaliseEnd(s: in String): String {
 // `SelfHostedBridge.fs` test harness also reaches them by reflection
 // across the language boundary.
 // ─────────────────────────────────────────────────────────────────────────────
-
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func formatSource(source: in String): String {
   format(parse(source))
 }
 
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func isFormattedSource(source: in String): Bool {
   isFormatted(source, parse(source))
 }
@@ -502,7 +550,6 @@ pub func isFormattedSource(source: in String): Bool {
 // a file's meaning: on any failure it refuses to overwrite and reports
 // the reason, leaving the file untouched.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub union FmtCheck {
   /// Formatting succeeded and was proven lossless.
   case FmtOk(text: String)
@@ -519,24 +566,31 @@ pub union FmtCheck {
   case FmtStructureChanged(detail: String)
 }
 
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func formatSourceChecked(source: in String): FmtCheck {
   val parsedIn = parse(source)
   val inErrs = errorDiagnostics(parsedIn.diagnostics)
-  if inErrs.count > 0 { return FmtInputParseError(diagnostics = inErrs) }
+  if inErrs.count > 0 {
+    return FmtInputParseError(diagnostics = inErrs)
+  }
 
   val formatted = format(parsedIn)
 
   val parsedOut = parse(formatted)
   val outErrs = errorDiagnostics(parsedOut.diagnostics)
-  if outErrs.count > 0 { return FmtOutputParseError(diagnostics = outErrs) }
+  if outErrs.count > 0 {
+    return FmtOutputParseError(diagnostics = outErrs)
+  }
 
-  val droppedComments =
-    multisetMissing(commentPayloads(source), commentPayloads(formatted))
-  if droppedComments.count > 0 { return FmtCommentLoss(dropped = droppedComments) }
+  val droppedComments = multisetMissing(commentPayloads(source), commentPayloads(formatted))
+  if droppedComments.count > 0 {
+    return FmtCommentLoss(dropped = droppedComments)
+  }
 
   val structDiff = structuralSequenceDiff(parsedIn.source, formatted)
-  if structDiff != "" { return FmtStructureChanged(detail = structDiff) }
+  if structDiff != "" {
+    return FmtStructureChanged(detail = structDiff)
+  }
 
   FmtOk(text = formatted)
 }
@@ -546,8 +600,9 @@ func errorDiagnostics(ds: in List[Diagnostic]): List[Diagnostic] {
   var i = 0
   while i < ds.count {
     match ds[i].severity {
-      case DiagError   -> acc.add(ds[i])
-      case DiagWarning -> {}
+      case DiagError -> acc.add(ds[i])
+      case DiagWarning -> {
+      }
     }
     i = i + 1
   }
@@ -570,22 +625,23 @@ func codeTokens(source: in String): List[String] {
   while i < lr.tokens.count {
     val t = lr.tokens[i]
     val include = match t.token {
-      case TStmtEnd             -> false
-      case TEof                 -> false
-      case TDocComment(_)       -> false
+      case TStmtEnd -> false
+      case TEof -> false
+      case TDocComment(_) -> false
       case TModuleDocComment(_) -> false
-      case _                    -> true
+      case _ -> true
     }
     if include {
       val st = t.span.startPos.offset
       val en = t.span.endPos.offset
-      val text =
-        if en > st and st >= 0 and en <= source.length {
-          Str.substring(source, st, en - st)
-        } else {
-          tokenKindTag(t.token)
-        }
-      if text != "," { acc.add(text) }
+      val text = if en > st and st >= 0 and en <= source.length {
+        Str.substring(source, st, en - st)
+      } else {
+        tokenKindTag(t.token)
+      }
+      if text != "," {
+        acc.add(text)
+      }
     }
     i = i + 1
   }
@@ -597,9 +653,9 @@ func tokenKindTag(tok: in Token): String {
   match tok {
     case TKeyword(kw) -> "kw:" + keywordSpelling(kw)
     case TIdent(name) -> "id:" + name
-    case TString(s)   -> "s:" + s
-    case TBool(b)     -> if b { "true" } else { "false" }
-    case _            -> "<tok>"
+    case TString(s) -> "s:" + s
+    case TBool(b) -> if b { "true" } else { "false" }
+    case _ -> "<tok>"
   }
 }
 
@@ -613,55 +669,45 @@ func structuralSequenceDiff(a: in String, b: in String): String {
   var i = 0
   while i < n {
     if ta[i] != tb[i] {
-      return "token " + toString(i + 1) + " changed: `" + ta[i] +
-             "` -> `" + tb[i] + "`"
+      return "token " + toString(i + 1) + " changed: `" + ta[i] + "` -> `" + tb[i] + "`"
     }
     i = i + 1
   }
   if ta.count != tb.count {
-    return "token count changed: " + toString(ta.count) + " -> " +
-           toString(tb.count)
+    return "token count changed: " + toString(ta.count) + " -> " + toString(tb.count)
   }
   ""
 }
 
 /// True when the checked format succeeded losslessly.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func fmtCheckIsOk(c: in FmtCheck): Bool {
   match c {
     case FmtOk(_) -> true
-    case _        -> false
+    case _ -> false
   }
 }
 
 /// The formatted text — valid only when `fmtCheckIsOk` is true (empty
 /// string otherwise).
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func fmtCheckText(c: in FmtCheck): String {
   match c {
     case FmtOk(t) -> t
-    case _        -> ""
+    case _ -> ""
   }
 }
 
 /// A human-readable explanation of why a checked format was refused, or
 /// the empty string on success.  Drives the `lyric fmt` diagnostic.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func fmtCheckMessage(c: in FmtCheck): String {
   match c {
     case FmtOk(_) -> ""
-    case FmtInputParseError(ds) ->
-      "fmt skipped — source has " + toString(ds.count) +
-      " parse error(s); not safe to reformat:\n" + diagsMessage(ds)
-    case FmtOutputParseError(ds) ->
-      "fmt aborted — formatter output does not parse (" + toString(ds.count) +
-      " error(s)); file left unchanged (formatter bug):\n" + diagsMessage(ds)
-    case FmtCommentLoss(dropped) ->
-      "fmt aborted — would drop " + toString(dropped.count) +
-      " comment(s); file left unchanged:\n" + droppedMessage(dropped)
-    case FmtStructureChanged(detail) ->
-      "fmt aborted — formatting would change the code-token sequence " +
-      "(formatter bug); file left unchanged:\n  " + detail
+    case FmtInputParseError(ds) -> "fmt skipped — source has " + toString(ds.count) + " parse error(s); not safe to reformat:\n" + diagsMessage(ds)
+    case FmtOutputParseError(ds) -> "fmt aborted — formatter output does not parse (" + toString(ds.count) + " error(s)); file left unchanged (formatter bug):\n" + diagsMessage(ds)
+    case FmtCommentLoss(dropped) -> "fmt aborted — would drop " + toString(dropped.count) + " comment(s); file left unchanged:\n" + droppedMessage(dropped)
+    case FmtStructureChanged(detail) -> "fmt aborted — formatting would change the code-token sequence " + "(formatter bug); file left unchanged:\n  " + detail
   }
 }
 
@@ -670,8 +716,9 @@ func diagsMessage(ds: in List[Diagnostic]): String {
   var i = 0
   while i < ds.count {
     val d = ds[i]
-    s = s + "  " + d.code + " [" + toString(d.span.startPos.line) + ":" +
-        toString(d.span.startPos.column) + "]: " + d.message + "\n"
+    s = s + "  " + d.code + " [" + toString(d.span.startPos.line) + ":" + toString(d.span.startPos.column) + "]: " +
+      d.message +
+      "\n"
     i = i + 1
   }
   s
@@ -697,11 +744,17 @@ func normComment(raw: in String): String {
   var s = Str.trim(raw)
   if Str.startsWith(s, "/*") {
     s = Str.substring(s, 2, s.length - 2)
-    if Str.endsWith(s, "*/") { s = Str.substring(s, 0, s.length - 2) }
+    if Str.endsWith(s, "*/") {
+      s = Str.substring(s, 0, s.length - 2)
+    }
   } else {
     var k = 0
-    while k < s.length and s[k] == '/' { k = k + 1 }
-    if k < s.length and s[k] == '!' { k = k + 1 }
+    while k < s.length and s[k] == '/' {
+      k = k + 1
+    }
+    if k < s.length and s[k] == '!' {
+      k = k + 1
+    }
     s = Str.substring(s, k, s.length - k)
   }
   collapseWs(Str.trim(s))
@@ -714,7 +767,9 @@ func collapseWs(s: in String): String {
   val acc: List[String] = newList()
   var i = 0
   while i < parts.length {
-    if parts[i] != "" { acc.add(parts[i]) }
+    if parts[i] != "" {
+      acc.add(parts[i])
+    }
     i = i + 1
   }
   joinStrings(acc, " ")
@@ -732,17 +787,40 @@ func commentPayloads(source: in String): List[String] {
     while k < t.leadingTrivia.count {
       val tr = t.leadingTrivia[k]
       match tr.kind {
-        case TKLineComment  -> { val p = normComment(tr.text); if p != "" { acc.add(p) } }
-        case TKBlockComment -> { val p = normComment(tr.text); if p != "" { acc.add(p) } }
-        case TKWhitespace   -> {}
-        case TKNewline      -> {}
+        case TKLineComment -> {
+          val p = normComment(tr.text)
+          if p != "" {
+            acc.add(p)
+          }
+        }
+        case TKBlockComment -> {
+          val p = normComment(tr.text)
+          if p != "" {
+            acc.add(p)
+          }
+        }
+        case TKWhitespace -> {
+        }
+        case TKNewline -> {
+        }
       }
       k = k + 1
     }
     match t.token {
-      case TDocComment(txt)       -> { val p = normComment(txt); if p != "" { acc.add(p) } }
-      case TModuleDocComment(txt) -> { val p = normComment(txt); if p != "" { acc.add(p) } }
-      case _ -> {}
+      case TDocComment(txt) -> {
+        val p = normComment(txt)
+        if p != "" {
+          acc.add(p)
+        }
+      }
+      case TModuleDocComment(txt) -> {
+        val p = normComment(txt)
+        if p != "" {
+          acc.add(p)
+        }
+      }
+      case _ -> {
+      }
     }
     i = i + 1
   }
@@ -758,10 +836,18 @@ func multisetMissing(a: in List[String], b: in List[String]): List[String] {
     val v = a[i]
     var seen = false
     var p = 0
-    while p < i { if a[p] == v { seen = true } p = p + 1 }
+    while p < i {
+      if a[p] == v {
+        seen = true
+      }
+      p = p + 1
+    }
     if not seen {
       var d = countOf(a, v) - countOf(b, v)
-      while d > 0 { missing.add(v) d = d - 1 }
+      while d > 0 {
+        missing.add(v)
+        d = d - 1
+      }
     }
     i = i + 1
   }
@@ -771,6 +857,11 @@ func multisetMissing(a: in List[String], b: in List[String]): List[String] {
 func countOf(xs: in List[String], v: in String): Int {
   var c = 0
   var i = 0
-  while i < xs.count { if xs[i] == v { c = c + 1 } i = i + 1 }
+  while i < xs.count {
+    if xs[i] == v {
+      c = c + 1
+    }
+    i = i + 1
+  }
   c
 }
