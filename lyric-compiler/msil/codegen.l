@@ -5083,13 +5083,10 @@ func lowerBuiltinOrStaticCallMsil(
         case MValueTypeRef(typeRefCode, clrFqn) -> {
           if clrFqn == "System.DateTime" {
             val tmpSlot = allocSlotMsil(fctx, "__tostring_dt_tmp", argTy)
-            val fmtTok  = ctxInternUs(cctx.lctx, "{0:o}")
             emitStoreSlot(insns, tmpSlot, fctx.paramCount)
-            insns.add(MLdStr(token = fmtTok))
             insns.add(MLdloca(slot = tmpSlot - fctx.paramCount))
-            val rawRow = (typeRefCode - 1) / 4
-            insns.add(MBox(typeToken = 16777216 + rawRow))
-            insns.add(MCall(methodToken = cctx.tokStringFormat1))
+            insns.add(MCall(methodToken = cctx.tokInvariantCulture))
+            insns.add(MCall(methodToken = cctx.tokDateTimeToStringInv))
           } else {
             val rawRow = (typeRefCode - 1) / 4
             insns.add(MBox(typeToken = 16777216 + rawRow))
