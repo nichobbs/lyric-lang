@@ -20984,3 +20984,45 @@ clears the `T0043` interface-subtyping errors on `mocking_tests`; the remaining
 visible to the self-hosted type checker (the `@stubbable` synthesis pass —
 `bootstrap/src/Lyric.Parser/Stubbable.fs` — is not yet ported to the self-hosted
 pipeline; tracked as the next #1488 sub-task).
+
+### D-progress-433 — self-hosted `@stubbable` synthesis pass (#1488 gate, Band-1 of #1470)
+
+**Status:** Shipped — new self-hosted compiler pass.
+
+`@stubbable` interfaces synthesise a sibling `<Name>Stub` record + `impl` before
+the type checker runs, so `mocking_tests`'s `PriceFeedStub` / `TaxProviderStub`
+resolve and the test isolates the unit under test.  This synthesis lived only in
+the F# stage-0 (`bootstrap/src/Lyric.Parser/Stubbable.fs`); the self-hosted
+pipeline never ran it, so `mocking_tests` raised `T0020` ("unknown name
+'PriceFeedStub'") on the self-hosted single-file build — the last `mocking_tests`
+false positive blocking the #1488 gate.
+
+Fix: ported the pass to `lyric-compiler/lyric/stubbable.l` (`Lyric.Stubbable`),
+a pure AST transform that appends, for each non-generic `@stubbable` interface,
+a `pub record <Name>Stub` (one `pub <method>_value: <ReturnType>` field per
+non-Unit, non-`Self`, non-async method) and an `impl <Name> for <Name>Stub`
+(each method returns its `<method>_value`; Unit methods get an empty body).
+`Msil.Bridge.stubbableRewriteFile` runs it after the alias rewrite, before
+type-check, on both the single-file and project paths.  Combined with the
+interface-subtyping support (D-progress-432), `mocking_tests` now builds clean on
+the self-hosted path; it continues to pass at runtime via the emitter suite
+(`StdlibLyricTests`, F# `Stubbable.fs`).
+
+Coverage: `mocking_tests` builds clean self-hosted (`./bin/lyric build`,
+zero diagnostics) and runs green via the emitter suite (843/843).  A dedicated
+`stubbable_self_test.l` is deferred: the `LYRIC_LOAD_COMPILER` loader path that
+runs `*_self_test.l` modules surfaces an unrelated, pre-existing self-hosted
+codegen bug (`Msil.Codegen: match not exhaustive in
+Lyric.Parser.parseInterfaceMemberOpt`) when the loader-compiled parser parses an
+`interface` — the bridge/stage-1-compiled parser handles it (mocking_tests
+proves the path), so this is a loader-codegen gap, not a `Lyric.Stubbable` one.
+Full regression green: 843/843 emitter, `weaver_self_test.l` 18/18.
+
+This clears the last `mocking_tests` false positive.  Remaining before the
+`bridge.l:93` flip: `encoding_tests` (a `Byte`-index argument needs `.toInt()`,
+which the F# stage-0 emitter — still the `StdlibLyricTests` runner — can't
+compile, a bootstrap tension), `regex_safe_tests` (alias-stripped qualified-call
+resolution when two packages export an identically-named overloaded function),
+and the compiler-internal tests (`metadata_reader_tests`,
+`msil_project_bridge_tests`) which need `LYRIC_LOAD_COMPILER` cross-compiler-
+package type resolution.
