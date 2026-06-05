@@ -59,6 +59,7 @@ pub record CodegenCtx {
   trBoolean:          Int   // System.Boolean
   trChar:             Int   // System.Char
   trException:        Int   // System.Exception
+  trCultureInfo:      Int   // System.Globalization.CultureInfo
   // MemberRef tokens (0x0A000000 | 1-based row)
   tokWriteLineStr:    Int   // Console.WriteLine(string)
   tokWriteLineInt:    Int   // Console.WriteLine(int32)
@@ -73,6 +74,8 @@ pub record CodegenCtx {
   tokStringFormat2:   Int   // String.Format(string,object,object)
   tokStringFormat3:   Int   // String.Format(string,object,object,object)
   tokObjToString:     Int   // Object.ToString() instance HASTHIS
+  tokCultureInfoInvariantGet: Int  // CultureInfo.get_InvariantCulture(): CultureInfo  static
+  tokDoubleToStringInv:       Int  // Double.ToString(IFormatProvider): string  instance HASTHIS
   tokExcGetMessage:   Int   // Exception.get_Message(): string  instance HASTHIS
   tokObjGetType:      Int   // Object.GetType(): Type  instance HASTHIS
   tokTypeGetName:     Int   // Type.get_Name: string  instance HASTHIS
@@ -368,7 +371,9 @@ pub func newCodegenCtx(packageName: in String,
   val trDouble   = ctxAddTypeRef(lctx, "System", "Double",    lctx.arRuntime)
   val trBoolean  = ctxAddTypeRef(lctx, "System", "Boolean",   lctx.arRuntime)
   val trChar     = ctxAddTypeRef(lctx, "System", "Char",      lctx.arRuntime)
-  val trException = ctxAddTypeRef(lctx, "System", "Exception", lctx.arRuntime)
+  val trException      = ctxAddTypeRef(lctx, "System", "Exception",      lctx.arRuntime)
+  val trIFormatProvider = ctxAddTypeRef(lctx, "System", "IFormatProvider", lctx.arRuntime)
+  val trCultureInfo     = ctxAddTypeRef(lctx, "System.Globalization", "CultureInfo", lctx.arRuntime)
 
   // Build MemberRef signatures.
   // 1. Console.WriteLine(string): void  → MemberRef[1] → token 0x0A000001
@@ -469,6 +474,19 @@ pub func newCodegenCtx(packageName: in String,
   val tokObjToStr = 0x0A000000 + ctxAddMemberRef(
     lctx, lctx.trObject, "ToString",
     "obj_tostring", buildInstanceMethodSig(toStrPs, MString))
+
+  // CultureInfo.get_InvariantCulture(): CultureInfo  static
+  val tokCultInvGet = 0x0A000000 + ctxAddMemberRef(
+    lctx, trCultureInfo, "get_InvariantCulture",
+    "cult_inv_get", buildStaticMethodSig(newList(),
+      MClassRef(typeRefCode = tdrTypeRef(trCultureInfo), clrFqn = "System.Globalization.CultureInfo")))
+
+  // Double.ToString(IFormatProvider): string  instance HASTHIS
+  val dblTsInvPs: List[MsilType] = newList()
+  dblTsInvPs.add(MClassRef(typeRefCode = tdrTypeRef(trIFormatProvider), clrFqn = "System.IFormatProvider"))
+  val tokDblToStrInv = 0x0A000000 + ctxAddMemberRef(
+    lctx, trDouble, "ToString",
+    "dbl_tostring_inv", buildInstanceMethodSig(dblTsInvPs, MString))
 
   // System.Type TypeRef (needed for GetType / get_Name)
   val trType = ctxAddTypeRef(lctx, "System", "Type", lctx.arRuntime)
@@ -835,6 +853,7 @@ pub func newCodegenCtx(packageName: in String,
     trBoolean            = trBoolean,
     trChar               = trChar,
     trException          = trException,
+    trCultureInfo        = trCultureInfo,
     tokWriteLineStr      = tokWLStr,
     tokWriteLineInt      = tokWLInt,
     tokWriteLineLong     = tokWLLong,
@@ -847,7 +866,9 @@ pub func newCodegenCtx(packageName: in String,
     tokStringFormat1     = tokFmt1,
     tokStringFormat2     = tokFmt2,
     tokStringFormat3     = tokFmt3,
-    tokObjToString       = tokObjToStr,
+    tokObjToString             = tokObjToStr,
+    tokCultureInfoInvariantGet = tokCultInvGet,
+    tokDoubleToStringInv       = tokDblToStrInv,
     tokExcGetMessage     = tokExcGetMessage,
     tokObjGetType        = tokObjGetType,
     tokTypeGetName       = tokTypeGetName,
@@ -5051,6 +5072,29 @@ func lowerBuiltinOrStaticCallMsil(
         case MVoid -> {
           val emptyTok = ctxInternUs(cctx.lctx, "")
           insns.add(MLdStr(token = emptyTok))
+        }
+        case MDouble -> {
+          val tmpSlot = allocSlotMsil(fctx, "__tostring_dbl_tmp", MDouble)
+          emitStoreSlot(insns, tmpSlot, fctx.paramCount)
+          insns.add(MLdloca(slot = tmpSlot - fctx.paramCount))
+          insns.add(MCall(methodToken = cctx.tokCultureInfoInvariantGet))
+          insns.add(MCall(methodToken = cctx.tokDoubleToStringInv))
+        }
+        case MValueTypeRef(typeRefCode, clrFqn) -> {
+          if clrFqn == "System.DateTime" {
+            val tmpSlot = allocSlotMsil(fctx, "__tostring_dt_tmp", argTy)
+            val fmtTok  = ctxInternUs(cctx.lctx, "{0:o}")
+            emitStoreSlot(insns, tmpSlot, fctx.paramCount)
+            insns.add(MLdStr(token = fmtTok))
+            insns.add(MLdloca(slot = tmpSlot - fctx.paramCount))
+            val rawRow = (typeRefCode - 1) / 4
+            insns.add(MBox(typeToken = 16777216 + rawRow))
+            insns.add(MCall(methodToken = cctx.tokStringFormat1))
+          } else {
+            val rawRow = (typeRefCode - 1) / 4
+            insns.add(MBox(typeToken = 16777216 + rawRow))
+            insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+          }
         }
         case _ -> {
           if isClrDateTimeMsil(argTy) {

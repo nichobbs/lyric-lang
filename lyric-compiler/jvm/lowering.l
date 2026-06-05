@@ -3870,8 +3870,9 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
 // `java.util.concurrent.StructuredTaskScope` changed shape across JDK previews:
 //   • JDK 21..23 (JEP 453/462/480): a *class* opened via
 //     `new StructuredTaskScope.ShutdownOnFailure()`, joined with `join()` and
-//     `throwIfFailed()`, all dispatched with `invokevirtual`.  This is the
-//     form the emitter targets today (Java 21 class-file version, major 65).
+//     subtask-state checked per subtask to propagate failure, all dispatched
+//     with `invokevirtual`.  This is the form the emitter targets today
+//     (Java 21 class-file version, major 65).
 //   • JDK 24+   (JEP 499 onward):  a sealed *interface* opened via the static
 //     factory `StructuredTaskScope.open()`, with `fork`/`join`/`close`
 //     dispatched via `invokeinterface`.  `ShutdownOnFailure` no longer exists.
@@ -3887,11 +3888,12 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
 // form; JDK 24+ raises a clear, actionable compiler error instead of shipping
 // untestable bytecode.
 /// Emit bytecode to open a structured-concurrency scope, fork each callable
-/// class (which must implement `Callable`), await the subtasks, propagate any
-/// failure, then close the scope.  Supported on JDK 21..23
-/// (`StructuredTaskScope.ShutdownOnFailure`); JDK 24+ support is tracked in
-/// #2263.  The scope reference is stored in `scopeSlot`; each forked task is
-/// stored in successive local slots starting at `firstTaskSlot`.
+/// class (which must implement `Callable`), join, check every subtask for
+/// failure (rethrowing the cause if any subtask failed), then close the scope.
+/// Supported on JDK 21..23 (`StructuredTaskScope.ShutdownOnFailure`); JDK 24+
+/// support is tracked in #2263.  The scope reference is stored in `scopeSlot`;
+/// each forked task is stored in successive local slots starting at
+/// `firstTaskSlot`.
 pub func lowerScopeBlock(
   asm: in MethodAssembler,
   callableNames: in List[String],
@@ -3927,13 +3929,13 @@ func lowerScopeBlockShutdownOnFailure(
   emitInvokespecial(asm, poolMethodref(asm.pool, scopeClass, "<init>", "()V"))
   emitAstore(asm, scopeSlot)
 
-  // fork each callable
+  // fork each callable — invokevirtual on ShutdownOnFailure (class API, not interface)
+  val forkDesc = "(Ljava/util/concurrent/Callable;)Ljava/util/concurrent/StructuredTaskScope$Subtask;"
   var taskSlot = firstTaskSlot
   for callableName in callableNames.toArray() {
     val callableClass = poolClass(asm.pool, callableName)
-    val callableCtor = poolMethodref(asm.pool, callableName, "<init>", "()V")
-    val forkDesc = "(Ljava/util/concurrent/Callable;)Ljava/util/concurrent/StructuredTaskScope$Subtask;"
-    val forkRef = poolMethodref(asm.pool, scopeClass, "fork", forkDesc)
+    val callableCtor  = poolMethodref(asm.pool, callableName, "<init>", "()V")
+    val forkRef       = poolMethodref(asm.pool, scopeClass, "fork", forkDesc)
 
     emitAload(asm, scopeSlot)
     emitNew(asm, callableClass)
@@ -3944,14 +3946,40 @@ func lowerScopeBlockShutdownOnFailure(
     taskSlot = taskSlot + 1
   }
 
-  // join() and throwIfFailed()
-  val joinRef = poolMethodref(asm.pool, scopeClass, "join", "()Ljava/util/concurrent/StructuredTaskScope;")
-  val throwRef = poolMethodref(asm.pool, scopeClass, "throwIfFailed", "()V")
+  // join() — blocks until all forked subtasks finish; returns this scope (discarded)
+  val joinRef  = poolMethodref(asm.pool, scopeClass, "join",  "()Ljava/util/concurrent/StructuredTaskScope$ShutdownOnFailure;")
+  val closeRef = poolMethodref(asm.pool, scopeClass, "close", "()V")
   emitAload(asm, scopeSlot)
   emitInvokevirtual(asm, joinRef)
   emitPop(asm)
+
+  // Check each subtask: if state() == FAILED, rethrow its exception.
+  // Subtask is a sealed interface in JDK 21+, so state() and exception() use invokeinterface.
+  val subtaskIface = "java/util/concurrent/StructuredTaskScope$Subtask"
+  val stateClass   = "java/util/concurrent/StructuredTaskScope$Subtask$State"
+  val stateDesc    = "Ljava/util/concurrent/StructuredTaskScope$Subtask$State;"
+  val stateRef     = poolIfaceMethodref(asm.pool, subtaskIface, "state",     "()" + stateDesc)
+  val excRef       = poolIfaceMethodref(asm.pool, subtaskIface, "exception", "()Ljava/lang/Throwable;")
+  val failedRef    = poolFieldref(asm.pool, stateClass, "FAILED", stateDesc)
+  var checkSlot = firstTaskSlot
+  var checkIdx  = 0
+  while checkIdx < callableNames.count {
+    val skipLabel = "scope_skip_" + toString(scopeSlot) + "_" + toString(checkSlot)
+    emitAload(asm, checkSlot)
+    emitInvokeinterface(asm, stateRef, 1)
+    emitGetstatic(asm, failedRef)
+    emitIfAcmpne(asm, skipLabel)
+    emitAload(asm, checkSlot)
+    emitInvokeinterface(asm, excRef, 1)
+    emitAthrow(asm)
+    emitLabel(asm, skipLabel)
+    checkSlot = checkSlot + 1
+    checkIdx  = checkIdx  + 1
+  }
+
+  // close() — StructuredTaskScope implements AutoCloseable
   emitAload(asm, scopeSlot)
-  emitInvokevirtual(asm, throwRef)
+  emitInvokevirtual(asm, closeRef)
 }
 
 // ── JDK feature-version detection ─────────────────────────────────────────────

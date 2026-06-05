@@ -156,7 +156,13 @@ func makeMainBytes(pool: in Pool): List[Byte] {
 
   emitReturn(asm)
 
-  val codeAttr = assembleCode(asm, 6, 4)
+  // Branches in the subtask-failure check require a StackMapTable.
+  val frameLocals: List[VerifierType] = newList()
+  frameLocals.add(VObject(className = "[Ljava/lang/String;"))
+  frameLocals.add(VObject(className = "java/util/concurrent/StructuredTaskScope"))
+  frameLocals.add(VObject(className = "java/util/concurrent/StructuredTaskScope$Subtask"))
+  frameLocals.add(VObject(className = "java/util/concurrent/StructuredTaskScope$Subtask"))
+  val codeAttr = assembleCodeWithFrames(asm, 6, 4, frameLocals)
   val attrs: List[Attribute] = newList()
   attrs.add(codeAttr)
   val mainMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "main", "([Ljava/lang/String;)V", attrs)
