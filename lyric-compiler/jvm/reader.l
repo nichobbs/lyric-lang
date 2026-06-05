@@ -34,7 +34,7 @@ record PoolStep {
 
 // Read big-endian u2 at offset (result: 0..=65535, always fits in Int).
 pub func readU2(bytes: in List[Byte], offset: in Int): Int {
-  bytes[offset] * 256 + bytes[offset + 1]
+  bytes[offset].toInt() * 256 + bytes[offset + 1].toInt()
 }
 
 // True iff the first four bytes equal 0xCAFEBABE.

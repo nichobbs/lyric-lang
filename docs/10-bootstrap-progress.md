@@ -21184,3 +21184,44 @@ spec-correct `.toInt()` code compiles on both the stage-0 and self-hosted paths.
 Regression: 843/843 emitter, `weaver_self_test.l` 18/18, every single-file gate
 stdlib build (encoding/regex/regex_safe/mocking/string/parse/environment/path)
 diagnostic-clean.
+
+### D-progress-437 — spec-correct Byte conversions in the compiler + field-receiver conversion codegen (#1488 gate)
+
+**Status:** Shipped — Byte→Int spec-correctness sweep + stage-0 codegen follow-up.
+
+D-progress-436 restored the primitive conversion methods in the stage-0 emitter,
+unblocking spec-correct `.toInt()` everywhere.  This lands the corresponding
+source fixes for the compiler-internal test closures, plus a stage-0 codegen
+gap that surfaced:
+
+- **Source fixes (spec §541, no implicit widening):** `metadata_reader.l`'s
+  `rdU8` (`b[o] * 1` → `b[o].toInt()`), `assembler.l`'s `isFatBody`
+  (`bs[0] % 4` → `bs[0].toInt() % 4`), the JVM ZIP/deflate readers
+  (`deflate.l`, `zip_reader.l`, `reader.l`: `data[p] * 1` / `bytes[o] * 256` →
+  `.toInt()`), and `metadata_reader_tests.l` (`(sig[0] * 1) < 0x80` →
+  `sig[0].toInt() < 0x80`).  Lyric `Byte` is unsigned 0..255, so `.toInt()`
+  zero-extends identically to the old `* 1` widening — no behaviour change.
+
+- **Stage-0 codegen (Codegen.fs):** D-progress-436's conversion arm guarded on a
+  side-effect-free `peekExprType`, which can't yet type field/index receivers
+  (`br.data[p]`).  Added a fallback in the method-call dispatch's
+  method-not-found (`E0012`) path: when no BCL method matched and the receiver's
+  *emitted* type is a primitive, emit the conversion opcode there.  `recvTy` is
+  accurate at that point, so `br.data[p].toInt()` now compiles on the stage-0
+  path too.
+
+`metadata_reader_tests` now builds **clean** via `LYRIC_LOAD_COMPILER` (115 → 0)
+and runs green on the F# path (843/843 emitter).  Regression: `weaver_self_test`
+18/18.
+
+Remaining compiler-internal test: `msil_project_bridge_tests` imports
+`Lyric.Emitter`, whose closure transitively pulls in the **JVM backend**
+(`Jvm.Bridge` → `Jvm.Classfile` → `Jvm.Kernel`).  Type-checking that closure via
+the MSIL loader surfaces cross-target kernel `extern type`s (e.g.
+`Pool = "Lyric.Jvm.Hosts.JvmConstantPool"`) that the loader doesn't yet resolve —
+a deeper cross-target-closure concern tracked separately, not a Byte/Int issue.
+
+Note: several touched files (`metadata_reader.l`, `assembler.l`, `zip_reader.l`,
+`reader.l`, `metadata_reader_tests.l`) hit pre-existing `lyric fmt` loss-check
+bugs (hex-literal normalisation, `Int`/`in` tokenisation) unrelated to this
+change, so they keep their hand-formatting.

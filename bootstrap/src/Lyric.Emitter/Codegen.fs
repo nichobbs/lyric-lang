@@ -2295,8 +2295,29 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
                     closeType rawRet
                 else rawRet
         | None ->
-            codegenErr ctx "E0012"
-                (sprintf "no method '%s' on type %s" methodName recvTy.Name) e.Span
+            // Primitive conversion-method fallback (§541).  No BCL method
+            // matched, but the receiver's *emitted* type is a primitive and the
+            // method is a spec conversion — emit the matching `conv.*` opcode on
+            // the already-on-stack receiver.  This catches receivers the
+            // `peekExprType`-guarded fast arm can't pre-type (field / index
+            // forms like `br.data[p].toInt()`), since `recvTy` here is the
+            // accurate emitted type.
+            let isPrimConvRecv =
+                recvTy = typeof<byte> || recvTy = typeof<int> || recvTy = typeof<int64>
+                || recvTy = typeof<double> || recvTy = typeof<char>
+            if isPrimConvRecv && List.isEmpty args then
+                match methodName with
+                | "toInt"    -> il.Emit(OpCodes.Conv_I4); typeof<int>
+                | "toLong"   -> il.Emit(OpCodes.Conv_I8); typeof<int64>
+                | "toDouble" -> il.Emit(OpCodes.Conv_R8); typeof<double>
+                | "toByte"   -> il.Emit(OpCodes.Conv_U1); typeof<byte>
+                | "toChar"   -> il.Emit(OpCodes.Conv_U2); typeof<char>
+                | _ ->
+                    codegenErr ctx "E0012"
+                        (sprintf "no method '%s' on type %s" methodName recvTy.Name) e.Span
+            else
+                codegenErr ctx "E0012"
+                    (sprintf "no method '%s' on type %s" methodName recvTy.Name) e.Span
 
     // ---- field access -------------------------------------------------
 
