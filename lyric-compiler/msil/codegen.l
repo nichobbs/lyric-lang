@@ -5097,21 +5097,8 @@ func lowerBuiltinOrStaticCallMsil(
           }
         }
         case _ -> {
-          if isClrDateTimeMsil(argTy) {
-            // Culture-invariant: dt.ToString(CultureInfo.InvariantCulture).
-            // The DateTime is an unboxed value type on the stack; stash it in
-            // a value-type local so we can take its address for the instance
-            // call, then push the InvariantCulture argument (#2184).
-            val dtSlot = allocSlotMsil(fctx,
-              "__inv_dt_" + toString(fctx.slotTicker.count), argTy)
-            emitStoreSlot(insns, dtSlot, fctx.paramCount)
-            insns.add(MLdloca(slot = dtSlot - fctx.paramCount))
-            insns.add(MCall(methodToken = cctx.tokInvariantCulture))
-            insns.add(MCall(methodToken = cctx.tokDateTimeToStringInv))
-          } else {
-            boxIfNeededMsil(cctx, insns, argTy)
-            insns.add(MCallvirt(methodToken = cctx.tokObjToString))
-          }
+          boxIfNeededMsil(cctx, insns, argTy)
+          insns.add(MCallvirt(methodToken = cctx.tokObjToString))
         }
       }
     } else {

@@ -1,15 +1,15 @@
-// std/_kernel_jvm/encoding_host.l — JVM host boundary for byte-level encoding.
-//
-// JVM counterpart of std/_kernel/encoding_host.l.  On JVM, List[Byte].toArray()
-// produces a properly-typed array (no List<object>/object[] type-erasure
-// mismatch), so pure-Lyric accumulator paths are safe and preferred.
-//
-// hostGetUtf8Enc returns a sentinel String (unused by the accumulator).
-// hostEncodeUtf8 ignores its first argument and encodes the string in pure Lyric.
-// hostFromBase64 assumes the caller (Std.Encoding.tryDecodeBase64) has already
-// validated the input; it only decodes without re-validating.
-//
-// Internal: only Std.Encoding should import this.
+//! std/_kernel_jvm/encoding_host.l — JVM host boundary for byte-level encoding.
+//!
+//! JVM counterpart of std/_kernel/encoding_host.l.  On JVM, List[Byte].toArray()
+//! produces a properly-typed array (no List<object>/object[] type-erasure
+//! mismatch), so pure-Lyric accumulator paths are safe and preferred.
+//!
+//! hostGetUtf8Enc returns a sentinel String (unused by the accumulator).
+//! hostEncodeUtf8 ignores its first argument and encodes the string in pure Lyric.
+//! hostFromBase64 assumes the caller (Std.Encoding.tryDecodeBase64) has already
+//! validated the input; it only decodes without re-validating.
+//!
+//! Internal: only Std.Encoding should import this.
 
 @axiom("JVM List[Byte].toArray() produces a properly typed byte array; pure-Lyric accumulators are safe on JVM")
 package Std.EncodingHost
