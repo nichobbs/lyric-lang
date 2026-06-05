@@ -1743,6 +1743,16 @@ func buildLocalVarSig(locals: in List[MsilType]): List[Byte] {
       // it alone produces a malformed LocalVarSig (dangling prefix, no element
       // type) that corrupts the evaluation stack at run time (AccessViolation).
       case MArray(_)             -> bufU1(w, 0x1C)
+      // Concrete `List<T>` / `Dictionary<K,V>` locals (Stage 2): context-free
+      // builder cannot produce a valid GENERICINST (needs the TypeRef row
+      // index), so fall back to Object like MClass.  The runtime sees an
+      // object-typed slot, which is a safe reference storage for the boxed
+      // reference; the Lyric type-flow layer still tracks the element type
+      // for call-dispatch.  The context-aware `buildLocalVarSigWithCtx`
+      // (called in the actual `addMethodBody` path) emits the full GENERICINST
+      // so the runtime sees the concrete type.
+      case MListOf(_)       -> bufU1(w, 0x1C)
+      case MMapOf(_, _)     -> bufU1(w, 0x1C)
       // A value-typed extern local (e.g. `val u = newUuid()` where Uuid is
       // System.Guid) CANNOT degrade to Object — a struct is not a reference,
       // so an `object` slot would mis-store the unboxed value.  Emit the full
@@ -1792,6 +1802,14 @@ func buildLocalVarSigWithCtx(locals: in List[MsilType], ctx: in LoweringCtx): Li
       case MValueTypeGenericInst(_, _, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MArray(_)                      -> bufU1(w, 0x1C)
       case MClassRef(_, _)                -> bufU1(w, 0x1C)
+      // Concrete `List<T>` / `Dictionary<K,V>` locals (Stage 2): emit the
+      // full GENERICINST encoding via `bufMsilTypeWithCtx` (the prefix-only
+      // 0x15 from `elementTypeByte` is a malformed LocalVarSig — a dangling
+      // prefix with no class/valuetype byte, no arg count, and no arg type
+      // corrupts the evaluation stack at run time, identical to the
+      // MArray fallback's rationale above).
+      case MListOf(_) -> bufMsilTypeWithCtx(w, locals[i], ctx)
+      case MMapOf(_, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MValueTypeRef(typeRefCode, _) -> {
         bufU1(w, 0x11)
         writeCompressedInt(w, typeRefCode)
