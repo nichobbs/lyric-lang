@@ -1663,6 +1663,37 @@ func itemInlineFallback(item: in Item): String {
 // with the comment list naturally.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// True when expression `e` renders starting with `(` or `[`.  Used to
+/// decide whether a preceding statement needs an explicit `;`: the lexer
+/// synthesises no STMT_END inside `{ }`, so on re-parse the postfix-call /
+/// index parser would otherwise swallow such a leading bracket as a call /
+/// index of the previous statement's trailing expression.
+@pure
+func exprStartsWithBracket(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(lit)     -> match lit { case LUnit -> true; case _ -> false }
+    case EParen(_)         -> true
+    case ETuple(_)         -> true
+    case EList(_)          -> true
+    case ECall(fn, _)      -> exprStartsWithBracket(fn)
+    case ETypeApp(fn, _)   -> exprStartsWithBracket(fn)
+    case EIndex(r, _)      -> exprStartsWithBracket(r)
+    case EMember(r, _)     -> exprStartsWithBracket(r)
+    case EPropagate(inner) -> exprStartsWithBracket(inner)
+    case EBinop(_, lhs, _) -> exprStartsWithBracket(lhs)
+    case _                 -> false
+  }
+}
+
+@pure
+func statementStartsWithBracket(s: in Statement): Bool {
+  match s.kind {
+    case SExpr(e)         -> exprStartsWithBracket(e)
+    case SAssign(t, _, _) -> exprStartsWithBracket(t)
+    case _                -> false
+  }
+}
+
 pub func blockLines(b: in Block, ctx: inout FmtCtx): List[String] {
   val acc: List[String] = newList()
   var i = 0
@@ -1674,6 +1705,15 @@ pub func blockLines(b: in Block, ctx: inout FmtCtx): List[String] {
     while j < sl.count {
       acc.add(sl[j])
       j = j + 1
+    }
+    // The two statements were separated by `;` in the source (the lexer
+    // emits no STMT_END inside `{ }`).  If the next statement renders
+    // starting with `(` / `[`, re-emit that `;` so re-parsing does not
+    // merge it into a call / index of this statement's trailing
+    // expression.  Any trailing comment is appended after the `;` by the
+    // next iteration's `appendTriviaInto`.
+    if i + 1 < b.statements.count and statementStartsWithBracket(b.statements[i + 1]) and acc.count > 0 {
+      acc[acc.count - 1] = acc[acc.count - 1] + ";"
     }
     i = i + 1
   }

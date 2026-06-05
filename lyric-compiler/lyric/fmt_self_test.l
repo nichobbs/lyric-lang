@@ -125,6 +125,19 @@ func testEndOfLineCommentStaysInline(): Unit {
   assertTrue(Str.contains(acc, "case 0 -> 0  // none"), "trailing: match-arm comment stays inline")
 }
 
+func testStatementSeparatorBeforeBracket(): Unit {
+  // Two statements separated by `;` where the second begins with `(`
+  // (here a unit expression).  The lexer synthesises no STMT_END inside
+  // `{ }`, so dropping the `;` would let re-parse merge `g(x)` and `()`
+  // into the call `g(x)()`.  The formatter must keep the `;`.
+  val src = "package P\n\nfunc g(x: in Int): Unit {\n  ()\n}\n\nfunc f(x: in Int): Unit {\n  g(x); ()\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "stmt separator: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "g(x);"), "stmt separator: `;` kept before bracket-leading statement")
+  assertTrue(not Str.contains(acc, "g(x)()"), "stmt separator: statements not merged into a call")
+}
+
 func testFormatPubFunc(): Unit {
   val src = "package P\npub func foo(): Unit { }\n"
   val pr = parse(src)
@@ -719,6 +732,7 @@ func main(): Unit {
   testCommentPreservationBlockComment()
   testCommentPreservationTrailing()
   testEndOfLineCommentStaysInline()
+  testStatementSeparatorBeforeBracket()
   testFormatPubFunc()
   testFormatUnion()
   testFormatEnum()
