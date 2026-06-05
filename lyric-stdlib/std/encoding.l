@@ -1,7 +1,5 @@
 //! std/encoding.l - Byte-level encoding: Base64, hexadecimal, and UTF-8.
 //!
-//! All operations are pure Lyric; no host externs remain.
-//!
 //! encodeHex produces uppercase two-hex-chars-per-byte output (e.g. "DEAD").
 //! tryDecodeHex accepts both upper and lower-case hex.
 //!
@@ -13,11 +11,31 @@
 //! are UTF-16 internally; surrogate pairs are encoded as 4-byte UTF-8
 //! sequences (the correct Unicode encoding, not CESU-8).  tryDecodeUtf8
 //! rejects overlong sequences, lone surrogates, and code points > U+10FFFF.
+//!
+//! Platform notes:
+//!   encodeUtf8 and tryDecodeBase64 use BCL externs on .NET so that the
+//!   result is always a genuine byte[] regardless of which emitter compiled
+//!   this module.  Both the F# bootstrap emitter and the self-hosted MSIL
+//!   emitter represent List[Byte] as List<object>; .toArray() on that type
+//!   would produce object[] rather than byte[], breaking any BCL method that
+//!   expects byte[].  The JVM versions use the pure-Lyric accumulator path
+//!   (the JVM backend's list representation does not have this type-erasure
+//!   mismatch).
+//!
+//! Lone-surrogate behaviour: a Lyric String may contain isolated UTF-16
+//! surrogates (U+D800..U+DFFF) that do not form a valid surrogate pair.
+//! encodeUtf8 does not validate its input for this case; the resulting
+//! byte sequence is platform-specific (.NET replaces lone surrogates with
+//! U+FFFD; the JVM accumulator encodes them as WTF-8 3-byte sequences).
+//! Callers that need portable round-trip behaviour should reject lone
+//! surrogates before encoding.
+
 package Std.Encoding
 
 import Std.Core
 import Std.Char
 import Std.Collections
+import Std.EncodingHost
 
 // =====================================================================
 // Hexadecimal.
@@ -127,16 +145,16 @@ pub func encodeBase64(bytes: in slice[Byte]): String {
 /// Decode a Base64 string (RFC 4648 §4).
 /// Returns `Some(bytes)` on success, `None` for any malformed input
 /// (invalid characters, wrong padding, length not a multiple of 4).
-@stable(since = "1.0")
+///
+/// On .NET the BCL `System.Convert.FromBase64String` is used so the result
+/// is a genuine byte[].  On JVM a pure-Lyric accumulator is used via the
+/// Std.EncodingHost kernel boundary.  Input is validated in pure Lyric on
+/// both platforms before the host call.
+@stable(since="1.0")
 pub func tryDecodeBase64(s: in String): Option[slice[Byte]] {
   val len = s.length
-  if len == 0 {
-    return Some(value = [])
-  }
-  if len % 4 != 0 {
-    return None
-  }
-  val result: List[Byte] = newList()
+  if len == 0 { return Some(value = []) }
+  if len % 4 != 0 { return None }
   var i = 0
   while i < len {
     val c0 = base64CharValue(s[i])
@@ -147,38 +165,23 @@ pub func tryDecodeBase64(s: in String): Option[slice[Byte]] {
     val ch2 = s[i + 2]
     val ch3 = s[i + 3]
     if ch2 == '=' {
-      if ch3 != '=' {
-        return None
-      }
-      if i + 4 != len {
-        return None
-      }
-      // padding only valid in last group
-      result.add(c0 * 4 + c1 / 16)
+      if ch3 != '=' { return None }
+      if i + 4 != len { return None }
     } else {
       val c2 = base64CharValue(ch2)
       if c2 < 0 {
         return None
       }
       if ch3 == '=' {
-        if i + 4 != len {
-          return None
-        }
-        result.add(c0 * 4 + c1 / 16)
-        result.add(c1 % 16 * 16 + c2 / 4)
+        if i + 4 != len { return None }
       } else {
         val c3 = base64CharValue(ch3)
-        if c3 < 0 {
-          return None
-        }
-        result.add(c0 * 4 + c1 / 16)
-        result.add(c1 % 16 * 16 + c2 / 4)
-        result.add(c2 % 4 * 64 + c3)
+        if c3 < 0 { return None }
       }
     }
     i += 4
   }
-  Some(value = result.toArray())
+  Some(value = hostFromBase64(s))
 }
 
 // =====================================================================
@@ -188,45 +191,13 @@ pub func tryDecodeBase64(s: in String): Option[slice[Byte]] {
 /// Unicode so this operation always succeeds.  Surrogate pairs in the
 /// source string are encoded as the corresponding supplementary-plane
 /// 4-byte UTF-8 sequence.
-@stable(since = "1.0")
+///
+/// On .NET the BCL `System.Text.Encoding.UTF8.GetBytes` is used so the
+/// result is a genuine byte[].  On JVM a pure-Lyric accumulator is used
+/// via the Std.EncodingHost kernel boundary.
+@stable(since="1.0")
 pub func encodeUtf8(s: in String): slice[Byte] {
-  val result: List[Byte] = newList()
-  val len = s.length
-  var i = 0
-  while i < len {
-    val cu = toInt(s[i])
-    if cu >= 55296 and cu <= 56319 and i + 1 < len {
-      // High surrogate: check for low surrogate pair
-      val cu2 = toInt(s[i + 1])
-      if cu2 >= 56320 and cu2 <= 57343 {
-        val cp = 65536 + (cu - 55296) * 1024 + (cu2 - 56320)
-        result.add(240 + cp / 262144)
-        result.add(128 + (cp / 4096) % 64)
-        result.add(128 + (cp / 64) % 64)
-        result.add(128 + cp % 64)
-        i += 2
-      } else {
-        // Lone high surrogate: encode as 3-byte sequence
-        result.add(224 + cu / 4096)
-        result.add(128 + (cu / 64) % 64)
-        result.add(128 + cu % 64)
-        i += 1
-      }
-    } else if cu <= 127 {
-      result.add(cu)
-      i += 1
-    } else if cu <= 2047 {
-      result.add(192 + cu / 64)
-      result.add(128 + cu % 64)
-      i += 1
-    } else {
-      result.add(224 + cu / 4096)
-      result.add(128 + (cu / 64) % 64)
-      result.add(128 + cu % 64)
-      i += 1
-    }
-  }
-  result.toArray()
+  hostEncodeUtf8(hostGetUtf8Enc(), s)
 }
 
 /// Decode a UTF-8 byte slice to a `String`.  Returns `Some(s)` when the

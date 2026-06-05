@@ -327,13 +327,14 @@ stage_ecosystem_tests() {
     while IFS= read -r tf; do
       echo
       echo "--- $tf ---"
-      if ! ( cd "$d" && lyric test "$tf" ); then
+      if ! ( cd "$d" && lyric test "$tf" --manifest lyric.toml ); then
         rc=1
       fi
     done < <(find "$d/tests" -maxdepth 2 -name '*_tests.l' | sort)
   done < <(ecosystem_dirs)
   return $rc
 }
+
 
 # Examples that have NO `main` function and only exist for the verifier are
 # skipped from the build stages.  Keep this list in sync with examples/README.md.
@@ -392,7 +393,7 @@ stage_examples_tests() {
     while IFS= read -r tf; do
       echo
       echo "--- ${tf#"$REPO_ROOT/"} ---"
-      if ! ( cd "$d" && lyric test "$tf" ); then
+      if ! ( cd "$d" && lyric test "$tf" --manifest lyric.toml ); then
         rc=1
       fi
     done < <(find "$d/tests" -maxdepth 2 -name '*_tests.l' | sort)

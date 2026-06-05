@@ -374,6 +374,8 @@ func findCompiledLibDir(): String {
 // them (flat `additionalProbingPaths` do not work for a non-NuGet layout).
 // Best-effort: existing files are left in place and copy failures are
 // non-fatal — the run then surfaces the original assembly-load error.
+// Always overwrites existing DLLs so stale copies from previous runs are
+// replaced when the stdlib is rebuilt.
 func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
   if srcDir.length == 0 { return }
   val destDir = Path.dirname(outPath)
@@ -386,11 +388,9 @@ func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
                      or base == "FSharp.Core.dll"
         if wanted {
           val dest = Path.join(destDir, base)
-          if not File.fileExists(dest) {
-            match File.readBytes(f) {
-              case Ok(bs) -> { val _ = File.writeBytes(dest, bs) }
-              case Err(_) -> ()
-            }
+          match File.readBytes(f) {
+            case Ok(bs) -> { val _ = File.writeBytes(dest, bs) }
+            case Err(_) -> ()
           }
         }
       }

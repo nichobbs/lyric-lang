@@ -81,3 +81,14 @@ pub func appBaseDirectory(): String {
 pub func currentDirectory(): String {
   hostCurrentDirectory()
 }
+
+/// Directory of the active .NET runtime shared framework
+/// (e.g. `/usr/share/dotnet/shared/Microsoft.NETCore.App/10.0.x/`).
+/// Used by the self-hosted compiler to discover reference assemblies on
+/// installations where `DOTNET_ROOT` is unset.  May return an empty string
+/// in native-AOT scenarios.
+@stable(since = "1.0")
+pub func runtimeDirectory(): String {
+  hostRuntimeDirectory()
+}
+

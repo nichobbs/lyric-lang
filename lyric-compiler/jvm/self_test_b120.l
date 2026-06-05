@@ -156,7 +156,18 @@ func makeMainBytes(pool: in Pool): List[Byte] {
 
   emitReturn(asm)
 
-  val codeAttr = assembleCode(asm, 6, 4)
+  // Branches in the subtask-failure check require a StackMapTable.
+  val frameLocals: List[VerifierType] = newList()
+  frameLocals.add(VObject(className = "[Ljava/lang/String;"))
+  // Slot 1 must be declared as ShutdownOnFailure, not its supertype StructuredTaskScope.
+  // After each branch target, invokevirtual ShutdownOnFailure.close()V is emitted;
+  // invokevirtual requires the receiver's frame-declared type to be a subtype of the
+  // Methodref class (ShutdownOnFailure).  StructuredTaskScope is NOT a subtype of
+  // ShutdownOnFailure, so declaring the supertype here would cause a VerifyError.
+  frameLocals.add(VObject(className = "java/util/concurrent/StructuredTaskScope$ShutdownOnFailure"))
+  frameLocals.add(VObject(className = "java/util/concurrent/StructuredTaskScope$Subtask"))
+  frameLocals.add(VObject(className = "java/util/concurrent/StructuredTaskScope$Subtask"))
+  val codeAttr = assembleCodeWithFrames(asm, 6, 4, frameLocals)
   val attrs: List[Attribute] = newList()
   attrs.add(codeAttr)
   val mainMethod = makeMethodInfo(ACC_PUBLIC + ACC_STATIC, "main", "([Ljava/lang/String;)V", attrs)

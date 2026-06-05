@@ -88,7 +88,7 @@ pub func compileWithTimeout(pattern: in String, seconds: in Double): CompiledReg
 /// network input, user-typed search box).
 @stable(since="1.0")
 pub func tryCompile(pattern: in String): Result[CompiledRegex, RegexError] {
-  return try {
+  try {
     Ok(value = compile(pattern))
   } catch Bug as b {
     Err(error = InvalidPattern(message = b.message))
@@ -109,7 +109,7 @@ pub func isMatch(r: in CompiledRegex, input: in String): Bool {
 /// compiled timeout.
 @stable(since="1.0")
 pub func tryIsMatch(r: in CompiledRegex, input: in String): Result[Bool, RegexError] {
-  return try {
+  try {
     Ok(value = RxHost.hostIsMatch(r.handle, input))
   } catch Bug as b {
     Err(error = classifyBug(b.message))
@@ -133,7 +133,7 @@ pub func tryReplace(
   input:       in String,
   replacement: in String
 ): Result[String, RegexError] {
-  return try {
+  try {
     Ok(value = RxHost.hostReplace(r.handle, input, replacement))
   } catch Bug as b {
     Err(error = classifyBug(b.message))

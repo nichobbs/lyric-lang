@@ -166,7 +166,17 @@ let tests =
             //               `System.Threading.Thread.Sleep` backing
             //               `Std.Time.sleepMillis`, the poll interval for
             //               `lyric run/build --watch` (#1974).
-            Expect.isLessThanOrEqual total 317
+            //   317 → 321 — `Std.EncodingHost` (4 externs): `extern type Enc`
+            //               + `@externTarget` for `hostGetUtf8Enc`,
+            //               `hostEncodeUtf8`, `hostFromBase64`.  BCL-backed
+            //               encoding boundary replacing the pure-Lyric
+            //               accumulator that produced `object[]` instead of
+            //               `byte[]` on .NET due to List<object> type erasure.
+            //   321 → 322 — `Std.EnvironmentHost.hostGetRuntimeDirectory`:
+            //               `@externTarget("System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory")`
+            //               for `lyric run/build --watch` stdlib path
+            //               discovery.
+            Expect.isLessThanOrEqual total 322
                 "total extern surface unexpectedly large"
         }
     ]

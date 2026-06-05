@@ -135,7 +135,11 @@ func checkDocTodos(docs: in List[DocComment]): List[LintDiag] {
 }
 
 // L005 — pub func with a block body should declare at least one contract.
-func checkPubContract(vis: in Option[Visibility], fn: in FunctionDecl): List[LintDiag] {
+// Suppressed when the module is annotated @runtime_checked.
+func checkPubContract(vis: in Option[Visibility], fn: in FunctionDecl, isRuntimeChecked: in Bool): List[LintDiag] {
+  if isRuntimeChecked {
+    return newList()
+  }
   match vis {
     case None -> newList()
     case Some(_) -> {
@@ -177,7 +181,7 @@ func appendDiags(target: in List[LintDiag], src: in List[LintDiag]) {
 }
 
 // ─── Item walker ──────────────────────────────────────────────────────────────
-func checkItem(item: in Item): List[LintDiag] {
+func checkItem(item: in Item, isRuntimeChecked: in Bool): List[LintDiag] {
   val acc: List[LintDiag] = newList()
   val vis = item.visibility
   val docs = item.docComments
@@ -186,7 +190,7 @@ func checkItem(item: in Item): List[LintDiag] {
       appendDiags(acc, checkFuncName(fn.name, fn.span))
       appendDiags(acc, checkPubDoc(vis, docs, fn.name, "func", item.span))
       appendDiags(acc, checkDocTodos(docs))
-      appendDiags(acc, checkPubContract(vis, fn))
+      appendDiags(acc, checkPubContract(vis, fn, isRuntimeChecked))
     }
     case IRecord(rd) -> {
       appendDiags(acc, checkTypeName(rd.name, rd.span))
@@ -322,10 +326,19 @@ func sortDiags(diags: in List[LintDiag]): List[LintDiag] {
 pub func lint(source: in String): List[LintDiag] {
   val pr = parse(source)
   val file = pr.file
+  var isRuntimeChecked = false
+  var ai = 0
+  while ai < file.fileAnnotations.count {
+    val ann = file.fileAnnotations[ai]
+    if ann.name.segments.count == 1 and ann.name.segments[0] == "runtime_checked" {
+      isRuntimeChecked = true
+    }
+    ai = ai + 1
+  }
   val acc: List[LintDiag] = newList()
   var i = 0
   while i < file.items.count {
-    appendDiags(acc, checkItem(file.items[i]))
+    appendDiags(acc, checkItem(file.items[i], isRuntimeChecked))
     i = i + 1
   }
   sortDiags(acc)

@@ -3656,10 +3656,19 @@ let rec emitExpr (ctx: FunctionCtx) (e: Expr) : ClrType =
         if argTy = typeof<string> then
             // Already a string — no boxing or call needed.
             ()
-        elif argTy = typeof<double> || argTy = typeof<single> || argTy = typeof<System.DateTime> then
-            // Culture-invariant formatting for floating-point and DateTime.
-            // InvariantCulture pins the decimal separator to "." for floats and
-            // produces "MM/dd/yyyy HH:mm:ss" for DateTime regardless of OS locale.
+        elif argTy = typeof<System.DateTime> then
+            // ISO 8601 round-trip via ToString("o") — culture-invariant by spec.
+            let toStringFmt =
+                match Option.ofObj (argTy.GetMethod("ToString", [| typeof<string> |])) with
+                | Some m -> m
+                | None   -> failwith "DateTime.ToString(String) not found"
+            let tmp = il.DeclareLocal(argTy)
+            il.Emit(OpCodes.Stloc, tmp)
+            il.Emit(OpCodes.Ldloca, tmp)
+            il.Emit(OpCodes.Ldstr, "o")
+            il.Emit(OpCodes.Call, toStringFmt)
+        elif argTy = typeof<double> || argTy = typeof<single> then
+            // InvariantCulture pins the decimal separator to ".".
             let invariantGetter =
                 let p = typeof<System.Globalization.CultureInfo>.GetProperty("InvariantCulture")
                 match Option.ofObj p with

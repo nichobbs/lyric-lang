@@ -13,6 +13,7 @@ import Std.Core
 import Std.Collections
 import Std.File as File
 import Std.Environment as Env
+import Std.ProcessCapture as ProcessCapture
 import Jvm.Kernel
 import Jvm.Classfile
 import Jvm.Bytecode
@@ -3870,8 +3871,9 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
 // `java.util.concurrent.StructuredTaskScope` changed shape across JDK previews:
 //   • JDK 21..23 (JEP 453/462/480): a *class* opened via
 //     `new StructuredTaskScope.ShutdownOnFailure()`, joined with `join()` and
-//     `throwIfFailed()`, all dispatched with `invokevirtual`.  This is the
-//     form the emitter targets today (Java 21 class-file version, major 65).
+//     subtask-state checked per subtask to propagate failure, all dispatched
+//     with `invokevirtual`.  This is the form the emitter targets today
+//     (Java 21 class-file version, major 65).
 //   • JDK 24+   (JEP 499 onward):  a sealed *interface* opened via the static
 //     factory `StructuredTaskScope.open()`, with `fork`/`join`/`close`
 //     dispatched via `invokeinterface`.  `ShutdownOnFailure` no longer exists.
@@ -3887,11 +3889,12 @@ pub func lowerAsyncGenerator(g: in LGenFunc, pool: in Pool): List[ClassFile] {
 // form; JDK 24+ raises a clear, actionable compiler error instead of shipping
 // untestable bytecode.
 /// Emit bytecode to open a structured-concurrency scope, fork each callable
-/// class (which must implement `Callable`), await the subtasks, propagate any
-/// failure, then close the scope.  Supported on JDK 21..23
-/// (`StructuredTaskScope.ShutdownOnFailure`); JDK 24+ support is tracked in
-/// #2263.  The scope reference is stored in `scopeSlot`; each forked task is
-/// stored in successive local slots starting at `firstTaskSlot`.
+/// class (which must implement `Callable`), join, check every subtask for
+/// failure (rethrowing the cause if any subtask failed), then close the scope.
+/// Supported on JDK 21..23 (`StructuredTaskScope.ShutdownOnFailure`); JDK 24+
+/// support is tracked in #2263.  The scope reference is stored in `scopeSlot`;
+/// each forked task is stored in successive local slots starting at
+/// `firstTaskSlot`.
 pub func lowerScopeBlock(
   asm: in MethodAssembler,
   callableNames: in List[String],
@@ -3927,13 +3930,13 @@ func lowerScopeBlockShutdownOnFailure(
   emitInvokespecial(asm, poolMethodref(asm.pool, scopeClass, "<init>", "()V"))
   emitAstore(asm, scopeSlot)
 
-  // fork each callable
+  // fork each callable — invokevirtual on ShutdownOnFailure (class API, not interface)
+  val forkDesc = "(Ljava/util/concurrent/Callable;)Ljava/util/concurrent/StructuredTaskScope$Subtask;"
   var taskSlot = firstTaskSlot
   for callableName in callableNames.toArray() {
     val callableClass = poolClass(asm.pool, callableName)
-    val callableCtor = poolMethodref(asm.pool, callableName, "<init>", "()V")
-    val forkDesc = "(Ljava/util/concurrent/Callable;)Ljava/util/concurrent/StructuredTaskScope$Subtask;"
-    val forkRef = poolMethodref(asm.pool, scopeClass, "fork", forkDesc)
+    val callableCtor  = poolMethodref(asm.pool, callableName, "<init>", "()V")
+    val forkRef       = poolMethodref(asm.pool, scopeClass, "fork", forkDesc)
 
     emitAload(asm, scopeSlot)
     emitNew(asm, callableClass)
@@ -3944,14 +3947,48 @@ func lowerScopeBlockShutdownOnFailure(
     taskSlot = taskSlot + 1
   }
 
-  // join() and throwIfFailed()
-  val joinRef = poolMethodref(asm.pool, scopeClass, "join", "()Ljava/util/concurrent/StructuredTaskScope;")
-  val throwRef = poolMethodref(asm.pool, scopeClass, "throwIfFailed", "()V")
+  // join() — blocks until all forked subtasks finish; returns this scope (discarded)
+  val joinRef  = poolMethodref(asm.pool, scopeClass, "join",  "()Ljava/util/concurrent/StructuredTaskScope$ShutdownOnFailure;")
+  val closeRef = poolMethodref(asm.pool, scopeClass, "close", "()V")
   emitAload(asm, scopeSlot)
   emitInvokevirtual(asm, joinRef)
   emitPop(asm)
+
+  // Check each subtask: if state() == FAILED, rethrow its exception.
+  // Subtask is a sealed interface in JDK 21+, so state() and exception() use invokeinterface.
+  val subtaskIface = "java/util/concurrent/StructuredTaskScope$Subtask"
+  val stateClass   = "java/util/concurrent/StructuredTaskScope$Subtask$State"
+  val stateDesc    = "Ljava/util/concurrent/StructuredTaskScope$Subtask$State;"
+  val stateRef     = poolIfaceMethodref(asm.pool, subtaskIface, "state",     "()" + stateDesc)
+  val excRef       = poolIfaceMethodref(asm.pool, subtaskIface, "exception", "()Ljava/lang/Throwable;")
+  val failedRef    = poolFieldref(asm.pool, stateClass, "FAILED", stateDesc)
+  var checkSlot = firstTaskSlot
+  var checkIdx  = 0
+  while checkIdx < callableNames.count {
+    val skipLabel = "scope_skip_" + toString(scopeSlot) + "_" + toString(checkSlot)
+    emitAload(asm, checkSlot)
+    emitInvokeinterface(asm, stateRef, 1)
+    emitGetstatic(asm, failedRef)
+    emitIfAcmpne(asm, skipLabel)
+    // close() before rethrow so the scope is not leaked on the failure path.
+    // join() has already returned so all subtasks are settled; it is safe to
+    // close here before inspecting exception().
+    // Known limitation: if close() itself throws (e.g. InterruptedException),
+    // it will replace the subtask's exception.  A try-finally exception-handler
+    // pattern would avoid this but is deferred with #2263 (JDK 24+ scope work).
+    emitAload(asm, scopeSlot)
+    emitInvokevirtual(asm, closeRef)
+    emitAload(asm, checkSlot)
+    emitInvokeinterface(asm, excRef, 1)
+    emitAthrow(asm)
+    emitLabel(asm, skipLabel)
+    checkSlot = checkSlot + 1
+    checkIdx  = checkIdx  + 1
+  }
+
+  // close() on the success path — all subtasks succeeded.
   emitAload(asm, scopeSlot)
-  emitInvokevirtual(asm, throwRef)
+  emitInvokevirtual(asm, closeRef)
 }
 
 // ── JDK feature-version detection ─────────────────────────────────────────────
@@ -3961,19 +3998,40 @@ func lowerScopeBlockShutdownOnFailure(
 // `JAVA_HOME` — the variable that pins the active JDK in CI and production
 // builds — rather than scanning `/usr/lib/jvm`, whose directory order is
 // filesystem-dependent and could non-deterministically pick the wrong JDK on a
-// multi-JDK machine (#2259).  Falls back to 21 (the emitter's target class-file
-// version) whenever `JAVA_HOME` is unset or its `release` file is missing /
-// unparseable — the safe default, since the only supported lowering today is
-// the JDK 21..23 `ShutdownOnFailure` form.
+// multi-JDK machine (#2259).  When `JAVA_HOME` is unset or its `release` file
+// is missing / unparseable, falls back to spawning `java --version` and parsing
+// its stdout, so the guard fires correctly even when `JAVA_HOME` is absent
+// (e.g. most macOS developer setups).  `java --version` (double-dash, Java 9+)
+// writes the version to stdout, not stderr, so `ProcessCapture.runCapture`
+// captures it as a plain String.  Ultimate fallback is 21 — safe because the
+// only supported lowering today is the JDK 21..23 `ShutdownOnFailure` form, so
+// we'd rather panic with a clear message than silently generate broken bytecode
+// for an undetected JDK 24+.
 func detectJavaFeatureVersion(): Int {
   val javaHome = Env.getVarOrDefault("JAVA_HOME", "")
-  if javaHome.length == 0 {
-    return 21
+  if javaHome.length > 0 {
+    match File.readText(javaHome + "/release") {
+      case Ok(text) -> return parseJavaFeatureVersion(text)
+      case Err(_)   -> ()
+    }
   }
-  match File.readText(javaHome + "/release") {
-    case Err(_) -> 21
-    case Ok(text) -> parseJavaFeatureVersion(text)
-  }
+  // Fallback: spawn `java --version` and parse stdout.
+  // Format: `java 25.0.3 ...` or `openjdk 21.0.1 ...` (second token is version).
+  // Pass the result directly to avoid `SLocal` type-erasure issues in the F#
+  // bootstrap emitter when binding cross-package function results to `val`.
+  // The `List[String]` return type on javaVersionArgs() is required so the
+  // F# bootstrap emitter emits `List<string>`-typed IL rather than
+  // `List<object>` (#867 / generator.l pattern).
+  parseJavaVersionFromOutput(ProcessCapture.runCapture("java", javaVersionArgs(), ""))
+}
+
+// Returns the `["--version"]` args list.  The explicit `List[String]` return
+// type is required so the F# bootstrap emitter emits `List<string>`-typed IL
+// rather than `List<object>`, which would cause a CLR JIT rejection (#867).
+func javaVersionArgs(): List[String] {
+  val args: List[String] = newList()
+  args.add("--version")
+  args
 }
 
 // Extract the leading integer of the JDK feature version from a `release`
@@ -4004,6 +4062,38 @@ func parseJavaFeatureVersion(text: in String): Int {
   } else {
     21
   }
+}
+
+// Parse the JDK major feature version from `java --version` stdout output.
+// Input looks like: `java 25.0.3 2026-04-21 ...` or `openjdk 21.0.1 ...`
+// (The second whitespace-delimited token is the version string.)
+// Returns 21 on parse failure (safe fallback — see detectJavaFeatureVersion).
+func parseJavaVersionFromOutput(output: in String): Int {
+  var i = 0
+  val len = output.length
+  // Skip the first token (e.g. "java" or "openjdk")
+  while i < len and output[i] != ' ' {
+    i = i + 1
+  }
+  // Skip whitespace between tokens
+  while i < len and output[i] == ' ' {
+    i = i + 1
+  }
+  // Parse the leading decimal integer of the version string
+  var n = 0
+  var sawDigit = false
+  var done = false
+  while i < len and not done {
+    val d = asciiDigit(output[i])
+    if d < 0 {
+      done = true
+    } else {
+      n = n * 10 + d
+      sawDigit = true
+      i = i + 1
+    }
+  }
+  if sawDigit { n } else { 21 }
 }
 
 // ASCII digit value (0..9) or -1 for a non-digit char.

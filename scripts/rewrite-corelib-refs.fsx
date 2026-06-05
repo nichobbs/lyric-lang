@@ -110,7 +110,7 @@ let refPackDir =
                 versions
                 |> Array.tryPick (fun (_, packRoot) ->
                     pickVersion packRoot
-                    |> Option.bind (fun v -> 
+                    |> Option.bind (fun v ->
                         let fullPath = Path.Combine(packRoot, v, "ref/net10.0")
                         if Directory.Exists fullPath then Some fullPath else None))
             else None

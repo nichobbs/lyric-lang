@@ -19,11 +19,11 @@
 //! `LYRIC_LOAD_COMPILER=1` is needed because this module imports only `Std.*`.
 //!
 //! What it pins: `toString(inst)` for a DateTime value must render via
-//! `CultureInfo.InvariantCulture` (the "MM/dd/yyyy HH:mm:ss" invariant form),
-//! matching the F# bootstrap emitter byte-for-byte regardless of the host OS
-//! locale.  Before the fix the self-hosted emitter boxed the value and called
-//! the parameterless `Object.ToString()`, which uses the *current* culture and
-//! so diverged from stage-0 on non-invariant locales.
+//! `DateTime.ToString("o")` (ISO-8601 round-trip, e.g. "1970-01-01T00:00:00.0000000Z"),
+//! matching the F# bootstrap emitter's Codegen.fs path byte-for-byte.
+//! Before the fix the self-hosted emitter either boxed the address (not the value)
+//! of the DateTime, or used CultureInfo.InvariantCulture which diverged from
+//! Codegen.fs after it was updated to use ToString("o").
 @test_module
 package Lyric.DateTimeToStringSelfTest
 
@@ -31,14 +31,15 @@ import Std.Core
 import Std.Time
 import Std.Testing
 
-test "toString(DateTime) at the Unix epoch is culture-invariant" {
+test "toString(DateTime) at the Unix epoch renders ISO-8601" {
   // FromUnixTimeMilliseconds(0).UtcDateTime == 1970-01-01T00:00:00 (Utc).
+  // DateTime.ToString("o") with Kind=Utc appends "Z" (ISO-8601 UTC marker).
   val inst: Instant = fromEpochMillis(0i64)
-  assertEqual(toString(inst), "01/01/1970 00:00:00", "epoch-0 invariant render")
+  assertEqual(toString(inst), "1970-01-01T00:00:00.0000000Z", "epoch-0 iso render")
 }
 
-test "toString(DateTime) for a non-zero epoch is culture-invariant" {
+test "toString(DateTime) for a non-zero epoch renders ISO-8601" {
   // 1_000_000_000_000 ms == 1_000_000_000 s == 2001-09-09T01:46:40Z.
   val inst: Instant = fromEpochMillis(1000000000000i64)
-  assertEqual(toString(inst), "09/09/2001 01:46:40", "epoch-1e12 invariant render")
+  assertEqual(toString(inst), "2001-09-09T01:46:40.0000000Z", "epoch-1e12 iso render")
 }
