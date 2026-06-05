@@ -21362,3 +21362,58 @@ not-applicable in issue #2356.
 **Regression gate:** All 24 F# async emitter tests pass.  All 26 `async_sm_self_test.l`
 tests pass (7 Phase B.0 + 8 Phase B.1 + 4 Phase B.2 + 2 Phase B.2+ + 5 Phase B.3).
 843/843 emitter tests green.
+
+### D-progress-440 — concrete CLASS encoding for in-bundle reference types in the self-hosted MSIL backend (epic #2359 Stage 1, #2360)
+
+**Status:** Shipped — in-bundle reference-type signatures are now concrete.
+
+The self-hosted MSIL backend (`lyric-compiler/msil/lowering.l`) degraded every
+`MClass` (a user record / class / distinct-type / opaque / interface) to
+`ELEMENT_TYPE_OBJECT` (`0x1C`) in field, method, ctor, and local-var signature
+blobs — the `bufMsilType` / `buildFieldSig` / `buildStaticMethodSig` /
+`buildInstanceMethodSig` / `buildLocalVarSig` family had no access to the
+`LoweringCtx` and so could not resolve a class name to its `TypeDef` row.  This
+diverged from the F# bootstrap emitter (which emits the real
+`ELEMENT_TYPE_CLASS + TypeDefOrRef`) and is the root blocker for linking
+F#-compiled producer DLLs as restored dependencies (the epic goal).
+
+This stage makes the in-bundle path concrete and **byte-identical to F#**:
+
+- **Ctx-aware signature builders.**  `buildFieldSigWithCtx`,
+  `buildStaticMethodSigWithCtx`, and `buildInstanceMethodSigWithCtx` encode
+  `MClass` via the existing `bufMsilTypeWithCtx` (CLASS + TypeDefOrRef).  Every
+  in-bundle signature site in `lowerMRecord`, `lowerMUnion`, `lowerMInterface`,
+  `lowerMOpaque`, `lowerMNullaryUnionCase`, and `lowerMFuncsToHostClass` now
+  routes through them.
+- **Forward references.**  A record whose field type is a type declared *later*
+  in the same bundle (the mutually-recursive AST node case) previously could not
+  resolve because `findTypeDefRowByName` scans the partially-built table.  A
+  zero-prediction **discovery pass** (`discoverTypeDefRowsInto`) lowers the same
+  items into a throwaway context first, harvesting each type's `TypeDef` row into
+  `LoweringCtx.typeDefRowByFqn`; because user `TypeDef`s are the only table rows
+  besides `<Module>` (BCL / stdlib / restored types are TypeRefs), the throwaway
+  pass assigns identical row numbers.  `resolveSigTypeDefRow` consults the
+  registry first, so forward and backward references both encode concretely.
+  `lowerMFunc` skips body lowering in discovery mode (only the row layout
+  matters).
+- **Interfaces (F# updated to match self-hosted).**  An interface is a reference
+  type, so `ELEMENT_TYPE_CLASS` over an interface TypeDef is correct ECMA-335 and
+  is what the self-hosted backend emits.  The F# emitter erased interface-typed
+  fields to `obj` because it registered interface `TypeBuilder`s in its
+  `typeIdToClr` lookup *after* the record/union field-population pass
+  (`Emitter.fs`).  Rather than make the source-of-truth self-hosted compiler
+  replicate that quirk, the F# stub-registration of interfaces was moved ahead of
+  the field passes so F# now also emits CLASS — converging on the correct
+  encoding before the F# tree's eventual deletion.
+
+Verification: a metadata dump (via `System.Reflection.Metadata`) of a
+record/interface program compiled by both backends shows identical field / ctor /
+method signature blobs for every reference-type position (e.g. a forward-referenced
+`record Outer { inner: Inner }` field emits `06 12 <Inner-token>` in both,
+matching).  Full regression green: emitter suite 843/843, CLI suite 84/84.
+
+Not in this stage (later in epic #2359): concrete `List<T>` / `Dictionary<K,V>`
+(Stage 2, #2361), concrete `Option<T>` / `Result<T,E>` (Stage 3, #2362), union
+case-class naming `Union_Case` vs `Union$Case` (Stage 4, #2363), and routing the
+*restored*-dependency registration path (`codegen.l`) through the same concrete
+encoding + DLL linking (Stage 5, #2364).
