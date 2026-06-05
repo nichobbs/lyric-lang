@@ -112,6 +112,19 @@ func testCommentPreservationTrailing(): Unit {
   assertTrue(Str.contains(acc, "// trailing after last"), "comments: trailing comment preserved")
 }
 
+func testEndOfLineCommentStaysInline(): Unit {
+  // An end-of-line comment (on the same source line as the code) must be
+  // re-attached to that line, not relocated to a standalone line before
+  // the next item.  Covers record fields, statements, and match arms.
+  val src = "package P\n\nrecord R {\n  owner: String  // who owns it\n  count: Int\n}\n\nfunc f(x: in Int): Int {\n  val a = x + 1  // bump\n  match a {\n    case 0 -> 0  // none\n    case _ -> a\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "trailing comment: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "owner: String  // who owns it"), "trailing: field comment stays inline")
+  assertTrue(Str.contains(acc, "val a = x + 1  // bump"), "trailing: statement comment stays inline")
+  assertTrue(Str.contains(acc, "case 0 -> 0  // none"), "trailing: match-arm comment stays inline")
+}
+
 func testFormatPubFunc(): Unit {
   val src = "package P\npub func foo(): Unit { }\n"
   val pr = parse(src)
@@ -705,6 +718,7 @@ func main(): Unit {
   testCommentPreservationBetweenItems()
   testCommentPreservationBlockComment()
   testCommentPreservationTrailing()
+  testEndOfLineCommentStaysInline()
   testFormatPubFunc()
   testFormatUnion()
   testFormatEnum()

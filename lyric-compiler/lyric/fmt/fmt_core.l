@@ -722,13 +722,7 @@ pub func paramsAtCol(col: in Int, ctx: inout FmtCtx, ps: in List[Param]): List[S
   var i = 0
   while i < ps.count {
     val p = ps[i]
-    val pre = popTriviaBefore(ctx, p.span.startPos.offset)
-    var k = 0
-    while k < pre.count {
-      val line = pre[k]
-      if line == "" { acc.add("") } else { acc.add(line) }
-      k = k + 1
-    }
+    appendTriviaInto(acc, ctx, p.span.startPos.offset, false)
     acc.add(paramStr(p) + ",")
     i = i + 1
   }
@@ -1674,9 +1668,7 @@ pub func blockLines(b: in Block, ctx: inout FmtCtx): List[String] {
   var i = 0
   while i < b.statements.count {
     val s = b.statements[i]
-    val pre = popTriviaBefore(ctx, s.span.startPos.offset)
-    var k = 0
-    while k < pre.count { acc.add(pre[k]); k = k + 1 }
+    appendTriviaInto(acc, ctx, s.span.startPos.offset, false)
     val sl = stmtLines(s, ctx)
     var j = 0
     while j < sl.count {
@@ -1685,14 +1677,12 @@ pub func blockLines(b: in Block, ctx: inout FmtCtx): List[String] {
     }
     i = i + 1
   }
-  // Pop trailing comments before the block's closing brace.  We use
-  // `popCommentsBefore` here (not `popTriviaBefore`): a blank line
-  // immediately before `}` should not become a trailing empty line in
-  // the formatted body — the closing brace already provides a visual
-  // terminator.  Comments before `}` are still preserved.
-  val tail = popCommentsBefore(ctx, b.span.endPos.offset)
-  var k = 0
-  while k < tail.count { acc.add(tail[k]); k = k + 1 }
+  // Comments before the block's closing brace.  `dropBlanks = true`: a
+  // blank line immediately before `}` should not become a trailing empty
+  // line in the formatted body — the closing brace already provides a
+  // visual terminator.  A trailing comment on the last statement is
+  // re-attached to its line rather than emitted before `}`.
+  appendTriviaInto(acc, ctx, b.span.endPos.offset, true)
   acc
 }
 
@@ -1746,9 +1736,7 @@ func matchLines(scrut: in Expr, arms: in List[MatchArm], ctx: inout FmtCtx): Lis
   var i = 0
   while i < arms.count {
     val a = arms[i]
-    val pre = popTriviaBefore(ctx, a.span.startPos.offset)
-    var k = 0
-    while k < pre.count { armLines.add(pre[k]); k = k + 1 }
+    appendTriviaInto(armLines, ctx, a.span.startPos.offset, false)
     val guard = match a.guard {
       case Some(g) -> " if " + exprInline(0, g)
       case None    -> ""
