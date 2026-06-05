@@ -3808,6 +3808,24 @@ let private emitAssembly
                 | true, t  -> Some t
                 | false, _ -> None
 
+        // Interfaces are defined and registered in `typeIdToClr` BEFORE the
+        // record / opaque / union field-population pass below so that a field
+        // whose declared type is an interface (`record Holder { shape: Shape }`)
+        // resolves to the interface's CLR type — i.e. emits `ELEMENT_TYPE_CLASS
+        // <interface>` — instead of erasing to `obj`.  An interface is a
+        // reference type, so CLASS is the correct ECMA-335 encoding, and it
+        // matches what the self-hosted Lyric MSIL backend emits (epic #2359
+        // Stage 1).  Previously this loop ran after the field passes, so an
+        // interface-typed field's `lookup` returned `None` and degraded to obj.
+        let interfaceTable = Records.InterfaceTable()
+        for id in interfaceItems sf do
+            let info = defineInterface ctx.Module nsName symbols lookup (visOf id.Name) id
+            interfaceTable.[id.Name] <- info
+            symbols.TryFind id.Name
+            |> Seq.tryHead
+            |> Option.bind Symbol.typeIdOpt
+            |> Option.iter (fun tid -> typeIdToClr.[tid] <- info.Type :> System.Type)
+
         // Second pass for records / opaques — populate fields + ctor
         // onto the existing TypeBuilder stubs now that every record's
         // TypeBuilder is registered in typeIdToClr.  This is what
@@ -3879,20 +3897,13 @@ let private emitAssembly
             |> Option.bind Symbol.typeIdOpt
             |> Option.iter (fun id -> typeIdToClr.[id] <- info.Type)
 
-        let interfaceTable = Records.InterfaceTable()
         // Tracks `impl Foo for Bar` blocks so codegen can resolve
         // `where T: Foo` bounds (Q021 sub-question #5) without
         // calling `TypeBuilder.GetInterfaces()` on a still-unsealed
         // record. Populated in Pass A.5 alongside
-        // `AddInterfaceImplementation`.
+        // `AddInterfaceImplementation`.  (`interfaceTable` itself is built
+        // earlier, before the record/union field passes — see above.)
         let implsTable = Records.ImplsTable()
-        for id in interfaceItems sf do
-            let info = defineInterface ctx.Module nsName symbols lookup (visOf id.Name) id
-            interfaceTable.[id.Name] <- info
-            symbols.TryFind id.Name
-            |> Seq.tryHead
-            |> Option.bind Symbol.typeIdOpt
-            |> Option.iter (fun tid -> typeIdToClr.[tid] <- info.Type :> System.Type)
 
         // Projectable cycle detection (D026).  Build a directed graph
         // of projectable opaque types, where an edge `A -> B` means

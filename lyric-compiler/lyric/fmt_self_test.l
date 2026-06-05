@@ -112,6 +112,32 @@ func testCommentPreservationTrailing(): Unit {
   assertTrue(Str.contains(acc, "// trailing after last"), "comments: trailing comment preserved")
 }
 
+func testEndOfLineCommentStaysInline(): Unit {
+  // An end-of-line comment (on the same source line as the code) must be
+  // re-attached to that line, not relocated to a standalone line before
+  // the next item.  Covers record fields, statements, and match arms.
+  val src = "package P\n\nrecord R {\n  owner: String  // who owns it\n  count: Int\n}\n\nfunc f(x: in Int): Int {\n  val a = x + 1  // bump\n  match a {\n    case 0 -> 0  // none\n    case _ -> a\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "trailing comment: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "owner: String  // who owns it"), "trailing: field comment stays inline")
+  assertTrue(Str.contains(acc, "val a = x + 1  // bump"), "trailing: statement comment stays inline")
+  assertTrue(Str.contains(acc, "case 0 -> 0  // none"), "trailing: match-arm comment stays inline")
+}
+
+func testStatementSeparatorBeforeBracket(): Unit {
+  // Two statements separated by `;` where the second begins with `(`
+  // (here a unit expression).  The lexer synthesises no STMT_END inside
+  // `{ }`, so dropping the `;` would let re-parse merge `g(x)` and `()`
+  // into the call `g(x)()`.  The formatter must keep the `;`.
+  val src = "package P\n\nfunc g(x: in Int): Unit {\n  ()\n}\n\nfunc f(x: in Int): Unit {\n  g(x); ()\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "stmt separator: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "g(x);"), "stmt separator: `;` kept before bracket-leading statement")
+  assertTrue(not Str.contains(acc, "g(x)()"), "stmt separator: statements not merged into a call")
+}
+
 func testFormatPubFunc(): Unit {
   val src = "package P\npub func foo(): Unit { }\n"
   val pr = parse(src)
@@ -145,6 +171,22 @@ func testFormatVal(): Unit {
   val pr = parse(src)
   val acc = format(pr)
   assertTrue(Str.contains(acc, "val pi: Double = 3.14"), "format: val")
+}
+
+func testNumericLiteralSpellingRoundTrips(): Unit {
+  // Numeric literals keep their verbatim source spelling rather than
+  // canonicalising the parsed value: `0xFF` must not become `255`,
+  // `100_000` must keep its underscore, the `i64` suffix must survive,
+  // and `2.99` must not widen to `2.9899999999999998`.
+  val src = "package P\n\nfunc f(): Int {\n  val a = 0xFF\n  val b = 100_000\n  val c = 1i64\n  val d = 2.99\n  a\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "numeric literals: round-trip")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "= 0xFF"), "numeric: hex spelling preserved")
+  assertTrue(Str.contains(acc, "= 100_000"), "numeric: underscore preserved")
+  assertTrue(Str.contains(acc, "= 1i64"), "numeric: suffix preserved")
+  assertTrue(Str.contains(acc, "= 2.99"), "numeric: float spelling preserved")
+  assertTrue(not Str.contains(acc, "255"), "numeric: hex not canonicalised")
 }
 
 func testFormatModuleDoc(): Unit {
@@ -578,11 +620,14 @@ func testFormatSourceCheckedInputParseError(): Unit {
 }
 
 func testFormatSourceCheckedStructureChange(): Unit {
-  // The formatter canonicalises `0xFF` -> `255`, changing the code-token
-  // sequence; the guard must refuse rather than silently rewrite the
-  // literal's spelling.
-  val c = formatSourceChecked("package P\n\nfunc f(): Int {\n  0xFF\n}\n")
-  assertTrue(not fmtCheckIsOk(c), "checked: literal canonicalisation is refused")
+  // A `\u{..}` escape inside a string literal is still re-rendered by the
+  // formatter's `escapeStr`, changing the code-token sequence; the guard
+  // must refuse rather than silently rewrite it.  (Numeric-literal
+  // canonicalisation no longer triggers this — see
+  // `testNumericLiteralSpellingRoundTrips` — so the structure-change guard
+  // is exercised here via the still-open string-escape gap.)
+  val c = formatSourceChecked("package P\n\nfunc f(): Unit {\n  val s = \"a\\u{80}b\"\n}\n")
+  assertTrue(not fmtCheckIsOk(c), "checked: string-escape rewrite is refused")
   assertTrue(Str.contains(fmtCheckMessage(c), "code-token sequence"), "checked: structure-change message")
 }
 
@@ -686,10 +731,13 @@ func main(): Unit {
   testCommentPreservationBetweenItems()
   testCommentPreservationBlockComment()
   testCommentPreservationTrailing()
+  testEndOfLineCommentStaysInline()
+  testStatementSeparatorBeforeBracket()
   testFormatPubFunc()
   testFormatUnion()
   testFormatEnum()
   testFormatVal()
+  testNumericLiteralSpellingRoundTrips()
   testFormatModuleDoc()
   testFormatSourceFacade()
   testCommentInsideFunctionBody()

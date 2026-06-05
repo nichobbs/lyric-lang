@@ -365,8 +365,11 @@ pub func docLines(docs: in List[DocComment]): List[String] {
 
 pub func litStr(l: in Literal): String {
   match l {
-    case LInt(v, s)         -> longToStr(v) + intSufStr(s)
-    case LFloat(v, s)       -> floatLitStr(v) + floatSufStr(s)
+    // Prefer the verbatim source spelling so `0xFF` / `100_000` / `2.99`
+    // round-trip instead of canonicalising to `255` / `100000` /
+    // `2.9899999999999998`.  Synthetic literals carry an empty `raw`.
+    case LInt(v, s, raw)    -> if raw != "" { raw } else { longToStr(v) + intSufStr(s) }
+    case LFloat(v, s, raw)  -> if raw != "" { raw } else { floatLitStr(v) + floatSufStr(s) }
     case LChar(cp)          -> charLitStr(cp)
     case LString(t)         -> "\"" + escapeStr(t) + "\""
     case LTripleString(t)   -> "\"\"\"" + t + "\"\"\""
@@ -719,13 +722,7 @@ pub func paramsAtCol(col: in Int, ctx: inout FmtCtx, ps: in List[Param]): List[S
   var i = 0
   while i < ps.count {
     val p = ps[i]
-    val pre = popTriviaBefore(ctx, p.span.startPos.offset)
-    var k = 0
-    while k < pre.count {
-      val line = pre[k]
-      if line == "" { acc.add("") } else { acc.add(line) }
-      k = k + 1
-    }
+    appendTriviaInto(acc, ctx, p.span.startPos.offset, false)
     acc.add(paramStr(p) + ",")
     i = i + 1
   }
@@ -1666,30 +1663,66 @@ func itemInlineFallback(item: in Item): String {
 // with the comment list naturally.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// True when expression `e` renders starting with `(` or `[`.  Used to
+/// decide whether a preceding statement needs an explicit `;`: the lexer
+/// synthesises no STMT_END inside `{ }`, so on re-parse the postfix-call /
+/// index parser would otherwise swallow such a leading bracket as a call /
+/// index of the previous statement's trailing expression.
+@pure
+func exprStartsWithBracket(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(lit)     -> match lit { case LUnit -> true; case _ -> false }
+    case EParen(_)         -> true
+    case ETuple(_)         -> true
+    case EList(_)          -> true
+    case ECall(fn, _)      -> exprStartsWithBracket(fn)
+    case ETypeApp(fn, _)   -> exprStartsWithBracket(fn)
+    case EIndex(r, _)      -> exprStartsWithBracket(r)
+    case EMember(r, _)     -> exprStartsWithBracket(r)
+    case EPropagate(inner) -> exprStartsWithBracket(inner)
+    case EBinop(_, lhs, _) -> exprStartsWithBracket(lhs)
+    case _                 -> false
+  }
+}
+
+@pure
+func statementStartsWithBracket(s: in Statement): Bool {
+  match s.kind {
+    case SExpr(e)         -> exprStartsWithBracket(e)
+    case SAssign(t, _, _) -> exprStartsWithBracket(t)
+    case _                -> false
+  }
+}
+
 pub func blockLines(b: in Block, ctx: inout FmtCtx): List[String] {
   val acc: List[String] = newList()
   var i = 0
   while i < b.statements.count {
     val s = b.statements[i]
-    val pre = popTriviaBefore(ctx, s.span.startPos.offset)
-    var k = 0
-    while k < pre.count { acc.add(pre[k]); k = k + 1 }
+    appendTriviaInto(acc, ctx, s.span.startPos.offset, false)
     val sl = stmtLines(s, ctx)
     var j = 0
     while j < sl.count {
       acc.add(sl[j])
       j = j + 1
     }
+    // The two statements were separated by `;` in the source (the lexer
+    // emits no STMT_END inside `{ }`).  If the next statement renders
+    // starting with `(` / `[`, re-emit that `;` so re-parsing does not
+    // merge it into a call / index of this statement's trailing
+    // expression.  Any trailing comment is appended after the `;` by the
+    // next iteration's `appendTriviaInto`.
+    if i + 1 < b.statements.count and statementStartsWithBracket(b.statements[i + 1]) and acc.count > 0 {
+      acc[acc.count - 1] = acc[acc.count - 1] + ";"
+    }
     i = i + 1
   }
-  // Pop trailing comments before the block's closing brace.  We use
-  // `popCommentsBefore` here (not `popTriviaBefore`): a blank line
-  // immediately before `}` should not become a trailing empty line in
-  // the formatted body — the closing brace already provides a visual
-  // terminator.  Comments before `}` are still preserved.
-  val tail = popCommentsBefore(ctx, b.span.endPos.offset)
-  var k = 0
-  while k < tail.count { acc.add(tail[k]); k = k + 1 }
+  // Comments before the block's closing brace.  `dropBlanks = true`: a
+  // blank line immediately before `}` should not become a trailing empty
+  // line in the formatted body — the closing brace already provides a
+  // visual terminator.  A trailing comment on the last statement is
+  // re-attached to its line rather than emitted before `}`.
+  appendTriviaInto(acc, ctx, b.span.endPos.offset, true)
   acc
 }
 
@@ -1743,9 +1776,7 @@ func matchLines(scrut: in Expr, arms: in List[MatchArm], ctx: inout FmtCtx): Lis
   var i = 0
   while i < arms.count {
     val a = arms[i]
-    val pre = popTriviaBefore(ctx, a.span.startPos.offset)
-    var k = 0
-    while k < pre.count { armLines.add(pre[k]); k = k + 1 }
+    appendTriviaInto(armLines, ctx, a.span.startPos.offset, false)
     val guard = match a.guard {
       case Some(g) -> " if " + exprInline(0, g)
       case None    -> ""

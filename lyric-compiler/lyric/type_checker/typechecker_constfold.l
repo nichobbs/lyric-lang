@@ -41,7 +41,7 @@ func foldGo(tbl: in SymbolTable, depth: in Int, e: in Expr): FoldResult {
 
     case ELiteral(lit) ->
       match lit {
-        case LInt(v, _) -> FoldOk(value = v)
+        case LInt(v, _, _) -> FoldOk(value = v)
         case _          -> FoldErr(error = FENotConstant)
       }
 
@@ -60,7 +60,7 @@ func foldGo(tbl: in SymbolTable, depth: in Int, e: in Expr): FoldResult {
           match inner.kind {
             case ELiteral(litInner) ->
               match litInner {
-                case LInt(lv, _) ->
+                case LInt(lv, _, _) ->
                   if lv == -9223372036854775808i64 {
                     FoldOk(value = -9223372036854775808i64)
                   } else {

@@ -227,7 +227,7 @@ func foldExprToLong(e: in Expr): Option[Long] {
   match e.kind {
     case ELiteral(lit) -> {
       match lit {
-        case LInt(v, _) -> Some(value = v)
+        case LInt(v, _, _) -> Some(value = v)
         case _ -> None
       }
     }

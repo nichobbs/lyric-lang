@@ -353,6 +353,50 @@ pub func buildInstanceMethodSig(params: in List[MsilType], ret: in MsilType): Li
   bufToList(w)
 }
 
+// Context-aware variant of `buildFieldSig`.  Encodes an `MClass` field type as
+// `ELEMENT_TYPE_CLASS + TypeDefOrRef` (resolving the class's TypeDef/TypeRef row
+// by name via `bufMsilTypeWithCtx`) instead of degrading to `ELEMENT_TYPE_OBJECT`.
+// This produces the same encoding the F# bootstrap emitter does, which is the
+// precondition for cross-assembly binding against an F#-compiled producer.
+pub func buildFieldSigWithCtx(t: in MsilType, ctx: in LoweringCtx): List[Byte] {
+  val w = bufNew()
+  bufU1(w, 0x06)          // FIELD
+  bufMsilTypeWithCtx(w, t, ctx)
+  bufToList(w)
+}
+
+// Context-aware variant of `buildStaticMethodSig`.  Encodes `MClass`
+// parameters/returns concretely (CLASS + TypeDefOrRef) via `bufMsilTypeWithCtx`.
+pub func buildStaticMethodSigWithCtx(params: in List[MsilType], ret: in MsilType,
+                                     ctx: in LoweringCtx): List[Byte] {
+  val w = bufNew()
+  bufU1(w, 0x00)                     // DEFAULT call convention (static)
+  bufU1(w, params.count)             // param count
+  bufMsilTypeWithCtx(w, ret, ctx)    // return type
+  var i = 0
+  while i < params.count {
+    bufMsilTypeWithCtx(w, params[i], ctx)
+    i = i + 1
+  }
+  bufToList(w)
+}
+
+// Context-aware variant of `buildInstanceMethodSig` (HASTHIS).  Encodes `MClass`
+// parameters/returns concretely (CLASS + TypeDefOrRef) via `bufMsilTypeWithCtx`.
+pub func buildInstanceMethodSigWithCtx(params: in List[MsilType], ret: in MsilType,
+                                       ctx: in LoweringCtx): List[Byte] {
+  val w = bufNew()
+  bufU1(w, 0x20)                     // HASTHIS
+  bufU1(w, params.count)             // explicit param count (this excluded)
+  bufMsilTypeWithCtx(w, ret, ctx)    // return type
+  var i = 0
+  while i < params.count {
+    bufMsilTypeWithCtx(w, params[i], ctx)
+    i = i + 1
+  }
+  bufToList(w)
+}
+
 // Write a compressed unsigned integer (ECMA-335 §II.23.2) into a ByteWriter.
 // Used in blob payloads for TypeDefOrRef tokens.
 pub func writeCompressedInt(w: in ByteWriter, v: in Int): Unit {
@@ -723,6 +767,26 @@ pub record LoweringCtx {
   // resources (the common case before `Lyric.Contract` embedding
   // shipped).
   resourceData: List[Byte]
+  // ── In-bundle type-row registry (epic #2359 Stage 1) ──────────────────────
+  // Maps a user-defined type's fully-qualified name to its 1-based TypeDef row.
+  // Populated by `recordUserTypeDefRow` as each in-bundle TypeDef is emitted,
+  // and PRE-populated (before any signature is built) by a discovery pass over
+  // the package items so that `bufMsilTypeWithCtx` can encode a forward
+  // reference (a record whose field type is a type declared later in the same
+  // bundle) as `ELEMENT_TYPE_CLASS + TypeDef` rather than degrading to
+  // `ELEMENT_TYPE_OBJECT`.  TypeDef rows are the only user-controlled rows in
+  // the table (BCL / stdlib / restored types are TypeRefs), so a throwaway
+  // discovery lowering over the same items assigns identical row numbers — see
+  // `discoverTypeDefRowsInto`.  `typeDefRowFqns` is the insertion-ordered key
+  // list (maps don't expose key iteration here) used to copy the registry from
+  // the discovery context into the real one.
+  typeDefRowByFqn: Map[String, Int]
+  typeDefRowFqns:  List[String]
+  // Non-empty (holds one `true`) while a discovery pass is running.  In that
+  // mode `lowerMFunc` skips method-body lowering: discovery only needs the
+  // TypeDef row layout, and a throwaway context lacks the pre-seeded stdlib /
+  // restored token rows that real body lowering resolves against.
+  discovering: List[Bool]
 }
 
 // Build and intern the Microsoft framework public key token blob.
@@ -822,7 +886,10 @@ pub func newLoweringCtx(packageName: in String,
     trEnum       = trEnum,
     arRuntime    = arRuntime,
     mrObjectCtor = mrObjectCtor,
-    resourceData = newList()
+    resourceData = newList(),
+    typeDefRowByFqn = newMap(),
+    typeDefRowFqns  = newList(),
+    discovering     = newList()
   )
 }
 
@@ -1133,7 +1200,7 @@ pub func buildGenericInstBlob(typeDefOrRef: in Int,
 func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): Unit {
   match t {
     case MClass(name) -> {
-      val defRow = findTypeDefRowByName(ctx, name)
+      val defRow = resolveSigTypeDefRow(ctx, name)
       if defRow > 0 {
         bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS
         writeCompressedInt(w, tdrTypeDef(defRow))
@@ -1162,6 +1229,15 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
     case MArray(elem) -> {
       bufU1(w, 0x1D)  // ELEMENT_TYPE_SZARRAY
       bufMsilTypeWithCtx(w, elem, ctx)
+    }
+    case MByRef(inner) -> {
+      // ELEMENT_TYPE_BYREF (out/inout parameter): the 0x10 prefix MUST be
+      // followed by the pointee type.  The context-free `bufMsilType` handles
+      // this; without an explicit arm here it would fall through to the `other`
+      // case and emit a bare, dangling 0x10 prefix — a malformed signature
+      // ("The signature is incorrect" at type load).  See #2360.
+      bufU1(w, 0x10)
+      bufMsilTypeWithCtx(w, inner, ctx)
     }
     case MGenericInst(typeRefCode, _, typeArgs) -> {
       bufU1(w, 0x15)  // ELEMENT_TYPE_GENERICINST
@@ -1633,7 +1709,7 @@ func buildLocalVarSigWithCtx(locals: in List[MsilType], ctx: in LoweringCtx): Li
   while i < locals.count {
     match locals[i] {
       case MClass(name) -> {
-        val defRow = findTypeDefRowByName(ctx, name)
+        val defRow = resolveSigTypeDefRow(ctx, name)
         if defRow > 0 {
           bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS
           writeCompressedInt(w, tdrTypeDef(defRow))
@@ -1711,6 +1787,12 @@ func buildLvSigKey(locals: in List[MsilType]): String {
 // Returns the MethodBody (for RVA assignment by the caller).
 pub func lowerMFunc(f: in MFunc, ctx: in LoweringCtx): MethodBody {
   val mb = newMethodBody()
+  // Discovery pass (epic #2359 Stage 1): only the TypeDef/MethodDef row layout
+  // matters, so skip body lowering — a throwaway context has none of the
+  // pre-seeded stdlib / restored token rows that `lowerMInsn` resolves against.
+  if ctx.discovering.count > 0 {
+    return mb
+  }
   if f.locals.count > 0 {
     val lvSig  = buildLocalVarSigWithCtx(f.locals, ctx)
     val lvBlob = ctxInternBlob(ctx, buildLvSigKey(f.locals), lvSig)
@@ -1779,6 +1861,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
     extends       = recExtendsToken,
     fieldList     = firstField,
     methodList    = firstMethod))
+  recordUserTypeDefRow(ctx, r.namespace, simpleNameRec, t.typeDefs.count)
 
   // Emit Field rows (must come after TypeDef so findFieldDefRowOfType sees this
   // type's firstField as the starting point when lowerMFunc is called below).
@@ -1786,7 +1869,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
   while fi < r.fields.count {
     val f     = r.fields[fi]
     val sF    = internString(sh, f.name)
-    val fSig  = buildFieldSig(f.fieldType)
+    val fSig  = buildFieldSigWithCtx(f.fieldType, ctx)
     val bSig  = internBlob(bh, "field_" + r.className + "_" + f.name, fSig)
     val fRow  = addField(t, FieldRow(flags = f.flags, name = sF, signature = bSig))
     fi = fi + 1
@@ -1839,7 +1922,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
       ctorParams.add(r.fields[ci].fieldType)
       ci = ci + 1
     }
-    val ctorSig  = buildInstanceMethodSig(ctorParams, MVoid)
+    val ctorSig  = buildInstanceMethodSigWithCtx(ctorParams, MVoid, ctx)
     val ctorKey  = "ctor_" + r.className
     val bCtorSig = internBlob(bh, ctorKey, ctorSig)
 
@@ -1884,7 +1967,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
     val rvasM = methodBodyRvas(ctx.bodies)
     val mRva  = rvasM[ctx.bodies.count - 1]
     val sName2 = internString(sh, m.name)
-    val mSig   = buildInstanceMethodSig(m.params, m.ret)
+    val mSig   = buildInstanceMethodSigWithCtx(m.params, m.ret, ctx)
     // Arity-qualify the intern key (#1536) so same-name overloads don't collide in `internBlob`'s dedup.
     val bMSig  = internBlob(bh, "meth_" + r.className + "_" + m.name + "/" + toString(m.params.count), mSig)
     val fp     = t.params_.count + 1
@@ -2014,6 +2097,7 @@ pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
     extends       = extendsToken,
     fieldList     = firstField,
     methodList    = firstMethod))
+  recordUserTypeDefRow(ctx, r.namespace, simpleNameRec, t.typeDefs.count)
 }
 
 // Lower an MUnion as an abstract base class + one sealed case class per variant.
@@ -2040,7 +2124,7 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
     val rvas = methodBodyRvas(ctx.bodies)
     val mRva = rvas[ctx.bodies.count - 1]
     val sN   = internString(sh, m.name)
-    val mSig = buildStaticMethodSig(m.params, m.ret)
+    val mSig = buildStaticMethodSigWithCtx(m.params, m.ret, ctx)
     // Arity-qualify the intern key (#1536) — see the `meth_` site above.
     val bSig = internBlob(bh, "basemeth_" + u.baseName + "_" + m.name + "/" + toString(m.params.count), mSig)
     val fp   = t.params_.count + 1
@@ -2088,6 +2172,7 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
     extends       = objectTypeToken(ctx),
     fieldList     = baseFirstField,
     methodList    = baseFirstMethod))
+  recordUserTypeDefRow(ctx, u.namespace, simpleNameUnion, baseRow)
 
   // Emit case classes extending the base.
   // Nullary cases (no fields) are lowered via lowerMNullaryUnionCase, which emits
@@ -2228,7 +2313,7 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
   while mi < iface.methods.count {
     val m    = iface.methods[mi]
     val sN   = internString(sh, m.name)
-    val mSig = buildInstanceMethodSig(m.params, m.ret)
+    val mSig = buildInstanceMethodSigWithCtx(m.params, m.ret, ctx)
     // Arity-qualify the intern key (#1536) — see the `meth_` site above.
     val bSig = internBlob(bh, "ifmeth_" + iface.className + "_" + m.name + "/" + toString(m.params.count), mSig)
     val fp   = t.params_.count + 1
@@ -2252,6 +2337,7 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
     extends       = 0,      // interfaces have no extends
     fieldList     = firstField,
     methodList    = firstMethod))
+  recordUserTypeDefRow(ctx, iface.namespace, simpleNameIface, t.typeDefs.count)
 }
 
 // ── Impl lowering ─────────────────────────────────────────────────────────────
@@ -2317,6 +2403,86 @@ pub func findTypeRefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
     i = i + 1
   }
   0
+}
+
+// Reconstruct a TypeDef's fully-qualified name from its (namespace, simpleName)
+// the same way `findTypeDefRowByName` splits one — so a name recorded here is
+// looked up by the identical key.
+func joinTypeFqn(namespace: in String, simpleName: in String): String {
+  if namespace.length == 0 { simpleName } else { namespace + "." + simpleName }
+}
+
+// Register an in-bundle TypeDef's FQN → row mapping (epic #2359 Stage 1).
+// Idempotent: a second registration of the same FQN (e.g. the real pass after
+// the discovery pass already seeded it) is ignored.  `simpleName` is the
+// unqualified type name as stored in the TypeDef row; `namespace` its namespace.
+pub func recordUserTypeDefRow(ctx: in LoweringCtx, namespace: in String,
+                              simpleName: in String, row: in Int): Unit {
+  val fqn = joinTypeFqn(namespace, simpleName)
+  if not ctx.typeDefRowByFqn.containsKey(fqn) {
+    ctx.typeDefRowByFqn.add(fqn, row)
+    ctx.typeDefRowFqns.add(fqn)
+  }
+}
+
+// Resolve an in-bundle type's TypeDef row for SIGNATURE encoding.  Consults the
+// pre-populated registry first (so a forward reference resolves) and falls back
+// to scanning the table (covers any TypeDef added without registration).
+// Returns 0 when the name is not an in-bundle TypeDef.  Interface types resolve
+// to their TypeDef like any other reference type — `ELEMENT_TYPE_CLASS` over an
+// interface is valid ECMA-335 (interfaces are reference types); the F# emitter
+// is being updated to match this (epic #2359 Stage 1).
+pub func resolveSigTypeDefRow(ctx: in LoweringCtx, fqn: in String): Int {
+  match mapGet(ctx.typeDefRowByFqn, fqn) {
+    case Some(row) -> row
+    case None      -> findTypeDefRowByName(ctx, fqn)
+  }
+}
+
+// Discovery pass (epic #2359 Stage 1): lower every item of every package into a
+// throwaway context purely to learn each in-bundle type's TypeDef row, then
+// copy that registry into the real context `dst` BEFORE the real lowering runs.
+// Because user TypeDefs are the only TypeDef rows besides `<Module>` (row 1) —
+// BCL / stdlib / restored types are TypeRefs — the throwaway pass assigns
+// identical row numbers regardless of the real context's pre-seeded
+// TypeRef / MemberRef / AssemblyRef rows.
+pub func discoverTypeDefRowsInto(dst: in LoweringCtx, pkgs: in List[MPackage]): Unit {
+  val dctx = newLoweringCtx("__lyric_typedef_discovery__", 0, 0)
+  dctx.discovering.add(true)
+  var pi = 0
+  while pi < pkgs.count {
+    val pkg = pkgs[pi]
+    var i = 0
+    while i < pkg.items.count {
+      match pkg.items[i] {
+        // MPImpl adds no TypeDef rows (only InterfaceImpl / MethodImpl rows and
+        // method bodies), and `lowerMImpl` resolves the impl's interface type —
+        // which for a BCL interface (e.g. async state machines implementing
+        // `System.Runtime.CompilerServices.IAsyncStateMachine`) lives only in
+        // the pre-seeded real context, not this fresh discovery context, so
+        // processing it here would panic.  Skipping it is safe: it cannot shift
+        // any TypeDef row number that the real pass will assign.
+        case MPImpl(_) -> {}
+        case other     -> lowerMPackageItem(other, dctx)
+      }
+      i = i + 1
+    }
+    pi = pi + 1
+  }
+  var k = 0
+  while k < dctx.typeDefRowFqns.count {
+    val fqn = dctx.typeDefRowFqns[k]
+    match mapGet(dctx.typeDefRowByFqn, fqn) {
+      case Some(row) -> {
+        if not dst.typeDefRowByFqn.containsKey(fqn) {
+          dst.typeDefRowByFqn.add(fqn, row)
+          dst.typeDefRowFqns.add(fqn)
+        }
+      }
+      case None -> {}
+    }
+    k = k + 1
+  }
 }
 
 // Find the 1-based MethodDef row owned by typeDefRow with the given method
@@ -2443,7 +2609,7 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
   while fi < op.fields.count {
     val f    = op.fields[fi]
     val sF   = internString(sh, f.name)
-    val fSig = buildFieldSig(f.fieldType)
+    val fSig = buildFieldSigWithCtx(f.fieldType, ctx)
     val bSig = internBlob(bh, "ofield_" + op.className + "_" + f.name, fSig)
     addField(t, FieldRow(flags = FDA_PRIVATE, name = sF, signature = bSig))
     fi = fi + 1
@@ -2456,7 +2622,7 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
     ctorPs.add(op.fields[ci].fieldType)
     ci = ci + 1
   }
-  val ctorSig  = buildInstanceMethodSig(ctorPs, MVoid)
+  val ctorSig  = buildInstanceMethodSigWithCtx(ctorPs, MVoid, ctx)
   val bCtorSig = internBlob(bh, "octor_" + op.className, ctorSig)
   val sCtor    = internString(sh, ".ctor")
 
@@ -2495,7 +2661,7 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
     val rvasM = methodBodyRvas(ctx.bodies)
     val mRva  = rvasM[ctx.bodies.count - 1]
     val sN    = internString(sh, m.name)
-    val mSig  = buildInstanceMethodSig(m.params, m.ret)
+    val mSig  = buildInstanceMethodSigWithCtx(m.params, m.ret, ctx)
     val bMSig = internBlob(bh, "ometh_" + op.className + "_" + m.name, mSig)
     val fpm   = t.params_.count + 1
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
@@ -2516,6 +2682,7 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
     extends       = objectTypeToken(ctx),
     fieldList     = firstField,
     methodList    = firstMethod))
+  recordUserTypeDefRow(ctx, op.namespace, simpleNameOpaque, opaqueRow)
 
   opaqueRow
 }
@@ -2555,7 +2722,7 @@ pub func lowerMFuncsToHostClass(hostClass: in String, funcs: in List[MFunc],
   while sfi < staticFields.count {
     val sf   = staticFields[sfi]
     val sN   = internString(sh, sf.name)
-    val fSig = buildFieldSig(sf.fieldType)
+    val fSig = buildFieldSigWithCtx(sf.fieldType, ctx)
     val bSig = internBlob(bh, "stfld_" + hostClass + "_" + sf.name, fSig)
     val fRow = addField(t, FieldRow(flags = sf.flags, name = sN, signature = bSig))
     if sf.hasLiteral {
@@ -2618,7 +2785,7 @@ pub func lowerMFuncsToHostClass(hostClass: in String, funcs: in List[MFunc],
     val rvas = methodBodyRvas(ctx.bodies)
     val fRva = rvas[ctx.bodies.count - 1]
     val sN   = internString(sh, f.name)
-    val mSig = buildStaticMethodSig(f.params, f.ret)
+    val mSig = buildStaticMethodSigWithCtx(f.params, f.ret, ctx)
     // Arity-qualify the intern key (#1536) so same-name overloads don't collide and inherit the wrong signature blob.
     val bSig = internBlob(bh, "sfunc_" + hostClass + "_" + f.name + "/" + toString(f.params.count), mSig)
     val fp   = t.params_.count + 1
@@ -2640,6 +2807,7 @@ pub func lowerMFuncsToHostClass(hostClass: in String, funcs: in List[MFunc],
     extends       = objectTypeToken(ctx),
     fieldList     = firstField,
     methodList    = firstMethod))
+  recordUserTypeDefRow(ctx, hostClass, "Program", t.typeDefs.count)
 }
 
 // ── Package lowering ───────────────────────────────────────────────────────────
@@ -2652,6 +2820,10 @@ pub func lowerMFuncsToHostClass(hostClass: in String, funcs: in List[MFunc],
 // retains the legacy default here.
 pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
   val ctx = newLoweringCtx(pkg.packageName, 0, 0)
+
+  val discPkgs: List[MPackage] = newList()
+  discPkgs.add(pkg)
+  discoverTypeDefRowsInto(ctx, discPkgs)
 
   var i = 0
   while i < pkg.items.count {
@@ -2732,6 +2904,10 @@ func lowerMPackageItem(item: in MPackageItem, ctx: in LoweringCtx): Unit {
 
 pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx,
                                entryMethodToken: in Int): List[Byte] {
+  val discPkgs: List[MPackage] = newList()
+  discPkgs.add(pkg)
+  discoverTypeDefRowsInto(ctx, discPkgs)
+
   var i = 0
   while i < pkg.items.count {
     lowerMPackageItem(pkg.items[i], ctx)
@@ -2768,6 +2944,8 @@ pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx,
 // correct row in the unified table.
 pub func lowerMPackagesWithCtx(pkgs: in List[MPackage], ctx: in LoweringCtx,
                                 entryMethodToken: in Int): List[Byte] {
+  discoverTypeDefRowsInto(ctx, pkgs)
+
   var pi = 0
   while pi < pkgs.count {
     val pkg = pkgs[pi]

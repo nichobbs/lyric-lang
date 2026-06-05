@@ -391,7 +391,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
     // ── Literals ──────────────────────────────────────────────────────────
     case ELiteral(lit) -> {
       match lit {
-        case LInt(v, suffix) -> {
+        case LInt(v, suffix, _) -> {
           // An `i64`/`u64` suffix makes the literal a Long regardless of
           // magnitude: `5i64` must push a long (ldc2_w / lconst), not an int
           // (iconst).  Storing an int with `lstore` underflows the operand
@@ -414,7 +414,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             JLong
           }
         }
-        case LFloat(v, _) -> {
+        case LFloat(v, _, _) -> {
           insns.add(LDconst(v = v))
           JDouble
         }
@@ -1433,7 +1433,7 @@ func lowerPatternTest(
     case PLiteral(lit) -> {
       emitLoad(insns, scrutSlot, scrutTy)
       match lit {
-        case LInt(v, suffix) -> {
+        case LInt(v, suffix, _) -> {
           // Match the scrutinee width: an `i64`/`u64`-suffixed pattern literal
           // (or one outside Int32 range) compares as a long (lcmp), else as an
           // int (if_icmpne).  Mixing widths corrupts the operand stack.

@@ -114,7 +114,7 @@ func literalIntValue(e: in Expr): Long {
   match e.kind {
     case ELiteral(lit) -> {
       match lit {
-        case LInt(v, _) -> v
+        case LInt(v, _, _) -> v
         case _ -> panic("literalIntValue: not an Int literal")
       }
     }

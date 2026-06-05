@@ -687,7 +687,7 @@ func renderConstExpr(e: in Expr): String {
   match e.kind {
     case ELiteral(lit) -> {
       match lit {
-        case LInt(v, _) -> toString(v)
+        case LInt(v, _, _) -> toString(v)
         case _ -> "0"
       }
     }
