@@ -5190,9 +5190,20 @@ allocates, stores, and promotes; returns the local index.
 `asyncLtBothAwaited` (comparison), `asyncAddRhsAwaited` (literal lhs, awaited rhs), and
 `asyncStrConcatBothAwaited` (string concat with both sides awaited).
 
+**JVM target:** Both D088–D090 fixes (promoted locals and binop stack-spill) are
+**structurally inapplicable** to the JVM backend.  The JVM `EAwait` lowering
+(`lyric-compiler/jvm/codegen.l:780`) is bootstrap-synchronous — `await expr` lowers
+as a pass-through `lowerExpr(ctx, insns, inner)` with no state machine, no suspend/
+resume protocol, and no `leave` instruction.  JVM locals are never zeroed between
+"invocations" of a single method activation, so the promoted-field pattern is
+unnecessary.  True JVM async will be a separate effort (virtual-thread continuations
+or bytecode transformation) when Phase B equivalent work is scoped for that target;
+at that point a dedicated D-progress entry will track it.  Closed as not-applicable
+in issue #2356.
+
 **Result:** All 26 tests in `async_sm_self_test.l` pass.  Existing `stack_spill_two_await_args`
 and `stack_spill_await_in_binop` F# inline tests continue to pass.  All 24 async F# tests pass.
-843/843 emitter tests green.  Tracked as D-progress-438.
+843/843 emitter tests green.  Tracked as D-progress-439.
 
 ---
 ## Decisions deferred to v2 or later
