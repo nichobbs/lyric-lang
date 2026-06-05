@@ -199,22 +199,31 @@ required).
 ### `Std.EncodingHost` — `lyric-stdlib/std/_kernel/encoding_host.l`
 
 ```
-@axiom("placeholder — no host calls remain in this boundary file")
+@axiom(".NET Encoding.GetBytes and Convert.FromBase64String conform to their documented .NET contracts and return genuine byte[] arrays")
 ```
 
-**BCL surface**: empty.  Pure-Lyric encoding helpers replaced every
-host call (UTF-8 / base64 / hex are now native Lyric on top of byte
-slices).  The axiom is retained as a placeholder so the file is
-discoverable by the audit lint; remove it when the file is deleted.
+**BCL surface**: `System.Text.Encoding.UTF8` (static property),
+`System.Text.Encoding.GetBytes(string)` (instance), and
+`System.Convert.FromBase64String(string)` (static).  These three
+BCL entry points are used because both the F# bootstrap and the
+self-hosted MSIL emitter represent `List[Byte]` as `List<object>` at
+runtime; calling `.toArray()` on that would produce `object[]`, not
+`byte[]`, breaking any BCL method that expects a genuine byte array.
+The externs bypass the accumulator pattern and obtain `byte[]` directly
+from the BCL.  Hex encoding/decoding and UTF-8 decoding remain pure Lyric.
 
-**Gap**: Base-64 and UTF-8 encode/decode involve byte-level iteration
-and produce `slice[Byte]` / `String` values whose contents cannot be
-characterised in first-order terms without a full string model.
+**Gap**: The axiom asserts only BCL contract compliance, not semantic
+roundtrip properties (e.g. that `GetBytes(Decode(b)) == b`).  Those are
+properties of the UTF-8 spec, not of the BCL implementation, and are
+covered by the pure-Lyric validation logic in `Std.Encoding` above the
+kernel boundary.
 
-**Caller obligation**: `FromBase64String` input must be a valid
-Base64 string (BCL throws `FormatException` otherwise); the kernel
-does not validate this.  In `@proof_required` code, callers must
-establish input validity.
+**Caller obligation**: `FromBase64String` input must be a valid standard
+Base64 string (RFC 4648 §4); `Std.Encoding.tryDecodeBase64` validates
+the alphabet and padding structure in pure Lyric before calling the host,
+so `FormatException` should never be raised in practice.  In
+`@proof_required` code, callers must establish input validity before
+crossing the host boundary.
 
 **Review**: Stable.
 
@@ -358,15 +367,20 @@ validated before the kernel call.
 
 ```
 @axiom("System.Environment operations conform to their documented .NET contracts")
+@axiom("System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory conforms to its documented .NET contract")
 ```
 
 **BCL surface**: `System.Environment` (GetEnvironmentVariable,
 GetEnvironmentVariables, CurrentDirectory, ProcessId, Exit), backing
-`Std.Environment`.
+`Std.Environment`; plus
+`System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory`
+(returns the path of the .NET runtime directory, used by the self-hosted
+CLI to locate reference assemblies for `lyric run`/`lyric build`).
 
 **Gap**: Environment variables are observable external process state;
 their values are non-deterministic at the point where the Lyric program
-calls them.
+calls them.  The runtime directory is process-stable but installation-
+dependent and opaque to the prover.
 
 **Caller obligation**: None for reads.  `Environment.Exit` terminates
 the process; it is a non-returning call that the prover treats as
@@ -775,7 +789,7 @@ All are provisional pending weaver integration.
 | `Std.PathHost`           | `path_host.l`                | 1      | 0           |
 | `Std.TimeHost`           | `time_host.l`                | 1      | 0           |
 | `Std.HttpHost`           | `http_host.l`                | 1      | 0           |
-| `Std.EnvironmentHost`    | `environment_host.l`         | 1      | 0           |
+| `Std.EnvironmentHost`    | `environment_host.l`         | 2      | 0           |
 | `Std.ProcessHost`        | `process_host.l`             | 1      | 0           |
 | `Std.ProcessCaptureHost` | `process_capture_host.l`     | 1      | 0           |
 | `Std.JsonHost`           | `json_host.l`                | 1      | 0           |
@@ -788,7 +802,7 @@ All are provisional pending weaver integration.
 | `Std.AssemblyResourcesHost` | `assembly_resources_host.l`  | 1      | 0           |
 | `Std.Jvm`                | `jvm.l`                      | 0      | 1           |
 | `Std.JvmExceptionHost`   | `jvm_exception.l`            | 0      | 1           |
-| **Total**                |                              | **24** | **2**       |
+| **Total**                |                              | **25** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -825,7 +839,7 @@ recorded in the §19 baseline.
 
 ### Combined total
 
-24 + 22 = **46** stable + **2** provisional = **48** `@axiom`
+25 + 22 = **47** stable + **2** provisional = **49** `@axiom`
 annotations covering the entire extern boundary across both
 targets.
 
@@ -836,7 +850,7 @@ entries) moved every BCL extern to `lyric-stdlib/std/_kernel/`, replacing
 per-function `@axiom` annotations with package-level annotations that
 cover the entire extern boundary of each kernel file.  The axiom count
 grew from 11 (M4.3 baseline) → 16 (after D-progress-140) → 22 + 2 JVM
-→ 25 + 22 + 2 (current) as additional BCL surfaces were added (Console,
+→ 25 + 22 + 2 → 27 + 22 + 2 (current) as additional BCL surfaces were added (Console,
 Path, ProcessCapture, VerifierEnv, Random, SecureRandom, Hash, Regex/RegexHost,
 Testing.Mocking) and the JVM target boundary was brought under the
 same audit framework.
@@ -861,8 +875,9 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.CharHost` | `char_host.l` | System.Char and System.Convert character operations conform to their documented .NET contracts |
 | `dotnet` | `Std.CollectionsHost` | `collections_host.l` | System.Collections.Generic.List / Dictionary conform to their documented .NET contracts |
 | `dotnet` | `Std.ConsoleHost` | `console_host.l` | System.Console operations conform to their documented .NET contracts |
-| `dotnet` | `Std.EncodingHost` | `encoding_host.l` | placeholder — no host calls remain in this boundary file |
+| `dotnet` | `Std.EncodingHost` | `encoding_host.l` | .NET Encoding.GetBytes and Convert.FromBase64String conform to their documented .NET contracts and return genuine byte[] arrays |
 | `dotnet` | `Std.EnvironmentHost` | `environment_host.l` | System.Environment operations conform to their documented .NET contracts |
+| `dotnet` | `Std.EnvironmentHost` | `environment_host.l` | System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory conforms to its documented .NET contract |
 | `dotnet` | `Std.FileHost` | `file_host.l` | System.IO.File / Directory operations conform to their documented .NET contracts |
 | `dotnet` | `Std.FormatHost` | `format_host.l` | System.Globalization.CultureInfo and System.String/Int/Double formatting operations conform to their documented .NET contracts |
 | `dotnet` | `Std.HashHost` | `hash_host.l` | System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics; both are pure functions |
@@ -886,7 +901,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.CharHost` | `char_host.l` | java.lang.Character character operations conform to their documented JVM contracts |
 | `jvm` | `Std.CollectionsHost` | `collections_host.l` | java.util.ArrayList / HashMap conform to their documented JVM contracts |
 | `jvm` | `Std.ConsoleHost` | `console_host.l` | lyric.stdlib.jvm.ConsoleHost operations conform to their documented JVM contracts |
-| `jvm` | `Std.EncodingHost` | `encoding_host.l` | placeholder — no host calls remain in this boundary file |
+| `jvm` | `Std.EncodingHost` | `encoding_host.l` | JVM List[Byte].toArray() produces a properly typed byte array; pure-Lyric accumulators are safe on JVM |
 | `jvm` | `Std.EnvironmentHost` | `environment_host.l` | lyric.stdlib.jvm.EnvHost operations conform to their documented JVM contracts |
 | `jvm` | `Std.FileHost` | `file_host.l` | lyric.stdlib.jvm.FileHost operations conform to their documented JVM contracts |
 | `jvm` | `Std.FormatHost` | `format_host.l` | lyric.stdlib.jvm.FormatHost formatting operations conform to their documented JVM contracts |
