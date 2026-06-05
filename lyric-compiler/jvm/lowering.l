@@ -3973,6 +3973,9 @@ func lowerScopeBlockShutdownOnFailure(
     // close() before rethrow so the scope is not leaked on the failure path.
     // join() has already returned so all subtasks are settled; it is safe to
     // close here before inspecting exception().
+    // Known limitation: if close() itself throws (e.g. InterruptedException),
+    // it will replace the subtask's exception.  A try-finally exception-handler
+    // pattern would avoid this but is deferred with #2263 (JDK 24+ scope work).
     emitAload(asm, scopeSlot)
     emitInvokevirtual(asm, closeRef)
     emitAload(asm, checkSlot)

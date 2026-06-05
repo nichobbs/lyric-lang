@@ -111,12 +111,10 @@ pub record CodegenCtx {
   trTask:      Int   // System.Threading.Tasks.Task (non-generic)
   trTask1:     Int   // System.Threading.Tasks.Task`1 (open generic)
   tokTaskWait: Int   // Task::Wait(): void  instance HASTHIS (void async externs)
-  // Culture-invariant toString(DateTime).  Mirrors the F# bootstrap emitter's
-  // InvariantCulture ToString(IFormatProvider) path (Codegen.fs) so stage-0
-  // and stage-1 render DateTime byte-identically regardless of host locale
-  // (#2184).
-  tokInvariantCulture:    Int  // CultureInfo.get_InvariantCulture(): CultureInfo  static
-  tokDateTimeToStringInv: Int  // DateTime.ToString(IFormatProvider): string  instance HASTHIS
+  // ISO-8601 toString(DateTime).  Mirrors the F# bootstrap emitter's
+  // DateTime.ToString("o") path (Codegen.fs) so stage-0 and stage-1 render
+  // DateTime identically (#2184).  "o" is culture-invariant by spec.
+  tokDateTimeToStringFmt: Int  // DateTime.ToString(string): string  instance HASTHIS
   // Reverse lookup: simple field name → FieldDef token.  Populated by
   // addPackageTokens for IRecord and IExposedRec fields so EMember can emit
   // ldfld on an MObject receiver when the static type is unknown.
@@ -754,34 +752,15 @@ pub func newCodegenCtx(packageName: in String,
     lctx, trTask, "Wait",
     "task_wait", buildInstanceMethodSig(newList(), MVoid))
 
-  // ── Culture-invariant toString(DateTime) (#2184) ───────────────────────────
-  // Counterpart of the F# bootstrap emitter's culture-invariant `toString`
-  // path: pin InvariantCulture so a DateTime renders identically (the
-  // "MM/dd/yyyy HH:mm:ss" invariant form) regardless of the host OS locale,
-  // keeping stage-0 (F#) and stage-1 (self-hosted) output in lockstep.
-  // CultureInfo / IFormatProvider / DateTime are type-forwarded from
-  // System.Runtime, so the runtime AssemblyRef resolves all three.
-  val trCultureInfo     = ctxAddTypeRef(lctx, "System.Globalization", "CultureInfo",     lctx.arRuntime)
-  val trIFormatProvider = ctxAddTypeRef(lctx, "System",              "IFormatProvider", lctx.arRuntime)
-  val trDateTime        = ctxAddTypeRef(lctx, "System",              "DateTime",        lctx.arRuntime)
-
-  // CultureInfo.get_InvariantCulture(): CultureInfo  — static
-  val ciRet: MsilType = MClassRef(typeRefCode = tdrTypeRef(trCultureInfo),
-                                  clrFqn = "System.Globalization.CultureInfo")
-  val tokInvariantCulture = 0x0A000000 + ctxAddMemberRef(
-    lctx, trCultureInfo, "get_InvariantCulture",
-    "ci_get_invariant", buildStaticMethodSig(newList(), ciRet))
-
-  // DateTime.ToString(IFormatProvider): string  — instance HASTHIS.  The
-  // value lives on the stack as an unboxed `valuetype System.DateTime`, so the
-  // call site takes its address (ldloca) and uses `call` (value-type instance
-  // dispatch), passing the CultureInfo as the IFormatProvider argument.
-  val dtToStrPs: List[MsilType] = newList()
-  dtToStrPs.add(MClassRef(typeRefCode = tdrTypeRef(trIFormatProvider),
-                          clrFqn = "System.IFormatProvider"))
-  val tokDateTimeToStringInv = 0x0A000000 + ctxAddMemberRef(
+  // DateTime.ToString(string): string  — instance HASTHIS.  Used for the
+  // ISO-8601 "o" round-trip format; mirrors Codegen.fs which calls
+  // DateTime.ToString("o").  DateTime is type-forwarded from System.Runtime.
+  val trDateTime        = ctxAddTypeRef(lctx, "System", "DateTime", lctx.arRuntime)
+  val dtToStrFmtPs: List[MsilType] = newList()
+  dtToStrFmtPs.add(MString)
+  val tokDateTimeToStringFmt = 0x0A000000 + ctxAddMemberRef(
     lctx, trDateTime, "ToString",
-    "dt_tostring_inv", buildInstanceMethodSig(dtToStrPs, MString))
+    "dt_tostring_fmt", buildInstanceMethodSig(dtToStrFmtPs, MString))
 
   // Async SM synthesis (Phase B, Epic #2070).
   // AsyncTaskMethodBuilder and IAsyncStateMachine live in System.Runtime.
@@ -872,8 +851,7 @@ pub func newCodegenCtx(packageName: in String,
     tokExcGetMessage     = tokExcGetMessage,
     tokObjGetType        = tokObjGetType,
     tokTypeGetName       = tokTypeGetName,
-    tokInvariantCulture     = tokInvariantCulture,
-    tokDateTimeToStringInv  = tokDateTimeToStringInv,
+    tokDateTimeToStringFmt  = tokDateTimeToStringFmt,
     tokListObjCtor       = tokListObjCtor,
     tokListObjAdd        = tokListObjAdd,
     tokListObjGetItem    = tokListObjGetItem,
@@ -5088,12 +5066,14 @@ func lowerBuiltinOrStaticCallMsil(
             val tmpSlot = allocSlotMsil(fctx, "__tostring_dt_tmp", argTy)
             emitStoreSlot(insns, tmpSlot, fctx.paramCount)
             insns.add(MLdloca(slot = tmpSlot - fctx.paramCount))
-            insns.add(MCall(methodToken = cctx.tokInvariantCulture))
-            insns.add(MCall(methodToken = cctx.tokDateTimeToStringInv))
+            insns.add(MLdStr(token = ctxInternUs(cctx.lctx, "o")))
+            insns.add(MCall(methodToken = cctx.tokDateTimeToStringFmt))
           } else {
             // typeRefCode is TypeDefOrRef-encoded (ECMA-335 §II.23.2.8) with TypeRef
             // tag 1: encoded = (row << 2) | 1.  Strip the tag to get the 1-based
             // TypeRef row, then build a 0x01xxxxxx metadata token (ECMA-335 §II.22.38).
+            // This invariant holds for all extern value types (no user-defined Lyric
+            // value types carry a TypeDef or TypeSpec code here today).
             val rawRow = (typeRefCode - 1) / 4
             insns.add(MBox(typeToken = 16777216 + rawRow))
             insns.add(MCallvirt(methodToken = cctx.tokObjToString))

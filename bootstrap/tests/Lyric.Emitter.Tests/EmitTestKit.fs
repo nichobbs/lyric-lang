@@ -136,7 +136,8 @@ let private runOnLargerStack (stackBytes: int) (action: unit -> 'a) : 'a =
             with e -> exn <- Some e),
         stackBytes)
     thread.Start()
-    thread.Join()
+    if not (thread.Join(System.TimeSpan.FromMinutes 10.0)) then
+        failwith "runOnLargerStack: compilation timed out after 10 minutes"
     match exn with
     | Some e -> System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e).Throw(); Unchecked.defaultof<_>
     | None   -> result.Value
