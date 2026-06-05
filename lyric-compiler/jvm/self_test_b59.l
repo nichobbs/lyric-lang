@@ -1,18 +1,17 @@
-// jvm/self_test_b59.l — Stage B59: Integer static string-conversion methods.
-//
-// Generates Converter.class with three static methods:
-//   toBin(I)String  — Integer.toBinaryString(i)
-//   toHex(I)String  — Integer.toHexString(i)
-//   toOct(I)String  — Integer.toOctalString(i)
-//
-// Main prints:
-//   toBin(10)  → "1010"
-//   toHex(255) → "ff"
-//   toOct(8)   → "10"
-//
-// Exercises: invokestatic on java/lang/Integer for string-conversion builtins,
-//            areturn of String result.
-
+//! jvm/self_test_b59.l — Stage B59: Integer static string-conversion methods.
+//!
+//! Generates Converter.class with three static methods:
+//!   toBin(I)String  — Integer.toBinaryString(i)
+//!   toHex(I)String  — Integer.toHexString(i)
+//!   toOct(I)String  — Integer.toOctalString(i)
+//!
+//! Main prints:
+//!   toBin(10)  → "1010"
+//!   toHex(255) → "ff"
+//!   toOct(8)   → "10"
+//!
+//! Exercises: invokestatic on java/lang/Integer for string-conversion builtins,
+//!            areturn of String result.
 package Jvm.SelfTestB59
 
 import Std.Core
@@ -23,10 +22,10 @@ import Jvm.Bytecode
 import Jvm.Driver
 
 func makeConverterBytes(): List[Byte] {
-  val pool       = poolNew()
-  val toBinRef   = poolMethodref(pool, "java/lang/Integer", "toBinaryString", "(I)Ljava/lang/String;")
-  val toHexRef   = poolMethodref(pool, "java/lang/Integer", "toHexString",    "(I)Ljava/lang/String;")
-  val toOctRef   = poolMethodref(pool, "java/lang/Integer", "toOctalString",  "(I)Ljava/lang/String;")
+  val pool = poolNew()
+  val toBinRef = poolMethodref(pool, "java/lang/Integer", "toBinaryString", "(I)Ljava/lang/String;")
+  val toHexRef = poolMethodref(pool, "java/lang/Integer", "toHexString", "(I)Ljava/lang/String;")
+  val toOctRef = poolMethodref(pool, "java/lang/Integer", "toOctalString", "(I)Ljava/lang/String;")
 
   // toBin(I)String
   val asmBin = newAssembler(pool)
@@ -67,14 +66,14 @@ func makeConverterBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool      = poolNew()
-  val asm       = newAssembler(pool)
+  val pool = poolNew()
+  val asm = newAssembler(pool)
 
-  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnS  = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val toBinRef  = poolMethodref(pool, "Converter", "toBin", "(I)Ljava/lang/String;")
-  val toHexRef  = poolMethodref(pool, "Converter", "toHex", "(I)Ljava/lang/String;")
-  val toOctRef  = poolMethodref(pool, "Converter", "toOct", "(I)Ljava/lang/String;")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnS = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val toBinRef = poolMethodref(pool, "Converter", "toBin", "(I)Ljava/lang/String;")
+  val toHexRef = poolMethodref(pool, "Converter", "toHex", "(I)Ljava/lang/String;")
+  val toOctRef = poolMethodref(pool, "Converter", "toOct", "(I)Ljava/lang/String;")
 
   // println(Converter.toBin(10))  → "1010"
   emitGetstatic(asm, sysOut)
@@ -110,24 +109,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b59"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val converterBytes = makeConverterBytes()
-  val mainBytes      = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val converterClass = BuiltClass(binaryName = "Converter", bytes = converterBytes)
-  val mainClass      = BuiltClass(binaryName = "Main",      bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(converterClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB59",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

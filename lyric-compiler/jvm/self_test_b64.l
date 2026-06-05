@@ -1,16 +1,15 @@
-// jvm/self_test_b64.l — Stage B64: iinc (increment local variable in-place).
-//
-// Generates Loops.class with two static methods:
-//   sumTo(I)I    — sum 1..n using iinc for the loop counter
-//   countDown(I)I — count down from n to 0 using iinc with negative delta
-//
-// Main prints:
-//   sumTo(10)    → 55
-//   countDown(5) → 0
-//
-// Exercises: iinc with positive and negative deltas (the wide form
-//            is covered implicitly if slot > 255 but here slot is small).
-
+//! jvm/self_test_b64.l — Stage B64: iinc (increment local variable in-place).
+//!
+//! Generates Loops.class with two static methods:
+//!   sumTo(I)I    — sum 1..n using iinc for the loop counter
+//!   countDown(I)I — count down from n to 0 using iinc with negative delta
+//!
+//! Main prints:
+//!   sumTo(10)    → 55
+//!   countDown(5) → 0
+//!
+//! Exercises: iinc with positive and negative deltas (the wide form
+//!            is covered implicitly if slot > 255 but here slot is small).
 package Jvm.SelfTestB64
 
 import Std.Core
@@ -82,13 +81,13 @@ func makeLoopsBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool     = poolNew()
-  val asm      = newAssembler(pool)
+  val pool = poolNew()
+  val asm = newAssembler(pool)
 
-  val sysOut   = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
-  val sumRef   = poolMethodref(pool, "Loops", "sumTo",     "(I)I")
-  val downRef  = poolMethodref(pool, "Loops", "countDown", "(I)I")
+  val sumRef = poolMethodref(pool, "Loops", "sumTo", "(I)I")
+  val downRef = poolMethodref(pool, "Loops", "countDown", "(I)I")
 
   // println(Loops.sumTo(10))    → 55
   emitGetstatic(asm, sysOut)
@@ -117,24 +116,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b64"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val loopsBytes = makeLoopsBytes()
-  val mainBytes  = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val loopsClass = BuiltClass(binaryName = "Loops", bytes = loopsBytes)
-  val mainClass  = BuiltClass(binaryName = "Main",  bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(loopsClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB64",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

@@ -1,23 +1,22 @@
-// auto_ffi_self_test.l — executable regression test for self-hosted
-// metadata-based auto-FFI resolution (epic #1622, Phase 3c).
-//
-// `extern type T = "Foo.Bar"` makes `T.method(args)` resolve to a real
-// BCL static method.  The self-hosted MSIL emitter resolves the overload
-// from .NET reference-assembly metadata (Msil.MetadataReader) and emits the
-// real MemberRef — replacing the legacy `(object...) : void` guess.  This
-// file is run by the native `lyric test` (issue #1611), which compiles the
-// synthesised program in-process through the self-hosted Msil.Bridge and
-// asserts every runtime value, so it exercises the metadata-resolution
-// codegen path end-to-end with no new F#.
-//
-//   lyric test lyric-compiler/lyric/auto_ffi_self_test.l
-//
-// Coverage is the exact-match static primitive case (the first cut of
-// Phase 3c): System.Math overloads on Int arguments.  Argument types whose
-// owning assembly is mis-hinted by `clrAssemblyForType`, numeric coercion,
-// and instance methods still fall back to `@externTarget` and are not
-// exercised here.
-
+//! auto_ffi_self_test.l — executable regression test for self-hosted
+//! metadata-based auto-FFI resolution (epic #1622, Phase 3c).
+//!
+//! `extern type T = "Foo.Bar"` makes `T.method(args)` resolve to a real
+//! BCL static method.  The self-hosted MSIL emitter resolves the overload
+//! from .NET reference-assembly metadata (Msil.MetadataReader) and emits the
+//! real MemberRef — replacing the legacy `(object...) : void` guess.  This
+//! file is run by the native `lyric test` (issue #1611), which compiles the
+//! synthesised program in-process through the self-hosted Msil.Bridge and
+//! asserts every runtime value, so it exercises the metadata-resolution
+//! codegen path end-to-end with no new F#.
+//!
+//!   lyric test lyric-compiler/lyric/auto_ffi_self_test.l
+//!
+//! Coverage is the exact-match static primitive case (the first cut of
+//! Phase 3c): System.Math overloads on Int arguments.  Argument types whose
+//! owning assembly is mis-hinted by `clrAssemblyForType`, numeric coercion,
+//! and instance methods still fall back to `@externTarget` and are not
+//! exercised here.
 @test_module
 package Lyric.AutoFfiSelfTest
 
@@ -25,9 +24,13 @@ import Std.Core
 import Std.Testing
 
 extern type Math = "System.Math"
+
 extern type Path = "System.IO.Path"
+
 extern type Ts = "System.TimeSpan"
+
 extern type Typ = "System.Type"
+
 extern type Obj = "System.Object"
 
 test "Math.Max binds the int overload" {
@@ -90,10 +93,14 @@ test "auto-FFI resolves value-type parameters and returns" {
 // instances per type, so a passing assertion proves the class return is a real,
 // usable reference.
 test "auto-FFI resolves class (reference) returns" {
-  assertTrue(Obj.ReferenceEquals(Typ.GetType("System.Int32"), Typ.GetType("System.Int32")),
-             "GetType yields a usable class reference (same type unified)")
-  assertTrue(not Obj.ReferenceEquals(Typ.GetType("System.Int32"), Typ.GetType("System.String")),
-             "distinct types are distinct references")
+  assertTrue(
+    Obj.ReferenceEquals(Typ.GetType("System.Int32"), Typ.GetType("System.Int32")),
+    "GetType yields a usable class reference (same type unified)"
+  )
+  assertTrue(
+    not Obj.ReferenceEquals(Typ.GetType("System.Int32"), Typ.GetType("System.String")),
+    "distinct types are distinct references"
+  )
 }
 
 // Phase 3c step 4b: instance-method dispatch.  `Type.GetType(string): Type`
@@ -102,10 +109,12 @@ test "auto-FFI resolves class (reference) returns" {
 // marquee end-to-end path: a class-returning static feeds a receiver-based
 // instance call, both resolved entirely from .NET metadata.
 test "auto-FFI dispatches instance methods via callvirt" {
-  assertEqual(Typ.GetType("System.Int32").ToString(), "System.Int32",
-              "GetType(...).ToString() returns the full type name")
-  assertEqual(Typ.GetType("System.String").ToString(), "System.String",
-              "instance dispatch on a different receiver")
+  assertEqual(
+    Typ.GetType("System.Int32").ToString(),
+    "System.Int32",
+    "GetType(...).ToString() returns the full type name"
+  )
+  assertEqual(Typ.GetType("System.String").ToString(), "System.String", "instance dispatch on a different receiver")
 }
 
 // Int → object: forces `box int32` before the call.
@@ -123,11 +132,18 @@ test "auto-FFI boxes value-type args to object parameters" {
 test "auto-FFI instance dispatch chains class returns and takes class params" {
   // (a) instance method returning a class ref: Type.MakeArrayType(): Type.  The
   //     returned array Type chains into another instance call (ToString()).
-  assertEqual(Typ.GetType("System.Int32").MakeArrayType().ToString(), "System.Int32[]",
-              "MakeArrayType() returns a class ref that chains to ToString()")
+  assertEqual(
+    Typ.GetType("System.Int32").MakeArrayType().ToString(),
+    "System.Int32[]",
+    "MakeArrayType() returns a class ref that chains to ToString()"
+  )
   // (b) instance method taking a class-ref parameter: Type.IsAssignableFrom(Type): bool.
-  assertTrue(Typ.GetType("System.Object").IsAssignableFrom(Typ.GetType("System.String")),
-             "Object.IsAssignableFrom(String) is true")
-  assertTrue(not Typ.GetType("System.String").IsAssignableFrom(Typ.GetType("System.Object")),
-             "String.IsAssignableFrom(Object) is false")
+  assertTrue(
+    Typ.GetType("System.Object").IsAssignableFrom(Typ.GetType("System.String")),
+    "Object.IsAssignableFrom(String) is true"
+  )
+  assertTrue(
+    not Typ.GetType("System.String").IsAssignableFrom(Typ.GetType("System.Object")),
+    "String.IsAssignableFrom(Object) is false"
+  )
 }

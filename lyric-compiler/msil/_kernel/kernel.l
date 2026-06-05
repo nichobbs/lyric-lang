@@ -1,18 +1,17 @@
-// Msil.Kernel — pure-Lyric growable byte buffer for PE emission (#1492).
-//
-// Replaces the F# `Lyric.Jvm.Hosts.JvmByteHost` boundary so `--target dotnet`
-// builds no longer drag `Lyric.Jvm.Hosts.dll` onto the runtime closure.  The
-// buffer is a plain `List[Byte]`; the only host boundaries are audited
-// `System.Runtime` externs (`System.BitConverter` for 64-bit / IEEE-754
-// little-endian byte extraction, plus `System.Convert.ToSingle` for the
-// float32 narrowing) — impractical in Lyric without bitwise primitives (#875).
-//
-// Endianness: `BitConverter.GetBytes` is host-endian; the compiler runs on
-// little-endian targets (x64 / arm64), matching the explicit little-endian
-// layout the former F# host produced and the LE assumption already pervasive
-// in PE/MSIL emission.  No big-endian host targets are currently supported;
-// a startup `BitConverter.IsLittleEndian` guard is tracked in #1824.
-
+//! Msil.Kernel — pure-Lyric growable byte buffer for PE emission (#1492).
+//!
+//! Replaces the F# `Lyric.Jvm.Hosts.JvmByteHost` boundary so `--target dotnet`
+//! builds no longer drag `Lyric.Jvm.Hosts.dll` onto the runtime closure.  The
+//! buffer is a plain `List[Byte]`; the only host boundaries are audited
+//! `System.Runtime` externs (`System.BitConverter` for 64-bit / IEEE-754
+//! little-endian byte extraction, plus `System.Convert.ToSingle` for the
+//! float32 narrowing) — impractical in Lyric without bitwise primitives (#875).
+//!
+//! Endianness: `BitConverter.GetBytes` is host-endian; the compiler runs on
+//! little-endian targets (x64 / arm64), matching the explicit little-endian
+//! layout the former F# host produced and the LE assumption already pervasive
+//! in PE/MSIL emission.  No big-endian host targets are currently supported;
+//! a startup `BitConverter.IsLittleEndian` guard is tracked in #1824.
 package Msil.Kernel
 
 import Std.Core
@@ -40,7 +39,11 @@ pub func bufNew(): ByteWriter {
 func shr8(v: in Int): Int {
   val q = v / 256
   val r = v % 256
-  if r < 0 { q - 1 } else { q }
+  if r < 0 {
+    q - 1
+  } else {
+    q
+  }
 }
 
 // Append the low 8 bits of `v`, matching the former host's `byte v`
@@ -115,7 +118,6 @@ pub func bufToList(w: in ByteWriter): List[Byte] {
 }
 
 // ── 64-bit and floating-point little-endian via System.BitConverter ──────────
-
 @externTarget("System.BitConverter.GetBytes")
 func i8GetBytes(v: in Long): slice[Byte] = ()
 

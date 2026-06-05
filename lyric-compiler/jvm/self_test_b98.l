@@ -1,20 +1,19 @@
-// jvm/self_test_b98.l — Stage B98: bitwise int ops + long comparison.
-//
-// Adds LIand/LIor/LIxor/LIshl/LIshr/LIushr/LLcmp (and the missing bytecode.l
-// emit helpers) to the LInsn union and lowerInsn dispatch.
-//
-// Creates a BitOps class via lowerFunc with two static methods:
-//   countBits(int n): int  — counts set bits using n & 1 and n >>> 1
-//   sumLong(long a, long b): long — returns a + b if a < b, else a - b
-//                                   (exercises LLcmp + LIfeq branch)
-//
-// Java output (java -jar):
-//   bits(0)=0
-//   bits(7)=3
-//   bits(255)=8
-//   cmp(3,7)=10
-//   cmp(9,2)=7
-
+//! jvm/self_test_b98.l — Stage B98: bitwise int ops + long comparison.
+//!
+//! Adds LIand/LIor/LIxor/LIshl/LIshr/LIushr/LLcmp (and the missing bytecode.l
+//! emit helpers) to the LInsn union and lowerInsn dispatch.
+//!
+//! Creates a BitOps class via lowerFunc with two static methods:
+//!   countBits(int n): int  — counts set bits using n & 1 and n >>> 1
+//!   sumLong(long a, long b): long — returns a + b if a < b, else a - b
+//!                                   (exercises LLcmp + LIfeq branch)
+//!
+//! Java output (java -jar):
+//!   bits(0)=0
+//!   bits(7)=3
+//!   bits(255)=8
+//!   cmp(3,7)=10
+//!   cmp(9,2)=7
 package Jvm.SelfTestB98
 
 import Std.Core
@@ -39,34 +38,50 @@ func makeCountBitsMethod(): LFunc {
   //   [done]:  return count
   val insns: List[LInsn] = newList()
   insns.add(LIconst(v = 0))
-  insns.add(LIstore(slot = 1))         // count = 0
-  insns.add(LLabel(name = "loop"))     // <- branch target
-  insns.add(LIload(slot = 0))          // n
-  insns.add(LIfeq(label = "done"))     // if n == 0 goto done
-  insns.add(LIload(slot = 1))          // count
-  insns.add(LIload(slot = 0))          // n
-  insns.add(LIconst(v = 1))            // 1
-  insns.add(LIand)                     // n & 1
-  insns.add(LIadd)                     // count + (n & 1)
-  insns.add(LIstore(slot = 1))         // count = ...
-  insns.add(LIload(slot = 0))          // n
-  insns.add(LIconst(v = 1))            // 1
-  insns.add(LIushr)                    // n >>> 1
-  insns.add(LIstore(slot = 0))         // n = n >>> 1
+  insns.add(LIstore(slot = 1))
+  // count = 0
+  insns.add(LLabel(name = "loop"))
+  // <- branch target
+  insns.add(LIload(slot = 0))
+  // n
+  insns.add(LIfeq(label = "done"))
+  // if n == 0 goto done
+  insns.add(LIload(slot = 1))
+  // count
+  insns.add(LIload(slot = 0))
+  // n
+  insns.add(LIconst(v = 1))
+  // 1
+  insns.add(LIand)
+  // n & 1
+  insns.add(LIadd)
+  // count + (n & 1)
+  insns.add(LIstore(slot = 1))
+  // count = ...
+  insns.add(LIload(slot = 0))
+  // n
+  insns.add(LIconst(v = 1))
+  // 1
+  insns.add(LIushr)
+  // n >>> 1
+  insns.add(LIstore(slot = 0))
+  // n = n >>> 1
   insns.add(LGoto(label = "loop"))
-  insns.add(LLabel(name = "done"))     // <- branch target
-  insns.add(LIload(slot = 1))          // count
+  insns.add(LLabel(name = "done"))
+  // <- branch target
+  insns.add(LIload(slot = 1))
+  // count
   insns.add(LIreturn)
 
   val params: List[JvmType] = newList()
   params.add(JInt)
   LFunc(
-    flags     = ACC_PUBLIC + ACC_STATIC,
-    name      = "countBits",
-    params    = params,
-    ret       = JInt,
-    insns     = insns,
-    maxStack  = 3,
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "countBits",
+    params = params,
+    ret = JInt,
+    insns = insns,
+    maxStack = 3,
     maxLocals = 2
   )
 }
@@ -94,16 +109,23 @@ func makeSumLongMethod(): LFunc {
   insns.add(LLload(slot = 0))
   insns.add(LLload(slot = 2))
   insns.add(LLsub)
-  insns.add(LLstore(slot = 4))         // result = a - b
-  insns.add(LLload(slot = 0))          // a
-  insns.add(LLload(slot = 2))          // b
-  insns.add(LLcmp)                     // -1/0/1
-  insns.add(LIfge(label = "skip"))     // if a >= b, skip update
+  insns.add(LLstore(slot = 4))
+  // result = a - b
+  insns.add(LLload(slot = 0))
+  // a
+  insns.add(LLload(slot = 2))
+  // b
+  insns.add(LLcmp)
+  // -1/0/1
+  insns.add(LIfge(label = "skip"))
+  // if a >= b, skip update
   insns.add(LLload(slot = 0))
   insns.add(LLload(slot = 2))
   insns.add(LLadd)
-  insns.add(LLstore(slot = 4))         // result = a + b
-  insns.add(LLabel(name = "skip"))     // <- branch target
+  insns.add(LLstore(slot = 4))
+  // result = a + b
+  insns.add(LLabel(name = "skip"))
+  // <- branch target
   insns.add(LLload(slot = 4))
   insns.add(LLreturn)
 
@@ -111,12 +133,12 @@ func makeSumLongMethod(): LFunc {
   params.add(JLong)
   params.add(JLong)
   LFunc(
-    flags     = ACC_PUBLIC + ACC_STATIC,
-    name      = "sumLong",
-    params    = params,
-    ret       = JLong,
-    insns     = insns,
-    maxStack  = 4,
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "sumLong",
+    params = params,
+    ret = JLong,
+    insns = insns,
+    maxStack = 4,
     maxLocals = 6
   )
 }
@@ -132,15 +154,15 @@ func makeBitOpsBytes(): List[Byte] {
 
 func makeMainBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOutIdx    = poolFieldref(pool,  "java/lang/System",    "out",       "Ljava/io/PrintStream;")
-  val printlnIdx   = poolMethodref(pool, "java/io/PrintStream", "println",   "(Ljava/lang/String;)V")
-  val concatIdx    = poolMethodref(pool, "java/lang/String",    "concat",    "(Ljava/lang/String;)Ljava/lang/String;")
-  val valOfIIdx    = poolMethodref(pool, "java/lang/String",    "valueOf",   "(I)Ljava/lang/String;")
-  val valOfLIdx    = poolMethodref(pool, "java/lang/String",    "valueOf",   "(J)Ljava/lang/String;")
-  val countBitsIdx = poolMethodref(pool, "BitOps",              "countBits", "(I)I")
-  val sumLongIdx   = poolMethodref(pool, "BitOps",              "sumLong",   "(JJ)J")
+  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
+  val valOfIIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
+  val valOfLIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(J)Ljava/lang/String;")
+  val countBitsIdx = poolMethodref(pool, "BitOps", "countBits", "(I)I")
+  val sumLongIdx = poolMethodref(pool, "BitOps", "sumLong", "(JJ)J")
 
   // println("bits(0)=" + String.valueOf(BitOps.countBits(0)))
   emitGetstatic(asm, sysOutIdx)
@@ -204,21 +226,21 @@ func makeMainBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b98"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val bitOpsClass = BuiltClass(binaryName = "BitOps", bytes = makeBitOpsBytes())
-  val mainClass   = BuiltClass(binaryName = "Main",   bytes = makeMainBytes())
+  val mainClass = BuiltClass(binaryName = "Main", bytes = makeMainBytes())
   val classes: List[BuiltClass] = newList()
   classes.add(bitOpsClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB98",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

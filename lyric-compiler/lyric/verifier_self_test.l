@@ -1,6 +1,6 @@
-// verifier_self_test.l — exercises the self-hosted Lyric.Verifier library.
-// Compiled and executed by SelfHostedVerifierTests.fs.
-// Exit 0 + "ok" in stdout means all checks held.
+//! verifier_self_test.l — exercises the self-hosted Lyric.Verifier library.
+//! Compiled and executed by SelfHostedVerifierTests.fs.
+//! Exit 0 + "ok" in stdout means all checks held.
 package Lyric.VerifierSelfTest
 
 import Std.Core
@@ -13,7 +13,6 @@ import Lyric.Verifier
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func zeroSpan(): Span {
   makeSpan(initialPosition(), initialPosition())
 }
@@ -23,24 +22,19 @@ func makeGoalTrue(): Goal {
   val syms: List[SymbolDecl] = newList()
   Goal(
     hypotheses = hyps,
-    conclusion  = trueT(),
-    symbols     = syms,
-    origin      = zeroSpan(),
-    kind        = GKAssertion,
-    label       = "test-true")
+    conclusion = trueT(),
+    symbols = syms,
+    origin = zeroSpan(),
+    kind = GKAssertion,
+    label = "test-true"
+  )
 }
 
 func makeGoalHypMatch(p: in Term): Goal {
   val hyps: List[Term] = newList()
   hyps.add(p)
   val syms: List[SymbolDecl] = newList()
-  Goal(
-    hypotheses = hyps,
-    conclusion  = p,
-    symbols     = syms,
-    origin      = zeroSpan(),
-    kind        = GKAssertion,
-    label       = "test-hyp")
+  Goal(hypotheses = hyps, conclusion = p, symbols = syms, origin = zeroSpan(), kind = GKAssertion, label = "test-hyp")
 }
 
 func makeGoalFalseConclusion(): Goal {
@@ -48,11 +42,12 @@ func makeGoalFalseConclusion(): Goal {
   val syms: List[SymbolDecl] = newList()
   Goal(
     hypotheses = hyps,
-    conclusion  = falseT(),
-    symbols     = syms,
-    origin      = zeroSpan(),
-    kind        = GKAssertion,
-    label       = "test-false")
+    conclusion = falseT(),
+    symbols = syms,
+    origin = zeroSpan(),
+    kind = GKAssertion,
+    label = "test-false"
+  )
 }
 
 func prove(src: in String): ProofSummary {
@@ -62,7 +57,6 @@ func prove(src: in String): ProofSummary {
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. SMT sort rendering.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testSmtSortBool(): Unit {
   assertEqual(smtRenderSort(SBool), "Bool", "sort-bool")
 }
@@ -95,7 +89,6 @@ func testSmtSortSlice(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. SMT sanitize.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testSmtSanitizeAlpha(): Unit {
   assertEqual(smtSanitize("hello"), "hello", "sanitize-alpha")
 }
@@ -113,7 +106,6 @@ func testSmtSanitizeSpecial(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. SMT term rendering.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testSmtTermBoolTrue(): Unit {
   val t = trueT()
   assertEqual(smtRenderTerm(t), "true", "term-true")
@@ -163,7 +155,6 @@ func testSmtTermIte(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. SMT goal rendering includes preamble and assert.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testSmtGoalContainsPreamble(): Unit {
   val g = makeGoalTrue()
   val rendered = smtRenderGoal(g)
@@ -175,7 +166,6 @@ func testSmtGoalContainsPreamble(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Term structural equality.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testTermEqSame(): Unit {
   val t1 = TVar(name = "x", sort = SInt)
   val t2 = TVar(name = "x", sort = SInt)
@@ -205,7 +195,6 @@ func testTermEqLitDiff(): Unit {
 //   subst {x -> y} (forall y. x > y)  must NOT produce forall y. y > y
 //   (which is UNSOUND — y was captured).  Correct result: forall y$1. y > y$1.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testSubstTermTForallCapture(): Unit {
   // env = { x -> y }; subst into (forall y. x > y) — y must be alpha-renamed.
   val env: Map[String, Term] = newMap()
@@ -267,12 +256,14 @@ func testSubstTermNoCapture(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §7. Trivial discharger.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testTrivialDischargeTrue(): Unit {
   val g = makeGoalTrue()
   match trivialDischarge(g) {
-    case Some(Discharged) -> {}
-    case _ -> { assertTrue(false, "trivial-true: expected Discharged") }
+    case Some(Discharged) -> {
+    }
+    case _ -> {
+      assertTrue(false, "trivial-true: expected Discharged")
+    }
   }
 }
 
@@ -280,16 +271,22 @@ func testTrivialDischargeHyp(): Unit {
   val p = TVar(name = "p", sort = SBool)
   val g = makeGoalHypMatch(p)
   match trivialDischarge(g) {
-    case Some(Discharged) -> {}
-    case _ -> { assertTrue(false, "trivial-hyp: expected Discharged") }
+    case Some(Discharged) -> {
+    }
+    case _ -> {
+      assertTrue(false, "trivial-hyp: expected Discharged")
+    }
   }
 }
 
 func testTrivialDiscargeFalseNone(): Unit {
   val g = makeGoalFalseConclusion()
   match trivialDischarge(g) {
-    case None -> {}
-    case Some(_) -> { assertTrue(false, "trivial-false: expected None") }
+    case None -> {
+    }
+    case Some(_) -> {
+      assertTrue(false, "trivial-false: expected None")
+    }
   }
 }
 
@@ -300,14 +297,18 @@ func testTrivialDischargeReflexiveEq(): Unit {
   val syms: List[SymbolDecl] = newList()
   val g = Goal(
     hypotheses = hyps,
-    conclusion  = eq,
-    symbols     = syms,
-    origin      = zeroSpan(),
-    kind        = GKAssertion,
-    label       = "refl-eq")
+    conclusion = eq,
+    symbols = syms,
+    origin = zeroSpan(),
+    kind = GKAssertion,
+    label = "refl-eq"
+  )
   match trivialDischarge(g) {
-    case Some(Discharged) -> {}
-    case _ -> { assertTrue(false, "trivial-refl-eq: expected Discharged") }
+    case Some(Discharged) -> {
+    }
+    case _ -> {
+      assertTrue(false, "trivial-refl-eq: expected Discharged")
+    }
   }
 }
 
@@ -318,21 +319,24 @@ func testTrivialDischargeImpliesSelf(): Unit {
   val syms: List[SymbolDecl] = newList()
   val g = Goal(
     hypotheses = hyps,
-    conclusion  = imp,
-    symbols     = syms,
-    origin      = zeroSpan(),
-    kind        = GKAssertion,
-    label       = "implies-self")
+    conclusion = imp,
+    symbols = syms,
+    origin = zeroSpan(),
+    kind = GKAssertion,
+    label = "implies-self"
+  )
   match trivialDischarge(g) {
-    case Some(Discharged) -> {}
-    case _ -> { assertTrue(false, "trivial-implies-self: expected Discharged") }
+    case Some(Discharged) -> {
+    }
+    case _ -> {
+      assertTrue(false, "trivial-implies-self: expected Discharged")
+    }
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §7. parseModel from solver.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testParseModelEmpty(): Unit {
   val result = parseModel("")
   assertEqualInt(result.count, 0, "parse-model-empty")
@@ -349,13 +353,15 @@ func testParseModelOneDef(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §8. proveSource — pipeline smoke tests (no SMT solver required).
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testProveRuntimeCheckedNoGoals(): Unit {
   val src = "package P\nfunc f(): Int { 42 }\n"
   val summary = prove(src)
   match summary.level {
-    case VLRuntimeChecked -> {}
-    case _ -> { assertTrue(false, "prove-rc: expected VLRuntimeChecked") }
+    case VLRuntimeChecked -> {
+    }
+    case _ -> {
+      assertTrue(false, "prove-rc: expected VLRuntimeChecked")
+    }
   }
   assertEqualInt(summaryTotalCount(summary), 0, "prove-rc: no goals")
   assertTrue(not summaryHasFailure(summary), "prove-rc: no failure")
@@ -366,8 +372,11 @@ func testProveExplicitRuntimeChecked(): Unit {
   val src = "@runtime_checked\npackage P\nfunc g(): Bool { true }\n"
   val summary = prove(src)
   match summary.level {
-    case VLRuntimeChecked -> {}
-    case _ -> { assertTrue(false, "prove-explicit-rc: expected VLRuntimeChecked") }
+    case VLRuntimeChecked -> {
+    }
+    case _ -> {
+      assertTrue(false, "prove-explicit-rc: expected VLRuntimeChecked")
+    }
   }
   assertEqualInt(summaryTotalCount(summary), 0, "prove-explicit-rc: no goals")
 }
@@ -380,14 +389,18 @@ func testTrivialDischargeGteRefl(): Unit {
   val syms: List[SymbolDecl] = newList()
   val g = Goal(
     hypotheses = hyps,
-    conclusion  = gteRefl,
-    symbols     = syms,
-    origin      = zeroSpan(),
-    kind        = GKAssertion,
-    label       = "gte-refl")
+    conclusion = gteRefl,
+    symbols = syms,
+    origin = zeroSpan(),
+    kind = GKAssertion,
+    label = "gte-refl"
+  )
   match trivialDischarge(g) {
-    case Some(Discharged) -> {}
-    case _ -> { assertTrue(false, "trivial-gte-refl: expected Discharged") }
+    case Some(Discharged) -> {
+    }
+    case _ -> {
+      assertTrue(false, "trivial-gte-refl: expected Discharged")
+    }
   }
 }
 
@@ -398,8 +411,11 @@ func testProveProofRequiredNoContracts(): Unit {
   val src = "@proof_required\npackage P\nfunc f(): Int {\n  var i = 0\n  while i < 3\n    invariant: i >= 0\n  {\n    i = i + 1\n  }\n  i\n}\n"
   val summary = prove(src)
   match summary.level {
-    case VLProofRequired -> {}
-    case _ -> { assertTrue(false, "prove-pr-no-contracts: expected VLProofRequired") }
+    case VLProofRequired -> {
+    }
+    case _ -> {
+      assertTrue(false, "prove-pr-no-contracts: expected VLProofRequired")
+    }
   }
   assertTrue(not summaryHasErrorDiag(summary), "prove-pr-no-contracts: no error diags")
 }
@@ -421,10 +437,7 @@ func testProveAspectWeaveNoV0031(): Unit {
   // V0031 (and the bare body, not the wrapper, was "proven"); after
   // #336 the verifier sees the woven wrapper, no V0031 fires, and
   // the trivial discharger closes the obligations on the woven body.
-  val src =
-    "@proof_required\npackage P\n" +
-    "aspect Trivial {\n" +
-    "  matches: name like \"compute*\"\n" +
+  val src = "@proof_required\npackage P\n" + "aspect Trivial {\n" + "  matches: name like \"compute*\"\n" +
     "  ensures: true\n" +
     "  around(args) -> ret { proceed(args) }\n" +
     "}\n" +
@@ -435,7 +448,9 @@ func testProveAspectWeaveNoV0031(): Unit {
   var hasV0031 = false
   var di = 0
   while di < summary.diagnostics.count {
-    if summary.diagnostics[di].code == "V0031" { hasV0031 = true }
+    if summary.diagnostics[di].code == "V0031" {
+      hasV0031 = true
+    }
     di = di + 1
   }
   assertTrue(not hasV0031, "aspect-weave-noV0031: V0031 retired (weaver runs pre-VCgen)")
@@ -455,8 +470,11 @@ func testProveProtectedTypeInvariantHolds(): Unit {
   val src = "@proof_required\npackage P\nprotected type Counter {\n  var n: Int\n  invariant: n >= 0\n  entry noop(): Unit { }\n}\n"
   val summary = prove(src)
   match summary.level {
-    case VLProofRequired -> {}
-    case _ -> { assertTrue(false, "prot-inv-holds: expected VLProofRequired") }
+    case VLProofRequired -> {
+    }
+    case _ -> {
+      assertTrue(false, "prot-inv-holds: expected VLProofRequired")
+    }
   }
   assertTrue(not summaryHasFailure(summary), "prot-inv-holds: no failure")
   assertTrue(not summaryHasErrorDiag(summary), "prot-inv-holds: no error diags")
@@ -468,8 +486,11 @@ func testProveProtectedTypeInvariantViolated(): Unit {
   val src = "@proof_required\npackage P\nprotected type Counter {\n  var n: Int\n  invariant: n >= 0\n  entry bad(): Unit {\n    n = 0 - 1\n    assert(n >= 0)\n  }\n}\n"
   val summary = prove(src)
   match summary.level {
-    case VLProofRequired -> {}
-    case _ -> { assertTrue(false, "prot-inv-violated: expected VLProofRequired") }
+    case VLProofRequired -> {
+    }
+    case _ -> {
+      assertTrue(false, "prot-inv-violated: expected VLProofRequired")
+    }
   }
   assertTrue(summaryHasFailure(summary), "prot-inv-violated: has failure")
 }
@@ -482,17 +503,16 @@ func testProveProtectedFuncContractViolated(): Unit {
   // `testProveProtectedType*Invariant*` tests only exercise the
   // `PMEntry` route.  Pin the `PMFunc` route by declaring a helper
   // whose ensures clause is trivially unprovable (#664).
-  val src =
-    "@proof_required\npackage P\n" +
-    "protected type Counter {\n" +
-    "  var n: Int\n" +
-    "  invariant: n >= 0\n" +
+  val src = "@proof_required\npackage P\n" + "protected type Counter {\n" + "  var n: Int\n" + "  invariant: n >= 0\n" +
     "  func helper(): Int requires: true ensures: result < 0 { 0 }\n" +
     "}\n"
   val summary = prove(src)
   match summary.level {
-    case VLProofRequired -> {}
-    case _ -> { assertTrue(false, "prot-func-violated: expected VLProofRequired") }
+    case VLProofRequired -> {
+    }
+    case _ -> {
+      assertTrue(false, "prot-func-violated: expected VLProofRequired")
+    }
   }
   assertTrue(summaryHasFailure(summary), "prot-func-violated: PMFunc with unprovable ensures has failure")
 }
@@ -502,8 +522,11 @@ func testProveRangeBoundUpperOnly(): Unit {
   val src = "@proof_required\npackage P\ntype Pct = Int range ..= 100\nfunc clip(x: in Pct): Int { return x }\n"
   val summary = prove(src)
   match summary.level {
-    case VLProofRequired -> {}
-    case _ -> { assertTrue(false, "range-upper-only: expected VLProofRequired") }
+    case VLProofRequired -> {
+    }
+    case _ -> {
+      assertTrue(false, "range-upper-only: expected VLProofRequired")
+    }
   }
   assertTrue(not summaryHasErrorDiag(summary), "range-upper-only: no error diags")
 }
@@ -513,8 +536,11 @@ func testProveSortNamespacing(): Unit {
   val src = "@proof_required\npackage P\nrecord A { x: Int }\nrecord B { x: Int }\nfunc id(a: in A): A { return a }\n"
   val summary = prove(src)
   match summary.level {
-    case VLProofRequired -> {}
-    case _ -> { assertTrue(false, "sort-namespace: expected VLProofRequired") }
+    case VLProofRequired -> {
+    }
+    case _ -> {
+      assertTrue(false, "sort-namespace: expected VLProofRequired")
+    }
   }
   assertTrue(not summaryHasErrorDiag(summary), "sort-namespace: no error diags")
 }
@@ -525,10 +551,12 @@ func testProveSortNamespacing(): Unit {
 // "Pkg_A_Foo" — the join is now `.`-separated, so the two paths
 // produce distinct sort names ("Pkg_A.Foo" vs "Pkg.A_Foo").
 func testQualifiedDatatypeNameNoCollision(): Unit {
-  val left:  List[String] = newList()
-  left.add("Pkg_A"); left.add("Foo")
+  val left: List[String] = newList()
+  left.add("Pkg_A")
+  left.add("Foo")
   val right: List[String] = newList()
-  right.add("Pkg"); right.add("A_Foo")
+  right.add("Pkg")
+  right.add("A_Foo")
   val l = qualifiedDatatypeName(left)
   val r = qualifiedDatatypeName(right)
   assertEqual(l, "Pkg_A.Foo", "left rendered as Pkg_A.Foo")
@@ -542,21 +570,19 @@ func testSummaryHelpers(): Unit {
   val syms: List[SymbolDecl] = newList()
   val g = Goal(
     hypotheses = hyps,
-    conclusion  = trueT(),
-    symbols     = syms,
-    origin      = zeroSpan(),
-    kind        = GKAssertion,
-    label       = "test")
+    conclusion = trueT(),
+    symbols = syms,
+    origin = zeroSpan(),
+    kind = GKAssertion,
+    label = "test"
+  )
   val r1 = ProofResult(goal = g, outcome = Discharged)
   val r2 = ProofResult(goal = g, outcome = Unknown(reason = "no solver"))
   val results: List[ProofResult] = newList()
   results.add(r1)
   results.add(r2)
   val diags: List[Diagnostic] = newList()
-  val summary = ProofSummary(
-    level       = VLProofRequired,
-    diagnostics = diags,
-    results     = results)
+  val summary = ProofSummary(level = VLProofRequired, diagnostics = diags, results = results)
   assertEqualInt(summaryTotalCount(summary), 2, "summary-total-2")
   assertEqualInt(summaryDischargedCount(summary), 1, "summary-discharged-1")
   assertTrue(summaryHasFailure(summary), "summary-has-failure")
@@ -567,7 +593,6 @@ func testSummaryHelpers(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // Main.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func main(): Unit {
   testSmtSortBool()
   testSmtSortInt()

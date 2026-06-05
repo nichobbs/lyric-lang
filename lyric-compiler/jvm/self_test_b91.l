@@ -1,12 +1,11 @@
-// jvm/self_test_b91.l — Stage B91: lowerRecord smoke test.
-//
-// Builds a Point record with two int fields (x, y) via lowerRecord,
-// instantiates it from Main, and prints the field values.
-//
-// Main prints:
-//   point.x=3
-//   point.y=7
-
+//! jvm/self_test_b91.l — Stage B91: lowerRecord smoke test.
+//!
+//! Builds a Point record with two int fields (x, y) via lowerRecord,
+//! instantiates it from Main, and prints the field values.
+//!
+//! Main prints:
+//!   point.x=3
+//!   point.y=7
 package Jvm.SelfTestB91
 
 import Std.Core
@@ -29,21 +28,21 @@ func makePointBytes(): List[Byte] {
   val methods: List[LFunc] = newList()
 
   val rec = LRecord(className = "Point", fields = fields, methods = methods, implementsIfaces = newList())
-  val cf  = lowerRecord(rec, pool)
+  val cf = lowerRecord(rec, pool)
   serializeClassWithPool(cf, pool)
 }
 
 func makeMainBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOutIdx  = poolFieldref(pool, "java/lang/System",    "out",     "Ljava/io/PrintStream;")
+  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx  = poolMethodref(pool, "java/lang/String",    "concat",  "(Ljava/lang/String;)Ljava/lang/String;")
-  val valueOfIdx = poolMethodref(pool, "java/lang/String",    "valueOf", "(I)Ljava/lang/String;")
-  val ptInitIdx  = poolMethodref(pool, "Point",               "<init>",  "(II)V")
-  val ptXIdx     = poolFieldref(pool,  "Point",               "x",       "I")
-  val ptYIdx     = poolFieldref(pool,  "Point",               "y",       "I")
+  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
+  val valueOfIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
+  val ptInitIdx = poolMethodref(pool, "Point", "<init>", "(II)V")
+  val ptXIdx = poolFieldref(pool, "Point", "x", "I")
+  val ptYIdx = poolFieldref(pool, "Point", "y", "I")
   val ptClassIdx = poolClass(pool, "Point")
 
   // Point pt = new Point(3, 7);  [slot 0]
@@ -87,21 +86,21 @@ func makeMainBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b91"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val pointClass = BuiltClass(binaryName = "Point", bytes = makePointBytes())
-  val mainClass  = BuiltClass(binaryName = "Main",  bytes = makeMainBytes())
+  val mainClass = BuiltClass(binaryName = "Main", bytes = makeMainBytes())
   val classes: List[BuiltClass] = newList()
   classes.add(pointClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB91",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

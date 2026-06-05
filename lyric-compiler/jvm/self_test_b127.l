@@ -1,17 +1,16 @@
-// jvm/self_test_b127.l — Stage B127: Std.Jvm.catch intrinsic bytecode pattern.
-//
-// Validates the bytecode shape that lowerCatchIntrinsic (codegen.l) emits:
-//   1. Creates a Wrapper union with Ok(value: Object) and Err(error: Object) cases.
-//   2. Creates SafeDiv with static safeDivide(int a, int b): Object that wraps
-//      integer division in a try-catch:
-//        success         → Wrapper$Ok(Integer(result))
-//        ArithmeticException → Wrapper$Err(exception)
-//   3. Main calls safeDivide(10, 2) and safeDivide(10, 0) and prints the results.
-//
-// Java output (java -jar):
-//   divide(10,2)=ok:5
-//   divide(10,0)=err:ArithmeticException
-
+//! jvm/self_test_b127.l — Stage B127: Std.Jvm.catch intrinsic bytecode pattern.
+//!
+//! Validates the bytecode shape that lowerCatchIntrinsic (codegen.l) emits:
+//!   1. Creates a Wrapper union with Ok(value: Object) and Err(error: Object) cases.
+//!   2. Creates SafeDiv with static safeDivide(int a, int b): Object that wraps
+//!      integer division in a try-catch:
+//!        success         → Wrapper$Ok(Integer(result))
+//!        ArithmeticException → Wrapper$Err(exception)
+//!   3. Main calls safeDivide(10, 2) and safeDivide(10, 0) and prints the results.
+//!
+//! Java output (java -jar):
+//!   divide(10,2)=ok:5
+//!   divide(10,0)=err:ArithmeticException
 package Jvm.SelfTestB127
 
 import Std.Core
@@ -23,7 +22,6 @@ import Jvm.Lowering
 import Jvm.Driver
 
 // ── Build Wrapper union (abstract base + Ok/Err case classes) ────────────────
-
 func makeWrapperBytes(): List[List[Byte]] {
   val pool = poolNew()
 
@@ -34,7 +32,7 @@ func makeWrapperBytes(): List[List[Byte]] {
   errFields.add(LField(flags = ACC_PUBLIC, name = "error", fieldType = JRef(className = "java/lang/Object")))
 
   val cases: List[LUnionCase] = newList()
-  cases.add(LUnionCase(caseName = "Ok",  fields = okFields))
+  cases.add(LUnionCase(caseName = "Ok", fields = okFields))
   cases.add(LUnionCase(caseName = "Err", fields = errFields))
 
   val baseMethods: List[LFunc] = newList()
@@ -59,39 +57,46 @@ func makeWrapperBytes(): List[List[Byte]] {
 //   [after]:     areturn
 //
 // V49 (Java 5) avoids StackMapTable requirement at the catch-handler entry.
-
 func makeSafeDivBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
   val integerValueOfIdx = poolMethodref(pool, "java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;")
-  val okClassIdx        = poolClass(pool, "Wrapper$Ok")
-  val errClassIdx       = poolClass(pool, "Wrapper$Err")
-  val okCtorIdx         = poolMethodref(pool, "Wrapper$Ok",  "<init>", "(Ljava/lang/Object;)V")
-  val errCtorIdx        = poolMethodref(pool, "Wrapper$Err", "<init>", "(Ljava/lang/Object;)V")
-  val aeClassIdx        = poolClass(pool, "java/lang/ArithmeticException")
+  val okClassIdx = poolClass(pool, "Wrapper$Ok")
+  val errClassIdx = poolClass(pool, "Wrapper$Err")
+  val okCtorIdx = poolMethodref(pool, "Wrapper$Ok", "<init>", "(Ljava/lang/Object;)V")
+  val errCtorIdx = poolMethodref(pool, "Wrapper$Err", "<init>", "(Ljava/lang/Object;)V")
+  val aeClassIdx = poolClass(pool, "java/lang/ArithmeticException")
 
   // ── try body ────────────────────────────────────────────────────────────────
   emitLabel(asm, "try_start")
-  emitIload(asm, 0)                          // a
-  emitIload(asm, 1)                          // b
-  emitIdiv(asm)                              // a/b (ArithmeticException on b=0)
-  emitInvokestatic(asm, integerValueOfIdx)   // box int to Integer
-  emitAstore(asm, 2)                         // slot 2 = boxed result
+  emitIload(asm, 0)
+  // a
+  emitIload(asm, 1)
+  // b
+  emitIdiv(asm)
+  // a/b (ArithmeticException on b=0)
+  emitInvokestatic(asm, integerValueOfIdx)
+  // box int to Integer
+  emitAstore(asm, 2)
+  // slot 2 = boxed result
   emitNew(asm, okClassIdx)
   emitDup(asm)
   emitAload(asm, 2)
-  emitInvokespecial(asm, okCtorIdx)          // Wrapper$Ok(result) on stack
+  emitInvokespecial(asm, okCtorIdx)
+  // Wrapper$Ok(result) on stack
   emitLabel(asm, "try_end")
   emitGoto(asm, "after")
 
   // ── catch handler ── (ArithmeticException is on stack at entry) ─────────────
   emitLabel(asm, "catch_handler")
-  emitAstore(asm, 2)                         // slot 2 = caught exception
+  emitAstore(asm, 2)
+  // slot 2 = caught exception
   emitNew(asm, errClassIdx)
   emitDup(asm)
   emitAload(asm, 2)
-  emitInvokespecial(asm, errCtorIdx)         // Wrapper$Err(exception) on stack
+  emitInvokespecial(asm, errCtorIdx)
+  // Wrapper$Err(exception) on stack
 
   emitLabel(asm, "after")
   emitAreturn(asm)
@@ -100,8 +105,7 @@ func makeSafeDivBytes(): List[Byte] {
   val safeDivPs: List[JvmType] = newList()
   safeDivPs.add(JInt)
   safeDivPs.add(JInt)
-  val codeAttr = assembleCodeWith1Handler(asm, 3, 3,
-    "try_start", "try_end", "catch_handler", aeClassIdx)
+  val codeAttr = assembleCodeWith1Handler(asm, 3, 3, "try_start", "try_end", "catch_handler", aeClassIdx)
   val attrs: List[Attribute] = newList()
   attrs.add(codeAttr)
   val divMethod = makeMethodInfo(
@@ -117,25 +121,24 @@ func makeSafeDivBytes(): List[Byte] {
 }
 
 // ── Build Main class ──────────────────────────────────────────────────────────
-
 func makeMainBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOutIdx     = poolFieldref(pool,  "java/lang/System",    "out",           "Ljava/io/PrintStream;")
-  val printlnIdx    = poolMethodref(pool, "java/io/PrintStream", "println",        "(Ljava/lang/String;)V")
-  val concatIdx     = poolMethodref(pool, "java/lang/String",    "concat",         "(Ljava/lang/String;)Ljava/lang/String;")
-  val divideIdx     = poolMethodref(pool, "SafeDiv",             "safeDivide",     "(II)Ljava/lang/Object;")
-  val toStringIdx   = poolMethodref(pool, "java/lang/Integer",   "toString",       "()Ljava/lang/String;")
-  val getClassIdx   = poolMethodref(pool, "java/lang/Object",    "getClass",       "()Ljava/lang/Class;")
-  val simpleNameIdx = poolMethodref(pool, "java/lang/Class",     "getSimpleName",  "()Ljava/lang/String;")
+  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
+  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
+  val divideIdx = poolMethodref(pool, "SafeDiv", "safeDivide", "(II)Ljava/lang/Object;")
+  val toStringIdx = poolMethodref(pool, "java/lang/Integer", "toString", "()Ljava/lang/String;")
+  val getClassIdx = poolMethodref(pool, "java/lang/Object", "getClass", "()Ljava/lang/Class;")
+  val simpleNameIdx = poolMethodref(pool, "java/lang/Class", "getSimpleName", "()Ljava/lang/String;")
 
-  val okClassIdx    = poolClass(pool, "Wrapper$Ok")
-  val errClassIdx   = poolClass(pool, "Wrapper$Err")
-  val intClassIdx   = poolClass(pool, "java/lang/Integer")
+  val okClassIdx = poolClass(pool, "Wrapper$Ok")
+  val errClassIdx = poolClass(pool, "Wrapper$Err")
+  val intClassIdx = poolClass(pool, "java/lang/Integer")
 
-  val okValueIdx    = poolFieldref(pool, "Wrapper$Ok",  "value", "Ljava/lang/Object;")
-  val errErrorIdx   = poolFieldref(pool, "Wrapper$Err", "error", "Ljava/lang/Object;")
+  val okValueIdx = poolFieldref(pool, "Wrapper$Ok", "value", "Ljava/lang/Object;")
+  val errErrorIdx = poolFieldref(pool, "Wrapper$Err", "error", "Ljava/lang/Object;")
 
   // res1 = safeDivide(10, 2)  →  Wrapper$Ok(Integer(5))
   emitPushInt(asm, 10)
@@ -185,11 +188,10 @@ func makeMainBytes(): List[Byte] {
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
-
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b127"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
@@ -206,13 +208,13 @@ func main(): Unit {
   }
 
   classes.add(BuiltClass(binaryName = "SafeDiv", bytes = makeSafeDivBytes()))
-  classes.add(BuiltClass(binaryName = "Main",    bytes = makeMainBytes()))
+  classes.add(BuiltClass(binaryName = "Main", bytes = makeMainBytes()))
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB127",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/catch.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/catch.jar"
   )
 
   if writeJarFromClasses(req, classes) {

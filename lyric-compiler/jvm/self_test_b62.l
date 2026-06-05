@@ -1,21 +1,20 @@
-// jvm/self_test_b62.l — Stage B62: integer bitwise operations.
-//
-// Generates Bits.class with static methods:
-//   band(II)I  — a & b   (iand)
-//   bor(II)I   — a | b   (ior)
-//   bxor(II)I  — a ^ b   (ixor)
-//   shl(II)I   — a << b  (ishl)
-//   shr(II)I   — a >> b  (ishr)
-//
-// Main prints:
-//   band(0xFF, 0x0F) → 15
-//   bor(0xF0, 0x0F)  → 255
-//   bxor(0xFF, 0xA5) → 90
-//   shl(1, 4)        → 16
-//   shr(256, 3)      → 32
-//
-// Exercises: iand, ior, ixor, ishl, ishr.
-
+//! jvm/self_test_b62.l — Stage B62: integer bitwise operations.
+//!
+//! Generates Bits.class with static methods:
+//!   band(II)I  — a & b   (iand)
+//!   bor(II)I   — a | b   (ior)
+//!   bxor(II)I  — a ^ b   (ixor)
+//!   shl(II)I   — a << b  (ishl)
+//!   shr(II)I   — a >> b  (ishr)
+//!
+//! Main prints:
+//!   band(0xFF, 0x0F) → 15
+//!   bor(0xF0, 0x0F)  → 255
+//!   bxor(0xFF, 0xA5) → 90
+//!   shl(1, 4)        → 16
+//!   shr(256, 3)      → 32
+//!
+//! Exercises: iand, ior, ixor, ishl, ishr.
 package Jvm.SelfTestB62
 
 import Std.Core
@@ -94,16 +93,16 @@ func makeBitsBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool     = poolNew()
-  val asm      = newAssembler(pool)
+  val pool = poolNew()
+  val asm = newAssembler(pool)
 
-  val sysOut   = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
-  val andRef   = poolMethodref(pool, "Bits", "band", "(II)I")
-  val orRef    = poolMethodref(pool, "Bits", "bor",  "(II)I")
-  val xorRef   = poolMethodref(pool, "Bits", "bxor", "(II)I")
-  val shlRef   = poolMethodref(pool, "Bits", "shl",  "(II)I")
-  val shrRef   = poolMethodref(pool, "Bits", "shr",  "(II)I")
+  val andRef = poolMethodref(pool, "Bits", "band", "(II)I")
+  val orRef = poolMethodref(pool, "Bits", "bor", "(II)I")
+  val xorRef = poolMethodref(pool, "Bits", "bxor", "(II)I")
+  val shlRef = poolMethodref(pool, "Bits", "shl", "(II)I")
+  val shrRef = poolMethodref(pool, "Bits", "shr", "(II)I")
 
   // println(Bits.band(0xFF, 0x0F)) → 15
   emitGetstatic(asm, sysOut)
@@ -156,7 +155,7 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b62"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
@@ -171,9 +170,9 @@ func main(): Unit {
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB62",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

@@ -1,13 +1,12 @@
-// jvm/self_test_b17.l — Stage B17: conditional branching (ifeq/ifge/goto + labels).
-//
-// Generates two class files:
-//   MathB17.class — static abs(I)I implemented with ifge + goto
-//   Main.class    — calls abs(-7) and abs(3), prints both results
-//
-// Exercises: emitLabel, emitIfge, emitGoto, emitIneg, ireturn,
-// the two-pass label resolution in the assembler.
-// Assembled into /tmp/lyric-jvm-b17/hello.jar; verified by JvmLoweringB17Test.
-
+//! jvm/self_test_b17.l — Stage B17: conditional branching (ifeq/ifge/goto + labels).
+//!
+//! Generates two class files:
+//!   MathB17.class — static abs(I)I implemented with ifge + goto
+//!   Main.class    — calls abs(-7) and abs(3), prints both results
+//!
+//! Exercises: emitLabel, emitIfge, emitGoto, emitIneg, ireturn,
+//! the two-pass label resolution in the assembler.
+//! Assembled into /tmp/lyric-jvm-b17/hello.jar; verified by JvmLoweringB17Test.
 package Jvm.SelfTestB17
 
 import Std.Core
@@ -19,7 +18,7 @@ import Jvm.Driver
 
 func makeMathClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
   // abs(I)I:  if (arg >= 0) goto positive; else negate and return
   emitIload(asm, 0)
@@ -45,10 +44,10 @@ func makeMathClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOut   = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val absRef   = poolMethodref(pool, "MathB17", "abs", "(I)I")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val absRef = poolMethodref(pool, "MathB17", "abs", "(I)I")
   val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
 
   // println(abs(-7))
@@ -78,7 +77,7 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b17"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
@@ -86,16 +85,16 @@ func main(): Unit {
   val mainBytes = makeMainClassBytes()
 
   val mathClass = BuiltClass(binaryName = "MathB17", bytes = mathBytes)
-  val mainClass = BuiltClass(binaryName = "Main",    bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(mathClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB17",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

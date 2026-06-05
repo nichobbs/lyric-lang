@@ -1,8 +1,8 @@
-// parser_self_test.l — exercises the self-hosted Lyric.Parser library.
-// Compiled and executed by the F# Expecto runner at
-// compiler/tests/Lyric.Emitter.Tests/SelfHostedParserTests.fs.
-// Each in-program assertion panics on mismatch; exit 0 + "ok" in
-// stdout means every check held.
+//! parser_self_test.l — exercises the self-hosted Lyric.Parser library.
+//! Compiled and executed by the F# Expecto runner at
+//! compiler/tests/Lyric.Emitter.Tests/SelfHostedParserTests.fs.
+//! Each in-program assertion panics on mismatch; exit 0 + "ok" in
+//! stdout means every check held.
 package Lyric.ParserSelfTest
 
 import Std.Core
@@ -14,7 +14,6 @@ import Lyric.Parser
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func diagCount(pr: in ParseResult): Int {
   pr.diagnostics.count
 }
@@ -28,31 +27,33 @@ func importCount(pr: in ParseResult): Int {
 }
 
 func firstItemKindName(pr: in ParseResult): String {
-  if pr.file.items.count == 0 { return "<none>" }
+  if pr.file.items.count == 0 {
+    return "<none>"
+  }
   match pr.file.items[0].kind {
-    case IConst(_)        -> "const"
-    case IVal(_)          -> "val"
-    case IFunc(_)         -> "func"
-    case ITypeAlias(_)    -> "alias"
+    case IConst(_) -> "const"
+    case IVal(_) -> "val"
+    case IFunc(_) -> "func"
+    case ITypeAlias(_) -> "alias"
     case IDistinctType(_) -> "distinct"
-    case IRecord(_)       -> "record"
-    case IExposedRec(_)   -> "exposed_rec"
-    case IUnion(_)        -> "union"
-    case IEnum(_)         -> "enum"
-    case IOpaque(_)       -> "opaque"
-    case IProtected(_)    -> "protected"
-    case IInterface(_)    -> "interface"
-    case IImpl(_)         -> "impl"
-    case IWire(_)         -> "wire"
-    case IScopeKind(_)    -> "scope_kind"
-    case IExtern(_)       -> "extern"
-    case IExternType(_)   -> "extern_type"
-    case ITest(_)         -> "test"
-    case IProperty(_)     -> "property"
-    case IFixture(_)      -> "fixture"
-    case IConfig(_)       -> "config"
-    case IAspect(_)       -> "aspect"
-    case IError           -> "error"
+    case IRecord(_) -> "record"
+    case IExposedRec(_) -> "exposed_rec"
+    case IUnion(_) -> "union"
+    case IEnum(_) -> "enum"
+    case IOpaque(_) -> "opaque"
+    case IProtected(_) -> "protected"
+    case IInterface(_) -> "interface"
+    case IImpl(_) -> "impl"
+    case IWire(_) -> "wire"
+    case IScopeKind(_) -> "scope_kind"
+    case IExtern(_) -> "extern"
+    case IExternType(_) -> "extern_type"
+    case ITest(_) -> "test"
+    case IProperty(_) -> "property"
+    case IFixture(_) -> "fixture"
+    case IConfig(_) -> "config"
+    case IAspect(_) -> "aspect"
+    case IError -> "error"
   }
 }
 
@@ -60,24 +61,20 @@ func firstItemKindName(pr: in ParseResult): String {
 // for the various "not a block-bodied function" shapes).  Used to assert that a
 // brace-`if` statement does not glue a following operator into one binop (#1943).
 func firstFuncBodyStmtCount(pr: in ParseResult): Int {
-  if pr.file.items.count == 0 { return -1 }
+  if pr.file.items.count == 0 {
+    return -1
+  }
   match pr.file.items[0].kind {
-    case IFunc(fd) ->
-      match fd.body {
-        case Some(b) ->
-          match b {
-            case FBBlock(blk) -> blk.statements.count
-            case FBExpr(_)    -> -2
-          }
-        case None -> -3
-      }
+    case IFunc(fd) -> match fd.body { case Some(b) -> match b { case FBBlock(blk) -> blk.statements.count; case FBExpr(_) -> -2 }; case None -> -3 }
     case _ -> -4
   }
 }
 
 func packageName(pr: in ParseResult): String {
   val segs = pr.file.packageDecl.path.segments
-  if segs.count == 0 { return "" }
+  if segs.count == 0 {
+    return ""
+  }
   var s = segs[0]
   var i = 1
   while i < segs.count {
@@ -90,7 +87,6 @@ func packageName(pr: in ParseResult): String {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testEmptySource(): Unit {
   val pr = parse("")
   assertEqualInt(diagCount(pr), 0, "empty: no diagnostics")
@@ -152,13 +148,17 @@ func testRecordDecl(): Unit {
 // parsed file, or panics if the shape is not a record-with-a-field.  Used by
 // the `var`-field regression tests below.
 func firstRecordFieldIsMutable(pr: in ParseResult): Bool {
-  if pr.file.items.count == 0 { panic("no items") }
+  if pr.file.items.count == 0 {
+    panic("no items")
+  }
   match pr.file.items[0].kind {
     case IRecord(decl) -> {
-      if decl.members.count == 0 { panic("record has no members") }
+      if decl.members.count == 0 {
+        panic("record has no members")
+      }
       match decl.members[0] {
         case RMField(f) -> f.isMutable
-        case _          -> panic("first member is not a field")
+        case _ -> panic("first member is not a field")
       }
     }
     case _ -> panic("first item is not a record")
@@ -250,8 +250,11 @@ func testPubVisibility(): Unit {
   assertEqualInt(itemCount(pr), 1, "pub: one item")
   val item = pr.file.items[0]
   match item.visibility {
-    case Some(_) -> {}
-    case None -> { assertTrue(false, "pub: visibility should be Some") }
+    case Some(_) -> {
+    }
+    case None -> {
+      assertTrue(false, "pub: visibility should be Some")
+    }
   }
 }
 
@@ -282,7 +285,6 @@ func testGenericFunc(): Unit {
 }
 
 // ── D046 config block parser (self-host mirror of F# bootstrap) ──
-
 func testConfigBlock(): Unit {
   val src = "package P\nconfig Settings { port: Int = 8080 }\n"
   val pr = parse(src)
@@ -315,11 +317,8 @@ func testConfigAsParamName(): Unit {
 }
 
 // ── D047 aspect block parser (self-host mirror of F# bootstrap) ──
-
 func testAspectBlock(): Unit {
-  val src =
-    "package P\naspect Logging {\n" +
-    "  matches: name like \"handle*\"\n" +
+  val src = "package P\naspect Logging {\n" + "  matches: name like \"handle*\"\n" +
     "  around(args) -> ret { proceed(args) }\n" +
     "}\n"
   val pr = parse(src)
@@ -331,7 +330,8 @@ func testAspectBlock(): Unit {
       assertEqual(ad.name, "Logging", "aspect: name")
       assertEqualInt(ad.matches.count, 1, "aspect: one matcher")
       match ad.around {
-        case Some(_) -> {}
+        case Some(_) -> {
+        }
         case None -> assertTrue(false, "aspect: around present")
       }
     }
@@ -356,19 +356,18 @@ func testAspectAsParamName(): Unit {
 //     including comments (line + block) and whitespace.
 //   * `RedNode` traversal yields children with non-decreasing offsets.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func syntaxKindName(k: in SyntaxKind): String {
   match k {
-    case SkSourceFile             -> "source_file"
-    case SkModuleDocSection       -> "module_doc"
+    case SkSourceFile -> "source_file"
+    case SkModuleDocSection -> "module_doc"
     case SkFileAnnotationsSection -> "file_anns"
-    case SkPackageDecl            -> "package_decl"
-    case SkImportSection          -> "import_section"
-    case SkImportDecl             -> "import_decl"
-    case SkItemSection            -> "item_section"
-    case SkItem                   -> "item"
-    case SkAnnotation             -> "annotation"
-    case SkRaw                    -> "raw"
+    case SkPackageDecl -> "package_decl"
+    case SkImportSection -> "import_section"
+    case SkImportDecl -> "import_decl"
+    case SkItemSection -> "item_section"
+    case SkItem -> "item"
+    case SkAnnotation -> "annotation"
+    case SkRaw -> "raw"
   }
 }
 
@@ -381,9 +380,12 @@ func countChildrenOfKind(n: in GreenNode, want: in SyntaxKind): Int {
   while i < n.children.count {
     match n.children[i] {
       case GcNode(child) -> {
-        if syntaxKindName(child.kind) == syntaxKindName(want) { c = c + 1 }
+        if syntaxKindName(child.kind) == syntaxKindName(want) {
+          c = c + 1
+        }
       }
-      case GcToken(_) -> {}
+      case GcToken(_) -> {
+      }
     }
     i = i + 1
   }
@@ -398,9 +400,12 @@ func findChild(n: in GreenNode, want: in SyntaxKind): GreenNode {
   while i < n.children.count {
     match n.children[i] {
       case GcNode(child) -> {
-        if syntaxKindName(child.kind) == syntaxKindName(want) { return child }
+        if syntaxKindName(child.kind) == syntaxKindName(want) {
+          return child
+        }
       }
-      case GcToken(_) -> {}
+      case GcToken(_) -> {
+      }
     }
     i = i + 1
   }
@@ -417,11 +422,7 @@ func testCstLossless(): Unit {
   // Source includes a doc comment, a line comment, a block comment,
   // and irregular indentation — the round-trip must reproduce every
   // byte (post CR/LF normalisation).
-  val src =
-    "//! module doc\n" +
-    "package P\n" +
-    "\n" +
-    "// pre-import line comment\n" +
+  val src = "//! module doc\n" + "package P\n" + "\n" + "// pre-import line comment\n" +
     "import Std.Core /* trailing block */\n" +
     "\n" +
     "/// item doc\n" +
@@ -475,10 +476,7 @@ func testRedRootOffsets(): Unit {
   var prev = -1
   var i = 0
   while i < kids.count {
-    val o = match kids[i] {
-      case RcToken(_, _, off) -> off
-      case RcNode(node) -> node.offset
-    }
+    val o = match kids[i] { case RcToken(_, _, off) -> off; case RcNode(node) -> node.offset }
     assertTrue(o >= prev, "red-root: offsets monotonic")
     prev = o
     i = i + 1
@@ -489,24 +487,23 @@ func testRedRootOffsets(): Unit {
 // CST per-expression / per-statement / per-block / per-contract granularity
 // (Phase 5 §M5.3 stage 6, D-progress-142).
 // ─────────────────────────────────────────────────────────────────────────────
-
 @pure
 func skName(k: in SyntaxKind): String {
   match k {
-    case SkSourceFile             -> "source_file"
-    case SkModuleDocSection       -> "module_doc"
+    case SkSourceFile -> "source_file"
+    case SkModuleDocSection -> "module_doc"
     case SkFileAnnotationsSection -> "file_anns"
-    case SkPackageDecl            -> "package"
-    case SkImportSection          -> "import_section"
-    case SkImportDecl             -> "import"
-    case SkItemSection            -> "item_section"
-    case SkItem                   -> "item"
-    case SkAnnotation             -> "annotation"
-    case SkBlock                  -> "block"
-    case SkStatement              -> "statement"
-    case SkExpr                   -> "expr"
-    case SkContractClause         -> "contract"
-    case SkRaw                    -> "raw"
+    case SkPackageDecl -> "package"
+    case SkImportSection -> "import_section"
+    case SkImportDecl -> "import"
+    case SkItemSection -> "item_section"
+    case SkItem -> "item"
+    case SkAnnotation -> "annotation"
+    case SkBlock -> "block"
+    case SkStatement -> "statement"
+    case SkExpr -> "expr"
+    case SkContractClause -> "contract"
+    case SkRaw -> "raw"
   }
 }
 
@@ -515,12 +512,17 @@ func skName(k: in SyntaxKind): String {
 /// node with that kind.
 func countKind(n: in GreenNode, target: in SyntaxKind): Int {
   var hit = 0
-  if skName(n.kind) == skName(target) { hit = 1 }
+  if skName(n.kind) == skName(target) {
+    hit = 1
+  }
   var i = 0
   while i < n.children.count {
     match n.children[i] {
-      case GcNode(child) -> { hit = hit + countKind(child, target) }
-      case GcToken(_)    -> {}
+      case GcNode(child) -> {
+        hit = hit + countKind(child, target)
+      }
+      case GcToken(_) -> {
+      }
     }
     i = i + 1
   }
@@ -555,8 +557,7 @@ func testCstHasSkExprInsideStatement(): Unit {
 }
 
 func testCstHasSkContractClause(): Unit {
-  val src =
-    "package P\nfunc divide(x: in Int, y: in Int): Int\n" +
+  val src = "package P\nfunc divide(x: in Int, y: in Int): Int\n" +
     "  requires: y != 0\n  ensures: result * y == x\n  { x / y }\n"
   val pr = parse(src)
   val n = countKind(pr.cst, SkContractClause)
@@ -589,17 +590,16 @@ func testPeekPastEofUsesSourceEnd(): Unit {
   val lr = lex(src)
   var st = makeParseState(lr.tokens, lr.diagnostics)
   // Walk to one position past the last real token.
-  while st.pos < lr.tokens.count { st.pos = st.pos + 1 }
+  while st.pos < lr.tokens.count {
+    st.pos = st.pos + 1
+  }
   val sp = peek(st).span
   val realEof = lr.tokens[lr.tokens.count - 1].span
-  assertTrue(sp.startPos.offset == realEof.endPos.offset,
-             "peek-past-EOF: span starts at real EOF end (not 0)")
-  assertTrue(sp.endPos.offset == realEof.endPos.offset,
-             "peek-past-EOF: span ends at real EOF end (not 0)")
+  assertTrue(sp.startPos.offset == realEof.endPos.offset, "peek-past-EOF: span starts at real EOF end (not 0)")
+  assertTrue(sp.endPos.offset == realEof.endPos.offset, "peek-past-EOF: span ends at real EOF end (not 0)")
   // The real EOF lives at offset 10 (`"package P\n"`); confirm the
   // synthetic span isn't the 0:0 placeholder the old code returned.
-  assertTrue(sp.startPos.offset > 0,
-             "peek-past-EOF: synthetic span is not 0:0")
+  assertTrue(sp.startPos.offset > 0, "peek-past-EOF: synthetic span is not 0:0")
 }
 
 // #425 item 5 / #1174: the bare literal `9223372036854775808` fires
@@ -615,11 +615,12 @@ func testNegationCancelsMinValueAbsDiagnostic(): Unit {
   var sawL0010 = false
   var i = 0
   while i < pr.diagnostics.count {
-    if pr.diagnostics[i].code == "L0010" { sawL0010 = true }
+    if pr.diagnostics[i].code == "L0010" {
+      sawL0010 = true
+    }
     i = i + 1
   }
-  assertTrue(not sawL0010,
-             "-9223372036854775808: L0010 cancelled by PreNeg wrapper")
+  assertTrue(not sawL0010, "-9223372036854775808: L0010 cancelled by PreNeg wrapper")
 }
 
 func testBareMinValueAbsKeepsDiagnostic(): Unit {
@@ -628,11 +629,12 @@ func testBareMinValueAbsKeepsDiagnostic(): Unit {
   var sawL0010 = false
   var i = 0
   while i < pr.diagnostics.count {
-    if pr.diagnostics[i].code == "L0010" { sawL0010 = true }
+    if pr.diagnostics[i].code == "L0010" {
+      sawL0010 = true
+    }
     i = i + 1
   }
-  assertTrue(sawL0010,
-             "bare 9223372036854775808: L0010 preserved (no PreNeg wrapper)")
+  assertTrue(sawL0010, "bare 9223372036854775808: L0010 preserved (no PreNeg wrapper)")
 }
 
 // `///` (item/outer doc) before `package` is left in the stream by
@@ -647,11 +649,12 @@ func testDocCommentBeforePackageDiagnostic(): Unit {
   var i = 0
   while i < pr.diagnostics.count {
     val d = pr.diagnostics[i]
-    if d.code == "P0020" and d.message.contains("//!") { sawTargeted = true }
+    if d.code == "P0020" and d.message.contains("//!") {
+      sawTargeted = true
+    }
     i = i + 1
   }
-  assertTrue(sawTargeted,
-             "P0020 for '///' before package mentions '//!' module-doc form")
+  assertTrue(sawTargeted, "P0020 for '///' before package mentions '//!' module-doc form")
 }
 
 func testPeekAtNegativeReturnsSyntheticEof(): Unit {
@@ -663,8 +666,7 @@ func testPeekAtNegativeReturnsSyntheticEof(): Unit {
   val st = makeParseState(lr.tokens, lr.diagnostics)
   val sp = peekAt(st, -1).span
   val realEof = lr.tokens[lr.tokens.count - 1].span
-  assertTrue(sp.startPos.offset == realEof.endPos.offset,
-             "peekAt(-1): span anchored at real EOF, not 0")
+  assertTrue(sp.startPos.offset == realEof.endPos.offset, "peekAt(-1): span anchored at real EOF, not 0")
 }
 
 func main(): Unit {

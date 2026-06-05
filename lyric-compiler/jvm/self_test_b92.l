@@ -1,12 +1,11 @@
-// jvm/self_test_b92.l — Stage B92: lowerUnion smoke test.
-//
-// Builds a Shape union with Circle(radius:int) and Square(side:int) cases
-// via lowerUnion, instantiates both cases from Main, reads their fields.
-//
-// Main prints:
-//   circle.radius=5
-//   square.side=8
-
+//! jvm/self_test_b92.l — Stage B92: lowerUnion smoke test.
+//!
+//! Builds a Shape union with Circle(radius:int) and Square(side:int) cases
+//! via lowerUnion, instantiates both cases from Main, reads their fields.
+//!
+//! Main prints:
+//!   circle.radius=5
+//!   square.side=8
 package Jvm.SelfTestB92
 
 import Std.Core
@@ -48,17 +47,17 @@ func makeShapeBytes(): List[List[Byte]] {
 
 func makeMainBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOutIdx  = poolFieldref(pool, "java/lang/System",    "out",     "Ljava/io/PrintStream;")
+  val sysOutIdx = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val printlnIdx = poolMethodref(pool, "java/io/PrintStream", "println", "(Ljava/lang/String;)V")
-  val concatIdx  = poolMethodref(pool, "java/lang/String",    "concat",  "(Ljava/lang/String;)Ljava/lang/String;")
-  val valueOfIdx = poolMethodref(pool, "java/lang/String",    "valueOf", "(I)Ljava/lang/String;")
+  val concatIdx = poolMethodref(pool, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;")
+  val valueOfIdx = poolMethodref(pool, "java/lang/String", "valueOf", "(I)Ljava/lang/String;")
 
   val circleInitIdx = poolMethodref(pool, "Shape$Circle", "<init>", "(I)V")
   val squareInitIdx = poolMethodref(pool, "Shape$Square", "<init>", "(I)V")
-  val radiusIdx     = poolFieldref(pool,  "Shape$Circle", "radius", "I")
-  val sideIdx       = poolFieldref(pool,  "Shape$Square", "side",   "I")
+  val radiusIdx = poolFieldref(pool, "Shape$Circle", "radius", "I")
+  val sideIdx = poolFieldref(pool, "Shape$Square", "side", "I")
   val circleClassIdx = poolClass(pool, "Shape$Circle")
   val squareClassIdx = poolClass(pool, "Shape$Square")
 
@@ -109,16 +108,16 @@ func makeMainBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b92"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val shapeBytes = makeShapeBytes()
   // lowerUnion returns [base, case0, case1]: Shape, Shape$Circle, Shape$Square
-  val shapeClass  = BuiltClass(binaryName = "Shape",        bytes = shapeBytes[0])
+  val shapeClass = BuiltClass(binaryName = "Shape", bytes = shapeBytes[0])
   val circleClass = BuiltClass(binaryName = "Shape$Circle", bytes = shapeBytes[1])
   val squareClass = BuiltClass(binaryName = "Shape$Square", bytes = shapeBytes[2])
-  val mainClass   = BuiltClass(binaryName = "Main",         bytes = makeMainBytes())
+  val mainClass = BuiltClass(binaryName = "Main", bytes = makeMainBytes())
 
   val classes: List[BuiltClass] = newList()
   classes.add(shapeClass)
@@ -128,9 +127,9 @@ func main(): Unit {
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB92",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

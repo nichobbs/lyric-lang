@@ -1,17 +1,16 @@
-// jvm/self_test_b47.l — Stage B47: explicit super.method() call from override.
-//
-// Generates two class files:
-//   Base.class  — getValue()I returns 10
-//   Child.class — extends Base; getValue()I returns super.getValue() * 2 = 20
-//   Main.class  — creates Base (→10) and Child (→20), prints both
-//
-// Expected output:
-//   10
-//   20
-//
-// Exercises: invokespecial on parent class method from within a subclass override
-//            (the distinguishing feature from B44 which used invokevirtual dispatch).
-
+//! jvm/self_test_b47.l — Stage B47: explicit super.method() call from override.
+//!
+//! Generates two class files:
+//!   Base.class  — getValue()I returns 10
+//!   Child.class — extends Base; getValue()I returns super.getValue() * 2 = 20
+//!   Main.class  — creates Base (→10) and Child (→20), prints both
+//!
+//! Expected output:
+//!   10
+//!   20
+//!
+//! Exercises: invokespecial on parent class method from within a subclass override
+//!            (the distinguishing feature from B44 which used invokevirtual dispatch).
 package Jvm.SelfTestB47
 
 import Std.Core
@@ -22,7 +21,7 @@ import Jvm.Bytecode
 import Jvm.Driver
 
 func makeBaseBytes(): List[Byte] {
-  val pool    = poolNew()
+  val pool = poolNew()
   val objInit = poolMethodref(pool, "java/lang/Object", "<init>", "()V")
 
   // <init>()V
@@ -53,9 +52,9 @@ func makeBaseBytes(): List[Byte] {
 }
 
 func makeChildBytes(): List[Byte] {
-  val pool      = poolNew()
-  val baseInit  = poolMethodref(pool, "Base", "<init>", "()V")
-  val baseGet   = poolMethodref(pool, "Base", "getValue", "()I")
+  val pool = poolNew()
+  val baseInit = poolMethodref(pool, "Base", "<init>", "()V")
+  val baseGet = poolMethodref(pool, "Base", "getValue", "()I")
 
   // <init>()V — calls Base.<init>
   val asmInit = newAssembler(pool)
@@ -90,15 +89,15 @@ func makeChildBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnI  = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
-  val baseGet   = poolMethodref(pool, "Base", "getValue", "()I")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val baseGet = poolMethodref(pool, "Base", "getValue", "()I")
   val baseClass = poolClass(pool, "Base")
-  val baseInit  = poolMethodref(pool, "Base", "<init>", "()V")
+  val baseInit = poolMethodref(pool, "Base", "<init>", "()V")
   val childClass = poolClass(pool, "Child")
-  val childInit  = poolMethodref(pool, "Child", "<init>", "()V")
+  val childInit = poolMethodref(pool, "Child", "<init>", "()V")
 
   // println(new Base().getValue())  → 10
   emitGetstatic(asm, sysOut)
@@ -131,17 +130,17 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b47"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
-  val baseBytes  = makeBaseBytes()
+  val baseBytes = makeBaseBytes()
   val childBytes = makeChildBytes()
-  val mainBytes  = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
-  val baseClass  = BuiltClass(binaryName = "Base",  bytes = baseBytes)
+  val baseClass = BuiltClass(binaryName = "Base", bytes = baseBytes)
   val childClass = BuiltClass(binaryName = "Child", bytes = childBytes)
-  val mainClass  = BuiltClass(binaryName = "Main",  bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(baseClass)
   classes.add(childClass)
@@ -149,9 +148,9 @@ func main(): Unit {
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB47",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

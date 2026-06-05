@@ -1,12 +1,11 @@
-// jvm/self_test_b16.l — Stage B16: instance fields with putfield + getfield.
-//
-// Generates two class files:
-//   Counter.class — field `int count`, constructor sets it, getValue() reads it
-//   Main.class    — creates Counter(42), calls getValue(), prints result
-//
-// Exercises: FieldInfo declaration, putfield, getfield, bipush, integer returns.
-// Assembled into /tmp/lyric-jvm-b16/hello.jar; verified by JvmLoweringB16Test.
-
+//! jvm/self_test_b16.l — Stage B16: instance fields with putfield + getfield.
+//!
+//! Generates two class files:
+//!   Counter.class — field `int count`, constructor sets it, getValue() reads it
+//!   Main.class    — creates Counter(42), calls getValue(), prints result
+//!
+//! Exercises: FieldInfo declaration, putfield, getfield, bipush, integer returns.
+//! Assembled into /tmp/lyric-jvm-b16/hello.jar; verified by JvmLoweringB16Test.
 package Jvm.SelfTestB16
 
 import Std.Core
@@ -25,7 +24,7 @@ func makeCounterClassBytes(): List[Byte] {
 
   // <init>(I)V: aload_0, invokespecial Object.<init>, aload_0, iload_1, putfield count, return
   val asmInit = newAssembler(pool)
-  val objInit    = poolMethodref(pool, "java/lang/Object", "<init>", "()V")
+  val objInit = poolMethodref(pool, "java/lang/Object", "<init>", "()V")
   val countFieldref = poolFieldref(pool, "Counter", "count", "I")
   emitAload(asmInit, 0)
   emitInvokespecial(asmInit, objInit)
@@ -59,13 +58,13 @@ func makeCounterClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOut      = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val counterCls  = poolClass(pool, "Counter")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val counterCls = poolClass(pool, "Counter")
   val counterInit = poolMethodref(pool, "Counter", "<init>", "(I)V")
-  val getValue_   = poolMethodref(pool, "Counter", "getValue", "()I")
-  val printlnI    = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val getValue_ = poolMethodref(pool, "Counter", "getValue", "()I")
+  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
 
   emitGetstatic(asm, sysOut)
   emitNew(asm, counterCls)
@@ -89,24 +88,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b16"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val counterBytes = makeCounterClassBytes()
-  val mainBytes    = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val counterClass = BuiltClass(binaryName = "Counter", bytes = counterBytes)
-  val mainClass    = BuiltClass(binaryName = "Main",    bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(counterClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB16",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

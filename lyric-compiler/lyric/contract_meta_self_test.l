@@ -1,11 +1,10 @@
-// contract_meta_self_test.l — exercises the in-process JSON parser
-// in `Lyric.ContractMeta.parseFromJson` (#1229 Phase A.1) and the
-// in-process resource readers `readFromFile` /
-// `readAllContractsFromFile` (#1229 Phase A.3).
-//
-// Compiled and executed by SelfHostedContractMetaTests.fs.  Exit 0 +
-// "ok" in stdout means every assertion held.
-
+//! contract_meta_self_test.l — exercises the in-process JSON parser
+//! in `Lyric.ContractMeta.parseFromJson` (#1229 Phase A.1) and the
+//! in-process resource readers `readFromFile` /
+//! `readAllContractsFromFile` (#1229 Phase A.3).
+//!
+//! Compiled and executed by SelfHostedContractMetaTests.fs.  Exit 0 +
+//! "ok" in stdout means every assertion held.
 package Lyric.ContractMeta.SelfTest
 
 import Std.Core
@@ -20,15 +19,13 @@ import Lyric.Parser
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
 func unwrapOrFail(opt: in Option[Contract], label: in String): Contract {
   match opt {
     case Some(c) -> c
-    case None    -> {
+    case None -> {
       panic(label + ": parseFromJson returned None on valid input")
       // unreachable
-      Contract(packageName = "", version = "", level = "", formatVersion = 0,
-               decls = newList())
+      Contract(packageName = "", version = "", level = "", formatVersion = 0, decls = newList())
     }
   }
 }
@@ -36,7 +33,9 @@ func unwrapOrFail(opt: in Option[Contract], label: in String): Contract {
 func findDecl(decls: in List[ContractDecl], name: in String): Option[ContractDecl] {
   var i = 0
   while i < decls.count {
-    if decls[i].name == name { return Some(value = decls[i]) }
+    if decls[i].name == name {
+      return Some(value = decls[i])
+    }
     i = i + 1
   }
   None
@@ -45,14 +44,9 @@ func findDecl(decls: in List[ContractDecl], name: in String): Option[ContractDec
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Tests
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Minimal valid contract: packageName + version + a single decl.
 func testMinimal(): Unit {
-  val json =
-    "{" +
-    "\"formatVersion\":2," +
-    "\"packageName\":\"My.Pkg\"," +
-    "\"version\":\"1.2.3\"," +
+  val json = "{" + "\"formatVersion\":2," + "\"packageName\":\"My.Pkg\"," + "\"version\":\"1.2.3\"," +
     "\"level\":\"runtime_checked\"," +
     "\"decls\":[" +
     "  {\"kind\":\"func\",\"name\":\"double\",\"repr\":\"func double(x: Int): Int\"}" +
@@ -81,11 +75,11 @@ func testEmptyObjectDefaults(): Unit {
 // Empty string or whitespace input → None.
 func testEmptyStringReturnsNone(): Unit {
   match parseFromJson("") {
-    case None    -> ()
+    case None -> ()
     case Some(_) -> panic("empty_string: expected None")
   }
   match parseFromJson("   \n  ") {
-    case None    -> ()
+    case None -> ()
     case Some(_) -> panic("whitespace_string: expected None")
   }
 }
@@ -93,7 +87,7 @@ func testEmptyStringReturnsNone(): Unit {
 // Non-object root JSON → None (e.g. an array literal isn't a Contract).
 func testNonObjectRootReturnsNone(): Unit {
   match parseFromJson("[1, 2, 3]") {
-    case None    -> ()
+    case None -> ()
     case Some(_) -> panic("array_root: expected None")
   }
 }
@@ -102,27 +96,22 @@ func testNonObjectRootReturnsNone(): Unit {
 // a Bug from System.Text.Json).
 func testMalformedJsonReturnsNone(): Unit {
   match parseFromJson("{not valid json") {
-    case None    -> ()
+    case None -> ()
     case Some(_) -> panic("malformed_json: expected None")
   }
   match parseFromJson("{\"unterminated\":") {
-    case None    -> ()
+    case None -> ()
     case Some(_) -> panic("malformed_json: unterminated value expected None")
   }
   match parseFromJson("garbage tokens here") {
-    case None    -> ()
+    case None -> ()
     case Some(_) -> panic("malformed_json: garbage expected None")
   }
 }
 
 // `pure: true` and `requires`/`ensures` arrays parse correctly.
 func testPureAndContracts(): Unit {
-  val json =
-    "{" +
-    "\"packageName\":\"Math\"," +
-    "\"decls\":[" +
-    "  {" +
-    "    \"kind\":\"func\"," +
+  val json = "{" + "\"packageName\":\"Math\"," + "\"decls\":[" + "  {" + "    \"kind\":\"func\"," +
     "    \"name\":\"abs\"," +
     "    \"repr\":\"func abs(x: Int): Int\"," +
     "    \"pure\":true," +
@@ -147,30 +136,23 @@ func testPureAndContracts(): Unit {
 
 // `body` field present → Option[String] = Some(text); absent → None.
 func testBodyOptional(): Unit {
-  val withBody =
-    "{\"decls\":[{\"kind\":\"func\",\"name\":\"id\",\"body\":\"x\"}]}"
+  val withBody = "{\"decls\":[{\"kind\":\"func\",\"name\":\"id\",\"body\":\"x\"}]}"
   val c1 = unwrapOrFail(parseFromJson(withBody), "body_present")
   match c1.decls[0].body {
     case Some(s) -> assertEqual(s, "x", "body_present: body text")
-    case None    -> panic("body_present: expected Some")
+    case None -> panic("body_present: expected Some")
   }
-  val noBody =
-    "{\"decls\":[{\"kind\":\"func\",\"name\":\"id\"}]}"
+  val noBody = "{\"decls\":[{\"kind\":\"func\",\"name\":\"id\"}]}"
   val c2 = unwrapOrFail(parseFromJson(noBody), "body_absent")
   match c2.decls[0].body {
-    case None    -> ()
+    case None -> ()
     case Some(_) -> panic("body_absent: expected None")
   }
 }
 
 // `params` array parses (name, type) tuples.
 func testParamsArray(): Unit {
-  val json =
-    "{\"decls\":[" +
-    "  {" +
-    "    \"kind\":\"func\"," +
-    "    \"name\":\"add\"," +
-    "    \"params\":[" +
+  val json = "{\"decls\":[" + "  {" + "    \"kind\":\"func\"," + "    \"name\":\"add\"," + "    \"params\":[" +
     "      {\"name\":\"a\",\"type\":\"Int\"}," +
     "      {\"name\":\"b\",\"type\":\"Int\"}" +
     "    ]" +
@@ -187,9 +169,7 @@ func testParamsArray(): Unit {
 
 // Stability field round-trips: "stable:X.Y" / "experimental" / "".
 func testStability(): Unit {
-  val json =
-    "{\"decls\":[" +
-    "  {\"name\":\"a\",\"stability\":\"stable:1.0\"}," +
+  val json = "{\"decls\":[" + "  {\"name\":\"a\",\"stability\":\"stable:1.0\"}," +
     "  {\"name\":\"b\",\"stability\":\"experimental\"}," +
     "  {\"name\":\"c\"}" +
     "]}"
@@ -201,9 +181,7 @@ func testStability(): Unit {
 
 // Multiple decls in `decls` array preserve order.
 func testMultipleDeclsOrder(): Unit {
-  val json =
-    "{\"decls\":[" +
-    "  {\"kind\":\"record\",\"name\":\"Point\"}," +
+  val json = "{\"decls\":[" + "  {\"kind\":\"record\",\"name\":\"Point\"}," +
     "  {\"kind\":\"func\",\"name\":\"makePoint\"}," +
     "  {\"kind\":\"union\",\"name\":\"Maybe\"}" +
     "]}"
@@ -225,11 +203,7 @@ func testPureDefaultsFalse(): Unit {
 // (matches F# — the parser only yields objects).  Pins the defensive
 // skip path so future schema additions don't crash the parser.
 func testNonObjectDeclEntrySkipped(): Unit {
-  val json =
-    "{\"decls\":[" +
-    "  {\"kind\":\"func\",\"name\":\"keep\"}," +
-    "  \"a-string-not-an-object\"," +
-    "  42," +
+  val json = "{\"decls\":[" + "  {\"kind\":\"func\",\"name\":\"keep\"}," + "  \"a-string-not-an-object\"," + "  42," +
     "  null," +
     "  {\"kind\":\"func\",\"name\":\"alsoKeep\"}" +
     "]}"
@@ -251,11 +225,7 @@ func testNonArrayDeclsFieldSkipped(): Unit {
 // Non-object entries inside `params` array are silently skipped.  Same
 // defensive shape as the decls-array skip.
 func testNonObjectParamEntrySkipped(): Unit {
-  val json =
-    "{\"decls\":[" +
-    "  {" +
-    "    \"name\":\"f\"," +
-    "    \"params\":[" +
+  val json = "{\"decls\":[" + "  {" + "    \"name\":\"f\"," + "    \"params\":[" +
     "      {\"name\":\"a\",\"type\":\"Int\"}," +
     "      \"not-an-object\"," +
     "      null," +
@@ -264,8 +234,7 @@ func testNonObjectParamEntrySkipped(): Unit {
     "  }" +
     "]}"
   val c = unwrapOrFail(parseFromJson(json), "non_object_param_entry_skipped")
-  assertEqualInt(c.decls[0].params.count, 2,
-    "non_object_param_entry_skipped: only objects kept")
+  assertEqualInt(c.decls[0].params.count, 2, "non_object_param_entry_skipped: only objects kept")
   assertEqual(c.decls[0].params[0].name, "a", "non_object_param_entry_skipped: p0")
   assertEqual(c.decls[0].params[1].name, "b", "non_object_param_entry_skipped: p1")
 }
@@ -279,7 +248,6 @@ func testNonObjectParamEntrySkipped(): Unit {
 // emitted assembly has an embedded `Lyric.Contract` resource (the
 // emitter writes it during `emit`), so we can verify the in-process
 // reader against the running test PE itself.
-
 func selfDllPath(): String {
   Path.join(Environment.appBaseDirectory(), "self_hosted_contract_meta.dll")
 }
@@ -292,12 +260,10 @@ func testReadFromFileInProcess(): Unit {
   match readFromFile(selfDllPath()) {
     case None -> panic("read_from_file_in_process: expected Some(json)")
     case Some(json) -> {
-      assertTrue(Str.isNotEmpty(json),
-        "read_from_file_in_process: json non-empty")
+      assertTrue(Str.isNotEmpty(json), "read_from_file_in_process: json non-empty")
       // Round-trip through the parser to confirm the JSON shape.
       val c = unwrapOrFail(parseFromJson(json), "read_from_file_in_process")
-      assertTrue(Str.isNotEmpty(c.packageName),
-        "read_from_file_in_process: packageName present")
+      assertTrue(Str.isNotEmpty(c.packageName), "read_from_file_in_process: packageName present")
     }
   }
 }
@@ -306,15 +272,13 @@ func testReadFromFileInProcess(): Unit {
 // itself always exists, so we only assert the positive case here.
 // (`readFromFile` is throw-on-missing-file by design; the bridge
 // pre-checks via `Std.File.exists` before calling.)
-
 // `readAllContractsFromFile` surfaces at least one entry for a
 // single-package Lyric assembly (the `Lyric.Contract` legacy form).
 // The pkgName for legacy resources is "" (empty) per the F# parity
 // contract.
 func testReadAllContractsFromFileSinglePkg(): Unit {
   val entries = readAllContractsFromFile(selfDllPath())
-  assertTrue(entries.count >= 1,
-    "read_all_single_pkg: at least one entry")
+  assertTrue(entries.count >= 1, "read_all_single_pkg: at least one entry")
   // Find the legacy entry.
   var foundLegacy = false
   var i = 0
@@ -324,29 +288,21 @@ func testReadAllContractsFromFileSinglePkg(): Unit {
     }
     i = i + 1
   }
-  assertTrue(foundLegacy,
-    "read_all_single_pkg: legacy (`Lyric.Contract`, packageName = \"\") entry present")
+  assertTrue(foundLegacy, "read_all_single_pkg: legacy (`Lyric.Contract`, packageName = \"\") entry present")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. JSON serialisation (contractToJson)
 // ─────────────────────────────────────────────────────────────────────────────
-
 // escapeJson covers the printable-ASCII passthrough plus the five
 // always-escaped sequences: `"`, `\`, `\n`, `\r`, `\t`.
 func testEscapeJsonBasic(): Unit {
-  assertEqual(escapeJson("hello"), "hello",
-    "escape_json_basic: printable passthrough")
-  assertEqual(escapeJson("a\"b"), "a\\\"b",
-    "escape_json_basic: quote escapes")
-  assertEqual(escapeJson("a\\b"), "a\\\\b",
-    "escape_json_basic: backslash escapes")
-  assertEqual(escapeJson("line1\nline2"), "line1\\nline2",
-    "escape_json_basic: newline escapes")
-  assertEqual(escapeJson("a\rb"), "a\\rb",
-    "escape_json_basic: carriage-return escapes (#1340)")
-  assertEqual(escapeJson("a\tb"), "a\\tb",
-    "escape_json_basic: tab escapes")
+  assertEqual(escapeJson("hello"), "hello", "escape_json_basic: printable passthrough")
+  assertEqual(escapeJson("a\"b"), "a\\\"b", "escape_json_basic: quote escapes")
+  assertEqual(escapeJson("a\\b"), "a\\\\b", "escape_json_basic: backslash escapes")
+  assertEqual(escapeJson("line1\nline2"), "line1\\nline2", "escape_json_basic: newline escapes")
+  assertEqual(escapeJson("a\rb"), "a\\rb", "escape_json_basic: carriage-return escapes (#1340)")
+  assertEqual(escapeJson("a\tb"), "a\\tb", "escape_json_basic: tab escapes")
 }
 
 // A `Contract` → JSON → `Contract` round-trip preserves every field
@@ -363,39 +319,40 @@ func testContractToJsonRoundTrip(): Unit {
   val ensClauses: List[String] = newList()
   ensClauses.add("result == x + 1")
   val decls: List[ContractDecl] = newList()
-  decls.add(ContractDecl(
-    kind            = "func",
-    name            = "succ",
-    repr            = "pub func succ(x: in Int): Int",
-    isPure          = true,
-    stability       = "stable:0.1",
-    requiresClauses = reqClauses,
-    ensuresClauses  = ensClauses,
-    body            = Some(value = "x + 1"),
-    params          = params))
+  decls.add(
+    ContractDecl(
+      kind = "func",
+      name = "succ",
+      repr = "pub func succ(x: in Int): Int",
+      isPure = true,
+      stability = "stable:0.1",
+      requiresClauses = reqClauses,
+      ensuresClauses = ensClauses,
+      body = Some(value = "x + 1"),
+      params = params
+    )
+  )
   val original = Contract(
-    packageName   = "RoundTrip.Pkg",
-    version       = "1.2.3",
-    level         = "runtime_checked",
+    packageName = "RoundTrip.Pkg",
+    version = "1.2.3",
+    level = "runtime_checked",
     formatVersion = 2,
-    decls         = decls)
+    decls = decls
+  )
 
-  val json    = contractToJson(original)
-  val parsed  = unwrapOrFail(parseFromJson(json), "round_trip")
+  val json = contractToJson(original)
+  val parsed = unwrapOrFail(parseFromJson(json), "round_trip")
 
   // Validate the structural fields.
-  assertEqual(parsed.packageName, original.packageName,
-    "round_trip: packageName")
+  assertEqual(parsed.packageName, original.packageName, "round_trip: packageName")
   assertEqual(parsed.version, original.version, "round_trip: version")
   assertEqual(parsed.level, original.level, "round_trip: level")
-  assertEqualInt(parsed.formatVersion, original.formatVersion,
-    "round_trip: formatVersion")
+  assertEqualInt(parsed.formatVersion, original.formatVersion, "round_trip: formatVersion")
   assertEqualInt(parsed.decls.count, 1, "round_trip: one decl")
   val d = parsed.decls[0]
   assertEqual(d.kind, "func", "round_trip: decl.kind")
   assertEqual(d.name, "succ", "round_trip: decl.name")
-  assertEqual(d.repr, "pub func succ(x: in Int): Int",
-    "round_trip: decl.repr")
+  assertEqual(d.repr, "pub func succ(x: in Int): Int", "round_trip: decl.repr")
   assertTrue(d.isPure, "round_trip: decl.isPure")
   assertEqual(d.stability, "stable:0.1", "round_trip: decl.stability")
   assertEqualInt(d.requiresClauses.count, 1, "round_trip: requires count")
@@ -404,7 +361,7 @@ func testContractToJsonRoundTrip(): Unit {
   assertEqual(d.ensuresClauses[0], "result == x + 1", "round_trip: ensures[0]")
   match d.body {
     case Some(b) -> assertEqual(b, "x + 1", "round_trip: body")
-    case None    -> panic("round_trip: expected body Some")
+    case None -> panic("round_trip: expected body Some")
   }
   assertEqualInt(d.params.count, 2, "round_trip: param count")
   assertEqual(d.params[0].name, "x", "round_trip: param[0].name")
@@ -422,35 +379,27 @@ func testContractToJsonOmitsDefaults(): Unit {
   val noParams: List[ContractParam] = newList()
   val empty: List[String] = newList()
   val decls: List[ContractDecl] = newList()
-  decls.add(ContractDecl(
-    kind            = "record",
-    name            = "Point",
-    repr            = "pub record Point { x: Int, y: Int }",
-    isPure          = false,
-    stability       = "",
-    requiresClauses = empty,
-    ensuresClauses  = empty,
-    body            = None,
-    params          = noParams))
-  val c = Contract(
-    packageName   = "Geom",
-    version       = "0.1.0",
-    level         = "runtime_checked",
-    formatVersion = 2,
-    decls         = decls)
+  decls.add(
+    ContractDecl(
+      kind = "record",
+      name = "Point",
+      repr = "pub record Point { x: Int, y: Int }",
+      isPure = false,
+      stability = "",
+      requiresClauses = empty,
+      ensuresClauses = empty,
+      body = None,
+      params = noParams
+    )
+  )
+  val c = Contract(packageName = "Geom", version = "0.1.0", level = "runtime_checked", formatVersion = 2, decls = decls)
   val json = contractToJson(c)
-  assertTrue(not Str.contains(json, "\"stability\""),
-    "omits_defaults: empty stability key absent")
-  assertTrue(not Str.contains(json, "\"pure\""),
-    "omits_defaults: false pure key absent")
-  assertTrue(not Str.contains(json, "\"requires\""),
-    "omits_defaults: empty requires absent")
-  assertTrue(not Str.contains(json, "\"ensures\""),
-    "omits_defaults: empty ensures absent")
-  assertTrue(not Str.contains(json, "\"body\""),
-    "omits_defaults: None body absent")
-  assertTrue(not Str.contains(json, "\"params\""),
-    "omits_defaults: empty params absent")
+  assertTrue(not Str.contains(json, "\"stability\""), "omits_defaults: empty stability key absent")
+  assertTrue(not Str.contains(json, "\"pure\""), "omits_defaults: false pure key absent")
+  assertTrue(not Str.contains(json, "\"requires\""), "omits_defaults: empty requires absent")
+  assertTrue(not Str.contains(json, "\"ensures\""), "omits_defaults: empty ensures absent")
+  assertTrue(not Str.contains(json, "\"body\""), "omits_defaults: None body absent")
+  assertTrue(not Str.contains(json, "\"params\""), "omits_defaults: empty params absent")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -463,33 +412,34 @@ func testContractToJsonOmitsDefaults(): Unit {
 // types, multi-case enums, generic interfaces, unions with mixed
 // named + positional fields, and the `TAValue` (array size) generic
 // argument path.
-
-func findDeclByKind(
-  decls: in List[ContractDecl],
-  kind: in String,
-  name: in String): Option[ContractDecl]
-{
+func findDeclByKind(decls: in List[ContractDecl], kind: in String, name: in String): Option[ContractDecl] {
   var i = 0
   while i < decls.count {
     val d = decls[i]
-    if d.kind == kind and d.name == name { return Some(value = d) }
+    if d.kind == kind and d.name == name {
+      return Some(value = d)
+    }
     i = i + 1
   }
   None
 }
 
-func unwrapDeclOrFail(
-  opt: in Option[ContractDecl],
-  label: in String): ContractDecl
-{
+func unwrapDeclOrFail(opt: in Option[ContractDecl], label: in String): ContractDecl {
   match opt {
     case Some(d) -> d
-    case None    -> {
+    case None -> {
       panic(label + ": expected decl, found none")
       ContractDecl(
-        kind = "", name = "", repr = "", isPure = false,
-        stability = "", requiresClauses = newList(),
-        ensuresClauses = newList(), body = None, params = newList())
+        kind = "",
+        name = "",
+        repr = "",
+        isPure = false,
+        stability = "",
+        requiresClauses = newList(),
+        ensuresClauses = newList(),
+        body = None,
+        params = newList()
+      )
     }
   }
 }
@@ -498,24 +448,21 @@ func unwrapDeclOrFail(
 func testLevelOfFileDefault(): Unit {
   val src = "package P\n\npub func f(): Int { 1 }\n"
   val pr = parse(src)
-  assertEqual(levelOfFile(pr.file), "runtime_checked",
-    "levelOfFile: unannotated → runtime_checked")
+  assertEqual(levelOfFile(pr.file), "runtime_checked", "levelOfFile: unannotated → runtime_checked")
 }
 
 // `levelOfFile` returns "axiom" for `@axiom` file-level annotation.
 func testLevelOfFileAxiom(): Unit {
   val src = "@axiom\npackage P\n\npub func ax(): Int { 1 }\n"
   val pr = parse(src)
-  assertEqual(levelOfFile(pr.file), "axiom",
-    "levelOfFile: @axiom → axiom")
+  assertEqual(levelOfFile(pr.file), "axiom", "levelOfFile: @axiom → axiom")
 }
 
 // `levelOfFile` returns "proof_required" without modifier.
 func testLevelOfFileProofRequired(): Unit {
   val src = "@proof_required\npackage P\n\npub func pf(): Int { 1 }\n"
   val pr = parse(src)
-  assertEqual(levelOfFile(pr.file), "proof_required",
-    "levelOfFile: @proof_required → proof_required")
+  assertEqual(levelOfFile(pr.file), "proof_required", "levelOfFile: @proof_required → proof_required")
 }
 
 // `buildContractFromFile` covers opaque types (reprForOpaque).
@@ -523,13 +470,9 @@ func testBuildOpaque(): Unit {
   val src = "package P\n\npub opaque type Money { amount: Int }\n"
   val pr = parse(src)
   val c = buildContractFromFile(pr.file, "1.0.0")
-  val d = unwrapDeclOrFail(
-    findDeclByKind(c.decls, "opaque", "Money"),
-    "buildContractFromFile: opaque Money missing")
-  assertTrue(Str.contains(d.repr, "pub opaque type Money"),
-    "opaque: repr header present (got " + d.repr + ")")
-  assertTrue(Str.contains(d.repr, "amount: Int"),
-    "opaque: amount field present")
+  val d = unwrapDeclOrFail(findDeclByKind(c.decls, "opaque", "Money"), "buildContractFromFile: opaque Money missing")
+  assertTrue(Str.contains(d.repr, "pub opaque type Money"), "opaque: repr header present (got " + d.repr + ")")
+  assertTrue(Str.contains(d.repr, "amount: Int"), "opaque: amount field present")
 }
 
 // `buildContractFromFile` covers multi-case enums (reprForEnum).
@@ -537,15 +480,10 @@ func testBuildEnum(): Unit {
   val src = "package P\n\npub enum Color { Red, Green, Blue }\n"
   val pr = parse(src)
   val c = buildContractFromFile(pr.file, "1.0.0")
-  val d = unwrapDeclOrFail(
-    findDeclByKind(c.decls, "enum", "Color"),
-    "buildContractFromFile: enum Color missing")
-  assertTrue(Str.contains(d.repr, "Red"),
-    "enum: Red case present")
-  assertTrue(Str.contains(d.repr, "Green"),
-    "enum: Green case present")
-  assertTrue(Str.contains(d.repr, "Blue"),
-    "enum: Blue case present")
+  val d = unwrapDeclOrFail(findDeclByKind(c.decls, "enum", "Color"), "buildContractFromFile: enum Color missing")
+  assertTrue(Str.contains(d.repr, "Red"), "enum: Red case present")
+  assertTrue(Str.contains(d.repr, "Green"), "enum: Green case present")
+  assertTrue(Str.contains(d.repr, "Blue"), "enum: Blue case present")
 }
 
 // `buildContractFromFile` covers generic interfaces.
@@ -553,13 +491,9 @@ func testBuildGenericInterface(): Unit {
   val src = "package P\n\npub interface Box[T] {\n  func get(): T\n}\n"
   val pr = parse(src)
   val c = buildContractFromFile(pr.file, "1.0.0")
-  val d = unwrapDeclOrFail(
-    findDeclByKind(c.decls, "interface", "Box"),
-    "buildContractFromFile: interface Box missing")
-  assertTrue(Str.contains(d.repr, "Box[T]"),
-    "interface: generic param list present (got " + d.repr + ")")
-  assertTrue(Str.contains(d.repr, "func get()"),
-    "interface: method get() present")
+  val d = unwrapDeclOrFail(findDeclByKind(c.decls, "interface", "Box"), "buildContractFromFile: interface Box missing")
+  assertTrue(Str.contains(d.repr, "Box[T]"), "interface: generic param list present (got " + d.repr + ")")
+  assertTrue(Str.contains(d.repr, "func get()"), "interface: method get() present")
 }
 
 // `buildContractFromFile` covers unions with mixed positional + named
@@ -567,19 +501,12 @@ func testBuildGenericInterface(): Unit {
 // via the labelled form (`Square(side: Int)`).  Both branches of
 // `renderUnionCase` are exercised (#1370).
 func testBuildUnionMixedFields(): Unit {
-  val src = "package P\n\npub union Shape {\n" +
-            "  case Circle(Int)\n" +
-            "  case Square(side: Int)\n" +
-            "}\n"
+  val src = "package P\n\npub union Shape {\n" + "  case Circle(Int)\n" + "  case Square(side: Int)\n" + "}\n"
   val pr = parse(src)
   val c = buildContractFromFile(pr.file, "1.0.0")
-  val d = unwrapDeclOrFail(
-    findDeclByKind(c.decls, "union", "Shape"),
-    "buildContractFromFile: union Shape missing")
-  assertTrue(Str.contains(d.repr, "Circle"),
-    "union: Circle case present")
-  assertTrue(Str.contains(d.repr, "Square"),
-    "union: Square case present")
+  val d = unwrapDeclOrFail(findDeclByKind(c.decls, "union", "Shape"), "buildContractFromFile: union Shape missing")
+  assertTrue(Str.contains(d.repr, "Circle"), "union: Circle case present")
+  assertTrue(Str.contains(d.repr, "Square"), "union: Square case present")
 }
 
 // `renderTypeArg` covers the `TAValue` (integer-literal array size)
@@ -588,11 +515,8 @@ func testBuildArrayTypeArg(): Unit {
   val src = "package P\n\npub record Buf { bytes: array[4, Int] }\n"
   val pr = parse(src)
   val c = buildContractFromFile(pr.file, "1.0.0")
-  val d = unwrapDeclOrFail(
-    findDeclByKind(c.decls, "record", "Buf"),
-    "buildContractFromFile: record Buf missing")
-  assertTrue(Str.contains(d.repr, "array[4, Int]"),
-    "array: TAValue literal renders faithfully (got " + d.repr + ")")
+  val d = unwrapDeclOrFail(findDeclByKind(c.decls, "record", "Buf"), "buildContractFromFile: record Buf missing")
+  assertTrue(Str.contains(d.repr, "array[4, Int]"), "array: TAValue literal renders faithfully (got " + d.repr + ")")
 }
 
 // `buildContractFromFile` carries the supplied version.
@@ -600,32 +524,29 @@ func testBuildVersionThreaded(): Unit {
   val src = "package P\n\npub func f(): Int { 1 }\n"
   val pr = parse(src)
   val c = buildContractFromFile(pr.file, "2.3.4")
-  assertEqual(c.version, "2.3.4",
-    "buildContractFromFile: version argument carried through")
+  assertEqual(c.version, "2.3.4", "buildContractFromFile: version argument carried through")
 }
 
 // `buildContractFromFile` filters out non-pub items.
 func testBuildFiltersNonPub(): Unit {
-  val src = "package P\n\nfunc internalOnly(): Int { 1 }\n" +
-            "pub func publicOne(): Int { 1 }\n"
+  val src = "package P\n\nfunc internalOnly(): Int { 1 }\n" + "pub func publicOne(): Int { 1 }\n"
   val pr = parse(src)
   val c = buildContractFromFile(pr.file, "1.0.0")
   val nonPub = findDeclByKind(c.decls, "func", "internalOnly")
   match nonPub {
-    case None    -> ()
+    case None -> ()
     case Some(_) -> panic("buildContractFromFile: non-pub item leaked into decls")
   }
   val pubd = findDeclByKind(c.decls, "func", "publicOne")
   match pubd {
     case Some(_) -> ()
-    case None    -> panic("buildContractFromFile: pub item missing from decls")
+    case None -> panic("buildContractFromFile: pub item missing from decls")
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Driver
 // ─────────────────────────────────────────────────────────────────────────────
-
 func main(): Int {
   testMinimal()
   testEmptyObjectDefaults()

@@ -1,18 +1,17 @@
-// jvm/self_test_b5.l — Stage B5 smoke test: stack-map frame computation.
-//
-// Builds B5Test.class in /tmp/lyric-jvm-b5/ with two static methods:
-//
-//   public static int max(int a, int b)   — has an if/else branch
-//   public static void main(String[] args) — entry point (just returns)
-//
-// The `max` method requires a StackMapTable attribute (JVMS §4.7.4) because
-// it contains a branch instruction.  Without a correct StackMapTable the JVM
-// class verifier rejects the class at load time with a VerifyError.
-//
-// The Expecto test (JvmLoweringB5Test.fs) runs this program to write the
-// class file, then executes `java -cp /tmp/lyric-jvm-b5 B5Test` and verifies
-// exit code 0, proving the generated StackMapTable is accepted.
-
+//! jvm/self_test_b5.l — Stage B5 smoke test: stack-map frame computation.
+//!
+//! Builds B5Test.class in /tmp/lyric-jvm-b5/ with two static methods:
+//!
+//!   public static int max(int a, int b)   — has an if/else branch
+//!   public static void main(String[] args) — entry point (just returns)
+//!
+//! The `max` method requires a StackMapTable attribute (JVMS §4.7.4) because
+//! it contains a branch instruction.  Without a correct StackMapTable the JVM
+//! class verifier rejects the class at load time with a VerifyError.
+//!
+//! The Expecto test (JvmLoweringB5Test.fs) runs this program to write the
+//! class file, then executes `java -cp /tmp/lyric-jvm-b5 B5Test` and verifies
+//! exit code 0, proving the generated StackMapTable is accepted.
 package Jvm.SelfTestB5
 
 import Std.Core
@@ -35,7 +34,6 @@ import Jvm.Lowering
 //   LLabel("thenBranch")
 //   LIload(0)              // then: push a
 //   LIreturn
-
 func makeMaxMethod(): LFunc {
   val insns: List[LInsn] = newList()
   insns.add(LIload(slot = 0))
@@ -52,12 +50,12 @@ func makeMaxMethod(): LFunc {
   params.add(JInt)
 
   LFunc(
-    flags     = ACC_PUBLIC + ACC_STATIC,
-    name      = "max",
-    params    = params,
-    ret       = JInt,
-    insns     = insns,
-    maxStack  = 2,
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "max",
+    params = params,
+    ret = JInt,
+    insns = insns,
+    maxStack = 2,
     maxLocals = 2
   )
 }
@@ -66,7 +64,6 @@ func makeMaxMethod(): LFunc {
 //
 // No-op entry point; just returns.  The JVM verifier will load (and verify)
 // `max` even though it is never called by `main`.
-
 func makeMainMethod(): LFunc {
   val insns: List[LInsn] = newList()
   insns.add(LReturn)
@@ -75,25 +72,24 @@ func makeMainMethod(): LFunc {
   params.add(JArray(elem = JRef(className = "java/lang/String")))
 
   LFunc(
-    flags     = ACC_PUBLIC + ACC_STATIC,
-    name      = "main",
-    params    = params,
-    ret       = JVoid,
-    insns     = insns,
-    maxStack  = 0,
+    flags = ACC_PUBLIC + ACC_STATIC,
+    name = "main",
+    params = params,
+    ret = JVoid,
+    insns = insns,
+    maxStack = 0,
     maxLocals = 1
   )
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
-
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b5"
   val _ = createDir(outDir)
 
   val pool = poolNew()
 
-  val maxMethod  = lowerFunc(makeMaxMethod(),  pool)
+  val maxMethod = lowerFunc(makeMaxMethod(), pool)
   val mainMethod = lowerFunc(makeMainMethod(), pool)
 
   val methods: List[MethodInfo] = newList()
@@ -104,9 +100,9 @@ func main(): Unit {
   val cf = makeClassFull("B5Test", fields, methods)
 
   val bytes = serializeClassWithPool(cf, pool)
-  val path  = outDir + "/B5Test.class"
+  val path = outDir + "/B5Test.class"
   match writeBytes(path, bytes) {
-    case Ok(_)  -> println("wrote B5Test.class (" + toString(bytes.count) + " bytes)")
+    case Ok(_) -> println("wrote B5Test.class (" + toString(bytes.count) + " bytes)")
     case Err(_) -> println("writeBytes failed for B5Test.class")
   }
 }

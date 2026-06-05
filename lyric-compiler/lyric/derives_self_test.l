@@ -1,6 +1,6 @@
-// derives_self_test.l — exercises the self-hosted Lyric.Derives library.
-// Compiled and executed by SelfHostedDerivesTests.fs.
-// Exit 0 + "ok" in stdout means all checks held.
+//! derives_self_test.l — exercises the self-hosted Lyric.Derives library.
+//! Compiled and executed by SelfHostedDerivesTests.fs.
+//! Exit 0 + "ok" in stdout means all checks held.
 package Lyric.DerivesSelfTest
 
 import Std.Core
@@ -11,25 +11,25 @@ import Lyric.Parser
 import Lyric.Derives
 import Lyric.Mono
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func parseDeriveAndCount(src: in String): Int {
-  val pr  = parse(src)
-  val sf  = deriveFile(pr.file)
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
   sf.items.count
 }
 
 func parseDeriveAndFindFunc(src: in String, name: in String): Bool {
-  val pr  = parse(src)
-  val sf  = deriveFile(pr.file)
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
   var i = 0
   while i < sf.items.count {
     match sf.items[i].kind {
       case IFunc(decl) -> {
-        if decl.name == name { return true }
+        if decl.name == name {
+          return true
+        }
       }
       case _ -> ()
     }
@@ -49,22 +49,32 @@ func countMethodCalls(e: in Expr, methodName: in String): Int {
     case ECall(fn, args) -> {
       match fn.kind {
         case EMember(receiver, name) -> {
-          if name == methodName { n = n + 1 }
+          if name == methodName {
+            n = n + 1
+          }
           n = n + countMethodCalls(receiver, methodName)
         }
-        case _ -> { n = n + countMethodCalls(fn, methodName) }
+        case _ -> {
+          n = n + countMethodCalls(fn, methodName)
+        }
       }
       var i = 0
       while i < args.count {
         match args[i] {
-          case CAPositional(expr) -> { n = n + countMethodCalls(expr, methodName) }
-          case CANamed(_, value, _) -> { n = n + countMethodCalls(value, methodName) }
+          case CAPositional(expr) -> {
+            n = n + countMethodCalls(expr, methodName)
+          }
+          case CANamed(_, value, _) -> {
+            n = n + countMethodCalls(value, methodName)
+          }
         }
         i = i + 1
       }
     }
-    case EMember(receiver, _) -> { n = n + countMethodCalls(receiver, methodName) }
-    case EBinop(_, lhs, rhs)  -> {
+    case EMember(receiver, _) -> {
+      n = n + countMethodCalls(receiver, methodName)
+    }
+    case EBinop(_, lhs, rhs) -> {
       n = n + countMethodCalls(lhs, methodName)
       n = n + countMethodCalls(rhs, methodName)
     }
@@ -72,11 +82,15 @@ func countMethodCalls(e: in Expr, methodName: in String): Int {
       var i = 0
       while i < body.statements.count {
         match body.statements[i].kind {
-          case SExpr(expr)   -> { n = n + countMethodCalls(expr, methodName) }
-          case SReturn(opt)  -> {
+          case SExpr(expr) -> {
+            n = n + countMethodCalls(expr, methodName)
+          }
+          case SReturn(opt) -> {
             match opt {
-              case Some(expr) -> { n = n + countMethodCalls(expr, methodName) }
-              case None       -> ()
+              case Some(expr) -> {
+                n = n + countMethodCalls(expr, methodName)
+              }
+              case None -> ()
             }
           }
           case _ -> ()
@@ -84,7 +98,9 @@ func countMethodCalls(e: in Expr, methodName: in String): Int {
         i = i + 1
       }
     }
-    case EParen(inner) -> { n = n + countMethodCalls(inner, methodName) }
+    case EParen(inner) -> {
+      n = n + countMethodCalls(inner, methodName)
+    }
     case _ -> ()
   }
   n
@@ -102,20 +118,30 @@ func findFuncBody(sf: in SourceFile, name: in String): Option[Expr] {
           match decl.body {
             case Some(fb) -> {
               match fb {
-                case FBExpr(expr) -> { return Some(value = expr) }
+                case FBExpr(expr) -> {
+                  return Some(value = expr)
+                }
                 case FBBlock(blk) -> {
                   if blk.statements.count > 0 {
                     match blk.statements[0].kind {
-                      case SReturn(opt) -> { return opt }
-                      case SExpr(e)     -> { return Some(value = e) }
-                      case _            -> { return None }
+                      case SReturn(opt) -> {
+                        return opt
+                      }
+                      case SExpr(e) -> {
+                        return Some(value = e)
+                      }
+                      case _ -> {
+                        return None
+                      }
                     }
                   }
                   return None
                 }
               }
             }
-            case None -> { return None }
+            case None -> {
+              return None
+            }
           }
         }
       }
@@ -126,11 +152,9 @@ func findFuncBody(sf: in SourceFile, name: in String): Option[Expr] {
   None
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func testNoAnnotationNoSynth(): Unit {
   val src = "package P\nrecord Point { x: Int; y: Int }\n"
   val cnt = parseDeriveAndCount(src)
@@ -139,26 +163,23 @@ func testNoAnnotationNoSynth(): Unit {
 
 func testDeriveEqualsRecord(): Unit {
   val src = "package P\n@derive(Equals)\nrecord Point { x: Int; y: Int }\n"
-  assertTrue(parseDeriveAndFindFunc(src, "Point.equals"),
-    "equals-rec: Point.equals synthesised")
+  assertTrue(parseDeriveAndFindFunc(src, "Point.equals"), "equals-rec: Point.equals synthesised")
 }
 
 func testDeriveHashRecord(): Unit {
   val src = "package P\n@derive(Hash)\nrecord Point { x: Int; y: Int }\n"
-  assertTrue(parseDeriveAndFindFunc(src, "Point.hash"),
-    "hash-rec: Point.hash synthesised")
+  assertTrue(parseDeriveAndFindFunc(src, "Point.hash"), "hash-rec: Point.hash synthesised")
 }
 
 func testDeriveShowRecord(): Unit {
   val src = "package P\n@derive(Show)\nrecord Point { x: Int; y: Int }\n"
-  assertTrue(parseDeriveAndFindFunc(src, "Point.show"),
-    "show-rec: Point.show synthesised")
+  assertTrue(parseDeriveAndFindFunc(src, "Point.show"), "show-rec: Point.show synthesised")
 }
 
 func testGenerateJsonRecord(): Unit {
   val src = "package P\n@generate(Json)\nrecord Point { x: Int; y: Int }\n"
-  val pr  = parse(src)
-  val sf  = deriveFile(pr.file)
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
   assertEqualInt(sf.items.count, 2, "json-rec: 1 record + 1 synth (toJson)")
   assertTrue(parseDeriveAndFindFunc(src, "Point.toJson"), "json-rec: Point.toJson synthesised")
 }
@@ -171,15 +192,13 @@ func testGenerateJsonRecord(): Unit {
 // (`testGenerateJsonRecord` above) would not catch it.
 func testGenerateJsonRecordStringEscape(): Unit {
   val src = "package P\n@generate(Json)\nrecord Msg { text: String }\n"
-  val pr  = parse(src)
-  val sf  = deriveFile(pr.file)
-  assertTrue(parseDeriveAndFindFunc(src, "Msg.toJson"),
-    "json-string: Msg.toJson synthesised")
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
+  assertTrue(parseDeriveAndFindFunc(src, "Msg.toJson"), "json-string: Msg.toJson synthesised")
   match findFuncBody(sf, "Msg.toJson") {
     case Some(body) -> {
       val replaceCount = countMethodCalls(body, "replace")
-      assertEqualInt(replaceCount, 5,
-        "json-string: Msg.toJson contains five chained .replace() calls (escape chain)")
+      assertEqualInt(replaceCount, 5, "json-string: Msg.toJson contains five chained .replace() calls (escape chain)")
     }
     case None -> assertTrue(false, "json-string: Msg.toJson body not found")
   }
@@ -187,43 +206,38 @@ func testGenerateJsonRecordStringEscape(): Unit {
 
 func testMultipleDerives(): Unit {
   val src = "package P\n@derive(Equals)\n@derive(Hash)\n@derive(Show)\nrecord Point { x: Int; y: Int }\n"
-  val pr  = parse(src)
-  val sf  = deriveFile(pr.file)
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
   val cnt = sf.items.count
   assertEqualInt(cnt, 4, "multi-derive: 1 record + 3 synths")
   assertTrue(parseDeriveAndFindFunc(src, "Point.equals"), "multi-derive: equals present")
-  assertTrue(parseDeriveAndFindFunc(src, "Point.hash"),   "multi-derive: hash present")
-  assertTrue(parseDeriveAndFindFunc(src, "Point.show"),   "multi-derive: show present")
+  assertTrue(parseDeriveAndFindFunc(src, "Point.hash"), "multi-derive: hash present")
+  assertTrue(parseDeriveAndFindFunc(src, "Point.show"), "multi-derive: show present")
 }
 
 func testDeriveEqualsDistinctType(): Unit {
   val src = "package P\ntype UserId = Int derives Equals\n"
-  assertTrue(parseDeriveAndFindFunc(src, "UserId.equals"),
-    "equals-distinct: UserId.equals synthesised")
+  assertTrue(parseDeriveAndFindFunc(src, "UserId.equals"), "equals-distinct: UserId.equals synthesised")
 }
 
 func testDeriveHashDistinctType(): Unit {
   val src = "package P\ntype UserId = Int derives Hash\n"
-  assertTrue(parseDeriveAndFindFunc(src, "UserId.hash"),
-    "hash-distinct: UserId.hash synthesised")
+  assertTrue(parseDeriveAndFindFunc(src, "UserId.hash"), "hash-distinct: UserId.hash synthesised")
 }
 
 func testDeriveShowDistinctType(): Unit {
   val src = "package P\ntype UserId = Int derives Show\n"
-  assertTrue(parseDeriveAndFindFunc(src, "UserId.show"),
-    "show-distinct: UserId.show synthesised")
+  assertTrue(parseDeriveAndFindFunc(src, "UserId.show"), "show-distinct: UserId.show synthesised")
 }
 
 func testDeriveEqualsEmptyRecord(): Unit {
   val src = "package P\n@derive(Equals)\nrecord Empty {}\n"
-  assertTrue(parseDeriveAndFindFunc(src, "Empty.equals"),
-    "equals-empty: Empty.equals synthesised (empty record)")
+  assertTrue(parseDeriveAndFindFunc(src, "Empty.equals"), "equals-empty: Empty.equals synthesised (empty record)")
 }
 
 func testDeriveShowEmptyRecord(): Unit {
   val src = "package P\n@derive(Show)\nrecord Empty {}\n"
-  assertTrue(parseDeriveAndFindFunc(src, "Empty.show"),
-    "show-empty: Empty.show synthesised (empty record)")
+  assertTrue(parseDeriveAndFindFunc(src, "Empty.show"), "show-empty: Empty.show synthesised (empty record)")
 }
 
 // Regression for #939: synthesised UFCS helpers must inherit the parent
@@ -232,8 +246,8 @@ func testDeriveShowEmptyRecord(): Unit {
 // would fail visibility checks.
 func testDeriveVisibilityPub(): Unit {
   val src = "package P\npub @derive(Equals)\nrecord Point { x: Int; y: Int }\n"
-  val pr  = parse(src)
-  val sf  = deriveFile(pr.file)
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
   var i = 0
   var found = false
   while i < sf.items.count {
@@ -245,20 +259,19 @@ func testDeriveVisibilityPub(): Unit {
           match it.visibility {
             case Some(v) -> {
               match v {
-                case VisPub(_) -> ()  // expected
+                case VisPub(_) -> ()
+                // expected
                 case VisInternal(_) -> {
-                  assertTrue(false,
-                    "visibility-pub: Point.equals should be VisPub, got VisInternal")
+                  assertTrue(false, "visibility-pub: Point.equals should be VisPub, got VisInternal")
                 }
               }
               match decl.visibility {
-                case Some(VisPub(_)) -> ()  // expected
-                case _ -> assertTrue(false,
-                  "visibility-pub: Point.equals FunctionDecl should also carry VisPub")
+                case Some(VisPub(_)) -> ()
+                // expected
+                case _ -> assertTrue(false, "visibility-pub: Point.equals FunctionDecl should also carry VisPub")
               }
             }
-            case None -> assertTrue(false,
-              "visibility-pub: Point.equals should have VisPub but visibility was None")
+            case None -> assertTrue(false, "visibility-pub: Point.equals should have VisPub but visibility was None")
           }
         }
       }
@@ -272,8 +285,8 @@ func testDeriveVisibilityPub(): Unit {
 // Regression for #939: package-private parent → package-private helper.
 func testDeriveVisibilityPackagePrivate(): Unit {
   val src = "package P\n@derive(Hash)\nrecord Counter { n: Int }\n"
-  val pr  = parse(src)
-  val sf  = deriveFile(pr.file)
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
   var i = 0
   var found = false
   while i < sf.items.count {
@@ -283,9 +296,9 @@ func testDeriveVisibilityPackagePrivate(): Unit {
         if decl.name == "Counter.hash" {
           found = true
           match it.visibility {
-            case None -> ()  // expected — parent has no `pub` so helper stays package-private
-            case Some(_) -> assertTrue(false,
-              "visibility-pkg: Counter.hash should inherit None (package-private), got Some(_)")
+            case None -> ()
+            // expected — parent has no `pub` so helper stays package-private
+            case Some(_) -> assertTrue(false, "visibility-pkg: Counter.hash should inherit None (package-private), got Some(_)")
           }
         }
       }
@@ -298,8 +311,7 @@ func testDeriveVisibilityPackagePrivate(): Unit {
 
 func testExposedRecordDerive(): Unit {
   val src = "package P\n@derive(Equals)\npub exposed record Row { id: Int }\n"
-  assertTrue(parseDeriveAndFindFunc(src, "Row.equals"),
-    "exposed-rec: Row.equals synthesised from exposed record")
+  assertTrue(parseDeriveAndFindFunc(src, "Row.equals"), "exposed-rec: Row.equals synthesised from exposed record")
 }
 
 func testNoDerivesInListDoesNotSynth(): Unit {
@@ -312,14 +324,13 @@ func testNoDerivesInListDoesNotSynth(): Unit {
 func testIdempotent(): Unit {
   // deriveFile applied twice should not add duplicates if the synthesised
   // funcs don't carry @derive annotations themselves.
-  val src  = "package P\n@derive(Equals)\nrecord Point { x: Int; y: Int }\n"
-  val pr   = parse(src)
-  val sf1  = deriveFile(pr.file)
-  val sf2  = deriveFile(sf1)
+  val src = "package P\n@derive(Equals)\nrecord Point { x: Int; y: Int }\n"
+  val pr = parse(src)
+  val sf1 = deriveFile(pr.file)
+  val sf2 = deriveFile(sf1)
   // sf2 should have 1 record + 1 equals from sf1; deriving on the IFunc items
   // produces nothing so sf2.items.count == sf1.items.count == 2.
-  assertEqualInt(sf2.items.count, sf1.items.count,
-    "idempotent: second deriveFile adds nothing")
+  assertEqualInt(sf2.items.count, sf1.items.count, "idempotent: second deriveFile adds nothing")
 }
 
 // Projection of a distinct type whose underlying is `Bool` must call
@@ -330,14 +341,18 @@ func testIdempotent(): Unit {
 // without error.
 func testDeriveEqualsDistinctBool(): Unit {
   val src = "package P\ntype Flag = Bool derives Equals\n"
-  assertTrue(parseDeriveAndFindFunc(src, "Flag.equals"),
-    "equals-distinct-bool: Flag.equals synthesised (projectionMethod Bool arm)")
+  assertTrue(
+    parseDeriveAndFindFunc(src, "Flag.equals"),
+    "equals-distinct-bool: Flag.equals synthesised (projectionMethod Bool arm)"
+  )
 }
 
 func testDeriveShowDistinctBool(): Unit {
   val src = "package P\ntype Flag = Bool derives Show\n"
-  assertTrue(parseDeriveAndFindFunc(src, "Flag.show"),
-    "show-distinct-bool: Flag.show synthesised (projectionMethod Bool arm)")
+  assertTrue(
+    parseDeriveAndFindFunc(src, "Flag.show"),
+    "show-distinct-bool: Flag.show synthesised (projectionMethod Bool arm)"
+  )
 }
 
 // A type carrying BOTH a `derives X` clause and a `@derive(X)`
@@ -346,10 +361,7 @@ func testDeriveShowDistinctBool(): Unit {
 // accumulator to suppress the second synthesis.  Without that guard
 // the file would type-check fail on the duplicate `.equals` definition.
 func testDeriveAndAnnotationDontDuplicate(): Unit {
-  val src =
-    "package P\n" +
-    "@derive(Equals)\n" +
-    "record Foo derives Equals { x: Int }\n"
+  val src = "package P\n" + "@derive(Equals)\n" + "record Foo derives Equals { x: Int }\n"
   val pr = parse(src)
   val sf = deriveFile(pr.file)
   // Count Foo.equals occurrences — exactly one expected.
@@ -362,8 +374,7 @@ func testDeriveAndAnnotationDontDuplicate(): Unit {
     }
     i = i + 1
   }
-  assertEqualInt(count, 1,
-    "derives-and-annotation: Foo.equals synthesised exactly once (not duplicated)")
+  assertEqualInt(count, 1, "derives-and-annotation: Foo.equals synthesised exactly once (not duplicated)")
 }
 
 // #1796 regression: the monomorphizer must RETAIN the non-generic
@@ -379,7 +390,11 @@ func findFuncInFile(sf: in SourceFile, name: in String): Bool {
   var i = 0
   while i < sf.items.count {
     match sf.items[i].kind {
-      case IFunc(decl) -> { if decl.name == name { return true } }
+      case IFunc(decl) -> {
+        if decl.name == name {
+          return true
+        }
+      }
       case _ -> ()
     }
     i = i + 1
@@ -388,10 +403,7 @@ func findFuncInFile(sf: in SourceFile, name: in String): Bool {
 }
 
 func testMonoRetainsDerivedHelpers(): Unit {
-  val src =
-    "package P\n" +
-    "@derive(Equals)\n@derive(Hash)\n@derive(Show)\n" +
-    "record Point { x: Int; y: Int }\n" +
+  val src = "package P\n" + "@derive(Equals)\n@derive(Hash)\n@derive(Show)\n" + "record Point { x: Int; y: Int }\n" +
     "func gid[T](v: in T): T { v }\n"
   val pr = parse(src)
   val sf = deriveFile(pr.file)
@@ -400,8 +412,8 @@ func testMonoRetainsDerivedHelpers(): Unit {
   // The fix: monoFile must keep the non-generic helpers.
   val mr = monoFile(sf)
   assertTrue(findFuncInFile(mr.file, "Point.equals"), "mono-retain: monoFile keeps Point.equals (#1796)")
-  assertTrue(findFuncInFile(mr.file, "Point.hash"),   "mono-retain: monoFile keeps Point.hash (#1796)")
-  assertTrue(findFuncInFile(mr.file, "Point.show"),   "mono-retain: monoFile keeps Point.show (#1796)")
+  assertTrue(findFuncInFile(mr.file, "Point.hash"), "mono-retain: monoFile keeps Point.hash (#1796)")
+  assertTrue(findFuncInFile(mr.file, "Point.show"), "mono-retain: monoFile keeps Point.show (#1796)")
 }
 
 func main(): Unit {

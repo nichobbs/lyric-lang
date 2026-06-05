@@ -1,15 +1,14 @@
-// jvm/self_test_b54.l — Stage B54: while-loop accumulation (iinc, if_icmpgt, goto back).
-//
-// Generates Sums.class (Java 5 / major=49) with:
-//   sum(I)I — computes 1+2+...+n via a while loop
-//
-// Main prints:
-//   sum(5)  → 15
-//   sum(10) → 55
-//
-// Exercises: istore/iload for multiple locals, if_icmpgt for loop guard,
-//            iinc for counter, backward goto for loop body, iadd for accumulation.
-
+//! jvm/self_test_b54.l — Stage B54: while-loop accumulation (iinc, if_icmpgt, goto back).
+//!
+//! Generates Sums.class (Java 5 / major=49) with:
+//!   sum(I)I — computes 1+2+...+n via a while loop
+//!
+//! Main prints:
+//!   sum(5)  → 15
+//!   sum(10) → 55
+//!
+//! Exercises: istore/iload for multiple locals, if_icmpgt for loop guard,
+//!            iinc for counter, backward goto for loop body, iadd for accumulation.
 package Jvm.SelfTestB54
 
 import Std.Core
@@ -29,18 +28,23 @@ func makeSumsClassBytes(): List[Byte] {
   // DONE: return total
   val asm = newAssembler(pool)
   emitIconst(asm, 0)
-  emitIstore(asm, 1)     // total = 0
+  emitIstore(asm, 1)
+  // total = 0
   emitIconst(asm, 1)
-  emitIstore(asm, 2)     // i = 1
+  emitIstore(asm, 2)
+  // i = 1
   emitLabel(asm, "LOOP")
   emitIload(asm, 2)
   emitIload(asm, 0)
-  emitIfIcmpgt(asm, "DONE")  // if i > n: done
+  emitIfIcmpgt(asm, "DONE")
+  // if i > n: done
   emitIload(asm, 1)
   emitIload(asm, 2)
   emitIadd(asm)
-  emitIstore(asm, 1)     // total += i
-  emitIinc(asm, 2, 1)    // i++
+  emitIstore(asm, 1)
+  // total += i
+  emitIinc(asm, 2, 1)
+  // i++
   emitGoto(asm, "LOOP")
   emitLabel(asm, "DONE")
   emitIload(asm, 1)
@@ -60,11 +64,11 @@ func makeSumsClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOut   = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
   val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
-  val sumRef   = poolMethodref(pool, "Sums", "sum", "(I)I")
+  val sumRef = poolMethodref(pool, "Sums", "sum", "(I)I")
 
   // println(Sums.sum(5))   → 15
   emitGetstatic(asm, sysOut)
@@ -93,7 +97,7 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b54"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
@@ -108,9 +112,9 @@ func main(): Unit {
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB54",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

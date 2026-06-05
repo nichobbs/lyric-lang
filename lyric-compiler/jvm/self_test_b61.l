@@ -1,17 +1,16 @@
-// jvm/self_test_b61.l — Stage B61: long add, i2l widening, l2i narrowing.
-//
-// Generates LongOps.class with:
-//   addLongs(JJ)J   — a + b  (long add)
-//   widenToLong(I)J — (long) i  (i2l widening)
-//   narrowToInt(J)I — (int) n   (l2i narrowing)
-//
-// Main prints:
-//   addLongs(5000000000L, 3000000000L) → 8000000000
-//   widenToLong(-1)                    → -1
-//   narrowToInt(2147483647L)           → 2147483647
-//
-// Exercises: lload, ladd, lreturn, i2l, l2i; complements B26 (lmul+ldc2_w).
-
+//! jvm/self_test_b61.l — Stage B61: long add, i2l widening, l2i narrowing.
+//!
+//! Generates LongOps.class with:
+//!   addLongs(JJ)J   — a + b  (long add)
+//!   widenToLong(I)J — (long) i  (i2l widening)
+//!   narrowToInt(J)I — (int) n   (l2i narrowing)
+//!
+//! Main prints:
+//!   addLongs(5000000000L, 3000000000L) → 8000000000
+//!   widenToLong(-1)                    → -1
+//!   narrowToInt(2147483647L)           → 2147483647
+//!
+//! Exercises: lload, ladd, lreturn, i2l, l2i; complements B26 (lmul+ldc2_w).
 package Jvm.SelfTestB61
 
 import Std.Core
@@ -64,14 +63,14 @@ func makeLongOpsBytes(): List[Byte] {
 }
 
 func makeMainClassBytes(): List[Byte] {
-  val pool      = poolNew()
-  val asm       = newAssembler(pool)
+  val pool = poolNew()
+  val asm = newAssembler(pool)
 
-  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val printlnJ  = poolMethodref(pool, "java/io/PrintStream", "println", "(J)V")
-  val printlnI  = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
-  val addRef    = poolMethodref(pool, "LongOps", "addLongs",    "(JJ)J")
-  val widenRef  = poolMethodref(pool, "LongOps", "widenToLong", "(I)J")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val printlnJ = poolMethodref(pool, "java/io/PrintStream", "println", "(J)V")
+  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val addRef = poolMethodref(pool, "LongOps", "addLongs", "(JJ)J")
+  val widenRef = poolMethodref(pool, "LongOps", "widenToLong", "(I)J")
   val narrowRef = poolMethodref(pool, "LongOps", "narrowToInt", "(J)I")
 
   // println(LongOps.addLongs(5000000000L, 3000000000L)) → 8000000000
@@ -109,24 +108,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b61"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val longOpsBytes = makeLongOpsBytes()
-  val mainBytes    = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val longOpsClass = BuiltClass(binaryName = "LongOps", bytes = longOpsBytes)
-  val mainClass    = BuiltClass(binaryName = "Main",    bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(longOpsClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB61",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

@@ -1,17 +1,16 @@
-// jvm/self_test_b32.l — Stage B32: shift ops (ishl, ishr, iushr) and long comparison (lcmp).
-//
-// Generates ShiftOps.class with:
-//   shl(I,I)I  : ishl  — arithmetic left shift
-//   shr(I,I)I  : ishr  — arithmetic right shift (sign-extending)
-//   ushr(I,I)I : iushr — logical right shift (zero-filling)
-//   lcmp0(J,J)I: lcmp  — compare two longs, return -1/0/1
-//
-// Main prints:
-//   shl(1, 4)      =  16
-//   shr(-8, 1)     =  -4   (sign preserved)
-//   ushr(-1, 28)   =  15   (0xFFFFFFFF >>> 28 = 0xF)
-//   lcmp0(100L, 50L) = 1   (a > b)
-
+//! jvm/self_test_b32.l — Stage B32: shift ops (ishl, ishr, iushr) and long comparison (lcmp).
+//!
+//! Generates ShiftOps.class with:
+//!   shl(I,I)I  : ishl  — arithmetic left shift
+//!   shr(I,I)I  : ishr  — arithmetic right shift (sign-extending)
+//!   ushr(I,I)I : iushr — logical right shift (zero-filling)
+//!   lcmp0(J,J)I: lcmp  — compare two longs, return -1/0/1
+//!
+//! Main prints:
+//!   shl(1, 4)      =  16
+//!   shr(-8, 1)     =  -4   (sign preserved)
+//!   ushr(-1, 28)   =  15   (0xFFFFFFFF >>> 28 = 0xF)
+//!   lcmp0(100L, 50L) = 1   (a > b)
 package Jvm.SelfTestB32
 
 import Std.Core
@@ -80,14 +79,14 @@ func makeShiftOpsClassBytes(): List[Byte] {
 
 func makeMainClassBytes(): List[Byte] {
   val pool = poolNew()
-  val asm  = newAssembler(pool)
+  val asm = newAssembler(pool)
 
-  val sysOut    = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
-  val shlRef    = poolMethodref(pool, "ShiftOps", "shl",   "(II)I")
-  val shrRef    = poolMethodref(pool, "ShiftOps", "shr",   "(II)I")
-  val ushrRef   = poolMethodref(pool, "ShiftOps", "ushr",  "(II)I")
-  val lcmpRef   = poolMethodref(pool, "ShiftOps", "lcmp0", "(JJ)I")
-  val printlnI  = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
+  val sysOut = poolFieldref(pool, "java/lang/System", "out", "Ljava/io/PrintStream;")
+  val shlRef = poolMethodref(pool, "ShiftOps", "shl", "(II)I")
+  val shrRef = poolMethodref(pool, "ShiftOps", "shr", "(II)I")
+  val ushrRef = poolMethodref(pool, "ShiftOps", "ushr", "(II)I")
+  val lcmpRef = poolMethodref(pool, "ShiftOps", "lcmp0", "(JJ)I")
+  val printlnI = poolMethodref(pool, "java/io/PrintStream", "println", "(I)V")
 
   // shl(1, 4) = 16
   emitGetstatic(asm, sysOut)
@@ -133,24 +132,24 @@ func makeMainClassBytes(): List[Byte] {
 func main(): Unit {
   val outDir = "/tmp/lyric-jvm-b32"
   match createDir(outDir) {
-    case Ok(_)  -> ()
+    case Ok(_) -> ()
     case Err(_) -> ()
   }
 
   val shiftOpsBytes = makeShiftOpsClassBytes()
-  val mainBytes     = makeMainClassBytes()
+  val mainBytes = makeMainClassBytes()
 
   val shiftOpsClass = BuiltClass(binaryName = "ShiftOps", bytes = shiftOpsBytes)
-  val mainClass     = BuiltClass(binaryName = "Main",     bytes = mainBytes)
+  val mainClass = BuiltClass(binaryName = "Main", bytes = mainBytes)
   val classes: List[BuiltClass] = newList()
   classes.add(shiftOpsClass)
   classes.add(mainClass)
 
   val req = BuildRequest(
     packageName = "Jvm.SelfTestB32",
-    mainClass   = "Main",
-    version     = "0.1.0",
-    outPath     = outDir + "/hello.jar"
+    mainClass = "Main",
+    version = "0.1.0",
+    outPath = outDir + "/hello.jar"
   )
 
   if writeJarFromClasses(req, classes) {

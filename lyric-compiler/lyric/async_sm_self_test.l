@@ -1,22 +1,21 @@
-// async_sm_self_test.l — regression test for user-defined `async func`
-// IAsyncStateMachine synthesis (Phase B.0 + B.1, Epic #2070 / D086).
-//
-// Phase B.0 covers async functions whose bodies contain NO EAwait nodes.
-// Phase B.1 covers async functions whose bodies contain one or more EAwait
-// nodes: real AwaitUnsafeOnCompleted suspension with a state-dispatch switch,
-// typed awaiter fields, and resume labels.
-//
-// Test callers use `await asyncXxx(...)` because the kickoff returns Task<T>
-// (or Task for void); `emitBlockingAwait` in non-SM contexts synchronously
-// resolves via GetAwaiter().GetResult().
-//
-// Phase B.1 functions (`asyncAddTwo`, `asyncAddThree`, `asyncVoidChain`,
-// `asyncSumViaAwait`) await other async functions in their bodies, exercising
-// the full SM machinery including state dispatch, AwaitUnsafeOnCompleted,
-// resume labels, and awaiter-field stash/restore.
-//
-//   lyric test lyric-compiler/lyric/async_sm_self_test.l
-
+//! async_sm_self_test.l — regression test for user-defined `async func`
+//! IAsyncStateMachine synthesis (Phase B.0 + B.1, Epic #2070 / D086).
+//!
+//! Phase B.0 covers async functions whose bodies contain NO EAwait nodes.
+//! Phase B.1 covers async functions whose bodies contain one or more EAwait
+//! nodes: real AwaitUnsafeOnCompleted suspension with a state-dispatch switch,
+//! typed awaiter fields, and resume labels.
+//!
+//! Test callers use `await asyncXxx(...)` because the kickoff returns Task<T>
+//! (or Task for void); `emitBlockingAwait` in non-SM contexts synchronously
+//! resolves via GetAwaiter().GetResult().
+//!
+//! Phase B.1 functions (`asyncAddTwo`, `asyncAddThree`, `asyncVoidChain`,
+//! `asyncSumViaAwait`) await other async functions in their bodies, exercising
+//! the full SM machinery including state dispatch, AwaitUnsafeOnCompleted,
+//! resume labels, and awaiter-field stash/restore.
+//!
+//!   lyric test lyric-compiler/lyric/async_sm_self_test.l
 @test_module
 package Lyric.AsyncSmSelfTest
 
@@ -24,7 +23,6 @@ import Std.Core
 import Std.Testing
 
 // ── Phase B.0: no awaits in body ─────────────────────────────────────────────
-
 // Returns an Int.  No awaits in the body.
 async func asyncAddOne(n: in Int): Int {
   n + 1
@@ -50,12 +48,13 @@ async func asyncReturnExplicit(n: in Int): Int {
 }
 
 async func asyncReturnFromBranch(n: in Int): Int {
-  if n > 0 { return n }
+  if n > 0 {
+    return n
+  }
   0 - n
 }
 
 // ── Phase B.1: awaits in body ─────────────────────────────────────────────────
-
 // Two sequential awaits: each chains into Phase B.0 asyncAddOne.
 // asyncAddTwo(n) = n + 2
 async func asyncAddTwo(n: in Int): Int {
@@ -84,7 +83,6 @@ async func asyncSumViaAwait(a: in Int, b: in Int): Int {
 }
 
 // ── Phase B.0 tests ───────────────────────────────────────────────────────────
-
 test "non-void async func: Int return" {
   val result = await asyncAddOne(41)
   assertEqualInt(result, 42, "asyncAddOne(41) should return 42")
@@ -125,7 +123,6 @@ test "non-void async func: explicit return from branch computes correct value" {
 }
 
 // ── Phase B.1 tests ───────────────────────────────────────────────────────────
-
 test "Phase B.1: two sequential awaits produce correct result" {
   val result = await asyncAddTwo(10)
   assertEqualInt(result, 12, "asyncAddTwo(10) should return 12")
