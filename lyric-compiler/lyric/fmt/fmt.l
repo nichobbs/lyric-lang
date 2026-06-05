@@ -31,7 +31,11 @@ import Lyric.Parser
 // ─────────────────────────────────────────────────────────────────────────────
 pub union HarvestedItem {
   /// A `//` or `/* */` comment.  `text` includes the leading prefix.
-  case HiComment(text: String, offset: Int)
+  /// `trailing` is true when the comment sat on the same source line as
+  /// the preceding token (no newline between them) — i.e. an end-of-line
+  /// comment that must be re-attached to the previous output line rather
+  /// than emitted as a standalone leading line.
+  case HiComment(text: String, offset: Int, trailing: Bool)
   /// One blank line in the original source (a run of 2+ consecutive
   /// `TKNewline` trivia).  Offset is the start of the run; multiple
   /// consecutive blank lines collapse to a single marker so the
@@ -42,7 +46,7 @@ pub union HarvestedItem {
 @pure
 func harvestedOffset(h: in HarvestedItem): Int {
   match h {
-    case HiComment(_, o) -> o
+    case HiComment(_, o, _) -> o
     case HiBlank(o) -> o
   }
 }
@@ -71,7 +75,7 @@ pub func popTriviaBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
   val acc: List[String] = newList()
   while ctx.cursor < ctx.items.count and harvestedOffset(ctx.items[ctx.cursor]) < hi {
     match ctx.items[ctx.cursor] {
-      case HiComment(text, _) -> {
+      case HiComment(text, _, _) -> {
         val parts = Str.split(text, "\n")
         var j = 0
         while j < parts.length {
@@ -88,6 +92,39 @@ pub func popTriviaBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
   acc
 }
 
+/// Like `popTriviaBefore`, but emits directly into a caller-owned line
+/// accumulator so that a *trailing* comment (one that sat on the same
+/// source line as the preceding token) is re-attached to the previous
+/// output line instead of being emitted as a standalone leading line.
+/// Leading comments and blank-line markers are appended as new lines,
+/// matching `popTriviaBefore`.  Used by the member / statement / arm
+/// list printers (which build an un-indented accumulator that the caller
+/// indents wholesale).
+pub func appendTriviaInto(acc: inout List[String], ctx: inout FmtCtx, hi: in Int, dropBlanks: in Bool): Unit {
+  while ctx.cursor < ctx.items.count and harvestedOffset(ctx.items[ctx.cursor]) < hi {
+    match ctx.items[ctx.cursor] {
+      case HiComment(text, _, trailing) -> {
+        val parts = Str.split(text, "\n")
+        if trailing and acc.count > 0 and acc[acc.count - 1] != "" and parts.length == 1 {
+          acc[acc.count - 1] = acc[acc.count - 1] + "  " + parts[0]
+        } else {
+          var j = 0
+          while j < parts.length {
+            acc.add(parts[j])
+            j = j + 1
+          }
+        }
+      }
+      case HiBlank(_) -> {
+        if not dropBlanks {
+          acc.add("")
+        }
+      }
+    }
+    ctx.cursor = ctx.cursor + 1
+  }
+}
+
 /// Pop every comment whose offset is `< hi` and render as `Doc` lines.
 /// Blank-line markers in the same range are silently dropped — used at
 /// top-level item / import boundaries where the canonical formatter
@@ -96,7 +133,7 @@ pub func popCommentsBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
   val acc: List[String] = newList()
   while ctx.cursor < ctx.items.count and harvestedOffset(ctx.items[ctx.cursor]) < hi {
     match ctx.items[ctx.cursor] {
-      case HiComment(text, _) -> {
+      case HiComment(text, _, _) -> {
         val parts = Str.split(text, "\n")
         var j = 0
         while j < parts.length {
@@ -156,14 +193,16 @@ func harvestTriviaFromToken(t: in SpannedToken, acc: inout List[HarvestedItem]):
         // line, just with leading spaces on the empty line.
       }
       case TKLineComment -> {
+        val isTrailing = newlineRun == 0
         newlineRun = 0
         blankRecorded = false
-        acc.add(HiComment(text = tr.text, offset = tr.span.startPos.offset))
+        acc.add(HiComment(text = tr.text, offset = tr.span.startPos.offset, trailing = isTrailing))
       }
       case TKBlockComment -> {
+        val isTrailing = newlineRun == 0
         newlineRun = 0
         blankRecorded = false
-        acc.add(HiComment(text = tr.text, offset = tr.span.startPos.offset))
+        acc.add(HiComment(text = tr.text, offset = tr.span.startPos.offset, trailing = isTrailing))
       }
     }
     i = i + 1
