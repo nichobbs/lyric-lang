@@ -64,6 +64,20 @@ func testFormatFunction(): Unit {
   assertTrue(Str.contains(acc, "x + y"), "format: func body")
 }
 
+func testParamModeRoundTrips(): Unit {
+  // A param with no mode keyword (`x: Int`) is sugar for `in`, but the
+  // formatter must not synthesise an `in` the author never wrote.
+  // Explicit `in`/`out`/`inout` are preserved verbatim.
+  val src = "package P\n\nfunc f(x: Int, y: in String, z: out Int): Int {\n  z = x\n  x\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "param mode: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "x: Int,"), "param mode: bare param stays bare")
+  assertTrue(not Str.contains(acc, "x: in Int"), "param mode: no synthesised `in`")
+  assertTrue(Str.contains(acc, "y: in String"), "param mode: explicit `in` preserved")
+  assertTrue(Str.contains(acc, "z: out Int"), "param mode: explicit `out` preserved")
+}
+
 func testIsFormattedRoundTrip(): Unit {
   val src = "package P\n\nalias Name = String\n"
   val pr = parse(src)
@@ -667,6 +681,7 @@ func main(): Unit {
   testFormatRecord()
   testFormatMutableRecordField()
   testFormatFunction()
+  testParamModeRoundTrips()
   testIsFormattedRoundTrip()
   testCommentPreservationBetweenItems()
   testCommentPreservationBlockComment()

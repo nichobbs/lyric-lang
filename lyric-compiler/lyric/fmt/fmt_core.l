@@ -654,14 +654,19 @@ pub func whereClauseStr(wc: in Option[WhereClause]): String {
 }
 
 pub func paramStr(p: in Param): String {
-  val modeStr = match p.mode {
-    case PMIn    -> "in "
-    // The Lyric keyword is `out`; the original `out` → `acc` rename
-    // (D-progress-131 reserved-keyword cleanup) accidentally rewrote
-    // this display string.  Drive the output off the source spelling
-    // instead.
-    case PMOut   -> "out "
-    case PMInout -> "inout "
+  // A bare param (`x: T`, no mode keyword) is sugar for `in`; the parser
+  // records that via `modeExplicit = false` so we don't synthesise an
+  // `in` the author never wrote.  `out`/`inout` are always explicit.
+  val modeStr = if not p.modeExplicit { "" } else {
+    match p.mode {
+      case PMIn    -> "in "
+      // The Lyric keyword is `out`; the original `out` → `acc` rename
+      // (D-progress-131 reserved-keyword cleanup) accidentally rewrote
+      // this display string.  Drive the output off the source spelling
+      // instead.
+      case PMOut   -> "out "
+      case PMInout -> "inout "
+    }
   }
   val defStr = match p.dflt {
     case None    -> ""

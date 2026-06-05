@@ -10303,7 +10303,7 @@ func lambdaParamToParam(lp: in LambdaParam): Param {
                span = syntheticSpan())
     }
   }
-  Param(mode = PMIn, name = lp.name, ty = ty, dflt = None, span = lp.span)
+  Param(mode = PMIn, modeExplicit = true, name = lp.name, ty = ty, dflt = None, span = lp.span)
 }
 
 // BFS lambda-lifting helpers — collect ELambda nodes in breadth-first order

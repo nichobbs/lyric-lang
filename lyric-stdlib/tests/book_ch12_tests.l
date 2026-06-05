@@ -1,7 +1,7 @@
-// book_ch12_tests.l — Chapter 12: Standard Library
-//
-// Verifies: Std.Core combinators, Std.String, Std.Collections, Std.Math,
-// Std.Parse, Std.Sort, and Std.Iter using correct free-function call forms.
+//! book_ch12_tests.l — Chapter 12: Standard Library
+//!
+//! Verifies: Std.Core combinators, Std.String, Std.Collections, Std.Math,
+//! Std.Parse, Std.Sort, and Std.Iter using correct free-function call forms.
 package Book.Ch12.Tests
 
 import Std.Core
@@ -16,7 +16,6 @@ import Std.Testing
 // ---------------------------------------------------------------------------
 // §12.2 Std.Core
 // ---------------------------------------------------------------------------
-
 func testCoreResult(): Unit {
   val r: Result[Int, Int] = Ok(value = 42)
 
@@ -56,7 +55,9 @@ func testCoreOption(): Unit {
 
 func parseDoubleInt(raw: String): Result[Int, Int] {
   val parsed = tryParseInt(raw)
-  if isErr(parsed) { return Err(error = -1) }
+  if isErr(parsed) {
+    return Err(error = -1)
+  }
   return Ok(value = unwrapResult(parsed) * 2)
 }
 
@@ -69,7 +70,6 @@ func testCorePropagation(): Unit {
 // ---------------------------------------------------------------------------
 // §12.3 Std.String
 // ---------------------------------------------------------------------------
-
 func testString(): Unit {
   val parts = split("a,b,c", ",")
   assertEqualInt(parts.length, 3, "split count")
@@ -90,7 +90,6 @@ func testString(): Unit {
 // ---------------------------------------------------------------------------
 // §12.4 Std.Collections
 // ---------------------------------------------------------------------------
-
 func testCollectionsList(): Unit {
   var list: List[String] = newList()
   list.add("alpha")
@@ -98,11 +97,13 @@ func testCollectionsList(): Unit {
   list.add("gamma")
   assertEqualInt(list.count, 3, "List count")
   assertEqual(list[0], "alpha", "List[0]")
-  assertEqual(list[1], "beta",  "List[1]")
+  assertEqual(list[1], "beta", "List[1]")
 
   // Iteration
   var n = 0
-  for item in list { n += 1 }
+  for item in list {
+    n += 1
+  }
   assertEqualInt(n, 3, "List iteration count")
 }
 
@@ -120,10 +121,9 @@ func testCollectionsMap(): Unit {
 // ---------------------------------------------------------------------------
 // §12.5 Std.Math
 // ---------------------------------------------------------------------------
-
 func testMath(): Unit {
   assertEqualInt(absInt(-5), 5, "absInt(-5)")
-  assertEqualInt(absInt(5),  5, "absInt(5)")
+  assertEqualInt(absInt(5), 5, "absInt(5)")
   assertEqualInt(minPairInt(3, 7), 3, "minPairInt(3,7)")
   assertEqualInt(maxPairInt(3, 7), 7, "maxPairInt(3,7)")
   assertTrue(sqrt(4.0) == 2.0, "sqrt(4.0)")
@@ -136,7 +136,6 @@ func testMath(): Unit {
 // ---------------------------------------------------------------------------
 // §12.6 Std.Parse
 // ---------------------------------------------------------------------------
-
 func testParse(): Unit {
   val ok = tryParseInt("42")
   assertTrue(isOk(ok), "tryParseInt 42")
@@ -159,14 +158,13 @@ func testParse(): Unit {
 // ---------------------------------------------------------------------------
 // §12.7 Std.Sort
 // ---------------------------------------------------------------------------
-
 func testSort(): Unit {
   val sorted = sortInts([3, 1, 4, 1, 5, 9, 2, 6])
   assertEqualInt(sorted[0], 1, "sortInts[0]")
   assertEqualInt(sorted[7], 9, "sortInts[7]")
 
   val sortedStrings = sortStrings(["banana", "apple", "cherry"])
-  assertEqual(sortedStrings[0], "apple",  "sortStrings[0]")
+  assertEqual(sortedStrings[0], "apple", "sortStrings[0]")
   assertEqual(sortedStrings[1], "banana", "sortStrings[1]")
   assertEqual(sortedStrings[2], "cherry", "sortStrings[2]")
 }
@@ -174,7 +172,6 @@ func testSort(): Unit {
 // ---------------------------------------------------------------------------
 // §12.8 Std.Iter
 // ---------------------------------------------------------------------------
-
 func testIter(): Unit {
   val numbers = [1, 2, 3, 4, 5]
 

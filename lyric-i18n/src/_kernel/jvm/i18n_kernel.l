@@ -11,14 +11,12 @@
 //!
 //! Only active when compiled with feature = "jvm" (Phase 6).
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-
 @cfg(feature = "jvm")
 package I18n.Kernel.Jvm
 
 import Std.Core
 
 // ─── File loading and JSON parsing ───────────────────────────────────────────
-
 @axiom("java.nio.file.Files + stdlib JSON parser for translation file loading")
 extern package lyric.i18n.FileLoader {
   /// Read the contents of the translations file at `path`.
@@ -46,9 +44,8 @@ extern package lyric.i18n.FileLoader {
   /// Return true iff the store contains `key` for `localeKey` (or its
   /// language-only fallback).
   pub func hasKey(storeHandle: Int, key: String, localeKey: String): Bool
+  // ─── Re-exports with `in` mode ────────────────────────────────────────────────
 }
-
-// ─── Re-exports with `in` mode ────────────────────────────────────────────────
 
 /// Read the translations file at `path` and return its contents as a JSON string.
 pub func loadFromPath(path: in String): Result[String, String] {
