@@ -561,10 +561,22 @@ pub union ExternMember {
   case EMDistinctType(decl: DistinctTypeDecl)
 }
 
+/// An extern-package member together with the leading doc comments,
+/// annotations, and `pub`/`internal` visibility the source wrote in front
+/// of it.  The bare `ExternMember` union carries only the declaration; the
+/// surrounding metadata lives here so the formatter can round-trip it.
+pub record ExternMemberDecl {
+  docComments: List[DocComment]
+  annotations: List[Annotation]
+  visibility: Option[Visibility]
+  kind: ExternMember
+  span: Span
+}
+
 pub record ExternPackageDecl {
   path: ModulePath
   annotations: List[Annotation]
-  members: List[ExternMember]
+  members: List[ExternMemberDecl]
   span: Span
 }
 

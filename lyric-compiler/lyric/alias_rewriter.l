@@ -1084,10 +1084,16 @@ func rewriteExternMember(aliases: in List[String], m: in ExternMember): ExternMe
 }
 
 func rewriteExternPackageDecl(aliases: in List[String], d: in ExternPackageDecl): ExternPackageDecl {
-  val ms: List[ExternMember] = newList()
+  val ms: List[ExternMemberDecl] = newList()
   var i = 0
   while i < d.members.count {
-    ms.add(rewriteExternMember(aliases, d.members[i]))
+    val emd = d.members[i]
+    ms.add(ExternMemberDecl(
+      docComments = emd.docComments,
+      annotations = emd.annotations,
+      visibility  = emd.visibility,
+      kind        = rewriteExternMember(aliases, emd.kind),
+      span        = emd.span))
     i = i + 1
   }
   ExternPackageDecl(path = d.path, annotations = d.annotations, members = ms, span = d.span)
