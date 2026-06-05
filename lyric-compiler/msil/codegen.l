@@ -1702,6 +1702,14 @@ pub record PhaseBCtx {
   isVoid:            Bool          // true when SM returns void (no result from GetResult)
   retTy:             MsilType      // bare return type (MVoid when isVoid)
   atmbMrRowForAwait: Int           // open MemberRef row for AwaitUnsafeOnCompleted
+  // Promoted locals: val-bindings hoisted to SM fields so they survive suspension.
+  // Populated on-the-fly as LBLet bindings are encountered during body lowering;
+  // `emitPhaseBAwait` reads the current list when emitting each resume label so
+  // every local defined before that await point is reloaded on the resume path.
+  smFields:             List[MField]      // reference to the SM class field list
+  promotedLocalNames:   List[String]      // val name → SM field "__local_<name>"
+  promotedLocalSlots:   List[Int]         // local-relative slot index (slot - paramCount)
+  promotedLocalTypes:   List[MsilType]    // type of the promoted local (parallel)
 }
 
 //   • locals: slots paramCount.., accessed via MLdloc(slot - paramCount)
@@ -6175,6 +6183,37 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
           val ty = if annoTy != MObject { annoTy } else { initTy }
           val slot = allocSlotMsil(fctx, name, ty)
           emitStoreSlot(insns, slot, fctx.paramCount)
+          // Phase B.1 promoted-local: hoist val-binding to SM field so the
+          // value survives suspension and is available on every MoveNext resume.
+          // The field is added to pbc.smFields here (before smRec is built) so
+          // smRec sees it.  emitPhaseBAwait reloads all registered locals at
+          // each resume label.
+          if fctx.phaseBCtx.count > 0 {
+            val pbc2      = fctx.phaseBCtx[0]
+            val localIdx2 = slot - fctx.paramCount
+            val fldName2  = "__local_" + name
+            // Check if already registered (re-binding the same name in a nested
+            // scope — allocSlotMsil may reuse the same slot).
+            var alreadyReg = false
+            var regChk = 0
+            while regChk < pbc2.promotedLocalNames.count {
+              if pbc2.promotedLocalNames[regChk] == name {
+                alreadyReg = true
+                regChk = pbc2.promotedLocalNames.count  // break
+              }
+              regChk = regChk + 1
+            }
+            if not alreadyReg {
+              pbc2.promotedLocalNames.add(name)
+              pbc2.promotedLocalSlots.add(localIdx2)
+              pbc2.promotedLocalTypes.add(ty)
+              pbc2.smFields.add(MField(flags = FDA_PUBLIC, name = fldName2, fieldType = ty))
+            }
+            // Always emit the field store regardless of registration state.
+            insns.add(MLdarg(slot = 0))
+            insns.add(MLdloc(slot = localIdx2))
+            insns.add(MStfldByName(ownerFqn = pbc2.smFqn, fieldName = fldName2))
+          }
         }
         case LBVar(name, tyOpt, initOpt) -> {
           // A `var` captured by a closure is hoisted to a heap cell (#1479 v2):
@@ -7910,6 +7949,20 @@ func emitPhaseBAwait(cctx: in CodegenCtx, fctx: in FuncCtx,
   insns.add(MLdcI4(v = -1))
   insns.add(MStfldByName(ownerFqn = pbc.smFqn, fieldName = "__state"))
 
+  // Reload promoted locals from SM fields into their local slots.  Any `val`
+  // binding encountered before this await point was saved to an SM field when
+  // it was first assigned; reload it here so the post-resume code sees the
+  // correct value in its slot rather than the default-zero that the JIT writes
+  // at the start of each MoveNext invocation.
+  var plReloadIdx = 0
+  while plReloadIdx < pbc.promotedLocalNames.count {
+    insns.add(MLdarg(slot = 0))
+    insns.add(MLdfldByName(ownerFqn = pbc.smFqn,
+                            fieldName = "__local_" + pbc.promotedLocalNames[plReloadIdx]))
+    insns.add(MStloc(slot = pbc.promotedLocalSlots[plReloadIdx]))
+    plReloadIdx = plReloadIdx + 1
+  }
+
   // 5. After-await label: both the "already completed" and "resume" paths join here.
   insns.add(MLabel(id = afterAwaitL))
 
@@ -8449,14 +8502,18 @@ func synthesizeAsyncSmPhaseBMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
 
   // Install the PhaseBCtx singleton in mnFctx
   val pbCtx = PhaseBCtx(
-    smFqn             = smFqn,
-    resumeLabels      = resumeLabels,
-    suspendLeaveLabel = afterTryL,
-    nextAwaitIndex    = newList(),
-    awaiterFieldNames = awaiterFieldNames,
-    isVoid            = isVoid,
-    retTy             = retTy,
-    atmbMrRowForAwait = atmbMrRowForAwait)
+    smFqn               = smFqn,
+    resumeLabels        = resumeLabels,
+    suspendLeaveLabel   = afterTryL,
+    nextAwaitIndex      = newList(),
+    awaiterFieldNames   = awaiterFieldNames,
+    isVoid              = isVoid,
+    retTy               = retTy,
+    atmbMrRowForAwait   = atmbMrRowForAwait,
+    smFields            = smFields,
+    promotedLocalNames  = newList(),
+    promotedLocalSlots  = newList(),
+    promotedLocalTypes  = newList())
   mnFctx.phaseBCtx.add(pbCtx)
 
   // Pre-allocate result slot for non-void (must exist before body lowering

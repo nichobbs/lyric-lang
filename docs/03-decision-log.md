@@ -5075,6 +5075,46 @@ tests 8–15 are Phase B.1 covering 2-await, 3-await, void-await, and
 two-parameter variants).
 
 ---
+## D088 — Band 3 Phase B.2: promoted locals for `async func` with awaits (#2070)
+
+**Context:** D087 shipped Phase B.1 (await-path SM synthesis).  A latent correctness
+bug remained: `val x = expr` bindings computed before an `await` point and used after it
+were allocated as MoveNext-local slots.  The CLR zeroes all local slots at the start of
+each MoveNext invocation, so on resume the slot held 0/null instead of the original value.
+
+**Decision: hoist all `val` bindings in a Phase B.1 `async func` body to SM fields.**
+
+The promotion protocol:
+
+1. **Field registration (on-the-fly):** When `lowerStmtMsil` processes `LBLet(name, ...)` 
+   inside a Phase B.1 MoveNext context (`fctx.phaseBCtx.count > 0`), it adds a
+   `MField(FDA_PUBLIC, "__local_<name>", ty)` to `pbc.smFields` (the SM class's field
+   list, which is still being built at this point — `smRec` is not constructed until after
+   all body lowering completes).  It also registers the name, local slot index, and type in
+   three parallel lists on `PhaseBCtx`.
+
+2. **Field store (on assignment):** After `emitStoreSlot` stores the value to the local
+   slot, a `ldarg.0; ldloc <slot>; stfld __local_<name>` sequence also writes the value
+   to the SM field.  This is always emitted (not conditional on whether an await follows),
+   so correctness does not require knowing the future control-flow shape.
+
+3. **Field reload (at each resume label):** `emitPhaseBAwait` emits, after the awaiter
+   restore / field-zero / state-reset sequence and BEFORE the `afterAwaitL` label, a
+   reload loop: `ldarg.0; ldfld __local_<name>; stloc <slot>` for each entry currently
+   in `pbc.promotedLocalNames`.  Because the list is populated sequentially during body
+   lowering, resume label N's reload covers exactly the locals defined in segments 0..N-1
+   — precisely those that need restoring at that point.
+
+**Conservative promotion strategy:** All `LBLet` bindings are promoted, regardless of
+whether they are actually live across an await.  This is correct (promoting an
+unnecessary local is benign — the field just holds a value that is never reloaded) and
+simple to implement.  The cost is one extra field per promoted local on the SM class.
+
+**Result:** 4 new tests in `async_sm_self_test.l` (tests 16–19) cover: val-survives-one-
+await, two-vals-survive-two-awaits, val-defined-between-awaits-survives-second, and
+val-survives-three-awaits.  All 19 tests pass.
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
