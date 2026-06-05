@@ -200,6 +200,20 @@ async func asyncLocalSurvivesThreeAwaits(n: in Int): Int {
   x + a + b + c
 }
 
+// var bindings in a while loop body with an await: both i and acc must survive
+// each suspension so loop state persists across MoveNext re-invocations.
+// asyncSumWithLoop(3): iterations 0,1,2; v=1,2,3; acc=1,3,6; result=6
+async func asyncSumWithLoop(n: in Int): Int {
+  var i = 0
+  var acc = 0
+  while i < n {
+    val v = await asyncAddOne(i)
+    acc = acc + v
+    i = i + 1
+  }
+  acc
+}
+
 test "promoted locals: val survives one await" {
   val result = await asyncLocalSurvivesAwait(5)
   assertEqualInt(result, 16, "asyncLocalSurvivesAwait(5) should return 16")
@@ -218,4 +232,14 @@ test "promoted locals: val defined between awaits survives second await" {
 test "promoted locals: val survives three awaits" {
   val result = await asyncLocalSurvivesThreeAwaits(5)
   assertEqualInt(result, 33, "asyncLocalSurvivesThreeAwaits(5) should return 33")
+}
+
+test "promoted locals: var bindings in while loop survive across awaits" {
+  val result = await asyncSumWithLoop(3)
+  assertEqualInt(result, 6, "asyncSumWithLoop(3) should return 6")
+}
+
+test "promoted locals: var bindings in while loop with zero iterations" {
+  val result = await asyncSumWithLoop(0)
+  assertEqualInt(result, 0, "asyncSumWithLoop(0) should return 0")
 }

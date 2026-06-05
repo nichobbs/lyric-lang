@@ -3835,6 +3835,9 @@ func lowerAssignExprMsil(
             case AssEq -> {
               lowerExprMsil(cctx, fctx, insns, value)
               emitStoreSlot(insns, slot, fctx.paramCount)
+              if fctx.phaseBCtx.count > 0 {
+                phaseBSyncLocalIfPromoted(fctx.phaseBCtx[0], insns, name, slot - fctx.paramCount)
+              }
             }
             case _ -> {
               // Compound assignment to a local: load the current value, then
@@ -3843,6 +3846,9 @@ func lowerAssignExprMsil(
               emitLoadSlot(insns, slot, fctx.paramCount)
               emitCompoundCombineMsil(cctx, fctx, insns, op, ty, value)
               emitStoreSlot(insns, slot, fctx.paramCount)
+              if fctx.phaseBCtx.count > 0 {
+                phaseBSyncLocalIfPromoted(fctx.phaseBCtx[0], insns, name, slot - fctx.paramCount)
+              }
             }
           }
           MVoid
@@ -6183,36 +6189,11 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
           val ty = if annoTy != MObject { annoTy } else { initTy }
           val slot = allocSlotMsil(fctx, name, ty)
           emitStoreSlot(insns, slot, fctx.paramCount)
-          // Phase B.1 promoted-local: hoist val-binding to SM field so the
-          // value survives suspension and is available on every MoveNext resume.
-          // The field is added to pbc.smFields here (before smRec is built) so
-          // smRec sees it.  emitPhaseBAwait reloads all registered locals at
+          // Phase B.1 promoted-local: hoist val-binding to SM field so the value
+          // survives suspension.  emitPhaseBAwait reloads all registered locals at
           // each resume label.
           if fctx.phaseBCtx.count > 0 {
-            val pbc2      = fctx.phaseBCtx[0]
-            val localIdx2 = slot - fctx.paramCount
-            val fldName2  = "__local_" + name
-            // Check if already registered (re-binding the same name in a nested
-            // scope — allocSlotMsil may reuse the same slot).
-            var alreadyReg = false
-            var regChk = 0
-            while regChk < pbc2.promotedLocalNames.count {
-              if pbc2.promotedLocalNames[regChk] == name {
-                alreadyReg = true
-                regChk = pbc2.promotedLocalNames.count  // break
-              }
-              regChk = regChk + 1
-            }
-            if not alreadyReg {
-              pbc2.promotedLocalNames.add(name)
-              pbc2.promotedLocalSlots.add(localIdx2)
-              pbc2.promotedLocalTypes.add(ty)
-              pbc2.smFields.add(MField(flags = FDA_PUBLIC, name = fldName2, fieldType = ty))
-            }
-            // Always emit the field store regardless of registration state.
-            insns.add(MLdarg(slot = 0))
-            insns.add(MLdloc(slot = localIdx2))
-            insns.add(MStfldByName(ownerFqn = pbc2.smFqn, fieldName = fldName2))
+            phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, name, ty, slot - fctx.paramCount)
           }
         }
         case LBVar(name, tyOpt, initOpt) -> {
@@ -6252,6 +6233,9 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
                 val slot = allocSlotMsil(fctx, name, ty)
                 emitStoreSlot(insns, slot, fctx.paramCount)
                 fctx.mutableLocals.add(name)
+                if fctx.phaseBCtx.count > 0 {
+                  phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, name, ty, slot - fctx.paramCount)
+                }
               }
             }
             case None -> {
@@ -6277,6 +6261,9 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
                   case MDouble -> { insns.add(MLdcR8(v = 0.0)); emitStoreSlot(insns, slot, fctx.paramCount) }
                   case MVoid   -> {}
                   case _       -> { insns.add(MLdcI4(v = 0)); emitStoreSlot(insns, slot, fctx.paramCount) }
+                }
+                if fctx.phaseBCtx.count > 0 and ty != MVoid {
+                  phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, name, ty, slot - fctx.paramCount)
                 }
               }
             }
@@ -7843,10 +7830,34 @@ func collectAwaitTypesStmtPB(cctx: in CodegenCtx, pkgName: in String,
         case None       -> {}
       }
     }
-    case SExpr(e)            -> collectAwaitTypesExprPB(cctx, pkgName, e, acc)
-    case SReturn(valOpt)     -> match valOpt {
+    case SExpr(e)        -> collectAwaitTypesExprPB(cctx, pkgName, e, acc)
+    case SReturn(valOpt) -> match valOpt {
       case Some(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, acc)
       case None    -> {}
+    }
+    case SAssign(_, _, value) -> collectAwaitTypesExprPB(cctx, pkgName, value, acc)
+    case SThrow(expr)         -> collectAwaitTypesExprPB(cctx, pkgName, expr, acc)
+    case SWhile(_, cond, body) -> {
+      collectAwaitTypesExprPB(cctx, pkgName, cond, acc)
+      collectAwaitTypesBlockPB(cctx, pkgName, body, acc)
+    }
+    case SFor(_, _, iter, body) -> {
+      collectAwaitTypesExprPB(cctx, pkgName, iter, acc)
+      collectAwaitTypesBlockPB(cctx, pkgName, body, acc)
+    }
+    case SLoop(_, body)  -> collectAwaitTypesBlockPB(cctx, pkgName, body, acc)
+    case SScope(_, body) -> collectAwaitTypesBlockPB(cctx, pkgName, body, acc)
+    case STry(body, catches, finally_) -> {
+      collectAwaitTypesBlockPB(cctx, pkgName, body, acc)
+      var ci = 0
+      while ci < catches.count {
+        collectAwaitTypesBlockPB(cctx, pkgName, catches[ci].body, acc)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> collectAwaitTypesBlockPB(cctx, pkgName, fb, acc)
+        case None     -> {}
+      }
     }
     case _ -> {}
   }
@@ -7865,6 +7876,44 @@ func collectAwaitTypesPhaseBMsil(cctx: in CodegenCtx, pkgName: in String,
     }
   }
   result
+}
+
+// Register a local as a promoted SM field (first time only) and emit a store
+// from the local slot to the SM field.  Called from LBLet and LBVar handlers
+// inside a Phase B.1 MoveNext context.
+func phaseBRegisterAndSyncLocal(pbc: in PhaseBCtx, insns: in List[MInsn],
+                                 name: in String, ty: in MsilType, localIdx: in Int): Unit {
+  val fldName = "__local_" + name
+  var alreadyReg = false
+  var chk = 0
+  while chk < pbc.promotedLocalNames.count {
+    if pbc.promotedLocalNames[chk] == name {
+      alreadyReg = true
+      chk = pbc.promotedLocalNames.count
+    }
+    chk = chk + 1
+  }
+  if not alreadyReg {
+    pbc.promotedLocalNames.add(name)
+    pbc.promotedLocalSlots.add(localIdx)
+    pbc.promotedLocalTypes.add(ty)
+    pbc.smFields.add(MField(flags = FDA_PUBLIC, name = fldName, fieldType = ty))
+  }
+  insns.add(MLdarg(slot = 0))
+  insns.add(MLdloc(slot = localIdx))
+  insns.add(MStfldByName(ownerFqn = pbc.smFqn, fieldName = fldName))
+}
+
+// Sync an already-promoted local's slot value back to its SM field.  Called
+// after each assignment to a `var` local that was registered by
+// phaseBRegisterAndSyncLocal.
+func phaseBSyncLocalIfPromoted(pbc: in PhaseBCtx, insns: in List[MInsn],
+                                name: in String, localIdx: in Int): Unit {
+  if nameListContains(pbc.promotedLocalNames, name) {
+    insns.add(MLdarg(slot = 0))
+    insns.add(MLdloc(slot = localIdx))
+    insns.add(MStfldByName(ownerFqn = pbc.smFqn, fieldName = "__local_" + name))
+  }
 }
 
 // Full Phase B.1 suspend/resume for one `await` point inside MoveNext.
