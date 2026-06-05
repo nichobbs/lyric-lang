@@ -716,7 +716,7 @@ func main(): Unit {
         mkBridge "shm_yield_collect"
             """package ShMYield
 
-async func gen(): Object {
+async func gen(): Int {
   yield 1
   yield 2
   yield 3

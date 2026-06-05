@@ -21225,3 +21225,38 @@ Note: several touched files (`metadata_reader.l`, `assembler.l`, `zip_reader.l`,
 `reader.l`, `metadata_reader_tests.l`) hit pre-existing `lyric fmt` loss-check
 bugs (hex-literal normalisation, `Int`/`in` tokenisation) unrelated to this
 change, so they keep their hand-formatting.
+
+### D-progress-438 — #1488 gate FLIP: single-file type-check is now fatal
+
+**Status:** Shipped — the #1488 gate is closed.
+
+`Msil.Bridge`'s single-file compile path (`compileToMsilWithVersion`) ran the
+self-hosted type checker in **advisory** mode (`reportDiagnostics`) while the
+project path (`compileProjectToMsil`) was already **fatal** (`reportAndAbort`) —
+so a type-broken single file compiled to broken IL silently, and the same source
+diverged between the two paths.  This was deliberate: the type checker "lacked
+builtin coverage", and the single-file false-positive surface was closed
+category by category first (D-progress-420..437: `result` shadowing,
+argument-type overloads, generic return inference, package-scoped resolution
+(#2271), range-subtype arithmetic, interface subtyping, `@stubbable` synthesis,
+alias-aware qualified calls, Byte/Int conversions).
+
+With every single-file-buildable surface now diagnostic-clean, the single-file
+type-check is flipped to `reportAndAbort` (`bridge.l`).  A `lyric build <file>`
+with type errors now aborts with the diagnostics instead of emitting broken IL —
+the single-file path matches the project path.
+
+Verification (clean build): emitter suite 843/843; cli suite 84/84 (one
+self-hosted-bridge test, `shm_yield_collect`, used a non-spec `Object` generator
+return annotation that exploited the now-closed type-checker gap — fixed to the
+spec §856 scalar element type `Int`); `weaver`/`cfg_gate`/`bitwise`/`conv_methods`
+self-tests green; the full `examples/` and `lyric-stdlib/tests/*` single-file
+sweep is clean (only the two `LYRIC_LOAD_COMPILER`-only compiler-internal tests,
+which aren't single-file programs, "fail" a bare single-file build, as expected).
+
+Remaining (tracked separately, **not** gate blockers):
+- `msil_project_bridge_tests` clean via `LYRIC_LOAD_COMPILER` needs the loader to
+  resolve cross-target JVM-kernel `extern type`s (`Pool = JvmConstantPool`);
+  its closure pulls in `Lyric.Emitter` → `Jvm.Bridge` → `Jvm.Kernel`.
+- The JVM single-file path (`jvm/bridge.l`) advisory→fatal flip, once the JVM
+  `lyric test` path's pre-existing environment issue is resolved.
