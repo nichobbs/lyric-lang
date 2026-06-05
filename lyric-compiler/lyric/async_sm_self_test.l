@@ -1,5 +1,6 @@
 //! async_sm_self_test.l — regression test for user-defined `async func`
-//! IAsyncStateMachine synthesis (Phase B.0 + B.1 + promoted locals, Epic #2070).
+//! IAsyncStateMachine synthesis (Phase B.0 + B.1 + promoted locals +
+//! B.2+ var/while + B.3 stack-spill + Phase 4 spawn, Epic #2070).
 //!
 //! Phase B.0 covers async functions whose bodies contain NO EAwait nodes.
 //! Phase B.1 covers async functions whose bodies contain one or more EAwait
@@ -7,6 +8,10 @@
 //! typed awaiter fields, and resume labels.
 //! Promoted locals: val-bindings computed before an await point and used after
 //! it are hoisted to SM fields so they survive between MoveNext invocations.
+//! Phase B.2+: var bindings and while-loop await scanning.
+//! Phase B.3: binop LHS stack-spill when RHS contains an await.
+//! Phase 4: spawn semantics — `spawn f()` returns Task<T>; `await handle`
+//! unwraps it (blocking in non-SM, Phase B suspension in SM context).
 //!
 //! Test callers use `await asyncXxx(...)` because the kickoff returns Task<T>
 //! (or Task for void); `emitBlockingAwait` in non-SM contexts synchronously
@@ -304,4 +309,43 @@ test "Phase B.3: rhs-only await in add (lhs is literal)" {
 test "Phase B.3: string concat with both operands awaited" {
   val result = await asyncStrConcatBothAwaited()
   assertEqual(result, "Hello, A!Hello, B!", "asyncStrConcatBothAwaited should return concatenated greetings")
+}
+
+// ── Phase 4: spawn semantics ──────────────────────────────────────────────────
+// `spawn f(args)` returns Task<T> without awaiting.  The caller can store the
+// handle and `await` it later.  In non-SM context (test body), `await handle`
+// goes through emitBlockingAwait on the Task<T> local.
+// spawn + immediate await in expression position: `await spawn f(args)`
+async func asyncSpawnImmediate(n: in Int): Int {
+  await spawn asyncAddOne(n)
+}
+
+// spawn stored in local, awaited later (requires pre-scan spawnEnv tracking)
+async func asyncSpawnAndStore(n: in Int): Int {
+  val handle = spawn asyncAddOne(n)
+  await handle
+}
+
+// Two spawns stored, both awaited (structured-concurrency starter pattern)
+async func asyncSpawnTwoAndAdd(a: in Int, b: in Int): Int {
+  val h1 = spawn asyncAddOne(a)
+  val h2 = spawn asyncAddOne(b)
+  val r1 = await h1
+  val r2 = await h2
+  r1 + r2
+}
+
+test "Phase 4: await spawn in expression position" {
+  val result = await asyncSpawnImmediate(7)
+  assertEqualInt(result, 8, "asyncSpawnImmediate(7) should return 8")
+}
+
+test "Phase 4: spawn stored in local then awaited" {
+  val result = await asyncSpawnAndStore(4)
+  assertEqualInt(result, 5, "asyncSpawnAndStore(4) should return 5")
+}
+
+test "Phase 4: two spawns stored then both awaited" {
+  val result = await asyncSpawnTwoAndAdd(3, 6)
+  assertEqualInt(result, 11, "asyncSpawnTwoAndAdd(3,6): (3+1)+(6+1) = 11")
 }

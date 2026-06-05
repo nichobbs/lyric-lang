@@ -2918,9 +2918,14 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
     // ── Await ─────────────────────────────────────────────────────────────────
     // When inside a Phase B.1 SM MoveNext body, emit the full suspend/resume
     // protocol.  Otherwise emit a blocking synchronous shim (GetAwaiter+GetResult).
+    // Non-Task values (blocking @externTarget async, or already-resolved results)
+    // are passed through as-is: the value is already on the stack.
     case EAwait(inner) -> {
       val taskTy = lowerExprMsil(cctx, fctx, insns, inner)
-      if fctx.phaseBCtx.count > 0 {
+      if not isTaskTypeMsil(cctx, taskTy) {
+        // Value is already resolved (blocking extern async, etc.) — no await needed.
+        taskTy
+      } else if fctx.phaseBCtx.count > 0 {
         emitPhaseBAwait(cctx, fctx, insns, taskTy)
       } else {
         emitBlockingAwait(cctx, fctx, insns, taskTy)
@@ -7734,6 +7739,19 @@ func taskTypeToAwaiterMsilType(cctx: in CodegenCtx, taskTy: in MsilType): MsilTy
   }
 }
 
+// True when ty is the IL representation of Task (void) or Task<T> (non-void).
+// Used by the EAwait handler and pre-scan to distinguish real async awaitables
+// from already-resolved values — e.g. a blocking @externTarget async function
+// returns T (not Task<T>) from its Lyric wrapper, so `await externFn()` should
+// pass the value through without invoking GetAwaiter/GetResult again.
+func isTaskTypeMsil(cctx: in CodegenCtx, ty: in MsilType): Bool {
+  match ty {
+    case MGenericInst(trCode, _, _) -> trCode == tdrTypeRef(cctx.trTask1)
+    case MClassRef(trCode, _)       -> trCode == tdrTypeRef(cctx.trTask)
+    case _                          -> false
+  }
+}
+
 // Emit the GetAwaiter() call on the value currently on the stack (Task<T> or Task).
 // Leaves the awaiter (value type) on the stack.
 func emitGetAwaiterCallPB(cctx: in CodegenCtx, insns: in List[MInsn], taskTy: in MsilType): Unit {
@@ -7849,9 +7867,35 @@ func emitBlockingAwait(cctx: in CodegenCtx, fctx: in FuncCtx,
 
 // ── Pre-scan helpers: collect awaiter types in body-evaluation order ──────────
 
-func inferCallReturnTypePB(cctx: in CodegenCtx, pkgName: in String, e: in Expr): MsilType {
+// Infer the MsilType that would be on the stack after evaluating expression `e`
+// in the context of a Phase B pre-scan.  Only used to determine the awaiter type
+// for EAwait sites, so precision matters only for expressions that produce Tasks.
+//
+// spawnNms/spawnTys are parallel lists tracking `val x = spawn f()` bindings:
+// spawnNms[i] is the local name, spawnTys[i] is its Task<T> type.
+// This lets `await x` resolve to the correct TaskAwaiter<T> field.
+func inferCallReturnTypePB(cctx: in CodegenCtx, pkgName: in String, e: in Expr,
+                            spawnNms: in List[String],
+                            spawnTys: in List[MsilType]): MsilType {
   match e.kind {
-    case EParen(inner) -> inferCallReturnTypePB(cctx, pkgName, inner)
+    case EParen(inner) -> inferCallReturnTypePB(cctx, pkgName, inner, spawnNms, spawnTys)
+    case ESpawn(inner) -> inferCallReturnTypePB(cctx, pkgName, inner, spawnNms, spawnTys)
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        val lookupName = path.segments[0]
+        var si = 0
+        var found: MsilType = MObject
+        while si < spawnNms.count {
+          if spawnNms[si] == lookupName {
+            found = spawnTys[si]
+          }
+          si = si + 1
+        }
+        found
+      } else {
+        MObject
+      }
+    }
     case ECall(callee, args) -> {
       match callee.kind {
         case EPath(path) -> {
@@ -7892,95 +7936,107 @@ func inferCallReturnTypePB(cctx: in CodegenCtx, pkgName: in String, e: in Expr):
 }
 
 func collectAwaitTypesExprPB(cctx: in CodegenCtx, pkgName: in String,
-                              e: in Expr, acc: in List[MsilType]): Unit {
+                              e: in Expr, acc: in List[MsilType],
+                              spawnNms: in List[String],
+                              spawnTys: in List[MsilType]): Unit {
   match e.kind {
     case EAwait(inner) -> {
-      val taskTy = inferCallReturnTypePB(cctx, pkgName, inner)
-      val awTy   = taskTypeToAwaiterMsilType(cctx, taskTy)
-      acc.add(awTy)
+      val taskTy = inferCallReturnTypePB(cctx, pkgName, inner, spawnNms, spawnTys)
+      // Only allocate an awaiter field for real async Tasks.  Blocking
+      // @externTarget async functions return T (not Task<T>) from their Lyric
+      // wrapper; `await externFn()` is a pass-through and needs no field.
+      if isTaskTypeMsil(cctx, taskTy) {
+        val awTy = taskTypeToAwaiterMsilType(cctx, taskTy)
+        acc.add(awTy)
+      }
     }
-    case EBlock(blk) -> collectAwaitTypesBlockPB(cctx, pkgName, blk, acc)
-    case EParen(inner) -> collectAwaitTypesExprPB(cctx, pkgName, inner, acc)
+    case EBlock(blk) -> collectAwaitTypesBlockPB(cctx, pkgName, blk, acc, spawnNms, spawnTys)
+    case EParen(inner) -> collectAwaitTypesExprPB(cctx, pkgName, inner, acc, spawnNms, spawnTys)
+    case ESpawn(inner) -> collectAwaitTypesExprPB(cctx, pkgName, inner, acc, spawnNms, spawnTys)
     case EIf(c, t, el, _) -> {
-      collectAwaitTypesExprPB(cctx, pkgName, c, acc)
+      collectAwaitTypesExprPB(cctx, pkgName, c, acc, spawnNms, spawnTys)
       match t {
-        case EOBBlock(b)  -> collectAwaitTypesBlockPB(cctx, pkgName, b, acc)
-        case EOBExpr(e2)  -> collectAwaitTypesExprPB(cctx, pkgName, e2, acc)
+        case EOBBlock(b)  -> collectAwaitTypesBlockPB(cctx, pkgName, b, acc, spawnNms, spawnTys)
+        case EOBExpr(e2)  -> collectAwaitTypesExprPB(cctx, pkgName, e2, acc, spawnNms, spawnTys)
       }
       match el {
         case Some(els) -> match els {
-          case EOBBlock(b)  -> collectAwaitTypesBlockPB(cctx, pkgName, b, acc)
-          case EOBExpr(e3)  -> collectAwaitTypesExprPB(cctx, pkgName, e3, acc)
+          case EOBBlock(b)  -> collectAwaitTypesBlockPB(cctx, pkgName, b, acc, spawnNms, spawnTys)
+          case EOBExpr(e3)  -> collectAwaitTypesExprPB(cctx, pkgName, e3, acc, spawnNms, spawnTys)
         }
         case None -> {}
       }
     }
     case ECall(callee, args) -> {
-      collectAwaitTypesExprPB(cctx, pkgName, callee, acc)
+      collectAwaitTypesExprPB(cctx, pkgName, callee, acc, spawnNms, spawnTys)
       var aci = 0
       while aci < args.count {
         val argExpr = match args[aci] {
           case CAPositional(ex)    -> ex
           case CANamed(_, ex, _)   -> ex
         }
-        collectAwaitTypesExprPB(cctx, pkgName, argExpr, acc)
+        collectAwaitTypesExprPB(cctx, pkgName, argExpr, acc, spawnNms, spawnTys)
         aci = aci + 1
       }
     }
     case EBinop(_, l, r) -> {
-      collectAwaitTypesExprPB(cctx, pkgName, l, acc)
-      collectAwaitTypesExprPB(cctx, pkgName, r, acc)
+      collectAwaitTypesExprPB(cctx, pkgName, l, acc, spawnNms, spawnTys)
+      collectAwaitTypesExprPB(cctx, pkgName, r, acc, spawnNms, spawnTys)
     }
     case _ -> {}
   }
 }
 
 func collectAwaitTypesBlockPB(cctx: in CodegenCtx, pkgName: in String,
-                               blk: in Block, acc: in List[MsilType]): Unit {
+                               blk: in Block, acc: in List[MsilType],
+                               spawnNms: in List[String],
+                               spawnTys: in List[MsilType]): Unit {
   var i = 0
   while i < blk.statements.count {
-    collectAwaitTypesStmtPB(cctx, pkgName, blk.statements[i], acc)
+    collectAwaitTypesStmtPB(cctx, pkgName, blk.statements[i], acc, spawnNms, spawnTys)
     i = i + 1
   }
 }
 
 func collectAwaitTypesStmtPB(cctx: in CodegenCtx, pkgName: in String,
-                               stmt: in Statement, acc: in List[MsilType]): Unit {
+                               stmt: in Statement, acc: in List[MsilType],
+                               spawnNms: in List[String],
+                               spawnTys: in List[MsilType]): Unit {
   match stmt.kind {
     case SLocal(binding) -> match binding {
-      case LBVal(_, _, init)     -> collectAwaitTypesExprPB(cctx, pkgName, init, acc)
-      case LBLet(_, _, init)     -> collectAwaitTypesExprPB(cctx, pkgName, init, acc)
-      case LBVar(_, _, initOpt)  -> match initOpt {
-        case Some(init) -> collectAwaitTypesExprPB(cctx, pkgName, init, acc)
+      case LBVal(_, _, init)    -> collectAwaitTypesExprPB(cctx, pkgName, init, acc, spawnNms, spawnTys)
+      case LBLet(_, _, init)    -> collectAwaitTypesExprPB(cctx, pkgName, init, acc, spawnNms, spawnTys)
+      case LBVar(_, _, initOpt) -> match initOpt {
+        case Some(init) -> collectAwaitTypesExprPB(cctx, pkgName, init, acc, spawnNms, spawnTys)
         case None       -> {}
       }
     }
-    case SExpr(e)        -> collectAwaitTypesExprPB(cctx, pkgName, e, acc)
+    case SExpr(e)        -> collectAwaitTypesExprPB(cctx, pkgName, e, acc, spawnNms, spawnTys)
     case SReturn(valOpt) -> match valOpt {
-      case Some(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, acc)
+      case Some(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, acc, spawnNms, spawnTys)
       case None    -> {}
     }
-    case SAssign(_, _, value) -> collectAwaitTypesExprPB(cctx, pkgName, value, acc)
-    case SThrow(expr)         -> collectAwaitTypesExprPB(cctx, pkgName, expr, acc)
+    case SAssign(_, _, value) -> collectAwaitTypesExprPB(cctx, pkgName, value, acc, spawnNms, spawnTys)
+    case SThrow(expr)         -> collectAwaitTypesExprPB(cctx, pkgName, expr, acc, spawnNms, spawnTys)
     case SWhile(_, cond, body) -> {
-      collectAwaitTypesExprPB(cctx, pkgName, cond, acc)
-      collectAwaitTypesBlockPB(cctx, pkgName, body, acc)
+      collectAwaitTypesExprPB(cctx, pkgName, cond, acc, spawnNms, spawnTys)
+      collectAwaitTypesBlockPB(cctx, pkgName, body, acc, spawnNms, spawnTys)
     }
     case SFor(_, _, iter, body) -> {
-      collectAwaitTypesExprPB(cctx, pkgName, iter, acc)
-      collectAwaitTypesBlockPB(cctx, pkgName, body, acc)
+      collectAwaitTypesExprPB(cctx, pkgName, iter, acc, spawnNms, spawnTys)
+      collectAwaitTypesBlockPB(cctx, pkgName, body, acc, spawnNms, spawnTys)
     }
-    case SLoop(_, body)  -> collectAwaitTypesBlockPB(cctx, pkgName, body, acc)
-    case SScope(_, body) -> collectAwaitTypesBlockPB(cctx, pkgName, body, acc)
+    case SLoop(_, body)  -> collectAwaitTypesBlockPB(cctx, pkgName, body, acc, spawnNms, spawnTys)
+    case SScope(_, body) -> collectAwaitTypesBlockPB(cctx, pkgName, body, acc, spawnNms, spawnTys)
     case STry(body, catches, finally_) -> {
-      collectAwaitTypesBlockPB(cctx, pkgName, body, acc)
+      collectAwaitTypesBlockPB(cctx, pkgName, body, acc, spawnNms, spawnTys)
       var ci = 0
       while ci < catches.count {
-        collectAwaitTypesBlockPB(cctx, pkgName, catches[ci].body, acc)
+        collectAwaitTypesBlockPB(cctx, pkgName, catches[ci].body, acc, spawnNms, spawnTys)
         ci = ci + 1
       }
       match finally_ {
-        case Some(fb) -> collectAwaitTypesBlockPB(cctx, pkgName, fb, acc)
+        case Some(fb) -> collectAwaitTypesBlockPB(cctx, pkgName, fb, acc, spawnNms, spawnTys)
         case None     -> {}
       }
     }
@@ -7988,16 +8044,65 @@ func collectAwaitTypesStmtPB(cctx: in CodegenCtx, pkgName: in String,
   }
 }
 
-// Return a List<MsilType> of awaiter types for each EAwait in the body,
-// in the order they would be encountered during lowering.
+// Return a List<MsilType> of awaiter types for each real-async EAwait in the
+// body, in the order they would be encountered during lowering.  Blocking
+// @externTarget async awaits are excluded (their values are already resolved).
+//
+// Spawn tracking: `val h = spawn asyncFn(x)` bindings are collected in a flat
+// pre-scan (top-level block statements only) before the recursive scan so that
+// `await h` later resolves the correct TaskAwaiter<T> type.  Mutation of the
+// spawn lists only happens on LOCAL variables in this function (not on params
+// passed into recursion), which avoids the F# bootstrap emitter limitation where
+// two-arg .add() and one-arg .add() on `in Map[K,V]` / `in List[T]` parameters
+// may fail BCL dispatch when type args include non-BCL Lyric types.
 func collectAwaitTypesPhaseBMsil(cctx: in CodegenCtx, pkgName: in String,
                                   decl: in FunctionDecl): List[MsilType] {
-  val result: List[MsilType] = newList()
+  val result:   List[MsilType] = newList()
+  val spawnNms: List[String]   = newList()
+  val spawnTys: List[MsilType] = newList()
+
+  // Phase 1: flat top-level pre-scan to collect spawn bindings.
+  // Only the outermost block's statements are scanned; nested spawn bindings
+  // (inside if/match/loop bodies) are a deferred case.
   match decl.body {
     case None -> {}
     case Some(body) -> match body {
-      case FBBlock(blk) -> collectAwaitTypesBlockPB(cctx, pkgName, blk, result)
-      case FBExpr(e)    -> collectAwaitTypesExprPB(cctx, pkgName, e, result)
+      case FBExpr(_)    -> {}
+      case FBBlock(blk) -> {
+        var si = 0
+        while si < blk.statements.count {
+          match blk.statements[si].kind {
+            case SLocal(binding) -> match binding {
+              case LBVal(pat, _, init) -> match pat.kind {
+                case PBinding(bindName, _) -> match init.kind {
+                  case ESpawn(spawnInner) -> {
+                    val sTy = inferCallReturnTypePB(cctx, pkgName, spawnInner, spawnNms, spawnTys)
+                    if isTaskTypeMsil(cctx, sTy) {
+                      spawnNms.add(bindName)
+                      spawnTys.add(sTy)
+                    }
+                  }
+                  case _ -> {}
+                }
+                case _ -> {}
+              }
+              case _ -> {}
+            }
+            case _ -> {}
+          }
+          si = si + 1
+        }
+      }
+    }
+  }
+
+  // Phase 2: recursive scan over the full body using the pre-built spawn lists
+  // (read-only — no .add() on the lists inside recursion).
+  match decl.body {
+    case None -> {}
+    case Some(body) -> match body {
+      case FBBlock(blk) -> collectAwaitTypesBlockPB(cctx, pkgName, blk, result, spawnNms, spawnTys)
+      case FBExpr(e)    -> collectAwaitTypesExprPB(cctx, pkgName, e, result, spawnNms, spawnTys)
     }
   }
   result
@@ -8054,6 +8159,8 @@ func phaseBSpillToLocal(pbc: in PhaseBCtx, fctx: in FuncCtx,
   phaseBRegisterAndSyncLocal(pbc, insns, name, ty, localIdx)
   localIdx
 }
+
+
 
 // Full Phase B.1 suspend/resume for one `await` point inside MoveNext.
 // Stack pre-condition:  Task<T> or Task.
