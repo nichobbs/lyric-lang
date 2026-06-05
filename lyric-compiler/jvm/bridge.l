@@ -17,6 +17,7 @@ import Lyric.ContractElaborator
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.Mono
 import Lyric.Derives
+import Lyric.Stubbable as Stubbable
 import Jvm.Kernel
 import Jvm.Classfile
 import Jvm.Lowering
@@ -136,7 +137,9 @@ pub func compileToJar(
     si = si + 1
   }
 
-  val file0 = parseResult.file
+  // Synthesise `@stubbable` interface stubs (record + impl) before type-check,
+  // matching the MSIL bridge — keeps `@stubbable` working on both targets.
+  val file0 = Stubbable.stubbableRewriteFile(parseResult.file)
 
   val tcRes = checkWithImportedPackages(file0, importedPkgs)
   reportDiagnostics(tcRes.diagnostics)   // advisory: type checker lacks builtin coverage
@@ -291,7 +294,8 @@ pub func compileToJarBundled(
     }
     case None -> ()
   }
-  val userFile = parseResult.file
+  // `@stubbable` synthesis before type-check (parity with the MSIL bridge).
+  val userFile = Stubbable.stubbableRewriteFile(parseResult.file)
 
   // Parse every stdlib source once: collect its type items (for cross-package
   // type resolution) and index the whole file by dotted package name (for the

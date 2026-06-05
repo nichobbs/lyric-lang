@@ -14,6 +14,7 @@ import Std.File
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.AliasRewriter as Aliases
+import Lyric.Stubbable as Stubbable
 import Lyric.TypeChecker
 import Lyric.ModeChecker
 import Lyric.ContractElaborator
@@ -92,8 +93,10 @@ pub func compileToMsilWithVersion(
   // self-hosted typechecker, which doesn't track import aliases
   // natively, doesn't fire T0020 on the alias head.  Mirrors the
   // F# `Lyric.Parser.AliasRewriter.rewriteFile` pass that the
-  // production F# emitter runs immediately after parse.
-  val file0 = Aliases.rewriteFile(parseResult.file)
+  // production F# emitter runs immediately after parse.  Then synthesise the
+  // `@stubbable` interface stubs (record + impl) so the type checker and codegen
+  // see them — mirrors the F# `Lyric.Parser.Stubbable` pre-typecheck pass.
+  val file0 = Stubbable.stubbableRewriteFile(Aliases.rewriteFile(parseResult.file))
 
   val tcRes = checkWithImportedPackages(file0, importedPkgs)
   reportDiagnostics(tcRes.diagnostics)   // advisory: type checker lacks builtin coverage
@@ -363,7 +366,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     if reportAndAbort(parseResult.diagnostics) { return false }
     val cfgRes = Cfg.applyCfgErasure(activeFeatures, declaredFeatures, parseResult.file)
     if reportAndAbort(cfgRes.diagnostics) { return false }
-    val file0 = Aliases.rewriteFile(cfgRes.file)
+    val file0 = Stubbable.stubbableRewriteFile(Aliases.rewriteFile(cfgRes.file))
     parsedPkgs.add(ParsedUserPkg(name = pkg.name, file = file0))
     pi = pi + 1
   }
