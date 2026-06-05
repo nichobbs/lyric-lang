@@ -72,45 +72,93 @@ func asAliasOf(imp: in ImportDecl): Option[String] { imp.asAlias }
 //
 // A list is used instead of a set because the typechecker isn't a
 // hot path for huge alias counts — linear membership is plenty.
+func dotJoin(segs: in List[String]): String {
+  if segs.count == 0 { return "" }
+  var s = segs[0]
+  var i = 1
+  while i < segs.count {
+    s = s + "." + segs[i]
+    i = i + 1
+  }
+  s
+}
+
+// Each entry is `"<alias>=<dotted declaring package>"`, e.g. `"Rx=Std.RegexSafe"`,
+// so a later `Rx.foo` rewrite can substitute the alias head with the full package
+// path (preserving which package the call/type targets) rather than dropping it.
+// `=` is a safe separator: neither identifiers nor package names contain it.
 func collectAliases(imports: in List[ImportDecl]): List[String] {
-  val names: List[String] = newList()
+  val entries: List[String] = newList()
   var i = 0
   while i < imports.count {
     match asAliasOf(imports[i]) {
-      case Some(name) -> names.add(name)
+      case Some(name) -> entries.add(name + "=" + dotJoin(imports[i].path.segments))
       case None       -> ()
     }
     i = i + 1
   }
-  names
+  entries
 }
 
 func aliasContains(aliases: in List[String], name: in String): Bool {
+  val pfx = name + "="
   var i = 0
   while i < aliases.count {
-    if aliases[i] == name { return true }
+    if Str.startsWith(aliases[i], pfx) { return true }
     i = i + 1
   }
   false
+}
+
+// The declaring-package segments for alias `name` (empty list if unknown).
+func aliasPkgSegs(aliases: in List[String], name: in String): List[String] {
+  val pfx = name + "="
+  val acc: List[String] = newList()
+  var i = 0
+  while i < aliases.count {
+    if Str.startsWith(aliases[i], pfx) {
+      val kv = Str.split(aliases[i], "=")
+      if kv.length >= 2 {
+        val segs = Str.split(kv[1], ".")
+        var k = 0
+        while k < segs.length {
+          acc.add(segs[k])
+          k = k + 1
+        }
+      }
+      return acc
+    }
+    i = i + 1
+  }
+  acc
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. ModulePath rewriting.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// `Coll.List` (segments = ["Coll", "List"]) where `Coll` is a known
-// alias collapses to `List` (segments = ["List"]).  Single-segment
-// paths and paths whose head isn't an alias pass through unchanged.
+// `Rx.tryCompile` (segments = ["Rx", "tryCompile"]) where `Rx` aliases
+// `Std.RegexSafe` rewrites to the fully-qualified `Std.RegexSafe.tryCompile`
+// (segments = ["Std", "RegexSafe", "tryCompile"]) — the package prefix is
+// preserved so resolution can disambiguate same-name symbols across packages
+// (#1488 regex_safe).  Single-segment paths and paths whose head isn't an alias
+// pass through unchanged.
 func rewritePath(aliases: in List[String], p: in ModulePath): ModulePath {
   if p.segments.count < 2 { return p }
   if not aliasContains(aliases, p.segments[0]) { return p }
-  val rest: List[String] = newList()
+  val acc: List[String] = newList()
+  val pkg = aliasPkgSegs(aliases, p.segments[0])
+  var k = 0
+  while k < pkg.count {
+    acc.add(pkg[k])
+    k = k + 1
+  }
   var i = 1
   while i < p.segments.count {
-    rest.add(p.segments[i])
+    acc.add(p.segments[i])
     i = i + 1
   }
-  ModulePath(segments = rest, span = p.span)
+  ModulePath(segments = acc, span = p.span)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -201,15 +249,21 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
     case EPath(path) ->
       return Expr(kind = EPath(path = rewritePath(aliases, path)), span = e.span)
     case EMember(receiver, memberName) -> {
-      // `Alias.foo` collapse: when the receiver is a single-segment
-      // `EPath` whose head is a known alias, drop the alias and
-      // surface the member as a bare path so the post-rewrite
-      // typechecker resolves it against the imported package's
-      // top-level symbols.
+      // `Alias.foo`: when the receiver is a single-segment `EPath` whose head
+      // is a known alias, surface the member as a fully-qualified path
+      // (`<package>.foo`) so the post-rewrite typechecker resolves it against
+      // the declaring package's symbols — preserving the package keeps two
+      // same-name imports distinguishable (#1488 regex_safe).
       match receiver.kind {
         case EPath(p) -> {
           if p.segments.count == 1 and aliasContains(aliases, p.segments[0]) {
             val segs: List[String] = newList()
+            val pkg = aliasPkgSegs(aliases, p.segments[0])
+            var k = 0
+            while k < pkg.count {
+              segs.add(pkg[k])
+              k = k + 1
+            }
             segs.add(memberName)
             return Expr(kind = EPath(path = ModulePath(segments = segs, span = p.span)),
                         span = e.span)
