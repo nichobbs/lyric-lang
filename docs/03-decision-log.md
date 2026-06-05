@@ -5206,6 +5206,7 @@ and `stack_spill_await_in_binop` F# inline tests continue to pass.  All 24 async
 843/843 emitter tests green.  Tracked as D-progress-439.
 
 ---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
