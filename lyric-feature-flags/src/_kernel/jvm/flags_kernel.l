@@ -7,26 +7,18 @@
 //!
 //! Only active when compiled with feature = "jvm" (Phase 6).
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-
 @cfg(feature = "jvm")
 package Flags.Kernel.Jvm
 
 import Std.Core
 
 // ─── Remote HTTP polling client ───────────────────────────────────────────────
-
 @axiom("java.net.http.HttpClient for remote feature flag polling (JDK 11+)")
 @cfg(feature = "remote")
 extern package lyric.flags.HttpClient {
   /// Open a polling connection to the remote flag endpoint.
   /// Returns an opaque store handle on success.
-  pub func connect(
-    url:             String,
-    apiKey:          String,
-    appKey:          String,
-    pollIntervalMs:  Int,
-    connectTimeoutMs: Int
-  ): Result[Int, String]
+  pub func connect(url: String, apiKey: String, appKey: String, pollIntervalMs: Int, connectTimeoutMs: Int): Result[Int, String]
 
   /// Return true if the named flag is enabled in the remote store.
   pub func isEnabled(storeHandle: Int, name: String): Bool
@@ -39,9 +31,8 @@ extern package lyric.flags.HttpClient {
 
   /// Trigger an immediate refresh from the remote endpoint.
   pub func refresh(storeHandle: Int): Result[Unit, String]
+  // ─── Process-global flag registry ────────────────────────────────────────────
 }
-
-// ─── Process-global flag registry ────────────────────────────────────────────
 
 @axiom("lyric.flags.Registry backed by java.util.concurrent.ConcurrentHashMap")
 extern package lyric.flags.Registry {
@@ -56,18 +47,13 @@ extern package lyric.flags.Registry {
 
   /// Register (or overwrite) a String flag in the process-global registry.
   pub func registerStringFlag(name: String, value: String): Unit
+  // ─── Re-exports with `in` mode ────────────────────────────────────────────────
 }
-
-// ─── Re-exports with `in` mode ────────────────────────────────────────────────
 
 /// Open a polling connection to the remote flag endpoint.
 @cfg(feature = "remote")
 pub func connect(
-  url:              in String,
-  apiKey:           in String,
-  appKey:           in String,
-  pollIntervalMs:   in Int,
-  connectTimeoutMs: in Int
+  url: in String, apiKey: in String, appKey: in String, pollIntervalMs: in Int, connectTimeoutMs: in Int
 ): Result[Int, String] {
   return lyric.flags.HttpClient.connect(url, apiKey, appKey, pollIntervalMs, connectTimeoutMs)
 }

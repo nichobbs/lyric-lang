@@ -1226,7 +1226,14 @@ func specializeFunc(
   while i < decl.params.count {
     val p = decl.params[i]
     newParams.add(
-      Param(mode = p.mode, name = p.name, ty = substTypeExpr(subst, valueSubst, p.ty), dflt = p.dflt, span = p.span)
+      Param(
+        mode = p.mode,
+        modeExplicit = p.modeExplicit,
+        name = p.name,
+        ty = substTypeExpr(subst, valueSubst, p.ty),
+        dflt = p.dflt,
+        span = p.span
+      )
     )
     i = i + 1
   }

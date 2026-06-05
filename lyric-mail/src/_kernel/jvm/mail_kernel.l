@@ -16,33 +16,23 @@
 //!
 //! Only active when compiled with feature = "jvm" (Phase 6).
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-
 @cfg(feature = "jvm")
 package Mail.Kernel.Jvm
 
 // ─── SMTP provider (Jakarta Mail) ────────────────────────────────────────────
-
 @axiom("Jakarta Mail SMTP client for JVM")
 @cfg(feature = "smtp")
 extern package lyric.mail.SmtpClient {
   /// Open an authenticated SMTP connection.  Returns an opaque connection handle.
-  pub func connect(
-    host:      String,
-    port:      Int,
-    username:  String,
-    password:  String,
-    useTls:    Bool,
-    timeoutMs: Int
-  ): Result[Int, String]
+  pub func connect(host: String, port: Int, username: String, password: String, useTls: Bool, timeoutMs: Int): Result[Int, String]
 
   /// Send a message encoded as JSON.  `senderHandle` is the handle returned by connect.
   pub func send(senderHandle: Int, messageJson: String): Result[Unit, String]
 
   /// Close the SMTP connection and release resources.
   pub func close(senderHandle: Int): Unit
+  // ─── Amazon SES provider ──────────────────────────────────────────────────────
 }
-
-// ─── Amazon SES provider ──────────────────────────────────────────────────────
 
 @axiom("Amazon SES SDK v2 for JVM")
 @cfg(feature = "ses")
@@ -56,9 +46,8 @@ extern package lyric.mail.SesClient {
 
   /// Release the SES client.
   pub func close(senderHandle: Int): Unit
+  // ─── SendGrid provider ────────────────────────────────────────────────────────
 }
-
-// ─── SendGrid provider ────────────────────────────────────────────────────────
 
 @axiom("SendGrid Java SDK for JVM")
 @cfg(feature = "sendgrid")
@@ -71,30 +60,25 @@ extern package lyric.mail.SendGridClient {
 
   /// Release the SendGrid client.
   pub func close(senderHandle: Int): Unit
+  // ─── Re-exports with `in` mode ────────────────────────────────────────────────
 }
-
-// ─── Re-exports with `in` mode ────────────────────────────────────────────────
 
 /// Open a Jakarta Mail SMTP connection.
 @cfg(feature = "smtp")
 pub func connectSmtp(
-  host:      in String,
-  port:      in Int,
-  username:  in String,
-  password:  in String,
-  useTls:    in Bool,
-  timeoutMs: in Int
+  host: in String,
+  port: in Int,
+  username: in String,
+  password: in String,
+  useTls: in Bool,
+  timeoutMs: in Int,
 ): Result[Int, String] {
   lyric.mail.SmtpClient.connect(host, port, username, password, useTls, timeoutMs)
 }
 
 /// Open an Amazon SES client.
 @cfg(feature = "ses")
-pub func connectSes(
-  region:    in String,
-  accessKey: in String,
-  secretKey: in String
-): Result[Int, String] {
+pub func connectSes(region: in String, accessKey: in String, secretKey: in String): Result[Int, String] {
   lyric.mail.SesClient.connect(region, accessKey, secretKey)
 }
 

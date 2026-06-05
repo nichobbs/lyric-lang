@@ -182,6 +182,10 @@ pub union ParamMode {
 
 pub record Param {
   mode: ParamMode
+  // `true` when the source wrote an explicit `in`/`out`/`inout` keyword.
+  // Omitting the mode is sugar for `in`; this flag lets the formatter
+  // round-trip the bare form instead of synthesising an `in`.
+  modeExplicit: Bool
   name: String
   ty: TypeExpr
   dflt: Option[Expr]

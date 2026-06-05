@@ -572,7 +572,14 @@ func rewriteLocalBinding(aliases: in List[String], lb: in LocalBinding): LocalBi
 // ─────────────────────────────────────────────────────────────────────────────
 func rewriteParam(aliases: in List[String], p: in Param): Param {
   val d = match p.dflt { case Some(e) -> Some(value = rewriteExpr(aliases, e)); case None -> p.dflt }
-  Param(mode = p.mode, name = p.name, ty = rewriteTypeExpr(aliases, p.ty), dflt = d, span = p.span)
+  Param(
+    mode = p.mode,
+    modeExplicit = p.modeExplicit,
+    name = p.name,
+    ty = rewriteTypeExpr(aliases, p.ty),
+    dflt = d,
+    span = p.span
+  )
 }
 
 func rewriteFunctionBody(aliases: in List[String], b: in FunctionBody): FunctionBody {
@@ -1088,12 +1095,15 @@ func rewriteExternPackageDecl(aliases: in List[String], d: in ExternPackageDecl)
   var i = 0
   while i < d.members.count {
     val emd = d.members[i]
-    ms.add(ExternMemberDecl(
-      docComments = emd.docComments,
-      annotations = emd.annotations,
-      visibility  = emd.visibility,
-      kind        = rewriteExternMember(aliases, emd.kind),
-      span        = emd.span))
+    ms.add(
+      ExternMemberDecl(
+        docComments = emd.docComments,
+        annotations = emd.annotations,
+        visibility = emd.visibility,
+        kind = rewriteExternMember(aliases, emd.kind),
+        span = emd.span
+      )
+    )
     i = i + 1
   }
   ExternPackageDecl(path = d.path, annotations = d.annotations, members = ms, span = d.span)
