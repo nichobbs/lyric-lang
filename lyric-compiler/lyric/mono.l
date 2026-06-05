@@ -293,13 +293,13 @@ func valueExprKey(e: in Expr): String {
   match e.kind {
     case ELiteral(lit) -> {
       match lit {
-        case LInt(value, _) -> longLitKey(value)
+        case LInt(value, _, _) -> longLitKey(value)
         case LBool(b) -> if b { "true" } else { "false" }
         case LChar(cp) -> "c" + toString(cp)
         case LString(s) -> "s" + toString(s.length)
         case LTripleString(s) -> "s" + toString(s.length)
         case LRawString(s) -> "s" + toString(s.length)
-        case LFloat(_, _) -> "f"
+        case LFloat(_, _, _) -> "f"
         case LUnit -> "u"
       }
     }
@@ -846,7 +846,7 @@ func specFuncName(
 // complex sub-expressions (calls, field projections, binary ops, etc.).
 func inferLitTE(lit: in Literal, span: in Span): Option[TypeExpr] {
   match lit {
-    case LInt(_, suffix) -> {
+    case LInt(_, suffix, _) -> {
       val name = match suffix {
         case I8 -> "Byte"
         case I16 -> "Short"
@@ -860,7 +860,7 @@ func inferLitTE(lit: in Literal, span: in Span): Option[TypeExpr] {
       }
       Some(value = TypeExpr(kind = TRef(path = singleSegPath(name)), span = span))
     }
-    case LFloat(_, suffix) -> {
+    case LFloat(_, suffix, _) -> {
       val name = match suffix { case F32 -> "Float"; case F64 -> "Double"; case NoFloatSuffix -> "Double" }
       Some(value = TypeExpr(kind = TRef(path = singleSegPath(name)), span = span))
     }

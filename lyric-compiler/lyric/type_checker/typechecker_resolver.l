@@ -83,7 +83,7 @@ pub func resolveType(tbl: in SymbolTable, ctx: in GenericContext, diag: in List[
 // distinct range subtypes with computed bounds are Band-4 work).
 pub func exprLiteralLong(e: in Expr): Option[Long] {
   match e.kind {
-    case ELiteral(lit) -> match lit { case LInt(v, _) -> Some(value = v); case _ -> None }
+    case ELiteral(lit) -> match lit { case LInt(v, _, _) -> Some(value = v); case _ -> None }
     case EParen(inner) -> exprLiteralLong(inner)
     case EPrefix(op, operand) -> match op { case PreNeg -> match exprLiteralLong(operand) { case Some(v) -> Some(value = 0i64 - v); case None -> None }; case _ -> None }
     case _ -> None

@@ -12,8 +12,8 @@ import Lyric.Parser
 // ─────────────────────────────────────────────────────────────────────────────
 pub func typeOfLiteral(lit: in Literal): Type {
   match lit {
-    case LInt(_, sfx) -> match sfx { case NoIntSuffix -> TyPrim(pt = PtInt); case I8 -> TyPrim(pt = PtByte); case I16 -> TyPrim(pt = PtInt); case I32 -> TyPrim(pt = PtInt); case I64 -> TyPrim(pt = PtLong); case U8 -> TyPrim(pt = PtByte); case U16 -> TyPrim(pt = PtUInt); case U32 -> TyPrim(pt = PtUInt); case U64 -> TyPrim(pt = PtULong) }
-    case LFloat(_, sfx) -> match sfx { case NoFloatSuffix -> TyPrim(pt = PtDouble); case F32 -> TyPrim(pt = PtFloat); case F64 -> TyPrim(pt = PtDouble) }
+    case LInt(_, sfx, _) -> match sfx { case NoIntSuffix -> TyPrim(pt = PtInt); case I8 -> TyPrim(pt = PtByte); case I16 -> TyPrim(pt = PtInt); case I32 -> TyPrim(pt = PtInt); case I64 -> TyPrim(pt = PtLong); case U8 -> TyPrim(pt = PtByte); case U16 -> TyPrim(pt = PtUInt); case U32 -> TyPrim(pt = PtUInt); case U64 -> TyPrim(pt = PtULong) }
+    case LFloat(_, sfx, _) -> match sfx { case NoFloatSuffix -> TyPrim(pt = PtDouble); case F32 -> TyPrim(pt = PtFloat); case F64 -> TyPrim(pt = PtDouble) }
     case LChar(_) -> TyPrim(pt = PtChar)
     case LString(_) -> TyPrim(pt = PtString)
     case LTripleString(_) -> TyPrim(pt = PtString)
