@@ -1404,14 +1404,15 @@ func parseWireBody(st: inout ParseState): WireDecl {
   WireDecl(name = ns.name, params = parameters, members = xs, span = joinSpans(startTok.span, endSpan))
 }
 
-func parseExternMemberOpt(st: inout ParseState): Option[ExternMember] {
-  val _ = parseItemDocComments(st)
-  val _ = parseItemAnnotations(st)
-  match tryEatKw(st, KwPub) {
-    case Some(_) -> {}
-    case None -> {}
+func parseExternMemberOpt(st: inout ParseState): Option[ExternMemberDecl] {
+  val docs = parseItemDocComments(st)
+  val anns = parseItemAnnotations(st)
+  val startSp = peekSpan(st)
+  val vis: Option[Visibility] = match tryEatKw(st, KwPub) {
+    case Some(t) -> Some(VisPub(span = t.span))
+    case None    -> None
   }
-  match peekToken(st) {
+  val kindOpt: Option[ExternMember] = match peekToken(st) {
     case TKeyword(k) -> {
       match k {
         case KwExposed -> {
@@ -1532,6 +1533,15 @@ func parseExternMemberOpt(st: inout ParseState): Option[ExternMember] {
       None
     }
   }
+  match kindOpt {
+    case Some(k) -> Some(ExternMemberDecl(
+      docComments = docs,
+      annotations = anns,
+      visibility  = vis,
+      kind        = k,
+      span        = startSp))
+    case None -> None
+  }
 }
 
 func parseExternPackageBody(st: inout ParseState, anns: List[Annotation]): ExternPackageDecl {
@@ -1543,7 +1553,7 @@ func parseExternPackageBody(st: inout ParseState, anns: List[Annotation]): Exter
     case None -> { emitErr(st, "P0271", "expected '{' to start extern package body", peekSpan(st)) }
   }
   val _ = skipStmtEnds(st)
-  val xs: List[ExternMember] = newList()
+  val xs: List[ExternMemberDecl] = newList()
   while not isPunct(peekToken(st), RBrace) and not isAtEnd(st) {
     val before = mark(st)
     match parseExternMemberOpt(st) {

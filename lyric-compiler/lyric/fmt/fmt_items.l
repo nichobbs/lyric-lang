@@ -118,6 +118,15 @@ func appendIndentedTrivia(acc: inout List[String], items: in List[String]): Unit
   }
 }
 
+/// Append every line of `items` to `acc` in order, verbatim.
+func appendDoc(acc: inout List[String], items: in List[String]): Unit {
+  var k = 0
+  while k < items.count {
+    acc.add(items[k])
+    k = k + 1
+  }
+}
+
 pub func fieldDeclStr(fd: in FieldDecl): String {
   val vis = match fd.visibility { case Some(_) -> "pub "; case None -> "" }
   val defStr = match fd.dflt { case Some(e) -> " = " + exprInline(0, e); case None -> "" }
@@ -573,7 +582,7 @@ pub func itemDoc(item: in Item, ctx: inout FmtCtx): List[String] {
     case IScopeKind(sd) -> concatDoc(header, singleLineDoc("scope_kind " + sd.name))
     case IConst(cd) -> concatDoc(header, constDoc(visStr, cd))
     case IVal(vd) -> concatDoc(header, valDoc(visStr, vd))
-    case IExtern(ep) -> externDoc(item, ep)
+    case IExtern(ep) -> externDoc(item, ep, ctx)
     case IExternType(et) -> concatDoc(header, externTypeDoc(visStr, et))
     case ITest(td) -> concatDoc(header, testDoc(td, ctx))
     case IProperty(pd) -> concatDoc(header, propertyDoc(pd, ctx))
@@ -809,42 +818,84 @@ func valDoc(visStr: in String, vd: in ValDecl): List[String] {
   singleLineDoc(visStr + "val " + patStr(vd.pattern) + tyStr + " = " + exprInline(0, vd.init))
 }
 
-func externDoc(item: in Item, ep: in ExternPackageDecl): List[String] {
-  val docL = docLines(item.docComments)
-  val epAnnos = annotationLines(ep.annotations)
-  val mLines: List[String] = newList()
+/// True when an opaque decl's annotation list carries the synthetic
+/// "exposed" tag the parser injects for an `exposed type` extern member.
+@pure
+func annotationsHaveExposedTag(anns: in List[Annotation]): Bool {
   var i = 0
-  while i < ep.members.count {
-    match ep.members[i] {
-      case EMRecord(r) -> mLines.add("record " + r.name)
-      case EMExposedRec(r) -> mLines.add("exposed record " + r.name)
-      case EMUnion(u) -> mLines.add("union " + u.name)
-      case EMEnum(e) -> mLines.add("enum " + e.name)
-      case EMOpaque(o) -> mLines.add("opaque type " + o.name)
-      case EMSig(sg) -> mLines.add(funcSigStr(sg))
-      case EMTypeAlias(ta) -> mLines.add("type " + ta.name)
-      case EMDistinctType(d) -> mLines.add("distinct type " + d.name)
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count == 1 and segs[0] == "exposed" {
+      return true
     }
     i = i + 1
   }
+  false
+}
+
+/// Visibility prefix for an extern member (`pub ` / `internal ` / none).
+@pure
+func externVisStr(vis: in Option[Visibility]): String {
+  match vis {
+    case Some(VisPub(_)) -> "pub "
+    case Some(VisInternal(_)) -> "internal "
+    case None -> ""
+  }
+}
+
+/// One extern-package member: leading non-doc trivia, its captured doc
+/// comments and annotations, then the declaration itself rendered at full
+/// fidelity (visibility + signature + contracts for a func, the full body
+/// for a record).  Mirrors the order the source wrote them so the
+/// `FmtCtx` cursor advances monotonically.
+func externMemberLines(emd: in ExternMemberDecl, ctx: inout FmtCtx): List[String] {
   val acc: List[String] = newList()
-  var j = 0
-  while j < docL.count {
-    acc.add(docL[j])
-    j = j + 1
+  val pre = popTriviaBefore(ctx, emd.span.startPos.offset)
+  appendDoc(acc, pre)
+  appendDoc(acc, docLines(emd.docComments))
+  appendDoc(acc, annotationLines(emd.annotations))
+  val visStr = externVisStr(emd.visibility)
+  match emd.kind {
+    case EMSig(sg) -> {
+      acc.add(visStr + funcSigStr(sg))
+      var ci = 0
+      while ci < sg.contracts.count {
+        val c = sg.contracts[ci]
+        val cpre = popTriviaBefore(ctx, contractClauseStartOffset(c))
+        appendIndentedTrivia(acc, cpre)
+        appendDoc(acc, indentDoc(2, contractDoc(2, ctx, c)))
+        ci = ci + 1
+      }
+    }
+    case EMExposedRec(r) -> appendDoc(acc, recordDoc(visStr, "exposed record", r.name, r.generics, r.whereClause, r.members, r.span.endPos.offset, ctx))
+    case EMRecord(r) -> appendDoc(acc, recordDoc(visStr, "record", r.name, r.generics, r.whereClause, r.members, r.span.endPos.offset, ctx))
+    case EMUnion(u) -> appendDoc(acc, unionDoc(visStr, u, ctx))
+    case EMEnum(e) -> appendDoc(acc, enumDoc(visStr, e, ctx))
+    case EMOpaque(o) -> {
+      // The parser models a `exposed type X` extern member as an opaque
+      // decl carrying a synthetic "exposed" annotation tag; reverse it.
+      val kw = if annotationsHaveExposedTag(o.annotations) { "exposed type " } else { "opaque type " }
+      acc.add(visStr + kw + o.name + genParamsStr(o.generics))
+    }
+    case EMTypeAlias(ta) -> appendDoc(acc, typeAliasDoc(visStr, ta))
+    case EMDistinctType(d) -> appendDoc(acc, distinctDoc(visStr, d))
   }
-  j = 0
-  while j < epAnnos.count {
-    acc.add(epAnnos[j])
-    j = j + 1
+  acc
+}
+
+func externDoc(item: in Item, ep: in ExternPackageDecl, ctx: inout FmtCtx): List[String] {
+  val acc: List[String] = newList()
+  appendDoc(acc, docLines(item.docComments))
+  appendDoc(acc, annotationLines(ep.annotations))
+  acc.add("extern package " + pathStr(ep.path) + " {")
+  val mLines: List[String] = newList()
+  var i = 0
+  while i < ep.members.count {
+    appendDoc(mLines, externMemberLines(ep.members[i], ctx))
+    i = i + 1
   }
-  acc.add("extern " + pathStr(ep.path) + " {")
-  val ind = indentDoc(2, mLines)
-  j = 0
-  while j < ind.count {
-    acc.add(ind[j])
-    j = j + 1
-  }
+  appendDoc(acc, indentDoc(2, mLines))
+  appendDoc(acc, indentDoc(2, popCommentsBefore(ctx, ep.span.endPos.offset)))
   acc.add("}")
   acc
 }

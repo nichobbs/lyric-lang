@@ -572,12 +572,21 @@ func testFormatSourceCheckedStructureChange(): Unit {
   assertTrue(Str.contains(fmtCheckMessage(c), "code-token sequence"), "checked: structure-change message")
 }
 
-func testFormatSourceCheckedOutputParseError(): Unit {
-  // The formatter cannot yet render an `extern package` losslessly (it drops
-  // the `package` keyword), so the output fails to re-parse and the guard
-  // refuses rather than emitting non-compiling source.
-  val c = formatSourceChecked("package P\n\nextern package Host.X {\n  pub func f(): Int\n}\n")
-  assertTrue(not fmtCheckIsOk(c), "checked: extern-package output is refused")
+func testExternPackageRoundTrips(): Unit {
+  // Extern packages round-trip: the `package` keyword, each member's
+  // visibility, doc comments, and contracts, and the `exposed type`
+  // spelling are all preserved (previously the formatter dropped the
+  // `package` keyword and every member's `pub`/doc/contract, so the guard
+  // refused the whole file).
+  val src = "package P\n\nextern package Host.X {\n  /// Doc.\n  pub func f(x: in Int): Int\n    requires: x > 0\n\n  pub exposed type Handle\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "extern package: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "extern package Host.X {"), "extern package: keyword preserved")
+  assertTrue(Str.contains(acc, "pub func f(x: in Int): Int"), "extern package: member visibility preserved")
+  assertTrue(Str.contains(acc, "requires: x > 0"), "extern package: member contract preserved")
+  assertTrue(Str.contains(acc, "pub exposed type Handle"), "extern package: exposed type preserved")
+  assertTrue(Str.contains(acc, "/// Doc."), "extern package: member doc preserved")
 }
 
 func testReturnTryRoundTrips(): Unit {
@@ -646,7 +655,7 @@ func main(): Unit {
   testFormatSourceCheckedOk()
   testFormatSourceCheckedInputParseError()
   testFormatSourceCheckedStructureChange()
-  testFormatSourceCheckedOutputParseError()
+  testExternPackageRoundTrips()
   testReturnTryRoundTrips()
   testMatchArmBareReturnRoundTrips()
   testMatchArmExplicitBracePreserved()
