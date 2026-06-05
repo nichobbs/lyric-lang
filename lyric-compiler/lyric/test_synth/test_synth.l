@@ -1,28 +1,28 @@
-// test/test_synth.l — self-hosted port of the F# `lyric test` source
-// rewriter (compiler/src/Lyric.Cli/TestSynth.fs).
-//
-// Given a Lyric source string carrying `@test_module` plus zero or
-// more `test "title" { … }` items, produce a *new* source string
-// where:
-//
-//   * Each `test "title" { body }` becomes a regular
-//     `func __lyric_test_<idx>(): Unit { body }`.
-//   * A synthesised `func main(): Int` is appended that runs each
-//     test inside `try`/`catch Bug as b { … }` and prints a
-//     TAP-shaped report to stdout.
-//   * Properties parse but skip with a `# skip` line.
-//   * Fixtures emit a `T0901`-shaped outcome.
-//
-// The rewrite operates on *spans into the original source string*
-// so user-authored test bodies stay byte-identical (line numbers
-// reported by the type-checker / emitter still point at user code).
-// See `docs/24-test-runner-plan.md` for the rationale.
-//
-// Phase 5 §M5.3-equivalent port.  `lyric test` routes through this
-// library: the self-hosted CLI dispatcher (`cli.l`) calls
-// `synthesize` / `listEntries` directly (D-progress-260).  The earlier
-// F# `Lyric.Cli.TestSynth` has been removed along with the rest of the
-// F# user-facing CLI (#860).
+//! test/test_synth.l — self-hosted port of the F# `lyric test` source
+//! rewriter (compiler/src/Lyric.Cli/TestSynth.fs).
+//!
+//! Given a Lyric source string carrying `@test_module` plus zero or
+//! more `test "title" { … }` items, produce a *new* source string
+//! where:
+//!
+//!   * Each `test "title" { body }` becomes a regular
+//!     `func __lyric_test_<idx>(): Unit { body }`.
+//!   * A synthesised `func main(): Int` is appended that runs each
+//!     test inside `try`/`catch Bug as b { … }` and prints a
+//!     TAP-shaped report to stdout.
+//!   * Properties parse but skip with a `# skip` line.
+//!   * Fixtures emit a `T0901`-shaped outcome.
+//!
+//! The rewrite operates on *spans into the original source string*
+//! so user-authored test bodies stay byte-identical (line numbers
+//! reported by the type-checker / emitter still point at user code).
+//! See `docs/24-test-runner-plan.md` for the rationale.
+//!
+//! Phase 5 §M5.3-equivalent port.  `lyric test` routes through this
+//! library: the self-hosted CLI dispatcher (`cli.l`) calls
+//! `synthesize` / `listEntries` directly (D-progress-260).  The earlier
+//! F# `Lyric.Cli.TestSynth` has been removed along with the rest of the
+//! F# user-facing CLI (#860).
 package Lyric.TestSynth
 
 import Std.Core
@@ -34,7 +34,6 @@ import Lyric.Parser
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public surface.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub union Outcome {
   case Synthesised(source: String, testCount: Int, skipCount: Int)
   case NoTestModule(span: Span)
@@ -47,13 +46,12 @@ pub union ListEntry {
   case TestEntry(title: String)
   case PropertyEntry(title: String, reason: String)
   case FixtureEntry(name: String)
+  // ─────────────────────────────────────────────────────────────────────────────
+  // §2. Helpers.  `escapeForLiteral` mirrors `escapeStr` in fmt_core.l but is
+  // inlined here so the test-runner library doesn't pull in `Lyric.Fmt` just
+  // for one tiny helper.
+  // ─────────────────────────────────────────────────────────────────────────────
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §2. Helpers.  `escapeForLiteral` mirrors `escapeStr` in fmt_core.l but is
-// inlined here so the test-runner library doesn't pull in `Lyric.Fmt` just
-// for one tiny helper.
-// ─────────────────────────────────────────────────────────────────────────────
 
 func escapeForLiteral(s: in String): String {
   var acc = ""
@@ -79,7 +77,9 @@ func escapeForLiteral(s: in String): String {
 }
 
 func annotationName(a: in Annotation): String {
-  if a.name.segments.count == 0 { return "" }
+  if a.name.segments.count == 0 {
+    return ""
+  }
   var s = a.name.segments[0]
   var i = 1
   while i < a.name.segments.count {
@@ -113,8 +113,8 @@ func slice(source: in String, sp: in Span): String {
 
 func filterAccepts(filter: in Option[String], title: in String): Bool {
   match filter {
-    case None       -> true
-    case Some(f)    -> Str.contains(title, f)
+    case None -> true
+    case Some(f) -> Str.contains(title, f)
   }
 }
 
@@ -123,21 +123,17 @@ func filterAccepts(filter: in Option[String], title: in String): Bool {
 // pairs plus skipped entries, emits a TAP-shaped report into a `func main():
 // Int` body.  Returns `1` on any test failure, `0` otherwise.
 // ─────────────────────────────────────────────────────────────────────────────
-
 record TestSlot {
   funcName: String
-  title:    String
+  title: String
 }
 
 record SkipSlot {
-  title:  String
+  title: String
   reason: String
 }
 
-func synthesizeMain(
-    tests: in List[TestSlot],
-    skipped: in List[SkipSlot],
-    filter: in Option[String]): String {
+func synthesizeMain(tests: in List[TestSlot], skipped: in List[SkipSlot], filter: in Option[String]): String {
   val total = tests.count + skipped.count
   var sb = ""
   sb = sb + "func main(): Int {\n"
@@ -195,7 +191,6 @@ func synthesizeMain(
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. `synthesize` — main entry point.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func userMainSpan(items: in List[Item]): Option[Span] {
   var i = 0
   var found: Option[Span] = None
@@ -207,7 +202,8 @@ func userMainSpan(items: in List[Item]): Option[Span] {
           found = Some(value = it.span)
         }
       }
-      case _ -> {}
+      case _ -> {
+      }
     }
     i = i + 1
   }
@@ -221,9 +217,12 @@ func fixtureSpan(items: in List[Item]): Option[Span] {
     val it = items[i]
     match it.kind {
       case IFixture(_) -> {
-        if isNone(found) { found = Some(value = it.span) }
+        if isNone(found) {
+          found = Some(value = it.span)
+        }
       }
-      case _ -> {}
+      case _ -> {
+      }
     }
     i = i + 1
   }
@@ -237,14 +236,15 @@ func parseErrors(diags: in List[Diagnostic]): List[Diagnostic] {
     val d = diags[i]
     match d.severity {
       case DiagError -> acc.add(d)
-      case _ -> {}
+      case _ -> {
+      }
     }
     i = i + 1
   }
   acc
 }
 
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func synthesize(source: in String, filter: in Option[String]): Outcome {
   val pf = parse(source)
   val errs = parseErrors(pf.diagnostics)
@@ -256,11 +256,13 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
   }
   match userMainSpan(pf.file.items) {
     case Some(sp) -> return UserMainExists(span = sp)
-    case None     -> {}
+    case None -> {
+    }
   }
   match fixtureSpan(pf.file.items) {
     case Some(sp) -> return FixtureUnsupported(span = sp)
-    case None     -> {}
+    case None -> {
+    }
   }
 
   // Walk items.  For each item: emit the source slice from the
@@ -295,9 +297,7 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
       }
       case IProperty(p) -> {
         // Drop the property item entirely; record as skip.
-        skipped.add(SkipSlot(
-          title  = p.title,
-          reason = "property: not implemented in v1"))
+        skipped.add(SkipSlot(title = p.title, reason = "property: not implemented in v1"))
       }
       case _ -> {
         if e > s {
@@ -316,17 +316,13 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
   // not meaningful in the compiled program and triggers a P0040 parse
   // cascade in the in-process bridge parser (issue #1442).
   sb = Str.replace(sb, "@test_module\n", "\n")
-  Synthesised(
-    source     = sb,
-    testCount  = tests.count,
-    skipCount  = skipped.count)
+  Synthesised(source = sb, testCount = tests.count, skipCount = skipped.count)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. `listEntries` — used by `lyric test --list`.
 // ─────────────────────────────────────────────────────────────────────────────
-
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func listEntries(source: in String): Result[List[ListEntry], List[Diagnostic]] {
   val pf = parse(source)
   val errs = parseErrors(pf.diagnostics)
@@ -338,15 +334,11 @@ pub func listEntries(source: in String): Result[List[ListEntry], List[Diagnostic
   while i < pf.file.items.count {
     val it = pf.file.items[i]
     match it.kind {
-      case ITest(t) ->
-        acc.add(TestEntry(title = t.title))
-      case IProperty(p) ->
-        acc.add(PropertyEntry(
-          title  = p.title,
-          reason = "property: not implemented in v1"))
-      case IFixture(f) ->
-        acc.add(FixtureEntry(name = f.name))
-      case _ -> {}
+      case ITest(t) -> acc.add(TestEntry(title = t.title))
+      case IProperty(p) -> acc.add(PropertyEntry(title = p.title, reason = "property: not implemented in v1"))
+      case IFixture(f) -> acc.add(FixtureEntry(name = f.name))
+      case _ -> {
+      }
     }
     i = i + 1
   }

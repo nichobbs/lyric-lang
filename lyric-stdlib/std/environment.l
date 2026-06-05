@@ -1,9 +1,8 @@
-// std/environment.l - environment and process helpers.
-//
-// Reading process state is an effect, but missing environment variables
-// are ordinary data errors. Process exit is intentionally explicit and
-// does not hide behind app-host helpers.
-
+//! std/environment.l - environment and process helpers.
+//!
+//! Reading process state is an effect, but missing environment variables
+//! are ordinary data errors. Process exit is intentionally explicit and
+//! does not hide behind app-host helpers.
 @runtime_checked
 package Std.Environment
 
@@ -19,7 +18,7 @@ import Std.EnvironmentHost
 /// - `InvalidPath`: key is empty.
 /// - `KeyNotFound`: no environment variable exists for `key`.
 /// - `IoError`: host lookup failed.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func getVar(key: in String): Result[String, IOError] {
   if key.length == 0 {
     return Err(error = InvalidPath(path = key, reason = "environment key must not be empty"))
@@ -39,7 +38,7 @@ pub func getVar(key: in String): Result[String, IOError] {
 ///
 /// Empty keys also return the default because this is a convenience
 /// lookup, not a validation boundary.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func getVarOrDefault(key: in String, default: in String): String {
   match getVar(key) {
     case Ok(value) -> value
@@ -51,7 +50,7 @@ pub func getVarOrDefault(key: in String, default: in String): String {
 ///
 /// The returned slice uses the host convention, including whether argv0
 /// appears as the first entry.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func args(): slice[String] {
   return hostGetCommandLineArgs()
 }
@@ -61,7 +60,7 @@ pub func args(): slice[String] {
 /// This function does not return. Prefer returning an Int from
 /// `App.run` in application code; use `exitCode` only at hard process
 /// boundaries.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func exitCode(code: in Int): Never {
   hostExit(code)
 }
@@ -71,14 +70,14 @@ pub func exitCode(code: in Int): Never {
 /// On .NET this is `System.AppContext.BaseDirectory`, which is the
 /// directory containing the entry assembly.  Useful for resolving
 /// resources packaged alongside the binary.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func appBaseDirectory(): String {
   hostAppBaseDirectory()
 }
 
 /// Current working directory of the process.  Equivalent to `pwd` on
 /// POSIX.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func currentDirectory(): String {
   hostCurrentDirectory()
 }

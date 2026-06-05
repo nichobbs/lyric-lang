@@ -1,25 +1,25 @@
-// std/http_server.l - Tiny HTTP server on top of `HttpListener`.
-//
-// The canonical loop is:
-//
-//   func main(): Unit {
-//     val srv = startListener("http://localhost:8080/")
-//     while true {
-//       val ctx = nextContext(srv)
-//       val method = requestMethod(ctx)
-//       val path = requestPath(ctx)
-//       respondJson(ctx, 200, "{\"hello\": \"world\"}")
-//     }
-//   }
-//
-// Bootstrap-grade: synchronous, single-threaded, no router, no
-// middleware.  Good enough to demonstrate end-to-end REST shape;
-// real servers come later (or via a hand-curated wrapper around
-// ASP.NET Core minimal APIs).
-//
-// G12 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-NNN):
-// the F# `Lyric.Stdlib.HttpServerHost` shim retires entirely.
-// Direct-extern primitives + Lyric-level orchestration live below.
+//! std/http_server.l - Tiny HTTP server on top of `HttpListener`.
+//!
+//! The canonical loop is:
+//!
+//!   func main(): Unit {
+//!     val srv = startListener("http://localhost:8080/")
+//!     while true {
+//!       val ctx = nextContext(srv)
+//!       val method = requestMethod(ctx)
+//!       val path = requestPath(ctx)
+//!       respondJson(ctx, 200, "{\"hello\": \"world\"}")
+//!     }
+//!   }
+//!
+//! Bootstrap-grade: synchronous, single-threaded, no router, no
+//! middleware.  Good enough to demonstrate end-to-end REST shape;
+//! real servers come later (or via a hand-curated wrapper around
+//! ASP.NET Core minimal APIs).
+//!
+//! G12 (`docs/23-fsharp-shim-elimination.md` §5; D-progress-NNN):
+//! the F# `Lyric.Stdlib.HttpServerHost` shim retires entirely.
+//! Direct-extern primitives + Lyric-level orchestration live below.
 package Std.HttpServer
 
 import Std.Core
@@ -27,21 +27,27 @@ import Std.Core
 // =====================================================================
 // Extern types — BCL classes the helpers below reference.
 // =====================================================================
+extern type HttpListener = "System.Net.HttpListener"
 
-extern type HttpListener        = "System.Net.HttpListener"
-extern type HttpContext         = "System.Net.HttpListenerContext"
+extern type HttpContext = "System.Net.HttpListenerContext"
+
 extern type HttpListenerRequest = "System.Net.HttpListenerRequest"
+
 extern type HttpListenerResponse = "System.Net.HttpListenerResponse"
+
 extern type HttpListenerPrefixCollection = "System.Net.HttpListenerPrefixCollection"
-extern type Uri                 = "System.Uri"
-extern type Encoding            = "System.Text.Encoding"
-extern type Stream              = "System.IO.Stream"
-extern type StreamReader        = "System.IO.StreamReader"
+
+extern type Uri = "System.Uri"
+
+extern type Encoding = "System.Text.Encoding"
+
+extern type Stream = "System.IO.Stream"
+
+extern type StreamReader = "System.IO.StreamReader"
 
 // =====================================================================
 // Primitive externs (private to this kernel file).
 // =====================================================================
-
 @externTarget("System.Net.HttpListener..ctor")
 func newHttpListener(): HttpListener = ()
 
@@ -120,7 +126,6 @@ func intToLong(n: in Int): Long = ()
 // =====================================================================
 // Public host helpers.
 // =====================================================================
-
 /// Construct + bind + start the listener for `prefix` (e.g.
 /// `"http://localhost:8080/"`).  The caller owns it and must call
 /// `stopListener` on shutdown.

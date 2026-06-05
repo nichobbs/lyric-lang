@@ -1,9 +1,8 @@
-// std/directory.l - Result-based directory operations.
-//
-// Directory APIs mirror Std.File's boundary style: user-input problems
-// become IOError values, while host failures are caught at this wrapper
-// layer and do not leak as Bug into application code.
-
+//! std/directory.l - Result-based directory operations.
+//!
+//! Directory APIs mirror Std.File's boundary style: user-input problems
+//! become IOError values, while host failures are caught at this wrapper
+//! layer and do not leak as Bug into application code.
 @runtime_checked
 package Std.Directory
 
@@ -25,7 +24,7 @@ func invalidPath(path: in String): Option[IOError] {
 /// Invalid or empty paths return false because this is an existence
 /// probe, not a creating/opening operation. Use `create` or
 /// `enumerate` when the caller needs a classified IOError.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func exists(path: in String): Bool {
   if path.length == 0 {
     return false
@@ -48,7 +47,7 @@ pub func exists(path: in String): Bool {
 /// - `PermissionDenied`: reserved for classified access failures.
 /// - `IoError`: parent/file conflicts, race, device, and other host
 ///   failures.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func create(path: in String): Result[Unit, IOError] {
   match invalidPath(path) {
     case Some(e) -> return Err(error = e)
@@ -68,7 +67,7 @@ pub func create(path: in String): Result[Unit, IOError] {
 /// This is an alias for callers that want to document recursive intent.
 /// The host boundary currently models directory creation with recursive
 /// `CreateDirectory` semantics, so this delegates to `create`.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func createRecursive(path: in String): Result[Unit, IOError] {
   return create(path)
 }
@@ -89,7 +88,7 @@ pub func createRecursive(path: in String): Result[Unit, IOError] {
 ///
 /// Result path shape follows the host boundary and is not yet pinned as
 /// absolute or relative.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func enumerate(path: in String): Result[slice[String], IOError] {
   match invalidPath(path) {
     case Some(e) -> return Err(error = e)
@@ -114,7 +113,7 @@ pub func enumerate(path: in String): Result[slice[String], IOError] {
 ///
 /// Result path shape follows the host boundary and is not yet pinned as
 /// absolute or relative.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func enumerateFiles(path: in String): Result[slice[String], IOError] {
   match invalidPath(path) {
     case Some(e) -> return Err(error = e)
@@ -139,7 +138,7 @@ pub func enumerateFiles(path: in String): Result[slice[String], IOError] {
 ///
 /// Filtering is performed at the host boundary so callers do not need
 /// to inspect filesystem metadata themselves.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func enumerateDirectories(path: in String): Result[slice[String], IOError] {
   match invalidPath(path) {
     case Some(e) -> return Err(error = e)
@@ -174,7 +173,7 @@ pub func enumerateDirectories(path: in String): Result[slice[String], IOError] {
 ///
 /// Recursive deletion is intentionally a separate function so
 /// destructive behavior is explicit at call sites.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func delete(path: in String): Result[Unit, IOError] {
   match invalidPath(path) {
     case Some(e) -> return Err(error = e)
@@ -206,7 +205,7 @@ pub func delete(path: in String): Result[Unit, IOError] {
 ///   when checked.
 /// - `PermissionDenied`: reserved for classified access failures.
 /// - `IoError`: race, device, and other host filesystem failures.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func deleteRecursive(path: in String): Result[Unit, IOError] {
   match invalidPath(path) {
     case Some(e) -> return Err(error = e)
