@@ -607,27 +607,6 @@ func testOpaqueConstructSamePackageWithDuplicateImportedSymbol(): Unit {
   assertTrue(not hasDiagCode(cr, "T0100"), "same-package opaque construction with duplicate imported symbol: no T0100")
 }
 
-func testOpaqueConstructSamePackageWithDuplicateImportedSymbol(): Unit {
-  // Regression test for same-package item shadowing in the typechecker.
-  // When a package is compiled with imported stdlib items, the current file's
-  // declarations appear after the imported items in the symbol table and
-  // must therefore take precedence.
-  val src =
-    "package P\n" +
-    "opaque type Secret { token: String }\n" +
-    "func f(): Unit { val s = Secret(token = \"x\") }\n"
-  val pr: ParseResult = parse(src)
-  val importedItems: List[Item] = newList()
-  var i = 0
-  while i < pr.file.items.count {
-    importedItems.add(pr.file.items[i])
-    i = i + 1
-  }
-  val cr = checkWithImports(pr.file, importedItems)
-  assertTrue(not hasDiagCode(cr, "T0100"),
-    "same-package opaque construction with duplicate imported symbol: no T0100")
-}
-
 // #425 item 6: T0031 ("arithmetic operands must have the same type")
 // used to render user-defined types as `<#7>` because the renderer
 // could not look up declared names.  After the fix, `TyUser` carries
