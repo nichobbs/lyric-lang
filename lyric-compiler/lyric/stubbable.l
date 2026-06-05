@@ -117,13 +117,81 @@ func valueFieldName(methodName: in String): String {
   methodName + "_value"
 }
 
-// One `pub <method>_value: <ReturnType>` field per non-Unit supported method.
+// Append the `pub <method>_value: <ReturnType>` field for one supported,
+// non-Unit method (no-op for Unit / unsupported methods).
+func appendStubField(fields: in List[RecordMember], sg: in FunctionSig): Unit {
+  if not isStubbableMethodSig(sg) {
+    return
+  }
+  if isUnitReturn(sg) {
+    return
+  }
+  val returnTy = match sg.ret { case Some(te) -> te; case None -> TypeExpr(kind = TUnit, span = sg.span) }
+  val noDoc: List[DocComment] = newList()
+  val noAnn: List[Annotation] = newList()
+  fields.add(
+    RMField(
+      field = FieldDecl(
+        docComments = noDoc,
+        annotations = noAnn,
+        visibility = Some(value = VisPub(span = sg.span)),
+        isMutable = false,
+        name = valueFieldName(sg.name),
+        ty = returnTy,
+        dflt = None,
+        span = sg.span
+      )
+    )
+  )
+}
+
+// The stub method body: `self.<method>_value` for a value-returning method, or
+// an empty block for a Unit-returning one.
+func stubMethodBody(sg: in FunctionSig): FunctionBody {
+  if isUnitReturn(sg) {
+    val noStmts: List[Statement] = newList()
+    return FBBlock(block = Block(statements = noStmts, span = sg.span))
+  }
+  val selfE = Expr(kind = ESelf, span = sg.span)
+  val mem = Expr(kind = EMember(receiver = selfE, memberName = valueFieldName(sg.name)), span = sg.span)
+  FBExpr(expr = mem)
+}
+
+// Append the impl method for one supported interface method (no-op otherwise).
+func appendStubMethod(methods: in List[ImplMember], sg: in FunctionSig): Unit {
+  if not isStubbableMethodSig(sg) {
+    return
+  }
+  val noDoc: List[DocComment] = newList()
+  val noAnn: List[Annotation] = newList()
+  val noContracts: List[ContractClause] = newList()
+  methods.add(
+    IMplFunc(
+      fn = FunctionDecl(
+        docComments = noDoc,
+        annotations = noAnn,
+        visibility = None,
+        isAsync = sg.isAsync,
+        name = sg.name,
+        generics = sg.generics,
+        params = sg.params,
+        ret = sg.ret,
+        whereClause = sg.whereClause,
+        contracts = noContracts,
+        body = Some(value = stubMethodBody(sg)),
+        span = sg.span
+      )
+    )
+  )
+}
+
+// One `pub <method>_value` field per non-Unit supported method.
 func synthesiseStubRecord(id: in InterfaceDecl): RecordDecl {
   val fields: List[RecordMember] = newList()
   var i = 0
   while i < id.members.count {
     match id.members[i] {
-      case IMSig(sg) -> if isStubbableMethodSig(sg) and not isUnitReturn(sg) { val returnTy = match sg.ret { case Some(te) -> te; case None -> TypeExpr(kind = TUnit, span = sg.span) }; val noDoc: List[DocComment] = newList(); val noAnn: List[Annotation] = newList(); fields.add(RMField(field = FieldDecl(docComments = noDoc, annotations = noAnn, visibility = Some(value = VisPub(span = sg.span)), isMutable = false, name = valueFieldName(sg.name), ty = returnTy, dflt = None, span = sg.span))) }
+      case IMSig(sg) -> appendStubField(fields, sg)
       case _ -> {
       }
     }
@@ -135,12 +203,11 @@ func synthesiseStubRecord(id: in InterfaceDecl): RecordDecl {
 // `impl <Iface> for <Iface>Stub` — each supported method returns its
 // `<method>_value` field (Unit methods get an empty body).
 func synthesiseStubImpl(id: in InterfaceDecl): ImplDecl {
-  val stubName = id.name + "Stub"
   val methods: List[ImplMember] = newList()
   var i = 0
   while i < id.members.count {
     match id.members[i] {
-      case IMSig(sg) -> if isStubbableMethodSig(sg) { val body = if isUnitReturn(sg) { val noStmts: List[Statement] = newList(); FBBlock(block = Block(statements = noStmts, span = sg.span)) } else { val selfE = Expr(kind = ESelf, span = sg.span); val mem = Expr(kind = EMember(receiver = selfE, memberName = valueFieldName(sg.name)), span = sg.span); FBExpr(expr = mem) }; val noDoc: List[DocComment] = newList(); val noAnn: List[Annotation] = newList(); val noContracts: List[ContractClause] = newList(); methods.add(IMplFunc(fn = FunctionDecl(docComments = noDoc, annotations = noAnn, visibility = None, isAsync = sg.isAsync, name = sg.name, generics = sg.generics, params = sg.params, ret = sg.ret, whereClause = sg.whereClause, contracts = noContracts, body = Some(value = body), span = sg.span))) }
+      case IMSig(sg) -> appendStubMethod(methods, sg)
       case _ -> {
       }
     }
@@ -150,10 +217,45 @@ func synthesiseStubImpl(id: in InterfaceDecl): ImplDecl {
   ImplDecl(
     generics = None,
     iface = ConstraintRef(head = mkPath(id.name, id.span), args = noArgs, span = id.span),
-    target = TypeExpr(kind = TRef(path = mkPath(stubName, id.span)), span = id.span),
+    target = TypeExpr(kind = TRef(path = mkPath(id.name + "Stub", id.span)), span = id.span),
     whereClause = None,
     members = methods,
     span = id.span
+  )
+}
+
+// Append the synthesised stub record + impl for one `@stubbable` interface item
+// (no-op for plain or generic interfaces).
+func appendStubsForInterface(result: in List[Item], it: in Item, id: in InterfaceDecl): Unit {
+  if not hasStubbable(it) {
+    return
+  }
+  // Generic interfaces are skipped (bootstrap scope): they need generic stubs.
+  val isGeneric = match id.generics { case Some(_) -> true; case None -> false }
+  if isGeneric {
+    return
+  }
+  val recDoc: List[DocComment] = newList()
+  val recAnn: List[Annotation] = newList()
+  result.add(
+    Item(
+      docComments = recDoc,
+      annotations = recAnn,
+      visibility = Some(value = VisPub(span = id.span)),
+      kind = IRecord(decl = synthesiseStubRecord(id)),
+      span = id.span
+    )
+  )
+  val impDoc: List[DocComment] = newList()
+  val impAnn: List[Annotation] = newList()
+  result.add(
+    Item(
+      docComments = impDoc,
+      annotations = impAnn,
+      visibility = None,
+      kind = IImpl(decl = synthesiseStubImpl(id)),
+      span = id.span
+    )
   )
 }
 
@@ -168,9 +270,8 @@ pub func synthesizeItems(items: in List[Item]): List[Item] {
   }
   var j = 0
   while j < items.count {
-    val it = items[j]
-    match it.kind {
-      case IInterface(id) -> if hasStubbable(it) { match id.generics { case None -> { val recDoc: List[DocComment] = newList(); val recAnn: List[Annotation] = newList(); result.add(Item(docComments = recDoc, annotations = recAnn, visibility = Some(value = VisPub(span = id.span)), kind = IRecord(decl = synthesiseStubRecord(id)), span = id.span)); val impDoc: List[DocComment] = newList(); val impAnn: List[Annotation] = newList(); result.add(Item(docComments = impDoc, annotations = impAnn, visibility = None, kind = IImpl(decl = synthesiseStubImpl(id)), span = id.span)) }; case Some(_) -> {  } } }
+    match items[j].kind {
+      case IInterface(id) -> appendStubsForInterface(result, items[j], id)
       case _ -> {
       }
     }
