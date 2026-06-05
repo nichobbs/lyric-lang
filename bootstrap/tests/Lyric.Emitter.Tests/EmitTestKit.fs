@@ -116,6 +116,25 @@ let prepareOutputDir (name: string) : string =
     copyAllStdlibDlls dir
     dir
 
+/// Run `action` on a dedicated OS thread with `stackBytes` of stack.
+/// The F# bootstrap emitter's `emitBranchValueWith`/`emitExpr` recursion can
+/// exhaust the 1 MB thread-pool stack when compiling large Lyric packages such
+/// as `Lyric.TypeChecker` or `Lyric.Parser`.  64 MB is sufficient for the
+/// deepest transitive-import compile paths seen so far.
+let private runOnLargerStack (stackBytes: int) (action: unit -> 'a) : 'a =
+    let mutable result : 'a option = None
+    let mutable exn    : exn option = None
+    let thread = System.Threading.Thread(
+        (fun () ->
+            try  result <- Some (action ())
+            with e -> exn <- Some e),
+        stackBytes)
+    thread.Start()
+    thread.Join()
+    match exn with
+    | Some e -> System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e).Throw(); Unchecked.defaultof<_>
+    | None   -> result.Value
+
 /// Compile + run a Lyric source string while the output directory
 /// is still alive — the caller's `inspect` callback runs *before*
 /// cleanup, so post-emit reads against the produced DLL (e.g.
@@ -139,7 +158,7 @@ let compileAndRunWith
               Target             = Dotnet
               ActiveFeatures     = Set.empty
               DeclaredFeatures   = Set.empty }
-        let r = emit req
+        let r = runOnLargerStack (64 * 1024 * 1024) (fun () -> emit req)
         // The emit may have lazily precompiled extra `Std.X` modules.
         // Copy any newly cached DLLs over so the runtime probing path
         // resolves every cross-assembly reference.
