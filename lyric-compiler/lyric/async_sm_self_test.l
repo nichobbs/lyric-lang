@@ -1,20 +1,19 @@
 // async_sm_self_test.l — regression test for user-defined `async func`
-// IAsyncStateMachine synthesis (Phase B.0, Epic #2070 / D086).
+// IAsyncStateMachine synthesis (Phase B.0 + B.1, Epic #2070 / D086).
 //
 // Phase B.0 covers async functions whose bodies contain NO EAwait nodes.
-// The self-hosted MSIL backend synthesises an IAsyncStateMachine sealed
-// class, MoveNext (runs the user body synchronously and calls SetResult),
-// and a kickoff function that instantiates the SM, calls ATMB.Start<SM>,
-// and returns Task / Task<T>.
+// Phase B.1 covers async functions whose bodies contain one or more EAwait
+// nodes: real AwaitUnsafeOnCompleted suspension with a state-dispatch switch,
+// typed awaiter fields, and resume labels.
 //
-// These tests exercise the two main paths:
+// Test callers use `await asyncXxx(...)` because the kickoff returns Task<T>
+// (or Task for void); `emitBlockingAwait` in non-SM contexts synchronously
+// resolves via GetAwaiter().GetResult().
 //
-//   - void async func (AsyncTaskMethodBuilder, returns Task)
-//   - non-void async func (AsyncTaskMethodBuilder<T>, returns Task<T>)
-//
-// Both are exercised end-to-end through the self-hosted Msil.Bridge with
-// runtime value assertions.  The async_extern_self_test.l (Phase A) tests
-// @externTarget async; this file tests user-defined async.
+// Phase B.1 functions (`asyncAddTwo`, `asyncAddThree`, `asyncVoidChain`,
+// `asyncSumViaAwait`) await other async functions in their bodies, exercising
+// the full SM machinery including state dispatch, AwaitUnsafeOnCompleted,
+// resume labels, and awaiter-field stash/restore.
 //
 //   lyric test lyric-compiler/lyric/async_sm_self_test.l
 
@@ -24,8 +23,9 @@ package Lyric.AsyncSmSelfTest
 import Std.Core
 import Std.Testing
 
-// ── Non-void async func ───────────────────────────────────────────────────────
-// Returns an Int.  No awaits in the body.  Phase B.0 path.
+// ── Phase B.0: no awaits in body ─────────────────────────────────────────────
+
+// Returns an Int.  No awaits in the body.
 async func asyncAddOne(n: in Int): Int {
   n + 1
 }
@@ -35,8 +35,7 @@ async func asyncGreet(name: in String): String {
   "Hello, " + name + "!"
 }
 
-// ── Void async func ───────────────────────────────────────────────────────────
-// Returns Unit (void path: AsyncTaskMethodBuilder, not AsyncTaskMethodBuilder<T>).
+// Void path: AsyncTaskMethodBuilder, not AsyncTaskMethodBuilder<T>.
 async func asyncNoop(): Unit = ()
 
 // Void async func with a side-effecting body (uses a local var).
@@ -45,10 +44,7 @@ async func asyncDoubleAndDiscard(n: in Int): Unit {
   val _ = doubled
 }
 
-// ── Explicit-return paths (regression for #2256) ─────────────────────────────
-// These exercise the MoveNext epilogue reachability fix: explicit `return`
-// inside the body must stash the result and branch to the epilogue so that
-// SetResult is always called before MoveNext returns.
+// Explicit-return paths (regression for #2256).
 async func asyncReturnExplicit(n: in Int): Int {
   return n * 2
 }
@@ -58,43 +54,116 @@ async func asyncReturnFromBranch(n: in Int): Int {
   0 - n
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// ── Phase B.1: awaits in body ─────────────────────────────────────────────────
+
+// Two sequential awaits: each chains into Phase B.0 asyncAddOne.
+// asyncAddTwo(n) = n + 2
+async func asyncAddTwo(n: in Int): Int {
+  val a = await asyncAddOne(n)
+  await asyncAddOne(a)
+}
+
+// Three sequential awaits.
+// asyncAddThree(n) = n + 3
+async func asyncAddThree(n: in Int): Int {
+  val a = await asyncAddOne(n)
+  val b = await asyncAddOne(a)
+  await asyncAddOne(b)
+}
+
+// Void async func that awaits a non-void result and discards it.
+async func asyncVoidChain(n: in Int): Unit {
+  val _ = await asyncAddOne(n)
+}
+
+// Computes (a + b) via two awaits.
+// asyncSumViaAwait(a, b) = a + b
+async func asyncSumViaAwait(a: in Int, b: in Int): Int {
+  val stepped = await asyncAddOne(a - 1)
+  await asyncAddOne(stepped + b - 1)
+}
+
+// ── Phase B.0 tests ───────────────────────────────────────────────────────────
 
 test "non-void async func: Int return" {
-  val result = asyncAddOne(41)
+  val result = await asyncAddOne(41)
   assertEqualInt(result, 42, "asyncAddOne(41) should return 42")
 }
 
 test "non-void async func: String return" {
-  val greeting = asyncGreet("World")
+  val greeting = await asyncGreet("World")
   assertEqual(greeting, "Hello, World!", "asyncGreet should return the greeting string")
 }
 
 test "void async func: no-op completes without error" {
-  asyncNoop()
+  await asyncNoop()
   assertTrue(true, "void async func returned normally")
 }
 
 test "void async func: body with local val completes without error" {
-  asyncDoubleAndDiscard(21)
+  await asyncDoubleAndDiscard(21)
   assertTrue(true, "void async func with local completed normally")
 }
 
 test "non-void async func: result matches synchronous computation" {
-  val a = asyncAddOne(0)
-  val b = asyncAddOne(a)
-  val c = asyncAddOne(b)
+  val a = await asyncAddOne(0)
+  val b = await asyncAddOne(a)
+  val c = await asyncAddOne(b)
   assertEqualInt(c, 3, "three sequential asyncAddOne calls should give 3")
 }
 
 test "non-void async func: explicit return computes correct value" {
-  val result = asyncReturnExplicit(21)
+  val result = await asyncReturnExplicit(21)
   assertEqualInt(result, 42, "asyncReturnExplicit(21) should return 42")
 }
 
 test "non-void async func: explicit return from branch computes correct value" {
-  val pos = asyncReturnFromBranch(5)
-  val neg = asyncReturnFromBranch(-3)
+  val pos = await asyncReturnFromBranch(5)
+  val neg = await asyncReturnFromBranch(-3)
   assertEqualInt(pos, 5, "asyncReturnFromBranch(5) should return 5")
   assertEqualInt(neg, 3, "asyncReturnFromBranch(-3) should return 3")
+}
+
+// ── Phase B.1 tests ───────────────────────────────────────────────────────────
+
+test "Phase B.1: two sequential awaits produce correct result" {
+  val result = await asyncAddTwo(10)
+  assertEqualInt(result, 12, "asyncAddTwo(10) should return 12")
+}
+
+test "Phase B.1: asyncAddTwo at zero" {
+  val result = await asyncAddTwo(0)
+  assertEqualInt(result, 2, "asyncAddTwo(0) should return 2")
+}
+
+test "Phase B.1: three sequential awaits produce correct result" {
+  val result = await asyncAddThree(7)
+  assertEqualInt(result, 10, "asyncAddThree(7) should return 10")
+}
+
+test "Phase B.1: three sequential awaits from zero" {
+  val result = await asyncAddThree(0)
+  assertEqualInt(result, 3, "asyncAddThree(0) should return 3")
+}
+
+test "Phase B.1: void async func that awaits non-void completes without error" {
+  await asyncVoidChain(5)
+  assertTrue(true, "asyncVoidChain completed normally")
+}
+
+test "Phase B.1: composition of B.1 and B.0 functions" {
+  val a = await asyncAddTwo(0)
+  val b = await asyncAddOne(a)
+  assertEqualInt(b, 3, "asyncAddTwo(0)=2 then asyncAddOne(2)=3")
+}
+
+test "Phase B.1: two B.1 functions composed" {
+  val a = await asyncAddTwo(0)
+  val b = await asyncAddThree(a)
+  assertEqualInt(b, 5, "asyncAddTwo(0)=2 then asyncAddThree(2)=5")
+}
+
+test "Phase B.1: asyncSumViaAwait correctness" {
+  val result = await asyncSumViaAwait(3, 4)
+  assertEqualInt(result, 7, "asyncSumViaAwait(3,4) should return 7")
 }

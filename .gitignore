@@ -21,9 +21,18 @@ target/
 # lyric test output directories (compiled test DLLs and runtimeconfig)
 .lyric-test/
 
+# Compiled test DLLs and runtimeconfig files emitted alongside source files
+# by `lyric test` when run without --manifest (standalone mode).
+lyric-compiler/**/*.dll
+lyric-compiler/**/*.runtimeconfig.json
+
 # Compiled kernel DLLs and runtime configs emitted into src/_kernel/ directories
 **/src/_kernel/**/*.dll
 **/src/_kernel/**/*.runtimeconfig.json
+
+# dotnet local tool manifest created as a side-effect of tool installs in
+# ephemeral CI/dev environments; not an intentional project file.
+dotnet-tools.json
 
 # Build results
 [Dd]ebug/

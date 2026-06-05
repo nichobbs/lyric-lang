@@ -323,6 +323,11 @@ pub record CodegenCtx {
   tokAtmbSetResult: Int   // ATMB::SetResult(): void  call (instance, on managed ptr)
   tokAtmbGetTask:   Int   // registered for MemberRef table ordering; not emitted directly (get_Task() is called via TypeSpec-parented MemberRef in the kickoff, not through this field)
   tokAtmbStartMr:   Int   // ATMB.Start<!!0>(ref !!0): void  open-generic MemberRef
+  // Phase B.1 async suspension tokens.
+  trTaskAwaiter1:        Int   // System.Runtime.CompilerServices.TaskAwaiter`1 (open generic struct)
+  trTaskAwaiter:         Int   // System.Runtime.CompilerServices.TaskAwaiter   (non-generic struct)
+  tokAtmbAwaitUnsafeMr:  Int   // ATMB.AwaitUnsafeOnCompleted<!!0,!!1> open MemberRef row (void ATMB TypeRef parent)
+  tokAtmb1AwaitUnsafeMr: Int   // ATMB`1.AwaitUnsafeOnCompleted<!!0,!!1> open MemberRef row (ATMB`1 TypeRef parent)
   // Monotonically-increasing counter for unique SM class names.
   // Pattern: "<funcName>__SM_<ticker>".  Matches AsyncStateMachine.fs convention.
   smTicker: List[Int]
@@ -797,6 +802,25 @@ pub func newCodegenCtx(packageName: in String,
     lctx, trAtmb, "Start",
     "atmb_start_open", buildAtmbStartOpenSig())
 
+  // Phase B.1: TaskAwaiter`1 and TaskAwaiter TypeRefs (GetAwaiter/GetResult call sites).
+  val trTaskAwaiter1 = ctxAddTypeRef(lctx, "System.Runtime.CompilerServices",
+                                      "TaskAwaiter`1", lctx.arRuntime)
+  val trTaskAwaiter  = ctxAddTypeRef(lctx, "System.Runtime.CompilerServices",
+                                      "TaskAwaiter",   lctx.arRuntime)
+
+  // Phase B.1: open MemberRef rows for AwaitUnsafeOnCompleted<!!0,!!1>(ref !!0, ref !!1): void.
+  // These are parent-typed MemberRefs: the void-path parent is the ATMB TypeRef;
+  // the non-void path parent is the ATMB`1 TypeRef.  At each call site, a
+  // TypeSpec-parented MemberRef will be built lazily (for non-void), or the
+  // ATMB TypeRef-parented one is used directly (for void).  Both are registered
+  // here so the MemberRef table order is stable across all packages.
+  val tokAtmbAwaitUnsafeMr = ctxAddMemberRef(
+    lctx, trAtmb, "AwaitUnsafeOnCompleted",
+    "atmb_awaitunafe_open", buildAwaitUnsafeOnCompletedOpenSig())
+  val tokAtmb1AwaitUnsafeMr = ctxAddMemberRef(
+    lctx, trAtmb1, "AwaitUnsafeOnCompleted",
+    "atmb1_awaitunafe_open", buildAwaitUnsafeOnCompletedOpenSig())
+
   val recCtorToks: Map[String, Int] = newMap()
   val fieldToks:   Map[String, Int] = newMap()
   val funcToks:    Map[String, Int] = newMap()
@@ -915,6 +939,10 @@ pub func newCodegenCtx(packageName: in String,
     tokAtmbSetResult     = tokAtmbSetResult,
     tokAtmbGetTask       = tokAtmbGetTask,
     tokAtmbStartMr       = tokAtmbStartMr,
+    trTaskAwaiter1         = trTaskAwaiter1,
+    trTaskAwaiter          = trTaskAwaiter,
+    tokAtmbAwaitUnsafeMr   = tokAtmbAwaitUnsafeMr,
+    tokAtmb1AwaitUnsafeMr  = tokAtmb1AwaitUnsafeMr,
     smTicker             = newList())
 }
 
@@ -1456,7 +1484,6 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
       case IFunc(decl) -> {
         if decl.isAsync
            and not funcBodyContainsYieldMsil(decl)
-           and not funcBodyContainsAwaitMsil(decl)
            and not hasExternTargetMsil(decl.annotations) {
           smClassCountPts = smClassCountPts + 1
         }
@@ -1502,8 +1529,30 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile,
         // lowerFuncMsil so that call sites in funcRetTypes agree with the actual
         // emitted signature — avoids void-typed locals when callers store the result.
         val isGen = decl.isAsync and funcBodyContainsYieldMsil(decl)
+        val isSm  = decl.isAsync and not isGen and not hasExternTargetMsil(decl.annotations)
         val retTy = if isGen {
           MObject
+        } else if isSm {
+          // SM kickoffs return Task<T> or Task, not the bare T.  Call sites that
+          // await the kickoff resolve via funcRetTypes — the EAwait handler then
+          // unwraps the Task to T via GetAwaiter+GetResult.
+          val bareRetTy = match decl.ret {
+            case Some(te) -> {
+              val r = typeExprToMsilCtx(cctx, te, pkgName)
+              if elementTypeByte(r) == 0 { MVoid } else { r }
+            }
+            case None -> MVoid
+          }
+          if bareRetTy == MVoid {
+            MClassRef(typeRefCode = tdrTypeRef(cctx.trTask),
+                      clrFqn = "System.Threading.Tasks.Task")
+          } else {
+            val kfRetArgs: List[MsilType] = newList()
+            kfRetArgs.add(bareRetTy)
+            MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1),
+                         headFqn = "System.Threading.Tasks.Task`1",
+                         typeArgs = kfRetArgs)
+          }
         } else if startsWith(decl.name, "__lambda_") {
           // For synthetic lambdas: the return type was set during lambda lifting based on
           // whether the body ends with an expression (implicit return) or not.
@@ -1638,6 +1687,23 @@ func isLiteralI4ExprMsilWithEnv(e: in Expr, env: in Map[String, Bool]): Bool {
 // FuncCtx threads mutable state through expression and statement lowering.
 // Parameters and locals share the `slots` map but use different namespaces:
 //   • params: slots 0..paramCount-1, accessed via MLdarg(slot)
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase B.1 async state machine context.
+// Installed in FuncCtx.phaseBCtx (singleton) while synthesiseAsyncSmPhaseBMsil
+// is lowering the MoveNext body.  The EAwait handler checks this to switch from
+// the blocking shim to the real suspend/resume protocol.
+// ─────────────────────────────────────────────────────────────────────────────
+pub record PhaseBCtx {
+  smFqn:             String        // FQN of the enclosing SM sealed class
+  resumeLabels:      List[Int]     // pre-allocated label ID per await site (index = state N)
+  suspendLeaveLabel: Int           // label to Leave to after AwaitUnsafeOnCompleted
+  nextAwaitIndex:    List[Int]     // length = next await index (list-as-counter)
+  awaiterFieldNames: List[String]  // "__awN" per state index (parallel to resumeLabels)
+  isVoid:            Bool          // true when SM returns void (no result from GetResult)
+  retTy:             MsilType      // bare return type (MVoid when isVoid)
+  atmbMrRowForAwait: Int           // open MemberRef row for AwaitUnsafeOnCompleted
+}
+
 //   • locals: slots paramCount.., accessed via MLdloc(slot - paramCount)
 // `locals` records MsilType entries in order for MFunc.locals.
 // `slotTicker` and `labelTicker` are singleton lists whose `.count` is the
@@ -1730,6 +1796,10 @@ pub record FuncCtx {
   // by-reference **cell** (a hoisted `var`) rather than a by-value boxed copy.
   // Reads emit `__caps[i]; get_Item(0); unbox`; writes emit `set_Item(0)`.
   captureCellNames:   List[String]
+  // Phase B.1 async SM context.  Empty except when synthesiseAsyncSmPhaseBMsil
+  // is lowering the MoveNext body (singleton then).  The EAwait handler checks
+  // this to switch from the blocking shim to the real suspend/resume protocol.
+  phaseBCtx: List[PhaseBCtx]
 }
 
 // Allocate a fresh label ID (0, 1, 2, …) for use with MLabel/MBr* instructions.
@@ -2838,9 +2908,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
       MObject
     }
 
-    // ── Await / spawn (bootstrap: synchronous lowering) ───────────────────────
+    // ── Await ─────────────────────────────────────────────────────────────────
+    // When inside a Phase B.1 SM MoveNext body, emit the full suspend/resume
+    // protocol.  Otherwise emit a blocking synchronous shim (GetAwaiter+GetResult).
     case EAwait(inner) -> {
-      lowerExprMsil(cctx, fctx, insns, inner)
+      val taskTy = lowerExprMsil(cctx, fctx, insns, inner)
+      if fctx.phaseBCtx.count > 0 {
+        emitPhaseBAwait(cctx, fctx, insns, taskTy)
+      } else {
+        emitBlockingAwait(cctx, fctx, insns, taskTy)
+      }
     }
 
     // ── Yield: collect-all model (R6) ────────────────────────────────────────
@@ -6661,7 +6738,8 @@ func makeFuncCtxMsil(pkgName: in String, className: in String,
     hoistedVarNames      = hoistedVarNames,
     hoistedCellSlot      = hoistedCellSlot,
     hoistedCellType      = hoistedCellType,
-    captureCellNames     = captureCellNames)
+    captureCellNames     = captureCellNames,
+    phaseBCtx            = newList())
 }
 
 // Check whether the last meaningful instruction in a list is a return or throw.
@@ -7470,6 +7548,376 @@ func funcBodyContainsAwaitMsil(decl: in FunctionDecl): Bool {
 //   ret
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase B.1 async SM helpers — GetAwaiter / IsCompleted / GetResult / pre-scan
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Get the T from Task<T> (or MVoid for plain Task).
+func taskResultType(taskTy: in MsilType): MsilType {
+  match taskTy {
+    case MGenericInst(_, _, args) -> if args.count > 0 { args[0] } else { MVoid }
+    case _                        -> MVoid
+  }
+}
+
+// Build the concrete MsilType for the awaiter from a Task MsilType.
+// Task<T> → TaskAwaiter<T>  (value type generic)
+// Task    → TaskAwaiter     (value type ref)
+func taskTypeToAwaiterMsilType(cctx: in CodegenCtx, taskTy: in MsilType): MsilType {
+  match taskTy {
+    case MGenericInst(_, _, args) -> {
+      if args.count > 0 {
+        val tArgs: List[MsilType] = newList()
+        tArgs.add(args[0])
+        MValueTypeGenericInst(
+          typeRefCode = tdrTypeRef(cctx.trTaskAwaiter1),
+          headFqn     = "System.Runtime.CompilerServices.TaskAwaiter`1",
+          typeArgs    = tArgs)
+      } else {
+        MValueTypeRef(typeRefCode = tdrTypeRef(cctx.trTaskAwaiter),
+                      clrFqn = "System.Runtime.CompilerServices.TaskAwaiter")
+      }
+    }
+    case _ -> MValueTypeRef(typeRefCode = tdrTypeRef(cctx.trTaskAwaiter),
+                            clrFqn = "System.Runtime.CompilerServices.TaskAwaiter")
+  }
+}
+
+// Emit the GetAwaiter() call on the value currently on the stack (Task<T> or Task).
+// Leaves the awaiter (value type) on the stack.
+func emitGetAwaiterCallPB(cctx: in CodegenCtx, insns: in List[MInsn], taskTy: in MsilType): Unit {
+  val lctx   = cctx.lctx
+  val resT   = taskResultType(taskTy)
+  val tyKey  = msilTypeKey(resT)
+  if resT == MVoid {
+    // Task.GetAwaiter() → TaskAwaiter  (non-generic)
+    val awRetTy = MValueTypeRef(typeRefCode = tdrTypeRef(cctx.trTaskAwaiter),
+                                clrFqn = "System.Runtime.CompilerServices.TaskAwaiter")
+    val gaArgs: List[MsilType] = newList()
+    val gaSig  = buildInstanceMethodSig(gaArgs, awRetTy)
+    val gaMrRow = ctxAddMemberRef(lctx, cctx.trTask, "GetAwaiter",
+                                  "task_getawaiter_void", gaSig)
+    insns.add(MCall(methodToken = 0x0A000000 + gaMrRow))
+  } else {
+    // Task<T>.GetAwaiter() → TaskAwaiter<T>  (generic, TypeSpec parent)
+    val tsArgs: List[MsilType] = newList()
+    tsArgs.add(resT)
+    val tsBlob = buildGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trTask1), tsArgs)
+    val tsRow  = ctxAddTypeSpec(lctx, "task1_ts_" + tyKey, tsBlob)
+    // Return sig uses VAR 0 (class type param of Task`1)
+    val awVarArgs: List[MsilType] = newList()
+    awVarArgs.add(MTypeVar(index = 0))
+    val awRetTy1 = MValueTypeGenericInst(typeRefCode = tdrTypeRef(cctx.trTaskAwaiter1),
+                                         headFqn     = "System.Runtime.CompilerServices.TaskAwaiter`1",
+                                         typeArgs    = awVarArgs)
+    val gaArgs1: List[MsilType] = newList()
+    val gaSig1  = buildInstanceMethodSig(gaArgs1, awRetTy1)
+    val gaMrRow1 = ctxAddMemberRefForTypeSpec(lctx, tsRow, "GetAwaiter",
+                                              "task1_getawaiter_" + tyKey, gaSig1)
+    insns.add(MCall(methodToken = 0x0A000000 + gaMrRow1))
+  }
+}
+
+// Emit get_IsCompleted on the awaiter at the address currently on the stack.
+// Leaves a bool on the stack.
+func emitGetIsCompletedCallPB(cctx: in CodegenCtx, insns: in List[MInsn],
+                               awTy: in MsilType): Unit {
+  val lctx  = cctx.lctx
+  val icArgs: List[MsilType] = newList()
+  val icSig  = buildInstanceMethodSig(icArgs, MBool)
+  match awTy {
+    case MValueTypeRef(_, _) -> {
+      // TaskAwaiter (non-generic)
+      val icMrRow = ctxAddMemberRef(lctx, cctx.trTaskAwaiter, "get_IsCompleted",
+                                    "taskaw_iscomp_void", icSig)
+      insns.add(MCall(methodToken = 0x0A000000 + icMrRow))
+    }
+    case MValueTypeGenericInst(_, _, tArgs) -> {
+      // TaskAwaiter<T> — TypeSpec parent
+      val awKey  = msilTypeKey(if tArgs.count > 0 { tArgs[0] } else { MVoid })
+      val awTsArgs: List[MsilType] = newList()
+      if tArgs.count > 0 { awTsArgs.add(tArgs[0]) }
+      val awTsBlob = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trTaskAwaiter1), awTsArgs)
+      val awTsRow  = ctxAddTypeSpec(lctx, "taskaw1_ts_" + awKey, awTsBlob)
+      val icMrRow1 = ctxAddMemberRefForTypeSpec(lctx, awTsRow, "get_IsCompleted",
+                                                "taskaw1_iscomp_" + awKey, icSig)
+      insns.add(MCall(methodToken = 0x0A000000 + icMrRow1))
+    }
+    case _ -> {}
+  }
+}
+
+// Emit GetResult on the awaiter at the address on the stack.
+// Leaves T on the stack (or nothing for void).  Returns the result MsilType.
+func emitGetResultCallPB(cctx: in CodegenCtx, insns: in List[MInsn],
+                          awTy: in MsilType): MsilType {
+  val lctx  = cctx.lctx
+  match awTy {
+    case MValueTypeRef(_, _) -> {
+      // TaskAwaiter.GetResult() → void
+      val grArgs: List[MsilType] = newList()
+      val grSig  = buildInstanceMethodSig(grArgs, MVoid)
+      val grMrRow = ctxAddMemberRef(lctx, cctx.trTaskAwaiter, "GetResult",
+                                    "taskaw_getresult_void", grSig)
+      insns.add(MCall(methodToken = 0x0A000000 + grMrRow))
+      MVoid
+    }
+    case MValueTypeGenericInst(_, _, tArgs) -> {
+      // TaskAwaiter<T>.GetResult() → VAR 0  (TypeSpec parent)
+      val resT   = if tArgs.count > 0 { tArgs[0] } else { MVoid }
+      val awKey  = msilTypeKey(resT)
+      val awTsArgs: List[MsilType] = newList()
+      awTsArgs.add(resT)
+      val awTsBlob = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trTaskAwaiter1), awTsArgs)
+      val awTsRow  = ctxAddTypeSpec(lctx, "taskaw1_ts_" + awKey, awTsBlob)
+      val grArgs1: List[MsilType] = newList()
+      val grSig1  = buildInstanceMethodSig(grArgs1, MTypeVar(index = 0))
+      val grMrRow1 = ctxAddMemberRefForTypeSpec(lctx, awTsRow, "GetResult",
+                                                "taskaw1_getresult_" + awKey, grSig1)
+      insns.add(MCall(methodToken = 0x0A000000 + grMrRow1))
+      resT
+    }
+    case _ -> MVoid
+  }
+}
+
+// Blocking synchronous await for non-SM contexts (test bodies, plain funcs).
+// Stack pre-condition:  Task<T> or Task.
+// Stack post-condition: T (or nothing for void).
+// Returns the result MsilType.
+func emitBlockingAwait(cctx: in CodegenCtx, fctx: in FuncCtx,
+                       insns: in List[MInsn], taskTy: in MsilType): MsilType {
+  emitGetAwaiterCallPB(cctx, insns, taskTy)
+  val awTy = taskTypeToAwaiterMsilType(cctx, taskTy)
+  val awSlot = allocSlotMsil(fctx, "__bloaw_" + toString(fctx.slotTicker.count), awTy)
+  val awLocalIdx = awSlot - fctx.paramCount
+  insns.add(MStloc(slot = awLocalIdx))
+  insns.add(MLdloca(slot = awLocalIdx))
+  emitGetResultCallPB(cctx, insns, awTy)
+}
+
+// ── Pre-scan helpers: collect awaiter types in body-evaluation order ──────────
+
+func inferCallReturnTypePB(cctx: in CodegenCtx, pkgName: in String, e: in Expr): MsilType {
+  match e.kind {
+    case EParen(inner) -> inferCallReturnTypePB(cctx, pkgName, inner)
+    case ECall(callee, args) -> {
+      match callee.kind {
+        case EPath(path) -> {
+          val cnt = args.count
+          if path.segments.count == 1 {
+            val fqn = pkgName + "." + path.segments[0] + "/" + toString(cnt)
+            match mapGet(cctx.funcRetTypes, fqn) {
+              case Some(ty) -> ty
+              case None -> {
+                val fqn2 = pkgName + "." + path.segments[0]
+                match mapGet(cctx.funcRetTypes, fqn2) {
+                  case Some(ty) -> ty
+                  case None     -> MObject
+                }
+              }
+            }
+          } else if path.segments.count >= 2 {
+            val fqn = joinSegsMsil(path.segments, ".") + "/" + toString(cnt)
+            match mapGet(cctx.funcRetTypes, fqn) {
+              case Some(ty) -> ty
+              case None -> {
+                val fqn2 = joinSegsMsil(path.segments, ".")
+                match mapGet(cctx.funcRetTypes, fqn2) {
+                  case Some(ty) -> ty
+                  case None     -> MObject
+                }
+              }
+            }
+          } else {
+            MObject
+          }
+        }
+        case _ -> MObject
+      }
+    }
+    case _ -> MObject
+  }
+}
+
+func collectAwaitTypesExprPB(cctx: in CodegenCtx, pkgName: in String,
+                              e: in Expr, acc: in List[MsilType]): Unit {
+  match e.kind {
+    case EAwait(inner) -> {
+      val taskTy = inferCallReturnTypePB(cctx, pkgName, inner)
+      val awTy   = taskTypeToAwaiterMsilType(cctx, taskTy)
+      acc.add(awTy)
+    }
+    case EBlock(blk) -> collectAwaitTypesBlockPB(cctx, pkgName, blk, acc)
+    case EParen(inner) -> collectAwaitTypesExprPB(cctx, pkgName, inner, acc)
+    case EIf(c, t, el, _) -> {
+      collectAwaitTypesExprPB(cctx, pkgName, c, acc)
+      match t {
+        case EOBBlock(b)  -> collectAwaitTypesBlockPB(cctx, pkgName, b, acc)
+        case EOBExpr(e2)  -> collectAwaitTypesExprPB(cctx, pkgName, e2, acc)
+      }
+      match el {
+        case Some(els) -> match els {
+          case EOBBlock(b)  -> collectAwaitTypesBlockPB(cctx, pkgName, b, acc)
+          case EOBExpr(e3)  -> collectAwaitTypesExprPB(cctx, pkgName, e3, acc)
+        }
+        case None -> {}
+      }
+    }
+    case ECall(callee, args) -> {
+      collectAwaitTypesExprPB(cctx, pkgName, callee, acc)
+      var aci = 0
+      while aci < args.count {
+        val argExpr = match args[aci] {
+          case CAPositional(ex)    -> ex
+          case CANamed(_, ex, _)   -> ex
+        }
+        collectAwaitTypesExprPB(cctx, pkgName, argExpr, acc)
+        aci = aci + 1
+      }
+    }
+    case EBinop(_, l, r) -> {
+      collectAwaitTypesExprPB(cctx, pkgName, l, acc)
+      collectAwaitTypesExprPB(cctx, pkgName, r, acc)
+    }
+    case _ -> {}
+  }
+}
+
+func collectAwaitTypesBlockPB(cctx: in CodegenCtx, pkgName: in String,
+                               blk: in Block, acc: in List[MsilType]): Unit {
+  var i = 0
+  while i < blk.statements.count {
+    collectAwaitTypesStmtPB(cctx, pkgName, blk.statements[i], acc)
+    i = i + 1
+  }
+}
+
+func collectAwaitTypesStmtPB(cctx: in CodegenCtx, pkgName: in String,
+                               stmt: in Statement, acc: in List[MsilType]): Unit {
+  match stmt.kind {
+    case SLocal(binding) -> match binding {
+      case LBVal(_, _, init)     -> collectAwaitTypesExprPB(cctx, pkgName, init, acc)
+      case LBLet(_, _, init)     -> collectAwaitTypesExprPB(cctx, pkgName, init, acc)
+      case LBVar(_, _, initOpt)  -> match initOpt {
+        case Some(init) -> collectAwaitTypesExprPB(cctx, pkgName, init, acc)
+        case None       -> {}
+      }
+    }
+    case SExpr(e)            -> collectAwaitTypesExprPB(cctx, pkgName, e, acc)
+    case SReturn(valOpt)     -> match valOpt {
+      case Some(e) -> collectAwaitTypesExprPB(cctx, pkgName, e, acc)
+      case None    -> {}
+    }
+    case _ -> {}
+  }
+}
+
+// Return a List<MsilType> of awaiter types for each EAwait in the body,
+// in the order they would be encountered during lowering.
+func collectAwaitTypesPhaseBMsil(cctx: in CodegenCtx, pkgName: in String,
+                                  decl: in FunctionDecl): List[MsilType] {
+  val result: List[MsilType] = newList()
+  match decl.body {
+    case None -> {}
+    case Some(body) -> match body {
+      case FBBlock(blk) -> collectAwaitTypesBlockPB(cctx, pkgName, blk, result)
+      case FBExpr(e)    -> collectAwaitTypesExprPB(cctx, pkgName, e, result)
+    }
+  }
+  result
+}
+
+// Full Phase B.1 suspend/resume for one `await` point inside MoveNext.
+// Stack pre-condition:  Task<T> or Task.
+// Stack post-condition: T (or nothing for void).
+// Returns the result MsilType.
+// Side-effects: allocates locals, uses and increments phaseBCtx.nextAwaitIndex.
+func emitPhaseBAwait(cctx: in CodegenCtx, fctx: in FuncCtx,
+                     insns: in List[MInsn], taskTy: in MsilType): MsilType {
+  val pbc   = fctx.phaseBCtx[0]
+  val lctx  = cctx.lctx
+  val N     = pbc.nextAwaitIndex.count
+  pbc.nextAwaitIndex.add(0)                     // consume index N
+  val resumeL   = pbc.resumeLabels[N]
+  val awFldName = pbc.awaiterFieldNames[N]
+
+  val resT  = taskResultType(taskTy)
+  val awTy  = taskTypeToAwaiterMsilType(cctx, taskTy)
+  val tyKey = msilTypeKey(resT)
+
+  // Allocate temp local for the awaiter struct (used by both paths).
+  val awSlot    = allocSlotMsil(fctx, "__awt_" + toString(N), awTy)
+  val awLocalIdx = awSlot - fctx.paramCount
+
+  // 1. GetAwaiter (stack: Task<T>|Task → awaiter value)
+  emitGetAwaiterCallPB(cctx, insns, taskTy)
+  insns.add(MStloc(slot = awLocalIdx))
+
+  // 2. IsCompleted check
+  insns.add(MLdloca(slot = awLocalIdx))
+  emitGetIsCompletedCallPB(cctx, insns, awTy)
+  val afterAwaitL = freshLabelMsil(fctx)
+  insns.add(MBrTrue(label = afterAwaitL))
+
+  // 3. Suspension path: save state + awaiter, call AwaitUnsafeOnCompleted, leave
+  insns.add(MLdarg(slot = 0))
+  insns.add(MLdcI4(v = N))
+  insns.add(MStfldByName(ownerFqn = pbc.smFqn, fieldName = "__state"))
+  // ldarg.0; ldloc awTemp; stfld __awN
+  insns.add(MLdarg(slot = 0))
+  insns.add(MLdloc(slot = awLocalIdx))
+  insns.add(MStfldByName(ownerFqn = pbc.smFqn, fieldName = awFldName))
+  // var sm = this
+  val smLocalSlot = allocSlotMsil(fctx, "__sm_" + toString(N), MClass(className = pbc.smFqn))
+  val smLocalIdx  = smLocalSlot - fctx.paramCount
+  insns.add(MLdarg(slot = 0))
+  insns.add(MStloc(slot = smLocalIdx))
+  // builder.AwaitUnsafeOnCompleted(ref __awN, ref sm)
+  insns.add(MLdarg(slot = 0))
+  insns.add(MLdfldaByName(ownerFqn = pbc.smFqn, fieldName = "__builder"))
+  insns.add(MLdarg(slot = 0))
+  insns.add(MLdfldaByName(ownerFqn = pbc.smFqn, fieldName = awFldName))
+  insns.add(MLdloca(slot = smLocalIdx))
+  insns.add(MCallAwaitUnsafeOnCompleted(
+    smFqn        = pbc.smFqn,
+    atmbMrRow    = pbc.atmbMrRowForAwait,
+    awaiterMsilTy = awTy))
+  insns.add(MLeave(label = pbc.suspendLeaveLabel))
+
+  // 4. Resume label: switch dispatch target for state = N
+  insns.add(MLabel(id = resumeL))
+  // Restore awaiter from SM field into temp local
+  insns.add(MLdarg(slot = 0))
+  insns.add(MLdfldByName(ownerFqn = pbc.smFqn, fieldName = awFldName))
+  insns.add(MStloc(slot = awLocalIdx))
+  // Zero SM field: ldarg.0; ldflda __awN; initobj <awaiter type>
+  insns.add(MLdarg(slot = 0))
+  insns.add(MLdfldaByName(ownerFqn = pbc.smFqn, fieldName = awFldName))
+  val initobjTok = if resT == MVoid {
+    0x01000000 + cctx.trTaskAwaiter
+  } else {
+    val awTsArgs: List[MsilType] = newList()
+    awTsArgs.add(resT)
+    val awTsBlob = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trTaskAwaiter1), awTsArgs)
+    val awTsKey  = "taskaw1_ts_" + tyKey
+    val awTsRow  = ctxAddTypeSpec(lctx, awTsKey, awTsBlob)
+    0x1B000000 + awTsRow
+  }
+  insns.add(MInitobj(typeToken = initobjTok))
+  // Reset state to -1 (running)
+  insns.add(MLdarg(slot = 0))
+  insns.add(MLdcI4(v = -1))
+  insns.add(MStfldByName(ownerFqn = pbc.smFqn, fieldName = "__state"))
+
+  // 5. After-await label: both the "already completed" and "resume" paths join here.
+  insns.add(MLabel(id = afterAwaitL))
+
+  // 6. GetResult (stack: address of awaiter → T or void)
+  insns.add(MLdloca(slot = awLocalIdx))
+  emitGetResultCallPB(cctx, insns, awTy)
+}
+
 func synthesizeAsyncSmMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
                             pkgName: in String,
                             items: in List[MPackageItem],
@@ -7803,19 +8251,17 @@ func synthesizeAsyncSmMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
     atmbMrRow = startMrRow,
     isGeneric = not isVoid))
 
-  // Phase B.0 synchronous unwrap: since MoveNext runs to completion without
-  // suspension, we can safely call get_Task() + get_Result() (or just Wait())
-  // immediately after Start() returns.  This makes the kickoff return T (not
-  // Task<T>) — matching the declared Lyric return type and avoiding any call-
-  // site changes.  Phase B.1 (real suspension) will skip this unwrap and
-  // expose the Task<T> to callers via Lyric's `await` expression.
+  // The kickoff returns Task<T> (non-void) or Task (void).
+  // Call sites must use `await` to unwrap the result; the test bodies
+  // and any non-async code use the blocking EAwait shim (GetAwaiter+GetResult).
   if isVoid {
-    // Void path: MoveNext already called SetResult() → task is Done.
-    // No value to return; just fall through to MRet.
+    // Void path: sm.__builder.get_Task() → Task; then ret.
+    kfInsns.add(MLdloc(slot = 0))
+    kfInsns.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
+    kfInsns.add(MCall(methodToken = cctx.tokAtmbGetTask))
   } else {
-    // Non-void path: Task<T> = sm.__builder.get_Task(); T = Task<T>.get_Result()
+    // Non-void path: sm.__builder.get_Task() → Task<T>; then ret.
     val taKey4  = msilTypeKey(retTy)
-    // get_Task(): Task<T>  — ldloc sm; ldflda __builder; call get_Task (struct instance)
     kfInsns.add(MLdloc(slot = 0))
     kfInsns.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
     val tsArgs4: List[MsilType] = newList()
@@ -7836,23 +8282,21 @@ func synthesizeAsyncSmMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
     val gtKey4  = "atmb1_gettask_mr_" + taKey4
     val gtMrRow4 = ctxAddMemberRefForTypeSpec(cctx.lctx, tsRow4, "get_Task", gtKey4, gtSig4)
     kfInsns.add(MCall(methodToken = 0x0A000000 + gtMrRow4))
-    // Task<T>.get_Result(): T  — callvirt (uses same pattern as Phase A)
-    val tsArgs5: List[MsilType] = newList()
-    tsArgs5.add(retTy)
-    val tsBlob5 = buildGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trTask1), tsArgs5)
-    val tsKey5  = "ts_task1_result_" + taKey4
-    val tsRow5  = ctxAddTypeSpec(cctx.lctx, tsKey5, tsBlob5)
-    val grSig5  = buildInstanceMethodSig(newList(), MTypeVar(0))
-    val grKey5  = "mr_task_getresult_" + tsKey5
-    val grMrRow5 = ctxAddMemberRefForTypeSpec(
-      cctx.lctx, tsRow5, "get_Result", grKey5, grSig5)
-    kfInsns.add(MCallvirt(methodToken = 0x0A000000 + grMrRow5))
   }
   kfInsns.add(MRet)
 
-  // Kickoff return type matches the declared Lyric type: T for non-void, void for void.
-  // (Phase B.0 only — Phase B.1 will expose Task<T> and require `await` at call sites.)
-  val kfRetTy: MsilType = retTy
+  // Kickoff return type is Task<T> (non-void) or Task (void).
+  val kfRetTy: MsilType =
+    if isVoid {
+      MClassRef(typeRefCode = tdrTypeRef(cctx.trTask),
+                clrFqn      = "System.Threading.Tasks.Task")
+    } else {
+      val kfRetArgs: List[MsilType] = newList()
+      kfRetArgs.add(retTy)
+      MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1),
+                   headFqn     = "System.Threading.Tasks.Task`1",
+                   typeArgs    = kfRetArgs)
+    }
 
   // Build parameter type list matching the user func.
   val kfParamTypes: List[MsilType] = newList()
@@ -7870,6 +8314,460 @@ func synthesizeAsyncSmMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
     insns    = kfInsns,
     maxStack = 4,
     locals   = kfLocals))
+}
+
+// ── Phase B.1: IAsyncStateMachine synthesis with real `await` suspension ─────
+//
+// Emits a sealed class SM with:
+//   __state    : Int            (-1 = initial, N = suspended at await N, -2 = done)
+//   __builder  : ATMB / ATMB<T>
+//   __p0..N-1  : user param types
+//   __aw0..M-1 : awaiter types for each EAwait in the body
+//
+// MoveNext structure:
+//   try {
+//     tryStartL:
+//     ldarg.0; ldfld __state; switch(resumeLabels); br bodyStartL
+//     bodyStartL:
+//       preamble + user body (EAwait nodes emit full suspend/resume inline)
+//       [stash result if non-void]
+//     normalDoneL:
+//       state=-2; SetResult; leave afterTryL
+//   } catch(Exception e) {
+//     state=-2; SetException(e); leave afterTryL
+//   }
+//   afterTryL:
+//   ret
+//
+// Resume path for state=N (inside the body, embedded after the suspend):
+//   resumeLabelN: restore __awN → awTemp; zero __awN; state=-1; GetResult → stack
+func synthesizeAsyncSmPhaseBMsil(cctx: in CodegenCtx, decl: in FunctionDecl,
+                                  pkgName: in String,
+                                  items: in List[MPackageItem],
+                                  fns:   in List[MFunc]): Unit {
+  val lctx = cctx.lctx
+
+  val tick   = cctx.smTicker.count
+  cctx.smTicker.add(0)
+  val smSimple = "<" + decl.name + ">__SM_" + toString(tick)
+  val smFqn    = pkgName + "." + smSimple
+
+  // Return type analysis (same as Phase B.0)
+  val retTy = match decl.ret {
+    case Some(te) -> {
+      val r = typeExprToMsilCtx(cctx, te, pkgName)
+      if elementTypeByte(r) == 0 { MVoid } else { r }
+    }
+    case None -> MVoid
+  }
+  val isVoid = retTy == MVoid
+
+  // Pre-scan: collect awaiter types in body-evaluation order
+  val awaiterTypes = collectAwaitTypesPhaseBMsil(cctx, pkgName, decl)
+  val awCount = awaiterTypes.count
+
+  // ── SM field list ─────────────────────────────────────────────────────────
+  val smFields: List[MField] = newList()
+  smFields.add(MField(flags = FDA_PUBLIC, name = "__state",   fieldType = MInt))
+
+  val builderTy: MsilType =
+    if isVoid {
+      MValueTypeRef(typeRefCode = tdrTypeRef(cctx.trAtmb),
+                    clrFqn = "System.Runtime.CompilerServices.AsyncTaskMethodBuilder")
+    } else {
+      val tArgs: List[MsilType] = newList()
+      tArgs.add(retTy)
+      MValueTypeGenericInst(typeRefCode = tdrTypeRef(cctx.trAtmb1),
+                            headFqn = "System.Runtime.CompilerServices.AsyncTaskMethodBuilder`1",
+                            typeArgs = tArgs)
+    }
+  smFields.add(MField(flags = FDA_PUBLIC, name = "__builder", fieldType = builderTy))
+
+  var smPi = 0
+  while smPi < decl.params.count {
+    val p   = decl.params[smPi]
+    val pTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
+    smFields.add(MField(flags = FDA_PUBLIC, name = "__p" + toString(smPi), fieldType = pTy))
+    smPi = smPi + 1
+  }
+
+  // Awaiter fields __aw0 .. __awM-1
+  val awaiterFieldNames: List[String] = newList()
+  var awi = 0
+  while awi < awCount {
+    val awName = "__aw" + toString(awi)
+    awaiterFieldNames.add(awName)
+    smFields.add(MField(flags = FDA_PUBLIC, name = awName, fieldType = awaiterTypes[awi]))
+    awi = awi + 1
+  }
+
+  // ── MoveNext() ────────────────────────────────────────────────────────────
+  val mnInsns: List[MInsn] = newList()
+  val mnFctx = makeFuncCtxMsil(pkgName, smFqn, "MoveNext", 1, MVoid)
+  mnFctx.slotTicker.add(0)  // reserve slot 0 for 'this' arg
+
+  // Pre-allocate labels
+  val tryStartL          = freshLabelMsil(mnFctx)
+  val bodyStartL         = freshLabelMsil(mnFctx)
+  val normalDoneL        = freshLabelMsil(mnFctx)
+  val afterTryL          = freshLabelMsil(mnFctx)
+  val tryBodyEndL        = freshLabelMsil(mnFctx)
+  val catchHandlerStartL = freshLabelMsil(mnFctx)
+  val catchHandlerEndL   = freshLabelMsil(mnFctx)
+
+  // Pre-allocate resume labels (one per await point)
+  val resumeLabels: List[Int] = newList()
+  var rli = 0
+  while rli < awCount {
+    resumeLabels.add(freshLabelMsil(mnFctx))
+    rli = rli + 1
+  }
+
+  // Epilogue for nested-try returns inside the body (points to normalDoneL)
+  mnFctx.epilogueLabel = normalDoneL
+
+  // Build the AwaitUnsafeOnCompleted MemberRef for this SM's ATMB type.
+  // For void: use the pre-built ATMB void row.
+  // For non-void: the CLR requires the MemberRef parent to be a TypeSpec
+  // (closed instantiation ATMB`1<retTy>), not an open TypeRef — ECMA-335
+  // §II.22.25 row 13.  The open-TypeRef row stored in cctx.tokAtmb1AwaitUnsafeMr
+  // causes a TypeLoadException at runtime.
+  val atmbMrRowForAwait =
+    if isVoid {
+      cctx.tokAtmbAwaitUnsafeMr
+    } else {
+      val awTsArgs: List[MsilType] = newList()
+      awTsArgs.add(retTy)
+      val awTsBlob = buildValueTypeGenericInstBlobWithCtx(cctx.lctx, tdrTypeRef(cctx.trAtmb1), awTsArgs)
+      val awTaKey  = msilTypeKey(retTy)
+      val awTsKey  = "atmb1_ts_await_" + awTaKey
+      val awTsRow  = ctxAddTypeSpec(cctx.lctx, awTsKey, awTsBlob)
+      val awSig    = buildAwaitUnsafeOnCompletedOpenSig()
+      val awMrKey  = "atmb1_await_unsafe_mr_" + awTaKey
+      ctxAddMemberRefForTypeSpec(cctx.lctx, awTsRow, "AwaitUnsafeOnCompleted", awMrKey, awSig)
+    }
+
+  // Install the PhaseBCtx singleton in mnFctx
+  val pbCtx = PhaseBCtx(
+    smFqn             = smFqn,
+    resumeLabels      = resumeLabels,
+    suspendLeaveLabel = afterTryL,
+    nextAwaitIndex    = newList(),
+    awaiterFieldNames = awaiterFieldNames,
+    isVoid            = isVoid,
+    retTy             = retTy,
+    atmbMrRowForAwait = atmbMrRowForAwait)
+  mnFctx.phaseBCtx.add(pbCtx)
+
+  // Pre-allocate result slot for non-void (must exist before body lowering
+  // so patched returns can reference it).
+  var rSlot = -1
+  if not isVoid {
+    rSlot = allocSlotMsil(mnFctx, "__sm_result", retTy)
+  }
+
+  // ── Preamble: load user params from SM fields into local slots ────────────
+  var mpre = 0
+  while mpre < decl.params.count {
+    val p    = decl.params[mpre]
+    val pTy  = typeExprToMsilCtx(cctx, p.ty, pkgName)
+    val pSlot = allocSlotMsil(mnFctx, p.name, pTy)
+    // pSlot - paramCount(1) = local index
+    mnInsns.add(MLdarg(slot = 0))
+    mnInsns.add(MLdfldByName(ownerFqn = smFqn, fieldName = "__p" + toString(mpre)))
+    mnInsns.add(MStloc(slot = pSlot - 1))
+    mpre = mpre + 1
+  }
+
+  // ── Try body start ────────────────────────────────────────────────────────
+  mnInsns.add(MLabel(id = tryStartL))
+  mnFctx.tryRegionStack.add(0)
+
+  // State dispatch switch
+  mnInsns.add(MLdarg(slot = 0))
+  mnInsns.add(MLdfldByName(ownerFqn = smFqn, fieldName = "__state"))
+  mnInsns.add(MSwitch(labels = resumeLabels))
+  mnInsns.add(MBr(label = bodyStartL))
+
+  // Body start label
+  mnInsns.add(MLabel(id = bodyStartL))
+
+  // ── Lower user body ───────────────────────────────────────────────────────
+  match decl.body {
+    case Some(body) -> {
+      match body {
+        case FBBlock(block) -> {
+          if not isVoid {
+            val bodyInsns: List[MInsn] = newList()
+            val trailTy = lowerBlockExprMsil(cctx, mnFctx, bodyInsns, block)
+            // Patch MRet → [stloc rSlot; br normalDoneL]
+            var lastWasPatchedRet = false
+            var pbi = 0
+            while pbi < bodyInsns.count {
+              match bodyInsns[pbi] {
+                case MRet -> {
+                  mnInsns.add(MStloc(slot = rSlot - 1))
+                  mnInsns.add(MBr(label = normalDoneL))
+                  lastWasPatchedRet = true
+                }
+                case _ -> {
+                  mnInsns.add(bodyInsns[pbi])
+                  lastWasPatchedRet = false
+                }
+              }
+              pbi = pbi + 1
+            }
+            if not lastWasPatchedRet {
+              coerceTrailingToRetMsil(cctx, mnInsns, trailTy, retTy)
+              mnInsns.add(MStloc(slot = rSlot - 1))
+            }
+          } else {
+            val bodyInsns2: List[MInsn] = newList()
+            lowerBlockMsil(cctx, mnFctx, bodyInsns2, block)
+            var pbi2 = 0
+            while pbi2 < bodyInsns2.count {
+              match bodyInsns2[pbi2] {
+                case MRet -> mnInsns.add(MBr(label = normalDoneL))
+                case _    -> mnInsns.add(bodyInsns2[pbi2])
+              }
+              pbi2 = pbi2 + 1
+            }
+          }
+        }
+        case FBExpr(e) -> {
+          if not isVoid {
+            val eTy = lowerExprMsil(cctx, mnFctx, mnInsns, e)
+            coerceTrailingToRetMsil(cctx, mnInsns, eTy, retTy)
+            mnInsns.add(MStloc(slot = rSlot - 1))
+          } else {
+            lowerExprMsil(cctx, mnFctx, mnInsns, e)
+            mnInsns.add(MPop)
+          }
+        }
+      }
+    }
+    case None -> {}
+  }
+
+  // ── Normal completion epilogue ────────────────────────────────────────────
+  mnInsns.add(MLabel(id = normalDoneL))
+  mnInsns.add(MLdarg(slot = 0))
+  mnInsns.add(MLdcI4(v = -2))
+  mnInsns.add(MStfldByName(ownerFqn = smFqn, fieldName = "__state"))
+  mnInsns.add(MLdarg(slot = 0))
+  mnInsns.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
+  if not isVoid {
+    mnInsns.add(MLdloc(slot = rSlot - 1))
+    val taKey = msilTypeKey(retTy)
+    val tsArgsB: List[MsilType] = newList()
+    tsArgsB.add(retTy)
+    val tsBlobB = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trAtmb1), tsArgsB)
+    val tsKeyB  = "atmb1_ts_" + taKey
+    val tsRowB  = ctxAddTypeSpec(lctx, tsKeyB, tsBlobB)
+    val srArgsB: List[MsilType] = newList()
+    srArgsB.add(MTypeVar(index = 0))
+    val srSigB  = buildInstanceMethodSig(srArgsB, MVoid)
+    val srKeyB  = "atmb1_setresult_mr_b1_" + taKey
+    val srMrRowB = ctxAddMemberRefForTypeSpec(lctx, tsRowB, "SetResult", srKeyB, srSigB)
+    mnInsns.add(MCall(methodToken = 0x0A000000 + srMrRowB))
+  } else {
+    mnInsns.add(MCall(methodToken = cctx.tokAtmbSetResult))
+  }
+  mnInsns.add(MLeave(label = afterTryL))
+
+  // ── End of try body ───────────────────────────────────────────────────────
+  mnFctx.tryRegionStack.removeAt(mnFctx.tryRegionStack.count - 1)
+  mnInsns.add(MLabel(id = tryBodyEndL))
+
+  // ── Catch handler ─────────────────────────────────────────────────────────
+  mnInsns.add(MLabel(id = catchHandlerStartL))
+  mnFctx.tryRegionStack.add(0)
+  val exSlot = allocSlotMsil(mnFctx, "__sm_ex", MObject)
+  mnInsns.add(MStloc(slot = exSlot - 1))
+  mnInsns.add(MLdarg(slot = 0))
+  mnInsns.add(MLdcI4(v = -2))
+  mnInsns.add(MStfldByName(ownerFqn = smFqn, fieldName = "__state"))
+  mnInsns.add(MLdarg(slot = 0))
+  mnInsns.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
+  mnInsns.add(MLdloc(slot = exSlot - 1))
+  // SetException signature: (Exception): void
+  val seParam = MClassRef(typeRefCode = tdrTypeRef(cctx.trException),
+                          clrFqn = "System.Exception")
+  val seArgList: List[MsilType] = newList()
+  seArgList.add(seParam)
+  val seSig = buildInstanceMethodSig(seArgList, MVoid)
+  if isVoid {
+    val seMrRow = ctxAddMemberRef(lctx, cctx.trAtmb, "SetException", "atmb_setexception", seSig)
+    mnInsns.add(MCall(methodToken = 0x0A000000 + seMrRow))
+  } else {
+    val taKeyEx  = msilTypeKey(retTy)
+    val tsArgsEx: List[MsilType] = newList()
+    tsArgsEx.add(retTy)
+    val tsBlobEx = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trAtmb1), tsArgsEx)
+    val tsKeyEx  = "atmb1_ts_" + taKeyEx
+    val tsRowEx  = ctxAddTypeSpec(lctx, tsKeyEx, tsBlobEx)
+    val seMrRowEx = ctxAddMemberRefForTypeSpec(lctx, tsRowEx, "SetException",
+                                               "atmb1_setexception_b1_" + taKeyEx, seSig)
+    mnInsns.add(MCall(methodToken = 0x0A000000 + seMrRowEx))
+  }
+  mnInsns.add(MLeave(label = afterTryL))
+  mnFctx.tryRegionStack.removeAt(mnFctx.tryRegionStack.count - 1)
+  mnInsns.add(MLabel(id = catchHandlerEndL))
+
+  // EH clause: typed catch(Exception)
+  mnInsns.add(MEHClause(
+    flags        = 0,
+    tryStart     = tryStartL,
+    tryEnd       = tryBodyEndL,
+    handlerStart = catchHandlerStartL,
+    handlerEnd   = catchHandlerEndL,
+    catchToken   = 0x01000000 + cctx.trException))
+
+  // ── After-try: ret ────────────────────────────────────────────────────────
+  mnInsns.add(MLabel(id = afterTryL))
+  mnInsns.add(MRet)
+
+  val mnFunc = MFunc(
+    flags    = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_FINAL,
+    name     = "MoveNext",
+    params   = newList(),
+    ret      = MVoid,
+    insns    = mnInsns,
+    maxStack = 8,
+    locals   = mnFctx.locals)
+
+  // ── SetStateMachine() stub (identical to Phase B.0) ───────────────────────
+  val ssmInsns: List[MInsn] = newList()
+  ssmInsns.add(MRet)
+  val ssmParams: List[MsilType] = newList()
+  ssmParams.add(MClassRef(typeRefCode = tdrTypeRef(cctx.trIAsm),
+                          clrFqn = "System.Runtime.CompilerServices.IAsyncStateMachine"))
+  val ssmFunc = MFunc(
+    flags    = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_FINAL,
+    name     = "SetStateMachine",
+    params   = ssmParams,
+    ret      = MVoid,
+    insns    = ssmInsns,
+    maxStack = 1,
+    locals   = newList())
+
+  // ── SM MRecord (same as Phase B.0) ────────────────────────────────────────
+  val smMethods2: List[MFunc] = newList()
+  smMethods2.add(mnFunc)
+  smMethods2.add(ssmFunc)
+  val smRec2 = MRecord(
+    className      = smFqn,
+    namespace      = pkgName,
+    baseClass      = "System.Object",
+    fields         = smFields,
+    methods        = smMethods2,
+    useDefaultCtor = true)
+  items.add(MPRecord(rec = smRec2))
+
+  // ── IAsyncStateMachine MPImpl (same as Phase B.0) ─────────────────────────
+  val slots2: List[MImplSlot] = newList()
+  slots2.add(MImplSlot(ifaceMethodToken = 0, implMethodToken = 0,
+                       ifaceMethodName = "MoveNext",      implMethodName = "MoveNext"))
+  slots2.add(MImplSlot(ifaceMethodToken = 0, implMethodToken = 0,
+                       ifaceMethodName = "SetStateMachine", implMethodName = "SetStateMachine"))
+  items.add(MPImpl(implData = MImplData(
+    targetTypeDefRow = 0,
+    ifaceTypeToken   = 0,
+    slots            = slots2,
+    targetTypeName   = smFqn,
+    ifaceTypeName    = "System.Runtime.CompilerServices.IAsyncStateMachine")))
+
+  // ── Kickoff MFunc (same structure as Phase B.0) ───────────────────────────
+  val kfInsns2: List[MInsn] = newList()
+  val kfLocals2: List[MsilType] = newList()
+  kfLocals2.add(MClass(smFqn))
+
+  kfInsns2.add(MNewobjByName(className = smFqn))
+  kfInsns2.add(MStloc(slot = 0))
+  kfInsns2.add(MLdloc(slot = 0))
+  kfInsns2.add(MLdcI4(v = -1))
+  kfInsns2.add(MStfldByName(ownerFqn = smFqn, fieldName = "__state"))
+
+  var kpi3 = 0
+  while kpi3 < decl.params.count {
+    kfInsns2.add(MLdloc(slot = 0))
+    kfInsns2.add(MLdarg(slot = kpi3))
+    kfInsns2.add(MStfldByName(ownerFqn = smFqn, fieldName = "__p" + toString(kpi3)))
+    kpi3 = kpi3 + 1
+  }
+
+  // Start<SM>(ref sm)
+  kfInsns2.add(MLdloc(slot = 0))
+  kfInsns2.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
+  kfInsns2.add(MLdloca(slot = 0))
+  val startMrRow2 =
+    if isVoid {
+      cctx.tokAtmbStartMr
+    } else {
+      val tsArgsS2: List[MsilType] = newList()
+      tsArgsS2.add(retTy)
+      val tsBlobS2 = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trAtmb1), tsArgsS2)
+      val tsKeyS2  = "atmb1_ts_" + msilTypeKey(retTy)
+      val tsRowS2  = ctxAddTypeSpec(lctx, tsKeyS2, tsBlobS2)
+      val startOpenSig2 = buildAtmbStartOpenSig()
+      val startMrKey2   = "atmb1_start_mr_" + msilTypeKey(retTy)
+      ctxAddMemberRefForTypeSpec(lctx, tsRowS2, "Start", startMrKey2, startOpenSig2)
+    }
+  kfInsns2.add(MCallAtmbStart(smFqn = smFqn, atmbMrRow = startMrRow2, isGeneric = not isVoid))
+
+  // Return Task<T> or Task
+  if isVoid {
+    kfInsns2.add(MLdloc(slot = 0))
+    kfInsns2.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
+    kfInsns2.add(MCall(methodToken = cctx.tokAtmbGetTask))
+  } else {
+    val taKey5   = msilTypeKey(retTy)
+    kfInsns2.add(MLdloc(slot = 0))
+    kfInsns2.add(MLdfldaByName(ownerFqn = smFqn, fieldName = "__builder"))
+    val tsArgs5: List[MsilType] = newList()
+    tsArgs5.add(retTy)
+    val tsBlob5 = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trAtmb1), tsArgs5)
+    val tsKey5  = "atmb1_ts_" + taKey5
+    val tsRow5  = ctxAddTypeSpec(lctx, tsKey5, tsBlob5)
+    val taskVarArgs5: List[MsilType] = newList()
+    taskVarArgs5.add(MTypeVar(index = 0))
+    val taskRetTy5: MsilType = MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1),
+                                             headFqn = "System.Threading.Tasks.Task`1",
+                                             typeArgs = taskVarArgs5)
+    val gtArgs5: List[MsilType] = newList()
+    val gtSig5 = buildInstanceMethodSig(gtArgs5, taskRetTy5)
+    val gtKey5 = "atmb1_gettask_mr_" + taKey5
+    val gtMrRow5 = ctxAddMemberRefForTypeSpec(lctx, tsRow5, "get_Task", gtKey5, gtSig5)
+    kfInsns2.add(MCall(methodToken = 0x0A000000 + gtMrRow5))
+  }
+  kfInsns2.add(MRet)
+
+  val kfRetTy2: MsilType =
+    if isVoid {
+      MClassRef(typeRefCode = tdrTypeRef(cctx.trTask),
+                clrFqn = "System.Threading.Tasks.Task")
+    } else {
+      val kfRetArgs2: List[MsilType] = newList()
+      kfRetArgs2.add(retTy)
+      MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1),
+                   headFqn = "System.Threading.Tasks.Task`1",
+                   typeArgs = kfRetArgs2)
+    }
+
+  val kfParamTypes2: List[MsilType] = newList()
+  var kpi4 = 0
+  while kpi4 < decl.params.count {
+    kfParamTypes2.add(typeExprToMsilCtx(cctx, decl.params[kpi4].ty, pkgName))
+    kpi4 = kpi4 + 1
+  }
+  fns.add(MFunc(
+    flags    = MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG,
+    name     = decl.name,
+    params   = byrefWrapSigTypes(decl.params, kfParamTypes2),
+    ret      = kfRetTy2,
+    insns    = kfInsns2,
+    maxStack = 4,
+    locals   = kfLocals2))
 }
 
 // Emit the function epilogue block when at least one `return` escaped a
@@ -10645,14 +11543,17 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
         items.add(MPRecord(rec = rec))
       }
       case IFunc(decl) -> {
-        // Phase B.0: synthesise IAsyncStateMachine for async func (no-await path).
+        // Route async SM synthesis: Phase B.1 (with awaits) or Phase B.0 (no awaits).
         // Generators and @externTarget async funcs use their existing paths.
-        val useSm = decl.isAsync
-                    and not funcBodyContainsYieldMsil(decl)
-                    and not funcBodyContainsAwaitMsil(decl)
-                    and not hasExternTargetMsil(decl.annotations)
+        val isGenerator = decl.isAsync and funcBodyContainsYieldMsil(decl)
+        val isExternFunc = hasExternTargetMsil(decl.annotations)
+        val useSm = decl.isAsync and not isGenerator and not isExternFunc
         if useSm {
-          synthesizeAsyncSmMsil(cctx, decl, pkgName, items, fns)
+          if funcBodyContainsAwaitMsil(decl) {
+            synthesizeAsyncSmPhaseBMsil(cctx, decl, pkgName, items, fns)
+          } else {
+            synthesizeAsyncSmMsil(cctx, decl, pkgName, items, fns)
+          }
         } else {
           fns.add(lowerFuncMsil(cctx, decl, pkgName))
         }
