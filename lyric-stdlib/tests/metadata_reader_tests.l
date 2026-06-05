@@ -249,7 +249,7 @@ func testMethodSigBlobs(): Unit {
   // Low nibble of the calling convention is DEFAULT(0)/VARARG(5)/GENERIC(0x10)
   // etc.; the HASTHIS(0x20)/EXPLICITTHIS(0x40) bits may also be set.  At minimum
   // the byte is < 0x80 (no reserved high bit) for a MethodDefSig.
-  assertTrue((sig[0] * 1) < 0x80, "sig: calling-convention byte is well-formed")
+  assertTrue(sig[0].toInt() < 0x80, "sig: calling-convention byte is well-formed")
 }
 
 // Extract the element-type byte of an `STPrim`, or -1 for any other shape.

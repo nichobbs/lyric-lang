@@ -121,7 +121,7 @@ pub func newBitReader(data: in slice[Byte], startOff: in Int, compressedLen: in 
 func refillBits(br: in BitReader): Unit {
   val p = getS(br.state, "p")
   if p < getS(br.state, "e") {
-    val by = toU8(br.data[p] * 1)
+    val by = toU8(br.data[p].toInt())
     setS(br.state, "p", p + 1)
     setS(br.state, "b", by)
     // n was 0, so b was 0; just store new byte
@@ -166,7 +166,7 @@ func readRawByte(br: in BitReader): Int {
     return 0
   }
   setS(br.state, "p", p + 1)
-  toU8(br.data[p] * 1)
+  toU8(br.data[p].toInt())
 }
 
 // Read a little-endian u16 from the byte-aligned stream.

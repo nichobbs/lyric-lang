@@ -97,9 +97,10 @@ pub record TablesHeader {
 
 // ── Little-endian byte readers (Byte→Int widening via mixed arithmetic) ──────
 
-// Read one byte as an unsigned Int (0..255).  `b[o] * 1` is Byte*Int → Int,
-// the same widening idiom `Std.Encoding` uses (`(b0 % 32u8) * 64`).
-func rdU8(b: in slice[Byte], o: in Int): Int { b[o] * 1 }
+// Read one byte as an unsigned Int (0..255).  `Byte` is unsigned, so `.toInt()`
+// zero-extends to the 0..255 range (language reference §541: conversions are
+// explicit — no implicit widening).
+func rdU8(b: in slice[Byte], o: in Int): Int { b[o].toInt() }
 
 func rdU16(b: in slice[Byte], o: in Int): Int {
   rdU8(b, o) + rdU8(b, o + 1) * 256

@@ -235,7 +235,7 @@ func writeMeta(w: in ByteWriter,
 // requirement.
 func isFatBody(buf: in ByteWriter): Bool {
   val bs = bufToList(buf)
-  if bs.count == 0 { false } else { (bs[0] % 4) == 3 }
+  if bs.count == 0 { false } else { (bs[0].toInt() % 4) == 3 }
 }
 
 /// Compute the RVA for each method body in `bodies`.

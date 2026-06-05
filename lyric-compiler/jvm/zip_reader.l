@@ -28,7 +28,7 @@ import Jvm.Deflate
 
 // Convert a raw byte (possibly signed) to unsigned 0-255.
 func rdU8(b: in slice[Byte], o: in Int): Int {
-  val v = b[o] * 1
+  val v = b[o].toInt()
   if v < 0 { v + 256 } else { v }
 }
 
