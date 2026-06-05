@@ -43,4 +43,4 @@ import Std.JvmExceptionHost
 // Passing a non-literal function value falls through to a general static call
 // which will fail at JVM load time (no generated implementation body).
 @stable(since="1.0")
-pub generic[T] func catch(action: func(): T): Result[T, JvmException] = ()
+pub func catch[T](action: func(): T): Result[T, JvmException] = ()
