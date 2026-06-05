@@ -243,7 +243,7 @@ pub func parseRangeBound(st: inout ParseState): RangeBound {
   } else if isPunct(peekToken(st), DotDot) or isPunct(peekToken(st), DotDotLt) {
     val opTok = advance(st)
     val hi = parseExpr(st)
-    val lo = mkExpr(ELiteral(lit = LInt(value = 0i64, suffix = NoIntSuffix)), opTok.span)
+    val lo = mkExpr(ELiteral(lit = LInt(value = 0i64, suffix = NoIntSuffix, raw = "")), opTok.span)
     RBHalfOpen(lo = lo, hi = hi)
   } else {
     val lo = parseExpr(st)
@@ -293,8 +293,8 @@ pub func parseRangeBound(st: inout ParseState): RangeBound {
 
 func parseTypeArg(st: inout ParseState): TypeArg {
   match peekToken(st) {
-    case TInt(_, _)          -> TAValue(expr = parseExpr(st))
-    case TFloat(_, _)        -> TAValue(expr = parseExpr(st))
+    case TInt(_, _, _)          -> TAValue(expr = parseExpr(st))
+    case TFloat(_, _, _)        -> TAValue(expr = parseExpr(st))
     case TChar(_)            -> TAValue(expr = parseExpr(st))
     case TString(_)          -> TAValue(expr = parseExpr(st))
     case TTripleString(_)    -> TAValue(expr = parseExpr(st))
@@ -629,11 +629,11 @@ func parsePrimaryPattern(st: inout ParseState): Pattern {
         }
       }
     }
-    case TInt(_, _) -> {
+    case TInt(_, _, _) -> {
       val firstExpr = parseExpr(st)
       parseLiteralOrRangePat(st, firstExpr)
     }
-    case TFloat(_, _) -> {
+    case TFloat(_, _, _) -> {
       val firstExpr = parseExpr(st)
       parseLiteralOrRangePat(st, firstExpr)
     }
@@ -742,13 +742,15 @@ func parseLiteralOrRangePat(st: inout ParseState, firstExpr: in Expr): Pattern {
             match inner.kind {
               case ELiteral(lit) -> {
                 match lit {
-                  case LInt(v, sfx) -> {
+                  case LInt(v, sfx, innerRaw) -> {
                     val negV = 0i64 - v
-                    mkPat(PLiteral(lit = LInt(value = negV, suffix = sfx)), firstExpr.span)
+                    val negRaw = if innerRaw != "" { "-" + innerRaw } else { "" }
+                    mkPat(PLiteral(lit = LInt(value = negV, suffix = sfx, raw = negRaw)), firstExpr.span)
                   }
-                  case LFloat(v, sfx) -> {
+                  case LFloat(v, sfx, innerRaw) -> {
                     val negV = 0.0 - v
-                    mkPat(PLiteral(lit = LFloat(value = negV, suffix = sfx)), firstExpr.span)
+                    val negRaw = if innerRaw != "" { "-" + innerRaw } else { "" }
+                    mkPat(PLiteral(lit = LFloat(value = negV, suffix = sfx, raw = negRaw)), firstExpr.span)
                   }
                   case _ -> {
                     emitErr(st, "P0073", "expected a literal pattern", firstExpr.span)
@@ -815,17 +817,17 @@ pub func parsePattern(st: inout ParseState): Pattern {
 pub func parsePrimaryExpr(st: inout ParseState): Expr {
   val tok = peek(st)
   match tok.token {
-    case TInt(_, _) -> {
+    case TInt(_, _, _) -> {
       val t = advance(st)
       match t.token {
-        case TInt(v, sfx) -> mkExpr(ELiteral(lit = LInt(value = v, suffix = sfx)), t.span)
+        case TInt(v, sfx, raw) -> mkExpr(ELiteral(lit = LInt(value = v, suffix = sfx, raw = raw)), t.span)
         case _ -> mkExpr(EError, t.span)
       }
     }
-    case TFloat(_, _) -> {
+    case TFloat(_, _, _) -> {
       val t = advance(st)
       match t.token {
-        case TFloat(v, sfx) -> mkExpr(ELiteral(lit = LFloat(value = v, suffix = sfx)), t.span)
+        case TFloat(v, sfx, raw) -> mkExpr(ELiteral(lit = LFloat(value = v, suffix = sfx, raw = raw)), t.span)
         case _ -> mkExpr(EError, t.span)
       }
     }
@@ -1535,7 +1537,7 @@ func cancelMinValueDiagIfWrapped(st: inout ParseState, inner: in Expr): Unit {
   match inner.kind {
     case ELiteral(lit) ->
       match lit {
-        case LInt(v, _) -> {
+        case LInt(v, _, _) -> {
           if v == -9223372036854775808i64 {
             val innerEnd = inner.span.endPos.offset
             var i = st.diags.count - 1

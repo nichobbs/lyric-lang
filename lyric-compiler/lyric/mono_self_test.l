@@ -94,7 +94,7 @@ func pathExpr(name: in String): Expr {
 }
 
 func litIntExpr(value: in Long): Expr {
-  Expr(kind = ELiteral(lit = LInt(value = value, suffix = NoIntSuffix)), span = syntheticSpan())
+  Expr(kind = ELiteral(lit = LInt(value = value, suffix = NoIntSuffix, raw = "")), span = syntheticSpan())
 }
 
 func typeRefExpr(name: in String): TypeExpr {

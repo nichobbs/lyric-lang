@@ -290,8 +290,11 @@ pub union Punct {
 pub union Token {
   case TKeyword(kw: Keyword)
   case TIdent(name: String)
-  case TInt(value: Long, suffix: IntSuffix)
-  case TFloat(value: Double, suffix: FloatSuffix)
+  // `raw` carries the verbatim source lexeme (`0xFF`, `100_000`, `1i64`)
+  // so the formatter can round-trip the spelling rather than re-render
+  // the parsed value.
+  case TInt(value: Long, suffix: IntSuffix, raw: String)
+  case TFloat(value: Double, suffix: FloatSuffix, raw: String)
   case TChar(codepoint: Int)
   /// A complete plain string literal (no interpolation).  Emitted by
   /// `lexStringLiteral` for the common case.
@@ -1398,11 +1401,11 @@ func lexBasedInt(state: inout LexerState, startP: in Position, base: in Int): Un
   }
   val body = stripUnderscores(raw)
   match parseDigits(body, base) {
-    case Some(v) -> emit(state, TInt(value = v, suffix = split.suffix), startP)
+    case Some(v) -> emit(state, TInt(value = v, suffix = split.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
     case None    -> {
       recordError(state, "L0010", "integer literal out of range",
                   makeSpan(startP, currentPosition(state)))
-      emit(state, TInt(value = 0i64, suffix = split.suffix), startP)
+      emit(state, TInt(value = 0i64, suffix = split.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
     }
   }
 }
@@ -1535,11 +1538,11 @@ func lexDecimalNumber(state: inout LexerState): Unit {
     val fsplit = splitFloatSuffix(combined)
     val stripped = stripUnderscores(fsplit.body)
     match parseDoubleLiteral(stripped) {
-      case Some(v) -> emit(state, TFloat(value = v, suffix = fsplit.suffix), startP)
+      case Some(v) -> emit(state, TFloat(value = v, suffix = fsplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
       case None    -> {
         recordError(state, "L0011", "invalid float literal",
                     makeSpan(startP, currentPosition(state)))
-        emit(state, TFloat(value = 0.0, suffix = fsplit.suffix), startP)
+        emit(state, TFloat(value = 0.0, suffix = fsplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
       }
     }
   } else {
@@ -1564,12 +1567,12 @@ func lexDecimalNumber(state: inout LexerState): Unit {
                       "decimal literal '9223372036854775808' exceeds Long range; only the spelling `-9223372036854775808` is well-formed (Long.MinValue)",
                       makeSpan(startP, currentPosition(state)))
         }
-        emit(state, TInt(value = v, suffix = isplit.suffix), startP)
+        emit(state, TInt(value = v, suffix = isplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
       }
       case None    -> {
         recordError(state, "L0010", "integer literal out of range",
                     makeSpan(startP, currentPosition(state)))
-        emit(state, TInt(value = 0i64, suffix = isplit.suffix), startP)
+        emit(state, TInt(value = 0i64, suffix = isplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
       }
     }
   }

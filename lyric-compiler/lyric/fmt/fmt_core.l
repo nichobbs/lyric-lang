@@ -365,8 +365,11 @@ pub func docLines(docs: in List[DocComment]): List[String] {
 
 pub func litStr(l: in Literal): String {
   match l {
-    case LInt(v, s)         -> longToStr(v) + intSufStr(s)
-    case LFloat(v, s)       -> floatLitStr(v) + floatSufStr(s)
+    // Prefer the verbatim source spelling so `0xFF` / `100_000` / `2.99`
+    // round-trip instead of canonicalising to `255` / `100000` /
+    // `2.9899999999999998`.  Synthetic literals carry an empty `raw`.
+    case LInt(v, s, raw)    -> if raw != "" { raw } else { longToStr(v) + intSufStr(s) }
+    case LFloat(v, s, raw)  -> if raw != "" { raw } else { floatLitStr(v) + floatSufStr(s) }
     case LChar(cp)          -> charLitStr(cp)
     case LString(t)         -> "\"" + escapeStr(t) + "\""
     case LTripleString(t)   -> "\"\"\"" + t + "\"\"\""

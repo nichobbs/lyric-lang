@@ -24,8 +24,8 @@ func tokenName(t: in Token): String {
   match t {
     case TKeyword(_)          -> "keyword"
     case TIdent(_)            -> "ident"
-    case TInt(_, _)           -> "int"
-    case TFloat(_, _)         -> "float"
+    case TInt(_, _, _)           -> "int"
+    case TFloat(_, _, _)         -> "float"
     case TChar(_)             -> "char"
     case TString(_)           -> "string"
     case TStringStart         -> "string_start"
@@ -53,14 +53,14 @@ func tokenKindAt(lr: in LexResult, i: in Int): String {
 
 func intValueAt(lr: in LexResult, i: in Int): Long {
   match tokenAt(lr, i).token {
-    case TInt(v, _) -> v
+    case TInt(v, _, _) -> v
     case _          -> -1i64
   }
 }
 
 func floatValueAt(lr: in LexResult, i: in Int): Double {
   match tokenAt(lr, i).token {
-    case TFloat(v, _) -> v
+    case TFloat(v, _, _) -> v
     case _            -> -1.0
   }
 }

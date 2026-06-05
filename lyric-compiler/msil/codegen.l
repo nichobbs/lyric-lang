@@ -1656,7 +1656,7 @@ func isLiteralI4ExprMsil(e: in Expr): Bool {
 func isLiteralI4ExprMsilWithEnv(e: in Expr, env: in Map[String, Bool]): Bool {
   match e.kind {
     case ELiteral(lit) -> match lit {
-      case LInt(v, suffix)  -> match suffix {
+      case LInt(v, suffix, _)  -> match suffix {
         case I64 | U64 -> false
         case _ -> v >= -2147483648i64 and v <= 2147483647i64
       }
@@ -2508,7 +2508,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
     // ── Literals ─────────────────────────────────────────────────────────────
     case ELiteral(lit) -> {
       match lit {
-        case LInt(v, suffix) -> {
+        case LInt(v, suffix, _) -> {
           match suffix {
             case I64 | U64 -> {
               insns.add(MLdcI8(v = v))
@@ -2525,7 +2525,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
             }
           }
         }
-        case LFloat(v, _) -> {
+        case LFloat(v, _, _) -> {
           insns.add(MLdcR8(v = v))
           MDouble
         }
@@ -4369,7 +4369,7 @@ func lowerPatternTestMsil(
     case PLiteral(lit) -> {
       emitLoadSlot(insns, scrutSlot, fctx.paramCount)
       match lit {
-        case LInt(v, suffix) -> {
+        case LInt(v, suffix, _) -> {
           match suffix {
             case I64 | U64 -> {
               insns.add(MLdcI8(v = v))
@@ -4407,7 +4407,7 @@ func lowerPatternTestMsil(
           insns.add(MCeq)
           insns.add(MBrFalse(label = failLabel))
         }
-        case LFloat(v, _) -> {
+        case LFloat(v, _, _) -> {
           // A `Float` scrutinee is an r8 on the stack; compare with `ceq`
           // against the pattern's value.  Previously this fell to the `_`
           // wildcard arm below and `pop`ped the scrutinee, making every
