@@ -21254,6 +21254,21 @@ self-tests green; the full `examples/` and `lyric-stdlib/tests/*` single-file
 sweep is clean (only the two `LYRIC_LOAD_COMPILER`-only compiler-internal tests,
 which aren't single-file programs, "fail" a bare single-file build, as expected).
 
+Two further type-checker false positives surfaced once the single-file path
+became fatal and were fixed in the same change (the gate's whole point — these
+were advisory diagnostics over broken-IL-that-happened-to-run):
+
+- **(J) interface subtyping at `val`/`var`/`let` bindings:** `val c: Compute =
+  ComputeImpl()` (interface-typed binding initialised with an impl) raised
+  `T0060`/`T0061`/`T0062` because the binding check used `typeEquiv`.  Now uses
+  `argSatisfiesParam` (the category-F helper: `typeEquiv` ∨ `impl Iface for T`),
+  matching argument positions (`return_in_try_self_test`).
+- **(K) `try`/`catch` in value position:** a trailing `try { … } catch … { … }`
+  bound to a `val` typed as `Unit` (its `STry` was a statement), so `r + 1`
+  raised `T0030`/`T0031`.  `checkBlock` now computes the joined branch value type
+  for a value-position `STry` (body type, a `Never` body deferring to a handler),
+  matching the codegen's shared-temp lowering (`try_catch_expr_self_test`).
+
 Remaining (tracked separately, **not** gate blockers):
 - `msil_project_bridge_tests` clean via `LYRIC_LOAD_COMPILER` needs the loader to
   resolve cross-target JVM-kernel `extern type`s (`Pool = JvmConstantPool`);
