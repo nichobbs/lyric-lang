@@ -596,7 +596,21 @@ func testFieldDocCommentPreserved(): Unit {
   assertTrue(Str.contains(acc, "x: Int"), "field doc: field preserved")
 }
 
+func testCharLiteralRendering(): Unit {
+  // Char literals must round-trip.  `intToChar` once mangled every char
+  // outside 0-31 / digits / a-f into `'?'`, corrupting ordinary letters,
+  // space, and punctuation on every format pass (#2280 item 3).
+  val z = format(parse("package P\n\nfunc f(): Char {\n  'z'\n}\n"))
+  assertTrue(Str.contains(z, "'z'"), "char: 'z' preserved")
+  assertTrue(not Str.contains(z, "'?'"), "char: 'z' not mangled to '?'")
+  val up = format(parse("package P\n\nfunc g(): Char {\n  'A'\n}\n"))
+  assertTrue(Str.contains(up, "'A'"), "char: uppercase 'A' preserved")
+  val slash = format(parse("package P\n\nfunc h(): Char {\n  '/'\n}\n"))
+  assertTrue(Str.contains(slash, "'/'"), "char: '/' preserved")
+}
+
 func main(): Unit {
+  testCharLiteralRendering()
   testFormatSourceCheckedOk()
   testFormatSourceCheckedInputParseError()
   testFormatSourceCheckedStructureChange()
