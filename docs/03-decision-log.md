@@ -5115,6 +5115,39 @@ await, two-vals-survive-two-awaits, val-defined-between-awaits-survives-second, 
 val-survives-three-awaits.  All 19 tests pass.
 
 ---
+
+## D089 — Band 3 Phase B.2+: `var` promotion and while-loop await scanning fix (#2070)
+
+**Context:** D088 extended Phase B.2 promoted locals to `LBLet` (`val`) bindings.  Two
+further correctness gaps remained:
+
+1. **`LBVar` bindings not promoted:** `var i = 0` in an async function body allocated a
+   plain MoveNext local slot.  After suspension+resume the CLR zeroed the slot, corrupting
+   the loop counter.  Fix: `LBVar` non-hoisted branches (both `Some(init)` and `None`)
+   now call `phaseBRegisterAndSyncLocal` to register the var as a promoted field.
+   Reassignment handlers (`lowerAssignExprMsil` EPath `AssEq` and compound-op paths) now
+   call `phaseBSyncLocalIfPromoted` to keep the SM field current after every write.
+
+2. **`collectAwaitTypesStmtPB` missing `SWhile` (and other control-flow forms):** The
+   pre-scan that counts `EAwait` nodes (to pre-allocate `resumeLabels` and
+   `awaiterFieldNames`) had `case _ -> {}` for all statement kinds not explicitly listed,
+   silently skipping `SWhile`, `SFor`, `SLoop`, `SScope`, `STry`, `SAssign`, and `SThrow`.
+   An `EAwait` inside a while-loop body was therefore never counted; `emitPhaseBAwait`
+   accessed `resumeLabels[0]` on an empty list and crashed with `ArgumentOutOfRangeException`.
+   Fix: added explicit cases for every statement kind that contains sub-blocks or
+   sub-expressions, matching the completeness already in `collectAwaitTypesExprPB`.
+
+**Bonus fix — stale `deps.json` with new stage1 DLLs:** After the stubbable port
+(`Lyric.Lyric.Stubbable.dll` added to stage1), the `Makefile` `aot` target ran
+`dotnet build` incrementally, skipping `deps.json` regeneration.  The new DLL was absent
+from the TPA list, causing `FileNotFoundException` on any `lyric test` run.  Fix:
+`dotnet build --no-incremental` in the `aot` target so `deps.json` is always regenerated
+to match the current stage1 glob.
+
+**Result:** 2 new tests in `async_sm_self_test.l` (tests 20–21) cover var-bindings-in-while-
+loop with n=3 (result=6) and n=0 (result=0).  All 21 tests pass.
+
+---
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

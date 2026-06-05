@@ -20956,6 +20956,44 @@ package's own function signatures**.  `Std.Regex.tryCompile`'s
 
 **Regression gate:** 24/24 emitter async tests green; 19/19 async_sm_self_test.l green.
 
+### D-progress-434 — Band 3 Phase B.2+: `var` promotion and while-loop await scan fix (#2070, D089)
+
+**What shipped:**
+
+- **`LBVar` promotion** in `lyric-compiler/msil/codegen.l`:
+
+  - `lowerStmtMsil` `LBVar` non-hoisted `Some(init)` branch: calls
+    `phaseBRegisterAndSyncLocal` after `emitStoreSlot` so mutable locals
+    with initializers are promoted to SM fields.
+
+  - `lowerStmtMsil` `LBVar` non-hoisted `None` branch (zero-init): calls
+    `phaseBRegisterAndSyncLocal` after the zero-fill so loop counters
+    (`var i = 0`) are promoted to SM fields.
+
+  - `lowerAssignExprMsil` EPath `Some(slot)` case: both `AssEq` and
+    compound-op paths now call `phaseBSyncLocalIfPromoted` after each
+    `emitStoreSlot` to keep the SM field current after every assignment.
+
+- **`collectAwaitTypesStmtPB` completeness fix**: added explicit cases for
+  `SWhile`, `SFor`, `SLoop`, `SScope`, `STry`, `SAssign`, and `SThrow` so
+  every `EAwait` inside nested control-flow blocks is counted.  Previously
+  `case _ -> {}` silently skipped these, causing `resumeLabels[0]` to be
+  accessed on an empty list (`ArgumentOutOfRangeException`) for any async
+  function whose body contains a while loop with an `await`.
+
+- **Makefile `aot` target**: `--no-incremental` ensures `lyric.deps.json`
+  is always regenerated after stage1 adds new DLLs.  Prevents the stale-
+  TPA crash introduced by the `Lyric.Lyric.Stubbable` addition.
+
+- **`async_sm_self_test.l` extended** — 2 new tests (tests 20–21):
+  - `asyncSumWithLoop(3)`: `var i`, `var acc` in a while-loop body with
+    one `await asyncAddOne(i)` per iteration; result = 6.
+  - `asyncSumWithLoop(0)`: zero-iteration case; result = 0.
+  All 21 tests (7 Phase B.0 + 8 Phase B.1 + 4 Phase B.2 + 2 new) pass.
+
+**Regression gate:** 843/843 emitter tests green; 84/84 CLI tests green;
+21/21 async_sm_self_test.l green.
+
 ### D-progress-431 — self-hosted type checker: range-subtype arithmetic / comparison (#1488 gate, Band-1 of #1470)
 
 **Status:** Shipped — type-checker-only.
