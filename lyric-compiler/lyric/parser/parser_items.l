@@ -105,7 +105,7 @@ func parseFieldDecl(st: inout ParseState): FieldDecl {
   }
   val ty = parseTypeExpr(st)
   val dflt = match tryEatPunct(st, Eq) { case Some(_) -> Some(parseExpr(st)); case None -> None }
-  val trailingAnns = parseTrailingAnnotations(st)
+  val trailingAnns = parseSameLineTrailingAnnotations(st)
   val allAnns = listConcat(anns, trailingAnns)
   val endSpan = match dflt { case Some(e) -> e.span; case None -> ty.span }
   FieldDecl(
@@ -2019,7 +2019,7 @@ func parseConfigField(st: inout ParseState): ConfigField {
       None
     }
   }
-  val trailingAnns = parseTrailingAnnotations(st)
+  val trailingAnns = parseSameLineTrailingAnnotations(st)
   val allAnns = listConcat(anns, trailingAnns)
   val endSpan = match dflt { case Some(e) -> e.span; case None -> ty.span }
   ConfigField(
