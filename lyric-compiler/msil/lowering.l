@@ -1188,6 +1188,9 @@ pub func ctxAddMemberRefForTypeSpec(ctx: in LoweringCtx, typeSpecRow: in Int,
 
 // Produce a unique string key for an MsilType, for TypeSpec blob deduplication.
 // Must distinguish every concrete encoding produced by bufMsilType.
+// INVARIANT: the output must never contain `|` — `dictTokensForLowering` joins
+// the key/value keys with `|` to form a collision-free composite cache key, so a
+// new variant that emitted a pipe would silently corrupt that cache (#2475).
 pub func msilTypeKey(t: in MsilType): String {
   match t {
     case MVoid -> "V"
@@ -2580,6 +2583,11 @@ pub func listTokensForLowering(ctx: in LoweringCtx, elemTy: in MsilType): ListTo
     case None    -> ()
   }
   val trList1 = findTypeRefRowByName(ctx, "System.Collections.Generic.List`1")
+  if trList1 <= 0 {
+    // The open `List`1` TypeRef is seeded for every assembly; a missing row
+    // here would produce a malformed TypeSpec blob the CLR rejects at load.
+    panic("Msil.Lowering.listTokensForLowering: System.Collections.Generic.List`1 TypeRef not seeded")
+  }
   val argTys: List[MsilType] = newList()
   argTys.add(elemTy)
   val tsRow = ctxAddTypeSpec(ctx, "ts_list_" + key, buildGenericInstBlobWithCtx(ctx, tdrTypeRef(trList1), argTys))
@@ -2613,6 +2621,9 @@ pub func dictTokensForLowering(ctx: in LoweringCtx, keyTy: in MsilType, valTy: i
     case None    -> ()
   }
   val trDict2 = findTypeRefRowByName(ctx, "System.Collections.Generic.Dictionary`2")
+  if trDict2 <= 0 {
+    panic("Msil.Lowering.dictTokensForLowering: System.Collections.Generic.Dictionary`2 TypeRef not seeded")
+  }
   val argTys: List[MsilType] = newList()
   argTys.add(keyTy)
   argTys.add(valTy)
