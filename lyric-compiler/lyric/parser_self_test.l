@@ -339,6 +339,28 @@ func testAspectBlock(): Unit {
   }
 }
 
+// `matches: name in { fn1, fn2 }` — set-membership matcher (#2450).
+func testAspectMatchesNameIn(): Unit {
+  val src = "package P\naspect Auth from X.Y {\n" + "  matches: name in { foo, bar, baz }\n" + "}\n"
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 0, "aspect name-in: no diagnostics")
+  assertEqualInt(itemCount(pr), 1, "aspect name-in: one item")
+  match pr.file.items[0].kind {
+    case IAspect(ad) -> {
+      assertEqualInt(ad.matches.count, 1, "aspect name-in: one matcher")
+      match ad.matches[0] {
+        case AMNameIn(names, _) -> {
+          assertEqualInt(names.count, 3, "aspect name-in: three names")
+          assertEqual(names[0], "foo", "aspect name-in: first name")
+          assertEqual(names[2], "baz", "aspect name-in: third name")
+        }
+        case _ -> assertTrue(false, "aspect name-in: expected AMNameIn matcher")
+      }
+    }
+    case _ -> assertTrue(false, "aspect name-in: expected IAspect")
+  }
+}
+
 func testAspectAsParamName(): Unit {
   val src = "package P\nfunc tag(aspect: in String): String { aspect }\n"
   val pr = parse(src)
@@ -698,6 +720,7 @@ func main(): Unit {
   testConfigBlockMultipleFields()
   testConfigAsParamName()
   testAspectBlock()
+  testAspectMatchesNameIn()
   testAspectAsParamName()
   testCstRootKind()
   testCstLossless()

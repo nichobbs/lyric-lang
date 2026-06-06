@@ -992,6 +992,33 @@ func testAspectFromClauseRoundTrips(): Unit {
   assertTrue(Str.contains(acc, "    requestsPerMinute: Int = 120"), "aspect from: config field at 4-space indent")
 }
 
+func testAspectMatchesNameInRoundTrips(): Unit {
+  // The set-membership matcher `matches: name in { fn1, fn2 }` must parse and
+  // round-trip through `lyric fmt` — previously the parser rejected it with
+  // P0298 ("expected 'like' after 'name'"), blocking the examples/* files
+  // (rbac, ledger, jobqueue, …) that use it heavily (#2450).
+  val src = "package P\n\naspect Auth from Web.Aspects.RequiresAuth {\n  matches: name in { handleCreateAccount, handleCreateTransfer }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "aspect name-in: round-trips")
+  val acc = format(parse(src))
+  assertTrue(
+    Str.contains(acc, "  matches: name in { handleCreateAccount, handleCreateTransfer }"),
+    "aspect name-in: matcher rendered with canonical spacing"
+  )
+}
+
+func testAspectMatchesNameInAndExceptRoundTrips(): Unit {
+  // `name in { … }` composes with `and` and the `except name in { … }`
+  // exclusion clause — both use the shared set parser.
+  val src = "package P\n\naspect A {\n  matches: name in { foo, bar } and visibility: pub except name in { baz }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "aspect name-in + and + except: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "name in { foo, bar }"), "aspect name-in: positive set preserved")
+  assertTrue(Str.contains(acc, "visibility: pub"), "aspect name-in: and-joined predicate preserved")
+  assertTrue(Str.contains(acc, "except name in { baz }"), "aspect name-in: except clause preserved")
+}
+
 func testNestedMatchTrailingCommentIdempotent(): Unit {
   // A trailing comment on the LAST arm of a *nested* match (a match that is
   // itself the body of an enclosing match arm) must stay attached to that
@@ -1050,6 +1077,8 @@ func main(): Unit {
   testAspectAroundRetNameRoundTrips()
   testAspectConfigBlockRoundTrips()
   testAspectFromClauseRoundTrips()
+  testAspectMatchesNameInRoundTrips()
+  testAspectMatchesNameInAndExceptRoundTrips()
   testCharLiteralRendering()
   testFormatSourceCheckedOk()
   testFormatSourceCheckedInputParseError()

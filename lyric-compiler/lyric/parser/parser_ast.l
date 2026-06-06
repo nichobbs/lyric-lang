@@ -690,6 +690,10 @@ pub record ConfigDecl {
 /// list lives on AspectDecl.
 pub union AspectMatcher {
   case AMNameLike(glob: String, span: Span)
+  /// `name in { fn1, fn2 }` — matches when the function's short name is one
+  /// of the listed identifiers (set membership).  The positive counterpart
+  /// of the `except name in { … }` exclusion list.
+  case AMNameIn(names: List[String], span: Span)
   case AMAnnotated(annotName: String, span: Span)
   case AMVisibility(vis: String, span: Span)
   case AMSignatureReturns(typeGlob: String, span: Span)

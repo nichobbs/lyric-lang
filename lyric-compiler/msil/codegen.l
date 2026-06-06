@@ -10565,6 +10565,7 @@ func globMatchMsil(glob: in String, name: in String): Bool {
 func matchesAspectMatcherMsil(matcher: in AspectMatcher, fn: in FunctionDecl): Bool {
   match matcher {
     case AMNameLike(glob, _) -> globMatchMsil(glob, fn.name)
+    case AMNameIn(names, _) -> nameListContains(names, fn.name)
     case AMAnnotated(annotName, _) -> hasAnnotationMsil(fn.annotations, annotName)
     case AMVisibility(vis, _) -> {
       match vis {

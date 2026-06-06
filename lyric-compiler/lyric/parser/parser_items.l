@@ -2120,33 +2120,92 @@ func parseAspectConfigBlock(st: inout ParseState): List[ConfigField] {
   fields
 }
 
+// Parse the `{ id, id, ... }` identifier set shared by the `name in { … }`
+// predicate and the `except name in { … }` exclusion clause.  `ctx` names the
+// clause for the brace diagnostics (e.g. "name in" / "except name in").
+// Parsed identifiers are appended to `names`.
+func parseAspectNameSet(st: inout ParseState, ctx: in String, names: inout List[String]): Unit {
+  match tryEatPunct(st, LBrace) {
+    case Some(_) -> {
+    }
+    case None -> {
+      emitErr(st, "P0321", "expected '{' after '" + ctx + "'", peekSpan(st))
+    }
+  }
+  val _ = skipStmtEnds(st)
+  var moreNames = true
+  while moreNames {
+    match peekToken(st) {
+      case TIdent(n) -> {
+        val _ = advance(st)
+        names.add(n)
+        val _ = skipStmtEnds(st)
+        match tryEatPunct(st, Comma) {
+          case Some(_) -> {
+            val _ = skipStmtEnds(st)
+          }
+          case None -> {
+            moreNames = false
+          }
+        }
+      }
+      case _ -> {
+        moreNames = false
+      }
+    }
+  }
+  match tryEatPunct(st, RBrace) {
+    case Some(_) -> {
+    }
+    case None -> {
+      emitErr(st, "P0322", "expected '}' to close '" + ctx + " { ... }'", peekSpan(st))
+    }
+  }
+}
+
 // Build a type-glob string from tokens until a boundary (newline/and/except/}).
 // Parse one predicate. Returns None if the current token is not a predicate keyword.
 func parseOneMatchPredicate(st: inout ParseState): Option[AspectMatcher] {
   match peekToken(st) {
     case TIdent(s) -> {
       if s == "name" {
+        val nameSp = peekSpan(st)
         val _ = advance(st)
+        // `name like "<glob>"` (glob match) or `name in { id, ... }` (set
+        // membership).  `in` is a keyword; `like` is a contextual identifier.
         match peekToken(st) {
+          case TKeyword(k) -> {
+            if k == KwIn {
+              val _ = advance(st)
+              val names: List[String] = newList()
+              parseAspectNameSet(st, "name in", names)
+              Some(value = AMNameIn(names = names, span = nameSp))
+            } else {
+              emitErr(st, "P0298", "expected 'like' or 'in' after 'name'", peekSpan(st))
+              None
+            }
+          }
           case TIdent(s2) -> {
             if s2 == "like" {
               val _ = advance(st)
+              match peekToken(st) {
+                case TString(g) -> {
+                  val sp = peekSpan(st)
+                  val _ = advance(st)
+                  Some(value = AMNameLike(glob = g, span = sp))
+                }
+                case _ -> {
+                  emitErr(st, "P0299", "expected a string-literal glob after 'name like'", peekSpan(st))
+                  None
+                }
+              }
             } else {
-              emitErr(st, "P0298", "expected 'like' after 'name'", peekSpan(st))
+              emitErr(st, "P0298", "expected 'like' or 'in' after 'name'", peekSpan(st))
+              None
             }
           }
           case _ -> {
-            emitErr(st, "P0298", "expected 'like' after 'name'", peekSpan(st))
-          }
-        }
-        match peekToken(st) {
-          case TString(g) -> {
-            val sp = peekSpan(st)
-            val _ = advance(st)
-            Some(value = AMNameLike(glob = g, span = sp))
-          }
-          case _ -> {
-            emitErr(st, "P0299", "expected a string-literal glob after 'name like'", peekSpan(st))
+            emitErr(st, "P0298", "expected 'like' or 'in' after 'name'", peekSpan(st))
             None
           }
         }
@@ -2320,42 +2379,7 @@ func parseAspectMatchesClause(
             emitErr(st, "P0320", "expected 'in' after 'except name'", peekSpan(st))
           }
         }
-        match tryEatPunct(st, LBrace) {
-          case Some(_) -> {
-          }
-          case None -> {
-            emitErr(st, "P0321", "expected '{' after 'except name in'", peekSpan(st))
-          }
-        }
-        val _ = skipStmtEnds(st)
-        var moreNames = true
-        while moreNames {
-          match peekToken(st) {
-            case TIdent(n) -> {
-              val _ = advance(st)
-              exceptNames.add(n)
-              val _ = skipStmtEnds(st)
-              match tryEatPunct(st, Comma) {
-                case Some(_) -> {
-                  val _ = skipStmtEnds(st)
-                }
-                case None -> {
-                  moreNames = false
-                }
-              }
-            }
-            case _ -> {
-              moreNames = false
-            }
-          }
-        }
-        match tryEatPunct(st, RBrace) {
-          case Some(_) -> {
-          }
-          case None -> {
-            emitErr(st, "P0322", "expected '}' to close 'except name in { ... }'", peekSpan(st))
-          }
-        }
+        parseAspectNameSet(st, "except name in", exceptNames)
       }
     }
     case _ -> {

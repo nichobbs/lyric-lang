@@ -156,6 +156,7 @@ predicate      = name-predicate
                | visibility-predicate
                | signature-predicate
 name-predicate       = "name" "like" string-literal
+                     | "name" "in" "{" identifier-list "}"
 annotated-predicate  = "annotated" ":" "@" identifier
 visibility-predicate = "visibility" ":" ("pub" | "priv" | "internal")
 signature-predicate  = "signature" ":" "returns" string-literal
@@ -174,6 +175,13 @@ qualified module path) against a POSIX-ish glob:
 - `?` — match exactly one character
 - `[abc]`, `[a-z]` — match one character from a set or range
 - All other characters match literally
+
+**`name in { fn1, fn2 }`** — matches when the function's short name is one
+of the listed identifiers (set membership). The positive counterpart of the
+`except name in { … }` exclusion list: `name in` selects, `except name in`
+de-selects. Names are bare short identifiers (not qualified module paths), as
+with `name like`. Use it instead of a long `name like "a" and …` chain when a
+fixed set of handlers shares an aspect.
 
 **`annotated: @AnnotName`** — matches functions carrying the named
 annotation anywhere in their annotation list. The match is on the short

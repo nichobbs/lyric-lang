@@ -1103,6 +1103,7 @@ func configDoc(visStr: in String, cd: in ConfigDecl): List[String] {
 func aspectMatcherPred(m: in AspectMatcher): String {
   match m {
     case AMNameLike(g, _) -> "name like \"" + g + "\""
+    case AMNameIn(names, _) -> "name in { " + joinStrings(names, ", ") + " }"
     case AMAnnotated(n, _) -> "annotated: @" + n
     case AMVisibility(v, _) -> "visibility: " + v
     case AMSignatureReturns(t, _) -> "signature: returns \"" + t + "\""
