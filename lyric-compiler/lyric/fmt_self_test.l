@@ -795,16 +795,14 @@ func testFormatSourceCheckedInputParseError(): Unit {
   assertTrue(Str.contains(fmtCheckMessage(c), "parse error"), "checked: input-parse message")
 }
 
-func testFormatSourceCheckedStructureChange(): Unit {
-  // A `\u{..}` escape inside a string literal is still re-rendered by the
-  // formatter's `escapeStr`, changing the code-token sequence; the guard
-  // must refuse rather than silently rewrite it.  (Numeric-literal
-  // canonicalisation no longer triggers this — see
-  // `testNumericLiteralSpellingRoundTrips` — so the structure-change guard
-  // is exercised here via the still-open string-escape gap.)
+func testStringEscapeCanonicalizationAccepted(): Unit {
+  // Canonicalising a string escape (here `\u{80}`, a C1 control rendered
+  // as its literal scalar) is NOT a code-token change: the loss check
+  // compares string literals by decoded value, so the round-trip is
+  // accepted rather than refused.  This used to be flagged via raw-spelling
+  // comparison — closing that gap was part of #2452.
   val c = formatSourceChecked("package P\n\nfunc f(): Unit {\n  val s = \"a\\u{80}b\"\n}\n")
-  assertTrue(not fmtCheckIsOk(c), "checked: string-escape rewrite is refused")
-  assertTrue(Str.contains(fmtCheckMessage(c), "code-token sequence"), "checked: structure-change message")
+  assertTrue(fmtCheckIsOk(c), "checked: string-escape canonicalisation accepted")
 }
 
 func testExternPackageRoundTrips(): Unit {
@@ -885,11 +883,160 @@ func testCharLiteralRendering(): Unit {
   assertTrue(Str.contains(slash, "'/'"), "char: '/' preserved")
 }
 
+func testUnicodeEscapeInStringRoundTrips(): Unit {
+  // A `\u{…}` escape inside a string literal must round-trip with its
+  // braces intact.  `escapeStr` once emitted the legacy braceless
+  // `\uXXXX` form for control characters, which the lexer rejects with
+  // L0021 ("expected '{' after \u"), so the guard refused every file
+  // containing a control-character escape (#2452).
+  val src = "package P\n\nfunc f(): String {\n  \"\\u{0000}\"\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "unicode escape: control char round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "\\u{0000}"), "unicode escape: braces preserved")
+  assertTrue(not Str.contains(acc, "\\u0000"), "unicode escape: no braceless form")
+}
+
+func testNonBmpEscapeLiteralRoundTrips(): Unit {
+  // A printable non-ASCII scalar (here U+00E9 'é', written `\u{00E9}`)
+  // is canonicalised to its literal character, but because the loss
+  // check now compares string tokens by decoded value the round-trip is
+  // accepted rather than flagged as a code-token change (#2452).
+  val src = "package P\n\nfunc f(): String {\n  \"\\u{00E9}\"\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "non-control escape: round-trips losslessly")
+}
+
+func testLiteralDollarBraceRoundTrips(): Unit {
+  // A plain string whose content contains a literal `${` must round-trip
+  // as `\${`: an unescaped `${` re-lexes as an interpolation hole.  Build
+  // the source by concatenation so this test file itself never carries an
+  // adjacent `${` (#2452).
+  val bs = "\\"
+  val dollar = "$"
+  val src = "package P\n\nfunc f(): String {\n  \"" + bs + dollar + "{\"\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "literal dollar-brace: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, bs + dollar + "{"), "literal dollar-brace: escape preserved")
+}
+
+func testInterpolatedStringRoundTrips(): Unit {
+  // A real interpolation `"x${s}y"` must round-trip — the formatter's own
+  // `interpolatedStr` was silently mis-lexed (its `"${"` literal became an
+  // interpolation hole), so every formatted hole collapsed to a constant.
+  // Build the source by concatenation to keep `${` out of this file's text.
+  val dollar = "$"
+  val src = "package P\n\nfunc f(s: in String): String {\n  \"x" + dollar + "{s}y\"\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "interpolation: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "x" + dollar + "{s}y"), "interpolation: hole preserved")
+}
+
+func testWhileLoopInvariantRoundTrips(): Unit {
+  // Loop invariants live in the source header (between the condition and
+  // the `{`); the parser prepends them as `SInvariant` statements at the
+  // top of the body.  The formatter must lift them back into the header —
+  // a bare `invariant:` statement inside a block is a P0050 parse error
+  // (#2452).
+  val src = "package P\n\nfunc f(): Int {\n  var i = 0\n  while i < 5\n    invariant: i >= 0\n  {\n    i = i + 1\n  }\n  i\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "while invariant: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "invariant: i >= 0"), "while invariant: clause preserved")
+}
+
+func testForLoopInvariantRoundTrips(): Unit {
+  val src = "package P\n\nfunc f(xs: in List[Int]): Int {\n  var s = 0\n  for x in xs\n    invariant: s >= 0\n  {\n    s = s + x\n  }\n  s\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "for invariant: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "invariant: s >= 0"), "for invariant: clause preserved")
+}
+
+func testAspectAroundRetNameRoundTrips(): Unit {
+  // The `around(args) -> ret { … }` return binder must survive: the
+  // parser built it via an `if … { Some(x) } else { None }` value that
+  // the stage-0 emitter mis-lowered to `None`, dropping `-> ret` (#2452).
+  val src = "package P\n\npub aspect X {\n  around(call) -> ret {\n    ret = call.proceed()\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "aspect around: retName round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "around(call) -> ret {"), "aspect around: `-> ret` preserved")
+}
+
+func testAspectConfigBlockRoundTrips(): Unit {
+  // An aspect's anonymous `config { }` block was dropped entirely by the
+  // formatter; it must now be emitted between `matches:` and the `around`
+  // advice (#2452).
+  val src = "package P\n\npub aspect X {\n  config {\n    enabled: Bool = true\n  }\n\n  around(call) -> ret {\n    ret = call.proceed()\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "aspect config: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "config {"), "aspect config: block preserved")
+  assertTrue(Str.contains(acc, "enabled: Bool = true"), "aspect config: field preserved")
+  assertTrue(Str.contains(acc, "around(call) -> ret {"), "aspect config: around still present")
+}
+
+func testNestedMatchTrailingCommentIdempotent(): Unit {
+  // A trailing comment on the LAST arm of a *nested* match (a match that is
+  // itself the body of an enclosing match arm) must stay attached to that
+  // arm across repeated format passes.  Previously `matchLines` left it
+  // unconsumed at the closing brace, so it bubbled out to the outer match —
+  // moving the comment and flipping the nested match between multi-line and
+  // inline on the second pass (an idempotency break exposed by #2452).
+  val src = "package P\n\nfunc f(o: in Option[Int], lv: in String): Bool {\n  match o {\n    case None -> return true\n    case Some(locked) ->\n      match lv {\n        case \"x\" -> if lv != \"y\" { return true }\n        case _   -> ()  // presence suffices for the cheap check\n      }\n  }\n  false\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "nested-match comment: round-trips")
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "nested-match comment: idempotent")
+  assertTrue(Str.contains(once, "()  // presence suffices for the cheap check"), "nested-match comment: stays on the arm")
+}
+
+func testAspectInterMemberBlankIdempotent(): Unit {
+  // Blank lines between aspect members (config / ensures / around) must not
+  // leak into the around body: `aspectDoc` consumes the pre-around trivia,
+  // so two separate source blank-runs can't land adjacent inside the body
+  // and collapse on the next pass (#2452).
+  val src = "package P\n\npub aspect X {\n  config {\n    enabled: Bool = true\n  }\n\n  ensures: true\n\n  around(call) -> ret {\n    ret = call.proceed()\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "aspect inter-member blank: round-trips")
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "aspect inter-member blank: idempotent")
+}
+
+func testProtectedInterMemberBlankIdempotent(): Unit {
+  // The same leak occurs in protected types: a blank between a type-level
+  // `invariant:` and an `entry` body would otherwise be dumped into the
+  // entry body and collapse on re-format.  `protectedTypeDoc` consumes
+  // inter-member trivia (#2452).
+  val src = "package P\n\npub protected type Counter {\n  var n: Int = 0\n  invariant: n >= 0\n\n  entry bump(): Unit {\n    n = n + 1\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "protected inter-member blank: round-trips")
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "protected inter-member blank: idempotent")
+}
+
 func main(): Unit {
+  testAspectInterMemberBlankIdempotent()
+  testProtectedInterMemberBlankIdempotent()
+  testNestedMatchTrailingCommentIdempotent()
+  testUnicodeEscapeInStringRoundTrips()
+  testNonBmpEscapeLiteralRoundTrips()
+  testLiteralDollarBraceRoundTrips()
+  testInterpolatedStringRoundTrips()
+  testWhileLoopInvariantRoundTrips()
+  testForLoopInvariantRoundTrips()
+  testAspectAroundRetNameRoundTrips()
+  testAspectConfigBlockRoundTrips()
   testCharLiteralRendering()
   testFormatSourceCheckedOk()
   testFormatSourceCheckedInputParseError()
-  testFormatSourceCheckedStructureChange()
+  testStringEscapeCanonicalizationAccepted()
   testExternPackageRoundTrips()
   testReturnTryRoundTrips()
   testMatchArmBareReturnRoundTrips()

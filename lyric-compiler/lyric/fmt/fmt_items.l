@@ -711,12 +711,45 @@ func typeAliasDoc(visStr: in String, ta: in TypeAliasDecl): List[String] {
   singleLineDoc(visStr + "alias " + ta.name + genParamsStr(ta.generics) + " = " + typeStr(ta.rhs))
 }
 
+@pure
+func protectedFieldStartOffset(pf: in ProtectedField): Int {
+  match pf {
+    case PFVar(_, _, _, sp) -> sp.startPos.offset
+    case PFLet(_, _, _, sp) -> sp.startPos.offset
+    case PFImmutable(fd) -> fd.span.startPos.offset
+  }
+}
+
+@pure
+func protectedMemberStartOffset(pm: in ProtectedMember): Int {
+  match pm {
+    case PMField(pf) -> protectedFieldStartOffset(pf)
+    case PMInvariant(ic) -> ic.span.startPos.offset
+    case PMEntry(ed) -> ed.span.startPos.offset
+    case PMFunc(fn) -> fn.span.startPos.offset
+  }
+}
+
 func protectedTypeDoc(visStr: in String, pd: in ProtectedTypeDecl, ctx: inout FmtCtx): List[String] {
   val gens = genParamsStr(pd.generics)
   val whereL = whereClauseLines(pd.whereClause)
   val mLines: List[String] = newList()
   var i = 0
   while i < pd.members.count {
+    // Consume trivia between the previous member and this one.  Without
+    // this, blank-line markers left in the `ctx` cursor would be dumped
+    // into the next member's body by `blockLines`' leading
+    // `appendTriviaInto` (a member with a body — an `entry` or `func`),
+    // and two source blank-runs landing adjacent there collapse to one on
+    // the next pass.  Comments are re-emitted as leading member lines;
+    // blank markers are dropped (canonical protected bodies carry no
+    // inter-member blank).
+    val pre = popCommentsBefore(ctx, protectedMemberStartOffset(pd.members[i]))
+    var p = 0
+    while p < pre.count {
+      mLines.add(pre[p])
+      p = p + 1
+    }
     val ml = protectedMemberDoc(pd.members[i], ctx)
     var j = 0
     while j < ml.count {
@@ -1099,6 +1132,26 @@ func aspectDoc(visStr: in String, ad: in AspectDecl, ctx: inout FmtCtx): List[St
     val ex = if ad.exceptNames.count > 0 { " except name in { " + joinStrings(ad.exceptNames, ", ") + " }" } else { "" }
     acc.add("  matches: " + body + ex)
   }
+  // §8 anonymous `config { }` block — canonical order (docs/26 §"Compile-time
+  // enable / runtime configure") places it after `matches:` and before the
+  // `around` advice.  Each member sits at column 4 (2 for the aspect body,
+  // 2 for the block body).
+  if ad.config.count > 0 {
+    acc.add("  config {")
+    var fi = 0
+    while fi < ad.config.count {
+      val f = ad.config[fi]
+      val annLines = annotationLines(f.annotations)
+      var ak = 0
+      while ak < annLines.count {
+        acc.add("    " + annLines[ak])
+        ak = ak + 1
+      }
+      acc.add("  " + configFieldLine(f))
+      fi = fi + 1
+    }
+    acc.add("  }")
+  }
   // §5 contract augmentation: emit requires:/ensures: before the around block.
   var ci = 0
   while ci < ad.contracts.count {
@@ -1110,9 +1163,49 @@ func aspectDoc(visStr: in String, ad: in AspectDecl, ctx: inout FmtCtx): List[St
     }
     ci = ci + 1
   }
-  match ad.around {
+  val al = aspectAroundLines(ad.around, ctx)
+  var ai = 0
+  while ai < al.count {
+    acc.add(al[ai])
+    ai = ai + 1
+  }
+  acc.add("}")
+  acc
+}
+
+// The `around(args) -> ret { … }` advice block.  The `Option[AspectAround]`
+// is matched here as a *function parameter* rather than via
+// `match ad.around { … }` in the caller: the stage-0 bootstrap emitter
+// type-erases `ad` to `Object`, and a nested `match` whose binding came
+// from matching a *field* of that erased value (`ar` from `ad.around`)
+// then re-matching one of *its* fields (`ar.retName`) silently yields the
+// fallback arm — which dropped the `-> ret` return binder.  Matching the
+// parameter directly (mirroring how `itemDoc` hands a decl to `funcDoc`)
+// lowers `match ar.retName` correctly.
+func aspectAroundLines(aroundOpt: in Option[AspectAround], ctx: inout FmtCtx): List[String] {
+  val acc: List[String] = newList()
+  match aroundOpt {
+    case None -> {}
     case Some(ar) -> {
-      val retStr = match ar.retName { case Some(r) -> " -> " + r; case None -> "" }
+      // Consume any trivia between the preceding aspect member (config /
+      // matches / a contract clause) and the `around` keyword.  `aspectDoc`
+      // emits members without popping the trivia between them, so without
+      // this the leftover blank-line markers would be dumped into the
+      // around body by `blockLines`' leading `appendTriviaInto` — and two
+      // separate source blank-runs landing adjacent there collapse to one
+      // on the next pass (an idempotency break).  Comments are re-emitted
+      // as leading lines; blank-line markers are dropped (canonical aspect
+      // bodies carry no inter-member blank).
+      val pre = popCommentsBefore(ctx, ar.span.startPos.offset)
+      var pk = 0
+      while pk < pre.count {
+        acc.add("  " + pre[pk])
+        pk = pk + 1
+      }
+      val retStr = match ar.retName {
+        case Some(r) -> " -> " + r
+        case None    -> ""
+      }
       acc.add("  around(" + ar.argsName + ")" + retStr + " {")
       val body = blockLines(ar.body, ctx)
       var k = 0
@@ -1122,10 +1215,7 @@ func aspectDoc(visStr: in String, ad: in AspectDecl, ctx: inout FmtCtx): List[St
       }
       acc.add("  }")
     }
-    case None -> {
-    }
   }
-  acc.add("}")
   acc
 }
 
