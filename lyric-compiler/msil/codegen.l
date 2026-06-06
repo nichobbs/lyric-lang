@@ -3295,10 +3295,14 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
             MObject
           }
         }
-        case MMapOf(_, _) -> {
-          // Map[K, V] receiver: dispatch to Dictionary<object,object> members.
+        case MMapOf(key, valTy) -> {
+          // Map[K, V] receiver: use the element-typed MemberRef (Stage 2).
+          // The legacy `Dictionary<object,object>` MemberRef cannot be called
+          // on a `Dictionary<String,Object>` (generic invariance); a runtime
+          // `castclass Dict<object,object>` would fail with InvalidCastException
+          // (caught by lyric-session tests on a Stage-2 build, #1835).
           if memberName == "count" {
-            insns.add(MCallvirt(methodToken = cctx.tokDictObjGetCount))
+            insns.add(MCallvirt(methodToken = ensureDictCountMsil(cctx, key, valTy)))
             MInt
           } else {
             // Unimplemented Map member: pop the receiver and emit a runtime
@@ -5403,7 +5407,25 @@ func lowerCallArgMsil(cctx: in CodegenCtx, fctx: in FuncCtx,
                       insns: in List[MInsn], arg: in CallArg): MsilType {
   match arg {
     case CAPositional(e)    -> lowerExprMsil(cctx, fctx, insns, e)
-    case CANamed(_, e, _)   -> lowerExprMsil(cctx, fctx, insns, e)
+    case CANamed(name, e, _) -> {
+      // For a named argument to a record / union case / generic ctor, push the
+      // declared field type as a call-site hint so a bare `Foo(m = newMap())`
+      // builds `Dictionary<K,V>` rather than `Dictionary<object,object>` —
+      // the field is stored as `object` in the ctor signature, so without the
+      // hint the typed-Map context is lost and the legacy Object token re-
+      // emerges at the use site (#1835; caught by lyric-session tests).
+      val hint = match mapGet(cctx.fieldMsilTypes, fctx.pkgName + "/" + name) {
+        case Some(fty) -> fty
+        case None      -> MObject
+      }
+      val prevLen = fctx.contextHintTyArgs.count
+      fctx.contextHintTyArgs.add(hint)
+      val result = lowerExprMsil(cctx, fctx, insns, e)
+      while fctx.contextHintTyArgs.count > prevLen {
+        fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+      }
+      result
+    }
   }
 }
 
@@ -5645,26 +5667,39 @@ func lowerBuiltinOrStaticCallMsil(
     MObject
   } else if funcName == "newList" {
     // Concrete `List<T>::.ctor()` (Stage 2).  The element type comes from
-    // the call-site hint (the surrounding `val xs: List[T] = newList()` type
-    // annotation pushes `T` into `contextHintTyArgs`), so the produced
-    // `newobj` is `List<T>` not `List<object>`.  Falls back to the legacy
-    // `List<object>` ctor when no hint is present (a bare `newList()` with
-    // no context), matching the bootstrap shape.
+    // the call-site hint.  Two hint shapes are accepted so both the let-
+    // binding path (`val xs: List[T] = newList()` pushes a single `T` via
+    // `LBVal`/`LBLet`) and the record-literal path (`Foo(xs = newList())`
+    // pushes a single `MListOf(T)` via the named-arg hint in
+    // `lowerCallArgMsil`) resolve the same way (#1835; caught by lyric-
+    // session tests on a Stage-2 build).
     val elemTy = if fctx.contextHintTyArgs.count > 0 {
-                   fctx.contextHintTyArgs[0]
+                   match fctx.contextHintTyArgs[fctx.contextHintTyArgs.count - 1] {
+                     case MListOf(e) -> e
+                     case _          -> fctx.contextHintTyArgs[fctx.contextHintTyArgs.count - 1]
+                   }
                  } else { MObject }
     insns.add(MNewobj(ctorToken = ensureListCtorMsil(cctx, elemTy)))
     MListOf(elemTy = elemTy)
   } else if funcName == "newMap" {
     // Concrete `Dictionary<K,V>::.ctor()` (Stage 2).  The key and value types
-    // come from the call-site hint (`val m: Map[K, V] = newMap()` pushes `K`
-    // and `V` into `contextHintTyArgs`).
-    val keyTy = if fctx.contextHintTyArgs.count > 0 {
-                  fctx.contextHintTyArgs[0]
-                } else { MObject }
-    val valTy = if fctx.contextHintTyArgs.count > 1 {
-                  fctx.contextHintTyArgs[1]
-                } else { MObject }
+    // come from the call-site hint.  Two hint shapes are accepted so both the
+    // let-binding path (`val m: Map[K, V] = newMap()` pushes two components
+    // via `LBVal`/`LBLet`) and the record-literal path (`Foo(m = newMap())`
+    // pushes a single `MMapOf(K, V)` via the named-arg hint in
+    // `lowerCallArgMsil`) resolve the same way (#1835; caught by lyric-
+    // session tests on a Stage-2 build).
+    val (keyTy, valTy) = if fctx.contextHintTyArgs.count >= 2 {
+      (fctx.contextHintTyArgs[fctx.contextHintTyArgs.count - 2],
+       fctx.contextHintTyArgs[fctx.contextHintTyArgs.count - 1])
+    } else if fctx.contextHintTyArgs.count == 1 {
+      match fctx.contextHintTyArgs[fctx.contextHintTyArgs.count - 1] {
+        case MMapOf(k, v) -> (k, v)
+        case _            -> (MObject, MObject)
+      }
+    } else {
+      (MObject, MObject)
+    }
     insns.add(MNewobj(ctorToken = ensureDictCtorMsil(cctx, keyTy, valTy)))
     MMapOf(keyTy = keyTy, valTy = valTy)
   } else if funcName == "mapGet" {
@@ -5684,9 +5719,9 @@ func lowerBuiltinOrStaticCallMsil(
       val mSlot = allocSlotMsil(fctx, "__mapget_m_" + toString(fctx.slotTicker.count), MObject)
       val mArgTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
       emitStoreSlot(insns, mSlot, fctx.paramCount)
-      val mapValTy = match mArgTy {
-        case MMapOf(_, vt) -> vt
-        case _             -> MObject
+      val (mapKeyTy, mapValTy) = match mArgTy {
+        case MMapOf(k, vt) -> (k, vt)
+        case _             -> (MObject, MObject)
       }
       val vTy: MsilType =
         if fctx.contextHintTyArgs.count > 0 { fctx.contextHintTyArgs[0] }
@@ -5699,17 +5734,36 @@ func lowerBuiltinOrStaticCallMsil(
       val elseL = freshLabelMsil(fctx)
       val endL  = freshLabelMsil(fctx)
 
-      // ContainsKey(m, key)
+      // ContainsKey(m, key) — use the element-typed MemberRef (Stage 2) when
+      // the receiver's static type carries the key/value.  The legacy
+      // `Dictionary<object,object>` MemberRef cannot be called on a
+      // `Dictionary<String,Object>` (generic invariance) and would
+      // `castclass Dict<object,object>` which fails at runtime, caught by
+      // lyric-session tests on a Stage-2 build (#1835).  The kSlot local
+      // holds the key in its `MObject` slot (the kArgTy is unconstrained);
+      // coerce to the map's declared K before the callvirt so the verifier
+      // sees an `int` / `string` / etc. on the stack matching the MemberRef
+      // signature (#1835, #2126).
       emitLoadSlot(insns, mSlot, fctx.paramCount)
       emitLoadSlot(insns, kSlot, fctx.paramCount)
-      insns.add(MCallvirt(methodToken = cctx.tokDictObjContainsKey))
+      coerceMsilType(cctx, insns, MObject, mapKeyTy)
+      val typedContainsTok = ensureDictContainsKeyMsil(cctx, mapKeyTy, mapValTy)
+      val typedGetItemTok  = ensureDictGetItemMsil(cctx, mapKeyTy, mapValTy)
+      insns.add(MCallvirt(methodToken = typedContainsTok))
       insns.add(MBrFalse(label = elseL))
 
       // then: Some(value = (V) m[key])
       emitLoadSlot(insns, mSlot, fctx.paramCount)
       emitLoadSlot(insns, kSlot, fctx.paramCount)
-      insns.add(MCallvirt(methodToken = cctx.tokDictObjGetItem))   // -> object
-      castObjectToMsil(cctx, insns, vTy)
+      coerceMsilType(cctx, insns, MObject, mapKeyTy)
+      insns.add(MCallvirt(methodToken = typedGetItemTok))   // -> V (object when MObject receiver)
+      if mapValTy != MObject {
+        // Typed get_Item already returns the value in its native V slot, so
+        // coerce to the Option's expected V (handles Int vs Long etc.).
+        coerceMsilType(cctx, insns, mapValTy, vTy)
+      } else {
+        castObjectToMsil(cctx, insns, vTy)
+      }
       val someArgTys: List[MsilType] = newList()
       someArgTys.add(vTy)
       val someCtx: List[MsilType] = newList()
