@@ -482,6 +482,14 @@ pub union MInsn {
   case MCall(methodToken: Int)         // call static or non-virtual method
   case MCallvirt(methodToken: Int)     // callvirt (virtual dispatch)
   case MCastclass(typeToken: Int)      // castclass
+  // Concrete generic-collection operations (epic #2359 Stage 2).  The element /
+  // key / value MsilType is resolved to a closed `List`1<elemTy>` /
+  // `Dictionary`2<k,v>` TypeSpec + member token at lowering time (deferred so
+  // in-bundle element types resolve to their TypeDef row).  op: 0=ctor(newobj)
+  // 1=Add 2=get_Item 3=set_Item 4=get_Count 5=Contains/ContainsKey
+  // 6=RemoveAt/Remove 7=castclass(TypeSpec).
+  case MListOp(op: Int, elemTy: MsilType)
+  case MDictOp(op: Int, keyTy: MsilType, valTy: MsilType)
   // Like `MIsinstByName` but emits `castclass` instead of `isinst`.
   // Used by EIndex to narrow a list element from object to its
   // declared type (e.g. castclass Lyric.Parser.Item) so subsequent
@@ -738,6 +746,23 @@ pub record MPackage {
   items:       List[MPackageItem]
 }
 
+// ── Concrete generic-collection tokens (epic #2359 Stage 2) ───────────────────
+// Operation tokens (0x0A000000 | MemberRef row) for a closed `List`1<elemTy>` /
+// `Dictionary`2<k,v>` instantiation, plus the `castclass` TypeSpec token
+// (0x1B000000 | TypeSpec row).  Built once per element-type key, cached on the
+// LoweringCtx.  Member signatures use the generic type variables `!0` / `!1`, so
+// they are byte-identical across instantiations — only the parent TypeSpec row
+// differs.
+pub record ListTokens {
+  typeSpec: Int   ctor:     Int   add:      Int   getItem:  Int
+  setItem:  Int   getCount: Int   contains: Int   removeAt: Int
+}
+
+pub record DictTokens {
+  typeSpec:    Int  ctor:    Int  add:         Int  getItem:  Int
+  setItem:     Int  getCount: Int  containsKey: Int  remove:   Int
+}
+
 // ── LoweringCtx — mutable accumulator for a single-assembly lowering ──────────
 
 pub record LoweringCtx {
@@ -782,6 +807,13 @@ pub record LoweringCtx {
   // the discovery context into the real one.
   typeDefRowByFqn: Map[String, Int]
   typeDefRowFqns:  List[String]
+  // Caches of concrete generic-collection tokens (epic #2359 Stage 2), built
+  // lazily by `listTokensForLowering` / `dictTokensForLowering` after the
+  // discovery pass has populated `typeDefRowByFqn` (so an in-bundle element type
+  // resolves to its TypeDef row).  Keyed by `msilTypeKey(elemTy)` (list) and
+  // `msilTypeKey(keyTy)+","+msilTypeKey(valTy)` (dict).
+  listTokenCache: Map[String, ListTokens]
+  dictTokenCache: Map[String, DictTokens]
   // Non-empty (holds one `true`) while a discovery pass is running.  In that
   // mode `lowerMFunc` skips method-body lowering: discovery only needs the
   // TypeDef row layout, and a throwaway context lacks the pre-seeded stdlib /
@@ -889,6 +921,8 @@ pub func newLoweringCtx(packageName: in String,
     resourceData = newList(),
     typeDefRowByFqn = newMap(),
     typeDefRowFqns  = newList(),
+    listTokenCache  = newMap(),
+    dictTokenCache  = newMap(),
     discovering     = newList()
   )
 }
@@ -1406,6 +1440,28 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MCall(tok)         -> emitCall(mb, tok)
     case MCallvirt(tok)     -> emitCallvirt(mb, tok)
     case MCastclass(tok)    -> emitCastclass(mb, tok)
+    case MListOp(op, elemTy) -> {
+      val lt = listTokensForLowering(ctx, elemTy)
+      if op == 0 { emitNewobj(mb, lt.ctor) }
+      else if op == 1 { emitCallvirt(mb, lt.add) }
+      else if op == 2 { emitCallvirt(mb, lt.getItem) }
+      else if op == 3 { emitCallvirt(mb, lt.setItem) }
+      else if op == 4 { emitCallvirt(mb, lt.getCount) }
+      else if op == 5 { emitCallvirt(mb, lt.contains) }
+      else if op == 6 { emitCallvirt(mb, lt.removeAt) }
+      else { emitCastclass(mb, lt.typeSpec) }
+    }
+    case MDictOp(op, keyTy, valTy) -> {
+      val dt = dictTokensForLowering(ctx, keyTy, valTy)
+      if op == 0 { emitNewobj(mb, dt.ctor) }
+      else if op == 1 { emitCallvirt(mb, dt.add) }
+      else if op == 2 { emitCallvirt(mb, dt.getItem) }
+      else if op == 3 { emitCallvirt(mb, dt.setItem) }
+      else if op == 4 { emitCallvirt(mb, dt.getCount) }
+      else if op == 5 { emitCallvirt(mb, dt.containsKey) }
+      else if op == 6 { emitCallvirt(mb, dt.remove) }
+      else { emitCastclass(mb, dt.typeSpec) }
+    }
     case MCastclassByName(name) -> {
       val defRow = findTypeDefRowByName(ctx, name)
       val tok = if defRow > 0 {
@@ -2483,6 +2539,72 @@ pub func discoverTypeDefRowsInto(dst: in LoweringCtx, pkgs: in List[MPackage]): 
     }
     k = k + 1
   }
+}
+
+// Build (and cache) the concrete `List`1<elemTy>` operation tokens (epic #2359
+// Stage 2).  Deferred to lowering time so an in-bundle `MClass` element type
+// resolves to its TypeDef row via `buildGenericInstBlobWithCtx`.  Member sigs
+// use `!0` (`MTypeVar(0)`), identical across instantiations.
+pub func listTokensForLowering(ctx: in LoweringCtx, elemTy: in MsilType): ListTokens {
+  val key = msilTypeKey(elemTy)
+  match mapGet(ctx.listTokenCache, key) {
+    case Some(t) -> return t
+    case None    -> ()
+  }
+  val trList1 = findTypeRefRowByName(ctx, "System.Collections.Generic.List`1")
+  val argTys: List[MsilType] = newList()
+  argTys.add(elemTy)
+  val tsRow = ctxAddTypeSpec(ctx, "ts_list_" + key, buildGenericInstBlobWithCtx(ctx, tdrTypeRef(trList1), argTys))
+  val ctorP: List[MsilType] = newList()
+  val ctorTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, ".ctor", "list_ctor_" + key, buildInstanceMethodSig(ctorP, MVoid))
+  val addP: List[MsilType] = newList()  addP.add(MTypeVar(0))
+  val addTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "Add", "list_add_" + key, buildInstanceMethodSig(addP, MVoid))
+  val getP: List[MsilType] = newList()  getP.add(MInt)
+  val getTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "get_Item", "list_get_" + key, buildInstanceMethodSig(getP, MTypeVar(0)))
+  val setP: List[MsilType] = newList()  setP.add(MInt)  setP.add(MTypeVar(0))
+  val setTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "set_Item", "list_set_" + key, buildInstanceMethodSig(setP, MVoid))
+  val cntP: List[MsilType] = newList()
+  val cntTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "get_Count", "list_cnt_" + key, buildInstanceMethodSig(cntP, MInt))
+  val cnsP: List[MsilType] = newList()  cnsP.add(MTypeVar(0))
+  val cnsTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "Contains", "list_cns_" + key, buildInstanceMethodSig(cnsP, MBool))
+  val rmP: List[MsilType] = newList()  rmP.add(MInt)
+  val rmTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "RemoveAt", "list_rm_" + key, buildInstanceMethodSig(rmP, MVoid))
+  val t = ListTokens(typeSpec = 0x1B000000 + tsRow, ctor = ctorTok, add = addTok, getItem = getTok,
+                     setItem = setTok, getCount = cntTok, contains = cnsTok, removeAt = rmTok)
+  ctx.listTokenCache.add(key, t)
+  t
+}
+
+// Build (and cache) the concrete `Dictionary`2<keyTy,valTy>` operation tokens.
+pub func dictTokensForLowering(ctx: in LoweringCtx, keyTy: in MsilType, valTy: in MsilType): DictTokens {
+  val key = msilTypeKey(keyTy) + "," + msilTypeKey(valTy)
+  match mapGet(ctx.dictTokenCache, key) {
+    case Some(t) -> return t
+    case None    -> ()
+  }
+  val trDict2 = findTypeRefRowByName(ctx, "System.Collections.Generic.Dictionary`2")
+  val argTys: List[MsilType] = newList()
+  argTys.add(keyTy)
+  argTys.add(valTy)
+  val tsRow = ctxAddTypeSpec(ctx, "ts_dict_" + key, buildGenericInstBlobWithCtx(ctx, tdrTypeRef(trDict2), argTys))
+  val ctorP: List[MsilType] = newList()
+  val ctorTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, ".ctor", "dict_ctor_" + key, buildInstanceMethodSig(ctorP, MVoid))
+  val addP: List[MsilType] = newList()  addP.add(MTypeVar(0))  addP.add(MTypeVar(1))
+  val addTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "Add", "dict_add_" + key, buildInstanceMethodSig(addP, MVoid))
+  val getP: List[MsilType] = newList()  getP.add(MTypeVar(0))
+  val getTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "get_Item", "dict_get_" + key, buildInstanceMethodSig(getP, MTypeVar(1)))
+  val setP: List[MsilType] = newList()  setP.add(MTypeVar(0))  setP.add(MTypeVar(1))
+  val setTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "set_Item", "dict_set_" + key, buildInstanceMethodSig(setP, MVoid))
+  val cntP: List[MsilType] = newList()
+  val cntTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "get_Count", "dict_cnt_" + key, buildInstanceMethodSig(cntP, MInt))
+  val ckP: List[MsilType] = newList()  ckP.add(MTypeVar(0))
+  val ckTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "ContainsKey", "dict_ck_" + key, buildInstanceMethodSig(ckP, MBool))
+  val rmP: List[MsilType] = newList()  rmP.add(MTypeVar(0))
+  val rmTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "Remove", "dict_rm_" + key, buildInstanceMethodSig(rmP, MBool))
+  val t = DictTokens(typeSpec = 0x1B000000 + tsRow, ctor = ctorTok, add = addTok, getItem = getTok,
+                     setItem = setTok, getCount = cntTok, containsKey = ckTok, remove = rmTok)
+  ctx.dictTokenCache.add(key, t)
+  t
 }
 
 // Find the 1-based MethodDef row owned by typeDefRow with the given method
