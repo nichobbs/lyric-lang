@@ -83,6 +83,16 @@ pub record CodegenCtx {
   tokListObjContains: Int  // List<object>::Contains(object): bool  callvirt
   tokListObjRemoveAt: Int  // List<object>::RemoveAt(int32): void  callvirt
   tokListObjTypeSpec: Int  // TypeSpec token for List<object>  castclass
+  // Non-generic IList / ICollection (#2361): the universal read path for a
+  // receiver tracked as `object` that may hold EITHER a genuine `List<object>`
+  // OR a concrete `List<Foo>` extracted from a type-erased container (tuple
+  // element, generic payload).  `castclass List<object>` faults on a concrete
+  // list (invariant generics); `System.Collections.IList` / `ICollection` are
+  // implemented by every `List<T>` and `T[]`, so the cast and member calls bind
+  // regardless of element type.
+  tokIListCast: Int  // castclass System.Collections.IList (TypeRef token)
+  tokIListGetItem: Int  // IList.get_Item(int32): object  callvirt
+  tokICollGetCount: Int  // ICollection.get_Count(): int32  callvirt
   // String intrinsic members (instance HASTHIS)
   tokStringGetChars: Int  // String.get_Chars(int32): char
   tokStringGetLength: Int  // String.get_Length(): int32
@@ -609,6 +619,35 @@ pub func newCodegenCtx(
       buildInstanceMethodSig(listRemoveAtPs, MVoid)
     )
 
+  // ── Non-generic IList / ICollection (#2361 erased-list read path) ─────────
+  // Both live in System.Runtime (the non-generic collection interfaces, unlike
+  // the generic List`1 in System.Collections).  Used to read a list whose
+  // static type erased to `object` but whose runtime instance may be a concrete
+  // `List<Foo>` (e.g. a `List[T]` extracted from a tuple) — `IList`/`ICollection`
+  // bind regardless of the element type.
+  val trIList = ctxAddTypeRef(lctx, "System.Collections", "IList", lctx.arRuntime)
+  val trICollection = ctxAddTypeRef(lctx, "System.Collections", "ICollection", lctx.arRuntime)
+  val ilistGetPs: List[MsilType] = newList()
+  ilistGetPs.add(MInt)
+  val tokIListGetItem = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trIList,
+      "get_Item",
+      "ilist_getitem",
+      buildInstanceMethodSig(ilistGetPs, MObject)
+    )
+  val icollCntPs: List[MsilType] = newList()
+  val tokICollGetCount = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trICollection,
+      "get_Count",
+      "icoll_count",
+      buildInstanceMethodSig(icollCntPs, MInt)
+    )
+  val tokIListCast = 0x01000000 + trIList
+
   // ── Dictionary<object,object> via TypeSpec ────────────────────────────────
   val trDict2 = ctxAddTypeRef(lctx, "System.Collections.Generic", "Dictionary`2", arCollections)
 
@@ -1091,6 +1130,9 @@ pub func newCodegenCtx(
     tokListObjContains = tokListObjContains,
     tokListObjRemoveAt = tokListObjRemoveAt,
     tokListObjTypeSpec = 0x1B000000 + tsListObj,
+    tokIListCast = tokIListCast,
+    tokIListGetItem = tokIListGetItem,
+    tokICollGetCount = tokICollGetCount,
     tokDictObjCtor = tokDictObjCtor,
     tokDictObjAdd = tokDictObjAdd,
     tokDictObjGetItem = tokDictObjGetItem,
@@ -3290,11 +3332,12 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             insns.add(MCallvirt(methodToken = cctx.tokTypeGetName))
             MString
           } else if memberName == "count" {
-            // castclass makes the stack type explicit as List<object> so the JIT
-            // can verify the callvirt when the receiver was produced by a call
-            // returning Object (e.g. a generator function).
-            insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
-            insns.add(MCallvirt(methodToken = cctx.tokListObjGetCount))
+            // #2361: read `.count` through the non-generic ICollection so it
+            // works whether the `object`-typed receiver holds a genuine
+            // `List<object>` or a concrete `List<Foo>` extracted from a tuple /
+            // generic payload (`castclass List<object>` faults on the latter).
+            insns.add(MCastclass(typeToken = cctx.tokIListCast))
+            insns.add(MCallvirt(methodToken = cctx.tokICollGetCount))
             MInt
           } else if memberName == "length" {
             insns.add(MCallvirt(methodToken = cctx.tokStringGetLength))
@@ -3575,17 +3618,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           }
         }
         case _ -> {
-          // List<object>.get_Item(int32): object — castclass the receiver
-          // BEFORE pushing the index so the IL stack is [List<object>, int32].
-          // A receiver typed as `object` on the stack (e.g. an `in` parameter)
-          // would otherwise fail JIT verification on get_Item; this mirrors the
-          // get_Count / set_Item paths, keeping read and write receiver
-          // handling symmetric (#1531).
-          insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
+          // #2361: read through the non-generic IList so an `object`-typed
+          // receiver works whether it holds a genuine `List<object>` or a
+          // concrete `List<Foo>` extracted from a tuple / generic payload
+          // (`castclass List<object>` faults on the latter — invariant generics).
+          // IList.get_Item(int32) returns `object`, matching the erased result.
+          insns.add(MCastclass(typeToken = cctx.tokIListCast))
           if indices.count > 0 {
             lowerExprMsil(cctx, fctx, insns, indices[0])
           }
-          insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+          insns.add(MCallvirt(methodToken = cctx.tokIListGetItem))
           MObject
         }
       }
@@ -4536,7 +4578,9 @@ func lowerAssignExprMsil(
               insns.add(MLdarg(slot = slot))
               match assignOpArithInsnMsil(op) {
                 case None -> {
+                  pushCollExpect(fctx, elemTy)
                   lowerExprMsil(cctx, fctx, insns, value)
+                  popCollExpect(fctx)
                 }
                 case Some(arith) -> {
                   insns.add(MDup)
@@ -4552,7 +4596,12 @@ func lowerAssignExprMsil(
           }
           match op {
             case AssEq -> {
+              // #2361: a `xs = newList()` reassignment must build the concrete
+              // instance the local's tracked type expects, or a later concrete op
+              // faults on the object list.
+              pushCollExpect(fctx, ty)
               lowerExprMsil(cctx, fctx, insns, value)
+              popCollExpect(fctx)
               emitStoreSlot(insns, slot, fctx.paramCount)
               if fctx.phaseBCtx.count > 0 {
                 phaseBSyncLocalIfPromoted(fctx.phaseBCtx[0], insns, name, slot - fctx.paramCount)
@@ -4601,7 +4650,9 @@ func lowerAssignExprMsil(
           val ty = match mapGet(fctx.types, "result") { case Some(t) -> t; case None -> MObject }
           match op {
             case AssEq -> {
+              pushCollExpect(fctx, ty)
               lowerExprMsil(cctx, fctx, insns, value)
+              popCollExpect(fctx)
               emitStoreSlot(insns, slot, fctx.paramCount)
             }
             case _ -> {
@@ -4633,7 +4684,13 @@ func lowerAssignExprMsil(
             case Some(tok) -> {
               match op {
                 case AssEq -> {
+                  // #2361: `recv.field = newList()` must build the concrete
+                  // instance the field's tracked type expects (e.g.
+                  // `state.pendingTrivia = newList()` for a `List[Trivia]` field).
+                  val fldTyA = match mapGet(cctx.fieldMsilTypes, key) { case Some(t) -> t; case None -> MObject }
+                  pushCollExpect(fctx, fldTyA)
                   val _vt = lowerExprMsil(cctx, fctx, insns, value)
+                  popCollExpect(fctx)
                   insns.add(MStfld(fieldToken = tok))
                 }
                 case _ -> {
