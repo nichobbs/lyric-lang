@@ -976,8 +976,21 @@ pub func exprAtCol(col: in Int, ctx: inout FmtCtx, e: in Expr): List[String] {
     // already produce.  The `then` form (`if cond then e`) has no brace
     // layout, so it falls through to inline (which may overflow).
     case EIf(cond, thn, els, thenForm) -> {
-      if thenForm { singleLineDoc(inline) }
-      else { ifBlockLines(cond, thn, els, ctx) }
+      if thenForm {
+        // A `then`-form if (`if c then x else y`) has no brace layout, so
+        // it normally renders inline.  When the source carried a comment
+        // BETWEEN the then-arm and the `else` (e.g. `then 3  // note`),
+        // the flat inline rendering would cram that comment and any
+        // trailing else-arm comment onto one line, merging two `//`
+        // comments into one on re-lex.  Detect internal trivia and split
+        // the arms across lines so each end-of-line comment survives as a
+        // distinct comment.
+        if hasTriviaInRange(ctx, e.span.startPos.offset, e.span.endPos.offset) {
+          ifThenFormDoc(ctx, cond, thn, els)
+        } else {
+          singleLineDoc(inline)
+        }
+      } else { ifBlockLines(cond, thn, els, ctx) }
     }
     case EMatch(scrut, arms)        -> matchLines(scrut, arms, ctx)
     case EBlock(b)                  -> blockExprDoc(col, ctx, b)
@@ -1763,7 +1776,11 @@ func stmtExprLines(s: in Statement, e: in Expr, ctx: inout FmtCtx): List[String]
   match e.kind {
     case EMatch(scrut, arms)             -> matchLines(scrut, arms, ctx)
     case EIf(cond, thn, els, thenForm)   -> {
-      if thenForm { singleLineDoc(stmtInline(s)) }
+      // Route the `then`-form through the ctx-aware expression printer so
+      // that internal comments (e.g. `then x  // note`) are preserved
+      // rather than merged by the flat inline rendering.  Without trivia
+      // inside, `exprAtCol` still produces the single-line form.
+      if thenForm { bareExprDoc(2, ctx, e) }
       else { ifBlockLines(cond, thn, els, ctx) }
     }
     case _                               -> bareExprDoc(2, ctx, e)
@@ -1783,7 +1800,20 @@ func matchLines(scrut: in Expr, arms: in List[MatchArm], ctx: inout FmtCtx): Lis
     }
     match a.body {
       case EOBExpr(body) -> {
-        armLines.add("case " + patStr(a.pattern) + guard + " -> " + exprInline(0, body))
+        val arrow = "case " + patStr(a.pattern) + guard + " -> "
+        // An expression arm body that carries an interior comment (e.g. a
+        // `then`-form if whose then-arm has a trailing `// note`) must
+        // render through the ctx-aware printer so the comment is woven in
+        // rather than dropped by the flat `exprInline`.  The common case
+        // (no interior trivia) keeps the single-line inline rendering.
+        if hasTriviaInRange(ctx, body.span.startPos.offset, body.span.endPos.offset) {
+          val bd = exprAtCol(arrow.length, ctx, body)
+          armLines.add(arrow + bd[0])
+          var j = 1
+          while j < bd.count { armLines.add(bd[j]); j = j + 1 }
+        } else {
+          armLines.add(arrow + exprInline(0, body))
+        }
       }
       case EOBBlock(blk) -> {
         if isBareKeywordExprBlock(blk) {
@@ -1807,6 +1837,63 @@ func matchLines(scrut: in Expr, arms: in List[MatchArm], ctx: inout FmtCtx): Lis
     i = i + 1
   }
   concatDoc3(head, indentDoc(2, armLines), singleLineDoc("}"))
+}
+
+/// Source offset of the first token of an `ExprOrBlock`.
+@pure
+func eobStartOffset(eob: in ExprOrBlock): Int {
+  match eob {
+    case EOBExpr(e)  -> e.span.startPos.offset
+    case EOBBlock(b) -> b.span.startPos.offset
+  }
+}
+
+/// Trivia-aware multi-line rendering of a `then`-form if expression
+/// (`if cond then X else Y`).  Used when the source carried a comment
+/// inside the expression that the flat inline rendering would merge with
+/// adjacent content.  The arms render inline (a `then`-form if has no
+/// brace layout); the value of this layout is that the `else` starts a new
+/// line, so a trailing comment on the then-arm and a trailing comment on
+/// the else-arm each stay on their own output line:
+///
+///     if cond then X  // comment on then-arm
+///     else Y          // comment on else-arm
+///
+/// The then-arm's trailing comment (the trivia between the then-arm and
+/// the `else` keyword) is woven in here via `appendTriviaInto`; the
+/// else-arm's trailing comment sits AFTER the if-expression's own span, so
+/// it is left for the enclosing block / match-arm printer to re-attach to
+/// the final `else Y` line.  An `else if` chain recurses so its inner
+/// comments are preserved too.
+func ifThenFormDoc(ctx: inout FmtCtx, cond: in Expr, thn: in ExprOrBlock, els: in Option[ExprOrBlock]): List[String] {
+  val acc: List[String] = newList()
+  acc.add("if " + exprInline(0, cond) + " then " + eobInline(thn))
+  match els {
+    case None -> {}
+    case Some(elseEob) -> {
+      // Comments / blank lines between the then-arm and the `else`
+      // keyword.  A trailing comment re-attaches to the `then` line; a
+      // standalone comment becomes its own line before `else`.
+      appendTriviaInto(acc, ctx, eobStartOffset(elseEob), false)
+      match elseEob {
+        case EOBExpr(e2) -> {
+          match e2.kind {
+            case EIf(c2, t2, e3, true) -> {
+              val inner = ifThenFormDoc(ctx, c2, t2, e3)
+              if inner.count > 0 {
+                acc.add("else " + inner[0])
+                var i = 1
+                while i < inner.count { acc.add(inner[i]); i = i + 1 }
+              }
+            }
+            case _ -> acc.add("else " + exprInline(0, e2))
+          }
+        }
+        case EOBBlock(b) -> acc.add("else " + blockExprInline(b))
+      }
+    }
+  }
+  acc
 }
 
 func ifBlockLines(cond: in Expr, thn: in ExprOrBlock, els: in Option[ExprOrBlock], ctx: inout FmtCtx): List[String] {

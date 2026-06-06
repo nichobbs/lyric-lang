@@ -5,8 +5,12 @@
 //! red/green CST attached to `ParseResult` (Phase 5 §M5.1 stage 5′) to
 //! preserve line and block comments at item boundaries — the comments today's
 //! F# `lyric fmt` drops.  Item-internal comment preservation (inside function
-//! bodies, record fields, etc.) is intentionally deferred until the CST is
-//! refined to per-statement / per-expression granularity.
+//! bodies, record fields, etc.) is woven in at structural boundaries the
+//! multi-line printers already visit (statements, member lists, call/list
+//! elements, binop operands, and — per #2453 — the arms of a `then`-form
+//! if-expression).  Trivia living deeper inside still-flat expression
+//! renderings (e.g. trailing comments on the fields of a multi-field union
+//! case) is the remaining per-expression-trivia work tracked under #2453.
 //!
 //! Public API (matches the Future-package contract advertised in
 //! compiler/lyric/lyric/cli.l):
