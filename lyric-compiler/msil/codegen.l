@@ -1747,6 +1747,16 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
   // Reserve MethodDef rows for synthesised generator classes (Phase 5, Epic #2070).
   // Each async generator contributes 6 rows before MPFuncs:
   //   .ctor (useDefaultCtor), RunBody, GetAsyncEnumerator, MoveNextAsync, get_Current, DisposeAsync.
+  //
+  // Ordering note (#2466): this pre-scan reserves ALL SM rows then ALL generator rows,
+  // but codegenMPackage emits SM and generator MPRecord items in source-declaration order
+  // (interleaved).  The ordering mismatch is safe because addPackageTokens never assigns
+  // specific MethodDef tokens to individual SM/generator class methods — it only advances
+  // methodDefRow by the total count (smClassCount*3 + genClassCount*6) so that the
+  // IFunc kickoff token assignments start at the correct offset.  lowerMPackageWithCtx
+  // assigns the actual SM/generator method rows in the order it encounters MPRecord items,
+  // which is source order; the total reserved count is identical regardless of SM vs
+  // generator interleaving, so IFunc token assignments are unaffected.
   var genClassCountPts = 0
   var gkPts = 0
   while gkPts < file.items.count {
