@@ -697,6 +697,19 @@ async func loadUser(id: UserId): User? {
 
 Parameters carry one of three modes: `in`, `out`, or `inout`. Omitting the keyword defaults to `in`, the read-only mode used by ~all parameters; `out` and `inout` must be written explicitly when wanted.
 
+A parameter may carry leading annotations, written before the parameter name:
+
+```
+@post("/users")
+func handleCreateUser(@body req: in CreateUserRequest, authToken: String): Result[String, ApiError]
+```
+
+The language itself attaches no semantics to parameter annotations; they are
+metadata consumed by libraries and source generators. For example, lyric-web
+reads `@body` to choose which parameter receives the deserialised request body
+(falling back to the last non-path, non-query parameter when no `@body` is
+present).
+
 ### 5.2 Parameter modes
 
 - `in`: parameter is read-only inside the function. **Default mode** when no keyword is given. The compiler may pass by value or by reference; the function cannot mutate.

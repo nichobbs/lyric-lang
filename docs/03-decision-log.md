@@ -5445,6 +5445,44 @@ follow-up, as are the unrelated `token changed` failures in the #2280 backlog.
 
 ---
 
+### D-progress-446: parameter annotations + the four aspect example files (#2454)
+
+Completes #2454 by making the 4 aspect-using `examples/` files
+(`jobqueue/api`, `ledger/api`, `product-catalog/aspects`, `rbac/api`) parse,
+round-trip, and stay idempotent through the self-hosted formatter, now that
+#2450 (`matches: name in {…}`) has landed.
+
+Most fixes mirror the non-aspect slice (D-progress earlier / #2502): non-spec
+example syntax made spec-compliant — `enum`→`union` for payload-bearing cases,
+`[T]`→`List[T]`, `&&`/`||`→`and`/`or`, brace-less multi-statement match arms
+wrapped, function-type params parenthesised (`in (T) -> R`). Two
+aspect-specific fixes: qualified names in `name in { … }` matchers reduced to
+the short names the matcher actually compares (docs/26 §179), and aspect
+members reordered to the formatter's canonical `wraps:`/`inside:` → `matches:`
+→ `config { }` order (docs/26 §6.2).
+
+**New language feature: parameter annotations.** The examples' lyric-web
+handlers use `@body req: in CreateRequest` — a documented feature
+(lyric-web README, `docs/03` web-routing entry) that neither parser actually
+implemented (`Param` had no annotations field). Implemented end-to-end on the
+self-hosted side: `Param.annotations: List[Annotation]` (parser_ast.l),
+`parseParam` consumes leading annotations, the formatter renders them inline
+before the name, and every `Param(…)` construction site
+(parser, mono, alias_rewriter, derives, msil/codegen) threads the field.
+Grammar `Param` production gains `{ Annotation }`; language reference §5.1
+documents it. New fmt self-test `testParamAnnotationRoundTrips`. The language
+attaches no semantics to param annotations — they are metadata for libraries
+and generators; lyric-web reads `@body` to pick the body parameter.
+
+All 4 files: 0 parse errors, round-trip + idempotent, canonically formatted.
+Repo-wide: 639 files format clean, 0 does-not-parse, 0 non-idempotent. Parser
+325, Emitter 843, Cli 84 green; `make lyric` self-host green. (A couple of
+redundant comments inside aspect `config { }` blocks were dropped — free
+comments in that position are not yet preserved by the formatter; a separate
+gap.)
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

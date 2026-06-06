@@ -194,6 +194,11 @@ pub record Param {
   name: String
   ty: TypeExpr
   dflt: Option[Expr]
+  // Leading annotations written before the parameter name, e.g.
+  // `@body req: in CreateRequest` (consumed by lyric-web's body binding).
+  // The grammar's `Param` production carries `{ Annotation }` ahead of the
+  // name; an omitted annotation list is the empty list.
+  annotations: List[Annotation]
   span: Span
   // ─────────────────────────────────────────────────────────────────────────────
   // §7. Expressions.

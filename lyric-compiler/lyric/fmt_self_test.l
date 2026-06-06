@@ -64,6 +64,18 @@ func testFormatFunction(): Unit {
   assertTrue(Str.contains(acc, "x + y"), "format: func body")
 }
 
+func testParamAnnotationRoundTrips(): Unit {
+  // A parameter may carry leading annotations (`@body req: in T`), consumed
+  // by libraries such as lyric-web.  The parser records them on `Param`; the
+  // formatter renders them inline before the param name (#2454).
+  val src = "package P\n\npub func h(@body req: in CreateRequest, authToken: String): Int {\n  0\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "param annotation: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "@body req: in CreateRequest"), "param annotation: rendered inline before the name")
+  assertTrue(Str.contains(acc, "authToken: String"), "param annotation: un-annotated param unchanged")
+}
+
 func testParamModeRoundTrips(): Unit {
   // A param with no mode keyword (`x: Int`) is sugar for `in`, but the
   // formatter must not synthesise an `in` the author never wrote.
@@ -1082,6 +1094,7 @@ func testProtectedInterMemberBlankIdempotent(): Unit {
 }
 
 func main(): Unit {
+  testParamAnnotationRoundTrips()
   testFieldAnnotationsStayWithTheirField()
   testAspectInterMemberBlankIdempotent()
   testProtectedInterMemberBlankIdempotent()

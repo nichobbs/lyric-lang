@@ -10,33 +10,20 @@
 //!
 //! Any handler that returns UNAUTHENTICATED bypasses the circuit counter
 //! because the request never reaches the handler body.
-
 @runtime_checked
 package ProductCatalog.Aspects
 
 import Grpc.Aspects
 
 aspect GrpcAuth from Grpc.Aspects.RequiresGrpcAuth {
-  matches: name in {
-    ProductCatalog.Catalog.getProduct,
-    ProductCatalog.Catalog.listProducts,
-    ProductCatalog.Catalog.createProduct,
-    ProductCatalog.Catalog.updateProduct,
-    ProductCatalog.Catalog.deleteProduct
-  }
+  matches: name in { getProduct, listProducts, createProduct, updateProduct, deleteProduct }
 }
 
 aspect GrpcCircuit from Grpc.Aspects.GrpcCircuitBreaker {
-  matches: name in {
-    ProductCatalog.Catalog.getProduct,
-    ProductCatalog.Catalog.listProducts,
-    ProductCatalog.Catalog.createProduct,
-    ProductCatalog.Catalog.updateProduct,
-    ProductCatalog.Catalog.deleteProduct
-  }
   inside: GrpcAuth
+  matches: name in { getProduct, listProducts, createProduct, updateProduct, deleteProduct }
   config {
     failureThreshold: Int = 3
-    cooldownMs:       Int = 15000
+    cooldownMs: Int = 15000
   }
 }

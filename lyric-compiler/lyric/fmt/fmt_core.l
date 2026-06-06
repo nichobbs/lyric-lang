@@ -684,7 +684,14 @@ pub func paramStr(p: in Param): String {
     case None    -> ""
     case Some(d) -> " = " + exprInline(0, d)
   }
-  p.name + ": " + modeStr + typeStr(p.ty) + defStr
+  // Leading param annotations (`@body req: T`) render inline before the name.
+  var annPrefix = ""
+  var ai = 0
+  while ai < p.annotations.count {
+    annPrefix = annPrefix + annotationStr(p.annotations[ai]) + " "
+    ai = ai + 1
+  }
+  annPrefix + p.name + ": " + modeStr + typeStr(p.ty) + defStr
 }
 
 pub func paramsStr(ps: in List[Param]): String {

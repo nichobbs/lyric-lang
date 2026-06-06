@@ -678,7 +678,11 @@ FunctionBody =
 ParamList = Param { ',' Param } [ ',' ] ;
 
 Param =
-      IDENT ':' [ ParamMode ] Type [ '=' Expr ] ;
+      { Annotation } IDENT ':' [ ParamMode ] Type [ '=' Expr ] ;
+
+(* Leading annotations may precede the parameter name, e.g.
+ * `@body req: in CreateRequest` (lyric-web reads `@body` to pick which
+ * parameter receives the deserialised request body). *)
 
 (* The mode keyword is optional; an omitted mode is taken as 'in'.
  * Note also: actual position is *after* the colon, not before — the
