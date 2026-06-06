@@ -822,13 +822,28 @@ func collectTypeItemsFromFile(file: in SourceFile, importedItems: in List[Item])
       case IInterface(_) -> true
       case ITypeAlias(_) -> true
       case IOpaque(_) -> true
+      // Mirror `collectStdlibTypeItems`: an in-bundle package's `extern type`
+      // and `protected type` declarations must reach packages that import it,
+      // so a transitively-loaded compiler package (e.g. `Jvm.Classfile`
+      // referencing `Jvm.Kernel`'s `extern type Pool`) resolves the bare type
+      // name instead of aborting with T0010 (#1488 compiler-internal closure).
+      // Safe now that extern types dedup to a canonical `TypeId` (#2394).
+      case IExternType(_) -> true
+      case IProtected(_) -> true
       case _ -> false
     }
     val isPubFunc = match it.kind {
       case IFunc(decl) -> match decl.visibility { case Some(vis) -> match vis { case VisPub(_) -> true; case _ -> false }; case None -> false }
       case _ -> false
     }
-    if isType or isPubFunc {
+    // Module-level `pub val`s (#2195) — e.g. `Jvm.Classfile`'s `pub val
+    // ACC_PUBLIC: Int = …` access-flag constants — must reach packages that
+    // import them, or a cross-package reference aborts with T0020.
+    val isPubVal = match it.kind {
+      case IVal(_) -> match it.visibility { case Some(vis) -> match vis { case VisPub(_) -> true; case _ -> false }; case None -> false }
+      case _ -> false
+    }
+    if isType or isPubFunc or isPubVal {
       importedItems.add(it)
     }
     i = i + 1

@@ -110,6 +110,22 @@ func addSym(
   sym
 }
 
+// The `TypeId` already assigned to an extern type with CLR target `clrName`,
+// if any — so repeat registrations of the same extern type share one canonical
+// id (see the `IExternType` arm of `registerItem`, #2394).
+func findExternTypeIdByClr(tbl: in SymbolTable, clrName: in String): Option[TypeId] {
+  var i = 0
+  while i < tbl.symbols.count {
+    match tbl.symbols[i].kind {
+      case DKExternType(id, d) -> if d.clrName == clrName { return Some(value = id) }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  None
+}
+
 func registerItem(
   tbl: in SymbolTable,
   ctr: in TypeIdCounter,
@@ -169,7 +185,22 @@ func registerItem(
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKInterface(id = tid, decl = decl), vis, span)
     }
     case IExternType(decl) -> {
-      val tid = freshTypeId(ctr)
+      // Deduplicate extern types by their CLR target so the *same* extern type
+      // (e.g. `extern type List[T] = "System.Collections.Generic.List`1"`,
+      // threaded into many packages) always resolves to one canonical `TypeId`.
+      // Without this, each registration gets a fresh id, and type identity breaks
+      // when two references resolve to different registrations — e.g. `List[String]`
+      // resolving to `List#127` while `newList()`'s `List[T]` resolves to `List#4`
+      // produced a spurious `T0060` whose appearance depended on registration
+      // order (#2394).
+      val tid = if decl.clrName.length > 0 {
+        match findExternTypeIdByClr(tbl, decl.clrName) {
+          case Some(existing) -> existing
+          case None -> freshTypeId(ctr)
+        }
+      } else {
+        freshTypeId(ctr)
+      }
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKExternType(id = tid, decl = decl), vis, span)
     }
     case IFunc(decl) -> {

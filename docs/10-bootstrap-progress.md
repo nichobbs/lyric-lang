@@ -21480,3 +21480,36 @@ encoding + DLL linking (Stage 5, #2364).
 **Regression gate:** 29/29 `async_sm_self_test.l` tests pass (26 Phase B.0–B.3 +
 3 Phase 4 spawn).  4/4 `async_extern_self_test.l` tests pass.  843/843 emitter
 tests green.
+
+### D-progress-442 — canonical TypeId for extern types (root cause of the #2394 order-dependent T0060)
+
+**Status:** Shipped — type-checker correctness fix + the in-bundle threading it makes safe.
+
+`registerItem` gave **every** `extern type` registration a *fresh* `TypeId`.
+`extern type List[T] = "System.Collections.Generic.List`1"` is threaded into many
+packages' imported sets, so it ended up with **multiple distinct TypeIds** — and
+since `typeEquiv` compares `TypeId`s first, type *identity* silently depended on
+which `List` registration a reference resolved against.  This was a latent bug:
+on most builds the registrations lined up, but perturbing the global
+registration order exposed it.  Confirmed via instrumentation (#2394): on a CI
+build, `lyric-session`'s `val markers: List[String] = newList()` reported
+`T0060` with `List[String]` resolved to `List#127` while `newList()`'s `List[T]`
+resolved to `List#4` — the same extern type, two identities.
+
+Fix: register an extern type under the **canonical `TypeId`** of any
+already-registered extern type with the same CLR target (`clrName`), so `List`
+(and `Map`, `Option`, …) has one identity no matter how many packages thread it.
+Order-independent by construction.  Externs with an empty `clrName` keep a fresh
+id (no false merge).
+
+This also makes the in-bundle extern-type / `protected` / module-level
+`pub val` threading (closed PR #2376, which *exposed* the latent bug by adding
+more `List` registrations) safe to land: `collectTypeItemsFromFile` now threads
+`IExternType` / `IProtected` / pub-`IVal` to importing packages, dropping
+`msil_project_bridge_tests` (via `LYRIC_LOAD_COMPILER`) from **38 → 1** while
+`metadata_reader_tests` stays clean (0).
+
+Regression: emitter 843/843, cli 84/84, typechecker 189/189; `lyric-auth` and
+`lyric-session` ecosystem suites build clean.  The remaining single
+`msil_project_bridge_tests` error (`T0043 AssignOp`/`Expr`) is the first of the
+whole-compiler self-type-check long tail (tracked in #2394 §3).
