@@ -485,11 +485,11 @@ pub union MInsn {
   // Concrete generic-collection operations (epic #2359 Stage 2).  The element /
   // key / value MsilType is resolved to a closed `List`1<elemTy>` /
   // `Dictionary`2<k,v>` TypeSpec + member token at lowering time (deferred so
-  // in-bundle element types resolve to their TypeDef row).  op: 0=ctor(newobj)
-  // 1=Add 2=get_Item 3=set_Item 4=get_Count 5=Contains/ContainsKey
-  // 6=RemoveAt/Remove 7=castclass(TypeSpec).
-  case MListOp(op: Int, elemTy: MsilType)
-  case MDictOp(op: Int, keyTy: MsilType, valTy: MsilType)
+  // in-bundle element types resolve to their TypeDef row).  The operation is a
+  // typed `ListOp` / `DictOp` (not a raw int) so the `lowerMInsn` dispatch is
+  // exhaustive and an invalid operation is unrepresentable.
+  case MListOp(op: ListOp, elemTy: MsilType)
+  case MDictOp(op: DictOp, keyTy: MsilType, valTy: MsilType)
   // Like `MIsinstByName` but emits `castclass` instead of `isinst`.
   // Used by EIndex to narrow a list element from object to its
   // declared type (e.g. castclass Lyric.Parser.Item) so subsequent
@@ -746,7 +746,31 @@ pub record MPackage {
   items:       List[MPackageItem]
 }
 
-// ── Concrete generic-collection tokens (epic #2359 Stage 2) ───────────────────
+// ── Concrete generic-collection operations (epic #2359 Stage 2) ───────────────
+// The operation an `MListOp` / `MDictOp` performs.  A typed union (not a raw
+// int) so the `lowerMInsn` dispatch is exhaustive and an invalid operation
+// cannot be constructed.
+pub union ListOp {
+  case LoCtor      // newobj List`1<elemTy>::.ctor()
+  case LoAdd       // callvirt Add(!0)
+  case LoGetItem   // callvirt get_Item(int32) -> !0
+  case LoSetItem   // callvirt set_Item(int32, !0)
+  case LoGetCount  // callvirt get_Count() -> int32
+  case LoContains  // callvirt Contains(!0) -> bool
+  case LoRemoveAt  // callvirt RemoveAt(int32)
+  case LoCastclass // castclass List`1<elemTy>
+}
+pub union DictOp {
+  case DoCtor        // newobj Dictionary`2<k,v>::.ctor()
+  case DoAdd         // callvirt Add(!0, !1)
+  case DoGetItem     // callvirt get_Item(!0) -> !1
+  case DoSetItem     // callvirt set_Item(!0, !1)
+  case DoGetCount    // callvirt get_Count() -> int32
+  case DoContainsKey // callvirt ContainsKey(!0) -> bool
+  case DoRemove      // callvirt Remove(!0) -> bool
+  case DoCastclass   // castclass Dictionary`2<k,v>
+}
+
 // Operation tokens (0x0A000000 | MemberRef row) for a closed `List`1<elemTy>` /
 // `Dictionary`2<k,v>` instantiation, plus the `castclass` TypeSpec token
 // (0x1B000000 | TypeSpec row).  Built once per element-type key, cached on the
@@ -811,7 +835,7 @@ pub record LoweringCtx {
   // lazily by `listTokensForLowering` / `dictTokensForLowering` after the
   // discovery pass has populated `typeDefRowByFqn` (so an in-bundle element type
   // resolves to its TypeDef row).  Keyed by `msilTypeKey(elemTy)` (list) and
-  // `msilTypeKey(keyTy)+","+msilTypeKey(valTy)` (dict).
+  // `msilTypeKey(keyTy)+"|"+msilTypeKey(valTy)` (dict).
   listTokenCache: Map[String, ListTokens]
   dictTokenCache: Map[String, DictTokens]
   // Non-empty (holds one `true`) while a discovery pass is running.  In that
@@ -1442,25 +1466,29 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MCastclass(tok)    -> emitCastclass(mb, tok)
     case MListOp(op, elemTy) -> {
       val lt = listTokensForLowering(ctx, elemTy)
-      if op == 0 { emitNewobj(mb, lt.ctor) }
-      else if op == 1 { emitCallvirt(mb, lt.add) }
-      else if op == 2 { emitCallvirt(mb, lt.getItem) }
-      else if op == 3 { emitCallvirt(mb, lt.setItem) }
-      else if op == 4 { emitCallvirt(mb, lt.getCount) }
-      else if op == 5 { emitCallvirt(mb, lt.contains) }
-      else if op == 6 { emitCallvirt(mb, lt.removeAt) }
-      else { emitCastclass(mb, lt.typeSpec) }
+      match op {
+        case LoCtor      -> emitNewobj(mb, lt.ctor)
+        case LoAdd       -> emitCallvirt(mb, lt.add)
+        case LoGetItem   -> emitCallvirt(mb, lt.getItem)
+        case LoSetItem   -> emitCallvirt(mb, lt.setItem)
+        case LoGetCount  -> emitCallvirt(mb, lt.getCount)
+        case LoContains  -> emitCallvirt(mb, lt.contains)
+        case LoRemoveAt  -> emitCallvirt(mb, lt.removeAt)
+        case LoCastclass -> emitCastclass(mb, lt.typeSpec)
+      }
     }
     case MDictOp(op, keyTy, valTy) -> {
       val dt = dictTokensForLowering(ctx, keyTy, valTy)
-      if op == 0 { emitNewobj(mb, dt.ctor) }
-      else if op == 1 { emitCallvirt(mb, dt.add) }
-      else if op == 2 { emitCallvirt(mb, dt.getItem) }
-      else if op == 3 { emitCallvirt(mb, dt.setItem) }
-      else if op == 4 { emitCallvirt(mb, dt.getCount) }
-      else if op == 5 { emitCallvirt(mb, dt.containsKey) }
-      else if op == 6 { emitCallvirt(mb, dt.remove) }
-      else { emitCastclass(mb, dt.typeSpec) }
+      match op {
+        case DoCtor        -> emitNewobj(mb, dt.ctor)
+        case DoAdd         -> emitCallvirt(mb, dt.add)
+        case DoGetItem     -> emitCallvirt(mb, dt.getItem)
+        case DoSetItem     -> emitCallvirt(mb, dt.setItem)
+        case DoGetCount    -> emitCallvirt(mb, dt.getCount)
+        case DoContainsKey -> emitCallvirt(mb, dt.containsKey)
+        case DoRemove      -> emitCallvirt(mb, dt.remove)
+        case DoCastclass   -> emitCastclass(mb, dt.typeSpec)
+      }
     }
     case MCastclassByName(name) -> {
       val defRow = findTypeDefRowByName(ctx, name)
@@ -2577,7 +2605,9 @@ pub func listTokensForLowering(ctx: in LoweringCtx, elemTy: in MsilType): ListTo
 
 // Build (and cache) the concrete `Dictionary`2<keyTy,valTy>` operation tokens.
 pub func dictTokensForLowering(ctx: in LoweringCtx, keyTy: in MsilType, valTy: in MsilType): DictTokens {
-  val key = msilTypeKey(keyTy) + "," + msilTypeKey(valTy)
+  // `|` separates key/value: `msilTypeKey` emits commas (generics, maps) but
+  // never a pipe, and CLR FQNs contain no pipe — so this cannot collide.
+  val key = msilTypeKey(keyTy) + "|" + msilTypeKey(valTy)
   match mapGet(ctx.dictTokenCache, key) {
     case Some(t) -> return t
     case None    -> ()
