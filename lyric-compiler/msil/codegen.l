@@ -106,12 +106,14 @@ pub record CodegenCtx {
   trTask: Int  // System.Threading.Tasks.Task (non-generic)
   trTask1: Int  // System.Threading.Tasks.Task`1 (open generic)
   tokTaskWait: Int  // Task::Wait(): void  instance HASTHIS (void async externs)
-  // Culture-invariant toString(DateTime).  Mirrors the F# bootstrap emitter's
-  // InvariantCulture ToString(IFormatProvider) path (Codegen.fs) so stage-0
-  // and stage-1 render DateTime byte-identically regardless of host locale
-  // (#2184).
-  tokInvariantCulture: Int  // CultureInfo.get_InvariantCulture(): CultureInfo  static
-  tokDateTimeToStringInv: Int  // DateTime.ToString(IFormatProvider): string  instance HASTHIS
+  // ISO-8601 toString(DateTime) via DateTime.ToString("o") (#2184).
+  // The "o" round-trip format produces "1970-01-01T00:00:00.0000000Z" for UTC
+  // DateTimes, matching the F# bootstrap emitter's DateTime.ToString("o") path
+  // in Codegen.fs so stage-0 and stage-1 render DateTime byte-identically.
+  tokInvariantCulture: Int  // CultureInfo.get_InvariantCulture(): CultureInfo  static (unused; kept for compat)
+  tokDateTimeToStringInv: Int  // DateTime.ToString(IFormatProvider): string  instance HASTHIS (unused; kept for compat)
+  tokDateTimeToStringO: Int    // DateTime.ToString(string): string  instance HASTHIS
+  usDateTimeFormatO: Int       // ldstr token (0x70000000 | US heap offset) for the "o" format specifier
   // Reverse lookup: simple field name → FieldDef token.  Populated by
   // addPackageTokens for IRecord and IExposedRec fields so EMember can emit
   // ldfld on an MObject receiver when the static type is unknown.
@@ -941,10 +943,8 @@ pub func newCodegenCtx(
       buildStaticMethodSig(newList(), ciRet)
     )
 
-  // DateTime.ToString(IFormatProvider): string  — instance HASTHIS.  The
-  // value lives on the stack as an unboxed `valuetype System.DateTime`, so the
-  // call site takes its address (ldloca) and uses `call` (value-type instance
-  // dispatch), passing the CultureInfo as the IFormatProvider argument.
+  // DateTime.ToString(IFormatProvider): string  — kept for struct compat but
+  // not used at call sites; the "o" overload below is used instead.
   val dtToStrPs: List[MsilType] = newList()
   dtToStrPs.add(MClassRef(typeRefCode = tdrTypeRef(trIFormatProvider), clrFqn = "System.IFormatProvider"))
   val tokDateTimeToStringInv = 0x0A000000 +
@@ -955,6 +955,22 @@ pub func newCodegenCtx(
       "dt_tostring_inv",
       buildInstanceMethodSig(dtToStrPs, MString)
     )
+
+  // DateTime.ToString(string): string  — ISO-8601 "o" format specifier path.
+  // Called with ldstr "o" + ldloca(dtSlot) + call DateTime.ToString(string).
+  // Produces "1970-01-01T00:00:00.0000000Z" for UTC DateTimes, matching the
+  // F# bootstrap emitter's DateTime.ToString("o") path in Codegen.fs (#2184).
+  val dtToStrOPs: List[MsilType] = newList()
+  dtToStrOPs.add(MString)
+  val tokDateTimeToStringO = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trDateTime,
+      "ToString",
+      "dt_tostring_o",
+      buildInstanceMethodSig(dtToStrOPs, MString)
+    )
+  val usDateTimeFormatO = ctxInternUs(lctx, "o")
 
   // Async SM synthesis (Phase B, Epic #2070).
   // AsyncTaskMethodBuilder and IAsyncStateMachine live in System.Runtime.
@@ -1065,6 +1081,8 @@ pub func newCodegenCtx(
     tokTypeGetName = tokTypeGetName,
     tokInvariantCulture = tokInvariantCulture,
     tokDateTimeToStringInv = tokDateTimeToStringInv,
+    tokDateTimeToStringO = tokDateTimeToStringO,
+    usDateTimeFormatO = usDateTimeFormatO,
     tokListObjCtor = tokListObjCtor,
     tokListObjAdd = tokListObjAdd,
     tokListObjGetItem = tokListObjGetItem,
@@ -5348,15 +5366,17 @@ func lowerBuiltinOrStaticCallMsil(
         }
         case _ -> {
           if isClrDateTimeMsil(argTy) {
-            // Culture-invariant: dt.ToString(CultureInfo.InvariantCulture).
+            // ISO-8601 round-trip format via DateTime.ToString("o") (#2184).
             // The DateTime is an unboxed value type on the stack; stash it in
             // a value-type local so we can take its address for the instance
-            // call, then push the InvariantCulture argument (#2184).
-            val dtSlot = allocSlotMsil(fctx, "__inv_dt_" + toString(fctx.slotTicker.count), argTy)
+            // call, then push the "o" format-specifier string.
+            // Produces "1970-01-01T00:00:00.0000000Z" for UTC DateTimes,
+            // matching the F# bootstrap emitter's DateTime.ToString("o") path.
+            val dtSlot = allocSlotMsil(fctx, "__o_dt_" + toString(fctx.slotTicker.count), argTy)
             emitStoreSlot(insns, dtSlot, fctx.paramCount)
             insns.add(MLdloca(slot = dtSlot - fctx.paramCount))
-            insns.add(MCall(methodToken = cctx.tokInvariantCulture))
-            insns.add(MCall(methodToken = cctx.tokDateTimeToStringInv))
+            insns.add(MLdStr(token = cctx.usDateTimeFormatO))
+            insns.add(MCall(methodToken = cctx.tokDateTimeToStringO))
           } else {
             boxIfNeededMsil(cctx, insns, argTy)
             insns.add(MCallvirt(methodToken = cctx.tokObjToString))
