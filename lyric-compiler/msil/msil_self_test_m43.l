@@ -113,12 +113,12 @@ func main(): Unit {
   // ── Build method body ─────────────────────────────────────────────────────
   val mbMain = newMethodBody()
 
-  emitLdc_I4_S(mbMain, 4)  // push alloc size = 4
-  emitLocalloc(mbMain)  // push ptr to 4 zeroed stack bytes
-  emitDup(mbMain)  // dup ptr
-  emitLdc_I4_S(mbMain, 42)  // push 42
-  emitStind_I4(mbMain)  // *ptr = 42
-  emitLdind_I4(mbMain)  // push *ptr = 42
+  emitLdc_I4_S(mbMain, 4)        // push alloc size = 4
+  emitLocalloc(mbMain)           // push ptr to 4 zeroed stack bytes
+  emitDup(mbMain)                // dup ptr
+  emitLdc_I4_S(mbMain, 42)      // push 42
+  emitStind_I4(mbMain)           // *ptr = 42
+  emitLdind_I4(mbMain)           // push *ptr = 42
   emitCall(mbMain, 0x0A000001)
   emitRet(mbMain)
 

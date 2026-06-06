@@ -85,8 +85,8 @@ func main(): Unit {
   // ── Build method body ─────────────────────────────────────────────────────
   val mbMain = newMethodBody()
 
-  emitLdc_I4_S(mbMain, 42)  // push 42
-  emitTail(mbMain)  // tail. prefix
+  emitLdc_I4_S(mbMain, 42)    // push 42
+  emitTail(mbMain)             // tail. prefix
   emitCall(mbMain, 0x0A000001)
   emitRet(mbMain)
 

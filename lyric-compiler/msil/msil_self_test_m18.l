@@ -102,7 +102,7 @@ func main(): Unit {
   emitLdc_R8(mbMain, 3.0)
   emitLdc_R8(mbMain, 2.0)
   emitMul(mbMain)
-  emitCall(mbMain, 0x0A000001)  // MemberRef[1] = Console.WriteLine(double)
+  emitCall(mbMain, 0x0A000001)   // MemberRef[1] = Console.WriteLine(double)
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

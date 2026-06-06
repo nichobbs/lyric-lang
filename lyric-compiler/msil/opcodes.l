@@ -441,9 +441,9 @@ pub union Insn {
   case VarF(op: Int, index: Int)
   case BranchInsn(op: Int, label: Int)
   case Switch(n: Int, swIdx: Int)
-  // ── Smart constructors ────────────────────────────────────────────────────────
 }
 
+// ── Smart constructors ────────────────────────────────────────────────────────
 pub func iNop(): Insn = Nullary(op = OP_NOP)
 
 pub func iRet(): Insn = Nullary(op = OP_RET)
@@ -1458,8 +1458,8 @@ pub func serializeMethodBody(b: in MethodBody, w: in ByteWriter): Unit {
     val nClauses = b.ehClauses.count
     // Fat EH section: kind(1) + dataSize-u24(3) + n*24 bytes.
     val dataSize = 4 + nClauses * 24
-    bufU1(w, 0x41)  // SectEHTable(0x01) | SectFatFormat(0x40)
-    bufU1(w, dataSize % 256)  // dataSize low byte
+    bufU1(w, 0x41)             // SectEHTable(0x01) | SectFatFormat(0x40)
+    bufU1(w, dataSize % 256)   // dataSize low byte
     bufU1(w, (dataSize / 256) % 256)
     bufU1(w, (dataSize / 65536) % 256)
 

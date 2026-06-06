@@ -20,13 +20,12 @@ import Jvm.Kernel
 
 // One file entry to be stored in the JAR.
 pub record ZipEntry {
-  name: String  // path inside the archive, e.g. "META-INF/MANIFEST.MF"
-  data: List[Byte]
-  // raw (uncompressed) file content
-  // Encode a String as UTF-8 bytes via the Jvm.Kernel ByteWriter.
-  // Used for both entry names and text-content entries (MANIFEST.MF, JSON).
+  name: String       // path inside the archive, e.g. "META-INF/MANIFEST.MF"
+  data: List[Byte]   // raw (uncompressed) file content
 }
 
+// Encode a String as UTF-8 bytes via the Jvm.Kernel ByteWriter.
+// Used for both entry names and text-content entries (MANIFEST.MF, JSON).
 pub func stringToUtf8Bytes(s: in String): List[Byte] {
   val w = writerNew()
   writerModifiedUtf8(w, s)
@@ -46,16 +45,16 @@ func writeLocalEntry(w: in ByteWriter, ent: in ZipEntry, nameBytes: in List[Byte
   val dataSize = ent.data.count
 
   writerU4Le(w, 0x04034B50)  // local file header signature PK\x03\x04
-  writerU2Le(w, 20)  // version needed: 2.0
-  writerU2Le(w, 2048)  // flags: bit 11 = UTF-8 names
-  writerU2Le(w, 0)  // compression: STORED
-  writerU2Le(w, 0)  // mod time
-  writerU2Le(w, 0)  // mod date
-  writerU4Le(w, checksum)  // CRC-32
-  writerU4Le(w, dataSize)  // compressed size (= uncompressed for STORED)
-  writerU4Le(w, dataSize)  // uncompressed size
-  writerU2Le(w, nameLen)  // file name length
-  writerU2Le(w, 0)  // extra field length
+  writerU2Le(w, 20)           // version needed: 2.0
+  writerU2Le(w, 2048)         // flags: bit 11 = UTF-8 names
+  writerU2Le(w, 0)            // compression: STORED
+  writerU2Le(w, 0)            // mod time
+  writerU2Le(w, 0)            // mod date
+  writerU4Le(w, checksum)     // CRC-32
+  writerU4Le(w, dataSize)     // compressed size (= uncompressed for STORED)
+  writerU4Le(w, dataSize)     // uncompressed size
+  writerU2Le(w, nameLen)      // file name length
+  writerU2Le(w, 0)            // extra field length
   writerByteList(w, nameBytes)
   writerByteList(w, ent.data)
 }
@@ -72,21 +71,21 @@ func writeCentralEntry(
   val dataSize = ent.data.count
 
   writerU4Le(w, 0x02014B50)  // central directory signature PK\x01\x02
-  writerU2Le(w, 0)  // version made by
-  writerU2Le(w, 20)  // version needed
-  writerU2Le(w, 2048)  // flags: UTF-8
-  writerU2Le(w, 0)  // compression: STORED
-  writerU2Le(w, 0)  // mod time
-  writerU2Le(w, 0)  // mod date
-  writerU4Le(w, checksum)  // CRC-32
-  writerU4Le(w, dataSize)  // compressed size
-  writerU4Le(w, dataSize)  // uncompressed size
-  writerU2Le(w, nameLen)  // file name length
-  writerU2Le(w, 0)  // extra field length
-  writerU2Le(w, 0)  // file comment length
-  writerU2Le(w, 0)  // disk number start
-  writerU2Le(w, 0)  // internal file attributes
-  writerU4Le(w, 0)  // external file attributes
+  writerU2Le(w, 0)            // version made by
+  writerU2Le(w, 20)           // version needed
+  writerU2Le(w, 2048)         // flags: UTF-8
+  writerU2Le(w, 0)            // compression: STORED
+  writerU2Le(w, 0)            // mod time
+  writerU2Le(w, 0)            // mod date
+  writerU4Le(w, checksum)     // CRC-32
+  writerU4Le(w, dataSize)     // compressed size
+  writerU4Le(w, dataSize)     // uncompressed size
+  writerU2Le(w, nameLen)      // file name length
+  writerU2Le(w, 0)            // extra field length
+  writerU2Le(w, 0)            // file comment length
+  writerU2Le(w, 0)            // disk number start
+  writerU2Le(w, 0)            // internal file attributes
+  writerU4Le(w, 0)            // external file attributes
   writerU4Le(w, localOffset)  // relative offset of local file header
   writerByteList(w, nameBytes)
 }
@@ -94,13 +93,13 @@ func writeCentralEntry(
 // Write the end of central directory record.
 func writeEndOfCentralDir(w: in ByteWriter, entryCount: in Int, cdOffset: in Int, cdSize: in Int): Unit {
   writerU4Le(w, 0x06054B50)  // EOCD signature PK\x05\x06
-  writerU2Le(w, 0)  // disk number
-  writerU2Le(w, 0)  // disk with central directory
-  writerU2Le(w, entryCount)  // entries on this disk
-  writerU2Le(w, entryCount)  // total entries
-  writerU4Le(w, cdSize)  // size of central directory
-  writerU4Le(w, cdOffset)  // offset of central directory
-  writerU2Le(w, 0)  // comment length
+  writerU2Le(w, 0)            // disk number
+  writerU2Le(w, 0)            // disk with central directory
+  writerU2Le(w, entryCount)   // entries on this disk
+  writerU2Le(w, entryCount)   // total entries
+  writerU4Le(w, cdSize)       // size of central directory
+  writerU4Le(w, cdOffset)     // offset of central directory
+  writerU2Le(w, 0)            // comment length
 }
 
 // Assemble a ZIP/JAR archive from a list of entries.

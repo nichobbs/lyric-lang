@@ -90,15 +90,15 @@ func main(): Unit {
   // ── Build method body ─────────────────────────────────────────────────────
   val mbMain = newMethodBody()
 
-  emitLdc_I4_S(mbMain, 42)  // push 42 (I4)
-  emitConv_I(mbMain)  // → native int (42)
-  emitConv_I4(mbMain)  // → I4 (42)
-  emitCall(mbMain, 0x0A000001)  // print 42
+  emitLdc_I4_S(mbMain, 42)     // push 42 (I4)
+  emitConv_I(mbMain)           // → native int (42)
+  emitConv_I4(mbMain)          // → I4 (42)
+  emitCall(mbMain, 0x0A000001) // print 42
 
-  emitLdc_I4_S(mbMain, 42)  // push 42 (I4)
-  emitConv_U(mbMain)  // → native uint (42)
-  emitConv_I4(mbMain)  // → I4 (42)
-  emitCall(mbMain, 0x0A000001)  // print 42
+  emitLdc_I4_S(mbMain, 42)     // push 42 (I4)
+  emitConv_U(mbMain)           // → native uint (42)
+  emitConv_I4(mbMain)          // → I4 (42)
+  emitCall(mbMain, 0x0A000001) // print 42
 
   emitRet(mbMain)
 

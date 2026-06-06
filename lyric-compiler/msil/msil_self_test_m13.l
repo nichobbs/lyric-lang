@@ -89,10 +89,10 @@ func main(): Unit {
 
   // LocalVarSig: LOCALS (0x07), 2 vars, I4, I4
   val lvW = bufNew()
-  bufU1(lvW, 0x07)  // LOCALS marker
-  bufU1(lvW, 0x02)  // 2 variables
-  bufU1(lvW, 0x08)  // var 0: I4 (sum)
-  bufU1(lvW, 0x08)  // var 1: I4 (i)
+  bufU1(lvW, 0x07)   // LOCALS marker
+  bufU1(lvW, 0x02)   // 2 variables
+  bufU1(lvW, 0x08)   // var 0: I4 (sum)
+  bufU1(lvW, 0x08)   // var 1: I4 (i)
   val localVarSig = internBlob(bh, "locals_sig", bufToList(lvW))
 
   // void () signature: DEFAULT, 0 params, void return
@@ -132,33 +132,33 @@ func main(): Unit {
   val endLbl = mbNewLabel(mbMain)
 
   // Initialization
-  emitLdc_I4_0(mbMain)  // push 0
-  emitStloc_0(mbMain)  // sum = 0
-  emitLdc_I4_1(mbMain)  // push 1
-  emitStloc_1(mbMain)  // i = 1
+  emitLdc_I4_0(mbMain)             // push 0
+  emitStloc_0(mbMain)              // sum = 0
+  emitLdc_I4_1(mbMain)             // push 1
+  emitStloc_1(mbMain)              // i = 1
 
   // Loop condition
   mbMarkLabel(mbMain, loopStart)
-  emitLdloc_1(mbMain)  // push i
-  emitLdc_I4_5(mbMain)  // push 5
-  emitCgt(mbMain)  // i > 5?
-  emitBrtrue(mbMain, endLbl)  // exit if true
+  emitLdloc_1(mbMain)              // push i
+  emitLdc_I4_5(mbMain)             // push 5
+  emitCgt(mbMain)                  // i > 5?
+  emitBrtrue(mbMain, endLbl)       // exit if true
 
   // Loop body
-  emitLdloc_0(mbMain)  // push sum
-  emitLdloc_1(mbMain)  // push i
-  emitAdd(mbMain)  // sum + i
-  emitStloc_0(mbMain)  // sum = sum + i
-  emitLdloc_1(mbMain)  // push i
-  emitLdc_I4_1(mbMain)  // push 1
-  emitAdd(mbMain)  // i + 1
-  emitStloc_1(mbMain)  // i = i + 1
-  emitBr(mbMain, loopStart)  // backward branch
+  emitLdloc_0(mbMain)              // push sum
+  emitLdloc_1(mbMain)              // push i
+  emitAdd(mbMain)                  // sum + i
+  emitStloc_0(mbMain)              // sum = sum + i
+  emitLdloc_1(mbMain)              // push i
+  emitLdc_I4_1(mbMain)             // push 1
+  emitAdd(mbMain)                  // i + 1
+  emitStloc_1(mbMain)              // i = i + 1
+  emitBr(mbMain, loopStart)        // backward branch
 
   // After loop
   mbMarkLabel(mbMain, endLbl)
-  emitLdloc_0(mbMain)  // push sum
-  emitCall(mbMain, 0x0A000001)  // call Console.WriteLine(int)
+  emitLdloc_0(mbMain)              // push sum
+  emitCall(mbMain, 0x0A000001)     // call Console.WriteLine(int)
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

@@ -118,7 +118,7 @@ func main(): Unit {
   val tryStart = mbNewLabel(mbMain)
   val finallyStart = mbNewLabel(mbMain)
   val finallyEnd = mbNewLabel(mbMain)
-  val endLbl = mbNewLabel(mbMain)  // same position as finallyEnd
+  val endLbl = mbNewLabel(mbMain)    // same position as finallyEnd
 
   // try block: set local to 10
   mbMarkLabel(mbMain, tryStart)

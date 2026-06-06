@@ -187,15 +187,15 @@ func main(): Unit {
 
   // Main: newobj .ctor / dup / call Increment (×3) / call GetValue / call WriteLine / ret
   val mbMain = newMethodBody()
-  emitNewobj(mbMain, 0x06000001)  // new Counter → [c]
-  emitDup(mbMain)  // [c, c]
-  emitCall(mbMain, 0x06000002)  // Increment() → [c]
-  emitDup(mbMain)  // [c, c]
-  emitCall(mbMain, 0x06000002)  // Increment() → [c]
-  emitDup(mbMain)  // [c, c]
-  emitCall(mbMain, 0x06000002)  // Increment() → [c]
-  emitCall(mbMain, 0x06000003)  // GetValue() → [3]
-  emitCall(mbMain, 0x0A000001)  // Console.WriteLine(int) → []
+  emitNewobj(mbMain, 0x06000001)    // new Counter → [c]
+  emitDup(mbMain)                   // [c, c]
+  emitCall(mbMain, 0x06000002)      // Increment() → [c]
+  emitDup(mbMain)                   // [c, c]
+  emitCall(mbMain, 0x06000002)      // Increment() → [c]
+  emitDup(mbMain)                   // [c, c]
+  emitCall(mbMain, 0x06000002)      // Increment() → [c]
+  emitCall(mbMain, 0x06000003)      // GetValue() → [3]
+  emitCall(mbMain, 0x0A000001)      // Console.WriteLine(int) → []
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

@@ -89,15 +89,15 @@ func main(): Unit {
   // ── Build method body ─────────────────────────────────────────────────────
   val mbMain = newMethodBody()
 
-  emitLdc_I4_S(mbMain, 85)  // push 85
-  emitLdc_I4_S(mbMain, 43)  // push 43
-  emitRem(mbMain)  // 85 % 43 = 42
-  emitLdc_I4_0(mbMain)  // push 0
-  emitLdc_I4_1(mbMain)  // push 1
-  emitRemUn(mbMain)  // 0 % 1 = 0
-  emitAdd(mbMain)  // 42 + 0 = 42
-  emitLdc_I4_1(mbMain)  // push 1
-  emitDivUn(mbMain)  // 42 / 1 = 42
+  emitLdc_I4_S(mbMain, 85)     // push 85
+  emitLdc_I4_S(mbMain, 43)     // push 43
+  emitRem(mbMain)               // 85 % 43 = 42
+  emitLdc_I4_0(mbMain)          // push 0
+  emitLdc_I4_1(mbMain)          // push 1
+  emitRemUn(mbMain)             // 0 % 1 = 0
+  emitAdd(mbMain)               // 42 + 0 = 42
+  emitLdc_I4_1(mbMain)          // push 1
+  emitDivUn(mbMain)             // 42 / 1 = 42
   emitCall(mbMain, 0x0A000001)
   emitRet(mbMain)
 

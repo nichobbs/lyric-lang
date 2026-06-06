@@ -97,14 +97,14 @@ func main(): Unit {
   // ── Build method body ─────────────────────────────────────────────────────
   val mbMain = newMethodBody()
 
-  emitLdc_I4_S(mbMain, 8)  // alloc size = 8 bytes (enough for native int on 64-bit)
-  emitLocalloc(mbMain)  // → rawPtr
-  emitDup(mbMain)  // → rawPtr, rawPtr
-  emitLdc_I4_S(mbMain, 42)  // → rawPtr, rawPtr, 42
-  emitConv_I(mbMain)  // → rawPtr, rawPtr, 42_native
-  emitStind_I(mbMain)  // *rawPtr = 42_native
-  emitLdind_I(mbMain)  // → 42_native
-  emitConv_I4(mbMain)  // → 42 (I4)
+  emitLdc_I4_S(mbMain, 8)       // alloc size = 8 bytes (enough for native int on 64-bit)
+  emitLocalloc(mbMain)           // → rawPtr
+  emitDup(mbMain)                // → rawPtr, rawPtr
+  emitLdc_I4_S(mbMain, 42)      // → rawPtr, rawPtr, 42
+  emitConv_I(mbMain)             // → rawPtr, rawPtr, 42_native
+  emitStind_I(mbMain)            // *rawPtr = 42_native
+  emitLdind_I(mbMain)            // → 42_native
+  emitConv_I4(mbMain)            // → 42 (I4)
   emitCall(mbMain, 0x0A000001)
   emitRet(mbMain)
 

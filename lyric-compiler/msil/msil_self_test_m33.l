@@ -114,12 +114,12 @@ func main(): Unit {
   //   TypeRef[4] = 0x01000004 → TypeDefOrRefOrSpec coded: (4 << 2) | 1 = 0x11 (fits 1 byte)
   //   TypeRef[5] = 0x01000005 → TypeDefOrRefOrSpec coded: (5 << 2) | 1 = 0x15 (fits 1 byte)
   val gthSigW = bufNew()
-  bufU1(gthSigW, 0x00)  // DEFAULT
-  bufU1(gthSigW, 0x01)  // 1 param
-  bufU1(gthSigW, 0x12)  // ret: ELEMENT_TYPE_CLASS
-  bufU1(gthSigW, 0x11)  // compressed TypeRef[4] token in TypeDefOrRefOrSpec = (4<<2)|1
-  bufU1(gthSigW, 0x11)  // param: ELEMENT_TYPE_VALUETYPE
-  bufU1(gthSigW, 0x15)  // compressed TypeRef[5] token = (5<<2)|1
+  bufU1(gthSigW, 0x00)   // DEFAULT
+  bufU1(gthSigW, 0x01)   // 1 param
+  bufU1(gthSigW, 0x12)   // ret: ELEMENT_TYPE_CLASS
+  bufU1(gthSigW, 0x11)   // compressed TypeRef[4] token in TypeDefOrRefOrSpec = (4<<2)|1
+  bufU1(gthSigW, 0x11)   // param: ELEMENT_TYPE_VALUETYPE
+  bufU1(gthSigW, 0x15)   // compressed TypeRef[5] token = (5<<2)|1
   val sigGetTypeFromHandle = internBlob(bh, "gth_sig", bufToList(gthSigW))
 
   // Type::get_Name() → string
@@ -151,10 +151,10 @@ func main(): Unit {
 
   // ── Build method body ─────────────────────────────────────────────────────
   val mbMain = newMethodBody()
-  emitLdtoken(mbMain, 0x01000003)  // ldtoken TypeRef[3]=System.Int32
-  emitCall(mbMain, 0x0A000001)  // call MemberRef[1]=Type::GetTypeFromHandle
-  emitCallvirt(mbMain, 0x0A000002)  // callvirt MemberRef[2]=Type::get_Name
-  emitCall(mbMain, 0x0A000003)  // call MemberRef[3]=Console::WriteLine(string)
+  emitLdtoken(mbMain, 0x01000003)       // ldtoken TypeRef[3]=System.Int32
+  emitCall(mbMain, 0x0A000001)          // call MemberRef[1]=Type::GetTypeFromHandle
+  emitCallvirt(mbMain, 0x0A000002)      // callvirt MemberRef[2]=Type::get_Name
+  emitCall(mbMain, 0x0A000003)          // call MemberRef[3]=Console::WriteLine(string)
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

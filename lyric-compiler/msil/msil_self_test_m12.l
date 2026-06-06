@@ -111,16 +111,16 @@ func main(): Unit {
   val elseLbl = mbNewLabel(mbMain)
   val endLbl = mbNewLabel(mbMain)
 
-  emitLdc_I4_7(mbMain)  // push 7
-  emitLdc_I4_4(mbMain)  // push 4
-  emitCgt(mbMain)  // compare: 7 > 4 → 1
-  emitBrfalse(mbMain, elseLbl)  // if 0 (false) → else
-  emitLdc_I4_1(mbMain)  // true branch: push 1
-  emitBr(mbMain, endLbl)  // jump to end
-  mbMarkLabel(mbMain, elseLbl)  // else:
-  emitLdc_I4_0(mbMain)  // false branch: push 0
-  mbMarkLabel(mbMain, endLbl)  // end:
-  emitCall(mbMain, 0x0A000001)  // call Console.WriteLine(int)
+  emitLdc_I4_7(mbMain)                  // push 7
+  emitLdc_I4_4(mbMain)                  // push 4
+  emitCgt(mbMain)                       // compare: 7 > 4 → 1
+  emitBrfalse(mbMain, elseLbl)          // if 0 (false) → else
+  emitLdc_I4_1(mbMain)                  // true branch: push 1
+  emitBr(mbMain, endLbl)                // jump to end
+  mbMarkLabel(mbMain, elseLbl)          // else:
+  emitLdc_I4_0(mbMain)                  // false branch: push 0
+  mbMarkLabel(mbMain, endLbl)           // end:
+  emitCall(mbMain, 0x0A000001)          // call Console.WriteLine(int)
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

@@ -86,9 +86,9 @@ func main(): Unit {
   // ── Build method body ─────────────────────────────────────────────────────
   val mbMain = newMethodBody()
 
-  emitLdc_I4_S(mbMain, 43)  // push 43
-  emitNeg(mbMain)  // -43  (= 0xFFFFFFD5)
-  emitNot(mbMain)  // ~(-43) = 42  (= 0x0000002A)
+  emitLdc_I4_S(mbMain, 43)     // push 43
+  emitNeg(mbMain)               // -43  (= 0xFFFFFFD5)
+  emitNot(mbMain)               // ~(-43) = 42  (= 0x0000002A)
   emitCall(mbMain, 0x0A000001)
   emitRet(mbMain)
 

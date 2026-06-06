@@ -137,26 +137,26 @@ func main(): Unit {
   val tokInt32 = 0x01000003
 
   val mbMain = newMethodBody()
-  emitLdc_I4(mbMain, 42)  // offset  0: ldc.i4 42  (5B)
-  emitStloc_0(mbMain)  // offset  5: stloc.0    (1B)
+  emitLdc_I4(mbMain, 42)                     // offset  0: ldc.i4 42  (5B)
+  emitStloc_0(mbMain)                        // offset  5: stloc.0    (1B)
   val lblLive = mbNewLabel(mbMain)
-  emitBr(mbMain, lblLive)  // offset  6: br LIVE    (5B) next=11 target=28 off=17
+  emitBr(mbMain, lblLive)                    // offset  6: br LIVE    (5B) next=11 target=28 off=17
   // dead block (17 bytes, offsets 11–27)
-  emitLdnull(mbMain)  // offset 11: ldnull     (1B)
-  emitLdvirtftn(mbMain, tokGetHashCode)  // offset 12: ldvirtftn  (6B) → FE 07 at file 0x260
-  emitPop(mbMain)  // offset 18: pop        (1B)
-  emitLdc_I4_0(mbMain)  // offset 19: ldc.i4.0   (1B)
-  emitLdsflda(mbMain, tokWriteLine)  // offset 20: ldsflda    (5B) → 7F at file 0x268
-  emitPop(mbMain)  // offset 25: pop        (1B)
-  emitPop(mbMain)  // offset 26: pop        (1B)
-  emitNop(mbMain)  // offset 27: nop        (1B)
+  emitLdnull(mbMain)                         // offset 11: ldnull     (1B)
+  emitLdvirtftn(mbMain, tokGetHashCode)      // offset 12: ldvirtftn  (6B) → FE 07 at file 0x260
+  emitPop(mbMain)                            // offset 18: pop        (1B)
+  emitLdc_I4_0(mbMain)                       // offset 19: ldc.i4.0   (1B)
+  emitLdsflda(mbMain, tokWriteLine)          // offset 20: ldsflda    (5B) → 7F at file 0x268
+  emitPop(mbMain)                            // offset 25: pop        (1B)
+  emitPop(mbMain)                            // offset 26: pop        (1B)
+  emitNop(mbMain)                            // offset 27: nop        (1B)
   // LIVE: offset 28
   mbMarkLabel(mbMain, lblLive)
-  emitLdloca_S(mbMain, 0)  // offset 28: ldloca.s 0 (2B)
-  emitConstrained(mbMain, tokInt32)  // offset 30: constrained. (6B) → FE 16 at file 0x272
-  emitCallvirt(mbMain, tokGetHashCode)  // offset 36: callvirt   (5B) → Int32.GetHashCode() = 42
-  emitCall(mbMain, tokWriteLine)  // offset 41: call       (5B) → Console.WriteLine(42)
-  emitRet(mbMain)  // offset 46: ret        (1B)
+  emitLdloca_S(mbMain, 0)                    // offset 28: ldloca.s 0 (2B)
+  emitConstrained(mbMain, tokInt32)          // offset 30: constrained. (6B) → FE 16 at file 0x272
+  emitCallvirt(mbMain, tokGetHashCode)       // offset 36: callvirt   (5B) → Int32.GetHashCode() = 42
+  emitCall(mbMain, tokWriteLine)             // offset 41: call       (5B) → Console.WriteLine(42)
+  emitRet(mbMain)                            // offset 46: ret        (1B)
   // codeSize = 47
 
   val bodies: List[MethodBody] = newList()
@@ -166,9 +166,9 @@ func main(): Unit {
 
   val t = newMetadataTables()
   addModule(t, ModuleRow(generation = 0, name = sModule, mvid = mvid, encId = 0, encBaseId = 0))
-  addTypeRef(t, TypeRefRow(resolutionScope = rsAssemblyRef(2), typeName = sConsole, typeNamespace = sSystem))  // TypeRef 1
-  addTypeRef(t, TypeRefRow(resolutionScope = rsAssemblyRef(1), typeName = sObject, typeNamespace = sSystem))  // TypeRef 2
-  addTypeRef(t, TypeRefRow(resolutionScope = rsAssemblyRef(1), typeName = sInt32, typeNamespace = sSystem))  // TypeRef 3
+  addTypeRef(t, TypeRefRow(resolutionScope = rsAssemblyRef(2), typeName = sConsole, typeNamespace = sSystem))   // TypeRef 1
+  addTypeRef(t, TypeRefRow(resolutionScope = rsAssemblyRef(1), typeName = sObject, typeNamespace = sSystem))   // TypeRef 2
+  addTypeRef(t, TypeRefRow(resolutionScope = rsAssemblyRef(1), typeName = sInt32, typeNamespace = sSystem))   // TypeRef 3
   addTypeDef(
     t,
     TypeDefRow(flags = 0, typeName = sModule, typeNamespace = 0, extends = 0, fieldList = 1, methodList = 1)
@@ -198,7 +198,7 @@ func main(): Unit {
   val sigIdx = addStandAloneSig(t, StandAloneSigRow(signature = localVarSig))
   mbSetLocalSig(mbMain, standaloneToken(sigIdx))
   addMemberRef(t, MemberRefRow(class = mrpTypeRef(1), name = sWriteLine, signature = sigWriteLineInt))  // MR 1
-  addMemberRef(t, MemberRefRow(class = mrpTypeRef(2), name = sGetHashCode, signature = sigGetHashCode))  // MR 2
+  addMemberRef(t, MemberRefRow(class = mrpTypeRef(2), name = sGetHashCode, signature = sigGetHashCode))   // MR 2
   addAssembly(
     t,
     AssemblyRow(

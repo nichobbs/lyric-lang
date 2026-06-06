@@ -98,11 +98,11 @@ func main(): Unit {
   // TypeRef[3] = System.Int32 → token 0x01000003
   val int32Token = 0x01000003
 
-  emitLdloca_S(mbMain, 0)  // address of local 0
-  emitInitobj(mbMain, int32Token)  // zero-initialise local 0 as System.Int32
-  emitLdloc_0(mbMain)  // load local 0 → 0 (zeroed)
-  emitLdc_I4_S(mbMain, 42)  // push 42
-  emitAdd(mbMain)  // 0 + 42 = 42
+  emitLdloca_S(mbMain, 0)          // address of local 0
+  emitInitobj(mbMain, int32Token)   // zero-initialise local 0 as System.Int32
+  emitLdloc_0(mbMain)               // load local 0 → 0 (zeroed)
+  emitLdc_I4_S(mbMain, 42)          // push 42
+  emitAdd(mbMain)                    // 0 + 42 = 42
   emitCall(mbMain, 0x0A000001)
   emitRet(mbMain)
 

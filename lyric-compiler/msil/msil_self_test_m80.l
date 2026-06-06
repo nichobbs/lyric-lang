@@ -95,27 +95,27 @@ func main(): Unit {
   val keyToken = internBlob(bh, "ms_key", bufToList(keyW))
 
   val mbMain = newMethodBody()
-  emitLdc_I4_S(mbMain, 43)  // offset  0 (2b): push 43
-  emitLdc_I4_S(mbMain, 40)  // offset  2 (2b): push 40
-  emitCgt(mbMain)  // offset  4 (2b): 43>40 → 1  ← 0xFE at 0x24D, 0x02 at 0x24E
-  emitLdc_I4_S(mbMain, 45)  // offset  6 (2b): push 45
-  emitLdc_I4_S(mbMain, 41)  // offset  8 (2b): push 41
-  emitCgt_Un(mbMain)  // offset 10 (2b): 45>41 → 1  ← 0xFE at 0x253, 0x03 at 0x254
-  emitLdc_I4_S(mbMain, 41)  // offset 12 (2b): push 41
-  emitLdc_I4_S(mbMain, 45)  // offset 14 (2b): push 45
-  emitClt(mbMain)  // offset 16 (2b): 41<45 → 1  ← 0xFE at 0x259, 0x04 at 0x25A
-  emitLdc_I4_S(mbMain, 43)  // offset 18 (2b): push 43
-  emitLdc_I4_S(mbMain, 44)  // offset 20 (2b): push 44
-  emitClt_Un(mbMain)  // offset 22 (2b): 43<44 → 1  ← 0xFE at 0x25F, 0x05 at 0x260
-  emitMul(mbMain)  // offset 24 (1b): 1×1=1
-  emitMul(mbMain)  // offset 25 (1b): 1×1=1
-  emitMul(mbMain)  // offset 26 (1b): 1×1=1
-  emitLdc_I4_S(mbMain, 42)  // offset 27 (2b): push 42
-  emitConv_R_Un(mbMain)  // offset 29 (1b): 42 as R  ← 0x76 at 0x266
-  emitConv_I4(mbMain)  // offset 30 (1b): back to I4
-  emitMul(mbMain)  // offset 31 (1b): 1×42=42
-  emitCall(mbMain, 0x0A000001)  // offset 32 (5b): print 42
-  emitRet(mbMain)  // offset 37
+  emitLdc_I4_S(mbMain, 43)          // offset  0 (2b): push 43
+  emitLdc_I4_S(mbMain, 40)          // offset  2 (2b): push 40
+  emitCgt(mbMain)                    // offset  4 (2b): 43>40 → 1  ← 0xFE at 0x24D, 0x02 at 0x24E
+  emitLdc_I4_S(mbMain, 45)          // offset  6 (2b): push 45
+  emitLdc_I4_S(mbMain, 41)          // offset  8 (2b): push 41
+  emitCgt_Un(mbMain)                 // offset 10 (2b): 45>41 → 1  ← 0xFE at 0x253, 0x03 at 0x254
+  emitLdc_I4_S(mbMain, 41)          // offset 12 (2b): push 41
+  emitLdc_I4_S(mbMain, 45)          // offset 14 (2b): push 45
+  emitClt(mbMain)                    // offset 16 (2b): 41<45 → 1  ← 0xFE at 0x259, 0x04 at 0x25A
+  emitLdc_I4_S(mbMain, 43)          // offset 18 (2b): push 43
+  emitLdc_I4_S(mbMain, 44)          // offset 20 (2b): push 44
+  emitClt_Un(mbMain)                 // offset 22 (2b): 43<44 → 1  ← 0xFE at 0x25F, 0x05 at 0x260
+  emitMul(mbMain)                    // offset 24 (1b): 1×1=1
+  emitMul(mbMain)                    // offset 25 (1b): 1×1=1
+  emitMul(mbMain)                    // offset 26 (1b): 1×1=1
+  emitLdc_I4_S(mbMain, 42)          // offset 27 (2b): push 42
+  emitConv_R_Un(mbMain)              // offset 29 (1b): 42 as R  ← 0x76 at 0x266
+  emitConv_I4(mbMain)                // offset 30 (1b): back to I4
+  emitMul(mbMain)                    // offset 31 (1b): 1×42=42
+  emitCall(mbMain, 0x0A000001)      // offset 32 (5b): print 42
+  emitRet(mbMain)                    // offset 37
 
   val bodies: List[MethodBody] = newList()
   bodies.add(mbMain)

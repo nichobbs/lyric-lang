@@ -135,72 +135,72 @@ func main(): Unit {
 
   val mbMain = newMethodBody()
   // Padding nops
-  emitNop(mbMain)  // offset  0
-  emitNop(mbMain)  // offset  1
-  emitNop(mbMain)  // offset  2
-  emitNop(mbMain)  // offset  3
-  emitNop(mbMain)  // offset  4
-  emitNop(mbMain)  // offset  5
+  emitNop(mbMain)                          // offset  0
+  emitNop(mbMain)                          // offset  1
+  emitNop(mbMain)                          // offset  2
+  emitNop(mbMain)                          // offset  3
+  emitNop(mbMain)                          // offset  4
+  emitNop(mbMain)                          // offset  5
   // Create byte[]
-  emitLdc_I4_1(mbMain)  // offset  6
-  emitNewarr(mbMain, tokByte)  // offset  7-11
-  emitStloc_0(mbMain)  // offset 12
+  emitLdc_I4_1(mbMain)                     // offset  6
+  emitNewarr(mbMain, tokByte)              // offset  7-11
+  emitStloc_0(mbMain)                      // offset 12
   // Create short[]
-  emitLdc_I4_1(mbMain)  // offset 13
-  emitNewarr(mbMain, tokInt16)  // offset 14-18
-  emitStloc_1(mbMain)  // offset 19
+  emitLdc_I4_1(mbMain)                     // offset 13
+  emitNewarr(mbMain, tokInt16)             // offset 14-18
+  emitStloc_1(mbMain)                      // offset 19
   // Create int[]
-  emitLdc_I4_1(mbMain)  // offset 20
-  emitNewarr(mbMain, tokInt32)  // offset 21-25
-  emitStloc_2(mbMain)  // offset 26
+  emitLdc_I4_1(mbMain)                     // offset 20
+  emitNewarr(mbMain, tokInt32)             // offset 21-25
+  emitStloc_2(mbMain)                      // offset 26
   // stelem.i1 + ldelem.u1 + ldelem.i1 on byte[]
-  emitLdloc_0(mbMain)  // offset 27
-  emitLdc_I4_0(mbMain)  // offset 28
-  emitLdc_I4_S(mbMain, 42)  // offset 29-30
-  emitStelem_I1(mbMain)  // offset 31 ← 0x9C at 0x254+31=0x273
-  emitLdloc_0(mbMain)  // offset 32
-  emitLdc_I4_0(mbMain)  // offset 33
-  emitLdelem_U1(mbMain)  // offset 34 ← 0x91 at 0x254+34=0x276
-  emitPop(mbMain)  // offset 35
-  emitLdloc_0(mbMain)  // offset 36
-  emitLdc_I4_0(mbMain)  // offset 37
-  emitLdelem_I1(mbMain)  // offset 38 ← 0x90 at 0x254+38=0x27A
-  emitPop(mbMain)  // offset 39
+  emitLdloc_0(mbMain)                      // offset 27
+  emitLdc_I4_0(mbMain)                     // offset 28
+  emitLdc_I4_S(mbMain, 42)                // offset 29-30
+  emitStelem_I1(mbMain)                    // offset 31 ← 0x9C at 0x254+31=0x273
+  emitLdloc_0(mbMain)                      // offset 32
+  emitLdc_I4_0(mbMain)                     // offset 33
+  emitLdelem_U1(mbMain)                    // offset 34 ← 0x91 at 0x254+34=0x276
+  emitPop(mbMain)                          // offset 35
+  emitLdloc_0(mbMain)                      // offset 36
+  emitLdc_I4_0(mbMain)                     // offset 37
+  emitLdelem_I1(mbMain)                    // offset 38 ← 0x90 at 0x254+38=0x27A
+  emitPop(mbMain)                          // offset 39
   // stelem.i2 + ldelem.i2 on short[]
-  emitLdloc_1(mbMain)  // offset 40
-  emitLdc_I4_0(mbMain)  // offset 41
-  emitLdc_I4_S(mbMain, 42)  // offset 42-43
-  emitStelem_I2(mbMain)  // offset 44 ← 0x9D at 0x254+44=0x280
-  emitLdloc_1(mbMain)  // offset 45
-  emitLdc_I4_0(mbMain)  // offset 46
-  emitLdelem_I2(mbMain)  // offset 47 ← 0x92 at 0x254+47=0x283
-  emitPop(mbMain)  // offset 48
+  emitLdloc_1(mbMain)                      // offset 40
+  emitLdc_I4_0(mbMain)                     // offset 41
+  emitLdc_I4_S(mbMain, 42)                // offset 42-43
+  emitStelem_I2(mbMain)                    // offset 44 ← 0x9D at 0x254+44=0x280
+  emitLdloc_1(mbMain)                      // offset 45
+  emitLdc_I4_0(mbMain)                     // offset 46
+  emitLdelem_I2(mbMain)                    // offset 47 ← 0x92 at 0x254+47=0x283
+  emitPop(mbMain)                          // offset 48
   // stelem.i4 + ldelem.u4 on int[]
-  emitLdloc_2(mbMain)  // offset 49
-  emitLdc_I4_0(mbMain)  // offset 50
-  emitLdc_I4_S(mbMain, 42)  // offset 51-52
-  emitStelem_I4(mbMain)  // offset 53 (stelem.i4, byte check not needed here)
-  emitLdloc_2(mbMain)  // offset 54
-  emitLdc_I4_0(mbMain)  // offset 55
-  emitLdelem_U4(mbMain)  // offset 56 ← 0x95 at 0x254+56=0x28C
-  emitPop(mbMain)  // offset 57
+  emitLdloc_2(mbMain)                      // offset 49
+  emitLdc_I4_0(mbMain)                     // offset 50
+  emitLdc_I4_S(mbMain, 42)                // offset 51-52
+  emitStelem_I4(mbMain)                    // offset 53 (stelem.i4, byte check not needed here)
+  emitLdloc_2(mbMain)                      // offset 54
+  emitLdc_I4_0(mbMain)                     // offset 55
+  emitLdelem_U4(mbMain)                    // offset 56 ← 0x95 at 0x254+56=0x28C
+  emitPop(mbMain)                          // offset 57
   // stelem (generic) + ldelem (generic) on int[]
-  emitLdloc_2(mbMain)  // offset 58
-  emitLdc_I4_0(mbMain)  // offset 59
-  emitLdc_I4_S(mbMain, 42)  // offset 60-61
-  emitStelem(mbMain, tokInt32)  // offset 62-66 ← 0xA4 at 0x254+62=0x292
-  emitLdloc_2(mbMain)  // offset 67
-  emitLdc_I4_0(mbMain)  // offset 68
-  emitLdelem(mbMain, tokInt32)  // offset 69-73 ← 0xA3 at 0x254+69=0x299
-  emitPop(mbMain)  // offset 74
-  emitNop(mbMain)  // offset 75: pad so BSJB reaches 0x2AA
-  emitNop(mbMain)  // offset 76
+  emitLdloc_2(mbMain)                      // offset 58
+  emitLdc_I4_0(mbMain)                     // offset 59
+  emitLdc_I4_S(mbMain, 42)                // offset 60-61
+  emitStelem(mbMain, tokInt32)             // offset 62-66 ← 0xA4 at 0x254+62=0x292
+  emitLdloc_2(mbMain)                      // offset 67
+  emitLdc_I4_0(mbMain)                     // offset 68
+  emitLdelem(mbMain, tokInt32)             // offset 69-73 ← 0xA3 at 0x254+69=0x299
+  emitPop(mbMain)                          // offset 74
+  emitNop(mbMain)                          // offset 75: pad so BSJB reaches 0x2AA
+  emitNop(mbMain)                          // offset 76
   // print 42 from int[]
-  emitLdloc_2(mbMain)  // offset 77
-  emitLdc_I4_0(mbMain)  // offset 78
-  emitLdelem_I4(mbMain)  // offset 79 → 42
-  emitCall(mbMain, 0x0A000001)  // offset 80-84
-  emitRet(mbMain)  // offset 85; codeSize=86
+  emitLdloc_2(mbMain)                      // offset 77
+  emitLdc_I4_0(mbMain)                     // offset 78
+  emitLdelem_I4(mbMain)                    // offset 79 → 42
+  emitCall(mbMain, 0x0A000001)            // offset 80-84
+  emitRet(mbMain)                          // offset 85; codeSize=86
 
   val bodies: List[MethodBody] = newList()
   bodies.add(mbMain)

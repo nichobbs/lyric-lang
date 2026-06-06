@@ -119,25 +119,25 @@ func main(): Unit {
   val tokInt32 = 0x01000003
 
   val mbMain = newMethodBody()
-  emitNop(mbMain)  // offset  0: nop (1b)
-  emitNop(mbMain)  // offset  1: nop (1b)
-  emitNop(mbMain)  // offset  2: nop (1b)
-  emitLdc_I4_1(mbMain)  // offset  3: push 1 (1b)
-  emitNewarr(mbMain, tokInt32)  // offset  4: new Int32[1] (5b) ← 0x8D at 0x258
-  emitStloc_0(mbMain)  // offset  9: store array (1b)
-  emitLdloc_0(mbMain)  // offset 10: load array (1b)
-  emitLdc_I4_0(mbMain)  // offset 11: push 0 (1b)
-  emitLdc_I4_S(mbMain, 42)  // offset 12: push 42 (2b)
-  emitStelem_I4(mbMain)  // offset 14: arr[0]=42 (1b)
-  emitLdloc_0(mbMain)  // offset 15: load array (1b)
-  emitLdlen(mbMain)  // offset 16: push length (1b) ← 0x8E at 0x264
-  emitPop(mbMain)  // offset 17: discard (1b)
-  emitLdloc_0(mbMain)  // offset 18: load array (1b)
-  emitLdc_I4_0(mbMain)  // offset 19: push 0 (1b)
-  emitLdelema(mbMain, tokInt32)  // offset 20: &arr[0] (5b) ← 0x8F at 0x268
-  emitLdind_I4(mbMain)  // offset 25: load 42 (1b)
-  emitCall(mbMain, 0x0A000001)  // offset 26: print (5b)
-  emitRet(mbMain)  // offset 31
+  emitNop(mbMain)                          // offset  0: nop (1b)
+  emitNop(mbMain)                          // offset  1: nop (1b)
+  emitNop(mbMain)                          // offset  2: nop (1b)
+  emitLdc_I4_1(mbMain)                     // offset  3: push 1 (1b)
+  emitNewarr(mbMain, tokInt32)             // offset  4: new Int32[1] (5b) ← 0x8D at 0x258
+  emitStloc_0(mbMain)                      // offset  9: store array (1b)
+  emitLdloc_0(mbMain)                      // offset 10: load array (1b)
+  emitLdc_I4_0(mbMain)                     // offset 11: push 0 (1b)
+  emitLdc_I4_S(mbMain, 42)                // offset 12: push 42 (2b)
+  emitStelem_I4(mbMain)                    // offset 14: arr[0]=42 (1b)
+  emitLdloc_0(mbMain)                      // offset 15: load array (1b)
+  emitLdlen(mbMain)                        // offset 16: push length (1b) ← 0x8E at 0x264
+  emitPop(mbMain)                          // offset 17: discard (1b)
+  emitLdloc_0(mbMain)                      // offset 18: load array (1b)
+  emitLdc_I4_0(mbMain)                     // offset 19: push 0 (1b)
+  emitLdelema(mbMain, tokInt32)            // offset 20: &arr[0] (5b) ← 0x8F at 0x268
+  emitLdind_I4(mbMain)                     // offset 25: load 42 (1b)
+  emitCall(mbMain, 0x0A000001)            // offset 26: print (5b)
+  emitRet(mbMain)                          // offset 31
 
   val bodies: List[MethodBody] = newList()
   bodies.add(mbMain)

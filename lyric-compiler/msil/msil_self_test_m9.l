@@ -133,10 +133,10 @@ func main(): Unit {
 
   // Hello.Main(): call GetFoo, call GetBar, add, call Console.WriteLine(int), ret
   val mbMain = newMethodBody()
-  emitCall(mbMain, 0x06000001)  // MethodDef[1] = GetFoo
-  emitCall(mbMain, 0x06000002)  // MethodDef[2] = GetBar
+  emitCall(mbMain, 0x06000001)   // MethodDef[1] = GetFoo
+  emitCall(mbMain, 0x06000002)   // MethodDef[2] = GetBar
   emitAdd(mbMain)
-  emitCall(mbMain, 0x0A000001)  // MemberRef[1] = Console.WriteLine(int)
+  emitCall(mbMain, 0x0A000001)   // MemberRef[1] = Console.WriteLine(int)
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

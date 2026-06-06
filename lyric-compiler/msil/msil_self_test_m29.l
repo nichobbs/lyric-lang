@@ -115,10 +115,10 @@ func main(): Unit {
   val mbMain = newMethodBody()
 
   emitLdc_I4_S(mbMain, 42)
-  emitBox(mbMain, 0x01000003)  // box System.Int32 = TypeRef[3]
-  emitCallvirt(mbMain, 0x0A000001)  // callvirt System.Object::ToString()
-  emitCastclass(mbMain, 0x01000004)  // castclass System.String = TypeRef[4]
-  emitCall(mbMain, 0x0A000002)  // call Console.WriteLine(string)
+  emitBox(mbMain, 0x01000003)               // box System.Int32 = TypeRef[3]
+  emitCallvirt(mbMain, 0x0A000001)          // callvirt System.Object::ToString()
+  emitCastclass(mbMain, 0x01000004)         // castclass System.String = TypeRef[4]
+  emitCall(mbMain, 0x0A000002)              // call Console.WriteLine(string)
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

@@ -90,8 +90,8 @@ func main(): Unit {
   val int32TypeRefToken = 0x01000003
 
   emitSizeof(mbMain, int32TypeRefToken)  // sizeof System.Int32 → 4
-  emitLdc_I4_S(mbMain, 38)  // 38
-  emitAdd(mbMain)  // 4 + 38 = 42
+  emitLdc_I4_S(mbMain, 38)              // 38
+  emitAdd(mbMain)                        // 4 + 38 = 42
   emitCall(mbMain, 0x0A000001)
   emitRet(mbMain)
 

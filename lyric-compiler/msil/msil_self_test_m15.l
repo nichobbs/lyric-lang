@@ -99,10 +99,10 @@ func main(): Unit {
   val mbMain = newMethodBody()
 
   emitLdc_I8(mbMain, 1000000000i64)  // push 1000000000 as int64
-  emitLdc_I8(mbMain, 2i64)  // push 2 as int64
-  emitMul(mbMain)  // 2000000000L
-  emitConv_I4(mbMain)  // narrow to int32 (2000000000 < 2^31)
-  emitCall(mbMain, 0x0A000001)  // call Console.WriteLine(int)
+  emitLdc_I8(mbMain, 2i64)          // push 2 as int64
+  emitMul(mbMain)                   // 2000000000L
+  emitConv_I4(mbMain)               // narrow to int32 (2000000000 < 2^31)
+  emitCall(mbMain, 0x0A000001)      // call Console.WriteLine(int)
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

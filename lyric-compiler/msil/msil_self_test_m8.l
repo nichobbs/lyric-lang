@@ -142,15 +142,15 @@ func main(): Unit {
   val mbCtor = newMethodBody()
   emitLdarg_0(mbCtor)
   emitLdarg_1(mbCtor)
-  emitStfld(mbCtor, 0x04000001)  // Field[1] = x_val
+  emitStfld(mbCtor, 0x04000001)    // Field[1] = x_val
   emitRet(mbCtor)
 
   // Main(): ldc.i4.s 99, newobj .ctor, ldfld x_val, call Console.WriteLine(int), ret
   val mbMain = newMethodBody()
   emitLdc_I4_S(mbMain, 99)
-  emitNewobj(mbMain, 0x06000001)  // MethodDef[1] = .ctor
-  emitLdfld(mbMain, 0x04000001)  // Field[1] = x_val
-  emitCall(mbMain, 0x0A000001)  // MemberRef[1] = Console.WriteLine(int)
+  emitNewobj(mbMain, 0x06000001)   // MethodDef[1] = .ctor
+  emitLdfld(mbMain, 0x04000001)    // Field[1] = x_val
+  emitCall(mbMain, 0x0A000001)     // MemberRef[1] = Console.WriteLine(int)
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

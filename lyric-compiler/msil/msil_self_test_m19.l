@@ -90,9 +90,9 @@ func main(): Unit {
   val mbMain = newMethodBody()
   emitLdc_I4_S(mbMain, 23)
   emitLdc_I4_S(mbMain, 3)
-  emitSub(mbMain)  // 20
+  emitSub(mbMain)              // 20
   emitLdc_I4_S(mbMain, 13)
-  emitRem(mbMain)  // 7
+  emitRem(mbMain)              // 7
   emitCall(mbMain, 0x0A000001)
   emitRet(mbMain)
 

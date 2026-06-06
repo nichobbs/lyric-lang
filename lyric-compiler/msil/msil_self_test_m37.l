@@ -134,18 +134,18 @@ func main(): Unit {
   val mbMain = newMethodBody()
   // int32[] arr = new int32[1]
   emitLdc_I4_1(mbMain)
-  emitNewarr(mbMain, 0x01000003)  // newarr System.Int32
+  emitNewarr(mbMain, 0x01000003)            // newarr System.Int32
   emitStloc_0(mbMain)
   // &arr[0] → stind.i4 → arr[0] = 42
   emitLdloc_0(mbMain)
   emitLdc_I4_0(mbMain)
-  emitLdelema(mbMain, 0x01000003)  // ldelema System.Int32 → byref to arr[0]
+  emitLdelema(mbMain, 0x01000003)           // ldelema System.Int32 → byref to arr[0]
   emitLdc_I4_S(mbMain, 42)
   emitStind_I4(mbMain)
   // Console.WriteLine(arr[0])
   emitLdloc_0(mbMain)
   emitLdc_I4_0(mbMain)
-  emitLdelem(mbMain, 0x01000003)  // ldelem System.Int32 → 42
+  emitLdelem(mbMain, 0x01000003)            // ldelem System.Int32 → 42
   emitCall(mbMain, 0x0A000001)
   emitRet(mbMain)
 

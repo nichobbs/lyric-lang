@@ -128,32 +128,32 @@ func main(): Unit {
 
   // Helper body: exercises ldarg.2/3, ldarg.s, starg.s, ldarga.s; returns 42
   val mbHelper = newMethodBody()
-  emitLdarg_2(mbHelper)  // offset  0: push c=3 (1b) ← 0x04 at file 0x249
-  emitLdarg_3(mbHelper)  // offset  1: push d=4 (1b) ← 0x05 at file 0x24A
-  emitLdarg_S(mbHelper, 4)  // offset  2: push e=32 (2b) ← 0x0E at file 0x24B
-  emitAdd(mbHelper)  // offset  4: 4+32=36 (1b)
-  emitAdd(mbHelper)  // offset  5: 3+36=39 (1b)
-  emitStarg_S(mbHelper, 0)  // offset  6: arg[0]=39 (2b) ← 0x10 at file 0x24F
-  emitLdarg_S(mbHelper, 1)  // offset  8: push b=2 (2b)
-  emitLdarg_S(mbHelper, 0)  // offset 10: push arg[0]=39 (2b)
-  emitAdd(mbHelper)  // offset 12: 2+39=41 (1b)
-  emitLdarga_S(mbHelper, 1)  // offset 13: push &arg[1] (2b) ← 0x0F at file 0x256
-  emitPop(mbHelper)  // offset 15: discard address (1b)
-  emitNop(mbHelper)  // offset 16: nop (1b)
-  emitNop(mbHelper)  // offset 17: nop (1b)
-  emitLdc_I4_1(mbHelper)  // offset 18: push 1 (1b)
-  emitAdd(mbHelper)  // offset 19: 41+1=42 (1b)
-  emitRet(mbHelper)  // offset 20: return 42 (1b)
+  emitLdarg_2(mbHelper)              // offset  0: push c=3 (1b) ← 0x04 at file 0x249
+  emitLdarg_3(mbHelper)              // offset  1: push d=4 (1b) ← 0x05 at file 0x24A
+  emitLdarg_S(mbHelper, 4)           // offset  2: push e=32 (2b) ← 0x0E at file 0x24B
+  emitAdd(mbHelper)                  // offset  4: 4+32=36 (1b)
+  emitAdd(mbHelper)                  // offset  5: 3+36=39 (1b)
+  emitStarg_S(mbHelper, 0)           // offset  6: arg[0]=39 (2b) ← 0x10 at file 0x24F
+  emitLdarg_S(mbHelper, 1)           // offset  8: push b=2 (2b)
+  emitLdarg_S(mbHelper, 0)           // offset 10: push arg[0]=39 (2b)
+  emitAdd(mbHelper)                  // offset 12: 2+39=41 (1b)
+  emitLdarga_S(mbHelper, 1)          // offset 13: push &arg[1] (2b) ← 0x0F at file 0x256
+  emitPop(mbHelper)                  // offset 15: discard address (1b)
+  emitNop(mbHelper)                  // offset 16: nop (1b)
+  emitNop(mbHelper)                  // offset 17: nop (1b)
+  emitLdc_I4_1(mbHelper)             // offset 18: push 1 (1b)
+  emitAdd(mbHelper)                  // offset 19: 41+1=42 (1b)
+  emitRet(mbHelper)                  // offset 20: return 42 (1b)
 
   // Main body: push 5 args, call Helper, call Console.WriteLine, ret
   val mbMain = newMethodBody()
-  emitLdc_I4_1(mbMain)  // push a=1
-  emitLdc_I4_2(mbMain)  // push b=2
-  emitLdc_I4_3(mbMain)  // push c=3
-  emitLdc_I4_4(mbMain)  // push d=4
-  emitLdc_I4_S(mbMain, 32)  // push e=32
-  emitCall(mbMain, 0x06000001)  // call Helper → 42
-  emitCall(mbMain, 0x0A000001)  // call Console.WriteLine(42)
+  emitLdc_I4_1(mbMain)               // push a=1
+  emitLdc_I4_2(mbMain)               // push b=2
+  emitLdc_I4_3(mbMain)               // push c=3
+  emitLdc_I4_4(mbMain)               // push d=4
+  emitLdc_I4_S(mbMain, 32)          // push e=32
+  emitCall(mbMain, 0x06000001)      // call Helper → 42
+  emitCall(mbMain, 0x0A000001)      // call Console.WriteLine(42)
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

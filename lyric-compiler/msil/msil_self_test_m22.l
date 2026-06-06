@@ -106,7 +106,7 @@ func main(): Unit {
   val mbMain = newMethodBody()
 
   emitLdstr(mbMain, ldstrTok)
-  emitCall(mbMain, 0x0A000001)  // Console.WriteLine(string) = MemberRef[1]
+  emitCall(mbMain, 0x0A000001)   // Console.WriteLine(string) = MemberRef[1]
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

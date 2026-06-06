@@ -132,9 +132,9 @@ func main(): Unit {
 
   // Hello.Main(): newobj .ctor, callvirt IGetter.GetValue, call Console.WriteLine(int), ret
   val mbMain = newMethodBody()
-  emitNewobj(mbMain, 0x06000002)  // MethodDef[2] = Impl..ctor
+  emitNewobj(mbMain, 0x06000002)    // MethodDef[2] = Impl..ctor
   emitCallvirt(mbMain, 0x06000001)  // MethodDef[1] = IGetter.GetValue (dispatches to Impl.GetValue)
-  emitCall(mbMain, 0x0A000001)  // MemberRef[1] = Console.WriteLine(int)
+  emitCall(mbMain, 0x0A000001)      // MemberRef[1] = Console.WriteLine(int)
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

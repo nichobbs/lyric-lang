@@ -90,10 +90,10 @@ func main(): Unit {
   // ── Build method body ─────────────────────────────────────────────────────
   val mbMain = newMethodBody()
 
-  emitLdc_I4_S(mbMain, 42)  // push 42
-  emitNop(mbMain)  // no-op
-  emitDup(mbMain)  // stack: [42, 42]
-  emitPop(mbMain)  // stack: [42]
+  emitLdc_I4_S(mbMain, 42)     // push 42
+  emitNop(mbMain)               // no-op
+  emitDup(mbMain)               // stack: [42, 42]
+  emitPop(mbMain)               // stack: [42]
   emitCall(mbMain, 0x0A000001)
   emitRet(mbMain)
 

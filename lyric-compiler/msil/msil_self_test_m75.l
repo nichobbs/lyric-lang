@@ -118,17 +118,17 @@ func main(): Unit {
   val keyToken = internBlob(bh, "ms_key", bufToList(keyW))
 
   val mbMain = newMethodBody()
-  emitLdc_I4_S(mbMain, 42)  // offset  0: push 42
-  emitStloc_2(mbMain)  // offset  2: local[2] = 42  (stloc.2 = 0x0C)
-  emitLdloc_2(mbMain)  // offset  3: push local[2]  (ldloc.2 = 0x08)
-  emitStloc_3(mbMain)  // offset  4: local[3] = 42  (stloc.3 = 0x0D)
-  emitLdloc_3(mbMain)  // offset  5: push local[3]  (ldloc.3 = 0x09)
-  emitStloc_S(mbMain, 4)  // offset  6: local[4] = 42  (stloc.s 4 = 0x13 0x04)
-  emitLdloc_S(mbMain, 4)  // offset  8: push local[4]  (ldloc.s 4 = 0x11 0x04)
-  emitStloc(mbMain, 4)  // offset 10: local[4] = 42  (stloc 4 = 0xFE 0x0E 0x04 0x00)
-  emitLdloc(mbMain, 4)  // offset 14: push local[4]  (ldloc 4 = 0xFE 0x0C 0x04 0x00)
+  emitLdc_I4_S(mbMain, 42)    // offset  0: push 42
+  emitStloc_2(mbMain)          // offset  2: local[2] = 42  (stloc.2 = 0x0C)
+  emitLdloc_2(mbMain)          // offset  3: push local[2]  (ldloc.2 = 0x08)
+  emitStloc_3(mbMain)          // offset  4: local[3] = 42  (stloc.3 = 0x0D)
+  emitLdloc_3(mbMain)          // offset  5: push local[3]  (ldloc.3 = 0x09)
+  emitStloc_S(mbMain, 4)       // offset  6: local[4] = 42  (stloc.s 4 = 0x13 0x04)
+  emitLdloc_S(mbMain, 4)       // offset  8: push local[4]  (ldloc.s 4 = 0x11 0x04)
+  emitStloc(mbMain, 4)         // offset 10: local[4] = 42  (stloc 4 = 0xFE 0x0E 0x04 0x00)
+  emitLdloc(mbMain, 4)         // offset 14: push local[4]  (ldloc 4 = 0xFE 0x0C 0x04 0x00)
   emitCall(mbMain, 0x0A000001)  // offset 18: print 42
-  emitRet(mbMain)  // offset 23
+  emitRet(mbMain)               // offset 23
 
   val bodies: List[MethodBody] = newList()
   bodies.add(mbMain)

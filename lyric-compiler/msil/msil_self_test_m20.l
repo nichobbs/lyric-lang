@@ -157,17 +157,17 @@ func main(): Unit {
 
   // try block
   mbMarkLabel(mbMain, tryStart)
-  emitNewobj(mbMain, 0x0A000002)  // new System.Exception()
+  emitNewobj(mbMain, 0x0A000002)       // new System.Exception()
   emitThrow(mbMain)
-  emitLeave(mbMain, endLbl)  // unreachable but required by verifier
+  emitLeave(mbMain, endLbl)            // unreachable but required by verifier
 
   // catch handler
   mbMarkLabel(mbMain, handlerStart)
-  emitPop(mbMain)  // discard exception object
+  emitPop(mbMain)                      // discard exception object
   emitLdc_I4_S(mbMain, 42)
   emitStloc_0(mbMain)
   emitLeave(mbMain, endLbl)
-  mbMarkLabel(mbMain, handlerEnd)  // handler_end = try_end = first insn after handler
+  mbMarkLabel(mbMain, handlerEnd)      // handler_end = try_end = first insn after handler
 
   // continuation
   mbMarkLabel(mbMain, endLbl)
@@ -188,7 +188,7 @@ func main(): Unit {
       handlerEnd = handlerEnd,
       catchToken = 0x01000003
     )
-  )  // TypeRef[3] = System.Exception
+  ) // TypeRef[3] = System.Exception
 
   val bodies: List[MethodBody] = newList()
   bodies.add(mbMain)

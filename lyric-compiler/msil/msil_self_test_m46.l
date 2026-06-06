@@ -86,13 +86,13 @@ func main(): Unit {
   // ── Build method body ─────────────────────────────────────────────────────
   val mbMain = newMethodBody()
 
-  emitLdc_I4_S(mbMain, 42)  // push 42 (int)
-  emitConv_I1(mbMain)  // sign-truncate to i8 → 42 (fits in i1)
-  emitCall(mbMain, 0x0A000001)  // print 42
+  emitLdc_I4_S(mbMain, 42)     // push 42 (int)
+  emitConv_I1(mbMain)          // sign-truncate to i8 → 42 (fits in i1)
+  emitCall(mbMain, 0x0A000001) // print 42
 
-  emitLdc_I4_S(mbMain, 42)  // push 42 (int)
-  emitConv_I2(mbMain)  // sign-truncate to i16 → 42 (fits in i2)
-  emitCall(mbMain, 0x0A000001)  // print 42
+  emitLdc_I4_S(mbMain, 42)     // push 42 (int)
+  emitConv_I2(mbMain)          // sign-truncate to i16 → 42 (fits in i2)
+  emitCall(mbMain, 0x0A000001) // print 42
 
   emitRet(mbMain)
 

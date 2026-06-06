@@ -18,22 +18,20 @@ import Std.Collections
 
 // Summary extracted from a class-file header.
 pub record ClassSummary {
-  magicValid: Bool  // true iff bytes 0-3 == 0xCA 0xFE 0xBA 0xBE
-  majorVersion: Int  // class-file major version (65 = Java 21)
-  poolCount: Int  // constant_pool_count
-  accessFlags: Int  // class access_flags
-  methodCount: Int
-  // number of declared methods
-  // Internal: per-pool-entry scan result.
+  magicValid: Bool   // true iff bytes 0-3 == 0xCA 0xFE 0xBA 0xBE
+  majorVersion: Int    // class-file major version (65 = Java 21)
+  poolCount: Int    // constant_pool_count
+  accessFlags: Int    // class access_flags
+  methodCount: Int    // number of declared methods
 }
 
+// Internal: per-pool-entry scan result.
 record PoolStep {
-  nextPos: Int  // byte offset of the next pool entry
-  extraIdx: Int
-  // 1 for Long/Double (two pool indices), 0 otherwise
-  // Read big-endian u2 at offset (result: 0..=65535, always fits in Int).
+  nextPos: Int   // byte offset of the next pool entry
+  extraIdx: Int   // 1 for Long/Double (two pool indices), 0 otherwise
 }
 
+// Read big-endian u2 at offset (result: 0..=65535, always fits in Int).
 pub func readU2(bytes: in List[Byte], offset: in Int): Int {
   bytes[offset].toInt() * 256 + bytes[offset + 1].toInt()
 }
@@ -64,13 +62,13 @@ func skipPoolEntry(bytes: in List[Byte], pos: in Int): PoolStep {
     nextP = pos + 9
     extra = 1
   } else if tag == 7 {
-    nextP = pos + 3  // CONSTANT_Class: 2-byte name_index
+    nextP = pos + 3   // CONSTANT_Class: 2-byte name_index
   } else if tag == 8 {
-    nextP = pos + 3  // CONSTANT_String: 2-byte string_index
+    nextP = pos + 3   // CONSTANT_String: 2-byte string_index
   } else if tag == 15 {
-    nextP = pos + 4  // CONSTANT_MethodHandle: 3-byte data
+    nextP = pos + 4   // CONSTANT_MethodHandle: 3-byte data
   } else if tag == 16 {
-    nextP = pos + 3  // CONSTANT_MethodType: 2-byte descriptor_index
+    nextP = pos + 3   // CONSTANT_MethodType: 2-byte descriptor_index
   }
   // tags 3,4,9,10,11,12,17,18 and unknown: default nextP = pos + 5.
   PoolStep(nextPos = nextP, extraIdx = extra)

@@ -98,19 +98,19 @@ func main(): Unit {
   // ── Build method body ─────────────────────────────────────────────────────
   val mbMain = newMethodBody()
 
-  emitLdc_I4_S(mbMain, 21)  // push 21
-  emitLdc_I4_S(mbMain, 21)  // push 21
-  emitAdd_Ovf(mbMain)  // 21 + 21 = 42  (checked signed)
-  emitLdc_I4_0(mbMain)  // push 0
-  emitSub_Ovf(mbMain)  // 42 - 0 = 42  (checked signed)
-  emitLdc_I4_1(mbMain)  // push 1
-  emitMul_Ovf(mbMain)  // 42 * 1 = 42  (checked signed)
-  emitLdc_I4_0(mbMain)  // push 0
-  emitAdd_Ovf_Un(mbMain)  // 42 + 0 = 42  (checked unsigned)
-  emitLdc_I4_0(mbMain)  // push 0
-  emitSub_Ovf_Un(mbMain)  // 42 - 0 = 42  (checked unsigned)
-  emitLdc_I4_1(mbMain)  // push 1
-  emitMul_Ovf_Un(mbMain)  // 42 * 1 = 42  (checked unsigned)
+  emitLdc_I4_S(mbMain, 21)     // push 21
+  emitLdc_I4_S(mbMain, 21)     // push 21
+  emitAdd_Ovf(mbMain)           // 21 + 21 = 42  (checked signed)
+  emitLdc_I4_0(mbMain)          // push 0
+  emitSub_Ovf(mbMain)           // 42 - 0 = 42  (checked signed)
+  emitLdc_I4_1(mbMain)          // push 1
+  emitMul_Ovf(mbMain)           // 42 * 1 = 42  (checked signed)
+  emitLdc_I4_0(mbMain)          // push 0
+  emitAdd_Ovf_Un(mbMain)        // 42 + 0 = 42  (checked unsigned)
+  emitLdc_I4_0(mbMain)          // push 0
+  emitSub_Ovf_Un(mbMain)        // 42 - 0 = 42  (checked unsigned)
+  emitLdc_I4_1(mbMain)          // push 1
+  emitMul_Ovf_Un(mbMain)        // 42 * 1 = 42  (checked unsigned)
   emitCall(mbMain, 0x0A000001)
   emitRet(mbMain)
 
