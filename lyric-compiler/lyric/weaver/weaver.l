@@ -1367,6 +1367,7 @@ func annotationHasName(fn: in FunctionDecl, name: in String): Bool {
 func matchesPredicate(m: in AspectMatcher, fn: in FunctionDecl): Bool {
   match m {
     case AMNameLike(glob, _) -> globMatch(glob, fn.name)
+    case AMNameIn(names, _) -> nameListContains(names, fn.name)
     case AMAnnotated(annName, _) -> annotationHasName(fn, annName)
     case AMVisibility(vis, _) -> {
       if vis == "pub" {
@@ -1453,10 +1454,10 @@ func isOptedOut(fn: in FunctionDecl, aspectName: in String): Bool {
   false
 }
 
-func exceptListContains(except: in List[String], name: in String): Bool {
+func nameListContains(names: in List[String], name: in String): Bool {
   var i = 0
-  while i < except.count {
-    if except[i] == name {
+  while i < names.count {
+    if names[i] == name {
       return true
     }
     i = i + 1
@@ -1631,7 +1632,7 @@ func weaveItemsCore(items: in List[Item], packagePath: in String): WeaveResult {
         var ai = 0
         while ai < declsForSort.count {
           val a = declsForSort[ai]
-          if not isOptedOut(fn, a.name) and not exceptListContains(a.exceptNames, fn.name) and matchesPredicates(a.matches, fn) {
+          if not isOptedOut(fn, a.name) and not nameListContains(a.exceptNames, fn.name) and matchesPredicates(a.matches, fn) {
             matched.add(a)
           }
           ai = ai + 1

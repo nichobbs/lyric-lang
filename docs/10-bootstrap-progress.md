@@ -21753,3 +21753,44 @@ block rendering were already fixed on `main` by #2452 (D-progress-443 /
 `testAspectFromClauseRoundTrips` self-test.  Emitter suite 843/843;
 `./bin/lyric fmt` round-trips a `from`-form aspect (and the existing
 `around(...) -> ret` repro) end-to-end.
+
+### D-progress-450 — aspect matcher `name in { … }` set-membership predicate (#2450, #2280)
+
+**Status:** Shipped — parser + formatter + weaver/MSIL matching for the
+positive set-membership matcher.
+
+The self-hosted parser only accepted `matches: name like "<glob>"`, rejecting
+the `matches: name in { fn1, fn2 }` set-membership form with
+`P0298 "expected 'like' after 'name'"`.  This blocked `lyric fmt` round-trip on
+the `examples/` services (rbac, ledger, jobqueue, …), which bind aspects to a
+fixed handler set with `name in { … }`.
+
+Added across the self-hosted compiler:
+
+- **AST** (`parser/parser_ast.l`): new `AMNameIn(names: List[String], span)`
+  variant on `AspectMatcher` — the positive counterpart of the existing
+  `except name in { … }` exclusion list.
+- **Parser** (`parser/parser_items.l`): `parseOneMatchPredicate` now dispatches
+  on the token after `name` — `like` → `AMNameLike` (glob), `in` →
+  `AMNameIn` (set).  The `{ id, id, … }` brace-list parsing is factored into a
+  shared `parseAspectNameSet` helper used by both `name in` and the
+  `except name in` clause (mirroring its newline-tolerant, trailing-comma
+  parsing).  The `P0298` message is updated to "expected 'like' or 'in' after
+  'name'".
+- **Formatter** (`fmt/fmt_items.l`): `aspectMatcherPred` renders
+  `name in { a, b, c }` (canonical single-line spacing; a multi-line source
+  set collapses to one line, token-preserving so the loss check passes).
+- **Matching** (`weaver/weaver.l`, `msil/codegen.l`): both `matchesPredicate`
+  exhaustive matches handle `AMNameIn` via a name-list membership check
+  (`weaver`'s `exceptListContains` was generalised + renamed to
+  `nameListContains`).
+
+Semantics (per `docs/26-aspects.md` §3.2): a function is selected when its
+**short** name is one of the listed bare identifiers.  New self-tests:
+`testAspectMatchesNameIn` (parser), `testAspectMatchesNameInRoundTrips` and
+`testAspectMatchesNameInAndExceptRoundTrips` (fmt).  Parser + fmt self-tests and
+the emitter suite are green; `./bin/lyric fmt` round-trips the repro and the
+multi-line rbac-style form.  The `examples/` files remain blocked from a full
+reformat by the separate `///`-before-`package` header gap (P0020) — and
+`examples/product-catalog` additionally uses qualified names in its set, which
+do not match the short-name semantics; both are follow-ups.
