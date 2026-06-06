@@ -2034,7 +2034,7 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
       }
     }
     i = i + 1
-  }
+  };
 
   (allGoals, allDiags)
 }

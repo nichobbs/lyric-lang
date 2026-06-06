@@ -1,23 +1,22 @@
-// msil/tables.l — ECMA-335 §II.22 metadata table model and row-index allocators.
-//
-// Provides:
-//   Row records     — one record per supported metadata table.
-//   MetadataTables  — mutable container for all rows.
-//   addXxx helpers  — append a row and return its 1-based row index.
-//   Coded-index helpers — encode (table-tag, row) into the packed wire forms
-//                         used as foreign-key fields in row records.
-//
-// Supported tables (the minimum set needed to emit a valid CLI assembly):
-//   Module (0x00), TypeRef (0x01), TypeDef (0x02), Field (0x04),
-//   MethodDef (0x06), Param (0x08), MemberRef (0x0A), CustomAttr (0x0C),
-//   StandAloneSig (0x11), Assembly (0x20), AssemblyRef (0x23).
-//
-// All heap references (name, signature, …) are stored as Int indices into
-// the corresponding heap (#Strings, #Blob, #GUID); the heap builder (heaps.l)
-// produces these indices, and the layout engine (assembler.l) resolves RVAs.
-//
-// Row indices are 1-based integers throughout (per ECMA-335 §II.22).
-
+//! msil/tables.l — ECMA-335 §II.22 metadata table model and row-index allocators.
+//!
+//! Provides:
+//!   Row records     — one record per supported metadata table.
+//!   MetadataTables  — mutable container for all rows.
+//!   addXxx helpers  — append a row and return its 1-based row index.
+//!   Coded-index helpers — encode (table-tag, row) into the packed wire forms
+//!                         used as foreign-key fields in row records.
+//!
+//! Supported tables (the minimum set needed to emit a valid CLI assembly):
+//!   Module (0x00), TypeRef (0x01), TypeDef (0x02), Field (0x04),
+//!   MethodDef (0x06), Param (0x08), MemberRef (0x0A), CustomAttr (0x0C),
+//!   StandAloneSig (0x11), Assembly (0x20), AssemblyRef (0x23).
+//!
+//! All heap references (name, signature, …) are stored as Int indices into
+//! the corresponding heap (#Strings, #Blob, #GUID); the heap builder (heaps.l)
+//! produces these indices, and the layout engine (assembler.l) resolves RVAs.
+//!
+//! Row indices are 1-based integers throughout (per ECMA-335 §II.22).
 package Msil.Tables
 
 import Msil.Kernel
@@ -25,363 +24,463 @@ import Std.Core
 import Std.Collections
 
 // ── TypeDef attribute flags (ECMA-335 §II.23.1.15) ────────────────────────────
-pub val TDF_PRIVATE            : Int = 0x00000000
-pub val TDF_PUBLIC             : Int = 0x00000001
-pub val TDF_NESTED_PUBLIC      : Int = 0x00000002
-pub val TDF_NESTED_PRIVATE     : Int = 0x00000003
-pub val TDF_NESTED_FAMILY      : Int = 0x00000004
-pub val TDF_AUTO_LAYOUT        : Int = 0x00000000
-pub val TDF_SEQUENTIAL_LAYOUT  : Int = 0x00000008
-pub val TDF_EXPLICIT_LAYOUT    : Int = 0x00000010
-pub val TDF_CLASS              : Int = 0x00000000
-pub val TDF_INTERFACE          : Int = 0x00000020
-pub val TDF_ABSTRACT           : Int = 0x00000080
-pub val TDF_SEALED             : Int = 0x00000100
-pub val TDF_SPECIAL_NAME       : Int = 0x00000400
-pub val TDF_BEFORE_FIELD_INIT  : Int = 0x00100000
-pub val TDF_RT_SPECIAL_NAME    : Int = 0x00000800
+pub val TDF_PRIVATE: Int = 0x00000000
+
+pub val TDF_PUBLIC: Int = 0x00000001
+
+pub val TDF_NESTED_PUBLIC: Int = 0x00000002
+
+pub val TDF_NESTED_PRIVATE: Int = 0x00000003
+
+pub val TDF_NESTED_FAMILY: Int = 0x00000004
+
+pub val TDF_AUTO_LAYOUT: Int = 0x00000000
+
+pub val TDF_SEQUENTIAL_LAYOUT: Int = 0x00000008
+
+pub val TDF_EXPLICIT_LAYOUT: Int = 0x00000010
+
+pub val TDF_CLASS: Int = 0x00000000
+
+pub val TDF_INTERFACE: Int = 0x00000020
+
+pub val TDF_ABSTRACT: Int = 0x00000080
+
+pub val TDF_SEALED: Int = 0x00000100
+
+pub val TDF_SPECIAL_NAME: Int = 0x00000400
+
+pub val TDF_BEFORE_FIELD_INIT: Int = 0x00100000
+
+pub val TDF_RT_SPECIAL_NAME: Int = 0x00000800
 
 // ── MethodDef attribute flags (ECMA-335 §II.23.1.10) ─────────────────────────
-pub val MDA_PRIVATE_SCOPE      : Int = 0x0000  // not nameable
-pub val MDA_PRIVATE            : Int = 0x0001
-pub val MDA_FAM_AND_ASSEM      : Int = 0x0002
-pub val MDA_ASSEM              : Int = 0x0003
-pub val MDA_FAMILY             : Int = 0x0004
-pub val MDA_FAM_OR_ASSEM       : Int = 0x0005
-pub val MDA_PUBLIC             : Int = 0x0006
-pub val MDA_STATIC             : Int = 0x0010
-pub val MDA_FINAL              : Int = 0x0020
-pub val MDA_VIRTUAL            : Int = 0x0040
-pub val MDA_HIDE_BY_SIG        : Int = 0x0080
-pub val MDA_VTABLE_LAYOUT_NEW  : Int = 0x0100
-pub val MDA_NEW_SLOT           : Int = 0x0100
-pub val MDA_STRICT             : Int = 0x0200
-pub val MDA_ABSTRACT           : Int = 0x0400
-pub val MDA_SPECIAL_NAME       : Int = 0x0800
-pub val MDA_RTS_SPECIAL_NAME   : Int = 0x1000
-pub val MDA_PINVOKE_IMPL       : Int = 0x2000
+pub val MDA_PRIVATE_SCOPE: Int = 0x0000
+
+// not nameable
+pub val MDA_PRIVATE: Int = 0x0001
+
+pub val MDA_FAM_AND_ASSEM: Int = 0x0002
+
+pub val MDA_ASSEM: Int = 0x0003
+
+pub val MDA_FAMILY: Int = 0x0004
+
+pub val MDA_FAM_OR_ASSEM: Int = 0x0005
+
+pub val MDA_PUBLIC: Int = 0x0006
+
+pub val MDA_STATIC: Int = 0x0010
+
+pub val MDA_FINAL: Int = 0x0020
+
+pub val MDA_VIRTUAL: Int = 0x0040
+
+pub val MDA_HIDE_BY_SIG: Int = 0x0080
+
+pub val MDA_VTABLE_LAYOUT_NEW: Int = 0x0100
+
+pub val MDA_NEW_SLOT: Int = 0x0100
+
+pub val MDA_STRICT: Int = 0x0200
+
+pub val MDA_ABSTRACT: Int = 0x0400
+
+pub val MDA_SPECIAL_NAME: Int = 0x0800
+
+pub val MDA_RTS_SPECIAL_NAME: Int = 0x1000
+
+pub val MDA_PINVOKE_IMPL: Int = 0x2000
 
 // ── MethodImpl attribute flags (ECMA-335 §II.23.1.11) ────────────────────────
-pub val MIA_IL                 : Int = 0x0000
-pub val MIA_NATIVE             : Int = 0x0001
-pub val MIA_OPTIL              : Int = 0x0002
-pub val MIA_RUNTIME            : Int = 0x0003
-pub val MIA_MANAGED            : Int = 0x0000
-pub val MIA_UNMANAGED          : Int = 0x0004
-pub val MIA_NO_INLINING        : Int = 0x0008
-pub val MIA_FORWARD_REF        : Int = 0x0010
-pub val MIA_SYNCHRONIZED       : Int = 0x0020
-pub val MIA_NO_OPTIMIZATION    : Int = 0x0040
-pub val MIA_PRESERVE_SIG       : Int = 0x0080
-pub val MIA_INTERNAL_CALL      : Int = 0x1000
+pub val MIA_IL: Int = 0x0000
+
+pub val MIA_NATIVE: Int = 0x0001
+
+pub val MIA_OPTIL: Int = 0x0002
+
+pub val MIA_RUNTIME: Int = 0x0003
+
+pub val MIA_MANAGED: Int = 0x0000
+
+pub val MIA_UNMANAGED: Int = 0x0004
+
+pub val MIA_NO_INLINING: Int = 0x0008
+
+pub val MIA_FORWARD_REF: Int = 0x0010
+
+pub val MIA_SYNCHRONIZED: Int = 0x0020
+
+pub val MIA_NO_OPTIMIZATION: Int = 0x0040
+
+pub val MIA_PRESERVE_SIG: Int = 0x0080
+
+pub val MIA_INTERNAL_CALL: Int = 0x1000
 
 // ── Field attribute flags (ECMA-335 §II.23.1.5) ──────────────────────────────
-pub val FDA_PRIVATE_SCOPE      : Int = 0x0000
-pub val FDA_PRIVATE            : Int = 0x0001
-pub val FDA_FAM_AND_ASSEM      : Int = 0x0002
-pub val FDA_ASSEMBLY           : Int = 0x0003
-pub val FDA_FAMILY             : Int = 0x0004
-pub val FDA_FAM_OR_ASSEM       : Int = 0x0005
-pub val FDA_PUBLIC             : Int = 0x0006
-pub val FDA_STATIC             : Int = 0x0010
-pub val FDA_INIT_ONLY          : Int = 0x0020
-pub val FDA_LITERAL            : Int = 0x0040
-pub val FDA_SPECIAL_NAME       : Int = 0x0200
-pub val FDA_RT_SPECIAL_NAME    : Int = 0x0400
-pub val FDA_HAS_DEFAULT        : Int = 0x8000   // field has a constant in the Constant table
+pub val FDA_PRIVATE_SCOPE: Int = 0x0000
 
+pub val FDA_PRIVATE: Int = 0x0001
+
+pub val FDA_FAM_AND_ASSEM: Int = 0x0002
+
+pub val FDA_ASSEMBLY: Int = 0x0003
+
+pub val FDA_FAMILY: Int = 0x0004
+
+pub val FDA_FAM_OR_ASSEM: Int = 0x0005
+
+pub val FDA_PUBLIC: Int = 0x0006
+
+pub val FDA_STATIC: Int = 0x0010
+
+pub val FDA_INIT_ONLY: Int = 0x0020
+
+pub val FDA_LITERAL: Int = 0x0040
+
+pub val FDA_SPECIAL_NAME: Int = 0x0200
+
+pub val FDA_RT_SPECIAL_NAME: Int = 0x0400
+
+pub val FDA_HAS_DEFAULT: Int = 0x8000
+
+// field has a constant in the Constant table
 // ── Param attribute flags (ECMA-335 §II.23.1.13) ─────────────────────────────
-pub val PRA_NONE               : Int = 0x0000
-pub val PRA_IN                 : Int = 0x0001
-pub val PRA_OUT                : Int = 0x0002
-pub val PRA_OPTIONAL           : Int = 0x0010
-pub val PRA_HAS_DEFAULT        : Int = 0x1000
-pub val PRA_HAS_FIELD_MARSHAL  : Int = 0x2000
+pub val PRA_NONE: Int = 0x0000
+
+pub val PRA_IN: Int = 0x0001
+
+pub val PRA_OUT: Int = 0x0002
+
+pub val PRA_OPTIONAL: Int = 0x0010
+
+pub val PRA_HAS_DEFAULT: Int = 0x1000
+
+pub val PRA_HAS_FIELD_MARSHAL: Int = 0x2000
 
 // ── Assembly flags (ECMA-335 §II.23.1.2) ─────────────────────────────────────
-pub val ASF_NONE               : Int = 0x0000
-pub val ASF_PUBLIC_KEY         : Int = 0x0001
-pub val ASF_RETARGETABLE       : Int = 0x0100
+pub val ASF_NONE: Int = 0x0000
+
+pub val ASF_PUBLIC_KEY: Int = 0x0001
+
+pub val ASF_RETARGETABLE: Int = 0x0100
+
 pub val ASF_DISABLE_JIT_COMPILE: Int = 0x4000
-pub val ASF_ENABLE_JIT_TRACK   : Int = 0x8000
+
+pub val ASF_ENABLE_JIT_TRACK: Int = 0x8000
 
 // ── Hash algorithm IDs ────────────────────────────────────────────────────────
-pub val HASH_ALG_NONE          : Int = 0x0000
-pub val HASH_ALG_MD5           : Int = 0x8003
-pub val HASH_ALG_SHA1          : Int = 0x8004
-pub val HASH_ALG_SHA256        : Int = 0x800C
+pub val HASH_ALG_NONE: Int = 0x0000
+
+pub val HASH_ALG_MD5: Int = 0x8003
+
+pub val HASH_ALG_SHA1: Int = 0x8004
+
+pub val HASH_ALG_SHA256: Int = 0x800C
 
 // ── Coded-index helpers ────────────────────────────────────────────────────────
 //
 // Each coded index encodes (row, table-tag) as row<<tagBits | tag.
 // Row is 1-based; tag 0 means "null" (no reference).
-
 // ResolutionScope (2-bit tag, §II.24.2.6 tag table 7):
 //   Module=0, ModuleRef=1, AssemblyRef=2, TypeRef=3
-pub func rsModule(row: in Int): Int    = (row * 4) + 0
+pub func rsModule(row: in Int): Int = (row * 4) + 0
+
 pub func rsModuleRef(row: in Int): Int = (row * 4) + 1
+
 pub func rsAssemblyRef(row: in Int): Int = (row * 4) + 2
-pub func rsTypeRef(row: in Int): Int   = (row * 4) + 3
+
+pub func rsTypeRef(row: in Int): Int = (row * 4) + 3
 
 // TypeDefOrRef (2-bit tag, §II.24.2.6 tag table 14):
 //   TypeDef=0, TypeRef=1, TypeSpec=2
-pub func tdrTypeDef(row: in Int): Int  = (row * 4) + 0
-pub func tdrTypeRef(row: in Int): Int  = (row * 4) + 1
+pub func tdrTypeDef(row: in Int): Int = (row * 4) + 0
+
+pub func tdrTypeRef(row: in Int): Int = (row * 4) + 1
+
 pub func tdrTypeSpec(row: in Int): Int = (row * 4) + 2
 
 // MemberRefParent (3-bit tag, §II.24.2.6 tag table 8):
 //   TypeDef=0, TypeRef=1, ModuleRef=2, MethodDef=3, TypeSpec=4
-pub func mrpTypeDef(row: in Int): Int   = (row * 8) + 0
-pub func mrpTypeRef(row: in Int): Int   = (row * 8) + 1
+pub func mrpTypeDef(row: in Int): Int = (row * 8) + 0
+
+pub func mrpTypeRef(row: in Int): Int = (row * 8) + 1
+
 pub func mrpModuleRef(row: in Int): Int = (row * 8) + 2
+
 pub func mrpMethodDef(row: in Int): Int = (row * 8) + 3
-pub func mrpTypeSpec(row: in Int): Int  = (row * 8) + 4
+
+pub func mrpTypeSpec(row: in Int): Int = (row * 8) + 4
 
 // HasCustomAttribute (5-bit tag, §II.24.2.6 tag table 2):
 //   MethodDef=0, Field=1, TypeRef=2, TypeDef=3, Param=4,
 //   InterfaceImpl=5, MemberRef=6, Module=7, DeclSecurity=8,
 //   Property=9, Event=10, StandAloneSig=11, ModuleRef=12,
 //   TypeSpec=13, Assembly=14, AssemblyRef=15
-pub func hcaMethodDef(row: in Int): Int  = (row * 32) + 0
-pub func hcaField(row: in Int): Int      = (row * 32) + 1
-pub func hcaTypeRef(row: in Int): Int    = (row * 32) + 2
-pub func hcaTypeDef(row: in Int): Int    = (row * 32) + 3
-pub func hcaParam(row: in Int): Int      = (row * 32) + 4
-pub func hcaMemberRef(row: in Int): Int  = (row * 32) + 6
-pub func hcaModule(row: in Int): Int     = (row * 32) + 7
-pub func hcaAssembly(row: in Int): Int   = (row * 32) + 14
+pub func hcaMethodDef(row: in Int): Int = (row * 32) + 0
+
+pub func hcaField(row: in Int): Int = (row * 32) + 1
+
+pub func hcaTypeRef(row: in Int): Int = (row * 32) + 2
+
+pub func hcaTypeDef(row: in Int): Int = (row * 32) + 3
+
+pub func hcaParam(row: in Int): Int = (row * 32) + 4
+
+pub func hcaMemberRef(row: in Int): Int = (row * 32) + 6
+
+pub func hcaModule(row: in Int): Int = (row * 32) + 7
+
+pub func hcaAssembly(row: in Int): Int = (row * 32) + 14
+
 pub func hcaAssemblyRef(row: in Int): Int = (row * 32) + 15
 
 // CustomAttributeType (3-bit tag, §II.24.2.6 tag table 1):
 //   MethodDef=2, MemberRef=3
 pub func catMethodDef(row: in Int): Int = (row * 8) + 2
+
 pub func catMemberRef(row: in Int): Int = (row * 8) + 3
 
 // ── Row records ───────────────────────────────────────────────────────────────
-
 // Module (Table 0x00) — ECMA-335 §II.22.30.  Exactly one row per module.
 pub record ModuleRow {
-  generation: Int   // reserved, always 0
-  name:       Int   // #Strings index of the module name
-  mvid:       Int   // #GUID 1-based index (module version GUID)
-  encId:      Int   // #GUID 1-based index (0 if not EnC)
-  encBaseId:  Int   // #GUID 1-based index (0 if not EnC)
+  generation: Int  // reserved, always 0
+  name: Int  // #Strings index of the module name
+  mvid: Int  // #GUID 1-based index (module version GUID)
+  encId: Int  // #GUID 1-based index (0 if not EnC)
+  encBaseId: Int
+  // #GUID 1-based index (0 if not EnC)
+  // TypeRef (Table 0x01) — ECMA-335 §II.22.38.
 }
 
-// TypeRef (Table 0x01) — ECMA-335 §II.22.38.
 pub record TypeRefRow {
   resolutionScope: Int  // coded: ResolutionScope
-  typeName:        Int  // #Strings
-  typeNamespace:   Int  // #Strings (0 = global namespace)
+  typeName: Int  // #Strings
+  typeNamespace: Int
+  // #Strings (0 = global namespace)
+  // TypeDef (Table 0x02) — ECMA-335 §II.22.37.
+  // fieldList and methodList are 1-based indices into Field and MethodDef tables.
+  // They point to the first row owned by this type; rows up to (but not including)
+  // the next TypeDef's list index are implicitly owned.
 }
 
-// TypeDef (Table 0x02) — ECMA-335 §II.22.37.
-// fieldList and methodList are 1-based indices into Field and MethodDef tables.
-// They point to the first row owned by this type; rows up to (but not including)
-// the next TypeDef's list index are implicitly owned.
 pub record TypeDefRow {
-  flags:         Int  // TypeAttributes
-  typeName:      Int  // #Strings
+  flags: Int  // TypeAttributes
+  typeName: Int  // #Strings
   typeNamespace: Int  // #Strings (0 = global)
-  extends:       Int  // coded: TypeDefOrRef (0 = no base, valid only for System.Object)
-  fieldList:     Int  // 1-based index into Field table (or Fields.count+1 if no fields)
-  methodList:    Int  // 1-based index into MethodDef table (or MethodDefs.count+1 if no methods)
+  extends: Int  // coded: TypeDefOrRef (0 = no base, valid only for System.Object)
+  fieldList: Int  // 1-based index into Field table (or Fields.count+1 if no fields)
+  methodList: Int
+  // 1-based index into MethodDef table (or MethodDefs.count+1 if no methods)
+  // Field (Table 0x04) — ECMA-335 §II.22.15.
 }
 
-// Field (Table 0x04) — ECMA-335 §II.22.15.
 pub record FieldRow {
-  flags:     Int  // FieldAttributes
-  name:      Int  // #Strings
-  signature: Int  // #Blob: FieldSig (starts with 0x06)
+  flags: Int  // FieldAttributes
+  name: Int  // #Strings
+  signature: Int
+  // #Blob: FieldSig (starts with 0x06)
+  // MethodDef (Table 0x06) — ECMA-335 §II.22.26.
+  // rva is filled in by the layout engine; use 0 initially and patch during PE
+  // serialization.  paramList points to the first Param row owned by this method.
 }
 
-// MethodDef (Table 0x06) — ECMA-335 §II.22.26.
-// rva is filled in by the layout engine; use 0 initially and patch during PE
-// serialization.  paramList points to the first Param row owned by this method.
 pub record MethodDefRow {
-  rva:       Int  // RVA of method body in .text; 0 = abstract/extern
+  rva: Int  // RVA of method body in .text; 0 = abstract/extern
   implFlags: Int  // MethodImplAttributes
-  flags:     Int  // MethodAttributes
-  name:      Int  // #Strings
+  flags: Int  // MethodAttributes
+  name: Int  // #Strings
   signature: Int  // #Blob: MethodSig
-  paramList: Int  // 1-based index into Param table
+  paramList: Int
+  // 1-based index into Param table
+  // Param (Table 0x08) — ECMA-335 §II.22.33.
+  // sequence=0 is the return value; sequence=1..n are the positional parameters.
 }
 
-// Param (Table 0x08) — ECMA-335 §II.22.33.
-// sequence=0 is the return value; sequence=1..n are the positional parameters.
 pub record ParamRow {
-  flags:    Int  // ParamAttributes
+  flags: Int  // ParamAttributes
   sequence: Int  // 0=return, 1..n=params
-  name:     Int  // #Strings (may be 0 if unnamed)
+  name: Int
+  // #Strings (may be 0 if unnamed)
+  // MemberRef (Table 0x0A) — ECMA-335 §II.22.25.
+  // References external fields and methods (those not defined in this module).
 }
 
-// MemberRef (Table 0x0A) — ECMA-335 §II.22.25.
-// References external fields and methods (those not defined in this module).
 pub record MemberRefRow {
-  class:     Int  // coded: MemberRefParent
-  name:      Int  // #Strings
-  signature: Int  // #Blob: MethodSig or FieldSig
+  class: Int  // coded: MemberRefParent
+  name: Int  // #Strings
+  signature: Int
+  // #Blob: MethodSig or FieldSig
+  // InterfaceImpl (Table 0x09) — ECMA-335 §II.22.23.
+  // Each row records that TypeDef[class_] implements the interface identified by
+  // the TypeDefOrRef coded index `interface_`.  Must be sorted by class_, then
+  // by interface_ (ascending) for CLR compatibility.
 }
 
-// InterfaceImpl (Table 0x09) — ECMA-335 §II.22.23.
-// Each row records that TypeDef[class_] implements the interface identified by
-// the TypeDefOrRef coded index `interface_`.  Must be sorted by class_, then
-// by interface_ (ascending) for CLR compatibility.
 pub record InterfaceImplRow {
-  class_:     Int  // 1-based TypeDef row index
-  interface_: Int  // coded: TypeDefOrRef
+  class_: Int  // 1-based TypeDef row index
+  interface_: Int
+  // coded: TypeDefOrRef
+  // CustomAttribute (Table 0x0C) — ECMA-335 §II.22.10.
+  // `type_` is the constructor being called; `value` is the serialized arguments.
 }
 
-// CustomAttribute (Table 0x0C) — ECMA-335 §II.22.10.
-// `type_` is the constructor being called; `value` is the serialized arguments.
 pub record CustomAttrRow {
   parent: Int  // coded: HasCustomAttribute
-  type_:  Int  // coded: CustomAttributeType (ctor reference)
-  value:  Int  // #Blob (0 = no value / empty blob)
+  type_: Int  // coded: CustomAttributeType (ctor reference)
+  value: Int
+  // #Blob (0 = no value / empty blob)
+  // Assembly (Table 0x20) — ECMA-335 §II.22.2.  Exactly one row per assembly.
 }
 
-// Assembly (Table 0x20) — ECMA-335 §II.22.2.  Exactly one row per assembly.
 pub record AssemblyRow {
-  hashAlgId:      Int  // AssemblyHashAlgorithm (HASH_ALG_*)
-  majorVersion:   Int
-  minorVersion:   Int
-  buildNumber:    Int
+  hashAlgId: Int  // AssemblyHashAlgorithm (HASH_ALG_*)
+  majorVersion: Int
+  minorVersion: Int
+  buildNumber: Int
   revisionNumber: Int
-  flags:          Int  // AssemblyFlags
-  publicKey:      Int  // #Blob (0 = no public key / delay-signed)
-  name:           Int  // #Strings
-  culture:        Int  // #Strings (0 = culture-neutral)
+  flags: Int  // AssemblyFlags
+  publicKey: Int  // #Blob (0 = no public key / delay-signed)
+  name: Int  // #Strings
+  culture: Int
+  // #Strings (0 = culture-neutral)
+  // StandAloneSig (Table 0x11) — ECMA-335 §II.22.36.
+  // Holds a standalone signature blob, used for local variable type lists
+  // (LocalVarSig) referenced by a fat method header's LocalVarSigTok field.
 }
 
-// StandAloneSig (Table 0x11) — ECMA-335 §II.22.36.
-// Holds a standalone signature blob, used for local variable type lists
-// (LocalVarSig) referenced by a fat method header's LocalVarSigTok field.
 pub record StandAloneSigRow {
-  signature: Int  // #Blob: LocalVarSig or MethodSig
+  signature: Int
+  // #Blob: LocalVarSig or MethodSig
+  // TypeSpec (Table 0x1B) — ECMA-335 §II.22.39.
+  // Encodes a type that is not directly named by a TypeDef or TypeRef,
+  // such as a generic instantiation (e.g. List<object>).
 }
 
-// TypeSpec (Table 0x1B) — ECMA-335 §II.22.39.
-// Encodes a type that is not directly named by a TypeDef or TypeRef,
-// such as a generic instantiation (e.g. List<object>).
 pub record TypeSpecRow {
-  signature: Int  // #Blob: type signature
+  signature: Int
+  // #Blob: type signature
+  // AssemblyRef (Table 0x23) — ECMA-335 §II.22.5.
 }
 
-// AssemblyRef (Table 0x23) — ECMA-335 §II.22.5.
 pub record AssemblyRefRow {
-  majorVersion:   Int
-  minorVersion:   Int
-  buildNumber:    Int
+  majorVersion: Int
+  minorVersion: Int
+  buildNumber: Int
   revisionNumber: Int
-  flags:          Int  // AssemblyFlags
+  flags: Int  // AssemblyFlags
   publicKeyToken: Int  // #Blob (8-byte token, or 0 if none)
-  name:           Int  // #Strings
-  culture:        Int  // #Strings (0 = culture-neutral)
-  hashValue:      Int  // #Blob (0 if no hash)
+  name: Int  // #Strings
+  culture: Int  // #Strings (0 = culture-neutral)
+  hashValue: Int
+  // #Blob (0 if no hash)
+  // ManifestResource (Table 0x28) — ECMA-335 §II.22.24.
+  //
+  // One row per managed resource exposed by the assembly.  For
+  // resources embedded in the assembly itself (the only kind the
+  // self-hosted bridge produces), `implementation` is the nil
+  // `Implementation` coded index (value 0); for resources in another
+  // file or assembly it would point into the File / AssemblyRef
+  // tables.  `offset` is the byte offset of this resource's
+  // length-prefixed payload inside the assembly's Resources data
+  // region (the region whose RVA + size live in the CLR header).
 }
 
-// ManifestResource (Table 0x28) — ECMA-335 §II.22.24.
-//
-// One row per managed resource exposed by the assembly.  For
-// resources embedded in the assembly itself (the only kind the
-// self-hosted bridge produces), `implementation` is the nil
-// `Implementation` coded index (value 0); for resources in another
-// file or assembly it would point into the File / AssemblyRef
-// tables.  `offset` is the byte offset of this resource's
-// length-prefixed payload inside the assembly's Resources data
-// region (the region whose RVA + size live in the CLR header).
 pub record ManifestResourceRow {
-  offset:         Int  // u4: byte offset into the Resources data region
-  flags:          Int  // u4: ManifestResourceAttributes (1 = Public, 2 = Private)
-  name:           Int  // #Strings: resource name
-  implementation: Int  // coded: Implementation (0 = embedded in this assembly)
+  offset: Int  // u4: byte offset into the Resources data region
+  flags: Int  // u4: ManifestResourceAttributes (1 = Public, 2 = Private)
+  name: Int  // #Strings: resource name
+  implementation: Int
+  // coded: Implementation (0 = embedded in this assembly)
+  // Constant (Table 0x0B) — ECMA-335 §II.22.9.
+  // Records a compile-time constant value for a Field, Param, or Property.
 }
 
-// Constant (Table 0x0B) — ECMA-335 §II.22.9.
-// Records a compile-time constant value for a Field, Param, or Property.
 pub record ConstantRow {
-  type_:  Int  // ELEMENT_TYPE_* constant (e.g., 0x08 = ELEMENT_TYPE_I4)
+  type_: Int  // ELEMENT_TYPE_* constant (e.g., 0x08 = ELEMENT_TYPE_I4)
   parent: Int  // coded: HasConstant (Field=0, Param=1, Property=2), 2-bit tag
-  value:  Int  // #Blob index of little-endian constant value bytes
+  value: Int
+  // #Blob index of little-endian constant value bytes
+  // MethodImpl (Table 0x19) — ECMA-335 §II.22.27.
+  // Maps an interface method slot to its implementing method in a type.
 }
 
-// MethodImpl (Table 0x19) — ECMA-335 §II.22.27.
-// Maps an interface method slot to its implementing method in a type.
 pub record MethodImplRow {
-  class_:              Int  // 1-based TypeDef row of the implementing type
-  methodBody:          Int  // coded: MethodDefOrRef — the implementing method
-  methodDeclaration:   Int  // coded: MethodDefOrRef — the interface slot being implemented
+  class_: Int  // 1-based TypeDef row of the implementing type
+  methodBody: Int  // coded: MethodDefOrRef — the implementing method
+  methodDeclaration: Int
+  // coded: MethodDefOrRef — the interface slot being implemented
+  // MethodSpec (Table 0x2B) — ECMA-335 §II.22.29.
+  // Instantiates a generic method: `method` is a MethodDefOrRef coded index to
+  // the open generic method (a MemberRef or MethodDef), and `instantiation` is a
+  // #Blob index to a MethodSpec signature (GENERICINST + arg count + type args,
+  // §II.23.2.15).  A call site references the resulting row via a 0x2B token.
 }
 
-// MethodSpec (Table 0x2B) — ECMA-335 §II.22.29.
-// Instantiates a generic method: `method` is a MethodDefOrRef coded index to
-// the open generic method (a MemberRef or MethodDef), and `instantiation` is a
-// #Blob index to a MethodSpec signature (GENERICINST + arg count + type args,
-// §II.23.2.15).  A call site references the resulting row via a 0x2B token.
 pub record MethodSpecRow {
-  method:        Int  // coded: MethodDefOrRef
-  instantiation: Int  // #Blob: MethodSpec signature
+  method: Int  // coded: MethodDefOrRef
+  instantiation: Int
+  // #Blob: MethodSpec signature
+  // ── Coded-index helpers (additional) ─────────────────────────────────────────
+  // HasConstant (2-bit tag, §II.24.2.6 tag table 3):
+  //   Field=0, Param=1, Property=2
 }
 
-// ── Coded-index helpers (additional) ─────────────────────────────────────────
-
-// HasConstant (2-bit tag, §II.24.2.6 tag table 3):
-//   Field=0, Param=1, Property=2
 pub func hconstField(row: in Int): Int = (row * 4) + 0
+
 pub func hconstParam(row: in Int): Int = (row * 4) + 1
 
 // MethodDefOrRef (1-bit tag, §II.24.2.6 tag table 10):
 //   MethodDef=0, MemberRef=1
 pub func mdorMethodDef(row: in Int): Int = (row * 2) + 0
+
 pub func mdorMemberRef(row: in Int): Int = (row * 2) + 1
 
 // ── MetadataTables container ───────────────────────────────────────────────────
-
 pub record MetadataTables {
-  modules:          List[ModuleRow]
-  typeRefs:         List[TypeRefRow]
-  typeDefs:         List[TypeDefRow]
-  fields:           List[FieldRow]
-  methodDefs:       List[MethodDefRow]
-  params_:          List[ParamRow]
-  interfaceImpls:   List[InterfaceImplRow]
-  memberRefs:       List[MemberRefRow]
-  constants:        List[ConstantRow]
-  customAttrs:      List[CustomAttrRow]
-  standAloneSigs:   List[StandAloneSigRow]
-  methodImpls:      List[MethodImplRow]
-  typeSpecs:        List[TypeSpecRow]
-  assemblies:       List[AssemblyRow]
-  assemblyRefs:     List[AssemblyRefRow]
+  modules: List[ModuleRow]
+  typeRefs: List[TypeRefRow]
+  typeDefs: List[TypeDefRow]
+  fields: List[FieldRow]
+  methodDefs: List[MethodDefRow]
+  params_: List[ParamRow]
+  interfaceImpls: List[InterfaceImplRow]
+  memberRefs: List[MemberRefRow]
+  constants: List[ConstantRow]
+  customAttrs: List[CustomAttrRow]
+  standAloneSigs: List[StandAloneSigRow]
+  methodImpls: List[MethodImplRow]
+  typeSpecs: List[TypeSpecRow]
+  assemblies: List[AssemblyRow]
+  assemblyRefs: List[AssemblyRefRow]
   manifestResources: List[ManifestResourceRow]
-  methodSpecs:      List[MethodSpecRow]
+  methodSpecs: List[MethodSpecRow]
 }
 
 pub func newMetadataTables(): MetadataTables {
   MetadataTables(
-    modules        = newList(),
-    typeRefs       = newList(),
-    typeDefs       = newList(),
-    fields         = newList(),
-    methodDefs     = newList(),
-    params_        = newList(),
+    modules = newList(),
+    typeRefs = newList(),
+    typeDefs = newList(),
+    fields = newList(),
+    methodDefs = newList(),
+    params_ = newList(),
     interfaceImpls = newList(),
-    memberRefs     = newList(),
-    constants      = newList(),
-    customAttrs    = newList(),
+    memberRefs = newList(),
+    constants = newList(),
+    customAttrs = newList(),
     standAloneSigs = newList(),
-    methodImpls    = newList(),
-    typeSpecs      = newList(),
-    assemblies     = newList(),
-    assemblyRefs   = newList(),
+    methodImpls = newList(),
+    typeSpecs = newList(),
+    assemblies = newList(),
+    assemblyRefs = newList(),
     manifestResources = newList(),
-    methodSpecs    = newList()
+    methodSpecs = newList()
   )
 }
 
 // ── Row-index allocators ──────────────────────────────────────────────────────
 // Each returns the 1-based index of the newly-added row.
-
 pub func addModule(t: in MetadataTables, r: in ModuleRow): Int {
   t.modules.add(r)
   t.modules.count
@@ -493,26 +592,58 @@ pub func standaloneToken(row: in Int): Int {
 //
 // This serializer writes rows for tables 0x00..0x0C, 0x11, 0x1B, 0x20, and
 // 0x23.  Tables not in that set are omitted from the valid bitmask.
-
 // Table presence bitmask bits (one bit per table ID 0x00..0x3F).
-val TABLE_BIT_MODULE      : Long = 1i64           // table 0x00, bit 0
-val TABLE_BIT_TYPE_REF    : Long = 2i64           // table 0x01, bit 1
-val TABLE_BIT_TYPE_DEF    : Long = 4i64           // table 0x02, bit 2
-val TABLE_BIT_FIELD       : Long = 16i64          // table 0x04, bit 4
-val TABLE_BIT_METHOD_DEF  : Long = 64i64          // table 0x06, bit 6
-val TABLE_BIT_PARAM       : Long = 256i64         // table 0x08, bit 8
-val TABLE_BIT_INTERFACE_IMPL  : Long = 512i64           // table 0x09, bit 9
-val TABLE_BIT_MEMBER_REF      : Long = 1024i64          // table 0x0A, bit 10
-val TABLE_BIT_CONSTANT        : Long = 2048i64          // table 0x0B, bit 11 (2^11)
-val TABLE_BIT_CUSTOM_ATTR     : Long = 4096i64          // table 0x0C, bit 12
-val TABLE_BIT_STAND_ALONE_SIG : Long = 131072i64        // table 0x11, bit 17 (2^17)
-val TABLE_BIT_METHOD_IMPL     : Long = 33554432i64      // table 0x19, bit 25 (2^25)
-val TABLE_BIT_TYPE_SPEC       : Long = 134217728i64     // table 0x1B, bit 27 (2^27)
-val TABLE_BIT_ASSEMBLY        : Long = 4294967296i64    // table 0x20, bit 32 (2^32)
-val TABLE_BIT_ASSEMBLY_REF    : Long = 34359738368i64   // table 0x23, bit 35 (2^35)
-val TABLE_BIT_MANIFEST_RESOURCE : Long = 1099511627776i64 // table 0x28, bit 40 (2^40)
-val TABLE_BIT_METHOD_SPEC       : Long = 8796093022208i64 // table 0x2B, bit 43 (2^43)
+val TABLE_BIT_MODULE: Long = 1i64
 
+// table 0x00, bit 0
+val TABLE_BIT_TYPE_REF: Long = 2i64
+
+// table 0x01, bit 1
+val TABLE_BIT_TYPE_DEF: Long = 4i64
+
+// table 0x02, bit 2
+val TABLE_BIT_FIELD: Long = 16i64
+
+// table 0x04, bit 4
+val TABLE_BIT_METHOD_DEF: Long = 64i64
+
+// table 0x06, bit 6
+val TABLE_BIT_PARAM: Long = 256i64
+
+// table 0x08, bit 8
+val TABLE_BIT_INTERFACE_IMPL: Long = 512i64
+
+// table 0x09, bit 9
+val TABLE_BIT_MEMBER_REF: Long = 1024i64
+
+// table 0x0A, bit 10
+val TABLE_BIT_CONSTANT: Long = 2048i64
+
+// table 0x0B, bit 11 (2^11)
+val TABLE_BIT_CUSTOM_ATTR: Long = 4096i64
+
+// table 0x0C, bit 12
+val TABLE_BIT_STAND_ALONE_SIG: Long = 131072i64
+
+// table 0x11, bit 17 (2^17)
+val TABLE_BIT_METHOD_IMPL: Long = 33554432i64
+
+// table 0x19, bit 25 (2^25)
+val TABLE_BIT_TYPE_SPEC: Long = 134217728i64
+
+// table 0x1B, bit 27 (2^27)
+val TABLE_BIT_ASSEMBLY: Long = 4294967296i64
+
+// table 0x20, bit 32 (2^32)
+val TABLE_BIT_ASSEMBLY_REF: Long = 34359738368i64
+
+// table 0x23, bit 35 (2^35)
+val TABLE_BIT_MANIFEST_RESOURCE: Long = 1099511627776i64
+
+// table 0x28, bit 40 (2^40)
+val TABLE_BIT_METHOD_SPEC: Long = 8796093022208i64
+
+// table 0x2B, bit 43 (2^43)
 // Emit a 2-byte LE integer.
 func w2(buf: in ByteWriter, v: in Int): Unit {
   bufU1(buf, v % 256)
@@ -540,54 +671,122 @@ func w8(buf: in ByteWriter, v: in Long): Unit {
 // For small assemblies, pass 0.
 pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in ByteWriter): Unit {
   // Header
-  w4(buf, 0)         // reserved
-  bufU1(buf, 2)      // major version
-  bufU1(buf, 0)      // minor version
+  w4(buf, 0)  // reserved
+  bufU1(buf, 2)  // major version
+  bufU1(buf, 0)  // minor version
   bufU1(buf, heapSizes)
-  bufU1(buf, 1)      // reserved (bit 1 always set)
+  bufU1(buf, 1)  // reserved (bit 1 always set)
 
   // Valid bitmask
   var valid: Long = 0i64
-  if t.modules.count > 0      { valid = valid + TABLE_BIT_MODULE }
-  if t.typeRefs.count > 0     { valid = valid + TABLE_BIT_TYPE_REF }
-  if t.typeDefs.count > 0     { valid = valid + TABLE_BIT_TYPE_DEF }
-  if t.fields.count > 0       { valid = valid + TABLE_BIT_FIELD }
-  if t.methodDefs.count > 0   { valid = valid + TABLE_BIT_METHOD_DEF }
-  if t.params_.count > 0          { valid = valid + TABLE_BIT_PARAM }
-  if t.interfaceImpls.count > 0   { valid = valid + TABLE_BIT_INTERFACE_IMPL }
-  if t.memberRefs.count > 0       { valid = valid + TABLE_BIT_MEMBER_REF }
-  if t.constants.count > 0        { valid = valid + TABLE_BIT_CONSTANT }
-  if t.customAttrs.count > 0      { valid = valid + TABLE_BIT_CUSTOM_ATTR }
-  if t.standAloneSigs.count > 0   { valid = valid + TABLE_BIT_STAND_ALONE_SIG }
-  if t.methodImpls.count > 0      { valid = valid + TABLE_BIT_METHOD_IMPL }
-  if t.typeSpecs.count > 0        { valid = valid + TABLE_BIT_TYPE_SPEC }
-  if t.assemblies.count > 0       { valid = valid + TABLE_BIT_ASSEMBLY }
-  if t.assemblyRefs.count > 0     { valid = valid + TABLE_BIT_ASSEMBLY_REF }
-  if t.manifestResources.count > 0 { valid = valid + TABLE_BIT_MANIFEST_RESOURCE }
-  if t.methodSpecs.count > 0      { valid = valid + TABLE_BIT_METHOD_SPEC }
+  if t.modules.count > 0 {
+    valid = valid + TABLE_BIT_MODULE
+  }
+  if t.typeRefs.count > 0 {
+    valid = valid + TABLE_BIT_TYPE_REF
+  }
+  if t.typeDefs.count > 0 {
+    valid = valid + TABLE_BIT_TYPE_DEF
+  }
+  if t.fields.count > 0 {
+    valid = valid + TABLE_BIT_FIELD
+  }
+  if t.methodDefs.count > 0 {
+    valid = valid + TABLE_BIT_METHOD_DEF
+  }
+  if t.params_.count > 0 {
+    valid = valid + TABLE_BIT_PARAM
+  }
+  if t.interfaceImpls.count > 0 {
+    valid = valid + TABLE_BIT_INTERFACE_IMPL
+  }
+  if t.memberRefs.count > 0 {
+    valid = valid + TABLE_BIT_MEMBER_REF
+  }
+  if t.constants.count > 0 {
+    valid = valid + TABLE_BIT_CONSTANT
+  }
+  if t.customAttrs.count > 0 {
+    valid = valid + TABLE_BIT_CUSTOM_ATTR
+  }
+  if t.standAloneSigs.count > 0 {
+    valid = valid + TABLE_BIT_STAND_ALONE_SIG
+  }
+  if t.methodImpls.count > 0 {
+    valid = valid + TABLE_BIT_METHOD_IMPL
+  }
+  if t.typeSpecs.count > 0 {
+    valid = valid + TABLE_BIT_TYPE_SPEC
+  }
+  if t.assemblies.count > 0 {
+    valid = valid + TABLE_BIT_ASSEMBLY
+  }
+  if t.assemblyRefs.count > 0 {
+    valid = valid + TABLE_BIT_ASSEMBLY_REF
+  }
+  if t.manifestResources.count > 0 {
+    valid = valid + TABLE_BIT_MANIFEST_RESOURCE
+  }
+  if t.methodSpecs.count > 0 {
+    valid = valid + TABLE_BIT_METHOD_SPEC
+  }
   w8(buf, valid)
 
   // Sorted bitmask: all zero (no sorting performed here)
   w8(buf, 0i64)
 
   // Row counts (only for present tables, in table-number order)
-  if t.modules.count > 0      { w4(buf, t.modules.count) }
-  if t.typeRefs.count > 0     { w4(buf, t.typeRefs.count) }
-  if t.typeDefs.count > 0     { w4(buf, t.typeDefs.count) }
-  if t.fields.count > 0       { w4(buf, t.fields.count) }
-  if t.methodDefs.count > 0   { w4(buf, t.methodDefs.count) }
-  if t.params_.count > 0          { w4(buf, t.params_.count) }
-  if t.interfaceImpls.count > 0   { w4(buf, t.interfaceImpls.count) }
-  if t.memberRefs.count > 0       { w4(buf, t.memberRefs.count) }
-  if t.constants.count > 0        { w4(buf, t.constants.count) }
-  if t.customAttrs.count > 0      { w4(buf, t.customAttrs.count) }
-  if t.standAloneSigs.count > 0   { w4(buf, t.standAloneSigs.count) }
-  if t.methodImpls.count > 0      { w4(buf, t.methodImpls.count) }
-  if t.typeSpecs.count > 0        { w4(buf, t.typeSpecs.count) }
-  if t.assemblies.count > 0       { w4(buf, t.assemblies.count) }
-  if t.assemblyRefs.count > 0     { w4(buf, t.assemblyRefs.count) }
-  if t.manifestResources.count > 0 { w4(buf, t.manifestResources.count) }
-  if t.methodSpecs.count > 0      { w4(buf, t.methodSpecs.count) }
+  if t.modules.count > 0 {
+    w4(buf, t.modules.count)
+  }
+  if t.typeRefs.count > 0 {
+    w4(buf, t.typeRefs.count)
+  }
+  if t.typeDefs.count > 0 {
+    w4(buf, t.typeDefs.count)
+  }
+  if t.fields.count > 0 {
+    w4(buf, t.fields.count)
+  }
+  if t.methodDefs.count > 0 {
+    w4(buf, t.methodDefs.count)
+  }
+  if t.params_.count > 0 {
+    w4(buf, t.params_.count)
+  }
+  if t.interfaceImpls.count > 0 {
+    w4(buf, t.interfaceImpls.count)
+  }
+  if t.memberRefs.count > 0 {
+    w4(buf, t.memberRefs.count)
+  }
+  if t.constants.count > 0 {
+    w4(buf, t.constants.count)
+  }
+  if t.customAttrs.count > 0 {
+    w4(buf, t.customAttrs.count)
+  }
+  if t.standAloneSigs.count > 0 {
+    w4(buf, t.standAloneSigs.count)
+  }
+  if t.methodImpls.count > 0 {
+    w4(buf, t.methodImpls.count)
+  }
+  if t.typeSpecs.count > 0 {
+    w4(buf, t.typeSpecs.count)
+  }
+  if t.assemblies.count > 0 {
+    w4(buf, t.assemblies.count)
+  }
+  if t.assemblyRefs.count > 0 {
+    w4(buf, t.assemblyRefs.count)
+  }
+  if t.manifestResources.count > 0 {
+    w4(buf, t.manifestResources.count)
+  }
+  if t.methodSpecs.count > 0 {
+    w4(buf, t.methodSpecs.count)
+  }
 
   // Row data — each table in table-number order.
   // Row wire format: all heap indices (Strings, GUID, Blob) and simple table
@@ -691,7 +890,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   while coni < t.constants.count {
     val r = t.constants[coni]
     bufU1(buf, r.type_)
-    bufU1(buf, 0)           // padding byte (always 0)
+    bufU1(buf, 0)  // padding byte (always 0)
     w2(buf, r.parent)
     w2(buf, r.value)
     coni = coni + 1

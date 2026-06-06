@@ -1,24 +1,23 @@
-// msil_self_test_m2a.l — Stage M2a self-test for parameterized heap builders.
-//
-// Exercises all four heap types (StringHeap, BlobHeap, UsHeap, GuidHeap) and
-// verifies the structural invariants expected by the ECMA-335 layout engine.
-//
-// Checks emitted (one per line, key=value):
-//   strings_start_ok    — new heap starts at size 1 (the null byte at offset 0)
-//   string_intern_ok    — first intern returns offset 1; dedup returns same offset
-//   string_size_ok      — size after two distinct strings is correct
-//   string_bytes_ok     — serialized bytes match expected UTF-8 + null layout
-//   blob_start_ok       — new blob heap starts at size 1
-//   blob_intern_ok      — internBlob returns correct offset; dedup works
-//   blob_size_ok        — size after one 3-byte blob is correct (1+1+3 = 5)
-//   us_start_ok         — new US heap starts at size 1
-//   us_intern_ok        — internUs returns correct offset; dedup works
-//   us_size_ok          — size after interning "Hi" is correct (1 + 1 + 4 + 1 = 7)
-//   us_bytes_ok         — first byte after offset 0 is the compressed length (5)
-//   guid_start_ok       — new GUID heap starts at size 0
-//   guid_intern_ok      — appendGuid returns 1-based index 1
-//   guid_size_ok        — size after one GUID is 16
-
+//! msil_self_test_m2a.l — Stage M2a self-test for parameterized heap builders.
+//!
+//! Exercises all four heap types (StringHeap, BlobHeap, UsHeap, GuidHeap) and
+//! verifies the structural invariants expected by the ECMA-335 layout engine.
+//!
+//! Checks emitted (one per line, key=value):
+//!   strings_start_ok    — new heap starts at size 1 (the null byte at offset 0)
+//!   string_intern_ok    — first intern returns offset 1; dedup returns same offset
+//!   string_size_ok      — size after two distinct strings is correct
+//!   string_bytes_ok     — serialized bytes match expected UTF-8 + null layout
+//!   blob_start_ok       — new blob heap starts at size 1
+//!   blob_intern_ok      — internBlob returns correct offset; dedup works
+//!   blob_size_ok        — size after one 3-byte blob is correct (1+1+3 = 5)
+//!   us_start_ok         — new US heap starts at size 1
+//!   us_intern_ok        — internUs returns correct offset; dedup works
+//!   us_size_ok          — size after interning "Hi" is correct (1 + 1 + 4 + 1 = 7)
+//!   us_bytes_ok         — first byte after offset 0 is the compressed length (5)
+//!   guid_start_ok       — new GUID heap starts at size 0
+//!   guid_intern_ok      — appendGuid returns 1-based index 1
+//!   guid_size_ok        — size after one GUID is 16
 package Msil.SelfTestM2a
 
 import Msil.Heaps
@@ -27,7 +26,11 @@ import Std.Core
 import Std.Collections
 
 func check(label: in String, ok: in Bool): Unit {
-  if ok { println(label + "=true") } else { println(label + "=false") }
+  if ok {
+    println(label + "=true")
+  } else {
+    println(label + "=false")
+  }
 }
 
 func main(): Unit {
@@ -46,14 +49,20 @@ func main(): Unit {
   val shW = bufNew()
   serializeStrings(sh, shW)
   val shBytes = bufToList(shW)
-  check("string_bytes_ok",
-    shBytes[0] == 0 and
-    shBytes[1] == 72 and   // 'H'
-    shBytes[2] == 101 and  // 'e'
-    shBytes[3] == 108 and  // 'l'
-    shBytes[4] == 108 and  // 'l'
-    shBytes[5] == 111 and  // 'o'
-    shBytes[6] == 0)       // null terminator
+  check(
+    "string_bytes_ok",
+    shBytes[0] == 0 and shBytes[1] == 72 and
+      // 'H'
+      shBytes[2] == 101 and
+      // 'e'
+      shBytes[3] == 108 and
+      // 'l'
+      shBytes[4] == 108 and
+      // 'l'
+      shBytes[5] == 111 and
+      // 'o'
+      shBytes[6] == 0
+  )  // null terminator
 
   // ── BlobHeap ───────────────────────────────────────────────────────────────
   val bh = newBlobHeap()
@@ -91,7 +100,10 @@ func main(): Unit {
 
   val guidW = bufNew()
   var gi = 0
-  while gi < 16 { bufU1(guidW, 0); gi = gi + 1 }
+  while gi < 16 {
+    bufU1(guidW, 0)
+    gi = gi + 1
+  }
   val zeroGuid = bufToList(guidW)
 
   val gidx = appendGuid(gh, zeroGuid)
