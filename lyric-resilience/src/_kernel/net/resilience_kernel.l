@@ -1,24 +1,23 @@
-// Resilience.Kernel.Net — .NET circuit-breaker and retry extern boundary.
-//
-// Provides:
-//   sleepMs              — Thread.Sleep for retry backoff
-//   circuitIsOpen        — query per-named circuit state (thread-safe)
-//   circuitRecordSuccess — record a successful call
-//   circuitRecordFailure — record a failed call; may open the circuit
-//
-// Circuit state lives in a process-global ConcurrentDictionary keyed by
-// circuit name.  Per-entry Monitor locking ensures atomic read-modify-write
-// for the four mutable fields of CircuitEntry.  State-machine invariants:
-//   - consecutiveFailures >= 0
-//   - isOpen ==> openedAtMs > 0
-//
-// The half-open state machine is covered exhaustively by the
-// CircuitBreakerState formal-model tests in lyric-resilience/tests/
-// resilience_tests.l, which inject nowMs to keep tests deterministic.
-//
-// Only active when compiled with feature = "dotnet".
-// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-
+//! Resilience.Kernel.Net — .NET circuit-breaker and retry extern boundary.
+//!
+//! Provides:
+//!   sleepMs              — Thread.Sleep for retry backoff
+//!   circuitIsOpen        — query per-named circuit state (thread-safe)
+//!   circuitRecordSuccess — record a successful call
+//!   circuitRecordFailure — record a failed call; may open the circuit
+//!
+//! Circuit state lives in a process-global ConcurrentDictionary keyed by
+//! circuit name.  Per-entry Monitor locking ensures atomic read-modify-write
+//! for the four mutable fields of CircuitEntry.  State-machine invariants:
+//!   - consecutiveFailures >= 0
+//!   - isOpen ==> openedAtMs > 0
+//!
+//! The half-open state machine is covered exhaustively by the
+//! CircuitBreakerState formal-model tests in lyric-resilience/tests/
+//! resilience_tests.l, which inject nowMs to keep tests deterministic.
+//!
+//! Only active when compiled with feature = "dotnet".
+//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 @cfg(feature = "dotnet")
 package Resilience.Kernel.Net
 
@@ -37,9 +36,9 @@ func cdTryGetValue[K, V](dict: in ConcurrentDict[K, V], key: in K, value: out V)
 func cdTryAdd[K, V](dict: in ConcurrentDict[K, V], key: in K, value: in V): Bool = ()
 
 record CircuitEntry {
-  var consecutiveFailures:   Int  = 0
-  var isOpen:                Bool = false
-  var openedAtMs:            Long = 0i64
+  var consecutiveFailures: Int = 0
+  var isOpen: Bool = false
+  var openedAtMs: Long = 0i64
   var halfOpenProbeInFlight: Bool = false
 }
 
@@ -58,12 +57,7 @@ func getOrCreateEntry(name: in String): CircuitEntry {
   if cdTryGetValue(circuitRegistry, name, found) {
     return found
   }
-  val newEntry = CircuitEntry(
-    consecutiveFailures   = 0,
-    isOpen                = false,
-    openedAtMs            = 0i64,
-    halfOpenProbeInFlight = false
-  )
+  val newEntry = CircuitEntry(consecutiveFailures = 0, isOpen = false, openedAtMs = 0i64, halfOpenProbeInFlight = false)
   val _ = cdTryAdd(circuitRegistry, name, newEntry)
   var found2: CircuitEntry = default()
   if cdTryGetValue(circuitRegistry, name, found2) {
@@ -88,51 +82,57 @@ pub func circuitIsOpen(name: in String, cooldownMs: in Int): Bool
   requires: name.length > 0
   requires: cooldownMs > 0
 {
-  val entry = getOrCreateEntry(name)
-  monitorEnter(entry)
-  defer { monitorExit(entry) }
-  if not entry.isOpen {
+  val circuit = getOrCreateEntry(name)
+  monitorEnter(circuit)
+  defer {
+    monitorExit(circuit)
+  }
+  if not circuit.isOpen {
     return false
   }
-  val elapsed: Long = nowEpochMillis() - entry.openedAtMs
+  val elapsed: Long = nowEpochMillis() - circuit.openedAtMs
   if elapsed < cooldownMs.toLong() {
     return true
   }
-  if entry.halfOpenProbeInFlight {
+  if circuit.halfOpenProbeInFlight {
     return true
   }
-  entry.halfOpenProbeInFlight = true
+  circuit.halfOpenProbeInFlight = true
   false
 }
 
 pub func circuitRecordSuccess(name: in String): Unit
   requires: name.length > 0
 {
-  val entry = getOrCreateEntry(name)
-  monitorEnter(entry)
-  defer { monitorExit(entry) }
-  entry.consecutiveFailures   = 0
-  entry.isOpen                = false
-  entry.openedAtMs            = 0i64
-  entry.halfOpenProbeInFlight = false
+  val circuit = getOrCreateEntry(name)
+  monitorEnter(circuit)
+  defer {
+    monitorExit(circuit)
+  }
+  circuit.consecutiveFailures = 0
+  circuit.isOpen = false
+  circuit.openedAtMs = 0i64
+  circuit.halfOpenProbeInFlight = false
 }
 
 pub func circuitRecordFailure(name: in String, failureThreshold: in Int): Unit
   requires: name.length > 0
   requires: failureThreshold > 0
 {
-  val entry = getOrCreateEntry(name)
-  monitorEnter(entry)
-  defer { monitorExit(entry) }
-  entry.consecutiveFailures = entry.consecutiveFailures + 1
-  if entry.isOpen {
-    entry.openedAtMs            = nowEpochMillis()
-    entry.halfOpenProbeInFlight = false
+  val circuit = getOrCreateEntry(name)
+  monitorEnter(circuit)
+  defer {
+    monitorExit(circuit)
+  }
+  circuit.consecutiveFailures = circuit.consecutiveFailures + 1
+  if circuit.isOpen {
+    circuit.openedAtMs = nowEpochMillis()
+    circuit.halfOpenProbeInFlight = false
   } else {
-    if entry.consecutiveFailures >= failureThreshold {
-      entry.isOpen                = true
-      entry.openedAtMs            = nowEpochMillis()
-      entry.halfOpenProbeInFlight = false
+    if circuit.consecutiveFailures >= failureThreshold {
+      circuit.isOpen = true
+      circuit.openedAtMs = nowEpochMillis()
+      circuit.halfOpenProbeInFlight = false
     }
   }
 }

@@ -8,6 +8,7 @@
 package Ledger.Accounts
 
 import Std.Core
+import Std.Collections
 import Std.Json
 import Ledger.Accounting
 import Db
@@ -45,9 +46,9 @@ pub func listAll(conn: in DbConnection): Result[List[Account], LedgerError] {
   match conn.query(sql, []) {
     case Err(e) -> Err(LedgerError.DatabaseError(message = e.message))
     case Ok(rows) -> {
-      var accounts: List[Account] = []
+      val accounts: List[Account] = newList()
       for r in rows {
-        accounts = accounts + [rowToAccount(r)]
+        accounts.add(rowToAccount(r))
       }
       Ok(accounts)
     }

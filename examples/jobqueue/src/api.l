@@ -11,6 +11,7 @@
 package JobQueue.Api
 
 import Std.Core
+import Std.Collections
 import Std.Json
 import JobQueue.Domain
 import JobQueue.Jobs
@@ -86,7 +87,7 @@ pub func handleEnqueue(@body req: in EnqueueRequest, authToken: String): Result[
     return Err(Web.badRequest("maxRetries must be between 0 and 10"))
   }
 
-  match Db.connectPostgres() {
+  match Db.connectFromEnv() {
     case Err(e) -> {
       OTel.setSpanError(span, e.message)
       OTel.endSpan(span)
@@ -100,13 +101,13 @@ pub func handleEnqueue(@body req: in EnqueueRequest, authToken: String): Result[
 pub func handleListJobs(status: String): Result[String, ApiError] {
   val span = OTel.startSpan("jobqueue.job.list", 1)
   val filter = if status.length == 0 then "pending" else status
-  match Db.connectPostgres() {
+  match Db.connectFromEnv() {
     case Err(e) -> {
       OTel.setSpanError(span, e.message)
       OTel.endSpan(span)
       Err(Web.serviceUnavailable("database unavailable"))
     }
-    case Ok(conn) -> match JobQueue.Jobs.listByStatus(conn, filter) { case Err(e) -> { conn.close(); OTel.setSpanError(span, JobQueue.Domain.errorMessage(e)); OTel.endSpan(span); Err(jobErrToApi(e)) }; case Ok(jobs) -> { conn.close(); OTel.setSpanAttribute(span, "job.count", jobs.length.toString()); OTel.endSpan(span); var jsons: List[String] = []; for j in jobs { jsons = jsons + [JobQueue.Jobs.toJson(j)] }; Ok(jsonArr(jsons)) } }
+    case Ok(conn) -> match JobQueue.Jobs.listByStatus(conn, filter) { case Err(e) -> { conn.close(); OTel.setSpanError(span, JobQueue.Domain.errorMessage(e)); OTel.endSpan(span); Err(jobErrToApi(e)) }; case Ok(jobs) -> { conn.close(); OTel.setSpanAttribute(span, "job.count", jobs.count.toString()); OTel.endSpan(span); val jsons: List[String] = newList(); for j in jobs { jsons.add(JobQueue.Jobs.toJson(j)) }; Ok(jsonArr(jsons)) } }
   }
 }
 
@@ -114,7 +115,7 @@ pub func handleListJobs(status: String): Result[String, ApiError] {
 pub func handleGetJob(id: Long): Result[String, ApiError] {
   val span = OTel.startSpan("jobqueue.job.get", 1)
   OTel.setSpanAttribute(span, "job.id", id.toString())
-  match Db.connectPostgres() {
+  match Db.connectFromEnv() {
     case Err(e) -> {
       OTel.setSpanError(span, e.message)
       OTel.endSpan(span)

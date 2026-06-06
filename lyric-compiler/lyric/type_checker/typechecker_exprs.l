@@ -444,6 +444,48 @@ func checkMatchExhaustive(
   // not a finite-case type — skip
 }
 
+// True when `e` is an integer literal written WITHOUT a type suffix
+// (`0`, `42`, `1_000` — not `0i64`).  Such a literal defaults to `Int`
+// but, per the language reference (integer literals "follow Rust's
+// syntax"), adopts whatever concrete integer type the context requires
+// (#2514).
+func isUnsuffixedIntLit(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(lit) -> match lit { case LInt(_, sfx, _) -> match sfx { case NoIntSuffix -> true; case _ -> false }; case _ -> false }
+    case _ -> false
+  }
+}
+
+// True when `t` (after stripping range refinements) is a concrete integer
+// primitive — the set an unsuffixed literal may adopt.
+func isConcreteIntType(t: in Type): Bool {
+  match unrefine(t) {
+    case TyPrim(pt) -> match pt { case PtByte -> true; case PtInt -> true; case PtLong -> true; case PtUInt -> true; case PtULong -> true; case PtNat -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
+// True when `t` is exactly the default literal type `Int` (the type an
+// unsuffixed integer literal infers to before context adjustment).
+func isPlainInt(t: in Type): Bool {
+  match t {
+    case TyPrim(pt) -> match pt { case PtInt -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
+// Rust-style integer-literal inference: when `e` is an unsuffixed integer
+// literal whose default type is `Int`, let it adopt a concrete `expected`
+// integer type (e.g. `Long` from `someLong <= 0`, a return type, a binding
+// annotation, or a parameter type).  Returns the adjusted type, or `actual`
+// unchanged when no coercion applies.
+func adoptIntLiteralType(e: in Expr, actual: in Type, expected: in Type): Type {
+  if isUnsuffixedIntLit(e) and isPlainInt(actual) and isConcreteIntType(expected) {
+    return expected
+  }
+  actual
+}
+
 func inferBinop(
   tbl: in SymbolTable, diag: in List[Diagnostic], op: in BinOp, lhs: in Type, rhs: in Type, span: in Span
 ): Type {
@@ -952,6 +994,45 @@ func startsUppercase(name: in String): Bool {
 // `f()` returns a non-`Unit` value that is discarded) is perfectly valid.  Only
 // two *value*-producing branches with **distinct non-`Unit`** types are a real
 // mismatch (T0067) — e.g. `if c { 1 } else { "s" }`.
+// True when `t` unrefines to exactly `Int`.
+func unrefinesToInt(t: in Type): Bool {
+  match unrefine(t) {
+    case TyPrim(pt) -> match pt { case PtInt -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
+// True when `t` unrefines to exactly `Long`.
+func unrefinesToLong(t: in Type): Bool {
+  match unrefine(t) {
+    case TyPrim(pt) -> match pt { case PtLong -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
+// Branch reconciliation for Rust-style integer-literal inference: when two
+// `match`/`if` branches differ only because one carries the literal-default
+// `Int` where the other has `Long`, widen toward `Long` (a lossless
+// widening, and the type the value almost always wants — e.g. a `colLong`
+// helper whose `case _ -> 0` default sits beside `Long` arms, or an
+// `if rows.count == 0 { Ok(0) } else { … Ok(v) }` whose `Ok(0)` sits beside
+// `Ok(v: Long)`).  Recurses through a shared generic head so `Result[Int, E]`
+// reconciles with `Result[Long, E]` (#2514).  Returns `None` when the types
+// are not an Int/Long pair (or generic over one), leaving `unifyBranchTypes`
+// to raise its usual T0067.
+func mergeIntWiden(a: in Type, b: in Type): Option[Type] {
+  if unrefinesToInt(a) and unrefinesToLong(b) {
+    return Some(value = b)
+  }
+  if unrefinesToInt(b) and unrefinesToLong(a) {
+    return Some(value = a)
+  }
+  match unrefine(a) {
+    case TyUser(aid, an, aargs) -> match unrefine(b) { case TyUser(bid, _, bargs) -> { if typeIdEq(aid, bid) and aargs.count == bargs.count { val merged: List[Type] = newList(); var allOk = true; var i = 0; while i < aargs.count { if typeEquiv(aargs[i], bargs[i]) { merged.add(aargs[i]) } else { match mergeIntWiden(aargs[i], bargs[i]) { case Some(m) -> merged.add(m); case None -> { allOk = false; merged.add(aargs[i]) } } }; i = i + 1 }; if allOk { return Some(value = TyUser(id = aid, name = an, args = merged)) }; return None }; None }; case _ -> None }
+    case _ -> None
+  }
+}
+
 func unifyBranchTypes(a: in Type, b: in Type, span: in Span, diag: in List[Diagnostic]): Type {
   if isNeverType(a) {
     return b
@@ -979,17 +1060,22 @@ func unifyBranchTypes(a: in Type, b: in Type, span: in Span, diag: in List[Diagn
   if typeEquiv(a, b) {
     a
   } else {
-    diag.add(
-      errorDiagnostic(
-        "T0067",
-        "incompatible branch types: one branch has type " + renderType(a) + ", the other " + renderType(b),
-        span
-      )
-    )
-    // Yield `TyError` (the universal unifier), not one arm's type, so the
-    // containing expression context does not cascade follow-on diagnostics off
-    // an arbitrary pick (#2099).
-    TyError
+    match mergeIntWiden(a, b) {
+      case Some(t) -> t
+      case None -> {
+        diag.add(
+          errorDiagnostic(
+            "T0067",
+            "incompatible branch types: one branch has type " + renderType(a) + ", the other " + renderType(b),
+            span
+          )
+        )
+        // Yield `TyError` (the universal unifier), not one arm's type, so the
+        // containing expression context does not cascade follow-on diagnostics off
+        // an arbitrary pick (#2099).
+        TyError
+      }
+    }
   }
 }
 
@@ -1802,8 +1888,13 @@ pub func inferExpr(
     }
 
     case EBinop(op, l, r) -> {
-      val lt = inferExpr(sc, tbl, sigs, diag, l)
-      val rt = inferExpr(sc, tbl, sigs, diag, r)
+      val lt0 = inferExpr(sc, tbl, sigs, diag, l)
+      val rt0 = inferExpr(sc, tbl, sigs, diag, r)
+      // Rust-style integer-literal inference: an unsuffixed literal operand
+      // adopts the other operand's concrete integer type, so `someLong <= 0`
+      // / `someLong + 1` type-check without a `0i64` suffix (#2514).
+      val lt = adoptIntLiteralType(l, lt0, rt0)
+      val rt = adoptIntLiteralType(r, rt0, lt0)
       inferBinop(tbl, diag, op, lt, rt, e.span)
     }
 
@@ -2038,6 +2129,32 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
   match userTypeId(paramTy) {
     case Some(ifaceId) -> match userTypeId(argTy) { case Some(argId) -> symTableTypeImplements(tbl, argId, ifaceId); case None -> false }
     case None -> false
+  }
+}
+
+// True when a value of type `actual` may be used where `expected` is
+// required.  Three cases, in order:
+//   1. `typeEquiv` — exact match, or either side a wildcard (TyError/TyVar).
+//   2. Interface subsumption — `expected` is an interface `I` and `actual`
+//      is a concrete type `T` with a registered `impl I for T` (keyed by
+//      `TypeId`, so a same-named interface from another package never
+//      matches).
+//   3. Same nominal generic head with covariantly-assignable type
+//      arguments — so `Result[NC, E]` satisfies `Result[Conn, E]` when
+//      `NC` implements `Conn`.
+// Unlike `typeEquiv`, this is directional (assignability, not equivalence)
+// and recurses through generic type arguments.  Used at return /
+// trailing-expression checks so a concrete record can be returned where
+// the function's declared interface (or a generic over it) is expected —
+// e.g. lyric-db `connect(): Result[DbConnection, DbError]` whose body
+// yields `Ok(NativeConnection(...))` (#2514).
+pub func typeAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type): Bool {
+  if typeEquiv(expected, actual) {
+    return true
+  }
+  match unrefine(expected) {
+    case TyUser(eid, _, eargs) -> match unrefine(actual) { case TyUser(aid, _, aargs) -> { if typeIdEq(eid, aid) { if eargs.count != aargs.count { return false }; var i = 0; while i < eargs.count { if not typeAssignable(tbl, eargs[i], aargs[i]) { return false }; i = i + 1 }; return true }; symTableTypeImplements(tbl, aid, eid) }; case _ -> false }
+    case _ -> false
   }
 }
 

@@ -7,6 +7,7 @@
 package JobQueue.Jobs
 
 import Std.Core
+import Std.Collections
 import JobQueue.Domain
 import Db
 
@@ -22,7 +23,7 @@ func colLong(row: in DbRow, name: in String): Long {
   match Db.col(row, name) {
     case DbValue.DbLong(v) -> v
     case DbValue.DbInt(v) -> v.toLong()
-    case _ -> 0
+    case _ -> 0i64
   }
 }
 
@@ -148,9 +149,9 @@ pub func listByStatus(conn: in DbConnection, status: in String): Result[List[Job
   match conn.query(sql, [status]) {
     case Err(e) -> Err(JobError.DatabaseError(message = e.message))
     case Ok(rows) -> {
-      var jobs: List[Job] = []
+      val jobs: List[Job] = newList()
       for row in rows {
-        jobs = jobs + [rowToJob(row)]
+        jobs.add(rowToJob(row))
       }
       Ok(jobs)
     }

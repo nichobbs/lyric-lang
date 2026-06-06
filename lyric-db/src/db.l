@@ -36,6 +36,7 @@ package Db
 import Std.Core
 import Std.Collections
 import Std.Json as StdJson
+import Std.Environment as Environment
 import Db.Kernel.Net as DbKernel
 
 // ─── Error ────────────────────────────────────────────────────────────────────
@@ -240,6 +241,23 @@ pub func connect(connStr: in String): Result[DbConnection, DbError]
     case Ok(connId) -> Ok(NativeConnection(connId = connId))
     case Err(msg) -> Err(DbError(message = msg, code = "CONNECT_ERROR"))
   }
+}
+
+/// Open a connection from the `LYRIC_CONFIG_DB_CONNECTION_URL` environment
+/// variable.  This is the zero-argument convenience the services in
+/// `examples/` and the book's database chapter use: the DSN lives in
+/// configuration, not in source.  The driver is detected from the DSN
+/// scheme (`postgres://`, `sqlite://`) exactly as `connect` does.  Returns
+/// a `CONFIG_ERROR` `DbError` when the variable is unset or empty so the
+/// caller can fail fast with a clear message instead of dereferencing an
+/// empty DSN.
+@stable(since = "0.1")
+pub func connectFromEnv(): Result[DbConnection, DbError] {
+  val url = Environment.getVarOrDefault("LYRIC_CONFIG_DB_CONNECTION_URL", "")
+  if url.length == 0 {
+    return Err(DbError(message = "LYRIC_CONFIG_DB_CONNECTION_URL is not set", code = "CONFIG_ERROR"))
+  }
+  connect(url)
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────

@@ -12,9 +12,13 @@ and SQLite (via Microsoft.Data.Sqlite), each gated by a feature flag.
 "Lyric.Db" = { path = "../lyric-db" }
 
 [features]
-postgres = []   # enable to use connectPostgres()
-sqlite   = []   # enable to use connectSqlite()
+postgres = []   # enable the PostgreSQL driver
+sqlite   = []   # enable the SQLite driver
 ```
+
+`connect(dsn)` and `connectFromEnv()` pick the driver from the DSN scheme
+(`postgres://`, `sqlite://`); enable the matching feature so the driver is
+linked.
 
 Enable only the features you need; both can be active simultaneously.
 
@@ -24,7 +28,7 @@ Enable only the features you need; both can be active simultaneously.
 import Db
 
 // Requires LYRIC_CONFIG_DB_CONNECTION_URL
-val conn = Db.connectPostgres()?
+val conn = Db.connectFromEnv()?
 
 // Use the connection...
 

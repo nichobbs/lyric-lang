@@ -180,6 +180,6 @@ pub func balancePreservation(fromBalance: in Long, toBalance: in Long, amount: i
   ensures: result == true
   ensures: (fromBalance - amount) + (toBalance + amount) == fromBalance + toBalance
 {
-  assert(fromBalance - amount) + (toBalance + amount) == fromBalance + toBalance
+  assert((fromBalance - amount) + (toBalance + amount) == fromBalance + toBalance)
   return true
 }

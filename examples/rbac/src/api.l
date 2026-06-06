@@ -11,6 +11,7 @@
 package Rbac.Api
 
 import Std.Core
+import Std.Collections
 import Rbac.Policy
 import Rbac.Store
 import Rbac.Enforcement
@@ -88,7 +89,7 @@ pub func handleCreateUser(@body req: in CreateUserRequest, authToken: String): R
     OTel.endSpan(span)
     return Err(Web.badRequest("username must not be empty"))
   }
-  match Db.connectPostgres() {
+  match Db.connectFromEnv() {
     case Err(e) -> {
       OTel.setSpanError(span, e.message)
       OTel.endSpan(span)
@@ -102,7 +103,7 @@ pub func handleCreateUser(@body req: in CreateUserRequest, authToken: String): R
 pub func handleGetUser(id: Long): Result[String, ApiError] {
   val span = OTel.startSpan("rbac.user.get", 1)
   OTel.setSpanAttribute(span, "user.id", id.toString())
-  match Db.connectPostgres() {
+  match Db.connectFromEnv() {
     case Err(e) -> {
       OTel.setSpanError(span, e.message)
       OTel.endSpan(span)
@@ -116,13 +117,13 @@ pub func handleGetUser(id: Long): Result[String, ApiError] {
 pub func handleGetUserRoles(id: Long): Result[String, ApiError] {
   val span = OTel.startSpan("rbac.roles.list", 1)
   OTel.setSpanAttribute(span, "user.id", id.toString())
-  match Db.connectPostgres() {
+  match Db.connectFromEnv() {
     case Err(e) -> {
       OTel.setSpanError(span, e.message)
       OTel.endSpan(span)
       Err(Web.serviceUnavailable("database unavailable"))
     }
-    case Ok(conn) -> match Rbac.Store.getRolesForUser(conn, id) { case Err(e) -> { conn.close(); OTel.endSpan(span); Err(storeErrToApi(e)) }; case Ok(assignments) -> { conn.close(); OTel.setSpanAttribute(span, "role.count", assignments.length.toString()); OTel.endSpan(span); var jsons: List[String] = []; for a in assignments { jsons = jsons + [Rbac.Store.assignmentToJson(a)] }; Ok(jsonArr(jsons)) } }
+    case Ok(conn) -> match Rbac.Store.getRolesForUser(conn, id) { case Err(e) -> { conn.close(); OTel.endSpan(span); Err(storeErrToApi(e)) }; case Ok(assignments) -> { conn.close(); OTel.setSpanAttribute(span, "role.count", assignments.count.toString()); OTel.endSpan(span); val jsons: List[String] = newList(); for a in assignments { jsons.add(Rbac.Store.assignmentToJson(a)) }; Ok(jsonArr(jsons)) } }
   }
 }
 
@@ -133,7 +134,7 @@ pub func handleGrantRole(id: Long, @body req: in GrantRoleRequest, authToken: St
   OTel.setSpanAttribute(span, "user.id", id.toString())
   OTel.setSpanAttribute(span, "role", req.role)
   OTel.setSpanAttribute(span, "grantor.id", req.grantorId.toString())
-  match Db.connectPostgres() {
+  match Db.connectFromEnv() {
     case Err(e) -> {
       OTel.setSpanError(span, e.message)
       OTel.endSpan(span)
@@ -148,7 +149,7 @@ pub func handleRevokeRole(id: Long, role: String, authToken: String): Result[Str
   val span = OTel.startSpan("rbac.role.revoke", 1)
   OTel.setSpanAttribute(span, "user.id", id.toString())
   OTel.setSpanAttribute(span, "role", role)
-  match Db.connectPostgres() {
+  match Db.connectFromEnv() {
     case Err(e) -> {
       OTel.setSpanError(span, e.message)
       OTel.endSpan(span)
@@ -186,7 +187,7 @@ pub func handleCheck(@body req: in CheckRequest): Result[String, ApiError] {
       OTel.endSpan(span)
       Err(Web.badRequest("unknown permission: " + req.permission))
     }
-    case Some(perm) -> match Db.connectPostgres() { case Err(e) -> { OTel.setSpanError(span, e.message); OTel.endSpan(span); Err(Web.serviceUnavailable("database unavailable")) }; case Ok(conn) -> match Rbac.Enforcement.check(conn, req.userId, perm) { case Err(e) -> { conn.close(); OTel.endSpan(span); Err(storeErrToApi(e)) }; case Ok(CheckResult.Allowed(roleName)) -> { conn.close(); OTel.setSpanAttribute(span, "check.result", "allowed"); OTel.endSpan(span); Ok("{\"allowed\":true,\"via_role\":\"" + roleName + "\"}") }; case Ok(CheckResult.Denied(reason)) -> { conn.close(); OTel.setSpanAttribute(span, "check.result", "denied"); OTel.endSpan(span); Ok("{\"allowed\":false,\"reason\":\"" + reason + "\"}") } } }
+    case Some(perm) -> match Db.connectFromEnv() { case Err(e) -> { OTel.setSpanError(span, e.message); OTel.endSpan(span); Err(Web.serviceUnavailable("database unavailable")) }; case Ok(conn) -> match Rbac.Enforcement.check(conn, req.userId, perm) { case Err(e) -> { conn.close(); OTel.endSpan(span); Err(storeErrToApi(e)) }; case Ok(CheckResult.Allowed(roleName)) -> { conn.close(); OTel.setSpanAttribute(span, "check.result", "allowed"); OTel.endSpan(span); Ok("{\"allowed\":true,\"via_role\":\"" + roleName + "\"}") }; case Ok(CheckResult.Denied(reason)) -> { conn.close(); OTel.setSpanAttribute(span, "check.result", "denied"); OTel.endSpan(span); Ok("{\"allowed\":false,\"reason\":\"" + reason + "\"}") } } }
   }
 }
 

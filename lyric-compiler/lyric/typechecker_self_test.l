@@ -131,6 +131,52 @@ func testMatchNullaryNoShadow(): Unit {
   assertEqualInt(diagCount(parseCheck(src)), 0, "match-no-shadow: case Nn does not shadow the Nn constructor")
 }
 
+// #2514: a concrete record returned where its implemented interface is
+// expected upcasts cleanly, including through a generic head — a `match`
+// that re-wraps a `Result[Int, String]` into `Result[Conn, DErr]` whose
+// `Ok` arm yields `Ok(NC(...))` (NC implements Conn) must NOT mismatch.
+// This is the lyric-db `connect(): Result[DbConnection, DbError]` shape.
+func testInterfaceUpcastInResult(): Unit {
+  // Inline `Res[T, E]` stands in for `Result[T, E]` so the check is
+  // self-contained (no Std.Core import).  The `Ok2` arm yields a concrete
+  // `NC` where the declared `Res[Conn, DErr]` expects `Conn`; the `Err2`
+  // arm fixes `E = DErr`.  Branch unification leaves the body as
+  // `Res[NC, <error>]`, so the return-type check must accept it via
+  // covariant interface subsumption (NC implements Conn) without a T0070.
+  val prelude = "package P\npub interface Conn {\n  func q(): Int\n}\nrecord NC {\n  id: Int\n}\nimpl Conn for NC {\n  func q(): Int { return self.id }\n}\nrecord DErr {\n  msg: String\n}\nunion Res[T, E] {\n  case Ok2(value: T)\n  case Err2(err: E)\n}\n"
+  val ok = prelude +
+    "func connect(c: in Res[Int, String]): Res[Conn, DErr] {\n  match c {\n    case Ok2(cid) -> Ok2(value = NC(id = cid))\n    case Err2(m) -> Err2(err = DErr(msg = m))\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "iface-upcast: NC upcasts to Conn inside Res")
+}
+
+// #2514: Rust-style integer-literal inference — an unsuffixed integer
+// literal adopts the concrete integer type required by context, so
+// `someLong <= 0`, `someLong + 1`, and a `colLong`-style match whose
+// `case _ -> 0` default sits beside `Long` arms all type-check without a
+// `0i64` suffix.
+func testIntLiteralAdoptsContext(): Unit {
+  val cmp = "package P\npub func f(x: in Long): Bool {\n  x <= 0\n}\n"
+  assertEqualInt(diagCount(parseCheck(cmp)), 0, "int-lit: Long <= 0 type-checks")
+  val arith = "package P\npub func g(x: in Long): Long {\n  return x + 1\n}\n"
+  assertEqualInt(diagCount(parseCheck(arith)), 0, "int-lit: Long + 1 type-checks")
+  val branch = "package P\npub func h(b: in Bool, v: in Long): Long {\n  if b {\n    v\n  } else {\n    0\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(branch)), 0, "int-lit: if-branch Long/0 widens to Long")
+}
+
+// Guard branch widening against over-reach: a genuinely incompatible pair
+// (String vs Int) must still raise T0067, not silently unify.
+func testBranchWidenStillRejectsMismatch(): Unit {
+  val bad = "package P\npub func f(b: in Bool): Int {\n  if b {\n    1\n  } else {\n    \"x\"\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0067"), "branch-widen: Int vs String still T0067")
+}
+
+// Guard the assignability relation against over-leniency: a record that
+// does NOT implement the expected interface must still mismatch (T0070).
+func testUnrelatedReturnStillMismatches(): Unit {
+  val bad = "package P\npub interface Conn {\n  func q(): Int\n}\nrecord Other {\n  x: Int\n}\nfunc f(): Conn { Other(x = 1) }\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0070"), "no-impl: Other does not implement Conn → T0070")
+}
+
 // #1488: a range subtype (`Int range 0 ..= 150`) is numeric and ordered when
 // its underlying representation is, so arithmetic and comparison on a
 // range-typed value type-check cleanly.  Before `isNumericType`/`isOrderedType`
@@ -1406,5 +1452,9 @@ func main(): Unit {
   testInParamNoOutCheck()
   testScopedResolutionNoCrossPackageTypeCollision()
   testFlatImportsPreserveLastWins()
+  testInterfaceUpcastInResult()
+  testUnrelatedReturnStillMismatches()
+  testIntLiteralAdoptsContext()
+  testBranchWidenStillRejectsMismatch()
   println("typechecker self-test: ok")
 }

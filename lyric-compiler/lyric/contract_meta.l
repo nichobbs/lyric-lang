@@ -841,19 +841,30 @@ func reprForUnion(decl: in UnionDecl): String {
   "pub union " + decl.name + renderGenerics(decl.generics) + " { " + cases + " }"
 }
 
-// Build the `pub enum Name { A, B, C }` repr.  EnumDecls carry just
-// case names in the bootstrap parser.
+// Build the `pub enum Name { case A; case B; case C }` repr.  EnumDecls
+// carry just case names in the bootstrap parser.  Each case must be
+// prefixed with `case` so the synthesised source re-parses (the parser
+// emits P0140 "expected 'case' to start an enum case" otherwise).
+// Mirrors the F# writer `ContractMeta.fs::declOfItem` (IEnum branch).
 func reprForEnum(decl: in EnumDecl): String {
   var cases = ""
   var i = 0
   while i < decl.cases.count {
     if i > 0 {
-      cases = cases + ", "
+      cases = cases + "; "
     }
-    cases = cases + decl.cases[i].name
+    cases = cases + "case " + decl.cases[i].name
     i = i + 1
   }
   "pub enum " + decl.name + " { " + cases + " }"
+}
+
+// Protected types are opaque externally — represent them as opaque
+// types so a cross-package consumer's contract type-check can resolve
+// references to the name without exposing the locked internal state.
+// Mirrors the F# writer `ContractMeta.fs::declOfItem` (IProtected branch).
+func reprForProtected(decl: in ProtectedTypeDecl): String {
+  "pub opaque type " + decl.name + renderGenerics(decl.generics)
 }
 
 // Build the head-only `impl <Iface> for <Target> {}` repr for a restored
@@ -1106,6 +1117,12 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
           case None -> ()
         }
       }
+      // Protected types are emitted regardless of visibility: their name
+      // can appear in a public signature (e.g. `pub func mk(): CbState`)
+      // even when the type itself is package-private, so the synthesised
+      // contract source must always declare the anchor.  Matches the F#
+      // writer's `IExternType _ | IProtected _ -> true` visibility rule.
+      case IProtected(p) -> decls.add(basicDecl("opaque", p.name, reprForProtected(p)))
       case _ -> ()
     }
     i = i + 1
