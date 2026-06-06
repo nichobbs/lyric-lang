@@ -10834,7 +10834,13 @@ pub func lowerImplMethodMsil(
   var pi = 0
   while pi < decl.params.count {
     val p = decl.params[pi]
-    val paramTy = typeExprToMsil(p.ty, pkgName)
+    // Body tracking must be CTX-aware (#2361): a `List[Int]` param is a concrete
+    // `List<int32>` instance at run time, so the body's `log.add(99)` must emit
+    // `List<int32>::Add(int32)`, not the legacy `List<object>::Add(object)` —
+    // the latter, called on a `List<int32>`, corrupts memory (different backing
+    // layout) and segfaults.  The method SIGNATURE still uses the erased
+    // `typeExprToMsil` below so the MethodDef matches the interface slot.
+    val paramTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
     val slot = fctx.slotTicker.count  // 1, 2, …
     fctx.slots.add(p.name, slot)
     fctx.types.add(p.name, paramTy)
@@ -10864,9 +10870,11 @@ pub func lowerImplMethodMsil(
       match body {
         case FBBlock(block) -> {
           if retTy != MVoid {
-            // #2361: tail expression is the implicit return — expect retTy so a
-            // tail `newList()` builds the concrete instance the signature wants.
-            pushCollExpect(fctx, retTy)
+            // #2361: the tail expression is the implicit return — expect the
+            // CTX-aware return type (`declaredRetTyCtx`), not the erased
+            // signature `retTy`, so a tail `newList()` builds the concrete
+            // `List<Foo>` the caller (which tracks the return concretely) reads.
+            pushCollExpect(fctx, declaredRetTyCtx)
             val _ = lowerBlockExprMsil(cctx, fctx, insns, block)
             popCollExpect(fctx)
           } else {
@@ -10877,7 +10885,7 @@ pub func lowerImplMethodMsil(
           }
         }
         case FBExpr(e) -> {
-          pushCollExpect(fctx, retTy)
+          pushCollExpect(fctx, declaredRetTyCtx)
           lowerExprMsil(cctx, fctx, insns, e)
           popCollExpect(fctx)
           insns.add(MRet)
@@ -11610,7 +11618,11 @@ func lowerProtectedMsil(
         var epi = 0
         while epi < ed.params.count {
           val p = ed.params[epi]
-          val paramTy = typeExprToMsil(p.ty, pkgName)
+          // Body tracking is CTX-aware so a collection param is operated on
+          // concretely (same fix as `lowerImplMethodMsil` — a non-ctx `List[Int]`
+          // tracked as `MObject` emits `List<object>` ops on a real `List<int32>`
+          // and segfaults).  The signature (`pTypes` above) stays erased.
+          val paramTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
           val slot = entryFctx.slotTicker.count
           entryFctx.slots.add(p.name, slot)
           entryFctx.types.add(p.name, paramTy)
