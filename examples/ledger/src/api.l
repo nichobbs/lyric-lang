@@ -1,19 +1,19 @@
-/// Ledger.Api — HTTP handler functions and route table.
-///
-/// Each handler:
-///   1. Opens a span via OTel (so every request is traced end-to-end).
-///   2. Attaches business identifiers (account.id, transfer.id) as span attributes.
-///   3. Obtains a connection from the pool, delegates to the repository, and
-///      closes the connection before returning.
-///   4. Maps LedgerError variants to the correct HTTP status code.
-///
-/// Route table:
-///   POST   /accounts              — create account
-///   GET    /accounts              — list all accounts (summary, no balance)
-///   GET    /accounts/{id}         — account detail with live balance
-///   GET    /accounts/{id}/entries — ledger entries for an account
-///   POST   /transfers             — record a transfer
-///   GET    /transfers/{id}        — transfer detail
+//! Ledger.Api — HTTP handler functions and route table.
+//!
+//! Each handler:
+//!   1. Opens a span via OTel (so every request is traced end-to-end).
+//!   2. Attaches business identifiers (account.id, transfer.id) as span attributes.
+//!   3. Obtains a connection from the pool, delegates to the repository, and
+//!      closes the connection before returning.
+//!   4. Maps LedgerError variants to the correct HTTP status code.
+//!
+//! Route table:
+//!   POST   /accounts              — create account
+//!   GET    /accounts              — list all accounts (summary, no balance)
+//!   GET    /accounts/{id}         — account detail with live balance
+//!   GET    /accounts/{id}/entries — ledger entries for an account
+//!   POST   /transfers             — record a transfer
+//!   GET    /transfers/{id}        — transfer detail
 
 @runtime_checked
 package Ledger.Api
