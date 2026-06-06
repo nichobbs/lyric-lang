@@ -78,6 +78,24 @@ pub union MsilType {
   // so that `.count` dispatch uses Dictionary.get_Count rather than
   // List.get_Count.
   case MMapOf(keyTy: MsilType, valTy: MsilType)
+  // Lyric List[T] with a CONCRETE runtime instance — a genuine
+  // `List`1<elemTy>` (not the legacy `List<object>` that `MListOf` tracks).
+  // Stage 2 of the F#-compatible object model (#2361): when the element type
+  // is a reference type the instance, its construction tokens, and its method
+  // MemberRefs are all the closed generic instantiation, so the signature
+  // encodes `GENERICINST List`1<Foo>` (matching the F# emitter) and a returned
+  // `List<Foo>` binds against an F#-compiled consumer.  Element access needs no
+  // box/unbox (refs stored directly; `get_Item` returns the element typed).
+  // Op sites route through `MListOp(op, elemTy)`; legacy `MListOf`/`MObject`
+  // keep the `tokListObj*` object path.  In LocalVarSig / slot-compat the
+  // instance still degrades to `object` (0x1C) — locals are object slots that
+  // `castclass` to the concrete TypeSpec at each op site.
+  case MConcreteList(elemTy: MsilType)
+  // Lyric Map[K, V] with a CONCRETE runtime instance — a genuine
+  // `Dictionary`2<keyTy,valTy>` (not the legacy `Dictionary<object,object>`
+  // that `MMapOf` tracks).  The concrete counterpart of `MConcreteList` for
+  // maps (#2361); op sites route through `MDictOp(op, keyTy, valTy)`.
+  case MConcreteMap(keyTy: MsilType, valTy: MsilType)
   // System.Byte (ELEMENT_TYPE_U1 = 0x05).  Used for `slice[Byte]` elements
   // so cross-package signatures match the F# stdlib's `byte[]` (e.g.
   // `Std.Encoding.tryDecodeBase64 -> Option[byte[]]`).
@@ -148,6 +166,8 @@ pub func elementTypeByte(t: in MsilType): Int {
     case MGenericInst(_, _, _) -> 0x15  // prefix only; full encoding via bufMsilType
     case MListOf(_)       -> 0x1C  // same as Object: runtime rep is List<object>
     case MMapOf(_, _)     -> 0x1C  // same as Object: runtime rep is Dictionary<object,object>
+    case MConcreteList(_) -> 0x15  // GENERICINST prefix; full List`1<elem> via bufMsilType
+    case MConcreteMap(_, _) -> 0x15  // GENERICINST prefix; full Dictionary`2<k,v> via bufMsilType
     case MByte            -> 0x05  // ELEMENT_TYPE_U1
     case MArray(_)        -> 0x1D  // ELEMENT_TYPE_SZARRAY prefix; element follows (bufMsilType)
     case MValueTypeRef(_, _) -> 0x11  // ELEMENT_TYPE_VALUETYPE prefix; TypeRef follows (bufMsilType)
@@ -259,6 +279,15 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
         gi = gi + 1
       }
     }
+    // Concrete collections need the LoweringCtx to resolve the
+    // `List`1`/`Dictionary`2` TypeRef row, so the context-free encoder cannot
+    // emit a valid GENERICINST.  Degrade to ELEMENT_TYPE_OBJECT (0x1C) here —
+    // the same workaround `MClass` uses above.  User signatures go through
+    // `bufMsilTypeWithCtx`, which emits the real instantiation; this path is
+    // only reached for BCL-extern sigs and context-free generic-arg blobs,
+    // where the concrete encoding isn't required.
+    case MConcreteList(_)   -> bufU1(w, 0x1C)
+    case MConcreteMap(_, _) -> bufU1(w, 0x1C)
     case other -> bufU1(w, elementTypeByte(other))
   }
 }
@@ -1270,6 +1299,8 @@ pub func msilTypeKey(t: in MsilType): String {
     }
     case MListOf(e) -> "LIST[" + msilTypeKey(e) + "]"
     case MMapOf(k, v) -> "MAP[" + msilTypeKey(k) + "," + msilTypeKey(v) + "]"
+    case MConcreteList(e) -> "CLIST[" + msilTypeKey(e) + "]"
+    case MConcreteMap(k, v) -> "CMAP[" + msilTypeKey(k) + "," + msilTypeKey(v) + "]"
     case MByte -> "B"
     case MArray(e) -> "[" + msilTypeKey(e) + "]"
     case MValueTypeRef(_, clrFqn) -> "VT" + clrFqn + ";"
@@ -1374,6 +1405,38 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
       while gi < typeArgs.count {
         bufMsilTypeWithCtx(w, genericArgType(typeArgs[gi]), ctx)
         gi = gi + 1
+      }
+    }
+    // Concrete collections (#2361): encode the closed `List`1<elem>` /
+    // `Dictionary`2<k,v>` instantiation as GENERICINST CLASS + TypeRef so a
+    // self-hosted-compiled signature matches the F# emitter's byte-for-byte
+    // and a returned `List<Foo>` binds against an F#-compiled consumer.  The
+    // open generic TypeRef is seeded for every assembly; fall back to object
+    // only if it is somehow missing (keeps the blob valid rather than emitting
+    // a dangling GENERICINST prefix).
+    case MConcreteList(elem) -> {
+      val trList1 = findTypeRefRowByName(ctx, "System.Collections.Generic.List`1")
+      if trList1 > 0 {
+        bufU1(w, 0x15)  // GENERICINST
+        bufU1(w, 0x12)  // CLASS
+        writeCompressedInt(w, tdrTypeRef(trList1))
+        bufU1(w, 1)
+        bufMsilTypeWithCtx(w, genericArgType(elem), ctx)
+      } else {
+        bufU1(w, 0x1C)
+      }
+    }
+    case MConcreteMap(keyT, valT) -> {
+      val trDict2 = findTypeRefRowByName(ctx, "System.Collections.Generic.Dictionary`2")
+      if trDict2 > 0 {
+        bufU1(w, 0x15)  // GENERICINST
+        bufU1(w, 0x12)  // CLASS
+        writeCompressedInt(w, tdrTypeRef(trDict2))
+        bufU1(w, 2)
+        bufMsilTypeWithCtx(w, genericArgType(keyT), ctx)
+        bufMsilTypeWithCtx(w, genericArgType(valT), ctx)
+      } else {
+        bufU1(w, 0x1C)
       }
     }
     case other -> bufU1(w, elementTypeByte(other))
@@ -1819,6 +1882,12 @@ func buildLocalVarSig(locals: in List[MsilType]): List[Byte] {
       // it alone produces a malformed LocalVarSig (dangling prefix, no element
       // type) that corrupts the evaluation stack at run time (AccessViolation).
       case MArray(_)             -> bufU1(w, 0x1C)
+      // Concrete collections degrade to Object in LocalVarSig like MGenericInst:
+      // the local slot is an object reference that op sites `castclass` to the
+      // concrete TypeSpec; the open GENERICINST token is not valid in a
+      // LocalVarSig (#2361).
+      case MConcreteList(_)      -> bufU1(w, 0x1C)
+      case MConcreteMap(_, _)    -> bufU1(w, 0x1C)
       // A value-typed extern local (e.g. `val u = newUuid()` where Uuid is
       // System.Guid) CANNOT degrade to Object — a struct is not a reference,
       // so an `object` slot would mis-store the unboxed value.  Emit the full
@@ -1867,6 +1936,8 @@ func buildLocalVarSigWithCtx(locals: in List[MsilType], ctx: in LoweringCtx): Li
       case MGenericInst(_, _, _) -> bufU1(w, 0x1C)
       case MValueTypeGenericInst(_, _, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MArray(_)                      -> bufU1(w, 0x1C)
+      case MConcreteList(_)               -> bufU1(w, 0x1C)
+      case MConcreteMap(_, _)             -> bufU1(w, 0x1C)
       case MClassRef(_, _)                -> bufU1(w, 0x1C)
       case MValueTypeRef(typeRefCode, _) -> {
         bufU1(w, 0x11)
@@ -1920,6 +1991,8 @@ func buildLvSigKey(locals: in List[MsilType]): String {
         val b = match locals[i] {
           case MClassRef(_, _)       -> 0x1C
           case MGenericInst(_, _, _) -> 0x1C
+          case MConcreteList(_)      -> 0x1C
+          case MConcreteMap(_, _)    -> 0x1C
           case other                 -> elementTypeByte(other)
         }
         key = key + toString(b) + "_"
