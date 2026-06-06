@@ -363,6 +363,50 @@ pub func recordDoc(
 // ─────────────────────────────────────────────────────────────────────────────
 // Union decl.
 // ─────────────────────────────────────────────────────────────────────────────
+@pure
+func unionFieldStr(f: in UnionField): String {
+  match f {
+    case UFNamed(n, ty, _) -> n + ": " + typeStr(ty)
+    case UFPos(ty, _) -> typeStr(ty)
+  }
+}
+
+@pure
+func unionFieldStart(f: in UnionField): Int {
+  match f {
+    case UFNamed(_, _, sp) -> sp.startPos.offset
+    case UFPos(_, sp) -> sp.startPos.offset
+  }
+}
+
+/// Multi-line rendering of a union case's field list, used when the field
+/// region carries interior trivia (a trailing `// note` on individual
+/// named fields, e.g. the `MEHClause` case in `lyric-compiler/msil/lowering.l`).
+/// Mirrors the magic-trailing-comma layout used for params / call args:
+/// opener on the `case` line, one field per line indented by 2 with a
+/// trailing comma, closer on its own line.  A trailing comment after the
+/// `(` re-attaches to the opener line; a trailing comment on a field
+/// re-attaches to that field's line; a trailing comment after the closing
+/// `)` (which sits after the case's own span) is left for the enclosing
+/// `unionDoc` case / closing-brace boundary to re-attach.
+func unionCaseMultiLines(c: in UnionCase, ctx: inout FmtCtx): List[String] {
+  val acc: List[String] = newList()
+  acc.add("case " + c.name + "(")
+  var fi = 0
+  while fi < c.fields.count {
+    // Trivia before this field: the opener-line trailing comment (first
+    // field) or the previous field's trailing comment.
+    appendTriviaInto(acc, ctx, unionFieldStart(c.fields[fi]), false)
+    acc.add("  " + unionFieldStr(c.fields[fi]) + ",")
+    fi = fi + 1
+  }
+  // Any comment between the last field and the case's own `)` (rare; the
+  // usual trailing comment sits after `)` and is popped by the caller).
+  appendTriviaInto(acc, ctx, c.span.endPos.offset, false)
+  acc.add(")")
+  acc
+}
+
 pub func unionDoc(visStr: in String, ud: in UnionDecl, ctx: inout FmtCtx): List[String] {
   val gens = genParamsStr(ud.generics)
   val whereL = whereClauseLines(ud.whereClause)
@@ -383,18 +427,26 @@ pub func unionDoc(visStr: in String, ud: in UnionDecl, ctx: inout FmtCtx): List[
       cases.add(ca[j])
       j = j + 1
     }
-    val fields: List[String] = newList()
-    var ki = 0
-    while ki < c.fields.count {
-      match c.fields[ki] {
-        case UFNamed(n, ty, _) -> fields.add(n + ": " + typeStr(ty))
-        case UFPos(ty, _) -> fields.add(typeStr(ty))
-      }
-      ki = ki + 1
-    }
     if c.fields.count == 0 {
       cases.add("case " + c.name)
+    } else if hasTriviaInRange(ctx, c.span.startPos.offset, c.span.endPos.offset) {
+      // The field list carries interior comments / blank lines (e.g. a
+      // trailing `// note` per named field).  Render multi-line so each
+      // comment survives on its own field's line rather than being merged
+      // or dropped by the flat single-line form.
+      val ml = unionCaseMultiLines(c, ctx)
+      var ki = 0
+      while ki < ml.count {
+        cases.add(ml[ki])
+        ki = ki + 1
+      }
     } else {
+      val fields: List[String] = newList()
+      var ki = 0
+      while ki < c.fields.count {
+        fields.add(unionFieldStr(c.fields[ki]))
+        ki = ki + 1
+      }
       cases.add("case " + c.name + "(" + joinStrings(fields, ", ") + ")")
     }
     i = i + 1
