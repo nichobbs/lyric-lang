@@ -21703,3 +21703,32 @@ emitter tests continue to pass.
   with main's fmt fix, the actual entries are D-progress-444 / D-progress-445.  Updated.
 
 **Regression gate:** 7/7 generator self-tests, 2/2 datetime self-tests pass.
+
+### D-progress-448 — `lyric fmt` preserves trailing comments on union-case fields (#2453, round-trip backlog #2280)
+
+**Status:** Shipped — second PR of the per-expression / per-field-trivia work (#2453).
+
+`unionDoc` rendered every union case's field list as a flat single line
+(`case Foo(a: Int, b: Int)`) with no trivia awareness, so a trailing `// note`
+on the individual fields of a multi-field case was dropped.  This blocked
+`lyric fmt` on `lyric-compiler/msil/lowering.l` — the `MEHClause` case of the
+`MsilInsn` union carries a per-field documentation comment on each of its six
+named fields.
+
+Fix (`lyric-compiler/lyric/fmt/fmt_items.l`): a new `unionCaseMultiLines`
+renders a union case across lines (magic-trailing-comma layout: opener on the
+`case` line, one field per line indented by 2 with a trailing comma, closer on
+its own line) when — and only when — the case's own span carries interior
+trivia.  Per-field trailing comments are woven in via `appendTriviaInto` at each
+field boundary (the opener-line comment re-attaches to the `case` line, each
+field's comment to its line); a comment after the closing `)` (outside the
+case's span) is left for the enclosing `unionDoc` case / closing-brace boundary,
+matching how the rest of the formatter anchors trailing trivia.  Trivia-free
+union cases still render on one line.  The parser already accepts a trailing
+comma in union-case field lists, so the magic comma round-trips.
+
+Two new `fmt_self_test.l` cases (per-field comments preserved + idempotent; the
+no-comment inline-stays case).  Full emitter suite 843/843.
+`lyric-compiler/msil/lowering.l` now round-trips and is idempotent end-to-end —
+with #2457 (D-progress-443) this clears all three comment-loss files called out
+in #2453 (`jvm/bytecode.l`, `msil/metadata_reader.l`, `msil/lowering.l`).

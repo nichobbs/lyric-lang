@@ -306,6 +306,37 @@ func testCommentInsideUnionBody(): Unit {
   assertTrue(Str.contains(acc, "// primaries"), "internal: between-case comment preserved")
 }
 
+func testUnionCaseFieldTrailingCommentsPreserved(): Unit {
+  // Issue #2453: trailing `// note` comments on the individual fields of a
+  // multi-field union case (the `MEHClause` case in
+  // lyric-compiler/msil/lowering.l) were dropped because the union-case
+  // printer rendered the field list as a flat single line with no trivia
+  // awareness.  The multi-line union-case layout now weaves each field's
+  // trailing comment onto its own line.
+  val src = "package P\n\nunion Insn {\n" + "  case Nop\n" + "  case EH(\n" +
+    "    flags: Int,        // 0=catch, 2=finally\n" +
+    "    tryStart: Int,     // start label\n" +
+    "    catchToken: Int)   // type token\n" +
+    "}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "union field comments: round-trips losslessly")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "// 0=catch, 2=finally"), "union field comments: first field comment preserved")
+  assertTrue(Str.contains(acc, "// start label"), "union field comments: middle field comment preserved")
+  assertTrue(Str.contains(acc, "// type token"), "union field comments: last field comment preserved")
+  // Each field lands on its own line.
+  assertTrue(Str.contains(acc, "\n    flags: Int,"), "union field comments: fields split across lines")
+  assertTrue(isFormatted(acc, parse(acc)), "union field comments: idempotent")
+}
+
+func testUnionCaseNoCommentsStaysInline(): Unit {
+  // Without interior trivia, a union case's fields stay on one line — the
+  // multi-line split fires only to rescue comments.
+  val src = "package P\n\nunion Pair {\n  case P(a: Int, b: Int)\n}\n"
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "case P(a: Int, b: Int)"), "union no comments: fields stay inline")
+}
+
 func testCommentInsideEnumBody(): Unit {
   // Comments between enum cases.
   val src = "package P\nenum Dir {\n  case North\n  // horizontal\n  case East\n  case West\n}\n"
@@ -894,6 +925,8 @@ func main(): Unit {
   testCommentInsideFunctionBody()
   testCommentInsideRecordBody()
   testCommentInsideUnionBody()
+  testUnionCaseFieldTrailingCommentsPreserved()
+  testUnionCaseNoCommentsStaysInline()
   testCommentInsideEnumBody()
   testCommentInsideNestedBlock()
   testBlankLineInsideFunctionBody()
