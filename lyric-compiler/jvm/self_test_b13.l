@@ -1,12 +1,11 @@
-// jvm/self_test_b13.l — Stage B13 smoke test: JDK round-trip class-file reader.
-//
-// Reads a real JDK class file from disk (written by the F# test harness
-// via javac) and passes its bytes to Jvm.Reader.parseClassSummary, verifying
-// that the magic number is valid and the major version is >= 52 (Java 8).
-//
-// The Expecto test (JvmLoweringB13Test.fs) pre-creates the class file at
-// /tmp/lyric-jvm-b13/Probe.class before running this Lyric program.
-
+//! jvm/self_test_b13.l — Stage B13 smoke test: JDK round-trip class-file reader.
+//!
+//! Reads a real JDK class file from disk (written by the F# test harness
+//! via javac) and passes its bytes to Jvm.Reader.parseClassSummary, verifying
+//! that the magic number is valid and the major version is >= 52 (Java 8).
+//!
+//! The Expecto test (JvmLoweringB13Test.fs) pre-creates the class file at
+//! /tmp/lyric-jvm-b13/Probe.class before running this Lyric program.
 package Jvm.SelfTestB13
 
 import Std.Core

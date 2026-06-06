@@ -3935,8 +3935,8 @@ func lowerScopeBlockShutdownOnFailure(
   var taskSlot = firstTaskSlot
   for callableName in callableNames.toArray() {
     val callableClass = poolClass(asm.pool, callableName)
-    val callableCtor  = poolMethodref(asm.pool, callableName, "<init>", "()V")
-    val forkRef       = poolMethodref(asm.pool, scopeClass, "fork", forkDesc)
+    val callableCtor = poolMethodref(asm.pool, callableName, "<init>", "()V")
+    val forkRef = poolMethodref(asm.pool, scopeClass, "fork", forkDesc)
 
     emitAload(asm, scopeSlot)
     emitNew(asm, callableClass)
@@ -3948,7 +3948,12 @@ func lowerScopeBlockShutdownOnFailure(
   }
 
   // join() — blocks until all forked subtasks finish; returns this scope (discarded)
-  val joinRef  = poolMethodref(asm.pool, scopeClass, "join",  "()Ljava/util/concurrent/StructuredTaskScope$ShutdownOnFailure;")
+  val joinRef = poolMethodref(
+    asm.pool,
+    scopeClass,
+    "join",
+    "()Ljava/util/concurrent/StructuredTaskScope$ShutdownOnFailure;"
+  )
   val closeRef = poolMethodref(asm.pool, scopeClass, "close", "()V")
   emitAload(asm, scopeSlot)
   emitInvokevirtual(asm, joinRef)
@@ -3957,13 +3962,13 @@ func lowerScopeBlockShutdownOnFailure(
   // Check each subtask: if state() == FAILED, rethrow its exception.
   // Subtask is a sealed interface in JDK 21+, so state() and exception() use invokeinterface.
   val subtaskIface = "java/util/concurrent/StructuredTaskScope$Subtask"
-  val stateClass   = "java/util/concurrent/StructuredTaskScope$Subtask$State"
-  val stateDesc    = "Ljava/util/concurrent/StructuredTaskScope$Subtask$State;"
-  val stateRef     = poolIfaceMethodref(asm.pool, subtaskIface, "state",     "()" + stateDesc)
-  val excRef       = poolIfaceMethodref(asm.pool, subtaskIface, "exception", "()Ljava/lang/Throwable;")
-  val failedRef    = poolFieldref(asm.pool, stateClass, "FAILED", stateDesc)
+  val stateClass = "java/util/concurrent/StructuredTaskScope$Subtask$State"
+  val stateDesc = "Ljava/util/concurrent/StructuredTaskScope$Subtask$State;"
+  val stateRef = poolIfaceMethodref(asm.pool, subtaskIface, "state", "()" + stateDesc)
+  val excRef = poolIfaceMethodref(asm.pool, subtaskIface, "exception", "()Ljava/lang/Throwable;")
+  val failedRef = poolFieldref(asm.pool, stateClass, "FAILED", stateDesc)
   var checkSlot = firstTaskSlot
-  var checkIdx  = 0
+  var checkIdx = 0
   while checkIdx < callableNames.count {
     val skipLabel = "scope_skip_" + toString(scopeSlot) + "_" + toString(checkSlot)
     emitAload(asm, checkSlot)
@@ -3983,7 +3988,7 @@ func lowerScopeBlockShutdownOnFailure(
     emitAthrow(asm)
     emitLabel(asm, skipLabel)
     checkSlot = checkSlot + 1
-    checkIdx  = checkIdx  + 1
+    checkIdx = checkIdx + 1
   }
 
   // close() on the success path — all subtasks succeeded.
@@ -4012,7 +4017,7 @@ func detectJavaFeatureVersion(): Int {
   if javaHome.length > 0 {
     match File.readText(javaHome + "/release") {
       case Ok(text) -> return parseJavaFeatureVersion(text)
-      case Err(_)   -> ()
+      case Err(_) -> ()
     }
   }
   // Fallback: spawn `java --version` and parse stdout.
@@ -4093,7 +4098,11 @@ func parseJavaVersionFromOutput(output: in String): Int {
       i = i + 1
     }
   }
-  if sawDigit { n } else { 21 }
+  if sawDigit {
+    n
+  } else {
+    21
+  }
 }
 
 // ASCII digit value (0..9) or -1 for a non-digit char.

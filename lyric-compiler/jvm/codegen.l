@@ -1,21 +1,20 @@
-// jvm/codegen.l — Jvm.Codegen
-//
-// Bootstrap-grade AST-to-JVM-IR lowering for the Lyric self-hosted compiler.
-// Walks a parsed `SourceFile` (from Lyric.Parser) and produces an `LPackage`
-// (from Jvm.Lowering) suitable for further lowering to class-file bytes by
-// `Jvm.Lowering.lowerPackage`.
-//
-// Supported in this bootstrap pass:
-//   • Simple functions — arithmetic, locals, if/else, while
-//   • Hello-world programs (main with println)
-//   • Record types with fields
-//   • Union types (lowered to sealed-union IR)
-//   • Basic builtin calls: println, print, panic, toString, assert, newList,
-//     default, format1..format4
-//
-// Unsupported forms panic at codegen time so failures are visible rather
-// than silently wrong.
-
+//! jvm/codegen.l — Jvm.Codegen
+//!
+//! Bootstrap-grade AST-to-JVM-IR lowering for the Lyric self-hosted compiler.
+//! Walks a parsed `SourceFile` (from Lyric.Parser) and produces an `LPackage`
+//! (from Jvm.Lowering) suitable for further lowering to class-file bytes by
+//! `Jvm.Lowering.lowerPackage`.
+//!
+//! Supported in this bootstrap pass:
+//!   • Simple functions — arithmetic, locals, if/else, while
+//!   • Hello-world programs (main with println)
+//!   • Record types with fields
+//!   • Union types (lowered to sealed-union IR)
+//!   • Basic builtin calls: println, print, panic, toString, assert, newList,
+//!     default, format1..format4
+//!
+//! Unsupported forms panic at codegen time so failures are visible rather
+//! than silently wrong.
 package Jvm.Codegen
 
 import Std.Core
@@ -29,7 +28,6 @@ import Jvm.AutoFfi
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Per-function codegen context.
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Cross-package function-call resolution entry.  A free-function call
 // (`assertEqualInt(...)`) must lower to `invokestatic <owner>.<name><desc>`
 // where the owner host class and the exact JVM descriptor (param + return
@@ -43,55 +41,55 @@ import Jvm.AutoFfi
 // (last `package` declaring a given name wins; the stdlib's public surface
 // has unique names on the call-reachable path).
 pub record JvmFuncSig {
-  owner:  String          // JVM internal host-class name, e.g. "Std/Testing"
-  params: List[JvmType]   // declared parameter types, in order
-  ret:    JvmType         // declared return type (JVoid for Unit)
+  owner: String  // JVM internal host-class name, e.g. "Std/Testing"
+  params: List[JvmType]  // declared parameter types, in order
+  ret: JvmType
+  // declared return type (JVoid for Unit)
+  // One field of a union case class, in declaration order.  A match binding
+  // `case Foo(x) -> …` reads the case object's i-th field; the JVM `getfield`
+  // descriptor and the bound local's type must be the field's *declared* type,
+  // not java/lang/Object — otherwise the read mis-resolves (NoSuchFieldError)
+  // and the bound value verifies as Object (failing any precise-typed use).
+  // Built once per compilation from every `union` declaration and threaded
+  // read-only through `FuncCtx.caseFields`, keyed by the case class's JVM name
+  // (e.g. "Std/Testing/PanicTry$PtPanicked").
 }
 
-// One field of a union case class, in declaration order.  A match binding
-// `case Foo(x) -> …` reads the case object's i-th field; the JVM `getfield`
-// descriptor and the bound local's type must be the field's *declared* type,
-// not java/lang/Object — otherwise the read mis-resolves (NoSuchFieldError)
-// and the bound value verifies as Object (failing any precise-typed use).
-// Built once per compilation from every `union` declaration and threaded
-// read-only through `FuncCtx.caseFields`, keyed by the case class's JVM name
-// (e.g. "Std/Testing/PanicTry$PtPanicked").
 pub record JvmCaseField {
   name: String
-  ty:   JvmType
+  ty: JvmType
+  // FuncCtx threads mutable state through expression and statement lowering.
+  // `slotTicker` and `labelTicker` are singleton lists whose `.count` is the
+  // current next-slot / next-label integer; `.add` advances them.
 }
 
-// FuncCtx threads mutable state through expression and statement lowering.
-// `slotTicker` and `labelTicker` are singleton lists whose `.count` is the
-// current next-slot / next-label integer; `.add` advances them.
 pub record FuncCtx {
-  pkgName:     String            // JVM path, e.g. "com/example/Hello"
-  className:   String            // host class for static methods
-  slots:       Map[String, Int]  // variable name → local slot
-  types:       Map[String, JvmType]  // variable name → JVM type
-  slotTicker:  List[Int]         // length = next slot index
-  labelTicker: List[Int]         // length = next label index
-  loopBreak:   List[String]      // stack of loop exit labels (innermost last)
-  loopCont:    List[String]      // stack of loop continue labels (innermost last)
+  pkgName: String  // JVM path, e.g. "com/example/Hello"
+  className: String  // host class for static methods
+  slots: Map[String, Int]  // variable name → local slot
+  types: Map[String, JvmType]  // variable name → JVM type
+  slotTicker: List[Int]  // length = next slot index
+  labelTicker: List[Int]  // length = next label index
+  loopBreak: List[String]  // stack of loop exit labels (innermost last)
+  loopCont: List[String]  // stack of loop continue labels (innermost last)
   // Generator body context: when Some, EYield emits LYield; when None, EYield panics.
-  genClass:    Option[String]
+  genClass: Option[String]
   // Cross-package free-function call resolution (see JvmFuncSig).  Keyed by
   // bare function name.  Empty for hand-built / generator-internal contexts.
-  funcSigs:    Map[String, JvmFuncSig]
+  funcSigs: Map[String, JvmFuncSig]
   // Union case field types for precise match-binding (see JvmCaseField).
   // Keyed by case class JVM name, e.g. "Pkg/Union$Case".
-  caseFields:  Map[String, List[JvmCaseField]]
+  caseFields: Map[String, List[JvmCaseField]]
   // Extern-type alias → Java FQN, e.g. "Math" → "java.lang.Math".
   externTypes: Map[String, String]
   // Auto-FFI resolution context for JDK class loading.
-  autoFfi:     AutoFfiCtx
+  autoFfi: AutoFfiCtx
+  // ─────────────────────────────────────────────────────────────────────────────
+  // §2. Helper utilities.
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Convert a dotted Lyric package name to a JVM internal binary name.
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// §2. Helper utilities.
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Convert a dotted Lyric package name to a JVM internal binary name.
 pub func lyricNameToJvm(name: in String): String {
   name.replace(".", "/")
 }
@@ -120,10 +118,7 @@ pub func allocSlot(ctx: in FuncCtx, name: in String, ty: in JvmType): Int {
   val width = jvmTypeSlotWidth(ty)
   match mapGet(ctx.slots, name) {
     case Some(existing) -> {
-      val prevTy = match mapGet(ctx.types, name) {
-        case Some(t) -> t
-        case None    -> ty
-      }
+      val prevTy = match mapGet(ctx.types, name) { case Some(t) -> t; case None -> ty }
       if jvmTypeSlotWidth(prevTy) == width {
         ctx.types.remove(name)
         ctx.types.add(name, ty)
@@ -131,15 +126,20 @@ pub func allocSlot(ctx: in FuncCtx, name: in String, ty: in JvmType): Int {
       }
       ctx.slots.remove(name)
     }
-    case None -> {}
+    case None -> {
+    }
   }
   val slot = ctx.slotTicker.count
   ctx.slots.add(name, slot)
-  if ctx.types.containsKey(name) { ctx.types.remove(name) }
+  if ctx.types.containsKey(name) {
+    ctx.types.remove(name)
+  }
   ctx.types.add(name, ty)
   // Advance the ticker.
   ctx.slotTicker.add(0)
-  if width == 2 { ctx.slotTicker.add(0) }
+  if width == 2 {
+    ctx.slotTicker.add(0)
+  }
   slot
 }
 
@@ -147,9 +147,9 @@ pub func allocSlot(ctx: in FuncCtx, name: in String, ty: in JvmType): Int {
 // everything else.  Mirrors ECMA JVMS §2.6.1.
 func jvmTypeSlotWidth(ty: in JvmType): Int {
   match ty {
-    case JLong   -> 2
+    case JLong -> 2
     case JDouble -> 2
-    case _       -> 1
+    case _ -> 1
   }
 }
 
@@ -166,7 +166,6 @@ pub func lookupType(ctx: in FuncCtx, name: in String): Option[JvmType] {
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Type mapping.
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Return the last segment of a ModulePath.
 func lastSegment(path: in ModulePath): String {
   val n = path.segments.count
@@ -236,19 +235,18 @@ pub func typeExprToJvm(te: in TypeExpr, pkgName: in String): JvmType {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Load / store / return helpers.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func emitLoad(insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
   match ty {
-    case JLong    -> insns.add(LLload(slot = slot))
-    case JDouble  -> insns.add(LDload(slot = slot))
+    case JLong -> insns.add(LLload(slot = slot))
+    case JDouble -> insns.add(LDload(slot = slot))
     case JBoolean -> insns.add(LIload(slot = slot))
-    case JByte    -> insns.add(LIload(slot = slot))
-    case JChar    -> insns.add(LIload(slot = slot))
-    case JShort   -> insns.add(LIload(slot = slot))
-    case JInt     -> insns.add(LIload(slot = slot))
-    case JFloat   -> insns.add(LDload(slot = slot))
-    case JVoid    -> insns.add(LNop)
-    case JRef(_)  -> insns.add(LAload(slot = slot))
+    case JByte -> insns.add(LIload(slot = slot))
+    case JChar -> insns.add(LIload(slot = slot))
+    case JShort -> insns.add(LIload(slot = slot))
+    case JInt -> insns.add(LIload(slot = slot))
+    case JFloat -> insns.add(LDload(slot = slot))
+    case JVoid -> insns.add(LNop)
+    case JRef(_) -> insns.add(LAload(slot = slot))
     case JArray(_) -> insns.add(LAload(slot = slot))
   }
 }
@@ -262,39 +260,43 @@ pub func emitLoad(insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
 pub func emitResultLoad(insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
   emitLoad(insns, slot, ty)
   match ty {
-    case JRef(cls) -> { if cls != "java/lang/Object" { insns.add(LCheckcast(className = cls)) } }
-    case _         -> ()
+    case JRef(cls) -> {
+      if cls != "java/lang/Object" {
+        insns.add(LCheckcast(className = cls))
+      }
+    }
+    case _ -> ()
   }
 }
 
 pub func emitStore(insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
   match ty {
-    case JLong    -> insns.add(LLstore(slot = slot))
-    case JDouble  -> insns.add(LDstore(slot = slot))
+    case JLong -> insns.add(LLstore(slot = slot))
+    case JDouble -> insns.add(LDstore(slot = slot))
     case JBoolean -> insns.add(LIstore(slot = slot))
-    case JByte    -> insns.add(LIstore(slot = slot))
-    case JChar    -> insns.add(LIstore(slot = slot))
-    case JShort   -> insns.add(LIstore(slot = slot))
-    case JInt     -> insns.add(LIstore(slot = slot))
-    case JFloat   -> insns.add(LDstore(slot = slot))
-    case JVoid    -> insns.add(LNop)
-    case JRef(_)  -> insns.add(LAstore(slot = slot))
+    case JByte -> insns.add(LIstore(slot = slot))
+    case JChar -> insns.add(LIstore(slot = slot))
+    case JShort -> insns.add(LIstore(slot = slot))
+    case JInt -> insns.add(LIstore(slot = slot))
+    case JFloat -> insns.add(LDstore(slot = slot))
+    case JVoid -> insns.add(LNop)
+    case JRef(_) -> insns.add(LAstore(slot = slot))
     case JArray(_) -> insns.add(LAstore(slot = slot))
   }
 }
 
 pub func emitReturn(insns: in List[LInsn], ty: in JvmType): Unit {
   match ty {
-    case JLong    -> insns.add(LLreturn)
-    case JDouble  -> insns.add(LDreturn)
+    case JLong -> insns.add(LLreturn)
+    case JDouble -> insns.add(LDreturn)
     case JBoolean -> insns.add(LIreturn)
-    case JByte    -> insns.add(LIreturn)
-    case JChar    -> insns.add(LIreturn)
-    case JShort   -> insns.add(LIreturn)
-    case JInt     -> insns.add(LIreturn)
-    case JFloat   -> insns.add(LDreturn)
-    case JVoid    -> insns.add(LReturn)
-    case JRef(_)  -> insns.add(LAreturn)
+    case JByte -> insns.add(LIreturn)
+    case JChar -> insns.add(LIreturn)
+    case JShort -> insns.add(LIreturn)
+    case JInt -> insns.add(LIreturn)
+    case JFloat -> insns.add(LDreturn)
+    case JVoid -> insns.add(LReturn)
+    case JRef(_) -> insns.add(LAreturn)
     case JArray(_) -> insns.add(LAreturn)
   }
 }
@@ -302,63 +304,61 @@ pub func emitReturn(insns: in List[LInsn], ty: in JvmType): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Expression lowering.
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Forward declarations: lowerExpr / lowerBlock / lowerStmt are mutually
 // recursive.  In Lyric this is supported via the natural forward-reference
 // rules — all three are in the same package and file, so they can call each
 // other freely.
-
 // Lower a comparison expression.  lhs type determines which comparison is used.
 func lowerCmp(
-  ctx:     in FuncCtx,
-  insns:   in List[LInsn],
-  op:      in BinOp,
-  lhsTy:   in JvmType,
-  trueLabel:  in String,
-  falseLabel: in String
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  op: in BinOp,
+  lhsTy: in JvmType,
+  trueLabel: in String,
+  falseLabel: in String,
 ): Unit {
   match lhsTy {
     case JLong -> {
       insns.add(LLcmp)
       match op {
-        case BEq  -> insns.add(LIfeq(label = trueLabel))
+        case BEq -> insns.add(LIfeq(label = trueLabel))
         case BNeq -> insns.add(LIfne(label = trueLabel))
-        case BLt  -> insns.add(LIflt(label = trueLabel))
+        case BLt -> insns.add(LIflt(label = trueLabel))
         case BLte -> insns.add(LIfle(label = trueLabel))
-        case BGt  -> insns.add(LIfgt(label = trueLabel))
+        case BGt -> insns.add(LIfgt(label = trueLabel))
         case BGte -> insns.add(LIfge(label = trueLabel))
-        case _    -> panic("Jvm.Codegen: unsupported long comparison op")
+        case _ -> panic("Jvm.Codegen: unsupported long comparison op")
       }
     }
     case JDouble -> {
       insns.add(LDcmpl)
       match op {
-        case BEq  -> insns.add(LIfeq(label = trueLabel))
+        case BEq -> insns.add(LIfeq(label = trueLabel))
         case BNeq -> insns.add(LIfne(label = trueLabel))
-        case BLt  -> insns.add(LIflt(label = trueLabel))
+        case BLt -> insns.add(LIflt(label = trueLabel))
         case BLte -> insns.add(LIfle(label = trueLabel))
-        case BGt  -> insns.add(LIfgt(label = trueLabel))
+        case BGt -> insns.add(LIfgt(label = trueLabel))
         case BGte -> insns.add(LIfge(label = trueLabel))
-        case _    -> panic("Jvm.Codegen: unsupported double comparison op")
+        case _ -> panic("Jvm.Codegen: unsupported double comparison op")
       }
     }
     case JRef(_) -> {
       match op {
-        case BEq  -> insns.add(LIfAcmpeq(label = trueLabel))
+        case BEq -> insns.add(LIfAcmpeq(label = trueLabel))
         case BNeq -> insns.add(LIfAcmpne(label = trueLabel))
-        case _    -> panic("Jvm.Codegen: unsupported reference comparison op")
+        case _ -> panic("Jvm.Codegen: unsupported reference comparison op")
       }
     }
     case _ -> {
       // Integer comparison (int, bool, char, byte, short).
       match op {
-        case BEq  -> insns.add(LIfIcmpeq(label = trueLabel))
+        case BEq -> insns.add(LIfIcmpeq(label = trueLabel))
         case BNeq -> insns.add(LIfIcmpne(label = trueLabel))
-        case BLt  -> insns.add(LIfIcmplt(label = trueLabel))
+        case BLt -> insns.add(LIfIcmplt(label = trueLabel))
         case BLte -> insns.add(LIfIcmple(label = trueLabel))
-        case BGt  -> insns.add(LIfIcmpgt(label = trueLabel))
+        case BGt -> insns.add(LIfIcmpgt(label = trueLabel))
         case BGte -> insns.add(LIfIcmpge(label = trueLabel))
-        case _    -> panic("Jvm.Codegen: unsupported int comparison op")
+        case _ -> panic("Jvm.Codegen: unsupported int comparison op")
       }
     }
   }
@@ -375,11 +375,7 @@ func emitPanicFromStack(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
   emitLoad(insns, msgSlot, JRef(className = "java/lang/String"))
   val rteps: List[JvmType] = newList()
   rteps.add(JRef(className = "java/lang/String"))
-  insns.add(LInvokespecial(
-    owner  = "java/lang/RuntimeException",
-    name   = "<init>",
-    params = rteps,
-    ret    = JVoid))
+  insns.add(LInvokespecial(owner = "java/lang/RuntimeException", name = "<init>", params = rteps, ret = JVoid))
   insns.add(LAthrow)
 }
 
@@ -397,12 +393,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           // (iconst).  Storing an int with `lstore` underflows the operand
           // stack ("Operand stack underflow"); a plain unsuffixed literal stays
           // an int when it fits in 32 bits.
-          val isLong =
-            match suffix {
-              case I64 -> true
-              case U64 -> true
-              case _   -> false
-            }
+          val isLong = match suffix { case I64 -> true; case U64 -> true; case _ -> false }
           if isLong {
             insns.add(LLconst(v = v))
             JLong
@@ -459,11 +450,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       val name = lastSegment(path)
       match lookupSlot(ctx, name) {
         case Some(slot) -> {
-          val ty =
-            match lookupType(ctx, name) {
-              case Some(t) -> t
-              case None    -> JRef(className = "java/lang/Object")
-            }
+          val ty = match lookupType(ctx, name) { case Some(t) -> t; case None -> JRef(className = "java/lang/Object") }
           emitLoad(insns, slot, ty)
           ty
         }
@@ -495,7 +482,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           JBoolean
         }
         case BOr -> {
-          val trueL  = freshLabel(ctx)
+          val trueL = freshLabel(ctx)
           val afterL = freshLabel(ctx)
           lowerExpr(ctx, insns, lhs)
           insns.add(LIfne(label = trueL))
@@ -509,12 +496,24 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           JBoolean
         }
         // Comparison ops — produce 0 or 1 on the stack.
-        case BEq  -> { lowerCmpExpr(ctx, insns, op, lhs, rhs) }
-        case BNeq -> { lowerCmpExpr(ctx, insns, op, lhs, rhs) }
-        case BLt  -> { lowerCmpExpr(ctx, insns, op, lhs, rhs) }
-        case BLte -> { lowerCmpExpr(ctx, insns, op, lhs, rhs) }
-        case BGt  -> { lowerCmpExpr(ctx, insns, op, lhs, rhs) }
-        case BGte -> { lowerCmpExpr(ctx, insns, op, lhs, rhs) }
+        case BEq -> {
+          lowerCmpExpr(ctx, insns, op, lhs, rhs)
+        }
+        case BNeq -> {
+          lowerCmpExpr(ctx, insns, op, lhs, rhs)
+        }
+        case BLt -> {
+          lowerCmpExpr(ctx, insns, op, lhs, rhs)
+        }
+        case BLte -> {
+          lowerCmpExpr(ctx, insns, op, lhs, rhs)
+        }
+        case BGt -> {
+          lowerCmpExpr(ctx, insns, op, lhs, rhs)
+        }
+        case BGte -> {
+          lowerCmpExpr(ctx, insns, op, lhs, rhs)
+        }
         // Arithmetic ops.
         case BAdd -> {
           val lhsTy = lowerExpr(ctx, insns, lhs)
@@ -529,33 +528,38 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               insns.add(LNew(className = "java/lang/StringBuilder"))
               insns.add(LDup)
               val sbInitPs: List[JvmType] = newList()
-              insns.add(LInvokespecial(
-                owner  = "java/lang/StringBuilder",
-                name   = "<init>",
-                params = sbInitPs,
-                ret    = JVoid))
+              insns.add(LInvokespecial(owner = "java/lang/StringBuilder", name = "<init>", params = sbInitPs, ret = JVoid))
               emitLoad(insns, lhsSlot, lhsTy)
               val appPs1: List[JvmType] = newList()
               appPs1.add(JRef(className = "java/lang/String"))
-              insns.add(LInvokevirtual(
-                owner  = "java/lang/StringBuilder",
-                name   = "append",
-                params = appPs1,
-                ret    = JRef(className = "java/lang/StringBuilder")))
+              insns.add(
+                LInvokevirtual(
+                  owner = "java/lang/StringBuilder",
+                  name = "append",
+                  params = appPs1,
+                  ret = JRef(className = "java/lang/StringBuilder")
+                )
+              )
               lowerExpr(ctx, insns, rhs)
               val appPs2: List[JvmType] = newList()
               appPs2.add(JRef(className = "java/lang/String"))
-              insns.add(LInvokevirtual(
-                owner  = "java/lang/StringBuilder",
-                name   = "append",
-                params = appPs2,
-                ret    = JRef(className = "java/lang/StringBuilder")))
+              insns.add(
+                LInvokevirtual(
+                  owner = "java/lang/StringBuilder",
+                  name = "append",
+                  params = appPs2,
+                  ret = JRef(className = "java/lang/StringBuilder")
+                )
+              )
               val tsPs: List[JvmType] = newList()
-              insns.add(LInvokevirtual(
-                owner  = "java/lang/StringBuilder",
-                name   = "toString",
-                params = tsPs,
-                ret    = JRef(className = "java/lang/String")))
+              insns.add(
+                LInvokevirtual(
+                  owner = "java/lang/StringBuilder",
+                  name = "toString",
+                  params = tsPs,
+                  ret = JRef(className = "java/lang/String")
+                )
+              )
               JRef(className = "java/lang/String")
             }
             case JLong -> {
@@ -579,35 +583,68 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           val lhsTy = lowerExpr(ctx, insns, lhs)
           lowerExpr(ctx, insns, rhs)
           match lhsTy {
-            case JLong   -> { insns.add(LLsub); JLong }
-            case JDouble -> { insns.add(LDsub); JDouble }
-            case _       -> { insns.add(LIsub); JInt }
+            case JLong -> {
+              insns.add(LLsub)
+              JLong
+            }
+            case JDouble -> {
+              insns.add(LDsub)
+              JDouble
+            }
+            case _ -> {
+              insns.add(LIsub)
+              JInt
+            }
           }
         }
         case BMul -> {
           val lhsTy = lowerExpr(ctx, insns, lhs)
           lowerExpr(ctx, insns, rhs)
           match lhsTy {
-            case JLong   -> { insns.add(LLmul); JLong }
-            case JDouble -> { insns.add(LDmul); JDouble }
-            case _       -> { insns.add(LImul); JInt }
+            case JLong -> {
+              insns.add(LLmul)
+              JLong
+            }
+            case JDouble -> {
+              insns.add(LDmul)
+              JDouble
+            }
+            case _ -> {
+              insns.add(LImul)
+              JInt
+            }
           }
         }
         case BDiv -> {
           val lhsTy = lowerExpr(ctx, insns, lhs)
           lowerExpr(ctx, insns, rhs)
           match lhsTy {
-            case JLong   -> { insns.add(LLdiv); JLong }
-            case JDouble -> { insns.add(LDdiv); JDouble }
-            case _       -> { insns.add(LIdiv); JInt }
+            case JLong -> {
+              insns.add(LLdiv)
+              JLong
+            }
+            case JDouble -> {
+              insns.add(LDdiv)
+              JDouble
+            }
+            case _ -> {
+              insns.add(LIdiv)
+              JInt
+            }
           }
         }
         case BMod -> {
           val lhsTy = lowerExpr(ctx, insns, lhs)
           lowerExpr(ctx, insns, rhs)
           match lhsTy {
-            case JLong   -> { insns.add(LLrem); JLong }
-            case _       -> { insns.add(LIrem); JInt }
+            case JLong -> {
+              insns.add(LLrem)
+              JLong
+            }
+            case _ -> {
+              insns.add(LIrem)
+              JInt
+            }
           }
         }
         case BXor -> {
@@ -619,7 +656,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case BCoalesce -> {
           // Null-coalescing: if lhs is non-null use it, else rhs.
           val lhsTy = lowerExpr(ctx, insns, lhs)
-          val nullL  = freshLabel(ctx)
+          val nullL = freshLabel(ctx)
           val afterL = freshLabel(ctx)
           insns.add(LDup)
           insns.add(LIfAcmpne(label = afterL))
@@ -630,7 +667,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         }
         case BImplies -> {
           // p => q == !p || q
-          val trueL  = freshLabel(ctx)
+          val trueL = freshLabel(ctx)
           val afterL = freshLabel(ctx)
           lowerExpr(ctx, insns, lhs)
           insns.add(LIfeq(label = trueL))  // if lhs is false, result is true
@@ -650,9 +687,18 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         case PreNeg -> {
           val ty = lowerExpr(ctx, insns, operand)
           match ty {
-            case JLong   -> { insns.add(LLneg); JLong }
-            case JDouble -> { insns.add(LDneg); JDouble }
-            case _       -> { insns.add(LIneg); JInt }
+            case JLong -> {
+              insns.add(LLneg)
+              JLong
+            }
+            case JDouble -> {
+              insns.add(LDneg)
+              JDouble
+            }
+            case _ -> {
+              insns.add(LIneg)
+              JInt
+            }
           }
         }
         case PreNot -> {
@@ -681,25 +727,34 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           // TyException built-in members: .message and .typeName.
           if cls == "java/lang/Throwable" and memberName == "message" {
             val getMessagePs: List[JvmType] = newList()
-            insns.add(LInvokevirtual(
-              owner  = "java/lang/Throwable",
-              name   = "getMessage",
-              params = getMessagePs,
-              ret    = JRef(className = "java/lang/String")))
+            insns.add(
+              LInvokevirtual(
+                owner = "java/lang/Throwable",
+                name = "getMessage",
+                params = getMessagePs,
+                ret = JRef(className = "java/lang/String")
+              )
+            )
             JRef(className = "java/lang/String")
           } else if cls == "java/lang/Throwable" and memberName == "typeName" {
             val getClassPs: List[JvmType] = newList()
-            insns.add(LInvokevirtual(
-              owner  = "java/lang/Object",
-              name   = "getClass",
-              params = getClassPs,
-              ret    = JRef(className = "java/lang/Class")))
+            insns.add(
+              LInvokevirtual(
+                owner = "java/lang/Object",
+                name = "getClass",
+                params = getClassPs,
+                ret = JRef(className = "java/lang/Class")
+              )
+            )
             val getSimplePs: List[JvmType] = newList()
-            insns.add(LInvokevirtual(
-              owner  = "java/lang/Class",
-              name   = "getSimpleName",
-              params = getSimplePs,
-              ret    = JRef(className = "java/lang/String")))
+            insns.add(
+              LInvokevirtual(
+                owner = "java/lang/Class",
+                name = "getSimpleName",
+                params = getSimplePs,
+                ret = JRef(className = "java/lang/String")
+              )
+            )
             JRef(className = "java/lang/String")
           } else {
             // Generic JRef member access — record field lowering deferred.
@@ -749,11 +804,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       insns.add(LNew(className = "java/util/ArrayList"))
       insns.add(LDup)
       val alInitPs: List[JvmType] = newList()
-      insns.add(LInvokespecial(
-        owner  = "java/util/ArrayList",
-        name   = "<init>",
-        params = alInitPs,
-        ret    = JVoid))
+      insns.add(LInvokespecial(owner = "java/util/ArrayList", name = "<init>", params = alInitPs, ret = JVoid))
       val listSlot = allocSlot(ctx, "__list_" + toString(ctx.slotTicker.count), JRef(className = "java/util/ArrayList"))
       insns.add(LAstore(slot = listSlot))
       var i = 0
@@ -764,11 +815,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         boxIfNeeded(insns, elemTy)
         val addPs: List[JvmType] = newList()
         addPs.add(JRef(className = "java/lang/Object"))
-        insns.add(LInvokevirtual(
-          owner  = "java/util/ArrayList",
-          name   = "add",
-          params = addPs,
-          ret    = JBoolean))
+        insns.add(LInvokevirtual(owner = "java/util/ArrayList", name = "add", params = addPs, ret = JBoolean))
         insns.add(LPop)
         i = i + 1
       }
@@ -841,11 +888,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       // such binding exists (which should never happen after elaboration).
       match lookupSlot(ctx, "result") {
         case Some(slot) -> {
-          val ty =
-            match lookupType(ctx, "result") {
-              case Some(t) -> t
-              case None    -> JRef(className = "java/lang/Object")
-            }
+          val ty = match lookupType(ctx, "result") { case Some(t) -> t; case None -> JRef(className = "java/lang/Object") }
           emitLoad(insns, slot, ty)
           ty
         }
@@ -878,11 +921,14 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             // List-style indexing via ArrayList.get(int).
             val getPs: List[JvmType] = newList()
             getPs.add(JInt)
-            insns.add(LInvokevirtual(
-              owner  = "java/util/ArrayList",
-              name   = "get",
-              params = getPs,
-              ret    = JRef(className = "java/lang/Object")))
+            insns.add(
+              LInvokevirtual(
+                owner = "java/util/ArrayList",
+                name = "get",
+                params = getPs,
+                ret = JRef(className = "java/lang/Object")
+              )
+            )
             JRef(className = "java/lang/Object")
           }
         }
@@ -903,17 +949,10 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
 // ─────────────────────────────────────────────────────────────────────────────
 // §5a. Comparison expression helper.
 // ─────────────────────────────────────────────────────────────────────────────
-
-func lowerCmpExpr(
-  ctx:   in FuncCtx,
-  insns: in List[LInsn],
-  op:    in BinOp,
-  lhs:   in Expr,
-  rhs:   in Expr
-): JvmType {
-  val lhsTy  = lowerExpr(ctx, insns, lhs)
+func lowerCmpExpr(ctx: in FuncCtx, insns: in List[LInsn], op: in BinOp, lhs: in Expr, rhs: in Expr): JvmType {
+  val lhsTy = lowerExpr(ctx, insns, lhs)
   lowerExpr(ctx, insns, rhs)
-  val trueL  = freshLabel(ctx)
+  val trueL = freshLabel(ctx)
   val afterL = freshLabel(ctx)
   // Materialise the 0/1 boolean through a result local so the operand stack is
   // empty at the `trueL` / `afterL` branch targets.  Leaving the bool on the
@@ -945,7 +984,6 @@ func lowerCmpExpr(
 // lowerBoolCondTrue:  jump to succeedLabel if cond is TRUE;  fall through if FALSE.
 // lowerCmpFail:       emit the branch-on-failure comparison for lowerBoolCond.
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Branch to failLabel if the comparison encoded by `op` is NOT satisfied.
 // Both operands must already be on the stack; both are consumed.
 func lowerCmpFail(insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLabel: in String): Unit {
@@ -953,43 +991,43 @@ func lowerCmpFail(insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLa
     case JLong -> {
       insns.add(LLcmp)
       match op {
-        case BEq  -> insns.add(LIfne(label = failLabel))
+        case BEq -> insns.add(LIfne(label = failLabel))
         case BNeq -> insns.add(LIfeq(label = failLabel))
-        case BLt  -> insns.add(LIfge(label = failLabel))
+        case BLt -> insns.add(LIfge(label = failLabel))
         case BLte -> insns.add(LIfgt(label = failLabel))
-        case BGt  -> insns.add(LIfle(label = failLabel))
+        case BGt -> insns.add(LIfle(label = failLabel))
         case BGte -> insns.add(LIflt(label = failLabel))
-        case _    -> insns.add(LNop)
+        case _ -> insns.add(LNop)
       }
     }
     case JDouble -> {
       insns.add(LDcmpl)
       match op {
-        case BEq  -> insns.add(LIfne(label = failLabel))
+        case BEq -> insns.add(LIfne(label = failLabel))
         case BNeq -> insns.add(LIfeq(label = failLabel))
-        case BLt  -> insns.add(LIfge(label = failLabel))
+        case BLt -> insns.add(LIfge(label = failLabel))
         case BLte -> insns.add(LIfgt(label = failLabel))
-        case BGt  -> insns.add(LIfle(label = failLabel))
+        case BGt -> insns.add(LIfle(label = failLabel))
         case BGte -> insns.add(LIflt(label = failLabel))
-        case _    -> insns.add(LNop)
+        case _ -> insns.add(LNop)
       }
     }
     case JRef(_) -> {
       match op {
-        case BEq  -> insns.add(LIfAcmpne(label = failLabel))
+        case BEq -> insns.add(LIfAcmpne(label = failLabel))
         case BNeq -> insns.add(LIfAcmpeq(label = failLabel))
-        case _    -> insns.add(LNop)
+        case _ -> insns.add(LNop)
       }
     }
     case _ -> {
       match op {
-        case BEq  -> insns.add(LIfIcmpne(label = failLabel))
+        case BEq -> insns.add(LIfIcmpne(label = failLabel))
         case BNeq -> insns.add(LIfIcmpeq(label = failLabel))
-        case BLt  -> insns.add(LIfIcmpge(label = failLabel))
+        case BLt -> insns.add(LIfIcmpge(label = failLabel))
         case BLte -> insns.add(LIfIcmpgt(label = failLabel))
-        case BGt  -> insns.add(LIfIcmple(label = failLabel))
+        case BGt -> insns.add(LIfIcmple(label = failLabel))
         case BGte -> insns.add(LIfIcmplt(label = failLabel))
-        case _    -> insns.add(LNop)
+        case _ -> insns.add(LNop)
       }
     }
   }
@@ -997,12 +1035,7 @@ func lowerCmpFail(insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLa
 
 // Compile a boolean condition, branching to failLabel if it is false.
 // Leaves the operand stack unchanged (no net stack effect).
-func lowerBoolCond(
-  ctx:       in FuncCtx,
-  insns:     in List[LInsn],
-  cond:      in Expr,
-  failLabel: in String
-): Unit {
+func lowerBoolCond(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, failLabel: in String): Unit {
   match cond.kind {
     case EBinop(op, lhs, rhs) -> {
       match op {
@@ -1055,7 +1088,10 @@ func lowerBoolCond(
     case EPrefix(op, operand) -> {
       match op {
         case PreNot -> lowerBoolCondTrue(ctx, insns, operand, failLabel)
-        case _      -> { lowerExpr(ctx, insns, cond); insns.add(LIfeq(label = failLabel)) }
+        case _ -> {
+          lowerExpr(ctx, insns, cond)
+          insns.add(LIfeq(label = failLabel))
+        }
       }
     }
     case EParen(inner) -> lowerBoolCond(ctx, insns, inner, failLabel)
@@ -1068,12 +1104,7 @@ func lowerBoolCond(
 
 // Compile a boolean condition, branching to succeedLabel if it is true.
 // Leaves the operand stack unchanged (no net stack effect).
-func lowerBoolCondTrue(
-  ctx:          in FuncCtx,
-  insns:        in List[LInsn],
-  cond:         in Expr,
-  succeedLabel: in String
-): Unit {
+func lowerBoolCondTrue(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, succeedLabel: in String): Unit {
   match cond.kind {
     case EBinop(op, lhs, rhs) -> {
       match op {
@@ -1127,7 +1158,10 @@ func lowerBoolCondTrue(
     case EPrefix(op, operand) -> {
       match op {
         case PreNot -> lowerBoolCond(ctx, insns, operand, succeedLabel)
-        case _      -> { lowerExpr(ctx, insns, cond); insns.add(LIfne(label = succeedLabel)) }
+        case _ -> {
+          lowerExpr(ctx, insns, cond)
+          insns.add(LIfne(label = succeedLabel))
+        }
       }
     }
     case EParen(inner) -> lowerBoolCondTrue(ctx, insns, inner, succeedLabel)
@@ -1141,22 +1175,21 @@ func lowerBoolCondTrue(
 // ─────────────────────────────────────────────────────────────────────────────
 // §5c. If expression lowering.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func lowerExprOrBlock(ctx: in FuncCtx, insns: in List[LInsn], eob: in ExprOrBlock): JvmType {
   match eob {
-    case EOBExpr(e)    -> lowerExpr(ctx, insns, e)
+    case EOBExpr(e) -> lowerExpr(ctx, insns, e)
     case EOBBlock(blk) -> lowerBlockExpr(ctx, insns, blk)
   }
 }
 
 func lowerIfExpr(
-  ctx:           in FuncCtx,
-  insns:         in List[LInsn],
-  cond:          in Expr,
-  thenBranch:    in ExprOrBlock,
-  elseBranchOpt: in Option[ExprOrBlock]
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  cond: in Expr,
+  thenBranch: in ExprOrBlock,
+  elseBranchOpt: in Option[ExprOrBlock],
 ): JvmType {
-  val elseL  = freshLabel(ctx)
+  val elseL = freshLabel(ctx)
   val afterL = freshLabel(ctx)
 
   match elseBranchOpt {
@@ -1207,7 +1240,6 @@ func lowerIfExpr(
 // §5c. Block expression lowering.
 //      Returns the type of the trailing value (last SExpr), or JVoid.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func lowerBlockExpr(ctx: in FuncCtx, insns: in List[LInsn], block: in Block): JvmType {
   val n = block.statements.count
   if n == 0 {
@@ -1249,24 +1281,13 @@ func lowerBlockExpr(ctx: in FuncCtx, insns: in List[LInsn], block: in Block): Jv
 // ─────────────────────────────────────────────────────────────────────────────
 // §5d. Assignment expression lowering.
 // ─────────────────────────────────────────────────────────────────────────────
-
-func lowerAssignExpr(
-  ctx:    in FuncCtx,
-  insns:  in List[LInsn],
-  target: in Expr,
-  op:     in AssignOp,
-  value:  in Expr
-): JvmType {
+func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op: in AssignOp, value: in Expr): JvmType {
   match target.kind {
     case EPath(path) -> {
       val name = lastSegment(path)
       match lookupSlot(ctx, name) {
         case Some(slot) -> {
-          val ty =
-            match lookupType(ctx, name) {
-              case Some(t) -> t
-              case None    -> JRef(className = "java/lang/Object")
-            }
+          val ty = match lookupType(ctx, name) { case Some(t) -> t; case None -> JRef(className = "java/lang/Object") }
           match op {
             case AssEq -> {
               lowerExpr(ctx, insns, value)
@@ -1276,9 +1297,9 @@ func lowerAssignExpr(
               emitLoad(insns, slot, ty)
               lowerExpr(ctx, insns, value)
               match ty {
-                case JLong   -> insns.add(LLadd)
+                case JLong -> insns.add(LLadd)
                 case JDouble -> insns.add(LDadd)
-                case _       -> insns.add(LIadd)
+                case _ -> insns.add(LIadd)
               }
               emitStore(insns, slot, ty)
             }
@@ -1286,9 +1307,9 @@ func lowerAssignExpr(
               emitLoad(insns, slot, ty)
               lowerExpr(ctx, insns, value)
               match ty {
-                case JLong   -> insns.add(LLsub)
+                case JLong -> insns.add(LLsub)
                 case JDouble -> insns.add(LDsub)
-                case _       -> insns.add(LIsub)
+                case _ -> insns.add(LIsub)
               }
               emitStore(insns, slot, ty)
             }
@@ -1296,9 +1317,9 @@ func lowerAssignExpr(
               emitLoad(insns, slot, ty)
               lowerExpr(ctx, insns, value)
               match ty {
-                case JLong   -> insns.add(LLmul)
+                case JLong -> insns.add(LLmul)
                 case JDouble -> insns.add(LDmul)
-                case _       -> insns.add(LImul)
+                case _ -> insns.add(LImul)
               }
               emitStore(insns, slot, ty)
             }
@@ -1306,9 +1327,9 @@ func lowerAssignExpr(
               emitLoad(insns, slot, ty)
               lowerExpr(ctx, insns, value)
               match ty {
-                case JLong   -> insns.add(LLdiv)
+                case JLong -> insns.add(LLdiv)
                 case JDouble -> insns.add(LDdiv)
-                case _       -> insns.add(LIdiv)
+                case _ -> insns.add(LIdiv)
               }
               emitStore(insns, slot, ty)
             }
@@ -1316,8 +1337,8 @@ func lowerAssignExpr(
               emitLoad(insns, slot, ty)
               lowerExpr(ctx, insns, value)
               match ty {
-                case JLong   -> insns.add(LLrem)
-                case _       -> insns.add(LIrem)
+                case JLong -> insns.add(LLrem)
+                case _ -> insns.add(LIrem)
               }
               emitStore(insns, slot, ty)
             }
@@ -1345,13 +1366,7 @@ func lowerAssignExpr(
 // §5e. Match expression lowering.
 //      Bootstrap-grade: handles literal and binding patterns only.
 // ─────────────────────────────────────────────────────────────────────────────
-
-func lowerMatchExpr(
-  ctx:      in FuncCtx,
-  insns:    in List[LInsn],
-  scrutinee: in Expr,
-  arms:     in List[MatchArm]
-): JvmType {
+func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, arms: in List[MatchArm]): JvmType {
   val scrutTy = lowerExpr(ctx, insns, scrutinee)
   val scrutSlot = allocSlot(ctx, "__scrut_" + toString(ctx.slotTicker.count), scrutTy)
   emitStore(insns, scrutSlot, scrutTy)
@@ -1391,7 +1406,9 @@ func lowerMatchExpr(
     match resultTy {
       case JVoid -> ()
       case _ -> {
-        if rslot < 0 { rslot = allocSlot(ctx, rslotName, resultTy) }
+        if rslot < 0 {
+          rslot = allocSlot(ctx, rslotName, resultTy)
+        }
         emitStore(insns, rslot, resultTy)
       }
     }
@@ -1407,7 +1424,11 @@ func lowerMatchExpr(
   insns.add(LLabel(name = afterL))
   match resultTy {
     case JVoid -> ()
-    case _     -> { if rslot >= 0 { emitResultLoad(insns, rslot, resultTy) } }
+    case _ -> {
+      if rslot >= 0 {
+        emitResultLoad(insns, rslot, resultTy)
+      }
+    }
   }
   resultTy
 }
@@ -1415,19 +1436,19 @@ func lowerMatchExpr(
 // Emit a runtime test for a pattern.  Jumps to `failLabel` if the test
 // fails.  The scrutinee is in local slot `scrutSlot` with type `scrutTy`.
 func lowerPatternTest(
-  ctx:        in FuncCtx,
-  insns:      in List[LInsn],
-  pat:        in Pattern,
-  scrutSlot:  in Int,
-  scrutTy:    in JvmType,
-  failLabel:  in String
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  pat: in Pattern,
+  scrutSlot: in Int,
+  scrutTy: in JvmType,
+  failLabel: in String,
 ): Unit {
   match pat.kind {
     case PWildcard -> insns.add(LNop)
     case PBinding(_, innerOpt) -> {
       match innerOpt {
         case Some(inner) -> lowerPatternTest(ctx, insns, inner, scrutSlot, scrutTy, failLabel)
-        case None        -> insns.add(LNop)
+        case None -> insns.add(LNop)
       }
     }
     case PLiteral(lit) -> {
@@ -1437,12 +1458,7 @@ func lowerPatternTest(
           // Match the scrutinee width: an `i64`/`u64`-suffixed pattern literal
           // (or one outside Int32 range) compares as a long (lcmp), else as an
           // int (if_icmpne).  Mixing widths corrupts the operand stack.
-          val isLong =
-            match suffix {
-              case I64 -> true
-              case U64 -> true
-              case _   -> false
-            }
+          val isLong = match suffix { case I64 -> true; case U64 -> true; case _ -> false }
           if (not isLong) and v >= -2147483648i64 and v <= 2147483647i64 {
             insns.add(LIconst(v = longToInt(v)))
             insns.add(LIfIcmpne(label = failLabel))
@@ -1464,11 +1480,7 @@ func lowerPatternTest(
           insns.add(LPushString(s = s))
           val eqPs: List[JvmType] = newList()
           eqPs.add(JRef(className = "java/lang/Object"))
-          insns.add(LInvokevirtual(
-            owner  = "java/lang/String",
-            name   = "equals",
-            params = eqPs,
-            ret    = JBoolean))
+          insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs, ret = JBoolean))
           insns.add(LIfeq(label = failLabel))
         }
         case LUnit -> {
@@ -1519,11 +1531,7 @@ func lowerPatternTest(
 
 // Bind pattern variables after a successful match.
 func lowerPatternBind(
-  ctx:       in FuncCtx,
-  insns:     in List[LInsn],
-  pat:       in Pattern,
-  scrutSlot: in Int,
-  scrutTy:   in JvmType
+  ctx: in FuncCtx, insns: in List[LInsn], pat: in Pattern, scrutSlot: in Int, scrutTy: in JvmType
 ): Unit {
   match pat.kind {
     case PWildcard -> insns.add(LNop)
@@ -1534,7 +1542,7 @@ func lowerPatternBind(
       emitStore(insns, bindSlot, scrutTy)
       match innerOpt {
         case Some(inner) -> lowerPatternBind(ctx, insns, inner, bindSlot, scrutTy)
-        case None        -> insns.add(LNop)
+        case None -> insns.add(LNop)
       }
     }
     case PLiteral(_) -> insns.add(LNop)
@@ -1544,7 +1552,11 @@ func lowerPatternBind(
       match scrutTy {
         case JRef(baseCls) -> {
           val caseClass = baseCls + "$" + caseName
-          val castSlot = allocSlot(ctx, "__cast_" + caseName + "_" + toString(ctx.slotTicker.count), JRef(className = caseClass))
+          val castSlot = allocSlot(
+            ctx,
+            "__cast_" + caseName + "_" + toString(ctx.slotTicker.count),
+            JRef(className = caseClass)
+          )
           emitLoad(insns, scrutSlot, scrutTy)
           insns.add(LCheckcast(className = caseClass))
           emitStore(insns, castSlot, JRef(className = caseClass))
@@ -1593,12 +1605,7 @@ func lowerPatternBind(
 // ─────────────────────────────────────────────────────────────────────────────
 // §5f. Interpolated string lowering.
 // ─────────────────────────────────────────────────────────────────────────────
-
-func lowerInterpolated(
-  ctx:      in FuncCtx,
-  insns:    in List[LInsn],
-  segments: in List[InterpolatedSegment]
-): JvmType {
+func lowerInterpolated(ctx: in FuncCtx, insns: in List[LInsn], segments: in List[InterpolatedSegment]): JvmType {
   if segments.count == 0 {
     insns.add(LPushString(s = ""))
     return JRef(className = "java/lang/String")
@@ -1607,11 +1614,7 @@ func lowerInterpolated(
   insns.add(LNew(className = "java/lang/StringBuilder"))
   insns.add(LDup)
   val sbInitPs: List[JvmType] = newList()
-  insns.add(LInvokespecial(
-    owner  = "java/lang/StringBuilder",
-    name   = "<init>",
-    params = sbInitPs,
-    ret    = JVoid))
+  insns.add(LInvokespecial(owner = "java/lang/StringBuilder", name = "<init>", params = sbInitPs, ret = JVoid))
   var i = 0
   while i < segments.count {
     match segments[i] {
@@ -1619,11 +1622,14 @@ func lowerInterpolated(
         insns.add(LPushString(s = text))
         val appPs: List[JvmType] = newList()
         appPs.add(JRef(className = "java/lang/String"))
-        insns.add(LInvokevirtual(
-          owner  = "java/lang/StringBuilder",
-          name   = "append",
-          params = appPs,
-          ret    = JRef(className = "java/lang/StringBuilder")))
+        insns.add(
+          LInvokevirtual(
+            owner = "java/lang/StringBuilder",
+            name = "append",
+            params = appPs,
+            ret = JRef(className = "java/lang/StringBuilder")
+          )
+        )
       }
       case ISExpr(e) -> {
         val eTy = lowerExpr(ctx, insns, e)
@@ -1632,11 +1638,14 @@ func lowerInterpolated(
           case JRef(cls) -> {
             if not (cls == "java/lang/String") {
               val tsPs: List[JvmType] = newList()
-              insns.add(LInvokevirtual(
-                owner  = "java/lang/Object",
-                name   = "toString",
-                params = tsPs,
-                ret    = JRef(className = "java/lang/String")))
+              insns.add(
+                LInvokevirtual(
+                  owner = "java/lang/Object",
+                  name = "toString",
+                  params = tsPs,
+                  ret = JRef(className = "java/lang/String")
+                )
+              )
             }
             insns.add(LNop)
           }
@@ -1644,55 +1653,62 @@ func lowerInterpolated(
             // Box and toString.
             boxIfNeeded(insns, eTy)
             val tsPs: List[JvmType] = newList()
-            insns.add(LInvokevirtual(
-              owner  = "java/lang/Object",
-              name   = "toString",
-              params = tsPs,
-              ret    = JRef(className = "java/lang/String")))
+            insns.add(
+              LInvokevirtual(
+                owner = "java/lang/Object",
+                name = "toString",
+                params = tsPs,
+                ret = JRef(className = "java/lang/String")
+              )
+            )
           }
         }
         val appPs2: List[JvmType] = newList()
         appPs2.add(JRef(className = "java/lang/String"))
-        insns.add(LInvokevirtual(
-          owner  = "java/lang/StringBuilder",
-          name   = "append",
-          params = appPs2,
-          ret    = JRef(className = "java/lang/StringBuilder")))
+        insns.add(
+          LInvokevirtual(
+            owner = "java/lang/StringBuilder",
+            name = "append",
+            params = appPs2,
+            ret = JRef(className = "java/lang/StringBuilder")
+          )
+        )
       }
     }
     i = i + 1
   }
   val finalTsPs: List[JvmType] = newList()
-  insns.add(LInvokevirtual(
-    owner  = "java/lang/StringBuilder",
-    name   = "toString",
-    params = finalTsPs,
-    ret    = JRef(className = "java/lang/String")))
+  insns.add(
+    LInvokevirtual(
+      owner = "java/lang/StringBuilder",
+      name = "toString",
+      params = finalTsPs,
+      ret = JRef(className = "java/lang/String")
+    )
+  )
   JRef(className = "java/lang/String")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §5g. Boxing helper.
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Box a primitive type sitting on the stack into its wrapper object.
 func boxIfNeeded(insns: in List[LInsn], ty: in JvmType): Unit {
   match ty {
-    case JInt     -> insns.add(LBoxInt)
-    case JLong    -> insns.add(LBoxLong)
-    case JDouble  -> insns.add(LBoxDouble)
+    case JInt -> insns.add(LBoxInt)
+    case JLong -> insns.add(LBoxLong)
+    case JDouble -> insns.add(LBoxDouble)
     case JBoolean -> insns.add(LBoxBool)
-    case JByte    -> insns.add(LBoxByte)
-    case JChar    -> insns.add(LBoxChar)
-    case JShort   -> insns.add(LBoxShort)
-    case _        -> insns.add(LNop)
+    case JByte -> insns.add(LBoxByte)
+    case JChar -> insns.add(LBoxChar)
+    case JShort -> insns.add(LBoxShort)
+    case _ -> insns.add(LNop)
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §5h. Std.Jvm.catch intrinsic.
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Macroexpand `Std.Jvm.catch({ -> body })` to an inline try-catch.
 // The lambda body is lowered as a block expression; on success the result is
 // wrapped in Result$Ok; on java.lang.Exception the caught reference (which IS
@@ -1703,17 +1719,21 @@ func boxIfNeeded(insns: in List[LInsn], ty: in JvmType): Unit {
 // breaking the try-catch semantics.  Typical usage is a single call expression
 // and is always safe.
 func lowerCatchIntrinsic(ctx: in FuncCtx, insns: in List[LInsn], lambdaBody: in Block): JvmType {
-  val tryStartL   = freshLabel(ctx)
-  val tryEndL     = freshLabel(ctx)
+  val tryStartL = freshLabel(ctx)
+  val tryEndL = freshLabel(ctx)
   val catchStartL = freshLabel(ctx)
-  val afterL      = freshLabel(ctx)
+  val afterL = freshLabel(ctx)
 
-  val resultSlot = allocSlot(ctx, "__catch_result_" + toString(ctx.slotTicker.count), JRef(className = "java/lang/Object"))
-  val exSlot     = allocSlot(ctx, "__catch_ex_" + toString(ctx.slotTicker.count), JRef(className = "java/lang/Object"))
+  val resultSlot = allocSlot(
+    ctx,
+    "__catch_result_" + toString(ctx.slotTicker.count),
+    JRef(className = "java/lang/Object")
+  )
+  val exSlot = allocSlot(ctx, "__catch_ex_" + toString(ctx.slotTicker.count), JRef(className = "java/lang/Object"))
 
   // Class names for Result cases as compiled from Std.Core
   // (pkgName="Std/Core", union="Result", cases "Ok" and "Err").
-  val okClass  = "Std/Core/Result$Ok"
+  val okClass = "Std/Core/Result$Ok"
   val errClass = "Std/Core/Result$Err"
 
   // ── try body ────────────────────────────────────────────────────────────────
@@ -1721,7 +1741,7 @@ func lowerCatchIntrinsic(ctx: in FuncCtx, insns: in List[LInsn], lambdaBody: in 
   val bodyTy = lowerBlockExpr(ctx, insns, lambdaBody)
   match bodyTy {
     case JVoid -> insns.add(LAconstNull)  // Unit result: represent as null
-    case _     -> boxIfNeeded(insns, bodyTy)
+    case _ -> boxIfNeeded(insns, bodyTy)
   }
   insns.add(LAstore(slot = resultSlot))
 
@@ -1730,11 +1750,7 @@ func lowerCatchIntrinsic(ctx: in FuncCtx, insns: in List[LInsn], lambdaBody: in 
   insns.add(LAload(slot = resultSlot))
   val okPs: List[JvmType] = newList()
   okPs.add(JRef(className = "java/lang/Object"))
-  insns.add(LInvokespecial(
-    owner  = okClass,
-    name   = "<init>",
-    params = okPs,
-    ret    = JVoid))
+  insns.add(LInvokespecial(owner = okClass, name = "<init>", params = okPs, ret = JVoid))
   insns.add(LGoto(label = afterL))
   insns.add(LLabel(name = tryEndL))
 
@@ -1748,19 +1764,18 @@ func lowerCatchIntrinsic(ctx: in FuncCtx, insns: in List[LInsn], lambdaBody: in 
   insns.add(LAload(slot = exSlot))
   val errPs: List[JvmType] = newList()
   errPs.add(JRef(className = "java/lang/Object"))
-  insns.add(LInvokespecial(
-    owner  = errClass,
-    name   = "<init>",
-    params = errPs,
-    ret    = JVoid))
+  insns.add(LInvokespecial(owner = errClass, name = "<init>", params = errPs, ret = JVoid))
   insns.add(LGoto(label = afterL))
 
   // ── exception table entry ────────────────────────────────────────────────────
-  insns.add(LTryCatch(
-    startLabel   = tryStartL,
-    endLabel     = tryEndL,
-    handlerLabel = catchStartL,
-    catchClass   = "java/lang/Exception"))
+  insns.add(
+    LTryCatch(
+      startLabel = tryStartL,
+      endLabel = tryEndL,
+      handlerLabel = catchStartL,
+      catchClass = "java/lang/Exception"
+    )
+  )
 
   insns.add(LLabel(name = afterL))
 
@@ -1770,7 +1785,6 @@ func lowerCatchIntrinsic(ctx: in FuncCtx, insns: in List[LInsn], lambdaBody: in 
 // ─────────────────────────────────────────────────────────────────────────────
 // §5i. @externTarget call-site lowering (Q-J013).
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Extract the target string from `@externTarget("java.Class.method")`.
 func findExternTarget(decl: in FunctionDecl): Option[String] {
   var i = 0
@@ -1784,10 +1798,12 @@ func findExternTarget(decl: in FunctionDecl): Option[String] {
           case ALiteral(av) -> {
             match av {
               case AVString(s, _) -> return Some(value = s)
-              case _ -> {}
+              case _ -> {
+              }
             }
           }
-          case _ -> {}
+          case _ -> {
+          }
         }
       }
     }
@@ -1814,7 +1830,9 @@ func isResultJvmException(ret: in Option[TypeExpr]): Bool {
               }
               case _ -> false
             }
-          } else { false }
+          } else {
+            false
+          }
         }
         case _ -> false
       }
@@ -1848,7 +1866,9 @@ func isStaticExternByName(name: in String): Bool {
       if i > 0 {
         val firstChar = substring(name, 0, 1)
         firstChar >= "A" and firstChar <= "Z"
-      } else { false }
+      } else {
+        false
+      }
     }
   }
 }
@@ -1856,22 +1876,17 @@ func isStaticExternByName(name: in String): Bool {
 // Emit the body of a body-less function that has `@externTarget("java.Class.method")`.
 // Loads all params, emits invokestatic or invokevirtual, and wraps the result in
 // Result$Ok / Result$Err when the declared return type is Result[T, JvmException].
-func lowerExternTargetBody(
-  decl:   in FunctionDecl,
-  ctx:    in FuncCtx,
-  insns:  in List[LInsn],
-  target: in String
-): JvmType {
+func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in List[LInsn], target: in String): JvmType {
   match lastIndexOf(target, ".") {
     case None -> {
       emitReturn(insns, JVoid)
       JVoid
     }
     case Some(dotIdx) -> {
-      val javaClass  = replace(substring(target, 0, dotIdx), ".", "/")
+      val javaClass = replace(substring(target, 0, dotIdx), ".", "/")
       val methodName = substring(target, dotIdx + 1, length(target) - dotIdx - 1)
 
-      val isStatic   = isStaticExternByName(decl.name)
+      val isStatic = isStaticExternByName(decl.name)
       val wrapResult = isResultJvmException(decl.ret)
       val startParam = if isStatic { 0 } else { 1 }
 
@@ -1886,9 +1901,7 @@ func lowerExternTargetBody(
       // Actual Java return type (unwrapped from Result for the invoke descriptor).
       val javaRet = match decl.ret {
         case None -> JVoid
-        case Some(te) ->
-          if wrapResult { extractResultValueType(te, ctx.pkgName) }
-          else          { typeExprToJvm(te, ctx.pkgName) }
+        case Some(te) -> if wrapResult { extractResultValueType(te, ctx.pkgName) } else { typeExprToJvm(te, ctx.pkgName) }
       }
 
       // Load all params in order: receiver first for instance calls.
@@ -1898,20 +1911,20 @@ func lowerExternTargetBody(
         val paramTy = typeExprToJvm(p.ty, ctx.pkgName)
         match lookupSlot(ctx, p.name) {
           case Some(s) -> emitLoad(insns, s, paramTy)
-          case None    -> insns.add(LAconstNull)
+          case None -> insns.add(LAconstNull)
         }
         li = li + 1
       }
 
       if wrapResult {
-        val okClass  = "Std/Core/Result$Ok"
+        val okClass = "Std/Core/Result$Ok"
         val errClass = "Std/Core/Result$Err"
-        val tryStartL   = freshLabel(ctx)
-        val tryEndL     = freshLabel(ctx)
+        val tryStartL = freshLabel(ctx)
+        val tryEndL = freshLabel(ctx)
         val catchStartL = freshLabel(ctx)
-        val afterL      = freshLabel(ctx)
-        val resultSlot  = allocSlot(ctx, "__ext_result", JRef(className = "java/lang/Object"))
-        val exSlot      = allocSlot(ctx, "__ext_ex",     JRef(className = "java/lang/Object"))
+        val afterL = freshLabel(ctx)
+        val resultSlot = allocSlot(ctx, "__ext_result", JRef(className = "java/lang/Object"))
+        val exSlot = allocSlot(ctx, "__ext_ex", JRef(className = "java/lang/Object"))
 
         insns.add(LLabel(name = tryStartL))
         if isStatic {
@@ -1921,7 +1934,7 @@ func lowerExternTargetBody(
         }
         match javaRet {
           case JVoid -> insns.add(LAconstNull)
-          case _     -> boxIfNeeded(insns, javaRet)
+          case _ -> boxIfNeeded(insns, javaRet)
         }
         insns.add(LAstore(slot = resultSlot))
         insns.add(LNew(className = okClass))
@@ -1943,11 +1956,14 @@ func lowerExternTargetBody(
         insns.add(LInvokespecial(owner = errClass, name = "<init>", params = errPs, ret = JVoid))
         insns.add(LGoto(label = afterL))
 
-        insns.add(LTryCatch(
-          startLabel   = tryStartL,
-          endLabel     = tryEndL,
-          handlerLabel = catchStartL,
-          catchClass   = "java/lang/Exception"))
+        insns.add(
+          LTryCatch(
+            startLabel = tryStartL,
+            endLabel = tryEndL,
+            handlerLabel = catchStartL,
+            catchClass = "java/lang/Exception"
+          )
+        )
         insns.add(LLabel(name = afterL))
 
         emitReturn(insns, JRef(className = "java/lang/Object"))
@@ -1968,13 +1984,7 @@ func lowerExternTargetBody(
 // ─────────────────────────────────────────────────────────────────────────────
 // §5j. Builtin and general call lowering.
 // ─────────────────────────────────────────────────────────────────────────────
-
-func lowerCall(
-  ctx:   in FuncCtx,
-  insns: in List[LInsn],
-  fn:    in Expr,
-  args:  in List[CallArg]
-): JvmType {
+func lowerCall(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, args: in List[CallArg]): JvmType {
   // Resolve the function name from the callee expression.
   match fn.kind {
     case EPath(path) -> {
@@ -2003,64 +2013,42 @@ func lowerCall(
 // Lower a single call argument.
 func lowerCallArg(ctx: in FuncCtx, insns: in List[LInsn], arg: in CallArg): JvmType {
   match arg {
-    case CAPositional(e)    -> lowerExpr(ctx, insns, e)
-    case CANamed(_, e, _)   -> lowerExpr(ctx, insns, e)
+    case CAPositional(e) -> lowerExpr(ctx, insns, e)
+    case CANamed(_, e, _) -> lowerExpr(ctx, insns, e)
   }
 }
 
 // Lower a builtin or static function call.
 func lowerBuiltinOrStaticCall(
-  ctx:      in FuncCtx,
-  insns:    in List[LInsn],
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
   funcName: in String,
-  path:     in ModulePath,
-  args:     in List[CallArg]
+  path: in ModulePath,
+  args: in List[CallArg],
 ): JvmType {
   if funcName == "println" {
-    insns.add(LGetstatic(
-      owner = "java/lang/System",
-      name  = "out",
-      t     = JRef(className = "java/io/PrintStream")))
+    insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
     if args.count > 0 {
       val argTy = lowerCallArg(ctx, insns, args[0])
       // Convert to String if needed for println.
       val printPs: List[JvmType] = newList()
       printPs.add(printArgType(argTy))
-      insns.add(LInvokevirtual(
-        owner  = "java/io/PrintStream",
-        name   = "println",
-        params = printPs,
-        ret    = JVoid))
+      insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "println", params = printPs, ret = JVoid))
     } else {
       val emptyPs: List[JvmType] = newList()
-      insns.add(LInvokevirtual(
-        owner  = "java/io/PrintStream",
-        name   = "println",
-        params = emptyPs,
-        ret    = JVoid))
+      insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "println", params = emptyPs, ret = JVoid))
     }
     JVoid
   } else if funcName == "print" {
-    insns.add(LGetstatic(
-      owner = "java/lang/System",
-      name  = "out",
-      t     = JRef(className = "java/io/PrintStream")))
+    insns.add(LGetstatic(owner = "java/lang/System", name = "out", t = JRef(className = "java/io/PrintStream")))
     if args.count > 0 {
       val argTy = lowerCallArg(ctx, insns, args[0])
       val printPs: List[JvmType] = newList()
       printPs.add(printArgType(argTy))
-      insns.add(LInvokevirtual(
-        owner  = "java/io/PrintStream",
-        name   = "print",
-        params = printPs,
-        ret    = JVoid))
+      insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "print", params = printPs, ret = JVoid))
     } else {
       val emptyPs2: List[JvmType] = newList()
-      insns.add(LInvokevirtual(
-        owner  = "java/io/PrintStream",
-        name   = "print",
-        params = emptyPs2,
-        ret    = JVoid))
+      insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "print", params = emptyPs2, ret = JVoid))
     }
     JVoid
   } else if funcName == "panic" {
@@ -2078,20 +2066,26 @@ func lowerBuiltinOrStaticCall(
       match argTy {
         case JRef(_) -> {
           val tsPs: List[JvmType] = newList()
-          insns.add(LInvokevirtual(
-            owner  = "java/lang/Object",
-            name   = "toString",
-            params = tsPs,
-            ret    = JRef(className = "java/lang/String")))
+          insns.add(
+            LInvokevirtual(
+              owner = "java/lang/Object",
+              name = "toString",
+              params = tsPs,
+              ret = JRef(className = "java/lang/String")
+            )
+          )
         }
         case _ -> {
           boxIfNeeded(insns, argTy)
           val tsPs2: List[JvmType] = newList()
-          insns.add(LInvokevirtual(
-            owner  = "java/lang/Object",
-            name   = "toString",
-            params = tsPs2,
-            ret    = JRef(className = "java/lang/String")))
+          insns.add(
+            LInvokevirtual(
+              owner = "java/lang/Object",
+              name = "toString",
+              params = tsPs2,
+              ret = JRef(className = "java/lang/String")
+            )
+          )
         }
       }
     } else {
@@ -2118,21 +2112,13 @@ func lowerBuiltinOrStaticCall(
     insns.add(LNew(className = "java/util/ArrayList"))
     insns.add(LDup)
     val nlPs: List[JvmType] = newList()
-    insns.add(LInvokespecial(
-      owner  = "java/util/ArrayList",
-      name   = "<init>",
-      params = nlPs,
-      ret    = JVoid))
+    insns.add(LInvokespecial(owner = "java/util/ArrayList", name = "<init>", params = nlPs, ret = JVoid))
     JRef(className = "java/util/ArrayList")
   } else if funcName == "newMap" {
     insns.add(LNew(className = "java/util/HashMap"))
     insns.add(LDup)
     val nmPs: List[JvmType] = newList()
-    insns.add(LInvokespecial(
-      owner  = "java/util/HashMap",
-      name   = "<init>",
-      params = nmPs,
-      ret    = JVoid))
+    insns.add(LInvokespecial(owner = "java/util/HashMap", name = "<init>", params = nmPs, ret = JVoid))
     JRef(className = "java/util/HashMap")
   } else if funcName == "mapGet" {
     // mapGet(map, key) → Option[V]
@@ -2142,11 +2128,9 @@ func lowerBuiltinOrStaticCall(
       boxIfNeeded(insns, JInt)  // key might be primitive
       val mgPs: List[JvmType] = newList()
       mgPs.add(JRef(className = "java/lang/Object"))
-      insns.add(LInvokevirtual(
-        owner  = "java/util/HashMap",
-        name   = "get",
-        params = mgPs,
-        ret    = JRef(className = "java/lang/Object")))
+      insns.add(
+        LInvokevirtual(owner = "java/util/HashMap", name = "get", params = mgPs, ret = JRef(className = "java/lang/Object"))
+      )
     } else {
       insns.add(LAconstNull)
     }
@@ -2212,36 +2196,35 @@ func lowerBuiltinOrStaticCall(
     // Wrap in a char array and call new String(char[]) — or box and toString.
     insns.add(LBoxChar)
     val csPs: List[JvmType] = newList()
-    insns.add(LInvokevirtual(
-      owner  = "java/lang/Character",
-      name   = "toString",
-      params = csPs,
-      ret    = JRef(className = "java/lang/String")))
+    insns.add(
+      LInvokevirtual(
+        owner = "java/lang/Character",
+        name = "toString",
+        params = csPs,
+        ret = JRef(className = "java/lang/String")
+      )
+    )
     JRef(className = "java/lang/String")
   } else if funcName == "stringToUtf8Bytes" {
     if args.count > 0 {
       lowerCallArg(ctx, insns, args[0])
     }
-    insns.add(LGetstatic(
-      owner = "java/nio/charset/StandardCharsets",
-      name  = "UTF_8",
-      t     = JRef(className = "java/nio/charset/Charset")))
+    insns.add(
+      LGetstatic(
+        owner = "java/nio/charset/StandardCharsets",
+        name = "UTF_8",
+        t = JRef(className = "java/nio/charset/Charset")
+      )
+    )
     val subPs: List[JvmType] = newList()
     subPs.add(JRef(className = "java/nio/charset/Charset"))
-    insns.add(LInvokevirtual(
-      owner  = "java/lang/String",
-      name   = "getBytes",
-      params = subPs,
-      ret    = JArray(elem = JByte)))
+    insns.add(LInvokevirtual(owner = "java/lang/String", name = "getBytes", params = subPs, ret = JArray(elem = JByte)))
     JArray(elem = JByte)
   } else if funcName == "catch" {
     // Std.Jvm.catch intrinsic: macroexpand to inline try-catch when the
     // argument is a zero-parameter lambda literal.  See lowerCatchIntrinsic.
     if args.count > 0 {
-      val argExpr: Expr = match args[0] {
-        case CAPositional(e)  -> e
-        case CANamed(_, e, _) -> e
-      }
+      val argExpr: Expr = match args[0] { case CAPositional(e) -> e; case CANamed(_, e, _) -> e }
       match argExpr.kind {
         case ELambda(_, lambdaBody) -> {
           lowerCatchIntrinsic(ctx, insns, lambdaBody)
@@ -2262,36 +2245,44 @@ func lowerBuiltinOrStaticCall(
 }
 
 // ── Auto-FFI helpers ──────────────────────────────────────────────────────────
-
 // Convert a JvmType to a JVM descriptor string, e.g. JInt → "I".
 func jvmTypeToDescStr(ty: JvmType): String {
   match ty {
-    case JInt        -> "I"
-    case JLong       -> "J"
-    case JDouble     -> "D"
-    case JFloat      -> "F"
-    case JBoolean    -> "Z"
-    case JByte       -> "B"
-    case JChar       -> "C"
-    case JShort      -> "S"
-    case JVoid       -> "V"
-    case JRef(cn)    -> "L" + cn + ";"
+    case JInt -> "I"
+    case JLong -> "J"
+    case JDouble -> "D"
+    case JFloat -> "F"
+    case JBoolean -> "Z"
+    case JByte -> "B"
+    case JChar -> "C"
+    case JShort -> "S"
+    case JVoid -> "V"
+    case JRef(cn) -> "L" + cn + ";"
     case JArray(elem) -> "[" + jvmTypeToDescStr(elem)
   }
 }
 
 // Convert a single JVM descriptor string to a JvmType.
 func descStrToJvmType(desc: String): JvmType {
-  if desc == "I" { JInt }
-  else if desc == "J" { JLong }
-  else if desc == "D" { JDouble }
-  else if desc == "F" { JFloat }
-  else if desc == "Z" { JBoolean }
-  else if desc == "B" { JByte }
-  else if desc == "C" { JChar }
-  else if desc == "S" { JShort }
-  else if desc == "V" { JVoid }
-  else if desc.length > 0 and desc[0] == '[' {
+  if desc == "I" {
+    JInt
+  } else if desc == "J" {
+    JLong
+  } else if desc == "D" {
+    JDouble
+  } else if desc == "F" {
+    JFloat
+  } else if desc == "Z" {
+    JBoolean
+  } else if desc == "B" {
+    JByte
+  } else if desc == "C" {
+    JChar
+  } else if desc == "S" {
+    JShort
+  } else if desc == "V" {
+    JVoid
+  } else if desc.length > 0 and desc[0] == '[' {
     JArray(elem = descStrToJvmType(desc.substring(1, desc.length - 1)))
   } else if desc.length > 1 and desc[0] == 'L' {
     JRef(className = desc.substring(1, desc.length - 2))
@@ -2306,7 +2297,9 @@ func returnDescFromMethodDesc(descriptor: String): String {
   var i = 0
   while i < len {
     if descriptor[i] == ')' {
-      if i + 1 < len { return descriptor.substring(i + 1, len - i - 1) }
+      if i + 1 < len {
+        return descriptor.substring(i + 1, len - i - 1)
+      }
       return "V"
     }
     i = i + 1
@@ -2318,18 +2311,38 @@ func returnDescFromMethodDesc(descriptor: String): String {
 // No-op when the types are identical or the widening is handled at the JVM
 // reference level (reference → Object).
 func emitFfiCoerce(insns: in List[LInsn], fromDesc: in String, toDesc: in String): Unit {
-  if fromDesc == toDesc { return () }
+  if fromDesc == toDesc {
+    return ()
+  }
   if fromDesc == "I" {
-    if toDesc == "J" { insns.add(LI2l); return () }
-    if toDesc == "D" { insns.add(LI2d); return () }
-    if toDesc == "F" { insns.add(LI2f); return () }
+    if toDesc == "J" {
+      insns.add(LI2l)
+      return ()
+    }
+    if toDesc == "D" {
+      insns.add(LI2d)
+      return ()
+    }
+    if toDesc == "F" {
+      insns.add(LI2f)
+      return ()
+    }
   }
   if fromDesc == "J" {
-    if toDesc == "D" { insns.add(LL2d); return () }
-    if toDesc == "F" { insns.add(LL2f); return () }
+    if toDesc == "D" {
+      insns.add(LL2d)
+      return ()
+    }
+    if toDesc == "F" {
+      insns.add(LL2f)
+      return ()
+    }
   }
   if fromDesc == "F" {
-    if toDesc == "D" { insns.add(LF2d); return () }
+    if toDesc == "D" {
+      insns.add(LF2d)
+      return ()
+    }
   }
 }
 
@@ -2338,15 +2351,15 @@ func emitFfiCoerce(insns: in List[LInsn], fromDesc: in String, toDesc: in String
 // from JDK metadata and emits invokestatic / invokevirtual with the real
 // descriptor.  Falls back to an Object-typed guess when the JDK is unavailable.
 func lowerAutoFfiStaticCall(
-  ctx:        in FuncCtx,
-  insns:      in List[LInsn],
-  javaFqn:    in String,
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  javaFqn: in String,
   methodName: in String,
-  args:       in List[CallArg]
+  args: in List[CallArg],
 ): JvmType {
   // Buffer each arg's lowering so coercions can be inserted per-overload.
-  val argBufs:  List[List[LInsn]] = newList()
-  val argDescs: List[String]      = newList()
+  val argBufs: List[List[LInsn]] = newList()
+  val argDescs: List[String] = newList()
   var i = 0
   while i < args.count {
     val buf: List[LInsn] = newList()
@@ -2376,24 +2389,21 @@ func lowerAutoFfiStaticCall(
       while j < argBufs.count {
         val buf = argBufs[j]
         var k = 0
-        while k < buf.count { insns.add(buf[k]); k = k + 1 }
+        while k < buf.count {
+          insns.add(buf[k])
+          k = k + 1
+        }
         paramTys.add(JRef(className = "java/lang/Object"))
         j = j + 1
       }
       if methodName == "new" {
         // No-metadata constructor fallback: Object-typed invokespecial <init>.
-        insns.add(LInvokespecial(
-          owner  = binaryName,
-          name   = "<init>",
-          params = paramTys,
-          ret    = JVoid))
+        insns.add(LInvokespecial(owner = binaryName, name = "<init>", params = paramTys, ret = JVoid))
         JRef(className = binaryName)
       } else {
-        insns.add(LInvokestatic(
-          owner  = binaryName,
-          name   = methodName,
-          params = paramTys,
-          ret    = JRef(className = "java/lang/Object")))
+        insns.add(
+          LInvokestatic(owner = binaryName, name = methodName, params = paramTys, ret = JRef(className = "java/lang/Object"))
+        )
         JRef(className = "java/lang/Object")
       }
     }
@@ -2408,36 +2418,42 @@ func lowerAutoFfiStaticCall(
           var argStr = ""
           var ai = 0
           while ai < argDescs.count {
-            if ai > 0 { argStr = argStr + ", " }
+            if ai > 0 {
+              argStr = argStr + ", "
+            }
             argStr = argStr + argDescs[ai]
             ai = ai + 1
           }
-          panic("JVM auto-FFI: no matching static overload for '" + javaFqn + "." + methodName + "(" + argStr + ")' — check the method name, argument types, and that it is a static method")
+          panic(
+            "JVM auto-FFI: no matching static overload for '" + javaFqn + "." + methodName + "(" + argStr +
+              ")' — check the method name, argument types, and that it is a static method"
+          )
         }
         case Some(method) -> {
           if not method.isStatic {
-            panic("JVM auto-FFI: '" + javaFqn + "." + methodName + "' is an instance method, not static; call it on an instance value, not on the type name")
+            panic(
+              "JVM auto-FFI: '" + javaFqn + "." + methodName +
+                "' is an instance method, not static; call it on an instance value, not on the type name"
+            )
           }
           val paramDescs = parseDescriptorParams(method.descriptor)
-          val retDesc    = returnDescFromMethodDesc(method.descriptor)
-          val retJvm     = descStrToJvmType(retDesc)
+          val retDesc = returnDescFromMethodDesc(method.descriptor)
+          val retJvm = descStrToJvmType(retDesc)
           val paramJvms: List[JvmType] = newList()
           var j = 0
           while j < argBufs.count {
             val buf = argBufs[j]
             var k = 0
-            while k < buf.count { insns.add(buf[k]); k = k + 1 }
-            val paramDesc =
-              if j < paramDescs.count { paramDescs[j] } else { argDescs[j] }
+            while k < buf.count {
+              insns.add(buf[k])
+              k = k + 1
+            }
+            val paramDesc = if j < paramDescs.count { paramDescs[j] } else { argDescs[j] }
             emitFfiCoerce(insns, argDescs[j], paramDesc)
             paramJvms.add(descStrToJvmType(paramDesc))
             j = j + 1
           }
-          insns.add(LInvokestatic(
-            owner  = ci.binaryName,
-            name   = methodName,
-            params = paramJvms,
-            ret    = retJvm))
+          insns.add(LInvokestatic(owner = ci.binaryName, name = methodName, params = paramJvms, ret = retJvm))
           retJvm
         }
       }
@@ -2449,14 +2465,14 @@ func lowerAutoFfiStaticCall(
 // already on the operand stack when this is called; this function lowers
 // `args`, resolves the overload from metadata, and emits `invokevirtual`.
 func lowerAutoFfiInstanceCall(
-  ctx:        in FuncCtx,
-  insns:      in List[LInsn],
-  ci:         in ClassInfo,
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  ci: in ClassInfo,
   methodName: in String,
-  args:       in List[CallArg]
+  args: in List[CallArg],
 ): JvmType {
-  val argBufs:  List[List[LInsn]] = newList()
-  val argDescs: List[String]      = newList()
+  val argBufs: List[List[LInsn]] = newList()
+  val argDescs: List[String] = newList()
   var i = 0
   while i < args.count {
     val buf: List[LInsn] = newList()
@@ -2470,7 +2486,9 @@ func lowerAutoFfiInstanceCall(
       var argStr = ""
       var ai = 0
       while ai < argDescs.count {
-        if ai > 0 { argStr = argStr + ", " }
+        if ai > 0 {
+          argStr = argStr + ", "
+        }
         argStr = argStr + argDescs[ai]
         ai = ai + 1
       }
@@ -2479,25 +2497,23 @@ func lowerAutoFfiInstanceCall(
     }
     case Some(method) -> {
       val paramDescs = parseDescriptorParams(method.descriptor)
-      val retDesc    = returnDescFromMethodDesc(method.descriptor)
-      val retJvm     = descStrToJvmType(retDesc)
+      val retDesc = returnDescFromMethodDesc(method.descriptor)
+      val retJvm = descStrToJvmType(retDesc)
       val paramJvms: List[JvmType] = newList()
       var j = 0
       while j < argBufs.count {
         val buf = argBufs[j]
         var k = 0
-        while k < buf.count { insns.add(buf[k]); k = k + 1 }
-        val paramDesc =
-          if j < paramDescs.count { paramDescs[j] } else { argDescs[j] }
+        while k < buf.count {
+          insns.add(buf[k])
+          k = k + 1
+        }
+        val paramDesc = if j < paramDescs.count { paramDescs[j] } else { argDescs[j] }
         emitFfiCoerce(insns, argDescs[j], paramDesc)
         paramJvms.add(descStrToJvmType(paramDesc))
         j = j + 1
       }
-      insns.add(LInvokevirtual(
-        owner  = ci.binaryName,
-        name   = methodName,
-        params = paramJvms,
-        ret    = retJvm))
+      insns.add(LInvokevirtual(owner = ci.binaryName, name = methodName, params = paramJvms, ret = retJvm))
       retJvm
     }
   }
@@ -2508,13 +2524,10 @@ func lowerAutoFfiInstanceCall(
 // produced by the `new` opcode and duplicated so the initialised reference
 // remains on the stack after `invokespecial` consumes the bottom copy.
 func lowerAutoFfiConstructorCall(
-  ctx:  in FuncCtx,
-  insns: in List[LInsn],
-  ci:   in ClassInfo,
-  args: in List[CallArg]
+  ctx: in FuncCtx, insns: in List[LInsn], ci: in ClassInfo, args: in List[CallArg]
 ): JvmType {
-  val argBufs:  List[List[LInsn]] = newList()
-  val argDescs: List[String]      = newList()
+  val argBufs: List[List[LInsn]] = newList()
+  val argDescs: List[String] = newList()
   var i = 0
   while i < args.count {
     val buf: List[LInsn] = newList()
@@ -2528,7 +2541,9 @@ func lowerAutoFfiConstructorCall(
       var argStr = ""
       var ai = 0
       while ai < argDescs.count {
-        if ai > 0 { argStr = argStr + ", " }
+        if ai > 0 {
+          argStr = argStr + ", "
+        }
         argStr = argStr + argDescs[ai]
         ai = ai + 1
       }
@@ -2544,18 +2559,16 @@ func lowerAutoFfiConstructorCall(
       while j < argBufs.count {
         val buf = argBufs[j]
         var k = 0
-        while k < buf.count { insns.add(buf[k]); k = k + 1 }
-        val paramDesc =
-          if j < paramDescs.count { paramDescs[j] } else { argDescs[j] }
+        while k < buf.count {
+          insns.add(buf[k])
+          k = k + 1
+        }
+        val paramDesc = if j < paramDescs.count { paramDescs[j] } else { argDescs[j] }
         emitFfiCoerce(insns, argDescs[j], paramDesc)
         paramJvms.add(descStrToJvmType(paramDesc))
         j = j + 1
       }
-      insns.add(LInvokespecial(
-        owner  = ci.binaryName,
-        name   = "<init>",
-        params = paramJvms,
-        ret    = JVoid))
+      insns.add(LInvokespecial(owner = ci.binaryName, name = "<init>", params = paramJvms, ret = JVoid))
       JRef(className = ci.binaryName)
     }
   }
@@ -2563,11 +2576,11 @@ func lowerAutoFfiConstructorCall(
 
 // Resolve a general (non-builtin) static function call.
 func lowerGeneralStaticCall(
-  ctx:      in FuncCtx,
-  insns:    in List[LInsn],
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
   funcName: in String,
-  path:     in ModulePath,
-  args:     in List[CallArg]
+  path: in ModulePath,
+  args: in List[CallArg],
 ): JvmType {
   // Collect parameter types and emit args.
   val paramTys: List[JvmType] = newList()
@@ -2600,11 +2613,7 @@ func lowerGeneralStaticCall(
     val qkey = joinSegments(ownerSegs, "/") + "/" + funcName
     match mapGet(ctx.funcSigs, qkey) {
       case Some(sig) -> {
-        insns.add(LInvokestatic(
-          owner  = sig.owner,
-          name   = funcName,
-          params = sig.params,
-          ret    = sig.ret))
+        insns.add(LInvokestatic(owner = sig.owner, name = funcName, params = sig.params, ret = sig.ret))
         return sig.ret
       }
       case None -> ()
@@ -2612,11 +2621,7 @@ func lowerGeneralStaticCall(
   }
   match mapGet(ctx.funcSigs, funcName) {
     case Some(sig) -> {
-      insns.add(LInvokestatic(
-        owner  = sig.owner,
-        name   = funcName,
-        params = sig.params,
-        ret    = sig.ret))
+      insns.add(LInvokestatic(owner = sig.owner, name = funcName, params = sig.params, ret = sig.ret))
       return sig.ret
     }
     case None -> ()
@@ -2626,25 +2631,22 @@ func lowerGeneralStaticCall(
   // present, else assume the current package.  Return type is unknown, so use
   // Object.  Reached only for names absent from every compiled package — i.e.
   // genuinely unresolved references, which fail loudly at JVM link time.
-  val owner =
-    if path.segments.count > 1 {
-      // Join all but last segment as the class path.
-      val segs: List[String] = newList()
-      var si = 0
-      while si < path.segments.count - 1 {
-        segs.add(path.segments[si])
-        si = si + 1
-      }
-      joinSegments(segs, "/")
-    } else {
-      ctx.className
+  val owner = if path.segments.count > 1 {
+    // Join all but last segment as the class path.
+    val segs: List[String] = newList()
+    var si = 0
+    while si < path.segments.count - 1 {
+      segs.add(path.segments[si])
+      si = si + 1
     }
+    joinSegments(segs, "/")
+  } else {
+    ctx.className
+  }
 
-  insns.add(LInvokestatic(
-    owner  = owner,
-    name   = funcName,
-    params = paramTys,
-    ret    = JRef(className = "java/lang/Object")))
+  insns.add(
+    LInvokestatic(owner = owner, name = funcName, params = paramTys, ret = JRef(className = "java/lang/Object"))
+  )
   JRef(className = "java/lang/Object")
 }
 
@@ -2653,14 +2655,14 @@ func lowerGeneralStaticCall(
 // (`.toInt()` etc., #1901).  `JBoolean` is excluded — not a numeric type.
 func isNumericJvm(ty: in JvmType): Bool {
   match ty {
-    case JByte   -> true
-    case JChar   -> true
-    case JShort  -> true
-    case JInt    -> true
-    case JLong   -> true
-    case JFloat  -> true
+    case JByte -> true
+    case JChar -> true
+    case JShort -> true
+    case JInt -> true
+    case JLong -> true
+    case JFloat -> true
     case JDouble -> true
-    case _       -> false
+    case _ -> false
   }
 }
 
@@ -2669,37 +2671,40 @@ func isNumericJvm(ty: in JvmType): Bool {
 // narrow with the matching conversion opcode.
 func emitToIntJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
   match srcTy {
-    case JLong   -> insns.add(LL2i)
-    case JFloat  -> insns.add(LF2i)
+    case JLong -> insns.add(LL2i)
+    case JFloat -> insns.add(LF2i)
     case JDouble -> insns.add(LD2i)
-    case _       -> {}   // JByte / JChar / JShort / JInt are int-on-stack
-  }
+    case _ -> {
+    }
+  }  // JByte / JChar / JShort / JInt are int-on-stack
 }
 
 func emitToLongJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
   match srcTy {
-    case JLong   -> {}            // already long
-    case JFloat  -> insns.add(LF2l)
+    case JLong -> {
+    }  // already long
+    case JFloat -> insns.add(LF2l)
     case JDouble -> insns.add(LD2l)
-    case _       -> insns.add(LI2l)   // int-like → long
-  }
+    case _ -> insns.add(LI2l)
+  }  // int-like → long
 }
 
 func emitToDoubleJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
   match srcTy {
-    case JDouble -> {}            // already double
-    case JLong   -> insns.add(LL2d)
-    case JFloat  -> insns.add(LF2d)
-    case _       -> insns.add(LI2d)   // int-like → double
-  }
+    case JDouble -> {
+    }  // already double
+    case JLong -> insns.add(LL2d)
+    case JFloat -> insns.add(LF2d)
+    case _ -> insns.add(LI2d)
+  }  // int-like → double
 }
 
 func lowerMethodCall(
-  ctx:        in FuncCtx,
-  insns:      in List[LInsn],
-  recv:       in Expr,
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  recv: in Expr,
   memberName: in String,
-  args:       in List[CallArg]
+  args: in List[CallArg],
 ): JvmType {
   // Auto-FFI: a call whose receiver is an extern-type name (e.g. `JMath` for
   // `extern type JMath = "java.lang.Math"`) is a static method on the Java
@@ -2711,8 +2716,7 @@ func lowerMethodCall(
   match recv.kind {
     case EPath(path) -> {
       match mapGet(ctx.externTypes, lastSegment(path)) {
-        case Some(javaFqn) ->
-          return lowerAutoFfiStaticCall(ctx, insns, javaFqn, memberName, args)
+        case Some(javaFqn) -> return lowerAutoFfiStaticCall(ctx, insns, javaFqn, memberName, args)
         case None -> ()
       }
     }
@@ -2724,8 +2728,7 @@ func lowerMethodCall(
   // logical-shift opcodes (IUSHR/LUSHR) are not reachable here.  Byte uses
   // the int opcodes (JVM byte arithmetic is int-width).  Long shifts take an
   // int shift count per the JVM spec, matching `.shl(n: Int)` / `.shr(n: Int)`.
-  if (memberName == "and" or memberName == "or" or memberName == "xor"
-      or memberName == "shl" or memberName == "shr") and args.count == 1 {
+  if (memberName == "and" or memberName == "or" or memberName == "xor" or memberName == "shl" or memberName == "shr") and args.count == 1 {
     lowerCallArg(ctx, insns, args[0])
     val isLong = match recvTy { case JLong -> true; case _ -> false }
     if memberName == "and" {
@@ -2747,9 +2750,7 @@ func lowerMethodCall(
   // no-op from an int-like source; `toByte` / `toChar` first normalise to int,
   // then narrow.  `toFloat` is intentionally absent (parity with the type
   // checker, which does not offer it).
-  if (memberName == "toInt" or memberName == "toLong" or memberName == "toByte"
-      or memberName == "toChar" or memberName == "toDouble")
-     and args.count == 0 and isNumericJvm(recvTy) {
+  if (memberName == "toInt" or memberName == "toLong" or memberName == "toByte" or memberName == "toChar" or memberName == "toDouble") and args.count == 0 and isNumericJvm(recvTy) {
     if memberName == "toLong" {
       emitToLongJvm(insns, recvTy)
       return JLong
@@ -2781,8 +2782,7 @@ func lowerMethodCall(
   // precise descriptor here.  `contains` takes a CharSequence (a String arg is
   // assignable); `startsWith`/`endsWith` take a String.
   val isStringRecv = match recvTy { case JRef(c) -> c == "java/lang/String"; case _ -> false }
-  if isStringRecv and args.count == 1 and
-     (memberName == "contains" or memberName == "startsWith" or memberName == "endsWith") {
+  if isStringRecv and args.count == 1 and (memberName == "contains" or memberName == "startsWith" or memberName == "endsWith") {
     lowerCallArg(ctx, insns, args[0])
     val ps: List[JvmType] = newList()
     if memberName == "contains" {
@@ -2790,11 +2790,7 @@ func lowerMethodCall(
     } else {
       ps.add(JRef(className = "java/lang/String"))
     }
-    insns.add(LInvokevirtual(
-      owner  = "java/lang/String",
-      name   = memberName,
-      params = ps,
-      ret    = JBoolean))
+    insns.add(LInvokevirtual(owner = "java/lang/String", name = memberName, params = ps, ret = JBoolean))
     return JBoolean
   }
 
@@ -2806,8 +2802,7 @@ func lowerMethodCall(
     case JRef(cls) -> {
       val fqn = cls.replace("/", ".")
       match loadClass(ctx.autoFfi, fqn) {
-        case Some(ci) ->
-          return lowerAutoFfiInstanceCall(ctx, insns, ci, memberName, args)
+        case Some(ci) -> return lowerAutoFfiInstanceCall(ctx, insns, ci, memberName, args)
         case None -> ()
       }
     }
@@ -2823,11 +2818,9 @@ func lowerMethodCall(
   }
   match recvTy {
     case JRef(cls) -> {
-      insns.add(LInvokevirtual(
-        owner  = cls,
-        name   = memberName,
-        params = paramTys,
-        ret    = JRef(className = "java/lang/Object")))
+      insns.add(
+        LInvokevirtual(owner = cls, name = memberName, params = paramTys, ret = JRef(className = "java/lang/Object"))
+      )
       JRef(className = "java/lang/Object")
     }
     case _ -> {
@@ -2840,20 +2833,19 @@ func lowerMethodCall(
 // PrintStream has overloads for int, long, double, boolean, char, String, Object.
 func printArgType(ty: in JvmType): JvmType {
   match ty {
-    case JInt     -> JInt
-    case JLong    -> JLong
-    case JDouble  -> JDouble
+    case JInt -> JInt
+    case JLong -> JLong
+    case JDouble -> JDouble
     case JBoolean -> JBoolean
-    case JChar    -> JChar
-    case JVoid    -> JRef(className = "java/lang/String")
-    case _        -> JRef(className = "java/lang/String")
+    case JChar -> JChar
+    case JVoid -> JRef(className = "java/lang/String")
+    case _ -> JRef(className = "java/lang/String")
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. Statement lowering.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): Unit {
   match stmt.kind {
 
@@ -2866,20 +2858,12 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
         }
         case LBLet(name, tyOpt, init) -> {
           val initTy = lowerExpr(ctx, insns, init)
-          val ty =
-            match tyOpt {
-              case Some(te) -> typeExprToJvm(te, ctx.pkgName)
-              case None     -> initTy
-            }
+          val ty = match tyOpt { case Some(te) -> typeExprToJvm(te, ctx.pkgName); case None -> initTy }
           val slot = allocSlot(ctx, name, ty)
           emitStore(insns, slot, ty)
         }
         case LBVar(name, tyOpt, initOpt) -> {
-          val ty =
-            match tyOpt {
-              case Some(te) -> typeExprToJvm(te, ctx.pkgName)
-              case None     -> JInt
-            }
+          val ty = match tyOpt { case Some(te) -> typeExprToJvm(te, ctx.pkgName); case None -> JInt }
           match initOpt {
             case Some(init) -> {
               val initTy = lowerExpr(ctx, insns, init)
@@ -2889,12 +2873,27 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             case None -> {
               val slot = allocSlot(ctx, name, ty)
               match ty {
-                case JLong   -> { insns.add(LLconst(v = 0i64)); emitStore(insns, slot, ty) }
-                case JDouble -> { insns.add(LDconst(v = 0.0)); emitStore(insns, slot, ty) }
-                case JRef(_)  -> { insns.add(LAconstNull); emitStore(insns, slot, ty) }
-                case JArray(_) -> { insns.add(LAconstNull); emitStore(insns, slot, ty) }
-                case JVoid   -> insns.add(LNop)
-                case _       -> { insns.add(LIconst(v = 0)); emitStore(insns, slot, ty) }
+                case JLong -> {
+                  insns.add(LLconst(v = 0i64))
+                  emitStore(insns, slot, ty)
+                }
+                case JDouble -> {
+                  insns.add(LDconst(v = 0.0))
+                  emitStore(insns, slot, ty)
+                }
+                case JRef(_) -> {
+                  insns.add(LAconstNull)
+                  emitStore(insns, slot, ty)
+                }
+                case JArray(_) -> {
+                  insns.add(LAconstNull)
+                  emitStore(insns, slot, ty)
+                }
+                case JVoid -> insns.add(LNop)
+                case _ -> {
+                  insns.add(LIconst(v = 0))
+                  emitStore(insns, slot, ty)
+                }
               }
             }
           }
@@ -2920,13 +2919,13 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
       val ty = lowerExpr(ctx, insns, e)
       match ty {
         case JVoid -> insns.add(LNop)
-        case _     -> insns.add(LPop)
+        case _ -> insns.add(LPop)
       }
     }
 
     // ── While loop ─────────────────────────────────────────────────────────
     case SWhile(_, cond, body) -> {
-      val loopL  = freshLabel(ctx)
+      val loopL = freshLabel(ctx)
       val afterL = freshLabel(ctx)
       insns.add(LLabel(name = loopL))
       lowerBoolCond(ctx, insns, cond, afterL)
@@ -2955,7 +2954,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           insns.add(LArraylength)
           emitStore(insns, lenSlot, JInt)
           val loopLA = freshLabel(ctx)
-          val endLA  = freshLabel(ctx)
+          val endLA = freshLabel(ctx)
           insns.add(LLabel(name = loopLA))
           emitLoad(insns, iSlot, JInt)
           emitLoad(insns, lenSlot, JInt)
@@ -2978,44 +2977,45 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
         case _ -> {
           // Iterable<Object>: use iterator()/hasNext()/next().
           // Works for both ArrayList and async-generator Iterable classes.
-          val iterableClass  = "java/lang/Iterable"
-          val iteratorClass  = "java/util/Iterator"
+          val iterableClass = "java/lang/Iterable"
+          val iteratorClass = "java/util/Iterator"
           val objTy = JRef(className = "java/lang/Object")
           val iterableSlot = allocSlot(ctx, "__iterable_" + toString(ctx.slotTicker.count), objTy)
           emitStore(insns, iterableSlot, objTy)
           // Call .iterator() to get an Iterator.
           emitLoad(insns, iterableSlot, objTy)
           val iterPs: List[JvmType] = newList()
-          insns.add(LInvokeinterface(
-            owner    = iterableClass,
-            name     = "iterator",
-            params   = iterPs,
-            ret      = JRef(className = iteratorClass),
-            argCount = 1))
+          insns.add(
+            LInvokeinterface(
+              owner = iterableClass,
+              name = "iterator",
+              params = iterPs,
+              ret = JRef(className = iteratorClass),
+              argCount = 1
+            )
+          )
           val itorSlot = allocSlot(ctx, "__itor_" + toString(ctx.slotTicker.count), objTy)
           emitStore(insns, itorSlot, objTy)
           val loopLB = freshLabel(ctx)
-          val endLB  = freshLabel(ctx)
+          val endLB = freshLabel(ctx)
           insns.add(LLabel(name = loopLB))
           // hasNext()
           emitLoad(insns, itorSlot, objTy)
           val hnPs: List[JvmType] = newList()
-          insns.add(LInvokeinterface(
-            owner    = iteratorClass,
-            name     = "hasNext",
-            params   = hnPs,
-            ret      = JBoolean,
-            argCount = 1))
+          insns.add(LInvokeinterface(owner = iteratorClass, name = "hasNext", params = hnPs, ret = JBoolean, argCount = 1))
           insns.add(LIfeq(label = endLB))
           // next()
           emitLoad(insns, itorSlot, objTy)
           val nextPs: List[JvmType] = newList()
-          insns.add(LInvokeinterface(
-            owner    = iteratorClass,
-            name     = "next",
-            params   = nextPs,
-            ret      = JRef(className = "java/lang/Object"),
-            argCount = 1))
+          insns.add(
+            LInvokeinterface(
+              owner = iteratorClass,
+              name = "next",
+              params = nextPs,
+              ret = JRef(className = "java/lang/Object"),
+              argCount = 1
+            )
+          )
           val elemTyB = JRef(className = "java/lang/Object")
           val elemSlotB = allocSlot(ctx, "__for_elem_" + toString(ctx.slotTicker.count), elemTyB)
           emitStore(insns, elemSlotB, elemTyB)
@@ -3077,11 +3077,13 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
     // Running the body inline here would be a silent miscompile, so fail loudly
     // and point at the tracking issue rather than emitting wrong code.
     case SDefer(_) -> {
-      panic("Jvm.Codegen: `defer` is not yet supported on --target jvm — it " +
-            "would require running the deferred block at scope exit (try/finally " +
-            "lowering + return-through-finally).  Implemented for --target dotnet " +
-            "in #1477; JVM parity is tracked in #1833.  Compile this program with " +
-            "--target dotnet, or avoid `defer` on the JVM target for now.")
+      panic(
+        "Jvm.Codegen: `defer` is not yet supported on --target jvm — it " +
+          "would require running the deferred block at scope exit (try/finally " +
+          "lowering + return-through-finally).  Implemented for --target dotnet " +
+          "in #1477; JVM parity is tracked in #1833.  Compile this program with " +
+          "--target dotnet, or avoid `defer` on the JVM target for now."
+      )
     }
 
     // ── Try/catch ─────────────────────────────────────────────────────────
@@ -3103,21 +3105,16 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
 // ─────────────────────────────────────────────────────────────────────────────
 // §6a. Local pattern binding.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func lowerLocalPatBind(
-  ctx:    in FuncCtx,
-  insns:  in List[LInsn],
-  pat:    in Pattern,
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  pat: in Pattern,
   initTy: in JvmType,
-  tyOpt:  in Option[TypeExpr]
+  tyOpt: in Option[TypeExpr],
 ): Unit {
   match pat.kind {
     case PBinding(name, _) -> {
-      val ty =
-        match tyOpt {
-          case Some(te) -> typeExprToJvm(te, ctx.pkgName)
-          case None     -> initTy
-        }
+      val ty = match tyOpt { case Some(te) -> typeExprToJvm(te, ctx.pkgName); case None -> initTy }
       val slot = allocSlot(ctx, name, ty)
       emitStore(insns, slot, ty)
     }
@@ -3125,7 +3122,7 @@ func lowerLocalPatBind(
       // Discard the value.
       match initTy {
         case JVoid -> insns.add(LNop)
-        case _     -> insns.add(LPop)
+        case _ -> insns.add(LPop)
       }
     }
     case _ -> {
@@ -3140,21 +3137,15 @@ func lowerLocalPatBind(
 // ─────────────────────────────────────────────────────────────────────────────
 // §6b. Try/catch lowering.
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Try/catch in *expression* position: `try { … } catch … ` whose value is the
 // trailing expression of the try body or of a matching catch body.  Each arm's
 // value is routed through a result local so the operand stack is empty at the
 // `afterL` join (the StackMapTable declares an empty stack there — see
 // lowerIfExpr).  Finally blocks are handled by the statement form only; callers
 // pass try/finally-as-value through `lowerStmt` instead.
-func lowerTryCatchExpr(
-  ctx:     in FuncCtx,
-  insns:   in List[LInsn],
-  body:    in Block,
-  catches: in List[CatchClause]
-): JvmType {
+func lowerTryCatchExpr(ctx: in FuncCtx, insns: in List[LInsn], body: in Block, catches: in List[CatchClause]): JvmType {
   val startL = freshLabel(ctx)
-  val endL   = freshLabel(ctx)
+  val endL = freshLabel(ctx)
   val afterL = freshLabel(ctx)
   val rslotName = "__try_r_" + afterL
   var rslot = -1
@@ -3163,7 +3154,10 @@ func lowerTryCatchExpr(
   val resultTy = lowerBlockExpr(ctx, insns, body)
   match resultTy {
     case JVoid -> ()
-    case _     -> { rslot = allocSlot(ctx, rslotName, resultTy); emitStore(insns, rslot, resultTy) }
+    case _ -> {
+      rslot = allocSlot(ctx, rslotName, resultTy)
+      emitStore(insns, rslot, resultTy)
+    }
   }
   insns.add(LGoto(label = afterL))
   insns.add(LLabel(name = endL))
@@ -3184,8 +3178,10 @@ func lowerTryCatchExpr(
     val catchBodyTy = lowerBlockExpr(ctx, insns, c.body)
     match resultTy {
       case JVoid -> ()
-      case _     -> {
-        if rslot < 0 { rslot = allocSlot(ctx, rslotName, resultTy) }
+      case _ -> {
+        if rslot < 0 {
+          rslot = allocSlot(ctx, rslotName, resultTy)
+        }
         // Use the lowered catch-body type for the store so an arm whose
         // actual produced kind differs from the try-body type (a documented
         // type-checker gap) emits the matching `istore`/`astore` variant
@@ -3194,40 +3190,38 @@ func lowerTryCatchExpr(
         // the type-checker normally guarantees.
         match catchBodyTy {
           case JVoid -> emitStore(insns, rslot, resultTy)
-          case _     -> emitStore(insns, rslot, catchBodyTy)
+          case _ -> emitStore(insns, rslot, catchBodyTy)
         }
       }
     }
     insns.add(LGoto(label = afterL))
-    val catchClass =
-      if c.typeName == "Bug" { "java/lang/Throwable" }
-      else { lyricNameToJvm(c.typeName) }
-    insns.add(LTryCatch(
-      startLabel   = startL,
-      endLabel     = endL,
-      handlerLabel = handlerL,
-      catchClass   = catchClass))
+    val catchClass = if c.typeName == "Bug" { "java/lang/Throwable" } else { lyricNameToJvm(c.typeName) }
+    insns.add(LTryCatch(startLabel = startL, endLabel = endL, handlerLabel = handlerL, catchClass = catchClass))
     i = i + 1
   }
 
   insns.add(LLabel(name = afterL))
   match resultTy {
     case JVoid -> ()
-    case _     -> { if rslot >= 0 { emitResultLoad(insns, rslot, resultTy) } }
+    case _ -> {
+      if rslot >= 0 {
+        emitResultLoad(insns, rslot, resultTy)
+      }
+    }
   }
   resultTy
 }
 
 func lowerTryCatch(
-  ctx:      in FuncCtx,
-  insns:    in List[LInsn],
-  body:     in Block,
-  catches:  in List[CatchClause],
-  finally_: in Option[Block]
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  body: in Block,
+  catches: in List[CatchClause],
+  finally_: in Option[Block],
 ): Unit {
-  val startL   = freshLabel(ctx)
-  val endL     = freshLabel(ctx)
-  val afterL   = freshLabel(ctx)
+  val startL = freshLabel(ctx)
+  val endL = freshLabel(ctx)
+  val afterL = freshLabel(ctx)
 
   insns.add(LLabel(name = startL))
   lowerBlock(ctx, insns, body)
@@ -3260,14 +3254,8 @@ func lowerTryCatch(
     // to `java/lang/Throwable` so the exception-table entry resolves at class
     // load (otherwise: NoClassDefFoundError: Bug).  This mirrors the MSIL
     // backend mapping `Bug` to `System.Exception`.
-    val catchClass =
-      if c.typeName == "Bug" { "java/lang/Throwable" }
-      else { lyricNameToJvm(c.typeName) }
-    insns.add(LTryCatch(
-      startLabel   = startL,
-      endLabel     = endL,
-      handlerLabel = handlerL,
-      catchClass   = catchClass))
+    val catchClass = if c.typeName == "Bug" { "java/lang/Throwable" } else { lyricNameToJvm(c.typeName) }
+    insns.add(LTryCatch(startLabel = startL, endLabel = endL, handlerLabel = handlerL, catchClass = catchClass))
     i = i + 1
   }
 
@@ -3285,7 +3273,7 @@ func lowerTryCatch(
     case Some(fb) -> {
       val finallyExL = freshLabel(ctx)
       insns.add(LLabel(name = finallyExL))
-      val exTy    = JRef(className = "java/lang/Throwable")
+      val exTy = JRef(className = "java/lang/Throwable")
       val tmpName = "__finally_ex_" + toString(ctx.labelTicker.count)
       val tmpSlot = allocSlot(ctx, tmpName, exTy)
       emitStore(insns, tmpSlot, exTy)
@@ -3295,11 +3283,7 @@ func lowerTryCatch(
       // Catch-all entry: covers try body ([startL, endL)) and all catch
       // handler bodies ([endL, finallyExL)).  endLabel = finallyExL means
       // the handler code itself is not covered (self-exclusion).
-      insns.add(LTryCatch(
-        startLabel   = startL,
-        endLabel     = finallyExL,
-        handlerLabel = finallyExL,
-        catchClass   = ""))
+      insns.add(LTryCatch(startLabel = startL, endLabel = finallyExL, handlerLabel = finallyExL, catchClass = ""))
       // Normal path: finally runs here after successful try/catch completion.
       insns.add(LLabel(name = afterL))
       lowerBlock(ctx, insns, fb)
@@ -3310,7 +3294,6 @@ func lowerTryCatch(
 // ─────────────────────────────────────────────────────────────────────────────
 // §7. Block lowering.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func lowerBlock(ctx: in FuncCtx, insns: in List[LInsn], block: in Block): Unit {
   var i = 0
   while i < block.statements.count {
@@ -3322,13 +3305,15 @@ pub func lowerBlock(ctx: in FuncCtx, insns: in List[LInsn], block: in Block): Un
 // ─────────────────────────────────────────────────────────────────────────────
 // §8. Function lowering.
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Create a fresh FuncCtx for the given function.
-func makeFuncCtx(pkgName: in String, className: in String,
-                 funcSigs: in Map[String, JvmFuncSig],
-                 caseFields: in Map[String, List[JvmCaseField]],
-                 externTypes: in Map[String, String],
-                 autoFfi: in AutoFfiCtx): FuncCtx {
+func makeFuncCtx(
+  pkgName: in String,
+  className: in String,
+  funcSigs: in Map[String, JvmFuncSig],
+  caseFields: in Map[String, List[JvmCaseField]],
+  externTypes: in Map[String, String],
+  autoFfi: in AutoFfiCtx,
+): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
   val slotTicker: List[Int] = newList()
@@ -3336,28 +3321,32 @@ func makeFuncCtx(pkgName: in String, className: in String,
   val loopBreak: List[String] = newList()
   val loopCont: List[String] = newList()
   FuncCtx(
-    pkgName     = pkgName,
-    className   = className,
-    slots       = slots,
-    types       = types,
-    slotTicker  = slotTicker,
+    pkgName = pkgName,
+    className = className,
+    slots = slots,
+    types = types,
+    slotTicker = slotTicker,
     labelTicker = labelTicker,
-    loopBreak   = loopBreak,
-    loopCont    = loopCont,
-    genClass    = None,
-    funcSigs    = funcSigs,
-    caseFields  = caseFields,
+    loopBreak = loopBreak,
+    loopCont = loopCont,
+    genClass = None,
+    funcSigs = funcSigs,
+    caseFields = caseFields,
     externTypes = externTypes,
-    autoFfi     = autoFfi)
+    autoFfi = autoFfi
+  )
 }
 
 // Create a FuncCtx for lowering a generator body (runBody instance method).
 // Slot 0 = `this` (reserved); params start at slot 1.
-func makeFuncCtxForGenerator(pkgName: in String, genClass: in String,
-                             funcSigs: in Map[String, JvmFuncSig],
-                             caseFields: in Map[String, List[JvmCaseField]],
-                             externTypes: in Map[String, String],
-                             autoFfi: in AutoFfiCtx): FuncCtx {
+func makeFuncCtxForGenerator(
+  pkgName: in String,
+  genClass: in String,
+  funcSigs: in Map[String, JvmFuncSig],
+  caseFields: in Map[String, List[JvmCaseField]],
+  externTypes: in Map[String, String],
+  autoFfi: in AutoFfiCtx,
+): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
   val slotTicker: List[Int] = newList()
@@ -3366,31 +3355,32 @@ func makeFuncCtxForGenerator(pkgName: in String, genClass: in String,
   val loopBreak: List[String] = newList()
   val loopCont: List[String] = newList()
   FuncCtx(
-    pkgName     = pkgName,
-    className   = genClass,
-    slots       = slots,
-    types       = types,
-    slotTicker  = slotTicker,
+    pkgName = pkgName,
+    className = genClass,
+    slots = slots,
+    types = types,
+    slotTicker = slotTicker,
     labelTicker = labelTicker,
-    loopBreak   = loopBreak,
-    loopCont    = loopCont,
-    genClass    = Some(value = genClass),
-    funcSigs    = funcSigs,
-    caseFields  = caseFields,
+    loopBreak = loopBreak,
+    loopCont = loopCont,
+    genClass = Some(value = genClass),
+    funcSigs = funcSigs,
+    caseFields = caseFields,
     externTypes = externTypes,
-    autoFfi     = autoFfi)
+    autoFfi = autoFfi
+  )
 }
 
-pub func lowerFunc(decl: in FunctionDecl, pkgName: in String, className: in String,
-                   funcSigs: in Map[String, JvmFuncSig],
-                   caseFields: in Map[String, List[JvmCaseField]],
-                   externTypes: in Map[String, String],
-                   autoFfi: in AutoFfiCtx): LFunc {
-  val retTy =
-    match decl.ret {
-      case Some(te) -> typeExprToJvm(te, pkgName)
-      case None     -> JVoid
-    }
+pub func lowerFunc(
+  decl: in FunctionDecl,
+  pkgName: in String,
+  className: in String,
+  funcSigs: in Map[String, JvmFuncSig],
+  caseFields: in Map[String, List[JvmCaseField]],
+  externTypes: in Map[String, String],
+  autoFfi: in AutoFfiCtx,
+): LFunc {
+  val retTy = match decl.ret { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
 
   val ctx = makeFuncCtx(pkgName, className, funcSigs, caseFields, externTypes, autoFfi)
   val insns: List[LInsn] = newList()
@@ -3433,7 +3423,7 @@ pub func lowerFunc(decl: in FunctionDecl, pkgName: in String, className: in Stri
               if not endsWithReturn(insns) {
                 match tailTy {
                   case JVoid -> emitReturn(insns, JVoid)
-                  case _     -> emitReturn(insns, retTy)
+                  case _ -> emitReturn(insns, retTy)
                 }
               }
             }
@@ -3453,8 +3443,11 @@ pub func lowerFunc(decl: in FunctionDecl, pkgName: in String, className: in Stri
     }
     case None -> {
       match findExternTarget(decl) {
-        case Some(target) -> { lowerExternTargetBody(decl, ctx, insns, target); () }
-        case None         -> emitReturn(insns, retTy)
+        case Some(target) -> {
+          lowerExternTargetBody(decl, ctx, insns, target);
+          ()
+        }
+        case None -> emitReturn(insns, retTy)
       }
     }
   }
@@ -3469,13 +3462,15 @@ pub func lowerFunc(decl: in FunctionDecl, pkgName: in String, className: in Stri
   }
 
   LFunc(
-    flags     = 0x0009,  // public static
-    name      = decl.name,
-    params    = paramTypes,
-    ret       = retTy,
-    insns     = insns,
-    maxStack  = 16,
-    maxLocals = ctx.slotTicker.count)
+    flags = 0x0009,
+    // public static
+    name = decl.name,
+    params = paramTypes,
+    ret = retTy,
+    insns = insns,
+    maxStack = 16,
+    maxLocals = ctx.slotTicker.count
+  )
 }
 
 // Check whether the last meaningful instruction in a list is a return.
@@ -3483,18 +3478,36 @@ func endsWithReturn(insns: in List[LInsn]): Bool {
   var i = insns.count - 1
   while i >= 0 {
     match insns[i] {
-      case LReturn   -> { return true }
-      case LIreturn  -> { return true }
-      case LLreturn  -> { return true }
-      case LDreturn  -> { return true }
-      case LAreturn  -> { return true }
-      case LAthrow   -> { return true }
-      case LNop      -> { i = i - 1 }
+      case LReturn -> {
+        return true
+      }
+      case LIreturn -> {
+        return true
+      }
+      case LLreturn -> {
+        return true
+      }
+      case LDreturn -> {
+        return true
+      }
+      case LAreturn -> {
+        return true
+      }
+      case LAthrow -> {
+        return true
+      }
+      case LNop -> {
+        i = i - 1
+      }
       // A label may be a branch target from code above (e.g. the after-label
       // of a match expression), so we cannot treat instructions before it as
       // the effective end of the method.  Stop scanning and report "no terminal".
-      case LLabel(_) -> { return false }
-      case _         -> { return false }
+      case LLabel(_) -> {
+        return false
+      }
+      case _ -> {
+        return false
+      }
     }
   }
   false
@@ -3503,12 +3516,14 @@ func endsWithReturn(insns: in List[LInsn]): Bool {
 // ─────────────────────────────────────────────────────────────────────────────
 // §9. Record lowering.
 // ─────────────────────────────────────────────────────────────────────────────
-
-pub func lowerRecord(decl: in RecordDecl, pkgName: in String,
-                     funcSigs: in Map[String, JvmFuncSig],
-                     caseFields: in Map[String, List[JvmCaseField]],
-                     externTypes: in Map[String, String],
-                     autoFfi: in AutoFfiCtx): LRecord {
+pub func lowerRecord(
+  decl: in RecordDecl,
+  pkgName: in String,
+  funcSigs: in Map[String, JvmFuncSig],
+  caseFields: in Map[String, List[JvmCaseField]],
+  externTypes: in Map[String, String],
+  autoFfi: in AutoFfiCtx,
+): LRecord {
   val className = pkgName + "/" + decl.name
 
   val fields: List[LField] = newList()
@@ -3516,13 +3531,19 @@ pub func lowerRecord(decl: in RecordDecl, pkgName: in String,
   while i < decl.members.count {
     match decl.members[i] {
       case RMField(f) -> {
-        fields.add(LField(
-          flags     = 0x0001,  // public
-          name      = f.name,
-          fieldType = typeExprToJvm(f.ty, pkgName)))
+        fields.add(
+          LField(
+            flags = 0x0001,
+            // public
+            name = f.name,
+            fieldType = typeExprToJvm(f.ty, pkgName)
+          )
+        )
       }
-      case RMInvariant(_) -> {}
-      case RMFunc(_)      -> {}
+      case RMInvariant(_) -> {
+      }
+      case RMFunc(_) -> {
+      }
     }
     i = i + 1
   }
@@ -3550,21 +3571,19 @@ pub func lowerRecord(decl: in RecordDecl, pkgName: in String,
   // Call super.<init>().
   ctorInsns.add(LAload(slot = 0))
   val objPs: List[JvmType] = newList()
-  ctorInsns.add(LInvokespecial(
-    owner  = "java/lang/Object",
-    name   = "<init>",
-    params = objPs,
-    ret    = JVoid))
+  ctorInsns.add(LInvokespecial(owner = "java/lang/Object", name = "<init>", params = objPs, ret = JVoid))
   ctorInsns.add(LReturn)
 
   val ctor = LFunc(
-    flags     = 0x0001,  // public
-    name      = "<init>",
-    params    = ctorParams,
-    ret       = JVoid,
-    insns     = ctorInsns,
-    maxStack  = 16,
-    maxLocals = slot)
+    flags = 0x0001,
+    // public
+    name = "<init>",
+    params = ctorParams,
+    ret = JVoid,
+    insns = ctorInsns,
+    maxStack = 16,
+    maxLocals = slot
+  )
 
   val methods: List[LFunc] = newList()
   methods.add(ctor)
@@ -3576,22 +3595,18 @@ pub func lowerRecord(decl: in RecordDecl, pkgName: in String,
       case RMFunc(fn) -> {
         methods.add(lowerFunc(fn, pkgName, className, funcSigs, caseFields, externTypes, autoFfi))
       }
-      case _ -> {}
+      case _ -> {
+      }
     }
     mi = mi + 1
   }
 
-  LRecord(
-    className        = className,
-    fields           = fields,
-    methods          = methods,
-    implementsIfaces = newList())
+  LRecord(className = className, fields = fields, methods = methods, implementsIfaces = newList())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §10. Union lowering.
 // ─────────────────────────────────────────────────────────────────────────────
-
 pub func lowerUnion(decl: in UnionDecl, pkgName: in String): LSealedUnion {
   val baseName = pkgName + "/" + decl.name
 
@@ -3604,23 +3619,15 @@ pub func lowerUnion(decl: in UnionDecl, pkgName: in String): LSealedUnion {
     while fi < c.fields.count {
       match c.fields[fi] {
         case UFNamed(name, ty, _) -> {
-          caseFields.add(LField(
-            flags     = 0x0001,
-            name      = name,
-            fieldType = typeExprToJvm(ty, pkgName)))
+          caseFields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvm(ty, pkgName)))
         }
         case UFPos(ty, _) -> {
-          caseFields.add(LField(
-            flags     = 0x0001,
-            name      = "field" + toString(fi),
-            fieldType = typeExprToJvm(ty, pkgName)))
+          caseFields.add(LField(flags = 0x0001, name = "field" + toString(fi), fieldType = typeExprToJvm(ty, pkgName)))
         }
       }
       fi = fi + 1
     }
-    cases.add(LSealedCase(
-      caseName = c.name,
-      fields   = caseFields))
+    cases.add(LSealedCase(caseName = c.name, fields = caseFields))
     i = i + 1
   }
 
@@ -3630,7 +3637,6 @@ pub func lowerUnion(decl: in UnionDecl, pkgName: in String): LSealedUnion {
 // ─────────────────────────────────────────────────────────────────────────────
 // §11. Package codegen — main entry point.
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Join path segments with "/" to form the JVM binary name.
 func segmentsToJvmPath(segs: in List[String]): String {
   joinSegments(segs, "/")
@@ -3643,72 +3649,89 @@ func isMainFunc(decl: in FunctionDecl): Bool {
 }
 
 // ── Async generator detection ─────────────────────────────────────────────────
-
 func exprContainsYield(e: in Expr): Bool {
   match e.kind {
-    case EYield(_)         -> true
-    case EAwait(inner)     -> exprContainsYield(inner)
-    case ESpawn(inner)     -> exprContainsYield(inner)
-    case EParen(inner)     -> exprContainsYield(inner)
-    case ETry(inner)       -> exprContainsYield(inner)
+    case EYield(_) -> true
+    case EAwait(inner) -> exprContainsYield(inner)
+    case ESpawn(inner) -> exprContainsYield(inner)
+    case EParen(inner) -> exprContainsYield(inner)
+    case ETry(inner) -> exprContainsYield(inner)
     case EPropagate(inner) -> exprContainsYield(inner)
-    case EOld(inner)       -> exprContainsYield(inner)
+    case EOld(inner) -> exprContainsYield(inner)
     case EPrefix(_, inner) -> exprContainsYield(inner)
-    case EBinop(_, l, r)   -> exprContainsYield(l) or exprContainsYield(r)
-    case EAssign(t, _, v)  -> exprContainsYield(t) or exprContainsYield(v)
-    case EBlock(blk)       -> blockContainsYield(blk)
-    case EUnsafe(blk)      -> blockContainsYield(blk)
+    case EBinop(_, l, r) -> exprContainsYield(l) or exprContainsYield(r)
+    case EAssign(t, _, v) -> exprContainsYield(t) or exprContainsYield(v)
+    case EBlock(blk) -> blockContainsYield(blk)
+    case EUnsafe(blk) -> blockContainsYield(blk)
     case EIf(cond, thn, els, _) -> {
-      if exprContainsYield(cond) { return true }
-      if eobContainsYield(thn)   { return true }
+      if exprContainsYield(cond) {
+        return true
+      }
+      if eobContainsYield(thn) {
+        return true
+      }
       match els {
         case Some(e2) -> eobContainsYield(e2)
-        case None     -> false
+        case None -> false
       }
     }
     case EMatch(scrut, arms) -> {
-      if exprContainsYield(scrut) { return true }
+      if exprContainsYield(scrut) {
+        return true
+      }
       var i = 0
       while i < arms.count {
-        if eobContainsYield(arms[i].body) { return true }
+        if eobContainsYield(arms[i].body) {
+          return true
+        }
         i = i + 1
       }
       false
     }
     case ECall(fn, args) -> {
-      if exprContainsYield(fn) { return true }
+      if exprContainsYield(fn) {
+        return true
+      }
       var i = 0
       while i < args.count {
         val argContains = match args[i] {
-          case CAPositional(e)   -> exprContainsYield(e)
-          case CANamed(_, e, _)  -> exprContainsYield(e)
+          case CAPositional(e) -> exprContainsYield(e)
+          case CANamed(_, e, _) -> exprContainsYield(e)
         }
-        if argContains { return true }
+        if argContains {
+          return true
+        }
         i = i + 1
       }
       false
     }
     case EIndex(recv, idxs) -> {
-      if exprContainsYield(recv) { return true }
+      if exprContainsYield(recv) {
+        return true
+      }
       var i = 0
       while i < idxs.count {
-        if exprContainsYield(idxs[i]) { return true }
+        if exprContainsYield(idxs[i]) {
+          return true
+        }
         i = i + 1
       }
       false
     }
-    case EMember(recv, _)  -> exprContainsYield(recv)
-    case ETuple(exprs)     -> listContainsYield(exprs)
-    case EList(exprs)      -> listContainsYield(exprs)
-    case ETypeApp(fn, _)   -> exprContainsYield(fn)
-    case _                 -> false
+    case EMember(recv, _) -> exprContainsYield(recv)
+    case ETuple(exprs) -> listContainsYield(exprs)
+    case EList(exprs) -> listContainsYield(exprs)
+    case ETypeApp(fn, _) -> exprContainsYield(fn)
+    case _ -> false
   }
 }
 
 func listContainsYield(exprs: in List[Expr]): Bool {
   var i = 0
   while i < exprs.count {
-    if exprContainsYield(exprs[i]) { return true }
+    if exprContainsYield(exprs[i]) {
+      return true
+    }
     i = i + 1
   }
   false
@@ -3716,7 +3739,7 @@ func listContainsYield(exprs: in List[Expr]): Bool {
 
 func eobContainsYield(eob: in ExprOrBlock): Bool {
   match eob {
-    case EOBExpr(e)   -> exprContainsYield(e)
+    case EOBExpr(e) -> exprContainsYield(e)
     case EOBBlock(blk) -> blockContainsYield(blk)
   }
 }
@@ -3724,7 +3747,9 @@ func eobContainsYield(eob: in ExprOrBlock): Bool {
 func blockContainsYield(blk: in Block): Bool {
   var i = 0
   while i < blk.statements.count {
-    if stmtContainsYield(blk.statements[i]) { return true }
+    if stmtContainsYield(blk.statements[i]) {
+      return true
+    }
     i = i + 1
   }
   false
@@ -3732,7 +3757,7 @@ func blockContainsYield(blk: in Block): Bool {
 
 func stmtContainsYield(stmt: in Statement): Bool {
   match stmt.kind {
-    case SExpr(e)  -> exprContainsYield(e)
+    case SExpr(e) -> exprContainsYield(e)
     case SLocal(binding) -> {
       match binding {
         case LBVal(_, _, init) -> exprContainsYield(init)
@@ -3740,7 +3765,7 @@ func stmtContainsYield(stmt: in Statement): Bool {
         case LBVar(_, _, initOpt) -> {
           match initOpt {
             case Some(init) -> exprContainsYield(init)
-            case None       -> false
+            case None -> false
           }
         }
       }
@@ -3748,33 +3773,37 @@ func stmtContainsYield(stmt: in Statement): Bool {
     case SReturn(eOpt) -> {
       match eOpt {
         case Some(e) -> exprContainsYield(e)
-        case None    -> false
+        case None -> false
       }
     }
-    case SAssign(t, _, v)  -> exprContainsYield(t) or exprContainsYield(v)
-    case SThrow(e)         -> exprContainsYield(e)
+    case SAssign(t, _, v) -> exprContainsYield(t) or exprContainsYield(v)
+    case SThrow(e) -> exprContainsYield(e)
     case SWhile(_, cond, body) -> exprContainsYield(cond) or blockContainsYield(body)
-    case SLoop(_, body)        -> blockContainsYield(body)
+    case SLoop(_, body) -> blockContainsYield(body)
     case SFor(_, _, iter, body) -> exprContainsYield(iter) or blockContainsYield(body)
-    case SBreak(_)             -> false
-    case SContinue(_)          -> false
-    case STry(body, catches, finally_)   -> {
-      if blockContainsYield(body) { return true }
+    case SBreak(_) -> false
+    case SContinue(_) -> false
+    case STry(body, catches, finally_) -> {
+      if blockContainsYield(body) {
+        return true
+      }
       var i = 0
       while i < catches.count {
-        if blockContainsYield(catches[i].body) { return true }
+        if blockContainsYield(catches[i].body) {
+          return true
+        }
         i = i + 1
       }
       match finally_ {
-        case None     -> false
+        case None -> false
         case Some(fb) -> blockContainsYield(fb)
       }
     }
-    case SDefer(body)    -> blockContainsYield(body)
+    case SDefer(body) -> blockContainsYield(body)
     case SScope(_, body) -> blockContainsYield(body)
-    case SInvariant(e)   -> exprContainsYield(e)
-    case SRule(l, r)     -> exprContainsYield(l) or exprContainsYield(r)
-    case SItem(_)        -> false
+    case SInvariant(e) -> exprContainsYield(e)
+    case SRule(l, r) -> exprContainsYield(l) or exprContainsYield(r)
+    case SItem(_) -> false
   }
 }
 
@@ -3783,7 +3812,7 @@ func funcBodyContainsYield(decl: in FunctionDecl): Bool {
     case Some(body) -> {
       match body {
         case FBBlock(blk) -> blockContainsYield(blk)
-        case FBExpr(e)    -> exprContainsYield(e)
+        case FBExpr(e) -> exprContainsYield(e)
       }
     }
     case None -> false
@@ -3794,13 +3823,13 @@ func funcBodyContainsYield(decl: in FunctionDecl): Bool {
 // Params are accessed as fields on `this` (slot 0); the preamble loads
 // each param field into a local slot so the body can use them normally.
 func lowerGeneratorBody(
-  decl:        in FunctionDecl,
-  pkgName:     in String,
-  genClass:    in String,
-  funcSigs:    in Map[String, JvmFuncSig],
-  caseFields:  in Map[String, List[JvmCaseField]],
+  decl: in FunctionDecl,
+  pkgName: in String,
+  genClass: in String,
+  funcSigs: in Map[String, JvmFuncSig],
+  caseFields: in Map[String, List[JvmCaseField]],
   externTypes: in Map[String, String],
-  autoFfi:     in AutoFfiCtx
+  autoFfi: in AutoFfiCtx,
 ): List[LInsn] {
   val insns: List[LInsn] = newList()
   val ctx = makeFuncCtxForGenerator(pkgName, genClass, funcSigs, caseFields, externTypes, autoFfi)
@@ -3823,10 +3852,14 @@ func lowerGeneratorBody(
     case Some(body) -> {
       match body {
         case FBBlock(block) -> lowerBlock(ctx, insns, block)
-        case FBExpr(e)      -> { lowerExpr(ctx, insns, e); () }
+        case FBExpr(e) -> {
+          lowerExpr(ctx, insns, e);
+          ()
+        }
       }
     }
-    case None -> {}
+    case None -> {
+    }
   }
 
   insns
@@ -3835,11 +3868,7 @@ func lowerGeneratorBody(
 // Synthesise the static factory LFunc that constructs a generator instance.
 // `public static Object name(params...) { return new GenClass(params...); }`
 // This is added to LPFuncs so it lands in the same class file as main().
-func makeGeneratorFactory(
-  decl:     in FunctionDecl,
-  genClass: in String,
-  pkgName:  in String
-): LFunc {
+func makeGeneratorFactory(decl: in FunctionDecl, genClass: in String, pkgName: in String): LFunc {
   val insns: List[LInsn] = newList()
   insns.add(LNew(className = genClass))
   insns.add(LDup)
@@ -3851,53 +3880,66 @@ func makeGeneratorFactory(
     val pty = typeExprToJvm(decl.params[pi].ty, pkgName)
     ctorParams.add(pty)
     match pty {
-      case JLong   -> { insns.add(LLload(slot = slot)); slot = slot + 2 }
-      case JDouble -> { insns.add(LDload(slot = slot)); slot = slot + 2 }
-      case JFloat  -> { insns.add(LFload(slot = slot)); slot = slot + 1 }
-      case JRef(_) -> { insns.add(LAload(slot = slot)); slot = slot + 1 }
+      case JLong -> {
+        insns.add(LLload(slot = slot))
+        slot = slot + 2
+      }
+      case JDouble -> {
+        insns.add(LDload(slot = slot))
+        slot = slot + 2
+      }
+      case JFloat -> {
+        insns.add(LFload(slot = slot))
+        slot = slot + 1
+      }
+      case JRef(_) -> {
+        insns.add(LAload(slot = slot))
+        slot = slot + 1
+      }
       // JBoolean, JByte, JChar, JShort are all JVM category-1 int types;
       // iload/istore works for all of them.
-      case _       -> { insns.add(LIload(slot = slot)); slot = slot + 1 }
+      case _ -> {
+        insns.add(LIload(slot = slot))
+        slot = slot + 1
+      }
     }
     pi = pi + 1
   }
 
-  insns.add(LInvokespecial(
-    owner  = genClass,
-    name   = "<init>",
-    params = ctorParams,
-    ret    = JVoid))
+  insns.add(LInvokespecial(owner = genClass, name = "<init>", params = ctorParams, ret = JVoid))
   insns.add(LAreturn)
 
   LFunc(
-    flags     = 0x0009,   // ACC_PUBLIC | ACC_STATIC
-    name      = decl.name,
-    params    = ctorParams,
-    ret       = JRef(className = "java/lang/Object"),
-    insns     = insns,
-    maxStack  = 0,        // inferred from peak-stack tracking
-    maxLocals = 0)        // inferred from slot scan
+    flags = 0x0009,
+    // ACC_PUBLIC | ACC_STATIC
+    name = decl.name,
+    params = ctorParams,
+    ret = JRef(className = "java/lang/Object"),
+    insns = insns,
+    maxStack = 0,
+    // inferred from peak-stack tracking
+    maxLocals = 0
+  )  // inferred from slot scan
 }
 
 // ── IImpl pre-pass helpers ────────────────────────────────────────────────────
-
 record ImplEntry {
   targetClass: String
-  ifaceClass:  String
-  methods:     List[LFunc]
+  ifaceClass: String
+  methods: List[LFunc]
+  // Convert a single-segment or multi-segment TypeExpr to a JVM binary class name.
+  // Used to resolve `impl Y for X` target from the AST.
+  //
+  // The non-TRef fallback used to return `pkgName + "/$unknown"` — not a
+  // valid JVM binary name and unreferenceable by the class loader.
+  // `panic` here surfaces the gap at codegen time with a clear message
+  // instead of letting an `interfaces` array reference a nonexistent
+  // class and tripping `ClassNotFoundException: pkg/$unknown` at JVM
+  // load time.  All `impl` targets are `TRef(path)` in practice today
+  // (concrete record names); a non-TRef case is a parser/AST shape
+  // not seen yet and we want to know about it loudly.
 }
 
-// Convert a single-segment or multi-segment TypeExpr to a JVM binary class name.
-// Used to resolve `impl Y for X` target from the AST.
-//
-// The non-TRef fallback used to return `pkgName + "/$unknown"` — not a
-// valid JVM binary name and unreferenceable by the class loader.
-// `panic` here surfaces the gap at codegen time with a clear message
-// instead of letting an `interfaces` array reference a nonexistent
-// class and tripping `ClassNotFoundException: pkg/$unknown` at JVM
-// load time.  All `impl` targets are `TRef(path)` in practice today
-// (concrete record names); a non-TRef case is a parser/AST shape
-// not seen yet and we want to know about it loudly.
 func typeExprToJvmClass(te: in TypeExpr, pkgName: in String): String {
   match te.kind {
     case TRef(path) -> {
@@ -3907,11 +3949,7 @@ func typeExprToJvmClass(te: in TypeExpr, pkgName: in String): String {
         segmentsToJvmPath(path.segments)
       }
     }
-    case _ -> panic(
-      "Jvm.Codegen: `impl Y for X` target is not a TRef (path) — got an " +
-      "unsupported TypeExpr shape; refusing to emit an unbindable JVM " +
-      "class name.  Add a TypeExpr arm to typeExprToJvmClass if a new " +
-      "impl-target shape is intended.")
+    case _ -> panic("Jvm.Codegen: `impl Y for X` target is not a TRef (path) — got an " + "unsupported TypeExpr shape; refusing to emit an unbindable JVM " + "class name.  Add a TypeExpr arm to typeExprToJvmClass if a new " + "impl-target shape is intended.")
   }
 }
 
@@ -3947,15 +3985,14 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
         // site must store/use a reference, not `decl.ret` (e.g. the `Int`
         // element type).  Record Object for it; everything else uses the
         // declared return.
-        val ret =
-          if decl.isAsync and funcBodyContainsYield(decl) {
-            JRef(className = "java/lang/Object")
-          } else {
-            match decl.ret {
-              case Some(te) -> typeExprToJvm(te, owner)
-              case None     -> JVoid
-            }
+        val ret = if decl.isAsync and funcBodyContainsYield(decl) {
+          JRef(className = "java/lang/Object")
+        } else {
+          match decl.ret {
+            case Some(te) -> typeExprToJvm(te, owner)
+            case None -> JVoid
           }
+        }
         val sig = JvmFuncSig(owner = owner, params = params, ret = ret)
         // Qualified key (`Std/Testing/assertEqualInt`) is unique across the
         // bundle, so two packages exporting the same short name (e.g.
@@ -3963,12 +4000,17 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
         // silently — call sites with a qualified path resolve via this key
         // (#1680).
         val qkey = owner + "/" + decl.name
-        if not into.containsKey(qkey) { into.add(qkey, sig) }
+        if not into.containsKey(qkey) {
+          into.add(qkey, sig)
+        }
         // Bare key kept for unqualified intra-package calls (first-wins on
         // collision, matching pre-1680 behaviour for compatibility).
-        if not into.containsKey(decl.name) { into.add(decl.name, sig) }
+        if not into.containsKey(decl.name) {
+          into.add(decl.name, sig)
+        }
       }
-      case _ -> {}
+      case _ -> {
+      }
     }
     i = i + 1
   }
@@ -3993,10 +4035,8 @@ pub func collectFileCases(file: in SourceFile, into: in Map[String, List[JvmCase
             var fi = 0
             while fi < c.fields.count {
               match c.fields[fi] {
-                case UFNamed(name, ty, _) ->
-                  flds.add(JvmCaseField(name = name, ty = typeExprToJvm(ty, owner)))
-                case UFPos(ty, _) ->
-                  flds.add(JvmCaseField(name = "field" + toString(fi), ty = typeExprToJvm(ty, owner)))
+                case UFNamed(name, ty, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvm(ty, owner)))
+                case UFPos(ty, _) -> flds.add(JvmCaseField(name = "field" + toString(fi), ty = typeExprToJvm(ty, owner)))
               }
               fi = fi + 1
             }
@@ -4005,7 +4045,8 @@ pub func collectFileCases(file: in SourceFile, into: in Map[String, List[JvmCase
           ci = ci + 1
         }
       }
-      case _ -> {}
+      case _ -> {
+      }
     }
     i = i + 1
   }
@@ -4027,11 +4068,13 @@ pub func codegenPackage(file: in SourceFile): LPackage {
 // whole compilation (this file's funcs plus every imported / stdlib package's).
 // The multi-package bridge builds one global registry from all files and hands
 // the same map to each package, so cross-package calls resolve owner + descriptor.
-pub func codegenPackageWithSigs(file: in SourceFile,
-                                funcSigs: in Map[String, JvmFuncSig],
-                                caseFields: in Map[String, List[JvmCaseField]],
-                                autoFfi: in AutoFfiCtx): LPackage {
-  val pkgName    = segmentsToJvmPath(file.packageDecl.path.segments)
+pub func codegenPackageWithSigs(
+  file: in SourceFile,
+  funcSigs: in Map[String, JvmFuncSig],
+  caseFields: in Map[String, List[JvmCaseField]],
+  autoFfi: in AutoFfiCtx,
+): LPackage {
+  val pkgName = segmentsToJvmPath(file.packageDecl.path.segments)
   val funcsClass = pkgName
 
   // Collect extern-type declarations: alias → Java FQN.
@@ -4044,12 +4087,13 @@ pub func codegenPackageWithSigs(file: in SourceFile,
           externTypes.add(decl.name, decl.clrName)
         }
       }
-      case _ -> {}
+      case _ -> {
+      }
     }
     eti = eti + 1
   }
 
-  val fns:   List[LFunc]        = newList()
+  val fns: List[LFunc] = newList()
   val items: List[LPackageItem] = newList()
   var hasMain = false
   // Captured return type of the Lyric `main(): T` so the JVM wrapper can
@@ -4068,22 +4112,21 @@ pub func codegenPackageWithSigs(file: in SourceFile,
     match file.items[pi].kind {
       case IImpl(decl) -> {
         val targetClass = typeExprToJvmClass(decl.target, pkgName)
-        val ifaceClass  = constraintRefToJvmClass(decl.iface, pkgName)
+        val ifaceClass = constraintRefToJvmClass(decl.iface, pkgName)
         val implFuncs: List[LFunc] = newList()
         var mi2 = 0
         while mi2 < decl.members.count {
           match decl.members[mi2] {
             case IMplFunc(fn) -> implFuncs.add(lowerFunc(fn, pkgName, targetClass, funcSigs, caseFields, externTypes, autoFfi))
-            case IMplAssoc(_) -> {}
+            case IMplAssoc(_) -> {
+            }
           }
           mi2 = mi2 + 1
         }
-        implEntries.add(ImplEntry(
-          targetClass = targetClass,
-          ifaceClass  = ifaceClass,
-          methods     = implFuncs))
+        implEntries.add(ImplEntry(targetClass = targetClass, ifaceClass = ifaceClass, methods = implFuncs))
       }
-      case _ -> {}
+      case _ -> {
+      }
     }
     pi = pi + 1
   }
@@ -4095,7 +4138,7 @@ pub func codegenPackageWithSigs(file: in SourceFile,
       case IFunc(decl) -> {
         if decl.isAsync and funcBodyContainsYield(decl) {
           // Async generator: synthesise Iterable+Iterator class via lowerAsyncGenerator.
-          val genClass  = pkgName + "$" + decl.name + "$Gen"
+          val genClass = pkgName + "$" + decl.name + "$Gen"
           val bodyInsns = lowerGeneratorBody(decl, pkgName, genClass, funcSigs, caseFields, externTypes, autoFfi)
           val genParams: List[LGenParam] = newList()
           var pi = 0
@@ -4104,18 +4147,19 @@ pub func codegenPackageWithSigs(file: in SourceFile,
             genParams.add(LGenParam(paramName = p.name, paramType = typeExprToJvm(p.ty, pkgName)))
             pi = pi + 1
           }
-          val elemTy =
-            match decl.ret {
-              case Some(te) -> typeExprToJvm(te, pkgName)
-              case None     -> JRef(className = "java/lang/Object")
-            }
+          val elemTy = match decl.ret {
+            case Some(te) -> typeExprToJvm(te, pkgName)
+            case None -> JRef(className = "java/lang/Object")
+          }
           val genFunc = LGenFunc(
             generatorClass = genClass,
-            hostClass      = "",     // pipeline adds factory to LPFuncs instead
-            methodName     = decl.name,
-            elemType       = elemTy,
-            params         = genParams,
-            bodyInsns      = bodyInsns)
+            hostClass = "",
+            // pipeline adds factory to LPFuncs instead
+            methodName = decl.name,
+            elemType = elemTy,
+            params = genParams,
+            bodyInsns = bodyInsns
+          )
           items.add(LPAsyncGenerator(g = genFunc))
           // Factory method lives alongside main() in the functions class.
           fns.add(makeGeneratorFactory(decl, genClass, pkgName))
@@ -4125,11 +4169,7 @@ pub func codegenPackageWithSigs(file: in SourceFile,
             hasMain = true
             // Resolve the Lyric main's declared return type so the JVM
             // wrapper can call it with the matching descriptor.
-            mainRet =
-              match decl.ret {
-                case Some(te) -> typeExprToJvm(te, pkgName)
-                case None     -> JVoid
-              }
+            mainRet = match decl.ret { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
           }
         }
       }
@@ -4144,19 +4184,31 @@ pub func codegenPackageWithSigs(file: in SourceFile,
             ifaces.add(implEntries[ei].ifaceClass)
             val ms = implEntries[ei].methods
             var mi3 = 0
-            while mi3 < ms.count { implFuncs.add(ms[mi3]); mi3 = mi3 + 1 }
+            while mi3 < ms.count {
+              implFuncs.add(ms[mi3])
+              mi3 = mi3 + 1
+            }
           }
           ei = ei + 1
         }
         val baseRec = lowerRecord(decl, pkgName, funcSigs, caseFields, externTypes, autoFfi)
         val mergedMethods: List[LFunc] = newList()
-        for fn in baseRec.methods.toArray() { mergedMethods.add(fn) }
-        for fn in implFuncs.toArray()      { mergedMethods.add(fn) }
-        items.add(LPRecord(rec = LRecord(
-          className        = baseRec.className,
-          fields           = baseRec.fields,
-          methods          = mergedMethods,
-          implementsIfaces = ifaces)))
+        for fn in baseRec.methods.toArray() {
+          mergedMethods.add(fn)
+        }
+        for fn in implFuncs.toArray() {
+          mergedMethods.add(fn)
+        }
+        items.add(
+          LPRecord(
+            rec = LRecord(
+              className = baseRec.className,
+              fields = baseRec.fields,
+              methods = mergedMethods,
+              implementsIfaces = ifaces
+            )
+          )
+        )
       }
       case IExposedRec(decl) -> {
         // Same impl-injection logic as `IRecord` (#900): `impl Trait
@@ -4174,31 +4226,44 @@ pub func codegenPackageWithSigs(file: in SourceFile,
             ifaces.add(implEntries[ei].ifaceClass)
             val ms = implEntries[ei].methods
             var mi3 = 0
-            while mi3 < ms.count { implFuncs.add(ms[mi3]); mi3 = mi3 + 1 }
+            while mi3 < ms.count {
+              implFuncs.add(ms[mi3])
+              mi3 = mi3 + 1
+            }
           }
           ei = ei + 1
         }
         val baseRec = lowerRecord(decl, pkgName, funcSigs, caseFields, externTypes, autoFfi)
         val mergedMethods: List[LFunc] = newList()
-        for fn in baseRec.methods.toArray() { mergedMethods.add(fn) }
-        for fn in implFuncs.toArray()      { mergedMethods.add(fn) }
-        items.add(LPRecord(rec = LRecord(
-          className        = baseRec.className,
-          fields           = baseRec.fields,
-          methods          = mergedMethods,
-          implementsIfaces = ifaces)))
+        for fn in baseRec.methods.toArray() {
+          mergedMethods.add(fn)
+        }
+        for fn in implFuncs.toArray() {
+          mergedMethods.add(fn)
+        }
+        items.add(
+          LPRecord(
+            rec = LRecord(
+              className = baseRec.className,
+              fields = baseRec.fields,
+              methods = mergedMethods,
+              implementsIfaces = ifaces
+            )
+          )
+        )
       }
       case IUnion(decl) -> {
         items.add(LPSealedUnion(su = lowerUnion(decl, pkgName)))
       }
-      case IConst(_)         -> {}
-      case IVal(_)           -> {}
-      case ITypeAlias(_)     -> {}
+      case IConst(_) -> {
+      }
+      case IVal(_) -> {
+      }
+      case ITypeAlias(_) -> {
+      }
       case IDistinctType(decl) -> {
         val inner = typeExprToJvm(decl.underlying, pkgName)
-        items.add(LPDistinctType(dt = LDistinctType(
-          wrapperClass   = pkgName + "/" + decl.name,
-          underlyingType = inner)))
+        items.add(LPDistinctType(dt = LDistinctType(wrapperClass = pkgName + "/" + decl.name, underlyingType = inner)))
       }
       case IEnum(decl) -> {
         val className2 = pkgName + "/" + decl.name
@@ -4210,8 +4275,10 @@ pub func codegenPackageWithSigs(file: in SourceFile,
         }
         items.add(LPEnum(en = LEnumType(className = className2, variants = variants)))
       }
-      case IOpaque(_)        -> {}
-      case IProtected(_)     -> {}
+      case IOpaque(_) -> {
+      }
+      case IProtected(_) -> {
+      }
       case IInterface(decl) -> {
         // Emit a JVM interface ClassFile: one abstract method per IMSig member.
         val ifClassName = pkgName + "/" + decl.name
@@ -4228,37 +4295,46 @@ pub func codegenPackageWithSigs(file: in SourceFile,
                 params.add(typeExprToJvm(sig.params[spi].ty, pkgName))
                 spi = spi + 1
               }
-              val ret = match sig.ret {
-                case Some(te) -> typeExprToJvm(te, pkgName)
-                case None     -> JVoid
-              }
+              val ret = match sig.ret { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
               val desc = buildDescriptor(params, ret)
-              abstractMethods.add(makeMethodInfo(
-                ACC_PUBLIC + ACC_ABSTRACT, sig.name, desc, emptyAttrs))
+              abstractMethods.add(makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, sig.name, desc, emptyAttrs))
             }
             case IMFunc(fn) -> {
               concreteFuncs.add(lowerFunc(fn, pkgName, ifClassName, funcSigs, caseFields, externTypes, autoFfi))
             }
-            case IMAssoc(_) -> {}
+            case IMAssoc(_) -> {
+            }
           }
           imi = imi + 1
         }
-        items.add(LPInterface(iface = LInterface(
-          className       = ifClassName,
-          abstractMethods = abstractMethods,
-          concreteFuncs   = concreteFuncs)))
+        items.add(
+          LPInterface(
+            iface = LInterface(className = ifClassName, abstractMethods = abstractMethods, concreteFuncs = concreteFuncs)
+          )
+        )
       }
-      case IImpl(_)          -> {}   // handled by pre-pass above
-      case IWire(_)          -> {}
-      case IScopeKind(_)     -> {}
-      case IExtern(_)        -> {}
-      case IExternType(_)    -> {}
-      case ITest(_)          -> {}
-      case IProperty(_)      -> {}
-      case IFixture(_)       -> {}
-      case IConfig(_)        -> {}
-      case IAspect(_)        -> {}
-      case IError            -> {}
+      case IImpl(_) -> {
+      }  // handled by pre-pass above
+      case IWire(_) -> {
+      }
+      case IScopeKind(_) -> {
+      }
+      case IExtern(_) -> {
+      }
+      case IExternType(_) -> {
+      }
+      case ITest(_) -> {
+      }
+      case IProperty(_) -> {
+      }
+      case IFixture(_) -> {
+      }
+      case IConfig(_) -> {
+      }
+      case IAspect(_) -> {
+      }
+      case IError -> {
+      }
     }
     i = i + 1
   }
@@ -4284,9 +4360,9 @@ pub func codegenPackageWithSigs(file: in SourceFile,
     // panics rather than J001.  See follow-up to widen
     // mainReturns2SlotType to the resolved slot type.
     match mainRet {
-      case JLong   -> panic("Jvm.Codegen: `func main(): Long` is not supported on the JVM target — wrap the result in `Int` or `Unit`")
+      case JLong -> panic("Jvm.Codegen: `func main(): Long` is not supported on the JVM target — wrap the result in `Int` or `Unit`")
       case JDouble -> panic("Jvm.Codegen: `func main(): Double` is not supported on the JVM target — wrap the result in `Int` or `Unit`")
-      case _       -> ()
+      case _ -> ()
     }
     val jvmMainParams: List[JvmType] = newList()
     jvmMainParams.add(JArray(elem = JRef(className = "java/lang/String")))
@@ -4295,11 +4371,7 @@ pub func codegenPackageWithSigs(file: in SourceFile,
     // Currently emits main():()V regardless of Lyric main's return type.
     // Long/Double return would require POP2; Int/Bool etc. would require POP.
     // Tracked as a follow-up once the JVM wrapper records the Lyric main return type.
-    jvmMainInsns.add(LInvokestatic(
-      owner  = funcsClass,
-      name   = "main",
-      params = lyricMainPs,
-      ret    = mainRet))
+    jvmMainInsns.add(LInvokestatic(owner = funcsClass, name = "main", params = lyricMainPs, ret = mainRet))
     // Discard the Lyric main's return value (when any) before issuing the
     // JVM `void` return.  The Long/Double 2-slot cases are rejected above,
     // so every remaining non-void return is category-1 (Int, Boolean,
@@ -4307,17 +4379,18 @@ pub func codegenPackageWithSigs(file: in SourceFile,
     // as a process exit code is a follow-up via java.lang.System.exit.
     match mainRet {
       case JVoid -> ()
-      case _     -> jvmMainInsns.add(LPop)
+      case _ -> jvmMainInsns.add(LPop)
     }
     jvmMainInsns.add(LReturn)
     val jvmMain = LFunc(
-      flags     = 0x0009,
-      name      = "main",
-      params    = jvmMainParams,
-      ret       = JVoid,
-      insns     = jvmMainInsns,
-      maxStack  = 2,
-      maxLocals = 1)
+      flags = 0x0009,
+      name = "main",
+      params = jvmMainParams,
+      ret = JVoid,
+      insns = jvmMainInsns,
+      maxStack = 2,
+      maxLocals = 1
+    )
     fns.add(jvmMain)
   }
 
