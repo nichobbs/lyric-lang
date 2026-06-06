@@ -153,6 +153,18 @@ func testSectionBannerStaysBetweenItems(): Unit {
   assertTrue(not Str.contains(acc, "  // --- Section ---"), "section banner: not indented into A's body")
 }
 
+func testLastMemberTrailingCommentStaysInline(): Unit {
+  // A trailing comment on the LAST member of a record / union body must
+  // stay on the member's line; previously the closing-brace tail used
+  // `popCommentsBefore` (leading) and split it onto its own line.
+  val src = "package P\n\npub record A {\n  x: Int  // the x\n}\n\npub union U {\n  case Foo  // a foo\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "last-member comment: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "x: Int  // the x"), "last record field comment stays inline")
+  assertTrue(Str.contains(acc, "case Foo  // a foo"), "last union case comment stays inline")
+}
+
 func testStatementSeparatorBeforeBracket(): Unit {
   // Two statements separated by `;` where the second begins with `(`
   // (here a unit expression).  The lexer synthesises no STMT_END inside
@@ -801,6 +813,7 @@ func main(): Unit {
   testEndOfLineCommentStaysInline()
   testTrailingCommentAlignmentPreserved()
   testSectionBannerStaysBetweenItems()
+  testLastMemberTrailingCommentStaysInline()
   testStatementSeparatorBeforeBracket()
   testFormatPubFunc()
   testFormatUnion()

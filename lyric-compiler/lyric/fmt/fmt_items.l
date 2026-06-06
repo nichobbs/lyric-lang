@@ -339,13 +339,9 @@ pub func recordDoc(
     }
     i = i + 1
   }
-  // Trailing comments before the closing brace.
-  val tail = popCommentsBefore(ctx, bodyEnd)
-  var k = 0
-  while k < tail.count {
-    mLines.add(tail[k])
-    k = k + 1
-  }
+  // Trailing comments before the closing brace; a trailing comment on the
+  // last member is re-attached to its line rather than split onto its own.
+  appendTriviaInto(mLines, ctx, bodyEnd, true)
 
   val acc: List[String] = newList()
   acc.add(visStr + kw + " " + name + genStr + " {")
@@ -403,13 +399,9 @@ pub func unionDoc(visStr: in String, ud: in UnionDecl, ctx: inout FmtCtx): List[
     }
     i = i + 1
   }
-  // Trailing comments before the closing brace.
-  val tail = popCommentsBefore(ctx, ud.span.endPos.offset)
-  var ki = 0
-  while ki < tail.count {
-    cases.add(tail[ki])
-    ki = ki + 1
-  }
+  // Trailing comments before the closing brace; a trailing comment on the
+  // last case is re-attached to its line rather than split onto its own.
+  appendTriviaInto(cases, ctx, ud.span.endPos.offset, true)
 
   val acc: List[String] = newList()
   acc.add(visStr + "union " + ud.name + gens + " {")
@@ -452,13 +444,9 @@ pub func enumDoc(visStr: in String, ed: in EnumDecl, ctx: inout FmtCtx): List[St
     cases.add("case " + c.name)
     i = i + 1
   }
-  // Trailing comments before the closing brace.
-  val tail = popCommentsBefore(ctx, ed.span.endPos.offset)
-  var ki = 0
-  while ki < tail.count {
-    cases.add(tail[ki])
-    ki = ki + 1
-  }
+  // Trailing comments before the closing brace; a trailing comment on the
+  // last case is re-attached to its line rather than split onto its own.
+  appendTriviaInto(cases, ctx, ed.span.endPos.offset, true)
 
   val acc: List[String] = newList()
   acc.add(visStr + "enum " + ed.name + " {")
@@ -942,8 +930,11 @@ func externDoc(item: in Item, ep: in ExternPackageDecl, ctx: inout FmtCtx): List
     appendDoc(mLines, externMemberLines(ep.members[i], ctx))
     i = i + 1
   }
+  // Pop any trailing comments before the closing brace into `mLines`
+  // first (so a trailing comment on the last member stays on its line),
+  // then indent the whole body.
+  appendTriviaInto(mLines, ctx, ep.span.endPos.offset, true)
   appendDoc(acc, indentDoc(2, mLines))
-  appendDoc(acc, indentDoc(2, popCommentsBefore(ctx, ep.span.endPos.offset)))
   acc.add("}")
   acc
 }
