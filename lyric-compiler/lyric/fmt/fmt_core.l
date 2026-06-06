@@ -542,7 +542,7 @@ func patParenStr(p: in Pattern): String {
 }
 
 func patTypeTestStr(p: in Pattern, ty: in TypeExpr): String {
-  patStr(p) + ": " + typeStr(ty)
+  patStr(p) + " is " + typeStr(ty)
 }
 
 func patOrStr(ps: in List[Pattern]): String {
@@ -571,7 +571,7 @@ func patRecordStr(head: in ModulePath, fs: in List[RecordPatternField], rest: in
   var i = 0
   while i < fs.count {
     match fs[i] {
-      case RPFNamed(n, p, _) -> parts.add(n + ": " + patStr(p))
+      case RPFNamed(n, p, _) -> parts.add(n + " = " + patStr(p))
       case RPFShort(n, _)    -> parts.add(n)
     }
     i = i + 1

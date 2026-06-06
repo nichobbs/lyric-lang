@@ -798,7 +798,10 @@ func parseTypeTestPattern(st: inout ParseState): Pattern {
   val primary = parsePrimaryPattern(st)
   if isKw(peekToken(st), KwIs) {
     val _ = advance(st)
-    val ty = parseTypeExpr(st)
+    // `parseTypeExprNoArrow`, not `parseTypeExpr`: a match arm's `->` follows the
+    // type-test pattern (`case x is T -> body`), so consuming a trailing `->` as
+    // a function-type arrow would swallow the arm separator (P0202).
+    val ty = parseTypeExprNoArrow(st)
     mkPat(PTypeTest(inner = primary, ty = ty), joinSpans(primary.span, ty.span))
   } else {
     primary

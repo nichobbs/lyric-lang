@@ -867,6 +867,18 @@ record FieldEntry {
   ty: Type
 }
 
+// The declared type of field `name` among `fields`, or `TyError` if absent.
+func fieldEntryType(fields: in List[FieldEntry], name: in String): Type {
+  var i = 0
+  while i < fields.count {
+    if fields[i].name == name {
+      return fields[i].ty
+    }
+    i = i + 1
+  }
+  TyError
+}
+
 func extractRecordFields(tbl: in SymbolTable, rd: in RecordDecl, result: in List[FieldEntry]): Unit {
   val ctx = newGenericContext()
   val dummyDiag: List[Diagnostic] = newList()
@@ -1690,11 +1702,18 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       }
     }
     case PRecord(_, fields, _) -> {
+      // Resolve the record's declared field types from the scrutinee type so a
+      // bound field carries its real type (e.g. `Point{x = a}` types `a` as
+      // `Int`) rather than `TyError`.
+      val recFields: List[FieldEntry] = match unrefine(ty) {
+        case TyUser(tid, _, _) -> fieldsOfRecord(tbl, tid)
+        case _ -> newList()
+      }
       var i = 0
       while i < fields.count {
         match fields[i] {
-          case RPFNamed(_, p, _) -> bindPatternTyped(sc, tbl, diag, p, TyError)
-          case RPFShort(nm, _) -> scopeAdd(sc, LocalBinding(name = nm, ty = TyError, isMutable = false))
+          case RPFNamed(fname, p, _) -> bindPatternTyped(sc, tbl, diag, p, fieldEntryType(recFields, fname))
+          case RPFShort(nm, _) -> scopeAdd(sc, LocalBinding(name = nm, ty = fieldEntryType(recFields, nm), isMutable = false))
         }
         i = i + 1
       }
@@ -1703,6 +1722,19 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       if patterns.count > 0 {
         bindPatternTyped(sc, tbl, diag, patterns[0], ty)
       }
+    }
+    case PParen(inner) -> {
+      bindPatternTyped(sc, tbl, diag, inner, ty)
+    }
+    case PTypeTest(inner, tyExpr) -> {
+      // `case x is T ->` narrows the scrutinee to `T`, so the inner pattern (and
+      // any binding it introduces) is typed at `T` — letting `x.field` resolve
+      // against the tested type rather than the wider scrutinee type.
+      val ctx = newGenericContext()
+      val testTy = resolveType(tbl, ctx, diag, tyExpr)
+      bindPatternTyped(sc, tbl, diag, inner, testTy)
+    }
+    case PRange(_, _, _) -> {
     }
     case _ -> {
     }

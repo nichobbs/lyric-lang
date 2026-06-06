@@ -5116,24 +5116,36 @@ func lowerPatternTestMsil(
     }
     case PLiteral(lit) -> {
       emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+      // A boxed (`object`) scrutinee — e.g. a tuple element pulled from the
+      // `List<object>` representation — must be unboxed to the literal's value
+      // type before a `ceq` comparison.
+      val scrutBoxed = match scrutTy { case MObject -> true; case _ -> false }
       match lit {
         case LInt(v, suffix, _) -> {
-          match suffix {
-            case I64 | U64 -> {
-              insns.add(MLdcI8(v = v))
+          val isLongLit = match suffix {
+            case I64 -> true
+            case U64 -> true
+            case _ -> (v < -2147483648i64 or v > 2147483647i64)
+          }
+          if scrutBoxed {
+            if isLongLit {
+              insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MLong)))
+            } else {
+              insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MInt)))
             }
-            case _ -> {
-              if v >= -2147483648i64 and v <= 2147483647i64 {
-                insns.add(MLdcI4(v = longToInt(v)))
-              } else {
-                insns.add(MLdcI8(v = v))
-              }
-            }
+          }
+          if isLongLit {
+            insns.add(MLdcI8(v = v))
+          } else {
+            insns.add(MLdcI4(v = longToInt(v)))
           }
           insns.add(MCeq)
           insns.add(MBrFalse(label = failLabel))
         }
         case LBool(value) -> {
+          if scrutBoxed {
+            insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MBool)))
+          }
           if value {
             insns.add(MLdcI4(v = 1))
           } else {
@@ -5151,11 +5163,17 @@ func lowerPatternTestMsil(
         case LChar(cp) -> {
           // A `Char` scrutinee is an i4 code point on the stack; compare
           // against the pattern's code point.
+          if scrutBoxed {
+            insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MChar)))
+          }
           insns.add(MLdcI4(v = cp))
           insns.add(MCeq)
           insns.add(MBrFalse(label = failLabel))
         }
         case LFloat(v, _, _) -> {
+          if scrutBoxed {
+            insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MDouble)))
+          }
           // A `Float` scrutinee is an r8 on the stack; compare with `ceq`
           // against the pattern's value.  Previously this fell to the `_`
           // wildcard arm below and `pop`ped the scrutinee, making every
@@ -5231,8 +5249,99 @@ func lowerPatternTestMsil(
         }
       }
     }
-    case PTuple(_) -> {
-      // Tuple patterns always match structurally; no runtime type test needed.
+    case PTuple(tuplePats) -> {
+      // A tuple structurally matches; recurse the test into each element (read
+      // from the `List<object>` representation) so refutable sub-patterns
+      // (literals, ranges, nested cases) are honoured rather than the tuple
+      // matching unconditionally.
+      var pti = 0
+      while pti < tuplePats.count {
+        emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+        insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
+        insns.add(MLdcI4(v = pti))
+        insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+        val ptElemSlot = allocSlotMsil(fctx, "__tuptest_" + toString(pti) + "_" + toString(fctx.slotTicker.count), MObject)
+        emitStoreSlot(insns, ptElemSlot, fctx.paramCount)
+        lowerPatternTestMsil(cctx, fctx, insns, tuplePats[pti], ptElemSlot, MObject, failLabel)
+        pti = pti + 1
+      }
+    }
+    case PParen(inner) -> {
+      lowerPatternTestMsil(cctx, fctx, insns, inner, scrutSlot, scrutTy, failLabel)
+    }
+    case PRange(lo, inclusive, hi) -> {
+      // Numeric range test: fail unless `lo <= scrut (<|<=) hi`.  `clt`/`cgt`
+      // work for i4/i8/r8 alike, so no per-width branching is needed.  An erased
+      // (boxed) scrutinee — e.g. a tuple element — is unboxed to the width the
+      // range bounds denote, so a Long/Double range is not truncated to int.
+      val rangeNumTy = match scrutTy { case MObject -> rangeBoundTypeMsil(lo); case _ -> scrutTy }
+      emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+      match scrutTy {
+        case MObject -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, rangeNumTy)))
+        case _ -> ()
+      }
+      lowerExprMsil(cctx, fctx, insns, lo)
+      insns.add(MClt)
+      insns.add(MBrTrue(label = failLabel))   // scrut < lo
+      emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+      match scrutTy {
+        case MObject -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, rangeNumTy)))
+        case _ -> ()
+      }
+      lowerExprMsil(cctx, fctx, insns, hi)
+      if inclusive {
+        insns.add(MCgt)
+        insns.add(MBrTrue(label = failLabel))  // scrut > hi
+      } else {
+        insns.add(MClt)
+        insns.add(MBrFalse(label = failLabel)) // not (scrut < hi) → scrut >= hi
+      }
+    }
+    case PRecord(head, fields, _) -> {
+      // A record is single-shape, so the structural test is a no-op; recurse the
+      // test into each named field's sub-pattern so refutable field patterns
+      // (`Point{x = 0}`) are honoured.
+      val recClass = match scrutTy {
+        case MClass(c) -> c
+        case MGenericInst(_, fqn, _) -> fqn
+        case _ -> fctx.pkgName + "." + lastSegmentMsil(head)
+      }
+      var rfi = 0
+      while rfi < fields.count {
+        match fields[rfi] {
+          case RPFNamed(fname, subPat, _) -> {
+            val rkey = recClass + "/" + fname
+            match mapGet(cctx.fieldTokens, rkey) {
+              case Some(fTok) -> {
+                val fty = match mapGet(cctx.fieldMsilTypes, rkey) { case Some(t) -> t; case None -> MObject }
+                emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+                insns.add(MCastclassByName(className = recClass))
+                insns.add(MLdfld(fieldToken = fTok))
+                val tSlot = allocSlotMsil(fctx, "__rtest_" + fname + "_" + toString(fctx.slotTicker.count), fty)
+                emitStoreSlot(insns, tSlot, fctx.paramCount)
+                lowerPatternTestMsil(cctx, fctx, insns, subPat, tSlot, fty, failLabel)
+              }
+              case None -> {
+              }
+            }
+          }
+          case RPFShort(_, _) -> {
+          }
+        }
+        rfi = rfi + 1
+      }
+    }
+    case PTypeTest(_, ty) -> {
+      val testTy = typeExprToMsilCtx(cctx, ty, fctx.pkgName)
+      match testTy {
+        case MClass(cls) -> {
+          emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+          insns.add(MIsinstByName(className = cls))
+          insns.add(MBrFalse(label = failLabel))
+        }
+        case _ -> {
+        }
+      }
     }
     case POr(patterns) -> {
       val succeedL = freshLabelMsil(fctx)
@@ -5507,6 +5616,87 @@ func lowerPatternBindMsil(
         pti = pti + 1
       }
     }
+    case PParen(inner) -> {
+      lowerPatternBindMsil(cctx, fctx, insns, inner, scrutSlot, scrutTy)
+    }
+    case PRange(_, _, _) -> {
+      // Range patterns bind nothing.
+    }
+    case PTypeTest(inner, ty) -> {
+      // Narrow to the tested type, then bind the inner pattern at that type.
+      val testTy = typeExprToMsilCtx(cctx, ty, fctx.pkgName)
+      match testTy {
+        case MClass(cls) -> {
+          emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+          insns.add(MCastclassByName(className = cls))
+          val nSlot = allocSlotMsil(fctx, "__typetest_" + toString(fctx.slotTicker.count), testTy)
+          emitStoreSlot(insns, nSlot, fctx.paramCount)
+          lowerPatternBindMsil(cctx, fctx, insns, inner, nSlot, testTy)
+        }
+        case _ -> lowerPatternBindMsil(cctx, fctx, insns, inner, scrutSlot, scrutTy)
+      }
+    }
+    case PRecord(head, fields, _) -> {
+      // Downcast to the record class and bind each named field by its declared
+      // field token (records are single-shape, so no case selector is needed).
+      val recClass = match scrutTy {
+        case MClass(c) -> c
+        case MGenericInst(_, fqn, _) -> fqn
+        case _ -> fctx.pkgName + "." + lastSegmentMsil(head)
+      }
+      val rCastSlot = allocSlotMsil(fctx, "__reccast_" + toString(fctx.slotTicker.count), MClass(className = recClass))
+      emitLoadSlot(insns, scrutSlot, fctx.paramCount)
+      insns.add(MCastclassByName(className = recClass))
+      emitStoreSlot(insns, rCastSlot, fctx.paramCount)
+      var rbi = 0
+      while rbi < fields.count {
+        match fields[rbi] {
+          case RPFNamed(fname, subPat, _) -> {
+            val rkey = recClass + "/" + fname
+            match mapGet(cctx.fieldTokens, rkey) {
+              case Some(fTok) -> {
+                val fty = match mapGet(cctx.fieldMsilTypes, rkey) { case Some(t) -> t; case None -> MObject }
+                match subPat.kind {
+                  case PBinding(bname, _) -> {
+                    emitLoadSlot(insns, rCastSlot, fctx.paramCount)
+                    insns.add(MCastclassByName(className = recClass))
+                    insns.add(MLdfld(fieldToken = fTok))
+                    val bSlot = allocSlotMsil(fctx, bname, fty)
+                    emitStoreSlot(insns, bSlot, fctx.paramCount)
+                  }
+                  case _ -> {
+                    emitLoadSlot(insns, rCastSlot, fctx.paramCount)
+                    insns.add(MCastclassByName(className = recClass))
+                    insns.add(MLdfld(fieldToken = fTok))
+                    val tSlot = allocSlotMsil(fctx, "__rfld_" + fname + "_" + toString(fctx.slotTicker.count), fty)
+                    emitStoreSlot(insns, tSlot, fctx.paramCount)
+                    lowerPatternBindMsil(cctx, fctx, insns, subPat, tSlot, fty)
+                  }
+                }
+              }
+              case None -> {
+              }
+            }
+          }
+          case RPFShort(fname, _) -> {
+            val rkey = recClass + "/" + fname
+            match mapGet(cctx.fieldTokens, rkey) {
+              case Some(fTok) -> {
+                val fty = match mapGet(cctx.fieldMsilTypes, rkey) { case Some(t) -> t; case None -> MObject }
+                emitLoadSlot(insns, rCastSlot, fctx.paramCount)
+                insns.add(MCastclassByName(className = recClass))
+                insns.add(MLdfld(fieldToken = fTok))
+                val bSlot = allocSlotMsil(fctx, fname, fty)
+                emitStoreSlot(insns, bSlot, fctx.paramCount)
+              }
+              case None -> {
+              }
+            }
+          }
+        }
+        rbi = rbi + 1
+      }
+    }
     case POr(_) -> {
     }
     case PError -> {
@@ -5669,6 +5859,43 @@ pub func lowerCallMsil(
       }
       MObject
     }
+  }
+}
+
+// Unbox a boxed (`object`) call argument to its declared value-type parameter.
+// Reached when a value of erased static type — e.g. a tuple element pulled from
+// the `List<object>` representation and bound by `PTuple` — is passed to a
+// value-typed parameter (`assertEqualInt(a, …)`); without the `unbox.any` the
+// CLR rejects the program ("invalid program").  A no-op unless the argument is
+// `object` and the parameter is a primitive value type.
+func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in MsilType, toTy: in MsilType): Unit {
+  val fromObj = match fromTy { case MObject -> true; case _ -> false }
+  if fromObj {
+    match toTy {
+      case MInt -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MInt)))
+      case MLong -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MLong)))
+      case MDouble -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MDouble)))
+      case MBool -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MBool)))
+      case MChar -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MChar)))
+      case MByte -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MByte)))
+      case _ -> ()
+    }
+  }
+}
+
+// The numeric width an integer/float literal denotes — used to unbox an erased
+// (boxed) `PRange` scrutinee to the right value type rather than a hard-coded
+// int.  `clt`/`cgt` then compare at that width (they work for i4/i8/r8 alike).
+func rangeBoundTypeMsil(e: in Expr): MsilType {
+  match e.kind {
+    case ELiteral(lit) -> {
+      match lit {
+        case LInt(_, suffix, _) -> match suffix { case I64 -> MLong; case U64 -> MLong; case _ -> MInt }
+        case LFloat(_, _, _) -> MDouble
+        case _ -> MInt
+      }
+    }
+    case _ -> MInt
   }
 }
 
@@ -6285,8 +6512,11 @@ func lowerBuiltinOrStaticCallMsil(
                           // `newList()` / `[...]` argument build the concrete
                           // instance the callee's signature expects.
                           pushCollExpect(fctx, pTy)
-                          val _ = lowerCallArgMsil(cctx, fctx, insns, args[i])
+                          val aTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
                           popCollExpect(fctx)
+                          // #2455: unbox a boxed (object) argument — e.g. a bound
+                          // tuple element — to a value-type parameter.
+                          coerceCallArgMsil(cctx, insns, aTy, pTy)
                         }
                       }
                       i = i + 1
@@ -8163,9 +8393,20 @@ func msilTypeKeyStr(t: in MsilType): String {
     case MByRef(inner) -> "byref_" + msilTypeKeyStr(inner)
     case MListOf(elem) -> "list_" + msilTypeKeyStr(elem)
     case MMapOf(k, v) -> "map_" + msilTypeKeyStr(k) + "_" + msilTypeKeyStr(v)
+    case MConcreteList(elem) -> "clist_" + msilTypeKeyStr(elem)
+    case MConcreteMap(k, v) -> "cmap_" + msilTypeKeyStr(k) + "_" + msilTypeKeyStr(v)
     case MIAsyncEnumerable(e) -> "iasyncen_" + msilTypeKeyStr(e)
     case MGenericInst(_, fqn, args) -> {
       var k = "gi_" + fqn
+      var ai = 0
+      while ai < args.count {
+        k = k + "_" + msilTypeKeyStr(args[ai])
+        ai = ai + 1
+      }
+      k
+    }
+    case MValueTypeGenericInst(_, fqn, args) -> {
+      var k = "vgi_" + fqn
       var ai = 0
       while ai < args.count {
         k = k + "_" + msilTypeKeyStr(args[ai])
@@ -11103,7 +11344,7 @@ func isOptedOutMsil(fn: in FunctionDecl, aspectName: in String): Bool {
       // are accepted; only the leading identifier portion matters.
       var j = 0
       while j < ann.args.count {
-        val argName = match ann.args[j] { case AAName(n, _, _) -> n; case ABare(n, _) -> n }
+        val argName = match ann.args[j] { case AAName(n, _, _) -> n; case ABare(n, _) -> n; case ALiteral(_, _) -> "" }
         if argName == aspectName {
           return true
         }

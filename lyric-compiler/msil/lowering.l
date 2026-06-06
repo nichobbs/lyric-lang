@@ -1316,6 +1316,7 @@ pub func msilTypeKey(t: in MsilType): String {
       key + ">"
     }
     case MByRef(inner) -> "BY" + msilTypeKey(inner) + ";"
+    case MIAsyncEnumerable(e) -> "IAE[" + msilTypeKey(e) + "]"
   }
 }
 

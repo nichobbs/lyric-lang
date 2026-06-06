@@ -43,6 +43,19 @@ func bindPattern(sc: in Scope, pat: in Pattern, ty: in Type): Unit {
         bindPattern(sc, patterns[0], ty)
       }
     }
+    case PParen(inner) -> {
+      bindPattern(sc, inner, ty)
+    }
+    case PRecord(_, fields, _) -> {
+      var i = 0
+      while i < fields.count {
+        match fields[i] {
+          case RPFNamed(_, p, _) -> bindPattern(sc, p, TyError)
+          case RPFShort(nm, _) -> scopeAdd(sc, LocalBinding(name = nm, ty = TyError, isMutable = false))
+        }
+        i = i + 1
+      }
+    }
     case _ -> {
     }
   }
