@@ -49,87 +49,86 @@ import Msil.MetadataReader as Mdr
 pub record CodegenCtx {
   lctx: LoweringCtx
   // TypeRef row indices (1-based)
-  trConsole: Int   // System.Console
-  trString: Int   // System.String
-  trInt32: Int   // System.Int32
-  trInt64: Int   // System.Int64
-  trDouble: Int   // System.Double
-  trBoolean: Int   // System.Boolean
-  trChar: Int   // System.Char
-  trException: Int   // System.Exception
-  trCultureInfo: Int   // System.Globalization.CultureInfo
+  trConsole: Int  // System.Console
+  trString: Int  // System.String
+  trInt32: Int  // System.Int32
+  trInt64: Int  // System.Int64
+  trDouble: Int  // System.Double
+  trBoolean: Int  // System.Boolean
+  trChar: Int  // System.Char
+  trException: Int  // System.Exception
   // MemberRef tokens (0x0A000000 | 1-based row)
-  tokWriteLineStr: Int   // Console.WriteLine(string)
-  tokWriteLineInt: Int   // Console.WriteLine(int32)
-  tokWriteLineLong: Int   // Console.WriteLine(int64)
-  tokWriteLineDbl: Int   // Console.WriteLine(double)
-  tokWriteLineBool: Int   // Console.WriteLine(bool)
-  tokWriteStr: Int   // Console.Write(string)
-  tokConcat2: Int   // String.Concat(string,string)
-  tokConcat3: Int   // String.Concat(string,string,string)
-  tokExceptionCtor: Int   // Exception..ctor(string) — one-arg ctor (callers emit ldstr+newobj+throw and rely on this arity)
-  tokStringFormat1: Int   // String.Format(string,object)
-  tokStringFormat2: Int   // String.Format(string,object,object)
-  tokStringFormat3: Int   // String.Format(string,object,object,object)
-  tokObjToString: Int   // Object.ToString() instance HASTHIS
-  tokCultureInfoInvariantGet: Int  // CultureInfo.get_InvariantCulture(): CultureInfo  static
-  tokDoubleToStringInv: Int  // Double.ToString(IFormatProvider): string  instance HASTHIS
-  tokExcGetMessage: Int   // Exception.get_Message(): string  instance HASTHIS
-  tokObjGetType: Int   // Object.GetType(): Type  instance HASTHIS
-  tokTypeGetName: Int   // Type.get_Name: string  instance HASTHIS
+  tokWriteLineStr: Int  // Console.WriteLine(string)
+  tokWriteLineInt: Int  // Console.WriteLine(int32)
+  tokWriteLineLong: Int  // Console.WriteLine(int64)
+  tokWriteLineDbl: Int  // Console.WriteLine(double)
+  tokWriteLineBool: Int  // Console.WriteLine(bool)
+  tokWriteStr: Int  // Console.Write(string)
+  tokConcat2: Int  // String.Concat(string,string)
+  tokConcat3: Int  // String.Concat(string,string,string)
+  tokExceptionCtor: Int  // Exception..ctor(string) — one-arg ctor (callers emit ldstr+newobj+throw and rely on this arity)
+  tokStringFormat1: Int  // String.Format(string,object)
+  tokStringFormat2: Int  // String.Format(string,object,object)
+  tokStringFormat3: Int  // String.Format(string,object,object,object)
+  tokObjToString: Int  // Object.ToString() instance HASTHIS
+  tokExcGetMessage: Int  // Exception.get_Message(): string  instance HASTHIS
+  tokObjGetType: Int  // Object.GetType(): Type  instance HASTHIS
+  tokTypeGetName: Int  // Type.get_Name: string  instance HASTHIS
   // List<object> via TypeSpec (for newList() and list operations)
-  tokListObjCtor: Int   // List<object>::.ctor()  newobj
-  tokListObjAdd: Int   // List<object>::Add(object): void  callvirt
-  tokListObjGetItem: Int   // List<object>::get_Item(int32): object  callvirt
-  tokListObjSetItem: Int   // List<object>::set_Item(int32, object): void  callvirt
-  tokListObjGetCount: Int   // List<object>::get_Count(): int32  callvirt
-  tokListObjContains: Int   // List<object>::Contains(object): bool  callvirt
-  tokListObjRemoveAt: Int   // List<object>::RemoveAt(int32): void  callvirt
-  tokListObjTypeSpec: Int   // TypeSpec token for List<object>  castclass
+  tokListObjCtor: Int  // List<object>::.ctor()  newobj
+  tokListObjAdd: Int  // List<object>::Add(object): void  callvirt
+  tokListObjGetItem: Int  // List<object>::get_Item(int32): object  callvirt
+  tokListObjSetItem: Int  // List<object>::set_Item(int32, object): void  callvirt
+  tokListObjGetCount: Int  // List<object>::get_Count(): int32  callvirt
+  tokListObjContains: Int  // List<object>::Contains(object): bool  callvirt
+  tokListObjRemoveAt: Int  // List<object>::RemoveAt(int32): void  callvirt
+  tokListObjTypeSpec: Int  // TypeSpec token for List<object>  castclass
   // String intrinsic members (instance HASTHIS)
-  tokStringGetChars: Int   // String.get_Chars(int32): char
-  tokStringGetLength: Int   // String.get_Length(): int32
-  tokStringSubstring: Int   // String.Substring(int32,int32): string
-  tokStringReplace: Int   // String.Replace(string,string): string
+  tokStringGetChars: Int  // String.get_Chars(int32): char
+  tokStringGetLength: Int  // String.get_Length(): int32
+  tokStringSubstring: Int  // String.Substring(int32,int32): string
+  tokStringReplace: Int  // String.Replace(string,string): string
   tokStringIsNormalized: Int  // String.IsNormalized(): bool
-  tokStringNormalize: Int   // String.Normalize(): string
-  tokStringTrim: Int   // String.Trim(): string
-  tokStringIndexOf: Int   // String.IndexOf(string): int32  (-1 if absent)
-  tokStringLastIndexOf: Int   // String.LastIndexOf(string): int32  (-1 if absent)
-  tokStringStartsWith: Int   // String.StartsWith(string): bool
-  tokStringEndsWith: Int   // String.EndsWith(string): bool
-  tokStringContains: Int   // String.Contains(string): bool
-  tokStringToLower: Int   // String.ToLowerInvariant(): string
-  tokStringToUpper: Int   // String.ToUpperInvariant(): string
+  tokStringNormalize: Int  // String.Normalize(): string
+  tokStringTrim: Int  // String.Trim(): string
+  tokStringIndexOf: Int  // String.IndexOf(string): int32  (-1 if absent)
+  tokStringLastIndexOf: Int  // String.LastIndexOf(string): int32  (-1 if absent)
+  tokStringStartsWith: Int  // String.StartsWith(string): bool
+  tokStringEndsWith: Int  // String.EndsWith(string): bool
+  tokStringContains: Int  // String.Contains(string): bool
+  tokStringToLower: Int  // String.ToLowerInvariant(): string
+  tokStringToUpper: Int  // String.ToUpperInvariant(): string
   // Object.Equals(object,object): bool  static (for value-equal string comparisons)
   tokObjectStaticEquals: Int
   // Async support (Phase A, Band 3).
   // Task and Task`1 TypeRef rows — used to build TypeSpec+MemberRef tokens lazily
   // in `emitExternTargetBody` for `@externTarget async func` unwrapping.
-  trTask: Int   // System.Threading.Tasks.Task (non-generic)
-  trTask1: Int   // System.Threading.Tasks.Task`1 (open generic)
-  tokTaskWait: Int   // Task::Wait(): void  instance HASTHIS (void async externs)
-  // ISO-8601 toString(DateTime).  Mirrors the F# bootstrap emitter's
-  // DateTime.ToString("o") path (Codegen.fs) so stage-0 and stage-1 render
-  // DateTime identically (#2184).  "o" is culture-invariant by spec.
-  tokDateTimeToStringFmt: Int  // DateTime.ToString(string): string  instance HASTHIS
+  trTask: Int  // System.Threading.Tasks.Task (non-generic)
+  trTask1: Int  // System.Threading.Tasks.Task`1 (open generic)
+  tokTaskWait: Int  // Task::Wait(): void  instance HASTHIS (void async externs)
+  // Culture-invariant toString(DateTime).  Mirrors the F# bootstrap emitter's
+  // InvariantCulture ToString(IFormatProvider) path (Codegen.fs) so stage-0
+  // and stage-1 render DateTime byte-identically regardless of host locale
+  // (#2184).
+  tokInvariantCulture: Int  // CultureInfo.get_InvariantCulture(): CultureInfo  static
+  tokDateTimeToStringInv: Int  // DateTime.ToString(IFormatProvider): string  instance HASTHIS
   // Reverse lookup: simple field name → FieldDef token.  Populated by
   // addPackageTokens for IRecord and IExposedRec fields so EMember can emit
   // ldfld on an MObject receiver when the static type is unknown.
   fieldTokensByName: Map[String, Int]
   // Dictionary<object,object> via TypeSpec (for newMap() and map operations)
-  tokDictObjCtor: Int   // Dictionary<object,object>::.ctor()  newobj
-  tokDictObjAdd: Int   // Dictionary<object,object>::Add(object,object): void  callvirt
-  tokDictObjGetItem: Int   // Dictionary<object,object>::get_Item(object): object  callvirt
-  tokDictObjSetItem: Int   // Dictionary<object,object>::set_Item(object,object): void  callvirt
-  tokDictObjTypeSpec: Int   // TypeSpec token for Dictionary<object,object>  castclass
-  tokDictObjGetCount: Int   // Dictionary<object,object>::get_Count(): int32  callvirt
+  tokDictObjCtor: Int  // Dictionary<object,object>::.ctor()  newobj
+  tokDictObjAdd: Int  // Dictionary<object,object>::Add(object,object): void  callvirt
+  tokDictObjGetItem: Int  // Dictionary<object,object>::get_Item(object): object  callvirt
+  tokDictObjSetItem: Int  // Dictionary<object,object>::set_Item(object,object): void  callvirt
+  tokDictObjTypeSpec: Int  // TypeSpec token for Dictionary<object,object>  castclass
+  tokDictObjGetCount: Int  // Dictionary<object,object>::get_Count(): int32  callvirt
   tokDictObjContainsKey: Int  // Dictionary<object,object>::ContainsKey(object): bool  callvirt
   tokDictObjRemove: Int  // Dictionary<object,object>::Remove(object): bool  callvirt
   tokDictObjTryGetValue: Int  // Dictionary<object,object>::TryGetValue(object, object): bool
   // Intra-package pre-computed tokens
-  recordCtorTokens: Map[String, Int]   // className → MethodDef token
-  fieldTokens: Map[String, Int]   // "ClassName/fieldName" → FieldDef token
+  recordCtorTokens: Map[String, Int]  // className → MethodDef token
+  fieldTokens: Map[String, Int]  // "ClassName/fieldName" → FieldDef token
   // Field metadata for cross-assembly generic union cases.  Both maps use the
   // same "ClassName/fieldName" and "ClassName/fieldN" key space as fieldTokens.
   // fieldSigBytes  → raw FieldSig blob (06 13 00 for VAR(0), etc.) used to
@@ -147,8 +146,8 @@ pub record CodegenCtx {
   // MInt, etc.) rather than always MObject — prevents StackUnexpected / IPE when
   // value-type fields are compared with ceq vs. Object.Equals (#1442).
   fieldMsilTypes: Map[String, MsilType]
-  funcTokens: Map[String, Int]   // funcName → MethodDef token
-  funcRetTypes: Map[String, MsilType]   // funcName → MsilType of declared return
+  funcTokens: Map[String, Int]  // funcName → MethodDef token
+  funcRetTypes: Map[String, MsilType]  // funcName → MsilType of declared return
   // funcName → declared parameter MsilTypes (same arity-qualified + bare keys
   // as funcTokens).  Used to thread a call argument's expected type into
   // `contextHintTyArgs` so a bare `f(None)` constructs `Option_None<concrete>`
@@ -187,11 +186,11 @@ pub record CodegenCtx {
   lambdaCaptureCells: Map[String, List[String]]
   // Compile-time const values: registered by IConst pre-scan so that EPath
   // references to const names inline ldc.i4 instead of ldsfld.
-  constValues: Map[String, Int]        // constName → inlined Int value
+  constValues: Map[String, Int]  // constName → inlined Int value
   // FFI caches (#370 + Phase R6).  Populated lazily by
   // emitExternTargetBody as `@externTarget` declarations are walked.
-  ffiAsmRefs: Map[String, Int]   // assembly simple name → AssemblyRef row index
-  ffiTypeRefs: Map[String, Int]   // "asm/ns.name" key → TypeRef row index
+  ffiAsmRefs: Map[String, Int]  // assembly simple name → AssemblyRef row index
+  ffiTypeRefs: Map[String, Int]  // "asm/ns.name" key → TypeRef row index
   // Auto-FFI metadata resolution (epic #1622, Phase 3c + 4).  Lazily-built
   // once per package over the reference pack; `metadataReady` is a one-shot
   // flag holder (empty = not yet built) since record scalar fields can't be
@@ -203,11 +202,11 @@ pub record CodegenCtx {
   metadataVtypeSet: Map[String, Bool]
   metadataReady: List[Bool]
   // Lambda / yield / extern-type support (Band 2, R6).
-  tokActionCtor: Int                // System.Action::.ctor(object, native int)
-  tokActionInvoke: Int                // System.Action::Invoke(): void
-  actionTypeRefs: Map[String, Int]   // toString(nparams) → TypeRef row for System.Action`N
+  tokActionCtor: Int  // System.Action::.ctor(object, native int)
+  tokActionInvoke: Int  // System.Action::Invoke(): void
+  actionTypeRefs: Map[String, Int]  // toString(nparams) → TypeRef row for System.Action`N
   externTypeNames: Map[String, String]  // Lyric name → CLR FQN (from IExternType items)
-  lambdaTicker: List[Int]          // length = next __lambda_<i> index
+  lambdaTicker: List[Int]  // length = next __lambda_<i> index
   // Instance method MethodDef tokens, keyed by "FQClassName/methodName".  Populated
   // by `addPackageTokens` for record methods, interface methods (abstract slots),
   // and impl methods folded into the implementing record.  `lowerMethodCallMsil`
@@ -310,44 +309,58 @@ pub record CodegenCtx {
   // references inside function bodies can emit `ldsfld` rather than falling
   // through to the null-as-unknown fallback.  Parallels `singletonFieldTokens`
   // for nullary union cases.
-  staticValTokens: Map[String, Int]       // valName → 0x04000000 | fieldDefRow
+  staticValTokens: Map[String, Int]  // valName → 0x04000000 | fieldDefRow
   staticValMsilTypes: Map[String, MsilType]  // valName → declared MsilType
   // Async SM synthesis (Phase B, Epic #2070).
   // TypeRef rows for System.Runtime.CompilerServices types.
-  trAtmb: Int   // AsyncTaskMethodBuilder (void variant, row)
-  trAtmb1: Int   // AsyncTaskMethodBuilder`1 (open generic, row)
-  trIAsm: Int   // IAsyncStateMachine (interface, row)
+  trAtmb: Int  // AsyncTaskMethodBuilder (void variant, row)
+  trAtmb1: Int  // AsyncTaskMethodBuilder`1 (open generic, row)
+  trIAsm: Int  // IAsyncStateMachine (interface, row)
   // MemberRef tokens for ATMB (void) instance methods.
-  tokAtmbCreate: Int   // registered for MemberRef table ordering; not emitted (ATMB.Create() removed in .NET 7+, replaced by newobj zero-init)
-  tokAtmbSetResult: Int   // ATMB::SetResult(): void  call (instance, on managed ptr)
-  tokAtmbGetTask: Int   // registered for MemberRef table ordering; not emitted directly (get_Task() is called via TypeSpec-parented MemberRef in the kickoff, not through this field)
-  tokAtmbStartMr: Int   // ATMB.Start<!!0>(ref !!0): void  open-generic MemberRef
+  tokAtmbCreate: Int  // registered for MemberRef table ordering; not emitted (ATMB.Create() removed in .NET 7+, replaced by newobj zero-init)
+  tokAtmbSetResult: Int  // ATMB::SetResult(): void  call (instance, on managed ptr)
+  tokAtmbGetTask: Int  // registered for MemberRef table ordering; not emitted directly (get_Task() is called via TypeSpec-parented MemberRef in the kickoff, not through this field)
+  tokAtmbStartMr: Int  // ATMB.Start<!!0>(ref !!0): void  open-generic MemberRef
   // Phase B.1 async suspension tokens.
-  trTaskAwaiter1: Int   // System.Runtime.CompilerServices.TaskAwaiter`1 (open generic struct)
-  trTaskAwaiter: Int   // System.Runtime.CompilerServices.TaskAwaiter   (non-generic struct)
-  tokAtmbAwaitUnsafeMr: Int   // ATMB.AwaitUnsafeOnCompleted<!!0,!!1> open MemberRef row (void ATMB TypeRef parent)
-  tokAtmb1AwaitUnsafeMr: Int   // ATMB`1.AwaitUnsafeOnCompleted<!!0,!!1> open MemberRef row (ATMB`1 TypeRef parent)
+  trTaskAwaiter1: Int  // System.Runtime.CompilerServices.TaskAwaiter`1 (open generic struct)
+  trTaskAwaiter: Int  // System.Runtime.CompilerServices.TaskAwaiter   (non-generic struct)
+  tokAtmbAwaitUnsafeMr: Int  // ATMB.AwaitUnsafeOnCompleted<!!0,!!1> open MemberRef row (void ATMB TypeRef parent)
+  tokAtmb1AwaitUnsafeMr: Int  // ATMB`1.AwaitUnsafeOnCompleted<!!0,!!1> open MemberRef row (ATMB`1 TypeRef parent)
   // Monotonically-increasing counter for unique SM class names.
   // Pattern: "<funcName>__SM_<ticker>".  Matches AsyncStateMachine.fs convention.
   smTicker: List[Int]
+  // Generator synthesis (Phase 5, Epic #2070).
+  // TypeRef rows for IAsyncEnumerable/IAsyncEnumerator/IAsyncDisposable/ValueTask/CancellationToken.
+  trIAE1: Int  // System.Collections.Generic.IAsyncEnumerable`1 (open generic, row)
+  trIAET1: Int  // System.Collections.Generic.IAsyncEnumerator`1 (open generic, row)
+  trIAsyncDisp: Int  // System.IAsyncDisposable
+  trValueTask1: Int  // System.Threading.Tasks.ValueTask`1 (open generic struct, row)
+  trValueTask: Int  // System.Threading.Tasks.ValueTask (non-generic struct, row)
+  trCancToken: Int  // System.Threading.CancellationToken
+  trList1: Int  // System.Collections.Generic.List`1 (open generic; exposed for gen synthesis)
+  // Monotonically-increasing counter for unique generator class names.
+  // Pattern: "<funcName>__Gen_<ticker>".  Both addPackageTokens and
+  // synthesizeGeneratorMsil increment this in source-declaration order so
+  // the computed FQN is consistent across the pre-scan and synthesis passes.
+  genTicker: List[Int]
+  // One impl block (`impl Iface for Target { … }`) captured by the pre-pass.
+  // `methods` are produced by `lowerImplMethodMsil`, which reserves slot 0 for
+  // the implicit `this` so `self` and user parameters resolve correctly when
+  // the methods are emitted as virtual instance members of the target type.
 }
 
-// One impl block (`impl Iface for Target { … }`) captured by the pre-pass.
-// `methods` are produced by `lowerImplMethodMsil`, which reserves slot 0 for
-// the implicit `this` so `self` and user parameters resolve correctly when
-// the methods are emitted as virtual instance members of the target type.
 pub record ImplEntryMsil {
-  targetTypeName: String        // FQN, e.g. "Pkg.EnglishGreeter"
-  ifaceTypeName: String        // FQN, e.g. "Pkg.Greeter"
+  targetTypeName: String  // FQN, e.g. "Pkg.EnglishGreeter"
+  ifaceTypeName: String  // FQN, e.g. "Pkg.Greeter"
   methods: List[MFunc]
+  // Build and return a fresh CodegenCtx for the named package.
+  // Registers all external AssemblyRef/TypeRef/MemberRef rows in a stable order
+  // so that every instruction token is a predictable constant.
+  // `major` / `minor` populate the Assembly row's version; both default to
+  // zero for bootstrap-grade callers that don't thread a manifest version.
+  // See `Msil.Bridge` entry points for the version threading wiring (#1364).
 }
 
-// Build and return a fresh CodegenCtx for the named package.
-// Registers all external AssemblyRef/TypeRef/MemberRef rows in a stable order
-// so that every instruction token is a predictable constant.
-// `major` / `minor` populate the Assembly row's version; both default to
-// zero for bootstrap-grade callers that don't thread a manifest version.
-// See `Msil.Bridge` entry points for the version threading wiring (#1364).
 pub func newCodegenCtx(
   packageName: in String,
   restoredArtifacts: in List[SynthesisedArtifact],
@@ -371,8 +384,6 @@ pub func newCodegenCtx(
   val trBoolean = ctxAddTypeRef(lctx, "System", "Boolean", lctx.arRuntime)
   val trChar = ctxAddTypeRef(lctx, "System", "Char", lctx.arRuntime)
   val trException = ctxAddTypeRef(lctx, "System", "Exception", lctx.arRuntime)
-  val trIFormatProvider = ctxAddTypeRef(lctx, "System", "IFormatProvider", lctx.arRuntime)
-  val trCultureInfo = ctxAddTypeRef(lctx, "System.Globalization", "CultureInfo", lctx.arRuntime)
 
   // Build MemberRef signatures.
   // 1. Console.WriteLine(string): void  → MemberRef[1] → token 0x0A000001
@@ -461,34 +472,6 @@ pub func newCodegenCtx(
       "ToString",
       "obj_tostring",
       buildInstanceMethodSig(toStrPs, MString)
-    )
-
-  // CultureInfo.get_InvariantCulture(): CultureInfo  static
-  val tokCultInvGet = 0x0A000000 +
-    ctxAddMemberRef(
-      lctx,
-      trCultureInfo,
-      "get_InvariantCulture",
-      "cult_inv_get",
-      buildStaticMethodSig(
-        newList(),
-        MClassRef(
-          typeRefCode = tdrTypeRef(trCultureInfo),
-          clrFqn = "System.Globalization.CultureInfo"
-        )
-      )
-    )
-
-  // Double.ToString(IFormatProvider): string  instance HASTHIS
-  val dblTsInvPs: List[MsilType] = newList()
-  dblTsInvPs.add(MClassRef(typeRefCode = tdrTypeRef(trIFormatProvider), clrFqn = "System.IFormatProvider"))
-  val tokDblToStrInv = 0x0A000000 +
-    ctxAddMemberRef(
-      lctx,
-      trDouble,
-      "ToString",
-      "dbl_tostring_inv",
-      buildInstanceMethodSig(dblTsInvPs, MString)
     )
 
   // System.Type TypeRef (needed for GetType / get_Name)
@@ -936,19 +919,41 @@ pub func newCodegenCtx(
   val tokTaskWait = 0x0A000000 +
     ctxAddMemberRef(lctx, trTask, "Wait", "task_wait", buildInstanceMethodSig(newList(), MVoid))
 
-  // DateTime.ToString(string): string  — instance HASTHIS.  Used for the
-  // ISO-8601 "o" round-trip format; mirrors Codegen.fs which calls
-  // DateTime.ToString("o").  DateTime is type-forwarded from System.Runtime.
+  // ── Culture-invariant toString(DateTime) (#2184) ───────────────────────────
+  // Counterpart of the F# bootstrap emitter's culture-invariant `toString`
+  // path: pin InvariantCulture so a DateTime renders identically (the
+  // "MM/dd/yyyy HH:mm:ss" invariant form) regardless of the host OS locale,
+  // keeping stage-0 (F#) and stage-1 (self-hosted) output in lockstep.
+  // CultureInfo / IFormatProvider / DateTime are type-forwarded from
+  // System.Runtime, so the runtime AssemblyRef resolves all three.
+  val trCultureInfo = ctxAddTypeRef(lctx, "System.Globalization", "CultureInfo", lctx.arRuntime)
+  val trIFormatProvider = ctxAddTypeRef(lctx, "System", "IFormatProvider", lctx.arRuntime)
   val trDateTime = ctxAddTypeRef(lctx, "System", "DateTime", lctx.arRuntime)
-  val dtToStrFmtPs: List[MsilType] = newList()
-  dtToStrFmtPs.add(MString)
-  val tokDateTimeToStringFmt = 0x0A000000 +
+
+  // CultureInfo.get_InvariantCulture(): CultureInfo  — static
+  val ciRet: MsilType = MClassRef(typeRefCode = tdrTypeRef(trCultureInfo), clrFqn = "System.Globalization.CultureInfo")
+  val tokInvariantCulture = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trCultureInfo,
+      "get_InvariantCulture",
+      "ci_get_invariant",
+      buildStaticMethodSig(newList(), ciRet)
+    )
+
+  // DateTime.ToString(IFormatProvider): string  — instance HASTHIS.  The
+  // value lives on the stack as an unboxed `valuetype System.DateTime`, so the
+  // call site takes its address (ldloca) and uses `call` (value-type instance
+  // dispatch), passing the CultureInfo as the IFormatProvider argument.
+  val dtToStrPs: List[MsilType] = newList()
+  dtToStrPs.add(MClassRef(typeRefCode = tdrTypeRef(trIFormatProvider), clrFqn = "System.IFormatProvider"))
+  val tokDateTimeToStringInv = 0x0A000000 +
     ctxAddMemberRef(
       lctx,
       trDateTime,
       "ToString",
-      "dt_tostring_fmt",
-      buildInstanceMethodSig(dtToStrFmtPs, MString)
+      "dt_tostring_inv",
+      buildInstanceMethodSig(dtToStrPs, MString)
     )
 
   // Async SM synthesis (Phase B, Epic #2070).
@@ -1018,6 +1023,16 @@ pub func newCodegenCtx(
     buildAwaitUnsafeOnCompletedOpenSig()
   )
 
+  // Generator synthesis (Phase 5, Epic #2070).
+  // IAsyncEnumerable`1, IAsyncEnumerator`1, IAsyncDisposable live in System.Runtime.
+  // ValueTask`1, ValueTask, and CancellationToken also live in System.Runtime.
+  val trIAE1 = ctxAddTypeRef(lctx, "System.Collections.Generic", "IAsyncEnumerable`1", lctx.arRuntime)
+  val trIAET1 = ctxAddTypeRef(lctx, "System.Collections.Generic", "IAsyncEnumerator`1", lctx.arRuntime)
+  val trIAsyncDisp = ctxAddTypeRef(lctx, "System", "IAsyncDisposable", lctx.arRuntime)
+  val trValueTask1 = ctxAddTypeRef(lctx, "System.Threading.Tasks", "ValueTask`1", lctx.arRuntime)
+  val trValueTask = ctxAddTypeRef(lctx, "System.Threading.Tasks", "ValueTask", lctx.arRuntime)
+  val trCancToken = ctxAddTypeRef(lctx, "System.Threading", "CancellationToken", lctx.arRuntime)
+
   val recCtorToks: Map[String, Int] = newMap()
   val fieldToks: Map[String, Int] = newMap()
   val funcToks: Map[String, Int] = newMap()
@@ -1032,7 +1047,6 @@ pub func newCodegenCtx(
     trBoolean = trBoolean,
     trChar = trChar,
     trException = trException,
-    trCultureInfo = trCultureInfo,
     tokWriteLineStr = tokWLStr,
     tokWriteLineInt = tokWLInt,
     tokWriteLineLong = tokWLLong,
@@ -1046,12 +1060,11 @@ pub func newCodegenCtx(
     tokStringFormat2 = tokFmt2,
     tokStringFormat3 = tokFmt3,
     tokObjToString = tokObjToStr,
-    tokCultureInfoInvariantGet = tokCultInvGet,
-    tokDoubleToStringInv = tokDblToStrInv,
     tokExcGetMessage = tokExcGetMessage,
     tokObjGetType = tokObjGetType,
     tokTypeGetName = tokTypeGetName,
-    tokDateTimeToStringFmt = tokDateTimeToStringFmt,
+    tokInvariantCulture = tokInvariantCulture,
+    tokDateTimeToStringInv = tokDateTimeToStringInv,
     tokListObjCtor = tokListObjCtor,
     tokListObjAdd = tokListObjAdd,
     tokListObjGetItem = tokListObjGetItem,
@@ -1142,7 +1155,15 @@ pub func newCodegenCtx(
     trTaskAwaiter = trTaskAwaiter,
     tokAtmbAwaitUnsafeMr = tokAtmbAwaitUnsafeMr,
     tokAtmb1AwaitUnsafeMr = tokAtmb1AwaitUnsafeMr,
-    smTicker = newList()
+    smTicker = newList(),
+    trIAE1 = trIAE1,
+    trIAET1 = trIAET1,
+    trIAsyncDisp = trIAsyncDisp,
+    trValueTask1 = trValueTask1,
+    trValueTask = trValueTask,
+    trCancToken = trCancToken,
+    trList1 = trList1,
+    genTicker = newList()
   )
 }
 
@@ -1691,6 +1712,24 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
     smkPts = smkPts + 1
   }
   methodDefRow = methodDefRow + smClassCountPts * 3
+  // Reserve MethodDef rows for synthesised generator classes (Phase 5, Epic #2070).
+  // Each async generator contributes 6 rows before MPFuncs:
+  //   .ctor (useDefaultCtor), RunBody, GetAsyncEnumerator, MoveNextAsync, get_Current, DisposeAsync.
+  var genClassCountPts = 0
+  var gkPts = 0
+  while gkPts < file.items.count {
+    match file.items[gkPts].kind {
+      case IFunc(decl) -> {
+        if decl.isAsync and funcBodyContainsYieldMsil(decl) {
+          genClassCountPts = genClassCountPts + 1
+        }
+      }
+      case _ -> {
+      }
+    }
+    gkPts = gkPts + 1
+  }
+  methodDefRow = methodDefRow + genClassCountPts * 6
   // Pass 2: MPFuncs — optional .cctor then IFunc items (in source order).
   if hasValCctor {
     methodDefRow = methodDefRow + 1
@@ -1722,14 +1761,15 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         if decl.name == "main" and cctx.mainEntryToken.count == 0 {
           cctx.mainEntryToken.add(funcTok)
         }
-        // Generator functions always return List<object> (MObject) regardless of
-        // the source-level annotation.  Use the same isGenerator logic as
-        // lowerFuncMsil so that call sites in funcRetTypes agree with the actual
-        // emitted signature — avoids void-typed locals when callers store the result.
+        // Generator functions return IAsyncEnumerable<object> (the synthesised generator
+        // class, erased to MIAsyncEnumerable(MObject) in funcRetTypes so that
+        // emitCollectionForMsil can dispatch to the async-enumerator protocol rather than
+        // the List<object> index-loop protocol.
         val isGen = decl.isAsync and funcBodyContainsYieldMsil(decl)
         val isSm = decl.isAsync and not isGen and not hasExternTargetMsil(decl.annotations)
         val retTy = if isGen {
-          MObject
+          val genElemTy = match decl.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MObject }
+          MIAsyncEnumerable(elemTy = genElemTy)
         } else if isSm {
           // SM kickoffs return Task<T> or Task, not the bare T.  Call sites that
           // await the kickoff resolve via funcRetTypes — the EAwait handler then
@@ -1889,40 +1929,41 @@ func isLiteralI4ExprMsilWithEnv(e: in Expr, env: in Map[String, Bool]): Bool {
 // the blocking shim to the real suspend/resume protocol.
 // ─────────────────────────────────────────────────────────────────────────────
 pub record PhaseBCtx {
-  smFqn: String        // FQN of the enclosing SM sealed class
-  resumeLabels: List[Int]     // pre-allocated label ID per await site (index = state N)
-  suspendLeaveLabel: Int           // label to Leave to after AwaitUnsafeOnCompleted
-  nextAwaitIndex: List[Int]     // length = next await index (list-as-counter)
+  smFqn: String  // FQN of the enclosing SM sealed class
+  resumeLabels: List[Int]  // pre-allocated label ID per await site (index = state N)
+  suspendLeaveLabel: Int  // label to Leave to after AwaitUnsafeOnCompleted
+  nextAwaitIndex: List[Int]  // length = next await index (list-as-counter)
   awaiterFieldNames: List[String]  // "__awN" per state index (parallel to resumeLabels)
-  isVoid: Bool          // true when SM returns void (no result from GetResult)
-  retTy: MsilType      // bare return type (MVoid when isVoid)
-  atmbMrRowForAwait: Int           // open MemberRef row for AwaitUnsafeOnCompleted
+  isVoid: Bool  // true when SM returns void (no result from GetResult)
+  retTy: MsilType  // bare return type (MVoid when isVoid)
+  atmbMrRowForAwait: Int  // open MemberRef row for AwaitUnsafeOnCompleted
   // Promoted locals: val-bindings hoisted to SM fields so they survive suspension.
   // Populated on-the-fly as LBLet bindings are encountered during body lowering;
   // `emitPhaseBAwait` reads the current list when emitting each resume label so
   // every local defined before that await point is reloaded on the resume path.
-  smFields: List[MField]      // reference to the SM class field list
-  promotedLocalNames: List[String]      // val name → SM field "__local_<name>"
-  promotedLocalSlots: List[Int]         // local-relative slot index (slot - paramCount)
-  promotedLocalTypes: List[MsilType]    // type of the promoted local (parallel)
+  smFields: List[MField]  // reference to the SM class field list
+  promotedLocalNames: List[String]  // val name → SM field "__local_<name>"
+  promotedLocalSlots: List[Int]  // local-relative slot index (slot - paramCount)
+  promotedLocalTypes: List[MsilType]
+  // type of the promoted local (parallel)
+  //   • locals: slots paramCount.., accessed via MLdloc(slot - paramCount)
+  // `locals` records MsilType entries in order for MFunc.locals.
+  // `slotTicker` and `labelTicker` are singleton lists whose `.count` is the
+  // current next-slot / next-label integer.
 }
 
-//   • locals: slots paramCount.., accessed via MLdloc(slot - paramCount)
-// `locals` records MsilType entries in order for MFunc.locals.
-// `slotTicker` and `labelTicker` are singleton lists whose `.count` is the
-// current next-slot / next-label integer.
 pub record FuncCtx {
   pkgName: String
   className: String
   funcName: String
   slots: Map[String, Int]
   types: Map[String, MsilType]
-  locals: List[MsilType]       // ordered local variable types for MFunc.locals
-  slotTicker: List[Int]            // length = next slot index (params + locals combined)
-  labelTicker: List[Int]            // length = next label index
-  paramCount: Int                  // number of parameters (fixed at creation)
-  loopBreak: List[Int]            // stack: top = innermost loop's exit label
-  loopCont: List[Int]            // stack: top = innermost loop's back-edge label
+  locals: List[MsilType]  // ordered local variable types for MFunc.locals
+  slotTicker: List[Int]  // length = next slot index (params + locals combined)
+  labelTicker: List[Int]  // length = next label index
+  paramCount: Int  // number of parameters (fixed at creation)
+  loopBreak: List[Int]  // stack: top = innermost loop's exit label
+  loopCont: List[Int]  // stack: top = innermost loop's back-edge label
   // Parallel to loopBreak/loopCont: the protected-region (try) nesting depth in
   // effect when each loop was entered.  A `break`/`continue` whose innermost
   // loop was entered at a *shallower* try depth than the current one is jumping
@@ -2003,9 +2044,9 @@ pub record FuncCtx {
   // is lowering the MoveNext body (singleton then).  The EAwait handler checks
   // this to switch from the blocking shim to the real suspend/resume protocol.
   phaseBCtx: List[PhaseBCtx]
+  // Allocate a fresh label ID (0, 1, 2, …) for use with MLabel/MBr* instructions.
 }
 
-// Allocate a fresh label ID (0, 1, 2, …) for use with MLabel/MBr* instructions.
 pub func freshLabelMsil(fctx: in FuncCtx): Int {
   val n = fctx.labelTicker.count
   fctx.labelTicker.add(0)
@@ -3928,7 +3969,7 @@ func lowerBinopMsil(
       val trueL = freshLabelMsil(fctx)
       val afterL = freshLabelMsil(fctx)
       lowerExprMsil(cctx, fctx, insns, lhs)
-      insns.add(MBrFalse(label = trueL))   // if lhs false, result is true
+      insns.add(MBrFalse(label = trueL))  // if lhs false, result is true
       lowerExprMsil(cctx, fctx, insns, rhs)
       insns.add(MBr(label = afterL))
       insns.add(MLabel(id = trueL))
@@ -4321,7 +4362,7 @@ func lowerAssignExprMsil(
                 }
                 case _ -> {
                   val fldTy = match mapGet(cctx.fieldMsilTypes, key) { case Some(t) -> t; case None -> MObject }
-                  insns.add(MDup)                      // recv, recv
+                  insns.add(MDup)  // recv, recv
                   insns.add(MLdfld(fieldToken = tok))  // recv, current
                   emitCompoundCombineMsil(cctx, fctx, insns, op, fldTy, value)
                   insns.add(MStfld(fieldToken = tok))  // recv, newval -> stored
@@ -5183,9 +5224,9 @@ func reorderCtorNamedArgs(cctx: in CodegenCtx, ctorKey: in String, args: in List
   while fp < args.count {
     val byPosKey = ctorKey + "/field" + toString(fp)
     match mapGet(cctx.fieldDeclaredNames, byPosKey) {
-      case None -> return args   // no field-order info — preserve current behaviour
+      case None -> return args  // no field-order info — preserve current behaviour
       case Some(fname) -> match mapGet(nameToArg, fname) { case Some(a) -> ordered.add(a); case None -> return args }
-    }   // a field has no matching arg — bail safely
+    }  // a field has no matching arg — bail safely
     fp = fp + 1
   }
   ordered
@@ -5305,37 +5346,21 @@ func lowerBuiltinOrStaticCallMsil(
           val emptyTok = ctxInternUs(cctx.lctx, "")
           insns.add(MLdStr(token = emptyTok))
         }
-        case MDouble -> {
-          // Covers both Double and Float: the self-hosted type system maps Lyric's
-          // Float to MDouble (see lowerTypeMsil, "Float" -> MDouble), so no
-          // separate MFloat arm is needed here.
-          val tmpSlot = allocSlotMsil(fctx, "__tostring_dbl_tmp", MDouble)
-          emitStoreSlot(insns, tmpSlot, fctx.paramCount)
-          insns.add(MLdloca(slot = tmpSlot - fctx.paramCount))
-          insns.add(MCall(methodToken = cctx.tokCultureInfoInvariantGet))
-          insns.add(MCall(methodToken = cctx.tokDoubleToStringInv))
-        }
-        case MValueTypeRef(typeRefCode, clrFqn) -> {
-          if clrFqn == "System.DateTime" {
-            val tmpSlot = allocSlotMsil(fctx, "__tostring_dt_tmp", argTy)
-            emitStoreSlot(insns, tmpSlot, fctx.paramCount)
-            insns.add(MLdloca(slot = tmpSlot - fctx.paramCount))
-            insns.add(MLdStr(token = ctxInternUs(cctx.lctx, "o")))
-            insns.add(MCall(methodToken = cctx.tokDateTimeToStringFmt))
+        case _ -> {
+          if isClrDateTimeMsil(argTy) {
+            // Culture-invariant: dt.ToString(CultureInfo.InvariantCulture).
+            // The DateTime is an unboxed value type on the stack; stash it in
+            // a value-type local so we can take its address for the instance
+            // call, then push the InvariantCulture argument (#2184).
+            val dtSlot = allocSlotMsil(fctx, "__inv_dt_" + toString(fctx.slotTicker.count), argTy)
+            emitStoreSlot(insns, dtSlot, fctx.paramCount)
+            insns.add(MLdloca(slot = dtSlot - fctx.paramCount))
+            insns.add(MCall(methodToken = cctx.tokInvariantCulture))
+            insns.add(MCall(methodToken = cctx.tokDateTimeToStringInv))
           } else {
-            // typeRefCode is TypeDefOrRef-encoded (ECMA-335 §II.23.2.8) with TypeRef
-            // tag 1: encoded = (row << 2) | 1.  Strip the tag to get the 1-based
-            // TypeRef row, then build a 0x01xxxxxx metadata token (ECMA-335 §II.22.38).
-            // This invariant holds for all extern value types (no user-defined Lyric
-            // value types carry a TypeDef or TypeSpec code here today).
-            val rawRow = (typeRefCode - 1) / 4
-            insns.add(MBox(typeToken = 16777216 + rawRow))
+            boxIfNeededMsil(cctx, insns, argTy)
             insns.add(MCallvirt(methodToken = cctx.tokObjToString))
           }
-        }
-        case _ -> {
-          boxIfNeededMsil(cctx, insns, argTy)
-          insns.add(MCallvirt(methodToken = cctx.tokObjToString))
         }
       }
     } else {
@@ -5414,7 +5439,7 @@ func lowerBuiltinOrStaticCallMsil(
       // then: Some(value = (V) m[key])
       emitLoadSlot(insns, mSlot, fctx.paramCount)
       emitLoadSlot(insns, kSlot, fctx.paramCount)
-      insns.add(MCallvirt(methodToken = cctx.tokDictObjGetItem))   // -> object
+      insns.add(MCallvirt(methodToken = cctx.tokDictObjGetItem))  // -> object
       castObjectToMsil(cctx, insns, vTy)
       val someArgTys: List[MsilType] = newList()
       someArgTys.add(vTy)
@@ -5943,7 +5968,7 @@ func lowerMethodCallMsil(
         }
         case None -> {
         }
-      }   // fall through to BCL-name dispatch
+      }  // fall through to BCL-name dispatch
     }
     case _ -> {
     }
@@ -6323,11 +6348,11 @@ func emitCountingForMsil(
   emitLoadSlot(insns, iSlot, fctx.paramCount)
   emitLoadSlot(insns, hiSlot, fctx.paramCount)
   if inclusive {
-    insns.add(MCgt)                       // i > hi ?
-    insns.add(MBrTrue(label = afterL))    // exit once the counter passes hi
+    insns.add(MCgt)  // i > hi ?
+    insns.add(MBrTrue(label = afterL))  // exit once the counter passes hi
   } else {
-    insns.add(MClt)                       // i < hi ?
-    insns.add(MBrFalse(label = afterL))   // exit once i is no longer below hi
+    insns.add(MClt)  // i < hi ?
+    insns.add(MBrFalse(label = afterL))  // exit once i is no longer below hi
   }
   // Bind the loop pattern from the current counter value.
   bindForPatternMsil(cctx, fctx, insns, pat, iSlot, loTy)
@@ -6355,7 +6380,9 @@ func emitCountingForMsil(
 
 // Emit an index-based loop for `for <pat> in <collection>`, modelling the
 // collection as `List<object>` (the bootstrap representation shared with the
-// `EIndex` read path).
+// `EIndex` read path).  When the iterator expression's type is
+// `MIAsyncEnumerable`, uses the async-enumerator protocol instead
+// (GetAsyncEnumerator / MoveNextAsync / get_Current).
 func emitCollectionForMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -6369,62 +6396,220 @@ func emitCollectionForMsil(
   // `object` (#2126): a `for x in xs.toArray()` element bound as `MObject` made
   // `match x` / field access on `x` see an untyped scrutinee and misbehave.
   val iterTy = lowerExprMsil(cctx, fctx, insns, iter)
-  // Narrow only reference (`MClass`) elements — user records / unions, the
-  // affected case.  Value-type and unknown elements keep the existing
-  // `MObject` binding to avoid changing their (working) lowering.
-  val forElemRaw = match iterTy { case MArray(e) -> e; case MListOf(e) -> e; case _ -> MObject }
-  val forElemTy = match forElemRaw { case MClass(_) -> forElemRaw; case _ -> MObject }
-  val listSlot = allocSlotMsil(fctx, "__for_list_" + toString(fctx.slotTicker.count), MObject)
-  emitStoreSlot(insns, listSlot, fctx.paramCount)
-  // i := 0
-  val iSlot = allocSlotMsil(fctx, "__for_ci_" + toString(fctx.slotTicker.count), MInt)
-  insns.add(MLdcI4(v = 0))
-  emitStoreSlot(insns, iSlot, fctx.paramCount)
-  // count := list.Count
-  val cntSlot = allocSlotMsil(fctx, "__for_cnt_" + toString(fctx.slotTicker.count), MInt)
-  emitLoadSlot(insns, listSlot, fctx.paramCount)
-  insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
-  insns.add(MCallvirt(methodToken = cctx.tokListObjGetCount))
-  emitStoreSlot(insns, cntSlot, fctx.paramCount)
 
-  val loopL = freshLabelMsil(fctx)
-  val contL = freshLabelMsil(fctx)
-  val afterL = freshLabelMsil(fctx)
+  // ── Async enumerator protocol for MIAsyncEnumerable (Phase 5, Epic #2070) ────
+  // The synthesised generator class implements IAsyncEnumerable<object>.
+  // Protocol: GetAsyncEnumerator(default(CancellationToken)) → enumerator;
+  //   while MoveNextAsync().get_Result() { elem = get_Current(); body }
+  match iterTy {
+    case MIAsyncEnumerable(iaeElemTy) -> {
+      val lctx = cctx.lctx
 
-  insns.add(MLabel(id = loopL))
-  emitLoadSlot(insns, iSlot, fctx.paramCount)
-  emitLoadSlot(insns, cntSlot, fctx.paramCount)
-  insns.add(MClt)
-  insns.add(MBrFalse(label = afterL))
-  // elem := list[i]
-  emitLoadSlot(insns, listSlot, fctx.paramCount)
-  insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
-  emitLoadSlot(insns, iSlot, fctx.paramCount)
-  insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
-  // get_Item returns `object`; narrow to the real element type (castclass) when
-  // it is a known reference type so the loop variable is correctly typed.
-  if forElemTy != MObject {
-    castObjectToMsil(cctx, insns, forElemTy)
+      // TypeSpecs (idempotent — same key → same row across calls)
+      val iaeArgs2: List[MsilType] = newList()
+      iaeArgs2.add(MObject)
+      val iaeBlob2 = buildGenericInstBlob(tdrTypeRef(cctx.trIAE1), iaeArgs2)
+      val tsIAERow2 = ctxAddTypeSpec(lctx, "ts_iae_obj", iaeBlob2)
+
+      val iaetArgs2: List[MsilType] = newList()
+      iaetArgs2.add(MObject)
+      val iaetBlob2 = buildGenericInstBlob(tdrTypeRef(cctx.trIAET1), iaetArgs2)
+      val tsIAETRow2 = ctxAddTypeSpec(lctx, "ts_iaet_obj", iaetBlob2)
+
+      val vtBoolArgs2: List[MsilType] = newList()
+      vtBoolArgs2.add(MBool)
+      val vtBoolBlob2 = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trValueTask1), vtBoolArgs2)
+      val tsVtBoolRow2 = ctxAddTypeSpec(lctx, "ts_vt_bool", vtBoolBlob2)
+
+      // MemberRef: IAsyncEnumerable<obj>::GetAsyncEnumerator(CancToken) → IAET<!0>
+      // Return type uses MTypeVar(0) (= !0), the open form required by ECMA-335 for
+      // TypeSpec-parented MemberRef signatures.  Using MObject (closed) prevents the CLR
+      // from matching the MethodImpl MethodDeclaration → MissingMethodException.
+      val ctTy2 = MValueTypeRef(typeRefCode = tdrTypeRef(cctx.trCancToken), clrFqn = "System.Threading.CancellationToken")
+      val getEnumPs2: List[MsilType] = newList()
+      getEnumPs2.add(ctTy2)
+      val getEnumRet2Args: List[MsilType] = newList()
+      getEnumRet2Args.add(MTypeVar(index = 0))
+      val getEnumRet2 = MGenericInst(
+        typeRefCode = tdrTypeRef(cctx.trIAET1),
+        headFqn = "System.Collections.Generic.IAsyncEnumerator`1",
+        typeArgs = getEnumRet2Args
+      )
+      val tokGetEnum2 = 0x0A000000 +
+        ctxAddMemberRefForTypeSpec(
+          lctx,
+          tsIAERow2,
+          "GetAsyncEnumerator",
+          "iae_obj_getenum",
+          buildInstanceMethodSig(getEnumPs2, getEnumRet2)
+        )
+
+      // MemberRef: IAsyncEnumerator<obj>::MoveNextAsync() → ValueTask<bool>
+      val moveNextPs2: List[MsilType] = newList()
+      val moveNextRet2Args: List[MsilType] = newList()
+      moveNextRet2Args.add(MBool)
+      val moveNextRet2 = MValueTypeGenericInst(
+        typeRefCode = tdrTypeRef(cctx.trValueTask1),
+        headFqn = "System.Threading.Tasks.ValueTask`1",
+        typeArgs = moveNextRet2Args
+      )
+      val tokMoveNext2 = 0x0A000000 +
+        ctxAddMemberRefForTypeSpec(
+          lctx,
+          tsIAETRow2,
+          "MoveNextAsync",
+          "iaet_obj_movenext",
+          buildInstanceMethodSig(moveNextPs2, moveNextRet2)
+        )
+
+      // MemberRef: IAsyncEnumerator<obj>::get_Current() → !0
+      val getCurrentPs2: List[MsilType] = newList()
+      val tokGetCurrent2 = 0x0A000000 +
+        ctxAddMemberRefForTypeSpec(
+          lctx,
+          tsIAETRow2,
+          "get_Current",
+          "iaet_obj_getcurrent",
+          buildInstanceMethodSig(getCurrentPs2, MTypeVar(index = 0))
+        )
+
+      // MemberRef: ValueTask<bool>::get_Result() → !0
+      val vtResPs2: List[MsilType] = newList()
+      val tokVtRes2 = 0x0A000000 +
+        ctxAddMemberRefForTypeSpec(
+          lctx,
+          tsVtBoolRow2,
+          "get_Result",
+          "vt_bool_getresult",
+          buildInstanceMethodSig(vtResPs2, MTypeVar(index = 0))
+        )
+
+      // Store the generator (already on stack) into a local
+      val genSlot2 = allocSlotMsil(fctx, "__iae_gen_" + toString(fctx.slotTicker.count), MObject)
+      emitStoreSlot(insns, genSlot2, fctx.paramCount)
+
+      // Allocate CancellationToken local and zero-init it via initobj
+      val ctLocalTy2 = MValueTypeRef(
+        typeRefCode = tdrTypeRef(cctx.trCancToken),
+        clrFqn = "System.Threading.CancellationToken"
+      )
+      val ctSlot2 = allocSlotMsil(fctx, "__iae_ct_" + toString(fctx.slotTicker.count), ctLocalTy2)
+      insns.add(MLdloca(slot = ctSlot2 - fctx.paramCount))
+      insns.add(MInitobj(typeToken = 0x01000000 + cctx.trCancToken))
+
+      // GetAsyncEnumerator(ct) → enumerator
+      emitLoadSlot(insns, genSlot2, fctx.paramCount)
+      insns.add(MLdloc(slot = ctSlot2 - fctx.paramCount))
+      insns.add(MCallvirt(methodToken = tokGetEnum2))
+      val enumSlot2 = allocSlotMsil(fctx, "__iae_enum_" + toString(fctx.slotTicker.count), MObject)
+      emitStoreSlot(insns, enumSlot2, fctx.paramCount)
+
+      // Allocate ValueTask<bool> struct local for MoveNextAsync result
+      val vtBoolLocalTy2Args: List[MsilType] = newList()
+      vtBoolLocalTy2Args.add(MBool)
+      val vtBoolLocalTy2 = MValueTypeGenericInst(
+        typeRefCode = tdrTypeRef(cctx.trValueTask1),
+        headFqn = "System.Threading.Tasks.ValueTask`1",
+        typeArgs = vtBoolLocalTy2Args
+      )
+      val vtSlot2 = allocSlotMsil(fctx, "__iae_vt_" + toString(fctx.slotTicker.count), vtBoolLocalTy2)
+
+      val loopL2 = freshLabelMsil(fctx)
+      val contL2 = freshLabelMsil(fctx)
+      val afterL2 = freshLabelMsil(fctx)
+
+      insns.add(MLabel(id = loopL2))
+      // MoveNextAsync() → ValueTask<bool>; store struct; extract bool via get_Result
+      emitLoadSlot(insns, enumSlot2, fctx.paramCount)
+      insns.add(MCallvirt(methodToken = tokMoveNext2))
+      insns.add(MStloc(slot = vtSlot2 - fctx.paramCount))
+      insns.add(MLdloca(slot = vtSlot2 - fctx.paramCount))
+      insns.add(MCall(methodToken = tokVtRes2))
+      insns.add(MBrFalse(label = afterL2))
+
+      // get_Current() returns `object` (box-erased IAsyncEnumerator<object>).
+      // Unbox/cast to the generator's declared element type so value-type
+      // arithmetic and pattern-matching on the loop variable work correctly
+      // (e.g. `total + x` where x comes from a genUpTo(5): Int generator).
+      emitLoadSlot(insns, enumSlot2, fctx.paramCount)
+      insns.add(MCallvirt(methodToken = tokGetCurrent2))
+      castObjectToMsil(cctx, insns, iaeElemTy)
+      val elemSlot2 = allocSlotMsil(fctx, "__iae_elem_" + toString(fctx.slotTicker.count), iaeElemTy)
+      emitStoreSlot(insns, elemSlot2, fctx.paramCount)
+      bindForPatternMsil(cctx, fctx, insns, pat, elemSlot2, iaeElemTy)
+
+      fctx.loopBreak.add(afterL2)
+      fctx.loopCont.add(contL2)
+      fctx.loopTryDepth.add(fctx.tryRegionStack.count)
+      lowerBlockMsil(cctx, fctx, insns, body)
+      fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
+      fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
+      fctx.loopCont.removeAt(fctx.loopCont.count - 1)
+
+      insns.add(MLabel(id = contL2))
+      insns.add(MBr(label = loopL2))
+      insns.add(MLabel(id = afterL2))
+    }
+    case _ -> {
+      // ── List<object> / Array index-loop protocol (existing path) ─────────────
+      // Narrow only reference (`MClass`) elements — user records / unions, the
+      // affected case.  Value-type and unknown elements keep the existing
+      // `MObject` binding to avoid changing their (working) lowering.
+      val forElemRaw = match iterTy { case MArray(e) -> e; case MListOf(e) -> e; case _ -> MObject }
+      val forElemTy = match forElemRaw { case MClass(_) -> forElemRaw; case _ -> MObject }
+      val listSlot = allocSlotMsil(fctx, "__for_list_" + toString(fctx.slotTicker.count), MObject)
+      emitStoreSlot(insns, listSlot, fctx.paramCount)
+      // i := 0
+      val iSlot = allocSlotMsil(fctx, "__for_ci_" + toString(fctx.slotTicker.count), MInt)
+      insns.add(MLdcI4(v = 0))
+      emitStoreSlot(insns, iSlot, fctx.paramCount)
+      // count := list.Count
+      val cntSlot = allocSlotMsil(fctx, "__for_cnt_" + toString(fctx.slotTicker.count), MInt)
+      emitLoadSlot(insns, listSlot, fctx.paramCount)
+      insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
+      insns.add(MCallvirt(methodToken = cctx.tokListObjGetCount))
+      emitStoreSlot(insns, cntSlot, fctx.paramCount)
+
+      val loopL = freshLabelMsil(fctx)
+      val contL = freshLabelMsil(fctx)
+      val afterL = freshLabelMsil(fctx)
+
+      insns.add(MLabel(id = loopL))
+      emitLoadSlot(insns, iSlot, fctx.paramCount)
+      emitLoadSlot(insns, cntSlot, fctx.paramCount)
+      insns.add(MClt)
+      insns.add(MBrFalse(label = afterL))
+      // elem := list[i]
+      emitLoadSlot(insns, listSlot, fctx.paramCount)
+      insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
+      emitLoadSlot(insns, iSlot, fctx.paramCount)
+      insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
+      // get_Item returns `object`; narrow to the real element type (castclass) when
+      // it is a known reference type so the loop variable is correctly typed.
+      if forElemTy != MObject {
+        castObjectToMsil(cctx, insns, forElemTy)
+      }
+      val elemSlot = allocSlotMsil(fctx, "__for_elem_" + toString(fctx.slotTicker.count), forElemTy)
+      emitStoreSlot(insns, elemSlot, fctx.paramCount)
+      bindForPatternMsil(cctx, fctx, insns, pat, elemSlot, forElemTy)
+
+      fctx.loopBreak.add(afterL)
+      fctx.loopCont.add(contL)
+      fctx.loopTryDepth.add(fctx.tryRegionStack.count)
+      lowerBlockMsil(cctx, fctx, insns, body)
+      fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
+      fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
+      fctx.loopCont.removeAt(fctx.loopCont.count - 1)
+
+      insns.add(MLabel(id = contL))
+      emitLoadSlot(insns, iSlot, fctx.paramCount)
+      insns.add(MLdcI4(v = 1))
+      insns.add(MAdd)
+      emitStoreSlot(insns, iSlot, fctx.paramCount)
+      insns.add(MBr(label = loopL))
+      insns.add(MLabel(id = afterL))
+    }
   }
-  val elemSlot = allocSlotMsil(fctx, "__for_elem_" + toString(fctx.slotTicker.count), forElemTy)
-  emitStoreSlot(insns, elemSlot, fctx.paramCount)
-  bindForPatternMsil(cctx, fctx, insns, pat, elemSlot, forElemTy)
-
-  fctx.loopBreak.add(afterL)
-  fctx.loopCont.add(contL)
-  fctx.loopTryDepth.add(fctx.tryRegionStack.count)
-  lowerBlockMsil(cctx, fctx, insns, body)
-  fctx.loopTryDepth.removeAt(fctx.loopTryDepth.count - 1)
-  fctx.loopBreak.removeAt(fctx.loopBreak.count - 1)
-  fctx.loopCont.removeAt(fctx.loopCont.count - 1)
-
-  insns.add(MLabel(id = contL))
-  emitLoadSlot(insns, iSlot, fctx.paramCount)
-  insns.add(MLdcI4(v = 1))
-  insns.add(MAdd)
-  emitStoreSlot(insns, iSlot, fctx.paramCount)
-  insns.add(MBr(label = loopL))
-  insns.add(MLabel(id = afterL))
 }
 
 // Dispatch a `for` statement to the range or collection lowering.
@@ -7418,10 +7603,10 @@ func bufFfiType(cctx: in CodegenCtx, w: in ByteWriter, t: in MsilType): Unit {
     case MClass(className) -> {
       val row = resolveFfiClassTypeRef(cctx, className)
       if row >= 0 {
-        bufU1(w, 0x12)                          // ELEMENT_TYPE_CLASS
-        writeCompressedInt(w, (row * 4) + 1)    // TypeDefOrRef coded index (TypeRef tag = 1)
+        bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS
+        writeCompressedInt(w, (row * 4) + 1)  // TypeDefOrRef coded index (TypeRef tag = 1)
       } else {
-        bufU1(w, 0x1C)                          // ELEMENT_TYPE_OBJECT fallback
+        bufU1(w, 0x1C)  // ELEMENT_TYPE_OBJECT fallback
       }
     }
     case _ -> bufMsilType(w, t)
@@ -7451,6 +7636,7 @@ func msilTypeKeyStr(t: in MsilType): String {
     case MByRef(inner) -> "byref_" + msilTypeKeyStr(inner)
     case MListOf(elem) -> "list_" + msilTypeKeyStr(elem)
     case MMapOf(k, v) -> "map_" + msilTypeKeyStr(k) + "_" + msilTypeKeyStr(v)
+    case MIAsyncEnumerable(e) -> "iasyncen_" + msilTypeKeyStr(e)
     case MGenericInst(_, fqn, args) -> {
       var k = "gi_" + fqn
       var ai = 0
@@ -8360,8 +8546,6 @@ func phaseBSpillToLocal(pbc: in PhaseBCtx, fctx: in FuncCtx, insns: in List[MIns
   localIdx
 }
 
-
-
 // Full Phase B.1 suspend/resume for one `await` point inside MoveNext.
 // Stack pre-condition:  Task<T> or Task.
 // Stack post-condition: T (or nothing for void).
@@ -8371,7 +8555,7 @@ func emitPhaseBAwait(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn
   val pbc = fctx.phaseBCtx[0]
   val lctx = cctx.lctx
   val N = pbc.nextAwaitIndex.count
-  pbc.nextAwaitIndex.add(0)                     // consume index N
+  pbc.nextAwaitIndex.add(0)  // consume index N
   val resumeL = pbc.resumeLabels[N]
   val awFldName = pbc.awaiterFieldNames[N]
 
@@ -9355,6 +9539,494 @@ func synthesizeAsyncSmPhaseBMsil(
   )
 }
 
+// ── Phase 5: IAsyncEnumerable<T> generator synthesis (Epic #2070) ─────────────
+//
+// Emits a sealed class `<funcName>__Gen_N` that implements:
+//   IAsyncEnumerable<object>, IAsyncEnumerator<object>, IAsyncDisposable
+//
+// Eager-producer pattern: RunBody() executes the full generator body synchronously,
+// populating `_values` via EYield, and the enumerator protocol serves them one-at-a-time
+// from `_values[_pos]`.
+//
+// Class fields: _values (List<object>), _pos (int32), __p0..N-1 (user params)
+// Methods (6 MethodDef rows):
+//   .ctor     (useDefaultCtor) — zero-initialises the instance
+//   RunBody   — executes the user body, appending yields to this._values
+//   GetAsyncEnumerator(CancellationToken) — resets _pos=0, returns this
+//   MoveNextAsync() — advances if available, returns ValueTask<bool>
+//   get_Current — returns _values[_pos-1]
+//   DisposeAsync() — no-op, returns default(ValueTask)
+func synthesizeGeneratorMsil(
+  cctx: in CodegenCtx,
+  decl: in FunctionDecl,
+  pkgName: in String,
+  items: in List[MPackageItem],
+  fns: in List[MFunc],
+): Unit {
+  val lctx = cctx.lctx
+
+  val tick = cctx.genTicker.count
+  cctx.genTicker.add(0)
+  val genSimple = "<" + decl.name + ">__Gen_" + toString(tick)
+  val genFqn = pkgName + "." + genSimple
+
+  // ── TypeSpecs for generic interfaces (idempotent — shared across generators) ──
+
+  // IAsyncEnumerable<object> TypeSpec
+  val iaeArgs: List[MsilType] = newList()
+  iaeArgs.add(MObject)
+  val iaeBlob = buildGenericInstBlob(tdrTypeRef(cctx.trIAE1), iaeArgs)
+  val tsIAERow = ctxAddTypeSpec(lctx, "ts_iae_obj", iaeBlob)
+
+  // IAsyncEnumerator<object> TypeSpec
+  val iaetArgs: List[MsilType] = newList()
+  iaetArgs.add(MObject)
+  val iaetBlob = buildGenericInstBlob(tdrTypeRef(cctx.trIAET1), iaetArgs)
+  val tsIAETRow = ctxAddTypeSpec(lctx, "ts_iaet_obj", iaetBlob)
+
+  // ValueTask<bool> TypeSpec (value type)
+  val vtBoolArgs: List[MsilType] = newList()
+  vtBoolArgs.add(MBool)
+  val vtBoolBlob = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trValueTask1), vtBoolArgs)
+  val tsVtBoolRow = ctxAddTypeSpec(lctx, "ts_vt_bool", vtBoolBlob)
+
+  // List<object> TypeSpec row (already created in newCodegenCtx; extract from token)
+  val tsListRow = cctx.tokListObjTypeSpec - 0x1B000000
+
+  // ── MemberRefs for generator class methods ────────────────────────────────────
+
+  // List<object>::get_Count() — already on cctx; used in MoveNextAsync body
+  val tokListCount = cctx.tokListObjGetCount
+  // List<object>::get_Item(int32) — already on cctx; used in get_Current body
+  val tokListGetItem = cctx.tokListObjGetItem
+
+  // ValueTask<bool>::.ctor(!0) — newobj to construct the return value
+  val vtBoolCtorPs: List[MsilType] = newList()
+  vtBoolCtorPs.add(MTypeVar(index = 0))
+  val vtBoolCtorSig = buildInstanceMethodSig(vtBoolCtorPs, MVoid)
+  val tokVtBoolCtor = 0x0A000000 + ctxAddMemberRefForTypeSpec(lctx, tsVtBoolRow, ".ctor", "vt_bool_ctor", vtBoolCtorSig)
+
+  // ValueTask<bool>::get_Result() → !0 — to extract bool from struct in consumer loop
+  val vtBoolResPs: List[MsilType] = newList()
+  val tokVtBoolGetResult = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      lctx,
+      tsVtBoolRow,
+      "get_Result",
+      "vt_bool_getresult",
+      buildInstanceMethodSig(vtBoolResPs, MTypeVar(index = 0))
+    )
+
+  // IAsyncEnumerator<object>::MoveNextAsync() → ValueTask<bool>
+  // Return type: GENERICINST VALUETYPE TypeRef(ValueTask`1) bool — inline encoding,
+  // no TypeSpec token in the blob (ELEMENT_TYPE_VALUETYPE + TypeSpec is rejected
+  // by the CLR JIT verifier; GENERICINST VALUETYPE + TypeRef is valid everywhere).
+  val moveNextPs: List[MsilType] = newList()
+  val vtBoolInlineTy: List[MsilType] = newList()
+  vtBoolInlineTy.add(MBool)
+  val moveNextRetTy = MValueTypeGenericInst(
+    typeRefCode = tdrTypeRef(cctx.trValueTask1),
+    headFqn = "System.Threading.Tasks.ValueTask`1",
+    typeArgs = vtBoolInlineTy
+  )
+  val tokIAETMoveNext = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      lctx,
+      tsIAETRow,
+      "MoveNextAsync",
+      "iaet_obj_movenext",
+      buildInstanceMethodSig(moveNextPs, moveNextRetTy)
+    )
+
+  // IAsyncEnumerator<object>::get_Current() → !0
+  val getCurrentPs: List[MsilType] = newList()
+  val tokIAETGetCurrent = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      lctx,
+      tsIAETRow,
+      "get_Current",
+      "iaet_obj_getcurrent",
+      buildInstanceMethodSig(getCurrentPs, MTypeVar(index = 0))
+    )
+
+  // IAsyncEnumerable<object>::GetAsyncEnumerator(CancellationToken) → IAsyncEnumerator<!0>
+  // Per ECMA-335 II.22.25: MemberRef signatures on TypeSpec-parented rows must use the
+  // OPEN (type-variable) form.  IAsyncEnumerable<T>.GetAsyncEnumerator returns
+  // IAsyncEnumerator<T> where T is !0 of the enclosing generic type.  Using MObject here
+  // instead of MTypeVar(0) produces the wrong (closed) signature, which the CLR JIT
+  // cannot match against the interface slot → MissingMethodException at dispatch.
+  val getEnumPs: List[MsilType] = newList()
+  val ctTy = MValueTypeRef(typeRefCode = tdrTypeRef(cctx.trCancToken), clrFqn = "System.Threading.CancellationToken")
+  getEnumPs.add(ctTy)
+  val iaetTypeVarArgs: List[MsilType] = newList()
+  iaetTypeVarArgs.add(MTypeVar(index = 0))
+  val getEnumRetTy = MGenericInst(
+    typeRefCode = tdrTypeRef(cctx.trIAET1),
+    headFqn = "System.Collections.Generic.IAsyncEnumerator`1",
+    typeArgs = iaetTypeVarArgs
+  )
+  val tokIAEGetEnum = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      lctx,
+      tsIAERow,
+      "GetAsyncEnumerator",
+      "iae_obj_getenum",
+      buildInstanceMethodSig(getEnumPs, getEnumRetTy)
+    )
+
+  // ── Generator class fields ─────────────────────────────────────────────────────
+  val genFields: List[MField] = newList()
+  genFields.add(MField(flags = FDA_PUBLIC, name = "_values", fieldType = MObject))
+  genFields.add(MField(flags = FDA_PUBLIC, name = "_pos", fieldType = MInt))
+  var gfi = 0
+  while gfi < decl.params.count {
+    val p = decl.params[gfi]
+    val pTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
+    genFields.add(MField(flags = FDA_PUBLIC, name = "__p" + toString(gfi), fieldType = pTy))
+    gfi = gfi + 1
+  }
+
+  // ── RunBody() — executes user body, yields into this._values ──────────────────
+  // Instance method: slot 0 = this.  User params loaded from fields into locals.
+  val rbInsns: List[MInsn] = newList()
+  val rbFctx = makeFuncCtxMsil(pkgName, genFqn, "RunBody", 1, MVoid)
+  // Seed slotTicker with one entry for `this` (slot 0 = the 'this' argument).
+  rbFctx.slotTicker.add(0)
+
+  // Load this._values into a local so EYield can append to it.
+  rbInsns.add(MLdarg(slot = 0))
+  rbInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "_values"))
+  val rbCollSlot = allocSlotMsil(rbFctx, "__yield_collector", MObject)
+  rbInsns.add(MStloc(slot = rbCollSlot - 1))
+  rbFctx.yieldSlots.add(rbCollSlot)
+
+  // Load user params from fields into named locals.
+  var rbPi = 0
+  while rbPi < decl.params.count {
+    val p = decl.params[rbPi]
+    val pTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
+    val pSlot = allocSlotMsil(rbFctx, p.name, pTy)
+    rbInsns.add(MLdarg(slot = 0))
+    rbInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "__p" + toString(rbPi)))
+    rbInsns.add(MStloc(slot = pSlot - 1))
+    rbPi = rbPi + 1
+  }
+
+  // Reserve epilogue label.
+  rbFctx.epilogueLabel = freshLabelMsil(rbFctx)
+
+  // Lower the user body (same as `lowerFuncMsil` generator path, but void return).
+  match decl.body {
+    case Some(body) -> {
+      match body {
+        case FBBlock(block) -> {
+          lowerBlockMsil(cctx, rbFctx, rbInsns, block)
+          if not endsWithReturnMsil(rbInsns) {
+            rbInsns.add(MRet)
+          }
+        }
+        case FBExpr(e) -> {
+          lowerExprMsil(cctx, rbFctx, rbInsns, e)
+          rbInsns.add(MPop)
+          rbInsns.add(MRet)
+        }
+      }
+    }
+    case None -> {
+      rbInsns.add(MRet)
+    }
+  }
+  emitEpilogueMsil(rbFctx, rbInsns)
+
+  val rbFunc = MFunc(
+    flags = MDA_PUBLIC + MDA_HIDE_BY_SIG,
+    name = "RunBody",
+    params = newList(),
+    ret = MVoid,
+    insns = rbInsns,
+    maxStack = 8,
+    locals = rbFctx.locals
+  )
+
+  // ── GetAsyncEnumerator(CancellationToken) → IAsyncEnumerator<object> ──────────
+  // Resets _pos to 0 and returns `this`.
+  val gaeInsns: List[MInsn] = newList()
+  gaeInsns.add(MLdarg(slot = 0))
+  gaeInsns.add(MLdcI4(v = 0))
+  gaeInsns.add(MStfldByName(ownerFqn = genFqn, fieldName = "_pos"))
+  gaeInsns.add(MLdarg(slot = 0))
+  gaeInsns.add(MRet)
+  val gaeParams: List[MsilType] = newList()
+  gaeParams.add(ctTy)
+  val gaeRetArgs: List[MsilType] = newList()
+  gaeRetArgs.add(MObject)
+  val gaeRetTy = MGenericInst(
+    typeRefCode = tdrTypeRef(cctx.trIAET1),
+    headFqn = "System.Collections.Generic.IAsyncEnumerator`1",
+    typeArgs = gaeRetArgs
+  )
+  val gaeFunc = MFunc(
+    flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_FINAL,
+    name = "GetAsyncEnumerator",
+    params = gaeParams,
+    ret = gaeRetTy,
+    insns = gaeInsns,
+    maxStack = 2,
+    locals = newList()
+  )
+
+  // ── MoveNextAsync() → ValueTask<bool> ─────────────────────────────────────────
+  val mnaInsns: List[MInsn] = newList()
+  val mnaFctx = makeFuncCtxMsil(pkgName, genFqn, "MoveNextAsync", 1, MVoid)
+  mnaFctx.slotTicker.add(0)  // seed for this
+
+  // local 0: pos_val (Int)
+  val mnaPosSlot = allocSlotMsil(mnaFctx, "__gen_pos", MInt)
+  mnaInsns.add(MLdarg(slot = 0))
+  mnaInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "_pos"))
+  mnaInsns.add(MStloc(slot = mnaPosSlot - 1))
+
+  // local 1: count_val (Int)
+  val mnaCntSlot = allocSlotMsil(mnaFctx, "__gen_cnt", MInt)
+  mnaInsns.add(MLdarg(slot = 0))
+  mnaInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "_values"))
+  mnaInsns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
+  mnaInsns.add(MCallvirt(methodToken = tokListCount))
+  mnaInsns.add(MStloc(slot = mnaCntSlot - 1))
+
+  // local 2: advance (Bool)
+  val mnaAdvSlot = allocSlotMsil(mnaFctx, "__gen_adv", MBool)
+  mnaInsns.add(MLdloc(slot = mnaPosSlot - 1))
+  mnaInsns.add(MLdloc(slot = mnaCntSlot - 1))
+  mnaInsns.add(MClt)
+  mnaInsns.add(MStloc(slot = mnaAdvSlot - 1))
+
+  // if advance { _pos++ }
+  val mnaSkipL = freshLabelMsil(mnaFctx)
+  mnaInsns.add(MLdloc(slot = mnaAdvSlot - 1))
+  mnaInsns.add(MBrFalse(label = mnaSkipL))
+  mnaInsns.add(MLdarg(slot = 0))
+  mnaInsns.add(MLdloc(slot = mnaPosSlot - 1))
+  mnaInsns.add(MLdcI4(v = 1))
+  mnaInsns.add(MAdd)
+  mnaInsns.add(MStfldByName(ownerFqn = genFqn, fieldName = "_pos"))
+  mnaInsns.add(MLabel(id = mnaSkipL))
+
+  // return new ValueTask<bool>(advance)
+  mnaInsns.add(MLdloc(slot = mnaAdvSlot - 1))
+  mnaInsns.add(MNewobj(ctorToken = tokVtBoolCtor))
+  mnaInsns.add(MRet)
+
+  val mnaRetArgs: List[MsilType] = newList()
+  mnaRetArgs.add(MBool)
+  val mnaRetTy = MValueTypeGenericInst(
+    typeRefCode = tdrTypeRef(cctx.trValueTask1),
+    headFqn = "System.Threading.Tasks.ValueTask`1",
+    typeArgs = mnaRetArgs
+  )
+  val mnaFunc = MFunc(
+    flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_FINAL,
+    name = "MoveNextAsync",
+    params = newList(),
+    ret = mnaRetTy,
+    insns = mnaInsns,
+    maxStack = 4,
+    locals = mnaFctx.locals
+  )
+
+  // ── get_Current() → object ──────────────────────────────────────────────────
+  val gcInsns: List[MInsn] = newList()
+  gcInsns.add(MLdarg(slot = 0))
+  gcInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "_values"))
+  gcInsns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
+  gcInsns.add(MLdarg(slot = 0))
+  gcInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "_pos"))
+  gcInsns.add(MLdcI4(v = 1))
+  gcInsns.add(MSub)
+  gcInsns.add(MCallvirt(methodToken = tokListGetItem))
+  gcInsns.add(MRet)
+  val gcFunc = MFunc(
+    flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_FINAL + MDA_SPECIAL_NAME,
+    name = "get_Current",
+    params = newList(),
+    ret = MObject,
+    insns = gcInsns,
+    maxStack = 3,
+    locals = newList()
+  )
+
+  // ── DisposeAsync() → ValueTask ─────────────────────────────────────────────
+  val daFctx = makeFuncCtxMsil(pkgName, genFqn, "DisposeAsync", 1, MVoid)
+  daFctx.slotTicker.add(0)
+  val daVtTy = MValueTypeRef(typeRefCode = tdrTypeRef(cctx.trValueTask), clrFqn = "System.Threading.Tasks.ValueTask")
+  val daVtSlot = allocSlotMsil(daFctx, "__gen_da_vt", daVtTy)
+  val daInsns: List[MInsn] = newList()
+  daInsns.add(MLdloca(slot = daVtSlot - 1))
+  daInsns.add(MInitobj(typeToken = 0x01000000 + cctx.trValueTask))
+  daInsns.add(MLdloc(slot = daVtSlot - 1))
+  daInsns.add(MRet)
+  val daRetTy = MValueTypeRef(typeRefCode = tdrTypeRef(cctx.trValueTask), clrFqn = "System.Threading.Tasks.ValueTask")
+  val daFunc = MFunc(
+    flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_FINAL,
+    name = "DisposeAsync",
+    params = newList(),
+    ret = daRetTy,
+    insns = daInsns,
+    maxStack = 2,
+    locals = daFctx.locals
+  )
+
+  // ── Generator MRecord ────────────────────────────────────────────────────────
+  val genMethods: List[MFunc] = newList()
+  genMethods.add(rbFunc)
+  genMethods.add(gaeFunc)
+  genMethods.add(mnaFunc)
+  genMethods.add(gcFunc)
+  genMethods.add(daFunc)
+  val genRec = MRecord(
+    className = genFqn,
+    namespace = pkgName,
+    baseClass = "System.Object",
+    fields = genFields,
+    methods = genMethods,
+    useDefaultCtor = true
+  )
+  items.add(MPRecord(rec = genRec))
+
+  // ── Interface implementation MPImpl rows ──────────────────────────────────────
+  // IAsyncEnumerable<object> — TypeSpec interface: explicit MethodImpl rows required.
+  val iaeSlots: List[MImplSlot] = newList()
+  iaeSlots.add(
+    MImplSlot(
+      ifaceMethodToken = tokIAEGetEnum - 0x0A000000,
+      implMethodToken = 0,
+      ifaceMethodName = "GetAsyncEnumerator",
+      implMethodName = "GetAsyncEnumerator"
+    )
+  )
+  items.add(
+    MPImpl(
+      implData = MImplData(
+        targetTypeDefRow = 0,
+        ifaceTypeToken = tdrTypeSpec(tsIAERow),
+        slots = iaeSlots,
+        targetTypeName = genFqn,
+        ifaceTypeName = "IAsyncEnumerable`1<object>"
+      )
+    )
+  )
+
+  // IAsyncEnumerator<object> — TypeSpec interface: explicit MethodImpl rows required.
+  val iaetSlots: List[MImplSlot] = newList()
+  iaetSlots.add(
+    MImplSlot(
+      ifaceMethodToken = tokIAETMoveNext - 0x0A000000,
+      implMethodToken = 0,
+      ifaceMethodName = "MoveNextAsync",
+      implMethodName = "MoveNextAsync"
+    )
+  )
+  iaetSlots.add(
+    MImplSlot(
+      ifaceMethodToken = tokIAETGetCurrent - 0x0A000000,
+      implMethodToken = 0,
+      ifaceMethodName = "get_Current",
+      implMethodName = "get_Current"
+    )
+  )
+  items.add(
+    MPImpl(
+      implData = MImplData(
+        targetTypeDefRow = 0,
+        ifaceTypeToken = tdrTypeSpec(tsIAETRow),
+        slots = iaetSlots,
+        targetTypeName = genFqn,
+        ifaceTypeName = "IAsyncEnumerator`1<object>"
+      )
+    )
+  )
+
+  // IAsyncDisposable
+  val iasyncDispSlots: List[MImplSlot] = newList()
+  iasyncDispSlots.add(
+    MImplSlot(
+      ifaceMethodToken = 0,
+      implMethodToken = 0,
+      ifaceMethodName = "DisposeAsync",
+      implMethodName = "DisposeAsync"
+    )
+  )
+  items.add(
+    MPImpl(
+      implData = MImplData(
+        targetTypeDefRow = 0,
+        ifaceTypeToken = tdrTypeRef(cctx.trIAsyncDisp),
+        slots = iasyncDispSlots,
+        targetTypeName = genFqn,
+        ifaceTypeName = "System.IAsyncDisposable"
+      )
+    )
+  )
+
+  // ── Kickoff MFunc ─────────────────────────────────────────────────────────────
+  // Allocates the generator, stores user params as fields, initialises _values,
+  // calls RunBody() to eagerly produce all yields, and returns the generator.
+  val kfInsns: List[MInsn] = newList()
+  val kfLocals: List[MsilType] = newList()
+  kfLocals.add(MClass(genFqn))  // local 0: gen instance
+
+  // gen = new Gen()
+  kfInsns.add(MNewobjByName(className = genFqn))
+  kfInsns.add(MStloc(slot = 0))
+
+  // gen._values = new List<object>()
+  kfInsns.add(MLdloc(slot = 0))
+  kfInsns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+  kfInsns.add(MStfldByName(ownerFqn = genFqn, fieldName = "_values"))
+
+  // Copy user params into gen fields: ldloc gen; ldarg i; stfld __pi
+  var kpi = 0
+  while kpi < decl.params.count {
+    kfInsns.add(MLdloc(slot = 0))
+    kfInsns.add(MLdarg(slot = kpi))
+    kfInsns.add(MStfldByName(ownerFqn = genFqn, fieldName = "__p" + toString(kpi)))
+    kpi = kpi + 1
+  }
+
+  // gen.RunBody()
+  kfInsns.add(MLdloc(slot = 0))
+  kfInsns.add(MCallByName(className = genFqn, methodName = "RunBody"))
+
+  // return gen (as IAsyncEnumerable<object>)
+  kfInsns.add(MLdloc(slot = 0))
+  kfInsns.add(MRet)
+
+  val kfRetArgs: List[MsilType] = newList()
+  kfRetArgs.add(MObject)
+  val kfRetTy: MsilType = MGenericInst(
+    typeRefCode = tdrTypeRef(cctx.trIAE1),
+    headFqn = "System.Collections.Generic.IAsyncEnumerable`1",
+    typeArgs = kfRetArgs
+  )
+  val kfParamTypes: List[MsilType] = newList()
+  var kpi2 = 0
+  while kpi2 < decl.params.count {
+    kfParamTypes.add(typeExprToMsilCtx(cctx, decl.params[kpi2].ty, pkgName))
+    kpi2 = kpi2 + 1
+  }
+  fns.add(
+    MFunc(
+      flags = MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG,
+      name = decl.name,
+      params = byrefWrapSigTypes(decl.params, kfParamTypes),
+      ret = kfRetTy,
+      insns = kfInsns,
+      maxStack = 4,
+      locals = kfLocals
+    )
+  )
+}
+
 // Emit the function epilogue block when at least one `return` escaped a
 // protected region through `leave` (#1477).  The epilogue loads the stashed
 // return value (for non-void functions) and rets.  No-op when no return used
@@ -9370,13 +10042,7 @@ func emitEpilogueMsil(fctx: in FuncCtx, insns: in List[MInsn]): Unit {
 }
 
 pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in String): MFunc {
-  val isGenerator = decl.isAsync and funcBodyContainsYieldMsil(decl)
-
-  // Generators return List<object> (the collected yield values), regardless
-  // of what the source-level return type annotation says.
-  val retTy = if isGenerator {
-    MObject
-  } else if startsWith(decl.name, "__lambda_") {
+  val retTy = if startsWith(decl.name, "__lambda_") {
     // Uniform Func ABI (#1877): synthetic lambdas return `object` (a boxed
     // value, or `null` for a void body — coerced in the return path below).
     // liftLambdasMsil sets decl.ret to Object, and the funcRetTypes mirror
@@ -9499,15 +10165,6 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   // block is only emitted below when at least one return actually used it.
   fctx.epilogueLabel = freshLabelMsil(fctx)
 
-  // Generator preamble: allocate a List<object> yield collector and record
-  // its slot index in fctx.yieldSlots so that EYield lowering can append to it.
-  if isGenerator {
-    insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
-    val collSlot = allocSlotMsil(fctx, "__yield_collector", MObject)
-    insns.add(MStloc(slot = collSlot - fctx.paramCount))
-    fctx.yieldSlots.add(collSlot)
-  }
-
   // FFI: a function carrying `@externTarget("Type.Member")` synthesises
   // its body from the BCL target (#370 / Phase R6).  Falls through to
   // the normal body lowering when the annotation is absent or the
@@ -9524,18 +10181,8 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
       case Some(body) -> {
         match body {
           case FBBlock(block) -> {
-            // Three-way dispatch based on function kind:
-            //   generators     → lowerBlockMsil (discard) + yield-collector return
-            //   non-void       → lowerBlockExprMsil (keep trailing value on stack)
-            //   void/Unit      → lowerBlockMsil (discard) + bare MRet
-            if isGenerator {
-              lowerBlockMsil(cctx, fctx, insns, block)
-              if not endsWithReturnMsil(insns) {
-                val collSlot2 = fctx.yieldSlots[0]
-                insns.add(MLdloc(slot = collSlot2 - fctx.paramCount))
-                insns.add(MRet)
-              }
-            } else if retTy != MVoid {
+            // Two-way dispatch: non-void keeps trailing value; void discards.
+            if retTy != MVoid {
               val trailTy = lowerBlockExprMsil(cctx, fctx, insns, block)
               if not endsWithReturnMsil(insns) {
                 // Coerce the trailing value to the declared return type — boxes a
@@ -9553,20 +10200,11 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
           }
           case FBExpr(e) -> {
             lowerExprMsil(cctx, fctx, insns, e)
-            if isGenerator {
-              insns.add(MPop)
-              val collSlot3 = fctx.yieldSlots[0]
-              insns.add(MLdloc(slot = collSlot3 - fctx.paramCount))
-            }
             insns.add(MRet)
           }
         }
       }
       case None -> {
-        if isGenerator {
-          val collSlot4 = fctx.yieldSlots[0]
-          insns.add(MLdloc(slot = collSlot4 - fctx.paramCount))
-        }
         insns.add(MRet)
       }
     }
@@ -9647,7 +10285,7 @@ pub func lowerImplMethodMsil(
   // `self.method()` dispatch via MClass(fctx.className) resolves to the
   // correct methodTokens key.
   val fctx = makeFuncCtxMsil(pkgName, targetTypeName, decl.name, 1 + decl.params.count, declaredRetTyCtx)
-  fctx.slotTicker.add(0)   // slot 0 = this, no name binding
+  fctx.slotTicker.add(0)  // slot 0 = this, no name binding
 
   val insns: List[MInsn] = newList()
 
@@ -9656,7 +10294,7 @@ pub func lowerImplMethodMsil(
   while pi < decl.params.count {
     val p = decl.params[pi]
     val paramTy = typeExprToMsil(p.ty, pkgName)
-    val slot = fctx.slotTicker.count   // 1, 2, …
+    val slot = fctx.slotTicker.count  // 1, 2, …
     fctx.slots.add(p.name, slot)
     fctx.types.add(p.name, paramTy)
     if isByrefMode(p.mode) {
@@ -10306,7 +10944,7 @@ pub func weaveAspectsMsil(file: in SourceFile): SourceFile {
   }
 
   if aspects.count == 0 {
-    return file   // nothing to do
+    return file  // nothing to do
   }
 
   // Build the rewritten item list.
@@ -10548,7 +11186,7 @@ func lowerWireMsil(
   }
   createInsns.add(MRet)
 
-  val createRetTy = MObject   // bootstrap: return object
+  val createRetTy = MObject  // bootstrap: return object
   fns.add(
     MFunc(
       flags = MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG,
@@ -11845,23 +12483,23 @@ func argCoercionInsns(cctx: in CodegenCtx, argTy: in MsilType, paramSig: in Mdr.
   } else {
     val argByte = msilToElemByte(argTy)
     if argByte == paramByte {
-      Some(value = acc)                       // exact: no coercion
+      Some(value = acc)  // exact: no coercion
     } else if paramByte == 0x1C {
-      boxIfNeededMsil(cctx, acc, argTy)       // object param: box value types
+      boxIfNeededMsil(cctx, acc, argTy)  // object param: box value types
       Some(value = acc)
     } else {
       val ra = elemNumericRank(argByte)
       val rp = elemNumericRank(paramByte)
       if ra < 0 or rp < 0 or ra > rp {
-        None                                  // not a supported widening
+        None  // not a supported widening
       } else if paramByte == 0x0A {
-        acc.add(MConvI8)                       // → long
+        acc.add(MConvI8)  // → long
         Some(value = acc)
       } else if paramByte == 0x0D {
-        acc.add(MConvR8)                       // → double
+        acc.add(MConvR8)  // → double
         Some(value = acc)
       } else {
-        None                                  // → R4 / narrower int: unsupported
+        None  // → R4 / narrower int: unsupported
       }
     }
   }
@@ -11931,7 +12569,7 @@ func emitResolvedAutoFfi(
       var bi = 0
       while bi < argBufs.count {
         appendInsnsMsil(insns, argBufs[bi])
-        appendInsnsMsil(insns, coercions[bi])   // exact: empty; widening: conv; object: box
+        appendInsnsMsil(insns, coercions[bi])  // exact: empty; widening: conv; object: box
         bi = bi + 1
       }
       insns.add(MCall(methodToken = tok))
@@ -12077,7 +12715,7 @@ func tryAutoFfiFromMetadata(
     match argTyToSig(t) {
       case None -> {
         bad = true
-      }    // unsupported argument type → legacy path
+      }  // unsupported argument type → legacy path
       case Some(s) -> {
         argBufs.add(buf)
         argTys.add(t)
@@ -12303,14 +12941,14 @@ pub func appendDeriveOverridesMsil(
     //   return <Record>.equals(this, c);
     // RETFALSE: return false; }
     val insns: List[MInsn] = newList()
-    insns.add(MLdarg(slot = 1))                      // obj
-    insns.add(MIsinstByName(className = recordFqn))   // obj as <Record>
+    insns.add(MLdarg(slot = 1))  // obj
+    insns.add(MIsinstByName(className = recordFqn))  // obj as <Record>
     insns.add(MStloc(slot = 0))
     insns.add(MLdloc(slot = 0))
     insns.add(MBrFalse(label = 0))
-    insns.add(MLdarg(slot = 0))                       // this
-    insns.add(MLdloc(slot = 0))                       // c
-    insns.add(MCall(methodToken = eqTok))             // <Record>.equals(this, c): bool
+    insns.add(MLdarg(slot = 0))  // this
+    insns.add(MLdloc(slot = 0))  // c
+    insns.add(MCall(methodToken = eqTok))  // <Record>.equals(this, c): bool
     insns.add(MRet)
     insns.add(MLabel(id = 0))
     insns.add(MLdcI4(v = 0))
@@ -12339,8 +12977,8 @@ pub func appendDeriveOverridesMsil(
     }
     // int GetHashCode() { return <Record>.hash(this); }
     val insns: List[MInsn] = newList()
-    insns.add(MLdarg(slot = 0))                       // this
-    insns.add(MCall(methodToken = hashTok))           // <Record>.hash(this): int
+    insns.add(MLdarg(slot = 0))  // this
+    insns.add(MCall(methodToken = hashTok))  // <Record>.hash(this): int
     insns.add(MRet)
     val ghParams: List[MsilType] = newList()
     val ghLocals: List[MsilType] = newList()
@@ -12453,6 +13091,8 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
           } else {
             synthesizeAsyncSmMsil(cctx, decl, pkgName, items, fns)
           }
+        } else if isGenerator {
+          synthesizeGeneratorMsil(cctx, decl, pkgName, items, fns)
         } else {
           fns.add(lowerFuncMsil(cctx, decl, pkgName))
         }

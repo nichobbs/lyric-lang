@@ -21546,3 +21546,111 @@ already clean.  `lyric-compiler/msil/lowering.l` still refuses on a *different*
 pattern — trailing comments on the fields of a multi-field union case
 (`MEHClause`) — which is item-internal (union-body) trivia, tracked as the next
 sub-task of #2453.
+
+### D-progress-444 — Band 3 Phase 5: `IAsyncEnumerable<object>` generator synthesis (#2070, D092)
+
+**What shipped:**
+
+- **`MIAsyncEnumerable(elemTy: MsilType)`** new case in the `MsilType` union
+  (`lyric-compiler/msil/lowering.l`).  Erased to `ELEMENT_TYPE_OBJECT (0x1C)` in
+  method signatures (generators return an opaque reference from the kickoff function
+  signature's perspective).  Used by `funcRetTypes` to mark generator return types so
+  that `emitCollectionForMsil` dispatches to the async-enumerator protocol.
+
+- **`MCallByName(className, methodName)`** new case in the `MInsn` union
+  (`lyric-compiler/msil/lowering.l`).  Resolves the named MethodDef at lowering time
+  by scanning the TypeDef table for `className` then the MethodDef table for
+  `methodName`.  Used by the generator kickoff to call `RunBody()` on the synthesised
+  class without requiring a pre-computed MethodDef token.
+
+- **`addPackageTokens` �� generator batch row reservation**:
+  Reserves 6 MethodDef rows per generator class (one for each synthesised method:
+  the default `.ctor`, `RunBody`, `GetAsyncEnumerator`, `MoveNextAsync`, `get_Current`,
+  `DisposeAsync`) before the MPFunc rows are assigned, keeping token budgets stable.
+
+- **`addPackageTokens` — generator kickoff return type**:
+  Generator kickoff functions are registered in `funcRetTypes` with return type
+  `MIAsyncEnumerable(MObject)` instead of the old `MObject`, so that call sites
+  see the iterable type and `emitCollectionForMsil` dispatches correctly.
+
+- **`synthesizeGeneratorMsil`** new function in `lyric-compiler/msil/codegen.l`:
+
+  Synthesises the full generator class and kickoff function for one `async func`
+  containing `yield`.  Key steps:
+
+  1. Names the class `<FuncName>__Gen_N` in `pkgName.<FuncName>__Gen_N`.
+  2. Builds idempotent TypeSpecs for `IAsyncEnumerable<object>`,
+     `IAsyncEnumerator<object>`, and `ValueTask<bool>` via `ctxAddTypeSpec`.
+  3. Builds MemberRefs for `ValueTask<bool>::.ctor(!0)`,
+     `ValueTask<bool>::get_Result()`, `IAsyncEnumerator<object>::MoveNextAsync()`,
+     `IAsyncEnumerator<object>::get_Current()`, and
+     `IAsyncEnumerable<object>::GetAsyncEnumerator(CancellationToken)`.
+  4. Declares fields: `_values: object`, `_pos: Int`, `__p0..pN-1` (user param types).
+  5. `RunBody()`: instance method with `paramCount=1` (this), loads `_values` and
+     user params from fields into locals, executes user body, returns void.
+  6. `GetAsyncEnumerator(ct)`: resets `_pos = 0`, returns `this`.
+  7. `MoveNextAsync()`: checks `_pos < _values.Count`, increments if true, returns
+     `new ValueTask<bool>(advance)`.
+  8. `get_Current()`: returns `_values[_pos - 1]`.
+  9. `DisposeAsync()`: zero-inits a `ValueTask` struct local and returns it.
+  10. Emits `MRecord` with `useDefaultCtor = true` and 3 `MPImpl` rows using
+      `tdrTypeSpec(tsRow)` (TypeDefOrRef coded index: `row*4+2`) for generic interfaces.
+  11. Emits kickoff `MFunc`: newobj Gen, init `_values`, copy user params to fields,
+      call `MCallByName(..., "RunBody")`, return gen.
+
+- **`codegenMPackage` IFunc dispatch**: generator branch routes to
+  `synthesizeGeneratorMsil` instead of `lowerFuncMsil`.
+
+- **`lowerFuncMsil` cleanup**: removed generator-specific branches (collect-all
+  `List<object>` preamble, `isGenerator` retTy override, generator `if` guards in
+  FBBlock / FBExpr / None body cases).
+
+- **`emitCollectionForMsil` — async protocol dispatch**:
+  When `iterTy` is `MIAsyncEnumerable(_)`, uses the async-enumerator protocol:
+  zero-init `CancellationToken`, call `GetAsyncEnumerator(ct)`, loop with
+  `MoveNextAsync()` → store struct → `MLdloca + MCall(get_Result)` → `BrFalse`,
+  then `get_Current()` → bind element → execute body.
+
+- **`async_generator_self_test.l`**: 7 new `@test_module` test cases:
+  - Zero-param generator (`genThree`): count check + element value checks.
+  - One-param loop generator (`genUpTo`): 1..4 and empty (n=0) cases.
+  - Two-param loop generator (`genRange`): 3..6 case.
+  - String generator (`genWords`): 3 string values.
+  - Summation via `for x in genUpTo(5)`: total = 15.
+
+- **`SelfHostedMsilBridgeTests.fs` `shm_yield_collect` updated**: replaced the
+  old `items.count` API (which read `.count` from the returned `List<object>`) with
+  `for x in gen() { count = count + 1 }` to match the new `IAsyncEnumerable<object>`
+  return type.
+
+**Regression gate:** All `async_generator_self_test.l` tests pass.  `shm_yield_collect`
+bridge test passes with the new iteration protocol.  843/843 emitter tests green.
+
+**JVM parity:** Generator synthesis is MSIL-only; tracked in issue #2469.
+
+### D-progress-445 — Phase 5 element-type unboxing in `emitCollectionForMsil` (#2070, D092)
+
+**What shipped:**
+
+- **`funcRetTypes` generator element type** (`lyric-compiler/msil/codegen.l`):
+  The `isGen` branch of `addPackageTokens` now captures the generator's declared
+  return type via `typeExprToMsilCtx(cctx, decl.ret, pkgName)` and stores it as
+  the element type in `MIAsyncEnumerable(elemTy = genElemTy)`.  Previously this
+  was always hardcoded to `MObject`, causing arithmetic on loop variables to
+  operate on the boxed object pointer rather than the unboxed integer value.
+
+- **`emitCollectionForMsil` element unboxing** (`lyric-compiler/msil/codegen.l`):
+  The `case MIAsyncEnumerable(iaeElemTy)` arm now calls
+  `castObjectToMsil(cctx, insns, iaeElemTy)` after `get_Current()` and stores
+  the result in a slot typed `iaeElemTy` (not `MObject`).  `bindForPatternMsil`
+  receives the real element type so subsequent operations on the loop variable
+  see the correct MSIL type.  For value types (e.g. `MInt`), this emits
+  `unbox.any int32`; for reference types (e.g. `MString`), it emits
+  `castclass System.String`; for `MObject` it is a no-op.
+
+- **`async_generator_self_test.l`**: test 7 ("generator: sum of genUpTo(5) is 15")
+  now passes.  Previously it returned a garbage value (pointer arithmetic
+  on the boxed object address).  All 7 self-tests green.
+
+**Regression gate:** 7/7 `async_generator_self_test.l` tests pass.  84/84
+`Lyric.Cli.Tests` pass.

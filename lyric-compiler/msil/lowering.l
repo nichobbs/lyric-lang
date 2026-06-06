@@ -119,6 +119,14 @@ pub union MsilType {
   // by bufMsilType / bufMsilTypeWithCtx; these sites must distinguish it from the
   // CLASS variant (MGenericInst) to avoid a CLR verifier type-mismatch.
   case MValueTypeGenericInst(typeRefCode: Int, headFqn: String, typeArgs: List[MsilType])
+  // Lyric async generator — runtime representation is IAsyncEnumerable<object>
+  // (the synthesised generator class).  Encoded as ELEMENT_TYPE_OBJECT (0x1C)
+  // in method signatures (erased to object like MListOf) so the kickoff
+  // function signature is compatible with the existing bootstrap conventions.
+  // emitCollectionForMsil detects this type and uses the async-enumerator
+  // protocol (GetAsyncEnumerator/MoveNextAsync/Current) instead of the
+  // List<object> index-loop protocol.
+  case MIAsyncEnumerable(elemTy: MsilType)
 }
 
 // Return the ECMA-335 ELEMENT_TYPE byte for the given MsilType.
@@ -146,6 +154,7 @@ pub func elementTypeByte(t: in MsilType): Int {
     case MClassRef(_, _)     -> 0x12  // ELEMENT_TYPE_CLASS prefix; TypeRef follows (bufMsilType)
     case MByRef(_)           -> 0x10  // ELEMENT_TYPE_BYREF prefix; pointee follows (bufMsilType)
     case MValueTypeGenericInst(_, _, _) -> 0x15  // GENERICINST prefix; VALUETYPE byte + args follow
+    case MIAsyncEnumerable(_)           -> 0x1C  // erased to object in signatures
   }
 }
 
@@ -588,6 +597,11 @@ pub union MInsn {
   // 2-arg MethodSpec [awaiterMsilTy, CLASS SM] can be built and emitted.
   // `atmbMrRow` is the 1-based MemberRef row for the open-generic method.
   case MCallAwaitUnsafeOnCompleted(smFqn: String, atmbMrRow: Int, awaiterMsilTy: MsilType)
+  // Non-virtual `call` that resolves the MethodDef token from a TypeDef name
+  // and method name at Phase 5 lowering time.  Used by generator kickoffs to
+  // call RunBody() on the synthesised generator class before the MethodDef
+  // table is fully populated (mirrors the MNewobjByName / MLdfldByName pattern).
+  case MCallByName(className: String, methodName: String)
 }
 
 // ── MField / MFunc / MRecord ──────────────────────────────────────────────────
@@ -843,6 +857,26 @@ pub record LoweringCtx {
   // TypeDef row layout, and a throwaway context lacks the pre-seeded stdlib /
   // restored token rows that real body lowering resolves against.
   discovering: List[Bool]
+  // TypeSpec row cache keyed by the same `sigKey` passed to `ctxAddTypeSpec`.
+  // Makes `ctxAddTypeSpec` idempotent: a second call with the same key returns
+  // the existing row instead of creating a duplicate TypeSpec row.  Without
+  // this, generator synthesis and the consumer for-loop both call
+  // `ctxAddTypeSpec("ts_vt_bool", ...)` and create rows N and M (N≠M);
+  // the `MoveNextAsync` MemberRef's blob (interned under "iaet_obj_movenext")
+  // encodes TypeSpec row N in its return type while the consumer's
+  // `MValueTypeRef` local uses row M, causing a token-identity mismatch the
+  // CLR JIT rejects as `BadImageFormatException`.
+  typeSpecRowByKey: Map[String, Int]
+  // MemberRef row cache keyed by the `sigKey` passed to
+  // `ctxAddMemberRefForTypeSpec`.  Makes that function idempotent so that
+  // generator synthesis (which creates MemberRef rows for GetAsyncEnumerator,
+  // MoveNextAsync, etc. to embed in MethodImpl declarations) and the consumer
+  // for-loop (which creates MemberRef rows for the same methods to embed in
+  // callvirt instructions) end up referencing the same MemberRef row.
+  // Without deduplication, the MethodImpl MethodDeclaration points at row M
+  // while the callvirt uses row N (M≠N), and the CLR virtual-dispatch resolver
+  // fails to match the two as the same slot → MissingMethodException.
+  memberRefRowByKey: Map[String, Int]
 }
 
 // Build and intern the Microsoft framework public key token blob.
@@ -947,7 +981,9 @@ pub func newLoweringCtx(packageName: in String,
     typeDefRowFqns  = newList(),
     listTokenCache  = newMap(),
     dictTokenCache  = newMap(),
-    discovering     = newList()
+    discovering     = newList(),
+    typeSpecRowByKey = newMap(),
+    memberRefRowByKey = newMap()
   )
 }
 
@@ -1092,8 +1128,15 @@ pub func ctxAddMemberRef(ctx: in LoweringCtx, parentTypeRefRow: in Int,
 // sigBytes is a type-signature blob (e.g. GENERICINST encoding).
 pub func ctxAddTypeSpec(ctx: in LoweringCtx, sigKey: in String,
                         sigBytes: in List[Byte]): Int {
-  val bSig = ctxInternBlob(ctx, sigKey, sigBytes)
-  addTypeSpec(ctx.tables, TypeSpecRow(signature = bSig))
+  match mapGet(ctx.typeSpecRowByKey, sigKey) {
+    case Some(row) -> row
+    case None -> {
+      val bSig = ctxInternBlob(ctx, sigKey, sigBytes)
+      val row  = addTypeSpec(ctx.tables, TypeSpecRow(signature = bSig))
+      ctx.typeSpecRowByKey.add(sigKey, row)
+      row
+    }
+  }
 }
 
 // Build the #Blob encoding for a MethodSpec instantiation signature
@@ -1174,16 +1217,27 @@ pub func ctxAddMethodSpec(ctx: in LoweringCtx, methodCoded: in Int,
 }
 
 // Add a MemberRef row whose parent is a TypeSpec row (for generic instantiations).
-// Returns the 1-based row index.
+// Idempotent: a second call with the same `sigKey` returns the cached row index
+// instead of emitting a duplicate row.  This guarantees that MethodImpl
+// MethodDeclaration rows and consumer callvirt instructions reference the exact
+// same MemberRef table entry, which the CLR requires for virtual dispatch to
+// resolve correctly.  Returns the 1-based row index.
 pub func ctxAddMemberRefForTypeSpec(ctx: in LoweringCtx, typeSpecRow: in Int,
                                      methodName: in String, sigKey: in String,
                                      sig: in List[Byte]): Int {
-  val sName = ctxInternStr(ctx, methodName)
-  val bSig  = ctxInternBlob(ctx, sigKey, sig)
-  addMemberRef(ctx.tables, MemberRefRow(
-    class = mrpTypeSpec(typeSpecRow),
-    name  = sName,
-    signature = bSig))
+  match mapGet(ctx.memberRefRowByKey, sigKey) {
+    case Some(row) -> row
+    case None -> {
+      val sName = ctxInternStr(ctx, methodName)
+      val bSig  = ctxInternBlob(ctx, sigKey, sig)
+      val row   = addMemberRef(ctx.tables, MemberRefRow(
+        class     = mrpTypeSpec(typeSpecRow),
+        name      = sName,
+        signature = bSig))
+      ctx.memberRefRowByKey.add(sigKey, row)
+      row
+    }
+  }
 }
 
 // Produce a unique string key for an MsilType, for TypeSpec blob deduplication.
@@ -1705,6 +1759,12 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
       val ctorRow = findMethodDefRowOfType(ctx, tdRow, ".ctor")
       if ctorRow > 0 { emitNewobj(mb, 0x06000000 + ctorRow) }
       else { panic("Msil.Lowering: MNewobjByName could not resolve .ctor for type '" + className + "'") }
+    }
+    case MCallByName(className, methodName) -> {
+      val tdRow  = findTypeDefRowByName(ctx, className)
+      val mdRow  = findMethodDefRowOfType(ctx, tdRow, methodName)
+      if mdRow > 0 { emitCall(mb, 0x06000000 + mdRow) }
+      else { panic("Msil.Lowering: MCallByName could not resolve '" + methodName + "' on type '" + className + "'") }
     }
     case MCallAtmbStart(smFqn, atmbMrRow, isGeneric) -> {
       // Resolve MethodSpec for `ATMB[<T>].Start<SM>(ref SM)` at Phase 5.
@@ -2746,6 +2806,27 @@ pub func lowerMImpl(d: in MImplData, ctx: in LoweringCtx): Int {
   addInterfaceImpl(t, InterfaceImplRow(
     class_     = targetRow,
     interface_ = ifaceToken))
+  // For TypeSpec-instantiated generic interfaces (tag = 2), the CLR cannot
+  // resolve implementations via name matching alone — explicit MethodImpl rows
+  // are required.  When a slot carries a pre-resolved ifaceMethodToken (the raw
+  // MemberRef row of the interface method), emit a MethodImpl row that wires
+  // the implementation MethodDef to the interface slot's MemberRef.
+  if (ifaceToken % 4) == 2 {
+    var si = 0
+    while si < d.slots.count {
+      val slot = d.slots[si]
+      if slot.ifaceMethodToken > 0 {
+        val implRow = findMethodDefRowOfType(ctx, targetRow, slot.implMethodName)
+        if implRow > 0 {
+          addMethodImpl(t, MethodImplRow(
+            class_             = targetRow,
+            methodBody         = mdorMethodDef(implRow),
+            methodDeclaration  = mdorMemberRef(slot.ifaceMethodToken)))
+        }
+      }
+      si = si + 1
+    }
+  }
   0
 }
 
