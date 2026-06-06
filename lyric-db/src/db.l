@@ -238,7 +238,10 @@ pub func connect(connStr: in String): Result[DbConnection, DbError]
   requires: connStr.length > 0
 {
   match DbKernel.connectDsn(connStr) {
-    case Ok(connId) -> Ok(NativeConnection(connId = connId))
+    case Ok(connId) -> {
+      val c: DbConnection = NativeConnection(connId = connId)
+      Ok(c)
+    }
     case Err(msg) -> Err(DbError(message = msg, code = "CONNECT_ERROR"))
   }
 }

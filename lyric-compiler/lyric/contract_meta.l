@@ -915,6 +915,17 @@ func lastSegOf(segs: in List[String]): String {
   }
 }
 
+func strListContains(list: in List[String], s: in String): Bool {
+  var j = 0
+  while j < list.count {
+    if list[j] == s {
+      return true
+    }
+    j = j + 1
+  }
+  false
+}
+
 // Build the `pub interface Name { ... }` repr with each abstract
 // method signature.  Default-method bodies and associated types are
 // elided (their full form requires walking ImplMember).
@@ -984,6 +995,16 @@ func reprForOpaque(decl: in OpaqueTypeDecl): String {
 // `pub alias Name = <rhs>` — renders the actual aliased TypeExpr.
 func reprForTypeAlias(decl: in TypeAliasDecl): String {
   "pub alias " + decl.name + renderGenerics(decl.generics) + " = " + renderTypeExpr(decl.rhs)
+}
+
+// `extern type Name[T] = "Clr.Fully.Qualified.Name"` — renders the CLR
+// binding declaration so a cross-package consumer can resolve function
+// signatures that reference this extern type.  Mirrors the F# writer's
+// `IExternType _ -> true` visibility rule: all extern types are included
+// regardless of `pub`, since they act as type anchors for any public
+// function whose signature references them.
+func reprForExternType(decl: in ExternTypeDecl): String {
+  "extern type " + decl.name + renderGenerics(decl.generics) + " = \"" + decl.clrName + "\""
 }
 
 // Construct a default ContractDecl with the three required fields and
@@ -1085,6 +1106,32 @@ pub func levelOfFile(file: in SourceFile): String {
 @stable(since = "0.1")
 pub func buildContractFromFile(file: in SourceFile, version: in String): Contract {
   val decls: List[ContractDecl] = newList()
+
+  // Pre-pass: collect names of all pub type-like items so impl-block
+  // filtering can check whether the impl target is a public type.
+  // Impl blocks whose target is a non-pub type (e.g. `impl MailSender for
+  // NativeSender` where NativeSender is private) must be excluded: the
+  // synthesised preamble won't declare the private type, causing T0010
+  // "unknown type" during round-trip type-checking.
+  val pubTypeNames: List[String] = newList()
+  var pi = 0
+  while pi < file.items.count {
+    val pit = file.items[pi]
+    if isPubVis(pit.visibility) {
+      match pit.kind {
+        case IRecord(r) -> pubTypeNames.add(r.name)
+        case IUnion(u) -> pubTypeNames.add(u.name)
+        case IEnum(e) -> pubTypeNames.add(e.name)
+        case IInterface(ix) -> pubTypeNames.add(ix.name)
+        case IDistinctType(d) -> pubTypeNames.add(d.name)
+        case IOpaque(o) -> pubTypeNames.add(o.name)
+        case IProtected(p) -> pubTypeNames.add(p.name)
+        case _ -> ()
+      }
+    }
+    pi = pi + 1
+  }
+
   var i = 0
   while i < file.items.count {
     val it = file.items[i]
@@ -1102,19 +1149,21 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
       }
     }
     // `impl` blocks carry no visibility token (they are not pub/private), so
-    // they sit outside the `isPubVis` guard above.  Record the impl→interface
-    // binding so a cross-package consumer learns which interface a public
-    // record satisfies — the consumer needs it to register the record's
-    // instance methods (it dispatches `store.set(...)` on the concrete record
-    // type, keyed `<pkg>.<Record>/<method>`, which is absent from the type
-    // surface otherwise) (#1602).  The repr is the head-only `impl I for T {}`
-    // form: an empty body re-parses + re-typechecks cleanly, and the method
-    // signatures are recovered from the already-emitted `interface` decl.
+    // they sit outside the `isPubVis` guard above.  Only include impl blocks
+    // whose target type is pub-declared: a private-target impl (e.g.
+    // `impl MailSender for NativeSender`) would reference a type absent from
+    // the synthesised preamble and cause T0010 during round-trip type-checking.
+    // Extern types are always included regardless of visibility: they act as
+    // type anchors for public function signatures, matching the F# writer's
+    // `IExternType _ | IProtected _ -> true` visibility rule.
     match it.kind {
       case IImpl(idecl) -> {
-        match reprForImplHead(idecl) {
-          case Some(repr) -> decls.add(basicDecl("impl", implReprName(idecl), repr))
-          case None -> ()
+        val targetName = implTargetSimpleName(idecl)
+        if strListContains(pubTypeNames, targetName) {
+          match reprForImplHead(idecl) {
+            case Some(repr) -> decls.add(basicDecl("impl", implReprName(idecl), repr))
+            case None -> ()
+          }
         }
       }
       // Protected types are emitted regardless of visibility: their name
@@ -1123,6 +1172,9 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
       // contract source must always declare the anchor.  Matches the F#
       // writer's `IExternType _ | IProtected _ -> true` visibility rule.
       case IProtected(p) -> decls.add(basicDecl("opaque", p.name, reprForProtected(p)))
+      case IExternType(et) -> {
+        decls.add(basicDecl("extern_type", et.name, reprForExternType(et)))
+      }
       case _ -> ()
     }
     i = i + 1

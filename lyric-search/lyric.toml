@@ -25,4 +25,4 @@ meilisearch   = []   # Meilisearch (Meilisearch .NET client)
 # feature = "elasticsearch" — Elasticsearch .NET client
 "Elastic.Clients.Elasticsearch" = "8.14.0"
 # feature = "meilisearch" — Meilisearch .NET client
-"Meilisearch"                   = "0.21.0"
+"Meilisearch"                   = "0.18.0"

@@ -11,7 +11,7 @@ output          = "single"
 output_assembly = "Testing.dll"
 
 [project.packages]
-"Testing" = "src"
+"Testing" = "src/testing.l"
 
 [project.tests]
 "Testing.TestingTests" = "tests/testing_tests.l"

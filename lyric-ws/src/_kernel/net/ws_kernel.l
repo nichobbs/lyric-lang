@@ -1,16 +1,15 @@
-// Ws.Kernel.Net — in-process WebSocket connection registry and rate limiter.
-//
-// Path-finder scope (#733, Phase 6): pure-Lyric implementation.  Real
-// ASP.NET Core WebSocket integration (HTTP upgrade, MessageReceived loop,
-// Kestrel binding) is tracked under #778 — that path requires the
-// lyric-web Kestrel shim.
-//
-// `send` / `broadcast` validate bookkeeping state; per-connection frame
-// buffering / real byte dispatch are deferred to #778.
-//
-// Only active when compiled with feature = "dotnet".
-// See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-
+//! Ws.Kernel.Net — in-process WebSocket connection registry and rate limiter.
+//!
+//! Path-finder scope (#733, Phase 6): pure-Lyric implementation.  Real
+//! ASP.NET Core WebSocket integration (HTTP upgrade, MessageReceived loop,
+//! Kestrel binding) is tracked under #778 — that path requires the
+//! lyric-web Kestrel shim.
+//!
+//! `send` / `broadcast` validate bookkeeping state; per-connection frame
+//! buffering / real byte dispatch are deferred to #778.
+//!
+//! Only active when compiled with feature = "dotnet".
+//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 @cfg(feature = "dotnet")
 package Ws.Kernel.Net
 
@@ -37,11 +36,10 @@ func monitorEnter[T](obj: in T): Unit = ()
 func monitorExit[T](obj: in T): Unit = ()
 
 // ─── Connection registry ──────────────────────────────────────────────────────
-
 record RegistryMeta {
   var maxMessageSizeBytes: Int = 1024
-  var pingIntervalMs:      Int = 0
-  var openCount:           Int = 0
+  var pingIntervalMs: Int = 0
+  var openCount: Int = 0
 }
 
 record ConnState {
@@ -53,12 +51,14 @@ record HandleCounter {
   var next: Int = 0
 }
 
-val handleCounter: HandleCounter                     = HandleCounter()
-val registryMap:  ConcurrentDict[Int, RegistryMeta]  = newConcurrentDict()
+val handleCounter: HandleCounter = HandleCounter()
+
+val registryMap: ConcurrentDict[Int, RegistryMeta] = newConcurrentDict()
+
 // connMap is populated by registerConnection (the HTTP upgrade entry point).
 // That function is deferred to #778 (lyric-web Kestrel shim); until then,
 // send/isConnected/connectionCount operate on an empty map in path-finder scope.
-val connMap:      ConcurrentDict[String, ConnState]   = newConcurrentDict()
+val connMap: ConcurrentDict[String, ConnState] = newConcurrentDict()
 
 func connKey(registryHandle: in Int, connectionId: in String): String {
   return registryHandle.toString() + ":" + connectionId
@@ -75,7 +75,9 @@ func registerConnection(registryHandle: in Int, connectionId: in String): Result
     return Err("unknown registry handle " + registryHandle.toString())
   }
   monitorEnter(meta)
-  defer { monitorExit(meta) }
+  defer {
+    monitorExit(meta)
+  }
   val key = connKey(registryHandle, connectionId)
   val state = ConnState(isOpen = true)
   if not cdTryAdd(connMap, key, state) {
@@ -89,7 +91,9 @@ func registerConnection(registryHandle: in Int, connectionId: in String): Result
 // connection was open (caller should decrement the registry open count).
 func tryCloseConn(state: in ConnState): Bool {
   monitorEnter(state)
-  defer { monitorExit(state) }
+  defer {
+    monitorExit(state)
+  }
   if state.isOpen {
     state.isOpen = false
     return true
@@ -102,14 +106,16 @@ func decrementOpenCount(handle: in Int): Unit {
   var meta: RegistryMeta = default()
   if cdTryGetValue(registryMap, handle, meta) {
     monitorEnter(meta)
-    defer { monitorExit(meta) }
+    defer {
+      monitorExit(meta)
+    }
     if meta.openCount > 0 {
       meta.openCount = meta.openCount - 1
     }
   }
 }
 
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func createRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): Result[Int, String]
   requires: maxMessageSizeBytes >= 1024
   requires: pingIntervalMs >= 0
@@ -121,20 +127,20 @@ pub func createRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): Re
     return Err("createRegistry: pingIntervalMs must be >= 0")
   }
   monitorEnter(handleCounter)
-  defer { monitorExit(handleCounter) }
+  defer {
+    monitorExit(handleCounter)
+  }
   handleCounter.next = handleCounter.next + 1
   val handle = handleCounter.next
-  val meta = RegistryMeta(
-    maxMessageSizeBytes = maxMessageSizeBytes,
-    pingIntervalMs      = pingIntervalMs,
-    openCount           = 0
-  )
+  val meta = RegistryMeta(maxMessageSizeBytes = maxMessageSizeBytes, pingIntervalMs = pingIntervalMs, openCount = 0)
   val _ = cdTryAdd(registryMap, handle, meta)
   Ok(handle)
 }
 
-@stable(since="0.1")
-pub func send(registryHandle: in Int, connectionId: in String, messageType: in String, data: in String): Result[Unit, String]
+@stable(since = "0.1")
+pub func send(
+  registryHandle: in Int, connectionId: in String, messageType: in String, data: in String
+): Result[Unit, String]
   requires: connectionId.length > 0
   requires: messageType.length > 0
 {
@@ -149,7 +155,7 @@ pub func send(registryHandle: in Int, connectionId: in String, messageType: in S
   Ok(())
 }
 
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func broadcast(registryHandle: in Int, messageType: in String, data: in String): Result[Unit, String]
   requires: messageType.length > 0
 {
@@ -161,7 +167,7 @@ pub func broadcast(registryHandle: in Int, messageType: in String, data: in Stri
   Ok(())
 }
 
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func close(registryHandle: in Int, connectionId: in String, code: in Int, reason: in String): Result[Unit, String]
   requires: connectionId.length > 0
 {
@@ -177,7 +183,7 @@ pub func close(registryHandle: in Int, connectionId: in String, code: in Int, re
   Ok(())
 }
 
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func connectionCount(registryHandle: in Int): Int {
   var meta: RegistryMeta = default()
   if cdTryGetValue(registryMap, registryHandle, meta) {
@@ -186,7 +192,7 @@ pub func connectionCount(registryHandle: in Int): Int {
   return 0
 }
 
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func isConnected(registryHandle: in Int, connectionId: in String): Bool
   requires: connectionId.length > 0
 {
@@ -206,20 +212,21 @@ pub func isConnected(registryHandle: in Int, connectionId: in String): Bool
 // up to 2× the nominal rate at window boundaries; the production rate limiter
 // (#778) should implement the sliding window if boundary bursting is a concern.
 // The burst budget is one-shot: it does not refill when the window resets.
-
 record RateEntry {
-  var windowStartMs:  Long = 0i64
-  var usedInWindow:   Int  = 0
-  var burstAvailable: Int  = 0
+  var windowStartMs: Long = 0i64
+  var usedInWindow: Int = 0
+  var burstAvailable: Int = 0
 }
 
 // Single global lock serialises all rate-limiter mutations.
-record RateLock {}
+record RateLock {
+}
 
-val rateLock:     RateLock                           = RateLock()
-val rateLimitMap: ConcurrentDict[String, RateEntry]  = newConcurrentDict()
+val rateLock: RateLock = RateLock()
 
-@stable(since="0.1")
+val rateLimitMap: ConcurrentDict[String, RateEntry] = newConcurrentDict()
+
+@stable(since = "0.1")
 pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in Int): Bool
   requires: key.length > 0
   requires: messagesPerMinute > 0
@@ -227,38 +234,36 @@ pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in
 {
   val nowMs = nowEpochMillis()
   monitorEnter(rateLock)
-  defer { monitorExit(rateLock) }
+  defer {
+    monitorExit(rateLock)
+  }
 
-  var entry: RateEntry = default()
-  if not cdTryGetValue(rateLimitMap, key, entry) {
-    val newEntry = RateEntry(
-      windowStartMs  = nowMs,
-      usedInWindow   = 0,
-      burstAvailable = burstSize
-    )
+  var re: RateEntry = default()
+  if not cdTryGetValue(rateLimitMap, key, re) {
+    val newEntry = RateEntry(windowStartMs = nowMs, usedInWindow = 0, burstAvailable = burstSize)
     val _ = cdTryAdd(rateLimitMap, key, newEntry)
-    var entry2: RateEntry = default()
-    if cdTryGetValue(rateLimitMap, key, entry2) {
-      entry = entry2
+    var re2: RateEntry = default()
+    if cdTryGetValue(rateLimitMap, key, re2) {
+      re = re2
     } else {
-      entry = newEntry
+      re = newEntry
     }
   }
 
-  val elapsed: Long = nowMs - entry.windowStartMs
+  val elapsed: Long = nowMs - re.windowStartMs
   if elapsed >= 60000i64 {
-    entry.windowStartMs = nowMs
-    entry.usedInWindow  = 0
+    re.windowStartMs = nowMs
+    re.usedInWindow = 0
   }
 
-  if entry.usedInWindow < messagesPerMinute {
-    entry.usedInWindow = entry.usedInWindow + 1
+  if re.usedInWindow < messagesPerMinute {
+    re.usedInWindow = re.usedInWindow + 1
     return true
   }
 
-  if entry.burstAvailable > 0 {
-    entry.burstAvailable = entry.burstAvailable - 1
-    entry.usedInWindow   = entry.usedInWindow + 1
+  if re.burstAvailable > 0 {
+    re.burstAvailable = re.burstAvailable - 1
+    re.usedInWindow = re.usedInWindow + 1
     return true
   }
 
