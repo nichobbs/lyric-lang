@@ -2088,6 +2088,10 @@ func localVarSlotByte(t: in MsilType): Int {
   match t {
     case MClass(_) -> 0x1C
     case MGenericInst(_, _, _) -> 0x1C
+    // Concrete collections occupy object slots (they degrade to 0x1C in the
+    // LocalVarSig), so slot-compatibility keys them as object too (#2361).
+    case MConcreteList(_) -> 0x1C
+    case MConcreteMap(_, _) -> 0x1C
     case other -> elementTypeByte(other)
   }
 }
@@ -2116,6 +2120,14 @@ pub func allocSlotMsil(fctx: in FuncCtx, name: in String, ty: in MsilType): Int 
     case Some(existing) -> {
       val existingTy = match mapGet(fctx.types, name) { case Some(t) -> t; case None -> ty }
       if localVarSlotByte(existingTy) == localVarSlotByte(ty) {
+        // Slot reused, but the tracked type must still be refreshed to the new
+        // binding's type: two same-named locals that share an object-byte slot
+        // (e.g. a `List[InterpolatedSegment]` then a `List[String]` in two
+        // match arms) must each see their own element type, or the stale type
+        // mis-routes a later EIndex/`.add` (harmless while every list is
+        // `List<object>`, a fault once element types are concrete — #2361).
+        fctx.types.remove(name)
+        fctx.types.add(name, ty)
         existing
       } else {
         val slot = fctx.slotTicker.count
