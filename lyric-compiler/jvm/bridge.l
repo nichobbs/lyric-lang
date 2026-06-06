@@ -273,10 +273,11 @@ func codegenPackageInto(
   file: in SourceFile,
   registry: in Map[String, JvmFuncSig],
   caseReg: in Map[String, List[JvmCaseField]],
+  ctorReg: in Map[String, String],
   autoFfi: in AutoFfiCtx,
   acc: in List[BuiltClass],
 ): Unit {
-  val pkg = codegenPackageWithSigs(file, registry, caseReg, autoFfi)
+  val pkg = codegenPackageWithSigs(file, registry, caseReg, ctorReg, autoFfi)
   val pool = poolNew()
   val classFiles = lowerPackage(pkg, pool)
   var j = 0
@@ -343,10 +344,13 @@ pub func compileToJarBundled(
   collectFileSigs(userFile, registry)
   val caseReg: Map[String, List[JvmCaseField]] = newMap()
   collectFileCases(userFile, caseReg)
+  val ctorReg: Map[String, String] = newMap()
+  collectFileCtors(userFile, ctorReg)
   var ri = 0
   while ri < stdlibFiles.count {
     collectFileSigs(stdlibFiles[ri], registry)
     collectFileCases(stdlibFiles[ri], caseReg)
+    collectFileCtors(stdlibFiles[ri], ctorReg)
     ri = ri + 1
   }
 
@@ -386,7 +390,7 @@ pub func compileToJarBundled(
 
   // User package first (its codegen failing is fatal).
   match runMiddleEnd(userFile, importedPkgs) {
-    case Some(f) -> codegenPackageInto(f, registry, caseReg, autoFfi, allClasses)
+    case Some(f) -> codegenPackageInto(f, registry, caseReg, ctorReg, autoFfi, allClasses)
     case None -> return false
   }
 
@@ -398,7 +402,7 @@ pub func compileToJarBundled(
     val f = toBundle[bi]
     try {
       match runMiddleEnd(f, importedPkgs) {
-        case Some(ff) -> codegenPackageInto(ff, registry, caseReg, autoFfi, allClasses)
+        case Some(ff) -> codegenPackageInto(ff, registry, caseReg, ctorReg, autoFfi, allClasses)
         case None -> ()
       }
     } catch Bug as _ {

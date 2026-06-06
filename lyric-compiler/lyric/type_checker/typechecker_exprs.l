@@ -1704,6 +1704,19 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
         bindPatternTyped(sc, tbl, diag, patterns[0], ty)
       }
     }
+    case PParen(inner) -> {
+      bindPatternTyped(sc, tbl, diag, inner, ty)
+    }
+    case PTypeTest(inner, tyExpr) -> {
+      // `case x is T ->` narrows the scrutinee to `T`, so the inner pattern (and
+      // any binding it introduces) is typed at `T` — letting `x.field` resolve
+      // against the tested type rather than the wider scrutinee type.
+      val ctx = newGenericContext()
+      val testTy = resolveType(tbl, ctx, diag, tyExpr)
+      bindPatternTyped(sc, tbl, diag, inner, testTy)
+    }
+    case PRange(_, _, _) -> {
+    }
     case _ -> {
     }
   }

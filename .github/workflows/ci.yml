@@ -503,6 +503,45 @@ jobs:
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/conv_methods_self_test.l
 
+      # Pattern-lowering self-test (#2455).  Exercises the five match-arm pattern
+      # forms that the self-hosted MSIL and JVM backends previously left
+      # unhandled in `lowerPatternTest` / `lowerPatternBind` — `PParen`,
+      # `PRange`, `PRecord`, `PTuple`, `PTypeTest` — plus the supporting
+      # record/union/tuple construction, field access, and call-site argument
+      # coercion the JVM target needed to run them.  Run on BOTH targets:
+      # parity is asserted, not deferred.  Imports only `Std.*`.
+      - name: Pattern-lowering self-test (native lyric test, dotnet)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping pattern-lowering self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping pattern-lowering self-test"
+            exit 0
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/jvm/pattern_lowering_self_test.l
+
+      - name: Pattern-lowering self-test on JVM (native lyric test --target jvm)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping pattern-lowering JVM self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping pattern-lowering JVM self-test"
+            exit 0
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/pattern_lowering_self_test.l
+
       # Auto-FFI metadata-resolution self-test — exercises the self-hosted
       # MSIL emitter resolving `ExternTypeName.method(args)` calls against
       # real .NET reference-assembly metadata (epic #1622, Phase 3c) and

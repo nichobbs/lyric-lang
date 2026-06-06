@@ -59,6 +59,32 @@ pub record JvmCaseField {
   ty: JvmType
 }
 
+// True when a JVM class name denotes a union case (`Pkg/Union$Case`) rather
+// than a record (`Pkg/Point`) — union cases are nested with a `$` separator.
+pub func jvmClassIsUnionCase(cls: in String): Bool {
+  var i = 0
+  while i < cls.length {
+    if cls[i] == '$' {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// The union's sealed-interface JVM name for a case class (`Pkg/Union$Case` →
+// `Pkg/Union`); returns the input unchanged for a record class (no `$`).
+pub func jvmUnionBaseClass(cls: in String): String {
+  var i = 0
+  while i < cls.length {
+    if cls[i] == '$' {
+      return cls.substring(0, i)
+    }
+    i = i + 1
+  }
+  cls
+}
+
 // FuncCtx threads mutable state through expression and statement lowering.
 // `slotTicker` and `labelTicker` are singleton lists whose `.count` is the
 // current next-slot / next-label integer; `.add` advances them.
@@ -77,8 +103,18 @@ pub record FuncCtx {
   // bare function name.  Empty for hand-built / generator-internal contexts.
   funcSigs: Map[String, JvmFuncSig]
   // Union case field types for precise match-binding (see JvmCaseField).
-  // Keyed by case class JVM name, e.g. "Pkg/Union$Case".
+  // Keyed by case class JVM name, e.g. "Pkg/Union$Case".  Record types are
+  // registered here too (keyed by their plain class name, e.g. "Pkg/Point")
+  // so record-field access and record-pattern binding resolve field types.
   caseFields: Map[String, List[JvmCaseField]]
+  // Constructible nominal types (records + union cases): short name → JVM class
+  // name (`Point` → `Pkg/Point`, `Circle` → `Pkg/Shape$Circle`).  Drives
+  // construction-call lowering and record/union pattern class resolution; field
+  // lists come from `caseFields` keyed by the resolved class name.  (A plain
+  // `Map[String, String]` rather than a record-valued map — the F# stage-0
+  // bootstrap emitter mis-resolves field access through a `Map[String, <record>]`
+  // in the whole-compiler bundle compile.)
+  ctors: Map[String, String]
   // Extern-type alias → Java FQN, e.g. "Math" → "java.lang.Math".
   externTypes: Map[String, String]
   // Auto-FFI resolution context for JDK class loading.
@@ -160,6 +196,26 @@ pub func lookupSlot(ctx: in FuncCtx, name: in String): Option[Int] {
 // Look up the JVM type of a named local.
 pub func lookupType(ctx: in FuncCtx, name: in String): Option[JvmType] {
   mapGet(ctx.types, name)
+}
+
+// Resolve the declared JVM type of field `fieldName` on the record/union-case
+// JVM class `cls`, via the type registry.  `None` when the class or field is
+// unknown (e.g. an erased Object receiver, or a BCL/extern type).
+pub func recordFieldType(ctx: in FuncCtx, cls: in String, fieldName: in String): Option[JvmType] {
+  val fldsOpt: Option[List[JvmCaseField]] = mapGet(ctx.caseFields, cls)
+  match fldsOpt {
+    case Some(flds) -> {
+      var i = 0
+      while i < flds.count {
+        if flds[i].name == fieldName {
+          return Some(value = flds[i].ty)
+        }
+        i = i + 1
+      }
+      None
+    }
+    case None -> None
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -756,8 +812,19 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             )
             JRef(className = "java/lang/String")
           } else {
-            // Generic JRef member access — record field lowering deferred.
-            JRef(className = "java/lang/Object")
+            // Record field access: resolve the field's declared type from the
+            // type registry (records are registered in `caseFields` keyed by
+            // their JVM class name) and emit a `getfield` with the precise
+            // descriptor.  Unknown receivers fall back to an Object result.
+            match recordFieldType(ctx, cls, memberName) {
+              case Some(fty) -> {
+                insns.add(LGetfield(owner = cls, name = memberName, t = fty))
+                fty
+              }
+              case None -> {
+                JRef(className = "java/lang/Object")
+              }
+            }
           }
         }
         case _ -> {
@@ -789,12 +856,31 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
 
     // ── Tuple ─────────────────────────────────────────────────────────────
     case ETuple(exprs) -> {
-      // Bootstrap: lower first element only (tuples not fully supported).
-      if exprs.count > 0 {
-        lowerExpr(ctx, insns, exprs[0])
-      } else {
-        JVoid
+      // A tuple's runtime representation is a `java/util/ArrayList` holding each
+      // element boxed to `Object` (mirroring the MSIL backend's `List<object>`
+      // representation).  `PTuple` patterns read elements back by index via
+      // `get(i)`.  Element static types are erased to `Object`; precise typing is
+      // re-established by the consuming context (pattern sub-binding, call-site
+      // coercion to a declared parameter type).
+      insns.add(LNew(className = "java/util/ArrayList"))
+      insns.add(LDup)
+      val tInitPs: List[JvmType] = newList()
+      insns.add(LInvokespecial(owner = "java/util/ArrayList", name = "<init>", params = tInitPs, ret = JVoid))
+      val tupSlot = allocSlot(ctx, "__tuple_" + toString(ctx.slotTicker.count), JRef(className = "java/util/ArrayList"))
+      insns.add(LAstore(slot = tupSlot))
+      var ti = 0
+      while ti < exprs.count {
+        insns.add(LAload(slot = tupSlot))
+        val elemTy = lowerExpr(ctx, insns, exprs[ti])
+        boxIfNeeded(insns, elemTy)
+        val tAddPs: List[JvmType] = newList()
+        tAddPs.add(JRef(className = "java/lang/Object"))
+        insns.add(LInvokevirtual(owner = "java/util/ArrayList", name = "add", params = tAddPs, ret = JBoolean))
+        insns.add(LPop)
+        ti = ti + 1
       }
+      insns.add(LAload(slot = tupSlot))
+      JRef(className = "java/util/ArrayList")
     }
 
     // ── List literal ──────────────────────────────────────────────────────
@@ -1434,6 +1520,85 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
 
 // Emit a runtime test for a pattern.  Jumps to `failLabel` if the test
 // fails.  The scrutinee is in local slot `scrutSlot` with type `scrutTy`.
+// Resolve the JVM case-class name for a `PConstructor` / nullary-binding
+// pattern.  Normally the scrutinee's static type names the union interface
+// (`Pkg/Shape`), so the case class is `<iface>$<case>`.  When the scrutinee is
+// erased to `Object` / `ArrayList` (e.g. a tuple element), fall back to the
+// constructor registry (keyed by the case's short name).  Returns "" when
+// unresolvable.
+func resolveCaseClassJvm(ctx: in FuncCtx, head: in ModulePath, scrutTy: in JvmType): String {
+  val caseName = lastSegment(head)
+  match scrutTy {
+    case JRef(baseCls) -> {
+      if not (baseCls == "java/lang/Object") and not (baseCls == "java/util/ArrayList") {
+        baseCls + "$" + caseName
+      } else {
+        match mapGet(ctx.ctors, caseName) {
+          case Some(cls) -> cls
+          case None -> ""
+        }
+      }
+    }
+    case _ -> match mapGet(ctx.ctors, caseName) { case Some(cls) -> cls; case None -> "" }
+  }
+}
+
+// Read tuple element `idx` from the `ArrayList` tuple in `tupSlot` into a fresh
+// `Object` local and return its slot.  Used by `PTuple` test and bind.
+func extractTupleElem(ctx: in FuncCtx, insns: in List[LInsn], tupSlot: in Int, tupTy: in JvmType, idx: in Int): Int {
+  emitLoad(insns, tupSlot, tupTy)
+  insns.add(LCheckcast(className = "java/util/ArrayList"))
+  insns.add(LIconst(v = idx))
+  val getPs: List[JvmType] = newList()
+  getPs.add(JInt)
+  insns.add(
+    LInvokevirtual(
+      owner = "java/util/ArrayList",
+      name = "get",
+      params = getPs,
+      ret = JRef(className = "java/lang/Object")
+    )
+  )
+  val elemSlot = allocSlot(
+    ctx,
+    "__tupelem_" + toString(idx) + "_" + toString(ctx.slotTicker.count),
+    JRef(className = "java/lang/Object")
+  )
+  emitStore(insns, elemSlot, JRef(className = "java/lang/Object"))
+  elemSlot
+}
+
+// True when `ty` is a (possibly boxed) reference rather than a stack primitive.
+func isRefJvm(ty: in JvmType): Bool {
+  match ty {
+    case JRef(_) -> true
+    case JArray(_) -> true
+    case _ -> false
+  }
+}
+
+// Read field `fieldName` (declared type `fty`) of record/case class `cls` from
+// the value in `scrutSlot` into a fresh local and return its slot.  Used to
+// recurse pattern tests/binds into a record field.
+func extractClassField(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  scrutSlot: in Int,
+  scrutTy: in JvmType,
+  cls: in String,
+  fieldName: in String,
+  fty: in JvmType,
+): Int {
+  emitLoad(insns, scrutSlot, scrutTy)
+  insns.add(LCheckcast(className = cls))
+  insns.add(LGetfield(owner = cls, name = fieldName, t = fty))
+  val fSlot = allocSlot(ctx, "__rfld_" + fieldName + "_" + toString(ctx.slotTicker.count), fty)
+  emitStore(insns, fSlot, fty)
+  fSlot
+}
+
+// Emit a runtime test for a pattern.  Jumps to `failLabel` if the test
+// fails.  The scrutinee is in local slot `scrutSlot` with type `scrutTy`.
 func lowerPatternTest(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -1444,30 +1609,60 @@ func lowerPatternTest(
 ): Unit {
   match pat.kind {
     case PWildcard -> insns.add(LNop)
-    case PBinding(_, innerOpt) -> {
+    case PBinding(name, innerOpt) -> {
       match innerOpt {
         case Some(inner) -> lowerPatternTest(ctx, insns, inner, scrutSlot, scrutTy, failLabel)
-        case None -> insns.add(LNop)
+        case None -> {
+          // A single-segment `case Foo ->` parses as a binding; if `Foo` names a
+          // known union case, emit the isinst test that `PConstructor` would, so
+          // it does not behave as an unconditional catch-all and hijack later
+          // arms.  Otherwise it is a genuine variable bind — always matches.
+          match mapGet(ctx.ctors, name) {
+            case Some(cls) -> {
+              if jvmClassIsUnionCase(cls) {
+                emitLoad(insns, scrutSlot, scrutTy)
+                insns.add(LInstanceof(className = cls))
+                insns.add(LIfeq(label = failLabel))
+              }
+            }
+            case None -> ()
+          }
+        }
       }
     }
     case PLiteral(lit) -> {
-      emitLoad(insns, scrutSlot, scrutTy)
+      val scrutIsRef = isRefJvm(scrutTy)
       match lit {
         case LInt(v, suffix, _) -> {
           // Match the scrutinee width: an `i64`/`u64`-suffixed pattern literal
           // (or one outside Int32 range) compares as a long (lcmp), else as an
-          // int (if_icmpne).  Mixing widths corrupts the operand stack.
-          val isLong = match suffix { case I64 -> true; case U64 -> true; case _ -> false }
-          if (not isLong) and v >= -2147483648i64 and v <= 2147483647i64 {
-            insns.add(LIconst(v = longToInt(v)))
-            insns.add(LIfIcmpne(label = failLabel))
-          } else {
+          // int (if_icmpne).  A boxed scrutinee (e.g. a tuple element) is
+          // checkcast to its wrapper and unboxed first.
+          val useLong = match suffix { case I64 -> true; case U64 -> true; case _ -> (v < -2147483648i64 or v > 2147483647i64) }
+          emitLoad(insns, scrutSlot, scrutTy)
+          if useLong {
+            if scrutIsRef {
+              insns.add(LCheckcast(className = "java/lang/Long"))
+              insns.add(LUnboxLong)
+            }
             insns.add(LLconst(v = v))
             insns.add(LLcmp)
             insns.add(LIfne(label = failLabel))
+          } else {
+            if scrutIsRef {
+              insns.add(LCheckcast(className = "java/lang/Integer"))
+              insns.add(LUnboxInt)
+            }
+            insns.add(LIconst(v = longToInt(v)))
+            insns.add(LIfIcmpne(label = failLabel))
           }
         }
         case LBool(value) -> {
+          emitLoad(insns, scrutSlot, scrutTy)
+          if scrutIsRef {
+            insns.add(LCheckcast(className = "java/lang/Boolean"))
+            insns.add(LUnboxBool)
+          }
           if value {
             insns.add(LIconst(v = 1))
           } else {
@@ -1475,7 +1670,37 @@ func lowerPatternTest(
           }
           insns.add(LIfIcmpne(label = failLabel))
         }
+        case LChar(cp) -> {
+          emitLoad(insns, scrutSlot, scrutTy)
+          if scrutIsRef {
+            insns.add(LCheckcast(className = "java/lang/Character"))
+            insns.add(LUnboxChar)
+          }
+          insns.add(LIconst(v = cp))
+          insns.add(LIfIcmpne(label = failLabel))
+        }
+        case LFloat(fv, _, _) -> {
+          emitLoad(insns, scrutSlot, scrutTy)
+          if scrutIsRef {
+            insns.add(LCheckcast(className = "java/lang/Double"))
+            insns.add(LUnboxDouble)
+          }
+          insns.add(LDconst(v = fv))
+          insns.add(LDcmpl)
+          insns.add(LIfne(label = failLabel))
+        }
         case LString(s) -> {
+          emitLoad(insns, scrutSlot, scrutTy)
+          // The receiver of String.equals must be statically a String; narrow an
+          // erased/boxed scrutinee (e.g. a tuple element) before the call.
+          match scrutTy {
+            case JRef(c) -> {
+              if not (c == "java/lang/String") {
+                insns.add(LCheckcast(className = "java/lang/String"))
+              }
+            }
+            case _ -> ()
+          }
           insns.add(LPushString(s = s))
           val eqPs: List[JvmType] = newList()
           eqPs.add(JRef(className = "java/lang/Object"))
@@ -1484,30 +1709,139 @@ func lowerPatternTest(
         }
         case LUnit -> {
           // Unit always matches.
-          insns.add(LPop)
+          insns.add(LNop)
         }
         case _ -> {
-          // Other literal types: load and compare.
-          insns.add(LPop)
+          // Other literal forms (triple/raw strings) compare structurally as
+          // strings via their text; handled by the LString arm in practice.
+          insns.add(LNop)
+        }
+      }
+    }
+    case PRange(lo, inclusive, hi) -> {
+      // Numeric range test: fail unless `lo <= scrut (<|<=) hi`.  Honours the
+      // scrutinee width (int vs long); Double ranges compare via dcmp.
+      match scrutTy {
+        case JLong -> {
+          emitLoad(insns, scrutSlot, scrutTy)
+          val loTy = lowerExpr(ctx, insns, lo)
+          coerceArgTo(insns, loTy, JLong)
+          insns.add(LLcmp)
+          insns.add(LIflt(label = failLabel))   // scrut < lo
+          emitLoad(insns, scrutSlot, scrutTy)
+          val hiTy = lowerExpr(ctx, insns, hi)
+          coerceArgTo(insns, hiTy, JLong)
+          insns.add(LLcmp)
+          if inclusive {
+            insns.add(LIfgt(label = failLabel))
+          } else {
+            insns.add(LIfge(label = failLabel))
+          }
+        }
+        case JDouble -> {
+          emitLoad(insns, scrutSlot, scrutTy)
+          val loTy = lowerExpr(ctx, insns, lo)
+          coerceArgTo(insns, loTy, JDouble)
+          insns.add(LDcmpl)
+          insns.add(LIflt(label = failLabel))
+          emitLoad(insns, scrutSlot, scrutTy)
+          val hiTy = lowerExpr(ctx, insns, hi)
+          coerceArgTo(insns, hiTy, JDouble)
+          insns.add(LDcmpl)
+          if inclusive {
+            insns.add(LIfgt(label = failLabel))
+          } else {
+            insns.add(LIfge(label = failLabel))
+          }
+        }
+        case _ -> {
+          // Int (and narrower int-on-stack) scrutinee.
+          emitLoad(insns, scrutSlot, scrutTy)
+          if isRefJvm(scrutTy) {
+            insns.add(LCheckcast(className = "java/lang/Integer"))
+            insns.add(LUnboxInt)
+          }
+          val loTy = lowerExpr(ctx, insns, lo)
+          coerceArgTo(insns, loTy, JInt)
+          insns.add(LIfIcmplt(label = failLabel))   // scrut < lo
+          emitLoad(insns, scrutSlot, scrutTy)
+          if isRefJvm(scrutTy) {
+            insns.add(LCheckcast(className = "java/lang/Integer"))
+            insns.add(LUnboxInt)
+          }
+          val hiTy = lowerExpr(ctx, insns, hi)
+          coerceArgTo(insns, hiTy, JInt)
+          if inclusive {
+            insns.add(LIfIcmpgt(label = failLabel))
+          } else {
+            insns.add(LIfIcmpge(label = failLabel))
+          }
         }
       }
     }
     case PConstructor(head, _) -> {
-      // Bootstrap: use instanceof check.
-      val caseName = lastSegment(head)
-      emitLoad(insns, scrutSlot, scrutTy)
-      match scrutTy {
-        case JRef(baseCls) -> {
-          insns.add(LCheckcast(className = baseCls + "$" + caseName))
-          insns.add(LAstore(slot = scrutSlot))
-          // Re-check with instanceof.
+      // isinst test against the case class; fail if the scrutinee is not that
+      // case.  (Unlike a checkcast this never throws on a non-matching arm.)
+      val caseClass = resolveCaseClassJvm(ctx, head, scrutTy)
+      if caseClass.length > 0 {
+        emitLoad(insns, scrutSlot, scrutTy)
+        insns.add(LInstanceof(className = caseClass))
+        insns.add(LIfeq(label = failLabel))
+      } else {
+        insns.add(LNop)
+      }
+    }
+    case PRecord(head, fields, _) -> {
+      // Records have a single shape: an isinst against the record class (from
+      // the head via the constructor registry), then recurse each named field's
+      // sub-pattern test so refutable field patterns (`Point{x = 0}`) are
+      // honoured rather than silently always-matching.
+      match mapGet(ctx.ctors, lastSegment(head)) {
+        case Some(recClass) -> {
           emitLoad(insns, scrutSlot, scrutTy)
-          insns.add(LInstanceof(className = baseCls + "$" + caseName))
+          insns.add(LInstanceof(className = recClass))
+          insns.add(LIfeq(label = failLabel))
+          var fi = 0
+          while fi < fields.count {
+            match fields[fi] {
+              case RPFNamed(fieldName, subPat, _) -> {
+                val fty = match recordFieldType(ctx, recClass, fieldName) {
+                  case Some(t) -> t
+                  case None -> JRef(className = "java/lang/Object")
+                }
+                val fSlot = extractClassField(ctx, insns, scrutSlot, scrutTy, recClass, fieldName, fty)
+                lowerPatternTest(ctx, insns, subPat, fSlot, fty, failLabel)
+              }
+              case RPFShort(_, _) -> ()
+            }
+            fi = fi + 1
+          }
+        }
+        case None -> insns.add(LNop)
+      }
+    }
+    case PTuple(patterns) -> {
+      // A tuple structurally matches; recurse the test into each element so
+      // refutable sub-patterns (literals, ranges, nested cases) are honoured.
+      var pti = 0
+      while pti < patterns.count {
+        val elemSlot = extractTupleElem(ctx, insns, scrutSlot, scrutTy, pti)
+        lowerPatternTest(ctx, insns, patterns[pti], elemSlot, JRef(className = "java/lang/Object"), failLabel)
+        pti = pti + 1
+      }
+    }
+    case PParen(inner) -> lowerPatternTest(ctx, insns, inner, scrutSlot, scrutTy, failLabel)
+    case PTypeTest(_, ty) -> {
+      // `case x: T ->` — isinst against T.  Primitive T is a degenerate test
+      // (a value of that static type always matches), so emit no test.
+      val testTy = typeExprToJvm(ty, ctx.pkgName)
+      match testTy {
+        case JRef(cls) -> {
+          emitLoad(insns, scrutSlot, scrutTy)
+          insns.add(LInstanceof(className = cls))
           insns.add(LIfeq(label = failLabel))
         }
-        case _ -> {
-          insns.add(LPop)
-        }
+        case _ -> insns.add(LNop)
       }
     }
     case POr(patterns) -> {
@@ -1528,6 +1862,42 @@ func lowerPatternTest(
   }
 }
 
+// Bind one positional/named sub-pattern of a constructor/record: read the field
+// into a precisely-typed local, then recurse for nested patterns.
+func bindCaseField(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  castSlot: in Int,
+  caseClass: in String,
+  realName: in String,
+  fty: in JvmType,
+  subPat: in Pattern,
+): Unit {
+  match subPat.kind {
+    case PBinding(fname, innerOpt) -> {
+      emitLoad(insns, castSlot, JRef(className = caseClass))
+      insns.add(LGetfield(owner = caseClass, name = realName, t = fty))
+      val fSlot = allocSlot(ctx, fname, fty)
+      emitStore(insns, fSlot, fty)
+      match innerOpt {
+        case Some(inner) -> lowerPatternBind(ctx, insns, inner, fSlot, fty)
+        case None -> ()
+      }
+    }
+    case PWildcard -> ()
+    case PLiteral(_) -> ()
+    case _ -> {
+      // Nested destructuring (tuple / record / constructor) in field position:
+      // read the field into a temp local and recurse.
+      emitLoad(insns, castSlot, JRef(className = caseClass))
+      insns.add(LGetfield(owner = caseClass, name = realName, t = fty))
+      val tSlot = allocSlot(ctx, "__fld_" + realName + "_" + toString(ctx.slotTicker.count), fty)
+      emitStore(insns, tSlot, fty)
+      lowerPatternBind(ctx, insns, subPat, tSlot, fty)
+    }
+  }
+}
+
 // Bind pattern variables after a successful match.
 func lowerPatternBind(
   ctx: in FuncCtx, insns: in List[LInsn], pat: in Pattern, scrutSlot: in Int, scrutTy: in JvmType
@@ -1535,65 +1905,126 @@ func lowerPatternBind(
   match pat.kind {
     case PWildcard -> insns.add(LNop)
     case PBinding(name, innerOpt) -> {
-      // Bind the name to the scrutinee value.
-      emitLoad(insns, scrutSlot, scrutTy)
-      val bindSlot = allocSlot(ctx, name, scrutTy)
-      emitStore(insns, bindSlot, scrutTy)
       match innerOpt {
-        case Some(inner) -> lowerPatternBind(ctx, insns, inner, bindSlot, scrutTy)
-        case None -> insns.add(LNop)
+        case Some(inner) -> {
+          emitLoad(insns, scrutSlot, scrutTy)
+          val bindSlot = allocSlot(ctx, name, scrutTy)
+          emitStore(insns, bindSlot, scrutTy)
+          lowerPatternBind(ctx, insns, inner, bindSlot, scrutTy)
+        }
+        case None -> {
+          // A single-segment `case Foo ->` that names a known union case binds
+          // nothing (mirrors the test side); otherwise it is a variable bind.
+          val isCase = match mapGet(ctx.ctors, name) { case Some(cls) -> jvmClassIsUnionCase(cls); case None -> false }
+          if not isCase {
+            emitLoad(insns, scrutSlot, scrutTy)
+            val bindSlot = allocSlot(ctx, name, scrutTy)
+            emitStore(insns, bindSlot, scrutTy)
+          }
+        }
       }
     }
     case PLiteral(_) -> insns.add(LNop)
-    case PConstructor(head, fields) -> {
-      // Downcast and bind each field.
-      val caseName = lastSegment(head)
-      match scrutTy {
-        case JRef(baseCls) -> {
-          val caseClass = baseCls + "$" + caseName
-          val castSlot = allocSlot(
-            ctx,
-            "__cast_" + caseName + "_" + toString(ctx.slotTicker.count),
-            JRef(className = caseClass)
-          )
+    case PRange(_, _, _) -> insns.add(LNop)
+    case PParen(inner) -> lowerPatternBind(ctx, insns, inner, scrutSlot, scrutTy)
+    case PTypeTest(inner, ty) -> {
+      // Narrow the scrutinee to the tested type, then bind the inner pattern at
+      // that precise type.
+      val testTy = typeExprToJvm(ty, ctx.pkgName)
+      match testTy {
+        case JRef(cls) -> {
           emitLoad(insns, scrutSlot, scrutTy)
-          insns.add(LCheckcast(className = caseClass))
-          emitStore(insns, castSlot, JRef(className = caseClass))
-          // Bind each positional sub-pattern by reading the case class's i-th
-          // field.  The field's *declared* name and type come from the union
-          // registry (ctx.caseFields) — reading with the precise descriptor
-          // (not java/lang/Object) so the getfield resolves and the bound
-          // local carries the right static type (e.g. a String `message`
-          // usable with `.contains`, an Int usable in arithmetic).  Falls back
-          // to (binding-name, Object) only when the union is unavailable.
-          val caseInfo: Option[List[JvmCaseField]] = mapGet(ctx.caseFields, caseClass)
+          insns.add(LCheckcast(className = cls))
+          val nSlot = allocSlot(ctx, "__typetest_" + toString(ctx.slotTicker.count), testTy)
+          emitStore(insns, nSlot, testTy)
+          lowerPatternBind(ctx, insns, inner, nSlot, testTy)
+        }
+        case _ -> lowerPatternBind(ctx, insns, inner, scrutSlot, scrutTy)
+      }
+    }
+    case PConstructor(head, fields) -> {
+      val caseClass = resolveCaseClassJvm(ctx, head, scrutTy)
+      if caseClass.length > 0 {
+        val castSlot = allocSlot(
+          ctx,
+          "__cast_" + lastSegment(head) + "_" + toString(ctx.slotTicker.count),
+          JRef(className = caseClass)
+        )
+        emitLoad(insns, scrutSlot, scrutTy)
+        insns.add(LCheckcast(className = caseClass))
+        emitStore(insns, castSlot, JRef(className = caseClass))
+        // Bind each positional sub-pattern by reading the case class's i-th
+        // field.  The field's *declared* name and type come from the registry
+        // (ctx.caseFields) so the getfield resolves and the bound local carries
+        // the right static type.  Falls back to (binding-name, Object) only when
+        // the case is unavailable.
+        val caseInfo: Option[List[JvmCaseField]] = mapGet(ctx.caseFields, caseClass)
+        var fi = 0
+        while fi < fields.count {
+          var realName = match fields[fi].kind { case PBinding(fn, _) -> fn; case _ -> "field" + toString(fi) }
+          var fty: JvmType = JRef(className = "java/lang/Object")
+          match caseInfo {
+            case Some(flds) -> {
+              if fi < flds.count {
+                realName = flds[fi].name
+                fty = flds[fi].ty
+              }
+            }
+            case None -> ()
+          }
+          bindCaseField(ctx, insns, castSlot, caseClass, realName, fty, fields[fi])
+          fi = fi + 1
+        }
+        insns.add(LNop)
+      } else {
+        insns.add(LNop)
+      }
+    }
+    case PRecord(head, fields, _) -> {
+      match mapGet(ctx.ctors, lastSegment(head)) {
+        case Some(recClass) -> {
+          val castSlot = allocSlot(ctx, "__reccast_" + toString(ctx.slotTicker.count), JRef(className = recClass))
+          emitLoad(insns, scrutSlot, scrutTy)
+          insns.add(LCheckcast(className = recClass))
+          emitStore(insns, castSlot, JRef(className = recClass))
           var fi = 0
           while fi < fields.count {
-            match fields[fi].kind {
-              case PBinding(fname, _) -> {
-                var realName = fname
-                var fty: JvmType = JRef(className = "java/lang/Object")
-                match caseInfo {
-                  case Some(flds) -> {
-                    if fi < flds.count {
-                      realName = flds[fi].name
-                      fty = flds[fi].ty
-                    }
-                  }
-                  case None -> ()
+            // A record pattern field binds by *field name* (`Point{x = a}` or the
+            // short form `Point{x}`), not positionally.
+            match fields[fi] {
+              case RPFNamed(fieldName, subPat, _) -> {
+                val fty = match recordFieldType(ctx, recClass, fieldName) {
+                  case Some(t) -> t
+                  case None -> JRef(className = "java/lang/Object")
                 }
-                emitLoad(insns, castSlot, JRef(className = caseClass))
-                insns.add(LGetfield(owner = caseClass, name = realName, t = fty))
-                val fSlot = allocSlot(ctx, fname, fty)
+                bindCaseField(ctx, insns, castSlot, recClass, fieldName, fty, subPat)
+              }
+              case RPFShort(fieldName, _) -> {
+                // `Point{x}` binds local `x` to field `x`.
+                val fty = match recordFieldType(ctx, recClass, fieldName) {
+                  case Some(t) -> t
+                  case None -> JRef(className = "java/lang/Object")
+                }
+                emitLoad(insns, castSlot, JRef(className = recClass))
+                insns.add(LGetfield(owner = recClass, name = fieldName, t = fty))
+                val fSlot = allocSlot(ctx, fieldName, fty)
                 emitStore(insns, fSlot, fty)
               }
-              case _ -> insns.add(LNop)
             }
             fi = fi + 1
           }
           insns.add(LNop)
         }
-        case _ -> insns.add(LNop)
+        case None -> insns.add(LNop)
+      }
+    }
+    case PTuple(patterns) -> {
+      // Extract each element from the ArrayList tuple representation and bind it.
+      var pti = 0
+      while pti < patterns.count {
+        val elemSlot = extractTupleElem(ctx, insns, scrutSlot, scrutTy, pti)
+        lowerPatternBind(ctx, insns, patterns[pti], elemSlot, JRef(className = "java/lang/Object"))
+        pti = pti + 1
       }
     }
     case POr(_) -> insns.add(LNop)
@@ -2573,7 +3004,171 @@ func lowerAutoFfiConstructorCall(
   }
 }
 
-// Resolve a general (non-builtin) static function call.
+// Coerce the value on top of the stack (statically `fromTy`) to `toTy`.  Used
+// at call/construction argument boundaries where a value of erased static type
+// (`Object`, e.g. a tuple element bound by `PTuple`) must satisfy a declared
+// primitive or reference parameter type: a boxed primitive is checkcast to its
+// wrapper and unboxed; a reference is narrowed with checkcast.  A no-op when the
+// value already has the target representation.
+func coerceArgTo(insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): Unit {
+  val fromRef = isRefJvm(fromTy)
+  match toTy {
+    case JInt -> {
+      if fromRef {
+        insns.add(LCheckcast(className = "java/lang/Integer"))
+        insns.add(LUnboxInt)
+      }
+    }
+    case JLong -> {
+      if fromRef {
+        insns.add(LCheckcast(className = "java/lang/Long"))
+        insns.add(LUnboxLong)
+      }
+    }
+    case JDouble -> {
+      if fromRef {
+        insns.add(LCheckcast(className = "java/lang/Double"))
+        insns.add(LUnboxDouble)
+      }
+    }
+    case JFloat -> {
+      if fromRef {
+        insns.add(LCheckcast(className = "java/lang/Float"))
+        insns.add(LUnboxFloat)
+      }
+    }
+    case JBoolean -> {
+      if fromRef {
+        insns.add(LCheckcast(className = "java/lang/Boolean"))
+        insns.add(LUnboxBool)
+      }
+    }
+    case JByte -> {
+      if fromRef {
+        insns.add(LCheckcast(className = "java/lang/Byte"))
+        insns.add(LUnboxByte)
+      }
+    }
+    case JChar -> {
+      if fromRef {
+        insns.add(LCheckcast(className = "java/lang/Character"))
+        insns.add(LUnboxChar)
+      }
+    }
+    case JRef(toCls) -> {
+      match fromTy {
+        case JRef(fromCls) -> {
+          if not (fromCls == toCls) and not (toCls == "java/lang/Object") {
+            insns.add(LCheckcast(className = toCls))
+          }
+        }
+        case _ -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+// Push a benign default value of `ty` (only reached if a construction call is
+// missing an argument — the type-checker normally guarantees arity).
+func pushDefaultValue(insns: in List[LInsn], ty: in JvmType): Unit {
+  match ty {
+    case JLong -> insns.add(LLconst(v = 0i64))
+    case JDouble -> insns.add(LDconst(v = 0.0))
+    case JRef(_) -> insns.add(LAconstNull)
+    case JArray(_) -> insns.add(LAconstNull)
+    case JVoid -> insns.add(LNop)
+    case _ -> insns.add(LIconst(v = 0))
+  }
+}
+
+// Reorder construction arguments to the constructor's field-declaration order.
+// A `<init>` consumes fields positionally; named-argument call sites (`Point(y
+// = 2, x = 1)`) must be permuted to match.  All-positional calls are returned
+// unchanged (already in declaration order).
+func orderCtorArgs(fields: in List[JvmCaseField], args: in List[CallArg]): List[CallArg] {
+  var anyNamed = false
+  var i = 0
+  while i < args.count {
+    match args[i] {
+      case CANamed(_, _, _) -> {
+        anyNamed = true
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  if not anyNamed {
+    return args
+  }
+  val byName: Map[String, CallArg] = newMap()
+  var j = 0
+  while j < args.count {
+    match args[j] {
+      case CANamed(nm, _, _) -> {
+        if not byName.containsKey(nm) {
+          byName.add(nm, args[j])
+        }
+      }
+      case _ -> ()
+    }
+    j = j + 1
+  }
+  val reordered: List[CallArg] = newList()
+  var f = 0
+  while f < fields.count {
+    match mapGet(byName, fields[f].name) {
+      case Some(a) -> {
+        reordered.add(a)
+      }
+      case None -> ()
+    }
+    f = f + 1
+  }
+  reordered
+}
+
+// Lower a record / union-case construction to `new`/`invokespecial`.  Arguments
+// are reordered to field-declaration order and coerced to each field's declared
+// type.  A record yields its own class type; a union case yields the union's
+// sealed-interface type (so the value flows into interface-typed slots and
+// `match` re-narrows via checkcast).
+func lowerConstruction(ctx: in FuncCtx, insns: in List[LInsn], className: in String, args: in List[CallArg]): JvmType {
+  val fieldsOpt: Option[List[JvmCaseField]] = mapGet(ctx.caseFields, className)
+  match fieldsOpt {
+    case Some(fields) -> {
+      insns.add(LNew(className = className))
+      insns.add(LDup)
+      val ordered = orderCtorArgs(fields, args)
+      val paramTys: List[JvmType] = newList()
+      var i = 0
+      while i < fields.count {
+        val fty = fields[i].ty
+        paramTys.add(fty)
+        if i < ordered.count {
+          val aTy = lowerCallArg(ctx, insns, ordered[i])
+          coerceArgTo(insns, aTy, fty)
+        } else {
+          pushDefaultValue(insns, fty)
+        }
+        i = i + 1
+      }
+      insns.add(LInvokespecial(owner = className, name = "<init>", params = paramTys, ret = JVoid))
+      if jvmClassIsUnionCase(className) {
+        JRef(className = jvmUnionBaseClass(className))
+      } else {
+        JRef(className = className)
+      }
+    }
+    case None -> {
+      // Unknown constructor class (should not occur — every registered ctor has
+      // a field entry).  Emit null to keep the stack balanced.
+      insns.add(LAconstNull)
+      JRef(className = className)
+    }
+  }
+}
+
 func lowerGeneralStaticCall(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -2581,28 +3176,27 @@ func lowerGeneralStaticCall(
   path: in ModulePath,
   args: in List[CallArg],
 ): JvmType {
-  // Collect parameter types and emit args.
-  val paramTys: List[JvmType] = newList()
-  var i = 0
-  while i < args.count {
-    val aTy = lowerCallArg(ctx, insns, args[i])
-    paramTys.add(aTy)
-    i = i + 1
+  // Construction: a call whose head names a record or union case lowers to a
+  // real `new`/`invokespecial` rather than a (non-existent) static method.
+  match mapGet(ctx.ctors, funcName) {
+    case Some(cls) -> return lowerConstruction(ctx, insns, cls, args)
+    case None -> ()
   }
 
   // Preferred path: resolve against the cross-package function registry, which
   // carries the callee's declaring host class and its exact JVM descriptor
-  // (declared param + return types).  This is what makes an imported call
-  // (`assertEqualInt` from `Std.Testing`) and a void-returning call link
-  // correctly — the legacy guess below assumed owner=ctx.className and
-  // ret=Object, which fails JVM resolution for both.
+  // (declared param + return types).  Args are lowered against the resolved
+  // signature and coerced to each declared parameter type, so an erased
+  // `Object` value (e.g. a tuple element) satisfies a primitive / reference
+  // parameter.  This is what makes an imported call (`assertEqualInt` from
+  // `Std.Testing`) and a void-returning call link correctly.
   //
   // Two-stage lookup: a qualified call site (`Std.Testing.assertEqualInt`)
   // tries the `owner/funcName` key first so it resolves to the explicit
   // package, even if another package in the bundle exports the same short
   // name; an unqualified call falls back to the bare-name key (the legacy
   // single-package shape).  #1680.
-  if path.segments.count > 1 {
+  val sigOpt = if path.segments.count > 1 {
     val ownerSegs: List[String] = newList()
     var si = 0
     while si < path.segments.count - 1 {
@@ -2611,27 +3205,41 @@ func lowerGeneralStaticCall(
     }
     val qkey = joinSegments(ownerSegs, "/") + "/" + funcName
     match mapGet(ctx.funcSigs, qkey) {
-      case Some(sig) -> {
-        insns.add(LInvokestatic(owner = sig.owner, name = funcName, params = sig.params, ret = sig.ret))
-        return sig.ret
-      }
-      case None -> ()
+      case Some(sig) -> Some(value = sig)
+      case None -> mapGet(ctx.funcSigs, funcName)
     }
+  } else {
+    mapGet(ctx.funcSigs, funcName)
   }
-  match mapGet(ctx.funcSigs, funcName) {
+  match sigOpt {
     case Some(sig) -> {
+      var ai = 0
+      while ai < args.count {
+        val aTy = lowerCallArg(ctx, insns, args[ai])
+        if ai < sig.params.count {
+          coerceArgTo(insns, aTy, sig.params[ai])
+        }
+        ai = ai + 1
+      }
       insns.add(LInvokestatic(owner = sig.owner, name = funcName, params = sig.params, ret = sig.ret))
       return sig.ret
     }
     case None -> ()
   }
 
-  // Fallback (unregistered name): derive the owner from a qualified path when
-  // present, else assume the current package.  Return type is unknown, so use
-  // Object.  Reached only for names absent from every compiled package — i.e.
-  // genuinely unresolved references, which fail loudly at JVM link time.
+  // Fallback (unregistered name): lower args as-is and derive the owner from a
+  // qualified path when present, else assume the current package.  Return type
+  // is unknown, so use Object.  Reached only for names absent from every
+  // compiled package — i.e. genuinely unresolved references, which fail loudly
+  // at JVM link time.
+  val paramTys: List[JvmType] = newList()
+  var i = 0
+  while i < args.count {
+    val aTy = lowerCallArg(ctx, insns, args[i])
+    paramTys.add(aTy)
+    i = i + 1
+  }
   val owner = if path.segments.count > 1 {
-    // Join all but last segment as the class path.
     val segs: List[String] = newList()
     var si = 0
     while si < path.segments.count - 1 {
@@ -3310,6 +3918,7 @@ func makeFuncCtx(
   className: in String,
   funcSigs: in Map[String, JvmFuncSig],
   caseFields: in Map[String, List[JvmCaseField]],
+  ctors: in Map[String, String],
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
 ): FuncCtx {
@@ -3331,6 +3940,7 @@ func makeFuncCtx(
     genClass = None,
     funcSigs = funcSigs,
     caseFields = caseFields,
+    ctors = ctors,
     externTypes = externTypes,
     autoFfi = autoFfi
   )
@@ -3343,6 +3953,7 @@ func makeFuncCtxForGenerator(
   genClass: in String,
   funcSigs: in Map[String, JvmFuncSig],
   caseFields: in Map[String, List[JvmCaseField]],
+  ctors: in Map[String, String],
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
 ): FuncCtx {
@@ -3365,6 +3976,7 @@ func makeFuncCtxForGenerator(
     genClass = Some(value = genClass),
     funcSigs = funcSigs,
     caseFields = caseFields,
+    ctors = ctors,
     externTypes = externTypes,
     autoFfi = autoFfi
   )
@@ -3376,12 +3988,13 @@ pub func lowerFunc(
   className: in String,
   funcSigs: in Map[String, JvmFuncSig],
   caseFields: in Map[String, List[JvmCaseField]],
+  ctors: in Map[String, String],
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
 ): LFunc {
   val retTy = match decl.ret { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
 
-  val ctx = makeFuncCtx(pkgName, className, funcSigs, caseFields, externTypes, autoFfi)
+  val ctx = makeFuncCtx(pkgName, className, funcSigs, caseFields, ctors, externTypes, autoFfi)
   val insns: List[LInsn] = newList()
 
   // Allocate slots for parameters.
@@ -3520,6 +4133,7 @@ pub func lowerRecord(
   pkgName: in String,
   funcSigs: in Map[String, JvmFuncSig],
   caseFields: in Map[String, List[JvmCaseField]],
+  ctors: in Map[String, String],
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
 ): LRecord {
@@ -3547,52 +4161,18 @@ pub func lowerRecord(
     i = i + 1
   }
 
-  // Synthesise <init> constructor that takes all fields as params and stores them.
-  val ctorInsns: List[LInsn] = newList()
-  val ctorCtx = makeFuncCtx(pkgName, className, funcSigs, caseFields, externTypes, autoFfi)
-
-  // Slot 0 = this.
-  ctorCtx.slotTicker.add(0)
-
-  val ctorParams: List[JvmType] = newList()
-  var slot = 1
-  var fi = 0
-  while fi < fields.count {
-    val f = fields[fi]
-    ctorParams.add(f.fieldType)
-    // Load this, load param, putfield.
-    ctorInsns.add(LAload(slot = 0))
-    emitLoad(ctorInsns, slot, f.fieldType)
-    ctorInsns.add(LPutfield(owner = className, name = f.name, t = f.fieldType))
-    slot = slot + fieldSlotSize(f.fieldType)
-    fi = fi + 1
-  }
-  // Call super.<init>().
-  ctorInsns.add(LAload(slot = 0))
-  val objPs: List[JvmType] = newList()
-  ctorInsns.add(LInvokespecial(owner = "java/lang/Object", name = "<init>", params = objPs, ret = JVoid))
-  ctorInsns.add(LReturn)
-
-  val ctor = LFunc(
-    flags = 0x0001,
-    // public
-    name = "<init>",
-    params = ctorParams,
-    ret = JVoid,
-    insns = ctorInsns,
-    maxStack = 16,
-    maxLocals = slot
-  )
-
+  // The record's `<init>(field…)V` constructor is synthesised from the field
+  // list by `Jvm.Lowering.lowerRecord` (LRecord → ClassFile); it is NOT added
+  // here, otherwise the class would carry two identical `<init>` methods
+  // (ClassFormatError "Duplicate method <init>" at load).
   val methods: List[LFunc] = newList()
-  methods.add(ctor)
 
-  // Also lower any RMFunc members.
+  // Lower any RMFunc members.
   var mi = 0
   while mi < decl.members.count {
     match decl.members[mi] {
       case RMFunc(fn) -> {
-        methods.add(lowerFunc(fn, pkgName, className, funcSigs, caseFields, externTypes, autoFfi))
+        methods.add(lowerFunc(fn, pkgName, className, funcSigs, caseFields, ctors, externTypes, autoFfi))
       }
       case _ -> {
       }
@@ -3827,11 +4407,12 @@ func lowerGeneratorBody(
   genClass: in String,
   funcSigs: in Map[String, JvmFuncSig],
   caseFields: in Map[String, List[JvmCaseField]],
+  ctors: in Map[String, String],
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
 ): List[LInsn] {
   val insns: List[LInsn] = newList()
-  val ctx = makeFuncCtxForGenerator(pkgName, genClass, funcSigs, caseFields, externTypes, autoFfi)
+  val ctx = makeFuncCtxForGenerator(pkgName, genClass, funcSigs, caseFields, ctors, externTypes, autoFfi)
 
   // Preamble: load each param from this.<field> into a local slot.
   var pi = 0
@@ -4044,6 +4625,53 @@ pub func collectFileCases(file: in SourceFile, into: in Map[String, List[JvmCase
           ci = ci + 1
         }
       }
+      case IRecord(decl) -> {
+        val recClass = owner + "/" + decl.name
+        if not into.containsKey(recClass) {
+          val flds: List[JvmCaseField] = newList()
+          var mi = 0
+          while mi < decl.members.count {
+            match decl.members[mi] {
+              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvm(f.ty, owner)))
+              case _ -> {
+              }
+            }
+            mi = mi + 1
+          }
+          into.add(recClass, flds)
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+// Collect every constructible nominal type (record + union case) from `file`
+// into `into`, keyed by its short name.  Mirrors `collectFileCases` (which is
+// keyed by JVM class name); this map drives construction-call lowering, which
+// resolves a head name like `Point` / `Circle` to the class to `new`.
+pub func collectFileCtors(file: in SourceFile, into: in Map[String, String]): Unit {
+  val owner = segmentsToJvmPath(file.packageDecl.path.segments)
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IRecord(decl) -> {
+        if not into.containsKey(decl.name) {
+          into.add(decl.name, owner + "/" + decl.name)
+        }
+      }
+      case IUnion(decl) -> {
+        var ci = 0
+        while ci < decl.cases.count {
+          val c = decl.cases[ci]
+          if not into.containsKey(c.name) {
+            into.add(c.name, owner + "/" + decl.name + "$" + c.name)
+          }
+          ci = ci + 1
+        }
+      }
       case _ -> {
       }
     }
@@ -4059,8 +4687,10 @@ pub func codegenPackage(file: in SourceFile): LPackage {
   collectFileSigs(file, sigs)
   val cases: Map[String, List[JvmCaseField]] = newMap()
   collectFileCases(file, cases)
+  val ctors: Map[String, String] = newMap()
+  collectFileCtors(file, ctors)
   val autoFfi = buildAutoFfiCtx()
-  codegenPackageWithSigs(file, sigs, cases, autoFfi)
+  codegenPackageWithSigs(file, sigs, cases, ctors, autoFfi)
 }
 
 // Codegen a package against a pre-built call registry `funcSigs` spanning the
@@ -4071,6 +4701,7 @@ pub func codegenPackageWithSigs(
   file: in SourceFile,
   funcSigs: in Map[String, JvmFuncSig],
   caseFields: in Map[String, List[JvmCaseField]],
+  ctors: in Map[String, String],
   autoFfi: in AutoFfiCtx,
 ): LPackage {
   val pkgName = segmentsToJvmPath(file.packageDecl.path.segments)
@@ -4116,7 +4747,7 @@ pub func codegenPackageWithSigs(
         var mi2 = 0
         while mi2 < decl.members.count {
           match decl.members[mi2] {
-            case IMplFunc(fn) -> implFuncs.add(lowerFunc(fn, pkgName, targetClass, funcSigs, caseFields, externTypes, autoFfi))
+            case IMplFunc(fn) -> implFuncs.add(lowerFunc(fn, pkgName, targetClass, funcSigs, caseFields, ctors, externTypes, autoFfi))
             case IMplAssoc(_) -> {
             }
           }
@@ -4138,7 +4769,7 @@ pub func codegenPackageWithSigs(
         if decl.isAsync and funcBodyContainsYield(decl) {
           // Async generator: synthesise Iterable+Iterator class via lowerAsyncGenerator.
           val genClass = pkgName + "$" + decl.name + "$Gen"
-          val bodyInsns = lowerGeneratorBody(decl, pkgName, genClass, funcSigs, caseFields, externTypes, autoFfi)
+          val bodyInsns = lowerGeneratorBody(decl, pkgName, genClass, funcSigs, caseFields, ctors, externTypes, autoFfi)
           val genParams: List[LGenParam] = newList()
           var pi = 0
           while pi < decl.params.count {
@@ -4163,7 +4794,7 @@ pub func codegenPackageWithSigs(
           // Factory method lives alongside main() in the functions class.
           fns.add(makeGeneratorFactory(decl, genClass, pkgName))
         } else {
-          fns.add(lowerFunc(decl, pkgName, funcsClass, funcSigs, caseFields, externTypes, autoFfi))
+          fns.add(lowerFunc(decl, pkgName, funcsClass, funcSigs, caseFields, ctors, externTypes, autoFfi))
           if isMainFunc(decl) {
             hasMain = true
             // Resolve the Lyric main's declared return type so the JVM
@@ -4190,7 +4821,7 @@ pub func codegenPackageWithSigs(
           }
           ei = ei + 1
         }
-        val baseRec = lowerRecord(decl, pkgName, funcSigs, caseFields, externTypes, autoFfi)
+        val baseRec = lowerRecord(decl, pkgName, funcSigs, caseFields, ctors, externTypes, autoFfi)
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
           mergedMethods.add(fn)
@@ -4232,7 +4863,7 @@ pub func codegenPackageWithSigs(
           }
           ei = ei + 1
         }
-        val baseRec = lowerRecord(decl, pkgName, funcSigs, caseFields, externTypes, autoFfi)
+        val baseRec = lowerRecord(decl, pkgName, funcSigs, caseFields, ctors, externTypes, autoFfi)
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
           mergedMethods.add(fn)
@@ -4299,7 +4930,7 @@ pub func codegenPackageWithSigs(
               abstractMethods.add(makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, sig.name, desc, emptyAttrs))
             }
             case IMFunc(fn) -> {
-              concreteFuncs.add(lowerFunc(fn, pkgName, ifClassName, funcSigs, caseFields, externTypes, autoFfi))
+              concreteFuncs.add(lowerFunc(fn, pkgName, ifClassName, funcSigs, caseFields, ctors, externTypes, autoFfi))
             }
             case IMAssoc(_) -> {
             }

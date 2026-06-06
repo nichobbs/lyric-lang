@@ -21794,3 +21794,54 @@ multi-line rbac-style form.  The `examples/` files remain blocked from a full
 reformat by the separate `///`-before-`package` header gap (P0020) — and
 `examples/product-catalog` additionally uses qualified names in its set, which
 do not match the short-name semantics; both are follow-ups.
+
+### D-progress-451 — complete match-arm pattern lowering on both backends + JVM algebraic-data-type support (#2455)
+
+**Status:** Shipped — JVM and MSIL `lowerPattern*` now handle every
+`PatternKind`; pattern self-test passes 8/8 on both targets.
+
+The self-hosted MSIL and JVM codegen `lowerPatternTest` / `lowerPatternBind`
+both handled only `PWildcard`, `PBinding`, `PLiteral`, `PConstructor`, `POr`,
+`PError` (JVM) / plus `PTuple` (MSIL).  The self-hosted type checker correctly
+flagged the gaps as `T0016` non-exhaustive matches on `PatternKind`; the F#
+stage-0 emitter tolerated them, so the holes were latent.  Both backends now
+handle **`PParen`, `PRange`, `PRecord`, `PTuple`, `PTypeTest`** with faithful
+bytecode (no silent `LNop`/no-op for destructuring forms):
+
+- **`PParen`** — recurse on the inner pattern at the scrutinee type.
+- **`PRange`** — numeric bound comparisons (`if_icmp*` / `lcmp` / `dcmp` on
+  the JVM; `clt`/`cgt` + branch on MSIL), honouring inclusive vs exclusive.
+- **`PRecord`** — downcast to the record class, read each named field by its
+  declared descriptor, recurse refutable field sub-patterns in the *test* path
+  (so `Point{x = 0}` is honoured, not always-matched).
+- **`PTuple`** — destructure the tuple representation (`ArrayList` of boxed
+  elements on the JVM, `List<object>` on MSIL); the test recurses each element
+  (unboxing for literal comparison) and the bind recurses each element.
+- **`PTypeTest`** — `isinst` (+ branch) then `checkcast` and bind the inner
+  pattern at the tested type.
+
+Making these testable end-to-end on the JVM target required the supporting
+algebraic-data-type infrastructure the JVM backend lacked: real tuple
+construction, record/union-case construction (`new`/`invokespecial` with
+named-argument reordering to field-declaration order), record field access
+(`getfield` with the field's declared type), and call-site argument coercion
+that unboxes/narrows an erased `object` value (e.g. a bound tuple element) to a
+callee's declared parameter type.  The MSIL backend gained the matching
+call-argument unbox so a bound tuple element flows into a value-typed parameter.
+
+Two pre-existing parser/type-checker gaps in the same feature were fixed: the
+`is`-type-test pattern parser consumed a trailing `->` as a function-type arrow
+(`parseTypeExprNoArrow` now used), and the type checker's pattern binders did
+not collect bindings introduced under `PParen` / `PTypeTest` / `PRecord`.  Three
+pre-existing non-exhaustive `match` holes the self-checker surfaced once the
+pattern errors cleared were also closed: `Msil.Lowering.msilTypeKey`,
+`Msil.Codegen.msilTypeKeyStr` (both missing `MConcreteList` / `MConcreteMap` /
+`MValueTypeGenericInst` / `MIAsyncEnumerable`), and an `AnnotationArg` match
+missing `ALiteral`.
+
+A `@test_module` self-test (`lyric-compiler/jvm/pattern_lowering_self_test.l`)
+exercises all five forms with runtime-value assertions and is wired into CI on
+**both** `--target dotnet` and `--target jvm` (8/8 each).  The
+`lyric fmt` round-trip for record-pattern (`{x = a}`) and `is`-type-test
+patterns was also corrected (the formatter emitted `:` where the grammar uses
+`=` / `is`).
