@@ -636,10 +636,27 @@ func parsePrimaryPattern(st: inout ParseState): Pattern {
           val noInner: Option[Pattern] = None
           mkPat(PBinding(name = "result", inner = noInner), tok.span)
         }
-        case _ -> {
-          // Literal-led patterns: TBool.
-          val firstExpr = parseExpr(st)
-          mkPat(PLiteral(lit = LBool(value = false)), firstExpr.span)
+        case _ -> match contextualIdentKeyword(k) {
+          // A pure position-introducer keyword (`entry`, `type`, …) used as a
+          // `val`/`match` binding name binds like any identifier (D093).
+          case Some(name) -> {
+            val _ = advance(st)
+            val noInner: Option[Pattern] = None
+            mkPat(PBinding(name = name, inner = noInner), tok.span)
+          }
+          case None -> {
+            // A reserved keyword (not a contextual identifier) in pattern
+            // position — name it explicitly rather than mis-parsing it as a
+            // literal (D093).
+            emitErr(
+              st,
+              "P0051",
+              "'" + keywordSpelling(k) + "' is a reserved keyword and cannot be used as a binding name",
+              tok.span
+            )
+            val _ = advance(st)
+            mkPat(PWildcard, tok.span)
+          }
         }
       }
     }
@@ -1082,10 +1099,28 @@ pub func parsePrimaryExpr(st: inout ParseState): Expr {
           val blk = Block(statements = singletonList(stmt), span = stmt.span)
           mkExpr(EBlock(block = blk), stmt.span)
         }
-        case _ -> {
-          emitErr(st, "P0050", "expected an expression", tok.span)
-          val _ = advance(st)
-          mkExpr(EError, tok.span)
+        case _ -> match contextualIdentKeyword(k) {
+          // A pure position-introducer keyword (`entry`, `type`, …) used as a
+          // value is an ordinary identifier reference (D093).
+          case Some(name) -> {
+            val nameTok = advance(st)
+            val segs: List[String] = newList()
+            segs.add(name)
+            mkExpr(EPath(path = ModulePath(segments = segs, span = nameTok.span)), nameTok.span)
+          }
+          case None -> {
+            // A genuinely reserved keyword in expression position: name it
+            // explicitly rather than emitting a bare "expected an expression",
+            // so the author sees the actual cause (D093).
+            emitErr(
+              st,
+              "P0051",
+              "'" + keywordSpelling(k) + "' is a reserved keyword and cannot be used as an identifier or value here",
+              tok.span
+            )
+            val _ = advance(st)
+            mkExpr(EError, tok.span)
+          }
         }
       }
     }

@@ -82,57 +82,57 @@ pub func circuitIsOpen(name: in String, cooldownMs: in Int): Bool
   requires: name.length > 0
   requires: cooldownMs > 0
 {
-  val circuit = getOrCreateEntry(name)
-  monitorEnter(circuit)
+  val entry = getOrCreateEntry(name)
+  monitorEnter(entry)
   defer {
-    monitorExit(circuit)
+    monitorExit(entry)
   }
-  if not circuit.isOpen {
+  if not entry.isOpen {
     return false
   }
-  val elapsed: Long = nowEpochMillis() - circuit.openedAtMs
+  val elapsed: Long = nowEpochMillis() - entry.openedAtMs
   if elapsed < cooldownMs.toLong() {
     return true
   }
-  if circuit.halfOpenProbeInFlight {
+  if entry.halfOpenProbeInFlight {
     return true
   }
-  circuit.halfOpenProbeInFlight = true
+  entry.halfOpenProbeInFlight = true
   false
 }
 
 pub func circuitRecordSuccess(name: in String): Unit
   requires: name.length > 0
 {
-  val circuit = getOrCreateEntry(name)
-  monitorEnter(circuit)
+  val entry = getOrCreateEntry(name)
+  monitorEnter(entry)
   defer {
-    monitorExit(circuit)
+    monitorExit(entry)
   }
-  circuit.consecutiveFailures = 0
-  circuit.isOpen = false
-  circuit.openedAtMs = 0i64
-  circuit.halfOpenProbeInFlight = false
+  entry.consecutiveFailures = 0
+  entry.isOpen = false
+  entry.openedAtMs = 0i64
+  entry.halfOpenProbeInFlight = false
 }
 
 pub func circuitRecordFailure(name: in String, failureThreshold: in Int): Unit
   requires: name.length > 0
   requires: failureThreshold > 0
 {
-  val circuit = getOrCreateEntry(name)
-  monitorEnter(circuit)
+  val entry = getOrCreateEntry(name)
+  monitorEnter(entry)
   defer {
-    monitorExit(circuit)
+    monitorExit(entry)
   }
-  circuit.consecutiveFailures = circuit.consecutiveFailures + 1
-  if circuit.isOpen {
-    circuit.openedAtMs = nowEpochMillis()
-    circuit.halfOpenProbeInFlight = false
+  entry.consecutiveFailures = entry.consecutiveFailures + 1
+  if entry.isOpen {
+    entry.openedAtMs = nowEpochMillis()
+    entry.halfOpenProbeInFlight = false
   } else {
-    if circuit.consecutiveFailures >= failureThreshold {
-      circuit.isOpen = true
-      circuit.openedAtMs = nowEpochMillis()
-      circuit.halfOpenProbeInFlight = false
+    if entry.consecutiveFailures >= failureThreshold {
+      entry.isOpen = true
+      entry.openedAtMs = nowEpochMillis()
+      entry.halfOpenProbeInFlight = false
     }
   }
 }

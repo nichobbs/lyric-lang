@@ -368,6 +368,53 @@ func testAspectAsParamName(): Unit {
   assertEqual(firstItemKindName(pr), "func", "aspect-as-param: kind is func")
 }
 
+func hasDiagCode(pr: in ParseResult, code: in String): Bool {
+  var i = 0
+  while i < pr.diagnostics.count {
+    if pr.diagnostics[i].code == code {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// D093: the pure position-introducer hard keywords (entry, type, record,
+// union, enum, interface, wire, fixture, property, test, alias) are usable
+// as ordinary identifiers — binding names (`val`/`var`/`let`), parameter
+// names, and value references — because they only carry keyword meaning at
+// item position (or, for `entry`, inside a protected-type body).
+func testContextualKeywordsAsIdentifiers(): Unit {
+  val valEntry = parse("package P\nfunc f(): Int {\n  val entry = 5\n  return entry\n}\n")
+  assertEqualInt(diagCount(valEntry), 0, "ctx-kw: `val entry` + `return entry` parses clean")
+  val varType = parse("package P\nfunc f(): Int {\n  var type = 5\n  return type\n}\n")
+  assertEqualInt(diagCount(varType), 0, "ctx-kw: `var type` parses clean")
+  val param = parse("package P\nfunc f(record: in Int, test: in Int): Int { record + test }\n")
+  assertEqualInt(diagCount(param), 0, "ctx-kw: `record`/`test` parameter names parse clean")
+  val memberRef = parse("package P\nfunc f(union: in Int): Int { union }\n")
+  assertEqualInt(diagCount(memberRef), 0, "ctx-kw: `union` value reference parses clean")
+}
+
+// The same keywords keep their keyword meaning at item position.
+func testContextualKeywordsStillKeywords(): Unit {
+  val distinct = parse("package P\ntype Age = Int\n")
+  assertEqualInt(diagCount(distinct), 0, "ctx-kw: `type X = …` still a distinct type")
+  assertEqual(firstItemKindName(distinct), "distinct", "ctx-kw: `type` item kind preserved")
+  val rec = parse("package P\nrecord Point {\n  x: Int\n  y: Int\n}\n")
+  assertEqualInt(diagCount(rec), 0, "ctx-kw: `record R { … }` still a record")
+  assertEqual(firstItemKindName(rec), "record", "ctx-kw: `record` item kind preserved")
+}
+
+// A genuinely reserved keyword (operator / statement starter) used as an
+// identifier is reported as P0051 naming the keyword — not the old generic
+// P0050/P0103 cascade.
+func testReservedKeywordAsIdentifierDiagnostic(): Unit {
+  val asBinding = parse("package P\nfunc f(): Int {\n  let match = 5\n  return match\n}\n")
+  assertTrue(hasDiagCode(asBinding, "P0051"), "reserved-kw: `let match` → P0051")
+  val asParam = parse("package P\nfunc g(if: in Int): Int { 0 }\n")
+  assertTrue(hasDiagCode(asParam, "P0051"), "reserved-kw: `if` param name → P0051")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // CST tests (Phase 5 §M5.1 stage 5' — red/green CST foundation).
 //
@@ -719,6 +766,9 @@ func main(): Unit {
   testConfigBlock()
   testConfigBlockMultipleFields()
   testConfigAsParamName()
+  testContextualKeywordsAsIdentifiers()
+  testContextualKeywordsStillKeywords()
+  testReservedKeywordAsIdentifierDiagnostic()
   testAspectBlock()
   testAspectMatchesNameIn()
   testAspectAsParamName()
