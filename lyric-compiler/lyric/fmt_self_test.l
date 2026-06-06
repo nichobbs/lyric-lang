@@ -125,6 +125,19 @@ func testEndOfLineCommentStaysInline(): Unit {
   assertTrue(Str.contains(acc, "case 0 -> 0  // none"), "trailing: match-arm comment stays inline")
 }
 
+func testTrailingCommentAlignmentPreserved(): Unit {
+  // Hand-aligned trailing-comment columns are preserved: the formatter
+  // re-emits the exact source gap before each `//` rather than collapsing
+  // to a single two-space gap.  The code renders at its source width, so
+  // preserving the gap preserves the alignment.
+  val src = "package P\n\nfunc f(w: in Int): Int {\n  g(w, 0x014C)  // a\n  g(w, 1)       // b\n  0\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "alignment: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "g(w, 0x014C)  // a"), "alignment: first comment gap preserved")
+  assertTrue(Str.contains(acc, "g(w, 1)       // b"), "alignment: wider gap preserved (columns stay aligned)")
+}
+
 func testStatementSeparatorBeforeBracket(): Unit {
   // Two statements separated by `;` where the second begins with `(`
   // (here a unit expression).  The lexer synthesises no STMT_END inside
@@ -771,6 +784,7 @@ func main(): Unit {
   testCommentPreservationBlockComment()
   testCommentPreservationTrailing()
   testEndOfLineCommentStaysInline()
+  testTrailingCommentAlignmentPreserved()
   testStatementSeparatorBeforeBracket()
   testFormatPubFunc()
   testFormatUnion()

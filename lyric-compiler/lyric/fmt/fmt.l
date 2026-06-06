@@ -34,8 +34,13 @@ pub union HarvestedItem {
   /// `trailing` is true when the comment sat on the same source line as
   /// the preceding token (no newline between them) — i.e. an end-of-line
   /// comment that must be re-attached to the previous output line rather
-  /// than emitted as a standalone leading line.
-  case HiComment(text: String, offset: Int, trailing: Bool)
+  /// than emitted as a standalone leading line.  `gap` is the exact
+  /// source whitespace between the preceding token and the comment; for a
+  /// trailing comment it is re-emitted verbatim so hand-aligned comment
+  /// columns survive (the code before the comment renders at its source
+  /// width, so preserving the gap preserves the alignment).  Empty for a
+  /// leading comment.
+  case HiComment(text: String, offset: Int, trailing: Bool, gap: String)
   /// One blank line in the original source (a run of 2+ consecutive
   /// `TKNewline` trivia).  Offset is the start of the run; multiple
   /// consecutive blank lines collapse to a single marker so the
@@ -46,7 +51,7 @@ pub union HarvestedItem {
 @pure
 func harvestedOffset(h: in HarvestedItem): Int {
   match h {
-    case HiComment(_, o, _) -> o
+    case HiComment(_, o, _, _) -> o
     case HiBlank(o) -> o
   }
 }
@@ -75,7 +80,7 @@ pub func popTriviaBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
   val acc: List[String] = newList()
   while ctx.cursor < ctx.items.count and harvestedOffset(ctx.items[ctx.cursor]) < hi {
     match ctx.items[ctx.cursor] {
-      case HiComment(text, _, _) -> {
+      case HiComment(text, _, _, _) -> {
         val parts = Str.split(text, "\n")
         var j = 0
         while j < parts.length {
@@ -103,10 +108,13 @@ pub func popTriviaBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
 pub func appendTriviaInto(acc: inout List[String], ctx: inout FmtCtx, hi: in Int, dropBlanks: in Bool): Unit {
   while ctx.cursor < ctx.items.count and harvestedOffset(ctx.items[ctx.cursor]) < hi {
     match ctx.items[ctx.cursor] {
-      case HiComment(text, _, trailing) -> {
+      case HiComment(text, _, trailing, gap) -> {
         val parts = Str.split(text, "\n")
         if trailing and acc.count > 0 and acc[acc.count - 1] != "" and parts.length == 1 {
-          acc[acc.count - 1] = acc[acc.count - 1] + "  " + parts[0]
+          // Re-emit the source gap verbatim so hand-aligned comment
+          // columns survive; fall back to two spaces if none was captured.
+          val sep = if gap != "" { gap } else { "  " }
+          acc[acc.count - 1] = acc[acc.count - 1] + sep + parts[0]
         } else {
           var j = 0
           while j < parts.length {
@@ -133,7 +141,7 @@ pub func popCommentsBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
   val acc: List[String] = newList()
   while ctx.cursor < ctx.items.count and harvestedOffset(ctx.items[ctx.cursor]) < hi {
     match ctx.items[ctx.cursor] {
-      case HiComment(text, _, _) -> {
+      case HiComment(text, _, _, _) -> {
         val parts = Str.split(text, "\n")
         var j = 0
         while j < parts.length {
@@ -174,6 +182,12 @@ func harvestTriviaFromToken(t: in SpannedToken, acc: inout List[HarvestedItem]):
   var newlineRun = 0
   var blankRecorded = false
   var runStart = 0
+  // The whitespace trivium immediately preceding the current position on
+  // the same line.  For a trailing comment it is the gap between the code
+  // and the `//`, re-emitted verbatim so aligned comment columns survive.
+  // Reset on every newline (whitespace after a newline is indentation, not
+  // a same-line gap).
+  var lastWs = ""
   var i = 0
   while i < t.leadingTrivia.count {
     val tr = t.leadingTrivia[i]
@@ -183,6 +197,7 @@ func harvestTriviaFromToken(t: in SpannedToken, acc: inout List[HarvestedItem]):
           runStart = tr.span.startPos.offset
         }
         newlineRun = newlineRun + 1
+        lastWs = ""
         if newlineRun >= 2 and not blankRecorded {
           acc.add(HiBlank(offset = runStart))
           blankRecorded = true
@@ -191,18 +206,23 @@ func harvestTriviaFromToken(t: in SpannedToken, acc: inout List[HarvestedItem]):
       case TKWhitespace -> {
         // Doesn't break a newline run — `\n  \n` is still a blank
         // line, just with leading spaces on the empty line.
+        lastWs = tr.text
       }
       case TKLineComment -> {
         val isTrailing = newlineRun == 0
+        val gap = if isTrailing { lastWs } else { "" }
         newlineRun = 0
         blankRecorded = false
-        acc.add(HiComment(text = tr.text, offset = tr.span.startPos.offset, trailing = isTrailing))
+        lastWs = ""
+        acc.add(HiComment(text = tr.text, offset = tr.span.startPos.offset, trailing = isTrailing, gap = gap))
       }
       case TKBlockComment -> {
         val isTrailing = newlineRun == 0
+        val gap = if isTrailing { lastWs } else { "" }
         newlineRun = 0
         blankRecorded = false
-        acc.add(HiComment(text = tr.text, offset = tr.span.startPos.offset, trailing = isTrailing))
+        lastWs = ""
+        acc.add(HiComment(text = tr.text, offset = tr.span.startPos.offset, trailing = isTrailing, gap = gap))
       }
     }
     i = i + 1
