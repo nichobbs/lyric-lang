@@ -90,3 +90,36 @@ test "first union case still matches when it is the actual case" {
   }
   assertEqual(got, "reg:9.9", "Reg element still matches Reg")
 }
+
+// #2363 Stage 4: union and case names that contain `_` must construct and match
+// correctly.  Case classes are emitted `Union_Case`, so the parent union is
+// recovered from the registered map (NOT by splitting the name on `_`, which
+// would be ambiguous here: `My_Status_Not_Ready` must resolve to `My_Status`,
+// not `My_Status_Not`).
+union My_Status {
+  case Not_Ready(why: String)
+  case All_Set(code: Int)
+}
+
+func statusLabel(s: in My_Status): String {
+  match s {
+    case Not_Ready(why) -> "wait:" + why
+    case All_Set(code) -> "ok:" + toString(code)
+  }
+}
+
+test "union and case names containing underscores construct and match" {
+  val a: My_Status = Not_Ready(why = "soon")
+  val b: My_Status = All_Set(code = 7)
+  assertEqual(statusLabel(a), "wait:soon", "underscore case Not_Ready round-trips")
+  assertEqual(statusLabel(b), "ok:7", "underscore case All_Set round-trips")
+  // Also exercise the list-iteration + match path with underscore names.
+  val xs: List[My_Status] = newList()
+  xs.add(b)
+  xs.add(a)
+  var acc = ""
+  for s in xs.toArray() {
+    acc = acc + statusLabel(s) + ";"
+  }
+  assertEqual(acc, "ok:7;wait:soon;", "underscore union round-trips through the loop")
+}

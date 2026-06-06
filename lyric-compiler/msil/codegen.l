@@ -2922,6 +2922,13 @@ func caseParentFqnMsil(cctx: in CodegenCtx, ctorKey: in String): String {
   match mapGet(cctx.caseParentUnion, ctorKey) {
     case Some(p) -> p
     case None -> {
+      // INVARIANT: every case-class key that reaches a construction site was
+      // registered (in-bundle via `addPackageTokens`, restored via
+      // `registerUnionCases` / `registerRestoredUnionCase`), so the map lookup
+      // above always hits.  This last-`_` split is a defensive fallback only;
+      // it is INHERENTLY AMBIGUOUS when the union or case name contains `_`
+      // (e.g. `Pkg.My_Union_Case` → `Pkg.My_Union` is wrong) and must never be
+      // the live path — if it ever fires, a registration site was missed.
       val us = ctorKey.lastIndexOf("_")
       if us >= 0 {
         ctorKey.substring(0, us)
@@ -6380,9 +6387,8 @@ func lowerBuiltinOrStaticCallMsil(
             }
             case None -> {
               insns.add(MNewobj(ctorToken = ctorTok))
-              // For local (in-bundle) cases, strip "$<case>" suffix from ctorKey to
-              // recover the parent union FQN. For cross-assembly stdlib cases that
-              // aren't generic (rare), pass through as-is.
+              // The construction result type is the parent union, recovered from
+              // the registered `caseParentUnion` map (#2363 Stage 4).
               MClass(className = caseParentFqnMsil(cctx, ctorKey))
             }
           }
