@@ -138,6 +138,21 @@ func testTrailingCommentAlignmentPreserved(): Unit {
   assertTrue(Str.contains(acc, "g(w, 1)       // b"), "alignment: wider gap preserved (columns stay aligned)")
 }
 
+func testSectionBannerStaysBetweenItems(): Unit {
+  // A section-banner comment between two top-level items must stay between
+  // them, not be pulled inside the preceding item's `}`.  Regression guard
+  // for the item-span overshoot (`endSpan` was the next token past the
+  // banner, so the body trivia pop swallowed it).
+  val src = "package P\n\npub record A {\n  x: Int\n}\n\n// --- Section ---\n\npub record B {\n  y: Int\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "section banner: round-trips")
+  val acc = format(parse(src))
+  // The banner is preserved and is NOT indented into A's body (an
+  // in-body comment would render with a two-space indent).
+  assertTrue(Str.contains(acc, "// --- Section ---"), "section banner: preserved")
+  assertTrue(not Str.contains(acc, "  // --- Section ---"), "section banner: not indented into A's body")
+}
+
 func testStatementSeparatorBeforeBracket(): Unit {
   // Two statements separated by `;` where the second begins with `(`
   // (here a unit expression).  The lexer synthesises no STMT_END inside
@@ -785,6 +800,7 @@ func main(): Unit {
   testCommentPreservationTrailing()
   testEndOfLineCommentStaysInline()
   testTrailingCommentAlignmentPreserved()
+  testSectionBannerStaysBetweenItems()
   testStatementSeparatorBeforeBracket()
   testFormatPubFunc()
   testFormatUnion()

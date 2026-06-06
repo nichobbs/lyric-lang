@@ -198,7 +198,7 @@ func parseDistinctTypeBody(st: inout ParseState, genericsPrefix: Option[GenericP
     }
   }
   val derives = parseDerivesClauseOpt(st)
-  val endSpan = peekSpan(st)
+  val endSpan = lastSpan(st)
   DistinctTypeDecl(
     name = ns.name,
     generics = generics,
@@ -304,7 +304,7 @@ func parseRecordBody(st: inout ParseState, genericsPrefix: Option[GenericParams]
   val _ = skipStmtEnds(st)
   val _ = parseTrailingAnnotations(st)
   val members = parseRecordMembers(st)
-  val endSpan = peekSpan(st)
+  val endSpan = lastSpan(st)
   RecordDecl(
     name = ns.name,
     generics = generics,
@@ -369,7 +369,7 @@ func parseUnionCase(st: inout ParseState): UnionCase {
       }
     }
   }
-  val endSpan = peekSpan(st)
+  val endSpan = lastSpan(st)
   UnionCase(
     docComments = docs,
     annotations = anns,
@@ -434,7 +434,7 @@ func parseUnionBody(st: inout ParseState, genericsPrefix: Option[GenericParams])
   val _ = skipStmtEnds(st)
   val _ = parseTrailingAnnotations(st)
   val cases = parseUnionCases(st)
-  val endSpan = peekSpan(st)
+  val endSpan = lastSpan(st)
   UnionDecl(
     name = ns.name,
     generics = generics,
@@ -507,7 +507,7 @@ func parseEnumBody(st: inout ParseState): EnumDecl {
   // 'enum'
   val ns = readIdent(st, "enum")
   val cases = parseEnumCases(st)
-  val endSpan = peekSpan(st)
+  val endSpan = lastSpan(st)
   EnumDecl(name = ns.name, cases = cases, span = joinSpans(startTok.span, endSpan))
 }
 
@@ -617,7 +617,7 @@ func parseOpaqueTypeBody(st: inout ParseState, genericsPrefix: Option[GenericPar
     case _ -> {
     }
   }
-  val endSpan = peekSpan(st)
+  val endSpan = lastSpan(st)
   OpaqueTypeDecl(
     name = ns.name,
     generics = generics,
@@ -905,7 +905,7 @@ func parseFunctionDeclBody(st: inout ParseState, genericsPrefix: Option[GenericP
   }
   val emptyDocs: List[DocComment] = newList()
   val emptyAnns: List[Annotation] = newList()
-  val endSpan = peekSpan(st)
+  val endSpan = lastSpan(st)
   FunctionDecl(
     docComments = emptyDocs,
     annotations = emptyAnns,
@@ -1101,7 +1101,7 @@ func parseInterfaceBody(st: inout ParseState, genericsPrefix: Option[GenericPara
   val _ = skipStmtEnds(st)
   val _ = parseTrailingAnnotations(st)
   val members = parseInterfaceMembers(st)
-  val endSpan = peekSpan(st)
+  val endSpan = lastSpan(st)
   InterfaceDecl(
     name = ns.name,
     generics = generics,
@@ -1243,7 +1243,7 @@ func parseImplBody(st: inout ParseState, genericsPrefix: Option[GenericParams]):
   val _ = skipStmtEnds(st)
   val _ = parseTrailingAnnotations(st)
   val members = parseImplMembers(st)
-  val endSpan = peekSpan(st)
+  val endSpan = lastSpan(st)
   ImplDecl(
     generics = generics,
     iface = iface,
@@ -1277,7 +1277,7 @@ func parseEntryDecl(st: inout ParseState): EntryDecl {
   val returnType = match tryEatPunct(st, Colon) { case Some(_) -> Some(parseTypeExpr(st)); case None -> None }
   val contracts = parseContractClauses(st)
   val body = parseFunctionBody(st)
-  val endSpan = peekSpan(st)
+  val endSpan = lastSpan(st)
   EntryDecl(
     docComments = docs,
     annotations = anns,
@@ -1492,7 +1492,7 @@ func parseProtectedTypeBody(st: inout ParseState, genericsPrefix: Option[Generic
       emitErr(st, "P0242", "expected '}' to close protected type body", peekSpan(st))
     }
   }
-  val endSpan = peekSpan(st)
+  val endSpan = lastSpan(st)
   ProtectedTypeDecl(
     name = ns.name,
     generics = generics,
@@ -1710,7 +1710,7 @@ func parseWireBody(st: inout ParseState): WireDecl {
       emitErr(st, "P0260", "expected '}' to close wire body", peekSpan(st))
     }
   }
-  val endSpan = peekSpan(st)
+  val endSpan = lastSpan(st)
   WireDecl(name = ns.name, params = parameters, members = xs, span = joinSpans(startTok.span, endSpan))
 }
 
@@ -1929,7 +1929,7 @@ func parseExternPackageBody(st: inout ParseState, anns: List[Annotation]): Exter
       emitErr(st, "P0272", "expected '}' to close extern package body", peekSpan(st))
     }
   }
-  val endSpan = peekSpan(st)
+  val endSpan = lastSpan(st)
   ExternPackageDecl(path = path, annotations = anns, members = xs, span = joinSpans(startTok.span, endSpan))
 }
 

@@ -769,6 +769,14 @@ func interfaceDoc(visStr: in String, id: in InterfaceDecl, ctx: inout FmtCtx): L
   acc
 }
 
+@pure
+func implMemberStartOffset(m: in ImplMember): Int {
+  match m {
+    case IMplFunc(fn) -> fn.span.startPos.offset
+    case IMplAssoc(a) -> a.span.startPos.offset
+  }
+}
+
 func implDoc(id: in ImplDecl, ctx: inout FmtCtx): List[String] {
   val gens = genParamsStr(id.generics)
   val target = typeStr(id.target)
@@ -777,6 +785,12 @@ func implDoc(id: in ImplDecl, ctx: inout FmtCtx): List[String] {
   val mLines: List[String] = newList()
   var i = 0
   while i < id.members.count {
+    // Pop inter-member trivia (blank lines + comments) before each member
+    // so it is not left for the function-signature printer to mistake for
+    // a comment inside the parameter list (which would force a spurious
+    // multi-line break with a blank line after `(`), and so member
+    // comments are preserved rather than dropped.
+    appendTriviaInto(mLines, ctx, implMemberStartOffset(id.members[i]), false)
     match id.members[i] {
       case IMplFunc(fn) -> {
         val fd = funcDoc("", fn, ctx)
@@ -795,6 +809,7 @@ func implDoc(id: in ImplDecl, ctx: inout FmtCtx): List[String] {
     }
     i = i + 1
   }
+  appendTriviaInto(mLines, ctx, id.span.endPos.offset, true)
   val acc: List[String] = newList()
   acc.add("impl" + gens + " " + ifStr + " for " + target + " {")
   i = 0
