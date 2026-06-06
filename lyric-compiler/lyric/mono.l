@@ -1227,6 +1227,7 @@ func specializeFunc(
     val p = decl.params[i]
     newParams.add(
       Param(
+        annotations = p.annotations,
         mode = p.mode,
         modeExplicit = p.modeExplicit,
         name = p.name,

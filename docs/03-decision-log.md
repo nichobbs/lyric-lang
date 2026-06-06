@@ -5445,6 +5445,34 @@ follow-up, as are the unrelated `token changed` failures in the #2280 backlog.
 
 ---
 
+### D087 — parameter annotations are open metadata (`@body req: in T`)
+
+**Context.** `lyric-web` (and other frameworks) bind HTTP request data to
+handler parameters by annotating them — `@body`, `@query`, `@path`, `@header`.
+The grammar's `Param` rule had no annotation slot, so the self-hosted parser
+rejected `@body req: in CreateReq` with `P0103` ("expected an identifier for
+parameter name"), which cascaded and blocked `lyric fmt` (and any compile) on
+every `examples/*` service handler. Item-level annotations were already
+supported; parameters were the gap.
+
+**Decision.** A parameter may carry leading annotations, parsed with the same
+`parseItemAnnotations` machinery as items and stored on a new
+`Param.annotations: List[Annotation]` field. They are **open metadata**: the
+core language parses and preserves them but attaches **no semantics** — it does
+not validate the annotation name, does not consume the arguments, and does not
+emit them into contract metadata. Source generators and frameworks (e.g.
+`lyric-web`'s request binding) are the consumers. The formatter renders them
+inline before the parameter name (`@body req: in T`, `@header("X-Tenant")
+tenant: String`). Grammar §"Param" gains `{ Annotation }`; the language
+reference adds §5.3.
+
+This mirrors how item annotations already work (open metadata the compiler
+preserves but doesn't interpret), so it introduces no new validation surface.
+Specific annotation *meanings* (which names are valid where, argument schemas)
+belong to the consuming framework, not the language.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

@@ -186,6 +186,11 @@ pub union ParamMode {
 }
 
 pub record Param {
+  /// Leading parameter annotations (`@body req: in T`, `@query page: Int`).
+  /// Open metadata consumed by source generators / frameworks (e.g.
+  /// `lyric-web`'s request-binding); the core language parses and preserves
+  /// them but attaches no semantics of its own.
+  annotations: List[Annotation]
   mode: ParamMode
   // `true` when the source wrote an explicit `in`/`out`/`inout` keyword.
   // Omitting the mode is sugar for `in`; this flag lets the formatter

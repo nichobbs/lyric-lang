@@ -634,6 +634,9 @@ func parseOpaqueTypeBody(st: inout ParseState, genericsPrefix: Option[GenericPar
 // ─────────────────────────────────────────────────────────────────────────────
 func parseParam(st: inout ParseState): Param {
   val startSpan = peekSpan(st)
+  // Leading parameter annotations (`@body req: in T`).  Open metadata for
+  // source generators / frameworks; the core language preserves them only.
+  val annotations = parseItemAnnotations(st)
   val paramName = match peekToken(st) {
     case TKeyword(k) -> {
       match k {
@@ -700,6 +703,7 @@ func parseParam(st: inout ParseState): Param {
   val dflt: Option[Expr] = match tryEatPunct(st, Eq) { case Some(_) -> Some(parseExpr(st)); case None -> None }
   val endSpan = match dflt { case Some(e) -> e.span; case None -> ty.span }
   Param(
+    annotations = annotations,
     mode = mode,
     modeExplicit = modeExplicit,
     name = paramName,

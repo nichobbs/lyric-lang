@@ -11301,7 +11301,7 @@ func lambdaParamToParam(lp: in LambdaParam): Param {
       TypeExpr(kind = TRef(path = ModulePath(segments = seg, span = syntheticSpan())), span = syntheticSpan())
     }
   }
-  Param(mode = PMIn, modeExplicit = true, name = lp.name, ty = ty, dflt = None, span = lp.span)
+  Param(annotations = newList(), mode = PMIn, modeExplicit = true, name = lp.name, ty = ty, dflt = None, span = lp.span)
 }
 
 // BFS lambda-lifting helpers — collect ELambda nodes in breadth-first order

@@ -678,7 +678,12 @@ FunctionBody =
 ParamList = Param { ',' Param } [ ',' ] ;
 
 Param =
-      IDENT ':' [ ParamMode ] Type [ '=' Expr ] ;
+      { Annotation } IDENT ':' [ ParamMode ] Type [ '=' Expr ] ;
+
+(* Leading parameter annotations are open metadata for source generators /
+   frameworks (e.g. lyric-web request binding: @body, @query, @path,
+   @header).  The core language parses and preserves them but attaches no
+   semantics of its own — they render inline before the parameter name. *)
 
 (* The mode keyword is optional; an omitted mode is taken as 'in'.
  * Note also: actual position is *after* the colon, not before — the

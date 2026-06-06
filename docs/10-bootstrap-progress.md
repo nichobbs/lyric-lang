@@ -21794,3 +21794,42 @@ multi-line rbac-style form.  The `examples/` files remain blocked from a full
 reformat by the separate `///`-before-`package` header gap (P0020) — and
 `examples/product-catalog` additionally uses qualified names in its set, which
 do not match the short-name semantics; both are follow-ups.
+
+### D-progress-451 — parameter annotations (`@body req: in T`) parse, store, and round-trip (#2515, D087)
+
+**Status:** Shipped — language feature: lexer (unchanged) → parser → AST →
+formatter, with pass-through across the compiler.
+
+`lyric-web` handlers annotate parameters for request binding
+(`@body`/`@query`/`@path`/`@header`), but the grammar's `Param` rule had no
+annotation slot, so the self-hosted parser rejected `@body req: in CreateReq`
+(`P0103`) — blocking `lyric fmt` on every `examples/*` service file.
+
+- **AST** (`parser/parser_ast.l`): new `Param.annotations: List[Annotation]`.
+- **Parser** (`parser/parser_items.l`): `parseParam` now consumes leading
+  annotations via the shared `parseItemAnnotations` before the parameter name.
+- **Formatter** (`fmt/fmt_core.l`): `paramStr` renders annotations inline
+  before the name (`@body req: in T`, `@header("X-Tenant") tenant: String`).
+- **Pass-through:** the three other `Param` constructors copy/empty the field —
+  `alias_rewriter.l` and `mono.l` thread `p.annotations`; `msil/codegen.l`'s
+  `lambdaParamToParam` and `derives/derives.l`'s `makeParam` use `newList()`.
+
+Semantics (D087): open metadata — the language parses and preserves param
+annotations but attaches no meaning; consumers (source generators / frameworks)
+interpret them.
+
+New self-tests: `testParamAnnotations` (parser); `testParamAnnotationsRoundTrip`
+and `testParamAnnotationWithArgsRoundTrip` (fmt). Parser + fmt self-tests,
+emitter 843/843, and a clean `make lyric` self-host are green; `./bin/lyric fmt`
+round-trips `@post(...) pub func h(@body req: in CreateReq, authToken: String)`.
+
+Bootstrap note: the field addition initially aborted the stage-1 CLI-bundle
+compile with "imported record 'Param' missing field 'annotations'". Root cause
+was a fifth `Param` constructor — `makeParam` in `derives/derives.l` — that
+ripgrep had skipped because the file carries literal C0 control bytes (a derive
+helper) and is classified as binary. Adding `annotations = newList()` there
+fixed it; docs `01` §5.3 and `grammar.ebnf` `Param` updated.
+
+The `examples/*` service files (`ledger/jobqueue/rbac/src/api.l`) now clear the
+`@body` blocker; their remaining round-trip gaps (brace-less multi-statement
+match-arm bodies; `[T]` → `List[T]`) are separate file fixes on #2280.

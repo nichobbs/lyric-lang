@@ -724,7 +724,26 @@ Mode rules:
 - Async functions cannot have `out` or `inout` parameters that are non-record value types crossing await points (the value would be aliased across awaits — see `docs/09-msil-emission.md` §11.4).
 - `in` prohibits **rebinding** the parameter (the name cannot be assigned a new value inside the function body) but does not prevent mutation through a mutable container type. A parameter declared `in` may call mutating methods such as `list.add(x)` on a `List[T]` value — the reference itself is immutable, not the heap object it points to. Direct reassignment (`param = ...`) of an `in` parameter — like reassigning a `val`/`let` — is a compile error (**T0087**), enforced by the type checker for all packages (not only proof-required code). It fires only on direct assignment, not on mutating method calls. (The §5.2 draft originally numbered this rule `V0001`; that code is owned by the proof-import mode-checker rule, so the type-checker-enforced rule uses T0087.)
 
-### 5.3 Return values
+### 5.3 Parameter annotations
+
+A parameter may carry leading annotations, before its name and any mode keyword:
+
+```
+@post("/accounts")
+pub func handleCreateAccount(@body req: in CreateAccountRequest,
+                             @header("X-Tenant") tenant: String): Result[String, ApiError] { … }
+```
+
+Parameter annotations are **open metadata**: the core language parses and
+preserves them but attaches no semantics of its own (it neither validates the
+annotation name nor consumes the arguments). They exist for source generators
+and frameworks — for example `lyric-web` reads `@body` / `@query` / `@path` /
+`@header` on a handler's parameters to drive HTTP request binding. The
+formatter renders them inline before the parameter name. An annotation with
+arguments uses the same form as item-level annotations
+(`@name("arg", key = expr)`).
+
+### 5.4 Return values
 
 `Unit` is the default return type if omitted. A function with `Unit` return type may omit `return`.
 
@@ -737,7 +756,7 @@ func minMax(xs: in slice[Int]): (Int, Int) {
 val (lo, hi) = minMax(xs)
 ```
 
-### 5.4 Closures and lambdas
+### 5.5 Closures and lambdas
 
 ```
 val add = { x: Int, y: Int -> x + y }

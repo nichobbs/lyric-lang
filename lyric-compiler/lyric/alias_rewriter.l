@@ -574,6 +574,7 @@ func rewriteLocalBinding(aliases: in List[String], lb: in LocalBinding): LocalBi
 func rewriteParam(aliases: in List[String], p: in Param): Param {
   val d = match p.dflt { case Some(e) -> Some(value = rewriteExpr(aliases, e)); case None -> p.dflt }
   Param(
+    annotations = p.annotations,
     mode = p.mode,
     modeExplicit = p.modeExplicit,
     name = p.name,

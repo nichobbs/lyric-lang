@@ -78,6 +78,27 @@ func testParamModeRoundTrips(): Unit {
   assertTrue(Str.contains(acc, "z: out Int"), "param mode: explicit `out` preserved")
 }
 
+func testParamAnnotationsRoundTrip(): Unit {
+  // Leading parameter annotations (`@body req: in T`, `@query page: Int`)
+  // must round-trip — they render inline before the parameter name (#2515).
+  val src = "package P\n\nfunc h(@body req: in CreateReq, @query page: Int, plain: Int): Int {\n  page\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "param ann: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "@body req: in CreateReq"), "param ann: @body rendered inline before name")
+  assertTrue(Str.contains(acc, "@query page: Int"), "param ann: @query rendered inline")
+  assertTrue(Str.contains(acc, "plain: Int"), "param ann: un-annotated param unchanged")
+}
+
+func testParamAnnotationWithArgsRoundTrip(): Unit {
+  // An annotation carrying arguments (`@header("X-Tenant")`) round-trips.
+  val src = "package P\n\nfunc h(@header(\"X-Tenant\") tenant: String): Int {\n  0\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "param ann args: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "@header(\"X-Tenant\") tenant: String"), "param ann args: rendered with args")
+}
+
 func testIsFormattedRoundTrip(): Unit {
   val src = "package P\n\nalias Name = String\n"
   val pr = parse(src)
@@ -1114,6 +1135,8 @@ func main(): Unit {
   testFormatMutableRecordField()
   testFormatFunction()
   testParamModeRoundTrips()
+  testParamAnnotationsRoundTrip()
+  testParamAnnotationWithArgsRoundTrip()
   testIsFormattedRoundTrip()
   testCommentPreservationBetweenItems()
   testCommentPreservationBlockComment()

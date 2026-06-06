@@ -112,6 +112,25 @@ func testFuncDecl(): Unit {
   assertEqual(firstItemKindName(pr), "func", "func: kind is func")
 }
 
+// Parameter annotations (`@body req: in T`) — open metadata for source
+// generators / frameworks (lyric-web request binding).  Issue #2515.
+func testParamAnnotations(): Unit {
+  val pr = parse("package P\nfunc h(@body req: in Int, @query page: Int, plain: Int): Int { 0 }\n")
+  assertEqualInt(diagCount(pr), 0, "param-ann: no diagnostics")
+  match pr.file.items[0].kind {
+    case IFunc(fd) -> {
+      assertEqualInt(fd.params.count, 3, "param-ann: three params")
+      assertEqualInt(fd.params[0].annotations.count, 1, "param-ann: first param has one annotation")
+      assertEqual(fd.params[0].annotations[0].name.segments[0], "body", "param-ann: @body name")
+      assertEqual(fd.params[0].name, "req", "param-ann: first param name")
+      assertEqualInt(fd.params[1].annotations.count, 1, "param-ann: second param has one annotation")
+      assertEqual(fd.params[1].annotations[0].name.segments[0], "query", "param-ann: @query name")
+      assertEqualInt(fd.params[2].annotations.count, 0, "param-ann: plain param has no annotations")
+    }
+    case _ -> assertTrue(false, "param-ann: expected IFunc")
+  }
+}
+
 // #1943: a brace-terminated `if` in statement position is a complete statement,
 // not the left operand of a following binary operator.  `if n > 10 { return
 // 100 }` then a bare `-1` on the next line must parse as TWO statements (the
@@ -696,6 +715,7 @@ func main(): Unit {
   testPackageDecl()
   testImport()
   testFuncDecl()
+  testParamAnnotations()
   testIfStmtDoesNotGlueOperator()
   testMatchStmtDoesNotGlueOperator()
   testValueIfStillSingleExpr()
