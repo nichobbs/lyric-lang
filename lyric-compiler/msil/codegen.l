@@ -5220,11 +5220,13 @@ func lowerPatternTestMsil(
     }
     case PRange(lo, inclusive, hi) -> {
       // Numeric range test: fail unless `lo <= scrut (<|<=) hi`.  `clt`/`cgt`
-      // work for i4/i8/r8 alike, so no per-width branching is needed; a boxed
-      // (Object) scrutinee is unboxed to int first.
+      // work for i4/i8/r8 alike, so no per-width branching is needed.  An erased
+      // (boxed) scrutinee — e.g. a tuple element — is unboxed to the width the
+      // range bounds denote, so a Long/Double range is not truncated to int.
+      val rangeNumTy = match scrutTy { case MObject -> rangeBoundTypeMsil(lo); case _ -> scrutTy }
       emitLoadSlot(insns, scrutSlot, fctx.paramCount)
       match scrutTy {
-        case MObject -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MInt)))
+        case MObject -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, rangeNumTy)))
         case _ -> ()
       }
       lowerExprMsil(cctx, fctx, insns, lo)
@@ -5232,7 +5234,7 @@ func lowerPatternTestMsil(
       insns.add(MBrTrue(label = failLabel))   // scrut < lo
       emitLoadSlot(insns, scrutSlot, fctx.paramCount)
       match scrutTy {
-        case MObject -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MInt)))
+        case MObject -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, rangeNumTy)))
         case _ -> ()
       }
       lowerExprMsil(cctx, fctx, insns, hi)
@@ -5827,6 +5829,22 @@ func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in Ms
       case MByte -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MByte)))
       case _ -> ()
     }
+  }
+}
+
+// The numeric width an integer/float literal denotes — used to unbox an erased
+// (boxed) `PRange` scrutinee to the right value type rather than a hard-coded
+// int.  `clt`/`cgt` then compare at that width (they work for i4/i8/r8 alike).
+func rangeBoundTypeMsil(e: in Expr): MsilType {
+  match e.kind {
+    case ELiteral(lit) -> {
+      match lit {
+        case LInt(_, suffix, _) -> match suffix { case I64 -> MLong; case U64 -> MLong; case _ -> MInt }
+        case LFloat(_, _, _) -> MDouble
+        case _ -> MInt
+      }
+    }
+    case _ -> MInt
   }
 }
 

@@ -1518,8 +1518,6 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
   resultTy
 }
 
-// Emit a runtime test for a pattern.  Jumps to `failLabel` if the test
-// fails.  The scrutinee is in local slot `scrutSlot` with type `scrutTy`.
 // Resolve the JVM case-class name for a `PConstructor` / nullary-binding
 // pattern.  Normally the scrutinee's static type names the union interface
 // (`Pkg/Shape`), so the case class is `<iface>$<case>`.  When the scrutinee is
@@ -1574,6 +1572,37 @@ func isRefJvm(ty: in JvmType): Bool {
     case JRef(_) -> true
     case JArray(_) -> true
     case _ -> false
+  }
+}
+
+// The numeric width an integer/float literal denotes — used to pick the
+// comparison and (un)box width for a `PRange` whose scrutinee is erased.
+func rangeBoundTypeJvm(e: in Expr): JvmType {
+  match e.kind {
+    case ELiteral(lit) -> {
+      match lit {
+        case LInt(_, suffix, _) -> match suffix { case I64 -> JLong; case U64 -> JLong; case _ -> JInt }
+        case LFloat(_, _, _) -> JDouble
+        case _ -> JInt
+      }
+    }
+    case _ -> JInt
+  }
+}
+
+// The numeric type a `PRange` test should compare at: the scrutinee's own width
+// when it is a stack primitive, else (an erased/boxed tuple element) the width
+// the range bounds denote — never a hard-coded `int`.
+func rangeNumericTypeJvm(scrutTy: in JvmType, lo: in Expr): JvmType {
+  match scrutTy {
+    case JLong -> JLong
+    case JDouble -> JDouble
+    case JFloat -> JDouble
+    case JInt -> JInt
+    case JByte -> JInt
+    case JChar -> JInt
+    case JShort -> JInt
+    case _ -> rangeBoundTypeJvm(lo)
   }
 }
 
@@ -1719,16 +1748,21 @@ func lowerPatternTest(
       }
     }
     case PRange(lo, inclusive, hi) -> {
-      // Numeric range test: fail unless `lo <= scrut (<|<=) hi`.  Honours the
-      // scrutinee width (int vs long); Double ranges compare via dcmp.
-      match scrutTy {
+      // Numeric range test: fail unless `lo <= scrut (<|<=) hi`.  The comparison
+      // width is the scrutinee's own (int / long / double); for an erased
+      // (boxed) scrutinee — e.g. a tuple element — it is taken from the range
+      // bounds so a Long/Double range is not silently truncated to int.
+      val numTy = rangeNumericTypeJvm(scrutTy, lo)
+      match numTy {
         case JLong -> {
           emitLoad(insns, scrutSlot, scrutTy)
+          coerceArgTo(insns, scrutTy, JLong)
           val loTy = lowerExpr(ctx, insns, lo)
           coerceArgTo(insns, loTy, JLong)
           insns.add(LLcmp)
           insns.add(LIflt(label = failLabel))   // scrut < lo
           emitLoad(insns, scrutSlot, scrutTy)
+          coerceArgTo(insns, scrutTy, JLong)
           val hiTy = lowerExpr(ctx, insns, hi)
           coerceArgTo(insns, hiTy, JLong)
           insns.add(LLcmp)
@@ -1740,11 +1774,13 @@ func lowerPatternTest(
         }
         case JDouble -> {
           emitLoad(insns, scrutSlot, scrutTy)
+          coerceArgTo(insns, scrutTy, JDouble)
           val loTy = lowerExpr(ctx, insns, lo)
           coerceArgTo(insns, loTy, JDouble)
           insns.add(LDcmpl)
           insns.add(LIflt(label = failLabel))
           emitLoad(insns, scrutSlot, scrutTy)
+          coerceArgTo(insns, scrutTy, JDouble)
           val hiTy = lowerExpr(ctx, insns, hi)
           coerceArgTo(insns, hiTy, JDouble)
           insns.add(LDcmpl)
@@ -1757,18 +1793,12 @@ func lowerPatternTest(
         case _ -> {
           // Int (and narrower int-on-stack) scrutinee.
           emitLoad(insns, scrutSlot, scrutTy)
-          if isRefJvm(scrutTy) {
-            insns.add(LCheckcast(className = "java/lang/Integer"))
-            insns.add(LUnboxInt)
-          }
+          coerceArgTo(insns, scrutTy, JInt)
           val loTy = lowerExpr(ctx, insns, lo)
           coerceArgTo(insns, loTy, JInt)
           insns.add(LIfIcmplt(label = failLabel))   // scrut < lo
           emitLoad(insns, scrutSlot, scrutTy)
-          if isRefJvm(scrutTy) {
-            insns.add(LCheckcast(className = "java/lang/Integer"))
-            insns.add(LUnboxInt)
-          }
+          coerceArgTo(insns, scrutTy, JInt)
           val hiTy = lowerExpr(ctx, insns, hi)
           coerceArgTo(insns, hiTy, JInt)
           if inclusive {

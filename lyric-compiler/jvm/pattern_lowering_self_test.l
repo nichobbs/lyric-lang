@@ -59,6 +59,16 @@ func bucket(n: Int): Int {
   }
 }
 
+// ── PRange over a Long scrutinee that is *erased* to `object` (a tuple element).
+// The range bound type (`i64`) must drive the unbox/compare width — unboxing to
+// `int` would truncate the 64-bit value and mis-discriminate.
+func longRangeInTuple(p: (Long, Int)): Int {
+  match p {
+    case (1i64 .. 6i64, _) -> 1
+    case (_, _) -> 2
+  }
+}
+
 // ── PTuple — literal sub-patterns drive arm selection (the test path must
 // unbox each element and compare).
 func classifyPair(p: (Int, Int)): Int {
@@ -125,6 +135,14 @@ test "PRange exclusive upper bound" {
   assertEqualInt(bucket(10), 2, "10 -> bucket 2 (excl boundary)")
   assertEqualInt(bucket(19), 2, "19 -> bucket 2")
   assertEqualInt(bucket(20), 9, "20 -> out (excl hi)")
+}
+
+test "PRange on an erased Long tuple element compares at 64-bit width" {
+  assertEqualInt(longRangeInTuple((3i64, 0)), 1, "3L in 1..6")
+  assertEqualInt(longRangeInTuple((9i64, 0)), 2, "9L out of 1..6")
+  // 2^32 + 1: its low 32 bits are 1 (in range), but the full Long is not — a
+  // truncating unbox-to-int would wrongly select arm 1.
+  assertEqualInt(longRangeInTuple((4294967297i64, 0)), 2, "2^32+1 not in 1..6 (no truncation)")
 }
 
 test "PTuple literal sub-patterns select the arm" {
