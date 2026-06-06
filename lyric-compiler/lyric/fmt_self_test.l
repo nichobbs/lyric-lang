@@ -209,6 +209,18 @@ func testModuleHeaderNestedCommentPreserved(): Unit {
   assertTrue(Str.contains(acc, "//!   // run the thing"), "header nested comment: preserved as //! line")
 }
 
+func testOpaqueTypeAnnotationAndBodyComment(): Unit {
+  // `itemDoc` dispatches opaque types without the shared header, so the
+  // leading annotation must be emitted by `opaqueDoc`; and a comment in an
+  // (otherwise empty) opaque body must be popped before the closing brace.
+  val src = "package P\n\n@stable(since = \"0.1\")\npub opaque type T {\n  // kernel-held handle\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "opaque type: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "@stable(since = \"0.1\")"), "opaque type: leading annotation preserved")
+  assertTrue(Str.contains(acc, "// kernel-held handle"), "opaque type: body comment preserved")
+}
+
 func testInterfaceMethodDocAndContractPreserved(): Unit {
   // A body-less interface method's `///` doc comment and contract clauses
   // are stored on the `FunctionSig` and must survive formatting (they were
@@ -767,6 +779,7 @@ func main(): Unit {
   testNumericLiteralSpellingRoundTrips()
   testFormatModuleDoc()
   testModuleHeaderNestedCommentPreserved()
+  testOpaqueTypeAnnotationAndBodyComment()
   testInterfaceMethodDocAndContractPreserved()
   testFormatSourceFacade()
   testCommentInsideFunctionBody()
