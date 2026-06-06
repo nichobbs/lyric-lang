@@ -138,7 +138,7 @@ the `Web.Router`.
 import Db
 
 func checkDb(): Result[Unit, String] {
-  val conn = match Db.connectPostgres() {
+  val conn = match Db.connectFromEnv() {
     case Ok(c)  -> c
     case Err(e) -> return Err("connect: " + e.message)
   }

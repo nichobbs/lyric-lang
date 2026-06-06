@@ -746,6 +746,53 @@ func isTypeDeclKind(kind: in String): Bool {
 // error when the synthesised source re-type-checks.  Used as the validation
 // preamble when synthesising one restored package so its signatures can name
 // sibling packages' types.
+// Return the leading identifier of `s` — the prefix up to the first
+// non-identifier delimiter.  Used to pull a case name out of the tail of
+// a `case `-split fragment (e.g. "Header; case Cookie }" -> "Header").
+func leadingIdent(s: in String): String {
+  var cut = Str.length(s)
+  val delims: List[String] = newList()
+  delims.add("(")
+  delims.add(" ")
+  delims.add(";")
+  delims.add(",")
+  delims.add("}")
+  delims.add("\n")
+  delims.add("\t")
+  var di = 0
+  while di < delims.count {
+    match Str.indexOf(s, delims[di]) {
+      case Some(idx) -> if idx < cut { cut = idx }
+      case None -> ()
+    }
+    di = di + 1
+  }
+  Str.substring(s, 0, cut)
+}
+
+// Extract the case names declared by an enum/union `repr` string (the
+// identifiers following each `case ` keyword).  Enum/union cases are
+// registered as package-level symbols, so when several packages are
+// flattened into one synthesised validation source these names can
+// collide with a sibling package's type of the same name (#2514 —
+// `Web.OpenApi.ParameterLocation.Header` vs `Web.Header`).  Seeding the
+// preamble's dedup set with the synthesised package's own case names lets
+// `siblingTypeDecls` drop the colliding sibling type, which the package's
+// signatures never reference in type position anyway.
+func collectCaseNames(repr: in String): List[String] {
+  val names: List[String] = newList()
+  val parts = Str.split(repr, "case ")
+  var i = 1
+  while i < parts.length {
+    val nm = leadingIdent(parts[i])
+    if Str.length(nm) > 0 {
+      names.add(nm)
+    }
+    i = i + 1
+  }
+  names
+}
+
 func siblingTypeDecls(arts: in List[RestoredArtifact], selfPkg: in String): List[Meta.ContractDecl] {
   val acc: List[Meta.ContractDecl] = newList()
   val seen: List[String] = newList()
@@ -761,8 +808,23 @@ func siblingTypeDecls(arts: in List[RestoredArtifact], selfPkg: in String): List
     val ownDecls = art.contract.decls
     var oi = 0
     while oi < ownDecls.count {
-      if indexOfString(seen, ownDecls[oi].name) < 0 {
-        seen.add(ownDecls[oi].name)
+      val od = ownDecls[oi]
+      if indexOfString(seen, od.name) < 0 {
+        seen.add(od.name)
+      }
+      // Also exclude any sibling type whose name matches one of this
+      // package's enum/union case names: the case name is a package-level
+      // symbol in the flattened synthesised source and would collide with
+      // the sibling type (#2514).
+      if od.kind == "enum" or od.kind == "union" {
+        val caseNames = collectCaseNames(od.repr)
+        var ci = 0
+        while ci < caseNames.count {
+          if indexOfString(seen, caseNames[ci]) < 0 {
+            seen.add(caseNames[ci])
+          }
+          ci = ci + 1
+        }
       }
       oi = oi + 1
     }

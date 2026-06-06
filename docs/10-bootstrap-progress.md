@@ -21845,3 +21845,72 @@ exercises all five forms with runtime-value assertions and is wired into CI on
 `lyric fmt` round-trip for record-pattern (`{x = a}`) and `is`-type-test
 patterns was also corrected (the formatter emitted `:` where the grammar uses
 `=` / `is`).
+### D-progress-452 — example packages build end-to-end via `lyric build` (#2514, #2454)
+
+**Status:** Shipped — all four multi-file showcase services in
+`examples/{rbac,ledger,jobqueue,product-catalog}` build end-to-end through
+`lyric build --manifest`, the final validation criterion from #2454.  CI now
+builds them on every push (`.github/workflows/ci.yml` "Build example packages"
+step) so they cannot regress.
+
+Until now the examples only parsed + round-tripped through `lyric fmt`
+(#2502, #2509); this is the first time they were put through a real build
+(name resolution, type/mode checking, contract elaboration, monomorphisation,
+MSIL emission, cross-file + cross-package references, aspect instantiations,
+and the lyric-web/db/otel/grpc/auth/resilience library deps).  Driving the
+first error to zero per construct surfaced — and fixed — several genuine
+self-hosted compiler and library gaps:
+
+- **Contract-metadata enum repr** (`contract_meta.l::reprForEnum`): emitted
+  `pub enum E { A, B }` (comma form) which fails to re-parse (P0140 "expected
+  'case'") when a consumer restores the DLL.  Now emits `case `-prefixed
+  variants, matching the F# writer.  Blocked every enum-exporting dependency.
+- **Protected types in contract metadata** (`contract_meta.l`): `IProtected`
+  was silently dropped, so a public signature naming a protected type
+  (`CircuitBreakerState` in lyric-resilience) failed restore synthesis with
+  `unknown type name`.  Now emitted as an opaque anchor (`pub opaque type T`),
+  matching the F# writer's `IProtected` rule.
+- **Restore-synthesis case-name collisions** (`restored_packages.l`,
+  `emitter.l`): flattening every restored package into one validation source
+  let a package-level enum/union **case** name collide with an unrelated
+  sibling **type** of the same name (`Web.Header` record vs
+  `Web.OpenApi.ParameterLocation.Header`; `Std.Core.Result.Ok` vs
+  `Grpc.Types.GrpcStatusCode.Ok`).  Preamble enums/unions are now rendered as
+  caseless anchors, and the preamble dedup set is seeded with the synthesised
+  package's own case names.
+- **Interface upcasting in generic return position** (`typechecker`): a
+  concrete record returned where its implemented interface is expected
+  (`connect(): Result[DbConnection, DbError]` whose body yields
+  `Ok(NativeConnection(...))`) raised T0070.  Added `typeAssignable` —
+  directional assignability with interface subsumption, recursing through
+  shared generic heads — used at the return/trailing-expression checks.
+- **Rust-style integer-literal inference** (`typechecker`): the language
+  reference says integer literals "follow Rust's syntax", but the self-hosted
+  checker typed an unsuffixed literal strictly as `Int`, rejecting
+  `someLong <= 0`, `someLong + 1`, and `colLong`-style match defaults
+  (`case _ -> 0`).  Unsuffixed literals now adopt the concrete integer type
+  required by a binary-operator sibling, and `match`/`if` branches widen
+  `Int`↔`Long` (recursing through generic args so `Ok(0)` reconciles with
+  `Ok(v: Long)`).
+- **lyric-resilience kernel** used `entry` (a reserved keyword) as a local
+  variable, a P0050 cascade under the self-hosted parser; renamed to `circuit`.
+- **lyric-db public API**: added `Db.connectFromEnv()` — the
+  documented-but-unimplemented env-based connect (reads
+  `LYRIC_CONFIG_DB_CONNECTION_URL` and delegates to `connect`, which detects
+  the driver from the DSN scheme).  Replaces the misnamed `connectPostgres()`
+  the book and examples assumed; book chapters 26/27 and the
+  lyric-db/lyric-health READMEs updated.
+
+Example-source fixes (the mechanical List[T] rewrite from #2454 was
+incomplete in the rbac/ledger/jobqueue services): replaced the unsupported
+`var xs: List[T] = []; xs = xs + [item]` functional-concat pattern with
+`val xs = newList(); xs.add(item)`; corrected `.length` (slice) to `.count`
+(List) on list values; and fixed a mis-parenthesised `assert` in the ledger
+accounting proof.  (product-catalog's source was fixed in parallel by #2521;
+this branch builds on that.)
+
+Known follow-up (filed separately): a directory-form package path
+(`"Pkg" = "src"` rather than an explicit file list) crashes `lyric build` with
+an `AccessViolationException` in `Std.Sort` on the result of `List.toArray()`;
+`lyric-health` was switched to the explicit-file form (the convention every
+other library already uses) to sidestep it.

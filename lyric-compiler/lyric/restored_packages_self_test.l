@@ -184,6 +184,52 @@ func testSynthesisePreambleOrdering(): Unit {
   assertTrue(externIdx < funcIdx, "synth_preamble: extern appears BEFORE the contract's own func")
 }
 
+// A preamble enum is rendered WITHOUT its cases (`pub enum Name {}`) so a
+// bare case name never lands as a package-level symbol that collides with
+// an unrelated sibling type of the same name once flattened into one
+// synthesised source (#2514).  The owning contract's own enum keeps its
+// cases.
+func testSynthesisePreambleEnumStripsCases(): Unit {
+  val preamble: List[Meta.ContractDecl] = newList()
+  preamble.add(
+    mkDecl(
+      "enum",
+      "ParameterLocation",
+      "pub enum ParameterLocation { case Path; case Query; case Header; case Cookie }"
+    )
+  )
+  val ownDecls: List[Meta.ContractDecl] = newList()
+  ownDecls.add(mkDecl("record", "Header", "pub record Header { name: String, value: String }"))
+  val c = mkContract("MyApp.Web", ownDecls)
+  val src = synthesiseSource(c, preamble)
+  assertTrue(Str.contains(src, "pub enum ParameterLocation {}"), "synth_preamble_enum: enum anchor is caseless")
+  assertTrue(
+    not Str.contains(src, "case Header"),
+    "synth_preamble_enum: no 'case Header' to collide with record Header"
+  )
+  assertTrue(Str.contains(src, "pub record Header"), "synth_preamble_enum: own record Header preserved")
+}
+
+// A preamble UNION is likewise rendered caseless, with its generic head
+// preserved (`pub union Result[T, E] {}`).  This stops a stdlib case such
+// as `Std.Core.Result.Ok` (a union case) from colliding with a restored
+// package's enum case of the same name (`Grpc.Types.GrpcStatusCode.Ok`)
+// when both are flattened into the validation source (#2514).
+func testSynthesisePreambleUnionStripsCases(): Unit {
+  val preamble: List[Meta.ContractDecl] = newList()
+  preamble.add(mkDecl("union", "Result", "pub union Result[T, E] { case Ok(value: T), case Err(err: E) }"))
+  val ownDecls: List[Meta.ContractDecl] = newList()
+  ownDecls.add(mkDecl("enum", "GrpcStatusCode", "pub enum GrpcStatusCode { case Ok; case Cancelled }"))
+  val c = mkContract("Grpc.Types", ownDecls)
+  val src = synthesiseSource(c, preamble)
+  assertTrue(
+    Str.contains(src, "pub union Result[T, E] {}"),
+    "synth_preamble_union: union anchor is caseless, generics kept"
+  )
+  assertTrue(not Str.contains(src, "case Ok(value"), "synth_preamble_union: no union 'case Ok' to collide")
+  assertTrue(Str.contains(src, "case Ok; case Cancelled"), "synth_preamble_union: own enum keeps its cases")
+}
+
 // Output ends in a newline — keeps the parser-friendly shape (trailing
 // items always terminated by a newline).
 func testSynthesiseTrailingNewline(): Unit {
@@ -271,6 +317,8 @@ func main(): Int {
   testSynthesiseInterfaceFullBodyNoDoubleBrace()
   testSynthesiseNonInterfaceKindsPassThrough()
   testSynthesisePreambleOrdering()
+  testSynthesisePreambleEnumStripsCases()
+  testSynthesisePreambleUnionStripsCases()
   testSynthesiseTrailingNewline()
   testSynthesiseArtifactHappyPath()
   testSynthesiseArtifactMalformedRepr()

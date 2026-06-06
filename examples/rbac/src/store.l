@@ -3,6 +3,7 @@
 package Rbac.Store
 
 import Std.Core
+import Std.Collections
 import Rbac.Policy
 import Db
 
@@ -18,7 +19,7 @@ func colLong(row: in DbRow, name: in String): Long {
   match Db.col(row, name) {
     case DbValue.DbLong(v) -> v
     case DbValue.DbInt(v) -> v.toLong()
-    case _ -> 0
+    case _ -> 0i64
   }
 }
 
@@ -97,18 +98,17 @@ pub func getRolesForUser(conn: in DbConnection, userId: in Long): Result[List[Ro
   match conn.query(sql, [userId.toString()]) {
     case Err(e) -> Err(StoreError.DatabaseError(message = e.message))
     case Ok(rows) -> {
-      var assignments: List[RoleAssignment] = []
+      val assignments: List[RoleAssignment] = newList()
       for row in rows {
-        assignments = assignments +
-          [
-            RoleAssignment(
-              userId = colLong(row, "user_id"),
-              roleId = colLong(row, "role_id"),
-              roleName = colText(row, "role_name"),
-              grantedBy = colLong(row, "granted_by"),
-              grantedAt = colText(row, "granted_at")
-            )
-          ]
+        assignments.add(
+          RoleAssignment(
+            userId = colLong(row, "user_id"),
+            roleId = colLong(row, "role_id"),
+            roleName = colText(row, "role_name"),
+            grantedBy = colLong(row, "granted_by"),
+            grantedAt = colText(row, "granted_at")
+          )
+        )
       }
       Ok(assignments)
     }

@@ -475,15 +475,40 @@ func testBuildOpaque(): Unit {
   assertTrue(Str.contains(d.repr, "amount: Int"), "opaque: amount field present")
 }
 
-// `buildContractFromFile` covers multi-case enums (reprForEnum).
+// `buildContractFromFile` covers multi-case enums (reprForEnum).  The
+// repr must prefix each variant with `case` so the synthesised contract
+// source re-parses (a bare `{ Red, Green, Blue }` triggers P0140
+// "expected 'case' to start an enum case" when a consumer restores the
+// DLL and re-typechecks its public surface).
 func testBuildEnum(): Unit {
-  val src = "package P\n\npub enum Color { Red, Green, Blue }\n"
+  val src = "package P\n\npub enum Color {\n  case Red\n  case Green\n  case Blue\n}\n"
   val pr = parse(src)
   val c = buildContractFromFile(pr.file, "1.0.0")
   val d = unwrapDeclOrFail(findDeclByKind(c.decls, "enum", "Color"), "buildContractFromFile: enum Color missing")
-  assertTrue(Str.contains(d.repr, "Red"), "enum: Red case present")
-  assertTrue(Str.contains(d.repr, "Green"), "enum: Green case present")
-  assertTrue(Str.contains(d.repr, "Blue"), "enum: Blue case present")
+  assertTrue(Str.contains(d.repr, "case Red"), "enum: 'case Red' present (got " + d.repr + ")")
+  assertTrue(Str.contains(d.repr, "case Green"), "enum: 'case Green' present (got " + d.repr + ")")
+  assertTrue(Str.contains(d.repr, "case Blue"), "enum: 'case Blue' present (got " + d.repr + ")")
+  // The repr must round-trip through the parser cleanly — this is what a
+  // cross-package consumer does when synthesising the restored contract.
+  val rt = parse("package P\n\n" + d.repr + "\n")
+  assertEqualInt(rt.diagnostics.count, 0, "enum: repr re-parses with no diagnostics (got " + d.repr + ")")
+}
+
+// `buildContractFromFile` emits a `pub protected type` as an opaque-type
+// anchor (reprForProtected) so a cross-package consumer can resolve the
+// name in a public signature without seeing the locked internal state.
+// Protected types are emitted regardless of source visibility.
+func testBuildProtected(): Unit {
+  val src = "package P\n\npub protected type Counter {\n  var n: Int = 0\n  entry bump(): Unit { n = n + 1 }\n}\n"
+  val pr = parse(src)
+  val c = buildContractFromFile(pr.file, "1.0.0")
+  val d = unwrapDeclOrFail(
+    findDeclByKind(c.decls, "opaque", "Counter"),
+    "buildContractFromFile: protected Counter missing"
+  )
+  assertTrue(Str.contains(d.repr, "pub opaque type Counter"), "protected: opaque repr header (got " + d.repr + ")")
+  val rt = parse("package P\n\n" + d.repr + "\n")
+  assertEqualInt(rt.diagnostics.count, 0, "protected: repr re-parses with no diagnostics (got " + d.repr + ")")
 }
 
 // `buildContractFromFile` covers generic interfaces.
@@ -572,6 +597,7 @@ func main(): Int {
   testLevelOfFileProofRequired()
   testBuildOpaque()
   testBuildEnum()
+  testBuildProtected()
   testBuildGenericInterface()
   testBuildUnionMixedFields()
   testBuildArrayTypeArg()

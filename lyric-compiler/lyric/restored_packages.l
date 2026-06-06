@@ -172,6 +172,30 @@ func renderDecl(d: in Meta.ContractDecl): String {
   }
 }
 
+// Render a preamble decl — a sibling package's type used only so this
+// package's signatures resolve its name.  Enums and unions are emitted
+// WITHOUT their cases (`pub enum Name {}` / `pub union Name[T, E] {}`): a
+// signature references only the type's NAME, never its variants, and a
+// bare case name (`case Header`, `case Ok`) would otherwise be registered
+// as a package-level symbol that collides — once every package is
+// flattened into one synthesised source (#2514) — with an unrelated
+// sibling type of the same name (`Web.Header` record vs
+// `Web.OpenApi.ParameterLocation.Header` case) or with another package's
+// case of the same name (`Std.Core.Result.Ok` vs
+// `Grpc.Types.GrpcStatusCode.Ok`).  The head (including any generic
+// parameter list) is preserved by cutting the repr at its first `{`; the
+// owning package keeps its full cases via `renderDecl` on `contract.decls`.
+func renderPreambleDecl(d: in Meta.ContractDecl): String {
+  if d.kind == "enum" or d.kind == "union" {
+    val braceIdx = d.repr.indexOf("{")
+    if braceIdx >= 0 {
+      return Str.substring(d.repr, 0, braceIdx) + "{}\n"
+    }
+    return d.repr + " {}\n"
+  }
+  renderDecl(d)
+}
+
 /// Synthesise a Lyric source file from a `Contract` + optional
 /// preamble.  The result is parseable by the standard
 /// `Lyric.Parser.parse` and type-checkable in isolation.  Function
@@ -185,7 +209,7 @@ pub func synthesiseSource(contract: in Meta.Contract, preamble: in List[Meta.Con
   // sibling packages whose names appear in this package's signatures.
   var pi = 0
   while pi < preamble.count {
-    sb = sb + renderDecl(preamble[pi])
+    sb = sb + renderPreambleDecl(preamble[pi])
     pi = pi + 1
   }
   // Blank line between preamble and own-decls when both are non-empty,

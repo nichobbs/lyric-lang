@@ -15,6 +15,7 @@
 package Ledger.Transfers
 
 import Std.Core
+import Std.Collections
 import Std.Json
 import Ledger.Accounting
 import Db
@@ -65,9 +66,9 @@ pub func getEntriesForAccount(conn: in DbConnection, id: in Long): Result[List[L
   match conn.query(sql, [id.toString()]) {
     case Err(e) -> Err(LedgerError.DatabaseError(message = e.message))
     case Ok(rows) -> {
-      var entries: List[LedgerEntry] = []
+      val entries: List[LedgerEntry] = newList()
       for r in rows {
-        entries = entries + [rowToEntry(r)]
+        entries.add(rowToEntry(r))
       }
       Ok(entries)
     }

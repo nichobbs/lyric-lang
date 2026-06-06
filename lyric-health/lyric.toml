@@ -11,7 +11,7 @@ output          = "single"
 output_assembly = "Health.dll"
 
 [project.packages]
-"Health" = "src"
+"Health" = "src/health.l"
 
 [dependencies]
 "Lyric.Web"    = { path = "../lyric-web" }

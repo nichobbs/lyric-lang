@@ -18,6 +18,7 @@
 package Ledger.Api
 
 import Std.Core
+import Std.Collections
 import Std.Json
 import Ledger.Accounting
 import Ledger.Accounts
@@ -77,7 +78,7 @@ pub record CreateTransferRequest {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 func withConn(f: in (DbConnection) -> Result[String, ApiError]): Result[String, ApiError] {
-  match Db.connectPostgres() {
+  match Db.connectFromEnv() {
     case Err(e) -> Err(Web.serviceUnavailable("database unavailable: " + e.message))
     case Ok(conn) -> {
       val res = f(conn)
@@ -125,20 +126,20 @@ pub func handleCreateAccount(@body req: in CreateAccountRequest, authToken: Stri
       OTel.endSpan(span)
       Err(Web.badRequest("unknown account kind: " + req.kind))
     }
-    case Some(kind) -> match Db.connectPostgres() { case Err(e) -> { OTel.setSpanError(span, e.message); OTel.endSpan(span); Err(Web.serviceUnavailable("database unavailable")) }; case Ok(conn) -> match Ledger.Accounts.createAccount(conn, req.name, kind, req.currency) { case Err(e) -> { conn.close(); OTel.setSpanError(span, Ledger.Accounting.errorMessage(e)); OTel.endSpan(span); Err(ledgerErrToApi(e)) }; case Ok(account) -> { conn.close(); OTel.setSpanAttribute(span, "account.id", account.id.toString()); OTel.setSpanAttribute(span, "account.kind", req.kind); OTel.setSpanAttribute(span, "account.currency", req.currency); OTel.endSpan(span); Ok(Ledger.Accounts.toJsonSummary(account)) } } }
+    case Some(kind) -> match Db.connectFromEnv() { case Err(e) -> { OTel.setSpanError(span, e.message); OTel.endSpan(span); Err(Web.serviceUnavailable("database unavailable")) }; case Ok(conn) -> match Ledger.Accounts.createAccount(conn, req.name, kind, req.currency) { case Err(e) -> { conn.close(); OTel.setSpanError(span, Ledger.Accounting.errorMessage(e)); OTel.endSpan(span); Err(ledgerErrToApi(e)) }; case Ok(account) -> { conn.close(); OTel.setSpanAttribute(span, "account.id", account.id.toString()); OTel.setSpanAttribute(span, "account.kind", req.kind); OTel.setSpanAttribute(span, "account.currency", req.currency); OTel.endSpan(span); Ok(Ledger.Accounts.toJsonSummary(account)) } } }
   }
 }
 
 @get("/accounts")
 pub func handleListAccounts(): Result[String, ApiError] {
   val span = OTel.startSpan("ledger.account.list", 1)
-  match Db.connectPostgres() {
+  match Db.connectFromEnv() {
     case Err(e) -> {
       OTel.setSpanError(span, e.message)
       OTel.endSpan(span)
       Err(Web.serviceUnavailable("database unavailable"))
     }
-    case Ok(conn) -> match Ledger.Accounts.listAll(conn) { case Err(e) -> { conn.close(); OTel.setSpanError(span, Ledger.Accounting.errorMessage(e)); OTel.endSpan(span); Err(ledgerErrToApi(e)) }; case Ok(accounts) -> { conn.close(); OTel.endSpan(span); var jsons: List[String] = []; for a in accounts { jsons = jsons + [Ledger.Accounts.toJsonSummary(a)] }; Ok(jsonArr(jsons)) } }
+    case Ok(conn) -> match Ledger.Accounts.listAll(conn) { case Err(e) -> { conn.close(); OTel.setSpanError(span, Ledger.Accounting.errorMessage(e)); OTel.endSpan(span); Err(ledgerErrToApi(e)) }; case Ok(accounts) -> { conn.close(); OTel.endSpan(span); val jsons: List[String] = newList(); for a in accounts { jsons.add(Ledger.Accounts.toJsonSummary(a)) }; Ok(jsonArr(jsons)) } }
   }
 }
 
@@ -146,7 +147,7 @@ pub func handleListAccounts(): Result[String, ApiError] {
 pub func handleGetAccount(id: Long): Result[String, ApiError] {
   val span = OTel.startSpan("ledger.account.get", 1)
   OTel.setSpanAttribute(span, "account.id", id.toString())
-  match Db.connectPostgres() {
+  match Db.connectFromEnv() {
     case Err(e) -> {
       OTel.setSpanError(span, e.message)
       OTel.endSpan(span)
@@ -160,13 +161,13 @@ pub func handleGetAccount(id: Long): Result[String, ApiError] {
 pub func handleGetAccountEntries(id: Long): Result[String, ApiError] {
   val span = OTel.startSpan("ledger.entries.list", 1)
   OTel.setSpanAttribute(span, "account.id", id.toString())
-  match Db.connectPostgres() {
+  match Db.connectFromEnv() {
     case Err(e) -> {
       OTel.setSpanError(span, e.message)
       OTel.endSpan(span)
       Err(Web.serviceUnavailable("database unavailable"))
     }
-    case Ok(conn) -> match Ledger.Transfers.getEntriesForAccount(conn, id) { case Err(e) -> { conn.close(); OTel.setSpanError(span, Ledger.Accounting.errorMessage(e)); OTel.endSpan(span); Err(ledgerErrToApi(e)) }; case Ok(entries) -> { conn.close(); OTel.setSpanAttribute(span, "entry.count", entries.length.toString()); OTel.endSpan(span); var jsons: List[String] = []; for e in entries { jsons = jsons + [Ledger.Transfers.entryToJson(e)] }; Ok(jsonArr(jsons)) } }
+    case Ok(conn) -> match Ledger.Transfers.getEntriesForAccount(conn, id) { case Err(e) -> { conn.close(); OTel.setSpanError(span, Ledger.Accounting.errorMessage(e)); OTel.endSpan(span); Err(ledgerErrToApi(e)) }; case Ok(entries) -> { conn.close(); OTel.setSpanAttribute(span, "entry.count", entries.count.toString()); OTel.endSpan(span); val jsons: List[String] = newList(); for e in entries { jsons.add(Ledger.Transfers.entryToJson(e)) }; Ok(jsonArr(jsons)) } }
   }
 }
 
@@ -190,7 +191,7 @@ pub func handleCreateTransfer(@body req: in CreateTransferRequest, authToken: St
   OTel.setSpanAttribute(span, "transfer.to_id", req.toId.toString())
   OTel.setSpanAttribute(span, "transfer.amount", req.amount.toString())
 
-  match Db.connectPostgres() {
+  match Db.connectFromEnv() {
     case Err(e) -> {
       OTel.setSpanError(span, e.message)
       OTel.endSpan(span)
@@ -207,7 +208,7 @@ pub func handleCreateTransfer(@body req: in CreateTransferRequest, authToken: St
 pub func handleGetTransfer(id: Long): Result[String, ApiError] {
   val span = OTel.startSpan("ledger.transfer.get", 1)
   OTel.setSpanAttribute(span, "transfer.id", id.toString())
-  match Db.connectPostgres() {
+  match Db.connectFromEnv() {
     case Err(e) -> {
       OTel.setSpanError(span, e.message)
       OTel.endSpan(span)

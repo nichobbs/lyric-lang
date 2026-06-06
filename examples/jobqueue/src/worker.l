@@ -42,7 +42,7 @@ func dispatch(job: in Job): Result[Unit, String] {
 /// via Web.addWorker in main.l.
 pub func workerTick(): Result[Unit, String] {
   val span = OTel.startSpan("jobqueue.worker.tick", 1)
-  match Db.connectPostgres() {
+  match Db.connectFromEnv() {
     case Err(e) -> {
       OTel.setSpanError(span, e.message)
       OTel.endSpan(span)
