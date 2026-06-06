@@ -18,5 +18,3 @@ output_assembly = "Flags.dll"
 [features]
 remote = []   # Remote flag store via HTTP polling (custom endpoint, LaunchDarkly, Unleash)
 
-[dependencies]
-"Lyric.Stdlib" = { path = "../lyric-stdlib" }

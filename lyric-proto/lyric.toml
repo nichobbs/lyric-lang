@@ -39,8 +39,5 @@ output_assembly = "Lyric.Proto.dll"
 # Merged package: types + encoding + decoding + public API + .NET kernel boundary.
 "Proto"            = "src/proto_main.l"
 
-[dependencies]
-"Lyric.Stdlib" = "*"
-
 [project.tests]
 "Proto.ProtoTypesTests" = "tests/proto_types_tests.l"

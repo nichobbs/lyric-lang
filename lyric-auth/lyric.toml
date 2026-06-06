@@ -43,5 +43,3 @@ output_assembly = "Lyric.Auth.dll"
 [project.tests]
 "Auth.AuthSecurityTests" = "tests/auth_security_tests.l"
 
-[dependencies]
-"Lyric.Stdlib" = { path = "../lyric-stdlib" }

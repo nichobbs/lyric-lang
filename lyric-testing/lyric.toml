@@ -17,7 +17,6 @@ output_assembly = "Testing.dll"
 "Testing.TestingTests" = "tests/testing_tests.l"
 
 [dependencies]
-"Lyric.Stdlib"   = { path = "../lyric-stdlib" }
 "Lyric.Cache"    = { path = "../lyric-cache" }
 "Lyric.Mail"     = { path = "../lyric-mail" }
 "Lyric.Storage"  = { path = "../lyric-storage" }

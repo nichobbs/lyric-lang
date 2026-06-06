@@ -31,7 +31,6 @@ redis    = []   # Redis-backed sessions (StackExchange.Redis)
 inmemory = []   # In-process sessions (suitable for single-instance deployments)
 
 [dependencies]
-"Lyric.Stdlib" = { path = "../lyric-stdlib" }
 "Lyric.Cache"  = { path = "../lyric-cache" }
 
 [nuget]

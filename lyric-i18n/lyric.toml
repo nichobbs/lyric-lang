@@ -13,5 +13,3 @@ output_assembly = "I18n.dll"
 [project.packages]
 "I18n" = "src/i18n.l"
 
-[dependencies]
-"Lyric.Stdlib" = { path = "../lyric-stdlib" }

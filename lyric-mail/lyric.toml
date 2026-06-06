@@ -19,9 +19,6 @@ smtp     = []   # SMTP via System.Net.Mail (MailKit on .NET)
 ses      = []   # Amazon SES (AWSSDK.SimpleEmail on .NET)
 sendgrid = []   # SendGrid (SendGrid .NET library)
 
-[dependencies]
-"Lyric.Stdlib" = { path = "../lyric-stdlib" }
-
 [nuget]
 # feature = "smtp" — SMTP client for .NET
 "MailKit"              = "4.7.0"

@@ -21,5 +21,3 @@ output_assembly = "Lyric.GeneratorSdk.dll"
 [project.packages]
 "Lyric.GeneratorSdk" = "src/generator_sdk.l"
 
-[dependencies]
-"Lyric.Stdlib" = { path = "../stdlib" }

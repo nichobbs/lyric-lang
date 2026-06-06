@@ -20,5 +20,4 @@ postgres = []    # enable the Npgsql (PostgreSQL) driver
 sqlite   = []    # enable the Microsoft.Data.Sqlite driver
 
 [dependencies]
-"Lyric.Stdlib"  = { path = "../lyric-stdlib" }
 "Std.Logging"   = { path = "../lyric-logging" }
