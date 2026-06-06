@@ -585,17 +585,32 @@ func itemFunc(visStr: in String, fn: in FunctionDecl, ctx: inout FmtCtx): List[S
   funcDoc(visStr, fn, ctx)
 }
 
+@pure
+func opaqueMemberStartOffset(m: in OpaqueMember): Int {
+  match m {
+    case OMField(fd) -> fd.span.startPos.offset
+    case OMInvariant(ic) -> ic.span.startPos.offset
+  }
+}
+
 func opaqueDoc(visStr: in String, item: in Item, od: in OpaqueTypeDecl, ctx: inout FmtCtx): List[String] {
+  // `itemDoc` dispatches to `opaqueDoc` WITHOUT prepending the shared
+  // `header` (unlike record/union/etc.), so the item's leading
+  // annotations (`@stable`, …) must be emitted here or they are dropped.
+  // `od.annotations` is the distinct set of trailing annotations
+  // (`parseTrailingAnnotations`), so the two never overlap.
+  val leadAnnos = annotationLines(item.annotations)
   val odAnnos = annotationLines(od.annotations)
   val gens = genParamsStr(od.generics)
   val whereL = whereClauseLines(od.whereClause)
   val docL = docLines(item.docComments)
   if not od.hasBody {
-    concatDoc3(docL, odAnnos, singleLineDoc(visStr + "opaque type " + od.name + gens))
+    concatDoc(concatDoc3(docL, leadAnnos, odAnnos), singleLineDoc(visStr + "opaque type " + od.name + gens))
   } else {
     val mLines: List[String] = newList()
     var i = 0
     while i < od.members.count {
+      appendTriviaInto(mLines, ctx, opaqueMemberStartOffset(od.members[i]), false)
       match od.members[i] {
         case OMField(fd) -> {
           val fl = fieldMemberLines(fd)
@@ -609,10 +624,18 @@ func opaqueDoc(visStr: in String, item: in Item, od: in OpaqueTypeDecl, ctx: ino
       }
       i = i + 1
     }
+    // A comment in an otherwise empty or trailing body (e.g.
+    // `opaque type T { // note }`) lives before the closing brace.
+    appendTriviaInto(mLines, ctx, item.span.endPos.offset, true)
     val acc: List[String] = newList()
     var j = 0
     while j < docL.count {
       acc.add(docL[j])
+      j = j + 1
+    }
+    j = 0
+    while j < leadAnnos.count {
+      acc.add(leadAnnos[j])
       j = j + 1
     }
     j = 0
