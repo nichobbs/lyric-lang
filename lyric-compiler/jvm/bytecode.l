@@ -834,7 +834,7 @@ pub union VerifierType {
   case VObject(className: String) // reference type or array (tag 7 + u2 class index)
 }
 
-func emitVerifierTypeBc(t: in VerifierType, pool: in Pool, w: in ByteWriter): Unit {
+pub func emitVerifierTypeBc(t: in VerifierType, pool: in Pool, w: in ByteWriter): Unit {
   match t {
     case VTop         -> writerByte(w, 0)
     case VInteger     -> writerByte(w, 1)

@@ -80,14 +80,14 @@ func foldArith(op: in BinOp, lv: in Long, rv: in Long): FoldResult {
     case BSub -> FoldOk(value = lv - rv)
     case BMul -> FoldOk(value = lv * rv)
     case BDiv -> {
-      if rv == 0 {
+      if rv == 0i64 {
         FoldErr(error = FEDivByZero)
       } else {
         FoldOk(value = lv / rv)
       }
     }
     case BMod -> {
-      if rv == 0 {
+      if rv == 0i64 {
         FoldErr(error = FEDivByZero)
       } else {
         FoldOk(value = lv % rv)

@@ -378,6 +378,7 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
     )
     case EBlock(block) -> return Expr(kind = EBlock(block = rewriteBlock(aliases, block)), span = e.span)
     case EUnsafe(block) -> return Expr(kind = EUnsafe(block = rewriteBlock(aliases, block)), span = e.span)
+    case EError -> return e
   }
   // Unreachable — every ExprKind variant returns above.  The trailing
   // `return e` keeps the typechecker satisfied that the function has

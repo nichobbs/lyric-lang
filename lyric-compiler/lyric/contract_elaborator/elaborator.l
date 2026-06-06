@@ -270,7 +270,7 @@ func blockContainsResult(body: in Block): Bool {
         }
       }
       case SLoop(_, bdy) -> if blockContainsResult(bdy) { return true }
-      case SAssign(_, rhs) -> if exprContainsResult(rhs) { return true }
+      case SAssign(_, _, rhs) -> if exprContainsResult(rhs) { return true }
       case _ -> {
       }
     }
