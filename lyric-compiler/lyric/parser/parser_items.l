@@ -2381,12 +2381,16 @@ func parseAspectAround(st: inout ParseState): AspectAround {
       emitErr(st, "P0302", "expected ')' after around args binder", peekSpan(st))
     }
   }
-  val ret = if isPunct(peekToken(st), Arrow) {
+  // The return binder is threaded through a `var` rather than an
+  // `if … { … Some(x) } else { None }` value-expression: the stage-0
+  // bootstrap emitter mis-lowers an `if`/`else` whose branches yield an
+  // `Option`, silently producing the `None` arm and dropping the `-> ret`
+  // binder.  A `var`-accumulator sidesteps that codegen bug.
+  var ret: Option[String] = None
+  if isPunct(peekToken(st), Arrow) {
     val _ = advance(st)
     val r = readIdent(st, "around return")
-    Some(value = r.name)
-  } else {
-    None
+    ret = Some(value = r.name)
   }
   val _ = skipStmtEnds(st)
   val body = parseBlock(st)

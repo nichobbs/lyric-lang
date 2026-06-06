@@ -695,12 +695,26 @@ func codeTokens(source: in String): List[String] {
       case _ -> true
     }
     if include {
+      // String and character literals are compared by their *decoded*
+      // value, not their raw source spelling.  The formatter legitimately
+      // canonicalises escapes — e.g. a control character may render as
+      // `\u{0000}` while a printable non-ASCII scalar renders as the
+      // literal character — so `"\u{FFFD}"` and `"<U+FFFD>"` are the same
+      // token and must not be flagged as a code-token change.  Every
+      // other token (punctuation, keyword, identifier, numeric literal
+      // whose verbatim spelling the formatter preserves) compares by its
+      // exact source slice.
       val st = t.span.startPos.offset
       val en = t.span.endPos.offset
-      val text = if en > st and st >= 0 and en <= source.length {
-        Str.substring(source, st, en - st)
-      } else {
-        tokenKindTag(t.token)
+      val text = match t.token {
+        case TString(s)      -> "str:" + s
+        case TStringPart(s)  -> "spart:" + s
+        case TChar(cp)       -> "char:" + toString(cp)
+        case _ -> if en > st and st >= 0 and en <= source.length {
+          Str.substring(source, st, en - st)
+        } else {
+          tokenKindTag(t.token)
+        }
       }
       if text != "," {
         acc.add(text)

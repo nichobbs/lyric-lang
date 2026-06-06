@@ -247,7 +247,10 @@ func intToChar(n: in Int): Char {
   else { Ch.fromInt(n) }
 }
 
-/// Format a code-point as `\uXXXX` (zero-padded 4-digit hex).
+/// Format a code-point as four zero-padded hex digits (`XXXX`), with no
+/// escape prefix.  Callers wrap the result in `\u{…}` (the only Unicode
+/// escape form the self-hosted lexer accepts — the legacy braceless
+/// `\uXXXX` is an L0021 parse error).
 @pure
 func uHex4(cp: in Int): String {
   // 0..0xFFFF only (BMP); higher code-points never reach `escapeStr`.
@@ -255,13 +258,17 @@ func uHex4(cp: in Int): String {
   val h1 = (cp / 256) % 16
   val h2 = (cp / 16) % 16
   val h3 = cp % 16
-  "\\u" + charToStr(hexDigit(h0)) + charToStr(hexDigit(h1)) +
+  charToStr(hexDigit(h0)) + charToStr(hexDigit(h1)) +
        charToStr(hexDigit(h2)) + charToStr(hexDigit(h3))
 }
 
 /// Escape a string for emission inside a `"…"` literal.  Mirrors the
 /// `escapeStr` in Fmt.fs: `"`, `\`, control characters, and the four
-/// common whitespace escapes are translated.
+/// common whitespace escapes are translated.  A literal `${` is also
+/// escaped to `\${`: the lexer treats an unescaped `${` inside a string
+/// as the start of an interpolation hole, so without this a plain string
+/// whose content happens to contain `${` would re-lex as an interpolated
+/// string and fail to round-trip.
 @pure
 pub func escapeStr(s: in String): String {
   var acc = ""
@@ -278,8 +285,10 @@ pub func escapeStr(s: in String): String {
       acc = acc + "\\r"
     } else if c == '\t' {
       acc = acc + "\\t"
+    } else if c == '$' and i + 1 < s.length and s[i + 1] == '{' {
+      acc = acc + "\\$"
     } else if charIsControl(c) {
-      acc = acc + uHex4(charCodepoint(c))
+      acc = acc + "\\u{" + uHex4(charCodepoint(c)) + "}"
     } else {
       acc = acc + charToStr(c)
     }
@@ -422,7 +431,7 @@ func charLitStr(cp: in Int): String {
   } else if cp == 9 {
     "'\\t'"
   } else if cp < 32 {
-    "'" + uHex4(cp) + "'"
+    "'\\u{" + uHex4(cp) + "}'"
   } else if cp < 128 {
     "'" + charToStr(intToChar(cp)) + "'"
   } else {
@@ -992,7 +1001,7 @@ pub func exprAtCol(col: in Int, ctx: inout FmtCtx, e: in Expr): List[String] {
         }
       } else { ifBlockLines(cond, thn, els, ctx) }
     }
-    case EMatch(scrut, arms)        -> matchLines(scrut, arms, ctx)
+    case EMatch(scrut, arms)        -> matchLines(scrut, arms, e.span.endPos.offset, ctx)
     case EBlock(b)                  -> blockExprDoc(col, ctx, b)
     case _                          -> singleLineDoc(inline)
   }
@@ -1313,7 +1322,7 @@ func interpolatedStr(segs: in List[InterpolatedSegment]): String {
   while i < segs.count {
     match segs[i] {
       case ISText(text, _) -> { acc = acc + escapeStr(text) }
-      case ISExpr(e)       -> { acc = acc + "${" + exprInline(0, e) + "}" }
+      case ISExpr(e)       -> { acc = acc + "\${" + exprInline(0, e) + "}" }
     }
     i = i + 1
   }
@@ -1632,12 +1641,64 @@ func scopeInlineStr(bindStr: in Option[String], body: in Block): String {
   "scope" + bs + " { " + blockInline(body) + " }"
 }
 
+// Loop invariants live in the source *header* — between the loop
+// condition (`while`) or iterator (`for … in …`) and the opening brace —
+// but the parser stores them as leading `SInvariant` statements at the
+// top of the body (see `prependLoopInvariants` in the parser).  The
+// formatter must re-emit them in the header: a bare `invariant:`
+// statement inside a `{ }` block is not something the parser accepts
+// (it produces a P0050 "expected an expression").  These two helpers
+// peel the leading contiguous run of `SInvariant` statements off a loop
+// body so the loop printers can place them back in the header.
+func leadingInvariantExprs(b: in Block): List[Expr] {
+  val acc: List[Expr] = newList()
+  var i = 0
+  var stop = false
+  while i < b.statements.count and not stop {
+    match b.statements[i].kind {
+      case SInvariant(e) -> { acc.add(e); i = i + 1 }
+      case _             -> { stop = true }
+    }
+  }
+  acc
+}
+
+func bodyWithoutLeadingInvariants(b: in Block): Block {
+  val rest: List[Statement] = newList()
+  var i = 0
+  var stop = false
+  while i < b.statements.count {
+    if stop {
+      rest.add(b.statements[i])
+    } else {
+      match b.statements[i].kind {
+        case SInvariant(_) -> {}
+        case _             -> { stop = true; rest.add(b.statements[i]) }
+      }
+    }
+    i = i + 1
+  }
+  Block(statements = rest, span = b.span)
+}
+
+func invariantsInlineStr(invs: in List[Expr]): String {
+  var s = ""
+  var i = 0
+  while i < invs.count {
+    s = s + " invariant: " + exprInline(0, invs[i])
+    i = i + 1
+  }
+  s
+}
+
 func forInlineStr(lbl: in Option[String], p: in Pattern, it: in Expr, b: in Block): String {
   val ls = match lbl {
     case Some(l) -> l + ": "
     case None    -> ""
   }
-  ls + "for " + patStr(p) + " in " + exprInline(0, it) + " { " + blockInline(b) + " }"
+  val invStr = invariantsInlineStr(leadingInvariantExprs(b))
+  val rest = bodyWithoutLeadingInvariants(b)
+  ls + "for " + patStr(p) + " in " + exprInline(0, it) + invStr + " { " + blockInline(rest) + " }"
 }
 
 func whileInlineStr(lbl: in Option[String], c: in Expr, b: in Block): String {
@@ -1645,7 +1706,9 @@ func whileInlineStr(lbl: in Option[String], c: in Expr, b: in Block): String {
     case Some(l) -> l + ": "
     case None    -> ""
   }
-  ls + "while " + exprInline(0, c) + " { " + blockInline(b) + " }"
+  val invStr = invariantsInlineStr(leadingInvariantExprs(b))
+  val rest = bodyWithoutLeadingInvariants(b)
+  ls + "while " + exprInline(0, c) + invStr + " { " + blockInline(rest) + " }"
 }
 
 func loopInlineStr(lbl: in Option[String], b: in Block): String {
@@ -1774,7 +1837,7 @@ pub func invariantDoc(col: in Int, ctx: inout FmtCtx, e: in Expr): List[String] 
 
 func stmtExprLines(s: in Statement, e: in Expr, ctx: inout FmtCtx): List[String] {
   match e.kind {
-    case EMatch(scrut, arms)             -> matchLines(scrut, arms, ctx)
+    case EMatch(scrut, arms)             -> matchLines(scrut, arms, e.span.endPos.offset, ctx)
     case EIf(cond, thn, els, thenForm)   -> {
       // Route the `then`-form through the ctx-aware expression printer so
       // that internal comments (e.g. `then x  // note`) are preserved
@@ -1787,7 +1850,7 @@ func stmtExprLines(s: in Statement, e: in Expr, ctx: inout FmtCtx): List[String]
   }
 }
 
-func matchLines(scrut: in Expr, arms: in List[MatchArm], ctx: inout FmtCtx): List[String] {
+func matchLines(scrut: in Expr, arms: in List[MatchArm], matchEnd: in Int, ctx: inout FmtCtx): List[String] {
   val head = singleLineDoc("match " + exprInline(0, scrut) + " {")
   val armLines: List[String] = newList()
   var i = 0
@@ -1836,6 +1899,15 @@ func matchLines(scrut: in Expr, arms: in List[MatchArm], ctx: inout FmtCtx): Lis
     }
     i = i + 1
   }
+  // A trailing comment on the LAST arm (between its body and the match's
+  // closing `}`) is not "before" any arm, so the per-arm
+  // `appendTriviaInto` above never consumes it; without this it bubbles up
+  // to the enclosing construct's next boundary — relocating the comment and
+  // flipping a nested match between multi-line and inline across format
+  // passes (an idempotency break).  Mirror `blockLines`: drain trivia up to
+  // the closing brace, re-attaching a same-line trailing comment to the
+  // last arm.
+  appendTriviaInto(armLines, ctx, matchEnd, true)
   concatDoc3(head, indentDoc(2, armLines), singleLineDoc("}"))
 }
 
@@ -1944,13 +2016,51 @@ func ifBlockLines(cond: in Expr, thn: in ExprOrBlock, els: in Option[ExprOrBlock
   acc
 }
 
+// Emit a multi-line loop, lifting any leading `invariant:` clauses out of
+// the body and back into the header (between `headStr` and the opening
+// brace), each on its own line indented 2 columns under the loop keyword:
+//
+//     while i < n
+//       invariant: i >= 0
+//     {
+//       …
+//     }
+func loopLinesWithInvariants(headStr: in String, b: in Block, ctx: inout FmtCtx): List[String] {
+  val invs = leadingInvariantExprs(b)
+  if invs.count == 0 {
+    val head = singleLineDoc(headStr + " {")
+    return concatDoc3(head, indentDoc(2, blockLines(b, ctx)), singleLineDoc("}"))
+  }
+  val acc: List[String] = newList()
+  acc.add(headStr)
+  var i = 0
+  while i < invs.count {
+    val invLines = indentDoc(2, invariantDoc(2, ctx, invs[i]))
+    var k = 0
+    while k < invLines.count {
+      acc.add(invLines[k])
+      k = k + 1
+    }
+    i = i + 1
+  }
+  acc.add("{")
+  val rest = bodyWithoutLeadingInvariants(b)
+  val bd = indentDoc(2, blockLines(rest, ctx))
+  var j = 0
+  while j < bd.count {
+    acc.add(bd[j])
+    j = j + 1
+  }
+  acc.add("}")
+  acc
+}
+
 func forLines(lbl: in Option[String], p: in Pattern, it: in Expr, b: in Block, ctx: inout FmtCtx): List[String] {
   val ls = match lbl {
     case Some(l) -> l + ": "
     case None    -> ""
   }
-  val head = singleLineDoc(ls + "for " + patStr(p) + " in " + exprInline(0, it) + " {")
-  concatDoc3(head, indentDoc(2, blockLines(b, ctx)), singleLineDoc("}"))
+  loopLinesWithInvariants(ls + "for " + patStr(p) + " in " + exprInline(0, it), b, ctx)
 }
 
 func whileLines(lbl: in Option[String], c: in Expr, b: in Block, ctx: inout FmtCtx): List[String] {
@@ -1958,8 +2068,7 @@ func whileLines(lbl: in Option[String], c: in Expr, b: in Block, ctx: inout FmtC
     case Some(l) -> l + ": "
     case None    -> ""
   }
-  val head = singleLineDoc(ls + "while " + exprInline(0, c) + " {")
-  concatDoc3(head, indentDoc(2, blockLines(b, ctx)), singleLineDoc("}"))
+  loopLinesWithInvariants(ls + "while " + exprInline(0, c), b, ctx)
 }
 
 func loopLines(lbl: in Option[String], b: in Block, ctx: inout FmtCtx): List[String] {

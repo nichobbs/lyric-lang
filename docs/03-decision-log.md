@@ -5378,6 +5378,73 @@ Tracked as D-progress-444 (initial synthesis) and D-progress-445 (element-type u
 
 ---
 
+### D-progress-442: `lyric fmt` round-trip — extern-adjacent "formatter output does not parse" cluster (#2452)
+
+Fixes the ~14-file cluster (epic #2280) where `lyric fmt --write` aborted with
+`formatter output does not parse` — the loss-checked guard caught the formatter
+emitting source the self-hosted parser then rejected.  Five distinct
+self-hosted-formatter / parser defects, all in `lyric-compiler/lyric/`:
+
+1. **Braceless `\u` escapes (`fmt_core.l`).**  `escapeStr`/`charLitStr` emitted
+   control characters as the legacy `\uXXXX` form; the lexer only accepts
+   `\u{XXXX}` (L0021 otherwise).  `uHex4` now returns bare hex digits and every
+   caller wraps them in `\u{…}`.
+2. **String-escape canonicalisation flagged as a token change (`fmt.l`).**  The
+   loss check `codeTokens` compared string / char literals by raw source
+   spelling, so re-spelling `\u{FFFD}` as its literal scalar (or vice-versa)
+   tripped the guard.  String (`TString`/`TStringPart`) and char (`TChar`)
+   tokens now compare by **decoded value**; every other token still compares by
+   exact source slice.
+3. **Literal `${` and interpolation (`fmt_core.l`).**  `escapeStr` now escapes a
+   literal `${` to `\${` (an unescaped `${` re-lexes as an interpolation hole).
+   This also fixed a self-hosting bug: the formatter's own `interpolatedStr` line
+   `"${" + … + "}"` was being mis-lexed as one interpolated string, so every
+   formatted hole collapsed to a constant — the literal is now written `"\${"`.
+4. **Loop invariants (`fmt_core.l`).**  Header `invariant:` clauses are stored by
+   the parser as leading `SInvariant` statements in the loop body; the formatter
+   emitted them back *inside* the braces, where a bare `invariant:` statement is a
+   P0050 parse error.  `forLines`/`whileLines` (and the inline forms) now lift the
+   leading invariant run back into the loop header.
+5. **Aspect `config { }` drop + `around … -> ret` binder drop (`fmt_items.l`,
+   `parser_items.l`).**  `aspectDoc` never emitted the anonymous `config { }`
+   block (now emitted after `matches:`, per docs/26).  Separately, the parser's
+   `parseAspectAround` built `retName` via an `if … { Some(x) } else { None }`
+   value-expression that the stage-0 emitter mis-lowered to `None`, dropping the
+   `-> ret` binder; rewritten as a `var`-accumulator.  The formatter's around
+   emitter was also extracted to a parameter-matching helper to sidestep a
+   stage-0 type-erasure miscompile of nested `match` on an erased value's field.
+
+Three further idempotency fixes were needed once the cluster files became
+formattable (each a pre-existing trivia leak that the does-not-parse failures
+had masked):
+
+6. **Trailing comment on the last `match` arm (`fmt_core.l`).**  `matchLines`
+   never drained trivia before its closing `}`, so a comment on the last arm
+   bubbled out to the enclosing construct — flipping a nested match between
+   multi-line and inline across passes.  It now drains up to the match's end
+   offset, re-attaching a same-line comment to the last arm.
+7. **Aspect inter-member blanks (`fmt_items.l`).**  Blank lines between aspect
+   members leaked into the `around` body via `blockLines`' leading trivia pop;
+   `aspectAroundLines` now consumes the pre-around trivia (comments kept,
+   blanks dropped).
+8. **Protected-type inter-member blanks (`fmt_items.l`).**  The same leak in
+   `protectedTypeDoc`'s member loop (e.g. a blank between a type `invariant:`
+   and an `entry` body); now consumed per member.
+
+All 14 target files round-trip and are idempotent, and the repo-wide
+"does not parse" count is 0 with 0 non-idempotent files across all 620
+formattable `.l` sources.  Twelve new `fmt_self_test.l` cases lock the
+constructs, and `testFormatSourceCheckedStructureChange` (which deliberately
+exercised the now-closed string-escape gap) is repurposed to
+`testStringEscapeCanonicalizationAccepted`.  Parser 325/325, Emitter 843/843,
+Cli 84/84, Lexer 128/128, TypeChecker 189/189 green; `make lyric` self-host
+green.  The pre-existing config-field-annotation reorder (affecting both
+aspect and module-level `config` blocks via `parseTrailingAnnotations`
+over-consuming across brace-internal newlines) is a separate defect left to a
+follow-up, as are the unrelated `token changed` failures in the #2280 backlog.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
