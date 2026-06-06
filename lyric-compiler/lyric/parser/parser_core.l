@@ -207,8 +207,40 @@ pub func tryEatIdent(st: inout ParseState): Option[NameAndSpan] {
   }
 }
 
+// Hard keywords (grammar §1.5) that are nonetheless accepted as ordinary
+// identifiers, because they are *pure position-introducers*: each carries
+// keyword meaning only at item position (or, for `entry`, inside a
+// `protected type` body), and never in expression, statement, or
+// binding-name position.  Accepting them as identifiers there removes a
+// class of needless parse failures (`val entry = …`, `record.field`,
+// `var type = …`) without any grammar ambiguity, mirroring how `result`
+// is already accepted.  Operators (`and`/`or`/`is`/`as`), expression or
+// statement starters (`if`/`match`/`return`/`for`/…), parameter/visibility
+// modifiers (`in`/`out`/`pub`/…), and literals (`true`/`self`/…) are
+// deliberately NOT in this set — admitting them as identifiers would be
+// genuinely ambiguous or harm readability.  Returns the keyword's source
+// spelling when it is contextually identifier-usable.  (D093)
+pub func contextualIdentKeyword(k: in Keyword): Option[String] {
+  match k {
+    case KwType -> Some(value = "type")
+    case KwAlias -> Some(value = "alias")
+    case KwRecord -> Some(value = "record")
+    case KwUnion -> Some(value = "union")
+    case KwEnum -> Some(value = "enum")
+    case KwInterface -> Some(value = "interface")
+    case KwWire -> Some(value = "wire")
+    case KwFixture -> Some(value = "fixture")
+    case KwProperty -> Some(value = "property")
+    case KwTest -> Some(value = "test")
+    case KwEntry -> Some(value = "entry")
+    case _ -> None
+  }
+}
+
 // `result` is a contextual keyword: valid as an identifier everywhere
-// except inside `ensures:` expression position.
+// except inside `ensures:` expression position.  The pure
+// position-introducer keywords in `contextualIdentKeyword` are likewise
+// accepted as identifier names here.
 pub func tryEatIdentOrContextual(st: inout ParseState): Option[NameAndSpan] {
   val t = peek(st)
   match t.token {
@@ -222,7 +254,7 @@ pub func tryEatIdentOrContextual(st: inout ParseState): Option[NameAndSpan] {
           st.pos = st.pos + 1
           Some(value = NameAndSpan(name = "result", span = t.span))
         }
-        case _ -> None
+        case _ -> match contextualIdentKeyword(k) { case Some(name) -> { st.pos = st.pos + 1; Some(value = NameAndSpan(name = name, span = t.span)) }; case None -> None }
       }
     }
     case _ -> None
@@ -279,7 +311,23 @@ pub func readIdent(st: inout ParseState, whatFor: in String): NameAndSpan {
     case Some(ns) -> ns
     case None -> {
       val sp = peekSpan(st)
-      emitErr(st, "P0103", "expected an identifier for " + whatFor + " name", sp)
+      // When the offending token is a reserved keyword, name it explicitly
+      // (P0051) instead of the generic P0103 — `let match = …` / `func type()`
+      // otherwise produced a misleading "expected an identifier" with no hint
+      // that the cause is a reserved word (D093).
+      match peekToken(st) {
+        case TKeyword(k) -> {
+          emitErr(
+            st,
+            "P0051",
+            "'" + keywordSpelling(k) + "' is a reserved keyword and cannot be used as a " + whatFor + " name",
+            sp
+          )
+        }
+        case _ -> {
+          emitErr(st, "P0103", "expected an identifier for " + whatFor + " name", sp)
+        }
+      }
       NameAndSpan(name = "<error>", span = sp)
     }
   }

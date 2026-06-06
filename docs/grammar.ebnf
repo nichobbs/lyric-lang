@@ -157,6 +157,31 @@ SoftKeyword = 'range'    | 'derives' | 'forall'     | 'exists'
  * remove them from §1.5 and append a decision-log entry.
  *)
 
+(* §1.6.2 Hard keywords accepted as contextual identifiers
+ *
+ * The following §1.5 hard keywords are lexed as keyword tokens (so they
+ * keep their keyword meaning at the positions that expect them), but the
+ * parser ALSO accepts them as ordinary identifiers in identifier,
+ * expression, and binding-name position. They are pure
+ * position-introducers — each carries keyword meaning only at item
+ * position, or, for 'entry', inside a 'protected type' body — so admitting
+ * them as identifiers elsewhere is unambiguous:
+ *
+ *   result                                            (contract variable)
+ *   type | alias | record | union | enum | interface (item introducers)
+ *   wire | fixture | property | test                 (item introducers)
+ *   entry                                             (protected-type member)
+ *
+ * So `val entry = …`, `var type = …`, `record.field`, and a parameter
+ * named `test` are all legal, while `type Age = Int` and `record P { … }`
+ * still declare a distinct type / record at item position. Operators
+ * ('and'/'or'/'is'/'as'), expression or statement starters
+ * ('if'/'match'/'return'/…), parameter/visibility modifiers
+ * ('in'/'out'/'pub'/…), and literals ('true'/'self'/…) are NOT accepted as
+ * identifiers — using one there is reported as P0051. See decision-log
+ * entry D093.
+ *)
+
 (* §1.7 Statement terminators
  *
  * The lexer emits a STMT_END token at:

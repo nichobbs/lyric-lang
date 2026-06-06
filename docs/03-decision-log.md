@@ -5483,6 +5483,63 @@ gap.)
 
 ---
 
+## D093 — Position-introducer hard keywords accepted as contextual identifiers (#2538 follow-up)
+
+**Status:** Accepted — implemented in the self-hosted parser.
+
+**Context.** Using a reserved keyword as an identifier (`val entry = …`,
+`var type = …`, a parameter named `record`) failed with a confusing,
+cascading low-level parse error (`P0050 "expected an expression"` /
+`P0103 "expected an identifier"`) that never named the actual cause. This
+surfaced in #2538, where the lyric-resilience .NET kernel had to rename an
+`entry` local to `circuit` purely to satisfy the self-hosted parser.
+
+**Decision.** Two complementary changes:
+
+1. **A specific diagnostic.** When a genuinely-reserved keyword appears in
+   identifier, value, or binding-name position, the parser now emits
+   `P0051 "'X' is a reserved keyword and cannot be used as …"` naming the
+   keyword, instead of the generic `P0050`/`P0103` cascade.
+
+2. **Contextual acceptance for pure position-introducers.** The grammar
+   already distinguishes §1.5 hard keywords from §1.6 soft keywords, and
+   already accepts `result` as an identifier in identifier position
+   (`tryEatIdentOrContextual`). This is extended to the hard keywords that
+   are *pure position-introducers* — they carry keyword meaning only at
+   item position, or, for `entry`, inside a `protected type` body, and
+   never in expression / statement / binding-name position:
+
+   ```
+   type  alias  record  union  enum  interface  wire  fixture  property  test  entry
+   ```
+
+   These remain hard-lexed keyword tokens (so `type Age = Int` and
+   `record P { … }` still declare a distinct type / record at item
+   position), but the parser additionally accepts them as identifiers in
+   binding-name (`tryEatIdentOrContextual`, `parsePrimaryPattern`) and
+   value (`parsePrimaryExpr`) position. Documented in grammar §1.6.2.
+
+**Excluded (remain fully reserved).** Operators (`and`/`or`/`not`/`xor`/
+`is`/`as`/`in`), expression or statement starters (`if`/`else`/`match`/
+`for`/`while`/`do`/`return`/`throw`/`try`/`await`/`spawn`/`val`/`var`/
+`let`/`func`/`case`/`then`/`when`/`with`), parameter/visibility modifiers
+(`out`/`inout`/`mut`/`pub`/`internal`/`async`/`exposed`/`scoped`/
+`singleton`/`protected`/`generic`/`extern`/`scope`/`bind`/`use`), literals
+(`true`/`false`/`self`/`old`), and the structural keywords
+(`package`/`import`/`end`). Admitting any of these as an identifier would be
+genuinely ambiguous (they begin a construct in the same position) or would
+materially harm readability. `aspect`, `config`, and `from` were already
+soft keywords (lexed as identifiers) and need no change.
+
+**Consequences.** Idiomatic code like `val entry = …` and `someLong`-named
+domain variables work without contortion; the lyric-resilience `entry`
+local reverts from the `circuit` workaround. Library and user code compiled
+by the self-hosted compiler benefit immediately. The stage-0 F# bootstrap
+lexer is unchanged (and need not change): the self-hosted compiler's own
+sources, which F# compiles, do not use these keywords as identifiers.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
