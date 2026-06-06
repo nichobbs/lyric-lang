@@ -1,12 +1,12 @@
-/// JobQueue.Api — HTTP handler functions and route table.
-///
-/// Route table:
-///   POST  /jobs              — enqueue a new job
-///   GET   /jobs              — list jobs (optional ?status= filter)
-///   GET   /jobs/{id}         — job detail
-///
-/// Auth: POST /jobs requires a valid JWT.
-/// Rate limiting: all handlers, 120 req/min, burst 20.
+//! JobQueue.Api — HTTP handler functions and route table.
+//!
+//! Route table:
+//!   POST  /jobs              — enqueue a new job
+//!   GET   /jobs              — list jobs (optional ?status= filter)
+//!   GET   /jobs/{id}         — job detail
+//!
+//! Auth: POST /jobs requires a valid JWT.
+//! Rate limiting: all handlers, 120 req/min, burst 20.
 
 @runtime_checked
 package JobQueue.Api

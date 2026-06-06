@@ -1,12 +1,12 @@
-/// Rbac.Api — HTTP handler functions and route table.
-///
-/// Route table:
-///   POST  /users                    — create user
-///   GET   /users/{id}               — get user
-///   GET   /users/{id}/roles         — list role assignments
-///   POST  /users/{id}/roles         — grant role (requires ManageUsers)
-///   DELETE /users/{id}/roles/{role} — revoke role (requires ManageUsers)
-///   POST  /check                    — check a (userId, permission) pair
+//! Rbac.Api — HTTP handler functions and route table.
+//!
+//! Route table:
+//!   POST  /users                    — create user
+//!   GET   /users/{id}               — get user
+//!   GET   /users/{id}/roles         — list role assignments
+//!   POST  /users/{id}/roles         — grant role (requires ManageUsers)
+//!   DELETE /users/{id}/roles/{role} — revoke role (requires ManageUsers)
+//!   POST  /check                    — check a (userId, permission) pair
 
 @runtime_checked
 package Rbac.Api
