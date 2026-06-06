@@ -196,6 +196,19 @@ func testFormatModuleDoc(): Unit {
   assertTrue(Str.contains(acc, "//! Module-level doc."), "format: module doc preserved")
 }
 
+func testModuleHeaderNestedCommentPreserved(): Unit {
+  // A plain `//` file header is auto-fixed to `//!`.  A header line whose
+  // text contains a nested `//` (a code example like `//   // note`) must
+  // survive: the loss guard normalises doc-comment payloads without
+  // re-stripping a marker (the lexer already removed it), so the inner
+  // `//` is not falsely counted as a dropped comment.
+  val src = "// Banner.\n//\n//   // run the thing\n//   var x = 1\npackage P\n\nfunc f(): Int { 0 }\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "header nested comment: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "//!   // run the thing"), "header nested comment: preserved as //! line")
+}
+
 func testInterfaceMethodDocAndContractPreserved(): Unit {
   // A body-less interface method's `///` doc comment and contract clauses
   // are stored on the `FunctionSig` and must survive formatting (they were
@@ -753,6 +766,7 @@ func main(): Unit {
   testFormatVal()
   testNumericLiteralSpellingRoundTrips()
   testFormatModuleDoc()
+  testModuleHeaderNestedCommentPreserved()
   testInterfaceMethodDocAndContractPreserved()
   testFormatSourceFacade()
   testCommentInsideFunctionBody()

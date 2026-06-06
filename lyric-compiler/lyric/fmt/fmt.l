@@ -846,14 +846,20 @@ func commentPayloads(source: in String): List[String] {
       k = k + 1
     }
     match t.token {
+      // Doc-comment token text already has its `///` / `//!` marker
+      // stripped by the lexer, so `normComment` (which strips a marker)
+      // must NOT run — otherwise doc content that itself begins with `//`
+      // or `/` (e.g. a code example `//   // note`, the `//`→`//!`
+      // auto-fix target) is over-stripped and falsely reported as a
+      // dropped comment.  Whitespace-collapse only.
       case TDocComment(txt) -> {
-        val p = normComment(txt)
+        val p = collapseWs(Str.trim(txt))
         if p != "" {
           acc.add(p)
         }
       }
       case TModuleDocComment(txt) -> {
-        val p = normComment(txt)
+        val p = collapseWs(Str.trim(txt))
         if p != "" {
           acc.add(p)
         }
