@@ -708,11 +708,10 @@ func main(): Unit {
 """
             "param ok"
 
-        // ── Band 2 (R6): EYield — collect-all generator model ────────────────────────────
-        // async func with yield is detected by isAsync && funcBodyContainsYield.
-        // Lowered as: allocate List<object> collector, each yield appends to it,
-        // return collector at end (return type = MObject regardless of annotation).
-        // Reads items.count to verify all 3 yielded values were collected.
+        // ── Band 2 (R6) / Phase 5 (#2070): EYield — IAsyncEnumerable<object> generator ──
+        // async func with yield is compiled into a synthesised generator class that
+        // implements IAsyncEnumerable<object>.  Consumers use `for x in gen() { ... }`.
+        // Counts iterations to verify all 3 yielded values are produced.
         mkBridge "shm_yield_collect"
             """package ShMYield
 
@@ -723,8 +722,11 @@ async func gen(): Int {
 }
 
 func main(): Unit {
-  val items = gen()
-  println(items.count)
+  var count = 0
+  for x in gen() {
+    count = count + 1
+  }
+  println(count)
 }
 """
             "3"

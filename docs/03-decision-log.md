@@ -5283,6 +5283,101 @@ parameters).
 
 ---
 
+## D092 — Band 3 Phase 5: `IAsyncEnumerable<object>` generator synthesis (#2070)
+
+**Context:** D091 completed the async/await self-hosted story through spawn semantics.
+Phase 5 targets `yield`-bearing `async func` bodies: previously these used a
+bootstrap-grade "collect-all" model that allocated a `List<object>`, appended each
+`yield`-ed value, and returned the raw list — incompatible with the language
+reference's `for x in gen()` consumption model and with the .NET async streaming APIs.
+
+**Problem:** The collect-all model returned `MObject` (erased `List<object>`) from the
+kickoff function, forcing call sites to use `.count`/`[i]` instead of `for x in` iteration.
+This made generators unusable from the standard iteration idiom and prevented composing
+them with other `IAsyncEnumerable`-typed values.
+
+**Decision: eager-producer `IAsyncEnumerable<object>` class synthesis.**
+
+Each `async func` whose body contains at least one `yield` is compiled into a synthesised
+generator class `<FuncName>__Gen_N` that implements three interfaces:
+
+- `IAsyncEnumerable<object>` — via `GetAsyncEnumerator(CancellationToken)`
+- `IAsyncEnumerator<object>` — via `MoveNextAsync()` and `get_Current()`
+- `IAsyncDisposable` — via `DisposeAsync()` (no-op, returns `default(ValueTask)`)
+
+**Eager-producer pattern** (matching `AsyncGenerator.fs` in the F# bootstrap emitter):
+
+1. The kickoff function allocates the generator class instance, stores user parameters
+   as fields (`__p0..pN-1`), initialises `_values = new List<object>()`, calls
+   `RunBody()` synchronously to eagerly execute the user body (collecting all yields),
+   and returns `this` typed as `IAsyncEnumerable<object>`.
+
+2. `RunBody()` is an instance method that loads `_values` and user params from fields
+   into locals, then executes the user-written generator body with `EYield` lowered to
+   `_values.Add(boxed_value)`.
+
+3. `GetAsyncEnumerator(ct)` resets `_pos = 0` and returns `this`.
+
+4. `MoveNextAsync()` checks `_pos < _values.Count`; if true, increments `_pos` and
+   returns `new ValueTask<bool>(true)`, else returns `new ValueTask<bool>(false)`.
+
+5. `get_Current()` returns `_values[_pos - 1]`.
+
+6. `DisposeAsync()` returns `default(ValueTask)` via `initobj`.
+
+**Rationale for eager producer vs lazy coroutine:**
+
+- The F# bootstrap emitter uses the same eager pattern; consistency simplifies parity
+  verification and avoids a two-implementation gap.
+- True coroutine/lazy generators require either `IAsyncStateMachine` suspension inside
+  the generator (conflicting with the existing Phase B SM synthesis) or separate
+  thread/channel infrastructure.  The eager pattern is simple, correct for all Phase 5
+  test cases, and defers coroutine complexity to a future decision.
+- Eagerness is semantically correct for finite, deterministic generators (all current
+  Lyric generator patterns).
+
+**Key MSIL encoding choices:**
+
+- `InterfaceImpl.Interface` for generic interfaces (`IAsyncEnumerable<object>`,
+  `IAsyncEnumerator<object>`) uses a `TypeDefOrRef` coded index:
+  `tdrTypeSpec(tsRow) = tsRow * 4 + 2` — **not** the raw `0x1B000000 + row` table token.
+- `ValueTask<bool>` struct locals use `MValueTypeRef`; `MVoid` is invalid as a local type.
+- TypeSpecs are created idempotently via `ctxAddTypeSpec` (key deduplication), so calling
+  both `synthesizeGeneratorMsil` and `emitCollectionForMsil` for the same package uses the
+  same TypeSpec rows.
+- `DisposeAsync` returns non-generic `ValueTask` (not `ValueTask<bool>`); its local is
+  typed with `tdrTypeRef(cctx.trValueTask)` (the non-generic TypeRef row).
+- `addPackageTokens` reserves 6 MethodDef rows per generator class (`.ctor` from
+  `useDefaultCtor`, `RunBody`, `GetAsyncEnumerator`, `MoveNextAsync`, `get_Current`,
+  `DisposeAsync`) before processing `MPFunc` items so token assignments are stable.
+
+**Consumer protocol (`emitCollectionForMsil`):**
+
+When the iterable type is `MIAsyncEnumerable(_)` (set by `funcRetTypes` for generators),
+`emitCollectionForMsil` uses the async-enumerator protocol instead of the index loop:
+
+1. Zero-init a `CancellationToken` local via `MLdloca + MInitobj`.
+2. Call `GetAsyncEnumerator(ct)`, store enumerator.
+3. Loop: call `MoveNextAsync()`, store the `ValueTask<bool>` struct, call
+   `get_Result()` via `MLdloca + MCall` to extract `bool`, `BrFalse` to exit.
+4. Call `get_Current()`, bind element to loop variable, execute body.
+
+**Tests:**
+
+- `lyric-compiler/lyric/async_generator_self_test.l`: 8 new test cases covering
+  zero-param generators, parametric generators (1 and 2 params), string generators,
+  empty-sequence edge case, and sum accumulation via `for x in` loops.
+- `bootstrap/tests/Lyric.Cli.Tests/SelfHostedMsilBridgeTests.fs`: updated
+  `shm_yield_collect` to use `for x in gen() { count = count + 1 }` instead of
+  the old `items.count` API (old API worked on `List<object>`; new return type is
+  `IAsyncEnumerable<object>`).
+
+Tracked as D-progress-444 (initial synthesis) and D-progress-445 (element-type unboxing).
+
+**JVM parity:** Generator synthesis is MSIL-only in this entry; the JVM equivalent is tracked in issue #2469 (filed 2026-06-06).
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
