@@ -71,7 +71,7 @@ pub record ListProductsRequest {
 
 pub record ListProductsResponse {
   @proto_field(1)
-  products: List[Product]
+  products: slice[Product]
   @proto_field(2)
   total: Int          // count of returned items
   // @proto_field(3) nextPageToken reserved — keyset pagination deferred (Q-G-003)

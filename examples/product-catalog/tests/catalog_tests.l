@@ -49,7 +49,7 @@ test "resourceExhausted has RESOURCE_EXHAUSTED code" {
 }
 
 test "internal has INTERNAL code" {
-  val s = Grpc.internal("boom")
+  val s = Grpc.grpcInternal("boom")
   assert
   s.code == GrpcStatusCode.Internal
 }
