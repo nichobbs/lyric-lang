@@ -1,15 +1,15 @@
-// FFI example using `extern type` to declare opaque CLR handles,
-// then calling extern functions that return / consume them.
-//
-// `extern type Foo = "Some.Clr.Type"` declares a Lyric-side name
-// for a CLR type loaded in the AppDomain — string at the
-// declaration site, ordinary Lyric symbol at every use site.
-//
-// Run: lyric run examples/ffi_datetime.l
-
+//! FFI example using `extern type` to declare opaque CLR handles,
+//! then calling extern functions that return / consume them.
+//!
+//! `extern type Foo = "Some.Clr.Type"` declares a Lyric-side name
+//! for a CLR type loaded in the AppDomain — string at the
+//! declaration site, ordinary Lyric symbol at every use site.
+//!
+//! Run: lyric run examples/ffi_datetime.l
 package FfiDateTime
 
 extern type DateTime = "System.DateTime"
+
 extern type TimeSpan = "System.TimeSpan"
 
 @externTarget("System.DateTime.UtcNow")

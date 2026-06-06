@@ -10,7 +10,6 @@
 //! validated the input; it only decodes without re-validating.
 //!
 //! Internal: only Std.Encoding should import this.
-
 @axiom("JVM List[Byte].toArray() produces a properly typed byte array; pure-Lyric accumulators are safe on JVM")
 package Std.EncodingHost
 
@@ -68,7 +67,9 @@ pub func hostEncodeUtf8(enc: in String, s: in String): slice[Byte] {
 // Assumes the caller has already validated the input (via tryDecodeBase64).
 pub func hostFromBase64(s: in String): slice[Byte] {
   val len = s.length
-  if len == 0 { return [] }
+  if len == 0 {
+    return []
+  }
   val result: List[Byte] = newList()
   var i = 0
   while i < len {
@@ -97,10 +98,20 @@ pub func hostFromBase64(s: in String): slice[Byte] {
 // Local copy of base64CharValue (avoids a circular import from Std.Encoding).
 func b64v(c: in Char): Int {
   val cp = toInt(c)
-  if cp >= 65 and cp <= 90  { return cp - 65 }       // A-Z → 0-25
-  if cp >= 97 and cp <= 122 { return cp - 97 + 26 }  // a-z → 26-51
-  if cp >= 48 and cp <= 57  { return cp - 48 + 52 }  // 0-9 → 52-61
-  if cp == 43 { return 62 }                           // +  → 62
-  if cp == 47 { return 63 }                           // /  → 63
+  if cp >= 65 and cp <= 90 {
+    return cp - 65
+  }       // A-Z → 0-25
+  if cp >= 97 and cp <= 122 {
+    return cp - 97 + 26
+  }  // a-z → 26-51
+  if cp >= 48 and cp <= 57 {
+    return cp - 48 + 52
+  }  // 0-9 → 52-61
+  if cp == 43 {
+    return 62
+  }                           // +  → 62
+  if cp == 47 {
+    return 63
+  }                           // /  → 63
   return -1
 }

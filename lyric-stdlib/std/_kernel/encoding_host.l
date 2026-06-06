@@ -8,7 +8,6 @@
 //! and obtain genuine byte[] results directly from the BCL.
 //!
 //! Internal: only Std.Encoding should import this.
-
 @axiom(".NET Encoding.GetBytes and Convert.FromBase64String conform to their documented .NET contracts and return genuine byte[] arrays")
 package Std.EncodingHost
 

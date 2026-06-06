@@ -91,4 +91,3 @@ pub func currentDirectory(): String {
 pub func runtimeDirectory(): String {
   hostRuntimeDirectory()
 }
-
