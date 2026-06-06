@@ -21654,3 +21654,30 @@ bridge test passes with the new iteration protocol.  843/843 emitter tests green
 
 **Regression gate:** 7/7 `async_generator_self_test.l` tests pass.  84/84
 `Lyric.Cli.Tests` pass.
+
+### D-progress-446 — Phase 5 review fixes: Double locale-invariant toString, dead `trList1` removal (#2462, #2463)
+
+**What shipped:**
+
+- **`toString(Double)` locale-invariant fix** (`lyric-compiler/msil/codegen.l`, #2462):
+  Added `tokDoubleToStringInv: Int` to `CodegenCtx` (MemberRef for
+  `Double.ToString(IFormatProvider)`).  Restored a `case MDouble ->` arm in the
+  `toString` builtin dispatch in `lowerBuiltinOrStaticCallMsil`: emits
+  `stloc(dblSlot) + ldloca(dblSlot) + call get_InvariantCulture() + call Double::ToString(IFormatProvider)`.
+  The removed arm had previously used `Object.ToString()` (locale-sensitive), which
+  renders `3.14` as `"3,14"` on German/French locales, breaking stage-0/stage-1 parity.
+
+- **Dead `trList1` field removed** (`lyric-compiler/msil/codegen.l`, #2465):
+  `CodegenCtx.trList1` (TypeRef row for `System.Collections.Generic.List\`1`) was
+  added with a comment "exposed for gen synthesis" but was never read by synthesis code
+  (synthesis accesses the TypeSpec row via `tokListObjTypeSpec`).  Field removed;
+  the local `val trList1` in `newCodegenCtx` is retained to build the TypeSpec blob.
+
+- **JVM parity tracking issue filed** (#2463): issue #2469 filed for JVM generator
+  synthesis, linked from D092 and D-progress-444.
+
+- **D-progress-444 test-count correction**: "8 new test cases" corrected to "7" to
+  match the actual `async_generator_self_test.l` file (#2464).
+
+**Regression gate:** No new tests; existing 7/7 generator self-tests and 843/843
+emitter tests continue to pass.

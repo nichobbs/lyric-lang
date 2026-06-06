@@ -5374,6 +5374,8 @@ When the iterable type is `MIAsyncEnumerable(_)` (set by `funcRetTypes` for gene
 
 Tracked as D-progress-443 (initial synthesis) and D-progress-444 (element-type unboxing).
 
+**JVM parity:** Generator synthesis is MSIL-only in this entry; the JVM equivalent is tracked in issue #2469 (filed 2026-06-06).
+
 ---
 
 ## Decisions deferred to v2 or later

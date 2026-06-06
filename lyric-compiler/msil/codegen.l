@@ -110,10 +110,11 @@ pub record CodegenCtx {
   // The "o" round-trip format produces "1970-01-01T00:00:00.0000000Z" for UTC
   // DateTimes, matching the F# bootstrap emitter's DateTime.ToString("o") path
   // in Codegen.fs so stage-0 and stage-1 render DateTime byte-identically.
-  tokInvariantCulture: Int  // CultureInfo.get_InvariantCulture(): CultureInfo  static (unused; kept for compat)
+  tokInvariantCulture: Int  // CultureInfo.get_InvariantCulture(): CultureInfo  static
   tokDateTimeToStringInv: Int  // DateTime.ToString(IFormatProvider): string  instance HASTHIS (unused; kept for compat)
   tokDateTimeToStringO: Int    // DateTime.ToString(string): string  instance HASTHIS
   usDateTimeFormatO: Int       // ldstr token (0x70000000 | US heap offset) for the "o" format specifier
+  tokDoubleToStringInv: Int    // Double.ToString(IFormatProvider): string  instance HASTHIS (#2462)
   // Reverse lookup: simple field name → FieldDef token.  Populated by
   // addPackageTokens for IRecord and IExposedRec fields so EMember can emit
   // ldfld on an MObject receiver when the static type is unknown.
@@ -339,7 +340,6 @@ pub record CodegenCtx {
   trValueTask1: Int  // System.Threading.Tasks.ValueTask`1 (open generic struct, row)
   trValueTask: Int  // System.Threading.Tasks.ValueTask (non-generic struct, row)
   trCancToken: Int  // System.Threading.CancellationToken
-  trList1: Int  // System.Collections.Generic.List`1 (open generic; exposed for gen synthesis)
   // Monotonically-increasing counter for unique generator class names.
   // Pattern: "<funcName>__Gen_<ticker>".  Both addPackageTokens and
   // synthesizeGeneratorMsil increment this in source-declaration order so
@@ -972,6 +972,20 @@ pub func newCodegenCtx(
     )
   val usDateTimeFormatO = ctxInternUs(lctx, "o")
 
+  // Double.ToString(IFormatProvider): string  — locale-invariant double serialisation (#2462).
+  // The box-then-Object.ToString() path is locale-sensitive (German: "3,14" not "3.14").
+  // Call sequence: stloc(dblSlot) + ldloca(dblSlot) + call get_InvariantCulture() + call Double::ToString.
+  val dblToStrPs: List[MsilType] = newList()
+  dblToStrPs.add(MClassRef(typeRefCode = tdrTypeRef(trIFormatProvider), clrFqn = "System.IFormatProvider"))
+  val tokDoubleToStringInv = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trDouble,
+      "ToString",
+      "dbl_tostring_inv",
+      buildInstanceMethodSig(dblToStrPs, MString)
+    )
+
   // Async SM synthesis (Phase B, Epic #2070).
   // AsyncTaskMethodBuilder and IAsyncStateMachine live in System.Runtime.
   val trAtmb = ctxAddTypeRef(lctx, "System.Runtime.CompilerServices", "AsyncTaskMethodBuilder", lctx.arRuntime)
@@ -1083,6 +1097,7 @@ pub func newCodegenCtx(
     tokDateTimeToStringInv = tokDateTimeToStringInv,
     tokDateTimeToStringO = tokDateTimeToStringO,
     usDateTimeFormatO = usDateTimeFormatO,
+    tokDoubleToStringInv = tokDoubleToStringInv,
     tokListObjCtor = tokListObjCtor,
     tokListObjAdd = tokListObjAdd,
     tokListObjGetItem = tokListObjGetItem,
@@ -1180,7 +1195,6 @@ pub func newCodegenCtx(
     trValueTask1 = trValueTask1,
     trValueTask = trValueTask,
     trCancToken = trCancToken,
-    trList1 = trList1,
     genTicker = newList()
   )
 }
@@ -5363,6 +5377,16 @@ func lowerBuiltinOrStaticCallMsil(
         case MVoid -> {
           val emptyTok = ctxInternUs(cctx.lctx, "")
           insns.add(MLdStr(token = emptyTok))
+        }
+        case MDouble -> {
+          // Locale-invariant: Double.ToString(CultureInfo.InvariantCulture) (#2462).
+          // Object.ToString() is locale-sensitive; German/French locales render "3,14".
+          // Double is a struct — take its address via ldloca for the HASTHIS call.
+          val dblSlot = allocSlotMsil(fctx, "__inv_dbl_" + toString(fctx.slotTicker.count), MDouble)
+          emitStoreSlot(insns, dblSlot, fctx.paramCount)
+          insns.add(MLdloca(slot = dblSlot - fctx.paramCount))
+          insns.add(MCall(methodToken = cctx.tokInvariantCulture))
+          insns.add(MCall(methodToken = cctx.tokDoubleToStringInv))
         }
         case _ -> {
           if isClrDateTimeMsil(argTy) {
