@@ -68,18 +68,18 @@ func openDb(): Result[DbConnection, GrpcStatus] {
 func rowToProduct(row: in DbRow): Product {
   return Product(
     id = Db.getLong(row, "id"),
-    name = Db.getString(row, "name"),
-    description = Db.getString(row, "description"),
-    category = Db.getString(row, "category"),
+    name = Db.dbGetString(row, "name"),
+    description = Db.dbGetString(row, "description"),
+    category = Db.dbGetString(row, "category"),
     priceCents = Db.getInt(row, "price_cents"),
     inStock = Db.getBool(row, "in_stock"),
     stockCount = Db.getInt(row, "stock_count"),
-    createdAt = Db.getString(row, "created_at")
+    createdAt = Db.dbGetString(row, "created_at")
   )
 }
 
 func dbErrToStatus(e: in DbError): GrpcStatus {
-  return Grpc.internal("Database error: " + e.message)
+  return Grpc.grpcInternal("Database error: " + e.message)
 }
 
 func resolvePageSize(requested: in Int): Int {
@@ -94,7 +94,7 @@ func resolvePageSize(requested: in Int): Int {
 
 record ListQuery {
   sql: String
-  params: List[String]
+  params: slice[String]
 }
 
 /// Build a SQL query + params for the products list, keeping both in sync.
@@ -119,7 +119,7 @@ func buildListQuery(category: in String, inStockOnly: in Bool, pageSize: in Int)
 @grpc_service("ProductCatalog.ProductService")
 @rpc("GetProduct")
 pub func getProduct(req: in GetProductRequest, authToken: in String): Result[Product, GrpcStatus] {
-  if req.id <= 0 {
+  if req.id <= 0i64 {
     return Err(Grpc.invalidArgument("id must be positive"))
   }
   match openDb() {
@@ -145,14 +145,14 @@ pub func listProducts(req: in ListProductsRequest, authToken: in String): Result
     case Err(s) -> return Err(s)
     case Ok(db) -> {
       val q = buildListQuery(req.category, req.inStockOnly, pageSize)
-      val result = Db.query(db, q.sql, q.params)
+      val result = Db.dbQuery(db, q.sql, q.params)
       db.close()
       match result {
         case Err(e) -> return Err(dbErrToStatus(e))
         case Ok(rows) -> {
-          var products: List[Product] = []
+          var products: slice[Product] = []
           for row in rows {
-            products = products + [rowToProduct(row)]
+            products = concat(products, [rowToProduct(row)])
           }
           return Ok(ListProductsResponse(products = products, total = products.count))
         }
@@ -203,7 +203,7 @@ pub func createProduct(req: in CreateProductRequest, authToken: in String): Resu
       db.close()
       match result {
         case Err(e) -> return Err(dbErrToStatus(e))
-        case Ok(None) -> return Err(Grpc.internal("Insert returned no rows"))
+        case Ok(None) -> return Err(Grpc.grpcInternal("Insert returned no rows"))
         case Ok(Some(row)) -> return Ok(rowToProduct(row))
       }
     }
@@ -214,7 +214,7 @@ pub func createProduct(req: in CreateProductRequest, authToken: in String): Resu
 @grpc_service("ProductCatalog.ProductService")
 @rpc("UpdateProduct")
 pub func updateProduct(req: in UpdateProductRequest, authToken: in String): Result[Product, GrpcStatus] {
-  if req.id <= 0 {
+  if req.id <= 0i64 {
     return Err(Grpc.invalidArgument("id must be positive"))
   }
   if req.priceCents < 0 {
@@ -249,13 +249,13 @@ pub func updateProduct(req: in UpdateProductRequest, authToken: in String): Resu
 @grpc_service("ProductCatalog.ProductService")
 @rpc("DeleteProduct")
 pub func deleteProduct(req: in DeleteProductRequest, authToken: in String): Result[DeleteProductResponse, GrpcStatus] {
-  if req.id <= 0 {
+  if req.id <= 0i64 {
     return Err(Grpc.invalidArgument("id must be positive"))
   }
   match openDb() {
     case Err(s) -> return Err(s)
     case Ok(db) -> {
-      val result = Db.execute(db, "DELETE FROM products WHERE id = $1", [req.id.toString()])
+      val result = Db.dbExecute(db, "DELETE FROM products WHERE id = $1", [req.id.toString()])
       db.close()
       match result {
         case Err(e) -> return Err(dbErrToStatus(e))
