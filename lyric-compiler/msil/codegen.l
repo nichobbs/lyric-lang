@@ -1907,6 +1907,17 @@ pub func allocSlotMsil(fctx: in FuncCtx, name: in String, ty: in MsilType): Int 
         case None    -> ty
       }
       if localVarSlotByte(existingTy) == localVarSlotByte(ty) {
+        // The physical LocalVarSig slot byte is identical (e.g. two same-named
+        // locals both lower to an `object` slot), so the slot is reused — but
+        // the SEMANTIC type may differ (`List<InterpolatedSegment>` vs
+        // `List<String>`).  Refresh the tracked type so element-type-aware
+        // codegen (concrete `List<T>` / `Map<K,V>` operations, #2359 Stage 2)
+        // uses THIS binding's element type instead of the prior same-named
+        // local's — otherwise a `val segs: List[String]` reusing a slot first
+        // bound as `List<InterpolatedSegment>` emits `List<InterpolatedSegment>`
+        // ops and faults its String elements at runtime.
+        fctx.types.remove(name)
+        fctx.types.add(name, ty)
         existing
       } else {
         val slot = fctx.slotTicker.count
