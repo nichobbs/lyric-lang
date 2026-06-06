@@ -979,6 +979,19 @@ func testAspectConfigBlockRoundTrips(): Unit {
   assertTrue(Str.contains(acc, "around(call) -> ret {"), "aspect config: around still present")
 }
 
+func testAspectFromClauseRoundTrips(): Unit {
+  // The instantiation form `aspect Name from Pkg.Template { … }` must
+  // preserve its `from Pkg.Template` header clause.  The renderer dropped
+  // `ad.from` entirely, so a `from`-form aspect could not round-trip
+  // through `lyric fmt` (the missing tokens tripped the loss check) (#2451).
+  val src = "package P\n\naspect Throttle from Web.Aspects.RateLimit {\n  matches: name like \"handle*\"\n  config {\n    requestsPerMinute: Int = 120\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "aspect from: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "aspect Throttle from Web.Aspects.RateLimit {"), "aspect from: clause preserved")
+  assertTrue(Str.contains(acc, "    requestsPerMinute: Int = 120"), "aspect from: config field at 4-space indent")
+}
+
 func testNestedMatchTrailingCommentIdempotent(): Unit {
   // A trailing comment on the LAST arm of a *nested* match (a match that is
   // itself the body of an enclosing match arm) must stay attached to that
@@ -992,7 +1005,10 @@ func testNestedMatchTrailingCommentIdempotent(): Unit {
   val once = format(parse(src))
   val twice = format(parse(once))
   assertEqual(once, twice, "nested-match comment: idempotent")
-  assertTrue(Str.contains(once, "()  // presence suffices for the cheap check"), "nested-match comment: stays on the arm")
+  assertTrue(
+    Str.contains(once, "()  // presence suffices for the cheap check"),
+    "nested-match comment: stays on the arm"
+  )
 }
 
 func testAspectInterMemberBlankIdempotent(): Unit {
@@ -1033,6 +1049,7 @@ func main(): Unit {
   testForLoopInvariantRoundTrips()
   testAspectAroundRetNameRoundTrips()
   testAspectConfigBlockRoundTrips()
+  testAspectFromClauseRoundTrips()
   testCharLiteralRendering()
   testFormatSourceCheckedOk()
   testFormatSourceCheckedInputParseError()

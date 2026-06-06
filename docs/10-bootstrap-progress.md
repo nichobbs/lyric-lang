@@ -21732,3 +21732,24 @@ no-comment inline-stays case).  Full emitter suite 843/843.
 `lyric-compiler/msil/lowering.l` now round-trips and is idempotent end-to-end —
 with #2457 (D-progress-443) this clears all three comment-loss files called out
 in #2453 (`jvm/bytecode.l`, `msil/metadata_reader.l`, `msil/lowering.l`).
+
+### D-progress-449 — `lyric fmt` renders the aspect `from Pkg.Template` instantiation clause (#2451, #2280)
+
+**Status:** Shipped — completes the aspect round-tripping work.
+
+`aspectDoc` rendered the aspect header as `aspect Name {`, dropping the
+`from Pkg.Template` clause of an instantiation-form aspect (D051).  A
+`from`-form aspect therefore could not round-trip through `lyric fmt`: the
+missing `from …` tokens tripped the loss check (`FmtStructureChanged`) and the
+command refused the file.  `aspectDoc` now emits the clause —
+`val fromStr = match ad.from { case Some(mp) -> " from " + pathStr(mp); case None -> "" }`.
+This is a single match on `ad.from` (not a nested re-match of a sub-field), so
+it lowers correctly under the stage-0 emitter — unlike the `around` advice,
+which #2452 routed through `aspectAroundLines` for exactly that reason.
+
+The companion `around(...) -> ret` binder drop and the anonymous `config { }`
+block rendering were already fixed on `main` by #2452 (D-progress-443 /
+`aspectAroundLines`); this entry adds only the missing `from` clause, with a
+`testAspectFromClauseRoundTrips` self-test.  Emitter suite 843/843;
+`./bin/lyric fmt` round-trips a `from`-form aspect (and the existing
+`around(...) -> ret` repro) end-to-end.
