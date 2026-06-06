@@ -1232,6 +1232,7 @@ func specializeFunc(
         name = p.name,
         ty = substTypeExpr(subst, valueSubst, p.ty),
         dflt = p.dflt,
+        annotations = p.annotations,
         span = p.span
       )
     )

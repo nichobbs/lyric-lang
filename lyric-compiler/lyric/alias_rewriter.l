@@ -579,6 +579,7 @@ func rewriteParam(aliases: in List[String], p: in Param): Param {
     name = p.name,
     ty = rewriteTypeExpr(aliases, p.ty),
     dflt = d,
+    annotations = p.annotations,
     span = p.span
   )
 }
