@@ -18,17 +18,16 @@ package ProductCatalog.Main
 
 import Std.Core
 import Grpc
-import ProductCatalog.Aspects
 
 pub func main(): Int {
   val service = "ProductCatalog.ProductService"
 
-  val registry = Grpc.create()
-  val registry = Grpc.addMethod(registry, service, "GetProduct", "ProductCatalog.Catalog.getProduct")
-  val registry = Grpc.addMethod(registry, service, "ListProducts", "ProductCatalog.Catalog.listProducts")
-  val registry = Grpc.addMethod(registry, service, "CreateProduct", "ProductCatalog.Catalog.createProduct")
-  val registry = Grpc.addMethod(registry, service, "UpdateProduct", "ProductCatalog.Catalog.updateProduct")
-  val registry = Grpc.addMethod(registry, service, "DeleteProduct", "ProductCatalog.Catalog.deleteProduct")
+  var registry = Grpc.create()
+  registry = Grpc.addMethod(registry, service, "GetProduct", "ProductCatalog.Catalog.getProduct")
+  registry = Grpc.addMethod(registry, service, "ListProducts", "ProductCatalog.Catalog.listProducts")
+  registry = Grpc.addMethod(registry, service, "CreateProduct", "ProductCatalog.Catalog.createProduct")
+  registry = Grpc.addMethod(registry, service, "UpdateProduct", "ProductCatalog.Catalog.updateProduct")
+  registry = Grpc.addMethod(registry, service, "DeleteProduct", "ProductCatalog.Catalog.deleteProduct")
 
   Grpc.start(registry)
   return 0
