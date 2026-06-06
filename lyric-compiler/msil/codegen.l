@@ -292,6 +292,13 @@ pub record CodegenCtx {
   // does not need a parallel table — `lowerPatternTestMsil` resolves
   // the case's TypeDef row directly via `findTypeDefRowByName`.
   unionCaseCtorByName: Map[String, String]
+  // Parent union FQN for each case-class key (#2363 Stage 4).  Key = the case
+  // class FQN (e.g. "Pkg.Union_Case"); value = the parent union FQN
+  // ("Pkg.Union").  Construction sites use this to recover the parent union
+  // type for the expression's result `MClass` WITHOUT string-splitting the case
+  // key on the separator — once the separator is `_` (matching F#), splitting is
+  // ambiguous (`_` is a valid identifier char), so the parent is looked up here.
+  caseParentUnion: Map[String, String]
   // Cross-package type name lookup (#1183 codegen port).  Maps a type's
   // simple name (e.g. "Maybe", "Point") to its FQN
   // (e.g. "XPkgUnion.Lib.Maybe").  `typeExprToMsil` consults this when
@@ -1198,6 +1205,7 @@ pub func newCodegenCtx(
     mainEntryToken = newList(),
     pkgImports = newMap(),
     unionCaseCtorByName = newMap(),
+    caseParentUnion = newMap(),
     typeFqnByName = newMap(),
     caseTypeParamCount = newMap(),
     restoredArtifacts = restoredArtifacts,
@@ -1546,7 +1554,13 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         var ci = 0
         while ci < decl.cases.count {
           val c = decl.cases[ci]
-          val caseName = pkgName + "." + decl.name + "$" + c.name
+          // #2363 Stage 4: case classes are named `Union_Case` (matching the F#
+          // emitter), not `Union$Case`.  Record the parent union FQN so
+          // construction sites recover it by lookup rather than splitting on `_`.
+          val caseName = pkgName + "." + decl.name + "_" + c.name
+          if not cctx.caseParentUnion.containsKey(caseName) {
+            cctx.caseParentUnion.add(caseName, pkgName + "." + decl.name)
+          }
           var fi = 0
           while fi < c.fields.count {
             match c.fields[fi] {
@@ -2898,6 +2912,33 @@ func popCollExpect(fctx: in FuncCtx): Unit {
   }
 }
 
+// Recover the parent union FQN for a case-class ctor key (#2363 Stage 4).
+// Case classes are named `Union_Case`; since `_` is a valid identifier char the
+// parent can't be recovered by splitting the key, so it is looked up in the
+// structured `caseParentUnion` map populated at registration.  The split on the
+// last `_` is a defensive fallback for any unregistered key (registered cases
+// always hit the map).
+func caseParentFqnMsil(cctx: in CodegenCtx, ctorKey: in String): String {
+  match mapGet(cctx.caseParentUnion, ctorKey) {
+    case Some(p) -> p
+    case None -> {
+      // INVARIANT: every case-class key that reaches a construction site was
+      // registered (in-bundle via `addPackageTokens`, restored via
+      // `registerUnionCases` / `registerRestoredUnionCase`), so the map lookup
+      // above always hits.  This last-`_` split is a defensive fallback only;
+      // it is INHERENTLY AMBIGUOUS when the union or case name contains `_`
+      // (e.g. `Pkg.My_Union_Case` → `Pkg.My_Union` is wrong) and must never be
+      // the live path — if it ever fires, a registration site was missed.
+      val us = ctorKey.lastIndexOf("_")
+      if us >= 0 {
+        ctorKey.substring(0, us)
+      } else {
+        ctorKey
+      }
+    }
+  }
+}
+
 // ── Concrete-aware collection op emission ──
 // Each routes a concrete `MConcreteList`/`MConcreteMap` receiver through the
 // lowering-time `MListOp`/`MDictOp` (which intern the closed-generic tokens at
@@ -3198,15 +3239,11 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     match mapGet(cctx.singletonFieldTokens, ctorKey) {
                       case Some(fldTok) -> {
                         insns.add(MLdsfld(fieldToken = fldTok))
-                        val dollarIdx = ctorKey.lastIndexOf("$")
-                        val classTy = if dollarIdx >= 0 { ctorKey.substring(0, dollarIdx) } else { ctorKey }
-                        MClass(className = classTy)
+                        MClass(className = caseParentFqnMsil(cctx, ctorKey))
                       }
                       case None -> {
                         insns.add(MNewobj(ctorToken = ctorTok))
-                        val dollarIdx = ctorKey.lastIndexOf("$")
-                        val classTy = if dollarIdx >= 0 { ctorKey.substring(0, dollarIdx) } else { ctorKey }
-                        MClass(className = classTy)
+                        MClass(className = caseParentFqnMsil(cctx, ctorKey))
                       }
                     }
                   }
@@ -5196,10 +5233,10 @@ func lowerPatternTestMsil(
       val caseName = lastSegmentMsil(head)
       val baseCls = match scrutTy { case MClass(cls) -> cls; case MGenericInst(_, fqn, _) -> fqn; case _ -> "" }
       if baseCls.length > 0 {
-        // Local (in-bundle) union cases use "$" as separator; cross-assembly
-        // stdlib cases compiled by the F# bootstrap use "_" (e.g. Option_Some).
-        // MGenericInst scrutinees are always cross-assembly generic types.
-        val sep = match scrutTy { case MGenericInst(_, _, _) -> "_"; case _ -> "$" }
+        // #2363 Stage 4: case classes are named `Union_Case` everywhere —
+        // in-bundle and restored — matching the F# emitter, so the separator is
+        // a constant `_` (no in-bundle-vs-cross-assembly fork).
+        val sep = "_"
         val caseClass = baseCls + sep + caseName
         emitLoadSlot(insns, scrutSlot, fctx.paramCount)
         // For MGenericInst scrutinees (e.g. Option[Int]) the case class is itself
@@ -5403,9 +5440,9 @@ func lowerPatternBindMsil(
       val caseName = lastSegmentMsil(head)
       val baseCls = match scrutTy { case MClass(cls) -> cls; case MGenericInst(_, fqn, _) -> fqn; case _ -> "" }
       if baseCls.length > 0 {
-        // Local (in-bundle) union cases use "$" as separator; cross-assembly
-        // stdlib cases compiled by the F# bootstrap use "_" (e.g. Option_Some).
-        val sep = match scrutTy { case MGenericInst(_, _, _) -> "_"; case _ -> "$" }
+        // #2363 Stage 4: case classes are `Union_Case` everywhere (in-bundle +
+        // restored), matching the F# emitter — separator is a constant `_`.
+        val sep = "_"
         val caseClass = baseCls + sep + caseName
         // For generic union scrutinees (e.g. Option[Int]) the case class is
         // also generic (e.g. Option_Some<T>).  The local variable must be
@@ -6346,18 +6383,13 @@ func lowerBuiltinOrStaticCallMsil(
           match mapGet(cctx.singletonFieldTokens, ctorKey) {
             case Some(fldTok) -> {
               insns.add(MLdsfld(fieldToken = fldTok))
-              val dollarIdx = ctorKey.lastIndexOf("$")
-              val classTy = if dollarIdx >= 0 { ctorKey.substring(0, dollarIdx) } else { ctorKey }
-              MClass(className = classTy)
+              MClass(className = caseParentFqnMsil(cctx, ctorKey))
             }
             case None -> {
               insns.add(MNewobj(ctorToken = ctorTok))
-              // For local (in-bundle) cases, strip "$<case>" suffix from ctorKey to
-              // recover the parent union FQN. For cross-assembly stdlib cases that
-              // aren't generic (rare), pass through as-is.
-              val dollarIdx = ctorKey.lastIndexOf("$")
-              val classTy = if dollarIdx >= 0 { ctorKey.substring(0, dollarIdx) } else { ctorKey }
-              MClass(className = classTy)
+              // The construction result type is the parent union, recovered from
+              // the registered `caseParentUnion` map (#2363 Stage 4).
+              MClass(className = caseParentFqnMsil(cctx, ctorKey))
             }
           }
         }
@@ -11226,7 +11258,8 @@ pub func lowerUnionMsil(decl: in UnionDecl, pkgName: in String): MUnion {
   var i = 0
   while i < decl.cases.count {
     val c = decl.cases[i]
-    val caseName = baseName + "$" + c.name
+    // #2363 Stage 4: emit the case-class TypeDef as `Union_Case` (matching F#).
+    val caseName = baseName + "_" + c.name
     val caseFields: List[MField] = newList()
     var fi = 0
     while fi < c.fields.count {
@@ -14208,9 +14241,12 @@ func registerUnionCases(cctx: in CodegenCtx, packageName: in String, unionName: 
     }
     if j > nameStart {
       val caseName = repr.substring(nameStart, j - nameStart)
-      val ctorKey = packageName + "." + unionName + "$" + caseName
+      val ctorKey = packageName + "." + unionName + "_" + caseName
       if not cctx.unionCaseCtorByName.containsKey(caseName) {
         cctx.unionCaseCtorByName.add(caseName, ctorKey)
+      }
+      if not cctx.caseParentUnion.containsKey(ctorKey) {
+        cctx.caseParentUnion.add(ctorKey, packageName + "." + unionName)
       }
     }
     idx = j
@@ -14438,10 +14474,13 @@ func registerRestoredUnionCase(
   c: in UnionCase,
   asmRefRow: in Int,
 ): Unit {
-  val caseClassName = unionName + "$" + c.name
+  val caseClassName = unionName + "_" + c.name
   val caseFqn = packageName + "." + caseClassName
   if cctx.recordCtorTokens.containsKey(caseFqn) {
     return
+  }
+  if not cctx.caseParentUnion.containsKey(caseFqn) {
+    cctx.caseParentUnion.add(caseFqn, packageName + "." + unionName)
   }
 
   val typeRefRow = ensureCaseClassTypeRefRow(cctx, packageName, caseClassName, asmRefRow)
