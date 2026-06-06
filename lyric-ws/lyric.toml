@@ -22,7 +22,6 @@ dotnet = []   # ASP.NET Core WebSockets
 jvm    = []   # Undertow WebSockets (Phase 6)
 
 [dependencies]
-"Lyric.Stdlib" = { path = "../lyric-stdlib" }
 "Lyric.Auth"   = { path = "../lyric-auth" }
 
 [nuget]

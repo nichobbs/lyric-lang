@@ -34,7 +34,6 @@ output_assembly = "ProductCatalog.dll"
 "ProductCatalog.Tests.Catalog"  = "tests/catalog_tests.l"
 
 [dependencies]
-"Lyric.Stdlib"     = { path = "../../stdlib" }
 "Lyric.Grpc"       = { path = "../../lyric-grpc" }
 "Lyric.Db"         = { path = "../../lyric-db" }
 "Lyric.Auth"       = { path = "../../lyric-auth" }

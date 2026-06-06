@@ -20,7 +20,6 @@ hangfire = []   # Hangfire backend for .NET (Hangfire.Core + Hangfire.SqlServer)
 quartz   = []   # Quartz.NET scheduler
 
 [dependencies]
-"Lyric.Stdlib"     = { path = "../lyric-stdlib" }
 "Lyric.Resilience" = { path = "../lyric-resilience" }
 
 [nuget]
