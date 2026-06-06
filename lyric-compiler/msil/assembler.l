@@ -443,7 +443,7 @@ pub func assemblePe(inp: in AssemblerInput): ByteWriter {
   if hasResources {
     var ri = 0
     while ri < rawRsrcSize {
-      bufU1(w, inp.resourceData[ri])
+      bufU1(w, inp.resourceData[ri].toInt())
       ri = ri + 1
     }
     bufZero(w, padRsrcSize - rawRsrcSize)
