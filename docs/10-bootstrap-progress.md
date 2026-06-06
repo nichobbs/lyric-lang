@@ -21513,3 +21513,36 @@ Regression: emitter 843/843, cli 84/84, typechecker 189/189; `lyric-auth` and
 `lyric-session` ecosystem suites build clean.  The remaining single
 `msil_project_bridge_tests` error (`T0043 AssignOp`/`Expr`) is the first of the
 whole-compiler self-type-check long tail (tracked in #2394 §3).
+
+### D-progress-443 — `lyric fmt` preserves comments inside `then`-form if-expressions (#2453, round-trip backlog #2280)
+
+**Status:** Shipped — first PR of the per-expression-trivia work (#2453).
+
+The self-hosted formatter rendered every expression as a flat string with no
+trivia awareness, so an end-of-line comment living *inside* a `then`-form
+if-expression — `if cond then 3  // a` / `else 6  // b` — was crammed onto a
+single output line (`then 3 else 6  // a  // b`).  On re-lex the second `//`
+became part of the first comment's text, so the loss-check counted two input
+comments collapsing to one and `lyric fmt --write` refused with
+"would drop 2 comment(s)".  This blocked `lyric fmt` on
+`lyric-compiler/jvm/bytecode.l` (the `insnSize` `Iinc` arm).
+
+Fix (all in `lyric-compiler/lyric/fmt/fmt_core.l`): a new trivia-aware
+`ifThenFormDoc` renders a `then`-form if across lines when the expression's own
+span carries interior trivia, putting `else` on a fresh line so each arm's
+trailing comment stays a distinct comment; the comment between the then-arm and
+`else` is woven in via `appendTriviaInto`, the else-arm's trailing comment (which
+sits after the if-expression's span) is left for the enclosing block / match-arm
+printer to re-attach.  An `else if` chain recurses.  `exprAtCol`'s `EIf`
+then-form branch, `stmtExprLines`, and `matchLines`' expression-arm path now
+route through this layout when (and only when) interior trivia is present;
+trivia-free `then`-form ifs still render on one line.  Covered by four new
+`fmt_self_test.l` cases (then/else arm comments, the match-arm body variant, the
+no-comment inline-stays case, and an `else if` chain), all asserting lossless
+round-trip + idempotence.
+
+`bytecode.l` now round-trips.  `metadata_reader.l` (brace-form `if` chains) was
+already clean.  `lyric-compiler/msil/lowering.l` still refuses on a *different*
+pattern — trailing comments on the fields of a multi-field union case
+(`MEHClause`) — which is item-internal (union-body) trivia, tracked as the next
+sub-task of #2453.

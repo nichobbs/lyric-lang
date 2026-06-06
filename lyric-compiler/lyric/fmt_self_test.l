@@ -673,6 +673,72 @@ func testWidthDrivenLongMatchBreaks(): Unit {
   assertTrue(Str.contains(acc, "case 1 ->"), "match-expr: arm rendered in body")
 }
 
+func testThenFormIfArmCommentsPreserved(): Unit {
+  // Issue #2453: a `then`-form if-expression whose then-arm and else-arm
+  // each carry an end-of-line comment must keep each comment on its own
+  // output line.  The flat inline rendering used to fuse them
+  // (`then 3 else 6  // a  // b`), merging two comments into one on
+  // re-lex; `lyric fmt --write` then refused with "would drop 2
+  // comment(s)".  The trivia-aware `then`-form layout splits the arms.
+  val src = "package P\n\nfunc f(x: in Int): Int {\n" + "  if x > 0 then 3   // three\n" +
+    "  else 6            // six\n" +
+    "}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "then-if arm comments: round-trips losslessly")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "then 3"), "then-if arm comments: then-arm value preserved")
+  assertTrue(Str.contains(acc, "// three"), "then-if arm comments: then-arm comment preserved")
+  assertTrue(Str.contains(acc, "// six"), "then-if arm comments: else-arm comment preserved")
+  // The `else` must start a fresh line so the two `//` comments do not
+  // collapse into one on re-lex.
+  assertTrue(Str.contains(acc, "\n  else 6"), "then-if arm comments: else on its own line")
+  // Idempotent: formatting the result is a fixed point.
+  assertTrue(isFormatted(acc, parse(acc)), "then-if arm comments: idempotent")
+}
+
+func testThenFormIfArmCommentsInMatchArm(): Unit {
+  // The same fix must apply when the `then`-form if is a match-arm body
+  // (the `lyric-compiler/jvm/bytecode.l` `insnSize` case): the arm body
+  // routes through the ctx-aware printer so the interior comment survives.
+  val src = "package P\n\nfunc g(x: in Int): Int {\n" + "  match x {\n" + "    case 0 ->\n" +
+    "      if x > 0 then 3   // op + u1\n" +
+    "      else 6            // wide + op\n" +
+    "    case _ -> 1\n" +
+    "  }\n" +
+    "}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "then-if in match arm: round-trips losslessly")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "// op + u1"), "then-if in match arm: then-arm comment preserved")
+  assertTrue(Str.contains(acc, "// wide + op"), "then-if in match arm: else-arm comment preserved")
+  assertTrue(isFormatted(acc, parse(acc)), "then-if in match arm: idempotent")
+}
+
+func testThenFormIfNoCommentsStaysInline(): Unit {
+  // Without interior trivia, a `then`-form if stays on one line — the
+  // multi-line split fires only to rescue comments.
+  val src = "package P\n\nfunc f(x: in Int): Int {\n  if x > 0 then 3 else 6\n}\n"
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "if x > 0 then 3 else 6"), "then-if no comments: stays inline")
+  assertTrue(not Str.contains(acc, "\n  else"), "then-if no comments: no spurious else break")
+}
+
+func testThenFormIfElseChainCommentsPreserved(): Unit {
+  // An `else if` chain in `then`-form with a comment on an intermediate
+  // arm: the recursion through `ifThenFormDoc` weaves each comment in.
+  val src = "package P\n\nfunc f(x: in Int): Int {\n" + "  if x > 2 then 9   // big\n" +
+    "  else if x > 0 then 3   // mid\n" +
+    "  else 0                 // zero\n" +
+    "}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "then-if else-chain: round-trips losslessly")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "// big"), "then-if else-chain: first comment preserved")
+  assertTrue(Str.contains(acc, "// mid"), "then-if else-chain: middle comment preserved")
+  assertTrue(Str.contains(acc, "// zero"), "then-if else-chain: last comment preserved")
+  assertTrue(isFormatted(acc, parse(acc)), "then-if else-chain: idempotent")
+}
+
 func testFBExprWithContracts(): Unit {
   // A func with an expression body AND contract clauses must preserve
   // both; the old FBExpr path dropped the contracts entirely.
@@ -854,6 +920,10 @@ func main(): Unit {
   testWidthDrivenLongLambdaBody()
   testForallBodyNoBraces()
   testWidthDrivenLongIfBreaks()
+  testThenFormIfArmCommentsPreserved()
+  testThenFormIfArmCommentsInMatchArm()
+  testThenFormIfNoCommentsStaysInline()
+  testThenFormIfElseChainCommentsPreserved()
   testWidthDrivenLongMatchBreaks()
   testFBExprWithContracts()
   println("fmt self-test: ok")
