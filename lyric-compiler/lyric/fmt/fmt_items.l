@@ -1111,7 +1111,13 @@ func aspectMatcherPred(m: in AspectMatcher): String {
 
 func aspectDoc(visStr: in String, ad: in AspectDecl, ctx: inout FmtCtx): List[String] {
   val acc: List[String] = newList()
-  acc.add(visStr + "aspect " + ad.name + " {")
+  // Instantiation form (D051): `aspect Name from Pkg.Template { … }`.  The
+  // `from` clause is matched on the `ad.from` field directly (a single match,
+  // not a nested re-match of a sub-field), so it lowers correctly under the
+  // stage-0 emitter — unlike the `around` advice, which is routed through
+  // `aspectAroundLines` for that reason.
+  val fromStr = match ad.from { case Some(mp) -> " from " + pathStr(mp); case None -> "" }
+  acc.add(visStr + "aspect " + ad.name + fromStr + " {")
   // §6 ordering: emit wraps:/inside: before matches:
   if ad.wraps.count > 0 {
     val wrapStr: String = joinStrings(ad.wraps, ", ")
@@ -1185,7 +1191,8 @@ func aspectDoc(visStr: in String, ad: in AspectDecl, ctx: inout FmtCtx): List[St
 func aspectAroundLines(aroundOpt: in Option[AspectAround], ctx: inout FmtCtx): List[String] {
   val acc: List[String] = newList()
   match aroundOpt {
-    case None -> {}
+    case None -> {
+    }
     case Some(ar) -> {
       // Consume any trivia between the preceding aspect member (config /
       // matches / a contract clause) and the `around` keyword.  `aspectDoc`
@@ -1202,10 +1209,7 @@ func aspectAroundLines(aroundOpt: in Option[AspectAround], ctx: inout FmtCtx): L
         acc.add("  " + pre[pk])
         pk = pk + 1
       }
-      val retStr = match ar.retName {
-        case Some(r) -> " -> " + r
-        case None    -> ""
-      }
+      val retStr = match ar.retName { case Some(r) -> " -> " + r; case None -> "" }
       acc.add("  around(" + ar.argsName + ")" + retStr + " {")
       val body = blockLines(ar.body, ctx)
       var k = 0
