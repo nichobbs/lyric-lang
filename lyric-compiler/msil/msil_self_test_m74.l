@@ -97,31 +97,31 @@ func main(): Unit {
   val mbMain = newMethodBody()
   val lblBleOk = mbNewLabel(mbMain)
   val lblBltOk = mbNewLabel(mbMain)
-  emitLdc_I4(mbMain, 42)  // offset  0: ldc.i4 42 (5B: 0x20 + 4 bytes) — full form
-  emitLdc_I4_S(mbMain, 43)  // offset  5: push 43
-  emitBle_Un(mbMain, lblBleOk)  // offset  7: ble.un → BLE_OK(20); next=12; offset=+8; 42<=43 → jump
-  emitLdc_I4_S(mbMain, 0)  // offset 12: dead
-  emitCall(mbMain, 0x0A000001)  // offset 14: dead
-  emitRet(mbMain)  // offset 19: dead
+  emitLdc_I4(mbMain, 42)           // offset  0: ldc.i4 42 (5B: 0x20 + 4 bytes) — full form
+  emitLdc_I4_S(mbMain, 43)         // offset  5: push 43
+  emitBle_Un(mbMain, lblBleOk)     // offset  7: ble.un → BLE_OK(20); next=12; offset=+8; 42<=43 → jump
+  emitLdc_I4_S(mbMain, 0)          // offset 12: dead
+  emitCall(mbMain, 0x0A000001)      // offset 14: dead
+  emitRet(mbMain)                   // offset 19: dead
   // BLE_OK: offset 20
   mbMarkLabel(mbMain, lblBleOk)
-  emitLdc_I4(mbMain, 42)  // offset 20: ldc.i4 42 (5B) — full form again
-  emitLdc_I4_S(mbMain, 43)  // offset 25: push 43
-  emitBlt_Un(mbMain, lblBltOk)  // offset 27: blt.un → BLT_OK(40); next=32; offset=+8; 42<43 → jump
-  emitLdc_I4_S(mbMain, 0)  // offset 32: dead
-  emitCall(mbMain, 0x0A000001)  // offset 34: dead
-  emitRet(mbMain)  // offset 39: dead
+  emitLdc_I4(mbMain, 42)           // offset 20: ldc.i4 42 (5B) — full form again
+  emitLdc_I4_S(mbMain, 43)         // offset 25: push 43
+  emitBlt_Un(mbMain, lblBltOk)     // offset 27: blt.un → BLT_OK(40); next=32; offset=+8; 42<43 → jump
+  emitLdc_I4_S(mbMain, 0)          // offset 32: dead
+  emitCall(mbMain, 0x0A000001)      // offset 34: dead
+  emitRet(mbMain)                   // offset 39: dead
   // BLT_OK: offset 40
   mbMarkLabel(mbMain, lblBltOk)
-  emitLdc_I4_6(mbMain)  // offset 40: push 6
-  emitLdc_I4_7(mbMain)  // offset 41: push 7
-  emitMul(mbMain)  // offset 42: 6*7=42
-  emitLdc_I4_8(mbMain)  // offset 43: push 8
-  emitLdc_I4_8(mbMain)  // offset 44: push 8
-  emitSub(mbMain)  // offset 45: 8-8=0
-  emitAdd(mbMain)  // offset 46: 42+0=42
-  emitCall(mbMain, 0x0A000001)  // offset 47: print 42
-  emitRet(mbMain)  // offset 52
+  emitLdc_I4_6(mbMain)             // offset 40: push 6
+  emitLdc_I4_7(mbMain)             // offset 41: push 7
+  emitMul(mbMain)                   // offset 42: 6*7=42
+  emitLdc_I4_8(mbMain)             // offset 43: push 8
+  emitLdc_I4_8(mbMain)             // offset 44: push 8
+  emitSub(mbMain)                   // offset 45: 8-8=0
+  emitAdd(mbMain)                   // offset 46: 42+0=42
+  emitCall(mbMain, 0x0A000001)      // offset 47: print 42
+  emitRet(mbMain)                   // offset 52
 
   val bodies: List[MethodBody] = newList()
   bodies.add(mbMain)

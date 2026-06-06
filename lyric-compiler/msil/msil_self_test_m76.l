@@ -119,37 +119,37 @@ func main(): Unit {
 
   val mbMain = newMethodBody()
   // Store 42 into each local
-  emitLdc_I4_S(mbMain, 42)  // offset  0: push 42 (2b)
-  emitStloc_0(mbMain)  // offset  2: local[0]=42 (I1) (1b)
-  emitLdc_I4_S(mbMain, 42)  // offset  3: (2b)
-  emitStloc_1(mbMain)  // offset  5: local[1]=42 (U2) (1b)
-  emitLdc_I4_S(mbMain, 42)  // offset  6: (2b)
-  emitStloc_2(mbMain)  // offset  8: local[2]=42 (U4) (1b)
-  emitLdc_I4_S(mbMain, 42)  // offset  9: (2b)
-  emitConv_I8(mbMain)  // offset 11: to I8 (1b)
-  emitStloc_3(mbMain)  // offset 12: local[3]=42 (I8) (1b)
+  emitLdc_I4_S(mbMain, 42)          // offset  0: push 42 (2b)
+  emitStloc_0(mbMain)                // offset  2: local[0]=42 (I1) (1b)
+  emitLdc_I4_S(mbMain, 42)          // offset  3: (2b)
+  emitStloc_1(mbMain)                // offset  5: local[1]=42 (U2) (1b)
+  emitLdc_I4_S(mbMain, 42)          // offset  6: (2b)
+  emitStloc_2(mbMain)                // offset  8: local[2]=42 (U4) (1b)
+  emitLdc_I4_S(mbMain, 42)          // offset  9: (2b)
+  emitConv_I8(mbMain)                // offset 11: to I8 (1b)
+  emitStloc_3(mbMain)                // offset 12: local[3]=42 (I8) (1b)
   // ldloca.s + ldind.i1
-  emitLdloca_S(mbMain, 0)  // offset 13: &local[0] (2b) ← 0x12 at file 0x261
-  emitLdind_I1(mbMain)  // offset 15: load I1→I4 (1b) ← 0x46 at file 0x263
-  emitPop(mbMain)  // offset 16: (1b)
+  emitLdloca_S(mbMain, 0)           // offset 13: &local[0] (2b) ← 0x12 at file 0x261
+  emitLdind_I1(mbMain)               // offset 15: load I1→I4 (1b) ← 0x46 at file 0x263
+  emitPop(mbMain)                    // offset 16: (1b)
   // ldloca.s + ldind.u2
-  emitLdloca_S(mbMain, 1)  // offset 17: &local[1] (2b)
-  emitLdind_U2(mbMain)  // offset 19: load U2→I4 (1b) ← 0x49 at file 0x267
-  emitPop(mbMain)  // offset 20: (1b)
+  emitLdloca_S(mbMain, 1)           // offset 17: &local[1] (2b)
+  emitLdind_U2(mbMain)               // offset 19: load U2→I4 (1b) ← 0x49 at file 0x267
+  emitPop(mbMain)                    // offset 20: (1b)
   // ldloca.s + ldind.u4
-  emitLdloca_S(mbMain, 2)  // offset 21: &local[2] (2b)
-  emitLdind_U4(mbMain)  // offset 23: load U4→I4 (1b) ← 0x4B at file 0x26B
-  emitPop(mbMain)  // offset 24: (1b)
+  emitLdloca_S(mbMain, 2)           // offset 21: &local[2] (2b)
+  emitLdind_U4(mbMain)               // offset 23: load U4→I4 (1b) ← 0x4B at file 0x26B
+  emitPop(mbMain)                    // offset 24: (1b)
   // ldloca.s + ldind.i8
-  emitLdloca_S(mbMain, 3)  // offset 25: &local[3] (2b)
-  emitLdind_I8(mbMain)  // offset 27: load I8 (1b)   ← 0x4C at file 0x26F
-  emitPop(mbMain)  // offset 28: (1b)
+  emitLdloca_S(mbMain, 3)           // offset 25: &local[3] (2b)
+  emitLdind_I8(mbMain)               // offset 27: load I8 (1b)   ← 0x4C at file 0x26F
+  emitPop(mbMain)                    // offset 28: (1b)
   // extra ldloca.s (byte check for opcode 0x12 at known offset)
-  emitLdloca_S(mbMain, 0)  // offset 29: &local[0] (2b) ← 0x12 at file 0x271
-  emitPop(mbMain)  // offset 31: (1b)
-  emitLdc_I4_S(mbMain, 42)  // offset 32: push 42 (2b)
-  emitCall(mbMain, 0x0A000001)  // offset 34: print 42 (5b)
-  emitRet(mbMain)  // offset 39
+  emitLdloca_S(mbMain, 0)           // offset 29: &local[0] (2b) ← 0x12 at file 0x271
+  emitPop(mbMain)                    // offset 31: (1b)
+  emitLdc_I4_S(mbMain, 42)          // offset 32: push 42 (2b)
+  emitCall(mbMain, 0x0A000001)       // offset 34: print 42 (5b)
+  emitRet(mbMain)                    // offset 39
 
   val bodies: List[MethodBody] = newList()
   bodies.add(mbMain)

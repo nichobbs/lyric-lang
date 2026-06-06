@@ -116,15 +116,15 @@ func main(): Unit {
   val mbMain = newMethodBody()
 
   emitLdc_I4_S(mbMain, 20)
-  emitStsfld(mbMain, 0x04000001)  // stsfld _x = Field[1]
+  emitStsfld(mbMain, 0x04000001)           // stsfld _x = Field[1]
   emitLdc_I4_S(mbMain, 22)
-  emitStsfld(mbMain, 0x04000002)  // stsfld _y = Field[2]
+  emitStsfld(mbMain, 0x04000002)           // stsfld _y = Field[2]
 
-  emitLdsfld(mbMain, 0x04000001)  // ldsfld _x
-  emitLdsfld(mbMain, 0x04000002)  // ldsfld _y
+  emitLdsfld(mbMain, 0x04000001)           // ldsfld _x
+  emitLdsfld(mbMain, 0x04000002)           // ldsfld _y
   emitAdd(mbMain)
 
-  emitCall(mbMain, 0x0A000001)  // Console.WriteLine(int)
+  emitCall(mbMain, 0x0A000001)             // Console.WriteLine(int)
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

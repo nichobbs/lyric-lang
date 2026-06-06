@@ -154,7 +154,7 @@ func main(): Unit {
       name = sContract,
       implementation = 0
     )
-  )  // embedded
+  )   // embedded
 
   // ── Build resourceData: 4-byte LE length prefix + "hi" payload ────────
   val rsrc: List[Byte] = newList()

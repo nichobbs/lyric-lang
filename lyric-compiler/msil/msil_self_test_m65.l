@@ -90,12 +90,12 @@ func main(): Unit {
   // ── Build method body ─────────────────────────────────────────────────────
   val mbMain = newMethodBody()
 
-  emitLdc_I8(mbMain, 43i64)  // push 43L (ldc.i8: opcode + 8 bytes = 9 bytes total)
-  emitConv_I4(mbMain)  // 43L → 43 (i4)
-  emitLdc_I4_M1(mbMain)  // push -1
-  emitAdd(mbMain)  // 43 + (-1) = 42
-  emitLdnull(mbMain)  // push null reference
-  emitPop(mbMain)  // discard null
+  emitLdc_I8(mbMain, 43i64)     // push 43L (ldc.i8: opcode + 8 bytes = 9 bytes total)
+  emitConv_I4(mbMain)           // 43L → 43 (i4)
+  emitLdc_I4_M1(mbMain)         // push -1
+  emitAdd(mbMain)               // 43 + (-1) = 42
+  emitLdnull(mbMain)            // push null reference
+  emitPop(mbMain)               // discard null
   emitCall(mbMain, 0x0A000001)
   emitRet(mbMain)
 

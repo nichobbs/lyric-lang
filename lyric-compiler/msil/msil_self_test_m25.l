@@ -120,14 +120,14 @@ func main(): Unit {
   val printZero = mbNewLabel(mbMain)
 
   emitLdc_I4_S(mbMain, 42)
-  emitBox(mbMain, 0x01000003)  // box System.Int32 = TypeRef[3]
-  emitIsinst(mbMain, 0x01000002)  // isinst System.Object = TypeRef[2]
-  emitBrfalse(mbMain, printZero)  // if null → fallback
+  emitBox(mbMain, 0x01000003)           // box System.Int32 = TypeRef[3]
+  emitIsinst(mbMain, 0x01000002)        // isinst System.Object = TypeRef[2]
+  emitBrfalse(mbMain, printZero)        // if null → fallback
 
   // isinst succeeded: box 42 and print it
   emitLdc_I4_S(mbMain, 42)
-  emitBox(mbMain, 0x01000003)  // box System.Int32
-  emitCall(mbMain, 0x0A000001)  // Console.WriteLine(object)
+  emitBox(mbMain, 0x01000003)           // box System.Int32
+  emitCall(mbMain, 0x0A000001)          // Console.WriteLine(object)
   emitRet(mbMain)
 
   // fallback: box 0 and print (should never execute)

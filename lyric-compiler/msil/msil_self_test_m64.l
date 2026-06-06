@@ -89,17 +89,17 @@ func main(): Unit {
   // ── Build method body ─────────────────────────────────────────────────────
   val mbMain = newMethodBody()
 
-  emitLdc_I4_S(mbMain, 42)  // push 42
-  emitConv_R8(mbMain)  // 42 → 42.0 (float64)
-  emitConv_I4(mbMain)  // 42.0 → 42 (i4)
-  emitLdc_I4_0(mbMain)  // push 0
-  emitConv_R4(mbMain)  // 0 → 0.0f (float32)
-  emitConv_I4(mbMain)  // 0.0f → 0 (i4)
-  emitAdd(mbMain)  // 42 + 0 = 42
-  emitLdc_I4_0(mbMain)  // push 0
-  emitConv_R_Un(mbMain)  // 0 → 0.0 (float, from unsigned int)
-  emitConv_I4(mbMain)  // 0.0 → 0 (i4)
-  emitAdd(mbMain)  // 42 + 0 = 42
+  emitLdc_I4_S(mbMain, 42)     // push 42
+  emitConv_R8(mbMain)           // 42 → 42.0 (float64)
+  emitConv_I4(mbMain)           // 42.0 → 42 (i4)
+  emitLdc_I4_0(mbMain)          // push 0
+  emitConv_R4(mbMain)           // 0 → 0.0f (float32)
+  emitConv_I4(mbMain)           // 0.0f → 0 (i4)
+  emitAdd(mbMain)               // 42 + 0 = 42
+  emitLdc_I4_0(mbMain)          // push 0
+  emitConv_R_Un(mbMain)         // 0 → 0.0 (float, from unsigned int)
+  emitConv_I4(mbMain)           // 0.0 → 0 (i4)
+  emitAdd(mbMain)               // 42 + 0 = 42
   emitCall(mbMain, 0x0A000001)
   emitRet(mbMain)
 

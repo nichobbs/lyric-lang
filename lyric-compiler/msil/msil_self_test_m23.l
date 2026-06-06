@@ -115,8 +115,8 @@ func main(): Unit {
   val mbMain = newMethodBody()
   emitLdc_I4_S(mbMain, 20)
   emitLdc_I4_S(mbMain, 22)
-  emitCall(mbMain, 0x06000002)  // call Add = MethodDef[2]
-  emitCall(mbMain, 0x0A000001)  // call Console.WriteLine(int)
+  emitCall(mbMain, 0x06000002)   // call Add = MethodDef[2]
+  emitCall(mbMain, 0x0A000001)   // call Console.WriteLine(int)
   emitRet(mbMain)
 
   // Add: ldarg.0 + ldarg.1 + add + ret

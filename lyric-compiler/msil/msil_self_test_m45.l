@@ -112,22 +112,22 @@ func main(): Unit {
   val mbMain = newMethodBody()
 
   // Part 1: initblk — fill 1 byte at &local0 with 42, read back as u1
-  emitLdloca_S(mbMain, 0)  // &local0
-  emitDup(mbMain)  // &local0, &local0
-  emitLdc_I4_S(mbMain, 42)  // &local0, &local0, 42
-  emitLdc_I4_S(mbMain, 1)  // &local0, &local0, 42, 1
-  emitInitblk(mbMain)  // fills 1 byte; &local0 remains
-  emitLdind_U1(mbMain)  // read unsigned byte = 42
+  emitLdloca_S(mbMain, 0)       // &local0
+  emitDup(mbMain)               // &local0, &local0
+  emitLdc_I4_S(mbMain, 42)      // &local0, &local0, 42
+  emitLdc_I4_S(mbMain, 1)       // &local0, &local0, 42, 1
+  emitInitblk(mbMain)           // fills 1 byte; &local0 remains
+  emitLdind_U1(mbMain)          // read unsigned byte = 42
   emitCall(mbMain, 0x0A000001)  // print 42
 
   // Part 2: cpblk — copy 4 bytes from &local0 to &local1
   emitLdc_I4_S(mbMain, 42)
-  emitStloc_0(mbMain)  // local0 = 42
-  emitLdloca_S(mbMain, 1)  // &local1 (dst)
-  emitLdloca_S(mbMain, 0)  // &local0 (src)
-  emitLdc_I4_S(mbMain, 4)  // size = 4
-  emitCpblk(mbMain)  // copies 4 bytes from &local0 to &local1
-  emitLdloc_1(mbMain)  // load local1 (= 42)
+  emitStloc_0(mbMain)           // local0 = 42
+  emitLdloca_S(mbMain, 1)       // &local1 (dst)
+  emitLdloca_S(mbMain, 0)       // &local0 (src)
+  emitLdc_I4_S(mbMain, 4)       // size = 4
+  emitCpblk(mbMain)             // copies 4 bytes from &local0 to &local1
+  emitLdloc_1(mbMain)           // load local1 (= 42)
   emitCall(mbMain, 0x0A000001)  // print 42
 
   emitRet(mbMain)

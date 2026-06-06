@@ -119,8 +119,8 @@ func main(): Unit {
   targets.add(lbl1)
   targets.add(lbl2)
 
-  emitLdc_I4_2(mbMain)  // push 2
-  emitSwitch(mbMain, targets)  // switch on 3 targets
+  emitLdc_I4_2(mbMain)              // push 2
+  emitSwitch(mbMain, targets)       // switch on 3 targets
 
   // default (fall-through when value out of [0,3))
   emitLdc_I4_S(mbMain, 99)
@@ -138,7 +138,7 @@ func main(): Unit {
   emitLdc_I4_S(mbMain, 42)
 
   mbMarkLabel(mbMain, endLbl)
-  emitCall(mbMain, 0x0A000001)  // call Console.WriteLine(int)
+  emitCall(mbMain, 0x0A000001)      // call Console.WriteLine(int)
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

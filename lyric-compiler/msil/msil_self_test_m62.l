@@ -94,12 +94,12 @@ func main(): Unit {
   // ── Build method body ─────────────────────────────────────────────────────
   val mbMain = newMethodBody()
 
-  emitLdc_I4_S(mbMain, 42)  // push 42
-  emitConv_I1(mbMain)  // 42 as i1 → 42 (fits in i1)
-  emitConv_I2(mbMain)  // 42 as i2 → 42 (fits in i2)
-  emitConv_I4(mbMain)  // 42 as i4 → 42
-  emitConv_I8(mbMain)  // 42 as i8 → 42L
-  emitConv_I4(mbMain)  // back to i4 → 42
+  emitLdc_I4_S(mbMain, 42)     // push 42
+  emitConv_I1(mbMain)           // 42 as i1 → 42 (fits in i1)
+  emitConv_I2(mbMain)           // 42 as i2 → 42 (fits in i2)
+  emitConv_I4(mbMain)           // 42 as i4 → 42
+  emitConv_I8(mbMain)           // 42 as i8 → 42L
+  emitConv_I4(mbMain)           // back to i4 → 42
   emitCall(mbMain, 0x0A000001)
   emitRet(mbMain)
 

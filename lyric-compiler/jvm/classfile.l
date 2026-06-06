@@ -104,18 +104,18 @@ pub record MethodInfo {
 /// Top-level class-file descriptor (JVMS §4.1).
 /// Use `makeClass` / `makeInterface` for common defaults.
 pub record ClassFile {
-  minorVersion: Int  // 0 for release; 65535 = preview features
-  majorVersion: Int  // 65 = Java 21
-  flags: Int  // access_flags bitmask
-  thisClass: String  // internal binary name, e.g. "com/example/Foo"
-  superClass: String  // "" → java/lang/Object for classes; "" for interfaces
+  minorVersion: Int           // 0 for release; 65535 = preview features
+  majorVersion: Int           // 65 = Java 21
+  flags: Int           // access_flags bitmask
+  thisClass: String        // internal binary name, e.g. "com/example/Foo"
+  superClass: String        // "" → java/lang/Object for classes; "" for interfaces
   interfaces: List[String]
   fields: List[FieldInfo]
   methods: List[MethodInfo]
   attrs: List[Attribute]
-  // ── Construction helpers ──────────────────────────────────────────────────────
 }
 
+// ── Construction helpers ──────────────────────────────────────────────────────
 /// Create an `Attribute` from a `ByteWriter` snapshot.
 pub func attrFromWriter(name: in String, w: in ByteWriter): Attribute {
   Attribute(name = name, bytes = writerToList(w))
@@ -330,8 +330,8 @@ pub func serializeClassWithPool(cf: in ClassFile, pool: in Pool): List[Byte] {
   writerU4(result, 0xCAFEBABE)
   writerU2(result, cf.minorVersion)
   writerU2(result, cf.majorVersion)
-  poolWriteTo(pool, result)  // constant_pool_count + entries
-  writerAppend(result, body)  // access_flags … attributes
+  poolWriteTo(pool, result)    // constant_pool_count + entries
+  writerAppend(result, body)   // access_flags … attributes
   writerToList(result)
 }
 
@@ -363,10 +363,10 @@ pub func makeCodeAttr(maxStack: in Int, maxLocals: in Int, code: in List[Byte]):
   val w = writerNew()
   writerU2(w, maxStack)
   writerU2(w, maxLocals)
-  writerU4(w, code.count)  // code_length
-  writerByteList(w, code)  // bytecode
-  writerU2(w, 0)  // exception_table_length = 0
-  writerU2(w, 0)  // attributes_count = 0
+  writerU4(w, code.count)      // code_length
+  writerByteList(w, code)      // bytecode
+  writerU2(w, 0)               // exception_table_length = 0
+  writerU2(w, 0)               // attributes_count = 0
   attrFromWriter("Code", w)
 }
 
@@ -387,12 +387,12 @@ pub func makeCodeAttrWithHandler(
   writerU2(w, maxLocals)
   writerU4(w, code.count)
   writerByteList(w, code)
-  writerU2(w, 1)  // exception_table_length = 1
+  writerU2(w, 1)           // exception_table_length = 1
   writerU2(w, startPc)
   writerU2(w, endPc)
   writerU2(w, handlerPc)
   writerU2(w, catchType)
-  writerU2(w, 0)  // attributes_count = 0
+  writerU2(w, 0)           // attributes_count = 0
   attrFromWriter("Code", w)
 }
 
@@ -569,9 +569,9 @@ pub func makeBootstrapMethodsSingle(
 ): Attribute {
   val w = writerNew()
   val mhIdx = poolMethodHandle(pool, refKind, className, name, desc)
-  writerU2(w, 1)  // num_bootstrap_methods
-  writerU2(w, mhIdx)  // bootstrap_method_ref
-  writerU2(w, 0)  // num_bootstrap_arguments = 0
+  writerU2(w, 1)       // num_bootstrap_methods
+  writerU2(w, mhIdx)   // bootstrap_method_ref
+  writerU2(w, 0)       // num_bootstrap_arguments = 0
   attrFromWriter("BootstrapMethods", w)
 }
 
@@ -644,12 +644,12 @@ pub func makePermittedSubclassesAttr(caseNames: in List[String], pool: in Pool):
 /// `fieldNames` and `fieldDescs` must have equal length; each pair is one record component.
 pub func makeRecordAttr(fieldNames: in List[String], fieldDescs: in List[String], pool: in Pool): Attribute {
   val w = writerNew()
-  writerU2(w, fieldNames.count)  // components_count
+  writerU2(w, fieldNames.count)   // components_count
   var i = 0
   while i < fieldNames.count {
-    writerU2(w, poolUtf8(pool, fieldNames[i]))  // name_index
-    writerU2(w, poolUtf8(pool, fieldDescs[i]))  // descriptor_index
-    writerU2(w, 0)  // attributes_count = 0
+    writerU2(w, poolUtf8(pool, fieldNames[i]))   // name_index
+    writerU2(w, poolUtf8(pool, fieldDescs[i]))   // descriptor_index
+    writerU2(w, 0)                               // attributes_count = 0
     i = i + 1
   }
   attrFromWriter("Record", w)
@@ -728,14 +728,13 @@ pub func makeCaseClassImplementing(
 /// @LyricTest and the meta-annotations @Retention / @Target.
 /// Extend with more cases as new tags are required.
 pub union AnnotationElementValue {
-  case AEVString(value: String)  // tag 's'
-  case AEVInt(value: Int)  // tag 'I'
-  case AEVEnum(typeName: String, constName: String)  // tag 'e'
+  case AEVString(value: String)                                  // tag 's'
+  case AEVInt(value: Int)                                        // tag 'I'
+  case AEVEnum(typeName: String, constName: String)              // tag 'e'
   // Array of one enum value — covers the @Target({X}) common case without
   // requiring a self-referential union (which the bootstrap emitter cannot
   // handle via Reflection.Emit TypeBuilderInstantiation).
-  case AEVSingleEnumArray(typeName: String, constName: String)
-  // tag '[' num=1 'e' ...
+  case AEVSingleEnumArray(typeName: String, constName: String)  // tag '[' num=1 'e' ...
 }
 
 /// A single name=value pair inside a RuntimeVisibleAnnotations entry.
@@ -749,28 +748,28 @@ pub record AnnotationElement {
 pub record AnnotationEntry {
   typeDescriptor: String
   elements: List[AnnotationElement]
-  // Emit an element_value to `w` (JVMS §4.7.16.1).
 }
 
+// Emit an element_value to `w` (JVMS §4.7.16.1).
 func emitElementValue(ev: in AnnotationElementValue, pool: in Pool, w: in ByteWriter): Unit {
   match ev {
     case AEVString(v) -> {
-      writerByte(w, 115)  // tag 's' = 0x73
+      writerByte(w, 115)          // tag 's' = 0x73
       writerU2(w, poolUtf8(pool, v))
     }
     case AEVInt(v) -> {
-      writerByte(w, 73)  // tag 'I' = 0x49
+      writerByte(w, 73)           // tag 'I' = 0x49
       writerU2(w, poolInteger(pool, v))
     }
     case AEVEnum(typeName, constName) -> {
-      writerByte(w, 101)  // tag 'e' = 0x65
+      writerByte(w, 101)          // tag 'e' = 0x65
       writerU2(w, poolUtf8(pool, typeName))
       writerU2(w, poolUtf8(pool, constName))
     }
     case AEVSingleEnumArray(typeName, constName) -> {
-      writerByte(w, 91)  // tag '[' = 0x5B
-      writerU2(w, 1)  // num_values = 1
-      writerByte(w, 101)  // tag 'e' = 0x65
+      writerByte(w, 91)           // tag '[' = 0x5B
+      writerU2(w, 1)              // num_values = 1
+      writerByte(w, 101)          // tag 'e' = 0x65
       writerU2(w, poolUtf8(pool, typeName))
       writerU2(w, poolUtf8(pool, constName))
     }

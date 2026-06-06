@@ -88,14 +88,14 @@ func main(): Unit {
   // TypeRef[3] = System.Int32 → token 0x01000003
   val int32TypeRefToken = 0x01000003
 
-  emitLdc_I4_1(mbMain)  // size = 1
-  emitNewarr(mbMain, int32TypeRefToken)  // new int32[1]
+  emitLdc_I4_1(mbMain)                    // size = 1
+  emitNewarr(mbMain, int32TypeRefToken)   // new int32[1]
   emitDup(mbMain)
-  emitLdc_I4_0(mbMain)  // index 0
-  emitLdc_I4_S(mbMain, 42)  // value 42
-  emitStelem_I4(mbMain)  // arr[0] = 42
-  emitLdc_I4_0(mbMain)  // index 0
-  emitLdelem_I4(mbMain)  // load arr[0] → 42
+  emitLdc_I4_0(mbMain)                    // index 0
+  emitLdc_I4_S(mbMain, 42)               // value 42
+  emitStelem_I4(mbMain)                   // arr[0] = 42
+  emitLdc_I4_0(mbMain)                    // index 0
+  emitLdelem_I4(mbMain)                   // load arr[0] → 42
   emitCall(mbMain, 0x0A000001)
   emitRet(mbMain)
 

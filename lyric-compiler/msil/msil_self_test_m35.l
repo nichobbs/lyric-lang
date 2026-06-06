@@ -102,8 +102,8 @@ func main(): Unit {
   // ── Build method body ─────────────────────────────────────────────────────
   val mbMain = newMethodBody()
   emitLdc_I4_S(mbMain, 42)
-  emitTail(mbMain)  // tail. prefix before call
-  emitCall(mbMain, 0x0A000001)  // call Console.WriteLine(int)
+  emitTail(mbMain)                        // tail. prefix before call
+  emitCall(mbMain, 0x0A000001)            // call Console.WriteLine(int)
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

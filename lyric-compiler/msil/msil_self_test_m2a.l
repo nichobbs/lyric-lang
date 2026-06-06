@@ -62,7 +62,7 @@ func main(): Unit {
       shBytes[5] == 111 and
       // 'o'
       shBytes[6] == 0
-  )  // null terminator
+  )       // null terminator
 
   // ── BlobHeap ───────────────────────────────────────────────────────────────
   val bh = newBlobHeap()

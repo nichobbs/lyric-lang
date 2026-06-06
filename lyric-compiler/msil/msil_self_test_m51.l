@@ -92,13 +92,13 @@ func main(): Unit {
   // ── Build method body ─────────────────────────────────────────────────────
   val mbMain = newMethodBody()
 
-  emitLdc_I4_S(mbMain, 4)  // alloc 4 bytes
-  emitLocalloc(mbMain)  // → rawPtr
-  emitDup(mbMain)  // → rawPtr, rawPtr
-  emitLdc_I4_S(mbMain, 42)  // → rawPtr, rawPtr, 42
-  emitStind_I4(mbMain)  // *rawPtr = 42
-  emitVolatile(mbMain)  // volatile. prefix
-  emitLdind_I4(mbMain)  // volatile load → 42
+  emitLdc_I4_S(mbMain, 4)    // alloc 4 bytes
+  emitLocalloc(mbMain)        // → rawPtr
+  emitDup(mbMain)             // → rawPtr, rawPtr
+  emitLdc_I4_S(mbMain, 42)   // → rawPtr, rawPtr, 42
+  emitStind_I4(mbMain)        // *rawPtr = 42
+  emitVolatile(mbMain)        // volatile. prefix
+  emitLdind_I4(mbMain)        // volatile load → 42
   emitCall(mbMain, 0x0A000001)
   emitRet(mbMain)
 

@@ -42,14 +42,14 @@ func main(): Unit {
   // "WriteLine"=0x3A.
 
   val sh = newStringHeap()
-  val sModule = internString(sh, "<Module>")  // 1
-  val sHello = internString(sh, "Hello")  // 0x0A
-  val sMain = internString(sh, "Main")  // 0x10
-  val sSystem = internString(sh, "System")  // 0x15
-  val sConsole = internString(sh, "Console")  // 0x1C
+  val sModule = internString(sh, "<Module>")       // 1
+  val sHello = internString(sh, "Hello")           // 0x0A
+  val sMain = internString(sh, "Main")            // 0x10
+  val sSystem = internString(sh, "System")          // 0x15
+  val sConsole = internString(sh, "Console")         // 0x1C
   val sRuntime = internString(sh, "System.Runtime")  // 0x24
-  val sObject = internString(sh, "Object")  // 0x33
-  val sWriteLine = internString(sh, "WriteLine")  // 0x3A
+  val sObject = internString(sh, "Object")          // 0x33
+  val sWriteLine = internString(sh, "WriteLine")       // 0x3A
 
   // ── Build #GUID heap ──────────────────────────────────────────────────────
   val gh = newGuidHeap()
@@ -73,7 +73,7 @@ func main(): Unit {
   bufU1(mainSigW, 0x00)
   bufU1(mainSigW, 0x00)
   bufU1(mainSigW, 0x01)
-  val sigMain = internBlob(bh, "main_sig", bufToList(mainSigW))  // 1
+  val sigMain = internBlob(bh, "main_sig", bufToList(mainSigW))      // 1
 
   // Console.WriteLine(string) signature: {0x00,0x01,0x01,0x0E}
   val wlSigW = bufNew()
@@ -81,7 +81,7 @@ func main(): Unit {
   bufU1(wlSigW, 0x01)
   bufU1(wlSigW, 0x01)
   bufU1(wlSigW, 0x0E)
-  val sigWriteLine = internBlob(bh, "wl_sig", bufToList(wlSigW))  // 5
+  val sigWriteLine = internBlob(bh, "wl_sig", bufToList(wlSigW))     // 5
 
   // System.Runtime public key token: b03f5f7f11d50a3a
   val keyW = bufNew()
@@ -93,7 +93,7 @@ func main(): Unit {
   bufU1(keyW, 0xD5)
   bufU1(keyW, 0x0A)
   bufU1(keyW, 0x3A)
-  val keyToken = internBlob(bh, "sysruntime_key", bufToList(keyW))  // 0x0A
+  val keyToken = internBlob(bh, "sysruntime_key", bufToList(keyW))   // 0x0A
 
   // ── Build MetadataTables ──────────────────────────────────────────────────
   val t = newMetadataTables()

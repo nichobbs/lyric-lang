@@ -90,10 +90,10 @@ func main(): Unit {
   // ── Build method body ─────────────────────────────────────────────────────
   val mbMain = newMethodBody()
 
-  emitLdc_I4_S(mbMain, 42)  // push 42 (int)
-  emitConv_R_Un(mbMain)  // → 42.0 (unsigned conversion to R8)
-  emitCkfinite(mbMain)  // check finite (passes; 42.0 is finite)
-  emitConv_I4(mbMain)  // → 42 (int)
+  emitLdc_I4_S(mbMain, 42)       // push 42 (int)
+  emitConv_R_Un(mbMain)          // → 42.0 (unsigned conversion to R8)
+  emitCkfinite(mbMain)           // check finite (passes; 42.0 is finite)
+  emitConv_I4(mbMain)            // → 42 (int)
   emitCall(mbMain, 0x0A000001)
   emitRet(mbMain)
 

@@ -96,11 +96,11 @@ func main(): Unit {
 
   // System.Action::.ctor — HASTHIS, 2 params, void, OBJECT(0x1C), I(0x18)
   val ctorSigW = bufNew()
-  bufU1(ctorSigW, 0x20)  // HASTHIS
-  bufU1(ctorSigW, 0x02)  // 2 params
-  bufU1(ctorSigW, 0x01)  // ret: void
-  bufU1(ctorSigW, 0x1C)  // param 1: OBJECT
-  bufU1(ctorSigW, 0x18)  // param 2: I (native int)
+  bufU1(ctorSigW, 0x20)   // HASTHIS
+  bufU1(ctorSigW, 0x02)   // 2 params
+  bufU1(ctorSigW, 0x01)   // ret: void
+  bufU1(ctorSigW, 0x1C)   // param 1: OBJECT
+  bufU1(ctorSigW, 0x18)   // param 2: I (native int)
   val sigCtor = internBlob(bh, "action_ctor_sig", bufToList(ctorSigW))
 
   // System.Action::Invoke — HASTHIS, 0 params, void
@@ -133,15 +133,15 @@ func main(): Unit {
   // Main: ldnull / ldftn PrintFortyTwo / newobj Action..ctor / callvirt Invoke / ret
   val mbMain = newMethodBody()
   emitLdnull(mbMain)
-  emitLdftn(mbMain, 0x06000002)  // ldftn MethodDef[2]=PrintFortyTwo
-  emitNewobj(mbMain, 0x0A000001)  // newobj MemberRef[1]=Action::.ctor
-  emitCallvirt(mbMain, 0x0A000002)  // callvirt MemberRef[2]=Action::Invoke
+  emitLdftn(mbMain, 0x06000002)        // ldftn MethodDef[2]=PrintFortyTwo
+  emitNewobj(mbMain, 0x0A000001)       // newobj MemberRef[1]=Action::.ctor
+  emitCallvirt(mbMain, 0x0A000002)     // callvirt MemberRef[2]=Action::Invoke
   emitRet(mbMain)
 
   // PrintFortyTwo: ldc.i4.s 42 / call Console.WriteLine(int) / ret
   val mbPrint = newMethodBody()
   emitLdc_I4_S(mbPrint, 42)
-  emitCall(mbPrint, 0x0A000003)  // call MemberRef[3]=Console.WriteLine(int)
+  emitCall(mbPrint, 0x0A000003)        // call MemberRef[3]=Console.WriteLine(int)
   emitRet(mbPrint)
 
   val bodies: List[MethodBody] = newList()

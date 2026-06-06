@@ -119,10 +119,10 @@ func main(): Unit {
 
   // LocalVarSig: 1 local — int32[] = SZARRAY(0x1D) + I4(0x08)
   val lvW = bufNew()
-  bufU1(lvW, 0x07)  // LOCAL_SIG
-  bufU1(lvW, 0x01)  // 1 local
-  bufU1(lvW, 0x1D)  // ELEMENT_TYPE_SZARRAY
-  bufU1(lvW, 0x08)  // ELEMENT_TYPE_I4
+  bufU1(lvW, 0x07)   // LOCAL_SIG
+  bufU1(lvW, 0x01)   // 1 local
+  bufU1(lvW, 0x1D)   // ELEMENT_TYPE_SZARRAY
+  bufU1(lvW, 0x08)   // ELEMENT_TYPE_I4
   val localVarSig = internBlob(bh, "locals_sig", bufToList(lvW))
 
   val keyW = bufNew()
@@ -141,14 +141,14 @@ func main(): Unit {
 
   // create int32[2]
   emitLdc_I4_2(mbMain)
-  emitNewarr(mbMain, 0x01000003)  // newarr System.Int32 = TypeRef[3]
+  emitNewarr(mbMain, 0x01000003)          // newarr System.Int32 = TypeRef[3]
   emitStloc_0(mbMain)
 
   // arr[0] = 21
   emitLdloc_0(mbMain)
   emitLdc_I4_0(mbMain)
   emitLdc_I4_S(mbMain, 21)
-  emitStelem(mbMain, 0x01000003)  // stelem System.Int32
+  emitStelem(mbMain, 0x01000003)          // stelem System.Int32
 
   // arr[1] = 21
   emitLdloc_0(mbMain)
@@ -159,7 +159,7 @@ func main(): Unit {
   // arr[0] + arr[1] = 42
   emitLdloc_0(mbMain)
   emitLdc_I4_0(mbMain)
-  emitLdelem(mbMain, 0x01000003)  // ldelem System.Int32
+  emitLdelem(mbMain, 0x01000003)          // ldelem System.Int32
 
   emitLdloc_0(mbMain)
   emitLdc_I4_1(mbMain)
@@ -167,7 +167,7 @@ func main(): Unit {
 
   emitAdd(mbMain)
 
-  emitCall(mbMain, 0x0A000001)  // Console.WriteLine(int)
+  emitCall(mbMain, 0x0A000001)            // Console.WriteLine(int)
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

@@ -45,17 +45,17 @@ func rdU32Le(b: in slice[Byte], o: in Int): Int {
 // ── ZIP entry descriptor ──────────────────────────────────────────────────────
 pub record ZipEntry {
   name: String
-  method: Int  // 0 = STORED, 8 = DEFLATE
+  method: Int    // 0 = STORED, 8 = DEFLATE
   compressedSize: Int
   uncompressedSize: Int
-  dataOffset: Int  // absolute offset of file data within the archive
+  dataOffset: Int    // absolute offset of file data within the archive
   hasDataDescriptor: Bool  // true when flags bit 3 is set (sizes in LFH may be 0)
   crc32: Int
-  // ── Entry enumeration ─────────────────────────────────────────────────────────
-  // Convert a sub-range of raw bytes to a String.
-  // JDK JMOD entry paths are pure ASCII; non-ASCII bytes are skipped.
 }
 
+// ── Entry enumeration ─────────────────────────────────────────────────────────
+// Convert a sub-range of raw bytes to a String.
+// JDK JMOD entry paths are pure ASCII; non-ASCII bytes are skipped.
 func bytesToString(data: in slice[Byte], offset: in Int, len: in Int): String {
   if len <= 0 {
     return ""
@@ -112,8 +112,8 @@ pub func readZipEntries(data: in slice[Byte]): List[ZipEntry] {
   val totalEntries = rdU16Le(data, eocd + 10)
   val cdSize = rdU32Le(data, eocd + 12)
   val cdOffsetZip = rdU32Le(data, eocd + 16)
-  val cdStart = eocd - cdSize  // central directory file offset
-  val baseShift = cdStart - cdOffsetZip  // file offset of ZIP "offset 0"
+  val cdStart = eocd - cdSize           // central directory file offset
+  val baseShift = cdStart - cdOffsetZip   // file offset of ZIP "offset 0"
 
   val cdEntrySig = 0x02014B50
   val lfhSig = 0x04034B50
@@ -187,7 +187,7 @@ pub func extractEntry(data: in slice[Byte], ent: in ZipEntry): List[Int] {
     // DEFLATE.
     inflate(data, ent.dataOffset, ent.compressedSize)
   } else {
-    newList()  // unsupported method
+    newList()   // unsupported method
   }
 }
 

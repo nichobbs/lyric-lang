@@ -41,37 +41,36 @@ import Jvm.AutoFfi
 // (last `package` declaring a given name wins; the stdlib's public surface
 // has unique names on the call-reachable path).
 pub record JvmFuncSig {
-  owner: String  // JVM internal host-class name, e.g. "Std/Testing"
-  params: List[JvmType]  // declared parameter types, in order
-  ret: JvmType
-  // declared return type (JVoid for Unit)
-  // One field of a union case class, in declaration order.  A match binding
-  // `case Foo(x) -> …` reads the case object's i-th field; the JVM `getfield`
-  // descriptor and the bound local's type must be the field's *declared* type,
-  // not java/lang/Object — otherwise the read mis-resolves (NoSuchFieldError)
-  // and the bound value verifies as Object (failing any precise-typed use).
-  // Built once per compilation from every `union` declaration and threaded
-  // read-only through `FuncCtx.caseFields`, keyed by the case class's JVM name
-  // (e.g. "Std/Testing/PanicTry$PtPanicked").
+  owner: String          // JVM internal host-class name, e.g. "Std/Testing"
+  params: List[JvmType]   // declared parameter types, in order
+  ret: JvmType         // declared return type (JVoid for Unit)
 }
 
+// One field of a union case class, in declaration order.  A match binding
+// `case Foo(x) -> …` reads the case object's i-th field; the JVM `getfield`
+// descriptor and the bound local's type must be the field's *declared* type,
+// not java/lang/Object — otherwise the read mis-resolves (NoSuchFieldError)
+// and the bound value verifies as Object (failing any precise-typed use).
+// Built once per compilation from every `union` declaration and threaded
+// read-only through `FuncCtx.caseFields`, keyed by the case class's JVM name
+// (e.g. "Std/Testing/PanicTry$PtPanicked").
 pub record JvmCaseField {
   name: String
   ty: JvmType
-  // FuncCtx threads mutable state through expression and statement lowering.
-  // `slotTicker` and `labelTicker` are singleton lists whose `.count` is the
-  // current next-slot / next-label integer; `.add` advances them.
 }
 
+// FuncCtx threads mutable state through expression and statement lowering.
+// `slotTicker` and `labelTicker` are singleton lists whose `.count` is the
+// current next-slot / next-label integer; `.add` advances them.
 pub record FuncCtx {
-  pkgName: String  // JVM path, e.g. "com/example/Hello"
-  className: String  // host class for static methods
+  pkgName: String            // JVM path, e.g. "com/example/Hello"
+  className: String            // host class for static methods
   slots: Map[String, Int]  // variable name → local slot
   types: Map[String, JvmType]  // variable name → JVM type
-  slotTicker: List[Int]  // length = next slot index
-  labelTicker: List[Int]  // length = next label index
-  loopBreak: List[String]  // stack of loop exit labels (innermost last)
-  loopCont: List[String]  // stack of loop continue labels (innermost last)
+  slotTicker: List[Int]         // length = next slot index
+  labelTicker: List[Int]         // length = next label index
+  loopBreak: List[String]      // stack of loop exit labels (innermost last)
+  loopCont: List[String]      // stack of loop continue labels (innermost last)
   // Generator body context: when Some, EYield emits LYield; when None, EYield panics.
   genClass: Option[String]
   // Cross-package free-function call resolution (see JvmFuncSig).  Keyed by
@@ -84,12 +83,12 @@ pub record FuncCtx {
   externTypes: Map[String, String]
   // Auto-FFI resolution context for JDK class loading.
   autoFfi: AutoFfiCtx
-  // ─────────────────────────────────────────────────────────────────────────────
-  // §2. Helper utilities.
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Convert a dotted Lyric package name to a JVM internal binary name.
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §2. Helper utilities.
+// ─────────────────────────────────────────────────────────────────────────────
+// Convert a dotted Lyric package name to a JVM internal binary name.
 pub func lyricNameToJvm(name: in String): String {
   name.replace(".", "/")
 }
@@ -2676,27 +2675,27 @@ func emitToIntJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
     case JDouble -> insns.add(LD2i)
     case _ -> {
     }
-  }  // JByte / JChar / JShort / JInt are int-on-stack
+  }   // JByte / JChar / JShort / JInt are int-on-stack
 }
 
 func emitToLongJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
   match srcTy {
     case JLong -> {
-    }  // already long
+    }            // already long
     case JFloat -> insns.add(LF2l)
     case JDouble -> insns.add(LD2l)
     case _ -> insns.add(LI2l)
-  }  // int-like → long
+  }   // int-like → long
 }
 
 func emitToDoubleJvm(insns: in List[LInsn], srcTy: in JvmType): Unit {
   match srcTy {
     case JDouble -> {
-    }  // already double
+    }            // already double
     case JLong -> insns.add(LL2d)
     case JFloat -> insns.add(LF2d)
     case _ -> insns.add(LI2d)
-  }  // int-like → double
+  }   // int-like → double
 }
 
 func lowerMethodCall(
@@ -3919,7 +3918,7 @@ func makeGeneratorFactory(decl: in FunctionDecl, genClass: in String, pkgName: i
     maxStack = 0,
     // inferred from peak-stack tracking
     maxLocals = 0
-  )  // inferred from slot scan
+  )        // inferred from slot scan
 }
 
 // ── IImpl pre-pass helpers ────────────────────────────────────────────────────
@@ -3927,19 +3926,19 @@ record ImplEntry {
   targetClass: String
   ifaceClass: String
   methods: List[LFunc]
-  // Convert a single-segment or multi-segment TypeExpr to a JVM binary class name.
-  // Used to resolve `impl Y for X` target from the AST.
-  //
-  // The non-TRef fallback used to return `pkgName + "/$unknown"` — not a
-  // valid JVM binary name and unreferenceable by the class loader.
-  // `panic` here surfaces the gap at codegen time with a clear message
-  // instead of letting an `interfaces` array reference a nonexistent
-  // class and tripping `ClassNotFoundException: pkg/$unknown` at JVM
-  // load time.  All `impl` targets are `TRef(path)` in practice today
-  // (concrete record names); a non-TRef case is a parser/AST shape
-  // not seen yet and we want to know about it loudly.
 }
 
+// Convert a single-segment or multi-segment TypeExpr to a JVM binary class name.
+// Used to resolve `impl Y for X` target from the AST.
+//
+// The non-TRef fallback used to return `pkgName + "/$unknown"` — not a
+// valid JVM binary name and unreferenceable by the class loader.
+// `panic` here surfaces the gap at codegen time with a clear message
+// instead of letting an `interfaces` array reference a nonexistent
+// class and tripping `ClassNotFoundException: pkg/$unknown` at JVM
+// load time.  All `impl` targets are `TRef(path)` in practice today
+// (concrete record names); a non-TRef case is a parser/AST shape
+// not seen yet and we want to know about it loudly.
 func typeExprToJvmClass(te: in TypeExpr, pkgName: in String): String {
   match te.kind {
     case TRef(path) -> {
@@ -4314,7 +4313,7 @@ pub func codegenPackageWithSigs(
         )
       }
       case IImpl(_) -> {
-      }  // handled by pre-pass above
+      }   // handled by pre-pass above
       case IWire(_) -> {
       }
       case IScopeKind(_) -> {

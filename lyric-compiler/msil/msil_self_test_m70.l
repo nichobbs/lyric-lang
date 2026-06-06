@@ -84,12 +84,12 @@ func main(): Unit {
   val keyToken = internBlob(bh, "ms_key", bufToList(keyW))
 
   val mbMain = newMethodBody()
-  emitLdc_R8(mbMain, 42.0)  // push 42.0 (float64, 9 bytes: opcode + 8)
-  emitCkfinite(mbMain)  // verify 42.0 is finite → stays 42.0
-  emitConv_I4(mbMain)  // 42.0 → 42 (i4)
-  emitLdc_R4(mbMain, 0.0)  // push 0.0 (float32, 5 bytes: opcode + 4)
-  emitConv_I4(mbMain)  // 0.0f → 0 (i4)
-  emitAdd(mbMain)  // 42 + 0 = 42
+  emitLdc_R8(mbMain, 42.0)      // push 42.0 (float64, 9 bytes: opcode + 8)
+  emitCkfinite(mbMain)           // verify 42.0 is finite → stays 42.0
+  emitConv_I4(mbMain)            // 42.0 → 42 (i4)
+  emitLdc_R4(mbMain, 0.0)       // push 0.0 (float32, 5 bytes: opcode + 4)
+  emitConv_I4(mbMain)            // 0.0f → 0 (i4)
+  emitAdd(mbMain)                // 42 + 0 = 42
   emitCall(mbMain, 0x0A000001)
   emitRet(mbMain)
 

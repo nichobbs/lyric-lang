@@ -93,27 +93,27 @@ func main(): Unit {
   val mbMain = newMethodBody()
   val lblBeqOk = mbNewLabel(mbMain)
   val lblBgtOk = mbNewLabel(mbMain)
-  emitLdc_I4_S(mbMain, 84)  // offset  0: push 84      (2 bytes) → [84]
-  emitLdc_I4_S(mbMain, 2)  // offset  2: push 2       (2 bytes) → [84, 2]
-  emitDiv(mbMain)  // offset  4: 84/2 = 42   (1 byte)  → [42]
-  emitLdc_I4_S(mbMain, 42)  // offset  5: push 42      (2 bytes) → [42, 42]
-  emitBeq(mbMain, lblBeqOk)  // offset  7: beq → BEQ_OK(20); next=12; offset=+8; pops 2 → []
-  emitLdc_I4_S(mbMain, 0)  // offset 12: dead → [0]
-  emitCall(mbMain, 0x0A000001)  // offset 14: dead → []
-  emitRet(mbMain)  // offset 19: dead, empty stack ✓
+  emitLdc_I4_S(mbMain, 84)         // offset  0: push 84      (2 bytes) → [84]
+  emitLdc_I4_S(mbMain, 2)          // offset  2: push 2       (2 bytes) → [84, 2]
+  emitDiv(mbMain)                   // offset  4: 84/2 = 42   (1 byte)  → [42]
+  emitLdc_I4_S(mbMain, 42)         // offset  5: push 42      (2 bytes) → [42, 42]
+  emitBeq(mbMain, lblBeqOk)        // offset  7: beq → BEQ_OK(20); next=12; offset=+8; pops 2 → []
+  emitLdc_I4_S(mbMain, 0)          // offset 12: dead → [0]
+  emitCall(mbMain, 0x0A000001)      // offset 14: dead → []
+  emitRet(mbMain)                   // offset 19: dead, empty stack ✓
   // BEQ_OK: offset 20
   mbMarkLabel(mbMain, lblBeqOk)
-  emitLdc_I4_S(mbMain, 42)  // offset 20: push 42      (2 bytes) → [42]
-  emitLdc_I4_S(mbMain, 41)  // offset 22: push 41      (2 bytes) → [42, 41]
-  emitBgt(mbMain, lblBgtOk)  // offset 24: bgt → BGT_OK(37); next=29; offset=+8; 42>41 → jump; pops 2 → []
-  emitLdc_I4_S(mbMain, 0)  // offset 29: dead → [0]
-  emitCall(mbMain, 0x0A000001)  // offset 31: dead → []
-  emitRet(mbMain)  // offset 36: dead, empty stack ✓
+  emitLdc_I4_S(mbMain, 42)         // offset 20: push 42      (2 bytes) → [42]
+  emitLdc_I4_S(mbMain, 41)         // offset 22: push 41      (2 bytes) → [42, 41]
+  emitBgt(mbMain, lblBgtOk)        // offset 24: bgt → BGT_OK(37); next=29; offset=+8; 42>41 → jump; pops 2 → []
+  emitLdc_I4_S(mbMain, 0)          // offset 29: dead → [0]
+  emitCall(mbMain, 0x0A000001)      // offset 31: dead → []
+  emitRet(mbMain)                   // offset 36: dead, empty stack ✓
   // BGT_OK: offset 37
   mbMarkLabel(mbMain, lblBgtOk)
-  emitLdc_I4_S(mbMain, 42)  // offset 37: push 42      (2 bytes) → [42]
-  emitCall(mbMain, 0x0A000001)  // offset 39: print 42    (5 bytes) → []
-  emitRet(mbMain)  // offset 44
+  emitLdc_I4_S(mbMain, 42)         // offset 37: push 42      (2 bytes) → [42]
+  emitCall(mbMain, 0x0A000001)      // offset 39: print 42    (5 bytes) → []
+  emitRet(mbMain)                   // offset 44
 
   val bodies: List[MethodBody] = newList()
   bodies.add(mbMain)

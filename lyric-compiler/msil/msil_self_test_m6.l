@@ -129,8 +129,8 @@ func main(): Unit {
   val mbMain = newMethodBody()
   emitLdc_I4_3(mbMain)
   emitLdc_I4_4(mbMain)
-  emitCall(mbMain, 0x06000001)  // MethodDef[1] = Add
-  emitCall(mbMain, 0x0A000001)  // MemberRef[1] = Console.WriteLine(int)
+  emitCall(mbMain, 0x06000001)   // MethodDef[1] = Add
+  emitCall(mbMain, 0x0A000001)   // MemberRef[1] = Console.WriteLine(int)
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

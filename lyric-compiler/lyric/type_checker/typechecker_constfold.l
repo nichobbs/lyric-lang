@@ -23,11 +23,11 @@ pub union FoldError {
 pub union FoldResult {
   case FoldOk(value: Long)
   case FoldErr(error: FoldError)
-  // ─────────────────────────────────────────────────────────────────────────────
-  // §2. Constant folding entry point.
-  // ─────────────────────────────────────────────────────────────────────────────
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §2. Constant folding entry point.
+// ─────────────────────────────────────────────────────────────────────────────
 pub func tryFoldInt(tbl: in SymbolTable, root: in Expr): FoldResult {
   foldGo(tbl, 0, root)
 }

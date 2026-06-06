@@ -98,14 +98,14 @@ func main(): Unit {
   //
   val mbMain = newMethodBody()
 
-  emitLdc_I4_S(mbMain, 60)  // 0x3C
-  emitLdc_I4_S(mbMain, 13)  // 0x0D
-  emitAnd(mbMain)  // 60 & 13 = 8
+  emitLdc_I4_S(mbMain, 60)     // 0x3C
+  emitLdc_I4_S(mbMain, 13)     // 0x0D
+  emitAnd(mbMain)              // 60 & 13 = 8
   emitLdc_I4_S(mbMain, 60)
   emitLdc_I4_S(mbMain, 13)
-  emitOr(mbMain)  // 60 | 13 = 61
-  emitAdd(mbMain)  // 8 + 61 = 69
-  emitCall(mbMain, 0x0A000001)  // Console.WriteLine(int)
+  emitOr(mbMain)               // 60 | 13 = 61
+  emitAdd(mbMain)              // 8 + 61 = 69
+  emitCall(mbMain, 0x0A000001) // Console.WriteLine(int)
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

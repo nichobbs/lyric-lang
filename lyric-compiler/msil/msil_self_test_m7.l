@@ -115,9 +115,9 @@ func main(): Unit {
   // Main(): ldc.i4.s 42, stsfld Field[1], ldsfld Field[1], call Console.WriteLine(int), ret
   val mbMain = newMethodBody()
   emitLdc_I4_S(mbMain, 42)
-  emitStsfld(mbMain, 0x04000001)  // Field[1] = s_val
-  emitLdsfld(mbMain, 0x04000001)  // Field[1] = s_val
-  emitCall(mbMain, 0x0A000001)  // MemberRef[1] = Console.WriteLine(int)
+  emitStsfld(mbMain, 0x04000001)   // Field[1] = s_val
+  emitLdsfld(mbMain, 0x04000001)   // Field[1] = s_val
+  emitCall(mbMain, 0x0A000001)     // MemberRef[1] = Console.WriteLine(int)
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

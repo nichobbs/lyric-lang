@@ -96,10 +96,10 @@ func main(): Unit {
 
   // LocalVarSig: LOCALS (0x07), 1 var, SZARRAY (0x1D), I4 (0x08)
   val lvW = bufNew()
-  bufU1(lvW, 0x07)  // LOCALS marker
-  bufU1(lvW, 0x01)  // 1 variable
-  bufU1(lvW, 0x1D)  // ELEMENT_TYPE_SZARRAY
-  bufU1(lvW, 0x08)  // element: I4
+  bufU1(lvW, 0x07)   // LOCALS marker
+  bufU1(lvW, 0x01)   // 1 variable
+  bufU1(lvW, 0x1D)   // ELEMENT_TYPE_SZARRAY
+  bufU1(lvW, 0x08)   // element: I4
   val localVarSig = internBlob(bh, "locals_sig", bufToList(lvW))
 
   // void () signature: DEFAULT, 0 params, void return
@@ -139,26 +139,26 @@ func main(): Unit {
 
   val mbMain = newMethodBody()
 
-  emitLdc_I4_3(mbMain)  // push 3 (array length)
-  emitNewarr(mbMain, int32Tok)  // new int32[3]
-  emitStloc_0(mbMain)  // arr = ...
+  emitLdc_I4_3(mbMain)                    // push 3 (array length)
+  emitNewarr(mbMain, int32Tok)            // new int32[3]
+  emitStloc_0(mbMain)                     // arr = ...
 
-  emitLdloc_0(mbMain)  // arr[0] = 10
+  emitLdloc_0(mbMain)                     // arr[0] = 10
   emitLdc_I4_0(mbMain)
   emitLdc_I4_S(mbMain, 10)
   emitStelem(mbMain, int32Tok)
 
-  emitLdloc_0(mbMain)  // arr[1] = 20
+  emitLdloc_0(mbMain)                     // arr[1] = 20
   emitLdc_I4_1(mbMain)
   emitLdc_I4_S(mbMain, 20)
   emitStelem(mbMain, int32Tok)
 
-  emitLdloc_0(mbMain)  // arr[2] = 30
+  emitLdloc_0(mbMain)                     // arr[2] = 30
   emitLdc_I4_2(mbMain)
   emitLdc_I4_S(mbMain, 30)
   emitStelem(mbMain, int32Tok)
 
-  emitLdloc_0(mbMain)  // arr[0] + arr[1] + arr[2]
+  emitLdloc_0(mbMain)                     // arr[0] + arr[1] + arr[2]
   emitLdc_I4_0(mbMain)
   emitLdelem(mbMain, int32Tok)
   emitLdloc_0(mbMain)
@@ -170,7 +170,7 @@ func main(): Unit {
   emitLdelem(mbMain, int32Tok)
   emitAdd(mbMain)
 
-  emitCall(mbMain, 0x0A000001)  // call Console.WriteLine(int)
+  emitCall(mbMain, 0x0A000001)            // call Console.WriteLine(int)
   emitRet(mbMain)
 
   val bodies: List[MethodBody] = newList()

@@ -244,95 +244,86 @@ pub func catMemberRef(row: in Int): Int = (row * 8) + 3
 // ── Row records ───────────────────────────────────────────────────────────────
 // Module (Table 0x00) — ECMA-335 §II.22.30.  Exactly one row per module.
 pub record ModuleRow {
-  generation: Int  // reserved, always 0
-  name: Int  // #Strings index of the module name
-  mvid: Int  // #GUID 1-based index (module version GUID)
-  encId: Int  // #GUID 1-based index (0 if not EnC)
-  encBaseId: Int
-  // #GUID 1-based index (0 if not EnC)
-  // TypeRef (Table 0x01) — ECMA-335 §II.22.38.
+  generation: Int   // reserved, always 0
+  name: Int   // #Strings index of the module name
+  mvid: Int   // #GUID 1-based index (module version GUID)
+  encId: Int   // #GUID 1-based index (0 if not EnC)
+  encBaseId: Int   // #GUID 1-based index (0 if not EnC)
 }
 
+// TypeRef (Table 0x01) — ECMA-335 §II.22.38.
 pub record TypeRefRow {
   resolutionScope: Int  // coded: ResolutionScope
   typeName: Int  // #Strings
-  typeNamespace: Int
-  // #Strings (0 = global namespace)
-  // TypeDef (Table 0x02) — ECMA-335 §II.22.37.
-  // fieldList and methodList are 1-based indices into Field and MethodDef tables.
-  // They point to the first row owned by this type; rows up to (but not including)
-  // the next TypeDef's list index are implicitly owned.
+  typeNamespace: Int  // #Strings (0 = global namespace)
 }
 
+// TypeDef (Table 0x02) — ECMA-335 §II.22.37.
+// fieldList and methodList are 1-based indices into Field and MethodDef tables.
+// They point to the first row owned by this type; rows up to (but not including)
+// the next TypeDef's list index are implicitly owned.
 pub record TypeDefRow {
   flags: Int  // TypeAttributes
   typeName: Int  // #Strings
   typeNamespace: Int  // #Strings (0 = global)
   extends: Int  // coded: TypeDefOrRef (0 = no base, valid only for System.Object)
   fieldList: Int  // 1-based index into Field table (or Fields.count+1 if no fields)
-  methodList: Int
-  // 1-based index into MethodDef table (or MethodDefs.count+1 if no methods)
-  // Field (Table 0x04) — ECMA-335 §II.22.15.
+  methodList: Int  // 1-based index into MethodDef table (or MethodDefs.count+1 if no methods)
 }
 
+// Field (Table 0x04) — ECMA-335 §II.22.15.
 pub record FieldRow {
   flags: Int  // FieldAttributes
   name: Int  // #Strings
-  signature: Int
-  // #Blob: FieldSig (starts with 0x06)
-  // MethodDef (Table 0x06) — ECMA-335 §II.22.26.
-  // rva is filled in by the layout engine; use 0 initially and patch during PE
-  // serialization.  paramList points to the first Param row owned by this method.
+  signature: Int  // #Blob: FieldSig (starts with 0x06)
 }
 
+// MethodDef (Table 0x06) — ECMA-335 §II.22.26.
+// rva is filled in by the layout engine; use 0 initially and patch during PE
+// serialization.  paramList points to the first Param row owned by this method.
 pub record MethodDefRow {
   rva: Int  // RVA of method body in .text; 0 = abstract/extern
   implFlags: Int  // MethodImplAttributes
   flags: Int  // MethodAttributes
   name: Int  // #Strings
   signature: Int  // #Blob: MethodSig
-  paramList: Int
-  // 1-based index into Param table
-  // Param (Table 0x08) — ECMA-335 §II.22.33.
-  // sequence=0 is the return value; sequence=1..n are the positional parameters.
+  paramList: Int  // 1-based index into Param table
 }
 
+// Param (Table 0x08) — ECMA-335 §II.22.33.
+// sequence=0 is the return value; sequence=1..n are the positional parameters.
 pub record ParamRow {
   flags: Int  // ParamAttributes
   sequence: Int  // 0=return, 1..n=params
-  name: Int
-  // #Strings (may be 0 if unnamed)
-  // MemberRef (Table 0x0A) — ECMA-335 §II.22.25.
-  // References external fields and methods (those not defined in this module).
+  name: Int  // #Strings (may be 0 if unnamed)
 }
 
+// MemberRef (Table 0x0A) — ECMA-335 §II.22.25.
+// References external fields and methods (those not defined in this module).
 pub record MemberRefRow {
   class: Int  // coded: MemberRefParent
   name: Int  // #Strings
-  signature: Int
-  // #Blob: MethodSig or FieldSig
-  // InterfaceImpl (Table 0x09) — ECMA-335 §II.22.23.
-  // Each row records that TypeDef[class_] implements the interface identified by
-  // the TypeDefOrRef coded index `interface_`.  Must be sorted by class_, then
-  // by interface_ (ascending) for CLR compatibility.
+  signature: Int  // #Blob: MethodSig or FieldSig
 }
 
+// InterfaceImpl (Table 0x09) — ECMA-335 §II.22.23.
+// Each row records that TypeDef[class_] implements the interface identified by
+// the TypeDefOrRef coded index `interface_`.  Must be sorted by class_, then
+// by interface_ (ascending) for CLR compatibility.
 pub record InterfaceImplRow {
   class_: Int  // 1-based TypeDef row index
-  interface_: Int
-  // coded: TypeDefOrRef
-  // CustomAttribute (Table 0x0C) — ECMA-335 §II.22.10.
-  // `type_` is the constructor being called; `value` is the serialized arguments.
+  interface_: Int  // coded: TypeDefOrRef
 }
 
+// CustomAttribute (Table 0x0C) — ECMA-335 §II.22.10.
+// `type_` is the constructor being called; `value` is the serialized arguments.
 pub record CustomAttrRow {
   parent: Int  // coded: HasCustomAttribute
   type_: Int  // coded: CustomAttributeType (ctor reference)
-  value: Int
-  // #Blob (0 = no value / empty blob)
-  // Assembly (Table 0x20) — ECMA-335 §II.22.2.  Exactly one row per assembly.
+  value: Int  // #Blob (0 = no value / empty blob)
 }
 
+// Assembly (Table 0x20) — ECMA-335 §II.22.2.  Exactly one row per assembly.
 pub record AssemblyRow {
   hashAlgId: Int  // AssemblyHashAlgorithm (HASH_ALG_*)
   majorVersion: Int
@@ -342,27 +333,24 @@ pub record AssemblyRow {
   flags: Int  // AssemblyFlags
   publicKey: Int  // #Blob (0 = no public key / delay-signed)
   name: Int  // #Strings
-  culture: Int
-  // #Strings (0 = culture-neutral)
-  // StandAloneSig (Table 0x11) — ECMA-335 §II.22.36.
-  // Holds a standalone signature blob, used for local variable type lists
-  // (LocalVarSig) referenced by a fat method header's LocalVarSigTok field.
+  culture: Int  // #Strings (0 = culture-neutral)
 }
 
+// StandAloneSig (Table 0x11) — ECMA-335 §II.22.36.
+// Holds a standalone signature blob, used for local variable type lists
+// (LocalVarSig) referenced by a fat method header's LocalVarSigTok field.
 pub record StandAloneSigRow {
-  signature: Int
-  // #Blob: LocalVarSig or MethodSig
-  // TypeSpec (Table 0x1B) — ECMA-335 §II.22.39.
-  // Encodes a type that is not directly named by a TypeDef or TypeRef,
-  // such as a generic instantiation (e.g. List<object>).
+  signature: Int  // #Blob: LocalVarSig or MethodSig
 }
 
+// TypeSpec (Table 0x1B) — ECMA-335 §II.22.39.
+// Encodes a type that is not directly named by a TypeDef or TypeRef,
+// such as a generic instantiation (e.g. List<object>).
 pub record TypeSpecRow {
-  signature: Int
-  // #Blob: type signature
-  // AssemblyRef (Table 0x23) — ECMA-335 §II.22.5.
+  signature: Int  // #Blob: type signature
 }
 
+// AssemblyRef (Table 0x23) — ECMA-335 §II.22.5.
 pub record AssemblyRefRow {
   majorVersion: Int
   minorVersion: Int
@@ -372,60 +360,55 @@ pub record AssemblyRefRow {
   publicKeyToken: Int  // #Blob (8-byte token, or 0 if none)
   name: Int  // #Strings
   culture: Int  // #Strings (0 = culture-neutral)
-  hashValue: Int
-  // #Blob (0 if no hash)
-  // ManifestResource (Table 0x28) — ECMA-335 §II.22.24.
-  //
-  // One row per managed resource exposed by the assembly.  For
-  // resources embedded in the assembly itself (the only kind the
-  // self-hosted bridge produces), `implementation` is the nil
-  // `Implementation` coded index (value 0); for resources in another
-  // file or assembly it would point into the File / AssemblyRef
-  // tables.  `offset` is the byte offset of this resource's
-  // length-prefixed payload inside the assembly's Resources data
-  // region (the region whose RVA + size live in the CLR header).
+  hashValue: Int  // #Blob (0 if no hash)
 }
 
+// ManifestResource (Table 0x28) — ECMA-335 §II.22.24.
+//
+// One row per managed resource exposed by the assembly.  For
+// resources embedded in the assembly itself (the only kind the
+// self-hosted bridge produces), `implementation` is the nil
+// `Implementation` coded index (value 0); for resources in another
+// file or assembly it would point into the File / AssemblyRef
+// tables.  `offset` is the byte offset of this resource's
+// length-prefixed payload inside the assembly's Resources data
+// region (the region whose RVA + size live in the CLR header).
 pub record ManifestResourceRow {
   offset: Int  // u4: byte offset into the Resources data region
   flags: Int  // u4: ManifestResourceAttributes (1 = Public, 2 = Private)
   name: Int  // #Strings: resource name
-  implementation: Int
-  // coded: Implementation (0 = embedded in this assembly)
-  // Constant (Table 0x0B) — ECMA-335 §II.22.9.
-  // Records a compile-time constant value for a Field, Param, or Property.
+  implementation: Int  // coded: Implementation (0 = embedded in this assembly)
 }
 
+// Constant (Table 0x0B) — ECMA-335 §II.22.9.
+// Records a compile-time constant value for a Field, Param, or Property.
 pub record ConstantRow {
   type_: Int  // ELEMENT_TYPE_* constant (e.g., 0x08 = ELEMENT_TYPE_I4)
   parent: Int  // coded: HasConstant (Field=0, Param=1, Property=2), 2-bit tag
-  value: Int
-  // #Blob index of little-endian constant value bytes
-  // MethodImpl (Table 0x19) — ECMA-335 §II.22.27.
-  // Maps an interface method slot to its implementing method in a type.
+  value: Int  // #Blob index of little-endian constant value bytes
 }
 
+// MethodImpl (Table 0x19) — ECMA-335 §II.22.27.
+// Maps an interface method slot to its implementing method in a type.
 pub record MethodImplRow {
   class_: Int  // 1-based TypeDef row of the implementing type
   methodBody: Int  // coded: MethodDefOrRef — the implementing method
-  methodDeclaration: Int
-  // coded: MethodDefOrRef — the interface slot being implemented
-  // MethodSpec (Table 0x2B) — ECMA-335 §II.22.29.
-  // Instantiates a generic method: `method` is a MethodDefOrRef coded index to
-  // the open generic method (a MemberRef or MethodDef), and `instantiation` is a
-  // #Blob index to a MethodSpec signature (GENERICINST + arg count + type args,
-  // §II.23.2.15).  A call site references the resulting row via a 0x2B token.
+  methodDeclaration: Int  // coded: MethodDefOrRef — the interface slot being implemented
 }
 
+// MethodSpec (Table 0x2B) — ECMA-335 §II.22.29.
+// Instantiates a generic method: `method` is a MethodDefOrRef coded index to
+// the open generic method (a MemberRef or MethodDef), and `instantiation` is a
+// #Blob index to a MethodSpec signature (GENERICINST + arg count + type args,
+// §II.23.2.15).  A call site references the resulting row via a 0x2B token.
 pub record MethodSpecRow {
   method: Int  // coded: MethodDefOrRef
-  instantiation: Int
-  // #Blob: MethodSpec signature
-  // ── Coded-index helpers (additional) ─────────────────────────────────────────
-  // HasConstant (2-bit tag, §II.24.2.6 tag table 3):
-  //   Field=0, Param=1, Property=2
+  instantiation: Int  // #Blob: MethodSpec signature
 }
 
+// ── Coded-index helpers (additional) ─────────────────────────────────────────
+// HasConstant (2-bit tag, §II.24.2.6 tag table 3):
+//   Field=0, Param=1, Property=2
 pub func hconstField(row: in Int): Int = (row * 4) + 0
 
 pub func hconstParam(row: in Int): Int = (row * 4) + 1
@@ -671,11 +654,11 @@ func w8(buf: in ByteWriter, v: in Long): Unit {
 // For small assemblies, pass 0.
 pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in ByteWriter): Unit {
   // Header
-  w4(buf, 0)  // reserved
-  bufU1(buf, 2)  // major version
-  bufU1(buf, 0)  // minor version
+  w4(buf, 0)         // reserved
+  bufU1(buf, 2)      // major version
+  bufU1(buf, 0)      // minor version
   bufU1(buf, heapSizes)
-  bufU1(buf, 1)  // reserved (bit 1 always set)
+  bufU1(buf, 1)      // reserved (bit 1 always set)
 
   // Valid bitmask
   var valid: Long = 0i64
@@ -890,7 +873,7 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   while coni < t.constants.count {
     val r = t.constants[coni]
     bufU1(buf, r.type_)
-    bufU1(buf, 0)  // padding byte (always 0)
+    bufU1(buf, 0)           // padding byte (always 0)
     w2(buf, r.parent)
     w2(buf, r.value)
     coni = coni + 1

@@ -38,20 +38,19 @@ func rdU32(b: in List[Int], o: in Int): Int {
 // ── Output types ─────────────────────────────────────────────────────────────
 pub record ClassMethod {
   name: String
-  descriptor: String  // JVM method descriptor, e.g. "(II)I"
+  descriptor: String   // JVM method descriptor, e.g. "(II)I"
   isStatic: Bool
 }
 
 pub record ClassInfo {
-  binaryName: String  // JVM binary name, e.g. "java/lang/Math"
-  superName: String  // JVM binary name of superclass, e.g. "java/lang/AbstractStringBuilder"; "" for Object
+  binaryName: String             // JVM binary name, e.g. "java/lang/Math"
+  superName: String             // JVM binary name of superclass, e.g. "java/lang/AbstractStringBuilder"; "" for Object
   methods: List[ClassMethod]  // public non-synthetic non-constructor methods
-  constructors: List[ClassMethod]
-  // public <init> constructors (isStatic=false)
-  // ── Constant pool helpers ─────────────────────────────────────────────────────
-  // Mutable-map state helpers.
+  constructors: List[ClassMethod]  // public <init> constructors (isStatic=false)
 }
 
+// ── Constant pool helpers ─────────────────────────────────────────────────────
+// Mutable-map state helpers.
 func getS(m: in Map[String, Int], k: in String): Int {
   match mapGet(m, k) {
     case Some(v) -> v
@@ -109,7 +108,7 @@ func readUtf8Entry(b: in List[Int], pos: in Int): String {
       s = s + ("" + fromInt(cp))
       i = i + 3
     } else {
-      i = i + 1  // skip invalid/unhandled byte
+      i = i + 1   // skip invalid/unhandled byte
     }
   }
   s
@@ -120,8 +119,7 @@ func readUtf8Entry(b: in List[Int], pos: in Int): String {
 // an extra pool slot (Long/Double).
 record PoolStep {
   nextPos: Int
-  isDouble: Bool
-  // true for Long (tag 5) and Double (tag 6): consume two pool slots
+  isDouble: Bool   // true for Long (tag 5) and Double (tag 6): consume two pool slots
 }
 
 func poolEntryEnd(b: in List[Int], pos: in Int): PoolStep {
@@ -170,14 +168,14 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
   }
 
   // Skip minor_version (2) + major_version (2).
-  val cpCount = rdU16(b, 8)  // constant_pool_count (1-based)
+  val cpCount = rdU16(b, 8)   // constant_pool_count (1-based)
 
   // First pass over the constant pool: store Utf8 strings and Class name indices.
   // Pool indices are 1-based; index 0 is unused.
-  val utf8Map: Map[String, String] = newMap()  // toString(idx) → string
-  val classMap: Map[String, Int] = newMap()  // toString(idx) → name_index
+  val utf8Map: Map[String, String] = newMap()   // toString(idx) → string
+  val classMap: Map[String, Int] = newMap()   // toString(idx) → name_index
 
-  var pos = 10  // byte offset after constant_pool_count
+  var pos = 10   // byte offset after constant_pool_count
   var idx = 1
   while idx < cpCount {
     val tag = rdU8(b, pos)

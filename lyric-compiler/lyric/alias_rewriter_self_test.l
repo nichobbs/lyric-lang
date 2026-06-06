@@ -70,10 +70,10 @@ func unwrapOr(o: in Core.Option[Int], dflt: in Int): Int {
 interface Labeller {
   func shout(s: in String): String
   func tagOpt(o: in Core.Option[Int]): Int
-  // ── IImpl: aliased call in a method body + aliased generic parameter type on
-  //    the signature (the #1834 headline repro) ──────────────────────────────────
 }
 
+// ── IImpl: aliased call in a method body + aliased generic parameter type on
+//    the signature (the #1834 headline repro) ──────────────────────────────────
 record Widget {
 }
 
