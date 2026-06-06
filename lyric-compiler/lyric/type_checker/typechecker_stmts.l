@@ -7,6 +7,33 @@ import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
 
+// TEMPORARY DIAGNOSTIC (issue #2394): render a type with its raw `TypeId`s so a
+// `T0060` failure shows whether the two sides resolved to different `TypeId`s for
+// the same named type (the duplicate-extern-type-id hypothesis).  Remove once the
+// root cause is confirmed and fixed.
+func typeIdDbg(t: in Type): String {
+  match t {
+    case TyUser(id, name, args) -> "U#" + toString(id.id) + ":" + name + "<" + dbgArgs(args) + ">"
+    case TyError -> "ERR"
+    case TyVar(n) -> "V:" + n
+    case TyPrim(_) -> "P"
+    case _ -> "?"
+  }
+}
+
+func dbgArgs(args: in List[Type]): String {
+  var s = ""
+  var i = 0
+  while i < args.count {
+    if i > 0 {
+      s = s + ","
+    }
+    s = s + typeIdDbg(args[i])
+    i = i + 1
+  }
+  s
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Pattern binding.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -74,7 +101,7 @@ pub func checkStatement(
   stmt: in Statement,
 ): Unit {
   match stmt.kind {
-    case SLocal(binding) -> match binding { case LBVal(pat, tyOpt, init) -> { val initType = inferExpr(sc, tbl, sigs, diag, init); val bindType = match tyOpt { case None -> initType; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0060", "val binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); declT } }; bindPattern(sc, pat, bindType) }; case LBVar(name, tyOpt, initOpt) -> { val initType = match initOpt { case None -> TyError; case Some(e) -> inferExpr(sc, tbl, sigs, diag, e) }; val bindType = match tyOpt { case None -> initType; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); match initOpt { case Some(initE) -> { if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0061", "var binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, initE, diag) }; case None -> {  } }; declT } }; scopeAdd(sc, LocalBinding(name = name, ty = bindType, isMutable = true)) }; case LBLet(name, tyOpt, init) -> { val initType = inferExpr(sc, tbl, sigs, diag, init); val bindType = match tyOpt { case None -> initType; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0062", "let binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); declT } }; scopeAdd(sc, LocalBinding(name = name, ty = bindType, isMutable = false)) } }
+    case SLocal(binding) -> match binding { case LBVal(pat, tyOpt, init) -> { val initType = inferExpr(sc, tbl, sigs, diag, init); val bindType = match tyOpt { case None -> initType; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0060", "val binding declared as " + renderType(declT) + " [" + typeIdDbg(declT) + "] but initialiser has type " + renderType(initType) + " [" + typeIdDbg(initType) + "]", stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); declT } }; bindPattern(sc, pat, bindType) }; case LBVar(name, tyOpt, initOpt) -> { val initType = match initOpt { case None -> TyError; case Some(e) -> inferExpr(sc, tbl, sigs, diag, e) }; val bindType = match tyOpt { case None -> initType; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); match initOpt { case Some(initE) -> { if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0061", "var binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, initE, diag) }; case None -> {  } }; declT } }; scopeAdd(sc, LocalBinding(name = name, ty = bindType, isMutable = true)) }; case LBLet(name, tyOpt, init) -> { val initType = inferExpr(sc, tbl, sigs, diag, init); val bindType = match tyOpt { case None -> initType; case Some(te) -> { val ctx = newGenericContext(); gctxPush(ctx, genericNames); val declT = resolveType(tbl, ctx, diag, te); if not argSatisfiesParam(tbl, declT, initType) { diag.add(errorDiagnostic("T0062", "let binding declared as " + renderType(declT) + " but initialiser has type " + renderType(initType), stmt.span)) }; checkRefinedLiteralBound(declT, init, diag); declT } }; scopeAdd(sc, LocalBinding(name = name, ty = bindType, isMutable = false)) } }
 
     case SAssign(target, _, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
