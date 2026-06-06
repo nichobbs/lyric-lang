@@ -5,8 +5,12 @@
 //!   2. Opens a DB connection, executes the SQL query, closes the connection.
 //!   3. Returns Ok(response) or Err(GrpcStatus) on failure.
 //!
-//! Auth is enforced by the RequiresGrpcAuth and GrpcCircuitBreaker aspects
-//! in ProductCatalog.Aspects — handlers themselves are auth-agnostic.
+//! Auth is enforced by the GrpcAuth and GrpcCircuit aspects declared below —
+//! handlers themselves are auth-agnostic.  The aspects live in this same
+//! package because aspect weaving is package-local: a matching aspect only
+//! weaves over functions declared alongside it (docs/26-aspects.md §3, §16).
+//! They reuse the library templates from Grpc.Aspects (`pub aspect` shares
+//! advice logic across packages; the weaving still happens here, §18).
 //!
 //! `authToken: String` is declared on every handler but intentionally unused
 //! in the body; the gRPC kernel injects it from metadata and the aspects
@@ -17,6 +21,7 @@ package ProductCatalog.Catalog
 import Std.Core
 import Std.Collections
 import Grpc
+import Grpc.Aspects
 import Db
 import ProductCatalog.Domain
 
@@ -25,6 +30,27 @@ config CatalogDb {
   connectionString: String
   defaultPageSize: Int = 20
   maxPageSize: Int = 100
+}
+
+// ─── Aspects ────────────────────────────────────────────────────────────────
+// Bind the library templates to the handlers in this package.  Ordering
+// (outermost → innermost → handler): GrpcAuth → GrpcCircuit → handler.  A
+// handler that returns UNAUTHENTICATED bypasses the circuit counter because
+// the request never reaches the handler body.
+//
+//   GrpcAuth  reads authToken from gRPC metadata (LYRIC_ASPECT_GRPCAUTH_*).
+//   GrpcCircuit opens after 3 consecutive failures, cools down for 15s.
+aspect GrpcAuth from Grpc.Aspects.RequiresGrpcAuth {
+  matches: name in { getProduct, listProducts, createProduct, updateProduct, deleteProduct }
+}
+
+aspect GrpcCircuit from Grpc.Aspects.GrpcCircuitBreaker {
+  inside: GrpcAuth
+  matches: name in { getProduct, listProducts, createProduct, updateProduct, deleteProduct }
+  config {
+    failureThreshold: Int = 3
+    cooldownMs: Int = 15000
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

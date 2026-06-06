@@ -27,7 +27,6 @@ output_assembly = "ProductCatalog.dll"
 [project.packages]
 "ProductCatalog.Domain"  = "src/domain.l"
 "ProductCatalog.Catalog" = "src/catalog.l"
-"ProductCatalog.Aspects" = "src/aspects.l"
 "ProductCatalog.Main"    = "src/main.l"
 
 [project.test_packages]

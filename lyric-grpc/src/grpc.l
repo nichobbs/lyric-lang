@@ -9,8 +9,8 @@
 //!   Grpc.closeChannel(ch)
 //!
 //! Server (service hosting):
-//!   val registry = Grpc.create()
-//!   val registry = Grpc.addMethod(registry, "MyService", "GetItem", "Pkg.handler")
+//!   var registry = Grpc.create()
+//!   registry = Grpc.addMethod(registry, "MyService", "GetItem", "Pkg.handler")
 //!   Grpc.start(registry)              // blocks until SIGTERM
 //!   val h = Grpc.startHandle(registry) // non-blocking; call Grpc.stop(h, 5000) to drain
 //!
