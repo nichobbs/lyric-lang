@@ -9203,7 +9203,9 @@ func synthesizeAsyncSmMsil(
             // MStloc instructions emitted during patching reference this slot.
             val rSlot = allocSlotMsil(mnFctx, "__sm_result", retTy)
             val bodyInsns: List[MInsn] = newList()
+            pushCollExpect(mnFctx, retTy)
             val trailTy = lowerBlockExprMsil(cctx, mnFctx, bodyInsns, block)
+            popCollExpect(mnFctx)
             // Inline patch: replace every MRet with [MStloc(rSlot-1); MBr(epilogueLabel)]
             // so that explicit `return` statements stash the result and branch to the SM
             // epilogue rather than exiting MoveNext before SetResult is called (#2256).
@@ -9278,7 +9280,9 @@ func synthesizeAsyncSmMsil(
         }
         case FBExpr(e) -> {
           if retTy != MVoid {
+            pushCollExpect(mnFctx, retTy)
             val eTy = lowerExprMsil(cctx, mnFctx, mnInsns, e)
+            popCollExpect(mnFctx)
             coerceTrailingToRetMsil(cctx, mnInsns, eTy, retTy)
             val rSlot2 = allocSlotMsil(mnFctx, "__sm_result2", retTy)
             mnInsns.add(MStloc(slot = rSlot2 - 1))
@@ -9707,7 +9711,9 @@ func synthesizeAsyncSmPhaseBMsil(
         case FBBlock(block) -> {
           if not isVoid {
             val bodyInsns: List[MInsn] = newList()
+            pushCollExpect(mnFctx, retTy)
             val trailTy = lowerBlockExprMsil(cctx, mnFctx, bodyInsns, block)
+            popCollExpect(mnFctx)
             // Patch MRet → [stloc rSlot; br normalDoneL]
             var lastWasPatchedRet = false
             var pbi = 0
@@ -9744,7 +9750,9 @@ func synthesizeAsyncSmPhaseBMsil(
         }
         case FBExpr(e) -> {
           if not isVoid {
+            pushCollExpect(mnFctx, retTy)
             val eTy = lowerExprMsil(cctx, mnFctx, mnInsns, e)
+            popCollExpect(mnFctx)
             coerceTrailingToRetMsil(cctx, mnInsns, eTy, retTy)
             mnInsns.add(MStloc(slot = rSlot - 1))
           } else {
@@ -10637,7 +10645,14 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
           case FBBlock(block) -> {
             // Two-way dispatch: non-void keeps trailing value; void discards.
             if retTy != MVoid {
+              // #2361: the block's trailing expression is the implicit return, so
+              // expect the declared return type — a tail `newList()` (e.g.
+              // `func f(): List[String] { newList() }`) builds the concrete
+              // instance the return signature requires.  Intermediate statements
+              // push/pop their own collExpect on top, so only the tail inherits it.
+              pushCollExpect(fctx, retTy)
               val trailTy = lowerBlockExprMsil(cctx, fctx, insns, block)
+              popCollExpect(fctx)
               if not endsWithReturnMsil(insns) {
                 // Coerce the trailing value to the declared return type — boxes a
                 // value-type result when the declared return is `object` (a
@@ -10653,7 +10668,9 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
             }
           }
           case FBExpr(e) -> {
+            pushCollExpect(fctx, retTy)
             lowerExprMsil(cctx, fctx, insns, e)
+            popCollExpect(fctx)
             insns.add(MRet)
           }
         }
@@ -10777,7 +10794,11 @@ pub func lowerImplMethodMsil(
       match body {
         case FBBlock(block) -> {
           if retTy != MVoid {
+            // #2361: tail expression is the implicit return — expect retTy so a
+            // tail `newList()` builds the concrete instance the signature wants.
+            pushCollExpect(fctx, retTy)
             val _ = lowerBlockExprMsil(cctx, fctx, insns, block)
+            popCollExpect(fctx)
           } else {
             lowerBlockMsil(cctx, fctx, insns, block)
           }
@@ -10786,7 +10807,9 @@ pub func lowerImplMethodMsil(
           }
         }
         case FBExpr(e) -> {
+          pushCollExpect(fctx, retTy)
           lowerExprMsil(cctx, fctx, insns, e)
+          popCollExpect(fctx)
           insns.add(MRet)
         }
       }
