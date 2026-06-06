@@ -21681,3 +21681,25 @@ bridge test passes with the new iteration protocol.  843/843 emitter tests green
 
 **Regression gate:** No new tests; existing 7/7 generator self-tests and 843/843
 emitter tests continue to pass.
+
+### D-progress-447 — Phase 5 second-pass review fixes: dead fields/vars removed, D092 refs corrected (#2478, #2476, #2477)
+
+**What shipped:**
+
+- **Dead `tokDateTimeToStringInv` removed** (`lyric-compiler/msil/codegen.l`, #2478):
+  `CodegenCtx.tokDateTimeToStringInv` (MemberRef for `DateTime.ToString(IFormatProvider)`)
+  was kept as "unused; kept for compat" after the switch to `DateTime.ToString("o")`.
+  Both the field declaration and the MemberRef creation in `newCodegenCtx` are now removed.
+  The field had no call sites (replaced by `tokDateTimeToStringO`); removing it shrinks
+  the PE MemberRef table by one entry and eliminates a production-standard violation.
+
+- **Dead `tsListRow` variable removed** (`lyric-compiler/msil/codegen.l`, #2476):
+  `val tsListRow = cctx.tokListObjTypeSpec - 0x1B000000` was computed in
+  `synthesizeGeneratorMsil` but never read — all call sites use `cctx.tokListObjTypeSpec`
+  directly (via pre-computed cctx tokens).  Local removed.
+
+- **D092 D-progress references corrected** (`docs/03-decision-log.md`, #2477):
+  D092 said "Tracked as D-progress-443 / D-progress-444"; after the numbering collision
+  with main's fmt fix, the actual entries are D-progress-444 / D-progress-445.  Updated.
+
+**Regression gate:** 7/7 generator self-tests, 2/2 datetime self-tests pass.

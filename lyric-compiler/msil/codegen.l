@@ -111,7 +111,6 @@ pub record CodegenCtx {
   // DateTimes, matching the F# bootstrap emitter's DateTime.ToString("o") path
   // in Codegen.fs so stage-0 and stage-1 render DateTime byte-identically.
   tokInvariantCulture: Int  // CultureInfo.get_InvariantCulture(): CultureInfo  static
-  tokDateTimeToStringInv: Int  // DateTime.ToString(IFormatProvider): string  instance HASTHIS (unused; kept for compat)
   tokDateTimeToStringO: Int    // DateTime.ToString(string): string  instance HASTHIS
   usDateTimeFormatO: Int       // ldstr token (0x70000000 | US heap offset) for the "o" format specifier
   tokDoubleToStringInv: Int    // Double.ToString(IFormatProvider): string  instance HASTHIS (#2462)
@@ -943,19 +942,6 @@ pub func newCodegenCtx(
       buildStaticMethodSig(newList(), ciRet)
     )
 
-  // DateTime.ToString(IFormatProvider): string  — kept for struct compat but
-  // not used at call sites; the "o" overload below is used instead.
-  val dtToStrPs: List[MsilType] = newList()
-  dtToStrPs.add(MClassRef(typeRefCode = tdrTypeRef(trIFormatProvider), clrFqn = "System.IFormatProvider"))
-  val tokDateTimeToStringInv = 0x0A000000 +
-    ctxAddMemberRef(
-      lctx,
-      trDateTime,
-      "ToString",
-      "dt_tostring_inv",
-      buildInstanceMethodSig(dtToStrPs, MString)
-    )
-
   // DateTime.ToString(string): string  — ISO-8601 "o" format specifier path.
   // Called with ldstr "o" + ldloca(dtSlot) + call DateTime.ToString(string).
   // Produces "1970-01-01T00:00:00.0000000Z" for UTC DateTimes, matching the
@@ -1094,7 +1080,6 @@ pub func newCodegenCtx(
     tokObjGetType = tokObjGetType,
     tokTypeGetName = tokTypeGetName,
     tokInvariantCulture = tokInvariantCulture,
-    tokDateTimeToStringInv = tokDateTimeToStringInv,
     tokDateTimeToStringO = tokDateTimeToStringO,
     usDateTimeFormatO = usDateTimeFormatO,
     tokDoubleToStringInv = tokDoubleToStringInv,
@@ -9643,9 +9628,6 @@ func synthesizeGeneratorMsil(
   vtBoolArgs.add(MBool)
   val vtBoolBlob = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trValueTask1), vtBoolArgs)
   val tsVtBoolRow = ctxAddTypeSpec(lctx, "ts_vt_bool", vtBoolBlob)
-
-  // List<object> TypeSpec row (already created in newCodegenCtx; extract from token)
-  val tsListRow = cctx.tokListObjTypeSpec - 0x1B000000
 
   // ── MemberRefs for generator class methods ────────────────────────────────────
 

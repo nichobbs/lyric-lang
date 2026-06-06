@@ -5372,7 +5372,7 @@ When the iterable type is `MIAsyncEnumerable(_)` (set by `funcRetTypes` for gene
   the old `items.count` API (old API worked on `List<object>`; new return type is
   `IAsyncEnumerable<object>`).
 
-Tracked as D-progress-443 (initial synthesis) and D-progress-444 (element-type unboxing).
+Tracked as D-progress-444 (initial synthesis) and D-progress-445 (element-type unboxing).
 
 **JVM parity:** Generator synthesis is MSIL-only in this entry; the JVM equivalent is tracked in issue #2469 (filed 2026-06-06).
 
