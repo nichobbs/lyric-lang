@@ -964,6 +964,7 @@ func parseInterfaceMemberOpt(st: inout ParseState): Option[InterfaceMember] {
               Some(
                 IMSig(
                   sig = FunctionSig(
+                    docComments = fn.docComments,
                     isAsync = fn.isAsync,
                     name = fn.name,
                     generics = fn.generics,
@@ -1002,6 +1003,7 @@ func parseInterfaceMemberOpt(st: inout ParseState): Option[InterfaceMember] {
               Some(
                 IMSig(
                   sig = FunctionSig(
+                    docComments = fn.docComments,
                     isAsync = fn.isAsync,
                     name = fn.name,
                     generics = fn.generics,
@@ -1822,6 +1824,7 @@ func parseExternMemberOpt(st: inout ParseState): Option[ExternMemberDecl] {
           Some(
             EMSig(
               sig = FunctionSig(
+                docComments = newList(),
                 isAsync = fn.isAsync,
                 name = fn.name,
                 generics = fn.generics,
@@ -1839,6 +1842,7 @@ func parseExternMemberOpt(st: inout ParseState): Option[ExternMemberDecl] {
           Some(
             EMSig(
               sig = FunctionSig(
+                docComments = newList(),
                 isAsync = fn.isAsync,
                 name = fn.name,
                 generics = fn.generics,

@@ -679,14 +679,38 @@ func protectedTypeDoc(visStr: in String, pd: in ProtectedTypeDecl, ctx: inout Fm
   acc
 }
 
+@pure
+func interfaceMemberStartOffset(m: in InterfaceMember): Int {
+  match m {
+    case IMSig(sg) -> sg.span.startPos.offset
+    case IMFunc(fn) -> fn.span.startPos.offset
+    case IMAssoc(a) -> a.span.startPos.offset
+  }
+}
+
 func interfaceDoc(visStr: in String, id: in InterfaceDecl, ctx: inout FmtCtx): List[String] {
   val gens = genParamsStr(id.generics)
   val whereL = whereClauseLines(id.whereClause)
   val mLines: List[String] = newList()
   var i = 0
   while i < id.members.count {
+    appendTriviaInto(mLines, ctx, interfaceMemberStartOffset(id.members[i]), false)
     match id.members[i] {
-      case IMSig(sg) -> mLines.add(funcSigStr(sg))
+      case IMSig(sg) -> {
+        // A body-less signature: doc comments + the signature + its
+        // contract clauses (`requires:` / `ensures:` / …), mirroring how
+        // an extern-package member is rendered.
+        appendDoc(mLines, docLines(sg.docComments))
+        mLines.add(funcSigStr(sg))
+        var ci = 0
+        while ci < sg.contracts.count {
+          val c = sg.contracts[ci]
+          val cpre = popTriviaBefore(ctx, contractClauseStartOffset(c))
+          appendIndentedTrivia(mLines, cpre)
+          appendDoc(mLines, indentDoc(2, contractDoc(2, ctx, c)))
+          ci = ci + 1
+        }
+      }
       case IMFunc(fn) -> {
         val fd = funcDoc("", fn, ctx)
         var j = 0
@@ -704,6 +728,7 @@ func interfaceDoc(visStr: in String, id: in InterfaceDecl, ctx: inout FmtCtx): L
     }
     i = i + 1
   }
+  appendTriviaInto(mLines, ctx, id.span.endPos.offset, true)
   val acc: List[String] = newList()
   acc.add(visStr + "interface " + id.name + gens + " {")
   i = 0

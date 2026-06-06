@@ -196,6 +196,20 @@ func testFormatModuleDoc(): Unit {
   assertTrue(Str.contains(acc, "//! Module-level doc."), "format: module doc preserved")
 }
 
+func testInterfaceMethodDocAndContractPreserved(): Unit {
+  // A body-less interface method's `///` doc comment and contract clauses
+  // are stored on the `FunctionSig` and must survive formatting (they were
+  // dropped previously because `FunctionSig` had no doc-comment field and
+  // `interfaceDoc` rendered the bare signature only).
+  val src = "package P\n\ninterface Store {\n  /// Fetch by key.\n  func get(key: in String): Int\n    requires: key.length > 0\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "interface method: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "/// Fetch by key."), "interface method: doc comment preserved")
+  assertTrue(Str.contains(acc, "func get(key: in String): Int"), "interface method: signature preserved")
+  assertTrue(Str.contains(acc, "requires: key.length > 0"), "interface method: contract preserved")
+}
+
 func testCommentInsideFunctionBody(): Unit {
   // Phase 5 §M5.3 stage 4 (D-progress-136): comments INSIDE a function
   // body must survive.  The block's harvested comments are popped at
@@ -739,6 +753,7 @@ func main(): Unit {
   testFormatVal()
   testNumericLiteralSpellingRoundTrips()
   testFormatModuleDoc()
+  testInterfaceMethodDocAndContractPreserved()
   testFormatSourceFacade()
   testCommentInsideFunctionBody()
   testCommentInsideRecordBody()

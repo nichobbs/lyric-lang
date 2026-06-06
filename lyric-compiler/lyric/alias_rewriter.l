@@ -761,6 +761,7 @@ func rewriteFunctionSig(aliases: in List[String], sig: in FunctionSig): Function
     i = i + 1
   }
   FunctionSig(
+    docComments = sig.docComments,
     isAsync = sig.isAsync,
     name = sig.name,
     generics = sig.generics,

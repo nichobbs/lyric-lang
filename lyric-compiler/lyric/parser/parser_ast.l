@@ -494,6 +494,10 @@ pub record DistinctTypeDecl {
 }
 
 pub record FunctionSig {
+  // Doc comments on a body-less signature (interface method).  Extern
+  // members carry their docs on the `ExternMemberDecl` wrapper instead, so
+  // this is empty for `EMSig`.
+  docComments: List[DocComment]
   isAsync: Bool
   name: String
   generics: Option[GenericParams]
