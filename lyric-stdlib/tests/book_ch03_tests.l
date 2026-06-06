@@ -1,6 +1,6 @@
-// book_ch03_tests.l — Chapter 3: Data Structures
-//
-// Verifies: records, unions (sum types), enums, tuples, arrays, and slices.
+//! book_ch03_tests.l — Chapter 3: Data Structures
+//!
+//! Verifies: records, unions (sum types), enums, tuples, arrays, and slices.
 package Book.Ch03.Tests
 
 import Std.Core
@@ -9,8 +9,10 @@ import Std.Testing
 // ---------------------------------------------------------------------------
 // §3.1 Records
 // ---------------------------------------------------------------------------
-
-record Point { x: Double; y: Double }
+record Point {
+  x: Double
+  y: Double
+}
 
 pub record Customer {
   pub id: Int
@@ -31,15 +33,24 @@ func testRecordFieldAccess(): Unit {
   assertEqual(c.name, "Alice", "Customer.name")
 }
 
-record Stats { min: Int; max: Int; sum: Int; count: Int }
+record Stats {
+  min: Int
+  max: Int
+  sum: Int
+  count: Int
+}
 
 func summarize(xs: in slice[Int]): Stats {
   var mn = xs[0]
   var mx = xs[0]
-  var s  = 0
+  var s = 0
   for x in xs {
-    if x < mn { mn = x }
-    if x > mx { mx = x }
+    if x < mn {
+      mn = x
+    }
+    if x > mx {
+      mx = x
+    }
     s += x
   }
   Stats(min = mn, max = mx, sum = s, count = xs.length)
@@ -56,7 +67,6 @@ func testRecordReturn(): Unit {
 // ---------------------------------------------------------------------------
 // §3.2 Union types (sum types)
 // ---------------------------------------------------------------------------
-
 union Shape {
   case Circle(radius: Double)
   case Rectangle(width: Double, height: Double)
@@ -65,9 +75,9 @@ union Shape {
 
 func area(s: in Shape): Double {
   match s {
-    case Circle(r)          -> 3.14159 * r * r
-    case Rectangle(w, h)    -> w * h
-    case Dot                -> 0.0
+    case Circle(r) -> 3.14159 * r * r
+    case Rectangle(w, h) -> w * h
+    case Dot -> 0.0
   }
 }
 
@@ -84,27 +94,29 @@ func testUnionConstruction(): Unit {
 // ---------------------------------------------------------------------------
 // §3.3 Enums
 // ---------------------------------------------------------------------------
-
-enum Color { case Red; case Green; case Blue }
+enum Color {
+  case Red
+  case Green
+  case Blue
+}
 
 func colorName(c: in Color): String {
   match c {
-    case Red   -> "red"
+    case Red -> "red"
     case Green -> "green"
-    case Blue  -> "blue"
+    case Blue -> "blue"
   }
 }
 
 func testEnum(): Unit {
-  assertEqual(colorName(Color.Red),   "red",   "enum Red")
+  assertEqual(colorName(Color.Red), "red", "enum Red")
   assertEqual(colorName(Color.Green), "green", "enum Green")
-  assertEqual(colorName(Color.Blue),  "blue",  "enum Blue")
+  assertEqual(colorName(Color.Blue), "blue", "enum Blue")
 }
 
 // ---------------------------------------------------------------------------
 // §3.4 Tuples
 // ---------------------------------------------------------------------------
-
 func divmod(n: Int, d: Int): (Int, Int) {
   (n / d, n % d)
 }
@@ -125,7 +137,6 @@ func testTupleConstruction(): Unit {
 // ---------------------------------------------------------------------------
 // §3.5 Arrays and slices
 // ---------------------------------------------------------------------------
-
 func testArray(): Unit {
   val fixed: slice[Int] = [10, 20, 30, 40]
   assertEqualInt(fixed.length, 4, "array length")
@@ -162,7 +173,6 @@ func testStringSlice(): Unit {
 // ---------------------------------------------------------------------------
 // §3.6 Option[T] (some / none)
 // ---------------------------------------------------------------------------
-
 func testOptionValues(): Unit {
   val name: Option[String] = Some(value = "Alice")
   val noName: Option[String] = None

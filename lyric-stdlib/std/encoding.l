@@ -29,7 +29,6 @@
 //! U+FFFD; the JVM accumulator encodes them as WTF-8 3-byte sequences).
 //! Callers that need portable round-trip behaviour should reject lone
 //! surrogates before encoding.
-
 package Std.Encoding
 
 import Std.Core
@@ -150,11 +149,15 @@ pub func encodeBase64(bytes: in slice[Byte]): String {
 /// is a genuine byte[].  On JVM a pure-Lyric accumulator is used via the
 /// Std.EncodingHost kernel boundary.  Input is validated in pure Lyric on
 /// both platforms before the host call.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func tryDecodeBase64(s: in String): Option[slice[Byte]] {
   val len = s.length
-  if len == 0 { return Some(value = []) }
-  if len % 4 != 0 { return None }
+  if len == 0 {
+    return Some(value = [])
+  }
+  if len % 4 != 0 {
+    return None
+  }
   var i = 0
   while i < len {
     val c0 = base64CharValue(s[i])
@@ -165,18 +168,26 @@ pub func tryDecodeBase64(s: in String): Option[slice[Byte]] {
     val ch2 = s[i + 2]
     val ch3 = s[i + 3]
     if ch2 == '=' {
-      if ch3 != '=' { return None }
-      if i + 4 != len { return None }
+      if ch3 != '=' {
+        return None
+      }
+      if i + 4 != len {
+        return None
+      }
     } else {
       val c2 = base64CharValue(ch2)
       if c2 < 0 {
         return None
       }
       if ch3 == '=' {
-        if i + 4 != len { return None }
+        if i + 4 != len {
+          return None
+        }
       } else {
         val c3 = base64CharValue(ch3)
-        if c3 < 0 { return None }
+        if c3 < 0 {
+          return None
+        }
       }
     }
     i += 4
@@ -195,7 +206,7 @@ pub func tryDecodeBase64(s: in String): Option[slice[Byte]] {
 /// On .NET the BCL `System.Text.Encoding.UTF8.GetBytes` is used so the
 /// result is a genuine byte[].  On JVM a pure-Lyric accumulator is used
 /// via the Std.EncodingHost kernel boundary.
-@stable(since="1.0")
+@stable(since = "1.0")
 pub func encodeUtf8(s: in String): slice[Byte] {
   hostEncodeUtf8(hostGetUtf8Enc(), s)
 }

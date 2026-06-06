@@ -1,9 +1,8 @@
-// assembly_resources_tests.l — exercises `Std.AssemblyResources`
-// against the running test PE itself (which the bootstrap emitter
-// always embeds a `Lyric.Contract` resource into).  Auto-discovered
-// by `bootstrap/tests/Lyric.Emitter.Tests/StdlibLyricTests.fs`.
-// Exit 0 + "ok" in stdout means every assertion held.
-
+//! assembly_resources_tests.l — exercises `Std.AssemblyResources`
+//! against the running test PE itself (which the bootstrap emitter
+//! always embeds a `Lyric.Contract` resource into).  Auto-discovered
+//! by `bootstrap/tests/Lyric.Emitter.Tests/StdlibLyricTests.fs`.
+//! Exit 0 + "ok" in stdout means every assertion held.
 package Std.AssemblyResources.Tests
 
 import Std.Core
@@ -24,7 +23,6 @@ import Std.AssemblyResources
 // `assembly_resources_tests.l` that's `assembly_resources_tests.dll`.
 // `Std.Environment.appBaseDirectory()` reports the directory the PE
 // was loaded from, so we can locate the DLL deterministically.
-
 func selfDllPath(): String {
   Path.join(Environment.appBaseDirectory(), "assembly_resources_tests.dll")
 }
@@ -32,11 +30,12 @@ func selfDllPath(): String {
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
 func sliceContains(s: in slice[String], needle: in String): Bool {
   var i = 0
   while i < s.length {
-    if s[i] == needle { return true }
+    if s[i] == needle {
+      return true
+    }
     i = i + 1
   }
   false
@@ -45,7 +44,6 @@ func sliceContains(s: in slice[String], needle: in String): Bool {
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Tests
 // ─────────────────────────────────────────────────────────────────────────────
-
 // `openAssembly` against a valid PE succeeds and snapshots a non-empty
 // name list (every Lyric-emitted assembly carries at least the
 // `Lyric.Contract` resource).
@@ -59,10 +57,9 @@ func testOpenSelf(): Unit {
 // resource (the contract-meta carrier).  This pins the bridge consumer's
 // happy path.
 func testLyricContractResourcePresent(): Unit {
-  val ar    = openAssembly(selfDllPath())
+  val ar = openAssembly(selfDllPath())
   val names = resourceNames(ar)
-  assertTrue(sliceContains(names, "Lyric.Contract"),
-    "lyric_contract_resource_present: `Lyric.Contract` in name list")
+  assertTrue(sliceContains(names, "Lyric.Contract"), "lyric_contract_resource_present: `Lyric.Contract` in name list")
 }
 
 // `tryReadResource` returns Some(bytes) for a present resource; the
@@ -72,12 +69,10 @@ func testTryReadLyricContract(): Unit {
   match tryReadResource(ar, "Lyric.Contract") {
     case None -> panic("try_read_lyric_contract: expected Some(bytes)")
     case Some(bytes) -> {
-      assertTrue(bytes.length > 0,
-        "try_read_lyric_contract: bytes non-empty")
+      assertTrue(bytes.length > 0, "try_read_lyric_contract: bytes non-empty")
       // First byte should be '{' (0x7B) — cheap shape check catching
       // obvious garbage like an HTML 404 page or a misencoded resource.
-      assertTrue(bytes[0] == 0x7Bu8,
-        "try_read_lyric_contract: starts with '{'")
+      assertTrue(bytes[0] == 0x7Bu8, "try_read_lyric_contract: starts with '{'")
     }
   }
 }
@@ -89,7 +84,7 @@ func testTryReadLyricContract(): Unit {
 func testTryReadMissingReturnsNone(): Unit {
   val ar = openAssembly(selfDllPath())
   match tryReadResource(ar, "DefinitelyNotARealResourceNameXYZ") {
-    case None    -> ()
+    case None -> ()
     case Some(_) -> panic("try_read_missing: expected None")
   }
 }
@@ -104,8 +99,7 @@ func testResourceNamesIsStable(): Unit {
   assertEqualInt(a.length, b.length, "resource_names_is_stable: lengths match")
   var i = 0
   while i < a.length {
-    assertEqual(a[i], b[i],
-      "resource_names_is_stable: entry " + Str.fromInt(i) + " matches")
+    assertEqual(a[i], b[i], "resource_names_is_stable: entry " + Str.fromInt(i) + " matches")
     i = i + 1
   }
 }
@@ -113,7 +107,6 @@ func testResourceNamesIsStable(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Driver
 // ─────────────────────────────────────────────────────────────────────────────
-
 func main(): Int {
   testOpenSelf()
   testLyricContractResourcePresent()

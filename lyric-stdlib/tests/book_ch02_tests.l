@@ -1,7 +1,7 @@
-// book_ch02_tests.l — Chapter 2: Core Types
-//
-// Verifies: primitive types, range subtypes (tryFrom), numeric literals,
-// boolean logic, and Never-returning functions.
+//! book_ch02_tests.l — Chapter 2: Core Types
+//!
+//! Verifies: primitive types, range subtypes (tryFrom), numeric literals,
+//! boolean logic, and Never-returning functions.
 package Book.Ch02.Tests
 
 import Std.Core
@@ -10,14 +10,13 @@ import Std.Testing
 // ---------------------------------------------------------------------------
 // §2.1 Primitive types
 // ---------------------------------------------------------------------------
-
 func testPrimitives(): Unit {
-  val b: Bool   = true
-  val i: Int    = -2_147_483_648
-  val l: Long   = 9_000_000_000_000_000_000i64
+  val b: Bool = true
+  val i: Int = -2_147_483_648
+  val l: Long = 9_000_000_000_000_000_000i64
   val d: Double = 3.14
   val s: String = "hello"
-  val c: Char   = 'A'
+  val c: Char = 'A'
 
   assertTrue(b, "Bool true")
   assertEqualInt(i, -2_147_483_648, "Int min value")
@@ -46,8 +45,8 @@ func testBoolLogic(): Unit {
 // ---------------------------------------------------------------------------
 // §2.2 Range subtypes
 // ---------------------------------------------------------------------------
-
 type Age = Int range 0 ..= 150
+
 type DiceRoll = Int range 1 ..= 6
 
 func testRangeSubtypeOk(): Unit {

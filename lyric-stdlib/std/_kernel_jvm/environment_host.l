@@ -29,4 +29,6 @@ extern package lyric.stdlib.jvm.EnvHost {
 // The .NET runtime shared-framework directory has no JVM equivalent.
 // Returns "" so that callers following the "empty = unavailable" convention
 // (documented in Std.Environment.runtimeDirectory) behave correctly on JVM.
-pub func hostRuntimeDirectory(): String { "" }
+pub func hostRuntimeDirectory(): String {
+  ""
+}

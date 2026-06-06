@@ -3,7 +3,6 @@
 //! Environment variables, command-line arguments, and process exit are
 //! host-global effects. Public wrappers in Std.Environment keep the
 //! recoverable parts Result-based and make process termination explicit.
-
 @axiom("System.Environment operations conform to their documented .NET contracts")
 package Std.EnvironmentHost
 
