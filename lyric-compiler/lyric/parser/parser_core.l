@@ -481,6 +481,39 @@ pub func parseTrailingAnnotations(st: inout ParseState): List[Annotation] {
   xs
 }
 
+/// Like `parseTrailingAnnotations`, but only consumes an annotation that
+/// sits on the *same source line* as the preceding token.  Inside a `{ }`
+/// body (record / config field lists) the lexer emits no statement-end
+/// tokens between members, so the plain greedy form would swallow the
+/// *next* member's leading annotation — e.g. in
+///
+///     @proto_field(1) id:   Long
+///     @proto_field(2) name: String
+///
+/// `id`'s trailing-annotation scan would eat `@proto_field(2)`, leaving
+/// `name` unannotated and reordering both annotations onto `id`.  The
+/// grammar's trailing `[ Annotation ]` on a `FieldDecl` is always on the
+/// field's own line, so the line check captures exactly the legal form.
+pub func parseSameLineTrailingAnnotations(st: inout ParseState): List[Annotation] {
+  val xs: List[Annotation] = newList()
+  var keepGoing = true
+  while keepGoing {
+    if peekSpan(st).startPos.line != lastSpan(st).endPos.line {
+      keepGoing = false
+    } else {
+      match parseAnnotation(st) {
+        case Some(a) -> {
+          xs.add(a)
+        }
+        case None -> {
+          keepGoing = false
+        }
+      }
+    }
+  }
+  xs
+}
+
 pub func parseFileLevelAnnotations(st: inout ParseState): List[Annotation] {
   cstStart(st, SkFileAnnotationsSection)
   val _ = skipStmtEnds(st)

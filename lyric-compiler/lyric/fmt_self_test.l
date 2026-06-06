@@ -870,6 +870,23 @@ func testFieldDocCommentPreserved(): Unit {
   assertTrue(Str.contains(acc, "x: Int"), "field doc: field preserved")
 }
 
+func testFieldAnnotationsStayWithTheirField(): Unit {
+  // A record (or config) field's leading annotation must stay attached to
+  // that field across a round-trip.  Inside a `{ }` body the lexer emits no
+  // statement-end tokens, so the parser's trailing-annotation scan used to
+  // swallow the *next* field's leading annotation, clumping both onto the
+  // first field and reordering the token stream (#2454).  The fix
+  // (`parseSameLineTrailingAnnotations`) only treats an annotation as
+  // trailing when it shares the field's source line.
+  val src = "package P\n\nrecord R {\n  @proto_field(1) id: Long\n  @proto_field(2) name: String\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "field annotations: round-trips")
+  val acc = format(parse(src))
+  // Each annotation renders on its own line directly above its own field.
+  assertTrue(Str.contains(acc, "@proto_field(1)\n  id: Long"), "field annotations: first stays with id")
+  assertTrue(Str.contains(acc, "@proto_field(2)\n  name: String"), "field annotations: second stays with name")
+}
+
 func testCharLiteralRendering(): Unit {
   // Char literals must round-trip.  `intToChar` once mangled every char
   // outside 0-31 / digits / a-f into `'?'`, corrupting ordinary letters,
@@ -1065,6 +1082,7 @@ func testProtectedInterMemberBlankIdempotent(): Unit {
 }
 
 func main(): Unit {
+  testFieldAnnotationsStayWithTheirField()
   testAspectInterMemberBlankIdempotent()
   testProtectedInterMemberBlankIdempotent()
   testNestedMatchTrailingCommentIdempotent()
