@@ -22443,3 +22443,68 @@ and zero stderr noise on success; `lyric build --target dotnet hello.l` still
 produces `hello.dll` + `hello.runtimeconfig.json`; explicit `-o out.jar` /
 `-o out.dll` are honoured.  No .NET regression — `bitwise_self_test.l` passes
 10/10 on both `--target dotnet` and `--target jvm`.
+
+### D-progress-464 — JVM-backend silent-miscompile fixes: Float/assign/or-pattern/union/named-arg (docs/44 J1, epic #2663, #2664, #1675, #1793)
+
+**Status:** Shipped — band J1 of the JVM production-readiness plan (docs/44 §5
+J1).  The self-hosted JVM backend previously produced five classes of
+wrong-but-running output; each is now correct and pinned by a CI self-test.
+All edits are in the post-J0 split `lyric-compiler/jvm/codegen/0X_*.l` files;
+the Lowering layer (`jvm/lowering.l` / `jvm/bytecode.l`) already carried every
+float opcode and array-store opcode, so no new IR was needed.
+
+What landed:
+
+- **Float emitted as genuine 32-bit `float` (B-4).** `typeExprToJvm`
+  (`01_types.l`) now maps Lyric `Float` → `JFloat` (was `JDouble`); the
+  load/store/return helpers emit `fload`/`fstore`/`freturn` (were the double
+  opcodes).  Arithmetic (`02_exprs.l` `BAdd`/`BSub`/`BMul`/`BDiv`/`BMod`/
+  `PreNeg`) and both comparison helpers (`lowerCmp` / `lowerCmpFail`) gained
+  `JFloat` arms (`fadd`/`fsub`/`fmul`/`fdiv`/`frem`/`fneg`, `fcmpl`).  A
+  `1.0f32` literal emits `ldc`-of-float (`LFconst`) and types `JFloat`; an
+  unsuffixed/`f64` literal stays `JDouble`.  `coerceArgTo` (`04_calls.l`) gained
+  primitive numeric conversions (`d2f`/`f2d`/`i2f`/`l2f`/`i2d`/`l2d`) so a value
+  crossing into a `Float`/`Double` slot, arg, field, or return narrows/widens
+  correctly; `boxIfNeeded` boxes `JFloat` → `java/lang/Float`.  Return paths
+  (`emitReturnArrayCoerced`, the `FBExpr` body, and the explicit `SReturn`
+  threaded through the new `FuncCtx.retTy`) coerce the tail value to the declared
+  return type.
+- **Complex assignment no longer silently dropped (B-5).** `lowerAssignExpr`
+  (`05_stmts.l`) implements `obj.field = e` (load receiver, eval+coerce RHS,
+  `putfield owner.field:desc`; compound `+=` etc. via `dup`/`getfield`/op/
+  `putfield`) and `arr[i] = e` (the right `Xastore` for primitive arrays,
+  `aastore`/`set(int,Object)` for the ArrayList slice representation).  The
+  previous value-pop no-op is gone.
+- **or-pattern variable binding (m-1).** `lowerPatternBind`'s `POr` arm
+  (`03_match.l`) re-tests each alternative at runtime (`instanceof` via
+  `lowerPatternTest`) and binds the variable from the matching alternative, so
+  `A(x) | B(x) -> x` binds `x` from whichever case matched (was `LNop`).
+- **Union-case construction (B-8 / #1675).** Field-bearing construction already
+  emitted `new`+`invokespecial`; the gap was **nullary** cases referenced as a
+  bare path (`Empty`, `None`), which lowered to `aconst_null` and made any
+  downstream `match` report "match not exhaustive".  The `EPath` `None` arm
+  (`02_exprs.l`) now constructs a registered nullary case via `lowerConstruction`
+  (`new`+`invokespecial <init>()V`).
+- **Named-argument record-construction reorder (B-7 / #1793).** Already handled
+  by `orderCtorArgs` in `lowerConstruction` (`04_calls.l`), which permutes
+  named args into field-declaration order before the positional `<init>` —
+  verified by the new guard test.
+- **Latent fix exposed:** an un-annotated `var x = e` (`05_stmts.l` `LBVar`)
+  took its slot type from the initialiser instead of defaulting to `JInt`
+  (the old default checkcast-unboxed a record/union value to `Integer`).
+
+CI gate: `lyric-compiler/jvm/silent_miscompile_guard_jvm_self_test.l`
+(`@test_module`, imports only `Std.*`), wired into `.github/workflows/ci.yml`
+beside the existing JVM self-test steps, runs via `lyric test --target jvm`
+(compiled in-process through `Jvm.Bridge` `compileToJarBundled`, executed under
+`java`): 8/8 pass, each asserting a value the pre-fix backend got wrong.  No
+regression — JVM `auto_ffi_jvm` 13/13, `hash_jvm` 3/3, `bitwise` 10/10;
+front-end shared with `.NET` unchanged (Emitter Msil suite 87/87, Jvm suite
+133/133).
+
+Not in scope (tracked separately): annotated `slice[T]` variables map to
+`JArray` while slice *literals* lower to `ArrayList`, so element read/write
+through an annotated slice variable is a pre-existing representation mismatch
+(inferred `var xs = [...]` works on both read and write).  Threading a true
+32-bit `Float` through the `.NET` MSIL backend (still `R8`-only) is likewise out
+of J1's JVM scope.

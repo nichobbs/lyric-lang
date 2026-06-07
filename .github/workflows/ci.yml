@@ -1135,6 +1135,28 @@ jobs:
             exit 0
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/hash_jvm_self_test.l
+      # Silent-miscompile guard (JVM, band J1 / #2664 / epic #2663): pins the
+      # five JVM-backend codegen fixes that previously produced wrong-but-running
+      # output — Float emitted as 32-bit (not double), complex assignment
+      # (`obj.field = e` / `arr[i] = e`) actually stores, or-pattern variable
+      # binding (`A(x)|B(x) -> x`), union-case construction (incl. nullary cases,
+      # #1675) round-tripping through match, and named-argument record-construction
+      # reorder (#1793).  Imports only `Std.*`.
+      - name: Silent-miscompile guard self-test on JVM (native lyric test --target jvm)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping silent-miscompile guard JVM self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping silent-miscompile guard JVM self-test"
+            exit 0
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/silent_miscompile_guard_jvm_self_test.l
       # Match-literal + compound-assignment self-test — pins two self-hosted
       # MSIL backend correctness fixes from #1481 (epic #1470, Band 2): Float
       # literal *match* patterns now emit a real `ldc.r8; ceq` compare instead

@@ -88,12 +88,157 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
         }
       }
     }
+    case EMember(recv, fieldName) -> {
+      // Record / opaque field assignment: `recv.field = e` → load receiver, eval
+      // (and coerce) RHS, `putfield owner.field:desc`.  Compound ops
+      // (`recv.field += e`) read the current field value, combine, and store.
+      val recvTy = lowerExpr(ctx, insns, recv)
+      match recvTy {
+        case JRef(cls) -> {
+          val fty = match recordFieldType(ctx, cls, fieldName) {
+            case Some(t) -> t
+            case None -> JRef(className = "java/lang/Object")
+          }
+          match op {
+            case AssEq -> {
+              val vTy = lowerExpr(ctx, insns, value)
+              coerceArgTo(insns, vTy, fty)
+              insns.add(LPutfield(owner = cls, name = fieldName, t = fty))
+            }
+            case _ -> {
+              // Compound: stack has [recv]; dup it so one copy reads the field and
+              // the other receives the putfield.  Sequence: dup; getfield; rhs;
+              // <op>; putfield.
+              insns.add(LDup)
+              insns.add(LGetfield(owner = cls, name = fieldName, t = fty))
+              val vTy = lowerExpr(ctx, insns, value)
+              coerceArgTo(insns, vTy, fty)
+              emitCompoundArith(insns, op, fty)
+              insns.add(LPutfield(owner = cls, name = fieldName, t = fty))
+            }
+          }
+          JVoid
+        }
+        case _ -> {
+          // Receiver isn't a known reference type — nothing to store into.
+          lowerExpr(ctx, insns, value)
+          insns.add(LPop)
+          JVoid
+        }
+      }
+    }
+    case EIndex(recv, indices) -> {
+      // Slice / array / list element assignment: `arr[i] = e`.
+      if indices.count == 0 {
+        lowerExpr(ctx, insns, value)
+        insns.add(LPop)
+        return JVoid
+      }
+      val recvTy = lowerExpr(ctx, insns, recv)
+      match recvTy {
+        case JArray(elem) -> {
+          match op {
+            case AssEq -> {
+              // [arr]; push index; (coerced) RHS; Xastore.
+              lowerExpr(ctx, insns, indices[0])
+              val vTy = lowerExpr(ctx, insns, value)
+              coerceArgTo(insns, vTy, elem)
+              emitArrayStore(insns, elem)
+            }
+            case _ -> {
+              // Compound: spill arrayref + index to locals (no dup2 opcode), read
+              // the current element, combine with the RHS, store back.
+              val arrSlot = allocSlot(ctx, "__idxasn_arr_" + toString(ctx.slotTicker.count), recvTy)
+              emitStore(insns, arrSlot, recvTy)
+              lowerExpr(ctx, insns, indices[0])
+              val idxSlot = allocSlot(ctx, "__idxasn_i_" + toString(ctx.slotTicker.count), JInt)
+              emitStore(insns, idxSlot, JInt)
+              emitLoad(insns, arrSlot, recvTy)
+              emitLoad(insns, idxSlot, JInt)
+              emitLoad(insns, arrSlot, recvTy)
+              emitLoad(insns, idxSlot, JInt)
+              emitArrayLoad(insns, elem)
+              val vTy = lowerExpr(ctx, insns, value)
+              coerceArgTo(insns, vTy, elem)
+              emitCompoundArith(insns, op, elem)
+              emitArrayStore(insns, elem)
+            }
+          }
+          JVoid
+        }
+        case _ -> {
+          // List-style element assignment via ArrayList.set(int, Object).  Values
+          // are boxed to Object (the list-element representation).
+          lowerExpr(ctx, insns, indices[0])
+          val vTy = lowerExpr(ctx, insns, value)
+          boxIfNeeded(insns, vTy)
+          emitListSet(insns)
+          JVoid
+        }
+      }
+    }
     case _ -> {
-      // Complex assignment targets (member, index) not yet supported.
+      // Other assignment targets (deref, etc.) are not meaningful on the JVM.
       lowerExpr(ctx, insns, value)
       insns.add(LPop)
       JVoid
     }
+  }
+}
+
+// Emit the element-store opcode for a JVM array of element type `elem`.  Stack:
+// [arrayref, index, value] → [].
+func emitArrayStore(insns: in List[LInsn], elem: in JvmType): Unit {
+  match elem {
+    case JByte -> insns.add(LBastore)
+    case JBoolean -> insns.add(LBastore)
+    case JChar -> insns.add(LCastore)
+    case JShort -> insns.add(LSastore)
+    case JInt -> insns.add(LIastore)
+    case JLong -> insns.add(LLastore)
+    case JFloat -> insns.add(LFastore)
+    case JDouble -> insns.add(LDastore)
+    case _ -> insns.add(LAastore)
+  }
+}
+
+// Emit the element-load opcode for a JVM array of element type `elem`.  Stack:
+// [arrayref, index] → [value].  Used by compound index assignment.
+func emitArrayLoad(insns: in List[LInsn], elem: in JvmType): Unit {
+  match elem {
+    case JByte -> insns.add(LBaload)
+    case JBoolean -> insns.add(LBaload)
+    case _ -> insns.add(LAaload)
+  }
+}
+
+// Replace element at index in an ArrayList: stack [list, index, value] → [].
+// `set(int, Object)` returns the previous element, which we discard.
+func emitListSet(insns: in List[LInsn]): Unit {
+  val setPs: List[JvmType] = newList()
+  setPs.add(JInt)
+  setPs.add(JRef(className = "java/lang/Object"))
+  insns.add(
+    LInvokevirtual(
+      owner = "java/util/ArrayList",
+      name = "set",
+      params = setPs,
+      ret = JRef(className = "java/lang/Object")
+    )
+  )
+  insns.add(LPop)
+}
+
+// Combine the current target value (already on the stack) with the RHS using
+// the compound-assignment operator, for primitive numeric target type `ty`.
+func emitCompoundArith(insns: in List[LInsn], op: in AssignOp, ty: in JvmType): Unit {
+  match op {
+    case AssPlus -> match ty { case JLong -> insns.add(LLadd); case JFloat -> insns.add(LFadd); case JDouble -> insns.add(LDadd); case _ -> insns.add(LIadd) }
+    case AssMinus -> match ty { case JLong -> insns.add(LLsub); case JFloat -> insns.add(LFsub); case JDouble -> insns.add(LDsub); case _ -> insns.add(LIsub) }
+    case AssStar -> match ty { case JLong -> insns.add(LLmul); case JFloat -> insns.add(LFmul); case JDouble -> insns.add(LDmul); case _ -> insns.add(LImul) }
+    case AssSlash -> match ty { case JLong -> insns.add(LLdiv); case JFloat -> insns.add(LFdiv); case JDouble -> insns.add(LDdiv); case _ -> insns.add(LIdiv) }
+    case AssPercent -> match ty { case JLong -> insns.add(LLrem); case JFloat -> insns.add(LFrem); case JDouble -> insns.add(LDrem); case _ -> insns.add(LIrem) }
+    case AssEq -> ()
   }
 }
 
@@ -113,22 +258,33 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
         case LBLet(name, tyOpt, init) -> {
           val initTy = lowerExpr(ctx, insns, init)
           val ty = match tyOpt { case Some(te) -> typeExprToJvm(te, ctx.pkgName); case None -> initTy }
+          coerceArgTo(insns, initTy, ty)
           val slot = allocSlot(ctx, name, ty)
           emitStore(insns, slot, ty)
         }
         case LBVar(name, tyOpt, initOpt) -> {
-          val ty = match tyOpt { case Some(te) -> typeExprToJvm(te, ctx.pkgName); case None -> JInt }
           match initOpt {
             case Some(init) -> {
+              // An un-annotated `var x = e` takes its slot type from the
+              // initialiser; an annotated `var x: T = e` coerces `e` to `T`.
               val initTy = lowerExpr(ctx, insns, init)
+              val ty = match tyOpt { case Some(te) -> typeExprToJvm(te, ctx.pkgName); case None -> initTy }
+              coerceArgTo(insns, initTy, ty)
               val slot = allocSlot(ctx, name, ty)
               emitStore(insns, slot, ty)
             }
             case None -> {
+              // No initialiser: an annotation is required to know the slot type;
+              // default to JInt only as a last resort (matches prior behaviour).
+              val ty = match tyOpt { case Some(te) -> typeExprToJvm(te, ctx.pkgName); case None -> JInt }
               val slot = allocSlot(ctx, name, ty)
               match ty {
                 case JLong -> {
                   insns.add(LLconst(v = 0i64))
+                  emitStore(insns, slot, ty)
+                }
+                case JFloat -> {
+                  insns.add(LFconst(v = 0.0))
                   emitStore(insns, slot, ty)
                 }
                 case JDouble -> {
@@ -160,7 +316,17 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
       match valOpt {
         case Some(e) -> {
           val ty = lowerExpr(ctx, insns, e)
-          emitReturn(insns, ty)
+          // Coerce to the declared return type so the value matches the method
+          // descriptor (e.g. a plain Double literal in a `: Float` function
+          // narrows with d2f).  Skip for void / generator contexts where the
+          // declared return type isn't threaded.
+          match ctx.retTy {
+            case JVoid -> emitReturn(insns, ty)
+            case rt -> {
+              coerceArgTo(insns, ty, rt)
+              emitReturn(insns, rt)
+            }
+          }
         }
         case None -> {
           insns.add(LReturn)
@@ -369,6 +535,7 @@ func lowerLocalPatBind(
   match pat.kind {
     case PBinding(name, _) -> {
       val ty = match tyOpt { case Some(te) -> typeExprToJvm(te, ctx.pkgName); case None -> initTy }
+      coerceArgTo(insns, initTy, ty)
       val slot = allocSlot(ctx, name, ty)
       emitStore(insns, slot, ty)
     }

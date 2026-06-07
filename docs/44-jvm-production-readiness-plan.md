@@ -151,11 +151,11 @@ tracking issue today (band J0 files them).
 | B-1 | Closures / lambdas panic on the user path (`ELambda` unhandled in `codegen.l`); no lambda-lifting stage in `bridge.l` | `codegen.l:985-989`; empirically `--target jvm` closure build fails | #1675 (closure dispatch) |
 | B-2 | `async`/`await`/`spawn`/`?` lower to **synchronous pass-throughs** — wrong semantics, not just missing (no future, no Err/None short-circuit) | `codegen.l:912-941` | #2469 (generators), (new: sync-stub) |
 | B-3 | Aspects are **not woven** on JVM (`bridge.l` never imports `Lyric.Weaver`); `IAspect` no-ops | `bridge.l:8-25`; `codegen.l:4994` vs `msil/bridge.l:168` | (new) |
-| B-4 | `Float` emitted as JVM `double` — silent precision/semantics bug | `codegen.l:261,302` | #1615 (int-opcode fallthrough), (new: Float) |
-| B-5 | Complex assignment targets (`obj.field = …`, `arr[i] = …`) silently dropped (value popped) | `codegen.l:1441-1446` | (new) |
+| B-4 | ~~`Float` emitted as JVM `double` — silent precision/semantics bug~~ **Fixed (D-progress-463):** real 32-bit `float`. | `codegen/01_types.l`,`02_exprs.l` | #1615, #2664 |
+| B-5 | ~~Complex assignment targets (`obj.field = …`, `arr[i] = …`) silently dropped (value popped)~~ **Fixed (D-progress-463).** | `codegen/05_stmts.l` | #2664 |
 | B-6 | stdlib packages that fail JVM codegen are swallowed → runtime `NoSuchMethodError` instead of build error | `bridge.l:408-413`; observed `Std.File`/`Std.Errors` "codegen unsupported" notes | (new) |
-| B-7 | Named-argument record construction can corrupt cross-typed fields (MSIL `reorderCtorNamedArgs` pass not ported) | per #1793 | #1793 |
-| B-8 | Union construction emits a call to a non-existent factory in some paths → `NoSuchMethodError` | per #1675 | #1675 |
+| B-7 | ~~Named-argument record construction can corrupt cross-typed fields (MSIL `reorderCtorNamedArgs` pass not ported)~~ **Fixed (D-progress-463):** `orderCtorArgs` permutes named args to field order. | `codegen/04_calls.l` | #1793, #2664 |
+| B-8 | ~~Union construction emits a call to a non-existent factory in some paths → `NoSuchMethodError`~~ **Fixed (D-progress-463):** field-bearing + nullary cases emit `new`+`invokespecial`. | `codegen/02_exprs.l`,`04_calls.l` | #1675, #2664 |
 | B-9 | No auto-FFI resolution for `extern type` method calls beyond the JDK-class fast path on some receivers; user `extern type` libraries mis-bind | #1708; `auto_ffi.l` JDK-first | #1708 |
 | B-10 | ~~`lyric build --target jvm foo.l` (no `-o`) writes the JAR as `foo.dll`; spurious .NET `runtimeconfig.json` emitted~~ **RESOLVED** | `cli.l:712`, `cli.l:545`; observed | #2664 (resolved) |
 | B-11 | JUnit tests do not actually execute on JVM — `lyric test --jvm` annotates `@LyricTest` but `LyricTestEngine` is deferred; generated test bodies are stub `return` | `test_engine.l:17-21`; `docs/18` Q-J007 | #676 |
@@ -238,17 +238,24 @@ self-test enforces in CI on `--target jvm`.
 
 ### J1 — Stop the silent miscompiles (highest priority, scoped, low-risk)
 These produce wrong-but-running output today and must fail loudly or be fixed:
-- B-4: emit `Float` as JVM `float` (`freturn`/`fload`/`F` descriptors), not
-  `double`; add a Float round-trip self-test.
-- B-5: implement `member =` / `index =` assignment lowering (or, if genuinely
+- [x] B-4: emit `Float` as JVM `float` (`freturn`/`fload`/`F` descriptors), not
+  `double`; add a Float round-trip self-test. **Done (D-progress-463):**
+  `typeExprToJvm` maps `Float`→`JFloat`; float load/store/return/arith/compare
+  opcodes + `d2f`/`f2d`/`i2f` conversions; `1.0f32` literal emits `LFconst`.
+- [x] B-5: implement `member =` / `index =` assignment lowering (or, if genuinely
   out of scope short-term, emit a hard error — never a silent pop).
+  **Done (D-progress-463):** `obj.field = e` → `putfield`; `arr[i] = e` →
+  `Xastore` / ArrayList `set`; compound forms supported.
 - B-6: make stdlib codegen failures **fatal** for the packages a build
   actually references; keep the "skipped" note only for genuinely-unreached
   packages, and surface which symbol failed.
-- or-pattern binding no-op (m-1 sibling, `codegen.l:2060`): bind the variable
-  or reject the pattern.
-- B-7/B-8: port the MSIL `reorderCtorNamedArgs` pass; fix union construction to
-  `new` + `invokespecial <init>`.
+- [x] or-pattern binding no-op (m-1 sibling, `codegen.l:2060`): bind the variable
+  or reject the pattern. **Done (D-progress-464):** the `POr` bind arm re-tests
+  each alternative and binds from the matching one.
+- [x] B-7/B-8: port the MSIL `reorderCtorNamedArgs` pass; fix union construction to
+  `new` + `invokespecial <init>`. **Done (D-progress-464):** `orderCtorArgs`
+  permutes named args to field order; nullary-case bare-path construction
+  (`Empty`/`None`) now emits `new`+`invokespecial <init>()V` instead of `null`.
 - B-10 (**done**, #2664): the single-file build output extension and
   `runtimeconfig.json` emission are now **target-aware** — `--target jvm`
   defaults the output to `<name>.jar` and emits no `runtimeconfig.json`,
@@ -259,7 +266,8 @@ These produce wrong-but-running output today and must fail loudly or be fixed:
   `compileToJarBundled`/`runMiddleEnd`); real user-file errors still surface.
 - **Acceptance:** a `silent_miscompile_guard_jvm_self_test.l` covering Float,
   complex assignment, named-arg records, union construction, and or-patterns,
-  run in CI on `--target jvm`.
+  run in CI on `--target jvm`. **Done (D-progress-463):** 8/8 pass; wired into
+  CI beside the `auto_ffi_jvm` / `hash_jvm` steps.
 
 ### J2 — Bring `jvm/bridge.l` to MSIL-bridge parity (architectural, the linchpin)
 Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:

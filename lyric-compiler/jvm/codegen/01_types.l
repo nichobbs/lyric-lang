@@ -116,6 +116,11 @@ pub record FuncCtx {
   externTypes: Map[String, String]
   // Auto-FFI resolution context for JDK class loading.
   autoFfi: AutoFfiCtx
+  // Declared JVM return type of the function being lowered.  An explicit
+  // `return e` coerces `e` to this type so the return value matches the
+  // method descriptor (e.g. a plain Double literal narrows to Float).  JVoid
+  // for void functions and hand-built / generator-internal contexts.
+  retTy: JvmType
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -255,7 +260,7 @@ pub func typeExprToJvm(te: in TypeExpr, pkgName: in String): JvmType {
       } else if seg == "Double" {
         JDouble
       } else if seg == "Float" {
-        JDouble
+        JFloat
       } else if seg == "Bool" {
         JBoolean
       } else if seg == "String" {
@@ -296,7 +301,7 @@ pub func emitLoad(insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
     case JChar -> insns.add(LIload(slot = slot))
     case JShort -> insns.add(LIload(slot = slot))
     case JInt -> insns.add(LIload(slot = slot))
-    case JFloat -> insns.add(LDload(slot = slot))
+    case JFloat -> insns.add(LFload(slot = slot))
     case JVoid -> insns.add(LNop)
     case JRef(_) -> insns.add(LAload(slot = slot))
     case JArray(_) -> insns.add(LAload(slot = slot))
@@ -330,7 +335,7 @@ pub func emitStore(insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
     case JChar -> insns.add(LIstore(slot = slot))
     case JShort -> insns.add(LIstore(slot = slot))
     case JInt -> insns.add(LIstore(slot = slot))
-    case JFloat -> insns.add(LDstore(slot = slot))
+    case JFloat -> insns.add(LFstore(slot = slot))
     case JVoid -> insns.add(LNop)
     case JRef(_) -> insns.add(LAstore(slot = slot))
     case JArray(_) -> insns.add(LAstore(slot = slot))
@@ -346,7 +351,7 @@ pub func emitReturn(insns: in List[LInsn], ty: in JvmType): Unit {
     case JChar -> insns.add(LIreturn)
     case JShort -> insns.add(LIreturn)
     case JInt -> insns.add(LIreturn)
-    case JFloat -> insns.add(LDreturn)
+    case JFloat -> insns.add(LFreturn)
     case JVoid -> insns.add(LReturn)
     case JRef(_) -> insns.add(LAreturn)
     case JArray(_) -> insns.add(LAreturn)
