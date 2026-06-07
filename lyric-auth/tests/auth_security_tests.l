@@ -277,6 +277,21 @@ test "nbf overflow regression: validly-signed token with 20-digit nbf is rejecte
   assertEqual(code, "NBF_OVERFLOW", "20-digit nbf → NBF_OVERFLOW")
 }
 
+test "exp non-numeric regression: validly-signed token with non-numeric exp string is rejected (#1161)" {
+  // Payload: {"exp":"abc"} — exp is a string, not a number.
+  // getLongClaimFromJson returns Err("parse_error") for the non-numeric string.
+  // validatePayload maps this to EXP_OVERFLOW (the conflated error code).
+  val r = Auth.verifyJwt(
+    "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOiJhYmMifQ.NCnzMSVqHiR3EKJFPFXm7gGpVfsgxO7Q7nY_Kf_3E5I",
+    "test-secret",
+    "",
+    "",
+    "HS256"
+  )
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(code, "EXP_OVERFLOW", "non-numeric exp string → EXP_OVERFLOW (pins current error code)")
+}
+
 // ─── #1089: RFC 7519 §4.1.3 array-form aud ────────────────────────────────────
 test "verifyJwt: array-form aud containing expected audience verifies (#1089)" {
   // Payload: {"aud":["api.example.com","admin"]}, signed with HMAC-SHA256("test-secret").
