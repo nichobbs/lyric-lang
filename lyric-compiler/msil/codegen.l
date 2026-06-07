@@ -14489,11 +14489,61 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
 // record ctors / free functions / union case ctors require
 // signature-blob encoding from the typechecker's `ResolvedSignature`
 // map and ship in the c.3 slice.
+// Scan `cctx.restoredArtifacts` for the matching package and return its
+// originating DLL file path, or `""` when no match.  Mirrors
+// `lookupRestoredArtifactVersion`'s linear scan.
+func lookupRestoredArtifactDllPath(cctx: in CodegenCtx, packageName: in String): String {
+  var i = 0
+  while i < cctx.restoredArtifacts.count {
+    val art = cctx.restoredArtifacts[i]
+    if art.packageName == packageName {
+      return art.dllPath
+    }
+    i = i + 1
+  }
+  ""
+}
+
+// Derive the actual assembly simple name from a DLL file path: strip the
+// directory prefix and the `.dll` extension.  A consumer's AssemblyRef
+// must match the producer's assembly simple name verbatim or the loader
+// can't bind.  For ordinary restored deps the file is `<packageName>.dll`,
+// so the stem equals the package name — but Lyric-emitted *bundle* DLLs
+// can prefix every member package (the compiler bundle ships package
+// `Lyric.Weaver` as `Lyric.Lyric.Weaver.dll`, assembly simple name
+// `Lyric.Lyric.Weaver`).  Naming the AssemblyRef after the file stem is
+// correct in both cases; `fallback` (the package name) covers a missing
+// path.
+func assemblySimpleNameFromDll(dllPath: in String, fallback: in String): String {
+  if dllPath == "" {
+    return fallback
+  }
+  var base = dllPath
+  val slashIdx = base.lastIndexOf("/")
+  if slashIdx >= 0 {
+    base = base.substring(slashIdx + 1, base.length - slashIdx - 1)
+  }
+  val bslashIdx = base.lastIndexOf("\\")
+  if bslashIdx >= 0 {
+    base = base.substring(bslashIdx + 1, base.length - bslashIdx - 1)
+  }
+  val dotIdx = base.lastIndexOf(".")
+  if dotIdx >= 0 {
+    base = base.substring(0, dotIdx)
+  }
+  if base == "" {
+    return fallback
+  }
+  base
+}
+
 // Allocate one AssemblyRef per restored artifact, keyed by package
 // name → AssemblyRef row.  Cached in `ffiAsmRefs` so multiple
 // `registerRestoredArtifactTokens` calls against the same package
-// re-use the row.  Lyric-emitted assemblies use `<packageName>.dll`,
-// so the simple assembly name matches the package name verbatim.
+// re-use the row.  The AssemblyRef NAME is the producer DLL's actual
+// assembly simple name (its file stem), which equals `packageName` for
+// ordinary `<packageName>.dll` deps but differs for prefixed bundle DLLs
+// (see `assemblySimpleNameFromDll`).
 func ensureAssemblyRefForArtifact(cctx: in CodegenCtx, packageName: in String): Int {
   match mapGet(cctx.ffiAsmRefs, packageName) {
     case Some(row) -> return row
@@ -14510,7 +14560,9 @@ func ensureAssemblyRefForArtifact(cctx: in CodegenCtx, packageName: in String): 
   // which is itself a bug; the fallback keeps the loader happy.
   val verStr = lookupRestoredArtifactVersion(cctx, packageName)
   val verParts = parseSemverMajorMinor(verStr)
-  val row = ctxAddLyricPackageAssemblyRef(cctx.lctx, packageName, verParts[0], verParts[1])
+  val dllPath = lookupRestoredArtifactDllPath(cctx, packageName)
+  val asmName = assemblySimpleNameFromDll(dllPath, packageName)
+  val row = ctxAddLyricPackageAssemblyRef(cctx.lctx, asmName, verParts[0], verParts[1])
   cctx.ffiAsmRefs.add(packageName, row)
   row
 }
@@ -14669,7 +14721,7 @@ func registerRestoredRecordCtor(cctx: in CodegenCtx, packageName: in String, rec
     fi = fi + 1
   }
 
-  val ctorSig = buildInstanceMethodSig(ctorParams, MVoid)
+  val ctorSig = buildInstanceMethodSigWithCtx(ctorParams, MVoid, cctx.lctx)
   val sigKey = "restored_ctor_" + className
   val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, ".ctor", sigKey, ctorSig)
   cctx.recordCtorTokens.add(className, 0x0A000000 + memberRow)
@@ -14679,11 +14731,15 @@ func registerRestoredRecordCtor(cctx: in CodegenCtx, packageName: in String, rec
 // so that `EMember` lowering can emit `ldfld` with a cross-assembly token
 // instead of silently popping the receiver and returning MObject.
 //
-// The field MemberRef signature mirrors `buildFieldSig`: reference-type
-// fields degrade to ELEMENT_TYPE_OBJECT (0x1C) to match the encoding that
-// `lowerMRecord` produces in the foreign DLL.  `fieldMsilTypes` carries the
-// "semantic" type (e.g. MListOf or MClass) so downstream codegen can still
-// see the element type for correct EIndex handling.
+// The field MemberRef signature mirrors `lowerMRecord`'s producer-side
+// encoding (`buildFieldSigWithCtx`): a reference-type field is encoded as
+// ELEMENT_TYPE_CLASS + TypeDefOrRef, not degraded to ELEMENT_TYPE_OBJECT.
+// Both the F# bootstrap emitter and the self-hosted `lowerMRecord` now emit
+// concrete field types, so the consumer's FieldRef must match concretely or
+// the loader faults with `Field not found` at run time (#2359).
+// `fieldMsilTypes` carries the "semantic" type (e.g. MListOf or MClass) so
+// downstream codegen can still see the element type for correct EIndex
+// handling.
 func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, rec: in RecordDecl): Unit {
   val className = packageName + "." + rec.name
   val typeRefRow = lookupRestoredTypeRefRow(cctx, packageName, rec.name)
@@ -14698,7 +14754,7 @@ func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, r
         val key = className + "/" + f.name
         if not cctx.fieldTokens.containsKey(key) {
           val fty = typeExprToMsilCtx(cctx, f.ty, packageName)
-          val fSig = buildFieldSig(fty)
+          val fSig = buildFieldSigWithCtx(fty, cctx.lctx)
           val sigKey = "restored_field_" + key
           val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, f.name, sigKey, fSig)
           cctx.fieldTokens.add(key, 0x0A000000 + memberRow)
@@ -14742,7 +14798,7 @@ func registerRestoredFunc(cctx: in CodegenCtx, packageName: in String, fn: in Fu
   }
   val retType = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
 
-  val funcSig = buildStaticMethodSig(byrefWrapSigTypes(fn.params, paramTypes), retType)
+  val funcSig = buildStaticMethodSigWithCtx(byrefWrapSigTypes(fn.params, paramTypes), retType, cctx.lctx)
   val sigKey = "restored_func_" + fqn
   val memberRow = ctxAddMemberRef(cctx.lctx, hostRefRow, fn.name, sigKey, funcSig)
   cctx.funcTokens.add(fqn, 0x0A000000 + memberRow)
@@ -14819,7 +14875,7 @@ func registerRestoredUnionCase(
     // For UFNamed the actual DLL field name is the declared name; UFPos uses
     // "field<i>".  The positional alias entry points to the SAME MemberRef
     // row so `ldfld` resolves correctly against the real field name.
-    val fSig = buildFieldSig(fty)
+    val fSig = buildFieldSigWithCtx(fty, cctx.lctx)
     match uf {
       case UFNamed(fname, _, _) -> {
         val nameKey = caseFqn + "/" + fname
@@ -14851,7 +14907,7 @@ func registerRestoredUnionCase(
     fi = fi + 1
   }
 
-  val ctorSig = buildInstanceMethodSig(ctorParams, MVoid)
+  val ctorSig = buildInstanceMethodSigWithCtx(ctorParams, MVoid, cctx.lctx)
   val sigKey = "restored_ucase_" + caseFqn
   val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, ".ctor", sigKey, ctorSig)
   cctx.recordCtorTokens.add(caseFqn, 0x0A000000 + memberRow)
@@ -15087,32 +15143,45 @@ func registerRestoredIfaceMethod(
 /// symbol tables.  Call once after `newCodegenCtx`, before the
 /// per-package `addPackageTokens` pre-scan.
 pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
+  // Global two-pass registration (mirrors `registerStdlibArtifactTokens`):
+  // ALL types across ALL artifacts are registered before ANY member
+  // signature is encoded.  A per-artifact pass would resolve a function
+  // whose signature references a *sibling* package's type before that
+  // sibling's TypeRef exists, silently erasing the cross-package type to
+  // `System.Object` — so the consumer's MemberRef physical signature
+  // (`Object parse(String)`) no longer matches the producer DLL's real
+  // method (`ParseResult parse(String)`) and the loader faults with
+  // `Method not found` at run time.  The global ordering guarantees, e.g.,
+  // `Lyric.Parser`'s `ParseResult` TypeRef exists before `Lyric.Weaver`'s
+  // functions (which return Parser-typed values) are encoded.
+  //
+  // Standard-library packages (`Std.*`) are authoritatively registered by
+  // `registerStdlibArtifactTokens` from the full `lyric-stdlib/std/*.l`
+  // sources, which every project build loads unconditionally
+  // (`emitProjectInProcess` -> `findStdlibSources`).  When `Lyric.Stdlib`
+  // is also a declared `[dependencies]` entry — as it is in every project
+  // — its bundle DLL arrives here as a restored artifact too.  Registering
+  // it from the contract-repr round-trip would emit cross-assembly refs
+  // using the self-hosted IN-BUNDLE conventions (`Option$None`, raw
+  // `Std.Core` assembly name) which do not match the actually-deployed
+  // stdlib (`Option_None` in assembly `Lyric.Stdlib.Core`), so the consumer
+  // PE faults at run time with `Could not load file or assembly 'Std.Core'`
+  // / `Could not load type 'Std.Core.Option$None'`.  Skip it here and let
+  // the single, source-backed stdlib path own these symbols (#1602).
+  //
+  // The `Std.*` prefix is reserved for the standard library (the type
+  // checker rejects user packages declaring it); see Q-name-001 for the
+  // formal reservation note.
+  //
+  // Pass 1: types (TypeRef rows + name lookups) for every artifact.
   var ai = 0
   while ai < cctx.restoredArtifacts.count {
     val art = cctx.restoredArtifacts[ai]
-    // Standard-library packages (`Std.*`) are authoritatively registered by
-    // `registerStdlibArtifactTokens` from the full `lyric-stdlib/std/*.l`
-    // sources, which every project build loads unconditionally
-    // (`emitProjectInProcess` -> `findStdlibSources`).  When `Lyric.Stdlib`
-    // is also a declared `[dependencies]` entry — as it is in every project
-    // — its bundle DLL arrives here as a restored artifact too.  Registering
-    // it from the contract-repr round-trip would emit cross-assembly refs
-    // using the self-hosted IN-BUNDLE conventions (`Option$None`, raw
-    // `Std.Core` assembly name) which do not match the actually-deployed
-    // stdlib (`Option_None` in assembly `Lyric.Stdlib.Core`), so the consumer
-    // PE faults at run time with `Could not load file or assembly 'Std.Core'`
-    // / `Could not load type 'Std.Core.Option$None'`.  Skip it here and let
-    // the single, source-backed stdlib path own these symbols (#1602).
-    //
-    // The `Std.*` prefix is reserved for the standard library (the type
-    // checker rejects user packages declaring it); see Q-name-001 for the
-    // formal reservation note.
     if startsWith(art.packageName, "Std.") {
       ai = ai + 1
       continue
     }
     val asmRefRow = ensureAssemblyRefForArtifact(cctx, art.packageName)
-    // Pass 1: types (TypeRef rows + name lookups).
     var di = 0
     while di < art.contract.decls.count {
       val decl = art.contract.decls[di]
@@ -15122,13 +15191,21 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
       }
       di = di + 1
     }
-    // Pass 2: record ctor MemberRef rows (depends on pass 1 having
-    // allocated the TypeRefs).  Walks the parsed source instead of
-    // the contract decls so we get structured field types for
-    // signature encoding.  Free funcs and union case ctors land in
-    // a follow-up slice.
-    registerRestoredMembers(cctx, art)
     ai = ai + 1
+  }
+  // Pass 2: member MemberRef rows (record ctors / fields, free funcs,
+  // union cases, impl methods) now that every type's TypeRef exists.
+  // Walks the parsed source instead of the contract decls so we get
+  // structured field types for signature encoding.
+  var aj = 0
+  while aj < cctx.restoredArtifacts.count {
+    val art = cctx.restoredArtifacts[aj]
+    if startsWith(art.packageName, "Std.") {
+      aj = aj + 1
+      continue
+    }
+    registerRestoredMembers(cctx, art)
+    aj = aj + 1
   }
 }
 
