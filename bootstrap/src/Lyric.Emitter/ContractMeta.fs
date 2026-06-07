@@ -40,9 +40,6 @@ type ContractDecl =
     { Kind:     string         // "func" | "record" | "union" | "enum" | …
       Name:     string
       Repr:     string         // canonical signature / shape, free-form
-      /// Visibility level (v3 format). "pub" | "internal" | "" (package-private).
-      /// Read from v3 metadata; defaults to "pub" for v1-v2 backward compatibility.
-      Visibility: string
       /// `@pure` annotation present on this declaration.
       Pure:     bool
       /// Stability level (D040 / Q011).
@@ -72,20 +69,7 @@ type Contract =
       /// `proof_required(checked_arithmetic)` / `axiom`.
       Level:         string
       FormatVersion: int
-      /// Direct dependencies: transitive deps list with contract hashes (v3+).
-      /// Read from v3 metadata; empty for v1-v2 contracts.
-      Dependencies: ContractDependency list
-      /// SHA256 hash of this contract's JSON (v3+).
-      /// Read from v3 metadata; empty for v1-v2 contracts.
-      ContractHash: string
       Decls:         ContractDecl list }
-
-/// One serialised direct dependency (v3 format).
-/// Read from v3 metadata only; empty list for v1-v2 contracts.
-and ContractDependency =
-    { PackageName:  string
-      Version:      string
-      ContractHash: string }
 
 module ContractDecl =
 
@@ -94,16 +78,15 @@ module ContractDecl =
     /// fixtures and decls of kinds that never carry contracts
     /// (records, enums, …).
     let basic (kind: string) (name: string) (repr: string) : ContractDecl =
-        { Kind       = kind
-          Name       = name
-          Repr       = repr
-          Visibility = "pub"
-          Pure       = false
-          Stability  = ""
-          Requires   = []
-          Ensures    = []
-          Body       = None
-          Params     = [] }
+        { Kind      = kind
+          Name      = name
+          Repr      = repr
+          Pure      = false
+          Stability = ""
+          Requires  = []
+          Ensures   = []
+          Body      = None
+          Params    = [] }
 
 module Contract =
 
@@ -115,8 +98,6 @@ module Contract =
           Version       = ver
           Level         = "runtime_checked"
           FormatVersion = 1
-          Dependencies  = []
-          ContractHash  = ""
           Decls         = decls }
 
 let private renderTypeExpr (te: TypeExpr) : string =
@@ -309,16 +290,15 @@ let private contractClauseStrings (cs: ContractClause list)
 let private declOf (it: Item) : ContractDecl option =
     let stab = stabilityStringOfItem it
     let mkDefault kind name repr =
-        { Kind       = kind
-          Name       = name
-          Repr       = repr
-          Visibility = "pub"
-          Pure       = false
-          Stability  = stab
-          Requires   = []
-          Ensures    = []
-          Body       = None
-          Params     = [] }
+        { Kind      = kind
+          Name      = name
+          Repr      = repr
+          Pure      = false
+          Stability = stab
+          Requires  = []
+          Ensures   = []
+          Body      = None
+          Params    = [] }
     // Extern types and protected types must be included regardless of visibility
     // so that contract type-checking can resolve them when public function
     // signatures reference these types.
@@ -358,16 +338,15 @@ let private declOf (it: Item) : ContractDecl option =
                 fn.Params
                 |> List.map (fun p -> p.Name, renderTypeExpr p.Type)
             Some
-                { Kind       = "func"
-                  Name       = fn.Name
-                  Repr       = repr
-                  Visibility = "pub"
-                  Pure       = isPure
-                  Stability  = stab
-                  Requires   = req
-                  Ensures    = ens
-                  Body       = body
-                  Params     = paramsStruct }
+                { Kind      = "func"
+                  Name      = fn.Name
+                  Repr      = repr
+                  Pure      = isPure
+                  Stability = stab
+                  Requires  = req
+                  Ensures   = ens
+                  Body      = body
+                  Params    = paramsStruct }
         | IRecord rd | IExposedRec rd ->
             let fs =
                 rd.Members
@@ -549,8 +528,6 @@ let buildContract
       Version       = version
       Level         = levelOfFile sf
       FormatVersion = FORMAT_VERSION
-      Dependencies  = []
-      ContractHash  = ""  // Populated by self-hosted Lyric.ContractMetaEmit in Phase 2
       Decls         = anchorDecls @ ownDecls @ reexportDecls }
 
 let private escape (s: string) : string =
@@ -778,15 +755,6 @@ let parseFromJson (json: string) : Contract option =
                     let t = getStrInElem inner "type" ""
                     yield n, t ]
             | _ -> []
-        let getDependencies () : ContractDependency list =
-            match root.TryGetProperty("dependencies") with
-            | true, arr when arr.ValueKind = System.Text.Json.JsonValueKind.Array ->
-                [ for el in arr.EnumerateArray() do
-                    let pkg = getStrInElem el "packageName" ""
-                    let ver = getStrInElem el "version" ""
-                    let hash = getStrInElem el "contractHash" ""
-                    yield { PackageName = pkg; Version = ver; ContractHash = hash } ]
-            | _ -> []
         let formatVersion =
             match root.TryGetProperty("formatVersion") with
             | true, e ->
@@ -798,8 +766,6 @@ let parseFromJson (json: string) : Contract option =
         let pkgStr = getStr "packageName" ""
         let verStr = getStr "version" "0.0.0"
         let level  = getStr "level" "runtime_checked"
-        let deps = getDependencies()
-        let hash = getStr "contractHash" ""
         let decls =
             match root.TryGetProperty("decls") with
             | true, arr when arr.ValueKind = System.Text.Json.JsonValueKind.Array ->
@@ -807,8 +773,6 @@ let parseFromJson (json: string) : Contract option =
                     let kind     = getStrInElem el "kind" ""
                     let name     = getStrInElem el "name" ""
                     let repr     = getStrInElem el "repr" ""
-                    // Visibility field for v3 contracts; absent v1-v2 contracts default to "pub"
-                    let vis      = getStrInElem el "visibility" "pub"
                     let pure'    = getBoolInElem el "pure"
                     let stab     = getStrInElem el "stability" ""
                     let reqs     = getStrArrayInElem el "requires"
@@ -816,24 +780,21 @@ let parseFromJson (json: string) : Contract option =
                     let body     = getOptStrInElem el "body"
                     let parms    = getParamsInElem el
                     yield
-                        { Kind       = kind
-                          Name       = name
-                          Repr       = repr
-                          Visibility = vis
-                          Pure       = pure'
-                          Stability  = stab
-                          Requires   = reqs
-                          Ensures    = ens
-                          Body       = body
-                          Params     = parms } ]
+                        { Kind      = kind
+                          Name      = name
+                          Repr      = repr
+                          Pure      = pure'
+                          Stability = stab
+                          Requires  = reqs
+                          Ensures   = ens
+                          Body      = body
+                          Params    = parms } ]
             | _ -> []
         Some
             { PackageName   = pkgStr
               Version       = verStr
               Level         = level
               FormatVersion = formatVersion
-              Dependencies  = deps
-              ContractHash  = hash
               Decls         = decls }
     with _ -> None
 
