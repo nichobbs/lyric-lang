@@ -122,6 +122,24 @@ pub record NugetSection {
   allowNative: Bool
 }
 
+/// A single `[maven]` coordinate entry per `docs/31-maven-linking.md` (D053).
+/// `coordinate` is the verbatim `groupId:artifactId` key; `version` is the
+/// resolved version string (passed opaquely to the resolver).
+pub record MavenEntry {
+  coordinate: String
+  version: String
+}
+
+/// `[maven]` section per `docs/31-maven-linking.md` (D053).  Parallels
+/// `NugetSection`.  `repositories` defaults to `["central"]` (Maven Central);
+/// `javaVersion` is `None` when the `[maven.options]` `java_version` key is
+/// absent (the resolver then substitutes the project's `jvm_target`).
+pub record MavenSection {
+  entries: List[MavenEntry]
+  repositories: List[String]
+  javaVersion: Option[String]
+}
+
 /// `[features]` section per `docs/24-build-features.md` (D045).  v1
 /// implementation accepts only empty implication arrays per declared
 /// feature; non-empty implications are deferred to v1.1.
@@ -172,6 +190,7 @@ pub record Manifest {
   project: Option[ProjectSection]
   deps: List[DependencyEntry]
   nuget: Option[NugetSection]
+  maven: Option[MavenSection]
   features: Option[FeaturesSection]
   /// Non-None when this manifest also declares a `[workspace]` table.
   workspace: Option[WorkspaceSection]
@@ -956,6 +975,47 @@ func assembleNuget(entries: in List[Entry]): Option[NugetSection] {
   Some(value = NugetSection(entries = nugetEntries, target = target, allowNative = allowNative))
 }
 
+/// Assemble the `[maven]` / `[maven.options]` tables per
+/// `docs/31-maven-linking.md` (D053).  Mirrors `assembleNuget`: each
+/// `groupId:artifactId = "version"` entry becomes a `MavenEntry`, and the
+/// extended `{ version = "...", ... }` inline-table form is also accepted.
+/// `[maven.options].repositories` defaults to `["central"]`; `java_version`
+/// is optional.  Returns `None` when no `[maven]` table is present.
+func assembleMaven(entries: in List[Entry]): Option[MavenSection] {
+  if not hasSection(entries, "maven") {
+    return None
+  }
+  val mavenEntries: List[MavenEntry] = newList()
+  var i = 0
+  while i < entries.count {
+    val e = entries[i]
+    if e.section == "maven" {
+      match e.value {
+        case VStr(v) -> mavenEntries.add(MavenEntry(coordinate = e.key, version = v))
+        case VTable(pairs) -> {
+          // Support { version = "2.17.0", ... } form in [maven].
+          match findInlineStr(pairs, "version") {
+            case Some(v) -> mavenEntries.add(MavenEntry(coordinate = e.key, version = v))
+            case None -> ()
+          }
+        }
+        case _ -> ()
+      }
+    }
+    i += 1
+  }
+  val repositories: List[String] = match findStringList(entries, "maven.options", "repositories") {
+    case Some(repos) -> repos
+    case None -> {
+      val def: List[String] = newList()
+      def.add("central")
+      def
+    }
+  }
+  val javaVersion = findString(entries, "maven.options", "java_version")
+  Some(value = MavenSection(entries = mavenEntries, repositories = repositories, javaVersion = javaVersion))
+}
+
 func assembleWorkspace(entries: in List[Entry]): Option[WorkspaceSection] {
   if not hasSection(entries, "workspace") {
     return None
@@ -1002,7 +1062,7 @@ func assembleRegistry(entries: in List[Entry]): Option[RegistryConfig] {
 pub func parseManifest(text: in String, filePath: in String): Result[Manifest, ManifestError] {
   match collectEntries(text, filePath) {
     case Err(e) -> Err(error = e)
-    case Ok(entries) -> match assemblePackage(entries) { case Err(e) -> Err(error = e); case Ok(pkg) -> { val project = assembleProject(entries); val nuget = assembleNuget(entries); val ws = assembleWorkspace(entries); val reg = assembleRegistry(entries); match assembleDeps(entries) { case Err(e) -> Err(error = e); case Ok(deps) -> match assembleFeatures(entries) { case Err(e) -> Err(error = e); case Ok(featuresOpt) -> Ok(value = Manifest(filePath = filePath, packageSection = pkg, project = project, deps = deps, nuget = nuget, features = featuresOpt, workspace = ws, registry = reg)) } } } }
+    case Ok(entries) -> match assemblePackage(entries) { case Err(e) -> Err(error = e); case Ok(pkg) -> { val project = assembleProject(entries); val nuget = assembleNuget(entries); val maven = assembleMaven(entries); val ws = assembleWorkspace(entries); val reg = assembleRegistry(entries); match assembleDeps(entries) { case Err(e) -> Err(error = e); case Ok(deps) -> match assembleFeatures(entries) { case Err(e) -> Err(error = e); case Ok(featuresOpt) -> Ok(value = Manifest(filePath = filePath, packageSection = pkg, project = project, deps = deps, nuget = nuget, maven = maven, features = featuresOpt, workspace = ws, registry = reg)) } } } }
   }
 }
 

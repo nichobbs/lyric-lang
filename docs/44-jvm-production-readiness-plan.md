@@ -169,7 +169,7 @@ tracking issue today (band J0 files them).
 | M-3 | Opaque / protected / wire / config types recognized but **not emitted** (no-op), though `lowering.l` can emit opaque | `codegen.l:4938,4940,4978,4992` | (new; opaque ≈ low-effort wiring) |
 | M-4 | `@cfg(feature=…)` erasure not applied on JVM (`bridge.l` has no cfg stage) | `bridge.l`; vs `msil/bridge.l:402` | #2444 (target-gate seam) |
 | M-5 | Cross-package / generic-type monomorphization is same-package only on JVM | `bridge.l:159` | #1707 |
-| M-6 | **Maven self-hosting absent:** `[maven]` parsed only by F# `Manifest.fs`; `manifest.l` cannot read ecosystem `[maven]` tables (`lyric-web`, `lyric-mq`, `lyric-grpc`, `lyric-lambda`, …) | `manifest.l` (no `[maven]`); `Manifest.fs:121+` | #1622/#1708 cluster |
+| M-6 | **Maven self-hosting absent:** `[maven]` parsed only by F# `Manifest.fs`; `manifest.l` cannot read ecosystem `[maven]` tables (`lyric-web`, `lyric-mq`, `lyric-grpc`, `lyric-lambda`, …). **Parsing slice DONE (#2668):** `manifest.l` now parses `[maven]` / `[maven.options]` into `MavenSection` (`MavenEntry` + `repositories` default `["central"]` + optional `java_version`), mirroring `[nuget]`; covered by `manifest_self_test.l`. The resolution/download path (M-7) remains. | `manifest.l` `assembleMaven`; `Manifest.fs:121+` | #1622/#1708 cluster |
 | M-7 | **Maven resolver orphaned:** `resolver/` Java project not built/invoked by any script, F#, Lyric, or CI; only `LYRIC_FFI_JARS` works | `resolver/pom.xml`; no references | #673 |
 | M-8 | **F#-host kernel debt:** JVM byte-builder + constant pool via `@externTarget` into `Lyric.Jvm.Hosts` (F#), on the deletion schedule | `jvm/_kernel/kernel.l:19-28` → `JvmHosts.fs`; `docs/41` H12 | (Band 5 / #1470 parity) |
 | M-9 | `Std.Hash` has **no JVM host** (`_kernel/hash_host.l` exists; `_kernel_jvm/hash_host.l` does not) yet `Std.Hash` is imported by `cli.l` | filesystem; agent-verified | (new) |
@@ -292,6 +292,20 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   resolution path (revive or replace `resolver/`), wired into
   `lyric build --target jvm`. Until then, document `LYRIC_FFI_JARS` as the only
   supported mechanism rather than implying automated resolution.
+  - **Parsing slice DONE (#2668):** `manifest.l` now parses `[maven]` and
+    `[maven.options]` into a `MavenSection` (`MavenEntry` coordinate/version
+    pairs, `repositories` defaulting to `["central"]`, optional `java_version`),
+    mirroring how `[nuget]` / `[nuget.options]` are parsed (`assembleMaven`
+    parallels `assembleNuget`). Both the plain `group:artifact = "version"`
+    and extended `{ version = "..." }` inline-table forms are accepted, per
+    `docs/31-maven-linking.md` §2 (D053). Covered by `manifest_self_test.l`
+    (single coordinate, multiple coordinates + options, extended form, and
+    absence → `None`).
+  - **Remaining (resolver slice):** consume the parsed `MavenSection` from the
+    JVM build pipeline — revive or replace the orphaned Java `resolver/`,
+    download + checksum-verify JARs (`B0050`/`B0054`), generate `_extern/*.l`
+    auto-shims (§4), and wire the resolved classpath into
+    `lyric build --target jvm`.
 - M-15/m-7/m-8/m-9: `extern type` robustness (abstract-type guard,
   `java/lang/Object` walk, path-split, negative-cache), Windows path handling.
 - **Acceptance:** an ecosystem library with a `[maven]` table builds and runs

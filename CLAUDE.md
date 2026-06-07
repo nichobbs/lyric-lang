@@ -749,7 +749,13 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
   - `manifest.l` — `Lyric.Manifest` TOML parser for `lyric.toml`
     (M5.3 stage 1, D-progress-129).  Parses the subset of TOML used by the
     Lyric package system (`[package]`, `[project]`, `[dependencies]`,
-    `[nuget]`, `[nuget.options]`, `[features]`).
+    `[nuget]`, `[nuget.options]`, `[maven]`, `[maven.options]`,
+    `[features]`).  `[maven]` parsing (D053 / `docs/31-maven-linking.md`;
+    J5 M-6 parsing slice, #2668) mirrors `[nuget]`: `assembleMaven`
+    yields a `MavenSection` of `MavenEntry` coordinate/version pairs
+    plus `repositories` (default `["central"]`) and an optional
+    `java_version`.  The Maven resolution/download path (M-7) is not
+    yet wired.
   - `cfg.l` — `Lyric.Cfg` compile-time feature erasure (D045 /
     D-progress-299).  Self-hosted port of `bootstrap/src/Lyric.Emitter/Cfg.fs`.
     Provides `applyCfgErasure(active, declared, sf): CfgErasureResult`

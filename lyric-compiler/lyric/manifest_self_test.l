@@ -59,6 +59,10 @@ func testMinimal(): Unit {
     case None -> ()
     case Some(_) -> assertTrue(false, "minimal: no nuget section")
   }
+  match m.maven {
+    case None -> ()
+    case Some(_) -> assertTrue(false, "minimal: no maven section")
+  }
   match m.features {
     case None -> ()
     case Some(_) -> assertTrue(false, "minimal: no features section")
@@ -265,6 +269,76 @@ func testNuget(): Unit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §5b. [maven] section (docs/31-maven-linking.md, D053)
+// ─────────────────────────────────────────────────────────────────────────────
+// Single coordinate; no [maven.options] -> repositories defaults to ["central"]
+// and javaVersion is None.
+func testMavenSingle(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[maven]\n\"org.postgresql:postgresql\" = \"42.7.3\"\n"
+  val m = parseOk(toml)
+  match m.maven {
+    case None -> assertTrue(false, "maven-single: expected Some")
+    case Some(mv) -> {
+      assertEqualInt(mv.entries.count, 1, "maven-single: entry count")
+      assertEqual(mv.entries[0].coordinate, "org.postgresql:postgresql", "maven-single: coordinate")
+      assertEqual(mv.entries[0].version, "42.7.3", "maven-single: version")
+      assertEqualInt(mv.repositories.count, 1, "maven-single: default repo count")
+      assertEqual(mv.repositories[0], "central", "maven-single: default repo")
+      match mv.javaVersion {
+        case None -> ()
+        case Some(_) -> assertTrue(false, "maven-single: javaVersion defaults to None")
+      }
+    }
+  }
+}
+
+// Multiple coordinates plus [maven.options] (repositories + java_version).
+func testMavenMultiple(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[maven]\n\"com.fasterxml.jackson.core:jackson-databind\" = \"2.17.0\"\n\"org.slf4j:slf4j-api\" = \"2.0.12\"\n\n[maven.options]\nrepositories = [\"central\"]\njava_version = \"21\"\n"
+  val m = parseOk(toml)
+  match m.maven {
+    case None -> assertTrue(false, "maven-multi: expected Some")
+    case Some(mv) -> {
+      assertEqualInt(mv.entries.count, 2, "maven-multi: entry count")
+      assertEqual(mv.entries[0].coordinate, "com.fasterxml.jackson.core:jackson-databind", "maven-multi: coord[0]")
+      assertEqual(mv.entries[0].version, "2.17.0", "maven-multi: version[0]")
+      assertEqual(mv.entries[1].coordinate, "org.slf4j:slf4j-api", "maven-multi: coord[1]")
+      assertEqual(mv.entries[1].version, "2.0.12", "maven-multi: version[1]")
+      assertEqualInt(mv.repositories.count, 1, "maven-multi: repo count")
+      assertEqual(mv.repositories[0], "central", "maven-multi: repo[0]")
+      match mv.javaVersion {
+        case Some(jv) -> assertEqual(jv, "21", "maven-multi: java_version")
+        case None -> assertTrue(false, "maven-multi: expected java_version")
+      }
+    }
+  }
+}
+
+// Extended { version = "..." } inline-table form, mirroring [nuget].
+func testMavenExtended(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[maven]\n\"com.google.guava:guava\" = { version = \"33.2.1-jre\" }\n"
+  val m = parseOk(toml)
+  match m.maven {
+    case None -> assertTrue(false, "maven-extended: expected Some")
+    case Some(mv) -> {
+      assertEqualInt(mv.entries.count, 1, "maven-extended: entry count")
+      assertEqual(mv.entries[0].coordinate, "com.google.guava:guava", "maven-extended: coordinate")
+      assertEqual(mv.entries[0].version, "33.2.1-jre", "maven-extended: version")
+    }
+  }
+}
+
+// Absence of a [maven] table -> None.
+func testMavenAbsent(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[nuget]\nNewtonsoft.Json = \"13.0.1\"\n"
+  val m = parseOk(toml)
+  match m.maven {
+    case None -> ()
+    case Some(_) -> assertTrue(false, "maven-absent: expected None when no [maven] table")
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §6. [project] section
 // ─────────────────────────────────────────────────────────────────────────────
 func testProject(): Unit {
@@ -366,6 +440,10 @@ func main(): Unit {
   testWorkspaceSection()
   testRegistrySection()
   testNuget()
+  testMavenSingle()
+  testMavenMultiple()
+  testMavenExtended()
+  testMavenAbsent()
   testProject()
   testFeatures()
   testComments()
