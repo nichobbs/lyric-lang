@@ -287,21 +287,12 @@ let main argv =
             JvmLoweringB132Test.tests
             JvmLoweringB133Test.tests
             JvmLoweringB134Test.tests
-            SelfHostedLexerTests.tests
-            SelfHostedParserTests.tests
-            SelfHostedTypeCheckerTests.tests
-            SelfHostedFmtTests.tests
-            SelfHostedModeCheckerTests.tests
-            SelfHostedContractElaboratorTests.tests
             SelfHostedTestSynthTests.tests
             SelfHostedManifestTests.tests
-            SelfHostedCfgTests.tests
             SelfHostedContractMetaTests.tests
             SelfHostedRestoredPackagesTests.tests
             SelfHostedVerifierTests.tests
             SelfHostedGeneratorTests.tests
-            SelfHostedDerivesTests.tests
-            SelfHostedMonoTests.tests
             MultiFilePackageTests.tests
             ProjectAsDllTests.tests
             CfgErasureTests.tests

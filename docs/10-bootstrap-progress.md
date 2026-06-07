@@ -22074,3 +22074,37 @@ Remaining for #2362: the stage-3 stdlib byte-match (self-compiling `core.l`'s
 (D-progress-453) means a no-suffix byte-match target is unsafe for any
 multi-field generic case; the current stdlib generic types are all single-field,
 so there is no immediate conflict.
+
+### D-progress-456 — migrate 9 compiler self-tests to `@test_module` / native `lyric test`; delete their F# wrappers (#2364)
+
+**Status:** Shipped — building on the Stage 5 linking mechanism (D-progress-454),
+nine of the self-hosted compiler's self-tests are converted from the
+`func main` + "print ok" shape to the `@test_module` (`test "…" { … }`) form and
+now run through native `lyric test` (which links the compiler DLLs as restored
+deps).  Their F# `SelfHosted*Tests.fs` Expecto wrappers are deleted, removing 9
+of the 15 wrappers from the deletion schedule.
+
+Migrated (file → tests): `lexer` (51), `parser` (50), `typechecker` (126),
+`modechecker` (20), `contract_elaborator` (23), `cfg` (10), `derives` (21),
+`mono` (15), `fmt` (89) — 405 assertions, all green via `lyric test`.
+
+- The conversion is mechanical: each test entry-point `func testX(): Unit { … }`
+  becomes `test "x" { … }`, helper `func`s stay, the `func main` runner is
+  deleted, and `@test_module` is added before `package`.  Headers updated to
+  drop references to the deleted wrappers.
+- One genuine test bug surfaced and was fixed: `parser_self_test.l`'s local
+  `syntaxKindName` had a non-exhaustive `match` on `SyntaxKind` (missing
+  `SkBlock`/`SkStatement`/`SkExpr`/`SkContractClause`).  The F# stage-0 emitter
+  did not flag it; the self-hosted typechecker (T0016) correctly does.
+- CI: one consolidated "Compiler self-tests (native lyric test)" step runs all
+  nine; the deleted wrappers are removed from `Program.fs` and the
+  `Lyric.Emitter.Tests` `.fsproj` (emitter suite drops from 843 → 834 cases,
+  still green).
+
+The remaining **6** self-tests (`generator`, `contract_meta`, `manifest`,
+`restored_packages`, `test_synth`, `verifier`) are deferred to #2580: each
+surfaces a real behavioral / environment difference under the self-hosted path
+(restored-synthesis type-resolution gap, on-disk DLL / running-PE fixtures, a
+`.message` method-resolution gap, synthesis-output diffs, and a runtime
+dependency on the F# `Lyric.Emitter` assembly) that needs its own fix before its
+wrapper can be deleted.

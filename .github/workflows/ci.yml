@@ -533,6 +533,40 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/weaver_self_test.l
 
+      # Self-hosted compiler self-tests (native lyric test) — replaces the
+      # deleted F# `SelfHosted*Tests.fs` Expecto wrappers (#2364).  Each
+      # `@test_module` imports its `Lyric.*` compiler package(s), resolved by
+      # linking the already-compiled stage-1 bundle DLLs as restored deps; no
+      # recompile-from-source `LYRIC_LOAD_COMPILER=1`.  Run as one step so a
+      # missing-stage-1 / missing-binary guard is shared.
+      - name: Compiler self-tests (native lyric test)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping compiler self-tests"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping compiler self-tests"
+            exit 0
+          fi
+          for t in \
+            lyric-compiler/lyric/lexer_self_test.l \
+            lyric-compiler/lyric/parser_self_test.l \
+            lyric-compiler/lyric/typechecker_self_test.l \
+            lyric-compiler/lyric/modechecker_self_test.l \
+            lyric-compiler/lyric/contract_elaborator_self_test.l \
+            lyric-compiler/lyric/cfg_self_test.l \
+            lyric-compiler/lyric/derives_self_test.l \
+            lyric-compiler/lyric/mono_self_test.l \
+            lyric-compiler/lyric/fmt_self_test.l ; do
+            echo "=== $t ==="
+            "$lyric_bin" test "$t"
+          done
+
       # CfgGate self-test — exercises `Lyric.CfgGate` via native `lyric test`.
       # Compiler-package imports are resolved by linking the stage-1 bundle
       # DLLs (#2364); no `LYRIC_LOAD_COMPILER=1` recompile.  Covers #1123
