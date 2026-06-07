@@ -798,11 +798,10 @@ All are provisional pending weaver integration.
 | `Std.SecureRandomHost`   | `secure_random_host.l`       | 1      | 0           |
 | `Std.HashHost`           | `hash_host.l`                | 1      | 0           |
 | `Std.RegexHost`          | `regex_host.l`               | 1      | 0           |
-| `Std.Testing.Mocking`    | `testing_mocking.l`          | 1      | 0           |
 | `Std.AssemblyResourcesHost` | `assembly_resources_host.l`  | 1      | 0           |
 | `Std.Jvm`                | `jvm.l`                      | 0      | 1           |
 | `Std.JvmExceptionHost`   | `jvm_exception.l`            | 0      | 1           |
-| **Total**                |                              | **25** | **2**       |
+| **Total**                |                              | **24** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -840,7 +839,7 @@ recorded in the §19 baseline.
 
 ### Combined total
 
-25 + 23 = **48** stable + **2** provisional = **50** `@axiom`
+24 + 23 = **47** stable + **2** provisional = **49** `@axiom`
 annotations covering the entire extern boundary across both
 targets.
 
@@ -851,10 +850,13 @@ entries) moved every BCL extern to `lyric-stdlib/std/_kernel/`, replacing
 per-function `@axiom` annotations with package-level annotations that
 cover the entire extern boundary of each kernel file.  The axiom count
 grew from 11 (M4.3 baseline) → 16 (after D-progress-140) → 22 + 2 JVM
-→ 25 + 22 + 2 → 27 + 23 + 2 (current) as additional BCL surfaces were added (Console,
-Path, ProcessCapture, VerifierEnv, Random, SecureRandom, Hash, Regex/RegexHost,
-Testing.Mocking) and the JVM target boundary was brought under the
+→ 25 + 22 + 2 → 27 + 23 + 2 → 26 + 23 + 2 (current) as additional BCL surfaces
+were added (Console, Path, ProcessCapture, VerifierEnv, Random, SecureRandom,
+Hash, Regex/RegexHost) and the JVM target boundary was brought under the
 same audit framework, the JVM kernel gaining its own SHA-512 `Std.HashHost`.
+The `Std.Testing.Mocking` kernel axiom was retired when `StubCounter` became a
+native `protected type` (D-progress-123); its stale extern-host kernel file was
+deleted in D-progress-467.
 
 ## 19. Machine-checked axiom baseline
 
@@ -895,7 +897,6 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.RandomHost` | `random_host.l` | System.Random conforms to its documented .NET contracts; the Shared property returns a thread-safe shared instance (documented since .NET 6) |
 | `dotnet` | `Std.RegexHost` | `regex_host.l` | System.Text.RegularExpressions.Regex / .Match conform to their documented .NET contracts |
 | `dotnet` | `Std.SecureRandomHost` | `secure_random_host.l` | System.Security.Cryptography.RandomNumberGenerator conforms to its documented .NET contracts and produces cryptographically strong output |
-| `dotnet` | `Std.Testing.Mocking` | `testing_mocking.l` | Lyric.Stdlib.StubCounter / .StubCounterHost are an opaque counter the host owns; semantics are make / get / increment with monotonic non-negative integer state |
 | `dotnet` | `Std.TimeHost` | `time_host.l` | System.DateTime / System.TimeSpan / System.DateTimeOffset / System.TimeZoneInfo / System.Threading.Thread conform to their documented .NET contracts |
 | `dotnet` | `Std.UnicodeHost` | `unicode_host.l` | System.Char.GetUnicodeCategory returns System.Globalization.UnicodeCategory whose underlying type is int32 |
 | `dotnet` | `Std.UuidHost` | `uuid_host.l` | System.Guid conforms to its documented .NET contract |
