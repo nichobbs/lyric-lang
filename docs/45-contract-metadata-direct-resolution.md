@@ -217,13 +217,13 @@ val symtbl = buildSymbolTable(art.contract, art.dependencies)
 
 **D4 — Explicit visibility field**: Required in metadata format. No string-parsing.
 
+**D5 — New fields are stable**: The `visibility`, `dependencies`, and `contractHash` fields can carry `@stable(since = "0.1")` because they are metadata-only, not part of the runtime API surface.
+
 ## Open Questions
 
 **Q1**: When a consumer loads a bundled DLL with multiple packages, should we flatten the dependency manifests into one combined list, or keep them per-package? (Propose: keep per-package, merge at load time for clarity.)
 
-**Q2**: Can we add a `@stable(since = "0.1")` on the new fields so they're part of the stable ABI surface? (Yes; they're metadata-only, not part of the runtime API.)
-
-**Q3**: How should the CLI error message guide users when they try to consume a v2 contract? (Propose: "Contract metadata format v2 is no longer supported. Rebuild the library with the latest compiler and re-publish.")
+**Q2**: How should the CLI error message guide users when they try to consume a v2 contract? (Propose: "Contract metadata format v2 is no longer supported. Rebuild the library with the latest compiler and re-publish.")
 
 ## References
 
@@ -235,7 +235,7 @@ val symtbl = buildSymbolTable(art.contract, art.dependencies)
 ## Implementation Notes
 
 - **Visibility extraction**: parse the first keyword in `repr` (e.g., `"pub func foo"` → `"pub"`, `"record Bar"` → `""`)
-- **Dependency manifest**: list of `{packageName, version, contractHash?}` serialized as JSON
+- **Dependency manifest**: list of `{packageName, version, contractHash}` serialized as JSON (contractHash is required)
 - **Symbol table builder**: adapt the logic from `typechecker_symbols.l::registerItem`, but ingest from metadata instead of parsed AST
-- **Backwards compatibility**: while v2 is supported, the bridge can detect format version and route to either loader (synthesize for v2, direct for v3)
+- **No v2 compatibility shim**: The emitter immediately rejects v2 contracts with a clear error message directing users to rebuild and republish. No dual-path support.
 
