@@ -10,7 +10,7 @@
 //! source of truth for contract metadata emission (self-hosted compiler
 //! path only; F# bootstrap remains unchanged until stage-0 is deleted).
 //!
-//! Public entry point: emitContractMetadata(request): Result[String, EmissionError]
+//! Public entry point: emitContractMetadata(contract: in Meta.Contract): String
 @runtime_checked
 package Lyric.ContractMetaEmit
 
