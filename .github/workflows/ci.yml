@@ -21,7 +21,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
 
     steps:
       - uses: actions/checkout@v6
@@ -2170,12 +2169,18 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  promote-pr-if-ready:
+    runs-on: ubuntu-latest
+    needs: [build-and-test]
+    permissions:
+      pull-requests: write
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.draft == true &&
+      github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
       - name: Mark PR ready for review if build succeeds
-        if: >-
-          success() &&
-          github.event_name == 'pull_request' &&
-          github.event.pull_request.draft == true &&
-          github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v7
         with:
           script: |
