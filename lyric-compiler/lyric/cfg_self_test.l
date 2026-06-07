@@ -191,7 +191,3 @@ test "cfg overload arity resolution" {
     "cfg_overload_arity: jvm-active leaves only combine/2, 3-arg call is T0042"
   )
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §3. Driver
-// ─────────────────────────────────────────────────────────────────────────────

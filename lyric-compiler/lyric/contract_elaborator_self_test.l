@@ -681,7 +681,3 @@ test "protected invariant appended to entries" {
   // Original entry contracts preserved (1 requires clause only, not the added invariant)
   assertEqualInt(ed.contracts.count, 1, "protected-invariant: original entry contracts preserved")
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Test runner.
-// ─────────────────────────────────────────────────────────────────────────────
