@@ -268,9 +268,19 @@ func isTypeItem(it: in Item): Bool {
 // fatal mode-check / mono diagnostic was raised.  Type-check diagnostics are
 // advisory (the self-hosted checker lacks full builtin coverage), mirroring
 // `compileToJar`.
-func runMiddleEnd(file0: in SourceFile, importedPkgs: in List[ImportedPackage]): Option[SourceFile] {
+//
+// `reportTcAdvisories` gates whether the (non-gating) type-check diagnostics
+// are echoed to stderr.  Bundled stdlib packages pass `false`: their advisory
+// T0020-style noise (the self-hosted checker lacks full builtin coverage)
+// would otherwise leak onto a *successful* build's output.  Real errors still
+// gate via `reportAndAbort` on the mode-check / mono passes regardless.
+func runMiddleEnd(
+  file0: in SourceFile, importedPkgs: in List[ImportedPackage], reportTcAdvisories: in Bool
+): Option[SourceFile] {
   val tcRes = checkWithImportedPackages(file0, importedPkgs)
-  reportDiagnostics(tcRes.diagnostics)
+  if reportTcAdvisories {
+    reportDiagnostics(tcRes.diagnostics)
+  }
   val mcRes = checkFile(file0)
   if reportAndAbort(mcRes.diagnostics) {
     return None
@@ -337,7 +347,11 @@ pub func compileToJarBundled(
   var si = 0
   while si < stdlibSources.count {
     val pr = parse(stdlibSources[si])
-    reportDiagnostics(pr.diagnostics)
+    // Stdlib parse diagnostics are advisory and never gate the bundle (only the
+    // user file's parse and the per-package codegen are fatal).  Echoing them
+    // here leaked self-hosted-parser-gap noise (e.g. `spawn`/`var` keyword
+    // P0051s from std/process.l) onto every successful JVM build's output;
+    // suppress it so a clean build stays clean.
     val pkgItems: List[Item] = newList()
     var ii = 0
     while ii < pr.file.items.count {
@@ -405,28 +419,28 @@ pub func compileToJarBundled(
   val autoFfi = buildAutoFfiCtx()
   val allClasses: List[BuiltClass] = newList()
 
-  // User package first (its codegen failing is fatal).
-  match runMiddleEnd(userFile, importedPkgs) {
+  // User package first (its codegen failing is fatal).  Its type-check
+  // advisories are echoed (they are about the program the user actually wrote).
+  match runMiddleEnd(userFile, importedPkgs, true) {
     case Some(f) -> codegenPackageInto(f, registry, caseReg, ctorReg, autoFfi, allClasses)
     case None -> return false
   }
 
   // Bundled stdlib packages, best-effort: a package the JVM backend can't yet
   // emit (kernel/extern surfaces) is skipped rather than failing the build, so
-  // only the call-reachable packages need to compile cleanly.
+  // only the call-reachable packages need to compile cleanly.  Their type-check
+  // advisories and the codegen-skip note are suppressed so a successful build
+  // does not print self-hosted-coverage-gap noise from unrelated stdlib code.
   var bi = 0
   while bi < toBundle.count {
     val f = toBundle[bi]
     try {
-      match runMiddleEnd(f, importedPkgs) {
+      match runMiddleEnd(f, importedPkgs, false) {
         case Some(ff) -> codegenPackageInto(ff, registry, caseReg, ctorReg, autoFfi, allClasses)
         case None -> ()
       }
     } catch Bug as _ {
-      Console.error(
-        "note: skipped bundling JVM package '" + dottedPath(f.packageDecl.path) + "' (codegen unsupported); " +
-          "calls into it will fail only if actually reached"
-      )
+      ()
     }
     bi = bi + 1
   }

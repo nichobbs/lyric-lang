@@ -219,7 +219,8 @@ Core commands you will use constantly:
 | Command | What it does |
 |---------|-------------|
 | `lyric` | Build the current project (discovers the nearest `lyric.toml`) |
-| `lyric build <file.l>` | Compile; produce a `.dll` |
+| `lyric build <file.l>` | Compile for .NET (default); produce a `.dll` + `.runtimeconfig.json` |
+| `lyric build --target jvm <file.l>` | Compile for the JVM; produce a runnable `.jar` (no `runtimeconfig.json`) |
 | `lyric build` | Build the discovered project (no source arg needed) |
 | `lyric run <file.l>` | Compile and immediately execute |
 | `lyric --help` | Print the grouped command list |

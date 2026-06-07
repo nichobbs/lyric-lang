@@ -22407,3 +22407,39 @@ on `.NET` still produces the correct digest; `bitwise_self_test.l` (JVM 10/10),
 
 Remaining in J6: M-11 (`lyric-storage` local-fs JVM kernel, `ProcessCaptureHost`
 on JVM) and the other cross-platform stdlib JVM hosts.
+
+### D-progress-463 — target-aware `lyric build` output for `--target jvm` (.jar, no runtimeconfig, clean output) (docs/44 J1 B-10, epic #2663, #2664)
+
+**Status:** Shipped — the self-hosted CLI's single-file `lyric build` now emits
+the correct artifacts for the JVM target.  Before this change, a
+`lyric build --target jvm foo.l` (with no `-o`) wrote the JAR under the wrong
+name `foo.dll`, dropped a spurious .NET `foo.runtimeconfig.json` next to it, and
+spilled advisory self-hosted-parser-gap noise (e.g. `error[P0051] 'spawn' is a
+reserved keyword` from `std/process.l`, plus `note: skipped bundling …`) onto a
+*successful* build's output.
+
+What landed:
+
+- **`lyric-compiler/lyric/cli.l`** (`cmdBuild`): the default output extension is
+  now target-aware — `.jar` for `--target jvm`, `.dll` for `--target dotnet`.
+  An explicit `-o <output>` is still honoured verbatim for either target.
+- **`lyric-compiler/lyric/cli.l`** (`buildOne`): `writeRuntimeConfig` is gated on
+  the target — a `.runtimeconfig.json` (a .NET-only `dotnet exec` artifact) is
+  emitted only for `--target dotnet`, never for JVM JARs.
+- **`lyric-compiler/jvm/bridge.l`** (`compileToJarBundled`, `runMiddleEnd`): the
+  bundled-stdlib advisory diagnostics — stdlib parse diagnostics, bundled-package
+  type-check advisories, and the `note: skipped bundling …` codegen-skip note —
+  are no longer echoed.  These are non-gating by design (only the user file's
+  parse and per-package codegen are fatal), so suppressing them leaves a clean
+  successful build clean.  `runMiddleEnd` gained a `reportTcAdvisories` flag: the
+  **user** file passes `true` (so real errors in the program the user wrote still
+  surface), bundled stdlib files pass `false`.  Real user-file errors and all
+  gating diagnostics (`reportAndAbort` on parse / mode-check / mono) print
+  unchanged on failure.
+
+Verified end to end on `./bin/lyric`: `lyric build --target jvm hello.l`
+produces `hello.jar` (runs under `java -jar`), no `hello.runtimeconfig.json`,
+and zero stderr noise on success; `lyric build --target dotnet hello.l` still
+produces `hello.dll` + `hello.runtimeconfig.json`; explicit `-o out.jar` /
+`-o out.dll` are honoured.  No .NET regression — `bitwise_self_test.l` passes
+10/10 on both `--target dotnet` and `--target jvm`.

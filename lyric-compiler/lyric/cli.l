@@ -542,7 +542,13 @@ func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarge
     case Some(_) -> ()
   }
 
-  writeRuntimeConfig(outPath)
+  // A `.runtimeconfig.json` is a .NET-only artifact consumed by `dotnet exec`;
+  // a JVM build produces a self-contained runnable JAR, so emitting one there
+  // would leave stray .NET tooling cruft next to the JAR.
+  match target {
+    case Dotnet -> writeRuntimeConfig(outPath)
+    case Jvm -> ()
+  }
   Console.println("built " + outPath)
   0
 }
@@ -714,7 +720,10 @@ func cmdBuild(argv: in slice[String]): Int {
     case None -> {
       val dir = Path.dirname(sourcePath)
       val stem = stemOf(Path.basename(sourcePath), 2)  // strip ".l"
-      Path.join(dir, stem + ".dll")
+      // Default output extension is target-aware: a `--target jvm` build
+      // produces a runnable JAR, a `--target dotnet` build a managed DLL.
+      val ext = match target { case Jvm -> ".jar"; case Dotnet -> ".dll" }
+      Path.join(dir, stem + ext)
     }
   }
 
