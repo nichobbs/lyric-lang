@@ -662,6 +662,40 @@ func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[P
   payloads
 }
 
+// #2364 Stage 5: compute the restored-DLL list for a `@test_module` that imports
+// `Lyric.*` compiler packages.  Reuses `loadCompilerPayloads` to resolve the
+// transitive compiler-package import closure from source, then maps each closure
+// package to its already-compiled DLL in `libDir` (the F#-built compiler DLLs are
+// named `Lyric.<package>.dll`, e.g. `Lyric.Lyric.Weaver.dll`).  Returns
+// "<pkg>\t<dllPath>" entries (the `restoredDllPaths` encoding); empty when the
+// test imports no compiler packages or the compiler source / libDir is absent.
+// This is the linked-DLL replacement for the `LYRIC_LOAD_COMPILER` recompile path:
+// the test links the compiler DLLs as restored deps instead of recompiling them.
+pub func compilerClosureDllPaths(testSource: in String, libDir: in String): List[String] {
+  val dlls: List[String] = newList()
+  if libDir.length == 0 {
+    return dlls
+  }
+  var compilerDir = walkUpForCompilerDir(Environment.appBaseDirectory())
+  if compilerDir.length == 0 {
+    compilerDir = walkUpForCompilerDir(Environment.currentDirectory())
+  }
+  if compilerDir.length == 0 {
+    return dlls
+  }
+  val payloads = loadCompilerPayloads(compilerDir, testSource)
+  var i = 0
+  while i < payloads.count {
+    val pkg = payloads[i].name
+    val dll = Path.join(libDir, "Lyric." + pkg + ".dll")
+    if File.fileExists(dll) {
+      dlls.add(pkg + "\t" + dll)
+    }
+    i = i + 1
+  }
+  dlls
+}
+
 // Selection sort over a copy of `xs` — small inputs (the compiler-tree
 // file list), so an O(n^2) sort is fine and keeps the discovery order
 // deterministic across platforms regardless of `listFilesRecursive`'s

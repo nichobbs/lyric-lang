@@ -509,10 +509,12 @@ jobs:
           done
           echo "all ecosystem libraries built"
 
-      # Weaver self-test — exercises `Lyric.Weaver` via native `lyric test`
-      # with `LYRIC_LOAD_COMPILER=1` so the bridge loads Lyric.Lexer /
-      # Lyric.Parser / Lyric.Weaver from lyric-compiler/lyric/ at runtime.
-      # Resolves issue #1324 without any new F# test shims.
+      # Weaver self-test — exercises `Lyric.Weaver` via native `lyric test`.
+      # The compiler-package imports (Lyric.Lexer / Lyric.Parser /
+      # Lyric.Weaver) are resolved by LINKING the already-compiled stage-1
+      # bundle DLLs as restored dependencies (#2364), so no recompile-from-
+      # source `LYRIC_LOAD_COMPILER=1` is needed.  Resolves issue #1324
+      # without any new F# test shims.
       - name: Weaver self-test (native lyric test)
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
@@ -527,11 +529,13 @@ jobs:
             echo "::warning::AOT binary not found at $lyric_bin; skipping weaver self-test"
             exit 0
           fi
-          LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/weaver_self_test.l
+          "$lyric_bin" test lyric-compiler/lyric/weaver_self_test.l
 
-      # CfgGate self-test — exercises `Lyric.CfgGate` via native `lyric test`
-      # with `LYRIC_LOAD_COMPILER=1`.  Covers #1123 (comment-aware @cfg
-      # detection) and #1124 (single stub for all-gated directory packages).
+      # CfgGate self-test — exercises `Lyric.CfgGate` via native `lyric test`.
+      # Compiler-package imports are resolved by linking the stage-1 bundle
+      # DLLs (#2364); no `LYRIC_LOAD_COMPILER=1` recompile.  Covers #1123
+      # (comment-aware @cfg detection) and #1124 (single stub for all-gated
+      # directory packages).
       - name: CfgGate self-test (native lyric test)
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
@@ -546,7 +550,7 @@ jobs:
             echo "::warning::AOT binary not found at $lyric_bin; skipping cfg_gate self-test"
             exit 0
           fi
-          LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/cfg_gate_self_test.l
+          "$lyric_bin" test lyric-compiler/lyric/cfg_gate_self_test.l
 
       # Bitwise self-test — first executable regression test for a
       # self-hosted-only *language feature* (the `.and/.or/.xor/.shl/.shr`
@@ -1477,8 +1481,9 @@ jobs:
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/mono_shadow_self_test.l
 
       # CLI did-you-mean suggestion self-test — exercises Lyric.CliSuggest
-      # (editDistance / suggestCommand) via native `lyric test` with
-      # `LYRIC_LOAD_COMPILER=1` (imports the compiler package Lyric.CliSuggest).
+      # (editDistance / suggestCommand) via native `lyric test`.  The
+      # Lyric.CliSuggest compiler-package import is resolved by linking the
+      # stage-1 bundle DLLs (#2364); no `LYRIC_LOAD_COMPILER=1` recompile.
       # Pure logic (Std.Core/Collections only), so it runs cleanly through the
       # in-process bundle.  Part of the ecosystem-DX epic #1968 (#1976/#1988).
       - name: CLI-suggest self-test (native lyric test)
@@ -1495,7 +1500,7 @@ jobs:
             echo "::warning::AOT binary not found at $lyric_bin; skipping cli-suggest self-test"
             exit 0
           fi
-          LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/cli_suggest_self_test.l
+          "$lyric_bin" test lyric-compiler/lyric/cli_suggest_self_test.l
 
       # CLI project-aware-defaults end-to-end smoke test — exercises
       # findNearestManifest (Lyric.Discovery), the bare-`lyric` build default,
@@ -1557,7 +1562,9 @@ jobs:
 
       # Release entry-detection self-test — exercises Lyric.Release's pure
       # source-introspection helpers (packageNameOf / declaresEntryMain) via
-      # native `lyric test` with `LYRIC_LOAD_COMPILER=1`.  Part of #1975.
+      # native `lyric test`.  The Lyric.Release compiler-package import is
+      # resolved by linking the stage-1 bundle DLLs (#2364); no
+      # `LYRIC_LOAD_COMPILER=1` recompile.  Part of #1975.
       - name: Release self-test (native lyric test)
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
@@ -1572,7 +1579,7 @@ jobs:
             echo "::warning::AOT binary not found at $lyric_bin; skipping release self-test"
             exit 0
           fi
-          LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/release_self_test.l
+          "$lyric_bin" test lyric-compiler/lyric/release_self_test.l
 
       - name: Init self-test (native lyric test)
         if: steps.changes.outputs.has_code_changes == 'true'
@@ -1584,7 +1591,7 @@ jobs:
             echo "::warning::AOT binary not found at $lyric_bin; skipping init self-test"
             exit 0
           fi
-          LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/init_self_test.l
+          "$lyric_bin" test lyric-compiler/lyric/init_self_test.l
 
       - name: Union-in-list match self-test (native lyric test, #2126)
         if: steps.changes.outputs.has_code_changes == 'true'
@@ -1596,7 +1603,7 @@ jobs:
             echo "::warning::AOT binary not found at $lyric_bin; skipping union-list-match self-test"
             exit 0
           fi
-          LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/union_list_match_self_test.l
+          "$lyric_bin" test lyric-compiler/lyric/union_list_match_self_test.l
 
       # Module-level val self-test — exercises M5.2 stage 3 (non-constant `val`
       # at package scope emitted as a static readonly field initialized in .cctor).

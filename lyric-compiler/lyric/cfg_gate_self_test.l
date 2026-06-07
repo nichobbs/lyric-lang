@@ -6,7 +6,7 @@
 //!
 //! Runs in CI via:
 //!
-//!   LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/cfg_gate_self_test.l
+//!   lyric test lyric-compiler/lyric/cfg_gate_self_test.l
 //!
 //! (#1436 / CLAUDE.md no-new-F#-code policy: no `SelfHostedCfgGateTests.fs`
 //! runner — discovery is the native Lyric path mirroring `weaver_self_test.l`.)

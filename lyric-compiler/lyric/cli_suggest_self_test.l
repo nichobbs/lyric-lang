@@ -3,7 +3,7 @@
 //!
 //! Runs in CI via:
 //!
-//!   LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/cli_suggest_self_test.l
+//!   lyric test lyric-compiler/lyric/cli_suggest_self_test.l
 //!
 //! (CLAUDE.md no-new-F#-code policy: discovery is the native Lyric path,
 //! mirroring cfg_gate_self_test.l — no F# runner shim.)

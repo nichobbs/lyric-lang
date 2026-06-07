@@ -9,7 +9,7 @@
 //!
 //! Runs in CI via:
 //!
-//!   LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/init_self_test.l
+//!   lyric test lyric-compiler/lyric/init_self_test.l
 @test_module
 package Lyric.InitSelfTest
 
