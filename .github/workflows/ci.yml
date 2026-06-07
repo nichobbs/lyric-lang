@@ -1113,6 +1113,28 @@ jobs:
             exit 0
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/auto_ffi_jvm_self_test.l
+      # Hash self-test on JVM — proves the target-aware kernel source loader
+      # (docs/44 J6 M-10) loads `lyric-stdlib/std/_kernel_jvm/hash_host.l` and
+      # the JVM SHA-512 host (M-9, java.security.MessageDigest + HexFormat via
+      # auto-FFI) computes correct digests.  Importing `Std.Hash` resolves to
+      # the JVM kernel on this target; the test asserts three NIST SHA-512
+      # vectors under `java`.  First native JVM self-test that depends on a
+      # `_kernel_jvm`-only module.  Imports only `Std.*`.
+      - name: Hash self-test on JVM (native lyric test --target jvm)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping hash JVM self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping hash JVM self-test"
+            exit 0
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/hash_jvm_self_test.l
       # Match-literal + compound-assignment self-test — pins two self-hosted
       # MSIL backend correctness fixes from #1481 (epic #1470, Band 2): Float
       # literal *match* patterns now emit a real `ldc.r8; ceq` compare instead

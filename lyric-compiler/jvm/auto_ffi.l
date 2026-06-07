@@ -400,6 +400,14 @@ pub func scoreParamMatch(argDesc: in String, paramDesc: in String): Int {
   if argDesc == "" and paramDesc.startsWith("L") {
     return 3
   }
+  // Lyric byte slice (`[Ljava/lang/Object;`, the erased slice[Byte]
+  // representation) → JDK primitive `byte[]`.  `emitFfiCoerce` materialises
+  // a real `byte[]` by unboxing each element, so this is a valid (if low-
+  // priority) match.  Enables `_kernel_jvm` hosts to hand byte slices to
+  // JDK APIs such as `java.security.MessageDigest.digest(byte[])`.
+  if argDesc == "[Ljava/lang/Object;" and paramDesc == "[B" {
+    return 2
+  }
   return -1
 }
 

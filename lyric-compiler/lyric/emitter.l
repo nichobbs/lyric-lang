@@ -214,13 +214,30 @@ func walkUpForCompilerDir(start: in String): String {
 // when the stdlib directory cannot be located (graceful degradation —
 // callers fall back to advisory-only type checking).
 //
-// MSIL-target only: `_kernel_jvm/` is never loaded here, and the two
-// JVM-only kernel files in `_kernel/` (`jvm.l`, `jvm_exception.l`) are
-// skipped by name so `Std.Jvm.catch` and its `JvmException` extern type
-// don't leak into the .NET symbol table.  A future JVM in-process
-// bridge will need its own target-aware source loader.
+// Default (MSIL / .NET) source loader.  Loads the `.NET` kernel
+// (`_kernel/`) and the public stdlib surface.  See
+// `findStdlibSourcesForTarget` for the target-aware variant the JVM
+// in-process bridge uses (J6 M-10).
 // No caching yet — re-reads ~30 stdlib files per emit call; see #1907.
 func findStdlibSources(): List[String] {
+  findStdlibSourcesForTarget(false)
+}
+
+// Target-aware stdlib source loader (J6 M-10).
+//
+// `.NET` (forJvm == false): load `_kernel/` (the .NET host boundary),
+// skipping the two JVM-only files (`jvm.l`, `jvm_exception.l`) so
+// `Std.Jvm.catch` / `JvmException` don't leak into the .NET symbol
+// table.
+//
+// JVM (forJvm == true): prefer `_kernel_jvm/<module>_host.l`; fall back
+// to `_kernel/<module>_host.l` only when no JVM-specific host file with
+// the same basename exists.  This is the linchpin that lets a JVM build
+// pick up the JVM-specific kernel hosts (e.g. `_kernel_jvm/hash_host.l`)
+// instead of always resolving the .NET kernel.  The JVM-only `_kernel/`
+// files (`jvm.l`, `jvm_exception.l`) are loaded (not skipped) on JVM so
+// `Std.Jvm`'s extern surface is visible.
+func findStdlibSourcesForTarget(forJvm: in Bool): List[String] {
   val sources: List[String] = newList()
   // 1. Explicit override.
   var stdlibDir = ""
@@ -239,7 +256,7 @@ func findStdlibSources(): List[String] {
   if stdlibDir.length == 0 {
     return sources
   }
-  // Load `_kernel/` files FIRST so their extern type declarations
+  // Load kernel files FIRST so their extern type declarations
   // (`extern type List[T] = "System.Collections.Generic.List`1"`,
   // `Map[K, V]`, `Random`, `HttpClient`, …) reach the typechecker's
   // symbol table before the public files' re-export aliases
@@ -248,7 +265,18 @@ func findStdlibSources(): List[String] {
   // (scans backwards), and `DKTypeAlias` carries no `TypeId`, so registering
   // an alias before its target type makes every reference to the bare name
   // resolve to the alias and fail with T0013 '<name> is not a type'.
-  appendLyricFiles(sources, Path.join(stdlibDir, "_kernel"), true)
+  if forJvm {
+    val jvmKernel = Path.join(stdlibDir, "_kernel_jvm")
+    // JVM-specific hosts win; record their basenames so the `.NET`
+    // kernel fallback below skips any file they supersede.
+    val jvmBasenames = appendLyricFilesCollect(sources, jvmKernel, false)
+    // `.NET` kernel fallback: only files whose basename is not already
+    // provided by `_kernel_jvm/`.  Do NOT skip the JVM-only `jvm*.l`
+    // files here — they are part of the JVM surface.
+    appendLyricFilesExcluding(sources, Path.join(stdlibDir, "_kernel"), jvmBasenames)
+  } else {
+    appendLyricFiles(sources, Path.join(stdlibDir, "_kernel"), true)
+  }
   // Public surface: every top-level `*.l` file in `lyric-stdlib/std/`.
   appendLyricFiles(sources, stdlibDir, false)
   sources
@@ -296,6 +324,89 @@ func appendLyricFiles(sources: in List[String], dir: in String, skipJvmKernel: i
     }
     si = si + 1
   }
+}
+
+// Like `appendLyricFiles` but also returns the list of basenames it
+// appended.  Used by the JVM loader (J6 M-10) to record which kernel
+// modules `_kernel_jvm/` provides, so the `.NET` kernel fallback can
+// skip the files those supersede.  `skipJvmKernel` matches
+// `appendLyricFiles`.
+func appendLyricFilesCollect(sources: in List[String], dir: in String, skipJvmKernel: in Bool): List[String] {
+  val basenames: List[String] = newList()
+  if not File.dirExists(dir) {
+    return basenames
+  }
+  val files = match File.listFiles(dir) { case Ok(fs) -> fs; case Err(_) -> newList() }
+  val keep: List[String] = newList()
+  var fi = 0
+  while fi < files.count {
+    val f = files[fi]
+    if Str.endsWith(f, ".l") {
+      val base = Path.basename(f)
+      val skip = skipJvmKernel and Str.startsWith(base, "jvm")
+      if not skip {
+        keep.add(f)
+      }
+    }
+    fi = fi + 1
+  }
+  val sorted = sortPathsByBasename(keep)
+  var si = 0
+  while si < sorted.count {
+    match File.readText(sorted[si]) {
+      case Ok(text) -> {
+        sources.add(text)
+        basenames.add(Path.basename(sorted[si]))
+      }
+      case Err(_) -> ()
+    }
+    si = si + 1
+  }
+  basenames
+}
+
+// Like `appendLyricFiles` but skips any `.l` file whose basename is in
+// `exclude`.  Used by the JVM loader (J6 M-10) to load only the `.NET`
+// `_kernel/` host files that have no `_kernel_jvm/` counterpart, so the
+// JVM-specific hosts win and their `.NET` twins don't double-register.
+func appendLyricFilesExcluding(sources: in List[String], dir: in String, exclude: in List[String]): Unit {
+  if not File.dirExists(dir) {
+    return
+  }
+  val files = match File.listFiles(dir) { case Ok(fs) -> fs; case Err(_) -> newList() }
+  val keep: List[String] = newList()
+  var fi = 0
+  while fi < files.count {
+    val f = files[fi]
+    if Str.endsWith(f, ".l") {
+      val base = Path.basename(f)
+      if not listContainsStr(exclude, base) {
+        keep.add(f)
+      }
+    }
+    fi = fi + 1
+  }
+  val sorted = sortPathsByBasename(keep)
+  var si = 0
+  while si < sorted.count {
+    match File.readText(sorted[si]) {
+      case Ok(text) -> sources.add(text)
+      case Err(_) -> ()
+    }
+    si = si + 1
+  }
+}
+
+// True when `xs` contains the string `target`.
+func listContainsStr(xs: in List[String], target: in String): Bool {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == target {
+      return true
+    }
+    i = i + 1
+  }
+  false
 }
 
 // Return a fresh list with `paths` arranged in ascending basename
@@ -1473,7 +1584,7 @@ pub func emit(req: in EmitRequest): EmitResult {
 // runtime.  Diagnostics land on stderr via `Lyric.DiagnosticUtil`, matching
 // the MSIL in-process path.
 func emitJvmInProcess(req: in EmitRequest): EmitResult {
-  val stdlibSources = findStdlibSources()
+  val stdlibSources = findStdlibSourcesForTarget(true)
   val pkgName = extractPackageName(req.source)
   val name = if pkgName.length > 0 { pkgName } else { req.assemblyName }
   val ok = JvmBridge.compileToJarBundled(req.source, req.outputPath, name, stdlibSources)

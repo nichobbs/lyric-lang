@@ -22345,3 +22345,65 @@ local-path `[dependencies]` entry, inlines to `42` in the consumer.  Emitter
 Remaining on #2592: the unified `emitPerPackageClosure` (stdlib + compiler
 closure with restored-dep threading) and the `bootstrap.sh` stage-1 rewire +
 `cli.l::sortFileList` retirement.
+
+### D-progress-462 — target-aware kernel source loader + `_kernel_jvm/hash_host.l` (docs/44 J6 M-9/M-10, epic #2663, #2669)
+
+**Status:** Shipped — the self-hosted stdlib source loader is now target-aware,
+so JVM builds load the JVM-specific kernel hosts under
+`lyric-stdlib/std/_kernel_jvm/` instead of only ever resolving the .NET
+`_kernel/`.  This is the linchpin of Track C in the JVM production-readiness
+plan (docs/44 §5 J6): before this change no JVM build could pick up a
+`_kernel_jvm`-only host, so the cross-platform stdlib silently linked .NET
+externs on the JVM target.
+
+What landed:
+
+- **`lyric-compiler/lyric/emitter.l`**: `findStdlibSources()` now delegates to a
+  new `findStdlibSourcesForTarget(forJvm: Bool)`.  For JVM it loads every
+  `_kernel_jvm/*.l` first, records their basenames, then loads `_kernel/*.l`
+  files only when no JVM host with the same basename exists (and without the
+  `.NET`-only `jvm*.l` skip, so `Std.Jvm`'s extern surface is visible).
+  `emitJvmInProcess` threads `forJvm = true`; the `.NET` path is unchanged.
+- **`lyric-stdlib/std/_kernel_jvm/hash_host.l`** (M-9): mirrors the public
+  `Std.HashHost` surface (`hostSha512Bytes`, `hostBytesToHex`) so `Std.Hash`
+  compiles unchanged on both targets.  SHA-512 routes through
+  `java.security.MessageDigest.getInstance("SHA-512").digest(...)`; uppercase
+  hex through `java.util.HexFormat.of().withUpperCase().formatHex(...)`.  Both
+  are declared with `extern type` JVM auto-FFI (resolved from JDK metadata at
+  compile time) — **no F# host shim, no `@externTarget` into F# code.**
+- **JVM `slice[Byte]↔byte[]` interop** (required for M-9 to run end to end),
+  in `lyric-compiler/jvm/codegen/` (post-J0 split: `04_calls.l`, `02_exprs.l`,
+  `06_items.l`) + `jvm/auto_ffi.l`:
+  - auto-FFI accepts a Lyric byte slice (`[Ljava/lang/Object;`) for a JDK
+    primitive `byte[]` parameter, materialising a real `byte[]` by unboxing
+    each element (`scoreParamMatch` + `emitFfiCoerce`);
+  - function returns coerce a primitive `byte[]` back into the erased
+    `slice[Byte]` (`Object[]` of boxed `Byte`) when the declared return type
+    is a slice (`emitReturnArrayCoerced` / `emitBoxByteArray`);
+  - the same box coercion runs at Lyric-to-Lyric call sites
+    (`lowerGeneralStaticCall`);
+  - primitive byte-array element read (`baload`, `JByte`) and `.length`
+    (`arraylength`) on `JArray` receivers;
+  - the byte-array coercion loop introduces a branch target, and the
+    StackMapTable generator assumes an empty operand stack at every label, so
+    `lowerAutoFfiInstanceCall` stashes the receiver (and prior args) to temps
+    before running the coercion and reloads them before `invokevirtual`.
+- **String `==` / `!=` value comparison** (`jvm/codegen/02_exprs.l` `lowerCmp` +
+  `lowerCmpFail`): two `java/lang/String` operands now compare with
+  `String.equals`, not `if_acmpeq`.  Reference equality wrongly reported
+  independently-built equal strings (e.g. a computed digest vs. a literal) as
+  unequal; this also fixed a latent `auto_ffi_jvm_self_test.l` failure
+  (`StringBuilder.toString()` vs. literal).
+
+Verified: `lyric-compiler/lyric/hash_jvm_self_test.l` (`@test_module`, imports
+`Std.Hash`) runs via `lyric test --target jvm` — compiled in-process through the
+self-hosted `Jvm.Bridge` (`compileToJarBundled`) and executed under `java` —
+asserting three NIST SHA-512 vectors (`"abc"`, `""`, `"hello"`): 3/3 pass.  This
+is the first native JVM self-test that depends on a `_kernel_jvm`-only module,
+meeting the docs/44 J6 acceptance criterion.  No `.NET` regression: `Std.Hash`
+on `.NET` still produces the correct digest; `bitwise_self_test.l` (JVM 10/10),
+`auto_ffi_jvm_self_test.l` (JVM 13/13, up from 12/13), `auto_ffi_self_test.l`
+(.NET 11/11), and `modechecker_self_test.l` (.NET 20/20) stay green.
+
+Remaining in J6: M-11 (`lyric-storage` local-fs JVM kernel, `ProcessCaptureHost`
+on JVM) and the other cross-platform stdlib JVM hosts.
