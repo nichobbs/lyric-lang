@@ -999,6 +999,118 @@ func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): List[Proj
 /// self-hosted stdlib bundle (#2592 stage-2): it produces, via the self-hosted
 /// emitter, the per-package DLLs the toolchain links — including packages the
 /// F# stage-0 emitter cannot compile.
+func locateCompilerDir(): String {
+  // Locate the self-hosted compiler tree (`lyric-compiler/lyric`) the same way
+  // `compilerClosureDllPaths` does: walk up from the binary base dir, then the
+  // CWD.  Empty when not found (e.g. a deployed binary without the source tree),
+  // in which case per-package emit covers stdlib only.
+  var d = walkUpForCompilerDir(Environment.appBaseDirectory())
+  if d.length == 0 {
+    d = walkUpForCompilerDir(Environment.currentDirectory())
+  }
+  d
+}
+
+// Synthesise a stdlib-discovery "entry" whose import lines are the union of
+// `entrySource`'s imports and every compiler payload's imports, so the stdlib
+// closure that `loadStdlibPayloads` resolves covers the `Std.*` modules the
+// compiler packages themselves depend on (not just the driver's direct ones).
+// Only the import lines matter — `loadStdlibPayloads` reads imports off the
+// entry, nothing else.
+func stdlibEntryImports(entrySource: in String, compilerPayloads: in List[ProjectPackagePayload]): String {
+  val lines: List[String] = newList()
+  collectImportLines(entrySource, lines)
+  var i = 0
+  while i < compilerPayloads.count {
+    collectImportLines(compilerPayloads[i].source, lines)
+    i = i + 1
+  }
+  "package __stdlib_entry__\n" + Str.joinList("\n", lines) + "\n"
+}
+
+// Direct compiler-package imports of one payload's merged source.
+func compilerImportsOf(payloadSource: in String): List[String] {
+  val lines: List[String] = newList()
+  collectImportLines(payloadSource, lines)
+  val deps: List[String] = newList()
+  var i = 0
+  while i < lines.count {
+    val p = importLinePackage(lines[i])
+    if isCompilerPackage(p) and indexOfString(deps, p) < 0 {
+      deps.add(p)
+    }
+    i = i + 1
+  }
+  deps
+}
+
+// Emit one package as its own assembly, threading `restored` ("name\tpath"
+// entries) as restored deps.  Returns a success `EmitResult` carrying the
+// output path, or a failure result with the inner compiler diagnostics
+// (surfaced, not swallowed) plus a B0001 frame naming the package.
+func emitPerPackagePackage(
+  name: in String,
+  source: in String,
+  restored: in List[String],
+  outDir: in String,
+  target: in CompileTarget,
+): EmitResult {
+  val asmName = perPackageAssemblyName(name, target)
+  val outPath = Path.join(outDir, asmName + ".dll")
+  val pkgs: List[ProjectPackage] = newList()
+  val srcs: List[String] = newList()
+  srcs.add(source)
+  pkgs.add(ProjectPackage(name = name, sources = srcs))
+  val noFeatures: List[String] = newList()
+  val req = EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = asmName,
+    outputPath = outPath,
+    target = target,
+    restoredDllPaths = restored,
+    activeFeatures = noFeatures,
+    declaredFeatures = noFeatures,
+    packageVersion = "0.1.0"
+  )
+  val res = emitProject(req)
+  match res.outputPath {
+    case None -> {
+      val diags: List[Diagnostic] = newList()
+      var di = 0
+      while di < res.diagnostics.count {
+        diags.add(res.diagnostics[di])
+        di = di + 1
+      }
+      val sp = pointSpan(initialPosition())
+      diags.add(errorDiagnostic("B0001", "per-package emit: package '" + name + "' failed to build", sp))
+      EmitResult(outputPath = None, diagnostics = diags)
+    }
+    case Some(_) -> EmitResult(outputPath = Some(value = outPath), diagnostics = newList())
+  }
+}
+
+/// Compile `entrySource`'s transitive import closure into separate
+/// per-package assemblies in `outDir`, in dependency order:
+///
+///   * `Std.*` packages → `Lyric.Stdlib.<X>.dll`, emitted first.  Stdlib
+///     siblings are resolved from source by the bridge and referenced by
+///     assembly name, so no restored-dep threading is needed (an earlier
+///     emit into the same directory satisfies the dependent at runtime).
+///   * compiler packages (`Lyric.*` / `Msil.*` / `Jvm.*`) → `Lyric.<Pkg>.dll`,
+///     emitted after the stdlib in dependency order.  Unlike stdlib, the
+///     bridge does NOT source-resolve compiler siblings, so each compiler
+///     package threads its transitive compiler-import closure (already
+///     emitted) as restored deps — the path that carries cross-package
+///     types AND inlined constants (#2592 slice 1) across the assembly
+///     boundary.  The stdlib closure is widened to cover the compiler
+///     packages' own `Std.*` imports.
+///
+/// Returns the first failing package's diagnostics, or a success result whose
+/// output path is `outDir` once every package emits.  This is the linchpin of
+/// the self-hosted toolchain (#2592): it produces, via the self-hosted emitter,
+/// the per-package DLLs the toolchain links — including packages the F# stage-0
+/// emitter cannot compile — with matching slice/generic ABI across the stdlib
+/// and the compiler.
 pub func emitPerPackageClosure(entrySource: in String, outDir: in String, target: in CompileTarget): EmitResult {
   // Per-package DLL emit is a .NET concept: the JVM toolchain bundles a
   // package's transitive closure into a single JAR via a different pipeline
@@ -1019,50 +1131,105 @@ pub func emitPerPackageClosure(entrySource: in String, outDir: in String, target
   if stdlibDir.length == 0 {
     return failResult("per-package emit: could not locate lyric-stdlib/std")
   }
-  val payloads = loadStdlibPayloads(stdlibDir, entrySource)
-  if payloads.count == 0 {
-    return failResult("per-package emit: no Std.* packages in the import closure")
-  }
-  var pi = 0
-  while pi < payloads.count {
-    val payload = payloads[pi]
-    pi = pi + 1
-    val asmName = perPackageAssemblyName(payload.name, target)
-    val outPath = Path.join(outDir, asmName + ".dll")
-    val pkgs: List[ProjectPackage] = newList()
-    val srcs: List[String] = newList()
-    srcs.add(payload.source)
-    pkgs.add(ProjectPackage(name = payload.name, sources = srcs))
-    val noFeatures: List[String] = newList()
-    val noRestored: List[String] = newList()
-    val req = EmitProjectRequest(
-      packages = pkgs,
-      assemblyName = asmName,
-      outputPath = outPath,
-      target = target,
-      restoredDllPaths = noRestored,
-      activeFeatures = noFeatures,
-      declaredFeatures = noFeatures,
-      packageVersion = "0.1.0"
-    )
-    val res = emitProject(req)
-    match res.outputPath {
-      case None -> {
-        // Surface the inner compiler diagnostics (type / parse errors), not just
-        // a generic failure, so the actual cause is actionable.
-        val diags: List[Diagnostic] = newList()
-        var di = 0
-        while di < res.diagnostics.count {
-          diags.add(res.diagnostics[di])
-          di = di + 1
-        }
-        val sp = pointSpan(initialPosition())
-        diags.add(errorDiagnostic("B0001", "per-package emit: package '" + payload.name + "' failed to build", sp))
-        return EmitResult(outputPath = None, diagnostics = diags)
-      }
-      case Some(_) -> ()
+
+  // Compiler-package closure of the entry (empty when the entry imports no
+  // compiler package, or the compiler source tree is unavailable).
+  val compilerDir = locateCompilerDir()
+  val compilerPayloads: List[ProjectPackagePayload] = newList()
+  if compilerDir.length > 0 {
+    val cps = loadCompilerPayloads(compilerDir, entrySource)
+    var cpi = 0
+    while cpi < cps.count {
+      compilerPayloads.add(cps[cpi])
+      cpi = cpi + 1
     }
   }
+
+  // Stdlib closure, widened to cover the compiler packages' own Std imports.
+  val stdlibPayloads = loadStdlibPayloads(stdlibDir, stdlibEntryImports(entrySource, compilerPayloads))
+  if stdlibPayloads.count == 0 and compilerPayloads.count == 0 {
+    return failResult("per-package emit: no Std.* or compiler packages in the import closure")
+  }
+
+  // Phase 1: stdlib packages (source-resolved siblings — no restored threading).
+  val noRestored: List[String] = newList()
+  var si = 0
+  while si < stdlibPayloads.count {
+    val r = emitPerPackagePackage(stdlibPayloads[si].name, stdlibPayloads[si].source, noRestored, outDir, target)
+    match r.outputPath {
+      case None -> return r
+      case Some(_) -> ()
+    }
+    si = si + 1
+  }
+
+  // Phase 2: compiler packages in dependency order.  Build the (names,
+  // directDeps) registry over local lists — indexing a nested `List[List]`
+  // local is the proven-safe pattern (`loadCompilerPayloads`); a
+  // `List[List[String]]` parameter trips the F# stage-0 codegen, so the
+  // transitive-closure walk is kept inline rather than factored into a helper.
+  val cNames: List[String] = newList()
+  val cDeps: List[List[String]] = newList()
+  var bi = 0
+  while bi < compilerPayloads.count {
+    cNames.add(compilerPayloads[bi].name)
+    cDeps.add(compilerImportsOf(compilerPayloads[bi].source))
+    bi = bi + 1
+  }
+  var ci = 0
+  while ci < compilerPayloads.count {
+    val payload = compilerPayloads[ci]
+    // Transitive compiler-import closure of `payload` over (cNames, cDeps).
+    // Each member is already emitted (dependency order) and is threaded as a
+    // restored dep so cross-package types AND inlined constants (#2592 slice 1)
+    // resolve across the assembly boundary.  The full transitive closure is
+    // needed (not just direct imports): registering a direct dep's member
+    // signatures requires the TypeRefs of types those signatures mention,
+    // which live in the dep's own dependencies.
+    val closure: List[String] = newList()
+    val queue: List[String] = newList()
+    val startIdx = indexOfString(cNames, payload.name)
+    if startIdx >= 0 {
+      val direct = cDeps[startIdx]
+      var qi = 0
+      while qi < direct.count {
+        queue.add(direct[qi])
+        qi = qi + 1
+      }
+    }
+    while queue.count > 0 {
+      val dep = queue[queue.count - 1]
+      queue.removeAt(queue.count - 1)
+      if indexOfString(closure, dep) < 0 {
+        closure.add(dep)
+        val depIdx = indexOfString(cNames, dep)
+        if depIdx >= 0 {
+          val nd = cDeps[depIdx]
+          var ndi = 0
+          while ndi < nd.count {
+            if indexOfString(closure, nd[ndi]) < 0 {
+              queue.add(nd[ndi])
+            }
+            ndi = ndi + 1
+          }
+        }
+      }
+    }
+    val restored: List[String] = newList()
+    var di = 0
+    while di < closure.count {
+      val depAsm = perPackageAssemblyName(closure[di], target)
+      restored.add(closure[di] + "\t" + Path.join(outDir, depAsm + ".dll"))
+      di = di + 1
+    }
+    val r = emitPerPackagePackage(payload.name, payload.source, restored, outDir, target)
+    match r.outputPath {
+      case None -> return r
+      case Some(_) -> ()
+    }
+    ci = ci + 1
+  }
+
   EmitResult(outputPath = Some(value = outDir), diagnostics = newList())
 }
 

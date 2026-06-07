@@ -22559,3 +22559,46 @@ pass — `Std.File`/`Std.FileHost`/`Std.Errors` are correctly recognised as
 unreachable in those builds and skipped silently.
 `bitwise_self_test.l` (JVM 10/10) and the F# `Lyric.Cli.Tests` suite (84/84)
 stay green; `make lyric` is clean.
+### D-progress-466 — per-package compiler emit with restored-dep threading (#2592 slice 2)
+
+**Status:** Shipped — `emitPerPackageClosure` now emits the compiler-package
+closure, not just the stdlib.
+
+Per-package emit previously covered only `Std.*` packages, which the bridge
+source-resolves (no restored-dep threading needed: a sibling emitted earlier
+into the same directory satisfies the dependent at runtime).  Compiler packages
+(`Lyric.*` / `Msil.*` / `Jvm.*`) are NOT source-resolved by the bridge, so each
+must thread its compiler dependencies as restored deps — the path that carries
+cross-package types AND inlined constants (slice 1) across a real assembly
+boundary.
+
+`emitPerPackageClosure(entrySource, outDir, Dotnet)` now:
+
+- discovers the entry's compiler-package closure via `loadCompilerPayloads`
+  (dependency-ordered), in addition to the stdlib closure;
+- widens the stdlib closure to cover the compiler packages' own `Std.*`
+  imports (`stdlibEntryImports`);
+- emits the stdlib first (`Lyric.Stdlib.<X>.dll`, no restored threading), then
+  the compiler packages (`Lyric.<Pkg>.dll`) in dependency order, threading each
+  package's **transitive** compiler-import closure (already emitted above it) as
+  restored deps.  `assemblySimpleNameFromDll` reads each restored DLL's real
+  assembly name, so the consumer's cross-assembly refs bind correctly with no
+  naming convention to maintain.
+
+The transitive-closure walk is inline over local lists: a `List[List[String]]`
+**parameter** trips the F# stage-0 codegen (`SLocal { Kind = PError }`), while
+indexing a nested-list **local** is the proven-safe `loadCompilerPayloads`
+pattern.  (The F# stage-0 still recompiles the self-hosted compiler sources when
+building the stage-1 CLI bundle, so new compiler `.l` must stay within its
+parser/codegen subset.)
+
+Verified (CI, "Per-package compiler emit"): emitting the typechecker
+self-test's compiler closure (`Lexer` + `Parser` + `TypeChecker`) produces the
+three `Lyric.<Pkg>.dll` assemblies, and running that self-test against the
+**self-hosted-emitted** DLLs (`LYRIC_STDLIB_BIN` → the emit output dir) passes
+all 155 TAP assertions — the producer side that #2364 (consumer side, against
+F#-built DLLs) could not cover.  Emitter (834) + CLI (84) suites green.
+
+Remaining on #2592: the `bootstrap.sh` stage-1 rewire to use
+`emitPerPackageClosure` for the shipped toolchain + `cli.l::sortFileList`
+retirement (slice 3).
