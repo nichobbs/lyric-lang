@@ -791,6 +791,14 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     compiled DLLs in-process via `Std.AssemblyResources` (no subprocess
     hop), parses to structured `Contract` / `ContractDecl`, and diffs
     public API surfaces for `public-api-diff`.
+  - `contract_meta_emit.l` — `Lyric.ContractMetaEmit` package
+    (D-progress-468 / docs/45).  Emits contract metadata version 3 with
+    SHA-256 integrity hashing via a two-pass protocol: serializes with blank
+    contractHash, computes SHA-256 of the blank JSON, then re-serializes with
+    hash embedded.  Public entry point: `emitContractMetadata(contract): String`.
+  - `contract_meta_emit_self_test.l` — `@test_module` covering the two-pass
+    hashing protocol and JSON structure consistency (`testEmitSimpleContract`,
+    `testHashConsistency`).
   - `restored_packages.l` — `Lyric.RestoredPackages` package
     (#1229 Phase A.3.2, D-progress-303).  Composes the contract-meta
     in-process readers into a single
