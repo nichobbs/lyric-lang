@@ -210,7 +210,10 @@ func harvestTriviaFromToken(t: in SpannedToken, acc: inout List[HarvestedItem]):
       case TKWhitespace -> {
         // Doesn't break a newline run — `\n  \n` is still a blank
         // line, just with leading spaces on the empty line.
-        lastWs = tr.text
+        // Accumulate across consecutive TKWhitespace segments so that
+        // the full gap before a trailing comment is captured even if
+        // the lexer emits multiple whitespace trivia in a row.
+        lastWs = lastWs + tr.text
       }
       case TKLineComment -> {
         val isTrailing = newlineRun == 0
@@ -707,14 +710,10 @@ func codeTokens(source: in String): List[String] {
       val st = t.span.startPos.offset
       val en = t.span.endPos.offset
       val text = match t.token {
-        case TString(s)      -> "str:" + s
-        case TStringPart(s)  -> "spart:" + s
-        case TChar(cp)       -> "char:" + toString(cp)
-        case _ -> if en > st and st >= 0 and en <= source.length {
-          Str.substring(source, st, en - st)
-        } else {
-          tokenKindTag(t.token)
-        }
+        case TString(s) -> "str:" + s
+        case TStringPart(s) -> "spart:" + s
+        case TChar(cp) -> "char:" + toString(cp)
+        case _ -> if en > st and st >= 0 and en <= source.length { Str.substring(source, st, en - st) } else { tokenKindTag(t.token) }
       }
       if text != "," {
         acc.add(text)

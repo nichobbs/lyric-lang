@@ -577,6 +577,7 @@ jobs:
             echo "::warning::AOT binary not found at $lyric_bin; skipping compiler self-tests"
             exit 0
           fi
+          ran=""
           for t in \
             lyric-compiler/lyric/lexer_self_test.l \
             lyric-compiler/lyric/parser_self_test.l \
@@ -586,10 +587,16 @@ jobs:
             lyric-compiler/lyric/cfg_self_test.l \
             lyric-compiler/lyric/derives_self_test.l \
             lyric-compiler/lyric/mono_self_test.l \
-            lyric-compiler/lyric/fmt_self_test.l ; do
+            lyric-compiler/lyric/fmt_self_test.l \
+            lyric-compiler/lyric/async_generator_self_test.l \
+            lyric-compiler/lyric/class_encoding_self_test.l \
+            lyric-compiler/lyric/hof_type_propagation_self_test.l \
+            lyric-compiler/lyric/typechecker_extern_dedup_self_test.l ; do
             echo "=== $t ==="
             "$lyric_bin" test "$t"
+            ran="$ran $t"
           done
+          echo "Compiler self-tests ran:$ran" >> "$GITHUB_STEP_SUMMARY"
 
       # CfgGate self-test — exercises `Lyric.CfgGate` via native `lyric test`.
       # Compiler-package imports are resolved by linking the stage-1 bundle
@@ -805,6 +812,12 @@ jobs:
             exit 0
           fi
           "$lyric_bin" test lyric-compiler/lyric/for_loop_slice_self_test.l
+
+      # For-loop slice self-test is dotnet-only (#2595).  The JVM backend does
+      # not yet lower `for x in xs.toArray()` over an erased element type: the
+      # JVM auto-FFI resolver sees the loop element typed as java.lang.Object and
+      # fails to bind the subsequent call, so `--target jvm` aborts.  JVM slice-
+      # iteration parity is tracked under the JVM-backend remediation in docs/41.
 
       # Bitwise self-test on the JVM target (#1611 JVM half).  Compiles the same
       # @test_module in-process through the self-hosted `Jvm.Bridge`
@@ -1347,6 +1360,7 @@ jobs:
             exit 0
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/outparam_self_test.l
+          echo "out/inout-parameter self-test ran: outparam_self_test.l (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
 
       # Nested-generic self-test — pins #1687 on the MSIL target.  JVM-target
       # parity is gated on the union case-factory gap, tracked in #1707 (so this
@@ -1683,6 +1697,12 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/mono_shadow_self_test.l
 
+      # Mono-shadow self-test is dotnet-only (#2000).  Although the module
+      # imports only Std.*, the JVM backend currently emits invalid stackmap
+      # frames for its monomorphised generic call shapes (the class fails JVM
+      # verification), so `--target jvm` cannot run it yet.  JVM monomorphisation
+      # parity is tracked under the JVM-backend remediation in docs/41.
+
       # CLI did-you-mean suggestion self-test — exercises Lyric.CliSuggest
       # (editDistance / suggestCommand) via native `lyric test`.  The
       # Lyric.CliSuggest compiler-package import is resolved by linking the
@@ -1751,11 +1771,11 @@ jobs:
           # 2. --help exits 0.
           "$bin_abs" --help >/dev/null
           # 3. Unknown command exits non-zero and suggests the nearest command.
-          if "$bin_abs" buld >/tmp/lyric_buld.out 2>&1; then
+          if "$bin_abs" buld >"${work}/lyric_buld.out" 2>&1; then
             echo "expected non-zero exit for unknown command"; exit 1
           fi
-          grep -q "did you mean 'build'?" /tmp/lyric_buld.out || {
-            echo "expected did-you-mean suggestion"; cat /tmp/lyric_buld.out; exit 1; }
+          grep -q "did you mean 'build'?" "${work}/lyric_buld.out" || {
+            echo "expected did-you-mean suggestion"; cat "${work}/lyric_buld.out"; exit 1; }
           # 4. Bare `lyric` outside any project exits non-zero (usage).
           empty="$(mktemp -d)"
           if ( cd "$empty" && "$bin_abs" ); then
@@ -1943,24 +1963,24 @@ jobs:
           ( cd "$work/lib" && "$bin_abs" build )
           ( cd "$work/lib2" && "$bin_abs" build )
           # 1. No lock -> auto-restore writes it and the build succeeds.
-          ( cd "$work/app" && "$bin_abs" build 2>&1 | tee /tmp/ar1.out )
-          grep -q "resolving dependencies" /tmp/ar1.out || { echo "expected auto-restore message"; exit 1; }
+          ( cd "$work/app" && "$bin_abs" build 2>&1 | tee "$work/ar1.out" )
+          grep -q "resolving dependencies" "$work/ar1.out" || { echo "expected auto-restore message"; exit 1; }
           test -f "$work/app/lyric.lock" || { echo "expected lyric.lock to be created"; exit 1; }
           # 2. In-sync lock -> no re-restore.
-          ( cd "$work/app" && "$bin_abs" build 2>&1 | tee /tmp/ar2.out )
-          if grep -q "resolving dependencies" /tmp/ar2.out; then echo "should not re-restore an in-sync lock"; exit 1; fi
+          ( cd "$work/app" && "$bin_abs" build 2>&1 | tee "$work/ar2.out" )
+          if grep -q "resolving dependencies" "$work/ar2.out"; then echo "should not re-restore an in-sync lock"; exit 1; fi
           # 3. Stale lock -> a dependency added after the lock was written triggers
           #    a re-restore (the new dep is absent from lyric.lock).
           printf 'Lib2 = { path = "../lib2" }\n' >> "$work/app/lyric.toml"
-          ( cd "$work/app" && "$bin_abs" build 2>&1 | tee /tmp/ar3.out )
-          grep -q "resolving dependencies" /tmp/ar3.out || { echo "expected re-restore on a stale lock (new dep)"; exit 1; }
+          ( cd "$work/app" && "$bin_abs" build 2>&1 | tee "$work/ar3.out" )
+          grep -q "resolving dependencies" "$work/ar3.out" || { echo "expected re-restore on a stale lock (new dep)"; exit 1; }
           # 4. --no-restore after deleting the lock -> no restore, lock not recreated.
           #    The build still succeeds (exit 0): both path deps are already built
           #    above, so no resolution is needed to compile against them.
           rm -f "$work/app/lyric.lock"
-          ( cd "$work/app" && "$bin_abs" build --no-restore ) > /tmp/ar4.out 2>&1; rc=$?
-          test "$rc" -eq 0 || { echo "--no-restore build should still succeed (exit 0), got $rc"; cat /tmp/ar4.out; exit 1; }
-          if grep -q "resolving dependencies" /tmp/ar4.out; then echo "--no-restore should skip restore"; exit 1; fi
+          ( cd "$work/app" && "$bin_abs" build --no-restore ) > "$work/ar4.out" 2>&1; rc=$?
+          test "$rc" -eq 0 || { echo "--no-restore build should still succeed (exit 0), got $rc"; cat "$work/ar4.out"; exit 1; }
+          if grep -q "resolving dependencies" "$work/ar4.out"; then echo "--no-restore should skip restore"; exit 1; fi
           test ! -f "$work/app/lyric.lock" || { echo "--no-restore should not recreate the lock"; exit 1; }
           echo "Auto-restore-on-build e2e passed"
 
@@ -2059,6 +2079,7 @@ jobs:
           fi
           bin_abs="$(pwd)/$lyric_bin"
           work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
           mkdir -p "$work/lib/src" "$work/app/src"
           cat > "$work/lib/lyric.toml" <<'TOML'
           [package]
@@ -2156,9 +2177,10 @@ jobs:
           ( cd mylib && "$bin_abs" build )
           # 3. overwrite refused without --force.
           if "$bin_abs" init demo; then echo "expected refusal to overwrite lyric.toml"; exit 1; fi
-          # 4. --force + --name overwrites.
+          # 4. --force + --name overwrites lyric.toml but must not clobber src/main.l.
           "$bin_abs" init demo --force --name Renamed
           grep -q 'name = "Renamed"' demo/lyric.toml || { echo "--name/--force did not apply"; exit 1; }
+          grep -q 'Hello from Demo!' demo/src/main.l || { echo "--force clobbered src/main.l"; exit 1; }
           # 5. bad name rejected.
           if "$bin_abs" init weird --name "bad-name"; then echo "expected rejection of invalid name"; exit 1; fi
           echo "lyric init e2e passed"
@@ -2179,6 +2201,7 @@ jobs:
           fi
           bin_abs="$(pwd)/$lyric_bin"
           work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
           printf 'package Hello\nimport Std.Core\nimport Std.Console as Console\npub func main(): Int { Console.println("watch-v1"); 0 }\n' > "$work/hello.l"
           ( "$bin_abs" run "$work/hello.l" --watch > "$work/out.log" 2>&1 ) &
           wpid=$!

@@ -100,9 +100,8 @@ func codegenBuiltinType(name: in String): Option[Type] {
 func isNumericType(t: in Type): Bool {
   match t {
     case TyPrim(pt) -> match pt { case PtByte -> true; case PtInt -> true; case PtLong -> true; case PtUInt -> true; case PtULong -> true; case PtNat -> true; case PtFloat -> true; case PtDouble -> true; case _ -> false }
-    // A range subtype (`Int range 0 ..= 100`) is numeric/ordered when its
-    // underlying representation is — otherwise arithmetic / comparison on a
-    // range-typed value would spuriously fail T0030/T0033 (#1488).
+    // A range subtype is numeric/ordered when its underlying representation is —
+    // otherwise arithmetic / comparison on a range-typed value would spuriously fail T0030/T0033.
     case TyRefined(u, _, _, _) -> isNumericType(u)
     case TyError -> true
     case _ -> false
@@ -341,6 +340,9 @@ func importedOpaqueName(tbl: in SymbolTable, ty: in Type): Option[String] {
 func patternCracksRepr(p: in Pattern): Bool {
   match p.kind {
     case PRecord(_, _, _) -> true
+    // Bare constructor with no sub-patterns (a.count == 0) does not crack the repr for
+    // single-variant opaque records; if multi-variant opaque types are ever added, even
+    // a bare `case Variant ->` leaks which variant is held and would need to return true.
     case PConstructor(_, a) -> a.count > 0
     case PParen(ip) -> patternCracksRepr(ip)
     case POr(ps) -> {
@@ -858,17 +860,17 @@ func isNonConvertiblePrimitive(t: in Type): Bool {
   }
 }
 
-// Element type produced by indexing `recv[i]` (#1901 part B).  `slice[T]` and
-// `array[N,T]` yield `T`; `String` yields `Char`; `List[T]` yields `T` and
-// `Map[K,V]` yields `V` (both modelled as `TyUser` with resolved type args).
-// An unknown / non-indexable receiver yields `TyError` (lenient — the codegen
-// owns the runtime behaviour for exotic receivers).
+// TyError for unknown receivers is intentional: codegen owns exotic receiver behaviour.
 func indexElementType(recvRaw: in Type): Type {
   match unrefine(recvRaw) {
     case TySlice(elem) -> elem
     case TyArray(_, elem) -> elem
     case TyPrim(pt) -> match pt { case PtString -> TyPrim(pt = PtChar); case _ -> TyError }
     case TyUser(_, nm, targs) -> {
+      // Matched by short name: `nm` is the unqualified name as registered by the
+      // stdlib kernel (`List`, `Map`).  User-defined types with those names and the
+      // matching arity would also match here — this is acceptable given that `List`
+      // and `Map` are effectively reserved stdlib names in the kernel convention.
       if nm == "List" and targs.count == 1 {
         targs[0]
       } else if nm == "Map" and targs.count == 2 {
@@ -1154,7 +1156,12 @@ func resolveExprPath(
     case Some(sym) -> {
       checkImportedVisibility(sym, span, diag)
       match sym.kind {
-        case DKUnionCase(_, _) -> return inferUnionCaseConstruction(tbl, diag, sym, newList(), span)
+        case DKUnionCase(_, _) -> {
+          // A bare constructor reference like `Some` without call args infers as the
+          // parent union with TyError type-args (uninferable without arguments).
+          // The enclosing ECall arm re-infers with actual arg types and wins.
+          return inferUnionCaseConstruction(tbl, diag, sym, newList(), span)
+        }
         case DKConst(cd) -> {
           val ctx = newGenericContext()
           return resolveType(tbl, ctx, diag, cd.ty)
@@ -1165,7 +1172,12 @@ func resolveExprPath(
               val ctx = newGenericContext()
               return resolveType(tbl, ctx, diag, te)
             }
-            case None -> return inferExpr(sc, tbl, sigs, diag, vd.init)
+            case None -> {
+              // Infer against an empty scope to avoid the caller's local bindings
+              // shadowing module-level names referenced in vd.init.
+              val emptyScope = newScopeForFunction(TyError, newList())
+              return inferExpr(emptyScope, tbl, sigs, diag, vd.init)
+            }
           }
         }
         case _ -> {
@@ -1403,7 +1415,8 @@ func inferConstruction(
     return resultTy
   }
   // Named arguments must reference a real field (T0101).  Full arg validation
-  // (missing-required, positional arity, value-type matching) is a follow-up.
+  // (missing-required, positional arity, value-type matching) is a follow-up;
+  // CtorField.ty and CtorField.hasDefault are pre-populated for that follow-up.
   val fields: List[CtorField] = newList()
   val _ = collectCtorFields(tbl, sym, fields)
   var i = 0
@@ -1598,8 +1611,12 @@ func substituteTyVars(t: in Type, names: in List[String], args: in List[Type]): 
 func findGenericInPair(name: in String, paramTy: in Type, argTy: in Type): Option[Type] {
   match paramTy {
     case TyVar(nm) -> if nm == name { Some(value = argTy) } else { None }
-    case TyUser(_, _, pargs) -> {
-      val aargs = match unrefine(argTy) { case TyUser(_, _, a) -> a; case _ -> newList() }
+    case TyUser(pid, _, pargs) -> {
+      // Guard by TypeId to avoid cross-constructor inference (e.g. Result vs Option).
+      val aargs = match unrefine(argTy) {
+        case TyUser(aid, _, a) -> if typeIdEq(pid, aid) { a } else { newList() }
+        case _ -> newList()
+      }
       findGenericInPairs(name, pargs, aargs)
     }
     case TySlice(pe) -> match unrefine(argTy) { case TySlice(ae) -> findGenericInPair(name, pe, ae); case _ -> None }
@@ -1805,6 +1822,7 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       }
     }
     case POr(patterns) -> {
+      // All alternatives bind the same names by language rule; process the first.
       if patterns.count > 0 {
         bindPatternTyped(sc, tbl, diag, patterns[0], ty)
       }
@@ -1906,9 +1924,10 @@ pub func inferExpr(
       // yields `TyError`, exactly what the general path would produce — so the
       // receiver is inferred once, with no duplicate diagnostics.
       match fn.kind {
-        case EMember(recvE, mname) -> match numericConvTarget(mname) { case Some(target) -> if args.count == 0 { val rt = inferExpr(sc, tbl, sigs, diag, recvE); if isNumericOrCharType(rt) { return TyPrim(pt = target) }; if isNonConvertiblePrimitive(rt) { diag.add(errorDiagnostic("T0103", "conversion method '" + mname + "' is not applicable to " + renderType(rt), recvE.span)) }; return TyError }; case None -> {  } }
-        // A `String`/`Bool`/`Unit` receiver can be neither converted nor
-        // host a user method of this name — report it precisely.
+        case EMember(recvE, mname) -> match numericConvTarget(mname) { case Some(target) -> if args.count == 0 { val rt = inferExpr(sc, tbl, sigs, diag, recvE); if isNumericOrCharType(rt) { return TyPrim(pt = target) }; if isNonConvertiblePrimitive(rt) { diag.add(errorDiagnostic("T0103", "conversion method '" + mname + "' is not applicable to " + renderType(rt), recvE.span)); return TyError }; match rt { case TyError -> return TyError; case _ -> {  } } }; case None -> {  } }
+        // Non-numeric, non-primitive receiver: fall through to general dispatch so
+        // a user-defined method named toInt/toLong/etc. on a user type is not
+        // silently shadowed by this intrinsic path once C2 method resolution lands.
         case _ -> {
         }
       }
@@ -2016,11 +2035,7 @@ pub func inferExpr(
     // first and falls back to the result temp only inside contracts.
     case EResult -> match scopeTryFind(sc, "result") { case Some(b) -> b.ty; case None -> sc.returnTy }
 
-    // Index expression `recv[i]` yields the receiver's element type (#1901
-    // part B): `slice[T]`/`array[N,T]` -> `T`, `String` -> `Char`,
-    // `List[T]` -> `T`, `Map[K,V]` -> `V`.  An unknown / non-indexable receiver
-    // stays `TyError` (lenient — codegen owns exotic receivers).  The index
-    // expressions are inferred so their own diagnostics surface.
+    // TyError for unknown receivers is intentional: codegen owns exotic receiver behaviour.
     case EIndex(recvE, indices) -> {
       val rt = inferExpr(sc, tbl, sigs, diag, recvE)
       var ii = 0
@@ -2039,7 +2054,13 @@ pub func inferExpr(
     // branch is typed (divergence-aware) by `checkBlock` (D081), so an
     // early-`return` branch is `Never` and unifies cleanly.
     case EIf(cond, thenBranch, elseBranch, _) -> {
-      inferExpr(sc, tbl, sigs, diag, cond)
+      val condT = inferExpr(sc, tbl, sigs, diag, cond)
+      match condT {
+        case TyError -> {
+        }
+        case TyPrim(pt) -> match pt { case PtBool -> {  }; case PtNever -> {  }; case _ -> diag.add(errorDiagnostic("T0066", "if-condition must be Bool (got " + renderType(condT) + ")", cond.span)) }
+        case _ -> diag.add(errorDiagnostic("T0066", "if-condition must be Bool (got " + renderType(condT) + ")", cond.span))
+      }
       val tt = inferExprOrBlock(sc, tbl, sigs, diag, thenBranch)
       match elseBranch {
         case None -> TyPrim(pt = PtUnit)
@@ -2058,15 +2079,21 @@ pub func inferExpr(
       // with its pattern variables bound to their destructured types
       // (`bindPatternTyped` — `Some(ns)` on `Option[T]` binds `ns : T`), then the
       // bodies fold through `unifyBranchTypes` (Never/TyError/Unit absorbed;
-      // T0067 on a genuine value mismatch).  Guards are not inferred here.
+      // T0067 on a genuine value mismatch).  Guards are inferred for diagnostics but
+      // do not contribute to the branch type.
       var acc: Type = TyError
       var ai = 0
       while ai < arms.count {
         scopePush(sc)
         bindPatternTyped(sc, tbl, diag, arms[ai].pattern, st)
+        match arms[ai].guard {
+          case Some(g) -> inferExpr(sc, tbl, sigs, diag, g)
+          case None -> TyError
+        }
         val bt = inferExprOrBlock(sc, tbl, sigs, diag, arms[ai].body)
+        val armSpan = match arms[ai].body { case EOBExpr(ae) -> ae.span; case EOBBlock(ab) -> ab.span }
         scopePop(sc)
-        acc = unifyBranchTypes(acc, bt, e.span, diag)
+        acc = unifyBranchTypes(acc, bt, armSpan, diag)
         ai = ai + 1
       }
       acc
@@ -2074,6 +2101,9 @@ pub func inferExpr(
     // A value-position brace block / `unsafe { … }` has the type of its trailing
     // expression (or `Unit` if it ends in a statement, or `Never` if it diverges)
     // — `checkBlock` walks the statements (binding locals) and returns that type.
+    // sc.genericNames / sc.returnTy are passed explicitly here because checkBlock
+    // still carries them as standalone parameters (follow-up: remove them once all
+    // branch forms are wired and checkBlock can read them from sc directly).
     case EBlock(blk) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, diag, blk)
     case EUnsafe(blk) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, diag, blk)
     case ETry(_) -> TyError
@@ -2106,14 +2136,6 @@ func paramsMatchArgs(tbl: in SymbolTable, params: in List[ResolvedParam], argTyp
   true
 }
 
-// The `TypeId` of a (possibly refined) user type, or `None` for non-`TyUser`.
-func userTypeId(t: in Type): Option[TypeId] {
-  match unrefine(t) {
-    case TyUser(id, _, _) -> Some(value = id)
-    case _ -> None
-  }
-}
-
 // True when an argument of type `argTy` is acceptable for a parameter of type
 // `paramTy` — either `typeEquiv` (the usual case), or interface subtyping
 // (#1488): `argTy` is a user type `T` and `paramTy` is an interface `I` with a
@@ -2126,8 +2148,8 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
   if typeEquiv(paramTy, argTy) {
     return true
   }
-  match userTypeId(paramTy) {
-    case Some(ifaceId) -> match userTypeId(argTy) { case Some(argId) -> symTableTypeImplements(tbl, argId, ifaceId); case None -> false }
+  match typeIdOfType(paramTy) {
+    case Some(ifaceId) -> match typeIdOfType(argTy) { case Some(argId) -> symTableTypeImplements(tbl, argId, ifaceId); case None -> false }
     case None -> false
   }
 }
@@ -2153,6 +2175,7 @@ pub func typeAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type)
     return true
   }
   match unrefine(expected) {
+    // Assumes covariance in all type args; revisit if invariant/contravariant parameters are added.
     case TyUser(eid, _, eargs) -> match unrefine(actual) { case TyUser(aid, _, aargs) -> { if typeIdEq(eid, aid) { if eargs.count != aargs.count { return false }; var i = 0; while i < eargs.count { if not typeAssignable(tbl, eargs[i], aargs[i]) { return false }; i = i + 1 }; return true }; symTableTypeImplements(tbl, aid, eid) }; case _ -> false }
     case _ -> false
   }
@@ -2182,6 +2205,9 @@ func findDirectSig(
       // No package match falls through to the bare-name resolution below, so an
       // intra-project alias whose target package didn't register a candidate
       // slot still resolves as before.
+      // Multi-segment paths reaching here are expected to be alias-rewritten
+      // (e.g. `Std.RegexSafe.tryCompile`); the fallthrough to bare-name
+      // resolution below is a deliberate backstop for any unmatched case.
       if path.segments.count > 1 {
         val prefix: List[String] = newList()
         var pi = 0

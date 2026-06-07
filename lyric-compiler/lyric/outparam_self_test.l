@@ -145,3 +145,31 @@ test "impl method with out param reads self.field and writes through the byref" 
   c.snapshot(dst)
   assertEqualInt(dst, 99, "snapshot writes self.tag (99) through the out byref")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3-param mixed-mode interface method: verifies that position 0 (in) is
+// by-value, position 1 (out) and position 2 (inout) are by-ref, and the
+// methodModes index mapping is correct across all three positions.
+// ─────────────────────────────────────────────────────────────────────────────
+interface Mixer {
+  func mix(a: in Int, b: out Int, c: inout Int): Unit
+}
+
+record MixerImpl {
+}
+
+impl Mixer for MixerImpl {
+  func mix(a: in Int, b: out Int, c: inout Int): Unit {
+    b = a * 2
+    c = c + a
+  }
+}
+
+test "3-param mixed-mode (in, out, inout) all positions index correctly" {
+  val m: Mixer = MixerImpl()
+  var b: Int = 0
+  var c: Int = 10
+  m.mix(3, b, c)
+  assertEqualInt(b, 6, "out param (pos 1): 3*2 = 6")
+  assertEqualInt(c, 13, "inout param (pos 2): 10+3 = 13")
+}

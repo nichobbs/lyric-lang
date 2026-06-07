@@ -103,7 +103,18 @@ func isStubbableMethodSig(sg: in FunctionSig): Bool {
 func isUnitReturn(sg: in FunctionSig): Bool {
   match sg.ret {
     case None -> true
-    case Some(te) -> match te.kind { case TUnit -> true; case TRef(p) -> p.segments.count == 1 and p.segments[0] == "Unit"; case _ -> false }
+    case Some(te) -> match te.kind {
+      // TUnit is the canonical parser form for the `Unit` built-in.
+      case TUnit -> true
+      // TRef("Unit") covers a narrow edge: if a parser context emits the
+      // built-in as a path reference rather than the dedicated TUnit token
+      // (e.g. a type annotation `Unit` in certain parse positions).  The
+      // single-segment guard prevents a user-defined type also named "Unit"
+      // in a nested module from matching; the stdlib built-in has no namespace
+      // prefix so only the bare name is expected here.
+      case TRef(p) -> p.segments.count == 1 and p.segments[0] == "Unit"
+      case _ -> false
+    }
   }
 }
 
@@ -261,7 +272,7 @@ func appendStubsForInterface(result: in List[Item], it: in Item, id: in Interfac
 
 // Append a synthesised stub record + impl for every non-generic `@stubbable`
 // interface; the original interface item is kept unchanged.
-pub func synthesizeItems(items: in List[Item]): List[Item] {
+pub func synthesiseItems(items: in List[Item]): List[Item] {
   val result: List[Item] = newList()
   var c = 0
   while c < items.count {
@@ -287,7 +298,7 @@ pub func stubbableRewriteFile(file: in SourceFile): SourceFile {
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
     imports = file.imports,
-    items = synthesizeItems(file.items),
+    items = synthesiseItems(file.items),
     span = file.span
   )
 }

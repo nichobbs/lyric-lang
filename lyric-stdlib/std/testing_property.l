@@ -139,9 +139,8 @@ func shrinkBoolToFixedPoint(failing: in Bool, prop: in (Bool) -> Bool): Bool {
     val c = candidates[j]
     if not prop(c) {
       best = c
-      // Bool shrinks to false in one step; no further recursion
+      // Bool shrinks in one step: no recursion needed; skip the rest
       j = candidates.count
-      // first smaller failure wins; skip the rest
     } else {
       j = j + 1
     }

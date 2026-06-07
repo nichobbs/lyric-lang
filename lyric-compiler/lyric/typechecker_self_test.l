@@ -1366,3 +1366,210 @@ test "flat imports preserve last wins" {
   assertTrue(idA > 0 and idB > 0, "flat: both signatures resolve to a user type")
   assertEqualInt(idA, idB, "flat imports: last-registered RegexError wins both signatures (back-compat)")
 }
+
+// #1980: `let` bindings are immutable like `val`; reassigning one must emit T0087.
+test "let no reassign" {
+  val src = "package P\nfunc f(): Unit {\n  let x = 1\n  x = 2\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0087"), "reassigning a `let`: T0087")
+}
+
+// #1993: an `inout val` argument must emit T0085.
+test "inout arg immutable rejected" {
+  val src = "package P\nfunc g(x: inout Int): Unit { x = 5 }\nfunc f(): Unit {\n  val y = 0\n  g(y)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0085"), "inout arg is a val: T0085")
+}
+
+// #1993: an `inout` literal argument must emit T0085.
+test "inout arg literal rejected" {
+  val src = "package P\nfunc g(x: inout Int): Unit { x = 5 }\nfunc f(): Unit { g(0) }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0085"), "inout arg is a literal: T0085")
+}
+
+// #1994: forwarding an `out` binding to another `out` param must not emit T0085.
+test "out arg forwarded out binding ok" {
+  val src = "package P\nfunc g(x: out Int): Unit { x = 5 }\nfunc h(y: out Int): Unit { g(y) }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0085"), "forwarding out binding to out param: no T0085")
+}
+
+// #2010: exposed-record constructor returns the record type.
+test "exposed rec ctor returns type" {
+  val ok = "package P\nexposed record Point { x: Int; y: Int }\nfunc f(): Unit { val p: Point = Point(x = 1, y = 2) }\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0060"), "exposed-rec ctor returns the record type: no T0060")
+}
+
+// #2030: multiple out params — only the unassigned one emits T0086.
+test "out multiple one unassigned" {
+  val src = "package P\nfunc f(x: out Int, y: out Int): Unit { x = 1 }\n"
+  val diags = parseCheck(src)
+  assertTrue(hasDiagCode(diags, "T0086"), "T0086 fires for the unassigned out param")
+  var count = 0
+  var i = 0
+  while i < diags.diagnostics.count {
+    if diags.diagnostics[i].code == "T0086" {
+      count = count + 1
+    }
+    i = i + 1
+  }
+  assertEqualInt(count, 1, "exactly one T0086 for the unassigned param")
+}
+
+// #2038: a body-less function (interface/extern signature) with an `out` param
+// must not falsely trigger T0086.
+test "out body less no false t0086" {
+  val src = "package P\ninterface I { func f(x: out Int): Unit }\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0086"), "body-less interface method: no false T0086")
+}
+
+// #2074: array[N, T] element inference returns T, not TyError.
+test "index array element typed" {
+  val src = "package P\nfunc f(a: in array[10, Long]): Int { a[0] }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0070"), "array[N,Long] element is Long, mismatches Int return")
+}
+
+// #2074: List[T] element inference returns T.
+test "index list element typed" {
+  val src = "package P\nextern type List[T] = \"System.Collections.Generic.List`1\"\nfunc f(xs: in List[Long]): Int { xs[0] }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0070"), "List[Long] element is Long, mismatches Int return")
+}
+
+// #2079: EResult inside an `ensures:` clause types as the function's return type.
+test "result expr typed in ensures" {
+  val ok = "package P\nfunc h(x: in Int): Bool ensures: result == true { x > 0 }\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "result in ensures: no type error when types agree")
+}
+
+// #2025: PParen pattern should trigger T0102 when it wraps a constructor sub-pattern.
+test "opaque paren pattern crack rejected" {
+  val imp = importedItemsOf("package Lib\npub opaque type Box { item: Int }\n")
+  val pr = parse("package App\nfunc f(b: in Box): Int { match b { case (Box(x)) -> 1; case _ -> 0 } }\n")
+  val cr = checkWithImports(pr.file, imp)
+  assertTrue(hasDiagCode(cr, "T0102"), "PParen wrapping PConstructor: T0102 for opaque crack")
+}
+
+// #2025: POr with a cracking sub-pattern should trigger T0102.
+test "opaque or pattern crack rejected" {
+  val imp = importedItemsOf("package Lib\npub opaque type Box { item: Int }\n")
+  val pr = parse("package App\nfunc f(b: in Box): Int { match b { case Box(x) | _ -> 1 } }\n")
+  val cr = checkWithImports(pr.file, imp)
+  assertTrue(hasDiagCode(cr, "T0102"), "POr with PConstructor sub-pattern: T0102 for opaque crack")
+}
+
+// #2025: POr with only binding/wildcard sub-patterns should NOT trigger T0102.
+test "opaque or binding pattern ok" {
+  val imp = importedItemsOf("package Lib\npub opaque type Box { item: Int }\n")
+  val pr = parse("package App\nfunc f(b: in Box): Int { match b { case other | _ -> 0 } }\n")
+  val cr = checkWithImports(pr.file, imp)
+  assertTrue(not hasDiagCode(cr, "T0102"), "POr with bindings only: no T0102")
+}
+
+// #2140: then-branch diverging is Never and is absorbed — the if takes the else type.
+test "if then diverging branch absorbed" {
+  val src = "package P\nfunc f(c: in Bool): Int { if c { return 0 } else { 1 } }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "if then-diverge: then-return is Never, unifies to Int")
+}
+
+// #2141: else-if chain unifies arms.
+test "else if chain unify" {
+  val ok = "package P\nfunc f(a: in Bool, b: in Bool): Int { if a { 1 } else if b { 2 } else { 3 } }\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "else-if chain: all Int arms unify")
+  val bad = "package P\nfunc f(a: in Bool, b: in Bool): Int { if a { 1 } else if b { \"s\" } else { 3 } }\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0067"), "else-if chain: String arm mismatches T0067")
+}
+
+// #2202: or-pattern binding does not double-bind (POr processes first alternative only).
+test "match or pattern no double bind" {
+  val src = "package P\nunion C { case A(n: Int); case B(n: Int) }\nfunc f(c: in C): Int { match c { case A(v) | B(v) -> v } }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "or-pattern: no double-bind, arm body uses v cleanly")
+}
+
+// #2208: a parameter named `result` exercises the same code path as a local named `result`.
+test "param named result shadows keyword" {
+  val src = "package P\nfunc f(result: in String): Unit {\n  val s: String = result\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "param named result: reads as String, not return type")
+}
+
+// #2209: EResult in ensures clause still types as return type (no user binding in scope).
+test "result in ensures types as return" {
+  val ok = "package P\nfunc h(x: in Int): Bool ensures: result == true { x > 0 }\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "result in ensures: types as return type Bool")
+}
+
+// #1957: internal function cross-package visibility (no T0097).
+test "visibility internal func allowed" {
+  val imp = importedItemsOf("package Lib\ninternal func helper(x: in Int): Int { x }\n")
+  val pr = parse("package App\nfunc f(): Int { helper(3) }\n")
+  val cr = checkWithImports(pr.file, imp)
+  assertTrue(not hasDiagCode(cr, "T0097"), "internal imported func cross-package: no T0097")
+}
+
+// #1957: multi-segment type path to a package-private type emits T0097.
+test "visibility multi segment private type rejected" {
+  val imp = importedItemsOf("package Lib\nrecord Widget { x: Int }\n")
+  val pr = parse("package App\nfunc f(w: in Lib.Widget): Int { 0 }\n")
+  val cr = checkWithImports(pr.file, imp)
+  assertTrue(hasDiagCode(cr, "T0097"), "package-private type via multi-segment path: T0097")
+}
+
+// #2239: slice[T] parameter — findGenericInPair handles TySlice.
+test "generic return slice param instantiated" {
+  val src = "package P\ngeneric[T] func head(xs: in slice[T]): T { xs[0] }\nfunc f(bs: in slice[Byte]): Int { head(bs) }\n"
+  assertTrue(
+    hasDiagCode(parseCheck(src), "T0070"),
+    "generic slice param: head(slice[Byte]) returns Byte, mismatches Int"
+  )
+}
+
+// #2220: user function shadows imported function with same name/arity/param type.
+test "user func shadows import by return type" {
+  val libSrc = "package Lib\npub func mk(s: in String): Int { 0 }\n"
+  val libPr = parse(libSrc)
+  val importedItems: List[Item] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    importedItems.add(libPr.file.items[i])
+    i = i + 1
+  }
+  val src = "package App\nfunc mk(s: in String): Bool { true }\nfunc f(): Unit { val b: Bool = mk(\"x\") }\n"
+  val cr = checkWithImports(parse(src).file, importedItems)
+  assertTrue(not hasDiagCode(cr, "T0060"), "user mk(String):Bool shadows import mk(String):Int — Bool binding clean")
+}
+
+// #2221: empty-literal slice arg selects the correct overload via TyError-wildcard.
+test "empty literal selects slice overload" {
+  val libSrc = "package Lib\npub func mk(n: in Int, xs: in slice[String]): Int { 0 }\npub func mk(n: in Int, s: in String): Bool { true }\n"
+  val libPr = parse(libSrc)
+  val importedItems: List[Item] = newList()
+  var i = 0
+  while i < libPr.file.items.count {
+    importedItems.add(libPr.file.items[i])
+    i = i + 1
+  }
+  val src = "package App\nfunc f(): Unit { val n: Int = mk(1, []) }\n"
+  val cr = checkWithImports(parse(src).file, importedItems)
+  assertTrue(not hasDiagCode(cr, "T0060"), "empty-literal [] arg selects slice[String] overload: Int binding clean")
+}
+
+// #2307: cross-package acceptance — impl PkgA.Greeter for Hello, pass Hello to PkgA.Greeter param.
+test "interface subtyping cross package acceptance" {
+  val pkgA = parse(
+    "package PkgA\npub interface Greeter {\n  func greet(): String\n}\npub func useG(g: in Greeter): String { \"\" }\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(ImportedPackage(name = "PkgA", items = pkgA.file.items))
+  val src = "package App\nimport PkgA\nrecord Hello { x: Int }\nimpl Greeter for Hello {\n  func greet(): String { \"hi\" }\n}\nfunc f(): Unit {\n  val s = useG(Hello(x = 1))\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, packages)
+  assertTrue(
+    not hasDiagCode(cr, "T0043"),
+    "cross-package impl acceptance: Hello (impl PkgA.Greeter) accepted at PkgA.Greeter param"
+  )
+}
+
+// #2275: range-typed params comment collapsed to one line — the behaviour unchanged.
+test "range subtype arithmetic clean" {
+  // range-typed params must be numeric/ordered; TyRefined wraps the base prim.
+  val src = "package P\nfunc f(a: in Int range 0 ..= 150): Bool {\n  val n = a + 1\n  a < 100\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "range-subtype: arithmetic and comparison clean")
+}

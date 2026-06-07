@@ -113,6 +113,8 @@ func addSym(
 // The `TypeId` already assigned to an extern type with CLR target `clrName`,
 // if any — so repeat registrations of the same extern type share one canonical
 // id (see the `IExternType` arm of `registerItem`, #2394).
+// O(N) per extern-type registration — negligible while extern types are rare (dozens at most);
+// a clrNameToTypeId side-table could reduce this to O(1) if it becomes measurable.
 func findExternTypeIdByClr(tbl: in SymbolTable, clrName: in String): Option[TypeId] {
   var i = 0
   while i < tbl.symbols.count {
@@ -942,7 +944,7 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
   match findInterfaceDecl(tbl, ifaceName) {
     case None -> {
     }
-    // unresolved interface — already diagnosed at resolution
+    // interface not found in local tbl — cross-package impls and genuinely unresolvable refs are skipped here; cross-package conformance deferred pending full type-matching work
     case Some(ifaceDecl) -> {
       var i = 0
       while i < ifaceDecl.members.count {

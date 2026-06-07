@@ -115,3 +115,38 @@ test "generator: sum of genUpTo(5) is 15" {
   }
   assertEqualInt(total, 15, "1+2+3+4+5 should be 15")
 }
+
+// ── #2480: mixed generator + non-generator async in the same package ──────────
+// A package that contains both a yield-bearing async func (generator) and a
+// non-yield async func (state-machine) in the same file.  If the SM and
+// generator MethodDef pre-scan counts are computed in the wrong order, or the
+// generator/SM distinction changes, IFunc token assignments shift silently.
+// This test exercises both paths in the same package and asserts their output.
+async func asyncAddTwo2(n: in Int): Int {
+  val a = n + 1
+  val b = a + 1
+  b
+}
+
+async func genEvens(n: in Int): Int {
+  var i = 0
+  while i < n {
+    yield i * 2
+    i = i + 1
+  }
+}
+
+test "#2480: SM async func and generator in the same package both work" {
+  // Non-generator path: asyncAddTwo2 resolves as a state-machine async
+  val sm = await asyncAddTwo2(5)
+  assertEqualInt(sm, 7, "asyncAddTwo2(5) should return 7")
+  // Generator path: genEvens yields 0, 2, 4 for n=3
+  val evens: List[Int] = newList()
+  for x in genEvens(3) {
+    evens.add(x)
+  }
+  assertEqualInt(evens.count, 3, "genEvens(3) should yield 3 items")
+  assertEqualInt(evens[0], 0, "genEvens first item = 0")
+  assertEqualInt(evens[1], 2, "genEvens second item = 2")
+  assertEqualInt(evens[2], 4, "genEvens third item = 4")
+}

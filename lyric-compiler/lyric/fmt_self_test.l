@@ -317,12 +317,11 @@ test "comment inside union body" {
 }
 
 test "union case field trailing comments preserved" {
-  // Issue #2453: trailing `// note` comments on the individual fields of a
-  // multi-field union case (the `MEHClause` case in
-  // lyric-compiler/msil/lowering.l) were dropped because the union-case
-  // printer rendered the field list as a flat single line with no trivia
-  // awareness.  The multi-line union-case layout now weaves each field's
-  // trailing comment onto its own line.
+  // Trailing `// note` comments on the individual fields of a multi-field
+  // union case were dropped because the union-case printer rendered the
+  // field list as a flat single line with no trivia awareness.  The
+  // multi-line union-case layout now weaves each field's trailing comment
+  // onto its own line.
   val src = "package P\n\nunion Insn {\n" + "  case Nop\n" + "  case EH(\n" +
     "    flags: Int,        // 0=catch, 2=finally\n" +
     "    tryStart: Int,     // start label\n" +
@@ -715,9 +714,9 @@ test "width driven long match breaks" {
 }
 
 test "then form if arm comments preserved" {
-  // Issue #2453: a `then`-form if-expression whose then-arm and else-arm
-  // each carry an end-of-line comment must keep each comment on its own
-  // output line.  The flat inline rendering used to fuse them
+  // A `then`-form if-expression whose then-arm and else-arm each carry an
+  // end-of-line comment must keep each comment on its own output line.
+  // The flat inline rendering used to fuse them
   // (`then 3 else 6  // a  // b`), merging two comments into one on
   // re-lex; `lyric fmt --write` then refused with "would drop 2
   // comment(s)".  The trivia-aware `then`-form layout splits the arms.
@@ -1137,4 +1136,30 @@ test "aspect config block trailing comment round trips" {
   assertTrue(Str.contains(once, "// toggle"), "aspect config trailing comment: preserved")
   val twice = format(parse(once))
   assertEqual(once, twice, "aspect config trailing comment: idempotent")
+}
+
+test "multi segment leading trivia round trips" {
+  // #2435: `appendTriviaInto` accumulates whitespace across multiple trivia
+  // segments (blank lines + comments) between items.  A blank line followed by
+  // a doc-less `//` comment before an item must round-trip and be idempotent.
+  val src = "package P\n\nfunc a(): Int {\n  1\n}\n\n// a free comment\n\nfunc b(): Int {\n  2\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "multi-segment trivia: round-trips")
+  val once = format(parse(src))
+  assertTrue(Str.contains(once, "// a free comment"), "multi-segment trivia: comment preserved")
+  val twice = format(parse(once))
+  assertEqual(once, twice, "multi-segment trivia: idempotent")
+}
+
+test "match expression arm round trips" {
+  // #2470: `matchLines` formats an expression-position arm body via
+  // `exprAtCol`; the `bd.count > 0` guard prevents an out-of-bounds read when
+  // the formatted arm doc is empty.  A simple expression-arm match must
+  // round-trip and be idempotent.
+  val src = "package P\n\nfunc f(o: in Option[Int]): Int {\n  match o {\n    case Some(x) -> x\n    case None -> 0\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "match expression arm: round-trips")
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "match expression arm: idempotent")
 }

@@ -19316,7 +19316,9 @@ type checker returns `TyError` for lambdas, so the param type must come from the
 higher-order function's signature at the call site), which is the #1939
 remainder and reuses this same `boxedParamTypes` machinery.  CI step extended
 (annotated-param runtime assertions + the unannotated fail-loud check).  No
-regression: emitter 847/847, CLI 84/84.  MSIL target only.
+regression: emitter 847/847, CLI 84/84.  MSIL target only.  JVM-target parity
+(unbox-on-load for annotated lambda params) is tracked under the #1939
+remainder.
 
 ### D-progress-390 — self-hosted type checker: impl/interface structural conformance (#1486, Band-1, docs/41 C11)
 
@@ -19453,7 +19455,9 @@ from the call site):
 type — the propagated-type bindings are left un-annotated, matching the existing
 `callParamTys` pattern.)  CI step updated (annotated + propagated runtime
 assertions, plus the non-HOF fail-loud check).  No regression: emitter 847/847,
-CLI 84/84.  MSIL target only.
+CLI 84/84.  MSIL target only (static-call path only — method-call propagation,
+e.g. `obj.applyInts({ x -> x + 1 }, 10)`, is out of scope; tracked as a
+follow-up under #1939).
 
 ### D-progress-394 — self-hosted: user function shadows an imported generic of the same name in the monomorphizer (#1855)
 
@@ -19579,7 +19583,7 @@ resolved by intervening PRs — confirmed by the IL: refs read
 
 This makes the in-process self-hosted bridge functionally complete for
 ecosystem-library tests: `lyric test --manifest lyric-auth/lyric.toml` (29/29)
-and `lyric test --manifest lyric-session/lyric.toml` (11/11) now pass with **no
+and `lyric test --manifest lyric-session/lyric.toml` (31/31 across 3 test files) now pass with **no
 manual DLL staging**.  The CI ecosystem step's per-test-dir stdlib pre-copy
 workaround is removed accordingly (the runner self-deploys); the `lyric-stdlib/bin`
 compile-time copy and the `Lyric.Session.Host` ecosystem-shim copy stay (a
@@ -19817,8 +19821,10 @@ Verified: mutate-inside-observe-outside (count=2), external-mutate-observe-insid
 String `+=` capture (s="ab"), non-captured `var` unaffected (plain local),
 escaping closure returned from its defining function (makeAdder=15), and all v1
 immutable cases.  CI step updated to assert by-reference sharing.  No regression:
-emitter 847/847, CLI 84/84.  MSIL target only.  Remaining for #1479: multi-level
-nesting (a lambda capturing an enclosing *lambda*'s locals).
+emitter 847/847, CLI 84/84.  MSIL target only (the JVM backend does not yet
+support `ELambda` at all; JVM closure capture parity is tracked under epic #1470).
+Remaining for #1479: multi-level nesting (a lambda capturing an enclosing
+*lambda*'s locals).
 ### D-progress-405 — numeric / character conversion-method intrinsics `.toByte()`/`.toInt()`/`.toLong()`/`.toChar()`/`.toDouble()` (#1901, Band-1 of #1470)
 
 **Status:** Shipped on both targets — the unblocker half of #1901 (the `EIndex`
@@ -19883,11 +19889,12 @@ checkout — or a just-edited `[dependencies]` set — builds without a manual
 - **`buildProject`** auto-restores before emit when deps are declared and the lock
   is missing/stale; **`--no-restore`** opts out.
 
-Verified end-to-end against `bin/lyric`: a two-project setup (app with a `path`
-dependency on lib) auto-restores on first build (writes `lyric.lock`), skips
-re-restore on an in-sync second build, and `--no-restore` skips restore without
-recreating the lock.  CI gains an "Auto-restore-on-build e2e" step exercising all
-three cases.  Stage-1 + AOT clean.  MSIL target.
+Verified end-to-end against `bin/lyric`: a three-project setup (lib, lib2, app —
+lib2 provides the stale-lock case) auto-restores on first build (writes
+`lyric.lock`), skips re-restore on an in-sync second build, detects a stale lock
+and re-restores, and `--no-restore` skips restore without recreating the lock.
+CI gains an "Auto-restore-on-build e2e" step exercising all four cases.
+Stage-1 + AOT clean.  MSIL target.
 
 Docs: D080 (decision log), language reference §13.1, book appendix-b CLI
 reference.  (Numbered D080 / D-progress-406 to follow #2013's in-flight D079 /
@@ -19989,7 +19996,7 @@ picks up the new path dep). Stage-1 + AOT clean.  MSIL target.
 Deferred (tracked follow-ups): `--registry <url>` (manifest has no per-dep
 registry field — it is a global `[registry]` setting) and `lyric remove`.
 
-Docs: D081 (decision log), language reference §13.10, book appendix-b CLI
+Docs: D082 (decision log), language reference §13.10, book appendix-b CLI
 reference.
 ### D-progress-410 — self-hosted parser: brace-`if`/`match` in statement position is a complete statement (#1943, Band-1 of #1470)
 
@@ -20873,6 +20880,9 @@ package's own function signatures**.  `Std.Regex.tryCompile`'s
   directly (synchronous unwrap); full `Task<T>` return is tracked in #2070.
 - Type-checker propagation of `async func` return types through call sites
   (currently inferred as `Unit` — tracked in #2070 as a follow-up).
+- **JVM target:** `async func` SM synthesis is Phase B.1+ (tracked in #2070);
+  the JVM backend currently lowers no-await `async func` synchronously without
+  synthesising a `CompletableFuture`/task equivalent (2026-06-07).
 
 ### D-progress-431 — Band 3 Phase B.1: `IAsyncStateMachine` synthesis for user-defined `async func` (await path, #2070, D086)
 
@@ -20924,6 +20934,10 @@ package's own function signatures**.  `Std.Regex.tryCompile`'s
 **Regression gate:** 847/847 emitter tests + 84/84 CLI tests green.
 
 ### D-progress-433 — Band 3 Phase B.2: promoted locals for `async func` with awaits (#2070, D088)
+<!-- Note: this entry was merged before D-progress-431/432/433 were assigned to
+     the range-subtype / interface-subtyping / @stubbable batch.  The async
+     Phase B.2 entry retains the number assigned at merge time; see the
+     D-progress-431/432/433 entries below for the later batch. -->
 
 **What shipped:**
 

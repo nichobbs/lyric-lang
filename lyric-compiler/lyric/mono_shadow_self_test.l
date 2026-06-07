@@ -45,16 +45,15 @@ func identity(o: in Option[Int]): String {
   }
 }
 
-// Local union (not stdlib) — same shadowing path, different value type.
-union Box {
-  case Empty
-  case Full(v: Int)
-}
-
-func tagBox(b: in Box): Int {
-  match b {
-    case Full(v) -> v
-    case Empty -> -1
+// `pickFirst` collides with `Std.Core.pickFirst[T, U]` (a proof generic that
+// takes two arguments and returns the first).  The local two-argument function
+// must win — any monomorphisation against the stdlib generic would produce a
+// different return type and body, crashing the call site.
+func pickFirst(a: in Int, b: in Int): String {
+  if a > b {
+    "a"
+  } else {
+    "b"
   }
 }
 
@@ -79,7 +78,7 @@ test "shadowed `identity` returns the user result, not the stdlib identity" {
   assertEqual(identity(o), "some", "user identity(Some) -> \"some\"")
 }
 
-test "shadowing also covers a local-union annotated local" {
-  val b: Box = Full(42)
-  assertEqualInt(tagBox(b), 42, "tagBox(Full(42)) -> 42")
+test "shadowed `pickFirst` uses the local two-Int->String body, not the stdlib generic" {
+  assertEqual(pickFirst(5, 3), "a", "5 > 3 -> a")
+  assertEqual(pickFirst(2, 9), "b", "2 < 9 -> b")
 }

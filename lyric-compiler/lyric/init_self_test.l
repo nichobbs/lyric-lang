@@ -72,3 +72,10 @@ test "derivePackageName: dotted name is rejected" {
     case Err(_) -> assertTrue(true, "dot rejected")
   }
 }
+
+test "derivePackageName: underscore is rejected" {
+  match Init.derivePackageName("my_app") {
+    case Ok(n) -> assertTrue(false, "expected Err, got Ok: " + n)
+    case Err(_) -> assertTrue(true, "underscore rejected")
+  }
+}

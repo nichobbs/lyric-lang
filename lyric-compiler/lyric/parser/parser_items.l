@@ -1718,9 +1718,11 @@ func parseWireBody(st: inout ParseState): WireDecl {
 }
 
 func parseExternMemberOpt(st: inout ParseState): Option[ExternMemberDecl] {
+  // Capture startSp before consuming docs/annotations so the span covers the
+  // full member extent (including leading doc comments).
+  val startSp = peekSpan(st)
   val docs = parseItemDocComments(st)
   val anns = parseItemAnnotations(st)
-  val startSp = peekSpan(st)
   val vis: Option[Visibility] = match tryEatKw(st, KwPub) {
     case Some(t) -> Some(VisPub(span = t.span))
     case None -> None
@@ -2158,7 +2160,12 @@ func parseAspectNameSet(st: inout ParseState, ctx: in String, names: inout List[
     }
   }
   match tryEatPunct(st, RBrace) {
-    case Some(_) -> {
+    case Some(closeSp) -> {
+      // An empty set `name in { }` is almost certainly a programming mistake —
+      // the predicate would never match any function.
+      if names.count == 0 {
+        emitErr(st, "P0323", "'" + ctx + " { }' is always false — add at least one name to the set", closeSp.span)
+      }
     }
     case None -> {
       emitErr(st, "P0322", "expected '}' to close '" + ctx + " { ... }'", peekSpan(st))
@@ -2182,6 +2189,10 @@ func parseOneMatchPredicate(st: inout ParseState): Option[AspectMatcher] {
               val _ = advance(st)
               val names: List[String] = newList()
               parseAspectNameSet(st, "name in", names)
+              // Convention: `span` is the span of the `name` keyword token
+              // (the start of the predicate).  AMNameLike uses the glob literal span
+              // (the end token); both strategies are valid — document whichever
+              // you pick when adding new AMxxx variants so error reporting is consistent.
               Some(value = AMNameIn(names = names, span = nameSp))
             } else {
               emitErr(st, "P0298", "expected 'like' or 'in' after 'name'", peekSpan(st))

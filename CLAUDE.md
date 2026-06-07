@@ -799,6 +799,10 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     `driver.l` (`prove(source): VerifySummary` entry point).  The
     driver invokes `Lyric.Weaver.weaveFile` before VC generation so
     proofs discharge against the woven body (D-progress-292 / #336).
+  - `stubbable.l` — `Lyric.Stubbable` AST transform (D-progress-433): for each
+    non-generic `@stubbable` interface, appends a synthesised `Stub` record +
+    `impl` before type-check; entry point `stubbableRewriteFile(file): SourceFile`.
+    Generic interfaces, `Self`-bearing and async methods are skipped.
   - `weaver/weaver.l` — `Lyric.Weaver` package (D-progress-292).
     Self-hosted port of `bootstrap/src/Lyric.Emitter/Weaver.fs`.
     Replaces each aspect-matched IFunc with a renamed

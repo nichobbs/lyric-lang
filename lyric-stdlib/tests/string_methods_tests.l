@@ -35,6 +35,13 @@ func testSearch(): Unit {
 func testCase(): Unit {
   assertEqual("Hello".toLower(), "hello", "toLower")
   assertEqual("Hello".toUpper(), "HELLO", "toUpper")
+  // ToLowerInvariant / ToUpperInvariant are used deliberately so protocol
+  // strings fold consistently regardless of thread culture.  The canonical
+  // case is the Turkish-I problem: under tr-TR culture "I".ToLower() yields
+  // "ı" (dotless i), but "I".ToLowerInvariant() always yields "i".
+  assertEqual("I".toLower(), "i", "toLower invariant (not Turkish dotless-i)")
+  assertEqual("HS256".toLower(), "hs256", "toLower invariant — JWT algorithm name canonical case")
+  assertEqual("hs256".toUpper(), "HS256", "toUpper invariant")
 }
 
 func main(): Unit {

@@ -700,6 +700,11 @@ func cmdBuild(argv: in slice[String]): Int {
     return 1
   }
 
+  if release and watch {
+    printErr("build: --watch is not supported with --release")
+    return 1
+  }
+
   if release {
     return buildReleaseSingle(sourcePath, explicitOut, target, ridArg, manifestArg)
   }
@@ -837,7 +842,7 @@ func buildProject(
   // Auto-restore: when the manifest declares dependencies and lyric.lock is
   // missing or out of sync with the [dependencies] table, resolve them before
   // building so a clean checkout (or a just-edited dependency set) builds
-  // without a manual `lyric restore` (#1971).  `--no-restore` opts out.
+  // without a manual `lyric restore`.  `--no-restore` opts out.
   if not noRestore and lockNeedsRestore(mfPath, manifest) {
     Console.println("build: resolving dependencies (lyric.lock missing or stale) ...")
     val rc = runRestore(mfPath, false)
@@ -1129,9 +1134,11 @@ func watchFingerprint(files: in List[String]): String {
 // process is interrupted.  Never returns under normal use.
 func watchLoop(files: in List[String], action: in WatchAction): Int {
   Console.println("watch: watching " + toString(files.count) + " file(s); press Ctrl-C to stop")
-  runWatchAction(action)
-  Console.println("watch: waiting for changes ...")
+  // Snapshot the fingerprint BEFORE the initial run so any edit that occurs
+  // during compilation is captured by the first poll and triggers a re-run.
   var fp = watchFingerprint(files)
+  val initRc = runWatchAction(action)
+  Console.println("watch: done (exit " + toString(initRc) + "); waiting for changes ...")
   while true {
     Time.sleepMillis(WATCH_POLL_MS)
     val cur = watchFingerprint(files)
@@ -1153,8 +1160,10 @@ func projectWatchFiles(mfPath: in String): List[String] {
   files.add(mfPath)
   val mfDir = Path.dirname(mfPath)
   match File.readText(mfPath) {
-    case Err(_) -> ()
-    case Ok(txt) -> match Mf.parseManifest(txt, mfPath) { case Err(_) -> (); case Ok(m) -> match m.project { case None -> (); case Some(p) -> { var i = 0; while i < p.packages.count { files.add(Path.join(mfDir, p.packages[i].path)); i += 1 } } } }
+    case Err(_) -> {
+      Console.error("watch: could not read manifest '" + mfPath + "' — watching manifest file only")
+    }
+    case Ok(txt) -> match Mf.parseManifest(txt, mfPath) { case Err(_) -> { Console.error("watch: could not parse manifest '" + mfPath + "' — watching manifest file only") }; case Ok(m) -> match m.project { case None -> (); case Some(p) -> { var i = 0; while i < p.packages.count { files.add(Path.join(mfDir, p.packages[i].path)); i += 1 } } } }
   }
   files
 }
@@ -1843,7 +1852,15 @@ func upsertTomlEntry(text: in String, table: in String, key: in String, rhs: in 
   var secIdx = -1
   var idx = 0
   while idx < n {
-    if Str.trim(lines[idx]) == header {
+    // Accept a trailing comment after the section header (e.g.
+    // `[dependencies] # managed by lyric`).  Strip everything after
+    // the first `#` before comparing, as TOML allows this form.
+    val rawLine = Str.trim(lines[idx])
+    val strippedLine = match Str.indexOf(rawLine, "#") {
+      case Some(ci) -> Str.trim(Str.substring(rawLine, 0, ci))
+      case None -> rawLine
+    }
+    if strippedLine == header {
       secIdx = idx
       idx = n
     } else {
@@ -2051,6 +2068,43 @@ func cmdAdd(argv: in slice[String]): Int {
     return 1
   }
 
+  // Reject double-quote and backslash characters in path/URL values: they are
+  // embedded directly in a TOML basic-string RHS and would produce malformed
+  // TOML.  On Windows, use forward slashes in --path values (they work on
+  // .NET and avoid the backslash-as-escape-sequence ambiguity in TOML strings).
+  match pathArg {
+    case Some(p) -> {
+      if Str.contains(p, "\"") {
+        printErr("add: --path value must not contain double-quote characters")
+        return 1
+      }
+      if Str.contains(p, "\\") {
+        printErr(
+          "add: --path value contains backslashes; use forward slashes instead (they work on all platforms in TOML strings)"
+        )
+        return 1
+      }
+    }
+    case None -> ()
+  }
+  match gitArg {
+    case Some(url) -> {
+      if Str.contains(url, "\"") {
+        printErr("add: --git URL must not contain double-quote characters")
+        return 1
+      }
+    }
+    case None -> ()
+  }
+  // The git ref (--tag/--rev/--branch) is embedded in the TOML RHS too, so it
+  // gets the same double-quote guard against malformed/injected TOML.
+  if gitRefKind != "" {
+    if Str.contains(gitRef, "\"") {
+      printErr("add: --" + gitRefKind + " value must not contain double-quote characters")
+      return 1
+    }
+  }
+
   // Render the TOML right-hand side for the chosen source form.
   val rhs = match pathArg {
     case Some(p) -> "{ path = \"" + p + "\" }"
@@ -2135,7 +2189,7 @@ func cmdRestore(argv: in slice[String]): Int {
 // Resolve and lock every dependency declared in the manifest at `mfPath`,
 // writing `lyric.lock` (or verifying it under `lockedMode`).  Extracted from
 // cmdRestore so `lyric build` can auto-restore when the lock is missing or
-// stale (#1971).
+// stale.
 func runRestore(mfPath: in String, lockedMode: in Bool): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
@@ -3149,6 +3203,10 @@ func cmdTest(argv: in slice[String]): Int {
           printErr("test: failed to start java")
           return 1
         }
+        if jvmRes.timedOut {
+          printErr("test: test binary timed out (600 s limit reached)")
+          return 1
+        }
         if jvmRes.stdout.length == 0 and jvmRes.exitCode == 0 {
           printErr("test: compiled test binary produced no TAP output — possible silent compile or runtime failure")
           return 1
@@ -3217,6 +3275,9 @@ func cmdTest(argv: in slice[String]): Int {
       }
       if dotnetRes.exitCode == -1 {
         printErr("test: failed to start dotnet")
+        1
+      } else if dotnetRes.timedOut {
+        printErr("test: test binary timed out (600 s limit reached)")
         1
       } else if dotnetRes.stdout.length == 0 and dotnetRes.exitCode == 0 {
         printErr("test: compiled test binary produced no TAP output — possible silent compile or runtime failure")
@@ -3573,6 +3634,9 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
     }
     val testExitCode = if mfDotnetRes.exitCode == -1 {
       printErr("test: failed to start dotnet")
+      1
+    } else if mfDotnetRes.timedOut {
+      printErr("test: test binary timed out (600 s limit reached)")
       1
     } else if mfDotnetRes.stdout.length == 0 and mfDotnetRes.exitCode == 0 {
       printErr("test: compiled test binary produced no TAP output — possible silent compile or runtime failure")

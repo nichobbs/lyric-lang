@@ -84,6 +84,54 @@ func testUtf8Invalid(): Unit {
   assertTrue(isNone(bad), "invalid utf8 byte returns None")
 }
 
+// ─── Numeric conversion opcodes (#2337) ──────────────────────────────────────
+// The stage-0 emitter added Conv_I4 / Conv_I8 / Conv_R8 / Conv_U1 / Conv_U2
+// to handle .toInt() / .toLong() / .toDouble() / .toByte() / .toChar() on
+// numeric types.  These round-trip assertions cover each opcode path so that
+// a wrong sign-extension or wrong stack-type annotation in the bootstrap
+// emitter is caught before the F# bootstrap path is retired.
+func testToIntConversion(): Unit {
+  val b: Byte = 200u8
+  assertEqualInt(b.toInt(), 200, "Byte.toInt — Conv_I4 zero-extends to Int")
+}
+
+func testToLongConversion(): Unit {
+  val b: Byte = 42u8
+  val n: Int = 100000
+  // Byte → Long: Conv_I8 zero-extends.
+  assertTrue(b.toLong() == 42i64, "Byte.toLong — Conv_I8 zero-extends Byte to Long")
+  // Int → Long: Conv_I8 sign-extends.
+  assertTrue(n.toLong() == 100000i64, "Int.toLong — Conv_I8 sign-extends Int to Long")
+  // Negative Int must sign-extend (stay negative); positive inputs alone cannot
+  // distinguish sign- from zero-extension, so cover a negative value.
+  val neg: Int = 0 - 5
+  assertTrue(neg.toLong() == 0i64 - 5i64, "Int.toLong — negative value sign-extends to a negative Long")
+  // A Byte with the high bit set must zero-extend (stay 200), not sign-extend to -56.
+  val hb: Byte = 200u8
+  assertTrue(hb.toLong() == 200i64, "Byte.toLong — high-bit Byte zero-extends (200, not -56)")
+}
+
+func testToDoubleConversion(): Unit {
+  val n: Int = 7
+  val d: Double = n.toDouble()
+  // Exact representation for small integers.
+  assertTrue(d > 6.9 and d < 7.1, "Int.toDouble — Conv_R8 converts Int to Double")
+}
+
+func testToByteConversion(): Unit {
+  val n: Int = 300
+  // Conv_U1 truncates modulo 256: 300 % 256 = 44.
+  val b: Byte = n.toByte()
+  assertEqualInt(b.toInt(), 44, "Int.toByte — Conv_U1 truncates modulo 256")
+}
+
+func testToCharConversion(): Unit {
+  val n: Int = 65
+  // Conv_U2: Int 65 → Char 'A' (U+0041).
+  val c: Char = n.toChar()
+  assertTrue(c == 'A', "Int.toChar — Conv_U2 converts Int to Char")
+}
+
 func main(): Unit {
   testBase64RoundTrip()
   testBase64Empty()
@@ -94,5 +142,10 @@ func main(): Unit {
   testUtf8RoundTrip()
   testUtf8Empty()
   testUtf8Invalid()
+  testToIntConversion()
+  testToLongConversion()
+  testToDoubleConversion()
+  testToByteConversion()
+  testToCharConversion()
   println("encoding: ok")
 }

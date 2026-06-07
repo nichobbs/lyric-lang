@@ -230,10 +230,11 @@ func dottedPath(path: in ModulePath): String {
   acc
 }
 
-// True for top-level type-declaring items (the set fed to `checkWithImports`
-// as imported items so cross-package type names resolve).
+// True for top-level items that must reach packages importing this one, so
+// cross-package type names and pub-val constants resolve (#2377).
+// Mirrors `collectTypeItemsFromFile` in `lyric-compiler/msil/bridge.l`.
 func isTypeItem(it: in Item): Bool {
-  match it.kind {
+  val isType = match it.kind {
     case IRecord(_) -> true
     case IExposedRec(_) -> true
     case IUnion(_) -> true
@@ -242,6 +243,22 @@ func isTypeItem(it: in Item): Bool {
     case IInterface(_) -> true
     case ITypeAlias(_) -> true
     case IOpaque(_) -> true
+    // `extern type` declarations (e.g. `extern type Pool = "…"` in Jvm.Kernel)
+    // must reach packages that import the declaring package, so the bare type
+    // name resolves instead of aborting with T0010.
+    case IExternType(_) -> true
+    // `protected type` declarations must likewise propagate across package
+    // boundaries so importing packages can reference the protected type.
+    case IProtected(_) -> true
+    case _ -> false
+  }
+  if isType {
+    return true
+  }
+  // Module-level `pub val`s (e.g. `pub val ACC_PUBLIC: Int = 1` in Jvm.Classfile)
+  // must reach importing packages or cross-package references abort with T0020.
+  match it.kind {
+    case IVal(_) -> match it.visibility { case Some(vis) -> match vis { case VisPub(_) -> true; case _ -> false }; case None -> false }
     case _ -> false
   }
 }

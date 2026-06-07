@@ -44,3 +44,24 @@ test "concrete List[String].toArray() binds as String[] across the F# stdlib bou
   ws.add("c")
   assertTrue(Str.join(",", ws.toArray()) == "a,b,c", "join(ws.toArray()) == a,b,c")
 }
+
+// #2625: erased-list (MListOf / MObject) no-op path.
+// When .toArray() is called on a list whose type is not statically known as
+// MConcreteList at the call site (e.g. returned from a helper function without
+// a concrete annotation flowing back), the `case _ -> recvTy` fallback in the
+// toArray arm preserves the receiver's tracked type unchanged.  The result is
+// still usable — the F# stdlib's ToArray() is called at runtime and returns the
+// correct CLR array.  This confirms the fallback path does not crash.
+func makeErasedIntList(): List[Int] {
+  val xs: List[Int] = newList()
+  xs.add(10)
+  xs.add(20)
+  xs.add(30)
+  xs
+}
+
+test "#2625: erased-list .toArray() fallback path produces correct sum" {
+  val xs = makeErasedIntList()
+  val arr = xs.toArray()
+  assertEqualInt(sumInts(arr), 60, "erased list toArray -> sumInts([10,20,30]) == 60")
+}

@@ -29,6 +29,10 @@ aspect Throttle from Web.Aspects.RateLimit {
   }
 }
 
+// Auth config env vars:
+//   LYRIC_ASPECT_AUTH_JWTSECRET  — REQUIRED (no default)
+//   LYRIC_ASPECT_AUTH_ISSUER     — default "jobqueue-service"
+//   LYRIC_ASPECT_AUTH_AUDIENCE   — default "jobqueue-api"
 aspect Auth from Web.Aspects.RequiresAuth {
   inside: Throttle
   matches: name in { handleEnqueue }

@@ -38,6 +38,7 @@ package Lyric.Emitter
 
 import Std.Core
 import Std.Collections
+import Std.Console as Console
 import Std.Errors
 import Std.File as File
 import Std.String as Str
@@ -243,9 +244,9 @@ func findStdlibSources(): List[String] {
   // `Map[K, V]`, `Random`, `HttpClient`, …) reach the typechecker's
   // symbol table before the public files' re-export aliases
   // (`pub alias Random = Std.RandomHost.Random`, etc.).  The
-  // self-hosted typechecker's `symTableTryFindOne` is first-in-wins,
-  // and `DKTypeAlias` carries no `TypeId`, so registering an alias
-  // before its target type makes every reference to the bare name
+  // self-hosted typechecker's `symTableTryFindOne` is last-registered-wins
+  // (scans backwards), and `DKTypeAlias` carries no `TypeId`, so registering
+  // an alias before its target type makes every reference to the bare name
   // resolve to the alias and fail with T0013 '<name> is not a type'.
   appendLyricFiles(sources, Path.join(stdlibDir, "_kernel"), true)
   // Public surface: every top-level `*.l` file in `lyric-stdlib/std/`.
@@ -263,9 +264,9 @@ func findStdlibSources(): List[String] {
 // the host filesystem hands back (`Directory.GetFiles` is documented as
 // "no guarantee"), so without explicit sorting two machines could
 // register stdlib `_kernel/` items in different sequences, and the
-// typechecker's first-in-wins `symTableTryFindOne` would pick different
-// declarations on each.  Sorting by basename makes the build
-// reproducible (#1385).
+// typechecker's last-registered-wins `symTableTryFindOne` would pick
+// different declarations on each.  Sorting by basename makes the build
+// reproducible.
 func appendLyricFiles(sources: in List[String], dir: in String, skipJvmKernel: in Bool): Unit {
   if not File.dirExists(dir) {
     return
@@ -457,10 +458,13 @@ func importLinePackage(line: in String): String {
   Str.trim(parts[0])
 }
 
-// Append every distinct raw `import ...` line in `source` to `acc`
-// (preserving the source text verbatim, including any ` as <alias>`
-// clause).  Used to union the import preambles across the several
-// source files that make up a multi-file compiler package.
+// Append every distinct `import ...` line in `source` to `acc`,
+// deduplicating by the module path token (the first whitespace-delimited
+// token after `import`).  This means `import Std.Core` and
+// `import Std.Core as C` are treated as the same module and only the
+// first occurrence is kept — preventing a double-import of the same module
+// with two different aliases when source files in a multi-file package use
+// different alias styles for shared stdlib imports.
 func collectImportLines(source: in String, acc: in List[String]) {
   val lines = Str.split(source, "\n")
   var i = 0
@@ -468,10 +472,11 @@ func collectImportLines(source: in String, acc: in List[String]) {
     val line = lines[i]
     val trimmed = Str.trim(line)
     if Str.startsWith(trimmed, "import ") {
+      val pkg = importLinePackage(trimmed)
       var seen = false
       var j = 0
       while j < acc.count {
-        if acc[j] == trimmed {
+        if importLinePackage(acc[j]) == pkg {
           seen = true
         }
         j = j + 1
@@ -499,8 +504,10 @@ func indexOfString(list: in List[String], s: in String): Int {
 // True when `pkg` is one of the self-hosted compiler namespaces that
 // `loadCompilerPayloads` discovers from disk (as opposed to a `Std.*`
 // package, which the bridge resolves from `lyric-stdlib/std/`).
+// Includes Native.* for the forthcoming LLVM native backend packages.
 func isCompilerPackage(pkg: in String): Bool {
-  Str.startsWith(pkg, "Lyric.") or Str.startsWith(pkg, "Msil.") or Str.startsWith(pkg, "Jvm.")
+  Str.startsWith(pkg, "Lyric.") or Str.startsWith(pkg, "Msil.") or Str.startsWith(pkg, "Jvm.") or
+    Str.startsWith(pkg, "Native.")
 }
 
 // Discover the self-hosted compiler packages under `compilerDir` and
@@ -536,7 +543,7 @@ func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[P
     if not Str.endsWith(path, ".l") {
       continue
     }
-    if Str.endsWith(path, "_self_test.l") or Str.endsWith(path, "_ci_test.l") {
+    if Str.endsWith(path, "_self_test.l") or Str.endsWith(path, "_ci_test.l") or Str.contains(path, "/self_test") {
       continue
     }
     val src = match File.readText(path) { case Ok(s) -> s; case Err(_) -> "" }
@@ -979,6 +986,9 @@ pub func compilerClosureDllPaths(testSource: in String, libDir: in String): List
     }
     i = i + 1
   }
+  if dlls.count == 0 and payloads.count > 0 {
+    Console.error("test: warning: compiler DLLs not found in '" + libDir + "'; the test's Lyric.* imports may fail")
+  }
   dlls
 }
 
@@ -1010,25 +1020,20 @@ func sortStrings(xs: in List[String]): List[String] {
     return empty
   }
 
-  // Sort non-empty strings via selection sort.
-  val remaining: List[String] = newList()
-  var nc = 0
-  while nc < nonEmpty.count {
-    remaining.add(nonEmpty[nc])
-    nc = nc + 1
-  }
+  // Sort non-empty strings via selection sort, using `nonEmpty` directly as
+  // the mutable sort buffer (removeAt mutates in-place; no copy needed).
   val sorted: List[String] = newList()
-  while remaining.count > 0 {
+  while nonEmpty.count > 0 {
     var bestIdx = 0
     var k = 1
-    while k < remaining.count {
-      if remaining[k] < remaining[bestIdx] {
+    while k < nonEmpty.count {
+      if nonEmpty[k] < nonEmpty[bestIdx] {
         bestIdx = k
       }
       k = k + 1
     }
-    sorted.add(remaining[bestIdx])
-    remaining.removeAt(bestIdx)
+    sorted.add(nonEmpty[bestIdx])
+    nonEmpty.removeAt(bestIdx)
   }
 
   // Append empty strings at the end.
@@ -1490,11 +1495,12 @@ func emitJvmInProcess(req: in EmitRequest): EmitResult {
 //
 // When `LYRIC_LOAD_COMPILER=1` is set, switches to the multi-package
 // bridge path: `loadCompilerPayloads` discovers the self-hosted
-// compiler packages under `lyric-compiler/lyric/` and loads the
-// import-closure of the requested source, compiling them together so
-// `@test_module` files in that tree can import any front/middle-end
-// compiler package (`Lyric.Lexer`, `Lyric.Parser`, `Lyric.TypeChecker`,
-// `Lyric.Verifier`, …) directly (issue #1324).
+// compiler packages under `lyric-compiler/` (covering `lyric/`,
+// `msil/`, and `jvm/` subtrees) and loads the import-closure of the
+// requested source, compiling them together so `@test_module` files
+// in that tree can import any front/middle-end compiler package
+// (`Lyric.Lexer`, `Lyric.Parser`, `Lyric.TypeChecker`, `Lyric.Verifier`,
+// …) directly.
 func emitMsilInProcess(req: in EmitRequest): EmitResult {
   // Auto-resolve `lyric-stdlib/std/*.l` so the bridge's typechecker sees
   // stdlib types at typecheck.  Mirrors the F# bootstrap shim
@@ -1507,8 +1513,19 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
     if compilerDir.length == 0 {
       compilerDir = walkUpForCompilerDir(Environment.currentDirectory())
     }
+    if compilerDir.length == 0 {
+      Console.error(
+        "LYRIC_LOAD_COMPILER=1: compiler directory not found — check that lyric-compiler/ exists relative to the binary or cwd; falling back to single-file compile"
+      )
+    }
     if compilerDir.length > 0 {
       val compilerPayloads = loadCompilerPayloads(compilerDir, req.source)
+      if compilerPayloads.count == 0 {
+        Console.error(
+          "LYRIC_LOAD_COMPILER=1: no compiler packages loaded from '" + compilerDir +
+            "' (Lyric.Lexer may be missing); falling back to single-file compile"
+        )
+      }
       if compilerPayloads.count > 0 {
         val testPkgName = extractPackageName(req.source)
         val pkgName = if testPkgName.length > 0 { testPkgName } else { req.assemblyName }

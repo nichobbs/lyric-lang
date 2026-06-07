@@ -51,3 +51,15 @@ test "declaresEntryMain: main with parameters is not an entry" {
 test "declaresEntryMain: no main → false" {
   assertTrue(not Release.declaresEntryMain("func helper(): Int { 0 }\n"), "no main")
 }
+
+test "declaresEntryMain: function whose name starts with 'main' but is not main()" {
+  assertTrue(not Release.declaresEntryMain("func mainHelper(): Int { 0 }\n"), "mainHelper is not the entry form")
+  assertTrue(
+    not Release.declaresEntryMain("func maintaining(x: in Int): Int { x }\n"),
+    "maintaining is not the entry form"
+  )
+}
+
+test "packageNameOf: inline comment stripped from package line" {
+  assertEqual(Release.packageNameOf("package Demo // entry point\n"), "Demo", "inline comment stripped")
+}

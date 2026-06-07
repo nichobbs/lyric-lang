@@ -380,12 +380,11 @@ func unionFieldStart(f: in UnionField): Int {
 }
 
 /// Multi-line rendering of a union case's field list, used when the field
-/// region carries interior trivia (a trailing `// note` on individual
-/// named fields, e.g. the `MEHClause` case in `lyric-compiler/msil/lowering.l`).
-/// Mirrors the magic-trailing-comma layout used for params / call args:
-/// opener on the `case` line, one field per line indented by 2 with a
-/// trailing comma, closer on its own line.  A trailing comment after the
-/// `(` re-attaches to the opener line; a trailing comment on a field
+/// region carries interior trivia (trailing `// note` comments on individual
+/// named fields).  Mirrors the magic-trailing-comma layout used for params /
+/// call args: opener on the `case` line, one field per line indented by 2
+/// with a trailing comma, closer on its own line.  A trailing comment after
+/// the `(` re-attaches to the opener line; a trailing comment on a field
 /// re-attaches to that field's line; a trailing comment after the closing
 /// `)` (which sits after the case's own span) is left for the enclosing
 /// `unionDoc` case / closing-brace boundary to re-attach.

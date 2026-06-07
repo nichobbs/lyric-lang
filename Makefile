@@ -43,12 +43,22 @@ stage0: ## Build the F# stage-0 bootstrap compiler only
 
 stage1: ## Build stage-0 + the full self-hosted compiler + CLI bundle (.bootstrap/stage1)
 	./scripts/bootstrap.sh --stage 1
+	@touch .bootstrap/stage1.stamp
 
 stage1-fast: ## Stage 1 without the CLI bundle — fastest loop for a single compiler package
 	SKIP_CLI_BUNDLE=1 ./scripts/bootstrap.sh --stage 1
+	@touch .bootstrap/stage1.stamp
 
-aot: ## Build the AOT entry-point project (requires a prior `make stage1`)
+# `aot` depends on the stage-1 stamp so a direct `make aot` with no prior
+# stage 1 builds stage 1 first (via the stamp rule below) instead of failing
+# on a missing CLI bundle. The stamp is written by `stage1` / `stage1-fast`.
+# The recipe keeps --no-incremental on purpose: the AOT trampoline embeds the
+# stage-1 DLLs, so a clean C# build is required whenever stage 1 has changed.
+aot: .bootstrap/stage1.stamp ## Build the AOT entry-point project (requires a prior `make stage1`)
 	dotnet build bootstrap/src/Lyric.Cli.Aot --configuration $(BUILD_CONFIG) --no-incremental
+
+.bootstrap/stage1.stamp:
+	$(MAKE) stage1
 
 lyric: stage1 aot ## Build the end-to-end `lyric` binary and symlink it to ./bin/lyric
 	@mkdir -p bin

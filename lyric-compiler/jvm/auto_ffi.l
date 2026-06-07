@@ -38,6 +38,11 @@ pub record AutoFfiCtx {
   // chain uses plain `List` accumulators it compiles correctly.
   cacheKeys: List[String]
   cacheVals: List[ClassInfo]
+  // Negative-lookup cache: binary names (e.g. "Pkg/MyRecord") that were not
+  // found in any JMOD or JAR.  Prevents repeated JMOD central-directory scans
+  // for Lyric-native record types whose JVM binary name will never match a
+  // class entry (#2181).  Same parallel-list pattern, keyed by binary name.
+  missKeys: List[String]
   // ── JDK discovery ─────────────────────────────────────────────────────────────
 }
 
@@ -105,7 +110,12 @@ func findJmodsDir(): String {
 }
 
 // Split a colon/semicolon-delimited path string into individual paths.
-// Handles both `:` (Unix) and `;` (Windows) separators.
+// Handles both `:` (Unix) and `;` (Windows) separators, treating each as a
+// delimiter.  NOTE: on Windows, absolute paths contain a drive-letter colon
+// (e.g. `C:\foo.jar`).  Because `:` is also treated as a delimiter here,
+// `C:\foo.jar;D:\bar.jar` is incorrectly split into four parts.  Windows
+// users must use `;` exclusively as the separator AND ensure no drive-letter
+// colons appear in the value — or, better, use a semicolon-only list (#2214).
 func splitPathList(s: in String): List[String] {
   val parts: List[String] = newList()
   var start = 0
@@ -144,7 +154,13 @@ func findJarPaths(): List[String] {
 /// $JAVA_HOME and common system paths, and reads additional JAR paths from
 /// the LYRIC_FFI_JARS environment variable.  The class cache starts empty.
 pub func buildAutoFfiCtx(): AutoFfiCtx {
-  AutoFfiCtx(jmodsDir = findJmodsDir(), jarPaths = findJarPaths(), cacheKeys = newList(), cacheVals = newList())
+  AutoFfiCtx(
+    jmodsDir = findJmodsDir(),
+    jarPaths = findJarPaths(),
+    cacheKeys = newList(),
+    cacheVals = newList(),
+    missKeys = newList()
+  )
 }
 
 // ── Class loading ─────────────────────────────────────────────────────────────
@@ -262,10 +278,13 @@ func addClassToCache(ctx: in AutoFfiCtx, binaryName: in String, ci: in ClassInfo
 
 /// Load (and cache) the public-method surface for a Java class.
 /// `javaFqn` is the dotted name e.g. "java.lang.Math".
+/// Negative lookups are cached in `ctx.missKeys` so that Lyric-native record
+/// types (whose JVM binary names never match a JMOD entry) don't trigger a
+/// repeated JMOD central-directory scan on every method call (#2181).
 pub func loadClass(ctx: in AutoFfiCtx, javaFqn: in String): Option[ClassInfo] {
   val binaryName = javaFqn.replace(".", "/")
 
-  // Linear scan of the parallel-list cache (see `AutoFfiCtx`).
+  // Linear scan of the positive cache (see `AutoFfiCtx`).
   var i = 0
   while i < ctx.cacheKeys.count {
     if ctx.cacheKeys[i] == binaryName {
@@ -274,12 +293,22 @@ pub func loadClass(ctx: in AutoFfiCtx, javaFqn: in String): Option[ClassInfo] {
     i = i + 1
   }
 
+  // Linear scan of the negative (miss) cache: skip the JMOD scan entirely for
+  // binary names already known to be absent.
+  var mi = 0
+  while mi < ctx.missKeys.count {
+    if ctx.missKeys[mi] == binaryName {
+      return None
+    }
+    mi = mi + 1
+  }
+
   val loaded = loadClassInfo(ctx, javaFqn)
   // Pass `ci` as a direct function argument from the match arm expression
   // (not inside a block body) so stage-0 lowers the binding correctly.
   match loaded {
     case Some(ci) -> addClassToCache(ctx, binaryName, ci)
-    case None -> ()
+    case None -> ctx.missKeys.add(binaryName)
   }
   loaded
 }
@@ -429,7 +458,12 @@ pub func findBestConstructor(ci: in ClassInfo, argDescs: in List[String]): Optio
   while i < ci.constructors.count {
     val m = ci.constructors[i]
     val s = scoreMethod(m, argDescs, false)
-    if s > bestScore {
+    // Explicit `s >= 0` mirrors `scoreAndGetSuper` / `findBestInstanceMethod`:
+    // negative means "no match" per the `scoreMethod` convention.  The
+    // initialisation of `bestScore = -1` provides an equivalent implicit guard
+    // today, but the explicit form is more robust if the sentinel ever shifts
+    // (e.g. scoreMethod returning 0 for no-match in a future refactor) (#2226).
+    if s >= 0 and s > bestScore {
       bestScore = s
       best = Some(value = m)
     }
@@ -514,6 +548,13 @@ pub func findBestInstanceMethod(
   //   3. Passes cacheVals[idx] directly to scoreAndGetSuper as a function
   //      argument — the known-safe pattern for cross-package record types
   //      under stage-0 (which drops bindings accessed in block bodies).
+  //
+  // NOTE (#2219): the loop terminates before reaching `java/lang/Object`, so
+  // methods declared *only* in Object and not overridden in any non-Object
+  // superclass are invisible to the resolver.  Affected methods include
+  // `getClass()`, `notify()`, `notifyAll()`, `wait()`, and unoverridden
+  // `hashCode()`/`equals()`/`toString()`.  A follow-up must extend the loop
+  // to include Object itself to support those calls via auto-FFI.
   var superBin = ci.superName
   while superBin.length > 0 and superBin != "java/lang/Object" {
     val superFqn = superBin.replace("/", ".")

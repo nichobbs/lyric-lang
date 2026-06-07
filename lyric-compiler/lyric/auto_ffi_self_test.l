@@ -60,11 +60,12 @@ test "Math.Max int and long overloads get distinct MemberRefs" {
 
 // Phase 3c step 2: `System.IO.Path` is mis-hinted by the legacy
 // `clrAssemblyForType` table (→ `System.IO.FileSystem`), but the metadata
-// type→assembly index finds its real facade assembly, so `Path.Combine`
-// resolves where step 1 fell back to `@externTarget`.
-test "Path.Combine resolves via the metadata type index" {
-  assertEqual(Path.Combine("/tmp", "x.txt"), "/tmp/x.txt", "Combine(/tmp, x.txt)")
-  assertEqual(Path.Combine("a", "b"), "a/b", "Combine(a, b)")
+// type→assembly index finds its real facade assembly.  Use platform-neutral
+// methods to avoid Unix-specific path-separator assumptions in `Path.Combine`
+// (backslash on Windows vs. slash on Unix; #1712).
+test "System.IO.Path resolves via the metadata type index" {
+  assertEqual(Path.GetFileName("/tmp/x.txt"), "x.txt", "GetFileName")
+  assertEqual(Path.GetExtension("file.txt"), ".txt", "GetExtension")
 }
 
 // Phase 3c step 2b: `System.Math.Sqrt` has only a `(double)` overload, so an

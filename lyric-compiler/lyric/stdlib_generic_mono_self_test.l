@@ -113,3 +113,32 @@ test "impl method specialises unwrapOr via self.field projection" {
   val l2: Lookup = StoreImpl(store = store2)
   assertEqual(l2.first("missing"), "missing", "self.store.items[0] -> None -> fallback")
 }
+
+// ── Map hint-propagation path: MMapOf(_, MGenericInst(...)) arm ──────────────
+//
+// This exercises the `MMapOf(_, MGenericInst(_, _, valArgs))` branch in the
+// codegen hint-propagation logic for `.add`.  When the map's value type is
+// `Option[Int]`, the codegen must propagate the `Option[Int]` hint to the
+// None argument so it constructs as `Option_None`1[Int]` rather than the
+// uninstantiated form.  Without the MMapOf arm, the hint is absent and the
+// isinst check for the None arm of a subsequent `match` on `mapGet(m, k)`
+// silently takes the wrong branch.
+test "Map[String, Option[Int]].add(None) hint-propagation: map value None roundtrips" {
+  val m: Map[String, Option[Int]] = newMap()
+  m.add("k", None)
+  val outer: Option[Option[Int]] = mapGet(m, "k")
+  val got: Option[Int] = match outer { case None -> None; case Some(v) -> v }
+  match got {
+    case None -> assertTrue(true, "map value None -> Option_None")
+    case Some(v) -> assertTrue(false, "expected None but got Some")
+  }
+}
+
+test "Map[String, Option[Int]].add(Some) and mapGet roundtrips" {
+  val m: Map[String, Option[Int]] = newMap()
+  m.add("x", Some(value = 42))
+  val outer: Option[Option[Int]] = mapGet(m, "x")
+  val got: Option[Int] = match outer { case None -> None; case Some(v) -> v }
+  val v = match got { case None -> -1; case Some(n) -> n }
+  assertEqualInt(v, 42, "map value Some(42) roundtrips")
+}

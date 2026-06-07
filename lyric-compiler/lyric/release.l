@@ -27,6 +27,7 @@ import Std.File as File
 import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
+import Lyric.Pack as Pack
 
 // Release target selector.  `buildRelease` is target-agnostic; each arm owns
 // its toolchain invocation so adding the GraalVM path later does not touch the
@@ -57,16 +58,20 @@ pub func packageNameOf(source: in String): String {
   while i < lines.length {
     val line = Str.trim(lines[i])
     if Str.startsWith(line, "package ") {
-      return Str.trim(Str.substring(line, 8, Str.length(line) - 8))
+      val raw = Str.trim(Str.substring(line, 8, Str.length(line) - 8))
+      // Strip any inline // comment from the package name so that a line
+      // like `package Demo // entry point` yields "Demo", not "Demo // entry point".
+      return match Str.indexOf(raw, "//") { case Some(idx) -> Str.trim(Str.substring(raw, 0, idx)); case None -> raw }
     }
     i += 1
   }
   ""
 }
 
-/// Whether `source` declares a zero-argument `main` — the only form the
-/// emitter treats as a program entry point (`isMainFuncMsil`: name == "main",
-/// no params).  Used to pick the entry package in a multi-package project.
+// Whether `source` declares a zero-argument `main` — the only form the
+// emitter treats as a program entry point (`isMainFuncMsil`: name == "main",
+// no params).  Will be used to pick the entry package in a multi-package
+// project when that feature is wired up.
 pub func declaresEntryMain(source: in String): Bool {
   val lines = Str.split(source, "\n")
   var i = 0
@@ -116,7 +121,7 @@ func locateStdlib(programDllDir: in String): Option[String] {
 }
 
 func referenceXml(dllPath: in String): String {
-  "    <Reference Include=\"" + dllPath + "\"><Private>true</Private></Reference>\n"
+  "    <Reference Include=\"" + Pack.xmlEscape(dllPath) + "\"><Private>true</Private></Reference>\n"
 }
 
 // Write the AOT host project.  `refDlls` are absolute paths to every managed

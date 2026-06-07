@@ -96,14 +96,7 @@ pub func compileToMsilWithVersion(
   val file0 = Stubbable.stubbableRewriteFile(Aliases.rewriteFile(parseResult.file))
 
   val tcRes = checkWithImportedPackages(file0, importedPkgs)
-  // #1488 gate: single-file type-check diagnostics are now fatal, matching the
-  // already-gating project path (`compileProjectToMsil`).  The Band-1
-  // single-file false-positive surface was closed category by category
-  // (D-progress-420..437: `result` shadowing, argument-type overloads, generic
-  // return inference, package-scoped resolution, range-subtype arithmetic,
-  // interface subtyping, `@stubbable` synthesis, alias-aware qualified calls,
-  // Byte/Int conversions) and Band 6 cross-package resolution landed (#2271), so
-  // type errors in a single-file build now abort instead of emitting broken IL.
+  // Type errors in a single-file build are now fatal, matching the project path.
   if reportAndAbort(tcRes.diagnostics) {
     return false
   }
@@ -721,8 +714,8 @@ pub func compileProjectToMsilWithRestoredEncoded(
 // `baseNames` is skipped: its items are already in `baseItems`, and adding
 // them again via the in-bundle closure would register every type twice,
 // allocating a second distinct `TypeId` for each type.  The second
-// TypeId is never used by the codegen (first-in-wins in `symTableTryFindOne`
-// returns the first TypeId) but the duplicate `DKUnion`/`DKRecord`/...
+// TypeId is never used by the codegen (`symTableTryFindOne` scans newest-to-oldest
+// and resolves the last-registered TypeId) but the duplicate `DKUnion`/`DKRecord`/...
 // symbols inflate the symbol table.  More critically, duplicate union-case
 // symbols (`Some`, `None`, `Ok`, `Err`) push extra `DKUnionCase` entries
 // whose `parentId` refers to the *second* (unused) TypeId; when the type

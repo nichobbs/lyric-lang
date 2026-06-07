@@ -78,6 +78,7 @@ pub func sleepMs(ms: in Int): Unit
   requires: ms >= 0
   = ()
 
+@stable(since = "0.1")
 pub func circuitIsOpen(name: in String, cooldownMs: in Int): Bool
   requires: name.length > 0
   requires: cooldownMs > 0
@@ -101,6 +102,7 @@ pub func circuitIsOpen(name: in String, cooldownMs: in Int): Bool
   false
 }
 
+@stable(since = "0.1")
 pub func circuitRecordSuccess(name: in String): Unit
   requires: name.length > 0
 {
@@ -115,6 +117,7 @@ pub func circuitRecordSuccess(name: in String): Unit
   entry.halfOpenProbeInFlight = false
 }
 
+@stable(since = "0.1")
 pub func circuitRecordFailure(name: in String, failureThreshold: in Int): Unit
   requires: name.length > 0
   requires: failureThreshold > 0

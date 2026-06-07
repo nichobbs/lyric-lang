@@ -1127,6 +1127,7 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
         case IDistinctType(d) -> pubTypeNames.add(d.name)
         case IOpaque(o) -> pubTypeNames.add(o.name)
         case IProtected(p) -> pubTypeNames.add(p.name)
+        case IExternType(et) -> pubTypeNames.add(et.name)
         case _ -> ()
       }
     }

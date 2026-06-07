@@ -304,6 +304,11 @@ func testReadAllContractsFromFileSinglePkg(): Unit {
   assertTrue(foundLegacy, "read_all_single_pkg: legacy (`Lyric.Contract`, packageName = \"\") entry present")
 }
 
+// Note: the `readAllContractsFromFile` step-2 path — per-package
+// `Lyric.Contract.<Pkg>` resources extracted from project-as-DLL assemblies —
+// is not covered here because no fixture bundled DLL with multiple
+// `Lyric.Contract.*` resources is available in this test context.  Coverage
+// for that path is deferred until Phase A.3.2 has an end-to-end fixture.
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. JSON serialisation (contractToJson)
 // ─────────────────────────────────────────────────────────────────────────────

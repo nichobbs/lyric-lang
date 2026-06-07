@@ -934,9 +934,13 @@ func inferExprTE(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
     // element, so a generic call whose parameter is `slice[T]` (e.g.
     // `glen([1,2,3])` / `Sort.sortInts([3,1,2])`) unifies `T` and monomorphises
     // into a concrete `__Int` copy rather than staying a generic method whose
-    // `slice[T]` parameter cannot name a real CLR type (#2557).  An empty literal
+    // `slice[T]` parameter cannot name a real CLR type.  An empty literal
     // carries no element type, so it stays `None` (the call falls back to the
     // generic erased path, as before).
+    // Note: only the first element is sampled.  If `es[0]` is not inferable
+    // (e.g. `nil`, an untyped variable, or a nested generic call with no type
+    // annotation) but later elements are, inference still returns `None` and
+    // the call falls through to the erased path — a safe degradation.
     case EList(es) -> {
       if es.count == 0 {
         None
@@ -1451,6 +1455,12 @@ func substTypesExpr(subst: in Map[String, TypeExpr], valueSubst: in Map[String, 
       }
       EInterpolated(segments = ns)
     }
+    // All remaining ExprKind variants (ELiteral, ECall, EIndex, EBinOp, etc.)
+    // pass through unchanged.  None of the unlisted variants embed a TypeExpr
+    // directly — type annotations are carried at the statement level
+    // (SLocal with a declared type) and handled by substTypesStmt.  If new
+    // expression forms with embedded TypeExprs are added to ExprKind, they
+    // must be listed explicitly here.
     case _ -> expr.kind
   }
   Expr(kind = k, span = s)

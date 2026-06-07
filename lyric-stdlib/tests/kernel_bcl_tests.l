@@ -32,8 +32,17 @@ func testVerifierEnvMissing(): Unit {
   assertTrue(missing == "", "unset env var returns empty string")
 }
 
+func testVerifierEnvSet(): Unit {
+  // PATH (or DOTNET_ROOT on .NET CI) must be non-empty in every environment
+  // where the test suite runs; this confirms the non-null value flows through
+  // the hostGetEnv null-coalesce path without being replaced by "".
+  val path = hostGetEnv("PATH")
+  assertTrue(path != "", "set env var (PATH) must return a non-empty string")
+}
+
 func main(): Unit {
   testLogToStderr()
   testVerifierEnvMissing()
+  testVerifierEnvSet()
   println("ok")
 }

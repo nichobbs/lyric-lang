@@ -108,10 +108,6 @@ below to reflect this state.
 program is implicitly trusting the .NET runtime; pretending otherwise
 is a lie.  The ratchet keeps growth audited, not zero.
 
-**Non-goals.** No goal of "zero externs." Anyone shipping a Lyric
-program is implicitly trusting the .NET runtime; pretending otherwise
-is a lie.
-
 ---
 
 ## 4. Language gaps that gate native modules

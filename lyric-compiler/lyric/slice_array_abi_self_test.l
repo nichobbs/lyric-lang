@@ -52,3 +52,82 @@ test "String slice literal binds as String[] across the F# stdlib boundary" {
   assertTrue(Str.join(",", ["a", "b", "c"]) == "a,b,c", "join produces a,b,c")
   assertTrue(Str.join("-", ["x"]) == "x", "join single element")
 }
+
+// ── #2623: uncovered element-type branches in arrayElemTokenOpt ───────────────
+// Each of the following exercises a branch of `arrayElemTokenOpt` not covered
+// by the Int/String cases above.  Pure-Lyric helper functions (no F# stdlib
+// boundary needed) verify the correct representation by reading elements back.
+func sumLongSlice(xs: in slice[Long]): Long {
+  var acc = 0i64
+  var i = 0
+  while i < xs.count {
+    acc = acc + xs[i]
+    i = i + 1
+  }
+  acc
+}
+
+func sumDoubleSlice(xs: in slice[Double]): Double {
+  var acc = 0.0
+  var i = 0
+  while i < xs.count {
+    acc = acc + xs[i]
+    i = i + 1
+  }
+  acc
+}
+
+func countTrueSlice(xs: in slice[Bool]): Int {
+  var c = 0
+  var i = 0
+  while i < xs.count {
+    if xs[i] {
+      c = c + 1
+    }
+    i = i + 1
+  }
+  c
+}
+
+func sumCharCodesSlice(xs: in slice[Char]): Int {
+  var acc = 0
+  var i = 0
+  while i < xs.count {
+    acc = acc + xs[i].toInt()
+    i = i + 1
+  }
+  acc
+}
+
+func sumByteSlice(xs: in slice[Byte]): Int {
+  var acc = 0
+  var i = 0
+  while i < xs.count {
+    acc = acc + xs[i].toInt()
+    i = i + 1
+  }
+  acc
+}
+
+test "Long slice literal builds as genuine Long[] (arrayElemTokenOpt MLong branch)" {
+  assertTrue(sumLongSlice([10i64, 20i64, 30i64]) == 60i64, "sumLong([10,20,30]) == 60L")
+  assertTrue(sumLongSlice([]) == 0i64, "sumLong([]) == 0L")
+}
+
+test "Double slice literal builds as genuine Double[] (arrayElemTokenOpt MDouble branch)" {
+  assertTrue(sumDoubleSlice([1.5, 2.5, 3.0]) == 7.0, "sumDouble([1.5,2.5,3.0]) == 7.0")
+}
+
+test "Bool slice literal builds as genuine Bool[] (arrayElemTokenOpt MBool branch)" {
+  assertEqualInt(countTrueSlice([true, false, true, true]), 3, "countTrue == 3")
+  assertEqualInt(countTrueSlice([false, false]), 0, "countTrue == 0")
+}
+
+test "Char slice literal builds as genuine Char[] (arrayElemTokenOpt MChar branch)" {
+  // 'A'=65, 'B'=66 => sum=131
+  assertEqualInt(sumCharCodesSlice([65.toChar(), 66.toChar()]), 131, "sumCharCodes == 131")
+}
+
+test "Byte slice literal builds as genuine Byte[] (arrayElemTokenOpt MByte branch)" {
+  assertEqualInt(sumByteSlice([10.toByte(), 20.toByte(), 30.toByte()]), 60, "sumByte == 60")
+}

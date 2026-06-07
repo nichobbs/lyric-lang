@@ -654,10 +654,10 @@ val TABLE_BIT_ASSEMBLY_REF: Long = 34359738368i64
 // table 0x23, bit 35 (2^35)
 val TABLE_BIT_MANIFEST_RESOURCE: Long = 1099511627776i64
 
-// table 0x28, bit 40 (2^40)
+// table 0x2A, bit 42 (2^42)
 val TABLE_BIT_GENERIC_PARAM: Long = 4398046511104i64
 
-// table 0x2A, bit 42 (2^42)
+// table 0x2B, bit 43 (2^43)
 val TABLE_BIT_METHOD_SPEC: Long = 8796093022208i64
 
 // Emit a 2-byte LE integer.

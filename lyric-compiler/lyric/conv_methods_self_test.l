@@ -93,6 +93,58 @@ test "Int.toChar round-trips through toInt" {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Byte as conversion source — exercises isNumericOrCharType(MByte)
+// MSIL: conv.i4/conv.i8/conv.r8/conv.u2 (unsigned zero-extend from U1)
+// JVM:  no-op for toInt (int-on-stack); l2d/i2l etc for wider targets
+// ─────────────────────────────────────────────────────────────────────────────
+test "Byte.toInt zero-extends to 32-bit" {
+  // 200 is above 127 — confirm it stays positive (unsigned zero-extension)
+  val b: Byte = 200.toByte()
+  assertEqualInt(b.toInt(), 200, "Byte(200).toInt() == 200")
+}
+
+test "Byte.toLong zero-extends to 64-bit" {
+  val b: Byte = 255.toByte()
+  assertTrue(b.toLong() == 255i64, "Byte(255).toLong() == 255L")
+}
+
+test "Byte.toDouble widens to floating point" {
+  val b: Byte = 10.toByte()
+  assertTrue(b.toDouble() == 10.0, "Byte(10).toDouble() == 10.0")
+}
+
+test "Byte.toChar round-trips through toInt" {
+  val b: Byte = 65.toByte()
+  assertEqualInt(b.toChar().toInt(), 65, "Byte(65).toChar().toInt() == 65 ('A')")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Char as conversion source — exercises isNumericOrCharType(MChar)
+// MSIL: conv.i4 (no-op U2->I4)/conv.i8/conv.u1/conv.r8
+// JVM:  int-on-stack; l2i/i2l/d2i/l2d as for Int
+// ─────────────────────────────────────────────────────────────────────────────
+test "Char.toInt yields the code point" {
+  val c: Char = 65.toChar()
+  assertEqualInt(c.toInt(), 65, "Char(65).toInt() == 65 ('A')")
+}
+
+test "Char.toLong widens to 64-bit" {
+  val c: Char = 66.toChar()
+  assertTrue(c.toLong() == 66i64, "Char(66).toLong() == 66L")
+}
+
+test "Char.toByte narrows through the low 8 bits" {
+  // code point 300 (U+012C 'Ĭ') & 0xFF == 44
+  val c: Char = 300.toChar()
+  assertEqualInt(c.toByte().toInt(), 44, "Char(300).toByte().toInt() == 44")
+}
+
+test "Char.toDouble widens to floating point" {
+  val c: Char = 7.toChar()
+  assertTrue(c.toDouble() == 7.0, "Char(7).toDouble() == 7.0")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Chaining — conversions compose left to right
 // ─────────────────────────────────────────────────────────────────────────────
 test "conversions chain" {

@@ -349,3 +349,138 @@ test "Phase 4: two spawns stored then both awaited" {
   val result = await asyncSpawnTwoAndAdd(3, 6)
   assertEqualInt(result, 11, "asyncSpawnTwoAndAdd(3,6): (3+1)+(6+1) = 11")
 }
+
+// ── #2292: match with all arms returning ─────────────────────────────────────
+// All match arms emit `return`, so the patch rewrites all of them.
+// asyncMatchAllReturn(1): all arms return, join point is unreachable dead code.
+async func asyncMatchAllReturn(n: in Int): Int {
+  match n {
+    case 1 -> return 10
+    case _ -> return 0
+  }
+}
+
+test "#2292: match with all arms returning yields the correct arm value" {
+  val r1 = await asyncMatchAllReturn(1)
+  val r0 = await asyncMatchAllReturn(99)
+  assertEqualInt(r1, 10, "asyncMatchAllReturn(1) should return 10")
+  assertEqualInt(r0, 0, "asyncMatchAllReturn(99) should return 0")
+}
+
+// ── #2292: early return followed by more statements ───────────────────────────
+// `return` appears before the end; the trailing `else` branch is the implicit
+// fall-off.  The `lastWasPatchedRet` tracking must not skip the trailing coerce
+// for the fall-off path.
+async func asyncEarlyReturn(n: in Int): Int {
+  if n > 0 {
+    return n * 10
+  }
+  n + 1
+}
+
+test "#2292: early return followed by fall-off path" {
+  val r1 = await asyncEarlyReturn(5)
+  val r0 = await asyncEarlyReturn(0)
+  assertEqualInt(r1, 50, "asyncEarlyReturn(5) should return 50")
+  assertEqualInt(r0, 1, "asyncEarlyReturn(0) should return 1")
+}
+
+// ── #2357: BMul / BDiv / BMod with both operands awaited ─────────────────────
+// Non-commutative operators: the spill + rhs-temp restore pattern must produce
+// the correct result for all operator variants.
+async func asyncMulBothAwaited(a: in Int, b: in Int): Int {
+  (await asyncAddOne(a)) * (await asyncAddOne(b))
+}
+
+async func asyncDivBothAwaited(a: in Int, b: in Int): Int {
+  (await asyncAddOne(a)) / (await asyncAddOne(b))
+}
+
+async func asyncModBothAwaited(a: in Int, b: in Int): Int {
+  (await asyncAddOne(a)) % (await asyncAddOne(b))
+}
+
+async func asyncGtBothAwaited(a: in Int, b: in Int): Bool {
+  (await asyncAddOne(a)) > (await asyncAddOne(b))
+}
+
+async func asyncLteBothAwaited(a: in Int, b: in Int): Bool {
+  (await asyncAddOne(a)) <= (await asyncAddOne(b))
+}
+
+async func asyncGteBothAwaited(a: in Int, b: in Int): Bool {
+  (await asyncAddOne(a)) >= (await asyncAddOne(b))
+}
+
+test "Phase B.3: mul with both operands awaited" {
+  val result = await asyncMulBothAwaited(3, 4)
+  assertEqualInt(result, 20, "asyncMulBothAwaited(3,4): 4*5 = 20")
+}
+
+test "Phase B.3: div with both operands awaited (non-commutative)" {
+  val result = await asyncDivBothAwaited(9, 4)
+  assertEqualInt(result, 2, "asyncDivBothAwaited(9,4): 10/5 = 2")
+}
+
+test "Phase B.3: mod with both operands awaited (non-commutative)" {
+  val result = await asyncModBothAwaited(9, 4)
+  assertEqualInt(result, 0, "asyncModBothAwaited(9,4): 10%5 = 0")
+}
+
+test "Phase B.3: gt comparison with both operands awaited (non-commutative)" {
+  val gt = await asyncGtBothAwaited(5, 3)
+  val lt = await asyncGtBothAwaited(3, 5)
+  assertTrue(gt, "asyncGtBothAwaited(5,3): 6>4 = true")
+  assertTrue(not lt, "asyncGtBothAwaited(3,5): 4>6 = false")
+}
+
+test "Phase B.3: lte comparison with both operands awaited (non-commutative)" {
+  val lte = await asyncLteBothAwaited(3, 5)
+  val notlte = await asyncLteBothAwaited(5, 3)
+  assertTrue(lte, "asyncLteBothAwaited(3,5): 4<=6 = true")
+  assertTrue(not notlte, "asyncLteBothAwaited(5,3): 6<=4 = false")
+}
+
+test "Phase B.3: gte comparison with both operands awaited (non-commutative)" {
+  val gte = await asyncGteBothAwaited(5, 3)
+  val eq = await asyncGteBothAwaited(4, 4)
+  val notgte = await asyncGteBothAwaited(3, 5)
+  assertTrue(gte, "asyncGteBothAwaited(5,3): 6>=4 = true")
+  assertTrue(eq, "asyncGteBothAwaited(4,4): 5>=5 = true")
+  assertTrue(not notgte, "asyncGteBothAwaited(3,5): 4>=6 = false")
+}
+
+// ── #2367: SFor — await inside a for-in loop body ────────────────────────────
+// Exercises the SFor arm added to `collectAwaitTypesStmtPB` so that the
+// loop-variable promoted-local pre-scan includes awaits inside for-in bodies.
+async func asyncForSum(xs: in List[Int]): Int {
+  var total = 0
+  for x in xs {
+    val v = await asyncAddOne(x)
+    total = total + v
+  }
+  total
+}
+
+test "#2367: SFor: await inside for-in loop body accumulates correctly" {
+  val xs: List[Int] = newList()
+  xs.add(1)
+  xs.add(2)
+  xs.add(3)
+  val result = await asyncForSum(xs)
+  assertEqualInt(result, 9, "sum of (x+1) for x in [1,2,3] = (2+3+4) = 9")
+}
+
+// ── #2367: SAssign — await on the RHS of an assignment ──────────────────────
+// Exercises the SAssign arm added to `collectAwaitTypesStmtPB` so that a
+// `var x = 0; x = await f()` pattern is correctly type-collected.
+async func asyncAssignAwait(n: in Int): Int {
+  var result = 0
+  result = await asyncAddOne(n)
+  result
+}
+
+test "#2367: SAssign: await on RHS of var reassignment" {
+  val result = await asyncAssignAwait(7)
+  assertEqualInt(result, 8, "asyncAssignAwait(7): var=0 then var=await(7+1) = 8")
+}

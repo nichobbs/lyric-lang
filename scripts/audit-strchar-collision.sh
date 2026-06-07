@@ -21,7 +21,7 @@
 # `Std.String` and `Std.Char` and contains a `Str.{fromInt,toUpper,toLower}`
 # call (line comments are ignored).
 
-set -uo pipefail
+set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 compiler_dir="$root/lyric-compiler/lyric"
@@ -35,9 +35,17 @@ fail=0
 while IFS= read -r f; do
   grep -q '^import Std\.Char\b'   "$f" || continue
   grep -q '^import Std\.String\b' "$f" || continue
-  # Strip `//` line comments before matching so the explanatory notes that
-  # mention `Str.fromInt` do not trip the guard.
-  hits="$(sed 's://.*::' "$f" | grep -nE 'Str\.(fromInt|toUpper|toLower)\b' || true)"
+  # Strip `//` line comments and single-line `/* … */` block comments before
+  # matching so explanatory notes mentioning `Str.fromInt` do not trip the
+  # guard.  Multi-line block comments are not stripped (rare in compiler
+  # sources); a future contributor using one that mentions these names would
+  # need to rewrite it as a line comment to avoid a false positive.
+  # NOTE: this guard checks only the `Str` alias (the convention in all
+  # compiler sources).  A file importing `Std.String` without an alias
+  # (`String.fromInt`) or with a different alias would not be caught; the
+  # assumption that the alias is always `Str` is documented here but not
+  # enforced — extend the pattern if a new import form is introduced.
+  hits="$(sed 's:/\*[^*]*\*/::g; s://.*::' "$f" | grep -nE 'Str\.(fromInt|toUpper|toLower)\b' || true)"
   if [ -n "$hits" ]; then
     echo "::error::$f imports both Std.String and Std.Char and uses a colliding Str.* call (#2125):"
     echo "$hits" | sed 's/^/    /'

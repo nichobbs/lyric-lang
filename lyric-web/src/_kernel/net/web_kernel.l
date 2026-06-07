@@ -32,7 +32,7 @@ import Std.Core
 /// supplied `endpoint` / `key` string.
 @axiom("Lyric.Ws.RateLimitHost.checkRateLimit — per-key 60s sliding-window + burst budget; state is per-process, shared with Ws.Kernel.Net")
 @externTarget("Lyric.Ws.RateLimitHost.checkRateLimit")
-pub func checkRateLimit(endpoint: String, requestsPerMinute: Int, burstSize: Int): Bool
+pub func checkRateLimit(endpoint: in String, requestsPerMinute: in Int, burstSize: in Int): Bool
   requires: endpoint.length > 0
   requires: requestsPerMinute > 0
   requires: burstSize > 0

@@ -56,7 +56,10 @@ pub func resolveType(tbl: in SymbolTable, ctx: in GenericContext, diag: in List[
       while i < argsList.count {
         match argsList[i] {
           case TAType(t) -> resolvedArgs.add(resolveType(tbl, ctx, diag, t))
-          case TAValue(_) -> resolvedArgs.add(TyError)
+          case TAValue(ve) -> {
+            diag.add(errorDiagnostic("T0012", "value expression used as type argument", ve.span))
+            resolvedArgs.add(TyError)
+          }
         }
         i = i + 1
       }
@@ -170,7 +173,10 @@ func resolveAliasRhs(
       while i < argsList.count {
         match argsList[i] {
           case TAType(t) -> resolvedArgs.add(resolveType(tbl, ctx, diag, t))
-          case TAValue(_) -> resolvedArgs.add(TyError)
+          case TAValue(ve) -> {
+            diag.add(errorDiagnostic("T0012", "value expression used as type argument in alias", ve.span))
+            resolvedArgs.add(TyError)
+          }
         }
         i = i + 1
       }
@@ -320,7 +326,7 @@ func resolveTypePath(
 // unaffected — a package is checked as one unit, so every sibling-file symbol
 // is in-package.  (The `V0007`/`V0008` codes suggested in #1484 are already
 // owned by the verifier; visibility uses the type-checker code T0097.)
-pub func checkImportedVisibility(sym: in Symbol, span: in Span, diag: in List[Diagnostic]): Unit {
+func checkImportedVisibility(sym: in Symbol, span: in Span, diag: in List[Diagnostic]): Unit {
   if sym.isImported {
     // Extern types / extern packages are host-binding (FFI boundary)
     // declarations: the pub/internal/package-private tiers do not apply to
