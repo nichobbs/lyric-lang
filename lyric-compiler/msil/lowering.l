@@ -596,6 +596,7 @@ pub union MInsn {
   case MUnboxAny(typeToken: Int)       // unbox.any
   case MNewarr(typeToken: Int)         // newarr — allocate a 1-D array of the element type token
   case MStelemRef                      // stelem.ref — store into a reference-typed array element
+  case MStelem(typeToken: Int)         // stelem <type> — store into an array element of any type (value or ref)
 
   // Misc
   case MDup
@@ -1892,6 +1893,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MUnboxAny(tok)     -> emitUnbox_Any(mb, tok)
     case MNewarr(tok)       -> emitNewarr(mb, tok)
     case MStelemRef         -> emitStelem_Ref(mb)
+    case MStelem(tok)       -> emitStelem(mb, tok)
     case MDup               -> emitDup(mb)
     case MPop               -> emitPop(mb)
     case MThrow             -> emitThrow(mb)
