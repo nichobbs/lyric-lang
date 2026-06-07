@@ -265,13 +265,24 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
     }
   }
 
-  // Skip file-level annotations at the start; we'll omit @test_module
-  // from the synthesised source (not meaningful in compiled program,
-  // triggers P0040 cascade in in-process bridge parser — issue #1442).
-  // Find the first non-annotation position (before package or first item).
-  var cursor = 0
-  if pf.file.items.count > 0 {
-    cursor = pf.file.items[0].span.startPos.offset
+  // Start output from the package declaration (which includes "package X.Y.Z")
+  // omitting the module doc comments and @test_module annotation (not meaningful
+  // in compiled program, would trigger P0020 error when the emitter parses
+  // synthesized source). packageDecl.span starts at "package" keyword.
+  var cursor = pf.file.packageDecl.span.startPos.offset
+  var sb = slice(source, pf.file.packageDecl.span)
+  sb = sb + "\n"
+
+  // Emit the imports verbatim.
+  var ii = 0
+  while ii < pf.file.imports.count {
+    sb = sb + slice(source, pf.file.imports[ii].span) + "\n"
+    ii = ii + 1
+  }
+
+  // Update cursor to the end of the last import (or package if no imports).
+  if pf.file.imports.count > 0 {
+    cursor = pf.file.imports[pf.file.imports.count - 1].span.endPos.offset
   }
 
   // Walk items.  For each item: emit the source slice from the
@@ -281,7 +292,6 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
   // and record it as a skip, or (c) emit the item slice unchanged.
   // After the loop, append everything from the last cursor to the
   // end of the source, then the synthesised main.
-  var sb = ""
   var tests: List[TestSlot] = newList()
   var skipped: List[SkipSlot] = newList()
   var testIdx = 0
