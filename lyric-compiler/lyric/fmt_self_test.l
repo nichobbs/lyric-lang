@@ -317,12 +317,11 @@ test "comment inside union body" {
 }
 
 test "union case field trailing comments preserved" {
-  // Issue #2453: trailing `// note` comments on the individual fields of a
-  // multi-field union case (the `MEHClause` case in
-  // lyric-compiler/msil/lowering.l) were dropped because the union-case
-  // printer rendered the field list as a flat single line with no trivia
-  // awareness.  The multi-line union-case layout now weaves each field's
-  // trailing comment onto its own line.
+  // Trailing `// note` comments on the individual fields of a multi-field
+  // union case were dropped because the union-case printer rendered the
+  // field list as a flat single line with no trivia awareness.  The
+  // multi-line union-case layout now weaves each field's trailing comment
+  // onto its own line.
   val src = "package P\n\nunion Insn {\n" + "  case Nop\n" + "  case EH(\n" +
     "    flags: Int,        // 0=catch, 2=finally\n" +
     "    tryStart: Int,     // start label\n" +
@@ -715,9 +714,9 @@ test "width driven long match breaks" {
 }
 
 test "then form if arm comments preserved" {
-  // Issue #2453: a `then`-form if-expression whose then-arm and else-arm
-  // each carry an end-of-line comment must keep each comment on its own
-  // output line.  The flat inline rendering used to fuse them
+  // A `then`-form if-expression whose then-arm and else-arm each carry an
+  // end-of-line comment must keep each comment on its own output line.
+  // The flat inline rendering used to fuse them
   // (`then 3 else 6  // a  // b`), merging two comments into one on
   // re-lex; `lyric fmt --write` then refused with "would drop 2
   // comment(s)".  The trivia-aware `then`-form layout splits the arms.

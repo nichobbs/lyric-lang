@@ -185,113 +185,7 @@ func hexDigit(n: in Int): Char {
 
 @pure
 func intToChar(n: in Int): Char {
-  // Lyric does not yet expose `Int -> Char` conversion in the surface
-  // language; the BCL extern path is used by the lexer's analogue.  A
-  // small lookup table covers every code-point we ever emit (<= 0xFF).
-  if n == 0 {
-    '\u{0000}'
-  } else if n == 1 {
-    '\u{0001}'
-  } else if n == 2 {
-    '\u{0002}'
-  } else if n == 3 {
-    '\u{0003}'
-  } else if n == 4 {
-    '\u{0004}'
-  } else if n == 5 {
-    '\u{0005}'
-  } else if n == 6 {
-    '\u{0006}'
-  } else if n == 7 {
-    '\u{0007}'
-  } else if n == 8 {
-    '\u{0008}'
-  } else if n == 9 {
-    '\t'
-  } else if n == 10 {
-    '\n'
-  } else if n == 11 {
-    '\u{000b}'
-  } else if n == 12 {
-    '\u{000c}'
-  } else if n == 13 {
-    '\r'
-  } else if n == 14 {
-    '\u{000e}'
-  } else if n == 15 {
-    '\u{000f}'
-  } else if n == 16 {
-    '\u{0010}'
-  } else if n == 17 {
-    '\u{0011}'
-  } else if n == 18 {
-    '\u{0012}'
-  } else if n == 19 {
-    '\u{0013}'
-  } else if n == 20 {
-    '\u{0014}'
-  } else if n == 21 {
-    '\u{0015}'
-  } else if n == 22 {
-    '\u{0016}'
-  } else if n == 23 {
-    '\u{0017}'
-  } else if n == 24 {
-    '\u{0018}'
-  } else if n == 25 {
-    '\u{0019}'
-  } else if n == 26 {
-    '\u{001a}'
-  } else if n == 27 {
-    '\u{001b}'
-  } else if n == 28 {
-    '\u{001c}'
-  } else if n == 29 {
-    '\u{001d}'
-  } else if n == 30 {
-    '\u{001e}'
-  } else if n == 31 {
-    '\u{001f}'
-  } else if n == 48 {
-    '0'
-  } else if n == 49 {
-    '1'
-  } else if n == 50 {
-    '2'
-  } else if n == 51 {
-    '3'
-  } else if n == 52 {
-    '4'
-  } else if n == 53 {
-    '5'
-  } else if n == 54 {
-    '6'
-  } else if n == 55 {
-    '7'
-  } else if n == 56 {
-    '8'
-  } else if n == 57 {
-    '9'
-  } else if n == 97 {
-    'a'
-  } else if n == 98 {
-    'b'
-  } else if n == 99 {
-    'c'
-  } else if n == 100 {
-    'd'
-  } else if n == 101 {
-    'e'
-  } else if n == 102 {
-    'f'
-  } else {
-    // Every other code point (ordinary printable ASCII — letters, space,
-    // punctuation) goes through the BCL-backed `Std.Char.fromInt`.  The
-    // table above predates that helper; without this fallback any char
-    // literal outside 0-31 / digits / a-f rendered as `'?'`, corrupting
-    // `'z'`, `' '`, `'/'`, every uppercase letter, etc. on every format.
-    Ch.fromInt(n)
-  }
+  Ch.fromInt(n)
 }
 
 /// Format a code-point as four zero-padded hex digits (`XXXX`), with no
@@ -1050,7 +944,7 @@ func isBareKeywordExprBlock(b: in Block): Bool {
 /// expression wrapper is unwrapped to the statement (round-tripping
 /// `return try { … } catch { … }`); any other block renders as a normal
 /// brace-delimited multi-line block.
-func blockExprDoc(col: in Int, ctx: inout FmtCtx, b: in Block): List[String] {
+func blockExprDoc(ctx: inout FmtCtx, b: in Block): List[String] {
   if isBareKeywordExprBlock(b) {
     return stmtLines(b.statements[0], ctx)
   }
@@ -1080,7 +974,7 @@ pub func exprAtCol(col: in Int, ctx: inout FmtCtx, e: in Expr): List[String] {
       val single = b.statements.count == 1
       val isTry = single and (match b.statements[0].kind { case STry(_, _, _) -> true; case _ -> false })
       if (not single) or isTry {
-        return blockExprDoc(col, ctx, b)
+        return blockExprDoc(ctx, b)
       }
     }
     case _ -> {
@@ -1127,7 +1021,7 @@ pub func exprAtCol(col: in Int, ctx: inout FmtCtx, e: in Expr): List[String] {
       }
     }
     case EMatch(scrut, arms) -> matchLines(scrut, arms, e.span.endPos.offset, ctx)
-    case EBlock(b) -> blockExprDoc(col, ctx, b)
+    case EBlock(b) -> blockExprDoc(ctx, b)
     case _ -> singleLineDoc(inline)
   }
 }
@@ -1990,11 +1884,13 @@ func matchLines(scrut: in Expr, arms: in List[MatchArm], matchEnd: in Int, ctx: 
         // (no interior trivia) keeps the single-line inline rendering.
         if hasTriviaInRange(ctx, body.span.startPos.offset, body.span.endPos.offset) {
           val bd = exprAtCol(arrow.length, ctx, body)
-          armLines.add(arrow + bd[0])
-          var j = 1
-          while j < bd.count {
-            armLines.add(bd[j])
-            j = j + 1
+          if bd.count > 0 {
+            armLines.add(arrow + bd[0])
+            var j = 1
+            while j < bd.count {
+              armLines.add(bd[j])
+              j = j + 1
+            }
           }
         } else {
           armLines.add(arrow + exprInline(0, body))
