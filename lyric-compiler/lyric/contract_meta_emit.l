@@ -56,7 +56,7 @@ func jsonArray(items: in List[String]): String {
   if items.length == 0 {
     "[]"
   } else {
-    val buf = "["
+    var buf = "["
     var i = 0
     while i < items.length {
       if i > 0 {
@@ -73,7 +73,7 @@ func jsonObject(fields: in List[(String, String)]): String {
   if fields.length == 0 {
     "{}"
   } else {
-    val buf = "{"
+    var buf = "{"
     var i = 0
     while i < fields.length {
       if i > 0 {
