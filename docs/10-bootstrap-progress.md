@@ -22133,12 +22133,20 @@ What landed:
 - **Type-alias re-export resolution** (`type_checker/typechecker_resolver.l`):
   the type resolver now follows a `pub alias X = Pkg.Type` re-export
   (`DKTypeAlias`) to its target instead of emitting a spurious T0013 "'X' is not
-  a type" (the alias symbol carries no `TypeId`).  An alias-skipping path lookup
+  a type" (the alias symbol carries no `TypeId`).  The path lookup
   (`resolveAliasPath`) prefers a concrete (non-alias) type symbol of the target's
   final segment, so the stdlib's `pub alias Random = Std.RandomHost.Random` (where
   the alias and the extern type share the simple name `Random`) resolves to the
-  underlying extern type rather than looping on itself.  Regression-tested in
-  `typechecker_self_test.l::testTypeAliasResolves`.
+  underlying extern type rather than looping on itself.  A chained-alias
+  expansion is bounded to 64 hops so a malformed cycle (`alias A = B` /
+  `alias B = A`) yields a clean **T0017** diagnostic instead of recursing to a
+  stack overflow (#2607).  A bounded counter (not a visited-name set) is used
+  because the F# stage-0 bootstrap emitter, which compiles this file, cannot yet
+  codegen the `List[String]` threading a visited set would require — the same
+  depth-bound technique the YAML/JSON parser uses for nested collections.
+  Regression-tested by `typechecker_self_test.l` (`type alias resolves`,
+  `type alias chain resolves`, `type alias to generic resolves`,
+  `cyclic type alias rejected`).
 - **Per-package diagnostic context** (`diagnostic_util.l`,
   `msil/bridge.l`): project (multi-package) builds now prefix each type/mode/mono
   diagnostic with the owning package name (`Std.Encoding: error[T0043] …`) so a

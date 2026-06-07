@@ -422,6 +422,31 @@ test "type alias resolves" {
   assertEqualInt(diagCount(cr), 0, "alias-resolve: clean type-check")
 }
 
+// A multi-hop alias chain (`alias B = Foo`, `alias C = B`) must resolve
+// through every hop to the concrete target.
+test "type alias chain resolves" {
+  val src = "package P\nrecord Foo { x: Int }\nalias B = Foo\nalias C = B\nfunc f(c: in C): Int { c.x }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "alias-chain: clean type-check")
+}
+
+// An alias to a generic type instantiation (the `TGenericApp` branch of
+// resolveAliasRhs) must resolve to the underlying generic type.
+test "type alias to generic resolves" {
+  val src = "package P\nrecord Box[T] { value: T }\nalias IntBox = Box[Int]\nfunc f(b: in IntBox): Int { 0 }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0013"), "alias-generic: no T0013")
+  assertTrue(not hasDiagCode(cr, "T0017"), "alias-generic: no spurious cycle")
+}
+
+// A mutual alias cycle (`alias A = B`, `alias B = A`) must be rejected with
+// a clean T0017 diagnostic, not recurse to a stack overflow (#2607).
+test "cyclic type alias rejected" {
+  val src = "package P\nalias A = B\nalias B = A\nfunc f(a: in A): Int { 0 }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0017"), "alias-cycle: T0017 emitted")
+}
+
 test "multiple items no error" {
   val src = "package P\nrecord A { x: Int }\nrecord B { y: String }\nfunc f(a: in A): String { a.x }\n"
   val pr = parse(src)

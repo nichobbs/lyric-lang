@@ -137,29 +137,33 @@ func symbolToType(
   span: in Span,
 ): Type {
   match sym.kind {
-    case DKTypeAlias(decl) -> resolveAliasRhs(tbl, ctx, diag, decl, sym.name, args, span)
+    case DKTypeAlias(decl) -> resolveAliasRhs(tbl, ctx, diag, decl, 0, args, span)
     case _ -> match symbolTypeIdOpt(sym) { case Some(tid) -> { checkImportedVisibility(sym, span, diag); TyUser(id = tid, name = sym.name, args = args) }; case None -> { diag.add(errorDiagnostic("T0013", "'" + sym.name + "' is not a type", span)); TyError } }
   }
 }
 
-// Follow a type alias's right-hand side to a concrete `Type`.  `aliasName`
-// is the name of the alias being expanded; the path-resolution helper skips
-// any symbol of that name so a re-export whose target shares the alias's
-// simple name (`alias Random = Std.RandomHost.Random`) resolves to the
-// underlying extern/user type rather than looping on the alias itself.
-// `args` are the type arguments supplied at the use site (empty for the
-// non-generic re-export form the stdlib uses).
+// Follow a type alias's right-hand side to a concrete `Type`.  `depth` counts
+// how many alias hops have been followed on this chain.  Real alias chains are
+// a handful of links deep; passing the bound (64, see `resolveAliasPath`) means
+// the chain is cyclic (`alias A = B` / `alias B = A`) — a malformed program —
+// so it stops with a clean T0017 rather than recursing to a stack overflow.  A
+// bounded counter is used instead of a visited-name set because the F# stage-0
+// bootstrap emitter (which compiles this file) cannot yet codegen the
+// `List[String]` threading that would require; this mirrors the depth-bound the
+// YAML/JSON parser uses for nested collections.  `args` are the type arguments
+// supplied at the use site (empty for the non-generic re-export form the stdlib
+// uses).
 func resolveAliasRhs(
   tbl: in SymbolTable,
   ctx: in GenericContext,
   diag: in List[Diagnostic],
   decl: in TypeAliasDecl,
-  aliasName: in String,
+  depth: in Int,
   args: in List[Type],
   span: in Span,
 ): Type {
   match decl.rhs.kind {
-    case TRef(path) -> resolveAliasPath(tbl, ctx, diag, path, aliasName, args, span)
+    case TRef(path) -> resolveAliasPath(tbl, ctx, diag, path, depth, args, span)
     case TGenericApp(head, argsList) -> {
       val resolvedArgs: List[Type] = newList()
       var i = 0
@@ -170,7 +174,7 @@ func resolveAliasRhs(
         }
         i = i + 1
       }
-      resolveAliasPath(tbl, ctx, diag, head, aliasName, resolvedArgs, span)
+      resolveAliasPath(tbl, ctx, diag, head, depth, resolvedArgs, span)
     }
     case _ -> resolveType(tbl, ctx, diag, decl.rhs)
   }
@@ -178,14 +182,15 @@ func resolveAliasRhs(
 
 // Resolve an alias target path to a `Type`, preferring a concrete (non-alias)
 // type symbol of the path's final segment so the lookup cannot loop back on
-// the alias being expanded.  Falls through to a differently-named chained
-// alias, then to a primitive, then to T0013.
+// the alias being expanded.  Falls through to a chained alias (bounded to 64
+// hops so a cycle yields a T0017 rather than unbounded recursion), then to a
+// primitive, then to T0013.
 func resolveAliasPath(
   tbl: in SymbolTable,
   ctx: in GenericContext,
   diag: in List[Diagnostic],
   path: in ModulePath,
-  aliasName: in String,
+  depth: in Int,
   args: in List[Type],
   span: in Span,
 ): Type {
@@ -214,14 +219,20 @@ func resolveAliasPath(
     }
     i = i + 1
   }
-  // Then, a chained alias with a different name (avoid self-recursion).
+  // Then, a chained alias — but stop at the depth bound so a cycle
+  // (`alias A = B` / `alias B = A`) produces a clean diagnostic instead of
+  // recursing to a stack overflow.
   var j = 0
   while j < all.count {
     match all[j].kind {
       case DKTypeAlias(d2) -> {
-        if d2.name != aliasName {
-          return resolveAliasRhs(tbl, ctx, diag, d2, d2.name, args, span)
+        if depth >= 64 {
+          diag.add(
+            errorDiagnostic("T0017", "type alias '" + d2.name + "' is part of a cycle and does not resolve to a type", span)
+          )
+          return TyError
         }
+        return resolveAliasRhs(tbl, ctx, diag, d2, depth + 1, args, span)
       }
       case _ -> {
       }
