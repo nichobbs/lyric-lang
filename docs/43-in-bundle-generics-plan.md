@@ -1,18 +1,38 @@
 # 43 — In-bundle generics plan (self-hosted MSIL backend)
 
-**Status:** Implemented for in-bundle types (records + unions); the stage-3
-stdlib byte-match remains.  In-bundle generic **records** (#2362 slice 1) and
-**unions** (#2362 slice 2) both ship: the self-hosted MSIL backend emits a
-`record Box[T]` / `union Maybe[T]` as truly generic TypeDefs (GenericParam table
-0x2A + VAR fields + AutoLayout + arity-suffixed names), constructs via
-closed-instantiation TypeSpec `.ctor` MemberRefs, reads fields through
-TypeSpec-parented `ldfld`, and (for unions) emits each case as a generic case
-class extending the open base instantiation `Maybe`1<!0>` (a TypeSpec), matched
-via closed-TypeSpec `isinst`/`castclass`/`ldfld`.  Exercised by
+**Status:** Done for in-bundle types (records + unions).  In-bundle generic
+**records** (#2362 slice 1) and **unions** (#2362 slice 2) both ship: the
+self-hosted MSIL backend emits a `record Box[T]` / `union Maybe[T]` as truly
+generic TypeDefs (GenericParam table 0x2A + VAR fields + AutoLayout +
+arity-suffixed names), constructs via closed-instantiation TypeSpec `.ctor`
+MemberRefs, reads fields through TypeSpec-parented `ldfld`, and (for unions)
+emits each case as a generic case class extending the open base instantiation
+`Maybe`1<!0>` (a TypeSpec), matched via closed-TypeSpec
+`isinst`/`castclass`/`ldfld`.  Exercised by
 `lyric-compiler/lyric/inbundle_generics_self_test.l` (native `lyric test`, 16
-cases).  **Q-GEN-001 resolved** (see below).  The remaining work is the
-stage-3 stdlib byte-match (self-compiling `core.l`'s `Option`/`Result` as
-reified generics) — note the arity-suffix correction below affects that target.
+cases).  **Q-GEN-001 resolved** (see below).
+
+**The stage-3 stdlib byte-match is deliberately NOT pursued** (decision recorded
+when #2362 was closed).  Two reasons, both grounded in what shipped:
+
+1. *Exact byte-match is superseded by the arity-suffix correctness fix.*  The
+   self-hosted emitter compiling `core.l` in isolation already produces
+   `Option`/`Result` that are **structurally identical to the F# stage-1 DLL** —
+   GenericParam rows (`T`; `T,E`), VAR fields (`value` = `06 13 00`, `error` =
+   `06 13 01`), cases extending the base TypeSpec — *except* the self-hosted
+   names carry the `` `<arity> `` suffix (`Option`1`, `Option_Some`1`) that F#
+   omits.  That suffix is **required** for multi-field value-type generics to lay
+   out correctly (correction 1 below); F# only gets away without it because every
+   stdlib generic case is single-field.  A literal byte-match would mean reverting
+   a correctness fix or editing the frozen F# emitter, so the self-hosted output
+   is intentionally *more correct than* — not byte-identical to — F#.
+2. *Routing the bootstrap's stdlib build through the self-hosted emitter is
+   blocked on broad self-hosted front-end completeness*, not on generics: today
+   `lyric build --manifest lyric-stdlib/lyric.toml` fails with `T0010: unknown
+   type name 'List'` (and the bootstrap's stage-2 builds the stdlib with F# both
+   times via `--internal-manifest-build`).  Self-compiling the whole stdlib is
+   tracked under the self-hosted-compiler completeness work (`docs/41` §R7), not
+   here.
 
 **Two corrections to the original plan, discovered during slice 1 (both
 empirically verified against a C#-emitted generic class and the live CLR):**
@@ -296,14 +316,15 @@ attempt to de-monomorphize functions in the same change.
    paths).  **Verified** by the union half of `inbundle_generics_self_test.l`
    (`Maybe`, two-parameter `Either`, multi-field `Pairish[Int,Int]`, function
    returns, nested `Maybe[Maybe[Int]]`).
-3. **Stdlib `Option[T]`/`Result[T,E]` via stage-3 byte-match.** Once `core.l`
-   self-compiles its generics as truly generic, run `scripts/bootstrap.sh --stage 3` and
-   confirm the self-hosted `Lyric.Stdlib.dll` GenericParam table matches the F# stage-1
-   DLL. This exercises 2-param generics (`Result[T,E]`), GenericParam `number` ordering,
-   and cross-case param sharing.
+3. **Stdlib `Option[T]`/`Result[T,E]` via stage-3 byte-match. NOT PURSUED** (see
+   the status header).  The self-hosted emitter already produces structurally
+   correct generic `Option`/`Result` when it compiles `core.l` in isolation; an
+   exact byte-match with the F# DLL is superseded by the arity-suffix correctness
+   fix, and routing the *whole* stdlib bundle through the self-hosted emitter is
+   blocked on self-hosted front-end completeness (`T0010`), tracked under
+   `docs/41` §R7 rather than here.
 
-Iterate steps 1–2 with `make stage1-fast` + a focused `*_self_test.l` (~seconds); step 3
-needs `make lyric` + the full bootstrap.
+Iterate steps 1–2 with `make stage1-fast` + a focused `*_self_test.l` (~seconds).
 
 ## Risks / gotchas
 
