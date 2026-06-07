@@ -1090,3 +1090,51 @@ test "protected inter member blank idempotent" {
   val twice = format(parse(once))
   assertEqual(once, twice, "protected inter-member blank: idempotent")
 }
+
+test "config block free comment round trips" {
+  // A free `//` comment sitting between config fields must survive a fmt
+  // round-trip and be idempotent (#2513).
+  val src = "package P\n\nconfig Settings {\n  // which env var feeds this\n  enabled: Bool = true\n  threshold: Int = 10\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "config free comment: round-trips")
+  val once = format(parse(src))
+  assertTrue(Str.contains(once, "// which env var feeds this"), "config free comment: preserved")
+  val twice = format(parse(once))
+  assertEqual(once, twice, "config free comment: idempotent")
+}
+
+test "config block trailing comment round trips" {
+  // A trailing `//` comment on a config field line must survive a fmt
+  // round-trip and be idempotent (#2513).
+  val src = "package P\n\nconfig Settings {\n  enabled: Bool = true\n  threshold: Int = 10  // tuning knob\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "config trailing comment: round-trips")
+  val once = format(parse(src))
+  assertTrue(Str.contains(once, "// tuning knob"), "config trailing comment: preserved")
+  val twice = format(parse(once))
+  assertEqual(once, twice, "config trailing comment: idempotent")
+}
+
+test "aspect config block free comment round trips" {
+  // A free `//` comment between aspect config fields must survive a fmt
+  // round-trip and be idempotent (#2513).
+  val src = "package P\n\naspect X {\n  config {\n    // which env var feeds this\n    enabled: Bool = true\n  }\n\n  around(call) -> ret {\n    ret = call.proceed()\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "aspect config free comment: round-trips")
+  val once = format(parse(src))
+  assertTrue(Str.contains(once, "// which env var feeds this"), "aspect config free comment: preserved")
+  val twice = format(parse(once))
+  assertEqual(once, twice, "aspect config free comment: idempotent")
+}
+
+test "aspect config block trailing comment round trips" {
+  // A trailing `//` comment on an aspect config field must survive a fmt
+  // round-trip and be idempotent (#2513).
+  val src = "package P\n\naspect X {\n  config {\n    enabled: Bool = true  // toggle\n  }\n\n  around(call) -> ret {\n    ret = call.proceed()\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "aspect config trailing comment: round-trips")
+  val once = format(parse(src))
+  assertTrue(Str.contains(once, "// toggle"), "aspect config trailing comment: preserved")
+  val twice = format(parse(once))
+  assertEqual(once, twice, "aspect config trailing comment: idempotent")
+}
