@@ -1,6 +1,5 @@
 //! mono_self_test.l — exercises the self-hosted Lyric.Mono library.
-//! Compiled and executed by SelfHostedMonoTests.fs.  Exit 0 + "ok" in
-//! stdout means every check held.
+//! Run in CI via native `lyric test` (no F# runner shim).
 //!
 //! Covers (docs/41 §9 Band 5 / #858):
 //!   • Same-package specialisation via call-site inference (the
@@ -24,6 +23,7 @@
 //!   • Record field projection inference (recv.field).
 //!   • Non-generic same-package return chaining.
 //!   • Multi-param inference mixing nested calls and literals.
+@test_module
 package Lyric.MonoSelfTest
 
 import Std.Core
@@ -167,7 +167,7 @@ func replaceCallerBody(file: in SourceFile, callerName: in String, bodyExpr: in 
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
 // Type-generic inference via param annotation — the existing baseline.
-func testTypeGenericInferred(): Unit {
+test "type generic inferred" {
   val src = "package P\n" + "func id[T](x: in T): T { x }\n" + "func caller(): Int { id(7) }\n"
   val res = runMono(src)
   assertTrue(hasFunc(res.file, "id__Int"), "id__Int specialisation emitted")
@@ -177,7 +177,7 @@ func testTypeGenericInferred(): Unit {
 
 // Explicit ETypeApp from a synthetic AST — exercises the
 // non-inference path through `rewriteExpr`.
-func testTypeGenericExplicitTypeApp(): Unit {
+test "type generic explicit type app" {
   val src = "package P\n" + "func empty[T](): Int { 0 }\n" + "func caller(): Int { 0 }\n"
   val pr = parse(src)
 
@@ -192,7 +192,7 @@ func testTypeGenericExplicitTypeApp(): Unit {
 
 // Value-generic specialisation via synthetic AST: ETypeApp carrying
 // a single TAValue(LInt(3)) argument.
-func testValueGenericExplicit(): Unit {
+test "value generic explicit" {
   val src = "package P\n" + "func ones[N: Nat](): Int { 0 }\n" + "func caller(): Int { 0 }\n"
   val pr = parse(src)
 
@@ -207,7 +207,7 @@ func testValueGenericExplicit(): Unit {
 }
 
 // Two distinct value args produce two distinct specialisations.
-func testValueGenericDistinctSpecs(): Unit {
+test "value generic distinct specs" {
   val src = "package P\n" + "func ones[N: Nat](): Int { 0 }\n" + "func caller(): Int { 0 }\n"
   val pr = parse(src)
 
@@ -231,7 +231,7 @@ func testValueGenericDistinctSpecs(): Unit {
 
 // The substituted body of a value-generic specialisation no longer
 // references the value-param name as an `EPath` leaf.
-func testValueGenericBodySubstituted(): Unit {
+test "value generic body substituted" {
   val src = "package P\n" + "func ones[N: Nat](): Int { N }\n" + "func caller(): Int { 0 }\n"
   val pr = parse(src)
 
@@ -303,7 +303,7 @@ func blockReferencesPath(b: in Block, name: in String): Bool {
 
 // Mixed type + value generics: `func f[T, N: Nat](x: T): T` produces a
 // mangled spec name combining both T and N substitutions.
-func testMixedTypeAndValueGenerics(): Unit {
+test "mixed type and value generics" {
   val src = "package P\n" + "func repN[T, N: Nat](x: in T): T { x }\n" + "func caller(): Int { 0 }\n"
   val pr = parse(src)
 
@@ -321,7 +321,7 @@ func testMixedTypeAndValueGenerics(): Unit {
 
 // Constraint validation: where clause with marker constraint and a
 // primitive concrete type produces no diagnostic.
-func testConstraintPrimitiveAccepted(): Unit {
+test "constraint primitive accepted" {
   val src = "package P\n" + "func eqCheck[T](a: in T, b: in T): Bool where T: Equals { true }\n" +
     "func caller(): Bool { eqCheck(1, 2) }\n"
   val res = runMono(src)
@@ -330,7 +330,7 @@ func testConstraintPrimitiveAccepted(): Unit {
 }
 
 // Worklist termination + nested generic call site.
-func testNestedGenericCallChain(): Unit {
+test "nested generic call chain" {
   val src = "package P\n" + "func id[T](x: in T): T { x }\n" + "func twice[T](x: in T): T { id(x) }\n" +
     "func caller(): Int { twice(42) }\n"
   val res = runMono(src)
@@ -341,7 +341,7 @@ func testNestedGenericCallChain(): Unit {
 // Cross-package surface: `monoFileWithImports` with an imported generic
 // FunctionDecl specialises it in the caller's file just like a
 // same-package generic.
-func testCrossPackageImportedGeneric(): Unit {
+test "cross package imported generic" {
   val callerSrc = "package Caller\n" + "func caller(): Int { idImported(11) }\n"
   val importedSrc = "package Lib\n" + "pub func idImported[T](x: in T): T { x }\n"
 
@@ -373,7 +373,7 @@ func testCrossPackageImportedGeneric(): Unit {
 
 // Identity behaviour when no generics are present: monoFile returns
 // the file unchanged with an empty rewrites map.
-func testNoGenericsNoOp(): Unit {
+test "no generics no op" {
   val src = "package P\n" + "func main(): Int { 0 }\n"
   val res = runMono(src)
   assertEqualInt(res.file.items.count, 1, "single non-generic item preserved")
@@ -382,7 +382,7 @@ func testNoGenericsNoOp(): Unit {
 }
 
 // Imports list passes through unchanged after monomorphisation.
-func testImportsPreserved(): Unit {
+test "imports preserved" {
   val src = "package P\n" + "import Std.Core\n" + "func id[T](x: in T): T { x }\n" + "func caller(): Int { id(1) }\n"
   val res = runMono(src)
   assertEqualInt(res.file.imports.count, 1, "import declarations preserved in mono output")
@@ -396,7 +396,7 @@ func testImportsPreserved(): Unit {
 // `inferExprTE` didn't see ECall.  Post-#349 it reads
 // `state.funcDecls`, finds id is generic with return T, infers T=Int
 // from the literal 7, and specialises wrap to wrap__Int.
-func testNestedGenericReturnInferred(): Unit {
+test "nested generic return inferred" {
   val src = "package P\n" + "func id[T](x: in T): T { x }\n" + "func wrap[T](y: in T): T { y }\n" +
     "func caller(): Int { wrap(id(7)) }\n"
   val res = runMono(src)
@@ -407,7 +407,7 @@ func testNestedGenericReturnInferred(): Unit {
 // Record field projection `b.value` should be inferred to the field's
 // declared type via `state.recordDecls`, threading b's record type
 // through the env from the un-annotated `val b = Box(...)`.
-func testFieldProjectionInferred(): Unit {
+test "field projection inferred" {
   val src = "package P\n" + "record Box { value: Int }\n" + "func consume[T](x: in T): T { x }\n" +
     "func caller(): Int { val b = Box(value = 11); consume(b.value) }\n"
   val res = runMono(src)
@@ -418,7 +418,7 @@ func testFieldProjectionInferred(): Unit {
 // `origin(): Int` is non-generic, so the inferer skips unification
 // and returns the declared return type directly — that feeds into
 // consume's inference.
-func testNonGenericReturnFeedsInference(): Unit {
+test "non generic return feeds inference" {
   val src = "package P\n" + "func consume[T](x: in T): T { x }\n" + "func origin(): Int { 0 }\n" +
     "func caller(): Int { consume(origin()) }\n"
   val res = runMono(src)
@@ -427,7 +427,7 @@ func testNonGenericReturnFeedsInference(): Unit {
 
 // Mixed positional inference — one type-param inferred via nested
 // generic call, the other via literal.
-func testMixedInferenceShapes(): Unit {
+test "mixed inference shapes" {
   val src = "package P\n" + "func wrap[T](x: in T): T { x }\n" + "func pair[A, B](a: in A, b: in B): A { a }\n" +
     "func caller(): Int { pair(wrap(3), 9) }\n"
   val res = runMono(src)
@@ -436,23 +436,4 @@ func testMixedInferenceShapes(): Unit {
     "#349 mixed: pair__Int__Int specialisation (A from wrap(3), B from 9)"
   )
   assertTrue(hasFunc(res.file, "wrap__Int"), "#349 mixed: wrap__Int (nested) specialisation")
-}
-
-func main(): Unit {
-  testTypeGenericInferred()
-  testTypeGenericExplicitTypeApp()
-  testValueGenericExplicit()
-  testValueGenericDistinctSpecs()
-  testValueGenericBodySubstituted()
-  testMixedTypeAndValueGenerics()
-  testConstraintPrimitiveAccepted()
-  testNestedGenericCallChain()
-  testCrossPackageImportedGeneric()
-  testNoGenericsNoOp()
-  testImportsPreserved()
-  testNestedGenericReturnInferred()
-  testFieldProjectionInferred()
-  testNonGenericReturnFeedsInference()
-  testMixedInferenceShapes()
-  println("mono self-test: ok")
 }

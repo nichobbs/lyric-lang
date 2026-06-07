@@ -788,11 +788,17 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     so `lyric prove` sees the woven body (#336).
   - `lexer_self_test.l`, `parser_self_test.l`,
     `typechecker_self_test.l`, `modechecker_self_test.l`,
-    `contract_elaborator_self_test.l`, `test_synth_self_test.l`,
-    `manifest_self_test.l`, `fmt_self_test.l`, `cfg_self_test.l`,
+    `contract_elaborator_self_test.l`, `cfg_self_test.l`,
+    `derives_self_test.l`, `mono_self_test.l`, `fmt_self_test.l` —
+    `@test_module` self-tests run in CI via native `lyric test`
+    (linking the compiler DLLs as restored deps, #2364 / D-progress-456);
+    their former F# `SelfHosted*Tests.fs` wrappers were deleted.
+  - `test_synth_self_test.l`, `manifest_self_test.l`,
     `contract_meta_self_test.l`, `restored_packages_self_test.l`,
-    `verifier_self_test.l` —
-    self-test consumers run by the F# emitter test suite.
+    `verifier_self_test.l`, `generator/generator_self_test.l` —
+    `func main` self-test consumers still run by the F# emitter test suite
+    via `SelfHosted*Tests.fs`; their migration to native `lyric test` is
+    deferred (each surfaces a real self-hosted gap, tracked in #2580).
   - `weaver_self_test.l` — `@test_module` covering the todo/06
     weaver features (config wiring #683, call context #682,
     `@inline_template` #681) plus regression cases for the

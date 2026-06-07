@@ -1,8 +1,6 @@
 //! parser_self_test.l — exercises the self-hosted Lyric.Parser library.
-//! Compiled and executed by the F# Expecto runner at
-//! compiler/tests/Lyric.Emitter.Tests/SelfHostedParserTests.fs.
-//! Each in-program assertion panics on mismatch; exit 0 + "ok" in
-//! stdout means every check held.
+//! Run in CI via native `lyric test` (no F# runner shim).
+@test_module
 package Lyric.ParserSelfTest
 
 import Std.Core
@@ -87,25 +85,25 @@ func packageName(pr: in ParseResult): String {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests.
 // ─────────────────────────────────────────────────────────────────────────────
-func testEmptySource(): Unit {
+test "empty source" {
   val pr = parse("")
   assertEqualInt(diagCount(pr), 0, "empty: no diagnostics")
   assertEqualInt(itemCount(pr), 0, "empty: no items")
 }
 
-func testPackageDecl(): Unit {
+test "package decl" {
   val pr = parse("package Foo.Bar\n")
   assertEqualInt(diagCount(pr), 0, "package: no diagnostics")
   assertEqual(packageName(pr), "Foo.Bar", "package: name")
 }
 
-func testImport(): Unit {
+test "import" {
   val pr = parse("package P\nimport Std.Core\n")
   assertEqualInt(diagCount(pr), 0, "import: no diagnostics")
   assertEqualInt(importCount(pr), 1, "import: one import")
 }
 
-func testFuncDecl(): Unit {
+test "func decl" {
   val pr = parse("package P\nfunc add(x: in Int, y: in Int): Int { x + y }\n")
   assertEqualInt(diagCount(pr), 0, "func: no diagnostics")
   assertEqualInt(itemCount(pr), 1, "func: one item")
@@ -116,14 +114,14 @@ func testFuncDecl(): Unit {
 // not the left operand of a following binary operator.  `if n > 10 { return
 // 100 }` then a bare `-1` on the next line must parse as TWO statements (the
 // if-statement and the `-1` fall-through value), not one glued `(if …) - 1`.
-func testIfStmtDoesNotGlueOperator(): Unit {
+test "if stmt does not glue operator" {
   val pr = parse("package P\nfunc f(n: in Int): Int {\n  if n > 10 { return 100 }\n  -1\n}\n")
   assertEqualInt(diagCount(pr), 0, "if-stmt-sei: no diagnostics")
   assertEqualInt(firstFuncBodyStmtCount(pr), 2, "if-stmt-sei: two statements, not a glued binop")
 }
 
 // The same for `match` in statement position.
-func testMatchStmtDoesNotGlueOperator(): Unit {
+test "match stmt does not glue operator" {
   val pr = parse("package P\nfunc f(n: in Int): Int {\n  match n { case _ -> { return 1 } }\n  -1\n}\n")
   assertEqualInt(diagCount(pr), 0, "match-stmt-sei: no diagnostics")
   assertEqualInt(firstFuncBodyStmtCount(pr), 2, "match-stmt-sei: two statements, not a glued binop")
@@ -131,13 +129,13 @@ func testMatchStmtDoesNotGlueOperator(): Unit {
 
 // Value position is unaffected: an `if` after `=` is an ordinary operand, so the
 // initialiser is a single expression (one `val` statement).
-func testValueIfStillSingleExpr(): Unit {
+test "value if still single expr" {
   val pr = parse("package P\nfunc f(c: in Bool): Int {\n  val x = if c { 1 } else { 2 }\n  x\n}\n")
   assertEqualInt(diagCount(pr), 0, "value-if: no diagnostics")
   assertEqualInt(firstFuncBodyStmtCount(pr), 2, "value-if: val-stmt + trailing x")
 }
 
-func testRecordDecl(): Unit {
+test "record decl" {
   val pr = parse("package P\nrecord Point { x: Int; y: Int }\n")
   assertEqualInt(diagCount(pr), 0, "record: no diagnostics")
   assertEqualInt(itemCount(pr), 1, "record: one item")
@@ -167,7 +165,7 @@ func firstRecordFieldIsMutable(pr: in ParseResult): Bool {
 
 // `var`-prefixed mutable record fields (language reference §3.4) must
 // parse without diagnostics.
-func testMutableRecordField(): Unit {
+test "mutable record field" {
   val pr = parse("package P\nrecord Counter {\n  var count: Int\n  step: Int\n}\n")
   assertEqualInt(diagCount(pr), 0, "var-field: no diagnostics")
   assertEqualInt(itemCount(pr), 1, "var-field: one item")
@@ -175,55 +173,55 @@ func testMutableRecordField(): Unit {
   assertTrue(firstRecordFieldIsMutable(pr), "var-field: first field is mutable")
 }
 
-func testImmutableRecordField(): Unit {
+test "immutable record field" {
   val pr = parse("package P\nrecord Point { x: Int; y: Int }\n")
   assertEqualInt(diagCount(pr), 0, "plain-field: no diagnostics")
   assertTrue(not firstRecordFieldIsMutable(pr), "plain-field: first field is immutable")
 }
 
 // `pub var` ordering: visibility precedes the `var` marker.
-func testPubMutableRecordField(): Unit {
+test "pub mutable record field" {
   val pr = parse("package P\nrecord Box {\n  pub var value: String\n}\n")
   assertEqualInt(diagCount(pr), 0, "pub-var-field: no diagnostics")
   assertTrue(firstRecordFieldIsMutable(pr), "pub-var-field: field is mutable")
 }
 
-func testUnionDecl(): Unit {
+test "union decl" {
   val pr = parse("package P\nunion Color { case Red; case Green; case Blue }\n")
   assertEqualInt(diagCount(pr), 0, "union: no diagnostics")
   assertEqualInt(itemCount(pr), 1, "union: one item")
   assertEqual(firstItemKindName(pr), "union", "union: kind is union")
 }
 
-func testDistinctTypeDecl(): Unit {
+test "distinct type decl" {
   val pr = parse("package P\ntype Age = Int range 0 ..= 150\n")
   assertEqualInt(diagCount(pr), 0, "distinct: no diagnostics")
   assertEqualInt(itemCount(pr), 1, "distinct: one item")
   assertEqual(firstItemKindName(pr), "distinct", "distinct: kind")
 }
 
-func testTypeAliasDecl(): Unit {
+test "type alias decl" {
   val pr = parse("package P\nalias Name = String\n")
   assertEqualInt(diagCount(pr), 0, "alias: no diagnostics")
   assertEqualInt(itemCount(pr), 1, "alias: one item")
   assertEqual(firstItemKindName(pr), "alias", "alias: kind")
 }
 
-func testValDecl(): Unit {
+test "val decl" {
   val pr = parse("package P\nval pi: Double = 3.14159\n")
   assertEqualInt(diagCount(pr), 0, "val: no diagnostics")
   assertEqualInt(itemCount(pr), 1, "val: one item")
   assertEqual(firstItemKindName(pr), "val", "val: kind")
 }
 
-func testMultipleItems(): Unit {
+test "multiple items" {
   val src = "package P\nrecord A { x: Int }\nrecord B { y: String }\nfunc f(): Unit { }\n"
   val pr = parse(src)
   assertEqualInt(diagCount(pr), 0, "multi: no diagnostics")
   assertEqualInt(itemCount(pr), 3, "multi: three items")
 }
 
-func testFuncWithContracts(): Unit {
+test "func with contracts" {
   val src = "package P\nfunc divide(x: in Int, y: in Int): Int\n  requires: y != 0\n  ensures: result * y == x\n  { x / y }\n"
   val pr = parse(src)
   assertEqualInt(diagCount(pr), 0, "contracts: no diagnostics")
@@ -231,20 +229,20 @@ func testFuncWithContracts(): Unit {
   assertEqual(firstItemKindName(pr), "func", "contracts: kind is func")
 }
 
-func testEnumDecl(): Unit {
+test "enum decl" {
   val pr = parse("package P\nenum Dir { case North; case South; case East; case West }\n")
   assertEqualInt(diagCount(pr), 0, "enum: no diagnostics")
   assertEqual(firstItemKindName(pr), "enum", "enum: kind")
 }
 
-func testInterfaceDecl(): Unit {
+test "interface decl" {
   val src = "package P\ninterface Printable { func print(self: in Self): Unit }\n"
   val pr = parse(src)
   assertEqualInt(diagCount(pr), 0, "interface: no diagnostics")
   assertEqual(firstItemKindName(pr), "interface", "interface: kind")
 }
 
-func testPubVisibility(): Unit {
+test "pub visibility" {
   val pr = parse("package P\npub func foo(): Unit { }\n")
   assertEqualInt(diagCount(pr), 0, "pub: no diagnostics")
   assertEqualInt(itemCount(pr), 1, "pub: one item")
@@ -258,26 +256,26 @@ func testPubVisibility(): Unit {
   }
 }
 
-func testAnnotation(): Unit {
+test "annotation" {
   val pr = parse("package P\n@pure\npub func foo(): Unit { }\n")
   assertEqualInt(diagCount(pr), 0, "ann: no diagnostics")
   assertEqualInt(itemCount(pr), 1, "ann: one item")
 }
 
-func testMatchExpr(): Unit {
+test "match expr" {
   val src = "package P\nfunc f(x: in Int): String {\n  match x {\n    case 0 -> \"zero\"\n    case _ -> \"other\"\n  }\n}\n"
   val pr = parse(src)
   assertEqualInt(diagCount(pr), 0, "match: no diagnostics")
   assertEqual(firstItemKindName(pr), "func", "match: kind")
 }
 
-func testIfExpr(): Unit {
+test "if expr" {
   val src = "package P\nfunc abs(x: in Int): Int { if x < 0 { -x } else { x } }\n"
   val pr = parse(src)
   assertEqualInt(diagCount(pr), 0, "if: no diagnostics")
 }
 
-func testGenericFunc(): Unit {
+test "generic func" {
   val src = "package P\nfunc identity[T](x: in T): T { x }\n"
   val pr = parse(src)
   assertEqualInt(diagCount(pr), 0, "generic: no diagnostics")
@@ -285,7 +283,7 @@ func testGenericFunc(): Unit {
 }
 
 // ── D046 config block parser (self-host mirror of F# bootstrap) ──
-func testConfigBlock(): Unit {
+test "config block" {
   val src = "package P\nconfig Settings { port: Int = 8080 }\n"
   val pr = parse(src)
   assertEqualInt(diagCount(pr), 0, "config: no diagnostics")
@@ -293,7 +291,7 @@ func testConfigBlock(): Unit {
   assertEqual(firstItemKindName(pr), "config", "config: kind")
 }
 
-func testConfigBlockMultipleFields(): Unit {
+test "config block multiple fields" {
   val src = "package P\nconfig Settings { port: Int = 8080; host: String = \"0.0.0.0\"; secret: String }\n"
   val pr = parse(src)
   assertEqualInt(diagCount(pr), 0, "config-multi: no diagnostics")
@@ -306,7 +304,7 @@ func testConfigBlockMultipleFields(): Unit {
   }
 }
 
-func testConfigAsParamName(): Unit {
+test "config as param name" {
   // `config` must remain usable as a parameter name; the dispatch is
   // context-sensitive (only fires when followed by an identifier in
   // module scope, not inside a function signature).
@@ -317,7 +315,7 @@ func testConfigAsParamName(): Unit {
 }
 
 // ── D047 aspect block parser (self-host mirror of F# bootstrap) ──
-func testAspectBlock(): Unit {
+test "aspect block" {
   val src = "package P\naspect Logging {\n" + "  matches: name like \"handle*\"\n" +
     "  around(args) -> ret { proceed(args) }\n" +
     "}\n"
@@ -340,7 +338,7 @@ func testAspectBlock(): Unit {
 }
 
 // `matches: name in { fn1, fn2 }` — set-membership matcher (#2450).
-func testAspectMatchesNameIn(): Unit {
+test "aspect matches name in" {
   val src = "package P\naspect Auth from X.Y {\n" + "  matches: name in { foo, bar, baz }\n" + "}\n"
   val pr = parse(src)
   assertEqualInt(diagCount(pr), 0, "aspect name-in: no diagnostics")
@@ -361,7 +359,7 @@ func testAspectMatchesNameIn(): Unit {
   }
 }
 
-func testAspectAsParamName(): Unit {
+test "aspect as param name" {
   val src = "package P\nfunc tag(aspect: in String): String { aspect }\n"
   val pr = parse(src)
   assertEqualInt(diagCount(pr), 0, "aspect-as-param: no diagnostics")
@@ -384,7 +382,7 @@ func hasDiagCode(pr: in ParseResult, code: in String): Bool {
 // as ordinary identifiers — binding names (`val`/`var`/`let`), parameter
 // names, and value references — because they only carry keyword meaning at
 // item position (or, for `entry`, inside a protected-type body).
-func testContextualKeywordsAsIdentifiers(): Unit {
+test "contextual keywords as identifiers" {
   val valEntry = parse("package P\nfunc f(): Int {\n  val entry = 5\n  return entry\n}\n")
   assertEqualInt(diagCount(valEntry), 0, "ctx-kw: `val entry` + `return entry` parses clean")
   val varType = parse("package P\nfunc f(): Int {\n  var type = 5\n  return type\n}\n")
@@ -396,7 +394,7 @@ func testContextualKeywordsAsIdentifiers(): Unit {
 }
 
 // The same keywords keep their keyword meaning at item position.
-func testContextualKeywordsStillKeywords(): Unit {
+test "contextual keywords still keywords" {
   val distinct = parse("package P\ntype Age = Int\n")
   assertEqualInt(diagCount(distinct), 0, "ctx-kw: `type X = …` still a distinct type")
   assertEqual(firstItemKindName(distinct), "distinct", "ctx-kw: `type` item kind preserved")
@@ -408,7 +406,7 @@ func testContextualKeywordsStillKeywords(): Unit {
 // A genuinely reserved keyword (operator / statement starter) used as an
 // identifier is reported as P0051 naming the keyword — not the old generic
 // P0050/P0103 cascade.
-func testReservedKeywordAsIdentifierDiagnostic(): Unit {
+test "reserved keyword as identifier diagnostic" {
   val asBinding = parse("package P\nfunc f(): Int {\n  let match = 5\n  return match\n}\n")
   assertTrue(hasDiagCode(asBinding, "P0051"), "reserved-kw: `let match` → P0051")
   val asParam = parse("package P\nfunc g(if: in Int): Int { 0 }\n")
@@ -437,6 +435,10 @@ func syntaxKindName(k: in SyntaxKind): String {
     case SkItem -> "item"
     case SkAnnotation -> "annotation"
     case SkRaw -> "raw"
+    case SkBlock -> "block"
+    case SkStatement -> "statement"
+    case SkExpr -> "expr"
+    case SkContractClause -> "contract_clause"
   }
 }
 
@@ -481,13 +483,13 @@ func findChild(n: in GreenNode, want: in SyntaxKind): GreenNode {
   panic("no child of kind " + syntaxKindName(want))
 }
 
-func testCstRootKind(): Unit {
+test "cst root kind" {
   val src = "package P\n"
   val pr = parse(src)
   assertEqual(syntaxKindName(pr.cst.kind), "source_file", "cst: root is source_file")
 }
 
-func testCstLossless(): Unit {
+test "cst lossless" {
   // Source includes a doc comment, a line comment, a block comment,
   // and irregular indentation — the round-trip must reproduce every
   // byte (post CR/LF normalisation).
@@ -506,7 +508,7 @@ func testCstLossless(): Unit {
   assertEqual(rebuilt, src, "cst-lossless: byte-faithful round-trip")
 }
 
-func testCstShape(): Unit {
+test "cst shape" {
   val src = "package P\nimport Std.Core\nfunc f(): Unit { }\n"
   val pr = parse(src)
   assertEqualInt(diagCount(pr), 0, "cst-shape: no diagnostics")
@@ -520,19 +522,19 @@ func testCstShape(): Unit {
   assertEqualInt(countChildrenOfKind(items, SkItem), 1, "cst-shape: one item")
 }
 
-func testCstEmptySourceLossless(): Unit {
+test "cst empty source lossless" {
   val pr = parse("")
   assertEqual(syntaxKindName(pr.cst.kind), "source_file", "cst-empty: still a source_file")
   assertEqual(nodeSourceText(pr.source, pr.cst), "", "cst-empty: empty round-trip")
 }
 
-func testCstWidthMatchesText(): Unit {
+test "cst width matches text" {
   val src = "package P\nfunc f(): Unit { }\n"
   val pr = parse(src)
   assertEqualInt(pr.cst.width, src.length, "cst-width: width equals source length")
 }
 
-func testRedRootOffsets(): Unit {
+test "red root offsets" {
   // Red-tree wrapper: the root sits at offset 0, and every child's
   // offset is the running sum of its preceding siblings' widths.
   val src = "package P\nimport Std.Core\n"
@@ -598,19 +600,19 @@ func countKind(n: in GreenNode, target: in SyntaxKind): Int {
   hit
 }
 
-func testCstHasSkBlockInsideFunc(): Unit {
+test "cst has sk block inside func" {
   val pr = parse("package P\nfunc f(): Unit { val a = 1 }\n")
   val n = countKind(pr.cst, SkBlock)
   assertTrue(n >= 1, "CST: at least one SkBlock inside func")
 }
 
-func testCstHasSkStatementInsideFunc(): Unit {
+test "cst has sk statement inside func" {
   val pr = parse("package P\nfunc f(): Unit { val a = 1; val b = 2 }\n")
   val n = countKind(pr.cst, SkStatement)
   assertTrue(n >= 2, "CST: each statement gets its own SkStatement node")
 }
 
-func testCstHasSkExprInsideStatement(): Unit {
+test "cst has sk expr inside statement" {
   // `parseExpr` is the wrapper-bearing entry — sub-precedence
   // helpers (`parseImpliesExpr`, `parseAddExpr`, etc.) don't re-enter
   // it, so a single binary expression like `1 + 2` produces only one
@@ -625,7 +627,7 @@ func testCstHasSkExprInsideStatement(): Unit {
   assertTrue(n >= 3, "CST: SkExpr nests across paren / sub-expr boundaries")
 }
 
-func testCstHasSkContractClause(): Unit {
+test "cst has sk contract clause" {
   val src = "package P\nfunc divide(x: in Int, y: in Int): Int\n" +
     "  requires: y != 0\n  ensures: result * y == x\n  { x / y }\n"
   val pr = parse(src)
@@ -633,13 +635,13 @@ func testCstHasSkContractClause(): Unit {
   assertTrue(n == 2, "CST: two contract clauses (requires + ensures)")
 }
 
-func testCstNoSkContractClauseWhenAbsent(): Unit {
+test "cst no sk contract clause when absent" {
   val pr = parse("package P\nfunc f(): Int { 0 }\n")
   val n = countKind(pr.cst, SkContractClause)
   assertEqualInt(n, 0, "CST: no SkContractClause node when no clauses")
 }
 
-func testCstShapeIsLossless(): Unit {
+test "cst shape is lossless" {
   // Per-expression / per-statement granularity must keep the green
   // tree's lossless guarantee — `nodeSourceText` reproduces the
   // input byte-for-byte (modulo CR/LF normalisation).
@@ -654,7 +656,7 @@ func testCstShapeIsLossless(): Unit {
 // the synthetic token point at the start of the file.  The fix routes
 // the out-of-bounds peeks through `syntheticEofSpan`, anchored at the
 // real EOF's end position.
-func testPeekPastEofUsesSourceEnd(): Unit {
+test "peek past eof uses source end" {
   val src = "package P\n"
   val lr = lex(src)
   var st = makeParseState(lr.tokens, lr.diagnostics)
@@ -678,7 +680,7 @@ func testPeekPastEofUsesSourceEnd(): Unit {
 // Long.MinValue and is well-formed.  Verifies both the cancellation
 // AND that an unrelated `9223372036854775808` in the same source
 // keeps its diagnostic.
-func testNegationCancelsMinValueAbsDiagnostic(): Unit {
+test "negation cancels min value abs diagnostic" {
   val src = "package P\nfunc f(): Long { -9223372036854775808 }\n"
   val pr = parse(src)
   var sawL0010 = false
@@ -692,7 +694,7 @@ func testNegationCancelsMinValueAbsDiagnostic(): Unit {
   assertTrue(not sawL0010, "-9223372036854775808: L0010 cancelled by PreNeg wrapper")
 }
 
-func testBareMinValueAbsKeepsDiagnostic(): Unit {
+test "bare min value abs keeps diagnostic" {
   val src = "package P\nfunc f(): Long { 9223372036854775808 }\n"
   val pr = parse(src)
   var sawL0010 = false
@@ -711,7 +713,7 @@ func testBareMinValueAbsKeepsDiagnostic(): Unit {
 // then surfaces a targeted P0020 pointing at `//!` instead of the bare
 // "expected 'package'" message.  Without this assertion, a future refactor
 // renaming `TDocComment` could silently revert the improved message.
-func testDocCommentBeforePackageDiagnostic(): Unit {
+test "doc comment before package diagnostic" {
   val src = "/// stray doc\npackage Foo\n"
   val pr = parse(src)
   var sawTargeted = false
@@ -726,7 +728,7 @@ func testDocCommentBeforePackageDiagnostic(): Unit {
   assertTrue(sawTargeted, "P0020 for '///' before package mentions '//!' module-doc form")
 }
 
-func testPeekAtNegativeReturnsSyntheticEof(): Unit {
+test "peek at negative returns synthetic eof" {
   // `peekAt(st, k)` with k that places `pos + k` outside the token
   // window must also return the source-end-anchored synthetic EOF
   // rather than a 0:0 span.
@@ -736,58 +738,4 @@ func testPeekAtNegativeReturnsSyntheticEof(): Unit {
   val sp = peekAt(st, -1).span
   val realEof = lr.tokens[lr.tokens.count - 1].span
   assertTrue(sp.startPos.offset == realEof.endPos.offset, "peekAt(-1): span anchored at real EOF, not 0")
-}
-
-func main(): Unit {
-  testEmptySource()
-  testPackageDecl()
-  testImport()
-  testFuncDecl()
-  testIfStmtDoesNotGlueOperator()
-  testMatchStmtDoesNotGlueOperator()
-  testValueIfStillSingleExpr()
-  testRecordDecl()
-  testMutableRecordField()
-  testImmutableRecordField()
-  testPubMutableRecordField()
-  testUnionDecl()
-  testDistinctTypeDecl()
-  testTypeAliasDecl()
-  testValDecl()
-  testMultipleItems()
-  testFuncWithContracts()
-  testEnumDecl()
-  testInterfaceDecl()
-  testPubVisibility()
-  testAnnotation()
-  testMatchExpr()
-  testIfExpr()
-  testGenericFunc()
-  testConfigBlock()
-  testConfigBlockMultipleFields()
-  testConfigAsParamName()
-  testContextualKeywordsAsIdentifiers()
-  testContextualKeywordsStillKeywords()
-  testReservedKeywordAsIdentifierDiagnostic()
-  testAspectBlock()
-  testAspectMatchesNameIn()
-  testAspectAsParamName()
-  testCstRootKind()
-  testCstLossless()
-  testCstShape()
-  testCstEmptySourceLossless()
-  testCstWidthMatchesText()
-  testRedRootOffsets()
-  testCstHasSkBlockInsideFunc()
-  testCstHasSkStatementInsideFunc()
-  testCstHasSkExprInsideStatement()
-  testCstHasSkContractClause()
-  testCstNoSkContractClauseWhenAbsent()
-  testCstShapeIsLossless()
-  testPeekPastEofUsesSourceEnd()
-  testPeekAtNegativeReturnsSyntheticEof()
-  testNegationCancelsMinValueAbsDiagnostic()
-  testBareMinValueAbsKeepsDiagnostic()
-  testDocCommentBeforePackageDiagnostic()
-  println("parser self-test: ok")
 }

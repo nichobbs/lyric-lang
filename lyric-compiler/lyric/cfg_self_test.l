@@ -1,7 +1,7 @@
 //! cfg_self_test.l — exercises the self-hosted `Lyric.Cfg` feature-erasure
-//! pass against parsed `Lyric.Parser` source files.  Compiled and executed
-//! by SelfHostedCfgTests.fs.  Exit 0 + "ok" in stdout means every
-//! assertion held.
+//! pass against parsed `Lyric.Parser` source files.  Run in CI via native
+//! `lyric test` (no F# runner shim).
+@test_module
 package Lyric.Cfg.SelfTest
 
 import Std.Core
@@ -56,7 +56,7 @@ func diagCount(diags: in List[Diagnostic], code: in String): Int {
 // §2. Tests
 // ─────────────────────────────────────────────────────────────────────────────
 // No @cfg annotations → no erasure, no diagnostics.
-func testNoAnnotations(): Unit {
+test "no annotations" {
   val src = "package P\n" + "pub func a(): Int { 1 }\n" + "pub func b(): Int { 2 }\n"
   val sf = parseOk(src)
   val res = applyCfgErasure(emptyFeatures(), emptyFeatures(), sf)
@@ -65,7 +65,7 @@ func testNoAnnotations(): Unit {
 }
 
 // `@cfg(feature = "X")` where X is NOT in active set → item is erased.
-func testInactiveFeatureErases(): Unit {
+test "inactive feature erases" {
   val src = "package P\n" + "@cfg(feature = \"experimental\")\n" + "pub func gated(): Int { 1 }\n" +
     "pub func ungated(): Int { 2 }\n"
   val sf = parseOk(src)
@@ -74,7 +74,7 @@ func testInactiveFeatureErases(): Unit {
 }
 
 // `@cfg(feature = "X")` where X IS in active set → item is kept.
-func testActiveFeatureKept(): Unit {
+test "active feature kept" {
   val src = "package P\n" + "@cfg(feature = \"experimental\")\n" + "pub func gated(): Int { 1 }\n"
   val sf = parseOk(src)
   val res = applyCfgErasure(singletonList("experimental"), emptyFeatures(), sf)
@@ -82,7 +82,7 @@ func testActiveFeatureKept(): Unit {
 }
 
 // Two `@cfg` on the same item AND together: erased unless ALL features active.
-func testAndSemantics(): Unit {
+test "and semantics" {
   val src = "package P\n" + "@cfg(feature = \"alpha\")\n" + "@cfg(feature = \"beta\")\n" +
     "pub func gated(): Int { 1 }\n" +
     "pub func ungated(): Int { 2 }\n"
@@ -96,7 +96,7 @@ func testAndSemantics(): Unit {
 }
 
 // F0012 fires for malformed predicates (literal arg, not `feature = "X"`).
-func testF0012Malformed(): Unit {
+test "f0012 malformed" {
   val src = "package P\n" + "@cfg(\"experimental\")\n" + "pub func gated(): Int { 1 }\n"
   val sf = parseOk(src)
   val res = applyCfgErasure(emptyFeatures(), emptyFeatures(), sf)
@@ -105,7 +105,7 @@ func testF0012Malformed(): Unit {
 
 // F0013 fires for a feature reference absent from a NON-EMPTY declared set
 // (typo guard).
-func testF0013Typo(): Unit {
+test "f0013 typo" {
   val src = "package P\n" + "@cfg(feature = \"experimntal\")\n" + "pub func gated(): Int { 1 }\n"
   val sf = parseOk(src)
   // Declared has the correctly-spelled feature; the @cfg references the
@@ -116,7 +116,7 @@ func testF0013Typo(): Unit {
 
 // F0013 is SUPPRESSED when the declared set is empty (no manifest [features]
 // table — the typo guard is opt-in via the declared set).
-func testF0013SuppressedWhenDeclaredEmpty(): Unit {
+test "f0013 suppressed when declared empty" {
   val src = "package P\n" + "@cfg(feature = \"anything\")\n" + "pub func gated(): Int { 1 }\n"
   val sf = parseOk(src)
   val res = applyCfgErasure(emptyFeatures(), emptyFeatures(), sf)
@@ -125,7 +125,7 @@ func testF0013SuppressedWhenDeclaredEmpty(): Unit {
 
 // File-level `@cfg` (annotation above the `package` decl) erases every
 // item in the file when the feature is inactive.
-func testFileLevelErasesEntireFile(): Unit {
+test "file level erases entire file" {
   val src = "@cfg(feature = \"never\")\n" + "package P\n" + "pub func a(): Int { 1 }\n" + "pub func b(): Int { 2 }\n"
   val sf = parseOk(src)
   val res = applyCfgErasure(emptyFeatures(), emptyFeatures(), sf)
@@ -134,7 +134,7 @@ func testFileLevelErasesEntireFile(): Unit {
 }
 
 // File-level `@cfg` whose feature IS active keeps the file intact.
-func testFileLevelKeepsWhenActive(): Unit {
+test "file level keeps when active" {
   val src = "@cfg(feature = \"always\")\n" + "package P\n" + "pub func a(): Int { 1 }\n"
   val sf = parseOk(src)
   val res = applyCfgErasure(singletonList("always"), emptyFeatures(), sf)
@@ -159,7 +159,7 @@ func testFileLevelKeepsWhenActive(): Unit {
 //     assertion is the real teeth: it fails if the dotnet 3-arg overload is
 //     silently kept (the inactive overload leaking back in), which is the
 //     precise failure mode #1472 describes.
-func testCfgOverloadArityResolution(): Unit {
+test "cfg overload arity resolution" {
   val src = "package P\n" + "@cfg(feature = \"jvm\")\n" + "pub func combine(a: in Int, b: in Int): Int { a + b }\n" +
     "@cfg(feature = \"dotnet\")\n" +
     "pub func combine(a: in Int, b: in Int, c: in Int): Int { a + b + c }\n" +
@@ -177,11 +177,7 @@ func testCfgOverloadArityResolution(): Unit {
     0,
     "cfg_overload_arity: dotnet-active 3-arg call resolves with no T0042"
   )
-  assertEqualInt(
-    dotnetCheck.diagnostics.count,
-    0,
-    "cfg_overload_arity: dotnet-active check produces zero diagnostics"
-  )
+  assertEqualInt(dotnetCheck.diagnostics.count, 0, "cfg_overload_arity: dotnet-active check produces zero diagnostics")
 
   // jvm active → only the 2-arg overload survives, so the 3-arg call in useIt
   // is now a genuine arity error — proving the dotnet overload was erased.
@@ -199,17 +195,3 @@ func testCfgOverloadArityResolution(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Driver
 // ─────────────────────────────────────────────────────────────────────────────
-func main(): Int {
-  testNoAnnotations()
-  testInactiveFeatureErases()
-  testActiveFeatureKept()
-  testAndSemantics()
-  testF0012Malformed()
-  testF0013Typo()
-  testF0013SuppressedWhenDeclaredEmpty()
-  testFileLevelErasesEntireFile()
-  testFileLevelKeepsWhenActive()
-  testCfgOverloadArityResolution()
-  println("cfg-self-test: ok")
-  return 0
-}

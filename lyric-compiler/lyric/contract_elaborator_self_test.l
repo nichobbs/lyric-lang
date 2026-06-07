@@ -1,7 +1,7 @@
 //! contract_elaborator_self_test.l — exercises the self-hosted
-//! `Lyric.ContractElaborator` library.  Compiled and executed by
-//! SelfHostedContractElaboratorTests.fs.  Exit 0 + "ok" in stdout
-//! means every assertion held.
+//! `Lyric.ContractElaborator` library.  Run in CI via native `lyric test`
+//! (no F# runner shim).
+@test_module
 package Lyric.ContractElaboratorSelfTest
 
 import Std.Core
@@ -134,7 +134,7 @@ func isTrailingPathSExpr(s: in Statement, expected: in String): Bool {
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Identity: empty contracts → identity-shaped output.
 // ─────────────────────────────────────────────────────────────────────────────
-func testNoContractsPassthrough(): Unit {
+test "no contracts passthrough" {
   val src = "package P\nfunc f(): Int { 1 }\n"
   val file = parseAndElaborate(src)
   val fn = firstFunction(file, "f")
@@ -146,7 +146,7 @@ func testNoContractsPassthrough(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Single `requires:` clause.
 // ─────────────────────────────────────────────────────────────────────────────
-func testSingleRequiresPrepended(): Unit {
+test "single requires prepended" {
   val src = "package P\nfunc f(x: in Int): Int\n  requires: x > 0\n{ x + 1 }\n"
   val file = parseAndElaborate(src)
   val fn = firstFunction(file, "f")
@@ -161,7 +161,7 @@ func testSingleRequiresPrepended(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Multiple `requires:` clauses preserved in source order.
 // ─────────────────────────────────────────────────────────────────────────────
-func testMultipleRequires(): Unit {
+test "multiple requires" {
   val src = "package P\n" + "func f(x: in Int, y: in Int): Int\n" + "  requires: x > 0\n" + "  requires: y > 0\n" +
     "  requires: x + y < 100\n" +
     "{ x + y }\n"
@@ -178,7 +178,7 @@ func testMultipleRequires(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Single `ensures:` rewrites the trailing SExpr.
 // ─────────────────────────────────────────────────────────────────────────────
-func testSingleEnsuresTrailing(): Unit {
+test "single ensures trailing" {
   val src = "package P\n" + "func f(): Int\n" + "  ensures: result >= 0\n" + "{ 7 }\n"
   val file = parseAndElaborate(src)
   val fn = firstFunction(file, "f")
@@ -194,7 +194,7 @@ func testSingleEnsuresTrailing(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Explicit `return e` is rewritten to bind + assert + return-name.
 // ─────────────────────────────────────────────────────────────────────────────
-func testEnsuresWithExplicitReturn(): Unit {
+test "ensures with explicit return" {
   val src = "package P\n" + "func f(): Int\n" + "  ensures: result == 5\n" + "{\n" + "  return 5\n" + "}\n"
   val file = parseAndElaborate(src)
   val fn = firstFunction(file, "f")
@@ -209,7 +209,7 @@ func testEnsuresWithExplicitReturn(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. `return` (no value) keeps the bare return but prepends ensures.
 // ─────────────────────────────────────────────────────────────────────────────
-func testEnsuresWithBareReturn(): Unit {
+test "ensures with bare return" {
   val src = "package P\n" + "func f(): Unit\n" + "  ensures: true\n" + "{\n" + "  return\n" + "}\n"
   val file = parseAndElaborate(src)
   val fn = firstFunction(file, "f")
@@ -223,7 +223,7 @@ func testEnsuresWithBareReturn(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §7. requires + ensures combined on the same function.
 // ─────────────────────────────────────────────────────────────────────────────
-func testRequiresAndEnsures(): Unit {
+test "requires and ensures" {
   val src = "package P\n" + "func f(x: in Int): Int\n" + "  requires: x > 0\n" + "  ensures:  result > 0\n" +
     "{ x + 1 }\n"
   val file = parseAndElaborate(src)
@@ -243,7 +243,7 @@ func testRequiresAndEnsures(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §8. Multiple ensures clauses generate one assert each.
 // ─────────────────────────────────────────────────────────────────────────────
-func testMultipleEnsures(): Unit {
+test "multiple ensures" {
   val src = "package P\n" + "func f(): Int\n" + "  ensures: result >= 0\n" + "  ensures: result < 100\n" + "{ 42 }\n"
   val file = parseAndElaborate(src)
   val fn = firstFunction(file, "f")
@@ -259,7 +259,7 @@ func testMultipleEnsures(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §9. @axiom functions are skipped (no body to elaborate).
 // ─────────────────────────────────────────────────────────────────────────────
-func testAxiomSkipped(): Unit {
+test "axiom skipped" {
   val src = "@proof_required\n" + "package P\n" + "@axiom\n" + "func ax(p: in Bool): Unit\n" + "  requires: p\n" + "\n"
   val file = parseAndElaborate(src)
   val fn = firstFunction(file, "ax")
@@ -278,7 +278,7 @@ func testAxiomSkipped(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §10. Functions without a body (signatures) pass through unchanged.
 // ─────────────────────────────────────────────────────────────────────────────
-func testSignaturePassthrough(): Unit {
+test "signature passthrough" {
   val src = "package P\n" + "func f(x: in Int): Int\n" + "  requires: x > 0\n" + "\n"
   val file = parseAndElaborate(src)
   val fn = firstFunction(file, "f")
@@ -295,7 +295,7 @@ func testSignaturePassthrough(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §11. Original `contracts` list is preserved on the elaborated decl.
 // ─────────────────────────────────────────────────────────────────────────────
-func testContractsListPreserved(): Unit {
+test "contracts list preserved" {
   val src = "package P\n" + "func f(x: in Int): Int\n" + "  requires: x > 0\n" + "  ensures: result > 0\n" + "{ x }\n"
   val file = parseAndElaborate(src)
   val fn = firstFunction(file, "f")
@@ -324,7 +324,7 @@ func testContractsListPreserved(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §12. Synthetic names are unique across multiple returns in one body.
 // ─────────────────────────────────────────────────────────────────────────────
-func testSyntheticNamesUnique(): Unit {
+test "synthetic names unique" {
   val src = "package P\n" + "func f(x: in Int): Int\n" + "  ensures: result > 0\n" + "{\n" + "  return 1\n" +
     "  return 2\n" +
     "}\n"
@@ -342,7 +342,7 @@ func testSyntheticNamesUnique(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §13. File-level identity preserved (package decl, imports, items count).
 // ─────────────────────────────────────────────────────────────────────────────
-func testFileLevelIdentity(): Unit {
+test "file level identity" {
   val src = "package P\n" + "import Std.Core\n" + "func a(): Int { 1 }\n" + "func b(): Int\n" + "  requires: true\n" +
     "{ 2 }\n"
   val file = parseAndElaborate(src)
@@ -355,7 +355,7 @@ func testFileLevelIdentity(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §14. Non-function items are passed through unchanged.
 // ─────────────────────────────────────────────────────────────────────────────
-func testNonFuncItemsPassthrough(): Unit {
+test "non func items passthrough" {
   val src = "package P\n" + "pub record Pair { x: Int, y: Int }\n" + "func f(): Int\n" + "  requires: true\n" +
     "{ 1 }\n"
   val file = parseAndElaborate(src)
@@ -379,7 +379,7 @@ func testNonFuncItemsPassthrough(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // A return nested inside an if-branch should be elaborated with ensures
 // checks, matching the behaviour for top-level returns.
-func testNestedReturnInIf(): Unit {
+test "nested return in if" {
   val src = "package T\n" + "func clamp(x: Int): Int\n" + "  ensures: result >= 0\n" + "{\n" +
     "  if x < 0 { return 0 }\n" +
     "  x\n" +
@@ -458,7 +458,7 @@ func bodyContainsAssertCall(file: in SourceFile, name: in String): Bool {
   false
 }
 
-func testNestedReturnInMatch(): Unit {
+test "nested return in match" {
   val src = "package T\n" + "func absV(x: Int): Int\n" + "  ensures: result >= 0\n" + "{\n" + "  match x {\n" +
     "    case 0 -> { return 0 }\n" +
     "    case _ -> x\n" +
@@ -473,7 +473,7 @@ func testNestedReturnInMatch(): Unit {
   assertTrue(n >= 2, "nested-return-match: trailing return elaborated (n >= 2)")
 }
 
-func testNestedReturnInWhile(): Unit {
+test "nested return in while" {
   val src = "package T\n" + "func find(): Int\n" + "  ensures: result >= 0\n" + "{\n" + "  var i = 0\n" +
     "  while i < 10 { if i == 5 { return i }; i = i + 1 }\n" +
     "  -1\n" +
@@ -485,7 +485,7 @@ func testNestedReturnInWhile(): Unit {
   assertTrue(bodyContainsAssertCall(file, "find"), "nested-return-while: ensures assert lowered into the body")
 }
 
-func testNestedReturnInTry(): Unit {
+test "nested return in try" {
   // Try-catch nested-return rewrite is deferred per the elaborator's
   // header comment (only top-level + EIf nested returns are rewritten
   // today; #341's full coverage remains in flight).  This test pins
@@ -505,7 +505,7 @@ func testNestedReturnInTry(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // Loop invariant lowering (docs/41 §9 Band 4).
 // ─────────────────────────────────────────────────────────────────────────────
-func testWhileInvariantLowered(): Unit {
+test "while invariant lowered" {
   val src = "package P\n" + "func f(): Unit {\n" + "  var i = 0\n" + "  while i < 10\n" + "    invariant: i >= 0\n" +
     "  {\n" +
     "    i = i + 1\n" +
@@ -533,7 +533,7 @@ func testWhileInvariantLowered(): Unit {
   assertTrue(found, "while-invariant: SWhile node found in body")
 }
 
-func testForInvariantLowered(): Unit {
+test "for invariant lowered" {
   val src = "package P\n" + "import Std.Collections\n" + "func f(): Unit {\n" + "  val xs: List[Int] = newList()\n" +
     "  for x in xs\n" +
     "    invariant: true\n" +
@@ -566,7 +566,7 @@ func testForInvariantLowered(): Unit {
 // so the early-return path in elaborateFunction must still detect the nested
 // SInvariant via stmtHasInvariant's SExpr case (otherwise the deep walk skips
 // and the assert is silently dropped).
-func testIfNestedWhileInvariantLowered(): Unit {
+test "if nested while invariant lowered" {
   val src = "package P\n" + "func f(x: Int): Unit {\n" + "  if x > 0 {\n" + "    var i = 0\n" + "    while i < 10\n" +
     "      invariant: i >= 0\n" +
     "    {\n" +
@@ -635,7 +635,7 @@ func entryBodyBlock(ed: in EntryDecl): Block {
   }
 }
 
-func testProtectedEntryRequiresLowered(): Unit {
+test "protected entry requires lowered" {
   val src = "package P\n" + "protected type Q {\n" + "  var count: Int\n" + "  entry add(x: in Int): Int\n" +
     "    requires: x > 0\n" +
     "  {\n" +
@@ -653,7 +653,7 @@ func testProtectedEntryRequiresLowered(): Unit {
   assertEqualInt(ed.contracts.count, 1, "protected-requires: original contracts preserved")
 }
 
-func testProtectedInvariantAppendedToEntries(): Unit {
+test "protected invariant appended to entries" {
   val src = "package P\n" + "protected type Q {\n" + "  var count: Int\n" + "  invariant: count >= 0\n" +
     "  entry add(x: in Int): Int\n" +
     "    requires: x > 0\n" +
@@ -685,29 +685,3 @@ func testProtectedInvariantAppendedToEntries(): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // Test runner.
 // ─────────────────────────────────────────────────────────────────────────────
-func main(): Unit {
-  testNoContractsPassthrough()
-  testSingleRequiresPrepended()
-  testMultipleRequires()
-  testSingleEnsuresTrailing()
-  testEnsuresWithExplicitReturn()
-  testEnsuresWithBareReturn()
-  testRequiresAndEnsures()
-  testMultipleEnsures()
-  testAxiomSkipped()
-  testSignaturePassthrough()
-  testContractsListPreserved()
-  testSyntheticNamesUnique()
-  testFileLevelIdentity()
-  testNonFuncItemsPassthrough()
-  testNestedReturnInIf()
-  testNestedReturnInMatch()
-  testNestedReturnInWhile()
-  testNestedReturnInTry()
-  testWhileInvariantLowered()
-  testForInvariantLowered()
-  testIfNestedWhileInvariantLowered()
-  testProtectedEntryRequiresLowered()
-  testProtectedInvariantAppendedToEntries()
-  println("contract-elaborator self-test: ok")
-}

@@ -1,8 +1,6 @@
 //! fmt_self_test.l — exercises the self-hosted Lyric.Fmt library.
-//! Compiled and executed by the F# Expecto runner at
-//! compiler/tests/Lyric.Emitter.Tests/SelfHostedFmtTests.fs.  Each
-//! in-program assertion panics on mismatch; exit 0 + an "ok" line in
-//! stdout means every check held.
+//! Run in CI via native `lyric test` (no F# runner shim).
+@test_module
 package Lyric.FmtSelfTest
 
 import Std.Core
@@ -12,13 +10,13 @@ import Std.String as Str
 import Lyric.Parser
 import Lyric.Fmt
 
-func testFormatPackageOnly(): Unit {
+test "format package only" {
   val pr = parse("package Foo.Bar\n")
   val acc = format(pr)
   assertEqual(acc, "package Foo.Bar\n", "format: package-only")
 }
 
-func testFormatPackageAndImports(): Unit {
+test "format package and imports" {
   val src = "package P\nimport Std.Core\nimport Std.Collections\n"
   val pr = parse(src)
   val acc = format(pr)
@@ -26,7 +24,7 @@ func testFormatPackageAndImports(): Unit {
   assertEqual(acc, expected, "format: package + imports")
 }
 
-func testFormatTypeAlias(): Unit {
+test "format type alias" {
   val src = "package P\nalias Name = String\n"
   val pr = parse(src)
   val acc = format(pr)
@@ -34,7 +32,7 @@ func testFormatTypeAlias(): Unit {
   assertEqual(acc, expected, "format: type alias")
 }
 
-func testFormatRecord(): Unit {
+test "format record" {
   val src = "package P\nrecord Point { x: Int; y: Int }\n"
   val pr = parse(src)
   val acc = format(pr)
@@ -46,7 +44,7 @@ func testFormatRecord(): Unit {
 
 // A `var`-prefixed mutable record field must survive a format
 // round-trip with its `var` marker intact.
-func testFormatMutableRecordField(): Unit {
+test "format mutable record field" {
   val src = "package P\nrecord Counter {\n  var count: Int\n  step: Int\n}\n"
   val pr = parse(src)
   val acc = format(pr)
@@ -56,7 +54,7 @@ func testFormatMutableRecordField(): Unit {
   assertTrue(isFormatted(acc, pr), "format: var field idempotent")
 }
 
-func testFormatFunction(): Unit {
+test "format function" {
   val src = "package P\nfunc add(x: in Int, y: in Int): Int { x + y }\n"
   val pr = parse(src)
   val acc = format(pr)
@@ -64,7 +62,7 @@ func testFormatFunction(): Unit {
   assertTrue(Str.contains(acc, "x + y"), "format: func body")
 }
 
-func testParamAnnotationRoundTrips(): Unit {
+test "param annotation round trips" {
   // A parameter may carry leading annotations (`@body req: in T`), consumed
   // by libraries such as lyric-web.  The parser records them on `Param`; the
   // formatter renders them inline before the param name (#2454).
@@ -76,7 +74,7 @@ func testParamAnnotationRoundTrips(): Unit {
   assertTrue(Str.contains(acc, "authToken: String"), "param annotation: un-annotated param unchanged")
 }
 
-func testParamModeRoundTrips(): Unit {
+test "param mode round trips" {
   // A param with no mode keyword (`x: Int`) is sugar for `in`, but the
   // formatter must not synthesise an `in` the author never wrote.
   // Explicit `in`/`out`/`inout` are preserved verbatim.
@@ -90,14 +88,14 @@ func testParamModeRoundTrips(): Unit {
   assertTrue(Str.contains(acc, "z: out Int"), "param mode: explicit `out` preserved")
 }
 
-func testIsFormattedRoundTrip(): Unit {
+test "is formatted round trip" {
   val src = "package P\n\nalias Name = String\n"
   val pr = parse(src)
   // After parsing + formatting, isFormatted should be true.
   assertTrue(isFormatted(format(pr), pr), "format: idempotent")
 }
 
-func testCommentPreservationBetweenItems(): Unit {
+test "comment preservation between items" {
   // Place a non-doc line comment between two items.  The F# formatter
   // would drop it; the self-hosted formatter must keep it because it
   // walks the CST instead of the AST alone.
@@ -110,21 +108,21 @@ func testCommentPreservationBetweenItems(): Unit {
   assertTrue(Str.contains(acc, "alias B = String"), "comments: second item still emitted")
 }
 
-func testCommentPreservationBlockComment(): Unit {
+test "comment preservation block comment" {
   val src = "package P\n\n/* block before */\nalias A = Int\n"
   val pr = parse(src)
   val acc = format(pr)
   assertTrue(Str.contains(acc, "/* block before */"), "comments: block comment preserved before item")
 }
 
-func testCommentPreservationTrailing(): Unit {
+test "comment preservation trailing" {
   val src = "package P\n\nalias A = Int\n\n// trailing after last\n"
   val pr = parse(src)
   val acc = format(pr)
   assertTrue(Str.contains(acc, "// trailing after last"), "comments: trailing comment preserved")
 }
 
-func testEndOfLineCommentStaysInline(): Unit {
+test "end of line comment stays inline" {
   // An end-of-line comment (on the same source line as the code) must be
   // re-attached to that line, not relocated to a standalone line before
   // the next item.  Covers record fields, statements, and match arms.
@@ -137,7 +135,7 @@ func testEndOfLineCommentStaysInline(): Unit {
   assertTrue(Str.contains(acc, "case 0 -> 0  // none"), "trailing: match-arm comment stays inline")
 }
 
-func testTrailingCommentAlignmentPreserved(): Unit {
+test "trailing comment alignment preserved" {
   // Hand-aligned trailing-comment columns are preserved: the formatter
   // re-emits the exact source gap before each `//` rather than collapsing
   // to a single two-space gap.  The code renders at its source width, so
@@ -150,7 +148,7 @@ func testTrailingCommentAlignmentPreserved(): Unit {
   assertTrue(Str.contains(acc, "g(w, 1)       // b"), "alignment: wider gap preserved (columns stay aligned)")
 }
 
-func testSectionBannerStaysBetweenItems(): Unit {
+test "section banner stays between items" {
   // A section-banner comment between two top-level items must stay between
   // them, not be pulled inside the preceding item's `}`.  Regression guard
   // for the item-span overshoot (`endSpan` was the next token past the
@@ -165,7 +163,7 @@ func testSectionBannerStaysBetweenItems(): Unit {
   assertTrue(not Str.contains(acc, "  // --- Section ---"), "section banner: not indented into A's body")
 }
 
-func testLastMemberTrailingCommentStaysInline(): Unit {
+test "last member trailing comment stays inline" {
   // A trailing comment on the LAST member of a record / union body must
   // stay on the member's line; previously the closing-brace tail used
   // `popCommentsBefore` (leading) and split it onto its own line.
@@ -177,7 +175,7 @@ func testLastMemberTrailingCommentStaysInline(): Unit {
   assertTrue(Str.contains(acc, "case Foo  // a foo"), "last union case comment stays inline")
 }
 
-func testStatementSeparatorBeforeBracket(): Unit {
+test "statement separator before bracket" {
   // Two statements separated by `;` where the second begins with `(`
   // (here a unit expression).  The lexer synthesises no STMT_END inside
   // `{ }`, so dropping the `;` would let re-parse merge `g(x)` and `()`
@@ -190,14 +188,14 @@ func testStatementSeparatorBeforeBracket(): Unit {
   assertTrue(not Str.contains(acc, "g(x)()"), "stmt separator: statements not merged into a call")
 }
 
-func testFormatPubFunc(): Unit {
+test "format pub func" {
   val src = "package P\npub func foo(): Unit { }\n"
   val pr = parse(src)
   val acc = format(pr)
   assertTrue(Str.contains(acc, "pub func foo(): Unit"), "format: pub visibility on func")
 }
 
-func testFormatUnion(): Unit {
+test "format union" {
   val src = "package P\nunion Color { case Red; case Green; case Blue }\n"
   val pr = parse(src)
   val acc = format(pr)
@@ -207,7 +205,7 @@ func testFormatUnion(): Unit {
   assertTrue(Str.contains(acc, "case Blue"), "format: case Blue")
 }
 
-func testFormatEnum(): Unit {
+test "format enum" {
   val src = "package P\nenum Dir { case North; case South; case East; case West }\n"
   val pr = parse(src)
   val acc = format(pr)
@@ -218,14 +216,14 @@ func testFormatEnum(): Unit {
 // `const` is not yet wired through the self-hosted parser; the
 // formatter renders it via `IConst` whenever the parser does start
 // emitting it.  Skipped for now.
-func testFormatVal(): Unit {
+test "format val" {
   val src = "package P\nval pi: Double = 3.14\n"
   val pr = parse(src)
   val acc = format(pr)
   assertTrue(Str.contains(acc, "val pi: Double = 3.14"), "format: val")
 }
 
-func testNumericLiteralSpellingRoundTrips(): Unit {
+test "numeric literal spelling round trips" {
   // Numeric literals keep their verbatim source spelling rather than
   // canonicalising the parsed value: `0xFF` must not become `255`,
   // `100_000` must keep its underscore, the `i64` suffix must survive,
@@ -241,14 +239,14 @@ func testNumericLiteralSpellingRoundTrips(): Unit {
   assertTrue(not Str.contains(acc, "255"), "numeric: hex not canonicalised")
 }
 
-func testFormatModuleDoc(): Unit {
+test "format module doc" {
   val src = "//! Module-level doc.\npackage P\n"
   val pr = parse(src)
   val acc = format(pr)
   assertTrue(Str.contains(acc, "//! Module-level doc."), "format: module doc preserved")
 }
 
-func testModuleHeaderNestedCommentPreserved(): Unit {
+test "module header nested comment preserved" {
   // A plain `//` file header is auto-fixed to `//!`.  A header line whose
   // text contains a nested `//` (a code example like `//   // note`) must
   // survive: the loss guard normalises doc-comment payloads without
@@ -261,7 +259,7 @@ func testModuleHeaderNestedCommentPreserved(): Unit {
   assertTrue(Str.contains(acc, "//!   // run the thing"), "header nested comment: preserved as //! line")
 }
 
-func testOpaqueTypeAnnotationAndBodyComment(): Unit {
+test "opaque type annotation and body comment" {
   // `itemDoc` dispatches opaque types without the shared header, so the
   // leading annotation must be emitted by `opaqueDoc`; and a comment in an
   // (otherwise empty) opaque body must be popped before the closing brace.
@@ -273,7 +271,7 @@ func testOpaqueTypeAnnotationAndBodyComment(): Unit {
   assertTrue(Str.contains(acc, "// kernel-held handle"), "opaque type: body comment preserved")
 }
 
-func testInterfaceMethodDocAndContractPreserved(): Unit {
+test "interface method doc and contract preserved" {
   // A body-less interface method's `///` doc comment and contract clauses
   // are stored on the `FunctionSig` and must survive formatting (they were
   // dropped previously because `FunctionSig` had no doc-comment field and
@@ -287,7 +285,7 @@ func testInterfaceMethodDocAndContractPreserved(): Unit {
   assertTrue(Str.contains(acc, "requires: key.length > 0"), "interface method: contract preserved")
 }
 
-func testCommentInsideFunctionBody(): Unit {
+test "comment inside function body" {
   // Phase 5 §M5.3 stage 4 (D-progress-136): comments INSIDE a function
   // body must survive.  The block's harvested comments are popped at
   // each statement boundary and at the closing brace.
@@ -300,7 +298,7 @@ func testCommentInsideFunctionBody(): Unit {
   assertTrue(Str.contains(acc, "val y = x"), "internal: stmt 2 emitted")
 }
 
-func testCommentInsideRecordBody(): Unit {
+test "comment inside record body" {
   // Comments BETWEEN record fields must survive the record body walk.
   val src = "package P\nrecord Point {\n  x: Int\n  // y is the second axis\n  y: Int\n}\n"
   val pr = parse(src)
@@ -310,7 +308,7 @@ func testCommentInsideRecordBody(): Unit {
   assertTrue(Str.contains(acc, "y: Int"), "internal: second field emitted")
 }
 
-func testCommentInsideUnionBody(): Unit {
+test "comment inside union body" {
   // Comments between union cases.
   val src = "package P\nunion Color {\n  case Red\n  // primaries\n  case Green\n  case Blue\n}\n"
   val pr = parse(src)
@@ -318,7 +316,7 @@ func testCommentInsideUnionBody(): Unit {
   assertTrue(Str.contains(acc, "// primaries"), "internal: between-case comment preserved")
 }
 
-func testUnionCaseFieldTrailingCommentsPreserved(): Unit {
+test "union case field trailing comments preserved" {
   // Issue #2453: trailing `// note` comments on the individual fields of a
   // multi-field union case (the `MEHClause` case in
   // lyric-compiler/msil/lowering.l) were dropped because the union-case
@@ -341,7 +339,7 @@ func testUnionCaseFieldTrailingCommentsPreserved(): Unit {
   assertTrue(isFormatted(acc, parse(acc)), "union field comments: idempotent")
 }
 
-func testUnionCaseNoCommentsStaysInline(): Unit {
+test "union case no comments stays inline" {
   // Without interior trivia, a union case's fields stay on one line — the
   // multi-line split fires only to rescue comments.
   val src = "package P\n\nunion Pair {\n  case P(a: Int, b: Int)\n}\n"
@@ -349,7 +347,7 @@ func testUnionCaseNoCommentsStaysInline(): Unit {
   assertTrue(Str.contains(acc, "case P(a: Int, b: Int)"), "union no comments: fields stay inline")
 }
 
-func testCommentInsideEnumBody(): Unit {
+test "comment inside enum body" {
   // Comments between enum cases.
   val src = "package P\nenum Dir {\n  case North\n  // horizontal\n  case East\n  case West\n}\n"
   val pr = parse(src)
@@ -357,7 +355,7 @@ func testCommentInsideEnumBody(): Unit {
   assertTrue(Str.contains(acc, "// horizontal"), "internal: enum between-case comment preserved")
 }
 
-func testCommentInsideNestedBlock(): Unit {
+test "comment inside nested block" {
   // Comments inside a nested block (if-then-block).
   val src = "package P\nfunc f(x: in Int): Unit {\n  if x > 0 {\n    // positive branch\n    val y = x\n  }\n}\n"
   val pr = parse(src)
@@ -365,7 +363,7 @@ func testCommentInsideNestedBlock(): Unit {
   assertTrue(Str.contains(acc, "// positive branch"), "internal: nested-block comment preserved")
 }
 
-func testBlankLineInsideFunctionBody(): Unit {
+test "blank line inside function body" {
   // Phase 5 §M5.3 stage 5: a blank line between two statements inside
   // a function body must survive `lyric fmt`.
   val src = "package P\nfunc f(): Unit {\n  val a = 1\n\n  val b = 2\n}\n"
@@ -375,7 +373,7 @@ func testBlankLineInsideFunctionBody(): Unit {
   assertEqual(acc, expected, "blank: between stmts in func body")
 }
 
-func testBlankLineInsideRecordBody(): Unit {
+test "blank line inside record body" {
   val src = "package P\nrecord Point {\n  x: Int\n\n  y: Int\n}\n"
   val pr = parse(src)
   val acc = format(pr)
@@ -383,7 +381,7 @@ func testBlankLineInsideRecordBody(): Unit {
   assertEqual(acc, expected, "blank: between record fields")
 }
 
-func testBlankLinesBetweenCommentBlocks(): Unit {
+test "blank lines between comment blocks" {
   // Two comment groups separated by a blank line.  Both comments
   // survive AND the blank between them stays.
   val src = "package P\nfunc f(): Unit {\n  // group 1\n  val a = 1\n\n  // group 2\n  val b = 2\n}\n"
@@ -395,7 +393,7 @@ func testBlankLinesBetweenCommentBlocks(): Unit {
   assertTrue(Str.contains(acc, "val a = 1\n\n  // group 2"), "blank: blank line preserved between comment groups")
 }
 
-func testMultipleBlankLinesCollapseToOne(): Unit {
+test "multiple blank lines collapse to one" {
   // 3 consecutive newlines (= 2 blank lines in source) collapse to a
   // single blank line in canonical output.  Use exact-match
   // `assertEqual` rather than `Str.contains` so the assertion locks
@@ -407,7 +405,7 @@ func testMultipleBlankLinesCollapseToOne(): Unit {
   assertEqual(acc, expected, "blank: multiple-newline run collapses to one blank")
 }
 
-func testTrailingBlankBeforeClosingBrace(): Unit {
+test "trailing blank before closing brace" {
   // A blank line immediately before `}` should be suppressed — the
   // closing brace itself is the visual terminator, and a trailing
   // empty line in the body just looks unfinished.  This locks in the
@@ -424,7 +422,7 @@ func testTrailingBlankBeforeClosingBrace(): Unit {
   assertEqual(recOut, recExpected, "blank: trailing blank before record `}` suppressed")
 }
 
-func testCommentBeforeContractClause(): Unit {
+test "comment before contract clause" {
   // Phase 5 §M5.3 stage 7: a comment immediately before a contract
   // clause must survive — anchored at the clause's own start offset
   // via the new SkContractClause CST node (D-progress-142 scaffolding).
@@ -444,7 +442,7 @@ func testCommentBeforeContractClause(): Unit {
   assertTrue(Str.contains(acc, "ensures: result * y == x"), "contract: ensures clause emitted")
 }
 
-func testBlankLineBetweenContractClauses(): Unit {
+test "blank line between contract clauses" {
   // A blank line between two contract clauses survives via the
   // HiBlank trivia stream + popTriviaBefore at the clause boundary.
   val src = "package P\n" + "func f(x: in Int): Int\n" + "  requires: x > 0\n" + "\n" + "  ensures: result > 0\n" +
@@ -458,7 +456,7 @@ func testBlankLineBetweenContractClauses(): Unit {
   )
 }
 
-func testCommentBeforeWhereClause(): Unit {
+test "comment before where clause" {
   // Phase 5 §M5.3 stage 8: a comment immediately before a `where`
   // clause on a function signature must survive — anchored at the
   // where clause's start offset.
@@ -470,7 +468,7 @@ func testCommentBeforeWhereClause(): Unit {
   assertTrue(Str.contains(acc, "where T: Compare"), "where: where clause itself emitted")
 }
 
-func testCommentBetweenWhereAndContract(): Unit {
+test "comment between where and contract" {
   // The self-hosted parser expects `where` BEFORE contract clauses on
   // a function signature.  A comment sitting between the where clause
   // and the following contract clause anchors at the contract clause
@@ -485,7 +483,7 @@ func testCommentBetweenWhereAndContract(): Unit {
   assertTrue(Str.contains(acc, "requires: true"), "where+contract: requires emitted")
 }
 
-func testWhereThenContractRoundTrips(): Unit {
+test "where then contract round trips" {
   // Round-trip lock: the self-hosted parser accepts `where` only
   // before contract clauses, so the formatter must output them in
   // that order.  `format(format(parse(src))) == format(parse(src))`
@@ -505,7 +503,7 @@ func testWhereThenContractRoundTrips(): Unit {
   assertTrue(wIdx < rIdx, "round-trip: where appears before requires")
 }
 
-func testWidthDrivenLongCallBreaks(): Unit {
+test "width driven long call breaks" {
   // Phase 5 §M5.3 stage 9 (D-progress-145): a function call whose
   // inline rendering would exceed the 120-character line budget at
   // its current column gets broken into one-arg-per-line layout.
@@ -524,7 +522,7 @@ func testWidthDrivenLongCallBreaks(): Unit {
   assertTrue(Str.contains(acc, "  )\n"), "width: long call closes with `)` on its own indented line")
 }
 
-func testWidthDrivenLongCallIdempotent(): Unit {
+test "width driven long call idempotent" {
   // The width-driven multi-line layout must round-trip: format(format(x)) == format(x).
   val src = "package P\n" + "func go(a: in Int): Int {\n" +
     "  val r = anExtraordinarilyLongFunctionName(a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a, a)\n" +
@@ -535,7 +533,7 @@ func testWidthDrivenLongCallIdempotent(): Unit {
   assertEqual(twice, once, "width: long-call layout is idempotent")
 }
 
-func testCommentInsideCallArgs(): Unit {
+test "comment inside call args" {
   // A `// ...` comment between two call arguments anchors at the
   // following arg's start offset and renders inside the multi-line
   // call layout, not at the next outer statement boundary.
@@ -548,7 +546,7 @@ func testCommentInsideCallArgs(): Unit {
   assertTrue(Str.contains(acc, "    // first arg\n    1,"), "width: comment between call args stays inside the call")
 }
 
-func testWidthDrivenLongBinopBreaks(): Unit {
+test "width driven long binop breaks" {
   // A long chain of binary `+` operators breaks to one operand per
   // line with the operator at the end of the previous line.  The
   // test source is long enough to force the break.
@@ -562,7 +560,7 @@ func testWidthDrivenLongBinopBreaks(): Unit {
   assertTrue(Str.contains(acc, "+\n  "), "width: long binop breaks with operator at end-of-line")
 }
 
-func testShortExpressionStaysInline(): Unit {
+test "short expression stays inline" {
   // Negative test: a short expression must NOT be split.  Locks in
   // the budget threshold: don't over-eagerly break.
   val src = "package P\nfunc f(): Int { val x = a + b; x }\n"
@@ -572,7 +570,7 @@ func testShortExpressionStaysInline(): Unit {
   assertTrue(not Str.contains(acc, "val x = a +\n"), "width: no spurious break for short expression")
 }
 
-func testCommentBetweenBinopOperands(): Unit {
+test "comment between binop operands" {
   // Phase 5 §M5.3 stage 10 (D-progress-146): a comment between two
   // operands of a binary op survives `lyric fmt` — the multi-line
   // EBinop layout pops trivia at the RHS's start offset.
@@ -583,7 +581,7 @@ func testCommentBetweenBinopOperands(): Unit {
   assertTrue(Str.contains(acc, "a +\n    // sum carry"), "binop: comment lands between operator and RHS")
 }
 
-func testCommentBetweenListElements(): Unit {
+test "comment between list elements" {
   // A `// primes` comment between two list elements anchors at the
   // following element's start offset and renders inside the multi-
   // line list layout.
@@ -597,7 +595,7 @@ func testCommentBetweenListElements(): Unit {
   assertTrue(Str.contains(acc, "    // primes\n    2,"), "list: comment between elements stays inside the list")
 }
 
-func testCommentBeforeFunctionParam(): Unit {
+test "comment before function param" {
   // A `// x is the input` comment sitting before the first parameter
   // in a multi-line function signature anchors at the first param's
   // leading trivia.  The signature breaks across lines because the
@@ -611,7 +609,7 @@ func testCommentBeforeFunctionParam(): Unit {
   assertTrue(Str.contains(acc, "  x: in Int,\n"), "param: each param on its own line with trailing comma")
 }
 
-func testWidthDrivenLongParamList(): Unit {
+test "width driven long param list" {
   // A function with so many parameters that the inline rendering
   // exceeds the 120-char budget gets a multi-line signature.
   val src = "package P\n" +
@@ -622,7 +620,7 @@ func testWidthDrivenLongParamList(): Unit {
   assertTrue(Str.contains(acc, "  aaaa: in Int,\n"), "param: first param on its own line")
 }
 
-func testOutModeRendersCorrectly(): Unit {
+test "out mode renders correctly" {
   // Regression test for the `PMOut` → `"acc "` rename slip from the
   // original sed-driven reserved-keyword cleanup.  An `out` parameter
   // must round-trip as `: out Type`.
@@ -632,7 +630,7 @@ func testOutModeRendersCorrectly(): Unit {
   assertTrue(Str.contains(acc, "x: out Int"), "param: PMOut renders as `out`, not `acc`")
 }
 
-func testCommentInsideLambdaBody(): Unit {
+test "comment inside lambda body" {
   // Phase 5 §M5.3 stage 11 (D-progress-147): a `// process input`
   // comment inside a lambda body anchors via `blockLines` (the body
   // is parsed as a `Block`).  The lambda renders multi-line because
@@ -649,7 +647,7 @@ func testCommentInsideLambdaBody(): Unit {
   assertTrue(Str.contains(acc, "{ x: Int ->\n"), "lambda: opener with params on its own line")
 }
 
-func testWidthDrivenLongLambdaBody(): Unit {
+test "width driven long lambda body" {
   // A lambda whose body — with the lambda braces, params, and
   // arrow — exceeds the 120-char budget breaks across lines.
   val src = "package P\n" + "func go(): Int {\n" +
@@ -661,7 +659,7 @@ func testWidthDrivenLongLambdaBody(): Unit {
   assertTrue(Str.contains(acc, "{ x: Int, y: Int, z: Int ->\n"), "lambda: long body breaks after `->`")
 }
 
-func testFormatSourceFacade(): Unit {
+test "format source facade" {
   // String-in / string-out façade — the entry point the F# CLI calls
   // through reflection in M5.3 stage 2 (CLI wiring).
   val src = "package P\n\n// keep me\nalias A = Int\n"
@@ -671,7 +669,7 @@ func testFormatSourceFacade(): Unit {
   assertTrue(isFormattedSource(acc), "formatSource: output is canonical (idempotent)")
 }
 
-func testForallBodyNoBraces(): Unit {
+test "forall body no braces" {
   // forall with a block body should NOT double-wrap in braces.
   // The parser wraps `{ p(i) }` in EBlock; the formatter must strip it.
   // Use a block-body function so the ensures: clause appears in output.
@@ -684,7 +682,7 @@ func testForallBodyNoBraces(): Unit {
   assertTrue(Str.contains(acc, "forall (j: Int) { j > 0 }"), "forall: single-brace block body round-trips")
 }
 
-func testWidthDrivenLongIfBreaks(): Unit {
+test "width driven long if breaks" {
   // An if-expression whose inline form exceeds 120 chars converts
   // to the brace layout (M5.3 stage 12).
   val src = "package P\n" + "func go(a: in Bool, b: in Bool): String {\n" +
@@ -700,7 +698,7 @@ func testWidthDrivenLongIfBreaks(): Unit {
   assertTrue(Str.contains(acc, "} else {\n"), "if-expr: else clause on its own line")
 }
 
-func testWidthDrivenLongMatchBreaks(): Unit {
+test "width driven long match breaks" {
   // A match-expression whose inline form exceeds 120 chars converts
   // to the brace layout (M5.3 stage 12).
   val src = "package P\n" + "func go(x: in Int): String {\n" +
@@ -716,7 +714,7 @@ func testWidthDrivenLongMatchBreaks(): Unit {
   assertTrue(Str.contains(acc, "case 1 ->"), "match-expr: arm rendered in body")
 }
 
-func testThenFormIfArmCommentsPreserved(): Unit {
+test "then form if arm comments preserved" {
   // Issue #2453: a `then`-form if-expression whose then-arm and else-arm
   // each carry an end-of-line comment must keep each comment on its own
   // output line.  The flat inline rendering used to fuse them
@@ -739,7 +737,7 @@ func testThenFormIfArmCommentsPreserved(): Unit {
   assertTrue(isFormatted(acc, parse(acc)), "then-if arm comments: idempotent")
 }
 
-func testThenFormIfArmCommentsInMatchArm(): Unit {
+test "then form if arm comments in match arm" {
   // The same fix must apply when the `then`-form if is a match-arm body
   // (the `lyric-compiler/jvm/bytecode.l` `insnSize` case): the arm body
   // routes through the ctx-aware printer so the interior comment survives.
@@ -757,7 +755,7 @@ func testThenFormIfArmCommentsInMatchArm(): Unit {
   assertTrue(isFormatted(acc, parse(acc)), "then-if in match arm: idempotent")
 }
 
-func testThenFormIfNoCommentsStaysInline(): Unit {
+test "then form if no comments stays inline" {
   // Without interior trivia, a `then`-form if stays on one line — the
   // multi-line split fires only to rescue comments.
   val src = "package P\n\nfunc f(x: in Int): Int {\n  if x > 0 then 3 else 6\n}\n"
@@ -766,7 +764,7 @@ func testThenFormIfNoCommentsStaysInline(): Unit {
   assertTrue(not Str.contains(acc, "\n  else"), "then-if no comments: no spurious else break")
 }
 
-func testThenFormIfElseChainCommentsPreserved(): Unit {
+test "then form if else chain comments preserved" {
   // An `else if` chain in `then`-form with a comment on an intermediate
   // arm: the recursion through `ifThenFormDoc` weaves each comment in.
   val src = "package P\n\nfunc f(x: in Int): Int {\n" + "  if x > 2 then 9   // big\n" +
@@ -782,7 +780,7 @@ func testThenFormIfElseChainCommentsPreserved(): Unit {
   assertTrue(isFormatted(acc, parse(acc)), "then-if else-chain: idempotent")
 }
 
-func testFBExprWithContracts(): Unit {
+test "fbexpr with contracts" {
   // A func with an expression body AND contract clauses must preserve
   // both; the old FBExpr path dropped the contracts entirely.
   val src = "package P\n" + "func abs(x: in Int): Int\n" + "  ensures: result >= 0\n" +
@@ -794,12 +792,12 @@ func testFBExprWithContracts(): Unit {
 }
 
 // ─── Loss-checked guard + module-comment auto-fix + field-doc preservation ───
-func testFormatSourceCheckedOk(): Unit {
+test "format source checked ok" {
   val c = formatSourceChecked("package P\n\nfunc f(x: in Int): Int {\n  x\n}\n")
   assertTrue(fmtCheckIsOk(c), "checked: clean source is FmtOk")
 }
 
-func testFormatSourceCheckedInputParseError(): Unit {
+test "format source checked input parse error" {
   // A `///` doc comment before `package` has no item to attach to (P0020),
   // so the input is rejected and never reformatted.
   val c = formatSourceChecked("/// orphan doc\npackage P\n")
@@ -807,7 +805,7 @@ func testFormatSourceCheckedInputParseError(): Unit {
   assertTrue(Str.contains(fmtCheckMessage(c), "parse error"), "checked: input-parse message")
 }
 
-func testStringEscapeCanonicalizationAccepted(): Unit {
+test "string escape canonicalization accepted" {
   // Canonicalising a string escape (here `\u{80}`, a C1 control rendered
   // as its literal scalar) is NOT a code-token change: the loss check
   // compares string literals by decoded value, so the round-trip is
@@ -817,7 +815,7 @@ func testStringEscapeCanonicalizationAccepted(): Unit {
   assertTrue(fmtCheckIsOk(c), "checked: string-escape canonicalisation accepted")
 }
 
-func testExternPackageRoundTrips(): Unit {
+test "extern package round trips" {
   // Extern packages round-trip: the `package` keyword, each member's
   // visibility, doc comments, and contracts, and the `exposed type`
   // spelling are all preserved (previously the formatter dropped the
@@ -834,7 +832,7 @@ func testExternPackageRoundTrips(): Unit {
   assertTrue(Str.contains(acc, "/// Doc."), "extern package: member doc preserved")
 }
 
-func testReturnTryRoundTrips(): Unit {
+test "return try round trips" {
   // The parser models `return try { … } catch { … }` as a `return` whose
   // value is a single-statement block wrapping the `try`.  The formatter
   // must render the bare `return try …` rather than injecting an extra
@@ -847,7 +845,7 @@ func testReturnTryRoundTrips(): Unit {
   assertTrue(not Str.contains(acc, "return {"), "return-try: no injected wrapping brace")
 }
 
-func testMatchArmBareReturnRoundTrips(): Unit {
+test "match arm bare return round trips" {
   // A bare `case P -> return e` arm body is also a parser-synthesised
   // single-statement block; it must render without injected braces.
   val src = "package P\n\nfunc f(o: in Option[Int]): Int {\n  match o {\n    case Some(e) -> return e\n    case None -> 0\n  }\n}\n"
@@ -857,7 +855,7 @@ func testMatchArmBareReturnRoundTrips(): Unit {
   assertTrue(Str.contains(acc, "case Some(e) -> return e"), "match-arm bare return: stays bare")
 }
 
-func testMatchArmExplicitBracePreserved(): Unit {
+test "match arm explicit brace preserved" {
   // When the author *did* write braces around a single `return`, the span
   // check distinguishes them from the bare form so they are preserved
   // (no token change) rather than unwrapped.
@@ -866,7 +864,7 @@ func testMatchArmExplicitBracePreserved(): Unit {
   assertTrue(fmtCheckIsOk(c), "match-arm explicit braces: round-trips")
 }
 
-func testModuleHeaderAutoFix(): Unit {
+test "module header auto fix" {
   // A plain `//` header block before `package` is promoted to `//!`.
   val acc = format(parse("// my module\n// second line\npackage P\n"))
   assertTrue(Str.contains(acc, "//! my module"), "auto-fix: // header -> //!")
@@ -874,7 +872,7 @@ func testModuleHeaderAutoFix(): Unit {
   assertTrue(not Str.contains(acc, "// my module"), "auto-fix: old // form gone")
 }
 
-func testFieldDocCommentPreserved(): Unit {
+test "field doc comment preserved" {
   // A `///` doc comment on a record field survives formatting (the field
   // printer historically dropped it).
   val acc = format(parse("package P\n\nrecord R {\n  /// the x coordinate\n  x: Int\n}\n"))
@@ -882,7 +880,7 @@ func testFieldDocCommentPreserved(): Unit {
   assertTrue(Str.contains(acc, "x: Int"), "field doc: field preserved")
 }
 
-func testFieldAnnotationsStayWithTheirField(): Unit {
+test "field annotations stay with their field" {
   // A record (or config) field's leading annotation must stay attached to
   // that field across a round-trip.  Inside a `{ }` body the lexer emits no
   // statement-end tokens, so the parser's trailing-annotation scan used to
@@ -899,7 +897,7 @@ func testFieldAnnotationsStayWithTheirField(): Unit {
   assertTrue(Str.contains(acc, "@proto_field(2)\n  name: String"), "field annotations: second stays with name")
 }
 
-func testCharLiteralRendering(): Unit {
+test "char literal rendering" {
   // Char literals must round-trip.  `intToChar` once mangled every char
   // outside 0-31 / digits / a-f into `'?'`, corrupting ordinary letters,
   // space, and punctuation on every format pass (#2280 item 3).
@@ -912,7 +910,7 @@ func testCharLiteralRendering(): Unit {
   assertTrue(Str.contains(slash, "'/'"), "char: '/' preserved")
 }
 
-func testUnicodeEscapeInStringRoundTrips(): Unit {
+test "unicode escape in string round trips" {
   // A `\u{…}` escape inside a string literal must round-trip with its
   // braces intact.  `escapeStr` once emitted the legacy braceless
   // `\uXXXX` form for control characters, which the lexer rejects with
@@ -926,7 +924,7 @@ func testUnicodeEscapeInStringRoundTrips(): Unit {
   assertTrue(not Str.contains(acc, "\\u0000"), "unicode escape: no braceless form")
 }
 
-func testNonBmpEscapeLiteralRoundTrips(): Unit {
+test "non bmp escape literal round trips" {
   // A printable non-ASCII scalar (here U+00E9 'é', written `\u{00E9}`)
   // is canonicalised to its literal character, but because the loss
   // check now compares string tokens by decoded value the round-trip is
@@ -936,7 +934,7 @@ func testNonBmpEscapeLiteralRoundTrips(): Unit {
   assertTrue(fmtCheckIsOk(c), "non-control escape: round-trips losslessly")
 }
 
-func testLiteralDollarBraceRoundTrips(): Unit {
+test "literal dollar brace round trips" {
   // A plain string whose content contains a literal `${` must round-trip
   // as `\${`: an unescaped `${` re-lexes as an interpolation hole.  Build
   // the source by concatenation so this test file itself never carries an
@@ -950,7 +948,7 @@ func testLiteralDollarBraceRoundTrips(): Unit {
   assertTrue(Str.contains(acc, bs + dollar + "{"), "literal dollar-brace: escape preserved")
 }
 
-func testInterpolatedStringRoundTrips(): Unit {
+test "interpolated string round trips" {
   // A real interpolation `"x${s}y"` must round-trip — the formatter's own
   // `interpolatedStr` was silently mis-lexed (its `"${"` literal became an
   // interpolation hole), so every formatted hole collapsed to a constant.
@@ -963,7 +961,7 @@ func testInterpolatedStringRoundTrips(): Unit {
   assertTrue(Str.contains(acc, "x" + dollar + "{s}y"), "interpolation: hole preserved")
 }
 
-func testWhileLoopInvariantRoundTrips(): Unit {
+test "while loop invariant round trips" {
   // Loop invariants live in the source header (between the condition and
   // the `{`); the parser prepends them as `SInvariant` statements at the
   // top of the body.  The formatter must lift them back into the header —
@@ -976,7 +974,7 @@ func testWhileLoopInvariantRoundTrips(): Unit {
   assertTrue(Str.contains(acc, "invariant: i >= 0"), "while invariant: clause preserved")
 }
 
-func testForLoopInvariantRoundTrips(): Unit {
+test "for loop invariant round trips" {
   val src = "package P\n\nfunc f(xs: in List[Int]): Int {\n  var s = 0\n  for x in xs\n    invariant: s >= 0\n  {\n    s = s + x\n  }\n  s\n}\n"
   val c = formatSourceChecked(src)
   assertTrue(fmtCheckIsOk(c), "for invariant: round-trips")
@@ -984,7 +982,7 @@ func testForLoopInvariantRoundTrips(): Unit {
   assertTrue(Str.contains(acc, "invariant: s >= 0"), "for invariant: clause preserved")
 }
 
-func testAspectAroundRetNameRoundTrips(): Unit {
+test "aspect around ret name round trips" {
   // The `around(args) -> ret { … }` return binder must survive: the
   // parser built it via an `if … { Some(x) } else { None }` value that
   // the stage-0 emitter mis-lowered to `None`, dropping `-> ret` (#2452).
@@ -995,7 +993,7 @@ func testAspectAroundRetNameRoundTrips(): Unit {
   assertTrue(Str.contains(acc, "around(call) -> ret {"), "aspect around: `-> ret` preserved")
 }
 
-func testAspectConfigBlockRoundTrips(): Unit {
+test "aspect config block round trips" {
   // An aspect's anonymous `config { }` block was dropped entirely by the
   // formatter; it must now be emitted between `matches:` and the `around`
   // advice (#2452).
@@ -1008,7 +1006,7 @@ func testAspectConfigBlockRoundTrips(): Unit {
   assertTrue(Str.contains(acc, "around(call) -> ret {"), "aspect config: around still present")
 }
 
-func testAspectFromClauseRoundTrips(): Unit {
+test "aspect from clause round trips" {
   // The instantiation form `aspect Name from Pkg.Template { … }` must
   // preserve its `from Pkg.Template` header clause.  The renderer dropped
   // `ad.from` entirely, so a `from`-form aspect could not round-trip
@@ -1021,7 +1019,7 @@ func testAspectFromClauseRoundTrips(): Unit {
   assertTrue(Str.contains(acc, "    requestsPerMinute: Int = 120"), "aspect from: config field at 4-space indent")
 }
 
-func testAspectMatchesNameInRoundTrips(): Unit {
+test "aspect matches name in round trips" {
   // The set-membership matcher `matches: name in { fn1, fn2 }` must parse and
   // round-trip through `lyric fmt` — previously the parser rejected it with
   // P0298 ("expected 'like' after 'name'"), blocking the examples/* files
@@ -1036,7 +1034,7 @@ func testAspectMatchesNameInRoundTrips(): Unit {
   )
 }
 
-func testAspectMatchesNameInAndExceptRoundTrips(): Unit {
+test "aspect matches name in and except round trips" {
   // `name in { … }` composes with `and` and the `except name in { … }`
   // exclusion clause — both use the shared set parser.
   val src = "package P\n\naspect A {\n  matches: name in { foo, bar } and visibility: pub except name in { baz }\n}\n"
@@ -1048,7 +1046,7 @@ func testAspectMatchesNameInAndExceptRoundTrips(): Unit {
   assertTrue(Str.contains(acc, "except name in { baz }"), "aspect name-in: except clause preserved")
 }
 
-func testNestedMatchTrailingCommentIdempotent(): Unit {
+test "nested match trailing comment idempotent" {
   // A trailing comment on the LAST arm of a *nested* match (a match that is
   // itself the body of an enclosing match arm) must stay attached to that
   // arm across repeated format passes.  Previously `matchLines` left it
@@ -1067,7 +1065,7 @@ func testNestedMatchTrailingCommentIdempotent(): Unit {
   )
 }
 
-func testAspectInterMemberBlankIdempotent(): Unit {
+test "aspect inter member blank idempotent" {
   // Blank lines between aspect members (config / ensures / around) must not
   // leak into the around body: `aspectDoc` consumes the pre-around trivia,
   // so two separate source blank-runs can't land adjacent inside the body
@@ -1080,7 +1078,7 @@ func testAspectInterMemberBlankIdempotent(): Unit {
   assertEqual(once, twice, "aspect inter-member blank: idempotent")
 }
 
-func testProtectedInterMemberBlankIdempotent(): Unit {
+test "protected inter member blank idempotent" {
   // The same leak occurs in protected types: a blank between a type-level
   // `invariant:` and an `entry` body would otherwise be dumped into the
   // entry body and collapse on re-format.  `protectedTypeDoc` consumes
@@ -1091,97 +1089,4 @@ func testProtectedInterMemberBlankIdempotent(): Unit {
   val once = format(parse(src))
   val twice = format(parse(once))
   assertEqual(once, twice, "protected inter-member blank: idempotent")
-}
-
-func main(): Unit {
-  testParamAnnotationRoundTrips()
-  testFieldAnnotationsStayWithTheirField()
-  testAspectInterMemberBlankIdempotent()
-  testProtectedInterMemberBlankIdempotent()
-  testNestedMatchTrailingCommentIdempotent()
-  testUnicodeEscapeInStringRoundTrips()
-  testNonBmpEscapeLiteralRoundTrips()
-  testLiteralDollarBraceRoundTrips()
-  testInterpolatedStringRoundTrips()
-  testWhileLoopInvariantRoundTrips()
-  testForLoopInvariantRoundTrips()
-  testAspectAroundRetNameRoundTrips()
-  testAspectConfigBlockRoundTrips()
-  testAspectFromClauseRoundTrips()
-  testAspectMatchesNameInRoundTrips()
-  testAspectMatchesNameInAndExceptRoundTrips()
-  testCharLiteralRendering()
-  testFormatSourceCheckedOk()
-  testFormatSourceCheckedInputParseError()
-  testStringEscapeCanonicalizationAccepted()
-  testExternPackageRoundTrips()
-  testReturnTryRoundTrips()
-  testMatchArmBareReturnRoundTrips()
-  testMatchArmExplicitBracePreserved()
-  testModuleHeaderAutoFix()
-  testFieldDocCommentPreserved()
-  testFormatPackageOnly()
-  testFormatPackageAndImports()
-  testFormatTypeAlias()
-  testFormatRecord()
-  testFormatMutableRecordField()
-  testFormatFunction()
-  testParamModeRoundTrips()
-  testIsFormattedRoundTrip()
-  testCommentPreservationBetweenItems()
-  testCommentPreservationBlockComment()
-  testCommentPreservationTrailing()
-  testEndOfLineCommentStaysInline()
-  testTrailingCommentAlignmentPreserved()
-  testSectionBannerStaysBetweenItems()
-  testLastMemberTrailingCommentStaysInline()
-  testStatementSeparatorBeforeBracket()
-  testFormatPubFunc()
-  testFormatUnion()
-  testFormatEnum()
-  testFormatVal()
-  testNumericLiteralSpellingRoundTrips()
-  testFormatModuleDoc()
-  testModuleHeaderNestedCommentPreserved()
-  testOpaqueTypeAnnotationAndBodyComment()
-  testInterfaceMethodDocAndContractPreserved()
-  testFormatSourceFacade()
-  testCommentInsideFunctionBody()
-  testCommentInsideRecordBody()
-  testCommentInsideUnionBody()
-  testUnionCaseFieldTrailingCommentsPreserved()
-  testUnionCaseNoCommentsStaysInline()
-  testCommentInsideEnumBody()
-  testCommentInsideNestedBlock()
-  testBlankLineInsideFunctionBody()
-  testBlankLineInsideRecordBody()
-  testBlankLinesBetweenCommentBlocks()
-  testMultipleBlankLinesCollapseToOne()
-  testTrailingBlankBeforeClosingBrace()
-  testCommentBeforeContractClause()
-  testBlankLineBetweenContractClauses()
-  testCommentBeforeWhereClause()
-  testCommentBetweenWhereAndContract()
-  testWhereThenContractRoundTrips()
-  testWidthDrivenLongCallBreaks()
-  testWidthDrivenLongCallIdempotent()
-  testCommentInsideCallArgs()
-  testWidthDrivenLongBinopBreaks()
-  testShortExpressionStaysInline()
-  testCommentBetweenBinopOperands()
-  testCommentBetweenListElements()
-  testCommentBeforeFunctionParam()
-  testWidthDrivenLongParamList()
-  testOutModeRendersCorrectly()
-  testCommentInsideLambdaBody()
-  testWidthDrivenLongLambdaBody()
-  testForallBodyNoBraces()
-  testWidthDrivenLongIfBreaks()
-  testThenFormIfArmCommentsPreserved()
-  testThenFormIfArmCommentsInMatchArm()
-  testThenFormIfNoCommentsStaysInline()
-  testThenFormIfElseChainCommentsPreserved()
-  testWidthDrivenLongMatchBreaks()
-  testFBExprWithContracts()
-  println("fmt self-test: ok")
 }

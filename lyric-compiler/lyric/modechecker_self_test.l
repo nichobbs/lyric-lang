@@ -1,6 +1,7 @@
 //! modechecker_self_test.l — exercises the self-hosted Lyric.ModeChecker library.
-//! Compiled and executed by SelfHostedModeCheckerTests.fs.
-//! Exit 0 + "ok" in stdout means all checks held.
+//! Run in CI via native `lyric test` (no F# runner shim).
+//!
+@test_module
 package Lyric.ModeCheckerSelfTest
 
 import Std.Core
@@ -35,7 +36,7 @@ func diagCount(result: in ModeCheckResult): Int {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests.
 // ─────────────────────────────────────────────────────────────────────────────
-func testRuntimeCheckedDefault(): Unit {
+test "runtime checked default" {
   val result = parseCheck("package P\nfunc f(): Int { 1 }\n")
   match result.level {
     case VLRuntimeChecked -> {
@@ -47,7 +48,7 @@ func testRuntimeCheckedDefault(): Unit {
   assertEqualInt(diagCount(result), 0, "default-level: no diagnostics")
 }
 
-func testExplicitRuntimeChecked(): Unit {
+test "explicit runtime checked" {
   val result = parseCheck("@runtime_checked\npackage P\nfunc f(): Int { 1 }\n")
   match result.level {
     case VLRuntimeChecked -> {
@@ -59,7 +60,7 @@ func testExplicitRuntimeChecked(): Unit {
   assertEqualInt(diagCount(result), 0, "explicit-rc: no diagnostics")
 }
 
-func testProofRequired(): Unit {
+test "proof required" {
   val result = parseCheck("@proof_required\npackage P\nfunc f(): Int { 1 }\n")
   match result.level {
     case VLProofRequired -> {
@@ -71,7 +72,7 @@ func testProofRequired(): Unit {
   assertEqualInt(diagCount(result), 0, "proof-req: no diagnostics")
 }
 
-func testProofRequiredUnsafe(): Unit {
+test "proof required unsafe" {
   val result = parseCheck("@proof_required(unsafe_blocks_allowed)\npackage P\nfunc f(): Unit {}\n")
   match result.level {
     case VLProofRequiredUnsafe -> {
@@ -83,7 +84,7 @@ func testProofRequiredUnsafe(): Unit {
   assertEqualInt(diagCount(result), 0, "pr-unsafe: no diagnostics")
 }
 
-func testAxiomLevel(): Unit {
+test "axiom level" {
   val result = parseCheck("@axiom\npackage P\nfunc f(): Int\n")
   match result.level {
     case VLAxiom -> {
@@ -95,24 +96,24 @@ func testAxiomLevel(): Unit {
   assertEqualInt(diagCount(result), 0, "axiom-level: no diagnostics")
 }
 
-func testConflictingAnnotations(): Unit {
+test "conflicting annotations" {
   val result = parseCheck("@runtime_checked\n@axiom\npackage P\nfunc f(): Int { 1 }\n")
   assertTrue(hasDiagCode(result, "V0010"), "conflict: V0010 emitted")
 }
 
-func testUnknownModifier(): Unit {
+test "unknown modifier" {
   val result = parseCheck("@proof_required(badmod)\npackage P\nfunc f(): Int { 1 }\n")
   assertTrue(hasDiagCode(result, "V0011"), "unknown-mod: V0011 emitted")
 }
 
-func testPureCalleePassing(): Unit {
+test "pure callee passing" {
   // @pure callee is admissible from proof-required code.
   val src = "@proof_required\npackage P\n@pure\nfunc helper(): Int { 42 }\nfunc f(): Int { helper() }\n"
   val result = parseCheck(src)
   assertEqualInt(diagCount(result), 0, "pure-callee: no diagnostics")
 }
 
-func testImpureCalleeV0002(): Unit {
+test "impure callee v0002" {
   // Calling a runtime-checked function from proof-required → V0002.
   // In the self-hosted checker, a function without @pure in a @proof_required
   // file inherits proof-required level, so a callee imported from a
@@ -125,57 +126,57 @@ func testImpureCalleeV0002(): Unit {
   assertTrue(hasDiagCode(result, "V0001"), "impure-callee: V0001 emitted")
 }
 
-func testAwaitV0002(): Unit {
+test "await v0002" {
   val src = "@proof_required\npackage P\nfunc f(): Unit { await someAsync() }\nfunc someAsync(): Unit {}\n"
   val result = parseCheck(src)
   assertTrue(hasDiagCode(result, "V0002"), "await: V0002 emitted")
 }
 
-func testUnsafeBlockV0003(): Unit {
+test "unsafe block v0003" {
   val src = "@proof_required\npackage P\nfunc f(): Unit { unsafe { } }\n"
   val result = parseCheck(src)
   assertTrue(hasDiagCode(result, "V0003"), "unsafe: V0003 emitted")
 }
 
-func testUnsafeAllowedNoError(): Unit {
+test "unsafe allowed no error" {
   val src = "@proof_required(unsafe_blocks_allowed)\npackage P\nfunc f(): Unit { unsafe { } }\n"
   val result = parseCheck(src)
   assertEqualInt(diagCount(result), 0, "unsafe-allowed: no diagnostics")
 }
 
-func testAxiomWithBodyV0004(): Unit {
+test "axiom with body v0004" {
   val src = "@proof_required\npackage P\n@axiom\nfunc assume(p: in Bool): Unit { p }\n"
   val result = parseCheck(src)
   assertTrue(hasDiagCode(result, "V0004"), "axiom-body: V0004 emitted")
 }
 
-func testAxiomNoBodyOk(): Unit {
+test "axiom no body ok" {
   val src = "@proof_required\npackage P\n@axiom\nfunc assume(p: in Bool): Unit\n"
   val result = parseCheck(src)
   assertEqualInt(diagCount(result), 0, "axiom-no-body: no diagnostics")
 }
 
-func testLoopWithoutInvariantV0005(): Unit {
+test "loop without invariant v0005" {
   val src = "@proof_required\npackage P\nfunc f(): Unit {\n  var i = 0\n  while i < 10 { i = i + 1 }\n}\n"
   val result = parseCheck(src)
   assertTrue(hasDiagCode(result, "V0005"), "loop-no-inv: V0005 emitted")
 }
 
-func testUnboundedQuantifierV0006(): Unit {
+test "unbounded quantifier v0006" {
   // forall with Int binder in a requires: clause — unbounded domain.
   val src = "@proof_required\npackage P\nfunc f(): Bool\n  requires: forall (n: Int) { n >= 0 }\n{ true }\n"
   val result = parseCheck(src)
   assertTrue(hasDiagCode(result, "V0006"), "unbounded-q: V0006 emitted")
 }
 
-func testRuntimeCheckedNoChecks(): Unit {
+test "runtime checked no checks" {
   // @runtime_checked packages skip all proof-mode checks.
   val src = "@runtime_checked\npackage P\nfunc f(): Unit {\n  var i = 0\n  while i < 10 { i = i + 1 }\n}\n"
   val result = parseCheck(src)
   assertEqualInt(diagCount(result), 0, "rc-no-checks: no diagnostics")
 }
 
-func testCrossPackageCallV0002(): Unit {
+test "cross package call v0002" {
   // A proof-required function calling a function from a runtime_checked
   // package via a multi-segment path (e.g. Ext.Lib.someFunc()) must trigger
   // V0002 at the call site, in addition to V0001 at the import.
@@ -187,7 +188,7 @@ func testCrossPackageCallV0002(): Unit {
   assertTrue(hasDiagCode(result, "V0002"), "cross-pkg: V0002 emitted for cross-package call")
 }
 
-func testCrossPackageCallProofOk(): Unit {
+test "cross package call proof ok" {
   // Calling into a proof_required package from proof_required is fine.
   val imports: List[ImportedMeta] = newList()
   imports.add(ImportedMeta(name = "Safe.Lib", level = "proof_required"))
@@ -197,7 +198,7 @@ func testCrossPackageCallProofOk(): Unit {
   assertTrue(not (hasDiagCode(result, "V0002")), "cross-pkg-ok: V0002 not emitted for proof_required callee")
 }
 
-func testCrossPackageSingleSegmentV0002(): Unit {
+test "cross package single segment v0002" {
   // Covers the EPath-receiver branch (single-segment package name).
   val imports: List[ImportedMeta] = newList()
   imports.add(ImportedMeta(name = "Pkg", level = "runtime_checked"))
@@ -208,28 +209,4 @@ func testCrossPackageSingleSegmentV0002(): Unit {
     hasDiagCode(result, "V0002"),
     "single-seg-pkg: V0002 emitted for single-segment runtime_checked package call"
   )
-}
-
-func main(): Unit {
-  testRuntimeCheckedDefault()
-  testExplicitRuntimeChecked()
-  testProofRequired()
-  testProofRequiredUnsafe()
-  testAxiomLevel()
-  testConflictingAnnotations()
-  testUnknownModifier()
-  testPureCalleePassing()
-  testImpureCalleeV0002()
-  testAwaitV0002()
-  testUnsafeBlockV0003()
-  testUnsafeAllowedNoError()
-  testAxiomWithBodyV0004()
-  testAxiomNoBodyOk()
-  testLoopWithoutInvariantV0005()
-  testUnboundedQuantifierV0006()
-  testRuntimeCheckedNoChecks()
-  testCrossPackageCallV0002()
-  testCrossPackageCallProofOk()
-  testCrossPackageSingleSegmentV0002()
-  println("modechecker self-test: ok")
 }

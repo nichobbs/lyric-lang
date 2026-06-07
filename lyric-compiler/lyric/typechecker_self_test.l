@@ -1,6 +1,6 @@
 //! typechecker_self_test.l — exercises the self-hosted Lyric.TypeChecker library.
-//! Compiled and executed by SelfHostedTypeCheckerTests.fs.
-//! Exit 0 + "ok" in stdout means all checks held.
+//! Run in CI via native `lyric test` (no F# runner shim).
+@test_module
 package Lyric.TypeCheckerSelfTest
 
 import Std.Core
@@ -40,20 +40,20 @@ func hasDiagCode(cr: in CheckResult, code: in String): Bool {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests.
 // ─────────────────────────────────────────────────────────────────────────────
-func testEmptySource(): Unit {
+test "empty source" {
   val cr = parseCheck("")
   assertEqualInt(diagCount(cr), 0, "empty: no diagnostics")
   assertEqualInt(symCount(cr), 0, "empty: no symbols")
 }
 
-func testFuncRegistered(): Unit {
+test "func registered" {
   val src = "package P\nfunc add(x: in Int, y: in Int): Int { x + y }\n"
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "func-reg: no diagnostics")
   assertTrue(symCount(cr) > 0, "func-reg: symbol registered")
 }
 
-func testFuncSigResolved(): Unit {
+test "func sig resolved" {
   val src = "package P\nfunc double(n: in Int): Int { n + n }\n"
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "sig: no diagnostics")
@@ -61,14 +61,14 @@ func testFuncSigResolved(): Unit {
   assertTrue(cr.sigs.containsKey("double/1"), "sig: arity key present")
 }
 
-func testRecordRegistered(): Unit {
+test "record registered" {
   val src = "package P\nrecord Point { x: Int; y: Int }\n"
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "rec-reg: no diagnostics")
   assertTrue(symCount(cr) > 0, "rec-reg: symbol registered")
 }
 
-func testUnionCasesRegistered(): Unit {
+test "union cases registered" {
   val src = "package P\nunion Color { case Red; case Green; case Blue }\n"
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "union-cases: no diagnostics")
@@ -76,13 +76,13 @@ func testUnionCasesRegistered(): Unit {
   assertEqualInt(symCount(cr), 4, "union-cases: 4 symbols")
 }
 
-func testDuplicateNameError(): Unit {
+test "duplicate name error" {
   val src = "package P\nrecord A { x: Int }\nrecord A { y: String }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0001"), "dup: T0001 emitted")
 }
 
-func testReturnTypeMismatch(): Unit {
+test "return type mismatch" {
   val src = "package P\nfunc f(): Int { \"hello\" }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0070"), "ret-mismatch: T0070 emitted")
@@ -93,7 +93,7 @@ func testReturnTypeMismatch(): Unit {
 // `union Opt[T] { Sm(value: T) … }` is `Opt[String]`, not `TyError`.  The
 // distinguishing case: an `Opt[Int]` return with an `Sm(value = "s")` body MUST
 // mismatch (T0070) — were the constructor still `TyError`, it would unify.
-func testGenericUnionCtorTyped(): Unit {
+test "generic union ctor typed" {
   val bad = "package P\nunion Opt[T] {\n  case Sm(value: T)\n  case Nn\n}\nfunc f(): Opt[Int] { Sm(value = \"s\") }\n"
   assertTrue(hasDiagCode(parseCheck(bad), "T0070"), "union-ctor: Sm(String) is Opt[String], mismatches Opt[Int]")
   val ok = "package P\nunion Opt2[T] {\n  case Sm2(value: T)\n  case Nn2\n}\nfunc g(): Opt2[String] { Sm2(value = \"s\") }\n"
@@ -102,7 +102,7 @@ func testGenericUnionCtorTyped(): Unit {
 
 // A no-field case (`Nn` — like `None`) has uninferable type args, so it is the
 // parent union with `TyError` args and leniently matches any instantiation.
-func testGenericUnionNullaryLenient(): Unit {
+test "generic union nullary lenient" {
   val src = "package P\nunion Opt3[T] {\n  case Sm3(value: T)\n  case Nn3\n}\nfunc f(): Opt3[Int] { Nn3 }\n"
   assertEqualInt(diagCount(parseCheck(src)), 0, "union-nullary: Nn3 leniently matches Opt3[Int]")
 }
@@ -112,13 +112,13 @@ func testGenericUnionNullaryLenient(): Unit {
 // case: `case Sm(v) -> v` binds `v : Int` (the case field instantiated against
 // `Opt[Int]`), so a `String`-returning function whose other arm is `""` MUST
 // mismatch (T0067) — were `v` still `TyError`, the arms would unify silently.
-func testMatchBranchDestructuredMismatch(): Unit {
+test "match branch destructured mismatch" {
   val src = "package P\nunion Opt[T] {\n  case Sm(value: T)\n  case Nn\n}\nfunc f(o: in Opt[Int]): String {\n  match o {\n    case Sm(v) -> v\n    case Nn -> \"\"\n  }\n}\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0067"), "match-destructure: Sm(v) binds v:Int, mismatches the String arm")
 }
 
 // Matching arms unify cleanly: `Sm(v) -> v` (Int) and `Nn -> 0` (Int) → Int.
-func testMatchBranchClean(): Unit {
+test "match branch clean" {
   val src = "package P\nunion Opt[T] {\n  case Sm(value: T)\n  case Nn\n}\nfunc f(o: in Opt[Int]): Int {\n  match o {\n    case Sm(v) -> v\n    case Nn -> 0\n  }\n}\n"
   assertEqualInt(diagCount(parseCheck(src)), 0, "match-clean: Sm(v:Int) and Nn(0) unify to Int")
 }
@@ -126,7 +126,7 @@ func testMatchBranchClean(): Unit {
 // A nullary case in pattern position (`case Nn`) must not shadow the `Nn`
 // constructor used in the arm body — so the reconstruction round-trips and the
 // match types as `Opt[Int]`.
-func testMatchNullaryNoShadow(): Unit {
+test "match nullary no shadow" {
   val src = "package P\nunion Opt[T] {\n  case Sm(value: T)\n  case Nn\n}\nfunc f(o: in Opt[Int]): Opt[Int] {\n  match o {\n    case Sm(v) -> Sm(value = v)\n    case Nn -> Nn\n  }\n}\n"
   assertEqualInt(diagCount(parseCheck(src)), 0, "match-no-shadow: case Nn does not shadow the Nn constructor")
 }
@@ -136,7 +136,7 @@ func testMatchNullaryNoShadow(): Unit {
 // that re-wraps a `Result[Int, String]` into `Result[Conn, DErr]` whose
 // `Ok` arm yields `Ok(NC(...))` (NC implements Conn) must NOT mismatch.
 // This is the lyric-db `connect(): Result[DbConnection, DbError]` shape.
-func testInterfaceUpcastInResult(): Unit {
+test "interface upcast in result" {
   // Inline `Res[T, E]` stands in for `Result[T, E]` so the check is
   // self-contained (no Std.Core import).  The `Ok2` arm yields a concrete
   // `NC` where the declared `Res[Conn, DErr]` expects `Conn`; the `Err2`
@@ -154,7 +154,7 @@ func testInterfaceUpcastInResult(): Unit {
 // `someLong <= 0`, `someLong + 1`, and a `colLong`-style match whose
 // `case _ -> 0` default sits beside `Long` arms all type-check without a
 // `0i64` suffix.
-func testIntLiteralAdoptsContext(): Unit {
+test "int literal adopts context" {
   val cmp = "package P\npub func f(x: in Long): Bool {\n  x <= 0\n}\n"
   assertEqualInt(diagCount(parseCheck(cmp)), 0, "int-lit: Long <= 0 type-checks")
   val arith = "package P\npub func g(x: in Long): Long {\n  return x + 1\n}\n"
@@ -165,14 +165,14 @@ func testIntLiteralAdoptsContext(): Unit {
 
 // Guard branch widening against over-reach: a genuinely incompatible pair
 // (String vs Int) must still raise T0067, not silently unify.
-func testBranchWidenStillRejectsMismatch(): Unit {
+test "branch widen still rejects mismatch" {
   val bad = "package P\npub func f(b: in Bool): Int {\n  if b {\n    1\n  } else {\n    \"x\"\n  }\n}\n"
   assertTrue(hasDiagCode(parseCheck(bad), "T0067"), "branch-widen: Int vs String still T0067")
 }
 
 // Guard the assignability relation against over-leniency: a record that
 // does NOT implement the expected interface must still mismatch (T0070).
-func testUnrelatedReturnStillMismatches(): Unit {
+test "unrelated return still mismatches" {
   val bad = "package P\npub interface Conn {\n  func q(): Int\n}\nrecord Other {\n  x: Int\n}\nfunc f(): Conn { Other(x = 1) }\n"
   assertTrue(hasDiagCode(parseCheck(bad), "T0070"), "no-impl: Other does not implement Conn → T0070")
 }
@@ -181,7 +181,7 @@ func testUnrelatedReturnStillMismatches(): Unit {
 // its underlying representation is, so arithmetic and comparison on a
 // range-typed value type-check cleanly.  Before `isNumericType`/`isOrderedType`
 // unwrapped `TyRefined`, `a + 1` / `a < 100` raised a spurious T0030/T0033.
-func testRangeSubtypeArithmetic(): Unit {
+test "range subtype arithmetic" {
   val src = "package P\nfunc f(a: in Int range 0 ..= 150): Bool {\n  val n = a + 1\n  a < 100\n}\n"
   assertEqualInt(
     diagCount(parseCheck(src)),
@@ -195,7 +195,7 @@ func testRangeSubtypeArithmetic(): Unit {
 // `Opt[Int]` returns `Int`, not the raw `TyVar("T")`.  A `String`-typed binding
 // of the result must mismatch (T0060); were the return still `TyVar`, `typeEquiv`
 // would treat it as a wildcard and the binding would pass silently.
-func testGenericReturnInstantiatedMismatch(): Unit {
+test "generic return instantiated mismatch" {
   val src = "package P\nunion Opt[T] {\n  case Sm(value: T)\n  case Nn\n}\ngeneric[T] func unwrapOr(o: in Opt[T], d: in T): T { d }\nfunc f(o: in Opt[Int]): Unit {\n  val s: String = unwrapOr(o, 0)\n}\n"
   assertTrue(
     hasDiagCode(parseCheck(src), "T0060"),
@@ -206,7 +206,7 @@ func testGenericReturnInstantiatedMismatch(): Unit {
 // The complementary clean case: the instantiated `Int` return is usable in an
 // `Int` comparison.  Were the return still `TyVar("T")`, `T < 0` would raise
 // T0033 (comparison of `T` and `Int`).
-func testGenericReturnInstantiatedClean(): Unit {
+test "generic return instantiated clean" {
   val src = "package P\nunion Opt[T] {\n  case Sm(value: T)\n  case Nn\n}\ngeneric[T] func unwrapOr(o: in Opt[T], d: in T): T { d }\nfunc f(o: in Opt[Int]): Bool {\n  unwrapOr(o, 0) < 0\n}\n"
   assertEqualInt(diagCount(parseCheck(src)), 0, "generic-return: instantiated Int return compares cleanly with Int")
 }
@@ -216,7 +216,7 @@ func testGenericReturnInstantiatedClean(): Unit {
 // so a `String` binding mismatches (T0060).  (When the occurrences disagree the
 // inference falls back to `TyError`; that case is already a T0043 at the
 // argument check, so it needs no separate assertion here.)
-func testGenericMultiOccurrenceConsistent(): Unit {
+test "generic multi occurrence consistent" {
   val src = "package P\ngeneric[T] func pick(a: in T, b: in T): T { a }\nfunc f(): Unit {\n  val s: String = pick(1, 2)\n}\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0060"), "generic-multi: pick(Int, Int) returns Int, mismatches String")
 }
@@ -228,7 +228,7 @@ func testGenericMultiOccurrenceConsistent(): Unit {
 // binding must be clean.  Before the fix, `result` typed as `Unit` (the return
 // type), producing a spurious T0060.  Mirrors codegen, which already loads the
 // `result` slot first (codegen.l:2833).
-func testResultLocalShadowsKeyword(): Unit {
+test "result local shadows keyword" {
   val src = "package P\nfunc f(): Unit {\n  val result = \"hi\"\n  val s: String = result\n}\n"
   assertEqualInt(diagCount(parseCheck(src)), 0, "result-local: a `val result` shadows the return-value keyword")
 }
@@ -237,7 +237,7 @@ func testResultLocalShadowsKeyword(): Unit {
 // way: `f` returns `Int`, `result` holds a `String`, and assigning `result`
 // into an `Int` binding must now mismatch (T0060) — proving the read takes the
 // String binding type, not the Int return type (which would spuriously pass).
-func testResultLocalKeepsBindingType(): Unit {
+test "result local keeps binding type" {
   val src = "package P\nfunc f(): Int {\n  val result = \"hi\"\n  val n: Int = result\n  n\n}\n"
   assertTrue(
     hasDiagCode(parseCheck(src), "T0060"),
@@ -245,7 +245,7 @@ func testResultLocalKeepsBindingType(): Unit {
   )
 }
 
-func testValTypeMismatch(): Unit {
+test "val type mismatch" {
   val src = "package P\nfunc f(): Unit {\n  val x: Int = \"oops\"\n}\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0060"), "val-mismatch: T0060 emitted")
@@ -255,7 +255,7 @@ func testValTypeMismatch(): Unit {
 // trailing expression, not the universal `TyError`.  Distinguishing case: an
 // `unsafe { 5 }` body (`Int`) in a `String`-returning function MUST mismatch
 // (T0070) — were the block still `TyError`, it would unify silently.
-func testUnsafeBlockTyped(): Unit {
+test "unsafe block typed" {
   val bad = "package P\nfunc f(): String { unsafe { 5 } }\n"
   assertTrue(hasDiagCode(parseCheck(bad), "T0070"), "unsafe-block: Int trailing expr mismatches String return")
   val ok = "package P\nfunc g(): Int { unsafe { 5 } }\n"
@@ -264,13 +264,13 @@ func testUnsafeBlockTyped(): Unit {
 
 // A block whose final statement is `return` has type `Never` (bottom), so a
 // function whose body block diverges does not false-mismatch its return type.
-func testDivergingBlockIsNever(): Unit {
+test "diverging block is never" {
   val src = "package P\nfunc f(): Int { unsafe { return 3 } }\n"
   assertEqualInt(diagCount(parseCheck(src)), 0, "diverging-block: unsafe { return 3 } is Never, no mismatch")
 }
 
 // #1943: an `if`/`else` expression takes the unified type of its branches.
-func testIfBranchesUnify(): Unit {
+test "if branches unify" {
   val ok = "package P\nfunc f(c: in Bool): Int { if c { 1 } else { 2 } }\n"
   assertEqualInt(diagCount(parseCheck(ok)), 0, "if-unify: matching branches type as Int")
   val bad = "package P\nfunc f(c: in Bool): Int { if c { 1 } else { \"x\" } }\n"
@@ -279,14 +279,14 @@ func testIfBranchesUnify(): Unit {
 
 // An `if` without `else` is `Unit` — binding it to a typed `val` mismatches
 // (were it still `TyError`, the binding would unify silently).
-func testIfWithoutElseIsUnit(): Unit {
+test "if without else is unit" {
   val src = "package P\nfunc f(c: in Bool): Unit {\n  val x: String = if c { \"x\" }\n}\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0060"), "if-no-else: Unit value mismatches a String val binding")
 }
 
 // A diverging branch (`return`) is `Never` and is absorbed — the `if` takes the
 // other branch's type, so this is a clean `Int`.
-func testIfDivergingBranchAbsorbed(): Unit {
+test "if diverging branch absorbed" {
   val src = "package P\nfunc f(c: in Bool): Int { if c { 1 } else { return 0 } }\n"
   assertEqualInt(diagCount(parseCheck(src)), 0, "if-diverge: else-return is Never, unifies to Int")
 }
@@ -297,7 +297,7 @@ func testIfDivergingBranchAbsorbed(): Unit {
 // branch is `Int`.  (A statement-position `if c { x } else { stmt }` where `x`
 // is a discarded non-`Unit` value is valid and pervasive — e.g. a branch ending
 // in a value-returning call whose result is dropped.)
-func testIfUnitBranchNoMismatch(): Unit {
+test "if unit branch no mismatch" {
   val src = "package P\nfunc f(c: in Bool): Unit {\n  if c { 1 } else { val x = 2 }\n}\n"
   assertEqualInt(diagCount(parseCheck(src)), 0, "if-unit-branch: Int-vs-Unit branches are not a mismatch")
 }
@@ -305,14 +305,14 @@ func testIfUnitBranchNoMismatch(): Unit {
 // #2127/#2129: a bare UpperCamelCase member-call receiver that does not resolve
 // is treated as a module reference (e.g. a `Std.String as Str` alias that
 // survived rewriting), so it does NOT emit T0020 …
-func testUppercaseModuleReceiverLenient(): Unit {
+test "uppercase module receiver lenient" {
   val src = "package P\nfunc f(): Int { Foo.bar() }\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0020"), "upper-receiver: unresolved `Foo.bar()` does not error T0020")
 }
 
 // … but a lowercase receiver is a value, so a typo still surfaces its T0020 —
 // the leniency must not swallow real unknown-name errors.
-func testLowercaseReceiverStillErrors(): Unit {
+test "lowercase receiver still errors" {
   val src = "package P\nfunc f(): Int { stirng.bar() }\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0020"), "lower-receiver: typo'd `stirng.bar()` still errors T0020")
 }
@@ -322,25 +322,25 @@ func testLowercaseReceiverStillErrors(): Unit {
 // a `.toLong()` body in an `Int`-returning function MUST mismatch (T0070) —
 // were the conversion still `TyError`, it would unify with `Int` and slip
 // through silently.
-func testConvMethodTypedAsTarget(): Unit {
+test "conv method typed as target" {
   val src = "package P\nfunc f(x: in Int): Int { x.toLong() }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0070"), "conv-target: Int body of Long conversion is a mismatch")
 }
 
-func testConvMethodWideningAccepted(): Unit {
+test "conv method widening accepted" {
   val src = "package P\nfunc f(x: in Int): Long { x.toLong() }\n"
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "conv-widen: Int.toLong() in a Long context type-checks")
 }
 
-func testConvMethodNarrowingAccepted(): Unit {
+test "conv method narrowing accepted" {
   val src = "package P\nfunc g(x: in Long): Int { x.toInt() }\n"
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "conv-narrow: Long.toInt() in an Int context type-checks")
 }
 
-func testConvMethodOnNonNumericRejected(): Unit {
+test "conv method on non numeric rejected" {
   val src = "package P\nfunc f(s: in String): Int { s.toInt() }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0103"), "conv-nonnumeric: String.toInt() rejected with T0103")
@@ -350,13 +350,13 @@ func testConvMethodOnNonNumericRejected(): Unit {
 // type, not the universal `TyError`.  Distinguishing case: a `slice[Byte]`
 // element returned where `Int` is expected MUST mismatch (T0070) — `Byte != Int`
 // (no implicit widening) — whereas `TyError` would have unified silently.
-func testIndexByteElementTyped(): Unit {
+test "index byte element typed" {
   val src = "package P\nfunc f(a: in slice[Byte]): Int { a[0] }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0070"), "index-byte: slice[Byte] element is Byte, mismatches Int return")
 }
 
-func testIndexByteWithConversionAccepted(): Unit {
+test "index byte with conversion accepted" {
   val src = "package P\nfunc f(a: in slice[Byte]): Int { a[0].toInt() }\n"
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "index-byte-conv: a[0].toInt() type-checks to Int")
@@ -364,52 +364,52 @@ func testIndexByteWithConversionAccepted(): Unit {
 
 // String indexing yields `Char`; a `Char` in a `Char`-returning function is
 // clean, but in an `Int`-returning function it mismatches.
-func testIndexStringElementIsChar(): Unit {
+test "index string element is char" {
   val ok = "package P\nfunc f(s: in String): Char { s[0] }\n"
   assertEqualInt(diagCount(parseCheck(ok)), 0, "index-string-char: s[0] is Char")
   val bad = "package P\nfunc g(s: in String): Int { s[0] }\n"
   assertTrue(hasDiagCode(parseCheck(bad), "T0070"), "index-string-int: Char element mismatches Int return")
 }
 
-func testReturnWithoutValueError(): Unit {
+test "return without value error" {
   val src = "package P\nfunc f(): Int { return }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0064"), "ret-novalue: T0064 emitted")
 }
 
-func testRangeSubtypeValid(): Unit {
+test "range subtype valid" {
   val src = "package P\ntype Age = Int range 0 ..= 150\n"
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "range-valid: no diagnostics")
   assertTrue(symCount(cr) > 0, "range-valid: symbol registered")
 }
 
-func testRangeSubtypeEmptyBounds(): Unit {
+test "range subtype empty bounds" {
   val src = "package P\ntype Bad = Int range 10 ..= 5\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0090"), "range-empty: T0090 emitted")
 }
 
-func testWhereClauseUnknownParam(): Unit {
+test "where clause unknown param" {
   val src = "package P\nfunc f[T](x: in T): T where Z: Add { x }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0050"), "where-unknown: T0050 emitted")
 }
 
-func testArithmeticTypeMismatch(): Unit {
+test "arithmetic type mismatch" {
   // Adding Int and Bool — should produce T0031.
   val src = "package P\nfunc f(x: in Int, b: in Bool): Int { x + b }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0031"), "arith-mismatch: T0031 emitted")
 }
 
-func testUnknownName(): Unit {
+test "unknown name" {
   val src = "package P\nfunc f(): Int { noSuchName }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0020"), "unknown-name: T0020 emitted")
 }
 
-func testMultipleItemsNoError(): Unit {
+test "multiple items no error" {
   val src = "package P\nrecord A { x: Int }\nrecord B { y: String }\nfunc f(a: in A): String { a.x }\n"
   val pr = parse(src)
   val cr = check(pr.file)
@@ -417,14 +417,14 @@ func testMultipleItemsNoError(): Unit {
   assertTrue(symCount(cr) >= 3, "multi: A, B, f all registered")
 }
 
-func testYieldOutsideAsync(): Unit {
+test "yield outside async" {
   // T0094: yield inside a non-async function body.
   val src = "package P\nfunc f(): Int {\n  yield 1\n  return 0\n}\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0094"), "T0094: yield outside async emits diagnostic")
 }
 
-func testAsyncGeneratorFlags(): Unit {
+test "async generator flags" {
   // An async func with yield: isAsync=true, isGenerator=true, no T0094.
   val src = "package P\nasync func g(): Int {\n  yield 1\n  yield 2\n}\n"
   val cr = parseCheck(src)
@@ -439,7 +439,7 @@ func testAsyncGeneratorFlags(): Unit {
   }
 }
 
-func testHotAnnotationFlag(): Unit {
+test "hot annotation flag" {
   // @hot on a regular async func: isHot=true, isGenerator=false.
   val src = "package P\n@hot\nasync func h(): Int { return 42 }\n"
   val cr = parseCheck(src)
@@ -452,7 +452,7 @@ func testHotAnnotationFlag(): Unit {
   }
 }
 
-func testQualifiedTypeResolvesViaImport(): Unit {
+test "qualified type resolves via import" {
   // `Lib.Point` in a type position should resolve to the same `Point`
   // type registered by checkWithImports — no T0014 "qualified type not
   // resolved".
@@ -480,7 +480,7 @@ func testQualifiedTypeResolvesViaImport(): Unit {
 // #1488: interface subtyping at argument positions — a value whose type `T`
 // has `impl I for T` is accepted where parameter type is the interface `I`.
 // `Hello` impls `Greeter`, so `useGreeter(Hello(...))` is clean.
-func testInterfaceSubtypingAccepted(): Unit {
+test "interface subtyping accepted" {
   val src = "package P\npub interface Greeter {\n  func greet(): String\n}\nrecord Hello { name: String }\nimpl Greeter for Hello {\n  func greet(): String { \"hi\" }\n}\nfunc useGreeter(g: in Greeter): String { g.greet() }\nfunc f(): Unit {\n  val s = useGreeter(Hello(name = \"x\"))\n}\n"
   assertEqualInt(
     diagCount(parseCheck(src)),
@@ -491,7 +491,7 @@ func testInterfaceSubtypingAccepted(): Unit {
 
 // The subtyping is precise: a record that does NOT implement the interface is
 // still rejected (T0043), so the relation isn't a blanket "any user type".
-func testInterfaceSubtypingRejectsNonImpl(): Unit {
+test "interface subtyping rejects non impl" {
   val src = "package P\npub interface Greeter {\n  func greet(): String\n}\nrecord Other { x: Int }\nfunc useGreeter(g: in Greeter): String { \"\" }\nfunc f(): Unit {\n  val s = useGreeter(Other(x = 1))\n}\n"
   assertTrue(
     hasDiagCode(parseCheck(src), "T0043"),
@@ -504,7 +504,7 @@ func testInterfaceSubtypingRejectsNonImpl(): Unit {
 // `PkgA.Greeter` (the user imports `PkgA`), so passing it to `PkgB.wantB`, whose
 // parameter is `PkgB.Greeter`, MUST still be rejected — a simple-name key would
 // have wrongly accepted it.
-func testInterfaceSubtypingCrossPackageSound(): Unit {
+test "interface subtyping cross package sound" {
   val pkgA = parse("package PkgA\npub interface Greeter {\n  func greet(): String\n}\n")
   val pkgB = parse(
     "package PkgB\npub interface Greeter {\n  func greet(): String\n}\npub func wantB(g: in Greeter): String { \"\" }\n"
@@ -532,7 +532,7 @@ func testInterfaceSubtypingCrossPackageSound(): Unit {
 // `testScopedResolutionNoCrossPackageTypeCollision`.  Here, when `LibB`'s `E` is
 // registered after `LibA`'s, a `match` over `E` is exhaustive against `LibB`'s
 // cases (and `LibA`'s cases are unknown).
-func testCollidingTypeNameLastRegisteredWins(): Unit {
+test "colliding type name last registered wins" {
   val libA = parse("package LibA\npub union E { case A1(x: Int) }\n")
   val libB = parse("package LibB\npub union E { case B1(x: Int)\n  case B2(y: Int) }\n")
   val importedItems: List[Item] = newList()
@@ -567,7 +567,7 @@ func testCollidingTypeNameLastRegisteredWins(): Unit {
 // by first-in-wins.  `mk(String)` returns `Int`; `mk(Int)` returns `String`.
 // A `String`-typed argument must select the `Int`-returning overload, so
 // binding the call into an `Int` is clean and into a `String` mismatches.
-func testOverloadDispatchByArgType(): Unit {
+test "overload dispatch by arg type" {
   val libSrc = "package Lib\npub func mk(s: in String): Int { 0 }\npub func mk(n: in Int): String { \"\" }\n"
   val libPr = parse(libSrc)
   val importedItems: List[Item] = newList()
@@ -595,7 +595,7 @@ func testOverloadDispatchByArgType(): Unit {
   )
 }
 
-func testQualifiedTypeUnknownEmitsT0014(): Unit {
+test "qualified type unknown emits t0014" {
   // A qualified name whose last segment is not in scope should still
   // emit T0014, not resolve silently.
   val src = "package App\nfunc f(x: Unknown.Pkg.Blorp): Int { 0 }\n"
@@ -605,7 +605,7 @@ func testQualifiedTypeUnknownEmitsT0014(): Unit {
   assertTrue(hasDiagCode(cr, "T0014"), "qualified-unknown: T0014 for Unknown.Pkg.Blorp not in scope")
 }
 
-func testQualifiedTypeMisqualifiedResolvesPermissively(): Unit {
+test "qualified type misqualified resolves permissively" {
   // Interim Band 6 behaviour (docs/41 §9, #923): the multi-segment
   // resolver looks up only the LAST segment in the symbol table.
   // `Wrong.Prefix.Point` therefore resolves to the imported `Point`
@@ -660,7 +660,7 @@ func testOpaqueConstructSamePackageWithDuplicateImportedSymbol(): Unit {
 // We exercise this with a record type used in a typed-arithmetic
 // mismatch (a Bool + Point pair).  T0031's payload must include the
 // declared name "Point" rather than the synthetic `<#N>` placeholder.
-func testTyUserRendersDeclaredName(): Unit {
+test "ty user renders declared name" {
   val src = "package P\n" + "record Point { x: Int; y: Int }\n" + "func f(p: in Point, b: in Bool): Int { p + b }\n"
   val cr = parseCheck(src)
   // Pull every diagnostic message and assert at least one mentions
@@ -688,7 +688,7 @@ func testTyUserRendersDeclaredName(): Unit {
 // fold returned FEOverflow; the lexer now stores 9223372036854775808
 // as Long.MinValue's bit pattern and the fold recognises the
 // PreNeg + literal pair as a single Long.MinValue unit.
-func testRangeBoundLongMinValueFolds(): Unit {
+test "range bound long min value folds" {
   val src = "package P\n" + "type Limit = Long range -9223372036854775808 ..= 0\n"
   val cr = parseCheck(src)
   // T0093 = "symbolic bound that cannot be folded" — must not fire.
@@ -696,7 +696,7 @@ func testRangeBoundLongMinValueFolds(): Unit {
   assertEqualInt(diagCount(cr), 0, "Long.MinValue range bound: no diagnostics at all")
 }
 
-func testFirstWinsOnImportFuncCollision(): Unit {
+test "first wins on import func collision" {
   // `addSigsFromItems` is called twice by `checkWithImports`: once
   // with `importedItems`, once with `file.items`.  On the bare name
   // key, first-wins means the imported signature pins the slot, and
@@ -739,78 +739,78 @@ func testFirstWinsOnImportFuncCollision(): Unit {
 // (range) bounds via `TyRefined`, populated by the resolver for inline
 // refined types (`Int range lo .. hi`).  A binding initialised with an
 // integer literal outside those bounds is rejected with T0015.
-func testInlineRefinedInBounds(): Unit {
+test "inline refined in bounds" {
   val src = "package P\nfunc f(): Unit {\n  val x: Int range 0 ..= 9 = 5\n}\n"
   val cr = parseCheck(src)
   assertTrue(not hasDiagCode(cr, "T0015"), "inline-range in-bounds: no T0015")
   assertEqualInt(diagCount(cr), 0, "inline-range in-bounds: clean")
 }
 
-func testInlineRefinedAboveInclusive(): Unit {
+test "inline refined above inclusive" {
   val src = "package P\nfunc f(): Unit {\n  val x: Int range 0 ..= 9 = 10\n}\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0015"), "inline-range above inclusive hi: T0015")
 }
 
-func testInlineRefinedAtInclusiveHi(): Unit {
+test "inline refined at inclusive hi" {
   // `..=` includes the upper endpoint, so 9 is in range.
   val src = "package P\nfunc f(): Unit {\n  val x: Int range 0 ..= 9 = 9\n}\n"
   val cr = parseCheck(src)
   assertTrue(not hasDiagCode(cr, "T0015"), "inline-range at inclusive hi: no T0015")
 }
 
-func testInlineRefinedHalfOpenExcludesHi(): Unit {
+test "inline refined half open excludes hi" {
   // `..` is half-open: 10 is excluded from `0 .. 10`.
   val src = "package P\nfunc f(): Unit {\n  val x: Int range 0 .. 10 = 10\n}\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0015"), "inline-range half-open excludes hi: T0015")
 }
 
-func testInlineRefinedHalfOpenInBounds(): Unit {
+test "inline refined half open in bounds" {
   val src = "package P\nfunc f(): Unit {\n  val x: Int range 0 .. 10 = 9\n}\n"
   val cr = parseCheck(src)
   assertTrue(not hasDiagCode(cr, "T0015"), "inline-range half-open in-bounds: no T0015")
 }
 
-func testInlineRefinedBelowLo(): Unit {
+test "inline refined below lo" {
   val src = "package P\nfunc f(): Unit {\n  val x: Int range 5 ..= 9 = 1\n}\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0015"), "inline-range below lo: T0015")
 }
 
-func testInlineRefinedNegativeBounds(): Unit {
+test "inline refined negative bounds" {
   val ok = "package P\nfunc f(): Unit {\n  val x: Int range -5 ..= 5 = -3\n}\n"
   val bad = "package P\nfunc f(): Unit {\n  val x: Int range -5 ..= 5 = -9\n}\n"
   assertTrue(not hasDiagCode(parseCheck(ok), "T0015"), "neg-bound in-range: no T0015")
   assertTrue(hasDiagCode(parseCheck(bad), "T0015"), "neg-bound out-of-range: T0015")
 }
 
-func testInlineRefinedVarAndLet(): Unit {
+test "inline refined var and let" {
   val v = "package P\nfunc f(): Unit {\n  var x: Int range 0 ..= 9 = 10\n}\n"
   val l = "package P\nfunc f(): Unit {\n  let x: Int range 0 ..= 9 = 10\n}\n"
   assertTrue(hasDiagCode(parseCheck(v), "T0015"), "var inline-range out-of-range: T0015")
   assertTrue(hasDiagCode(parseCheck(l), "T0015"), "let inline-range out-of-range: T0015")
 }
 
-func testInlineRefinedUpperOpenBelowLo(): Unit {
+test "inline refined upper open below lo" {
   // Upper-open `range 5 ..`: 3 is below the lower bound — T0015.
   val src = "package P\nfunc f(): Unit {\n  val x: Int range 5 .. = 3\n}\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0015"), "upper-open below lo: T0015")
 }
 
-func testInlineRefinedUpperOpenAtLo(): Unit {
+test "inline refined upper open at lo" {
   // Upper-open `range 5 ..`: 5 is at the lower bound, no upper to check.
   val src = "package P\nfunc f(): Unit {\n  val x: Int range 5 .. = 5\n}\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0015"), "upper-open at lo: no T0015")
 }
 
-func testInlineRefinedLowerOpenAboveHi(): Unit {
+test "inline refined lower open above hi" {
   // Lower-open `range ..= 9`: 12 is above the inclusive upper bound — T0015.
   val src = "package P\nfunc f(): Unit {\n  val x: Int range ..= 9 = 12\n}\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0015"), "lower-open above hi: T0015")
 }
 
-func testRefinementTransparentToEquiv(): Unit {
+test "refinement transparent to equiv" {
   // Gate-safety: a refined type is equivalent to its underlying.  An
   // in-bounds refined binding whose declared type differs only by the
   // refinement layer must produce zero type-equivalence diagnostics
@@ -822,7 +822,7 @@ func testRefinementTransparentToEquiv(): Unit {
   assertEqualInt(diagCount(cr), 0, "refinement transparency: zero diagnostics")
 }
 
-func testInlineRefinedNonLiteralNotChecked(): Unit {
+test "inline refined non literal not checked" {
   // The inline check only fires for statically-known integer literals;
   // a non-literal initialiser (here a parameter) is not range-checked
   // at compile time (that is runtime / Band-4 construction validation).
@@ -836,7 +836,7 @@ func testInlineRefinedNonLiteralNotChecked(): Unit {
 // Bool / unbounded-scalar scrutinees.  A bare `case Foo` counts as covering
 // case `Foo` only when `Foo` names a case of the scrutinee type (matching
 // codegen); otherwise it is an irrefutable variable bind (catch-all).
-func testMatchUnionExhaustive(): Unit {
+test "match union exhaustive" {
   val src = "package P\n" + "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
     "func area(sh: in Shape): Int {\n" +
     "  match sh { case Circle(r) -> r; case Square(s) -> s; case Tri -> 0 }\n" +
@@ -845,7 +845,7 @@ func testMatchUnionExhaustive(): Unit {
   assertTrue(not hasDiagCode(cr, "T0016"), "union all-cases: no T0016")
 }
 
-func testMatchUnionNonExhaustive(): Unit {
+test "match union non exhaustive" {
   val src = "package P\n" + "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
     "func area(sh: in Shape): Int {\n" +
     "  match sh { case Circle(r) -> r; case Square(s) -> s }\n" +
@@ -854,7 +854,7 @@ func testMatchUnionNonExhaustive(): Unit {
   assertTrue(hasDiagCode(cr, "T0016"), "union missing case: T0016")
 }
 
-func testMatchUnionWildcard(): Unit {
+test "match union wildcard" {
   val src = "package P\n" + "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
     "func area(sh: in Shape): Int {\n" +
     "  match sh { case Circle(r) -> r; case _ -> 0 }\n" +
@@ -863,7 +863,7 @@ func testMatchUnionWildcard(): Unit {
   assertTrue(not hasDiagCode(cr, "T0016"), "union wildcard: no T0016")
 }
 
-func testMatchUnionBareNameBind(): Unit {
+test "match union bare name bind" {
   // A bare name that is NOT a case of the scrutinee is a variable bind
   // (catch-all), so the match is exhaustive.
   val src = "package P\n" + "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
@@ -874,7 +874,7 @@ func testMatchUnionBareNameBind(): Unit {
   assertTrue(not hasDiagCode(cr, "T0016"), "union bare-name bind catch-all: no T0016")
 }
 
-func testMatchUnionNullaryBareCase(): Unit {
+test "match union nullary bare case" {
   // A bare `case Tri` (nullary) covers case Tri — proving bare-name cases are
   // resolved against the scrutinee's case set, not treated as a catch-all.
   val src = "package P\n" + "union Shape { case Circle(r: Int); case Tri }\n" + "func area(sh: in Shape): Int {\n" +
@@ -884,7 +884,7 @@ func testMatchUnionNullaryBareCase(): Unit {
   assertTrue(hasDiagCode(cr, "T0016"), "union bare nullary case covers only Tri -> missing Circle: T0016")
 }
 
-func testMatchUnionGuardDoesNotCover(): Unit {
+test "match union guard does not cover" {
   // A guarded arm never counts toward coverage (the guard may fail).
   val src = "package P\n" + "union Shape { case Circle(r: Int); case Tri }\n" + "func area(sh: in Shape): Int {\n" +
     "  match sh { case Circle(r) if r > 0 -> r; case Tri -> 0 }\n" +
@@ -893,7 +893,7 @@ func testMatchUnionGuardDoesNotCover(): Unit {
   assertTrue(hasDiagCode(cr, "T0016"), "guarded Circle arm does not cover -> T0016")
 }
 
-func testMatchGenericUnionExhaustive(): Unit {
+test "match generic union exhaustive" {
   // Generic-union scrutinees (`Option[Int]`) should resolve to the union
   // declaration via `typeIdEq` regardless of type arguments.
   val ok = "package P\nunion Option[T] { case Some(value: T); case None }\n" + "func f(o: in Option[Int]): Int {\n" +
@@ -906,7 +906,7 @@ func testMatchGenericUnionExhaustive(): Unit {
   assertTrue(hasDiagCode(parseCheck(bad), "T0016"), "Option[Int] missing None: T0016")
 }
 
-func testMatchOrPatternExhaustive(): Unit {
+test "match or pattern exhaustive" {
   // POr arms enumerate multiple union cases at once.
   val ok = "package P\n" + "union Shape { case Circle; case Square; case Tri }\n" + "func area(sh: in Shape): Int {\n" +
     "  match sh { case Circle | Square -> 0; case Tri -> 1 }\n" +
@@ -918,7 +918,7 @@ func testMatchOrPatternExhaustive(): Unit {
   assertTrue(hasDiagCode(parseCheck(bad), "T0016"), "Or-pattern missing Tri: T0016")
 }
 
-func testMatchAtBindExhaustive(): Unit {
+test "match at bind exhaustive" {
   // `case x@Circle(r)` should credit `Circle` to the coverage set via the
   // `Some(inner)` branch of `collectCoveredCases`.
   val src = "package P\n" + "union Shape { case Circle(r: Int); case Square(s: Int); case Tri }\n" +
@@ -933,7 +933,7 @@ func testMatchAtBindExhaustive(): Unit {
   assertTrue(hasDiagCode(parseCheck(bad), "T0016"), "@-bound Circle alone leaves Square/Tri uncovered: T0016")
 }
 
-func testMatchEnumExhaustive(): Unit {
+test "match enum exhaustive" {
   val src = "package P\n" + "enum Color { case Red; case Green; case Blue }\n" + "func rank(c: in Color): Int {\n" +
     "  match c { case Red -> 1; case Green -> 2; case Blue -> 3 }\n" +
     "}\n"
@@ -941,7 +941,7 @@ func testMatchEnumExhaustive(): Unit {
   assertTrue(not hasDiagCode(cr, "T0016"), "enum all-cases: no T0016")
 }
 
-func testMatchEnumNonExhaustive(): Unit {
+test "match enum non exhaustive" {
   val src = "package P\n" + "enum Color { case Red; case Green; case Blue }\n" + "func rank(c: in Color): Int {\n" +
     "  match c { case Red -> 1; case Green -> 2 }\n" +
     "}\n"
@@ -949,32 +949,32 @@ func testMatchEnumNonExhaustive(): Unit {
   assertTrue(hasDiagCode(cr, "T0016"), "enum missing Blue: T0016")
 }
 
-func testMatchBoolExhaustive(): Unit {
+test "match bool exhaustive" {
   val src = "package P\n" + "func f(b: in Bool): Int { match b { case true -> 1; case false -> 0 } }\n"
   val cr = parseCheck(src)
   assertTrue(not hasDiagCode(cr, "T0016"), "bool true+false: no T0016")
 }
 
-func testMatchBoolNonExhaustive(): Unit {
+test "match bool non exhaustive" {
   val src = "package P\n" + "func f(b: in Bool): Int { match b { case true -> 1 } }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0016"), "bool missing false: T0016")
 }
 
-func testMatchScalarNeedsWildcard(): Unit {
+test "match scalar needs wildcard" {
   val bad = "package P\nfunc f(n: in Int): Int { match n { case 0 -> 0; case 1 -> 1 } }\n"
   val ok = "package P\nfunc f(n: in Int): Int { match n { case 0 -> 0; case _ -> 1 } }\n"
   assertTrue(hasDiagCode(parseCheck(bad), "T0016"), "int match no wildcard: T0016")
   assertTrue(not hasDiagCode(parseCheck(ok), "T0016"), "int match with wildcard: no T0016")
 }
 
-func testMatchStringNeedsWildcard(): Unit {
+test "match string needs wildcard" {
   val src = "package P\n" + "func f(s: in String): Int { match s { case \"a\" -> 1; case \"b\" -> 2 } }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0016"), "string match no wildcard: T0016")
 }
 
-func testPropagateResultUnwrap(): Unit {
+test "propagate result unwrap" {
   val ok = "package P\nunion Result[T, E] { case Ok(value: T); case Err(error: E) }\n" +
     "func f(r: in Result[Int, String]): Unit { val n: Int = r? }\n"
   val bad = "package P\nunion Result[T, E] { case Ok(value: T); case Err(error: E) }\n" +
@@ -983,7 +983,7 @@ func testPropagateResultUnwrap(): Unit {
   assertTrue(hasDiagCode(parseCheck(bad), "T0060"), "Result[Int,_]? used as String: T0060")
 }
 
-func testPropagateOptionUnwrap(): Unit {
+test "propagate option unwrap" {
   val ok = "package P\nunion Option[T] { case Some(value: T); case None }\n" +
     "func f(o: in Option[Int]): Unit { val n: Int = o? }\n"
   val bad = "package P\nunion Option[T] { case Some(value: T); case None }\n" +
@@ -992,7 +992,7 @@ func testPropagateOptionUnwrap(): Unit {
   assertTrue(hasDiagCode(parseCheck(bad), "T0060"), "Option[Int]? used as String: T0060")
 }
 
-func testPropagateNonMonadicNoT0060(): Unit {
+test "propagate non monadic no t0060" {
   val src = "package P\n" + "func f(n: in Int): Unit { val _x = n? }\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0060"), "non-monadic ? yields TyError: no T0060 cascade")
 }
@@ -1013,14 +1013,14 @@ func importedItemsOf(libSrc: in String): List[Item] {
   items
 }
 
-func testVisibilityPubTypeAllowed(): Unit {
+test "visibility pub type allowed" {
   val imp = importedItemsOf("package Lib\npub record Widget { x: Int }\n")
   val pr = parse("package App\nfunc f(w: in Widget): Int { 0 }\n")
   val cr = checkWithImports(pr.file, imp)
   assertTrue(not hasDiagCode(cr, "T0097"), "pub imported type: no T0097")
 }
 
-func testVisibilityInternalTypeAllowed(): Unit {
+test "visibility internal type allowed" {
   // `internal` is visible across packages within a project.
   val imp = importedItemsOf("package Lib\ninternal record Widget { x: Int }\n")
   val pr = parse("package App\nfunc f(w: in Widget): Int { 0 }\n")
@@ -1028,28 +1028,28 @@ func testVisibilityInternalTypeAllowed(): Unit {
   assertTrue(not hasDiagCode(cr, "T0097"), "internal imported type cross-package: no T0097")
 }
 
-func testVisibilityPrivateTypeRejected(): Unit {
+test "visibility private type rejected" {
   val imp = importedItemsOf("package Lib\nrecord Widget { x: Int }\n")
   val pr = parse("package App\nfunc f(w: in Widget): Int { 0 }\n")
   val cr = checkWithImports(pr.file, imp)
   assertTrue(hasDiagCode(cr, "T0097"), "package-private imported type referenced cross-package: T0097")
 }
 
-func testVisibilityPubFuncAllowed(): Unit {
+test "visibility pub func allowed" {
   val imp = importedItemsOf("package Lib\npub func helper(x: in Int): Int { x }\n")
   val pr = parse("package App\nfunc f(): Int { helper(3) }\n")
   val cr = checkWithImports(pr.file, imp)
   assertTrue(not hasDiagCode(cr, "T0097"), "pub imported func: no T0097")
 }
 
-func testVisibilityPrivateFuncRejected(): Unit {
+test "visibility private func rejected" {
   val imp = importedItemsOf("package Lib\nfunc helper(x: in Int): Int { x }\n")
   val pr = parse("package App\nfunc f(): Int { helper(3) }\n")
   val cr = checkWithImports(pr.file, imp)
   assertTrue(hasDiagCode(cr, "T0097"), "package-private imported func referenced cross-package: T0097")
 }
 
-func testVisibilityExternTypeAllowed(): Unit {
+test "visibility extern type allowed" {
   // Extern types are FFI-boundary bindings (no `pub`), but are referenced
   // directly across packages (e.g. `List`/`Map`).  They must not be flagged.
   val imp = importedItemsOf("package Lib\nextern type Box = \"System.Object\"\n")
@@ -1058,7 +1058,7 @@ func testVisibilityExternTypeAllowed(): Unit {
   assertTrue(not hasDiagCode(cr, "T0097"), "extern type cross-package: no T0097 (FFI boundary)")
 }
 
-func testVisibilitySamePackageUnaffected(): Unit {
+test "visibility same package unaffected" {
   // A package-private symbol referenced within the same package (not imported)
   // must never be flagged.
   val src = "package P\n" + "record Widget { x: Int }\n" + "func helper(n: in Int): Int { n }\n" +
@@ -1069,7 +1069,7 @@ func testVisibilitySamePackageUnaffected(): Unit {
 
 // #1486: impl/interface structural conformance — every abstract interface
 // method must be implemented (T0098) with matching parameter arity (T0099).
-func testImplConforming(): Unit {
+test "impl conforming" {
   val src = "package P\n" + "interface Greeter { func greet(name: in String): String }\n" + "record G {}\n" +
     "impl Greeter for G { func greet(name: in String): String { name } }\n"
   val cr = parseCheck(src)
@@ -1077,21 +1077,21 @@ func testImplConforming(): Unit {
   assertTrue(not hasDiagCode(cr, "T0099"), "conforming impl: no T0099")
 }
 
-func testImplMissingMethod(): Unit {
+test "impl missing method" {
   val src = "package P\n" + "interface Greeter { func greet(name: in String): String }\n" + "record G {}\n" +
     "impl Greeter for G {}\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0098"), "impl missing abstract method: T0098")
 }
 
-func testImplArityMismatch(): Unit {
+test "impl arity mismatch" {
   val src = "package P\n" + "interface Greeter { func greet(name: in String): String }\n" + "record G {}\n" +
     "impl Greeter for G { func greet(): String { \"hi\" } }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0099"), "impl method arity mismatch: T0099")
 }
 
-func testImplDefaultMethodOptional(): Unit {
+test "impl default method optional" {
   // An interface method WITH a body is a default (IMFunc) — an impl need not
   // override it, so omitting it must not produce T0098.
   val src = "package P\n" + "interface Greeter { func greet(name: in String): String { \"hi \" + name } }\n" +
@@ -1103,32 +1103,32 @@ func testImplDefaultMethodOptional(): Unit {
 
 // #1487 (§5.2): `in` parameters (and `val`/`let`) are immutable and cannot be
 // reassigned (T0087); `var` locals and `out`/`inout` params are mutable.
-func testInParamNoRebind(): Unit {
+test "in param no rebind" {
   val src = "package P\nfunc f(x: in Int): Unit { x = 5 }\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0087"), "reassigning an `in` param: T0087")
 }
 
-func testValNoReassign(): Unit {
+test "val no reassign" {
   val src = "package P\nfunc f(): Unit {\n  val x = 1\n  x = 2\n}\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0087"), "reassigning a `val`: T0087")
 }
 
-func testVarReassignOk(): Unit {
+test "var reassign ok" {
   val src = "package P\nfunc f(): Unit {\n  var x = 1\n  x = 2\n}\n"
   val cr = parseCheck(src)
   assertTrue(not hasDiagCode(cr, "T0087"), "reassigning a `var`: no T0087")
 }
 
-func testOutParamReassignOk(): Unit {
+test "out param reassign ok" {
   // `out` params are mutable (they must be assigned), so assigning is fine.
   val src = "package P\nfunc f(x: out Int): Unit { x = 5 }\n"
   val cr = parseCheck(src)
   assertTrue(not hasDiagCode(cr, "T0087"), "assigning an `out` param: no T0087")
 }
 
-func testInoutParamReassignOk(): Unit {
+test "inout param reassign ok" {
   val src = "package P\nfunc f(x: inout Int): Unit { x = 5 }\n"
   val cr = parseCheck(src)
   assertTrue(not hasDiagCode(cr, "T0087"), "assigning an `inout` param: no T0087")
@@ -1136,27 +1136,27 @@ func testInoutParamReassignOk(): Unit {
 
 // #1487 (§5.2): an argument bound to an `out`/`inout` parameter must be a
 // mutable l-value (T0085); `in` arguments may be any expression.
-func testOutArgMutableOk(): Unit {
+test "out arg mutable ok" {
   val src = "package P\nfunc g(x: out Int): Unit { x = 5 }\nfunc f(): Unit {\n  var y = 0\n  g(y)\n}\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0085"), "out arg is a var: no T0085")
 }
 
-func testOutArgImmutableRejected(): Unit {
+test "out arg immutable rejected" {
   val src = "package P\nfunc g(x: out Int): Unit { x = 5 }\nfunc f(): Unit {\n  val y = 0\n  g(y)\n}\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0085"), "out arg is a val: T0085")
 }
 
-func testOutArgLiteralRejected(): Unit {
+test "out arg literal rejected" {
   val src = "package P\nfunc g(x: out Int): Unit { x = 5 }\nfunc f(): Unit { g(0) }\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0085"), "out arg is a literal: T0085")
 }
 
-func testInoutArgMutableOk(): Unit {
+test "inout arg mutable ok" {
   val src = "package P\nfunc g(x: inout Int): Unit { x = 5 }\nfunc f(): Unit {\n  var y = 0\n  g(y)\n}\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0085"), "inout arg is a var: no T0085")
 }
 
-func testInArgAnyExprOk(): Unit {
+test "in arg any expr ok" {
   val src = "package P\nfunc g(x: in Int): Unit {}\nfunc f(): Unit { g(0) }\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0085"), "in arg literal: no T0085")
 }
@@ -1165,31 +1165,31 @@ func testInArgAnyExprOk(): Unit {
 // call now yields the constructed type (non-generic records); a named argument
 // must reference a real field (T0101); an opaque type cannot be constructed
 // outside its declaring package (T0100).
-func testCtorReturnsRecordType(): Unit {
+test "ctor returns record type" {
   val ok = "package P\nrecord Point { x: Int; y: Int }\nfunc f(): Unit { val p: Point = Point(x = 1, y = 2) }\n"
   val bad = "package P\nrecord Point { x: Int; y: Int }\nfunc f(): Unit { val q: Int = Point(x = 1, y = 2) }\n"
   assertTrue(not hasDiagCode(parseCheck(ok), "T0060"), "ctor returns the record type: no T0060")
   assertTrue(hasDiagCode(parseCheck(bad), "T0060"), "record ctor used as Int: T0060")
 }
 
-func testCtorUnknownField(): Unit {
+test "ctor unknown field" {
   val src = "package P\nrecord Point { x: Int; y: Int }\nfunc f(): Unit { val p = Point(z = 3) }\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0101"), "unknown ctor field: T0101")
 }
 
-func testCtorKnownFieldsOk(): Unit {
+test "ctor known fields ok" {
   val src = "package P\nrecord Point { x: Int; y: Int }\nfunc f(): Unit { val p = Point(x = 1, y = 2) }\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0101"), "known ctor fields: no T0101")
 }
 
-func testOpaqueConstructCrossPackage(): Unit {
+test "opaque construct cross package" {
   val imp = importedItemsOf("package Lib\npub opaque type Secret { token: String }\n")
   val pr = parse("package App\nfunc f(): Unit { val s = Secret(token = \"x\") }\n")
   val cr = checkWithImports(pr.file, imp)
   assertTrue(hasDiagCode(cr, "T0100"), "opaque construction cross-package: T0100")
 }
 
-func testOpaqueConstructSamePackage(): Unit {
+test "opaque construct same package" {
   val src = "package P\nopaque type Secret { token: String }\nfunc f(): Unit { val s = Secret(token = \"x\") }\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0100"), "opaque construction same-package: no T0100")
 }
@@ -1197,48 +1197,48 @@ func testOpaqueConstructSamePackage(): Unit {
 // #1485: pattern-matching an opaque type's representation (record/constructor
 // pattern) is forbidden outside its declaring package (T0102); binding /
 // wildcard arms remain legal.
-func testOpaquePatternMatchCrossPackage(): Unit {
+test "opaque pattern match cross package" {
   val imp = importedItemsOf("package Lib\npub opaque type Box { item: Int }\n")
   val pr = parse("package App\nfunc f(b: in Box): Int { match b { case Box(x) -> 1; case _ -> 0 } }\n")
   val cr = checkWithImports(pr.file, imp)
   assertTrue(hasDiagCode(cr, "T0102"), "cross-package opaque representation match: T0102")
 }
 
-func testOpaqueBindingMatchCrossPackageOk(): Unit {
+test "opaque binding match cross package ok" {
   val imp = importedItemsOf("package Lib\npub opaque type Box { item: Int }\n")
   val pr = parse("package App\nfunc f(b: in Box): Int { match b { case other -> 0 } }\n")
   val cr = checkWithImports(pr.file, imp)
   assertTrue(not hasDiagCode(cr, "T0102"), "cross-package opaque binding match: no T0102")
 }
 
-func testOpaquePatternMatchSamePackageOk(): Unit {
+test "opaque pattern match same package ok" {
   val src = "package P\nopaque type Box { item: Int }\nfunc f(b: in Box): Int { match b { case Box(x) -> 1; case _ -> 0 } }\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0102"), "same-package opaque destructure: no T0102")
 }
 
 // #1487 (§5.2): an `out` parameter must be assigned before the function
 // returns; one never assigned anywhere in the body is rejected (T0086).
-func testOutAssignedOk(): Unit {
+test "out assigned ok" {
   val src = "package P\nfunc f(x: out Int): Unit { x = 5 }\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0086"), "out param assigned: no T0086")
 }
 
-func testOutNeverAssigned(): Unit {
+test "out never assigned" {
   val src = "package P\nfunc f(x: out Int): Unit { val y = 1 }\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0086"), "out param never assigned: T0086")
 }
 
-func testOutAssignedInBranchesOk(): Unit {
+test "out assigned in branches ok" {
   val src = "package P\nfunc f(c: in Bool, x: out Int): Unit { if c { x = 1 } else { x = 2 } }\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0086"), "out assigned in if-branches: no T0086")
 }
 
-func testOutAssignedInLoopOk(): Unit {
+test "out assigned in loop ok" {
   val src = "package P\nfunc f(x: out Int): Unit {\n  var i = 0\n  while i < 3 { x = i; i = i + 1 }\n}\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0086"), "out assigned in loop body: no T0086")
 }
 
-func testInParamNoOutCheck(): Unit {
+test "in param no out check" {
   val src = "package P\nfunc f(x: in Int): Unit { val y = 1 }\n"
   assertTrue(not hasDiagCode(parseCheck(src), "T0086"), "in param: no T0086")
 }
@@ -1282,7 +1282,7 @@ func regexErrorPkgB(): ParseResult {
   parse("package Pb\n" + "pub union RegexError { case Worse }\n" + "pub func tryB(): RegexError { Worse }\n")
 }
 
-func testScopedResolutionNoCrossPackageTypeCollision(): Unit {
+test "scoped resolution no cross package type collision" {
   val pkgA = regexErrorPkgA()
   val pkgB = regexErrorPkgB()
   val imports: List[ImportedPackage] = newList()
@@ -1301,7 +1301,7 @@ func testScopedResolutionNoCrossPackageTypeCollision(): Unit {
   assertEqualInt(idB, typeSymIdByOrigin(cr, "RegexError", "Pb"), "scoped: tryB return type is Pb's RegexError")
 }
 
-func testFlatImportsPreserveLastWins(): Unit {
+test "flat imports preserve last wins" {
   // The flat `checkWithImports` shim leaves imported symbols with an empty
   // origin package, so scoped resolution's package preference never engages
   // and the historical last-registered-wins behaviour is preserved: both
@@ -1327,134 +1327,4 @@ func testFlatImportsPreserveLastWins(): Unit {
   val idB = sigReturnUserId(cr, "tryB")
   assertTrue(idA > 0 and idB > 0, "flat: both signatures resolve to a user type")
   assertEqualInt(idA, idB, "flat imports: last-registered RegexError wins both signatures (back-compat)")
-}
-
-func main(): Unit {
-  testEmptySource()
-  testFuncRegistered()
-  testFuncSigResolved()
-  testRecordRegistered()
-  testUnionCasesRegistered()
-  testDuplicateNameError()
-  testReturnTypeMismatch()
-  testGenericUnionCtorTyped()
-  testGenericUnionNullaryLenient()
-  testMatchBranchDestructuredMismatch()
-  testMatchBranchClean()
-  testMatchNullaryNoShadow()
-  testRangeSubtypeArithmetic()
-  testGenericReturnInstantiatedMismatch()
-  testGenericReturnInstantiatedClean()
-  testGenericMultiOccurrenceConsistent()
-  testResultLocalShadowsKeyword()
-  testResultLocalKeepsBindingType()
-  testValTypeMismatch()
-  testUnsafeBlockTyped()
-  testDivergingBlockIsNever()
-  testIfBranchesUnify()
-  testIfWithoutElseIsUnit()
-  testIfDivergingBranchAbsorbed()
-  testIfUnitBranchNoMismatch()
-  testUppercaseModuleReceiverLenient()
-  testLowercaseReceiverStillErrors()
-  testConvMethodTypedAsTarget()
-  testConvMethodWideningAccepted()
-  testConvMethodNarrowingAccepted()
-  testConvMethodOnNonNumericRejected()
-  testIndexByteElementTyped()
-  testIndexByteWithConversionAccepted()
-  testIndexStringElementIsChar()
-  testReturnWithoutValueError()
-  testRangeSubtypeValid()
-  testRangeSubtypeEmptyBounds()
-  testWhereClauseUnknownParam()
-  testArithmeticTypeMismatch()
-  testUnknownName()
-  testMultipleItemsNoError()
-  testYieldOutsideAsync()
-  testAsyncGeneratorFlags()
-  testHotAnnotationFlag()
-  testQualifiedTypeResolvesViaImport()
-  testCollidingTypeNameLastRegisteredWins()
-  testInterfaceSubtypingAccepted()
-  testInterfaceSubtypingRejectsNonImpl()
-  testInterfaceSubtypingCrossPackageSound()
-  testOverloadDispatchByArgType()
-  testQualifiedTypeUnknownEmitsT0014()
-  testQualifiedTypeMisqualifiedResolvesPermissively()
-  testRangeBoundLongMinValueFolds()
-  testTyUserRendersDeclaredName()
-  testFirstWinsOnImportFuncCollision()
-  testInlineRefinedInBounds()
-  testInlineRefinedAboveInclusive()
-  testInlineRefinedAtInclusiveHi()
-  testInlineRefinedHalfOpenExcludesHi()
-  testInlineRefinedHalfOpenInBounds()
-  testInlineRefinedBelowLo()
-  testInlineRefinedNegativeBounds()
-  testInlineRefinedVarAndLet()
-  testInlineRefinedUpperOpenBelowLo()
-  testInlineRefinedUpperOpenAtLo()
-  testInlineRefinedLowerOpenAboveHi()
-  testRefinementTransparentToEquiv()
-  testInlineRefinedNonLiteralNotChecked()
-  testMatchUnionExhaustive()
-  testMatchUnionNonExhaustive()
-  testMatchUnionWildcard()
-  testMatchUnionBareNameBind()
-  testMatchUnionNullaryBareCase()
-  testMatchUnionGuardDoesNotCover()
-  testMatchGenericUnionExhaustive()
-  testMatchOrPatternExhaustive()
-  testMatchAtBindExhaustive()
-  testMatchEnumExhaustive()
-  testMatchEnumNonExhaustive()
-  testMatchBoolExhaustive()
-  testMatchBoolNonExhaustive()
-  testMatchScalarNeedsWildcard()
-  testMatchStringNeedsWildcard()
-  testPropagateResultUnwrap()
-  testPropagateOptionUnwrap()
-  testPropagateNonMonadicNoT0060()
-  testVisibilityPubTypeAllowed()
-  testVisibilityInternalTypeAllowed()
-  testVisibilityPrivateTypeRejected()
-  testVisibilityPubFuncAllowed()
-  testVisibilityPrivateFuncRejected()
-  testVisibilityExternTypeAllowed()
-  testVisibilitySamePackageUnaffected()
-  testImplConforming()
-  testImplMissingMethod()
-  testImplArityMismatch()
-  testImplDefaultMethodOptional()
-  testInParamNoRebind()
-  testValNoReassign()
-  testVarReassignOk()
-  testOutParamReassignOk()
-  testInoutParamReassignOk()
-  testOutArgMutableOk()
-  testOutArgImmutableRejected()
-  testOutArgLiteralRejected()
-  testInoutArgMutableOk()
-  testInArgAnyExprOk()
-  testCtorReturnsRecordType()
-  testCtorUnknownField()
-  testCtorKnownFieldsOk()
-  testOpaqueConstructCrossPackage()
-  testOpaqueConstructSamePackage()
-  testOpaquePatternMatchCrossPackage()
-  testOpaqueBindingMatchCrossPackageOk()
-  testOpaquePatternMatchSamePackageOk()
-  testOutAssignedOk()
-  testOutNeverAssigned()
-  testOutAssignedInBranchesOk()
-  testOutAssignedInLoopOk()
-  testInParamNoOutCheck()
-  testScopedResolutionNoCrossPackageTypeCollision()
-  testFlatImportsPreserveLastWins()
-  testInterfaceUpcastInResult()
-  testUnrelatedReturnStillMismatches()
-  testIntLiteralAdoptsContext()
-  testBranchWidenStillRejectsMismatch()
-  println("typechecker self-test: ok")
 }

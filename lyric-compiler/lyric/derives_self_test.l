@@ -1,6 +1,7 @@
 //! derives_self_test.l — exercises the self-hosted Lyric.Derives library.
-//! Compiled and executed by SelfHostedDerivesTests.fs.
-//! Exit 0 + "ok" in stdout means all checks held.
+//! Run in CI via native `lyric test` (no F# runner shim).
+//!
+@test_module
 package Lyric.DerivesSelfTest
 
 import Std.Core
@@ -155,28 +156,28 @@ func findFuncBody(sf: in SourceFile, name: in String): Option[Expr] {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests.
 // ─────────────────────────────────────────────────────────────────────────────
-func testNoAnnotationNoSynth(): Unit {
+test "no annotation no synth" {
   val src = "package P\nrecord Point { x: Int; y: Int }\n"
   val cnt = parseDeriveAndCount(src)
   assertEqualInt(cnt, 1, "no-annot: no synthesis")
 }
 
-func testDeriveEqualsRecord(): Unit {
+test "derive equals record" {
   val src = "package P\n@derive(Equals)\nrecord Point { x: Int; y: Int }\n"
   assertTrue(parseDeriveAndFindFunc(src, "Point.equals"), "equals-rec: Point.equals synthesised")
 }
 
-func testDeriveHashRecord(): Unit {
+test "derive hash record" {
   val src = "package P\n@derive(Hash)\nrecord Point { x: Int; y: Int }\n"
   assertTrue(parseDeriveAndFindFunc(src, "Point.hash"), "hash-rec: Point.hash synthesised")
 }
 
-func testDeriveShowRecord(): Unit {
+test "derive show record" {
   val src = "package P\n@derive(Show)\nrecord Point { x: Int; y: Int }\n"
   assertTrue(parseDeriveAndFindFunc(src, "Point.show"), "show-rec: Point.show synthesised")
 }
 
-func testGenerateJsonRecord(): Unit {
+test "generate json record" {
   val src = "package P\n@generate(Json)\nrecord Point { x: Int; y: Int }\n"
   val pr = parse(src)
   val sf = deriveFile(pr.file)
@@ -190,7 +191,7 @@ func testGenerateJsonRecord(): Unit {
 // A regression that strips any link in that chain reduces the count and
 // trips the assertion below; relying on the bare Int-field test
 // (`testGenerateJsonRecord` above) would not catch it.
-func testGenerateJsonRecordStringEscape(): Unit {
+test "generate json record string escape" {
   val src = "package P\n@generate(Json)\nrecord Msg { text: String }\n"
   val pr = parse(src)
   val sf = deriveFile(pr.file)
@@ -204,7 +205,7 @@ func testGenerateJsonRecordStringEscape(): Unit {
   }
 }
 
-func testMultipleDerives(): Unit {
+test "multiple derives" {
   val src = "package P\n@derive(Equals)\n@derive(Hash)\n@derive(Show)\nrecord Point { x: Int; y: Int }\n"
   val pr = parse(src)
   val sf = deriveFile(pr.file)
@@ -215,27 +216,27 @@ func testMultipleDerives(): Unit {
   assertTrue(parseDeriveAndFindFunc(src, "Point.show"), "multi-derive: show present")
 }
 
-func testDeriveEqualsDistinctType(): Unit {
+test "derive equals distinct type" {
   val src = "package P\ntype UserId = Int derives Equals\n"
   assertTrue(parseDeriveAndFindFunc(src, "UserId.equals"), "equals-distinct: UserId.equals synthesised")
 }
 
-func testDeriveHashDistinctType(): Unit {
+test "derive hash distinct type" {
   val src = "package P\ntype UserId = Int derives Hash\n"
   assertTrue(parseDeriveAndFindFunc(src, "UserId.hash"), "hash-distinct: UserId.hash synthesised")
 }
 
-func testDeriveShowDistinctType(): Unit {
+test "derive show distinct type" {
   val src = "package P\ntype UserId = Int derives Show\n"
   assertTrue(parseDeriveAndFindFunc(src, "UserId.show"), "show-distinct: UserId.show synthesised")
 }
 
-func testDeriveEqualsEmptyRecord(): Unit {
+test "derive equals empty record" {
   val src = "package P\n@derive(Equals)\nrecord Empty {}\n"
   assertTrue(parseDeriveAndFindFunc(src, "Empty.equals"), "equals-empty: Empty.equals synthesised (empty record)")
 }
 
-func testDeriveShowEmptyRecord(): Unit {
+test "derive show empty record" {
   val src = "package P\n@derive(Show)\nrecord Empty {}\n"
   assertTrue(parseDeriveAndFindFunc(src, "Empty.show"), "show-empty: Empty.show synthesised (empty record)")
 }
@@ -244,7 +245,7 @@ func testDeriveShowEmptyRecord(): Unit {
 // item's visibility.  Without it, `pub @derive(Equals) record Point` would
 // produce a package-private `Point.equals`, and cross-package callers
 // would fail visibility checks.
-func testDeriveVisibilityPub(): Unit {
+test "derive visibility pub" {
   val src = "package P\npub @derive(Equals)\nrecord Point { x: Int; y: Int }\n"
   val pr = parse(src)
   val sf = deriveFile(pr.file)
@@ -283,7 +284,7 @@ func testDeriveVisibilityPub(): Unit {
 }
 
 // Regression for #939: package-private parent → package-private helper.
-func testDeriveVisibilityPackagePrivate(): Unit {
+test "derive visibility package private" {
   val src = "package P\n@derive(Hash)\nrecord Counter { n: Int }\n"
   val pr = parse(src)
   val sf = deriveFile(pr.file)
@@ -309,19 +310,19 @@ func testDeriveVisibilityPackagePrivate(): Unit {
   assertTrue(found, "visibility-pkg: Counter.hash must be synthesised")
 }
 
-func testExposedRecordDerive(): Unit {
+test "exposed record derive" {
   val src = "package P\n@derive(Equals)\npub exposed record Row { id: Int }\n"
   assertTrue(parseDeriveAndFindFunc(src, "Row.equals"), "exposed-rec: Row.equals synthesised from exposed record")
 }
 
-func testNoDerivesInListDoesNotSynth(): Unit {
+test "no derives in list does not synth" {
   // A distinct type with an empty derives list should produce no synths.
   val src = "package P\ntype Foo = Int\n"
   val cnt = parseDeriveAndCount(src)
   assertEqualInt(cnt, 1, "no-derives: no synths for plain distinct type")
 }
 
-func testIdempotent(): Unit {
+test "idempotent" {
   // deriveFile applied twice should not add duplicates if the synthesised
   // funcs don't carry @derive annotations themselves.
   val src = "package P\n@derive(Equals)\nrecord Point { x: Int; y: Int }\n"
@@ -339,7 +340,7 @@ func testIdempotent(): Unit {
 // helpers wouldn't compile.  We exercise the path via `derives Equals`
 // on `type Flag = Bool`; the synthesiser is hit and the result builds
 // without error.
-func testDeriveEqualsDistinctBool(): Unit {
+test "derive equals distinct bool" {
   val src = "package P\ntype Flag = Bool derives Equals\n"
   assertTrue(
     parseDeriveAndFindFunc(src, "Flag.equals"),
@@ -347,7 +348,7 @@ func testDeriveEqualsDistinctBool(): Unit {
   )
 }
 
-func testDeriveShowDistinctBool(): Unit {
+test "derive show distinct bool" {
   val src = "package P\ntype Flag = Bool derives Show\n"
   assertTrue(
     parseDeriveAndFindFunc(src, "Flag.show"),
@@ -360,7 +361,7 @@ func testDeriveShowDistinctBool(): Unit {
 // consults both `existingItems` and the in-progress `synths`
 // accumulator to suppress the second synthesis.  Without that guard
 // the file would type-check fail on the duplicate `.equals` definition.
-func testDeriveAndAnnotationDontDuplicate(): Unit {
+test "derive and annotation dont duplicate" {
   val src = "package P\n" + "@derive(Equals)\n" + "record Foo derives Equals { x: Int }\n"
   val pr = parse(src)
   val sf = deriveFile(pr.file)
@@ -402,7 +403,7 @@ func findFuncInFile(sf: in SourceFile, name: in String): Bool {
   false
 }
 
-func testMonoRetainsDerivedHelpers(): Unit {
+test "mono retains derived helpers" {
   val src = "package P\n" + "@derive(Equals)\n@derive(Hash)\n@derive(Show)\n" + "record Point { x: Int; y: Int }\n" +
     "func gid[T](v: in T): T { v }\n"
   val pr = parse(src)
@@ -414,29 +415,4 @@ func testMonoRetainsDerivedHelpers(): Unit {
   assertTrue(findFuncInFile(mr.file, "Point.equals"), "mono-retain: monoFile keeps Point.equals (#1796)")
   assertTrue(findFuncInFile(mr.file, "Point.hash"), "mono-retain: monoFile keeps Point.hash (#1796)")
   assertTrue(findFuncInFile(mr.file, "Point.show"), "mono-retain: monoFile keeps Point.show (#1796)")
-}
-
-func main(): Unit {
-  testNoAnnotationNoSynth()
-  testDeriveEqualsRecord()
-  testDeriveHashRecord()
-  testDeriveShowRecord()
-  testGenerateJsonRecord()
-  testGenerateJsonRecordStringEscape()
-  testMultipleDerives()
-  testDeriveEqualsDistinctType()
-  testDeriveHashDistinctType()
-  testDeriveShowDistinctType()
-  testDeriveEqualsEmptyRecord()
-  testDeriveShowEmptyRecord()
-  testDeriveEqualsDistinctBool()
-  testDeriveShowDistinctBool()
-  testDeriveAndAnnotationDontDuplicate()
-  testDeriveVisibilityPub()
-  testDeriveVisibilityPackagePrivate()
-  testExposedRecordDerive()
-  testNoDerivesInListDoesNotSynth()
-  testIdempotent()
-  testMonoRetainsDerivedHelpers()
-  println("derives self-test: ok")
 }
