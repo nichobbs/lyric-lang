@@ -5540,6 +5540,68 @@ sources, which F# compiles, do not use these keywords as identifiers.
 
 ---
 
+## D094 — `slice.length` and `String` relational operators in self-hosted MSIL codegen (#2539)
+
+**Context.** `lyric build --manifest <m>.toml` crashed with an
+`AccessViolationException` when a `[project.packages]` entry pointed at a
+**directory** (`"Pkg" = "src"`) rather than an explicit file. The directory
+branch in `cli.l` sorts the discovered file list for deterministic ordering,
+and that path surfaced three independent self-hosted MSIL codegen bugs.
+
+**Bug 1 — `slice.length` assumed a real array or a `String`.** Slice values
+are `List`-backed at runtime (a slice literal `[…]` builds a `List<object>`,
+and `List.toArray()` is a no-op that returns the receiver `List`), but the
+`slice[T]` *type* lowers to the MSIL type `MArray`. The `.length`
+member-access codegen dispatched on the receiver's MSIL type:
+
+- an `MArray` receiver emitted `ldlen` — correct only for a genuine CLI
+  array; on a `List`-backed value it reads a field as a length (garbage) or
+  faults;
+- an `MObject` receiver fell through to the `String.get_Length` path,
+  reinterpreting the `List` as a `String`;
+- an `MConcreteList` receiver threw "unimplemented List member access".
+
+Meanwhile `.count`, indexing, and `for` were already `List`-aware. Both
+`System.Array` and `List<T>` implement the non-generic
+`System.Collections.IList` / `ICollection`, so the fix routes `.length`
+(and slice indexing) through `ICollection.get_Count` / `IList.get_Item` for
+every `List`-backed receiver, with an explicit `MString` arm preserving
+`String.length` → `String.get_Length`. This also fixes the pre-existing
+`for x in str.split(…)` fault (a genuine `String[]` iterable hit the
+`List<object>`-specific cast).
+
+**Bug 2 — `String` relational operators emitted integer compares.** `<` /
+`>` / `<=` / `>=` emitted a raw `clt` / `cgt`, which compares the two string
+*references* as integers rather than lexicographically — so `"a" < "b"` was
+`false`. The fix registers a `String.CompareOrdinal(string, string): int32`
+MemberRef and routes the four relational operators through it when the lhs is
+`MString` (`==` / `!=` already used `Object.Equals`, which is correct for
+strings). This is what actually unblocked the directory build: the file-list
+sort compares paths with `<`.
+
+**Bug 3 (out of scope, tracked separately as #2557) — generic-method slice ABI.**
+`Std.Sort.{sort,sliceCopy,mergeSorted}` are emitted as true CLR generic
+methods whose `slice[T]` parameters become `!0[]` arrays, but the arguments
+are `List`-backed; once instantiated the JIT reinterprets the `List`
+reference as an array and `StelemRef` corrupts memory. The `.length` /
+indexing fixes make these calls memory-safe (no AV) but `Std.Sort`'s generic
+path still returns an unsorted result for a `List`-backed argument.
+Correcting the cross-package / generic slice ABI is a larger representation
+change and is **not** part of this fix. To unblock the headline directory
+build without that change, the two `cli.l` directory-sort call sites use a
+local monomorphic `sortFileList(List[String])` (mirroring the existing
+`emitter.l` local sort) instead of the generic `Std.Sort.sortStrings`.
+
+**Verification.** `slice.length` (literal / `toArray()` / `slice[T]`
+parameter / `String.split` array), slice indexing, `for`, and the four
+`String` relational operators are covered by
+`lyric-compiler/lyric/slice_string_self_test.l`, run in CI via native
+`lyric test`. The single-file directory-package build succeeds with no
+`AccessViolationException`. The full F# emitter regression suite stays green
+(843 passed, 0 failed).
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

@@ -110,6 +110,11 @@ pub record CodegenCtx {
   tokStringToUpper: Int  // String.ToUpperInvariant(): string
   // Object.Equals(object,object): bool  static (for value-equal string comparisons)
   tokObjectStaticEquals: Int
+  // String.CompareOrdinal(string,string): int32  static — backs the relational
+  // operators (`<` / `>` / `<=` / `>=`) on `String` operands.  Without it the
+  // relational arms emit a raw `clt` / `cgt`, which compares the two string
+  // *references* as integers rather than lexicographically (#2539).
+  tokStringCompareOrdinal: Int
   // Async support (Phase A, Band 3).
   // Task and Task`1 TypeRef rows — used to build TypeSpec+MemberRef tokens lazily
   // in `emitExternTargetBody` for `@externTarget async func` unwrapping.
@@ -954,6 +959,20 @@ pub func newCodegenCtx(
       buildStaticMethodSig(objEqPs, MBool)
     )
 
+  // String.CompareOrdinal(string, string): int32  static — lexicographic
+  // ordinal comparison for the relational operators on `String` (#2539).
+  val strCmpOrdPs: List[MsilType] = newList()
+  strCmpOrdPs.add(MString)
+  strCmpOrdPs.add(MString)
+  val tokStringCompareOrdinal = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trString,
+      "CompareOrdinal",
+      "str_compare_ordinal",
+      buildStaticMethodSig(strCmpOrdPs, MInt)
+    )
+
   // System.Action`N TypeRefs are registered lazily on first use for each N
   // (see internActionTypeRef); no static entries here.
 
@@ -1188,6 +1207,7 @@ pub func newCodegenCtx(
     tokStringToLower = tokStringToLower,
     tokStringToUpper = tokStringToUpper,
     tokObjectStaticEquals = tokObjectStaticEquals,
+    tokStringCompareOrdinal = tokStringCompareOrdinal,
     trTask = trTask,
     trTask1 = trTask1,
     tokTaskWait = tokTaskWait,
@@ -2951,6 +2971,11 @@ func caseParentFqnMsil(cctx: in CodegenCtx, ctorKey: in String): String {
 func emitListCastRecv(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in MsilType): Unit {
   match recvTy {
     case MConcreteList(e) -> insns.add(MListOp(op = LoCastclass, elemTy = e))
+    // `MArray` (the static type of `slice[T]`) may hold either a genuine CLI
+    // array or a `List`-backed slice; the non-generic `IList` is implemented by
+    // both, so cast through it rather than the `List<object>`-specific TypeSpec
+    // (which faults on a real array — #2539).
+    case MArray(_) -> insns.add(MCastclass(typeToken = cctx.tokIListCast))
     case _ -> insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
   }
 }
@@ -2965,6 +2990,9 @@ func emitListAdd(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in MsilType
 func emitListGetItem(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in MsilType): Unit {
   match recvTy {
     case MConcreteList(e) -> insns.add(MListOp(op = LoGetItem, elemTy = e))
+    // `MArray` slice: read through `IList.get_Item` so a genuine array iterable
+    // (`for x in str.split(...)`) works alongside a `List`-backed slice (#2539).
+    case MArray(_) -> insns.add(MCallvirt(methodToken = cctx.tokIListGetItem))
     case _ -> insns.add(MCallvirt(methodToken = cctx.tokListObjGetItem))
   }
 }
@@ -2979,6 +3007,9 @@ func emitListSetItem(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in Msil
 func emitListGetCount(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in MsilType): Unit {
   match recvTy {
     case MConcreteList(e) -> insns.add(MListOp(op = LoGetCount, elemTy = e))
+    // `MArray` slice: count through the non-generic `ICollection`, implemented by
+    // both `System.Array` and `List<T>` (#2539).
+    case MArray(_) -> insns.add(MCallvirt(methodToken = cctx.tokICollGetCount))
     case _ -> insns.add(MCallvirt(methodToken = cctx.tokListObjGetCount))
   }
 }
@@ -3350,10 +3381,13 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           }
         }
         case MConcreteList(_) -> {
-          // Concrete List[T] receiver (#2361): `.count` via the concrete
-          // `get_Count`; castclass first so the callvirt is well-typed when the
-          // receiver came from an object-typed slot.
-          if memberName == "count" {
+          // Concrete List[T] receiver (#2361): `.count` / `.length` via the
+          // concrete `get_Count`; castclass first so the callvirt is well-typed
+          // when the receiver came from an object-typed slot.  `slice[T]` values
+          // are List-backed at runtime (slice literals and `toArray()` both yield
+          // a `List`), so `.length` is the element count, not a real-array `ldlen`
+          // (#2539).
+          if memberName == "count" or memberName == "length" {
             emitListCastRecv(cctx, insns, recvTy)
             emitListGetCount(cctx, insns, recvTy)
             MInt
@@ -3381,12 +3415,34 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           }
         }
         case MArray(_) -> {
-          // Real CLI array receiver: `.length` / `.count` is `ldlen` (which
-          // pushes a native int; conv.i4 narrows it to the Int the rest of the
-          // codegen expects).
+          // `MArray` is the lowered static type of `slice[T]` (codegen ~2686:
+          // `TSlice(elem) -> MArray(...)`), but slice *values* have two runtime
+          // representations behind that one static type: genuine CLI arrays
+          // (e.g. `String[]` from a `String.Split` extern) and `List`-backed
+          // slices (slice literals, `toArray()` results, sub-slice copies).  A
+          // raw `ldlen` faults / reads garbage on the List-backed case (#2539).
+          // Both `System.Array` and `List<T>` implement the non-generic
+          // `System.Collections.IList` / `ICollection`, so `.length` / `.count`
+          // route through `ICollection.get_Count`, which is correct for either
+          // representation.
           if memberName == "length" or memberName == "count" {
-            insns.add(MLdlen)
-            insns.add(MConvI4)
+            insns.add(MCastclass(typeToken = cctx.tokIListCast))
+            insns.add(MCallvirt(methodToken = cctx.tokICollGetCount))
+            MInt
+          } else {
+            insns.add(MPop)
+            MObject
+          }
+        }
+        case MString -> {
+          // Genuine `String` receiver: `.length` is `String.get_Length`.  This
+          // arm is explicit so a `String` value never falls through to the
+          // `case _` collection-count path below (#2539): both used to share the
+          // fallback, which routed `.length` to `String.get_Length` and so
+          // silently miscompiled `.length` on a `List`-backed slice that also
+          // lowered to `MObject`.
+          if memberName == "length" {
+            insns.add(MCallvirt(methodToken = cctx.tokStringGetLength))
             MInt
           } else {
             insns.add(MPop)
@@ -3412,7 +3468,15 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             insns.add(MCallvirt(methodToken = cctx.tokICollGetCount))
             MInt
           } else if memberName == "length" {
-            insns.add(MCallvirt(methodToken = cctx.tokStringGetLength))
+            // An `object`-typed receiver reaching here is a `List`-backed slice
+            // (slice literal / `toArray()` result whose static type erased to
+            // `MObject`); `.length` is its element count.  Read it through the
+            // non-generic `ICollection` exactly like `.count` above so it works
+            // whether the value is a genuine `List<object>` or a concrete
+            // `List<Foo>` (#2539).  Genuine `String` receivers take the explicit
+            // `MString` arm above, not this path.
+            insns.add(MCastclass(typeToken = cctx.tokIListCast))
+            insns.add(MCallvirt(methodToken = cctx.tokICollGetCount))
             MInt
           } else {
             // KNOWN IL-VERIFICATION GAP: no preceding `castclass` before `ldfld`
@@ -3660,33 +3724,37 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           valTy
         }
         case MArray(elem) -> {
-          // Real CLI array receiver (e.g. `slice[String]` → `String[]` from a
-          // stdlib call such as `Std.String.split`).  Push the index, then load
-          // the element with the opcode matching the element type — the array
-          // is already on the stack, so stack is [array, index] before ldelem.
+          // `MArray` is the lowered static type of `slice[T]`, but a slice value
+          // is one of two runtime representations behind that single static type:
+          // a genuine CLI array (e.g. `String[]` from `String.Split`) or a
+          // `List`-backed slice (slice literal, `toArray()` / sub-slice copy,
+          // or a `List` value passed into a `slice[T]` parameter whose signature
+          // declares `T[]`).  A raw `ldelem` faults / reads garbage on the
+          // `List`-backed case (#2539: `Std.Sort` indexes its `slice[T]` params,
+          // which receive `List`-backed values).  Both `System.Array` and
+          // `List<T>` implement the non-generic `System.Collections.IList`, so
+          // indexing routes through `IList.get_Item(int32)` (returns `object`),
+          // then unboxes / narrows to the element type — correct for either
+          // representation.
+          insns.add(MCastclass(typeToken = cctx.tokIListCast))
           if indices.count > 0 {
             lowerExprMsil(cctx, fctx, insns, indices[0])
           }
-          match elem {
-            case MByte -> {
-              insns.add(MLdelemU1)
-              MInt
-            }
-            case MInt -> {
-              insns.add(MLdelemI4)
-              MInt
-            }
-            case MString -> {
-              insns.add(MLdelemRef)
-              MString
-            }
-            case MClass(c) -> {
-              insns.add(MLdelemRef)
-              MClass(className = c)
-            }
-            case _ -> {
-              insns.add(MLdelemRef)
-              elem
+          insns.add(MCallvirt(methodToken = cctx.tokIListGetItem))
+          if isValueType(elem) {
+            castObjectToMsil(cctx, insns, elem)
+            elem
+          } else {
+            match elem {
+              case MString -> {
+                insns.add(MCastclassByName(className = "System.String"))
+                MString
+              }
+              case MClass(c) -> {
+                insns.add(MCastclassByName(className = c))
+                MClass(className = c)
+              }
+              case _ -> elem
             }
           }
         }
@@ -4063,7 +4131,16 @@ func lowerBinopMsil(
       if bltRhsTy == MObject and isValueType(bltLhsTy) {
         insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, bltLhsTy)))
       }
-      insns.add(MClt)
+      match bltLhsTy {
+        case MString -> {
+          // `a < b`  ≡  `String.CompareOrdinal(a, b) < 0` (#2539): a raw `clt`
+          // on two string references compares pointers, not text.
+          insns.add(MCall(methodToken = cctx.tokStringCompareOrdinal))
+          insns.add(MLdcI4(v = 0))
+          insns.add(MClt)
+        }
+        case _ -> insns.add(MClt)
+      }
       MBool
     }
     case BGt -> {
@@ -4084,7 +4161,15 @@ func lowerBinopMsil(
       if bgtRhsTy == MObject and isValueType(bgtLhsTy) {
         insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, bgtLhsTy)))
       }
-      insns.add(MCgt)
+      match bgtLhsTy {
+        case MString -> {
+          // `a > b`  ≡  `String.CompareOrdinal(a, b) > 0` (#2539).
+          insns.add(MCall(methodToken = cctx.tokStringCompareOrdinal))
+          insns.add(MLdcI4(v = 0))
+          insns.add(MCgt)
+        }
+        case _ -> insns.add(MCgt)
+      }
       MBool
     }
     case BLte -> {
@@ -4106,7 +4191,15 @@ func lowerBinopMsil(
       if blteRhsTy == MObject and isValueType(blteLhsTy) {
         insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, blteLhsTy)))
       }
-      insns.add(MCgt)
+      match blteLhsTy {
+        case MString -> {
+          // `a <= b`  ≡  `!(String.CompareOrdinal(a, b) > 0)` (#2539).
+          insns.add(MCall(methodToken = cctx.tokStringCompareOrdinal))
+          insns.add(MLdcI4(v = 0))
+          insns.add(MCgt)
+        }
+        case _ -> insns.add(MCgt)
+      }
       insns.add(MLdcI4(v = 1))
       insns.add(MXor)
       MBool
@@ -4130,7 +4223,15 @@ func lowerBinopMsil(
       if bgteRhsTy == MObject and isValueType(bgteLhsTy) {
         insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, bgteLhsTy)))
       }
-      insns.add(MClt)
+      match bgteLhsTy {
+        case MString -> {
+          // `a >= b`  ≡  `!(String.CompareOrdinal(a, b) < 0)` (#2539).
+          insns.add(MCall(methodToken = cctx.tokStringCompareOrdinal))
+          insns.add(MLdcI4(v = 0))
+          insns.add(MClt)
+        }
+        case _ -> insns.add(MClt)
+      }
       insns.add(MLdcI4(v = 1))
       insns.add(MXor)
       MBool
