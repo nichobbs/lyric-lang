@@ -4420,7 +4420,7 @@ should trigger it automatically.
   `runRestore`'s own placement).
 - **`--no-restore`** opts out and builds against the lock as-is.
 - Single-file builds are unaffected (dependencies live in a project manifest).
-  `[nuget]`-table changes do not trigger auto-restore in this slice (only
+  `[nuget]`/`[maven]`-table changes do not trigger auto-restore in this slice (only
   `[dependencies]`); documented, revisit if needed.
 
 **Consequence:** `lyric build` and bare `lyric` "just work" on a fresh checkout
@@ -5002,6 +5002,10 @@ synchronously inside `MoveNext`, so no suspension machinery is needed.
    - User body lowered exactly as a normal function body.
    - Epilogue: `ldarg.0; ldc.i4 -2; stfld __state; ldarg.0; ldflda __builder;
      [result]; call SetResult; ret`.
+   - **Phase B.0 scope:** bodies with no `try`/`catch`/`finally`-with-`return`
+     are supported.  Bodies containing `try`/`return` inside a protected region
+     require Phase B.1 protected-region routing; a diagnostic is emitted for
+     out-of-scope bodies.
 
 3. **SetStateMachine** — no-op stub (the CLR calls this when boxing a struct SM;
    we use a class SM so boxing doesn't apply).
@@ -5379,6 +5383,10 @@ Tracked as D-progress-444 (initial synthesis) and D-progress-445 (element-type u
 ---
 
 ### D-progress-442: `lyric fmt` round-trip — extern-adjacent "formatter output does not parse" cluster (#2452)
+<!-- Note: this entry was assigned D-progress-442 from the tracking issue number
+     but was appended after D-progress-444/445 (the async-generator synthesis
+     batch) had already been committed.  The number reflects the work-item
+     origin; the append order is the merge sequence. -->
 
 Fixes the ~14-file cluster (epic #2280) where `lyric fmt --write` aborted with
 `formatter output does not parse` — the loss-checked guard caught the formatter
@@ -5684,6 +5692,54 @@ ecosystem `lyric-auth` / `lyric-session` suites, the four
 `examples/{rbac,ledger,jobqueue,product-catalog}` builds, and the full F#
 emitter regression suite (843 passed, 0 failed) all stay green; `make lyric`
 self-hosts cleanly.
+
+---
+
+## D096 — Self-hosted MSIL backend reifies generic TypeDefs; erasure is rejected (#2359, docs/43)
+
+**Context.** The self-hosted MSIL backend must emit generic record and union types
+(`Box[T]`, `Option[T]`, `Result[T, E]`).  Two strategies exist: (a) *reify* —
+emit true CLR generic TypeDefs with a GenericParam table row (0x2A), VAR-typed
+fields, and closed-instantiation TypeSpec construction/field-read; (b) *erase* —
+monomorphise every instantiation to a separate non-generic TypeDef per concrete
+type argument set.
+
+**Decision.** Reify.  The self-hosted MSIL backend emits truly generic TypeDefs:
+
+- **GenericParam table (0x2A) rows** with the arity-suffixed CLR name
+  (`` Box`1 ``, `` Maybe`1 ``).
+- **VAR-typed fields** — a field `value: T` in a generic record lowers to
+  `FIELD VAR(0)` in the FieldDef signature blob.
+- **TypeSpec-parented construction and field access** — constructing `Box[Int]`
+  emits a closed-instantiation TypeSpec `Box`1<ELEMENT_TYPE_I4>` as the
+  `.ctor` MemberRef parent; field reads use the same closed TypeSpec.
+- Nullary union cases use `newobj`-each-time (no singleton) — Q-GEN-001 resolved.
+
+**Rationale:**
+
+1. The F# stage-0 bootstrap emitter uses reified generics (confirmed by
+   inspecting `Lyric.Stdlib.dll` from a stage-0 build).  Erasure would break
+   load correctness: a non-generic calling code compiled by F# loading an
+   erased (non-generic) type emitted by the self-hosted backend produces a
+   `TypeLoadException` at runtime.
+2. Erasure forecloses Stage 3 of epic #2359 (byte-match comparison between F#
+   and self-hosted-emitted DLLs); reification is a prerequisite for any
+   structural byte-match.
+3. The arity-suffix correctness fix (`` `1 `` suffix on multi-field value types)
+   is required for correct CLR multi-field value-type layout; the F# emitter
+   omits it for some cases, which is an F# emitter bug that the self-hosted
+   emitter does not reproduce.
+
+**Scope boundary.** In-bundle generic records and unions are reified (D-progress-453,
+D-progress-455).  The exact stage-3 stdlib byte-match against the F# emitter was
+**not pursued**: the arity-suffix correctness fix means the self-hosted output is
+not byte-identical to F# output (it is structurally correct and more correct),
+and self-compiling the full stdlib is blocked on front-end completeness (docs/41
+§R7).  JVM-target generic TypeDef emission is out of scope for this entry (tracked
+under Band 4 of docs/41 and epic #2359).
+
+**Related:** epic #2359 (stages 1/2/4 merged; stage 5 #2364 pending), docs/43,
+Band 4 of docs/41.
 
 ---
 

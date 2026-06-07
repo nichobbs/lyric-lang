@@ -182,6 +182,17 @@ SoftKeyword = 'range'    | 'derives' | 'forall'     | 'exists'
  * entry D093.
  *)
 
+ContextualHardKeyword = 'type'      | 'alias'    | 'record'   | 'union'
+                      | 'enum'      | 'interface' | 'wire'     | 'fixture'
+                      | 'property'  | 'test'      | 'entry'    ;
+
+(* An ExtendedIdent is any position where the parser accepts a plain IDENT
+ * OR a ContextualHardKeyword (binding name, value expression, parameter name,
+ * record field access). The IDENT-only positions (item introducers, import
+ * paths) are not extended. Productions below use IDENT for lexer-level
+ * identifiers and accept ContextualHardKeyword contextually per D093. *)
+ExtendedIdent = IDENT | ContextualHardKeyword ;
+
 (* §1.7 Statement terminators
  *
  * The lexer emits a STMT_END token at:

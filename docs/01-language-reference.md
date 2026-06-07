@@ -235,6 +235,8 @@ val p2 = p.copy(x = 3.0)        // non-destructive update
 
 All fields must be named at construction. Positional construction is rejected by the parser.
 
+Constructor calls must use an unqualified type name — `Point(x = 1.0, y = 2.0)`, not `Pkg.Point(x = 1.0, y = 2.0)`. A qualified path is not recognised as a constructor call; use `import` to bring the type name into scope.
+
 **Mutable record fields (`var`):** A field may be prefixed with `var` to signal that it is intended to be mutated by the record's owning code:
 
 ```
@@ -540,7 +542,7 @@ Lyric adopts the **Swift operator precedence table** as its base, with the follo
 - Bitwise operators are not symbolic — use `.and()`, `.or()`, `.xor()`, `.shl()`, `.shr()` methods on integer types. This sidesteps the C-family precedence trap with `&` and `==`.
   - `.shl(n: Int)` — logical left shift by `n` bits.  Equivalent to multiplication by `2^n`; high bits are discarded.
   - `.shr(n: Int)` — **arithmetic** right shift on signed integer types (`Byte`, `Int`, `Long`).  Sign bit is replicated into the vacated high bits, so negative inputs stay negative (`-1.shr(1) == -1`).  Unsigned types (`UInt`, `ULong`) get **logical** right shift (zero-extended).  This matches the .NET runtime's distinction between `>>` on `int` (arithmetic) and `int.UnsignedRightShift` / `>>>` introduced in .NET 7.  Protobuf zigzag encoders rely on this signed/unsigned split — see lyric-proto #361 for the RFC vector tests that pin the behaviour.
-- **Numeric / character conversions are explicit** — Lyric performs no implicit numeric widening or narrowing.  The numeric and character primitives `Byte`, `Int`, `Long`, `Double`, and `Char` carry the conversion methods `.toByte()`, `.toInt()`, `.toLong()`, `.toChar()`, and `.toDouble()`, each yielding the named target type.  Widening (`Int.toLong()`, `Int.toDouble()`) is lossless; narrowing (`Long.toInt()`, `Double.toInt()`) truncates toward zero, and `.toByte()` reduces modulo 256 to the **unsigned** `0..255` range (`Byte` is unsigned).  These are the surface form for mixing widths — e.g. summing a `slice[Byte]` element into an `Int` accumulator is `acc + b.toInt()`, never `acc + b`.  (Conversions on the unsigned integers `UInt`/`ULong`/`Nat` and `.toFloat()` are reserved pending backend support for those representations — see #2050; calling a conversion method on `String`/`Bool`/`Unit` is a `T0103` error.)
+- **Numeric / character conversions are explicit** — Lyric performs no implicit numeric widening or narrowing.  The numeric and character primitives `Byte`, `Int`, `Long`, `Double`, and `Char` carry the conversion methods `.toByte()`, `.toInt()`, `.toLong()`, `.toChar()`, and `.toDouble()`, each yielding the named target type.  Widening (`Int.toLong()`, `Int.toDouble()`) is lossless; narrowing (`Long.toInt()`, `Double.toInt()`) truncates toward zero, and `.toByte()` reduces modulo 256 to the **unsigned** `0..255` range (`Byte` is unsigned).  These are the surface form for mixing widths — e.g. summing a `slice[Byte]` element into an `Int` accumulator is `acc + b.toInt()`, never `acc + b`.  (Conversions on the unsigned integers `UInt`/`ULong`/`Nat` and `.toFloat()` are reserved pending backend support for those representations; calling a conversion method on `String`/`Bool`/`Unit` is a `T0103` error.)
 - Chained comparisons follow **Rust's rule**: `a < b < c` is a parse error, not `(a < b) < c`. Comparison operators do not associate.
 - The ternary `?:` operator does not exist. Use `if expr then a else b`.
 - The `?` operator (error propagation) has its own precedence level immediately above postfix.
@@ -600,8 +602,8 @@ val x = if cond then a else b
 
 A brace-terminated `if` or `match` written in **statement position** (not as the
 right-hand side of a binding or another expression) is a *complete statement*: a
-binary operator on the following line begins a **new** statement rather than
-continuing the block expression. So
+binary operator after the closing `}` (whether on the same line or the next)
+begins a **new** statement rather than continuing the block expression. So
 ```
 if cond { return x }
 -1                      // a separate statement — the fall-through value
