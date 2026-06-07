@@ -14622,7 +14622,13 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
         )
         staticFields.add(sfield)
         // Register the inlined value so EPath references emit ldc.i4 directly.
-        cctx.constValues.add(decl.name, constVal)
+        // Guard with containsKey: a multi-package closure may include two packages
+        // that both define a val with the same simple name (e.g. `OP_NOP` in both
+        // Msil.Opcodes and Jvm.Bytecode); first-wins matches the other registration
+        // guards in this file (unionCaseCtorByName, typeFqnByName, etc.).
+        if not cctx.constValues.containsKey(decl.name) {
+          cctx.constValues.add(decl.name, constVal)
+        }
       }
       case IVal(decl) -> {
         // Module-level runtime value → static readonly field initialized in .cctor.
@@ -14641,8 +14647,14 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
         if initInsns.count == 1 {
           match initInsns[0] {
             case MLdcI4(v) -> {
-              cctx.constValues.add(fieldName, v)
-              sfInitInsns = newList()
+              // Guard with containsKey: same first-wins semantics as IConst above.
+              // Only suppress the .cctor when we successfully register the inline
+              // value; if the name is already taken, keep initInsns so the field
+              // receives its proper runtime initialization.
+              if not cctx.constValues.containsKey(fieldName) {
+                cctx.constValues.add(fieldName, v)
+                sfInitInsns = newList()
+              }
             }
             case _ -> {
             }
