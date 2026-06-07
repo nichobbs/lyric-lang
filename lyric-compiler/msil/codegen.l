@@ -56,6 +56,7 @@ pub record CodegenCtx {
   trDouble: Int  // System.Double
   trBoolean: Int  // System.Boolean
   trChar: Int  // System.Char
+  trByte: Int  // System.Byte
   trException: Int  // System.Exception
   // MemberRef tokens (0x0A000000 | 1-based row)
   tokWriteLineStr: Int  // Console.WriteLine(string)
@@ -406,6 +407,12 @@ pub func newCodegenCtx(
   val trDouble = ctxAddTypeRef(lctx, "System", "Double", lctx.arRuntime)
   val trBoolean = ctxAddTypeRef(lctx, "System", "Boolean", lctx.arRuntime)
   val trChar = ctxAddTypeRef(lctx, "System", "Char", lctx.arRuntime)
+  // System.Byte — needed so `Byte` values box/unbox correctly (e.g. reading
+  // an element of a `slice[Byte]` through `IList.get_Item`, which returns a
+  // boxed `object`).  Without it `boxTypeRef(MByte)` fell back to
+  // `System.Object` and `unbox.any [Object]` was a no-op that leaked the
+  // boxed reference (#2539 regression: garbage bytes broke HMAC verification).
+  val trByte = ctxAddTypeRef(lctx, "System", "Byte", lctx.arRuntime)
   val trException = ctxAddTypeRef(lctx, "System", "Exception", lctx.arRuntime)
 
   // Build MemberRef signatures.
@@ -1127,6 +1134,7 @@ pub func newCodegenCtx(
     trDouble = trDouble,
     trBoolean = trBoolean,
     trChar = trChar,
+    trByte = trByte,
     trException = trException,
     tokWriteLineStr = tokWLStr,
     tokWriteLineInt = tokWLInt,
@@ -2771,6 +2779,7 @@ func isValueType(ty: in MsilType): Bool {
     case MDouble -> true
     case MBool -> true
     case MChar -> true
+    case MByte -> true
     case _ -> false
   }
 }
@@ -2816,6 +2825,7 @@ func boxTypeRef(cctx: in CodegenCtx, ty: in MsilType): Int {
     case MDouble -> cctx.trDouble
     case MBool -> cctx.trBoolean
     case MChar -> cctx.trChar
+    case MByte -> cctx.trByte
     case _ -> cctx.lctx.trObject
   }
 }

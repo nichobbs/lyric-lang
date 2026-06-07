@@ -36,6 +36,7 @@ package Lyric.SliceStringSelfTest
 import Std.Core
 import Std.Collections
 import Std.String as Str
+import Std.Encoding as Enc
 import Std.Testing
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -107,6 +108,25 @@ test "List.toArray().length" {
   l.add(1)
   l.add(2)
   assertEqualInt(l.toArray().length, 3, "toArray length")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// slice[Byte] — a genuine `byte[]` (from base64 decode) read by `.length` and
+// indexing.  `Byte` is a value type, so `IList.get_Item` returns a boxed
+// `object` that must `unbox.any [System.Byte]`; a missing `boxTypeRef(MByte)`
+// previously made that a no-op and leaked the boxed reference, returning
+// garbage bytes (the #2539 regression that broke HMAC signature verification
+// in lyric-auth).
+test "slice[Byte] length and indexing (base64 decode)" {
+  match Enc.tryDecodeBase64("AAEC") {
+    case None -> assertTrue(false, "base64 decode of AAEC must succeed")
+    case Some(bytes) -> {
+      assertEqualInt(bytes.length, 3, "decoded byte[] length")
+      assertEqualInt(bytes[0].toInt(), 0, "byte 0 == 0")
+      assertEqualInt(bytes[1].toInt(), 1, "byte 1 == 1")
+      assertEqualInt(bytes[2].toInt(), 2, "byte 2 == 2")
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

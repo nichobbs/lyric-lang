@@ -5570,6 +5570,17 @@ every `List`-backed receiver, with an explicit `MString` arm preserving
 `for x in str.split(…)` fault (a genuine `String[]` iterable hit the
 `List<object>`-specific cast).
 
+Reading a `slice[Byte]` element through `IList.get_Item` returns a boxed
+`object` that must `unbox.any [System.Byte]`, which exposed a latent gap:
+`MByte` was absent from both `isValueType` and `boxTypeRef`, so the unbox
+fell back to `System.Object` (a no-op) and leaked the boxed reference —
+returning garbage bytes. This broke `lyric-auth`'s HMAC signature
+verification (the `fixedTimeEqualBytes` constant-time compare indexes a
+decoded `byte[]`), caught by the ecosystem CI suite. Registering a
+`System.Byte` TypeRef and adding `MByte` to `isValueType` / `boxTypeRef`
+completes value-type boxing for `Byte` (and fixes the same latent unbox at
+the other `boxTypeRef(MByte)` call site).
+
 **Bug 2 — `String` relational operators emitted integer compares.** `<` /
 `>` / `<=` / `>=` emitted a raw `clt` / `cgt`, which compares the two string
 *references* as integers rather than lexicographically — so `"a" < "b"` was
