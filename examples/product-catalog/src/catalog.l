@@ -148,8 +148,10 @@ pub func listProducts(req: in ListProductsRequest, authToken: in String): Result
       match result {
         case Err(e) -> return Err(dbErrToStatus(e))
         case Ok(rows) -> {
-          val products = rows.map
-          { row -> rowToProduct(row) }
+          var products: slice[Product] = []
+          for row in rows {
+            products = concat(products, [rowToProduct(row)])
+          }
           return Ok(ListProductsResponse(products = products, total = products.count))
         }
       }
