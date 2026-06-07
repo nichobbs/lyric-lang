@@ -239,6 +239,22 @@ func testNonObjectParamEntrySkipped(): Unit {
   assertEqual(c.decls[0].params[1].name, "b", "non_object_param_entry_skipped: p1")
 }
 
+// Non-string entries in the `requiresClauses` array are coerced to ""
+// rather than skipped (F# parity: matches safeStr empty-string default).
+// This differs from the decl/param skip behaviour: non-string entries are
+// preserved with empty-string placeholders, not dropped (#1240).
+func testStrArrayNonStringElementCoercedToEmpty(): Unit {
+  val json =
+    "{\"decls\":[" +
+    "  {\"name\":\"f\",\"requires\":[42, \"x > 0\", null]}" +
+    "]}"
+  val c = unwrapOrFail(parseFromJson(json), "str_array_coerce")
+  assertEqualInt(c.decls[0].requiresClauses.count, 3, "str_array_coerce: count preserved")
+  assertEqual(c.decls[0].requiresClauses[0], "", "str_array_coerce: number → empty")
+  assertEqual(c.decls[0].requiresClauses[1], "x > 0", "str_array_coerce: string kept")
+  assertEqual(c.decls[0].requiresClauses[2], "", "str_array_coerce: null → empty")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. In-process resource readers (#1229 Phase A.3)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -465,6 +481,30 @@ func testLevelOfFileProofRequired(): Unit {
   assertEqual(levelOfFile(pr.file), "proof_required", "levelOfFile: @proof_required → proof_required")
 }
 
+// `levelOfFile` returns "proof_required(unsafe_blocks_allowed)" for
+// the unsafe_blocks_allowed modifier (#1371).
+func testLevelOfFileProofRequiredUnsafeBlocks(): Unit {
+  val src = "@proof_required(unsafe_blocks_allowed)\npackage P\n\npub func pf(): Int { 1 }\n"
+  val pr = parse(src)
+  assertEqual(
+    levelOfFile(pr.file),
+    "proof_required(unsafe_blocks_allowed)",
+    "levelOfFile: @proof_required(unsafe_blocks_allowed) → proof_required(unsafe_blocks_allowed)"
+  )
+}
+
+// `levelOfFile` returns "proof_required(checked_arithmetic)" for
+// the checked_arithmetic modifier (#1371).
+func testLevelOfFileProofRequiredCheckedArith(): Unit {
+  val src = "@proof_required(checked_arithmetic)\npackage P\n\npub func pf(): Int { 1 }\n"
+  val pr = parse(src)
+  assertEqual(
+    levelOfFile(pr.file),
+    "proof_required(checked_arithmetic)",
+    "levelOfFile: @proof_required(checked_arithmetic) → proof_required(checked_arithmetic)"
+  )
+}
+
 // `buildContractFromFile` covers opaque types (reprForOpaque).
 func testBuildOpaque(): Unit {
   val src = "package P\n\npub opaque type Money { amount: Int }\n"
@@ -589,12 +629,15 @@ func main(): Int {
   testReadFromFileInProcess()
   testReadAllContractsFromFileSinglePkg()
   testNonObjectParamEntrySkipped()
+  testStrArrayNonStringElementCoercedToEmpty()
   testEscapeJsonBasic()
   testContractToJsonRoundTrip()
   testContractToJsonOmitsDefaults()
   testLevelOfFileDefault()
   testLevelOfFileAxiom()
   testLevelOfFileProofRequired()
+  testLevelOfFileProofRequiredUnsafeBlocks()
+  testLevelOfFileProofRequiredCheckedArith()
   testBuildOpaque()
   testBuildEnum()
   testBuildProtected()

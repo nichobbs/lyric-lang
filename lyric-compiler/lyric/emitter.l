@@ -701,11 +701,35 @@ pub func compilerClosureDllPaths(testSource: in String, libDir: in String): List
 // deterministic across platforms regardless of `listFilesRecursive`'s
 // traversal order.
 func sortStrings(xs: in List[String]): List[String] {
-  val remaining: List[String] = newList()
+  if xs.count == 0 {
+    return newList()
+  }
+
+  // Pre-filter: separate non-empty strings from empty ones to avoid
+  // comparison issues. Empty strings sort to end.
+  val nonEmpty: List[String] = newList()
+  val empty: List[String] = newList()
   var c = 0
   while c < xs.count {
-    remaining.add(xs[c])
+    val s = xs[c]
+    if Str.isNotEmpty(s) {
+      nonEmpty.add(s)
+    } else {
+      empty.add(s)
+    }
     c = c + 1
+  }
+
+  if nonEmpty.count == 0 {
+    return empty
+  }
+
+  // Sort non-empty strings via selection sort.
+  val remaining: List[String] = newList()
+  var nc = 0
+  while nc < nonEmpty.count {
+    remaining.add(nonEmpty[nc])
+    nc = nc + 1
   }
   val sorted: List[String] = newList()
   while remaining.count > 0 {
@@ -719,6 +743,13 @@ func sortStrings(xs: in List[String]): List[String] {
     }
     sorted.add(remaining[bestIdx])
     remaining.removeAt(bestIdx)
+  }
+
+  // Append empty strings at the end.
+  var ec = 0
+  while ec < empty.count {
+    sorted.add(empty[ec])
+    ec = ec + 1
   }
   sorted
 }

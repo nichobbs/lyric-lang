@@ -265,6 +265,28 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
     }
   }
 
+  // Start output from the package declaration (which includes "package X.Y.Z")
+  // omitting the module doc comments and @test_module annotation (not meaningful
+  // in compiled program, would trigger P0020 error when the emitter parses
+  // synthesized source). packageDecl.span starts at "package" keyword.
+  var cursor = pf.file.packageDecl.span.startPos.offset
+  var sb = slice(source, pf.file.packageDecl.span)
+  sb = sb + "\n"
+
+  // Emit the imports verbatim.
+  var ii = 0
+  while ii < pf.file.imports.count {
+    sb = sb + slice(source, pf.file.imports[ii].span) + "\n"
+    ii = ii + 1
+  }
+
+  // Update cursor to the end of the last import (or package if no imports).
+  if pf.file.imports.count > 0 {
+    cursor = pf.file.imports[pf.file.imports.count - 1].span.endPos.offset
+  } else {
+    cursor = pf.file.packageDecl.span.endPos.offset
+  }
+
   // Walk items.  For each item: emit the source slice from the
   // previous cursor up to the item's start verbatim; then either
   // (a) replace an `ITest` with a synthesised `func __lyric_test_<i>`
@@ -272,8 +294,6 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
   // and record it as a skip, or (c) emit the item slice unchanged.
   // After the loop, append everything from the last cursor to the
   // end of the source, then the synthesised main.
-  var sb = ""
-  var cursor = 0
   var tests: List[TestSlot] = newList()
   var skipped: List[SkipSlot] = newList()
   var testIdx = 0
@@ -312,10 +332,6 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
   }
   sb = sb + "\n\n"
   sb = sb + synthesizeMain(tests, skipped, filter)
-  // Strip @test_module from the synthesised source — the annotation is
-  // not meaningful in the compiled program and triggers a P0040 parse
-  // cascade in the in-process bridge parser (issue #1442).
-  sb = Str.replace(sb, "@test_module\n", "\n")
   Synthesised(source = sb, testCount = tests.count, skipCount = skipped.count)
 }
 
