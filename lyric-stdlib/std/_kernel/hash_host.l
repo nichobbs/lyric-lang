@@ -18,6 +18,7 @@ pub func hostSha256Bytes(bytes: in slice[Byte]): slice[Byte] = ()
 
 /// Compute the SHA-512 digest of `bytes` and return the raw 64-byte digest.
 @externTarget("System.Security.Cryptography.SHA512.HashData")
+@stable(since = "1.0")
 pub func hostSha512Bytes(bytes: in slice[Byte]): slice[Byte] = ()
 
 /// Convert a byte slice to an uppercase hexadecimal string (one `[0-9A-F]`

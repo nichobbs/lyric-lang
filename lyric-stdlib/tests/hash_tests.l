@@ -7,7 +7,15 @@ import Std.Hash
 import Std.Testing
 import Std.Uuid as Uuid
 
-// FIPS 180-4 "abc" vector (uppercase). Wrapped because top-level val isn't supported by the bootstrap parser.
+// FIPS 180-4 test vectors (uppercase). Wrapped because top-level val isn't supported by the bootstrap parser.
+func sha256Abc(): String {
+  "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD"
+}
+
+func sha256Empty(): String {
+  "E3B0C44298FC1C149AFBF4C8996FB924427AE41E4649B934CA495991B7852B855"
+}
+
 func sha512Abc(): String {
   "DDAF35A193617ABACC417349AE20413112E6FA4E89A97EA20A9EEEE64B55D39A" +
     "2192992A274FC1A836BA3C23A3FEEBBD454D4423643CE80E2A9AC94FA54CA49F"
@@ -21,6 +29,17 @@ func sha512Empty(): String {
 func bytesAbc(): slice[Byte] {
   // ASCII codepoints 0x61 0x62 0x63.
   [97u8, 98u8, 99u8]
+}
+
+func testSha256OfBytesKnownVector(): Unit {
+  val hex = sha256OfBytes(bytesAbc())
+  assertEqual(hex, sha256Abc(), "sha256('abc') matches FIPS 180-4 vector")
+}
+
+func testSha256OfBytesEmpty(): Unit {
+  val empty: slice[Byte] = []
+  val hex = sha256OfBytes(empty)
+  assertEqual(hex, sha256Empty(), "sha256('') matches FIPS 180-4 vector")
 }
 
 func testSha512OfBytesKnownVector(): Unit {
@@ -66,6 +85,8 @@ func testSha512OfFileKnownVector(): Unit {
 }
 
 func main(): Int {
+  testSha256OfBytesKnownVector()
+  testSha256OfBytesEmpty()
   testSha512OfBytesKnownVector()
   testSha512OfBytesEmpty()
   testSha512OfFileNotFound()

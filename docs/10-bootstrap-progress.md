@@ -22603,7 +22603,73 @@ Remaining on #2592: the `bootstrap.sh` stage-1 rewire to use
 `emitPerPackageClosure` for the shipped toolchain + `cli.l::sortFileList`
 retirement (slice 3).
 
-### D-progress-467 — SHA-256 hashing infrastructure (docs/45 §2–§3)
+### D-progress-467 — entire stdlib self-host-compiles; #2592 ABI fork audit (slice 3)
+
+**Status:** Shipped — every `Std.*` package now self-host-compiles via
+`emitPerPackageClosure`; the cross-emitter ABI situation is audited below.
+
+The original #2592 root cause — the F# emitter lowering `slice[T]` to a CLR
+`!0[]` array while self-hosted callers were `List`-backed — **is already
+resolved**: both emitters lower `slice[T]` to the static type `T[]` (`MArray`),
+and the self-hosted codegen handles array- and `List`-backed values uniformly
+through the non-generic `IList` path (#2557/#2591). A self-hosted-compiled
+program calling the shipped F#-built `Std.Sort` therefore sorts correctly; the
+remaining gap was simply that `Lyric.Stdlib.Sort.dll` **never shipped** (the F#
+stage-0 emitter cannot compile `Std.Sort`'s typed-lambda generics, and no
+compiler package imports it — the compiler uses `cli.l::sortFileList` to avoid
+it).
+
+This slice makes the **entire** standard library self-host-compile, the
+prerequisite for shipping a self-hosted stdlib. Three fixes:
+
+- **`findTypeDefRowByName` / `findTypeRefRowByName` bracketed-name bug**
+  (`lowering.l`): both split the FQN at the *last* dot to recover
+  namespace/simple-name. A compiler-generated simple name can itself contain
+  dots inside angle brackets — an async state machine synthesised for a
+  *type-method* is `Std.Http.<HttpResponse.bodyText>__SM_3` (simple name
+  `<HttpResponse.bodyText>__SM_3`). The last-dot split landed inside the
+  brackets, so the SM TypeDef was never found and emit panicked
+  (`MLdfldByName could not resolve field '__p0'`). Fixed by only considering
+  dots **before the first `<`** (`nsBoundaryLimit`), matching how `lowerMRecord`
+  derives the simple name (namespace-prefix strip). Unblocks `Std.Http` and
+  `Std.Rest` (free-function async worked; only the type-method form had an
+  internal dot).
+- **Stale `_kernel/testing_mocking.l` + `_kernel_jvm/testing_mocking.l`
+  deleted**: orphaned pre-D-progress-123 F#-shim `StubCounter`
+  (`extern type` + `@externTarget("Lyric.Stdlib.StubCounterHost.*")`, a host
+  that no longer exists), superseded by the native `protected type` in
+  `std/testing_mocking.l`. Both declared `package Std.Testing.Mocking`, so a
+  full-stdlib emit merged them → `T0001 duplicate name`. The F# manifest dodged
+  it by referencing only the native file.
+- **`std/rest.l` non-conforming match arms braced**: four arms used an unbraced
+  multi-statement body (`case Ok(parsed) ->` then `var req = …; …`). The grammar
+  (`MatchArm = 'case' Pattern [MatchGuard] '->' ( Expr | Block )`, grammar.ebnf
+  §match) requires an expression or a braced block; the F# parser was wrongly
+  lenient. Braced to conform.
+
+Verified (CI, "Full self-hosted stdlib"): a driver importing every public
+`Std.*` module emits all packages (incl. `Std.Sort` / `Std.Http` / `Std.Rest`)
+via `emitPerPackageClosure`; a `Std.Sort` program compiled + run against the
+self-hosted-emitted stdlib sorts `1 2 3 4 5`. Emitter (834) + CLI (84) green.
+
+**Shipping the full self-hosted stdlib is gated on R7.** A self-hosted-*built*
+`Lyric.Stdlib.Core.dll` defines generic `Option`/`Result` with the
+arity-suffixed encoding (`Option_1`, docs/43) that the self-hosted emitter
+applies when *building* a generic type, whereas the F#-emitted compiler — and
+the F#-compatible *consumer* refs the self-hosted emitter still emits for
+`Std.Core` — expect the non-suffixed `Std.Core.Option`. Swapping a
+self-hosted-built `Core.dll` under the F#-emitted compiler fails at load
+(`Could not load type 'Std.Core.Option'`). A *consistent* self-hosted stdlib
+therefore requires a self-hosted **compiler** (so compiler and stdlib share one
+encoding) — i.e. docs/41 §R7. Until then, the shipped F#-built `Core`/`Collections`/…
+are correct for both the compiler and self-hosted user code, and the one
+genuinely-missing package (`Std.Sort`) can ship as a self-hosted `Sort.dll`
+alongside them (verified: self-hosted `Sort.dll` + F#-built `Core` sorts
+correctly). Wiring that into the shipped lib dir, and the `sortFileList`
+retirement (which needs the compiler to import `Std.Sort`, hence R7), remain
+follow-ups.
+
+### D-progress-468 — SHA-256 hashing infrastructure (docs/45 §2–§3)
 
 **Status:** Shipped — Phase 1.2 foundation: SHA-256 hashing support via `Std.Hash.sha256OfBytes`.
 
@@ -22611,6 +22677,7 @@ What landed:
 
 - **`lyric-stdlib/std/_kernel/hash_host.l`** (new extern): `pub func hostSha256Bytes(bytes: in slice[Byte]): slice[Byte]` targeting `System.Security.Cryptography.SHA256.HashData`. Declared as `@axiom` with `@stable(since = "1.0")` annotation.
 - **`lyric-stdlib/std/hash.l`** (new public function): `pub func sha256OfBytes(bytes: in slice[Byte]): String { hostBytesToHex(hostSha256Bytes(bytes)) }`. Mirrors the structure of the existing `sha512OfBytes` exactly.
+- **`lyric-stdlib/tests/hash_tests.l`**: new self-test covering SHA-256 with NIST test vectors (empty string, "abc").
 - **`bootstrap/tests/Lyric.Emitter.Tests/KernelBoundaryTests.fs`**: kernel extern cap bumped 322 → 323 to reflect the new `hostSha256Bytes` extern.
 - **`docs/17-axiom-audit.md`** and **`book/chapters/appendix-b-quick-reference.md`**: updated to document the new extern and public function.
 
