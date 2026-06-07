@@ -72,7 +72,7 @@ func emptyDecls(): List[Meta.ContractDecl] {
 }
 
 func mkContract(name: in String, decls: in List[Meta.ContractDecl]): Meta.Contract {
-  Meta.Contract(packageName = name, version = "1.0.0", level = "runtime_checked", formatVersion = 2, decls = decls)
+  Meta.Contract(packageName = name, version = "1.0.0", level = "runtime_checked", formatVersion = 2, decls = decls, dependencies = newList(), contractHash = "")
 }
 
 func mkDecl(kind: in String, name: in String, repr: in String): Meta.ContractDecl {
@@ -80,6 +80,7 @@ func mkDecl(kind: in String, name: in String, repr: in String): Meta.ContractDec
     kind = kind,
     name = name,
     repr = repr,
+    visibility = "pub",
     isPure = false,
     stability = "",
     requiresClauses = newList(),

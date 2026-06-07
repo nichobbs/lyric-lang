@@ -1093,6 +1093,7 @@ func basicDecl(kind: in String, name: in String, repr: in String): ContractDecl 
     kind = kind,
     name = name,
     repr = repr,
+    visibility = "pub",
     isPure = false,
     stability = "",
     requiresClauses = newList(),
@@ -1262,7 +1263,9 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
     packageName = joinDots(file.packageDecl.path.segments),
     version = version,
     level = levelOfFile(file),
-    formatVersion = 2,
-    decls = decls
+    formatVersion = 3,
+    decls = decls,
+    dependencies = newList(),
+    contractHash = ""
   )
 }
