@@ -1,0 +1,1 @@
+$(git show HEAD:lyric-compiler/lyric/for_loop_slice_self_test.l)
