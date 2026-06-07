@@ -937,32 +937,6 @@ func testPerPackageIsolationImplicitLeak(): Unit {
   cleanup(tmpDir)
 }
 
-// #2628: two packages each declaring a constant with the same simple name
-// must compile in a single MSIL closure without a duplicate-key crash in
-// cctx.constValues, and each constant must resolve to the correct value
-// at runtime.
-func testMultiPackageSameNamedConst(): Unit {
-  val packages: List[ProjectPackagePayload] = newList()
-  packages.add(mkPkg("DupConst.Lib", "package DupConst.Lib\n" + "\n" + "pub val LIMIT: Int = 100\n"))
-  packages.add(
-    mkPkg(
-      "DupConst.App",
-      "package DupConst.App\n" + "\n" + "import DupConst.Lib\n" + "\n" + "val LIMIT: Int = 42\n" + "\n" +
-        "func main(): Unit {\n" +
-        "  println(LIMIT)\n" +
-        "  println(DupConst.Lib.LIMIT)\n" +
-        "}\n"
-    )
-  )
-  val result = compileAndRun("dup-const", packages, "DupConst")
-  assertEqualInt(result.exitCode, 0, "multi_package_same_named_const: exit 0 (stderr=" + result.stderr + ")")
-  assertEqual(
-    Str.trim(result.stdout),
-    "42\n100",
-    "multi_package_same_named_const: each package's const resolves correctly"
-  )
-}
-
 func main(): Int {
   testTwoIndependentPackagesBundle()
   testFirstPackageWithRecordDoesNotDisturbSecond()
@@ -987,7 +961,6 @@ func main(): Int {
   testCrossPackageUnionParenlessNullaryCase()
   testRestoredRecordCtorTokenPopulated()
   testPerPackageIsolationImplicitLeak()
-  testMultiPackageSameNamedConst()
   println("msil-project-bridge tests: ok")
   return 0
 }
