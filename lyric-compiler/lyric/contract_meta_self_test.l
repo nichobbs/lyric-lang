@@ -25,7 +25,7 @@ func unwrapOrFail(opt: in Option[Contract], label: in String): Contract {
     case None -> {
       panic(label + ": parseFromJson returned None on valid input")
       // unreachable
-      Contract(packageName = "", version = "", level = "", formatVersion = 0, decls = newList())
+      Contract(packageName = "", version = "", level = "", formatVersion = 0, decls = newList(), dependencies = newList(), contractHash = "")
     }
   }
 }
@@ -342,6 +342,7 @@ func testContractToJsonRoundTrip(): Unit {
       kind = "func",
       name = "succ",
       repr = "pub func succ(x: in Int): Int",
+      visibility = "pub",
       isPure = true,
       stability = "stable:0.1",
       requiresClauses = reqClauses,
@@ -355,7 +356,9 @@ func testContractToJsonRoundTrip(): Unit {
     version = "1.2.3",
     level = "runtime_checked",
     formatVersion = 2,
-    decls = decls
+    decls = decls,
+    dependencies = newList(),
+    contractHash = ""
   )
 
   val json = contractToJson(original)
@@ -402,6 +405,7 @@ func testContractToJsonOmitsDefaults(): Unit {
       kind = "record",
       name = "Point",
       repr = "pub record Point { x: Int, y: Int }",
+      visibility = "pub",
       isPure = false,
       stability = "",
       requiresClauses = empty,
@@ -410,7 +414,7 @@ func testContractToJsonOmitsDefaults(): Unit {
       params = noParams
     )
   )
-  val c = Contract(packageName = "Geom", version = "0.1.0", level = "runtime_checked", formatVersion = 2, decls = decls)
+  val c = Contract(packageName = "Geom", version = "0.1.0", level = "runtime_checked", formatVersion = 2, decls = decls, dependencies = newList(), contractHash = "")
   val json = contractToJson(c)
   assertTrue(not Str.contains(json, "\"stability\""), "omits_defaults: empty stability key absent")
   assertTrue(not Str.contains(json, "\"pure\""), "omits_defaults: false pure key absent")
@@ -451,6 +455,7 @@ func unwrapDeclOrFail(opt: in Option[ContractDecl], label: in String): ContractD
         kind = "",
         name = "",
         repr = "",
+        visibility = "",
         isPure = false,
         stability = "",
         requiresClauses = newList(),

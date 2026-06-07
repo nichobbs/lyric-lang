@@ -234,6 +234,9 @@ pub record ContractDecl {
   name: String
   /// Canonical signature / shape, free-form.
   repr: String
+  /// Visibility level: "pub" | "internal" | "" (package-private).
+  /// Format v3+; absent in v1-v2 (defaults to "pub" for backward compat).
+  visibility: String
   /// @pure annotation present on this declaration.
   isPure: Bool
   /// Stability level (D040 / Q011):
@@ -256,6 +259,15 @@ pub record ContractDecl {
   params: List[ContractParam]
 }
 
+/// One direct dependency in a contract's dependency manifest (format v3+).
+@stable(since = "0.1")
+pub record ContractDependency {
+  packageName: String
+  version: String
+  /// SHA256 hash of the dependency's contract JSON.
+  contractHash: String
+}
+
 /// Serialised contract for one emitted assembly.  Mirrors F#
 /// `Lyric.Emitter.ContractMeta.Contract`.
 @stable(since = "0.1")
@@ -268,6 +280,10 @@ pub record Contract {
   level: String
   formatVersion: Int
   decls: List[ContractDecl]
+  /// Direct dependencies' contract metadata (format v3+; absent in v1-v2).
+  dependencies: List[ContractDependency]
+  /// SHA256 hash of this contract's JSON (format v3+; absent in v1-v2).
+  contractHash: String
   // JsonValueKind ordinals (matches `System.Text.Json.JsonValueKind`):
   //   0=Undefined  1=Object  2=Array  3=String  4=Number  5=True  6=False  7=Null
 }
@@ -379,6 +395,7 @@ func parseDecl(el: in JsonElement): ContractDecl {
     kind = getStr(el, "kind", ""),
     name = getStr(el, "name", ""),
     repr = getStr(el, "repr", ""),
+    visibility = getStr(el, "visibility", "pub"),
     isPure = getBool(el, "pure"),
     stability = getStr(el, "stability", ""),
     requiresClauses = getStrArray(el, "requires"),
@@ -386,6 +403,33 @@ func parseDecl(el: in JsonElement): ContractDecl {
     body = getOptStr(el, "body"),
     params = getParams(el)
   )
+}
+
+func parseDependency(el: in JsonElement): ContractDependency {
+  ContractDependency(
+    packageName = getStr(el, "packageName", ""),
+    version = getStr(el, "version", ""),
+    contractHash = getStr(el, "contractHash", "")
+  )
+}
+
+func getDependencies(elem: in JsonElement): List[ContractDependency] {
+  val result: List[ContractDependency] = newList()
+  match tryGetProperty(elem, "dependencies") {
+    case None -> result
+    case Some(a) -> {
+      if valueKind(a) == JK_ARRAY {
+        var en = enumerateArray(a)
+        while arrayMoveNext(en) {
+          val v = arrayCurrent(en)
+          if valueKind(v) == JK_OBJECT {
+            result.add(parseDependency(v))
+          }
+        }
+      }
+      result
+    }
+  }
 }
 
 // Walk the parsed root.  Returns None when the root isn't a JSON object
@@ -420,7 +464,9 @@ func parseFromRoot(root: in JsonElement): Option[Contract] {
       version = getStr(root, "version", "0.0.0"),
       level = getStr(root, "level", "runtime_checked"),
       formatVersion = getInt(root, "formatVersion", 1),
-      decls = decls
+      decls = decls,
+      dependencies = getDependencies(root),
+      contractHash = getStr(root, "contractHash", "")
     )
   )
 }
@@ -545,11 +591,14 @@ func renderParams(ps: in List[ContractParam]): String {
 // Render one `ContractDecl` as a JSON object.  Mirrors F#
 // `renderDecl`: only emits the optional fields when they carry
 // non-empty content, so the JSON stays byte-stable against the
-// F# producer.
-func renderDecl(d: in ContractDecl): String {
+// F# producer. Visibility is emitted in v3+.
+func renderDecl(d: in ContractDecl, formatVersion: in Int): String {
   var sb = "{\"kind\":\"" + escapeJson(d.kind) + "\""
   sb = sb + ",\"name\":\"" + escapeJson(d.name) + "\""
   sb = sb + ",\"repr\":\"" + escapeJson(d.repr) + "\""
+  if formatVersion >= 3 and Str.isNotEmpty(d.visibility) {
+    sb = sb + ",\"visibility\":\"" + escapeJson(d.visibility) + "\""
+  }
   if Str.isNotEmpty(d.stability) {
     sb = sb + ",\"stability\":\"" + escapeJson(d.stability) + "\""
   }
@@ -574,10 +623,31 @@ func renderDecl(d: in ContractDecl): String {
   sb + "}"
 }
 
-/// Render a `Contract` as JSON, preserving `c.formatVersion` (format-1
-/// or format-2) so the output round-trips byte-stably through
-/// `parseFromJson` without loss.  Mirrors
-/// `bootstrap/src/Lyric.Emitter/ContractMeta.fs::toJson`.
+// Render one `ContractDependency` as a JSON object.
+func renderDependency(dep: in ContractDependency): String {
+  var sb = "{\"packageName\":\"" + escapeJson(dep.packageName) + "\""
+  sb = sb + ",\"version\":\"" + escapeJson(dep.version) + "\""
+  sb = sb + ",\"contractHash\":\"" + escapeJson(dep.contractHash) + "\"}"
+  sb
+}
+
+// Render dependencies array as JSON.
+func renderDependencies(deps: in List[ContractDependency]): String {
+  var sb = "["
+  var i = 0
+  while i < deps.count {
+    if i > 0 {
+      sb = sb + ","
+    }
+    sb = sb + renderDependency(deps[i])
+    i = i + 1
+  }
+  sb + "]"
+}
+
+/// Render a `Contract` as JSON.  For v3+ contracts, includes
+/// dependencies and contractHash. Preserves `c.formatVersion`
+/// so v1-v2 round-trips byte-stably.
 @stable(since = "0.1")
 pub func contractToJson(c: in Contract): String {
   var sb = "{\n"
@@ -585,13 +655,22 @@ pub func contractToJson(c: in Contract): String {
   sb = sb + "  \"packageName\": \"" + escapeJson(c.packageName) + "\",\n"
   sb = sb + "  \"version\": \"" + escapeJson(c.version) + "\",\n"
   sb = sb + "  \"level\": \"" + escapeJson(c.level) + "\",\n"
+
+  if c.formatVersion >= 3 and Str.isNotEmpty(c.contractHash) {
+    sb = sb + "  \"contractHash\": \"" + escapeJson(c.contractHash) + "\",\n"
+  }
+
+  if c.formatVersion >= 3 and c.dependencies.count > 0 {
+    sb = sb + "  \"dependencies\": " + renderDependencies(c.dependencies) + ",\n"
+  }
+
   sb = sb + "  \"decls\": [\n"
   var i = 0
   while i < c.decls.count {
     if i > 0 {
       sb = sb + ",\n"
     }
-    sb = sb + "    " + renderDecl(c.decls[i])
+    sb = sb + "    " + renderDecl(c.decls[i], c.formatVersion)
     i = i + 1
   }
   sb + "\n  ]\n}\n"
@@ -1015,6 +1094,7 @@ func basicDecl(kind: in String, name: in String, repr: in String): ContractDecl 
     kind = kind,
     name = name,
     repr = repr,
+    visibility = "pub",
     isPure = false,
     stability = "",
     requiresClauses = newList(),
@@ -1186,6 +1266,8 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
     version = version,
     level = levelOfFile(file),
     formatVersion = 2,
-    decls = decls
+    decls = decls,
+    dependencies = newList(),
+    contractHash = ""
   )
 }
