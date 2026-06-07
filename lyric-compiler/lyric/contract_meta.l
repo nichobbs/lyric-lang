@@ -234,7 +234,7 @@ pub record ContractDecl {
   /// Canonical signature / shape, free-form.
   repr: String
   /// Visibility level: "pub" | "internal" | "" (package-private).
-  /// Format v3+; absent in v1-v2 (defaults to "").
+  /// Format v3+; absent in v1-v2 (defaults to "pub" for backward compat).
   visibility: String
   /// @pure annotation present on this declaration.
   isPure: Bool
@@ -591,11 +591,11 @@ func renderParams(ps: in List[ContractParam]): String {
 // `renderDecl`: only emits the optional fields when they carry
 // non-empty content, so the JSON stays byte-stable against the
 // F# producer. Visibility is emitted in v3+.
-func renderDecl(d: in ContractDecl): String {
+func renderDecl(d: in ContractDecl, formatVersion: in Int): String {
   var sb = "{\"kind\":\"" + escapeJson(d.kind) + "\""
   sb = sb + ",\"name\":\"" + escapeJson(d.name) + "\""
   sb = sb + ",\"repr\":\"" + escapeJson(d.repr) + "\""
-  if Str.isNotEmpty(d.visibility) {
+  if formatVersion >= 3 and Str.isNotEmpty(d.visibility) {
     sb = sb + ",\"visibility\":\"" + escapeJson(d.visibility) + "\""
   }
   if Str.isNotEmpty(d.stability) {
@@ -669,7 +669,7 @@ pub func contractToJson(c: in Contract): String {
     if i > 0 {
       sb = sb + ",\n"
     }
-    sb = sb + "    " + renderDecl(c.decls[i])
+    sb = sb + "    " + renderDecl(c.decls[i], c.formatVersion)
     i = i + 1
   }
   sb + "\n  ]\n}\n"
