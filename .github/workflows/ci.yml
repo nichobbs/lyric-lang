@@ -2166,3 +2166,20 @@ jobs:
           path: coverage/
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Mark PR ready for review if build succeeds
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.draft == true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            console.log(`Marking PR #${pr.number} as ready for review`);
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              draft: false
+            });
+            console.log(`PR #${pr.number} is now ready for review`);
