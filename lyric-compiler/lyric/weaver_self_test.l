@@ -1,12 +1,14 @@
 //! weaver_self_test.l — exercises the self-hosted `Lyric.Weaver`
 //! library.  Runs automatically in CI via native `lyric test`:
 //!
-//!   LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/weaver_self_test.l
+//!   lyric test lyric-compiler/lyric/weaver_self_test.l
 //!
-//! The `LYRIC_LOAD_COMPILER=1` env var gates `emitMsilInProcess` into the
-//! multi-package bridge path, which loads `Lyric.Lexer`, `Lyric.Parser`,
-//! and `Lyric.Weaver` from `lyric-compiler/lyric/` so the test's imports
-//! resolve without a subprocess hop.  Tracked in issue #1324.
+//! The compiler-package imports (`Lyric.Lexer`, `Lyric.Parser`,
+//! `Lyric.Weaver`) are resolved by LINKING the already-compiled stage-1
+//! bundle DLLs as restored dependencies (#2364), so the test's imports
+//! resolve without recompiling them from source (the former
+//! `LYRIC_LOAD_COMPILER=1` path) and without a subprocess hop.  Resolves
+//! issue #1324.
 //!
 //! Covers the three todo/06 features that land in weaver.l:
 //!

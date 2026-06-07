@@ -21963,3 +21963,60 @@ every value asserted at runtime; the DLL type-loads) run in CI via native
 (84) suites stay green.  In-bundle generic **unions** (the nullary-case
 singleton interaction, Q-GEN-001) and the stage-3 stdlib byte-match remain
 follow-ups.
+
+### D-progress-454 — `lyric test` links F#-compiled compiler DLLs as restored deps (#2364, epic #2359 Stage 5)
+
+**Status:** Shipped (linking mechanism) — a single-file `@test_module` that
+imports `Lyric.*` compiler packages now resolves those imports by LINKING the
+already-compiled stage-1 bundle DLLs as restored dependencies, instead of the
+former `LYRIC_LOAD_COMPILER=1` recompile-from-source path.  This is the
+foundation for retiring the F# `SelfHosted*Tests.fs` self-test wrappers
+(#2364) and resolves the long-standing #1324 ("weaver self-test not wired
+into CI without an env-var hack").
+
+Three cross-assembly fidelity gaps had to close before the F#-compiled bundle
+DLLs would bind at run time (the self-hosted consumer must byte-match the
+producer's physical metadata):
+
+- **AssemblyRef naming** (`codegen.l::ensureAssemblyRefForArtifact`): the
+  consumer named the foreign `AssemblyRef` after the contract `packageName`
+  (`Lyric.Weaver`), but a multi-package bundle DLL prefixes every member
+  package, so the real assembly simple name is the file stem
+  (`Lyric.Lyric.Weaver`).  An `AssemblyRef` under the package name can't bind
+  (`Could not load file or assembly 'Lyric.Weaver'`).  Now derives the simple
+  name from the artifact's DLL file stem; ordinary `<packageName>.dll` deps are
+  unaffected (stem == packageName).
+- **Global two-pass registration** (`codegen.l::registerRestoredArtifactTokens`):
+  switched from a per-artifact (types+members interleaved) pass to a global
+  two-pass (all types across all artifacts, then all members), mirroring
+  `registerStdlibArtifactTokens`.  The per-artifact pass encoded a
+  function/field whose signature referenced a *sibling* package's type before
+  that sibling's TypeRef existed, silently erasing the type to `System.Object`.
+- **Concrete signature encoding**: the restored record-ctor / record-field /
+  free-func / union-case registrations now use the `WithCtx` signature encoders
+  (`buildFieldSigWithCtx` / `buildStaticMethodSigWithCtx` /
+  `buildInstanceMethodSigWithCtx`), which encode `MClass` as
+  `ELEMENT_TYPE_CLASS + TypeDefOrRef` instead of degrading to
+  `ELEMENT_TYPE_OBJECT`.  `lowerMRecord` already emits concrete field/ctor
+  signatures, so the consumer's MemberRef/FieldRef must match concretely or the
+  loader faults with `Method/Field not found`.  (Interface/impl-method sites
+  keep the erasing encoder deliberately, to match the producer's still-erasing
+  `MInterface` emission, #1602.)
+
+CLI plumbing: `emitter.l::compilerClosureDllPaths` resolves the transitive
+compiler-package import closure to its compiled DLLs in the stage-1 lib dir;
+`cli.l` routes single-file `lyric test` through `emitTestLinked`
+(`Emitter.emitProject` with the closure as restored deps) when the test imports
+compiler packages, falling back to `emitTestPlain` otherwise.  Blast radius is
+limited — `Lyric.*` is reserved for the compiler tree, so a normal user
+`lyric test` never triggers the linked path.
+
+CI: the six compiler-importing self-tests (`weaver`, `cfg_gate`, `cli_suggest`,
+`release`, `init`, `union_list_match`) dropped `LYRIC_LOAD_COMPILER=1` and now
+run via linking.  All 843 emitter + 84 CLI tests pass; `weaver_self_test.l`
+(18 tests) passes via linking with no env var.
+
+Remaining in #2364 (tracked follow-up): convert the 14 `func main`
+self-tests to `@test_module`, run them via native `lyric test`, and delete the
+15 F# `SelfHosted*Tests.fs` wrappers.  The linking mechanism that unblocks this
+shipped here.
