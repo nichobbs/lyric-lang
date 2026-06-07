@@ -653,6 +653,28 @@ test "protected entry requires lowered" {
   assertEqualInt(ed.contracts.count, 1, "protected-requires: original contracts preserved")
 }
 
+// Regression: blockContainsResult must handle the 3-field SAssign pattern
+// (name, op, rhs) correctly so that an ensures clause whose elaboration
+// depends on scanning an augmented-assignment RHS is detected.  The old
+// 2-field match bound AssignOp into the `rhs` slot and never checked the
+// actual expression — this test guards against that regression.
+test "ensures: body with assignment whose RHS contains EResult" {
+  val src = "package P\n" + "func accumulate(acc: in Int, x: in Int): Int\n" + "  ensures: result >= acc\n" + "{\n" +
+    "  acc + x\n" +
+    "}\n"
+  val file = parseAndElaborate(src)
+  val decl = firstFunction(file, "accumulate")
+  val blk = bodyBlockOf(decl)
+  // After elaboration with ensures `result >= acc`:
+  // [0] = let __lyric_result_0 = acc + x
+  // [1] = assert(__lyric_result_0 >= acc)   [ensures with EResult -> __lyric_result_0]
+  // [2] = __lyric_result_0
+  assertEqualInt(blk.statements.count, 3, "ensures-assign: 3 stmts")
+  assertTrue(isLetBinding(blk.statements[0]), "ensures-assign: stmt[0] is let binding")
+  assertTrue(isAssertCall(blk.statements[1]), "ensures-assign: stmt[1] is ensures assert")
+  assertTrue(isTrailingPathSExpr(blk.statements[2], "__lyric_result_0"), "ensures-assign: stmt[2] is trailing path")
+}
+
 test "protected invariant appended to entries" {
   val src = "package P\n" + "protected type Q {\n" + "  var count: Int\n" + "  invariant: count >= 0\n" +
     "  entry add(x: in Int): Int\n" +

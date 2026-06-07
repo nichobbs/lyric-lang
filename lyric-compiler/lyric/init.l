@@ -107,10 +107,7 @@ func gitignoreContent(): String {
     "target/\n" +
     "\n" +
     "# Dependency restore cache\n" +
-    ".lyric/\n" +
-    "\n" +
-    "# Three-stage bootstrap workdir\n" +
-    ".bootstrap/\n"
+    ".lyric/\n"
 }
 
 // Write `content` to `path`, reporting a clear `init:` error on failure.

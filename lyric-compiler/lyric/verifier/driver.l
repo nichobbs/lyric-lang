@@ -200,6 +200,17 @@ pub func proveSourceWithOptions(source: in String, allowUnverified: in Bool): Pr
   val weaveDiags = wovenResult.diagnostics
   appendDiags(allParseDiags, weaveDiags)
 
+  // Gate on fatal weave diagnostics before VC generation.  A0044 in
+  // particular materialises a `panic(...)` stub into the woven body; VC
+  // generation would then model the panic as an unconstrained value and may
+  // discharge goals as Proved even though the program panics at runtime —
+  // producing an unsound result.  Returning early here matches the build
+  // path's `reportAndAbort(weaveRes.diagnostics)` guard.
+  if hasFatalDiag(weaveDiags) {
+    val results: List[ProofResult] = newList()
+    return ProofSummary(level = level, diagnostics = allParseDiags, results = results)
+  }
+
   // 5. VC generation against the woven file.
   val (goals, vcDiags) = goalsForFile(wovenFile, level)
 

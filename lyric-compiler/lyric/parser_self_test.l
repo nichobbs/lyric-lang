@@ -127,6 +127,15 @@ test "match stmt does not glue operator" {
   assertEqualInt(firstFuncBodyStmtCount(pr), 2, "match-stmt-sei: two statements, not a glued binop")
 }
 
+// Same-line operator after brace-if in statement position: the operator is on
+// the SAME line as the closing `}` — it still parses as two separate statements
+// (the if-statement and then the operator-expression), not as a glued binop.
+test "if stmt same-line operator does not glue" {
+  val pr = parse("package P\nfunc f(n: in Int): Int {\n  if n > 10 { return 100 } -1\n}\n")
+  assertEqualInt(diagCount(pr), 0, "if-stmt-same-line: no diagnostics")
+  assertEqualInt(firstFuncBodyStmtCount(pr), 2, "if-stmt-same-line: two statements, not a glued binop")
+}
+
 // Value position is unaffected: an `if` after `=` is an ordinary operand, so the
 // initialiser is a single expression (one `val` statement).
 test "value if still single expr" {
@@ -359,6 +368,12 @@ test "aspect matches name in" {
   }
 }
 
+// P0321 — missing `{` after `name in`.
+test "aspect name-in missing brace P0321" {
+  val pr = parse("package P\naspect A from X {\n  matches: name in foo, bar\n}\n")
+  assertTrue(hasDiagCode(pr, "P0321"), "P0321: missing '{' after 'name in'")
+}
+
 test "aspect as param name" {
   val src = "package P\nfunc tag(aspect: in String): String { aspect }\n"
   val pr = parse(src)
@@ -391,6 +406,19 @@ test "contextual keywords as identifiers" {
   assertEqualInt(diagCount(param), 0, "ctx-kw: `record`/`test` parameter names parse clean")
   val memberRef = parse("package P\nfunc f(union: in Int): Int { union }\n")
   assertEqualInt(diagCount(memberRef), 0, "ctx-kw: `union` value reference parses clean")
+  // Remaining six contextual keywords not covered by the above cases.
+  val alias = parse("package P\nfunc f(): Int {\n  val alias = 1\n  alias\n}\n")
+  assertEqualInt(diagCount(alias), 0, "ctx-kw: `alias` as binding name parses clean")
+  val enum = parse("package P\nfunc f(): Int {\n  val enum = 2\n  enum\n}\n")
+  assertEqualInt(diagCount(enum), 0, "ctx-kw: `enum` as binding name parses clean")
+  val interface = parse("package P\nfunc f(): Int {\n  val interface = 3\n  interface\n}\n")
+  assertEqualInt(diagCount(interface), 0, "ctx-kw: `interface` as binding name parses clean")
+  val wire = parse("package P\nfunc f(): Int {\n  val wire = 4\n  wire\n}\n")
+  assertEqualInt(diagCount(wire), 0, "ctx-kw: `wire` as binding name parses clean")
+  val fixture = parse("package P\nfunc f(): Int {\n  val fixture = 5\n  fixture\n}\n")
+  assertEqualInt(diagCount(fixture), 0, "ctx-kw: `fixture` as binding name parses clean")
+  val property = parse("package P\nfunc f(): Int {\n  val property = 6\n  property\n}\n")
+  assertEqualInt(diagCount(property), 0, "ctx-kw: `property` as binding name parses clean")
 }
 
 // The same keywords keep their keyword meaning at item position.

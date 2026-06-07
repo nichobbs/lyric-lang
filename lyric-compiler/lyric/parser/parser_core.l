@@ -261,11 +261,12 @@ pub func tryEatIdentOrContextual(st: inout ParseState): Option[NameAndSpan] {
   }
 }
 
-// Accept an identifier OR any keyword as a member / method name after `.`.
-// A keyword is unambiguous in member position (only a member name is valid
-// after a `.`), and several built-in methods use reserved spellings — the
-// bitwise integer methods `and` / `or` / `xor` in particular.  The
-// keyword's source spelling becomes the member name.
+// Accept an identifier OR one of the allowlisted keywords as a member / method
+// name after `.`.  Only `and`, `or`, and `xor` are accepted as keywords here
+// because they are the only reserved spellings used as built-in method names
+// (the bitwise integer methods).  All other keywords at member position remain
+// a parse error (P0081), preserving clear diagnostics for mistakes like
+// `x.if(...)` or `x.return`.
 pub func tryEatMemberName(st: inout ParseState): Option[NameAndSpan] {
   val t = peek(st)
   match t.token {
@@ -274,8 +275,13 @@ pub func tryEatMemberName(st: inout ParseState): Option[NameAndSpan] {
       Some(value = NameAndSpan(name = name, span = t.span))
     }
     case TKeyword(k) -> {
-      st.pos = st.pos + 1
-      Some(value = NameAndSpan(name = keywordSpelling(k), span = t.span))
+      val allowed = k == KwAnd or k == KwOr or k == KwXor
+      if allowed {
+        st.pos = st.pos + 1
+        Some(value = NameAndSpan(name = keywordSpelling(k), span = t.span))
+      } else {
+        None
+      }
     }
     case _ -> None
   }

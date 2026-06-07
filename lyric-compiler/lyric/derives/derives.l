@@ -178,7 +178,9 @@ func emptyList[A](): List[A] {
 
 func makeParam(nm: in String, ty: in TypeExpr): Param {
   val noAnns: List[Annotation] = newList()
-  Param(mode = PMIn, modeExplicit = true, name = nm, ty = ty, dflt = None, annotations = noAnns, span = sp())
+  // modeExplicit = false: synthesised params have no explicit mode keyword in
+  // source — `in` is the default sugar, not an authored annotation.
+  Param(mode = PMIn, modeExplicit = false, name = nm, ty = ty, dflt = None, annotations = noAnns, span = sp())
 }
 
 func makeFuncDecl(
@@ -257,12 +259,11 @@ func synthesizeEqualsRecord(typeName: in String, decl: in RecordDecl, vis: in Op
 
 // `TypeName.equals(self, other): Bool` for distinct types via the `value`
 // field directly.  The lowered MDistinctType has a single `value: Inner`
-// field (added in `lowerMDistinctType`); the `projMethod` parameter is
-// kept for callers' API stability but the body bypasses it — projection
-// methods like `toInt`/`toString` are not synthesised on the lowered CLR
-// class (#1917), and the F# emitter's own `equals` synthesis uses the
-// same field-direct pattern (`ldfld value`).
-func synthesizeEqualsDistinct(typeName: in String, projMethod: in String, vis: in Option[Visibility]): Item {
+// field (added in `lowerMDistinctType`); the body bypasses projection methods
+// — `toInt`/`toString` are not synthesised on the lowered CLR class, and the
+// F# emitter's own `equals` synthesis uses the same field-direct pattern
+// (`ldfld value`).
+func synthesizeEqualsDistinct(typeName: in String, vis: in Option[Visibility]): Item {
   val cmp = binop(BEq, memberOf(pathExpr("self"), "value"), memberOf(pathExpr("other"), "value"))
   val body = blockReturn(cmp)
   val params: List[Param] = newList()
@@ -300,9 +301,8 @@ func synthesizeHashRecord(typeName: in String, decl: in RecordDecl, vis: in Opti
 }
 
 // `TypeName.hash(self: in TypeName): Int` for distinct types.
-// Same `value`-field-direct strategy as `synthesizeEqualsDistinct` (see
-// note there); `projMethod` is kept for API stability but unused.
-func synthesizeHashDistinct(typeName: in String, projMethod: in String, vis: in Option[Visibility]): Item {
+// Same `value`-field-direct strategy as `synthesizeEqualsDistinct` (see note there).
+func synthesizeHashDistinct(typeName: in String, vis: in Option[Visibility]): Item {
   val body = blockReturn(call1("hashCode", memberOf(pathExpr("self"), "value")))
   val params: List[Param] = newList()
   params.add(makeParam("self", typeRef(typeName)))
@@ -340,9 +340,8 @@ func synthesizeShowRecord(typeName: in String, decl: in RecordDecl, vis: in Opti
 }
 
 // `TypeName.show(self: in TypeName): String` for distinct types.
-// Same `value`-field-direct strategy as the equals/hash synthesisers
-// above; `projMethod` is kept for API stability but unused.
-func synthesizeShowDistinct(typeName: in String, projMethod: in String, vis: in Option[Visibility]): Item {
+// Same `value`-field-direct strategy as the equals/hash synthesisers above.
+func synthesizeShowDistinct(typeName: in String, vis: in Option[Visibility]): Item {
   val body = blockReturn(
     strCat(
       strCat(strLit(typeName + "("), call1("toString", memberOf(pathExpr("self"), "value"))),
@@ -426,58 +425,6 @@ func synthesizeToJsonRecord(typeName: in String, decl: in RecordDecl, vis: in Op
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §8. Distinct-type projection method name.
-// ─────────────────────────────────────────────────────────────────────────────
-// Map an underlying primitive type name to the UFCS projection method
-// that Lyric synthesises automatically on distinct types.
-func projectionMethod(underlyingName: in String): String {
-  if underlyingName == "Int" {
-    return "toInt"
-  }
-  if underlyingName == "Long" {
-    return "toLong"
-  }
-  if underlyingName == "UInt" {
-    return "toUInt"
-  }
-  if underlyingName == "ULong" {
-    return "toULong"
-  }
-  if underlyingName == "Byte" {
-    return "toByte"
-  }
-  if underlyingName == "Float" {
-    return "toFloat"
-  }
-  if underlyingName == "Double" {
-    return "toDouble"
-  }
-  if underlyingName == "String" {
-    return "toString"
-  }
-  // Distinct-type wrappers around Bool need `.toBool()` projection;
-  // without this arm they would fall through to the `"toValue"`
-  // fallback and reference a method that doesn't exist on Bool.
-  if underlyingName == "Bool" {
-    return "toBool"
-  }
-  "toValue"
-}
-
-func lastSegment(te: in TypeExpr): String {
-  match te.kind {
-    case TRef(path) -> {
-      if path.segments.count > 0 {
-        path.segments[path.segments.count - 1]
-      } else {
-        ""
-      }
-    }
-    case _ -> ""
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // §9. Per-item synthesis dispatch.
 // ─────────────────────────────────────────────────────────────────────────────
 // Returns true when a function named `name` already exists in `items`.
@@ -546,30 +493,29 @@ func deriveItem(item: in Item, existingItems: in List[Item], synths: inout List[
       }
     }
     case IDistinctType(decl) -> {
-      val projName = projectionMethod(lastSegment(decl.underlying))
       val nm = decl.name
       var di = 0
       while di < decl.derives.count {
         val marker = decl.derives[di]
         if marker == "Equals" {
-          addIfNew(synths, existingItems, synthesizeEqualsDistinct(nm, projName, vis), nm + ".equals")
+          addIfNew(synths, existingItems, synthesizeEqualsDistinct(nm, vis), nm + ".equals")
         }
         if marker == "Hash" {
-          addIfNew(synths, existingItems, synthesizeHashDistinct(nm, projName, vis), nm + ".hash")
+          addIfNew(synths, existingItems, synthesizeHashDistinct(nm, vis), nm + ".hash")
         }
         if marker == "Show" {
-          addIfNew(synths, existingItems, synthesizeShowDistinct(nm, projName, vis), nm + ".show")
+          addIfNew(synths, existingItems, synthesizeShowDistinct(nm, vis), nm + ".show")
         }
         di = di + 1
       }
       if hasDeriveMarker(anns, "Equals") {
-        addIfNew(synths, existingItems, synthesizeEqualsDistinct(nm, projName, vis), nm + ".equals")
+        addIfNew(synths, existingItems, synthesizeEqualsDistinct(nm, vis), nm + ".equals")
       }
       if hasDeriveMarker(anns, "Hash") {
-        addIfNew(synths, existingItems, synthesizeHashDistinct(nm, projName, vis), nm + ".hash")
+        addIfNew(synths, existingItems, synthesizeHashDistinct(nm, vis), nm + ".hash")
       }
       if hasDeriveMarker(anns, "Show") {
-        addIfNew(synths, existingItems, synthesizeShowDistinct(nm, projName, vis), nm + ".show")
+        addIfNew(synths, existingItems, synthesizeShowDistinct(nm, vis), nm + ".show")
       }
     }
     case _ -> ()

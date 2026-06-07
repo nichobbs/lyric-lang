@@ -163,6 +163,34 @@ func testGitDepTag(): Unit {
   }
 }
 
+func testGitDepRev(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nSomeLib = { git = \"https://github.com/user/repo\", rev = \"abc1234\" }\n"
+  val m = parseOk(toml)
+  assertEqualInt(m.deps.count, 1, "git-dep-rev: one entry")
+  match m.deps[0].source {
+    case Git(url, refKind, refValue, _) -> {
+      assertEqual(url, "https://github.com/user/repo", "git-dep-rev: url")
+      assertEqual(refKind, "rev", "git-dep-rev: ref kind")
+      assertEqual(refValue, "abc1234", "git-dep-rev: rev SHA")
+    }
+    case _ -> assertTrue(false, "git-dep-rev: source should be Git")
+  }
+}
+
+func testGitDepBranch(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nSomeLib = { git = \"https://github.com/user/repo\", branch = \"main\" }\n"
+  val m = parseOk(toml)
+  assertEqualInt(m.deps.count, 1, "git-dep-branch: one entry")
+  match m.deps[0].source {
+    case Git(url, refKind, refValue, _) -> {
+      assertEqual(url, "https://github.com/user/repo", "git-dep-branch: url")
+      assertEqual(refKind, "branch", "git-dep-branch: ref kind")
+      assertEqual(refValue, "main", "git-dep-branch: branch name")
+    }
+    case _ -> assertTrue(false, "git-dep-branch: source should be Git")
+  }
+}
+
 func testGitDepSubdir(): Unit {
   val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"Lyric.Cache\" = { git = \"https://github.com/nichobbs/lyric-lang\", tag = \"v0.1.0\", subdir = \"lyric-cache\" }\n"
   val m = parseOk(toml)
@@ -332,6 +360,8 @@ func main(): Unit {
   testWorkspaceDep()
   testPathDep()
   testGitDepTag()
+  testGitDepRev()
+  testGitDepBranch()
   testGitDepSubdir()
   testWorkspaceSection()
   testRegistrySection()

@@ -316,13 +316,13 @@ func isWhitelistedT0010(d: in Diagnostic): Bool {
   isWhitelistedStdlibType(name)
 }
 
-// True iff `d` is a *body-semantics* diagnostic that cannot meaningfully apply
-// to a synthesised contract source.  That source reconstructs a restored
-// package's public API from metadata: `impl` blocks are bare type anchors and
-// function bodies are stubs, so checks that depend on real bodies / call sites
-// legitimately "fail" here even though the package compiled cleanly when it was
-// originally built.  Whitelisting them keeps the restored-dep load from
-// false-failing — same rationale as the whitelisted-T0010 stdlib anchors.
+// True iff `d` is one of the diagnostic codes that cannot meaningfully apply
+// to a synthesised contract source — these are whitelisted so they do not turn
+// a successful synthesis into a failure.  The synthesised source reconstructs a
+// restored package's public API from metadata: `impl` blocks are bare type
+// anchors and function bodies are stubs, so checks that depend on real bodies /
+// call sites legitimately "fail" here even though the package compiled cleanly
+// originally.
 //
 //   T0085 — `out`/`inout` argument must be a mutable l-value (call sites)
 //   T0086 — `out` parameter never assigned (stub bodies assign nothing)
@@ -332,7 +332,7 @@ func isWhitelistedT0010(d: in Diagnostic): Bool {
 //   T0100 — opaque construction outside its package
 //   T0101 — constructor names an unknown field
 //   T0102 — opaque representation pattern-match outside its package
-func isConformanceDiag(d: in Diagnostic): Bool {
+func isSynthesizedBodyDiag(d: in Diagnostic): Bool {
   d.code == "T0085" or d.code == "T0086" or d.code == "T0087" or d.code == "T0098" or d.code == "T0099" or
     d.code == "T0100" or
     d.code == "T0101" or
@@ -360,7 +360,7 @@ func filterRealErrors(diags: in List[Diagnostic]): List[Diagnostic] {
   var i = 0
   while i < diags.count {
     val d = diags[i]
-    if isErrorDiag(d) and not isWhitelistedT0010(d) and not isConformanceDiag(d) {
+    if isErrorDiag(d) and not isWhitelistedT0010(d) and not isSynthesizedBodyDiag(d) {
       kept.add(d)
     }
     i = i + 1
@@ -414,6 +414,14 @@ pub func synthesiseArtifact(
   // resolve at bundle time against the sibling artifacts' items.
   val ownSrc = synthesiseSource(art.contract, emptyPreamble())
   val ownPr = parse(ownSrc)
+
+  // The own-source parse should always succeed (it is the same content that
+  // type-checked cleanly above, minus the preamble header).  Defensively
+  // check for parse errors before storing the AST, so a future edge case
+  // does not silently register a malformed file in the bundle's item pool.
+  if ownPr.diagnostics.count > 0 {
+    return Err(error = SynthesisDiagnostics(path = art.dllPath, diags = ownPr.diagnostics))
+  }
 
   Ok(
     value = SynthesisedArtifact(

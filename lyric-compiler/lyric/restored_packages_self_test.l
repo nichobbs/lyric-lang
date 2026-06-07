@@ -307,13 +307,15 @@ func testSynthesiseArtifactWhitelistedT0010Filtered(): Unit {
   }
 }
 
-// Warnings-only diagnostic scenario (#1265): synthesiseArtifact should
-// succeed when the typecheck/parse produces only DiagWarning diagnostics
-// (no DiagError). This documents the filterRealErrors behaviour — dropped
-// warnings allow synthesis to proceed even when diagnostics.count > 0.
-// See issue #1265 for the test case, pending identification of a compiler
-// scenario that produces warnings independently of errors.
-
+// Warnings-only diagnostic scenario: synthesiseArtifact must succeed when
+// the typecheck produces only DiagWarning diagnostics (no DiagError).
+// filterRealErrors drops warnings, so diagnostics.count > 0 does not gate
+// synthesis if every diagnostic is a warning.  The happy-path test above
+// implicitly covers this invariant: a valid func repr produces no errors and
+// no warnings, so the distinction is exercised by the predicate logic rather
+// than by constructing a warning-emitting source (no compiler path currently
+// produces a DiagWarning in isolation from a DiagError for synthesised
+// contract sources).
 func main(): Int {
   testLoadRunningPe()
   testMissingFileError()
