@@ -148,3 +148,25 @@ test "nested try/catch expression: each layer yields the right branch value" {
   // outer panic then fires its own catch -> 3.
   assertEqualInt(nested(true, true), 3, "both panic -> outer catch value")
 }
+
+// A panic originating inside the inner catch block — a distinct path from any of
+// the four `nested` cases above.  When the inner catch itself panics, the outer
+// try region is still active and must intercept the exception.
+func innerCatchPanics(): Int {
+  try {
+    try {
+      panic("i")
+      1
+    } catch Bug as _ {
+      panic("ic")
+      2
+    }
+    10
+  } catch Bug as _ {
+    3
+  }
+}
+
+test "inner catch panic is intercepted by the outer try region" {
+  assertEqualInt(innerCatchPanics(), 3, "inner-catch panic -> outer catch yields 3")
+}

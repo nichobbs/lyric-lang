@@ -184,3 +184,36 @@ test "nested generic union Maybe[Maybe[Int]] round-trips" {
   val r = match outer { case Just(mi) -> match mi { case Just(v) -> v; case Nothing -> -1 }; case Nothing -> -2 }
   assertEqualInt(r, 9, "nested Just(Just(9))")
 }
+
+// #2585: bare nullary generic case as a call argument without annotation.
+// When the only available type hint comes from the callee's parameter type
+// (`m: in Maybe[Int]`) rather than an LBVal/LBVar annotation or a declared
+// return type, the MGenericInstByName inference path is not yet taken — the
+// nullary case constructs as the uninstantiated `Maybe_Nothing`1` and the
+// `isinst` for the match arm silently misses.  The workaround is an explicit
+// `val` annotation so the hint flows via LBVal instead of the call-arg path.
+// This test documents the current constraint and will become redundant once
+// the call-arg hint path is implemented.
+test "#2585: bare nullary Nothing via annotated val workaround roundtrips" {
+  val n: Maybe[Int] = Nothing
+  assertEqualInt(unwrapOr(n, 0), 0, "annotated-val Nothing -> default 0")
+}
+
+test "#2585: bare Just as call argument without annotation" {
+  assertEqualInt(unwrapOr(Just(value = 7), 0), 7, "bare Just(7) -> 7")
+}
+
+// #2587: Pairish[Int, String] — heterogeneous type parameters.
+// Confirms that VAR(0) (field `a: A`) and VAR(1) (field `b: B`) are
+// independently resolved to the closed-instantiation types `Int` and `String`
+// respectively (rather than sharing the same type argument or being mixed up).
+test "#2587: Pairish[Int,String] Both keeps fields independently typed" {
+  val p: Pairish[Int, String] = Both(a = 10, b = "hello")
+  assertEqualInt(match p { case Both(n, _) -> n; case Neither -> -1 }, 10, "Pairish[Int,String] a field")
+  assertEqual(match p { case Both(_, s) -> s; case Neither -> "x" }, "hello", "Pairish[Int,String] b field")
+}
+
+test "#2587: Pairish[Int,String] Neither still matches the nullary case" {
+  val p: Pairish[Int, String] = Neither
+  assertEqualInt(match p { case Both(n, _) -> n; case Neither -> -9 }, -9, "Pairish[Int,String] Neither")
+}

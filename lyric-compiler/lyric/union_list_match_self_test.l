@@ -123,3 +123,27 @@ test "union and case names containing underscores construct and match" {
   }
   assertEqual(acc, "ok:7;wait:soon;", "underscore union round-trips through the loop")
 }
+
+// #2218: the `lowerPatternTestMsil` MObject→isinst path is exercised when a
+// union value is retrieved via mapGet, which returns Option[V] where V is an
+// opaque erased type (MObject) in the self-hosted emitter.  The inner `Some`
+// payload is an untyped `object`; the PR (#2218) fixes `match c` on that
+// payload to emit a real `isinst Src_Git` (via `unionCaseCtorByName`) rather
+// than the old "any non-null matches" null check.
+test "#2218: mapGet-erased union scrutinee: correct case selected via isinst" {
+  val m: Map[String, Src] = newMap()
+  m.add("reg", Reg(version = "1.0"))
+  m.add("git", Git(url = "u", ref = Tag(name = "v2"), subdir = None))
+  val r1 = mapGet(m, "reg")
+  val got1 = match r1 {
+    case None -> "miss"
+    case Some(s) -> match s { case Reg(v) -> "reg:" + v; case Git(url, r, subdir) -> "git" }
+  }
+  assertEqual(got1, "reg:1.0", "mapGet erased Reg -> Reg branch selected")
+  val r2 = mapGet(m, "git")
+  val got2 = match r2 {
+    case None -> "miss"
+    case Some(s) -> match s { case Reg(v) -> "reg"; case Git(url, r, subdir) -> "git:" + refLabel(r) }
+  }
+  assertEqual(got2, "git:tag:v2", "mapGet erased Git -> Git branch selected")
+}

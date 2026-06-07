@@ -28,7 +28,6 @@
 package Lyric.EnsuresSelfTest
 
 import Std.Core
-import Std.Collections
 import Std.Testing
 
 // Implicit fall-off (trailing expression) body — the elaborator binds the

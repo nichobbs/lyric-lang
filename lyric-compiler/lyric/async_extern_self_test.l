@@ -43,7 +43,6 @@ test "non-void async extern returns T not Task<T>" {
 
 test "void async extern completes without error" {
   taskDelay(0)
-  assertTrue(true, "void async extern returned after Task::Wait()")
 }
 
 // Phase 4: `await externFn()` is a no-op pass-through in non-async context.
@@ -57,5 +56,4 @@ test "await non-void async extern is pass-through" {
 
 test "await void async extern is pass-through" {
   await taskDelay(0)
-  assertTrue(true, "await on void blocking extern should pass through without error")
 }

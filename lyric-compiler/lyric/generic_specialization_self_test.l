@@ -64,3 +64,38 @@ test "generic returning Option[String] round-trips its payload" {
     case Some(v) -> assertEqual(v, "payload", "wrapSome payload")
   }
 }
+
+// ── #1745: bare-None match arm type-widening fix ──────────────────────────────
+// Before the fix, `case None -> None` in a generic match body widened to
+// `Option<object>`, so `specializeFunc` produced a wrong return-arm type and
+// the monomorphized copy mis-dispatched at runtime.
+func optId[T](x: in Option[T]): Option[T] {
+  match x {
+    case None -> None
+    case Some(v) -> Some(value = v)
+  }
+}
+
+test "#1745: bare None arm in generic match specialises correctly for Int" {
+  val a: Option[Int] = optId(None)
+  match a {
+    case None -> assertTrue(true, "None -> None (Int)")
+    case Some(v) -> assertTrue(false, "expected None")
+  }
+}
+
+test "#1745: bare Some arm in generic match preserved for Int" {
+  val a: Option[Int] = optId(Some(value = 77))
+  match a {
+    case None -> assertTrue(false, "expected Some")
+    case Some(v) -> assertEqualInt(v, 77, "Some(77) round-trips")
+  }
+}
+
+test "#1745: bare None arm in generic match specialises correctly for String" {
+  val a: Option[String] = optId(None)
+  match a {
+    case None -> assertTrue(true, "None -> None (String)")
+    case Some(v) -> assertTrue(false, "expected None")
+  }
+}

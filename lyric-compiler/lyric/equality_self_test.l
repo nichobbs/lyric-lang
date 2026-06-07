@@ -108,3 +108,25 @@ test "distinct types over String compare structurally" {
   assertTrue(a == b, "Tag(\"alpha\") == Tag(\"alpha\")")
   assertTrue(a != c, "Tag(\"alpha\") != Tag(\"beta\")")
 }
+
+// #1998: runtime codegen guard for @derive(Show) on distinct types.
+// The synthesised `toString` must compile and produce output without crashing
+// (the #1995 bug was a projection-method NRE and missing addPackageTokens
+// registration for the `self.value` access in Show + Hash synthesizers).
+@derive(Show)
+type Label = String
+
+@derive(Show)
+type Count = Int
+
+test "#1998: @derive(Show) on distinct type over String: toString compiles and runs" {
+  val l = Label("events")
+  val s = l.toString()
+  assertTrue(s.length > 0, "Show(Label) toString is non-empty")
+}
+
+test "#1998: @derive(Show) on distinct type over Int: toString compiles and runs" {
+  val c = Count(7)
+  val s = c.toString()
+  assertTrue(s.length > 0, "Show(Count) toString is non-empty")
+}
