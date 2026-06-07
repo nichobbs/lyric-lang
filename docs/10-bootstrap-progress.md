@@ -22020,3 +22020,57 @@ Remaining in #2364 (tracked follow-up): convert the 14 `func main`
 self-tests to `@test_module`, run them via native `lyric test`, and delete the
 15 F# `SelfHosted*Tests.fs` wrappers.  The linking mechanism that unblocks this
 shipped here.
+
+### D-progress-455 — in-bundle generic unions on the self-hosted MSIL backend (#2362 slice 2, epic #2359 Stage 3)
+
+**Status:** Shipped — in-bundle generic *unions* now emit as truly generic
+TypeDefs, completing the in-bundle half of #2362 (records landed in
+D-progress-453).  A `union Maybe[T] { case Just(value: T); case Nothing }`
+compiles to a generic base `Maybe`1` plus generic case classes `Maybe_Just`1` /
+`Maybe_Nothing`1`, byte-shaped like the F# stdlib's `Option`/`Result` (modulo
+the arity suffix — see below).
+
+What landed (building on the records infrastructure from D-progress-453):
+
+- **Reified union emission** (`codegen.l::lowerUnionMsil`): re-enabled the
+  `generics` threading so case fields lower to VAR(n) and each case carries the
+  union's full type-parameter list.
+- **Generic case-class inheritance** (`lowering.l::lowerMRecord`): a generic
+  union case extends the *open base instantiation* `Maybe`1<!0>` encoded as a
+  TypeSpec (not a bare TypeDef ref to the open base), and chains the base `.ctor`
+  through a TypeSpec-parented MemberRef — matching the F# emitter.
+- **Nullary generic cases** (`lowering.l::lowerMUnion`, Q-GEN-001 resolved):
+  decoded from `Lyric.Stdlib.dll` that F# gives `Option_None` *no singleton* — no
+  `Instance` field, no `.cctor`, just a plain `.ctor()` — because a generic
+  type's static fields are per-instantiation.  A generic nullary case is now
+  lowered as a zero-field generic record (plain `.ctor`, AutoLayout, GenericParam
+  rows, no singleton) and constructed via `newobj` each time; a non-generic
+  nullary case keeps the singleton for reference equality.
+- **Construction routing** (`codegen.l::addPackageTokens` IUnion +
+  `buildInBundleGenericCtorTok`): registers `genericTypeArity` /
+  `genericCtorParams` / `fieldVarIndices` per case (with corrected method-row
+  accounting for the singleton-free generic nullary case), routes `Just(x)` /
+  `Nothing` through `MNewobjGenericByName`, and returns the *parent union* as the
+  construction result type (`Just(5) : Maybe[Int]`, not `Maybe_Just[Int]`).
+- **Matching** (`codegen.l` pattern test + bind): closed-TypeSpec
+  `MIsinstGeneric` / `MCastclassGeneric` / `MLdfldGeneric` for `MGenericInstByName`
+  scrutinees, with the concrete type-argument substituted for each bound payload.
+- **Partial type-argument inference**: `MGenericInstByName` arms in the
+  `LBVal`/`LBVar` annotation and `declaredRetTy` context-hint paths thread the
+  declared type's args so a nullary or partially-applied case (`Nothing`,
+  `Lft(7) : Either[Int,String]`) instantiates at the annotated args — otherwise
+  the value's runtime instantiation would not match the `match` scrutinee type.
+
+Verified by the union half of `lyric-compiler/lyric/inbundle_generics_self_test.l`
+(16 cases total: `Maybe`, two-parameter `Either`, multi-field value-type
+`Pairish[Int,Int]`, function returns, nested `Maybe[Maybe[Int]]`) run in CI via
+native `lyric test --target dotnet`.  Full Emitter (843) + CLI (84) suites stay
+green: non-generic unions are byte-identical (the singleton path and method-row
+accounting are unchanged for `uArity == 0`), and cross-assembly `Option`/`Result`
+still route through the `MGenericInst` (TypeRef) path.
+
+Remaining for #2362: the stage-3 stdlib byte-match (self-compiling `core.l`'s
+`Option`/`Result` as reified generics).  Note the arity-suffix correction
+(D-progress-453) means a no-suffix byte-match target is unsafe for any
+multi-field generic case; the current stdlib generic types are all single-field,
+so there is no immediate conflict.

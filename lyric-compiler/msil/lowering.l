@@ -2216,7 +2216,23 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
   val recBaseRow = if r.baseClass.length > 0 and r.baseClass != "System.Object" {
     findTypeDefRowByName(ctx, r.baseClass)
   } else { 0 }
-  val recExtendsToken = if recBaseRow > 0 { tdrTypeDef(recBaseRow) } else { objectTypeToken(ctx) }
+  // A generic union *case* extends the open instantiation of its generic base
+  // (`Maybe_Just`1` extends `Maybe`1<!0>`), encoded as a TypeSpec — NOT a bare
+  // TypeDef ref to the open base (#2362).  Build that base-open TypeSpec once;
+  // it parents both the `extends` token and the base-`.ctor` MemberRef below.
+  val baseOpenTsRow = if recBaseRow > 0 and r.generics.count > 0 {
+    val baseArgs: List[MsilType] = newList()
+    var bj = 0
+    while bj < r.generics.count {
+      baseArgs.add(MTypeVar(index = bj))
+      bj = bj + 1
+    }
+    val baseBlob = buildGenericInstBlobWithCtx(ctx, tdrTypeDef(recBaseRow), baseArgs)
+    ctxAddTypeSpec(ctx, "base_open_ts_" + r.className, baseBlob)
+  } else { 0 }
+  val recExtendsToken = if baseOpenTsRow > 0 { tdrTypeSpec(baseOpenTsRow) }
+                        else if recBaseRow > 0 { tdrTypeDef(recBaseRow) }
+                        else { objectTypeToken(ctx) }
   // ECMA-335 / CLR constraint: SequentialLayout is only valid when the parent
   // is System.Object, System.ValueType, or another SequentialLayout/ExplicitLayout
   // class.  Union case classes extend their abstract AutoLayout base, so they
@@ -2278,7 +2294,12 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
   // fields as parameters (the existing record constructor pattern).
   val sCtor    = internString(sh, ".ctor")
   val recBaseCtorTok2 =
-    if r.baseClass.length > 0 and r.baseClass != "System.Object" {
+    if baseOpenTsRow > 0 {
+      // Generic case: chain through `Maybe`1<!0>::.ctor()` via a TypeSpec MemberRef.
+      val mrRow = ctxAddMemberRefForTypeSpec(ctx, baseOpenTsRow, ".ctor",
+                    "base_open_ctor_" + r.className, buildInstanceMethodSig(newList(), MVoid))
+      0x0A000000 + mrRow
+    } else if r.baseClass.length > 0 and r.baseClass != "System.Object" {
       val recBaseTypeRow2 = findTypeDefRowByName(ctx, r.baseClass)
       if recBaseTypeRow2 > 0 {
         val recBaseCtorRow2 = findMethodDefRowOfType(ctx, recBaseTypeRow2, ".ctor")
@@ -2516,8 +2537,15 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
   val bh = ctx.blobs
   val t  = ctx.tables
 
-  val simpleNameUnion = if u.namespace.length == 0 { u.baseName }
+  val simpleBaseUnion = if u.namespace.length == 0 { u.baseName }
                         else { u.baseName.substring(u.namespace.length + 1, u.baseName.length - u.namespace.length - 1) }
+  // A generic union's base + case TypeDefs carry the CLR arity suffix
+  // (`Maybe`1`, `Maybe_Just`1`) — same convention as generic records (#2362).
+  val arity = u.generics.count
+  val simpleNameUnion = if arity > 0 { simpleBaseUnion + "`" + toString(arity) } else { simpleBaseUnion }
+  // The arity-suffixed base FQN the case classes must name as their base so
+  // findTypeDefRowByName resolves it (the TypeDef is stored under the suffix).
+  val baseClassFqn = if arity > 0 { u.baseName + "`" + toString(arity) } else { u.baseName }
   val sBase  = internString(sh, simpleNameUnion)
   val sNs    = internString(sh, u.namespace)
 
@@ -2595,12 +2623,20 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
     val rec = MRecord(
       className      = c.name,
       namespace      = u.namespace,
-      baseClass      = u.baseName,
+      baseClass      = baseClassFqn,
       fields         = c.fields,
       methods        = newList(),
       useDefaultCtor = false,
       generics       = c.generics)
-    if c.fields.count == 0 {
+    // A *generic* nullary case routes through lowerMRecord (a zero-field generic
+    // record): lowerMRecord emits exactly the F# shape — a plain `.ctor()`
+    // chaining the base via a TypeSpec MemberRef, AutoLayout, the arity-suffixed
+    // name, GenericParam rows, and NO singleton.  The singleton scheme
+    // (`lowerMNullaryUnionCase`) cannot apply to a generic case because a generic
+    // type's static `Instance` field is per-instantiation — F# constructs the
+    // nullary generic case via `newobj` each time instead (Q-GEN-001).  A
+    // non-generic nullary case keeps the singleton (reference equality).
+    if c.fields.count == 0 and c.generics.count == 0 {
       lowerMNullaryUnionCase(rec, ctx)
     } else {
       lowerMRecord(rec, ctx)

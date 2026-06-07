@@ -1635,6 +1635,16 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         if not cctx.typeFqnByName.containsKey(decl.name) {
           cctx.typeFqnByName.add(decl.name, unionFqn)
         }
+        // In-bundle generic union support (#2362): the union and every case are
+        // reified, so register the union's arity (the cases share it).  A generic
+        // nullary case is lowered as a zero-field generic record (plain `.ctor`,
+        // no singleton) — see lowerMUnion — so the row accounting and the
+        // singleton registration below branch on `uArity`.
+        val uGenerics = genericNamesOf(decl.generics)
+        val uArity = uGenerics.count
+        if uArity > 0 and not cctx.genericTypeArity.containsKey(unionFqn) {
+          cctx.genericTypeArity.add(unionFqn, uArity)
+        }
         var ci = 0
         while ci < decl.cases.count {
           val c = decl.cases[ci]
@@ -1645,6 +1655,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           if not cctx.caseParentUnion.containsKey(caseName) {
             cctx.caseParentUnion.add(caseName, pkgName + "." + decl.name)
           }
+          // VAR-form ctor parameter types for a generic case (mirrors the
+          // generic-record registration): a type-parameter field lowers to
+          // MTypeVar(n), everything else to its concrete MSIL type.
+          val caseCtorParams: List[MsilType] = newList()
           var fi = 0
           while fi < c.fields.count {
             match c.fields[fi] {
@@ -1655,30 +1669,67 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                 if not cctx.fieldTokens.containsKey(caseName + "/field" + toString(fi)) {
                   cctx.fieldTokens.add(caseName + "/field" + toString(fi), 0x04000000 + fieldDefRow)
                 }
-                val ufTyMsil = typeExprToMsilCtx(cctx, ufTy, pkgName)
+                val ftyG = typeExprToMsilG(ufTy, pkgName, uGenerics)
+                val gIdx = match ftyG { case MTypeVar(ix) -> ix; case _ -> -1 }
+                caseCtorParams.add(ftyG)
+                val ufTyMsil = if gIdx >= 0 { ftyG } else { typeExprToMsilCtx(cctx, ufTy, pkgName) }
                 if not cctx.fieldMsilTypes.containsKey(caseName + "/" + name) {
                   cctx.fieldMsilTypes.add(caseName + "/" + name, ufTyMsil)
                 }
                 if not cctx.fieldMsilTypes.containsKey(caseName + "/field" + toString(fi)) {
                   cctx.fieldMsilTypes.add(caseName + "/field" + toString(fi), ufTyMsil)
                 }
+                if uArity > 0 {
+                  // FIELD VAR(n) for a type-parameter field, the concrete FIELD sig
+                  // otherwise; consumed by the generic pattern-match field reads.
+                  val fSig = if gIdx >= 0 { buildGenericParamFieldSig(gIdx) } else { buildFieldSig(ufTyMsil) }
+                  cctx.fieldVarIndices.add(caseName + "/" + name, gIdx)
+                  cctx.fieldSigBytes.add(caseName + "/" + name, fSig)
+                  if not cctx.fieldVarIndices.containsKey(caseName + "/field" + toString(fi)) {
+                    cctx.fieldVarIndices.add(caseName + "/field" + toString(fi), gIdx)
+                    cctx.fieldSigBytes.add(caseName + "/field" + toString(fi), fSig)
+                  }
+                  if not cctx.fieldDeclaredNames.containsKey(caseName + "/field" + toString(fi)) {
+                    cctx.fieldDeclaredNames.add(caseName + "/field" + toString(fi), name)
+                  }
+                }
                 fieldDefRow = fieldDefRow + 1
               }
               case UFPos(ufPosTy, _) -> {
                 cctx.fieldTokens.add(caseName + "/field" + toString(fi), 0x04000000 + fieldDefRow)
-                val ufPosTyMsil = typeExprToMsilCtx(cctx, ufPosTy, pkgName)
+                val ftyGp = typeExprToMsilG(ufPosTy, pkgName, uGenerics)
+                val gIdxP = match ftyGp { case MTypeVar(ix) -> ix; case _ -> -1 }
+                caseCtorParams.add(ftyGp)
+                val ufPosTyMsil = if gIdxP >= 0 { ftyGp } else { typeExprToMsilCtx(cctx, ufPosTy, pkgName) }
                 if not cctx.fieldMsilTypes.containsKey(caseName + "/field" + toString(fi)) {
                   cctx.fieldMsilTypes.add(caseName + "/field" + toString(fi), ufPosTyMsil)
+                }
+                if uArity > 0 {
+                  val fSigP = if gIdxP >= 0 { buildGenericParamFieldSig(gIdxP) } else { buildFieldSig(ufPosTyMsil) }
+                  cctx.fieldVarIndices.add(caseName + "/field" + toString(fi), gIdxP)
+                  cctx.fieldSigBytes.add(caseName + "/field" + toString(fi), fSigP)
                 }
                 fieldDefRow = fieldDefRow + 1
               }
             }
             fi = fi + 1
           }
-          // Nullary cases get an extra Instance FieldDef + .cctor MethodDef
-          // emitted by lowerMNullaryUnionCase so that construction sites can
-          // use ldsfld instead of newobj, making reference-equality work.
-          if c.fields.count == 0 {
+          // Generic cases: register the arity (keyed by the case ctorKey, used by
+          // the in-bundle construction helper) and the VAR-form ctor params.
+          if uArity > 0 {
+            if not cctx.genericTypeArity.containsKey(caseName) {
+              cctx.genericTypeArity.add(caseName, uArity)
+            }
+            if not cctx.genericCtorParams.containsKey(caseName) {
+              cctx.genericCtorParams.add(caseName, caseCtorParams)
+            }
+          }
+          // A NON-generic nullary case gets an extra Instance FieldDef + .cctor
+          // MethodDef (lowerMNullaryUnionCase) so construction can use ldsfld
+          // (reference equality).  A GENERIC nullary case is a zero-field generic
+          // record: plain `.ctor`, no Instance field, no .cctor, no singleton —
+          // constructed via newobj each time (Q-GEN-001).
+          if c.fields.count == 0 and uArity == 0 {
             cctx.singletonFieldTokens.add(caseName, 0x04000000 + fieldDefRow)
             fieldDefRow = fieldDefRow + 1  // Instance static field
           }
@@ -1694,8 +1745,8 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
             cctx.unionCaseCtorByName.add(c.name, caseName)
           }
           methodDefRow = methodDefRow + 1  // .ctor
-          if c.fields.count == 0 {
-            methodDefRow = methodDefRow + 1  // .cctor
+          if c.fields.count == 0 and uArity == 0 {
+            methodDefRow = methodDefRow + 1  // .cctor (non-generic nullary only)
           }
           ci = ci + 1
         }
@@ -3337,6 +3388,13 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                           rti = rti + 1
                         }
                       }
+                      case MGenericInstByName(_, retArgTys) -> {
+                        var rti = 0
+                        while rti < retArgTys.count {
+                          nullCtxTyArgs.add(retArgTys[rti])
+                          rti = rti + 1
+                        }
+                      }
                       case _ -> {
                       }
                     }
@@ -3352,14 +3410,24 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                       MObject
                     }
                   } else {
-                    match mapGet(cctx.singletonFieldTokens, ctorKey) {
-                      case Some(fldTok) -> {
-                        insns.add(MLdsfld(fieldToken = fldTok))
-                        MClass(className = caseParentFqnMsil(cctx, ctorKey))
-                      }
-                      case None -> {
-                        insns.add(MNewobj(ctorToken = ctorTok))
-                        MClass(className = caseParentFqnMsil(cctx, ctorKey))
+                    // In-bundle generic nullary case (e.g. a bare `Nothing` for
+                    // `Maybe[Int]`): construct via newobj on the closed TypeSpec
+                    // (#2362).  A generic nullary case has no singleton — see
+                    // lowerMUnion / Q-GEN-001.
+                    val nullInb: List[MsilType] = newList()
+                    val nullInbTok = buildInBundleGenericCtorTok(cctx, ctorKey, nullArgTypes, nullCtxTyArgs, nullInb, insns)
+                    if nullInbTok > 0 {
+                      nullInb[0]
+                    } else {
+                      match mapGet(cctx.singletonFieldTokens, ctorKey) {
+                        case Some(fldTok) -> {
+                          insns.add(MLdsfld(fieldToken = fldTok))
+                          MClass(className = caseParentFqnMsil(cctx, ctorKey))
+                        }
+                        case None -> {
+                          insns.add(MNewobj(ctorToken = ctorTok))
+                          MClass(className = caseParentFqnMsil(cctx, ctorKey))
+                        }
                       }
                     }
                   }
@@ -5347,6 +5415,13 @@ func lowerPatternTestMsil(
                   // `contextHintTyArgs`).  Test the scrutinee's concrete args.
                   insns.add(MIsinstGeneric(className = ctorKey, typeArgs = typeArgs))
                 }
+                case MGenericInstByName(_, typeArgs) -> {
+                  // In-bundle generic union case (#2362): the case is a real
+                  // generic TypeDef and the nullary case is a real object (newobj
+                  // each time, no singleton), so test with a closed `isinst`
+                  // against the arity-suffixed case TypeSpec.
+                  insns.add(MIsinstGeneric(className = genericBacktickFqn(ctorKey, typeArgs.count), typeArgs = typeArgs))
+                }
                 case _ -> {
                   // For generic nullary cases (e.g. Option_None) with an untyped
                   // MObject scrutinee (produced by mapGet), we cannot form a
@@ -5450,7 +5525,14 @@ func lowerPatternTestMsil(
     case PConstructor(head, args) -> {
       // Use isinst to check the case type; branch to failLabel if null.
       val caseName = lastSegmentMsil(head)
-      val baseCls = match scrutTy { case MClass(cls) -> cls; case MGenericInst(_, fqn, _) -> fqn; case _ -> "" }
+      // For an in-bundle generic union the scrutinee FQN carries the arity suffix
+      // (`Pkg.Maybe`1`); strip it before splicing the case name (#2362).
+      val baseCls = match scrutTy {
+        case MClass(cls) -> cls
+        case MGenericInst(_, fqn, _) -> fqn
+        case MGenericInstByName(fqn, _) -> stripGenericArity(fqn)
+        case _ -> ""
+      }
       if baseCls.length > 0 {
         // #2363 Stage 4: case classes are named `Union_Case` everywhere —
         // in-bundle and restored — matching the F# emitter, so the separator is
@@ -5464,6 +5546,9 @@ func lowerPatternTestMsil(
         match scrutTy {
           case MGenericInst(_, _, typeArgs) -> {
             insns.add(MIsinstGeneric(className = caseClass, typeArgs = typeArgs))
+          }
+          case MGenericInstByName(_, typeArgs) -> {
+            insns.add(MIsinstGeneric(className = genericBacktickFqn(caseClass, typeArgs.count), typeArgs = typeArgs))
           }
           case _ -> {
             insns.add(MIsinstByName(className = caseClass))
@@ -5657,12 +5742,24 @@ func lowerPatternBindMsil(
     }
     case PConstructor(head, fields) -> {
       val caseName = lastSegmentMsil(head)
-      val baseCls = match scrutTy { case MClass(cls) -> cls; case MGenericInst(_, fqn, _) -> fqn; case _ -> "" }
+      val baseCls = match scrutTy {
+        case MClass(cls) -> cls
+        case MGenericInst(_, fqn, _) -> fqn
+        case MGenericInstByName(fqn, _) -> stripGenericArity(fqn)
+        case _ -> ""
+      }
       if baseCls.length > 0 {
         // #2363 Stage 4: case classes are `Union_Case` everywhere (in-bundle +
         // restored), matching the F# emitter — separator is a constant `_`.
         val sep = "_"
         val caseClass = baseCls + sep + caseName
+        // The arity-suffixed case name (`Maybe_Just`1`) for an in-bundle generic
+        // union: the codegen maps stay keyed by the plain `caseClass`, but the
+        // generic instructions must name the suffixed TypeDef (#2362).
+        val caseClassBt = match scrutTy {
+          case MGenericInstByName(_, typeArgsB) -> genericBacktickFqn(caseClass, typeArgsB.count)
+          case _ -> caseClass
+        }
         // For generic union scrutinees (e.g. Option[Int]) the case class is
         // also generic (e.g. Option_Some<T>).  The local variable must be
         // declared with the closed instantiation (GENERICINST CLASS TypeRef
@@ -5677,6 +5774,7 @@ func lowerPatternBindMsil(
               case None -> MClass(className = caseClass)
             }
           }
+          case MGenericInstByName(_, typeArgs) -> MGenericInstByName(headFqn = caseClassBt, typeArgs = typeArgs)
           case _ -> MClass(className = caseClass)
         }
         // Load scrutinee; for generic case types emit MCastclassGeneric to
@@ -5688,6 +5786,7 @@ func lowerPatternBindMsil(
         emitLoadSlot(insns, scrutSlot, fctx.paramCount)
         match castTy {
           case MGenericInst(_, _, typeArgs) -> insns.add(MCastclassGeneric(className = caseClass, typeArgs = typeArgs))
+          case MGenericInstByName(_, typeArgs) -> insns.add(MCastclassGeneric(className = caseClassBt, typeArgs = typeArgs))
           case _ -> {
           }
         }
@@ -5725,6 +5824,9 @@ func lowerPatternBindMsil(
                   case MGenericInst(_, _, typeArgs) -> {
                     vi = match mapGet(cctx.fieldVarIndices, sigLookupKey) { case Some(v) -> v; case None -> -1 }
                   }
+                  case MGenericInstByName(_, _) -> {
+                    vi = match mapGet(cctx.fieldVarIndices, sigLookupKey) { case Some(v) -> v; case None -> -1 }
+                  }
                   case _ -> {
                   }
                 }
@@ -5749,6 +5851,11 @@ func lowerPatternBindMsil(
                     case MGenericInst(_, _, typeArgs) -> {
                       concreteFieldTy = typeArgs[vi]
                     }
+                    case MGenericInstByName(_, typeArgs) -> {
+                      if vi < typeArgs.count {
+                        concreteFieldTy = typeArgs[vi]
+                      }
+                    }
                     case _ -> {
                     }
                   }
@@ -5767,6 +5874,7 @@ func lowerPatternBindMsil(
                 emitLoadSlot(insns, castSlot, fctx.paramCount)
                 match castTy {
                   case MGenericInst(_, _, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClass, typeArgs = typeArgs, fieldName = actualFieldName, fieldSig = fSig))
+                  case MGenericInstByName(_, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClassBt, typeArgs = typeArgs, fieldName = actualFieldName, fieldSig = fSig))
                   case _ -> {
                     // castSlot is typed as `object` in LocalVarSig (MClass encodes as
                     // ELEMENT_TYPE_OBJECT = 0x1C), so the JIT sees `object` on the stack.
@@ -5795,6 +5903,9 @@ func lowerPatternBindMsil(
                   case MGenericInst(_, _, typeArgs) -> {
                     ptVi = match mapGet(cctx.fieldVarIndices, ptPosFldKey) { case Some(v) -> v; case None -> -1 }
                   }
+                  case MGenericInstByName(_, _) -> {
+                    ptVi = match mapGet(cctx.fieldVarIndices, ptPosFldKey) { case Some(v) -> v; case None -> -1 }
+                  }
                   case _ -> {
                   }
                 }
@@ -5809,6 +5920,11 @@ func lowerPatternBindMsil(
                     case MGenericInst(_, _, typeArgs) -> {
                       ptFieldTy = typeArgs[ptVi]
                     }
+                    case MGenericInstByName(_, typeArgs) -> {
+                      if ptVi < typeArgs.count {
+                        ptFieldTy = typeArgs[ptVi]
+                      }
+                    }
                     case _ -> {
                     }
                   }
@@ -5816,6 +5932,7 @@ func lowerPatternBindMsil(
                 emitLoadSlot(insns, castSlot, fctx.paramCount)
                 match castTy {
                   case MGenericInst(_, _, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClass, typeArgs = typeArgs, fieldName = ptActualFieldName, fieldSig = ptFSig))
+                  case MGenericInstByName(_, typeArgs) -> insns.add(MLdfldGeneric(baseClassName = caseClassBt, typeArgs = typeArgs, fieldName = ptActualFieldName, fieldSig = ptFSig))
                   case _ -> {
                     insns.add(MCastclassByName(className = caseClass))
                     insns.add(MLdfld(fieldToken = ptFTok))
@@ -6504,6 +6621,13 @@ func lowerBuiltinOrStaticCallMsil(
         } else {
           match fctx.declaredRetTy {
             case MGenericInst(_, _, retArgTys) -> {
+              var rci = 0
+              while rci < retArgTys.count {
+                outerCtxTyArgs.add(retArgTys[rci])
+                rci = rci + 1
+              }
+            }
+            case MGenericInstByName(_, retArgTys) -> {
               var rci = 0
               while rci < retArgTys.count {
                 outerCtxTyArgs.add(retArgTys[rci])
@@ -7657,6 +7781,19 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 hi = hi + 1
               }
             }
+            // An in-bundle generic type annotation (`val m: Maybe[Int] = Nothing`)
+            // threads its concrete args so a payload-light construction (a nullary
+            // case, or a case that pins only some params) instantiates at the
+            // annotated args rather than erasing the rest to `object` — otherwise
+            // the value's runtime instantiation won't match the `match` scrutinee
+            // type and every arm's `isinst` fails (#2362).
+            case MGenericInstByName(_, typeArgs) -> {
+              var hi = 0
+              while hi < typeArgs.count {
+                fctx.contextHintTyArgs.add(typeArgs[hi])
+                hi = hi + 1
+              }
+            }
             case _ -> {
             }
           }
@@ -7689,6 +7826,19 @@ pub func lowerStmtMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           val prevHintLen = fctx.contextHintTyArgs.count
           match annoTy {
             case MGenericInst(_, _, typeArgs) -> {
+              var hi = 0
+              while hi < typeArgs.count {
+                fctx.contextHintTyArgs.add(typeArgs[hi])
+                hi = hi + 1
+              }
+            }
+            // An in-bundle generic type annotation (`val m: Maybe[Int] = Nothing`)
+            // threads its concrete args so a payload-light construction (a nullary
+            // case, or a case that pins only some params) instantiates at the
+            // annotated args rather than erasing the rest to `object` — otherwise
+            // the value's runtime instantiation won't match the `match` scrutinee
+            // type and every arm's `isinst` fails (#2362).
+            case MGenericInstByName(_, typeArgs) -> {
               var hi = 0
               while hi < typeArgs.count {
                 fctx.contextHintTyArgs.add(typeArgs[hi])
@@ -11567,6 +11717,7 @@ pub func lowerRecordMsil(decl: in RecordDecl, pkgName: in String): MRecord {
 // ─────────────────────────────────────────────────────────────────────────────
 pub func lowerUnionMsil(decl: in UnionDecl, pkgName: in String): MUnion {
   val baseName = pkgName + "." + decl.name
+  val generics = genericNamesOf(decl.generics)
 
   val cases: List[MUnionCase] = newList()
   var i = 0
@@ -11579,26 +11730,26 @@ pub func lowerUnionMsil(decl: in UnionDecl, pkgName: in String): MUnion {
     while fi < c.fields.count {
       match c.fields[fi] {
         case UFNamed(name, ty, _) -> {
-          caseFields.add(MField(flags = FDA_PUBLIC, name = name, fieldType = typeExprToMsil(ty, pkgName)))
+          caseFields.add(MField(flags = FDA_PUBLIC, name = name, fieldType = typeExprToMsilG(ty, pkgName, generics)))
         }
         case UFPos(ty, _) -> {
-          caseFields.add(MField(flags = FDA_PUBLIC, name = "field" + toString(fi), fieldType = typeExprToMsil(ty, pkgName)))
+          caseFields.add(
+            MField(flags = FDA_PUBLIC, name = "field" + toString(fi), fieldType = typeExprToMsilG(ty, pkgName, generics))
+          )
         }
       }
       fi = fi + 1
     }
-    // In-bundle generic UNIONS are not yet reified (#2362 follow-up — the
-    // nullary-case singleton interaction with per-instantiation static fields
-    // is the open Q-GEN-001 question in docs/43).  Type parameters stay erased
-    // here exactly as before, so union behaviour is unchanged.  Generic RECORDS
-    // are reified (see lowerRecordMsil); the `generics` field is carried on the
-    // model for that future union work.
-    cases.add(MUnionCase(name = caseName, fields = caseFields, generics = newList()))
+    // In-bundle generic unions are reified (#2362): every case re-declares the
+    // union's full type-parameter list (matching the F# emitter — `Option_Some`
+    // and `Option_None` both carry `[T]`), and type-parameter fields lower to
+    // VAR(n) via typeExprToMsilG.
+    cases.add(MUnionCase(name = caseName, fields = caseFields, generics = generics))
     i = i + 1
   }
 
   val methods: List[MFunc] = newList()
-  MUnion(baseName = baseName, namespace = pkgName, cases = cases, methods = methods, generics = newList())
+  MUnion(baseName = baseName, namespace = pkgName, cases = cases, methods = methods, generics = generics)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -15358,10 +15509,15 @@ func buildInBundleGenericCtorTok(
   }
   // The CLR-canonical (arity-suffixed) name resolves against the suffixed
   // TypeDef the lowering layer emits; the plain `ctorKey` remains the codegen
-  // map key.
+  // map key.  `newobj` allocates the concrete CASE class.
   val headFqn = genericBacktickFqn(ctorKey, nTypeParams)
   insns.add(MNewobjGenericByName(headFqn = headFqn, typeArgs = typeArgs, ctorParams = ctorParams))
-  outResultTy.add(MGenericInstByName(headFqn = headFqn, typeArgs = typeArgs))
+  // The static result type is the PARENT union for a union case (`Just(5)` has
+  // type `Maybe[Int]`, not `Maybe_Just[Int]`), or the type itself for a plain
+  // generic record.  Both share the same type-argument list.
+  val parentFqn = match mapGet(cctx.caseParentUnion, ctorKey) { case Some(p) -> p; case None -> ctorKey }
+  val parentArity = match mapGet(cctx.genericTypeArity, parentFqn) { case Some(n) -> n; case None -> nTypeParams }
+  outResultTy.add(MGenericInstByName(headFqn = genericBacktickFqn(parentFqn, parentArity), typeArgs = typeArgs))
   1
 }
 

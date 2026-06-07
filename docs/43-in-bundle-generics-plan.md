@@ -1,14 +1,18 @@
 # 43 — In-bundle generics plan (self-hosted MSIL backend)
 
-**Status:** Partially implemented. In-bundle generic **records** ship (#2362
-slice 1): the self-hosted MSIL backend emits a `record Box[T]` as a truly
-generic TypeDef (GenericParam table 0x2A + VAR fields + AutoLayout), constructs
-via a closed-instantiation TypeSpec `.ctor` MemberRef, and reads fields through
-a TypeSpec-parented `ldfld`.  Exercised by
-`lyric-compiler/lyric/inbundle_generics_self_test.l` (native `lyric test`).
-In-bundle generic **unions** remain a follow-up (the nullary-case singleton /
-per-instantiation static-field interaction, Q-GEN-001 below).  This doc still
-captures the full plan for the remaining union + stdlib byte-match work.
+**Status:** Implemented for in-bundle types (records + unions); the stage-3
+stdlib byte-match remains.  In-bundle generic **records** (#2362 slice 1) and
+**unions** (#2362 slice 2) both ship: the self-hosted MSIL backend emits a
+`record Box[T]` / `union Maybe[T]` as truly generic TypeDefs (GenericParam table
+0x2A + VAR fields + AutoLayout + arity-suffixed names), constructs via
+closed-instantiation TypeSpec `.ctor` MemberRefs, reads fields through
+TypeSpec-parented `ldfld`, and (for unions) emits each case as a generic case
+class extending the open base instantiation `Maybe`1<!0>` (a TypeSpec), matched
+via closed-TypeSpec `isinst`/`castclass`/`ldfld`.  Exercised by
+`lyric-compiler/lyric/inbundle_generics_self_test.l` (native `lyric test`, 16
+cases).  **Q-GEN-001 resolved** (see below).  The remaining work is the
+stage-3 stdlib byte-match (self-compiling `core.l`'s `Option`/`Result` as
+reified generics) — note the arity-suffix correction below affects that target.
 
 **Two corrections to the original plan, discovered during slice 1 (both
 empirically verified against a C#-emitted generic class and the live CLR):**
@@ -279,12 +283,19 @@ attempt to de-monomorphize functions in the same change.
    **Verified** by `inbundle_generics_self_test.l` (8 cases: `Box[Int/Long/
    String/Bool]`, `Pair[A,B]`, mixed `Tagged[T]`, signature flow, nested
    `Box[Box[Int]]`) — every value asserted at runtime; the DLL type-loads.
-2. **`union Maybe[T] { case Just(value: T); case Nothing }`.** Adds: GenericParam rows on
-   the abstract base **and** each case TypeDef; in-bundle `caseTypeParamCount` /
-   `fieldVarIndices`; nullary-case singleton interaction (check the F# `Option_None`
-   `Instance` field typing and mirror it); matching via `MIsinstGeneric`/
-   `MCastclassGeneric`. **Verify:** `match Just(value = 3) { case Just(v) -> v; case
-   Nothing -> 0 }` → `3`.
+2. **`union Maybe[T] { case Just(value: T); case Nothing }`. ✅ SHIPPED (#2362).**
+   Landed: GenericParam rows on the abstract base **and** each case TypeDef;
+   in-bundle `genericTypeArity` / `genericCtorParams` / `fieldVarIndices` for the
+   cases; each case extends the open base instantiation `Maybe`1<!0>` (a TypeSpec)
+   with TypeSpec-parented base-`.ctor` calls; the nullary case is a zero-field
+   generic record — plain `.ctor`, no singleton (Q-GEN-001 resolved); construction
+   via `MNewobjGenericByName` (parent-union result type); matching via closed-
+   TypeSpec `MIsinstGeneric` / `MCastclassGeneric` / `MLdfldGeneric`; partial
+   type-argument inference threaded from the value's declared type
+   (`MGenericInstByName` arms in the `LBVal`/`LBVar` and `declaredRetTy` hint
+   paths).  **Verified** by the union half of `inbundle_generics_self_test.l`
+   (`Maybe`, two-parameter `Either`, multi-field `Pairish[Int,Int]`, function
+   returns, nested `Maybe[Maybe[Int]]`).
 3. **Stdlib `Option[T]`/`Result[T,E]` via stage-3 byte-match.** Once `core.l`
    self-compiles its generics as truly generic, run `scripts/bootstrap.sh --stage 3` and
    confirm the self-hosted `Lyric.Stdlib.dll` GenericParam table matches the F# stage-1
@@ -322,18 +333,22 @@ needs `make lyric` + the full bootstrap.
 
 ## Open questions
 
-- **Q-GEN-001 — Nullary generic case singleton (the blocker for the union slice).**
-  A generic union's nullary case (`Option_None`, `Maybe.Nothing`) emits a singleton
-  `Instance` static field + `.cctor` (`lowerMNullaryUnionCase`). In .NET a generic
-  type's static fields are **per-instantiation** — there is no single shared
-  `Instance` across all `T`, and the `.cctor`'s `newobj Case::.ctor()` against an
-  open generic TypeDef faults at load. So the current singleton scheme cannot be
-  lifted verbatim to a generic case. What does the F# emitter actually do for
-  `Option_None` (open generic, a fixed `object` instantiation, or no singleton at
-  all)? Must be decoded from `Lyric.Stdlib.dll` and mirrored before the union
-  slice. **This is why in-bundle generic unions were deferred** when the records
-  slice shipped — records have no nullary singleton path, so they were completed
-  and verified independently while this question stays open.
+- **Q-GEN-001 — Nullary generic case singleton. RESOLVED (#2362 slice 2).**
+  Decoded from `Lyric.Stdlib.dll`: the F# emitter gives `Option_None` **no
+  singleton at all** — no `Instance` static field, no `.cctor`, just a plain
+  `.ctor()` (`02 28 <base> 2a`).  Nullary generic cases are constructed via
+  `newobj` each time.  This sidesteps the per-instantiation-static-field problem
+  entirely (a generic type's static fields are per-`T`, so a shared `Instance`
+  is impossible).  The self-hosted backend mirrors this: a *generic* nullary
+  case is lowered as a zero-field generic record (`lowerMRecord` — plain `.ctor`
+  chaining the base TypeSpec, AutoLayout, GenericParam rows, arity-suffixed name,
+  no singleton), and construction routes through `MNewobjGenericByName` with
+  empty ctor params.  A *non-generic* nullary case keeps the singleton
+  (`lowerMNullaryUnionCase`) for reference equality.  Matching a nullary generic
+  case uses a real closed-TypeSpec `isinst` (the case is a real object, not
+  `null`).  The cost vs the singleton is that `Nothing == Nothing` is not
+  reference-equal — matching is type-based (`isinst`), so this is invisible to
+  `match`; structural `==` on union values goes through its own lowering.
 - **Q-GEN-002 — Generic methods (MVAR) scope.** This plan reifies generic *types* only
   (TypeDef-owned GenericParam rows, VAR `0x13`). Generic *methods* need MVAR
   (`ELEMENT_TYPE_MVAR = 0x1E`) + MethodDef-owned GenericParam rows, and the self-hosted
