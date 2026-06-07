@@ -328,13 +328,19 @@ pub func connect(provider: in String): Result[SearchClient, SearchError]
 {
   if provider == "elasticsearch" {
     match searchConnectBackendElasticsearch("", "", "", "", 5000, 30000) {
-      case Ok(handle) -> return Ok(NativeSearchClient(clientHandle = handle))
+      case Ok(handle) -> {
+        val sc: SearchClient = NativeSearchClient(clientHandle = handle)
+        return Ok(sc)
+      }
       case Err(err) -> return Err(SearchError(message = err, code = "CONNECT_FAILED", statusCode = 0))
     }
   }
   if provider == "meilisearch" {
     match searchConnectBackendMeilisearch("", "", 5000) {
-      case Ok(handle) -> return Ok(NativeSearchClient(clientHandle = handle))
+      case Ok(handle) -> {
+        val sc: SearchClient = NativeSearchClient(clientHandle = handle)
+        return Ok(sc)
+      }
       case Err(err) -> return Err(SearchError(message = err, code = "CONNECT_FAILED", statusCode = 0))
     }
   }
