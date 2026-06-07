@@ -725,6 +725,33 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/auto_ffi_self_test.l
 
+      # In-bundle generic records self-test (#2362, docs/43, epic #2359 Stage 3).
+      # Exercises the self-hosted MSIL backend emitting a `record Box[T]` as a
+      # truly generic TypeDef: GenericParam metadata rows (table 0x2A), VAR-typed
+      # fields (`value: T` -> FIELD VAR(0)), the arity-suffixed CLR type name
+      # (`Box`1`), AutoLayout, construction through a closed-instantiation
+      # TypeSpec `.ctor` MemberRef, and field reads through a TypeSpec-parented
+      # `ldfld`.  This is the make-or-break LOAD test for that wire format: a
+      # malformed generic TypeDef faults at load with a TypeLoadException, and a
+      # value-type instantiation with the wrong ctor field-access token silently
+      # corrupts multi-field records — both caught here.  Compiled in-process
+      # through the self-hosted `Msil.Bridge`; imports only `Std.*`.
+      - name: In-bundle generics self-test (native lyric test)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping in-bundle generics self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping in-bundle generics self-test"
+            exit 0
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/inbundle_generics_self_test.l
+
       # Async extern unwrapping self-test — pins the Band 3 Phase A fix for the
       # @externTarget async silent miscompile (epic #2070, D085, D-progress-415).
       # Before this fix, @externTarget async func left Task<T> on the stack where

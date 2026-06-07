@@ -406,6 +406,22 @@ pub record MethodSpecRow {
   instantiation: Int  // #Blob: MethodSpec signature
 }
 
+// GenericParam (Table 0x2A) — ECMA-335 §II.22.20.
+// One row per generic type parameter owned by a generic TypeDef or MethodDef.
+// `number` is the 0-based ordinal of the parameter within its owner; `flags`
+// carries variance + special constraints (0 for invariant, no constraints —
+// the only form the self-hosted emitter produces); `owner` is a TypeOrMethodDef
+// coded index (mtdTypeDef / mtdMethodDef); `name` is the #Strings index of the
+// parameter name (e.g. "T", "E").  The CLR binary-searches this table by owner,
+// so rows MUST be physically sorted by (owner, number) before serialization and
+// the table's sorted-mask bit (42) set — see serializeTablesStream.
+pub record GenericParamRow {
+  number: Int  // u2: 0-based ordinal within the owner
+  flags: Int  // u2: GenericParamAttributes (0 = invariant, no constraints)
+  owner: Int  // coded: TypeOrMethodDef
+  name: Int  // #Strings
+}
+
 // ── Coded-index helpers (additional) ─────────────────────────────────────────
 // HasConstant (2-bit tag, §II.24.2.6 tag table 3):
 //   Field=0, Param=1, Property=2
@@ -418,6 +434,14 @@ pub func hconstParam(row: in Int): Int = (row * 4) + 1
 pub func mdorMethodDef(row: in Int): Int = (row * 2) + 0
 
 pub func mdorMemberRef(row: in Int): Int = (row * 2) + 1
+
+// TypeOrMethodDef (1-bit tag, §II.24.2.6 tag table 13):
+//   TypeDef=0, MethodDef=1.  The `owner` field of a GenericParam row uses this
+//   coded index to point at the generic TypeDef (type-level generic parameter)
+//   or the generic MethodDef (method-level generic parameter).
+pub func mtdTypeDef(row: in Int): Int = (row * 2) + 0
+
+pub func mtdMethodDef(row: in Int): Int = (row * 2) + 1
 
 // ── MetadataTables container ───────────────────────────────────────────────────
 pub record MetadataTables {
@@ -437,6 +461,7 @@ pub record MetadataTables {
   assemblies: List[AssemblyRow]
   assemblyRefs: List[AssemblyRefRow]
   manifestResources: List[ManifestResourceRow]
+  genericParams: List[GenericParamRow]
   methodSpecs: List[MethodSpecRow]
 }
 
@@ -458,6 +483,7 @@ pub func newMetadataTables(): MetadataTables {
     assemblies = newList(),
     assemblyRefs = newList(),
     manifestResources = newList(),
+    genericParams = newList(),
     methodSpecs = newList()
   )
 }
@@ -549,6 +575,11 @@ pub func addManifestResource(t: in MetadataTables, r: in ManifestResourceRow): I
   t.manifestResources.count
 }
 
+pub func addGenericParam(t: in MetadataTables, r: in GenericParamRow): Int {
+  t.genericParams.add(r)
+  t.genericParams.count
+}
+
 /// Build the StandAloneSig metadata token for the given 1-based row index.
 /// Token = (table 0x11) << 24 | rowIndex.
 pub func standaloneToken(row: in Int): Int {
@@ -624,6 +655,9 @@ val TABLE_BIT_ASSEMBLY_REF: Long = 34359738368i64
 val TABLE_BIT_MANIFEST_RESOURCE: Long = 1099511627776i64
 
 // table 0x28, bit 40 (2^40)
+val TABLE_BIT_GENERIC_PARAM: Long = 4398046511104i64
+
+// table 0x2A, bit 42 (2^42)
 val TABLE_BIT_METHOD_SPEC: Long = 8796093022208i64
 
 // table 0x2B, bit 43 (2^43)
@@ -710,13 +744,21 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   if t.manifestResources.count > 0 {
     valid = valid + TABLE_BIT_MANIFEST_RESOURCE
   }
+  if t.genericParams.count > 0 {
+    valid = valid + TABLE_BIT_GENERIC_PARAM
+  }
   if t.methodSpecs.count > 0 {
     valid = valid + TABLE_BIT_METHOD_SPEC
   }
   w8(buf, valid)
 
-  // Sorted bitmask: all zero (no sorting performed here)
-  w8(buf, 0i64)
+  // Sorted bitmask.  The CLR binary-searches GenericParam by owner, so when
+  // GenericParam rows are present they MUST be physically sorted by (owner,
+  // number) — done just below before emission — AND the table's sorted-mask
+  // bit (42) MUST be set so the loader trusts the ordering.  No other table is
+  // declared sorted (matching the historical emitter behaviour).
+  val sorted: Long = if t.genericParams.count > 0 { TABLE_BIT_GENERIC_PARAM } else { 0i64 }
+  w8(buf, sorted)
 
   // Row counts (only for present tables, in table-number order)
   if t.modules.count > 0 {
@@ -766,6 +808,9 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
   }
   if t.manifestResources.count > 0 {
     w4(buf, t.manifestResources.count)
+  }
+  if t.genericParams.count > 0 {
+    w4(buf, t.genericParams.count)
   }
   if t.methodSpecs.count > 0 {
     w4(buf, t.methodSpecs.count)
@@ -964,6 +1009,39 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     mri = mri + 1
   }
 
+  // GenericParam rows (table 0x2A).  Wire format per ECMA-335 §II.22.20:
+  // u2 number, u2 flags, u2 owner (coded TypeOrMethodDef), u2 name (#Strings).
+  // The CLR binary-searches this table by `owner`, so the rows must be sorted
+  // by (owner, number) ascending.  Copy + insertion-sort a local view so the
+  // caller's `genericParams` order (TypeDef-emission order) is preserved while
+  // the wire image is correctly sorted.
+  val sortedGp: List[GenericParamRow] = newList()
+  var gpc = 0
+  while gpc < t.genericParams.count {
+    sortedGp.add(t.genericParams[gpc])
+    gpc = gpc + 1
+  }
+  var gsi = 1
+  while gsi < sortedGp.count {
+    val key = sortedGp[gsi]
+    var gsj = gsi - 1
+    while gsj >= 0 and genericParamGreater(sortedGp[gsj], key) {
+      sortedGp[gsj + 1] = sortedGp[gsj]
+      gsj = gsj - 1
+    }
+    sortedGp[gsj + 1] = key
+    gsi = gsi + 1
+  }
+  var gpi = 0
+  while gpi < sortedGp.count {
+    val r = sortedGp[gpi]
+    w2(buf, r.number)
+    w2(buf, r.flags)
+    w2(buf, r.owner)
+    w2(buf, r.name)
+    gpi = gpi + 1
+  }
+
   // MethodSpec rows (table 0x2B).  Wire format per ECMA-335 §II.22.29:
   // u2 method (coded MethodDefOrRef), u2 instantiation (#Blob).
   var msi = 0
@@ -972,5 +1050,16 @@ pub func serializeTablesStream(t: in MetadataTables, heapSizes: in Int, buf: in 
     w2(buf, r.method)
     w2(buf, r.instantiation)
     msi = msi + 1
+  }
+}
+
+// Ordering predicate for GenericParam rows: sort by `owner` ascending, then by
+// `number` ascending within the same owner.  Used by serializeTablesStream to
+// produce the CLR-required (owner, number) sort.
+func genericParamGreater(a: in GenericParamRow, b: in GenericParamRow): Bool {
+  if a.owner != b.owner {
+    a.owner > b.owner
+  } else {
+    a.number > b.number
   }
 }

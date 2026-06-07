@@ -1,10 +1,48 @@
 # 43 — In-bundle generics plan (self-hosted MSIL backend)
 
-**Status:** Unbacked execution plan / handoff. Captures the implementation plan for
-making the self-hosted MSIL backend emit *truly generic* in-bundle types
-(GenericParam metadata + VAR fields + instantiated TypeSpec construction/field/match),
-so generic records/unions — and the stdlib `Std.Core.Option[T]` / `Result[T,E]` when
-the self-hosted compiler compiles `core.l` — byte-match the F# bootstrap emitter.
+**Status:** Partially implemented. In-bundle generic **records** ship (#2362
+slice 1): the self-hosted MSIL backend emits a `record Box[T]` as a truly
+generic TypeDef (GenericParam table 0x2A + VAR fields + AutoLayout), constructs
+via a closed-instantiation TypeSpec `.ctor` MemberRef, and reads fields through
+a TypeSpec-parented `ldfld`.  Exercised by
+`lyric-compiler/lyric/inbundle_generics_self_test.l` (native `lyric test`).
+In-bundle generic **unions** remain a follow-up (the nullary-case singleton /
+per-instantiation static-field interaction, Q-GEN-001 below).  This doc still
+captures the full plan for the remaining union + stdlib byte-match work.
+
+**Two corrections to the original plan, discovered during slice 1 (both
+empirically verified against a C#-emitted generic class and the live CLR):**
+
+1. **The CLR type name MUST carry the `` `<arity> `` suffix** (`Box`1`,
+   `Pair`2`) — the standard .NET naming convention C# emits.  Without it, the
+   runtime mis-lays-out **multi-field value-type instantiations**: e.g.
+   `Pair[Int,Int]` silently drops/overwrites the second field (the JIT falls back
+   to the canonical reference-sized layout).  The F# bootstrap emitter omits the
+   suffix and gets away with it *only because every stdlib generic case has ≤1
+   field* (`Option_Some.value`, `Result_Err.error`) — single-field types never
+   hit the layout bug.  **A no-suffix name is therefore NOT a safe byte-match
+   target for multi-field generic types**; the stage-3 stdlib byte-match (slice
+   3) must reconcile this (the stdlib's generic types are all single-field unions
+   today, so there is no immediate conflict, but any future multi-field generic
+   case needs the suffix).  The codegen keeps its maps keyed by the plain FQN and
+   carries the suffixed name only in the by-name generic instructions + the
+   TypeDef name (`genericBacktickFqn` / `stripGenericArity`).
+
+2. **Field access from WITHIN a generic type's own methods (the ctor's `stfld`)
+   must go through a Field MemberRef parented to the *open* self-instantiation
+   TypeSpec** (`Box`1<!0>`), NOT a bare FieldDef token.  A bare FieldDef makes
+   the JIT use the canonical layout for the write while the (correct) TypeSpec
+   `ldfld` reads the per-instantiation layout — the two disagree for value-type
+   args, so the second field reads back as default.  `lowerMRecord` now builds
+   the open self-TypeSpec once and routes every ctor `stfld` through it.
+
+Original plan follows.
+
+**Original goal:** make the self-hosted MSIL backend emit *truly generic*
+in-bundle types (GenericParam metadata + VAR fields + instantiated TypeSpec
+construction/field/match), so generic records/unions — and the stdlib
+`Std.Core.Option[T]` / `Result[T,E]` when the self-hosted compiler compiles
+`core.l` — byte-match the F# bootstrap emitter.
 
 **Why this doc exists:** the work below was scoped and partially prototyped in a
 session where the GitHub MCP was unavailable, so it is captured here instead of on the
@@ -25,13 +63,15 @@ Open questions: **Q-GEN-001–Q-GEN-005** (see the Open questions section below)
 - **#2361 Stage 2** — concrete `List[T]` / `Map[K,V]` (reference *and* value elements,
   unboxed). **Merged** (PRs #2487 foundation, #2501 reference elements, #2518 value
   elements).
-- **#2362 Stage 3** — concrete `Option[T]` / `Result[T,E]`. **Partially addressed:**
-  params/returns already resolve to concrete `MGenericInst` cross-assembly; the
-  *remaining* work (record/union **fields** of generic type, and the stdlib's own
-  generic emission) is exactly what **this doc's feature unblocks**. The architect
-  finding for #2362 is that F# does **not** arity-suffix Lyric union names (`Option_Some`,
-  not ``Option_Some`1``) but carries GenericParam rows — so this feature, not a name
-  change, is the real prerequisite.
+- **#2362 Stage 3** — concrete `Option[T]` / `Result[T,E]`. **Records slice
+  shipped:** in-bundle generic *records* now emit truly-generic TypeDefs and
+  round-trip (construction + field read), including multi-field value-type
+  instantiations (`Pair[Int,Int]`).  Cross-assembly `Option`/`Result`
+  params/returns already resolve to concrete `MGenericInst`.  Remaining: in-bundle
+  generic **unions** (case classes, nullary singletons) and the stdlib's own
+  generic emission (stage-3 byte-match).  NB the original architect finding ("F#
+  does not arity-suffix") is **superseded for multi-field correctness**: the
+  arity suffix is required (see the two corrections in the status header).
 - **#2363 Stage 4** — converge union case-class naming `Union$Case` → `Union_Case`.
   **Merged** (PR #2540). The separator is now a constant `_` everywhere
   (`caseParentUnion` map for parent-FQN recovery).
@@ -228,14 +268,17 @@ attempt to de-monomorphize functions in the same change.
 
 ## Smallest verifiable slice (sequenced — front-load the load test)
 
-1. **`record Box[T] { value: T }` loads + round-trips.** Minimal surface: model
-   `generics`; `genericNamesOf`; GenericParam serializer (table 0x2A) for the record
-   TypeDef; VAR field; AutoLayout guard; `MGenericInstByName` + its `bufMsilTypeWithCtx`
-   arm; in-bundle construction via `MNewobjGenericByName`; field read via existing
-   `MLdfldGeneric`; `genericTypeArity` detection. **Verify:** `val b = Box(value = 5);
-   println(toString(b.value))` compiles, the DLL **type-loads** (no `TypeLoadException`),
-   prints `5`. This is make-or-break — a malformed generic TypeDef fails at *load*,
-   masking usage-layer correctness.
+1. **`record Box[T] { value: T }` loads + round-trips. ✅ SHIPPED (#2362).**
+   Implemented surface: model `generics` on `MRecord`/`MUnion`/`MUnionCase`;
+   `genericNamesOf`; GenericParam serializer (table 0x2A, sorted bit 42, owner
+   `mtdTypeDef`); VAR fields; AutoLayout guard; arity-suffixed TypeDef name
+   (`Box`1`, see correction #1); `MGenericInstByName` + its `bufMsilTypeWithCtx`
+   arm; in-bundle construction via `MNewobjGenericByName`; the ctor's `stfld`
+   routed through the open self-TypeSpec (correction #2); field read via
+   `MLdfldGeneric`; `genericTypeArity` + `genericCtorParams` detection.
+   **Verified** by `inbundle_generics_self_test.l` (8 cases: `Box[Int/Long/
+   String/Bool]`, `Pair[A,B]`, mixed `Tagged[T]`, signature flow, nested
+   `Box[Box[Int]]`) — every value asserted at runtime; the DLL type-loads.
 2. **`union Maybe[T] { case Just(value: T); case Nothing }`.** Adds: GenericParam rows on
    the abstract base **and** each case TypeDef; in-bundle `caseTypeParamCount` /
    `fieldVarIndices`; nullary-case singleton interaction (check the F# `Option_None`
@@ -279,12 +322,18 @@ needs `make lyric` + the full bootstrap.
 
 ## Open questions
 
-- **Q-GEN-001 — Nullary generic case singleton.** A generic union's nullary case
-  (`Option_None`, `Maybe.Nothing`) emits a singleton `Instance` static field + `.cctor`
-  (`lowerMNullaryUnionCase`). For a generic type, what is the `Instance` field's type and
-  the `.cctor` body in the F# emitter — the open generic, a fixed instantiation, or
-  `object`? Must be decoded from `Lyric.Stdlib.dll` and mirrored before the union slice
-  (step 2).
+- **Q-GEN-001 — Nullary generic case singleton (the blocker for the union slice).**
+  A generic union's nullary case (`Option_None`, `Maybe.Nothing`) emits a singleton
+  `Instance` static field + `.cctor` (`lowerMNullaryUnionCase`). In .NET a generic
+  type's static fields are **per-instantiation** — there is no single shared
+  `Instance` across all `T`, and the `.cctor`'s `newobj Case::.ctor()` against an
+  open generic TypeDef faults at load. So the current singleton scheme cannot be
+  lifted verbatim to a generic case. What does the F# emitter actually do for
+  `Option_None` (open generic, a fixed `object` instantiation, or no singleton at
+  all)? Must be decoded from `Lyric.Stdlib.dll` and mirrored before the union
+  slice. **This is why in-bundle generic unions were deferred** when the records
+  slice shipped — records have no nullary singleton path, so they were completed
+  and verified independently while this question stays open.
 - **Q-GEN-002 — Generic methods (MVAR) scope.** This plan reifies generic *types* only
   (TypeDef-owned GenericParam rows, VAR `0x13`). Generic *methods* need MVAR
   (`ELEMENT_TYPE_MVAR = 0x1E`) + MethodDef-owned GenericParam rows, and the self-hosted

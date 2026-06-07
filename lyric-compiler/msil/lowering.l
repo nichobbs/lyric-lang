@@ -145,6 +145,15 @@ pub union MsilType {
   // protocol (GetAsyncEnumerator/MoveNextAsync/Current) instead of the
   // List<object> index-loop protocol.
   case MIAsyncEnumerable(elemTy: MsilType)
+  // GENERICINST over an IN-BUNDLE generic TypeDef, resolved BY NAME at lowering
+  // time (#2362 / docs/43).  The counterpart of `MGenericInst` for in-bundle
+  // generic records/unions: codegen (Phase 3) cannot bake a `tdrTypeDef(row)`
+  // because the TypeDef row is only allocated during lowering (Phase 5), so the
+  // head's dotted FQN is carried instead and resolved via `resolveSigTypeDefRow`
+  // (in-bundle TypeDef first, then TypeRef fallback) when the signature blob is
+  // emitted.  Mirrors the proven `MCastclassByName` / `MLdfldByName` deferred-
+  // by-name pattern.  Encodes `0x15 0x12 <coded> <argCount> <args…>`.
+  case MGenericInstByName(headFqn: String, typeArgs: List[MsilType])
 }
 
 // Return the ECMA-335 ELEMENT_TYPE byte for the given MsilType.
@@ -175,6 +184,7 @@ pub func elementTypeByte(t: in MsilType): Int {
     case MByRef(_)           -> 0x10  // ELEMENT_TYPE_BYREF prefix; pointee follows (bufMsilType)
     case MValueTypeGenericInst(_, _, _) -> 0x15  // GENERICINST prefix; VALUETYPE byte + args follow
     case MIAsyncEnumerable(_)           -> 0x1C  // erased to object in signatures
+    case MGenericInstByName(_, _)       -> 0x15  // GENERICINST prefix; full encoding via bufMsilTypeWithCtx
   }
 }
 
@@ -288,6 +298,10 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
     // where the concrete encoding isn't required.
     case MConcreteList(_)   -> bufU1(w, 0x1C)
     case MConcreteMap(_, _) -> bufU1(w, 0x1C)
+    // In-bundle generic instantiation needs the LoweringCtx to resolve the
+    // TypeDef row, so the context-free encoder degrades to ELEMENT_TYPE_OBJECT
+    // (only reached for BCL sigs / context-free generic-arg blobs).
+    case MGenericInstByName(_, _) -> bufU1(w, 0x1C)
     case other -> bufU1(w, elementTypeByte(other))
   }
 }
@@ -569,6 +583,15 @@ pub union MInsn {
   // `ctorParams` — constructor parameter MSIL types (empty for nullary cases;
   //                [MTypeVar(0)] for a single generic-parameter field).
   case MNewobjGenericCase(typeRefRow: Int, typeArgs: List[MsilType], ctorParams: List[MsilType])
+  // newobj for an IN-BUNDLE generic record/union-case constructor, resolved by
+  // name at Phase 5 (#2362 / docs/43).  The in-bundle counterpart of
+  // MNewobjGenericCase: the case/record TypeDef row is only allocated during
+  // lowering, so `headFqn` (its dotted FQN) is carried and resolved via
+  // `resolveSigTypeDefRow` → `tdrTypeDef` (TypeRef fallback) when the closed
+  // GENERICINST TypeSpec + TypeSpec-parented `.ctor` MemberRef are built.
+  // `ctorParams` are the constructor parameter MSIL types in VAR form (e.g.
+  // [MTypeVar(0)] for `Box(value: T)`).
+  case MNewobjGenericByName(headFqn: String, typeArgs: List[MsilType], ctorParams: List[MsilType])
   case MBox(typeToken: Int)            // box value type
   case MUnboxAny(typeToken: Int)       // unbox.any
   case MNewarr(typeToken: Int)         // newarr — allocate a 1-D array of the element type token
@@ -662,6 +685,12 @@ pub record MRecord {
   // Required for IAsyncStateMachine SM classes (fields set individually
   // by the kickoff after newobj).
   useDefaultCtor:  Bool
+  // Type-parameter names for an in-bundle generic record (#2362 / docs/43),
+  // in declaration order (e.g. ["T"] for `record Box[T]`).  Empty for a
+  // non-generic record.  When non-empty, lowerMRecord emits GenericParam rows
+  // (table 0x2A) for this TypeDef, lowers `T`-typed fields to `MTypeVar`, and
+  // switches the TypeDef to AutoLayout.
+  generics:        List[String]
 }
 
 // ── MUnion — sealed class hierarchy ─────────────────────────────────────────
@@ -669,6 +698,11 @@ pub record MRecord {
 pub record MUnionCase {
   name:   String            // fully-qualified case class name
   fields: List[MField]
+  // Type-parameter names this case class re-declares (#2362).  Every case of a
+  // generic union carries the union's full parameter list (so `Option_Some` and
+  // `Option_None` each declare `[T]`), matching the F# emitter.  Empty for a
+  // non-generic union's cases.
+  generics: List[String]
 }
 
 pub record MUnion {
@@ -676,6 +710,10 @@ pub record MUnion {
   namespace:  String
   cases:      List[MUnionCase]
   methods:    List[MFunc]   // methods on the base
+  // Type-parameter names for an in-bundle generic union (#2362), in declaration
+  // order (e.g. ["T", "E"] for `union Result[T, E]`).  Empty for a non-generic
+  // union.  Propagated to every case's `generics` list during lowering.
+  generics:   List[String]
 }
 
 // ── MStaticField — module-level static field (IConst / IVal) ─────────────────
@@ -1317,6 +1355,16 @@ pub func msilTypeKey(t: in MsilType): String {
     }
     case MByRef(inner) -> "BY" + msilTypeKey(inner) + ";"
     case MIAsyncEnumerable(e) -> "IAE[" + msilTypeKey(e) + "]"
+    case MGenericInstByName(headFqn, typeArgs) -> {
+      var key = "GN" + headFqn + "<"
+      var i = 0
+      while i < typeArgs.count {
+        key = key + msilTypeKey(typeArgs[i])
+        key = key + ","
+        i = i + 1
+      }
+      key + ">"
+    }
   }
 }
 
@@ -1436,6 +1484,33 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
         bufU1(w, 2)
         bufMsilTypeWithCtx(w, genericArgType(keyT), ctx)
         bufMsilTypeWithCtx(w, genericArgType(valT), ctx)
+      } else {
+        bufU1(w, 0x1C)
+      }
+    }
+    // In-bundle generic instantiation (#2362).  Resolve the head's TypeDef row
+    // first (in-bundle generic record/union), then a TypeRef fallback (the head
+    // came from another assembly after all), and encode the closed GENERICINST.
+    // Degrade to ELEMENT_TYPE_OBJECT only if neither resolves, keeping the blob
+    // valid rather than emitting a dangling GENERICINST prefix.
+    case MGenericInstByName(headFqn, typeArgs) -> {
+      val defRow = resolveSigTypeDefRow(ctx, headFqn)
+      val coded = if defRow > 0 {
+        tdrTypeDef(defRow)
+      } else {
+        val refRow = findTypeRefRowByName(ctx, headFqn)
+        if refRow > 0 { tdrTypeRef(refRow) } else { 0 }
+      }
+      if coded > 0 {
+        bufU1(w, 0x15)  // GENERICINST
+        bufU1(w, 0x12)  // CLASS
+        writeCompressedInt(w, coded)
+        bufU1(w, typeArgs.count)
+        var gi = 0
+        while gi < typeArgs.count {
+          bufMsilTypeWithCtx(w, genericArgType(typeArgs[gi]), ctx)
+          gi = gi + 1
+        }
       } else {
         bufU1(w, 0x1C)
       }
@@ -1773,6 +1848,46 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
       val mrRow = ctxAddMemberRefForTypeSpec(ctx, tsRow, ".ctor", mrKey, ctorSig)
       emitNewobj(mb, 0x0A000000 + mrRow)
     }
+    case MNewobjGenericByName(headFqn, typeArgs, ctorParams) -> {
+      // In-bundle generic construction (#2362).  Resolve the record/case TypeDef
+      // row (TypeRef fallback) so the closed GENERICINST TypeSpec references the
+      // in-bundle TypeDef, then build a TypeSpec-parented `.ctor` MemberRef whose
+      // signature uses the VAR-form ctorParams.  Mirrors MNewobjGenericCase but
+      // by-name (the TypeDef row is only known at this lowering phase).
+      val defRow = resolveSigTypeDefRow(ctx, headFqn)
+      val coded = if defRow > 0 {
+        tdrTypeDef(defRow)
+      } else {
+        val refRow = findTypeRefRowByName(ctx, headFqn)
+        if refRow > 0 { tdrTypeRef(refRow) } else { 0 }
+      }
+      if coded > 0 {
+        var taKey = ""
+        var tai = 0
+        while tai < typeArgs.count {
+          taKey = taKey + msilTypeKey(typeArgs[tai]) + ","
+          tai = tai + 1
+        }
+        val tsBlob = buildGenericInstBlobWithCtx(ctx, coded, typeArgs)
+        val tsKey  = "newobj_ts_gname_" + headFqn + "_" + taKey
+        val tsRow  = ctxAddTypeSpec(ctx, tsKey, tsBlob)
+        // Ctx-aware so a concrete CLASS-typed ctor parameter encodes CLASS +
+        // TypeDef (matching the TypeDef `.ctor` sig lowerMRecord emits) rather
+        // than degrading to object — VAR params encode 0x13 idx either way.
+        val ctorSig = buildInstanceMethodSigWithCtx(ctorParams, MVoid, ctx)
+        var cpKey = ""
+        var cpi = 0
+        while cpi < ctorParams.count {
+          cpKey = cpKey + msilTypeKey(ctorParams[cpi]) + ","
+          cpi = cpi + 1
+        }
+        val mrKey = "newobj_mr_gname_" + headFqn + "_" + taKey + "_" + cpKey
+        val mrRow = ctxAddMemberRefForTypeSpec(ctx, tsRow, ".ctor", mrKey, ctorSig)
+        emitNewobj(mb, 0x0A000000 + mrRow)
+      } else {
+        panic("Msil.Lowering: MNewobjGenericByName could not resolve TypeDef/TypeRef for '" + headFqn + "'")
+      }
+    }
     case MBox(tok)          -> emitBox(mb, tok)
     case MUnboxAny(tok)     -> emitUnbox_Any(mb, tok)
     case MNewarr(tok)       -> emitNewarr(mb, tok)
@@ -1889,6 +2004,11 @@ func buildLocalVarSig(locals: in List[MsilType]): List[Byte] {
       // LocalVarSig (#2361).
       case MConcreteList(_)      -> bufU1(w, 0x1C)
       case MConcreteMap(_, _)    -> bufU1(w, 0x1C)
+      // In-bundle generic instantiation locals degrade to Object like
+      // MGenericInst: the slot is an object reference that op sites `castclass`
+      // to the concrete TypeSpec; the GENERICINST token is not valid in a
+      // LocalVarSig (#2362).
+      case MGenericInstByName(_, _) -> bufU1(w, 0x1C)
       // A value-typed extern local (e.g. `val u = newUuid()` where Uuid is
       // System.Guid) CANNOT degrade to Object — a struct is not a reference,
       // so an `object` slot would mis-store the unboxed value.  Emit the full
@@ -1935,6 +2055,7 @@ func buildLocalVarSigWithCtx(locals: in List[MsilType], ctx: in LoweringCtx): Li
         }
       }
       case MGenericInst(_, _, _) -> bufU1(w, 0x1C)
+      case MGenericInstByName(_, _)       -> bufU1(w, 0x1C)
       case MValueTypeGenericInst(_, _, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case MArray(_)                      -> bufU1(w, 0x1C)
       case MConcreteList(_)               -> bufU1(w, 0x1C)
@@ -1992,6 +2113,7 @@ func buildLvSigKey(locals: in List[MsilType]): String {
         val b = match locals[i] {
           case MClassRef(_, _)       -> 0x1C
           case MGenericInst(_, _, _) -> 0x1C
+          case MGenericInstByName(_, _) -> 0x1C
           case MConcreteList(_)      -> 0x1C
           case MConcreteMap(_, _)    -> 0x1C
           case other                 -> elementTypeByte(other)
@@ -2031,6 +2153,28 @@ pub func lowerMFunc(f: in MFunc, ctx: in LoweringCtx): MethodBody {
 
 // ── Record lowering ───────────────────────────────────────────────────────────
 
+// Emit one GenericParam row (table 0x2A) per type-parameter name owned by the
+// generic TypeDef at `ownerTypeDefRow` (#2362 / docs/43).  Each row records the
+// parameter's 0-based ordinal (`number`), invariant/no-constraint flags (0), the
+// owning TypeDef as a TypeOrMethodDef coded index, and the #Strings index of the
+// parameter name.  The serializer sorts the table by (owner, number) before
+// emission, so rows may be added here in declaration order.  No-op when
+// `generics` is empty (the non-generic case).
+func emitGenericParamRows(ctx: in LoweringCtx, ownerTypeDefRow: in Int,
+                          generics: in List[String]): Unit {
+  val sh = ctx.strings
+  val t  = ctx.tables
+  var gi = 0
+  while gi < generics.count {
+    addGenericParam(t, GenericParamRow(
+      number = gi,
+      flags  = 0,
+      owner  = mtdTypeDef(ownerTypeDefRow),
+      name   = internString(sh, generics[gi])))
+    gi = gi + 1
+  }
+}
+
 // Lower an MRecord into the context, adding the TypeDef, Field, and MethodDef rows.
 // Returns the 1-based TypeDef row index of the emitted class.
 pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
@@ -2042,8 +2186,15 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
   // namespace-qualified name.  r.className = "Pkg.Name" but the TypeDef must
   // store "Name" in typeName and "Pkg" in typeNamespace so the CLR type loader
   // can resolve the type by (namespace, simpleName) without a dot-split issue.
-  val simpleNameRec = if r.namespace.length == 0 { r.className }
+  val simpleBaseRec = if r.namespace.length == 0 { r.className }
                       else { r.className.substring(r.namespace.length + 1, r.className.length - r.namespace.length - 1) }
+  // A generic TypeDef's name carries the CLR arity suffix (`Box`1`), matching
+  // the .NET naming convention C# emits.  Without it, the runtime mis-lays-out
+  // multi-field value-type instantiations (e.g. `Pair<Int,Int>` silently drops
+  // the second field) — #2362.  By-name resolution (recordUserTypeDefRow /
+  // findTypeDefRowByName) uses this same suffixed name, and codegen carries the
+  // suffixed FQN in its generic by-name instructions, so lookups stay consistent.
+  val simpleNameRec = if r.generics.count > 0 { simpleBaseRec + "`" + toString(r.generics.count) } else { simpleBaseRec }
   val sName  = internString(sh, simpleNameRec)
   val sNs    = internString(sh, r.namespace)
 
@@ -2070,7 +2221,10 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
   // is System.Object, System.ValueType, or another SequentialLayout/ExplicitLayout
   // class.  Union case classes extend their abstract AutoLayout base, so they
   // must use AutoLayout (no TDF_SEQUENTIAL_LAYOUT) to pass type loading.
-  val recFlags = if recBaseRow > 0 {
+  // A generic TypeDef with a type-variable field (`value: T` → VAR(0)) cannot
+  // use SequentialLayout — the CLR rejects it at load with a TypeLoadException —
+  // so a generic record (non-empty `r.generics`) uses AutoLayout too (#2362).
+  val recFlags = if recBaseRow > 0 or r.generics.count > 0 {
     TDF_PUBLIC + TDF_SEALED + TDF_BEFORE_FIELD_INIT
   } else {
     TDF_PUBLIC + TDF_SEALED + TDF_SEQUENTIAL_LAYOUT + TDF_BEFORE_FIELD_INIT
@@ -2082,7 +2236,27 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
     extends       = recExtendsToken,
     fieldList     = firstField,
     methodList    = firstMethod))
-  recordUserTypeDefRow(ctx, r.namespace, simpleNameRec, t.typeDefs.count)
+  val selfTypeDefRow = t.typeDefs.count
+  recordUserTypeDefRow(ctx, r.namespace, simpleNameRec, selfTypeDefRow)
+  // Emit GenericParam rows for an in-bundle generic record (#2362).
+  emitGenericParamRows(ctx, selfTypeDefRow, r.generics)
+  // For a generic record, field access from WITHIN the type's own methods (the
+  // ctor's `stfld`) must go through a Field MemberRef parented to the *open*
+  // self-instantiation TypeSpec (`Box`1<!0>`), NOT a bare FieldDef token.  A
+  // bare FieldDef makes the JIT use the canonical (reference-sized) layout, so
+  // for a value-type instantiation (`Pair<Int,Int>`) the ctor writes the wrong
+  // field offset (the second field silently lands in the wrong slot) — #2362.
+  // Build the open self-TypeSpec once here; the ctor below references its fields.
+  val selfTsRow = if r.generics.count > 0 {
+    val openArgs: List[MsilType] = newList()
+    var gj = 0
+    while gj < r.generics.count {
+      openArgs.add(MTypeVar(index = gj))
+      gj = gj + 1
+    }
+    val selfBlob = buildGenericInstBlobWithCtx(ctx, tdrTypeDef(selfTypeDefRow), openArgs)
+    ctxAddTypeSpec(ctx, "self_open_ts_" + r.className, selfBlob)
+  } else { 0 }
 
   // Emit Field rows (must come after TypeDef so findFieldDefRowOfType sees this
   // type's firstField as the starting point when lowerMFunc is called below).
@@ -2157,7 +2331,18 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
     while ai < r.fields.count {
       emitLdarg_0(mbCtor)
       emitLdarg(mbCtor, ai + 1)
-      emitStfld(mbCtor, 0x04000000 + firstField + ai)
+      if selfTsRow > 0 {
+        // Generic record: stfld through a Field MemberRef on the open
+        // self-instantiation TypeSpec so the JIT uses the correct per-
+        // instantiation field layout (#2362).
+        val f = r.fields[ai]
+        val fSigC = buildFieldSigWithCtx(f.fieldType, ctx)
+        val mrRow = ctxAddMemberRefForTypeSpec(ctx, selfTsRow, f.name,
+                      "self_open_fld_" + r.className + "_" + f.name, fSigC)
+        emitStfld(mbCtor, 0x0A000000 + mrRow)
+      } else {
+        emitStfld(mbCtor, 0x04000000 + firstField + ai)
+      }
       ai = ai + 1
     }
     emitRet(mbCtor)
@@ -2319,6 +2504,9 @@ pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
     fieldList     = firstField,
     methodList    = firstMethod))
   recordUserTypeDefRow(ctx, r.namespace, simpleNameRec, t.typeDefs.count)
+  // A nullary case of a generic union re-declares the union's type parameters
+  // (e.g. `Option_None` carries `[T]`), matching the F# emitter (#2362).
+  emitGenericParamRows(ctx, t.typeDefs.count, r.generics)
 }
 
 // Lower an MUnion as an abstract base class + one sealed case class per variant.
@@ -2394,6 +2582,8 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
     fieldList     = baseFirstField,
     methodList    = baseFirstMethod))
   recordUserTypeDefRow(ctx, u.namespace, simpleNameUnion, baseRow)
+  // GenericParam rows for the abstract base of a generic union (#2362).
+  emitGenericParamRows(ctx, baseRow, u.generics)
 
   // Emit case classes extending the base.
   // Nullary cases (no fields) are lowered via lowerMNullaryUnionCase, which emits
@@ -2408,7 +2598,8 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
       baseClass      = u.baseName,
       fields         = c.fields,
       methods        = newList(),
-      useDefaultCtor = false)
+      useDefaultCtor = false,
+      generics       = c.generics)
     if c.fields.count == 0 {
       lowerMNullaryUnionCase(rec, ctx)
     } else {
@@ -2431,7 +2622,8 @@ pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {
     baseClass      = "System.Object",
     fields         = newList(),
     methods        = newList(),
-    useDefaultCtor = false)
+    useDefaultCtor = false,
+    generics       = newList())
   val valueField = MField(
     flags     = FDA_PUBLIC + FDA_INIT_ONLY,
     name      = "value",
