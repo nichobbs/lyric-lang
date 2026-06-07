@@ -332,7 +332,9 @@ jobs:
           fi
           # StackExchange.Redis ships next to Session.Host (bootstrap.sh
           # copies it from the publish output).  Load is lazy — copy
-          # if present so Redis-backed tests can run.
+          # if present so Redis-backed tests can run. Silent skip is
+          # acceptable: if the DLL is absent, Redis-backed tests skip
+          # gracefully via the SessionStore factory (#1145).
           if [ -f .bootstrap/stage1/StackExchange.Redis.dll ]; then
             cp .bootstrap/stage1/StackExchange.Redis.dll lyric-session/.lyric-test/
           fi
