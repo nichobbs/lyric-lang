@@ -34,6 +34,7 @@ package Std.AssemblyResources
 
 import Std.Core
 import Std.Collections
+import Std.File as File
 import Std.AssemblyResourcesHost
 
 /// Opaque handle to a loaded assembly's resource surface.  Wraps the
@@ -58,7 +59,10 @@ pub opaque type AssemblyResources {
 /// `try { … } catch Bug as _ { None }`.
 @stable(since = "0.1")
 pub func openAssembly(path: in String): AssemblyResources {
-  val image = hostReadAssemblyBytes(path)
+  // Read the image bytes through `Std.File` (which owns the audited
+  // `File.ReadAllBytes` extern) rather than declaring a duplicate kernel
+  // extern, then load via the identity-independent `Assembly.Load(byte[])`.
+  val image = File.readBytesOrPanic(path)
   val asm = hostAssemblyLoad(image)
   val names = hostAssemblyResourceNames(asm)
   AssemblyResources(asm = asm, names = names)

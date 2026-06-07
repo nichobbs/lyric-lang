@@ -54,14 +54,6 @@ extern type ResStream = "System.IO.Stream"
 extern type ResMemoryStream = "System.IO.MemoryStream"
 
 // ── Host functions ─────────────────────────────────────────────────────────
-/// Resolves to `File.ReadAllBytes(string): byte[]`.  Reads the assembly
-/// image into a managed byte buffer so it can be loaded via the
-/// identity-independent `Assembly.Load(byte[])` path below.  Throws
-/// `FileNotFoundException` when the path doesn't exist; callers should
-/// pre-check with `Std.File`.
-@externTarget("System.IO.File.ReadAllBytes")
-pub func hostReadAssemblyBytes(path: in String): slice[Byte] = ()
-
 /// Resolves to `Assembly.Load(byte[]): Assembly`.  Loads the assembly
 /// from its raw image bytes rather than `Assembly.LoadFrom(path)`.
 ///
