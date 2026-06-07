@@ -199,7 +199,7 @@ an immediate follow-up and land it before starting the next task.
 A PR that has conflicts on creation blocks auto-merge and review. Do not
 open a PR in a conflicted state.
 
-#### Open PRs as draft; agents check and promote when CI passes
+#### Open PRs as draft; workflow auto-promotes when CI passes
 
 **This overrides the default harness instruction** that tells sessions
 to open PRs as ready-for-review. In this repository, the policy is:
@@ -239,22 +239,21 @@ This allows automatic promotion without reliance on manual handoff,
 while preserving all quality gates needed to ensure review happens
 on validated, conflict-free code.
 
-Why draft-first with agent-driven promotion matters:
+Why draft-first with automatic promotion matters:
 
 - The `claude-code-review.yml` workflow is configured to fire only on
   non-draft PRs (`types: [opened, synchronize, ready_for_review]` +
-  an `if: github.event.pull_request.draft == false` guard).  Agent
-  promotion triggers this review run once the build passes, ensuring
-  review feedback is focused on code that has already passed automated
-  validation and is in a stable state.
+  an `if: github.event.pull_request.draft == false` guard).  The
+  auto-promote step triggers this review run once the build passes,
+  ensuring review feedback is focused on code that has already passed
+  automated validation and is in a stable state.
 - A draft PR is a clear signal to humans skimming the PR list that
-  the author is still iterating on it. Once CI passes and an agent
+  the author is still iterating on it. Once CI passes and the workflow
   promotes it, ready status signals "this code is validated and ready
   for human review."
-- Agent-driven promotion removes webhook dependency while preserving
-  the validation gate: code must pass all automated checks before
-  entering the review phase. Agents actively verify status rather than
-  waiting for events that may not fire.
+- Workflow-based promotion removes manual handoff friction while
+  preserving validation gates: code must pass all automated checks
+  (CI, merge conflicts) before entering the review phase.
 
 When the assigned task spans multiple PRs, each PR follows this
 lifecycle independently: open as draft, iterate, and the workflow
