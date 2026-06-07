@@ -211,10 +211,16 @@ pub func compileToJar(
 // builds one cross-package call registry (JvmFuncSig) so every call site
 // resolves its callee's host class + descriptor regardless of declaring package.
 //
-// Each package is lowered with its *own* constant pool, so a package whose
-// codegen fails (e.g. a kernel/extern package the JVM backend can't yet emit)
-// can be skipped without corrupting the rest of the JAR — and any unreachable
-// reference to its classes resolves lazily at first call, which never happens.
+// Each package is lowered with its *own* constant pool.  Every package that
+// reaches the bundling loop is in the user program's transitive import closure
+// — i.e. it is *referenced* by the build — so a codegen failure for it is a
+// real bug in a package the program depends on and is **fatal at compile time**
+// (J1 B-6, #2664).  Mirrors the MSIL bridge, where the per-package codegen loop
+// (`compileProjectToMsil`) likewise lets a codegen failure propagate rather than
+// swallowing it.  Packages that are *not* in the closure are never added to the
+// bundle list (the closure walk's `case None ->` arm), so they cannot mask a
+// failure: their bytecode is simply absent, and a genuinely-unreached reference
+// resolves lazily at a call that never happens.
 // ─────────────────────────────────────────────────────────────────────────────
 // Join a ModulePath's segments with "." (the Lyric package-name spelling).
 func dottedPath(path: in ModulePath): String {
@@ -315,6 +321,264 @@ func codegenPackageInto(
   }
 }
 
+// ── Call-reachability (J1 B-6) ────────────────────────────────────────────
+//
+// The bundle list (`toBundle`) follows the *import* graph, which over-
+// approximates the bytecode actually reached: a package can be imported only
+// for its types (or be a dead import, like `Std.Testing`'s `import Std.File`)
+// while none of its functions are ever invoked.  A codegen failure in such an
+// import-only package must not fail the build — its bytecode is never reached.
+//
+// Reachability is computed at *function* granularity (matching the JVM's lazy
+// per-method linking): a function is reachable when it is called transitively
+// from one of the user package's own functions (the program entry points).  We
+// resolve each call site to the callee's canonical registry key (`owner/name`)
+// using the same two-stage lookup the codegen uses.  A call whose target is not
+// in the registry (an extern / auto-FFI call such as a kernel shim's
+// `lyric.stdlib.jvm.FileHost.fileExists`) resolves to nothing, so it cannot
+// drag a package in via a colliding short name.  A bundled package is then
+// "referenced" iff it declares at least one reachable function; only those are
+// fatal-on-codegen-failure.  A package whose functions are all unreachable —
+// dead imports, type-only imports, or sibling functions never invoked — is
+// skipped (advisory) if its codegen fails, because the JAR never links them.
+// Canonical registry key (`owner/name`) a call target resolves to, or "" when
+// the callee is not a registered Lyric function (extern / auto-FFI / unresolved).
+// Mirrors `lowerCall`'s two-stage lookup.  Kept flat (no nested option match)
+// to dodge the stage-0 bootstrap emitter's `Map[_, record]` value-threading gap.
+func registryKeyOf(registry: in Map[String, JvmFuncSig], key: in String): String {
+  match mapGet(registry, key) {
+    case Some(sig) -> sig.owner + "/" + lastSegOfKey(key)
+    case None -> ""
+  }
+}
+
+// The substring of a registry key after the last "/", i.e. the function name.
+func lastSegOfKey(key: in String): String {
+  var lastSlash = -1
+  var i = 0
+  while i < key.length {
+    if key[i] == '/' {
+      lastSlash = i
+    }
+    i = i + 1
+  }
+  if lastSlash < 0 {
+    key
+  } else {
+    key.substring(lastSlash + 1, key.length)
+  }
+}
+
+// A package's JVM-internal owner name (segments joined with "/"), matching
+// `Jvm.Codegen.segmentsToJvmPath` so it agrees with `JvmFuncSig.owner`.
+func pkgJvmOwner(path: in ModulePath): String {
+  ownerOfSegments(path.segments, path.segments.count)
+}
+
+// Join the first `upTo` segments with "/".
+func ownerOfSegments(segments: in List[String], upTo: in Int): String {
+  var acc = ""
+  var si = 0
+  while si < upTo {
+    if si > 0 {
+      acc = acc + "/"
+    }
+    acc = acc + segments[si]
+    si = si + 1
+  }
+  acc
+}
+
+// Resolve a call target expression `fn` to the callee's canonical registry key
+// (`owner/name`), or "" when it is not a registered Lyric function.
+func resolveCallKey(fn: in Expr, registry: in Map[String, JvmFuncSig]): String {
+  match fn.kind {
+    case EPath(path) -> {
+      if path.segments.count == 0 {
+        ""
+      } else if path.segments.count > 1 {
+        // Qualified call: only the explicit-owner key counts.  A qkey absent
+        // from the registry is an extern / non-Lyric FQN, so we do *not* fall
+        // back to the bare name (which could mis-resolve a colliding short name
+        // such as a kernel shim's `fileExists`).
+        val funcName = path.segments[path.segments.count - 1]
+        val owner = ownerOfSegments(path.segments, path.segments.count - 1)
+        registryKeyOf(registry, owner + "/" + funcName)
+      } else {
+        registryKeyOf(registry, path.segments[0])
+      }
+    }
+    case EMember(recv, memberName) -> {
+      match recv.kind {
+        case EPath(rpath) -> registryKeyOf(registry, ownerOfSegments(rpath.segments, rpath.segments.count) + "/" + memberName)
+        case _ -> ""
+      }
+    }
+    case _ -> ""
+  }
+}
+
+// Walk `e`, resolving every call site's owner package into `acc` and recursing.
+func collectExprNames(e: in Expr, acc: in List[String], registry: in Map[String, JvmFuncSig]): Unit {
+  match e.kind {
+    case EInterpolated(segs) -> {
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISExpr(ex) -> collectExprNames(ex, acc, registry)
+          case ISText(_, _) -> ()
+        }
+        i = i + 1
+      }
+    }
+    case EParen(inner) -> collectExprNames(inner, acc, registry)
+    case ETuple(exprs) -> collectExprListNames(exprs, acc, registry)
+    case EList(exprs) -> collectExprListNames(exprs, acc, registry)
+    case EIf(cond, thenB, elseB, _) -> {
+      collectExprNames(cond, acc, registry)
+      collectExprOrBlockNames(thenB, acc, registry)
+      match elseB {
+        case Some(eb) -> collectExprOrBlockNames(eb, acc, registry)
+        case None -> ()
+      }
+    }
+    case EMatch(scrut, arms) -> {
+      collectExprNames(scrut, acc, registry)
+      var i = 0
+      while i < arms.count {
+        match arms[i].guard {
+          case Some(g) -> collectExprNames(g, acc, registry)
+          case None -> ()
+        }
+        collectExprOrBlockNames(arms[i].body, acc, registry)
+        i = i + 1
+      }
+    }
+    case EAwait(inner) -> collectExprNames(inner, acc, registry)
+    case EYield(inner) -> collectExprNames(inner, acc, registry)
+    case ESpawn(inner) -> collectExprNames(inner, acc, registry)
+    case ETry(inner) -> collectExprNames(inner, acc, registry)
+    case EOld(inner) -> collectExprNames(inner, acc, registry)
+    case ELambda(_, body) -> collectBlockNames(body, acc, registry)
+    case ECall(fn, args) -> {
+      val callKey = resolveCallKey(fn, registry)
+      if callKey.length > 0 {
+        acc.add(callKey)
+      }
+      collectExprNames(fn, acc, registry)
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CANamed(_, value, _) -> collectExprNames(value, acc, registry)
+          case CAPositional(ex) -> collectExprNames(ex, acc, registry)
+        }
+        i = i + 1
+      }
+    }
+    case ETypeApp(fn, _) -> collectExprNames(fn, acc, registry)
+    case EIndex(receiver, indices) -> {
+      collectExprNames(receiver, acc, registry)
+      collectExprListNames(indices, acc, registry)
+    }
+    case EMember(recv, _) -> collectExprNames(recv, acc, registry)
+    case EPropagate(inner) -> collectExprNames(inner, acc, registry)
+    case EPrefix(_, operand) -> collectExprNames(operand, acc, registry)
+    case EBinop(_, lhs, rhs) -> {
+      collectExprNames(lhs, acc, registry)
+      collectExprNames(rhs, acc, registry)
+    }
+    case EAssign(target, _, value) -> {
+      collectExprNames(target, acc, registry)
+      collectExprNames(value, acc, registry)
+    }
+    case EBlock(block) -> collectBlockNames(block, acc, registry)
+    case EUnsafe(block) -> collectBlockNames(block, acc, registry)
+    case _ -> ()
+  }
+}
+
+func collectExprListNames(exprs: in List[Expr], acc: in List[String], registry: in Map[String, JvmFuncSig]): Unit {
+  var i = 0
+  while i < exprs.count {
+    collectExprNames(exprs[i], acc, registry)
+    i = i + 1
+  }
+}
+
+func collectExprOrBlockNames(eob: in ExprOrBlock, acc: in List[String], registry: in Map[String, JvmFuncSig]): Unit {
+  match eob {
+    case EOBExpr(ex) -> collectExprNames(ex, acc, registry)
+    case EOBBlock(b) -> collectBlockNames(b, acc, registry)
+  }
+}
+
+func collectStmtNames(s: in Statement, acc: in List[String], registry: in Map[String, JvmFuncSig]): Unit {
+  match s.kind {
+    case SLocal(binding) -> match binding { case LBVal(_, _, init) -> collectExprNames(init, acc, registry); case LBLet(_, _, init) -> collectExprNames(init, acc, registry); case LBVar(_, _, init) -> match init { case Some(ie) -> collectExprNames(ie, acc, registry); case None -> () } }
+    case SAssign(target, _, value) -> {
+      collectExprNames(target, acc, registry)
+      collectExprNames(value, acc, registry)
+    }
+    case SReturn(value) -> match value { case Some(v) -> collectExprNames(v, acc, registry); case None -> () }
+    case SThrow(ex) -> collectExprNames(ex, acc, registry)
+    case STry(body, catches, finally_) -> {
+      collectBlockNames(body, acc, registry)
+      var i = 0
+      while i < catches.count {
+        collectBlockNames(catches[i].body, acc, registry)
+        i = i + 1
+      }
+      match finally_ {
+        case Some(fb) -> collectBlockNames(fb, acc, registry)
+        case None -> ()
+      }
+    }
+    case SDefer(body) -> collectBlockNames(body, acc, registry)
+    case SScope(_, body) -> collectBlockNames(body, acc, registry)
+    case SFor(_, _, iter, body) -> {
+      collectExprNames(iter, acc, registry)
+      collectBlockNames(body, acc, registry)
+    }
+    case SWhile(_, cond, body) -> {
+      collectExprNames(cond, acc, registry)
+      collectBlockNames(body, acc, registry)
+    }
+    case SLoop(_, body) -> collectBlockNames(body, acc, registry)
+    case SInvariant(ex) -> collectExprNames(ex, acc, registry)
+    case SExpr(ex) -> collectExprNames(ex, acc, registry)
+    case SRule(lhs, rhs) -> {
+      collectExprNames(lhs, acc, registry)
+      collectExprNames(rhs, acc, registry)
+    }
+    case SItem(it) -> match it.kind {
+      // A nested function's body calls count toward the enclosing function for
+      // reachability (the JVM lowers them into the same class either way).
+      case IFunc(decl) -> match decl.body { case Some(fb) -> match fb { case FBExpr(ex) -> collectExprNames(ex, acc, registry); case FBBlock(b) -> collectBlockNames(b, acc, registry) }; case None -> () }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+}
+
+func collectBlockNames(b: in Block, acc: in List[String], registry: in Map[String, JvmFuncSig]): Unit {
+  var i = 0
+  while i < b.statements.count {
+    collectStmtNames(b.statements[i], acc, registry)
+    i = i + 1
+  }
+}
+
+// Canonical registry keys (`owner/name`) of every Lyric function `decl`'s
+// body calls.
+func collectFuncCallKeys(decl: in FunctionDecl, registry: in Map[String, JvmFuncSig]): List[String] {
+  val acc: List[String] = newList()
+  match decl.body {
+    case Some(fb) -> match fb { case FBExpr(ex) -> collectExprNames(ex, acc, registry); case FBBlock(b) -> collectBlockNames(b, acc, registry) }
+    case None -> ()
+  }
+  acc
+}
+
 pub func compileToJarBundled(
   source: in String,
   outputPath: in String,
@@ -411,36 +675,177 @@ pub func compileToJarBundled(
           }
         }
         case None -> ()
+        // Genuinely unreached / unavailable: a builtin head (`Std.*`
+        // resolved by the emitter, `Lyric.*` compiler packages) or a
+        // package with no in-bundle source.  Nothing to bundle, so no
+        // codegen runs for it and a failure can never be masked here.
+        // This `None` arm is the only "skip" path; every package that
+        // *does* have source is bundled and its codegen failure is fatal.
       }
-      // builtin head / unavailable package — nothing to bundle
     }
+  }
+
+  // ── Call-reachability fixpoint (J1 B-6, #2664) ──────────────────────────
+  // Build a function-level call graph over the user package plus every bundled
+  // package: each function's canonical key (`owner/name`) maps to the keys of
+  // the functions it calls.  Mark every function in the *user* package as a
+  // root (entry points — `main`, the synthesised `lyric test` runners) and
+  // close the reachable set transitively.  A bundled package is "referenced"
+  // iff at least one of its declared functions is reachable; only those are
+  // fatal-on-codegen-failure.  This matches the JVM's lazy per-method linking:
+  // a never-invoked sibling function (e.g. `Std.Hash.sha512OfFile` pulling in
+  // `Std.FileHost` when only `sha512OfBytes` is called) does not make its
+  // callee package "referenced".
+  val callGraph: Map[String, List[String]] = newMap()
+  val reachableFns: Map[String, Bool] = newMap()
+  val fnWorklist: List[String] = newList()
+
+  // User package: every top-level function is a root.
+  val userOwner = pkgJvmOwner(userFile.packageDecl.path)
+  var gi = 0
+  while gi < userFile.items.count {
+    match userFile.items[gi].kind {
+      case IFunc(decl) -> {
+        val selfKey = userOwner + "/" + decl.name
+        if not callGraph.containsKey(selfKey) {
+          callGraph.add(selfKey, collectFuncCallKeys(decl, registry))
+        }
+        if not reachableFns.containsKey(selfKey) {
+          reachableFns.add(selfKey, true)
+          fnWorklist.add(selfKey)
+        }
+      }
+      case _ -> ()
+    }
+    gi = gi + 1
+  }
+
+  // Bundled packages: index their functions' outgoing calls (not roots).
+  var bgi = 0
+  while bgi < toBundle.count {
+    val bf = toBundle[bgi]
+    val bOwner = pkgJvmOwner(bf.packageDecl.path)
+    var bii = 0
+    while bii < bf.items.count {
+      match bf.items[bii].kind {
+        case IFunc(decl) -> {
+          val selfKey = bOwner + "/" + decl.name
+          if not callGraph.containsKey(selfKey) {
+            callGraph.add(selfKey, collectFuncCallKeys(decl, registry))
+          }
+        }
+        case _ -> ()
+      }
+      bii = bii + 1
+    }
+    bgi = bgi + 1
+  }
+
+  // Transitive closure over the call graph.
+  var wfi = 0
+  while wfi < fnWorklist.count {
+    val cur = fnWorklist[wfi]
+    wfi = wfi + 1
+    match mapGet(callGraph, cur) {
+      case Some(callees) -> {
+        var ci = 0
+        while ci < callees.count {
+          val callee = callees[ci]
+          if not reachableFns.containsKey(callee) {
+            reachableFns.add(callee, true)
+            fnWorklist.add(callee)
+          }
+          ci = ci + 1
+        }
+      }
+      case None -> ()
+    }
+  }
+
+  // A bundled package is referenced iff one of its functions is reachable.
+  val referencedPkgs: Map[String, Bool] = newMap()
+  var rpi = 0
+  while rpi < toBundle.count {
+    val rf = toBundle[rpi]
+    val rOwner = pkgJvmOwner(rf.packageDecl.path)
+    if not referencedPkgs.containsKey(rOwner) {
+      var rii = 0
+      var anyReachable = false
+      while rii < rf.items.count {
+        match rf.items[rii].kind {
+          case IFunc(decl) -> {
+            if reachableFns.containsKey(rOwner + "/" + decl.name) {
+              anyReachable = true
+            }
+          }
+          case _ -> ()
+        }
+        rii = rii + 1
+      }
+      if anyReachable {
+        referencedPkgs.add(rOwner, true)
+      }
+    }
+    rpi = rpi + 1
   }
 
   val autoFfi = buildAutoFfiCtx()
   val allClasses: List[BuiltClass] = newList()
 
-  // User package first (its codegen failing is fatal).  Its type-check
+  // User package first (its codegen failing is always fatal).  Its type-check
   // advisories are echoed (they are about the program the user actually wrote).
   match runMiddleEnd(userFile, importedPkgs, true) {
     case Some(f) -> codegenPackageInto(f, registry, caseReg, ctorReg, autoFfi, allClasses)
     case None -> return false
   }
 
-  // Bundled stdlib packages, best-effort: a package the JVM backend can't yet
-  // emit (kernel/extern surfaces) is skipped rather than failing the build, so
-  // only the call-reachable packages need to compile cleanly.  Their type-check
-  // advisories and the codegen-skip note are suppressed so a successful build
-  // does not print self-hosted-coverage-gap noise from unrelated stdlib code.
+  // For every bundled package, a codegen failure is **fatal** when the package
+  // is call-reachable — i.e. the program actually invokes one of its functions
+  // — because the resulting JAR would otherwise throw NoSuchMethodError at
+  // runtime instead of failing the build.  The catch surfaces the panic's
+  // message, which names the failing symbol / declaration / construct (e.g.
+  // "Jvm.Codegen: EForall not supported in JVM codegen"), so the build points at
+  // the exact lowering gap.  A package that is imported only for its types (or
+  // dead-imported) and never called is *not* call-reachable: its bytecode is
+  // never invoked, so a codegen failure for it is skipped silently.  Bundled
+  // packages pass `reportTcAdvisories = false`: their advisory type-check noise
+  // (the self-hosted checker lacks full builtin coverage) is suppressed so a
+  // successful build does not print self-hosted-coverage-gap noise from
+  // unrelated stdlib code.  Real errors still surface — referenced-package
+  // codegen panics are echoed via the fatal J002 path below.
   var bi = 0
   while bi < toBundle.count {
     val f = toBundle[bi]
-    try {
+    val pkgName = dottedPath(f.packageDecl.path)
+    val reachable = referencedPkgs.containsKey(pkgJvmOwner(f.packageDecl.path))
+    val ok = try {
       match runMiddleEnd(f, importedPkgs, false) {
-        case Some(ff) -> codegenPackageInto(ff, registry, caseReg, ctorReg, autoFfi, allClasses)
-        case None -> ()
+        case Some(ff) -> {
+          codegenPackageInto(ff, registry, caseReg, ctorReg, autoFfi, allClasses)
+          true
+        }
+        // A fatal middle-end diagnostic (already reported) aborts the build only
+        // when the package is actually called; an imported-only package whose
+        // middle-end fails is skipped (its bytecode is never invoked).
+        case None -> not reachable
       }
-    } catch Bug as _ {
-      ()
+    } catch Bug as b {
+      if reachable {
+        Console.error("error[J002]: JVM codegen failed for referenced package '" + pkgName + "': " + b.message)
+        Console.error(
+          "  this package's functions are called by the program, so it must compile; " +
+            "the failure above names the symbol or construct the JVM backend could not lower"
+        )
+        false
+      } else {
+        // Unreached package whose codegen failed: not a build error (its bytecode
+        // is never invoked), and not the success path either — so this never
+        // reintroduces the noisy per-package skip note J1c removed.  Suppressed.
+        true
+      }
+    }
+    if not ok {
+      return false
     }
     bi = bi + 1
   }

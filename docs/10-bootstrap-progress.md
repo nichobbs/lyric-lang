@@ -22508,3 +22508,54 @@ through an annotated slice variable is a pre-existing representation mismatch
 (inferred `var xs = [...]` works on both read and write).  Threading a true
 32-bit `Float` through the `.NET` MSIL backend (still `R8`-only) is likewise out
 of J1's JVM scope.
+
+### D-progress-465 — referenced-package JVM codegen failures are fatal with named symbol (docs/44 J1 B-6, epic #2663, #2664)
+
+**Status:** Shipped — a JVM build that actually calls into a package whose
+codegen fails now errors at compile time, naming the package and the failing
+symbol, instead of silently dropping the package's bytecode and producing a JAR
+that throws `NoSuchMethodError` at runtime.
+
+The bug: `jvm/bridge.l`'s `compileToJarBundled` wrapped each bundled stdlib
+package's codegen in `try { … } catch Bug as _` and, on failure, printed a vague
+"skipped package X" note and continued.  Unlike the MSIL bridge — whose
+per-package codegen loop lets a failure propagate — the JVM bridge hid real
+codegen bugs in packages the program depended on until execution.
+
+What landed (all in `lyric-compiler/jvm/bridge.l`):
+
+- **Function-level call reachability.**  `compileToJarBundled` builds a
+  function-level call graph over the user package plus the bundled import
+  closure.  Each call site is resolved to the callee's canonical registry key
+  (`owner/name`) via the same two-stage lookup the codegen uses
+  (`resolveCallKey` mirrors `lowerCall`): a qualified call uses the explicit
+  owner key only, and a call whose key is absent from the registry (an extern /
+  auto-FFI target such as a kernel shim's `lyric.stdlib.jvm.FileHost.fileExists`)
+  resolves to nothing — so a colliding short name can no longer drag an unused
+  package in.  Every function in the *user* package is a root (entry points:
+  `main`, the synthesised `lyric test` runners); reachability is closed
+  transitively.  This matches the JVM's lazy per-method linking: a never-invoked
+  sibling (e.g. `Std.Hash.sha512OfFile` pulling in `Std.FileHost` when only
+  `sha512OfBytes` is called) does not make its callee package "referenced".
+- **Fatal-vs-skip policy.**  A bundled package is *referenced* iff it declares
+  at least one reachable function.  A codegen panic (`catch Bug`) for a
+  referenced package is now fatal: `error[J002]` names the package and includes
+  the panic message, which carries the failing symbol / declaration / construct
+  (e.g. `Jvm.Codegen: EForall not supported in JVM codegen`, or the auto-FFI
+  `no matching instance … method` text).  A package with no reachable function
+  is skipped silently rather than failing the build — its bytecode is never
+  invoked.  (Reconciled with D-progress-463's success-path verbosity cut: the
+  unreached-skip path no longer prints the per-package `note:` so a successful
+  build stays clean; only the fatal referenced-package J002 error is echoed.)
+
+Verified before/after: a repro program that calls `Std.File.readBytes` (which
+drives the JVM auto-FFI `.add` codegen gap) now fails the build at compile time
+with `error[J002]: JVM codegen failed for referenced package 'Std.File': … no
+matching instance or inherited method for 'java.lang.Object.add(…)'` and
+produces no JAR (exit 1), where previously it produced a JAR that threw
+`NoSuchMethodError` on the first `readBytes` call.  No success-path regression:
+`hash_jvm_self_test.l` (JVM 3/3) and `auto_ffi_jvm_self_test.l` (JVM 13/13) still
+pass — `Std.File`/`Std.FileHost`/`Std.Errors` are correctly recognised as
+unreachable in those builds and skipped silently.
+`bitwise_self_test.l` (JVM 10/10) and the F# `Lyric.Cli.Tests` suite (84/84)
+stay green; `make lyric` is clean.

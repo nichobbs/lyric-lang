@@ -153,7 +153,7 @@ tracking issue today (band J0 files them).
 | B-3 | Aspects are **not woven** on JVM (`bridge.l` never imports `Lyric.Weaver`); `IAspect` no-ops | `bridge.l:8-25`; `codegen.l:4994` vs `msil/bridge.l:168` | (new) |
 | B-4 | ~~`Float` emitted as JVM `double` — silent precision/semantics bug~~ **Fixed (D-progress-463):** real 32-bit `float`. | `codegen/01_types.l`,`02_exprs.l` | #1615, #2664 |
 | B-5 | ~~Complex assignment targets (`obj.field = …`, `arr[i] = …`) silently dropped (value popped)~~ **Fixed (D-progress-463).** | `codegen/05_stmts.l` | #2664 |
-| B-6 | stdlib packages that fail JVM codegen are swallowed → runtime `NoSuchMethodError` instead of build error | `bridge.l:408-413`; observed `Std.File`/`Std.Errors` "codegen unsupported" notes | (new) |
+| B-6 | ~~stdlib packages that fail JVM codegen are swallowed → runtime `NoSuchMethodError` instead of build error~~ **Fixed (D-progress-465):** function-level call reachability + fatal `error[J002]` for referenced packages. | `bridge.l` `compileToJarBundled` | #2664 |
 | B-7 | ~~Named-argument record construction can corrupt cross-typed fields (MSIL `reorderCtorNamedArgs` pass not ported)~~ **Fixed (D-progress-463):** `orderCtorArgs` permutes named args to field order. | `codegen/04_calls.l` | #1793, #2664 |
 | B-8 | ~~Union construction emits a call to a non-existent factory in some paths → `NoSuchMethodError`~~ **Fixed (D-progress-463):** field-bearing + nullary cases emit `new`+`invokespecial`. | `codegen/02_exprs.l`,`04_calls.l` | #1675, #2664 |
 | B-9 | No auto-FFI resolution for `extern type` method calls beyond the JDK-class fast path on some receivers; user `extern type` libraries mis-bind | #1708; `auto_ffi.l` JDK-first | #1708 |
@@ -246,9 +246,19 @@ These produce wrong-but-running output today and must fail loudly or be fixed:
   out of scope short-term, emit a hard error — never a silent pop).
   **Done (D-progress-463):** `obj.field = e` → `putfield`; `arr[i] = e` →
   `Xastore` / ArrayList `set`; compound forms supported.
-- B-6: make stdlib codegen failures **fatal** for the packages a build
-  actually references; keep the "skipped" note only for genuinely-unreached
-  packages, and surface which symbol failed.
+- [x] B-6: make stdlib codegen failures **fatal** for the packages a build
+  actually references; surface which symbol failed.  **Done (D-progress-465):**
+  `jvm/bridge.l`'s `compileToJarBundled` now computes function-level call
+  reachability over the user package plus the bundled import closure (mirroring
+  the JVM's lazy per-method linking), using the same cross-package call registry
+  the codegen resolves against.  A codegen panic for a package that declares a
+  reachable function is fatal (`error[J002]`, naming the package and the panic
+  message — which carries the failing symbol/construct); a package with no
+  reachable function is skipped silently instead of producing a JAR that throws
+  `NoSuchMethodError` at runtime.  Composed with B-10's success-path verbosity
+  cut: bundled packages run the middle-end with `reportTcAdvisories = false`,
+  and the unreached-skip path prints no `note:`, so a successful build stays
+  clean while a referenced-package failure aborts loudly.
 - [x] or-pattern binding no-op (m-1 sibling, `codegen.l:2060`): bind the variable
   or reject the pattern. **Done (D-progress-464):** the `POr` bind arm re-tests
   each alternative and binds from the matching one.
