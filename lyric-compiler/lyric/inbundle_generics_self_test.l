@@ -143,6 +143,13 @@ func mkNothing(): Maybe[Int] {
   Nothing
 }
 
+func getOrDefault[T](m: in Maybe[T], dflt: in T): T {
+  match m {
+    case Just(v) -> v
+    case Nothing -> dflt
+  }
+}
+
 test "Maybe[Int] Just constructs and matches its payload" {
   assertEqualInt(unwrapOr(Just(value = 5), 0), 5, "Just(5)")
 }
@@ -154,6 +161,11 @@ test "Maybe[Int] Nothing matches (nullary, no singleton)" {
 
 test "Maybe Nothing returned from a function matches" {
   assertEqualInt(unwrapOr(mkNothing(), 7), 7, "mkNothing()")
+}
+
+test "Bare nullary case as call argument (Nothing without annotation)" {
+  assertEqualInt(getOrDefault(Nothing, 42), 42, "Nothing infers [Int]")
+  assertEqual(getOrDefault(Nothing, "default"), "default", "Nothing infers [String]")
 }
 
 test "Maybe[String] Just binds a reference payload" {
