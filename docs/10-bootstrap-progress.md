@@ -21914,3 +21914,52 @@ Known follow-up (filed separately): a directory-form package path
 an `AccessViolationException` in `Std.Sort` on the result of `List.toArray()`;
 `lyric-health` was switched to the explicit-file form (the convention every
 other library already uses) to sidestep it.
+
+### D-progress-453 — in-bundle generic records on the self-hosted MSIL backend (#2362 slice 1, epic #2359 Stage 3)
+
+**Status:** Shipped — the self-hosted MSIL backend now emits an in-bundle
+`record Box[T]` as a *truly generic* TypeDef instead of erasing its type
+parameters.  This is the first reified in-bundle generic type on the
+self-hosted path; the execution plan and the corrections found while building
+it are in `docs/43-in-bundle-generics-plan.md`.
+
+What landed:
+
+- **GenericParam metadata (table 0x2A)** in `msil/tables.l`: the `GenericParamRow`
+  record, the `TypeOrMethodDef` coded-index helpers (`mtdTypeDef`/`mtdMethodDef`),
+  the table-presence + sorted-mask bits (bit 42), and a serializer that physically
+  sorts rows by `(owner, number)` before emission (the CLR binary-searches the
+  table by owner).
+- **VAR-typed fields + arity-suffixed names** in `msil/lowering.l`: a generic
+  record's `value: T` field lowers to `FIELD VAR(0)` (`06 13 00`), the TypeDef is
+  AutoLayout (sequential layout is illegal with type-variable fields), the TypeDef
+  name carries the CLR `` `<arity> `` suffix (`Box`1`), and GenericParam rows are
+  emitted per type parameter.
+- **By-name generic instructions**: `MGenericInstByName` (signature encoding) and
+  `MNewobjGenericByName` (construction) resolve the in-bundle TypeDef row at
+  lowering time (codegen runs before the row is allocated), mirroring the proven
+  `MCastclassByName` / `MLdfldByName` deferred-by-name pattern.
+- **Codegen routing** in `msil/codegen.l`: `genericTypeArity` + `genericCtorParams`
+  detection in `addPackageTokens`; `typeExprToMsilCtx` routes an in-bundle
+  `Box[Int]` to `MGenericInstByName` before the cross-assembly `ffiTypeRefs` path;
+  construction routes through `buildInBundleGenericCtorTok`; field reads emit
+  `MCastclassGeneric` + `MLdfldGeneric` with the concrete type-argument result
+  type.
+
+Two corrections to the original plan were found and verified against a
+C#-emitted generic class and the live CLR (both documented in docs/43):
+
+1. The CLR type name **must** carry the `` `<arity> `` suffix — without it the
+   runtime mis-lays-out multi-field value-type instantiations (`Pair[Int,Int]`
+   drops its second field).  The F# emitter omits the suffix and is safe only
+   because every stdlib generic case has ≤1 field.
+2. A generic type's own ctor must `stfld` through a Field MemberRef parented to
+   the **open self-instantiation TypeSpec** (`Box`1<!0>`), not a bare FieldDef
+   token, or the JIT writes the wrong per-instantiation field offset.
+
+Verified by `lyric-compiler/lyric/inbundle_generics_self_test.l` (8 cases,
+every value asserted at runtime; the DLL type-loads) run in CI via native
+`lyric test --target dotnet`.  No regressions: the full Emitter (843) and CLI
+(84) suites stay green.  In-bundle generic **unions** (the nullary-case
+singleton interaction, Q-GEN-001) and the stage-3 stdlib byte-match remain
+follow-ups.
