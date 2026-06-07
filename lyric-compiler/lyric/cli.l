@@ -2096,6 +2096,14 @@ func cmdAdd(argv: in slice[String]): Int {
     }
     case None -> ()
   }
+  // The git ref (--tag/--rev/--branch) is embedded in the TOML RHS too, so it
+  // gets the same double-quote guard against malformed/injected TOML.
+  if gitRefKind != "" {
+    if Str.contains(gitRef, "\"") {
+      printErr("add: --" + gitRefKind + " value must not contain double-quote characters")
+      return 1
+    }
+  }
 
   // Render the TOML right-hand side for the chosen source form.
   val rhs = match pathArg {

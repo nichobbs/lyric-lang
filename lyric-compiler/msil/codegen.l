@@ -1524,10 +1524,12 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               val rmKey = className + "/" + fn.name
               if not cctx.methodTokens.containsKey(rmKey) {
                 cctx.methodTokens.add(rmKey, 0x06000000 + methodDefRow)
+                // Token and signature metadata are registered together so the
+                // first overload wins for both (no token/metadata divergence).
+                registerMethodRetTy(cctx, rmKey, fn.ret, pkgName)
+                registerMethodParamTypes(cctx, rmKey, fn.params, pkgName)
+                registerMethodParamModes(cctx, rmKey, fn.params)
               }
-              registerMethodRetTy(cctx, rmKey, fn.ret, pkgName)
-              registerMethodParamTypes(cctx, rmKey, fn.params, pkgName)
-              registerMethodParamModes(cctx, rmKey, fn.params)
               methodDefRow = methodDefRow + 1
             }
             case _ -> {
@@ -1605,10 +1607,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               val xrmKey = className + "/" + fn.name
               if not cctx.methodTokens.containsKey(xrmKey) {
                 cctx.methodTokens.add(xrmKey, 0x06000000 + methodDefRow)
+                registerMethodRetTy(cctx, xrmKey, fn.ret, pkgName)
+                registerMethodParamTypes(cctx, xrmKey, fn.params, pkgName)
+                registerMethodParamModes(cctx, xrmKey, fn.params)
               }
-              registerMethodRetTy(cctx, xrmKey, fn.ret, pkgName)
-              registerMethodParamTypes(cctx, xrmKey, fn.params, pkgName)
-              registerMethodParamModes(cctx, xrmKey, fn.params)
               methodDefRow = methodDefRow + 1
             }
             case _ -> {
@@ -1782,10 +1784,12 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               val imsKey = ifaceName + "/" + sig.name
               if not cctx.methodTokens.containsKey(imsKey) {
                 cctx.methodTokens.add(imsKey, 0x06000000 + methodDefRow)
+                // Token and signature metadata are registered together so the
+                // first overload wins for both (no token/metadata divergence).
+                registerMethodRetTy(cctx, imsKey, sig.ret, pkgName)
+                registerMethodParamTypes(cctx, imsKey, sig.params, pkgName)
+                registerMethodParamModes(cctx, imsKey, sig.params)
               }
-              registerMethodRetTy(cctx, imsKey, sig.ret, pkgName)
-              registerMethodParamTypes(cctx, imsKey, sig.params, pkgName)
-              registerMethodParamModes(cctx, imsKey, sig.params)
               methodDefRow = methodDefRow + 1
             }
             case IMFunc(fn) -> {
@@ -1793,10 +1797,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               val imfKey = ifaceName + "/" + fn.name
               if not cctx.methodTokens.containsKey(imfKey) {
                 cctx.methodTokens.add(imfKey, 0x06000000 + methodDefRow)
+                registerMethodRetTy(cctx, imfKey, fn.ret, pkgName)
+                registerMethodParamTypes(cctx, imfKey, fn.params, pkgName)
+                registerMethodParamModes(cctx, imfKey, fn.params)
               }
-              registerMethodRetTy(cctx, imfKey, fn.ret, pkgName)
-              registerMethodParamTypes(cctx, imfKey, fn.params, pkgName)
-              registerMethodParamModes(cctx, imfKey, fn.params)
               methodDefRow = methodDefRow + 1
             }
             case IMAssoc(_) -> {
