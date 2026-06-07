@@ -2180,7 +2180,26 @@ jobs:
         with:
           script: |
             const pr = context.payload.pull_request;
-            console.log(`[auto-promote] PR #${pr.number}: All CI passed, promoting to ready for review`);
+            console.log(`[auto-promote] PR #${pr.number}: All CI passed, checking quality gates before promotion`);
+
+            // Fetch fresh PR state to verify mergeable_state
+            const freshPr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number
+            });
+
+            // Check for merge conflicts (mergeable_state: dirty)
+            if (freshPr.data.mergeable_state === 'dirty') {
+              console.log(`[auto-promote] PR #${pr.number}: ⚠ Merge conflicts detected — skipping promotion`);
+              return;
+            }
+
+            if (freshPr.data.mergeable_state === 'unknown') {
+              console.log(`[auto-promote] PR #${pr.number}: ⏳ Merge status unknown, will not promote`);
+              return;
+            }
+
             try {
               await github.rest.pulls.update({
                 owner: context.repo.owner,
