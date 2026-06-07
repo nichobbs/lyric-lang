@@ -635,6 +635,29 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
 
+      # Slice array-ABI self-test (#2592).  Verifies a self-hosted `slice[T]`
+      # literal binds as a genuine CLR `T[]` when handed to the F#-built,
+      # array-based stdlib (`Std.Core.sumInts`/`maxInt`/`countEq`,
+      # `Std.String.join`).  Before the codegen.l `EList` `MArray` arm, the
+      # literal was a `List`-backed value and mis-bound to the `T[]` parameter
+      # (the same fork that made `Std.Sort` return unsorted).  Run via native
+      # `lyric test` (in-process `Msil.Bridge`); imports only `Std.*`.
+      - name: Slice array-ABI self-test (native lyric test)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping slice array-ABI self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping slice array-ABI self-test"
+            exit 0
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/slice_array_abi_self_test.l
+
       # Slice-length / String-comparison self-test (#2539).  Exercises two
       # self-hosted MSIL codegen fixes: (1) `String` relational operators
       # (`<` / `>` / `<=` / `>=`) route through `String.CompareOrdinal`

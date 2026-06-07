@@ -2983,6 +2983,29 @@ func boxIfNeededMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType
   }
 }
 
+// TypeRef token for an array element type, suitable for `newarr` / `stelem`.
+// Covers the value-type elements (via their `System.*` TypeRefs), `String`,
+// and the erased `Object` element.  Returns `None` for element types we cannot
+// yet name a token for here (user classes, nested generics / collections);
+// callers fall back to the List-backed slice path for those.  This is the basis
+// for representing a `slice[T]` value as a genuine CLR `T[]` (matching the F#
+// emitter's `TypeMap.fs` `MakeArrayType()` lowering) so a self-hosted-built
+// slice passed to an array-typed boundary (e.g. the F#-compiled
+// `Std.Sort.sortInts(Int[])`) is a real array, not a `List` (#2592).
+func arrayElemTokenOpt(cctx: in CodegenCtx, e: in MsilType): Option[Int] {
+  match e {
+    case MInt -> Some(value = 0x01000000 + cctx.trInt32)
+    case MLong -> Some(value = 0x01000000 + cctx.trInt64)
+    case MDouble -> Some(value = 0x01000000 + cctx.trDouble)
+    case MBool -> Some(value = 0x01000000 + cctx.trBoolean)
+    case MChar -> Some(value = 0x01000000 + cctx.trChar)
+    case MByte -> Some(value = 0x01000000 + cctx.trByte)
+    case MString -> Some(value = 0x01000000 + cctx.trString)
+    case MObject -> Some(value = 0x01000000 + cctx.lctx.trObject)
+    case _ -> None
+  }
+}
+
 // Convert an `object` on the stack to `ty`: `unbox.any` for value types
 // (`Int`, `Bool`, …), `castclass` for reference types (string / user class /
 // closed generic), no-op for `object` itself.  Used when feeding a
@@ -3769,6 +3792,50 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             celi = celi + 1
           }
           MConcreteList(elemTy = e)
+        }
+        // A slice-typed context (`slice[T]` lowers to `MArray`): build a genuine
+        // CLR `T[]` via `newarr` + `stelem`, not a `List`.  This makes a
+        // self-hosted slice value byte-compatible with the F# emitter's array
+        // representation, so passing it to an array-typed boundary — notably the
+        // F#-compiled `Std.Sort.sortInts(Int[])` — works instead of silently
+        // mis-binding a `List` to an array parameter (#2592).  Element types we
+        // can't name a token for fall through to the legacy List path below.
+        case MArray(e) -> {
+          match arrayElemTokenOpt(cctx, e) {
+            case Some(elemTok) -> {
+              insns.add(MLdcI4(v = exprs.count))
+              insns.add(MNewarr(typeToken = elemTok))
+              var ali = 0
+              while ali < exprs.count {
+                insns.add(MDup)
+                insns.add(MLdcI4(v = ali))
+                pushCollExpect(fctx, e)
+                val aeTy = lowerExprMsil(cctx, fctx, insns, exprs[ali])
+                popCollExpect(fctx)
+                // An `object[]` stores boxed value elements; a typed array
+                // (`Int[]`, `String[]`, …) stores them unboxed via `stelem <T>`.
+                match e {
+                  case MObject -> boxIfNeededMsil(cctx, insns, aeTy)
+                  case _ -> ()
+                }
+                insns.add(MStelem(typeToken = elemTok))
+                ali = ali + 1
+              }
+              MArray(elemTy = e)
+            }
+            case None -> {
+              insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
+              var eli2 = 0
+              while eli2 < exprs.count {
+                insns.add(MDup)
+                val eTy2 = lowerExprMsil(cctx, fctx, insns, exprs[eli2])
+                boxIfNeededMsil(cctx, insns, eTy2)
+                insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
+                eli2 = eli2 + 1
+              }
+              MObject
+            }
+          }
         }
         case _ -> {
           insns.add(MNewobj(ctorToken = cctx.tokListObjCtor))

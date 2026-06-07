@@ -22170,4 +22170,48 @@ Note on #2592's runtime fork: the cross-emitter `slice[T]` ABI fork (F# emits
 making the self-hosted emitter able to build the bundle — once the shipped
 bundle is produced by the self-hosted path (rewiring `bootstrap.sh`'s stage-1
 bundle step off F# stage-0), both producer and consumer share the List-backed
-representation.  That rewire is the remaining stage-2 step.
+representation.  That rewire is the remaining stage-2 step.  (D-progress-458
+closes the *value-construction* half: slice literals now build genuine arrays,
+so they match the F# array representation directly.)
+
+### D-progress-458 — slice literals build genuine CLR arrays (#2592 runtime fork)
+
+**Status:** Shipped — a `slice[T]` literal in a slice-typed context now lowers to
+a genuine CLR `T[]` (`newarr` + `stelem`) on the self-hosted MSIL backend, not a
+`List`-backed value.  This closes the value-construction half of #2592's
+cross-emitter ABI fork: the F# stage-0 emitter lowers a `slice[T]` parameter to a
+real `T[]` (`TypeMap.fs` `MakeArrayType()`), so a self-hosted-built literal handed
+to an F#-compiled, array-based stdlib function (`Std.Sort.sortInts(Int[])`,
+`Std.Core.sumInts(Int[])`, `Std.String.join(_, String[])`, …) now binds as a real
+array instead of mis-binding a `List` to an array parameter (which made
+`Std.Sort` return unsorted).
+
+What landed:
+
+- **`codegen.l` `EList` `MArray` arm**: when the collection-expectation context is
+  `MArray(e)` (a `slice[T]` parameter / return / binding), emit `ldc <count>` →
+  `newarr <elemTok>` → per element `dup` / `ldc <i>` / lower / (`box` only for an
+  `object[]` element) / `stelem <elemTok>`, returning `MArray(e)`.  Element types
+  the emitter can name a token for — the value types `Int`/`Long`/`Double`/
+  `Bool`/`Char`/`Byte`, `String`, and the erased `Object` — build typed arrays;
+  others fall through to the legacy `List<object>` path unchanged.  Untyped
+  literals (no slice context) are also unchanged, so the blast radius is exactly
+  the cross-boundary case.
+- **`lowering.l` `MStelem(typeToken)`**: a new instruction node emitting the
+  generic `stelem <type>` (the existing `MStelemRef` is reference-only), so
+  value-typed array elements store unboxed.
+- **`arrayElemTokenOpt`** (`codegen.l`): maps an element `MsilType` to its
+  `newarr`/`stelem` TypeRef token.
+
+Verified by `lyric-compiler/lyric/slice_array_abi_self_test.l` (run in CI via
+native `lyric test`): 4 cases over `Std.Core.sumInts`/`maxInt`/`countEq` and
+`Std.String.join` — all fail against a pre-fix binary and pass after.  Full
+Emitter (834) + CLI (84) suites stay green; `generic_slice_self_test` (6) and
+both stdlib manifests still build.
+
+Still open on #2592: the *conversion* half — `List.toArray()` is a no-op in the
+self-hosted emitter (returns the receiver), so a `List[T]` value crossing into a
+`slice[T]`/array boundary is not yet materialised as a real array.  That, plus
+the `bootstrap.sh` stage-1 rewire to ship the self-hosted-built bundle, are the
+remaining pieces (the `cli.l::sortFileList` local-sort workaround stays until
+then).
