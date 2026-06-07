@@ -19,6 +19,9 @@ env:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
 
     steps:
       - uses: actions/checkout@v6
@@ -2166,3 +2169,32 @@ jobs:
           path: coverage/
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Mark PR ready for review if build succeeds
+        if: >-
+          success() &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.draft == true &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            console.log(`[auto-promote] PR #${pr.number}: All CI passed, promoting to ready for review`);
+            try {
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                draft: false
+              });
+              console.log(`[auto-promote] PR #${pr.number}: ✓ Successfully promoted to ready for review`);
+            } catch (error) {
+              if (error.status === 403) {
+                console.log(`[auto-promote] PR #${pr.number}: ⚠ Permission denied (403) — may be a fork`);
+              } else if (error.status === 422) {
+                console.log(`[auto-promote] PR #${pr.number}: ⚠ Cannot be promoted (422) — already ready or in invalid state`);
+              } else {
+                console.log(`[auto-promote] PR #${pr.number}: ✗ Error: ${error.message}`);
+              }
+            }
