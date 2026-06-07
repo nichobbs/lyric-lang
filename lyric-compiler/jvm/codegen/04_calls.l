@@ -1016,12 +1016,37 @@ func coerceArgTo(insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): U
       if fromRef {
         insns.add(LCheckcast(className = "java/lang/Double"))
         insns.add(LUnboxDouble)
+      } else {
+        // Primitive widening into a Double slot: a Float value widens with f2d;
+        // int-like values widen with i2f then f2d (the JVM has no direct i2d on
+        // the int subset other than i2d, so use it directly); long with l2d.
+        match fromTy {
+          case JFloat -> insns.add(LF2d)
+          case JInt -> insns.add(LI2d)
+          case JByte -> insns.add(LI2d)
+          case JChar -> insns.add(LI2d)
+          case JShort -> insns.add(LI2d)
+          case JLong -> insns.add(LL2d)
+          case _ -> ()
+        }
       }
     }
     case JFloat -> {
       if fromRef {
         insns.add(LCheckcast(className = "java/lang/Float"))
         insns.add(LUnboxFloat)
+      } else {
+        // Primitive coercion into a Float slot: a Double narrows with d2f;
+        // int-like / long values convert with i2f / l2f.
+        match fromTy {
+          case JDouble -> insns.add(LD2f)
+          case JInt -> insns.add(LI2f)
+          case JByte -> insns.add(LI2f)
+          case JChar -> insns.add(LI2f)
+          case JShort -> insns.add(LI2f)
+          case JLong -> insns.add(LL2f)
+          case _ -> ()
+        }
       }
     }
     case JBoolean -> {

@@ -54,6 +54,18 @@ func lowerCmp(
         case _ -> panic("Jvm.Codegen: unsupported double comparison op")
       }
     }
+    case JFloat -> {
+      insns.add(LFcmpl)
+      match op {
+        case BEq -> insns.add(LIfeq(label = trueLabel))
+        case BNeq -> insns.add(LIfne(label = trueLabel))
+        case BLt -> insns.add(LIflt(label = trueLabel))
+        case BLte -> insns.add(LIfle(label = trueLabel))
+        case BGt -> insns.add(LIfgt(label = trueLabel))
+        case BGte -> insns.add(LIfge(label = trueLabel))
+        case _ -> panic("Jvm.Codegen: unsupported float comparison op")
+      }
+    }
     case JRef(cls) -> {
       // `String == / !=` must compare by value (`String.equals`), not by
       // reference (`if_acmpeq`): two equal strings built independently (e.g. a
@@ -133,9 +145,19 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             JLong
           }
         }
-        case LFloat(v, _, _) -> {
-          insns.add(LDconst(v = v))
-          JDouble
+        case LFloat(v, suffix, _) -> {
+          // An `f`-suffixed literal (`1.5f`) is a 32-bit Float; everything else
+          // (plain, or `d`-suffixed) is a 64-bit Double.
+          match suffix {
+            case F32 -> {
+              insns.add(LFconst(v = v))
+              JFloat
+            }
+            case _ -> {
+              insns.add(LDconst(v = v))
+              JDouble
+            }
+          }
         }
         case LString(s) -> {
           insns.add(LPushString(s = s))
@@ -183,10 +205,22 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           ty
         }
         case None -> {
-          // Could be a package-qualified name or unknown reference.
-          // Emit null as a safe fallback.
-          insns.add(LAconstNull)
-          JRef(className = "java/lang/Object")
+          // A bare reference to a nullary union case (`Empty`, `None`) is a
+          // construction, not a variable: `new Pkg/Union$Case; dup;
+          // invokespecial <init>()V`.  Without this the case lowered to null and
+          // any downstream `match` saw `instanceof Case == false` → "match not
+          // exhaustive" (#1675).
+          match mapGet(ctx.ctors, name) {
+            case Some(cls) -> {
+              val emptyArgs: List[CallArg] = newList()
+              lowerConstruction(ctx, insns, cls, emptyArgs)
+            }
+            case None -> {
+              // Package-qualified or genuinely unknown reference: null fallback.
+              insns.add(LAconstNull)
+              JRef(className = "java/lang/Object")
+            }
+          }
         }
       }
     }
@@ -296,9 +330,16 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               JLong
             }
             case JDouble -> {
-              lowerExpr(ctx, insns, rhs)
+              val rTy = lowerExpr(ctx, insns, rhs)
+              coerceArgTo(insns, rTy, JDouble)
               insns.add(LDadd)
               JDouble
+            }
+            case JFloat -> {
+              val rTy = lowerExpr(ctx, insns, rhs)
+              coerceArgTo(insns, rTy, JFloat)
+              insns.add(LFadd)
+              JFloat
             }
             case _ -> {
               lowerExpr(ctx, insns, rhs)
@@ -319,6 +360,10 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               insns.add(LDsub)
               JDouble
             }
+            case JFloat -> {
+              insns.add(LFsub)
+              JFloat
+            }
             case _ -> {
               insns.add(LIsub)
               JInt
@@ -336,6 +381,10 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             case JDouble -> {
               insns.add(LDmul)
               JDouble
+            }
+            case JFloat -> {
+              insns.add(LFmul)
+              JFloat
             }
             case _ -> {
               insns.add(LImul)
@@ -355,6 +404,10 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               insns.add(LDdiv)
               JDouble
             }
+            case JFloat -> {
+              insns.add(LFdiv)
+              JFloat
+            }
             case _ -> {
               insns.add(LIdiv)
               JInt
@@ -368,6 +421,14 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             case JLong -> {
               insns.add(LLrem)
               JLong
+            }
+            case JDouble -> {
+              insns.add(LDrem)
+              JDouble
+            }
+            case JFloat -> {
+              insns.add(LFrem)
+              JFloat
             }
             case _ -> {
               insns.add(LIrem)
@@ -422,6 +483,10 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             case JDouble -> {
               insns.add(LDneg)
               JDouble
+            }
+            case JFloat -> {
+              insns.add(LFneg)
+              JFloat
             }
             case _ -> {
               insns.add(LIneg)
@@ -783,6 +848,18 @@ func lowerCmpFail(insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLa
     }
     case JDouble -> {
       insns.add(LDcmpl)
+      match op {
+        case BEq -> insns.add(LIfne(label = failLabel))
+        case BNeq -> insns.add(LIfeq(label = failLabel))
+        case BLt -> insns.add(LIfge(label = failLabel))
+        case BLte -> insns.add(LIfgt(label = failLabel))
+        case BGt -> insns.add(LIfle(label = failLabel))
+        case BGte -> insns.add(LIflt(label = failLabel))
+        case _ -> insns.add(LNop)
+      }
+    }
+    case JFloat -> {
+      insns.add(LFcmpl)
       match op {
         case BEq -> insns.add(LIfne(label = failLabel))
         case BNeq -> insns.add(LIfeq(label = failLabel))
@@ -1168,6 +1245,7 @@ func boxIfNeeded(insns: in List[LInsn], ty: in JvmType): Unit {
     case JInt -> insns.add(LBoxInt)
     case JLong -> insns.add(LBoxLong)
     case JDouble -> insns.add(LBoxDouble)
+    case JFloat -> insns.add(LBoxFloat)
     case JBoolean -> insns.add(LBoxBool)
     case JByte -> insns.add(LBoxByte)
     case JChar -> insns.add(LBoxChar)

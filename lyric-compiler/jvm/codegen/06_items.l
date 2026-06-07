@@ -25,6 +25,7 @@ func makeFuncCtx(
   ctors: in Map[String, String],
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
+  retTy: in JvmType,
 ): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
@@ -46,7 +47,8 @@ func makeFuncCtx(
     caseFields = caseFields,
     ctors = ctors,
     externTypes = externTypes,
-    autoFfi = autoFfi
+    autoFfi = autoFfi,
+    retTy = retTy
   )
 }
 
@@ -82,7 +84,8 @@ func makeFuncCtxForGenerator(
     caseFields = caseFields,
     ctors = ctors,
     externTypes = externTypes,
-    autoFfi = autoFfi
+    autoFfi = autoFfi,
+    retTy = JVoid
   )
 }
 
@@ -97,6 +100,11 @@ func makeFuncCtxForGenerator(
 func emitReturnArrayCoerced(ctx: in FuncCtx, insns: in List[LInsn], tailTy: in JvmType, retTy: in JvmType): Unit {
   if isByteArrayToObjectArray(tailTy, retTy) {
     emitBoxByteArray(ctx, insns)
+  } else {
+    // Numeric / reference coercion so the tail value matches the declared
+    // return descriptor (e.g. a plain `1.5` Double tail in a `: Float`
+    // function narrows with d2f before `freturn`).
+    coerceArgTo(insns, tailTy, retTy)
   }
   emitReturn(insns, retTy)
 }
@@ -169,7 +177,7 @@ pub func lowerFunc(
 ): LFunc {
   val retTy = match decl.ret { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
 
-  val ctx = makeFuncCtx(pkgName, className, funcSigs, caseFields, ctors, externTypes, autoFfi)
+  val ctx = makeFuncCtx(pkgName, className, funcSigs, caseFields, ctors, externTypes, autoFfi, retTy)
   val insns: List[LInsn] = newList()
 
   // Allocate slots for parameters.
@@ -224,7 +232,7 @@ pub func lowerFunc(
         }
         case FBExpr(e) -> {
           val ty = lowerExpr(ctx, insns, e)
-          emitReturn(insns, ty)
+          emitReturnArrayCoerced(ctx, insns, ty, retTy)
         }
       }
     }

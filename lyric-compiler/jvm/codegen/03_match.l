@@ -622,7 +622,24 @@ func lowerPatternBind(
         pti = pti + 1
       }
     }
-    case POr(_) -> insns.add(LNop)
+    case POr(patterns) -> {
+      // Or-pattern bind: the test side has already proven *some* alternative
+      // matches, but not which one.  Re-test each alternative at runtime and
+      // bind from the matching alternative only.  The type-checker guarantees
+      // every alternative binds the same variable name(s) and type(s), so any
+      // matching alternative populates the same locals the arm body reads.
+      val doneL = freshLabel(ctx)
+      var ai = 0
+      while ai < patterns.count {
+        val nextAltL = freshLabel(ctx)
+        lowerPatternTest(ctx, insns, patterns[ai], scrutSlot, scrutTy, nextAltL)
+        lowerPatternBind(ctx, insns, patterns[ai], scrutSlot, scrutTy)
+        insns.add(LGoto(label = doneL))
+        insns.add(LLabel(name = nextAltL))
+        ai = ai + 1
+      }
+      insns.add(LLabel(name = doneL))
+    }
     case PError -> insns.add(LNop)
   }
 }
