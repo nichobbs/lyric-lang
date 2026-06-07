@@ -994,7 +994,7 @@ func collectMavenEntry(acc: in List[MavenEntry], key: in String, version: in Str
       )
     )
   }
-  if Str.endsWith(Str.toUpper(version), "-SNAPSHOT") {
+  if Str.endsWith(version, "-SNAPSHOT") {
     return Some(
       value = InvalidField(
         section = "maven",
