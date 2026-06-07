@@ -7327,14 +7327,25 @@ func lowerMethodCallMsil(
       MVoid
     }
   } else if memberName == "toArray" {
-    // List::toArray(): return the list itself as the iterable (bootstrap).
-    // The SFor codegen iterates via get_Count / get_Item, which work on the
-    // List<object> directly, so no conversion is needed.  Return the receiver's
-    // tracked type (e.g. `MListOf(elem)`) rather than erasing to `MObject`, so a
-    // `for x in xs.toArray()` loop can recover the element type and bind `x`
-    // with it — an erased loop variable broke `match x` / field access on `x`
-    // (#2126).
-    recvTy
+    // `List.toArray()`: for a concrete `List<e>` (a genuine `List`1<e>` at
+    // runtime, #2361 Stage 2) materialise a real CLR `e[]` via `ToArray()`, so
+    // the result binds at an array-typed boundary — notably the F#-compiled,
+    // array-based stdlib (`Std.Sort.sortStrings(String[])`, …).  This is the
+    // conversion half of #2592 (the literal half is the `EList` `MArray` arm).
+    //
+    // For an erased / legacy `List<object>` receiver (`MListOf` / `MObject`) the
+    // call stays a no-op returning the receiver: those iterate via
+    // `get_Count` / `get_Item` (which work on the list directly), and returning
+    // the tracked `MListOf(elem)` keeps the element type a `for x in
+    // xs.toArray()` loop binds `x` with (an erased loop variable broke
+    // `match x` / field access, #2126).
+    match recvTy {
+      case MConcreteList(e) -> {
+        insns.add(MListOp(op = LoToArray, elemTy = e))
+        MArray(elemTy = e)
+      }
+      case _ -> recvTy
+    }
   } else if memberName == "toString" {
     insns.add(MCallvirt(methodToken = cctx.tokObjToString))
     MString
@@ -7766,10 +7777,16 @@ func emitCollectionForMsil(
       }
       // A concrete list's `get_Item` returns the element already typed (ref OR
       // value), so the loop variable takes the exact element type and needs no
-      // read-narrow (#2361 Stage B).  Legacy/array elements keep the existing
-      // behaviour: narrow only `MClass` refs, leave the rest `MObject`.
+      // read-narrow (#2361 Stage B).  A genuine array (`MArray`) is read through
+      // `IList.get_Item`, which returns `object`, so the loop variable takes the
+      // array's element type and the value is narrowed (unbox value types,
+      // castclass refs) below — without this an `Int[]` element read garbage and
+      // a `String[]` element mis-dispatched (#2592, exposed once concrete
+      // `List.toArray()` yields a real array).  Other legacy/erased iterables
+      // keep the existing behaviour: narrow only `MClass` refs.
       val forElemTy = match iterTy {
         case MConcreteList(e) -> e
+        case MArray(e) -> e
         case _ -> match forElemRaw { case MClass(_) -> forElemRaw; case _ -> MObject }
       }
       val listSlot = allocSlotMsil(fctx, "__for_list_" + toString(fctx.slotTicker.count), MObject)
