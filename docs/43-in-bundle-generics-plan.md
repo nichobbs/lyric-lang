@@ -10,6 +10,11 @@ the self-hosted compiler compiles `core.l` — byte-match the F# bootstrap emitt
 session where the GitHub MCP was unavailable, so it is captured here instead of on the
 issue. Point an agent at this file for full context.
 
+**Parent spec / backing:** extends the Band 4 "user generic types (C8)" item of
+`docs/09-msil-emission.md`'s self-hosted emitter gap analysis,
+`docs/41-self-hosted-compiler-gap-analysis.md` (linked from its Band 4 open question).
+Open questions: **Q-GEN-001–Q-GEN-005** (see the Open questions section below).
+
 ## Related issues
 
 - **Epic #2359** — "Concrete generics in the self-hosted MSIL backend (F#-compatible
@@ -271,6 +276,34 @@ needs `make lyric` + the full bootstrap.
 - Guards: `generic_specialization_self_test.l`, `nested_generic_self_test.l`,
   `stdlib_generic_mono_self_test.l`, `lyric-stdlib/tests/core_tests.l`, and the
   **bootstrap stage-3 byte-compare** (the ultimate guard).
+
+## Open questions
+
+- **Q-GEN-001 — Nullary generic case singleton.** A generic union's nullary case
+  (`Option_None`, `Maybe.Nothing`) emits a singleton `Instance` static field + `.cctor`
+  (`lowerMNullaryUnionCase`). For a generic type, what is the `Instance` field's type and
+  the `.cctor` body in the F# emitter — the open generic, a fixed instantiation, or
+  `object`? Must be decoded from `Lyric.Stdlib.dll` and mirrored before the union slice
+  (step 2).
+- **Q-GEN-002 — Generic methods (MVAR) scope.** This plan reifies generic *types* only
+  (TypeDef-owned GenericParam rows, VAR `0x13`). Generic *methods* need MVAR
+  (`ELEMENT_TYPE_MVAR = 0x1E`) + MethodDef-owned GenericParam rows, and the self-hosted
+  compiler currently relies on `Lyric.Mono` to monomorphize generic functions. Do generic
+  functions stay monomorphized (recommended — mono is orthogonal) or also reify? The 39
+  MethodDef-owned GenericParam rows in the F# DLL are out of scope here; confirm leaving
+  them monomorphized still byte-matches at the *type* level.
+- **Q-GEN-003 — `GPValue` const-generics.** `genericNamesOf` collects `GPType` names only
+  and skips `GPValue` (value/const generics). How are value-generic types represented
+  (today: erased / mono-specialized)? Confirm skipping them here is correct and tracked.
+- **Q-GEN-004 — Cross-assembly ↔ in-bundle interaction.** Once `Std.Core` self-compiles
+  `Option`/`Result` as reified generics, confirm the *consumer* path (restored-dep
+  registration + `ffiTypeRefs` → `MGenericInst`) still binds against the now-generic
+  TypeDefs, and that `caseTypeParamCount`/`fieldVarIndices` registration is consistent
+  across in-bundle (`addPackageTokens`) and restored (`registerStdlibTypeItem`) paths.
+- **Q-GEN-005 — LocalVarSig degrade coverage.** Locals/fields of a generic type degrade
+  to `object` (0x1C) in LocalVarSig, relying on `castclass` (via `MCastclassGeneric`) at
+  every use site. Audit that all read/store sites for generic-typed locals emit the
+  narrowing cast, so no `object`-typed slot reaches a generic-member callvirt unverified.
 
 ## Key file:line references
 

@@ -403,6 +403,11 @@ it for SM synthesis is the main remaining lowering gap.
   Metadata-based extern resolution (replacing the hardcoded `clrAssemblyForType`
   table + the auto-FFI guess) is epic #1622 — design in
   `docs/42-extern-metadata-resolution.md`.
+  - **Open question — user generic types (C8), reify path:** the decision is to
+    *reify* (emit truly generic TypeDefs: GenericParam table + VAR fields +
+    instantiated TypeSpec construction/field/match), not erase. The execution
+    plan is `docs/43-in-bundle-generics-plan.md` (epic #2359, prerequisite for
+    full Stage 3 byte-match #2362). Open questions there: Q-GEN-001–Q-GEN-005.
 
 ### Band 5 — F# elimination + AOT (HIGH)
 - Replace the `Lyric.Jvm.Hosts` ByteWriter boundary with a pure-Lyric byte
