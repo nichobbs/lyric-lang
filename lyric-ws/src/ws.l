@@ -1,8 +1,8 @@
 //! Ws — WebSocket server library for Lyric.
 //! Stability: @experimental — the connection lifecycle compiles and the WsAuth
 //! aspect has tests, but the rate-limiter's burst budget is one-shot (does not
-//! refill) and the end-to-end loop has not been exercised against a real
-//! WebSocket client in CI.
+//! refill; tracked in issue #1178) and the end-to-end loop has not been exercised
+//! against a real WebSocket client in CI.
 //!
 //! Provides the full connection lifecycle for WebSocket servers:
 //! connection context, message types, a handler interface for
