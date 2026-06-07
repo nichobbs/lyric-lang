@@ -34,23 +34,19 @@ func testEmitSimpleContract(): Unit {
     contractHash = ""
   )
 
-  match Emit.emitContractMetadata(contract) {
-    case Ok(json) -> {
-      // Verify the JSON is non-empty and contains expected fields
-      assertTrue(json.length > 0, "emitted JSON is non-empty")
-      assertTrue(
-        json.contains("\"packageName\":") and json.contains("\"Test.Package\""),
-        "JSON contains packageName field"
-      )
-      // Verify contractHash is a 64-char hex string (SHA-256 produces exactly this)
-      assertTrue(
-        json.contains("\"contractHash\":\"") and json.length > 70,
-        "JSON contains contractHash field with computed digest"
-      )
-      assertTrue(json.contains("\"formatVersion\":3"), "JSON contains formatVersion 3")
-    }
-    case Err(e) -> assertTrue(false, "emission should succeed")
-  }
+  val json = Emit.emitContractMetadata(contract)
+  // Verify the JSON is non-empty and contains expected fields
+  assertTrue(json.length > 0, "emitted JSON is non-empty")
+  assertTrue(
+    json.contains("\"packageName\":") and json.contains("\"Test.Package\""),
+    "JSON contains packageName field"
+  )
+  // Verify contractHash is a 64-char hex string (SHA-256 produces exactly this)
+  assertTrue(
+    json.contains("\"contractHash\":\"") and json.length > 70,
+    "JSON contains contractHash field with computed digest"
+  )
+  assertTrue(json.contains("\"formatVersion\":3"), "JSON contains formatVersion 3")
 }
 
 func testHashConsistency(): Unit {
@@ -88,10 +84,7 @@ func testHashConsistency(): Unit {
     contractHash = ""
   )
 
-  match (Emit.emitContractMetadata(contract1), Emit.emitContractMetadata(contract2)) {
-    case (Ok(json1), Ok(json2)) -> {
-      assertEqual(json1, json2, "identical contracts produce identical JSON")
-    }
-    case _ -> assertTrue(false, "both emissions should succeed")
-  }
+  val json1 = Emit.emitContractMetadata(contract1)
+  val json2 = Emit.emitContractMetadata(contract2)
+  assertEqual(json1, json2, "identical contracts produce identical JSON")
 }
