@@ -157,7 +157,7 @@ tracking issue today (band J0 files them).
 | B-7 | Named-argument record construction can corrupt cross-typed fields (MSIL `reorderCtorNamedArgs` pass not ported) | per #1793 | #1793 |
 | B-8 | Union construction emits a call to a non-existent factory in some paths → `NoSuchMethodError` | per #1675 | #1675 |
 | B-9 | No auto-FFI resolution for `extern type` method calls beyond the JDK-class fast path on some receivers; user `extern type` libraries mis-bind | #1708; `auto_ffi.l` JDK-first | #1708 |
-| B-10 | `lyric build --target jvm foo.l` (no `-o`) writes the JAR as `foo.dll`; spurious .NET `runtimeconfig.json` emitted | `cli.l:712`, `cli.l:545`; observed | (new) |
+| B-10 | ~~`lyric build --target jvm foo.l` (no `-o`) writes the JAR as `foo.dll`; spurious .NET `runtimeconfig.json` emitted~~ **RESOLVED** | `cli.l:712`, `cli.l:545`; observed | #2664 (resolved) |
 | B-11 | JUnit tests do not actually execute on JVM — `lyric test --jvm` annotates `@LyricTest` but `LyricTestEngine` is deferred; generated test bodies are stub `return` | `test_engine.l:17-21`; `docs/18` Q-J007 | #676 |
 
 ### MAJORS (real parity gap or missing subsystem)
@@ -249,9 +249,14 @@ These produce wrong-but-running output today and must fail loudly or be fixed:
   or reject the pattern.
 - B-7/B-8: port the MSIL `reorderCtorNamedArgs` pass; fix union construction to
   `new` + `invokespecial <init>`.
-- B-10: make the single-file build output extension and `runtimeconfig.json`
-  emission **target-aware** (`.jar` + no `runtimeconfig.json` for JVM); stop
-  leaking advisory stdlib parse errors to stdout on a successful build.
+- B-10 (**done**, #2664): the single-file build output extension and
+  `runtimeconfig.json` emission are now **target-aware** — `--target jvm`
+  defaults the output to `<name>.jar` and emits no `runtimeconfig.json`,
+  `--target dotnet` keeps `<name>.dll` + its `runtimeconfig.json`, and an
+  explicit `-o` is honoured verbatim (`cli.l` `cmdBuild`/`buildOne`). The
+  JVM bridge no longer echoes advisory stdlib parse / type-check noise or the
+  "skipped bundling" note on a *successful* build (`jvm/bridge.l`
+  `compileToJarBundled`/`runMiddleEnd`); real user-file errors still surface.
 - **Acceptance:** a `silent_miscompile_guard_jvm_self_test.l` covering Float,
   complex assignment, named-arg records, union construction, and or-patterns,
   run in CI on `--target jvm`.

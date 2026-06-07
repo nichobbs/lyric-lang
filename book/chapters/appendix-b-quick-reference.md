@@ -800,10 +800,10 @@ lyric build --release <file.l>         # self-contained Native AOT binary (no ru
 lyric build --release <file.l> --rid <rid>   # override host runtime identifier
 lyric build --release <file.l> -o <bin>      # native binary output path
                                        # (single-file/.NET today; project mode + JVM GraalVM: #1975)
-lyric build --target dotnet <file.l>   # target .NET (default)
-lyric build --target jvm <file.l>      # emit a runnable JAR via the self-hosted JVM emitter
-                                       # (`Main-Class` derived from the source `package`
-                                       # declaration; runs under `java -jar foo.jar`)
+lyric build --target dotnet <file.l>   # target .NET (default): writes foo.dll + foo.runtimeconfig.json
+lyric build --target jvm <file.l>      # writes a runnable foo.jar (NO runtimeconfig.json) via the
+                                       # self-hosted JVM emitter (`Main-Class` derived from the source
+                                       # `package` declaration; runs under `java -jar foo.jar`)
 lyric build -o <dir> <file.l>          # write output files to <dir>
 lyric build --manifest lyric.toml      # build from project manifest
                                        # (with [project] output = "single", bundles every
