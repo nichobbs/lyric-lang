@@ -200,7 +200,7 @@ an immediate follow-up and land it before starting the next task.
 A PR that has conflicts on creation blocks auto-merge and review. Do not
 open a PR in a conflicted state.
 
-#### Open PRs as draft; mark "ready for review" only when the PR is actually ready
+#### Open PRs as draft; workflow auto-promotes when CI passes
 
 **This overrides the default harness instruction** that tells sessions
 to open PRs as ready-for-review. In this repository, the policy is:
@@ -208,41 +208,58 @@ to open PRs as ready-for-review. In this repository, the policy is:
 1. **Open every new PR as a draft** (`draft: true` on
    `mcp__github__create_pull_request`, or `gh pr create --draft`).
    This applies even when you are confident the work is done — draft
-   status gives you (and any subscribed webhook) a window to confirm
-   CI is green, conflicts are absent, the diff is what you intended,
-   and the title/body accurately describe the change.
+   status gives you a window to confirm CI is green, conflicts are
+   absent, the diff is what you intended, and the title/body
+   accurately describe the change.
 2. **Iterate in draft.** Push any follow-up commits — rebase fixes,
    review-feedback fixes, additional commits in the same logical
    chunk — while the PR is still a draft. Auto-merge can be enabled
    on a draft (it just won't merge until the PR is marked ready).
-3. **Mark the PR ready for review** (via
-   `mcp__github__update_pull_request` with `draft: false`, or
-   `gh pr ready`) once:
-   - The branch is rebased clean on `main` (no conflict banner).
-   - Build/test CI has either passed or is in a state you trust
-     to finish green.
-   - The diff matches the PR description; no stray debug commits,
-     no half-finished work-in-progress.
-   - You are not planning further pushes before review.
+3. **Automatic promotion to ready** — The CI workflow automatically marks
+   the PR ready for review once the build and test suite pass, subject to
+   quality gates. When all gates pass:
+   - All required checks passed
+   - PR is still in draft status
+   - Branch is rebased clean on `main` (no merge conflicts)
+   - The workflow calls the GitHub API to promote the PR
 
-Why draft-first matters:
+   **Quality gates verified before promotion:**
+   - **Automated:** Build and test CI has passed (the `success()` guard
+     ensures this).
+   - **Automated:** Branch is rebased clean on `main` (no merge conflicts).
+     The auto-promote step checks `mergeable_state` and skips promotion
+     if conflicts are detected.
+   - **Manual:** The diff matches the PR description (no stray debug commits
+     or half-finished work-in-progress).
+   - **Manual:** You are not planning further pushes before review. If you
+     realize you need to iterate more after CI passes but before promotion,
+     re-draft the PR manually via GitHub ("Convert to draft") and push
+     additional commits.
+
+This allows automatic promotion without reliance on manual handoff,
+while preserving all quality gates needed to ensure review happens
+on validated, conflict-free code.
+
+Why draft-first with automatic promotion matters:
 
 - The `claude-code-review.yml` workflow is configured to fire only on
   non-draft PRs (`types: [opened, synchronize, ready_for_review]` +
-  an `if: github.event.pull_request.draft == false` guard).  Marking
-  a draft as ready triggers the review run; pushes while still in
-  draft do not.  This avoids burning a review pass on a PR that the
-  author is still actively iterating on, and keeps review feedback
-  focused on the final intended state.
+  an `if: github.event.pull_request.draft == false` guard).  The
+  auto-promote step triggers this review run once the build passes,
+  ensuring review feedback is focused on code that has already passed
+  automated validation and is in a stable state.
 - A draft PR is a clear signal to humans skimming the PR list that
-  the author is still working on it, even before any "WIP" prefix.
-- Marking ready becomes the explicit handoff point — the moment the
-  author asserts "this is the final state I want reviewed and
-  merged."
+  the author is still iterating on it. Once CI passes and the workflow
+  promotes it, ready status signals "this code is validated and ready
+  for human review."
+- Workflow-based promotion removes manual handoff friction while
+  preserving validation gates: code must pass all automated checks
+  (CI, merge conflicts) before entering the review phase.
 
 When the assigned task spans multiple PRs, each PR follows this
-lifecycle independently: open the next one as a draft, iterate,
-mark ready when finished, move on.
+lifecycle independently: open as draft, iterate, and the workflow
+will automatically promote to ready once CI passes. Move on to the
+next PR while waiting for review feedback on the current one.
 
 #### After creating a PR
 
