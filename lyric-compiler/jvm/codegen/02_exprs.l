@@ -54,11 +54,27 @@ func lowerCmp(
         case _ -> panic("Jvm.Codegen: unsupported double comparison op")
       }
     }
-    case JRef(_) -> {
-      match op {
-        case BEq -> insns.add(LIfAcmpeq(label = trueLabel))
-        case BNeq -> insns.add(LIfAcmpne(label = trueLabel))
-        case _ -> panic("Jvm.Codegen: unsupported reference comparison op")
+    case JRef(cls) -> {
+      // `String == / !=` must compare by value (`String.equals`), not by
+      // reference (`if_acmpeq`): two equal strings built independently (e.g. a
+      // computed digest vs. a literal) have distinct identities, so reference
+      // equality would wrongly report them unequal.  Other reference types keep
+      // identity comparison.  Operands are on the stack as [lhs, rhs].
+      if cls == "java/lang/String" {
+        val eqPs: List[JvmType] = newList()
+        eqPs.add(JRef(className = "java/lang/Object"))
+        insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs, ret = JBoolean))
+        match op {
+          case BEq -> insns.add(LIfne(label = trueLabel))
+          case BNeq -> insns.add(LIfeq(label = trueLabel))
+          case _ -> panic("Jvm.Codegen: unsupported String comparison op")
+        }
+      } else {
+        match op {
+          case BEq -> insns.add(LIfAcmpeq(label = trueLabel))
+          case BNeq -> insns.add(LIfAcmpne(label = trueLabel))
+          case _ -> panic("Jvm.Codegen: unsupported reference comparison op")
+        }
       }
     }
     case _ -> {
@@ -484,6 +500,18 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             }
           }
         }
+        case JArray(_) -> {
+          // `arr.length` on a JVM array → `arraylength` (JInt).  Without
+          // this, array length fell through to the JVoid arm below and
+          // mis-stacked (e.g. a `byte[]` returned by an auto-FFI digest
+          // call).  Any other member on an array is not meaningful.
+          if memberName == "length" {
+            insns.add(LArraylength)
+            JInt
+          } else {
+            JVoid
+          }
+        }
         case _ -> {
           // Primitive member access is not meaningful; return void.
           JVoid
@@ -655,9 +683,20 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       if indices.count > 0 {
         lowerExpr(ctx, insns, indices[0])
         match recvTy {
-          case JArray(_) -> {
-            insns.add(LAaload)
-            JRef(className = "java/lang/Object")
+          case JArray(elem) -> {
+            // Primitive byte arrays (e.g. a JDK `byte[]` returned by an
+            // auto-FFI call such as MessageDigest.digest) load via `baload`
+            // and yield a `JByte`; reference arrays use `aaload`.
+            match elem {
+              case JByte -> {
+                insns.add(LBaload)
+                JByte
+              }
+              case _ -> {
+                insns.add(LAaload)
+                JRef(className = "java/lang/Object")
+              }
+            }
           }
           case _ -> {
             // List-style indexing via ArrayList.get(int).
@@ -754,11 +793,24 @@ func lowerCmpFail(insns: in List[LInsn], op: in BinOp, lhsTy: in JvmType, failLa
         case _ -> insns.add(LNop)
       }
     }
-    case JRef(_) -> {
-      match op {
-        case BEq -> insns.add(LIfAcmpne(label = failLabel))
-        case BNeq -> insns.add(LIfAcmpeq(label = failLabel))
-        case _ -> insns.add(LNop)
+    case JRef(cls) -> {
+      // String `==`/`!=` is value comparison (`String.equals`), not identity.
+      // See the matching note in `lowerCmp`.  Operands on stack as [lhs, rhs].
+      if cls == "java/lang/String" {
+        val eqPs: List[JvmType] = newList()
+        eqPs.add(JRef(className = "java/lang/Object"))
+        insns.add(LInvokevirtual(owner = "java/lang/String", name = "equals", params = eqPs, ret = JBoolean))
+        match op {
+          case BEq -> insns.add(LIfeq(label = failLabel))
+          case BNeq -> insns.add(LIfne(label = failLabel))
+          case _ -> insns.add(LNop)
+        }
+      } else {
+        match op {
+          case BEq -> insns.add(LIfAcmpne(label = failLabel))
+          case BNeq -> insns.add(LIfAcmpeq(label = failLabel))
+          case _ -> insns.add(LNop)
+        }
       }
     }
     case _ -> {

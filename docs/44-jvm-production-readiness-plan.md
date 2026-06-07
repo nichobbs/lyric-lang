@@ -172,8 +172,8 @@ tracking issue today (band J0 files them).
 | M-6 | **Maven self-hosting absent:** `[maven]` parsed only by F# `Manifest.fs`; `manifest.l` cannot read ecosystem `[maven]` tables (`lyric-web`, `lyric-mq`, `lyric-grpc`, `lyric-lambda`, …). **Parsing slice DONE (#2668):** `manifest.l` now parses `[maven]` / `[maven.options]` into `MavenSection` (`MavenEntry` + `repositories` default `["central"]` + optional `java_version`), mirroring `[nuget]`; covered by `manifest_self_test.l`. The resolution/download path (M-7) remains. | `manifest.l` `assembleMaven`; `Manifest.fs:121+` | #1622/#1708 cluster |
 | M-7 | **Maven resolver orphaned:** `resolver/` Java project not built/invoked by any script, F#, Lyric, or CI; only `LYRIC_FFI_JARS` works | `resolver/pom.xml`; no references | #673 |
 | M-8 | **F#-host kernel debt:** JVM byte-builder + constant pool via `@externTarget` into `Lyric.Jvm.Hosts` (F#), on the deletion schedule | `jvm/_kernel/kernel.l:19-28` → `JvmHosts.fs`; `docs/41` H12 | (Band 5 / #1470 parity) |
-| M-9 | `Std.Hash` has **no JVM host** (`_kernel/hash_host.l` exists; `_kernel_jvm/hash_host.l` does not) yet `Std.Hash` is imported by `cli.l` | filesystem; agent-verified | (new) |
-| M-10 | `_kernel_jvm/` is **never loaded** by the self-hosted type-resolution source loader; only the F# emitter honors it. Self-hosted JVM type-checking sees only .NET kernel declarations | `SelfHostedBridge.fs:182-222`, `emitter.l:743-790` | (new) |
+| M-9 | ~~`Std.Hash` has **no JVM host**~~ **DONE (J6).** `lyric-stdlib/std/_kernel_jvm/hash_host.l` added: `MessageDigest.getInstance("SHA-512").digest(...)` + `HexFormat.of().withUpperCase().formatHex(...)` via JVM auto-FFI (`extern type`, no F# shim). Verified by `hash_jvm_self_test.l` (3 NIST vectors) under `java`. | `_kernel_jvm/hash_host.l` | DONE |
+| M-10 | ~~`_kernel_jvm/` is **never loaded** by the self-hosted source loader~~ **DONE (J6).** `emitter.l:findStdlibSourcesForTarget(forJvm)` prefers `_kernel_jvm/<module>_host.l` and falls back to `_kernel/<module>_host.l` only when no JVM host exists; `emitJvmInProcess` threads `forJvm = true`. Required JVM `slice[Byte]↔byte[]` interop fixes in `codegen.l` (auto-FFI arg/return byte-array coercion, primitive-array index/length) and a String `==`/`!=` value-comparison fix. | `emitter.l`, `jvm/codegen.l`, `jvm/auto_ffi.l` | DONE |
 | M-11 | `lyric-storage` local-fs backend has no JVM kernel; `ProcessCaptureHost.runCaptureWithTimeout` unimplemented on JVM | #1444/#1840, #1065 | #1444, #1840, #1065 |
 | M-12 | Async generators are eager "collect-all", not lazy `IAsyncEnumerable` | `lowering.l:3493-3518` | #2469 |
 | M-13 | Range/refined types erased to `JInt`, no bounds checks | `codegen.l:283` | (new) |
@@ -312,14 +312,25 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   on `--target jvm` from a clean checkout with no manual classpath.
 
 ### J6 — stdlib JVM kernel parity (cross-platform stdlib actually works on JVM)
-- M-9: add `_kernel_jvm/hash_host.l` (Java SHA-512/hex).
-- M-10: make the self-hosted type-resolution source loader **target-aware** so
-  it loads `_kernel_jvm/` for JVM builds (today it only ever loads `_kernel/`).
+- **M-9 (DONE):** added `_kernel_jvm/hash_host.l` (Java SHA-512 via
+  `java.security.MessageDigest`, uppercase hex via `java.util.HexFormat`),
+  declared with `extern type` JVM auto-FFI (no F# shim).
+- **M-10 (DONE):** the self-hosted source loader is now **target-aware**
+  (`emitter.l:findStdlibSourcesForTarget(forJvm)`): JVM builds prefer
+  `_kernel_jvm/<module>_host.l` and fall back to `_kernel/<module>_host.l`
+  only when no JVM host exists; `emitJvmInProcess` passes `forJvm = true`.
+  Closing M-10 also required JVM-backend `slice[Byte]↔byte[]` interop in
+  `jvm/codegen.l` + `jvm/auto_ffi.l` (auto-FFI byte-array arg/return
+  coercion, primitive-array index `baload` / `.length`, receiver stash so the
+  coercion loop runs at empty operand stack) and a String `==`/`!=`
+  value-comparison fix (was reference equality).
 - M-11: `lyric-storage` local-fs JVM kernel; `ProcessCaptureHost` on JVM;
   M-16 slice-ABI reconciliation (#2592); m-6/m-10 regex/time stubs.
-- **Acceptance:** a self-hosted JVM self-test that imports a `_kernel_jvm`-only
-  module (e.g. `Std.File`/`Std.Http`/`Std.Hash`) builds and runs under `java`
-  in CI — closing the "no native JVM test depends on `_kernel_jvm`" gap.
+- **Acceptance (MET for M-9/M-10):** `lyric-compiler/lyric/hash_jvm_self_test.l`
+  imports `Std.Hash` (resolving to `_kernel_jvm/hash_host.l` on JVM), builds via
+  the self-hosted `Jvm.Bridge`, and runs under `java` asserting three NIST
+  SHA-512 vectors — closing the "no native JVM test depends on `_kernel_jvm`"
+  gap. (M-11 file/storage kernels remain.)
 
 ### J7 — Testing, distribution, and the acceptance gate
 - M-14: expand the self-hosted `--target jvm` pipeline suite well beyond the
