@@ -21,9 +21,13 @@
 //!
 //! Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1` is needed.
 //!
-//! Scope: in-bundle generic RECORDS.  In-bundle generic UNIONS (the nullary
-//! case-singleton / per-instantiation static-field interaction, Q-GEN-001 in
-//! docs/43) are a tracked follow-up and are NOT exercised here.
+//! Scope: in-bundle generic RECORDS and UNIONS.  Unions exercise the case-class
+//! hierarchy (each case extends the open base instantiation `Maybe`1<!0>` via a
+//! TypeSpec, with TypeSpec-parented base-`.ctor` calls), nullary cases
+//! (constructed via `newobj` each time — no per-instantiation singleton,
+//! Q-GEN-001), construction + `match` (isinst / castclass / ldfld on closed
+//! case TypeSpecs), and partial type-argument inference from the value's
+//! declared type.
 @test_module
 package Lyric.InbundleGenericsSelfTest
 
@@ -99,4 +103,84 @@ test "nested generic Box[Box[Int]] round-trips" {
   val inner = Box(value = 3)
   val outer = Box(value = inner)
   assertEqualInt(outer.value.value, 3, "Box[Box[Int]].value.value")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// In-bundle generic UNIONS (#2362).  Each case is a generic case class extending
+// the open base instantiation; nullary cases carry the union's type parameters
+// and are constructed via `newobj` each time (no singleton — Q-GEN-001).
+// ─────────────────────────────────────────────────────────────────────────────
+// Single-parameter union with a payload case and a nullary case (the Option shape).
+union Maybe[T] {
+  case Just(value: T)
+  case Nothing
+}
+
+// Two-parameter union: each case re-declares both parameters (`Either_Lft`2`,
+// `Either_Rgt`2`), and a case pins only one of them so the other is inferred
+// from the value's declared type.
+union Either[L, R] {
+  case Lft(l: L)
+  case Rgt(r: R)
+}
+
+// A multi-field generic case (`Both(a: T, b: T)`): the value-type instantiation
+// `Pairish[Int, Int]` exercises the arity-suffixed name + open-self-TypeSpec
+// ctor `stfld` that keep both fields at the correct per-instantiation offset.
+union Pairish[A, B] {
+  case Both(a: A, b: B)
+  case Neither
+}
+
+func unwrapOr(m: in Maybe[Int], dflt: in Int): Int {
+  match m {
+    case Just(v) -> v
+    case Nothing -> dflt
+  }
+}
+
+func mkNothing(): Maybe[Int] {
+  Nothing
+}
+
+test "Maybe[Int] Just constructs and matches its payload" {
+  assertEqualInt(unwrapOr(Just(value = 5), 0), 5, "Just(5)")
+}
+
+test "Maybe[Int] Nothing matches (nullary, no singleton)" {
+  val m: Maybe[Int] = Nothing
+  assertEqualInt(unwrapOr(m, 99), 99, "Nothing")
+}
+
+test "Maybe Nothing returned from a function matches" {
+  assertEqualInt(unwrapOr(mkNothing(), 7), 7, "mkNothing()")
+}
+
+test "Maybe[String] Just binds a reference payload" {
+  val m = Just(value = "hi")
+  val r = match m { case Just(s) -> s; case Nothing -> "none" }
+  assertEqual(r, "hi", "Just(hi)")
+}
+
+test "Either[Int,String] infers the unpinned parameter from the annotation" {
+  val a: Either[Int, String] = Lft(l = 7)
+  val b: Either[Int, String] = Rgt(r = "x")
+  assertEqualInt(match a { case Lft(n) -> n; case Rgt(_) -> -1 }, 7, "Lft 7")
+  assertEqual(match b { case Lft(_) -> "L"; case Rgt(s) -> s }, "x", "Rgt x")
+}
+
+test "Pairish[Int,Int] multi-field value-type case keeps both fields" {
+  val p: Pairish[Int, Int] = Both(a = 3, b = 4)
+  assertEqualInt(match p { case Both(x, y) -> x + y; case Neither -> 0 }, 7, "Both 3 4")
+}
+
+test "Pairish Neither (nullary of a two-parameter union)" {
+  val p: Pairish[Int, Int] = Neither
+  assertEqualInt(match p { case Both(x, y) -> x + y; case Neither -> -5 }, -5, "Neither")
+}
+
+test "nested generic union Maybe[Maybe[Int]] round-trips" {
+  val outer: Maybe[Maybe[Int]] = Just(value = Just(value = 9))
+  val r = match outer { case Just(mi) -> match mi { case Just(v) -> v; case Nothing -> -1 }; case Nothing -> -2 }
+  assertEqualInt(r, 9, "nested Just(Just(9))")
 }
