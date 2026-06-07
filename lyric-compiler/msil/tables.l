@@ -660,7 +660,6 @@ val TABLE_BIT_GENERIC_PARAM: Long = 4398046511104i64
 // table 0x2A, bit 42 (2^42)
 val TABLE_BIT_METHOD_SPEC: Long = 8796093022208i64
 
-// table 0x2B, bit 43 (2^43)
 // Emit a 2-byte LE integer.
 func w2(buf: in ByteWriter, v: in Int): Unit {
   bufU1(buf, v % 256)

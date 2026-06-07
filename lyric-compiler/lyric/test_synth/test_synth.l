@@ -269,7 +269,6 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
   // omitting the module doc comments and @test_module annotation (not meaningful
   // in compiled program, would trigger P0020 error when the emitter parses
   // synthesized source). packageDecl.span starts at "package" keyword.
-  var cursor = pf.file.packageDecl.span.startPos.offset
   var sb = slice(source, pf.file.packageDecl.span)
   sb = sb + "\n"
 
@@ -281,11 +280,12 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
   }
 
   // Update cursor to the end of the last import (or package if no imports).
-  if pf.file.imports.count > 0 {
-    cursor = pf.file.imports[pf.file.imports.count - 1].span.endPos.offset
+  var cursor = if pf.file.imports.count > 0 {
+    pf.file.imports[pf.file.imports.count - 1].span.endPos.offset
   } else {
-    cursor = pf.file.packageDecl.span.endPos.offset
+    pf.file.packageDecl.span.endPos.offset
   }
+
 
   // Walk items.  For each item: emit the source slice from the
   // previous cursor up to the item's start verbatim; then either
