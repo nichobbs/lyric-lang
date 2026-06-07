@@ -2019,8 +2019,20 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
             case None -> MVoid
           }
         } else {
+          // A generic function's `slice[T]` / bare-`T` return is List-backed at
+          // run time (#2557): the caller must track it as `MArray(MObject)` (so
+          // `.length` / indexing route through the IList slice path) or `MObject`
+          // (a bare erased element), never as `MClass(pkg + ".T")` which names no
+          // real CLR type and would emit a faulting `castclass`.
+          val declGenerics = genericNamesOf(decl.generics)
           match decl.ret {
-            case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName)
+            case Some(te) -> {
+              if declGenerics.count > 0 {
+                typeExprToMsilGenBody(cctx, te, pkgName, declGenerics)
+              } else {
+                typeExprToMsilCtx(cctx, te, pkgName)
+              }
+            }
             case None -> MVoid
           }
         }
@@ -2033,10 +2045,18 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         }
         // Record the declared parameter MsilTypes so call sites can thread an
         // argument's expected type into `contextHintTyArgs` (see funcParamTypes).
+        // A generic function's `slice[T]` / bare-`T` parameter is recorded in the
+        // erased List-backed form (#2557) so the call-site collExpect builds a
+        // List-backed argument, matching the erased parameter slot.
+        val declGenericsP = genericNamesOf(decl.generics)
         val paramTys: List[MsilType] = newList()
         var ppi = 0
         while ppi < decl.params.count {
-          paramTys.add(typeExprToMsilCtx(cctx, decl.params[ppi].ty, pkgName))
+          if declGenericsP.count > 0 {
+            paramTys.add(typeExprToMsilGenBody(cctx, decl.params[ppi].ty, pkgName, declGenericsP))
+          } else {
+            paramTys.add(typeExprToMsilCtx(cctx, decl.params[ppi].ty, pkgName))
+          }
           ppi = ppi + 1
         }
         if not cctx.funcParamTypes.containsKey(arityKey) {
@@ -11241,7 +11261,15 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   } else {
     match decl.ret {
       case Some(te) -> {
-        val resolved = typeExprToMsilCtx(cctx, te, pkgName)
+        // A generic-function `slice[T]` / bare-`T` return is emitted as plain
+        // `object` so a List-backed return value matches the signature; the
+        // caller tracks it via funcRetTypes and reads it through the IList path
+        // (#2557).
+        val resolved = if genericNamesOf(decl.generics).count > 0 {
+          typeExprToMsilGenSig(te, pkgName, genericNamesOf(decl.generics))
+        } else {
+          typeExprToMsilCtx(cctx, te, pkgName)
+        }
         if elementTypeByte(resolved) == 0 {
           MVoid
         } else {
@@ -11253,6 +11281,11 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   }
 
   val className = pkgName
+  // Generic-function type parameters (#2557).  When non-empty, a `slice[T]` /
+  // bare-`T` parameter, return, and local must use the erased List-backed
+  // representation (see typeExprToMsilGenBody / typeExprToMsilGenSig) instead of
+  // a bogus `MClass(pkg + ".T")` that names no real CLR type.
+  val fnGenerics = genericNamesOf(decl.generics)
   // Capturing closure (#1479): a capturing `__lambda_*` takes a synthetic leading
   // `object[] __caps` parameter (the closed-over delegate target).  It occupies
   // slot 0, shifting the lambda's own params to 1+, so paramCount grows by one.
@@ -11301,7 +11334,13 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
     val p = decl.params[pi]
     // A lambda parameter's logical type is its annotation if present, else the
     // type propagated from the call site (#1939); the signature stays `object`.
-    val annotTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
+    // A generic-function `slice[T]` / bare-`T` param tracks as the erased
+    // List-backed form (#2557) so the body uses the non-generic IList path.
+    val annotTy = if fnGenerics.count > 0 {
+      typeExprToMsilGenBody(cctx, p.ty, pkgName, fnGenerics)
+    } else {
+      typeExprToMsilCtx(cctx, p.ty, pkgName)
+    }
     val paramTy = if isLambdaFn and annotTy == MObject and pi < lambdaPropagated.count {
       lambdaPropagated[pi]
     } else {
@@ -11425,6 +11464,11 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
   while pi2 < decl.params.count {
     if isLambdaFn {
       paramTypes.add(MObject)
+    } else if fnGenerics.count > 0 {
+      // Generic function (#2557): a `slice[T]` / bare-`T` parameter is emitted
+      // as plain `object` in the signature so a List-backed argument matches the
+      // slot; the body uses the IList slice path, never genuine array ops.
+      paramTypes.add(typeExprToMsilGenSig(decl.params[pi2].ty, pkgName, fnGenerics))
     } else {
       paramTypes.add(typeExprToMsil(decl.params[pi2].ty, pkgName))
     }
@@ -11668,6 +11712,79 @@ func typeExprToMsilG(te: in TypeExpr, pkgName: in String, generics: in List[Stri
       }
     }
     case TParen(inner) -> typeExprToMsilG(inner, pkgName, generics)
+    case _ -> typeExprToMsil(te, pkgName)
+  }
+}
+
+// True when `te` mentions one of the enclosing generic-function's type
+// parameters as its (terminal-segment) name — i.e. it is a bare type variable
+// like `T`.  Used to decide whether a parameter/return/local must use the
+// erased generic-slice representation (#2557).
+func isGenericTypeVar(te: in TypeExpr, generics: in List[String]): Bool {
+  match te.kind {
+    case TRef(path) -> genericIndexOf(generics, lastSegmentMsil(path)) >= 0
+    case TParen(inner) -> isGenericTypeVar(inner, generics)
+    case _ -> false
+  }
+}
+
+// Generic-function BODY-tracking type lowering (#2557).  Inside a generic
+// function a bare type variable `T` and a `slice[T]` cannot name a concrete CLR
+// type, so they reuse the List-backed slice representation that #2558 made the
+// non-generic slice path route through: a `slice[T]` value is tracked as
+// `MArray(MObject)` so `.length` / indexing / `for` dispatch through the
+// (already-correct) non-generic `IList`/`ICollection` path, and a bare `T` is
+// tracked as `MObject` (the erased element).  Element reads therefore yield
+// `object` (no `castclass` to the non-existent `Pkg.T`), matching the erased
+// runtime value.  Non-type-variable annotations delegate to the legacy
+// context-aware lowering so a generic function over concrete types is unaffected.
+func typeExprToMsilGenBody(
+  cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, generics: in List[String]
+): MsilType {
+  match te.kind {
+    case TRef(_) -> {
+      if isGenericTypeVar(te, generics) {
+        MObject
+      } else {
+        typeExprToMsilCtx(cctx, te, pkgName)
+      }
+    }
+    case TSlice(elem) -> {
+      if isGenericTypeVar(elem, generics) {
+        MArray(elemTy = MObject)
+      } else {
+        typeExprToMsilCtx(cctx, te, pkgName)
+      }
+    }
+    case TParen(inner) -> typeExprToMsilGenBody(cctx, inner, pkgName, generics)
+    case _ -> typeExprToMsilCtx(cctx, te, pkgName)
+  }
+}
+
+// Generic-function SIGNATURE type lowering (#2557).  A bare type variable `T`
+// or `slice[T]` parameter/return is emitted as plain `object` in the method
+// signature so a List-backed argument value (the runtime representation of a
+// slice) matches the parameter slot directly — the body never performs genuine
+// array ops on it, so the `object[]` shape would be a lie that buys nothing.
+// Non-type-variable annotations delegate to the legacy (erasure) signature
+// lowering, preserving every existing signature byte.
+func typeExprToMsilGenSig(te: in TypeExpr, pkgName: in String, generics: in List[String]): MsilType {
+  match te.kind {
+    case TRef(_) -> {
+      if isGenericTypeVar(te, generics) {
+        MObject
+      } else {
+        typeExprToMsil(te, pkgName)
+      }
+    }
+    case TSlice(elem) -> {
+      if isGenericTypeVar(elem, generics) {
+        MObject
+      } else {
+        typeExprToMsil(te, pkgName)
+      }
+    }
+    case TParen(inner) -> typeExprToMsilGenSig(inner, pkgName, generics)
     case _ -> typeExprToMsil(te, pkgName)
   }
 }

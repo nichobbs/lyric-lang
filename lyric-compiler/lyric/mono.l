@@ -698,6 +698,16 @@ func unifyTE(
         case _ -> ()
       }
     }
+    case TSlice(elem1) -> {
+      // Unify the element types of `slice[T]` against `slice[Int]` so a generic
+      // `slice[T]` parameter binds `T` from a slice/list-literal argument and the
+      // call monomorphises (#2557).
+      match argTE.kind {
+        case TSlice(elem2) -> unifyTE(typeParams, elem1, elem2, subst)
+        case TArray(_, elem2) -> unifyTE(typeParams, elem1, elem2, subst)
+        case _ -> ()
+      }
+    }
     case TFunction(ps1, r1) -> {
       match argTE.kind {
         case TFunction(ps2, r2) -> {
@@ -920,6 +930,23 @@ func inferExprTE(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
     // `data` un-typed and a later generic call on `data.field` could not
     // infer its type arguments (#1727).
     case EIndex(recv, _) -> inferIndexTE(state, env, recv)
+    // A list/slice literal `[e0, …]` infers to `slice[ElemType]` from its first
+    // element, so a generic call whose parameter is `slice[T]` (e.g.
+    // `glen([1,2,3])` / `Sort.sortInts([3,1,2])`) unifies `T` and monomorphises
+    // into a concrete `__Int` copy rather than staying a generic method whose
+    // `slice[T]` parameter cannot name a real CLR type (#2557).  An empty literal
+    // carries no element type, so it stays `None` (the call falls back to the
+    // generic erased path, as before).
+    case EList(es) -> {
+      if es.count == 0 {
+        None
+      } else {
+        match inferExprTE(state, env, es[0]) {
+          case Some(elemTE) -> Some(value = TypeExpr(kind = TSlice(element = elemTE), span = expr.span))
+          case None -> None
+        }
+      }
+    }
     case _ -> None
   }
 }
@@ -1213,6 +1240,232 @@ func allParamsBound(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §10b. Body type-annotation substitution (#2557)
+// ─────────────────────────────────────────────────────────────────────────────
+// `specializeFunc` substitutes type variables in the signature (params / return)
+// but, before this pass, shared the body verbatim.  A typed local in the body —
+// `val acc: List[T] = newList()` — therefore kept its `T`, and codegen lowered
+// `List[T]` to a `List<Pkg.T>` instance over a non-existent CLR type ("Common
+// Language Runtime detected an invalid program").  These helpers rewrite every
+// TypeExpr annotation reachable from the body (local bindings, lambda parameter
+// annotations, explicit type applications) with `substTypeExpr`, leaving the
+// rest of the AST structurally unchanged.
+func substTypesBlock(subst: in Map[String, TypeExpr], valueSubst: in Map[String, Expr], blk: in Block): Block {
+  val newStmts: List[Statement] = newList()
+  var i = 0
+  while i < blk.statements.count {
+    newStmts.add(substTypesStmt(subst, valueSubst, blk.statements[i]))
+    i = i + 1
+  }
+  Block(statements = newStmts, span = blk.span)
+}
+
+func substTypesOptTy(
+  subst: in Map[String, TypeExpr], valueSubst: in Map[String, Expr], oty: in Option[TypeExpr]
+): Option[TypeExpr] {
+  match oty {
+    case Some(te) -> Some(value = substTypeExpr(subst, valueSubst, te))
+    case None -> None
+  }
+}
+
+func substTypesStmt(subst: in Map[String, TypeExpr], valueSubst: in Map[String, Expr], stmt: in Statement): Statement {
+  val s = stmt.span
+  val k = match stmt.kind {
+    case SLocal(binding) -> {
+      val nb = match binding {
+        case LBVal(pat, ty, init) -> LBVal(pat = pat, ty = substTypesOptTy(subst, valueSubst, ty), init = substTypesExpr(subst, valueSubst, init))
+        case LBVar(name, ty, init) -> {
+          val ni = match init { case Some(e) -> Some(value = substTypesExpr(subst, valueSubst, e)); case None -> None }
+          LBVar(name = name, ty = substTypesOptTy(subst, valueSubst, ty), init = ni)
+        }
+        case LBLet(name, ty, init) -> LBLet(name = name, ty = substTypesOptTy(subst, valueSubst, ty), init = substTypesExpr(subst, valueSubst, init))
+      }
+      SLocal(binding = nb)
+    }
+    case SAssign(target, op, value) -> SAssign(target = substTypesExpr(subst, valueSubst, target), op = op, value = substTypesExpr(subst, valueSubst, value))
+    case SReturn(value) -> {
+      match value {
+        case Some(e) -> SReturn(value = Some(value = substTypesExpr(subst, valueSubst, e)))
+        case None -> SReturn(value = None)
+      }
+    }
+    case SBreak(label) -> SBreak(label = label)
+    case SContinue(label) -> SContinue(label = label)
+    case SThrow(expr) -> SThrow(expr = substTypesExpr(subst, valueSubst, expr))
+    case STry(body, catches, finally_) -> {
+      val newCatches: List[CatchClause] = newList()
+      var ci = 0
+      while ci < catches.count {
+        val c = catches[ci]
+        newCatches.add(
+          CatchClause(
+            typeName = c.typeName,
+            bindName = c.bindName,
+            body = substTypesBlock(subst, valueSubst, c.body),
+            span = c.span
+          )
+        )
+        ci = ci + 1
+      }
+      val newFin = match finally_ { case Some(b) -> Some(value = substTypesBlock(subst, valueSubst, b)); case None -> None }
+      STry(body = substTypesBlock(subst, valueSubst, body), catches = newCatches, finally_ = newFin)
+    }
+    case SDefer(body) -> SDefer(body = substTypesBlock(subst, valueSubst, body))
+    case SScope(binding, body) -> SScope(binding = binding, body = substTypesBlock(subst, valueSubst, body))
+    case SFor(label, pat, iter, body) -> SFor(label = label, pat = pat, iter = substTypesExpr(subst, valueSubst, iter), body = substTypesBlock(subst, valueSubst, body))
+    case SWhile(label, cond, body) -> SWhile(label = label, cond = substTypesExpr(subst, valueSubst, cond), body = substTypesBlock(subst, valueSubst, body))
+    case SLoop(label, body) -> SLoop(label = label, body = substTypesBlock(subst, valueSubst, body))
+    case SInvariant(expr) -> SInvariant(expr = substTypesExpr(subst, valueSubst, expr))
+    case SExpr(expr) -> SExpr(expr = substTypesExpr(subst, valueSubst, expr))
+    case SRule(lhs, rhs) -> SRule(lhs = substTypesExpr(subst, valueSubst, lhs), rhs = substTypesExpr(subst, valueSubst, rhs))
+    case SItem(item) -> SItem(item = item)
+  }
+  Statement(kind = k, span = s)
+}
+
+func substTypesEOB(subst: in Map[String, TypeExpr], valueSubst: in Map[String, Expr], eob: in ExprOrBlock): ExprOrBlock {
+  match eob {
+    case EOBExpr(e) -> EOBExpr(expr = substTypesExpr(subst, valueSubst, e))
+    case EOBBlock(b) -> EOBBlock(block = substTypesBlock(subst, valueSubst, b))
+  }
+}
+
+func substTypesExpr(subst: in Map[String, TypeExpr], valueSubst: in Map[String, Expr], expr: in Expr): Expr {
+  val s = expr.span
+  val k = match expr.kind {
+    case EParen(inner) -> EParen(inner = substTypesExpr(subst, valueSubst, inner))
+    case ETuple(es) -> {
+      val ne: List[Expr] = newList()
+      var i = 0
+      while i < es.count {
+        ne.add(substTypesExpr(subst, valueSubst, es[i]))
+        i = i + 1
+      }
+      ETuple(exprs = ne)
+    }
+    case EList(es) -> {
+      val ne: List[Expr] = newList()
+      var i = 0
+      while i < es.count {
+        ne.add(substTypesExpr(subst, valueSubst, es[i]))
+        i = i + 1
+      }
+      EList(exprs = ne)
+    }
+    case EIf(cond, thenBranch, elseBranch, thenForm) -> {
+      val ne = match elseBranch { case Some(eb) -> Some(value = substTypesEOB(subst, valueSubst, eb)); case None -> None }
+      EIf(
+        cond = substTypesExpr(subst, valueSubst, cond),
+        thenBranch = substTypesEOB(subst, valueSubst, thenBranch),
+        elseBranch = ne,
+        thenForm = thenForm
+      )
+    }
+    case EMatch(scrutinee, arms) -> {
+      val na: List[MatchArm] = newList()
+      var i = 0
+      while i < arms.count {
+        val arm = arms[i]
+        val ng = match arm.guard { case Some(g) -> Some(value = substTypesExpr(subst, valueSubst, g)); case None -> None }
+        na.add(
+          MatchArm(pattern = arm.pattern, guard = ng, body = substTypesEOB(subst, valueSubst, arm.body), span = arm.span)
+        )
+        i = i + 1
+      }
+      EMatch(scrutinee = substTypesExpr(subst, valueSubst, scrutinee), arms = na)
+    }
+    case EAwait(inner) -> EAwait(inner = substTypesExpr(subst, valueSubst, inner))
+    case EYield(inner) -> EYield(inner = substTypesExpr(subst, valueSubst, inner))
+    case ESpawn(inner) -> ESpawn(inner = substTypesExpr(subst, valueSubst, inner))
+    case ETry(inner) -> ETry(inner = substTypesExpr(subst, valueSubst, inner))
+    case EOld(inner) -> EOld(inner = substTypesExpr(subst, valueSubst, inner))
+    case ELambda(lambdaParams, body) -> {
+      val nps: List[LambdaParam] = newList()
+      var i = 0
+      while i < lambdaParams.count {
+        val lp = lambdaParams[i]
+        nps.add(LambdaParam(name = lp.name, ty = substTypesOptTy(subst, valueSubst, lp.ty), span = lp.span))
+        i = i + 1
+      }
+      ELambda(lambdaParams = nps, body = substTypesBlock(subst, valueSubst, body))
+    }
+    case ECall(fn, args) -> {
+      val na: List[CallArg] = newList()
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CAPositional(e) -> na.add(CAPositional(expr = substTypesExpr(subst, valueSubst, e)))
+          case CANamed(n, e, span) -> na.add(CANamed(name = n, value = substTypesExpr(subst, valueSubst, e), span = span))
+        }
+        i = i + 1
+      }
+      ECall(fn = substTypesExpr(subst, valueSubst, fn), args = na)
+    }
+    case ETypeApp(fn, args) -> {
+      val na: List[TypeArg] = newList()
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case TAType(te) -> na.add(TAType(ty = substTypeExpr(subst, valueSubst, te)))
+          case TAValue(e) -> na.add(TAValue(expr = substTypesExpr(subst, valueSubst, e)))
+        }
+        i = i + 1
+      }
+      ETypeApp(fn = substTypesExpr(subst, valueSubst, fn), args = na)
+    }
+    case EIndex(receiver, indices) -> {
+      val ni: List[Expr] = newList()
+      var i = 0
+      while i < indices.count {
+        ni.add(substTypesExpr(subst, valueSubst, indices[i]))
+        i = i + 1
+      }
+      EIndex(receiver = substTypesExpr(subst, valueSubst, receiver), indices = ni)
+    }
+    case EMember(receiver, memberName) -> EMember(receiver = substTypesExpr(subst, valueSubst, receiver), memberName = memberName)
+    case EPropagate(inner) -> EPropagate(inner = substTypesExpr(subst, valueSubst, inner))
+    case EPrefix(op, operand) -> EPrefix(op = op, operand = substTypesExpr(subst, valueSubst, operand))
+    case EBinop(op, lhs, rhs) -> EBinop(op = op, lhs = substTypesExpr(subst, valueSubst, lhs), rhs = substTypesExpr(subst, valueSubst, rhs))
+    case ERange(bound) -> {
+      val nb = match bound {
+        case RBClosed(lo, hi) -> RBClosed(lo = substTypesExpr(subst, valueSubst, lo), hi = substTypesExpr(subst, valueSubst, hi))
+        case RBHalfOpen(lo, hi) -> RBHalfOpen(lo = substTypesExpr(subst, valueSubst, lo), hi = substTypesExpr(subst, valueSubst, hi))
+        case RBLowerOpen(hi) -> RBLowerOpen(hi = substTypesExpr(subst, valueSubst, hi))
+        case RBUpperOpen(lo) -> RBUpperOpen(lo = substTypesExpr(subst, valueSubst, lo))
+      }
+      ERange(bound = nb)
+    }
+    case EAssign(target, op, value) -> EAssign(target = substTypesExpr(subst, valueSubst, target), op = op, value = substTypesExpr(subst, valueSubst, value))
+    case EBlock(block) -> EBlock(block = substTypesBlock(subst, valueSubst, block))
+    case EUnsafe(block) -> EUnsafe(block = substTypesBlock(subst, valueSubst, block))
+    case EInterpolated(segments) -> {
+      val ns: List[InterpolatedSegment] = newList()
+      var i = 0
+      while i < segments.count {
+        match segments[i] {
+          case ISText(text, span) -> ns.add(ISText(text = text, span = span))
+          case ISExpr(e) -> ns.add(ISExpr(expr = substTypesExpr(subst, valueSubst, e)))
+        }
+        i = i + 1
+      }
+      EInterpolated(segments = ns)
+    }
+    case _ -> expr.kind
+  }
+  Expr(kind = k, span = s)
+}
+
+func substTypesFunctionBody(
+  subst: in Map[String, TypeExpr], valueSubst: in Map[String, Expr], body: in FunctionBody
+): FunctionBody {
+  match body {
+    case FBExpr(e) -> FBExpr(expr = substTypesExpr(subst, valueSubst, e))
+    case FBBlock(b) -> FBBlock(block = substTypesBlock(subst, valueSubst, b))
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §11. Function specialisation — substitute type vars in decl structure
 // ─────────────────────────────────────────────────────────────────────────────
 func specializeFunc(
@@ -1257,6 +1510,13 @@ func specializeFunc(
   }
   val emptyDocs: List[DocComment] = newList()
   val emptyAnns: List[Annotation] = newList()
+  // Substitute type-variable annotations inside the body too (#2557): a typed
+  // local such as `val acc: List[T]` must become `List[Int]` in the specialised
+  // copy, otherwise codegen emits a `List<Pkg.T>` over a non-existent CLR type.
+  val newBody = match decl.body {
+    case Some(b) -> Some(value = substTypesFunctionBody(subst, valueSubst, b))
+    case None -> None
+  }
   FunctionDecl(
     docComments = emptyDocs,
     annotations = emptyAnns,
@@ -1268,7 +1528,7 @@ func specializeFunc(
     ret = newRet,
     whereClause = None,
     contracts = decl.contracts,
-    body = decl.body,
+    body = newBody,
     span = decl.span
   )
 }
