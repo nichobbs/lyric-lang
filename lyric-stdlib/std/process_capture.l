@@ -107,3 +107,26 @@ pub func runCaptureWithDiagnostics(executable: in String, args: in List[String],
     timedOut = pcResultTimedOut(raw)
   )
 }
+
+/// Spawn `executable` with `args`, write `stdinContent` to its stdin,
+/// and return a `CaptureResult` with stdout, stderr, exit code, and
+/// whether the process timed out.  Like `runCaptureWithDiagnostics` but
+/// with a caller-supplied `timeoutMs` wall-clock cap instead of the
+/// default 10-second cap.  Use for long-running subprocesses such as
+/// test suite execution or build invocations.
+@stable(since = "1.0")
+pub func runCaptureWithDiagnosticsTimeout(
+  executable: in String,
+  args: in List[String],
+  stdinContent: in String,
+  timeoutMs: in Int,
+): CaptureResult {
+  val argStr = buildArgString(args)
+  val raw = hostRunCaptureTimeout(executable, argStr, stdinContent, timeoutMs)
+  CaptureResult(
+    stdout = pcResultStdout(raw),
+    stderr = pcResultStderr(raw),
+    exitCode = pcResultExitCode(raw),
+    timedOut = pcResultTimedOut(raw)
+  )
+}
