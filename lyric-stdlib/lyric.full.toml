@@ -1,0 +1,98 @@
+# Full self-hosted stdlib bundle manifest.
+#
+# Unlike `lyric.toml` (the bootstrap smoke set built by the F# stage-0
+# emitter), this manifest enumerates the *entire* public stdlib surface and
+# is compiled by the self-hosted compiler:
+#
+#     ./bin/lyric build --manifest lyric-stdlib/lyric.full.toml
+#
+# It is the stage-2 self-hosting verification target (#2592): every package
+# here must type-check and emit through the self-hosted MSIL backend.  As the
+# F# stage-0 emitter is retired, packages migrate from here into `lyric.toml`.
+
+[package]
+name        = "Lyric.Stdlib.Full"
+version     = "0.1.0"
+description = "Lyric standard library — full self-hosted bundle."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[project]
+name            = "Lyric.Stdlib.Full"
+output          = "single"
+output_assembly = "Lyric.Stdlib.Full.dll"
+
+[project.packages]
+# Tier 0 — base layer.
+"Std.Core"             = "std/core.l"
+"Std.Errors"           = "std/errors.l"
+"Std.String"           = "std/string.l"
+"Std.Core.Proof"       = "std/core_proof.l"
+
+# Kernel boundaries (extern type / @externTarget host shims).
+"Std.ProcessHost"      = "std/_kernel/process_host.l"
+"Std.ProcessCaptureHost" = "std/_kernel/process_capture_host.l"
+"Std.ConsoleHost"      = "std/_kernel/console_host.l"
+"Std.RegexHost"        = "std/_kernel/regex_host.l"
+"Std.CharHost"         = "std/_kernel/char_host.l"
+"Std.FormatHost"       = "std/_kernel/format_host.l"
+"Std.EncodingHost"     = "std/_kernel/encoding_host.l"
+"Std.RandomHost"       = "std/_kernel/random_host.l"
+"Std.SecureRandomHost" = "std/_kernel/secure_random_host.l"
+"Std.UuidHost"         = "std/_kernel/uuid_host.l"
+"Std.FileHost"         = "std/_kernel/file_host.l"
+"Std.PathHost"         = "std/_kernel/path_host.l"
+"Std.EnvironmentHost"  = "std/_kernel/environment_host.l"
+"Std.LogHost"          = "std/_kernel/log_host.l"
+"Std.HashHost"         = "std/_kernel/hash_host.l"
+"Std.TimeHost"         = "std/_kernel/time_host.l"
+"Std.JsonHost"         = "std/_kernel/json_host.l"
+"Std.MathHost"         = "std/_kernel/math_host.l"
+"Std.ParseHost"        = "std/_kernel/parse_host.l"
+
+# Tier 1 — collections, regex, processes.
+"Std.Regex"            = "std/regex.l"
+"Std.Collections"      = "std/collections.l"
+"Std.ProcessCapture"   = "std/process_capture.l"
+"Std.Process"          = "std/process.l"
+
+# Tier 2 — numeric, text, stream, char.
+"Std.Math"             = "std/math.l"
+"Std.Parse"            = "std/parse.l"
+"Std.Stream"           = "std/stream.l"
+"Std.Char"             = "std/char.l"
+"Std.Set"              = "std/set.l"
+"Std.Iter"             = "std/iter.l"
+"Std.Sort"             = "std/sort.l"
+"Std.Format"           = "std/format.l"
+"Std.Encoding"         = "std/encoding.l"
+
+# Tier 3 — randomness, hashing, ids.
+"Std.Random"           = "std/random.l"
+"Std.SecureRandom"     = "std/secure_random.l"
+"Std.Uuid"             = "std/uuid.l"
+
+# Tier 4 — filesystem, environment, logging, console.
+"Std.File"             = "std/file.l"
+"Std.Directory"        = "std/directory.l"
+"Std.Path"             = "std/path.l"
+"Std.Environment"      = "std/environment.l"
+"Std.Log"              = "std/log.l"
+"Std.Console"          = "std/console.l"
+"Std.Hash"             = "std/hash.l"
+
+# Tier 5 — structured data, markup, time.
+"Std.Time"             = "std/time.l"
+"Std.Json"             = "std/json.l"
+"Std.Xml"              = "std/xml.l"
+"Std.Yaml"             = "std/yaml.l"
+
+# Tier 6 — regex compatibility shim.
+"Std.RegexSafe"        = "std/regex_safe.l"
+
+# Tier 7 — testing utilities + app host.
+"Std.Testing.Mocking"  = "std/testing_mocking.l"
+"Std.Testing"          = "std/testing.l"
+"Std.Testing.Property" = "std/testing_property.l"
+"Std.Testing.Snapshot" = "std/testing_snapshot.l"
+"Std.App"              = "std/app.l"

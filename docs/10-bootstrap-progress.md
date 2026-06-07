@@ -22108,3 +22108,66 @@ surfaces a real behavioral / environment difference under the self-hosted path
 `.message` method-resolution gap, synthesis-output diffs, and a runtime
 dependency on the F# `Lyric.Emitter` assembly) that needs its own fix before its
 wrapper can be deleted.
+
+### D-progress-457 — full public stdlib compiles through the self-hosted MSIL backend (#2592, stage-2 milestone)
+
+**Status:** Shipped — the entire public standard-library surface now type-checks
+and emits via the self-hosted compiler.  `./bin/lyric build --manifest
+lyric-stdlib/lyric.full.toml` produces `Lyric.Stdlib.Full.dll` covering every
+`Std.*` package (Core, Errors, String, Collections, Math, Parse, Stream, Char,
+Set, Iter, Sort, Format, Encoding, Random, SecureRandom, Uuid, File, Directory,
+Path, Environment, Log, Console, Hash, Time, Json, Xml, Yaml, Regex, RegexSafe,
+Process, ProcessCapture, App, and the Testing family) plus the `_kernel/` host
+boundaries.  This is the stage-2 self-hosting milestone the #2592 scoping note
+flagged as blocked: the self-hosted emitter previously aborted on the first
+package.
+
+`lyric-stdlib/lyric.toml` stays the **bootstrap smoke set** built by the F#
+stage-0 emitter (`scripts/bootstrap.sh`), which only handles that subset; the new
+`lyric-stdlib/lyric.full.toml` is the self-hosted verification target.  As the F#
+emitter is retired (docs/23), packages migrate from the full manifest into the
+bootstrap one.
+
+What landed:
+
+- **Type-alias re-export resolution** (`type_checker/typechecker_resolver.l`):
+  the type resolver now follows a `pub alias X = Pkg.Type` re-export
+  (`DKTypeAlias`) to its target instead of emitting a spurious T0013 "'X' is not
+  a type" (the alias symbol carries no `TypeId`).  The path lookup
+  (`resolveAliasPath`) prefers a concrete (non-alias) type symbol of the target's
+  final segment, so the stdlib's `pub alias Random = Std.RandomHost.Random` (where
+  the alias and the extern type share the simple name `Random`) resolves to the
+  underlying extern type rather than looping on itself.  A chained-alias
+  expansion is bounded to 64 hops so a malformed cycle (`alias A = B` /
+  `alias B = A`) yields a clean **T0017** diagnostic instead of recursing to a
+  stack overflow (#2607).  A bounded counter (not a visited-name set) is used
+  because the F# stage-0 bootstrap emitter, which compiles this file, cannot yet
+  codegen the `List[String]` threading a visited set would require — the same
+  depth-bound technique the YAML/JSON parser uses for nested collections.
+  Regression-tested by `typechecker_self_test.l` (`type alias resolves`,
+  `type alias chain resolves`, `type alias to generic resolves`,
+  `cyclic type alias rejected`).
+- **Per-package diagnostic context** (`diagnostic_util.l`,
+  `msil/bridge.l`): project (multi-package) builds now prefix each type/mode/mono
+  diagnostic with the owning package name (`Std.Encoding: error[T0043] …`) so a
+  bundle compiling dozens of files names the culprit instead of a bare
+  `error[code] line:col`.
+- **Stdlib source conformance fixes** (no implicit numeric widening, language
+  reference §6): `parse.l` and `yaml.l` integer accumulators widen the digit
+  explicitly (`acc * 10i64 + d.toLong()`); `encoding.l`'s UTF-8 decoder widens
+  byte values to `Int` before code-point arithmetic; `app.l` writes the
+  function-type parameter in grammar form (`main: () -> Unit`, not `func Unit`).
+  The F# stage-0 emitter accepted all of these leniently; the self-hosted
+  type-checker (correctly) rejects them.
+
+Verified: Emitter suite green, the `typechecker` self-test (run via native
+`lyric test` after D-progress-456) green with the new `test "type alias
+resolves"` case, and both the bootstrap (`lyric.toml`) and full
+(`lyric.full.toml`) manifests build through `./bin/lyric`.
+
+Note on #2592's runtime fork: the cross-emitter `slice[T]` ABI fork (F# emits
+`!0[]` arrays, self-hosted emits List-backed slices) is resolved at the source by
+making the self-hosted emitter able to build the bundle — once the shipped
+bundle is produced by the self-hosted path (rewiring `bootstrap.sh`'s stage-1
+bundle step off F# stage-0), both producer and consumer share the List-backed
+representation.  That rewire is the remaining stage-2 step.

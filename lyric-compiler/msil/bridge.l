@@ -462,12 +462,12 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     )
 
     val tcRes = checkWithImportedPackages(pp.file, importedPkgs)
-    if reportAndAbort(tcRes.diagnostics) {
+    if reportAndAbortInPkg(pp.name, tcRes.diagnostics) {
       return false
     }
 
     val mcRes = checkFile(pp.file)
-    if reportAndAbort(mcRes.diagnostics) {
+    if reportAndAbortInPkg(pp.name, mcRes.diagnostics) {
       return false
     }
 
@@ -475,14 +475,14 @@ pub func compileProjectToMsilWithRestoredAndVersion(
 
     // Lower `?` error-propagation (#1475); see the single-file path above.
     val propRes = lowerPropagateFile(elaborated)
-    if reportAndAbort(propRes.diagnostics) {
+    if reportAndAbortInPkg(pp.name, propRes.diagnostics) {
       return false
     }
 
     val derived = deriveFile(propRes.file)
 
     val monoRes = monoFileWithImports(derived, stdlibGenFuncs)
-    if reportAndAbort(monoRes.diagnostics) {
+    if reportAndAbortInPkg(pp.name, monoRes.diagnostics) {
       return false
     }
 
@@ -1124,6 +1124,10 @@ func bundleNameMatches(bundleNames: in List[String], name: in String): Bool {
 // infinite recursion at runtime (lyric-lang #714).
 func reportAndAbort(diags: in List[Diagnostic]): Bool {
   DiagUtil.diagReportAndAbort(diags)
+}
+
+func reportAndAbortInPkg(pkgName: in String, diags: in List[Diagnostic]): Bool {
+  DiagUtil.diagReportAndAbortInPkg(pkgName, diags)
 }
 
 func reportDiagnostics(diags: in List[Diagnostic]): Unit {
