@@ -47,6 +47,10 @@ pub record ClassInfo {
   superName: String             // JVM binary name of superclass, e.g. "java/lang/AbstractStringBuilder"; "" for Object
   methods: List[ClassMethod]  // public non-synthetic non-constructor methods
   constructors: List[ClassMethod]  // public <init> constructors (isStatic=false)
+  // ACC_ABSTRACT (0x0400): true when the class cannot be instantiated directly.
+  // Used by `lowerAutoFfiConstructorCall` to emit a compile-time error instead
+  // of bytecode that throws `InstantiationError` at runtime (#2215).
+  isAbstract: Bool
 }
 
 // ── Constant pool helpers ─────────────────────────────────────────────────────
@@ -217,6 +221,9 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
   if (accessFlags / 8192) % 2 != 0 {
     return None
   }
+  // ACC_ABSTRACT=1024: abstract classes are included (they appear in superclass
+  // chains) but callers must not emit `new` for them (#2215).
+  val isAbstract = (accessFlags / 1024) % 2 != 0
 
   // Resolve this class's binary name.
   val classNameIdx = getS(classMap, toString(thisClassIdx))
@@ -283,7 +290,8 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
             binaryName = binaryName,
             superName = superName,
             methods = methods,
-            constructors = constructors
+            constructors = constructors,
+            isAbstract = isAbstract
           )
         )
       }
@@ -312,6 +320,12 @@ pub func parseClass(b: in List[Int]): Option[ClassInfo] {
   }
 
   Some(
-    value = ClassInfo(binaryName = binaryName, superName = superName, methods = methods, constructors = constructors)
+    value = ClassInfo(
+      binaryName = binaryName,
+      superName = superName,
+      methods = methods,
+      constructors = constructors,
+      isAbstract = isAbstract
+    )
   )
 }

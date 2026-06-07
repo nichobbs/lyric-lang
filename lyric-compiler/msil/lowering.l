@@ -1,32 +1,31 @@
-// msil/lowering.l — High-level MSIL lowering (Stage M84 / Phase R5).
-//
-// Mirrors jvm/lowering.l for the MSIL / .NET PE target.
-//
-// Provides:
-//   MsilType          — typed representation of CLI types.
-//   MInsn             — high-level instruction union; lowerMInsn resolves tokens.
-//   MField / MFunc / MRecord — typed class/method/field descriptors.
-//   MUnion / MEnum / MDistinctType / MRangeType — more IR types.
-//   MPackage          — top-level package descriptor.
-//   lowerMFunc        — lowers an MFunc to a MethodBody.
-//   lowerMRecord      — lowers an MRecord into a LoweringCtx (adds TypeDef/Field/MethodDef rows).
-//   lowerMPackage     — lowers an MPackage to a complete PE byte list.
-//
-// Phase R5 coverage (bootstrap-grade, matching jvm/lowering.l Phase R4):
-//   Primitive types: Int(I4), Long(I8), Double(R8), Bool(Boolean), String, Unit(Void), Char.
-//   Records with primitive or record-typed fields.
-//   Top-level static functions.
-//   Sealed union types (abstract base + derived case classes).
-//   Distinct types and range types (thin newtype wrappers).
-//   Arithmetic, comparison, boolean ops, string ops.
-//   Control flow: if/else, while, match (literal + binding patterns).
-//   Return, function call (static), constructor call (newobj), field access.
-//
-// Not covered in Phase R5 (deferred to R6):
-//   Generics, async, protected types, wire blocks, aspects, FFI (@extern).
-//   Cross-package references beyond the stdlib primitives.
-//   Exception handling (try/catch/finally).
-
+//! msil/lowering.l — High-level MSIL lowering (Stage M84 / Phase R5).
+//!
+//! Mirrors jvm/lowering.l for the MSIL / .NET PE target.
+//!
+//! Provides:
+//!   MsilType          — typed representation of CLI types.
+//!   MInsn             — high-level instruction union; lowerMInsn resolves tokens.
+//!   MField / MFunc / MRecord — typed class/method/field descriptors.
+//!   MUnion / MEnum / MDistinctType / MRangeType — more IR types.
+//!   MPackage          — top-level package descriptor.
+//!   lowerMFunc        — lowers an MFunc to a MethodBody.
+//!   lowerMRecord      — lowers an MRecord into a LoweringCtx (adds TypeDef/Field/MethodDef rows).
+//!   lowerMPackage     — lowers an MPackage to a complete PE byte list.
+//!
+//! Phase R5 coverage (bootstrap-grade, matching jvm/lowering.l Phase R4):
+//!   Primitive types: Int(I4), Long(I8), Double(R8), Bool(Boolean), String, Unit(Void), Char.
+//!   Records with primitive or record-typed fields.
+//!   Top-level static functions.
+//!   Sealed union types (abstract base + derived case classes).
+//!   Distinct types and range types (thin newtype wrappers).
+//!   Arithmetic, comparison, boolean ops, string ops.
+//!   Control flow: if/else, while, match (literal + binding patterns).
+//!   Return, function call (static), constructor call (newobj), field access.
+//!
+//! Not covered in Phase R5 (deferred to R6):
+//!   Generics, async, protected types, wire blocks, aspects, FFI (@extern).
+//!   Cross-package references beyond the stdlib primitives.
+//!   Exception handling (try/catch/finally).
 package Msil.Lowering
 
 import Msil.Kernel
@@ -38,7 +37,6 @@ import Std.Core
 import Std.Collections
 
 // ── MsilType ──────────────────────────────────────────────────────────────────
-
 // CLI element types supported by this lowering layer.
 pub union MsilType {
   case MInt        // System.Int32   (ELEMENT_TYPE_I4  = 0x08)
@@ -80,7 +78,7 @@ pub union MsilType {
   case MMapOf(keyTy: MsilType, valTy: MsilType)
   // Lyric List[T] with a CONCRETE runtime instance — a genuine
   // `List`1<elemTy>` (not the legacy `List<object>` that `MListOf` tracks).
-  // Stage 2 of the F#-compatible object model (#2361): when the element type
+  // Stage 2 of the F#-compatible object model: when the element type
   // is a reference type the instance, its construction tokens, and its method
   // MemberRefs are all the closed generic instantiation, so the signature
   // encodes `GENERICINST List`1<Foo>` (matching the F# emitter) and a returned
@@ -94,7 +92,7 @@ pub union MsilType {
   // Lyric Map[K, V] with a CONCRETE runtime instance — a genuine
   // `Dictionary`2<keyTy,valTy>` (not the legacy `Dictionary<object,object>`
   // that `MMapOf` tracks).  The concrete counterpart of `MConcreteList` for
-  // maps (#2361); op sites route through `MDictOp(op, keyTy, valTy)`.
+  // maps; op sites route through `MDictOp(op, keyTy, valTy)`.
   case MConcreteMap(keyTy: MsilType, valTy: MsilType)
   // System.Byte (ELEMENT_TYPE_U1 = 0x05).  Used for `slice[Byte]` elements
   // so cross-package signatures match the F# stdlib's `byte[]` (e.g.
@@ -161,30 +159,30 @@ pub union MsilType {
 // with a compressed TypeDefOrRef token; this helper returns the prefix only).
 pub func elementTypeByte(t: in MsilType): Int {
   match t {
-    case MVoid      -> 0x01
-    case MBool      -> 0x02
-    case MChar      -> 0x03
-    case MInt       -> 0x08
-    case MLong      -> 0x0A
-    case MDouble    -> 0x0D
-    case MString    -> 0x0E
-    case MObject          -> 0x1C
-    case MClass(_)        -> 0x12
-    case MTypeVar(_)      -> 0x13  // prefix only; index byte emitted separately by bufMsilType
-    case MNativeInt       -> 0x18
+    case MVoid -> 0x01
+    case MBool -> 0x02
+    case MChar -> 0x03
+    case MInt -> 0x08
+    case MLong -> 0x0A
+    case MDouble -> 0x0D
+    case MString -> 0x0E
+    case MObject -> 0x1C
+    case MClass(_) -> 0x12
+    case MTypeVar(_) -> 0x13  // prefix only; index byte emitted separately by bufMsilType
+    case MNativeInt -> 0x18
     case MGenericInst(_, _, _) -> 0x15  // prefix only; full encoding via bufMsilType
-    case MListOf(_)       -> 0x1C  // same as Object: runtime rep is List<object>
-    case MMapOf(_, _)     -> 0x1C  // same as Object: runtime rep is Dictionary<object,object>
+    case MListOf(_) -> 0x1C  // same as Object: runtime rep is List<object>
+    case MMapOf(_, _) -> 0x1C  // same as Object: runtime rep is Dictionary<object,object>
     case MConcreteList(_) -> 0x15  // GENERICINST prefix; full List`1<elem> via bufMsilType
     case MConcreteMap(_, _) -> 0x15  // GENERICINST prefix; full Dictionary`2<k,v> via bufMsilType
-    case MByte            -> 0x05  // ELEMENT_TYPE_U1
-    case MArray(_)        -> 0x1D  // ELEMENT_TYPE_SZARRAY prefix; element follows (bufMsilType)
+    case MByte -> 0x05  // ELEMENT_TYPE_U1
+    case MArray(_) -> 0x1D  // ELEMENT_TYPE_SZARRAY prefix; element follows (bufMsilType)
     case MValueTypeRef(_, _) -> 0x11  // ELEMENT_TYPE_VALUETYPE prefix; TypeRef follows (bufMsilType)
-    case MClassRef(_, _)     -> 0x12  // ELEMENT_TYPE_CLASS prefix; TypeRef follows (bufMsilType)
-    case MByRef(_)           -> 0x10  // ELEMENT_TYPE_BYREF prefix; pointee follows (bufMsilType)
+    case MClassRef(_, _) -> 0x12  // ELEMENT_TYPE_CLASS prefix; TypeRef follows (bufMsilType)
+    case MByRef(_) -> 0x10  // ELEMENT_TYPE_BYREF prefix; pointee follows (bufMsilType)
     case MValueTypeGenericInst(_, _, _) -> 0x15  // GENERICINST prefix; VALUETYPE byte + args follow
-    case MIAsyncEnumerable(_)           -> 0x1C  // erased to object in signatures
-    case MGenericInstByName(_, _)       -> 0x15  // GENERICINST prefix; full encoding via bufMsilTypeWithCtx
+    case MIAsyncEnumerable(_) -> 0x1C  // erased to object in signatures
+    case MGenericInstByName(_, _) -> 0x15  // GENERICINST prefix; full encoding via bufMsilTypeWithCtx
   }
 }
 
@@ -194,13 +192,13 @@ pub func elementTypeByte(t: in MsilType): Int {
 // string, class, list/map, generic instance, type variable) uses `ldind.ref`.
 func emitLdindForType(mb: in MethodBody, ty: in MsilType): Unit {
   match ty {
-    case MInt    -> emitLdind_I4(mb)
-    case MLong   -> emitLdind_I8(mb)
+    case MInt -> emitLdind_I4(mb)
+    case MLong -> emitLdind_I8(mb)
     case MDouble -> emitLdind_R8(mb)
-    case MBool   -> emitLdind_I1(mb)
-    case MChar   -> emitLdind_U2(mb)
-    case MByte   -> emitLdind_I1(mb)
-    case _       -> emitLdind_Ref(mb)
+    case MBool -> emitLdind_I1(mb)
+    case MChar -> emitLdind_U2(mb)
+    case MByte -> emitLdind_I1(mb)
+    case _ -> emitLdind_Ref(mb)
   }
 }
 
@@ -209,13 +207,13 @@ func emitLdindForType(mb: in MethodBody, ty: in MsilType): Unit {
 // parameter.
 func emitStindForType(mb: in MethodBody, ty: in MsilType): Unit {
   match ty {
-    case MInt    -> emitStind_I4(mb)
-    case MLong   -> emitStind_I8(mb)
+    case MInt -> emitStind_I4(mb)
+    case MLong -> emitStind_I8(mb)
     case MDouble -> emitStind_R8(mb)
-    case MBool   -> emitStind_I1(mb)
-    case MChar   -> emitStind_I2(mb)
-    case MByte   -> emitStind_I1(mb)
-    case _       -> emitStind_Ref(mb)
+    case MBool -> emitStind_I1(mb)
+    case MChar -> emitStind_I2(mb)
+    case MByte -> emitStind_I1(mb)
+    case _ -> emitStind_Ref(mb)
   }
 }
 
@@ -229,11 +227,11 @@ func emitStindForType(mb: in MethodBody, ty: in MsilType): Unit {
 // a `Unit`/`void` *return* type still encodes as 0x01.
 func genericArgType(t: in MsilType): MsilType {
   match t {
-    case MVoid          -> MObject
+    case MVoid -> MObject
     // Recurse into array elements so a `slice[Unit]` argument encodes as
     // `object[]` rather than the illegal `void[]` (#1582).
-    case MArray(elem)   -> MArray(elemTy = genericArgType(elem))
-    case _              -> t
+    case MArray(elem) -> MArray(elemTy = genericArgType(elem))
+    case _ -> t
   }
 }
 
@@ -296,7 +294,7 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
     // `bufMsilTypeWithCtx`, which emits the real instantiation; this path is
     // only reached for BCL-extern sigs and context-free generic-arg blobs,
     // where the concrete encoding isn't required.
-    case MConcreteList(_)   -> bufU1(w, 0x1C)
+    case MConcreteList(_) -> bufU1(w, 0x1C)
     case MConcreteMap(_, _) -> bufU1(w, 0x1C)
     // In-bundle generic instantiation needs the LoweringCtx to resolve the
     // TypeDef row, so the context-free encoder degrades to ELEMENT_TYPE_OBJECT
@@ -419,8 +417,7 @@ pub func buildFieldSigWithCtx(t: in MsilType, ctx: in LoweringCtx): List[Byte] {
 
 // Context-aware variant of `buildStaticMethodSig`.  Encodes `MClass`
 // parameters/returns concretely (CLASS + TypeDefOrRef) via `bufMsilTypeWithCtx`.
-pub func buildStaticMethodSigWithCtx(params: in List[MsilType], ret: in MsilType,
-                                     ctx: in LoweringCtx): List[Byte] {
+pub func buildStaticMethodSigWithCtx(params: in List[MsilType], ret: in MsilType, ctx: in LoweringCtx): List[Byte] {
   val w = bufNew()
   bufU1(w, 0x00)                     // DEFAULT call convention (static)
   bufU1(w, params.count)             // param count
@@ -435,8 +432,7 @@ pub func buildStaticMethodSigWithCtx(params: in List[MsilType], ret: in MsilType
 
 // Context-aware variant of `buildInstanceMethodSig` (HASTHIS).  Encodes `MClass`
 // parameters/returns concretely (CLASS + TypeDefOrRef) via `bufMsilTypeWithCtx`.
-pub func buildInstanceMethodSigWithCtx(params: in List[MsilType], ret: in MsilType,
-                                       ctx: in LoweringCtx): List[Byte] {
+pub func buildInstanceMethodSigWithCtx(params: in List[MsilType], ret: in MsilType, ctx: in LoweringCtx): List[Byte] {
   val w = bufNew()
   bufU1(w, 0x20)                     // HASTHIS
   bufU1(w, params.count)             // explicit param count (this excluded)
@@ -466,7 +462,6 @@ pub func writeCompressedInt(w: in ByteWriter, v: in Int): Unit {
 }
 
 // ── MInsn — high-level MSIL instructions ─────────────────────────────────────
-
 pub union MInsn {
   // Labels and branching — label IDs are integers allocated by freshLabelMsil in Msil.Codegen
   case MLabel(id: Int)
@@ -612,12 +607,13 @@ pub union MInsn {
   case MLeave(label: Int)              // leave — exit protected region (clears stack, branches)
   case MEndfinally                     // endfinally — exit finally/fault handler
   case MEHClause(                      // meta-insn: register one exception-handler clause
-    flags:        Int,                 //   0=typed catch, 2=finally, 4=fault
-    tryStart:     Int,                 //   label ID for start of protected region
-    tryEnd:       Int,                 //   label ID for first insn after protected region
+    flags: Int,                 //   0=typed catch, 2=finally, 4=fault
+    tryStart: Int,                 //   label ID for start of protected region
+    tryEnd: Int,                 //   label ID for first insn after protected region
     handlerStart: Int,                 //   label ID for start of handler code
-    handlerEnd:   Int,                 //   label ID for first insn after handler code
-    catchToken:   Int)                 //   TypeRef/TypeDef token (0 for finally/fault)
+    handlerEnd: Int,                 //   label ID for first insn after handler code
+    catchToken: Int,
+  )                 //   TypeRef/TypeDef token (0 for finally/fault)
 
   // Deferred-resolution instructions for async SM synthesis.
   // The SM TypeDef row isn't known during Phase 3 (codegen), so tokens are
@@ -658,46 +654,44 @@ pub union MInsn {
 }
 
 // ── MField / MFunc / MRecord ──────────────────────────────────────────────────
-
 pub record MField {
-  flags:     Int        // FieldAttributes (from Msil.Tables FDA_*)
-  name:      String
+  flags: Int        // FieldAttributes (from Msil.Tables FDA_*)
+  name: String
   fieldType: MsilType
 }
 
 pub record MFunc {
-  flags:     Int        // MethodAttributes (from Msil.Tables MDA_*)
-  name:      String
-  params:    List[MsilType]
-  ret:       MsilType
-  insns:     List[MInsn]
-  maxStack:  Int
-  locals:    List[MsilType]   // local variable type list (in order)
+  flags: Int        // MethodAttributes (from Msil.Tables MDA_*)
+  name: String
+  params: List[MsilType]
+  ret: MsilType
+  insns: List[MInsn]
+  maxStack: Int
+  locals: List[MsilType]   // local variable type list (in order)
 }
 
 pub record MRecord {
-  className:       String          // fully-qualified, e.g. "Hello"
-  namespace:       String          // e.g. "" (empty = global) or "My.Ns"
-  baseClass:       String          // fully-qualified, default "System.Object"
-  fields:          List[MField]
-  methods:         List[MFunc]
+  className: String          // fully-qualified, e.g. "Hello"
+  namespace: String          // e.g. "" (empty = global) or "My.Ns"
+  baseClass: String          // fully-qualified, default "System.Object"
+  fields: List[MField]
+  methods: List[MFunc]
   // When true, lowerMRecord synthesises a public no-arg .ctor (default
   // Object .ctor call) instead of a field-parameterised .ctor.
   // Required for IAsyncStateMachine SM classes (fields set individually
   // by the kickoff after newobj).
-  useDefaultCtor:  Bool
+  useDefaultCtor: Bool
   // Type-parameter names for an in-bundle generic record (#2362 / docs/43),
   // in declaration order (e.g. ["T"] for `record Box[T]`).  Empty for a
   // non-generic record.  When non-empty, lowerMRecord emits GenericParam rows
   // (table 0x2A) for this TypeDef, lowers `T`-typed fields to `MTypeVar`, and
   // switches the TypeDef to AutoLayout.
-  generics:        List[String]
+  generics: List[String]
 }
 
 // ── MUnion — sealed class hierarchy ─────────────────────────────────────────
-
 pub record MUnionCase {
-  name:   String            // fully-qualified case class name
+  name: String            // fully-qualified case class name
   fields: List[MField]
   // Type-parameter names this case class re-declares (#2362).  Every case of a
   // generic union carries the union's full parameter list (so `Option_Some` and
@@ -707,47 +701,44 @@ pub record MUnionCase {
 }
 
 pub record MUnion {
-  baseName:   String        // abstract base class name
-  namespace:  String
-  cases:      List[MUnionCase]
-  methods:    List[MFunc]   // methods on the base
+  baseName: String        // abstract base class name
+  namespace: String
+  cases: List[MUnionCase]
+  methods: List[MFunc]   // methods on the base
   // Type-parameter names for an in-bundle generic union (#2362), in declaration
   // order (e.g. ["T", "E"] for `union Result[T, E]`).  Empty for a non-generic
   // union.  Propagated to every case's `generics` list during lowering.
-  generics:   List[String]
+  generics: List[String]
 }
 
 // ── MStaticField — module-level static field (IConst / IVal) ─────────────────
-
 pub record MStaticField {
-  flags:      Int         // FDA_PUBLIC | FDA_STATIC | optionally FDA_LITERAL | FDA_INIT_ONLY | FDA_HAS_DEFAULT
-  name:       String
-  fieldType:  MsilType
+  flags: Int         // FDA_PUBLIC | FDA_STATIC | optionally FDA_LITERAL | FDA_INIT_ONLY | FDA_HAS_DEFAULT
+  name: String
+  fieldType: MsilType
   constValue: Int         // literal value when FDA_LITERAL is set (0 otherwise)
   hasLiteral: Bool        // true if constValue is valid (i.e. FDA_LITERAL field)
-  initInsns:  List[MInsn] // IL to compute initial value for IVal (empty for IConst)
+  initInsns: List[MInsn] // IL to compute initial value for IVal (empty for IConst)
 }
 
 // ── MEnum — CLR enum type ─────────────────────────────────────────────────────
-
 pub record MEnum {
   className: String       // fully-qualified, e.g. "Pkg.Direction"
   namespace: String       // e.g. "Pkg"
-  cases:     List[String] // case names; ordinals = 0..n-1
+  cases: List[String] // case names; ordinals = 0..n-1
 }
 
 // ── MInterface / MImplData ───────────────────────────────────────────────────
-
 pub record MInterfaceMethod {
-  name:   String
+  name: String
   params: List[MsilType]
-  ret:    MsilType
+  ret: MsilType
 }
 
 pub record MInterface {
   className: String       // fully-qualified interface name
   namespace: String
-  methods:   List[MInterfaceMethod]
+  methods: List[MInterfaceMethod]
 }
 
 // Per overridden interface method slot.
@@ -756,9 +747,9 @@ pub record MInterface {
 // looking up the corresponding `*Name` field in the type's MethodDef range.
 pub record MImplSlot {
   ifaceMethodToken: Int   // MethodDef or MemberRef token of the interface method (0 = resolve by name)
-  implMethodToken:  Int   // MethodDef token of the implementing method (0 = resolve by name)
-  ifaceMethodName:  String  // method name on the interface; used when ifaceMethodToken == 0
-  implMethodName:   String  // method name on the implementing type; used when implMethodToken == 0
+  implMethodToken: Int   // MethodDef token of the implementing method (0 = resolve by name)
+  ifaceMethodName: String  // method name on the interface; used when ifaceMethodToken == 0
+  implMethodName: String  // method name on the implementing type; used when implMethodToken == 0
 }
 
 // `MImplData` describes one `impl Iface for Target { … }` block.
@@ -775,40 +766,37 @@ pub record MImplData {
   // The name-based path is the common one: codegen does not know TypeDef rows
   // when it builds MPackage items, so the resolution is deferred to lowerMImpl.
   targetTypeDefRow: Int         // 1-based TypeDef row of the implementing type (0 = resolve by name)
-  ifaceTypeToken:   Int         // TypeDefOrRef coded-index of the interface (0 = resolve by name)
-  slots:            List[MImplSlot]
-  targetTypeName:   String      // fully-qualified, e.g. "Pkg.EnglishGreeter"
-  ifaceTypeName:    String      // fully-qualified, e.g. "Pkg.Greeter"
+  ifaceTypeToken: Int         // TypeDefOrRef coded-index of the interface (0 = resolve by name)
+  slots: List[MImplSlot]
+  targetTypeName: String      // fully-qualified, e.g. "Pkg.EnglishGreeter"
+  ifaceTypeName: String      // fully-qualified, e.g. "Pkg.Greeter"
 }
 
 // ── MOpaque — sealed opaque type ─────────────────────────────────────────────
-
 pub record MOpaque {
-  className:    String    // fully-qualified, e.g. "Pkg.AccountId"
-  namespace:    String
-  fields:       List[MField]    // private storage fields
-  methods:      List[MFunc]     // public methods declared in the package
+  className: String    // fully-qualified, e.g. "Pkg.AccountId"
+  namespace: String
+  fields: List[MField]    // private storage fields
+  methods: List[MFunc]     // public methods declared in the package
   isProjectable: Bool           // true if @projectable — emit twin Exposed TypeDef
 }
 
 // ── MDistinctType / MRangeType — thin newtype wrappers ───────────────────────
-
 pub record MDistinctType {
   className: String
   namespace: String
-  inner:     MsilType    // the wrapped primitive or class type
+  inner: MsilType    // the wrapped primitive or class type
 }
 
 pub record MRangeType {
   className: String
   namespace: String
-  inner:     MsilType
-  minVal:    Long
-  maxVal:    Long
+  inner: MsilType
+  minVal: Long
+  maxVal: Long
 }
 
 // ── MPackageItem — tagged union over all supported item kinds ─────────────────
-
 pub union MPackageItem {
   case MPRecord(rec: MRecord)
   // MPFuncs: top-level functions + optional static fields (IConst / IVal).
@@ -825,7 +813,7 @@ pub union MPackageItem {
 
 pub record MPackage {
   packageName: String
-  items:       List[MPackageItem]
+  items: List[MPackageItem]
 }
 
 // ── Concrete generic-collection operations (epic #2359 Stage 2) ───────────────
@@ -843,6 +831,7 @@ pub union ListOp {
   case LoCastclass // castclass List`1<elemTy>
   case LoToArray   // callvirt ToArray() -> !0[]
 }
+
 pub union DictOp {
   case DoCtor        // newobj Dictionary`2<k,v>::.ctor()
   case DoAdd         // callvirt Add(!0, !1)
@@ -861,36 +850,47 @@ pub union DictOp {
 // they are byte-identical across instantiations — only the parent TypeSpec row
 // differs.
 pub record ListTokens {
-  typeSpec: Int   ctor:     Int   add:      Int   getItem:  Int
-  setItem:  Int   getCount: Int   contains: Int   removeAt: Int
-  toArray:  Int
+  typeSpec: Int
+  ctor: Int
+  add: Int
+  getItem: Int
+  setItem: Int
+  getCount: Int
+  contains: Int
+  removeAt: Int
+  toArray: Int
 }
 
 pub record DictTokens {
-  typeSpec:    Int  ctor:    Int  add:         Int  getItem:  Int
-  setItem:     Int  getCount: Int  containsKey: Int  remove:   Int
+  typeSpec: Int
+  ctor: Int
+  add: Int
+  getItem: Int
+  setItem: Int
+  getCount: Int
+  containsKey: Int
+  remove: Int
 }
 
 // ── LoweringCtx — mutable accumulator for a single-assembly lowering ──────────
-
 pub record LoweringCtx {
-  strings:     StringHeap
-  blobs:       BlobHeap
-  us:          UsHeap
-  guids:       GuidHeap
-  tables:      MetadataTables
-  bodies:      List[MethodBody]
+  strings: StringHeap
+  blobs: BlobHeap
+  us: UsHeap
+  guids: GuidHeap
+  tables: MetadataTables
+  bodies: List[MethodBody]
   // Pre-interned well-known string indices
-  sModule:     Int
-  sObject:     Int
-  sSystem:     Int
-  sMsCorLib:   Int
-  sMsKey:      Int     // blob index of the MS public key token (b03f5f7f11d50a3a)
+  sModule: Int
+  sObject: Int
+  sSystem: Int
+  sMsCorLib: Int
+  sMsKey: Int     // blob index of the MS public key token (b03f5f7f11d50a3a)
   // Well-known TypeRef row indices (1-based)
-  trObject:    Int     // System.Object in System.Runtime
-  trEnum:      Int     // System.Enum in System.Runtime (for CLR enum types)
+  trObject: Int     // System.Object in System.Runtime
+  trEnum: Int     // System.Enum in System.Runtime (for CLR enum types)
   // Well-known AssemblyRef row indices (1-based)
-  arRuntime:   Int     // System.Runtime
+  arRuntime: Int     // System.Runtime
   // Well-known MemberRef row indices (1-based)
   mrObjectCtor: Int    // System.Object::.ctor() — called by synthesised record constructors
   // Resource payload to embed in the PE.  Each resource is encoded as
@@ -914,7 +914,7 @@ pub record LoweringCtx {
   // list (maps don't expose key iteration here) used to copy the registry from
   // the discovery context into the real one.
   typeDefRowByFqn: Map[String, Int]
-  typeDefRowFqns:  List[String]
+  typeDefRowFqns: List[String]
   // Caches of concrete generic-collection tokens (epic #2359 Stage 2), built
   // lazily by `listTokensForLowering` / `dictTokensForLowering` after the
   // discovery pass has populated `typeDefRowByFqn` (so an in-bundle element type
@@ -952,8 +952,14 @@ pub record LoweringCtx {
 // Build and intern the Microsoft framework public key token blob.
 func internMsKeyToken(bh: in BlobHeap): Int {
   val w = bufNew()
-  bufU1(w, 0xB0)  bufU1(w, 0x3F)  bufU1(w, 0x5F)  bufU1(w, 0x7F)
-  bufU1(w, 0x11)  bufU1(w, 0xD5)  bufU1(w, 0x0A)  bufU1(w, 0x3A)
+  bufU1(w, 0xB0)
+  bufU1(w, 0x3F)
+  bufU1(w, 0x5F)
+  bufU1(w, 0x7F)
+  bufU1(w, 0x11)
+  bufU1(w, 0xD5)
+  bufU1(w, 0x0A)
+  bufU1(w, 0x3A)
   internBlob(bh, "__mskey__", bufToList(w))
 }
 
@@ -963,95 +969,116 @@ func internMsKeyToken(bh: in BlobHeap): Int {
 // at the bottom of this function); pass `(0, 0)` for the bootstrap-
 // compatible default.  Consumers thread the manifest's `[package].version`
 // through `Msil.Bridge` (see #1364).
-pub func newLoweringCtx(packageName: in String,
-                        major: in Int, minor: in Int): LoweringCtx {
+pub func newLoweringCtx(packageName: in String, major: in Int, minor: in Int): LoweringCtx {
   val sh = newStringHeap()
   val bh = newBlobHeap()
   val uh = newUsHeap()
   val gh = newGuidHeap()
-  val t  = newMetadataTables()
+  val t = newMetadataTables()
 
   // Intern well-known strings
-  val sModule   = internString(sh, "<Module>")
-  val sObject   = internString(sh, "Object")
-  val sSystem   = internString(sh, "System")
-  val sRuntime  = internString(sh, "System.Runtime")
+  val sModule = internString(sh, "<Module>")
+  val sObject = internString(sh, "Object")
+  val sSystem = internString(sh, "System")
+  val sRuntime = internString(sh, "System.Runtime")
   val sMsCorLib = internString(sh, "mscorlib")
-  val msKey     = internMsKeyToken(bh)
+  val msKey = internMsKeyToken(bh)
 
   // Module row
   val guidW = bufNew()
   var gi = 0
-  while gi < 16 { bufU1(guidW, 0); gi = gi + 1 }
+  while gi < 16 {
+    bufU1(guidW, 0)
+    gi = gi + 1
+  }
   val mvid = appendGuid(gh, bufToList(guidW))
-  addModule(t, ModuleRow(
-    generation = 0, name = sModule, mvid = mvid, encId = 0, encBaseId = 0))
+  addModule(t, ModuleRow(generation = 0, name = sModule, mvid = mvid, encId = 0, encBaseId = 0))
 
   // <Module> TypeDef (always TypeDef[1] per CLI spec)
-  addTypeDef(t, TypeDefRow(
-    flags = 0, typeName = sModule, typeNamespace = 0,
-    extends = 0, fieldList = 1, methodList = 1))
+  addTypeDef(
+    t,
+    TypeDefRow(flags = 0, typeName = sModule, typeNamespace = 0, extends = 0, fieldList = 1, methodList = 1)
+  )
 
   // AssemblyRef[1]: System.Runtime
-  val arRuntime = addAssemblyRef(t, AssemblyRefRow(
-    majorVersion = 10, minorVersion = 0,
-    buildNumber = 0, revisionNumber = 0,
-    flags = 0, publicKeyToken = msKey,
-    name = sRuntime, culture = 0, hashValue = 0))
+  val arRuntime = addAssemblyRef(
+    t,
+    AssemblyRefRow(
+      majorVersion = 10,
+      minorVersion = 0,
+      buildNumber = 0,
+      revisionNumber = 0,
+      flags = 0,
+      publicKeyToken = msKey,
+      name = sRuntime,
+      culture = 0,
+      hashValue = 0
+    )
+  )
 
   // TypeRef[1]: System.Object in System.Runtime
-  val trObject = addTypeRef(t, TypeRefRow(
-    resolutionScope = rsAssemblyRef(arRuntime),
-    typeName = sObject, typeNamespace = sSystem))
+  val trObject = addTypeRef(
+    t,
+    TypeRefRow(resolutionScope = rsAssemblyRef(arRuntime), typeName = sObject, typeNamespace = sSystem)
+  )
 
   // TypeRef[2]: System.Enum in System.Runtime (needed for CLR enum types)
   val sEnum = internString(sh, "Enum")
-  val trEnum = addTypeRef(t, TypeRefRow(
-    resolutionScope = rsAssemblyRef(arRuntime),
-    typeName = sEnum, typeNamespace = sSystem))
+  val trEnum = addTypeRef(
+    t,
+    TypeRefRow(resolutionScope = rsAssemblyRef(arRuntime), typeName = sEnum, typeNamespace = sSystem)
+  )
 
   // MemberRef[1]: System.Object::.ctor() — called from synthesised record constructors
   // to satisfy the CLR verifier rule that every .ctor must call a base constructor
   // before returning (ECMA-335 §I.8.9.6.6; ilverify error ThisUninitReturn).
-  val sCtorName    = internString(sh, ".ctor")
-  val objCtorSig   = buildInstanceMethodSig(newList(), MVoid)
-  val bObjCtorSig  = internBlob(bh, "__object_ctor_sig__", objCtorSig)
-  val mrObjectCtor = addMemberRef(t, MemberRefRow(
-    class     = mrpTypeRef(trObject),
-    name      = sCtorName,
-    signature = bObjCtorSig))
+  val sCtorName = internString(sh, ".ctor")
+  val objCtorSig = buildInstanceMethodSig(newList(), MVoid)
+  val bObjCtorSig = internBlob(bh, "__object_ctor_sig__", objCtorSig)
+  val mrObjectCtor = addMemberRef(
+    t,
+    MemberRefRow(class = mrpTypeRef(trObject), name = sCtorName, signature = bObjCtorSig)
+  )
 
   // Assembly row
   val sPackage = internString(sh, packageName)
-  addAssembly(t, AssemblyRow(
-    hashAlgId = HASH_ALG_SHA1,
-    majorVersion = major, minorVersion = minor,
-    buildNumber = 0, revisionNumber = 0,
-    flags = ASF_NONE, publicKey = 0,
-    name = sPackage, culture = 0))
+  addAssembly(
+    t,
+    AssemblyRow(
+      hashAlgId = HASH_ALG_SHA1,
+      majorVersion = major,
+      minorVersion = minor,
+      buildNumber = 0,
+      revisionNumber = 0,
+      flags = ASF_NONE,
+      publicKey = 0,
+      name = sPackage,
+      culture = 0
+    )
+  )
 
   LoweringCtx(
-    strings      = sh,
-    blobs        = bh,
-    us           = uh,
-    guids        = gh,
-    tables       = t,
-    bodies       = newList(),
-    sModule      = sModule,
-    sObject      = sObject,
-    sSystem      = sSystem,
-    sMsCorLib    = sMsCorLib,
-    sMsKey       = msKey,
-    trObject     = trObject,
-    trEnum       = trEnum,
-    arRuntime    = arRuntime,
+    strings = sh,
+    blobs = bh,
+    us = uh,
+    guids = gh,
+    tables = t,
+    bodies = newList(),
+    sModule = sModule,
+    sObject = sObject,
+    sSystem = sSystem,
+    sMsCorLib = sMsCorLib,
+    sMsKey = msKey,
+    trObject = trObject,
+    trEnum = trEnum,
+    arRuntime = arRuntime,
     mrObjectCtor = mrObjectCtor,
     resourceData = newList(),
     typeDefRowByFqn = newMap(),
-    typeDefRowFqns  = newList(),
-    listTokenCache  = newMap(),
-    dictTokenCache  = newMap(),
-    discovering     = newList(),
+    typeDefRowFqns = newList(),
+    listTokenCache = newMap(),
+    dictTokenCache = newMap(),
+    discovering = newList(),
     typeSpecRowByKey = newMap(),
     memberRefRowByKey = newMap()
   )
@@ -1103,10 +1130,9 @@ pub func parseSemverMajorMinor(version: in String): List[Int] {
     return parts
   }
   val majStr = version.substring(0, firstDot)
-  val rest   = version.substring(firstDot + 1, version.length - firstDot - 1)
+  val rest = version.substring(firstDot + 1, version.length - firstDot - 1)
   val secondDot = rest.indexOf(".")
-  val minStr = if secondDot < 0 { rest }
-               else { rest.substring(0, secondDot) }
+  val minStr = if secondDot < 0 { rest } else { rest.substring(0, secondDot) }
   parts.add(parseIntOr0(majStr))
   parts.add(parseIntOr0(minStr))
   parts
@@ -1115,12 +1141,16 @@ pub func parseSemverMajorMinor(version: in String): List[Int] {
 // Parse an ASCII decimal int, returning 0 on any non-digit / overflow.
 // Local helper to avoid an `Std.Parse` dependency from the lowering layer.
 func parseIntOr0(s: in String): Int {
-  if s.length == 0 { return 0 }
+  if s.length == 0 {
+    return 0
+  }
   var i = 0
   var n = 0
   while i < s.length {
     val ch = s.substring(i, 1)
-    if ch < "0" or ch > "9" { return 0 }
+    if ch < "0" or ch > "9" {
+      return 0
+    }
     n = n * 10 + semverParseDigit(ch)
     i = i + 1
   }
@@ -1128,17 +1158,29 @@ func parseIntOr0(s: in String): Int {
 }
 
 func semverParseDigit(ch: in String): Int {
-  if ch == "0" { 0 }
-  else if ch == "1" { 1 }
-  else if ch == "2" { 2 }
-  else if ch == "3" { 3 }
-  else if ch == "4" { 4 }
-  else if ch == "5" { 5 }
-  else if ch == "6" { 6 }
-  else if ch == "7" { 7 }
-  else if ch == "8" { 8 }
-  else if ch == "9" { 9 }
-  else { 0 }
+  if ch == "0" {
+    0
+  } else if ch == "1" {
+    1
+  } else if ch == "2" {
+    2
+  } else if ch == "3" {
+    3
+  } else if ch == "4" {
+    4
+  } else if ch == "5" {
+    5
+  } else if ch == "6" {
+    6
+  } else if ch == "7" {
+    7
+  } else if ch == "8" {
+    8
+  } else if ch == "9" {
+    9
+  } else {
+    0
+  }
 }
 
 // Add a new AssemblyRef row for a BCL / framework assembly and return
@@ -1146,14 +1188,22 @@ func semverParseDigit(ch: in String): Int {
 // token (`b03f5f7f11d50a3a`) so the loader binds against the
 // strong-named host runtime assemblies.  Lyric package refs use
 // `ctxAddLyricPackageAssemblyRef` below (no public key token).
-pub func ctxAddAssemblyRef(ctx: in LoweringCtx, name: in String,
-                           major: in Int, minor: in Int): Int {
+pub func ctxAddAssemblyRef(ctx: in LoweringCtx, name: in String, major: in Int, minor: in Int): Int {
   val sName = ctxInternStr(ctx, name)
-  addAssemblyRef(ctx.tables, AssemblyRefRow(
-    majorVersion = major, minorVersion = minor,
-    buildNumber = 0, revisionNumber = 0,
-    flags = 0, publicKeyToken = ctx.sMsKey,
-    name = sName, culture = 0, hashValue = 0))
+  addAssemblyRef(
+    ctx.tables,
+    AssemblyRefRow(
+      majorVersion = major,
+      minorVersion = minor,
+      buildNumber = 0,
+      revisionNumber = 0,
+      flags = 0,
+      publicKeyToken = ctx.sMsKey,
+      name = sName,
+      culture = 0,
+      hashValue = 0
+    )
+  )
 }
 
 // Add an AssemblyRef row for an unsigned Lyric package and return its
@@ -1162,47 +1212,55 @@ pub func ctxAddAssemblyRef(ctx: in LoweringCtx, name: in String,
 // `publicKeyToken = 0` — otherwise the loader rejects the bind with a
 // public-key-token mismatch.  Version threading is tracked in #1364;
 // today the major/minor parameters carry through directly.
-pub func ctxAddLyricPackageAssemblyRef(ctx: in LoweringCtx, name: in String,
-                                       major: in Int, minor: in Int): Int {
+pub func ctxAddLyricPackageAssemblyRef(ctx: in LoweringCtx, name: in String, major: in Int, minor: in Int): Int {
   val sName = ctxInternStr(ctx, name)
-  addAssemblyRef(ctx.tables, AssemblyRefRow(
-    majorVersion = major, minorVersion = minor,
-    buildNumber = 0, revisionNumber = 0,
-    flags = 0, publicKeyToken = 0,
-    name = sName, culture = 0, hashValue = 0))
+  addAssemblyRef(
+    ctx.tables,
+    AssemblyRefRow(
+      majorVersion = major,
+      minorVersion = minor,
+      buildNumber = 0,
+      revisionNumber = 0,
+      flags = 0,
+      publicKeyToken = 0,
+      name = sName,
+      culture = 0,
+      hashValue = 0
+    )
+  )
 }
 
 // Add a TypeRef row and return its 1-based row index.
-pub func ctxAddTypeRef(ctx: in LoweringCtx, namespaceName: in String,
-                       typeName: in String, assemblyRefRow: in Int): Int {
-  val sNs   = ctxInternStr(ctx, namespaceName)
+pub func ctxAddTypeRef(ctx: in LoweringCtx, namespaceName: in String, typeName: in String, assemblyRefRow: in Int): Int {
+  val sNs = ctxInternStr(ctx, namespaceName)
   val sName = ctxInternStr(ctx, typeName)
-  addTypeRef(ctx.tables, TypeRefRow(
-    resolutionScope = rsAssemblyRef(assemblyRefRow),
-    typeName = sName, typeNamespace = sNs))
+  addTypeRef(
+    ctx.tables,
+    TypeRefRow(resolutionScope = rsAssemblyRef(assemblyRefRow), typeName = sName, typeNamespace = sNs)
+  )
 }
 
 // Add a MemberRef row (external method reference) and return its 1-based row index.
-pub func ctxAddMemberRef(ctx: in LoweringCtx, parentTypeRefRow: in Int,
-                         methodName: in String, sigKey: in String,
-                         sig: in List[Byte]): Int {
+pub func ctxAddMemberRef(
+  ctx: in LoweringCtx,
+  parentTypeRefRow: in Int,
+  methodName: in String,
+  sigKey: in String,
+  sig: in List[Byte],
+): Int {
   val sName = ctxInternStr(ctx, methodName)
-  val bSig  = ctxInternBlob(ctx, sigKey, sig)
-  addMemberRef(ctx.tables, MemberRefRow(
-    class = mrpTypeRef(parentTypeRefRow),
-    name  = sName,
-    signature = bSig))
+  val bSig = ctxInternBlob(ctx, sigKey, sig)
+  addMemberRef(ctx.tables, MemberRefRow(class = mrpTypeRef(parentTypeRefRow), name = sName, signature = bSig))
 }
 
 // Add a TypeSpec row and return its 1-based row index.
 // sigBytes is a type-signature blob (e.g. GENERICINST encoding).
-pub func ctxAddTypeSpec(ctx: in LoweringCtx, sigKey: in String,
-                        sigBytes: in List[Byte]): Int {
+pub func ctxAddTypeSpec(ctx: in LoweringCtx, sigKey: in String, sigBytes: in List[Byte]): Int {
   match mapGet(ctx.typeSpecRowByKey, sigKey) {
     case Some(row) -> row
     case None -> {
       val bSig = ctxInternBlob(ctx, sigKey, sigBytes)
-      val row  = addTypeSpec(ctx.tables, TypeSpecRow(signature = bSig))
+      val row = addTypeSpec(ctx.tables, TypeSpecRow(signature = bSig))
       ctx.typeSpecRowByKey.add(sigKey, row)
       row
     }
@@ -1247,10 +1305,9 @@ pub func buildAtmbStartOpenSig(): List[Byte] {
 // TypeDef row is not known at Phase 3 build time.  At Phase 5 lowering the
 // SM TypeDef row has been allocated, so we can look it up by name and encode
 // the concrete TypeDef token (0x02000000 + row) as the GENERICINST argument.
-pub func buildMethodSpecBlobWithCtx(ctx: in LoweringCtx,
-                                     smFqn: in String): List[Byte] {
-  val smRow    = findTypeDefRowByName(ctx, smFqn)
-  val smCoded  = tdrTypeDef(smRow)  // TypeDefOrRef coded-index: row*4+0
+pub func buildMethodSpecBlobWithCtx(ctx: in LoweringCtx, smFqn: in String): List[Byte] {
+  val smRow = findTypeDefRowByName(ctx, smFqn)
+  val smCoded = tdrTypeDef(smRow)  // TypeDefOrRef coded-index: row*4+0
   val w = bufNew()
   bufU1(w, 0x0A)                 // GENERICINST (method instantiation)
   writeCompressedInt(w, 1)       // 1 generic argument
@@ -1278,12 +1335,9 @@ pub func buildArrayEmptyOpenSig(): List[Byte] {
 // MethodDefOrRef coded index (use `mdorMemberRef`/`mdorMethodDef`) naming the
 // open generic method; `sig` is a `buildMethodSpecBlob` instantiation blob.
 // Returns the 1-based row index; the call site uses `0x2B000000 + row`.
-pub func ctxAddMethodSpec(ctx: in LoweringCtx, methodCoded: in Int,
-                          sigKey: in String, sig: in List[Byte]): Int {
+pub func ctxAddMethodSpec(ctx: in LoweringCtx, methodCoded: in Int, sigKey: in String, sig: in List[Byte]): Int {
   val bSig = ctxInternBlob(ctx, sigKey, sig)
-  addMethodSpec(ctx.tables, MethodSpecRow(
-    method = methodCoded,
-    instantiation = bSig))
+  addMethodSpec(ctx.tables, MethodSpecRow(method = methodCoded, instantiation = bSig))
 }
 
 // Add a MemberRef row whose parent is a TypeSpec row (for generic instantiations).
@@ -1292,18 +1346,19 @@ pub func ctxAddMethodSpec(ctx: in LoweringCtx, methodCoded: in Int,
 // MethodDeclaration rows and consumer callvirt instructions reference the exact
 // same MemberRef table entry, which the CLR requires for virtual dispatch to
 // resolve correctly.  Returns the 1-based row index.
-pub func ctxAddMemberRefForTypeSpec(ctx: in LoweringCtx, typeSpecRow: in Int,
-                                     methodName: in String, sigKey: in String,
-                                     sig: in List[Byte]): Int {
+pub func ctxAddMemberRefForTypeSpec(
+  ctx: in LoweringCtx,
+  typeSpecRow: in Int,
+  methodName: in String,
+  sigKey: in String,
+  sig: in List[Byte],
+): Int {
   match mapGet(ctx.memberRefRowByKey, sigKey) {
     case Some(row) -> row
     case None -> {
       val sName = ctxInternStr(ctx, methodName)
-      val bSig  = ctxInternBlob(ctx, sigKey, sig)
-      val row   = addMemberRef(ctx.tables, MemberRefRow(
-        class     = mrpTypeSpec(typeSpecRow),
-        name      = sName,
-        signature = bSig))
+      val bSig = ctxInternBlob(ctx, sigKey, sig)
+      val row = addMemberRef(ctx.tables, MemberRefRow(class = mrpTypeSpec(typeSpecRow), name = sName, signature = bSig))
       ctx.memberRefRowByKey.add(sigKey, row)
       row
     }
@@ -1375,8 +1430,7 @@ pub func msilTypeKey(t: in MsilType): String {
 // typeDefOrRef is the compressed TypeDefOrRef coded-index for the open generic.
 // argTypes is the list of concrete type arguments.
 // Returns: 0x15 CLASS typeDefOrRef argCount argType...
-pub func buildGenericInstBlob(typeDefOrRef: in Int,
-                               argTypes: in List[MsilType]): List[Byte] {
+pub func buildGenericInstBlob(typeDefOrRef: in Int, argTypes: in List[MsilType]): List[Byte] {
   val w = bufNew()
   bufU1(w, 0x15)  // ELEMENT_TYPE_GENERICINST
   bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS (reference generic)
@@ -1459,7 +1513,7 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
         gi = gi + 1
       }
     }
-    // Concrete collections (#2361): encode the closed `List`1<elem>` /
+    // Concrete collections: encode the closed `List`1<elem>` /
     // `Dictionary`2<k,v>` instantiation as GENERICINST CLASS + TypeRef so a
     // self-hosted-compiled signature matches the F# emitter's byte-for-byte
     // and a returned `List<Foo>` binds against an F#-compiled consumer.  The
@@ -1502,7 +1556,11 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
         tdrTypeDef(defRow)
       } else {
         val refRow = findTypeRefRowByName(ctx, headFqn)
-        if refRow > 0 { tdrTypeRef(refRow) } else { 0 }
+        if refRow > 0 {
+          tdrTypeRef(refRow)
+        } else {
+          0
+        }
       }
       if coded > 0 {
         bufU1(w, 0x15)  // GENERICINST
@@ -1526,9 +1584,7 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
 // so that MClass type arguments are encoded as CLASS + TypeDefOrRef rather
 // than degrading to ELEMENT_TYPE_OBJECT.  Required for correct isinst /
 // castclass TypeSpecs on generic union case classes (e.g. Option_Some<Keyword>).
-pub func buildGenericInstBlobWithCtx(ctx: in LoweringCtx,
-                                      typeDefOrRef: in Int,
-                                      argTypes: in List[MsilType]): List[Byte] {
+pub func buildGenericInstBlobWithCtx(ctx: in LoweringCtx, typeDefOrRef: in Int, argTypes: in List[MsilType]): List[Byte] {
   val w = bufNew()
   bufU1(w, 0x15)  // ELEMENT_TYPE_GENERICINST
   bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS (reference generic)
@@ -1545,9 +1601,9 @@ pub func buildGenericInstBlobWithCtx(ctx: in LoweringCtx,
 // Context-aware GENERICINST blob for value-type generics (ELEMENT_TYPE_VALUETYPE = 0x11).
 // Required for AsyncTaskMethodBuilder<T> and other BCL structs — buildGenericInstBlobWithCtx
 // incorrectly emits ELEMENT_TYPE_CLASS (0x12) for those, causing a CLR value-type mismatch.
-pub func buildValueTypeGenericInstBlobWithCtx(ctx: in LoweringCtx,
-                                               typeDefOrRef: in Int,
-                                               argTypes: in List[MsilType]): List[Byte] {
+pub func buildValueTypeGenericInstBlobWithCtx(
+  ctx: in LoweringCtx, typeDefOrRef: in Int, argTypes: in List[MsilType]
+): List[Byte] {
   val w = bufNew()
   bufU1(w, 0x15)  // ELEMENT_TYPE_GENERICINST
   bufU1(w, 0x11)  // ELEMENT_TYPE_VALUETYPE (struct generic, e.g. AsyncTaskMethodBuilder<T>)
@@ -1589,10 +1645,8 @@ pub func buildAwaitUnsafeOnCompletedOpenSig(): List[Byte] {
 // arg0 is the concrete awaiter type (e.g. TaskAwaiter<Int>).
 // SM is the in-bundle state machine sealed class identified by smFqn; its
 // TypeDef token is resolved at Phase 5 lowering time.
-func buildMethodSpec2ArgBlobWithCtx(ctx: in LoweringCtx,
-                                     arg0: in MsilType,
-                                     smFqn: in String): List[Byte] {
-  val smRow   = findTypeDefRowByName(ctx, smFqn)
+func buildMethodSpec2ArgBlobWithCtx(ctx: in LoweringCtx, arg0: in MsilType, smFqn: in String): List[Byte] {
+  val smRow = findTypeDefRowByName(ctx, smFqn)
   val smCoded = tdrTypeDef(smRow)
   val w = bufNew()
   bufU1(w, 0x0A)              // GENERICINST (method instantiation)
@@ -1604,90 +1658,89 @@ func buildMethodSpec2ArgBlobWithCtx(ctx: in LoweringCtx,
 }
 
 // ── Method body lowering ──────────────────────────────────────────────────────
-
 // Lower one MInsn to opcode bytes in `mb`.
 pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Unit {
   match insn {
-    case MLabel(id)         -> mbMarkLabel(mb, id)
-    case MBr(lbl)           -> emitBr(mb, lbl)
-    case MBrTrue(lbl)       -> emitBrtrue(mb, lbl)
-    case MBrFalse(lbl)      -> emitBrfalse(mb, lbl)
-    case MBrEq(lbl)         -> emitBeq(mb, lbl)
-    case MBrNe(lbl)         -> emitBne_Un(mb, lbl)
-    case MBrLt(lbl)         -> emitBlt(mb, lbl)
-    case MBrGt(lbl)         -> emitBgt(mb, lbl)
-    case MBrLe(lbl)         -> emitBle(mb, lbl)
-    case MBrGe(lbl)         -> emitBge(mb, lbl)
-    case MNop               -> emitNop(mb)
-    case MRet               -> emitRet(mb)
-    case MLdNull            -> emitLdnull(mb)
-    case MLdcI4(v)          -> emitLdc_I4(mb, v)
-    case MLdcI8(v)          -> emitLdc_I8(mb, v)
-    case MLdcR8(v)          -> emitLdc_R8(mb, v)
-    case MLdStr(token)      -> emitLdstr(mb, token)
-    case MLdarg(slot)       -> emitLdarg(mb, slot)
-    case MStarg(slot)       -> emitStarg_S(mb, slot)
-    case MLdloc(slot)       -> emitLdloc(mb, slot)
-    case MStloc(slot)       -> emitStloc(mb, slot)
-    case MLdloca(slot)      -> emitLdloca_S(mb, slot)
-    case MLdarga(slot)      -> emitLdarga_S(mb, slot)
-    case MLdind(ty)         -> emitLdindForType(mb, ty)
-    case MStind(ty)         -> emitStindForType(mb, ty)
-    case MAdd               -> emitAdd(mb)
-    case MSub               -> emitSub(mb)
-    case MMul               -> emitMul(mb)
-    case MDiv               -> emitDiv(mb)
-    case MRem               -> emitRem(mb)
-    case MAnd               -> emitAnd(mb)
-    case MOr                -> emitOr(mb)
-    case MXor               -> emitXor(mb)
-    case MNeg               -> emitNeg(mb)
-    case MNot               -> emitNot(mb)
-    case MShl               -> emitShl(mb)
-    case MShr               -> emitShr(mb)
-    case MShrUn             -> emitShrUn(mb)
-    case MCeq               -> emitCeq(mb)
-    case MClt               -> emitClt(mb)
-    case MCgt               -> emitCgt(mb)
-    case MConvI4            -> emitConv_I4(mb)
-    case MConvI8            -> emitConv_I8(mb)
-    case MConvR8            -> emitConv_R8(mb)
-    case MConvU1            -> emitConv_U1(mb)
-    case MConvU2            -> emitConv_U2(mb)
-    case MNewobj(tok)       -> emitNewobj(mb, tok)
-    case MLdfld(tok)        -> emitLdfld(mb, tok)
-    case MLdflda(tok)       -> emitLdflda(mb, tok)
-    case MStfld(tok)        -> emitStfld(mb, tok)
-    case MLdsfld(tok)       -> emitLdsfld(mb, tok)
-    case MStsfld(tok)       -> emitStsfld(mb, tok)
-    case MCall(tok)         -> emitCall(mb, tok)
-    case MCallvirt(tok)     -> emitCallvirt(mb, tok)
-    case MCastclass(tok)    -> emitCastclass(mb, tok)
+    case MLabel(id) -> mbMarkLabel(mb, id)
+    case MBr(lbl) -> emitBr(mb, lbl)
+    case MBrTrue(lbl) -> emitBrtrue(mb, lbl)
+    case MBrFalse(lbl) -> emitBrfalse(mb, lbl)
+    case MBrEq(lbl) -> emitBeq(mb, lbl)
+    case MBrNe(lbl) -> emitBne_Un(mb, lbl)
+    case MBrLt(lbl) -> emitBlt(mb, lbl)
+    case MBrGt(lbl) -> emitBgt(mb, lbl)
+    case MBrLe(lbl) -> emitBle(mb, lbl)
+    case MBrGe(lbl) -> emitBge(mb, lbl)
+    case MNop -> emitNop(mb)
+    case MRet -> emitRet(mb)
+    case MLdNull -> emitLdnull(mb)
+    case MLdcI4(v) -> emitLdc_I4(mb, v)
+    case MLdcI8(v) -> emitLdc_I8(mb, v)
+    case MLdcR8(v) -> emitLdc_R8(mb, v)
+    case MLdStr(token) -> emitLdstr(mb, token)
+    case MLdarg(slot) -> emitLdarg(mb, slot)
+    case MStarg(slot) -> emitStarg_S(mb, slot)
+    case MLdloc(slot) -> emitLdloc(mb, slot)
+    case MStloc(slot) -> emitStloc(mb, slot)
+    case MLdloca(slot) -> emitLdloca_S(mb, slot)
+    case MLdarga(slot) -> emitLdarga_S(mb, slot)
+    case MLdind(ty) -> emitLdindForType(mb, ty)
+    case MStind(ty) -> emitStindForType(mb, ty)
+    case MAdd -> emitAdd(mb)
+    case MSub -> emitSub(mb)
+    case MMul -> emitMul(mb)
+    case MDiv -> emitDiv(mb)
+    case MRem -> emitRem(mb)
+    case MAnd -> emitAnd(mb)
+    case MOr -> emitOr(mb)
+    case MXor -> emitXor(mb)
+    case MNeg -> emitNeg(mb)
+    case MNot -> emitNot(mb)
+    case MShl -> emitShl(mb)
+    case MShr -> emitShr(mb)
+    case MShrUn -> emitShrUn(mb)
+    case MCeq -> emitCeq(mb)
+    case MClt -> emitClt(mb)
+    case MCgt -> emitCgt(mb)
+    case MConvI4 -> emitConv_I4(mb)
+    case MConvI8 -> emitConv_I8(mb)
+    case MConvR8 -> emitConv_R8(mb)
+    case MConvU1 -> emitConv_U1(mb)
+    case MConvU2 -> emitConv_U2(mb)
+    case MNewobj(tok) -> emitNewobj(mb, tok)
+    case MLdfld(tok) -> emitLdfld(mb, tok)
+    case MLdflda(tok) -> emitLdflda(mb, tok)
+    case MStfld(tok) -> emitStfld(mb, tok)
+    case MLdsfld(tok) -> emitLdsfld(mb, tok)
+    case MStsfld(tok) -> emitStsfld(mb, tok)
+    case MCall(tok) -> emitCall(mb, tok)
+    case MCallvirt(tok) -> emitCallvirt(mb, tok)
+    case MCastclass(tok) -> emitCastclass(mb, tok)
     case MListOp(op, elemTy) -> {
       val lt = listTokensForLowering(ctx, elemTy)
       match op {
-        case LoCtor      -> emitNewobj(mb, lt.ctor)
-        case LoAdd       -> emitCallvirt(mb, lt.add)
-        case LoGetItem   -> emitCallvirt(mb, lt.getItem)
-        case LoSetItem   -> emitCallvirt(mb, lt.setItem)
-        case LoGetCount  -> emitCallvirt(mb, lt.getCount)
-        case LoContains  -> emitCallvirt(mb, lt.contains)
-        case LoRemoveAt  -> emitCallvirt(mb, lt.removeAt)
+        case LoCtor -> emitNewobj(mb, lt.ctor)
+        case LoAdd -> emitCallvirt(mb, lt.add)
+        case LoGetItem -> emitCallvirt(mb, lt.getItem)
+        case LoSetItem -> emitCallvirt(mb, lt.setItem)
+        case LoGetCount -> emitCallvirt(mb, lt.getCount)
+        case LoContains -> emitCallvirt(mb, lt.contains)
+        case LoRemoveAt -> emitCallvirt(mb, lt.removeAt)
         case LoCastclass -> emitCastclass(mb, lt.typeSpec)
-        case LoToArray   -> emitCallvirt(mb, lt.toArray)
+        case LoToArray -> emitCallvirt(mb, lt.toArray)
       }
     }
     case MDictOp(op, keyTy, valTy) -> {
       val dt = dictTokensForLowering(ctx, keyTy, valTy)
       match op {
-        case DoCtor        -> emitNewobj(mb, dt.ctor)
-        case DoAdd         -> emitCallvirt(mb, dt.add)
-        case DoGetItem     -> emitCallvirt(mb, dt.getItem)
-        case DoSetItem     -> emitCallvirt(mb, dt.setItem)
-        case DoGetCount    -> emitCallvirt(mb, dt.getCount)
+        case DoCtor -> emitNewobj(mb, dt.ctor)
+        case DoAdd -> emitCallvirt(mb, dt.add)
+        case DoGetItem -> emitCallvirt(mb, dt.getItem)
+        case DoSetItem -> emitCallvirt(mb, dt.setItem)
+        case DoGetCount -> emitCallvirt(mb, dt.getCount)
         case DoContainsKey -> emitCallvirt(mb, dt.containsKey)
-        case DoRemove      -> emitCallvirt(mb, dt.remove)
-        case DoCastclass   -> emitCastclass(mb, dt.typeSpec)
+        case DoRemove -> emitCallvirt(mb, dt.remove)
+        case DoCastclass -> emitCastclass(mb, dt.typeSpec)
       }
     }
     case MCastclassByName(name) -> {
@@ -1704,7 +1757,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
       }
       emitCastclass(mb, tok)
     }
-    case MIsinst(tok)       -> emitIsinst(mb, tok)
+    case MIsinst(tok) -> emitIsinst(mb, tok)
     case MIsinstByName(name) -> {
       val defRow = findTypeDefRowByName(ctx, name)
       val tok = if defRow > 0 {
@@ -1738,7 +1791,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
       val tok = if defRow > 0 {
         val codedIdx = tdrTypeDef(defRow)
         val sigKey = "typespec_isinst_def_" + name + "_" + taKey
-        val blob   = buildGenericInstBlobWithCtx(ctx, codedIdx, typeArgs)
+        val blob = buildGenericInstBlobWithCtx(ctx, codedIdx, typeArgs)
         val specRow = ctxAddTypeSpec(ctx, sigKey, blob)
         0x1B000000 + specRow
       } else {
@@ -1746,7 +1799,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         if refRow > 0 {
           val codedIdx = tdrTypeRef(refRow)
           val sigKey = "typespec_isinst_ref_" + name + "_" + taKey
-          val blob   = buildGenericInstBlobWithCtx(ctx, codedIdx, typeArgs)
+          val blob = buildGenericInstBlobWithCtx(ctx, codedIdx, typeArgs)
           val specRow = ctxAddTypeSpec(ctx, sigKey, blob)
           0x1B000000 + specRow
         } else {
@@ -1770,7 +1823,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
       val tok = if defRow > 0 {
         val codedIdx = tdrTypeDef(defRow)
         val sigKey = "typespec_castclass_def_" + name + "_" + taKey
-        val blob   = buildGenericInstBlobWithCtx(ctx, codedIdx, typeArgs)
+        val blob = buildGenericInstBlobWithCtx(ctx, codedIdx, typeArgs)
         val specRow = ctxAddTypeSpec(ctx, sigKey, blob)
         0x1B000000 + specRow
       } else {
@@ -1778,7 +1831,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         if refRow > 0 {
           val codedIdx = tdrTypeRef(refRow)
           val sigKey = "typespec_castclass_ref_" + name + "_" + taKey
-          val blob   = buildGenericInstBlobWithCtx(ctx, codedIdx, typeArgs)
+          val blob = buildGenericInstBlobWithCtx(ctx, codedIdx, typeArgs)
           val specRow = ctxAddTypeSpec(ctx, sigKey, blob)
           0x1B000000 + specRow
         } else {
@@ -1802,21 +1855,21 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
       val defRow = findTypeDefRowByName(ctx, baseName)
       val tok = if defRow > 0 {
         val codedIdx = tdrTypeDef(defRow)
-        val tsKey  = "typespec_ldfld_def_" + baseName + "_" + taKey
-        val blob   = buildGenericInstBlobWithCtx(ctx, codedIdx, typeArgs)
-        val tsRow  = ctxAddTypeSpec(ctx, tsKey, blob)
-        val mrKey  = "mr_ldfld_def_" + baseName + "_" + taKey + "_" + fieldName
-        val mrRow  = ctxAddMemberRefForTypeSpec(ctx, tsRow, fieldName, mrKey, fieldSig)
+        val tsKey = "typespec_ldfld_def_" + baseName + "_" + taKey
+        val blob = buildGenericInstBlobWithCtx(ctx, codedIdx, typeArgs)
+        val tsRow = ctxAddTypeSpec(ctx, tsKey, blob)
+        val mrKey = "mr_ldfld_def_" + baseName + "_" + taKey + "_" + fieldName
+        val mrRow = ctxAddMemberRefForTypeSpec(ctx, tsRow, fieldName, mrKey, fieldSig)
         0x0A000000 + mrRow
       } else {
         val refRow = findTypeRefRowByName(ctx, baseName)
         if refRow > 0 {
           val codedIdx = tdrTypeRef(refRow)
-          val tsKey  = "typespec_ldfld_ref_" + baseName + "_" + taKey
-          val blob   = buildGenericInstBlobWithCtx(ctx, codedIdx, typeArgs)
-          val tsRow  = ctxAddTypeSpec(ctx, tsKey, blob)
-          val mrKey  = "mr_ldfld_ref_" + baseName + "_" + taKey + "_" + fieldName
-          val mrRow  = ctxAddMemberRefForTypeSpec(ctx, tsRow, fieldName, mrKey, fieldSig)
+          val tsKey = "typespec_ldfld_ref_" + baseName + "_" + taKey
+          val blob = buildGenericInstBlobWithCtx(ctx, codedIdx, typeArgs)
+          val tsRow = ctxAddTypeSpec(ctx, tsKey, blob)
+          val mrKey = "mr_ldfld_ref_" + baseName + "_" + taKey + "_" + fieldName
+          val mrRow = ctxAddMemberRefForTypeSpec(ctx, tsRow, fieldName, mrKey, fieldSig)
           0x0A000000 + mrRow
         } else {
           0
@@ -1839,8 +1892,8 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         tai = tai + 1
       }
       val tsBlob = buildGenericInstBlobWithCtx(ctx, codedIdx, typeArgs)
-      val tsKey  = "newobj_ts_gcase_" + toString(typeRefRow) + "_" + taKey
-      val tsRow  = ctxAddTypeSpec(ctx, tsKey, tsBlob)
+      val tsKey = "newobj_ts_gcase_" + toString(typeRefRow) + "_" + taKey
+      val tsRow = ctxAddTypeSpec(ctx, tsKey, tsBlob)
       val ctorSig = buildInstanceMethodSig(ctorParams, MVoid)
       var cpKey = ""
       var cpi = 0
@@ -1863,7 +1916,11 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         tdrTypeDef(defRow)
       } else {
         val refRow = findTypeRefRowByName(ctx, headFqn)
-        if refRow > 0 { tdrTypeRef(refRow) } else { 0 }
+        if refRow > 0 {
+          tdrTypeRef(refRow)
+        } else {
+          0
+        }
       }
       if coded > 0 {
         var taKey = ""
@@ -1873,8 +1930,8 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
           tai = tai + 1
         }
         val tsBlob = buildGenericInstBlobWithCtx(ctx, coded, typeArgs)
-        val tsKey  = "newobj_ts_gname_" + headFqn + "_" + taKey
-        val tsRow  = ctxAddTypeSpec(ctx, tsKey, tsBlob)
+        val tsKey = "newobj_ts_gname_" + headFqn + "_" + taKey
+        val tsRow = ctxAddTypeSpec(ctx, tsKey, tsBlob)
         // Ctx-aware so a concrete CLASS-typed ctor parameter encodes CLASS +
         // TypeDef (matching the TypeDef `.ctor` sig lowerMRecord emits) rather
         // than degrading to object — VAR params encode 0x13 idx either way.
@@ -1892,63 +1949,71 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         panic("Msil.Lowering: MNewobjGenericByName could not resolve TypeDef/TypeRef for '" + headFqn + "'")
       }
     }
-    case MBox(tok)          -> emitBox(mb, tok)
-    case MUnboxAny(tok)     -> emitUnbox_Any(mb, tok)
-    case MNewarr(tok)       -> emitNewarr(mb, tok)
-    case MStelemRef         -> emitStelem_Ref(mb)
-    case MStelem(tok)       -> emitStelem(mb, tok)
-    case MDup               -> emitDup(mb)
-    case MPop               -> emitPop(mb)
-    case MThrow             -> emitThrow(mb)
-    case MLdlen             -> emitLdlen(mb)
-    case MLdelemRef         -> emitLdelem_Ref(mb)
-    case MLdelemU1          -> emitLdelem_U1(mb)
-    case MLdelemI4          -> emitLdelem_I4(mb)
-    case MLdftn(tok)        -> emitLdftn(mb, tok)
-    case MLeave(lbl)        -> emitLeave(mb, lbl)
-    case MEndfinally        -> emitEndfinally(mb)
-    case MEHClause(f, ts, te, hs, he, ct) ->
-      mbAddEHClause(mb, EHClause(
-        flags        = f,
-        tryStart     = ts,
-        tryEnd       = te,
-        handlerStart = hs,
-        handlerEnd   = he,
-        catchToken   = ct))
+    case MBox(tok) -> emitBox(mb, tok)
+    case MUnboxAny(tok) -> emitUnbox_Any(mb, tok)
+    case MNewarr(tok) -> emitNewarr(mb, tok)
+    case MStelemRef -> emitStelem_Ref(mb)
+    case MStelem(tok) -> emitStelem(mb, tok)
+    case MDup -> emitDup(mb)
+    case MPop -> emitPop(mb)
+    case MThrow -> emitThrow(mb)
+    case MLdlen -> emitLdlen(mb)
+    case MLdelemRef -> emitLdelem_Ref(mb)
+    case MLdelemU1 -> emitLdelem_U1(mb)
+    case MLdelemI4 -> emitLdelem_I4(mb)
+    case MLdftn(tok) -> emitLdftn(mb, tok)
+    case MLeave(lbl) -> emitLeave(mb, lbl)
+    case MEndfinally -> emitEndfinally(mb)
+    case MEHClause(f, ts, te, hs, he, ct) -> mbAddEHClause(mb, EHClause(flags = f, tryStart = ts, tryEnd = te, handlerStart = hs, handlerEnd = he, catchToken = ct))
 
     // ── Deferred-resolution instructions (async SM synthesis) ──────────────
 
     case MLdfldByName(ownerFqn, fieldName) -> {
-      val tdRow  = findTypeDefRowByName(ctx, ownerFqn)
-      val fdRow  = findFieldDefRowOfType(ctx, tdRow, fieldName)
-      if fdRow > 0 { emitLdfld(mb, 0x04000000 + fdRow) }
-      else { panic("Msil.Lowering: MLdfldByName could not resolve field '" + fieldName + "' on type '" + ownerFqn + "'") }
+      val tdRow = findTypeDefRowByName(ctx, ownerFqn)
+      val fdRow = findFieldDefRowOfType(ctx, tdRow, fieldName)
+      if fdRow > 0 {
+        emitLdfld(mb, 0x04000000 + fdRow)
+      } else {
+        panic("Msil.Lowering: MLdfldByName could not resolve field '" + fieldName + "' on type '" + ownerFqn + "'")
+      }
     }
     case MLdfldaByName(ownerFqn, fieldName) -> {
-      val tdRow  = findTypeDefRowByName(ctx, ownerFqn)
-      val fdRow  = findFieldDefRowOfType(ctx, tdRow, fieldName)
-      if fdRow > 0 { emitLdflda(mb, 0x04000000 + fdRow) }
-      else { panic("Msil.Lowering: MLdfldaByName could not resolve field '" + fieldName + "' on type '" + ownerFqn + "'") }
+      val tdRow = findTypeDefRowByName(ctx, ownerFqn)
+      val fdRow = findFieldDefRowOfType(ctx, tdRow, fieldName)
+      if fdRow > 0 {
+        emitLdflda(mb, 0x04000000 + fdRow)
+      } else {
+        panic("Msil.Lowering: MLdfldaByName could not resolve field '" + fieldName + "' on type '" + ownerFqn + "'")
+      }
     }
     case MStfldByName(ownerFqn, fieldName) -> {
-      val tdRow  = findTypeDefRowByName(ctx, ownerFqn)
-      val fdRow  = findFieldDefRowOfType(ctx, tdRow, fieldName)
-      if fdRow > 0 { emitStfld(mb, 0x04000000 + fdRow) }
-      else { panic("Msil.Lowering: MStfldByName could not resolve field '" + fieldName + "' on type '" + ownerFqn + "'") }
+      val tdRow = findTypeDefRowByName(ctx, ownerFqn)
+      val fdRow = findFieldDefRowOfType(ctx, tdRow, fieldName)
+      if fdRow > 0 {
+        emitStfld(mb, 0x04000000 + fdRow)
+      } else {
+        panic("Msil.Lowering: MStfldByName could not resolve field '" + fieldName + "' on type '" + ownerFqn + "'")
+      }
     }
     case MNewobjByName(className) -> {
       // Find (or build) a no-arg .ctor MemberRef for the SM class.
       // The SM TypeDef is in-bundle, so resolve to a MethodDef token directly.
-      val tdRow   = findTypeDefRowByName(ctx, className)
+      val tdRow = findTypeDefRowByName(ctx, className)
       val ctorRow = findMethodDefRowOfType(ctx, tdRow, ".ctor")
-      if ctorRow > 0 { emitNewobj(mb, 0x06000000 + ctorRow) }
-      else { panic("Msil.Lowering: MNewobjByName could not resolve .ctor for type '" + className + "'") }
+      if ctorRow > 0 {
+        emitNewobj(mb, 0x06000000 + ctorRow)
+      } else {
+        panic("Msil.Lowering: MNewobjByName could not resolve .ctor for type '" + className + "'")
+      }
     }
     case MCallByName(className, methodName) -> {
-      val tdRow  = findTypeDefRowByName(ctx, className)
-      val mdRow  = findMethodDefRowOfType(ctx, tdRow, methodName)
-      if mdRow > 0 { emitCall(mb, 0x06000000 + mdRow) }
-      else { panic("Msil.Lowering: MCallByName could not resolve '" + methodName + "' on type '" + className + "'") }
+      val tdRow = findTypeDefRowByName(ctx, className)
+      val mdRow = findMethodDefRowOfType(ctx, tdRow, methodName)
+      if mdRow > 0 {
+        emitCall(mb, 0x06000000 + mdRow)
+      } else {
+        panic("Msil.Lowering: MCallByName could not resolve '" + methodName + "' on type '" + className + "'")
+      }
     }
     case MCallAtmbStart(smFqn, atmbMrRow, isGeneric) -> {
       // Resolve MethodSpec for `ATMB[<T>].Start<SM>(ref SM)` at Phase 5.
@@ -1970,8 +2035,8 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
       // Build a 2-arg MethodSpec for `ATMB[<T>].AwaitUnsafeOnCompleted<TAwaiter, SM>`.
       // arg0 = concrete awaiter type; arg1 = SM class (TypeDef row looked up from smFqn).
       val specBlob = buildMethodSpec2ArgBlobWithCtx(ctx, awaiterMsilTy, smFqn)
-      val specKey  = "ms_atmbawunafe_" + smFqn + "_" + msilTypeKey(awaiterMsilTy)
-      val specRow  = ctxAddMethodSpec(ctx, mdorMemberRef(atmbMrRow), specKey, specBlob)
+      val specKey = "ms_atmbawunafe_" + smFqn + "_" + msilTypeKey(awaiterMsilTy)
+      val specRow = ctxAddMethodSpec(ctx, mdorMemberRef(atmbMrRow), specKey, specBlob)
       emitCall(mb, 0x2B000000 + specRow)
     }
   }
@@ -1994,21 +2059,21 @@ func buildLocalVarSig(locals: in List[MsilType]): List[Byte] {
   var i = 0
   while i < locals.count {
     match locals[i] {
-      case MClass(_)             -> bufU1(w, 0x1C)   // Object: avoids malformed CLASS+TypeDefOrRef entry
-      case MGenericInst(_, _, _)          -> bufU1(w, 0x1C)  // same: TypeRef token not valid in LocalVarSig
+      case MClass(_) -> bufU1(w, 0x1C)   // Object: avoids malformed CLASS+TypeDefOrRef entry
+      case MGenericInst(_, _, _) -> bufU1(w, 0x1C)  // same: TypeRef token not valid in LocalVarSig
       case MValueTypeGenericInst(_, _, _) -> bufU1(w, 0x1C)  // struct generics also degrade (rare as locals)
       // A slice local degrades to Object too: the codegen treats slices as
       // opaque references (a `byte[]` value is still an object), and
       // `elementTypeByte(MArray)` is only the 0x1D SZARRAY *prefix* — writing
       // it alone produces a malformed LocalVarSig (dangling prefix, no element
       // type) that corrupts the evaluation stack at run time (AccessViolation).
-      case MArray(_)             -> bufU1(w, 0x1C)
+      case MArray(_) -> bufU1(w, 0x1C)
       // Concrete collections degrade to Object in LocalVarSig like MGenericInst:
       // the local slot is an object reference that op sites `castclass` to the
       // concrete TypeSpec; the open GENERICINST token is not valid in a
-      // LocalVarSig (#2361).
-      case MConcreteList(_)      -> bufU1(w, 0x1C)
-      case MConcreteMap(_, _)    -> bufU1(w, 0x1C)
+      // LocalVarSig.
+      case MConcreteList(_) -> bufU1(w, 0x1C)
+      case MConcreteMap(_, _) -> bufU1(w, 0x1C)
       // In-bundle generic instantiation locals degrade to Object like
       // MGenericInst: the slot is an object reference that op sites `castclass`
       // to the concrete TypeSpec; the GENERICINST token is not valid in a
@@ -2026,7 +2091,7 @@ func buildLocalVarSig(locals: in List[MsilType]): List[Byte] {
       }
       // A class-ref local is a reference, so it degrades to Object safely
       // (like MClass above) — an object-typed slot holds any ref correctly.
-      case MClassRef(_, _)       -> bufU1(w, 0x1C)
+      case MClassRef(_, _) -> bufU1(w, 0x1C)
       case other -> bufU1(w, elementTypeByte(other))
     }
     i = i + 1
@@ -2060,12 +2125,12 @@ func buildLocalVarSigWithCtx(locals: in List[MsilType], ctx: in LoweringCtx): Li
         }
       }
       case MGenericInst(_, _, _) -> bufU1(w, 0x1C)
-      case MGenericInstByName(_, _)       -> bufU1(w, 0x1C)
+      case MGenericInstByName(_, _) -> bufU1(w, 0x1C)
       case MValueTypeGenericInst(_, _, _) -> bufMsilTypeWithCtx(w, locals[i], ctx)
-      case MArray(_)                      -> bufU1(w, 0x1C)
-      case MConcreteList(_)               -> bufU1(w, 0x1C)
-      case MConcreteMap(_, _)             -> bufU1(w, 0x1C)
-      case MClassRef(_, _)                -> bufU1(w, 0x1C)
+      case MArray(_) -> bufU1(w, 0x1C)
+      case MConcreteList(_) -> bufU1(w, 0x1C)
+      case MConcreteMap(_, _) -> bufU1(w, 0x1C)
+      case MClassRef(_, _) -> bufU1(w, 0x1C)
       case MValueTypeRef(typeRefCode, _) -> {
         bufU1(w, 0x11)
         writeCompressedInt(w, typeRefCode)
@@ -2116,12 +2181,12 @@ func buildLvSigKey(locals: in List[MsilType]): String {
       }
       case _ -> {
         val b = match locals[i] {
-          case MClassRef(_, _)       -> 0x1C
+          case MClassRef(_, _) -> 0x1C
           case MGenericInst(_, _, _) -> 0x1C
           case MGenericInstByName(_, _) -> 0x1C
-          case MConcreteList(_)      -> 0x1C
-          case MConcreteMap(_, _)    -> 0x1C
-          case other                 -> elementTypeByte(other)
+          case MConcreteList(_) -> 0x1C
+          case MConcreteMap(_, _) -> 0x1C
+          case other -> elementTypeByte(other)
         }
         key = key + toString(b) + "_"
       }
@@ -2142,9 +2207,9 @@ pub func lowerMFunc(f: in MFunc, ctx: in LoweringCtx): MethodBody {
     return mb
   }
   if f.locals.count > 0 {
-    val lvSig  = buildLocalVarSigWithCtx(f.locals, ctx)
+    val lvSig = buildLocalVarSigWithCtx(f.locals, ctx)
     val lvBlob = ctxInternBlob(ctx, buildLvSigKey(f.locals), lvSig)
-    val lvRow  = addStandAloneSig(ctx.tables, StandAloneSigRow(signature = lvBlob))
+    val lvRow = addStandAloneSig(ctx.tables, StandAloneSigRow(signature = lvBlob))
     mbSetLocalSig(mb, standaloneToken(lvRow))
   }
   mb.maxStack = f.maxStack
@@ -2157,7 +2222,6 @@ pub func lowerMFunc(f: in MFunc, ctx: in LoweringCtx): MethodBody {
 }
 
 // ── Record lowering ───────────────────────────────────────────────────────────
-
 // Emit one GenericParam row (table 0x2A) per type-parameter name owned by the
 // generic TypeDef at `ownerTypeDefRow` (#2362 / docs/43).  Each row records the
 // parameter's 0-based ordinal (`number`), invariant/no-constraint flags (0), the
@@ -2165,17 +2229,15 @@ pub func lowerMFunc(f: in MFunc, ctx: in LoweringCtx): MethodBody {
 // parameter name.  The serializer sorts the table by (owner, number) before
 // emission, so rows may be added here in declaration order.  No-op when
 // `generics` is empty (the non-generic case).
-func emitGenericParamRows(ctx: in LoweringCtx, ownerTypeDefRow: in Int,
-                          generics: in List[String]): Unit {
+func emitGenericParamRows(ctx: in LoweringCtx, ownerTypeDefRow: in Int, generics: in List[String]): Unit {
   val sh = ctx.strings
-  val t  = ctx.tables
+  val t = ctx.tables
   var gi = 0
   while gi < generics.count {
-    addGenericParam(t, GenericParamRow(
-      number = gi,
-      flags  = 0,
-      owner  = mtdTypeDef(ownerTypeDefRow),
-      name   = internString(sh, generics[gi])))
+    addGenericParam(
+      t,
+      GenericParamRow(number = gi, flags = 0, owner = mtdTypeDef(ownerTypeDefRow), name = internString(sh, generics[gi]))
+    )
     gi = gi + 1
   }
 }
@@ -2185,25 +2247,32 @@ func emitGenericParamRows(ctx: in LoweringCtx, ownerTypeDefRow: in Int,
 pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
   val sh = ctx.strings
   val bh = ctx.blobs
-  val t  = ctx.tables
+  val t = ctx.tables
 
   // TypeDef typeName must be the SIMPLE (unqualified) type name, not the full
   // namespace-qualified name.  r.className = "Pkg.Name" but the TypeDef must
   // store "Name" in typeName and "Pkg" in typeNamespace so the CLR type loader
   // can resolve the type by (namespace, simpleName) without a dot-split issue.
-  val simpleBaseRec = if r.namespace.length == 0 { r.className }
-                      else { r.className.substring(r.namespace.length + 1, r.className.length - r.namespace.length - 1) }
+  val simpleBaseRec = if r.namespace.length == 0 {
+    r.className
+  } else {
+    r.className.substring(r.namespace.length + 1, r.className.length - r.namespace.length - 1)
+  }
   // A generic TypeDef's name carries the CLR arity suffix (`Box`1`), matching
   // the .NET naming convention C# emits.  Without it, the runtime mis-lays-out
   // multi-field value-type instantiations (e.g. `Pair<Int,Int>` silently drops
   // the second field) — #2362.  By-name resolution (recordUserTypeDefRow /
   // findTypeDefRowByName) uses this same suffixed name, and codegen carries the
   // suffixed FQN in its generic by-name instructions, so lookups stay consistent.
-  val simpleNameRec = if r.generics.count > 0 { simpleBaseRec + "`" + toString(r.generics.count) } else { simpleBaseRec }
-  val sName  = internString(sh, simpleNameRec)
-  val sNs    = internString(sh, r.namespace)
+  val simpleNameRec = if r.generics.count > 0 {
+    simpleBaseRec + "`" + toString(r.generics.count)
+  } else {
+    simpleBaseRec
+  }
+  val sName = internString(sh, simpleNameRec)
+  val sNs = internString(sh, r.namespace)
 
-  val firstField  = t.fields.count + 1
+  val firstField = t.fields.count + 1
   val firstMethod = t.methodDefs.count + 1
 
   // TypeDef row must be registered BEFORE fields and method bodies are emitted so
@@ -2220,7 +2289,9 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
   // add operations and all subsequent fields for this type are added next.
   val recBaseRow = if r.baseClass.length > 0 and r.baseClass != "System.Object" {
     findTypeDefRowByName(ctx, r.baseClass)
-  } else { 0 }
+  } else {
+    0
+  }
   // A generic union *case* extends the open instantiation of its generic base
   // (`Maybe_Just`1` extends `Maybe`1<!0>`), encoded as a TypeSpec — NOT a bare
   // TypeDef ref to the open base (#2362).  Build that base-open TypeSpec once;
@@ -2234,10 +2305,16 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
     }
     val baseBlob = buildGenericInstBlobWithCtx(ctx, tdrTypeDef(recBaseRow), baseArgs)
     ctxAddTypeSpec(ctx, "base_open_ts_" + r.className, baseBlob)
-  } else { 0 }
-  val recExtendsToken = if baseOpenTsRow > 0 { tdrTypeSpec(baseOpenTsRow) }
-                        else if recBaseRow > 0 { tdrTypeDef(recBaseRow) }
-                        else { objectTypeToken(ctx) }
+  } else {
+    0
+  }
+  val recExtendsToken = if baseOpenTsRow > 0 {
+    tdrTypeSpec(baseOpenTsRow)
+  } else if recBaseRow > 0 {
+    tdrTypeDef(recBaseRow)
+  } else {
+    objectTypeToken(ctx)
+  }
   // ECMA-335 / CLR constraint: SequentialLayout is only valid when the parent
   // is System.Object, System.ValueType, or another SequentialLayout/ExplicitLayout
   // class.  Union case classes extend their abstract AutoLayout base, so they
@@ -2250,13 +2327,17 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
   } else {
     TDF_PUBLIC + TDF_SEALED + TDF_SEQUENTIAL_LAYOUT + TDF_BEFORE_FIELD_INIT
   }
-  addTypeDef(t, TypeDefRow(
-    flags         = recFlags,
-    typeName      = sName,
-    typeNamespace = sNs,
-    extends       = recExtendsToken,
-    fieldList     = firstField,
-    methodList    = firstMethod))
+  addTypeDef(
+    t,
+    TypeDefRow(
+      flags = recFlags,
+      typeName = sName,
+      typeNamespace = sNs,
+      extends = recExtendsToken,
+      fieldList = firstField,
+      methodList = firstMethod
+    )
+  )
   val selfTypeDefRow = t.typeDefs.count
   recordUserTypeDefRow(ctx, r.namespace, simpleNameRec, selfTypeDefRow)
   // Emit GenericParam rows for an in-bundle generic record (#2362).
@@ -2277,17 +2358,19 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
     }
     val selfBlob = buildGenericInstBlobWithCtx(ctx, tdrTypeDef(selfTypeDefRow), openArgs)
     ctxAddTypeSpec(ctx, "self_open_ts_" + r.className, selfBlob)
-  } else { 0 }
+  } else {
+    0
+  }
 
   // Emit Field rows (must come after TypeDef so findFieldDefRowOfType sees this
   // type's firstField as the starting point when lowerMFunc is called below).
   var fi = 0
   while fi < r.fields.count {
-    val f     = r.fields[fi]
-    val sF    = internString(sh, f.name)
-    val fSig  = buildFieldSigWithCtx(f.fieldType, ctx)
-    val bSig  = internBlob(bh, "field_" + r.className + "_" + f.name, fSig)
-    val fRow  = addField(t, FieldRow(flags = f.flags, name = sF, signature = bSig))
+    val f = r.fields[fi]
+    val sF = internString(sh, f.name)
+    val fSig = buildFieldSigWithCtx(f.fieldType, ctx)
+    val bSig = internBlob(bh, "field_" + r.className + "_" + f.name, fSig)
+    val fRow = addField(t, FieldRow(flags = f.flags, name = sF, signature = bSig))
     fi = fi + 1
   }
 
@@ -2297,44 +2380,59 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
   // by the kickoff function via stfld after `newobj`.
   // Otherwise emit the standard .ctor(field1, field2, ...) that takes all
   // fields as parameters (the existing record constructor pattern).
-  val sCtor    = internString(sh, ".ctor")
-  val recBaseCtorTok2 =
-    if baseOpenTsRow > 0 {
-      // Generic case: chain through `Maybe`1<!0>::.ctor()` via a TypeSpec MemberRef.
-      val mrRow = ctxAddMemberRefForTypeSpec(ctx, baseOpenTsRow, ".ctor",
-                    "base_open_ctor_" + r.className, buildInstanceMethodSig(newList(), MVoid))
-      0x0A000000 + mrRow
-    } else if r.baseClass.length > 0 and r.baseClass != "System.Object" {
-      val recBaseTypeRow2 = findTypeDefRowByName(ctx, r.baseClass)
-      if recBaseTypeRow2 > 0 {
-        val recBaseCtorRow2 = findMethodDefRowOfType(ctx, recBaseTypeRow2, ".ctor")
-        if recBaseCtorRow2 > 0 { 0x06000000 + recBaseCtorRow2 }
-        else { 0x0A000000 + ctx.mrObjectCtor }
-      } else { 0x0A000000 + ctx.mrObjectCtor }
-    } else { 0x0A000000 + ctx.mrObjectCtor }
+  val sCtor = internString(sh, ".ctor")
+  val recBaseCtorTok2 = if baseOpenTsRow > 0 {
+    // Generic case: chain through `Maybe`1<!0>::.ctor()` via a TypeSpec MemberRef.
+    val mrRow = ctxAddMemberRefForTypeSpec(
+      ctx,
+      baseOpenTsRow,
+      ".ctor",
+      "base_open_ctor_" + r.className,
+      buildInstanceMethodSig(newList(), MVoid)
+    )
+    0x0A000000 + mrRow
+  } else if r.baseClass.length > 0 and r.baseClass != "System.Object" {
+    val recBaseTypeRow2 = findTypeDefRowByName(ctx, r.baseClass)
+    if recBaseTypeRow2 > 0 {
+      val recBaseCtorRow2 = findMethodDefRowOfType(ctx, recBaseTypeRow2, ".ctor")
+      if recBaseCtorRow2 > 0 {
+        0x06000000 + recBaseCtorRow2
+      } else {
+        0x0A000000 + ctx.mrObjectCtor
+      }
+    } else {
+      0x0A000000 + ctx.mrObjectCtor
+    }
+  } else {
+    0x0A000000 + ctx.mrObjectCtor
+  }
 
   if r.useDefaultCtor {
     // No-arg constructor: ldarg.0; call Object::.ctor(); ret
-    val noArgSig  = buildInstanceMethodSig(newList(), MVoid)
-    val noArgKey  = "ctor_noarg_" + r.className
+    val noArgSig = buildInstanceMethodSig(newList(), MVoid)
+    val noArgKey = "ctor_noarg_" + r.className
     val bNoArgSig = internBlob(bh, noArgKey, noArgSig)
-    val mbCtor2   = newMethodBody()
+    val mbCtor2 = newMethodBody()
     mbCtor2.maxStack = 1
     emitLdarg_0(mbCtor2)
     emitCall(mbCtor2, recBaseCtorTok2)
     emitRet(mbCtor2)
     ctx.bodies.add(mbCtor2)
-    val rvasC2     = methodBodyRvas(ctx.bodies)
-    val ctorRva2   = rvasC2[ctx.bodies.count - 1]
-    val firstPrm2  = t.params_.count + 1
+    val rvasC2 = methodBodyRvas(ctx.bodies)
+    val ctorRva2 = rvasC2[ctx.bodies.count - 1]
+    val firstPrm2 = t.params_.count + 1
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-    addMethodDef(t, MethodDefRow(
-      rva       = ctorRva2,
-      implFlags = 0,
-      flags     = MDA_PUBLIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
-      name      = sCtor,
-      signature = bNoArgSig,
-      paramList = firstPrm2))
+    addMethodDef(
+      t,
+      MethodDefRow(
+        rva = ctorRva2,
+        implFlags = 0,
+        flags = MDA_PUBLIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
+        name = sCtor,
+        signature = bNoArgSig,
+        paramList = firstPrm2
+      )
+    )
   } else {
     // Field-parameterised constructor: .ctor(field1, field2, ...)
     val ctorParams: List[MsilType] = newList()
@@ -2343,8 +2441,8 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
       ctorParams.add(r.fields[ci].fieldType)
       ci = ci + 1
     }
-    val ctorSig  = buildInstanceMethodSigWithCtx(ctorParams, MVoid, ctx)
-    val ctorKey  = "ctor_" + r.className
+    val ctorSig = buildInstanceMethodSigWithCtx(ctorParams, MVoid, ctx)
+    val ctorKey = "ctor_" + r.className
     val bCtorSig = internBlob(bh, ctorKey, ctorSig)
 
     // Build .ctor body: ldarg.0; call <base>::.ctor(); [ldarg.n; stfld field_n]×n; ret
@@ -2363,8 +2461,7 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
         // instantiation field layout (#2362).
         val f = r.fields[ai]
         val fSigC = buildFieldSigWithCtx(f.fieldType, ctx)
-        val mrRow = ctxAddMemberRefForTypeSpec(ctx, selfTsRow, f.name,
-                      "self_open_fld_" + r.className + "_" + f.name, fSigC)
+        val mrRow = ctxAddMemberRefForTypeSpec(ctx, selfTsRow, f.name, "self_open_fld_" + r.className + "_" + f.name, fSigC)
         emitStfld(mbCtor, 0x0A000000 + mrRow)
       } else {
         emitStfld(mbCtor, 0x04000000 + firstField + ai)
@@ -2374,49 +2471,49 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
     emitRet(mbCtor)
     ctx.bodies.add(mbCtor)
 
-    val rvas      = methodBodyRvas(ctx.bodies)
-    val ctorRva   = rvas[ctx.bodies.count - 1]
+    val rvas = methodBodyRvas(ctx.bodies)
+    val ctorRva = rvas[ctx.bodies.count - 1]
     val firstParam = t.params_.count + 1
 
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
 
-    addMethodDef(t, MethodDefRow(
-      rva       = ctorRva,
-      implFlags = 0,
-      flags     = MDA_PUBLIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
-      name      = sCtor,
-      signature = bCtorSig,
-      paramList = firstParam))
+    addMethodDef(
+      t,
+      MethodDefRow(
+        rva = ctorRva,
+        implFlags = 0,
+        flags = MDA_PUBLIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
+        name = sCtor,
+        signature = bCtorSig,
+        paramList = firstParam
+      )
+    )
   }
 
   // Emit explicit instance methods — TypeDef and FieldDefs are already registered
   // above, so MLdfldByName/MStfldByName inside lowerMFunc resolve correctly.
   var mi = 0
   while mi < r.methods.count {
-    val m    = r.methods[mi]
-    val mbM  = lowerMFunc(m, ctx)
+    val m = r.methods[mi]
+    val mbM = lowerMFunc(m, ctx)
     ctx.bodies.add(mbM)
     val rvasM = methodBodyRvas(ctx.bodies)
-    val mRva  = rvasM[ctx.bodies.count - 1]
+    val mRva = rvasM[ctx.bodies.count - 1]
     val sName2 = internString(sh, m.name)
-    val mSig   = buildInstanceMethodSigWithCtx(m.params, m.ret, ctx)
+    val mSig = buildInstanceMethodSigWithCtx(m.params, m.ret, ctx)
     // Arity-qualify the intern key (#1536) so same-name overloads don't collide in `internBlob`'s dedup.
-    val bMSig  = internBlob(bh, "meth_" + r.className + "_" + m.name + "/" + toString(m.params.count), mSig)
-    val fp     = t.params_.count + 1
+    val bMSig = internBlob(bh, "meth_" + r.className + "_" + m.name + "/" + toString(m.params.count), mSig)
+    val fp = t.params_.count + 1
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-    addMethodDef(t, MethodDefRow(
-      rva       = mRva,
-      implFlags = 0,
-      flags     = m.flags,
-      name      = sName2,
-      signature = bMSig,
-      paramList = fp))
+    addMethodDef(
+      t,
+      MethodDefRow(rva = mRva, implFlags = 0, flags = m.flags, name = sName2, signature = bMSig, paramList = fp)
+    )
     mi = mi + 1
   }
 }
 
 // ── Union lowering ────────────────────────────────────────────────────────────
-
 // Lower a nullary union case (no fields) as a sealed class with a static singleton
 // `Instance` field and a static constructor (.cctor) that initialises it.
 //
@@ -2432,85 +2529,103 @@ pub func lowerMRecord(r: in MRecord, ctx: in LoweringCtx): Int {
 pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
   val sh = ctx.strings
   val bh = ctx.blobs
-  val t  = ctx.tables
+  val t = ctx.tables
 
-  val simpleNameRec = if r.namespace.length == 0 { r.className }
-                      else { r.className.substring(r.namespace.length + 1, r.className.length - r.namespace.length - 1) }
+  val simpleNameRec = if r.namespace.length == 0 {
+    r.className
+  } else {
+    r.className.substring(r.namespace.length + 1, r.className.length - r.namespace.length - 1)
+  }
   val sName = internString(sh, simpleNameRec)
-  val sNs   = internString(sh, r.namespace)
+  val sNs = internString(sh, r.namespace)
 
-  val firstField  = t.fields.count + 1
+  val firstField = t.fields.count + 1
   val firstMethod = t.methodDefs.count + 1
 
   // Emit Instance static field (public, static, initonly; type = Object).
-  val sInstance   = internString(sh, "Instance")
-  val instSig     = buildFieldSig(MObject)
-  val bInstSig    = internBlob(bh, "inst_" + r.className, instSig)
-  addField(t, FieldRow(flags = FDA_PUBLIC + FDA_STATIC + FDA_INIT_ONLY,
-                       name = sInstance, signature = bInstSig))
+  val sInstance = internString(sh, "Instance")
+  val instSig = buildFieldSig(MObject)
+  val bInstSig = internBlob(bh, "inst_" + r.className, instSig)
+  addField(t, FieldRow(flags = FDA_PUBLIC + FDA_STATIC + FDA_INIT_ONLY, name = sInstance, signature = bInstSig))
 
   // Emit .ctor() — no parameters; calls the union base's protected .ctor.
   // If the base is a local TypeDef (union case hierarchy), chain through its
   // protected .ctor rather than calling Object::.ctor() directly.
-  val baseCtorTok =
-    if r.baseClass.length > 0 and r.baseClass != "System.Object" {
-      val baseTypeRow = findTypeDefRowByName(ctx, r.baseClass)
-      if baseTypeRow > 0 {
-        val baseCtorRow = findMethodDefRowOfType(ctx, baseTypeRow, ".ctor")
-        if baseCtorRow > 0 { 0x06000000 + baseCtorRow }
-        else { 0x0A000000 + ctx.mrObjectCtor }
-      } else { 0x0A000000 + ctx.mrObjectCtor }
-    } else { 0x0A000000 + ctx.mrObjectCtor }
-  val mbCtor    = newMethodBody()
+  val baseCtorTok = if r.baseClass.length > 0 and r.baseClass != "System.Object" {
+    val baseTypeRow = findTypeDefRowByName(ctx, r.baseClass)
+    if baseTypeRow > 0 {
+      val baseCtorRow = findMethodDefRowOfType(ctx, baseTypeRow, ".ctor")
+      if baseCtorRow > 0 {
+        0x06000000 + baseCtorRow
+      } else {
+        0x0A000000 + ctx.mrObjectCtor
+      }
+    } else {
+      0x0A000000 + ctx.mrObjectCtor
+    }
+  } else {
+    0x0A000000 + ctx.mrObjectCtor
+  }
+  val mbCtor = newMethodBody()
   mbCtor.maxStack = 2
   emitLdarg_0(mbCtor)
   emitCall(mbCtor, baseCtorTok)
   emitRet(mbCtor)
   ctx.bodies.add(mbCtor)
-  val rvasCtor  = methodBodyRvas(ctx.bodies)
-  val ctorRva   = rvasCtor[ctx.bodies.count - 1]
-  val fpCtor    = t.params_.count + 1
-  val sCtor     = internString(sh, ".ctor")
-  val ctorSig   = buildInstanceMethodSig(newList(), MVoid)
-  val bCtorSig  = internBlob(bh, "ctor_" + r.className, ctorSig)
+  val rvasCtor = methodBodyRvas(ctx.bodies)
+  val ctorRva = rvasCtor[ctx.bodies.count - 1]
+  val fpCtor = t.params_.count + 1
+  val sCtor = internString(sh, ".ctor")
+  val ctorSig = buildInstanceMethodSig(newList(), MVoid)
+  val bCtorSig = internBlob(bh, "ctor_" + r.className, ctorSig)
   addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-  addMethodDef(t, MethodDefRow(
-    rva       = ctorRva,
-    implFlags = 0,
-    flags     = MDA_PUBLIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
-    name      = sCtor,
-    signature = bCtorSig,
-    paramList = fpCtor))
+  addMethodDef(
+    t,
+    MethodDefRow(
+      rva = ctorRva,
+      implFlags = 0,
+      flags = MDA_PUBLIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
+      name = sCtor,
+      signature = bCtorSig,
+      paramList = fpCtor
+    )
+  )
 
   // Emit .cctor() — creates the singleton Instance.
   // .ctor MethodDef token = 0x06000000 + firstMethod (already emitted above).
   // Instance FieldDef token = 0x04000000 + firstField (already emitted above).
-  val mbCctor   = newMethodBody()
+  val mbCctor = newMethodBody()
   mbCctor.maxStack = 2
   emitNewobj(mbCctor, 0x06000000 + firstMethod)
   emitStsfld(mbCctor, 0x04000000 + firstField)
   emitRet(mbCctor)
   ctx.bodies.add(mbCctor)
   val rvasCctor = methodBodyRvas(ctx.bodies)
-  val cctorRva  = rvasCctor[ctx.bodies.count - 1]
-  val fpCctor   = t.params_.count + 1
-  val sCctor    = internString(sh, ".cctor")
-  val cctorSig  = buildStaticMethodSig(newList(), MVoid)
+  val cctorRva = rvasCctor[ctx.bodies.count - 1]
+  val fpCctor = t.params_.count + 1
+  val sCctor = internString(sh, ".cctor")
+  val cctorSig = buildStaticMethodSig(newList(), MVoid)
   val bCctorSig = internBlob(bh, "cctor_" + r.className, cctorSig)
   addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-  addMethodDef(t, MethodDefRow(
-    rva       = cctorRva,
-    implFlags = 0,
-    flags     = MDA_PRIVATE + MDA_STATIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
-    name      = sCctor,
-    signature = bCctorSig,
-    paramList = fpCctor))
+  addMethodDef(
+    t,
+    MethodDefRow(
+      rva = cctorRva,
+      implFlags = 0,
+      flags = MDA_PRIVATE + MDA_STATIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
+      name = sCctor,
+      signature = bCctorSig,
+      paramList = fpCctor
+    )
+  )
 
   // TypeDef row — sealed class extending the union base class (or Object as
   // fallback when the base is not a local TypeDef, e.g. for cross-package use).
   val baseDefRow = if r.baseClass.length > 0 and r.baseClass != "System.Object" {
     findTypeDefRowByName(ctx, r.baseClass)
-  } else { 0 }
+  } else {
+    0
+  }
   val extendsToken = if baseDefRow > 0 { tdrTypeDef(baseDefRow) } else { objectTypeToken(ctx) }
   // ECMA-335 / CLR constraint: SequentialLayout is only valid when the parent
   // is System.Object, System.ValueType, or another SequentialLayout/ExplicitLayout
@@ -2522,13 +2637,17 @@ pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
   } else {
     TDF_PUBLIC + TDF_SEALED + TDF_SEQUENTIAL_LAYOUT + TDF_BEFORE_FIELD_INIT
   }
-  addTypeDef(t, TypeDefRow(
-    flags         = caseFlags,
-    typeName      = sName,
-    typeNamespace = sNs,
-    extends       = extendsToken,
-    fieldList     = firstField,
-    methodList    = firstMethod))
+  addTypeDef(
+    t,
+    TypeDefRow(
+      flags = caseFlags,
+      typeName = sName,
+      typeNamespace = sNs,
+      extends = extendsToken,
+      fieldList = firstField,
+      methodList = firstMethod
+    )
+  )
   recordUserTypeDefRow(ctx, r.namespace, simpleNameRec, t.typeDefs.count)
   // A nullary case of a generic union re-declares the union's type parameters
   // (e.g. `Option_None` carries `[T]`), matching the F# emitter (#2362).
@@ -2540,10 +2659,13 @@ pub func lowerMNullaryUnionCase(r: in MRecord, ctx: in LoweringCtx): Int {
 pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
   val sh = ctx.strings
   val bh = ctx.blobs
-  val t  = ctx.tables
+  val t = ctx.tables
 
-  val simpleBaseUnion = if u.namespace.length == 0 { u.baseName }
-                        else { u.baseName.substring(u.namespace.length + 1, u.baseName.length - u.namespace.length - 1) }
+  val simpleBaseUnion = if u.namespace.length == 0 {
+    u.baseName
+  } else {
+    u.baseName.substring(u.namespace.length + 1, u.baseName.length - u.namespace.length - 1)
+  }
   // A generic union's base + case TypeDefs carry the CLR arity suffix
   // (`Maybe`1`, `Maybe_Just`1`) — same convention as generic records (#2362).
   val arity = u.generics.count
@@ -2551,33 +2673,27 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
   // The arity-suffixed base FQN the case classes must name as their base so
   // findTypeDefRowByName resolves it (the TypeDef is stored under the suffix).
   val baseClassFqn = if arity > 0 { u.baseName + "`" + toString(arity) } else { u.baseName }
-  val sBase  = internString(sh, simpleNameUnion)
-  val sNs    = internString(sh, u.namespace)
+  val sBase = internString(sh, simpleNameUnion)
+  val sNs = internString(sh, u.namespace)
 
-  val baseFirstField  = t.fields.count + 1
+  val baseFirstField = t.fields.count + 1
   val baseFirstMethod = t.methodDefs.count + 1
 
   // Emit base methods (abstract / virtual)
   var mi = 0
   while mi < u.methods.count {
-    val m   = u.methods[mi]
-    val mb  = lowerMFunc(m, ctx)
+    val m = u.methods[mi]
+    val mb = lowerMFunc(m, ctx)
     ctx.bodies.add(mb)
     val rvas = methodBodyRvas(ctx.bodies)
     val mRva = rvas[ctx.bodies.count - 1]
-    val sN   = internString(sh, m.name)
+    val sN = internString(sh, m.name)
     val mSig = buildStaticMethodSigWithCtx(m.params, m.ret, ctx)
     // Arity-qualify the intern key (#1536) — see the `meth_` site above.
     val bSig = internBlob(bh, "basemeth_" + u.baseName + "_" + m.name + "/" + toString(m.params.count), mSig)
-    val fp   = t.params_.count + 1
+    val fp = t.params_.count + 1
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-    addMethodDef(t, MethodDefRow(
-      rva       = mRva,
-      implFlags = 0,
-      flags     = m.flags,
-      name      = sN,
-      signature = bSig,
-      paramList = fp))
+    addMethodDef(t, MethodDefRow(rva = mRva, implFlags = 0, flags = m.flags, name = sN, signature = bSig, paramList = fp))
     mi = mi + 1
   }
 
@@ -2585,35 +2701,43 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
   // defines this constructor so derived case classes can chain through it.
   // Without it, the CLR refuses to load case classes whose TypeDef extends
   // the union base when their own .ctor calls Object::.ctor() directly.
-  val sBaseCtor    = internString(sh, ".ctor")
-  val baseCtorSig  = buildInstanceMethodSig(newList(), MVoid)
+  val sBaseCtor = internString(sh, ".ctor")
+  val baseCtorSig = buildInstanceMethodSig(newList(), MVoid)
   val bBaseCtorSig = internBlob(bh, "union_base_ctor_" + u.baseName, baseCtorSig)
-  val mbBaseCtor   = newMethodBody()
+  val mbBaseCtor = newMethodBody()
   mbBaseCtor.maxStack = 1
   emitLdarg_0(mbBaseCtor)
   emitCall(mbBaseCtor, 0x0A000000 + ctx.mrObjectCtor)
   emitRet(mbBaseCtor)
   ctx.bodies.add(mbBaseCtor)
   val rvasBaseCtor = methodBodyRvas(ctx.bodies)
-  val baseCtorRva  = rvasBaseCtor[ctx.bodies.count - 1]
-  val fpBaseCtor   = t.params_.count + 1
+  val baseCtorRva = rvasBaseCtor[ctx.bodies.count - 1]
+  val fpBaseCtor = t.params_.count + 1
   addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-  addMethodDef(t, MethodDefRow(
-    rva       = baseCtorRva,
-    implFlags = 0,
-    flags     = MDA_FAMILY + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
-    name      = sBaseCtor,
-    signature = bBaseCtorSig,
-    paramList = fpBaseCtor))
+  addMethodDef(
+    t,
+    MethodDefRow(
+      rva = baseCtorRva,
+      implFlags = 0,
+      flags = MDA_FAMILY + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
+      name = sBaseCtor,
+      signature = bBaseCtorSig,
+      paramList = fpBaseCtor
+    )
+  )
 
   // Abstract base TypeDef
-  val baseRow = addTypeDef(t, TypeDefRow(
-    flags         = TDF_PUBLIC + TDF_ABSTRACT + TDF_BEFORE_FIELD_INIT,
-    typeName      = sBase,
-    typeNamespace = sNs,
-    extends       = objectTypeToken(ctx),
-    fieldList     = baseFirstField,
-    methodList    = baseFirstMethod))
+  val baseRow = addTypeDef(
+    t,
+    TypeDefRow(
+      flags = TDF_PUBLIC + TDF_ABSTRACT + TDF_BEFORE_FIELD_INIT,
+      typeName = sBase,
+      typeNamespace = sNs,
+      extends = objectTypeToken(ctx),
+      fieldList = baseFirstField,
+      methodList = baseFirstMethod
+    )
+  )
   recordUserTypeDefRow(ctx, u.namespace, simpleNameUnion, baseRow)
   // GenericParam rows for the abstract base of a generic union (#2362).
   emitGenericParamRows(ctx, baseRow, u.generics)
@@ -2626,13 +2750,14 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
   while ci < u.cases.count {
     val c = u.cases[ci]
     val rec = MRecord(
-      className      = c.name,
-      namespace      = u.namespace,
-      baseClass      = baseClassFqn,
-      fields         = c.fields,
-      methods        = newList(),
+      className = c.name,
+      namespace = u.namespace,
+      baseClass = baseClassFqn,
+      fields = c.fields,
+      methods = newList(),
       useDefaultCtor = false,
-      generics       = c.generics)
+      generics = c.generics
+    )
     // A *generic* nullary case routes through lowerMRecord (a zero-field generic
     // record): lowerMRecord emits exactly the F# shape — a plain `.ctor()`
     // chaining the base via a TypeSpec MemberRef, AutoLayout, the arity-suffixed
@@ -2653,22 +2778,19 @@ pub func lowerMUnion(u: in MUnion, ctx: in LoweringCtx): Int {
 }
 
 // ── Distinct / Range type lowering ────────────────────────────────────────────
-
 // Lower an MDistinctType as a sealed wrapper class with a single `value` field
 // and a .ctor(inner) constructor.
 pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {
   val rec = MRecord(
-    className      = d.className,
-    namespace      = d.namespace,
-    baseClass      = "System.Object",
-    fields         = newList(),
-    methods        = newList(),
+    className = d.className,
+    namespace = d.namespace,
+    baseClass = "System.Object",
+    fields = newList(),
+    methods = newList(),
     useDefaultCtor = false,
-    generics       = newList())
-  val valueField = MField(
-    flags     = FDA_PUBLIC + FDA_INIT_ONLY,
-    name      = "value",
-    fieldType = d.inner)
+    generics = newList()
+  )
+  val valueField = MField(flags = FDA_PUBLIC + FDA_INIT_ONLY, name = "value", fieldType = d.inner)
   rec.fields.add(valueField)
   lowerMRecord(rec, ctx)
 }
@@ -2676,37 +2798,33 @@ pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {
 // Lower an MRangeType as a distinct type with range validation in .ctor.
 // Phase R5: validation is a runtime assert; SMT proof deferred to Phase R6.
 pub func lowerMRangeType(r: in MRangeType, ctx: in LoweringCtx): Int {
-  lowerMDistinctType(MDistinctType(
-    className = r.className,
-    namespace = r.namespace,
-    inner     = r.inner), ctx)
+  lowerMDistinctType(MDistinctType(className = r.className, namespace = r.namespace, inner = r.inner), ctx)
 }
 
 // ── Enum lowering ─────────────────────────────────────────────────────────────
-
 // Lower an MEnum to a CLR enum TypeDef.
 // Produces: TypeDef extends System.Enum, one `value__` field (I4), one static literal
 // field per case, and one Constant row per case in the Constant table.
 pub func lowerMEnum(e: in MEnum, ctx: in LoweringCtx): Int {
   val sh = ctx.strings
   val bh = ctx.blobs
-  val t  = ctx.tables
+  val t = ctx.tables
 
   val sName = internString(sh, e.className)
-  val sNs   = internString(sh, e.namespace)
+  val sNs = internString(sh, e.namespace)
 
   // Allocate TypeDef row first (field list starts right after current fields).
-  val firstField  = t.fields.count + 1
+  val firstField = t.fields.count + 1
   val firstMethod = t.methodDefs.count + 1
 
   // Emit `value__` special field (I4, Private, SpecialName, RTSpecialName).
   val sValueDunder = internString(sh, "value__")
-  val i4Sig  = buildFieldSig(MInt)
+  val i4Sig = buildFieldSig(MInt)
   val bI4Sig = internBlob(bh, "field_i4_sig", i4Sig)
-  addField(t, FieldRow(
-    flags     = FDA_PRIVATE + FDA_SPECIAL_NAME + FDA_RT_SPECIAL_NAME,
-    name      = sValueDunder,
-    signature = bI4Sig))
+  addField(
+    t,
+    FieldRow(flags = FDA_PRIVATE + FDA_SPECIAL_NAME + FDA_RT_SPECIAL_NAME, name = sValueDunder, signature = bI4Sig)
+  )
 
   // Emit one static literal field per case + a Constant row for its ordinal value.
   // The enum's own TypeDef is appended at the end of this function via
@@ -2716,86 +2834,109 @@ pub func lowerMEnum(e: in MEnum, ctx: in LoweringCtx): Int {
 
   var ci = 0
   while ci < e.cases.count {
-    val sCase    = internString(sh, e.cases[ci])
+    val sCase = internString(sh, e.cases[ci])
     // Case field type = VALUETYPE <this enum TypeDef>.
     // TypeDefOrRef coded-index for a TypeDef: tdrTypeDef(row) = row * 4.
-    val enumTdr  = tdrTypeDef(enumTypeDefRow)
-    val caseSig  = buildValueTypeFieldSig(enumTdr)
+    val enumTdr = tdrTypeDef(enumTypeDefRow)
+    val caseSig = buildValueTypeFieldSig(enumTdr)
     val bCaseSig = internBlob(bh, "enum_case_" + e.className + "_" + e.cases[ci], caseSig)
-    val caseFieldRow = addField(t, FieldRow(
-      flags     = FDA_PUBLIC + FDA_STATIC + FDA_LITERAL + FDA_HAS_DEFAULT,
-      name      = sCase,
-      signature = bCaseSig))
+    val caseFieldRow = addField(
+      t,
+      FieldRow(
+        flags = FDA_PUBLIC + FDA_STATIC + FDA_LITERAL + FDA_HAS_DEFAULT,
+        name = sCase,
+        signature = bCaseSig
+      )
+    )
     // Constant row: ELEMENT_TYPE_I4 (0x08), parent = hconstField(caseFieldRow).
     val constBlob = buildI4ConstantBlob(ci)
-    val bConst    = internBlob(bh, "const_" + e.className + "_" + e.cases[ci], constBlob)
-    addConstant(t, ConstantRow(
-      type_  = 0x08,     // ELEMENT_TYPE_I4
-      parent = hconstField(caseFieldRow),
-      value  = bConst))
+    val bConst = internBlob(bh, "const_" + e.className + "_" + e.cases[ci], constBlob)
+    addConstant(
+      t,
+      ConstantRow(
+        type_ = 0x08,
+        // ELEMENT_TYPE_I4
+        parent = hconstField(caseFieldRow),
+        value = bConst
+      )
+    )
     ci = ci + 1
   }
 
   // Emit the TypeDef itself — must extend System.Enum.
-  addTypeDef(t, TypeDefRow(
-    flags         = TDF_PUBLIC + TDF_SEALED,
-    typeName      = sName,
-    typeNamespace = sNs,
-    extends       = enumTypeToken(ctx),
-    fieldList     = firstField,
-    methodList    = firstMethod))
+  addTypeDef(
+    t,
+    TypeDefRow(
+      flags = TDF_PUBLIC + TDF_SEALED,
+      typeName = sName,
+      typeNamespace = sNs,
+      extends = enumTypeToken(ctx),
+      fieldList = firstField,
+      methodList = firstMethod
+    )
+  )
 }
 
 // ── Interface lowering ────────────────────────────────────────────────────────
-
 // Lower an MInterface to a CLR interface TypeDef with abstract method headers.
 pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
   val sh = ctx.strings
   val bh = ctx.blobs
-  val t  = ctx.tables
+  val t = ctx.tables
 
-  val simpleNameIface = if iface.namespace.length == 0 { iface.className }
-                        else { iface.className.substring(iface.namespace.length + 1, iface.className.length - iface.namespace.length - 1) }
+  val simpleNameIface = if iface.namespace.length == 0 {
+    iface.className
+  } else {
+    iface.className.substring(iface.namespace.length + 1, iface.className.length - iface.namespace.length - 1)
+  }
   val sName = internString(sh, simpleNameIface)
-  val sNs   = internString(sh, iface.namespace)
+  val sNs = internString(sh, iface.namespace)
 
-  val firstField  = t.fields.count + 1
+  val firstField = t.fields.count + 1
   val firstMethod = t.methodDefs.count + 1
 
   // Emit abstract method header for each interface method.
   var mi = 0
   while mi < iface.methods.count {
-    val m    = iface.methods[mi]
-    val sN   = internString(sh, m.name)
+    val m = iface.methods[mi]
+    val sN = internString(sh, m.name)
     val mSig = buildInstanceMethodSigWithCtx(m.params, m.ret, ctx)
     // Arity-qualify the intern key (#1536) — see the `meth_` site above.
     val bSig = internBlob(bh, "ifmeth_" + iface.className + "_" + m.name + "/" + toString(m.params.count), mSig)
-    val fp   = t.params_.count + 1
+    val fp = t.params_.count + 1
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
     // Abstract interface method: Public, Abstract, Virtual, HideBySig, NewSlot, RVA=0.
-    addMethodDef(t, MethodDefRow(
-      rva       = 0,
-      implFlags = 0,
-      flags     = MDA_PUBLIC + MDA_ABSTRACT + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_NEW_SLOT,
-      name      = sN,
-      signature = bSig,
-      paramList = fp))
+    addMethodDef(
+      t,
+      MethodDefRow(
+        rva = 0,
+        implFlags = 0,
+        flags = MDA_PUBLIC + MDA_ABSTRACT + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_NEW_SLOT,
+        name = sN,
+        signature = bSig,
+        paramList = fp
+      )
+    )
     mi = mi + 1
   }
 
   // TypeDef flags for a CLR interface: Interface | Abstract | Public.
-  addTypeDef(t, TypeDefRow(
-    flags         = TDF_INTERFACE + TDF_ABSTRACT + TDF_PUBLIC,
-    typeName      = sName,
-    typeNamespace = sNs,
-    extends       = 0,      // interfaces have no extends
-    fieldList     = firstField,
-    methodList    = firstMethod))
+  addTypeDef(
+    t,
+    TypeDefRow(
+      flags = TDF_INTERFACE + TDF_ABSTRACT + TDF_PUBLIC,
+      typeName = sName,
+      typeNamespace = sNs,
+      extends = 0,
+      // interfaces have no extends
+      fieldList = firstField,
+      methodList = firstMethod
+    )
+  )
   recordUserTypeDefRow(ctx, iface.namespace, simpleNameIface, t.typeDefs.count)
 }
 
 // ── Impl lowering ─────────────────────────────────────────────────────────────
-
 // Find the 1-based TypeDef row whose (namespace, name) matches the given
 // fully-qualified type name.  Returns 0 if no such TypeDef exists.
 // Uses #Strings heap interning — both `internString` calls are idempotent so
@@ -2807,13 +2948,13 @@ pub func findTypeDefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
   var lastDot = -1
   var di = 0
   while di < fqn.length {
-    if fqn[di] == '.' { lastDot = di }
+    if fqn[di] == '.' {
+      lastDot = di
+    }
     di = di + 1
   }
-  val ns         = if lastDot < 0 { "" }
-                   else { fqn.substring(0, lastDot) }
-  val simpleName = if lastDot < 0 { fqn }
-                   else { fqn.substring(lastDot + 1, fqn.length - lastDot - 1) }
+  val ns = if lastDot < 0 { "" } else { fqn.substring(0, lastDot) }
+  val simpleName = if lastDot < 0 { fqn } else { fqn.substring(lastDot + 1, fqn.length - lastDot - 1) }
   val sNs = internString(ctx.strings, ns)
   val sSN = internString(ctx.strings, simpleName)
   val t = ctx.tables
@@ -2838,13 +2979,13 @@ pub func findTypeRefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
   var lastDot = -1
   var di = 0
   while di < fqn.length {
-    if fqn[di] == '.' { lastDot = di }
+    if fqn[di] == '.' {
+      lastDot = di
+    }
     di = di + 1
   }
-  val ns         = if lastDot < 0 { "" }
-                   else { fqn.substring(0, lastDot) }
-  val simpleName = if lastDot < 0 { fqn }
-                   else { fqn.substring(lastDot + 1, fqn.length - lastDot - 1) }
+  val ns = if lastDot < 0 { "" } else { fqn.substring(0, lastDot) }
+  val simpleName = if lastDot < 0 { fqn } else { fqn.substring(lastDot + 1, fqn.length - lastDot - 1) }
   val sNs = internString(ctx.strings, ns)
   val sSN = internString(ctx.strings, simpleName)
   val t = ctx.tables
@@ -2863,15 +3004,18 @@ pub func findTypeRefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
 // the same way `findTypeDefRowByName` splits one — so a name recorded here is
 // looked up by the identical key.
 func joinTypeFqn(namespace: in String, simpleName: in String): String {
-  if namespace.length == 0 { simpleName } else { namespace + "." + simpleName }
+  if namespace.length == 0 {
+    simpleName
+  } else {
+    namespace + "." + simpleName
+  }
 }
 
 // Register an in-bundle TypeDef's FQN → row mapping (epic #2359 Stage 1).
 // Idempotent: a second registration of the same FQN (e.g. the real pass after
 // the discovery pass already seeded it) is ignored.  `simpleName` is the
 // unqualified type name as stored in the TypeDef row; `namespace` its namespace.
-pub func recordUserTypeDefRow(ctx: in LoweringCtx, namespace: in String,
-                              simpleName: in String, row: in Int): Unit {
+pub func recordUserTypeDefRow(ctx: in LoweringCtx, namespace: in String, simpleName: in String, row: in Int): Unit {
   val fqn = joinTypeFqn(namespace, simpleName)
   if not ctx.typeDefRowByFqn.containsKey(fqn) {
     ctx.typeDefRowByFqn.add(fqn, row)
@@ -2889,7 +3033,7 @@ pub func recordUserTypeDefRow(ctx: in LoweringCtx, namespace: in String,
 pub func resolveSigTypeDefRow(ctx: in LoweringCtx, fqn: in String): Int {
   match mapGet(ctx.typeDefRowByFqn, fqn) {
     case Some(row) -> row
-    case None      -> findTypeDefRowByName(ctx, fqn)
+    case None -> findTypeDefRowByName(ctx, fqn)
   }
 }
 
@@ -2916,8 +3060,9 @@ pub func discoverTypeDefRowsInto(dst: in LoweringCtx, pkgs: in List[MPackage]): 
         // the pre-seeded real context, not this fresh discovery context, so
         // processing it here would panic.  Skipping it is safe: it cannot shift
         // any TypeDef row number that the real pass will assign.
-        case MPImpl(_) -> {}
-        case other     -> lowerMPackageItem(other, dctx)
+        case MPImpl(_) -> {
+        }
+        case other -> lowerMPackageItem(other, dctx)
       }
       i = i + 1
     }
@@ -2933,7 +3078,8 @@ pub func discoverTypeDefRowsInto(dst: in LoweringCtx, pkgs: in List[MPackage]): 
           dst.typeDefRowFqns.add(fqn)
         }
       }
-      case None -> {}
+      case None -> {
+      }
     }
     k = k + 1
   }
@@ -2947,7 +3093,7 @@ pub func listTokensForLowering(ctx: in LoweringCtx, elemTy: in MsilType): ListTo
   val key = msilTypeKey(elemTy)
   match mapGet(ctx.listTokenCache, key) {
     case Some(t) -> return t
-    case None    -> ()
+    case None -> ()
   }
   val trList1 = findTypeRefRowByName(ctx, "System.Collections.Generic.List`1")
   if trList1 <= 0 {
@@ -2959,25 +3105,84 @@ pub func listTokensForLowering(ctx: in LoweringCtx, elemTy: in MsilType): ListTo
   argTys.add(elemTy)
   val tsRow = ctxAddTypeSpec(ctx, "ts_list_" + key, buildGenericInstBlobWithCtx(ctx, tdrTypeRef(trList1), argTys))
   val ctorP: List[MsilType] = newList()
-  val ctorTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, ".ctor", "list_ctor_" + key, buildInstanceMethodSig(ctorP, MVoid))
-  val addP: List[MsilType] = newList()  addP.add(MTypeVar(0))
-  val addTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "Add", "list_add_" + key, buildInstanceMethodSig(addP, MVoid))
-  val getP: List[MsilType] = newList()  getP.add(MInt)
-  val getTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "get_Item", "list_get_" + key, buildInstanceMethodSig(getP, MTypeVar(0)))
-  val setP: List[MsilType] = newList()  setP.add(MInt)  setP.add(MTypeVar(0))
-  val setTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "set_Item", "list_set_" + key, buildInstanceMethodSig(setP, MVoid))
+  val ctorTok = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      ctx,
+      tsRow,
+      ".ctor",
+      "list_ctor_" + key,
+      buildInstanceMethodSig(ctorP, MVoid)
+    )
+  val addP: List[MsilType] = newList()
+  addP.add(MTypeVar(0))
+  val addTok = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(ctx, tsRow, "Add", "list_add_" + key, buildInstanceMethodSig(addP, MVoid))
+  val getP: List[MsilType] = newList()
+  getP.add(MInt)
+  val getTok = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      ctx,
+      tsRow,
+      "get_Item",
+      "list_get_" + key,
+      buildInstanceMethodSig(getP, MTypeVar(0))
+    )
+  val setP: List[MsilType] = newList()
+  setP.add(MInt)
+  setP.add(MTypeVar(0))
+  val setTok = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      ctx,
+      tsRow,
+      "set_Item",
+      "list_set_" + key,
+      buildInstanceMethodSig(setP, MVoid)
+    )
   val cntP: List[MsilType] = newList()
-  val cntTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "get_Count", "list_cnt_" + key, buildInstanceMethodSig(cntP, MInt))
-  val cnsP: List[MsilType] = newList()  cnsP.add(MTypeVar(0))
-  val cnsTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "Contains", "list_cns_" + key, buildInstanceMethodSig(cnsP, MBool))
-  val rmP: List[MsilType] = newList()  rmP.add(MInt)
-  val rmTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "RemoveAt", "list_rm_" + key, buildInstanceMethodSig(rmP, MVoid))
+  val cntTok = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      ctx,
+      tsRow,
+      "get_Count",
+      "list_cnt_" + key,
+      buildInstanceMethodSig(cntP, MInt)
+    )
+  val cnsP: List[MsilType] = newList()
+  cnsP.add(MTypeVar(0))
+  val cnsTok = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      ctx,
+      tsRow,
+      "Contains",
+      "list_cns_" + key,
+      buildInstanceMethodSig(cnsP, MBool)
+    )
+  val rmP: List[MsilType] = newList()
+  rmP.add(MInt)
+  val rmTok = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(ctx, tsRow, "RemoveAt", "list_rm_" + key, buildInstanceMethodSig(rmP, MVoid))
   // `instance !0[] ToArray()` — materialises a genuine CLR array from the list,
   // used to bridge a List-backed value into an array-typed boundary (#2592).
   val taP: List[MsilType] = newList()
-  val taTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "ToArray", "list_toarr_" + key, buildInstanceMethodSig(taP, MArray(elemTy = MTypeVar(index = 0))))
-  val t = ListTokens(typeSpec = 0x1B000000 + tsRow, ctor = ctorTok, add = addTok, getItem = getTok,
-                     setItem = setTok, getCount = cntTok, contains = cnsTok, removeAt = rmTok, toArray = taTok)
+  val taTok = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      ctx,
+      tsRow,
+      "ToArray",
+      "list_toarr_" + key,
+      buildInstanceMethodSig(taP, MArray(elemTy = MTypeVar(index = 0)))
+    )
+  val t = ListTokens(
+    typeSpec = 0x1B000000 + tsRow,
+    ctor = ctorTok,
+    add = addTok,
+    getItem = getTok,
+    setItem = setTok,
+    getCount = cntTok,
+    contains = cnsTok,
+    removeAt = rmTok,
+    toArray = taTok
+  )
   ctx.listTokenCache.add(key, t)
   t
 }
@@ -2989,7 +3194,7 @@ pub func dictTokensForLowering(ctx: in LoweringCtx, keyTy: in MsilType, valTy: i
   val key = msilTypeKey(keyTy) + "|" + msilTypeKey(valTy)
   match mapGet(ctx.dictTokenCache, key) {
     case Some(t) -> return t
-    case None    -> ()
+    case None -> ()
   }
   val trDict2 = findTypeRefRowByName(ctx, "System.Collections.Generic.Dictionary`2")
   if trDict2 <= 0 {
@@ -3000,21 +3205,73 @@ pub func dictTokensForLowering(ctx: in LoweringCtx, keyTy: in MsilType, valTy: i
   argTys.add(valTy)
   val tsRow = ctxAddTypeSpec(ctx, "ts_dict_" + key, buildGenericInstBlobWithCtx(ctx, tdrTypeRef(trDict2), argTys))
   val ctorP: List[MsilType] = newList()
-  val ctorTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, ".ctor", "dict_ctor_" + key, buildInstanceMethodSig(ctorP, MVoid))
-  val addP: List[MsilType] = newList()  addP.add(MTypeVar(0))  addP.add(MTypeVar(1))
-  val addTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "Add", "dict_add_" + key, buildInstanceMethodSig(addP, MVoid))
-  val getP: List[MsilType] = newList()  getP.add(MTypeVar(0))
-  val getTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "get_Item", "dict_get_" + key, buildInstanceMethodSig(getP, MTypeVar(1)))
-  val setP: List[MsilType] = newList()  setP.add(MTypeVar(0))  setP.add(MTypeVar(1))
-  val setTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "set_Item", "dict_set_" + key, buildInstanceMethodSig(setP, MVoid))
+  val ctorTok = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      ctx,
+      tsRow,
+      ".ctor",
+      "dict_ctor_" + key,
+      buildInstanceMethodSig(ctorP, MVoid)
+    )
+  val addP: List[MsilType] = newList()
+  addP.add(MTypeVar(0))
+  addP.add(MTypeVar(1))
+  val addTok = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(ctx, tsRow, "Add", "dict_add_" + key, buildInstanceMethodSig(addP, MVoid))
+  val getP: List[MsilType] = newList()
+  getP.add(MTypeVar(0))
+  val getTok = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      ctx,
+      tsRow,
+      "get_Item",
+      "dict_get_" + key,
+      buildInstanceMethodSig(getP, MTypeVar(1))
+    )
+  val setP: List[MsilType] = newList()
+  setP.add(MTypeVar(0))
+  setP.add(MTypeVar(1))
+  val setTok = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      ctx,
+      tsRow,
+      "set_Item",
+      "dict_set_" + key,
+      buildInstanceMethodSig(setP, MVoid)
+    )
   val cntP: List[MsilType] = newList()
-  val cntTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "get_Count", "dict_cnt_" + key, buildInstanceMethodSig(cntP, MInt))
-  val ckP: List[MsilType] = newList()  ckP.add(MTypeVar(0))
-  val ckTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "ContainsKey", "dict_ck_" + key, buildInstanceMethodSig(ckP, MBool))
-  val rmP: List[MsilType] = newList()  rmP.add(MTypeVar(0))
-  val rmTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "Remove", "dict_rm_" + key, buildInstanceMethodSig(rmP, MBool))
-  val t = DictTokens(typeSpec = 0x1B000000 + tsRow, ctor = ctorTok, add = addTok, getItem = getTok,
-                     setItem = setTok, getCount = cntTok, containsKey = ckTok, remove = rmTok)
+  val cntTok = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      ctx,
+      tsRow,
+      "get_Count",
+      "dict_cnt_" + key,
+      buildInstanceMethodSig(cntP, MInt)
+    )
+  val ckP: List[MsilType] = newList()
+  ckP.add(MTypeVar(0))
+  val ckTok = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      ctx,
+      tsRow,
+      "ContainsKey",
+      "dict_ck_" + key,
+      buildInstanceMethodSig(ckP, MBool)
+    )
+  val rmP: List[MsilType] = newList()
+  rmP.add(MTypeVar(0))
+  val rmTok = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(ctx, tsRow, "Remove", "dict_rm_" + key, buildInstanceMethodSig(rmP, MBool))
+  val t = DictTokens(
+    typeSpec = 0x1B000000 + tsRow,
+    ctor = ctorTok,
+    add = addTok,
+    getItem = getTok,
+    setItem = setTok,
+    getCount = cntTok,
+    containsKey = ckTok,
+    remove = rmTok
+  )
   ctx.dictTokenCache.add(key, t)
   t
 }
@@ -3023,18 +3280,15 @@ pub func dictTokensForLowering(ctx: in LoweringCtx, keyTy: in MsilType, valTy: i
 // name.  The methods owned by a TypeDef are the contiguous range
 // [td.methodList, nextTd.methodList) in the MethodDef table — the last
 // TypeDef owns through the end of the table.  Returns 0 if not found.
-pub func findMethodDefRowOfType(ctx: in LoweringCtx, typeDefRow: in Int,
-                                 methodName: in String): Int {
+pub func findMethodDefRowOfType(ctx: in LoweringCtx, typeDefRow: in Int, methodName: in String): Int {
   val t = ctx.tables
-  if typeDefRow < 1 or typeDefRow > t.typeDefs.count { return 0 }
-  val sName = internString(ctx.strings, methodName)
-  val td    = t.typeDefs[typeDefRow - 1]
-  val first = td.methodList
-  val last  = if typeDefRow == t.typeDefs.count {
-    t.methodDefs.count + 1
-  } else {
-    t.typeDefs[typeDefRow].methodList
+  if typeDefRow < 1 or typeDefRow > t.typeDefs.count {
+    return 0
   }
+  val sName = internString(ctx.strings, methodName)
+  val td = t.typeDefs[typeDefRow - 1]
+  val first = td.methodList
+  val last = if typeDefRow == t.typeDefs.count { t.methodDefs.count + 1 } else { t.typeDefs[typeDefRow].methodList }
   var i = first
   while i < last {
     if t.methodDefs[i - 1].name == sName {
@@ -3049,18 +3303,15 @@ pub func findMethodDefRowOfType(ctx: in LoweringCtx, typeDefRow: in Int,
 // Fields owned by a TypeDef are the contiguous range
 // [td.fieldList, nextTd.fieldList) — the last TypeDef owns through the end.
 // Returns 0 if not found.
-pub func findFieldDefRowOfType(ctx: in LoweringCtx, typeDefRow: in Int,
-                                fieldName: in String): Int {
+pub func findFieldDefRowOfType(ctx: in LoweringCtx, typeDefRow: in Int, fieldName: in String): Int {
   val t = ctx.tables
-  if typeDefRow < 1 or typeDefRow > t.typeDefs.count { return 0 }
-  val sName = internString(ctx.strings, fieldName)
-  val td    = t.typeDefs[typeDefRow - 1]
-  val first = td.fieldList
-  val last  = if typeDefRow == t.typeDefs.count {
-    t.fields.count + 1
-  } else {
-    t.typeDefs[typeDefRow].fieldList
+  if typeDefRow < 1 or typeDefRow > t.typeDefs.count {
+    return 0
   }
+  val sName = internString(ctx.strings, fieldName)
+  val td = t.typeDefs[typeDefRow - 1]
+  val first = td.fieldList
+  val last = if typeDefRow == t.typeDefs.count { t.fields.count + 1 } else { t.typeDefs[typeDefRow].fieldList }
   var i = first
   while i < last {
     if t.fields[i - 1].name == sName {
@@ -3091,11 +3342,7 @@ pub func findFieldDefRowOfType(ctx: in LoweringCtx, typeDefRow: in Int,
 // msil_self_test_m11.l.
 pub func lowerMImpl(d: in MImplData, ctx: in LoweringCtx): Int {
   val t = ctx.tables
-  val targetRow = if d.targetTypeDefRow > 0 {
-    d.targetTypeDefRow
-  } else {
-    findTypeDefRowByName(ctx, d.targetTypeName)
-  }
+  val targetRow = if d.targetTypeDefRow > 0 { d.targetTypeDefRow } else { findTypeDefRowByName(ctx, d.targetTypeName) }
   if targetRow == 0 {
     panic("Msil.Lowering: MPImpl target type '" + d.targetTypeName + "' has no TypeDef row")
   }
@@ -3114,9 +3361,7 @@ pub func lowerMImpl(d: in MImplData, ctx: in LoweringCtx): Int {
     }
   }
   // InterfaceImpl row: records that targetRow implements ifaceToken.
-  addInterfaceImpl(t, InterfaceImplRow(
-    class_     = targetRow,
-    interface_ = ifaceToken))
+  addInterfaceImpl(t, InterfaceImplRow(class_ = targetRow, interface_ = ifaceToken))
   // For TypeSpec-instantiated generic interfaces (tag = 2), the CLR cannot
   // resolve implementations via name matching alone — explicit MethodImpl rows
   // are required.  When a slot carries a pre-resolved ifaceMethodToken (the raw
@@ -3129,10 +3374,14 @@ pub func lowerMImpl(d: in MImplData, ctx: in LoweringCtx): Int {
       if slot.ifaceMethodToken > 0 {
         val implRow = findMethodDefRowOfType(ctx, targetRow, slot.implMethodName)
         if implRow > 0 {
-          addMethodImpl(t, MethodImplRow(
-            class_             = targetRow,
-            methodBody         = mdorMethodDef(implRow),
-            methodDeclaration  = mdorMemberRef(slot.ifaceMethodToken)))
+          addMethodImpl(
+            t,
+            MethodImplRow(
+              class_ = targetRow,
+              methodBody = mdorMethodDef(implRow),
+              methodDeclaration = mdorMemberRef(slot.ifaceMethodToken)
+            )
+          )
         }
       }
       si = si + 1
@@ -3142,28 +3391,30 @@ pub func lowerMImpl(d: in MImplData, ctx: in LoweringCtx): Int {
 }
 
 // ── Opaque type lowering ──────────────────────────────────────────────────────
-
 // Lower an MOpaque to a sealed TypeDef with private storage fields.
 // When isProjectable=true, also emits a sibling TypeDef with public fields
 // and toExposed/fromExposed static methods.
 pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
   val sh = ctx.strings
   val bh = ctx.blobs
-  val t  = ctx.tables
+  val t = ctx.tables
 
-  val simpleNameOpaque = if op.namespace.length == 0 { op.className }
-                         else { op.className.substring(op.namespace.length + 1, op.className.length - op.namespace.length - 1) }
+  val simpleNameOpaque = if op.namespace.length == 0 {
+    op.className
+  } else {
+    op.className.substring(op.namespace.length + 1, op.className.length - op.namespace.length - 1)
+  }
   val sName = internString(sh, simpleNameOpaque)
-  val sNs   = internString(sh, op.namespace)
+  val sNs = internString(sh, op.namespace)
 
-  val firstField  = t.fields.count + 1
+  val firstField = t.fields.count + 1
   val firstMethod = t.methodDefs.count + 1
 
   // Emit private storage fields (no public field access outside the package).
   var fi = 0
   while fi < op.fields.count {
-    val f    = op.fields[fi]
-    val sF   = internString(sh, f.name)
+    val f = op.fields[fi]
+    val sF = internString(sh, f.name)
     val fSig = buildFieldSigWithCtx(f.fieldType, ctx)
     val bSig = internBlob(bh, "ofield_" + op.className + "_" + f.name, fSig)
     addField(t, FieldRow(flags = FDA_PRIVATE, name = sF, signature = bSig))
@@ -3177,9 +3428,9 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
     ctorPs.add(op.fields[ci].fieldType)
     ci = ci + 1
   }
-  val ctorSig  = buildInstanceMethodSigWithCtx(ctorPs, MVoid, ctx)
+  val ctorSig = buildInstanceMethodSigWithCtx(ctorPs, MVoid, ctx)
   val bCtorSig = internBlob(bh, "octor_" + op.className, ctorSig)
-  val sCtor    = internString(sh, ".ctor")
+  val sCtor = internString(sh, ".ctor")
 
   val mbCtor = newMethodBody()
   mbCtor.maxStack = 2
@@ -3195,63 +3446,70 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
   emitRet(mbCtor)
   ctx.bodies.add(mbCtor)
 
-  val rvas    = methodBodyRvas(ctx.bodies)
+  val rvas = methodBodyRvas(ctx.bodies)
   val ctorRva = rvas[ctx.bodies.count - 1]
-  val fp      = t.params_.count + 1
+  val fp = t.params_.count + 1
   addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-  addMethodDef(t, MethodDefRow(
-    rva       = ctorRva,
-    implFlags = 0,
-    flags     = MDA_PUBLIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
-    name      = sCtor,
-    signature = bCtorSig,
-    paramList = fp))
+  addMethodDef(
+    t,
+    MethodDefRow(
+      rva = ctorRva,
+      implFlags = 0,
+      flags = MDA_PUBLIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
+      name = sCtor,
+      signature = bCtorSig,
+      paramList = fp
+    )
+  )
 
   // Emit explicit instance methods.
   var mi = 0
   while mi < op.methods.count {
-    val m    = op.methods[mi]
-    val mbM  = lowerMFunc(m, ctx)
+    val m = op.methods[mi]
+    val mbM = lowerMFunc(m, ctx)
     ctx.bodies.add(mbM)
     val rvasM = methodBodyRvas(ctx.bodies)
-    val mRva  = rvasM[ctx.bodies.count - 1]
-    val sN    = internString(sh, m.name)
-    val mSig  = buildInstanceMethodSigWithCtx(m.params, m.ret, ctx)
+    val mRva = rvasM[ctx.bodies.count - 1]
+    val sN = internString(sh, m.name)
+    val mSig = buildInstanceMethodSigWithCtx(m.params, m.ret, ctx)
     val bMSig = internBlob(bh, "ometh_" + op.className + "_" + m.name, mSig)
-    val fpm   = t.params_.count + 1
+    val fpm = t.params_.count + 1
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-    addMethodDef(t, MethodDefRow(
-      rva       = mRva,
-      implFlags = 0,
-      flags     = m.flags,
-      name      = sN,
-      signature = bMSig,
-      paramList = fpm))
+    addMethodDef(
+      t,
+      MethodDefRow(rva = mRva, implFlags = 0, flags = m.flags, name = sN, signature = bMSig, paramList = fpm)
+    )
     mi = mi + 1
   }
 
-  val opaqueRow = addTypeDef(t, TypeDefRow(
-    flags         = TDF_PUBLIC + TDF_SEALED + TDF_BEFORE_FIELD_INIT,
-    typeName      = sName,
-    typeNamespace = sNs,
-    extends       = objectTypeToken(ctx),
-    fieldList     = firstField,
-    methodList    = firstMethod))
+  val opaqueRow = addTypeDef(
+    t,
+    TypeDefRow(
+      flags = TDF_PUBLIC + TDF_SEALED + TDF_BEFORE_FIELD_INIT,
+      typeName = sName,
+      typeNamespace = sNs,
+      extends = objectTypeToken(ctx),
+      fieldList = firstField,
+      methodList = firstMethod
+    )
+  )
   recordUserTypeDefRow(ctx, op.namespace, simpleNameOpaque, opaqueRow)
 
   opaqueRow
 }
 
 // ── Top-level static functions lowering ───────────────────────────────────────
-
 // Lower a list of top-level static MFuncs (and optional static fields) into a
 // single host class named `hostClass`. staticFields holds IConst/IVal items.
-pub func lowerMFuncsToHostClass(hostClass: in String, funcs: in List[MFunc],
-                                staticFields: in List[MStaticField],
-                                ctx: in LoweringCtx): Int {
+pub func lowerMFuncsToHostClass(
+  hostClass: in String,
+  funcs: in List[MFunc],
+  staticFields: in List[MStaticField],
+  ctx: in LoweringCtx,
+): Int {
   val sh = ctx.strings
   val bh = ctx.blobs
-  val t  = ctx.tables
+  val t = ctx.tables
 
   // The free-function host class is named `<package>.Program`: the
   // *full* package path (e.g. `Lyric.Pkg.Greeter`) is the CLR namespace
@@ -3266,28 +3524,33 @@ pub func lowerMFuncsToHostClass(hostClass: in String, funcs: in List[MFunc],
   // its TypeRef into the same `(namespace, type)` slot the F# producer
   // emitted.  Single-segment packages (no dot) yield
   // (namespace="<pkg>", name="Program") unchanged.
-  val sName    = internString(sh, "Program")
-  val sNs      = internString(sh, hostClass)
-  val firstField  = t.fields.count + 1
+  val sName = internString(sh, "Program")
+  val sNs = internString(sh, hostClass)
+  val firstField = t.fields.count + 1
 
   // Emit static fields (IConst → literal; IVal → init-only).
   val cctorInsns: List[MInsn] = newList()
   val hasCctor: List[Bool] = newList()  // singleton used as mutable bool flag
   var sfi = 0
   while sfi < staticFields.count {
-    val sf   = staticFields[sfi]
-    val sN   = internString(sh, sf.name)
+    val sf = staticFields[sfi]
+    val sN = internString(sh, sf.name)
     val fSig = buildFieldSigWithCtx(sf.fieldType, ctx)
     val bSig = internBlob(bh, "stfld_" + hostClass + "_" + sf.name, fSig)
     val fRow = addField(t, FieldRow(flags = sf.flags, name = sN, signature = bSig))
     if sf.hasLiteral {
       // IConst: emit a Constant table row with the literal value.
       val constBlob = buildI4ConstantBlob(sf.constValue)
-      val bConst    = internBlob(bh, "const_" + hostClass + "_" + sf.name, constBlob)
-      addConstant(t, ConstantRow(
-        type_  = 0x08,     // ELEMENT_TYPE_I4
-        parent = hconstField(fRow),
-        value  = bConst))
+      val bConst = internBlob(bh, "const_" + hostClass + "_" + sf.name, constBlob)
+      addConstant(
+        t,
+        ConstantRow(
+          type_ = 0x08,
+          // ELEMENT_TYPE_I4
+          parent = hconstField(fRow),
+          value = bConst
+        )
+      )
     } else if sf.initInsns.count > 0 {
       // IVal: accumulate IL for the .cctor body.
       var ii = 0
@@ -3316,57 +3579,58 @@ pub func lowerMFuncsToHostClass(hostClass: in String, funcs: in List[MFunc],
     }
     ctx.bodies.add(mbCctor)
     val rvasC = methodBodyRvas(ctx.bodies)
-    val cRva  = rvasC[ctx.bodies.count - 1]
+    val cRva = rvasC[ctx.bodies.count - 1]
     val sCctor = internString(sh, ".cctor")
-    val cctorSig  = buildStaticMethodSig(newList(), MVoid)
+    val cctorSig = buildStaticMethodSig(newList(), MVoid)
     val bCctorSig = internBlob(bh, "cctor_" + hostClass, cctorSig)
     val fpc = t.params_.count + 1
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-    addMethodDef(t, MethodDefRow(
-      rva       = cRva,
-      implFlags = 0,
-      flags     = MDA_PRIVATE + MDA_STATIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
-      name      = sCctor,
-      signature = bCctorSig,
-      paramList = fpc))
+    addMethodDef(
+      t,
+      MethodDefRow(
+        rva = cRva,
+        implFlags = 0,
+        flags = MDA_PRIVATE + MDA_STATIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
+        name = sCctor,
+        signature = bCctorSig,
+        paramList = fpc
+      )
+    )
   }
 
   // Emit static methods.
   var fi = 0
   while fi < funcs.count {
-    val f    = funcs[fi]
-    val mb   = lowerMFunc(f, ctx)
+    val f = funcs[fi]
+    val mb = lowerMFunc(f, ctx)
     ctx.bodies.add(mb)
     val rvas = methodBodyRvas(ctx.bodies)
     val fRva = rvas[ctx.bodies.count - 1]
-    val sN   = internString(sh, f.name)
+    val sN = internString(sh, f.name)
     val mSig = buildStaticMethodSigWithCtx(f.params, f.ret, ctx)
     // Arity-qualify the intern key (#1536) so same-name overloads don't collide and inherit the wrong signature blob.
     val bSig = internBlob(bh, "sfunc_" + hostClass + "_" + f.name + "/" + toString(f.params.count), mSig)
-    val fp   = t.params_.count + 1
+    val fp = t.params_.count + 1
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-    addMethodDef(t, MethodDefRow(
-      rva       = fRva,
-      implFlags = 0,
-      flags     = f.flags,
-      name      = sN,
-      signature = bSig,
-      paramList = fp))
+    addMethodDef(t, MethodDefRow(rva = fRva, implFlags = 0, flags = f.flags, name = sN, signature = bSig, paramList = fp))
     fi = fi + 1
   }
 
-  addTypeDef(t, TypeDefRow(
-    flags         = TDF_PUBLIC + TDF_SEALED + TDF_BEFORE_FIELD_INIT,
-    typeName      = sName,
-    typeNamespace = sNs,
-    extends       = objectTypeToken(ctx),
-    fieldList     = firstField,
-    methodList    = firstMethod))
+  addTypeDef(
+    t,
+    TypeDefRow(
+      flags = TDF_PUBLIC + TDF_SEALED + TDF_BEFORE_FIELD_INIT,
+      typeName = sName,
+      typeNamespace = sNs,
+      extends = objectTypeToken(ctx),
+      fieldList = firstField,
+      methodList = firstMethod
+    )
+  )
   recordUserTypeDefRow(ctx, hostClass, "Program", t.typeDefs.count)
 }
 
 // ── Package lowering ───────────────────────────────────────────────────────────
-
 // Lower an MPackage to a complete PE binary.
 // `entryMethodToken` is the MethodDef token for the program's entry point (0 for libraries).
 // Defaults the Assembly row version to 0.0; the bridge entry points that
@@ -3422,12 +3686,14 @@ pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
 
   val inp = AssemblerInput(
     entryPointToken = entryMethodToken,
-    methodBodies    = ctx.bodies,
-    tables          = ctx.tables,
-    strings         = ctx.strings,
-    us              = ctx.us,
-    blobs           = ctx.blobs,
-    guids           = ctx.guids, resourceData = ctx.resourceData)
+    methodBodies = ctx.bodies,
+    tables = ctx.tables,
+    strings = ctx.strings,
+    us = ctx.us,
+    blobs = ctx.blobs,
+    guids = ctx.guids,
+    resourceData = ctx.resourceData
+  )
 
   val peBuf = assemblePe(inp)
   bufToList(peBuf)
@@ -3445,20 +3711,37 @@ pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
 // multi-package walker (#1185).
 func lowerMPackageItem(item: in MPackageItem, ctx: in LoweringCtx): Unit {
   match item {
-    case MPRecord(rec)                       -> { val _ = lowerMRecord(rec, ctx) }
-    case MPFuncs(hostClass, funcs, sfields)  -> { val _ = lowerMFuncsToHostClass(hostClass, funcs, sfields, ctx) }
-    case MPUnion(u)                          -> { val _ = lowerMUnion(u, ctx) }
-    case MPDistinctType(d)                   -> { val _ = lowerMDistinctType(d, ctx) }
-    case MPRangeType(r)                      -> { val _ = lowerMRangeType(r, ctx) }
-    case MPEnum(e)                           -> { val _ = lowerMEnum(e, ctx) }
-    case MPInterface(iface)                  -> { val _ = lowerMInterface(iface, ctx) }
-    case MPImpl(implData)                    -> { val _ = lowerMImpl(implData, ctx) }
-    case MPOpaque(op)                        -> { val _ = lowerMOpaque(op, ctx) }
+    case MPRecord(rec) -> {
+      val _ = lowerMRecord(rec, ctx)
+    }
+    case MPFuncs(hostClass, funcs, sfields) -> {
+      val _ = lowerMFuncsToHostClass(hostClass, funcs, sfields, ctx)
+    }
+    case MPUnion(u) -> {
+      val _ = lowerMUnion(u, ctx)
+    }
+    case MPDistinctType(d) -> {
+      val _ = lowerMDistinctType(d, ctx)
+    }
+    case MPRangeType(r) -> {
+      val _ = lowerMRangeType(r, ctx)
+    }
+    case MPEnum(e) -> {
+      val _ = lowerMEnum(e, ctx)
+    }
+    case MPInterface(iface) -> {
+      val _ = lowerMInterface(iface, ctx)
+    }
+    case MPImpl(implData) -> {
+      val _ = lowerMImpl(implData, ctx)
+    }
+    case MPOpaque(op) -> {
+      val _ = lowerMOpaque(op, ctx)
+    }
   }
 }
 
-pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx,
-                               entryMethodToken: in Int): List[Byte] {
+pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx, entryMethodToken: in Int): List[Byte] {
   val discPkgs: List[MPackage] = newList()
   discPkgs.add(pkg)
   discoverTypeDefRowsInto(ctx, discPkgs)
@@ -3474,12 +3757,14 @@ pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx,
 
   val inp = AssemblerInput(
     entryPointToken = entryMethodToken,
-    methodBodies    = ctx.bodies,
-    tables          = ctx.tables,
-    strings         = ctx.strings,
-    us              = ctx.us,
-    blobs           = ctx.blobs,
-    guids           = ctx.guids, resourceData = ctx.resourceData)
+    methodBodies = ctx.bodies,
+    tables = ctx.tables,
+    strings = ctx.strings,
+    us = ctx.us,
+    blobs = ctx.blobs,
+    guids = ctx.guids,
+    resourceData = ctx.resourceData
+  )
 
   val peBuf = assemblePe(inp)
   bufToList(peBuf)
@@ -3497,8 +3782,7 @@ pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx,
 // host class per package's functions.  All cross-package call sites that
 // resolved to bundle-local `MethodDef` tokens during codegen point at the
 // correct row in the unified table.
-pub func lowerMPackagesWithCtx(pkgs: in List[MPackage], ctx: in LoweringCtx,
-                                entryMethodToken: in Int): List[Byte] {
+pub func lowerMPackagesWithCtx(pkgs: in List[MPackage], ctx: in LoweringCtx, entryMethodToken: in Int): List[Byte] {
   discoverTypeDefRowsInto(ctx, pkgs)
 
   var pi = 0
@@ -3514,12 +3798,14 @@ pub func lowerMPackagesWithCtx(pkgs: in List[MPackage], ctx: in LoweringCtx,
 
   val inp = AssemblerInput(
     entryPointToken = entryMethodToken,
-    methodBodies    = ctx.bodies,
-    tables          = ctx.tables,
-    strings         = ctx.strings,
-    us              = ctx.us,
-    blobs           = ctx.blobs,
-    guids           = ctx.guids, resourceData = ctx.resourceData)
+    methodBodies = ctx.bodies,
+    tables = ctx.tables,
+    strings = ctx.strings,
+    us = ctx.us,
+    blobs = ctx.blobs,
+    guids = ctx.guids,
+    resourceData = ctx.resourceData
+  )
 
   val peBuf = assemblePe(inp)
   bufToList(peBuf)

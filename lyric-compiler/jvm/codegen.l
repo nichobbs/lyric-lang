@@ -2983,9 +2983,19 @@ func lowerAutoFfiInstanceCall(
 // `new <class>; dup; <args>; invokespecial <init>`.  Receiver reference is
 // produced by the `new` opcode and duplicated so the initialised reference
 // remains on the stack after `invokespecial` consumes the bottom copy.
+// Abstract classes are rejected at compile time: emitting `new` for an
+// abstract class produces bytecode that throws `InstantiationError` at runtime
+// rather than a clear diagnostic (#2215).
 func lowerAutoFfiConstructorCall(
   ctx: in FuncCtx, insns: in List[LInsn], ci: in ClassInfo, args: in List[CallArg]
 ): JvmType {
+  if ci.isAbstract {
+    val fqn = ci.binaryName.replace("/", ".")
+    panic(
+      "JVM auto-FFI: cannot construct abstract class '" + fqn +
+        "' — declare a concrete subclass and instantiate that instead"
+    )
+  }
   val argBufs: List[List[LInsn]] = newList()
   val argDescs: List[String] = newList()
   var i = 0
@@ -3367,7 +3377,16 @@ func lowerMethodCall(
   // int shift count per the JVM spec, matching `.shl(n: Int)` / `.shr(n: Int)`.
   if (memberName == "and" or memberName == "or" or memberName == "xor" or memberName == "shl" or memberName == "shr") and args.count == 1 {
     lowerCallArg(ctx, insns, args[0])
-    val isLong = match recvTy { case JLong -> true; case _ -> false }
+    val isLong = match recvTy {
+      case JLong -> true
+      case JInt -> false
+      // Byte uses int-width opcodes on JVM (byte arithmetic is int-width per JVMS §2.11.1).
+      case JByte -> false
+      case _ -> panic("Jvm.Codegen: bitwise op on non-integer JVM type (expected JInt, JByte, or JLong)")
+      // Defense-in-depth: the type checker should reject bitwise ops on non-integer
+      // types before reaching codegen, but emit a clear panic rather than silently
+      // mis-emitting int opcodes for a float/ref receiver (#1615).
+    }
     if memberName == "and" {
       insns.add(if isLong { LLand } else { LIand })
     } else if memberName == "or" {
@@ -3825,6 +3844,16 @@ func lowerTryCatchExpr(ctx: in FuncCtx, insns: in List[LInsn], body: in Block, c
         // and the JVM verifier doesn't reject a mismatched store (#1681).
         // The result slot is sized by `resultTy`; widths must match, which
         // the type-checker normally guarantees.
+        //
+        // KNOWN LIMITATION (#2042): when `catchBodyTy == JVoid` and
+        // `resultTy != JVoid`, the catch body evaluated in statement mode and
+        // pushed nothing onto the operand stack.  Falling back to
+        // `emitStore(insns, rslot, resultTy)` will still pop a value that
+        // isn't there, producing the same class of VerifyError this PR fixed
+        // for the non-void case.  This path is guarded by the type-checker
+        // guarantee that widths must match; when the documented type-checker
+        // gap allows a mismatch here, the generated class will fail to load.
+        // Fix pending the underlying type-checker repair.
         match catchBodyTy {
           case JVoid -> emitStore(insns, rslot, resultTy)
           case _ -> emitStore(insns, rslot, catchBodyTy)

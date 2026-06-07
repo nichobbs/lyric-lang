@@ -24,14 +24,11 @@ import Std.Char
 import Jvm.Deflate
 
 // ── Little-endian readers ─────────────────────────────────────────────────────
-// Convert a raw byte (possibly signed) to unsigned 0-255.
+// Zero-extend a raw byte to unsigned 0-255.  Lyric `Byte` is unsigned and
+// `.toInt()` zero-extends, so `v` is always in [0, 255] — no sign-correction
+// branch is needed (#2343).
 func rdU8(b: in slice[Byte], o: in Int): Int {
-  val v = b[o].toInt()
-  if v < 0 {
-    v + 256
-  } else {
-    v
-  }
+  b[o].toInt()
 }
 
 func rdU16Le(b: in slice[Byte], o: in Int): Int {

@@ -1,34 +1,33 @@
-// msil/metadata_reader.l — pure-Lyric CLI-metadata reader.
-//
-// Reads a .NET PE assembly's bytes and parses the ECMA-335 metadata container.
-// It is the inverse of the metadata *writer* in `pe.l`/`tables.l`/`heaps.l`:
-// where the writer lays out the DOS/PE/COFF headers, the CLI header, the
-// metadata root (`BSJB`), the stream headers, and the `#~` table-stream
-// header, this reader walks the same structures back out of a byte image.
-// Resolving external method signatures from reference-assembly metadata this
-// way needs no runtime type loading — it is pure byte reading, so it is
-// independent of whether the emitting assembly's types can be reflected over.
-//
-// This module currently covers layers 1–5 plus reference-assembly discovery:
-// the PE container (DOS/PE/COFF/optional header, sections, RVA→file-offset,
-// CLI header), the metadata root (stream headers), the `#~` table-stream
-// header (heap-size flags, the valid-table bitvector, per-table row counts),
-// the `#Strings`/`#Blob` heap readers, the table layout + TypeDef/MethodDef/
-// Param row readers (with run-length method-list ownership), the MethodDefSig
-// signature-blob decoder, and a reference-pack discovery + type→assembly
-// index.  Overload resolution and the emitter wiring build on top.
-//
-// All multi-byte integers in the PE/metadata format are little-endian.  Byte
-// values are widened to `Int` via mixed Byte*Int arithmetic (the same idiom
-// `Std.Encoding` uses for UTF-8 decoding), which keeps this compilable by the
-// bootstrap emitter that lacks bitwise operators.  No field read here stores a
-// value with the high bit of a 32-bit slot set (offsets, sizes, RVAs, and row
-// counts are all well under 2^31), and the 64-bit valid/sorted bitvectors are
-// read byte-wise so they never overflow `Int`.
-//
-// References: ECMA-335 6th edition §II.25.2 (PE file), §II.24.2 (metadata
-// physical layout), §II.24.2.6 (`#~` stream).
-
+//! msil/metadata_reader.l — pure-Lyric CLI-metadata reader.
+//!
+//! Reads a .NET PE assembly's bytes and parses the ECMA-335 metadata container.
+//! It is the inverse of the metadata *writer* in `pe.l`/`tables.l`/`heaps.l`:
+//! where the writer lays out the DOS/PE/COFF headers, the CLI header, the
+//! metadata root (`BSJB`), the stream headers, and the `#~` table-stream
+//! header, this reader walks the same structures back out of a byte image.
+//! Resolving external method signatures from reference-assembly metadata this
+//! way needs no runtime type loading — it is pure byte reading, so it is
+//! independent of whether the emitting assembly's types can be reflected over.
+//!
+//! This module currently covers layers 1–5 plus reference-assembly discovery:
+//! the PE container (DOS/PE/COFF/optional header, sections, RVA→file-offset,
+//! CLI header), the metadata root (stream headers), the `#~` table-stream
+//! header (heap-size flags, the valid-table bitvector, per-table row counts),
+//! the `#Strings`/`#Blob` heap readers, the table layout + TypeDef/MethodDef/
+//! Param row readers (with run-length method-list ownership), the MethodDefSig
+//! signature-blob decoder, and a reference-pack discovery + type→assembly
+//! index.  Overload resolution and the emitter wiring build on top.
+//!
+//! All multi-byte integers in the PE/metadata format are little-endian.  Byte
+//! values are widened to `Int` via mixed Byte*Int arithmetic (the same idiom
+//! `Std.Encoding` uses for UTF-8 decoding), which keeps this compilable by the
+//! bootstrap emitter that lacks bitwise operators.  No field read here stores a
+//! value with the high bit of a 32-bit slot set (offsets, sizes, RVAs, and row
+//! counts are all well under 2^31), and the 64-bit valid/sorted bitvectors are
+//! read byte-wise so they never overflow `Int`.
+//!
+//! References: ECMA-335 6th edition §II.25.2 (PE file), §II.24.2 (metadata
+//! physical layout), §II.24.2.6 (`#~` stream).
 package Msil.MetadataReader
 
 import Std.Core
@@ -42,65 +41,65 @@ import Std.Path as Path
 import Std.Parse as Parse
 
 // ── Parsed shapes ────────────────────────────────────────────────────────────
-
 // One PE section header (the 40-byte rows after the optional header).  Only
 // the fields needed for RVA→file-offset mapping are kept.
 pub record SectionHeader {
   virtualAddress: Int
-  virtualSize:    Int
-  rawDataPtr:     Int
-  rawDataSize:    Int
+  virtualSize: Int
+  rawDataPtr: Int
+  rawDataSize: Int
 }
 
 // The PE container: enough to locate the CLI header and the metadata root.
 pub record PeImage {
-  bytes:        slice[Byte]
-  peHeaderOff:  Int            // file offset of the "PE\0\0" signature
-  numSections:  Int
+  bytes: slice[Byte]
+  peHeaderOff: Int            // file offset of the "PE\0\0" signature
+  numSections: Int
   optHeaderSize: Int
-  isPe32Plus:   Bool
-  cliHeaderRva:  Int
+  isPe32Plus: Bool
+  cliHeaderRva: Int
   cliHeaderSize: Int
-  metadataRva:   Int           // RVA of the BSJB metadata root
-  metadataSize:  Int
-  metadataOff:   Int           // file offset of the BSJB metadata root
-  sections:      List[SectionHeader]
+  metadataRva: Int           // RVA of the BSJB metadata root
+  metadataSize: Int
+  metadataOff: Int           // file offset of the BSJB metadata root
+  sections: List[SectionHeader]
 }
 
 // One metadata stream header (`#~`, `#Strings`, `#US`, `#GUID`, `#Blob`).
 // `offset` is relative to the metadata root; `fileOff` is absolute.
 pub record StreamHeader {
-  name:    String
-  offset:  Int
-  size:    Int
+  name: String
+  offset: Int
+  size: Int
   fileOff: Int
 }
 
 // The metadata root (`BSJB`) plus its stream headers.
 pub record MetadataRoot {
   versionString: String
-  streams:       List[StreamHeader]
+  streams: List[StreamHeader]
 }
 
 // The `#~` table-stream header: heap-index widths + which tables are present
 // and their row counts.  `rowCounts` is indexed by ECMA table id (0..63);
 // absent tables read 0.
 pub record TablesHeader {
-  heapSizes:      Int          // bit0: #Strings 4-byte, bit1: #GUID, bit2: #Blob
-  stringsWide:    Bool
-  guidWide:       Bool
-  blobWide:       Bool
-  presentCount:   Int          // number of tables with a row-count entry
-  rowCounts:      List[Int]    // length 64, indexed by table id
-  tablesDataOff:  Int          // file offset where the table rows begin
+  heapSizes: Int          // bit0: #Strings 4-byte, bit1: #GUID, bit2: #Blob
+  stringsWide: Bool
+  guidWide: Bool
+  blobWide: Bool
+  presentCount: Int          // number of tables with a row-count entry
+  rowCounts: List[Int]    // length 64, indexed by table id
+  tablesDataOff: Int          // file offset where the table rows begin
 }
 
 // ── Little-endian byte readers (Byte→Int widening via mixed arithmetic) ──────
-
 // Read one byte as an unsigned Int (0..255).  `Byte` is unsigned, so `.toInt()`
 // zero-extends to the 0..255 range (language reference §541: conversions are
 // explicit — no implicit widening).
-func rdU8(b: in slice[Byte], o: in Int): Int { b[o].toInt() }
+func rdU8(b: in slice[Byte], o: in Int): Int {
+  b[o].toInt()
+}
 
 func rdU16(b: in slice[Byte], o: in Int): Int {
   rdU8(b, o) + rdU8(b, o + 1) * 256
@@ -114,7 +113,10 @@ func rdU32(b: in slice[Byte], o: in Int): Int {
 func bitSetInByte(byteVal: in Int, bit: in Int): Bool {
   var p = 1
   var k = 0
-  while k < bit { p = p * 2  k = k + 1 }
+  while k < bit {
+    p = p * 2
+    k = k + 1
+  };
   (byteVal / p) % 2 == 1
 }
 
@@ -126,7 +128,9 @@ func popcount64(b: in slice[Byte], o: in Int): Int {
     val v = rdU8(b, o + i)
     var bit = 0
     while bit < 8 {
-      if bitSetInByte(v, bit) { total = total + 1 }
+      if bitSetInByte(v, bit) {
+        total = total + 1
+      }
       bit = bit + 1
     }
     i = i + 1
@@ -147,7 +151,6 @@ func rdAsciiZ(b: in slice[Byte], o: in Int): String {
 }
 
 // ── Layer 1: PE container ────────────────────────────────────────────────────
-
 // Map an RVA to a file offset using the section table.  Returns -1 when no
 // section covers the RVA.
 pub func rvaToOffset(img: in PeImage, rva: in Int): Int {
@@ -181,37 +184,39 @@ pub func readPe(bytes: in slice[Byte]): Result[PeImage, String] {
   if rdU32(bytes, peOff) != 0x4550 {
     return Err(error = "metadata: missing 'PE\\0\\0' signature at " + toString(peOff))
   }
-  val numSections   = rdU16(bytes, peOff + 6)
+  val numSections = rdU16(bytes, peOff + 6)
   val optHeaderSize = rdU16(bytes, peOff + 20)
-  val optBase       = peOff + 24
+  val optBase = peOff + 24
   if optBase + optHeaderSize > bytes.length {
     return Err(error = "metadata: optional header out of range")
   }
-  val magic      = rdU16(bytes, optBase)
+  val magic = rdU16(bytes, optBase)
   val isPe32Plus = magic == 0x20B
   if magic != 0x10B and magic != 0x20B {
     return Err(error = "metadata: unrecognised optional-header magic 0x" + toString(magic))
   }
   // NumberOfRvaAndSizes precedes the data directories (optBase+92 for PE32,
   // optBase+108 for PE32+); the directories themselves start 4 bytes later.
-  val numRvaOff   = if isPe32Plus { optBase + 108 } else { optBase + 92 }
+  val numRvaOff = if isPe32Plus { optBase + 108 } else { optBase + 92 }
   val dataDirStart = numRvaOff + 4
   // CLI header = COM descriptor = data directory index 14, so the image must
   // declare at least 15 directory entries and the entry must lie within the
   // optional header (which spans [optBase, optBase+optHeaderSize)).
   val numRvaAndSizes = rdU32(bytes, numRvaOff)
   if numRvaAndSizes < 15 {
-    return Err(error = "metadata: image has only " + toString(numRvaAndSizes)
-      + " data directories; no CLI header (index 14)")
+    return Err(
+      error = "metadata: image has only " + toString(numRvaAndSizes) +
+        " data directories; no CLI header (index 14)"
+    )
   }
-  val cliDirOff  = dataDirStart + 14 * 8
+  val cliDirOff = dataDirStart + 14 * 8
   if cliDirOff + 8 > optBase + optHeaderSize {
     return Err(error = "metadata: CLI data directory extends past the optional header")
   }
   if cliDirOff + 8 > bytes.length {
     return Err(error = "metadata: CLI data directory out of range")
   }
-  val cliRva  = rdU32(bytes, cliDirOff)
+  val cliRva = rdU32(bytes, cliDirOff)
   val cliSize = rdU32(bytes, cliDirOff + 4)
   if cliRva == 0 {
     return Err(error = "metadata: not a managed assembly (CLI header RVA is 0)")
@@ -225,43 +230,62 @@ pub func readPe(bytes: in slice[Byte]): Result[PeImage, String] {
     if so + 40 > bytes.length {
       return Err(error = "metadata: section header " + toString(si) + " out of range")
     }
-    sections.add(SectionHeader(
-      virtualAddress = rdU32(bytes, so + 12),
-      virtualSize    = rdU32(bytes, so + 8),
-      rawDataPtr     = rdU32(bytes, so + 20),
-      rawDataSize    = rdU32(bytes, so + 16)))
+    sections.add(
+      SectionHeader(
+        virtualAddress = rdU32(bytes, so + 12),
+        virtualSize = rdU32(bytes, so + 8),
+        rawDataPtr = rdU32(bytes, so + 20),
+        rawDataSize = rdU32(bytes, so + 16)
+      )
+    )
     si = si + 1
   }
   // Build a partial image so rvaToOffset can be used to resolve the CLI header.
   val partial = PeImage(
-    bytes = bytes, peHeaderOff = peOff, numSections = numSections,
-    optHeaderSize = optHeaderSize, isPe32Plus = isPe32Plus,
-    cliHeaderRva = cliRva, cliHeaderSize = cliSize,
-    metadataRva = 0, metadataSize = 0, metadataOff = -1, sections = sections)
+    bytes = bytes,
+    peHeaderOff = peOff,
+    numSections = numSections,
+    optHeaderSize = optHeaderSize,
+    isPe32Plus = isPe32Plus,
+    cliHeaderRva = cliRva,
+    cliHeaderSize = cliSize,
+    metadataRva = 0,
+    metadataSize = 0,
+    metadataOff = -1,
+    sections = sections
+  )
   val cliOff = rvaToOffset(partial, cliRva)
   if cliOff < 0 or cliOff + 16 > bytes.length {
     return Err(error = "metadata: CLI header RVA " + toString(cliRva) + " not mapped by any section")
   }
   // CLI header: cb u32, runtime ver u16+u16, then MetaData (RVA u32, Size u32).
-  val mdRva  = rdU32(bytes, cliOff + 8)
+  val mdRva = rdU32(bytes, cliOff + 8)
   val mdSize = rdU32(bytes, cliOff + 12)
-  val mdOff  = rvaToOffset(partial, mdRva)
+  val mdOff = rvaToOffset(partial, mdRva)
   if mdOff < 0 or mdOff + 16 > bytes.length {
     return Err(error = "metadata: metadata root RVA " + toString(mdRva) + " not mapped by any section")
   }
-  Ok(value = PeImage(
-    bytes = bytes, peHeaderOff = peOff, numSections = numSections,
-    optHeaderSize = optHeaderSize, isPe32Plus = isPe32Plus,
-    cliHeaderRva = cliRva, cliHeaderSize = cliSize,
-    metadataRva = mdRva, metadataSize = mdSize, metadataOff = mdOff,
-    sections = sections))
+  Ok(
+    value = PeImage(
+      bytes = bytes,
+      peHeaderOff = peOff,
+      numSections = numSections,
+      optHeaderSize = optHeaderSize,
+      isPe32Plus = isPe32Plus,
+      cliHeaderRva = cliRva,
+      cliHeaderSize = cliSize,
+      metadataRva = mdRva,
+      metadataSize = mdSize,
+      metadataOff = mdOff,
+      sections = sections
+    )
+  )
 }
 
 // ── Layer 2a: metadata root + stream headers ─────────────────────────────────
-
 pub func readMetadataRoot(img: in PeImage): Result[MetadataRoot, String] {
-  val b   = img.bytes
-  val mo  = img.metadataOff
+  val b = img.bytes
+  val mo = img.metadataOff
   if mo + 20 > b.length {
     return Err(error = "metadata: root header out of range")
   }
@@ -276,7 +300,7 @@ pub func readMetadataRoot(img: in PeImage): Result[MetadataRoot, String] {
   }
   val versionString = rdAsciiZ(b, mo + 16)
   // After the (4-byte-aligned) version string: Flags u16, Streams u16.
-  val afterVer  = mo + 16 + verLen
+  val afterVer = mo + 16 + verLen
   val numStreams = rdU16(b, afterVer + 2)
   val streams: List[StreamHeader] = newList()
   var p = afterVer + 4
@@ -285,14 +309,13 @@ pub func readMetadataRoot(img: in PeImage): Result[MetadataRoot, String] {
     if p + 8 > b.length {
       return Err(error = "metadata: stream header " + toString(k) + " out of range")
     }
-    val sOff  = rdU32(b, p)
+    val sOff = rdU32(b, p)
     val sSize = rdU32(b, p + 4)
     val sName = rdAsciiZ(b, p + 8)
     // Name is null-terminated and padded to the next 4-byte boundary.
     val nameLen = sName.length + 1
-    val padded  = ((nameLen + 3) / 4) * 4
-    streams.add(StreamHeader(
-      name = sName, offset = sOff, size = sSize, fileOff = mo + sOff))
+    val padded = ((nameLen + 3) / 4) * 4
+    streams.add(StreamHeader(name = sName, offset = sOff, size = sSize, fileOff = mo + sOff))
     p = p + 8 + padded
     k = k + 1
   }
@@ -303,14 +326,15 @@ pub func readMetadataRoot(img: in PeImage): Result[MetadataRoot, String] {
 pub func findStream(root: in MetadataRoot, name: in String): Option[StreamHeader] {
   var i = 0
   while i < root.streams.count {
-    if root.streams[i].name == name { return Some(value = root.streams[i]) }
+    if root.streams[i].name == name {
+      return Some(value = root.streams[i])
+    }
     i = i + 1
   }
   None
 }
 
 // ── Layer 2b: `#~` table-stream header ───────────────────────────────────────
-
 // Parse the `#~` (or `#-`) table-stream header: heap-size flags, the valid
 // bitvector, and the per-table row counts.  Stops at the start of the table
 // rows (Phase 2 reads the rows themselves).
@@ -318,10 +342,7 @@ pub func readTablesHeader(img: in PeImage, root: in MetadataRoot): Result[Tables
   val b = img.bytes
   val sh = match findStream(root, "#~") {
     case Some(s) -> s
-    case None -> match findStream(root, "#-") {
-      case Some(s2) -> s2
-      case None -> return Err(error = "metadata: no '#~' or '#-' table stream")
-    }
+    case None -> match findStream(root, "#-") { case Some(s2) -> s2; case None -> return Err(error = "metadata: no '#~' or '#-' table stream") }
   }
   val base = sh.fileOff
   if base + 24 > b.length {
@@ -330,21 +351,24 @@ pub func readTablesHeader(img: in PeImage, root: in MetadataRoot): Result[Tables
   // +0 Reserved u32, +4 Major u8, +5 Minor u8, +6 HeapSizes u8, +7 Reserved u8,
   // +8 Valid u64, +16 Sorted u64, +24 row counts (u32 × popcount(Valid)).
   val heapSizes = rdU8(b, base + 6)
-  val validOff  = base + 8
-  val present   = popcount64(b, validOff)
-  val rowsOff   = base + 24
+  val validOff = base + 8
+  val present = popcount64(b, validOff)
+  val rowsOff = base + 24
   if rowsOff + present * 4 > b.length {
     return Err(error = "metadata: '#~' row counts out of range")
   }
   // Walk table ids 0..63 in order; each present table consumes one u32.
   val rowCounts: List[Int] = newList()
   var t = 0
-  while t < 64 { rowCounts.add(0)  t = t + 1 }
+  while t < 64 {
+    rowCounts.add(0)
+    t = t + 1
+  }
   var rc = 0
   var tid = 0
   while tid < 64 {
     val byteIdx = tid / 8
-    val bitIdx  = tid % 8
+    val bitIdx = tid % 8
     if bitSetInByte(rdU8(b, validOff + byteIdx), bitIdx) {
       rowCounts[tid] = rdU32(b, rowsOff + rc * 4)
       rc = rc + 1
@@ -354,29 +378,35 @@ pub func readTablesHeader(img: in PeImage, root: in MetadataRoot): Result[Tables
   // Table rows begin after the row-count array.  HeapSizes bit 6 (ExtraData,
   // present in `#-` edit-and-continue streams) inserts one extra u32 first.
   var dataOff = rowsOff + present * 4
-  if bitSetInByte(heapSizes, 6) { dataOff = dataOff + 4 }
-  Ok(value = TablesHeader(
-    heapSizes     = heapSizes,
-    stringsWide   = bitSetInByte(heapSizes, 0),
-    guidWide      = bitSetInByte(heapSizes, 1),
-    blobWide      = bitSetInByte(heapSizes, 2),
-    presentCount  = present,
-    rowCounts     = rowCounts,
-    tablesDataOff = dataOff))
+  if bitSetInByte(heapSizes, 6) {
+    dataOff = dataOff + 4
+  }
+  Ok(
+    value = TablesHeader(
+      heapSizes = heapSizes,
+      stringsWide = bitSetInByte(heapSizes, 0),
+      guidWide = bitSetInByte(heapSizes, 1),
+      blobWide = bitSetInByte(heapSizes, 2),
+      presentCount = present,
+      rowCounts = rowCounts,
+      tablesDataOff = dataOff
+    )
+  )
 }
 
 // Row count for an ECMA table id (0..63); 0 when the table is absent.
 pub func rowCountOf(th: in TablesHeader, tableId: in Int): Int {
-  if tableId < 0 or tableId >= th.rowCounts.count { return 0 }
+  if tableId < 0 or tableId >= th.rowCounts.count {
+    return 0
+  }
   th.rowCounts[tableId]
 }
 
 // ── Layer 3: heaps ───────────────────────────────────────────────────────────
-
 // Read a compressed unsigned integer (ECMA-335 §II.23.2), the inverse of the
 // emitter's `writeCompressedUInt`.  Returns (value, bytesConsumed).
 pub record CompressedUInt {
-  value:     Int
+  value: Int
   byteWidth: Int
 }
 
@@ -392,10 +422,10 @@ pub func readCompressedUInt(b: in slice[Byte], o: in Int): CompressedUInt {
   } else if b0 < 0xC0 {
     CompressedUInt(value = (b0 - 0x80) * 256 + rdU8(b, o + 1), byteWidth = 2)
   } else {
-    CompressedUInt(value =
-      (b0 - 0xC0) * 16777216 + rdU8(b, o + 1) * 65536
-        + rdU8(b, o + 2) * 256 + rdU8(b, o + 3),
-      byteWidth = 4)
+    CompressedUInt(
+      value = (b0 - 0xC0) * 16777216 + rdU8(b, o + 1) * 65536 + rdU8(b, o + 2) * 256 + rdU8(b, o + 3),
+      byteWidth = 4
+    )
   }
 }
 
@@ -411,52 +441,51 @@ func readUtf8Z(b: in slice[Byte], off: in Int): String {
   }
   match Enc.tryDecodeUtf8(acc.toArray()) {
     case Some(s) -> s
-    case None    -> ""
+    case None -> ""
   }
 }
 
 // ── Layer 4: table layout + row readers ──────────────────────────────────────
-
 // Computed physical layout for the metadata tables: heap-index and
 // coded-index column widths, plus each table's row size and the file offset
 // where its rows begin.  Indexed arrays are length 64 (ECMA table id).
 pub record TableLayout {
-  stringIdx:       Int          // #Strings index width (2 or 4)
-  guidIdx:         Int
-  blobIdx:         Int
+  stringIdx: Int          // #Strings index width (2 or 4)
+  guidIdx: Int
+  blobIdx: Int
   typeDefOrRefIdx: Int          // TypeDefOrRef coded-index width
   resolutionScopeIdx: Int       // ResolutionScope coded-index width (TypeRef col 0)
-  fieldIdx:        Int          // Field simple-index width
-  methodIdx:       Int          // MethodDef simple-index width
-  paramIdx:        Int          // Param simple-index width
-  rowSize:         List[Int]    // length 64
-  dataStart:       List[Int]    // length 64, file offset of each table's rows
-  stringsBase:     Int          // file offset of the #Strings heap (-1 if absent)
-  blobBase:        Int          // file offset of the #Blob heap (-1 if absent)
+  fieldIdx: Int          // Field simple-index width
+  methodIdx: Int          // MethodDef simple-index width
+  paramIdx: Int          // Param simple-index width
+  rowSize: List[Int]    // length 64
+  dataStart: List[Int]    // length 64, file offset of each table's rows
+  stringsBase: Int          // file offset of the #Strings heap (-1 if absent)
+  blobBase: Int          // file offset of the #Blob heap (-1 if absent)
 }
 
 pub record TypeDefRow {
-  flags:           Int
-  name:            String
-  namespaceName:   String
-  extendsToken:    Int          // TypeDefOrRef coded index (0 = no base class)
-  fieldListStart:  Int          // 1-based Field row
+  flags: Int
+  name: String
+  namespaceName: String
+  extendsToken: Int          // TypeDefOrRef coded index (0 = no base class)
+  fieldListStart: Int          // 1-based Field row
   methodListStart: Int          // 1-based MethodDef row
 }
 
 pub record MethodDefRow {
-  rva:            Int
-  implFlags:      Int
-  flags:          Int
-  name:           String
-  sigBlob:        Int          // #Blob heap index of the MethodDefSig
+  rva: Int
+  implFlags: Int
+  flags: Int
+  name: String
+  sigBlob: Int          // #Blob heap index of the MethodDefSig
   paramListStart: Int          // 1-based Param row
 }
 
 pub record ParamRow {
-  flags:    Int
+  flags: Int
   sequence: Int
-  name:     String
+  name: String
 }
 
 // A coded index is 2 bytes when the largest referenced table fits in
@@ -464,20 +493,37 @@ pub record ParamRow {
 func codedWidth(maxRows: in Int, tagBits: in Int): Int {
   var limit = 1
   var k = 0
-  while k < 16 - tagBits { limit = limit * 2  k = k + 1 }
-  if maxRows < limit { 2 } else { 4 }
+  while k < 16 - tagBits {
+    limit = limit * 2
+    k = k + 1
+  }
+  if maxRows < limit {
+    2
+  } else {
+    4
+  }
 }
 
 // A simple table index is 2 bytes when the table has fewer than 2^16 rows.
 func simpleWidth(th: in TablesHeader, tableId: in Int): Int {
-  if rowCountOf(th, tableId) < 65536 { 2 } else { 4 }
+  if rowCountOf(th, tableId) < 65536 {
+    2
+  } else {
+    4
+  }
 }
 
 func maxOf4(a: in Int, b: in Int, c: in Int, d: in Int): Int {
   var m = a
-  if b > m { m = b }
-  if c > m { m = c }
-  if d > m { m = d }
+  if b > m {
+    m = b
+  }
+  if c > m {
+    m = c
+  }
+  if d > m {
+    m = d
+  }
   m
 }
 
@@ -486,24 +532,27 @@ func maxOf4(a: in Int, b: in Int, c: in Int, d: in Int): Int {
 // enough to locate and read TypeDef/MethodDef/Param, which is all the metadata
 // reader needs.  Rows of higher tables follow these and never shift their
 // offsets, so their sizes are not required here.
-pub func computeLayout(img: in PeImage, root: in MetadataRoot,
-                       th: in TablesHeader): Result[TableLayout, String] {
+pub func computeLayout(img: in PeImage, root: in MetadataRoot, th: in TablesHeader): Result[TableLayout, String] {
   val stringIdx = if th.stringsWide { 4 } else { 2 }
-  val guidIdx   = if th.guidWide    { 4 } else { 2 }
-  val blobIdx   = if th.blobWide    { 4 } else { 2 }
-  val fieldIdx  = simpleWidth(th, 0x04)
+  val guidIdx = if th.guidWide { 4 } else { 2 }
+  val blobIdx = if th.blobWide { 4 } else { 2 }
+  val fieldIdx = simpleWidth(th, 0x04)
   val methodIdx = simpleWidth(th, 0x06)
-  val paramIdx  = simpleWidth(th, 0x08)
+  val paramIdx = simpleWidth(th, 0x08)
   // ResolutionScope: Module(0x00), ModuleRef(0x1A), AssemblyRef(0x23), TypeRef(0x01).
-  val rsIdx = codedWidth(maxOf4(rowCountOf(th, 0x00), rowCountOf(th, 0x1A),
-                                rowCountOf(th, 0x23), rowCountOf(th, 0x01)), 2)
+  val rsIdx = codedWidth(
+    maxOf4(rowCountOf(th, 0x00), rowCountOf(th, 0x1A), rowCountOf(th, 0x23), rowCountOf(th, 0x01)),
+    2
+  )
   // TypeDefOrRef: TypeDef(0x02), TypeRef(0x01), TypeSpec(0x1B).
-  val tdrIdx = codedWidth(maxOf4(rowCountOf(th, 0x02), rowCountOf(th, 0x01),
-                                 rowCountOf(th, 0x1B), 0), 2)
+  val tdrIdx = codedWidth(maxOf4(rowCountOf(th, 0x02), rowCountOf(th, 0x01), rowCountOf(th, 0x1B), 0), 2)
 
   val rowSize: List[Int] = newList()
   var z = 0
-  while z < 64 { rowSize.add(0)  z = z + 1 }
+  while z < 64 {
+    rowSize.add(0)
+    z = z + 1
+  }
   rowSize[0x00] = 2 + stringIdx + 3 * guidIdx                              // Module
   rowSize[0x01] = rsIdx + 2 * stringIdx                                    // TypeRef
   rowSize[0x02] = 4 + 2 * stringIdx + tdrIdx + fieldIdx + methodIdx        // TypeDef
@@ -516,7 +565,10 @@ pub func computeLayout(img: in PeImage, root: in MetadataRoot,
 
   val dataStart: List[Int] = newList()
   var z2 = 0
-  while z2 < 64 { dataStart.add(0)  z2 = z2 + 1 }
+  while z2 < 64 {
+    dataStart.add(0)
+    z2 = z2 + 1
+  }
   var off = th.tablesDataOff
   var tid = 0
   while tid <= 0x08 {
@@ -525,37 +577,49 @@ pub func computeLayout(img: in PeImage, root: in MetadataRoot,
     tid = tid + 1
   }
 
-  val stringsBase = match findStream(root, "#Strings") {
-    case Some(s) -> s.fileOff
-    case None    -> -1
-  }
-  val blobBase = match findStream(root, "#Blob") {
-    case Some(s) -> s.fileOff
-    case None    -> -1
-  }
-  Ok(value = TableLayout(
-    stringIdx = stringIdx, guidIdx = guidIdx, blobIdx = blobIdx,
-    typeDefOrRefIdx = tdrIdx, resolutionScopeIdx = rsIdx,
-    fieldIdx = fieldIdx, methodIdx = methodIdx,
-    paramIdx = paramIdx, rowSize = rowSize, dataStart = dataStart,
-    stringsBase = stringsBase, blobBase = blobBase))
+  val stringsBase = match findStream(root, "#Strings") { case Some(s) -> s.fileOff; case None -> -1 }
+  val blobBase = match findStream(root, "#Blob") { case Some(s) -> s.fileOff; case None -> -1 }
+  Ok(
+    value = TableLayout(
+      stringIdx = stringIdx,
+      guidIdx = guidIdx,
+      blobIdx = blobIdx,
+      typeDefOrRefIdx = tdrIdx,
+      resolutionScopeIdx = rsIdx,
+      fieldIdx = fieldIdx,
+      methodIdx = methodIdx,
+      paramIdx = paramIdx,
+      rowSize = rowSize,
+      dataStart = dataStart,
+      stringsBase = stringsBase,
+      blobBase = blobBase
+    )
+  )
 }
 
 // Read a heap or simple/coded index of `width` (2 or 4) bytes.
 func rdIdx(b: in slice[Byte], o: in Int, width: in Int): Int {
-  if width == 2 { rdU16(b, o) } else { rdU32(b, o) }
+  if width == 2 {
+    rdU16(b, o)
+  } else {
+    rdU32(b, o)
+  }
 }
 
 // Resolve a #Strings heap index to its string value ("" for index 0).
 pub func stringAt(img: in PeImage, layout: in TableLayout, strIndex: in Int): String {
-  if strIndex == 0 or layout.stringsBase < 0 { return "" }
+  if strIndex == 0 or layout.stringsBase < 0 {
+    return ""
+  }
   readUtf8Z(img.bytes, layout.stringsBase + strIndex)
 }
 
 // Resolve a #Blob heap index to its raw bytes (length-prefixed; empty for 0).
 pub func blobAt(img: in PeImage, layout: in TableLayout, blobIndex: in Int): slice[Byte] {
   val empty: List[Byte] = newList()
-  if blobIndex == 0 or layout.blobBase < 0 { return empty.toArray() }
+  if blobIndex == 0 or layout.blobBase < 0 {
+    return empty.toArray()
+  }
   val b = img.bytes
   val hdr = readCompressedUInt(b, layout.blobBase + blobIndex)
   val start = layout.blobBase + blobIndex + hdr.byteWidth
@@ -571,8 +635,11 @@ pub func blobAt(img: in PeImage, layout: in TableLayout, blobIndex: in Int): sli
 // Read TypeDef row `row` (1-based).  Columns (ECMA §II.22.37):
 // Flags(u32), Name(#String), Namespace(#String), Extends(TypeDefOrRef),
 // FieldList(Field), MethodList(MethodDef).
-pub func readTypeDef(img: in PeImage, layout: in TableLayout,
-                     row: in Int): TypeDefRow {
+pub func readTypeDef(img: in PeImage, layout: in TableLayout, row: in Int): TypeDefRow {
+  // Row indices are 1-based per ECMA-335 §II.22; row 0 underflows the table.
+  if row < 1 {
+    panic("Msil.MetadataReader.readTypeDef: row must be >= 1, got " + toString(row))
+  }
   val b = img.bytes
   val o = layout.dataStart[0x02] + (row - 1) * layout.rowSize[0x02]
   val flags = rdU32(b, o)
@@ -587,15 +654,18 @@ pub func readTypeDef(img: in PeImage, layout: in TableLayout,
   p = p + layout.fieldIdx
   val methodL = rdIdx(b, p, layout.methodIdx)
   TypeDefRow(
-    flags = flags, name = stringAt(img, layout, nameI),
+    flags = flags,
+    name = stringAt(img, layout, nameI),
     namespaceName = stringAt(img, layout, nsI),
     extendsToken = ext,
-    fieldListStart = fieldL, methodListStart = methodL)
+    fieldListStart = fieldL,
+    methodListStart = methodL
+  )
 }
 
 // A TypeRef row's name and namespace (ECMA §II.22.38).
 pub record TypeRefRow {
-  name:          String
+  name: String
   namespaceName: String
 }
 
@@ -616,19 +686,34 @@ pub func readTypeRef(img: in PeImage, layout: in TableLayout, row: in Int): Type
 // VALUETYPE / GENERICINST signature carries) to the referenced type's
 // fully-qualified name.  Tag 0 = TypeDef, 1 = TypeRef, 2 = TypeSpec.
 // TypeSpec (generic instantiations etc.) and out-of-range rows return "".
-pub func resolveTypeDefOrRefName(img: in PeImage, layout: in TableLayout,
-                                 th: in TablesHeader, codedToken: in Int): String {
+pub func resolveTypeDefOrRefName(
+  img: in PeImage, layout: in TableLayout, th: in TablesHeader, codedToken: in Int
+): String {
   val tag = codedToken % 4
   val row = codedToken / 4
-  if row <= 0 { return "" }
+  if row <= 0 {
+    return ""
+  }
   if tag == 0 {
-    if row > rowCountOf(th, 0x02) { return "" }
+    if row > rowCountOf(th, 0x02) {
+      return ""
+    }
     val td = readTypeDef(img, layout, row)
-    if td.namespaceName.length > 0 { td.namespaceName + "." + td.name } else { td.name }
+    if td.namespaceName.length > 0 {
+      td.namespaceName + "." + td.name
+    } else {
+      td.name
+    }
   } else if tag == 1 {
-    if row > rowCountOf(th, 0x01) { return "" }
+    if row > rowCountOf(th, 0x01) {
+      return ""
+    }
     val tr = readTypeRef(img, layout, row)
-    if tr.namespaceName.length > 0 { tr.namespaceName + "." + tr.name } else { tr.name }
+    if tr.namespaceName.length > 0 {
+      tr.namespaceName + "." + tr.name
+    } else {
+      tr.name
+    }
   } else {
     ""
   }
@@ -637,8 +722,11 @@ pub func resolveTypeDefOrRefName(img: in PeImage, layout: in TableLayout,
 // Read MethodDef row `row` (1-based).  Columns (ECMA §II.22.26):
 // RVA(u32), ImplFlags(u16), Flags(u16), Name(#String), Signature(#Blob),
 // ParamList(Param).
-pub func readMethodDef(img: in PeImage, layout: in TableLayout,
-                       row: in Int): MethodDefRow {
+pub func readMethodDef(img: in PeImage, layout: in TableLayout, row: in Int): MethodDefRow {
+  // Row indices are 1-based per ECMA-335 §II.22; row 0 underflows the table.
+  if row < 1 {
+    panic("Msil.MetadataReader.readMethodDef: row must be >= 1, got " + toString(row))
+  }
   val b = img.bytes
   val o = layout.dataStart[0x06] + (row - 1) * layout.rowSize[0x06]
   val rva = rdU32(b, o)
@@ -651,18 +739,26 @@ pub func readMethodDef(img: in PeImage, layout: in TableLayout,
   p = p + layout.blobIdx
   val paramL = rdIdx(b, p, layout.paramIdx)
   MethodDefRow(
-    rva = rva, implFlags = implFlags, flags = flags,
-    name = stringAt(img, layout, nameI), sigBlob = sigI, paramListStart = paramL)
+    rva = rva,
+    implFlags = implFlags,
+    flags = flags,
+    name = stringAt(img, layout, nameI),
+    sigBlob = sigI,
+    paramListStart = paramL
+  )
 }
 
 // Read Param row `row` (1-based).  Columns (ECMA §II.22.33):
 // Flags(u16), Sequence(u16), Name(#String).
-pub func readParam(img: in PeImage, layout: in TableLayout,
-                   row: in Int): ParamRow {
+pub func readParam(img: in PeImage, layout: in TableLayout, row: in Int): ParamRow {
+  // Row indices are 1-based per ECMA-335 §II.22; row 0 underflows the table.
+  if row < 1 {
+    panic("Msil.MetadataReader.readParam: row must be >= 1, got " + toString(row))
+  }
   val b = img.bytes
   val o = layout.dataStart[0x08] + (row - 1) * layout.rowSize[0x08]
   val flags = rdU16(b, o)
-  val seq   = rdU16(b, o + 2)
+  val seq = rdU16(b, o + 2)
   val nameI = rdIdx(b, o + 4, layout.stringIdx)
   ParamRow(flags = flags, sequence = seq, name = stringAt(img, layout, nameI))
 }
@@ -672,12 +768,11 @@ pub func readParam(img: in PeImage, layout: in TableLayout,
 // MethodDef rows from its MethodList up to the next TypeDef's MethodList, or
 // the end of the MethodDef table for the last TypeDef).
 pub record RowRange {
-  start:  Int    // 1-based, inclusive
+  start: Int    // 1-based, inclusive
   endRow: Int    // 1-based, inclusive; < start means empty
 }
 
-pub func methodRange(img: in PeImage, layout: in TableLayout, th: in TablesHeader,
-                     typeRow: in Int): RowRange {
+pub func methodRange(img: in PeImage, layout: in TableLayout, th: in TablesHeader, typeRow: in Int): RowRange {
   val start = readTypeDef(img, layout, typeRow).methodListStart
   val typeCount = rowCountOf(th, 0x02)
   val last = if typeRow < typeCount {
@@ -696,7 +791,6 @@ pub func methodRange(img: in PeImage, layout: in TableLayout, th: in TablesHeade
 // handles the *full* element-type grammar so signatures from real reference
 // assemblies — value types, by-ref/out parameters, generics, the complete
 // primitive set — decode, not just the subset the Lyric writer emits.
-
 // A decoded signature type.  Primitives (VOID, BOOLEAN, CHAR, I1..U8, R4, R8,
 // STRING, OBJECT, I, U, TYPEDBYREF) are carried by their element-type byte;
 // structured types get their own case.
@@ -721,11 +815,11 @@ pub union SigType {
 }
 
 pub record DecodedMethodSig {
-  hasThis:       Bool
-  isGeneric:     Bool
+  hasThis: Bool
+  isGeneric: Bool
   genParamCount: Int
-  returnType:    SigType
-  paramTypes:    List[SigType]
+  returnType: SigType
+  paramTypes: List[SigType]
 }
 
 // Element-type bytes that decode to a leaf primitive `STPrim`.
@@ -735,7 +829,7 @@ func isPrimByte(et: in Int): Bool {
 
 // Result of decoding one type: the type plus the offset just past it.
 pub record DecodedType {
-  ty:   SigType
+  ty: SigType
   next: Int
 }
 
@@ -821,7 +915,7 @@ pub func decodeType(b: in slice[Byte], o: in Int): DecodedType {
 
 // Result of decoding a method signature: the signature plus the offset past it.
 pub record DecodedMethodSigAt {
-  sig:  DecodedMethodSig
+  sig: DecodedMethodSig
   next: Int
 }
 
@@ -830,7 +924,7 @@ pub record DecodedMethodSigAt {
 pub func decodeMethodSigAt(b: in slice[Byte], o: in Int): DecodedMethodSigAt {
   val cc = rdU8(b, o)
   var p = o + 1
-  val hasThis   = (cc / 32) % 2 == 1   // HASTHIS  (0x20)
+  val hasThis = (cc / 32) % 2 == 1   // HASTHIS  (0x20)
   val isGeneric = (cc / 16) % 2 == 1   // GENERIC  (0x10)
   var genCount = 0
   if isGeneric {
@@ -858,9 +952,14 @@ pub func decodeMethodSigAt(b: in slice[Byte], o: in Int): DecodedMethodSigAt {
   }
   DecodedMethodSigAt(
     sig = DecodedMethodSig(
-      hasThis = hasThis, isGeneric = isGeneric, genParamCount = genCount,
-      returnType = ret.ty, paramTypes = params),
-    next = p)
+      hasThis = hasThis,
+      isGeneric = isGeneric,
+      genParamCount = genCount,
+      returnType = ret.ty,
+      paramTypes = params
+    ),
+    next = p
+  )
 }
 
 // Decode a complete MethodDefSig blob.  Returns an error for an empty blob.
@@ -883,7 +982,7 @@ pub func mkPrimSig(elemByte: in Int): SigType {
 pub func sigPrimByte(t: in SigType): Int {
   match t {
     case STPrim(b) -> b
-    case _         -> -1
+    case _ -> -1
   }
 }
 
@@ -892,9 +991,9 @@ pub func sigPrimByte(t: in SigType): Int {
 // union-case patterns, so codegen can't match `case Mdr.STClass(t)` directly).
 pub func sigClassToken(t: in SigType): Int {
   match t {
-    case STClass(tok)     -> tok
+    case STClass(tok) -> tok
     case STValueType(tok) -> tok
-    case _                -> -1
+    case _ -> -1
   }
 }
 
@@ -902,7 +1001,7 @@ pub func sigClassToken(t: in SigType): Int {
 pub func sigIsValueType(t: in SigType): Bool {
   match t {
     case STValueType(_) -> true
-    case _              -> false
+    case _ -> false
   }
 }
 
@@ -916,7 +1015,7 @@ pub func mkNamedSig(fqn: in String, valueType: in Bool): SigType {
 pub func sigNamedFqn(t: in SigType): String {
   match t {
     case STNamed(fqn, _) -> fqn
-    case _               -> ""
+    case _ -> ""
   }
 }
 
@@ -924,7 +1023,7 @@ pub func sigNamedFqn(t: in SigType): String {
 pub func sigNamedIsValueType(t: in SigType): Bool {
   match t {
     case STNamed(_, vt) -> vt
-    case _              -> false
+    case _ -> false
   }
 }
 
@@ -938,12 +1037,15 @@ pub func sigNamedIsValueType(t: in SigType): Bool {
 // TypeDefs in their facade assembly (e.g. `System.Math` in `System.Runtime`,
 // `System.Console` in `System.Console`), so a TypeDef-derived index is
 // sufficient — no ExportedType/type-forward chasing is required.
-
 // Index of the last path separator (`/` or `\`), or -1 when there is none.
 func lastSepIndex(path: in String): Int {
-  val a = match Str.lastIndexOf(path, "/")  { case None -> -1  case Some(i) -> i }
-  val b = match Str.lastIndexOf(path, "\\") { case None -> -1  case Some(i) -> i }
-  if a > b { a } else { b }
+  val a = match Str.lastIndexOf(path, "/") { case None -> -1; case Some(i) -> i }
+  val b = match Str.lastIndexOf(path, "\\") { case None -> -1; case Some(i) -> i }
+  if a > b {
+    a
+  } else {
+    b
+  }
 }
 
 // Strip a directory (either separator) + ".dll" extension to the assembly's
@@ -951,15 +1053,23 @@ func lastSepIndex(path: in String): Int {
 func assemblySimpleName(path: in String): String {
   val cut = lastSepIndex(path)
   val base = if cut < 0 { path } else { Str.substring(path, cut + 1, path.length - cut - 1) }
-  if Str.endsWith(base, ".dll") { Str.substring(base, 0, base.length - 4) } else { base }
+  if Str.endsWith(base, ".dll") {
+    Str.substring(base, 0, base.length - 4)
+  } else {
+    base
+  }
 }
 
 // True when `s` is non-empty and all ASCII/Unicode digits.
 func isAllDigits(s: in String): Bool {
-  if s.length == 0 { return false }
+  if s.length == 0 {
+    return false
+  }
   var i = 0
   while i < s.length {
-    if not Ch.isDigit(s[i]) { return false }
+    if not Ch.isDigit(s[i]) {
+      return false
+    }
     i = i + 1
   }
   true
@@ -1000,11 +1110,15 @@ func pickHighestDir(dir: in String): Option[String] {
   match File.listDirs(dir) {
     case Err(_) -> None
     case Ok(names) -> {
-      if names.count == 0 { return None }
+      if names.count == 0 {
+        return None
+      }
       var best = names[0]
       var i = 1
       while i < names.count {
-        if dirVersionGreater(names[i], best) { best = names[i] }
+        if dirVersionGreater(names[i], best) {
+          best = names[i]
+        }
         i = i + 1
       }
       Some(value = best)
@@ -1019,9 +1133,13 @@ func pickHighestDir(dir: in String): Option[String] {
 func candidateDotnetRoots(): List[String] {
   val roots: List[String] = newList()
   val dr = Environment.getVarOrDefault("DOTNET_ROOT", "")
-  if dr.length > 0 { roots.add(dr) }
+  if dr.length > 0 {
+    roots.add(dr)
+  }
   val home = Environment.getVarOrDefault("HOME", "")
-  if home.length > 0 { roots.add(Path.join(home, ".dotnet")) }
+  if home.length > 0 {
+    roots.add(Path.join(home, ".dotnet"))
+  }
   roots.add("/usr/share/dotnet")
   roots.add("/usr/lib/dotnet")
   roots
@@ -1041,11 +1159,13 @@ pub func refPackDir(): Option[String] {
           if File.dirExists(refDir) {
             match pickHighestDir(refDir) {
               case Some(tfm) -> return Some(value = Path.join(refDir, tfm))
-              case None -> {}
+              case None -> {
+              }
             }
           }
         }
-        case None -> {}
+        case None -> {
+        }
       }
     }
     i = i + 1
@@ -1061,7 +1181,9 @@ pub func enumRefAssemblies(refDir: in String): List[String] {
     case Ok(names) -> {
       var i = 0
       while i < names.count {
-        if Str.endsWith(names[i], ".dll") { acc.add(Path.join(refDir, names[i])) }
+        if Str.endsWith(names[i], ".dll") {
+          acc.add(Path.join(refDir, names[i]))
+        }
         i = i + 1
       }
       acc
@@ -1076,15 +1198,20 @@ pub func enumRefAssemblies(refDir: in String): List[String] {
 // skipped silently — a single broken DLL must not abort building the index.
 pub func addAssemblyTypes(index: in Map[String, String], asmPath: in String): Unit {
   match File.readBytes(asmPath) {
-    case Err(_) -> {}
+    case Err(_) -> {
+    }
     case Ok(raw) -> match readPe(raw.toArray()) {
-      case Err(_) -> {}
+      case Err(_) -> {
+      }
       case Ok(img) -> match readMetadataRoot(img) {
-        case Err(_) -> {}
+        case Err(_) -> {
+        }
         case Ok(root) -> match readTablesHeader(img, root) {
-          case Err(_) -> {}
+          case Err(_) -> {
+          }
           case Ok(th) -> match computeLayout(img, root, th) {
-            case Err(_) -> {}
+            case Err(_) -> {
+            }
             case Ok(layout) -> {
               val asmName = assemblySimpleName(asmPath)
               val n = rowCountOf(th, 0x02)
@@ -1095,12 +1222,11 @@ pub func addAssemblyTypes(index: in Map[String, String], asmPath: in String): Un
                 // mask 0x07 == Public); this excludes `<Module>`, nested, and
                 // non-public types, which are never extern-resolution targets.
                 if (td.flags % 8) == 1 {
-                  val fqn = if td.namespaceName.length > 0 {
-                    td.namespaceName + "." + td.name
-                  } else { td.name }
+                  val fqn = if td.namespaceName.length > 0 { td.namespaceName + "." + td.name } else { td.name }
                   match mapGet(index, fqn) {
-                    case Some(_) -> {}
-                    case None    -> index.add(fqn, asmName)
+                    case Some(_) -> {
+                    }
+                    case None -> index.add(fqn, asmName)
                   }
                 }
                 i = i + 1
@@ -1127,13 +1253,14 @@ pub func buildTypeIndex(asmPaths: in List[String]): Map[String, String] {
 // Populate both a type→assembly-name index and an assembly-name→path index from
 // one assembly, reading the DLL once.  First writer wins for each name.  Lets a
 // caller (e.g. the emitter's lazy index build) fill both maps in a single pass.
-pub func addAssemblyToIndexes(typeIndex: in Map[String, String],
-                              pathIndex: in Map[String, String],
-                              asmPath: in String): Unit {
+pub func addAssemblyToIndexes(
+  typeIndex: in Map[String, String], pathIndex: in Map[String, String], asmPath: in String
+): Unit {
   val nm = assemblySimpleName(asmPath)
   match mapGet(pathIndex, nm) {
-    case Some(_) -> {}
-    case None    -> pathIndex.add(nm, asmPath)
+    case Some(_) -> {
+    }
+    case None -> pathIndex.add(nm, asmPath)
   }
   addAssemblyTypes(typeIndex, asmPath)
 }
@@ -1151,15 +1278,20 @@ pub func assemblyForType(index: in Map[String, String], typeFqn: in String): Opt
 // from metadata is free (same I/O pass, no extra assembly reads).
 pub func addAssemblyValueTypes(vtypeSet: in Map[String, Bool], asmPath: in String): Unit {
   match File.readBytes(asmPath) {
-    case Err(_) -> {}
+    case Err(_) -> {
+    }
     case Ok(raw) -> match readPe(raw.toArray()) {
-      case Err(_) -> {}
+      case Err(_) -> {
+      }
       case Ok(img) -> match readMetadataRoot(img) {
-        case Err(_) -> {}
+        case Err(_) -> {
+        }
         case Ok(root) -> match readTablesHeader(img, root) {
-          case Err(_) -> {}
+          case Err(_) -> {
+          }
           case Ok(th) -> match computeLayout(img, root, th) {
-            case Err(_) -> {}
+            case Err(_) -> {
+            }
             case Ok(layout) -> {
               val n = rowCountOf(th, 0x02)
               var i = 1
@@ -1169,12 +1301,11 @@ pub func addAssemblyValueTypes(vtypeSet: in Map[String, Bool], asmPath: in Strin
                 if (td.flags % 8) == 1 and td.extendsToken > 0 {
                   val extName = resolveTypeDefOrRefName(img, layout, th, td.extendsToken)
                   if extName == "System.ValueType" or extName == "System.Enum" {
-                    val fqn = if td.namespaceName.length > 0 {
-                      td.namespaceName + "." + td.name
-                    } else { td.name }
+                    val fqn = if td.namespaceName.length > 0 { td.namespaceName + "." + td.name } else { td.name }
                     match mapGet(vtypeSet, fqn) {
-                      case Some(_) -> {}
-                      case None    -> vtypeSet.add(fqn, true)
+                      case Some(_) -> {
+                      }
+                      case None -> vtypeSet.add(fqn, true)
                     }
                   }
                 }
@@ -1192,7 +1323,7 @@ pub func addAssemblyValueTypes(vtypeSet: in Map[String, Bool], asmPath: in Strin
 // metadata-derived vtypeSet built by addAssemblyValueTypes.
 pub func isValueTypeFqn(vtypeSet: in Map[String, Bool], typeFqn: in String): Bool {
   match mapGet(vtypeSet, typeFqn) {
-    case None    -> false
+    case None -> false
     case Some(_) -> true
   }
 }
@@ -1205,12 +1336,11 @@ pub func isValueTypeFqn(vtypeSet: in Map[String, Bool], typeFqn: in String): Boo
 // types to `SigType`s); the scoring replicates the bootstrap emitter's
 // coercion rules: an exact match beats a widening numeric conversion
 // (`Int`→`Long`, etc.), and an `object` parameter accepts any argument.
-
 // A resolved method: its calling shape and decoded signature.
 pub record ResolvedMethod {
-  name:       String
-  isStatic:   Bool
-  isVirtual:  Bool
+  name: String
+  isStatic: Bool
+  isVirtual: Bool
   returnType: SigType
   paramTypes: List[SigType]
 }
@@ -1219,18 +1349,42 @@ pub record ResolvedMethod {
 // A narrower type implicitly converts to a wider one: I1<U1<I2<U2<Char<I4<U4
 // <I8<U8<R4<R8 (unsigned ranked alongside their signed width).
 func numericRank(elemByte: in Int): Int {
-  if elemByte == 0x04 { 1 }       // I1
-  else if elemByte == 0x05 { 1 }  // U1
-  else if elemByte == 0x06 { 2 }  // I2
-  else if elemByte == 0x07 { 2 }  // U2
-  else if elemByte == 0x03 { 3 }  // CHAR
-  else if elemByte == 0x08 { 4 }  // I4
-  else if elemByte == 0x09 { 4 }  // U4
-  else if elemByte == 0x0A { 5 }  // I8
-  else if elemByte == 0x0B { 5 }  // U8
-  else if elemByte == 0x0C { 6 }  // R4
-  else if elemByte == 0x0D { 7 }  // R8
-  else { -1 }
+  if elemByte == 0x04 {
+    1
+  } else if elemByte == 0x05 {
+    // I1
+    1
+  } else if elemByte == 0x06 {
+    // U1
+    2
+  } else if elemByte == 0x07 {
+    // I2
+    2
+  } else if elemByte == 0x03 {
+    // U2
+    3
+  } else if elemByte == 0x08 {
+    // CHAR
+    4
+  } else if elemByte == 0x09 {
+    // I4
+    4
+  } else if elemByte == 0x0A {
+    // U4
+    5
+  } else if elemByte == 0x0B {
+    // I8
+    5
+  } else if elemByte == 0x0C {
+    // U8
+    6
+  } else if elemByte == 0x0D {
+    // R4
+    7
+  } else {
+    // R8
+    -1
+  }
 }
 
 // Score one argument against one parameter: 2 = exact, 1 = widening / boxes to
@@ -1239,28 +1393,26 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
   match param {
     case STPrim(pb) -> match arg {
       case STPrim(ab) -> {
-        if ab == pb { 2 }
-        else if pb == 0x1C { 1 }                       // object accepts anything
-        else {
+        if ab == pb {
+          2
+        } else if pb == 0x1C {
+          1
+        } else {
+          // object accepts anything
           val ra = numericRank(ab)
           val rp = numericRank(pb)
-          if ra >= 0 and rp >= 0 and ra <= rp { 1 } else { -1 }
+          if ra >= 0 and rp >= 0 and ra <= rp {
+            1
+          } else {
+            -1
+          }
         }
       }
       case _ -> if pb == 0x1C { 1 } else { -1 }          // object accepts references
     }
-    case STClass(pt) -> match arg {
-      case STClass(at) -> if at == pt { 2 } else { -1 }
-      case _ -> -1
-    }
-    case STValueType(pt) -> match arg {
-      case STValueType(at) -> if at == pt { 2 } else { -1 }
-      case _ -> -1
-    }
-    case STNamed(pfqn, pvt) -> match arg {
-      case STNamed(afqn, avt) -> if afqn == pfqn and avt == pvt { 2 } else { -1 }
-      case _ -> -1
-    }
+    case STClass(pt) -> match arg { case STClass(at) -> if at == pt { 2 } else { -1 }; case _ -> -1 }
+    case STValueType(pt) -> match arg { case STValueType(at) -> if at == pt { 2 } else { -1 }; case _ -> -1 }
+    case STNamed(pfqn, pvt) -> match arg { case STNamed(afqn, avt) -> if afqn == pfqn and avt == pvt { 2 } else { -1 }; case _ -> -1 }
     case STSzArray(pe) -> match arg {
       // CLR arrays with value-type elements are invariant — `int[]` cannot be
       // passed where `long[]` is expected.  Only accept an exact element match
@@ -1276,14 +1428,17 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
 // (resolving the TypeDefOrRef token to a fully-qualified name) — making them
 // comparable to a caller's by-name argument types and directly mappable by the
 // emitter.  Primitive and other shapes pass through unchanged.
-pub func resolveSigTypeFqn(img: in PeImage, layout: in TableLayout, th: in TablesHeader,
-                           t: in SigType): SigType {
+pub func resolveSigTypeFqn(img: in PeImage, layout: in TableLayout, th: in TablesHeader, t: in SigType): SigType {
   val tok = sigClassToken(t)
   if tok < 0 {
     t
   } else {
     val fqn = resolveTypeDefOrRefName(img, layout, th, tok)
-    if fqn.length == 0 { t } else { STNamed(fqn = fqn, valueType = sigIsValueType(t)) }
+    if fqn.length == 0 {
+      t
+    } else {
+      STNamed(fqn = fqn, valueType = sigIsValueType(t))
+    }
   }
 }
 
@@ -1291,12 +1446,16 @@ pub func resolveSigTypeFqn(img: in PeImage, layout: in TableLayout, th: in Table
 // caller's argument types: the sum of per-parameter scores, or -1 on arity
 // mismatch or any incompatible parameter.
 pub func scoreParams(argTypes: in List[SigType], params: in List[SigType]): Int {
-  if params.count != argTypes.count { return -1 }
+  if params.count != argTypes.count {
+    return -1
+  }
   var total = 0
   var i = 0
   while i < argTypes.count {
     val s = scoreSigType(argTypes[i], params[i])
-    if s < 0 { return -1 }
+    if s < 0 {
+      return -1
+    }
     total = total + s
     i = i + 1
   }
@@ -1312,12 +1471,16 @@ pub func scoreParams(argTypes: in List[SigType], params: in List[SigType]): Int 
 // callers supplying `STNamed` args must pre-normalize too, or go through
 // `resolveOverloadIn` / `resolveExtern`.
 pub func scoreOverload(argTypes: in List[SigType], sig: in DecodedMethodSig): Int {
-  if sig.paramTypes.count != argTypes.count { return -1 }
+  if sig.paramTypes.count != argTypes.count {
+    return -1
+  }
   var total = 0
   var i = 0
   while i < argTypes.count {
     val s = scoreSigType(argTypes[i], sig.paramTypes[i])
-    if s < 0 { return -1 }
+    if s < 0 {
+      return -1
+    }
     total = total + s
     i = i + 1
   }
@@ -1326,16 +1489,15 @@ pub func scoreOverload(argTypes: in List[SigType], sig: in DecodedMethodSig): In
 
 // Find the TypeDef row (1-based) whose fully-qualified name is `typeFqn`, or
 // -1 when absent.
-pub func findTypeDefByFqn(img: in PeImage, layout: in TableLayout, th: in TablesHeader,
-                          typeFqn: in String): Int {
+pub func findTypeDefByFqn(img: in PeImage, layout: in TableLayout, th: in TablesHeader, typeFqn: in String): Int {
   val n = rowCountOf(th, 0x02)
   var i = 1
   while i <= n {
     val td = readTypeDef(img, layout, i)
-    val fqn = if td.namespaceName.length > 0 {
-      td.namespaceName + "." + td.name
-    } else { td.name }
-    if fqn == typeFqn { return i }
+    val fqn = if td.namespaceName.length > 0 { td.namespaceName + "." + td.name } else { td.name }
+    if fqn == typeFqn {
+      return i
+    }
     i = i + 1
   }
   -1
@@ -1343,16 +1505,25 @@ pub func findTypeDefByFqn(img: in PeImage, layout: in TableLayout, th: in Tables
 
 // MethodAttributes: Virtual = 0x0040.  Static (0x0010) is read off the
 // `hasThis` bit of the method signature instead, so no helper here.
-func methodIsVirtual(flags: in Int): Bool { (flags / 64) % 2 == 1 }
+func methodIsVirtual(flags: in Int): Bool {
+  (flags / 64) % 2 == 1
+}
 
 // Resolve the best-matching overload of `member` on `typeFqn` for `argTypes`,
 // reading from already-parsed metadata.  Returns None when the type is absent
 // or no overload is compatible.
-pub func resolveOverloadIn(img: in PeImage, layout: in TableLayout, th: in TablesHeader,
-                           typeFqn: in String, member: in String,
-                           argTypes: in List[SigType]): Option[ResolvedMethod] {
+pub func resolveOverloadIn(
+  img: in PeImage,
+  layout: in TableLayout,
+  th: in TablesHeader,
+  typeFqn: in String,
+  member: in String,
+  argTypes: in List[SigType],
+): Option[ResolvedMethod] {
   val typeRow = findTypeDefByFqn(img, layout, th, typeFqn)
-  if typeRow < 0 { return None }
+  if typeRow < 0 {
+    return None
+  }
   val mr = methodRange(img, layout, th, typeRow)
   var best: Option[ResolvedMethod] = None
   var bestScore = -1
@@ -1361,7 +1532,8 @@ pub func resolveOverloadIn(img: in PeImage, layout: in TableLayout, th: in Table
     val md = readMethodDef(img, layout, mi)
     if md.name == member {
       match decodeMethodSig(blobAt(img, layout, md.sigBlob)) {
-        case Err(_) -> {}
+        case Err(_) -> {
+        }
         case Ok(sig) -> {
           // Normalise non-primitive parameter / return types to FQN names so
           // matching and emission don't depend on this assembly's tokens.
@@ -1374,12 +1546,15 @@ pub func resolveOverloadIn(img: in PeImage, layout: in TableLayout, th: in Table
           val score = scoreParams(argTypes, normParams)
           if score >= 0 and score > bestScore {
             bestScore = score
-            best = Some(value = ResolvedMethod(
-              name = md.name,
-              isStatic = not sig.hasThis,
-              isVirtual = methodIsVirtual(md.flags),
-              returnType = resolveSigTypeFqn(img, layout, th, sig.returnType),
-              paramTypes = normParams))
+            best = Some(
+              value = ResolvedMethod(
+                name = md.name,
+                isStatic = not sig.hasThis,
+                isVirtual = methodIsVirtual(md.flags),
+                returnType = resolveSigTypeFqn(img, layout, th, sig.returnType),
+                paramTypes = normParams
+              )
+            )
           }
         }
       }
@@ -1392,23 +1567,12 @@ pub func resolveOverloadIn(img: in PeImage, layout: in TableLayout, th: in Table
 // Resolve an overload by reading the assembly at `asmPath`.  A convenience
 // wrapper over `resolveOverloadIn`; callers compiling many references should
 // parse each assembly once and call `resolveOverloadIn` directly.
-pub func resolveOverload(asmPath: in String, typeFqn: in String, member: in String,
-                         argTypes: in List[SigType]): Option[ResolvedMethod] {
+pub func resolveOverload(
+  asmPath: in String, typeFqn: in String, member: in String, argTypes: in List[SigType]
+): Option[ResolvedMethod] {
   match File.readBytes(asmPath) {
     case Err(_) -> None
-    case Ok(raw) -> match readPe(raw.toArray()) {
-      case Err(_) -> None
-      case Ok(img) -> match readMetadataRoot(img) {
-        case Err(_) -> None
-        case Ok(root) -> match readTablesHeader(img, root) {
-          case Err(_) -> None
-          case Ok(th) -> match computeLayout(img, root, th) {
-            case Err(_) -> None
-            case Ok(layout) -> resolveOverloadIn(img, layout, th, typeFqn, member, argTypes)
-          }
-        }
-      }
-    }
+    case Ok(raw) -> match readPe(raw.toArray()) { case Err(_) -> None; case Ok(img) -> match readMetadataRoot(img) { case Err(_) -> None; case Ok(root) -> match readTablesHeader(img, root) { case Err(_) -> None; case Ok(th) -> match computeLayout(img, root, th) { case Err(_) -> None; case Ok(layout) -> resolveOverloadIn(img, layout, th, typeFqn, member, argTypes) } } } }
   }
 }
 
@@ -1420,10 +1584,9 @@ pub func resolveOverload(asmPath: in String, typeFqn: in String, member: in Stri
 // the best overload from that assembly.  Callers build both indexes once (over
 // `enumRefAssemblies(refPackDir())` plus any restored-dependency DLLs) and
 // reuse them across call sites.
-
 pub record ResolvedExtern {
   assemblyName: String        // owning assembly's simple name (for the AssemblyRef)
-  sig:          ResolvedMethod
+  sig: ResolvedMethod
 }
 
 // Build an assembly-simple-name → full-DLL-path index over the given
@@ -1438,8 +1601,9 @@ pub func buildPathIndex(asmPaths: in List[String]): Map[String, String] {
   while i < asmPaths.count {
     val name = assemblySimpleName(asmPaths[i])
     match mapGet(index, name) {
-      case Some(_) -> {}
-      case None    -> index.add(name, asmPaths[i])
+      case Some(_) -> {
+      }
+      case None -> index.add(name, asmPaths[i])
     }
     i = i + 1
   }
@@ -1458,17 +1622,15 @@ pub func refAssemblyPath(refDir: in String, asmName: in String): String {
   Path.join(refDir, asmName + ".dll")
 }
 
-pub func resolveExtern(typeIndex: in Map[String, String], pathIndex: in Map[String, String],
-                       typeFqn: in String, member: in String,
-                       argTypes: in List[SigType]): Option[ResolvedExtern] {
+pub func resolveExtern(
+  typeIndex: in Map[String, String],
+  pathIndex: in Map[String, String],
+  typeFqn: in String,
+  member: in String,
+  argTypes: in List[SigType],
+): Option[ResolvedExtern] {
   match assemblyForType(typeIndex, typeFqn) {
     case None -> None
-    case Some(asmName) -> match mapGet(pathIndex, asmName) {
-      case None -> None
-      case Some(asmPath) -> match resolveOverload(asmPath, typeFqn, member, argTypes) {
-        case None    -> None
-        case Some(m) -> Some(value = ResolvedExtern(assemblyName = asmName, sig = m))
-      }
-    }
+    case Some(asmName) -> match mapGet(pathIndex, asmName) { case None -> None; case Some(asmPath) -> match resolveOverload(asmPath, typeFqn, member, argTypes) { case None -> None; case Some(m) -> Some(value = ResolvedExtern(assemblyName = asmName, sig = m)) } }
   }
 }
