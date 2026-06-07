@@ -778,7 +778,7 @@ func isAsciiAlpha(c: in Char): Bool {
 
 @pure
 func isAscii(c: in Char): Bool {
-  c <= '\u{fffd}'
+  CharHost.hostCharToInt(c) < 128
 }
 
 /// UAX #31 XID_Start (approximated through .NET's `UnicodeCategory`):
@@ -1704,35 +1704,7 @@ func longToInt(v: in Long): Int {
 
 @pure
 func charCodepoint(c: in Char): Int {
-  // Tiny ASCII inverse of `longToChar`; suffices for the v0.1 escape
-  // set + ASCII source.  A real builtin will replace this when the
-  // Char→Int promotion is exposed in the surface language.
-  if c == '\u{0000}' {
-    0
-  } else if c == '\t' {
-    9
-  } else if c == '\n' {
-    10
-  } else if c == '\r' {
-    13
-  } else if c == '\u{fffd}' {
-    0xFFFD
-  } else {
-    var i = 32
-    val ascii = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
-    var found = -1
-    while i < 127 and found < 0 {
-      if ascii[i - 32] == c {
-        found = i
-      }
-      i = i + 1
-    }
-    if found < 0 {
-      0xFFFD
-    } else {
-      found
-    }
-  }
+  CharHost.hostCharToInt(c)
 }
 
 /// Consume one escape-sequence body just past the opening backslash.
