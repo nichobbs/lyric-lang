@@ -1,4 +1,4 @@
-# 42 — Contract Metadata Direct Resolution
+# 45 — Contract Metadata Direct Resolution
 
 **Status**: Proposal (ready for decision)
 
@@ -105,15 +105,17 @@ pub record ContractDependency {
 }
 ```
 
-### 2. Emitter (both F# bootstrap and self-hosted)
+### 2. Contract Metadata Emitter (self-hosted only)
 
-**File**: `bootstrap/src/Lyric.Emitter/ContractMeta.fs` and `lyric-compiler/lyric/contract_meta_emit.l`
+**File**: `lyric-compiler/lyric/contract_meta_emit.l` (new `Lyric.ContractMetaEmit` package)
 
-When emitting a contract:
+Per CLAUDE.md "No new F# code" policy, all implementation is in Lyric. When emitting a contract (called by the bridge):
 
 1. Extract `visibility` from each declaration's parsed `Visibility` field
 2. Populate the `dependencies` list by scanning the `EmitRequest`'s resolved packages
-3. Emit the enhanced contract JSON with format version 3
+3. Emit the enhanced contract JSON with format version 3 and contractHash
+
+The F# bootstrap emitter (`ContractMeta.fs`) is left untouched unless stage-0 to stage-1 bootstrap cannot complete; any such change would be a bootstrap-continuity fix, not a planned feature.
 
 ### 3. Restored Packages Loader
 
@@ -188,12 +190,19 @@ val symtbl = buildSymbolTable(art.contract, art.dependencies)
 
 **v2 support is dropped immediately** — breaking change in one release.
 
-1. **Phase 1**: Update the F# bootstrap emitter to emit format v3 only (with visibility + dependencies + contractHash)
-2. **Phase 2**: Implement direct symbol table builder in `restored_packages.l` (no synthesis/parse/recheck)
-3. **Phase 3**: Migrate bridge to use direct loader
-4. **Phase 4**: Remove synthesis-based loader and temporary v2 compat code
+Per CLAUDE.md "No new F# code" policy, all implementation is in Lyric (`lyric-compiler/lyric/`):
 
-**Publish guidance**: Users publishing libraries must rebuild with the new emitter to emit v3 contracts. The CLI will reject v2 contracts with a clear error message.
+1. **Phase 1**: Implement `lyric-compiler/lyric/contract_meta_emit.l` (`Lyric.ContractMetaEmit` package). Adds visibility extraction from parsed `Visibility` field, dependency list population, and v3 JSON emission with contractHash.
+
+2. **Phase 2**: Update emitter bridge to call `Lyric.ContractMetaEmit` to produce v3 contracts. The F# bootstrap emitter is only touched if stage-0 to stage-1 bootstrap cannot complete without it; that change would be justified as a bootstrap-continuity fix, not a planned feature.
+
+3. **Phase 3**: Implement direct symbol table builder in `restored_packages.l` (no synthesis/parse/recheck)
+
+4. **Phase 4**: Migrate bridge to use direct loader
+
+5. **Phase 5**: Remove synthesis-based loader and temporary v2 compat code
+
+**Publish guidance**: Users publishing libraries must rebuild with the new compiler to emit v3 contracts. The CLI will reject v2 contracts with a clear error message.
 
 **Consumer requirement**: All consumers must upgrade to a compiler version that reads v3 contracts.
 
@@ -219,11 +228,11 @@ val symtbl = buildSymbolTable(art.contract, art.dependencies)
 
 **D5 — New fields are stable**: The `visibility`, `dependencies`, and `contractHash` fields can carry `@stable(since = "0.1")` because they are metadata-only, not part of the runtime API surface.
 
+**D6 — v2 rejection error message**: When the CLI encounters a contract with `formatVersion` less than 3, it must emit: `"Contract metadata format v2 is no longer supported. Rebuild the library with the latest compiler and re-publish."` No dual-path support; no compatibility routing.
+
 ## Open Questions
 
 **Q1**: When a consumer loads a bundled DLL with multiple packages, should we flatten the dependency manifests into one combined list, or keep them per-package? (Propose: keep per-package, merge at load time for clarity.)
-
-**Q2**: How should the CLI error message guide users when they try to consume a v2 contract? (Propose: "Contract metadata format v2 is no longer supported. Rebuild the library with the latest compiler and re-publish.")
 
 ## References
 
