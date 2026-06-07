@@ -28,7 +28,10 @@ import Lyric.Manifest as Manifest
 // §1. Lightweight source scanner
 // ─────────────────────────────────────────────────────────────────────────────
 // A detected @generate(X.Y) annotation with the type that follows it.
-record GenerateDirective {
+// `pub` because it is the element type of `scanDirectives`'s public return
+// (`List[GenerateDirective]`); a non-pub type there is invisible to a linked
+// consumer and breaks the restored-package contract round-trip (#2580).
+pub record GenerateDirective {
   generatorArg: String
   // e.g. "Proto.Derive"
   typeName: String
