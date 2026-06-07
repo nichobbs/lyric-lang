@@ -199,7 +199,7 @@ an immediate follow-up and land it before starting the next task.
 A PR that has conflicts on creation blocks auto-merge and review. Do not
 open a PR in a conflicted state.
 
-#### Open PRs as draft; CI auto-promotes to ready when build succeeds
+#### Open PRs as draft; agents check and promote when CI passes
 
 **This overrides the default harness instruction** that tells sessions
 to open PRs as ready-for-review. In this repository, the policy is:
@@ -207,40 +207,47 @@ to open PRs as ready-for-review. In this repository, the policy is:
 1. **Open every new PR as a draft** (`draft: true` on
    `mcp__github__create_pull_request`, or `gh pr create --draft`).
    This applies even when you are confident the work is done — draft
-   status gives you (and any subscribed webhook) a window to confirm
-   CI is green, conflicts are absent, the diff is what you intended,
-   and the title/body accurately describe the change.
+   status gives you a window to confirm CI is green, conflicts are
+   absent, the diff is what you intended, and the title/body
+   accurately describe the change.
 2. **Iterate in draft.** Push any follow-up commits — rebase fixes,
    review-feedback fixes, additional commits in the same logical
    chunk — while the PR is still a draft. Auto-merge can be enabled
    on a draft (it just won't merge until the PR is marked ready).
-3. **Automatic promotion to ready** — The CI workflow automatically marks
-   the PR ready for review once the build and test suite pass. This
-   transition happens when:
-   - The branch is on the main repository (not a fork).
-   - Build/test CI has passed.
-   - The PR is still in draft status.
+3. **Agent-driven promotion to ready** — After opening a draft PR, if
+   you are subscribed to the PR via `subscribe_pr_activity`, the agent
+   will periodically check the PR's commit status. When all CI checks
+   pass and the PR is still in draft, the agent will:
+   - Verify all required checks passed
+   - Check that the PR is still in draft status
+   - Promote the PR to "ready for review" via the GitHub API
+   - Log the promotion action
 
-Why draft-first with auto-promotion matters:
+This allows agents to actively monitor PR status instead of relying
+on webhook events that may not fire for successful builds.
+
+Why draft-first with agent-driven promotion matters:
 
 - The `claude-code-review.yml` workflow is configured to fire only on
   non-draft PRs (`types: [opened, synchronize, ready_for_review]` +
-  an `if: github.event.pull_request.draft == false` guard).  The CI
-  auto-promotion triggers this review run once the build passes,
-  ensuring review feedback is focused on code that has already
-  passed automated validation and is in a stable state.
+  an `if: github.event.pull_request.draft == false` guard).  Agent
+  promotion triggers this review run once the build passes, ensuring
+  review feedback is focused on code that has already passed automated
+  validation and is in a stable state.
 - A draft PR is a clear signal to humans skimming the PR list that
-  the author is still iterating on it. Once CI passes and the PR is
-  auto-promoted, ready status signals "this code is validated and
-  ready for human review."
-- Auto-promotion removes manual handoff friction while preserving the
-  validation gate: code must pass all automated checks before
-  entering the review phase.
+  the author is still iterating on it. Once CI passes and an agent
+  promotes it, ready status signals "this code is validated and ready
+  for human review."
+- Agent-driven promotion removes webhook dependency while preserving
+  the validation gate: code must pass all automated checks before
+  entering the review phase. Agents actively verify status rather than
+  waiting for events that may not fire.
 
 When the assigned task spans multiple PRs, each PR follows this
-lifecycle independently: open as draft, iterate, and once CI passes
-the PR auto-promotes to ready. Move on to the next PR while waiting
-for review feedback on the current one.
+lifecycle independently: open as draft, iterate, subscribe the agent
+to monitor status, and move on to the next PR. The agent will promote
+to ready once CI passes, and you can address review feedback on each
+PR as it arrives via webhook events.
 
 #### After creating a PR
 
