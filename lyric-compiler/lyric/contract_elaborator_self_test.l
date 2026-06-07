@@ -825,11 +825,6 @@ func testProtectedInvariantAppendedToEntries(): Unit {
   assertEqualInt(ed.contracts.count, 1, "protected-invariant: original entry contracts preserved")
 }
 
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Test runner.
-// ─────────────────────────────────────────────────────────────────────────────
-
 func main(): Unit {
   testNoContractsPassthrough()
   testSingleRequiresPrepended()
