@@ -571,21 +571,21 @@ values from the OS CSPRNG on every call.
 ### `Std.HashHost` — `lyric-stdlib/std/_kernel/hash_host.l`
 
 ```
-@axiom("System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics; both are pure functions")
+@axiom("System.Security.Cryptography.SHA256.HashData + System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics; all are pure functions")
 ```
 
-**BCL surface**: `System.Security.Cryptography.SHA512.HashData` and
-`System.Convert.ToHexString`.  Composed by `Std.Hash.sha512OfBytes` into a
-single public helper.
+**BCL surface**: `System.Security.Cryptography.SHA256.HashData`,
+`System.Security.Cryptography.SHA512.HashData`, and `System.Convert.ToHexString`.
+Composed by `Std.Hash.sha256OfBytes` and `sha512OfBytes` into public helpers.
 
-**Gap**: SHA-512 is a deterministic cryptographic hash whose output is a
-64-byte slice keyed on the entire input; the prover cannot model the
-underlying algorithm, but both BCL primitives are documented as pure
-(no observable side effects, no hidden state).
+**Gap**: SHA-256 and SHA-512 are deterministic cryptographic hashes whose
+output is keyed on the entire input; the prover cannot model the underlying
+algorithms, but all three BCL primitives are documented as pure (no observable
+side effects, no hidden state).
 
-**Caller obligation**: None.  Both functions are total on their inputs;
-`HashData` accepts any byte sequence and `ToHexString` accepts any
-byte slice.
+**Caller obligation**: None.  All functions are total on their inputs;
+both `HashData` functions accept any byte sequence and `ToHexString` accepts
+any byte slice.
 
 **Review**: Stable.
 
@@ -883,7 +883,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.EnvironmentHost` | `environment_host.l` | System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory conforms to its documented .NET contract |
 | `dotnet` | `Std.FileHost` | `file_host.l` | System.IO.File / Directory operations conform to their documented .NET contracts |
 | `dotnet` | `Std.FormatHost` | `format_host.l` | System.Globalization.CultureInfo and System.String/Int/Double formatting operations conform to their documented .NET contracts |
-| `dotnet` | `Std.HashHost` | `hash_host.l` | System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics; both are pure functions |
+| `dotnet` | `Std.HashHost` | `hash_host.l` | System.Security.Cryptography.SHA256.HashData + System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics; all are pure functions |
 | `dotnet` | `Std.HttpHost` | `http_host.l` | System.Net.Http operations conform to their documented .NET contracts |
 | `dotnet` | `Std.IO` | `io.l` | System.Console and System.IO operations conform to their documented .NET contracts |
 | `dotnet` | `Std.JsonHost` | `json_host.l` | System.Text.Json operations conform to their documented .NET contracts |

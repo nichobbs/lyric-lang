@@ -176,7 +176,10 @@ let tests =
             //               `@externTarget("System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory")`
             //               for `lyric run/build --watch` stdlib path
             //               discovery.
-            Expect.isLessThanOrEqual total 322
+            //   322 → 323 — `Std.HashHost.hostSha256Bytes`:
+            //               `@externTarget("System.Security.Cryptography.SHA256.HashData")`
+            //               for SHA-256 hashing infrastructure (Std.Hash.sha256OfBytes).
+            Expect.isLessThanOrEqual total 323
                 "total extern surface unexpectedly large"
         }
     ]
