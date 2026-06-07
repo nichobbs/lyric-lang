@@ -3848,6 +3848,52 @@ pub func main(argv: in slice[String]): Int {
 
   val cmd = argv[0]
 
+  // Internal (#2592 stage-2): emit a driver's transitive `Std.*` import closure
+  // into per-package `Lyric.Stdlib.<X>.dll` assemblies via the self-hosted
+  // emitter.  `--internal-perpackage-build <entry.l> <outDir> [--target jvm]`.
+  // Not a user-facing command; used to produce the self-hosted stdlib layout.
+  if cmd == "--internal-perpackage-build" {
+    if argv.length < 3 {
+      printErr("usage: lyric --internal-perpackage-build <entry.l> <outDir> [--target jvm]")
+      return 1
+    }
+    val entryPath = argv[1]
+    val outDir = argv[2]
+    val tgt = if argv.length >= 5 and argv[3] == "--target" and argv[4] == "jvm" { Jvm } else { Dotnet }
+    match File.readText(entryPath) {
+      case Err(e) -> {
+        printErr("perpackage: cannot read " + entryPath + ": " + IOError.message(e))
+        return 1
+      }
+      case Ok(entrySrc) -> {
+        val res = Emitter.emitPerPackageClosure(entrySrc, outDir, tgt)
+        var hadError = false
+        for d in res.diagnostics.toArray() {
+          printDiag(d)
+          match d.severity {
+            case DiagError -> {
+              hadError = true
+            }
+            case DiagWarning -> ()
+          }
+        }
+        if hadError {
+          return 1
+        }
+        match res.outputPath {
+          case Some(_) -> {
+            Console.println("per-package stdlib emitted to " + outDir)
+            return 0
+          }
+          case None -> {
+            printErr("perpackage: emit failed")
+            return 1
+          }
+        }
+      }
+    }
+  }
+
   if cmd == "--version" or cmd == "-v" {
     Console.println("lyric " + VERSION())
     return 0

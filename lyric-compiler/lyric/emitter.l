@@ -662,6 +662,292 @@ func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[P
   payloads
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §3b. Per-package closure emit (#2592 stage-2: self-hosted stdlib bundle).
+// ─────────────────────────────────────────────────────────────────────────────
+// The self-hosted analogue of the F# emitter's auto-resolve: compile a driver's
+// transitive `Std.*` import closure into SEPARATE per-package DLLs
+// (`Lyric.Stdlib.<X>.dll`), in dependency order, in one output directory.  Each
+// package is emitted as its own assembly via `emitProject`; the MSIL bridge
+// resolves stdlib imports from source for type-checking and emits cross-assembly
+// references by assembly name, so a dependency emitted earlier into the same
+// directory satisfies the dependent at runtime — no restored-dep threading is
+// needed for stdlib.  This produces the per-package layout the toolchain links,
+// including packages the F# stage-0 emitter cannot compile (e.g. `Std.Sort`,
+// whose typed-lambda generics defeat the F# codegen).  Compiler-package
+// (`Lyric.*` / `Msil.*`) per-package emit, which needs restored-dep threading,
+// is a follow-up.
+func isStdlibPackage(pkg: in String): Bool {
+  Str.startsWith(pkg, "Std.") or pkg == "Std"
+}
+
+// `Std.X` → `Lyric.Stdlib.X`; multi-segment tails join without dots
+// (`Std.Testing.Mocking` → `Lyric.Stdlib.TestingMocking`), matching the F#
+// emitter's `assemblyName` derivation so the output is a drop-in for the
+// existing per-package DLLs.  `--target jvm` appends `.Jvm`.
+pub func perPackageAssemblyName(pkg: in String, target: in CompileTarget): String {
+  val segs = Str.split(pkg, ".")
+  var tail = ""
+  var i = 1
+  while i < segs.length {
+    tail = tail + segs[i]
+    i = i + 1
+  }
+  val base = if segs.length > 0 and segs[0] == "Std" {
+    if Str.length(tail) > 0 {
+      "Lyric.Stdlib." + tail
+    } else {
+      "Lyric.Stdlib"
+    }
+  } else if segs.length > 0 {
+    if Str.length(tail) > 0 {
+      "Lyric." + segs[0] + "." + tail
+    } else {
+      "Lyric." + segs[0]
+    }
+  } else {
+    "Lyric.Unknown"
+  }
+  match target {
+    case Jvm -> base + ".Jvm"
+    case Dotnet -> base
+  }
+}
+
+// Locate `lyric-stdlib/std/` the same way `findStdlibSources` does: explicit
+// `$LYRIC_STD_PATH`, else walk up from the binary's base dir, else from the CWD.
+func locateStdlibDir(): String {
+  val envOverride = Environment.getVarOrDefault("LYRIC_STD_PATH", "")
+  if envOverride.length > 0 and File.dirExists(envOverride) {
+    return envOverride
+  }
+  var dir = walkUpForStdlib(Environment.appBaseDirectory())
+  if dir.length == 0 {
+    dir = walkUpForStdlib(Environment.currentDirectory())
+  }
+  dir
+}
+
+// Discover the `Std.*` packages under `stdlibDir` and return
+// `ProjectPackagePayload` entries for exactly the import-closure of
+// `entrySource`, in dependency order.  Mirrors `loadCompilerPayloads` but for
+// stdlib: multi-file packages are merged by their declared `package` name.
+//
+// .NET-only: the JVM-only kernel files (`_kernel_jvm/`, `_kernel/jvm*.l`) are
+// dropped so they don't collide with their `_kernel/` counterparts.  Per-package
+// emit is rejected for the JVM target upstream in `emitPerPackageClosure` (the
+// JVM toolchain bundles into a single JAR, not per-package DLLs), so this
+// function only ever runs for `--target dotnet` — no target parameter is
+// threaded.  When JVM per-package emit is implemented, the kernel selection here
+// must become target-aware (skip `_kernel/`, keep `_kernel_jvm/`).
+func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): List[ProjectPackagePayload] {
+  val empty: List[ProjectPackagePayload] = newList()
+  val files = match File.listFilesRecursive(stdlibDir) { case Ok(fs) -> fs; case Err(_) -> return empty }
+
+  val regNames: List[String] = newList()
+  val regBodies: List[String] = newList()
+  val regImports: List[List[String]] = newList()
+
+  val sortedFiles = sortStrings(files)
+  var fi = 0
+  while fi < sortedFiles.count {
+    val path = sortedFiles[fi]
+    fi = fi + 1
+    if not Str.endsWith(path, ".l") {
+      continue
+    }
+    if Str.endsWith(path, "_self_test.l") or Str.endsWith(path, "_ci_test.l") {
+      continue
+    }
+    // .NET target: drop the JVM-only kernel files (they declare the same
+    // `Std.*Host` packages as `_kernel/` and would otherwise merge / collide).
+    if Str.contains(path, "_kernel_jvm") {
+      continue
+    }
+    val base = Path.basename(path)
+    if Str.startsWith(base, "jvm") {
+      continue
+    }
+    val src = match File.readText(path) { case Ok(s) -> s; case Err(_) -> "" }
+    if Str.length(src) == 0 {
+      continue
+    }
+    val pkg = extractPackageName(src)
+    if Str.length(pkg) == 0 or not isStdlibPackage(pkg) {
+      continue
+    }
+    var idx = indexOfString(regNames, pkg)
+    if idx < 0 {
+      regNames.add(pkg)
+      regBodies.add("")
+      val imps: List[String] = newList()
+      regImports.add(imps)
+      idx = regNames.count - 1
+    }
+    val body = stripPackageAndImports(src)
+    val prior = regBodies[idx]
+    regBodies[idx] = if Str.length(prior) == 0 { body } else { prior + "\n" + body }
+    collectImportLines(src, regImports[idx])
+  }
+
+  // Import-closure of `entrySource` over the registry (Std.* only).
+  val needed: List[String] = newList()
+  val queue: List[String] = newList()
+  val entryImports: List[String] = newList()
+  collectImportLines(entrySource, entryImports)
+  var qi = 0
+  while qi < entryImports.count {
+    val p = importLinePackage(entryImports[qi])
+    if isStdlibPackage(p) and indexOfString(regNames, p) >= 0 {
+      queue.add(p)
+    }
+    qi = qi + 1
+  }
+  while queue.count > 0 {
+    val name = queue[queue.count - 1]
+    queue.removeAt(queue.count - 1)
+    if indexOfString(needed, name) >= 0 {
+      continue
+    }
+    val ridx = indexOfString(regNames, name)
+    if ridx < 0 {
+      continue
+    }
+    needed.add(name)
+    val imps = regImports[ridx]
+    var ii = 0
+    while ii < imps.count {
+      val dep = importLinePackage(imps[ii])
+      if isStdlibPackage(dep) and indexOfString(regNames, dep) >= 0 and indexOfString(needed, dep) < 0 {
+        queue.add(dep)
+      }
+      ii = ii + 1
+    }
+  }
+
+  // Topologically order so a dependency is emitted before its dependent.
+  val ordered: List[String] = newList()
+  var madeProgress = true
+  while ordered.count < needed.count and madeProgress {
+    madeProgress = false
+    var oi = 0
+    while oi < needed.count {
+      val name = needed[oi]
+      oi = oi + 1
+      if indexOfString(ordered, name) >= 0 {
+        continue
+      }
+      val ridx = indexOfString(regNames, name)
+      val imps = regImports[ridx]
+      var depsReady = true
+      var di2 = 0
+      while di2 < imps.count {
+        val dep = importLinePackage(imps[di2])
+        if indexOfString(needed, dep) >= 0 and indexOfString(ordered, dep) < 0 {
+          depsReady = false
+        }
+        di2 = di2 + 1
+      }
+      if depsReady {
+        ordered.add(name)
+        madeProgress = true
+      }
+    }
+  }
+  var fi2 = 0
+  while fi2 < needed.count {
+    if indexOfString(ordered, needed[fi2]) < 0 {
+      ordered.add(needed[fi2])
+    }
+    fi2 = fi2 + 1
+  }
+
+  val payloads: List[ProjectPackagePayload] = newList()
+  var ni = 0
+  while ni < ordered.count {
+    val name = ordered[ni]
+    val ridx = indexOfString(regNames, name)
+    val combined = "package " + name + "\n" + Str.joinList("\n", regImports[ridx]) + "\n" + regBodies[ridx]
+    payloads.add(ProjectPackagePayload(name = name, source = combined))
+    ni = ni + 1
+  }
+  payloads
+}
+
+/// Compile `entrySource`'s transitive `Std.*` import closure into separate
+/// per-package `Lyric.Stdlib.<X>.dll` assemblies in `outDir`, in dependency
+/// order.  Returns the first failing package's diagnostics, or an empty
+/// success result once every package emits.  This is the linchpin of the
+/// self-hosted stdlib bundle (#2592 stage-2): it produces, via the self-hosted
+/// emitter, the per-package DLLs the toolchain links — including packages the
+/// F# stage-0 emitter cannot compile.
+pub func emitPerPackageClosure(entrySource: in String, outDir: in String, target: in CompileTarget): EmitResult {
+  // Per-package DLL emit is a .NET concept: the JVM toolchain bundles a
+  // package's transitive closure into a single JAR via a different pipeline
+  // (`compileToJarBundled`), not separate per-package artifacts.  Rather than
+  // emit half-wired/wrong JVM output, reject it explicitly; JVM per-package
+  // emit is tracked as separate future work (#2647).
+  match target {
+    case Jvm -> return failResult(
+      "per-package emit: --target jvm is not supported (the JVM toolchain bundles into a single JAR; per-package DLL emit is .NET-only)"
+    )
+    case Dotnet -> ()
+  }
+  match File.createDir(outDir) {
+    case Ok(_) -> ()
+    case Err(e) -> return failResult("per-package emit: cannot create output directory '" + outDir + "': " + IOError.message(e))
+  }
+  val stdlibDir = locateStdlibDir()
+  if stdlibDir.length == 0 {
+    return failResult("per-package emit: could not locate lyric-stdlib/std")
+  }
+  val payloads = loadStdlibPayloads(stdlibDir, entrySource)
+  if payloads.count == 0 {
+    return failResult("per-package emit: no Std.* packages in the import closure")
+  }
+  var pi = 0
+  while pi < payloads.count {
+    val payload = payloads[pi]
+    pi = pi + 1
+    val asmName = perPackageAssemblyName(payload.name, target)
+    val outPath = Path.join(outDir, asmName + ".dll")
+    val pkgs: List[ProjectPackage] = newList()
+    val srcs: List[String] = newList()
+    srcs.add(payload.source)
+    pkgs.add(ProjectPackage(name = payload.name, sources = srcs))
+    val noFeatures: List[String] = newList()
+    val noRestored: List[String] = newList()
+    val req = EmitProjectRequest(
+      packages = pkgs,
+      assemblyName = asmName,
+      outputPath = outPath,
+      target = target,
+      restoredDllPaths = noRestored,
+      activeFeatures = noFeatures,
+      declaredFeatures = noFeatures,
+      packageVersion = "0.1.0"
+    )
+    val res = emitProject(req)
+    match res.outputPath {
+      case None -> {
+        // Surface the inner compiler diagnostics (type / parse errors), not just
+        // a generic failure, so the actual cause is actionable.
+        val diags: List[Diagnostic] = newList()
+        var di = 0
+        while di < res.diagnostics.count {
+          diags.add(res.diagnostics[di])
+          di = di + 1
+        }
+        val sp = pointSpan(initialPosition())
+        diags.add(errorDiagnostic("B0001", "per-package emit: package '" + payload.name + "' failed to build", sp))
+        return EmitResult(outputPath = None, diagnostics = diags)
+      }
+      case Some(_) -> ()
+    }
+  }
+  EmitResult(outputPath = Some(value = outDir), diagnostics = newList())
+}
+
 // #2364 Stage 5: compute the restored-DLL list for a `@test_module` that imports
 // `Lyric.*` compiler packages.  Reuses `loadCompilerPayloads` to resolve the
 // transitive compiler-package import closure from source, then maps each closure

@@ -22252,3 +22252,43 @@ Remaining on #2592: the `bootstrap.sh` stage-1 rewire to ship the
 self-hosted-built bundle (so the shipped `Std.Sort` is itself self-hosted /
 array-based and the `cli.l::sortFileList` workaround can be retired) is the last
 piece.
+
+### D-progress-460 — self-hosted per-package stdlib emit (#2592 stage-2 linchpin)
+
+**Status:** Shipped — `Lyric.Emitter.emitPerPackageClosure` compiles a driver's
+transitive `Std.*` import closure into separate per-package `Lyric.Stdlib.<X>.dll`
+assemblies, in dependency order, via the self-hosted MSIL emitter.  This is the
+linchpin of the bootstrap rewire: it produces, through the self-hosted compiler,
+the per-package stdlib layout the toolchain links — **including packages the F#
+stage-0 emitter cannot compile**, notably `Std.Sort` (its typed-lambda generics
+`{ a: Int, b: Int -> … }` defeat the F# codegen with `E3 … PError`).
+
+The self-hosted analogue of the F# emitter's auto-resolve.  Building on the slice
+ABI fixes (D-progress-457..459 — slice literals and `List.toArray()` now yield
+genuine arrays), a self-hosted-built `Std.Sort` is array-consistent end to end.
+
+What landed:
+
+- **`emitter.l`**: `loadStdlibPayloads` (the `Std.*` analogue of
+  `loadCompilerPayloads`: discover the import closure of an entry source, group
+  multi-file packages by their declared name, skip the JVM-only kernel files on
+  .NET, topologically order); `perPackageAssemblyName` (`Std.X` →
+  `Lyric.Stdlib.X`, matching the F# emitter's naming so the output is a drop-in);
+  and `emitPerPackageClosure`, which emits each package as its own assembly via
+  `emitProject`.  No restored-dep threading is needed for stdlib: the MSIL bridge
+  resolves stdlib imports from source for type-checking and emits cross-assembly
+  references by assembly name, so a dependency emitted earlier into the same
+  directory satisfies its dependents at runtime.
+- **`cli.l`**: an internal `--internal-perpackage-build <entry.l> <outDir>
+  [--target jvm]` command driving the orchestrator.
+
+Verified (CI, "Per-package stdlib emit"): `--internal-perpackage-build` on a
+`Std.Sort` driver emits `Lyric.Stdlib.Core/Collections/CollectionsHost/Sort.dll`;
+a program calling `sortInts([3,1,2,5,4])` built against them prints `1 2 3 4 5` —
+**self-hosted `Std.Sort` returns sorted output**, the headline #2592 symptom, end
+to end through a self-hosted-built stdlib.  Emitter (834) + CLI (84) suites green.
+
+Remaining on #2592: compiler-package (`Lyric.*` / `Msil.*`) per-package emit
+(needs restored-dep threading, unlike stdlib) and then wiring
+`bootstrap.sh`'s stage-1 to use `emitPerPackageClosure` so the *shipped*
+toolchain is self-hosted-built and the `cli.l::sortFileList` workaround retires.
