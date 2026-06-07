@@ -612,7 +612,7 @@ pub func itemDoc(item: in Item, ctx: inout FmtCtx): List[String] {
     case ITest(td) -> concatDoc(header, testDoc(td, ctx))
     case IProperty(pd) -> concatDoc(header, propertyDoc(pd, ctx))
     case IFixture(fd) -> concatDoc(header, fixtureDoc(fd))
-    case IConfig(cd) -> concatDoc(header, configDoc(visStr, cd))
+    case IConfig(cd) -> concatDoc(header, configDoc(visStr, cd, ctx))
     case IAspect(ad) -> concatDoc(header, aspectDoc(visStr, ad, ctx))
     case IError -> singleLineDoc("// <parse-error>")
   }
@@ -1075,22 +1075,33 @@ func configFieldLine(f: in ConfigField): String {
   // (emitted by `configDoc`); the field itself is one line with
   // `name: T = default?`.
   val dflt = match f.default { case Some(e) -> " = " + exprInline(0, e); case None -> "" }
-  "  " + f.name + ": " + typeStr(f.ty) + dflt
+  f.name + ": " + typeStr(f.ty) + dflt
 }
 
-func configDoc(visStr: in String, cd: in ConfigDecl): List[String] {
-  val acc: List[String] = newList()
-  acc.add(visStr + "config " + cd.name + " {")
+func configDoc(visStr: in String, cd: in ConfigDecl, ctx: inout FmtCtx): List[String] {
+  val mLines: List[String] = newList()
   var i = 0
   while i < cd.fields.count {
     val f = cd.fields[i]
+    appendTriviaInto(mLines, ctx, f.span.startPos.offset, false)
     val annLines = annotationLines(f.annotations)
     var k = 0
     while k < annLines.count {
-      acc.add("  " + annLines[k])
+      mLines.add(annLines[k])
       k = k + 1
     }
-    acc.add(configFieldLine(f))
+    mLines.add(configFieldLine(f))
+    i = i + 1
+  }
+  // Trailing trivia before the closing brace; a trailing comment on the
+  // last field is re-attached to its line rather than split onto its own.
+  appendTriviaInto(mLines, ctx, cd.span.endPos.offset, true)
+  val acc: List[String] = newList()
+  acc.add(visStr + "config " + cd.name + " {")
+  val ind = indentDoc(2, mLines)
+  i = 0
+  while i < ind.count {
+    acc.add(ind[i])
     i = i + 1
   }
   acc.add("}")
@@ -1145,17 +1156,28 @@ func aspectDoc(visStr: in String, ad: in AspectDecl, ctx: inout FmtCtx): List[St
   // 2 for the block body).
   if ad.config.count > 0 {
     acc.add("  config {")
+    val cfgLines: List[String] = newList()
     var fi = 0
     while fi < ad.config.count {
       val f = ad.config[fi]
+      appendTriviaInto(cfgLines, ctx, f.span.startPos.offset, false)
       val annLines = annotationLines(f.annotations)
       var ak = 0
       while ak < annLines.count {
-        acc.add("    " + annLines[ak])
+        cfgLines.add(annLines[ak])
         ak = ak + 1
       }
-      acc.add("  " + configFieldLine(f))
+      cfgLines.add(configFieldLine(f))
       fi = fi + 1
+    }
+    // Trailing trivia after the last config field is left for subsequent
+    // element handling (contracts or around block) — the aspect config
+    // block's closing brace offset is not stored in the AST.
+    val cfgInd = indentDoc(4, cfgLines)
+    var ci2 = 0
+    while ci2 < cfgInd.count {
+      acc.add(cfgInd[ci2])
+      ci2 = ci2 + 1
     }
     acc.add("  }")
   }
