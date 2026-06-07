@@ -29,13 +29,7 @@ open System.IO
 open System.Text
 open Lyric.Parser.Ast
 
-let private FORMAT_VERSION = 3
-
-/// One serialised direct dependency (v3 format).
-type ContractDependency =
-    { PackageName:  string
-      Version:      string
-      ContractHash: string }
+let private FORMAT_VERSION = 2
 
 /// One serialised public declaration.
 ///
@@ -47,6 +41,7 @@ type ContractDecl =
       Name:     string
       Repr:     string         // canonical signature / shape, free-form
       /// Visibility level (v3 format). "pub" | "internal" | "" (package-private).
+      /// Read from v3 metadata; defaults to "pub" for v1-v2 backward compatibility.
       Visibility: string
       /// `@pure` annotation present on this declaration.
       Pure:     bool
@@ -78,10 +73,19 @@ type Contract =
       Level:         string
       FormatVersion: int
       /// Direct dependencies: transitive deps list with contract hashes (v3+).
+      /// Read from v3 metadata; empty for v1-v2 contracts.
       Dependencies: ContractDependency list
       /// SHA256 hash of this contract's JSON (v3+).
+      /// Read from v3 metadata; empty for v1-v2 contracts.
       ContractHash: string
       Decls:         ContractDecl list }
+
+/// One serialised direct dependency (v3 format).
+/// Read from v3 metadata only; empty list for v1-v2 contracts.
+and ContractDependency =
+    { PackageName:  string
+      Version:      string
+      ContractHash: string }
 
 module ContractDecl =
 
@@ -153,14 +157,6 @@ let private isPub (vis: Visibility option) =
     | Some (Pub _)      -> true
     | Some (Internal _) -> false
     | None              -> false
-
-/// Extract visibility as a string: "pub" | "internal" | "" (package-private).
-/// Used for v3 format metadata (D-progress-###).
-let private visibilityString (vis: Visibility option) : string =
-    match vis with
-    | Some (Pub _)      -> "pub"
-    | Some (Internal _) -> "internal"
-    | None              -> ""
 
 /// Encode the stability annotations on an `Item` as the canonical
 /// stability string stored in `ContractDecl.Stability`.
@@ -312,12 +308,11 @@ let private contractClauseStrings (cs: ContractClause list)
 
 let private declOf (it: Item) : ContractDecl option =
     let stab = stabilityStringOfItem it
-    let vis = visibilityString it.Visibility
     let mkDefault kind name repr =
         { Kind       = kind
           Name       = name
           Repr       = repr
-          Visibility = vis
+          Visibility = "pub"
           Pure       = false
           Stability  = stab
           Requires   = []
@@ -366,7 +361,7 @@ let private declOf (it: Item) : ContractDecl option =
                 { Kind       = "func"
                   Name       = fn.Name
                   Repr       = repr
-                  Visibility = vis
+                  Visibility = "pub"
                   Pure       = isPure
                   Stability  = stab
                   Requires   = req
@@ -555,7 +550,7 @@ let buildContract
       Level         = levelOfFile sf
       FormatVersion = FORMAT_VERSION
       Dependencies  = []
-      ContractHash  = ""
+      ContractHash  = ""  // Populated by self-hosted Lyric.ContractMetaEmit in Phase 2
       Decls         = anchorDecls @ ownDecls @ reexportDecls }
 
 let private escape (s: string) : string =
@@ -594,26 +589,11 @@ let private renderParams (ps: (string * string) list) : string =
     sb.Append "]" |> ignore
     sb.ToString()
 
-let private renderDependency (d: ContractDependency) : string =
-    sprintf "{\"packageName\":\"%s\",\"version\":\"%s\",\"contractHash\":\"%s\"}"
-        (escape d.PackageName) (escape d.Version) (escape d.ContractHash)
-
-let private renderDependencies (ds: ContractDependency list) : string =
-    let sb = StringBuilder()
-    sb.Append "[" |> ignore
-    ds |> List.iteri (fun i d ->
-        if i > 0 then sb.Append "," |> ignore
-        sb.Append (renderDependency d) |> ignore)
-    sb.Append "]" |> ignore
-    sb.ToString()
-
 let private renderDecl (d: ContractDecl) : string =
     let sb = StringBuilder()
     sb.Append (sprintf "{\"kind\":\"%s\",\"name\":\"%s\",\"repr\":\"%s\""
                 (escape d.Kind) (escape d.Name) (escape d.Repr))
         |> ignore
-    if d.Visibility <> "" then
-        sb.Append (sprintf ",\"visibility\":\"%s\"" (escape d.Visibility)) |> ignore
     if d.Stability <> "" then
         sb.Append (sprintf ",\"stability\":\"%s\"" (escape d.Stability)) |> ignore
     if d.Pure then
@@ -635,7 +615,7 @@ let private renderDecl (d: ContractDecl) : string =
     sb.ToString()
 
 /// Render a `Contract` as JSON.  Hand-rolled to avoid pulling in
-/// System.Text.Json on every emit.  Format-3 (D-progress-###).
+/// System.Text.Json on every emit.  Format-2 (D-progress-086).
 let toJson (c: Contract) : string =
     let sb = StringBuilder(1024)
     sb.Append "{\n" |> ignore
@@ -643,10 +623,6 @@ let toJson (c: Contract) : string =
     sb.Append (sprintf "  \"packageName\": \"%s\",\n" (escape c.PackageName)) |> ignore
     sb.Append (sprintf "  \"version\": \"%s\",\n" (escape c.Version)) |> ignore
     sb.Append (sprintf "  \"level\": \"%s\",\n" (escape c.Level)) |> ignore
-    // v3+ fields: dependencies and contractHash
-    if c.FormatVersion >= 3 then
-        sb.Append (sprintf "  \"dependencies\": %s,\n" (renderDependencies c.Dependencies)) |> ignore
-        sb.Append (sprintf "  \"contractHash\": \"%s\",\n" (escape c.ContractHash)) |> ignore
     sb.Append "  \"decls\": [\n" |> ignore
     c.Decls
     |> List.iteri (fun i d ->
@@ -831,6 +807,7 @@ let parseFromJson (json: string) : Contract option =
                     let kind     = getStrInElem el "kind" ""
                     let name     = getStrInElem el "name" ""
                     let repr     = getStrInElem el "repr" ""
+                    // Visibility field for v3 contracts; absent v1-v2 contracts default to "pub"
                     let vis      = getStrInElem el "visibility" "pub"
                     let pure'    = getBoolInElem el "pure"
                     let stab     = getStrInElem el "stability" ""

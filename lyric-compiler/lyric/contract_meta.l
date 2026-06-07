@@ -394,7 +394,7 @@ func parseDecl(el: in JsonElement): ContractDecl {
     kind = getStr(el, "kind", ""),
     name = getStr(el, "name", ""),
     repr = getStr(el, "repr", ""),
-    visibility = getStr(el, "visibility", ""),
+    visibility = getStr(el, "visibility", "pub"),
     isPure = getBool(el, "pure"),
     stability = getStr(el, "stability", ""),
     requiresClauses = getStrArray(el, "requires"),
@@ -1263,7 +1263,7 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
     packageName = joinDots(file.packageDecl.path.segments),
     version = version,
     level = levelOfFile(file),
-    formatVersion = 3,
+    formatVersion = 2,
     decls = decls,
     dependencies = newList(),
     contractHash = ""
