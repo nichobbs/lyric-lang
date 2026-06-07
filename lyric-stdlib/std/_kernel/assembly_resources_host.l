@@ -3,19 +3,32 @@
 //! PE assemblies.  Used by the self-hosted MSIL bridge's
 //! restored-dependency loader (#1229 Phase A.2).
 //!
-//! Why `System.Reflection.Assembly.LoadFrom` and not
+//! Why `System.Reflection.Assembly.Load(byte[])` and not
 //! `System.Reflection.Metadata.PEReader`: `PEReader`'s embedded-
 //! resource read path requires either unsafe pointer arithmetic
 //! (Lyric doesn't expose unsafe pointers) or a ~12-extern chain
-//! through the `BlobReader` value-type API.  `Assembly.LoadFrom` ships
-//! in the same `System.Runtime.dll` (no new BCL dep) and reduces the
-//! extern surface to 8 host calls + 3 types — 6 read/walk calls plus
-//! the `hostStreamDispose` / `hostMemoryStreamDispose` pair so callers
+//! through the `BlobReader` value-type API.  `Assembly.Load` ships
+//! in the same `System.Runtime.dll` (no new BCL dep) and keeps the
+//! extern surface small — the read/walk calls plus the
+//! `hostStreamDispose` / `hostMemoryStreamDispose` pair so callers
 //! reading many resources release file handles deterministically.
-//! The trade-off is that `LoadFrom` JIT-resolves the assembly into
-//! the current `AssemblyLoadContext`; for compile-time consumers
-//! like the self-hosted MSIL bridge this overhead is irrelevant, and
-//! the process-lifetime accumulation matches the F# emitter's
+//!
+//! Why `Load(byte[])` and not the simpler `LoadFrom(path)`:
+//! `Assembly.LoadFrom` keys the runtime's loaded-assembly cache by
+//! *assembly identity* (name + version + culture + key), not by path.
+//! A compile-time reader that walks many freshly emitted DLLs — in
+//! particular the per-package emitter, which runs *inside* the
+//! self-hosted compiler process where the compiler's own assemblies
+//! are already loaded — hit two failure modes: loading a different
+//! file whose identity matched an already-loaded assembly threw
+//! `FileLoadException`, and a same-identity match silently returned
+//! the in-process assembly's resources instead of the file's (which
+//! dropped `const` decls from large contracts).  `Assembly.Load`
+//! over the raw image bytes has no identity dedup, so each read
+//! reflects the supplied file's content.  The trade-off is that the
+//! loaded assembly stays in the process `AssemblyLoadContext` (never
+//! unloaded) — acceptable for compile-time consumers reading a
+//! bounded set of DLLs per invocation, and matches the F# emitter's
 //! `Mono.Cecil.AssemblyDefinition` semantics (which also doesn't
 //! dispose).
 //!
@@ -41,10 +54,25 @@ extern type ResStream = "System.IO.Stream"
 extern type ResMemoryStream = "System.IO.MemoryStream"
 
 // ── Host functions ─────────────────────────────────────────────────────────
-/// Resolves to `Assembly.LoadFrom(string)`.  Throws `FileNotFoundException`
-/// when the path doesn't exist; callers should pre-check with `Std.File`.
-@externTarget("System.Reflection.Assembly.LoadFrom")
-pub func hostAssemblyLoadFrom(path: in String): RuntimeAssembly = ()
+/// Resolves to `Assembly.Load(byte[]): Assembly`.  Loads the assembly
+/// from its raw image bytes rather than `Assembly.LoadFrom(path)`.
+///
+/// Why not `LoadFrom`: `Assembly.LoadFrom` keys the runtime's loaded-
+/// assembly cache by *assembly identity* (name + version + culture +
+/// key), not by path.  A compile-time reader that walks many freshly
+/// emitted DLLs hits two failure modes with that contract: (1) loading
+/// a second, different file whose identity matches one already loaded
+/// throws `FileLoadException("Assembly with same name is already
+/// loaded")`, and (2) re-reading a path whose bytes changed since the
+/// first load silently returns the stale cached assembly.  The
+/// per-package emit (which emits and then re-reads same-named contract
+/// DLLs in one process) tripped exactly this, dropping `const` decls
+/// from large contracts.  `Assembly.Load(byte[])` creates a fresh
+/// assembly from the supplied bytes on every call with no identity
+/// dedup, so each read reflects the current file content.  Stays in
+/// `System.Runtime.dll` — no new BCL dependency.
+@externTarget("System.Reflection.Assembly.Load")
+pub func hostAssemblyLoad(image: in slice[Byte]): RuntimeAssembly = ()
 
 /// Resolves to `Assembly.GetManifestResourceNames(): string[]`.  Returns
 /// every embedded resource name in the assembly (excludes linked
