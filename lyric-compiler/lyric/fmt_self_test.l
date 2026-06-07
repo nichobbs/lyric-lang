@@ -1137,3 +1137,29 @@ test "aspect config block trailing comment round trips" {
   val twice = format(parse(once))
   assertEqual(once, twice, "aspect config trailing comment: idempotent")
 }
+
+test "multi segment leading trivia round trips" {
+  // #2435: `appendTriviaInto` accumulates whitespace across multiple trivia
+  // segments (blank lines + comments) between items.  A blank line followed by
+  // a doc-less `//` comment before an item must round-trip and be idempotent.
+  val src = "package P\n\nfunc a(): Int {\n  1\n}\n\n// a free comment\n\nfunc b(): Int {\n  2\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "multi-segment trivia: round-trips")
+  val once = format(parse(src))
+  assertTrue(Str.contains(once, "// a free comment"), "multi-segment trivia: comment preserved")
+  val twice = format(parse(once))
+  assertEqual(once, twice, "multi-segment trivia: idempotent")
+}
+
+test "match expression arm round trips" {
+  // #2470: `matchLines` formats an expression-position arm body via
+  // `exprAtCol`; the `bd.count > 0` guard prevents an out-of-bounds read when
+  // the formatted arm doc is empty.  A simple expression-arm match must
+  // round-trip and be idempotent.
+  val src = "package P\n\nfunc f(o: in Option[Int]): Int {\n  match o {\n    case Some(x) -> x\n    case None -> 0\n  }\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "match expression arm: round-trips")
+  val once = format(parse(src))
+  val twice = format(parse(once))
+  assertEqual(once, twice, "match expression arm: idempotent")
+}

@@ -260,8 +260,8 @@ pub func monotonicNanos(): Long {
 /// intended for simple poll loops such as `lyric run/build --watch`.
 ///
 /// Note: the JVM runtime binding is a Phase 6 deliverable; calling this function
-/// from a JVM-target program will fail at runtime until the Phase 6 host shims
-/// ship (tracked in D083).
+/// from a JVM-target program will fail at runtime until the JVM host shims ship
+/// (tracked under the JVM production-readiness plan, docs/44).
 pub func sleepMillis(ms: in Int): Unit {
   if ms <= 0 {
     return

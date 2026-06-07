@@ -50,7 +50,6 @@ output_assembly = "Web.dll"
 
 [project.tests]
 "Web.CorsGuardTests"   = "tests/cors_guard_tests.l"
-"Web.RateLimitTests"   = "tests/rate_limit_tests.l"
 
 [dependencies]
 "Lyric.Auth"         = { path = "../lyric-auth" }

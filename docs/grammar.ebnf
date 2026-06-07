@@ -184,7 +184,7 @@ SoftKeyword = 'range'    | 'derives' | 'forall'     | 'exists'
 
 ContextualHardKeyword = 'type'      | 'alias'    | 'record'   | 'union'
                       | 'enum'      | 'interface' | 'wire'     | 'fixture'
-                      | 'property'  | 'test'      | 'entry'    ;
+                      | 'property'  | 'test'      | 'entry'    | 'result'  ;
 
 (* An ExtendedIdent is any position where the parser accepts a plain IDENT
  * OR a ContextualHardKeyword (binding name, value expression, parameter name,

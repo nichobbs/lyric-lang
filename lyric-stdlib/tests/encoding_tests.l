@@ -102,6 +102,13 @@ func testToLongConversion(): Unit {
   assertTrue(b.toLong() == 42i64, "Byte.toLong — Conv_I8 zero-extends Byte to Long")
   // Int → Long: Conv_I8 sign-extends.
   assertTrue(n.toLong() == 100000i64, "Int.toLong — Conv_I8 sign-extends Int to Long")
+  // Negative Int must sign-extend (stay negative); positive inputs alone cannot
+  // distinguish sign- from zero-extension, so cover a negative value.
+  val neg: Int = 0 - 5
+  assertTrue(neg.toLong() == 0i64 - 5i64, "Int.toLong — negative value sign-extends to a negative Long")
+  // A Byte with the high bit set must zero-extend (stay 200), not sign-extend to -56.
+  val hb: Byte = 200u8
+  assertTrue(hb.toLong() == 200i64, "Byte.toLong — high-bit Byte zero-extends (200, not -56)")
 }
 
 func testToDoubleConversion(): Unit {

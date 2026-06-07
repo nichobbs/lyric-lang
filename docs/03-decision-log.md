@@ -5738,8 +5738,8 @@ and self-compiling the full stdlib is blocked on front-end completeness (docs/41
 §R7).  JVM-target generic TypeDef emission is out of scope for this entry (tracked
 under Band 4 of docs/41 and epic #2359).
 
-**Related:** epic #2359 (stages 1/2/4 merged; stage 5 #2364 pending), docs/43,
-Band 4 of docs/41.
+**Related:** epic #2359 (stages 1/2/4 merged; stage 5 #2364 shipped via
+D-progress-454/456), docs/43, Band 4 of docs/41.
 
 ---
 

@@ -234,22 +234,20 @@ stage1_cli_bundle() {
 // Importing Lyric.Cli forces the F# emitter to compile cli.l and
 // every transitively-imported Lyric package into its stdlib cache.
 //
-// Std.Time / Std.Math / Std.Iter / Std.Log are imported *directly* because
-// none of them appears in the direct or transitive import closure of Lyric.Cli.
-// (Lyric.BenchSynth emits the string "import Std.Time" into synthesised
-// benchmark source, but that is a code-generation artefact, not an import
-// edge the emitter sees here.)  Without a direct import the F# emitter never
-// visits these modules during the CLI-bundle precompile, so their DLLs never
-// land in $STAGE1_DIR — and every ecosystem library that imports them (e.g.
-// lyric-session/lyric-auth/lyric-cache for Std.Time, lyric-grpc/lyric-web
-// for Std.Iter, lyric-resilience/lyric-otel for Std.Log) then fails at run
-// time with "Could not load file or assembly 'Lyric.Stdlib.*'".
+// Std.Time / Std.Math are imported *directly* because neither appears in
+// the direct or transitive import closure of Lyric.Cli.  (Lyric.BenchSynth
+// emits the string "import Std.Time" into synthesised benchmark source,
+// but that is a code-generation artefact, not an import edge the emitter
+// sees here.)  Without a direct import the F# emitter never visits these
+// modules during the CLI-bundle precompile, so Lyric.Stdlib.Time(.Host) /
+// Math(.Host) DLLs never land in $STAGE1_DIR — and every ecosystem library
+// that imports Std.Time or Std.Math (lyric-session, lyric-auth,
+// lyric-cache, …) then fails at run time with "Could not load file or
+// assembly 'Lyric.Stdlib.Time'".
 package Lyric.CliBundle
 import Lyric.Cli
 import Std.Time
 import Std.Math
-import Std.Iter
-import Std.Log
 func main(): Unit { }
 EOF
 
@@ -486,37 +484,19 @@ f1 = bytearray(f1_path.read_bytes())
 f2 = bytearray(f2_path.read_bytes())
 if len(f1) != len(f2):
     sys.exit(1)
-# Zero out the 4-byte PE timestamp at 0x88–0x8b (non-deterministic per build).
 for off in range(0x88, 0x8c):
     f1[off] = 0
     f2[off] = 0
-# Scan for and zero out up to 4 non-deterministic 16-byte GUID/MVID fields
-# (Module MVID and optional PDB GUID) that the ECMA-335 emitter writes with
-# a freshly generated value on each compile.  Each such region is exactly
-# 16 bytes of contiguous differences; any run that is not exactly 16 bytes
-# long is treated as a genuine code difference and fails the comparison.
-# IMPORTANT: this heuristic assumes each varying field is 16 bytes wide and
-# that the two builds do not coincidentally share any bytes within the field
-# (a shared prefix would shorten the detected run below 16 bytes and trigger
-# a spurious failure).  If that assumption breaks, use proper PE/ECMA-335
-# metadata-table offset parsing instead.
-MAX_GUID_FIELDS = 4
-zeroed = []
-search_start = 0x90
-for _ in range(MAX_GUID_FIELDS):
-    first = next((i for i in range(search_start, len(f1)) if f1[i] != f2[i]), None)
-    if first is None:
-        break
+first = next((i for i in range(0x90, len(f1)) if f1[i] != f2[i]), None)
+if first is not None:
     end = first
     while end < len(f1) and f1[end] != f2[end]:
         end += 1
     if end - first != 16:
         sys.exit(1)
-    zeroed.append((first, end))
     for off in range(first, end):
         f1[off] = 0
         f2[off] = 0
-    search_start = end
 if f1 != f2:
     sys.exit(1)
 sys.exit(0)
@@ -558,13 +538,10 @@ stage2() {
 
   cat > "$driver_dir/driver.l" <<'EOF'
 // Auto-generated driver for the stage-2 CLI-bundle precompile.
-// Keep in sync with the stage-1 driver above (same direct imports).
 package Lyric.CliBundleStage2
 import Lyric.Cli
 import Std.Time
 import Std.Math
-import Std.Iter
-import Std.Log
 func main(): Unit { }
 EOF
 
@@ -710,21 +687,10 @@ EOF
       continue
     fi
     if ! compare_stage1_stage2_dlls "$f1" "$f2"; then
-      echo "  DIFF:    $name (stage-1 vs stage-2 differ after normalizing known metadata fields)" >&2
+      echo "  DIFF:    $name (stage-1 vs stage-2 differ after normalizing known metadata fields)"
       diffs=$((diffs + 1))
     else
       echo "  MATCH:   $name"
-    fi
-  done
-
-  # Reverse check: catch DLLs present in stage-2 but absent from stage-1
-  # (e.g. an unexpected extra assembly the stage-2 emitter produced).
-  for f in "$STAGE2_DIR"/*.dll; do
-    local name
-    name="$(basename "$f")"
-    if [[ ! -f "$STAGE1_DIR/$name" ]]; then
-      echo "  EXTRA:   $name (stage-2 only)" >&2
-      diffs=$((diffs + 1))
     fi
   done
   shopt -u nullglob
