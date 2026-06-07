@@ -43,7 +43,6 @@ package Ws
 import Std.Core
 import Std.Collections
 import Ws.Kernel.Net as WsKernel
-import Ws.Kernel.Jvm as WsKernelJvm
 
 // Kernel boundary: every BCL / JDK interaction goes through `WsKernel`
 // (`Ws.Kernel.Net` on .NET, `Ws.Kernel.Jvm` on JVM).  This file is the

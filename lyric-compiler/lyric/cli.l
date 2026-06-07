@@ -769,14 +769,15 @@ func buildReleaseSingle(
 
 // Deterministic ascending sort of a file-path list.
 //
-// Uses a monomorphic stable selection sort over `List[String]` rather than the
+// Uses a monomorphic selection sort over `List[String]` rather than the
 // generic `Std.Sort.sortStrings`: the self-hosted MSIL backend emits a user
 // generic function's `slice[T]` parameters as a true CLR `!0[]` array, but slice
 // values are `List`-backed at runtime, so the generic `Std.Sort` returns an
 // unsorted result for the `List`-backed argument (#2539).  Sorting the `List`
 // directly with `<` (now a correct lexicographic `String.CompareOrdinal`
 // comparison, #2539) sidesteps the broken generic-method slice ABI and matches
-// the existing local-sort pattern in `emitter.l`.
+// the existing local-sort pattern in `emitter.l`.  This workaround can be
+// removed once #2557 fixes the self-hosted generic slice handling.
 func sortFileList(xs: in List[String]): List[String] {
   val remaining: List[String] = newList()
   var c = 0

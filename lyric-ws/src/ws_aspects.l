@@ -8,7 +8,6 @@ import Std.Core
 import Std.Console
 import Auth
 import Ws.Kernel.Net as WsKernel
-import Ws.Kernel.Jvm as WsKernelJvm
 
 // ─── WsAuth ───────────────────────────────────────────────────────────────────
 /// Validate a bearer token from the WebSocket handshake Authorization header.
