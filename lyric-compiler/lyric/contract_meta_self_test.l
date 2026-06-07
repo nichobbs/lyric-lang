@@ -481,6 +481,30 @@ func testLevelOfFileProofRequired(): Unit {
   assertEqual(levelOfFile(pr.file), "proof_required", "levelOfFile: @proof_required → proof_required")
 }
 
+// `levelOfFile` returns "proof_required(unsafe_blocks_allowed)" for
+// the unsafe_blocks_allowed modifier (#1371).
+func testLevelOfFileProofRequiredUnsafeBlocks(): Unit {
+  val src = "@proof_required(unsafe_blocks_allowed)\npackage P\n\npub func pf(): Int { 1 }\n"
+  val pr = parse(src)
+  assertEqual(
+    levelOfFile(pr.file),
+    "proof_required(unsafe_blocks_allowed)",
+    "levelOfFile: @proof_required(unsafe_blocks_allowed) → proof_required(unsafe_blocks_allowed)"
+  )
+}
+
+// `levelOfFile` returns "proof_required(checked_arithmetic)" for
+// the checked_arithmetic modifier (#1371).
+func testLevelOfFileProofRequiredCheckedArith(): Unit {
+  val src = "@proof_required(checked_arithmetic)\npackage P\n\npub func pf(): Int { 1 }\n"
+  val pr = parse(src)
+  assertEqual(
+    levelOfFile(pr.file),
+    "proof_required(checked_arithmetic)",
+    "levelOfFile: @proof_required(checked_arithmetic) → proof_required(checked_arithmetic)"
+  )
+}
+
 // `buildContractFromFile` covers opaque types (reprForOpaque).
 func testBuildOpaque(): Unit {
   val src = "package P\n\npub opaque type Money { amount: Int }\n"
@@ -612,6 +636,8 @@ func main(): Int {
   testLevelOfFileDefault()
   testLevelOfFileAxiom()
   testLevelOfFileProofRequired()
+  testLevelOfFileProofRequiredUnsafeBlocks()
+  testLevelOfFileProofRequiredCheckedArith()
   testBuildOpaque()
   testBuildEnum()
   testBuildProtected()
