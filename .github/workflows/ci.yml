@@ -811,6 +811,47 @@ jobs:
           fi
           echo "cross-package pub val inlines through restored-dep contract metadata"
 
+      # Per-package compiler emit (#2592 slice 2).  emitPerPackageClosure now
+      # emits the COMPILER-package closure (Lyric.* / Msil.* / Jvm.*) — not just
+      # the stdlib — as separate Lyric.<Pkg>.dll assemblies, threading each
+      # package's transitive compiler-import closure (already emitted) as
+      # restored deps, so cross-package types AND inlined constants (#2592
+      # slice 1) resolve across the assembly boundary.  This emits the
+      # typechecker self-test's compiler closure (Lexer + Parser + TypeChecker),
+      # then runs that same self-test against the SELF-HOSTED-EMITTED DLLs (via
+      # LYRIC_STDLIB_BIN, which findCompiledLibDir honours): the passing TAP
+      # assertions prove the emitted compiler DLLs are functional with correct
+      # transitive restored-dep threading — the producer side that #2364 (the
+      # consumer side, against F#-built DLLs) could not cover.
+      - name: Per-package compiler emit (#2592 self-hosted compiler DLLs)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          st="lyric-compiler/lyric/typechecker_self_test.l"
+          "$lyric_bin" --internal-perpackage-build "$st" "$work/out"
+          for dll in Lyric.Lyric.Lexer.dll Lyric.Lyric.Parser.dll Lyric.Lyric.TypeChecker.dll; do
+            if [ ! -f "$work/out/$dll" ]; then
+              echo "::error::expected per-package compiler DLL missing: $dll"
+              exit 1
+            fi
+          done
+          out="$(LYRIC_STDLIB_BIN="$work/out" "$lyric_bin" test "$st" --target dotnet)"
+          printf '%s\n' "$out" | tail -5
+          fail="$(printf '%s\n' "$out" | sed -n 's/^# fail  *\([0-9][0-9]*\)$/\1/p')"
+          pass="$(printf '%s\n' "$out" | sed -n 's/^# pass  *\([0-9][0-9]*\)$/\1/p')"
+          if [ "${fail:-1}" != "0" ] || [ "${pass:-0}" -lt 1 ]; then
+            echo "::error::self-test against self-hosted-emitted compiler DLLs failed (pass=${pass:-?} fail=${fail:-?})"
+            exit 1
+          fi
+          echo "self-hosted-emitted compiler closure runs the typechecker self-test ($pass assertions)"
+
       # Slice-length / String-comparison self-test (#2539).  Exercises two
       # self-hosted MSIL codegen fixes: (1) `String` relational operators
       # (`<` / `>` / `<=` / `>=`) route through `String.CompareOrdinal`
