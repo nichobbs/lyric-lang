@@ -5613,6 +5613,80 @@ parameter / `String.split` array), slice indexing, `for`, and the four
 
 ---
 
+## D095 — Self-hosted generic `slice[T]` uses the List-backed slice representation (#2557)
+
+**Context.** D094 made *non-generic* slice access (`.length`, indexing, `for`)
+route through the non-generic `System.Collections.IList` / `ICollection`, so a
+`List`-backed slice value (slice literal, `List.toArray()` result, sub-slice
+copy) and a genuine CLI array (`String.split`, base64 `slice[Byte]`) both work
+behind the single `slice[T]` static type. The *generic* case was explicitly
+left out (D094 Bug 3): a user-defined generic function whose parameter, return,
+or typed local mentioned `slice[T]` (or a bare type variable `T`) miscompiled.
+
+**Root cause.** Two independent gaps, both in the self-hosted compiler:
+
+1. **The monomorphiser never specialised these calls.** `Lyric.Mono.inferExprTE`
+   had no arm for a list/slice literal `[…]`, so `glen([1,2,3])` inferred no
+   argument type, `unifyTE` (which also lacked a `TSlice` arm) could not bind
+   `T`, and the call survived to codegen as a generic invocation. The surviving
+   generic `slice[T]` parameter then lowered to `MArray(MClass(pkg + ".T"))` —
+   a slice over a CLR type that does not exist — and element reads emitted a
+   `castclass pkg.T`, which the JIT rejected as "Common Language Runtime
+   detected an invalid program."
+2. **Specialised bodies were copied verbatim.** Even once a call *did*
+   monomorphise, `Lyric.Mono.specializeFunc` substituted type variables only in
+   the signature (params / return) and shared `decl.body` unchanged. A typed
+   body local — `val acc: List[T] = newList()` — kept its `T`, and codegen built
+   a `List<pkg.T>` instance over the non-existent type, the same "invalid
+   program" failure by a different route.
+
+**Decision.** Keep the post-#2558 **List-backed** slice representation (do not
+fork to a genuine-array ABI for the self-hosted path) and make generic
+`slice[T]` reuse it consistently:
+
+- `inferExprTE` infers `slice[ElemType]` from a non-empty list/slice literal's
+  first element; an empty literal stays `None` (no element type to infer).
+- `unifyTE` gains a `TSlice` arm so `slice[T]` unifies against `slice[Int]`
+  (and `TArray`), binding `T`. Most generic-slice calls therefore monomorphise
+  into concrete `__Int` / `__String` copies that reuse the working non-generic
+  List-backed slice path end to end.
+- `specializeFunc` substitutes type-variable annotations throughout the
+  specialised body (`substTypesFunctionBody` walks local bindings, lambda
+  parameter annotations, and explicit type applications), so `List[T]` becomes
+  `List[Int]` in the copy.
+- For the residual cases that genuinely cannot monomorphise, `Msil.Codegen`
+  lowers a generic function's `slice[T]` / bare-`T` parameter and return to the
+  erased List-backed forms: the *signature* uses plain `object` (so a
+  List-backed argument matches the slot), the *body tracking* and the
+  caller-visible `funcRetTypes` use `MArray(MObject)` / `MObject` (so `.length`
+  / indexing / `for` dispatch through the IList path and element reads yield
+  `object`), never `MClass(pkg + ".T")`.
+
+**Scope boundary — F#-compiled stdlib (`Std.Sort`).** `Std.Sort.{sort,
+sliceCopy,mergeSorted}` ship inside the **F#-emitted** `Lyric.Stdlib.dll`
+(stage-0 builds the stdlib bundle), where the F# emitter lowers a generic
+`slice[T]` to a genuine `!0[]` array and `List.toArray()` to a genuine `T[]`.
+A self-hosted caller passing a `List`-backed value to that F#-array ABI still
+corrupts memory; this is a **cross-emitter ABI fork**, not a self-hosted codegen
+bug, and is out of scope for #2557. The `cli.l` directory-sort therefore keeps
+its local monomorphic `sortFileList(List[String])` from D094 rather than
+reverting to `Std.Sort.sortStrings`. Closing the fork (recompiling the stdlib
+through the self-hosted emitter, or monomorphising qualified imported-generic
+calls and pulling their non-generic wrappers into the bundle) is tracked as a
+follow-up.
+
+**Verification.** A new `lyric-compiler/lyric/generic_slice_self_test.l`
+(`glen[T]` / `gidx[T]` / `gcopy[T]` / `gid[T]` over value and reference
+elements, covering `slice[T]` parameters, bare-`T` and `slice[T]` returns, and a
+`List[T]` body local) runs in CI via native `lyric test`. The D094
+`slice_string_self_test.l` (non-generic slice + string regression guard), the
+ecosystem `lyric-auth` / `lyric-session` suites, the four
+`examples/{rbac,ledger,jobqueue,product-catalog}` builds, and the full F#
+emitter regression suite (843 passed, 0 failed) all stay green; `make lyric`
+self-hosts cleanly.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)
