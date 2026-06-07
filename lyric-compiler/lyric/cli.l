@@ -3140,13 +3140,20 @@ func cmdTest(argv: in slice[String]): Int {
         val jvmArgs: List[String] = newList()
         jvmArgs.add("-jar")
         jvmArgs.add(outPath)
-        match Process.run("java", jvmArgs) {
-          case Ok(code) -> return code
-          case Err(e) -> {
-            printErr("test: failed to start java: " + IOError.message(e))
-            return 1
-          }
+        val jvmRes = ProcessCapture.runCaptureWithDiagnosticsTimeout("java", jvmArgs, "", 600000)
+        Console.print(jvmRes.stdout)
+        if jvmRes.stderr.length > 0 {
+          Console.error(jvmRes.stderr)
         }
+        if jvmRes.exitCode == -1 {
+          printErr("test: failed to start java")
+          return 1
+        }
+        if jvmRes.stdout.length == 0 and jvmRes.exitCode == 0 {
+          printErr("test: compiled test binary produced no TAP output — possible silent compile or runtime failure")
+          return 1
+        }
+        return jvmRes.exitCode
       }
       // Co-locate the fully-compiled stdlib runtime assemblies beside the
       // test DLL so `dotnet exec` resolves the real stdlib `pub func`s
@@ -3203,12 +3210,19 @@ func cmdTest(argv: in slice[String]): Int {
       val execArgs: List[String] = newList()
       execArgs.add("exec")
       execArgs.add(outPath)
-      match Process.run("dotnet", execArgs) {
-        case Ok(code) -> code
-        case Err(e) -> {
-          printErr("test: failed to start dotnet: " + IOError.message(e))
-          1
-        }
+      val dotnetRes = ProcessCapture.runCaptureWithDiagnosticsTimeout("dotnet", execArgs, "", 600000)
+      Console.print(dotnetRes.stdout)
+      if dotnetRes.stderr.length > 0 {
+        Console.error(dotnetRes.stderr)
+      }
+      if dotnetRes.exitCode == -1 {
+        printErr("test: failed to start dotnet")
+        1
+      } else if dotnetRes.stdout.length == 0 and dotnetRes.exitCode == 0 {
+        printErr("test: compiled test binary produced no TAP output — possible silent compile or runtime failure")
+        1
+      } else {
+        dotnetRes.exitCode
       }
     }
   }
@@ -3552,12 +3566,19 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
     val execArgs: List[String] = newList()
     execArgs.add("exec")
     execArgs.add(outPath)
-    val testExitCode = match Process.run("dotnet", execArgs) {
-      case Ok(code) -> code
-      case Err(e) -> {
-        printErr("test: failed to start dotnet: " + IOError.message(e))
-        1
-      }
+    val mfDotnetRes = ProcessCapture.runCaptureWithDiagnosticsTimeout("dotnet", execArgs, "", 600000)
+    Console.print(mfDotnetRes.stdout)
+    if mfDotnetRes.stderr.length > 0 {
+      Console.error(mfDotnetRes.stderr)
+    }
+    val testExitCode = if mfDotnetRes.exitCode == -1 {
+      printErr("test: failed to start dotnet")
+      1
+    } else if mfDotnetRes.stdout.length == 0 and mfDotnetRes.exitCode == 0 {
+      printErr("test: compiled test binary produced no TAP output — possible silent compile or runtime failure")
+      1
+    } else {
+      mfDotnetRes.exitCode
     }
     if testExitCode == 0 {
       totalPassed += 1
