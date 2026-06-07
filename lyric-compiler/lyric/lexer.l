@@ -1,38 +1,38 @@
-// lyric/lexer.l — self-hosted Lyric lexer (Phase 5 §M5.1 stage 2b).
-//
-// Mirrors the F# bootstrap lexer at compiler/src/Lyric.Lexer/Lexer.fs:
-// produces the same token stream over a UTF-8 source string, applies
-// the same statement-terminator-insertion rules, and records the same
-// diagnostic codes for malformed input.  This file is the reusable
-// `Lyric.Lexer` library; the in-process self-test that exercises it
-// lives at `compiler/lyric/lyric/lexer_self_test.l`.
-//
-// Phase 5 §M5.1 stage 3 (this file): string interpolation, triple-
-// quoted and raw strings landed; the new tokens (TStringStart,
-// TStringPart, TStringHoleStart, TStringEnd, TTripleString,
-// TRawString) plus the InString / InHole mode stack mirror
-// `compiler/src/Lyric.Lexer/Lexer.fs` 1:1.
-//
-// Phase 5 §M5.1 stage 4 (this file): full UAX #31 identifier
-// support — NFC normalisation of lexemes via
-// `System.String.Normalize` (BCL instance method), the L0040
-// reserved-name diagnostic for `_X` identifiers, and non-ASCII
-// XID_Start / XID_Continue acceptance via `Std.UnicodeHost`'s
-// `System.Char.GetUnicodeCategory` extern.  The category integers
-// match `System.Globalization.UnicodeCategory`'s enum ordering;
-// see `compiler/lyric/std/_kernel/unicode_host.l` for the constants.
-//
-// Scope still deferred:
-//   * Non-BMP `\u{…}` escapes (would need a wider TChar payload).
-//
-// Everything else from the F# lexer's grammar §1 implementation lives
-// here: identifiers, the full keyword table, decimal/hex/octal/binary
-// integer literals (with underscore separators and type suffixes), float
-// literals (with optional exponent and `f32`/`f64` suffix), single-quoted
-// string literals with the common escape set, character literals, the
-// full punctuation table, line + nested block comments, doc/module-doc
-// comments, and statement-end insertion with the same suppression set
-// used by the bootstrap.
+//! lyric/lexer.l — self-hosted Lyric lexer (Phase 5 §M5.1 stage 2b).
+//!
+//! Mirrors the F# bootstrap lexer at compiler/src/Lyric.Lexer/Lexer.fs:
+//! produces the same token stream over a UTF-8 source string, applies
+//! the same statement-terminator-insertion rules, and records the same
+//! diagnostic codes for malformed input.  This file is the reusable
+//! `Lyric.Lexer` library; the in-process self-test that exercises it
+//! lives at `compiler/lyric/lyric/lexer_self_test.l`.
+//!
+//! Phase 5 §M5.1 stage 3 (this file): string interpolation, triple-
+//! quoted and raw strings landed; the new tokens (TStringStart,
+//! TStringPart, TStringHoleStart, TStringEnd, TTripleString,
+//! TRawString) plus the InString / InHole mode stack mirror
+//! `compiler/src/Lyric.Lexer/Lexer.fs` 1:1.
+//!
+//! Phase 5 §M5.1 stage 4 (this file): full UAX #31 identifier
+//! support — NFC normalisation of lexemes via
+//! `System.String.Normalize` (BCL instance method), the L0040
+//! reserved-name diagnostic for `_X` identifiers, and non-ASCII
+//! XID_Start / XID_Continue acceptance via `Std.UnicodeHost`'s
+//! `System.Char.GetUnicodeCategory` extern.  The category integers
+//! match `System.Globalization.UnicodeCategory`'s enum ordering;
+//! see `compiler/lyric/std/_kernel/unicode_host.l` for the constants.
+//!
+//! Scope still deferred:
+//!   * Non-BMP `\u{…}` escapes (would need a wider TChar payload).
+//!
+//! Everything else from the F# lexer's grammar §1 implementation lives
+//! here: identifiers, the full keyword table, decimal/hex/octal/binary
+//! integer literals (with underscore separators and type suffixes), float
+//! literals (with optional exponent and `f32`/`f64` suffix), single-quoted
+//! string literals with the common escape set, character literals, the
+//! full punctuation table, line + nested block comments, doc/module-doc
+//! comments, and statement-end insertion with the same suppression set
+//! used by the bootstrap.
 package Lyric.Lexer
 
 import Std.Core
@@ -41,46 +41,44 @@ import Std.String as Str
 import Std.UnicodeHost
 import Std.CharHost as CharHost
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Position and Span — mirror compiler/src/Lyric.Lexer/Span.fs.
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// A position in source.  `offset` is a 0-based UTF-16 code-unit offset
 /// into the (already CR/LF-normalised) source string; `line` and
 /// `column` are 1-based.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record Position {
   offset: Int
-  line:   Int
+  line: Int
   column: Int
 }
 
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func initialPosition(): Position {
   Position(offset = 0, line = 1, column = 1)
 }
 
 /// A half-open span `[startPos, endPos)` over the source.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record Span {
   startPos: Position
-  endPos:   Position
+  endPos: Position
 }
 
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func makeSpan(startP: in Position, endP: in Position): Span {
   Span(startPos = startP, endPos = endP)
 }
 
 /// Zero-length span used for synthetic tokens (STMT_END, EOF).
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func pointSpan(p: in Position): Span {
   Span(startPos = p, endPos = p)
 }
 
 @pure
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func spanLength(s: in Span): Int {
   s.endPos.offset - s.startPos.offset
 }
@@ -88,27 +86,26 @@ pub func spanLength(s: in Span): Int {
 // ─────────────────────────────────────────────────────────────────────────────
 // Diagnostics — mirror compiler/src/Lyric.Lexer/Diagnostics.fs.
 // ─────────────────────────────────────────────────────────────────────────────
-
-@stable(since="0.1")
+@stable(since = "0.1")
 pub union DiagnosticSeverity {
   case DiagError
   case DiagWarning
 }
 
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record Diagnostic {
   severity: DiagnosticSeverity
-  code:     String
-  message:  String
-  span:     Span
+  code: String
+  message: String
+  span: Span
 }
 
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func errorDiagnostic(code: in String, msg: in String, sp: in Span): Diagnostic {
   Diagnostic(severity = DiagError, code = code, message = msg, span = sp)
 }
 
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func warningDiagnostic(code: in String, msg: in String, sp: in Span): Diagnostic {
   Diagnostic(severity = DiagWarning, code = code, message = msg, span = sp)
 }
@@ -124,8 +121,7 @@ pub func warningDiagnostic(code: in String, msg: in String, sp: in Span): Diagno
 // performed; the entire run between two real tokens is recorded as the
 // second token's `leadingTrivia`.
 // ─────────────────────────────────────────────────────────────────────────────
-
-@stable(since="0.1")
+@stable(since = "0.1")
 pub union TriviaKind {
   case TKWhitespace
   case TKNewline
@@ -133,7 +129,7 @@ pub union TriviaKind {
   case TKBlockComment
 }
 
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record Trivia {
   kind: TriviaKind
   text: String
@@ -143,8 +139,7 @@ pub record Trivia {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tokens — mirror compiler/src/Lyric.Lexer/Token.fs.
 // ─────────────────────────────────────────────────────────────────────────────
-
-@stable(since="0.1")
+@stable(since = "0.1")
 pub union IntSuffix {
   case I8
   case I16
@@ -157,7 +152,7 @@ pub union IntSuffix {
   case NoIntSuffix
 }
 
-@stable(since="0.1")
+@stable(since = "0.1")
 pub union FloatSuffix {
   case F32
   case F64
@@ -166,7 +161,7 @@ pub union FloatSuffix {
 
 /// The reserved keyword set (grammar §1.5).  Constructor names carry a
 /// `Kw` prefix to keep them spelling-distinct from Lyric keywords.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub union Keyword {
   case KwAlias
   case KwAnd
@@ -238,7 +233,7 @@ pub union Keyword {
 }
 
 /// Multi- and single-character punctuation/operator tokens (§1.9).
-@stable(since="0.1")
+@stable(since = "0.1")
 pub union Punct {
   case DotDotEq
   case DotDotLt
@@ -286,7 +281,7 @@ pub union Punct {
 /// because Lyric does not yet have a `ULong` literal form in this
 /// module's surface area; values that overflow `Long.MaxValue` are
 /// reported via L0010 and replaced with 0.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub union Token {
   case TKeyword(kw: Keyword)
   case TIdent(name: String)
@@ -326,10 +321,10 @@ pub union Token {
   case TEof
 }
 
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record SpannedToken {
-  token:         Token
-  span:          Span
+  token: Token
+  span: Span
   /// Whitespace, newlines, and non-doc comments that appeared in the
   /// source between the previous token's end and this token's start.
   /// Always non-null; empty for the very first token in a file (and for
@@ -341,7 +336,7 @@ pub record SpannedToken {
 /// Construct a `SpannedToken` with no leading trivia.  Used by helpers
 /// that synthesise tokens (sentinels for out-of-bounds peeks, and
 /// constructors prior to trivia capture wiring).
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func makeSpannedToken(tok: in Token, sp: in Span): SpannedToken {
   val empty: List[Trivia] = newList()
   SpannedToken(token = tok, span = sp, leadingTrivia = empty)
@@ -350,79 +345,78 @@ pub func makeSpannedToken(tok: in Token, sp: in Span): SpannedToken {
 // ─────────────────────────────────────────────────────────────────────────────
 // Keyword spelling tables.  Mirrors compiler/src/Lyric.Lexer/Keywords.fs.
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// Canonical source spelling for a keyword.
 @pure
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func keywordSpelling(kw: in Keyword): String {
   match kw {
-    case KwAlias     -> "alias"
-    case KwAnd       -> "and"
-    case KwAs        -> "as"
-    case KwAsync     -> "async"
-    case KwAwait     -> "await"
-    case KwBind      -> "bind"
-    case KwCase      -> "case"
-    case KwDo        -> "do"
-    case KwElse      -> "else"
-    case KwEnd       -> "end"
-    case KwEnsures   -> "ensures"
-    case KwEntry     -> "entry"
-    case KwEnum      -> "enum"
-    case KwExposed   -> "exposed"
-    case KwExtern    -> "extern"
-    case KwFalse     -> "false"
-    case KwFixture   -> "fixture"
-    case KwFor       -> "for"
-    case KwFunc      -> "func"
-    case KwGeneric   -> "generic"
-    case KwIf        -> "if"
-    case KwImpl      -> "impl"
-    case KwImport    -> "import"
-    case KwIn        -> "in"
-    case KwInout     -> "inout"
+    case KwAlias -> "alias"
+    case KwAnd -> "and"
+    case KwAs -> "as"
+    case KwAsync -> "async"
+    case KwAwait -> "await"
+    case KwBind -> "bind"
+    case KwCase -> "case"
+    case KwDo -> "do"
+    case KwElse -> "else"
+    case KwEnd -> "end"
+    case KwEnsures -> "ensures"
+    case KwEntry -> "entry"
+    case KwEnum -> "enum"
+    case KwExposed -> "exposed"
+    case KwExtern -> "extern"
+    case KwFalse -> "false"
+    case KwFixture -> "fixture"
+    case KwFor -> "for"
+    case KwFunc -> "func"
+    case KwGeneric -> "generic"
+    case KwIf -> "if"
+    case KwImpl -> "impl"
+    case KwImport -> "import"
+    case KwIn -> "in"
+    case KwInout -> "inout"
     case KwInterface -> "interface"
-    case KwInternal  -> "internal"
+    case KwInternal -> "internal"
     case KwInvariant -> "invariant"
-    case KwIs        -> "is"
-    case KwLet       -> "let"
-    case KwMatch     -> "match"
-    case KwMut       -> "mut"
-    case KwNot       -> "not"
-    case KwOld       -> "old"
-    case KwOpaque    -> "opaque"
-    case KwOr        -> "or"
-    case KwOut       -> "out"
-    case KwPackage   -> "package"
-    case KwProperty  -> "property"
+    case KwIs -> "is"
+    case KwLet -> "let"
+    case KwMatch -> "match"
+    case KwMut -> "mut"
+    case KwNot -> "not"
+    case KwOld -> "old"
+    case KwOpaque -> "opaque"
+    case KwOr -> "or"
+    case KwOut -> "out"
+    case KwPackage -> "package"
+    case KwProperty -> "property"
     case KwProtected -> "protected"
-    case KwPub       -> "pub"
-    case KwRecord    -> "record"
-    case KwRequires  -> "requires"
-    case KwResult    -> "result"
-    case KwReturn    -> "return"
-    case KwScope     -> "scope"
-    case KwScoped    -> "scoped"
-    case KwSelf      -> "self"
+    case KwPub -> "pub"
+    case KwRecord -> "record"
+    case KwRequires -> "requires"
+    case KwResult -> "result"
+    case KwReturn -> "return"
+    case KwScope -> "scope"
+    case KwScoped -> "scoped"
+    case KwSelf -> "self"
     case KwSingleton -> "singleton"
-    case KwSpawn     -> "spawn"
-    case KwTest      -> "test"
-    case KwThen      -> "then"
-    case KwThrow     -> "throw"
-    case KwTrue      -> "true"
-    case KwTry       -> "try"
-    case KwType      -> "type"
-    case KwUnion     -> "union"
-    case KwUse       -> "use"
-    case KwVal       -> "val"
-    case KwVar       -> "var"
-    case KwWhen      -> "when"
-    case KwWhere     -> "where"
-    case KwWhile     -> "while"
-    case KwWire      -> "wire"
-    case KwWith      -> "with"
-    case KwYield     -> "yield"
-    case KwXor       -> "xor"
+    case KwSpawn -> "spawn"
+    case KwTest -> "test"
+    case KwThen -> "then"
+    case KwThrow -> "throw"
+    case KwTrue -> "true"
+    case KwTry -> "try"
+    case KwType -> "type"
+    case KwUnion -> "union"
+    case KwUse -> "use"
+    case KwVal -> "val"
+    case KwVar -> "var"
+    case KwWhen -> "when"
+    case KwWhere -> "where"
+    case KwWhile -> "while"
+    case KwWire -> "wire"
+    case KwWith -> "with"
+    case KwYield -> "yield"
+    case KwXor -> "xor"
   }
 }
 
@@ -431,89 +425,157 @@ pub func keywordSpelling(kw: in Keyword): String {
 /// `scope_kind`) are NOT recognised here — the parser resolves them
 /// contextually.
 @pure
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func tryKeywordFromString(s: in String): Option[Keyword] {
   // The keyword table is closed and small; an explicit cascade keeps
   // the lookup allocation-free and its branches obvious.  Once the
   // self-hosted compiler grows a `Std.Map` with first-class hash
   // tables this can collapse to a hashed lookup.
-  if s == "alias"     { Some(value = KwAlias) }
-  else if s == "and"       { Some(value = KwAnd) }
-  else if s == "as"        { Some(value = KwAs) }
-  else if s == "async"     { Some(value = KwAsync) }
-  else if s == "await"     { Some(value = KwAwait) }
-  else if s == "bind"      { Some(value = KwBind) }
-  else if s == "case"      { Some(value = KwCase) }
-  else if s == "do"        { Some(value = KwDo) }
-  else if s == "else"      { Some(value = KwElse) }
-  else if s == "end"       { Some(value = KwEnd) }
-  else if s == "ensures"   { Some(value = KwEnsures) }
-  else if s == "entry"     { Some(value = KwEntry) }
-  else if s == "enum"      { Some(value = KwEnum) }
-  else if s == "exposed"   { Some(value = KwExposed) }
-  else if s == "extern"    { Some(value = KwExtern) }
-  else if s == "false"     { Some(value = KwFalse) }
-  else if s == "fixture"   { Some(value = KwFixture) }
-  else if s == "for"       { Some(value = KwFor) }
-  else if s == "func"      { Some(value = KwFunc) }
-  else if s == "generic"   { Some(value = KwGeneric) }
-  else if s == "if"        { Some(value = KwIf) }
-  else if s == "impl"      { Some(value = KwImpl) }
-  else if s == "import"    { Some(value = KwImport) }
-  else if s == "in"        { Some(value = KwIn) }
-  else if s == "inout"     { Some(value = KwInout) }
-  else if s == "interface" { Some(value = KwInterface) }
-  else if s == "internal"  { Some(value = KwInternal) }
-  else if s == "invariant" { Some(value = KwInvariant) }
-  else if s == "is"        { Some(value = KwIs) }
-  else if s == "let"       { Some(value = KwLet) }
-  else if s == "match"     { Some(value = KwMatch) }
-  else if s == "mut"       { Some(value = KwMut) }
-  else if s == "not"       { Some(value = KwNot) }
-  else if s == "old"       { Some(value = KwOld) }
-  else if s == "opaque"    { Some(value = KwOpaque) }
-  else if s == "or"        { Some(value = KwOr) }
-  else if s == "out"       { Some(value = KwOut) }
-  else if s == "package"   { Some(value = KwPackage) }
-  else if s == "property"  { Some(value = KwProperty) }
-  else if s == "protected" { Some(value = KwProtected) }
-  else if s == "pub"       { Some(value = KwPub) }
-  else if s == "record"    { Some(value = KwRecord) }
-  else if s == "requires"  { Some(value = KwRequires) }
-  else if s == "result"    { Some(value = KwResult) }
-  else if s == "return"    { Some(value = KwReturn) }
-  else if s == "scope"     { Some(value = KwScope) }
-  else if s == "scoped"    { Some(value = KwScoped) }
-  else if s == "self"      { Some(value = KwSelf) }
-  else if s == "singleton" { Some(value = KwSingleton) }
-  else if s == "spawn"     { Some(value = KwSpawn) }
-  else if s == "test"      { Some(value = KwTest) }
-  else if s == "then"      { Some(value = KwThen) }
-  else if s == "throw"     { Some(value = KwThrow) }
-  else if s == "true"      { Some(value = KwTrue) }
-  else if s == "try"       { Some(value = KwTry) }
-  else if s == "type"      { Some(value = KwType) }
-  else if s == "union"     { Some(value = KwUnion) }
-  else if s == "use"       { Some(value = KwUse) }
-  else if s == "val"       { Some(value = KwVal) }
-  else if s == "var"       { Some(value = KwVar) }
-  else if s == "when"      { Some(value = KwWhen) }
-  else if s == "where"     { Some(value = KwWhere) }
-  else if s == "while"     { Some(value = KwWhile) }
-  else if s == "wire"      { Some(value = KwWire) }
-  else if s == "with"      { Some(value = KwWith) }
-  else if s == "yield"     { Some(value = KwYield) }
-  else if s == "xor"       { Some(value = KwXor) }
-  else                     { None }
+  if s == "alias" {
+    Some(value = KwAlias)
+  } else if s == "and" {
+    Some(value = KwAnd)
+  } else if s == "as" {
+    Some(value = KwAs)
+  } else if s == "async" {
+    Some(value = KwAsync)
+  } else if s == "await" {
+    Some(value = KwAwait)
+  } else if s == "bind" {
+    Some(value = KwBind)
+  } else if s == "case" {
+    Some(value = KwCase)
+  } else if s == "do" {
+    Some(value = KwDo)
+  } else if s == "else" {
+    Some(value = KwElse)
+  } else if s == "end" {
+    Some(value = KwEnd)
+  } else if s == "ensures" {
+    Some(value = KwEnsures)
+  } else if s == "entry" {
+    Some(value = KwEntry)
+  } else if s == "enum" {
+    Some(value = KwEnum)
+  } else if s == "exposed" {
+    Some(value = KwExposed)
+  } else if s == "extern" {
+    Some(value = KwExtern)
+  } else if s == "false" {
+    Some(value = KwFalse)
+  } else if s == "fixture" {
+    Some(value = KwFixture)
+  } else if s == "for" {
+    Some(value = KwFor)
+  } else if s == "func" {
+    Some(value = KwFunc)
+  } else if s == "generic" {
+    Some(value = KwGeneric)
+  } else if s == "if" {
+    Some(value = KwIf)
+  } else if s == "impl" {
+    Some(value = KwImpl)
+  } else if s == "import" {
+    Some(value = KwImport)
+  } else if s == "in" {
+    Some(value = KwIn)
+  } else if s == "inout" {
+    Some(value = KwInout)
+  } else if s == "interface" {
+    Some(value = KwInterface)
+  } else if s == "internal" {
+    Some(value = KwInternal)
+  } else if s == "invariant" {
+    Some(value = KwInvariant)
+  } else if s == "is" {
+    Some(value = KwIs)
+  } else if s == "let" {
+    Some(value = KwLet)
+  } else if s == "match" {
+    Some(value = KwMatch)
+  } else if s == "mut" {
+    Some(value = KwMut)
+  } else if s == "not" {
+    Some(value = KwNot)
+  } else if s == "old" {
+    Some(value = KwOld)
+  } else if s == "opaque" {
+    Some(value = KwOpaque)
+  } else if s == "or" {
+    Some(value = KwOr)
+  } else if s == "out" {
+    Some(value = KwOut)
+  } else if s == "package" {
+    Some(value = KwPackage)
+  } else if s == "property" {
+    Some(value = KwProperty)
+  } else if s == "protected" {
+    Some(value = KwProtected)
+  } else if s == "pub" {
+    Some(value = KwPub)
+  } else if s == "record" {
+    Some(value = KwRecord)
+  } else if s == "requires" {
+    Some(value = KwRequires)
+  } else if s == "result" {
+    Some(value = KwResult)
+  } else if s == "return" {
+    Some(value = KwReturn)
+  } else if s == "scope" {
+    Some(value = KwScope)
+  } else if s == "scoped" {
+    Some(value = KwScoped)
+  } else if s == "self" {
+    Some(value = KwSelf)
+  } else if s == "singleton" {
+    Some(value = KwSingleton)
+  } else if s == "spawn" {
+    Some(value = KwSpawn)
+  } else if s == "test" {
+    Some(value = KwTest)
+  } else if s == "then" {
+    Some(value = KwThen)
+  } else if s == "throw" {
+    Some(value = KwThrow)
+  } else if s == "true" {
+    Some(value = KwTrue)
+  } else if s == "try" {
+    Some(value = KwTry)
+  } else if s == "type" {
+    Some(value = KwType)
+  } else if s == "union" {
+    Some(value = KwUnion)
+  } else if s == "use" {
+    Some(value = KwUse)
+  } else if s == "val" {
+    Some(value = KwVal)
+  } else if s == "var" {
+    Some(value = KwVar)
+  } else if s == "when" {
+    Some(value = KwWhen)
+  } else if s == "where" {
+    Some(value = KwWhere)
+  } else if s == "while" {
+    Some(value = KwWhile)
+  } else if s == "wire" {
+    Some(value = KwWire)
+  } else if s == "with" {
+    Some(value = KwWith)
+  } else if s == "yield" {
+    Some(value = KwYield)
+  } else if s == "xor" {
+    Some(value = KwXor)
+  } else {
+    None
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LexResult and LexerState.
 // ─────────────────────────────────────────────────────────────────────────────
-
-@stable(since="0.1")
+@stable(since = "0.1")
 pub record LexResult {
-  tokens:      List[SpannedToken]
+  tokens: List[SpannedToken]
   diagnostics: List[Diagnostic]
 }
 
@@ -541,8 +603,8 @@ union Mode {
 /// without reconstructing the record.
 record LexerState {
   source: String
-  pos:    Int
-  line:   Int
+  pos: Int
+  line: Int
   column: Int
   // Bracket-nesting depth (parens / square / brace) gates STMT_END
   // emission: a newline inside an unclosed bracket pair is a
@@ -562,11 +624,11 @@ record LexerState {
   // True once the file has emitted at least one real token; used to
   // suppress STMT_END at start-of-file.
   haveAnyToken: Bool
-  tokens:      List[SpannedToken]
+  tokens: List[SpannedToken]
   diagnostics: List[Diagnostic]
   // String / interpolation mode stack.  Empty during plain top-
   // level lexing; see the `Mode` union.
-  modes:       List[Mode]
+  modes: List[Mode]
   // Trivia accumulated since the previous emit; flushed onto the next
   // emitted token's `leadingTrivia` (the synthesised STMT_END if one
   // is inserted first, otherwise the real token).  Always non-null.
@@ -575,19 +637,19 @@ record LexerState {
 
 func newState(source: in String): LexerState {
   LexerState(
-    source         = source,
-    pos            = 0,
-    line           = 1,
-    column         = 1,
-    bracketDepth   = 0,
+    source = source,
+    pos = 0,
+    line = 1,
+    column = 1,
+    bracketDepth = 0,
     newlinePending = false,
     prevSuppresses = false,
     prevWasStmtEnd = false,
-    haveAnyToken   = false,
-    tokens         = newList(),
-    diagnostics    = newList(),
-    modes          = newList(),
-    pendingTrivia  = newList()
+    haveAnyToken = false,
+    tokens = newList(),
+    diagnostics = newList(),
+    modes = newList(),
+    pendingTrivia = newList()
   )
 }
 
@@ -640,7 +702,6 @@ func popMode(state: inout LexerState): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // Cursor primitives.
 // ─────────────────────────────────────────────────────────────────────────────
-
 @pure
 func isAtEnd(state: in LexerState): Bool {
   state.pos >= state.source.length
@@ -690,7 +751,6 @@ func currentPosition(state: in LexerState): Position {
 // Character predicates (ASCII fast path; non-ASCII identifier handling
 // is deferred per the file header).
 // ─────────────────────────────────────────────────────────────────────────────
-
 @pure
 func isDigitChar(c: in Char): Bool {
   c >= '0' and c <= '9'
@@ -718,7 +778,7 @@ func isAsciiAlpha(c: in Char): Bool {
 
 @pure
 func isAscii(c: in Char): Bool {
-  c <= '\u{007F}'
+  c <= '\u{fffd}'
 }
 
 /// UAX #31 XID_Start (approximated through .NET's `UnicodeCategory`):
@@ -733,12 +793,9 @@ func isIdStart(c: in Char): Bool {
     isAsciiAlpha(c) or c == '_'
   } else {
     val cat = hostUnicodeCategory(c)
-    cat == ucUppercaseLetter()
-      or cat == ucLowercaseLetter()
-      or cat == ucTitlecaseLetter()
-      or cat == ucModifierLetter()
-      or cat == ucOtherLetter()
-      or cat == ucLetterNumber()
+    cat == ucUppercaseLetter() or cat == ucLowercaseLetter() or cat == ucTitlecaseLetter() or cat == ucModifierLetter() or
+      cat == ucOtherLetter() or
+      cat == ucLetterNumber()
   }
 }
 
@@ -753,16 +810,13 @@ func isIdContinue(c: in Char): Bool {
     isAsciiAlpha(c) or isDigitChar(c) or c == '_'
   } else {
     val cat = hostUnicodeCategory(c)
-    cat == ucUppercaseLetter()
-      or cat == ucLowercaseLetter()
-      or cat == ucTitlecaseLetter()
-      or cat == ucModifierLetter()
-      or cat == ucOtherLetter()
-      or cat == ucLetterNumber()
-      or cat == ucNonSpacingMark()
-      or cat == ucSpacingCombiningMark()
-      or cat == ucDecimalDigitNumber()
-      or cat == ucConnectorPunctuation()
+    cat == ucUppercaseLetter() or cat == ucLowercaseLetter() or cat == ucTitlecaseLetter() or cat == ucModifierLetter() or
+      cat == ucOtherLetter() or
+      cat == ucLetterNumber() or
+      cat == ucNonSpacingMark() or
+      cat == ucSpacingCombiningMark() or
+      cat == ucDecimalDigitNumber() or
+      cat == ucConnectorPunctuation()
   }
 }
 
@@ -795,7 +849,7 @@ func digitValue(c: in Char): Int {
     case 'E' -> 14
     case 'f' -> 15
     case 'F' -> 15
-    case _   -> -1
+    case _ -> -1
   }
 }
 
@@ -810,48 +864,51 @@ func charToString(c: in Char): String {
 
 @pure
 func maxInt(a: in Int, b: in Int): Int {
-  if a > b { a } else { b }
+  if a > b {
+    a
+  } else {
+    b
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Statement-terminator insertion (grammar §1.7).
 // ─────────────────────────────────────────────────────────────────────────────
-
 @pure
 func punctSuppressesNewline(p: in Punct): Bool {
   match p {
-    case Plus       -> true
-    case Minus      -> true
-    case Star       -> true
-    case Slash      -> true
-    case Percent    -> true
-    case Eq         -> true
-    case EqEq       -> true
-    case NotEq      -> true
-    case Lt         -> true
-    case LtEq       -> true
-    case Gt         -> true
-    case GtEq       -> true
-    case PlusEq     -> true
-    case MinusEq    -> true
-    case StarEq     -> true
-    case SlashEq    -> true
-    case PercentEq  -> true
-    case Arrow      -> true
-    case FatArrow   -> true
-    case DotDot     -> true
-    case DotDotEq   -> true
-    case DotDotLt   -> true
-    case Comma      -> true
-    case Dot        -> true
-    case At         -> true
+    case Plus -> true
+    case Minus -> true
+    case Star -> true
+    case Slash -> true
+    case Percent -> true
+    case Eq -> true
+    case EqEq -> true
+    case NotEq -> true
+    case Lt -> true
+    case LtEq -> true
+    case Gt -> true
+    case GtEq -> true
+    case PlusEq -> true
+    case MinusEq -> true
+    case StarEq -> true
+    case SlashEq -> true
+    case PercentEq -> true
+    case Arrow -> true
+    case FatArrow -> true
+    case DotDot -> true
+    case DotDotEq -> true
+    case DotDotLt -> true
+    case Comma -> true
+    case Dot -> true
+    case At -> true
     case ColonColon -> true
-    case Colon      -> true
-    case LParen     -> true
-    case LBracket   -> true
-    case LBrace     -> true
+    case Colon -> true
+    case LParen -> true
+    case LBracket -> true
+    case LBrace -> true
     case QuestionQuestion -> true
-    case _          -> false
+    case _ -> false
   }
 }
 
@@ -861,26 +918,26 @@ func keywordSuppressesNewline(kw: in Keyword): Bool {
   // expression: a newline after them is a continuation.  Mirrors
   // `suppressesNewlineAfter` in the F# lexer.
   match kw {
-    case KwAnd   -> true
-    case KwOr    -> true
-    case KwXor   -> true
-    case KwNot   -> true
-    case KwIs    -> true
-    case KwAs    -> true
-    case KwElse  -> true
-    case KwThen  -> true
-    case KwIn    -> true
+    case KwAnd -> true
+    case KwOr -> true
+    case KwXor -> true
+    case KwNot -> true
+    case KwIs -> true
+    case KwAs -> true
+    case KwElse -> true
+    case KwThen -> true
+    case KwIn -> true
     case KwWhere -> true
-    case _       -> false
+    case _ -> false
   }
 }
 
 @pure
 func tokenSuppressesNewline(tok: in Token): Bool {
   match tok {
-    case TPunct(p)   -> punctSuppressesNewline(p)
+    case TPunct(p) -> punctSuppressesNewline(p)
     case TKeyword(k) -> keywordSuppressesNewline(k)
-    case _           -> false
+    case _ -> false
   }
 }
 
@@ -908,20 +965,20 @@ func trackBracketDepthFor(state: inout LexerState, tok: in Token): Unit {
 @pure
 func punctIsOpenBracket(p: in Punct): Bool {
   match p {
-    case LParen   -> true
+    case LParen -> true
     case LBracket -> true
-    case LBrace   -> true
-    case _        -> false
+    case LBrace -> true
+    case _ -> false
   }
 }
 
 @pure
 func punctIsCloseBracket(p: in Punct): Bool {
   match p {
-    case RParen   -> true
+    case RParen -> true
     case RBracket -> true
-    case RBrace   -> true
-    case _        -> false
+    case RBrace -> true
+    case _ -> false
   }
 }
 
@@ -932,8 +989,7 @@ func punctIsCloseBracket(p: in Punct): Bool {
 /// the next real token starts with an empty trivia list.
 func maybeEmitStmtEnd(state: inout LexerState): Unit {
   if state.newlinePending and state.bracketDepth == 0 {
-    val suppress =
-      state.prevWasStmtEnd or state.prevSuppresses or (not state.haveAnyToken)
+    val suppress = state.prevWasStmtEnd or state.prevSuppresses or (not state.haveAnyToken)
     if not suppress {
       val sp = pointSpan(currentPosition(state))
       val triv = takePendingTrivia(state)
@@ -983,7 +1039,6 @@ func recordError(state: inout LexerState, code: in String, msg: in String, sp: i
 // ─────────────────────────────────────────────────────────────────────────────
 // Trivia: whitespace and comments.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func skipBlockComment(state: inout LexerState, startP: in Position): Unit {
   // Already past the opening `/*`.
   var depth = 1
@@ -1001,8 +1056,7 @@ func skipBlockComment(state: inout LexerState, startP: in Position): Unit {
     }
   }
   if depth > 0 {
-    recordError(state, "L0001", "unterminated block comment",
-                makeSpan(startP, currentPosition(state)))
+    recordError(state, "L0001", "unterminated block comment", makeSpan(startP, currentPosition(state)))
   }
 }
 
@@ -1024,11 +1078,7 @@ func emitDocComment(state: inout LexerState, startP: in Position): Unit {
   advance(state)
   val raw = consumeLineToString(state)
   // The bootstrap lexer trims a single leading space; replicate it.
-  val text = if raw.length > 0 and raw[0] == ' ' {
-    Str.substring(raw, 1, raw.length - 1)
-  } else {
-    raw
-  }
+  val text = if raw.length > 0 and raw[0] == ' ' { Str.substring(raw, 1, raw.length - 1) } else { raw }
   emit(state, TDocComment(text = text), startP)
 }
 
@@ -1037,11 +1087,7 @@ func emitModuleDocComment(state: inout LexerState, startP: in Position): Unit {
   advance(state)
   advance(state)
   val raw = consumeLineToString(state)
-  val text = if raw.length > 0 and raw[0] == ' ' {
-    Str.substring(raw, 1, raw.length - 1)
-  } else {
-    raw
-  }
+  val text = if raw.length > 0 and raw[0] == ' ' { Str.substring(raw, 1, raw.length - 1) } else { raw }
   emit(state, TModuleDocComment(text = text), startP)
 }
 
@@ -1125,7 +1171,6 @@ func consumeBlockComment(state: inout LexerState): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // Identifiers and keywords.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func lexIdentOrKeyword(state: inout LexerState): Unit {
   val startP = currentPosition(state)
   var buf = ""
@@ -1147,9 +1192,7 @@ func lexIdentOrKeyword(state: inout LexerState): Unit {
   // placeholder so it cannot collide with synthesised names like
   // `_Async` / `_StateMachine` further down the pipeline.
   if isReservedUnderscoreUpper(text) {
-    recordError(state, "L0040",
-                reservedUnderscoreUpperMessage(text),
-                makeSpan(startP, currentPosition(state)))
+    recordError(state, "L0040", reservedUnderscoreUpperMessage(text), makeSpan(startP, currentPosition(state)))
     val placeholder = "__error_" + toString(startP.offset)
     emitIdentOrKeywordToken(state, placeholder, startP)
   } else {
@@ -1169,8 +1212,7 @@ func isReservedUnderscoreUpper(text: in String): Bool {
 
 @pure
 func reservedUnderscoreUpperMessage(text: in String): String {
-  "identifier '" + text
-    + "' is reserved (leading '_' followed by an uppercase letter)"
+  "identifier '" + text + "' is reserved (leading '_' followed by an uppercase letter)"
 }
 
 /// Decide between `TBool`, `TKeyword`, and `TIdent` for a freshly
@@ -1182,22 +1224,21 @@ func reservedUnderscoreUpperMessage(text: in String): String {
 func emitIdentOrKeywordToken(state: inout LexerState, lexeme: in String, startP: in Position): Unit {
   match tryKeywordFromString(lexeme) {
     case Some(kw) -> emitKeywordToken(state, kw, startP)
-    case None     -> emit(state, TIdent(name = lexeme), startP)
+    case None -> emit(state, TIdent(name = lexeme), startP)
   }
 }
 
 func emitKeywordToken(state: inout LexerState, kw: in Keyword, startP: in Position): Unit {
   match kw {
-    case KwTrue  -> emit(state, TBool(value = true),  startP)
+    case KwTrue -> emit(state, TBool(value = true), startP)
     case KwFalse -> emit(state, TBool(value = false), startP)
-    case _       -> emit(state, TKeyword(kw = kw),    startP)
+    case _ -> emit(state, TKeyword(kw = kw), startP)
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Numeric literals.
 // ─────────────────────────────────────────────────────────────────────────────
-
 @pure
 func stripUnderscores(s: in String): String {
   // `var sb` not `var out` — `out` is a reserved keyword (parameter
@@ -1216,13 +1257,13 @@ func stripUnderscores(s: in String): String {
 
 /// Result of peeling an integer-type suffix off a numeric body.
 record IntSuffixSplit {
-  body:   String
+  body: String
   suffix: IntSuffix
 }
 
 /// Result of peeling a float-type suffix off a numeric body.
 record FloatSuffixSplit {
-  body:   String
+  body: String
   suffix: FloatSuffix
 }
 
@@ -1329,7 +1370,9 @@ func isMinValueAbsOverflow(body: in String, base: in Int): Bool {
 /// well-formed.
 @pure
 func parseDigits(body: in String, base: in Int): Option[Long] {
-  if body.length == 0 { return None }
+  if body.length == 0 {
+    return None
+  }
   val baseL = intToLong(base)
   var value: Long = 0i64
   var overflowed = false
@@ -1375,10 +1418,7 @@ func lexBasedInt(state: inout LexerState, startP: in Position, base: in Int): Un
   var keepReading = true
   while keepReading and not isAtEnd(state) {
     val c = peek(state)
-    val ok =
-      if base == 16 { isHexDigitChar(c) }
-      else if base == 8  { isOctalDigitChar(c) }
-      else               { isBinaryDigitChar(c) }
+    val ok = if base == 16 { isHexDigitChar(c) } else if base == 8 { isOctalDigitChar(c) } else { isBinaryDigitChar(c) }
     if ok or c == '_' {
       advance(state)
       raw = raw + charToString(c)
@@ -1402,9 +1442,8 @@ func lexBasedInt(state: inout LexerState, startP: in Position, base: in Int): Un
   val body = stripUnderscores(raw)
   match parseDigits(body, base) {
     case Some(v) -> emit(state, TInt(value = v, suffix = split.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
-    case None    -> {
-      recordError(state, "L0010", "integer literal out of range",
-                  makeSpan(startP, currentPosition(state)))
+    case None -> {
+      recordError(state, "L0010", "integer literal out of range", makeSpan(startP, currentPosition(state)))
       emit(state, TInt(value = 0i64, suffix = split.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
     }
   }
@@ -1416,7 +1455,9 @@ func parseDoubleLiteral(body: in String): Option[Double] {
   //   `[0-9]+ ('.' [0-9]+)? ([eE][+-]?[0-9]+)?`
   // The bootstrap lexer delegates to `Double.TryParse(InvariantCulture)`;
   // mirror the same accepted shape so the two lexers stay aligned.
-  if body.length == 0 { return None }
+  if body.length == 0 {
+    return None
+  }
   var i = 0
   var sawDigit = false
   // Integer part.
@@ -1435,7 +1476,9 @@ func parseDoubleLiteral(body: in String): Option[Double] {
       sawDigit = true
       i = i + 1
     }
-    if not fracDigits { return None }
+    if not fracDigits {
+      return None
+    }
   }
   // Exponent.
   var hasExp = false
@@ -1450,10 +1493,16 @@ func parseDoubleLiteral(body: in String): Option[Double] {
       expDigits = true
       i = i + 1
     }
-    if not expDigits { return None }
+    if not expDigits {
+      return None
+    }
   }
-  if not sawDigit { return None }
-  if i != body.length { return None }
+  if not sawDigit {
+    return None
+  }
+  if i != body.length {
+    return None
+  }
   // Build value left-to-right.
   var idx = 0
   var intPart: Double = 0.0
@@ -1475,7 +1524,9 @@ func parseDoubleLiteral(body: in String): Option[Double] {
     idx = idx + 1   // skip 'e'/'E'
     var expSign = 1
     if idx < body.length and (body[idx] == '+' or body[idx] == '-') {
-      if body[idx] == '-' { expSign = -1 }
+      if body[idx] == '-' {
+        expSign = -1
+      }
       idx = idx + 1
     }
     var expVal = 0
@@ -1532,16 +1583,18 @@ func lexDecimalNumber(state: inout LexerState): Unit {
     tail = tail + charToString(advance(state))
   }
   val combined = raw + tail
-  val endsInF = combined.length >= 3 and (Str.substring(combined, combined.length - 3, 3) == "f32"
-                                          or Str.substring(combined, combined.length - 3, 3) == "f64")
+  val endsInF = combined.length >= 3 and
+    (
+      Str.substring(combined, combined.length - 3, 3) == "f32" or
+        Str.substring(combined, combined.length - 3, 3) == "f64"
+    )
   if isFloat or endsInF {
     val fsplit = splitFloatSuffix(combined)
     val stripped = stripUnderscores(fsplit.body)
     match parseDoubleLiteral(stripped) {
       case Some(v) -> emit(state, TFloat(value = v, suffix = fsplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
-      case None    -> {
-        recordError(state, "L0011", "invalid float literal",
-                    makeSpan(startP, currentPosition(state)))
+      case None -> {
+        recordError(state, "L0011", "invalid float literal", makeSpan(startP, currentPosition(state)))
         emit(state, TFloat(value = 0.0, suffix = fsplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
       }
     }
@@ -1549,9 +1602,12 @@ func lexDecimalNumber(state: inout LexerState): Unit {
     val isplit = splitIntSuffix(combined)
     val stripped = stripUnderscores(isplit.body)
     if leadingZero {
-      recordError(state, "L0012",
-                  "leading-zero decimal integers are not permitted; use 0o for octal",
-                  makeSpan(startP, currentPosition(state)))
+      recordError(
+        state,
+        "L0012",
+        "leading-zero decimal integers are not permitted; use 0o for octal",
+        makeSpan(startP, currentPosition(state))
+      )
     }
     match parseDigits(stripped, 10) {
       case Some(v) -> {
@@ -1563,15 +1619,17 @@ func lexDecimalNumber(state: inout LexerState): Unit {
         // is flagged; the parser cancels the diagnostic when it
         // builds the PreNeg + literal pair (#1174 review finding).
         if isMinValueAbsOverflow(stripped, 10) {
-          recordError(state, "L0010",
-                      "decimal literal '9223372036854775808' exceeds Long range; only the spelling `-9223372036854775808` is well-formed (Long.MinValue)",
-                      makeSpan(startP, currentPosition(state)))
+          recordError(
+            state,
+            "L0010",
+            "decimal literal '9223372036854775808' exceeds Long range; only the spelling `-9223372036854775808` is well-formed (Long.MinValue)",
+            makeSpan(startP, currentPosition(state))
+          )
         }
         emit(state, TInt(value = v, suffix = isplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
       }
-      case None    -> {
-        recordError(state, "L0010", "integer literal out of range",
-                    makeSpan(startP, currentPosition(state)))
+      case None -> {
+        recordError(state, "L0010", "integer literal out of range", makeSpan(startP, currentPosition(state)))
         emit(state, TInt(value = 0i64, suffix = isplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
       }
     }
@@ -1604,19 +1662,18 @@ func lexNumber(state: inout LexerState): Unit {
 // recognises the common ASCII escapes; non-BMP `\u{…}` escapes are
 // reserved for the follow-up that introduces a wider TChar payload.
 // ─────────────────────────────────────────────────────────────────────────────
-
 @pure
 func decodeEscape(c: in Char): Option[Char] {
   match c {
-    case 'n'  -> Some(value = '\n')
-    case 'r'  -> Some(value = '\r')
-    case 't'  -> Some(value = '\t')
+    case 'n' -> Some(value = '\n')
+    case 'r' -> Some(value = '\r')
+    case 't' -> Some(value = '\t')
     case '\\' -> Some(value = '\\')
     case '\'' -> Some(value = '\'')
-    case '"'  -> Some(value = '"')
-    case '0'  -> Some(value = '\0')
-    case '$'  -> Some(value = '$')
-    case _    -> None
+    case '"' -> Some(value = '"')
+    case '0' -> Some(value = '\u{0000}')
+    case '$' -> Some(value = '$')
+    case _ -> None
   }
 }
 
@@ -1626,7 +1683,7 @@ func decodeEscape(c: in Char): Option[Char] {
 @pure
 func longToChar(v: in Long): Char {
   if v < 0i64 or v > 65535i64 or (v >= 55296i64 and v <= 57343i64) {
-    '\u{FFFD}'
+    '\u{fffd}'
   } else {
     CharHost.hostIntToChar(longToInt(v))
   }
@@ -1650,20 +1707,31 @@ func charCodepoint(c: in Char): Int {
   // Tiny ASCII inverse of `longToChar`; suffices for the v0.1 escape
   // set + ASCII source.  A real builtin will replace this when the
   // Char→Int promotion is exposed in the surface language.
-  if c == '\0' { 0 }
-  else if c == '\t' { 9 }
-  else if c == '\n' { 10 }
-  else if c == '\r' { 13 }
-  else if c == '\u{FFFD}' { 0xFFFD }
-  else {
+  if c == '\u{0000}' {
+    0
+  } else if c == '\t' {
+    9
+  } else if c == '\n' {
+    10
+  } else if c == '\r' {
+    13
+  } else if c == '\u{fffd}' {
+    0xFFFD
+  } else {
     var i = 32
     val ascii = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
     var found = -1
     while i < 127 and found < 0 {
-      if ascii[i - 32] == c { found = i }
+      if ascii[i - 32] == c {
+        found = i
+      }
       i = i + 1
     }
-    if found < 0 { 0xFFFD } else { found }
+    if found < 0 {
+      0xFFFD
+    } else {
+      found
+    }
   }
 }
 
@@ -1672,7 +1740,7 @@ func charCodepoint(c: in Char): Int {
 /// diagnostic if the sequence was malformed / unknown.
 func lexEscape(state: inout LexerState, startP: in Position): Char {
   if isAtEnd(state) {
-    return '\u{FFFD}'
+    return '\u{fffd}'
   }
   val c = advance(state)
   if c == 'u' {
@@ -1680,7 +1748,7 @@ func lexEscape(state: inout LexerState, startP: in Position): Char {
   }
   match decodeEscape(c) {
     case Some(d) -> d
-    case None    -> c
+    case None -> c
   }
 }
 
@@ -1694,9 +1762,8 @@ func lexEscape(state: inout LexerState, startP: in Position): Char {
 /// The leading `\u` has already been consumed by the caller.
 func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
   if peek(state) != '{' {
-    recordError(state, "L0021", "expected '{' after \\u",
-                makeSpan(startP, currentPosition(state)))
-    return '\u{FFFD}'
+    recordError(state, "L0021", "expected '{' after \\u", makeSpan(startP, currentPosition(state)))
+    return '\u{fffd}'
   }
   advance(state)   // '{'
   var hexBody = ""
@@ -1720,52 +1787,71 @@ func lexUnicodeEscape(state: inout LexerState, startP: in Position): Char {
         advance(state)
         extra = extra + 1
       }
-      if peek(state) == '}' { advance(state) }
-      recordError(state, "L0022",
-                  "overlong unicode escape (must be 1-6 hex digits, <= U+10FFFF)",
-                  makeSpan(startP, currentPosition(state)))
+      if peek(state) == '}' {
+        advance(state)
+      }
+      recordError(
+        state,
+        "L0022",
+        "overlong unicode escape (must be 1-6 hex digits, <= U+10FFFF)",
+        makeSpan(startP, currentPosition(state))
+      )
     } else {
-      recordError(state, "L0021", "unterminated unicode escape",
-                  makeSpan(startP, currentPosition(state)))
+      recordError(state, "L0021", "unterminated unicode escape", makeSpan(startP, currentPosition(state)))
     }
-    return '\u{FFFD}'
+    return '\u{fffd}'
   }
   advance(state)   // '}'
   if n == 0 {
-    recordError(state, "L0022",
-                "empty unicode escape (\\u{} requires 1-6 hex digits)",
-                makeSpan(startP, currentPosition(state)))
-    return '\u{FFFD}'
+    recordError(
+      state,
+      "L0022",
+      "empty unicode escape (\\u{} requires 1-6 hex digits)",
+      makeSpan(startP, currentPosition(state))
+    )
+    return '\u{fffd}'
   }
   match parseDigits(hexBody, 16) {
     case Some(v) -> {
       if v < 0i64 or v > 1114111i64 {
-        recordError(state, "L0022",
-                    "invalid unicode escape (must be 1-6 hex digits, <= U+10FFFF)",
-                    makeSpan(startP, currentPosition(state)))
-        '\u{FFFD}'
+        recordError(
+          state,
+          "L0022",
+          "invalid unicode escape (must be 1-6 hex digits, <= U+10FFFF)",
+          makeSpan(startP, currentPosition(state))
+        )
+        '\u{fffd}'
       } else if v >= 55296i64 and v <= 57343i64 {
         // Surrogate range U+D800..U+DFFF: not a valid Unicode scalar value (L0023).
-        recordError(state, "L0023",
-                    "invalid unicode escape (surrogate range U+D800..U+DFFF is not a valid scalar)",
-                    makeSpan(startP, currentPosition(state)))
-        '\u{FFFD}'
+        recordError(
+          state,
+          "L0023",
+          "invalid unicode escape (surrogate range U+D800..U+DFFF is not a valid scalar)",
+          makeSpan(startP, currentPosition(state))
+        )
+        '\u{fffd}'
       } else if v > 65535i64 {
         // Non-BMP scalar — needs a surrogate-pair encoding the current
         // Char surface cannot express (L0022, reachable via U+10000..U+10FFFF).
-        recordError(state, "L0022",
-                    "non-BMP unicode escape (>U+FFFF) requires surrogate-pair encoding",
-                    makeSpan(startP, currentPosition(state)))
-        '\u{FFFD}'
+        recordError(
+          state,
+          "L0022",
+          "non-BMP unicode escape (>U+FFFF) requires surrogate-pair encoding",
+          makeSpan(startP, currentPosition(state))
+        )
+        '\u{fffd}'
       } else {
         longToChar(v)
       }
     }
     case None -> {
-      recordError(state, "L0022",
-                  "invalid unicode escape (must be 1-6 hex digits)",
-                  makeSpan(startP, currentPosition(state)))
-      '\u{FFFD}'
+      recordError(
+        state,
+        "L0022",
+        "invalid unicode escape (must be 1-6 hex digits)",
+        makeSpan(startP, currentPosition(state))
+      )
+      '\u{fffd}'
     }
   }
 }
@@ -1774,8 +1860,7 @@ func lexCharLiteral(state: inout LexerState): Unit {
   val startP = currentPosition(state)
   advance(state)   // opening '
   if isAtEnd(state) {
-    recordError(state, "L0024", "unterminated character literal",
-                makeSpan(startP, currentPosition(state)))
+    recordError(state, "L0024", "unterminated character literal", makeSpan(startP, currentPosition(state)))
     emit(state, TChar(codepoint = 0xFFFD), startP)
     return
   }
@@ -1783,8 +1868,7 @@ func lexCharLiteral(state: inout LexerState): Unit {
   if peek(state) == '\'' {
     advance(state)
   } else {
-    recordError(state, "L0024", "unterminated character literal",
-                makeSpan(startP, currentPosition(state)))
+    recordError(state, "L0024", "unterminated character literal", makeSpan(startP, currentPosition(state)))
   }
   emit(state, TChar(codepoint = charCodepoint(ch)), startP)
 }
@@ -1819,17 +1903,19 @@ func lexStringLiteral(state: inout LexerState): Unit {
       val d = lexEscape(state, startP)
       buf = buf + charToString(d)
     } else if c == '\n' {
-      recordError(state, "L0025",
-                  "unterminated string literal (newline before closing \")",
-                  makeSpan(startP, currentPosition(state)))
+      recordError(
+        state,
+        "L0025",
+        "unterminated string literal (newline before closing \")",
+        makeSpan(startP, currentPosition(state))
+      )
       terminated = true
     } else {
       buf = buf + charToString(advance(state))
     }
   }
   if not terminated {
-    recordError(state, "L0025", "unterminated string literal",
-                makeSpan(startP, currentPosition(state)))
+    recordError(state, "L0025", "unterminated string literal", makeSpan(startP, currentPosition(state)))
   }
   emit(state, TString(text = buf), startP)
 }
@@ -1839,7 +1925,6 @@ func lexStringLiteral(state: inout LexerState): Unit {
 // stage 3).  Mirrors `compiler/src/Lyric.Lexer/Lexer.fs` 1:1 — see the
 // docstrings on each helper for the per-shape rules.
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// Lookahead from just past an opening `"`: scan for the first
 /// occurrence of an unescaped `${`, closing `"`, newline, or EOF.
 /// Returns true iff `${` is encountered first — that's the signal
@@ -1862,8 +1947,7 @@ func hasInterpolation(state: in LexerState): Bool {
       } else if c == '\\' {
         // Skip the backslash and the next char (the escape body).
         i = i + 2
-      } else if c == '$' and i + 1 < state.source.length
-                and state.source[i + 1] == '{' {
+      } else if c == '$' and i + 1 < state.source.length and state.source[i + 1] == '{' {
         result = true
         stopped = true
       } else {
@@ -1939,9 +2023,7 @@ func lexStringChunk(state: inout LexerState, stringStart: in Position): Unit {
     state.bracketDepth = state.bracketDepth + 1
     pushMode(state, InHole(depthBefore = depthBeforeHole))
   } else {
-    recordError(state, "L0025",
-                "unterminated string literal",
-                makeSpan(stringStart, currentPosition(state)))
+    recordError(state, "L0025", "unterminated string literal", makeSpan(stringStart, currentPosition(state)))
     emit(state, TStringEnd, currentPosition(state))
     popMode(state)
   }
@@ -1959,8 +2041,7 @@ func lexTripleString(state: inout LexerState): Unit {
   var buf = ""
   var terminated = false
   while not terminated and not isAtEnd(state) {
-    if peek(state) == '"' and peekAt(state, 1) == '"'
-       and peekAt(state, 2) == '"' {
+    if peek(state) == '"' and peekAt(state, 1) == '"' and peekAt(state, 2) == '"' {
       advance(state)
       advance(state)
       advance(state)
@@ -1974,9 +2055,7 @@ func lexTripleString(state: inout LexerState): Unit {
     }
   }
   if not terminated {
-    recordError(state, "L0026",
-                "unterminated triple-quoted string literal",
-                makeSpan(startP, currentPosition(state)))
+    recordError(state, "L0026", "unterminated triple-quoted string literal", makeSpan(startP, currentPosition(state)))
   }
   emit(state, TTripleString(text = buf), startP)
 }
@@ -1995,9 +2074,7 @@ func lexRawString(state: inout LexerState): Unit {
     hashes = hashes + 1
   }
   if peek(state) != '"' {
-    recordError(state, "L0027",
-                "expected '\"' after 'r' (raw-string opener)",
-                makeSpan(startP, currentPosition(state)))
+    recordError(state, "L0027", "expected '\"' after 'r' (raw-string opener)", makeSpan(startP, currentPosition(state)))
     emit(state, TRawString(text = ""), startP)
     return
   }
@@ -2010,7 +2087,9 @@ func lexRawString(state: inout LexerState): Unit {
       var i = 1
       var matched = true
       while matched and i <= hashes {
-        if peekAt(state, i) != '#' { matched = false }
+        if peekAt(state, i) != '#' {
+          matched = false
+        }
         i = i + 1
       }
       if matched {
@@ -2030,9 +2109,7 @@ func lexRawString(state: inout LexerState): Unit {
     }
   }
   if not terminated {
-    recordError(state, "L0028",
-                "unterminated raw string literal",
-                makeSpan(startP, currentPosition(state)))
+    recordError(state, "L0028", "unterminated raw string literal", makeSpan(startP, currentPosition(state)))
   }
   emit(state, TRawString(text = buf), startP)
 }
@@ -2040,59 +2117,99 @@ func lexRawString(state: inout LexerState): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // Punctuation and operators.
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// Try to match a multi-/single-char operator at the cursor.  Returns
 /// `Some((p, n))` with the matched `Punct` plus how many source chars
 /// to advance, or `None` if no token is available.
 @pure
 func tryMatchOperator(c0: in Char, c1: in Char, c2: in Char): Option[(Punct, Int)] {
-  if c0 == '.' and c1 == '.' and c2 == '=' { Some(value = (DotDotEq, 3)) }
-  else if c0 == '.' and c1 == '.' and c2 == '<' { Some(value = (DotDotLt, 3)) }
-  else if c0 == '.' and c1 == '.'               { Some(value = (DotDot, 2)) }
-  else if c0 == '-' and c1 == '>'               { Some(value = (Arrow, 2)) }
-  else if c0 == '=' and c1 == '>'               { Some(value = (FatArrow, 2)) }
-  else if c0 == ':' and c1 == ':'               { Some(value = (ColonColon, 2)) }
-  else if c0 == '?' and c1 == '?'               { Some(value = (QuestionQuestion, 2)) }
-  else if c0 == '=' and c1 == '='               { Some(value = (EqEq, 2)) }
-  else if c0 == '!' and c1 == '='               { Some(value = (NotEq, 2)) }
-  else if c0 == '<' and c1 == '='               { Some(value = (LtEq, 2)) }
-  else if c0 == '>' and c1 == '='               { Some(value = (GtEq, 2)) }
-  else if c0 == '+' and c1 == '='               { Some(value = (PlusEq, 2)) }
-  else if c0 == '-' and c1 == '='               { Some(value = (MinusEq, 2)) }
-  else if c0 == '*' and c1 == '='               { Some(value = (StarEq, 2)) }
-  else if c0 == '/' and c1 == '='               { Some(value = (SlashEq, 2)) }
-  else if c0 == '%' and c1 == '='               { Some(value = (PercentEq, 2)) }
-  else if c0 == '?'                             { Some(value = (Question, 1)) }
-  else if c0 == '@'                             { Some(value = (At, 1)) }
-  else if c0 == '+'                             { Some(value = (Plus, 1)) }
-  else if c0 == '-'                             { Some(value = (Minus, 1)) }
-  else if c0 == '*'                             { Some(value = (Star, 1)) }
-  else if c0 == '/'                             { Some(value = (Slash, 1)) }
-  else if c0 == '%'                             { Some(value = (Percent, 1)) }
-  else if c0 == '<'                             { Some(value = (Lt, 1)) }
-  else if c0 == '>'                             { Some(value = (Gt, 1)) }
-  else if c0 == '='                             { Some(value = (Eq, 1)) }
-  else if c0 == '!'                             { Some(value = (Bang, 1)) }
-  else if c0 == '|'                             { Some(value = (Pipe, 1)) }
-  else if c0 == '&'                             { Some(value = (Amp, 1)) }
-  else if c0 == '('                             { Some(value = (LParen, 1)) }
-  else if c0 == ')'                             { Some(value = (RParen, 1)) }
-  else if c0 == '['                             { Some(value = (LBracket, 1)) }
-  else if c0 == ']'                             { Some(value = (RBracket, 1)) }
-  else if c0 == '{'                             { Some(value = (LBrace, 1)) }
-  else if c0 == '}'                             { Some(value = (RBrace, 1)) }
-  else if c0 == ','                             { Some(value = (Comma, 1)) }
-  else if c0 == ';'                             { Some(value = (Semi, 1)) }
-  else if c0 == ':'                             { Some(value = (Colon, 1)) }
-  else if c0 == '.'                             { Some(value = (Dot, 1)) }
-  else                                          { None }
+  if c0 == '.' and c1 == '.' and c2 == '=' {
+    Some(value = (DotDotEq, 3))
+  } else if c0 == '.' and c1 == '.' and c2 == '<' {
+    Some(value = (DotDotLt, 3))
+  } else if c0 == '.' and c1 == '.' {
+    Some(value = (DotDot, 2))
+  } else if c0 == '-' and c1 == '>' {
+    Some(value = (Arrow, 2))
+  } else if c0 == '=' and c1 == '>' {
+    Some(value = (FatArrow, 2))
+  } else if c0 == ':' and c1 == ':' {
+    Some(value = (ColonColon, 2))
+  } else if c0 == '?' and c1 == '?' {
+    Some(value = (QuestionQuestion, 2))
+  } else if c0 == '=' and c1 == '=' {
+    Some(value = (EqEq, 2))
+  } else if c0 == '!' and c1 == '=' {
+    Some(value = (NotEq, 2))
+  } else if c0 == '<' and c1 == '=' {
+    Some(value = (LtEq, 2))
+  } else if c0 == '>' and c1 == '=' {
+    Some(value = (GtEq, 2))
+  } else if c0 == '+' and c1 == '=' {
+    Some(value = (PlusEq, 2))
+  } else if c0 == '-' and c1 == '=' {
+    Some(value = (MinusEq, 2))
+  } else if c0 == '*' and c1 == '=' {
+    Some(value = (StarEq, 2))
+  } else if c0 == '/' and c1 == '=' {
+    Some(value = (SlashEq, 2))
+  } else if c0 == '%' and c1 == '=' {
+    Some(value = (PercentEq, 2))
+  } else if c0 == '?' {
+    Some(value = (Question, 1))
+  } else if c0 == '@' {
+    Some(value = (At, 1))
+  } else if c0 == '+' {
+    Some(value = (Plus, 1))
+  } else if c0 == '-' {
+    Some(value = (Minus, 1))
+  } else if c0 == '*' {
+    Some(value = (Star, 1))
+  } else if c0 == '/' {
+    Some(value = (Slash, 1))
+  } else if c0 == '%' {
+    Some(value = (Percent, 1))
+  } else if c0 == '<' {
+    Some(value = (Lt, 1))
+  } else if c0 == '>' {
+    Some(value = (Gt, 1))
+  } else if c0 == '=' {
+    Some(value = (Eq, 1))
+  } else if c0 == '!' {
+    Some(value = (Bang, 1))
+  } else if c0 == '|' {
+    Some(value = (Pipe, 1))
+  } else if c0 == '&' {
+    Some(value = (Amp, 1))
+  } else if c0 == '(' {
+    Some(value = (LParen, 1))
+  } else if c0 == ')' {
+    Some(value = (RParen, 1))
+  } else if c0 == '[' {
+    Some(value = (LBracket, 1))
+  } else if c0 == ']' {
+    Some(value = (RBracket, 1))
+  } else if c0 == '{' {
+    Some(value = (LBrace, 1))
+  } else if c0 == '}' {
+    Some(value = (RBrace, 1))
+  } else if c0 == ',' {
+    Some(value = (Comma, 1))
+  } else if c0 == ';' {
+    Some(value = (Semi, 1))
+  } else if c0 == ':' {
+    Some(value = (Colon, 1))
+  } else if c0 == '.' {
+    Some(value = (Dot, 1))
+  } else {
+    None
+  }
 }
 
 @pure
 func punctIsSemi(p: in Punct): Bool {
   match p {
     case Semi -> true
-    case _    -> false
+    case _ -> false
   }
 }
 
@@ -2123,9 +2240,12 @@ func lexPunct(state: inout LexerState): Unit {
     }
     case None -> {
       val c = advance(state)
-      recordError(state, "L0030",
-                  "unexpected character '" + charToString(c) + "'",
-                  makeSpan(startP, currentPosition(state)))
+      recordError(
+        state,
+        "L0030",
+        "unexpected character '" + charToString(c) + "'",
+        makeSpan(startP, currentPosition(state))
+      )
     }
   }
 }
@@ -2133,15 +2253,16 @@ func lexPunct(state: inout LexerState): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // Top-level lexer loop.
 // ─────────────────────────────────────────────────────────────────────────────
-
 func lexOne(state: inout LexerState): Unit {
   skipTrivia(state)
-  if isAtEnd(state) { return }
+  if isAtEnd(state) {
+    return
+  }
   val c = peek(state)
   // Raw-string prefix wins over the `r` identifier path.
   if c == 'r' and (peekAt(state, 1) == '"' or peekAt(state, 1) == '#') {
     lexRawString(state)
-  // Triple-quoted string wins over the single-quoted form.
+    // Triple-quoted string wins over the single-quoted form.
   } else if c == '"' and peekAt(state, 1) == '"' and peekAt(state, 2) == '"' {
     lexTripleString(state)
   } else if isDigitChar(c) {
@@ -2179,9 +2300,12 @@ func lexNext(state: inout LexerState): Unit {
       // mode.
       match topMode(state) {
         case Some(InHole(saved)) -> {
-          if state.bracketDepth == saved { popMode(state) }
+          if state.bracketDepth == saved {
+            popMode(state)
+          }
         }
-        case _ -> {}
+        case _ -> {
+        }
       }
     }
   }
@@ -2197,7 +2321,7 @@ func normaliseLineEndings(s: in String): String {
 /// Lex `source` into a `LexResult`.  The result always contains a
 /// trailing `TEof`; diagnostics include all the recoverable lexer
 /// errors with their `L00xx` codes, matching the bootstrap.
-@stable(since="0.1")
+@stable(since = "0.1")
 pub func lex(source: in String): LexResult {
   val normalised = normaliseLineEndings(source)
   val state = newState(normalised)
@@ -2211,16 +2335,14 @@ pub func lex(source: in String): LexResult {
   while state.modes.count > 0 {
     match topMode(state) {
       case Some(InString(start)) -> lexStringChunk(state, start)
-      case Some(InHole(_))       -> popMode(state)
-      case None                  -> {}
+      case Some(InHole(_)) -> popMode(state)
+      case None -> {
+      }
     }
   }
   // Final STMT_END if the file ended on a real statement.
   skipTrivia(state)
-  if state.newlinePending and state.bracketDepth == 0
-     and state.haveAnyToken
-     and not state.prevSuppresses
-     and not state.prevWasStmtEnd {
+  if state.newlinePending and state.bracketDepth == 0 and state.haveAnyToken and not state.prevSuppresses and not state.prevWasStmtEnd {
     val sp = pointSpan(currentPosition(state))
     val stmtTriv = takePendingTrivia(state)
     state.tokens.add(SpannedToken(token = TStmtEnd, span = sp, leadingTrivia = stmtTriv))
