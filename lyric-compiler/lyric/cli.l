@@ -77,20 +77,32 @@ import Std.Process as Process
 import Std.Environment as Environment
 import Std.Errors
 import Std.Parse
-import Std.Hash as Hash       // sha512OfFile / sha512OfBytes for #738 lock integrity
-import Std.Time as Time       // sleepMillis — the --watch poll interval (#1974)
-import Std.Json as Json       // encodeString — RFC 8259 string literal escaping (#1093)
-
-import Lyric.Manifest as Mf   // parseManifest(text, filePath) -> Result[Manifest, ManifestError]
-import Lyric.Pack as Pack     // publishCsproj, restoreCsproj, xmlEscape, sanitisedPackageName
-import Lyric.Lexer             // Diagnostic, DiagnosticSeverity, DiagError, DiagWarning, Span, Position
-import Lyric.Workspace as Ws   // findWorkspaceRoot, findMember, resolveDep, WorkspaceContext
-import Lyric.Discovery as Disc // findNearestManifest — nearest lyric.toml walking up from cwd
-import Lyric.Release as Release // buildRelease — `--release` Native AOT native-binary pipeline
-import Lyric.Init as Init       // runInit — `lyric init` project scaffolder (#1972)
-import Lyric.GitDep as GitDep  // resolve(url, ref, subdir) -> Result[GitDepResult, String]
-import Lyric.Lockfile as LF    // emptyLockFile, addOrUpdatePackage, serializeLockFile, parseLockFile
-import Std.ProcessCapture as ProcessCapture  // runCapture(exe, args, stdin) -> String
+import Std.Hash as Hash
+// sha512OfFile / sha512OfBytes for #738 lock integrity
+import Std.Time as Time
+// sleepMillis — the --watch poll interval (#1974)
+import Std.Json as Json
+// encodeString — RFC 8259 string literal escaping (#1093)
+import Lyric.Manifest as Mf
+// parseManifest(text, filePath) -> Result[Manifest, ManifestError]
+import Lyric.Pack as Pack
+// publishCsproj, restoreCsproj, xmlEscape, sanitisedPackageName
+import Lyric.Lexer
+// Diagnostic, DiagnosticSeverity, DiagError, DiagWarning, Span, Position
+import Lyric.Workspace as Ws
+// findWorkspaceRoot, findMember, resolveDep, WorkspaceContext
+import Lyric.Discovery as Disc
+// findNearestManifest — nearest lyric.toml walking up from cwd
+import Lyric.Release as Release
+// buildRelease — `--release` Native AOT native-binary pipeline
+import Lyric.Init as Init
+// runInit — `lyric init` project scaffolder (#1972)
+import Lyric.GitDep as GitDep
+// resolve(url, ref, subdir) -> Result[GitDepResult, String]
+import Lyric.Lockfile as LF
+// emptyLockFile, addOrUpdatePackage, serializeLockFile, parseLockFile
+import Std.ProcessCapture as ProcessCapture
+// runCapture(exe, args, stdin) -> String
 import Std.Char as Ch
 import Lyric.Generator as Generator
 // preprocess(source, manifestPath, sourceFile) -> Result[String, String]
@@ -2931,8 +2943,14 @@ func emitTestLinked(
 ): EmitResult {
   val testSrcs: List[String] = newList()
   testSrcs.add(rewritten)
+  // Guard against a missing `package` declaration: an empty package name would
+  // produce a malformed `ProjectPackage`.  A `@test_module` always carries a
+  // `package` line, so this falls back to the assembly stem only defensively
+  // (#2564).
+  val rawPkgName = firstPackageNameOf(rewritten)
+  val testPkgName = if rawPkgName.length > 0 { rawPkgName } else { stem }
   val testPkgs: List[ProjectPackage] = newList()
-  testPkgs.add(ProjectPackage(name = firstPackageNameOf(rewritten), sources = testSrcs))
+  testPkgs.add(ProjectPackage(name = testPkgName, sources = testSrcs))
   val activeF: List[String] = newList()
   val declaredF: List[String] = newList()
   Emitter.emitProject(
