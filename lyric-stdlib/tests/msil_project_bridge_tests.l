@@ -549,7 +549,7 @@ func testCfgErasureF0013Typo(): Unit {
   pkgs.add(
     mkPkg(
       "CfgTypo.App",
-      "package CfgTypo.App\n" + "\n" + "@cfg(feature = \"experimental\")\n" + "pub func gated(): String { \"x\" }\n" +
+      "package CfgTypo.App\n" + "\n" + "@cfg(feature = \"experimntal\")\n" + "pub func gated(): String { \"x\" }\n" +
         "\n" +
         "pub func fallback(): String { \"fallback\" }\n" +
         "\n" +
