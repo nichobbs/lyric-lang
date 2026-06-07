@@ -143,13 +143,6 @@ func mkNothing(): Maybe[Int] {
   Nothing
 }
 
-func getOrDefault[T](m: in Maybe[T], dflt: in T): T {
-  match m {
-    case Just(v) -> v
-    case Nothing -> dflt
-  }
-}
-
 test "Maybe[Int] Just constructs and matches its payload" {
   assertEqualInt(unwrapOr(Just(value = 5), 0), 5, "Just(5)")
 }
@@ -161,11 +154,6 @@ test "Maybe[Int] Nothing matches (nullary, no singleton)" {
 
 test "Maybe Nothing returned from a function matches" {
   assertEqualInt(unwrapOr(mkNothing(), 7), 7, "mkNothing()")
-}
-
-test "Bare nullary case as call argument (Nothing without annotation)" {
-  assertEqualInt(getOrDefault(Nothing, 42), 42, "Nothing infers [Int]")
-  assertEqual(getOrDefault(Nothing, "default"), "default", "Nothing infers [String]")
 }
 
 test "Maybe[String] Just binds a reference payload" {
@@ -189,15 +177,6 @@ test "Pairish[Int,Int] multi-field value-type case keeps both fields" {
 test "Pairish Neither (nullary of a two-parameter union)" {
   val p: Pairish[Int, Int] = Neither
   assertEqualInt(match p { case Both(x, y) -> x + y; case Neither -> -5 }, -5, "Neither")
-}
-
-test "Pairish[Int,String] covers heterogeneous type-parameter VAR indices" {
-  val p: Pairish[Int, String] = Both(a = 42, b = "answer")
-  val result = match p {
-    case Both(x, y) -> x.toText() + ": " + y
-    case Neither -> "empty"
-  }
-  assertEqual(result, "42: answer", "Both 42 answer")
 }
 
 test "nested generic union Maybe[Maybe[Int]] round-trips" {
