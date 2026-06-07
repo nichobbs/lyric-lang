@@ -694,9 +694,17 @@ pub func perPackageAssemblyName(pkg: in String, target: in CompileTarget): Strin
     i = i + 1
   }
   val base = if segs.length > 0 and segs[0] == "Std" {
-    "Lyric.Stdlib." + tail
+    if Str.length(tail) > 0 {
+      "Lyric.Stdlib." + tail
+    } else {
+      "Lyric.Stdlib"
+    }
   } else if segs.length > 0 {
-    "Lyric." + segs[0] + "." + tail
+    if Str.length(tail) > 0 {
+      "Lyric." + segs[0] + "." + tail
+    } else {
+      "Lyric." + segs[0]
+    }
   } else {
     "Lyric.Unknown"
   }
@@ -723,9 +731,15 @@ func locateStdlibDir(): String {
 // Discover the `Std.*` packages under `stdlibDir` and return
 // `ProjectPackagePayload` entries for exactly the import-closure of
 // `entrySource`, in dependency order.  Mirrors `loadCompilerPayloads` but for
-// stdlib: multi-file packages are merged by their declared `package` name, and
-// the JVM-only kernel files (`_kernel_jvm/`, `_kernel/jvm*.l`) are skipped on the
-// .NET target so they don't collide with their `_kernel/` counterparts.
+// stdlib: multi-file packages are merged by their declared `package` name.
+//
+// .NET-only: the JVM-only kernel files (`_kernel_jvm/`, `_kernel/jvm*.l`) are
+// dropped so they don't collide with their `_kernel/` counterparts.  Per-package
+// emit is rejected for the JVM target upstream in `emitPerPackageClosure` (the
+// JVM toolchain bundles into a single JAR, not per-package DLLs), so this
+// function only ever runs for `--target dotnet` — no target parameter is
+// threaded.  When JVM per-package emit is implemented, the kernel selection here
+// must become target-aware (skip `_kernel/`, keep `_kernel_jvm/`).
 func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): List[ProjectPackagePayload] {
   val empty: List[ProjectPackagePayload] = newList()
   val files = match File.listFilesRecursive(stdlibDir) { case Ok(fs) -> fs; case Err(_) -> return empty }
@@ -868,9 +882,20 @@ func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): List[Proj
 /// emitter, the per-package DLLs the toolchain links — including packages the
 /// F# stage-0 emitter cannot compile.
 pub func emitPerPackageClosure(entrySource: in String, outDir: in String, target: in CompileTarget): EmitResult {
+  // Per-package DLL emit is a .NET concept: the JVM toolchain bundles a
+  // package's transitive closure into a single JAR via a different pipeline
+  // (`compileToJarBundled`), not separate per-package artifacts.  Rather than
+  // emit half-wired/wrong JVM output, reject it explicitly; JVM per-package
+  // emit is tracked as separate future work (#2647).
+  match target {
+    case Jvm -> return failResult(
+      "per-package emit: --target jvm is not supported (the JVM toolchain bundles into a single JAR; per-package DLL emit is .NET-only)"
+    )
+    case Dotnet -> ()
+  }
   match File.createDir(outDir) {
     case Ok(_) -> ()
-    case Err(_) -> ()
+    case Err(e) -> return failResult("per-package emit: cannot create output directory '" + outDir + "': " + IOError.message(e))
   }
   val stdlibDir = locateStdlibDir()
   if stdlibDir.length == 0 {
@@ -904,7 +929,19 @@ pub func emitPerPackageClosure(entrySource: in String, outDir: in String, target
     )
     val res = emitProject(req)
     match res.outputPath {
-      case None -> return failResult("per-package emit: package '" + payload.name + "' failed to build")
+      case None -> {
+        // Surface the inner compiler diagnostics (type / parse errors), not just
+        // a generic failure, so the actual cause is actionable.
+        val diags: List[Diagnostic] = newList()
+        var di = 0
+        while di < res.diagnostics.count {
+          diags.add(res.diagnostics[di])
+          di = di + 1
+        }
+        val sp = pointSpan(initialPosition())
+        diags.add(errorDiagnostic("B0001", "per-package emit: package '" + payload.name + "' failed to build", sp))
+        return EmitResult(outputPath = None, diagnostics = diags)
+      }
       case Some(_) -> ()
     }
   }
