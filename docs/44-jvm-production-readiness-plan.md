@@ -207,13 +207,31 @@ Bands are ordered by dependency and risk. **Stop-the-bleeding (J1) before
 new capability (J2–J4).** Each band ends with an acceptance criterion that a
 self-test enforces in CI on `--target jvm`.
 
-### J0 — Establish the umbrella and stop the doc drift (prereq, ~days)
+### J0 — Establish the umbrella, split codegen, stop the doc drift (prereq, ~days)
 - File a single **JVM production-readiness epic** (the missing #1470 analog)
   linking every issue in §4; convert each "(new)" finding into a tracked issue.
+  (Done: epic #2663 with band sub-tasks #2664–#2670.)
+- **Split `jvm/codegen.l` (~5,060 lines) into ~6 files under the same
+  `Jvm.Codegen` package**, along its existing section boundaries:
+  `codegen_types.l` (`FuncCtx`/sigs/slot+type lookup/`typeExprToJvm`/emit
+  helpers), `codegen_exprs.l` (`lowerExpr`, comparisons, bool conditions,
+  interpolation, box), `codegen_match.l` (match + pattern test/bind),
+  `codegen_stmts.l` (`lowerStmt`, `lowerAssignExpr`, blocks, try/catch),
+  `codegen_calls.l` (calls, builtins, auto-FFI, construction, method calls),
+  `codegen_items.l` (`lowerFunc`/`lowerRecord`/`lowerUnion`, generators,
+  `codegenPackage`). This is precedented (`Lyric.Parser` = 5 files,
+  `Lyric.TypeChecker` = 9, all one package; intra-package cross-file mutual
+  recursion already works) and is a pure mechanical refactor proven by the
+  existing self-tests. It is the **prerequisite that makes Track A
+  parallelizable** (§6) — land it *before* J1–J4 branch off so everyone
+  rebases onto the new layout once. Residual hotspot after the split: the
+  `lowerExpr` mega-function (~600 lines, `codegen.l:439-1034`) that J2
+  (`ELambda`) and J4 (async) both edit — decompose by expr-kind sub-dispatch
+  only if that contention actually bites.
 - Resolve the doc contradictions (m-11): reconcile Q-J012/Q-J013 to their true
   shipped state, fix the self-test-count and parity-count drift across
   `docs/18`/`docs/31`/`docs/33`/`docs/04`/`docs/03`, and cross-link this doc
-  from `docs/41` §8 and `docs/33`.
+  from `docs/41` §8 and `docs/33`. (Done: cross-links landed in #2656.)
 - **Decision required (G1, `docs/36`):** is `--target jvm` a v1.0 SemVer
   channel, or a Phase-6 ecosystem target with independent versioning? This
   gates how strict the acceptance bar (J7) is. Land a decision-log entry.
@@ -309,7 +327,42 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
 
 ---
 
-## 6. Definition of "production-ready `--target jvm`"
+## 6. Parallelization and sequencing
+
+The bands are **partially parallelizable across ~3 tracks**, bounded by two
+constraints: logical dependencies, and shared-file contention (J1–J4 all edit
+`jvm/codegen.l` and `jvm/bridge.l`). The J0 codegen split (§5) is what unlocks
+most of the available parallelism; do it first.
+
+**Tracks (run concurrently after J0):**
+
+| Track | Bands | Primary files | Parallel? |
+|---|---|---|---|
+| **A — codegen core** | J1 → J2 → J3 → J4 | `codegen_*.l`, `bridge.l`, `lowering.l` | internally serial (J1‖J3 possible after the split); the critical path |
+| **B — self-hosting/ecosystem** | J5 | `jvm/_kernel/kernel.l`, `manifest.l`, `resolver/` | fully parallel with A & C |
+| **C — stdlib kernel + infra** | J6 + J7-infra | `_kernel_jvm/*`, source loader (`emitter.l`), CI, `cli.l` run/bench wrappers | parallel with A & B |
+| **D — acceptance gate** | J7 gate | per-feature parity suite (#1495) | last — after A/B/C converge |
+
+**Dependencies to respect:**
+
+- **J2 is the linchpin.** It ports lambda-lifting (unblocks closures), aspect
+  weaving (unblocks aspects), and `?`-propagation (feeds J4 async). Land it
+  early on Track A.
+- **J4 builds on J2** — async reuses J2's `?`-propagation lowering; generics
+  reuse J2's cross-package monomorphization.
+- **J6's source-loader fix comes first within Track C.** Making the
+  self-hosted source loader target-aware (so it loads `_kernel_jvm/`) is a
+  prerequisite for verifying any cross-platform stdlib module on JVM, and
+  underpins J7's acceptance tests.
+- **J7's acceptance gate (Track D) depends on everything** and runs last.
+
+**Residual serial core (irreducible):** even after the codegen split, the
+`lowerExpr` function (`codegen.l:439-1034`) is edited by both J2 (`ELambda`)
+and J4 (async), and the J2→J4 logical dependency holds — so Track A
+(J1→J2→J4) is the critical path. Realistic throughput is ~3 tracks in flight
+(≈3× over strict sequential), bounded by Track A's length.
+
+## 7. Definition of "production-ready `--target jvm`"
 
 1. Every language construct the reference defines for both targets compiles and
    runs correctly on JVM, or is a tracked, dated, documented exception (no
@@ -325,7 +378,7 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
 
 ---
 
-## 7. Open decisions for the maintainer
+## 8. Open decisions for the maintainer
 
 - **G1 (gating):** Is `--target jvm` a v1.0 SemVer-guaranteed channel, or a
   Phase-6 target with independent versioning? (`docs/36` §G1.) Determines the
@@ -338,7 +391,7 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
 
 ---
 
-## 8. Issue cross-reference
+## 9. Issue cross-reference
 
 Blockers: #1675, #1793, #1708, #676, plus the new silent-miscompile tickets
 (Float, complex-assignment, swallowed-codegen, CLI extension/runtimeconfig).
