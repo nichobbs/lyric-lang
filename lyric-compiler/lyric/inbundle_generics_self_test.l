@@ -124,7 +124,7 @@ union Either[L, R] {
   case Rgt(r: R)
 }
 
-// A multi-field generic case (`Both(a: T, b: T)`): the value-type instantiation
+// A multi-field generic case (`Both(a: A, b: B)`): the value-type instantiation
 // `Pairish[Int, Int]` exercises the arity-suffixed name + open-self-TypeSpec
 // ctor `stfld` that keep both fields at the correct per-instantiation offset.
 union Pairish[A, B] {
@@ -177,6 +177,15 @@ test "Pairish[Int,Int] multi-field value-type case keeps both fields" {
 test "Pairish Neither (nullary of a two-parameter union)" {
   val p: Pairish[Int, Int] = Neither
   assertEqualInt(match p { case Both(x, y) -> x + y; case Neither -> -5 }, -5, "Neither")
+}
+
+test "Pairish[Int,String] covers heterogeneous type-parameter VAR indices" {
+  val p: Pairish[Int, String] = Both(a = 42, b = "answer")
+  val result = match p {
+    case Both(x, y) -> x.toText() + ": " + y
+    case Neither -> "empty"
+  }
+  assertEqual(result, "42: answer", "Both 42 answer")
 }
 
 test "nested generic union Maybe[Maybe[Int]] round-trips" {
