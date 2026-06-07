@@ -168,6 +168,7 @@ their sources (`lyric-compiler/lyric/<pkg>_self_test.l`).
 - [09-msil-emission.md](docs/09-msil-emission.md) — how Lyric lowers to MSIL on .NET
 - [13-tutorial.md](docs/13-tutorial.md) — guided introduction for newcomers (Phase 3 / D-progress-065)
 - [18-jvm-emission.md](docs/18-jvm-emission.md) — JVM bytecode emission strategy (self-hosted Lyric emitter shipped in `lyric-compiler/jvm/`)
+- [44-jvm-production-readiness-plan.md](docs/44-jvm-production-readiness-plan.md) — JVM production-readiness audit and remediation plan (bands J0–J7)
 - [grammar.ebnf](docs/grammar.ebnf) — formal grammar (Phase 0 deliverable #4)
 
 ## Reading order
