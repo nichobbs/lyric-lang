@@ -24,7 +24,8 @@ re-audit corrects a 2026-05-20 finding the change is called out in §7._
 _JVM is **out of scope** for this audit (deliberately deferred per the review
 brief). The goal measured against is a **functionally complete, production-grade
 compiler written in Lyric — no F# shims, no workarounds — supporting all
-language features on the .NET runtime and AOT-compilable.**_
+language features on the .NET runtime and AOT-compilable.** The JVM counterpart
+audit and remediation plan lives in `docs/44-jvm-production-readiness-plan.md`._
 
 _All file:line citations are to the working branch at the time of audit. The
 audit was performed by reading the current source, not by trusting prior docs._
