@@ -1174,7 +1174,10 @@ func embedLyricContract(lctx: in LoweringCtx, file: in SourceFile, resourceName:
   // Emit metadata with two-pass SHA-256 hashing protocol
   val json = match Emit.emitContractMetadata(contractV3) {
     case Ok(j) -> j
-    case Err(_) -> Meta.contractToJson(contract)
+    case Err(e) -> {
+      println("[warning] contract metadata v3 emission failed, falling back to v2")
+      Meta.contractToJson(contract)
+    }
   }
   val jsonBytes = Encoding.encodeUtf8(json)
   val jsonLen = jsonBytes.length
