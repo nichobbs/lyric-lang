@@ -177,11 +177,7 @@ func testCfgOverloadArityResolution(): Unit {
     0,
     "cfg_overload_arity: dotnet-active 3-arg call resolves with no T0042"
   )
-  assertEqualInt(
-    dotnetCheck.diagnostics.count,
-    0,
-    "cfg_overload_arity: dotnet-active check produces zero diagnostics"
-  )
+  assertEqualInt(dotnetCheck.diagnostics.count, 0, "cfg_overload_arity: dotnet-active check produces zero diagnostics")
 
   // jvm active → only the 2-arg overload survives, so the 3-arg call in useIt
   // is now a genuine arity error — proving the dotnet overload was erased.

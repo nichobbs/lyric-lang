@@ -313,7 +313,6 @@ func testSynthesiseArtifactWhitelistedT0010Filtered(): Unit {
 // warnings allow synthesis to proceed even when diagnostics.count > 0.
 // See issue #1265 for the test case, pending identification of a compiler
 // scenario that produces warnings independently of errors.
-
 func main(): Int {
   testLoadRunningPe()
   testMissingFileError()

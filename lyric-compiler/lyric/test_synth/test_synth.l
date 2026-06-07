@@ -286,7 +286,6 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
     pf.file.packageDecl.span.endPos.offset
   }
 
-
   // Walk items.  For each item: emit the source slice from the
   // previous cursor up to the item's start verbatim; then either
   // (a) replace an `ITest` with a synthesised `func __lyric_test_<i>`
