@@ -7777,10 +7777,16 @@ func emitCollectionForMsil(
       }
       // A concrete list's `get_Item` returns the element already typed (ref OR
       // value), so the loop variable takes the exact element type and needs no
-      // read-narrow (#2361 Stage B).  Legacy/array elements keep the existing
-      // behaviour: narrow only `MClass` refs, leave the rest `MObject`.
+      // read-narrow (#2361 Stage B).  A genuine array (`MArray`) is read through
+      // `IList.get_Item`, which returns `object`, so the loop variable takes the
+      // array's element type and the value is narrowed (unbox value types,
+      // castclass refs) below — without this an `Int[]` element read garbage and
+      // a `String[]` element mis-dispatched (#2592, exposed once concrete
+      // `List.toArray()` yields a real array).  Other legacy/erased iterables
+      // keep the existing behaviour: narrow only `MClass` refs.
       val forElemTy = match iterTy {
         case MConcreteList(e) -> e
+        case MArray(e) -> e
         case _ -> match forElemRaw { case MClass(_) -> forElemRaw; case _ -> MObject }
       }
       val listSlot = allocSlotMsil(fctx, "__for_list_" + toString(fctx.slotTicker.count), MObject)
