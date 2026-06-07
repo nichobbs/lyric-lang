@@ -15502,6 +15502,20 @@ func registerRestoredIfaceMethod(
   }
 }
 
+// Fold a module-level const/val initializer to its inlined Int value,
+// mirroring the `addPackageTokens` IConst/IVal fold: lower the init and
+// take the leading `ldc.i4`.  Used to register a restored package's
+// compile-time constants for cross-package inlining.
+func foldConstInitToInt(cctx: in CodegenCtx, pkgName: in String, init: in Expr): Int {
+  val fctx = makeFuncCtxMsil(pkgName, pkgName, "__const_fold", 0, MVoid)
+  val insns: List[MInsn] = newList()
+  lowerExprMsil(cctx, fctx, insns, init)
+  match insns.count {
+    case n if n > 0 -> match insns[0] { case MLdcI4(v) -> v; case _ -> 0 }
+    case _ -> 0
+  }
+}
+
 /// Walk every `SynthesisedArtifact` in `cctx.restoredArtifacts` and
 /// register its type-shaped public decls into the cross-package
 /// symbol tables.  Call once after `newCodegenCtx`, before the
@@ -15570,6 +15584,36 @@ pub func registerRestoredArtifactTokens(cctx: in CodegenCtx): Unit {
     }
     registerRestoredMembers(cctx, art)
     aj = aj + 1
+  }
+  // Pass 3: cross-package compile-time constant inlining.  A module-level
+  // `pub const` / `pub val` with an integer-literal initializer is inlined
+  // at every use site as `ldc.i4` (codegen `addPackageTokens`).  In a
+  // per-package build the consumer compiles separately from the producer,
+  // so register each restored package's inlinable constants into
+  // `cctx.constValues` here.  The contract writer emits only the
+  // integer-literal const/val forms, so every IConst/IVal in the restored
+  // synthesised source is registrable.  First-wins (containsKey guard)
+  // matches the other cross-package registration guards; Std.* is included
+  // (a no-op unless the stdlib contract carries inlinable constants, since
+  // const inlining emits `ldc.i4` with no cross-assembly ref — the reason
+  // Std.* is skipped in passes 1/2 does not apply here).
+  var ac = 0
+  while ac < cctx.restoredArtifacts.count {
+    val art = cctx.restoredArtifacts[ac]
+    var ci = 0
+    while ci < art.source.items.count {
+      match art.source.items[ci].kind {
+        case IConst(decl) -> {
+          if not cctx.constValues.containsKey(decl.name) {
+            cctx.constValues.add(decl.name, foldConstInitToInt(cctx, art.packageName, decl.init))
+          }
+        }
+        case IVal(decl) -> match decl.pattern.kind { case PBinding(name, _) -> { if not cctx.constValues.containsKey(name) { cctx.constValues.add(name, foldConstInitToInt(cctx, art.packageName, decl.init)) } }; case _ -> () }
+        case _ -> ()
+      }
+      ci = ci + 1
+    }
+    ac = ac + 1
   }
 }
 

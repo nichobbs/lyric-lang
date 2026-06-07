@@ -735,6 +735,75 @@ jobs:
           fi
           echo "self-hosted per-package Std.Sort returns sorted output"
 
+      # Cross-package compile-time constant inlining (#2592 slice 1).  A
+      # module-level `pub val` / `pub const` with an integer-literal
+      # initializer is part of a package's ABI: consumers inline its value
+      # at compile time (`ldc.i4`).  Under separate compilation (per-package
+      # emit), the consumer compiles without the producer's source, so the
+      # value must travel in the producer's embedded `Lyric.Contract`
+      # metadata and be re-registered into the consumer's `constValues` from
+      # the restored dependency.  This builds a dependency exposing
+      # `pub val ANSWER: Int = 0x002A`, then a consumer that prints `ANSWER`
+      # across a real assembly boundary (a local-path `[dependencies]`
+      # entry, which threads the producer DLL as a restored dep), and
+      # asserts the inlined value is `42`.  Before slice 1, `ANSWER` was
+      # absent from the dependency's contract, so the consumer could not
+      # even resolve it.
+      - name: Cross-package const inlining (#2592 restored-dep consts)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          mkdir -p "$work/constdep/src" "$work/app/src"
+          cat > "$work/constdep/lyric.toml" <<'TOML'
+          [package]
+          name = "constdep"
+          version = "0.1.0"
+          [project]
+          name = "ConstDep"
+          output_assembly = "Lyric.ConstDep.dll"
+          [project.packages]
+          "ConstDep" = "src"
+          TOML
+          cat > "$work/constdep/src/constdep.l" <<'LYR'
+          package ConstDep
+          pub val ANSWER: Int = 0x002A
+          LYR
+          cat > "$work/app/lyric.toml" <<'TOML'
+          [package]
+          name = "app"
+          version = "0.1.0"
+          [project]
+          name = "App"
+          [project.packages]
+          "App" = "src"
+          [dependencies]
+          constdep = { path = "../constdep" }
+          TOML
+          cat > "$work/app/src/app.l" <<'LYR'
+          package App
+          import ConstDep
+          import Std.Console as Console
+          func main(): Unit {
+            Console.println(toString(ANSWER))
+          }
+          LYR
+          "$lyric_bin" build --manifest "$work/constdep/lyric.toml"
+          "$lyric_bin" build --manifest "$work/app/lyric.toml"
+          got="$(cd "$work/app/bin" && dotnet App.dll | tr -d '\r\n')"
+          echo "consumer printed: '$got'"
+          if [ "$got" != "42" ]; then
+            echo "::error::cross-package const inlining returned '$got', expected '42'"
+            exit 1
+          fi
+          echo "cross-package pub val inlines through restored-dep contract metadata"
+
       # Slice-length / String-comparison self-test (#2539).  Exercises two
       # self-hosted MSIL codegen fixes: (1) `String` relational operators
       # (`<` / `>` / `<=` / `>=`) route through `String.CompareOrdinal`

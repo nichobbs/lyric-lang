@@ -22292,3 +22292,42 @@ Remaining on #2592: compiler-package (`Lyric.*` / `Msil.*`) per-package emit
 (needs restored-dep threading, unlike stdlib) and then wiring
 `bootstrap.sh`'s stage-1 to use `emitPerPackageClosure` so the *shipped*
 toolchain is self-hosted-built and the `cli.l::sortFileList` workaround retires.
+
+### D-progress-461 — cross-package compile-time constant inlining via contract metadata (#2592 slice 1)
+
+**Status:** Shipped — the foundation for compiler-package per-package emit.
+
+A module-level `pub const` / `pub val` with an integer-literal initializer is
+inlined at every use site as `ldc.i4` (codegen `addPackageTokens` IConst/IVal),
+so its value is part of the package's ABI.  In-bundle this works because all
+packages share one `CodegenCtx.constValues`; under separate compilation
+(per-package emit) the consumer compiles without the producer's source and the
+value was lost — the consumer could not even resolve the name.  The compiler
+tree relies on this pattern heavily (e.g. `Jvm.Classfile`'s 16 `ACC_*` + 9
+`REF_*` `pub val` flags consumed by the Msil/Jvm backends), so per-package
+compiler emit was blocked on it.
+
+This slice carries inlinable constants through the embedded
+`Lyric.Contract.<Pkg>` metadata and re-registers them in the consumer:
+
+- `contract_meta.l::buildContractFromFile` now emits a `const` / `val`
+  `ContractDecl` (repr `pub const NAME: TYPE = N` / `pub val NAME: TYPE = N`)
+  for each `pub` integer-literal `const` / `val`.  Non-literal `val`s (runtime
+  values needing cross-package field access) stay out of the inlinable surface;
+  every `pub val` in the compiler tree is an integer literal, so the surface is
+  complete.  Format additive — `formatVersion` stays 2.
+- The repr round-trips through `restored_packages.l::synthesiseSource`
+  verbatim, so the restored synthesised source carries the `const` / `val`
+  items.
+- `codegen.l::registerRestoredArtifactTokens` gains a third pass that folds
+  each restored package's inlinable initializer (`foldConstInitToInt`, the same
+  fold as `addPackageTokens`) into `cctx.constValues`, first-wins.
+
+Verified (CI, "Cross-package const inlining"): a dependency exposing
+`pub val ANSWER: Int = 0x002A`, consumed across a real assembly boundary via a
+local-path `[dependencies]` entry, inlines to `42` in the consumer.  Emitter
+(834) + CLI (84) suites green.
+
+Remaining on #2592: the unified `emitPerPackageClosure` (stdlib + compiler
+closure with restored-dep threading) and the `bootstrap.sh` stage-1 rewire +
+`cli.l::sortFileList` retirement.

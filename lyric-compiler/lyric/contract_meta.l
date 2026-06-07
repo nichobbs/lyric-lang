@@ -1024,6 +1024,49 @@ func basicDecl(kind: in String, name: in String, repr: in String): ContractDecl 
   )
 }
 
+// True when `e` is a bare integer literal — the only initializer form the
+// MSIL backend folds to a single `ldc.i4` and inlines at the use site
+// (codegen `addPackageTokens` IConst/IVal).  Cross-package inlining of a
+// module-level constant only carries this form; non-literal initializers
+// are not compile-time foldable and fall outside the inlinable surface.
+func isIntLiteralExpr(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(lit) -> match lit { case LInt(_, _, _) -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
+// Repr for a module-level `pub const`: `pub const NAME: TYPE = N`.  The
+// value is part of the public ABI because consumers inline it at compile
+// time, so it round-trips into the contract and the synthesised source.
+func reprForConst(decl: in ConstDecl): String {
+  "pub const " + decl.name + ": " + renderTypeExpr(decl.ty) + " = " + renderConstExpr(decl.init)
+}
+
+// Simple binding name of a `val` whose pattern is a plain binding, or "".
+func bindingName(p: in Pattern): String {
+  match p.kind {
+    case PBinding(name, _) -> name
+    case _ -> ""
+  }
+}
+
+// Repr for an inlinable module-level `pub val` — a plain binding with an
+// explicit type and an integer-literal initializer (`pub val NAME: TYPE =
+// N`).  Returns None for destructuring patterns, missing type
+// annotations, or non-literal inits: those are not compile-time inlinable
+// (cross-package field access for runtime `val`s is separate work), so
+// they stay out of the inlinable-constant contract surface.
+func reprForInlinableVal(decl: in ValDecl): Option[String] {
+  if not isIntLiteralExpr(decl.init) {
+    return None
+  }
+  match decl.pattern.kind {
+    case PBinding(name, _) -> match decl.ty { case Some(te) -> Some(value = "pub val " + name + ": " + renderTypeExpr(te) + " = " + renderConstExpr(decl.init)); case None -> None }
+    case _ -> None
+  }
+}
+
 // Find a single-segment file-level annotation by name.  Returns the
 // first matching annotation (file-level `@axiom`, `@proof_required`,
 // `@runtime_checked` are mutually exclusive in practice but we
@@ -1146,6 +1189,12 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
         case IDistinctType(d) -> decls.add(basicDecl("distinct", d.name, reprForDistinct(d)))
         case IOpaque(o) -> decls.add(basicDecl("opaque", o.name, reprForOpaque(o)))
         case ITypeAlias(a) -> decls.add(basicDecl("alias", a.name, reprForTypeAlias(a)))
+        // Module-level compile-time constants whose value crosses package
+        // boundaries by inlining (see codegen `addPackageTokens`).  A
+        // consumer compiled separately (per-package emit) needs the value
+        // from the producer's contract; carry it here.
+        case IConst(c) -> decls.add(basicDecl("const", c.name, reprForConst(c)))
+        case IVal(v) -> match reprForInlinableVal(v) { case Some(repr) -> decls.add(basicDecl("val", bindingName(v.pattern), repr)); case None -> () }
         case _ -> ()
       }
     }
