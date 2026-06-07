@@ -2944,10 +2944,18 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
 pub func findTypeDefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
   // lowerMRecord stores the SIMPLE name in typeName and the namespace in
   // typeNamespace (e.g. "EnglishGreeter"/"ShMIface" for "ShMIface.EnglishGreeter").
-  // Split the FQN at the last dot and match both fields independently.
+  // It derives the simple name by stripping the namespace prefix, so a
+  // compiler-generated simple name may itself contain dots inside angle
+  // brackets — e.g. an async state machine for a *type-method*:
+  // `Std.Http.<HttpResponse.bodyText>__SM_3` (simple name
+  // `<HttpResponse.bodyText>__SM_3`, namespace `Std.Http`).  A naive
+  // last-dot split would land inside the brackets and never match.
+  // Namespaces never contain `<`, so only consider dots BEFORE the first
+  // `<` when locating the namespace/simple-name boundary.
+  val boundary = nsBoundaryLimit(fqn)
   var lastDot = -1
   var di = 0
-  while di < fqn.length {
+  while di < boundary {
     if fqn[di] == '.' {
       lastDot = di
     }
@@ -2969,6 +2977,21 @@ pub func findTypeDefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
   0
 }
 
+// The index of the first `<` in `fqn`, or its length when none is present.
+// Dots at or after this index belong to a bracketed (compiler-generated)
+// simple name, not the namespace, so namespace/simple-name splitting must
+// ignore them.  See `findTypeDefRowByName`.
+func nsBoundaryLimit(fqn: in String): Int {
+  var i = 0
+  while i < fqn.length {
+    if fqn[i] == '<' {
+      return i
+    }
+    i = i + 1
+  }
+  fqn.length
+}
+
 // Find the 1-based TypeRef row whose namespace + name match the given FQN.
 // Mirrors `findTypeDefRowByName` but searches the TypeRef table instead of
 // TypeDef.  Used by `MIsinstByName` as a fallback when the type is defined in
@@ -2976,9 +2999,12 @@ pub func findTypeDefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
 // union case classes like `Std.Core.Option$Some` imported from `Lyric.Stdlib.Core`.
 // Returns 0 when no matching TypeRef exists.
 pub func findTypeRefRowByName(ctx: in LoweringCtx, fqn: in String): Int {
+  // Same bracketed-simple-name handling as `findTypeDefRowByName`: only
+  // dots before the first `<` delimit the namespace.
+  val boundary = nsBoundaryLimit(fqn)
   var lastDot = -1
   var di = 0
-  while di < fqn.length {
+  while di < boundary {
     if fqn[di] == '.' {
       lastDot = di
     }
