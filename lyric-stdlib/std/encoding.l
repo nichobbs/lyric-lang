@@ -223,7 +223,7 @@ pub func tryDecodeUtf8(bytes: in slice[Byte]): Option[String] {
     val b0 = bytes[i]
     if b0 < 128u8 {
       // 1-byte sequence: U+0000..U+007F
-      result = result + ("" + fromInt(b0))
+      result = result + ("" + fromInt(b0.toInt()))
       i += 1
     } else if b0 / 32u8 == 6u8 {
       // 2-byte sequence: 110xxxxx 10xxxxxx → U+0080..U+07FF
@@ -235,7 +235,7 @@ pub func tryDecodeUtf8(bytes: in slice[Byte]): Option[String] {
         return None
       }
       // continuation byte check
-      val cp = (b0 % 32u8) * 64 + b1 % 64u8
+      val cp = (b0.toInt() % 32) * 64 + b1.toInt() % 64
       if cp < 128 {
         return None
       }
@@ -252,7 +252,7 @@ pub func tryDecodeUtf8(bytes: in slice[Byte]): Option[String] {
       if b1 / 64u8 != 2u8 or b2 / 64u8 != 2u8 {
         return None
       }
-      val cp = (b0 % 16u8) * 4096 + (b1 % 64u8) * 64 + b2 % 64u8
+      val cp = (b0.toInt() % 16) * 4096 + (b1.toInt() % 64) * 64 + b2.toInt() % 64
       if cp < 2048 {
         return None
       }
@@ -274,7 +274,7 @@ pub func tryDecodeUtf8(bytes: in slice[Byte]): Option[String] {
       if b1 / 64u8 != 2u8 or b2 / 64u8 != 2u8 or b3 / 64u8 != 2u8 {
         return None
       }
-      val cp = (b0 % 8u8) * 262144 + (b1 % 64u8) * 4096 + (b2 % 64u8) * 64 + b3 % 64u8
+      val cp = (b0.toInt() % 8) * 262144 + (b1.toInt() % 64) * 4096 + (b2.toInt() % 64) * 64 + b3.toInt() % 64
       if cp < 65536 {
         return None
       }

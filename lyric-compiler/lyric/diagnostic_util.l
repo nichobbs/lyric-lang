@@ -48,6 +48,26 @@ pub func diagReportAndAbort(diags: in List[Diagnostic]): Bool {
   hasErrors
 }
 
+/// Like `diagReportAndAbort`, but prefixes each diagnostic with the
+/// owning package name so project (multi-package) builds say *which*
+/// package failed — the bare `error[code] line:col` is ambiguous when
+/// a bundle compiles dozens of files.  Returns true when any
+/// diagnostic is error-severity.
+@stable(since = "0.1")
+pub func diagReportAndAbortInPkg(pkgName: in String, diags: in List[Diagnostic]): Bool {
+  var hasErrors = false
+  var i = 0
+  while i < diags.count {
+    val d = diags[i]
+    Console.error(pkgName + ": " + diagFormat(d))
+    if d.severity == DiagError {
+      hasErrors = true
+    }
+    i = i + 1
+  }
+  hasErrors
+}
+
 /// Print every diagnostic in `diags` to stderr without affecting the
 /// compile's success/failure outcome.  Used for typechecker output
 /// until Band 6 (cross-package resolution) lands and the typechecker

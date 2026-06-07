@@ -123,6 +123,115 @@ func rangeHiInclusive(rb: in RangeBound): Bool {
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Path resolution helper.
 // ─────────────────────────────────────────────────────────────────────────────
+// Resolve a symbol found in type position to a `Type`.  A `pub alias X = Y`
+// type-alias re-export (`DKTypeAlias`) is followed to its target `Y` — this is
+// how the stdlib re-exports an extern type for callers (`pub alias Random =
+// Std.RandomHost.Random`).  Concrete type symbols (records, unions, extern
+// types, …) resolve to their `TyUser`; a non-type symbol is a T0013.
+func symbolToType(
+  tbl: in SymbolTable,
+  ctx: in GenericContext,
+  diag: in List[Diagnostic],
+  sym: in Symbol,
+  args: in List[Type],
+  span: in Span,
+): Type {
+  match sym.kind {
+    case DKTypeAlias(decl) -> resolveAliasRhs(tbl, ctx, diag, decl, sym.name, args, span)
+    case _ -> match symbolTypeIdOpt(sym) { case Some(tid) -> { checkImportedVisibility(sym, span, diag); TyUser(id = tid, name = sym.name, args = args) }; case None -> { diag.add(errorDiagnostic("T0013", "'" + sym.name + "' is not a type", span)); TyError } }
+  }
+}
+
+// Follow a type alias's right-hand side to a concrete `Type`.  `aliasName`
+// is the name of the alias being expanded; the path-resolution helper skips
+// any symbol of that name so a re-export whose target shares the alias's
+// simple name (`alias Random = Std.RandomHost.Random`) resolves to the
+// underlying extern/user type rather than looping on the alias itself.
+// `args` are the type arguments supplied at the use site (empty for the
+// non-generic re-export form the stdlib uses).
+func resolveAliasRhs(
+  tbl: in SymbolTable,
+  ctx: in GenericContext,
+  diag: in List[Diagnostic],
+  decl: in TypeAliasDecl,
+  aliasName: in String,
+  args: in List[Type],
+  span: in Span,
+): Type {
+  match decl.rhs.kind {
+    case TRef(path) -> resolveAliasPath(tbl, ctx, diag, path, aliasName, args, span)
+    case TGenericApp(head, argsList) -> {
+      val resolvedArgs: List[Type] = newList()
+      var i = 0
+      while i < argsList.count {
+        match argsList[i] {
+          case TAType(t) -> resolvedArgs.add(resolveType(tbl, ctx, diag, t))
+          case TAValue(_) -> resolvedArgs.add(TyError)
+        }
+        i = i + 1
+      }
+      resolveAliasPath(tbl, ctx, diag, head, aliasName, resolvedArgs, span)
+    }
+    case _ -> resolveType(tbl, ctx, diag, decl.rhs)
+  }
+}
+
+// Resolve an alias target path to a `Type`, preferring a concrete (non-alias)
+// type symbol of the path's final segment so the lookup cannot loop back on
+// the alias being expanded.  Falls through to a differently-named chained
+// alias, then to a primitive, then to T0013.
+func resolveAliasPath(
+  tbl: in SymbolTable,
+  ctx: in GenericContext,
+  diag: in List[Diagnostic],
+  path: in ModulePath,
+  aliasName: in String,
+  args: in List[Type],
+  span: in Span,
+): Type {
+  val last = path.segments[path.segments.count - 1]
+  match primFromString(last) {
+    case Some(prim) -> {
+      if args.count > 0 {
+        diag.add(errorDiagnostic("T0012", "primitive type '" + last + "' does not take type arguments", span))
+      }
+      return TyPrim(pt = prim)
+    }
+    case None -> {
+    }
+  }
+  val all = symTableTryFindAll(tbl, last)
+  // First, any concrete type (record / union / extern type / …).
+  var i = 0
+  while i < all.count {
+    match symbolTypeIdOpt(all[i]) {
+      case Some(tid) -> {
+        checkImportedVisibility(all[i], span, diag)
+        return TyUser(id = tid, name = all[i].name, args = args)
+      }
+      case None -> {
+      }
+    }
+    i = i + 1
+  }
+  // Then, a chained alias with a different name (avoid self-recursion).
+  var j = 0
+  while j < all.count {
+    match all[j].kind {
+      case DKTypeAlias(d2) -> {
+        if d2.name != aliasName {
+          return resolveAliasRhs(tbl, ctx, diag, d2, d2.name, args, span)
+        }
+      }
+      case _ -> {
+      }
+    }
+    j = j + 1
+  }
+  diag.add(errorDiagnostic("T0013", "'" + last + "' is not a type", span))
+  TyError
+}
+
 func resolveTypePath(
   tbl: in SymbolTable,
   ctx: in GenericContext,
@@ -151,7 +260,7 @@ func resolveTypePath(
       return TyVar(name = name)
     }
     match symTableTryFindOne(tbl, name) {
-      case Some(sym) -> match symbolTypeIdOpt(sym) { case Some(tid) -> { checkImportedVisibility(sym, span, diag); return TyUser(id = tid, name = sym.name, args = args) }; case None -> { diag.add(errorDiagnostic("T0013", "'" + name + "' is not a type", span)); return TyError } }
+      case Some(sym) -> return symbolToType(tbl, ctx, diag, sym, args, span)
       case None -> {
         diag.add(errorDiagnostic("T0010", "unknown type name '" + name + "'", span))
         return TyError
@@ -164,7 +273,11 @@ func resolveTypePath(
   // was imported.  Fall through to primitive check, then T0014.
   val last = path.segments[path.segments.count - 1]
   match symTableTryFindOne(tbl, last) {
-    case Some(sym) -> match symbolTypeIdOpt(sym) { case Some(tid) -> { checkImportedVisibility(sym, span, diag); return TyUser(id = tid, name = sym.name, args = args) }; case None -> {  } }
+    case Some(sym) -> {
+      if symbolIsType(sym) {
+        return symbolToType(tbl, ctx, diag, sym, args, span)
+      }
+    }
     case None -> {
     }
   }

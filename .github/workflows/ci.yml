@@ -378,6 +378,28 @@ jobs:
           fi
           echo "ecosystem test suite passed"
 
+      # Full self-hosted stdlib bundle (#2592, stage-2 milestone) — builds
+      # the entire public Std.* surface through the self-hosted MSIL backend
+      # via lyric-stdlib/lyric.full.toml.  The bootstrap lyric.toml is only
+      # the F#-stage-0 smoke set; this step guards that the self-hosted
+      # emitter can compile the whole standard library so the milestone
+      # cannot silently regress.
+      - name: Build full stdlib (self-hosted, lyric.full.toml)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin"
+            exit 1
+          fi
+          if ! "$lyric_bin" build --manifest lyric-stdlib/lyric.full.toml; then
+            echo "::error::full self-hosted stdlib bundle failed to build"
+            exit 1
+          fi
+          echo "full self-hosted stdlib bundle built"
+
       # Multi-file example packages — builds each showcase service in
       # examples/{rbac,ledger,jobqueue,product-catalog} end-to-end via
       # `lyric build --manifest` (#2514).  Unlike the single-file AOT

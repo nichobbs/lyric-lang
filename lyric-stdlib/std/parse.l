@@ -155,7 +155,7 @@ pub func parseOptLong(s: in String): Option[Long] {
       if acc == -922337203685477580i64 and d > 8 {
         return None
       }
-      acc = acc * 10i64 - d
+      acc = acc * 10i64 - d.toLong()
       i += 1
     }
   }
