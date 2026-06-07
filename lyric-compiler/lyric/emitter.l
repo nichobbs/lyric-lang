@@ -667,14 +667,18 @@ func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[P
 // deterministic across platforms regardless of `listFilesRecursive`'s
 // traversal order.
 func sortStrings(xs: in List[String]): List[String] {
+  if xs.count == 0 {
+    return newList()
+  }
+
   // Pre-filter: separate non-empty strings from empty ones to avoid
-  // comparison issues with empty strings.  Empty strings sort to end.
+  // comparison issues. Empty strings sort to end.
   val nonEmpty: List[String] = newList()
   val empty: List[String] = newList()
   var c = 0
   while c < xs.count {
     val s = xs[c]
-    if s.length > 0 {
+    if Str.isNotEmpty(s) {
       nonEmpty.add(s)
     } else {
       empty.add(s)
@@ -687,18 +691,24 @@ func sortStrings(xs: in List[String]): List[String] {
   }
 
   // Sort non-empty strings via selection sort.
+  val remaining: List[String] = newList()
+  var nc = 0
+  while nc < nonEmpty.count {
+    remaining.add(nonEmpty[nc])
+    nc = nc + 1
+  }
   val sorted: List[String] = newList()
-  while nonEmpty.count > 0 {
+  while remaining.count > 0 {
     var bestIdx = 0
     var k = 1
-    while k < nonEmpty.count {
-      if nonEmpty[k] < nonEmpty[bestIdx] {
+    while k < remaining.count {
+      if remaining[k] < remaining[bestIdx] {
         bestIdx = k
       }
       k = k + 1
     }
-    sorted.add(nonEmpty[bestIdx])
-    nonEmpty.removeAt(bestIdx)
+    sorted.add(remaining[bestIdx])
+    remaining.removeAt(bestIdx)
   }
 
   // Append empty strings at the end.
