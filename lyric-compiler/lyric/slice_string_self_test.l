@@ -173,3 +173,23 @@ test "split result .length / index / for" {
   }
   assertEqualInt(n, 3, "split for count")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Formerly-workaround patterns from #2558 / #2576: empty-slice `[]` as a
+// match arm result and nested `match` inside a test body.  Both caused silent
+// exit-0 / no-TAP-output in an earlier binary and were deliberately avoided
+// in the original version of this file.  They must now work correctly.
+// ─────────────────────────────────────────────────────────────────────────────
+test "empty-slice [] as match arm result" {
+  val a = match Enc.tryDecodeBase64("AAEC") { case Some(x) -> x; case None -> [] }
+  assertEqualInt(a.length, 3, "Some arm yields real bytes")
+  val b = match Enc.tryDecodeBase64("!!!not-base64!!!") { case Some(x) -> x; case None -> [] }
+  assertEqualInt(b.length, 0, "None arm yields empty slice")
+}
+
+test "nested match in test body" {
+  match Enc.tryDecodeBase64("AAEC") {
+    case None -> assertTrue(false, "outer decode must succeed")
+    case Some(a) -> match Enc.tryDecodeBase64("AAEC") { case None -> assertTrue(false, "inner decode must succeed"); case Some(b) -> assertTrue(a.length == b.length, "same-input lengths equal") }
+  }
+}

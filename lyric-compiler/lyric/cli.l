@@ -3139,11 +3139,21 @@ func cmdTest(argv: in slice[String]): Int {
         val jvmArgs: List[String] = newList()
         jvmArgs.add("-jar")
         jvmArgs.add(outPath)
-        match Process.run("java", jvmArgs) {
-          case Ok(code) -> return code
-          case Err(e) -> {
-            printErr("test: failed to start java: " + IOError.message(e))
+        match Process.runCapture("java", jvmArgs, 600000) {
+          case Err(msg) -> {
+            printErr("test: failed to start java: " + msg)
             return 1
+          }
+          case Ok(res) -> {
+            Console.print(res.stdout)
+            if res.stderr.length > 0 {
+              Console.error(res.stderr)
+            }
+            if res.stdout.length == 0 and res.exitCode == 0 {
+              printErr("test: compiled test binary produced no TAP output — possible silent compile or runtime failure")
+              return 1
+            }
+            return res.exitCode
           }
         }
       }
@@ -3202,11 +3212,22 @@ func cmdTest(argv: in slice[String]): Int {
       val execArgs: List[String] = newList()
       execArgs.add("exec")
       execArgs.add(outPath)
-      match Process.run("dotnet", execArgs) {
-        case Ok(code) -> code
-        case Err(e) -> {
-          printErr("test: failed to start dotnet: " + IOError.message(e))
+      match Process.runCapture("dotnet", execArgs, 600000) {
+        case Err(msg) -> {
+          printErr("test: failed to start dotnet: " + msg)
           1
+        }
+        case Ok(res) -> {
+          Console.print(res.stdout)
+          if res.stderr.length > 0 {
+            Console.error(res.stderr)
+          }
+          if res.stdout.length == 0 and res.exitCode == 0 {
+            printErr("test: compiled test binary produced no TAP output — possible silent compile or runtime failure")
+            1
+          } else {
+            res.exitCode
+          }
         }
       }
     }
@@ -3551,11 +3572,22 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
     val execArgs: List[String] = newList()
     execArgs.add("exec")
     execArgs.add(outPath)
-    val testExitCode = match Process.run("dotnet", execArgs) {
-      case Ok(code) -> code
-      case Err(e) -> {
-        printErr("test: failed to start dotnet: " + IOError.message(e))
+    val testExitCode = match Process.runCapture("dotnet", execArgs, 600000) {
+      case Err(msg) -> {
+        printErr("test: failed to start dotnet: " + msg)
         1
+      }
+      case Ok(res) -> {
+        Console.print(res.stdout)
+        if res.stderr.length > 0 {
+          Console.error(res.stderr)
+        }
+        if res.stdout.length == 0 and res.exitCode == 0 {
+          printErr("test: compiled test binary produced no TAP output — possible silent compile or runtime failure")
+          1
+        } else {
+          res.exitCode
+        }
       }
     }
     if testExitCode == 0 {
