@@ -2177,11 +2177,22 @@ jobs:
         with:
           script: |
             const pr = context.payload.pull_request;
-            console.log(`Marking PR #${pr.number} as ready for review`);
-            await github.rest.pulls.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: pr.number,
-              draft: false
-            });
-            console.log(`PR #${pr.number} is now ready for review`);
+            console.log(`[auto-promote] PR #${pr.number}: Checking if ready to promote from draft`);
+            try {
+              const result = await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                draft: false
+              });
+              console.log(`[auto-promote] PR #${pr.number}: ✓ Successfully promoted to ready for review`);
+            } catch (error) {
+              if (error.status === 403) {
+                console.log(`[auto-promote] PR #${pr.number}: ⚠ Permission denied (403) — skipping promotion (may be a fork or permission issue)`);
+              } else if (error.status === 422) {
+                console.log(`[auto-promote] PR #${pr.number}: ⚠ Cannot be promoted (422) — already ready or invalid state`);
+              } else {
+                console.log(`[auto-promote] PR #${pr.number}: ✗ Error: ${error.message} (${error.status})`);
+                throw error;
+              }
+            }
