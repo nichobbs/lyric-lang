@@ -49,7 +49,8 @@ output_assembly = "Web.dll"
 # "Web.Kernel.Jvm"  = "src/_kernel/jvm/web_kernel.l"
 
 [project.tests]
-"Web.CorsGuardTests" = "tests/cors_guard_tests.l"
+"Web.CorsGuardTests"   = "tests/cors_guard_tests.l"
+"Web.RateLimitTests"   = "tests/rate_limit_tests.l"
 
 [dependencies]
 "Lyric.Auth"         = { path = "../lyric-auth" }

@@ -37,16 +37,14 @@ config CatalogDb {
 // (outermost → innermost → handler): GrpcAuth → GrpcCircuit → handler.  A
 // handler that returns UNAUTHENTICATED bypasses the circuit counter because
 // the request never reaches the handler body.
-//
-//   GrpcAuth  reads authToken from gRPC metadata (LYRIC_ASPECT_GRPCAUTH_*).
-//   GrpcCircuit opens after 3 consecutive failures, cools down for 15s.
+// GrpcAuth reads the token from gRPC metadata (LYRIC_ASPECT_GRPCAUTH_*).
 aspect GrpcAuth from Grpc.Aspects.RequiresGrpcAuth {
-  matches: name in { getProduct, listProducts, createProduct, updateProduct, deleteProduct }
+  matches: visibility: pub
 }
 
 aspect GrpcCircuit from Grpc.Aspects.GrpcCircuitBreaker {
   inside: GrpcAuth
-  matches: name in { getProduct, listProducts, createProduct, updateProduct, deleteProduct }
+  matches: visibility: pub
   config {
     failureThreshold: Int = 3
     cooldownMs: Int = 15000
@@ -150,10 +148,8 @@ pub func listProducts(req: in ListProductsRequest, authToken: in String): Result
       match result {
         case Err(e) -> return Err(dbErrToStatus(e))
         case Ok(rows) -> {
-          var products: slice[Product] = []
-          for row in rows {
-            products = concat(products, [rowToProduct(row)])
-          }
+          val products = rows.map
+          { row -> rowToProduct(row) }
           return Ok(ListProductsResponse(products = products, total = products.count))
         }
       }

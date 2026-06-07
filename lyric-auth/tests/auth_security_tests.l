@@ -250,6 +250,26 @@ test "duplicate alg attack: both algs in allow-list — still fails on invalid s
 // print(make(b'{"exp":"abc"}'))
 // # → eyJhbGciOiJIUzI1NiJ9.eyJleHAiOiJhYmMifQ.NCnzMSVqHiR3EKJFPFXm7gGpVfsgxO7Q7nY_Kf_3E5I
 // ```
+test "exp non-numeric regression: validly-signed token with string exp is rejected (#1161)" {
+  // Payload: {"exp":"abc"} — non-numeric exp claim.
+  // getLongClaimFromJson returns Err("parse_error"); validatePayload maps all
+  // getLongClaimFromJson errors to EXP_OVERFLOW (intentional: both parse-error
+  // and arithmetic-overflow indicate a malformed/unsafe exp claim).
+  val r = Auth.verifyJwt(
+    "eyJhbGciOiJIUzI1NiJ9.eyJleHAiOiJhYmMifQ.NCnzMSVqHiR3EKJFPFXm7gGpVfsgxO7Q7nY_Kf_3E5I",
+    "test-secret",
+    "",
+    "",
+    "HS256"
+  )
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(
+    code,
+    "EXP_OVERFLOW",
+    "non-numeric exp → EXP_OVERFLOW (both parse-error and overflow map to the same code)"
+  )
+}
+
 test "exp overflow regression: validly-signed token with 20-digit exp is rejected (#1078)" {
   // Payload: {"exp":99999999999999999999} — 20 digits, overflows Long.
   // Without the fix the overflowed value is negative → exp check skipped → Ok.
@@ -317,6 +337,54 @@ test "verifyJwt: string-form aud still verifies (#1089 backwards-compat)" {
   )
   val isOk = match r { case Ok(v) -> true; case Err(e) -> false }
   assertTrue(isOk, "single-string aud match must continue to verify")
+}
+
+// ─── #1289: audienceMatches dual-form last-wins regression ───────────────────
+// When both `"aud":"..."` (string-form) and `"aud":[...]` (array-form) appear
+// in the same payload, the one at the larger byte offset wins.  These two tests
+// pin both orderings to prevent a regression back to first-wins or always-picks-
+// string semantics.
+//
+// Token construction (Python snippet above, additional payloads):
+//   # string-form before array-form (array-form wins):
+//   print(make(b'{"aud":"string-form","aud":["api.example.com","admin"]}'))
+//   # → eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJzdHJpbmctZm9ybSIsImF1ZCI6WyJhcGkuZXhhbXBsZS5jb20iLCJhZG1pbiJdfQ.JfVRxKPvRE6tg-Hx38rEtkx6uW9OFYQYft0Qp5c2YWg
+//
+//   # array-form before string-form (string-form wins):
+//   print(make(b'{"aud":["api.example.com","admin"],"aud":"string-form"}'))
+//   # → eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOlsiYXBpLmV4YW1wbGUuY29tIiwiYWRtaW4iXSwiYXVkIjoic3RyaW5nLWZvcm0ifQ.w_IKJJM4012nafutKKKl9jkiAz-lEIZFyicsvC87hB0
+test "audienceMatches dual-form: string-form before array-form — array-form (last) wins (#1289)" {
+  // Payload: {"aud":"string-form","aud":["api.example.com","admin"]}
+  // The array-form appears at the larger byte offset → it wins.
+  // Audience "api.example.com" is in the array → must verify.
+  val r = Auth.verifyJwt(
+    "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJzdHJpbmctZm9ybSIsImF1ZCI6WyJhcGkuZXhhbXBsZS5jb20iLCJhZG1pbiJdfQ.JfVRxKPvRE6tg-Hx38rEtkx6uW9OFYQYft0Qp5c2YWg",
+    "test-secret",
+    "",
+    "api.example.com",
+    "HS256"
+  )
+  val isOk = match r { case Ok(v) -> true; case Err(e) -> false }
+  assertTrue(isOk, "string-form aud before array-form: array-form (last) wins — api.example.com must verify")
+}
+
+test "audienceMatches dual-form: array-form before string-form — string-form (last) wins (#1289)" {
+  // Payload: {"aud":["api.example.com","admin"],"aud":"string-form"}
+  // The string-form appears at the larger byte offset → it wins.
+  // Audience "api.example.com" is NOT the string-form value → must reject.
+  val r = Auth.verifyJwt(
+    "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOlsiYXBpLmV4YW1wbGUuY29tIiwiYWRtaW4iXSwiYXVkIjoic3RyaW5nLWZvcm0ifQ.w_IKJJM4012nafutKKKl9jkiAz-lEIZFyicsvC87hB0",
+    "test-secret",
+    "",
+    "api.example.com",
+    "HS256"
+  )
+  val code = match r { case Ok(v) -> "OK"; case Err(e) -> e.code }
+  assertEqual(
+    code,
+    "AUDIENCE_MISMATCH",
+    "array-form aud before string-form: string-form (last) wins — api.example.com must be rejected"
+  )
 }
 
 // ─── #1079: JSON escape decoding in claim values ─────────────────────────────

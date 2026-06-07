@@ -57,8 +57,8 @@ pub func liveness(): Result[Unit, String] {
 /// Readiness: the PostgreSQL connection pool is reachable and responding.
 pub func readiness(): Result[Unit, String] {
   match Db.connectFromEnv() {
-    case Err(e) -> Err("postgres unreachable: " + e.message)
-    case Ok(conn) -> match conn.query("SELECT 1 AS ok", []) { case Err(e) -> { conn.close(); Err("postgres ping failed: " + e.message) }; case Ok(_) -> { conn.close(); Ok(()) } }
+    case Err(e) -> Err("database unreachable: " + e.message)
+    case Ok(conn) -> match conn.query("SELECT 1 AS ok", []) { case Err(e) -> { conn.close(); Err("database ping failed: " + e.message) }; case Ok(_) -> { conn.close(); Ok(()) } }
   }
 }
 

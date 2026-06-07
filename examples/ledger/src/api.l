@@ -191,6 +191,9 @@ pub func handleCreateTransfer(@body req: in CreateTransferRequest, authToken: St
   OTel.setSpanAttribute(span, "transfer.to_id", req.toId.toString())
   OTel.setSpanAttribute(span, "transfer.amount", req.amount.toString())
 
+  // Fetch both balances before recording — these values are passed to
+  // Ledger.Transfers.recordTransfer which in turn passes them to the
+  // @proof_required balancePreservation oracle.
   match Db.connectFromEnv() {
     case Err(e) -> {
       OTel.setSpanError(span, e.message)
@@ -198,9 +201,6 @@ pub func handleCreateTransfer(@body req: in CreateTransferRequest, authToken: St
       Err(Web.serviceUnavailable("database unavailable"))
     }
     case Ok(conn) -> match Ledger.Accounts.getBalance(conn, req.fromId) { case Err(e) -> { conn.close(); OTel.setSpanError(span, Ledger.Accounting.errorMessage(e)); OTel.endSpan(span); Err(ledgerErrToApi(e)) }; case Ok(fromBalance) -> { if fromBalance < req.amount { conn.close(); OTel.setSpanError(span, "insufficient funds"); OTel.endSpan(span); return Err(Web.unprocessable("insufficient funds: balance " + fromBalance.toString() + ", needed " + req.amount.toString(), [])) }; match Ledger.Accounts.getBalance(conn, req.toId) { case Err(e) -> { conn.close(); OTel.setSpanError(span, Ledger.Accounting.errorMessage(e)); OTel.endSpan(span); Err(ledgerErrToApi(e)) }; case Ok(toBalance) -> match Ledger.Transfers.recordTransfer(conn, req.fromId, req.toId, req.amount, req.note, fromBalance, toBalance) { case Err(e) -> { conn.close(); OTel.setSpanError(span, Ledger.Accounting.errorMessage(e)); OTel.endSpan(span); Err(ledgerErrToApi(e)) }; case Ok(transfer) -> { conn.close(); OTel.setSpanAttribute(span, "transfer.id", transfer.id.toString()); OTel.endSpan(span); Ok(Ledger.Transfers.transferToJson(transfer)) } } } } }
-    // Fetch both balances before recording — these values are passed to
-    // Ledger.Transfers.recordTransfer which in turn passes them to the
-    // @proof_required balancePreservation oracle.
   }
 }
 
