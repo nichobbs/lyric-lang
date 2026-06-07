@@ -239,6 +239,22 @@ func testNonObjectParamEntrySkipped(): Unit {
   assertEqual(c.decls[0].params[1].name, "b", "non_object_param_entry_skipped: p1")
 }
 
+// Non-string entries in the `requiresClauses` array are coerced to ""
+// rather than skipped (F# parity: matches safeStr empty-string default).
+// This differs from the decl/param skip behaviour: non-string entries are
+// preserved with empty-string placeholders, not dropped (#1240).
+func testStrArrayNonStringElementCoercedToEmpty(): Unit {
+  val json =
+    "{\"decls\":[" +
+    "  {\"name\":\"f\",\"requires\":[42, \"x > 0\", null]}" +
+    "]}"
+  val c = unwrapOrFail(parseFromJson(json), "str_array_coerce")
+  assertEqualInt(c.decls[0].requiresClauses.count, 3, "str_array_coerce: count preserved")
+  assertEqual(c.decls[0].requiresClauses[0], "", "str_array_coerce: number → empty")
+  assertEqual(c.decls[0].requiresClauses[1], "x > 0", "str_array_coerce: string kept")
+  assertEqual(c.decls[0].requiresClauses[2], "", "str_array_coerce: null → empty")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. In-process resource readers (#1229 Phase A.3)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -589,6 +605,7 @@ func main(): Int {
   testReadFromFileInProcess()
   testReadAllContractsFromFileSinglePkg()
   testNonObjectParamEntrySkipped()
+  testStrArrayNonStringElementCoercedToEmpty()
   testEscapeJsonBasic()
   testContractToJsonRoundTrip()
   testContractToJsonOmitsDefaults()
