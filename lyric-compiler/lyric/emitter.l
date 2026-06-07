@@ -1188,14 +1188,14 @@ pub func emitPerPackageClosure(entrySource: in String, outDir: in String, target
     // which live in the dep's own dependencies.
     val closure: List[String] = newList()
     val queue: List[String] = newList()
-    val startIdx = indexOfString(cNames, payload.name)
-    if startIdx >= 0 {
-      val direct = cDeps[startIdx]
-      var qi = 0
-      while qi < direct.count {
-        queue.add(direct[qi])
-        qi = qi + 1
-      }
+    // cNames / cDeps were built by iterating `compilerPayloads` in order, so
+    // cDeps[ci] is exactly this payload's direct compiler imports — no name
+    // lookup needed (and none can fail: ci indexes the same list).
+    val direct = cDeps[ci]
+    var qi = 0
+    while qi < direct.count {
+      queue.add(direct[qi])
+      qi = qi + 1
     }
     while queue.count > 0 {
       val dep = queue[queue.count - 1]
