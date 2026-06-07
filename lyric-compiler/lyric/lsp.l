@@ -770,6 +770,7 @@ func renderType(cr: in CheckResult, ty: in Type): String {
     case TySelf -> "Self"
     case TyVar(n) -> n
     case TyError -> "<error>"
+    case TyException -> "Exception"
   }
 }
 

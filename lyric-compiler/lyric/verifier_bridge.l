@@ -42,6 +42,7 @@ func levelDisplay(lvl: in VerificationLevel): String {
     case VLProofRequired -> "proof_required"
     case VLProofRequiredUnsafe -> "proof_required(unsafe_blocks_allowed)"
     case VLProofRequiredChecked -> "proof_required(checked_arithmetic)"
+    case VLAxiom -> "@axiom"
   }
 }
 

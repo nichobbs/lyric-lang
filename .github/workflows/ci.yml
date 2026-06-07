@@ -911,6 +911,40 @@ jobs:
           fi
           echo "all Std.* packages self-host-compile; self-hosted Std.Sort sorts correctly"
 
+      # Whole compiler self-host-compiles (docs/41 §R7 front-end completeness).
+      # Drives emitPerPackageClosure over the entire Lyric.Cli import closure —
+      # all ~73 Lyric.* / Msil.* / Jvm.* compiler packages — and asserts every
+      # one emits.  Each package runs the full self-hosted middle-end + codegen,
+      # so success means the self-hosted front-end (notably its match-exhaustiveness
+      # checking, which is stricter than the F# stage-0's advisory pass) accepts
+      # the compiler's own source.  Guards against reintroducing a non-exhaustive
+      # match (the T0016 class that previously blocked Msil.Codegen on
+      # MGenericInstByName, Lyric.Lsp on TyException, Lyric.VerifierBridge on
+      # VLAxiom).  This is the prerequisite for a self-hosted-built toolchain.
+      - name: Whole compiler self-host-compiles (R7 front-end completeness)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          # Lyric.VerifierBridge is a protocol bridge not in the Lyric.Cli runtime
+          # closure, so import it explicitly to cover its (VLAxiom) fix too.
+          printf 'package CompilerSelfHost\nimport Lyric.Cli\nimport Lyric.VerifierBridge\nfunc main(): Int { 0 }\n' > "$work/all.l"
+          "$lyric_bin" --internal-perpackage-build "$work/all.l" "$work/out"
+          for dll in Lyric.Lyric.Cli.dll Lyric.Msil.Codegen.dll Lyric.Lyric.Lsp.dll Lyric.Lyric.VerifierBridge.dll Lyric.Jvm.Codegen.dll; do
+            if [ ! -f "$work/out/$dll" ]; then
+              echo "::error::expected self-hosted compiler DLL missing: $dll"
+              exit 1
+            fi
+          done
+          n="$(ls "$work/out"/Lyric.Lyric.*.dll "$work/out"/Lyric.Msil.*.dll "$work/out"/Lyric.Jvm.*.dll 2>/dev/null | wc -l)"
+          echo "whole compiler self-host-compiles: $n compiler-package DLLs emitted"
+
       # Slice-length / String-comparison self-test (#2539).  Exercises two
       # self-hosted MSIL codegen fixes: (1) `String` relational operators
       # (`<` / `>` / `<=` / `>=`) route through `String.CompareOrdinal`
