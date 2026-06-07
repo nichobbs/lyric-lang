@@ -841,6 +841,7 @@ pub union ListOp {
   case LoContains  // callvirt Contains(!0) -> bool
   case LoRemoveAt  // callvirt RemoveAt(int32)
   case LoCastclass // castclass List`1<elemTy>
+  case LoToArray   // callvirt ToArray() -> !0[]
 }
 pub union DictOp {
   case DoCtor        // newobj Dictionary`2<k,v>::.ctor()
@@ -862,6 +863,7 @@ pub union DictOp {
 pub record ListTokens {
   typeSpec: Int   ctor:     Int   add:      Int   getItem:  Int
   setItem:  Int   getCount: Int   contains: Int   removeAt: Int
+  toArray:  Int
 }
 
 pub record DictTokens {
@@ -1672,6 +1674,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         case LoContains  -> emitCallvirt(mb, lt.contains)
         case LoRemoveAt  -> emitCallvirt(mb, lt.removeAt)
         case LoCastclass -> emitCastclass(mb, lt.typeSpec)
+        case LoToArray   -> emitCallvirt(mb, lt.toArray)
       }
     }
     case MDictOp(op, keyTy, valTy) -> {
@@ -2969,8 +2972,12 @@ pub func listTokensForLowering(ctx: in LoweringCtx, elemTy: in MsilType): ListTo
   val cnsTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "Contains", "list_cns_" + key, buildInstanceMethodSig(cnsP, MBool))
   val rmP: List[MsilType] = newList()  rmP.add(MInt)
   val rmTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "RemoveAt", "list_rm_" + key, buildInstanceMethodSig(rmP, MVoid))
+  // `instance !0[] ToArray()` — materialises a genuine CLR array from the list,
+  // used to bridge a List-backed value into an array-typed boundary (#2592).
+  val taP: List[MsilType] = newList()
+  val taTok = 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, "ToArray", "list_toarr_" + key, buildInstanceMethodSig(taP, MArray(elemTy = MTypeVar(index = 0))))
   val t = ListTokens(typeSpec = 0x1B000000 + tsRow, ctor = ctorTok, add = addTok, getItem = getTok,
-                     setItem = setTok, getCount = cntTok, contains = cnsTok, removeAt = rmTok)
+                     setItem = setTok, getCount = cntTok, contains = cnsTok, removeAt = rmTok, toArray = taTok)
   ctx.listTokenCache.add(key, t)
   t
 }

@@ -22215,3 +22215,40 @@ self-hosted emitter (returns the receiver), so a `List[T]` value crossing into a
 the `bootstrap.sh` stage-1 rewire to ship the self-hosted-built bundle, are the
 remaining pieces (the `cli.l::sortFileList` local-sort workaround stays until
 then).
+
+### D-progress-459 — `List.toArray()` materialises a genuine CLR array (#2592 conversion half)
+
+**Status:** Shipped — `List.toArray()` on a concrete `List[T]` now emits a real
+`List`1<T>::ToArray()` call returning a genuine CLR `T[]`, instead of the
+bootstrap no-op that returned the `List` receiver unchanged.  This is the
+conversion half of #2592's cross-emitter slice ABI fork (D-progress-458 was the
+value-construction half — slice literals).  A `List[T]` value can now be handed
+to an array-typed boundary — the F#-built, array-based stdlib
+(`Std.Sort.sortStrings(String[])`, `Std.Core.sumInts(Int[])`,
+`Std.String.join(_, String[])`, …) — via `xs.toArray()`, binding as a real array
+instead of mis-binding a `List` to an array parameter.
+
+What landed:
+
+- **`lowering.l` `LoToArray`**: a new `ListOp` whose MemberRef is
+  `instance !0[] ToArray()` on the closed `List`1<e>` TypeSpec (built in
+  `listTokensForLowering`, cached alongside the other list ops); `lowerMInsn`
+  dispatches it to `callvirt`.
+- **`codegen.l` `toArray` arm**: for a concrete `MConcreteList(e)` receiver,
+  emit `MListOp(LoToArray, e)` and track the result as `MArray(e)`.  An erased /
+  legacy `List<object>` receiver (`MListOf` / `MObject`) keeps the no-op
+  (returns the receiver) so a `for x in xs.toArray()` loop still recovers the
+  element type via `get_Count` / `get_Item` (the #2126 fix); only a genuine
+  `List<e>` is convertible to a typed `e[]`.
+
+Verified by `lyric-compiler/lyric/toarray_array_abi_self_test.l` (run in CI via
+native `lyric test`): 3 cases over a concrete `List[Int]` / `List[String]`
+`.toArray()` fed into `Std.Core.sumInts`/`maxInt` and `Std.String.join` — broken
+(runtime fault) against a pre-fix binary, passing after.  Full Emitter (834) +
+CLI (84) suites stay green; the D-progress-458 slice-literal test, the
+`generic_slice_self_test` (6), and both stdlib manifests still pass.
+
+Remaining on #2592: the `bootstrap.sh` stage-1 rewire to ship the
+self-hosted-built bundle (so the shipped `Std.Sort` is itself self-hosted /
+array-based and the `cli.l::sortFileList` workaround can be retired) is the last
+piece.

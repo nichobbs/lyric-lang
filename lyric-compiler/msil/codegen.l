@@ -7327,14 +7327,25 @@ func lowerMethodCallMsil(
       MVoid
     }
   } else if memberName == "toArray" {
-    // List::toArray(): return the list itself as the iterable (bootstrap).
-    // The SFor codegen iterates via get_Count / get_Item, which work on the
-    // List<object> directly, so no conversion is needed.  Return the receiver's
-    // tracked type (e.g. `MListOf(elem)`) rather than erasing to `MObject`, so a
-    // `for x in xs.toArray()` loop can recover the element type and bind `x`
-    // with it — an erased loop variable broke `match x` / field access on `x`
-    // (#2126).
-    recvTy
+    // `List.toArray()`: for a concrete `List<e>` (a genuine `List`1<e>` at
+    // runtime, #2361 Stage 2) materialise a real CLR `e[]` via `ToArray()`, so
+    // the result binds at an array-typed boundary — notably the F#-compiled,
+    // array-based stdlib (`Std.Sort.sortStrings(String[])`, …).  This is the
+    // conversion half of #2592 (the literal half is the `EList` `MArray` arm).
+    //
+    // For an erased / legacy `List<object>` receiver (`MListOf` / `MObject`) the
+    // call stays a no-op returning the receiver: those iterate via
+    // `get_Count` / `get_Item` (which work on the list directly), and returning
+    // the tracked `MListOf(elem)` keeps the element type a `for x in
+    // xs.toArray()` loop binds `x` with (an erased loop variable broke
+    // `match x` / field access, #2126).
+    match recvTy {
+      case MConcreteList(e) -> {
+        insns.add(MListOp(op = LoToArray, elemTy = e))
+        MArray(elemTy = e)
+      }
+      case _ -> recvTy
+    }
   } else if memberName == "toString" {
     insns.add(MCallvirt(methodToken = cctx.tokObjToString))
     MString
