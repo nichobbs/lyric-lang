@@ -261,7 +261,7 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
       bufU1(w, 0x15)   // ELEMENT_TYPE_GENERICINST
       bufU1(w, 0x12)   // ELEMENT_TYPE_CLASS (reference type)
       writeCompressedInt(w, typeRefCode)
-      bufU1(w, typeArgs.count)
+      writeCompressedInt(w, typeArgs.count)
       var gi = 0
       while gi < typeArgs.count {
         bufMsilType(w, genericArgType(typeArgs[gi]))
@@ -272,7 +272,7 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
       bufU1(w, 0x15)   // ELEMENT_TYPE_GENERICINST
       bufU1(w, 0x11)   // ELEMENT_TYPE_VALUETYPE (struct generic, e.g. AsyncTaskMethodBuilder<T>)
       writeCompressedInt(w, typeRefCode)
-      bufU1(w, typeArgs.count)
+      writeCompressedInt(w, typeArgs.count)
       var gi = 0
       while gi < typeArgs.count {
         bufMsilType(w, genericArgType(typeArgs[gi]))
@@ -1390,7 +1390,7 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
       bufU1(w, 0x15)  // ELEMENT_TYPE_GENERICINST
       bufU1(w, 0x12)  // ELEMENT_TYPE_CLASS
       writeCompressedInt(w, typeRefCode)
-      bufU1(w, typeArgs.count)
+      writeCompressedInt(w, typeArgs.count)
       var gi = 0
       while gi < typeArgs.count {
         bufMsilTypeWithCtx(w, genericArgType(typeArgs[gi]), ctx)
@@ -1401,7 +1401,7 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
       bufU1(w, 0x15)  // ELEMENT_TYPE_GENERICINST
       bufU1(w, 0x11)  // ELEMENT_TYPE_VALUETYPE
       writeCompressedInt(w, typeRefCode)
-      bufU1(w, typeArgs.count)
+      writeCompressedInt(w, typeArgs.count)
       var gi = 0
       while gi < typeArgs.count {
         bufMsilTypeWithCtx(w, genericArgType(typeArgs[gi]), ctx)
