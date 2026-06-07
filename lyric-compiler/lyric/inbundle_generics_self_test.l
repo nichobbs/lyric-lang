@@ -124,7 +124,7 @@ union Either[L, R] {
   case Rgt(r: R)
 }
 
-// A multi-field generic case (`Both(a: T, b: T)`): the value-type instantiation
+// A multi-field generic case (`Both(a: A, b: B)`): the value-type instantiation
 // `Pairish[Int, Int]` exercises the arity-suffixed name + open-self-TypeSpec
 // ctor `stfld` that keep both fields at the correct per-instantiation offset.
 union Pairish[A, B] {
