@@ -283,6 +283,8 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
   // Update cursor to the end of the last import (or package if no imports).
   if pf.file.imports.count > 0 {
     cursor = pf.file.imports[pf.file.imports.count - 1].span.endPos.offset
+  } else {
+    cursor = pf.file.packageDecl.span.endPos.offset
   }
 
   // Walk items.  For each item: emit the source slice from the

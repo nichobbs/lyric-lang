@@ -686,25 +686,19 @@ func sortStrings(xs: in List[String]): List[String] {
     return empty
   }
 
-  // Sort non-empty strings.
-  val remaining: List[String] = newList()
-  var nc = 0
-  while nc < nonEmpty.count {
-    remaining.add(nonEmpty[nc])
-    nc = nc + 1
-  }
+  // Sort non-empty strings via selection sort.
   val sorted: List[String] = newList()
-  while remaining.count > 0 {
+  while nonEmpty.count > 0 {
     var bestIdx = 0
     var k = 1
-    while k < remaining.count {
-      if remaining[k] < remaining[bestIdx] {
+    while k < nonEmpty.count {
+      if nonEmpty[k] < nonEmpty[bestIdx] {
         bestIdx = k
       }
       k = k + 1
     }
-    sorted.add(remaining[bestIdx])
-    remaining.removeAt(bestIdx)
+    sorted.add(nonEmpty[bestIdx])
+    nonEmpty.removeAt(bestIdx)
   }
 
   // Append empty strings at the end.

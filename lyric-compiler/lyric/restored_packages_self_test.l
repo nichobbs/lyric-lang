@@ -311,9 +311,8 @@ func testSynthesiseArtifactWhitelistedT0010Filtered(): Unit {
 // succeed when the typecheck/parse produces only DiagWarning diagnostics
 // (no DiagError). This documents the filterRealErrors behaviour — dropped
 // warnings allow synthesis to proceed even when diagnostics.count > 0.
-// TODO: Add this test once a scenario that produces DiagWarning without
-// DiagError is identified in the compiler pipeline. Currently no self-test
-// case triggers warnings independently of errors.
+// See issue #1265 for the test case, pending identification of a compiler
+// scenario that produces warnings independently of errors.
 
 func main(): Int {
   testLoadRunningPe()
