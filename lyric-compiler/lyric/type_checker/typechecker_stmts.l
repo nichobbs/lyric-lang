@@ -47,6 +47,8 @@ func bindPattern(sc: in Scope, pat: in Pattern, ty: in Type): Unit {
       bindPattern(sc, inner, ty)
     }
     case PRecord(_, fields, _) -> {
+      // Field types are TyError here because bindPattern has no tbl access; the
+      // typed path (bindPatternTyped in typechecker_exprs.l) resolves real field types.
       var i = 0
       while i < fields.count {
         match fields[i] {
@@ -107,7 +109,7 @@ pub func checkStatement(
       // assignment whose target is an immutable binding is rejected (T0087).
       // `var` locals and `out`/`inout` params are mutable and unaffected.
       match target.kind {
-        case EPath(p) -> if p.segments.count == 1 { match scopeTryFind(sc, p.segments[0]) { case Some(b) -> if not b.isMutable { diag.add(errorDiagnostic("T0087", "cannot reassign immutable binding '" + p.segments[0] + "' (a `val`/`let` or an `in` parameter)", stmt.span)) }; case None -> {  } } }
+        case EPath(p) -> if p.segments.count == 1 { match scopeTryFind(sc, p.segments[0]) { case Some(b) -> if not b.isMutable { diag.add(errorDiagnostic("T0087", "cannot reassign immutable binding '" + p.segments[0] + "' (a `val`/`let` or an `in` parameter)", target.span)) }; case None -> {  } } }
         case _ -> {
         }
       }
@@ -252,13 +254,7 @@ pub func checkBlock(
       case SExpr(e) -> {
         lastExprType = inferExpr(sc, tbl, sigs, diag, e)
       }
-      // A `try`/`catch` in value position (e.g. a trailing `try`/`catch` bound
-      // to a `val`) yields the branch value, not `Unit`.  Check the body, each
-      // catch handler (with the exception bound), and `finally` here — mirroring
-      // checkStatement's STry arm — and join the branch types: the try body's
-      // type wins, except a `Never` (always-diverging) body defers to a handler.
-      // The bootstrap codegen lowers this via a shared temp, so a `val r = try …`
-      // must type `r` as the branch value rather than `Unit` (#1488 flip).
+      // Codegen lowers value-position try via a shared temp — type the expression as the body (or first handler if body is Never).
       case STry(body, catches, fin) -> {
         var resultTy = checkBlock(sc, tbl, sigs, genericNames, returnTy, diag, body)
         var ci = 0
@@ -346,16 +342,7 @@ func hasConflictingExternHints(anns: in List[Annotation]): Bool {
   hasStatic and hasInstance
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// §3a. `out` definite-assignment support (#1487 §5.2).
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Collect the names assigned anywhere in a function body.  Used to enforce that
-// every `out` parameter is assigned before the function returns (T0086).  The
-// check is the sound subset "never assigned anywhere is a definite violation";
-// full all-paths definite-assignment (partial-assignment detection) is a
-// follow-up.  The walk is complete over statement and block-bearing forms (so a
-// param assigned in any branch / loop / nested block is not falsely flagged).
+// T0086: sound never-assigned subset only; full all-paths definite-assignment is a follow-up.
 func addAssignedTarget(target: in Expr, acc: in List[String]): Unit {
   match target.kind {
     case EPath(p) -> if p.segments.count == 1 { acc.add(p.segments[0]) }
@@ -442,6 +429,9 @@ func collectAssignedExpr(e: in Expr, acc: in List[String]): Unit {
       }
     }
     case ELambda(_, b) -> collectAssignedBlock(b, acc)
+    // Known false-negative: an assignment inside a lambda body suppresses T0086 even
+    // if the lambda is never called before the function exits.  The alternative
+    // (excluding ELambda) would false-positive valid capture-and-call patterns.
     case _ -> {
     }
   }
@@ -525,10 +515,17 @@ func checkOutDefiniteAssignment(diag: in List[Diagnostic], fn: in FunctionDecl, 
     return
   }
   val assigned: List[String] = newList()
+  var bodyless = false
   match fn.body {
     case None -> {
+      bodyless = true
     }
     case Some(b) -> match b { case FBBlock(blk) -> collectAssignedBlock(blk, assigned); case FBExpr(e) -> collectAssignedExpr(e, assigned) }
+  }
+  if bodyless {
+    // body-less signatures (interface/extern decls): nothing to check; an empty
+    // `assigned` list would otherwise false-flag every `out` param as T0086.
+    return
   }
   var k = 0
   while k < sig.params.count {
