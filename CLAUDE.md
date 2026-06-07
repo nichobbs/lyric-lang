@@ -223,6 +223,14 @@ to open PRs as ready-for-review. In this repository, the policy is:
    - Promote the PR to "ready for review" via the GitHub API
    - Log the promotion action
 
+   **Before agent promotion, verify these manual quality gates:**
+   - The diff matches the PR description (no stray debug commits or
+     half-finished work-in-progress).
+   - You are not planning further pushes before review. If you realize
+     you need to iterate more after CI passes but before promotion,
+     re-draft the PR manually via GitHub ("Convert to draft") and push
+     additional commits.
+
 This allows agents to actively monitor PR status instead of relying
 on webhook events that may not fire for successful builds.
 
