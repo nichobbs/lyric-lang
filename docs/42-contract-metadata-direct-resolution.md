@@ -50,6 +50,17 @@ Visibility guarantees are **preserved and strengthened**:
 ### Consistency with auto-FFI
 The approach mirrors how the compiler handles external types (`System.Math`, JDK types): read metadata once, build signatures, trust the compiled form. Reduced work, same safety.
 
+## Alternatives Considered
+
+| Alternative | How it works | Pros | Cons | Why rejected |
+|---|---|---|---|---|
+| **Status quo (synthesize per consumer)** | Keep current synthesis → parse → recheck cycle | Validates each consumer; reuses existing code | Duplicated work per consumer; slow for bundled DLLs | Performance bottleneck; doesn't scale |
+| **Cache synthesis results** | Synthesize/parse/check once at library build; cache result in DLL | Eliminates per-consumer re-work | Preambles are consumer-specific (different for each consumer); cache format adds complexity | Can't pre-compute preambles; doesn't solve sibling references |
+| **Binary AST serialization** | Emit parsed AST in a binary format; deserialize at load time | Faster than re-parsing | Requires AST serialization format; breaks on parser changes; adds versioning complexity | Simpler to stay with metadata + on-demand symbol table |
+| **Pre-compiled symbol tables** | Emit SymbolTable directly as binary blob | No parse/check overhead | Requires symbol table serialization; couples library format to compiler; version brittleness | Metadata-direct is more flexible and cleaner |
+| **Lazy type resolution** | Don't resolve types upfront; resolve on-demand as encountered | Minimal upfront work | Complex to implement; ordering issues with preambles; harder to debug | Over-engineered for this problem |
+| **Explicit type exports (like C headers)** | Emit actual compiled type definitions consumers link against | Traditional model; robust | Loses contract abstraction; visibility control weak; increases binary size | Incompatible with Lyric's contract-based design |
+
 ## Changes Required
 
 ### 1. Metadata Format (breaking change — format version bump)
@@ -74,23 +85,23 @@ pub record ContractDecl {
 }
 ```
 
-Add `dependencies` field to `Contract`:
+Add `dependencies` field to `Contract` and include contract hash for integrity:
 
 ```lyric
 pub record Contract {
   packageName: String
   version: String
   level: String
-  formatVersion: Int              // bump to 3
+  formatVersion: Int              // bump to 3 (v2 support dropped immediately)
   decls: List[ContractDecl]
   dependencies: List[ContractDependency]  // NEW: transitive deps metadata
+  contractHash: String             // NEW: SHA256 hash of this contract's JSON
 }
 
 pub record ContractDependency {
   packageName: String
   version: String
-  // Optional: hash of the dependency's contract for integrity checking
-  contractHash: Option[String]
+  contractHash: String             // SHA256 hash of the dependency's contract
 }
 ```
 
@@ -175,30 +186,44 @@ val symtbl = buildSymbolTable(art.contract, art.dependencies)
 
 ## Migration Path
 
-1. **Phase 1**: Add format version 3 support to the metadata parser (backwards-compatible, read v2 and v3)
-2. **Phase 2**: Update the F# bootstrap emitter to emit format v3 (with visibility + dependencies)
-3. **Phase 3**: Implement direct symbol table builder in `restored_packages.l`
-4. **Phase 4**: Migrate bridge to use direct loader (remove synthesis/parse/recheck)
-5. **Phase 5**: Deprecate and remove synthesis-based loader (once all libraries are v3)
+**v2 support is dropped immediately** — breaking change in one release.
+
+1. **Phase 1**: Update the F# bootstrap emitter to emit format v3 only (with visibility + dependencies + contractHash)
+2. **Phase 2**: Implement direct symbol table builder in `restored_packages.l` (no synthesis/parse/recheck)
+3. **Phase 3**: Migrate bridge to use direct loader
+4. **Phase 4**: Remove synthesis-based loader and temporary v2 compat code
+
+**Publish guidance**: Users publishing libraries must rebuild with the new emitter to emit v3 contracts. The CLI will reject v2 contracts with a clear error message.
+
+**Consumer requirement**: All consumers must upgrade to a compiler version that reads v3 contracts.
 
 ## Risks and Mitigations
 
 | Risk | Mitigation |
 |------|-----------|
-| Format version bump requires re-emit of all published libraries | Gradual deprecation (v2 support continues for one cycle); encourage early adoption with release notes |
-| Trust model shift (fewer per-consumer checks) | Validation at library-build time is more rigorous; add optional contract hash to manifest for integrity |
-| Complexity in direct symbol table builder | Write thorough tests; mirror the symbol-building logic from the current parse/check path |
-| Transitive dependency resolution bugs | Embed full metadata chain (not just direct dependencies); validate completeness at library build |
+| **Breaking change (v2 → v3 immediate)** | Clear error message guides users to rebuild; publish release notes with detailed migration steps; tooling can warn early if a library hasn't been rebuilt |
+| **Trust model shift (fewer per-consumer checks)** | Contract hash for integrity checking; rigorous validation at library-build time; consider optional signature-based verification for published libraries |
+| **Complexity in direct symbol table builder** | Write thorough tests; mirror symbol-building logic from current parse/check path; validate parity with old approach via round-trip testing |
+| **Transitive dependency resolution bugs** | Embed full dependency metadata chain; validate completeness at library build; hash mismatch catches corrupted/out-of-sync dependencies |
+| **Tooling ecosystem needs update** | Package managers and build tools must understand the new format; coordinate release with documentation |
+
+## Decisions Made
+
+**D1 — Metadata-direct symbol table construction**: Chosen over alternatives (see "Alternatives Considered"). Faster, simpler, consistent with auto-FFI.
+
+**D2 — Contract hash required**: Include SHA256 hash of each contract (and each dependency) for integrity checking. Required, not optional.
+
+**D3 — v2 support dropped immediately**: Breaking change. Users must rebuild libraries with the new emitter in the next release. Clear error messages guide users.
+
+**D4 — Explicit visibility field**: Required in metadata format. No string-parsing.
 
 ## Open Questions
 
-**Q1**: Should we compute and embed a hash of each contract to detect corruption or tampering? (Optional; improves integrity checking at load time.)
+**Q1**: When a consumer loads a bundled DLL with multiple packages, should we flatten the dependency manifests into one combined list, or keep them per-package? (Propose: keep per-package, merge at load time for clarity.)
 
-**Q2**: When a consumer loads a bundled DLL with multiple packages, should we flatten the dependency manifests into one combined list, or keep them per-package? (Propose: keep per-package, merge at load time for clarity.)
+**Q2**: Can we add a `@stable(since = "0.1")` on the new fields so they're part of the stable ABI surface? (Yes; they're metadata-only, not part of the runtime API.)
 
-**Q3**: Should format v2 support be dropped immediately or maintained for one release cycle? (Propose: maintain for one cycle, deprecation warning, then drop.)
-
-**Q4**: Can we add a `@stable(since = "0.1")` on the new fields so they're part of the stable ABI surface? (Yes; they're metadata-only, not part of the runtime API.)
+**Q3**: How should the CLI error message guide users when they try to consume a v2 contract? (Propose: "Contract metadata format v2 is no longer supported. Rebuild the library with the latest compiler and re-publish.")
 
 ## References
 
