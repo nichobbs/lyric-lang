@@ -214,21 +214,20 @@ to open PRs as ready-for-review. In this repository, the policy is:
    review-feedback fixes, additional commits in the same logical
    chunk — while the PR is still a draft. Auto-merge can be enabled
    on a draft (it just won't merge until the PR is marked ready).
-3. **Agent-driven promotion to ready** — After opening a draft PR, if
-   you are subscribed to the PR via `subscribe_pr_activity`, the agent
-   will periodically check the PR's commit status. When all CI checks
-   pass and the PR is still in draft, the agent will:
-   - Verify all required checks passed
-   - Check that the PR is still in draft status
-   - Promote the PR to "ready for review" via the GitHub API
-   - Log the promotion action
+3. **Automatic promotion to ready** — The CI workflow automatically marks
+   the PR ready for review once the build and test suite pass, subject to
+   quality gates. When all gates pass:
+   - All required checks passed
+   - PR is still in draft status
+   - Branch is rebased clean on `main` (no merge conflicts)
+   - The workflow calls the GitHub API to promote the PR
 
-   **Before promotion, these quality gates are verified:**
+   **Quality gates verified before promotion:**
+   - **Automated:** Build and test CI has passed (the `success()` guard
+     ensures this).
    - **Automated:** Branch is rebased clean on `main` (no merge conflicts).
      The auto-promote step checks `mergeable_state` and skips promotion
      if conflicts are detected.
-   - **Automated:** Build and test CI has passed (the `success()` guard
-     ensures this).
    - **Manual:** The diff matches the PR description (no stray debug commits
      or half-finished work-in-progress).
    - **Manual:** You are not planning further pushes before review. If you
@@ -236,8 +235,9 @@ to open PRs as ready-for-review. In this repository, the policy is:
      re-draft the PR manually via GitHub ("Convert to draft") and push
      additional commits.
 
-This allows agents to actively monitor PR status instead of relying
-on webhook events that may not fire for successful builds.
+This allows automatic promotion without reliance on manual handoff,
+while preserving all quality gates needed to ensure review happens
+on validated, conflict-free code.
 
 Why draft-first with agent-driven promotion matters:
 
@@ -257,10 +257,9 @@ Why draft-first with agent-driven promotion matters:
   waiting for events that may not fire.
 
 When the assigned task spans multiple PRs, each PR follows this
-lifecycle independently: open as draft, iterate, subscribe the agent
-to monitor status, and move on to the next PR. The agent will promote
-to ready once CI passes, and you can address review feedback on each
-PR as it arrives via webhook events.
+lifecycle independently: open as draft, iterate, and the workflow
+will automatically promote to ready once CI passes. Move on to the
+next PR while waiting for review feedback on the current one.
 
 #### After creating a PR
 
