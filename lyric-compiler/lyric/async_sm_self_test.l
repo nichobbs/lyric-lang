@@ -484,3 +484,69 @@ test "#2367: SAssign: await on RHS of var reassignment" {
   val result = await asyncAssignAwait(7)
   assertEqualInt(result, 8, "asyncAssignAwait(7): var=0 then var=await(7+1) = 8")
 }
+
+// ── #2289: `return` inside a protected region (try/catch/finally) in a
+// no-await async func.  SReturn inside a try region stores into retvalSlot and
+// `leave`s to the SM epilogue; that slot must be the same one the epilogue
+// reads for SetResult (it formerly defaulted to an MVoid `__retval`, losing the
+// value and emitting invalid IL).
+async func asyncTryReturn(): Int {
+  try {
+    return 42
+  } catch Bug as _ {
+    return 0
+  }
+}
+
+async func asyncTryCatchReturn(x: in Int): Int {
+  try {
+    if x > 0 {
+      panic("boom")
+    }
+    return 1
+  } catch Bug as _ {
+    return 99
+  }
+}
+
+async func asyncTryFinallyReturn(): Int {
+  try {
+    return 5
+  } finally {
+    val _ = 0
+  }
+}
+
+// Mixes a protected-region return (try body) with a fall-through trailing value
+// after the try/catch — exercises both the retvalSlot leave path and the
+// trailing-stash path in one function.
+async func asyncTryTrailing(x: in Int): Int {
+  try {
+    if x > 0 {
+      return 10
+    }
+  } catch Bug as _ {
+    return 0
+  }
+  20
+}
+
+test "#2289: return inside try body in no-await async func" {
+  val result = await asyncTryReturn()
+  assertEqualInt(result, 42, "asyncTryReturn: try-body return reaches SetResult")
+}
+
+test "#2289: return inside catch handler in no-await async func" {
+  assertEqualInt(await asyncTryCatchReturn(0), 1, "asyncTryCatchReturn(0): try body returns 1")
+  assertEqualInt(await asyncTryCatchReturn(1), 99, "asyncTryCatchReturn(1): catch handler returns 99")
+}
+
+test "#2289: return inside try with finally in no-await async func" {
+  val result = await asyncTryFinallyReturn()
+  assertEqualInt(result, 5, "asyncTryFinallyReturn: finally runs, value 5 preserved")
+}
+
+test "#2289: protected-region return plus trailing fall-through value" {
+  assertEqualInt(await asyncTryTrailing(1), 10, "asyncTryTrailing(1): try-region return = 10")
+  assertEqualInt(await asyncTryTrailing(0), 20, "asyncTryTrailing(0): fall-through trailing value = 20")
+}
