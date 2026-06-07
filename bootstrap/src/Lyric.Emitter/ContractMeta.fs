@@ -29,7 +29,13 @@ open System.IO
 open System.Text
 open Lyric.Parser.Ast
 
-let private FORMAT_VERSION = 2
+let private FORMAT_VERSION = 3
+
+/// One serialised direct dependency (v3 format).
+type ContractDependency =
+    { PackageName:  string
+      Version:      string
+      ContractHash: string }
 
 /// One serialised public declaration.
 ///
@@ -40,6 +46,8 @@ type ContractDecl =
     { Kind:     string         // "func" | "record" | "union" | "enum" | …
       Name:     string
       Repr:     string         // canonical signature / shape, free-form
+      /// Visibility level (v3 format). "pub" | "internal" | "" (package-private).
+      Visibility: string
       /// `@pure` annotation present on this declaration.
       Pure:     bool
       /// Stability level (D040 / Q011).
@@ -69,6 +77,10 @@ type Contract =
       /// `proof_required(checked_arithmetic)` / `axiom`.
       Level:         string
       FormatVersion: int
+      /// Direct dependencies: transitive deps list with contract hashes (v3+).
+      Dependencies: ContractDependency list
+      /// SHA256 hash of this contract's JSON (v3+).
+      ContractHash: string
       Decls:         ContractDecl list }
 
 module ContractDecl =
@@ -78,15 +90,16 @@ module ContractDecl =
     /// fixtures and decls of kinds that never carry contracts
     /// (records, enums, …).
     let basic (kind: string) (name: string) (repr: string) : ContractDecl =
-        { Kind      = kind
-          Name      = name
-          Repr      = repr
-          Pure      = false
-          Stability = ""
-          Requires  = []
-          Ensures   = []
-          Body      = None
-          Params    = [] }
+        { Kind       = kind
+          Name       = name
+          Repr       = repr
+          Visibility = "pub"
+          Pure       = false
+          Stability  = ""
+          Requires   = []
+          Ensures    = []
+          Body       = None
+          Params     = [] }
 
 module Contract =
 
@@ -98,6 +111,8 @@ module Contract =
           Version       = ver
           Level         = "runtime_checked"
           FormatVersion = 1
+          Dependencies  = []
+          ContractHash  = ""
           Decls         = decls }
 
 let private renderTypeExpr (te: TypeExpr) : string =
@@ -138,6 +153,14 @@ let private isPub (vis: Visibility option) =
     | Some (Pub _)      -> true
     | Some (Internal _) -> false
     | None              -> false
+
+/// Extract visibility as a string: "pub" | "internal" | "" (package-private).
+/// Used for v3 format metadata (D-progress-###).
+let private visibilityString (vis: Visibility option) : string =
+    match vis with
+    | Some (Pub _)      -> "pub"
+    | Some (Internal _) -> "internal"
+    | None              -> ""
 
 /// Encode the stability annotations on an `Item` as the canonical
 /// stability string stored in `ContractDecl.Stability`.
@@ -289,16 +312,18 @@ let private contractClauseStrings (cs: ContractClause list)
 
 let private declOf (it: Item) : ContractDecl option =
     let stab = stabilityStringOfItem it
+    let vis = visibilityString it.Visibility
     let mkDefault kind name repr =
-        { Kind      = kind
-          Name      = name
-          Repr      = repr
-          Pure      = false
-          Stability = stab
-          Requires  = []
-          Ensures   = []
-          Body      = None
-          Params    = [] }
+        { Kind       = kind
+          Name       = name
+          Repr       = repr
+          Visibility = vis
+          Pure       = false
+          Stability  = stab
+          Requires   = []
+          Ensures    = []
+          Body       = None
+          Params     = [] }
     // Extern types and protected types must be included regardless of visibility
     // so that contract type-checking can resolve them when public function
     // signatures reference these types.
@@ -338,15 +363,16 @@ let private declOf (it: Item) : ContractDecl option =
                 fn.Params
                 |> List.map (fun p -> p.Name, renderTypeExpr p.Type)
             Some
-                { Kind      = "func"
-                  Name      = fn.Name
-                  Repr      = repr
-                  Pure      = isPure
-                  Stability = stab
-                  Requires  = req
-                  Ensures   = ens
-                  Body      = body
-                  Params    = paramsStruct }
+                { Kind       = "func"
+                  Name       = fn.Name
+                  Repr       = repr
+                  Visibility = vis
+                  Pure       = isPure
+                  Stability  = stab
+                  Requires   = req
+                  Ensures    = ens
+                  Body       = body
+                  Params     = paramsStruct }
         | IRecord rd | IExposedRec rd ->
             let fs =
                 rd.Members
@@ -528,6 +554,8 @@ let buildContract
       Version       = version
       Level         = levelOfFile sf
       FormatVersion = FORMAT_VERSION
+      Dependencies  = []
+      ContractHash  = ""
       Decls         = anchorDecls @ ownDecls @ reexportDecls }
 
 let private escape (s: string) : string =
@@ -566,11 +594,26 @@ let private renderParams (ps: (string * string) list) : string =
     sb.Append "]" |> ignore
     sb.ToString()
 
+let private renderDependency (d: ContractDependency) : string =
+    sprintf "{\"packageName\":\"%s\",\"version\":\"%s\",\"contractHash\":\"%s\"}"
+        (escape d.PackageName) (escape d.Version) (escape d.ContractHash)
+
+let private renderDependencies (ds: ContractDependency list) : string =
+    let sb = StringBuilder()
+    sb.Append "[" |> ignore
+    ds |> List.iteri (fun i d ->
+        if i > 0 then sb.Append "," |> ignore
+        sb.Append (renderDependency d) |> ignore)
+    sb.Append "]" |> ignore
+    sb.ToString()
+
 let private renderDecl (d: ContractDecl) : string =
     let sb = StringBuilder()
     sb.Append (sprintf "{\"kind\":\"%s\",\"name\":\"%s\",\"repr\":\"%s\""
                 (escape d.Kind) (escape d.Name) (escape d.Repr))
         |> ignore
+    if d.Visibility <> "" then
+        sb.Append (sprintf ",\"visibility\":\"%s\"" (escape d.Visibility)) |> ignore
     if d.Stability <> "" then
         sb.Append (sprintf ",\"stability\":\"%s\"" (escape d.Stability)) |> ignore
     if d.Pure then
@@ -592,7 +635,7 @@ let private renderDecl (d: ContractDecl) : string =
     sb.ToString()
 
 /// Render a `Contract` as JSON.  Hand-rolled to avoid pulling in
-/// System.Text.Json on every emit.  Format-2 (D-progress-086).
+/// System.Text.Json on every emit.  Format-3 (D-progress-###).
 let toJson (c: Contract) : string =
     let sb = StringBuilder(1024)
     sb.Append "{\n" |> ignore
@@ -600,6 +643,10 @@ let toJson (c: Contract) : string =
     sb.Append (sprintf "  \"packageName\": \"%s\",\n" (escape c.PackageName)) |> ignore
     sb.Append (sprintf "  \"version\": \"%s\",\n" (escape c.Version)) |> ignore
     sb.Append (sprintf "  \"level\": \"%s\",\n" (escape c.Level)) |> ignore
+    // v3+ fields: dependencies and contractHash
+    if c.FormatVersion >= 3 then
+        sb.Append (sprintf "  \"dependencies\": %s,\n" (renderDependencies c.Dependencies)) |> ignore
+        sb.Append (sprintf "  \"contractHash\": \"%s\",\n" (escape c.ContractHash)) |> ignore
     sb.Append "  \"decls\": [\n" |> ignore
     c.Decls
     |> List.iteri (fun i d ->
@@ -755,6 +802,15 @@ let parseFromJson (json: string) : Contract option =
                     let t = getStrInElem inner "type" ""
                     yield n, t ]
             | _ -> []
+        let getDependencies () : ContractDependency list =
+            match root.TryGetProperty("dependencies") with
+            | true, arr when arr.ValueKind = System.Text.Json.JsonValueKind.Array ->
+                [ for el in arr.EnumerateArray() do
+                    let pkg = getStrInElem el "packageName" ""
+                    let ver = getStrInElem el "version" ""
+                    let hash = getStrInElem el "contractHash" ""
+                    yield { PackageName = pkg; Version = ver; ContractHash = hash } ]
+            | _ -> []
         let formatVersion =
             match root.TryGetProperty("formatVersion") with
             | true, e ->
@@ -766,6 +822,8 @@ let parseFromJson (json: string) : Contract option =
         let pkgStr = getStr "packageName" ""
         let verStr = getStr "version" "0.0.0"
         let level  = getStr "level" "runtime_checked"
+        let deps = getDependencies()
+        let hash = getStr "contractHash" ""
         let decls =
             match root.TryGetProperty("decls") with
             | true, arr when arr.ValueKind = System.Text.Json.JsonValueKind.Array ->
@@ -773,6 +831,7 @@ let parseFromJson (json: string) : Contract option =
                     let kind     = getStrInElem el "kind" ""
                     let name     = getStrInElem el "name" ""
                     let repr     = getStrInElem el "repr" ""
+                    let vis      = getStrInElem el "visibility" "pub"
                     let pure'    = getBoolInElem el "pure"
                     let stab     = getStrInElem el "stability" ""
                     let reqs     = getStrArrayInElem el "requires"
@@ -780,21 +839,24 @@ let parseFromJson (json: string) : Contract option =
                     let body     = getOptStrInElem el "body"
                     let parms    = getParamsInElem el
                     yield
-                        { Kind      = kind
-                          Name      = name
-                          Repr      = repr
-                          Pure      = pure'
-                          Stability = stab
-                          Requires  = reqs
-                          Ensures   = ens
-                          Body      = body
-                          Params    = parms } ]
+                        { Kind       = kind
+                          Name       = name
+                          Repr       = repr
+                          Visibility = vis
+                          Pure       = pure'
+                          Stability  = stab
+                          Requires   = reqs
+                          Ensures    = ens
+                          Body       = body
+                          Params     = parms } ]
             | _ -> []
         Some
             { PackageName   = pkgStr
               Version       = verStr
               Level         = level
               FormatVersion = formatVersion
+              Dependencies  = deps
+              ContractHash  = hash
               Decls         = decls }
     with _ -> None
 
