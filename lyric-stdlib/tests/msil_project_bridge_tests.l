@@ -763,6 +763,42 @@ func testStdlibSelfBuildNoDuplicateTypeVarCorruption(): Unit {
   assertEqual(Str.trim(result.stdout), "8", "ix1435_no_duplicate_type_var_corruption: stdout=8")
 }
 
+// In-process bridge stdlib resolution (#1202).
+// emitProjectInProcess passes an empty stdlibSources list to
+// compileProjectToMsil.  This test verifies that stdlib imports
+// (e.g. `import Std.Core`) resolve successfully through the in-process
+// bridge by relying on LYRIC_STD_PATH / the runtime path, confirming
+// the empty stdlibSources is correct.
+func testEmitProjectInProcessStdlibImport(): Unit {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "StdlibImport.Lib",
+      "package StdlibImport.Lib\n" + "\n" + "import Std.Core\n" + "\n" + "pub func makeOpt(v: in Int): Option[Int] { Some(v) }\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "StdlibImport.App",
+      "package StdlibImport.App\n" + "\n" + "import StdlibImport.Lib\n" + "import Std.Core\n" + "\n" +
+        "func main(): Unit {\n" +
+        "  val opt = makeOpt(42)\n" +
+        "  match opt {\n" +
+        "    case Some(v) -> println(v)\n" +
+        "    case None -> println(0)\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("stdlib-import", packages, "StdlibImport")
+  assertEqualInt(result.exitCode, 0, "emit_project_in_process_stdlib_import: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "42",
+    "emit_project_in_process_stdlib_import: stdlib imports resolve successfully"
+  )
+}
+
 func main(): Int {
   testTwoIndependentPackagesBundle()
   testFirstPackageWithRecordDoesNotDisturbSecond()
@@ -782,6 +818,7 @@ func main(): Int {
   testCfgErasureFileLevelErasesEntireFile()
   testRestoredDepWiringNoCrash()
   testStdlibSelfBuildNoDuplicateTypeVarCorruption()
+  testEmitProjectInProcessStdlibImport()
   println("msil-project-bridge tests: ok")
   return 0
 }
