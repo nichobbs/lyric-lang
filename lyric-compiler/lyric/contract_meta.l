@@ -90,9 +90,10 @@ func decodeUtf8Resource(bytes: in slice[Byte]): Option[String] {
 /// `readAllContractsFromFile` instead.
 ///
 /// **Throws** on missing or unreadable `path` (the underlying BCL
-/// `Assembly.LoadFrom` raises `FileNotFoundException` /
-/// `BadImageFormatException`); callers that need a typed-error shape
-/// should wrap the call in `try` (#1252).
+/// `File.ReadAllBytes` raises `FileNotFoundException`, and
+/// `Assembly.Load(byte[])` raises `BadImageFormatException` on a
+/// malformed image); callers that need a typed-error shape should wrap
+/// the call in `try` (#1252).
 @stable(since = "0.1")
 pub func readFromFile(path: in String): Option[String] {
   val ar = AsmRes.openAssembly(path)

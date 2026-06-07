@@ -14,13 +14,16 @@
 //! at embedded resources of a .NET DLL/EXE without taking on the
 //! `Mono.Cecil` dependency.
 //!
-//! Lifetime: a `RuntimeAssembly` loaded via `Assembly.LoadFrom` stays in
-//! the current AssemblyLoadContext (default = process lifetime).  This
-//! is acceptable for compile-time consumers and matches the F#
-//! `Mono.Cecil.AssemblyDefinition` semantics already in use (also
-//! never disposed).  Avoid using this from long-lived servers reading
-//! many distinct assemblies — file a follow-up if that use case
-//! surfaces.
+//! Lifetime: assemblies are loaded via `Assembly.Load(byte[])`, which
+//! creates a fresh assembly from the image bytes on every call (no
+//! identity dedup — this is deliberate; see the host file's
+//! `hostAssemblyLoad` doc for why `Assembly.LoadFrom`'s identity cache
+//! made it unusable for reading many freshly emitted same-named DLLs).
+//! Each loaded assembly stays in the current AssemblyLoadContext
+//! (default = process lifetime).  This is acceptable for compile-time
+//! consumers — a single build invocation reads a bounded set of DLLs.
+//! Avoid using this from long-lived servers reading many distinct
+//! assemblies — file a follow-up if that use case surfaces.
 //! .NET-only.  The underlying kernel binds `System.Reflection.Assembly`;
 //! the JVM equivalent would wrap `java.util.jar.JarFile` (tracked in
 //! #1229 Phase B).  Without this gate, JVM builds importing
@@ -41,8 +44,8 @@ import Std.AssemblyResourcesHost
 /// `resourceNames` / `tryReadResource`.
 ///
 /// Lifetime: no explicit close.  See the package header for the
-/// rationale — `Assembly.LoadFrom` registers with the process
-/// `AssemblyLoadContext` and is collected with it.
+/// rationale — the underlying assembly is loaded from image bytes via
+/// `Assembly.Load(byte[])` and lives for the process AssemblyLoadContext.
 @stable(since = "0.1")
 pub opaque type AssemblyResources {
   asm: RuntimeAssembly
@@ -55,7 +58,8 @@ pub opaque type AssemblyResources {
 /// `try { … } catch Bug as _ { None }`.
 @stable(since = "0.1")
 pub func openAssembly(path: in String): AssemblyResources {
-  val asm = hostAssemblyLoadFrom(path)
+  val image = hostReadAssemblyBytes(path)
+  val asm = hostAssemblyLoad(image)
   val names = hostAssemblyResourceNames(asm)
   AssemblyResources(asm = asm, names = names)
 }
