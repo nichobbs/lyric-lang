@@ -230,9 +230,11 @@ Per CLAUDE.md "No new F# code" policy, all implementation is in Lyric (`lyric-co
 
 **D6 — v2 rejection error message**: When the CLI encounters a contract with `formatVersion` less than 3, it must emit: `"Contract metadata format v2 is no longer supported. Rebuild the library with the latest compiler and re-publish."` No dual-path support; no compatibility routing.
 
+**D7 — Bundled DLL dependency manifest structure**: Keep manifests per-package within the bundled DLL; the loader merges them at load time. Rationale: per-package structure preserves source granularity for diagnostics; merging at load time is a single deterministic operation.
+
 ## Open Questions
 
-**Q1**: When a consumer loads a bundled DLL with multiple packages, should we flatten the dependency manifests into one combined list, or keep them per-package? (Propose: keep per-package, merge at load time for clarity.)
+(No open questions remain — all design decisions finalized.)
 
 ## References
 
@@ -243,8 +245,8 @@ Per CLAUDE.md "No new F# code" policy, all implementation is in Lyric (`lyric-co
 
 ## Implementation Notes
 
-- **Visibility extraction**: parse the first keyword in `repr` (e.g., `"pub func foo"` → `"pub"`, `"record Bar"` → `""`)
-- **Dependency manifest**: list of `{packageName, version, contractHash}` serialized as JSON (contractHash is required)
-- **Symbol table builder**: adapt the logic from `typechecker_symbols.l::registerItem`, but ingest from metadata instead of parsed AST
+- **Visibility extraction**: Read the declaration's parsed `Visibility` field from the AST (e.g., `IFunc.visibility`, `IRecord.visibility`). Do not parse the `repr` string — use the structured AST value directly.
+- **Dependency manifest**: List of `{packageName, version, contractHash}` serialized as JSON (contractHash is required). Per-package manifests are merged at load time.
+- **Symbol table builder**: Adapt the logic from `typechecker_symbols.l::registerItem`, but ingest from metadata instead of parsed AST.
 - **No v2 compatibility shim**: The emitter immediately rejects v2 contracts with a clear error message directing users to rebuild and republish. No dual-path support.
 
