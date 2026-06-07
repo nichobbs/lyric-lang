@@ -10108,7 +10108,11 @@ func synthesizeAsyncSmMsil(
   // paramCount = 1 (this = ldarg.0).
   // User params are pre-loaded from SM fields into LOCAL slots [0, N-1].
   val mnInsns: List[MInsn] = newList()
-  val mnFctx = makeFuncCtxMsil(pkgName, smFqn, "MoveNext", 1, MVoid)
+  // declaredRetTy is the async func's return type (not MVoid): a `return` lowered
+  // inside a protected region (try/catch/finally) stashes into `retvalSlot` and
+  // `leave`s to the epilogue, so that slot must be typed as the result and the
+  // SReturn collExpect must match the result type (#2289).
+  val mnFctx = makeFuncCtxMsil(pkgName, smFqn, "MoveNext", 1, retTy)
 
   // Pre-populate slotTicker with one entry for the `this` arg (slot 0) so
   // that the first allocSlotMsil call below gets slot 1 (a local, not an arg).
@@ -10144,6 +10148,12 @@ func synthesizeAsyncSmMsil(
             // Allocate the result stash slot before lowering the body: the stash
             // MStloc instructions emitted during patching reference this slot.
             val rSlot = allocSlotMsil(mnFctx, "__sm_result", retTy)
+            // Route protected-region returns (`return` inside try/catch/finally)
+            // into the same slot the epilogue reads: SReturn stores into
+            // `retvalSlot` and `leave`s to `epilogueLabel`, and the epilogue below
+            // loads `rSlot` for SetResult.  Without this they diverge and the
+            // returned value is lost (#2289).
+            mnFctx.retvalSlot = rSlot
             val bodyInsns: List[MInsn] = newList()
             pushCollExpect(mnFctx, retTy)
             val trailTy = lowerBlockExprMsil(cctx, mnFctx, bodyInsns, block)
@@ -10554,7 +10564,10 @@ func synthesizeAsyncSmPhaseBMsil(
 
   // ── MoveNext() ────────────────────────────────────────────────────────────
   val mnInsns: List[MInsn] = newList()
-  val mnFctx = makeFuncCtxMsil(pkgName, smFqn, "MoveNext", 1, MVoid)
+  // declaredRetTy is the async func's return type so a `return` inside a
+  // protected region stashes into a correctly-typed `retvalSlot` and the
+  // SReturn collExpect matches the result type (#2289).
+  val mnFctx = makeFuncCtxMsil(pkgName, smFqn, "MoveNext", 1, retTy)
   mnFctx.slotTicker.add(0)  // reserve slot 0 for 'this' arg
 
   // Pre-allocate labels
@@ -10622,6 +10635,10 @@ func synthesizeAsyncSmPhaseBMsil(
   var rSlot = -1
   if not isVoid {
     rSlot = allocSlotMsil(mnFctx, "__sm_result", retTy)
+    // Protected-region returns (`return` inside try/catch/finally) `leave` to
+    // normalDoneL after stashing into retvalSlot; route that into the same slot
+    // the normal-completion epilogue reads for SetResult (#2289).
+    mnFctx.retvalSlot = rSlot
   }
 
   // ── Preamble: load user params from SM fields into local slots ────────────
