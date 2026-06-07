@@ -39,6 +39,13 @@ func isMissingField(e: in ManifestError, section: in String, field: in String): 
   }
 }
 
+func isInvalidField(e: in ManifestError, section: in String, field: in String): Bool {
+  match e {
+    case InvalidField(s, f, _) -> s == section and f == field
+    case _ -> false
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Minimal manifest — only [package] section
 // ─────────────────────────────────────────────────────────────────────────────
@@ -58,6 +65,10 @@ func testMinimal(): Unit {
   match m.nuget {
     case None -> ()
     case Some(_) -> assertTrue(false, "minimal: no nuget section")
+  }
+  match m.maven {
+    case None -> ()
+    case Some(_) -> assertTrue(false, "minimal: no maven section")
   }
   match m.features {
     case None -> ()
@@ -265,6 +276,98 @@ func testNuget(): Unit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §5b. [maven] section (docs/31-maven-linking.md, D053)
+// ─────────────────────────────────────────────────────────────────────────────
+// Single coordinate; no [maven.options] -> repositories defaults to ["central"]
+// and javaVersion is None.
+func testMavenSingle(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[maven]\n\"org.postgresql:postgresql\" = \"42.7.3\"\n"
+  val m = parseOk(toml)
+  match m.maven {
+    case None -> assertTrue(false, "maven-single: expected Some")
+    case Some(mv) -> {
+      assertEqualInt(mv.entries.count, 1, "maven-single: entry count")
+      assertEqual(mv.entries[0].group, "org.postgresql", "maven-single: group")
+      assertEqual(mv.entries[0].artifact, "postgresql", "maven-single: artifact")
+      assertEqual(mv.entries[0].version, "42.7.3", "maven-single: version")
+      assertEqualInt(mv.repositories.count, 1, "maven-single: default repo count")
+      assertEqual(mv.repositories[0], "central", "maven-single: default repo")
+      match mv.javaVersion {
+        case None -> ()
+        case Some(_) -> assertTrue(false, "maven-single: javaVersion defaults to None")
+      }
+    }
+  }
+}
+
+// Multiple coordinates plus [maven.options] (repositories + java_version).
+func testMavenMultiple(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[maven]\n\"com.fasterxml.jackson.core:jackson-databind\" = \"2.17.0\"\n\"org.slf4j:slf4j-api\" = \"2.0.12\"\n\n[maven.options]\nrepositories = [\"central\"]\njava_version = \"21\"\n"
+  val m = parseOk(toml)
+  match m.maven {
+    case None -> assertTrue(false, "maven-multi: expected Some")
+    case Some(mv) -> {
+      assertEqualInt(mv.entries.count, 2, "maven-multi: entry count")
+      assertEqual(mv.entries[0].group, "com.fasterxml.jackson.core", "maven-multi: group[0]")
+      assertEqual(mv.entries[0].artifact, "jackson-databind", "maven-multi: artifact[0]")
+      assertEqual(mv.entries[0].version, "2.17.0", "maven-multi: version[0]")
+      assertEqual(mv.entries[1].group, "org.slf4j", "maven-multi: group[1]")
+      assertEqual(mv.entries[1].artifact, "slf4j-api", "maven-multi: artifact[1]")
+      assertEqual(mv.entries[1].version, "2.0.12", "maven-multi: version[1]")
+      assertEqualInt(mv.repositories.count, 1, "maven-multi: repo count")
+      assertEqual(mv.repositories[0], "central", "maven-multi: repo[0]")
+      match mv.javaVersion {
+        case Some(jv) -> assertEqual(jv, "21", "maven-multi: java_version")
+        case None -> assertTrue(false, "maven-multi: expected java_version")
+      }
+    }
+  }
+}
+
+// Extended { version = "..." } inline-table form, mirroring [nuget].
+func testMavenExtended(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[maven]\n\"com.google.guava:guava\" = { version = \"33.2.1-jre\" }\n"
+  val m = parseOk(toml)
+  match m.maven {
+    case None -> assertTrue(false, "maven-extended: expected Some")
+    case Some(mv) -> {
+      assertEqualInt(mv.entries.count, 1, "maven-extended: entry count")
+      assertEqual(mv.entries[0].group, "com.google.guava", "maven-extended: group")
+      assertEqual(mv.entries[0].artifact, "guava", "maven-extended: artifact")
+      assertEqual(mv.entries[0].version, "33.2.1-jre", "maven-extended: version")
+    }
+  }
+}
+
+// Absence of a [maven] table -> None.
+func testMavenAbsent(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[nuget]\nNewtonsoft.Json = \"13.0.1\"\n"
+  val m = parseOk(toml)
+  match m.maven {
+    case None -> ()
+    case Some(_) -> assertTrue(false, "maven-absent: expected None when no [maven] table")
+  }
+}
+
+// A -SNAPSHOT version is rejected at parse time (B0054).
+func testMavenSnapshotRejected(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[maven]\n\"org.example:lib\" = \"1.0.0-SNAPSHOT\"\n"
+  val e = parseErr(toml)
+  assertTrue(isInvalidField(e, "maven", "org.example:lib"), "maven-snapshot: InvalidField(maven, org.example:lib)")
+}
+
+// Malformed coordinate keys (no ':' or more than one ':') are rejected.
+func testMavenMalformedCoordinate(): Unit {
+  val noColon = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[maven]\n\"just-an-artifact\" = \"1.0.0\"\n"
+  val e1 = parseErr(noColon)
+  assertTrue(isInvalidField(e1, "maven", "just-an-artifact"), "maven-malformed: InvalidField for missing ':'")
+
+  val twoColons = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[maven]\n\"a:b:c\" = \"1.0.0\"\n"
+  val e2 = parseErr(twoColons)
+  assertTrue(isInvalidField(e2, "maven", "a:b:c"), "maven-malformed: InvalidField for two ':'")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §6. [project] section
 // ─────────────────────────────────────────────────────────────────────────────
 func testProject(): Unit {
@@ -366,6 +469,12 @@ func main(): Unit {
   testWorkspaceSection()
   testRegistrySection()
   testNuget()
+  testMavenSingle()
+  testMavenMultiple()
+  testMavenExtended()
+  testMavenAbsent()
+  testMavenSnapshotRejected()
+  testMavenMalformedCoordinate()
   testProject()
   testFeatures()
   testComments()

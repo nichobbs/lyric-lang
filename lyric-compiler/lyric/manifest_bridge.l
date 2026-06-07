@@ -16,6 +16,9 @@
 //!     nuget=<id>=<version>            (one per nuget entry)
 //!     nuget.target=<tfm>
 //!     nuget.allow_native=true
+//!     maven=<group>:<artifact>=<version>  (one per maven entry; last '=' before version)
+//!     maven.repository=<repo>         (one per repository)
+//!     maven.java_version=<ver>
 //!     project.name=<name>
 //!     project.output=<mode>
 //!     project.output_assembly=<asm>
@@ -71,6 +74,27 @@ pub func serializeManifest(text: in String, filePath: in String): String {
           }
           if n.allowNative {
             s = s + "nuget.allow_native=true\n"
+          }
+        }
+      }
+      match m.maven {
+        case None -> ()
+        case Some(mv) -> {
+          var mi = 0
+          while mi < mv.entries.count {
+            s = s + "maven=" + mv.entries[mi].group + ":" + mv.entries[mi].artifact + "=" + mv.entries[mi].version + "\n"
+            mi = mi + 1
+          }
+          var mri = 0
+          while mri < mv.repositories.count {
+            s = s + "maven.repository=" + mv.repositories[mri] + "\n"
+            mri = mri + 1
+          }
+          match mv.javaVersion {
+            case None -> ()
+            case Some(jv) -> {
+              s = s + "maven.java_version=" + jv + "\n"
+            }
           }
         }
       }
