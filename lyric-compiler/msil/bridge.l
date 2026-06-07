@@ -17,6 +17,7 @@ import Lyric.Stubbable as Stubbable
 import Lyric.TypeChecker
 import Lyric.ModeChecker
 import Lyric.ContractElaborator
+import Lyric.ContractMetaEmit as Emit
 import Lyric.Propagate
 import Lyric.Cfg as Cfg
 import Lyric.DiagnosticUtil as DiagUtil
@@ -1158,7 +1159,23 @@ func segmentsToString(segments: in List[String]): String {
 // manifest pass `"0.0.0"`.
 func embedLyricContract(lctx: in LoweringCtx, file: in SourceFile, resourceName: in String, version: in String): Unit {
   val contract = Meta.buildContractFromFile(file, version)
-  val json = Meta.contractToJson(contract)
+
+  // Upgrade contract to v3 format for emission with SHA-256 integrity hashing
+  val contractV3 = Meta.Contract(
+    packageName = contract.packageName,
+    version = contract.version,
+    level = contract.level,
+    formatVersion = 3,
+    decls = contract.decls,
+    dependencies = newList(),
+    contractHash = ""
+  )
+
+  // Emit metadata with two-pass SHA-256 hashing protocol
+  val json = match Emit.emitContractMetadata(contractV3) {
+    case Ok(j) -> j
+    case Err(_) -> Meta.contractToJson(contract)
+  }
   val jsonBytes = Encoding.encodeUtf8(json)
   val jsonLen = jsonBytes.length
 
