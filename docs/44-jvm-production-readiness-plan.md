@@ -159,6 +159,7 @@ tracking issue today (band J0 files them).
 | B-9 | No auto-FFI resolution for `extern type` method calls beyond the JDK-class fast path on some receivers; user `extern type` libraries mis-bind | #1708; `auto_ffi.l` JDK-first | #1708 |
 | B-10 | ~~`lyric build --target jvm foo.l` (no `-o`) writes the JAR as `foo.dll`; spurious .NET `runtimeconfig.json` emitted~~ **RESOLVED** | `cli.l:712`, `cli.l:545`; observed | #2664 (resolved) |
 | B-11 | JUnit tests do not actually execute on JVM — `lyric test --jvm` annotates `@LyricTest` but `LyricTestEngine` is deferred; generated test bodies are stub `return` | `test_engine.l:17-21`; `docs/18` Q-J007 | #676 |
+| B-12 | ~~Record instance methods (`RMFunc`) emitted as **static** but called via `invokevirtual` → `VerifyError "Expecting non-static method"`; records-with-methods unusable~~ **Fixed (D-progress-475):** `lowerRecord` now lowers each `RMFunc` through `lowerRecordMethod` as a true non-static instance method (slot 0 = `this`, `selfClass` field reads, generic params erased to `Object` matching the registered `<class>#<method>` `invokevirtual` sig); non-static methods route through `lowerFuncForClass` so slot 0 is typed as the record class in the StackMapTable (also hardens protected entries). | `codegen/06_items.l` (`lowerRecord`/`lowerRecordMethod`/`registerInstanceSigErased`), `lowering.l` (`lowerRecord`) | #2865 |
 
 ### MAJORS (real parity gap or missing subsystem)
 
