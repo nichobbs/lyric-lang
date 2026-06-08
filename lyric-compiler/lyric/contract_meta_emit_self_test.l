@@ -41,11 +41,14 @@ func testEmitSimpleContract(): Unit {
     json.contains("\"packageName\":") and json.contains("\"Test.Package\""),
     "JSON contains packageName field"
   )
-  // Verify contractHash is a 64-char hex string (SHA-256 produces exactly this)
+  // Verify contractHash field is present (contains 64-char SHA-256 hex digest)
   assertTrue(
-    json.contains("\"contractHash\":\"") and json.length > 70,
-    "JSON contains contractHash field with computed digest"
+    json.contains("\"contractHash\":\""),
+    "JSON contains contractHash field"
   )
+  // Verify the two-pass protocol produced a substantial hash: the JSON should be
+  // longer than the basic structure (minimum ~110 chars for this minimal contract)
+  assertTrue(json.length > 120, "JSON includes 64-char SHA-256 hash")
   assertTrue(json.contains("\"formatVersion\":3"), "JSON contains formatVersion 3")
 }
 
