@@ -760,20 +760,26 @@ pub func checkGeneratorDeclaredIn(
 // Pure G0002 check — verifies the dependency's manifest declares
 // `[package].kind = "source-generator"`.  `depMfPath` is included in
 // the diagnostic so the user can locate the offending manifest.
+// Returns Result[String, String] (Ok("") = success) rather than
+// Result[Unit, String] or Result[Bool, String] to avoid cross-assembly ABI
+// mismatches: the F# and self-hosted emitters encode Unit and bool differently
+// in generic instantiation signatures (Unit → ValueTuple vs Object; bool →
+// TypeRef(System.Boolean) vs ELEMENT_TYPE_BOOLEAN).  String is a reference
+// type with unambiguous encoding across both emitters.
 pub func checkGeneratorKind(
   generatorArg: in String, depMfPath: in String, depMf: in Manifest.Manifest
-): Result[Unit, String] {
+): Result[String, String] {
   match depMf.packageSection.kind {
-    case Some(k) -> if k == "source-generator" { Ok(value = ()) } else { Err(error = "G0002: @generate(" + generatorArg + ") declares [package].kind = \"" + k + "\" (must be \"source-generator\") in " + depMfPath) }
+    case Some(k) -> if k == "source-generator" { Ok(value = "") } else { Err(error = "G0002: @generate(" + generatorArg + ") declares [package].kind = \"" + k + "\" (must be \"source-generator\") in " + depMfPath) }
     case None -> Err(error = "G0002: @generate(" + generatorArg + ") is missing [package].kind = \"source-generator\" in " + depMfPath)
   }
 }
 
-func checkGeneratorDependency(mfPath: in String, generatorArg: in String): Result[Unit, String] {
+func checkGeneratorDependency(mfPath: in String, generatorArg: in String): Result[String, String] {
   val consumerMf = match File.readText(mfPath) {
-    case Err(_) -> return Ok(value = ())
+    case Err(_) -> return Ok(value = "")
     // can't read manifest -> skip; cli.l will surface the real error
-    case Ok(text) -> match Manifest.parseManifest(text, mfPath) { case Err(_) -> return Ok(value = ()); case Ok(m) -> m }
+    case Ok(text) -> match Manifest.parseManifest(text, mfPath) { case Err(_) -> return Ok(value = ""); case Ok(m) -> m }
   }
   // parse error -> cli.l will surface it
   val declared = checkGeneratorDeclaredIn(consumerMf, generatorArg)
@@ -781,7 +787,7 @@ func checkGeneratorDependency(mfPath: in String, generatorArg: in String): Resul
     case Err(e) -> return Err(error = e)
     case Ok(_) -> ()
   }
-  val dep = match declared { case Ok(d) -> d; case Err(_) -> return Ok(value = ()) }
+  val dep = match declared { case Ok(d) -> d; case Err(_) -> return Ok(value = "") }
   // unreachable — handled above
   // If we can resolve the dep's manifest, check its [package].kind.
   val depManifestPath = match dep.source {
@@ -793,13 +799,13 @@ func checkGeneratorDependency(mfPath: in String, generatorArg: in String): Resul
     case _ -> None
   }
   match depManifestPath {
-    case None -> Ok(value = ())
+    case None -> Ok(value = "")
     // Registry / Workspace / Git — skip kind check (see header comment).
     case Some(p) -> {
       match File.readText(p) {
-        case Err(_) -> Ok(value = ())
+        case Err(_) -> Ok(value = "")
         // missing — restore step will surface it.
-        case Ok(text) -> match Manifest.parseManifest(text, p) { case Err(_) -> Ok(value = ()); case Ok(depMf) -> checkGeneratorKind(generatorArg, p, depMf) }
+        case Ok(text) -> match Manifest.parseManifest(text, p) { case Err(_) -> Ok(value = ""); case Ok(depMf) -> checkGeneratorKind(generatorArg, p, depMf) }
       }
       // parse error there — separate concern.
     }
@@ -862,11 +868,13 @@ func buildCaptureArgs(dllPath: in String): List[String] {
 /// with the generated Lyric fragments appended, or Err with a diagnostic
 /// message if any generator fails.
 ///
-/// `manifestPath` must be `Some` when the source contains custom generators;
-/// if it is `None` and custom generators are present, the function returns Err.
-pub func preprocess(
-  source: in String, manifestPath: in Option[String], sourceFilePath: in String
-): Result[String, String] {
+/// `manifestPath` must be non-empty when the source contains custom generators;
+/// pass an empty string to indicate "no manifest", which causes Err if any
+/// custom @generate directives are present.  The Option[String] overload was
+/// retired to avoid a cross-assembly ABI mismatch between the F# and
+/// self-hosted emitters for nullary generic union cases (None ≡ null in F#
+/// vs newobj in self-hosted).
+pub func preprocess(source: in String, manifestPath: in String, sourceFilePath: in String): Result[String, String] {
   val pkgName = extractPackageName(source)
   val directives = scanDirectives(source, pkgName)
 
@@ -874,20 +882,10 @@ pub func preprocess(
     return Ok(value = source)
   }
 
-  // #867 workaround: cannot write
-  //   val mfPath = match manifestPath { case None -> return Err(...); case Some(p) -> p }
-  // because the F# bootstrap emitter mis-emits the match join — the
-  // diverging `case None -> return` arm leaves the stack empty at the
-  // join point while the `case Some(p) -> p` arm leaves the bound
-  // value, producing IL with inconsistent stack depths at the merge
-  // (ilverify: PathStackDepth at offset 0x6F).  Split into an
-  // early-return guard + a dedicated unwrap.
-  match manifestPath {
-    case None -> return Err(error = "custom @generate(...) requires --manifest to locate generator packages")
-    case Some(_) -> ()
+  if manifestPath.length == 0 {
+    return Err(error = "custom @generate(...) requires --manifest to locate generator packages")
   }
-  val mfPath = match manifestPath { case Some(p) -> p; case None -> "" }
-  // unreachable; guarded above
+  val mfPath = manifestPath
 
   var augmented = source
   var extraImports = ""

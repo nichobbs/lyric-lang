@@ -1,8 +1,10 @@
 //! generator/generator_self_test.l — exercises the supply-chain
-//! enforcement helpers in `Lyric.Generator`.  Compiled and executed by
-//! SelfHostedGeneratorTests.fs.  Exit 0 + "ok" in stdout means every
-//! assertion held.
-package Lyric.Generator.SelfTest
+//! enforcement helpers in `Lyric.Generator`.
+//!
+//! Run via `lyric test lyric-compiler/lyric/generator/generator_self_test.l`.
+//! Replaces the F# SelfHostedGeneratorTests.fs wrapper (#2580).
+@test_module
+package Lyric.GeneratorSelfTest
 
 import Std.Core
 import Std.Collections
@@ -68,7 +70,7 @@ func testG0008_DepDeclared(): Unit {
 func testG0002_KindMatches(): Unit {
   val depMf = parseOk(depGenerator(), "/test/foo-bar/lyric.toml")
   match checkGeneratorKind("Foo.Bar", "/test/foo-bar/lyric.toml", depMf) {
-    case Ok(_) -> ()
+    case Ok(s) -> assertEqual(s, "", "G0002 happy path: Ok value is empty string sentinel")
     case Err(e) -> assertTrue(false, "G0002 happy path: unexpected Err: " + e)
   }
 }
@@ -96,9 +98,6 @@ func testG0002_KindMissing(): Unit {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Entry point
-// ─────────────────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 // scanDirectives — detection + false-positive guards (#698, #702)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -153,45 +152,65 @@ func testScanDirectives_LineCommentIgnored(): Unit {
 // test binary would exit non-zero with a clear stack trace pointing at
 // `Lyric.Generator.Program.preprocess`.
 // ─────────────────────────────────────────────────────────────────────────────
-// Source with no `@generate(X.Y)` directives — exercises the
-// `directives.count == 0` fast-path before any of the bug-prone code
-// runs.  Equivalent to `preprocess`'s happy path for the common case.
 func testPreprocess_NoDirectives_PassesThrough(): Unit {
   val src = "package P\nfunc main(): Unit { println(\"hi\") }\n"
-  match preprocess(src, None, "p.l") {
+  match preprocess(src, "", "p.l") {
     case Ok(s) -> assertEqual(s, src, "no-directives: source returned unchanged")
     case Err(e) -> assertTrue(false, "no-directives: unexpected Err: " + e)
   }
 }
 
-// Source WITH a `@generate(Foo.Bar)` directive but `manifestPath = None`.
-// Exercises the exact `val mfPath = match manifestPath { case None ->
-// return Err(...); case Some(p) -> p }` shape that triggered the
-// PathStackDepth bug at offset 0x6F.  Returns Err with the
-// "requires --manifest" message.
 func testPreprocess_DirectiveWithoutManifest_ReturnsErr(): Unit {
   val src = "package P\n" + "@generate(Foo.Bar)\n" + "pub record Order { id: Int }\n"
-  match preprocess(src, None, "p.l") {
+  match preprocess(src, "", "p.l") {
     case Ok(_) -> assertTrue(false, "missing-manifest: expected Err, got Ok")
     case Err(e) -> assertTrue(e.contains("--manifest"), "missing-manifest: error mentions --manifest (got: " + e + ")")
   }
 }
 
-func main(): Int {
+// ─────────────────────────────────────────────────────────────────────────────
+// Test items
+// ─────────────────────────────────────────────────────────────────────────────
+test "G0008 dep not declared" {
   testG0008_DepNotDeclared()
+}
+
+test "G0008 dep declared" {
   testG0008_DepDeclared()
+}
+
+test "G0002 kind matches" {
   testG0002_KindMatches()
+}
+
+test "G0002 kind wrong" {
   testG0002_KindWrong()
+}
+
+test "G0002 kind missing" {
   testG0002_KindMissing()
+}
 
+test "scan directives dot in arg" {
   testScanDirectives_DotInArg()
+}
+
+test "scan directives bare name skipped" {
   testScanDirectives_BareNameSkipped()
+}
+
+test "scan directives string literal ignored" {
   testScanDirectives_StringLiteralIgnored()
+}
+
+test "scan directives line comment ignored" {
   testScanDirectives_LineCommentIgnored()
+}
 
+test "preprocess no directives passes through" {
   testPreprocess_NoDirectives_PassesThrough()
-  testPreprocess_DirectiveWithoutManifest_ReturnsErr()
+}
 
-  println("generator self-test: ok")
-  return 0
+test "preprocess directive without manifest returns err" {
+  testPreprocess_DirectiveWithoutManifest_ReturnsErr()
 }

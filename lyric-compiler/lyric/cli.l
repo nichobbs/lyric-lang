@@ -429,7 +429,8 @@ func copyRuntimeDepsBeside(outPath: in String, srcDir: in String): Unit {
     case Ok(fs) -> {
       for f in fs.toArray() {
         val base = Path.basename(f)
-        val wanted = (Str.startsWith(base, "Lyric.Stdlib") and Str.endsWith(base, ".dll")) or base == "FSharp.Core.dll"
+        val wanted = (Str.startsWith(base, "Lyric.Stdlib") and Str.endsWith(base, ".dll")) or base == "FSharp.Core.dll" or
+          base == "Lyric.Emitter.dll"
         if wanted {
           val dest = Path.join(destDir, base)
           match File.readBytes(f) {
@@ -463,13 +464,11 @@ func copyRestoredDepDlls(outPath: in String, restoredDlls: in List[String]): Uni
       continue
     }
     val dest = Path.join(destDir, Path.basename(dllPath))
-    if not File.fileExists(dest) {
-      match File.readBytes(dllPath) {
-        case Ok(bs) -> {
-          val _ = File.writeBytes(dest, bs)
-        }
-        case Err(_) -> ()
+    match File.readBytes(dllPath) {
+      case Ok(bs) -> {
+        val _ = File.writeBytes(dest, bs)
       }
+      case Err(_) -> ()
     }
   }
 }
@@ -490,7 +489,7 @@ func buildOne(sourcePath: in String, outPath: in String, target: in CompileTarge
   // Run custom @generate(X.Y) pre-processing before handing source to the
   // emitter.  Built-in generators (@generate(Json) etc.) are handled later
   // inside the F# bootstrap's Generate.synthesizeItems pass.
-  source = match Generator.preprocess(source, manifestPath, sourcePath) {
+  source = match Generator.preprocess(source, match manifestPath { case Some(p) -> p; case None -> "" }, sourcePath) {
     case Ok(augmented) -> augmented
     case Err(msg) -> {
       printErr("build: generator error: " + msg)

@@ -289,9 +289,6 @@
     <Compile Include="JvmLoweringB132Test.fs" />
     <Compile Include="JvmLoweringB133Test.fs" />
     <Compile Include="JvmLoweringB134Test.fs" />
-    <Compile Include="SelfHostedManifestTests.fs" />
-    <Compile Include="SelfHostedVerifierTests.fs" />
-    <Compile Include="SelfHostedGeneratorTests.fs" />
     <Compile Include="MultiFilePackageTests.fs" />
     <Compile Include="ProjectAsDllTests.fs" />
     <Compile Include="CfgErasureTests.fs" />

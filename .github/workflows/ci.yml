@@ -600,7 +600,10 @@ jobs:
             lyric-compiler/lyric/typechecker_extern_dedup_self_test.l \
             lyric-compiler/lyric/contract_meta_self_test.l \
             lyric-compiler/lyric/restored_packages_self_test.l \
-            lyric-compiler/lyric/test_synth_self_test.l ; do
+            lyric-compiler/lyric/test_synth_self_test.l \
+            lyric-compiler/lyric/manifest_self_test.l \
+            lyric-compiler/lyric/verifier_self_test.l \
+            lyric-compiler/lyric/generator/generator_self_test.l ; do
             echo "=== $t ==="
             "$lyric_bin" test "$t"
             ran="$ran $t"
