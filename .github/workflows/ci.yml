@@ -983,7 +983,9 @@ jobs:
             Console.println(acc)
           }
           LYR
-          got="$("$lyric_bin" run "$work/s.l" | tr -d '\r\n')"
+          # `lyric run` prints a "built <path>" progress line before the
+          # program's stdout, so take the last line (the program output).
+          got="$("$lyric_bin" run "$work/s.l" | tail -1 | tr -d '\r\n')"
           echo "shipped Std.Sort printed: '$got'"
           if [ "$got" != "1 2 3 4 5" ]; then
             echo "::error::shipped Std.Sort returned '$got', expected '1 2 3 4 5'"
