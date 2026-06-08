@@ -121,6 +121,36 @@ pub record FuncCtx {
   // method descriptor (e.g. a plain Double literal narrows to Float).  JVoid
   // for void functions and hand-built / generator-internal contexts.
   retTy: JvmType
+  // Pending `defer { … }` blocks for the current lexical scope chain, innermost
+  // last.  A `defer` pushes its block here; the enclosing `lowerBlock` replays
+  // (and pops) the blocks it pushed on the normal fall-off path, and
+  // `return` / `break` / `continue` replay the still-pending blocks before
+  // transferring control so the deferred code runs on every non-exception
+  // exit.  The exception-unwind path is covered by a catch-all handler emitted
+  // around the deferred region (#1833, mirrors MSIL #1477).
+  deferStack: List[Block]
+  // `deferStack.count` captured at each enclosing loop's entry, innermost last.
+  // `break` / `continue` replay the defers pushed inside the loop body (indices
+  // >= this depth) before jumping, so a `defer` declared in a loop body runs on
+  // loop-exit and loop-continue as well as on fall-off.
+  loopDeferDepth: List[Int]
+  // When `Some(cls)`, the function is an instance method whose receiver is at
+  // local slot 0 (a protected-type entry / helper).  `self` and bare field
+  // references (`tokens`, not `self.tokens`) resolve to `getfield`/`putfield`
+  // on `cls` when the name is one of `cls`'s fields (registered in `caseFields`).
+  // None for static functions, where bare unknown names fall back as before.
+  selfClass: Option[String]
+  // Module-level `val NAME` declarations of the host package: name → JVM type.
+  // A bare reference to such a name lowers to `getstatic <hostClass>.<name>`
+  // (the `public static final` field emitted by `lowerFuncsToClass`).  The
+  // owning class is the package host class (`pkgName`).  Empty for hand-built
+  // / generator-internal contexts (m-2).
+  moduleVals: Map[String, JvmType]
+  // JVM class names (e.g. "Pkg/Counter") of `opaque type` declarations in scope.
+  // An opaque type stores its fields privately as `$<name>` and exposes them via
+  // `$<name>()` accessor methods, so a field read on an opaque receiver lowers
+  // to `invokevirtual $<name>()` rather than a direct `getfield` (J3 M-3).
+  opaqueTypes: Map[String, Bool]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -216,6 +246,17 @@ pub func recordFieldType(ctx: in FuncCtx, cls: in String, fieldName: in String):
       }
       None
     }
+    case None -> None
+  }
+}
+
+// When the current function is an instance method (`ctx.selfClass` is set),
+// resolve the JVM type of a field named `name` on the receiver class — used to
+// lower a bare field reference / assignment inside a protected-type entry to a
+// `getfield`/`putfield` on `this`.  `None` for static functions or non-fields.
+pub func selfFieldType(ctx: in FuncCtx, name: in String): Option[JvmType] {
+  match ctx.selfClass {
+    case Some(cls) -> recordFieldType(ctx, cls, name)
     case None -> None
   }
 }

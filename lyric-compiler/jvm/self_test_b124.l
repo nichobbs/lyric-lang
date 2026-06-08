@@ -59,7 +59,8 @@ func makePackageClasses(pool: in Pool): List[BuiltClass] {
   val items: List[LPackageItem] = newList()
   items.add(LPRecord(rec = pairRec))
   items.add(LPDistinctType(dt = weightDt))
-  items.add(LPFuncs(funcsClass = "Utils", fns = addFuncList))
+  val noStaticVals: List[LStaticVal] = newList()
+  items.add(LPFuncs(funcsClass = "Utils", fns = addFuncList, staticVals = noStaticVals))
 
   val pkg = LPackage(packageName = "test", items = items)
   val cfs = lowerPackage(pkg, pool)

@@ -165,8 +165,8 @@ tracking issue today (band J0 files them).
 | ID | Finding | Evidence | Issue |
 |---|---|---|---|
 | M-1 | Generics **erased to `Object`** (no `Signature` attrs, no generic instantiation); Option/Result type args erased, unlike MSIL true generics | `codegen.l:278`; `docs/18` §6.1/§10 | #1707, #2574 |
-| M-2 | `defer` panics on JVM | `codegen.l:3716-3724` | #1833 |
-| M-3 | Opaque / protected / wire / config types recognized but **not emitted** (no-op), though `lowering.l` can emit opaque | `codegen.l:4938,4940,4978,4992` | (new; opaque ≈ low-effort wiring) |
+| M-2 | ~~`defer` panics on JVM~~ **DONE (J3, D-progress-472).** `defer { D }` runs `D` on every non-exception exit (normal fall-off, early `return`, `break`/`continue`) plus exception unwind, mirroring MSIL #1477: statement blocks route through `lowerBlockStmtsFrom`/`lowerDeferRegion` and value-producing blocks through `lowerBlockExprWithDefer`; the suffix after a defer runs inside a catch-all-rethrow region, and `FuncCtx.deferStack` lets early transfers replay the pending blocks first. | `codegen/05_stmts.l` | #1833 |
+| M-3 | ~~Opaque / protected / wire / config types recognized but **not emitted** (no-op)~~ **DONE (J3, D-progress-472).** `06_items.l`'s `IOpaque`/`IProtected`/`IWire` arms now dispatch to the real lowering: opaque → `lowerOpaqueType`/`lowerOpaqueFacade` (construction + `$<name>()`-accessor field reads, public ctor for in-package construction); protected → record-shaped class (field-args ctor + lock-wrapped instance entries; bare-name field reads/writes resolve via `selfClass`); wire → `lowerWire` DI factory (`bootstrap()` + exposed-binding accessors, callable as `AppWire.bootstrap()`/`AppWire.<binding>()`). `IConfig` stays an intentional no-op (DI-phase-consumed, parity with MSIL). | `codegen/06_items.l`, `lowering.l` | (#2666) |
 | M-4 | `@cfg(feature=…)` erasure not applied on JVM (`bridge.l` has no cfg stage) | `bridge.l`; vs `msil/bridge.l:402` | #2444 (target-gate seam) |
 | M-5 | Cross-package / generic-type monomorphization is same-package only on JVM | `bridge.l:159` | #1707 |
 | M-6 | **Maven self-hosting absent:** `[maven]` parsed only by F# `Manifest.fs`; `manifest.l` cannot read ecosystem `[maven]` tables (`lyric-web`, `lyric-mq`, `lyric-grpc`, `lyric-lambda`, …). **Parsing slice DONE (#2668):** `manifest.l` now parses `[maven]` / `[maven.options]` into `MavenSection` (`MavenEntry` + `repositories` default `["central"]` + optional `java_version`), mirroring `[nuget]`; covered by `manifest_self_test.l`. The resolution/download path (M-7) remains. | `manifest.l` `assembleMaven`; `Manifest.fs:121+` | #1622/#1708 cluster |
@@ -188,7 +188,7 @@ tracking issue today (band J0 files them).
 | ID | Finding | Evidence | Issue |
 |---|---|---|---|
 | m-1 | loop `invariant:` is a runtime no-op on JVM | `codegen.l:3732` | (new) |
-| m-2 | Module-level `val` not emitted as `static final` on JVM (M5.2 stage-3 parity) | per #2210 | #2210 |
+| m-2 | ~~Module-level `val` not emitted as `static final` on JVM~~ **DONE (J3, D-progress-472).** A module-level `val NAME = expr` emits a `public static final` field on the package host class, initialised in a synthesised `<clinit>`; bare references resolve to `getstatic <hostClass>.<name>` from any function in the package (collected by `collectFileVals`, threaded via `FuncCtx.moduleVals`). Mirrors the MSIL `.cctor` static-field path. | `codegen/06_items.l`, `lowering.l` | #2210 |
 | m-3 | `out`/`inout` parameter parity (holder-array lowering) | #1763 | #1763 |
 | m-4 | intra-impl `self.m`/bare `m` calls | #1722 | #1722 |
 | m-5 | nested-generic union case construction (`Result[Option[T],E]`) | #1707 | #1707 |
@@ -306,13 +306,25 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   assertion remain open — the former is a separate task, the latter awaits J4
   generics.)
 
-### J3 — Wire the capabilities `lowering.l` already has (low-effort parity)
-- M-3: call the existing `lowerOpaqueType`/`lowerOpaqueFacade`/protected/wire
-  lowering from `codegen.l`'s `IOpaque`/`IProtected`/`IWire`/`IConfig` arms
-  (the lowering exists and is self-tested; only the dispatch is missing).
-- M-2: implement `defer` via try/finally (mirror MSIL #1477).
-- m-2: module-level `val` as `static final`.
-- **Acceptance:** opaque/protected/wire/defer self-tests on `--target jvm`.
+### J3 — Wire the capabilities `lowering.l` already has (low-effort parity) — **DONE (D-progress-472)**
+- [x] M-3: dispatch `06_items.l`'s `IOpaque`/`IProtected`/`IWire` arms to the
+  real lowering. The work was larger than "only the dispatch is missing": each
+  construct also needed the front-end → class plumbing that the hand-built
+  Path-A self-tests bypassed — opaque/protected type **registration** (so
+  `Counter(value = …)` construction + field reads resolve), `selfClass`
+  bare-name field resolution for protected entries, an instance-method
+  signature registry (`<class>#<method>`) so entry calls emit a precise
+  `invokevirtual` instead of the `()Object` guess, opaque field reads through
+  the `$<name>()` accessor, a **public** opaque ctor (cross-JVM-package
+  access), and wire static-call resolution (`AppWire.bootstrap()` /
+  `AppWire.<binding>()`). `IConfig` stays an intentional no-op (DI-phase
+  consumed, parity with MSIL — no `lowerConfig` in either backend).
+- [x] M-2: `defer` via try/finally + defer-replay (mirror MSIL #1477) — runs on
+  normal fall-off, early `return`/`break`/`continue`, and exception unwind.
+- [x] m-2: module-level `val` as `static final` (read via `getstatic`).
+- **Acceptance:** `lyric-compiler/jvm/j3_lowering_self_test.l` (6/6) on
+  `--target jvm`, wired into CI; no regression on the four existing JVM
+  self-tests (silent-miscompile 8/8, auto-FFI 13/13, hash 3/3, bitwise 10/10).
 
 ### J4 — Generics, async, and the harder semantics (largest effort)
 - M-1/M-5/m-5: decide and implement the JVM generics strategy (erased +

@@ -1346,6 +1346,24 @@ func lowerMethodCall(
         case Some(javaFqn) -> return lowerAutoFfiStaticCall(ctx, insns, javaFqn, memberName, args)
         case None -> ()
       }
+      // J3 M-3: `AppWire.bootstrap()` / `AppWire.<exposed>()` resolve to a
+      // static call on the wire factory class, registered under the
+      // `<wireShortName>.<method>` key — not an instance dispatch on a value.
+      match mapGet(ctx.funcSigs, lastSegment(path) + "." + memberName) {
+        case Some(sig) -> {
+          var wi = 0
+          while wi < args.count {
+            val aTy = lowerCallArg(ctx, insns, args[wi])
+            if wi < sig.params.count {
+              coerceArgTo(insns, aTy, sig.params[wi])
+            }
+            wi = wi + 1
+          }
+          insns.add(LInvokestatic(owner = sig.owner, name = memberName, params = sig.params, ret = sig.ret))
+          return sig.ret
+        }
+        case None -> ()
+      }
     }
     case _ -> ()
   }
@@ -1439,6 +1457,32 @@ func lowerMethodCall(
       val fqn = cls.replace("/", ".")
       match loadClass(ctx.autoFfi, fqn) {
         case Some(ci) -> return lowerAutoFfiInstanceCall(ctx, insns, ci, memberName, args)
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+
+  // Instance methods of in-package record / protected types: when the receiver
+  // class and method are registered under `<class>#<method>` (J3 M-3), emit a
+  // precisely-typed `invokevirtual` (args coerced to declared params, real
+  // return type) rather than the `()Object` guess — which would mis-resolve a
+  // `void` entry like `c.increment()` to a non-existent `()Object` method.
+  match recvTy {
+    case JRef(cls) -> {
+      match mapGet(ctx.funcSigs, cls + "#" + memberName) {
+        case Some(sig) -> {
+          var ai = 0
+          while ai < args.count {
+            val aTy = lowerCallArg(ctx, insns, args[ai])
+            if ai < sig.params.count {
+              coerceArgTo(insns, aTy, sig.params[ai])
+            }
+            ai = ai + 1
+          }
+          insns.add(LInvokevirtual(owner = cls, name = memberName, params = sig.params, ret = sig.ret))
+          return sig.ret
+        }
         case None -> ()
       }
     }

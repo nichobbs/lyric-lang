@@ -81,10 +81,40 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
           JVoid
         }
         case None -> {
-          // Unknown variable — lower the value but don't store it.
-          lowerExpr(ctx, insns, value)
-          insns.add(LPop)
-          JVoid
+          // Inside an instance method (protected-type entry / helper), a bare
+          // name that is a field of the receiver is `this.<name>`: assign with
+          // `aload_0; <rhs>; putfield` (compound ops read the field first).
+          // Protected entries assign their fields by bare name (`tokens = …`),
+          // so without this the store was silently dropped (J3 M-3).
+          match selfFieldType(ctx, name) {
+            case Some(fty) -> {
+              val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
+              match op {
+                case AssEq -> {
+                  insns.add(LAload(slot = 0))
+                  val vTy = lowerExpr(ctx, insns, value)
+                  coerceArgTo(insns, vTy, fty)
+                  insns.add(LPutfield(owner = selfCls, name = name, t = fty))
+                }
+                case _ -> {
+                  insns.add(LAload(slot = 0))
+                  insns.add(LDup)
+                  insns.add(LGetfield(owner = selfCls, name = name, t = fty))
+                  val vTy = lowerExpr(ctx, insns, value)
+                  coerceArgTo(insns, vTy, fty)
+                  emitCompoundArith(insns, op, fty)
+                  insns.add(LPutfield(owner = selfCls, name = name, t = fty))
+                }
+              }
+              JVoid
+            }
+            case None -> {
+              // Unknown variable — lower the value but don't store it.
+              lowerExpr(ctx, insns, value)
+              insns.add(LPop)
+              JVoid
+            }
+          }
         }
       }
     }
@@ -320,15 +350,21 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           // descriptor (e.g. a plain Double literal in a `: Float` function
           // narrows with d2f).  Skip for void / generator contexts where the
           // declared return type isn't threaded.
-          match ctx.retTy {
-            case JVoid -> emitReturn(insns, ty)
-            case rt -> {
-              coerceArgTo(insns, ty, rt)
-              emitReturn(insns, rt)
-            }
+          val rt = match ctx.retTy { case JVoid -> ty; case t -> { coerceArgTo(insns, ty, t); t } }
+          // A `return` exits the function, so every still-pending `defer` block
+          // (the whole stack) must run first.  Stash the already-coerced value
+          // in a temp so the deferred blocks run on an empty operand stack, then
+          // reload and return (#1833, mirrors MSIL #1477's epilogue routing).
+          if ctx.deferStack.count > 0 {
+            val rtmp = allocSlot(ctx, "__defer_ret_" + toString(ctx.slotTicker.count), rt)
+            emitStore(insns, rtmp, rt)
+            replayDefers(ctx, insns, 0)
+            emitLoad(insns, rtmp, rt)
           }
+          emitReturn(insns, rt)
         }
         case None -> {
+          replayDefers(ctx, insns, 0)
           insns.add(LReturn)
         }
       }
@@ -351,7 +387,9 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
       lowerBoolCond(ctx, insns, cond, afterL)
       ctx.loopBreak.add(afterL)
       ctx.loopCont.add(loopL)
+      ctx.loopDeferDepth.add(ctx.deferStack.count)
       lowerBlock(ctx, insns, body)
+      ctx.loopDeferDepth.removeAt(ctx.loopDeferDepth.count - 1)
       ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
       ctx.loopCont.removeAt(ctx.loopCont.count - 1)
       insns.add(LGoto(label = loopL))
@@ -374,6 +412,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           insns.add(LArraylength)
           emitStore(insns, lenSlot, JInt)
           val loopLA = freshLabel(ctx)
+          val contLA = freshLabel(ctx)
           val endLA = freshLabel(ctx)
           insns.add(LLabel(name = loopLA))
           emitLoad(insns, iSlot, JInt)
@@ -386,7 +425,18 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           val elemSlotA = allocSlot(ctx, "__for_elem_" + toString(ctx.slotTicker.count), elemTyA)
           emitStore(insns, elemSlotA, elemTyA)
           lowerPatternBind(ctx, insns, pat, elemSlotA, elemTyA)
+          // #2854: `continue` targets the index-increment point (`contLA`), not
+          // the loop top, so the loop variable still advances; `break` targets
+          // `endLA`.  `loopDeferDepth` captures the entry depth so a body `defer`
+          // replays on both before the jump.
+          ctx.loopBreak.add(endLA)
+          ctx.loopCont.add(contLA)
+          ctx.loopDeferDepth.add(ctx.deferStack.count)
           lowerBlock(ctx, insns, body)
+          ctx.loopDeferDepth.removeAt(ctx.loopDeferDepth.count - 1)
+          ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
+          ctx.loopCont.removeAt(ctx.loopCont.count - 1)
+          insns.add(LLabel(name = contLA))
           emitLoad(insns, iSlot, JInt)
           insns.add(LIconst(v = 1))
           insns.add(LIadd)
@@ -440,7 +490,16 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           val elemSlotB = allocSlot(ctx, "__for_elem_" + toString(ctx.slotTicker.count), elemTyB)
           emitStore(insns, elemSlotB, elemTyB)
           lowerPatternBind(ctx, insns, pat, elemSlotB, elemTyB)
+          // #2854: `continue` targets the loop top (`loopLB`, which re-checks
+          // hasNext()); `break` targets `endLB`.  `loopDeferDepth` captures the
+          // entry depth so a body `defer` replays on both before the jump.
+          ctx.loopBreak.add(endLB)
+          ctx.loopCont.add(loopLB)
+          ctx.loopDeferDepth.add(ctx.deferStack.count)
           lowerBlock(ctx, insns, body)
+          ctx.loopDeferDepth.removeAt(ctx.loopDeferDepth.count - 1)
+          ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
+          ctx.loopCont.removeAt(ctx.loopCont.count - 1)
           insns.add(LGoto(label = loopLB))
           insns.add(LLabel(name = endLB))
         }
@@ -450,9 +509,21 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
     // ── Loop (unconditional) ───────────────────────────────────────────────
     case SLoop(_, body) -> {
       val loopL3 = freshLabel(ctx)
+      val afterL3 = freshLabel(ctx)
       insns.add(LLabel(name = loopL3))
+      // #2854: register this loop's own break/continue targets (an unconditional
+      // `loop` exits only via `break`/`return`) and the defer depth at entry, so
+      // a `defer` declared in the body replays on `break`/`continue` and the jump
+      // lands on *this* loop rather than an enclosing one.
+      ctx.loopBreak.add(afterL3)
+      ctx.loopCont.add(loopL3)
+      ctx.loopDeferDepth.add(ctx.deferStack.count)
       lowerBlock(ctx, insns, body)
+      ctx.loopDeferDepth.removeAt(ctx.loopDeferDepth.count - 1)
+      ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
+      ctx.loopCont.removeAt(ctx.loopCont.count - 1)
       insns.add(LGoto(label = loopL3))
+      insns.add(LLabel(name = afterL3))
     }
 
     // ── Assignment statement ───────────────────────────────────────────────
@@ -470,6 +541,10 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
     // ── Break / continue ──────────────────────────────────────────────────
     case SBreak(_) -> {
       if ctx.loopBreak.count > 0 {
+        // Replay any `defer` declared inside the loop body before exiting.
+        if ctx.loopDeferDepth.count > 0 {
+          replayDefers(ctx, insns, ctx.loopDeferDepth[ctx.loopDeferDepth.count - 1])
+        }
         insns.add(LGoto(label = ctx.loopBreak[ctx.loopBreak.count - 1]))
       } else {
         insns.add(LNop)
@@ -478,6 +553,10 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
 
     case SContinue(_) -> {
       if ctx.loopCont.count > 0 {
+        // Replay any `defer` declared inside the loop body before continuing.
+        if ctx.loopDeferDepth.count > 0 {
+          replayDefers(ctx, insns, ctx.loopDeferDepth[ctx.loopDeferDepth.count - 1])
+        }
         insns.add(LGoto(label = ctx.loopCont[ctx.loopCont.count - 1]))
       } else {
         insns.add(LNop)
@@ -490,19 +569,16 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
     }
 
     // ── Defer ───────────────────────────────────────────────────────────────
-    // `defer { D }` must run D at scope exit on every path (fall-off, return,
-    // break/continue, exception unwind).  The MSIL backend lowers this to
-    // `try { rest } finally { D }` (#1477); the JVM backend does not yet have
-    // the equivalent lowering (it needs JVM return-through-finally first).
-    // Running the body inline here would be a silent miscompile, so fail loudly
-    // and point at the tracking issue rather than emitting wrong code.
+    // `defer { D }` runs D on every scope exit (fall-off, return, break/continue,
+    // exception unwind).  Lowered by `lowerBlockStmtsFrom`, which wraps the
+    // statements after the defer in a protected region whose catch-all runs the
+    // deferred block then rethrows, replays it inline on the normal fall-off,
+    // and pushes it onto `ctx.deferStack` so early transfers replay it (#1833,
+    // mirrors MSIL #1477).  Every block routes through `lowerBlockStmtsFrom`, so
+    // a bare `SDefer` never reaches `lowerStmt`.
     case SDefer(_) -> {
       panic(
-        "Jvm.Codegen: `defer` is not yet supported on --target jvm — it " +
-          "would require running the deferred block at scope exit (try/finally " +
-          "lowering + return-through-finally).  Implemented for --target dotnet " +
-          "in #1477; JVM parity is tracked in #1833.  Compile this program with " +
-          "--target dotnet, or avoid `defer` on the JVM target for now."
+        "Jvm.Codegen: SDefer reached lowerStmt directly — defers must be lowered through lowerBlockStmtsFrom (unreachable)"
       )
     }
 
@@ -726,9 +802,317 @@ func lowerTryCatch(
 // §7. Block lowering.
 // ─────────────────────────────────────────────────────────────────────────────
 pub func lowerBlock(ctx: in FuncCtx, insns: in List[LInsn], block: in Block): Unit {
+  lowerBlockStmtsFrom(ctx, insns, block.statements, 0)
+}
+
+// True when the last meaningful instruction unconditionally transfers control
+// (return / throw / goto), so the fall-through point is unreachable.  Used to
+// suppress the normal-path `defer` replay (and its StackMapTable frames) after
+// an early `return` / `break` / `continue` already replayed and transferred.
+func lastInsnIsTerminator(insns: in List[LInsn]): Bool {
+  var i = insns.count - 1
+  while i >= 0 {
+    match insns[i] {
+      case LReturn -> {
+        return true
+      }
+      case LIreturn -> {
+        return true
+      }
+      case LLreturn -> {
+        return true
+      }
+      case LFreturn -> {
+        return true
+      }
+      case LDreturn -> {
+        return true
+      }
+      case LAreturn -> {
+        return true
+      }
+      case LAthrow -> {
+        return true
+      }
+      case LGoto(_) -> {
+        return true
+      }
+      case LNop -> {
+        i = i - 1
+      }
+      // `LTryCatch` is a zero-width meta-instruction (an exception-table entry);
+      // it carries no control flow, so skip past it to the real tail.
+      case LTryCatch(_, _, _, _) -> {
+        i = i - 1
+      }
+      case LLabel(_) -> {
+        return false
+      }
+      case _ -> {
+        return false
+      }
+    }
+  }
+  false
+}
+
+// Replay the `defer` blocks pending at indices [downTo, deferStack.count) in
+// reverse (innermost-defined runs first), WITHOUT popping them.  Control is
+// transferring away (return / break / continue), so the stack entries stay in
+// place for any enclosing block's own fall-off / exception handling.
+func replayDefers(ctx: in FuncCtx, insns: in List[LInsn], downTo: in Int): Unit {
+  var i = ctx.deferStack.count - 1
+  while i >= downTo {
+    lowerBlock(ctx, insns, ctx.deferStack[i])
+    i = i - 1
+  }
+}
+
+// Lower `stmts[start..]`, honouring any `defer { … }` in that range.  The first
+// `defer` splits the suffix: statements after it run inside a protected region
+// whose catch-all handler runs the deferred block then rethrows (exception
+// path), and whose normal fall-off re-runs the deferred block once (fall-off
+// path).  Early `return` / `break` / `continue` inside the region replay the
+// pending defers before transferring (see `replayDefers`).  Mirrors MSIL #1477.
+func lowerBlockStmtsFrom(ctx: in FuncCtx, insns: in List[LInsn], stmts: in List[Statement], start: in Int): Unit {
+  val n = stmts.count
+  // Locate the first `defer` at or after `start`.
+  var deferIdx = -1
+  var di = start
+  while di < n {
+    if deferIdx < 0 {
+      match stmts[di].kind {
+        case SDefer(_) -> {
+          deferIdx = di
+        }
+        case _ -> ()
+      }
+    }
+    di = di + 1
+  }
+  if start >= n {
+    ()
+  } else if deferIdx < 0 {
+    var i = start
+    while i < n {
+      lowerStmt(ctx, insns, stmts[i])
+      i = i + 1
+    }
+  } else {
+    lowerDeferRegion(ctx, insns, stmts, start, deferIdx)
+  }
+}
+
+// Lower the statements before `deferIdx` normally, then the suffix after it
+// inside the protected region described in `lowerBlockStmtsFrom`.
+func lowerDeferRegion(
+  ctx: in FuncCtx, insns: in List[LInsn], stmts: in List[Statement], start: in Int, deferIdx: in Int
+): Unit {
+  // Statements before the defer run normally.
+  var k = start
+  while k < deferIdx {
+    lowerStmt(ctx, insns, stmts[k])
+    k = k + 1
+  }
+  val deferBody = match stmts[deferIdx].kind {
+    case SDefer(b) -> b
+    case _ -> panic("Jvm.Codegen: lowerDeferRegion: deferIdx does not point at an SDefer (unreachable)")
+  }
+  val startL = freshLabel(ctx)
+  val afterL = freshLabel(ctx)
+  val normalReplayL = freshLabel(ctx)
+  val handlerL = freshLabel(ctx)
+  insns.add(LLabel(name = startL))
+  // Make the deferred block visible to `return` / `break` / `continue` inside
+  // the protected region so they replay it before transferring control.
+  ctx.deferStack.add(deferBody)
+  val savedDepth = ctx.deferStack.count - 1
+  lowerBlockStmtsFrom(ctx, insns, stmts, deferIdx + 1)
+  // Drop this defer from the pending set before the normal-path replay (the
+  // inline copy below covers fall-off; replays past here must not re-run it).
+  ctx.deferStack.removeAt(savedDepth)
+  // Snapshot whether the suffix already transferred control BEFORE emitting the
+  // normalReplayL label (a label resets `lastInsnIsTerminator`, so the check
+  // must run against the suffix's true tail).
+  val suffixTerminated = lastInsnIsTerminator(insns)
+  // Close the protected region BEFORE the inline normal-path replay so a throw
+  // from the deferred block during replay is NOT caught by the catch-all (which
+  // would re-run the block — double execution, diverging from try/finally).
+  insns.add(LLabel(name = normalReplayL))
+  // Normal fall-off: run the deferred block once and jump over the handler.
+  // When an early transfer already terminated the region, the fall-off is
+  // unreachable — skip both the inline replay and the jump so no dead code (and
+  // no stray StackMapTable frame) lands before the handler.
+  if not suffixTerminated {
+    lowerBlock(ctx, insns, deferBody)
+    insns.add(LGoto(label = afterL))
+  }
+  // Exception path: catch any throwable, run the deferred block, rethrow.
+  insns.add(LLabel(name = handlerL))
+  val exTy = JRef(className = "java/lang/Throwable")
+  val tmpName = "__defer_ex_" + toString(ctx.labelTicker.count)
+  val tmpSlot = allocSlot(ctx, tmpName, exTy)
+  // Store via `LAstoreAs` so the slot's StackMapTable type is `Throwable`, not
+  // the bare `Object` a plain `astore` registers — otherwise the rethrow's
+  // `athrow` fails verification when the deferred block itself does not diverge.
+  insns.add(LAstoreAs(slot = tmpSlot, className = "java/lang/Throwable"))
+  lowerBlock(ctx, insns, deferBody)
+  emitLoad(insns, tmpSlot, exTy)
+  insns.add(LAthrow)
+  // Catch-all entry covers [startL, normalReplayL) (the region body + suffix
+  // only); endLabel = normalReplayL excludes the inline normal-path replay so a
+  // throw during replay rethrows directly rather than re-running the block.
+  insns.add(LTryCatch(startLabel = startL, endLabel = normalReplayL, handlerLabel = handlerL, catchClass = ""))
+  insns.add(LLabel(name = afterL))
+}
+
+// True when `block` declares a `defer` directly among its statements.
+pub func blockHasDefer(block: in Block): Bool {
   var i = 0
   while i < block.statements.count {
-    lowerStmt(ctx, insns, block.statements[i])
+    match block.statements[i].kind {
+      case SDefer(_) -> {
+        return true
+      }
+      case _ -> ()
+    }
     i = i + 1
+  }
+  false
+}
+
+// Value-producing counterpart of `lowerBlockStmtsFrom`: lower
+// `block.statements[start..]` leaving the trailing value on the stack while
+// honouring a `defer`.  Statements after the first defer run inside a protected
+// region; on normal completion the trailing value is stashed in a temp, the
+// deferred block runs, and the value is reloaded (so the block still yields it).
+// Early `return` / `break` / `continue` replay the pending defers via
+// `replayDefers`; an exception runs the deferred block via the catch-all and
+// rethrows.  Mirrors MSIL `lowerStmtsExprFromMsil` (#1833 / #1477).
+pub func lowerBlockExprWithDefer(ctx: in FuncCtx, insns: in List[LInsn], block: in Block, start: in Int): JvmType {
+  val stmts = block.statements
+  val n = stmts.count
+  // Locate the first defer at/after `start`.
+  var deferIdx = -1
+  var di = start
+  while di < n {
+    if deferIdx < 0 {
+      match stmts[di].kind {
+        case SDefer(_) -> {
+          deferIdx = di
+        }
+        case _ -> ()
+      }
+    }
+    di = di + 1
+  }
+  if deferIdx < 0 {
+    // No defer left: plain trailing-value lowering of stmts[start..].
+    return lowerStmtsTrailingValue(ctx, insns, stmts, start)
+  }
+  // Statements before the defer run normally.
+  var k = start
+  while k < deferIdx {
+    lowerStmt(ctx, insns, stmts[k])
+    k = k + 1
+  }
+  val deferBody = match stmts[deferIdx].kind {
+    case SDefer(b) -> b
+    case _ -> panic("Jvm.Codegen: lowerBlockExprWithDefer: deferIdx does not point at an SDefer (unreachable)")
+  }
+  val startL = freshLabel(ctx)
+  val afterL = freshLabel(ctx)
+  val normalReplayL = freshLabel(ctx)
+  val handlerL = freshLabel(ctx)
+  insns.add(LLabel(name = startL))
+  ctx.deferStack.add(deferBody)
+  val savedDepth = ctx.deferStack.count - 1
+  // Recurse for the value-producing suffix (may contain further defers).
+  val valTy = lowerBlockExprWithDefer(ctx, insns, block, deferIdx + 1)
+  ctx.deferStack.removeAt(savedDepth)
+  // Snapshot whether the suffix already transferred control BEFORE emitting the
+  // normalReplayL label (a label resets `lastInsnIsTerminator`, so the check
+  // must run against the suffix's true tail).
+  val suffixTerminated = lastInsnIsTerminator(insns)
+  // Close the protected region BEFORE the inline normal-path replay so a throw
+  // from the deferred block during replay is NOT caught by the catch-all (which
+  // would re-run the block — double execution, diverging from try/finally).
+  insns.add(LLabel(name = normalReplayL))
+  // Normal completion path: when the suffix did not unconditionally transfer
+  // control (an early `return` / `break` / `continue` already replayed the
+  // deferred block via `replayDefers`), stash the trailing value, run the
+  // deferred block, reload, and jump over the handler.  When the suffix DID
+  // terminate, the fall-off is unreachable — emit nothing here so no dead code
+  // / stray frame lands before the handler.
+  if not suffixTerminated {
+    var valSlot = -1
+    match valTy {
+      case JVoid -> ()
+      case _ -> {
+        valSlot = allocSlot(ctx, "__defer_val_" + toString(ctx.slotTicker.count), valTy)
+        emitStore(insns, valSlot, valTy)
+      }
+    }
+    lowerBlock(ctx, insns, deferBody)
+    match valTy {
+      case JVoid -> ()
+      case _ -> emitLoad(insns, valSlot, valTy)
+    }
+    insns.add(LGoto(label = afterL))
+  }
+  // Exception path: run the deferred block, then rethrow.
+  insns.add(LLabel(name = handlerL))
+  val exTy = JRef(className = "java/lang/Throwable")
+  val tmpSlot = allocSlot(ctx, "__defer_ex_" + toString(ctx.labelTicker.count), exTy)
+  // Store via `LAstoreAs` so the slot's StackMapTable type is `Throwable`, not
+  // the bare `Object` a plain `astore` registers — otherwise the rethrow's
+  // `athrow` fails verification when the deferred block itself does not diverge.
+  insns.add(LAstoreAs(slot = tmpSlot, className = "java/lang/Throwable"))
+  lowerBlock(ctx, insns, deferBody)
+  emitLoad(insns, tmpSlot, exTy)
+  insns.add(LAthrow)
+  // Catch-all covers [startL, normalReplayL) (region body + suffix only);
+  // endLabel = normalReplayL excludes the inline normal-path replay so a throw
+  // during replay rethrows directly rather than re-running the block.
+  insns.add(LTryCatch(startLabel = startL, endLabel = normalReplayL, handlerLabel = handlerL, catchClass = ""))
+  // Only land the join label when the normal path actually reaches it; when the
+  // suffix terminated (e.g. trailing `return`), nothing branches to `afterL`,
+  // so emitting it would leave a non-terminator tail and make the caller append
+  // a spurious (wrong-typed) return after the region.
+  if not suffixTerminated {
+    insns.add(LLabel(name = afterL))
+  }
+  valTy
+}
+
+// Lower `stmts[start..]` leaving the trailing value on the stack (no defer in
+// range).  The last statement's value becomes the block value; non-tail
+// statements are lowered in statement position.
+func lowerStmtsTrailingValue(ctx: in FuncCtx, insns: in List[LInsn], stmts: in List[Statement], start: in Int): JvmType {
+  val n = stmts.count
+  if start >= n {
+    return JVoid
+  }
+  var i = start
+  while i < n - 1 {
+    lowerStmt(ctx, insns, stmts[i])
+    i = i + 1
+  }
+  val last = stmts[n - 1]
+  match last.kind {
+    case SExpr(e) -> lowerExpr(ctx, insns, e)
+    case STry(body, catches, finally_) -> {
+      match finally_ {
+        case None -> lowerTryCatchExpr(ctx, insns, body, catches)
+        case Some(_) -> {
+          lowerStmt(ctx, insns, last)
+          JVoid
+        }
+      }
+    }
+    case _ -> {
+      lowerStmt(ctx, insns, last)
+      JVoid
+    }
   }
 }
