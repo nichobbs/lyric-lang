@@ -1267,21 +1267,18 @@ func registerStaticWireSig(
 // True when `name` is listed in a `wire` block's `expose` members.
 func wireExposes(decl: in WireDecl, name: in String): Bool {
   var i = 0
-  var found = false
   while i < decl.members.count {
-    if not found {
-      match decl.members[i] {
-        case WMExpose(en, _) -> {
-          if en == name {
-            found = true
-          }
+    match decl.members[i] {
+      case WMExpose(en, _) -> {
+        if en == name {
+          return true
         }
-        case _ -> ()
       }
+      case _ -> ()
     }
     i = i + 1
   }
-  found
+  false
 }
 
 // Collect every `union` case class's field list from `file` into `into`,
@@ -1783,11 +1780,12 @@ pub func codegenPackageWithSigs(
         }
       }
       case IProtected(decl) -> {
-        // J3 M-3: emit a final, ReentrantLock-guarded class via the existing
-        // `Jvm.Lowering.lowerProtected` (driven from `LPProtected`).  Field
-        // members become private data fields; each `entry` / helper `func`
-        // becomes a lock-wrapped instance method whose bare field references
-        // resolve through `selfClass` (slot 0 = `this`).
+        // J3 M-3: emit a record-shaped class via `buildProtected` (an
+        // `LPRecord`).  Field members become private data fields; each `entry`
+        // / helper `func` becomes an instance method whose bare field
+        // references resolve through `selfClass` (slot 0 = `this`).  Real
+        // ReentrantLock guarding is a documented cross-target gap — MSIL also
+        // emits protected types as plain records.
         items.add(buildProtected(decl, pkgName, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes))
       }
       case IInterface(decl) -> {

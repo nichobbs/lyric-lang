@@ -923,19 +923,16 @@ func lowerDeferRegion(
 // True when `block` declares a `defer` directly among its statements.
 pub func blockHasDefer(block: in Block): Bool {
   var i = 0
-  var found = false
   while i < block.statements.count {
-    if not found {
-      match block.statements[i].kind {
-        case SDefer(_) -> {
-          found = true
-        }
-        case _ -> ()
+    match block.statements[i].kind {
+      case SDefer(_) -> {
+        return true
       }
+      case _ -> ()
     }
     i = i + 1
   }
-  found
+  false
 }
 
 // Value-producing counterpart of `lowerBlockStmtsFrom`: lower
