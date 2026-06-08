@@ -1160,7 +1160,9 @@ func segmentsToString(segments: in List[String]): String {
 func embedLyricContract(lctx: in LoweringCtx, file: in SourceFile, resourceName: in String, version: in String): Unit {
   val contract = Meta.buildContractFromFile(file, version)
 
-  // Upgrade contract to v3 format for emission with SHA-256 integrity hashing
+  // Upgrade contract to v3 format for emission with SHA-256 integrity hashing.
+  // Dependencies are populated at link time from restored packages (Phase 1.3);
+  // at source-level analysis, no dependency info is available yet.
   val contractV3 = Meta.Contract(
     packageName = contract.packageName,
     version = contract.version,
