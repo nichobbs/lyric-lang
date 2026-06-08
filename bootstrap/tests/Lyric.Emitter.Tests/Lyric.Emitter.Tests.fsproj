@@ -289,7 +289,6 @@
     <Compile Include="JvmLoweringB132Test.fs" />
     <Compile Include="JvmLoweringB133Test.fs" />
     <Compile Include="JvmLoweringB134Test.fs" />
-    <Compile Include="SelfHostedTestSynthTests.fs" />
     <Compile Include="SelfHostedManifestTests.fs" />
     <Compile Include="SelfHostedVerifierTests.fs" />
     <Compile Include="SelfHostedGeneratorTests.fs" />

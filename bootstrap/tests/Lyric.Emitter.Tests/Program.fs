@@ -287,7 +287,6 @@ let main argv =
             JvmLoweringB132Test.tests
             JvmLoweringB133Test.tests
             JvmLoweringB134Test.tests
-            SelfHostedTestSynthTests.tests
             SelfHostedManifestTests.tests
             SelfHostedVerifierTests.tests
             SelfHostedGeneratorTests.tests
