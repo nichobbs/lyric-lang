@@ -13,6 +13,17 @@ import Jvm.Classfile
 import Jvm.Lowering
 import Jvm.AutoFfi
 
+// A module-level `val NAME = init` lowered once, up front (#2853).  The init is
+// lowered with the shared `<clinit>` ctx so the field's JVM type is the *exact*
+// type the value carries (`lowered`, then coerced to `field`).  Both the
+// `getstatic` descriptor (`moduleVals`) and the emitted field (`LStaticVal`)
+// read from the same `field` type here, so they can never disagree.
+record LoweredModuleVal {
+  name: String
+  field: JvmType
+  insns: List[LInsn]
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §8. Function lowering.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -71,6 +82,8 @@ func makeFuncCtxForGenerator(
   ctors: in Map[String, String],
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
+  moduleVals: in Map[String, JvmType],
+  opaqueTypes: in Map[String, Bool],
 ): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
@@ -100,8 +113,8 @@ func makeFuncCtxForGenerator(
     deferStack = deferStack,
     loopDeferDepth = loopDeferDepth,
     selfClass = None,
-    moduleVals = newMap(),
-    opaqueTypes = newMap()
+    moduleVals = moduleVals,
+    opaqueTypes = opaqueTypes
   )
 }
 
@@ -974,9 +987,24 @@ func lowerGeneratorBody(
   ctors: in Map[String, String],
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
+  moduleVals: in Map[String, JvmType],
+  opaqueTypes: in Map[String, Bool],
 ): List[LInsn] {
   val insns: List[LInsn] = newList()
-  val ctx = makeFuncCtxForGenerator(pkgName, genClass, funcSigs, caseFields, ctors, externTypes, autoFfi)
+  // #2856: thread the real `moduleVals` / `opaqueTypes` maps into the generator
+  // ctx so a generator body that reads a module-`val` (bare `getstatic`) or an
+  // opaque-type field resolves it, instead of silently lowering to `null`.
+  val ctx = makeFuncCtxForGenerator(
+    pkgName,
+    genClass,
+    funcSigs,
+    caseFields,
+    ctors,
+    externTypes,
+    autoFfi,
+    moduleVals,
+    opaqueTypes
+  )
 
   // Preamble: load each param from this.<field> into a local slot.
   var pi = 0
@@ -1490,6 +1518,65 @@ func inferValType(e: in Expr, owner: in String): JvmType {
   }
 }
 
+// Pre-lower every module-level `val NAME = init` (PBinding form) once, against
+// the shared `<clinit>` ctx, and **overwrite** `moduleVals[NAME]` with the real
+// field type the value carries (#2853).  `collectFileVals`'s `inferValType`
+// guess disagrees with the emitted field in two cases — an F32 float literal
+// (`D` vs `F`) and any non-literal init (`Object` vs the concrete type) — which
+// made the bare-reference `getstatic <owner>.<name>:<desc>` mismatch the
+// declared field and fail class load with `NoSuchFieldError`.  Lowering here,
+// before any function body or the `<clinit>` itself, means the `getstatic`
+// descriptor and the `LStaticVal` field are derived from the identical `field`
+// type.  The lowered insns are cached so the `<clinit>` emission reuses them
+// rather than lowering a second time (slot numbering stays consistent).
+func prelowerModuleVals(
+  file: in SourceFile,
+  pkgName: in String,
+  valInitCtx: in FuncCtx,
+  moduleVals: in Map[String, JvmType],
+): List[LoweredModuleVal] {
+  val lowered: List[LoweredModuleVal] = newList()
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IVal(decl) -> {
+        match decl.pattern.kind {
+          case PBinding(name, _) -> {
+            val initInsns: List[LInsn] = newList()
+            val valTy = lowerExpr(valInitCtx, initInsns, decl.init)
+            val fieldTy = match decl.ty { case Some(te) -> typeExprToJvm(te, pkgName); case None -> valTy }
+            coerceArgTo(initInsns, valTy, fieldTy)
+            // Overwrite the `collectFileVals`/`inferValType` guess with the real
+            // field type so bare reads emit the matching `getstatic` descriptor.
+            if moduleVals.containsKey(name) {
+              moduleVals.remove(name)
+            }
+            moduleVals.add(name, fieldTy)
+            lowered.add(LoweredModuleVal(name = name, field = fieldTy, insns = initInsns))
+          }
+          case _ -> ()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  lowered
+}
+
+// Look up the pre-lowered module val for `name` (#2853).  Returns the cached
+// field type + init insns so the `<clinit>` emission reuses the single lowering.
+func findLoweredModuleVal(cache: in List[LoweredModuleVal], name: in String): Option[LoweredModuleVal] {
+  var i = 0
+  while i < cache.count {
+    if cache[i].name == name {
+      return Some(value = cache[i])
+    }
+    i = i + 1
+  }
+  None
+}
+
 // Backward-compatible single-package entry: the registry carries only this
 // file's own functions (enough to resolve intra-package calls — including
 // void-returning ones the legacy guess mis-resolved).
@@ -1563,6 +1650,11 @@ pub func codegenPackageWithSigs(
     moduleVals,
     opaqueTypes
   )
+  // #2853: lower every module-level `val` once, now, and overwrite `moduleVals`
+  // with the real field type before any function (or the `<clinit>` itself) is
+  // lowered — so a bare reference's `getstatic` descriptor matches the emitted
+  // field.  The IVal item loop below reuses these cached insns / types.
+  val loweredVals = prelowerModuleVals(file, pkgName, valInitCtx, moduleVals)
   var hasMain = false
   // Captured return type of the Lyric `main(): T` so the JVM wrapper can
   // emit a correctly-typed invokestatic.  `JVoid` until / unless a main is
@@ -1607,7 +1699,18 @@ pub func codegenPackageWithSigs(
         if decl.isAsync and funcBodyContainsYield(decl) {
           // Async generator: synthesise Iterable+Iterator class via lowerAsyncGenerator.
           val genClass = pkgName + "$" + decl.name + "$Gen"
-          val bodyInsns = lowerGeneratorBody(decl, pkgName, genClass, funcSigs, caseFields, ctors, externTypes, autoFfi)
+          val bodyInsns = lowerGeneratorBody(
+            decl,
+            pkgName,
+            genClass,
+            funcSigs,
+            caseFields,
+            ctors,
+            externTypes,
+            autoFfi,
+            moduleVals,
+            opaqueTypes
+          )
           val genParams: List[LGenParam] = newList()
           var pi = 0
           while pi < decl.params.count {
@@ -1735,11 +1838,14 @@ pub func codegenPackageWithSigs(
         // emitted (no MSIL counterpart either).
         match decl.pattern.kind {
           case PBinding(name, _) -> {
-            val initInsns: List[LInsn] = newList()
-            val valTy = lowerExpr(valInitCtx, initInsns, decl.init)
-            val fieldTy = match decl.ty { case Some(te) -> typeExprToJvm(te, pkgName); case None -> valTy }
-            coerceArgTo(initInsns, valTy, fieldTy)
-            staticVals.add(LStaticVal(name = name, valType = fieldTy, initInsns = initInsns))
+            // #2853: reuse the single pre-lowering (cached in `loweredVals`) so
+            // the emitted field type is identical to the one `moduleVals`
+            // carries for bare-reference `getstatic`.  The cache is always
+            // populated for the PBinding form (same scan as here).
+            match findLoweredModuleVal(loweredVals, name) {
+              case Some(lv) -> staticVals.add(LStaticVal(name = name, valType = lv.field, initInsns = lv.insns))
+              case None -> ()
+            }
           }
           case _ -> ()
         }

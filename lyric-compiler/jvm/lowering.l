@@ -675,7 +675,14 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
     case LInvokestatic(owner, name, ps, ret) -> {
       val idx = poolMethodref(asm.pool, owner, name, buildDescriptor(ps, ret))
       emitInvokestatic(asm, idx)
-      trackStack(asm, 0)
+      // Precise net delta: `ret` slots pushed minus the arg slots popped (no
+      // receiver for a static call).  The flat `trackStack(asm, 0)` under-counts
+      // the peak when a method pushes more than it pops — e.g. a 0-arg call
+      // returning a value as the *first* instruction of a `<clinit>` (a
+      // non-literal module-`val` initialiser, #2853), where peakStack would
+      // otherwise stay 0 and the verifier rejects the method with a stack
+      // overflow.  `trackStack` raises peakStack when the net delta is positive.
+      trackStack(asm, fieldSlotSize(ret) - slotSum(ps))
     }
     case LInvokeinterface(owner, name, ps, ret, argCount) -> {
       val idx = poolIfaceMethodref(asm.pool, owner, name, buildDescriptor(ps, ret))

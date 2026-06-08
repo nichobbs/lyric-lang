@@ -29,6 +29,32 @@ import Std.Testing
 val theAnswer: Int = 42
 val greeting: String = "hello"
 
+// #2853: an *unannotated* module `val` whose init is a function call.  Before the
+// fix, `collectFileVals` typed it `java/lang/Object` (D-guess) while the emitted
+// field carried the call's real return type (`I`), so a bare read's `getstatic`
+// descriptor mismatched the field and class load failed with `NoSuchFieldError`.
+func computeAnswer(): Int {
+  return 6 * 7
+}
+val derivedAnswer = computeAnswer()
+
+// #2853: an *unannotated* module `val` whose init is a non-literal returning a
+// record.  Same descriptor-mismatch failure mode (`Object` guess vs the real
+// `LJvm/J3LoweringSelfTest/Gadget;` field) before the fix.
+record Gadget {
+  weight: Int
+}
+
+func makeGadget(): Gadget {
+  return Gadget(weight = 99)
+}
+val theGadget = makeGadget()
+
+// #2853: an *unannotated* F32 module `val`.  `inferValType` typed every float
+// literal `JDouble` (`D`), but `1.5f32` lowers to `JFloat` (`F`) — the field is
+// `F`, so a bare `getstatic …:D` read mismatched and failed class load.
+val unitScale = 1.5f32
+
 // ── M-3: opaque type ──────────────────────────────────────────────────────────
 opaque type Amount {
   cents: Int
@@ -117,10 +143,55 @@ func deferContinues(iters: in Int, obs: in Counter): Unit {
   }
 }
 
+// #2854: `for`/`loop` `break`/`continue` now replay pending defers (the codegen
+// registers `loopBreak`/`loopCont`/`loopDeferDepth` symmetric to `while`).  No
+// runnable JVM regression is added here because `for`-over-array element use and
+// `loop {}` both hit *pre-existing* JVM-backend miscompiles independent of this
+// fix — an array-`for` element is bound as a boxed `Object` and any typed use
+// (`if v == n`) fails verification ("Bad type on operand stack"); `loop {}` with
+// a `break`/`return` panics codegen with a spurious `ELambda`.  Both predate this
+// branch (verified against pristine `05_stmts.l`) and are out of scope here; the
+// `while`-loop defer paths above (#2852) cover the replay machinery end-to-end.
+
+// #2856: a generator body that reads a module-`val` must resolve it (real
+// `getstatic`), not silently lower to `null`.  Before the fix the generator ctx
+// carried an empty `moduleVals`, so `theAnswer` resolved to `LAconstNull` (and
+// `runBody` failed to even verify — "Expecting to find integer on stack").  The
+// assertion runs *inside* the `for` body: a typed local escaping a
+// `for`-over-generator loop hits a separate, pre-existing slot-type VerifyError
+// (tracked under docs/44 J-loops; not this fix), so the test consumes `v` only
+// as an Object here.  `obs` records that the body ran for each yield.
+async func answersGen(n: Int): Int {
+  var i = 0
+  while i < n {
+    yield theAnswer
+    i = i + 1
+  }
+}
+
+func consumeAnswers(n: in Int, obs: in Counter): Unit {
+  for v in answersGen(n) {
+    assertEqual(toString(v), "42", "generator yielded the module val, not null")
+    obs.increment()
+  }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 test "module-level val is read via getstatic" {
   assertEqualInt(theAnswer, 42, "theAnswer")
   assertEqual(greeting, "hello", "greeting")
+}
+
+test "unannotated non-literal module val (call) loads and reads (#2853)" {
+  assertEqualInt(derivedAnswer, 42, "derivedAnswer = computeAnswer()")
+}
+
+test "unannotated non-literal module val (record) loads and reads (#2853)" {
+  assertEqualInt(theGadget.weight, 99, "theGadget.weight")
+}
+
+test "unannotated F32 module val loads with the F descriptor (#2853)" {
+  assertTrue(unitScale == 1.5f32, "unitScale == 1.5f32")
 }
 
 test "opaque type round-trips construction and field read" {
@@ -169,4 +240,10 @@ test "defer in loop replays on every continue iteration (#2852)" {
   val obs = Counter(count = 0)
   deferContinues(5, obs)
   assertEqualInt(obs.get(), 5, "defer ran once per iteration incl. continue paths")
+}
+
+test "generator body reads a module val, not null (#2856)" {
+  val obs = Counter(count = 0)
+  consumeAnswers(3, obs)
+  assertEqualInt(obs.get(), 3, "generator yielded 3 times, each value == theAnswer")
 }

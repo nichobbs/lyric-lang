@@ -412,6 +412,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           insns.add(LArraylength)
           emitStore(insns, lenSlot, JInt)
           val loopLA = freshLabel(ctx)
+          val contLA = freshLabel(ctx)
           val endLA = freshLabel(ctx)
           insns.add(LLabel(name = loopLA))
           emitLoad(insns, iSlot, JInt)
@@ -424,7 +425,18 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           val elemSlotA = allocSlot(ctx, "__for_elem_" + toString(ctx.slotTicker.count), elemTyA)
           emitStore(insns, elemSlotA, elemTyA)
           lowerPatternBind(ctx, insns, pat, elemSlotA, elemTyA)
+          // #2854: `continue` targets the index-increment point (`contLA`), not
+          // the loop top, so the loop variable still advances; `break` targets
+          // `endLA`.  `loopDeferDepth` captures the entry depth so a body `defer`
+          // replays on both before the jump.
+          ctx.loopBreak.add(endLA)
+          ctx.loopCont.add(contLA)
+          ctx.loopDeferDepth.add(ctx.deferStack.count)
           lowerBlock(ctx, insns, body)
+          ctx.loopDeferDepth.removeAt(ctx.loopDeferDepth.count - 1)
+          ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
+          ctx.loopCont.removeAt(ctx.loopCont.count - 1)
+          insns.add(LLabel(name = contLA))
           emitLoad(insns, iSlot, JInt)
           insns.add(LIconst(v = 1))
           insns.add(LIadd)
@@ -478,7 +490,16 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           val elemSlotB = allocSlot(ctx, "__for_elem_" + toString(ctx.slotTicker.count), elemTyB)
           emitStore(insns, elemSlotB, elemTyB)
           lowerPatternBind(ctx, insns, pat, elemSlotB, elemTyB)
+          // #2854: `continue` targets the loop top (`loopLB`, which re-checks
+          // hasNext()); `break` targets `endLB`.  `loopDeferDepth` captures the
+          // entry depth so a body `defer` replays on both before the jump.
+          ctx.loopBreak.add(endLB)
+          ctx.loopCont.add(loopLB)
+          ctx.loopDeferDepth.add(ctx.deferStack.count)
           lowerBlock(ctx, insns, body)
+          ctx.loopDeferDepth.removeAt(ctx.loopDeferDepth.count - 1)
+          ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
+          ctx.loopCont.removeAt(ctx.loopCont.count - 1)
           insns.add(LGoto(label = loopLB))
           insns.add(LLabel(name = endLB))
         }
@@ -488,9 +509,21 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
     // ── Loop (unconditional) ───────────────────────────────────────────────
     case SLoop(_, body) -> {
       val loopL3 = freshLabel(ctx)
+      val afterL3 = freshLabel(ctx)
       insns.add(LLabel(name = loopL3))
+      // #2854: register this loop's own break/continue targets (an unconditional
+      // `loop` exits only via `break`/`return`) and the defer depth at entry, so
+      // a `defer` declared in the body replays on `break`/`continue` and the jump
+      // lands on *this* loop rather than an enclosing one.
+      ctx.loopBreak.add(afterL3)
+      ctx.loopCont.add(loopL3)
+      ctx.loopDeferDepth.add(ctx.deferStack.count)
       lowerBlock(ctx, insns, body)
+      ctx.loopDeferDepth.removeAt(ctx.loopDeferDepth.count - 1)
+      ctx.loopBreak.removeAt(ctx.loopBreak.count - 1)
+      ctx.loopCont.removeAt(ctx.loopCont.count - 1)
       insns.add(LGoto(label = loopL3))
+      insns.add(LLabel(name = afterL3))
     }
 
     // ── Assignment statement ───────────────────────────────────────────────
