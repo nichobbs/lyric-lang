@@ -23158,3 +23158,59 @@ that reproduces identically for a top-level `func`, unrelated to record-method
 dispatch.  The
 Result-returning case in the self-test uses the `if/else` tail-expression form to
 exercise J4 generics without tripping it.
+
+### D-progress-476 — JVM control flow: a tail `if`/`else` (and `match`) with all-terminating arms no longer appends a stray void return (#2870, epic #2663)
+
+**Status:** Shipped — a function/method whose `if`/`else` has an explicit
+`return` in both arms (or whose `match` `return`s on every arm) now compiles and
+runs on `--target jvm` (was a `VerifyError`).  Self-hosted-only; no F#; no MSIL
+change.
+
+Before this slice, `func classify(n: Int): String { if n > 0 { return "pos" }
+else { return "non-pos" } }` failed JVM verification.  The JVM `if`/`match`
+lowering always emitted the `afterL` join label after the arms.  When both/all
+arms terminated, that join was unreachable but still landed as a branch target at
+the **past-end bytecode offset**, and the `StackMapTable` frame the verifier
+emits for it pointed past the method body (`VerifyError: StackMapTable error: bad
+offset`).  Worse, the function-body return check `endsWithReturn` (which inspects
+the emitted instruction stream and stops at a label) could not see the
+termination through that trailing label, so it also appended a stray void
+`return` after the `if`.  A very common pattern; the prior workaround was the
+tail-expression form.
+
+**The fix (`lyric-compiler/jvm/`):**
+
+- **`codegen/02_exprs.l` (`lowerIfExpr`):** each arm's termination is snapshotted
+  via `endsWithReturn` right after it is lowered.  A terminating then-arm skips
+  the dead result-store + `goto afterL`; when **both** arms terminate, the `afterL`
+  join label (and the result reload) is **not emitted** — the `if` is itself
+  terminating, so there is no unreachable past-end frame.
+- **`codegen/03_match.l` (`lowerMatchExpr`):** a new `anyArmFellThrough` flag
+  records whether any arm emitted a `goto afterL`.  When every arm terminates, the
+  `afterL` label (and the result reload) is suppressed for the same reason.
+- **`codegen/06_items.l`:** a new AST-level terminator predicate —
+  `blockTerminates` / `stmtTerminates` / `exprTerminates` /
+  `exprOrBlockTerminates` — recurses through `if`/`else if`/`else` chains (an `if`
+  with no `else` is **not** terminating) and `match` (terminating iff every arm
+  terminates).  It is consulted alongside `endsWithReturn` at all four
+  function-body return-decision points (top-level `func`, record/impl methods via
+  `lowerFunc`; protected-type entry/helper bodies), so the implicit/trailing
+  `return` is not appended when control is already terminated.  This mirrors the
+  MSIL backend's intent (no implicit return after an all-paths-terminating body)
+  while fixing the JVM-specific StackMapTable failure mode.
+
+The implicit-return / fall-off path is unchanged: a `Unit` function that falls off
+the end, and an `if` with no `else` followed by a tail value, both still emit
+their implicit return.
+
+**Test:** `lyric-compiler/jvm/control_flow_jvm_self_test.l` (`@test_module`,
+`Std.*`-only) asserts runtime values under `java` for: `return` in both `if`/`else`
+arms (the #2870 repro, value-returning), a nested `if`/`else if`/`else` chain
+where every arm `return`s, an all-arms-return `match`, an `if`/`else` after a
+preceding statement, plus the two control cases (a `Unit` fall-off function and an
+else-less `if` followed by a tail value) that prove the implicit-return path still
+works.  6/6 under `java` via native `lyric test --target jvm`, wired into `ci.yml`
+beside the closure JVM self-test.  No regression on the existing JVM self-tests
+(silent-miscompile 8/8, auto-FFI 13/13, hash 3/3, bitwise 10/10, j3_lowering
+12/12, middle-end-passes 5/5, generic 13/13, closure 11/11) or the full F# Emitter
+suite (834 passed, 0 failed, 0 errored).

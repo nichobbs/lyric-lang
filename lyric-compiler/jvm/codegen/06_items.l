@@ -321,7 +321,13 @@ pub func lowerFunc(
               // `ireturn`/`areturn` next would underflow the operand stack
               // (VerifyError) — so a tail value of `JVoid` requires the
               // value-less `return` instead (#1683).
-              if not endsWithReturn(insns) {
+              //
+              // `blockTerminates(block)` covers the case where the tail is an
+              // `if`/`else` (or `match`) whose arms all `return`: the lowering
+              // leaves the unreachable join label as the last instruction, so
+              // `endsWithReturn` cannot see the termination and would otherwise
+              // append a stray void `return` (#2870).
+              if not endsWithReturn(insns) and not blockTerminates(block) {
                 match tailTy {
                   case JVoid -> emitReturn(insns, JVoid)
                   case _ -> emitReturnArrayCoerced(ctx, insns, tailTy, retTy)
@@ -332,7 +338,7 @@ pub func lowerFunc(
           // For the void path the inner `lowerBlock` did not leave a value on
           // the stack; close the method with `return` if it didn't already end
           // in one.  The non-void path returned above.
-          if retTy == JVoid and not endsWithReturn(insns) {
+          if retTy == JVoid and not endsWithReturn(insns) and not blockTerminates(block) {
             emitReturn(insns, retTy)
           }
         }
@@ -418,6 +424,73 @@ func endsWithReturn(insns: in List[LInsn]): Bool {
     }
   }
   false
+}
+
+// AST-level terminator analysis (mirrors the MSIL backend's intent: a body that
+// unconditionally transfers control on every path must NOT have an implicit
+// trailing `return` appended after it).  `endsWithReturn` inspects the emitted
+// instruction stream and stops at a label, so it cannot see that an `if`/`else`
+// (or `match`) whose arms all `return` is terminating — the lowering leaves the
+// (unreachable) join label as the last instruction.  Appending a void `return`
+// there produces a stray, wrong-typed return that fails JVM verification (#2870).
+// These predicates close that gap by reasoning over the source AST instead.
+// True when executing `block` always transfers control away (every path ends in
+// `return` / `throw`), so the fall-off point after it is unreachable.
+pub func blockTerminates(block: in Block): Bool {
+  val n = block.statements.count
+  if n == 0 {
+    return false
+  }
+  stmtTerminates(block.statements[n - 1])
+}
+
+// True when executing `stmt` always transfers control away on every path.
+func stmtTerminates(stmt: in Statement): Bool {
+  match stmt.kind {
+    case SReturn(_) -> true
+    case SThrow(_) -> true
+    case SBreak(_) -> true
+    case SContinue(_) -> true
+    case SExpr(e) -> exprTerminates(e)
+    case _ -> false
+  }
+}
+
+// True when evaluating `e` always transfers control away on every path.  Covers
+// the `if`/`else` and `match` expression forms whose every arm terminates; an
+// `if` with no `else` is NOT terminating (the false path falls through).
+func exprTerminates(e: in Expr): Bool {
+  match e.kind {
+    case EBlock(block) -> blockTerminates(block)
+    case EIf(_, thenBranch, elseBranchOpt, _) -> {
+      match elseBranchOpt {
+        case None -> false
+        case Some(elseBranch) -> exprOrBlockTerminates(thenBranch) and exprOrBlockTerminates(elseBranch)
+      }
+    }
+    case EMatch(_, arms) -> {
+      if arms.count == 0 {
+        return false
+      }
+      var i = 0
+      while i < arms.count {
+        if not exprOrBlockTerminates(arms[i].body) {
+          return false
+        }
+        i = i + 1
+      }
+      true
+    }
+    case _ -> false
+  }
+}
+
+// True when the `then`/`else`/match-arm body always transfers control away.
+func exprOrBlockTerminates(eob: in ExprOrBlock): Bool {
+  match eob {
+    case EOBExpr(e) -> exprTerminates(e)
+    case EOBBlock(block) -> blockTerminates(block)
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -611,13 +684,17 @@ func lowerProtectedMethod(
       match retTy {
         case JVoid -> {
           lowerBlock(ctxSelf, insns, block)
-          if not endsWithReturn(insns) {
+          if not endsWithReturn(insns) and not blockTerminates(block) {
             emitReturn(insns, JVoid)
           }
         }
         case _ -> {
           val tailTy = lowerBlockExpr(ctxSelf, insns, block)
-          if not endsWithReturn(insns) {
+          // See lowerFunc: `blockTerminates(block)` catches a tail `if`/`else`
+          // (or `match`) whose arms all `return`, where the unreachable join
+          // label is the last instruction and `endsWithReturn` cannot see the
+          // termination (#2870).
+          if not endsWithReturn(insns) and not blockTerminates(block) {
             match tailTy {
               case JVoid -> emitReturn(insns, JVoid)
               case _ -> {
