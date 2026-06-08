@@ -29,6 +29,12 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
   // first arm reveals the value type; `-1` until then / for Unit-typed matches.
   val rslotName = "__match_r_" + afterL
   var rslot = -1
+  // Whether ANY arm can fall through to the `afterL` join.  When every arm
+  // terminates (each ends in `return` / `throw`), no `goto afterL` is emitted,
+  // the join is unreachable, and landing the `afterL` label would leave an
+  // unreachable branch target at the past-end bytecode offset whose
+  // StackMapTable frame points past the method body (VerifyError, #2870).
+  var anyArmFellThrough = false
 
   var i = 0
   while i < arms.count {
@@ -82,6 +88,7 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
         }
       }
       insns.add(LGoto(label = afterL))
+      anyArmFellThrough = true
     }
     insns.add(LLabel(name = nextArmL))
     i = i + 1
@@ -91,12 +98,17 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
   insns.add(LPushString(s = "Jvm.Codegen: match not exhaustive"))
   emitPanicFromStack(ctx, insns)
 
-  insns.add(LLabel(name = afterL))
-  match resultTy {
-    case JVoid -> ()
-    case _ -> {
-      if rslot >= 0 {
-        emitResultLoad(insns, rslot, resultTy)
+  // Land the join only when some arm can reach it.  When every arm terminated,
+  // the match is itself terminating: emitting `afterL` here would create the
+  // past-end unreachable frame described above (#2870).
+  if anyArmFellThrough {
+    insns.add(LLabel(name = afterL))
+    match resultTy {
+      case JVoid -> ()
+      case _ -> {
+        if rslot >= 0 {
+          emitResultLoad(insns, rslot, resultTy)
+        }
       }
     }
   }

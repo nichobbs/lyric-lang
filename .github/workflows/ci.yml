@@ -1501,6 +1501,31 @@ jobs:
             exit 0
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/record_method_jvm_self_test.l
+      # Control-flow terminator self-test on the JVM target (#2870, epic #2663).
+      # Pins the fix for the stray trailing void `return` appended after a tail
+      # `if`/`else` (or `match`) whose arms all `return`: the if/match lowering no
+      # longer lands an unreachable join label at the past-end bytecode offset
+      # (its StackMapTable frame pointed past the method body → VerifyError), and
+      # the AST-level `blockTerminates` predicate suppresses the implicit return.
+      # Asserts the both-branches-return repro, a nested if/else-if/else chain,
+      # an all-arms-return `match`, plus a Unit fall-off and an else-less `if` to
+      # prove the implicit-return path still works — all under `java`.  Imports
+      # only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: Control-flow terminator self-test on JVM (native lyric test --target jvm)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping control-flow JVM self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping control-flow JVM self-test"
+            exit 0
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/control_flow_jvm_self_test.l
       # Match-literal + compound-assignment self-test — pins two self-hosted
       # MSIL backend correctness fixes from #1481 (epic #1470, Band 2): Float
       # literal *match* patterns now emit a real `ldc.r8; ceq` compare instead

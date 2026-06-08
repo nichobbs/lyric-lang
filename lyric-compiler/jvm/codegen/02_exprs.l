@@ -1201,13 +1201,28 @@ func lowerIfExpr(
     case Some(elseBranch) -> {
       lowerBoolCond(ctx, insns, cond, elseL)
       val thenTy = lowerExprOrBlock(ctx, insns, thenBranch)
+      // Whether the then-arm unconditionally transferred control (e.g. both this
+      // `if`'s arms `return`).  When it did, the `goto afterL` that would follow
+      // it is dead; emitting the `afterL` join label below — when the else-arm
+      // ALSO terminates — would leave an unreachable branch target at the
+      // past-end bytecode offset, and the StackMapTable frame the verifier emits
+      // for it points past the method body (VerifyError: bad offset, #2870).
+      val thenTerminated = endsWithReturn(insns)
       match thenTy {
         case JVoid -> {
           // Void if-expression: nothing on the stack at the `afterL` join.
-          insns.add(LGoto(label = afterL))
+          if not thenTerminated {
+            insns.add(LGoto(label = afterL))
+          }
           insns.add(LLabel(name = elseL))
           val _ = lowerExprOrBlock(ctx, insns, elseBranch)
-          insns.add(LLabel(name = afterL))
+          val elseTerminated = endsWithReturn(insns)
+          // Only land the join label when at least one arm can reach it.  When
+          // both arms terminated, the whole `if` is terminating: emitting the
+          // join would create the past-end unreachable frame described above.
+          if not (thenTerminated and elseTerminated) {
+            insns.add(LLabel(name = afterL))
+          }
           JVoid
         }
         case _ -> {
@@ -1219,13 +1234,26 @@ func lowerIfExpr(
           // Storing into a local in each arm and reloading after the join keeps
           // the stack empty at the merge point.
           val rslot = allocSlot(ctx, "__if_r_" + afterL, thenTy)
-          emitStore(insns, rslot, thenTy)
-          insns.add(LGoto(label = afterL))
+          // A terminating then-arm (e.g. `if c { return x } else { … }`) already
+          // transferred control and left nothing on the stack — its value never
+          // reaches the join, so skip the result store + dead `goto`.
+          if not thenTerminated {
+            emitStore(insns, rslot, thenTy)
+            insns.add(LGoto(label = afterL))
+          }
           insns.add(LLabel(name = elseL))
           val _ = lowerExprOrBlock(ctx, insns, elseBranch)
-          emitStore(insns, rslot, thenTy)
-          insns.add(LLabel(name = afterL))
-          emitResultLoad(insns, rslot, thenTy)
+          val elseTerminated = endsWithReturn(insns)
+          if not elseTerminated {
+            emitStore(insns, rslot, thenTy)
+          }
+          // When both arms terminated, the `if` is itself terminating: do not
+          // land the join label (and its past-end frame) and do not reload the
+          // result, since control never arrives here (#2870).
+          if not (thenTerminated and elseTerminated) {
+            insns.add(LLabel(name = afterL))
+            emitResultLoad(insns, rslot, thenTy)
+          }
           thenTy
         }
       }
