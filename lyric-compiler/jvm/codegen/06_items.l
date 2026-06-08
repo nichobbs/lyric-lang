@@ -39,6 +39,8 @@ func makeFuncCtx(
   retTy: in JvmType,
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
+  closureAcc: in List[LClosure],
+  closureCounter: in List[Int],
 ): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
@@ -68,7 +70,9 @@ func makeFuncCtx(
     loopDeferDepth = loopDeferDepth,
     selfClass = None,
     moduleVals = moduleVals,
-    opaqueTypes = opaqueTypes
+    opaqueTypes = opaqueTypes,
+    closureAcc = closureAcc,
+    closureCounter = closureCounter
   )
 }
 
@@ -84,6 +88,8 @@ func makeFuncCtxForGenerator(
   autoFfi: in AutoFfiCtx,
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
+  closureAcc: in List[LClosure],
+  closureCounter: in List[Int],
 ): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
@@ -114,7 +120,9 @@ func makeFuncCtxForGenerator(
     loopDeferDepth = loopDeferDepth,
     selfClass = None,
     moduleVals = moduleVals,
-    opaqueTypes = opaqueTypes
+    opaqueTypes = opaqueTypes,
+    closureAcc = closureAcc,
+    closureCounter = closureCounter
   )
 }
 
@@ -132,6 +140,8 @@ func makeFuncCtxInstance(
   retTy: in JvmType,
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
+  closureAcc: in List[LClosure],
+  closureCounter: in List[Int],
 ): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
@@ -162,7 +172,9 @@ func makeFuncCtxInstance(
     loopDeferDepth = loopDeferDepth,
     selfClass = Some(value = className),
     moduleVals = moduleVals,
-    opaqueTypes = opaqueTypes
+    opaqueTypes = opaqueTypes,
+    closureAcc = closureAcc,
+    closureCounter = closureCounter
   )
 }
 
@@ -253,6 +265,8 @@ pub func lowerFunc(
   autoFfi: in AutoFfiCtx,
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
+  closureAcc: in List[LClosure],
+  closureCounter: in List[Int],
 ): LFunc {
   val retTy = match decl.ret { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
 
@@ -266,7 +280,9 @@ pub func lowerFunc(
     autoFfi,
     retTy,
     moduleVals,
-    opaqueTypes
+    opaqueTypes,
+    closureAcc,
+    closureCounter
   )
   val insns: List[LInsn] = newList()
 
@@ -451,13 +467,30 @@ pub func lowerRecord(
   // (ClassFormatError "Duplicate method <init>" at load).
   val methods: List[LFunc] = newList()
 
-  // Lower any RMFunc members.
+  // Lower any RMFunc members.  Lambdas inside a record method are outside the
+  // J2b closure slice (#2665) — a throwaway accumulator keeps `lowerFunc` total;
+  // an `ELambda` here still panics in codegen (unchanged from pre-J2b).
+  val recClosureAcc: List[LClosure] = newList()
+  val recClosureCounter: List[Int] = newList()
   var mi = 0
   while mi < decl.members.count {
     match decl.members[mi] {
       case RMFunc(fn) -> {
         methods.add(
-          lowerFunc(fn, pkgName, className, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes)
+          lowerFunc(
+            fn,
+            pkgName,
+            className,
+            funcSigs,
+            caseFields,
+            ctors,
+            externTypes,
+            autoFfi,
+            moduleVals,
+            opaqueTypes,
+            recClosureAcc,
+            recClosureCounter
+          )
         )
       }
       case _ -> {
@@ -528,6 +561,13 @@ func lowerProtectedMethod(
   opaqueTypes: in Map[String, Bool],
 ): LFunc {
   val retTy = match retOpt { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
+  // Lambdas inside a protected-type entry/helper are not part of the J2b
+  // closure slice (#2665): the shared package accumulator is threaded only
+  // through the top-level `func` / `impl` / `interface` paths.  A throwaway
+  // accumulator keeps `makeFuncCtxInstance` total here; an `ELambda` in this
+  // position still panics in codegen (unchanged from pre-J2b).
+  val protClosureAcc: List[LClosure] = newList()
+  val protClosureCounter: List[Int] = newList()
   val ctxSelf = makeFuncCtxInstance(
     pkgName,
     className,
@@ -538,7 +578,9 @@ func lowerProtectedMethod(
     autoFfi,
     retTy,
     moduleVals,
-    opaqueTypes
+    opaqueTypes,
+    protClosureAcc,
+    protClosureCounter
   )
   val insns: List[LInsn] = newList()
   val paramTypes: List[JvmType] = newList()
@@ -781,6 +823,10 @@ func lowerWireBindingInit(
     val fty = match mapGet(bindingTypes, refName) { case Some(t) -> t; case None -> JRef(className = "java/lang/Object") }
     insns.add(LGetstatic(owner = className, name = refName, t = fty))
   } else {
+    // Wire-binding initialisers are outside the J2b closure slice (#2665) — a
+    // throwaway accumulator keeps `makeFuncCtx` total.
+    val wireClosureAcc: List[LClosure] = newList()
+    val wireClosureCounter: List[Int] = newList()
     val ctx = makeFuncCtx(
       pkgName,
       className,
@@ -791,7 +837,9 @@ func lowerWireBindingInit(
       autoFfi,
       expectedTy,
       moduleVals,
-      opaqueTypes
+      opaqueTypes,
+      wireClosureAcc,
+      wireClosureCounter
     )
     val ty = lowerExpr(ctx, insns, init)
     coerceArgTo(insns, ty, expectedTy)
@@ -997,6 +1045,8 @@ func lowerGeneratorBody(
   autoFfi: in AutoFfiCtx,
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
+  closureAcc: in List[LClosure],
+  closureCounter: in List[Int],
 ): List[LInsn] {
   val insns: List[LInsn] = newList()
   // #2856: thread the real `moduleVals` / `opaqueTypes` maps into the generator
@@ -1011,7 +1061,9 @@ func lowerGeneratorBody(
     externTypes,
     autoFfi,
     moduleVals,
-    opaqueTypes
+    opaqueTypes,
+    closureAcc,
+    closureCounter
   )
 
   // Preamble: load each param from this.<field> into a local slot.
@@ -1651,6 +1703,12 @@ pub func codegenPackageWithSigs(
   // FuncCtx (`valInitCtx`) so their local-slot numbering stays disjoint when the
   // initialisers are concatenated into a single `<clinit>` body.
   val staticVals: List[LStaticVal] = newList()
+  // J2b closures (#2665): the package-shared closure accumulator + name counter,
+  // threaded through every top-level `func` / module-`val` / `impl` / `interface`
+  // FuncCtx so that an `ELambda` anywhere on those paths registers its synthesised
+  // inner class here.  Drained into `LPClosureClass` items after the item loop.
+  val closureAcc: List[LClosure] = newList()
+  val closureCounter: List[Int] = newList()
   val valInitCtx = makeFuncCtx(
     pkgName,
     funcsClass,
@@ -1661,7 +1719,9 @@ pub func codegenPackageWithSigs(
     autoFfi,
     JVoid,
     moduleVals,
-    opaqueTypes
+    opaqueTypes,
+    closureAcc,
+    closureCounter
   )
   // #2853: lower every module-level `val` once, now, and overwrite `moduleVals`
   // with the real field type before any function (or the `<clinit>` itself) is
@@ -1690,7 +1750,7 @@ pub func codegenPackageWithSigs(
         var mi2 = 0
         while mi2 < decl.members.count {
           match decl.members[mi2] {
-            case IMplFunc(fn) -> implFuncs.add(lowerFunc(fn, pkgName, targetClass, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes))
+            case IMplFunc(fn) -> implFuncs.add(lowerFunc(fn, pkgName, targetClass, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes, closureAcc, closureCounter))
             case IMplAssoc(_) -> {
             }
           }
@@ -1722,7 +1782,9 @@ pub func codegenPackageWithSigs(
             externTypes,
             autoFfi,
             moduleVals,
-            opaqueTypes
+            opaqueTypes,
+            closureAcc,
+            closureCounter
           )
           val genParams: List[LGenParam] = newList()
           var pi = 0
@@ -1749,7 +1811,20 @@ pub func codegenPackageWithSigs(
           fns.add(makeGeneratorFactory(decl, genClass, pkgName))
         } else {
           fns.add(
-            lowerFunc(decl, pkgName, funcsClass, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes)
+            lowerFunc(
+              decl,
+              pkgName,
+              funcsClass,
+              funcSigs,
+              caseFields,
+              ctors,
+              externTypes,
+              autoFfi,
+              moduleVals,
+              opaqueTypes,
+              closureAcc,
+              closureCounter
+            )
           )
           if isMainFunc(decl) {
             hasMain = true
@@ -1929,7 +2004,20 @@ pub func codegenPackageWithSigs(
             }
             case IMFunc(fn) -> {
               concreteFuncs.add(
-                lowerFunc(fn, pkgName, ifClassName, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes)
+                lowerFunc(
+                  fn,
+                  pkgName,
+                  ifClassName,
+                  funcSigs,
+                  caseFields,
+                  ctors,
+                  externTypes,
+                  autoFfi,
+                  moduleVals,
+                  opaqueTypes,
+                  closureAcc,
+                  closureCounter
+                )
               )
             }
             case IMAssoc(_) -> {
@@ -2040,6 +2128,31 @@ pub func codegenPackageWithSigs(
   }
 
   items.add(LPFuncs(funcsClass = funcsClass, fns = fns, staticVals = staticVals))
+
+  // J2b closures (#2665): drain the accumulated lambda closures into package
+  // items, and — if any lambda was emitted — add the one shared functional
+  // interface `<pkg>/Lyric$Lambda` they all implement
+  // (`invoke([Ljava/lang/Object;)Ljava/lang/Object;`).
+  if closureAcc.count > 0 {
+    val ifaceName = lambdaIfaceName(pkgName)
+    val ifaceParams: List[JvmType] = newList()
+    ifaceParams.add(JArray(elem = JRef(className = "java/lang/Object")))
+    val ifaceDesc = buildDescriptor(ifaceParams, JRef(className = "java/lang/Object"))
+    val ifaceAttrs: List[Attribute] = newList()
+    val ifaceAbstract: List[MethodInfo] = newList()
+    ifaceAbstract.add(makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, lambdaIfaceMethod(), ifaceDesc, ifaceAttrs))
+    val ifaceConcrete: List[LFunc] = newList()
+    items.add(
+      LPInterface(
+        iface = LInterface(className = ifaceName, abstractMethods = ifaceAbstract, concreteFuncs = ifaceConcrete)
+      )
+    )
+    var li = 0
+    while li < closureAcc.count {
+      items.add(LPClosureClass(c = closureAcc[li]))
+      li = li + 1
+    }
+  }
 
   LPackage(packageName = pkgName, items = items)
 }

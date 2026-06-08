@@ -51,7 +51,8 @@ func makeSquarerBytes(): List[Byte] {
     captures = captures,
     methodParams = noParams,
     methodRet = JVoid,
-    bodyInsns = body
+    bodyInsns = body,
+    bodyMaxLocals = 0
   )
   val cf = lowerClosure(c, pool)
   serializeClassWithPool(cf, pool)

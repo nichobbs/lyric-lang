@@ -148,7 +148,7 @@ tracking issue today (band J0 files them).
 
 | ID | Finding | Evidence | Issue |
 |---|---|---|---|
-| B-1 | Closures / lambdas panic on the user path (`ELambda` unhandled in `codegen.l`); no lambda-lifting stage in `bridge.l` | `codegen.l:985-989`; empirically `--target jvm` closure build fails | #1675 (closure dispatch) |
+| B-1 | ~~Closures / lambdas panic on the user path (`ELambda` unhandled in `codegen.l`)~~ **Fixed (D-progress-474):** `ELambda` lowers to a `<pkg>$Lambda$<n>` inner class implementing a package-shared `Lyric$Lambda` functional interface (uniform `Object[]`-packing ABI); capture analysis binds free `val`/param references as ctor fields; call sites route lambda-typed callees through `invokeinterface`. `val`/param by-value capture done; by-reference `var` capture deferred. | `codegen/02_exprs.l` (`lowerLambda`), `codegen/04_calls.l` (`lowerLambdaInvoke`), `lowering.l` (`lowerClosure`) | #2665 (resolved) |
 | B-2 | `async`/`await`/`spawn`/`?` lower to **synchronous pass-throughs** — wrong semantics, not just missing (no future, no Err/None short-circuit) | `codegen.l:912-941` | #2469 (generators), (new: sync-stub) |
 | B-3 | Aspects are **not woven** on JVM (`bridge.l` never imports `Lyric.Weaver`); `IAspect` no-ops | `bridge.l:8-25`; `codegen.l:4994` vs `msil/bridge.l:168` | (new) |
 | B-4 | ~~`Float` emitted as JVM `double` — silent precision/semantics bug~~ **Fixed (D-progress-463):** real 32-bit `float`. | `codegen/01_types.l`,`02_exprs.l` | #1615, #2664 |
@@ -285,8 +285,14 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   the single-file (`compileToJar`) and bundled (`compileToJarBundled` via
   `runMiddleEnd`) paths, at the MSIL pass position (after mono, before codegen);
   weave-time diagnostics A0042/A0043/A0044 surface like MSIL.
-- [ ] Lambda lifting — unblocks B-1.  **Not done in this slice** (closures are a
-  separate task; the JVM lambda-lift + closure backend remains a BLOCKER).
+- [x] Lambda lifting / closures — B-1.  **Done (J2b, D-progress-474):** rather
+  than an MSIL-style lambda-lifting pre-pass, the JVM backend lowers each
+  `ELambda` directly to a `<pkg>$Lambda$<n>` inner class implementing a
+  package-shared `Lyric$Lambda` functional interface (uniform `Object[]`-packing
+  ABI).  Capture analysis (`lambdaCaptureNamesJvm`) binds free `val`/param
+  references as ctor fields; call sites route lambda-typed callees through
+  `invokeinterface`.  `val`/param by-value capture ships; by-reference `var`
+  capture (heap-cell hoisting, MSIL `#1479 v2`) is the remaining follow-up.
 - [x] `?` / `try` error-propagation lowering — part of B-2.  Wired into both
   paths at the MSIL position (after the elaborator, before mono) via
   `lowerPropagateFile`.  The lowering is target-agnostic and is verified on MSIL
@@ -302,9 +308,10 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   MSIL bridge's `collectStdlibGenericFuncs`) instead of bare `monoFile`.
 - **Acceptance:** weaving / `@cfg` runtime assertions pass on `--target jvm` via
   `lyric-compiler/jvm/middle_end_passes_jvm_self_test.l`; the four wired passes
-  mirror the MSIL bridge's order.  (Lambda-lift/closures and a runtime `?`
-  assertion remain open — the former is a separate task, the latter awaits J4
-  generics.)
+  mirror the MSIL bridge's order.  Closures/lambda values now compile and run
+  (`lyric-compiler/jvm/closure_jvm_self_test.l`, D-progress-474).  A runtime `?`
+  assertion is the remaining J2 gap — it awaits J4 generics (now landed in
+  D-progress-473, so a JVM `?` runtime test is unblocked as follow-up).
 
 ### J3 — Wire the capabilities `lowering.l` already has (low-effort parity) — **DONE (D-progress-472)**
 - [x] M-3: dispatch `06_items.l`'s `IOpaque`/`IProtected`/`IWire` arms to the

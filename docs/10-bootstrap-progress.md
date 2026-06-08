@@ -23008,3 +23008,70 @@ J3 lowering JVM self-test.  No regression on the existing JVM self-tests
 (`Result[Option[T], E]`, m-5) and cross-package generic monomorphization beyond
 `monoFileWithImports`; async/generator generic interplay (B-2/M-12) and JDK24+
 `scope` (M-17) remain the rest of J4.
+
+### D-progress-474 — JVM J2b / B-1: closures (lambda values) via ELambda → closure inner classes (#2665, epic #2663)
+
+**Status:** Shipped — general lambda values now compile and run on the JVM
+target (was a hard codegen panic).  docs/44 J2 lambda-lift / closures closed for
+the `val`/param by-value-capture path.  Self-hosted-only; no F#; no MSIL change.
+
+Before this slice every general `ELambda` panicked in `Jvm.Codegen`
+(`ELambda not supported — pass lambdas directly to Std.Jvm.catch`); only the
+literal-lambda `Std.Jvm.catch` intrinsic was special-cased (handled before
+`lowerExpr` is reached, and left untouched here).  A lambda value
+(`val f = { x -> … }`), passing a lambda to a higher-order function, capturing
+an enclosing binding, and returning a `Result[T, E]` from a lambda were all
+unsupported on `--target jvm`.
+
+**The design (uniform Object[]-packing ABI):** each lambda lowers to a
+synthesised `<pkg>$Lambda$<n>` inner class implementing one package-shared
+functional interface `<pkg>/Lyric$Lambda`
+(`invoke([Ljava/lang/Object;)Ljava/lang/Object;`).  The uniform `Object[]` arg
+packing + `Object` return makes construction and invocation agree for any arity,
+with generics erased to `Object` (J4) — primitives are boxed in and
+checkcast+unboxed out via the existing `coerceArgTo` / `reconcileCmpOperands`
+J4 paths.  Capture is by value (snapshot) per docs/01 §5.4 for `val` bindings.
+
+**The fix:**
+
+- **Capture analysis (`codegen/02_exprs.l`):** new `lambdaCaptureNamesJvm` plus
+  `collectRefNames*` / `collectBoundNames*` AST walkers compute the free
+  variables a lambda references from its enclosing scope (free idents ∩ enclosing
+  slots, minus the lambda's own params and body-bound names), mirroring the MSIL
+  `lambdaCaptureNamesMsil`.
+- **Closure emit (`codegen/02_exprs.l`, `lowering.l`):** `lowerLambda` builds an
+  `LClosure` whose captures become ctor-bound fields and whose `invoke` body
+  unpacks `args[i]` into the (annotated→typed, else `Object`) param locals, reads
+  each capture field into a local, runs the lowered body, then boxes + `areturn`s
+  the result.  A package-shared `closureAcc` / `closureCounter` is threaded
+  through every top-level `func` / module-`val` / `impl` / `interface` `FuncCtx`;
+  `codegenPackageWithSigs` drains it into `LPClosureClass` items plus the one
+  shared interface (`LPInterface`).  `LClosure` gained `bodyMaxLocals` and the
+  closure `invoke` method now lowers through `lowerFuncForClass` so branchy
+  bodies (`if` / `match`) get a real StackMapTable.
+- **Call-site wiring (`codegen/04_calls.l`):** `lowerCall` routes a call whose
+  head is a single-segment local bound to a lambda value (slot typed as the
+  shared iface or the erased `Object` HOF-param) to `lowerLambdaInvoke`, which
+  checkcasts the closure to the iface, packs the boxed args into an `Object[]`,
+  and `invokeinterface`s `invoke`.
+
+**Test:** `lyric-compiler/jvm/closure_jvm_self_test.l` (`@test_module`,
+`Std.*`-only) asserts runtime values under `java` for: a non-capturing lambda
+value (`f(2) == 3`); a capturing lambda over one and over multiple `val`s
+(`g(5) == 15`, `h(1) == 104`); a lambda passed to a higher-order function
+(plain, captured, and multi-argument); a lambda returning `Result[Int, String]`
+(`Ok` and `Err` arms, plus through a HOF) exercising J4 erased generics through
+the closure ABI; and a captured-`String` lambda.  10/10 under `java` via native
+`lyric test --target jvm`, wired into `ci.yml` beside the J4 generic JVM
+self-test.  No regression on the existing JVM self-tests (silent-miscompile 8/8,
+auto-FFI 13/13, hash 3/3, bitwise 10/10, j3_lowering 12/12, middle-end-passes
+5/5, generic 13/13) or the full F# Emitter suite (834 passed, 0 failed, 0
+errored).
+
+**Known follow-up (out of this slice):** by-reference `var` capture (mutation
+after capture reflected in the closure) needs heap-cell hoisting like the MSIL
+`#1479 v2` path and is currently snapshotted by value; lambdas inside record /
+protected-type / wire-binding bodies still route through a throwaway accumulator
+(an `ELambda` there is rare and out of the acceptance set); a returning-lambda
+(lambda whose result is itself a lambda) and deeply-nested closures are
+untested.
