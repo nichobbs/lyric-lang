@@ -9031,6 +9031,15 @@ func msilTypeKeyStr(t: in MsilType): String {
       }
       k
     }
+    case MGenericInstByName(fqn, args) -> {
+      var k = "gibn_" + fqn
+      var ai = 0
+      while ai < args.count {
+        k = k + "_" + msilTypeKeyStr(args[ai])
+        ai = ai + 1
+      }
+      k
+    }
     case MValueTypeGenericInst(_, fqn, args) -> {
       var k = "vgi_" + fqn
       var ai = 0

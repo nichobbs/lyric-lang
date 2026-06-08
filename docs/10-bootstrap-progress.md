@@ -22668,3 +22668,47 @@ alongside them (verified: self-hosted `Sort.dll` + F#-built `Core` sorts
 correctly). Wiring that into the shipped lib dir, and the `sortFileList`
 retirement (which needs the compiler to import `Std.Sort`, hence R7), remain
 follow-ups.
+
+### D-progress-468 — entire self-hosted compiler self-host-compiles (docs/41 §R7)
+
+**Status:** Shipped — all 73 real compiler packages now pass the self-hosted
+front-end via `emitPerPackageClosure`.
+
+The self-hosted compiler **runs** every `lyric build`/`run --target dotnet`
+(it is the default pipeline), but its stage-1 binary is still **F#-built**: the
+F# stage-0 emitter compiles the `.l` sources into the stage-1 DLLs because the
+self-hosted compiler could not yet compile its own source tree. An audit
+(emit each real compiler package's closure via the self-hosted emitter) found
+the gap was **not** a broad multi-band effort — 66/73 packages already
+self-host-compiled, and the 7 failures collapsed to **3 root causes, all the
+same class**: a `match` missing a recently-added union case, which the
+self-hosted type checker rejects as non-exhaustive (`T0016`) where the F#
+stage-0 treats exhaustiveness as advisory.
+
+Fixes (one `match` arm each):
+
+- **`msil/codegen.l` `msilTypeKeyStr`** — added `MGenericInstByName` (mirrors
+  the existing `MGenericInst` key), the in-bundle by-name generic instantiation
+  added in docs/43. This was the root of 5 of the 7 failures: it cascades to
+  `Lyric.Cli`, `Lyric.Emitter`, `Lyric.Repl`, `Msil.Bridge` (all depend on
+  `Msil.Codegen`).
+- **`lyric/verifier_bridge.l` `levelDisplay`** — added `VLAxiom -> "@axiom"`
+  (matches the mode checker's display).
+- **`lyric/lsp.l` `renderType`** — added `TyException -> "Exception"` (matches
+  `typechecker_types.l`'s renderer).
+
+Re-audit after the fixes: **73/73 compiler packages self-host-compile, 0
+failures** — no tail behind the three sites. Notably the audit surfaced **zero**
+parser errors, panics, or other type-error classes across the whole compiler;
+the only gap was match-exhaustiveness.
+
+Verified (CI, "Whole compiler self-host-compiles"): `emitPerPackageClosure` over
+the full `Lyric.Cli` closure emits every compiler-package DLL. Emitter (834) +
+CLI (84) suites green.
+
+Remaining toward a self-hosted-built toolchain: wire `bootstrap.sh` stage-2 to
+emit the compiler via the self-hosted emitter (the stubbed `stage2()`), at which
+point compiler and stdlib share the arity-suffixed `Option`1`/`Result`2`
+encoding (docs/43) — resolving the `Could not load type 'Std.Core.Option'`
+mismatch (D-progress-467), unblocking the full self-hosted stdlib ship and the
+`cli.l::sortFileList` retirement.
