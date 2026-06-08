@@ -23153,7 +23153,8 @@ the full F# Emitter suite (834 passed, 0 failed, 0 errored).
 `if`/`else` branches each carry an explicit `return` (rather than an `if/else`
 tail expression) emits a stray trailing void `return` after a non-void body
 (`endsWithReturn` does not see returns nested inside an `if`/`else`), tripping a
-`VerifyError` — a separate pre-existing JVM control-flow gap that reproduces
-identically for a top-level `func`, unrelated to record-method dispatch.  The
+`VerifyError` — a separate pre-existing JVM control-flow gap (tracked in #2870)
+that reproduces identically for a top-level `func`, unrelated to record-method
+dispatch.  The
 Result-returning case in the self-test uses the `if/else` tail-expression form to
 exercise J4 generics without tripping it.
