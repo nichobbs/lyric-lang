@@ -28,7 +28,6 @@ import Lyric.ContractMeta as Meta
 // so we hand-construct the structure. This is intentionally simple and
 // focused on the contract metadata shape only.
 func jsonString(s: in String): String {
-  // Use Std.Json.encodeString for proper JSON string escaping
   Std.Json.encodeString(s)
 }
 
@@ -185,15 +184,9 @@ func emitContractJson(contract: in Meta.Contract, contractHash: in String): Stri
 /// The returned JSON can be embedded as a DLL resource and later parsed
 /// by Lyric.ContractMeta.parseFromJson for validation and symbol table
 /// construction.
-@stable(since = "1.0")
 pub func emitContractMetadata(contract: in Meta.Contract): String {
-  // Phase 1: Serialize with blank hash
   val blankJson = emitContractJson(contract, "")
-
-  // Phase 2: Compute SHA-256 (as uppercase hex)
   val hashBytes = Std.Encoding.encodeUtf8(blankJson)
   val contractHash = Std.Hash.sha256OfBytes(hashBytes)
-
-  // Phase 3: Re-serialize with hash embedded
   emitContractJson(contract, contractHash)
 }
