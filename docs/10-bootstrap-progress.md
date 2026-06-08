@@ -22669,7 +22669,161 @@ correctly). Wiring that into the shipped lib dir, and the `sortFileList`
 retirement (which needs the compiler to import `Std.Sort`, hence R7), remain
 follow-ups.
 
-### D-progress-468 — SHA-256 hashing infrastructure + contract metadata v3 emission (docs/45 §2–§5)
+### D-progress-468 — entire self-hosted compiler self-host-compiles (docs/41 §R7)
+
+**Status:** Shipped — all 73 real compiler packages now pass the self-hosted
+front-end via `emitPerPackageClosure`.
+
+The self-hosted compiler **runs** every `lyric build`/`run --target dotnet`
+(it is the default pipeline), but its stage-1 binary is still **F#-built**: the
+F# stage-0 emitter compiles the `.l` sources into the stage-1 DLLs because the
+self-hosted compiler could not yet compile its own source tree. An audit
+(emit each real compiler package's closure via the self-hosted emitter) found
+the gap was **not** a broad multi-band effort — 66/73 packages already
+self-host-compiled, and the 7 failures collapsed to **3 root causes, all the
+same class**: a `match` missing a recently-added union case, which the
+self-hosted type checker rejects as non-exhaustive (`T0016`) where the F#
+stage-0 treats exhaustiveness as advisory.
+
+Fixes (one `match` arm each):
+
+- **`msil/codegen.l` `msilTypeKeyStr`** — added `MGenericInstByName` (mirrors
+  the existing `MGenericInst` key), the in-bundle by-name generic instantiation
+  added in docs/43. This was the root of 5 of the 7 failures: it cascades to
+  `Lyric.Cli`, `Lyric.Emitter`, `Lyric.Repl`, `Msil.Bridge` (all depend on
+  `Msil.Codegen`).
+- **`lyric/verifier_bridge.l` `levelDisplay`** — added `VLAxiom -> "@axiom"`
+  (matches the mode checker's display).
+- **`lyric/lsp.l` `renderType`** — added `TyException -> "Exception"` (matches
+  `typechecker_types.l`'s renderer).
+
+Re-audit after the fixes: **73/73 compiler packages self-host-compile, 0
+failures** — no tail behind the three sites. Notably the audit surfaced **zero**
+parser errors, panics, or other type-error classes across the whole compiler;
+the only gap was match-exhaustiveness.
+
+Verified (CI, "Whole compiler self-host-compiles"): `emitPerPackageClosure` over
+the full `Lyric.Cli` closure emits every compiler-package DLL. Emitter (834) +
+CLI (84) suites green.
+
+Remaining toward a self-hosted-built toolchain: wire `bootstrap.sh` stage-2 to
+emit the compiler via the self-hosted emitter (the stubbed `stage2()`), at which
+point compiler and stdlib share the arity-suffixed `Option`1`/`Result`2`
+encoding (docs/43) — resolving the `Could not load type 'Std.Core.Option'`
+mismatch (D-progress-467), unblocking the full self-hosted stdlib ship and the
+`cli.l::sortFileList` retirement.
+
+### D-progress-469 — cross-package generic-return ref-typed arg fix; dead VerifierBridge deleted
+
+**Status:** Shipped — one genuine cross-package signature bug fixed; the broader
+self-hosted-built toolchain remains blocked (see "Remaining" below).
+
+**Encoding fix (`registerStdlibFunc`, `msil/codegen.l`).** A self-hosted-compiled
+call to a stdlib function whose return is a generic instantiation with a
+*reference-typed* argument — e.g. `Std.File.readText : Result[String, IOError]`
+(`IOError` is a union in the separate `Std.Errors` package) — encoded the
+consumer MemberRef return as `Result<String, object>`: the context-free
+signature encoder (`buildStaticMethodSig`) degrades an `MClass` generic arg to
+`object`.  The F#-built producer emits the concrete `Result<String,
+Std.Errors.IOError>`, so the call failed at run time with
+`MissingMethodException`.  Primitive args (`Result[Int, String]`,
+`Option[String]`) were unaffected, so the bug was latent — it breaks
+self-hosted-compiled programs (and self-hosted-built compiler packages) that
+call `Result[_, <union>]`-returning stdlib functions.  Fixed by switching
+`registerStdlibFunc` to the ctx-aware `buildStaticMethodSigWithCtx` (which
+resolves the arg to its real TypeRef), matching what `registerRestoredFunc`
+already does.  CI step "Cross-package generic-return ref-typed arg" runs a
+self-hosted program calling `readText` and asserts it binds.  Emitter (834) +
+CLI (84) green.
+
+**Dead code (`verifier_bridge.l` deleted).** `Lyric.VerifierBridge`
+(`proveToProtocol`, `levelDisplay`) had zero consumers: no `.l` import, and the
+F# `SelfHostedVerifierTests.fs` exercises `verifier_self_test.l` →
+`Lyric.Verifier` directly, not the bridge.  It was an orphaned protocol bridge
+on the F#-shim deletion schedule.  Deleted, and dropped from the
+"Whole compiler self-host-compiles" CI guard (the D-progress-468 `VLAxiom` arm
+it carried went with it — it was a fix to dead code).
+
+**Remaining (self-hosted-built toolchain still blocked).** Building the whole
+compiler self-hosted and *running* it surfaced a deeper cross-emitter ABI
+divergence that the per-package compile gate (D-progress-468) does not catch
+(compiling ≠ running):
+
+- **Record-field encoding.** `lowerMRecord` defines fields with the ctx-aware
+  *concrete* encoding (`EmitResult.diagnostics : List[Diagnostic]` → a genuine
+  `List`1<Diagnostic>` FieldDef), but the consumer field-ref path
+  (`cctx.fieldSigBytes` via context-free `buildFieldSig`) and the F#-built
+  producer both encode it as `object`.  So a self-hosted-*built* producer's
+  field DEF (`List`1`) does not match the consumer ref (`object`) →
+  `MissingFieldException`.  This is *not* safely fixable in isolation: making
+  the consumer concrete would break the current self-hosted-consumer ↔
+  F#-built-producer pairing (F# uses object-typed fields), which is the shipped
+  config.
+- **Generic-type name suffix.** A self-hosted-built `Lyric.Stdlib.Core.dll`
+  defines `Option`/`Result` arity-suffixed (`Option`1`, docs/43) while every
+  consumer references them non-suffixed (`Option`), so a self-hosted Core can't
+  be loaded by self-hosted consumers (D-progress-467).
+
+Both are facets of the same root: the self-hosted emitter encodes cross-package
+*definitions* (ctx-aware/concrete/suffixed) differently from cross-package
+*references* (context-free/object/non-suffixed), and it diverges from the
+F#-built emitter's object-typed-field / non-suffixed convention.  A
+self-hosted-built toolchain needs these reconciled *coordinatedly* (all packages
+self-hosted at once, refs == defs) — it cannot be done as a partial F#/
+self-hosted mix.  Tracked as the next step toward the bootstrap stage-2 rewire;
+`cli.l::sortFileList` retirement remains gated on that (and on the F# stage-0
+not recompiling a `Std.Sort`-importing `cli.l`).
+
+### D-progress-470 — ship the stdlib packages F# can't build (#2592 user-facing close)
+
+**Status:** Shipped — `Std.Sort` (and 6 more) now resolve through the default
+toolchain; #2592's user-facing symptom is fixed.
+
+#2592's literal root cause (the slice `!0[]`-vs-List ABI fork) was already
+resolved (both emitters use `T[]` + `IList`, D-progress-467).  The remaining
+user-facing gap was that `Lyric.Stdlib.Sort.dll` **never shipped**: the F#
+stage-0 CLI-bundle only emits the compiler's import closure plus the F#-buildable
+bundle "smoke set", and F# cannot compile `Std.Sort`'s typed-lambda generics, so
+a user program importing `Std.Sort` failed at run time with `Could not load file
+or assembly 'Lyric.Stdlib.Sort'`.
+
+`scripts/stage-selfhosted-stdlib.sh` closes this: after the AOT binary is built,
+it emits the full stdlib with the **self-hosted** emitter (`emitPerPackageClosure`)
+and `cp -n`s the packages F# can't build into the toolchain lib dir(s) —
+**never** clobbering an F#-built DLL, so the self-hosted leaf packages sit beside
+the F#-built `Core`/`Collections` they reference (non-suffixed, so they bind).
+Wired into the `Makefile` `lyric` target and the CI build step.
+
+**Shipped (verified to bind against the F#-built stdlib):** `Std.Sort`,
+`Std.Iter`, `Std.SecureRandom`, `Std.Regex`, `Std.Log`, `Std.Http`, `Std.Rest`
+(plus their self-hosted host sub-packages: `RegexHost`, `LogHost`,
+`SecureRandomHost`).  Each was smoke-tested: a self-hosted-compiled program calls
+the package and runs.
+
+**Excluded (real self-hosted binding bugs — need the self-hosted-built-toolchain
+ABI work, D-progress-469, first):**
+
+- `Std.Random` — `System.Random.Next` instance method mis-binds (receiver passed
+  as an argument).
+- `Std.Format` — calls a `System.Int32.ToString(int, string)` extern overload
+  that does not exist.
+- `Std.Xml` / `Std.Yaml` — union-case constructor signature mismatch (the
+  cross-package record/union field-encoding divergence).
+
+`Std.Set` / `Std.Stream` / `Std.App` / `Std.Testing.*` / `Std.Core.Proof` are
+not yet shipped (unverified; follow-up).
+
+Verified (CI, "Shipped Std.Sort via default toolchain"): with no
+`LYRIC_STDLIB_BIN` override, a `Std.Sort` program built+run through the default
+toolchain sorts `1 2 3 4 5` (and fails with `FileNotFound` if the staging step
+is skipped).  No regression — the staging only *adds* DLLs the F# build omitted.
+
+Remaining for a *fully* self-hosted stdlib: the excluded packages' binding bugs,
+which share the root of D-progress-469 (cross-package definition-vs-reference
+encoding divergence) and are unblocked by the coordinated self-hosted-built
+toolchain, not by per-package patches.
+
+### D-progress-471 — SHA-256 hashing infrastructure + contract metadata v3 emission (docs/45 §2–§5)
 
 **Status:** Shipped — Phase 1.2a (SHA-256 foundation) and Phase 1.2b (pure-Lyric ContractMetaEmit): SHA-256 hashing support via `Std.Hash.sha256OfBytes` and contract metadata v3 emission with two-pass integrity hashing.
 
