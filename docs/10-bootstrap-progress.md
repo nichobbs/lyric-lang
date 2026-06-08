@@ -22712,3 +22712,64 @@ point compiler and stdlib share the arity-suffixed `Option`1`/`Result`2`
 encoding (docs/43) — resolving the `Could not load type 'Std.Core.Option'`
 mismatch (D-progress-467), unblocking the full self-hosted stdlib ship and the
 `cli.l::sortFileList` retirement.
+
+### D-progress-469 — cross-package generic-return ref-typed arg fix; dead VerifierBridge deleted
+
+**Status:** Shipped — one genuine cross-package signature bug fixed; the broader
+self-hosted-built toolchain remains blocked (see "Remaining" below).
+
+**Encoding fix (`registerStdlibFunc`, `msil/codegen.l`).** A self-hosted-compiled
+call to a stdlib function whose return is a generic instantiation with a
+*reference-typed* argument — e.g. `Std.File.readText : Result[String, IOError]`
+(`IOError` is a union in the separate `Std.Errors` package) — encoded the
+consumer MemberRef return as `Result<String, object>`: the context-free
+signature encoder (`buildStaticMethodSig`) degrades an `MClass` generic arg to
+`object`.  The F#-built producer emits the concrete `Result<String,
+Std.Errors.IOError>`, so the call failed at run time with
+`MissingMethodException`.  Primitive args (`Result[Int, String]`,
+`Option[String]`) were unaffected, so the bug was latent — it breaks
+self-hosted-compiled programs (and self-hosted-built compiler packages) that
+call `Result[_, <union>]`-returning stdlib functions.  Fixed by switching
+`registerStdlibFunc` to the ctx-aware `buildStaticMethodSigWithCtx` (which
+resolves the arg to its real TypeRef), matching what `registerRestoredFunc`
+already does.  CI step "Cross-package generic-return ref-typed arg" runs a
+self-hosted program calling `readText` and asserts it binds.  Emitter (834) +
+CLI (84) green.
+
+**Dead code (`verifier_bridge.l` deleted).** `Lyric.VerifierBridge`
+(`proveToProtocol`, `levelDisplay`) had zero consumers: no `.l` import, and the
+F# `SelfHostedVerifierTests.fs` exercises `verifier_self_test.l` →
+`Lyric.Verifier` directly, not the bridge.  It was an orphaned protocol bridge
+on the F#-shim deletion schedule.  Deleted, and dropped from the
+"Whole compiler self-host-compiles" CI guard (the D-progress-468 `VLAxiom` arm
+it carried went with it — it was a fix to dead code).
+
+**Remaining (self-hosted-built toolchain still blocked).** Building the whole
+compiler self-hosted and *running* it surfaced a deeper cross-emitter ABI
+divergence that the per-package compile gate (D-progress-468) does not catch
+(compiling ≠ running):
+
+- **Record-field encoding.** `lowerMRecord` defines fields with the ctx-aware
+  *concrete* encoding (`EmitResult.diagnostics : List[Diagnostic]` → a genuine
+  `List`1<Diagnostic>` FieldDef), but the consumer field-ref path
+  (`cctx.fieldSigBytes` via context-free `buildFieldSig`) and the F#-built
+  producer both encode it as `object`.  So a self-hosted-*built* producer's
+  field DEF (`List`1`) does not match the consumer ref (`object`) →
+  `MissingFieldException`.  This is *not* safely fixable in isolation: making
+  the consumer concrete would break the current self-hosted-consumer ↔
+  F#-built-producer pairing (F# uses object-typed fields), which is the shipped
+  config.
+- **Generic-type name suffix.** A self-hosted-built `Lyric.Stdlib.Core.dll`
+  defines `Option`/`Result` arity-suffixed (`Option`1`, docs/43) while every
+  consumer references them non-suffixed (`Option`), so a self-hosted Core can't
+  be loaded by self-hosted consumers (D-progress-467).
+
+Both are facets of the same root: the self-hosted emitter encodes cross-package
+*definitions* (ctx-aware/concrete/suffixed) differently from cross-package
+*references* (context-free/object/non-suffixed), and it diverges from the
+F#-built emitter's object-typed-field / non-suffixed convention.  A
+self-hosted-built toolchain needs these reconciled *coordinatedly* (all packages
+self-hosted at once, refs == defs) — it cannot be done as a partial F#/
+self-hosted mix.  Tracked as the next step toward the bootstrap stage-2 rewire;
+`cli.l::sortFileList` retirement remains gated on that (and on the F# stage-0
+not recompiling a `Std.Sort`-importing `cli.l`).

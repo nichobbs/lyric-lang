@@ -16384,11 +16384,15 @@ func splitDottedName(name: in String): List[String] {
 //     package, restored artifact, or earlier stdlib pass already
 //     registered it — first-in-wins).
 //
-// Reuses `buildStaticMethodSig` + `typeExprToMsilCtx` so the
+// Reuses `buildStaticMethodSigWithCtx` + `typeExprToMsilCtx` so the
 // signature blob matches the encoding the F# emitter would emit on
-// the producer side.  Errors during type resolution surface as
-// `MObject` slots in the signature (matching the existing
-// `registerRestoredFunc` policy).
+// the producer side.  The ctx-aware encoder is required so a generic
+// return whose type argument is a reference type (`MClass`) — e.g.
+// `Std.File.readText : Result[String, IOError]` — resolves the arg to its
+// real TypeRef (`Result<String, Std.Errors.IOError>`) instead of degrading
+// it to `object` (`Result<String, object>`), which would not bind against
+// the F#-built producer's concrete signature at run time.  Mirrors
+// `registerRestoredFunc`, which already uses the ctx-aware builder.
 func registerStdlibFunc(cctx: in CodegenCtx, packageName: in String, hostRefRow: in Int, fn: in FunctionDecl): Unit {
   val isPub = match fn.visibility { case Some(VisPub(_)) -> true; case _ -> false }
   if not isPub {
@@ -16404,7 +16408,7 @@ func registerStdlibFunc(cctx: in CodegenCtx, packageName: in String, hostRefRow:
     pi = pi + 1
   }
   val retType = match fn.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
-  val funcSig = buildStaticMethodSig(byrefWrapSigTypes(fn.params, paramTypes), retType)
+  val funcSig = buildStaticMethodSigWithCtx(byrefWrapSigTypes(fn.params, paramTypes), retType, cctx.lctx)
   val fnModes = paramModesOf(fn.params)
   // Register with an arity-specific key so overloaded stdlib functions
   // (e.g. Str.substring/2 vs Str.substring/3) each get a distinct
