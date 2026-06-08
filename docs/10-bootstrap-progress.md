@@ -22832,7 +22832,7 @@ toolchain, not by per-package patches.
 - **`lyric-stdlib/std/_kernel/hash_host.l`** (.NET): new extern `pub func hostSha256Bytes(bytes: in slice[Byte]): slice[Byte]` targeting `System.Security.Cryptography.SHA256.HashData`. Declared as `@axiom` with `@stable(since = "1.0")` annotation.
 - **`lyric-stdlib/std/_kernel_jvm/hash_host.l`** (JVM): new extern `pub func hostSha256Bytes(bytes: in slice[Byte]): slice[Byte]` using `java.security.MessageDigest.getInstance("SHA-256")`. Declared as `@axiom` with `@stable(since = "1.0")` annotation.
 - **`lyric-stdlib/std/hash.l`**: new public function `pub func sha256OfBytes(bytes: in slice[Byte]): String`. Mirrors the existing `sha512OfBytes` exactly; both .NET and JVM kernel boundaries wired.
-- **`lyric-stdlib/tests/hash_tests.l`**: SHA-512 self-tests (SHA-256 tests deferred pending bootstrap emitter BCL verification; see #2840).
+- **`lyric-stdlib/tests/hash_tests.l`**: full suite of SHA-256 and SHA-512 self-tests, including FIPS 180-4 / NIST test vectors for both (abc, empty string).
 - **`bootstrap/tests/Lyric.Emitter.Tests/KernelBoundaryTests.fs`**: kernel extern cap bumped 322 → 323.
 - **`docs/17-axiom-audit.md`** and **`book/chapters/appendix-b-quick-reference.md`**: updated for new externs and public function.
 
