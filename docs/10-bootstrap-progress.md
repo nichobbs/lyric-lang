@@ -22872,3 +22872,79 @@ existing JVM self-test steps.  No regression: the four JVM regression self-tests
 (`silent_miscompile_guard_jvm` 8/8, `auto_ffi_jvm` 13/13, `hash_jvm` 3/3,
 `bitwise` 10/10) and the MSIL `propagate`/`cfg`/`mono`/`parser` self-tests all
 pass; `make lyric` is clean.
+
+### D-progress-472 — JVM J3: wire opaque/protected/wire + defer + module-val codegen (#2666, epic #2663)
+
+**Status:** Shipped — the JVM backend no longer silently drops opaque /
+protected / wire bodies, `defer` runs on every exit path, and module-level
+`val`s are real `static final` fields.  docs/44 J3 (M-2, M-3, m-2) closed.
+Self-hosted-only; no F#; no MSIL change.
+
+Band J3 of `docs/44` framed this as "the lowering exists in `jvm/lowering.l`;
+only the dispatch is missing."  The opaque-type *class* emission was indeed
+one-line dispatch wiring, but driving each construct end-to-end from Lyric
+source needed the front-end plumbing the hand-built Path-A self-tests
+(`self_test_b6/b93/b94/b110/b125.l`) bypass.  All work is in
+`lyric-compiler/jvm/` (`codegen/0X_*.l` + `lowering.l`).
+
+**M-3 — opaque / protected / wire dispatch (`codegen/06_items.l`):**
+
+- `IOpaque` → `LPOpaqueType` → `lowerOpaqueType` + `lowerOpaqueFacade`.  Opaque
+  types are registered in `collectFileCases`/`collectFileCtors` so
+  `Counter(value = …)` construction resolves; field reads on an opaque receiver
+  route through the `$<name>()` accessor (new `FuncCtx.opaqueTypes` set), not a
+  direct (private-field) `getfield`.  The opaque ctor is now `ACC_PUBLIC`
+  (`lowering.l`) so the package host class — which lands in a *different* JVM
+  package (`<pkg>` vs `<pkg>/<Name>`) — can construct it without
+  `IllegalAccessError`.
+- `IProtected` → record-shaped `LPRecord` (mirrors `lowerProtectedMsil`): field
+  members become public data fields with a field-args ctor (matching how
+  protected types are constructed, `TokenBucket(field = …)`); `entry` / helper
+  methods become instance methods.  Bare field references inside an entry
+  (`tokens`, not `self.tokens`) resolve to `getfield`/`putfield` on `this` via a
+  new `FuncCtx.selfClass`.  Full ReentrantLock mutual exclusion remains a
+  documented cross-target gap (MSIL also emits protected types as plain records,
+  "Phase R6").
+- `IWire` → `LPWire` → `lowerWire` (new `LPackageItem` variant + dispatch in
+  `lowerPackage`): final DI factory class with private static binding fields, a
+  private ctor, `bootstrap()`, and exposed-binding accessors.
+  `AppWire.bootstrap()` / `AppWire.<binding>()` resolve as static calls
+  (registered under a `<wireShortName>.<method>` key).
+- `IConfig` stays an explicit, documented no-op — `config { }` blocks are
+  DI-phase-consumed (D046/D048) and have no standalone runtime representation;
+  the MSIL backend emits nothing for them either (no `lowerConfig` exists), so
+  this is intentional parity, not a dropped body.
+- New shared infra benefiting records too: an instance-method signature registry
+  keyed `<class>#<method>` (`collectFileSigs` now registers `RMFunc` / protected
+  members), consulted by `lowerMethodCall` to emit a precise `invokevirtual`
+  (real descriptor) instead of the `()Object` guess that mis-resolved a `void`
+  entry like `c.increment()`.
+
+**M-2 — `defer` via try/finally (`codegen/05_stmts.l`, mirrors MSIL #1477):**
+`defer { D }` runs `D` on every non-exception exit (normal fall-off, early
+`return`/`break`/`continue`) plus exception unwind.  Statement blocks route
+through `lowerBlockStmtsFrom`/`lowerDeferRegion`; value-producing blocks (a
+non-void function body) through `lowerBlockExprWithDefer`, which stashes the
+trailing value across the deferred block.  The suffix after a defer runs inside
+a catch-all-rethrow region; `FuncCtx.deferStack` (+ `loopDeferDepth`) lets
+`return`/`break`/`continue` replay the pending blocks before transferring.
+
+**m-2 — module-level `val` as `static final` (`codegen/06_items.l`,
+`lowering.l`):** a module `val NAME = expr` emits a `public static final` field
+initialised in a synthesised `<clinit>` (built as a `<clinit>` `LFunc` so it
+reuses the StackMapTable / max-stack machinery); bare references resolve to
+`getstatic <hostClass>.<name>` (`collectFileVals` → `FuncCtx.moduleVals`).
+Mirrors the MSIL `.cctor` static-field path.
+
+**Test:** `lyric-compiler/jvm/j3_lowering_self_test.l` — `@test_module` asserting
+runtime values for opaque round-trip, protected entries, wire-resolved
+singleton, defer (normal + early-return), and module-`val` read; 6/6 under
+`java` via native `lyric test --target jvm`, wired into `ci.yml` beside the
+J1 silent-miscompile guard.  No regression on the four existing JVM self-tests
+(silent-miscompile 8/8, auto-FFI 13/13, hash 3/3, bitwise 10/10) or the .NET
+parser self-test.
+
+**Known follow-up:** the self-hosted formatter (`lyric-compiler/lyric/fmt/`)
+does not yet round-trip `wire { }` blocks (`lyric fmt` aborts safely with a
+token-sequence-change guard), so `j3_lowering_self_test.l` is committed
+hand-formatted; tracked as a `Lyric.Fmt` gap, independent of this codegen work.

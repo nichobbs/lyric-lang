@@ -205,20 +205,45 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           ty
         }
         case None -> {
-          // A bare reference to a nullary union case (`Empty`, `None`) is a
-          // construction, not a variable: `new Pkg/Union$Case; dup;
-          // invokespecial <init>()V`.  Without this the case lowered to null and
-          // any downstream `match` saw `instanceof Case == false` → "match not
-          // exhaustive" (#1675).
-          match mapGet(ctx.ctors, name) {
-            case Some(cls) -> {
-              val emptyArgs: List[CallArg] = newList()
-              lowerConstruction(ctx, insns, cls, emptyArgs)
+          // Inside an instance method (a protected-type entry / helper), a bare
+          // name that is a field of the receiver is `this.<name>`: load slot 0
+          // and `getfield`.  Protected entries reference their fields by bare
+          // name (`tokens`, not `self.tokens`), so without this the read fell to
+          // the null fallback below and the value was lost (J3 M-3).
+          match selfFieldType(ctx, name) {
+            case Some(fty) -> {
+              val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
+              insns.add(LAload(slot = 0))
+              insns.add(LGetfield(owner = selfCls, name = name, t = fty))
+              fty
             }
             case None -> {
-              // Package-qualified or genuinely unknown reference: null fallback.
-              insns.add(LAconstNull)
-              JRef(className = "java/lang/Object")
+              // A bare reference to a nullary union case (`Empty`, `None`) is a
+              // construction, not a variable: `new Pkg/Union$Case; dup;
+              // invokespecial <init>()V`.  Without this the case lowered to null and
+              // any downstream `match` saw `instanceof Case == false` → "match not
+              // exhaustive" (#1675).
+              match mapGet(ctx.ctors, name) {
+                case Some(cls) -> {
+                  val emptyArgs: List[CallArg] = newList()
+                  lowerConstruction(ctx, insns, cls, emptyArgs)
+                }
+                case None -> {
+                  // A bare reference to a module-level `val` resolves to a
+                  // `getstatic` on the package host class (m-2).
+                  match mapGet(ctx.moduleVals, name) {
+                    case Some(vty) -> {
+                      insns.add(LGetstatic(owner = ctx.pkgName, name = name, t = vty))
+                      vty
+                    }
+                    case None -> {
+                      // Package-qualified or genuinely unknown reference: null fallback.
+                      insns.add(LAconstNull)
+                      JRef(className = "java/lang/Object")
+                    }
+                  }
+                }
+              }
             }
           }
         }
@@ -556,7 +581,15 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
             // descriptor.  Unknown receivers fall back to an Object result.
             match recordFieldType(ctx, cls, memberName) {
               case Some(fty) -> {
-                insns.add(LGetfield(owner = cls, name = memberName, t = fty))
+                if ctx.opaqueTypes.containsKey(cls) {
+                  // Opaque types store fields privately as `$<name>` and expose
+                  // them via `$<name>()T` accessor methods, so read through the
+                  // accessor rather than a direct (illegal) `getfield` (J3 M-3).
+                  val accPs: List[JvmType] = newList()
+                  insns.add(LInvokevirtual(owner = cls, name = "$" + memberName, params = accPs, ret = fty))
+                } else {
+                  insns.add(LGetfield(owner = cls, name = memberName, t = fty))
+                }
                 fty
               }
               case None -> {
@@ -712,7 +745,13 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
     }
     case ESelf -> {
       insns.add(LAload(slot = 0))
-      JRef(className = "java/lang/Object")
+      // Type `self` to the enclosing instance class when known so `self.field`
+      // member access resolves the field's precise descriptor; otherwise the
+      // erased Object receiver (records / unhosted contexts) is reported.
+      match ctx.selfClass {
+        case Some(cls) -> JRef(className = cls)
+        case None -> JRef(className = "java/lang/Object")
+      }
     }
     case EResult -> {
       // `result` is a contextual keyword: inside ensures clauses the contract
@@ -1115,6 +1154,12 @@ func lowerBlockExpr(ctx: in FuncCtx, insns: in List[LInsn], block: in Block): Jv
   val n = block.statements.count
   if n == 0 {
     return JVoid
+  }
+  // A `defer { … }` in a value-producing block must run on scope exit while the
+  // block still yields its trailing value: route to the defer-aware helper,
+  // which stashes the value, runs the deferred block, and reloads it (#1833).
+  if blockHasDefer(block) {
+    return lowerBlockExprWithDefer(ctx, insns, block, 0)
   }
   var i = 0
   while i < n - 1 {

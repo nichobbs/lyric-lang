@@ -2520,7 +2520,13 @@ func lowerOpaqueCtor(o: in LOpaqueType, pool: in Pool): MethodInfo {
     ctorPs.add(o.fields[ci].fieldType)
     ci = ci + 1
   }
-  makeMethodInfo(0, "<init>", buildDescriptor(ctorPs, JVoid), attrs)
+  // ACC_PUBLIC: the package's own host class (`<pkg>`) and the opaque type
+  // (`<pkg>/<Name>`) land in different JVM packages, so a package-private ctor
+  // is inaccessible to in-package construction (`Counter(value = …)`) — it would
+  // raise IllegalAccessError.  Construction-hiding from external Java is the
+  // facade's job (and the reflection-sealing guarantee is a Phase-6 item, see
+  // the `$<name>()` accessor note above) (J3 M-3).
+  makeMethodInfo(ACC_PUBLIC, "<init>", buildDescriptor(ctorPs, JVoid), attrs)
 }
 
 // One public `$<name>()T` accessor per field (bootstrap-grade; removed in Phase 6).
@@ -4469,6 +4475,16 @@ pub func lowerDeriveOrd(d: in LDistinctWithDerives, pool: in Pool): ClassFile {
 }
 
 // ── B124: lowerPackage (top-level integration entry point) ────────────────────
+// A module-level `val NAME = expr`, emitted as a `public static final` field on
+// the package host class and initialised in its `<clinit>`.  `initInsns` push
+// the value (no store / return); `lowerFuncsToClass` emits the `putstatic` and
+// the `<clinit>` wrapper.
+pub record LStaticVal {
+  name: String
+  valType: JvmType
+  initInsns: List[LInsn]
+}
+
 pub union LPackageItem {
   case LPRecord(rec: LRecord)
   case LPSealedUnion(su: LSealedUnion)
@@ -4478,7 +4494,10 @@ pub union LPackageItem {
   case LPRangeType(rt: LRangeType)
   case LPExposedRecord(er: LExposedRecord)
   case LPProtected(pt: LProtected)
-  case LPFuncs(funcsClass: String, fns: List[LFunc])
+  // J3 M-3: `wire { … }` block — final DI factory class (private static fields,
+  // private ctor, `bootstrap()V`, exposed-binding accessors).
+  case LPWire(w: LWire)
+  case LPFuncs(funcsClass: String, fns: List[LFunc], staticVals: List[LStaticVal])
   // B129/B130: async generator function (yield in async func body).
   // Covers Gap-4 (yield only) and Gap-4a (yield + await, bootstrap-synchronous).
   case LPAsyncGenerator(g: LGenFunc)
@@ -4495,12 +4514,51 @@ pub record LPackage {
   items: List[LPackageItem]
 }
 
-func lowerFuncsToClass(funcsClass: in String, fns: in List[LFunc], pool: in Pool): ClassFile {
+func lowerFuncsToClass(
+  funcsClass: in String, fns: in List[LFunc], staticVals: in List[LStaticVal], pool: in Pool
+): ClassFile {
   val methods: List[MethodInfo] = newList()
   for fn in fns.toArray() {
     methods.add(lowerFunc(fn, pool))
   }
-  makeClassWithMethods(funcsClass, methods)
+
+  // m-2: module-level `val NAME = expr` → `public static final` field on the
+  // host class, initialised in a synthesised `<clinit>`.  The `<clinit>` is
+  // built as an ordinary `<clinit>` LFunc and lowered through `lowerFunc` so it
+  // reuses the same StackMapTable / max-stack machinery as user methods, which
+  // keeps branchy initialisers (an init expression containing `if` / `match`)
+  // verifiable.  Mirrors the MSIL `.cctor` static-field path.
+  val cfFields: List[FieldInfo] = newList()
+  if staticVals.count > 0 {
+    val clinitInsns: List[LInsn] = newList()
+    for sv in staticVals.toArray() {
+      val fa: List[Attribute] = newList()
+      cfFields.add(makeFieldInfo(ACC_PUBLIC + ACC_STATIC + ACC_FINAL, sv.name, typeDescriptor(sv.valType), fa))
+      for insn in sv.initInsns.toArray() {
+        clinitInsns.add(insn)
+      }
+      clinitInsns.add(LPutstatic(owner = funcsClass, name = sv.name, t = sv.valType))
+    }
+    clinitInsns.add(LReturn)
+    val clinitParams: List[JvmType] = newList()
+    val clinit = LFunc(
+      flags = ACC_STATIC,
+      name = "<clinit>",
+      params = clinitParams,
+      ret = JVoid,
+      insns = clinitInsns,
+      maxStack = 0,
+      // 0 → lowerFuncImpl infers peak stack
+      maxLocals = 0
+    )
+    methods.add(lowerFunc(clinit, pool))
+  }
+
+  if cfFields.count > 0 {
+    makeClassFull(funcsClass, cfFields, methods)
+  } else {
+    makeClassWithMethods(funcsClass, methods)
+  }
 }
 
 /// Dispatch over all package items and return the complete list of ClassFiles.
@@ -4538,8 +4596,11 @@ pub func lowerPackage(pkg: in LPackage, pool: in Pool): List[ClassFile] {
       case LPProtected(pt) -> {
         result.add(lowerProtected(pt, pool))
       }
-      case LPFuncs(funcsClass, fns) -> {
-        result.add(lowerFuncsToClass(funcsClass, fns, pool))
+      case LPWire(w) -> {
+        result.add(lowerWire(w, pool))
+      }
+      case LPFuncs(funcsClass, fns, staticVals) -> {
+        result.add(lowerFuncsToClass(funcsClass, fns, staticVals, pool))
       }
       case LPAsyncGenerator(g) -> {
         val cfs = lowerAsyncGenerator(g, pool)

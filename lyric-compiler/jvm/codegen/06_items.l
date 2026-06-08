@@ -26,6 +26,8 @@ func makeFuncCtx(
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
   retTy: in JvmType,
+  moduleVals: in Map[String, JvmType],
+  opaqueTypes: in Map[String, Bool],
 ): FuncCtx {
   val slots: Map[String, Int] = newMap()
   val types: Map[String, JvmType] = newMap()
@@ -33,6 +35,8 @@ func makeFuncCtx(
   val labelTicker: List[Int] = newList()
   val loopBreak: List[String] = newList()
   val loopCont: List[String] = newList()
+  val deferStack: List[Block] = newList()
+  val loopDeferDepth: List[Int] = newList()
   FuncCtx(
     pkgName = pkgName,
     className = className,
@@ -48,7 +52,12 @@ func makeFuncCtx(
     ctors = ctors,
     externTypes = externTypes,
     autoFfi = autoFfi,
-    retTy = retTy
+    retTy = retTy,
+    deferStack = deferStack,
+    loopDeferDepth = loopDeferDepth,
+    selfClass = None,
+    moduleVals = moduleVals,
+    opaqueTypes = opaqueTypes
   )
 }
 
@@ -70,6 +79,8 @@ func makeFuncCtxForGenerator(
   val labelTicker: List[Int] = newList()
   val loopBreak: List[String] = newList()
   val loopCont: List[String] = newList()
+  val deferStack: List[Block] = newList()
+  val loopDeferDepth: List[Int] = newList()
   FuncCtx(
     pkgName = pkgName,
     className = genClass,
@@ -85,7 +96,60 @@ func makeFuncCtxForGenerator(
     ctors = ctors,
     externTypes = externTypes,
     autoFfi = autoFfi,
-    retTy = JVoid
+    retTy = JVoid,
+    deferStack = deferStack,
+    loopDeferDepth = loopDeferDepth,
+    selfClass = None,
+    moduleVals = newMap(),
+    opaqueTypes = newMap()
+  )
+}
+
+// Create a FuncCtx for a protected-type entry / helper instance method.
+// Slot 0 is reserved for `this`; `selfClass = Some(className)` so bare field
+// references resolve to `getfield`/`putfield` on the receiver.
+func makeFuncCtxInstance(
+  pkgName: in String,
+  className: in String,
+  funcSigs: in Map[String, JvmFuncSig],
+  caseFields: in Map[String, List[JvmCaseField]],
+  ctors: in Map[String, String],
+  externTypes: in Map[String, String],
+  autoFfi: in AutoFfiCtx,
+  retTy: in JvmType,
+  moduleVals: in Map[String, JvmType],
+  opaqueTypes: in Map[String, Bool],
+): FuncCtx {
+  val slots: Map[String, Int] = newMap()
+  val types: Map[String, JvmType] = newMap()
+  val slotTicker: List[Int] = newList()
+  slotTicker.add(0)  // reserve slot 0 for `this`
+  val labelTicker: List[Int] = newList()
+  val loopBreak: List[String] = newList()
+  val loopCont: List[String] = newList()
+  val deferStack: List[Block] = newList()
+  val loopDeferDepth: List[Int] = newList()
+  FuncCtx(
+    pkgName = pkgName,
+    className = className,
+    slots = slots,
+    types = types,
+    slotTicker = slotTicker,
+    labelTicker = labelTicker,
+    loopBreak = loopBreak,
+    loopCont = loopCont,
+    genClass = None,
+    funcSigs = funcSigs,
+    caseFields = caseFields,
+    ctors = ctors,
+    externTypes = externTypes,
+    autoFfi = autoFfi,
+    retTy = retTy,
+    deferStack = deferStack,
+    loopDeferDepth = loopDeferDepth,
+    selfClass = Some(value = className),
+    moduleVals = moduleVals,
+    opaqueTypes = opaqueTypes
   )
 }
 
@@ -174,10 +238,23 @@ pub func lowerFunc(
   ctors: in Map[String, String],
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
+  moduleVals: in Map[String, JvmType],
+  opaqueTypes: in Map[String, Bool],
 ): LFunc {
   val retTy = match decl.ret { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
 
-  val ctx = makeFuncCtx(pkgName, className, funcSigs, caseFields, ctors, externTypes, autoFfi, retTy)
+  val ctx = makeFuncCtx(
+    pkgName,
+    className,
+    funcSigs,
+    caseFields,
+    ctors,
+    externTypes,
+    autoFfi,
+    retTy,
+    moduleVals,
+    opaqueTypes
+  )
   val insns: List[LInsn] = newList()
 
   // Allocate slots for parameters.
@@ -294,6 +371,12 @@ func endsWithReturn(insns: in List[LInsn]): Bool {
       case LNop -> {
         i = i - 1
       }
+      // `LTryCatch` is a zero-width meta-instruction (an exception-table entry)
+      // emitted after a defer/try region's rethrowing handler; skip past it to
+      // find the real terminal instruction (the handler's `athrow`).
+      case LTryCatch(_, _, _, _) -> {
+        i = i - 1
+      }
       // A label may be a branch target from code above (e.g. the after-label
       // of a match expression), so we cannot treat instructions before it as
       // the effective end of the method.  Stop scanning and report "no terminal".
@@ -319,6 +402,8 @@ pub func lowerRecord(
   ctors: in Map[String, String],
   externTypes: in Map[String, String],
   autoFfi: in AutoFfiCtx,
+  moduleVals: in Map[String, JvmType],
+  opaqueTypes: in Map[String, Bool],
 ): LRecord {
   val className = pkgName + "/" + decl.name
 
@@ -355,7 +440,9 @@ pub func lowerRecord(
   while mi < decl.members.count {
     match decl.members[mi] {
       case RMFunc(fn) -> {
-        methods.add(lowerFunc(fn, pkgName, className, funcSigs, caseFields, ctors, externTypes, autoFfi))
+        methods.add(
+          lowerFunc(fn, pkgName, className, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes)
+        )
       }
       case _ -> {
       }
@@ -394,6 +481,300 @@ pub func lowerUnion(decl: in UnionDecl, pkgName: in String): LSealedUnion {
   }
 
   LSealedUnion(baseName = baseName, cases = cases)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §10b. Protected-type and wire-block lowering (J3 M-3).
+// ─────────────────────────────────────────────────────────────────────────────
+// Build an instance method (slot 0 = `this`) for a protected-type entry/helper.
+// `selfClass` is set so bare field references resolve to `getfield`/`putfield`
+// on the receiver.  Parameters start at slot 1; the body is lowered with normal
+// return semantics (an entry's early `return e` emits the typed return opcode).
+func lowerProtectedMethod(
+  className: in String,
+  flags: in Int,
+  name: in String,
+  params: in List[Param],
+  retOpt: in Option[TypeExpr],
+  body: in FunctionBody,
+  pkgName: in String,
+  funcSigs: in Map[String, JvmFuncSig],
+  caseFields: in Map[String, List[JvmCaseField]],
+  ctors: in Map[String, String],
+  externTypes: in Map[String, String],
+  autoFfi: in AutoFfiCtx,
+  moduleVals: in Map[String, JvmType],
+  opaqueTypes: in Map[String, Bool],
+): LFunc {
+  val retTy = match retOpt { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
+  val ctxSelf = makeFuncCtxInstance(
+    pkgName,
+    className,
+    funcSigs,
+    caseFields,
+    ctors,
+    externTypes,
+    autoFfi,
+    retTy,
+    moduleVals,
+    opaqueTypes
+  )
+  val insns: List[LInsn] = newList()
+  val paramTypes: List[JvmType] = newList()
+  var pi = 0
+  while pi < params.count {
+    val p = params[pi]
+    val paramTy = typeExprToJvm(p.ty, pkgName)
+    allocSlot(ctxSelf, p.name, paramTy)
+    paramTypes.add(paramTy)
+    pi = pi + 1
+  }
+  match body {
+    case FBBlock(block) -> {
+      match retTy {
+        case JVoid -> {
+          lowerBlock(ctxSelf, insns, block)
+          if not endsWithReturn(insns) {
+            emitReturn(insns, JVoid)
+          }
+        }
+        case _ -> {
+          val tailTy = lowerBlockExpr(ctxSelf, insns, block)
+          if not endsWithReturn(insns) {
+            match tailTy {
+              case JVoid -> emitReturn(insns, JVoid)
+              case _ -> {
+                coerceArgTo(insns, tailTy, retTy)
+                emitReturn(insns, retTy)
+              }
+            }
+          }
+        }
+      }
+    }
+    case FBExpr(e) -> {
+      val ty = lowerExpr(ctxSelf, insns, e)
+      coerceArgTo(insns, ty, retTy)
+      emitReturn(insns, retTy)
+    }
+  }
+  LFunc(flags = flags, name = name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
+}
+
+// Build a protected-type class as a record-shaped `LPRecord`: data fields plus
+// the entry / helper methods as instance methods.  This mirrors the MSIL
+// backend (`lowerProtectedMsil`), which also emits protected types as records;
+// real ReentrantLock-based mutual exclusion is a documented cross-target gap
+// (MSIL "Phase R6", JVM `lowerProtected` Path-A) tracked in #855 / #1833.  The
+// record shape is required so the field-args constructor matches how protected
+// types are constructed (`TokenBucket(field = …, …)`), unlike the no-arg
+// `lowerProtected` Path-A constructor.
+func buildProtected(
+  decl: in ProtectedTypeDecl,
+  pkgName: in String,
+  funcSigs: in Map[String, JvmFuncSig],
+  caseFields: in Map[String, List[JvmCaseField]],
+  ctors: in Map[String, String],
+  externTypes: in Map[String, String],
+  autoFfi: in AutoFfiCtx,
+  moduleVals: in Map[String, JvmType],
+  opaqueTypes: in Map[String, Bool],
+): LPackageItem {
+  val className = pkgName + "/" + decl.name
+  val fields: List[LField] = newList()
+  val methods: List[LFunc] = newList()
+  var mi = 0
+  while mi < decl.members.count {
+    match decl.members[mi] {
+      case PMField(pf) -> {
+        match pf {
+          case PFVar(name, ty, _, _) -> fields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvm(ty, pkgName)))
+          case PFLet(name, ty, _, _) -> fields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvm(ty, pkgName)))
+          case PFImmutable(f) -> fields.add(LField(flags = 0x0001, name = f.name, fieldType = typeExprToJvm(f.ty, pkgName)))
+        }
+      }
+      case PMEntry(ed) -> {
+        methods.add(
+          lowerProtectedMethod(
+            className,
+            0x0001,
+            ed.name,
+            ed.params,
+            ed.ret,
+            ed.body,
+            pkgName,
+            funcSigs,
+            caseFields,
+            ctors,
+            externTypes,
+            autoFfi,
+            moduleVals,
+            opaqueTypes
+          )
+        )
+      }
+      case PMFunc(fn) -> {
+        match fn.body {
+          case Some(b) -> {
+            methods.add(
+              lowerProtectedMethod(
+                className,
+                0x0001,
+                fn.name,
+                fn.params,
+                fn.ret,
+                b,
+                pkgName,
+                funcSigs,
+                caseFields,
+                ctors,
+                externTypes,
+                autoFfi,
+                moduleVals,
+                opaqueTypes
+              )
+            )
+          }
+          case None -> ()
+        }
+      }
+      case PMInvariant(_) -> ()
+    }
+    mi = mi + 1
+  }
+  LPRecord(rec = LRecord(className = className, fields = fields, methods = methods, implementsIfaces = newList()))
+}
+
+// Build a wire-block DI factory class.  Each `singleton` / `local` binding's
+// initialiser is lowered to instructions that push the constructed value (no
+// return); `lowerWire` emits a private static field per binding, a `bootstrap()`
+// that runs every binding initialiser then `putstatic`s it, and a public static
+// accessor for each `expose`d binding.  A binding initialiser may reference an
+// earlier binding by name — the shared `wireCtx` resolves such a reference to a
+// `getstatic` on the wire class so the dependency graph wires up in order.
+// Mirrors the MSIL `lowerWireMsil` member subset (singleton / local / expose).
+func buildWire(
+  decl: in WireDecl,
+  pkgName: in String,
+  funcSigs: in Map[String, JvmFuncSig],
+  caseFields: in Map[String, List[JvmCaseField]],
+  ctors: in Map[String, String],
+  externTypes: in Map[String, String],
+  autoFfi: in AutoFfiCtx,
+  moduleVals: in Map[String, JvmType],
+  opaqueTypes: in Map[String, Bool],
+): LWire {
+  val className = pkgName + "/" + decl.name
+  val bindings: List[LWireBinding] = newList()
+  val exposes: List[String] = newList()
+  // Track binding name → static-field type so a later binding referencing an
+  // earlier one resolves to `getstatic <wire>.<name>`.
+  val bindingTypes: Map[String, JvmType] = newMap()
+  var mi = 0
+  while mi < decl.members.count {
+    match decl.members[mi] {
+      case WMSingleton(name, ty, init, _) -> {
+        val bty = typeExprToJvm(ty, pkgName)
+        val initInsns: List[LInsn] = newList()
+        lowerWireBindingInit(
+          className,
+          bindingTypes,
+          pkgName,
+          funcSigs,
+          caseFields,
+          ctors,
+          externTypes,
+          autoFfi,
+          moduleVals,
+          opaqueTypes,
+          initInsns,
+          init,
+          bty
+        )
+        bindings.add(LWireBinding(name = name, valType = bty, insns = initInsns))
+        if not bindingTypes.containsKey(name) {
+          bindingTypes.add(name, bty)
+        }
+      }
+      case WMLocal(name, tyOpt, init, _) -> {
+        val bty = match tyOpt { case Some(t) -> typeExprToJvm(t, pkgName); case None -> JRef(className = "java/lang/Object") }
+        val initInsns: List[LInsn] = newList()
+        lowerWireBindingInit(
+          className,
+          bindingTypes,
+          pkgName,
+          funcSigs,
+          caseFields,
+          ctors,
+          externTypes,
+          autoFfi,
+          moduleVals,
+          opaqueTypes,
+          initInsns,
+          init,
+          bty
+        )
+        bindings.add(LWireBinding(name = name, valType = bty, insns = initInsns))
+        if not bindingTypes.containsKey(name) {
+          bindingTypes.add(name, bty)
+        }
+      }
+      case WMExpose(name, _) -> exposes.add(name)
+      case _ -> ()
+    }
+    mi = mi + 1
+  }
+  LWire(className = className, bindings = bindings, exposes = exposes)
+}
+
+// Lower a wire-binding initialiser so it pushes the constructed value (no return
+// instruction).  Binding cross-references resolve to `getstatic` on the wire
+// class via `bindingTypes`; everything else lowers through the normal expression
+// path.
+func lowerWireBindingInit(
+  className: in String,
+  bindingTypes: in Map[String, JvmType],
+  pkgName: in String,
+  funcSigs: in Map[String, JvmFuncSig],
+  caseFields: in Map[String, List[JvmCaseField]],
+  ctors: in Map[String, String],
+  externTypes: in Map[String, String],
+  autoFfi: in AutoFfiCtx,
+  moduleVals: in Map[String, JvmType],
+  opaqueTypes: in Map[String, Bool],
+  insns: in List[LInsn],
+  init: in Expr,
+  expectedTy: in JvmType,
+): Unit {
+  // A bare reference to an already-declared binding resolves to a `getstatic`
+  // on the wire class; everything else lowers through the normal expression
+  // path.
+  var refName = ""
+  match init.kind {
+    case EPath(path) -> {
+      refName = lastSegment(path)
+    }
+    case _ -> ()
+  }
+  if refName != "" and bindingTypes.containsKey(refName) {
+    val fty = match mapGet(bindingTypes, refName) { case Some(t) -> t; case None -> JRef(className = "java/lang/Object") }
+    insns.add(LGetstatic(owner = className, name = refName, t = fty))
+  } else {
+    val ctx = makeFuncCtx(
+      pkgName,
+      className,
+      funcSigs,
+      caseFields,
+      ctors,
+      externTypes,
+      autoFfi,
+      expectedTy,
+      moduleVals,
+      opaqueTypes
+    )
+    val ty = lowerExpr(ctx, insns, init)
+    coerceArgTo(insns, ty, expectedTy)
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -772,11 +1153,135 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
           into.add(decl.name, sig)
         }
       }
+      case IProtected(decl) -> {
+        // J3 M-3: register each protected entry / helper method under the
+        // instance-method key `<class>#<method>` so `c.increment()` resolves to
+        // the real descriptor (e.g. `()V`) instead of the `()Object` guess.
+        val protClass = owner + "/" + decl.name
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case PMEntry(ed) -> {
+              registerInstanceSig(into, protClass, ed.name, ed.params, ed.ret, owner)
+            }
+            case PMFunc(fn) -> {
+              registerInstanceSig(into, protClass, fn.name, fn.params, fn.ret, owner)
+            }
+            case _ -> ()
+          }
+          mi = mi + 1
+        }
+      }
+      case IRecord(decl) -> {
+        // Register record instance methods (`RMFunc`) under `<class>#<method>`
+        // too, so a method call on a record receiver resolves precisely (same
+        // `()Object`-guess gap as protected entries).
+        val recClass = owner + "/" + decl.name
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case RMFunc(fn) -> {
+              registerInstanceSig(into, recClass, fn.name, fn.params, fn.ret, owner)
+            }
+            case _ -> ()
+          }
+          mi = mi + 1
+        }
+      }
+      case IWire(decl) -> {
+        // J3 M-3: register the wire's static factory methods under the
+        // `<wireShortName>.<method>` key so `AppWire.bootstrap()` /
+        // `AppWire.svc()` resolve to `invokestatic <wireClass>.<method>` with the
+        // real descriptor.  `bootstrap()V` runs the bindings; each exposed
+        // binding gets a `()T` accessor returning its declared type.
+        val wireClass = owner + "/" + decl.name
+        val noPs: List[Param] = newList()
+        // bootstrap()V
+        registerStaticWireSig(into, decl.name, wireClass, "bootstrap", newList(), JVoid)
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case WMSingleton(bname, bty, _, _) -> {
+              if wireExposes(decl, bname) {
+                registerStaticWireSig(into, decl.name, wireClass, bname, newList(), typeExprToJvm(bty, owner))
+              }
+            }
+            case WMLocal(bname, btyOpt, _, _) -> {
+              if wireExposes(decl, bname) {
+                val rt = match btyOpt { case Some(t) -> typeExprToJvm(t, owner); case None -> JRef(className = "java/lang/Object") }
+                registerStaticWireSig(into, decl.name, wireClass, bname, newList(), rt)
+              }
+            }
+            case _ -> ()
+          }
+          mi = mi + 1
+        }
+      }
       case _ -> {
       }
     }
     i = i + 1
   }
+}
+
+// Register an instance method's signature under the `<class>#<method>` key used
+// by `lowerMethodCall` to emit a precisely-typed `invokevirtual` for in-package
+// receivers (records / protected types) instead of the `()Object` guess.
+func registerInstanceSig(
+  into: in Map[String, JvmFuncSig],
+  className: in String,
+  methodName: in String,
+  params: in List[Param],
+  retOpt: in Option[TypeExpr],
+  owner: in String,
+): Unit {
+  val ps: List[JvmType] = newList()
+  var pi = 0
+  while pi < params.count {
+    ps.add(typeExprToJvm(params[pi].ty, owner))
+    pi = pi + 1
+  }
+  val ret = match retOpt { case Some(te) -> typeExprToJvm(te, owner); case None -> JVoid }
+  val key = className + "#" + methodName
+  if not into.containsKey(key) {
+    into.add(key, JvmFuncSig(owner = className, params = ps, ret = ret))
+  }
+}
+
+// Register a wire's static factory method under the `<wireShortName>.<method>`
+// key consulted by `lowerMethodCall` for `AppWire.bootstrap()` / accessor calls.
+func registerStaticWireSig(
+  into: in Map[String, JvmFuncSig],
+  wireShortName: in String,
+  wireClass: in String,
+  methodName: in String,
+  params: in List[JvmType],
+  ret: in JvmType,
+): Unit {
+  val key = wireShortName + "." + methodName
+  if not into.containsKey(key) {
+    into.add(key, JvmFuncSig(owner = wireClass, params = params, ret = ret))
+  }
+}
+
+// True when `name` is listed in a `wire` block's `expose` members.
+func wireExposes(decl: in WireDecl, name: in String): Bool {
+  var i = 0
+  var found = false
+  while i < decl.members.count {
+    if not found {
+      match decl.members[i] {
+        case WMExpose(en, _) -> {
+          if en == name {
+            found = true
+          }
+        }
+        case _ -> ()
+      }
+    }
+    i = i + 1
+  }
+  found
 }
 
 // Collect every `union` case class's field list from `file` into `into`,
@@ -824,6 +1329,51 @@ pub func collectFileCases(file: in SourceFile, into: in Map[String, List[JvmCase
           into.add(recClass, flds)
         }
       }
+      case IProtected(decl) -> {
+        // J3 M-3: a protected type lowers to a record-shaped class (field-args
+        // ctor + instance methods), so register its data fields here too —
+        // otherwise `TokenBucket(...)` construction and bare field reads inside
+        // entries can't resolve the field descriptors.
+        val protClass = owner + "/" + decl.name
+        if not into.containsKey(protClass) {
+          val flds: List[JvmCaseField] = newList()
+          var mi = 0
+          while mi < decl.members.count {
+            match decl.members[mi] {
+              case PMField(pf) -> {
+                match pf {
+                  case PFVar(name, ty, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvm(ty, owner)))
+                  case PFLet(name, ty, _, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvm(ty, owner)))
+                  case PFImmutable(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvm(f.ty, owner)))
+                }
+              }
+              case _ -> ()
+            }
+            mi = mi + 1
+          }
+          into.add(protClass, flds)
+        }
+      }
+      case IOpaque(decl) -> {
+        // J3 M-3: an opaque type's field-args ctor lets `Counter(value = …)`
+        // construct it; register its logical fields (the `$`-mangling is applied
+        // only at accessor-emit time) so construction arg-ordering resolves.
+        if decl.hasBody {
+          val opqClass = owner + "/" + decl.name
+          if not into.containsKey(opqClass) {
+            val flds: List[JvmCaseField] = newList()
+            var mi = 0
+            while mi < decl.members.count {
+              match decl.members[mi] {
+                case OMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvm(f.ty, owner)))
+                case OMInvariant(_) -> ()
+              }
+              mi = mi + 1
+            }
+            into.add(opqClass, flds)
+          }
+        }
+      }
       case _ -> {
       }
     }
@@ -855,10 +1405,91 @@ pub func collectFileCtors(file: in SourceFile, into: in Map[String, String]): Un
           ci = ci + 1
         }
       }
+      case IProtected(decl) -> {
+        // J3 M-3: protected types are constructed like records (`TokenBucket(…)`).
+        if not into.containsKey(decl.name) {
+          into.add(decl.name, owner + "/" + decl.name)
+        }
+      }
+      case IOpaque(decl) -> {
+        // J3 M-3: opaque types are constructed like records (`Counter(value=…)`).
+        if decl.hasBody {
+          if not into.containsKey(decl.name) {
+            into.add(decl.name, owner + "/" + decl.name)
+          }
+        }
+      }
       case _ -> {
       }
     }
     i = i + 1
+  }
+}
+
+// Collect every module-level `val NAME [: T] = expr` binding from `file` into
+// `into`, keyed by `NAME` with its JVM field type.  Drives bare-name reads of
+// module-level vals (lowered to `getstatic <hostClass>.<name>`).  Only the
+// simple `PBinding` form participates; destructuring module-level vals emit no
+// host field and so are not registered (m-2).
+pub func collectFileVals(file: in SourceFile, owner: in String, into: in Map[String, JvmType]): Unit {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IVal(decl) -> {
+        match decl.pattern.kind {
+          case PBinding(name, _) -> {
+            if not into.containsKey(name) {
+              val vty = match decl.ty { case Some(te) -> typeExprToJvm(te, owner); case None -> inferValType(decl.init, owner) }
+              into.add(name, vty)
+            }
+          }
+          case _ -> ()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
+// Collect every `opaque type` declaration's JVM class name into `into` (value
+// is always `true`).  Drives accessor-routed field reads on opaque receivers.
+pub func collectFileOpaque(file: in SourceFile, owner: in String, into: in Map[String, Bool]): Unit {
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IOpaque(decl) -> {
+        if decl.hasBody {
+          val cls = owner + "/" + decl.name
+          if not into.containsKey(cls) {
+            into.add(cls, true)
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
+// Best-effort static type of a module-level `val` initialiser without a
+// declared annotation: literals map to their JVM type; everything else falls
+// back to a `java/lang/Object` reference.  The field type only needs to be the
+// JVM *kind* (the codegen coerces the init value to it); annotated vals (the
+// common case) bypass this.
+func inferValType(e: in Expr, owner: in String): JvmType {
+  match e.kind {
+    case ELiteral(lit) -> {
+      match lit {
+        case LInt(_, suffix, _) -> match suffix { case I64 -> JLong; case U64 -> JLong; case _ -> JInt }
+        case LFloat(_, _, _) -> JDouble
+        case LBool(_) -> JBoolean
+        case LString(_) -> JRef(className = "java/lang/String")
+        case LChar(_) -> JChar
+        case _ -> JRef(className = "java/lang/Object")
+      }
+    }
+    case _ -> JRef(className = "java/lang/Object")
   }
 }
 
@@ -906,8 +1537,35 @@ pub func codegenPackageWithSigs(
     eti = eti + 1
   }
 
+  // m-2: collect the module-level `val NAME` declarations up front (name → JVM
+  // type) so a bare reference to one resolves to `getstatic <hostClass>.<name>`
+  // in every function of this package.
+  val moduleVals: Map[String, JvmType] = newMap()
+  collectFileVals(file, pkgName, moduleVals)
+  // J3 M-3: collect opaque-type class names so field reads on opaque receivers
+  // route through the `$<name>()` accessor methods instead of a direct getfield.
+  val opaqueTypes: Map[String, Bool] = newMap()
+  collectFileOpaque(file, pkgName, opaqueTypes)
+
   val fns: List[LFunc] = newList()
   val items: List[LPackageItem] = newList()
+  // m-2: module-level `val NAME = expr` declarations, accumulated into the host
+  // class's `<clinit>` as `public static final` fields.  All inits share one
+  // FuncCtx (`valInitCtx`) so their local-slot numbering stays disjoint when the
+  // initialisers are concatenated into a single `<clinit>` body.
+  val staticVals: List[LStaticVal] = newList()
+  val valInitCtx = makeFuncCtx(
+    pkgName,
+    funcsClass,
+    funcSigs,
+    caseFields,
+    ctors,
+    externTypes,
+    autoFfi,
+    JVoid,
+    moduleVals,
+    opaqueTypes
+  )
   var hasMain = false
   // Captured return type of the Lyric `main(): T` so the JVM wrapper can
   // emit a correctly-typed invokestatic.  `JVoid` until / unless a main is
@@ -930,7 +1588,7 @@ pub func codegenPackageWithSigs(
         var mi2 = 0
         while mi2 < decl.members.count {
           match decl.members[mi2] {
-            case IMplFunc(fn) -> implFuncs.add(lowerFunc(fn, pkgName, targetClass, funcSigs, caseFields, ctors, externTypes, autoFfi))
+            case IMplFunc(fn) -> implFuncs.add(lowerFunc(fn, pkgName, targetClass, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes))
             case IMplAssoc(_) -> {
             }
           }
@@ -977,7 +1635,9 @@ pub func codegenPackageWithSigs(
           // Factory method lives alongside main() in the functions class.
           fns.add(makeGeneratorFactory(decl, genClass, pkgName))
         } else {
-          fns.add(lowerFunc(decl, pkgName, funcsClass, funcSigs, caseFields, ctors, externTypes, autoFfi))
+          fns.add(
+            lowerFunc(decl, pkgName, funcsClass, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes)
+          )
           if isMainFunc(decl) {
             hasMain = true
             // Resolve the Lyric main's declared return type so the JVM
@@ -1004,7 +1664,7 @@ pub func codegenPackageWithSigs(
           }
           ei = ei + 1
         }
-        val baseRec = lowerRecord(decl, pkgName, funcSigs, caseFields, ctors, externTypes, autoFfi)
+        val baseRec = lowerRecord(decl, pkgName, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes)
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
           mergedMethods.add(fn)
@@ -1046,7 +1706,7 @@ pub func codegenPackageWithSigs(
           }
           ei = ei + 1
         }
-        val baseRec = lowerRecord(decl, pkgName, funcSigs, caseFields, ctors, externTypes, autoFfi)
+        val baseRec = lowerRecord(decl, pkgName, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes)
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
           mergedMethods.add(fn)
@@ -1070,7 +1730,22 @@ pub func codegenPackageWithSigs(
       }
       case IConst(_) -> {
       }
-      case IVal(_) -> {
+      case IVal(decl) -> {
+        // m-2: module-level `val NAME = expr` → `public static final` field
+        // initialised in the host class's `<clinit>` (parity with the MSIL
+        // `.cctor` static-field path).  Only the simple `val NAME = …` binding
+        // form participates; destructuring patterns at module scope are not
+        // emitted (no MSIL counterpart either).
+        match decl.pattern.kind {
+          case PBinding(name, _) -> {
+            val initInsns: List[LInsn] = newList()
+            val valTy = lowerExpr(valInitCtx, initInsns, decl.init)
+            val fieldTy = match decl.ty { case Some(te) -> typeExprToJvm(te, pkgName); case None -> valTy }
+            coerceArgTo(initInsns, valTy, fieldTy)
+            staticVals.add(LStaticVal(name = name, valType = fieldTy, initInsns = initInsns))
+          }
+          case _ -> ()
+        }
       }
       case ITypeAlias(_) -> {
       }
@@ -1088,9 +1763,32 @@ pub func codegenPackageWithSigs(
         }
         items.add(LPEnum(en = LEnumType(className = className2, variants = variants)))
       }
-      case IOpaque(_) -> {
+      case IOpaque(decl) -> {
+        // J3 M-3: emit the opaque-type wrapper class plus its Java-interop
+        // facade via the existing `Jvm.Lowering.lowerOpaqueType` /
+        // `lowerOpaqueFacade` (driven from `LPOpaqueType`).  A body-less opaque
+        // declaration (`opaque type X` with no `{ … }`) has no fields to wrap,
+        // so it contributes no class — matching the MSIL `hasBody` guard.
+        if decl.hasBody {
+          val oFields: List[LOpaqueField] = newList()
+          var ofi = 0
+          while ofi < decl.members.count {
+            match decl.members[ofi] {
+              case OMField(f) -> oFields.add(LOpaqueField(name = f.name, fieldType = typeExprToJvm(f.ty, pkgName)))
+              case OMInvariant(_) -> ()
+            }
+            ofi = ofi + 1
+          }
+          items.add(LPOpaqueType(ot = LOpaqueType(className = pkgName + "/" + decl.name, fields = oFields)))
+        }
       }
-      case IProtected(_) -> {
+      case IProtected(decl) -> {
+        // J3 M-3: emit a final, ReentrantLock-guarded class via the existing
+        // `Jvm.Lowering.lowerProtected` (driven from `LPProtected`).  Field
+        // members become private data fields; each `entry` / helper `func`
+        // becomes a lock-wrapped instance method whose bare field references
+        // resolve through `selfClass` (slot 0 = `this`).
+        items.add(buildProtected(decl, pkgName, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes))
       }
       case IInterface(decl) -> {
         // Emit a JVM interface ClassFile: one abstract method per IMSig member.
@@ -1113,7 +1811,9 @@ pub func codegenPackageWithSigs(
               abstractMethods.add(makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, sig.name, desc, emptyAttrs))
             }
             case IMFunc(fn) -> {
-              concreteFuncs.add(lowerFunc(fn, pkgName, ifClassName, funcSigs, caseFields, ctors, externTypes, autoFfi))
+              concreteFuncs.add(
+                lowerFunc(fn, pkgName, ifClassName, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes)
+              )
             }
             case IMAssoc(_) -> {
             }
@@ -1128,7 +1828,15 @@ pub func codegenPackageWithSigs(
       }
       case IImpl(_) -> {
       }   // handled by pre-pass above
-      case IWire(_) -> {
+      case IWire(decl) -> {
+        // J3 M-3: emit a final DI factory class via the existing
+        // `Jvm.Lowering.lowerWire` (driven from `LPWire`): one private static
+        // field per binding, a private ctor, a `bootstrap()V` that initialises
+        // the bindings in declaration order, and a public static accessor per
+        // exposed binding.
+        items.add(
+          LPWire(w = buildWire(decl, pkgName, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes))
+        )
       }
       case IScopeKind(_) -> {
       }
@@ -1143,6 +1851,13 @@ pub func codegenPackageWithSigs(
       case IFixture(_) -> {
       }
       case IConfig(_) -> {
+        // J3 M-3: `config { … }` blocks declare compile-time DI configuration
+        // (D046 / D048).  They are resolved during config/wire resolution and
+        // carry no standalone runtime representation — the MSIL backend emits
+        // nothing for `IConfig` for the same reason, so this is intentional
+        // parity, not a dropped body.  When the config-resolution phase lands a
+        // JVM consumer it will read the resolved values directly rather than a
+        // synthesised class.
       }
       case IAspect(_) -> {
       }
@@ -1207,7 +1922,7 @@ pub func codegenPackageWithSigs(
     fns.add(jvmMain)
   }
 
-  items.add(LPFuncs(funcsClass = funcsClass, fns = fns))
+  items.add(LPFuncs(funcsClass = funcsClass, fns = fns, staticVals = staticVals))
 
   LPackage(packageName = pkgName, items = items)
 }
