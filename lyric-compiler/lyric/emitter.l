@@ -1754,7 +1754,22 @@ func emitJvmInProcess(req: in EmitRequest): EmitResult {
   val stdlibSources = findStdlibSourcesForTarget(true)
   val pkgName = extractPackageName(req.source)
   val name = if pkgName.length > 0 { pkgName } else { req.assemblyName }
-  val ok = JvmBridge.compileToJarBundled(req.source, req.outputPath, name, stdlibSources)
+  // The single-file `EmitRequest` carries no feature set (mirroring the MSIL
+  // single-file `compileToMsilWithVersion` path).  With an empty active set,
+  // `@cfg(feature = "X")` items in the user file erase — the same behaviour the
+  // MSIL project path applies, now wired on the JVM target via
+  // `compileToJarBundledWithFeatures` (J2 / docs/44 §5, #2665).  JVM *project*
+  // builds thread the manifest's feature set through
+  // `emitProjectJvmViaSubprocess`'s `FEATURE` spec lines.
+  val noFeatures: List[String] = newList()
+  val ok = JvmBridge.compileToJarBundledWithFeatures(
+    req.source,
+    req.outputPath,
+    name,
+    stdlibSources,
+    noFeatures,
+    noFeatures
+  )
   if ok {
     val okDiags: List[Diagnostic] = newList()
     EmitResult(outputPath = Some(value = req.outputPath), diagnostics = okDiags)

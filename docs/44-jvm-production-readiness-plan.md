@@ -281,13 +281,30 @@ These produce wrong-but-running output today and must fail loudly or be fixed:
 
 ### J2 — Bring `jvm/bridge.l` to MSIL-bridge parity (architectural, the linchpin)
 Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
-- Aspect weaving (`Lyric.Weaver.weaveFileWithDiags`) — B-3.
-- Lambda lifting — unblocks B-1.
-- `?` / `try` error-propagation lowering — part of B-2.
-- `@cfg` erasure (`Cfg.applyCfgErasure`) — M-4.
-- Cross-package generic collection into mono — M-5.
-- **Acceptance:** the existing weaver/cfg/propagate self-tests run on
-  `--target jvm`; a closure program builds and runs under `java`.
+- [x] Aspect weaving (`Lyric.Weaver.weaveFileWithDiags`) — B-3.  Wired into both
+  the single-file (`compileToJar`) and bundled (`compileToJarBundled` via
+  `runMiddleEnd`) paths, at the MSIL pass position (after mono, before codegen);
+  weave-time diagnostics A0042/A0043/A0044 surface like MSIL.
+- [ ] Lambda lifting — unblocks B-1.  **Not done in this slice** (closures are a
+  separate task; the JVM lambda-lift + closure backend remains a BLOCKER).
+- [x] `?` / `try` error-propagation lowering — part of B-2.  Wired into both
+  paths at the MSIL position (after the elaborator, before mono) via
+  `lowerPropagateFile`.  The lowering is target-agnostic and is verified on MSIL
+  by `propagate_self_test.l`; its lowered output constructs/matches the generic
+  `Result`/`Option` types, so a *runtime* JVM `?` assertion is blocked on JVM
+  generics (M-1, scheduled for J4) and is deferred there.
+- [x] `@cfg` erasure (`Cfg.applyCfgErasure`) — M-4.  Wired into
+  `compileToJarBundledWithFeatures` before `@stubbable`/type-check; the
+  single-file `EmitRequest` path threads an empty feature set (parity with the
+  MSIL single-file `compileToMsilWithVersion`, which likewise runs no cfg).
+- [x] Cross-package generic collection into mono — M-5.  Both JVM paths now call
+  `monoFileWithImports` fed `collectStdlibGenericFuncsJvm(...)` (mirroring the
+  MSIL bridge's `collectStdlibGenericFuncs`) instead of bare `monoFile`.
+- **Acceptance:** weaving / `@cfg` runtime assertions pass on `--target jvm` via
+  `lyric-compiler/jvm/middle_end_passes_jvm_self_test.l`; the four wired passes
+  mirror the MSIL bridge's order.  (Lambda-lift/closures and a runtime `?`
+  assertion remain open — the former is a separate task, the latter awaits J4
+  generics.)
 
 ### J3 — Wire the capabilities `lowering.l` already has (low-effort parity)
 - M-3: call the existing `lowerOpaqueType`/`lowerOpaqueFacade`/protected/wire
