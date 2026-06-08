@@ -798,11 +798,16 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
         }
       }
     }
-    case ELambda(_, _) -> {
-      // General lambda lowering (closure class generation) is deferred.
-      // The only supported lambda use is as a literal argument to Std.Jvm.catch,
-      // which is handled by lowerCatchIntrinsic before lowerExpr is ever called.
-      panic("Jvm.Codegen: ELambda not supported — pass lambdas directly to Std.Jvm.catch")
+    case ELambda(lparams, lbody) -> {
+      // J2b closures (#2665): a general lambda value lowers to a synthesised
+      // inner class implementing the package's shared `Lyric$Lambda` functional
+      // interface (uniform Object[]-packing ABI).  The class captures the free
+      // `val`/param references of the enclosing scope as ctor-bound fields; the
+      // closure object left on the stack IS the lambda value.  Calling it routes
+      // through `lowerLambdaInvoke` (see 04_calls.l).  The literal-lambda
+      // `Std.Jvm.catch` intrinsic is handled before lowerExpr is reached, so it
+      // never lands here.
+      lowerLambda(ctx, insns, lparams, lbody)
     }
     case ETypeApp(fn, _) -> {
       // Ignore type args and lower the function expression.
@@ -1379,4 +1384,449 @@ func boxIfNeeded(insns: in List[LInsn], ty: in JvmType): Unit {
     case JShort -> insns.add(LBoxShort)
     case _ -> insns.add(LNop)
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §5j. Lambda / closure lowering (J2b, #2665).
+// ─────────────────────────────────────────────────────────────────────────────
+// The shared functional interface every lambda in a package implements.  A
+// uniform Object[]-packing ABI (`invoke([Ljava/lang/Object;)Ljava/lang/Object;`)
+// makes construction and invocation agree for any arity, with generics erased to
+// `Object` (J4) — primitives are boxed in and checkcast+unboxed out.  One such
+// interface is emitted per package (see `emitLambdaInterfaceIfNeeded`).
+pub func lambdaIfaceName(pkgName: in String): String {
+  pkgName + "/Lyric$Lambda"
+}
+
+pub func lambdaIfaceMethod(): String {
+  "invoke"
+}
+
+// Does the package name list already contain `nm`?
+func nameInList(xs: in List[String], nm: in String): Bool {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == nm {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func addNameOnceJvm(xs: in List[String], nm: in String): Unit {
+  if not nameInList(xs, nm) {
+    xs.add(nm)
+  }
+}
+
+// ── Free-variable / bound-name collection over the lambda body ───────────────
+// `collectRefNames*` accumulate every single-segment `EPath` reference (a bare
+// identifier) reachable in the body; `collectBoundNames*` accumulate the names
+// the body binds locally (its own `val`/`var`/`let`, `for`/`match` pattern
+// bindings, and nested-lambda params).  The capture set is the references that
+// are neither bound nor lambda params yet resolve to an enclosing-scope slot.
+func collectRefNamesExpr(e: in Expr, acc: in List[String]): Unit {
+  match e.kind {
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        addNameOnceJvm(acc, path.segments[0])
+      }
+    }
+    case EBinop(_, lhs, rhs) -> {
+      collectRefNamesExpr(lhs, acc)
+      collectRefNamesExpr(rhs, acc)
+    }
+    case EPrefix(_, operand) -> collectRefNamesExpr(operand, acc)
+    case ECall(fn, args) -> {
+      collectRefNamesExpr(fn, acc)
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CAPositional(ex) -> collectRefNamesExpr(ex, acc)
+          case CANamed(_, ex, _) -> collectRefNamesExpr(ex, acc)
+        }
+        i = i + 1
+      }
+    }
+    case EMember(recv, _) -> collectRefNamesExpr(recv, acc)
+    case EIndex(recv, idxs) -> {
+      collectRefNamesExpr(recv, acc)
+      var i = 0
+      while i < idxs.count {
+        collectRefNamesExpr(idxs[i], acc)
+        i = i + 1
+      }
+    }
+    case ETypeApp(fn, _) -> collectRefNamesExpr(fn, acc)
+    case EAssign(target, _, value) -> {
+      collectRefNamesExpr(target, acc)
+      collectRefNamesExpr(value, acc)
+    }
+    case EIf(cond, thenB, elseOpt, _) -> {
+      collectRefNamesExpr(cond, acc)
+      collectRefNamesEob(thenB, acc)
+      match elseOpt {
+        case Some(eb) -> collectRefNamesEob(eb, acc)
+        case None -> ()
+      }
+    }
+    case EMatch(scrut, arms) -> {
+      collectRefNamesExpr(scrut, acc)
+      var i = 0
+      while i < arms.count {
+        match arms[i].guard {
+          case Some(g) -> collectRefNamesExpr(g, acc)
+          case None -> ()
+        }
+        collectRefNamesEob(arms[i].body, acc)
+        i = i + 1
+      }
+    }
+    case EBlock(block) -> collectRefNamesBlock(block, acc)
+    case EUnsafe(block) -> collectRefNamesBlock(block, acc)
+    case EAwait(inner) -> collectRefNamesExpr(inner, acc)
+    case ESpawn(inner) -> collectRefNamesExpr(inner, acc)
+    case ETry(inner) -> collectRefNamesExpr(inner, acc)
+    case EYield(inner) -> collectRefNamesExpr(inner, acc)
+    case EPropagate(inner) -> collectRefNamesExpr(inner, acc)
+    case ETuple(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        collectRefNamesExpr(exprs[i], acc)
+        i = i + 1
+      }
+    }
+    case EList(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        collectRefNamesExpr(exprs[i], acc)
+        i = i + 1
+      }
+    }
+    case EInterpolated(segs) -> {
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISExpr(ex) -> collectRefNamesExpr(ex, acc)
+          case ISText(_) -> ()
+        }
+        i = i + 1
+      }
+    }
+    case ELambda(_, lbody) -> collectRefNamesBlock(lbody, acc)
+    case _ -> ()
+  }
+}
+
+func collectRefNamesEob(eob: in ExprOrBlock, acc: in List[String]): Unit {
+  match eob {
+    case EOBExpr(ex) -> collectRefNamesExpr(ex, acc)
+    case EOBBlock(b) -> collectRefNamesBlock(b, acc)
+  }
+}
+
+func collectRefNamesBlock(b: in Block, acc: in List[String]): Unit {
+  var i = 0
+  while i < b.statements.count {
+    collectRefNamesStmt(b.statements[i], acc)
+    i = i + 1
+  }
+}
+
+func collectRefNamesStmt(s: in Statement, acc: in List[String]): Unit {
+  match s.kind {
+    case SLocal(binding) -> match binding { case LBVal(_, _, init) -> collectRefNamesExpr(init, acc); case LBLet(_, _, init) -> collectRefNamesExpr(init, acc); case LBVar(_, _, init) -> match init { case Some(ie) -> collectRefNamesExpr(ie, acc); case None -> () } }
+    case SAssign(target, _, value) -> {
+      collectRefNamesExpr(target, acc)
+      collectRefNamesExpr(value, acc)
+    }
+    case SReturn(value) -> match value { case Some(v) -> collectRefNamesExpr(v, acc); case None -> () }
+    case SThrow(ex) -> collectRefNamesExpr(ex, acc)
+    case STry(body, catches, finallyOpt) -> {
+      collectRefNamesBlock(body, acc)
+      var i = 0
+      while i < catches.count {
+        collectRefNamesBlock(catches[i].body, acc)
+        i = i + 1
+      }
+      match finallyOpt {
+        case Some(fb) -> collectRefNamesBlock(fb, acc)
+        case None -> ()
+      }
+    }
+    case SDefer(body) -> collectRefNamesBlock(body, acc)
+    case SScope(_, body) -> collectRefNamesBlock(body, acc)
+    case SFor(_, _, iter, body) -> {
+      collectRefNamesExpr(iter, acc)
+      collectRefNamesBlock(body, acc)
+    }
+    case SWhile(_, cond, body) -> {
+      collectRefNamesExpr(cond, acc)
+      collectRefNamesBlock(body, acc)
+    }
+    case SLoop(_, body) -> collectRefNamesBlock(body, acc)
+    case SInvariant(ex) -> collectRefNamesExpr(ex, acc)
+    case SExpr(ex) -> collectRefNamesExpr(ex, acc)
+    case SRule(lhs, rhs) -> {
+      collectRefNamesExpr(lhs, acc)
+      collectRefNamesExpr(rhs, acc)
+    }
+    case _ -> ()
+  }
+}
+
+func collectBoundNamesPattern(p: in Pattern, acc: in List[String]): Unit {
+  match p.kind {
+    case PBinding(name, inner) -> {
+      addNameOnceJvm(acc, name)
+      match inner {
+        case Some(ip) -> collectBoundNamesPattern(ip, acc)
+        case None -> ()
+      }
+    }
+    case PConstructor(_, args) -> {
+      var i = 0
+      while i < args.count {
+        collectBoundNamesPattern(args[i], acc)
+        i = i + 1
+      }
+    }
+    case PRecord(_, fields, _) -> {
+      var i = 0
+      while i < fields.count {
+        match fields[i] {
+          case RPFNamed(_, pat, _) -> collectBoundNamesPattern(pat, acc)
+          case RPFShort(name, _) -> addNameOnceJvm(acc, name)
+        }
+        i = i + 1
+      }
+    }
+    case PTuple(patterns) -> {
+      var i = 0
+      while i < patterns.count {
+        collectBoundNamesPattern(patterns[i], acc)
+        i = i + 1
+      }
+    }
+    case PParen(inner) -> collectBoundNamesPattern(inner, acc)
+    case PTypeTest(inner, _) -> collectBoundNamesPattern(inner, acc)
+    case POr(patterns) -> {
+      var i = 0
+      while i < patterns.count {
+        collectBoundNamesPattern(patterns[i], acc)
+        i = i + 1
+      }
+    }
+    case _ -> ()
+  }
+}
+
+func collectBoundNamesBlock(b: in Block, acc: in List[String]): Unit {
+  var i = 0
+  while i < b.statements.count {
+    collectBoundNamesStmt(b.statements[i], acc)
+    i = i + 1
+  }
+}
+
+func collectBoundNamesStmt(s: in Statement, acc: in List[String]): Unit {
+  match s.kind {
+    case SLocal(binding) -> match binding { case LBVal(pat, _, _) -> collectBoundNamesPattern(pat, acc); case LBLet(name, _, _) -> addNameOnceJvm(acc, name); case LBVar(name, _, _) -> addNameOnceJvm(acc, name) }
+    case SFor(_, pat, _, body) -> {
+      collectBoundNamesPattern(pat, acc)
+      collectBoundNamesBlock(body, acc)
+    }
+    case SWhile(_, _, body) -> collectBoundNamesBlock(body, acc)
+    case SLoop(_, body) -> collectBoundNamesBlock(body, acc)
+    case SScope(_, body) -> collectBoundNamesBlock(body, acc)
+    case SDefer(body) -> collectBoundNamesBlock(body, acc)
+    case STry(body, catches, finallyOpt) -> {
+      collectBoundNamesBlock(body, acc)
+      var i = 0
+      while i < catches.count {
+        match catches[i].bindName {
+          case Some(nm) -> addNameOnceJvm(acc, nm)
+          case None -> ()
+        }
+        collectBoundNamesBlock(catches[i].body, acc)
+        i = i + 1
+      }
+      match finallyOpt {
+        case Some(fb) -> collectBoundNamesBlock(fb, acc)
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+// The capture set: free references resolving to an enclosing slot, minus the
+// lambda's own params and any names bound inside the body.  Order-preserving and
+// deduped so capture-field / ctor-arg / load ordering stays consistent.
+func lambdaCaptureNamesJvm(ctx: in FuncCtx, lparams: in List[LambdaParam], body: in Block): List[String] {
+  val refs: List[String] = newList()
+  collectRefNamesBlock(body, refs)
+  val bound: List[String] = newList()
+  var p = 0
+  while p < lparams.count {
+    addNameOnceJvm(bound, lparams[p].name)
+    p = p + 1
+  }
+  collectBoundNamesBlock(body, bound)
+  val caps: List[String] = newList()
+  var i = 0
+  while i < refs.count {
+    val nm = refs[i]
+    if not nameInList(bound, nm) {
+      // A free name is captured by value when it is an enclosing local/param
+      // slot, OR a field of the enclosing receiver class (`selfClass`) — the
+      // latter occurs when the lambda lives in a record-method / protected-entry
+      // body and references a bare field name (#2864).  Both are snapshotted
+      // into the closure's ctor-bound capture fields.
+      if ctx.slots.containsKey(nm) {
+        addNameOnceJvm(caps, nm)
+      } else {
+        match selfFieldType(ctx, nm) {
+          case Some(_) -> addNameOnceJvm(caps, nm)
+          case None -> ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  caps
+}
+
+// Lower a lambda value: synthesise a closure inner class implementing the
+// package's shared `Lyric$Lambda` interface, register it in `ctx.closureAcc`,
+// then emit `new` + capture-load + `invokespecial <init>` so the closure object
+// is left on the stack.  Returns the closure's static type (the shared iface).
+func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[LambdaParam], body: in Block): JvmType {
+  val ifaceName = lambdaIfaceName(ctx.pkgName)
+  val idx = ctx.closureCounter.count
+  ctx.closureCounter.add(0)
+  // Use `$Lambda$<n>` nesting under the package host class so the binary name is
+  // unique and not mistaken for a user record/union.
+  val closureClass = ctx.pkgName + "$Lambda$" + toString(idx)
+
+  val caps = lambdaCaptureNamesJvm(ctx, lparams, body)
+  // Capture types come from the enclosing scope (by value, per §5.4 / docs/01:
+  // `val` bindings are captured by value).  A captured `var` is currently also
+  // snapshotted by value on the JVM — mutation-after-capture is not reflected
+  // (the by-reference `var` path needs heap-cell hoisting; tracked for J2b+).
+  val captures: List[LClosureCapture] = newList()
+  var ci = 0
+  while ci < caps.count {
+    val cn = caps[ci]
+    val cty = match lookupType(ctx, cn) {
+      case Some(t) -> t
+      case None -> match selfFieldType(ctx, cn) { case Some(ft) -> ft; case None -> JRef(className = "java/lang/Object") }
+    }
+    captures.add(LClosureCapture(captureName = cn, captureType = cty))
+    ci = ci + 1
+  }
+
+  // ── Build the closure body (`invoke(Object[])Object`) in a fresh ctx ─────────
+  // Slot 0 = this, slot 1 = the Object[] args; the prologue unpacks args into
+  // the lambda-param locals and reads capture fields into capture locals.
+  val bodyCtx = makeFuncCtx(
+    ctx.pkgName,
+    closureClass,
+    ctx.funcSigs,
+    ctx.caseFields,
+    ctx.ctors,
+    ctx.externTypes,
+    ctx.autoFfi,
+    JRef(className = "java/lang/Object"),
+    ctx.moduleVals,
+    ctx.opaqueTypes,
+    ctx.closureAcc,
+    ctx.closureCounter
+  )
+  // Reserve slot 0 (this) and slot 1 (Object[] args).
+  allocSlot(bodyCtx, "__closure_this", JRef(className = closureClass))
+  val argsSlot = allocSlot(bodyCtx, "__closure_args", JArray(elem = JRef(className = "java/lang/Object")))
+
+  val bodyInsns: List[LInsn] = newList()
+  // Unpack each lambda param from args[i].  Annotated params unbox to their
+  // declared JVM type; un-annotated params stay `Object` (the J4 erased model —
+  // numeric binops / comparisons unbox on demand via reconcileCmpOperands).
+  var pi = 0
+  while pi < lparams.count {
+    val lp = lparams[pi]
+    val pty = match lp.ty {
+      case Some(te) -> typeExprToJvm(te, ctx.pkgName)
+      case None -> JRef(className = "java/lang/Object")
+    }
+    val pslot = allocSlot(bodyCtx, lp.name, pty)
+    bodyInsns.add(LAload(slot = argsSlot))
+    bodyInsns.add(LIconst(v = pi))
+    bodyInsns.add(LAaload)
+    // args[i] is Object; coerce to the param's (possibly primitive) type.
+    coerceArgTo(bodyInsns, JRef(className = "java/lang/Object"), pty)
+    emitStore(bodyInsns, pslot, pty)
+    pi = pi + 1
+  }
+  // Read each capture field into a local of the capture's type.
+  var cj = 0
+  while cj < captures.count {
+    val cap = captures[cj]
+    val cslot = allocSlot(bodyCtx, cap.captureName, cap.captureType)
+    bodyInsns.add(LAload(slot = 0))
+    bodyInsns.add(LGetfield(owner = closureClass, name = cap.captureName, t = cap.captureType))
+    emitStore(bodyInsns, cslot, cap.captureType)
+    cj = cj + 1
+  }
+  // Lower the lambda body in expression position; box the value to Object and
+  // return it (Unit lambdas push null).
+  val tailTy = lowerBlockExpr(bodyCtx, bodyInsns, body)
+  match tailTy {
+    case JVoid -> bodyInsns.add(LAconstNull)
+    case _ -> boxIfNeeded(bodyInsns, tailTy)
+  }
+  bodyInsns.add(LAreturn)
+
+  val methodParams: List[JvmType] = newList()
+  methodParams.add(JArray(elem = JRef(className = "java/lang/Object")))
+  val closure = LClosure(
+    closureClass = closureClass,
+    ifaceClass = ifaceName,
+    ifaceMethod = lambdaIfaceMethod(),
+    captures = captures,
+    methodParams = methodParams,
+    methodRet = JRef(className = "java/lang/Object"),
+    bodyInsns = bodyInsns,
+    bodyMaxLocals = bodyCtx.slotTicker.count
+  )
+  ctx.closureAcc.add(closure)
+
+  // ── Construct the closure at the lambda site ─────────────────────────────────
+  insns.add(LNew(className = closureClass))
+  insns.add(LDup)
+  var ck = 0
+  while ck < captures.count {
+    val cap = captures[ck]
+    // Load the captured value to pass to the closure ctor.  A local/param is
+    // read from its slot; an enclosing-receiver field (`selfClass`) is read via
+    // `aload_0; getfield selfClass.<name>` (#2864 — record-method / protected-
+    // entry lambdas capturing a bare field).
+    match lookupSlot(ctx, cap.captureName) {
+      case Some(s) -> emitLoad(insns, s, cap.captureType)
+      case None -> {
+        val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
+        insns.add(LAload(slot = 0))
+        insns.add(LGetfield(owner = selfCls, name = cap.captureName, t = cap.captureType))
+      }
+    }
+    ck = ck + 1
+  }
+  val ctorPs: List[JvmType] = newList()
+  var cp = 0
+  while cp < captures.count {
+    ctorPs.add(captures[cp].captureType)
+    cp = cp + 1
+  }
+  insns.add(LInvokespecial(owner = closureClass, name = "<init>", params = ctorPs, ret = JVoid))
+  JRef(className = ifaceName)
 }

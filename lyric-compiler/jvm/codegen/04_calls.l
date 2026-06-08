@@ -296,7 +296,14 @@ func lowerCall(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, args: in Lis
   match fn.kind {
     case EPath(path) -> {
       val funcName = lastSegment(path)
-      lowerBuiltinOrStaticCall(ctx, insns, funcName, path, args)
+      // J2b closures (#2665): a call whose head is a single-segment local bound
+      // to a lambda value (`val f = (x) -> …; f(2)`) invokes the shared
+      // functional interface on the closure object, not a static method.
+      if path.segments.count == 1 and isLambdaLocal(ctx, funcName) {
+        lowerLambdaInvoke(ctx, insns, funcName, args)
+      } else {
+        lowerBuiltinOrStaticCall(ctx, insns, funcName, path, args)
+      }
     }
     case ETypeApp(innerFn, _) -> {
       // Ignore type args; lower the callee.
@@ -315,6 +322,62 @@ func lowerCall(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, args: in Lis
       JRef(className = "java/lang/Object")
     }
   }
+}
+
+// True when `name` is a local/param slot holding a lambda (closure) value: a
+// slot typed as the package's shared `Lyric$Lambda` interface (a `val f =
+// (x) -> …` binding) or as the erased `Object` (a higher-order-function
+// parameter declared `(…) -> R`, which `typeExprToJvm` maps to `Object`).  A
+// matching local shadows any static function of the same name, so a call on it
+// must dispatch through the functional interface rather than `invokestatic`.
+func isLambdaLocal(ctx: in FuncCtx, name: in String): Bool {
+  match lookupSlot(ctx, name) {
+    case Some(_) -> {
+      val ifaceName = lambdaIfaceName(ctx.pkgName)
+      match lookupType(ctx, name) {
+        case Some(t) -> match t { case JRef(cls) -> cls == ifaceName or cls == "java/lang/Object"; case _ -> false }
+        case None -> false
+      }
+    }
+    case None -> false
+  }
+}
+
+// Invoke a lambda value held in local `name`: load the closure, checkcast to the
+// shared functional interface, pack the (boxed) args into an `Object[]`, and
+// `invokeinterface invoke([Ljava/lang/Object;)Ljava/lang/Object;`.  The result
+// is `Object`; the caller context narrows / unboxes it via the usual paths.
+func lowerLambdaInvoke(ctx: in FuncCtx, insns: in List[LInsn], name: in String, args: in List[CallArg]): JvmType {
+  val ifaceName = lambdaIfaceName(ctx.pkgName)
+  val slot = match lookupSlot(ctx, name) { case Some(s) -> s; case None -> 0 }
+  // Load the closure reference and ensure its static type is the iface.
+  insns.add(LAload(slot = slot))
+  insns.add(LCheckcast(className = ifaceName))
+  // Build the Object[] of boxed args.
+  insns.add(LIconst(v = args.count))
+  insns.add(LAnewarray(className = "java/lang/Object"))
+  var i = 0
+  while i < args.count {
+    insns.add(LDup)
+    insns.add(LIconst(v = i))
+    val aTy = lowerCallArg(ctx, insns, args[i])
+    boxIfNeeded(insns, aTy)
+    insns.add(LAastore)
+    i = i + 1
+  }
+  val invPs: List[JvmType] = newList()
+  invPs.add(JArray(elem = JRef(className = "java/lang/Object")))
+  // invokeinterface arg-count = receiver(1) + the Object[](1) = 2.
+  insns.add(
+    LInvokeinterface(
+      owner = ifaceName,
+      name = lambdaIfaceMethod(),
+      params = invPs,
+      ret = JRef(className = "java/lang/Object"),
+      argCount = 2
+    )
+  )
+  JRef(className = "java/lang/Object")
 }
 
 // Lower a single call argument.

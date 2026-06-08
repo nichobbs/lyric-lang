@@ -1449,6 +1449,32 @@ jobs:
             exit 0
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/generic_jvm_self_test.l
+      # Closure / lambda-value self-test on the JVM target (J2b / B-1, #2665,
+      # epic #2663).  Pins the self-hosted JVM closure backend: a general
+      # `ELambda` lowers to a `<pkg>$Lambda$<n>` inner class implementing the
+      # package-shared `Lyric$Lambda` functional interface (uniform
+      # Object[]-packing ABI); capture analysis binds free `val`/param refs as
+      # ctor fields; lambda-typed call sites dispatch through `invokeinterface`.
+      # Asserts non-capturing + capturing lambdas, lambdas through higher-order
+      # functions, multi-arg lambdas, a lambda returning `Result[Int, String]`
+      # (J4 erased generics through the closure ABI), and a captured-String
+      # lambda — all under `java`.  Imports only `Std.*`, so no
+      # `LYRIC_LOAD_COMPILER=1`.
+      - name: Closure-codegen self-test on JVM (native lyric test --target jvm)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping closure-codegen JVM self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping closure-codegen JVM self-test"
+            exit 0
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/closure_jvm_self_test.l
       # Match-literal + compound-assignment self-test — pins two self-hosted
       # MSIL backend correctness fixes from #1481 (epic #1470, Band 2): Float
       # literal *match* patterns now emit a real `ldc.r8; ceq` compare instead

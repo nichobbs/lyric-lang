@@ -151,6 +151,19 @@ pub record FuncCtx {
   // `$<name>()` accessor methods, so a field read on an opaque receiver lowers
   // to `invokevirtual $<name>()` rather than a direct `getfield` (J3 M-3).
   opaqueTypes: Map[String, Bool]
+  // J2b closures (#2665): the package-shared accumulator of synthesised closure
+  // classes.  An `ELambda` lowers to a `new <pkg>$Lambda$<n>` inner class that
+  // implements the shared `<pkg>/Lyric$Lambda` functional interface
+  // (`invoke([Ljava/lang/Object;)Ljava/lang/Object;`).  Each lowered closure is
+  // appended here; `codegenPackageWithSigs` drains the list into `LPClosureClass`
+  // package items (plus the one shared interface) after all functions are lowered.
+  // The same list object is threaded through every `FuncCtx` of the package so
+  // lambda-class names stay globally unique and no closure is lost.
+  closureAcc: List[LClosure]
+  // Shared monotonic counter for unique `<pkg>$Lambda$<n>` class names; `.count`
+  // is the next index, `.add` advances it.  Shared across the package like
+  // `closureAcc`.
+  closureCounter: List[Int]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

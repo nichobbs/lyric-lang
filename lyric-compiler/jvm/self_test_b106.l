@@ -63,7 +63,8 @@ func makeAddNBytes(): List[Byte] {
     captures = captures,
     methodParams = params,
     methodRet = JInt,
-    bodyInsns = body
+    bodyInsns = body,
+    bodyMaxLocals = 0
   )
   val cf = lowerClosure(c, pool)
   serializeClassWithPool(cf, pool)

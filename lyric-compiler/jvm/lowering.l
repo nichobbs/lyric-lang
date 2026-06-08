@@ -2080,6 +2080,12 @@ pub record LClosure {
   methodParams: List[JvmType]
   methodRet: JvmType
   bodyInsns: List[LInsn]
+  // Total local-slot count the interface-method body uses (this + the method
+  // params + any locals the body allocates).  `0` means "infer from
+  // `methodParams` only" (the legacy async-path shape, whose hand-built bodies
+  // allocate no extra locals).  J2b general lambdas set this from the codegen
+  // body ctx's slot ticker so `max_locals` covers param/capture/temporary slots.
+  bodyMaxLocals: Int
 }
 
 func lowerClosureCaptures(captures: in List[LClosureCapture], pool: in Pool): List[FieldInfo] {
@@ -2167,13 +2173,24 @@ func lowerClosureCtor(c: in LClosure, pool: in Pool): MethodInfo {
 }
 
 func lowerClosureMethod(c: in LClosure, pool: in Pool): MethodInfo {
-  val asm = newAssembler(pool)
-  lowerBodyInsns(asm, c.bodyInsns)
+  // Lower the interface method through the full `lowerFuncForClass` path so the
+  // body gets a real StackMapTable (branchy lambda bodies — `if` / `match` —
+  // need branch-target frames) and slot pre-initialisation.  The receiver
+  // (slot 0) is typed as the closure class.  `maxStack = 0` lets the assembler
+  // infer the peak stack; `maxLocals` uses the codegen-supplied body count, with
+  // the param-only estimate as the floor for hand-built (async-path) bodies.
   val paramSlots = 1 + slotSum(c.methodParams)
-  val codeAttr = assembleCodeInferred(asm, paramSlots)
-  val attrs: List[Attribute] = newList()
-  attrs.add(codeAttr)
-  makeMethodInfo(ACC_PUBLIC, c.ifaceMethod, buildDescriptor(c.methodParams, c.methodRet), attrs)
+  val localCount = if c.bodyMaxLocals > paramSlots { c.bodyMaxLocals } else { paramSlots }
+  val lf = LFunc(
+    flags = ACC_PUBLIC,
+    name = c.ifaceMethod,
+    params = c.methodParams,
+    ret = c.methodRet,
+    insns = c.bodyInsns,
+    maxStack = 0,
+    maxLocals = localCount
+  )
+  lowerFuncForClass(lf, c.closureClass, pool)
 }
 
 pub func lowerClosure(c: in LClosure, pool: in Pool): ClassFile {
@@ -3454,7 +3471,8 @@ pub func lowerHotAsync(h: in LHotFunc, pool: in Pool): List[ClassFile] {
     captures = appCaptures,
     methodParams = appParams,
     methodRet = JRef(className = "java/lang/Object"),
-    bodyInsns = appInsns
+    bodyInsns = appInsns,
+    bodyMaxLocals = 0
   )
   result.add(lowerClosure(appClosure, pool))
 
@@ -4514,6 +4532,10 @@ pub union LPackageItem {
   case LPTestModule(className: String, slots: List[TestMethodSlot])
   // B132+: Lyric `interface` declaration — emits a JVM interface ClassFile.
   case LPInterface(iface: LInterface)
+  // J2b closures (#2665): a synthesised lambda closure inner class.  Lowered via
+  // `lowerClosure`, which emits the capture-field ctor + the functional-interface
+  // method.  Drained from `FuncCtx.closureAcc` by `codegenPackageWithSigs`.
+  case LPClosureClass(c: LClosure)
 }
 
 pub record LPackage {
@@ -4623,6 +4645,9 @@ pub func lowerPackage(pkg: in LPackage, pool: in Pool): List[ClassFile] {
       }
       case LPInterface(iface) -> {
         result.add(lowerInterface(iface, pool))
+      }
+      case LPClosureClass(c) -> {
+        result.add(lowerClosure(c, pool))
       }
     }
   }
