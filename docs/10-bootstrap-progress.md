@@ -22948,3 +22948,63 @@ parser self-test.
 does not yet round-trip `wire { }` blocks (`lyric fmt` aborts safely with a
 token-sequence-change guard), so `j3_lowering_self_test.l` is committed
 hand-formatted; tracked as a `Lyric.Fmt` gap, independent of this codegen work.
+
+### D-progress-473 — JVM J4 M-1: correct erased-generics codegen (box/checkcast) for Result/Option + generic records/unions (#2667, epic #2663, #1707)
+
+**Status:** Shipped — generic `Result[T, E]` / `Option[T]` and user generic
+records/unions now construct and `match`-extract correctly on the JVM (was a
+`VerifyError` at class load), and the `?`-propagation JVM runtime runs.
+docs/44 J4 M-1 closed.  Self-hosted-only; no F#; no MSIL change.
+
+The JVM backend erases generics to `java/lang/Object` (no `Signature`
+attributes, no reified generics — Q-J001, matching `docs/18` §6.1/§10).  The
+erased model was *incorrect*: a generic case field of type `T` was mis-resolved
+to a non-existent `pkg/T` class, construction did not box a primitive payload
+into the `Object` field, and match-extraction read the `Object` field without a
+`checkcast` + unbox before a typed use — so `Ok(5)` + `case Ok(v) -> v` and
+every generic `Result`/`Option` program faulted at class load with
+`java.lang.VerifyError: Bad type on operand stack` / `Operand stack underflow`.
+This blocked the `?`-propagation runtime (already wired in `jvm/bridge.l`,
+MSIL-verified) from running its generic `Result`/`Option` output on the JVM.
+
+**The fix (all in `lyric-compiler/jvm/codegen/`):**
+
+- **Erasure (`01_types.l`, `06_items.l`):** new `typeExprToJvmErased(te,
+  pkgName, typeParams)` + `genericParamNames(generics)`.  A bare `TRef` whose
+  name is one of the enclosing decl's type params erases to
+  `java/lang/Object` instead of `pkg/T`.  Threaded through `lowerUnion`,
+  `lowerRecord`, and `collectFileCases` so the emitted field descriptors and the
+  match-binding field types agree (`Ljava/lang/Object;`).
+- **Construction boxing (`04_calls.l`):** `coerceArgTo` now boxes a primitive
+  value flowing into a reference slot (`Ok(5)` boxes the `int` to
+  `java/lang/Integer` before the `Object` field store).  This also makes
+  function-return (`emitReturnArrayCoerced`) and `SReturn` coercion box/unbox
+  generic payloads correctly.
+- **Match-extraction + use-site unbox (`02_exprs.l`, `03_match.l`):** the
+  binding reads the `Object` field; `reconcileCmpOperands` `checkcast`s + unboxes
+  an erased reference operand to the sibling primitive's width at every
+  comparison and arithmetic op (`v == 5`, `v + 1`), so the binding's concrete
+  type is recovered before any typed op.  `lowerMatchExpr` now coerces each arm's
+  value to the result-slot type (boxing a primitive arm into an `Object` result
+  when arms are heterogeneous, e.g. `case Ok(v) -> v` alongside `case Err(_) ->
+  -1`) and skips the result-store / fall-through `goto` for arms whose body
+  already terminated control flow (the `?`-propagation `case Err(e) -> return
+  Err(e)`), which previously underflowed the stack.
+
+**Test:** `lyric-compiler/jvm/generic_jvm_self_test.l` (`@test_module`,
+`Std.*`-only) asserts runtime values under `java` for: `Result` `Ok`/`Err`
+construct + extract (Int + String payloads, payload arithmetic); `Option`
+`Some`/`None` construct + extract including `None` round-trip and `String`
+payload; a user generic record `Box[T]` and a user generic union `Tagged[T]`
+construct + extract; and a `?`-propagation chain returning `Result[Int, String]`
+that short-circuits on `Err` and unwraps the `Int` on the `Ok` path.  13/13
+under `java` via native `lyric test --target jvm`, wired into `ci.yml` beside the
+J3 lowering JVM self-test.  No regression on the existing JVM self-tests
+(silent-miscompile 8/8, auto-FFI 13/13, hash 3/3, bitwise 10/10, j3_lowering
+12/12, middle-end-passes 5/5, pattern-lowering 9/9) or the full F# Emitter suite
+(834 passed, 0 failed, 0 errored).
+
+**Known follow-up (out of this slice):** nested-generic-union-case construction
+(`Result[Option[T], E]`, m-5) and cross-package generic monomorphization beyond
+`monoFileWithImports`; async/generator generic interplay (B-2/M-12) and JDK24+
+`scope` (M-17) remain the rest of J4.

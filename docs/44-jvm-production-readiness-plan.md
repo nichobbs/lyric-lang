@@ -164,7 +164,7 @@ tracking issue today (band J0 files them).
 
 | ID | Finding | Evidence | Issue |
 |---|---|---|---|
-| M-1 | Generics **erased to `Object`** (no `Signature` attrs, no generic instantiation); Option/Result type args erased, unlike MSIL true generics | `codegen.l:278`; `docs/18` §6.1/§10 | #1707, #2574 |
+| M-1 | ~~Generics **erased to `Object`**; the erased model was **incorrect** — generic `Result`/`Option` and user generic records/unions VerifyError'd at class load (construction did not box primitive payloads into the `Object` field; match-extraction read the `Object` field without `checkcast` + unbox)~~ **DONE (J4 M-1, D-progress-473).** Generic type params now erase to `java/lang/Object` via `typeExprToJvmErased` (decl `generics` threaded through `lowerUnion`/`lowerRecord`/`collectFileCases`); construction boxes a primitive payload into the `Object` field (`coerceArgTo` primitive→ref); match-extraction + erased-operand use-sites (`reconcileCmpOperands` for compare/arith, function-return/`SReturn` coercion, mixed-arm `match` result boxing, `return`-terminated arms skipped) `checkcast` + unbox to the binding's concrete type. The `?`-propagation JVM runtime now runs. Verified by `generic_jvm_self_test.l` (13 cases). Async/generic interplay (M-12) and `scope` (M-17) remain. Still erased (no `Signature` attrs / reified generics — Q-J001), matching `docs/18` §6.1/§10. | `jvm/codegen/{01_types,02_exprs,03_match,04_calls,06_items}.l` | #1707, #2574, #2667 |
 | M-2 | ~~`defer` panics on JVM~~ **DONE (J3, D-progress-472).** `defer { D }` runs `D` on every non-exception exit (normal fall-off, early `return`, `break`/`continue`) plus exception unwind, mirroring MSIL #1477: statement blocks route through `lowerBlockStmtsFrom`/`lowerDeferRegion` and value-producing blocks through `lowerBlockExprWithDefer`; the suffix after a defer runs inside a catch-all-rethrow region, and `FuncCtx.deferStack` lets early transfers replay the pending blocks first. | `codegen/05_stmts.l` | #1833 |
 | M-3 | ~~Opaque / protected / wire / config types recognized but **not emitted** (no-op)~~ **DONE (J3, D-progress-472).** `06_items.l`'s `IOpaque`/`IProtected`/`IWire` arms now dispatch to the real lowering: opaque → `lowerOpaqueType`/`lowerOpaqueFacade` (construction + `$<name>()`-accessor field reads, public ctor for in-package construction); protected → record-shaped class (field-args ctor + lock-wrapped instance entries; bare-name field reads/writes resolve via `selfClass`); wire → `lowerWire` DI factory (`bootstrap()` + exposed-binding accessors, callable as `AppWire.bootstrap()`/`AppWire.<binding>()`). `IConfig` stays an intentional no-op (DI-phase-consumed, parity with MSIL). | `codegen/06_items.l`, `lowering.l` | (#2666) |
 | M-4 | `@cfg(feature=…)` erasure not applied on JVM (`bridge.l` has no cfg stage) | `bridge.l`; vs `msil/bridge.l:402` | #2444 (target-gate seam) |
@@ -327,10 +327,16 @@ Port the middle-end stages `msil/bridge.l` runs that `jvm/bridge.l` omits:
   self-tests (silent-miscompile 8/8, auto-FFI 13/13, hash 3/3, bitwise 10/10).
 
 ### J4 — Generics, async, and the harder semantics (largest effort)
-- M-1/M-5/m-5: decide and implement the JVM generics strategy (erased +
-  `checkcast` is acceptable for v1; document the Valhalla deferral, Q-J001) and
-  close the nested-generic-union and cross-package gaps. At minimum, make the
-  erased model **correct** (it currently is for the tested subset).
+- M-1: **DONE (D-progress-473).** Erased + `checkcast` JVM generics strategy
+  (Q-J001 — Valhalla deferral documented). Generic type params erase to
+  `java/lang/Object`; construction boxes primitive payloads into the `Object`
+  field; match-extraction + erased-operand use-sites `checkcast` + unbox to the
+  binding's concrete type. The `?`-propagation JVM runtime runs. Covers
+  `Result`/`Option`, user generic records/unions, and same-unit + stdlib
+  generics (`monoFileWithImports`). Verified by `generic_jvm_self_test.l`.
+- M-5/m-5: nested-generic-union-case construction (`Result[Option[T], E]`) and
+  broader cross-package generic monomorphization beyond `monoFileWithImports`
+  remain open follow-ups.
 - B-2/M-12: real async lowering (futures / virtual threads per `docs/18` §14)
   and lazy generator synthesis — parity with MSIL #2070 Phase 5.
 - M-17: JDK 24+ `scope` support.

@@ -48,21 +48,41 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
         insns.add(LNop)
       }
     }
-    // Emit arm body.
+    // Emit arm body.  The first value-producing arm fixes the result-slot type;
+    // every later arm coerces its value to that type before the store.  A
+    // generic-payload arm (`case Ok(v) -> v`) is erased to `Object`, so a sibling
+    // primitive-literal arm (`case Err(_) -> -1`) is boxed to `Object` by
+    // `coerceArgTo` rather than stored raw — storing an `int` into a
+    // reference-typed result local would otherwise fail verification.
     val armTy = lowerExprOrBlock(ctx, insns, arm.body)
-    if i == 0 {
-      resultTy = armTy
-    }
+    // An arm whose body already terminated control flow (e.g. the `?`-propagation
+    // `case Err(e) -> return Err(e)`) left nothing on the stack and must not run
+    // the result-store / fall-through `goto`: doing so would pop an empty stack
+    // (VerifyError) and emit dead, unreachable bytecode after the `areturn`.
+    val armTerminated = endsWithReturn(insns)
+    // Fix the result-slot type from the first *value-producing* (non-terminating)
+    // arm, so a leading `return`-only arm does not force the whole match to Unit.
     match resultTy {
-      case JVoid -> ()
-      case _ -> {
-        if rslot < 0 {
-          rslot = allocSlot(ctx, rslotName, resultTy)
+      case JVoid -> {
+        if not armTerminated {
+          resultTy = armTy
         }
-        emitStore(insns, rslot, resultTy)
       }
+      case _ -> ()
     }
-    insns.add(LGoto(label = afterL))
+    if not armTerminated {
+      match resultTy {
+        case JVoid -> ()
+        case _ -> {
+          if rslot < 0 {
+            rslot = allocSlot(ctx, rslotName, resultTy)
+          }
+          coerceArgTo(insns, armTy, resultTy)
+          emitStore(insns, rslot, resultTy)
+        }
+      }
+      insns.add(LGoto(label = afterL))
+    }
     insns.add(LLabel(name = nextArmL))
     i = i + 1
   }
