@@ -247,6 +247,12 @@ jobs:
             echo "::error::AOT entry-point binary not found at $lyric_bin"
             exit 1
           fi
+          # Stage the stdlib packages the F# stage-0 emitter cannot build
+          # (#2592: Std.Sort et al.) into the toolchain lib dir(s) via the
+          # self-hosted emitter, so user programs importing them resolve at
+          # run time.  Runs once after the AOT build; later steps in this job
+          # reuse the populated lib dir.
+          bash scripts/stage-selfhosted-stdlib.sh "$lyric_bin" "$(dirname "$lyric_bin")" .bootstrap/stage1
           # Route any emitProject / --target jvm / LYRIC_FORCE_SUBPROCESS hop
           # to the F# bootstrap CLI.  Required since #1082 stripped the AOT
           # entry point of its path-discovery shim — the AOT binary is a
@@ -942,6 +948,50 @@ jobs:
           done
           n="$(ls "$work/out"/Lyric.Lyric.*.dll "$work/out"/Lyric.Msil.*.dll "$work/out"/Lyric.Jvm.*.dll 2>/dev/null | wc -l)"
           echo "whole compiler self-host-compiles: $n compiler-package DLLs emitted"
+
+      # Shipped Std.Sort works via the default toolchain (#2592 close).  The
+      # AOT-build step above ran scripts/stage-selfhosted-stdlib.sh, which
+      # staged the stdlib packages F# cannot build (Std.Sort et al.) into the
+      # lib dir.  This builds + runs a Std.Sort program through the *default*
+      # toolchain — NO LYRIC_STDLIB_BIN override — so it exercises exactly what
+      # a user gets: a self-hosted-compiled program linking the shipped,
+      # self-hosted-built Std.Sort against the F#-built Core, and sorting.
+      - name: Shipped Std.Sort via default toolchain (#2592)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.Sort.dll" ]; then
+            echo "::error::Lyric.Stdlib.Sort.dll not staged in the toolchain lib dir"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          cat > "$work/s.l" <<'LYR'
+          package S
+          import Std.Console as Console
+          import Std.Sort as Sort
+          func main(): Unit {
+            val r = Sort.sortInts([5, 3, 1, 4, 2])
+            var acc = ""
+            var i = 0
+            while i < r.length {
+              acc = acc + toString(r[i])
+              if i < r.length - 1 { acc = acc + " " }
+              i = i + 1
+            }
+            Console.println(acc)
+          }
+          LYR
+          # `lyric run` prints a "built <path>" progress line before the
+          # program's stdout, so take the last line (the program output).
+          got="$("$lyric_bin" run "$work/s.l" | tail -1 | tr -d '\r\n')"
+          echo "shipped Std.Sort printed: '$got'"
+          if [ "$got" != "1 2 3 4 5" ]; then
+            echo "::error::shipped Std.Sort returned '$got', expected '1 2 3 4 5'"
+            exit 1
+          fi
+          echo "Std.Sort resolves and sorts through the default shipped toolchain"
 
       # Cross-package generic-return signature: reference-typed generic args.
       # A self-hosted-compiled call to a cross-package function whose return is a

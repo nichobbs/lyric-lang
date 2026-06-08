@@ -22773,3 +22773,52 @@ self-hosted at once, refs == defs) — it cannot be done as a partial F#/
 self-hosted mix.  Tracked as the next step toward the bootstrap stage-2 rewire;
 `cli.l::sortFileList` retirement remains gated on that (and on the F# stage-0
 not recompiling a `Std.Sort`-importing `cli.l`).
+
+### D-progress-470 — ship the stdlib packages F# can't build (#2592 user-facing close)
+
+**Status:** Shipped — `Std.Sort` (and 6 more) now resolve through the default
+toolchain; #2592's user-facing symptom is fixed.
+
+#2592's literal root cause (the slice `!0[]`-vs-List ABI fork) was already
+resolved (both emitters use `T[]` + `IList`, D-progress-467).  The remaining
+user-facing gap was that `Lyric.Stdlib.Sort.dll` **never shipped**: the F#
+stage-0 CLI-bundle only emits the compiler's import closure plus the F#-buildable
+bundle "smoke set", and F# cannot compile `Std.Sort`'s typed-lambda generics, so
+a user program importing `Std.Sort` failed at run time with `Could not load file
+or assembly 'Lyric.Stdlib.Sort'`.
+
+`scripts/stage-selfhosted-stdlib.sh` closes this: after the AOT binary is built,
+it emits the full stdlib with the **self-hosted** emitter (`emitPerPackageClosure`)
+and `cp -n`s the packages F# can't build into the toolchain lib dir(s) —
+**never** clobbering an F#-built DLL, so the self-hosted leaf packages sit beside
+the F#-built `Core`/`Collections` they reference (non-suffixed, so they bind).
+Wired into the `Makefile` `lyric` target and the CI build step.
+
+**Shipped (verified to bind against the F#-built stdlib):** `Std.Sort`,
+`Std.Iter`, `Std.SecureRandom`, `Std.Regex`, `Std.Log`, `Std.Http`, `Std.Rest`
+(plus their self-hosted host sub-packages: `RegexHost`, `LogHost`,
+`SecureRandomHost`).  Each was smoke-tested: a self-hosted-compiled program calls
+the package and runs.
+
+**Excluded (real self-hosted binding bugs — need the self-hosted-built-toolchain
+ABI work, D-progress-469, first):**
+
+- `Std.Random` — `System.Random.Next` instance method mis-binds (receiver passed
+  as an argument).
+- `Std.Format` — calls a `System.Int32.ToString(int, string)` extern overload
+  that does not exist.
+- `Std.Xml` / `Std.Yaml` — union-case constructor signature mismatch (the
+  cross-package record/union field-encoding divergence).
+
+`Std.Set` / `Std.Stream` / `Std.App` / `Std.Testing.*` / `Std.Core.Proof` are
+not yet shipped (unverified; follow-up).
+
+Verified (CI, "Shipped Std.Sort via default toolchain"): with no
+`LYRIC_STDLIB_BIN` override, a `Std.Sort` program built+run through the default
+toolchain sorts `1 2 3 4 5` (and fails with `FileNotFound` if the staging step
+is skipped).  No regression — the staging only *adds* DLLs the F# build omitted.
+
+Remaining for a *fully* self-hosted stdlib: the excluded packages' binding bugs,
+which share the root of D-progress-469 (cross-package definition-vs-reference
+encoding divergence) and are unblocked by the coordinated self-hosted-built
+toolchain, not by per-package patches.
