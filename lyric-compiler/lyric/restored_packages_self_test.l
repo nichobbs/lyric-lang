@@ -1,7 +1,9 @@
 //! restored_packages_self_test.l — exercises the `Lyric.RestoredPackages`
-//! loader (#1229 Phase A.3.2).  Compiled and executed by
-//! SelfHostedRestoredPackagesTests.fs.  Exit 0 + "ok" in stdout means
-//! every assertion held.
+//! loader (#1229 Phase A.3.2).
+//!
+//! Run via `lyric test lyric-compiler/lyric/restored_packages_self_test.l`.
+//! Replaces the F# SelfHostedRestoredPackagesTests.fs wrapper (#2580).
+@test_module
 package Lyric.RestoredPackages.SelfTest
 
 import Std.Core
@@ -14,7 +16,7 @@ import Lyric.ContractMeta as Meta
 import Lyric.RestoredPackages
 
 func selfDllPath(): String {
-  Path.join(Environment.appBaseDirectory(), "self_hosted_restored_packages.dll")
+  Path.join(Environment.appBaseDirectory(), "restored_packages_self_test.dll")
 }
 
 // Happy path: the running test PE has an embedded `Lyric.Contract`
@@ -72,7 +74,15 @@ func emptyDecls(): List[Meta.ContractDecl] {
 }
 
 func mkContract(name: in String, decls: in List[Meta.ContractDecl]): Meta.Contract {
-  Meta.Contract(packageName = name, version = "1.0.0", level = "runtime_checked", formatVersion = 2, decls = decls, dependencies = newList(), contractHash = "")
+  Meta.Contract(
+    packageName = name,
+    version = "1.0.0",
+    level = "runtime_checked",
+    formatVersion = 2,
+    decls = decls,
+    dependencies = newList(),
+    contractHash = ""
+  )
 }
 
 func mkDecl(kind: in String, name: in String, repr: in String): Meta.ContractDecl {
@@ -308,31 +318,71 @@ func testSynthesiseArtifactWhitelistedT0010Filtered(): Unit {
   }
 }
 
-// Warnings-only diagnostic scenario: synthesiseArtifact must succeed when
-// the typecheck produces only DiagWarning diagnostics (no DiagError).
-// filterRealErrors drops warnings, so diagnostics.count > 0 does not gate
-// synthesis if every diagnostic is a warning.  The happy-path test above
-// implicitly covers this invariant: a valid func repr produces no errors and
-// no warnings, so the distinction is exercised by the predicate logic rather
-// than by constructing a warning-emitting source (no compiler path currently
-// produces a DiagWarning in isolation from a DiagError for synthesised
-// contract sources).
-func main(): Int {
+// ─────────────────────────────────────────────────────────────────────────────
+// §5. Test items
+// ─────────────────────────────────────────────────────────────────────────────
+// Note: a warnings-only scenario (synthesiseArtifact succeeds when typecheck
+// produces only DiagWarning, no DiagError) is covered implicitly: a valid func
+// repr produces no errors and no warnings, so the predicate logic is exercised
+// without constructing a dedicated warning-emitting source (no compiler path
+// currently produces a DiagWarning in isolation from a DiagError for
+// synthesised contract sources).
+test "load running PE" {
   testLoadRunningPe()
+}
+
+test "missing file error" {
   testMissingFileError()
+}
+
+test "error message variants" {
   testErrorMessageVariants()
+}
+
+test "synthesise empty contract" {
   testSynthesiseEmptyContract()
+}
+
+test "synthesise func" {
   testSynthesiseFunc()
+}
+
+test "synthesise interface appends braces" {
   testSynthesiseInterfaceAppendsBraces()
+}
+
+test "synthesise interface full body no double brace" {
   testSynthesiseInterfaceFullBodyNoDoubleBrace()
+}
+
+test "synthesise non-interface kinds pass through" {
   testSynthesiseNonInterfaceKindsPassThrough()
+}
+
+test "synthesise preamble ordering" {
   testSynthesisePreambleOrdering()
+}
+
+test "synthesise preamble enum strips cases" {
   testSynthesisePreambleEnumStripsCases()
+}
+
+test "synthesise preamble union strips cases" {
   testSynthesisePreambleUnionStripsCases()
+}
+
+test "synthesise trailing newline" {
   testSynthesiseTrailingNewline()
+}
+
+test "synthesise artifact happy path" {
   testSynthesiseArtifactHappyPath()
+}
+
+test "synthesise artifact malformed repr" {
   testSynthesiseArtifactMalformedRepr()
+}
+
+test "synthesise artifact whitelisted T0010 filtered" {
   testSynthesiseArtifactWhitelistedT0010Filtered()
-  println("restored-packages self-test: ok")
-  return 0
 }

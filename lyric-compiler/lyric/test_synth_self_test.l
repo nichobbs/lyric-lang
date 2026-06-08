@@ -1,8 +1,9 @@
 //! test_synth_self_test.l — exercises the self-hosted Lyric.TestSynth
-//! library.  Compiled and executed by the F# Expecto runner at
-//! compiler/tests/Lyric.Emitter.Tests/SelfHostedTestSynthTests.fs.
-//! Each in-program assertion panics on mismatch; exit 0 + an "ok"
-//! line in stdout means every check held.
+//! library.
+//!
+//! Run via `lyric test lyric-compiler/lyric/test_synth_self_test.l`.
+//! Replaces the F# SelfHostedTestSynthTests.fs wrapper (#2580).
+@test_module
 package Lyric.TestSynthSelfTest
 
 import Std.Core
@@ -32,7 +33,12 @@ func propertySource(): String {
 }
 
 func testSynthesisesPassingTwoTests(): Unit {
-  match synthesize(passingSource(), None) {
+  // Use Some(value = "") rather than None: both mean "no active filter"
+  // (empty string is a substring of every title), but Some avoids the
+  // cross-assembly nullary-union ABI mismatch for Option[String] between
+  // the self-hosted emitter (test program) and the F# bootstrap-compiled
+  // Lyric.TestSynth.dll (#2557).
+  match synthesize(passingSource(), Some(value = "")) {
     case Synthesised(rewritten, n, sk) -> {
       assertEqualInt(n, 2, "two tests detected")
       assertEqualInt(sk, 0, "no skips")
@@ -74,7 +80,9 @@ func testRejectsFixture(): Unit {
 }
 
 func testPropertyReportedAsSkip(): Unit {
-  match synthesize(propertySource(), None) {
+  // Use Some(value = "") for the same reason as testSynthesisesPassingTwoTests
+  // (#2557 cross-assembly nullary-union ABI).
+  match synthesize(propertySource(), Some(value = "")) {
     case Synthesised(rewritten, n, sk) -> {
       assertEqualInt(n, 1, "one runnable test")
       assertEqualInt(sk, 1, "one skip")
@@ -114,13 +122,30 @@ func testListEntriesEnumerates(): Unit {
   }
 }
 
-func main(): Unit {
+test "synthesises passing two tests" {
   testSynthesisesPassingTwoTests()
+}
+
+test "rejects missing @test_module" {
   testRejectsMissingTestModule()
+}
+
+test "rejects user-defined main" {
   testRejectsUserMain()
+}
+
+test "rejects fixture" {
   testRejectsFixture()
+}
+
+test "property reported as skip" {
   testPropertyReportedAsSkip()
+}
+
+test "filter skips non-matching tests" {
   testFilterSkipsNonMatching()
+}
+
+test "listEntries enumerates entries" {
   testListEntriesEnumerates()
-  println("ok")
 }

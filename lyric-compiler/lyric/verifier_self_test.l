@@ -1,6 +1,8 @@
 //! verifier_self_test.l — exercises the self-hosted Lyric.Verifier library.
-//! Compiled and executed by SelfHostedVerifierTests.fs.
-//! Exit 0 + "ok" in stdout means all checks held.
+//!
+//! Run via `lyric test lyric-compiler/lyric/verifier_self_test.l`.
+//! Replaces the F# SelfHostedVerifierTests.fs wrapper (#2580).
+@test_module
 package Lyric.VerifierSelfTest
 
 import Std.Core
@@ -591,64 +593,192 @@ func testSummaryHelpers(): Unit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Main.
+// Test items
 // ─────────────────────────────────────────────────────────────────────────────
-func main(): Unit {
+test "smt sort bool" {
   testSmtSortBool()
+}
+
+test "smt sort int" {
   testSmtSortInt()
+}
+
+test "smt sort float32" {
   testSmtSortFloat32()
+}
+
+test "smt sort string" {
   testSmtSortString()
+}
+
+test "smt sort bitvec" {
   testSmtSortBitVec()
+}
+
+test "smt sort datatype" {
   testSmtSortDatatype()
+}
+
+test "smt sort slice" {
   testSmtSortSlice()
+}
 
+test "smt sanitize alpha" {
   testSmtSanitizeAlpha()
+}
+
+test "smt sanitize with dot" {
   testSmtSanitizeWithDot()
+}
+
+test "smt sanitize special" {
   testSmtSanitizeSpecial()
+}
 
+test "smt term bool true" {
   testSmtTermBoolTrue()
+}
+
+test "smt term bool false" {
   testSmtTermBoolFalse()
+}
+
+test "smt term var" {
   testSmtTermVar()
+}
+
+test "smt term int lit" {
   testSmtTermIntLit()
+}
+
+test "smt term neg int lit" {
   testSmtTermNegIntLit()
+}
+
+test "smt term add" {
   testSmtTermAdd()
+}
+
+test "smt term not" {
   testSmtTermNot()
+}
+
+test "smt term ite" {
   testSmtTermIte()
+}
 
+test "smt goal contains preamble" {
   testSmtGoalContainsPreamble()
+}
 
+test "term eq same" {
   testTermEqSame()
+}
+
+test "term eq diff" {
   testTermEqDiff()
+}
+
+test "term eq lit" {
   testTermEqLit()
+}
+
+test "term eq lit diff" {
   testTermEqLitDiff()
+}
 
+test "subst term tforall capture" {
   testSubstTermTForallCapture()
+}
+
+test "subst term texists capture" {
   testSubstTermTExistsCapture()
+}
+
+test "subst term no capture" {
   testSubstTermNoCapture()
+}
 
+test "trivial discharge true" {
   testTrivialDischargeTrue()
+}
+
+test "trivial discharge hyp" {
   testTrivialDischargeHyp()
+}
+
+test "trivial discharge false none" {
   testTrivialDiscargeFalseNone()
+}
+
+test "trivial discharge reflexive eq" {
   testTrivialDischargeReflexiveEq()
+}
+
+test "trivial discharge implies self" {
   testTrivialDischargeImpliesSelf()
+}
+
+test "trivial discharge gte refl" {
   testTrivialDischargeGteRefl()
+}
 
+test "parse model empty" {
   testParseModelEmpty()
+}
+
+test "parse model one def" {
   testParseModelOneDef()
+}
 
+test "prove runtime checked no goals" {
   testProveRuntimeCheckedNoGoals()
-  testProveExplicitRuntimeChecked()
-  testProveProofRequiredNoContracts()
-  testProveParseError()
-  testProveAspectWeaveNoV0031()
-  testProveNoAspectStillWorks()
-  testProveProtectedTypeInvariantHolds()
-  testProveProtectedTypeInvariantViolated()
-  testProveProtectedFuncContractViolated()
-  testProveRangeBoundUpperOnly()
-  testProveSortNamespacing()
-  testQualifiedDatatypeNameNoCollision()
-  testSummaryHelpers()
+}
 
-  println("verifier self-test: ok")
+test "prove explicit runtime checked" {
+  testProveExplicitRuntimeChecked()
+}
+
+test "prove proof required no contracts" {
+  testProveProofRequiredNoContracts()
+}
+
+test "prove parse error" {
+  testProveParseError()
+}
+
+test "prove aspect weave no V0031" {
+  testProveAspectWeaveNoV0031()
+}
+
+test "prove no aspect still works" {
+  testProveNoAspectStillWorks()
+}
+
+test "prove protected type invariant holds" {
+  testProveProtectedTypeInvariantHolds()
+}
+
+test "prove protected type invariant violated" {
+  testProveProtectedTypeInvariantViolated()
+}
+
+test "prove protected func contract violated" {
+  testProveProtectedFuncContractViolated()
+}
+
+test "prove range bound upper only" {
+  testProveRangeBoundUpperOnly()
+}
+
+test "prove sort namespacing" {
+  testProveSortNamespacing()
+}
+
+test "qualified datatype name no collision" {
+  testQualifiedDatatypeNameNoCollision()
+}
+
+test "summary helpers" {
+  testSummaryHelpers()
 }
