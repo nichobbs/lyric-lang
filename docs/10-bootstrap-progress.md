@@ -22669,19 +22669,20 @@ correctly). Wiring that into the shipped lib dir, and the `sortFileList`
 retirement (which needs the compiler to import `Std.Sort`, hence R7), remain
 follow-ups.
 
-### D-progress-468 — SHA-256 hashing infrastructure (docs/45 §2–§3)
+### D-progress-468 — SHA-256 hashing infrastructure + contract metadata v3 emission (docs/45 §2–§5)
 
-**Status:** Shipped — Phase 1.2 foundation: SHA-256 hashing support via `Std.Hash.sha256OfBytes`.
+**Status:** Shipped — Phase 1.2a (SHA-256 foundation) and Phase 1.2b (pure-Lyric ContractMetaEmit): SHA-256 hashing support via `Std.Hash.sha256OfBytes` and contract metadata v3 emission with two-pass integrity hashing.
 
-What landed:
+**Phase 1.2a (SHA-256 foundation, .NET and JVM):**
 
-- **`lyric-stdlib/std/_kernel/hash_host.l`** (new extern): `pub func hostSha256Bytes(bytes: in slice[Byte]): slice[Byte]` targeting `System.Security.Cryptography.SHA256.HashData`. Declared as `@axiom` with `@stable(since = "1.0")` annotation.
-- **`lyric-stdlib/std/hash.l`** (new public function): `pub func sha256OfBytes(bytes: in slice[Byte]): String { hostBytesToHex(hostSha256Bytes(bytes)) }`. Mirrors the structure of the existing `sha512OfBytes` exactly.
-- **`lyric-stdlib/tests/hash_tests.l`**: new self-test covering SHA-256 with NIST test vectors (empty string, "abc").
+- **`lyric-stdlib/std/_kernel/hash_host.l`** (.NET): new extern `pub func hostSha256Bytes(bytes: in slice[Byte]): slice[Byte]` targeting `System.Security.Cryptography.SHA256.HashData`. Declared as `@axiom` with `@stable(since = "1.0")` annotation.
+- **`lyric-stdlib/std/_kernel_jvm/hash_host.l`** (JVM): new extern `pub func hostSha256Bytes(bytes: in slice[Byte]): slice[Byte]` using `java.security.MessageDigest.getInstance("SHA-256")`. Declared as `@axiom` with `@stable(since = "1.0")` annotation.
+- **`lyric-stdlib/std/hash.l`**: new public function `pub func sha256OfBytes(bytes: in slice[Byte]): String { hostBytesToHex(hostSha256Bytes(bytes)) }`. Mirrors the existing `sha512OfBytes` exactly; both .NET and JVM kernel boundaries are wired.
+- **`lyric-stdlib/tests/hash_tests.l`**: new self-test covering SHA-256 with NIST FIPS 180-4 test vectors (empty string, "abc").
 - **`bootstrap/tests/Lyric.Emitter.Tests/KernelBoundaryTests.fs`**: kernel extern cap bumped 322 → 323 to reflect the new `hostSha256Bytes` extern.
-- **`docs/17-axiom-audit.md`** and **`book/chapters/appendix-b-quick-reference.md`**: updated to document the new extern and public function.
+- **`docs/17-axiom-audit.md`** and **`book/chapters/appendix-b-quick-reference.md`**: updated to document the new externs and public function.
 
-No new F# code; all logic lands in Lyric per project standards. SHA-256 is a prerequisite for contract metadata v3 integrity hashing (docs/45 §2–§3), where the contract JSON is hashed to produce a canonical `contractHash` field. The `Lyric.ContractMetaEmit` package that consumes this function is deferred to a follow-up PR to avoid circular import issues with the stage-0 F# bootstrap compiler.
+**Phase 1.2b (pure-Lyric ContractMetaEmit package with two-pass SHA-256 hashing):**
 
 Verified (CI, "Full self-hosted stdlib"): a driver importing every public
 `Std.*` module emits all packages (incl. `Std.Sort` / `Std.Http` / `Std.Rest`)
