@@ -18,7 +18,6 @@ import Std.Core
 import Std.Collections
 import Std.Hash
 import Std.Json
-import Std.String as Str
 import Std.Encoding
 import Lyric.ContractMeta as Meta
 
@@ -129,7 +128,7 @@ func emitDecl(d: in Meta.ContractDecl): String {
   // Body (always emit field for consistent schema)
   val bodyJson = match d.body {
     case Some(b) -> jsonString(b)
-    case None -> jsonString("")
+    case None -> "null"
   }
   fields.add(("body", bodyJson))
 
