@@ -419,6 +419,9 @@ pub func lowerRecord(
   opaqueTypes: in Map[String, Bool],
 ): LRecord {
   val className = pkgName + "/" + decl.name
+  // Generic type params erase to `Object` (docs/44 M-1 / Q-J001) so a `T`-typed
+  // field on a generic record (e.g. `Box[T] { value: T }`) is declared `Object`.
+  val tps = genericParamNames(decl.generics)
 
   val fields: List[LField] = newList()
   var i = 0
@@ -430,7 +433,7 @@ pub func lowerRecord(
             flags = 0x0001,
             // public
             name = f.name,
-            fieldType = typeExprToJvm(f.ty, pkgName)
+            fieldType = typeExprToJvmErased(f.ty, pkgName, tps)
           )
         )
       }
@@ -471,6 +474,9 @@ pub func lowerRecord(
 // ─────────────────────────────────────────────────────────────────────────────
 pub func lowerUnion(decl: in UnionDecl, pkgName: in String): LSealedUnion {
   val baseName = pkgName + "/" + decl.name
+  // Generic type params erase to `Object` (no reified generics on the JVM —
+  // docs/44 M-1 / Q-J001), so a `T`-typed payload field is declared `Object`.
+  val tps = genericParamNames(decl.generics)
 
   val cases: List[LSealedCase] = newList()
   var i = 0
@@ -481,10 +487,12 @@ pub func lowerUnion(decl: in UnionDecl, pkgName: in String): LSealedUnion {
     while fi < c.fields.count {
       match c.fields[fi] {
         case UFNamed(name, ty, _) -> {
-          caseFields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvm(ty, pkgName)))
+          caseFields.add(LField(flags = 0x0001, name = name, fieldType = typeExprToJvmErased(ty, pkgName, tps)))
         }
         case UFPos(ty, _) -> {
-          caseFields.add(LField(flags = 0x0001, name = "field" + toString(fi), fieldType = typeExprToJvm(ty, pkgName)))
+          caseFields.add(
+            LField(flags = 0x0001, name = "field" + toString(fi), fieldType = typeExprToJvmErased(ty, pkgName, tps))
+          )
         }
       }
       fi = fi + 1
@@ -1319,6 +1327,10 @@ pub func collectFileCases(file: in SourceFile, into: in Map[String, List[JvmCase
   while i < file.items.count {
     match file.items[i].kind {
       case IUnion(decl) -> {
+        // A generic union's case fields (`Some(value: T)`, `Ok(value: T)`)
+        // erase their type-param payloads to `Object` so the binding-site field
+        // types match the `Ljava/lang/Object;` fields the class actually emits.
+        val tps = genericParamNames(decl.generics)
         var ci = 0
         while ci < decl.cases.count {
           val c = decl.cases[ci]
@@ -1328,8 +1340,8 @@ pub func collectFileCases(file: in SourceFile, into: in Map[String, List[JvmCase
             var fi = 0
             while fi < c.fields.count {
               match c.fields[fi] {
-                case UFNamed(name, ty, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvm(ty, owner)))
-                case UFPos(ty, _) -> flds.add(JvmCaseField(name = "field" + toString(fi), ty = typeExprToJvm(ty, owner)))
+                case UFNamed(name, ty, _) -> flds.add(JvmCaseField(name = name, ty = typeExprToJvmErased(ty, owner, tps)))
+                case UFPos(ty, _) -> flds.add(JvmCaseField(name = "field" + toString(fi), ty = typeExprToJvmErased(ty, owner, tps)))
               }
               fi = fi + 1
             }
@@ -1340,12 +1352,13 @@ pub func collectFileCases(file: in SourceFile, into: in Map[String, List[JvmCase
       }
       case IRecord(decl) -> {
         val recClass = owner + "/" + decl.name
+        val tps = genericParamNames(decl.generics)
         if not into.containsKey(recClass) {
           val flds: List[JvmCaseField] = newList()
           var mi = 0
           while mi < decl.members.count {
             match decl.members[mi] {
-              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvm(f.ty, owner)))
+              case RMField(f) -> flds.add(JvmCaseField(name = f.name, ty = typeExprToJvmErased(f.ty, owner, tps)))
               case _ -> {
               }
             }

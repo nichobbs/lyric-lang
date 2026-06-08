@@ -1427,6 +1427,28 @@ jobs:
             exit 0
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/j3_lowering_self_test.l
+      # Generic-codegen self-test on JVM (J4 M-1, epic #2663 / #2667 / #1707).
+      # Pins the erased-generics correctness fix: generic `Result`/`Option` and
+      # user generic records/unions now construct (boxing primitive payloads
+      # into the `Object` field) and match-extract (checkcast + unbox the payload
+      # to the binding's concrete type) without VerifyError, and the
+      # `?`-propagation runtime runs on the JVM.  Imports only `Std.*`, so no
+      # `LYRIC_LOAD_COMPILER=1`.
+      - name: Generic-codegen self-test on JVM (native lyric test --target jvm)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping generic-codegen JVM self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping generic-codegen JVM self-test"
+            exit 0
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/generic_jvm_self_test.l
       # Match-literal + compound-assignment self-test — pins two self-hosted
       # MSIL backend correctness fixes from #1481 (epic #1470, Band 2): Float
       # literal *match* patterns now emit a real `ldc.r8; ceq` compare instead

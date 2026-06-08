@@ -287,6 +287,58 @@ func joinSegments(segs: in List[String], sep: in String): String {
   result
 }
 
+// Collect the type-parameter names from an optional `GenericParams` list, so a
+// declaration's generic params (e.g. `T`, `E` of `Result[T, E]`) can be erased
+// to `java/lang/Object` rather than mis-resolved to a non-existent class.
+pub func genericParamNames(g: in Option[GenericParams]): List[String] {
+  val names: List[String] = newList()
+  match g {
+    case Some(gp) -> {
+      var i = 0
+      while i < gp.params.count {
+        match gp.params[i] {
+          case GPType(name, _) -> names.add(name)
+          case GPValue(name, _, _) -> names.add(name)
+        }
+        i = i + 1
+      }
+    }
+    case None -> ()
+  }
+  names
+}
+
+func listContainsStr(xs: in List[String], s: in String): Bool {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == s {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Like `typeExprToJvm`, but a bare `TRef` whose name is one of `typeParams`
+// erases to `java/lang/Object` (the JVM has no reified generics — see docs/44
+// M-1 / Q-J001).  Used when lowering a generic record/union's field types so a
+// `T`-typed payload is declared `Ljava/lang/Object;` instead of resolving to a
+// non-existent `pkg/T` class.
+pub func typeExprToJvmErased(te: in TypeExpr, pkgName: in String, typeParams: in List[String]): JvmType {
+  match te.kind {
+    case TRef(path) -> {
+      val seg = lastSegment(path)
+      if listContainsStr(typeParams, seg) {
+        JRef(className = "java/lang/Object")
+      } else {
+        typeExprToJvm(te, pkgName)
+      }
+    }
+    case TParen(inner) -> typeExprToJvmErased(inner, pkgName, typeParams)
+    case _ -> typeExprToJvm(te, pkgName)
+  }
+}
+
 // Map a Lyric TypeExpr to a JvmType.
 pub func typeExprToJvm(te: in TypeExpr, pkgName: in String): JvmType {
   match te.kind {

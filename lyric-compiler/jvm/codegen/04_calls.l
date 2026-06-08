@@ -1074,7 +1074,12 @@ func coerceArgTo(insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): U
             insns.add(LCheckcast(className = toCls))
           }
         }
-        case _ -> ()
+        case JArray(_) -> ()
+        // A primitive value flowing into a reference slot (e.g. an `Int` payload
+        // of a generic case field erased to `Object`) must be boxed so the
+        // verifier accepts the `Ljava/lang/Object;` store.  Match-extraction
+        // later checkcasts + unboxes back to the binding's concrete type.
+        case _ -> boxIfNeeded(insns, fromTy)
       }
     }
     case _ -> ()
