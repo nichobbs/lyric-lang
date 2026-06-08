@@ -82,6 +82,41 @@ func deferReturns(early: in Bool, obs: in Counter): Int {
   return x
 }
 
+// #2852: a `defer` inside a loop body must replay on the `break` iteration too.
+// `obs` is bumped once per iteration via the in-loop defer; the loop `break`s
+// once `i` reaches `stopAt`, so the deferred block must run `stopAt + 1` times
+// (iterations 0..stopAt inclusive, the last ending in the break).  Validates the
+// `SBreak` replay path and `loopDeferDepth` push/pop.
+func deferBreaks(stopAt: in Int, obs: in Counter): Unit {
+  var i = 0
+  while i < 100 {
+    defer {
+      obs.increment()
+    }
+    if i == stopAt {
+      break
+    }
+    i = i + 1
+  }
+}
+
+// #2852: a `defer` inside a loop body must replay on every `continue` iteration.
+// The loop runs `iters` times; on even `i` it `continue`s before the tail, on odd
+// `i` it falls off the body — either way the in-loop defer bumps `obs` once per
+// iteration.  Validates the `SContinue` replay path and `loopDeferDepth` push/pop.
+func deferContinues(iters: in Int, obs: in Counter): Unit {
+  var i = 0
+  while i < iters {
+    defer {
+      obs.increment()
+    }
+    i = i + 1
+    if (i - 1) % 2 == 0 {
+      continue
+    }
+  }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 test "module-level val is read via getstatic" {
   assertEqualInt(theAnswer, 42, "theAnswer")
@@ -122,4 +157,16 @@ test "defer runs on an early return exit" {
   val r = deferReturns(true, obs)
   assertEqualInt(r, 2, "early-return value (1+1)")
   assertEqualInt(obs.get(), 1, "deferred block ran once on early return")
+}
+
+test "defer in loop replays on the break iteration (#2852)" {
+  val obs = Counter(count = 0)
+  deferBreaks(3, obs)
+  assertEqualInt(obs.get(), 4, "defer ran on iterations 0..3 incl. the break")
+}
+
+test "defer in loop replays on every continue iteration (#2852)" {
+  val obs = Counter(count = 0)
+  deferContinues(5, obs)
+  assertEqualInt(obs.get(), 5, "defer ran once per iteration incl. continue paths")
 }

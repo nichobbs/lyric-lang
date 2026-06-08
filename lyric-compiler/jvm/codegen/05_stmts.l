@@ -887,6 +887,7 @@ func lowerDeferRegion(
   }
   val startL = freshLabel(ctx)
   val afterL = freshLabel(ctx)
+  val normalReplayL = freshLabel(ctx)
   val handlerL = freshLabel(ctx)
   insns.add(LLabel(name = startL))
   // Make the deferred block visible to `return` / `break` / `continue` inside
@@ -897,11 +898,19 @@ func lowerDeferRegion(
   // Drop this defer from the pending set before the normal-path replay (the
   // inline copy below covers fall-off; replays past here must not re-run it).
   ctx.deferStack.removeAt(savedDepth)
+  // Snapshot whether the suffix already transferred control BEFORE emitting the
+  // normalReplayL label (a label resets `lastInsnIsTerminator`, so the check
+  // must run against the suffix's true tail).
+  val suffixTerminated = lastInsnIsTerminator(insns)
+  // Close the protected region BEFORE the inline normal-path replay so a throw
+  // from the deferred block during replay is NOT caught by the catch-all (which
+  // would re-run the block — double execution, diverging from try/finally).
+  insns.add(LLabel(name = normalReplayL))
   // Normal fall-off: run the deferred block once and jump over the handler.
   // When an early transfer already terminated the region, the fall-off is
   // unreachable — skip both the inline replay and the jump so no dead code (and
   // no stray StackMapTable frame) lands before the handler.
-  if not lastInsnIsTerminator(insns) {
+  if not suffixTerminated {
     lowerBlock(ctx, insns, deferBody)
     insns.add(LGoto(label = afterL))
   }
@@ -910,13 +919,17 @@ func lowerDeferRegion(
   val exTy = JRef(className = "java/lang/Throwable")
   val tmpName = "__defer_ex_" + toString(ctx.labelTicker.count)
   val tmpSlot = allocSlot(ctx, tmpName, exTy)
-  emitStore(insns, tmpSlot, exTy)
+  // Store via `LAstoreAs` so the slot's StackMapTable type is `Throwable`, not
+  // the bare `Object` a plain `astore` registers — otherwise the rethrow's
+  // `athrow` fails verification when the deferred block itself does not diverge.
+  insns.add(LAstoreAs(slot = tmpSlot, className = "java/lang/Throwable"))
   lowerBlock(ctx, insns, deferBody)
   emitLoad(insns, tmpSlot, exTy)
   insns.add(LAthrow)
-  // Catch-all entry covers [startL, handlerL) (the region body and its inline
-  // normal-path replay); endLabel = handlerL self-excludes the handler.
-  insns.add(LTryCatch(startLabel = startL, endLabel = handlerL, handlerLabel = handlerL, catchClass = ""))
+  // Catch-all entry covers [startL, normalReplayL) (the region body + suffix
+  // only); endLabel = normalReplayL excludes the inline normal-path replay so a
+  // throw during replay rethrows directly rather than re-running the block.
+  insns.add(LTryCatch(startLabel = startL, endLabel = normalReplayL, handlerLabel = handlerL, catchClass = ""))
   insns.add(LLabel(name = afterL))
 }
 
@@ -976,6 +989,7 @@ pub func lowerBlockExprWithDefer(ctx: in FuncCtx, insns: in List[LInsn], block: 
   }
   val startL = freshLabel(ctx)
   val afterL = freshLabel(ctx)
+  val normalReplayL = freshLabel(ctx)
   val handlerL = freshLabel(ctx)
   insns.add(LLabel(name = startL))
   ctx.deferStack.add(deferBody)
@@ -983,13 +997,20 @@ pub func lowerBlockExprWithDefer(ctx: in FuncCtx, insns: in List[LInsn], block: 
   // Recurse for the value-producing suffix (may contain further defers).
   val valTy = lowerBlockExprWithDefer(ctx, insns, block, deferIdx + 1)
   ctx.deferStack.removeAt(savedDepth)
+  // Snapshot whether the suffix already transferred control BEFORE emitting the
+  // normalReplayL label (a label resets `lastInsnIsTerminator`, so the check
+  // must run against the suffix's true tail).
+  val suffixTerminated = lastInsnIsTerminator(insns)
+  // Close the protected region BEFORE the inline normal-path replay so a throw
+  // from the deferred block during replay is NOT caught by the catch-all (which
+  // would re-run the block — double execution, diverging from try/finally).
+  insns.add(LLabel(name = normalReplayL))
   // Normal completion path: when the suffix did not unconditionally transfer
   // control (an early `return` / `break` / `continue` already replayed the
   // deferred block via `replayDefers`), stash the trailing value, run the
   // deferred block, reload, and jump over the handler.  When the suffix DID
   // terminate, the fall-off is unreachable — emit nothing here so no dead code
   // / stray frame lands before the handler.
-  val suffixTerminated = lastInsnIsTerminator(insns)
   if not suffixTerminated {
     var valSlot = -1
     match valTy {
@@ -1010,11 +1031,17 @@ pub func lowerBlockExprWithDefer(ctx: in FuncCtx, insns: in List[LInsn], block: 
   insns.add(LLabel(name = handlerL))
   val exTy = JRef(className = "java/lang/Throwable")
   val tmpSlot = allocSlot(ctx, "__defer_ex_" + toString(ctx.labelTicker.count), exTy)
-  emitStore(insns, tmpSlot, exTy)
+  // Store via `LAstoreAs` so the slot's StackMapTable type is `Throwable`, not
+  // the bare `Object` a plain `astore` registers — otherwise the rethrow's
+  // `athrow` fails verification when the deferred block itself does not diverge.
+  insns.add(LAstoreAs(slot = tmpSlot, className = "java/lang/Throwable"))
   lowerBlock(ctx, insns, deferBody)
   emitLoad(insns, tmpSlot, exTy)
   insns.add(LAthrow)
-  insns.add(LTryCatch(startLabel = startL, endLabel = handlerL, handlerLabel = handlerL, catchClass = ""))
+  // Catch-all covers [startL, normalReplayL) (region body + suffix only);
+  // endLabel = normalReplayL excludes the inline normal-path replay so a throw
+  // during replay rethrows directly rather than re-running the block.
+  insns.add(LTryCatch(startLabel = startL, endLabel = normalReplayL, handlerLabel = handlerL, catchClass = ""))
   // Only land the join label when the normal path actually reaches it; when the
   // suffix terminated (e.g. trailing `return`), nothing branches to `afterL`,
   // so emitting it would leave a non-terminator tail and make the caller append
