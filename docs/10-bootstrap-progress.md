@@ -22823,20 +22823,20 @@ which share the root of D-progress-469 (cross-package definition-vs-reference
 encoding divergence) and are unblocked by the coordinated self-hosted-built
 toolchain, not by per-package patches.
 
-### D-progress-471 — SHA-256 hashing infrastructure + contract metadata v3 emission (docs/45 §2–§5)
+### D-progress-471 — SHA-256 hashing infrastructure (Phase 1.2a, docs/45 §2–§3)
 
-**Status:** Shipped — Phase 1.2a (SHA-256 foundation) and Phase 1.2b (pure-Lyric ContractMetaEmit): SHA-256 hashing support via `Std.Hash.sha256OfBytes` and contract metadata v3 emission with two-pass integrity hashing.
+**Status:** Shipped — Phase 1.2a (SHA-256 foundation, complete on .NET and JVM).
 
-**Phase 1.2a (SHA-256 foundation, .NET and JVM):**
+**Phase 1.2a deliverables:**
 
 - **`lyric-stdlib/std/_kernel/hash_host.l`** (.NET): new extern `pub func hostSha256Bytes(bytes: in slice[Byte]): slice[Byte]` targeting `System.Security.Cryptography.SHA256.HashData`. Declared as `@axiom` with `@stable(since = "1.0")` annotation.
 - **`lyric-stdlib/std/_kernel_jvm/hash_host.l`** (JVM): new extern `pub func hostSha256Bytes(bytes: in slice[Byte]): slice[Byte]` using `java.security.MessageDigest.getInstance("SHA-256")`. Declared as `@axiom` with `@stable(since = "1.0")` annotation.
-- **`lyric-stdlib/std/hash.l`**: new public function `pub func sha256OfBytes(bytes: in slice[Byte]): String { hostBytesToHex(hostSha256Bytes(bytes)) }`. Mirrors the existing `sha512OfBytes` exactly; both .NET and JVM kernel boundaries are wired.
-- **`lyric-stdlib/tests/hash_tests.l`**: new self-test covering SHA-256 with NIST FIPS 180-4 test vectors (empty string, "abc").
-- **`bootstrap/tests/Lyric.Emitter.Tests/KernelBoundaryTests.fs`**: kernel extern cap bumped 322 → 323 to reflect the new `hostSha256Bytes` extern.
-- **`docs/17-axiom-audit.md`** and **`book/chapters/appendix-b-quick-reference.md`**: updated to document the new externs and public function.
+- **`lyric-stdlib/std/hash.l`**: new public function `pub func sha256OfBytes(bytes: in slice[Byte]): String`. Mirrors the existing `sha512OfBytes` exactly; both .NET and JVM kernel boundaries wired.
+- **`lyric-stdlib/tests/hash_tests.l`**: SHA-512 self-tests (SHA-256 tests deferred pending bootstrap emitter BCL verification; see #2840).
+- **`bootstrap/tests/Lyric.Emitter.Tests/KernelBoundaryTests.fs`**: kernel extern cap bumped 322 → 323.
+- **`docs/17-axiom-audit.md`** and **`book/chapters/appendix-b-quick-reference.md`**: updated for new externs and public function.
 
-**Phase 1.2b (pure-Lyric ContractMetaEmit package with two-pass SHA-256 hashing):**
+No new F# code. SHA-256 infrastructure complete and wired on both .NET and JVM targets.
 
 Verified (CI, "Full self-hosted stdlib"): a driver importing every public
 `Std.*` module emits all packages (incl. `Std.Sort` / `Std.Http` / `Std.Rest`)
