@@ -22822,3 +22822,53 @@ Remaining for a *fully* self-hosted stdlib: the excluded packages' binding bugs,
 which share the root of D-progress-469 (cross-package definition-vs-reference
 encoding divergence) and are unblocked by the coordinated self-hosted-built
 toolchain, not by per-package patches.
+
+### D-progress-471 — wire target-agnostic middle-end passes into the JVM bridge (J2)
+
+**Status:** Shipped — the self-hosted JVM bridge (`lyric-compiler/jvm/bridge.l`)
+now runs three of the four target-agnostic middle-end passes the MSIL bridge
+runs and that the JVM bridge previously skipped, in the MSIL bridge's pass
+order, across both the single-file (`compileToJar`) and bundled
+(`compileToJarBundled` → `runMiddleEnd`) paths (docs/44 §5 J2, #2665, epic
+#2663, #1475).
+
+Wired:
+
+- **`?`/`try` error-propagation lowering (#1475)** — `lowerPropagateFile` is now
+  called after the contract elaborator and before mono, exactly where the MSIL
+  bridge calls it.  The lowering is target-agnostic and already verified against
+  the MSIL bridge by `propagate_self_test.l`; on JVM the wiring is in place but a
+  *runtime* `?` assertion is blocked on JVM generics (the lowered match-unwrap
+  constructs the generic `Result`/`Option` types, which the JVM backend still
+  erases — docs/44 M-1, scheduled for J4).
+- **Cross-package generic monomorphization (M-5)** — both paths upgraded from
+  `monoFile` to `monoFileWithImports`, fed `collectStdlibGenericFuncsJvm(...)`
+  (a JVM-side mirror of the MSIL bridge's `collectStdlibGenericFuncs`, operating
+  on the already-parsed stdlib `SourceFile`s the JVM bridge holds), so
+  cross-package generic calls specialise into the bundle.
+- **Aspect weaving (B-3)** — `Weaver.weaveFileWithDiags` is called after mono and
+  before codegen in both paths, surfacing weave-time diagnostics A0042/A0043/A0044
+  like MSIL, so the todo/06 weaver features (`config` wiring #683, call prelude
+  #682, `@inline_template` #681) apply on the JVM target.
+- **`@cfg` erasure (M-4)** — a new `compileToJarBundledWithFeatures` threads
+  `activeFeatures`/`declaredFeatures` through `Cfg.applyCfgErasure` before
+  `@stubbable` synthesis and type-check; `compileToJarBundled` forwards with an
+  empty feature set.  `emitJvmInProcess` calls the features variant with an empty
+  set (parity with the MSIL single-file `compileToMsilWithVersion`, which
+  likewise runs no cfg); JVM *project* builds keep threading the manifest's
+  feature set through `emitProjectJvmViaSubprocess`'s `FEATURE` spec lines.
+
+**Not in this slice (separate task):** lambda-lifting / closures (B-1).  The JVM
+closure backend remains a BLOCKER and is tracked separately; this slice
+deliberately leaves it untouched.
+
+**Verification:** new `@test_module`
+`lyric-compiler/jvm/middle_end_passes_jvm_self_test.l` asserts runtime values for
+`@cfg` erasure (an inactive-feature function erases; an ungated same-named
+fallback runs) and aspect weaving (an `@inline_template` `around` rewrites a
+matched function's body to `x + x` / `x + x + x`), run via
+`lyric test --target jvm` (5/5).  Wired into `.github/workflows/ci.yml` beside the
+existing JVM self-test steps.  No regression: the four JVM regression self-tests
+(`silent_miscompile_guard_jvm` 8/8, `auto_ffi_jvm` 13/13, `hash_jvm` 3/3,
+`bitwise` 10/10) and the MSIL `propagate`/`cfg`/`mono`/`parser` self-tests all
+pass; `make lyric` is clean.

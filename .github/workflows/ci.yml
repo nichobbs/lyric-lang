@@ -1380,6 +1380,30 @@ jobs:
             exit 0
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/silent_miscompile_guard_jvm_self_test.l
+      # Middle-end-passes guard (band J2, docs/44 §5, #2665, epic #2663) —
+      # exercises the target-agnostic middle-end passes J2 wired into the
+      # self-hosted JVM bridge: `@cfg` erasure (an inactive-feature item is
+      # dropped before type-check) and aspect weaving (an `@inline_template`
+      # `around` rewrites a matched function's body).  Both are asserted at
+      # runtime through `compileToJarBundled`.  (`?`-propagation is also wired
+      # by J2 and verified on MSIL via `propagate_self_test.l`; its generic
+      # `Result`/`Option` output awaits JVM generics in J4 before it can run
+      # under `java`.)  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: Middle-end-passes guard self-test on JVM (native lyric test --target jvm)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping middle-end-passes JVM self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping middle-end-passes JVM self-test"
+            exit 0
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/middle_end_passes_jvm_self_test.l
       # Match-literal + compound-assignment self-test — pins two self-hosted
       # MSIL backend correctness fixes from #1481 (epic #1470, Band 2): Float
       # literal *match* patterns now emit a real `ldc.r8; ceq` compare instead

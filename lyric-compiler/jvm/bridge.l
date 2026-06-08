@@ -13,6 +13,9 @@ import Lyric.Parser
 import Lyric.TypeChecker
 import Lyric.ModeChecker
 import Lyric.ContractElaborator
+import Lyric.Propagate
+import Lyric.Cfg as Cfg
+import Lyric.Weaver as Weaver
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.Mono
 import Lyric.Derives
@@ -115,6 +118,11 @@ pub func compileToJar(
   // so same-named cross-package types (Std.Regex/Std.RegexSafe RegexError)
   // resolve against their own package rather than colliding.
   val importedPkgs: List[ImportedPackage] = newList()
+  // Parsed stdlib source files, retained so `collectStdlibGenericFuncsJvm`
+  // can feed the stdlib's pure-Lyric generic `pub func`s to the
+  // monomorphizer (M-5 cross-package specialisation; parity with the
+  // MSIL bridge's `collectStdlibGenericFuncs`).
+  val stdlibFiles: List[SourceFile] = newList()
   var si = 0
   while si < stdlibSources.count {
     val stdPr = parse(stdlibSources[si])
@@ -134,6 +142,7 @@ pub func compileToJar(
       ii = ii + 1
     }
     importedPkgs.add(ImportedPackage(name = dottedPath(stdPr.file.packageDecl.path), items = pkgItems))
+    stdlibFiles.add(stdPr.file)
     si = si + 1
   }
 
@@ -152,15 +161,38 @@ pub func compileToJar(
 
   val elaborated = elaborateFile(file0)
 
-  // Synthesise @derive / @generate(Json) methods (Band 5 — docs/41 §9 #857).
-  val derived = deriveFile(elaborated)
+  // Lower `?` error-propagation into match-unwrap + early-return (#1475).
+  // Runs after the elaborator so a propagated Err/None short-circuit is not
+  // forced through the success-shaped `ensures:` rewrite — parity with the
+  // MSIL bridge (J2 / docs/44 §5, #2665).
+  val propRes = lowerPropagateFile(elaborated)
+  if reportAndAbort(propRes.diagnostics) {
+    return false
+  }
 
-  // Monomorphise same-package generic calls (Band 5 — docs/41 §9).
-  val monoRes = monoFile(derived)
+  // Synthesise @derive / @generate(Json) methods (Band 5 — docs/41 §9 #857).
+  val derived = deriveFile(propRes.file)
+
+  // Monomorphise generic calls (Band 5 — docs/41 §9), feeding the stdlib's
+  // pure-Lyric generic `pub func`s so cross-package generic calls (`mapGet`,
+  // `unwrapOr`, …) specialise into this artifact instead of erasing their
+  // generic return to `object` (M-5; parity with the MSIL bridge's
+  // `monoFileWithImports`).
+  val stdlibGenFuncs = collectStdlibGenericFuncsJvm(stdlibFiles)
+  val monoRes = monoFileWithImports(derived, stdlibGenFuncs)
   if reportAndAbort(monoRes.diagnostics) {
     return false
   }
-  val file = monoRes.file
+
+  // Aspect weaving (B-3) — after mono, before codegen, matching the MSIL
+  // bridge.  `weaveFileWithDiags` applies the todo/06 features (config
+  // wiring #683, call-context #682, `@inline_template` #681) and surfaces
+  // weave-time diagnostics (A0042 / A0043 / A0044) before codegen runs.
+  val weaveRes = Weaver.weaveFileWithDiags(monoRes.file)
+  if reportAndAbort(weaveRes.diagnostics) {
+    return false
+  }
+  val file = weaveRes.file
 
   val pkg = codegenPackage(file)
   val pool = poolNew()
@@ -269,19 +301,33 @@ func isTypeItem(it: in Item): Bool {
   }
 }
 
-// Run the middle-end (type check → mode check → contract elaborate → derive →
-// monomorphise) on one parsed file.  Returns the post-mono file, or None if a
-// fatal mode-check / mono diagnostic was raised.  Type-check diagnostics are
-// advisory (the self-hosted checker lacks full builtin coverage), mirroring
+// Run the middle-end (type check → mode check → contract elaborate →
+// `?`-propagation lower → derive → monomorphise → weave) on one parsed file.
+// Returns the post-weave file, or None if a fatal mode-check / propagate /
+// mono / weave diagnostic was raised.  Type-check diagnostics are advisory
+// (the self-hosted checker lacks full builtin coverage), mirroring
 // `compileToJar`.
+//
+// Mirrors the MSIL bridge's per-package pass order (`?`-propagation after the
+// elaborator, `monoFileWithImports` fed the stdlib's generic `pub func`s, then
+// `Weaver.weaveFileWithDiags` before codegen) so the JVM target weaves
+// aspects and specialises cross-package generics with the same semantics
+// (J2 / docs/44 §5, #2665).
+//
+// `stdlibGenFuncs` supplies the stdlib's pure-Lyric generic `pub func`s to the
+// monomorphizer so cross-package generic calls specialise into this bundle.
 //
 // `reportTcAdvisories` gates whether the (non-gating) type-check diagnostics
 // are echoed to stderr.  Bundled stdlib packages pass `false`: their advisory
 // T0020-style noise (the self-hosted checker lacks full builtin coverage)
 // would otherwise leak onto a *successful* build's output.  Real errors still
-// gate via `reportAndAbort` on the mode-check / mono passes regardless.
+// gate via `reportAndAbort` on the mode-check / propagate / mono / weave
+// passes regardless.
 func runMiddleEnd(
-  file0: in SourceFile, importedPkgs: in List[ImportedPackage], reportTcAdvisories: in Bool
+  file0: in SourceFile,
+  importedPkgs: in List[ImportedPackage],
+  stdlibGenFuncs: in List[FunctionDecl],
+  reportTcAdvisories: in Bool,
 ): Option[SourceFile] {
   val tcRes = checkWithImportedPackages(file0, importedPkgs)
   if reportTcAdvisories {
@@ -292,12 +338,88 @@ func runMiddleEnd(
     return None
   }
   val elaborated = elaborateFile(file0)
-  val derived = deriveFile(elaborated)
-  val monoRes = monoFile(derived)
+
+  // Lower `?` error-propagation (#1475); see the single-file path above.
+  val propRes = lowerPropagateFile(elaborated)
+  if reportAndAbort(propRes.diagnostics) {
+    return None
+  }
+
+  val derived = deriveFile(propRes.file)
+  val monoRes = monoFileWithImports(derived, stdlibGenFuncs)
   if reportAndAbort(monoRes.diagnostics) {
     return None
   }
-  Some(value = monoRes.file)
+
+  // Aspect weaving (B-3) — after mono, before codegen, matching the MSIL
+  // bridge's per-package weave so the todo/06 features and weave-time
+  // diagnostics (A0042 / A0043 / A0044) apply on the JVM target too.
+  val weaveRes = Weaver.weaveFileWithDiags(monoRes.file)
+  if reportAndAbort(weaveRes.diagnostics) {
+    return None
+  }
+  Some(value = weaveRes.file)
+}
+
+// Collect every pure-Lyric generic `pub func` from the parsed stdlib source
+// files so the monomorphizer can specialise cross-package generic call sites —
+// e.g. `mapGet(m, "k")` -> a concrete `mapGet__String__String` copy emitted
+// into the bundle — instead of leaving the generic return erased.  Mirrors
+// `Msil.Bridge.collectStdlibGenericFuncs`, but operates directly on the
+// already-parsed `SourceFile`s the JVM bridge holds (the JVM bridge does not
+// depend on the `Msil.*` packages, so the MSIL `StdlibPkg`-shaped helper is
+// replicated here rather than imported).
+//
+// Filtered conservatively to `generic` `pub func`s with a real `{ }` block body
+// and no blocking annotations — `annsBlockSpecializationJvm` rejects
+// `@externTarget` and `@axiom` (whose bodies codegen synthesises / must not run
+// as code).  `mapGet` is excluded: it is a codegen intrinsic whose specialised
+// copy would call the un-lowerable generic kernel extern `tryGetValue`.
+func collectStdlibGenericFuncsJvm(files: in List[SourceFile]): List[FunctionDecl] {
+  val genFuncs: List[FunctionDecl] = newList()
+  var fi = 0
+  while fi < files.count {
+    val f = files[fi]
+    val pkgName = dottedPath(f.packageDecl.path)
+    var ii = 0
+    while ii < f.items.count {
+      match f.items[ii].kind {
+        case IFunc(decl) -> {
+          val isPub = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+          val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+          val hasBlockBody = match decl.body {
+            case Some(fb) -> match fb { case FBBlock(_) -> true; case FBExpr(_) -> false }
+            case None -> false
+          }
+          if isPub and isGeneric and hasBlockBody and not annsBlockSpecializationJvm(decl.annotations) and not (decl.name == "mapGet" and pkgName == "Std.Collections") {
+            genFuncs.add(decl)
+          }
+        }
+        case _ -> ()
+      }
+      ii = ii + 1
+    }
+    fi = fi + 1
+  }
+  genFuncs
+}
+
+// True iff the annotation list carries a marker that makes a generic unsuitable
+// for monomorphization-by-copy (`@externTarget` / `@axiom`).  Mirrors
+// `Msil.Bridge.annsBlockSpecialization`.
+func annsBlockSpecializationJvm(anns: in List[Annotation]): Bool {
+  var i = 0
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count == 1 {
+      val n = segs[0]
+      if n == "externTarget" or n == "axiom" {
+        return true
+      }
+    }
+    i = i + 1
+  }
+  false
 }
 
 // Codegen one (already middle-ended) file against `registry` and append its
@@ -579,11 +701,32 @@ func collectFuncCallKeys(decl: in FunctionDecl, registry: in Map[String, JvmFunc
   acc
 }
 
+// Back-compat forwarder: no feature flags, so no `@cfg` erasure runs.  Callers
+// that thread a manifest's `[features]` table (the in-process CLI path) use
+// `compileToJarBundledWithFeatures`.
 pub func compileToJarBundled(
   source: in String,
   outputPath: in String,
   packageName: in String,
   stdlibSources: in List[String],
+): Bool {
+  val noFeatures: List[String] = newList()
+  compileToJarBundledWithFeatures(source, outputPath, packageName, stdlibSources, noFeatures, noFeatures)
+}
+
+/// Like `compileToJarBundled` but threads `activeFeatures` / `declaredFeatures`
+/// through `Lyric.Cfg.applyCfgErasure` before type-check (M-4; parity with the
+/// MSIL bridge's `compileProjectToMsilWithFeatures`).  Items in the user package
+/// annotated `@cfg(feature = "X")` where `X` is absent from `activeFeatures`
+/// are erased; an annotation naming a feature absent from `declaredFeatures`
+/// (when the declared set is non-empty) raises an `F0013` typo warning.
+pub func compileToJarBundledWithFeatures(
+  source: in String,
+  outputPath: in String,
+  packageName: in String,
+  stdlibSources: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
 ): Bool {
   val parseResult = parse(source)
   if reportAndAbort(parseResult.diagnostics) {
@@ -597,8 +740,16 @@ pub func compileToJarBundled(
     }
     case None -> ()
   }
+  // `@cfg`-driven erasure before `@stubbable` synthesis and type-check (M-4):
+  // drop user-package items gated on inactive features so the rest of the
+  // pipeline never sees them.  Mirrors the MSIL bridge, which runs cfg erasure
+  // on each user package immediately after parse.
+  val cfgRes = Cfg.applyCfgErasure(activeFeatures, declaredFeatures, parseResult.file)
+  if reportAndAbort(cfgRes.diagnostics) {
+    return false
+  }
   // `@stubbable` synthesis before type-check (parity with the MSIL bridge).
-  val userFile = Stubbable.stubbableRewriteFile(parseResult.file)
+  val userFile = Stubbable.stubbableRewriteFile(cfgRes.file)
 
   // Parse every stdlib source once: collect its type items (for cross-package
   // type resolution) and index the whole file by dotted package name (for the
@@ -792,9 +943,15 @@ pub func compileToJarBundled(
   val autoFfi = buildAutoFfiCtx()
   val allClasses: List[BuiltClass] = newList()
 
+  // Stdlib pure-Lyric generic `pub func`s, fed to each package's monomorphizer
+  // so cross-package generic calls (`mapGet`, `unwrapOr`, …) specialise into
+  // this bundle instead of erasing their generic return (M-5; parity with the
+  // MSIL bridge's `collectStdlibGenericFuncs`).
+  val stdlibGenFuncs = collectStdlibGenericFuncsJvm(stdlibFiles)
+
   // User package first (its codegen failing is always fatal).  Its type-check
   // advisories are echoed (they are about the program the user actually wrote).
-  match runMiddleEnd(userFile, importedPkgs, true) {
+  match runMiddleEnd(userFile, importedPkgs, stdlibGenFuncs, true) {
     case Some(f) -> codegenPackageInto(f, registry, caseReg, ctorReg, autoFfi, allClasses)
     case None -> return false
   }
@@ -819,7 +976,7 @@ pub func compileToJarBundled(
     val pkgName = dottedPath(f.packageDecl.path)
     val reachable = referencedPkgs.containsKey(pkgJvmOwner(f.packageDecl.path))
     val ok = try {
-      match runMiddleEnd(f, importedPkgs, false) {
+      match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, false) {
         case Some(ff) -> {
           codegenPackageInto(ff, registry, caseReg, ctorReg, autoFfi, allClasses)
           true
