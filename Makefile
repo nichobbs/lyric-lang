@@ -64,6 +64,8 @@ lyric: stage1 aot ## Build the end-to-end `lyric` binary and symlink it to ./bin
 	@mkdir -p bin
 	@ln -sf "../$(AOT_BIN)" bin/lyric
 	@echo "lyric binary ready: ./bin/lyric -> $(AOT_BIN)"
+	@echo "staging self-hosted-only stdlib packages (#2592: Std.Sort et al.) ..."
+	@bash scripts/stage-selfhosted-stdlib.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
 
 # ── F# test suites (Expecto console apps) ───────────────────────────────────
 
