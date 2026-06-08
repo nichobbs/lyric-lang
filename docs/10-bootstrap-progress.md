@@ -23091,8 +23091,69 @@ selfClass.<name>` at construction.
 after capture reflected in the closure) needs heap-cell hoisting like the MSIL
 `#1479 v2` path and is currently snapshotted by value; a returning-lambda
 (lambda whose result is itself a lambda) and deeply-nested closures are
-untested.  Note: invoking a **record** instance method on `--target jvm` is a
-separate pre-existing gap (`lowerFunc` emits the method as static while the
-caller uses `invokevirtual` → "Expecting non-static method"), unrelated to
+untested.  Note: invoking a **record** instance method on `--target jvm` was a
+separate pre-existing gap (`lowerFunc` emitted the method as static while the
+caller used `invokevirtual` → "Expecting non-static method"), unrelated to
 closures; the #2864 test uses the protected-entry form, which lowers as a true
-instance method and exercises the same field-capture closure path.
+instance method and exercises the same field-capture closure path.  That record
+gap is now fixed in D-progress-475 (#2865).
+
+### D-progress-475 — JVM record instance-method dispatch: emit `RMFunc` as instance methods, call via `invokevirtual` (#2865, epic #2663)
+
+**Status:** Shipped — a method declared inside a `record` body (`RMFunc`) now
+compiles and runs on the JVM target (was a hard `VerifyError` at link time).
+Closes the separate pre-existing gap noted in D-progress-474's follow-up.
+Self-hosted-only; no F#; no MSIL change.
+
+Before this slice a record's instance method was emitted as a **static** method
+on the record's class (`lowerFunc`, flags `0x0009`), while a call `rec.m(args)`
+lowered to a precisely-typed **`invokevirtual`** through the J3 `<class>#<method>`
+registry — a mismatch the JVM rejects:
+`java.lang.VerifyError: ... Expecting non-static method ...`.  Record
+construction, field reads, and accessors already worked; only instance-method
+dispatch was broken, which blocked the very common records-with-methods pattern.
+
+**The fix (`codegen/06_items.l`, `lowering.l`):**
+
+- **Emission** — `lowerRecord`'s `RMFunc` branch now lowers each method through a
+  new `lowerRecordMethod` (a generic-aware sibling of `lowerProtectedMethod`)
+  instead of `lowerFunc`: flags `0x0001` (public, **not** static), `this` in slot
+  0, params shifted to slots 1+, and `selfClass` set (via `makeFuncCtxInstance`)
+  so bare/`self.` field references resolve through `this` (`getfield`).  This
+  mirrors how protected-type entries and `impl` methods are already lowered.  A
+  body-less `RMFunc` signature is skipped (records carry no abstract methods).
+- **Generics (J4)** — `lowerRecordMethod` erases the record's generic type params
+  to `Object` in param/return descriptors (`typeExprToJvmErased`), and the
+  `<class>#<method>` registration uses the matching `registerInstanceSigErased`,
+  so the emitted method byte-matches the `invokevirtual` descriptor.  Generic
+  arg/return boxing + checkcast flows through the existing `coerceArgTo` paths.
+- **StackMapTable** — `lowerRecord` now routes non-static methods through
+  `lowerFuncForClass(fn, r.className, pool)` (was `lowerFunc`, hardcoded
+  `java/lang/Object`), so slot 0 (`this`) is typed as the **record class** in the
+  StackMapTable; a `getfield <recClass>.field` on the receiver would otherwise
+  fail verification ("Type 'java/lang/Object' is not assignable").  This also
+  hardens protected-type entries, which share the same `lowerRecord` path.
+- **Call site** — already correct: `lowerMethodCall` emits `invokevirtual
+  <recordClass>.<method><desc>` from the registered `<class>#<method>` sig (no
+  change needed).
+
+**Test:** `lyric-compiler/jvm/record_method_jvm_self_test.l` (`@test_module`,
+`Std.*`-only) asserts runtime values under `java` for: a method reading its own
+field (`Counter(41).get() == 41`, `inc() == 11`); a method combining an argument
+with a field (`Accumulator(100).add(23) == 123`, two-arg `fma`); a method reading
+field(s) inside a larger expression (`Rect.area`/`perimeter`); and a method
+returning `Result[Int, String]` (`Ok`/`Err` arms), exercising J4 erased generics
+through an instance method.  8/8 under `java` via native `lyric test --target
+jvm`, wired into `ci.yml` beside the closure JVM self-test.  No regression on the
+existing JVM self-tests (silent-miscompile 8/8, auto-FFI 13/13, hash 3/3, bitwise
+10/10, j3_lowering 12/12, middle-end-passes 5/5, generic 13/13, closure 11/11) or
+the full F# Emitter suite (834 passed, 0 failed, 0 errored).
+
+**Known follow-up (out of this slice):** a record/top-level-`func` body whose
+`if`/`else` branches each carry an explicit `return` (rather than an `if/else`
+tail expression) emits a stray trailing void `return` after a non-void body
+(`endsWithReturn` does not see returns nested inside an `if`/`else`), tripping a
+`VerifyError` — a separate pre-existing JVM control-flow gap that reproduces
+identically for a top-level `func`, unrelated to record-method dispatch.  The
+Result-returning case in the self-test uses the `if/else` tail-expression form to
+exercise J4 generics without tripping it.

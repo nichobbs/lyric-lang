@@ -469,31 +469,44 @@ pub func lowerRecord(
   // (ClassFormatError "Duplicate method <init>" at load).
   val methods: List[LFunc] = newList()
 
-  // Lower any RMFunc members.  Lambdas inside a record method register their
-  // synthesised closure inner class into the package-shared accumulator
-  // (#2864) — the same `closureAcc`/`closureCounter` threaded through
-  // top-level `func` bodies — so `<pkg>$Lambda$<n>` is emitted into the
-  // package output and the lambda works end-to-end.
+  // Lower any RMFunc members as true non-static instance methods (slot 0 =
+  // `this`, flags 0x0001).  A record method call `rec.m(args)` lowers to
+  // `invokevirtual <recordClass>.m` at the call site (J3 `<class>#<method>`
+  // registry), so emitting them static (as a top-level `func`) makes the JVM
+  // reject the call ("Expecting non-static method") (#2865).  `lowerRecordMethod`
+  // sets `selfClass` so bare field references resolve through `this`, and erases
+  // the record's generic type params to `Object` in the descriptor (docs/44 J4).
+  // A body-less RMFunc signature is skipped (records carry no abstract methods).
+  // Lambdas inside a record method still register their synthesised closure
+  // inner class into the package-shared accumulator (#2864) via the threaded
+  // `closureAcc`/`closureCounter`.
   var mi = 0
   while mi < decl.members.count {
     match decl.members[mi] {
       case RMFunc(fn) -> {
-        methods.add(
-          lowerFunc(
-            fn,
-            pkgName,
-            className,
-            funcSigs,
-            caseFields,
-            ctors,
-            externTypes,
-            autoFfi,
-            moduleVals,
-            opaqueTypes,
-            closureAcc,
-            closureCounter
-          )
-        )
+        match fn.body {
+          case Some(b) -> {
+            methods.add(
+              lowerRecordMethod(
+                className,
+                fn,
+                b,
+                pkgName,
+                tps,
+                funcSigs,
+                caseFields,
+                ctors,
+                externTypes,
+                autoFfi,
+                moduleVals,
+                opaqueTypes,
+                closureAcc,
+                closureCounter
+              )
+            )
+          }
+          case None -> ()
+        }
       }
       case _ -> {
       }
@@ -623,6 +636,90 @@ func lowerProtectedMethod(
     }
   }
   LFunc(flags = flags, name = name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
+}
+
+// Build a record instance method (`RMFunc`) as a true non-static instance method
+// (slot 0 = `this`, flags 0x0001).  A record method call `rec.m(args)` lowers to
+// `invokevirtual <recordClass>.m` at the call site (`lowerMethodCall`, J3
+// `<class>#<method>` registry), so the method must be an instance method or the
+// JVM rejects the call ("Expecting non-static method") (#2865).  `selfClass` is
+// set (via `makeFuncCtxInstance`) so bare field references inside the body
+// resolve through `this` (`getfield`/`putfield`), mirroring protected-type
+// entries and `impl` methods.  Generic type params (`typeParams`) erase to
+// `Object` in param/return descriptors so the emitted method byte-matches the
+// registered `<class>#<method>` sig, applying the J4 erased-generics
+// boxing/checkcast that `coerceArgTo` already performs on the tail value.
+func lowerRecordMethod(
+  className: in String,
+  fn: in FunctionDecl,
+  body: in FunctionBody,
+  pkgName: in String,
+  typeParams: in List[String],
+  funcSigs: in Map[String, JvmFuncSig],
+  caseFields: in Map[String, List[JvmCaseField]],
+  ctors: in Map[String, String],
+  externTypes: in Map[String, String],
+  autoFfi: in AutoFfiCtx,
+  moduleVals: in Map[String, JvmType],
+  opaqueTypes: in Map[String, Bool],
+  closureAcc: in List[LClosure],
+  closureCounter: in List[Int],
+): LFunc {
+  val retTy = match fn.ret { case Some(te) -> typeExprToJvmErased(te, pkgName, typeParams); case None -> JVoid }
+  val ctxSelf = makeFuncCtxInstance(
+    pkgName,
+    className,
+    funcSigs,
+    caseFields,
+    ctors,
+    externTypes,
+    autoFfi,
+    retTy,
+    moduleVals,
+    opaqueTypes,
+    closureAcc,
+    closureCounter
+  )
+  val insns: List[LInsn] = newList()
+  val paramTypes: List[JvmType] = newList()
+  var pi = 0
+  while pi < fn.params.count {
+    val p = fn.params[pi]
+    val paramTy = typeExprToJvmErased(p.ty, pkgName, typeParams)
+    allocSlot(ctxSelf, p.name, paramTy)
+    paramTypes.add(paramTy)
+    pi = pi + 1
+  }
+  match body {
+    case FBBlock(block) -> {
+      match retTy {
+        case JVoid -> {
+          lowerBlock(ctxSelf, insns, block)
+          if not endsWithReturn(insns) {
+            emitReturn(insns, JVoid)
+          }
+        }
+        case _ -> {
+          val tailTy = lowerBlockExpr(ctxSelf, insns, block)
+          if not endsWithReturn(insns) {
+            match tailTy {
+              case JVoid -> emitReturn(insns, JVoid)
+              case _ -> {
+                coerceArgTo(insns, tailTy, retTy)
+                emitReturn(insns, retTy)
+              }
+            }
+          }
+        }
+      }
+    }
+    case FBExpr(e) -> {
+      val ty = lowerExpr(ctxSelf, insns, e)
+      coerceArgTo(insns, ty, retTy)
+      emitReturn(insns, retTy)
+    }
+  }
+  LFunc(flags = 0x0001, name = fn.name, params = paramTypes, ret = retTy, insns = insns, maxStack = 0, maxLocals = 0)
 }
 
 // Build a protected-type class as a record-shaped `LPRecord`: data fields plus
@@ -1279,11 +1376,14 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
         // too, so a method call on a record receiver resolves precisely (same
         // `()Object`-guess gap as protected entries).
         val recClass = owner + "/" + decl.name
+        // Generic type params erase to `Object` so the registered descriptor
+        // matches what `lowerRecordMethod` emits (#2865).
+        val recTps = genericParamNames(decl.generics)
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
             case RMFunc(fn) -> {
-              registerInstanceSig(into, recClass, fn.name, fn.params, fn.ret, owner)
+              registerInstanceSigErased(into, recClass, fn.name, fn.params, fn.ret, owner, recTps)
             }
             case _ -> ()
           }
@@ -1337,13 +1437,31 @@ func registerInstanceSig(
   retOpt: in Option[TypeExpr],
   owner: in String,
 ): Unit {
+  // Non-generic receiver: no type params to erase.
+  registerInstanceSigErased(into, className, methodName, params, retOpt, owner, newList())
+}
+
+// As `registerInstanceSig`, but a param/return whose type names one of
+// `typeParams` erases to `java/lang/Object` (JVM has no reified generics —
+// docs/44 M-1 / Q-J001).  Used for generic record instance methods so the
+// registered descriptor matches the emitted method (`lowerRecordMethod` erases
+// the same params), keeping the `invokevirtual` call site precise.
+func registerInstanceSigErased(
+  into: in Map[String, JvmFuncSig],
+  className: in String,
+  methodName: in String,
+  params: in List[Param],
+  retOpt: in Option[TypeExpr],
+  owner: in String,
+  typeParams: in List[String],
+): Unit {
   val ps: List[JvmType] = newList()
   var pi = 0
   while pi < params.count {
-    ps.add(typeExprToJvm(params[pi].ty, owner))
+    ps.add(typeExprToJvmErased(params[pi].ty, owner, typeParams))
     pi = pi + 1
   }
-  val ret = match retOpt { case Some(te) -> typeExprToJvm(te, owner); case None -> JVoid }
+  val ret = match retOpt { case Some(te) -> typeExprToJvmErased(te, owner, typeParams); case None -> JVoid }
   val key = className + "#" + methodName
   if not into.containsKey(key) {
     into.add(key, JvmFuncSig(owner = className, params = ps, ret = ret))

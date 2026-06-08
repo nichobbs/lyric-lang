@@ -1536,8 +1536,19 @@ pub func lowerRecord(r: in LRecord, pool: in Pool): ClassFile {
   methods.add(ctorMethod)
 
   // ── Emit explicit methods ──────────────────────────────────────────────────
+  // A non-static method (record instance method / protected-type entry) has
+  // `this` in slot 0; the StackMapTable must type slot 0 as the *record class*,
+  // not `java/lang/Object`, or a `getfield <recClass>.field` on the receiver
+  // fails verification ("Type 'java/lang/Object' is not assignable").  Route
+  // instance methods through `lowerFuncForClass` so slot 0 carries the precise
+  // receiver type; static methods keep the `java/lang/Object` frame (#2865).
   for fn in r.methods.toArray() {
-    methods.add(lowerFunc(fn, pool))
+    val isStatic = (fn.flags / 8) % 2 == 1
+    if isStatic {
+      methods.add(lowerFunc(fn, pool))
+    } else {
+      methods.add(lowerFuncForClass(fn, r.className, pool))
+    }
   }
 
   // ── Build FieldInfo list ───────────────────────────────────────────────────

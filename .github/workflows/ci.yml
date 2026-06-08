@@ -1475,6 +1475,32 @@ jobs:
             exit 0
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/closure_jvm_self_test.l
+      # Record instance-method self-test on the JVM target (#2865, epic #2663).
+      # Pins record instance-method DISPATCH on `--target jvm`: a method declared
+      # inside a `record` body (`RMFunc`) is emitted as a true non-static instance
+      # method (slot 0 = `this`, `getfield` field reads through the receiver), and
+      # a call `rec.m(args)` lowers to a precisely-typed `invokevirtual` via the
+      # J3 `<class>#<method>` registry.  Before this fix the method was emitted
+      # static while the caller used `invokevirtual` → JVM VerifyError "Expecting
+      # non-static method".  Asserts field-reading methods, argument-combining
+      # methods, field-in-expression reads, and a `Result[Int, String]`-returning
+      # method (J4 erased generics through an instance method) — all under `java`.
+      # Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: Record-method self-test on JVM (native lyric test --target jvm)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping record-method JVM self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping record-method JVM self-test"
+            exit 0
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/record_method_jvm_self_test.l
       # Match-literal + compound-assignment self-test — pins two self-hosted
       # MSIL backend correctness fixes from #1481 (epic #1470, Band 2): Float
       # literal *match* patterns now emit a real `ldc.r8; ceq` compare instead
