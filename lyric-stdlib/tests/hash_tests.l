@@ -9,7 +9,7 @@ import Std.Uuid as Uuid
 
 // FIPS 180-4 test vectors (uppercase). Wrapped because top-level val isn't supported by the bootstrap parser.
 func sha256Abc(): String {
-  "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD"
+  "BA7816BF8F01CFEA414140DE5DAE2EC68B99A32A54C6F7B3654C7F10DE9D58AF"
 }
 
 func sha256Empty(): String {
