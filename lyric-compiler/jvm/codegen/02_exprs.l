@@ -1679,8 +1679,18 @@ func lambdaCaptureNamesJvm(ctx: in FuncCtx, lparams: in List[LambdaParam], body:
   while i < refs.count {
     val nm = refs[i]
     if not nameInList(bound, nm) {
+      // A free name is captured by value when it is an enclosing local/param
+      // slot, OR a field of the enclosing receiver class (`selfClass`) — the
+      // latter occurs when the lambda lives in a record-method / protected-entry
+      // body and references a bare field name (#2864).  Both are snapshotted
+      // into the closure's ctor-bound capture fields.
       if ctx.slots.containsKey(nm) {
         addNameOnceJvm(caps, nm)
+      } else {
+        match selfFieldType(ctx, nm) {
+          case Some(_) -> addNameOnceJvm(caps, nm)
+          case None -> ()
+        }
       }
     }
     i = i + 1
@@ -1709,7 +1719,10 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
   var ci = 0
   while ci < caps.count {
     val cn = caps[ci]
-    val cty = match lookupType(ctx, cn) { case Some(t) -> t; case None -> JRef(className = "java/lang/Object") }
+    val cty = match lookupType(ctx, cn) {
+      case Some(t) -> t
+      case None -> match selfFieldType(ctx, cn) { case Some(ft) -> ft; case None -> JRef(className = "java/lang/Object") }
+    }
     captures.add(LClosureCapture(captureName = cn, captureType = cty))
     ci = ci + 1
   }
@@ -1794,7 +1807,18 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
   var ck = 0
   while ck < captures.count {
     val cap = captures[ck]
-    emitLoad(insns, match lookupSlot(ctx, cap.captureName) { case Some(s) -> s; case None -> 0 }, cap.captureType)
+    // Load the captured value to pass to the closure ctor.  A local/param is
+    // read from its slot; an enclosing-receiver field (`selfClass`) is read via
+    // `aload_0; getfield selfClass.<name>` (#2864 — record-method / protected-
+    // entry lambdas capturing a bare field).
+    match lookupSlot(ctx, cap.captureName) {
+      case Some(s) -> emitLoad(insns, s, cap.captureType)
+      case None -> {
+        val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
+        insns.add(LAload(slot = 0))
+        insns.add(LGetfield(owner = selfCls, name = cap.captureName, t = cap.captureType))
+      }
+    }
     ck = ck + 1
   }
   val ctorPs: List[JvmType] = newList()

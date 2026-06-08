@@ -433,6 +433,8 @@ pub func lowerRecord(
   autoFfi: in AutoFfiCtx,
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
+  closureAcc: in List[LClosure],
+  closureCounter: in List[Int],
 ): LRecord {
   val className = pkgName + "/" + decl.name
   // Generic type params erase to `Object` (docs/44 M-1 / Q-J001) so a `T`-typed
@@ -467,11 +469,11 @@ pub func lowerRecord(
   // (ClassFormatError "Duplicate method <init>" at load).
   val methods: List[LFunc] = newList()
 
-  // Lower any RMFunc members.  Lambdas inside a record method are outside the
-  // J2b closure slice (#2665) — a throwaway accumulator keeps `lowerFunc` total;
-  // an `ELambda` here still panics in codegen (unchanged from pre-J2b).
-  val recClosureAcc: List[LClosure] = newList()
-  val recClosureCounter: List[Int] = newList()
+  // Lower any RMFunc members.  Lambdas inside a record method register their
+  // synthesised closure inner class into the package-shared accumulator
+  // (#2864) — the same `closureAcc`/`closureCounter` threaded through
+  // top-level `func` bodies — so `<pkg>$Lambda$<n>` is emitted into the
+  // package output and the lambda works end-to-end.
   var mi = 0
   while mi < decl.members.count {
     match decl.members[mi] {
@@ -488,8 +490,8 @@ pub func lowerRecord(
             autoFfi,
             moduleVals,
             opaqueTypes,
-            recClosureAcc,
-            recClosureCounter
+            closureAcc,
+            closureCounter
           )
         )
       }
@@ -559,15 +561,14 @@ func lowerProtectedMethod(
   autoFfi: in AutoFfiCtx,
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
+  closureAcc: in List[LClosure],
+  closureCounter: in List[Int],
 ): LFunc {
   val retTy = match retOpt { case Some(te) -> typeExprToJvm(te, pkgName); case None -> JVoid }
-  // Lambdas inside a protected-type entry/helper are not part of the J2b
-  // closure slice (#2665): the shared package accumulator is threaded only
-  // through the top-level `func` / `impl` / `interface` paths.  A throwaway
-  // accumulator keeps `makeFuncCtxInstance` total here; an `ELambda` in this
-  // position still panics in codegen (unchanged from pre-J2b).
-  val protClosureAcc: List[LClosure] = newList()
-  val protClosureCounter: List[Int] = newList()
+  // Lambdas inside a protected-type entry/helper register their synthesised
+  // closure inner class into the package-shared accumulator (#2864), so an
+  // `ELambda` here emits `<pkg>$Lambda$<n>` into the package output and works
+  // end-to-end — exactly as in a top-level `func` body.
   val ctxSelf = makeFuncCtxInstance(
     pkgName,
     className,
@@ -579,8 +580,8 @@ func lowerProtectedMethod(
     retTy,
     moduleVals,
     opaqueTypes,
-    protClosureAcc,
-    protClosureCounter
+    closureAcc,
+    closureCounter
   )
   val insns: List[LInsn] = newList()
   val paramTypes: List[JvmType] = newList()
@@ -642,6 +643,8 @@ func buildProtected(
   autoFfi: in AutoFfiCtx,
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
+  closureAcc: in List[LClosure],
+  closureCounter: in List[Int],
 ): LPackageItem {
   val className = pkgName + "/" + decl.name
   val fields: List[LField] = newList()
@@ -672,7 +675,9 @@ func buildProtected(
             externTypes,
             autoFfi,
             moduleVals,
-            opaqueTypes
+            opaqueTypes,
+            closureAcc,
+            closureCounter
           )
         )
       }
@@ -694,7 +699,9 @@ func buildProtected(
                 externTypes,
                 autoFfi,
                 moduleVals,
-                opaqueTypes
+                opaqueTypes,
+                closureAcc,
+                closureCounter
               )
             )
           }
@@ -726,6 +733,8 @@ func buildWire(
   autoFfi: in AutoFfiCtx,
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
+  closureAcc: in List[LClosure],
+  closureCounter: in List[Int],
 ): LWire {
   val className = pkgName + "/" + decl.name
   val bindings: List[LWireBinding] = newList()
@@ -750,6 +759,8 @@ func buildWire(
           autoFfi,
           moduleVals,
           opaqueTypes,
+          closureAcc,
+          closureCounter,
           initInsns,
           init,
           bty
@@ -773,6 +784,8 @@ func buildWire(
           autoFfi,
           moduleVals,
           opaqueTypes,
+          closureAcc,
+          closureCounter,
           initInsns,
           init,
           bty
@@ -805,6 +818,8 @@ func lowerWireBindingInit(
   autoFfi: in AutoFfiCtx,
   moduleVals: in Map[String, JvmType],
   opaqueTypes: in Map[String, Bool],
+  closureAcc: in List[LClosure],
+  closureCounter: in List[Int],
   insns: in List[LInsn],
   init: in Expr,
   expectedTy: in JvmType,
@@ -823,10 +838,9 @@ func lowerWireBindingInit(
     val fty = match mapGet(bindingTypes, refName) { case Some(t) -> t; case None -> JRef(className = "java/lang/Object") }
     insns.add(LGetstatic(owner = className, name = refName, t = fty))
   } else {
-    // Wire-binding initialisers are outside the J2b closure slice (#2665) — a
-    // throwaway accumulator keeps `makeFuncCtx` total.
-    val wireClosureAcc: List[LClosure] = newList()
-    val wireClosureCounter: List[Int] = newList()
+    // A lambda in a wire-binding initialiser registers its synthesised closure
+    // inner class into the package-shared accumulator (#2864), so it emits
+    // `<pkg>$Lambda$<n>` into the package output and works end-to-end.
     val ctx = makeFuncCtx(
       pkgName,
       className,
@@ -838,8 +852,8 @@ func lowerWireBindingInit(
       expectedTy,
       moduleVals,
       opaqueTypes,
-      wireClosureAcc,
-      wireClosureCounter
+      closureAcc,
+      closureCounter
     )
     val ty = lowerExpr(ctx, insns, init)
     coerceArgTo(insns, ty, expectedTy)
@@ -1852,7 +1866,19 @@ pub func codegenPackageWithSigs(
           }
           ei = ei + 1
         }
-        val baseRec = lowerRecord(decl, pkgName, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes)
+        val baseRec = lowerRecord(
+          decl,
+          pkgName,
+          funcSigs,
+          caseFields,
+          ctors,
+          externTypes,
+          autoFfi,
+          moduleVals,
+          opaqueTypes,
+          closureAcc,
+          closureCounter
+        )
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
           mergedMethods.add(fn)
@@ -1894,7 +1920,19 @@ pub func codegenPackageWithSigs(
           }
           ei = ei + 1
         }
-        val baseRec = lowerRecord(decl, pkgName, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes)
+        val baseRec = lowerRecord(
+          decl,
+          pkgName,
+          funcSigs,
+          caseFields,
+          ctors,
+          externTypes,
+          autoFfi,
+          moduleVals,
+          opaqueTypes,
+          closureAcc,
+          closureCounter
+        )
         val mergedMethods: List[LFunc] = newList()
         for fn in baseRec.methods.toArray() {
           mergedMethods.add(fn)
@@ -1980,7 +2018,21 @@ pub func codegenPackageWithSigs(
         // references resolve through `selfClass` (slot 0 = `this`).  Real
         // ReentrantLock guarding is a documented cross-target gap — MSIL also
         // emits protected types as plain records.
-        items.add(buildProtected(decl, pkgName, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes))
+        items.add(
+          buildProtected(
+            decl,
+            pkgName,
+            funcSigs,
+            caseFields,
+            ctors,
+            externTypes,
+            autoFfi,
+            moduleVals,
+            opaqueTypes,
+            closureAcc,
+            closureCounter
+          )
+        )
       }
       case IInterface(decl) -> {
         // Emit a JVM interface ClassFile: one abstract method per IMSig member.
@@ -2040,7 +2092,21 @@ pub func codegenPackageWithSigs(
         // the bindings in declaration order, and a public static accessor per
         // exposed binding.
         items.add(
-          LPWire(w = buildWire(decl, pkgName, funcSigs, caseFields, ctors, externTypes, autoFfi, moduleVals, opaqueTypes))
+          LPWire(
+            w = buildWire(
+              decl,
+              pkgName,
+              funcSigs,
+              caseFields,
+              ctors,
+              externTypes,
+              autoFfi,
+              moduleVals,
+              opaqueTypes,
+              closureAcc,
+              closureCounter
+            )
+          )
         )
       }
       case IScopeKind(_) -> {

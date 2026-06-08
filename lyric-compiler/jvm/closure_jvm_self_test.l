@@ -53,6 +53,31 @@ func applyRes(f: in (Int) -> Result[Int, String], x: in Int): Result[Int, String
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Lambda inside an instance-method (record-shaped) body that captures a field
+// (#2864).  A protected-type lowers to a record-shaped class whose `entry`
+// methods are instance methods (slot 0 = `this`); a lambda in the body captures
+// the field `amount` by value.  Before the #2864 fix the `<pkg>$Lambda$<n>`
+// closure class for such a lambda was never emitted — the protected-entry body
+// lowered through a throwaway closure accumulator that the package drain never
+// saw, so a reference to a missing class reached `java` at runtime (a silent
+// miscompile, a regression in failure visibility — pre-J2b these panicked).
+//
+// This exercises the same instance-method + field-capture path as a record
+// method.  A bare `record { func … }` instance method cannot be driven here:
+// invoking a record instance method on `--target jvm` is independently broken
+// (`lowerFunc` emits the method as static while the caller uses `invokevirtual`
+// → "Expecting non-static method"), a pre-existing JVM record-method-dispatch
+// gap unrelated to closures (docs/44).  The protected-entry form covers the
+// closure-emission fix end-to-end without tripping that orthogonal gap.
+protected type Adder {
+  amount: Int
+  entry bump(x: in Int): Int {
+    val f: (Int) -> Int = { y: Int -> y + amount }
+    return f(x)
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Non-capturing lambda, called via its value.
 // ─────────────────────────────────────────────────────────────────────────────
 test "non-capturing lambda value calls correctly" {
@@ -126,4 +151,12 @@ test "capturing lambda over a String val" {
   val prefix = "hi-"
   val withPrefix: (String) -> String = { s: String -> prefix + s }
   assertEqual(withPrefix("there"), "hi-there", "withPrefix(there) with captured prefix")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lambda in an instance-method (protected-entry) body capturing a field
+// (#2864) — closure class must be emitted, not silently dropped.
+test "lambda inside protected entry captures field" {
+  val a = Adder(amount = 10)
+  assertEqualInt(a.bump(5), 15, "Adder(10).bump(5) -> lambda y+10 applied to 5 == 15")
 }

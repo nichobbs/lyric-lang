@@ -23061,17 +23061,38 @@ value (`f(2) == 3`); a capturing lambda over one and over multiple `val`s
 (`g(5) == 15`, `h(1) == 104`); a lambda passed to a higher-order function
 (plain, captured, and multi-argument); a lambda returning `Result[Int, String]`
 (`Ok` and `Err` arms, plus through a HOF) exercising J4 erased generics through
-the closure ABI; and a captured-`String` lambda.  10/10 under `java` via native
-`lyric test --target jvm`, wired into `ci.yml` beside the J4 generic JVM
-self-test.  No regression on the existing JVM self-tests (silent-miscompile 8/8,
-auto-FFI 13/13, hash 3/3, bitwise 10/10, j3_lowering 12/12, middle-end-passes
-5/5, generic 13/13) or the full F# Emitter suite (834 passed, 0 failed, 0
-errored).
+the closure ABI; a captured-`String` lambda; and a lambda inside an
+instance-method (protected-type `entry`) body that captures a field by value
+(#2864).  11/11 under `java` via native `lyric test --target jvm`, wired into
+`ci.yml` beside the J4 generic JVM self-test.  No regression on the existing JVM
+self-tests (silent-miscompile 8/8, auto-FFI 13/13, hash 3/3, bitwise 10/10,
+j3_lowering 12/12, middle-end-passes 5/5, generic 13/13) or the full F# Emitter
+suite (834 passed, 0 failed, 0 errored).
+
+**#2864 fix — lambdas in record / protected / wire bodies no longer silently
+dropped:** the original J2b slice threaded the package closure accumulator only
+through top-level `func` / module-`val` / `impl` / `interface` bodies; an
+`ELambda` inside a record-method (`RMFunc`), protected-type entry/helper, or
+wire-binding initialiser body lowered through a **throwaway** accumulator the
+package drain never saw, so the `<pkg>$Lambda$<n>` class was never emitted —
+yielding a reference to a missing class at runtime (a silent miscompile, a
+regression in failure visibility; pre-J2b these panicked).  Fixed by threading
+the real package `closureAcc` / `closureCounter` through `lowerRecord`,
+`buildProtected` / `lowerProtectedMethod`, and `buildWire` /
+`lowerWireBindingInit` (`codegen/06_items.l`), so closures from those bodies are
+drained into `LPClosureClass` items exactly as for a top-level `func`.  A lambda
+in an instance-method body that captures a bare **field** (e.g. a protected
+entry referencing `amount`) is now captured by value: `lambdaCaptureNamesJvm`
+and `lowerLambda` (`codegen/02_exprs.l`) fall back to `selfFieldType` for free
+names that are receiver fields, reading them via `aload_0; getfield
+selfClass.<name>` at construction.
 
 **Known follow-up (out of this slice):** by-reference `var` capture (mutation
 after capture reflected in the closure) needs heap-cell hoisting like the MSIL
-`#1479 v2` path and is currently snapshotted by value; lambdas inside record /
-protected-type / wire-binding bodies still route through a throwaway accumulator
-(an `ELambda` there is rare and out of the acceptance set); a returning-lambda
+`#1479 v2` path and is currently snapshotted by value; a returning-lambda
 (lambda whose result is itself a lambda) and deeply-nested closures are
-untested.
+untested.  Note: invoking a **record** instance method on `--target jvm` is a
+separate pre-existing gap (`lowerFunc` emits the method as static while the
+caller uses `invokevirtual` → "Expecting non-static method"), unrelated to
+closures; the #2864 test uses the protected-entry form, which lowers as a true
+instance method and exercises the same field-capture closure path.
