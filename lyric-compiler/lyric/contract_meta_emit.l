@@ -21,15 +21,12 @@ import Std.Json
 import Std.Encoding
 import Lyric.ContractMeta as Meta
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. JSON building helpers (minimal serializer for contract metadata)
 // ─────────────────────────────────────────────────────────────────────────────
-
 // Build a JSON string by concatenating parts. No actual JSON library yet,
 // so we hand-construct the structure. This is intentionally simple and
 // focused on the contract metadata shape only.
-
 func jsonString(s: in String): String {
   // Use Std.Json.encodeString for proper JSON string escaping
   Std.Json.encodeString(s)
@@ -81,7 +78,6 @@ func jsonObject(fields: in List[(String, String)]): String {
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. ContractParam JSON serialization
 // ─────────────────────────────────────────────────────────────────────────────
-
 func emitParam(p: in Meta.ContractParam): String {
   val fields: List[(String, String)] = newList()
   fields.add(("name", jsonString(p.name)))
@@ -100,7 +96,6 @@ func emitParams(params: in List[Meta.ContractParam]): String {
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. ContractDecl JSON serialization
 // ─────────────────────────────────────────────────────────────────────────────
-
 func emitDecl(d: in Meta.ContractDecl): String {
   val fields: List[(String, String)] = newList()
 
@@ -126,10 +121,7 @@ func emitDecl(d: in Meta.ContractDecl): String {
   fields.add(("ensuresClauses", jsonArray(ensuresItems)))
 
   // Body (always emit field for consistent schema)
-  val bodyJson = match d.body {
-    case Some(b) -> jsonString(b)
-    case None -> "null"
-  }
+  val bodyJson = match d.body { case Some(b) -> jsonString(b); case None -> "null" }
   fields.add(("body", bodyJson))
 
   // Parameters
@@ -149,7 +141,6 @@ func emitDecls(decls: in List[Meta.ContractDecl]): String {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. ContractDependency JSON serialization
 // ─────────────────────────────────────────────────────────────────────────────
-
 func emitDependency(dep: in Meta.ContractDependency): String {
   val fields: List[(String, String)] = newList()
   fields.add(("packageName", jsonString(dep.packageName)))
@@ -169,11 +160,7 @@ func emitDependencies(deps: in List[Meta.ContractDependency]): String {
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Contract serialization with SHA-256 integrity hashing
 // ─────────────────────────────────────────────────────────────────────────────
-
-func emitContractJson(
-  contract: in Meta.Contract,
-  contractHash: in String
-): String {
+func emitContractJson(contract: in Meta.Contract, contractHash: in String): String {
   val fields: List[(String, String)] = newList()
   fields.add(("packageName", jsonString(contract.packageName)))
   fields.add(("version", jsonString(contract.version)))
@@ -188,7 +175,6 @@ func emitContractJson(
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. Public entry point: two-pass hashing protocol
 // ─────────────────────────────────────────────────────────────────────────────
-
 /// Emit contract metadata v3 with SHA-256 integrity hashing.
 ///
 /// Two-pass protocol:
