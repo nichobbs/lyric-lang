@@ -12026,7 +12026,35 @@ func typeExprToMsilGenSig(te: in TypeExpr, pkgName: in String, generics: in List
   }
 }
 
-pub func lowerRecordMsil(decl: in RecordDecl, pkgName: in String): MRecord {
+// Field type for a record/union case field on the PRODUCER side (the TypeDef
+// FieldDef and the `.ctor` parameter, both emitted by `lowerMRecord` /
+// `lowerMUnion`).
+//
+// For a NON-generic enclosing type, a `List[T]`/`Map[..]`/`Option[..]` field is
+// DEFINED with the ctx-aware concrete encoding (`typeExprToMsilCtx` →
+// `List`1<T>`), matching the F# emitter and the cross-package field/ctor
+// REFERENCE (`registerRestoredRecord{Ctor,Fields}`, both `…WithCtx`).  Without
+// this the self-hosted producer erased the field to `object` and a consumer in
+// another assembly faulted with MissingField/MissingMethod (D-progress-469).
+//
+// For a GENERIC enclosing type the whole type stays on the context-free
+// `typeExprToMsilG` path: a bare `value: T` lowers to `VAR(n)`, and — crucially
+// — a CONCRETE field (`List[Int]`) is erased to `object`, exactly matching the
+// F# generic-ctor convention and every in-bundle generic REF site
+// (`genericCtorParams`, `fieldSigBytes`, the stdlib case-ctor at §registerStdlibTypeItem),
+// all of which are gated on the enclosing type being generic and encode
+// concrete fields as `object`.  Concretising a generic type's concrete field
+// here (the earlier per-field guard) diverged the DEF from those REFs and
+// produced an InvalidProgramException at construction.
+func recordFieldMsilType(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, generics: in List[String]): MsilType {
+  if generics.count > 0 {
+    typeExprToMsilG(te, pkgName, generics)
+  } else {
+    typeExprToMsilCtx(cctx, te, pkgName)
+  }
+}
+
+pub func lowerRecordMsil(cctx: in CodegenCtx, decl: in RecordDecl, pkgName: in String): MRecord {
   val className = pkgName + "." + decl.name
   val generics = genericNamesOf(decl.generics)
 
@@ -12044,7 +12072,7 @@ pub func lowerRecordMsil(decl: in RecordDecl, pkgName: in String): MRecord {
             // Mirrors FDA_PUBLIC re-exported by Msil.Lowering.
             flags = 0x0006,
             name = f.name,
-            fieldType = typeExprToMsilG(f.ty, pkgName, generics)
+            fieldType = recordFieldMsilType(cctx, f.ty, pkgName, generics)
           )
         )
       }
@@ -12069,7 +12097,7 @@ pub func lowerRecordMsil(decl: in RecordDecl, pkgName: in String): MRecord {
 // ─────────────────────────────────────────────────────────────────────────────
 // §10. Union lowering.
 // ─────────────────────────────────────────────────────────────────────────────
-pub func lowerUnionMsil(decl: in UnionDecl, pkgName: in String): MUnion {
+pub func lowerUnionMsil(cctx: in CodegenCtx, decl: in UnionDecl, pkgName: in String): MUnion {
   val baseName = pkgName + "." + decl.name
   val generics = genericNamesOf(decl.generics)
 
@@ -12084,11 +12112,15 @@ pub func lowerUnionMsil(decl: in UnionDecl, pkgName: in String): MUnion {
     while fi < c.fields.count {
       match c.fields[fi] {
         case UFNamed(name, ty, _) -> {
-          caseFields.add(MField(flags = FDA_PUBLIC, name = name, fieldType = typeExprToMsilG(ty, pkgName, generics)))
+          caseFields.add(MField(flags = FDA_PUBLIC, name = name, fieldType = recordFieldMsilType(cctx, ty, pkgName, generics)))
         }
         case UFPos(ty, _) -> {
           caseFields.add(
-            MField(flags = FDA_PUBLIC, name = "field" + toString(fi), fieldType = typeExprToMsilG(ty, pkgName, generics))
+            MField(
+              flags = FDA_PUBLIC,
+              name = "field" + toString(fi),
+              fieldType = recordFieldMsilType(cctx, ty, pkgName, generics)
+            )
           )
         }
       }
@@ -14783,13 +14815,13 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
     val item = weavedFile.items[i]
     match item.kind {
       case IRecord(decl) -> {
-        val baseRec = lowerRecordMsil(decl, pkgName)
+        val baseRec = lowerRecordMsil(cctx, decl, pkgName)
         val rec0 = injectImplMethodsIntoRecord(cctx, baseRec, pkgName + "." + decl.name)
         val rec = appendDeriveOverridesMsil(cctx, rec0, pkgName + "." + decl.name, item.annotations)
         items.add(MPRecord(rec = rec))
       }
       case IExposedRec(decl) -> {
-        val baseRec = lowerRecordMsil(decl, pkgName)
+        val baseRec = lowerRecordMsil(cctx, decl, pkgName)
         val rec0 = injectImplMethodsIntoRecord(cctx, baseRec, pkgName + "." + decl.name)
         val rec = appendDeriveOverridesMsil(cctx, rec0, pkgName + "." + decl.name, item.annotations)
         items.add(MPRecord(rec = rec))
@@ -14816,7 +14848,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
         }
       }
       case IUnion(decl) -> {
-        items.add(MPUnion(u = lowerUnionMsil(decl, pkgName)))
+        items.add(MPUnion(u = lowerUnionMsil(cctx, decl, pkgName)))
       }
       case IDistinctType(decl) -> {
         val inner = typeExprToMsil(decl.underlying, pkgName)

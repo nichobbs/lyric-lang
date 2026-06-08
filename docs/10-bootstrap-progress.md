@@ -23214,3 +23214,37 @@ beside the closure JVM self-test.  No regression on the existing JVM self-tests
 (silent-miscompile 8/8, auto-FFI 13/13, hash 3/3, bitwise 10/10, j3_lowering
 12/12, middle-end-passes 5/5, generic 13/13, closure 11/11) or the full F# Emitter
 suite (834 passed, 0 failed, 0 errored).
+
+### D-progress-477 — self-hosted producer emits concrete record/union field types for non-generic types (D-progress-469 facet 1)
+
+**Status:** Shipped — the self-hosted MSIL producer (`lowerRecordMsil` /
+`lowerUnionMsil` in `lyric-compiler/msil/codegen.l`) now DEFINES a
+`List[T]` / `Map[..]` / `Option[..]` field of a **non-generic** record or
+union case with the ctx-aware concrete encoding (`typeExprToMsilCtx` →
+`List`1<T>`) instead of erasing it to `object`.  This matches the F# emitter and
+the cross-package field/ctor REFERENCE (`registerRestoredRecordCtor` /
+`registerRestoredRecordFields`, both `…WithCtx`).  Before the fix a
+self-hosted-built record's reference-typed field did not bind from another
+assembly (MissingField/MissingMethod), which kept self-hosted-built packages
+that expose such records off the shippable set (D-progress-469).
+
+**Why non-generic only.** The new helper `recordFieldMsilType` gates the
+concrete encoding on `generics.count == 0`.  A **generic** enclosing type stays
+entirely on the context-free `typeExprToMsilG` path: a bare `value: T` lowers to
+`VAR(n)`, and — crucially — a concrete field (`List[Int]`) is erased to `object`,
+exactly matching the F# generic-ctor convention and every in-bundle generic
+REFERENCE site (`genericCtorParams`, `fieldSigBytes`, the stdlib case-ctor in
+`registerStdlibTypeItem`), all of which are gated on the enclosing type being
+generic and encode concrete fields as `object`.  An earlier per-field guard
+(reverted) concretised a generic type's concrete field, diverging the DEF from
+those REFs and producing an InvalidProgramException at construction in the
+ecosystem suites.  Gating on the whole type instead of the field is the minimal
+correct fix and touches no REFERENCE site.
+
+**Verification:** cross-package non-generic record with `List[Int]` /
+`List[Item]` / `String` fields binds and reads across a real assembly boundary
+(`3 1 hi`); in-bundle generics self-test 20/20 (generic types unchanged);
+weaver self-test 18/18 (F#-built records); ecosystem `lyric test` suites
+`lyric-auth` 32/32 and `lyric-session` 11/11 (the suites that regressed under
+the per-field guard); emitter (834) + CLI (84) F# suites green; `make lyric`
+clean.
