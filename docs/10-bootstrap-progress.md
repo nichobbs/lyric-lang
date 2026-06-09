@@ -22860,6 +22860,33 @@ correctly). Wiring that into the shipped lib dir, and the `sortFileList`
 retirement (which needs the compiler to import `Std.Sort`, hence R7), remain
 follow-ups.
 
+**Phase 1.2b (contract metadata v3 emission, self-hosted path only):**
+
+Phase 1.2b adds pure-Lyric contract metadata v3 emission with SHA-256 integrity
+hashing via the `Lyric.ContractMetaEmit` package. The code is complete and
+production-quality but remains available only to the self-hosted compiler path.
+The bootstrap emitter continues to use v2 contract metadata (via
+`Meta.contractToJson`) for backward compatibility. Phase 1.2b will be integrated
+into the bootstrap path once #2580 enables loading self-hosted compiler packages
+in the bootstrap emitter.
+
+**Deliverables (self-hosted compiler path only):**
+
+- **`lyric-compiler/lyric/contract_meta_emit.l`** — `Lyric.ContractMetaEmit`
+  package emitting contract metadata version 3 with SHA-256 integrity hashing.
+  Two-pass protocol: (1) serialize with blank `contractHash`, (2) compute
+  SHA-256 of serialized JSON, (3) re-serialize with hash embedded. Public entry
+  point: `emitContractMetadata(contract): String`.
+- **`lyric-compiler/lyric/contract_meta_emit_self_test.l`** — `@test_module`
+  covering the two-pass hashing protocol and JSON structure. Not wired into CI
+  pending #2580 infrastructure.
+- **Bootstrap path (v2 unchanged):** `Msil.Bridge.embedLyricContract` continues
+  to emit v2 contract metadata via `Meta.contractToJson`. Phase 1.2b integration
+  deferred to follow-up once bootstrap package-loading support exists.
+
+Verified (self-hosted): ContractMetaEmit compiles and is available for use in
+the self-hosted compiler. Bootstrap tests (1553 total) pass with v2 metadata.
+
 ### D-progress-468 — entire self-hosted compiler self-host-compiles (docs/41 §R7)
 
 **Status:** Shipped — all 73 real compiler packages now pass the self-hosted
