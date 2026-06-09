@@ -4034,7 +4034,6 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         insns.add(MLeave(label = lgctx.leaveLabel))
         // Resume label: next MoveNextAsync call dispatches here via state switch
         insns.add(MLabel(id = resumeLabel))
-        MVoid
       } else if fctx.yieldSlots.count > 0 {
         val collSlot = fctx.yieldSlots[0]
         insns.add(MLdloc(slot = collSlot - fctx.paramCount))
@@ -4045,10 +4044,10 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         val eTy = lowerExprMsil(cctx, fctx, insns, inner)
         boxIfNeededMsil(cctx, insns, eTy)
         insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
-        MVoid
       } else {
         panic("Msil.Codegen: yield outside async generator — front-end should have rejected this")
       }
+      MVoid
     }
 
     case ESpawn(inner) -> {
