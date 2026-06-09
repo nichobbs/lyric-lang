@@ -1760,3 +1760,9 @@ test "long in int ctor field rejected" {
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0104"), "Long does not narrow to Int in ctor field")
 }
+
+test "slice literal in list ctor field ok" {
+  val src = "package P\nimport Std.Collections\nrecord R { items: List[Int] }\nfunc f(): R { R(items = [1, 2, 3]) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "slice[Int] satisfies List[Int] in ctor field")
+}

@@ -2468,6 +2468,14 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
     case None -> {
     }
   }
+  // slice[T] satisfies List[T]: the emitter treats the two as the same
+  // runtime type; `[...]` literals type as TySlice but may be used wherever
+  // a List[T] field or parameter is expected.
+  match argTy {
+    case TySlice(elemTy) -> match paramTy { case TyUser(_, pName, pArgs) -> { if pName == "List" and pArgs.count == 1 and typeEquiv(pArgs[0], elemTy) { return true } }; case _ -> {  } }
+    case _ -> {
+    }
+  }
   match typeIdOfType(paramTy) {
     case Some(ifaceId) -> match typeIdOfType(argTy) { case Some(argId) -> symTableTypeImplements(tbl, argId, ifaceId); case None -> false }
     case None -> false
