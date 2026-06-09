@@ -3577,15 +3577,17 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
     // via emitProject so each package declaration is a separate compilation
     // unit — concatenating sources into a single-file emit is invalid when
     // the project contains more than one `package` declaration.
+    // Add the test package FIRST so its synthesized main() is recorded as the
+    // entry point by the first-wins semantics in addPackageTokens (#2885).
     val allPkgs: List[ProjectPackage] = newList()
+    val testSrcs: List[String] = newList()
+    testSrcs.add(rewritten)
+    allPkgs.add(ProjectPackage(name = testEntry.name, sources = testSrcs))
     var si = 0
     while si < libPkgs.count {
       allPkgs.add(libPkgs[si])
       si += 1
     }
-    val testSrcs: List[String] = newList()
-    testSrcs.add(rewritten)
-    allPkgs.add(ProjectPackage(name = testEntry.name, sources = testSrcs))
     val asmStem = stemOf(Path.basename(testEntry.path), 2)
     val outPath = Path.join(testOutDir, asmStem + ".dll")
 

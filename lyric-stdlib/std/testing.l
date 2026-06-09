@@ -7,6 +7,7 @@
 //!   * `assertEqualInt(actual, expected, label)` — integer variant.
 //!   * `assertEqualLong(actual, expected, label)` — long variant.
 //!   * `assertTrue(cond, label)` — generic predicate assertion.
+//!   * `assertFalse(cond, label)` — panics when condition is true.
 //!   * `assertPanics(label, fn)` — runs `fn()` inside a `try` and
 //!     asserts that it panicked (raised a `Bug`); fails the test
 //!     when `fn()` returns normally.
@@ -76,6 +77,15 @@ pub func assertTrue(cond: in Bool, label: in String): Unit {
     ()
   } else {
     panic("assertTrue '" + label + "' failed")
+  }
+}
+
+/// Panic when `cond` is true.  Companion to `assertTrue`, useful
+/// for asserting that a condition is NOT satisfied.
+@stable(since = "1.0")
+pub func assertFalse(cond: in Bool, label: in String): Unit {
+  if cond {
+    panic("assertFalse '" + label + "' failed")
   }
 }
 
