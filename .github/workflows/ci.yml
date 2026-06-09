@@ -3248,13 +3248,9 @@ jobs:
             });
 
             // Check for merge conflicts (mergeable_state: dirty)
+            // Only skip if there are actual conflicts; 'unknown' means GitHub is still computing
             if (freshPr.data.mergeable_state === 'dirty') {
               console.log(`[auto-promote] PR #${prNumber}: ⚠ Merge conflicts detected — skipping promotion`);
-              return;
-            }
-
-            if (freshPr.data.mergeable_state === 'unknown') {
-              console.log(`[auto-promote] PR #${prNumber}: ⏳ Merge status unknown, will not promote`);
               return;
             }
 
