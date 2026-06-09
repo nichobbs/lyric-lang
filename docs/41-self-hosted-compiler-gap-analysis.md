@@ -495,49 +495,50 @@ section wins.
 | H21 — BCL stubs | `mapGet`→`Option`, real `Map.remove` | `List.Contains`→false, `removeAt`→no-op |
 | M9 — `pub use Foo.bar` | `isPubUse` flag + fmt rendering | item-level AST node + checker/codegen |
 
-### Still OPEN — the v1.0 gating list (unchanged in substance)
+### Still OPEN — the v1.0 gating list (updated 2026-06-09)
 
-- **Band 1 (front-end soundness, CRITICAL):** C1, C2, C10, C11, H14, H15, H16,
-  M6 — and the front-end half of C13. The type checker is still an advisory,
-  error-tolerant inference pass (`TyError` universal unifier), not a gatekeeper.
-- **Band 2 (backend correctness, CRITICAL):** C3 (`?` no-op, #1475), all of
-  **#1481** (items 1–2: Float/Long literal match compares + compound-assignment
-  operator, D-progress-370; items 3–4: break/continue-across-`try` → `leave`,
-  `List.contains`/`removeAt` real calls, unknown-method fail-loud, D-progress-371),
-  H17, C7 (`defer` now runs at scope exit, #1477), H1 (`==`/`Map`-key structural
-  equality, #1480/#1837), and the try/catch-as-value-expression invalid-IL gap
-  (#1823) are now fixed; M7 is **stale** (loop invariants are checked via the
-  elaborator's `assert` lowering; `SItem` is never produced by the parser).
-  **H20 (capturing closures)** is now RESOLVED (#1479 v1+v2): capturing an
-  **immutable** binding works by value (v1) — boxed into an `object[]` bound as
-  the delegate's closed target, read back in the lifted body from a leading
-  `object[] __caps` parameter; capturing a **`var`** works by reference (v2) —
-  the `var` is hoisted to a shared one-element `List[object]` heap cell, so
-  reassignments are visible across the closure boundary in both directions
-  (verified with mutate-inside-observe-outside, external-mutate-observe-inside,
-  loop-variable capture, String `+=`, and escaping closures returned from their
-  defining function). Multi-level nesting (a lambda capturing an enclosing
-  *lambda*'s locals) remains tracked in #1479.
-  Invoking a function-typed value `f()` (#1877) is **fixed** for zero-argument
-  lambdas via a uniform `Func` ABI — thunks, suppliers, and `() -> Unit`
-  callbacks run correctly through higher-order functions. **Parameter-taking**
-  lambdas passed directly to a typed `(…) -> R` parameter now also work (#1939):
-  their boxed arguments are unboxed on load, with the param type taken from an
-  explicit annotation or **propagated from the higher-order function's
-  signature** at the call site. A param-using lambda with neither source (e.g.
-  one stored in a `val`) still fails loud. Lambdas in a `@test_module` still
-  produce no TAP output (#1854).
-- **Band 3 (async, CRITICAL):** C4, C5 — no `IAsyncStateMachine` / lazy
-  `IAsyncEnumerable` in `lyric-compiler/msil/`. `await`/`spawn`/`async func`
-  still lower synchronously and silently miscompile on the default self-hosted
-  `--target dotnet` path. Largest single remaining port.
-- **Band 4 (feature completion, HIGH):** C8 (generic types erased), H2
-  (`@projectable` twins), H3 (range-subtype validation), H10 (custom
-  `@generate` never invoked), H11 (`old()`/`forall`/`exists` panic), M3
-  (`config{}` no-op), M4 (`@derive(Ord)`/union/enum derives).
-- **Band 5 (F# elimination + AOT, HIGH):** H12 (HttpClientHost + ProcessCapture
-  + new L5 `StubCounterHost` + L6 `Lyric.Session.Host`), H13 (no `<PublishAot>`
-  anywhere — confirmed absent).
+_Several items the 2026-06-03 snapshot listed as open have since shipped.
+The authoritative tactical task list is `docs/12-todo-plan.md`._
+
+- **Band 1 (front-end soundness, CRITICAL):** C2, C11 PARTIAL, H15, H16, M6.
+  Closed since 2026-06-03: advisory→fatal flip (C1, D-progress-438), visibility
+  enforcement (H14, #1484), opaque hiding (C10, #1485), parameter-mode front-end
+  (C13, #1487). Remaining: `TyError` expression forms (C2 — `ELambda`,
+  `ETypeApp`, `EForall`/`EExists`, `EAssign`, tuple-destructure sub-bindings,
+  record-ctor arg checking), full impl/interface conformance — signature
+  type-matching + subtyping at non-argument positions + default-interface-method
+  bodies (C11 PARTIAL, #1486), `where`-bound satisfaction (H15), alias-as-type
+  (H16), numeric widening (M6).
+- **Band 2 (backend correctness, CRITICAL):** All major Band-2 items are now
+  resolved: `?` (C3, #1475), `==`/`Map`-key structural equality (H1,
+  #1480/#1837), `defer` (C7, #1477), all of #1481, try/catch-as-value-expression
+  IL (#1823). H20 (capturing closures) **RESOLVED** (#1479 v1+v2 — immutable by
+  value into `object[]`, `var` by heap-cell reference, single-level incl.
+  escaping). Function-value invocation (#1877/#1939) works for zero-arg and
+  annotated/HOF-propagated param-using lambdas. M7 is stale (loop invariants
+  lowered by the elaborator; `SItem` never produced by the parser). Remaining
+  tracked items: multi-level nested closure capture (#1479), lambdas in
+  `@test_module` bodies (#1854).
+- **Band 3 (async, CRITICAL):** Async SM synthesis **shipped** (Epic #2070
+  Phases B.0–B.3 + spawn): `IAsyncStateMachine` / `AsyncTaskMethodBuilder` /
+  `Task[T]` returns and `ESpawn` are implemented (verified by
+  `async_sm_self_test.l`). Remaining correctness gaps: `await` inside a `try`
+  block emits invalid IL (#2725, recent open); hardcoded `maxStack=8` risks
+  `VerificationException` (#2712); lazy `IAsyncEnumerable[T]` generator
+  synthesis (C5, Phase 5, #1490).
+- **Band 4 (feature completion, HIGH):** C8 (cross-package generic-type
+  reification — in-bundle MSIL records/unions done #2362; cross-package remains,
+  #1496), C12 (protected-type locking — zero mutual exclusion emitted, #1499),
+  H2 (`@projectable` twins, #1500), H3 (range-subtype validation, #1501), H10
+  (custom `@generate` never invoked, #1505), H11 (`old()`/`forall`/`exists`
+  panic, #1506), M3 (`config{}` no-op, #1508), M4 (`@derive(Ord)`/union/enum
+  derives, #1507).
+- **Band 5 (F# elimination + AOT, HIGH):** AOT **now wired** — `release.l`
+  emits `<PublishAot>true</PublishAot>` and runs `dotnet publish
+  -p:PublishAot=true`; H13 "confirmed absent" is no longer accurate. CI smoke
+  test still needed. F# residue still load-bearing: H12 (HttpClientHost .cctor
+  gap #1576, ProcessCapture async tail #1489), L5 `StubCounterHost` (#1776), L6
+  `Lyric.Session.Host` (#1777).
 
 ### New findings (2026-06-03, not in the 05-29 body)
 
@@ -546,14 +547,15 @@ section wins.
 - **L6** — `lyric-session` drags `Lyric.Session.Host.dll` (F#) onto consumers'
   runtime closure — a second load-bearing F# assembly. (Added to §3.)
 
-### Bottom line (2026-06-03)
+### Bottom line (updated 2026-06-09)
 
-The backend correctness floor has improved (5 silent-miscompile/codegen gaps
-closed, auto-FFI now metadata-driven), but the **two highest-severity bands are
-untouched**: the front end still does not reject invalid programs (Band 1), and
-`await`/`async` still silently miscompile (Band 3).  The Band 2 backend
-correctness floor is now substantially closed (`?` #1475, `==` #1480, `defer`
-#1477, plus the #1481 batch); `await`/`async` is the remaining silent
-miscompile.  No `<PublishAot>` exists. These — not the §R1–R6 items in
-`docs/36`, which are all done — are the real remaining v1.0 blockers, and are
-now tracked as `docs/36` §R7.
+Since the 2026-06-03 snapshot, significant further progress has landed: async SM
+synthesis shipped (Epic #2070 Phases B.0–B.3 + spawn), the advisory→fatal
+typecheck gate flipped (C1, D-progress-438), visibility enforcement (#1484),
+opaque hiding (#1485), and parameter-mode front-end (#1487) are done, and AOT is
+now wired via `release.l`.  The remaining v1.0 blockers are the Band-1 front-end
+soundness remainder (C2 TyError forms, C11 PARTIAL impl conformance, H15/H16/M6),
+async correctness tail (#2725 await-in-try, #2712 maxStack, C5 generators), and
+Band-4 feature gaps.  Band 2 is substantially resolved.  `docs/12-todo-plan.md`
+is the authoritative task list; `docs/36-v1-roadmap.md` §R1–R6 are all done and
+tracking has moved to docs/12.

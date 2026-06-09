@@ -3,18 +3,20 @@
 Everything in Bands A–D and Tiers 1–5 of the previous version of this file
 has shipped.  What remains is tracked here.
 
-The phased plan in `docs/05-implementation-plan.md` is the strategic view;
-this doc is the *next-sessions* tactical view.
+The phased plan in `docs/05-implementation-plan.md` is the strategic view.
+**This file is the single source of truth for outstanding work.**
+`docs/36-v1-roadmap.md` (§R1–R6 all complete) is superseded for tracking
+purposes and retained as a historical reference only.  Technical per-gap
+evidence lives in `docs/41-self-hosted-compiler-gap-analysis.md`.
+
+_Last verified against source: **2026-06-09**._
 
 ---
 
 ## Tier 0 — self-hosted `--target dotnet` soundness & correctness floor (v1.0 blocker)
 
-This is the top of the queue and the real remaining v1.0 work.  Since the
-self-hosted compiler became the default and only non-JVM path, its gaps ship to
-users.  The authoritative, source-verified list is
-`docs/41-self-hosted-compiler-gap-analysis.md` §10 (re-verified 2026-06-03),
-sequenced as `docs/36-v1-roadmap.md` §R7.  In priority order:
+This is the top of the queue and the real remaining v1.0 work.  In priority
+order:
 
 1. **Front-end soundness (CRITICAL).** **Shipped:** gatekeeper flip done — single-file
    `lyric build` now aborts on type errors, matching the project path (C1,
@@ -32,46 +34,47 @@ sequenced as `docs/36-v1-roadmap.md` §R7.  In priority order:
    #1486). **Remaining:** remaining `TyError` expression forms — `ELambda`,
    `ETypeApp`, `EForall`/`EExists`, `EAssign`, tuple-destructure sub-bindings,
    record-ctor argument checking (C2); full impl-conformance signature type
-   matching + default method bodies (C11); `where T: Marker` bound satisfaction
-   (H15); `alias X = Long` as a usable type (H16); numeric widening (M6).
-   (docs/41 C2, C11 PARTIAL, H15, H16, M6.)
-2. **Backend correctness (CRITICAL).** `?` (C3), all of #1481 (compound-assign
-   operator H22, Float/Long literal match H18, break/continue-across-`try` H17,
-   `List.contains`/`removeAt` + unknown-method fail-loud H21), `defer` at scope
-   exit (C7, #1477), `==`/`Map`-key structural equality (H1, #1480/#1837), and
-   try/catch-as-value-expression IL (#1823) are done; M7 is stale (loop
-   invariants are checked via the elaborator; `SItem` is never parsed).
-   Capturing closures (H20, #1479) work for **immutable** bindings by value
-   (into an `object[]` closed delegate target) and for **`var`** bindings by
-   reference (hoisted to a shared `List[object]` heap cell), single level
-   incl. escaping closures; multi-level nesting remains tracked in #1479.
-   Function-value
-   invocation (#1877) is fixed for zero-argument lambdas via a uniform `Func`
-   ABI (thunks/suppliers/`() -> Unit` callbacks work through HOFs); param-using
-   lambdas passed directly to a typed `(…) -> R` parameter work — boxed args
-   unboxed via annotation or HOF-signature propagation (#1939); a param-using
-   lambda with neither source fails loud.
-   **Anything not yet correctly lowered must hard-error, never silently pass
-   through.** (docs/41 H20 RESOLVED single-level; multi-level nesting #1479
-   remains; #1877 done, #1939 done, lambdas in `@test_module` #1854.)
-3. **Async (CRITICAL).** Port `AsyncStateMachine.fs` + `AsyncGenerator.fs` to
-   `lyric-compiler/msil/` (state machine, `Task[T]`/`ValueTask[T]`, lazy
-   `IAsyncEnumerable[T]`).  Until ported, `await`/`spawn`/async-generators must
-   panic with a tracked-issue message instead of miscompiling. (docs/41 C4, C5.)
-4. **Feature completion (HIGH).** User cross-package generic *types* type-erased
-   (C8 — in-bundle generic records/unions now reified, #2362/D-progress-453/455;
-   cross-package still erased), `@projectable` twins (H2), range-subtype
-   validation (H3), custom `@generate` wiring (H10), `old()`/quantifier lowering
-   (H11), `config{}` (M3), `@derive(Ord)`/union-enum derives (M4), user
-   cross-package generic-fn mono (H6 — stdlib wired, user cross-package funcs
-   still not collected), wire `bind`/`scoped`/`provided` (H4 — `WMExpose`
-   lowers, `bind`/`scoped`/`provided` dropped), call-site named/default args
-   (H5 — record ctor reordering done, function call-site still broken).
-5. **F# elimination + AOT (HIGH).** Close the `HttpClientHost` package class-`val`
-   `.cctor` gap, port `ProcessCapture` to async, resolve the broken
-   `StubCounterHost` externs (`@stubbable` counters, **new** — docs/41 L5),
-   migrate `Lyric.Session.Host` off F# (**new** — docs/41 L6), then add
-   `<PublishAot>` + a native-binary CI smoke test (H12, H13).
+   matching + default method bodies (C11, #1486); `where T: Marker` bound
+   satisfaction (H15); `alias X = Long` as a usable type (H16); numeric widening
+   (M6). (docs/41 C2, C11 PARTIAL, H15, H16, M6.)
+2. **Backend correctness (CRITICAL).** All Band-2 items are now resolved: `?`
+   (C3, #1475), `==`/`Map`-key structural equality (H1, #1480/#1837), `defer`
+   (C7, #1477), all of #1481, try/catch-as-value-expression IL (#1823), and
+   capturing closures (H20, #1479 v1+v2 — immutable by value into `object[]`,
+   `var` by heap-cell reference, single-level incl. escaping). Function-value
+   invocation works for zero-arg lambdas (#1877) and annotated/HOF-propagated
+   param-using lambdas (#1939). M7 is stale (loop invariants lowered by the
+   elaborator; `SItem` never produced by the parser). Remaining tracked items:
+   multi-level nested closure capture (#1479) and lambdas in `@test_module`
+   bodies (#1854). **Anything not yet correctly lowered must hard-error, never
+   silently pass through.**
+3. **Async tail (CRITICAL).** Async SM synthesis shipped (Epic #2070 Phases
+   B.0–B.3 + spawn): `IAsyncStateMachine` / `AsyncTaskMethodBuilder` / `Task[T]`
+   returns and `ESpawn` are implemented in `lyric-compiler/msil/` (verified by
+   `async_sm_self_test.l`). Remaining correctness gaps:
+   - `await` inside a `try` block emits invalid IL (#2725, open, recent).
+   - Hardcoded `maxStack=8` risks `VerificationException` on complex methods
+     (#2712).
+   - Lazy `IAsyncEnumerable[T]` generator synthesis (C5, Phase 5, #1490).
+   (docs/41 C4 Phase B done; C5 + #2725 + #2712 remain.)
+4. **Feature completion (HIGH).** Cross-package user generic *types* (C8 —
+   in-bundle MSIL records/unions done #2362/D-progress-453/455; cross-package
+   reification and stdlib self-compile remain, #1496), protected-type locking
+   (C12 — zero mutual exclusion emitted, #1499), `@projectable` twins (H2, #1500),
+   range-subtype validation (H3, #1501), custom `@generate` wiring (H10, #1505),
+   `old()`/quantifier lowering (H11, #1506), `config{}` lowering (M3, #1508),
+   `@derive(Ord)`/union-enum derives (M4, #1507), user cross-package generic-fn
+   mono (H6, #1498 — stdlib wired, user cross-package funcs not yet collected),
+   wire `bind`/`scoped`/`provided` (H4, #1502 — `WMExpose` lowers;
+   `bind`/`scoped`/`provided` still dropped), call-site named/default args
+   (H5, #1503 — record ctor reordering done; function call-site still broken).
+5. **F# elimination + AOT (HIGH).** AOT is now wired: `release.l` emits
+   `<PublishAot>true</PublishAot>` and invokes `dotnet publish -p:PublishAot=true`
+   for the `.lyric-release` target — a CI smoke test using this path is still
+   needed. F# residue still load-bearing: close the `HttpClientHost` class-`val`
+   `.cctor` gap (#1576), port `ProcessCapture` to async (#1489 tail), fix the
+   broken `StubCounterHost` externs (#1776), migrate `Lyric.Session.Host` off F#
+   (#1777). (docs/41 H12, H13 partial.)
 
 ---
 
