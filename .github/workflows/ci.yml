@@ -17,8 +17,10 @@ env:
   BUILD_CONFIG: Debug
 
 jobs:
-  build-and-test:
+  build:
     runs-on: ubuntu-latest
+    outputs:
+      has_code_changes: ${{ steps.changes.outputs.has_code_changes }}
     permissions:
       contents: read
 
@@ -284,8 +286,1482 @@ jobs:
       # #465.  Skipped silently if the stage-1 bundle or AOT binary is absent
       # (mirrors the AOT smoke step above).  Fails CI when tests are present
       # and actually fail, so security regressions are caught on every push.
-      - name: Ecosystem test suite (lyric-auth + lyric-session)
+      - name: Upload build artifacts
         if: steps.changes.outputs.has_code_changes == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            .bootstrap/stage1
+            bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}
+            bootstrap/src/Lyric.Cli/bin/${{ env.BUILD_CONFIG }}
+          retention-days: 1
+
+  compiler-self-tests-dotnet:
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+    if: needs.build.outputs.has_code_changes == 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: bootstrap/global.json
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+      - name: Restore executable permissions
+        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+
+      - name: Weaver self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping weaver self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping weaver self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/weaver_self_test.l
+
+      # Self-hosted compiler self-tests (native lyric test) — replaces the
+      # deleted F# `SelfHosted*Tests.fs` Expecto wrappers (#2364).  Each
+      # `@test_module` imports its `Lyric.*` compiler package(s), resolved by
+      # linking the already-compiled stage-1 bundle DLLs as restored deps; no
+      # recompile-from-source `LYRIC_LOAD_COMPILER=1`.  Run as one step so a
+      # missing-stage-1 / missing-binary guard is shared.
+      - name: Compiler self-tests (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping compiler self-tests"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping compiler self-tests"
+            exit 1
+          fi
+          ran=""
+          for t in \
+            lyric-compiler/lyric/lexer_self_test.l \
+            lyric-compiler/lyric/parser_self_test.l \
+            lyric-compiler/lyric/typechecker_self_test.l \
+            lyric-compiler/lyric/modechecker_self_test.l \
+            lyric-compiler/lyric/contract_elaborator_self_test.l \
+            lyric-compiler/lyric/cfg_self_test.l \
+            lyric-compiler/lyric/derives_self_test.l \
+            lyric-compiler/lyric/mono_self_test.l \
+            lyric-compiler/lyric/fmt_self_test.l \
+            lyric-compiler/lyric/async_generator_self_test.l \
+            lyric-compiler/lyric/class_encoding_self_test.l \
+            lyric-compiler/lyric/hof_type_propagation_self_test.l \
+            lyric-compiler/lyric/typechecker_extern_dedup_self_test.l \
+            lyric-compiler/lyric/contract_meta_self_test.l \
+            lyric-compiler/lyric/restored_packages_self_test.l \
+            lyric-compiler/lyric/test_synth_self_test.l \
+            lyric-compiler/lyric/manifest_self_test.l \
+            lyric-compiler/lyric/verifier_self_test.l \
+            lyric-compiler/lyric/generator/generator_self_test.l ; do
+            echo "=== $t ==="
+            "$lyric_bin" test "$t"
+            ran="$ran $t"
+          done
+          echo "Compiler self-tests ran:$ran" >> "$GITHUB_STEP_SUMMARY"
+
+      # CfgGate self-test — exercises `Lyric.CfgGate` via native `lyric test`.
+      # Compiler-package imports are resolved by linking the stage-1 bundle
+      # DLLs (#2364); no `LYRIC_LOAD_COMPILER=1` recompile.  Covers #1123
+      # (comment-aware @cfg detection) and #1124 (single stub for all-gated
+      # directory packages).
+      - name: CfgGate self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping cfg_gate self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping cfg_gate self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/cfg_gate_self_test.l
+
+      # Bitwise self-test — first executable regression test for a
+      # self-hosted-only *language feature* (the `.and/.or/.xor/.shl/.shr`
+      # integer methods, #1610).  Run via native `lyric test`, which
+      # synthesises a program from the `test` blocks and compiles it
+      # in-process through the self-hosted `Msil.Bridge` (the F# stage-0
+      # emitter can't parse keyword-named methods — `x.xor(y)` -> P0081),
+      # then executes it and asserts every runtime value.  Resolves the
+      # MSIL half of issue #1611 with no new F#.  No `LYRIC_LOAD_COMPILER=1`
+      # here: this module imports only `Std.*`, not the compiler packages.
+      - name: Bitwise self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping bitwise self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping bitwise self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
+
+      # Slice array-ABI self-test (#2592).  Verifies a self-hosted `slice[T]`
+      # literal binds as a genuine CLR `T[]` when handed to the F#-built,
+      # array-based stdlib (`Std.Core.sumInts`/`maxInt`/`countEq`,
+      # `Std.String.join`).  Before the codegen.l `EList` `MArray` arm, the
+      # literal was a `List`-backed value and mis-bound to the `T[]` parameter
+      # (the same fork that made `Std.Sort` return unsorted).  Run via native
+      # `lyric test` (in-process `Msil.Bridge`); imports only `Std.*`.
+      - name: Slice array-ABI self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping slice array-ABI self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping slice array-ABI self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/slice_array_abi_self_test.l
+
+      # toArray array-ABI self-test (#2592 conversion half).  Verifies that a
+      # concrete `List[T].toArray()` materialises a genuine CLR `T[]` (not the
+      # legacy no-op that returned the `List`), so the result binds into the
+      # F#-built, array-based stdlib (`Std.Core.sumInts`/`maxInt`,
+      # `Std.String.join`).  Run via native `lyric test`; imports only `Std.*`.
+      - name: toArray array-ABI self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping toArray array-ABI self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping toArray array-ABI self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/toarray_array_abi_self_test.l
+
+      # Per-package stdlib emit (#2592 stage-2).  Drives the self-hosted
+      # `--internal-perpackage-build` to compile a `Std.Sort` driver's transitive
+      # Std.* import closure into separate `Lyric.Stdlib.<X>.dll` assemblies,
+      # then builds a program that calls `Std.Sort.sortInts([3,1,2,5,4])` against
+      # those DLLs and asserts the runtime output is sorted (`1 2 3 4 5`).  This
+      # exercises the self-hosted production of the per-package stdlib layout,
+      # including `Std.Sort` — which the F# stage-0 emitter cannot compile.
+      - name: Slice/String self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping slice/string self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping slice/string self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/slice_string_self_test.l
+
+      # Generic-slice self-test (#2557).  Exercises user-defined generic
+      # functions whose parameters / returns / typed locals mention `slice[T]`
+      # or a bare type variable `T` (`glen[T]` / `gidx[T]` / `gcopy[T]` /
+      # `gid[T]`).  Before the fix these failed to monomorphise (list/slice
+      # literals inferred no element type) and the surviving generic `slice[T]`
+      # lowered to a `slice<Pkg.T>` over a non-existent CLR type, which the JIT
+      # rejected ("invalid program"); a typed body local (`val acc: List[T]`)
+      # hit the same wall because the specialised body was copied verbatim.
+      # Run via native `lyric test`, which compiles the @test_module in-process
+      # through the self-hosted `Msil.Bridge`.  Imports only `Std.*`.
+      - name: Generic-slice self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping generic-slice self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping generic-slice self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/generic_slice_self_test.l
+
+      # For-loop slice iteration self-test (#2563).  Verifies that `for x in xs`
+      # works correctly when `xs` is a slice[T] parameter derived from List.toArray().
+      # Compiles the @test_module in-process through the self-hosted `Msil.Bridge`.
+      - name: For-loop slice self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping for-loop slice self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping for-loop slice self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/for_loop_slice_self_test.l
+
+      # For-loop slice self-test is dotnet-only (#2595).  The JVM backend does
+      # not yet lower `for x in xs.toArray()` over an erased element type: the
+      # JVM auto-FFI resolver sees the loop element typed as java.lang.Object and
+      # fails to bind the subsequent call, so `--target jvm` aborts.  JVM slice-
+      # iteration parity is tracked under the JVM-backend remediation in docs/41.
+
+      # Bitwise self-test on the JVM target (#1611 JVM half).  Compiles the same
+      # @test_module in-process through the self-hosted `Jvm.Bridge`
+      # (`compileToJarBundled` bundles the user package + its stdlib import
+      # closure into one runnable JAR), then runs it under `java`.  This is the
+      # first self-hosted-only language feature executed end-to-end on the JVM
+      # target with no new F#.  Java 21 is configured above; FSharp.Core (needed
+      # by the JVM kernel's F# host shim) is staged into .bootstrap/stage1 by
+      # bootstrap.sh and referenced by the AOT csproj.
+      - name: Conversion-method self-test (native lyric test, dotnet)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping conversion-method self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping conversion-method self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/conv_methods_self_test.l
+
+      - name: Pattern-lowering self-test (native lyric test, dotnet)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping pattern-lowering self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping pattern-lowering self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/jvm/pattern_lowering_self_test.l
+
+      - name: Auto-FFI metadata self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping auto-FFI self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping auto-FFI self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/auto_ffi_self_test.l
+
+      # In-bundle generic records self-test (#2362, docs/43, epic #2359 Stage 3).
+      # Exercises the self-hosted MSIL backend emitting a `record Box[T]` as a
+      # truly generic TypeDef: GenericParam metadata rows (table 0x2A), VAR-typed
+      # fields (`value: T` -> FIELD VAR(0)), the arity-suffixed CLR type name
+      # (`Box`1`), AutoLayout, construction through a closed-instantiation
+      # TypeSpec `.ctor` MemberRef, and field reads through a TypeSpec-parented
+      # `ldfld`.  This is the make-or-break LOAD test for that wire format: a
+      # malformed generic TypeDef faults at load with a TypeLoadException, and a
+      # value-type instantiation with the wrong ctor field-access token silently
+      # corrupts multi-field records — both caught here.  Compiled in-process
+      # through the self-hosted `Msil.Bridge`; imports only `Std.*`.
+      - name: In-bundle generics self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping in-bundle generics self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping in-bundle generics self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/inbundle_generics_self_test.l
+
+      # Async extern unwrapping self-test — pins the Band 3 Phase A fix for the
+      # @externTarget async silent miscompile (epic #2070, D085, D-progress-415).
+      # Before this fix, @externTarget async func left Task<T> on the stack where
+      # callers expected T.  Exercises both unwrap paths: the non-void path
+      # (Task<T>::get_Result() via StringReader.ReadToEndAsync) and the void path
+      # (Task::Wait() via Task.Delay(0)).  MSIL target only; JVM async (IAsyncEnumerable
+      # synthesis) is Phase B and tracked in epic #2070.  Imports only Std.*, so
+      # no LYRIC_LOAD_COMPILER=1 needed.
+      - name: Async extern unwrapping self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping async extern self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping async extern self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/async_extern_self_test.l
+
+      # IAsyncStateMachine synthesis self-test — pins Phase B.0 (epic #2070, D086):
+      # user-defined `async func` without EAwait nodes synthesises a sealed
+      # IAsyncStateMachine class.  Exercises non-void (Int, String), void (no-op,
+      # local val), sequential calls, and explicit-return paths (#2256).
+      # MSIL target only (JVM async is Phase B.1+).  Imports only `Std.*`.
+      - name: Async SM synthesis self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping async SM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping async SM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/async_sm_self_test.l
+
+      # Auto-FFI metadata-resolution self-test on the JVM target (epic #1622,
+      # JVM analog).  `extern type T = "java.lang.Math"` makes `T.method(args)`
+      # resolve to a real JVM static method: the self-hosted JVM emitter reads
+      # the `.class` entry straight out of `java.base.jmod` (a ZIP of
+      # DEFLATE-compressed class files) via the pure-Lyric Jvm.ZipReader /
+      # Jvm.Deflate / Jvm.ClassReader stack, scores the overloads in
+      # Jvm.AutoFfi, and emits the real `invokestatic owner.name(desc)` instead
+      # of the legacy `([Object…])Object` guess.  Run via native
+      # `lyric test --target jvm`, which compiles the @test_module in-process
+      # through the self-hosted `Jvm.Bridge` (`compileToJarBundled`) and runs it
+      # under `java` (Java 21 is configured above).  No new F#; imports only
+      # `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: Match/compound self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping match/compound self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping match/compound self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/match_compound_self_test.l
+
+      # Loop-EH + collection self-test — pins the remaining two #1481 (epic
+      # #1470, Band 2) backend fixes: (3) `break`/`continue` whose target loop
+      # sits outside an enclosing `try` region now emit `leave` instead of an
+      # unverifiable `br` across the protected-region boundary; (4) `List.contains`
+      # / `List.removeAt` call the real `List<object>::Contains`/`RemoveAt` BCL
+      # methods instead of the false/no-op stubs.  MSIL target only; JVM parity
+      # under #1470's JVM-deferral note.  Imports only `Std.*`.
+      - name: Loop-EH/collection self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping loop-EH/collection self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping loop-EH/collection self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/loop_eh_collection_self_test.l
+
+      # Return-in-try self-test — pins the #1477 foundation (epic #1470, Band 2):
+      # a `return` inside a `try`/`catch`/`finally` now routes through a function
+      # epilogue via `leave` (running intervening `finally` handlers) instead of
+      # emitting a bare `ret` out of a protected region (unverifiable IL ->
+      # InvalidProgramException). MSIL target only; JVM parity under #1470's
+      # JVM-deferral note. Imports only `Std.*`.
+      - name: Return-in-try self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping return-in-try self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping return-in-try self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/return_in_try_self_test.l
+
+      # Defer self-test — pins `defer`-at-scope-exit (#1477, epic #1470, Band 2):
+      # `defer { D }` runs D on scope exit on every path (fall-off, early return,
+      # break/continue, exception unwind), and multiple defers run in reverse
+      # declaration order. Lowered as `try { rest } finally { D }`, reusing the
+      # function-epilogue return lowering and the break/continue-`leave` lowering.
+      # MSIL target only; JVM parity under #1470's JVM-deferral note. Imports
+      # only `Std.*`.
+      - name: Defer self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping defer self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping defer self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/defer_self_test.l
+
+      # try/catch-as-value self-test — pins #1823 (epic #1470, Band 2): a
+      # `try { … } catch … { … }` used as a value-producing expression now
+      # stashes each branch value into a temp before the `leave` and reloads it
+      # after the merge label, instead of discarding the value (which left a
+      # non-void function emitting a bare `ret` → InvalidProgramException). Also
+      # unblocks the `assertPanics` try/catch shape on the self-hosted backend.
+      # MSIL target only; JVM parity under #1470's JVM-deferral note.
+      - name: Try-catch-expr self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping try-catch-expr self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping try-catch-expr self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/try_catch_expr_self_test.l
+
+      # Loop-invariant self-test — pins that a loop `invariant:` clause is
+      # checked at runtime (the contract elaborator lowers it to `assert(inv)`
+      # at the loop-body top; codegen drops the redundant `SInvariant` marker).
+      # A holding invariant doesn't interfere; a violated one panics (observed
+      # via a try/catch expression). MSIL target only.
+      - name: Loop-invariant self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping loop-invariant self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping loop-invariant self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/loop_invariant_self_test.l
+
+      # Function-value invocation — pins #1877: invoking a function-typed value
+      # (`f()` where f: () -> R) through the uniform Func ABI.  Zero-argument
+      # value/string/void HOFs must run and print the correct results, and a
+      # parameter-USING lambda must fail loud (#1939, until arg unboxing lands).
+      - name: Function-value invocation (#1877)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping function-value invocation test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping function-value invocation test"
+            exit 1
+          fi
+          dir="$(mktemp -d)"
+          pos="$dir/hof.l"
+          cat > "$pos" <<'LYRIC'
+          package Hof
+          import Std.Core
+          func apply0(f: in () -> Int): Int { f() }
+          func twice(f: in () -> Int): Int { f() + f() }
+          func applyS(f: in () -> String): String { f() }
+          func runV(f: in () -> Unit): Unit { f() }
+          func five(): Int { 5 }
+          func main(): Int {
+            println("a0=" + toString(apply0({ -> 42 })))
+            println("tw=" + toString(twice({ -> five() })))
+            println("aS=" + applyS({ -> "hi" }))
+            runV({ -> println("voidcb") })
+            0
+          }
+          LYRIC
+          out="$("$lyric_bin" run "$pos" 2>&1)" || { echo "::error::function-value HOF program failed to run"; echo "$out"; exit 1; }
+          for expect in "a0=42" "tw=10" "aS=hi" "voidcb"; do
+            if ! printf '%s\n' "$out" | grep -qx "$expect"; then
+              echo "::error::expected '$expect' in function-value HOF output"; echo "$out"; exit 1
+            fi
+          done
+          echo "OK: zero-argument function-value invocation produces correct results."
+          # Parameter-taking lambdas (#1939): a lambda passed directly to a typed
+          # `(…) -> R` parameter has its boxed args unboxed — both an explicit
+          # annotation and an un-annotated param (type propagated from the HOF
+          # signature) must run and produce correct results.
+          ann="$dir/ann.l"
+          cat > "$ann" <<'LYRIC'
+          package Ann
+          import Std.Core
+          func apply1(f: in (Int) -> Int, x: in Int): Int { f(x) }
+          func apply2(f: in (Int, Int) -> Int, a: in Int, b: in Int): Int { f(a, b) }
+          func applyB(f: in (Int) -> Bool, x: in Int): Bool { f(x) }
+          func main(): Int {
+            println("a1=" + toString(apply1({ x: Int -> x + 1 }, 10)))
+            println("u1=" + toString(apply1({ x -> x + 1 }, 10)))
+            println("u2=" + toString(apply2({ a, b -> a * b }, 6, 7)))
+            println("uB=" + toString(applyB({ x -> x > 5 }, 3)))
+            0
+          }
+          LYRIC
+          aout="$("$lyric_bin" run "$ann" 2>&1)" || { echo "::error::param-taking HOF program failed to run"; echo "$aout"; exit 1; }
+          for expect in "a1=11" "u1=11" "u2=42" "uB=False"; do
+            if ! printf '%s\n' "$aout" | grep -qx "$expect"; then
+              echo "::error::expected '$expect' in param-taking HOF output"; echo "$aout"; exit 1
+            fi
+          done
+          echo "OK: annotated and propagated parameter-taking lambdas produce correct results."
+          # An un-annotated param-using lambda NOT passed directly to a HOF (so no
+          # type can be propagated) must fail loud (#1939), not read garbage.
+          neg="$dir/pneg.l"
+          cat > "$neg" <<'LYRIC'
+          package PNeg
+          import Std.Core
+          func main(): Int { val f = { x -> x + 1 }; println("made"); 0 }
+          LYRIC
+          if "$lyric_bin" build --target dotnet "$neg" > "$dir/pneg.out" 2>&1; then
+            echo "::error::un-typed param-using lambda compiled — the #1939 diagnostic did not fire"; cat "$dir/pneg.out"; exit 1
+          fi
+          if ! grep -qi "un-annotated parameter" "$dir/pneg.out"; then
+            echo "::error::un-typed param-using lambda failed without the expected #1939 diagnostic"; cat "$dir/pneg.out"; exit 1
+          fi
+          echo "OK: un-typed param-using lambda (no annotation, no HOF propagation) fails loud (#1939)."
+
+      # Capturing closures (#1479 v1+v2) — a lambda that captures an immutable
+      # enclosing binding is captured by value into an object[] bound as the
+      # delegate target (v1); a captured `var` is hoisted to a shared heap cell
+      # so reassignments are observable across the closure boundary in both
+      # directions (v2).  Both must run and produce correct results.
+      - name: Capturing closures (#1479 v1+v2)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping capturing-closures test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping capturing-closures test"
+            exit 1
+          fi
+          dir="$(mktemp -d)"
+          pos="$dir/cap.l"
+          cat > "$pos" <<'LYRIC'
+          package Cap
+          import Std.Core
+          func apply0(f: in () -> Int): Int { f() }
+          func applyS(f: in () -> String): String { f() }
+          func apply1(f: in (Int) -> Int, x: in Int): Int { f(x) }
+          func main(): Int {
+            val a = 3
+            val b = 4
+            println("c1=" + toString(apply0({ -> a * b + 1 })))
+            val name = "world"
+            println("c2=" + applyS({ -> "hi " + name }))
+            val base = 100
+            println("c3=" + toString(apply1({ x -> x + base }, 5)))
+            0
+          }
+          LYRIC
+          out="$("$lyric_bin" run "$pos" 2>&1)" || { echo "::error::capturing-closure program failed to run"; echo "$out"; exit 1; }
+          for expect in "c1=13" "c2=hi world" "c3=105"; do
+            if ! printf '%s\n' "$out" | grep -qx "$expect"; then
+              echo "::error::expected '$expect' in capturing-closure output"; echo "$out"; exit 1
+            fi
+          done
+          echo "OK: by-value capture of immutable bindings produces correct results."
+          # By-reference capture of a `var` (#1479 v2): a hoisted heap cell is
+          # shared, so a mutation inside the closure is visible outside (m1=2) and
+          # an external mutation is visible inside a closure captured earlier
+          # (m2=10).
+          ref="$dir/capref.l"
+          cat > "$ref" <<'LYRIC'
+          package CapRef
+          import Std.Core
+          func run(f: in () -> Unit): Unit { f() }
+          func apply0(f: in () -> Int): Int { f() }
+          func main(): Int {
+            var count = 0
+            run({ -> count = count + 1 })
+            run({ -> count = count + 1 })
+            println("m1=" + toString(count))
+            var n = 1
+            val get = { -> n + 0 }
+            n = 10
+            println("m2=" + toString(apply0(get)))
+            0
+          }
+          LYRIC
+          rout="$("$lyric_bin" run "$ref" 2>&1)" || { echo "::error::by-ref capturing closure failed to run"; echo "$rout"; exit 1; }
+          for expect in "m1=2" "m2=10"; do
+            if ! printf '%s\n' "$rout" | grep -qx "$expect"; then
+              echo "::error::expected '$expect' in by-ref capture output"; echo "$rout"; exit 1
+            fi
+          done
+          echo "OK: by-reference (\`var\`) capture shares a mutable cell across the closure boundary."
+
+      # Out/inout-parameter self-test — pins the self-hosted MSIL byref calling
+      # convention (#1761): `out`/`inout` parameters are passed by managed
+      # pointer so a callee's write reaches the caller.  MSIL target only; JVM
+      # parity (holder-array lowering) is tracked in #1763.
+      - name: Out/inout-parameter self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping out/inout self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping out/inout self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/outparam_self_test.l
+          echo "out/inout-parameter self-test ran: outparam_self_test.l (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
+
+      # Nested-generic self-test — pins #1687 on the MSIL target.  JVM-target
+      # parity is gated on the union case-factory gap, tracked in #1707 (so this
+      # step is `--target dotnet` only, unlike the bitwise self-test above).
+      - name: Nested-generic self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping nested-generic self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping nested-generic self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/nested_generic_self_test.l
+
+      # Self-method-call self-test — pins #1715: intra-impl method calls
+      # (`self.m()` and bare `m()`) were dropped by the self-hosted MSIL
+      # backend, returning null/the argument instead of the call result.
+      # MSIL target only; JVM-target parity is tracked in #1722.
+      - name: Self-method-call self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping self-method-call self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping self-method-call self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/self_method_call_self_test.l
+
+      # Named-arg-order self-test — pins D-progress-357: record construction with
+      # named arguments out of declaration order stored values into the wrong
+      # field slots (invalid IL / cross-typed fields).  MSIL target only.
+      - name: Named-arg-order self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping named-arg-order self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping named-arg-order self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/named_arg_order_self_test.l
+
+      # Record-option-field self-test — pins #1731 / D-progress-359: a `None`
+      # (or `Some`) value for a concrete `Option[T]` record field must carry the
+      # field's type argument so a later `match` on the field finds the arm.
+      # MSIL target only; JVM-target parity is tracked in #1740.
+      - name: Record-option-field self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping record-option-field self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping record-option-field self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/record_option_field_self_test.l
+
+      # Generic-specialization self-test — pins #1730 / D-progress-360: a *called*
+      # same-package generic NRE'd in lowerFuncMsil, and the monomorphizer's
+      # AST-rewrite reconstructed `Option` fields (the `if`-else branch, guards,
+      # returns, finally) via a two-arm `None`/`Some` match that the bootstrap F#
+      # emitter widened to `Option<object>`, corrupting every rewritten function.
+      # MSIL target only; JVM-target parity for same-package generic
+      # specialization is tracked in #1707.
+      - name: Generic-specialization self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping generic-specialization self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping generic-specialization self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/generic_specialization_self_test.l
+
+      # Stdlib-generic monomorphization self-test — pins #1727 (inference slice):
+      # the monomorphizer is fed the stdlib's pure-Lyric generic `pub func`s,
+      # rewrites impl/interface method bodies, and infers types through
+      # `self.field` and Map/List indexing, so calls like `unwrapOr(b.opts[i], d)`
+      # specialise into a concrete copy.  MSIL target only; JVM parity tracked
+      # in #1707.
+      - name: Stdlib-generic-mono self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping stdlib-generic-mono self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping stdlib-generic-mono self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/stdlib_generic_mono_self_test.l
+
+      # Map-option self-test — pins #1727 (codegen slice): `mapGet(m, key)` lowers
+      # to a real `Option[V]` (`ContainsKey ? Some(get_Item) : None`) with `V` from
+      # the call's context hint, and `Map.remove(key)` calls the real
+      # `Dictionary.Remove` (was a pop-only stub).  Together these closed the
+      # lyric-session store suite (24/31 -> 31/31).  MSIL target only.
+      - name: Map-option self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping map-option self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping map-option self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_option_self_test.l
+
+      # Propagate self-test — the `?` error-propagation operator (#1475).
+      # `EPropagate` was a codegen no-op (`x?` compiled as `x`); the
+      # `Lyric.Propagate` middle-end pass now lowers it to match-unwrap +
+      # early-return.  Run via native `lyric test`: compiled in-process
+      # through the self-hosted `Msil.Bridge`, so the lowering under test is
+      # the one that runs.  MSIL target only (epic #1470 defers JVM).
+      - name: Propagate self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping propagate self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping propagate self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/propagate_self_test.l
+
+      # List-value-compare self-test — #1779 bug A.  A comparison / arithmetic
+      # on a `List[ValueType]` element-access result (`xs[i] <= 0`) miscompiled
+      # because the boxed `List<object>` slot wasn't unboxed back to the value
+      # type.  Run via native `lyric test` (in-process through Msil.Bridge).
+      - name: List-value-compare self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping list-value-compare self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping list-value-compare self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/list_value_compare_self_test.l
+
+      # Equality self-test — #1480 (partial).  `==`/`!=` on a record / distinct
+      # type with `@derive(Equals)` now dispatches to the synthesised structural
+      # `equals` (it reaches codegen only after #1796); records are no longer
+      # compared by reference.  Run via native `lyric test` (in-process through
+      # Msil.Bridge).
+      - name: Equality self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping equality self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping equality self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/equality_self_test.l
+
+      # Map-key self-test — #1480.  Records with `@derive(Equals)` +
+      # `@derive(Hash)` now carry synthesised `Object.Equals`/`GetHashCode`
+      # overrides, so field-equal instances are the same BCL `Map` key.  Run
+      # via native `lyric test` (in-process through Msil.Bridge).
+      - name: Map-key self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping map-key self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping map-key self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_key_self_test.l
+
+      # Map-value self-test — #1835.  `Map[K, ValueType]` values read correctly
+      # in hint-less positions (`match mapGet(m, k)`, `m[k]`) — the value type
+      # is tracked + unboxed instead of erasing to `Option<object>`.  Run via
+      # native `lyric test` (in-process through Msil.Bridge).
+      - name: Map-value self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping map-value self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping map-value self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_value_self_test.l
+
+      # Impl-method self-test — #1784.  Interface/impl methods with value-type
+      # parameters (`Int`/`Bool`/`Double`/`Char`) — and `?`/early-`return` in
+      # their bodies — dispatch correctly (value-type args are no longer boxed
+      # against the value-type param signature).  Run via native `lyric test`.
+      - name: Impl-method self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping impl-method self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping impl-method self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/impl_method_self_test.l
+
+      # Alias-rewriter self-test — #1834.  The package-alias rewriter
+      # (`Lyric.AliasRewriter`) now descends into the compound item kinds
+      # (IImpl / IInterface / IUnion and friends), so an `import X as Y`
+      # reference inside an `impl` method body, an interface method signature,
+      # or a union case payload resolves instead of tripping T0020.  Run via
+      # native `lyric test` (in-process through Msil.Bridge).  Imports only
+      # `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: Alias-rewriter self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping alias-rewriter self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping alias-rewriter self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/alias_rewriter_self_test.l
+
+      # Ensures self-test — #1871.  `ensures:` contract clauses now compile and
+      # run through the self-hosted MSIL path: the contract elaborator's
+      # synthesised `let __lyric_result_<n> = …` binding no longer NREs in
+      # codegen (the bare `None` ty field that widened to `Option[obj]` is now
+      # pinned).  Run via native `lyric test` (in-process through Msil.Bridge).
+      # Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: Ensures self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping ensures self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping ensures self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/ensures_self_test.l
+
+      # Mono-shadow self-test — #1855.  A user-defined function now shadows an
+      # imported generic of the same bare name in the monomorphizer, so calling
+      # a local `func tag(o: Option[Int]): Int` (which collides with the stdlib
+      # proof generic `Std.Core.tag[T]`) via an annotated local no longer
+      # mis-specialises into a broken identity stub (invalid IL).  Run via
+      # native `lyric test` (in-process through Msil.Bridge, which seeds the
+      # monomorphizer with the stdlib generics as imports).  Imports only `Std.*`.
+      - name: Mono-shadow self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping mono-shadow self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping mono-shadow self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/lyric/mono_shadow_self_test.l
+
+      # Mono-shadow self-test is dotnet-only (#2000).  Although the module
+      # imports only Std.*, the JVM backend currently emits invalid stackmap
+      # frames for its monomorphised generic call shapes (the class fails JVM
+      # verification), so `--target jvm` cannot run it yet.  JVM monomorphisation
+      # parity is tracked under the JVM-backend remediation in docs/41.
+
+      # CLI did-you-mean suggestion self-test — exercises Lyric.CliSuggest
+      # (editDistance / suggestCommand) via native `lyric test`.  The
+      # Lyric.CliSuggest compiler-package import is resolved by linking the
+      # stage-1 bundle DLLs (#2364); no `LYRIC_LOAD_COMPILER=1` recompile.
+      # Pure logic (Std.Core/Collections only), so it runs cleanly through the
+      # in-process bundle.  Part of the ecosystem-DX epic #1968 (#1976/#1988).
+      - name: CLI-suggest self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping cli-suggest self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping cli-suggest self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/cli_suggest_self_test.l
+
+      # CLI project-aware-defaults end-to-end smoke test — exercises
+      # findNearestManifest (Lyric.Discovery), the bare-`lyric` build default,
+      # and the did-you-mean / --help UX through the real binary (#1968:
+      # #1969/#1970/#1976/#1988).  This is the integration counterpart to the
+      # cli-suggest unit self-test: findNearestManifest itself can't be a
+      # `lyric test` self-test because that path can't yet run host-backed
+      # stdlib (Std.File) at runtime (#2001), so we drive the behaviour
+      # end-to-end via the compiled CLI instead.
+      - name: Release self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping release self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping release self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/release_self_test.l
+
+      # MSIL project bridge self-test — exercises the self-hosted multi-package
+      # MSIL bridge (Msil.Bridge.compileProjectToMsil /
+      # compileProjectToMsilWithFeatures) end-to-end.  Covers Phases 1–3:
+      # independent bundles, cross-package function/record/union round-trips,
+      # and cfg-erasure diagnostics (F0012/F0013).  Placed in lyric-compiler/
+      # so the Msil.Bridge transitive closure does not overflow the F# bootstrap
+      # emitter; stage-1 DLLs provide the compiler-package imports (#2888).
+      - name: MSIL project bridge self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping MSIL project bridge self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping MSIL project bridge self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/msil_project_bridge_self_test.l
+
+      # Emitter project self-test — exercises the Phase 4 in-process routing in
+      # Lyric.Emitter.emitProject (multi-package DOTNET builds).  Covers aliased
+      # imports, per-package isolation, @cfg erasure via emitProject, restored-dep
+      # wiring, and subprocess-fallback routing (#2888).
+      - name: Emitter project self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping emitter project self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping emitter project self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/emitter_project_self_test.l
+
+      - name: Init self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping init self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/init_self_test.l
+
+      - name: Union-in-list match self-test (native lyric test, #2126)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping union-list-match self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/union_list_match_self_test.l
+
+      # Module-level val self-test — exercises M5.2 stage 3 (non-constant `val`
+      # at package scope emitted as a static readonly field initialized in .cctor).
+      # Covers both the inline ldc.i4 path (literal Int/Bool) and the ldsfld path
+      # (String, binary-op results).  Imports only Std.*; no LYRIC_LOAD_COMPILER.
+      - name: Module-val self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping module-val self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/module_val_self_test.l
+
+      # Culture-invariant toString(DateTime) self-test (#2184).  Pins the
+      # self-hosted MSIL emitter's `toString` builtin to InvariantCulture for
+      # DateTime values so stage-0 (F#) and stage-1 (self-hosted) render
+      # DateTime byte-identically regardless of the CI host locale.  Compiled
+      # in-process through the self-hosted `Msil.Bridge`.  Imports only
+      # `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: DateTime-toString self-test (native lyric test, #2184)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping datetime-toString self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/datetime_tostring_self_test.l
+
+      # Release Native AOT end-to-end — `lyric build --release` produces a
+      # self-contained native binary and runs it (#1975 / D079).  This is the
+      # integration test for the AOT pipeline (host project + trampoline +
+      # `dotnet publish -p:PublishAot=true`); it downloads the ILCompiler
+      # package on first run, so it is the heaviest CLI step.
+  compiler-self-tests-jvm:
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+    if: needs.build.outputs.has_code_changes == 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: bootstrap/global.json
+      - name: Set up Java 21 (for JVM emitter tests)
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+      - name: Restore executable permissions
+        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+
+      - name: Bitwise self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping bitwise JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping bitwise JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/bitwise_self_test.l
+
+      # Numeric / character conversion-method self-test (#1901, Band-1 of epic
+      # #1470).  Exercises `.toByte()` / `.toInt()` / `.toLong()` / `.toChar()`
+      # / `.toDouble()` end-to-end: the type checker types each conversion and
+      # both backends lower it to native width-conversion opcodes (`conv.*` on
+      # MSIL; `i2l`/`l2i`/`d2i`/… on the JVM, with `.toByte()` masked to the
+      # unsigned 0..255 range to match MSIL's `conv.u1`).  Run on BOTH targets —
+      # parity is asserted, not deferred.  Imports only `Std.*`.
+      - name: Conversion-method self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping conversion-method JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping conversion-method JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/conv_methods_self_test.l
+
+      # Pattern-lowering self-test (#2455).  Exercises the five match-arm pattern
+      # forms that the self-hosted MSIL and JVM backends previously left
+      # unhandled in `lowerPatternTest` / `lowerPatternBind` — `PParen`,
+      # `PRange`, `PRecord`, `PTuple`, `PTypeTest` — plus the supporting
+      # record/union/tuple construction, field access, and call-site argument
+      # coercion the JVM target needed to run them.  Run on BOTH targets:
+      # parity is asserted, not deferred.  Imports only `Std.*`.
+      - name: Pattern-lowering self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping pattern-lowering JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping pattern-lowering JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/pattern_lowering_self_test.l
+
+      # Auto-FFI metadata-resolution self-test — exercises the self-hosted
+      # MSIL emitter resolving `ExternTypeName.method(args)` calls against
+      # real .NET reference-assembly metadata (epic #1622, Phase 3c) and
+      # emitting the real MemberRef instead of the legacy guess.  Run via
+      # native `lyric test`: the program is compiled in-process through the
+      # self-hosted `Msil.Bridge`, whose codegen reads the reference pack at
+      # compile time, then executed with its runtime values asserted.  No new
+      # F#.  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: Auto-FFI metadata self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping auto-FFI JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping auto-FFI JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/auto_ffi_jvm_self_test.l
+      # Hash self-test on JVM — proves the target-aware kernel source loader
+      # (docs/44 J6 M-10) loads `lyric-stdlib/std/_kernel_jvm/hash_host.l` and
+      # the JVM SHA-512 host (M-9, java.security.MessageDigest + HexFormat via
+      # auto-FFI) computes correct digests.  Importing `Std.Hash` resolves to
+      # the JVM kernel on this target; the test asserts three NIST SHA-512
+      # vectors under `java`.  First native JVM self-test that depends on a
+      # `_kernel_jvm`-only module.  Imports only `Std.*`.
+      - name: Hash self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping hash JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping hash JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/lyric/hash_jvm_self_test.l
+      # Silent-miscompile guard (JVM, band J1 / #2664 / epic #2663): pins the
+      # five JVM-backend codegen fixes that previously produced wrong-but-running
+      # output — Float emitted as 32-bit (not double), complex assignment
+      # (`obj.field = e` / `arr[i] = e`) actually stores, or-pattern variable
+      # binding (`A(x)|B(x) -> x`), union-case construction (incl. nullary cases,
+      # #1675) round-tripping through match, and named-argument record-construction
+      # reorder (#1793).  Imports only `Std.*`.
+      - name: Silent-miscompile guard self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping silent-miscompile guard JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping silent-miscompile guard JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/silent_miscompile_guard_jvm_self_test.l
+      # Middle-end-passes guard (band J2, docs/44 §5, #2665, epic #2663) —
+      # exercises the target-agnostic middle-end passes J2 wired into the
+      # self-hosted JVM bridge: `@cfg` erasure (an inactive-feature item is
+      # dropped before type-check) and aspect weaving (an `@inline_template`
+      # `around` rewrites a matched function's body).  Both are asserted at
+      # runtime through `compileToJarBundled`.  (`?`-propagation is also wired
+      # by J2 and verified on MSIL via `propagate_self_test.l`; its generic
+      # `Result`/`Option` output awaits JVM generics in J4 before it can run
+      # under `java`.)  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: Middle-end-passes guard self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping middle-end-passes JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping middle-end-passes JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/middle_end_passes_jvm_self_test.l
+      # J3 lowering self-test (JVM, band J3 / #2666 / epic #2663): pins the
+      # codegen dispatch wired to the `jvm/lowering.l` capabilities that were
+      # previously unreachable (silently dropped bodies) — opaque-type
+      # construction + accessor field read, protected-type field-args ctor +
+      # lock-wrapped entries with bare-name field resolution, wire-block DI
+      # `bootstrap()` + exposed-singleton accessor, plus `defer` (normal +
+      # early-return, mirroring MSIL #1477) and module-level `val` as a
+      # `static final` field.  Imports only `Std.*`.
+      - name: J3 lowering self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping J3 lowering JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping J3 lowering JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/j3_lowering_self_test.l
+      # Generic-codegen self-test on JVM (J4 M-1, epic #2663 / #2667 / #1707).
+      # Pins the erased-generics correctness fix: generic `Result`/`Option` and
+      # user generic records/unions now construct (boxing primitive payloads
+      # into the `Object` field) and match-extract (checkcast + unbox the payload
+      # to the binding's concrete type) without VerifyError, and the
+      # `?`-propagation runtime runs on the JVM.  Imports only `Std.*`, so no
+      # `LYRIC_LOAD_COMPILER=1`.
+      - name: Generic-codegen self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping generic-codegen JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping generic-codegen JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/generic_jvm_self_test.l
+      # Closure / lambda-value self-test on the JVM target (J2b / B-1, #2665,
+      # epic #2663).  Pins the self-hosted JVM closure backend: a general
+      # `ELambda` lowers to a `<pkg>$Lambda$<n>` inner class implementing the
+      # package-shared `Lyric$Lambda` functional interface (uniform
+      # Object[]-packing ABI); capture analysis binds free `val`/param refs as
+      # ctor fields; lambda-typed call sites dispatch through `invokeinterface`.
+      # Asserts non-capturing + capturing lambdas, lambdas through higher-order
+      # functions, multi-arg lambdas, a lambda returning `Result[Int, String]`
+      # (J4 erased generics through the closure ABI), and a captured-String
+      # lambda — all under `java`.  Imports only `Std.*`, so no
+      # `LYRIC_LOAD_COMPILER=1`.
+      - name: Closure-codegen self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping closure-codegen JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping closure-codegen JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/closure_jvm_self_test.l
+      # Record instance-method self-test on the JVM target (#2865, epic #2663).
+      # Pins record instance-method DISPATCH on `--target jvm`: a method declared
+      # inside a `record` body (`RMFunc`) is emitted as a true non-static instance
+      # method (slot 0 = `this`, `getfield` field reads through the receiver), and
+      # a call `rec.m(args)` lowers to a precisely-typed `invokevirtual` via the
+      # J3 `<class>#<method>` registry.  Before this fix the method was emitted
+      # static while the caller used `invokevirtual` → JVM VerifyError "Expecting
+      # non-static method".  Asserts field-reading methods, argument-combining
+      # methods, field-in-expression reads, and a `Result[Int, String]`-returning
+      # method (J4 erased generics through an instance method) — all under `java`.
+      # Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: Record-method self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping record-method JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping record-method JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/record_method_jvm_self_test.l
+      # Control-flow terminator self-test on the JVM target (#2870, epic #2663).
+      # Pins the fix for the stray trailing void `return` appended after a tail
+      # `if`/`else` (or `match`) whose arms all `return`: the if/match lowering no
+      # longer lands an unreachable join label at the past-end bytecode offset
+      # (its StackMapTable frame pointed past the method body → VerifyError), and
+      # the AST-level `blockTerminates` predicate suppresses the implicit return.
+      # Asserts the both-branches-return repro, a nested if/else-if/else chain,
+      # an all-arms-return `match`, plus a Unit fall-off and an else-less `if` to
+      # prove the implicit-return path still works — all under `java`.  Imports
+      # only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: Control-flow terminator self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping control-flow JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping control-flow JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/control_flow_jvm_self_test.l
+      # Match-literal + compound-assignment self-test — pins two self-hosted
+      # MSIL backend correctness fixes from #1481 (epic #1470, Band 2): Float
+      # literal *match* patterns now emit a real `ldc.r8; ceq` compare instead
+      # of falling to the wildcard arm (always-match), and compound assignment
+      # (`+=` etc.) honours the operator for local / `result` / record-field /
+      # List-element / Map-value targets (String `+=` concatenates; a record
+      # field `+=` no longer drops the operator; `a[i] op= v` is a real
+      # read-modify-write).  MSIL target only; JVM parity tracked under #1470's
+      # JVM-deferral note.  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+  ecosystem-and-stdlib-tests:
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+    if: needs.build.outputs.has_code_changes == 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: bootstrap/global.json
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+      - name: Restore executable permissions
+        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+
+      - name: Ecosystem test suite (lyric-auth + lyric-session)
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -393,7 +1869,6 @@ jobs:
       # emitter can compile the whole standard library so the milestone
       # cannot silently regress.
       - name: Build full stdlib (self-hosted, lyric.full.toml)
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -417,7 +1892,6 @@ jobs:
       # Library deps are built bottom-up first so each example's restored
       # path-dependency DLLs exist.  Fails CI if any package regresses.
       - name: Build example packages (lyric build --manifest)
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -478,7 +1952,6 @@ jobs:
       # so libraries already built by the example packages step above are
       # not re-compiled from scratch.
       - name: Ecosystem library builds (#2530)
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -547,168 +2020,29 @@ jobs:
       # bundle DLLs as restored dependencies (#2364), so no recompile-from-
       # source `LYRIC_LOAD_COMPILER=1` is needed.  Resolves issue #1324
       # without any new F# test shims.
-      - name: Weaver self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping weaver self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping weaver self-test"
-            exit 0
-          fi
-          "$lyric_bin" test lyric-compiler/lyric/weaver_self_test.l
+  crosspackage-and-codegen-tests:
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+    if: needs.build.outputs.has_code_changes == 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: bootstrap/global.json
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+      - name: Restore executable permissions
+        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
-      # Self-hosted compiler self-tests (native lyric test) — replaces the
-      # deleted F# `SelfHosted*Tests.fs` Expecto wrappers (#2364).  Each
-      # `@test_module` imports its `Lyric.*` compiler package(s), resolved by
-      # linking the already-compiled stage-1 bundle DLLs as restored deps; no
-      # recompile-from-source `LYRIC_LOAD_COMPILER=1`.  Run as one step so a
-      # missing-stage-1 / missing-binary guard is shared.
-      - name: Compiler self-tests (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping compiler self-tests"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping compiler self-tests"
-            exit 0
-          fi
-          ran=""
-          for t in \
-            lyric-compiler/lyric/lexer_self_test.l \
-            lyric-compiler/lyric/parser_self_test.l \
-            lyric-compiler/lyric/typechecker_self_test.l \
-            lyric-compiler/lyric/modechecker_self_test.l \
-            lyric-compiler/lyric/contract_elaborator_self_test.l \
-            lyric-compiler/lyric/cfg_self_test.l \
-            lyric-compiler/lyric/derives_self_test.l \
-            lyric-compiler/lyric/mono_self_test.l \
-            lyric-compiler/lyric/fmt_self_test.l \
-            lyric-compiler/lyric/async_generator_self_test.l \
-            lyric-compiler/lyric/class_encoding_self_test.l \
-            lyric-compiler/lyric/hof_type_propagation_self_test.l \
-            lyric-compiler/lyric/typechecker_extern_dedup_self_test.l \
-            lyric-compiler/lyric/contract_meta_self_test.l \
-            lyric-compiler/lyric/restored_packages_self_test.l \
-            lyric-compiler/lyric/test_synth_self_test.l \
-            lyric-compiler/lyric/manifest_self_test.l \
-            lyric-compiler/lyric/verifier_self_test.l \
-            lyric-compiler/lyric/generator/generator_self_test.l ; do
-            echo "=== $t ==="
-            "$lyric_bin" test "$t"
-            ran="$ran $t"
-          done
-          echo "Compiler self-tests ran:$ran" >> "$GITHUB_STEP_SUMMARY"
-
-      # CfgGate self-test — exercises `Lyric.CfgGate` via native `lyric test`.
-      # Compiler-package imports are resolved by linking the stage-1 bundle
-      # DLLs (#2364); no `LYRIC_LOAD_COMPILER=1` recompile.  Covers #1123
-      # (comment-aware @cfg detection) and #1124 (single stub for all-gated
-      # directory packages).
-      - name: CfgGate self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping cfg_gate self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping cfg_gate self-test"
-            exit 0
-          fi
-          "$lyric_bin" test lyric-compiler/lyric/cfg_gate_self_test.l
-
-      # Bitwise self-test — first executable regression test for a
-      # self-hosted-only *language feature* (the `.and/.or/.xor/.shl/.shr`
-      # integer methods, #1610).  Run via native `lyric test`, which
-      # synthesises a program from the `test` blocks and compiles it
-      # in-process through the self-hosted `Msil.Bridge` (the F# stage-0
-      # emitter can't parse keyword-named methods — `x.xor(y)` -> P0081),
-      # then executes it and asserts every runtime value.  Resolves the
-      # MSIL half of issue #1611 with no new F#.  No `LYRIC_LOAD_COMPILER=1`
-      # here: this module imports only `Std.*`, not the compiler packages.
-      - name: Bitwise self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping bitwise self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping bitwise self-test"
-            exit 0
-          fi
-          "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
-
-      # Slice array-ABI self-test (#2592).  Verifies a self-hosted `slice[T]`
-      # literal binds as a genuine CLR `T[]` when handed to the F#-built,
-      # array-based stdlib (`Std.Core.sumInts`/`maxInt`/`countEq`,
-      # `Std.String.join`).  Before the codegen.l `EList` `MArray` arm, the
-      # literal was a `List`-backed value and mis-bound to the `T[]` parameter
-      # (the same fork that made `Std.Sort` return unsorted).  Run via native
-      # `lyric test` (in-process `Msil.Bridge`); imports only `Std.*`.
-      - name: Slice array-ABI self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping slice array-ABI self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping slice array-ABI self-test"
-            exit 0
-          fi
-          "$lyric_bin" test lyric-compiler/lyric/slice_array_abi_self_test.l
-
-      # toArray array-ABI self-test (#2592 conversion half).  Verifies that a
-      # concrete `List[T].toArray()` materialises a genuine CLR `T[]` (not the
-      # legacy no-op that returned the `List`), so the result binds into the
-      # F#-built, array-based stdlib (`Std.Core.sumInts`/`maxInt`,
-      # `Std.String.join`).  Run via native `lyric test`; imports only `Std.*`.
-      - name: toArray array-ABI self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping toArray array-ABI self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping toArray array-ABI self-test"
-            exit 0
-          fi
-          "$lyric_bin" test lyric-compiler/lyric/toarray_array_abi_self_test.l
-
-      # Per-package stdlib emit (#2592 stage-2).  Drives the self-hosted
-      # `--internal-perpackage-build` to compile a `Std.Sort` driver's transitive
-      # Std.* import closure into separate `Lyric.Stdlib.<X>.dll` assemblies,
-      # then builds a program that calls `Std.Sort.sortInts([3,1,2,5,4])` against
-      # those DLLs and asserts the runtime output is sorted (`1 2 3 4 5`).  This
-      # exercises the self-hosted production of the per-package stdlib layout,
-      # including `Std.Sort` — which the F# stage-0 emitter cannot compile.
       - name: Per-package stdlib emit (#2592 self-hosted Std.Sort)
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -769,7 +2103,6 @@ jobs:
       # absent from the dependency's contract, so the consumer could not
       # even resolve it.
       - name: Cross-package const inlining (#2592 restored-dep consts)
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -836,7 +2169,6 @@ jobs:
       # transitive restored-dep threading — the producer side that #2364 (the
       # consumer side, against F#-built DLLs) could not cover.
       - name: Per-package compiler emit (#2592 self-hosted compiler DLLs)
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -875,7 +2207,6 @@ jobs:
       # the self-hosted-emitted stdlib (self-consistent set) and asserts it sorts.
       # Guards against regressions in stdlib self-host-compilability.
       - name: Full self-hosted stdlib (#2592 all Std.* packages)
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -934,7 +2265,6 @@ jobs:
       # MGenericInstByName and Lyric.Lsp on TyException).  This is the
       # prerequisite for a self-hosted-built toolchain.
       - name: Whole compiler self-host-compiles (R7 front-end completeness)
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -963,7 +2293,6 @@ jobs:
       # a user gets: a self-hosted-compiled program linking the shipped,
       # self-hosted-built Std.Sort against the F#-built Core, and sorting.
       - name: Shipped Std.Sort via default toolchain (#2592)
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1010,7 +2339,6 @@ jobs:
       # fields, then a consumer that reads them across a real assembly boundary,
       # and asserts the values.  Before the fix the read faulted.
       - name: Cross-package record field encoding (D-progress-477)
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1087,7 +2415,6 @@ jobs:
       # facet-1 guard above, which runs the consumer without staging any stdlib
       # runtime DLL (collection literals would pull `Lyric.Stdlib.Core`).
       - name: Cross-package function parameter encoding (D-progress-478)
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1161,7 +2488,6 @@ jobs:
       # Primitive args (e.g. `Result[Int, String]`) were unaffected, so this was
       # latent.  Guards `registerStdlibFunc`'s ctx-aware encoding.
       - name: Cross-package generic-return ref-typed arg (Std.File.readText)
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1203,7 +2529,6 @@ jobs:
       # only to the F#-built-stdlib REFERENCE in `registerStdlibFunc`) leaves the
       # in-bundle object-argument representation untouched.  Guards the encoding.
       - name: Cross-package generic-return Unit arg (Std.File.writeText)
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1248,7 +2573,6 @@ jobs:
       # literals, and asserts the matched/read counts.  Before the fix the union
       # `match` aborted.
       - name: Union/record concrete-collection construct+match (D-progress-480)
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1297,7 +2621,6 @@ jobs:
       # builds the dep + consumer across a real assembly boundary and asserts the
       # producer reads the concrete list it was handed.
       - name: Cross-package record construct-in-consumer (D-progress-481)
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1368,18 +2691,17 @@ jobs:
       # `InvalidCastException` when the concrete-typed operation runs at runtime.
       # Guarded by a `.bootstrap/stage1` presence check (::warning if missing).
       - name: Construction-position collExpect coverage (#2592 slice 3, self-hosted)
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping collExpect construction-position self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping collExpect construction-position self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping collExpect construction-position self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping collExpect construction-position self-test"
+            exit 1
           fi
           work="$(mktemp -d)"
           # The self-hosted type checker treats `[...]` literals as `slice[T]`, not
@@ -1440,7 +2762,6 @@ jobs:
       # Test builds a `List[String]`, converts via `.toArray()`, sorts, and
       # asserts lexicographic order.
       - name: Sort.sortStrings(list.toArray()) end-to-end (#2592 slice 4)
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1496,7 +2817,6 @@ jobs:
       # DLL presence is the authoritative check for slice 4; correctness of the
       # Xml and Yaml APIs is covered by the stdlib emitter test suite.
       - name: Std.Xml and Std.Yaml staged (#2592 slice 4)
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -1525,1186 +2845,36 @@ jobs:
       # `slice[T]` parameter, and genuine `String.split` array).  Run via
       # native `lyric test`, which compiles the @test_module in-process
       # through the self-hosted `Msil.Bridge`.  Imports only `Std.*`.
-      - name: Slice/String self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping slice/string self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping slice/string self-test"
-            exit 0
-          fi
-          "$lyric_bin" test lyric-compiler/lyric/slice_string_self_test.l
+  e2e-cli-tests:
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+    if: needs.build.outputs.has_code_changes == 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: bootstrap/global.json
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+      - name: Restore executable permissions
+        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
-      # Generic-slice self-test (#2557).  Exercises user-defined generic
-      # functions whose parameters / returns / typed locals mention `slice[T]`
-      # or a bare type variable `T` (`glen[T]` / `gidx[T]` / `gcopy[T]` /
-      # `gid[T]`).  Before the fix these failed to monomorphise (list/slice
-      # literals inferred no element type) and the surviving generic `slice[T]`
-      # lowered to a `slice<Pkg.T>` over a non-existent CLR type, which the JIT
-      # rejected ("invalid program"); a typed body local (`val acc: List[T]`)
-      # hit the same wall because the specialised body was copied verbatim.
-      # Run via native `lyric test`, which compiles the @test_module in-process
-      # through the self-hosted `Msil.Bridge`.  Imports only `Std.*`.
-      - name: Generic-slice self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping generic-slice self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping generic-slice self-test"
-            exit 0
-          fi
-          "$lyric_bin" test lyric-compiler/lyric/generic_slice_self_test.l
-
-      # For-loop slice iteration self-test (#2563).  Verifies that `for x in xs`
-      # works correctly when `xs` is a slice[T] parameter derived from List.toArray().
-      # Compiles the @test_module in-process through the self-hosted `Msil.Bridge`.
-      - name: For-loop slice self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping for-loop slice self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping for-loop slice self-test"
-            exit 0
-          fi
-          "$lyric_bin" test lyric-compiler/lyric/for_loop_slice_self_test.l
-
-      # For-loop slice self-test is dotnet-only (#2595).  The JVM backend does
-      # not yet lower `for x in xs.toArray()` over an erased element type: the
-      # JVM auto-FFI resolver sees the loop element typed as java.lang.Object and
-      # fails to bind the subsequent call, so `--target jvm` aborts.  JVM slice-
-      # iteration parity is tracked under the JVM-backend remediation in docs/41.
-
-      # Bitwise self-test on the JVM target (#1611 JVM half).  Compiles the same
-      # @test_module in-process through the self-hosted `Jvm.Bridge`
-      # (`compileToJarBundled` bundles the user package + its stdlib import
-      # closure into one runnable JAR), then runs it under `java`.  This is the
-      # first self-hosted-only language feature executed end-to-end on the JVM
-      # target with no new F#.  Java 21 is configured above; FSharp.Core (needed
-      # by the JVM kernel's F# host shim) is staged into .bootstrap/stage1 by
-      # bootstrap.sh and referenced by the AOT csproj.
-      - name: Bitwise self-test on JVM (native lyric test --target jvm)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping bitwise JVM self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping bitwise JVM self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/bitwise_self_test.l
-
-      # Numeric / character conversion-method self-test (#1901, Band-1 of epic
-      # #1470).  Exercises `.toByte()` / `.toInt()` / `.toLong()` / `.toChar()`
-      # / `.toDouble()` end-to-end: the type checker types each conversion and
-      # both backends lower it to native width-conversion opcodes (`conv.*` on
-      # MSIL; `i2l`/`l2i`/`d2i`/… on the JVM, with `.toByte()` masked to the
-      # unsigned 0..255 range to match MSIL's `conv.u1`).  Run on BOTH targets —
-      # parity is asserted, not deferred.  Imports only `Std.*`.
-      - name: Conversion-method self-test (native lyric test, dotnet)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping conversion-method self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping conversion-method self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/conv_methods_self_test.l
-
-      - name: Conversion-method self-test on JVM (native lyric test --target jvm)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping conversion-method JVM self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping conversion-method JVM self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/conv_methods_self_test.l
-
-      # Pattern-lowering self-test (#2455).  Exercises the five match-arm pattern
-      # forms that the self-hosted MSIL and JVM backends previously left
-      # unhandled in `lowerPatternTest` / `lowerPatternBind` — `PParen`,
-      # `PRange`, `PRecord`, `PTuple`, `PTypeTest` — plus the supporting
-      # record/union/tuple construction, field access, and call-site argument
-      # coercion the JVM target needed to run them.  Run on BOTH targets:
-      # parity is asserted, not deferred.  Imports only `Std.*`.
-      - name: Pattern-lowering self-test (native lyric test, dotnet)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping pattern-lowering self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping pattern-lowering self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/jvm/pattern_lowering_self_test.l
-
-      - name: Pattern-lowering self-test on JVM (native lyric test --target jvm)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping pattern-lowering JVM self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping pattern-lowering JVM self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/pattern_lowering_self_test.l
-
-      # Auto-FFI metadata-resolution self-test — exercises the self-hosted
-      # MSIL emitter resolving `ExternTypeName.method(args)` calls against
-      # real .NET reference-assembly metadata (epic #1622, Phase 3c) and
-      # emitting the real MemberRef instead of the legacy guess.  Run via
-      # native `lyric test`: the program is compiled in-process through the
-      # self-hosted `Msil.Bridge`, whose codegen reads the reference pack at
-      # compile time, then executed with its runtime values asserted.  No new
-      # F#.  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
-      - name: Auto-FFI metadata self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping auto-FFI self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping auto-FFI self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/auto_ffi_self_test.l
-
-      # In-bundle generic records self-test (#2362, docs/43, epic #2359 Stage 3).
-      # Exercises the self-hosted MSIL backend emitting a `record Box[T]` as a
-      # truly generic TypeDef: GenericParam metadata rows (table 0x2A), VAR-typed
-      # fields (`value: T` -> FIELD VAR(0)), the arity-suffixed CLR type name
-      # (`Box`1`), AutoLayout, construction through a closed-instantiation
-      # TypeSpec `.ctor` MemberRef, and field reads through a TypeSpec-parented
-      # `ldfld`.  This is the make-or-break LOAD test for that wire format: a
-      # malformed generic TypeDef faults at load with a TypeLoadException, and a
-      # value-type instantiation with the wrong ctor field-access token silently
-      # corrupts multi-field records — both caught here.  Compiled in-process
-      # through the self-hosted `Msil.Bridge`; imports only `Std.*`.
-      - name: In-bundle generics self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping in-bundle generics self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping in-bundle generics self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/inbundle_generics_self_test.l
-
-      # Async extern unwrapping self-test — pins the Band 3 Phase A fix for the
-      # @externTarget async silent miscompile (epic #2070, D085, D-progress-415).
-      # Before this fix, @externTarget async func left Task<T> on the stack where
-      # callers expected T.  Exercises both unwrap paths: the non-void path
-      # (Task<T>::get_Result() via StringReader.ReadToEndAsync) and the void path
-      # (Task::Wait() via Task.Delay(0)).  MSIL target only; JVM async (IAsyncEnumerable
-      # synthesis) is Phase B and tracked in epic #2070.  Imports only Std.*, so
-      # no LYRIC_LOAD_COMPILER=1 needed.
-      - name: Async extern unwrapping self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping async extern self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping async extern self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/async_extern_self_test.l
-
-      # IAsyncStateMachine synthesis self-test — pins Phase B.0 (epic #2070, D086):
-      # user-defined `async func` without EAwait nodes synthesises a sealed
-      # IAsyncStateMachine class.  Exercises non-void (Int, String), void (no-op,
-      # local val), sequential calls, and explicit-return paths (#2256).
-      # MSIL target only (JVM async is Phase B.1+).  Imports only `Std.*`.
-      - name: Async SM synthesis self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping async SM self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping async SM self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/async_sm_self_test.l
-
-      # Auto-FFI metadata-resolution self-test on the JVM target (epic #1622,
-      # JVM analog).  `extern type T = "java.lang.Math"` makes `T.method(args)`
-      # resolve to a real JVM static method: the self-hosted JVM emitter reads
-      # the `.class` entry straight out of `java.base.jmod` (a ZIP of
-      # DEFLATE-compressed class files) via the pure-Lyric Jvm.ZipReader /
-      # Jvm.Deflate / Jvm.ClassReader stack, scores the overloads in
-      # Jvm.AutoFfi, and emits the real `invokestatic owner.name(desc)` instead
-      # of the legacy `([Object…])Object` guess.  Run via native
-      # `lyric test --target jvm`, which compiles the @test_module in-process
-      # through the self-hosted `Jvm.Bridge` (`compileToJarBundled`) and runs it
-      # under `java` (Java 21 is configured above).  No new F#; imports only
-      # `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
-      - name: Auto-FFI metadata self-test on JVM (native lyric test --target jvm)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping auto-FFI JVM self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping auto-FFI JVM self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/auto_ffi_jvm_self_test.l
-      # Hash self-test on JVM — proves the target-aware kernel source loader
-      # (docs/44 J6 M-10) loads `lyric-stdlib/std/_kernel_jvm/hash_host.l` and
-      # the JVM SHA-512 host (M-9, java.security.MessageDigest + HexFormat via
-      # auto-FFI) computes correct digests.  Importing `Std.Hash` resolves to
-      # the JVM kernel on this target; the test asserts three NIST SHA-512
-      # vectors under `java`.  First native JVM self-test that depends on a
-      # `_kernel_jvm`-only module.  Imports only `Std.*`.
-      - name: Hash self-test on JVM (native lyric test --target jvm)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping hash JVM self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping hash JVM self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/lyric/hash_jvm_self_test.l
-      # Silent-miscompile guard (JVM, band J1 / #2664 / epic #2663): pins the
-      # five JVM-backend codegen fixes that previously produced wrong-but-running
-      # output — Float emitted as 32-bit (not double), complex assignment
-      # (`obj.field = e` / `arr[i] = e`) actually stores, or-pattern variable
-      # binding (`A(x)|B(x) -> x`), union-case construction (incl. nullary cases,
-      # #1675) round-tripping through match, and named-argument record-construction
-      # reorder (#1793).  Imports only `Std.*`.
-      - name: Silent-miscompile guard self-test on JVM (native lyric test --target jvm)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping silent-miscompile guard JVM self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping silent-miscompile guard JVM self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/silent_miscompile_guard_jvm_self_test.l
-      # Middle-end-passes guard (band J2, docs/44 §5, #2665, epic #2663) —
-      # exercises the target-agnostic middle-end passes J2 wired into the
-      # self-hosted JVM bridge: `@cfg` erasure (an inactive-feature item is
-      # dropped before type-check) and aspect weaving (an `@inline_template`
-      # `around` rewrites a matched function's body).  Both are asserted at
-      # runtime through `compileToJarBundled`.  (`?`-propagation is also wired
-      # by J2 and verified on MSIL via `propagate_self_test.l`; its generic
-      # `Result`/`Option` output awaits JVM generics in J4 before it can run
-      # under `java`.)  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
-      - name: Middle-end-passes guard self-test on JVM (native lyric test --target jvm)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping middle-end-passes JVM self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping middle-end-passes JVM self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/middle_end_passes_jvm_self_test.l
-      # J3 lowering self-test (JVM, band J3 / #2666 / epic #2663): pins the
-      # codegen dispatch wired to the `jvm/lowering.l` capabilities that were
-      # previously unreachable (silently dropped bodies) — opaque-type
-      # construction + accessor field read, protected-type field-args ctor +
-      # lock-wrapped entries with bare-name field resolution, wire-block DI
-      # `bootstrap()` + exposed-singleton accessor, plus `defer` (normal +
-      # early-return, mirroring MSIL #1477) and module-level `val` as a
-      # `static final` field.  Imports only `Std.*`.
-      - name: J3 lowering self-test on JVM (native lyric test --target jvm)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping J3 lowering JVM self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping J3 lowering JVM self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/j3_lowering_self_test.l
-      # Generic-codegen self-test on JVM (J4 M-1, epic #2663 / #2667 / #1707).
-      # Pins the erased-generics correctness fix: generic `Result`/`Option` and
-      # user generic records/unions now construct (boxing primitive payloads
-      # into the `Object` field) and match-extract (checkcast + unbox the payload
-      # to the binding's concrete type) without VerifyError, and the
-      # `?`-propagation runtime runs on the JVM.  Imports only `Std.*`, so no
-      # `LYRIC_LOAD_COMPILER=1`.
-      - name: Generic-codegen self-test on JVM (native lyric test --target jvm)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping generic-codegen JVM self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping generic-codegen JVM self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/generic_jvm_self_test.l
-      # Closure / lambda-value self-test on the JVM target (J2b / B-1, #2665,
-      # epic #2663).  Pins the self-hosted JVM closure backend: a general
-      # `ELambda` lowers to a `<pkg>$Lambda$<n>` inner class implementing the
-      # package-shared `Lyric$Lambda` functional interface (uniform
-      # Object[]-packing ABI); capture analysis binds free `val`/param refs as
-      # ctor fields; lambda-typed call sites dispatch through `invokeinterface`.
-      # Asserts non-capturing + capturing lambdas, lambdas through higher-order
-      # functions, multi-arg lambdas, a lambda returning `Result[Int, String]`
-      # (J4 erased generics through the closure ABI), and a captured-String
-      # lambda — all under `java`.  Imports only `Std.*`, so no
-      # `LYRIC_LOAD_COMPILER=1`.
-      - name: Closure-codegen self-test on JVM (native lyric test --target jvm)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping closure-codegen JVM self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping closure-codegen JVM self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/closure_jvm_self_test.l
-      # Record instance-method self-test on the JVM target (#2865, epic #2663).
-      # Pins record instance-method DISPATCH on `--target jvm`: a method declared
-      # inside a `record` body (`RMFunc`) is emitted as a true non-static instance
-      # method (slot 0 = `this`, `getfield` field reads through the receiver), and
-      # a call `rec.m(args)` lowers to a precisely-typed `invokevirtual` via the
-      # J3 `<class>#<method>` registry.  Before this fix the method was emitted
-      # static while the caller used `invokevirtual` → JVM VerifyError "Expecting
-      # non-static method".  Asserts field-reading methods, argument-combining
-      # methods, field-in-expression reads, and a `Result[Int, String]`-returning
-      # method (J4 erased generics through an instance method) — all under `java`.
-      # Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
-      - name: Record-method self-test on JVM (native lyric test --target jvm)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping record-method JVM self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping record-method JVM self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/record_method_jvm_self_test.l
-      # Control-flow terminator self-test on the JVM target (#2870, epic #2663).
-      # Pins the fix for the stray trailing void `return` appended after a tail
-      # `if`/`else` (or `match`) whose arms all `return`: the if/match lowering no
-      # longer lands an unreachable join label at the past-end bytecode offset
-      # (its StackMapTable frame pointed past the method body → VerifyError), and
-      # the AST-level `blockTerminates` predicate suppresses the implicit return.
-      # Asserts the both-branches-return repro, a nested if/else-if/else chain,
-      # an all-arms-return `match`, plus a Unit fall-off and an else-less `if` to
-      # prove the implicit-return path still works — all under `java`.  Imports
-      # only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
-      - name: Control-flow terminator self-test on JVM (native lyric test --target jvm)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping control-flow JVM self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping control-flow JVM self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target jvm lyric-compiler/jvm/control_flow_jvm_self_test.l
-      # Match-literal + compound-assignment self-test — pins two self-hosted
-      # MSIL backend correctness fixes from #1481 (epic #1470, Band 2): Float
-      # literal *match* patterns now emit a real `ldc.r8; ceq` compare instead
-      # of falling to the wildcard arm (always-match), and compound assignment
-      # (`+=` etc.) honours the operator for local / `result` / record-field /
-      # List-element / Map-value targets (String `+=` concatenates; a record
-      # field `+=` no longer drops the operator; `a[i] op= v` is a real
-      # read-modify-write).  MSIL target only; JVM parity tracked under #1470's
-      # JVM-deferral note.  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
-      - name: Match/compound self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping match/compound self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping match/compound self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/match_compound_self_test.l
-
-      # Loop-EH + collection self-test — pins the remaining two #1481 (epic
-      # #1470, Band 2) backend fixes: (3) `break`/`continue` whose target loop
-      # sits outside an enclosing `try` region now emit `leave` instead of an
-      # unverifiable `br` across the protected-region boundary; (4) `List.contains`
-      # / `List.removeAt` call the real `List<object>::Contains`/`RemoveAt` BCL
-      # methods instead of the false/no-op stubs.  MSIL target only; JVM parity
-      # under #1470's JVM-deferral note.  Imports only `Std.*`.
-      - name: Loop-EH/collection self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping loop-EH/collection self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping loop-EH/collection self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/loop_eh_collection_self_test.l
-
-      # Return-in-try self-test — pins the #1477 foundation (epic #1470, Band 2):
-      # a `return` inside a `try`/`catch`/`finally` now routes through a function
-      # epilogue via `leave` (running intervening `finally` handlers) instead of
-      # emitting a bare `ret` out of a protected region (unverifiable IL ->
-      # InvalidProgramException). MSIL target only; JVM parity under #1470's
-      # JVM-deferral note. Imports only `Std.*`.
-      - name: Return-in-try self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping return-in-try self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping return-in-try self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/return_in_try_self_test.l
-
-      # Defer self-test — pins `defer`-at-scope-exit (#1477, epic #1470, Band 2):
-      # `defer { D }` runs D on scope exit on every path (fall-off, early return,
-      # break/continue, exception unwind), and multiple defers run in reverse
-      # declaration order. Lowered as `try { rest } finally { D }`, reusing the
-      # function-epilogue return lowering and the break/continue-`leave` lowering.
-      # MSIL target only; JVM parity under #1470's JVM-deferral note. Imports
-      # only `Std.*`.
-      - name: Defer self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping defer self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping defer self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/defer_self_test.l
-
-      # try/catch-as-value self-test — pins #1823 (epic #1470, Band 2): a
-      # `try { … } catch … { … }` used as a value-producing expression now
-      # stashes each branch value into a temp before the `leave` and reloads it
-      # after the merge label, instead of discarding the value (which left a
-      # non-void function emitting a bare `ret` → InvalidProgramException). Also
-      # unblocks the `assertPanics` try/catch shape on the self-hosted backend.
-      # MSIL target only; JVM parity under #1470's JVM-deferral note.
-      - name: Try-catch-expr self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping try-catch-expr self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping try-catch-expr self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/try_catch_expr_self_test.l
-
-      # Loop-invariant self-test — pins that a loop `invariant:` clause is
-      # checked at runtime (the contract elaborator lowers it to `assert(inv)`
-      # at the loop-body top; codegen drops the redundant `SInvariant` marker).
-      # A holding invariant doesn't interfere; a violated one panics (observed
-      # via a try/catch expression). MSIL target only.
-      - name: Loop-invariant self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping loop-invariant self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping loop-invariant self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/loop_invariant_self_test.l
-
-      # Function-value invocation — pins #1877: invoking a function-typed value
-      # (`f()` where f: () -> R) through the uniform Func ABI.  Zero-argument
-      # value/string/void HOFs must run and print the correct results, and a
-      # parameter-USING lambda must fail loud (#1939, until arg unboxing lands).
-      - name: Function-value invocation (#1877)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping function-value invocation test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping function-value invocation test"
-            exit 0
-          fi
-          dir="$(mktemp -d)"
-          pos="$dir/hof.l"
-          cat > "$pos" <<'LYRIC'
-          package Hof
-          import Std.Core
-          func apply0(f: in () -> Int): Int { f() }
-          func twice(f: in () -> Int): Int { f() + f() }
-          func applyS(f: in () -> String): String { f() }
-          func runV(f: in () -> Unit): Unit { f() }
-          func five(): Int { 5 }
-          func main(): Int {
-            println("a0=" + toString(apply0({ -> 42 })))
-            println("tw=" + toString(twice({ -> five() })))
-            println("aS=" + applyS({ -> "hi" }))
-            runV({ -> println("voidcb") })
-            0
-          }
-          LYRIC
-          out="$("$lyric_bin" run "$pos" 2>&1)" || { echo "::error::function-value HOF program failed to run"; echo "$out"; exit 1; }
-          for expect in "a0=42" "tw=10" "aS=hi" "voidcb"; do
-            if ! printf '%s\n' "$out" | grep -qx "$expect"; then
-              echo "::error::expected '$expect' in function-value HOF output"; echo "$out"; exit 1
-            fi
-          done
-          echo "OK: zero-argument function-value invocation produces correct results."
-          # Parameter-taking lambdas (#1939): a lambda passed directly to a typed
-          # `(…) -> R` parameter has its boxed args unboxed — both an explicit
-          # annotation and an un-annotated param (type propagated from the HOF
-          # signature) must run and produce correct results.
-          ann="$dir/ann.l"
-          cat > "$ann" <<'LYRIC'
-          package Ann
-          import Std.Core
-          func apply1(f: in (Int) -> Int, x: in Int): Int { f(x) }
-          func apply2(f: in (Int, Int) -> Int, a: in Int, b: in Int): Int { f(a, b) }
-          func applyB(f: in (Int) -> Bool, x: in Int): Bool { f(x) }
-          func main(): Int {
-            println("a1=" + toString(apply1({ x: Int -> x + 1 }, 10)))
-            println("u1=" + toString(apply1({ x -> x + 1 }, 10)))
-            println("u2=" + toString(apply2({ a, b -> a * b }, 6, 7)))
-            println("uB=" + toString(applyB({ x -> x > 5 }, 3)))
-            0
-          }
-          LYRIC
-          aout="$("$lyric_bin" run "$ann" 2>&1)" || { echo "::error::param-taking HOF program failed to run"; echo "$aout"; exit 1; }
-          for expect in "a1=11" "u1=11" "u2=42" "uB=False"; do
-            if ! printf '%s\n' "$aout" | grep -qx "$expect"; then
-              echo "::error::expected '$expect' in param-taking HOF output"; echo "$aout"; exit 1
-            fi
-          done
-          echo "OK: annotated and propagated parameter-taking lambdas produce correct results."
-          # An un-annotated param-using lambda NOT passed directly to a HOF (so no
-          # type can be propagated) must fail loud (#1939), not read garbage.
-          neg="$dir/pneg.l"
-          cat > "$neg" <<'LYRIC'
-          package PNeg
-          import Std.Core
-          func main(): Int { val f = { x -> x + 1 }; println("made"); 0 }
-          LYRIC
-          if "$lyric_bin" build --target dotnet "$neg" > "$dir/pneg.out" 2>&1; then
-            echo "::error::un-typed param-using lambda compiled — the #1939 diagnostic did not fire"; cat "$dir/pneg.out"; exit 1
-          fi
-          if ! grep -qi "un-annotated parameter" "$dir/pneg.out"; then
-            echo "::error::un-typed param-using lambda failed without the expected #1939 diagnostic"; cat "$dir/pneg.out"; exit 1
-          fi
-          echo "OK: un-typed param-using lambda (no annotation, no HOF propagation) fails loud (#1939)."
-
-      # Capturing closures (#1479 v1+v2) — a lambda that captures an immutable
-      # enclosing binding is captured by value into an object[] bound as the
-      # delegate target (v1); a captured `var` is hoisted to a shared heap cell
-      # so reassignments are observable across the closure boundary in both
-      # directions (v2).  Both must run and produce correct results.
-      - name: Capturing closures (#1479 v1+v2)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping capturing-closures test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping capturing-closures test"
-            exit 0
-          fi
-          dir="$(mktemp -d)"
-          pos="$dir/cap.l"
-          cat > "$pos" <<'LYRIC'
-          package Cap
-          import Std.Core
-          func apply0(f: in () -> Int): Int { f() }
-          func applyS(f: in () -> String): String { f() }
-          func apply1(f: in (Int) -> Int, x: in Int): Int { f(x) }
-          func main(): Int {
-            val a = 3
-            val b = 4
-            println("c1=" + toString(apply0({ -> a * b + 1 })))
-            val name = "world"
-            println("c2=" + applyS({ -> "hi " + name }))
-            val base = 100
-            println("c3=" + toString(apply1({ x -> x + base }, 5)))
-            0
-          }
-          LYRIC
-          out="$("$lyric_bin" run "$pos" 2>&1)" || { echo "::error::capturing-closure program failed to run"; echo "$out"; exit 1; }
-          for expect in "c1=13" "c2=hi world" "c3=105"; do
-            if ! printf '%s\n' "$out" | grep -qx "$expect"; then
-              echo "::error::expected '$expect' in capturing-closure output"; echo "$out"; exit 1
-            fi
-          done
-          echo "OK: by-value capture of immutable bindings produces correct results."
-          # By-reference capture of a `var` (#1479 v2): a hoisted heap cell is
-          # shared, so a mutation inside the closure is visible outside (m1=2) and
-          # an external mutation is visible inside a closure captured earlier
-          # (m2=10).
-          ref="$dir/capref.l"
-          cat > "$ref" <<'LYRIC'
-          package CapRef
-          import Std.Core
-          func run(f: in () -> Unit): Unit { f() }
-          func apply0(f: in () -> Int): Int { f() }
-          func main(): Int {
-            var count = 0
-            run({ -> count = count + 1 })
-            run({ -> count = count + 1 })
-            println("m1=" + toString(count))
-            var n = 1
-            val get = { -> n + 0 }
-            n = 10
-            println("m2=" + toString(apply0(get)))
-            0
-          }
-          LYRIC
-          rout="$("$lyric_bin" run "$ref" 2>&1)" || { echo "::error::by-ref capturing closure failed to run"; echo "$rout"; exit 1; }
-          for expect in "m1=2" "m2=10"; do
-            if ! printf '%s\n' "$rout" | grep -qx "$expect"; then
-              echo "::error::expected '$expect' in by-ref capture output"; echo "$rout"; exit 1
-            fi
-          done
-          echo "OK: by-reference (\`var\`) capture shares a mutable cell across the closure boundary."
-
-      # Out/inout-parameter self-test — pins the self-hosted MSIL byref calling
-      # convention (#1761): `out`/`inout` parameters are passed by managed
-      # pointer so a callee's write reaches the caller.  MSIL target only; JVM
-      # parity (holder-array lowering) is tracked in #1763.
-      - name: Out/inout-parameter self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping out/inout self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping out/inout self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/outparam_self_test.l
-          echo "out/inout-parameter self-test ran: outparam_self_test.l (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
-
-      # Nested-generic self-test — pins #1687 on the MSIL target.  JVM-target
-      # parity is gated on the union case-factory gap, tracked in #1707 (so this
-      # step is `--target dotnet` only, unlike the bitwise self-test above).
-      - name: Nested-generic self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping nested-generic self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping nested-generic self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/nested_generic_self_test.l
-
-      # Self-method-call self-test — pins #1715: intra-impl method calls
-      # (`self.m()` and bare `m()`) were dropped by the self-hosted MSIL
-      # backend, returning null/the argument instead of the call result.
-      # MSIL target only; JVM-target parity is tracked in #1722.
-      - name: Self-method-call self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping self-method-call self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping self-method-call self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/self_method_call_self_test.l
-
-      # Named-arg-order self-test — pins D-progress-357: record construction with
-      # named arguments out of declaration order stored values into the wrong
-      # field slots (invalid IL / cross-typed fields).  MSIL target only.
-      - name: Named-arg-order self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping named-arg-order self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping named-arg-order self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/named_arg_order_self_test.l
-
-      # Record-option-field self-test — pins #1731 / D-progress-359: a `None`
-      # (or `Some`) value for a concrete `Option[T]` record field must carry the
-      # field's type argument so a later `match` on the field finds the arm.
-      # MSIL target only; JVM-target parity is tracked in #1740.
-      - name: Record-option-field self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping record-option-field self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping record-option-field self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/record_option_field_self_test.l
-
-      # Generic-specialization self-test — pins #1730 / D-progress-360: a *called*
-      # same-package generic NRE'd in lowerFuncMsil, and the monomorphizer's
-      # AST-rewrite reconstructed `Option` fields (the `if`-else branch, guards,
-      # returns, finally) via a two-arm `None`/`Some` match that the bootstrap F#
-      # emitter widened to `Option<object>`, corrupting every rewritten function.
-      # MSIL target only; JVM-target parity for same-package generic
-      # specialization is tracked in #1707.
-      - name: Generic-specialization self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping generic-specialization self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping generic-specialization self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/generic_specialization_self_test.l
-
-      # Stdlib-generic monomorphization self-test — pins #1727 (inference slice):
-      # the monomorphizer is fed the stdlib's pure-Lyric generic `pub func`s,
-      # rewrites impl/interface method bodies, and infers types through
-      # `self.field` and Map/List indexing, so calls like `unwrapOr(b.opts[i], d)`
-      # specialise into a concrete copy.  MSIL target only; JVM parity tracked
-      # in #1707.
-      - name: Stdlib-generic-mono self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping stdlib-generic-mono self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping stdlib-generic-mono self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/stdlib_generic_mono_self_test.l
-
-      # Map-option self-test — pins #1727 (codegen slice): `mapGet(m, key)` lowers
-      # to a real `Option[V]` (`ContainsKey ? Some(get_Item) : None`) with `V` from
-      # the call's context hint, and `Map.remove(key)` calls the real
-      # `Dictionary.Remove` (was a pop-only stub).  Together these closed the
-      # lyric-session store suite (24/31 -> 31/31).  MSIL target only.
-      - name: Map-option self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping map-option self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping map-option self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_option_self_test.l
-
-      # Propagate self-test — the `?` error-propagation operator (#1475).
-      # `EPropagate` was a codegen no-op (`x?` compiled as `x`); the
-      # `Lyric.Propagate` middle-end pass now lowers it to match-unwrap +
-      # early-return.  Run via native `lyric test`: compiled in-process
-      # through the self-hosted `Msil.Bridge`, so the lowering under test is
-      # the one that runs.  MSIL target only (epic #1470 defers JVM).
-      - name: Propagate self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping propagate self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping propagate self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/propagate_self_test.l
-
-      # List-value-compare self-test — #1779 bug A.  A comparison / arithmetic
-      # on a `List[ValueType]` element-access result (`xs[i] <= 0`) miscompiled
-      # because the boxed `List<object>` slot wasn't unboxed back to the value
-      # type.  Run via native `lyric test` (in-process through Msil.Bridge).
-      - name: List-value-compare self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping list-value-compare self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping list-value-compare self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/list_value_compare_self_test.l
-
-      # Equality self-test — #1480 (partial).  `==`/`!=` on a record / distinct
-      # type with `@derive(Equals)` now dispatches to the synthesised structural
-      # `equals` (it reaches codegen only after #1796); records are no longer
-      # compared by reference.  Run via native `lyric test` (in-process through
-      # Msil.Bridge).
-      - name: Equality self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping equality self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping equality self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/equality_self_test.l
-
-      # Map-key self-test — #1480.  Records with `@derive(Equals)` +
-      # `@derive(Hash)` now carry synthesised `Object.Equals`/`GetHashCode`
-      # overrides, so field-equal instances are the same BCL `Map` key.  Run
-      # via native `lyric test` (in-process through Msil.Bridge).
-      - name: Map-key self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping map-key self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping map-key self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_key_self_test.l
-
-      # Map-value self-test — #1835.  `Map[K, ValueType]` values read correctly
-      # in hint-less positions (`match mapGet(m, k)`, `m[k]`) — the value type
-      # is tracked + unboxed instead of erasing to `Option<object>`.  Run via
-      # native `lyric test` (in-process through Msil.Bridge).
-      - name: Map-value self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping map-value self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping map-value self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_value_self_test.l
-
-      # Impl-method self-test — #1784.  Interface/impl methods with value-type
-      # parameters (`Int`/`Bool`/`Double`/`Char`) — and `?`/early-`return` in
-      # their bodies — dispatch correctly (value-type args are no longer boxed
-      # against the value-type param signature).  Run via native `lyric test`.
-      - name: Impl-method self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping impl-method self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping impl-method self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/impl_method_self_test.l
-
-      # Alias-rewriter self-test — #1834.  The package-alias rewriter
-      # (`Lyric.AliasRewriter`) now descends into the compound item kinds
-      # (IImpl / IInterface / IUnion and friends), so an `import X as Y`
-      # reference inside an `impl` method body, an interface method signature,
-      # or a union case payload resolves instead of tripping T0020.  Run via
-      # native `lyric test` (in-process through Msil.Bridge).  Imports only
-      # `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
-      - name: Alias-rewriter self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping alias-rewriter self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping alias-rewriter self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/alias_rewriter_self_test.l
-
-      # Ensures self-test — #1871.  `ensures:` contract clauses now compile and
-      # run through the self-hosted MSIL path: the contract elaborator's
-      # synthesised `let __lyric_result_<n> = …` binding no longer NREs in
-      # codegen (the bare `None` ty field that widened to `Option[obj]` is now
-      # pinned).  Run via native `lyric test` (in-process through Msil.Bridge).
-      # Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
-      - name: Ensures self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping ensures self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping ensures self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/ensures_self_test.l
-
-      # Mono-shadow self-test — #1855.  A user-defined function now shadows an
-      # imported generic of the same bare name in the monomorphizer, so calling
-      # a local `func tag(o: Option[Int]): Int` (which collides with the stdlib
-      # proof generic `Std.Core.tag[T]`) via an annotated local no longer
-      # mis-specialises into a broken identity stub (invalid IL).  Run via
-      # native `lyric test` (in-process through Msil.Bridge, which seeds the
-      # monomorphizer with the stdlib generics as imports).  Imports only `Std.*`.
-      - name: Mono-shadow self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping mono-shadow self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping mono-shadow self-test"
-            exit 0
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/mono_shadow_self_test.l
-
-      # Mono-shadow self-test is dotnet-only (#2000).  Although the module
-      # imports only Std.*, the JVM backend currently emits invalid stackmap
-      # frames for its monomorphised generic call shapes (the class fails JVM
-      # verification), so `--target jvm` cannot run it yet.  JVM monomorphisation
-      # parity is tracked under the JVM-backend remediation in docs/41.
-
-      # CLI did-you-mean suggestion self-test — exercises Lyric.CliSuggest
-      # (editDistance / suggestCommand) via native `lyric test`.  The
-      # Lyric.CliSuggest compiler-package import is resolved by linking the
-      # stage-1 bundle DLLs (#2364); no `LYRIC_LOAD_COMPILER=1` recompile.
-      # Pure logic (Std.Core/Collections only), so it runs cleanly through the
-      # in-process bundle.  Part of the ecosystem-DX epic #1968 (#1976/#1988).
-      - name: CLI-suggest self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping cli-suggest self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping cli-suggest self-test"
-            exit 0
-          fi
-          "$lyric_bin" test lyric-compiler/lyric/cli_suggest_self_test.l
-
-      # CLI project-aware-defaults end-to-end smoke test — exercises
-      # findNearestManifest (Lyric.Discovery), the bare-`lyric` build default,
-      # and the did-you-mean / --help UX through the real binary (#1968:
-      # #1969/#1970/#1976/#1988).  This is the integration counterpart to the
-      # cli-suggest unit self-test: findNearestManifest itself can't be a
-      # `lyric test` self-test because that path can't yet run host-backed
-      # stdlib (Std.File) at runtime (#2001), so we drive the behaviour
-      # end-to-end via the compiled CLI instead.
       - name: CLI project-aware-defaults e2e smoke test
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping CLI e2e smoke test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping CLI e2e smoke test"
+            exit 1
           fi
           bin_abs="$(pwd)/$lyric_bin"
           work="$(mktemp -d)"
@@ -2751,137 +2921,14 @@ jobs:
       # native `lyric test`.  The Lyric.Release compiler-package import is
       # resolved by linking the stage-1 bundle DLLs (#2364); no
       # `LYRIC_LOAD_COMPILER=1` recompile.  Part of #1975.
-      - name: Release self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping release self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping release self-test"
-            exit 0
-          fi
-          "$lyric_bin" test lyric-compiler/lyric/release_self_test.l
-
-      # MSIL project bridge self-test — exercises the self-hosted multi-package
-      # MSIL bridge (Msil.Bridge.compileProjectToMsil /
-      # compileProjectToMsilWithFeatures) end-to-end.  Covers Phases 1–3:
-      # independent bundles, cross-package function/record/union round-trips,
-      # and cfg-erasure diagnostics (F0012/F0013).  Placed in lyric-compiler/
-      # so the Msil.Bridge transitive closure does not overflow the F# bootstrap
-      # emitter; stage-1 DLLs provide the compiler-package imports (#2888).
-      - name: MSIL project bridge self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping MSIL project bridge self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping MSIL project bridge self-test"
-            exit 0
-          fi
-          "$lyric_bin" test lyric-compiler/lyric/msil_project_bridge_self_test.l
-
-      # Emitter project self-test — exercises the Phase 4 in-process routing in
-      # Lyric.Emitter.emitProject (multi-package DOTNET builds).  Covers aliased
-      # imports, per-package isolation, @cfg erasure via emitProject, restored-dep
-      # wiring, and subprocess-fallback routing (#2888).
-      - name: Emitter project self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping emitter project self-test"
-            exit 0
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping emitter project self-test"
-            exit 0
-          fi
-          "$lyric_bin" test lyric-compiler/lyric/emitter_project_self_test.l
-
-      - name: Init self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping init self-test"
-            exit 0
-          fi
-          "$lyric_bin" test lyric-compiler/lyric/init_self_test.l
-
-      - name: Union-in-list match self-test (native lyric test, #2126)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping union-list-match self-test"
-            exit 0
-          fi
-          "$lyric_bin" test lyric-compiler/lyric/union_list_match_self_test.l
-
-      # Module-level val self-test — exercises M5.2 stage 3 (non-constant `val`
-      # at package scope emitted as a static readonly field initialized in .cctor).
-      # Covers both the inline ldc.i4 path (literal Int/Bool) and the ldsfld path
-      # (String, binary-op results).  Imports only Std.*; no LYRIC_LOAD_COMPILER.
-      - name: Module-val self-test (native lyric test)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping module-val self-test"
-            exit 0
-          fi
-          "$lyric_bin" test lyric-compiler/lyric/module_val_self_test.l
-
-      # Culture-invariant toString(DateTime) self-test (#2184).  Pins the
-      # self-hosted MSIL emitter's `toString` builtin to InvariantCulture for
-      # DateTime values so stage-0 (F#) and stage-1 (self-hosted) render
-      # DateTime byte-identically regardless of the CI host locale.  Compiled
-      # in-process through the self-hosted `Msil.Bridge`.  Imports only
-      # `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
-      - name: DateTime-toString self-test (native lyric test, #2184)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping datetime-toString self-test"
-            exit 0
-          fi
-          "$lyric_bin" test lyric-compiler/lyric/datetime_tostring_self_test.l
-
-      # Release Native AOT end-to-end — `lyric build --release` produces a
-      # self-contained native binary and runs it (#1975 / D079).  This is the
-      # integration test for the AOT pipeline (host project + trampoline +
-      # `dotnet publish -p:PublishAot=true`); it downloads the ILCompiler
-      # package on first run, so it is the heaviest CLI step.
       - name: Release Native AOT e2e (lyric build --release)
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping release e2e"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping release e2e"
+            exit 1
           fi
           bin_abs="$(pwd)/$lyric_bin"
           work="$(mktemp -d)"
@@ -2913,14 +2960,13 @@ jobs:
       # Driven through the real binary because the staleness check reads the
       # filesystem (can't be a `lyric test` self-test, #2001).
       - name: Auto-restore-on-build e2e
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping auto-restore e2e"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping auto-restore e2e"
+            exit 1
           fi
           bin_abs="$(pwd)/$lyric_bin"
           work="$(mktemp -d)"
@@ -2998,14 +3044,13 @@ jobs:
       # unhandled exception / fromInt panic) with a non-zero exit; (b) a TOML
       # parse error renders a real `:<line>:<col>:` location.
       - name: Git-dep / manifest-error regression e2e
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -uo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping git-dep regression"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping git-dep regression"
+            exit 1
           fi
           bin_abs="$(pwd)/$lyric_bin"
           work="$(mktemp -d)"
@@ -3074,14 +3119,13 @@ jobs:
       # unparseable manifest (#1973).  Binary-driven because the command reads
       # and writes the filesystem (can't be a `lyric test` self-test, #2001).
       - name: lyric add e2e
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping lyric add e2e"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping lyric add e2e"
+            exit 1
           fi
           bin_abs="$(pwd)/$lyric_bin"
           work="$(mktemp -d)"
@@ -3155,14 +3199,13 @@ jobs:
       # `lyric init` end-to-end — scaffold an app, run + build it, and check the
       # --lib / --force / bad-name / overwrite-refusal behaviours (#1972).
       - name: lyric init e2e
-        if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping init e2e"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping init e2e"
+            exit 1
           fi
           bin_abs="$(pwd)/$lyric_bin"
           work="$(mktemp -d)"
@@ -3195,15 +3238,14 @@ jobs:
       # changes (#1974).  Driven in the background; we edit the file, wait for a
       # poll cycle, then kill the watcher and assert the re-run happened.
       - name: lyric run --watch e2e
-        if: steps.changes.outputs.has_code_changes == 'true'
         timeout-minutes: 2
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping watch e2e"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping watch e2e"
+            exit 1
           fi
           bin_abs="$(pwd)/$lyric_bin"
           work="$(mktemp -d)"
@@ -3228,11 +3270,32 @@ jobs:
       # binaries the build-and-test steps already produce, so no project-file
       # restructuring is required.  The Cobertura report is uploaded as a
       # CI artifact; viewers / trend-trackers can ingest it from there.
+  coverage:
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+    if: >-
+      needs.build.outputs.has_code_changes == 'true' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: bootstrap/global.json
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+      - name: Restore executable permissions
+        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+
       - name: Collect code coverage (main only)
-        if: >-
-          steps.changes.outputs.has_code_changes == 'true' &&
-          github.event_name == 'push' &&
-          github.ref == 'refs/heads/main'
         continue-on-error: true
         working-directory: bootstrap
         run: |
@@ -3262,16 +3325,28 @@ jobs:
           ls -lah ../coverage || true
 
       - name: Upload coverage artifact (main only)
-        if: >-
-          steps.changes.outputs.has_code_changes == 'true' &&
-          github.event_name == 'push' &&
-          github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: code-coverage
           path: coverage/
           if-no-files-found: warn
           retention-days: 30
+
+  build-and-test:
+    runs-on: ubuntu-latest
+    needs: [build, compiler-self-tests-dotnet, compiler-self-tests-jvm, ecosystem-and-stdlib-tests, crosspackage-and-codegen-tests, e2e-cli-tests]
+    if: always()
+    permissions:
+      contents: read
+    steps:
+      - name: Aggregate CI results
+        run: |
+          results='${{ toJSON(needs.*.result) }}'
+          if echo "$results" | grep -qE '"failure"|"cancelled"'; then
+            echo "One or more CI jobs failed"
+            exit 1
+          fi
+          echo "All CI jobs passed or were skipped"
 
   promote-pr-if-ready:
     runs-on: ubuntu-latest
