@@ -1844,7 +1844,45 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
               case None -> Expr(kind = ECall(fn = fn, args = newArgs), span = s)
             }
           } else {
-            Expr(kind = ECall(fn = fn, args = newArgs), span = s)
+            // Multi-segment qualified call: try the last segment as a generic
+            // so `Validation.toResult(42,[])` specialises when `toResult[T]` is
+            // in genDecls (imported from the `Validation` in-bundle package).
+            // Same inference path as the single-segment case above (#2932).
+            val qfname = path.segments[path.segments.count - 1]
+            match mapGet(state.genDecls, qfname) {
+              case Some(qBaseDecl) -> {
+                val qTypeParams = extractTypeParamNames(qBaseDecl.generics)
+                val qValueParams = extractValueParamNames(qBaseDecl.generics)
+                if qTypeParams.count > 0 and qValueParams.count == 0 {
+                  val qSubst: Map[String, TypeExpr] = newMap()
+                  var qi = 0
+                  while qi < args.count and qi < qBaseDecl.params.count {
+                    match inferExprTE(state, env, callArgExpr(args[qi])) {
+                      case Some(qArgTE) -> unifyTE(qTypeParams, qBaseDecl.params[qi].ty, qArgTE, qSubst)
+                      case None -> ()
+                    }
+                    qi = qi + 1
+                  }
+                  if substIsComplete(qTypeParams, qSubst) {
+                    val qAllParams = extractAllParamInfo(qBaseDecl.generics)
+                    val qEmptyVS: Map[String, Expr] = newMap()
+                    val qName = specFuncName(qfname, qAllParams, qSubst, qEmptyVS)
+                    validateWhereBounds(qBaseDecl, qSubst, fn.span, state.diags)
+                    if not state.seenSpecs.containsKey(qName) {
+                      state.seenSpecs.add(qName, true)
+                      val qSpecDecl = specializeFunc(qBaseDecl, qName, qSubst, qEmptyVS)
+                      state.allSpecs.add(
+                        SpecRequest(specName = qName, baseDecl = qSpecDecl, subst = qSubst, valueSubst = qEmptyVS, callSpan = fn.span)
+                      )
+                    }
+                    val qNewFn = singleSegPathExpr(qName, fn.span)
+                    return Expr(kind = ECall(fn = qNewFn, args = newArgs), span = s)
+                  }
+                }
+                Expr(kind = ECall(fn = fn, args = newArgs), span = s)
+              }
+              case None -> Expr(kind = ECall(fn = fn, args = newArgs), span = s)
+            }
           }
         }
         case _ -> Expr(kind = ECall(fn = rewriteExpr(state, env, fn), args = newArgs), span = s)
