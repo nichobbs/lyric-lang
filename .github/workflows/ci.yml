@@ -1234,6 +1234,59 @@ jobs:
           fi
           echo "cross-package Result[Unit, IOError] return binds correctly"
 
+      # Non-generic union/record with a concrete-collection field: construct +
+      # match (D-progress-480 / #2592 slice 1, facet 4).  Facet 1 made a
+      # non-generic record/union collection field a concrete `List<T>`, but a
+      # `[...]` literal builds a `List<object>` unless the construction site
+      # pushes the field's concrete type onto the expected-collection stack.
+      # Record construction did; a NON-GENERIC union case did not (it registers
+      # no `fieldDeclaredNames`), so `Circle(tags = [1,2,3])` stored a
+      # `List<object>` into a `List<int32>` field and the `match` binding — which
+      # casts to the concrete field type — faulted with InvalidCastException,
+      # even in a single package.  This builds a union with a `List[Int]`-payload
+      # case plus a record with the same field, constructs both from list
+      # literals, and asserts the matched/read counts.  Before the fix the union
+      # `match` aborted.
+      - name: Union/record concrete-collection construct+match (D-progress-480)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          cat > "$work/uc.l" <<'LYR'
+          package UC
+          import Std.Console as Console
+          record Box { tags: List[Int] }
+          union Shape {
+            case Circle(tags: List[Int])
+            case Empty
+          }
+          func boxCount(b: in Box): Int { b.tags.count }
+          func shapeCount(s: in Shape): Int {
+            match s {
+              case Circle(tags) -> tags.count
+              case Empty -> 0
+            }
+          }
+          func main(): Unit {
+            val b = Box(tags = [1, 2, 3])
+            val c = Circle(tags = [4, 5])
+            Console.println(toString(boxCount(b)) + " " + toString(shapeCount(c)))
+          }
+          LYR
+          out="$("$lyric_bin" run "$work/uc.l" 2>&1 | tail -1)"
+          echo "union/record program printed: '$out'"
+          if [ "$out" != "3 2" ]; then
+            echo "::error::union/record concrete-collection construct+match returned '$out' (expected '3 2'); #2592 slice-1 regressed"
+            exit 1
+          fi
+          echo "non-generic union/record concrete-collection field construct+match works"
+
       # Slice-length / String-comparison self-test (#2539).  Exercises two
       # self-hosted MSIL codegen fixes: (1) `String` relational operators
       # (`<` / `>` / `<=` / `>=`) route through `String.CompareOrdinal`

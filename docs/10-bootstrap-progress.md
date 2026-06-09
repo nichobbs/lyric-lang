@@ -23332,3 +23332,56 @@ no regression — `Std.File.readText` (`Result[String, IOError]`, facet
 D-progress-469) still `err-ok`; `lyric-auth` 32/32 and `lyric-session`
 5/15/11 recovered; in-bundle generics self-test 20/20; emitter (828) + CLI (84)
 F# suites green; `make lyric` clean.
+
+### D-progress-480 — non-generic union/record construction pushes the concrete collection field type so a `[...]` literal builds `List<T>` (#2592 slice 1 / D-progress-469 facet 4)
+
+**Status:** Shipped (first slice of the #2592 value-representation
+reconciliation, tracked in the epic) — a non-generic union case (and record)
+with a concrete-collection field now builds its `[...]` / `newList()` argument as
+the field's concrete `List<T>` / `Map[..]` instead of the legacy `List<object>`,
+so constructing then `match`-binding such a value no longer faults.
+
+**The bug (a facet-1 regression surfacing the #2592 representation fork).**
+Facet 1 (D-progress-477) made a non-generic record/union collection field a
+concrete `List<T>` FieldDef.  But a list literal `[1, 2, 3]` builds a
+`List<object>` unless the surrounding construction site pushes the field's
+concrete type onto the codegen's expected-collection stack (`collExpect`); the
+`EList` lowering then emits `newobj List`1<int32>` + typed `Add`.  Record
+construction pushed it; a **non-generic union case did not**, because the
+construction-site hint resolver keyed on `fieldDeclaredNames`, which is
+registered only for *generic* cases (`uArity > 0`).  So `Circle(tags = [1,2,3])`
+stored a `List<object>` into the case's `List<int32>` field, and a later
+`match { case Circle(tags) -> … }` — whose binding casts to the concrete field
+type — faulted with `InvalidCastException`, **even within a single package**.
+Records dodged it only because a field *read* (`b.tags.count`) does not hard-cast
+to the concrete generic.  This is exactly the documented `Std.Xml` / `Std.Yaml`
+"union-case ctor signature mismatch (field encoding)" blocker from
+`scripts/stage-selfhosted-stdlib.sh`.  Facet 1's self-tests missed it: they
+cover *generic* unions (`Maybe[T]`, `Either[L, R]`) and records, never a
+non-generic union with a concrete-collection field that is constructed **and**
+matched.
+
+**The fix.** At the construction-site argument-hint resolver, when
+`fieldDeclaredNames` has no entry (the non-generic case), fall back to the
+positional `fieldMsilTypes[<ctor>/field<i>]` key — which non-generic record and
+union cases both register — so the concrete `List<T>` field type flows onto
+`collExpect` and the literal builds the genuine instance.  Generic cases are
+untouched (they resolve via `fieldDeclaredNames` as before).
+
+**Scope and what remains.** This slice fixes in-bundle **and** cross-package
+**union** construct+match (the cross-package union case binds because the
+restored union-case metadata already registers the positional concrete field
+type).  Cross-package **record** construct-in-consumer (a consumer building a
+restored dependency's record from a list literal) is still
+`InvalidCastException`: the restored-record registration does not give the
+construction site a concrete positional field type, so the literal degrades to
+`List<object>`.  That is a separate slice of the #2592 epic (restored-record
+field-type registration), tracked there.  The broader end-state — making list /
+slice **values** concrete end-to-end so they match facet-1's concrete field
+DEFs at every boundary — is the remaining epic work.
+
+**Verification:** in-bundle union+record construct+match prints `3 2` (CI guard
+added); cross-package union construct+match returns `3` (the earlier
+`InvalidCastException` is gone); no regression — `lyric-auth` 32/32,
+`lyric-session` 5/15/11, in-bundle generics self-test 20/20, slice/string
+self-test green; emitter (828) + CLI (84) F# suites green; `make lyric` clean.

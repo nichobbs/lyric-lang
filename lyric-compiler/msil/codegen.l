@@ -6879,7 +6879,16 @@ func lowerBuiltinOrStaticCallMsil(
           } else {
             match mapGet(cctx.fieldDeclaredNames, fldKeyH) {
               case Some(fname) -> match mapGet(cctx.fieldMsilTypes, ctorKey + "/" + fname) { case Some(fty) -> fty; case None -> MObject }
-              case None -> MObject
+              // A NON-GENERIC union case registers no `fieldDeclaredNames` entry
+              // (that map is populated only for generic cases, `uArity > 0`), so
+              // fall back to the positional `fieldMsilTypes[<ctor>/field<i>]` key —
+              // which non-generic record AND union cases both register — to recover
+              // a concrete `List[T]` / `Map[..]` field type.  Without this the hint
+              // degrades to `object`, the `[...]` argument builds a `List<object>`
+              // instead of the field's concrete `List<T>`, and a later `match`
+              // binding (which casts to the concrete field type) faults with
+              // InvalidCastException (#2592 / D-progress-469 facet 4).
+              case None -> match mapGet(cctx.fieldMsilTypes, fldKeyH) { case Some(fty) -> fty; case None -> MObject }
             }
           }
           val at = match innerHint {
