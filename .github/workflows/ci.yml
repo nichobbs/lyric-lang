@@ -1354,6 +1354,157 @@ jobs:
           fi
           echo "cross-package record construct-in-consumer builds the concrete list"
 
+      # Construction-position collExpect coverage (#2592 slice 3, D-progress-482).
+      # Verifies that the self-hosted `codegen.l` `collExpect` push at four positions
+      # produces genuine concrete `List<T>` rather than `List<object>`:
+      #   1. Return position: `func f(): List[Int] { [10,20,30] }` — return-type push
+      #   2. Call argument: `sumList([100,200,300])` — parameter-type push
+      #   3. `var` reassignment: `xs = [1,2,3]` — local-tracked-type push
+      #   4. Nested literal: `[[10,20],[30,40,50]]` — element-type push for inner list
+      # All four positions require the SELF-HOSTED emitter (`lyric test` via the
+      # in-process `Msil.Bridge`).  `lyric run` compiles through the F# bootstrap
+      # emitter, which does not push `collExpect` for positions 1-3 — it builds
+      # `List<object>` for those positions and the CLR faults with
+      # `InvalidCastException` when the concrete-typed operation runs at runtime.
+      # Guarded by a `.bootstrap/stage1` presence check (::warning if missing).
+      - name: Construction-position collExpect coverage (#2592 slice 3, self-hosted)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping collExpect construction-position self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping collExpect construction-position self-test"
+            exit 0
+          fi
+          work="$(mktemp -d)"
+          cat > "$work/c3.l" <<'LYR'
+          @test_module
+          package C3
+          import Std.Testing
+          func makeInts(): List[Int] { [10, 20, 30] }
+          func sumList(xs: in List[Int]): Int {
+            var s = 0
+            var i = 0
+            while i < xs.count { s = s + xs[i]; i = i + 1 }
+            s
+          }
+          @test func testReturnPosition(): Unit {
+            val xs = makeInts()
+            Testing.assertEq(xs.count, 3)
+            Testing.assertEq(xs[0] + xs[1] + xs[2], 60)
+          }
+          @test func testCallArgPosition(): Unit {
+            Testing.assertEq(sumList([100, 200, 300]), 600)
+          }
+          @test func testReassignPosition(): Unit {
+            var xs: List[Int] = newList()
+            xs = [1, 2, 3]
+            Testing.assertEq(xs.count, 3)
+            Testing.assertEq(xs[0] + xs[2], 4)
+          }
+          @test func testNestedLiteralPosition(): Unit {
+            val xss: List[List[Int]] = [[10, 20], [30, 40, 50]]
+            Testing.assertEq(xss[0].count, 2)
+            Testing.assertEq(xss[1].count, 3)
+            Testing.assertEq(xss[0][0] + xss[0][1], 30)
+          }
+          LYR
+          "$lyric_bin" test "$work/c3.l"
+          echo "collExpect propagates correctly at all four construction positions (self-hosted)"
+          echo "nested-literal collExpect builds inner lists as concrete List<int32>"
+
+      # `Sort.sortStrings(list.toArray())` end-to-end (#2592 slice 4, D-progress-483).
+      # The #2592 headline bug: self-hosted callers passed a `List`-backed slice to
+      # the F#-built `Std.Sort.sortStrings(String[])`, which returned the unsorted
+      # input because the array-based F# body couldn't walk a `List` value.
+      # The `cli.l::sortFileList` workaround is NOT retired in this PR (retirement
+      # is deferred to stage-2 self-hosting; see D-progress-483 for the rationale).
+      # This test confirms the underlying mechanism works end-to-end: `MConcreteList`
+      # values support `.toArray()` and `coerceCallArgMsil` auto-converts
+      # `MConcreteList → MArray` at call sites (D-progress-483).
+      # Test builds a `List[String]`, converts via `.toArray()`, sorts, and
+      # asserts lexicographic order.
+      - name: Sort.sortStrings(list.toArray()) end-to-end (#2592 slice 4)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin"
+            exit 1
+          fi
+          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.Sort.dll" ]; then
+            echo "::error::Lyric.Stdlib.Sort.dll not staged — slice-4 test cannot run"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          cat > "$work/s4.l" <<'LYR'
+          package S4
+          import Std.Sort as Sort
+          import Std.Console as Console
+          func main(): Unit {
+            val files: List[String] = newList()
+            files.add("gamma.l")
+            files.add("alpha.l")
+            files.add("beta.l")
+            val sorted = Sort.sortStrings(files.toArray())
+            var acc = ""
+            var i = 0
+            while i < sorted.length {
+              if i > 0 { acc = acc + " " }
+              acc = acc + sorted[i]
+              i = i + 1
+            }
+            Console.println(acc)
+          }
+          LYR
+          out="$("$lyric_bin" run "$work/s4.l" 2>&1 | tail -1)"
+          echo "slice-4 program printed: '$out'"
+          if [ "$out" != "alpha.l beta.l gamma.l" ]; then
+            echo "::error::Sort.sortStrings(list.toArray()) returned '$out' (expected 'alpha.l beta.l gamma.l'); #2592 slice-4 regressed"
+            exit 1
+          fi
+          echo "Sort.sortStrings(list.toArray()) returns lexicographically sorted result"
+
+      # Std.Xml / Std.Yaml staging check (#2592 slice 4 — curated-package
+      # exclusions retired, D-progress-480).  `Xml` and `Yaml` are now in
+      # CURATED_PACKAGES in `scripts/stage-selfhosted-stdlib.sh`.
+      # A runtime smoke test via `lyric run` is deliberately omitted:
+      # the F# bootstrap emitter stack-overflows (exit 134) for ANY external
+      # code that transitively uses `XmlNode` or `XmlDoc` as a type parameter
+      # (including `List[XmlNode]` returned by `elementChildren`), because
+      # the emitter recursively resolves all field types of external types and
+      # `XmlNode` contains a self-referential `List[XmlNode]` field.  The
+      # existing `xml_tests.l` passes because it is compiled against Xml source
+      # (in-flight, not DLL-restored), which avoids DLL-based recursive lookup.
+      # DLL presence is the authoritative check for slice 4; correctness of the
+      # Xml and Yaml APIs is covered by the stdlib emitter test suite.
+      - name: Std.Xml and Std.Yaml staged (#2592 slice 4)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin"
+            exit 1
+          fi
+          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.Xml.dll" ]; then
+            echo "::error::Lyric.Stdlib.Xml.dll not staged — curated-package exclusion not retired"
+            exit 1
+          fi
+          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.Yaml.dll" ]; then
+            echo "::error::Lyric.Stdlib.Yaml.dll not staged — curated-package exclusion not retired"
+            exit 1
+          fi
+          echo "Std.Xml and Std.Yaml DLLs are staged alongside the AOT binary"
+
       # Slice-length / String-comparison self-test (#2539).  Exercises two
       # self-hosted MSIL codegen fixes: (1) `String` relational operators
       # (`<` / `>` / `<=` / `>=`) route through `String.CompareOrdinal`

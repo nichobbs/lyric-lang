@@ -23631,3 +23631,59 @@ guard added); the earlier `InvalidCastException` is gone; no regression —
 cross-package union construct+match still returns `3`, `lyric-auth` 32/32,
 `lyric-session` 5/15/11, in-bundle generics 20/20, slice/string self-test green;
 emitter (828) + CLI (84) F# suites green; `make lyric` clean.
+
+### D-progress-482 — construction-position `collExpect` coverage (#2592 slice 3)
+
+**Status:** Shipped — CI guard added for all four construction positions via the
+self-hosted emitter.  The four positions: (1) list literal in **return position**
+(return-type push at `SReturn`), (2) list literal as a **call argument**
+(parameter-type push at call site), (3) list literal in a **`var` reassignment**
+(`xs = [1,2,3]` where `xs: List[Int]`, local-tracked-type push), and
+(4) **nested list literal** (`[[10,20],[30,40,50]]` — element-type push for each
+inner list).  All four positions require the self-hosted emitter path: the F#
+bootstrap emitter does not push `collExpect` for positions 1–3, building
+`List<object>` literals there and faulting with `InvalidCastException` when the
+concrete-typed operation runs.
+
+**CI guard:** the `Construction-position collExpect coverage (self-hosted)` step
+runs a `@test_module` via `lyric test` (self-hosted MSIL bridge via
+`.bootstrap/stage1`); four `@test` functions covering each position.  Guarded by
+`.bootstrap/stage1` presence (::warning if missing, not ::error).
+
+### D-progress-483 — `Sort.sortStrings(list.toArray())` end-to-end; Std.Xml/Yaml unblocked; `cli.l::sortFileList` retirement deferred to stage-2 (#2592 slice 4)
+
+**Status:** Shipped — the `#2592` headline slice:
+
+**codegen.l `coerceCallArgMsil` extension.** Extended to handle
+`MConcreteList(e) → MArray(e)`: when a concrete `List<T>` value is passed to a
+`slice[T]` (= `T[]`) parameter, `coerceCallArgMsil` now emits `MListOp(LoToArray, e)`
+automatically.  This is a safety-net for the (currently hypothetical, possible under
+type-checker gaps) case where a `MConcreteList` value reaches a `MArray` parameter
+boundary without an explicit `.toArray()` call.
+
+**`cli.l::sortFileList` — retirement deferred to stage-2.** `cli.l` is compiled by the
+F# stage-1 bootstrap, which bundles `Std.Sort` inline and produces broken runtime code
+for its typed-lambda generics.  Attempting to call `Sort.sortStrings` from `cli.l` at
+stage-1 crashes with a `NullReferenceException` inside `List.get_Item` — the bundled
+sort compiles but miscompiles the typed-lambda closure.  The `sortFileList` local
+monomorphic selection sort therefore remains in `cli.l`; its comment is updated to
+document the stage-2 dependency and cite #2592 slice 4 as the tracking issue.
+`sortFileList` can be retired once `cli.l` is compiled exclusively by the self-hosted
+compiler (stage-2 self-hosting).
+
+**`scripts/stage-selfhosted-stdlib.sh` CURATED_PACKAGES expansion.** `Std.Xml` and
+`Std.Yaml` added to `CURATED_PACKAGES`.  Their prior exclusion — "union-case ctor
+signature mismatch (field encoding)" — was fixed by D-progress-480 (non-generic
+union-case concrete-collection field construction).  Both packages now build and stage
+correctly; the `XmlNode.Element(tag, attrs, children)` match no longer faults on the
+`List[XmlAttr]` / `List[XmlNode]` field cast.
+
+**CI guards:** (1) `Sort.sortStrings(list.toArray())` step builds a `List[String]` from
+`add()` calls, converts via `.toArray()`, sorts, and asserts `alpha.l beta.l gamma.l`;
+(2) Xml/Yaml staged step verifies both DLLs are present alongside the AOT binary — no
+runtime smoke test is run.  A `lyric run` program that imports `Std.Xml` stack-overflows
+(exit 134) in the F# bootstrap emitter because it recursively resolves all field types of
+external types and `XmlNode` is self-referential (`List[XmlNode]` field on the `Element`
+case); any API involving `XmlNode` or `XmlDoc` as a type parameter triggers the loop.  The
+existing `xml_tests.l` stdlib tests (compiled against Xml source, not DLL-restored metadata)
+cover Xml/Yaml API correctness in the emitter test suite.

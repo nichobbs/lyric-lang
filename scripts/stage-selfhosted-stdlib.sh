@@ -14,11 +14,12 @@
 #
 # Scope: only packages VERIFIED to bind against the F#-built stdlib are shipped
 # (see CURATED_PACKAGES below).  Packages with known self-hosted binding bugs are
-# deliberately excluded — they need the self-hosted-built-toolchain ABI work
-# (docs/10 D-progress-469) first:
+# deliberately excluded — they need the self-hosted-built-toolchain ABI work first:
 #   * Std.Random  — System.Random.Next instance mis-bind
 #   * Std.Format  — Int32.ToString(int, string) extern not found
-#   * Std.Xml / Std.Yaml — union-case ctor signature mismatch (field encoding)
+# Previously excluded (now fixed by D-progress-480, #2592 slice 1):
+#   * Std.Xml / Std.Yaml — non-generic union-case ctor concrete-collection field
+#     mismatch (List<object> stored into List<T> field → InvalidCastException on match)
 #
 # Usage: stage-selfhosted-stdlib.sh <lyric-binary> <lib-dir> [<lib-dir> ...]
 set -euo pipefail
@@ -34,8 +35,8 @@ fi
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STD_DIR="$REPO_ROOT/lyric-stdlib/std"
 
-# Verified-to-bind leaf packages F# cannot ship.  Std.Sort is the #2592 headline.
-CURATED_PACKAGES=(Sort Iter SecureRandom Regex Log Http Rest)
+# Verified-to-bind leaf packages F# cannot ship.
+CURATED_PACKAGES=(Sort Iter SecureRandom Regex Log Http Rest Xml Yaml)
 
 emit_dir="$(mktemp -d)"
 trap 'rm -rf "$emit_dir"' EXIT
