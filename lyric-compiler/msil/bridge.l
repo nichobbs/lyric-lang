@@ -441,6 +441,21 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // so cross-assembly generic calls (`mapGet`, `unwrapOr`, …) specialise into
   // the consumer bundle instead of erasing their return to `object` (#1727).
   val stdlibGenFuncs = collectStdlibGenericFuncs(stdlibPkgs)
+  // In-bundle user package generic pub funcs: same treatment so a test package
+  // calling `Validation.toResult(42, [])` specialises `toResult__Int` into its
+  // own class rather than hitting the unresolved-call fallback (#2932).
+  val inBundleGenFuncs = collectInBundleGenericFuncs(parsedPkgs)
+  val allImportedGenFuncs: List[FunctionDecl] = newList()
+  var agfi = 0
+  while agfi < stdlibGenFuncs.count {
+    allImportedGenFuncs.add(stdlibGenFuncs[agfi])
+    agfi = agfi + 1
+  }
+  var agfj = 0
+  while agfj < inBundleGenFuncs.count {
+    allImportedGenFuncs.add(inBundleGenFuncs[agfj])
+    agfj = agfj + 1
+  }
   val perPkgFiles: List[SourceFile] = newList()
   val perPkgNames: List[String] = newList()
   var ti = 0
@@ -474,7 +489,7 @@ pub func compileProjectToMsilWithRestoredAndVersion(
 
     val derived = deriveFile(propRes.file)
 
-    val monoRes = monoFileWithImports(derived, stdlibGenFuncs)
+    val monoRes = monoFileWithImports(derived, allImportedGenFuncs)
     if reportAndAbortInPkg(pp.name, monoRes.diagnostics) {
       return false
     }
@@ -526,6 +541,67 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // surface so the per-package addPackageTokens pre-scan sees restored
   // types as first-class lookups.
   registerRestoredArtifactTokens(cctx)
+
+  // Pre-register all in-bundle user-type names in typeFqnByName so that
+  // cross-package type references in specialised functions resolve correctly
+  // regardless of package processing order.  `cmdTestManifest` in cli.l
+  // places the test package FIRST in allPkgs (so its synthesised main() wins
+  // the entry-point slot), which means addPackageTokens for the test package
+  // runs before addPackageTokens for the library packages.  Any specialised
+  // function placed in the test package (e.g. toResult__Int synthesised from
+  // Validation.toResult[T]) carries unqualified type refs (e.g. TRef
+  // ["ValidationError"]) whose FQN must be resolved via typeFqnByName.
+  // Without this pre-pass the lookup falls back to pkgName + "." + seg,
+  // producing the wrong FQN (e.g. Validation.ValidationTests.ValidationError)
+  // and a "match not exhaustive" panic at run time (#2932).
+  var prtpi = 0
+  while prtpi < perPkgFiles.count {
+    val prtFile = perPkgFiles[prtpi]
+    val prtPkg = perPkgNames[prtpi]
+    var prtii = 0
+    while prtii < prtFile.items.count {
+      match prtFile.items[prtii].kind {
+        case IRecord(decl) -> {
+          if not cctx.typeFqnByName.containsKey(decl.name) {
+            cctx.typeFqnByName.add(decl.name, prtPkg + "." + decl.name)
+          }
+        }
+        case IExposedRec(decl) -> {
+          if not cctx.typeFqnByName.containsKey(decl.name) {
+            cctx.typeFqnByName.add(decl.name, prtPkg + "." + decl.name)
+          }
+        }
+        case IUnion(decl) -> {
+          if not cctx.typeFqnByName.containsKey(decl.name) {
+            cctx.typeFqnByName.add(decl.name, prtPkg + "." + decl.name)
+          }
+        }
+        case IEnum(decl) -> {
+          if not cctx.typeFqnByName.containsKey(decl.name) {
+            cctx.typeFqnByName.add(decl.name, prtPkg + "." + decl.name)
+          }
+        }
+        case IInterface(decl) -> {
+          if not cctx.typeFqnByName.containsKey(decl.name) {
+            cctx.typeFqnByName.add(decl.name, prtPkg + "." + decl.name)
+          }
+        }
+        case IOpaque(decl) -> {
+          if not cctx.typeFqnByName.containsKey(decl.name) {
+            cctx.typeFqnByName.add(decl.name, prtPkg + "." + decl.name)
+          }
+        }
+        case IDistinctType(decl) -> {
+          if not cctx.typeFqnByName.containsKey(decl.name) {
+            cctx.typeFqnByName.add(decl.name, prtPkg + "." + decl.name)
+          }
+        }
+        case _ -> ()
+      }
+      prtii = prtii + 1
+    }
+    prtpi = prtpi + 1
+  }
 
   val liftedFiles: List[SourceFile] = newList()
   var li = 0
@@ -1052,6 +1128,41 @@ pub func collectStdlibGenericFuncs(pkgs: in List[StdlibPkg]): List[FunctionDecl]
         }
         case _ -> {
         }
+      }
+      ii = ii + 1
+    }
+    pi = pi + 1
+  }
+  genFuncs
+}
+
+// Collect every generic `pub func` with a block body from all parsed in-bundle
+// user packages so that cross-package same-bundle generic calls (e.g.
+// `Validation.toResult(42, [])` from a test package calling a generic in the
+// `Validation` package) are specialised into the calling package instead of
+// falling through to the unresolved-call fallback that emits unbalanced IL
+// (causing `InvalidProgramException` at runtime).  Mirrors the logic of
+// `collectStdlibGenericFuncs` but operates on `ParsedUserPkg` entries (#2932).
+func collectInBundleGenericFuncs(parsedPkgs: in List[ParsedUserPkg]): List[FunctionDecl] {
+  val genFuncs: List[FunctionDecl] = newList()
+  var pi = 0
+  while pi < parsedPkgs.count {
+    val file = parsedPkgs[pi].file
+    var ii = 0
+    while ii < file.items.count {
+      match file.items[ii].kind {
+        case IFunc(decl) -> {
+          val isPub = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+          val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+          val hasBlockBody = match decl.body {
+            case Some(fb) -> match fb { case FBBlock(_) -> true; case FBExpr(_) -> false }
+            case None -> false
+          }
+          if isPub and isGeneric and hasBlockBody and not annsBlockSpecialization(decl.annotations) {
+            genFuncs.add(decl)
+          }
+        }
+        case _ -> ()
       }
       ii = ii + 1
     }
