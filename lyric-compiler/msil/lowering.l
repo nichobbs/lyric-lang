@@ -739,6 +739,7 @@ pub record MInterface {
   className: String       // fully-qualified interface name
   namespace: String
   methods: List[MInterfaceMethod]
+  defaultMethods: List[MFunc]   // concrete DIM bodies (IMFunc members)
 }
 
 // Per overridden interface method slot.
@@ -2918,6 +2919,36 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
       )
     )
     mi = mi + 1
+  }
+
+  // Emit concrete MethodDefs for default interface methods (DIM).
+  // A DIM has Public + Virtual + HideBySig + NewSlot but NOT Abstract, and a
+  // real body (rva != 0).  The CLR dispatches through the DIM when the
+  // implementing class provides no override.
+  var di = 0
+  while di < iface.defaultMethods.count {
+    val dm = iface.defaultMethods[di]
+    val mbDm = lowerMFunc(dm, ctx)
+    ctx.bodies.add(mbDm)
+    val rvasDm = methodBodyRvas(ctx.bodies)
+    val dmRva = rvasDm[ctx.bodies.count - 1]
+    val sNDm = internString(sh, dm.name)
+    val dmSig = buildInstanceMethodSigWithCtx(dm.params, dm.ret, ctx)
+    val bDmSig = internBlob(bh, "ifdmeth_" + iface.className + "_" + dm.name + "/" + toString(dm.params.count), dmSig)
+    val fpDm = t.params_.count + 1
+    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+    addMethodDef(
+      t,
+      MethodDefRow(
+        rva = dmRva,
+        implFlags = 0,
+        flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_NEW_SLOT,
+        name = sNDm,
+        signature = bDmSig,
+        paramList = fpDm
+      )
+    )
+    di = di + 1
   }
 
   // TypeDef flags for a CLR interface: Interface | Abstract | Public.

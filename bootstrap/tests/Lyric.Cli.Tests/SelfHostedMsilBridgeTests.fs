@@ -771,6 +771,32 @@ func main(): Unit {
             1   // expectedIfaceImplCount: EnglishGreeter implements Greeter
             0   // expectedMethodImplCount: CLR name-matching, no explicit MethodImpl rows
 
+        // ── C11: default interface method body (DIM) ──────────────────────────
+        // An interface method WITH a body (IMFunc) is a DIM — an impl that does
+        // not override it gets the default body at runtime.  Verify the self-hosted
+        // MSIL emitter emits a concrete (non-abstract) MethodDef so the CLR
+        // dispatches correctly.
+        mkBridge "shm_interface_default_method"
+            """
+package E
+interface Greeter {
+  func greet(): String
+  func greetTwice(): String { self.greet() + " " + self.greet() }
+}
+record Hello {}
+impl Greeter for Hello {
+  func greet(): String = "hi"
+}
+func speak(g: in Greeter): Unit {
+  println(g.greet())
+  println(g.greetTwice())
+}
+func main(): Unit {
+  speak(Hello())
+}
+"""
+            "hi\nhi hi"
+
         // ── Trailing-expression-as-return-value: `func main(): Int { 0 }` ──────────────────
         // Regression test for the codegen bug where `lowerBlockMsil` popped the
         // trailing literal, leaving the stack empty for `ret` and producing
