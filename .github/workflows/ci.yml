@@ -2757,6 +2757,49 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/release_self_test.l
 
+      # MSIL project bridge self-test — exercises the self-hosted multi-package
+      # MSIL bridge (Msil.Bridge.compileProjectToMsil /
+      # compileProjectToMsilWithFeatures) end-to-end.  Covers Phases 1–3:
+      # independent bundles, cross-package function/record/union round-trips,
+      # and cfg-erasure diagnostics (F0012/F0013).  Placed in lyric-compiler/
+      # so the Msil.Bridge transitive closure does not overflow the F# bootstrap
+      # emitter; stage-1 DLLs provide the compiler-package imports (#2888).
+      - name: MSIL project bridge self-test (native lyric test)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping MSIL project bridge self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping MSIL project bridge self-test"
+            exit 0
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/msil_project_bridge_self_test.l
+
+      # Emitter project self-test — exercises the Phase 4 in-process routing in
+      # Lyric.Emitter.emitProject (multi-package DOTNET builds).  Covers aliased
+      # imports, per-package isolation, @cfg erasure via emitProject, restored-dep
+      # wiring, and subprocess-fallback routing (#2888).
+      - name: Emitter project self-test (native lyric test)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::warning::stage 1 bundle missing; skipping emitter project self-test"
+            exit 0
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::warning::AOT binary not found at $lyric_bin; skipping emitter project self-test"
+            exit 0
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/emitter_project_self_test.l
+
       - name: Init self-test (native lyric test)
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
