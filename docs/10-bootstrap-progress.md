@@ -23680,5 +23680,10 @@ correctly; the `XmlNode.Element(tag, attrs, children)` match no longer faults on
 
 **CI guards:** (1) `Sort.sortStrings(list.toArray())` step builds a `List[String]` from
 `add()` calls, converts via `.toArray()`, sorts, and asserts `alpha.l beta.l gamma.l`;
-(2) Xml/Yaml staged step verifies both DLLs are present and runs a `parseXml` + Element
-match asserting `items 2`.
+(2) Xml/Yaml staged step verifies both DLLs are present alongside the AOT binary — no
+runtime smoke test is run.  A `lyric run` program that imports `Std.Xml` stack-overflows
+(exit 134) in the F# bootstrap emitter because it recursively resolves all field types of
+external types and `XmlNode` is self-referential (`List[XmlNode]` field on the `Element`
+case); any API involving `XmlNode` or `XmlDoc` as a type parameter triggers the loop.  The
+existing `xml_tests.l` stdlib tests (compiled against Xml source, not DLL-restored metadata)
+cover Xml/Yaml API correctness in the emitter test suite.
