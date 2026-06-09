@@ -6,9 +6,14 @@
 //!   2. Compute SHA-256 of serialized JSON
 //!   3. Re-serialize with contractHash field populated
 //!
-//! Per docs/45, this replaces the F# bootstrap shim and is the sole
-//! source of truth for contract metadata emission (self-hosted compiler
-//! path only; F# bootstrap remains unchanged until stage-0 is deleted).
+//! **Current status (Phase 1.2b):** Available for self-hosted compiler use only.
+//! The bootstrap emitter (F# stage-0) continues using v2 contract metadata
+//! (via Meta.contractToJson) for backward compatibility. Integration of v3
+//! into the bootstrap path is deferred pending issue #2580 infrastructure
+//! (in-process MSIL bridge support for self-hosted compiler packages).
+//!
+//! Per docs/45, this is the sole source of truth for v3 contract metadata
+//! emission in the self-hosted compiler path.
 //!
 //! Public entry point: emitContractMetadata(contract: in Meta.Contract): String
 @runtime_checked

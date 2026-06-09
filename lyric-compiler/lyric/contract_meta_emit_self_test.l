@@ -1,6 +1,12 @@
 //! contract_meta_emit_self_test.l — basic tests for Lyric.ContractMetaEmit
 //!
-//! Verifies the two-pass hashing protocol and JSON structure.
+//! Verifies the two-pass hashing protocol and JSON structure. Tests the
+//! Lyric.ContractMetaEmit package's ability to emit contract metadata v3
+//! with SHA-256 integrity hashing.
+//!
+//! **Not currently wired into CI** — awaiting issue #2580 (in-process MSIL
+//! bridge support for self-hosted compiler packages). The test suite can be
+//! run manually once the infrastructure is ready.
 @test_module
 package Lyric.ContractMetaEmit.Tests
 
