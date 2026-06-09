@@ -295,64 +295,68 @@ pub func lowerFunc(
     pi = pi + 1
   }
 
-  // Lower the body.
-  match decl.body {
-    case Some(body) -> {
-      match body {
-        case FBBlock(block) -> {
-          match retTy {
-            case JVoid -> {
-              // Void function: every statement (including a trailing
-              // expression) is lowered in statement position and its value
-              // discarded; a bare `return` closes the method.
-              lowerBlock(ctx, insns, block)
-            }
-            case _ -> {
-              // Non-void function: the block's trailing expression IS the
-              // return value, so lower it in expression position (leaving its
-              // value on the stack) rather than popping it.  Using statement-
-              // mode `lowerBlock` here popped the tail, leaving the stack empty
-              // for the synthesised `ireturn` (VerifyError: operand stack
-              // underflow).
-              val tailTy = lowerBlockExpr(ctx, insns, block)
-              // `try { … } finally { … }` in tail position falls back to
-              // statement-mode lowering inside `lowerBlockExpr` and reports
-              // `JVoid` (value discarded by the fallback).  Emitting a typed
-              // `ireturn`/`areturn` next would underflow the operand stack
-              // (VerifyError) — so a tail value of `JVoid` requires the
-              // value-less `return` instead (#1683).
-              //
-              // `blockTerminates(block)` covers the case where the tail is an
-              // `if`/`else` (or `match`) whose arms all `return`: the lowering
-              // leaves the unreachable join label as the last instruction, so
-              // `endsWithReturn` cannot see the termination and would otherwise
-              // append a stray void `return` (#2870).
-              if not endsWithReturn(insns) and not blockTerminates(block) {
-                match tailTy {
-                  case JVoid -> emitReturn(insns, JVoid)
-                  case _ -> emitReturnArrayCoerced(ctx, insns, tailTy, retTy)
-                }
-              }
-            }
-          }
-          // For the void path the inner `lowerBlock` did not leave a value on
-          // the stack; close the method with `return` if it didn't already end
-          // in one.  The non-void path returned above.
-          if retTy == JVoid and not endsWithReturn(insns) and not blockTerminates(block) {
-            emitReturn(insns, retTy)
-          }
-        }
-        case FBExpr(e) -> {
-          val ty = lowerExpr(ctx, insns, e)
-          emitReturnArrayCoerced(ctx, insns, ty, retTy)
-        }
-      }
+  // Lower the body. @externTarget annotation takes priority over any syntactic
+  // body form — a conventional `= ()` stub on an extern declaration must route
+  // to lowerExternTargetBody, not the unit-literal path (which leaves the
+  // operand stack empty and causes a VerifyError on the typed return).
+  // Mirrors the MSIL hasExternTargetMsil guard in the MSIL emitter.
+  match findExternTarget(decl) {
+    case Some(target) -> {
+      lowerExternTargetBody(decl, ctx, insns, target);
+      ()
     }
     case None -> {
-      match findExternTarget(decl) {
-        case Some(target) -> {
-          lowerExternTargetBody(decl, ctx, insns, target);
-          ()
+      match decl.body {
+        case Some(body) -> {
+          match body {
+            case FBBlock(block) -> {
+              match retTy {
+                case JVoid -> {
+                  // Void function: every statement (including a trailing
+                  // expression) is lowered in statement position and its value
+                  // discarded; a bare `return` closes the method.
+                  lowerBlock(ctx, insns, block)
+                }
+                case _ -> {
+                  // Non-void function: the block's trailing expression IS the
+                  // return value, so lower it in expression position (leaving its
+                  // value on the stack) rather than popping it.  Using statement-
+                  // mode `lowerBlock` here popped the tail, leaving the stack empty
+                  // for the synthesised `ireturn` (VerifyError: operand stack
+                  // underflow).
+                  val tailTy = lowerBlockExpr(ctx, insns, block)
+                  // `try { … } finally { … }` in tail position falls back to
+                  // statement-mode lowering inside `lowerBlockExpr` and reports
+                  // `JVoid` (value discarded by the fallback).  Emitting a typed
+                  // `ireturn`/`areturn` next would underflow the operand stack
+                  // (VerifyError) — so a tail value of `JVoid` requires the
+                  // value-less `return` instead (#1683).
+                  //
+                  // `blockTerminates(block)` covers the case where the tail is an
+                  // `if`/`else` (or `match`) whose arms all `return`: the lowering
+                  // leaves the unreachable join label as the last instruction, so
+                  // `endsWithReturn` cannot see the termination and would otherwise
+                  // append a stray void `return` (#2870).
+                  if not endsWithReturn(insns) and not blockTerminates(block) {
+                    match tailTy {
+                      case JVoid -> emitReturn(insns, JVoid)
+                      case _ -> emitReturnArrayCoerced(ctx, insns, tailTy, retTy)
+                    }
+                  }
+                }
+              }
+              // For the void path the inner `lowerBlock` did not leave a value on
+              // the stack; close the method with `return` if it didn't already end
+              // in one.  The non-void path returned above.
+              if retTy == JVoid and not endsWithReturn(insns) and not blockTerminates(block) {
+                emitReturn(insns, retTy)
+              }
+            }
+            case FBExpr(e) -> {
+              val ty = lowerExpr(ctx, insns, e)
+              emitReturnArrayCoerced(ctx, insns, ty, retTy)
+            }
+          }
         }
         case None -> emitReturn(insns, retTy)
       }

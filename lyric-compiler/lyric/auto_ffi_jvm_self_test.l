@@ -122,3 +122,23 @@ test "StringBuilder.new() no-arg constructor binding" {
   val sb = JStringBuilder.new()
   assertEqualInt(sb.length(), 0, "empty StringBuilder length")
 }
+
+// Phase 5 (F0015-J): @externTarget with metadata-verified signature.
+// The function names follow the Maven TypeName_methodName convention so
+// isStaticExternByName returns true, matching the emitted invokestatic.
+@externTarget("java.lang.Math.abs")
+func Math_abs(x: in Int): Int = ()
+
+@externTarget("java.lang.Math.max")
+func Math_max(a: in Int, b: in Int): Int = ()
+
+@externTarget("java.lang.Integer.toString")
+func Integer_toString(x: in Int): String = ()
+
+test "@externTarget with verified JVM signatures compile and run correctly" {
+  assertEqualInt(Math_abs(-12), 12, "Math_abs(-12)")
+  assertEqualInt(Math_abs(7), 7, "Math_abs(7)")
+  assertEqualInt(Math_max(3, 9), 9, "Math_max(3, 9)")
+  assertEqualInt(Math_max(100, 2), 100, "Math_max(100, 2)")
+  assertEqual(Integer_toString(42), "42", "Integer_toString(42)")
+}
