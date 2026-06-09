@@ -16,12 +16,25 @@ users.  The authoritative, source-verified list is
 `docs/41-self-hosted-compiler-gap-analysis.md` §10 (re-verified 2026-06-03),
 sequenced as `docs/36-v1-roadmap.md` §R7.  In priority order:
 
-1. **Front-end soundness (CRITICAL).** Make the type checker a gatekeeper, not an
-   advisory pass: type the ~12 `TyError` expression forms, add match
-   exhaustiveness, visibility / opaque-hiding / impl-conformance enforcement, and
-   a §5.2 parameter-mode pass that runs for *all* packages; then flip the
-   single-file build path from advisory to fatal and reconcile it with the
-   project path. (docs/41 C1, C2, C10, C11, H14, H15, H16, M6, C13-front-end.)
+1. **Front-end soundness (CRITICAL).** **Shipped:** gatekeeper flip done — single-file
+   `lyric build` now aborts on type errors, matching the project path (C1,
+   D-progress-438); match exhaustiveness for unions/enums/`Bool`/unbounded scalars
+   (T0016, #1483 split 1); `EPropagate` (`?`) unwrap typing (#1483 split 2a);
+   `EIndex` element typing (D-progress-407); `EIf`-branch unified typing
+   (D-progress-414); `EMatch`-branch unified typing with per-arm pattern variable
+   binding (D-progress-419); generic union-constructor typing (D-progress-418);
+   generic return-type instantiation (D-progress-424); argument-type overload
+   resolution (D-progress-421); `EBlock`/`EUnsafe`/`EResult` typing
+   (D-progress-408); visibility enforcement (H14, #1484); opaque
+   representation-hiding (C10, #1485); §5.2 parameter-mode pass for all packages
+   (C13-front-end, #1487); impl-conformance start — missing-abstract-method and
+   arity-mismatch errors, interface subtyping at argument positions (C11 PARTIAL,
+   #1486). **Remaining:** remaining `TyError` expression forms — `ELambda`,
+   `ETypeApp`, `EForall`/`EExists`, `EAssign`, tuple-destructure sub-bindings,
+   record-ctor argument checking (C2); full impl-conformance signature type
+   matching + default method bodies (C11); `where T: Marker` bound satisfaction
+   (H15); `alias X = Long` as a usable type (H16); numeric widening (M6).
+   (docs/41 C2, C11 PARTIAL, H15, H16, M6.)
 2. **Backend correctness (CRITICAL).** `?` (C3), all of #1481 (compound-assign
    operator H22, Float/Long literal match H18, break/continue-across-`try` H17,
    `List.contains`/`removeAt` + unknown-method fail-loud H21), `defer` at scope
@@ -39,16 +52,21 @@ sequenced as `docs/36-v1-roadmap.md` §R7.  In priority order:
    unboxed via annotation or HOF-signature propagation (#1939); a param-using
    lambda with neither source fails loud.
    **Anything not yet correctly lowered must hard-error, never silently pass
-   through.** (docs/41 H20 PARTIAL; #1877 done, #1939 done, #1854.)
+   through.** (docs/41 H20 RESOLVED single-level; multi-level nesting #1479
+   remains; #1877 done, #1939 done, lambdas in `@test_module` #1854.)
 3. **Async (CRITICAL).** Port `AsyncStateMachine.fs` + `AsyncGenerator.fs` to
    `lyric-compiler/msil/` (state machine, `Task[T]`/`ValueTask[T]`, lazy
    `IAsyncEnumerable[T]`).  Until ported, `await`/`spawn`/async-generators must
    panic with a tracked-issue message instead of miscompiling. (docs/41 C4, C5.)
-4. **Feature completion (HIGH).** User generic *types* (C8), `@projectable`
-   twins (H2), range-subtype validation (H3), custom `@generate` wiring (H10),
-   `old()`/quantifier lowering (H11), `config{}` (M3), `@derive(Ord)`/union-enum
-   derives (M4), user cross-package generic-fn mono (H6), wire
-   `bind`/`scoped`/`provided` (H4), call-site named/default args (H5).
+4. **Feature completion (HIGH).** User cross-package generic *types* type-erased
+   (C8 — in-bundle generic records/unions now reified, #2362/D-progress-453/455;
+   cross-package still erased), `@projectable` twins (H2), range-subtype
+   validation (H3), custom `@generate` wiring (H10), `old()`/quantifier lowering
+   (H11), `config{}` (M3), `@derive(Ord)`/union-enum derives (M4), user
+   cross-package generic-fn mono (H6 — stdlib wired, user cross-package funcs
+   still not collected), wire `bind`/`scoped`/`provided` (H4 — `WMExpose`
+   lowers, `bind`/`scoped`/`provided` dropped), call-site named/default args
+   (H5 — record ctor reordering done, function call-site still broken).
 5. **F# elimination + AOT (HIGH).** Close the `HttpClientHost` package class-`val`
    `.cctor` gap, port `ProcessCapture` to async, resolve the broken
    `StubCounterHost` externs (`@stubbable` counters, **new** — docs/41 L5),
