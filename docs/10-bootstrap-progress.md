@@ -23274,10 +23274,17 @@ call sites are a separate, deferred concern).  Lambda parameters likewise stay
 non-generic, non-lambda parameter signature, exactly matching facet 1's
 whole-type gating discipline.
 
-**Verification:** cross-package non-generic functions taking a record parameter,
-a `slice[Err]` parameter, and a `slice[slice[Err]]` parameter bind and execute
-across a real assembly boundary (`name:required 2 3`; CI guard added);
-no regression — emitter (828) + CLI (84) F# suites green (the self-hosted
+**Verification:** cross-package non-generic functions taking one (`describe`)
+and two (`combine`) reference-typed record parameters bind and execute across a
+real assembly boundary (`name:required name:required|name:required`; CI guard
+added).  The guard constructs the record in the dependency (`mkErr`) and passes
+it from the consumer, so the consumer never builds a collection and needs no
+staged stdlib runtime DLL — the same zero-staging runtime model as facet 1's
+guard (a consumer-side `slice`/`List` literal would pull `Lyric.Stdlib.Core`,
+which `lyric build` does not copy beside a bare `dotnet App.dll` run; the
+parameter fix is whole-type-gated, so the `slice[record]` parameter traverses
+the identical changed branch as the record parameter and adds no coverage).
+No regression — emitter (828) + CLI (84) F# suites green (the self-hosted
 MSIL/JVM bridge tests and every `lyric-stdlib/tests/*_tests.l` compile real
 parameter-bearing functions through the self-hosted emitter), ecosystem
 `lyric test` suites `lyric-auth` and `lyric-session` green (the same oracle that

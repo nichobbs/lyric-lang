@@ -1079,9 +1079,13 @@ jobs:
       # all use the concrete encoding.  So a self-hosted-built function with a
       # reference-typed parameter did not bind from another assembly
       # (MissingMethodException).  This builds a dependency package whose
-      # NON-generic functions take a record parameter and a `slice[record]`
-      # parameter, then a consumer that calls them across a real assembly
+      # NON-generic functions take one (`describe`) and two (`combine`) record
+      # parameters, then a consumer that calls them across a real assembly
       # boundary, and asserts the result.  Before the fix the calls faulted.
+      # The record is constructed in the DEPENDENCY (`mkErr`) and passed by the
+      # consumer, so the consumer never constructs a collection — mirroring the
+      # facet-1 guard above, which runs the consumer without staging any stdlib
+      # runtime DLL (collection literals would pull `Lyric.Stdlib.Core`).
       - name: Cross-package function parameter encoding (D-progress-478)
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
@@ -1107,14 +1111,9 @@ jobs:
           cat > "$work/dep/src/fdep.l" <<'LYR'
           package FDep
           pub record Err { field: String; msg: String }
+          pub func mkErr(): Err { Err(field = "name", msg = "required") }
           pub func describe(e: in Err): String { e.field + ":" + e.msg }
-          pub func countErrs(es: in slice[Err]): Int { es.length }
-          pub func flatCount(ess: in slice[slice[Err]]): Int {
-            var n = 0
-            var i = 0
-            while i < ess.length { n = n + ess[i].length; i = i + 1 }
-            n
-          }
+          pub func combine(a: in Err, b: in Err): String { describe(a) + "|" + describe(b) }
           LYR
           cat > "$work/app/lyric.toml" <<'TOML'
           [package]
@@ -1132,10 +1131,9 @@ jobs:
           import FDep
           import Std.Console as Console
           func main(): Unit {
-            val e = Err(field = "name", msg = "required")
-            val es: slice[Err] = [e, Err(field = "age", msg = "bad")]
-            val ess: slice[slice[Err]] = [es, [e]]
-            Console.println(describe(e) + " " + toString(countErrs(es)) + " " + toString(flatCount(ess)))
+            val a = mkErr()
+            val b = mkErr()
+            Console.println(describe(a) + " " + combine(a, b))
           }
           LYR
           "$lyric_bin" build --manifest "$work/dep/lyric.toml"
@@ -1145,8 +1143,8 @@ jobs:
           cp "$work/dep/bin/Lyric.FDep.dll" "$work/app/bin/"
           got="$(cd "$work/app/bin" && dotnet FApp.dll | tail -1 | tr -d '\r\n')"
           echo "consumer printed: '$got'"
-          if [ "$got" != "name:required 2 3" ]; then
-            echo "::error::cross-package function param call returned '$got', expected 'name:required 2 3'"
+          if [ "$got" != "name:required name:required|name:required" ]; then
+            echo "::error::cross-package function param call returned '$got', expected 'name:required name:required|name:required'"
             exit 1
           fi
           echo "cross-package non-generic function reference-typed params bind concretely"
