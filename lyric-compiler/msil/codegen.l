@@ -15236,8 +15236,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
         items.add(MPEnum(e = MEnum(className = pkgName + "." + decl.name, namespace = pkgName, cases = caseNames)))
       }
       case IInterface(decl) -> {
-        val ifaceMethods: List[MInterfaceMethod] = newList()
-        val dimMethods: List[MFunc] = newList()
+        val ifaceMembers: List[MIfaceItem] = newList()
         val ifaceFqn = pkgName + "." + decl.name
         var mi = 0
         while mi < decl.members.count {
@@ -15250,12 +15249,14 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
                 pi = pi + 1
               }
               val retTy = match sig.ret { case Some(te) -> typeExprToMsil(te, pkgName); case None -> MVoid }
-              ifaceMethods.add(MInterfaceMethod(name = sig.name, params = byrefWrapSigTypes(sig.params, pTypes), ret = retTy))
+              ifaceMembers.add(MIAbstract(m = MInterfaceMethod(name = sig.name, params = byrefWrapSigTypes(sig.params, pTypes), ret = retTy)))
             }
             case IMFunc(fn) -> {
               // Default interface method — compile body; `lowerMInterface` emits as
-              // a concrete DIM MethodDef (Virtual+HideBySig+NewSlot, no Abstract).
-              dimMethods.add(lowerImplMethodMsil(cctx, fn, pkgName, ifaceFqn))
+              // a concrete DIM MethodDef (Virtual+HideBySig+NewSlot, no Abstract),
+              // in the same declaration-order position so token numbers match the
+              // addPackageTokens pre-pass.
+              ifaceMembers.add(MIDim(fn = lowerImplMethodMsil(cctx, fn, pkgName, ifaceFqn)))
             }
             case IMAssoc(_) -> {
             }
@@ -15263,7 +15264,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
           mi = mi + 1
         }
         items.add(
-          MPInterface(iface = MInterface(className = ifaceFqn, namespace = pkgName, methods = ifaceMethods, defaultMethods = dimMethods))
+          MPInterface(iface = MInterface(className = ifaceFqn, namespace = pkgName, members = ifaceMembers))
         )
       }
       case IImpl(_) -> {
