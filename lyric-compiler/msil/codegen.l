@@ -1777,10 +1777,11 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         }
       }
       case IInterface(decl) -> {
-        // lowerMInterface: one abstract MethodDef per IMSig/IMFunc (rva=0, no body).
-        // Register each abstract slot in `methodTokens` so callvirt against an
-        // interface-typed receiver can dispatch through the interface vtable
-        // (#878).
+        // lowerMInterface: one MethodDef per IMSig (abstract) and per IMFunc
+        // (concrete DIM body).  Token layout is the same (1 row each) regardless
+        // of whether the body is abstract or concrete.  Register each slot in
+        // `methodTokens` so callvirt against an interface-typed receiver dispatches
+        // through the correct interface vtable slot (#878).
         val ifaceName = pkgName + "." + decl.name
         if not cctx.typeFqnByName.containsKey(decl.name) {
           cctx.typeFqnByName.add(decl.name, ifaceName)
@@ -15235,8 +15236,8 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
         items.add(MPEnum(e = MEnum(className = pkgName + "." + decl.name, namespace = pkgName, cases = caseNames)))
       }
       case IInterface(decl) -> {
-        // Band-2 #850: interface declaration.
-        val ifaceMethods: List[MInterfaceMethod] = newList()
+        val ifaceMembers: List[MIfaceItem] = newList()
+        val ifaceFqn = pkgName + "." + decl.name
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
@@ -15248,18 +15249,14 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
                 pi = pi + 1
               }
               val retTy = match sig.ret { case Some(te) -> typeExprToMsil(te, pkgName); case None -> MVoid }
-              ifaceMethods.add(MInterfaceMethod(name = sig.name, params = byrefWrapSigTypes(sig.params, pTypes), ret = retTy))
+              ifaceMembers.add(MIAbstract(m = MInterfaceMethod(name = sig.name, params = byrefWrapSigTypes(sig.params, pTypes), ret = retTy)))
             }
             case IMFunc(fn) -> {
-              // Default interface method — for now, emit as abstract signature.
-              val pTypes: List[MsilType] = newList()
-              var pi = 0
-              while pi < fn.params.count {
-                pTypes.add(typeExprToMsil(fn.params[pi].ty, pkgName))
-                pi = pi + 1
-              }
-              val retTy = match fn.ret { case Some(te) -> typeExprToMsil(te, pkgName); case None -> MVoid }
-              ifaceMethods.add(MInterfaceMethod(name = fn.name, params = byrefWrapSigTypes(fn.params, pTypes), ret = retTy))
+              // Default interface method — compile body; `lowerMInterface` emits as
+              // a concrete DIM MethodDef (Virtual+HideBySig+NewSlot, no Abstract),
+              // in the same declaration-order position so token numbers match the
+              // addPackageTokens pre-pass.
+              ifaceMembers.add(MIDim(fn = lowerImplMethodMsil(cctx, fn, pkgName, ifaceFqn)))
             }
             case IMAssoc(_) -> {
             }
@@ -15267,7 +15264,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
           mi = mi + 1
         }
         items.add(
-          MPInterface(iface = MInterface(className = pkgName + "." + decl.name, namespace = pkgName, methods = ifaceMethods))
+          MPInterface(iface = MInterface(className = ifaceFqn, namespace = pkgName, members = ifaceMembers))
         )
       }
       case IImpl(_) -> {

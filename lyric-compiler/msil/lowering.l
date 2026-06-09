@@ -735,10 +735,16 @@ pub record MInterfaceMethod {
   ret: MsilType
 }
 
+// One slot in an interface definition, in declaration order.
+pub union MIfaceItem {
+  case MIAbstract(m: MInterfaceMethod)   // abstract slot (IMSig) — RVA = 0
+  case MIDim(fn: MFunc)                  // default method body (IMFunc) — concrete MethodDef
+}
+
 pub record MInterface {
   className: String       // fully-qualified interface name
   namespace: String
-  methods: List[MInterfaceMethod]
+  members: List[MIfaceItem]   // abstract and DIM members in declaration order
 }
 
 // Per overridden interface method slot.
@@ -2895,28 +2901,55 @@ pub func lowerMInterface(iface: in MInterface, ctx: in LoweringCtx): Int {
   val firstField = t.fields.count + 1
   val firstMethod = t.methodDefs.count + 1
 
-  // Emit abstract method header for each interface method.
+  // Emit one MethodDef per member in declaration order so token numbers agree
+  // with the addPackageTokens pre-pass (which also walks members in order).
+  // Abstract slots (MIAbstract) get RVA=0 and the Abstract flag; DIM slots
+  // (MIDim) get a compiled body and no Abstract flag.
   var mi = 0
-  while mi < iface.methods.count {
-    val m = iface.methods[mi]
-    val sN = internString(sh, m.name)
-    val mSig = buildInstanceMethodSigWithCtx(m.params, m.ret, ctx)
-    // Arity-qualify the intern key (#1536) — see the `meth_` site above.
-    val bSig = internBlob(bh, "ifmeth_" + iface.className + "_" + m.name + "/" + toString(m.params.count), mSig)
-    val fp = t.params_.count + 1
-    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-    // Abstract interface method: Public, Abstract, Virtual, HideBySig, NewSlot, RVA=0.
-    addMethodDef(
-      t,
-      MethodDefRow(
-        rva = 0,
-        implFlags = 0,
-        flags = MDA_PUBLIC + MDA_ABSTRACT + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_NEW_SLOT,
-        name = sN,
-        signature = bSig,
-        paramList = fp
-      )
-    )
+  while mi < iface.members.count {
+    match iface.members[mi] {
+      case MIAbstract(m) -> {
+        val sN = internString(sh, m.name)
+        val mSig = buildInstanceMethodSigWithCtx(m.params, m.ret, ctx)
+        // Arity-qualify the intern key (#1536) — see the `meth_` site above.
+        val bSig = internBlob(bh, "ifmeth_" + iface.className + "_" + m.name + "/" + toString(m.params.count), mSig)
+        val fp = t.params_.count + 1
+        addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+        addMethodDef(
+          t,
+          MethodDefRow(
+            rva = 0,
+            implFlags = 0,
+            flags = MDA_PUBLIC + MDA_ABSTRACT + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_NEW_SLOT,
+            name = sN,
+            signature = bSig,
+            paramList = fp
+          )
+        )
+      }
+      case MIDim(dm) -> {
+        val mbDm = lowerMFunc(dm, ctx)
+        ctx.bodies.add(mbDm)
+        val rvasDm = methodBodyRvas(ctx.bodies)
+        val dmRva = rvasDm[ctx.bodies.count - 1]
+        val sNDm = internString(sh, dm.name)
+        val dmSig = buildInstanceMethodSigWithCtx(dm.params, dm.ret, ctx)
+        val bDmSig = internBlob(bh, "ifdmeth_" + iface.className + "_" + dm.name + "/" + toString(dm.params.count), dmSig)
+        val fpDm = t.params_.count + 1
+        addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+        addMethodDef(
+          t,
+          MethodDefRow(
+            rva = dmRva,
+            implFlags = 0,
+            flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_NEW_SLOT,
+            name = sNDm,
+            signature = bDmSig,
+            paramList = fpDm
+          )
+        )
+      }
+    }
     mi = mi + 1
   }
 

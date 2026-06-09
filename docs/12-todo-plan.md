@@ -37,9 +37,10 @@ order:
    (C11, #1486, #2939); `where T: Marker` bound satisfaction at call sites (H15,
    #2939); `alias X = Long` as a usable type (H16, #2939); numeric widening —
    `Int`/`Long` and `Float`/`Double` in arithmetic, comparisons, and argument
-   positions (M6, #2939). **Remaining:** default method bodies on interface impls
-   (C11 partial — signature match done, default bodies not lowered); (docs/41 C11
-   PARTIAL — default bodies only).
+   positions (M6, #2939); default interface method (DIM) bodies lowered as
+   concrete .NET DIM MethodDefs in the self-hosted MSIL emitter (C11 DONE,
+   `lowerMInterface` + `lowerImplMethodMsil`). **Remaining:** none — Band 1 is
+   complete.
 2. **Backend correctness (CRITICAL).** All Band-2 items are now resolved: `?`
    (C3, #1475), `==`/`Map`-key structural equality (H1, #1480/#1837), `defer`
    (C7, #1477), all of #1481, try/catch-as-value-expression IL (#1823), and
