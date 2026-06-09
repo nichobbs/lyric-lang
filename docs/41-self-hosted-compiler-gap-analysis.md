@@ -171,7 +171,7 @@ supporting all language features."
 | C8 | **Fixed for in-bundle types (#2362 — D-progress-453 records, D-progress-455 unions).** In-bundle generic *records and unions* are reified: GenericParam rows (table 0x2A), VAR-typed fields (`value: T` → `FIELD VAR(0)`), arity-suffixed CLR type names (`Box`1`, `Maybe`1`, `Maybe_Just`1`), AutoLayout, construction via closed-instantiation TypeSpec `.ctor` MemberRefs, and TypeSpec-parented field reads — verified for multi-field value-type instantiations (`Pair[Int,Int]`, `Pairish[Int,Int]`). Unions: each case extends the open base instantiation (`Maybe`1<!0>`, a TypeSpec); nullary cases are `newobj`-each-time (no singleton — Q-GEN-001 resolved); matching via closed-TypeSpec isinst/castclass/ldfld. #2362 closed here: an exact stage-3 stdlib byte-match was **not pursued** (the self-hosted emitter already produces structurally-correct generic `Option`/`Result` but with the arity-suffix correctness fix F# omits, and self-compiling the whole stdlib is blocked on front-end completeness — §R7); see `docs/43`. **JVM parity gap (2026-06-07):** the JVM backend does not yet emit truly generic TypeDefs for in-bundle generic records/unions (no JVM equivalent of GenericParam rows, open-type field descriptors, or TypeSpec-parented construction); JVM generic-type emission is deferred and tracked under Band 4 of this doc and epic #2359. | `codegen.l` (`lowerRecordMsil`/`lowerUnionMsil`, `typeExprToMsilCtx`, `buildInBundleGenericCtorTok`, EMember, pattern test/bind); `lowering.l` (`lowerMRecord`/`lowerMUnion`, GenericParam emit); `tables.l` (GenericParam 0x2A) | In-bundle MSIL ✅; JVM deferred (#2359); stdlib self-compile under §R7 |
 | C9 | ~~`@externTarget` whose signature mentions any class/object type emits a runtime-throw stub instead of a real call.~~ **Resolved (#1504 part 1):** class-typed params/return now encode as real `ELEMENT_TYPE_CLASS + TypeDefOrRef` MemberRefs (`buildFfiMethodSigCtx`/`resolveFfiClassTypeRef`), resolving extern types via `externTypeNames` → CLR TypeRef. Verified end-to-end (`StringBuilder` ctor + instance calls). Remaining #1504 parts: unresolved-type diagnostic (H8), instance/non-void auto-FFI (H9), generic externs (blocked on #1497). | `codegen.l` `buildFfiMethodSigCtx` | ✅ |
 | C10 | ~~Opaque representation-hiding not enforced.~~ **RESOLVED (#1485):** cross-package **construction** of an opaque type is rejected (**T0100**), cross-package **pattern-matching** of its representation (record/constructor pattern) is rejected (**T0102**), and field reads on opaque values resolve to `TyError` (non-resolving). Construction calls also yield the constructed type with named-field validation (T0101). Binding/wildcard match arms remain legal (the value is opaque-but-usable). | `typechecker_exprs.l` (`inferConstruction`, `checkOpaquePatternHiding`) | M |
-| C11 | `impl`/interface conformance never checked (`IImpl(_) -> {}` no-op); missing/mismatched methods not reported; default-interface-method bodies discarded (emitted abstract). **PARTIALLY RESOLVED (#1486):** `checkImplConformance` (`typechecker_checker.l`, T5 pass) now reports a missing abstract interface method (**T0098**) and a parameter-arity mismatch (**T0099**). **Interface subtyping at argument positions shipped (#1488, D-progress-432):** `impl I for T` conformances are recorded in `SymbolTable.impls` and `argSatisfiesParam` accepts a `T` argument where parameter type is interface `I`. Pending: full signature *type* matching (generic/`Self`) and impl-body type-checking (overlap with #1483 record-ctor / expression-typing forms), subtyping at non-argument positions (return values, `val` bindings, collection elements), plus the codegen default-interface-method-body emission. | `typechecker_checker.l`; `codegen.l:6275-6291` | M |
+| C11 | ~~`impl`/interface conformance never checked; default-interface-method bodies discarded.~~ **RESOLVED:** `checkImplConformance` reports missing abstract methods (**T0098**), arity mismatches (**T0099**), parameter-type mismatches (**T0106**), and return-type mismatches (**T0107**, #1486, #2939). Interface subtyping at argument positions wired via `SymbolTable.impls` / `argSatisfiesParam` (#1488). **DIM bodies lowered:** `IMFunc` members now compile via `lowerImplMethodMsil` into `MInterface.defaultMethods`; `lowerMInterface` emits them as concrete (non-abstract) MethodDefs with real RVA and `Public+Virtual+HideBySig+NewSlot` flags — the CLR dispatches through the DIM when the implementing class provides no override. Verified by `shm_interface_default_method` in `SelfHostedMsilBridgeTests.fs`. | `typechecker_checker.l`; `codegen.l`; `lowering.l` | ✅ |
 | C12 | Protected types emit a plain record with **no lock field and no Enter/Exit** — zero mutual exclusion despite the doc-comment promising Monitor locking. | `codegen.l:5373-5482` | L |
 | C13 | ~~§5.2 parameter modes unenforced.~~ **Front-end RESOLVED (#1487).** Codegen passes `out`/`inout` by managed pointer (#1761). Type-checker §5.2 enforcement, all packages: **`in` no-rebind** (**T0087**, resolves the V0001 collision); **`out`/`inout` value-type argument must be a writable l-value** (**T0085**; reference-type `inout` records mutated in place are exempt); **`out` definite-assignment** (**T0086** — an `out` param never assigned in the body; the sound never-assigned subset, full all-paths partial-assignment detection a refinement). (JVM by-ref parity is follow-up #1763.) | T0085/T0086/T0087 present | M |
 
@@ -500,15 +500,13 @@ section wins.
 _Several items the 2026-06-03 snapshot listed as open have since shipped.
 The authoritative tactical task list is `docs/12-todo-plan.md`._
 
-- **Band 1 (front-end soundness, CRITICAL):** C2, C11 PARTIAL, H15, H16, M6.
-  Closed since 2026-06-03: advisory→fatal flip (C1, D-progress-438), visibility
-  enforcement (H14, #1484), opaque hiding (C10, #1485), parameter-mode front-end
-  (C13, #1487). Remaining: `TyError` expression forms (C2 — `ELambda`,
-  `ETypeApp`, `EForall`/`EExists`, `EAssign`, tuple-destructure sub-bindings,
-  record-ctor arg checking), full impl/interface conformance — signature
-  type-matching + subtyping at non-argument positions + default-interface-method
-  bodies (C11 PARTIAL, #1486), `where`-bound satisfaction (H15), alias-as-type
-  (H16), numeric widening (M6).
+- **Band 1 (front-end soundness, CRITICAL): COMPLETE.** All Band-1 items are
+  resolved. Closed since 2026-06-03: advisory→fatal flip (C1, D-progress-438),
+  visibility enforcement (H14, #1484), opaque hiding (C10, #1485), parameter-mode
+  front-end (C13, #1487), `TyError` expression forms (C2, #2939), full
+  impl/interface conformance including DIM body lowering (C11, #1486/#2939),
+  `where`-bound satisfaction (H15, #2939), alias-as-type (H16, #2939), numeric
+  widening (M6, #2939).
 - **Band 2 (backend correctness, CRITICAL):** All major Band-2 items are now
   resolved: `?` (C3, #1475), `==`/`Map`-key structural equality (H1,
   #1480/#1837), `defer` (C7, #1477), all of #1481, try/catch-as-value-expression
@@ -552,10 +550,12 @@ The authoritative tactical task list is `docs/12-todo-plan.md`._
 Since the 2026-06-03 snapshot, significant further progress has landed: async SM
 synthesis shipped (Epic #2070 Phases B.0–B.3 + spawn), the advisory→fatal
 typecheck gate flipped (C1, D-progress-438), visibility enforcement (#1484),
-opaque hiding (#1485), and parameter-mode front-end (#1487) are done, and AOT is
-now wired via `release.l`.  The remaining v1.0 blockers are the Band-1 front-end
-soundness remainder (C2 TyError forms, C11 PARTIAL impl conformance, H15/H16/M6),
-async correctness tail (#2725 await-in-try, #2712 maxStack, C5 generators), and
-Band-4 feature gaps.  Band 2 is substantially resolved.  `docs/12-todo-plan.md`
-is the authoritative task list; `docs/36-v1-roadmap.md` §R1–R6 are all done and
-tracking has moved to docs/12.
+opaque hiding (#1485), parameter-mode front-end (#1487), TyError expression forms
+(C2, #2939), full impl conformance including DIM body lowering (C11, #1486/#2939),
+`where`-bound satisfaction (H15, #2939), alias-as-type (H16, #2939), numeric
+widening (M6, #2939), and AOT wired via `release.l`.  **Band 1 (front-end
+soundness) is now complete.**  The remaining v1.0 blockers are async correctness
+tail (#2725 await-in-try, #2712 maxStack, C5 generators) and Band-4 feature gaps.
+Band 2 is substantially resolved.  `docs/12-todo-plan.md` is the authoritative
+task list; `docs/36-v1-roadmap.md` §R1–R6 are all done and tracking has moved to
+docs/12.
