@@ -23778,3 +23778,47 @@ the analogous lookup via `Jvm.AutoFfi.loadClass` + `findBestMethod` /
   Q-MD-005 resolved.
 - `docs/09-msil-emission.md` Appendix C: F0015 / F0015-J added to the diagnostics
   table.
+
+### D-progress-486 — front-end soundness: C2, C11, H15, H16, M6 (#2939)
+
+**Status:** Shipped (PR #2939, 2026-06-09).
+
+Completes the remaining CRITICAL front-end soundness items from `docs/12-todo-plan.md` Tier 0 item 1:
+
+- **C2 — TyError expression coverage** (`typechecker_exprs.l`): `ELambda`,
+  `ETypeApp`, `EForall`/`EExists`, `EAssign`, tuple-destructure sub-bindings,
+  and record-ctor argument checking (T0101 unknown field, T0102 arity, T0104
+  type mismatch) all produce correctly-typed output or `TyError` on mismatch.
+
+- **C11 — impl-conformance signature matching** (`typechecker_checker.l`):
+  interface method implementations are verified for parameter-type and
+  return-type agreement; mismatches emit T0105 (param) and T0106 (return).
+  Default method bodies remain deferred.
+
+- **H15 — `where T: Marker` bound satisfaction** (`typechecker_exprs.l`,
+  `typechecker_checker.l`, `typechecker_symbols.l`): `Symbol` gains a
+  `derives: List[String]` field; `@derive(...)` annotations on records,
+  unions, and distinct types are extracted by `extractDerives` and stored
+  at registration time; `hasDerive` / `checkBoundsSatisfied` verify that
+  each `where T: Constraint` is satisfied at generic call sites; unsatisfied
+  bounds emit T0108.
+
+- **H16 — alias type usability** (`typechecker_exprs.l`): `alias X = Long`
+  resolves to its underlying type in type-checking context; T0003 no longer
+  spuriously fires when using an alias name.
+
+- **M6 — numeric widening** (`typechecker_exprs.l`): `Int`/`Long` and
+  `Float`/`Double` pairs widen to the wider type in arithmetic, comparison,
+  and argument positions (`argSatisfiesParam`); narrowing is still rejected.
+
+Also fixes `copyRestoredDepDlls` in `cli.l` to always overwrite existing
+DLLs (prevents stale cached compiler DLLs from causing silent failures
+after a stage1 rebuild).
+
+#### Self-tests
+
+182 typechecker self-tests pass (0 failures), including new cases for:
+T0104 named/positional ctor arg mismatch; T0105/T0106 impl signature
+mismatch; T0108 where-bound unsatisfied; H16 alias usability; M6 widening
+(int+long, float+double, rejection cases); int literal in Long ctor field
+(widening); slice literal in List field (coercion).
