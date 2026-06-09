@@ -176,6 +176,13 @@ pub record CodegenCtx {
   // arity-qualified + bare-FQN alias).  Lets a call site pass `out`/`inout`
   // arguments by managed pointer (address-load) instead of by value.  See #1761.
   funcParamModes: Map[String, List[ParamMode]]
+  // Declared parameter names per function, flat-encoded to avoid
+  // List[List[_]] inference issues in the stage-0 bootstrap emitter.
+  // Key: "<fqn>/param<i>" (both arity-qualified and bare-FQN aliases).
+  // Value: declared name of the i-th parameter.
+  // Used to reorder named-arg calls (`foo(b = 2, a = 1)`) to declaration
+  // order at the static-call site.  Mirrors fieldDeclaredNames / #1503.
+  funcParamNames: Map[String, String]
   // Inner parameter MsilTypes of a function-typed parameter (`(A,B) -> R` ⇒
   // [MsilType(A), MsilType(B)]), keyed `"<fqn>#<paramIdx>"` (both the
   // arity-qualified and bare-FQN aliases).  Only function-typed parameters have
@@ -1209,6 +1216,8 @@ pub func newCodegenCtx(
     funcRetTypes = newMap(),
     funcParamTypes = newMap(),
     funcParamModes = newMap(),
+    funcParamNames = newMap(),
+    // flat "fqn/paramN" → name
     funcParamFnInner = newMap(),
     lambdaParamTypes = newMap(),
     lambdaCaptureNames = newMap(),
@@ -2154,6 +2163,16 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         var pmi = 0
         while pmi < decl.params.count {
           paramModes.add(decl.params[pmi].mode)
+          // Flat-encode parameter names to avoid nested-generic inference issues
+          // in the stage-0 bootstrap emitter.  Key: "<fqn>/param<i>".
+          val pnKey = fqn + "/param" + toString(pmi)
+          val pnKeyA = arityKey + "/param" + toString(pmi)
+          if not cctx.funcParamNames.containsKey(pnKey) {
+            cctx.funcParamNames.add(pnKey, decl.params[pmi].name)
+          }
+          if not cctx.funcParamNames.containsKey(pnKeyA) {
+            cctx.funcParamNames.add(pnKeyA, decl.params[pmi].name)
+          }
           pmi = pmi + 1
         }
         if not cctx.funcParamModes.containsKey(arityKey) {
@@ -6633,6 +6652,56 @@ func reorderCtorNamedArgs(cctx: in CodegenCtx, ctorKey: in String, args: in List
   ordered
 }
 
+// Reorder a static/method function call's arguments to parameter-declaration
+// order (#1503).  Mirrors reorderCtorNamedArgs but uses `funcParamNames` (the
+// declared parameter-name list keyed by `tokKey`) instead of `fieldDeclaredNames`.
+// Returns `args` unchanged when: any arg is positional, the name map is absent
+// for this function (e.g. a cross-package restored function), or a named arg
+// doesn't match any declared parameter name.
+func reorderFuncNamedArgs(cctx: in CodegenCtx, tokKey: in String, args: in List[CallArg]): List[CallArg] {
+  if args.count == 0 {
+    return args
+  }
+  // Build name → arg from the call site; bail if any arg is positional
+  // (mixed positional/named calls are already in declaration order).
+  val nameToArg: Map[String, CallArg] = newMap()
+  var i = 0
+  while i < args.count {
+    match args[i] {
+      case CANamed(nm, _, _) -> {
+        if nameToArg.containsKey(nm) {
+          return args
+        }
+        nameToArg.add(nm, args[i])
+      }
+      case CAPositional(_) -> {
+        return args
+      }
+    }
+    i = i + 1
+  }
+  // Reassemble in parameter-declaration order using the flat name map
+  // (keyed "<tokKey>/param<i>").  The arity guard: if param<0> is absent, this
+  // function has no recorded param names (e.g. cross-package restored) — bail.
+  if not cctx.funcParamNames.containsKey(tokKey + "/param0") {
+    return args
+  }
+  val ordered: List[CallArg] = newList()
+  var pi = 0
+  while pi < args.count {
+    val pnKey = tokKey + "/param" + toString(pi)
+    match mapGet(cctx.funcParamNames, pnKey) {
+      case None -> return args  // fewer declared params than args — bail
+      case Some(pname) -> match mapGet(nameToArg, pname) {
+        case None -> return args  // call arg name not in declared params — bail
+        case Some(a) -> ordered.add(a)
+      }
+    }
+    pi = pi + 1
+  }
+  ordered
+}
+
 // Lower a function call expression.
 pub func lowerCallMsil(
   cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], fn: in Expr, args: in List[CallArg]
@@ -7271,14 +7340,15 @@ func lowerBuiltinOrStaticCallMsil(
                 case Some(tok) -> {
                   val callParamTys = match mapGet(cctx.funcParamTypes, tokKey) { case Some(pts) -> pts; case None -> newList() }
                   val callParamModes = match mapGet(cctx.funcParamModes, tokKey) { case Some(ms) -> ms; case None -> newList() }
+                  val callArgs = reorderFuncNamedArgs(cctx, tokKey, args)
                   var i = 0
-                  while i < args.count {
+                  while i < callArgs.count {
                     // #1939: a lambda passed *directly* to a function-typed
                     // parameter inherits that parameter's inner types — record
                     // them under the lambda's index (the next lambdaTicker value,
                     // which the ELambda arm will consume) so the lambda body
                     // unboxes its boxed params to the propagated types.
-                    match callArgExpr(args[i]).kind {
+                    match callArgExpr(callArgs[i]).kind {
                       case ELambda(_, _) -> {
                         match mapGet(cctx.funcParamFnInner, tokKey + "#" + toString(i)) {
                           case Some(inner) -> {
@@ -7300,7 +7370,7 @@ func lowerBuiltinOrStaticCallMsil(
                     // managed pointer) rather than its value.  See #1761.
                     val isByrefArg = if i < callParamModes.count { isByrefMode(callParamModes[i]) } else { false }
                     if isByrefArg {
-                      emitByrefArgMsil(cctx, fctx, insns, callArgExpr(args[i]))
+                      emitByrefArgMsil(cctx, fctx, insns, callArgExpr(callArgs[i]))
                       i = i + 1
                     } else {
                       // Thread a generic parameter's type args as the construction
@@ -7327,7 +7397,7 @@ func lowerBuiltinOrStaticCallMsil(
                             ph = ph + 1
                           }
                           pushCollExpect(fctx, pTy)
-                          val _ = lowerCallArgMsil(cctx, fctx, insns, args[i])
+                          val _ = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
                           popCollExpect(fctx)
                           while fctx.contextHintTyArgs.count > 0 {
                             fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
@@ -7343,7 +7413,7 @@ func lowerBuiltinOrStaticCallMsil(
                           // so a bare `newList()` / `[...]` argument builds the
                           // concrete instance the callee's signature requires.
                           pushCollExpect(fctx, pTy)
-                          val aTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+                          val aTy = lowerCallArgMsil(cctx, fctx, insns, callArgs[i])
                           popCollExpect(fctx)
                           // #2455: unbox a boxed (object) argument — e.g. a bound
                           // tuple element — to a value-type parameter.
