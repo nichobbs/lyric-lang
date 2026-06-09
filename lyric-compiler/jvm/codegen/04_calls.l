@@ -211,6 +211,41 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
         case Some(te) -> if wrapResult { extractResultValueType(te, ctx.pkgName) } else { typeExprToJvm(te, ctx.pkgName) }
       }
 
+      // F0015-J: verify the declared @externTarget signature against JDK class
+      // metadata.  Returns true when the class is not found (non-JDK types
+      // like Lyric.Jvm.Hosts.* pass through with no false positive) or when a
+      // matching overload exists.  Fires a build-time panic only when the class
+      // IS found in the metadata index but no overload matches the declared
+      // descriptor — catching typos and signature drift before codegen.
+      val f5ArgDescs: List[String] = newList()
+      var f5ai = 0
+      while f5ai < javaArgTypes.count {
+        f5ArgDescs.add(jvmTypeToDescStr(javaArgTypes[f5ai]))
+        f5ai = f5ai + 1
+      }
+      val javaFqnDot = replace(javaClass, "/", ".")
+      if not verifyExternTargetJvm(ctx.autoFfi, javaFqnDot, methodName, f5ArgDescs, isStatic) {
+        var f5SigStr = "("
+        var f5si = 0
+        while f5si < javaArgTypes.count {
+          if f5si > 0 {
+            f5SigStr = f5SigStr + ", "
+          }
+          f5SigStr = f5SigStr + jvmTypeToDescStr(javaArgTypes[f5si])
+          f5si = f5si + 1
+        }
+        f5SigStr = f5SigStr + ") -> " + jvmTypeToDescStr(javaRet)
+        panic(
+          "F0015-J: @externTarget '" + target + "' on '" + decl.name + "': " + "declared signature " + f5SigStr +
+            " does not match any overload of '" +
+            javaFqnDot +
+            "." +
+            methodName +
+            "' in JDK class metadata. " +
+            "Verify the Lyric parameter/return types match the Java method."
+        )
+      }
+
       // Load all params in order: receiver first for instance calls.
       var li = 0
       while li < decl.params.count {

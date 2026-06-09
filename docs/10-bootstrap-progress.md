@@ -23724,3 +23724,57 @@ Fix: split into two `@test_module` files under `lyric-compiler/lyric/`, where
 Two new CI steps added to `.github/workflows/ci.yml` following the pattern of the
 existing "Release self-test" step: each guards on `.bootstrap/stage1/Lyric.Lyric.Cli.dll`
 and the AOT binary, then runs `"$lyric_bin" test <file>`.
+
+### D-progress-485 — epic #1622 phases 4 & 5: @externTarget signature verification (F0015 / F0015-J)
+
+**Status:** Shipped — Phase 4 (MSIL) and Phase 5 (JVM) of epic #1622.
+
+#### Phase 4 — MSIL `@externTarget` signature verification (F0015)
+
+`emitExternTargetBody` in `lyric-compiler/msil/codegen.l` now verifies the
+declared Lyric parameter types against reference-assembly metadata before
+emitting the MemberRef.
+
+- **F0015 diagnostic**: when the assembled `SigType` list (from the declared Lyric
+  parameter types) does not match any overload returned by
+  `Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, fqn, memberName, sigs)`,
+  the build panics with a message naming the target, the declared signature, and
+  the target FQN.
+- **Skips**: constructors (`r.isCtor`), params whose `MsilType` maps to `None` in
+  `argTyToSig` (generics / `MByRef` shapes), and types absent from the
+  metadata index (Lyric host types not present in the ref pack).
+- **Metadata-index primary lookup**: the guard that previously checked only the
+  `clrAssemblyResolvable` prefix now first queries the metadata type index
+  (`Mdr.assemblyForType`) so that NuGet-restored Lyric package types outside
+  `System.*`/`Lyric.*` are accepted when their DLL has been added to the index.
+- **Restored-dep DLLs in the index**: `ensureMetadataIndex` now iterates
+  `cctx.restoredArtifacts` and calls `Mdr.addAssemblyToIndexes` + `addAssemblyValueTypes`
+  for each non-empty `dllPath`, so the type and path indexes include types from
+  all restored Lyric packages as well as the BCL ref pack.
+- **Test**: `auto_ffi_self_test.l` — `@externTarget with verified signatures compile
+  and run correctly` (wrappers: `externAbsInt`, `externStrConcat`, `externMaxLong`).
+
+#### Phase 5 — JVM `@externTarget` signature verification (F0015-J)
+
+`lowerExternTargetBody` in `lyric-compiler/jvm/codegen/04_calls.l` now performs
+the analogous lookup via `Jvm.AutoFfi.loadClass` + `findBestMethod` /
+`findBestConstructor` immediately after computing the JVM arg and return types.
+
+- **F0015-J diagnostic**: when the assembled JVM descriptor list does not match
+  any overload, the build panics with a message naming the target, the descriptor
+  signature, and the target FQN.
+- **Skips**: when `loadClass` returns `None` (class not found in jmods /
+  LYRIC_FFI_JARS), the check is bypassed to avoid spurious failures in minimal
+  environments.
+- **Constructor handling**: `methodName == "new"` uses `findBestConstructor`.
+- **Reuses existing infrastructure**: the same `AutoFfiCtx` (`ctx.autoFfi`) and
+  overload scorer already used by the auto-FFI call lowering path.
+- **Test**: `auto_ffi_jvm_self_test.l` — `@externTarget with verified JVM signatures
+  compile and run correctly` (wrappers: `Math_abs`, `Math_max`, `Integer_toString`).
+
+#### Documentation
+
+- `docs/42-extern-metadata-resolution.md` §5: Phase 4 and Phase 5 marked SHIPPED;
+  Q-MD-005 resolved.
+- `docs/09-msil-emission.md` Appendix C: F0015 / F0015-J added to the diagnostics
+  table.

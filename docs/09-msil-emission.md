@@ -1417,6 +1417,15 @@ delegate process-wide.  `--target dotnet` (the default) routes through this
 bridge; `--target dotnet-legacy` falls back to the F# bootstrap emitter
 (`Lyric.Emitter`) as an escape hatch.
 
+### Self-hosted emitter diagnostics
+
+| Code | Condition | Notes |
+|---|---|---|
+| `F0015` | `@externTarget` declared signature does not match any overload of the named CLR method in reference-assembly metadata | Fired by `emitExternTargetBody` (Phase 4, `codegen.l`). Shows the declared Lyric signature and the target FQN. Skipped for `out`/`inout` params, generic shapes that have no `SigType` equivalent, and types absent from the metadata index (e.g. Lyric-host types in `Lyric.Emitter.dll`). |
+| `F0015-J` | JVM analog of F0015: `@externTarget` declared signature does not match any overload in JDK class metadata | Fired by `lowerExternTargetBody` (Phase 5, `jvm/codegen/04_calls.l`). Silenced when the class is absent from the JDK jmods / `LYRIC_FFI_JARS` index. |
+
+`F0010`–`F0013` are documented in `docs/24-build-features.md` (cfg-erasure diagnostics).
+
 ### Key design note: MemberRef signatures on TypeSpecs
 
 Per ECMA-335 §II.14.4.2, a MemberRef whose parent is a TypeSpec (a generic

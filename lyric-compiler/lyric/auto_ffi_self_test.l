@@ -148,3 +148,26 @@ test "auto-FFI instance dispatch chains class returns and takes class params" {
     "String.IsAssignableFrom(Object) is false"
   )
 }
+
+// Phase 4: @externTarget with metadata-verified signature.
+// These wrappers declare correct BCL signatures; if F0015 incorrectly fires
+// for a valid declaration the test would fail to build.
+@externTarget("System.Math.Abs")
+@externStatic
+func externAbsInt(x: in Int): Int = ()
+
+@externTarget("System.String.Concat")
+@externStatic
+func externStrConcat(a: in String, b: in String): String = ()
+
+@externTarget("System.Math.Max")
+@externStatic
+func externMaxLong(a: in Long, b: in Long): Long = ()
+
+test "@externTarget with verified signatures compile and run correctly" {
+  assertEqualInt(externAbsInt(-12), 12, "externAbsInt(-12)")
+  assertEqualInt(externAbsInt(7), 7, "externAbsInt(7)")
+  assertEqual(externStrConcat("hello", " world"), "hello world", "externStrConcat")
+  assertTrue(externMaxLong(3i64, 9i64) == 9i64, "externMaxLong(3, 9)")
+  assertTrue(externMaxLong(100i64, 2i64) == 100i64, "externMaxLong(100, 2)")
+}

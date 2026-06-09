@@ -9303,40 +9303,92 @@ func emitExternTargetBody(
       }
       val retTy = match decl.ret { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MVoid }
 
-      // The bootstrap-grade FFI resolver hasn't wired up TypeRef-
-      // encoded MemberRef signatures yet, so externs whose Lyric
-      // signature mentions a non-primitive class type can't emit a
-      // direct call yet.  Earlier the codegen returned `false` and
-      // the default lowering emitted bare `MRet` — invalid MSIL for
-      // non-void returns and a runtime VerificationException with no
-      // build-time signal (#791).  Now we emit a *runtime stub* that
-      // unconditionally throws a System.Exception carrying the
-      // diagnostic message.  The build succeeds (so examples that
-      // declare these externs but never call them at runtime — the
-      // smoke-test case — still build cleanly), and any call site
-      // Class-typed params / return are now encoded as real TypeRef-backed
-      // CLASS entries in the signature blob (#1504 part 1) via
-      // `buildFfiMethodSigCtx`, so the runtime-throw bail that previously
-      // fired for class-typed FFI signatures is gone.
-
-      // An extern type the FFI cascade can't resolve to a known reference
-      // assembly used to silently bind to `System.Runtime`, then fail at
-      // runtime with an opaque `TypeLoadException`.  Fail the build with a
-      // clear, type-specific diagnostic instead (matching the
-      // `@externStatic`/`@externInstance` conflict panic above).
+      // Phase 4: prefer the metadata type index over the prefix-based guard so
+      // types from NuGet-restored assemblies (not `System.*` / `Lyric.*`) are
+      // accepted when their DLL is in the index (added by ensureMetadataIndex).
       val resolvedFqn = if r.namespaceStr == "" { r.typeName } else { r.namespaceStr + "." + r.typeName }
-      if not clrAssemblyResolvable(resolvedFqn) {
+      ensureMetadataIndex(cctx)
+      val isKnownFqn = match Mdr.assemblyForType(cctx.metadataTypeIndex, resolvedFqn) {
+        case Some(_) -> true
+        case None -> clrAssemblyResolvable(resolvedFqn)
+      }
+      if not isKnownFqn {
         panic(
           "Msil.Codegen: FFI extern '" + target + "' on '" + decl.name + "' references type '" + resolvedFqn +
-            "', which cannot be resolved " +
-            "to a known reference assembly (only System.* and the Lyric host " +
-            "assemblies are supported); check the @externTarget annotation for " +
-            "a typo or an unsupported type."
+            "', which cannot be resolved to any indexed reference assembly or Lyric host " +
+            "assembly; check the @externTarget annotation for a typo or an unsupported type."
         )
       }
 
       val asmName = assemblyForTypeMsil(cctx, resolvedFqn)
       val tRefRow = internFfiTypeRef(cctx, asmName, r.namespaceStr, r.typeName)
+
+      // Phase 4 (F0015): verify the declared @externTarget signature against
+      // reference-assembly metadata so a mis-transcribed Lyric signature is
+      // caught at build time rather than surfacing as a MissingMethodException.
+      // Skipped when: (a) any declared param is MByRef (out/inout, complex to
+      // resolve via overload scoring), (b) any param type maps to None in
+      // argTyToSig (generic or unsupported shapes), (c) the type is absent
+      // from the metadata index (Lyric host types in Lyric.Emitter.dll), or
+      // (d) the caller did not supply @externStatic — without an explicit
+      // static annotation the codegen defaults to static but the BCL method
+      // may be instance, producing a false positive; verification is only
+      // reliable when the caller's intent is unambiguous.
+      val isExplicitStatic = match hint { case RHStaticOnly -> true; case _ -> false }
+      if not r.isCtor and isExplicitStatic {
+        val verifyStart = if r.isStatic { 0 } else { 1 }
+        val verifySigs: List[Mdr.SigType] = newList()
+        var vpi = verifyStart
+        var canVerify = true
+        while vpi < paramTypes.count and canVerify {
+          val pTy = paramTypes[vpi]
+          val isByRef = match pTy { case MByRef(_) -> true; case _ -> false }
+          if isByRef {
+            canVerify = false
+          } else {
+            match argTyToSig(pTy) {
+              case None -> {
+                canVerify = false
+              }
+              case Some(s) -> verifySigs.add(s)
+            }
+          }
+          vpi = vpi + 1
+        }
+        if canVerify {
+          match Mdr.assemblyForType(cctx.metadataTypeIndex, resolvedFqn) {
+            case None -> {
+            }
+            case Some(_) -> {
+              match Mdr.resolveExtern(cctx.metadataTypeIndex, cctx.metadataPathIndex, resolvedFqn, r.memberName, verifySigs) {
+                case Some(_) -> {
+                }
+                case None -> {
+                  var declSigStr = "("
+                  var dsi = 0
+                  while dsi < verifySigs.count {
+                    if dsi > 0 {
+                      declSigStr = declSigStr + ", "
+                    }
+                    declSigStr = declSigStr + msilTypeKeyStr(paramTypes[verifyStart + dsi])
+                    dsi = dsi + 1
+                  }
+                  declSigStr = declSigStr + ") -> " + msilTypeKeyStr(retTy)
+                  panic(
+                    "F0015: @externTarget '" + target + "' on '" + decl.name + "': " + "declared signature " + declSigStr +
+                      " does not match any overload of '" +
+                      resolvedFqn +
+                      "." +
+                      r.memberName +
+                      "' in reference-assembly metadata. " +
+                      "Verify the Lyric parameter/return types match the BCL method."
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
 
       // Build the method signature blob, encoding class-typed params/return
       // against their resolved TypeRefs.
@@ -14336,6 +14388,19 @@ func ensureMetadataIndex(cctx: in CodegenCtx): Unit {
       }
     }
   }
+  // Phase 4: feed restored-dependency DLLs into the same indexes so types from
+  // NuGet-restored assemblies (outside the BCL ref pack) are discoverable.
+  // `SynthesisedArtifact.dllPath` is the on-disk path of the restored DLL;
+  // an empty path means the artifact has no file (e.g. an in-memory-only entry).
+  var ri = 0
+  while ri < cctx.restoredArtifacts.count {
+    val dllPath = cctx.restoredArtifacts[ri].dllPath
+    if dllPath.length > 0 {
+      Mdr.addAssemblyToIndexes(cctx.metadataTypeIndex, cctx.metadataPathIndex, dllPath)
+      Mdr.addAssemblyValueTypes(cctx.metadataVtypeSet, dllPath)
+    }
+    ri = ri + 1
+  }
 }
 
 // Widening rank for the numeric element-type bytes the auto-FFI path maps to
@@ -14688,15 +14753,19 @@ func emitAutoFfiCallMsil(
     case None -> {
     }
   }
-  // Reject an extern-type CLR name the FFI cascade can't resolve to a
-  // known reference assembly, rather than silently mis-binding it to
-  // `System.Runtime` (opaque runtime `TypeLoadException`).
-  if not clrAssemblyResolvable(clrFqn) {
+  // Reject an extern-type CLR name the FFI cascade can't resolve to a known
+  // reference assembly. Phase 4: prefer the metadata type index over the prefix
+  // guard so types from NuGet-restored assemblies are accepted when their DLL
+  // is in the index (added by ensureMetadataIndex via restoredArtifacts).
+  val isKnownAutoFfiFqn = match Mdr.assemblyForType(cctx.metadataTypeIndex, clrFqn) {
+    case Some(_) -> true
+    case None -> clrAssemblyResolvable(clrFqn)
+  }
+  if not isKnownAutoFfiFqn {
     panic(
       "Msil.Codegen: auto-FFI call '" + methodName + "' on extern type '" + clrFqn +
-        "' cannot be resolved to a known reference assembly (only " +
-        "System.* and the Lyric host assemblies are supported); check the " +
-        "extern type's CLR name for a typo or an unsupported type."
+        "' cannot be resolved to any indexed reference assembly or Lyric host assembly; " +
+        "check the extern type's CLR name for a typo or an unsupported type."
     )
   }
   // Auto-FFI cannot resolve a method's signature; fail loud on argument-bearing calls.

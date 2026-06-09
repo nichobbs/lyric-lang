@@ -589,3 +589,37 @@ pub func findBestInstanceMethod(
   }
   best
 }
+
+// Verify that a declared @externTarget signature has a matching overload in JDK
+// class metadata.  Returns true when the match succeeds or when the class is not
+// found in the JDK index (non-JDK types, or JDK not present — no false positive).
+// Returns false when the class IS found but no overload matches the declared arg
+// descriptors.
+//
+// Extracted as a top-level function so callers (lowerExternTargetBody in
+// jvm/codegen/04_calls.l) avoid the stage-0 `case Some(ci) -> { block }` binding
+// bug for cross-package record types: the Option[ClassInfo] match is kept inside
+// this function, which stage-0 compiles correctly when the bound value is passed
+// directly as a function argument rather than used in an outer block body.
+pub func verifyExternTargetJvm(
+  ctx: in AutoFfiCtx,
+  javaFqn: in String,
+  methodName: in String,
+  argDescs: in List[String],
+  wantStatic: in Bool,
+): Bool {
+  match loadClass(ctx, javaFqn) {
+    case None -> true
+    case Some(ci) -> {
+      val resolved = if methodName == "new" {
+        findBestConstructor(ci, argDescs)
+      } else {
+        findBestMethod(ci, methodName, argDescs, wantStatic)
+      }
+      match resolved {
+        case Some(_) -> true
+        case None -> false
+      }
+    }
+  }
+}
