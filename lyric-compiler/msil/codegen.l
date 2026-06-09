@@ -13852,9 +13852,14 @@ func lowerProtectedMsil(
 }
 
 // ── Wire block lowering ───────────────────────────────────────────────────────
-// Lower a wire block to a static factory class with a `create()` method that
-// instantiates the dependency graph in topological order.
-// For Band-2 bootstrap, we support WMSingleton and WMLocal members.
+// Lower a wire block to a static factory class with a `<wireName>_create()`
+// method that instantiates the dependency graph in topological order.
+// Supported member kinds:
+//   singleton / local — evaluated once, stored as a local
+//   scoped[X]         — bootstrap: treated as local (true async-local scoping deferred)
+//   bind I -> impl    — impl evaluated and stored under interface's simple name
+//   @provided n: T    — becomes a parameter of the create() function
+//   expose n          — loads n and leaves it on the stack for return
 func lowerWireMsil(
   cctx: in CodegenCtx,
   decl: in WireDecl,
@@ -13862,17 +13867,44 @@ func lowerWireMsil(
   items: in List[MPackageItem],
   fns: in List[MFunc],
 ): Unit {
-  // Synthesise a static factory function `<wireName>_create()` that
-  // allocates each singleton in dependency order and returns the root.
+  // Pre-pass: collect @provided members to determine the factory's param count.
+  val providedNames: List[String] = newList()
+  val providedTypes: List[MsilType] = newList()
+  var fpi = 0
+  while fpi < decl.members.count {
+    match decl.members[fpi] {
+      case WMProvided(pname, pty, _) -> {
+        providedNames.add(pname)
+        providedTypes.add(typeExprToMsil(pty, pkgName))
+      }
+      case _ -> {
+      }
+    }
+    fpi = fpi + 1
+  }
+
+  val providedCount = providedNames.count
   val createInsns: List[MInsn] = newList()
-  val createFctx = makeFuncCtxMsil(pkgName, pkgName, "__wire_create", 0, MObject)
-  val createLocals: List[MsilType] = newList()
+  val createFctx = makeFuncCtxMsil(pkgName, pkgName, "__wire_create", providedCount, MObject)
+
+  // Register provided parameters as argument slots (0..providedCount-1) so that
+  // init expressions in subsequent members can reference them by name.
+  var ppi = 0
+  while ppi < providedCount {
+    val pSlot = createFctx.slotTicker.count
+    createFctx.slots.add(providedNames[ppi], pSlot)
+    createFctx.types.add(providedNames[ppi], providedTypes[ppi])
+    createFctx.slotTicker.add(0)
+    ppi = ppi + 1
+  }
 
   var mi = 0
   while mi < decl.members.count {
     match decl.members[mi] {
+      case WMProvided(_, _, _) -> {
+        // Already registered as a param above; no instructions needed.
+      }
       case WMSingleton(name, ty, init, _) -> {
-        // Allocate a local slot for this singleton.
         val localTy = typeExprToMsil(ty, pkgName)
         val localSlot = allocSlotMsil(createFctx, name, localTy)
         lowerExprMsil(cctx, createFctx, createInsns, init)
@@ -13884,31 +13916,50 @@ func lowerWireMsil(
         lowerExprMsil(cctx, createFctx, createInsns, init)
         createInsns.add(MStloc(slot = localSlot - createFctx.paramCount))
       }
+      case WMScoped(_, name, ty, init, _) -> {
+        // Bootstrap: allocate per-call (true async-local scoping is a follow-up).
+        val localTy = typeExprToMsil(ty, pkgName)
+        val localSlot = allocSlotMsil(createFctx, name, localTy)
+        lowerExprMsil(cctx, createFctx, createInsns, init)
+        createInsns.add(MStloc(slot = localSlot - createFctx.paramCount))
+      }
+      case WMBind(iface, provider, _) -> {
+        // Evaluate the provider and store it under the interface's simple name
+        // so subsequent member inits can reference the bound value by that name.
+        val ifaceName = match iface.kind { case TRef(path) -> lastSegmentMsil(path); case _ -> "__bind" }
+        val localTy = typeExprToMsil(iface, pkgName)
+        val localSlot = allocSlotMsil(createFctx, ifaceName, localTy)
+        lowerExprMsil(cctx, createFctx, createInsns, provider)
+        createInsns.add(MStloc(slot = localSlot - createFctx.paramCount))
+      }
       case WMExpose(name, _) -> {
-        // Return the exposed component.
         match mapGet(createFctx.slots, name) {
           case Some(slot) -> {
-            createInsns.add(MLdloc(slot = slot - createFctx.paramCount))
+            emitLoadSlot(createInsns, slot, createFctx.paramCount)
           }
           case None -> {
             createInsns.add(MLdNull)
           }
         }
       }
-      case _ -> {
-      }
     }
     mi = mi + 1
   }
   createInsns.add(MRet)
 
-  val createRetTy = MObject  // bootstrap: return object
+  val createParams: List[MsilType] = newList()
+  var cpi = 0
+  while cpi < providedCount {
+    createParams.add(providedTypes[cpi])
+    cpi = cpi + 1
+  }
+
   fns.add(
     MFunc(
       flags = MDA_PUBLIC + MDA_STATIC + MDA_HIDE_BY_SIG,
       name = decl.name + "_create",
-      params = newList(),
-      ret = createRetTy,
+      params = createParams,
+      ret = MObject,
       insns = createInsns,
       maxStack = 16,
       locals = createFctx.locals
@@ -16009,7 +16060,9 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
                 pi = pi + 1
               }
               val retTy = match sig.ret { case Some(te) -> typeExprToMsil(te, pkgName); case None -> MVoid }
-              ifaceMembers.add(MIAbstract(m = MInterfaceMethod(name = sig.name, params = byrefWrapSigTypes(sig.params, pTypes), ret = retTy)))
+              ifaceMembers.add(
+                MIAbstract(m = MInterfaceMethod(name = sig.name, params = byrefWrapSigTypes(sig.params, pTypes), ret = retTy))
+              )
             }
             case IMFunc(fn) -> {
               // Default interface method — compile body; `lowerMInterface` emits as
@@ -16023,9 +16076,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
           }
           mi = mi + 1
         }
-        items.add(
-          MPInterface(iface = MInterface(className = ifaceFqn, namespace = pkgName, members = ifaceMembers))
-        )
+        items.add(MPInterface(iface = MInterface(className = ifaceFqn, namespace = pkgName, members = ifaceMembers)))
       }
       case IImpl(_) -> {
         // Handled by the `collectImplEntriesMsil` pre-pass above; both the
