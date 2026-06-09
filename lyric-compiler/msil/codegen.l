@@ -11707,7 +11707,17 @@ pub func lowerFuncMsil(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in S
       // slot; the body uses the IList slice path, never genuine array ops.
       paramTypes.add(typeExprToMsilGenSig(decl.params[pi2].ty, pkgName, fnGenerics))
     } else {
-      paramTypes.add(typeExprToMsil(decl.params[pi2].ty, pkgName))
+      // Non-generic free function: the parameter signature uses the ctx-aware
+      // concrete encoding (`Option[String]` → `Option`1<String>`, a record →
+      // its real TypeRef), matching the F# emitter, this function's own body
+      // slot type (`typeExprToMsilCtx` at the param-slot registration above),
+      // and the cross-package call REFERENCE (`registerRestoredFunc` /
+      // `registerStdlibFunc`, both `…WithCtx`).  The context-free
+      // `typeExprToMsil` erased a reference-typed param to `object`, so a
+      // self-hosted-built function with such a param did not bind from another
+      // assembly (MissingMethodException).  Generic functions stay on the
+      // `typeExprToMsilGenSig` branch above (the consumer skips them entirely).
+      paramTypes.add(typeExprToMsilCtx(cctx, decl.params[pi2].ty, pkgName))
     }
     pi2 = pi2 + 1
   }
