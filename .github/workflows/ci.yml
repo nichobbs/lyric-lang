@@ -3082,26 +3082,28 @@ jobs:
     steps:
       - name: Mark PR ready for review if build succeeds
         uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         with:
           script: |
-            const pr = context.payload.pull_request;
-            console.log(`[auto-promote] PR #${pr.number}: All CI passed, checking quality gates before promotion`);
+            const prNumber = parseInt(process.env.PR_NUMBER);
+            console.log(`[auto-promote] PR #${prNumber}: All CI passed, checking quality gates before promotion`);
 
             // Fetch fresh PR state to verify mergeable_state
             const freshPr = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: pr.number
+              pull_number: prNumber
             });
 
             // Check for merge conflicts (mergeable_state: dirty)
             if (freshPr.data.mergeable_state === 'dirty') {
-              console.log(`[auto-promote] PR #${pr.number}: ⚠ Merge conflicts detected — skipping promotion`);
+              console.log(`[auto-promote] PR #${prNumber}: ⚠ Merge conflicts detected — skipping promotion`);
               return;
             }
 
             if (freshPr.data.mergeable_state === 'unknown') {
-              console.log(`[auto-promote] PR #${pr.number}: ⏳ Merge status unknown, will not promote`);
+              console.log(`[auto-promote] PR #${prNumber}: ⏳ Merge status unknown, will not promote`);
               return;
             }
 
@@ -3109,16 +3111,16 @@ jobs:
               await github.rest.pulls.update({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                pull_number: pr.number,
+                pull_number: prNumber,
                 draft: false
               });
-              console.log(`[auto-promote] PR #${pr.number}: ✓ Successfully promoted to ready for review`);
+              console.log(`[auto-promote] PR #${prNumber}: ✓ Successfully promoted to ready for review`);
             } catch (error) {
               if (error.status === 403) {
-                console.log(`[auto-promote] PR #${pr.number}: ⚠ Permission denied (403) — may be a fork`);
+                console.log(`[auto-promote] PR #${prNumber}: ⚠ Permission denied (403) — may be a fork`);
               } else if (error.status === 422) {
-                console.log(`[auto-promote] PR #${pr.number}: ⚠ Cannot be promoted (422) — already ready or in invalid state`);
+                console.log(`[auto-promote] PR #${prNumber}: ⚠ Cannot be promoted (422) — already ready or in invalid state`);
               } else {
-                console.log(`[auto-promote] PR #${pr.number}: ✗ Error: ${error.message}`);
+                console.log(`[auto-promote] PR #${prNumber}: ✗ Error: ${error.message}`);
               }
             }
