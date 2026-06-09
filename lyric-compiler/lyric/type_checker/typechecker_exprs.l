@@ -2461,6 +2461,13 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
   if typeEquiv(paramTy, argTy) {
     return true
   }
+  // M6: numeric widening — Int satisfies Long, Float satisfies Double, etc.
+  // widenArithmetic(param, arg) returns Some(param) iff arg can widen to param.
+  match widenArithmetic(paramTy, argTy) {
+    case Some(wt) -> if typeEquiv(wt, paramTy) { return true }
+    case None -> {
+    }
+  }
   match typeIdOfType(paramTy) {
     case Some(ifaceId) -> match typeIdOfType(argTy) { case Some(argId) -> symTableTypeImplements(tbl, argId, ifaceId); case None -> false }
     case None -> false

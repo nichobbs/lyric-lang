@@ -1748,3 +1748,15 @@ test "int plus bool still rejected" {
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0031") or hasDiagCode(cr, "T0030"), "Int + Bool still rejected")
 }
+
+test "int literal in long ctor field ok" {
+  val src = "package P\nrecord R { id: Long }\nfunc f(): R { R(id = 0) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "Int literal widened to Long in ctor field")
+}
+
+test "long in int ctor field rejected" {
+  val src = "package P\nrecord R { id: Int }\nfunc f(v: in Long): R { R(id = v) }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0104"), "Long does not narrow to Int in ctor field")
+}
