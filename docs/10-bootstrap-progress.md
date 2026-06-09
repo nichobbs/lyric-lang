@@ -23822,3 +23822,48 @@ T0104 named/positional ctor arg mismatch; T0105/T0106 impl signature
 mismatch; T0108 where-bound unsatisfied; H16 alias usability; M6 widening
 (int+long, float+double, rejection cases); int literal in Long ctor field
 (widening); slice literal in List field (coercion).
+
+### D-progress-487 — self-hosted MSIL emitter: default interface method (DIM) body lowering; C11 fully resolved (PR #2959)
+
+**Status:** Shipped (PR #2959, 2026-06-09).
+
+Closes the last open item in C11 (`docs/12-todo-plan.md` Tier 0 item 1):
+default interface method body lowering in the self-hosted MSIL emitter.
+
+D-progress-486 shipped the front-end C11 slice (signature-type matching,
+T0105/T0106); that entry explicitly deferred DIM bodies ("Default method
+bodies remain deferred.").  This entry ships the backend slice.
+
+**Changes:**
+
+- **`lyric-compiler/msil/lowering.l`** — `MInterface` record gains a
+  `defaultMethods: List[MFunc]` field alongside the existing `methods:
+  List[MInterfaceMethod]` (abstract members).  `lowerMInterface` now
+  contains a second emission loop after the abstract-method loop: for each
+  `MFunc` in `defaultMethods` it calls `lowerMFunc` to compile the body,
+  obtains the RVA via `methodBodyRvas`, builds the blob-heap signature via
+  `buildInstanceMethodSigWithCtx`, and adds a MethodDef row with flags
+  `Public + Virtual + HideBySig + NewSlot` (no `Abstract`) and the real
+  RVA.  This is the correct ECMA-335 encoding for a default interface method.
+
+- **`lyric-compiler/msil/codegen.l`** — In the `IInterface` branch of
+  `codegenMPackage`, `IMFunc(fn)` members now route through
+  `lowerImplMethodMsil(cctx, fn, pkgName, ifaceFqn)` (with the interface
+  FQN as the receiver type so `self.method()` inside a DIM body emits
+  `callvirt` through the interface vtable token table) and are collected
+  into a separate `dimMethods: List[MFunc]` list.  The `MInterface`
+  constructor call is updated to pass `defaultMethods = dimMethods`.
+  `addPackageTokens` comment updated to document that both `IMSig` and
+  `IMFunc` members produce exactly one MethodDef row (token accounting
+  unchanged).
+
+- **`bootstrap/tests/Lyric.Cli.Tests/SelfHostedMsilBridgeTests.fs`** —
+  new end-to-end test `shm_interface_default_method`: defines a `Greeter`
+  interface with abstract `greet(): String` and a DIM `greetTwice(): String
+  { self.greet() + " " + self.greet() }`; `Hello` implements only `greet`,
+  inheriting `greetTwice` via DIM dispatch.  Expected output: `"hi\nhi hi"`.
+
+**Band 1 complete.**  All items in `docs/12-todo-plan.md` Tier 0 item 1
+(Front-end soundness CRITICAL band) are now resolved — the C11 entry now
+reads "C11 DONE"; `docs/41-self-hosted-compiler-gap-analysis.md` §3 table
+and §10 bottom-line updated accordingly.
