@@ -15425,6 +15425,7 @@ func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, r
   }
 
   var fi = 0
+  var fpos = 0
   while fi < rec.members.count {
     match rec.members[fi] {
       case RMField(f) -> {
@@ -15437,6 +15438,18 @@ func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, r
           cctx.fieldTokens.add(key, 0x0A000000 + memberRow)
           cctx.fieldMsilTypes.add(key, fty)
         }
+        // Positional name map (#1730 / #2592 slice 2): mirror the in-bundle
+        // record registration so a CONSUMER constructing this restored record
+        // can resolve each field's concrete type at the construction site
+        // (`fieldDeclaredNames[<fqn>/field<pos>]` -> name ->
+        // `fieldMsilTypes[<fqn>/name]`) and push it onto `collExpect`.  Without
+        // it a `[...]` argument degrades to `List<object>` and the producer's
+        // concrete-field read faults with InvalidCastException.
+        val byPosKey = className + "/field" + toString(fpos)
+        if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
+          cctx.fieldDeclaredNames.add(byPosKey, f.name)
+        }
+        fpos = fpos + 1
       }
       case _ -> ()
     }

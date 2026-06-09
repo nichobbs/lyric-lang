@@ -23371,17 +23371,45 @@ untouched (they resolve via `fieldDeclaredNames` as before).
 **Scope and what remains.** This slice fixes in-bundle **and** cross-package
 **union** construct+match (the cross-package union case binds because the
 restored union-case metadata already registers the positional concrete field
-type).  Cross-package **record** construct-in-consumer (a consumer building a
-restored dependency's record from a list literal) is still
-`InvalidCastException`: the restored-record registration does not give the
-construction site a concrete positional field type, so the literal degrades to
-`List<object>`.  That is a separate slice of the #2592 epic (restored-record
-field-type registration), tracked there.  The broader end-state — making list /
-slice **values** concrete end-to-end so they match facet-1's concrete field
-DEFs at every boundary — is the remaining epic work.
+type).  Cross-package **record** construct-in-consumer is fixed in the companion
+slice 2 (D-progress-481, same PR).  The broader end-state — making list / slice
+**values** concrete end-to-end so they match facet-1's concrete field DEFs at
+every boundary (slices 3–4: exhaustive construction-position coverage and
+`slice[T]` → array parity) — is the remaining epic work, sequenced on #2592.
 
 **Verification:** in-bundle union+record construct+match prints `3 2` (CI guard
 added); cross-package union construct+match returns `3` (the earlier
 `InvalidCastException` is gone); no regression — `lyric-auth` 32/32,
 `lyric-session` 5/15/11, in-bundle generics self-test 20/20, slice/string
 self-test green; emitter (828) + CLI (84) F# suites green; `make lyric` clean.
+
+### D-progress-481 — restored-record registration emits the positional field-name map so a consumer constructs the concrete collection (#2592 slice 2 / D-progress-469 facet 4)
+
+**Status:** Shipped (companion to D-progress-480, same PR) — a consumer that
+constructs a *restored dependency's* record from a list literal now builds the
+field's concrete `List<T>` instead of a `List<object>`, so the producer's
+concrete-field read no longer faults.
+
+**The bug.** `registerRestoredRecordFields` registered each field's concrete
+MSIL type only under the by-name key `fieldMsilTypes[<fqn>/<name>]`; it never
+registered the positional `fieldDeclaredNames[<fqn>/field<i>]` map that
+in-bundle record registration emits.  At a construction site
+(`Box(tags = [1,2,3], name = "hi")` where `Box` is a path-dependency record),
+the argument-hint resolver looks up `fieldDeclaredNames[<ctor>/field<i>]` to find
+the field name, then its concrete type; with that map absent (and the slice-1
+positional `fieldMsilTypes` fallback also absent for restored records) the hint
+degraded to `object`, the `[...]` literal built a `List<object>`, and the
+producer's `b.tags.count` — reading a concrete `List<int32>` field — faulted with
+`InvalidCastException`.
+
+**The fix.** Register `fieldDeclaredNames[<fqn>/field<pos>] = <name>` for each
+restored record field, mirroring the in-bundle record registration.  The
+construction site then resolves the field name → its already-registered concrete
+`fieldMsilTypes[<fqn>/<name>]`, pushes it onto `collExpect`, and the literal
+builds the genuine `List<T>`.
+
+**Verification:** cross-package record construct-in-consumer prints `4:hi` (CI
+guard added); the earlier `InvalidCastException` is gone; no regression —
+cross-package union construct+match still returns `3`, `lyric-auth` 32/32,
+`lyric-session` 5/15/11, in-bundle generics 20/20, slice/string self-test green;
+emitter (828) + CLI (84) F# suites green; `make lyric` clean.
