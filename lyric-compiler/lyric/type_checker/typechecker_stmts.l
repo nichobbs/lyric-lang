@@ -25,9 +25,11 @@ func bindPattern(sc: in Scope, pat: in Pattern, ty: in Type): Unit {
     case PWildcard -> {
     }
     case PTuple(patterns) -> {
+      val telems = match unrefine(ty) { case TyTuple(es) -> es; case _ -> newList() }
       var i = 0
       while i < patterns.count {
-        bindPattern(sc, patterns[i], TyError)
+        val et = if i < telems.count { telems[i] } else { TyError }
+        bindPattern(sc, patterns[i], et)
         i = i + 1
       }
     }

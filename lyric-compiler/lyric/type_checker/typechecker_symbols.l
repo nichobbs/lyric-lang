@@ -61,6 +61,9 @@ pub record Symbol {
   /// Dotted declaring-package name; empty = no package context (the flat
   /// `checkWithImports` shim, i.e. historical last-registered-wins).
   originPackage: String
+  /// Derive markers extracted from `@derive(...)` annotations on the item.
+  /// Non-empty only for records, unions, and distinct types.
+  derives: List[String]
   // ─────────────────────────────────────────────────────────────────────────────
   // §3. Symbol helpers.
   // ─────────────────────────────────────────────────────────────────────────────
