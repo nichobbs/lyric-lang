@@ -3433,6 +3433,48 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
     return 1
   }
 
+  // Build local-path dependencies that are not yet built (#2887).
+  // This allows `lyric test` to work without requiring the user to manually
+  // run `lyric build` on dependencies first.
+  var bi = 0
+  while bi < manifest.deps.count {
+    val dep = manifest.deps[bi]
+    match dep.source {
+      case Path(dir) -> {
+        val depDir = if Path.isAbsolute(dir) { dir } else { Path.join(mfDir, dir) }
+        val depToml = Path.join(depDir, "lyric.toml")
+        val depBinDir = Path.join(depDir, "bin")
+        if File.fileExists(depToml) {
+          match File.readText(depToml) {
+            case Ok(depMfText) -> {
+              match Mf.parseManifest(depMfText, depToml) {
+                case Ok(depMf) -> {
+                  val dllName = match depMf.project {
+                    case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
+                    case None -> depMf.packageSection.name + ".dll"
+                  }
+                  val dllPath = Path.join(depBinDir, dllName)
+                  if not File.fileExists(dllPath) {
+                    Console.println("test: building local dep '" + dep.name + "' ...")
+                    val buildRc = buildProject(depToml, None, Dotnet, newList(), false, false, false)
+                    if buildRc != 0 {
+                      printErr("test: failed to build local dep '" + dep.name + "'")
+                      return 1
+                    }
+                  }
+                }
+                case Err(_) -> ()
+              }
+            }
+            case Err(_) -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+    bi += 1
+  }
+
   // Resolve local-path dependencies to DLL paths, matching buildProject.
   // Also track unique dep bin directories so the test runtimeconfig can
   // include additionalProbingPaths — this lets dotnet exec locate stdlib
@@ -3473,7 +3515,8 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
                       depBinDirs.add(depBinDir)
                     }
                   } else {
-                    printErr("test: local dep '" + dep.name + "' not built — run `lyric build --manifest " + depToml + "` first")
+                    printErr("test: local dep '" + dep.name + "' could not be built")
+                    return 1
                   }
                 }
                 case Err(e) -> {
@@ -3577,15 +3620,17 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
     // via emitProject so each package declaration is a separate compilation
     // unit — concatenating sources into a single-file emit is invalid when
     // the project contains more than one `package` declaration.
+    // Add the test package FIRST so its synthesized main() is recorded as the
+    // entry point by the first-wins semantics in addPackageTokens (#2885).
     val allPkgs: List[ProjectPackage] = newList()
+    val testSrcs: List[String] = newList()
+    testSrcs.add(rewritten)
+    allPkgs.add(ProjectPackage(name = testEntry.name, sources = testSrcs))
     var si = 0
     while si < libPkgs.count {
       allPkgs.add(libPkgs[si])
       si += 1
     }
-    val testSrcs: List[String] = newList()
-    testSrcs.add(rewritten)
-    allPkgs.add(ProjectPackage(name = testEntry.name, sources = testSrcs))
     val asmStem = stemOf(Path.basename(testEntry.path), 2)
     val outPath = Path.join(testOutDir, asmStem + ".dll")
 
