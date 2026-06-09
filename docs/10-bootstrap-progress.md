@@ -23248,3 +23248,37 @@ weaver self-test 18/18 (F#-built records); ecosystem `lyric test` suites
 `lyric-auth` 32/32 and `lyric-session` 11/11 (the suites that regressed under
 the per-field guard); emitter (834) + CLI (84) F# suites green; `make lyric`
 clean.
+
+### D-progress-478 — self-hosted producer emits concrete non-generic free-function parameter signatures (D-progress-469 facet 2)
+
+**Status:** Shipped — the self-hosted MSIL producer (`lowerFuncMsil` in
+`lyric-compiler/msil/codegen.l`) now encodes a reference-typed parameter of a
+**non-generic** free function (a record, `slice[record]`, `Option[..]`, `Map`,
+etc.) with the ctx-aware concrete encoding (`typeExprToMsilCtx`) instead of
+erasing it to `object` via the context-free `typeExprToMsil`.  The function's
+return type already used the concrete encoder, as did the function's own body
+parameter-slot type and the cross-package call REFERENCE
+(`registerRestoredFunc` / `registerStdlibFunc`, both `…WithCtx`) — so the
+parameter signature was the lone erased site.  A self-hosted-built function with
+a reference-typed parameter therefore did not bind from another assembly
+(MissingMethodException), keeping such packages off the shippable set
+(D-progress-469).
+
+**Generic functions are unchanged.** The `fnGenerics.count > 0` branch keeps a
+generic function's `slice[T]` / bare-`T` parameter on the erased
+`typeExprToMsilGenSig` path (a List-backed argument matches the `object` slot,
+#2557), mirroring the cross-package consumer, which skips generic free functions
+entirely (`registerRestoredFunc` returns early for them — cross-assembly generic
+call sites are a separate, deferred concern).  Lambda parameters likewise stay
+`object` (the uniform `Func` ABI, #1877).  So the change is confined to the
+non-generic, non-lambda parameter signature, exactly matching facet 1's
+whole-type gating discipline.
+
+**Verification:** cross-package non-generic functions taking a record parameter,
+a `slice[Err]` parameter, and a `slice[slice[Err]]` parameter bind and execute
+across a real assembly boundary (`name:required 2 3`; CI guard added);
+no regression — emitter (828) + CLI (84) F# suites green (the self-hosted
+MSIL/JVM bridge tests and every `lyric-stdlib/tests/*_tests.l` compile real
+parameter-bearing functions through the self-hosted emitter), ecosystem
+`lyric test` suites `lyric-auth` and `lyric-session` green (the same oracle that
+caught facet 1's regression); `make lyric` clean.
