@@ -23634,26 +23634,21 @@ emitter (828) + CLI (84) F# suites green; `make lyric` clean.
 
 ### D-progress-482 — construction-position `collExpect` coverage (#2592 slice 3)
 
-**Status:** Shipped — CI guards added for the three construction positions the F#
-bootstrap emitter handles, plus a separate self-hosted test for the nested-literal
-position.  The four positions: (1) list literal in **return position** (return-type
-push at `SReturn`), (2) list literal as a **call argument** (parameter-type push at
-call site), (3) list literal in a **`var` reassignment** (`xs = [1,2,3]` where
-`xs: List[Int]`, local-tracked-type push), and (4) **nested list literal**
-(`[[10,20],[30,40,50]]` — element-type push for each inner list).  The infrastructure
-was already in place (D-progress-478/480); this entry validates the coverage
-end-to-end and hardens it against regression.
+**Status:** Shipped — CI guard added for all four construction positions via the
+self-hosted emitter.  The four positions: (1) list literal in **return position**
+(return-type push at `SReturn`), (2) list literal as a **call argument**
+(parameter-type push at call site), (3) list literal in a **`var` reassignment**
+(`xs = [1,2,3]` where `xs: List[Int]`, local-tracked-type push), and
+(4) **nested list literal** (`[[10,20],[30,40,50]]` — element-type push for each
+inner list).  All four positions require the self-hosted emitter path: the F#
+bootstrap emitter does not push `collExpect` for positions 1–3, building
+`List<object>` literals there and faulting with `InvalidCastException` when the
+concrete-typed operation runs.
 
-**CI guards:**
-- `Construction-position collExpect coverage` step: `lyric run` (F# emitter)
-  covers positions 1–3; expected output `3 600 3`.
-- `Nested-literal collExpect coverage (self-hosted)` step: `lyric test` (self-hosted
-  MSIL bridge via `.bootstrap/stage1`) covers position 4; asserts
-  `[[10,20],[30,40,50]]` produces inner lists with correct counts and values.
-  The F# bootstrap emitter does not propagate the element type into inner list
-  literals when the outer expected element type is itself `List<T>` (it would build
-  `List<object>` inners and fault with `InvalidCastException` at runtime), so this
-  position must be tested through the self-hosted `codegen.l` path.
+**CI guard:** the `Construction-position collExpect coverage (self-hosted)` step
+runs a `@test_module` via `lyric test` (self-hosted MSIL bridge via
+`.bootstrap/stage1`); four `@test` functions covering each position.  Guarded by
+`.bootstrap/stage1` presence (::warning if missing, not ::error).
 
 ### D-progress-483 — `Sort.sortStrings(list.toArray())` end-to-end; Std.Xml/Yaml unblocked; `cli.l::sortFileList` retirement deferred to stage-2 (#2592 slice 4)
 
