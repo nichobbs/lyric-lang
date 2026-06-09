@@ -782,7 +782,6 @@ func buildReleaseSingle(
   Release.buildRelease(releaseTarget, stagingDll, pkgName, newList(), ridArg, outNative)
 }
 
-
 // Deterministic ascending sort of a file-path list.
 //
 // Uses a monomorphic selection sort over `List[String]` rather than
@@ -3431,46 +3430,125 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
     return 1
   }
 
-  // Build local-path dependencies that are not yet built (#2887).
-  // This allows `lyric test` to work without requiring the user to manually
-  // run `lyric build` on dependencies first.
-  var bi = 0
-  while bi < manifest.deps.count {
-    val dep = manifest.deps[bi]
-    match dep.source {
-      case Path(dir) -> {
-        val depDir = if Path.isAbsolute(dir) { dir } else { Path.join(mfDir, dir) }
-        val depToml = Path.join(depDir, "lyric.toml")
-        val depBinDir = Path.join(depDir, "bin")
-        if File.fileExists(depToml) {
-          match File.readText(depToml) {
-            case Ok(depMfText) -> {
-              match Mf.parseManifest(depMfText, depToml) {
-                case Ok(depMf) -> {
-                  val dllName = match depMf.project {
-                    case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
-                    case None -> depMf.packageSection.name + ".dll"
-                  }
-                  val dllPath = Path.join(depBinDir, dllName)
-                  if not File.fileExists(dllPath) {
-                    Console.println("test: building local dep '" + dep.name + "' ...")
-                    val buildRc = buildProject(depToml, None, Dotnet, newList(), false, false, false)
-                    if buildRc != 0 {
-                      printErr("test: failed to build local dep '" + dep.name + "'")
-                      return 1
-                    }
-                  }
-                }
-                case Err(_) -> ()
-              }
-            }
-            case Err(_) -> ()
-          }
-        }
+  // Build local-path dependencies in topological order (#2887).
+  // Uses an iterative DFS post-order over the full transitive local-path-dep
+  // closure so a dep's own local-path dependencies are always built before the
+  // dep itself — even when the manifest order is not dependency-first and even
+  // when transitive deps are not listed directly in this manifest.
+  //
+  // Stack entries are pairs stored as alternating elements with tomlPath on top:
+  //   add("open"), add(tomlPath)   → tomlPath at count-1, "open" at count-2
+  //   pop tomlPath, pop state
+  val dfsSeen: List[String] = newList()
+  val topoOrder: List[String] = newList()
+  val dfsStack: List[String] = newList()
+
+  // Seed the DFS with direct local-path deps (push in reverse for correct pop order).
+  var seedIdx = manifest.deps.count - 1
+  while seedIdx >= 0 {
+    val seedDep = manifest.deps[seedIdx]
+    match seedDep.source {
+      case Path(seedDir) -> {
+        val seedDepDir = if Path.isAbsolute(seedDir) { seedDir } else { Path.join(mfDir, seedDir) }
+        dfsStack.add("open")
+        dfsStack.add(Path.join(seedDepDir, "lyric.toml"))
       }
       case _ -> ()
     }
-    bi += 1
+    seedIdx -= 1
+  }
+
+  while dfsStack.count > 0 {
+    val dfsToml = dfsStack[dfsStack.count - 1]
+    dfsStack.removeAt(dfsStack.count - 1)
+    val dfsState = dfsStack[dfsStack.count - 1]
+    dfsStack.removeAt(dfsStack.count - 1)
+
+    if dfsState == "close" {
+      topoOrder.add(dfsToml)
+      continue
+    }
+
+    // "open": skip if already visited (handles diamond deps and back edges).
+    var dfsAlreadySeen = false
+    var dfsSeenIdx = 0
+    while dfsSeenIdx < dfsSeen.count {
+      if dfsSeen[dfsSeenIdx] == dfsToml {
+        dfsAlreadySeen = true
+      }
+      dfsSeenIdx += 1
+    }
+    if dfsAlreadySeen {
+      continue
+    }
+    dfsSeen.add(dfsToml)
+
+    // Push close marker for this node (will fire after all children are processed).
+    dfsStack.add("close")
+    dfsStack.add(dfsToml)
+
+    // Parse this dep's manifest to discover its own local-path deps,
+    // pushing them as children (in reverse for correct DFS pop order).
+    match File.readText(dfsToml) {
+      case Ok(dfsText) -> {
+        match Mf.parseManifest(dfsText, dfsToml) {
+          case Ok(dfsMf) -> {
+            val dfsMfDir = Path.dirname(dfsToml)
+            var childIdx = dfsMf.deps.count - 1
+            while childIdx >= 0 {
+              val childDep = dfsMf.deps[childIdx]
+              match childDep.source {
+                case Path(childDir) -> {
+                  val childDepDir = if Path.isAbsolute(childDir) { childDir } else { Path.join(dfsMfDir, childDir) }
+                  dfsStack.add("open")
+                  dfsStack.add(Path.join(childDepDir, "lyric.toml"))
+                }
+                case _ -> ()
+              }
+              childIdx -= 1
+            }
+          }
+          case Err(_) -> ()
+        }
+      }
+      case Err(_) -> ()
+    }
+  }
+
+  // Build each dep in topo order; skip those already built.
+  var topoIdx = 0
+  while topoIdx < topoOrder.count {
+    val buildToml = topoOrder[topoIdx]
+    match File.readText(buildToml) {
+      case Ok(buildText) -> {
+        match Mf.parseManifest(buildText, buildToml) {
+          case Ok(buildMf) -> {
+            val buildDllName = match buildMf.project {
+              case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
+              case None -> buildMf.packageSection.name + ".dll"
+            }
+            val buildDllPath = Path.join(Path.join(Path.dirname(buildToml), "bin"), buildDllName)
+            if not File.fileExists(buildDllPath) {
+              Console.println("test: building dep '" + buildMf.packageSection.name + "' ...")
+              val buildRc = buildProject(buildToml, None, Dotnet, newList(), false, false, false)
+              if buildRc != 0 {
+                printErr("test: failed to build dep '" + buildMf.packageSection.name + "'")
+                return 1
+              }
+            }
+          }
+          case Err(e) -> {
+            printErr("test: malformed lyric.toml at '" + buildToml + "': " + ManifestError.message(e))
+            return 1
+          }
+        }
+      }
+      case Err(e) -> {
+        printErr("test: cannot read dep manifest at '" + buildToml + "': " + IOError.message(e))
+        return 1
+      }
+    }
+    topoIdx += 1
   }
 
   // Resolve local-path dependencies to DLL paths, matching buildProject.
