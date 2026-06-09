@@ -22,8 +22,8 @@ func diagLine(d: in Diagnostic): String {
 pub func synthesizeBenchToProtocol(source: in String, runs: in Int, warmup: in Int, filter: in String): String {
   match synthesizeBench(source, runs, warmup, filter) {
     case NoBenchModule(span) -> "nobench\n" + toString(span.startPos.line) + "\n" + toString(span.startPos.column)
-    case UserMainExists(span) -> "usermain\n" + toString(span.startPos.line) + "\n" + toString(span.startPos.column)
-    case ParseFailures(diags) -> {
+    case BenchUserMainExists(span) -> "usermain\n" + toString(span.startPos.line) + "\n" + toString(span.startPos.column)
+    case BenchParseFailures(diags) -> {
       var s = "parsefail"
       var i = 0
       while i < diags.count {
