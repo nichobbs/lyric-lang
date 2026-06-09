@@ -13620,20 +13620,32 @@ func lowerProtectedMsil(
         val afterL = freshLabelMsil(entryFctx)
         entryInsns.add(MLabel(id = tryStartL))
         entryFctx.tryRegionStack.add(0)
+        // Set epilogueLabel BEFORE lowering the body so that any explicit `return`
+        // statement inside the try region can stash its value (via retvalSlot) and
+        // `leave` to afterL instead of emitting an illegal bare `ret` inside a
+        // protected region (#1499 / SReturn case in lowerStmtMsil).
+        entryFctx.epilogueLabel = afterL
 
-        // Lower the body inside the try block.
+        // Shared helper: emit the try/finally EH structure and afterL epilogue.
+        // Inlined per arm since each arm builds its own finallyStart/End labels.
         match ed.body {
           case FBBlock(block) -> {
             if retTy != MVoid {
-              // Non-void: stash the value into a result local before leaving the
-              // try region (the evaluation stack must be empty at a `leave`).
-              val valTy = lowerBlockExprMsil(cctx, entryFctx, entryInsns, block)
-              val resultSlot = allocSlotMsil(entryFctx, "__entry_result", valTy)
-              emitStoreSlot(entryInsns, resultSlot, entryFctx.paramCount)
-              entryInsns.add(MLeave(label = afterL))
+              // Non-void block body.  Lower the block; if it fell through normally
+              // the result is on the stack — stash it to retvalSlot and leave.
+              // If it ended with an explicit `return` (epilogueUsed > 0), SReturn
+              // already stashed the value and emitted leave(afterL); skip the
+              // fall-through path so we don't try to store a void stack value.
+              val _ = lowerBlockExprMsil(cctx, entryFctx, entryInsns, block)
+              if entryFctx.epilogueUsed.count == 0 {
+                if entryFctx.retvalSlot < 0 {
+                  entryFctx.retvalSlot = allocSlotMsil(entryFctx, "__retval", retTy)
+                }
+                emitStoreSlot(entryInsns, entryFctx.retvalSlot, entryFctx.paramCount)
+                entryInsns.add(MLeave(label = afterL))
+              }
               val tryBodyEndL = freshLabelMsil(entryFctx)
               entryInsns.add(MLabel(id = tryBodyEndL))
-              // Finally: Monitor.Exit(this).
               val finallyStartL = freshLabelMsil(entryFctx)
               val finallyEndL = freshLabelMsil(entryFctx)
               entryInsns.add(MLabel(id = finallyStartL))
@@ -13652,11 +13664,16 @@ func lowerProtectedMsil(
                 )
               )
               entryInsns.add(MLabel(id = afterL))
-              emitLoadSlot(entryInsns, resultSlot, entryFctx.paramCount)
+              if entryFctx.retvalSlot >= 0 {
+                emitLoadSlot(entryInsns, entryFctx.retvalSlot, entryFctx.paramCount)
+              }
               entryInsns.add(MRet)
             } else {
+              // Void block body.
               lowerBlockMsil(cctx, entryFctx, entryInsns, block)
-              entryInsns.add(MLeave(label = afterL))
+              if entryFctx.epilogueUsed.count == 0 {
+                entryInsns.add(MLeave(label = afterL))
+              }
               val tryBodyEndL = freshLabelMsil(entryFctx)
               entryInsns.add(MLabel(id = tryBodyEndL))
               val finallyStartL = freshLabelMsil(entryFctx)
@@ -13681,9 +13698,13 @@ func lowerProtectedMsil(
             }
           }
           case FBExpr(e) -> {
+            // Expression body: expressions cannot contain SReturn, so no epilogue
+            // escape is possible.  Lower the expression, stash the result, leave.
             lowerExprMsil(cctx, entryFctx, entryInsns, e)
-            val resultSlot = allocSlotMsil(entryFctx, "__entry_result", retTy)
-            emitStoreSlot(entryInsns, resultSlot, entryFctx.paramCount)
+            if entryFctx.retvalSlot < 0 {
+              entryFctx.retvalSlot = allocSlotMsil(entryFctx, "__retval", retTy)
+            }
+            emitStoreSlot(entryInsns, entryFctx.retvalSlot, entryFctx.paramCount)
             entryInsns.add(MLeave(label = afterL))
             val tryBodyEndL = freshLabelMsil(entryFctx)
             entryInsns.add(MLabel(id = tryBodyEndL))
@@ -13705,7 +13726,9 @@ func lowerProtectedMsil(
               )
             )
             entryInsns.add(MLabel(id = afterL))
-            emitLoadSlot(entryInsns, resultSlot, entryFctx.paramCount)
+            if entryFctx.retvalSlot >= 0 {
+              emitLoadSlot(entryInsns, entryFctx.retvalSlot, entryFctx.paramCount)
+            }
             entryInsns.add(MRet)
           }
         }
