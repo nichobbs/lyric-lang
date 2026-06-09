@@ -1,5 +1,13 @@
 # 36 — v1.0 Roadmap
 
+> **SUPERSEDED FOR TRACKING (2026-06-09).** §R1–R6 are all complete (see
+> status lines in each section below). §R7 (self-hosted soundness/correctness
+> floor) is the only remaining v1.0 work, and its tracking has moved to
+> `docs/12-todo-plan.md`, which is the single source of truth for outstanding
+> tasks. This document is retained as a **historical record** of the R1–R6
+> milestones and their acceptance criteria. The §§3–5 workarounds and deferred
+> items remain accurate and can be referenced directly.
+
 This document is the actionable pre-release checklist.  Every item either
 blocks the `v1.0` tag or is a tracked production-quality gap deferred to
 a specific 1.x milestone with an open issue.  Per `CLAUDE.md`,
