@@ -464,11 +464,13 @@ func copyRestoredDepDlls(outPath: in String, restoredDlls: in List[String]): Uni
       continue
     }
     val dest = Path.join(destDir, Path.basename(dllPath))
-    match File.readBytes(dllPath) {
-      case Ok(bs) -> {
-        val _ = File.writeBytes(dest, bs)
+    if not File.fileExists(dest) {
+      match File.readBytes(dllPath) {
+        case Ok(bs) -> {
+          val _ = File.writeBytes(dest, bs)
+        }
+        case Err(_) -> ()
       }
-      case Err(_) -> ()
     }
   }
 }
