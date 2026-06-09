@@ -13917,7 +13917,8 @@ func lowerWireMsil(
         createInsns.add(MStloc(slot = localSlot - createFctx.paramCount))
       }
       case WMScoped(_, name, ty, init, _) -> {
-        // Bootstrap: allocate per-call (true async-local scoping is a follow-up).
+        // Per-call allocation: correct when the wire is created once per execution
+        // unit (HTTP request, job). True AsyncLocal<T>-backed scoping tracked in #2972.
         val localTy = typeExprToMsil(ty, pkgName)
         val localSlot = allocSlotMsil(createFctx, name, localTy)
         lowerExprMsil(cctx, createFctx, createInsns, init)

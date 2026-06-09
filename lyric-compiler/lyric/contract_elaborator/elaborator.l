@@ -532,7 +532,7 @@ func collectOldExpr(e: in Expr, acc: inout List[Expr]) {
     case ESelf -> ()
     case EResult -> ()
     case EError -> ()
-    case ERange(_) -> ()
+    case ERange(bound) -> collectOldExprRange(bound, acc)
     case EParen(inner) -> collectOldExpr(inner, acc)
     case ETuple(exprs) -> collectOldExprList(exprs, acc)
     case EList(exprs) -> collectOldExprList(exprs, acc)
@@ -622,6 +622,21 @@ func collectOldExprList(exprs: in List[Expr], acc: inout List[Expr]) {
   while i < exprs.count {
     collectOldExpr(exprs[i], acc)
     i = i + 1
+  }
+}
+
+func collectOldExprRange(b: in RangeBound, acc: inout List[Expr]) {
+  match b {
+    case RBClosed(lo, hi) -> {
+      collectOldExpr(lo, acc)
+      collectOldExpr(hi, acc)
+    }
+    case RBHalfOpen(lo, hi) -> {
+      collectOldExpr(lo, acc)
+      collectOldExpr(hi, acc)
+    }
+    case RBLowerOpen(hi) -> collectOldExpr(hi, acc)
+    case RBUpperOpen(lo) -> collectOldExpr(lo, acc)
   }
 }
 
