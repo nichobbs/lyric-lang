@@ -23631,3 +23631,48 @@ guard added); the earlier `InvalidCastException` is gone; no regression —
 cross-package union construct+match still returns `3`, `lyric-auth` 32/32,
 `lyric-session` 5/15/11, in-bundle generics 20/20, slice/string self-test green;
 emitter (828) + CLI (84) F# suites green; `make lyric` clean.
+
+### D-progress-482 — construction-position `collExpect` coverage (#2592 slice 3)
+
+**Status:** Shipped — CI guards added for four construction positions where `collExpect`
+propagation must produce a concrete `List<T>` rather than `List<object>`: (1) list
+literal in **return position** (return-type push at `SReturn`), (2) list literal as a
+**call argument** (parameter-type push at call site), (3) list literal in a **`var`
+reassignment** (`xs = [1,2,3]` where `xs: List[Int]`, local-tracked-type push), and
+(4) **nested list literal** (`[[10,20],[30,40,50]]` — element-type push for each inner
+list).  The infrastructure was already in place (D-progress-478/480); this entry
+validates the coverage end-to-end and hardens it against regression.
+
+**CI guard:** the `Construction-position collExpect coverage` step in `ci.yml` compiles
+and runs a single-file program covering all four positions; expected output `3 600 3 2`.
+
+### D-progress-483 — `Sort.sortStrings(list.toArray())` end-to-end; `cli.l::sortFileList` retired; Std.Xml/Yaml unblocked (#2592 slice 4)
+
+**Status:** Shipped — the `#2592` headline slice:
+
+**codegen.l `coerceCallArgMsil` extension.** Extended to handle
+`MConcreteList(e) → MArray(e)`: when a concrete `List<T>` value is passed to a
+`slice[T]` (= `T[]`) parameter, `coerceCallArgMsil` now emits `MListOp(LoToArray, e)`
+automatically.  This is a safety-net for the (currently hypothetical, possible under
+type-checker gaps) case where a `MConcreteList` value reaches a `MArray` parameter
+boundary without an explicit `.toArray()` call.
+
+**`cli.l::sortFileList` retired.** The local monomorphic selection sort introduced as a
+workaround for the broken generic-method slice ABI (#2539) is deleted.  Both call sites
+(`buildProject` and the `lyric test` path) now call
+`Sort.sortStrings(lFiles.toArray())` directly.  `lFiles.toArray()` on a
+`MConcreteList(MString)` emits `List<string>.ToArray()` → real `String[]` → binds
+correctly to `Std.Sort.sortStrings`'s `String[]` parameter.  `import Std.Sort as Sort`
+added to `cli.l`.
+
+**`scripts/stage-selfhosted-stdlib.sh` CURATED_PACKAGES expansion.** `Std.Xml` and
+`Std.Yaml` added to `CURATED_PACKAGES`.  Their prior exclusion — "union-case ctor
+signature mismatch (field encoding)" — was fixed by D-progress-480 (non-generic
+union-case concrete-collection field construction).  Both packages now build and stage
+correctly; the `XmlNode.Element(tag, attrs, children)` match no longer faults on the
+`List[XmlAttr]` / `List[XmlNode]` field cast.
+
+**CI guards:** (1) `Sort.sortStrings(list.toArray())` step builds a `List[String]` from
+`add()` calls, converts via `.toArray()`, sorts, and asserts `alpha.l beta.l gamma.l`;
+(2) Xml/Yaml staged step verifies both DLLs are present and runs a `parseXml` + Element
+match asserting `items 2`.

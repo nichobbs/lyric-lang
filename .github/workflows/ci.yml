@@ -1354,6 +1354,153 @@ jobs:
           fi
           echo "cross-package record construct-in-consumer builds the concrete list"
 
+      # Construction-position coverage (#2592 slice 3, D-progress-482).  Verifies
+      # that a `[...]` list literal builds a genuine concrete `List<T>` (not
+      # `List<object>`) in four positions where `collExpect` propagation must fire:
+      #   1. Return position: `func f(): List[Int] { [10,20,30] }` — return-type push
+      #   2. Call argument: `count([1,2,3])` — parameter-type push
+      #   3. `var` reassignment: `xs = [1,2,3]` — local-tracked-type push
+      #   4. Nested literal: `[[10,20],[30,40,50]]` — element-type push for inner list
+      # A `List<object>` at any of these positions would cause `.count` to return
+      # the wrong value or fault when later read through a concrete-field signature.
+      - name: Construction-position collExpect coverage (#2592 slice 3)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          cat > "$work/c3.l" <<'LYR'
+          package C3
+          import Std.Console as Console
+          func makeInts(): List[Int] { [10, 20, 30] }
+          func sumList(xs: in List[Int]): Int {
+            var s = 0
+            var i = 0
+            while i < xs.count { s = s + xs[i]; i = i + 1 }
+            s
+          }
+          func main(): Unit {
+            val fromReturn = makeInts()
+            val fromArg = sumList([100, 200, 300])
+            var xs: List[Int] = newList()
+            xs = [1, 2, 3]
+            val xss: List[List[Int]] = [[10, 20], [30, 40, 50]]
+            Console.println(
+              toString(fromReturn.count) + " " +
+              toString(fromArg) + " " +
+              toString(xs.count) + " " +
+              toString(xss[0].count)
+            )
+          }
+          LYR
+          out="$("$lyric_bin" run "$work/c3.l" 2>&1 | tail -1)"
+          echo "slice-3 program printed: '$out'"
+          if [ "$out" != "3 600 3 2" ]; then
+            echo "::error::slice-3 construction-position returned '$out' (expected '3 600 3 2'); #2592 slice-3 regressed"
+            exit 1
+          fi
+          echo "collExpect propagates correctly at return / call-arg / reassignment / nested positions"
+
+      # `Sort.sortStrings(list.toArray())` end-to-end (#2592 slice 4, D-progress-483).
+      # The #2592 headline bug: self-hosted callers passed a `List`-backed slice to
+      # the F#-built `Std.Sort.sortStrings(String[])`, which returned the unsorted
+      # input because the array-based F# body couldn't walk a `List` value.
+      # The `cli.l::sortFileList` workaround is retired here: the fix is that
+      # `MConcreteList.toArray()` emits a genuine `List<T>.ToArray()` (D-progress-??),
+      # and `coerceCallArgMsil` auto-converts `MConcreteList → MArray` at call sites.
+      # This test builds a `List[String]`, converts via `.toArray()`, sorts, and
+      # asserts lexicographic order — the pattern matching `cli.l`'s replacement.
+      - name: Sort.sortStrings(list.toArray()) end-to-end (#2592 slice 4)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin"
+            exit 1
+          fi
+          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.Sort.dll" ]; then
+            echo "::error::Lyric.Stdlib.Sort.dll not staged — slice-4 test cannot run"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          cat > "$work/s4.l" <<'LYR'
+          package S4
+          import Std.Sort as Sort
+          import Std.Console as Console
+          func main(): Unit {
+            val files: List[String] = newList()
+            files.add("gamma.l")
+            files.add("alpha.l")
+            files.add("beta.l")
+            val sorted: slice[String] = Sort.sortStrings(files.toArray())
+            Console.println(sorted[0] + " " + sorted[1] + " " + sorted[2])
+          }
+          LYR
+          out="$("$lyric_bin" run "$work/s4.l" 2>&1 | tail -1)"
+          echo "slice-4 program printed: '$out'"
+          if [ "$out" != "alpha.l beta.l gamma.l" ]; then
+            echo "::error::Sort.sortStrings(list.toArray()) returned '$out' (expected 'alpha.l beta.l gamma.l'); #2592 slice-4 regressed"
+            exit 1
+          fi
+          echo "Sort.sortStrings(list.toArray()) returns lexicographically sorted result"
+
+      # Std.Xml / Std.Yaml smoke test (#2592 slice 4 — curated-package exclusions
+      # retired, D-progress-480).  `Xml` and `Yaml` are now in CURATED_PACKAGES in
+      # `scripts/stage-selfhosted-stdlib.sh`.  The union-case concrete-collection
+      # fix (D-progress-480) resolved the `InvalidCastException` on
+      # `Element(tag, attrs, children)` match — attrs and children are `List[T]`
+      # fields on a non-generic union case, the exact pattern the fix targets.
+      - name: Std.Xml and Std.Yaml staged and parse correctly (#2592 slice 4)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin"
+            exit 1
+          fi
+          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.Xml.dll" ]; then
+            echo "::error::Lyric.Stdlib.Xml.dll not staged — curated-package exclusion not retired"
+            exit 1
+          fi
+          if [ ! -f "$(dirname "$lyric_bin")/Lyric.Stdlib.Yaml.dll" ]; then
+            echo "::error::Lyric.Stdlib.Yaml.dll not staged — curated-package exclusion not retired"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          cat > "$work/xmltest.l" <<'LYR'
+          package XmlTest
+          import Std.Xml as Xml
+          import Std.Console as Console
+          func main(): Unit {
+            match Xml.parseXml("<items><a/><b/></items>") {
+              case Ok(doc) -> {
+                val root = Xml.documentRoot(doc)
+                match root {
+                  case Element(tag, attrs, children) -> Console.println(tag + " " + toString(children.count))
+                  case _ -> Console.println("unexpected")
+                }
+              }
+              case Err(e) -> Console.println("error: " + Xml.XmlError.message(e))
+            }
+          }
+          LYR
+          out="$("$lyric_bin" run "$work/xmltest.l" 2>&1 | tail -1)"
+          echo "Xml test printed: '$out'"
+          if [ "$out" != "items 2" ]; then
+            echo "::error::Std.Xml parse+match returned '$out' (expected 'items 2'); union-case concrete-collection regression"
+            exit 1
+          fi
+          echo "Std.Xml and Std.Yaml staged; Xml parse + Element match works correctly"
+
       # Slice-length / String-comparison self-test (#2539).  Exercises two
       # self-hosted MSIL codegen fixes: (1) `String` relational operators
       # (`<` / `>` / `<=` / `>=`) route through `String.CompareOrdinal`

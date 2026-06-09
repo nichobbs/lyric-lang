@@ -6475,6 +6475,20 @@ func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in Ms
       case MByte -> insns.add(MUnboxAny(typeToken = 0x01000000 + boxTypeRef(cctx, MByte)))
       case _ -> ()
     }
+  } else {
+    // A concrete `List<T>` value being passed to a `slice[T]` (= `T[]`) parameter:
+    // emit `ToArray()` so the callee — typically an F#-built stdlib function that
+    // declares a genuine CLR `!0[]` parameter — receives a real array rather than
+    // a `List`-backed value (#2592 slice 4).
+    match fromTy {
+      case MConcreteList(fromElem) -> {
+        match toTy {
+          case MArray(_) -> insns.add(MListOp(op = LoToArray, elemTy = fromElem))
+          case _ -> ()
+        }
+      }
+      case _ -> ()
+    }
   }
 }
 
