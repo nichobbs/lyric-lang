@@ -297,7 +297,11 @@ pub record CodegenCtx {
   // `addPackageTokens` guards with `containsKey`).  The match-arm side
   // does not need a parallel table — `lowerPatternTestMsil` resolves
   // the case's TypeDef row directly via `findTypeDefRowByName`.
-  unionCaseCtorByName: Map[String, String]
+  // Changed to a multimap (Map[String, List[String]]) so that two unions
+  // in different packages can share a simple case name without one
+  // silently overwriting the other (#2899).  Disambiguation at each
+  // lookup site uses `pickCaseFqnByScope` / `pickCaseFqnByScrutinee`.
+  unionCaseCtorByName: Map[String, List[String]]
   // Parent union FQN for each case-class key (#2363 Stage 4).  Key = the case
   // class FQN (e.g. "Pkg.Union_Case"); value = the parent union FQN
   // ("Pkg.Union").  Construction sites use this to recover the parent union
@@ -1750,14 +1754,20 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           }
           cctx.recordCtorTokens.add(caseName, 0x06000000 + methodDefRow)
           // Index by simple case name for cross-package construction
-          // (#1183 codegen port).  Allows a user package to write
-          // `Some(value = X)` after `import Std.Core` even though the
-          // case ctor lives under the imported package's FQN.  First
-          // hit wins on collisions (Dictionary.Add throws on duplicates,
-          // so we guard with containsKey).  Same-name cases across
-          // different unions are vanishingly rare in practice.
-          if not cctx.unionCaseCtorByName.containsKey(c.name) {
-            cctx.unionCaseCtorByName.add(c.name, caseName)
+          // (#1183 codegen port, multimap since #2899).  Allows a user
+          // package to write `Some(value = X)` after `import Std.Core`
+          // even though the case ctor lives under the imported package's
+          // FQN.  All same-named cases from different unions are stored;
+          // `pickCaseFqnByScope` disambiguates at the call site.
+          if cctx.unionCaseCtorByName.containsKey(c.name) {
+            match mapGet(cctx.unionCaseCtorByName, c.name) {
+              case Some(lst) -> lst.add(caseName)
+              case None -> ()
+            }
+          } else {
+            val caseNameList1: List[String] = newList()
+            caseNameList1.add(caseName)
+            cctx.unionCaseCtorByName.add(c.name, caseNameList1)
           }
           methodDefRow = methodDefRow + 1  // .ctor
           if c.fields.count == 0 and uArity == 0 {
@@ -3489,7 +3499,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 localCtorKey
               } else {
                 match mapGet(cctx.unionCaseCtorByName, name) {
-                  case Some(fqn) -> fqn
+                  case Some(candidates) -> pickCaseFqnByScope(cctx, fctx, candidates)
                   case None -> localCtorKey
                 }
               }
@@ -5585,6 +5595,81 @@ func lowerMatchExprMsil(
   resultTy
 }
 
+// Given a list of union-case FQN candidates that share the same simple
+// case name (from `unionCaseCtorByName`), return the best match for a
+// call site in `fctx.pkgName`.  Used to resolve same-named cases across
+// different packages (#2899).
+//
+// Resolution order:
+//   1. A candidate whose FQN starts with the current package name
+//      (same-package construction — `Std.Xml.XmlError_InvalidDocument`
+//      wins over `Std.Yaml.YamlError_InvalidDocument` inside Std.Xml).
+//   2. A candidate in one of the packages imported by the current package
+//      (first import wins, matching the type-checker's shadowing rule).
+//   3. First candidate (original first-wins fallback for unresolvable cases).
+func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in List[String]): String {
+  if candidates.count == 1 {
+    return candidates[0]
+  }
+  val currentPkg = fctx.pkgName
+  val prefix1 = currentPkg + "."
+  var i = 0
+  while i < candidates.count {
+    if startsWith(candidates[i], prefix1) {
+      return candidates[i]
+    }
+    i = i + 1
+  }
+  match mapGet(cctx.pkgImports, currentPkg) {
+    case Some(imps) -> {
+      var ii = 0
+      while ii < imps.count {
+        val prefix2 = imps[ii] + "."
+        var j = 0
+        while j < candidates.count {
+          if startsWith(candidates[j], prefix2) {
+            return candidates[j]
+          }
+          j = j + 1
+        }
+        ii = ii + 1
+      }
+    }
+    case None -> ()
+  }
+  candidates[0]
+}
+
+// Pattern-matching variant of `pickCaseFqnByScope`.  When `scrutTy`
+// names a concrete union class the case whose registered parent union
+// matches it is preferred, because the scrutinee's type is the most
+// precise signal available.  Falls back to `pickCaseFqnByScope` when
+// the scrutinee type is erased (`MObject`) or the parent-union map has
+// no entry for any candidate.
+func pickCaseFqnByScrutinee(
+  cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in List[String], scrutTy: in MsilType
+): String {
+  if candidates.count == 1 {
+    return candidates[0]
+  }
+  val parentFqn = match scrutTy { case MClass(cls) -> cls; case MGenericInst(_, fqn, _) -> fqn; case _ -> "" }
+  if parentFqn.length > 0 {
+    var i = 0
+    while i < candidates.count {
+      match mapGet(cctx.caseParentUnion, candidates[i]) {
+        case Some(p) -> {
+          if p == parentFqn {
+            return candidates[i]
+          }
+        }
+        case None -> ()
+      }
+      i = i + 1
+    }
+  }
+  pickCaseFqnByScope(cctx, fctx, candidates)
+}
+
 // Emit a runtime test for a pattern.  Jumps to `failLabel` if the test fails.
 func lowerPatternTestMsil(
   cctx: in CodegenCtx,
@@ -5615,7 +5700,10 @@ func lowerPatternTestMsil(
           val ctorKeyOpt = if cctx.recordCtorTokens.containsKey(localCtorKey) {
             Some(value = localCtorKey)
           } else {
-            mapGet(cctx.unionCaseCtorByName, pBindName)
+            match mapGet(cctx.unionCaseCtorByName, pBindName) {
+              case Some(cands) -> Some(value = pickCaseFqnByScrutinee(cctx, fctx, cands, scrutTy))
+              case None -> None
+            }
           }
           match ctorKeyOpt {
             case Some(ctorKey) -> {
@@ -5788,7 +5876,10 @@ func lowerPatternTestMsil(
         val mobjCtorKeyOpt = if cctx.recordCtorTokens.containsKey(mobjLocalCtorKey) {
           Some(value = mobjLocalCtorKey)
         } else {
-          mapGet(cctx.unionCaseCtorByName, caseName)
+          match mapGet(cctx.unionCaseCtorByName, caseName) {
+            case Some(cands) -> Some(value = pickCaseFqnByScope(cctx, fctx, cands))
+            case None -> None
+          }
         }
         emitLoadSlot(insns, scrutSlot, fctx.paramCount)
         match mobjCtorKeyOpt {
@@ -6827,7 +6918,7 @@ func lowerBuiltinOrStaticCallMsil(
       localCtorKey
     } else {
       match mapGet(cctx.unionCaseCtorByName, funcName) {
-        case Some(fqn) -> fqn
+        case Some(candidates) -> pickCaseFqnByScope(cctx, fctx, candidates)
         case None -> {
           // Cross-package record: look up simple name in typeFqnByName to
           // get the FQN, then verify it has a ctor registered.
@@ -15308,8 +15399,15 @@ func registerUnionCases(cctx: in CodegenCtx, packageName: in String, unionName: 
     if j > nameStart {
       val caseName = repr.substring(nameStart, j - nameStart)
       val ctorKey = packageName + "." + unionName + "_" + caseName
-      if not cctx.unionCaseCtorByName.containsKey(caseName) {
-        cctx.unionCaseCtorByName.add(caseName, ctorKey)
+      if cctx.unionCaseCtorByName.containsKey(caseName) {
+        match mapGet(cctx.unionCaseCtorByName, caseName) {
+          case Some(lst) -> lst.add(ctorKey)
+          case None -> ()
+        }
+      } else {
+        val ctorKeyList1: List[String] = newList()
+        ctorKeyList1.add(ctorKey)
+        cctx.unionCaseCtorByName.add(caseName, ctorKeyList1)
       }
       if not cctx.caseParentUnion.containsKey(ctorKey) {
         cctx.caseParentUnion.add(ctorKey, packageName + "." + unionName)
@@ -16417,8 +16515,18 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
             cctx.caseTypeParamCount.add(ctorKey, unionTypeParamCount)
           }
         }
-        if not cctx.unionCaseCtorByName.containsKey(caseName) {
-          cctx.unionCaseCtorByName.add(caseName, ctorKey)
+        if cctx.unionCaseCtorByName.containsKey(caseName) {
+          match mapGet(cctx.unionCaseCtorByName, caseName) {
+            case Some(lst) -> lst.add(ctorKey)
+            case None -> ()
+          }
+        } else {
+          val ctorKeyList2: List[String] = newList()
+          ctorKeyList2.add(ctorKey)
+          cctx.unionCaseCtorByName.add(caseName, ctorKeyList2)
+        }
+        if not cctx.caseParentUnion.containsKey(ctorKey) {
+          cctx.caseParentUnion.add(ctorKey, packageName + "." + decl.name)
         }
         ci = ci + 1
       }
