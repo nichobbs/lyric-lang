@@ -314,6 +314,9 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                 val rhsTy = lowerExpr(ctx, insns, rhs)
                 val numTy = reconcileCmpOperands(ctx, insns, lhsTy, rhsTy)
                 match numTy {
+                  case JRef(_) -> {
+                    panic("BAdd: both operands are Object — type checker should reject Object+Object (#2870)")
+                  }
                   case JLong -> {
                     insns.add(LLadd)
                     return JLong
@@ -1242,9 +1245,10 @@ func lowerIfExpr(
             insns.add(LGoto(label = afterL))
           }
           insns.add(LLabel(name = elseL))
-          val _ = lowerExprOrBlock(ctx, insns, elseBranch)
+          val elseTy = lowerExprOrBlock(ctx, insns, elseBranch)
           val elseTerminated = endsWithReturn(insns)
           if not elseTerminated {
+            coerceArgTo(insns, elseTy, thenTy)
             emitStore(insns, rslot, thenTy)
           }
           // When both arms terminated, the `if` is itself terminating: do not

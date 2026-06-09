@@ -772,13 +772,13 @@ func lowerRecordMethod(
       match retTy {
         case JVoid -> {
           lowerBlock(ctxSelf, insns, block)
-          if not endsWithReturn(insns) {
+          if not endsWithReturn(insns) and not blockTerminates(block) {
             emitReturn(insns, JVoid)
           }
         }
         case _ -> {
           val tailTy = lowerBlockExpr(ctxSelf, insns, block)
-          if not endsWithReturn(insns) {
+          if not endsWithReturn(insns) and not blockTerminates(block) {
             match tailTy {
               case JVoid -> emitReturn(insns, JVoid)
               case _ -> {
