@@ -17,6 +17,7 @@ import Lyric.Stubbable as Stubbable
 import Lyric.TypeChecker
 import Lyric.ModeChecker
 import Lyric.ContractElaborator
+import Lyric.ContractMetaEmit as Emit
 import Lyric.Propagate
 import Lyric.Cfg as Cfg
 import Lyric.DiagnosticUtil as DiagUtil
@@ -1159,10 +1160,21 @@ func segmentsToString(segments: in List[String]): String {
 func embedLyricContract(lctx: in LoweringCtx, file: in SourceFile, resourceName: in String, version: in String): Unit {
   val contract = Meta.buildContractFromFile(file, version)
 
-  // Emit contract metadata in v2 format.
-  // Phase 1.2b (v3 format with SHA-256 hashing) is deferred to a follow-up PR
-  // once the bootstrap path is ready for self-hosted compiler packages.
-  val json = Meta.contractToJson(contract)
+  // Upgrade contract to v3 format for emission with SHA-256 integrity hashing.
+  // Dependencies are populated at link time from restored packages (Phase 1.3);
+  // at source-level analysis, no dependency info is available yet.
+  val contractV3 = Meta.Contract(
+    packageName = contract.packageName,
+    version = contract.version,
+    level = contract.level,
+    formatVersion = 3,
+    decls = contract.decls,
+    dependencies = newList(),
+    contractHash = ""
+  )
+
+  // Emit metadata with two-pass SHA-256 hashing protocol
+  val json = Emit.emitContractMetadata(contractV3)
   val jsonBytes = Encoding.encodeUtf8(json)
   val jsonLen = jsonBytes.length
 
