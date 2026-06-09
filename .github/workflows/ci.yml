@@ -1439,8 +1439,15 @@ jobs:
             files.add("gamma.l")
             files.add("alpha.l")
             files.add("beta.l")
-            val sorted: slice[String] = Sort.sortStrings(files.toArray())
-            Console.println(sorted[0] + " " + sorted[1] + " " + sorted[2])
+            val sorted = Sort.sortStrings(files.toArray())
+            var acc = ""
+            var i = 0
+            while i < sorted.length {
+              if i > 0 { acc = acc + " " }
+              acc = acc + sorted[i]
+              i = i + 1
+            }
+            Console.println(acc)
           }
           LYR
           out="$("$lyric_bin" run "$work/s4.l" 2>&1 | tail -1)"

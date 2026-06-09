@@ -924,7 +924,7 @@ func buildProject(
         printErr("build: package '" + pkgEntry.name + "': no .l files found in " + abs)
         hadFatal = true
       } else {
-        val sorted: slice[String] = Sort.sortStrings(lFiles.toArray())
+        val sorted = Sort.sortStrings(lFiles.toArray())
         for f in sorted {
           match File.readText(f) {
             case Ok(t) -> pkgSources.add(t)
@@ -3361,7 +3361,7 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
         // `package` declaration bug from #1124 when two or more files
         // in a directory package are each gated out.
         val fileEntries: List[CfgGate.CfgGateFile] = newList()
-        val sorted: slice[String] = Sort.sortStrings(lFiles.toArray())
+        val sorted = Sort.sortStrings(lFiles.toArray())
         var readFailed = false
         for f in sorted {
           match File.readText(f) {
