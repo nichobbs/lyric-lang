@@ -35,6 +35,7 @@ import Msil.Heaps
 import Msil.Assembler
 import Std.Core
 import Std.Collections
+import Std.Math
 
 // ── MsilType ──────────────────────────────────────────────────────────────────
 // CLI element types supported by this lowering layer.
@@ -2802,9 +2803,121 @@ pub func lowerMDistinctType(d: in MDistinctType, ctx: in LoweringCtx): Int {
 }
 
 // Lower an MRangeType as a distinct type with range validation in .ctor.
-// Phase R5: validation is a runtime assert; SMT proof deferred to Phase R6.
+// The constructor checks `minVal <= value <= maxVal` at runtime and throws a
+// System.ArgumentOutOfRangeException when violated (Phase R5 runtime check;
+// SMT proof is Phase R6).
 pub func lowerMRangeType(r: in MRangeType, ctx: in LoweringCtx): Int {
-  lowerMDistinctType(MDistinctType(className = r.className, namespace = r.namespace, inner = r.inner), ctx)
+  val sh = ctx.strings
+  val bh = ctx.blobs
+  val t = ctx.tables
+
+  val simpleName = if r.namespace.length == 0 {
+    r.className
+  } else {
+    r.className.substring(r.namespace.length + 1, r.className.length - r.namespace.length - 1)
+  }
+  val sName = internString(sh, simpleName)
+  val sNs = internString(sh, r.namespace)
+
+  val firstField = t.fields.count + 1
+  val firstMethod = t.methodDefs.count + 1
+
+  // Single public initonly field named `value`.
+  val fSig = buildFieldSigWithCtx(r.inner, ctx)
+  val bFSig = internBlob(bh, "range_val_" + r.className, fSig)
+  addField(t, FieldRow(flags = FDA_PUBLIC + FDA_INIT_ONLY, name = internString(sh, "value"), signature = bFSig))
+
+  // Exception and ArgumentOutOfRangeException TypeRefs for bounds-check throws.
+  val trExc = ctxAddTypeRef(ctx, "System", "ArgumentOutOfRangeException", ctx.arRuntime)
+  val excCtorPs: List[MsilType] = newList()
+  excCtorPs.add(MString)
+  val excCtorSig = buildInstanceMethodSig(excCtorPs, MVoid)
+  val mrExcCtor = 0x0A000000 + ctxAddMemberRef(ctx, trExc, ".ctor", "range_exc_ctor_" + r.className, excCtorSig)
+
+  // Build .ctor(value: inner) body:
+  //   ldarg.0; call Object..ctor()
+  //   ldarg.1; ldc <minVal>; clt; brfalse skip_min
+  //   ldstr msg; newobj Exc..ctor; throw
+  //   skip_min: ldarg.1; ldc <maxVal>; cgt; brfalse skip_max
+  //   ldstr msg; newobj Exc..ctor; throw
+  //   skip_max: ldarg.0; ldarg.1; stfld value; ret
+  val ctorParams: List[MsilType] = newList()
+  ctorParams.add(r.inner)
+  val ctorSig = buildInstanceMethodSigWithCtx(ctorParams, MVoid, ctx)
+  val bCtorSig = internBlob(bh, "range_ctor_" + r.className, ctorSig)
+
+  val mbCtor = newMethodBody()
+  mbCtor.maxStack = 3
+  emitLdarg_0(mbCtor)
+  emitCall(mbCtor, 0x0A000000 + ctx.mrObjectCtor)
+
+  // minVal check: if value < minVal → throw
+  val skipMinL = mbNewLabel(mbCtor)
+  emitLdarg(mbCtor, 1)
+  match r.inner {
+    case MInt -> emitLdc_I4(mbCtor, longToInt(r.minVal))
+    case _ -> emitLdc_I8(mbCtor, r.minVal)
+  }
+  emitClt(mbCtor)
+  emitBrfalse(mbCtor, skipMinL)
+  val minMsg = ctxInternUs(ctx, "Value is below minimum " + r.minVal.toString() + " for type " + r.className)
+  emitLdstr(mbCtor, minMsg)
+  emitNewobj(mbCtor, mrExcCtor)
+  emitThrow(mbCtor)
+  mbMarkLabel(mbCtor, skipMinL)
+
+  // maxVal check: if value > maxVal → throw
+  val skipMaxL = mbNewLabel(mbCtor)
+  emitLdarg(mbCtor, 1)
+  match r.inner {
+    case MInt -> emitLdc_I4(mbCtor, longToInt(r.maxVal))
+    case _ -> emitLdc_I8(mbCtor, r.maxVal)
+  }
+  emitCgt(mbCtor)
+  emitBrfalse(mbCtor, skipMaxL)
+  val maxMsg = ctxInternUs(ctx, "Value is above maximum " + r.maxVal.toString() + " for type " + r.className)
+  emitLdstr(mbCtor, maxMsg)
+  emitNewobj(mbCtor, mrExcCtor)
+  emitThrow(mbCtor)
+  mbMarkLabel(mbCtor, skipMaxL)
+
+  // Store value into field and return.
+  emitLdarg_0(mbCtor)
+  emitLdarg(mbCtor, 1)
+  emitStfld(mbCtor, 0x04000000 + firstField)
+  emitRet(mbCtor)
+  ctx.bodies.add(mbCtor)
+
+  val rvas = methodBodyRvas(ctx.bodies)
+  val ctorRva = rvas[ctx.bodies.count - 1]
+  val sCtor = internString(sh, ".ctor")
+  val firstParam = t.params_.count + 1
+  addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+  addMethodDef(
+    t,
+    MethodDefRow(
+      rva = ctorRva,
+      implFlags = 0,
+      flags = MDA_PUBLIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
+      name = sCtor,
+      signature = bCtorSig,
+      paramList = firstParam
+    )
+  )
+
+  val typeRow = addTypeDef(
+    t,
+    TypeDefRow(
+      flags = TDF_PUBLIC + TDF_SEALED + TDF_SEQUENTIAL_LAYOUT + TDF_BEFORE_FIELD_INIT,
+      typeName = sName,
+      typeNamespace = sNs,
+      extends = objectTypeToken(ctx),
+      fieldList = firstField,
+      methodList = firstMethod
+    )
+  )
+  recordUserTypeDefRow(ctx, r.namespace, simpleName, typeRow)
+  typeRow
 }
 
 // ── Enum lowering ─────────────────────────────────────────────────────────────

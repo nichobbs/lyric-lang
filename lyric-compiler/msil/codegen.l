@@ -13526,8 +13526,10 @@ pub func weaveAspectsMsil(file: in SourceFile): SourceFile {
 
 // ── Protected type lowering ───────────────────────────────────────────────────
 // Lower an IProtected declaration to a sealed class with Monitor-based entry locking.
-// Each PMEntry becomes a public method that acquires the lock, runs the body, releases it.
-// The lock object is a private `object __lock` field.
+// Each PMEntry becomes a public method that acquires Monitor(this), runs the body in
+// a try block, and releases Monitor(this) in the finally handler.
+// Using `this` as the lock object avoids an extra field: every CLR object has a
+// built-in sync-block, and `lock (this)` is the canonical per-instance pattern.
 func lowerProtectedMsil(
   cctx: in CodegenCtx,
   decl: in ProtectedTypeDecl,
@@ -13535,9 +13537,33 @@ func lowerProtectedMsil(
   items: in List[MPackageItem],
   fns: in List[MFunc],
 ): Unit {
-  // For Band-2 bootstrap: emit the protected type as a regular record.
-  // Full Monitor locking (Enter/Exit in a try/finally) deferred to Phase R6.
-  // The type's fields are emitted as a record; entries become public methods.
+  val typeFqn = pkgName + "." + decl.name
+
+  // Build Monitor.Enter(object) and Monitor.Exit(object) MemberRef tokens.
+  // These are registered lazily here so they appear in the MemberRef table only
+  // when at least one protected type is compiled (not unconditionally).
+  val trMonitor = ctxAddTypeRef(cctx.lctx, "System.Threading", "Monitor", cctx.lctx.arRuntime)
+  val enterPs: List[MsilType] = newList()
+  enterPs.add(MObject)
+  val tokEnter = 0x0A000000 +
+    ctxAddMemberRef(
+      cctx.lctx,
+      trMonitor,
+      "Enter",
+      "monitor_enter_" + decl.name,
+      buildStaticMethodSig(enterPs, MVoid)
+    )
+  val exitPs: List[MsilType] = newList()
+  exitPs.add(MObject)
+  val tokExit = 0x0A000000 +
+    ctxAddMemberRef(
+      cctx.lctx,
+      trMonitor,
+      "Exit",
+      "monitor_exit_" + decl.name,
+      buildStaticMethodSig(exitPs, MVoid)
+    )
+
   val recFields: List[MField] = newList()
   val recMethods: List[MFunc] = newList()
 
@@ -13558,7 +13584,8 @@ func lowerProtectedMsil(
         }
       }
       case PMEntry(ed) -> {
-        // Entry method: for bootstrap, emit as a regular function without locking.
+        // Entry method: acquires Monitor(this) before the body and releases it in
+        // a finally handler so the lock is released on any exit path.
         // Note: `entry` is a Lyric reserved keyword so we bind to `ed` here.
         val pTypes: List[MsilType] = newList()
         var pi = 0
@@ -13567,7 +13594,7 @@ func lowerProtectedMsil(
           pi = pi + 1
         }
         val retTy = match ed.ret { case Some(te) -> typeExprToMsil(te, pkgName); case None -> MVoid }
-        val entryFctx = makeFuncCtxMsil(pkgName, pkgName + "." + decl.name, decl.name, ed.params.count, retTy)
+        val entryFctx = makeFuncCtxMsil(pkgName, typeFqn, ed.name, ed.params.count, retTy)
         var epi = 0
         while epi < ed.params.count {
           val p = ed.params[epi]
@@ -13583,25 +13610,107 @@ func lowerProtectedMsil(
           epi = epi + 1
         }
         val entryInsns: List[MInsn] = newList()
+
+        // Monitor.Enter(this): acquire the per-instance lock.
+        entryInsns.add(MLdarg(slot = 0))
+        entryInsns.add(MCall(methodToken = tokEnter))
+
+        // Open the try region.
+        val tryStartL = freshLabelMsil(entryFctx)
+        val afterL = freshLabelMsil(entryFctx)
+        entryInsns.add(MLabel(id = tryStartL))
+        entryFctx.tryRegionStack.add(0)
+
+        // Lower the body inside the try block.
         match ed.body {
           case FBBlock(block) -> {
-            // Mirror the lowerFuncMsil retTy dispatch: non-void entry
-            // bodies keep the trailing expression on the stack as the
-            // return value; void/Unit entries discard it (#1039).
             if retTy != MVoid {
-              val _ = lowerBlockExprMsil(cctx, entryFctx, entryInsns, block)
+              // Non-void: stash the value into a result local before leaving the
+              // try region (the evaluation stack must be empty at a `leave`).
+              val valTy = lowerBlockExprMsil(cctx, entryFctx, entryInsns, block)
+              val resultSlot = allocSlotMsil(entryFctx, "__entry_result", valTy)
+              emitStoreSlot(entryInsns, resultSlot, entryFctx.paramCount)
+              entryInsns.add(MLeave(label = afterL))
+              val tryBodyEndL = freshLabelMsil(entryFctx)
+              entryInsns.add(MLabel(id = tryBodyEndL))
+              // Finally: Monitor.Exit(this).
+              val finallyStartL = freshLabelMsil(entryFctx)
+              val finallyEndL = freshLabelMsil(entryFctx)
+              entryInsns.add(MLabel(id = finallyStartL))
+              entryInsns.add(MLdarg(slot = 0))
+              entryInsns.add(MCall(methodToken = tokExit))
+              entryInsns.add(MEndfinally)
+              entryInsns.add(MLabel(id = finallyEndL))
+              entryInsns.add(
+                MEHClause(
+                  flags = 2,
+                  tryStart = tryStartL,
+                  tryEnd = finallyStartL,
+                  handlerStart = finallyStartL,
+                  handlerEnd = finallyEndL,
+                  catchToken = 0
+                )
+              )
+              entryInsns.add(MLabel(id = afterL))
+              emitLoadSlot(entryInsns, resultSlot, entryFctx.paramCount)
+              entryInsns.add(MRet)
             } else {
               lowerBlockMsil(cctx, entryFctx, entryInsns, block)
+              entryInsns.add(MLeave(label = afterL))
+              val tryBodyEndL = freshLabelMsil(entryFctx)
+              entryInsns.add(MLabel(id = tryBodyEndL))
+              val finallyStartL = freshLabelMsil(entryFctx)
+              val finallyEndL = freshLabelMsil(entryFctx)
+              entryInsns.add(MLabel(id = finallyStartL))
+              entryInsns.add(MLdarg(slot = 0))
+              entryInsns.add(MCall(methodToken = tokExit))
+              entryInsns.add(MEndfinally)
+              entryInsns.add(MLabel(id = finallyEndL))
+              entryInsns.add(
+                MEHClause(
+                  flags = 2,
+                  tryStart = tryStartL,
+                  tryEnd = finallyStartL,
+                  handlerStart = finallyStartL,
+                  handlerEnd = finallyEndL,
+                  catchToken = 0
+                )
+              )
+              entryInsns.add(MLabel(id = afterL))
+              entryInsns.add(MRet)
             }
           }
           case FBExpr(e) -> {
             lowerExprMsil(cctx, entryFctx, entryInsns, e)
+            val resultSlot = allocSlotMsil(entryFctx, "__entry_result", retTy)
+            emitStoreSlot(entryInsns, resultSlot, entryFctx.paramCount)
+            entryInsns.add(MLeave(label = afterL))
+            val tryBodyEndL = freshLabelMsil(entryFctx)
+            entryInsns.add(MLabel(id = tryBodyEndL))
+            val finallyStartL = freshLabelMsil(entryFctx)
+            val finallyEndL = freshLabelMsil(entryFctx)
+            entryInsns.add(MLabel(id = finallyStartL))
+            entryInsns.add(MLdarg(slot = 0))
+            entryInsns.add(MCall(methodToken = tokExit))
+            entryInsns.add(MEndfinally)
+            entryInsns.add(MLabel(id = finallyEndL))
+            entryInsns.add(
+              MEHClause(
+                flags = 2,
+                tryStart = tryStartL,
+                tryEnd = finallyStartL,
+                handlerStart = finallyStartL,
+                handlerEnd = finallyEndL,
+                catchToken = 0
+              )
+            )
+            entryInsns.add(MLabel(id = afterL))
+            emitLoadSlot(entryInsns, resultSlot, entryFctx.paramCount)
             entryInsns.add(MRet)
           }
         }
-        if not endsWithReturnMsil(entryInsns) {
-          entryInsns.add(MRet)
-        }
+        entryFctx.tryRegionStack.removeAt(entryFctx.tryRegionStack.count - 1)
+
         recMethods.add(
           MFunc(
             flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG,
@@ -13637,7 +13746,7 @@ func lowerProtectedMsil(
   items.add(
     MPRecord(
       rec = MRecord(
-        className = pkgName + "." + decl.name,
+        className = typeFqn,
         namespace = pkgName,
         baseClass = "System.Object",
         fields = recFields,
