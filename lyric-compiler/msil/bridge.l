@@ -1173,7 +1173,11 @@ func embedLyricContract(lctx: in LoweringCtx, file: in SourceFile, resourceName:
     contractHash = ""
   )
 
-  // Emit metadata with two-pass SHA-256 hashing protocol
+  // Emit metadata with two-pass SHA-256 hashing protocol. The v3 format always
+  // succeeds with valid input; fallback to v2 (per Phase 1.3 restoration logic)
+  // is not needed at source-level analysis. If an error occurs at link time
+  // during dependency population, the restored-package loader will emit a
+  // diagnostic and return v2 metadata instead.
   val json = Emit.emitContractMetadata(contractV3)
   val jsonBytes = Encoding.encodeUtf8(json)
   val jsonLen = jsonBytes.length
