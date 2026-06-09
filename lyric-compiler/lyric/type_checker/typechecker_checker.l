@@ -95,6 +95,20 @@ func addSym(
   vis: in Option[Visibility],
   span: in Span,
 ): Symbol {
+  addSymDerived(tbl, diag, isImported, originPkg, name, kind, vis, span, newList())
+}
+
+func addSymDerived(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  isImported: in Bool,
+  originPkg: in String,
+  name: in String,
+  kind: in DeclKind,
+  vis: in Option[Visibility],
+  span: in Span,
+  derives: in List[String],
+): Symbol {
   if not isImported {
     checkDuplicate(tbl, diag, name, kind, span)
   }
@@ -104,10 +118,33 @@ func addSym(
     declSpan = span,
     visibility = vis,
     isImported = isImported,
-    originPackage = originPkg
+    originPackage = originPkg,
+    derives = derives
   )
   symTableAdd(tbl, sym)
   sym
+}
+
+func extractDerives(anns: in List[Annotation]): List[String] {
+  val result: List[String] = newList()
+  var i = 0
+  while i < anns.count {
+    val ann = anns[i]
+    if ann.name.segments.count == 1 and ann.name.segments[0] == "derive" {
+      var j = 0
+      while j < ann.args.count {
+        match ann.args[j] {
+          case ABare(nm, _) -> result.add(nm)
+          case AAName(nm, _, _) -> result.add(nm)
+          case ALiteral(_, _) -> {
+          }
+        }
+        j = j + 1
+      }
+    }
+    i = i + 1
+  }
+  result
 }
 
 // The `TypeId` already assigned to an extern type with CLR target `clrName`,
@@ -141,15 +178,45 @@ func registerItem(
   match it.kind {
     case IRecord(decl) -> {
       val tid = freshTypeId(ctr)
-      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKRecord(id = tid, decl = decl), vis, span)
+      val _ = addSymDerived(
+        tbl,
+        diag,
+        isImported,
+        originPkg,
+        decl.name,
+        DKRecord(id = tid, decl = decl),
+        vis,
+        span,
+        extractDerives(it.annotations)
+      )
     }
     case IExposedRec(decl) -> {
       val tid = freshTypeId(ctr)
-      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKExposedRec(id = tid, decl = decl), vis, span)
+      val _ = addSymDerived(
+        tbl,
+        diag,
+        isImported,
+        originPkg,
+        decl.name,
+        DKExposedRec(id = tid, decl = decl),
+        vis,
+        span,
+        extractDerives(it.annotations)
+      )
     }
     case IUnion(decl) -> {
       val tid = freshTypeId(ctr)
-      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKUnion(id = tid, decl = decl), vis, span)
+      val _ = addSymDerived(
+        tbl,
+        diag,
+        isImported,
+        originPkg,
+        decl.name,
+        DKUnion(id = tid, decl = decl),
+        vis,
+        span,
+        extractDerives(it.annotations)
+      )
       var i = 0
       while i < decl.cases.count {
         val c = decl.cases[i]
@@ -893,6 +960,45 @@ func isCodegenBuiltinName(name: in String): Bool {
 // ─────────────────────────────────────────────────────────────────────────────
 // §8a. impl/interface conformance (#1486).
 // ─────────────────────────────────────────────────────────────────────────────
+// Replace every `TySelf` occurrence in `t` with `selfTy`, used when matching
+// interface parameter/return types against a concrete impl.
+func substitutesSelf(t: in Type, selfTy: in Type): Type {
+  match t {
+    case TySelf -> selfTy
+    case TyUser(id, name, args) -> {
+      val na: List[Type] = newList()
+      var i = 0
+      while i < args.count {
+        na.add(substitutesSelf(args[i], selfTy))
+        i = i + 1
+      }
+      TyUser(id = id, name = name, args = na)
+    }
+    case TyNullable(inner) -> TyNullable(inner = substitutesSelf(inner, selfTy))
+    case TySlice(elem) -> TySlice(element = substitutesSelf(elem, selfTy))
+    case TyArray(sz, elem) -> TyArray(size = sz, element = substitutesSelf(elem, selfTy))
+    case TyTuple(elems) -> {
+      val ne: List[Type] = newList()
+      var i = 0
+      while i < elems.count {
+        ne.add(substitutesSelf(elems[i], selfTy))
+        i = i + 1
+      }
+      TyTuple(elems = ne)
+    }
+    case TyFunction(ps, ret, isA) -> {
+      val np: List[Type] = newList()
+      var i = 0
+      while i < ps.count {
+        np.add(substitutesSelf(ps[i], selfTy))
+        i = i + 1
+      }
+      TyFunction(params = np, ret = substitutesSelf(ret, selfTy), isAsync = isA)
+    }
+    case _ -> t
+  }
+}
+
 func findInterfaceDecl(tbl: in SymbolTable, name: in String): Option[InterfaceDecl] {
   var i = 0
   while i < tbl.symbols.count {
@@ -927,14 +1033,17 @@ func findImplMethod(decl: in ImplDecl, name: in String): Option[FunctionDecl] {
   None
 }
 
-// Structural conformance for an `impl Iface for Target { … }`: every abstract
-// interface method (`IMSig`) must be implemented (T0098), and an implemented
-// method's parameter arity must match the interface declaration (T0099).
-// Default methods (`IMFunc`) are optional, so they are not required.  Only
-// parameter *counts* are compared — full type matching (with generic / `Self`
-// substitution) and impl-body type-checking are deferred (they overlap with the
-// record-ctor / expression-typing forms still pending in #1483), so this check
-// is generic-safe and never false-positives on a conforming impl.
+// Structural conformance for an `impl Iface for Target { … }`.  Checks:
+//   T0098 — abstract method missing from the impl.
+//   T0099 — parameter arity mismatch.
+//   T0106 — parameter type mismatch (C11).
+//   T0107 — return type mismatch (C11).
+// `Self` in the interface is substituted with the resolved impl target type so
+// that `func method(other: Self): Bool` matches `func method(other: MyType): Bool`.
+// Default methods (`IMFunc`) are optional; they are skipped here.
+// Cross-package interfaces not found in the local symbol table are silently
+// skipped — cross-package conformance is enforced by the restoring package's
+// own type-check pass.
 func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in ImplDecl): Unit {
   val segs = decl.iface.head.segments
   if segs.count == 0 {
@@ -944,16 +1053,73 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
   match findInterfaceDecl(tbl, ifaceName) {
     case None -> {
     }
-    // interface not found in local tbl — cross-package impls and genuinely unresolvable refs are skipped here; cross-package conformance deferred pending full type-matching work
     case Some(ifaceDecl) -> {
+      val ctx = newGenericContext()
+      val selfTy = resolveType(tbl, ctx, diag, decl.target)
       var i = 0
       while i < ifaceDecl.members.count {
         match ifaceDecl.members[i] {
-          case IMSig(sig) -> match findImplMethod(decl, sig.name) { case None -> diag.add(errorDiagnostic("T0098", "impl of interface '" + ifaceName + "' is missing method '" + sig.name + "'", decl.span)); case Some(fn) -> if fn.params.count != sig.params.count { diag.add(errorDiagnostic("T0099", "impl method '" + sig.name + "' has " + toString(fn.params.count) + " parameter(s) but interface '" + ifaceName + "' declares " + toString(sig.params.count), fn.span)) } }
+          case IMSig(sig) -> {
+            match findImplMethod(decl, sig.name) {
+              case None -> diag.add(errorDiagnostic("T0098", "impl of interface '" + ifaceName + "' is missing method '" + sig.name + "'", decl.span))
+              case Some(fn) -> {
+                if fn.params.count != sig.params.count {
+                  diag.add(
+                    errorDiagnostic(
+                      "T0099",
+                      "impl method '" + sig.name + "' has " + toString(fn.params.count) + " parameter(s) but interface '" + ifaceName +
+                        "' declares " +
+                        toString(sig.params.count),
+                      fn.span
+                    )
+                  )
+                } else {
+                  // C11: check each parameter type matches (with Self substitution).
+                  val ictx = newGenericContext()
+                  var pi = 0
+                  while pi < sig.params.count {
+                    val ifacePTy = substitutesSelf(resolveType(tbl, ictx, diag, sig.params[pi].ty), selfTy)
+                    val implPTy = resolveType(tbl, ictx, diag, fn.params[pi].ty)
+                    if not argSatisfiesParam(tbl, ifacePTy, implPTy) {
+                      diag.add(
+                        errorDiagnostic(
+                          "T0106",
+                          "impl method '" + sig.name + "' parameter '" + sig.params[pi].name + "' has type " + renderType(implPTy) +
+                            " but interface expects " +
+                            renderType(ifacePTy),
+                          fn.params[pi].span
+                        )
+                      )
+                    }
+                    pi = pi + 1
+                  }
+                  // C11: check return type matches (with Self substitution).
+                  val ifaceRetTy = substitutesSelf(
+                    match sig.ret {
+                      case None -> TyPrim(pt = PtUnit)
+                      case Some(te) -> resolveType(tbl, ictx, diag, te)
+                    },
+                    selfTy
+                  )
+                  val implRetTy = match fn.ret { case None -> TyPrim(pt = PtUnit); case Some(te) -> resolveType(tbl, ictx, diag, te) }
+                  if not argSatisfiesParam(tbl, ifaceRetTy, implRetTy) {
+                    diag.add(
+                      errorDiagnostic(
+                        "T0107",
+                        "impl method '" + sig.name + "' returns " + renderType(implRetTy) + " but interface '" + ifaceName +
+                          "' declares return type " +
+                          renderType(ifaceRetTy),
+                        fn.span
+                      )
+                    )
+                  }
+                }
+              }
+            }
+          }
           case _ -> {
           }
         }
-        // IMFunc (default, optional) / IMAssoc handled elsewhere
         i = i + 1
       }
     }

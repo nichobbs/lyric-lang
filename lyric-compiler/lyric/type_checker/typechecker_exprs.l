@@ -108,6 +108,49 @@ func isNumericType(t: in Type): Bool {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §3a. Numeric widening (M6).
+// ─────────────────────────────────────────────────────────────────────────────
+// Widening rank of a signed integer primitive: Byte < Int < Long.
+func signedIntRank(pt: in PrimType): Int {
+  match pt {
+    case PtByte -> 0
+    case PtInt -> 1
+    case PtLong -> 2
+    case _ -> -1
+  }
+}
+
+// Widening rank of an unsigned integer primitive: Byte < UInt < ULong.
+func unsignedIntRank(pt: in PrimType): Int {
+  match pt {
+    case PtByte -> 0
+    case PtUInt -> 1
+    case PtULong -> 2
+    case _ -> -1
+  }
+}
+
+// Widening rank of a floating-point primitive: Float < Double.
+func floatPrimRank(pt: in PrimType): Int {
+  match pt {
+    case PtFloat -> 0
+    case PtDouble -> 1
+    case _ -> -1
+  }
+}
+
+// When `lhs` and `rhs` are numeric primitives that widen to a common type
+// return that type; return `None` when they are the same type (no widening
+// needed) or when they are incompatible.  Used by `inferBinop` so that e.g.
+// `Int + Long` type-checks and yields `Long`.
+func widenArithmetic(lhs: in Type, rhs: in Type): Option[Type] {
+  match lhs {
+    case TyPrim(pa) -> match rhs { case TyPrim(pb) -> { if primEq(pa, pb) { return None }; val asr = signedIntRank(pa); val bsr = signedIntRank(pb); if asr >= 0 and bsr >= 0 { return Some(value = if asr >= bsr { lhs } else { rhs }) }; val au = unsignedIntRank(pa); val bu = unsignedIntRank(pb); if au >= 0 and bu >= 0 { return Some(value = if au >= bu { lhs } else { rhs }) }; val af = floatPrimRank(pa); val bf = floatPrimRank(pb); if af >= 0 and bf >= 0 { return Some(value = if af >= bf { lhs } else { rhs }) }; None }; case _ -> None }
+    case _ -> None
+  }
+}
+
 func isOrderedType(t: in Type): Bool {
   if isNumericType(t) {
     return true
@@ -124,10 +167,26 @@ func hasDerive(tbl: in SymbolTable, marker: in String, t: in Type): Bool {
     case TyUser(tid, _, _) -> {
       var i = 0
       while i < tbl.symbols.count {
-        match tbl.symbols[i].kind {
+        val sym = tbl.symbols[i]
+        match sym.kind {
           case DKDistinctType(did, dt) -> {
             if typeIdEq(did, tid) {
               return listContainsStr(dt.derives, marker)
+            }
+          }
+          case DKRecord(rid, _) -> {
+            if typeIdEq(rid, tid) {
+              return listContainsStr(sym.derives, marker)
+            }
+          }
+          case DKExposedRec(rid, _) -> {
+            if typeIdEq(rid, tid) {
+              return listContainsStr(sym.derives, marker)
+            }
+          }
+          case DKUnion(uid, _) -> {
+            if typeIdEq(uid, tid) {
+              return listContainsStr(sym.derives, marker)
             }
           }
           case _ -> {
@@ -504,20 +563,27 @@ func inferBinop(
           errorDiagnostic("T0030", "left operand of arithmetic operator is not numeric (got " + renderType(lhs) + ")", span)
         )
       }
-      // TODO(#1891): the `val addEquiv = …; if not addEquiv { … }` shape
-      // avoids inlining the `typeEquiv` call inside the `if` directly, which
-      // would otherwise route through the PConstructor MObject codegen bug.
-      val addEquiv = typeEquiv(lhs, rhs)
-      if not addEquiv {
-        diag.add(
-          errorDiagnostic(
-            "T0031",
-            "arithmetic operands must have the same type (got " + renderType(lhs) + " and " + renderType(rhs) + ")",
-            span
-          )
-        )
+      // M6: numeric widening — Int + Long → Long.  `widenArithmetic` returns
+      // `None` for same-type pairs (already `typeEquiv`) so the slow path
+      // preserves the pre-M6 `val addEquiv = …; if not addEquiv { … }` shape
+      // that avoids the #1891 PConstructor MObject codegen bug.
+      val addWiden = widenArithmetic(lhs, rhs)
+      match addWiden {
+        case Some(w) -> w
+        case None -> {
+          val addEquiv = typeEquiv(lhs, rhs)
+          if not addEquiv {
+            diag.add(
+              errorDiagnostic(
+                "T0031",
+                "arithmetic operands must have the same type (got " + renderType(lhs) + " and " + renderType(rhs) + ")",
+                span
+              )
+            )
+          }
+          lhs
+        }
       }
-      lhs
     }
     case BSub -> {
       val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Sub", lhs)
@@ -526,16 +592,22 @@ func inferBinop(
           errorDiagnostic("T0030", "left operand of arithmetic operator is not numeric (got " + renderType(lhs) + ")", span)
         )
       }
-      if not typeEquiv(lhs, rhs) {
-        diag.add(
-          errorDiagnostic(
-            "T0031",
-            "arithmetic operands must have the same type (got " + renderType(lhs) + " and " + renderType(rhs) + ")",
-            span
-          )
-        )
+      val subWiden = widenArithmetic(lhs, rhs)
+      match subWiden {
+        case Some(w) -> w
+        case None -> {
+          if not typeEquiv(lhs, rhs) {
+            diag.add(
+              errorDiagnostic(
+                "T0031",
+                "arithmetic operands must have the same type (got " + renderType(lhs) + " and " + renderType(rhs) + ")",
+                span
+              )
+            )
+          }
+          lhs
+        }
       }
-      lhs
     }
     case BMul -> {
       val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Mul", lhs)
@@ -544,16 +616,22 @@ func inferBinop(
           errorDiagnostic("T0030", "left operand of arithmetic operator is not numeric (got " + renderType(lhs) + ")", span)
         )
       }
-      if not typeEquiv(lhs, rhs) {
-        diag.add(
-          errorDiagnostic(
-            "T0031",
-            "arithmetic operands must have the same type (got " + renderType(lhs) + " and " + renderType(rhs) + ")",
-            span
-          )
-        )
+      val mulWiden = widenArithmetic(lhs, rhs)
+      match mulWiden {
+        case Some(w) -> w
+        case None -> {
+          if not typeEquiv(lhs, rhs) {
+            diag.add(
+              errorDiagnostic(
+                "T0031",
+                "arithmetic operands must have the same type (got " + renderType(lhs) + " and " + renderType(rhs) + ")",
+                span
+              )
+            )
+          }
+          lhs
+        }
       }
-      lhs
     }
     case BDiv -> {
       val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Div", lhs)
@@ -562,16 +640,22 @@ func inferBinop(
           errorDiagnostic("T0030", "left operand of arithmetic operator is not numeric (got " + renderType(lhs) + ")", span)
         )
       }
-      if not typeEquiv(lhs, rhs) {
-        diag.add(
-          errorDiagnostic(
-            "T0031",
-            "arithmetic operands must have the same type (got " + renderType(lhs) + " and " + renderType(rhs) + ")",
-            span
-          )
-        )
+      val divWiden = widenArithmetic(lhs, rhs)
+      match divWiden {
+        case Some(w) -> w
+        case None -> {
+          if not typeEquiv(lhs, rhs) {
+            diag.add(
+              errorDiagnostic(
+                "T0031",
+                "arithmetic operands must have the same type (got " + renderType(lhs) + " and " + renderType(rhs) + ")",
+                span
+              )
+            )
+          }
+          lhs
+        }
       }
-      lhs
     }
     case BMod -> {
       val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Mod", lhs)
@@ -580,16 +664,22 @@ func inferBinop(
           errorDiagnostic("T0030", "left operand of arithmetic operator is not numeric (got " + renderType(lhs) + ")", span)
         )
       }
-      if not typeEquiv(lhs, rhs) {
-        diag.add(
-          errorDiagnostic(
-            "T0031",
-            "arithmetic operands must have the same type (got " + renderType(lhs) + " and " + renderType(rhs) + ")",
-            span
-          )
-        )
+      val modWiden = widenArithmetic(lhs, rhs)
+      match modWiden {
+        case Some(w) -> w
+        case None -> {
+          if not typeEquiv(lhs, rhs) {
+            diag.add(
+              errorDiagnostic(
+                "T0031",
+                "arithmetic operands must have the same type (got " + renderType(lhs) + " and " + renderType(rhs) + ")",
+                span
+              )
+            )
+          }
+          lhs
+        }
       }
-      lhs
     }
     case BEq -> {
       if not typeEquiv(lhs, rhs) {
@@ -617,7 +707,9 @@ func inferBinop(
     }
     case BLt -> {
       val lhsOk = isOrderedType(lhs) or hasDerive(tbl, "Compare", lhs)
-      if not lhsOk or not typeEquiv(lhs, rhs) {
+      val ltWiden = widenArithmetic(lhs, rhs)
+      val ltCompat = match ltWiden { case Some(_) -> true; case None -> typeEquiv(lhs, rhs) }
+      if not lhsOk or not ltCompat {
         diag.add(
           errorDiagnostic(
             "T0033",
@@ -630,7 +722,9 @@ func inferBinop(
     }
     case BLte -> {
       val lhsOk = isOrderedType(lhs) or hasDerive(tbl, "Compare", lhs)
-      if not lhsOk or not typeEquiv(lhs, rhs) {
+      val lteWiden = widenArithmetic(lhs, rhs)
+      val lteCompat = match lteWiden { case Some(_) -> true; case None -> typeEquiv(lhs, rhs) }
+      if not lhsOk or not lteCompat {
         diag.add(
           errorDiagnostic(
             "T0033",
@@ -643,7 +737,9 @@ func inferBinop(
     }
     case BGt -> {
       val lhsOk = isOrderedType(lhs) or hasDerive(tbl, "Compare", lhs)
-      if not lhsOk or not typeEquiv(lhs, rhs) {
+      val gtWiden = widenArithmetic(lhs, rhs)
+      val gtCompat = match gtWiden { case Some(_) -> true; case None -> typeEquiv(lhs, rhs) }
+      if not lhsOk or not gtCompat {
         diag.add(
           errorDiagnostic(
             "T0033",
@@ -656,7 +752,9 @@ func inferBinop(
     }
     case BGte -> {
       val lhsOk = isOrderedType(lhs) or hasDerive(tbl, "Compare", lhs)
-      if not lhsOk or not typeEquiv(lhs, rhs) {
+      val gteWiden = widenArithmetic(lhs, rhs)
+      val gteCompat = match gteWiden { case Some(_) -> true; case None -> typeEquiv(lhs, rhs) }
+      if not lhsOk or not gteCompat {
         diag.add(
           errorDiagnostic(
             "T0033",
@@ -1306,6 +1404,17 @@ func fieldHasName(fields: in List[CtorField], name: in String): Bool {
   false
 }
 
+func fieldTypeByName(fields: in List[CtorField], name: in String): Type {
+  var i = 0
+  while i < fields.count {
+    if fields[i].name == name {
+      return fields[i].ty
+    }
+    i = i + 1
+  }
+  TyError
+}
+
 // Append the constructor fields of a record/opaque member list to `out`
 // (mirrors `extractRecordFields`).  A field with a default is optional.
 func collectCtorFieldsFromRecord(
@@ -1403,6 +1512,7 @@ func inferConstruction(
   diag: in List[Diagnostic],
   sym: in Symbol,
   args: in List[CallArg],
+  argTypes: in List[Type],
   span: in Span,
 ): Type {
   val resultTy = ctorResultType(sym)
@@ -1414,20 +1524,58 @@ func inferConstruction(
     )
     return resultTy
   }
-  // Named arguments must reference a real field (T0101).  Full arg validation
-  // (missing-required, positional arity, value-type matching) is a follow-up;
-  // CtorField.ty and CtorField.hasDefault are pre-populated for that follow-up.
   val fields: List[CtorField] = newList()
   val _ = collectCtorFields(tbl, sym, fields)
+  // C2: validate argument names, arity, and value types.
+  // First pass: named-arg field-name and value-type check.
+  // Second pass: positional args against fields in declaration order.
+  var posIdx = 0
   var i = 0
   while i < args.count {
+    val argTy = if i < argTypes.count { argTypes[i] } else { TyError }
     match args[i] {
       case CANamed(nm, _, asp) -> {
         if not fieldHasName(fields, nm) {
           diag.add(errorDiagnostic("T0101", "'" + sym.name + "' has no field '" + nm + "'", asp))
+        } else {
+          val fieldTy = fieldTypeByName(fields, nm)
+          if not argSatisfiesParam(tbl, fieldTy, argTy) {
+            diag.add(
+              errorDiagnostic(
+                "T0104",
+                "argument for field '" + nm + "' has type " + renderType(argTy) + " but field expects " + renderType(fieldTy),
+                asp
+              )
+            )
+          }
         }
       }
-      case CAPositional(_) -> {
+      case CAPositional(ae) -> {
+        if posIdx >= fields.count {
+          diag.add(
+            errorDiagnostic(
+              "T0104",
+              "'" + sym.name + "' has " + toString(fields.count) + " field(s) but positional argument " + toString(posIdx + 1) +
+                " was supplied",
+              ae.span
+            )
+          )
+        } else {
+          val fieldTy = fields[posIdx].ty
+          if not argSatisfiesParam(tbl, fieldTy, argTy) {
+            diag.add(
+              errorDiagnostic(
+                "T0104",
+                "positional argument " + toString(posIdx + 1) + " has type " + renderType(argTy) + " but field '" +
+                  fields[posIdx].name +
+                  "' expects " +
+                  renderType(fieldTy),
+                ae.span
+              )
+            )
+          }
+        }
+        posIdx = posIdx + 1
       }
     }
     i = i + 1
@@ -1697,6 +1845,80 @@ func instantiateReturnType(sig: in ResolvedSignature, argTypes: in List[Type]): 
   }
   val targs = inferGenericArgsDeep(sig.generics, paramTys, argTypes)
   substituteTyVars(sig.returnTy, sig.generics, targs)
+}
+
+// H15: verify that concrete type arguments inferred for a generic call site
+// satisfy every `where T: Constraint` bound declared on `sig`.  Called from
+// `ECall` after a signature is selected.  `TyError`/`TyVar` args pass
+// silently (the lenient unifier, or still-abstract).
+func checkBoundsSatisfied(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  sig: in ResolvedSignature,
+  argTypes: in List[Type],
+  span: in Span,
+): Unit {
+  if sig.bounds.count == 0 or sig.generics.count == 0 {
+    return
+  }
+  val paramTys: List[Type] = newList()
+  var pi = 0
+  while pi < sig.params.count {
+    paramTys.add(sig.params[pi].ty)
+    pi = pi + 1
+  }
+  val targs = inferGenericArgsDeep(sig.generics, paramTys, argTypes)
+  var bi = 0
+  while bi < sig.bounds.count {
+    val bound = sig.bounds[bi]
+    var idx = -1
+    var gi = 0
+    while gi < sig.generics.count {
+      if sig.generics[gi] == bound.name {
+        idx = gi
+      }
+      gi = gi + 1
+    }
+    if idx >= 0 and idx < targs.count {
+      val concreteTy = targs[idx]
+      match concreteTy {
+        case TyError -> {
+        }
+        case TyVar(_) -> {
+        }
+        case _ -> {
+          var ci = 0
+          while ci < bound.constraints.count {
+            val cname = bound.constraints[ci]
+            var satisfied = false
+            if isKnownDeriveMarker(cname) {
+              satisfied = hasDerive(tbl, cname, concreteTy)
+            } else {
+              match symTableTryFindOne(tbl, cname) {
+                case Some(ifaceSym) -> match ifaceSym.kind { case DKInterface(ifaceId, _) -> match typeIdOfType(concreteTy) { case Some(concreteId) -> { satisfied = symTableTypeImplements(tbl, concreteId, ifaceId) }; case None -> { satisfied = true } }; case _ -> { satisfied = true } }
+                case None -> {
+                  satisfied = true
+                }
+              }
+            }
+            if not satisfied {
+              diag.add(
+                errorDiagnostic(
+                  "T0108",
+                  "type argument " + renderType(concreteTy) + " does not satisfy constraint '" + cname + "' for type parameter '" +
+                    bound.name +
+                    "'",
+                  span
+                )
+              )
+            }
+            ci = ci + 1
+          }
+        }
+      }
+    }
+    bi = bi + 1
+  }
 }
 
 // The union case's field types *instantiated* against the scrutinee's type args:
@@ -1982,11 +2204,13 @@ pub func inferExpr(
               k = k + 1
             }
           }
+          // H15: verify where-clause bounds on generic call sites.
+          checkBoundsSatisfied(tbl, diag, sig, argTypes, e.span)
           // Instantiate a generic return type from the argument types (#1488
           // category B) so `unwrapOr(opt, 0): T` yields `Int`, not `TyVar("T")`.
           instantiateReturnType(sig, argTypes)
         }
-        case None -> match unionCaseSymbolOf(tbl, fn) { case Some(caseSym) -> inferUnionCaseConstruction(tbl, diag, caseSym, argTypes, e.span); case None -> match constructorSymbolOf(tbl, fn) { case Some(ctorSym) -> inferConstruction(tbl, diag, ctorSym, args, e.span); case None -> match fnT { case TyFunction(paramTypes, ret, _) -> { if paramTypes.count != argTypes.count { diag.add(errorDiagnostic("T0042", "expected " + toString(paramTypes.count) + " argument(s), got " + toString(argTypes.count), e.span)) } else { var k = 0; while k < paramTypes.count { if not argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) { diag.add(errorDiagnostic("T0043", "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(paramTypes[k]), e.span)) }; k = k + 1 } }; ret }; case TyError -> TyError; case _ -> { diag.add(errorDiagnostic("T0044", "called value of non-function type " + renderType(fnT), e.span)); TyError } } } }
+        case None -> match unionCaseSymbolOf(tbl, fn) { case Some(caseSym) -> inferUnionCaseConstruction(tbl, diag, caseSym, argTypes, e.span); case None -> match constructorSymbolOf(tbl, fn) { case Some(ctorSym) -> inferConstruction(tbl, diag, ctorSym, args, argTypes, e.span); case None -> match fnT { case TyFunction(paramTypes, ret, _) -> { if paramTypes.count != argTypes.count { diag.add(errorDiagnostic("T0042", "expected " + toString(paramTypes.count) + " argument(s), got " + toString(argTypes.count), e.span)) } else { var k = 0; while k < paramTypes.count { if not argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) { diag.add(errorDiagnostic("T0043", "argument type " + renderType(argTypes[k]) + " does not match parameter type " + renderType(paramTypes[k]), e.span)) }; k = k + 1 } }; ret }; case TyError -> TyError; case _ -> { diag.add(errorDiagnostic("T0044", "called value of non-function type " + renderType(fnT), e.span)); TyError } } } }
       }
     }
 
@@ -2045,8 +2269,31 @@ pub func inferExpr(
       }
       indexElementType(rt)
     }
-    case ETypeApp(_, _) -> TyError
-    case ELambda(_, _) -> TyError
+    // ETypeApp: a type-application expression `foo[T]`.  Pass through to the
+    // inner function so `ECall(ETypeApp(fn, targs), vargs)` finds the function
+    // type for the direct-sig fallback instead of silently inferring TyError.
+    case ETypeApp(fnExpr, _) -> inferExpr(sc, tbl, sigs, diag, fnExpr)
+    // ELambda: a closure literal `|x: T, y: U| { body }`.  Resolve each
+    // annotated parameter type (unannotated params stay lenient as TyError),
+    // bind them into a fresh scope frame, check the body, then return the
+    // inferred function type.  The lambda's own return type is TyError (the
+    // lenient unifier) since we have no contextual expected return here.
+    case ELambda(lambdaParams, body) -> {
+      val lctx = newGenericContext()
+      val paramTypes: List[Type] = newList()
+      scopePush(sc)
+      var li = 0
+      while li < lambdaParams.count {
+        val lp = lambdaParams[li]
+        val pTy = match lp.ty { case None -> TyError; case Some(te) -> resolveType(tbl, lctx, diag, te) }
+        paramTypes.add(pTy)
+        scopeAdd(sc, LocalBinding(name = lp.name, ty = pTy, isMutable = false))
+        li = li + 1
+      }
+      val bodyTy = checkBlock(sc, tbl, sigs, sc.genericNames, TyError, diag, body)
+      scopePop(sc)
+      TyFunction(params = paramTypes, ret = bodyTy, isAsync = false)
+    }
     // An `if`/`else` expression takes the unified type of its branches.  An
     // `if` without an `else` produces no value on the false path, so it is
     // `Unit` (the parser desugars a statement-position brace-`if` so a trailing
@@ -2107,9 +2354,75 @@ pub func inferExpr(
     case EBlock(blk) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, diag, blk)
     case EUnsafe(blk) -> checkBlock(sc, tbl, sigs, sc.genericNames, sc.returnTy, diag, blk)
     case ETry(_) -> TyError
-    case EForall(_, _, _) -> TyError
-    case EExists(_, _, _) -> TyError
-    case EAssign(_, _, _) -> TyError
+    // EForall/EExists: quantifier expressions used in contracts.  Bind the
+    // quantified variables into a fresh scope, infer the optional `where`
+    // filter and the body predicate, then return Bool — quantifiers always
+    // produce a boolean truth value.
+    case EForall(binders, whereOpt, body) -> {
+      val fctx = newGenericContext()
+      scopePush(sc)
+      var fi = 0
+      while fi < binders.count {
+        val bt = resolveType(tbl, fctx, diag, binders[fi].ty)
+        if binders[fi].name != "_" {
+          scopeAdd(sc, LocalBinding(name = binders[fi].name, ty = bt, isMutable = false))
+        }
+        fi = fi + 1
+      }
+      match whereOpt {
+        case Some(we) -> {
+          val _ = inferExpr(sc, tbl, sigs, diag, we)
+        }
+        case None -> {
+        }
+      }
+      val _ = inferExpr(sc, tbl, sigs, diag, body)
+      scopePop(sc)
+      TyPrim(pt = PtBool)
+    }
+    case EExists(binders, whereOpt, body) -> {
+      val ectx = newGenericContext()
+      scopePush(sc)
+      var ei = 0
+      while ei < binders.count {
+        val bt = resolveType(tbl, ectx, diag, binders[ei].ty)
+        if binders[ei].name != "_" {
+          scopeAdd(sc, LocalBinding(name = binders[ei].name, ty = bt, isMutable = false))
+        }
+        ei = ei + 1
+      }
+      match whereOpt {
+        case Some(we) -> {
+          val _ = inferExpr(sc, tbl, sigs, diag, we)
+        }
+        case None -> {
+        }
+      }
+      val _ = inferExpr(sc, tbl, sigs, diag, body)
+      scopePop(sc)
+      TyPrim(pt = PtBool)
+    }
+    // EAssign: assignment in expression position.  Check target/value types
+    // and the immutability of the target exactly as the statement path does.
+    case EAssign(target, _, value) -> {
+      val targetType = inferExpr(sc, tbl, sigs, diag, target)
+      val valueType = inferExpr(sc, tbl, sigs, diag, value)
+      if not typeEquiv(targetType, valueType) {
+        diag.add(
+          errorDiagnostic(
+            "T0063",
+            "assigned value of type " + renderType(valueType) + " does not match target of type " + renderType(targetType),
+            e.span
+          )
+        )
+      }
+      match target.kind {
+        case EPath(p) -> if p.segments.count == 1 { match scopeTryFind(sc, p.segments[0]) { case Some(b) -> if not b.isMutable { diag.add(errorDiagnostic("T0087", "cannot reassign immutable binding '" + p.segments[0] + "' (a `val`/`let` or an `in` parameter)", target.span)) }; case None -> {  } } }
+        case _ -> {
+        }
+      }
+      TyPrim(pt = PtUnit)
+    }
     case ERange(_) -> TyError
     case EInterpolated(_) -> TyPrim(pt = PtString)
     case EError -> TyError
@@ -2147,6 +2460,21 @@ func paramsMatchArgs(tbl: in SymbolTable, params: in List[ResolvedParam], argTyp
 func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): Bool {
   if typeEquiv(paramTy, argTy) {
     return true
+  }
+  // M6: numeric widening — Int satisfies Long, Float satisfies Double, etc.
+  // widenArithmetic(param, arg) returns Some(param) iff arg can widen to param.
+  match widenArithmetic(paramTy, argTy) {
+    case Some(wt) -> if typeEquiv(wt, paramTy) { return true }
+    case None -> {
+    }
+  }
+  // slice[T] satisfies List[T]: the emitter treats the two as the same
+  // runtime type; `[...]` literals type as TySlice but may be used wherever
+  // a List[T] field or parameter is expected.
+  match argTy {
+    case TySlice(elemTy) -> match paramTy { case TyUser(_, pName, pArgs) -> { if pName == "List" and pArgs.count == 1 and typeEquiv(pArgs[0], elemTy) { return true } }; case _ -> {  } }
+    case _ -> {
+    }
   }
   match typeIdOfType(paramTy) {
     case Some(ifaceId) -> match typeIdOfType(argTy) { case Some(argId) -> symTableTypeImplements(tbl, argId, ifaceId); case None -> false }

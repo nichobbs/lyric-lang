@@ -1573,3 +1573,196 @@ test "range subtype arithmetic clean" {
   val src = "package P\nfunc f(a: in Int range 0 ..= 150): Bool {\n  val n = a + 1\n  a < 100\n}\n"
   assertEqualInt(diagCount(parseCheck(src)), 0, "range-subtype: arithmetic and comparison clean")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Front-end soundness: ELambda typing.
+// ─────────────────────────────────────────────────────────────────────────────
+test "lambda annotated params inferred" {
+  val src = "package P\nfunc f(): Unit {\n  val fn = { x: Int -> x + 1 }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "lambda with annotated Int param: no errors")
+}
+
+test "lambda unannotated params lenient" {
+  val src = "package P\nfunc f(): Unit {\n  val fn = { x -> x }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "lambda with unannotated param: no errors (lenient)")
+}
+
+test "lambda body type error reported" {
+  val src = "package P\nfunc f(): Unit {\n  val fn = { x: Int -> x + true }\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0030") or hasDiagCode(cr, "T0031"), "lambda body type mismatch: error reported")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Front-end soundness: EAssign in expression position.
+// ─────────────────────────────────────────────────────────────────────────────
+test "assign stmt type mismatch rejected" {
+  val src = "package P\nfunc f(): Unit {\n  var x = 0\n  x = true\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0063"), "assignment with type mismatch: T0063")
+}
+
+test "assign stmt same type ok" {
+  val src = "package P\nfunc f(): Unit {\n  var x = 0\n  x = 5\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0063"), "assignment with same type: no T0063")
+}
+
+test "assign stmt immutable binding rejected" {
+  val src = "package P\nfunc f(): Unit {\n  val x = 0\n  x = 5\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0087"), "assignment to val: T0087")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Front-end soundness: EForall/EExists quantifiers.
+// ─────────────────────────────────────────────────────────────────────────────
+test "forall quantifier returns bool" {
+  val src = "package P\nfunc f(): Bool {\n  forall(x: Int) x >= 0\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "forall quantifier: returns Bool, no errors")
+}
+
+test "exists quantifier returns bool" {
+  val src = "package P\nfunc f(): Bool {\n  exists(x: Int) x > 0\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "exists quantifier: returns Bool, no errors")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Front-end soundness: tuple-destructure sub-bindings.
+// ─────────────────────────────────────────────────────────────────────────────
+test "tuple destructure sub-bindings typed" {
+  // `val (a, b) = (1, true)` — `a` should be typed Int, `b` Bool, so using
+  // them in a numeric context must not produce a false T0030.
+  val src = "package P\nfunc f(): Int {\n  val (a, b) = (1, true)\n  a + 1\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0030"), "tuple sub-binding a typed as Int: no T0030 on a+1")
+}
+
+test "tuple destructure sub-binding type mismatch" {
+  // `b` is Bool; using it as Int should fire T0030.
+  val src = "package P\nfunc f(): Int {\n  val (a, b) = (1, true)\n  b + 1\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0030"), "tuple sub-binding b typed as Bool: T0030 on b+1")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Front-end soundness: record constructor argument type checking (C2).
+// ─────────────────────────────────────────────────────────────────────────────
+test "ctor named arg type mismatch rejected" {
+  val src = "package P\nrecord Point { x: Int; y: Int }\nfunc f(): Unit { val _ = Point(x = true, y = 2) }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0104"), "ctor named arg type mismatch: T0104")
+}
+
+test "ctor named arg type match ok" {
+  val src = "package P\nrecord Point { x: Int; y: Int }\nfunc f(): Unit { val _ = Point(x = 1, y = 2) }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0104"), "ctor named arg type match: no T0104")
+}
+
+test "ctor positional arg type mismatch rejected" {
+  val src = "package P\nrecord Point { x: Int; y: Int }\nfunc f(): Unit { val _ = Point(true, 2) }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0104"), "ctor positional arg type mismatch: T0104")
+}
+
+test "ctor positional arg too many rejected" {
+  val src = "package P\nrecord Point { x: Int; y: Int }\nfunc f(): Unit { val _ = Point(1, 2, 3) }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0104"), "ctor positional too many: T0104")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Front-end soundness: impl conformance — parameter and return type checking (C11).
+// ─────────────────────────────────────────────────────────────────────────────
+test "impl param type mismatch rejected" {
+  val src = "package P\n" + "interface Adder { func add(x: in Int): Int }\n" + "record R {}\n" +
+    "impl Adder for R { func add(x: in String): Int { 0 } }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0106"), "impl param type mismatch: T0106")
+}
+
+test "impl return type mismatch rejected" {
+  val src = "package P\n" + "interface Namer { func name(): String }\n" + "record R {}\n" +
+    "impl Namer for R { func name(): Int { 0 } }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0107"), "impl return type mismatch: T0107")
+}
+
+test "impl param and return match ok" {
+  val src = "package P\n" + "interface Adder { func add(x: in Int): Int }\n" + "record R {}\n" +
+    "impl Adder for R { func add(x: in Int): Int { 0 } }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0106"), "impl param type match: no T0106")
+  assertTrue(not hasDiagCode(cr, "T0107"), "impl return type match: no T0107")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Front-end soundness: where T: Marker bound satisfaction (H15).
+// ─────────────────────────────────────────────────────────────────────────────
+test "where bound satisfied ok" {
+  val src = "package P\n@derive(Add)\nrecord Meters { value: Int }\nfunc add2[T](a: in T, b: in T): T where T: Add { default() }\nfunc f(): Meters { add2(Meters(value = 1), Meters(value = 2)) }\n"
+  val cr = parseCheck(src)
+  assertTrue(not hasDiagCode(cr, "T0108"), "where-bound Add satisfied by @derive(Add): no T0108")
+}
+
+test "where bound not satisfied rejected" {
+  val src = "package P\nrecord Plain { value: Int }\nfunc add2[T](a: in T, b: in T): T where T: Add { default() }\nfunc f(): Plain { add2(Plain(value = 1), Plain(value = 2)) }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0108"), "where-bound Add not satisfied by Plain: T0108")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Front-end soundness: numeric widening (M6).
+// ─────────────────────────────────────────────────────────────────────────────
+test "int plus long widens to long" {
+  val src = "package P\nfunc f(a: in Int, b: in Long): Long { a + b }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "Int + Long widens to Long: no errors")
+}
+
+test "int less than long widens" {
+  val src = "package P\nfunc f(a: in Int, b: in Long): Bool { a < b }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "Int < Long widens: no errors")
+}
+
+test "float plus double widens to double" {
+  val src = "package P\nfunc f(a: in Float, b: in Double): Double { a + b }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "Float + Double widens to Double: no errors")
+}
+
+test "int plus string still rejected" {
+  val src = "package P\nfunc f(a: in Int, b: in String): Unit { val _ = a + b }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0031"), "Int + String still rejected: T0031")
+}
+
+test "int plus bool still rejected" {
+  val src = "package P\nfunc f(a: in Int, b: in Bool): Unit { val _ = a + b }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0031") or hasDiagCode(cr, "T0030"), "Int + Bool still rejected")
+}
+
+test "int literal in long ctor field ok" {
+  val src = "package P\nrecord R { id: Long }\nfunc f(): R { R(id = 0) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "Int literal widened to Long in ctor field")
+}
+
+test "long in int ctor field rejected" {
+  val src = "package P\nrecord R { id: Int }\nfunc f(v: in Long): R { R(id = v) }\n"
+  val cr = parseCheck(src)
+  assertTrue(hasDiagCode(cr, "T0104"), "Long does not narrow to Int in ctor field")
+}
+
+test "slice literal in list ctor field ok" {
+  val src = "package P\nimport Std.Collections\nrecord R { items: List[Int] }\nfunc f(): R { R(items = [1, 2, 3]) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "slice[Int] satisfies List[Int] in ctor field")
+}
