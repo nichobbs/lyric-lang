@@ -1422,11 +1422,13 @@ jobs:
       # The #2592 headline bug: self-hosted callers passed a `List`-backed slice to
       # the F#-built `Std.Sort.sortStrings(String[])`, which returned the unsorted
       # input because the array-based F# body couldn't walk a `List` value.
-      # The `cli.l::sortFileList` workaround is retired here: the fix is that
-      # `MConcreteList.toArray()` emits a genuine `List<T>.ToArray()` (D-progress-??),
-      # and `coerceCallArgMsil` auto-converts `MConcreteList → MArray` at call sites.
-      # This test builds a `List[String]`, converts via `.toArray()`, sorts, and
-      # asserts lexicographic order — the pattern matching `cli.l`'s replacement.
+      # The `cli.l::sortFileList` workaround is NOT retired in this PR (retirement
+      # is deferred to stage-2 self-hosting; see D-progress-483 for the rationale).
+      # This test confirms the underlying mechanism works end-to-end: `MConcreteList`
+      # values support `.toArray()` and `coerceCallArgMsil` auto-converts
+      # `MConcreteList → MArray` at call sites (D-progress-483).
+      # Test builds a `List[String]`, converts via `.toArray()`, sorts, and
+      # asserts lexicographic order.
       - name: Sort.sortStrings(list.toArray()) end-to-end (#2592 slice 4)
         if: steps.changes.outputs.has_code_changes == 'true'
         working-directory: ${{ github.workspace }}
