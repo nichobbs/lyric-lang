@@ -23289,3 +23289,46 @@ MSIL/JVM bridge tests and every `lyric-stdlib/tests/*_tests.l` compile real
 parameter-bearing functions through the self-hosted emitter), ecosystem
 `lyric test` suites `lyric-auth` and `lyric-session` green (the same oracle that
 caught facet 1's regression); `make lyric` clean.
+
+### D-progress-479 — self-hosted consumer encodes a `Unit` generic argument as `System.ValueTuple` at the F#-built-stdlib reference (D-progress-469 facet 3)
+
+**Status:** Shipped — a self-hosted call to an F#-built stdlib function whose
+return is a generic instantiation with a `Unit` (or `Never`) argument — e.g.
+`Std.File.writeText` / `Std.Directory.create : Result[Unit, IOError]`, the
+idiomatic "fallible void" — now encodes the consumer MemberRef return as
+`Result<[corelib]System.ValueTuple, Std.Errors.IOError>`, matching the F#
+emitter's value-position convention (`TypeMap.fs`: `Unit`/`Never` →
+`System.ValueTuple` at value position, `→ void` only at the method-return
+slot — `void` is not a legal generic instantiation argument).  Previously the
+self-hosted encoder degraded the `Unit` argument to `object`
+(`Result<object, IOError>`), which did not bind against the F#-built producer
+and faulted at run time with `MissingMethodException`.  `Result[Unit, E]` is the
+canonical fallible-void return, so the bug was latent but broad — every
+self-hosted program calling such a stdlib function faulted.
+
+**Scoped to the cross-package REFERENCE only (`registerStdlibFunc`).** The fix
+is a recursive MsilType rewriter `xrefUnitArgsToValueTuple` that replaces a
+`MVoid` generic ARGUMENT (the unambiguous footprint of a `Unit`/`Never` type
+argument — nothing else lowers to `MVoid` in arg position) with
+`System.ValueTuple`, leaving the top-level type intact (a function returning
+bare `Unit` still returns `void`).  It is applied only when encoding the
+F#-built-stdlib reference signature — **not** the in-bundle definition /
+value-construction path (`typeExprToMsilCtx` proper).  A self-hosted package
+represents its *own* `Result[Unit, E]` values with an `object` argument
+end-to-end (definition, constructor, and `match` all agree); an earlier attempt
+that lifted the type to `ValueTuple` inside `typeExprToMsilCtx` itself left the
+value representation as `object` and silently miscompiled those programs
+(`lyric-auth` dropped 32/32 → 9/32 with no crash — pure value corruption).
+Gating the rewrite to the F#-reference site is the minimal correct fix and
+mirrors the def-vs-ref discipline of facets 1–2 (which moved the *definition* to
+match an already-concrete reference; here the *reference* moves to match the
+F#-built definition).  `Unit` as a generic argument parses as a `TRef` atom, not
+`TUnit` (the latter is only the `()` literal type), which is why the rewrite
+keys on the lowered `MVoid` rather than the surface `TUnit`.
+
+**Verification:** cross-package `Std.File.writeText` and `Std.Directory.create`
+(`Result[Unit, IOError]`) bind and run (`wrote-ok` / `dir-ok`; CI guard added);
+no regression — `Std.File.readText` (`Result[String, IOError]`, facet
+D-progress-469) still `err-ok`; `lyric-auth` 32/32 and `lyric-session`
+5/15/11 recovered; in-bundle generics self-test 20/20; emitter (828) + CLI (84)
+F# suites green; `make lyric` clean.

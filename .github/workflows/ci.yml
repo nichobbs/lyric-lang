@@ -1190,6 +1190,50 @@ jobs:
           fi
           echo "cross-package Result[String, IOError] return binds correctly"
 
+      # Cross-package generic-return with a `Unit` arg (D-progress-479 / facet 3).
+      # A self-hosted call to an F#-built stdlib function whose return is a
+      # generic instantiation with a `Unit` argument — e.g.
+      # `Std.File.writeText : Result[Unit, IOError]` ("fallible void", idiomatic)
+      # — must encode the consumer MemberRef return as
+      # `Result<[corelib]System.ValueTuple, Std.Errors.IOError>`, matching the
+      # F# emitter's value-position `Unit -> System.ValueTuple` convention.  The
+      # self-hosted encoder degraded the `Unit` arg to `object` (`Result<object,
+      # IOError>`), which did not bind against the F#-built producer and faulted
+      # with MissingMethodException.  The fix (`xrefUnitArgsToValueTuple`, applied
+      # only to the F#-built-stdlib REFERENCE in `registerStdlibFunc`) leaves the
+      # in-bundle object-argument representation untouched.  Guards the encoding.
+      - name: Cross-package generic-return Unit arg (Std.File.writeText)
+        if: steps.changes.outputs.has_code_changes == 'true'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin"
+            exit 1
+          fi
+          work="$(mktemp -d)"
+          cat > "$work/wt.l" <<'LYR'
+          package WT
+          import Std.File as File
+          import Std.Console as Console
+          func main(): Unit {
+            match File.writeText("$WORKPATH/wt_probe.txt", "hi") {
+              case Ok(_)  -> Console.println("wrote-ok")
+              case Err(_) -> Console.println("write-err")
+            }
+          }
+          LYR
+          # Substitute a writable temp path into the program source.
+          sed -i "s#\$WORKPATH#$work#" "$work/wt.l"
+          out="$("$lyric_bin" run "$work/wt.l" 2>&1 | tail -1)"
+          echo "writeText program printed: '$out'"
+          if [ "$out" != "wrote-ok" ]; then
+            echo "::error::self-hosted Std.File.writeText call returned '$out' (expected 'wrote-ok'); cross-package Result[Unit, IOError] signature regressed"
+            exit 1
+          fi
+          echo "cross-package Result[Unit, IOError] return binds correctly"
+
       # Slice-length / String-comparison self-test (#2539).  Exercises two
       # self-hosted MSIL codegen fixes: (1) `String` relational operators
       # (`<` / `>` / `<=` / `>=`) route through `String.CompareOrdinal`
