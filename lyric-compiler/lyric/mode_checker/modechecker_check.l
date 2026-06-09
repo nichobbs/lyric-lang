@@ -1103,11 +1103,278 @@ func checkImportLevels(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §9. Public entry points.
+// §9. V0012 — await inside a try/catch/finally in an async func.
+// The CLR verifier rejects AwaitUnsafeOnCompleted inside a protected region;
+// diagnose at compile time instead of emitting invalid IL.
+// ─────────────────────────────────────────────────────────────────────────────
+record AwaitTryCtx {
+  fnName: String
+  inTry: Bool
+  diag: List[Diagnostic]
+}
+
+func walkExprOrBlockForAwaitInTry(ctx: in AwaitTryCtx, eob: in ExprOrBlock): Unit {
+  match eob {
+    case EOBExpr(e) -> walkExprForAwaitInTry(ctx, e)
+    case EOBBlock(blk) -> walkBlockForAwaitInTry(ctx, blk)
+  }
+}
+
+func walkExprForAwaitInTry(ctx: in AwaitTryCtx, e: in Expr): Unit {
+  match e.kind {
+    case EAwait(inner) -> {
+      if ctx.inTry {
+        ctx.diag.add(
+          errorDiagnostic(
+            "V0012",
+            "await inside a try/catch/finally in async function '" + ctx.fnName +
+              "' emits invalid IL; restructure to await before or after the try block",
+            e.span
+          )
+        )
+      }
+      walkExprForAwaitInTry(ctx, inner)
+    }
+    case EParen(inner) -> walkExprForAwaitInTry(ctx, inner)
+    case ETuple(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        walkExprForAwaitInTry(ctx, exprs[i])
+        i = i + 1
+      }
+    }
+    case EList(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        walkExprForAwaitInTry(ctx, exprs[i])
+        i = i + 1
+      }
+    }
+    case EIf(cond, thenB, elseOpt, _) -> {
+      walkExprForAwaitInTry(ctx, cond)
+      walkExprOrBlockForAwaitInTry(ctx, thenB)
+      match elseOpt {
+        case Some(elseB) -> walkExprOrBlockForAwaitInTry(ctx, elseB)
+        case None -> {
+        }
+      }
+    }
+    case EMatch(scrutinee, arms) -> {
+      walkExprForAwaitInTry(ctx, scrutinee)
+      var i = 0
+      while i < arms.count {
+        match arms[i].guard {
+          case Some(g) -> walkExprForAwaitInTry(ctx, g)
+          case None -> {
+          }
+        }
+        walkExprOrBlockForAwaitInTry(ctx, arms[i].body)
+        i = i + 1
+      }
+    }
+    case EYield(inner) -> walkExprForAwaitInTry(ctx, inner)
+    case ESpawn(inner) -> walkExprForAwaitInTry(ctx, inner)
+    case ETry(inner) -> walkExprForAwaitInTry(ctx, inner)
+    case EOld(inner) -> walkExprForAwaitInTry(ctx, inner)
+    case EPropagate(inner) -> walkExprForAwaitInTry(ctx, inner)
+    case EPrefix(_, operand) -> walkExprForAwaitInTry(ctx, operand)
+    case EBinop(_, lhs, rhs) -> {
+      walkExprForAwaitInTry(ctx, lhs)
+      walkExprForAwaitInTry(ctx, rhs)
+    }
+    case EAssign(target, _, value) -> {
+      walkExprForAwaitInTry(ctx, target)
+      walkExprForAwaitInTry(ctx, value)
+    }
+    case ECall(fn, args) -> {
+      walkExprForAwaitInTry(ctx, fn)
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CANamed(_, v, _) -> walkExprForAwaitInTry(ctx, v)
+          case CAPositional(x) -> walkExprForAwaitInTry(ctx, x)
+        }
+        i = i + 1
+      }
+    }
+    case ETypeApp(fn, _) -> walkExprForAwaitInTry(ctx, fn)
+    case EIndex(recv, indices) -> {
+      walkExprForAwaitInTry(ctx, recv)
+      var i = 0
+      while i < indices.count {
+        walkExprForAwaitInTry(ctx, indices[i])
+        i = i + 1
+      }
+    }
+    case EMember(recv, _) -> walkExprForAwaitInTry(ctx, recv)
+    case EBlock(blk) -> walkBlockForAwaitInTry(ctx, blk)
+    case EUnsafe(blk) -> walkBlockForAwaitInTry(ctx, blk)
+    case ELambda(_, body) -> walkBlockForAwaitInTry(ctx, body)
+    case EInterpolated(segs) -> {
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISExpr(x) -> walkExprForAwaitInTry(ctx, x)
+          case ISText(_, _) -> {
+          }
+        }
+        i = i + 1
+      }
+    }
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi) -> {
+          walkExprForAwaitInTry(ctx, lo)
+          walkExprForAwaitInTry(ctx, hi)
+        }
+        case RBHalfOpen(lo, hi) -> {
+          walkExprForAwaitInTry(ctx, lo)
+          walkExprForAwaitInTry(ctx, hi)
+        }
+        case RBLowerOpen(hi) -> walkExprForAwaitInTry(ctx, hi)
+        case RBUpperOpen(lo) -> walkExprForAwaitInTry(ctx, lo)
+      }
+    }
+    case EForall(_, whereOpt, body) -> {
+      match whereOpt {
+        case Some(w) -> walkExprForAwaitInTry(ctx, w)
+        case None -> {
+        }
+      }
+      walkExprForAwaitInTry(ctx, body)
+    }
+    case EExists(_, whereOpt, body) -> {
+      match whereOpt {
+        case Some(w) -> walkExprForAwaitInTry(ctx, w)
+        case None -> {
+        }
+      }
+      walkExprForAwaitInTry(ctx, body)
+    }
+    case ELiteral(_) -> {
+    }
+    case EPath(_) -> {
+    }
+    case ESelf -> {
+    }
+    case EResult -> {
+    }
+    case EError -> {
+    }
+  }
+}
+
+func walkStmtForAwaitInTry(ctx: in AwaitTryCtx, st: in Statement): Unit {
+  match st.kind {
+    case SExpr(x) -> walkExprForAwaitInTry(ctx, x)
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> walkExprForAwaitInTry(ctx, init)
+        case LBLet(_, _, init) -> walkExprForAwaitInTry(ctx, init)
+        case LBVar(_, _, initOpt) -> {
+          match initOpt {
+            case Some(init) -> walkExprForAwaitInTry(ctx, init)
+            case None -> {
+            }
+          }
+        }
+      }
+    }
+    case SAssign(t, _, v) -> {
+      walkExprForAwaitInTry(ctx, t)
+      walkExprForAwaitInTry(ctx, v)
+    }
+    case SReturn(valOpt) -> {
+      match valOpt {
+        case Some(v) -> walkExprForAwaitInTry(ctx, v)
+        case None -> {
+        }
+      }
+    }
+    case SThrow(x) -> walkExprForAwaitInTry(ctx, x)
+    case STry(body, catches, finally_) -> {
+      val innerCtx = AwaitTryCtx(fnName = ctx.fnName, inTry = true, diag = ctx.diag)
+      walkBlockForAwaitInTry(innerCtx, body)
+      var ci = 0
+      while ci < catches.count {
+        walkBlockForAwaitInTry(innerCtx, catches[ci].body)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> walkBlockForAwaitInTry(innerCtx, fb)
+        case None -> {
+        }
+      }
+    }
+    case SDefer(body) -> walkBlockForAwaitInTry(ctx, body)
+    case SScope(_, body) -> walkBlockForAwaitInTry(ctx, body)
+    case SFor(_, _, iter, body) -> {
+      walkExprForAwaitInTry(ctx, iter)
+      walkBlockForAwaitInTry(ctx, body)
+    }
+    case SWhile(_, cond, body) -> {
+      walkExprForAwaitInTry(ctx, cond)
+      walkBlockForAwaitInTry(ctx, body)
+    }
+    case SLoop(_, body) -> walkBlockForAwaitInTry(ctx, body)
+    case SInvariant(x) -> walkExprForAwaitInTry(ctx, x)
+    case SRule(l, r) -> {
+      walkExprForAwaitInTry(ctx, l)
+      walkExprForAwaitInTry(ctx, r)
+    }
+    case SBreak(_) -> {
+    }
+    case SContinue(_) -> {
+    }
+    case SItem(_) -> {
+    }
+  }
+}
+
+func walkBlockForAwaitInTry(ctx: in AwaitTryCtx, blk: in Block): Unit {
+  var i = 0
+  while i < blk.statements.count {
+    walkStmtForAwaitInTry(ctx, blk.statements[i])
+    i = i + 1
+  }
+}
+
+func checkAwaitInTry(file: in SourceFile, fileLevel: in VerificationLevel, diag: in List[Diagnostic]): Unit {
+  if not vlIsProofRequired(fileLevel) {
+    return
+  }
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(fn) -> {
+        if fn.isAsync {
+          match fn.body {
+            case None -> {
+            }
+            case Some(body) -> {
+              val ctx = AwaitTryCtx(fnName = fn.name, inTry = false, diag = diag)
+              match body {
+                case FBExpr(e) -> walkExprForAwaitInTry(ctx, e)
+                case FBBlock(blk) -> walkBlockForAwaitInTry(ctx, blk)
+              }
+            }
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §10. Public entry points.
 // ─────────────────────────────────────────────────────────────────────────────
 pub func checkFileWithImports(file: in SourceFile, imports: in List[ImportedMeta]): ModeCheckResult {
   val diag: List[Diagnostic] = newList()
   val fileLevel = levelOfFile(file, diag)
+  checkAwaitInTry(file, fileLevel, diag)
   if not vlIsProofRequired(fileLevel) {
     return ModeCheckResult(level = fileLevel, diagnostics = diag)
   }
