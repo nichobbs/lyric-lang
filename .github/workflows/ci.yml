@@ -3382,20 +3382,30 @@ jobs:
               return;
             }
 
+            // The REST API silently ignores `draft: false` on PATCH /pulls/:number.
+            // Converting a draft PR to ready-for-review requires the GraphQL mutation.
+            const prNodeId = freshPr.data.node_id;
             try {
-              await github.rest.pulls.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: prNumber,
-                draft: false
-              });
-              console.log(`[auto-promote] PR #${prNumber}: ✓ Successfully promoted to ready for review`);
-            } catch (error) {
-              if (error.status === 403) {
-                console.log(`[auto-promote] PR #${prNumber}: ⚠ Permission denied (403) — may be a fork`);
-              } else if (error.status === 422) {
-                console.log(`[auto-promote] PR #${prNumber}: ⚠ Cannot be promoted (422) — already ready or in invalid state`);
+              const result = await github.graphql(`
+                mutation($prId: ID!) {
+                  markPullRequestReadyForReview(input: { pullRequestId: $prId }) {
+                    pullRequest {
+                      isDraft
+                      number
+                    }
+                  }
+                }
+              `, { prId: prNodeId });
+              const isDraft = result.markPullRequestReadyForReview.pullRequest.isDraft;
+              if (!isDraft) {
+                console.log(`[auto-promote] PR #${prNumber}: ✓ Successfully promoted to ready for review`);
               } else {
-                console.log(`[auto-promote] PR #${prNumber}: ✗ Error: ${error.message}`);
+                console.log(`[auto-promote] PR #${prNumber}: ⚠ Mutation returned but PR is still draft`);
+              }
+            } catch (error) {
+              if (error.message && error.message.includes('NOT_FOUND')) {
+                console.log(`[auto-promote] PR #${prNumber}: ⚠ PR not found (may be a fork or permission issue)`);
+              } else {
+                core.setFailed(`[auto-promote] PR #${prNumber}: ✗ GraphQL error: ${error.message}`);
               }
             }
