@@ -23687,3 +23687,40 @@ external types and `XmlNode` is self-referential (`List[XmlNode]` field on the `
 case); any API involving `XmlNode` or `XmlDoc` as a type parameter triggers the loop.  The
 existing `xml_tests.l` stdlib tests (compiled against Xml source, not DLL-restored metadata)
 cover Xml/Yaml API correctness in the emitter test suite.
+
+### D-progress-484 — re-enable all disabled MSIL project bridge tests (#2888)
+
+**Status:** Shipped — all previously disabled E2E tests re-enabled as two native
+`@test_module` self-tests in `lyric-compiler/lyric/`.
+
+The original `lyric-stdlib/tests/msil_project_bridge_tests.l` (added with the
+multi-package bridge, #1183) was deleted and/or had its 12+ tests disabled via
+block comments across several follow-up commits because the file imported both
+`Msil.Bridge` and `Lyric.Emitter`, whose combined transitive closure (including
+the full JVM compiler packages) exceeded the F# bootstrap emitter's compilation
+capacity when driven by `StdlibLyricTests.fs`.  The commits cited the F# emitter
+as unable to compile the file, but the real constraint was the transitive-closure
+size in the stdlib test path — not an inherent incompatibility.
+
+Fix: split into two `@test_module` files under `lyric-compiler/lyric/`, where
+`lyric test` resolves compiler-package imports from pre-compiled stage-1 DLLs via
+`Emitter.compilerClosureDllPaths` (the same mechanism used by
+`release_self_test.l`, `weaver_self_test.l`, and `auto_ffi_self_test.l`):
+
+- **`lyric-compiler/lyric/msil_project_bridge_self_test.l`** (`package
+  Lyric.MsilProjectBridgeSelfTest`) — 11 tests covering Phases 1–3: independent
+  bundles, cross-package function/record/union round-trips, the stdlib
+  double-registration regression (#1435), and cfg-erasure diagnostics F0012/F0013.
+  Imports `Msil.Bridge` only.
+
+- **`lyric-compiler/lyric/emitter_project_self_test.l`** (`package
+  Lyric.EmitterProjectSelfTest`) — 12 tests covering Phase 4: in-process
+  `emitProject` routing, aliased cross-package calls (#1378), per-package
+  isolation (duplicate names #1378, implicit-leak rejection #1422), @cfg
+  feature-erasure via `emitProject` (inactive / active / AND / file-level),
+  restored-dep wiring crash-safety (#1381), subprocess-fallback routing (#1203),
+  and stdlib import resolution (#1202).  Imports `Lyric.Emitter` only.
+
+Two new CI steps added to `.github/workflows/ci.yml` following the pattern of the
+existing "Release self-test" step: each guards on `.bootstrap/stage1/Lyric.Lyric.Cli.dll`
+and the AOT binary, then runs `"$lyric_bin" test <file>`.
