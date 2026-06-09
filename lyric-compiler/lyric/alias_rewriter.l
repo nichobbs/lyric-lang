@@ -89,13 +89,26 @@ func dotJoin(segs: in List[String]): String {
 // so a later `Rx.foo` rewrite can substitute the alias head with the full package
 // path (preserving which package the call/type targets) rather than dropping it.
 // `=` is a safe separator: neither identifiers nor package names contain it.
+//
+// Bare single-segment `import X` (no `as` clause) is treated as an implicit
+// `import X as X`: the package name `X` is registered as an alias for itself so
+// that `X.func(...)` call sites are rewritten from `EMember(EPath(["X"]), "func")`
+// to the flat `EPath(["X", "func"])` form that `lowerBuiltinOrStaticCallMsil`
+// can dispatch correctly.  Without this, the call lands in `lowerMethodCallMsil`
+// which looks for `func` as a method on an unknown receiver and throws at runtime.
 func collectAliases(imports: in List[ImportDecl]): List[String] {
   val entries: List[String] = newList()
   var i = 0
   while i < imports.count {
-    match asAliasOf(imports[i]) {
-      case Some(name) -> entries.add(name + "=" + dotJoin(imports[i].path.segments))
-      case None -> ()
+    val imp = imports[i]
+    match asAliasOf(imp) {
+      case Some(name) -> entries.add(name + "=" + dotJoin(imp.path.segments))
+      case None -> {
+        if imp.path.segments.count == 1 {
+          val seg = imp.path.segments[0]
+          entries.add(seg + "=" + seg)
+        }
+      }
     }
     i = i + 1
   }

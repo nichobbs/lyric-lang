@@ -1,7 +1,6 @@
-// tests/validation_tests.l — test suite for the Validation package.
-// Tests both positive cases (valid input → empty list) and negative cases
-// (invalid input → non-empty error list with the expected code).
-
+//! tests/validation_tests.l — test suite for the Validation package.
+//! Tests both positive cases (valid input → empty list) and negative cases
+//! (invalid input → non-empty error list with the expected code).
 @test_module
 package Validation.ValidationTests
 
@@ -10,14 +9,13 @@ import Std.Testing
 import Validation
 
 // ─── required ────────────────────────────────────────────────────────────────
-
 test "required: empty string returns one error with code 'required'" {
   val errs = Validation.required("", "username")
   assertTrue(errs.length == 1, "expected one error for empty string")
   match Validation.firstError(errs) {
-    case None    -> assertTrue(false, "firstError should not be None")
+    case None -> assertTrue(false, "firstError should not be None")
     case Some(e) -> {
-      assertEqual(e.code,  "required", "code")
+      assertEqual(e.code, "required", "code")
       assertEqual(e.field, "username", "field")
     }
   }
@@ -40,12 +38,11 @@ test "required: whitespace-only string is treated as non-empty" {
 }
 
 // ─── minLength ────────────────────────────────────────────────────────────────
-
 test "minLength: string shorter than min returns error with code 'minLength'" {
   val errs = Validation.minLength("ab", "password", 8)
   assertTrue(errs.length == 1, "expected one error")
   match Validation.firstError(errs) {
-    case None    -> assertTrue(false, "firstError should not be None")
+    case None -> assertTrue(false, "firstError should not be None")
     case Some(e) -> assertEqual(e.code, "minLength", "code")
   }
 }
@@ -71,12 +68,11 @@ test "minLength: min of 0 accepts any string" {
 }
 
 // ─── maxLength ────────────────────────────────────────────────────────────────
-
 test "maxLength: string longer than max returns error with code 'maxLength'" {
   val errs = Validation.maxLength("abcdefghijk", "bio", 10)
   assertTrue(errs.length == 1, "expected one error")
   match Validation.firstError(errs) {
-    case None    -> assertTrue(false, "firstError should not be None")
+    case None -> assertTrue(false, "firstError should not be None")
     case Some(e) -> assertEqual(e.code, "maxLength", "code")
   }
 }
@@ -102,12 +98,11 @@ test "maxLength: max of 0 accepts empty string" {
 }
 
 // ─── exactLength ──────────────────────────────────────────────────────────────
-
 test "exactLength: string shorter than target returns error with code 'exactLength'" {
   val errs = Validation.exactLength("abc", "zip", 5)
   assertTrue(errs.length == 1, "expected one error")
   match Validation.firstError(errs) {
-    case None    -> assertTrue(false, "firstError should not be None")
+    case None -> assertTrue(false, "firstError should not be None")
     case Some(e) -> assertEqual(e.code, "exactLength", "code")
   }
 }
@@ -133,12 +128,11 @@ test "exactLength: non-empty string with target 0 fails" {
 }
 
 // ─── notBlank ─────────────────────────────────────────────────────────────────
-
 test "notBlank: empty string returns error with code 'notBlank'" {
   val errs = Validation.notBlank("", "title")
   assertTrue(errs.length == 1, "expected one error")
   match Validation.firstError(errs) {
-    case None    -> assertTrue(false, "firstError should not be None")
+    case None -> assertTrue(false, "firstError should not be None")
     case Some(e) -> assertEqual(e.code, "notBlank", "code")
   }
 }
@@ -164,7 +158,6 @@ test "notBlank: string with leading whitespace but non-whitespace content passes
 }
 
 // ─── oneOf ────────────────────────────────────────────────────────────────────
-
 test "oneOf: value in allowed list returns no errors" {
   val errs = Validation.oneOf("admin", "role", ["admin", "editor", "viewer"])
   assertTrue(Validation.isValid(errs), "value present in list must be valid")
@@ -174,7 +167,7 @@ test "oneOf: value not in list returns error with code 'oneOf'" {
   val errs = Validation.oneOf("superuser", "role", ["admin", "editor", "viewer"])
   assertTrue(errs.length == 1, "expected one error")
   match Validation.firstError(errs) {
-    case None    -> assertTrue(false, "firstError should not be None")
+    case None -> assertTrue(false, "firstError should not be None")
     case Some(e) -> assertEqual(e.code, "oneOf", "code")
   }
 }
@@ -195,7 +188,6 @@ test "oneOf: empty allowed list rejects every value" {
 }
 
 // ─── email ────────────────────────────────────────────────────────────────────
-
 test "email: well-formed address returns no errors" {
   val errs = Validation.email("alice@example.com", "email")
   assertTrue(Validation.isValid(errs), "well-formed email must pass")
@@ -210,7 +202,7 @@ test "email: missing @ returns error with code 'email'" {
   val errs = Validation.email("aliceexample.com", "email")
   assertTrue(errs.length == 1, "expected one error")
   match Validation.firstError(errs) {
-    case None    -> assertTrue(false, "firstError should not be None")
+    case None -> assertTrue(false, "firstError should not be None")
     case Some(e) -> assertEqual(e.code, "email", "code")
   }
 }
@@ -236,7 +228,6 @@ test "email: missing TLD (no dot in domain) fails" {
 }
 
 // ─── url ──────────────────────────────────────────────────────────────────────
-
 test "url: http URL passes" {
   val errs = Validation.url("http://example.com", "website")
   assertTrue(Validation.isValid(errs), "http URL must pass")
@@ -251,7 +242,7 @@ test "url: ftp URL fails with code 'url'" {
   val errs = Validation.url("ftp://example.com", "website")
   assertTrue(errs.length == 1, "expected one error")
   match Validation.firstError(errs) {
-    case None    -> assertTrue(false, "firstError should not be None")
+    case None -> assertTrue(false, "firstError should not be None")
     case Some(e) -> assertEqual(e.code, "url", "code")
   }
 }
@@ -267,12 +258,11 @@ test "url: empty string fails" {
 }
 
 // ─── minValue ─────────────────────────────────────────────────────────────────
-
 test "minValue: value below min returns error with code 'minValue'" {
   val errs = Validation.minValue(4, "age", 18)
   assertTrue(errs.length == 1, "expected one error")
   match Validation.firstError(errs) {
-    case None    -> assertTrue(false, "firstError should not be None")
+    case None -> assertTrue(false, "firstError should not be None")
     case Some(e) -> assertEqual(e.code, "minValue", "code")
   }
 }
@@ -298,12 +288,11 @@ test "minValue: zero min rejects negative value" {
 }
 
 // ─── maxValue ─────────────────────────────────────────────────────────────────
-
 test "maxValue: value above max returns error with code 'maxValue'" {
   val errs = Validation.maxValue(200, "age", 150)
   assertTrue(errs.length == 1, "expected one error")
   match Validation.firstError(errs) {
-    case None    -> assertTrue(false, "firstError should not be None")
+    case None -> assertTrue(false, "firstError should not be None")
     case Some(e) -> assertEqual(e.code, "maxValue", "code")
   }
 }
@@ -329,7 +318,6 @@ test "maxValue: max of zero accepts negative value" {
 }
 
 // ─── rangeValue ───────────────────────────────────────────────────────────────
-
 test "rangeValue: value within range returns no errors" {
   val errs = Validation.rangeValue(50, "score", 0, 100)
   assertTrue(Validation.isValid(errs), "value in range must pass")
@@ -349,7 +337,7 @@ test "rangeValue: value below lower bound returns error with code 'rangeValue'" 
   val errs = Validation.rangeValue(-1, "score", 0, 100)
   assertTrue(errs.length == 1, "expected one error")
   match Validation.firstError(errs) {
-    case None    -> assertTrue(false, "firstError should not be None")
+    case None -> assertTrue(false, "firstError should not be None")
     case Some(e) -> assertEqual(e.code, "rangeValue", "code")
   }
 }
@@ -360,7 +348,6 @@ test "rangeValue: value above upper bound returns error" {
 }
 
 // ─── combine ──────────────────────────────────────────────────────────────────
-
 test "combine: two empty lists gives an empty list" {
   val errs = Validation.combine([], [])
   assertTrue(Validation.isValid(errs), "combine of two empty lists must be valid")
@@ -368,13 +355,13 @@ test "combine: two empty lists gives an empty list" {
 
 test "combine: error in first list is included in result" {
   val a = Validation.required("", "name")
-  val b: [ValidationError] = []
+  val b: slice[ValidationError] = []
   val errs = Validation.combine(a, b)
   assertTrue(errs.length == 1, "result must contain the single error from a")
 }
 
 test "combine: error in second list is included in result" {
-  val a: [ValidationError] = []
+  val a: slice[ValidationError] = []
   val b = Validation.required("", "email")
   val errs = Validation.combine(a, b)
   assertTrue(errs.length == 1, "result must contain the single error from b")
@@ -388,40 +375,35 @@ test "combine: errors from both lists are combined" {
 }
 
 // ─── all ──────────────────────────────────────────────────────────────────────
-
 test "all: empty input list gives an empty error list" {
   val errs = Validation.all([])
   assertTrue(Validation.isValid(errs), "all of empty input must be valid")
 }
 
 test "all: all-passing validators give an empty error list" {
-  val errs = Validation.all([
-    Validation.required("alice", "name"),
-    Validation.minLength("alice", "name", 2),
-    Validation.maxLength("alice", "name", 100),
-  ])
+  val errs = Validation.all(
+    [
+      Validation.required("alice", "name"),
+      Validation.minLength("alice", "name", 2),
+      Validation.maxLength("alice", "name", 100)
+    ]
+  )
   assertTrue(Validation.isValid(errs), "all-passing validators must produce no errors")
 }
 
 test "all: one failing validator produces its error in the result" {
-  val errs = Validation.all([
-    Validation.required("alice", "name"),
-    Validation.minLength("", "bio", 1),
-  ])
+  val errs = Validation.all([Validation.required("alice", "name"), Validation.minLength("", "bio", 1)])
   assertTrue(errs.length == 1, "one failing validator must yield one error")
 }
 
 test "all: multiple failing validators accumulate errors" {
-  val errs = Validation.all([
-    Validation.required("", "name"),
-    Validation.required("", "email"),
-    Validation.minLength("x", "bio", 10),
-  ])
+  val errs = Validation.all(
+    [Validation.required("", "name"), Validation.required("", "email"), Validation.minLength("x", "bio", 10)]
+  )
   assertTrue(errs.length == 3, "three failing validators must yield three errors")
 }
 
 // ─── isValid / firstError ─────────────────────────────────────────────────────
-
 test "isValid: returns true for empty list" {
   assertTrue(Validation.isValid([]), "isValid on empty list must be true")
 }
@@ -433,29 +415,25 @@ test "isValid: returns false for non-empty list" {
 
 test "firstError: returns None for empty list" {
   match Validation.firstError([]) {
-    case None    -> ()
+    case None -> ()
     case Some(_) -> assertTrue(false, "firstError on empty list must be None")
   }
 }
 
 test "firstError: returns the first error in a non-empty list" {
-  val errs = Validation.all([
-    Validation.required("", "name"),
-    Validation.required("", "email"),
-  ])
+  val errs = Validation.all([Validation.required("", "name"), Validation.required("", "email")])
   match Validation.firstError(errs) {
-    case None    -> assertTrue(false, "firstError must not be None")
+    case None -> assertTrue(false, "firstError must not be None")
     case Some(e) -> assertEqual(e.field, "name", "first error field must be 'name'")
   }
 }
 
 // ─── toResult ─────────────────────────────────────────────────────────────────
-
 test "toResult: empty errors list returns Ok(value)" {
   val result = Validation.toResult(42, [])
   match result {
-    case Ok(v)   -> assertEqualInt(v, 42, "value in Ok")
-    case Err(_)  -> assertTrue(false, "expected Ok, got Err")
+    case Ok(v) -> assertEqualInt(v, 42, "value in Ok")
+    case Err(_) -> assertTrue(false, "expected Ok, got Err")
   }
 }
 
@@ -463,19 +441,16 @@ test "toResult: non-empty errors list returns Err(errors)" {
   val errs = Validation.required("", "name")
   val result = Validation.toResult("ignored", errs)
   match result {
-    case Ok(_)   -> assertTrue(false, "expected Err, got Ok")
+    case Ok(_) -> assertTrue(false, "expected Err, got Ok")
     case Err(es) -> assertTrue(es.length == 1, "Err must contain the one error")
   }
 }
 
 test "toResult: multiple errors are all present in Err" {
-  val errs = Validation.all([
-    Validation.required("", "name"),
-    Validation.required("", "email"),
-  ])
+  val errs = Validation.all([Validation.required("", "name"), Validation.required("", "email")])
   val result = Validation.toResult("ignored", errs)
   match result {
-    case Ok(_)   -> assertTrue(false, "expected Err")
+    case Ok(_) -> assertTrue(false, "expected Err")
     case Err(es) -> assertTrue(es.length == 2, "both errors must be in Err")
   }
 }
