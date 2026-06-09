@@ -324,13 +324,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping weaver self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping weaver self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping weaver self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping weaver self-test"
+            exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/weaver_self_test.l
 
@@ -345,13 +345,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping compiler self-tests"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping compiler self-tests"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping compiler self-tests"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping compiler self-tests"
+            exit 1
           fi
           ran=""
           for t in \
@@ -390,13 +390,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping cfg_gate self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping cfg_gate self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping cfg_gate self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping cfg_gate self-test"
+            exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/cfg_gate_self_test.l
 
@@ -414,13 +414,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping bitwise self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping bitwise self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping bitwise self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping bitwise self-test"
+            exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/bitwise_self_test.l
 
@@ -436,13 +436,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping slice array-ABI self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping slice array-ABI self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping slice array-ABI self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping slice array-ABI self-test"
+            exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/slice_array_abi_self_test.l
 
@@ -456,13 +456,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping toArray array-ABI self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping toArray array-ABI self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping toArray array-ABI self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping toArray array-ABI self-test"
+            exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/toarray_array_abi_self_test.l
 
@@ -478,13 +478,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping slice/string self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping slice/string self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping slice/string self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping slice/string self-test"
+            exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/slice_string_self_test.l
 
@@ -503,13 +503,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping generic-slice self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping generic-slice self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping generic-slice self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping generic-slice self-test"
+            exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/generic_slice_self_test.l
 
@@ -521,13 +521,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping for-loop slice self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping for-loop slice self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping for-loop slice self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping for-loop slice self-test"
+            exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/for_loop_slice_self_test.l
 
@@ -550,13 +550,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping conversion-method self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping conversion-method self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping conversion-method self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping conversion-method self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/conv_methods_self_test.l
 
@@ -565,13 +565,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping pattern-lowering self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping pattern-lowering self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping pattern-lowering self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping pattern-lowering self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/jvm/pattern_lowering_self_test.l
 
@@ -580,13 +580,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping auto-FFI self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping auto-FFI self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping auto-FFI self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping auto-FFI self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/auto_ffi_self_test.l
 
@@ -606,13 +606,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping in-bundle generics self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping in-bundle generics self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping in-bundle generics self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping in-bundle generics self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/inbundle_generics_self_test.l
 
@@ -629,13 +629,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping async extern self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping async extern self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping async extern self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping async extern self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/async_extern_self_test.l
 
@@ -649,13 +649,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping async SM self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping async SM self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping async SM self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping async SM self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/async_sm_self_test.l
 
@@ -676,13 +676,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping match/compound self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping match/compound self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping match/compound self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping match/compound self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/match_compound_self_test.l
 
@@ -698,13 +698,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping loop-EH/collection self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping loop-EH/collection self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping loop-EH/collection self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping loop-EH/collection self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/loop_eh_collection_self_test.l
 
@@ -719,13 +719,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping return-in-try self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping return-in-try self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping return-in-try self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping return-in-try self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/return_in_try_self_test.l
 
@@ -741,13 +741,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping defer self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping defer self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping defer self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping defer self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/defer_self_test.l
 
@@ -763,13 +763,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping try-catch-expr self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping try-catch-expr self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping try-catch-expr self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping try-catch-expr self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/try_catch_expr_self_test.l
 
@@ -783,13 +783,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping loop-invariant self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping loop-invariant self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping loop-invariant self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping loop-invariant self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/loop_invariant_self_test.l
 
@@ -802,13 +802,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping function-value invocation test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping function-value invocation test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping function-value invocation test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping function-value invocation test"
+            exit 1
           fi
           dir="$(mktemp -d)"
           pos="$dir/hof.l"
@@ -887,13 +887,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping capturing-closures test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping capturing-closures test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping capturing-closures test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping capturing-closures test"
+            exit 1
           fi
           dir="$(mktemp -d)"
           pos="$dir/cap.l"
@@ -960,13 +960,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping out/inout self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping out/inout self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping out/inout self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping out/inout self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/outparam_self_test.l
           echo "out/inout-parameter self-test ran: outparam_self_test.l (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
@@ -979,13 +979,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping nested-generic self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping nested-generic self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping nested-generic self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping nested-generic self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/nested_generic_self_test.l
 
@@ -998,13 +998,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping self-method-call self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping self-method-call self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping self-method-call self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping self-method-call self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/self_method_call_self_test.l
 
@@ -1016,13 +1016,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping named-arg-order self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping named-arg-order self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping named-arg-order self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping named-arg-order self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/named_arg_order_self_test.l
 
@@ -1035,13 +1035,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping record-option-field self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping record-option-field self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping record-option-field self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping record-option-field self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/record_option_field_self_test.l
 
@@ -1057,13 +1057,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping generic-specialization self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping generic-specialization self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping generic-specialization self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping generic-specialization self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/generic_specialization_self_test.l
 
@@ -1078,13 +1078,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping stdlib-generic-mono self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping stdlib-generic-mono self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping stdlib-generic-mono self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping stdlib-generic-mono self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/stdlib_generic_mono_self_test.l
 
@@ -1098,13 +1098,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping map-option self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping map-option self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping map-option self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping map-option self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_option_self_test.l
 
@@ -1119,13 +1119,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping propagate self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping propagate self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping propagate self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping propagate self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/propagate_self_test.l
 
@@ -1138,13 +1138,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping list-value-compare self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping list-value-compare self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping list-value-compare self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping list-value-compare self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/list_value_compare_self_test.l
 
@@ -1158,13 +1158,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping equality self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping equality self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping equality self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping equality self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/equality_self_test.l
 
@@ -1177,13 +1177,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping map-key self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping map-key self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping map-key self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping map-key self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_key_self_test.l
 
@@ -1196,13 +1196,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping map-value self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping map-value self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping map-value self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping map-value self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/map_value_self_test.l
 
@@ -1215,13 +1215,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping impl-method self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping impl-method self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping impl-method self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping impl-method self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/impl_method_self_test.l
 
@@ -1237,13 +1237,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping alias-rewriter self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping alias-rewriter self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping alias-rewriter self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping alias-rewriter self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/alias_rewriter_self_test.l
 
@@ -1258,13 +1258,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping ensures self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping ensures self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping ensures self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping ensures self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/ensures_self_test.l
 
@@ -1280,13 +1280,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping mono-shadow self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping mono-shadow self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping mono-shadow self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping mono-shadow self-test"
+            exit 1
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/mono_shadow_self_test.l
 
@@ -1307,13 +1307,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping cli-suggest self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping cli-suggest self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping cli-suggest self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping cli-suggest self-test"
+            exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/cli_suggest_self_test.l
 
@@ -1330,13 +1330,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping release self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping release self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping release self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping release self-test"
+            exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/release_self_test.l
 
@@ -1352,13 +1352,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping MSIL project bridge self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping MSIL project bridge self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping MSIL project bridge self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping MSIL project bridge self-test"
+            exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/msil_project_bridge_self_test.l
 
@@ -1371,13 +1371,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping emitter project self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping emitter project self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping emitter project self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping emitter project self-test"
+            exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/emitter_project_self_test.l
 
@@ -1387,8 +1387,8 @@ jobs:
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping init self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping init self-test"
+            exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/init_self_test.l
 
@@ -1398,8 +1398,8 @@ jobs:
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping union-list-match self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping union-list-match self-test"
+            exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/union_list_match_self_test.l
 
@@ -1413,8 +1413,8 @@ jobs:
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping module-val self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping module-val self-test"
+            exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/module_val_self_test.l
 
@@ -1430,8 +1430,8 @@ jobs:
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping datetime-toString self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping datetime-toString self-test"
+            exit 1
           fi
           "$lyric_bin" test lyric-compiler/lyric/datetime_tostring_self_test.l
 
@@ -1472,13 +1472,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping bitwise JVM self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping bitwise JVM self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping bitwise JVM self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping bitwise JVM self-test"
+            exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/bitwise_self_test.l
 
@@ -1494,13 +1494,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping conversion-method JVM self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping conversion-method JVM self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping conversion-method JVM self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping conversion-method JVM self-test"
+            exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/conv_methods_self_test.l
 
@@ -1516,13 +1516,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping pattern-lowering JVM self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping pattern-lowering JVM self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping pattern-lowering JVM self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping pattern-lowering JVM self-test"
+            exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/pattern_lowering_self_test.l
 
@@ -1539,13 +1539,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping auto-FFI JVM self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping auto-FFI JVM self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping auto-FFI JVM self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping auto-FFI JVM self-test"
+            exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/auto_ffi_jvm_self_test.l
       # Hash self-test on JVM — proves the target-aware kernel source loader
@@ -1560,13 +1560,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping hash JVM self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping hash JVM self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping hash JVM self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping hash JVM self-test"
+            exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/lyric/hash_jvm_self_test.l
       # Silent-miscompile guard (JVM, band J1 / #2664 / epic #2663): pins the
@@ -1581,13 +1581,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping silent-miscompile guard JVM self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping silent-miscompile guard JVM self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping silent-miscompile guard JVM self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping silent-miscompile guard JVM self-test"
+            exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/silent_miscompile_guard_jvm_self_test.l
       # Middle-end-passes guard (band J2, docs/44 §5, #2665, epic #2663) —
@@ -1604,13 +1604,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping middle-end-passes JVM self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping middle-end-passes JVM self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping middle-end-passes JVM self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping middle-end-passes JVM self-test"
+            exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/middle_end_passes_jvm_self_test.l
       # J3 lowering self-test (JVM, band J3 / #2666 / epic #2663): pins the
@@ -1626,13 +1626,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping J3 lowering JVM self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping J3 lowering JVM self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping J3 lowering JVM self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping J3 lowering JVM self-test"
+            exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/j3_lowering_self_test.l
       # Generic-codegen self-test on JVM (J4 M-1, epic #2663 / #2667 / #1707).
@@ -1647,13 +1647,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping generic-codegen JVM self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping generic-codegen JVM self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping generic-codegen JVM self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping generic-codegen JVM self-test"
+            exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/generic_jvm_self_test.l
       # Closure / lambda-value self-test on the JVM target (J2b / B-1, #2665,
@@ -1672,13 +1672,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping closure-codegen JVM self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping closure-codegen JVM self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping closure-codegen JVM self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping closure-codegen JVM self-test"
+            exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/closure_jvm_self_test.l
       # Record instance-method self-test on the JVM target (#2865, epic #2663).
@@ -1697,13 +1697,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping record-method JVM self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping record-method JVM self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping record-method JVM self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping record-method JVM self-test"
+            exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/record_method_jvm_self_test.l
       # Control-flow terminator self-test on the JVM target (#2870, epic #2663).
@@ -1721,13 +1721,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping control-flow JVM self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping control-flow JVM self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping control-flow JVM self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping control-flow JVM self-test"
+            exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/control_flow_jvm_self_test.l
       # Match-literal + compound-assignment self-test — pins two self-hosted
@@ -2695,13 +2695,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::warning::stage 1 bundle missing; skipping collExpect construction-position self-test"
-            exit 0
+            echo "::error::stage 1 bundle missing; skipping collExpect construction-position self-test"
+            exit 1
           fi
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping collExpect construction-position self-test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping collExpect construction-position self-test"
+            exit 1
           fi
           work="$(mktemp -d)"
           cat > "$work/c3.l" <<'LYR'
@@ -2863,8 +2863,8 @@ jobs:
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping CLI e2e smoke test"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping CLI e2e smoke test"
+            exit 1
           fi
           bin_abs="$(pwd)/$lyric_bin"
           work="$(mktemp -d)"
@@ -2917,8 +2917,8 @@ jobs:
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping release e2e"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping release e2e"
+            exit 1
           fi
           bin_abs="$(pwd)/$lyric_bin"
           work="$(mktemp -d)"
@@ -2955,8 +2955,8 @@ jobs:
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping auto-restore e2e"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping auto-restore e2e"
+            exit 1
           fi
           bin_abs="$(pwd)/$lyric_bin"
           work="$(mktemp -d)"
@@ -3039,8 +3039,8 @@ jobs:
           set -uo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping git-dep regression"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping git-dep regression"
+            exit 1
           fi
           bin_abs="$(pwd)/$lyric_bin"
           work="$(mktemp -d)"
@@ -3114,8 +3114,8 @@ jobs:
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping lyric add e2e"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping lyric add e2e"
+            exit 1
           fi
           bin_abs="$(pwd)/$lyric_bin"
           work="$(mktemp -d)"
@@ -3194,8 +3194,8 @@ jobs:
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping init e2e"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping init e2e"
+            exit 1
           fi
           bin_abs="$(pwd)/$lyric_bin"
           work="$(mktemp -d)"
@@ -3234,8 +3234,8 @@ jobs:
           set -euo pipefail
           lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
           if [ ! -x "$lyric_bin" ]; then
-            echo "::warning::AOT binary not found at $lyric_bin; skipping watch e2e"
-            exit 0
+            echo "::error::AOT binary not found at $lyric_bin; skipping watch e2e"
+            exit 1
           fi
           bin_abs="$(pwd)/$lyric_bin"
           work="$(mktemp -d)"
@@ -3315,7 +3315,7 @@ jobs:
           ls -lah ../coverage || true
 
       - name: Upload coverage artifact (main only)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: code-coverage
           path: coverage/
@@ -3332,7 +3332,7 @@ jobs:
       - name: Aggregate CI results
         run: |
           results='${{ toJSON(needs.*.result) }}'
-          if echo "$results" | grep -q '"failure"'; then
+          if echo "$results" | grep -qE '"failure"|"cancelled"'; then
             echo "One or more CI jobs failed"
             exit 1
           fi
