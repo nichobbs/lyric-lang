@@ -31,12 +31,15 @@ order:
    representation-hiding (C10, #1485); §5.2 parameter-mode pass for all packages
    (C13-front-end, #1487); impl-conformance start — missing-abstract-method and
    arity-mismatch errors, interface subtyping at argument positions (C11 PARTIAL,
-   #1486). **Remaining:** remaining `TyError` expression forms — `ELambda`,
-   `ETypeApp`, `EForall`/`EExists`, `EAssign`, tuple-destructure sub-bindings,
-   record-ctor argument checking (C2); full impl-conformance signature type
-   matching + default method bodies (C11, #1486); `where T: Marker` bound
-   satisfaction (H15); `alias X = Long` as a usable type (H16); numeric widening
-   (M6). (docs/41 C2, C11 PARTIAL, H15, H16, M6.)
+   #1486); remaining `TyError` expression forms — `ELambda`, `ETypeApp`,
+   `EForall`/`EExists`, `EAssign`, tuple-destructure sub-bindings, record-ctor
+   argument checking (C2, #2939); full impl-conformance signature type matching
+   (C11, #1486, #2939); `where T: Marker` bound satisfaction at call sites (H15,
+   #2939); `alias X = Long` as a usable type (H16, #2939); numeric widening —
+   `Int`/`Long` and `Float`/`Double` in arithmetic, comparisons, and argument
+   positions (M6, #2939). **Remaining:** default method bodies on interface impls
+   (C11 partial — signature match done, default bodies not lowered); (docs/41 C11
+   PARTIAL — default bodies only).
 2. **Backend correctness (CRITICAL).** All Band-2 items are now resolved: `?`
    (C3, #1475), `==`/`Map`-key structural equality (H1, #1480/#1837), `defer`
    (C7, #1477), all of #1481, try/catch-as-value-expression IL (#1823), and
