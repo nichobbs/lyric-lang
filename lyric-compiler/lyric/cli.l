@@ -3662,34 +3662,38 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
       }
     }
 
-    val rewritten: String = match TestSynth.synthesize(testSource, filterArg) {
-      case Synthesised(rw, _, _) -> rw
+    var synthFailed = false
+    var rewritten = ""
+    match TestSynth.synthesize(testSource, filterArg) {
+      case Synthesised(rw, _, _) -> {
+        rewritten = rw
+      }
       case NoTestModule(span) -> {
         printErr(abs + ":" + toString(span.startPos.line) + ": not a @test_module — add @test_module annotation")
         totalFailed += 1
-        ti += 1
-        continue
+        synthFailed = true
       }
       case UserMainExists(span) -> {
         printErr(abs + ":" + toString(span.startPos.line) + ": @test_module cannot define func main()")
         totalFailed += 1
-        ti += 1
-        continue
+        synthFailed = true
       }
       case FixtureUnsupported(span) -> {
         printErr(abs + ":" + toString(span.startPos.line) + ": fixture types are not yet supported by `lyric test`")
         totalFailed += 1
-        ti += 1
-        continue
+        synthFailed = true
       }
       case ParseFailures(diags) -> {
         for d in diags.toArray() {
           printDiag(d)
         }
         totalFailed += 1
-        ti += 1
-        continue
+        synthFailed = true
       }
+    }
+    if synthFailed {
+      ti += 1
+      continue
     }
 
     // Compile the library packages together with the synthesised test package

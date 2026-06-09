@@ -7595,6 +7595,11 @@ func lowerMethodCallMsil(
       case _ -> recvTy
     }
   } else if memberName == "toString" {
+    // `callvirt Object.ToString()` requires a boxed reference on the stack.
+    // Value types (Int, Long, Double, Bool, Char, Byte) must be boxed first
+    // — without the `box` instruction the JIT treats the raw value bits as an
+    // object pointer, causing a NullReferenceException at runtime.
+    boxIfNeededMsil(cctx, insns, recvTy)
     insns.add(MCallvirt(methodToken = cctx.tokObjToString))
     MString
   } else if memberName == "substring" {
