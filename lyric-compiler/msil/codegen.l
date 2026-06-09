@@ -6879,7 +6879,16 @@ func lowerBuiltinOrStaticCallMsil(
           } else {
             match mapGet(cctx.fieldDeclaredNames, fldKeyH) {
               case Some(fname) -> match mapGet(cctx.fieldMsilTypes, ctorKey + "/" + fname) { case Some(fty) -> fty; case None -> MObject }
-              case None -> MObject
+              // A NON-GENERIC union case registers no `fieldDeclaredNames` entry
+              // (that map is populated only for generic cases, `uArity > 0`), so
+              // fall back to the positional `fieldMsilTypes[<ctor>/field<i>]` key —
+              // which non-generic record AND union cases both register — to recover
+              // a concrete `List[T]` / `Map[..]` field type.  Without this the hint
+              // degrades to `object`, the `[...]` argument builds a `List<object>`
+              // instead of the field's concrete `List<T>`, and a later `match`
+              // binding (which casts to the concrete field type) faults with
+              // InvalidCastException (#2592 / D-progress-469 facet 4).
+              case None -> match mapGet(cctx.fieldMsilTypes, fldKeyH) { case Some(fty) -> fty; case None -> MObject }
             }
           }
           val at = match innerHint {
@@ -15416,6 +15425,7 @@ func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, r
   }
 
   var fi = 0
+  var fpos = 0
   while fi < rec.members.count {
     match rec.members[fi] {
       case RMField(f) -> {
@@ -15428,6 +15438,18 @@ func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, r
           cctx.fieldTokens.add(key, 0x0A000000 + memberRow)
           cctx.fieldMsilTypes.add(key, fty)
         }
+        // Positional name map (#1730 / #2592 slice 2): mirror the in-bundle
+        // record registration so a CONSUMER constructing this restored record
+        // can resolve each field's concrete type at the construction site
+        // (`fieldDeclaredNames[<fqn>/field<pos>]` -> name ->
+        // `fieldMsilTypes[<fqn>/name]`) and push it onto `collExpect`.  Without
+        // it a `[...]` argument degrades to `List<object>` and the producer's
+        // concrete-field read faults with InvalidCastException.
+        val byPosKey = className + "/field" + toString(fpos)
+        if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
+          cctx.fieldDeclaredNames.add(byPosKey, f.name)
+        }
+        fpos = fpos + 1
       }
       case _ -> ()
     }
