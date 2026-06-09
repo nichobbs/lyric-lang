@@ -78,7 +78,6 @@ import Std.Environment as Environment
 import Std.Errors
 import Std.Parse
 import Std.Hash as Hash
-import Std.Sort as Sort
 // sha512OfFile / sha512OfBytes for #738 lock integrity
 import Std.Time as Time
 // sleepMillis — the --watch poll interval (#1974)
@@ -784,6 +783,37 @@ func buildReleaseSingle(
 }
 
 
+// Deterministic ascending sort of a file-path list.
+//
+// Uses a monomorphic selection sort over `List[String]` rather than
+// `Std.Sort.sortStrings`: `cli.l` is compiled by the F# stage-1 bootstrap
+// during stage-1, which bundles `Std.Sort` inline and produces broken code for
+// its typed-lambda generics — the bundled `sortStrings` crashes at runtime.
+// This workaround can be retired once stage-2 self-hosting lands (cli.l
+// compiled exclusively by the self-hosted compiler).  Tracking: #2592 slice 4.
+func sortFileList(xs: in List[String]): List[String] {
+  val remaining: List[String] = newList()
+  var c = 0
+  while c < xs.count {
+    remaining.add(xs[c])
+    c = c + 1
+  }
+  val sorted: List[String] = newList()
+  while remaining.count > 0 {
+    var bestIdx = 0
+    var k = 1
+    while k < remaining.count {
+      if remaining[k] < remaining[bestIdx] {
+        bestIdx = k
+      }
+      k = k + 1
+    }
+    sorted.add(remaining[bestIdx])
+    remaining.removeAt(bestIdx)
+  }
+  sorted
+}
+
 // Project-mode build: reads [project.packages] from lyric.toml and
 // bundles every package's .l files into a single DLL.
 func buildProject(
@@ -924,7 +954,7 @@ func buildProject(
         printErr("build: package '" + pkgEntry.name + "': no .l files found in " + abs)
         hadFatal = true
       } else {
-        val sorted = Sort.sortStrings(lFiles.toArray())
+        val sorted = sortFileList(lFiles)
         for f in sorted {
           match File.readText(f) {
             case Ok(t) -> pkgSources.add(t)
@@ -3361,7 +3391,7 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
         // `package` declaration bug from #1124 when two or more files
         // in a directory package are each gated out.
         val fileEntries: List[CfgGate.CfgGateFile] = newList()
-        val sorted = Sort.sortStrings(lFiles.toArray())
+        val sorted = sortFileList(lFiles)
         var readFailed = false
         for f in sorted {
           match File.readText(f) {

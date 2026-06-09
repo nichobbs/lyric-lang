@@ -23646,7 +23646,7 @@ validates the coverage end-to-end and hardens it against regression.
 **CI guard:** the `Construction-position collExpect coverage` step in `ci.yml` compiles
 and runs a single-file program covering all four positions; expected output `3 600 3 2`.
 
-### D-progress-483 — `Sort.sortStrings(list.toArray())` end-to-end; `cli.l::sortFileList` retired; Std.Xml/Yaml unblocked (#2592 slice 4)
+### D-progress-483 — `Sort.sortStrings(list.toArray())` end-to-end; Std.Xml/Yaml unblocked; `cli.l::sortFileList` retirement deferred to stage-2 (#2592 slice 4)
 
 **Status:** Shipped — the `#2592` headline slice:
 
@@ -23657,13 +23657,15 @@ automatically.  This is a safety-net for the (currently hypothetical, possible u
 type-checker gaps) case where a `MConcreteList` value reaches a `MArray` parameter
 boundary without an explicit `.toArray()` call.
 
-**`cli.l::sortFileList` retired.** The local monomorphic selection sort introduced as a
-workaround for the broken generic-method slice ABI (#2539) is deleted.  Both call sites
-(`buildProject` and the `lyric test` path) now call
-`Sort.sortStrings(lFiles.toArray())` directly.  `lFiles.toArray()` on a
-`MConcreteList(MString)` emits `List<string>.ToArray()` → real `String[]` → binds
-correctly to `Std.Sort.sortStrings`'s `String[]` parameter.  `import Std.Sort as Sort`
-added to `cli.l`.
+**`cli.l::sortFileList` — retirement deferred to stage-2.** `cli.l` is compiled by the
+F# stage-1 bootstrap, which bundles `Std.Sort` inline and produces broken runtime code
+for its typed-lambda generics.  Attempting to call `Sort.sortStrings` from `cli.l` at
+stage-1 crashes with a `NullReferenceException` inside `List.get_Item` — the bundled
+sort compiles but miscompiles the typed-lambda closure.  The `sortFileList` local
+monomorphic selection sort therefore remains in `cli.l`; its comment is updated to
+document the stage-2 dependency and cite #2592 slice 4 as the tracking issue.
+`sortFileList` can be retired once `cli.l` is compiled exclusively by the self-hosted
+compiler (stage-2 self-hosting).
 
 **`scripts/stage-selfhosted-stdlib.sh` CURATED_PACKAGES expansion.** `Std.Xml` and
 `Std.Yaml` added to `CURATED_PACKAGES`.  Their prior exclusion — "union-case ctor
