@@ -36,8 +36,8 @@ import Lyric.Parser
 pub union Outcome {
   case BenchSynthesised(source: String, benchCount: Int)
   case NoBenchModule(span: Span)
-  case UserMainExists(span: Span)
-  case ParseFailures(diagnostics: List[Diagnostic])
+  case BenchUserMainExists(span: Span)
+  case BenchParseFailures(diagnostics: List[Diagnostic])
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Helpers.
   // ─────────────────────────────────────────────────────────────────────────────
@@ -224,13 +224,13 @@ pub func synthesizeBench(source: in String, runs: in Int, warmup: in Int, filter
   val pf = parse(source)
   val errs = parseErrors(pf.diagnostics)
   if errs.count > 0 {
-    return ParseFailures(diagnostics = errs)
+    return BenchParseFailures(diagnostics = errs)
   }
   if not hasBenchModule(pf.file) {
     return NoBenchModule(span = pf.file.span)
   }
   match userMainSpan(pf.file.items) {
-    case Some(sp) -> return UserMainExists(span = sp)
+    case Some(sp) -> return BenchUserMainExists(span = sp)
     case None -> {
     }
   }

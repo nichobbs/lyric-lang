@@ -2957,7 +2957,23 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
     case TSlice(elem) -> MArray(elemTy = sliceElemMsilCtx(cctx, elem, pkgName))
     case TNullable(_) -> MObject
     case TTuple(_) -> MObject
-    case TFunction(_, _) -> MObject
+    case TFunction(params, ret) -> {
+      // Map Lyric function types to the CLR delegate types the bootstrap F# emitter uses
+      // (#1877 uniform ABI). All Lyric values are boxed to System.Object in the
+      // bootstrap model, so params always erase to object.
+      // `() -> Unit` maps to System.Action (no type parameters).
+      // All other arities and return types remain System.Object for now; a full
+      // multi-arity mapping lands with epic #1877.
+      // Note: the parser produces TRef(["Unit"]) for the `Unit` name, not TUnit,
+      // so we resolve `ret` recursively and check for MVoid.
+      val retMsil = typeExprToMsilCtx(cctx, ret, pkgName)
+      val isVoidRet = match retMsil { case MVoid -> true; case _ -> false }
+      if params.count == 0 and isVoidRet {
+        MClass("System.Action")
+      } else {
+        MObject
+      }
+    }
     case TArray(_, _) -> MObject
     case TRefined(_, _) -> MInt
     case TParen(inner) -> typeExprToMsilCtx(cctx, inner, pkgName)
@@ -4222,20 +4238,32 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       var capTyI = 0
       while capTyI < caps.count {
         val cn = caps[capTyI]
-        match mapGet(fctx.hoistedCellSlot, cn) {
-          case Some(_) -> {
-            capTypes.add(match mapGet(fctx.hoistedCellType, cn) { case Some(t) -> t; case None -> MObject })
+        if fctx.captureNameToIndex.containsKey(cn) {
+          // Re-captured from the enclosing lambda's own capture array (#1479 multi-level).
+          // Propagate the cell if the outer closure marked it as a cell capture;
+          // otherwise propagate the value type from captureNameToType.
+          if nameListContains(fctx.captureCellNames, cn) {
+            capTypes.add(match mapGet(fctx.captureNameToType, cn) { case Some(t) -> t; case None -> MObject })
             capCells.add(cn)
+          } else {
+            capTypes.add(match mapGet(fctx.captureNameToType, cn) { case Some(t) -> t; case None -> MObject })
           }
-          case None -> {
-            if nameListContains(fctx.mutableLocals, cn) {
-              panic(
-                "Msil.Codegen: internal error — captured mutable (`var`) local '" + cn +
-                  "' was not hoisted to a heap cell (#1479 v2 closure-capture " +
-                  "pre-pass missed it).  Please report this with a reproducer."
-              )
+        } else {
+          match mapGet(fctx.hoistedCellSlot, cn) {
+            case Some(_) -> {
+              capTypes.add(match mapGet(fctx.hoistedCellType, cn) { case Some(t) -> t; case None -> MObject })
+              capCells.add(cn)
             }
-            capTypes.add(match mapGet(fctx.types, cn) { case Some(t) -> t; case None -> MObject })
+            case None -> {
+              if nameListContains(fctx.mutableLocals, cn) {
+                panic(
+                  "Msil.Codegen: internal error — captured mutable (`var`) local '" + cn +
+                    "' was not hoisted to a heap cell (#1479 v2 closure-capture " +
+                    "pre-pass missed it).  Please report this with a reproducer."
+                )
+              }
+              capTypes.add(match mapGet(fctx.types, cn) { case Some(t) -> t; case None -> MObject })
+            }
           }
         }
         capTyI = capTyI + 1
@@ -4313,17 +4341,28 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             while capStI < caps.count {
               insns.add(MDup)
               insns.add(MLdcI4(v = capStI))
-              if nameListContains(capCells, caps[capStI]) {
+              val capName = caps[capStI]
+              if fctx.captureNameToIndex.containsKey(capName) {
+                // Re-capture from outer closure's __caps array (#1479 multi-level).
+                // Load __caps (slot 0), then index into it.  If it's a cell
+                // capture, the cell reference is already boxed as object in __caps
+                // and is forwarded directly.  If it's a value capture, the value
+                // is already boxed as object in __caps and is forwarded directly.
+                val outerIdx = match mapGet(fctx.captureNameToIndex, capName) { case Some(n) -> n; case None -> 0 }
+                emitLoadVarMsil(fctx, insns, 0)
+                insns.add(MLdcI4(v = outerIdx))
+                insns.add(MLdelemRef)
+              } else if nameListContains(capCells, capName) {
                 // By-reference: store the cell (a `List[object]` reference) itself
                 // so the closure and enclosing scope share it — no box (#1479 v2).
-                match mapGet(fctx.hoistedCellSlot, caps[capStI]) {
+                match mapGet(fctx.hoistedCellSlot, capName) {
                   case Some(s) -> emitLoadVarMsil(fctx, insns, s)
-                  case None -> panic("Msil.Codegen ICE: captured name '" + caps[capStI] + "' not found in fctx.hoistedCellSlot — lambdaCaptureNamesMsil should only return names present in the enclosing scope")
+                  case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot — lambdaCaptureNamesMsil should only return names present in the enclosing scope")
                 }
               } else {
-                match mapGet(fctx.slots, caps[capStI]) {
+                match mapGet(fctx.slots, capName) {
                   case Some(s) -> emitLoadVarMsil(fctx, insns, s)
-                  case None -> panic("Msil.Codegen ICE: captured name '" + caps[capStI] + "' not found in fctx.slots — lambdaCaptureNamesMsil should only return names present in the enclosing scope")
+                  case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots — lambdaCaptureNamesMsil should only return names present in the enclosing scope")
                 }
                 boxIfNeededMsil(cctx, insns, capTypes[capStI])
               }
@@ -14004,6 +14043,12 @@ pub func lambdaCaptureNamesMsil(fctx: in FuncCtx, lparams: in List[LambdaParam],
     val nm = refs[i]
     if not nameListContains(bound, nm) {
       if fctx.slots.containsKey(nm) {
+        addNameOnce(caps, nm)
+      } else if fctx.captureNameToIndex.containsKey(nm) {
+        // Multi-level nesting: this lambda is itself inside another lambda.
+        // The name is not a local slot of the outer lambda but is one of its
+        // own captures.  Re-capture it so the inner lambda can read it via
+        // its own __caps array (#1479).
         addNameOnce(caps, nm)
       }
     }

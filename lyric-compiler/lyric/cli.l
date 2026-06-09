@@ -3876,11 +3876,11 @@ func cmdBench(argv: in slice[String]): Int {
       printErr(sourcePath + ":" + toString(span.startPos.line) + ": not a @bench_module — add @bench_module annotation")
       return 1
     }
-    case UserMainExists(span) -> {
+    case BenchUserMainExists(span) -> {
       printErr(sourcePath + ":" + toString(span.startPos.line) + ": @bench_module cannot define func main()")
       return 1
     }
-    case ParseFailures(diags) -> {
+    case BenchParseFailures(diags) -> {
       for d in diags.toArray() {
         printDiag(d)
       }
