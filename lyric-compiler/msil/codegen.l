@@ -1457,6 +1457,37 @@ func registerMethodRetTyMsil(cctx: in CodegenCtx, key: in String, mty: in MsilTy
   }
 }
 
+// Pre-populate lctx.allProjFqns with the FQNs of all @projectable opaque types
+// declared across all bundle packages before any per-package addPackageTokens
+// call.  This lets addPackageTokens detect cross-package nested projectable
+// fields (i.e., a visible non-@projectionBoundary field whose type is a
+// projectable from a different package in the same bundle), matching the check
+// that lowerMOpaque uses via lctx.allProjFqns.
+pub func prescanProjectableFqns(cctx: in CodegenCtx, files: in List[SourceFile], pkgNames: in List[String]): Unit {
+  var i = 0
+  while i < files.count {
+    val file = files[i]
+    val pkgName = pkgNames[i]
+    var j = 0
+    while j < file.items.count {
+      match file.items[j].kind {
+        case IOpaque(decl) -> {
+          if decl.hasBody and hasAnnotationMsil(decl.annotations, "projectable") {
+            val pfqn = pkgName + "." + decl.name
+            if not cctx.lctx.allProjFqns.containsKey(pfqn) {
+              cctx.lctx.allProjFqns.add(pfqn, true)
+              cctx.lctx.allProjFqnKeys.add(pfqn)
+            }
+          }
+        }
+        case _ -> ()
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+}
+
 // Pre-scan the AST and assign MethodDef/FieldDef row numbers for every
 // record, function, union case, interface method, opaque type, and protected
 // type in the package.  Must be called before any `lowerFuncMsil` invocations
@@ -1523,6 +1554,28 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
       }
     }
     pi = pi + 1
+  }
+
+  // Pre-scan: collect the FQNs of all @projectable opaque types declared in this
+  // file so the IOpaque handler can determine hasNestedProjField (a visible
+  // non-@projectionBoundary field of a projectable type suppresses tryInto()).
+  // Uses pkgName + "." + decl.name as key, mirroring lowerMOpaque's check
+  // against ctx.projectableToViewMDef.
+  val projFqns: Map[String, Bool] = newMap()
+  var projPrescan = 0
+  while projPrescan < file.items.count {
+    match file.items[projPrescan].kind {
+      case IOpaque(decl) -> {
+        if decl.hasBody and hasAnnotationMsil(decl.annotations, "projectable") {
+          val pfqn = pkgName + "." + decl.name
+          if not projFqns.containsKey(pfqn) {
+            projFqns.add(pfqn, true)
+          }
+        }
+      }
+      case _ -> ()
+    }
+    projPrescan = projPrescan + 1
   }
 
   // Pass 1: source-order scan for non-IFunc items that emit MethodDef rows.
@@ -1965,13 +2018,125 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         }
       }
       case IOpaque(decl) -> {
-        // lowerMOpaque: FieldDef per OMField; .ctor MethodDef; no explicit methods.
+        // lowerMOpaque emission order for @projectable types:
+        //   Phase 1 — view FieldDef ×M, view .ctor, tryInto() (optional)
+        //   Phase 2 — opaque FieldDef ×N, opaque .ctor, toView()
+        // Non-projectable types emit only: opaque FieldDef ×N, opaque .ctor.
         if decl.hasBody {
           val className = pkgName + "." + decl.name
+          val isProj = hasAnnotationMsil(decl.annotations, "projectable")
+          if isProj {
+            val viewSimpleName = decl.name + "View"
+            val viewFqn = pkgName + "." + viewSimpleName
+            // Register view type name so resolveTypeFqn finds <Name>View references.
+            if not cctx.typeFqnByName.containsKey(viewSimpleName) {
+              cctx.typeFqnByName.add(viewSimpleName, viewFqn)
+            }
+            // Phase 1: view FieldDef rows (visible fields only) + view .ctor + tryInto().
+            // Mirrors lowerMOpaque's Phase 1 exactly, including token registration.
+            var hasHiddenProj = false
+            var hasNestedProjField = false
+            var vfi = 0
+            while vfi < decl.members.count {
+              match decl.members[vfi] {
+                case OMField(f) -> {
+                  if hasAnnotationMsil(f.annotations, "hidden") {
+                    hasHiddenProj = true
+                  } else {
+                    // hasNestedProjField: visible non-@projectionBoundary field whose
+                    // type is another projectable type → tryInto() is suppressed.
+                    // Checks projFqns (current file) AND cctx.lctx.allProjFqns
+                    // (all bundle packages, pre-seeded by prescanProjectableFqns)
+                    // so cross-package nested projectables are detected correctly.
+                    val isBoundary = hasAnnotationMsil(f.annotations, "projectionBoundary")
+                    val fMsilTy = typeExprToMsilCtx(cctx, f.ty, pkgName)
+                    if not isBoundary {
+                      match fMsilTy {
+                        case MClass(srcFqn) -> {
+                          if projFqns.containsKey(srcFqn) or cctx.lctx.allProjFqns.containsKey(srcFqn) {
+                            hasNestedProjField = true
+                          }
+                        }
+                        case _ -> ()
+                      }
+                    }
+                    // View field type: projectable non-boundary → <FType>View; else original.
+                    val viewFieldTy = if not isBoundary {
+                      match fMsilTy {
+                        case MClass(srcFqn2) -> {
+                          if projFqns.containsKey(srcFqn2) or cctx.lctx.allProjFqns.containsKey(srcFqn2) {
+                            MClass(className = srcFqn2 + "View")
+                          } else {
+                            fMsilTy
+                          }
+                        }
+                        case _ -> fMsilTy
+                      }
+                    } else {
+                      fMsilTy
+                    }
+                    // Register view field token and MSIL type for EMember dispatch.
+                    val vfKey = viewFqn + "/" + f.name
+                    if not cctx.fieldTokens.containsKey(vfKey) {
+                      cctx.fieldTokens.add(vfKey, 0x04000000 + fieldDefRow)
+                    }
+                    if not cctx.fieldMsilTypes.containsKey(vfKey) {
+                      cctx.fieldMsilTypes.add(vfKey, viewFieldTy)
+                    }
+                    fieldDefRow = fieldDefRow + 1
+                  }
+                }
+                case _ -> ()
+              }
+              vfi = vfi + 1
+            }
+            // view .ctor token (registered before increment, matching lowerMOpaque row).
+            if not cctx.recordCtorTokens.containsKey(viewFqn) {
+              cctx.recordCtorTokens.add(viewFqn, 0x06000000 + methodDefRow)
+            }
+            methodDefRow = methodDefRow + 1  // view .ctor
+            // tryInto() eligibility mirrors lowerMOpaque exactly (including the
+            // isDiscover branch that always emits a stub in the discover pass).
+            if not hasHiddenProj and not hasNestedProjField and cctx.lctx.stdCoreResultOk2Row.count > 0 {
+              val tryIntoKey = viewFqn + "/tryInto"
+              if not cctx.methodTokens.containsKey(tryIntoKey) {
+                cctx.methodTokens.add(tryIntoKey, 0x06000000 + methodDefRow)
+              }
+              if not cctx.methodRetTypes.containsKey(tryIntoKey) {
+                val triRetArgs: List[MsilType] = newList()
+                triRetArgs.add(MClass(className = className))
+                triRetArgs.add(MString)
+                cctx.methodRetTypes.add(tryIntoKey, MGenericInst(typeRefCode = 0, headFqn = "Std.Core.Result", typeArgs = triRetArgs))
+              }
+              methodDefRow = methodDefRow + 1  // tryInto()
+            }
+          }
+          // Phase 2: opaque FieldDef + opaque .ctor (+ toView for projectable types).
+          // Register opaque field tokens so same-package ldfld (e.g. via a
+          // @projectionBoundary view field returning the raw opaque) resolves correctly.
           var fi = 0
           while fi < decl.members.count {
             match decl.members[fi] {
-              case OMField(_) -> {
+              case OMField(f2) -> {
+                val ofKey = className + "/" + f2.name
+                val ofTok = 0x04000000 + fieldDefRow
+                if not cctx.fieldTokens.containsKey(ofKey) {
+                  cctx.fieldTokens.add(ofKey, ofTok)
+                }
+                val ofTy = typeExprToMsilCtx(cctx, f2.ty, pkgName)
+                if not cctx.fieldMsilTypes.containsKey(ofKey) {
+                  cctx.fieldMsilTypes.add(ofKey, ofTy)
+                }
+                // Also register under the package-level reverse-lookup key so that
+                // MObject-typed receivers (e.g. a match binding on `tryInto()`'s Ok
+                // result) can emit ldfld via the fieldTokensByName fallback path.
+                val ofByNameKey = pkgName + "/" + f2.name
+                if not cctx.fieldTokensByName.containsKey(ofByNameKey) {
+                  cctx.fieldTokensByName.add(ofByNameKey, ofTok)
+                }
+                if not cctx.fieldMsilTypes.containsKey(ofByNameKey) {
+                  cctx.fieldMsilTypes.add(ofByNameKey, ofTy)
+                }
                 fieldDefRow = fieldDefRow + 1
               }
               case OMInvariant(_) -> {
@@ -1980,7 +2145,19 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
             fi = fi + 1
           }
           cctx.recordCtorTokens.add(className, 0x06000000 + methodDefRow)
-          methodDefRow = methodDefRow + 1
+          methodDefRow = methodDefRow + 1  // opaque .ctor
+          if isProj {
+            // toView() on the opaque type; return type is the view class.
+            val viewFqn2 = pkgName + "." + decl.name + "View"
+            val toViewKey = className + "/toView"
+            if not cctx.methodTokens.containsKey(toViewKey) {
+              cctx.methodTokens.add(toViewKey, 0x06000000 + methodDefRow)
+            }
+            if not cctx.methodRetTypes.containsKey(toViewKey) {
+              cctx.methodRetTypes.add(toViewKey, MClass(className = viewFqn2))
+            }
+            methodDefRow = methodDefRow + 1  // toView()
+          }
         }
       }
       case IProtected(decl) -> {
@@ -16274,11 +16451,15 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
         // Band-2 #853: opaque type.
         if decl.hasBody {
           val oFields: List[MField] = newList()
+          val visMask: List[Bool] = newList()
+          val projMask: List[Bool] = newList()
           var fi = 0
           while fi < decl.members.count {
             match decl.members[fi] {
               case OMField(f) -> {
                 oFields.add(MField(flags = FDA_PRIVATE, name = f.name, fieldType = typeExprToMsil(f.ty, pkgName)))
+                visMask.add(not hasAnnotationMsil(f.annotations, "hidden"))
+                projMask.add(hasAnnotationMsil(f.annotations, "projectionBoundary"))
               }
               case OMInvariant(_) -> {
               }
@@ -16293,7 +16474,9 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
                 namespace = pkgName,
                 fields = oFields,
                 methods = newList(),
-                isProjectable = isProj
+                isProjectable = isProj,
+                visibleFieldMask = visMask,
+                projBoundaryMask = projMask
               )
             )
           )

@@ -51,21 +51,25 @@ val sharedSb: SB = newSb()
 
 val sharedSb2: SB = newSb()
 
-func check(label: in String, ok: in Bool): Unit {
+func check(label: in String, ok: in Bool): Int {
   if ok {
     println(label + "=true")
+    0
   } else {
     println(label + "=false")
+    1
   }
 }
 
-func main(): Unit {
+func main(): Int {
+  var fails = 0
   val _ = sbAppend(sharedSb, "hello")
-  check("val_init_ok", sbStr(sharedSb) == "hello")
+  fails = fails + check("val_init_ok", sbStr(sharedSb) == "hello")
 
   val _ = sbAppend(sharedSb, "-world")
-  check("val_append_ok", sbStr(sharedSb) == "hello-world")
+  fails = fails + check("val_append_ok", sbStr(sharedSb) == "hello-world")
 
   val _ = sbAppend(sharedSb2, "second")
-  check("val_second_ok", sbStr(sharedSb2) == "second")
+  fails = fails + check("val_second_ok", sbStr(sharedSb2) == "second")
+  fails
 }

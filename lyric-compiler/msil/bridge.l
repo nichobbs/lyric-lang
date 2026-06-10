@@ -149,6 +149,13 @@ pub func compileToMsilWithVersion(
   // rationale (mirrors the F# emitter's `resolveStdlibImports` +
   // `emitAssembly` import-table population).
   registerStdlibArtifactTokens(cctx, stdlibPkgs)
+  // Seed lctx.stdCoreResultOk2Row so lowerMOpaque can emit tryInto() bodies.
+  if cctx.lctx.stdCoreResultOk2Row.count == 0 {
+    match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result_Ok") {
+      case Some(row) -> cctx.lctx.stdCoreResultOk2Row.add(row)
+      case None -> ()
+    }
+  }
 
   // Run the aspect weaver before the token pre-scan so that the pre-scan
   // sees the post-weave function list (renamed originals + synthesised wrappers).
@@ -445,6 +452,9 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // calling `Validation.toResult(42, [])` specialises `toResult__Int` into its
   // own class rather than hitting the unresolved-call fallback (#2932).
   val inBundleGenFuncs = collectInBundleGenericFuncs(parsedPkgs)
+  // Restored-dependency generic pub funcs: cross-DLL generic calls specialise
+  // into the consumer bundle rather than erasing return type to `object` (#1498).
+  val restoredGenFuncs = collectRestoredGenericFuncs(restoredArtifacts)
   val allImportedGenFuncs: List[FunctionDecl] = newList()
   var agfi = 0
   while agfi < stdlibGenFuncs.count {
@@ -455,6 +465,11 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   while agfj < inBundleGenFuncs.count {
     allImportedGenFuncs.add(inBundleGenFuncs[agfj])
     agfj = agfj + 1
+  }
+  var agfk = 0
+  while agfk < restoredGenFuncs.count {
+    allImportedGenFuncs.add(restoredGenFuncs[agfk])
+    agfk = agfk + 1
   }
   val perPkgFiles: List[SourceFile] = newList()
   val perPkgNames: List[String] = newList()
@@ -537,6 +552,13 @@ pub func compileProjectToMsilWithRestoredAndVersion(
   // robust to a future refactor that routes stdlib compilation
   // through the in-process path.
   registerStdlibArtifactTokens(cctx, filterStdlibPkgsByBundle(stdlibPkgs, perPkgNames))
+  // Seed lctx.stdCoreResultOk2Row so lowerMOpaque can emit tryInto() bodies.
+  if cctx.lctx.stdCoreResultOk2Row.count == 0 {
+    match mapGet(cctx.ffiTypeRefs, "Std.Core/Std.Core.Result_Ok") {
+      case Some(row) -> cctx.lctx.stdCoreResultOk2Row.add(row)
+      case None -> ()
+    }
+  }
   // Seed cross-package symbol tables with the restored artifacts' type
   // surface so the per-package addPackageTokens pre-scan sees restored
   // types as first-class lookups.
@@ -602,6 +624,12 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     }
     prtpi = prtpi + 1
   }
+
+  // Pre-seed lctx.allProjFqns with all @projectable FQNs from every bundle
+  // package before per-package addPackageTokens calls.  This lets each
+  // per-package addPackageTokens correctly identify cross-package nested
+  // projectable fields (matching what lowerMOpaque checks via lctx.allProjFqns).
+  prescanProjectableFqns(cctx, perPkgFiles, perPkgNames)
 
   val liftedFiles: List[SourceFile] = newList()
   var li = 0
@@ -1167,6 +1195,39 @@ func collectInBundleGenericFuncs(parsedPkgs: in List[ParsedUserPkg]): List[Funct
       ii = ii + 1
     }
     pi = pi + 1
+  }
+  genFuncs
+}
+
+// Collect generic pub funcs from all restored dependency SynthesisedArtifacts.
+// Mirrors `collectInBundleGenericFuncs` but operates on the pre-synthesised
+// `source: SourceFile` from each artifact (#1498).  `@externTarget` and
+// `@axiom` funcs are excluded by `annsBlockSpecialization` — they are BCL
+// boundary stubs whose bodies must not be specialised into the consumer bundle.
+func collectRestoredGenericFuncs(artifacts: in List[SynthesisedArtifact]): List[FunctionDecl] {
+  val genFuncs: List[FunctionDecl] = newList()
+  var ai = 0
+  while ai < artifacts.count {
+    val file = artifacts[ai].source
+    var ii = 0
+    while ii < file.items.count {
+      match file.items[ii].kind {
+        case IFunc(decl) -> {
+          val isPub = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+          val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+          val hasBlockBody = match decl.body {
+            case Some(fb) -> match fb { case FBBlock(_) -> true; case FBExpr(_) -> false }
+            case None -> false
+          }
+          if isPub and isGeneric and hasBlockBody and not annsBlockSpecialization(decl.annotations) {
+            genFuncs.add(decl)
+          }
+        }
+        case _ -> ()
+      }
+      ii = ii + 1
+    }
+    ai = ai + 1
   }
   genFuncs
 }

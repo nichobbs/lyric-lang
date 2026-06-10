@@ -13827,7 +13827,7 @@ TypeDef.  Verified by `shm_interface_smoke`.
 `lowerOpaqueMsil` emits a sealed, non-abstract TypeDef with one private
 instance field per `opaque type` field declaration, plus a public `.ctor`
 that `stfld`-stores every argument.  Exposed-twin (`@projectable`) synthesis
-is deferred to Band 3.  Verified by `shm_opaque_smoke`.
+shipped in D-progress-490 (#1500).  Verified by `shm_opaque_smoke` (non-projectable path) and `msil_self_test_m86.l` (projectable path).
 
 **IProtected → Monitor-backed sealed TypeDef (#855, protected half)**
 
@@ -23957,3 +23957,27 @@ Fix: `typeExprToMsilCtx` now checks `externTypeNames` first; reference-typed ext
 `bootstrap/src/Lyric.Emitter/HttpClientHost.fs` deleted.  The `@externTarget("Lyric.Emitter.HttpClientHost.defaultClient")` binding in `lyric-stdlib/std/_kernel/http_host.l` is replaced with a pure-Lyric `pub val defaultClient: HttpClient = newClient()` field (initialised in `.cctor` via the new A.4c path) and `pub func hostDefaultClient(): HttpClient { defaultClient }` which emits `ldsfld` to load the singleton.  The extern count drops from 335 to 334 (`KernelBoundaryTests.fs` updated).
 
 **`docs/23-fsharp-shim-elimination.md`** — `HttpClientHost` row marked done (strikethrough); deletion recorded as PR #3027.
+
+### D-progress-492 — `@projectable` opaque-twin synthesis + cross-package generic monomorphization (#1500, #1498)
+
+**Status:** Shipped (PR #3015, 2026-06-10).
+
+**`@projectable` opaque-twin synthesis (IOpaque → view TypeDef + toView() + tryInto())** (`lowering.l`, `codegen.l`, `bridge.l`):
+
+Replaces the Band 3 stub with full two-phase view synthesis in the self-hosted MSIL backend, closing the "deferred to Band 3" gap noted in D-progress-488. The earlier entry ("IOpaque → sealed TypeDef … Exposed-twin (`@projectable`) synthesis is deferred to Band 3") is now resolved.
+
+Phase 1 (view TypeDef): `lowerMOpaque` emits a `<Name>View` sealed TypeDef before the opaque TypeDef. Non-`@hidden` fields are emitted as public FieldDefs; if a field's type is also projectable and not marked `@projectionBoundary`, the view field type is substituted with the nested `<FieldType>View`. A public all-fields `.ctor` is emitted. When `Std.Core.Result_Ok` is registered in the stdlib token table AND there are no `@hidden` fields AND no non-boundary nested projectable fields, a `tryInto()` method is also emitted: it loads each view field, calls `newobj` on the opaque's pre-computed MethodDef (forward reference), then `newobj` on a closed `Result_Ok<OpaqueType, String>` TypeSpec MemberRef (ECMA-335 §10.1.8 compliant).
+
+Phase 2 (opaque TypeDef): emits the opaque's private fields, `.ctor`, and explicit methods as before, plus a new `toView()` instance method that loads each visible field (calling `callvirt nestedToViewRow` for non-boundary nested projectables), then `newobj viewCtorMDefRow`.
+
+**Forward-reference handling and declaration-order independence**: `discoverTypeDefRowsInto` pre-scans all packages to populate `allProjFqns` (complete set of in-bundle projectable FQNs) before processing any items, making `hasNestedProjField` declaration-order-independent. Both discover and real passes use identical `canEmitTryInto` eligibility (`stdCoreResultOk2Row.count > 0 and not hasNestedProjField and not hasHiddenFields`); the discover context mirrors `hasResultOk` via a new parameter. Predicted `toView()` and `.ctor` MethodDef rows are copied from discover to real context for sibling forward references.
+
+**codegen.l changes**: the `IOpaque` handler now populates two parallel `List[Bool]` masks (`visibleFieldMask`: true = not `@hidden`; `projBoundaryMask`: true = `@projectionBoundary`). New `prescanProjectableFqns` pre-seeds `cctx.lctx.allProjFqns` so cross-package nested projectables are correctly detected in per-package `addPackageTokens` calls.
+
+**bridge.l changes**: both compilation paths seed `cctx.lctx.stdCoreResultOk2Row` from `cctx.ffiTypeRefs["Std.Core/Std.Core.Result_Ok"]` after `registerStdlibArtifactTokens`. Multi-package path calls `prescanProjectableFqns` before the per-package token pre-scan loop.
+
+Verified by the existing F# emitter `OpaqueTypeTests.fs` (12 projectable cases pass) plus `msil_self_test_m87.l` which covers basic `toView()`, `tryInto()` round-trip, `@hidden` suppression, `@projectionBoundary` field-type preservation, nested recursive projection, and two-level transitive projection. CI wiring via native `lyric test` is tracked in #3045. JVM parity tracked in #3044.
+
+**Cross-package generic-function monomorphization (#1498)** (`bridge.l`):
+
+Added `collectRestoredGenericFuncs(artifacts: in List[SynthesisedArtifact]): List[FunctionDecl]` which extracts generic `pub func`s with block bodies from each restored dependency's synthesised `source: SourceFile`. In practice synthesised sources emit stub bodies so this currently collects nothing — forward-compatible with a future contract format that includes source bodies.
