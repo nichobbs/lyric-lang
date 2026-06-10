@@ -12134,11 +12134,7 @@ func synthesizeGeneratorMsil(
   var hsiScan = 0
   while hsiScan < mnInsns.count {
     val hInsn = mnInsns[hsiScan]
-    val hSlot = match hInsn {
-      case MLdloc(s) -> s
-      case MStloc(s) -> s
-      case _ -> -1
-    }
+    val hSlot = match hInsn { case MLdloc(s) -> s; case MStloc(s) -> s; case _ -> -1 }
     if hSlot >= hoistParamCount {
       if not hoistSeen.containsKey(hSlot) {
         hoistSeen.add(hSlot, true)
@@ -12165,13 +12161,13 @@ func synthesizeGeneratorMsil(
     match hInsn {
       case MLeave(lbl) -> {
         // Yield-leave: MLeave(afterTryL) immediately followed by a resume MLabel.
-        val isYieldLeave =
-          lbl == afterTryL and
-          hriScan + 1 < mnInsns.count and
-          (match mnInsns[hriScan + 1] {
-            case MLabel(nxtId) -> resumeLabels.contains(nxtId)
-            case _ -> false
-          })
+        val isYieldLeave = lbl == afterTryL and hriScan + 1 < mnInsns.count and
+          (
+            match mnInsns[hriScan + 1] {
+              case MLabel(nxtId) -> resumeLabels.contains(nxtId)
+              case _ -> false
+            }
+          )
         if isYieldLeave {
           var sv = 0
           while sv < hoistLocalIndices.count {
