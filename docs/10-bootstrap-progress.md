@@ -123,6 +123,7 @@ deferred to Phase 3 by design.
 | M5.3 manifest self-test — `manifest_self_test.l` + `SelfHostedManifestTests.fs` exercise the `Lyric.Manifest` TOML parser | **Shipped** | D-progress-230 |
 | M5.3 — self-hosted verifier (`Lyric.Verifier` package: VCGen, SMT emission, trivial discharger, `prove` driver + `verifier_self_test.l`) | **Shipped** | D-progress-234 |
 | M5.3 — self-hosted stdlib / formatter / package manager / CLI | **Shipped** (`Lyric.Manifest`, `Lyric.Fmt` CST formatter, `Lyric.ManifestBridge`, `Lyric.TestSynthBridge`, `Lyric.Cli` full command dispatcher handling all CLI commands natively via `SelfHostedCli.fs`) | — |
+| M5.3 — project-aware CLI: `run`, `fmt`, `lint`, `prove`, `doc`, `test`, `bench` all auto-discover `lyric.toml` when invoked with no source file; `--manifest` override; `fmt` dry-run/`--write` distinction; `run --target dotnet\|jvm` for project mode | **Shipped** (PR #3063) | — |
 
 ### Phase 2 — type system completion (in progress)
 

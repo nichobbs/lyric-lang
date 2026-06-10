@@ -789,9 +789,10 @@ lyric init demo --name Demo --force    # override the package name; overwrite an
 # Project-aware defaults
 lyric                                  # build the current project (discovers nearest lyric.toml)
 lyric --help                           # grouped command list (also -h / help); exits 0
-                                       # build / restore with no source or --manifest discover
-                                       # the nearest lyric.toml by walking up from the cwd, so
-                                       # they work from any subdirectory of a project
+                                       # build / restore / run / fmt / lint / prove / doc / test /
+                                       # bench all discover the nearest lyric.toml by walking up
+                                       # from the cwd when no source file is given; each also
+                                       # accepts --manifest <lyric.toml> to override discovery
 
 # Build
 lyric build <file.l>                   # compile to .dll + .runtimeconfig.json
@@ -824,34 +825,47 @@ lyric build --all-features             # transitive closure of every declared fe
 lyric run <file.l>                     # compile and immediately execute
 lyric run <file.l> -- arg1 arg2        # pass arguments to the program
 lyric run <file.l> --watch             # rebuild & re-run on source changes (Ctrl-C to stop)
+lyric run                              # project mode: build + run the project's main entry point
+lyric run -- arg1 arg2                 # project mode: pass arguments to the program
+lyric run --watch                      # project mode: rebuild & re-run on source changes
+lyric run --target jvm                 # project mode: build JVM target and run with java -jar
 lyric build --watch                    # project/single build: rebuild on source changes
 
-# Test  (single-file; --manifest, --doctests, --update-snapshots, property execution: v2)
+# Test
 lyric test <file.l>                    # run test blocks in a @test_module file
                                        # (TAP-shaped output; exit 1 on any failure)
 lyric test <file.l> --filter <substr>  # only run tests whose title contains <substr>
 lyric test <file.l> --list             # print test titles only; do not compile or run
 lyric test <file.l> --jvm              # compile with JVM backend; write annotated JAR
                                        # (full JUnit 5 ConsoleLauncher integration in progress)
-lyric test --manifest <lyric.toml>     # run every [project.tests] entry in the manifest
-                                       # (gated by self-hosted CLI bridge; see #465)
+lyric test                             # project mode: run every [project.tests] entry
+lyric test --manifest <lyric.toml>     # project mode: override manifest discovery
+                                       # (v2: --doctests, --update-snapshots, property execution)
 
 # Format
 lyric fmt <file.l>                     # print formatted source to stdout (no configuration)
 lyric fmt --write <file.l>             # overwrite file in place
-lyric fmt --check <file.l>             # exit 1 if not formatted; print nothing (CI gate)
+lyric fmt --check <file.l>             # exit 1 if not formatted; prints filename (CI gate)
 lyric fmt --legacy <file.l>            # AST-only fallback (drops `//` comments) — DEPRECATED, removed in v1.1
+lyric fmt                              # project mode (dry-run): list files that would change
+lyric fmt --write                      # project mode: rewrite all files in place
+lyric fmt --check                      # project mode: exit 1 if any unformatted; prints paths (CI gate)
 # Default: walks the red/green CST and preserves all comments
 # (//, /* */, ///, //!) plus intentional blank lines (max one per spot).
 
 # Lint
 lyric lint <file.l>                    # report style/quality diagnostics (AST-only; fast)
 lyric lint --error-on-warning <file.l> # treat warnings as errors (CI gate)
+lyric lint                             # project mode: lint every [project.packages] source file
+lyric lint --manifest <lyric.toml>     # project mode: override manifest discovery
 # Codes: L001 PascalCase types, L002 camelCase funcs, L003 missing pub doc,
 #        L004 TODO/FIXME in doc, L005 pub func without contracts
 
 # Documentation
 lyric doc <file.l>                     # generate Markdown docs from doc comments + contracts
+lyric doc                              # project mode: generate docs/ for all project source files
+lyric doc --manifest <lyric.toml>      # project mode: override manifest discovery
+lyric doc -o <dir>                     # write docs to <dir> (default: docs/ beside manifest)
 
 # Verification
 lyric prove <file.l>                   # run SMT verifier on @proof_required modules
@@ -860,12 +874,17 @@ lyric prove --explain --goal N <file.l> # show the VC IR for goal N
 lyric prove --json <file.l>            # machine-readable output
 lyric prove --proof-dir <dir> <file.l> # write SMT files to <dir> (default: target/proofs/)
 lyric prove --verbose <file.l>         # print each goal's SMT query and solver response
+lyric prove                            # project mode: prove every [project.packages] source file
+lyric prove --manifest <lyric.toml>    # project mode: override manifest discovery
+                                       # (--json and --explain --goal N require explicit source file)
 
 # Benchmarking  (see chapter 28)
 lyric bench <file.l>                   # compile and run @bench_module timing harness
 lyric bench <file.l> --runs <N>        # number of timed iterations (default: 10)
 lyric bench <file.l> --warmup <N>      # un-timed warmup iterations (default: 3)
 lyric bench <file.l> --filter <substr> # only run benchmarks whose name contains <substr>
+lyric bench                            # project mode: run all @bench_module files in project
+lyric bench --manifest <lyric.toml>    # project mode: override manifest discovery
 # Output: "name  min=Xms  max=Xms  mean=Xms" per @bench function
 # Requirements: file must carry @bench_module; @bench functions must be pub func f(): Unit
 

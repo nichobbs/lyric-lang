@@ -92,8 +92,10 @@ dotnet hello.dll           # run the produced assembly
 Inside a project, you can drop the arguments entirely. Running `lyric` with no
 command builds the current project, and `lyric build` / `lyric restore` find the
 project's `lyric.toml` by walking up from your working directory — so they work
-from any subdirectory. (`lyric run` still takes an explicit source file.) Run
-`lyric --help` for the grouped command list.
+from any subdirectory. All eight dev-loop commands (`build`, `run`, `fmt`,
+`lint`, `prove`, `doc`, `test`, `bench`) do the same discovery, so they work
+from any subdirectory without arguments. Run `lyric --help` for the grouped
+command list.
 
 ### Scaffolding a project — `lyric init`
 
@@ -222,19 +224,27 @@ Core commands you will use constantly:
 | `lyric build <file.l>` | Compile for .NET (default); produce a `.dll` + `.runtimeconfig.json` |
 | `lyric build --target jvm <file.l>` | Compile for the JVM; produce a runnable `.jar` (no `runtimeconfig.json`) |
 | `lyric build` | Build the discovered project (no source arg needed) |
-| `lyric run <file.l>` | Compile and immediately execute |
+| `lyric run <file.l>` | Compile and immediately execute a single file |
+| `lyric run` | Build and run the discovered project (no source arg needed) |
+| `lyric run --target jvm` | Build and run the project on the JVM target |
 | `lyric --help` | Print the grouped command list |
 | `lyric test <file.l>` | Run `test` declarations in a `@test_module` file (TAP-shaped output, exit 1 on failure) |
+| `lyric test` | Run tests for the discovered project |
 | `lyric test <file.l> --list` | Print test titles without compiling |
 | `lyric test <file.l> --filter <substring>` | Run only tests whose title contains the substring |
-| `lyric fmt` | Format source code to the standard style |
-| `lyric fmt --check` | Exit 1 if the file is not formatted (CI gate) |
-| `lyric fmt --write` | Overwrite file in place |
+| `lyric fmt` | Dry-run: list files that would be reformatted (exit 1 if any) |
+| `lyric fmt --write` | Reformat all project source files in place |
+| `lyric fmt --check` | Exit 1 if any file is not formatted (CI gate) |
+| `lyric fmt <file.l>` | Dry-run format check on a single file |
+| `lyric fmt --write <file.l>` | Reformat a single file in place |
 | `lyric lint` | Report style and quality diagnostics |
 | `lyric lint --error-on-warning` | Treat warnings as errors (CI gate) |
 | `lyric doc <file.l>` | Generate Markdown documentation from doc comments |
+| `lyric doc` | Generate docs for all packages in the discovered project |
 | `lyric prove <file.l>` | Run the SMT-backed verifier on `@proof_required` modules |
+| `lyric prove` | Verify all packages in the discovered project |
 | `lyric bench <file.l>` | Measure runtime performance of `@bench_module` functions |
+| `lyric bench` | Run benchmarks for all packages in the discovered project |
 | `lyric bench <file.l> --runs <N> --warmup <N>` | Control timed and warmup iteration counts |
 | `lyric bench <file.l> --filter <substring>` | Run only benchmarks whose name contains the substring |
 | `lyric publish` | Pack and push the current package to the configured registry |
