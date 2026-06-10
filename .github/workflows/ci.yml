@@ -246,10 +246,11 @@ jobs:
             bootstrap/src/Lyric.Cli/bin/${{ env.BUILD_CONFIG }}
           retention-days: 1
 
-  # F# test suites (Lexer, Parser, TypeChecker, Emitter, CLI + JVM smoke) run in
-  # parallel with all downstream self-test jobs, decoupled from the stage-1
-  # bootstrap that used to block them in `build`.  Saves ~8–12 min off the
-  # critical path.
+  # F# test suites (Lexer, Parser, TypeChecker, Emitter, CLI + JVM smoke) used to
+  # run serially inside `build`, blocking stage-1 bootstrap from starting.  Moving
+  # them here lets stage-1 begin as soon as `dotnet build` finishes, and runs the
+  # test suites in parallel with all downstream self-test jobs.  Saves ~8–12 min
+  # off the critical path.
   test-bootstrap:
     runs-on: ubuntu-latest
     needs: [build]
@@ -3467,18 +3468,20 @@ jobs:
                   }
                 }
               `, { prId: prNodeId });
-              const isDraft = result.markPullRequestReadyForReview.pullRequest.isDraft;
-              if (!isDraft) {
+              const prResult = result?.markPullRequestReadyForReview?.pullRequest;
+              if (!prResult) {
+                core.setFailed(`[auto-promote] PR #${prNumber}: ✗ Mutation returned an unexpected response shape: ${JSON.stringify(result)}`);
+              } else if (!prResult.isDraft) {
                 console.log(`[auto-promote] PR #${prNumber}: ✓ Successfully promoted to ready for review`);
               } else {
-                console.log(`[auto-promote] PR #${prNumber}: ⚠ Mutation returned but PR is still draft`);
+                core.setFailed(`[auto-promote] PR #${prNumber}: ✗ Mutation succeeded but PR is still draft — promotion did not take effect`);
               }
             } catch (error) {
               const isSoftError =
                 error.status === 403 ||
                 (Array.isArray(error.errors) && error.errors.some(e => e.type === 'FORBIDDEN' || e.type === 'NOT_FOUND'));
               if (isSoftError) {
-                console.log(`[auto-promote] PR #${prNumber}: ⚠ PR not found or permission denied (fork PRs cannot be promoted by the workflow)`);
+                console.log(`[auto-promote] PR #${prNumber}: ⚠ Skipping promotion — permission denied or PR not found (check that the workflow token has pull-requests:write scope and that org policy permits the workflow to update PRs)`);  
               } else {
                 core.setFailed(`[auto-promote] PR #${prNumber}: ✗ GraphQL error: ${error.message}`);
               }
