@@ -83,8 +83,9 @@ bar:
 4. **Generic *types*, key item kinds, and FFI shapes are erased or stubbed
    (HIGH).** User generic types (`record Box[T]`, `union Tree[T]`) are
    type-erased to a single non-generic TypeDef with `object` fields; protected
-   types emit **zero locking**; `@projectable` opaque twins are never generated;
-   range-subtype bounds are dropped (no validation); wire blocks drop
+   types emit **zero locking**; range-subtype bounds are dropped (no validation)
+   _(`@projectable` opaque twins are now generated on both targets — H2
+   resolved, PR #3015 + #3044)_; wire blocks drop
    `bind`/`scoped`/`provided`; default/named/`out`/`inout` arguments are
    mis-handled. _(An `@externTarget` whose signature touches a class/object
    type used to emit a runtime-throw stub; that is now resolved — #1504
@@ -180,7 +181,7 @@ supporting all language features."
 | # | Gap | Evidence | Effort |
 |---|---|---|---|
 | H1 | ~~`==` does not dispatch to derived `equals`; no `GetHashCode` override.~~ **RESOLVED (#1480).** Two parts: (1) `==`/`!=` operator wiring — `BEq`/`BNeq` call the derived `<Type>.equals` for `@derive(Equals)` records/distinct types instead of static `Object.Equals`, so `a == b` is structural (recursive through nested derived records). (2) `Object.Equals(object)` + `GetHashCode()` virtual *overrides* are now synthesised on `@derive(Equals)`/`@derive(Hash)` record TypeDefs (`appendDeriveOverridesMsil`, delegating to the derived `equals`/`hash`; rows reserved in `addPackageTokens`), so BCL `Map`/`HashSet` key lookup is structural — two field-equal record instances hash and compare as the same key. Both depended on #1796 (mono no longer drops the synthesized helper). Verified by `equality_self_test.l` + `map_key_self_test.l`. (Map keys need both `@derive(Equals)` and `@derive(Hash)`, mirroring the .NET requirement. A `Map[Record, ValueType]` *value* still trips the unrelated #1835 bug.) | `codegen.l` `BEq`/`BNeq` → `derivedEqualsTokenMsil`; `appendDeriveOverridesMsil` | M |
-| H2 | `@projectable` opaque twin + `toExposed`/`fromExposed` never generated — `isProjectable` is computed but never read in `lowerMOpaque`. | `codegen.l:6324-6330`, `lowering.l:1849-1944` | L |
+| H2 | ~~`@projectable` opaque twin + `toExposed`/`fromExposed` never generated — `isProjectable` is computed but never read in `lowerMOpaque`.~~ **RESOLVED (#1500 / PR #3015, MSIL; #3044, JVM).** `lowerMOpaque` emits the `<Name>View` TypeDef (visible fields, view-substituted nested types), `toView()`, and eligibility-gated `tryInto()` with a declaration-order-independent `allProjFqns` pre-scan; the JVM backend mirrors it via `LPProjectable` → `lowerProjectableType` (D-progress-492/493). Verified in CI by `msil_self_test_m87.l` + `projectable_jvm_self_test.l` (native `lyric test`, both targets). | `msil/lowering.l` `lowerMOpaque`; `jvm/lowering.l` `lowerProjectableType` | L |
 | H3 | Range-subtype bounds dropped at every layer: `IDistinctType` arm reads only `underlying`; `lowerMRangeType` is dead and also drops bounds; no construction validation. Front-end discards range in `TRefined`. | `codegen.l:6174-6180`, `lowering.l:1592-1599`, `typechecker_resolver.l:75-78` | M |
 | H4 | **PARTIAL (2026-06-03).** `WMExpose` members lower; `bind`/`scoped`/`provided` are still dropped (`case _ -> {}`) and there is no topological ordering / cycle detection. | `codegen.l` wire-block lowering (`WMExpose` only); `typechecker_checker.l` | L |
 | H5 | **PARTIAL (2026-06-03).** Record-constructor named args are now reordered to field-declaration order (`reorderCtorNamedArgs`, #1730 spinoff / f774979). **Function call sites still don't reorder named args and never fill defaults** (too few args → invalid IL). | `codegen.l` call-arg lowering; record ctor reorder present | M |
@@ -394,7 +395,8 @@ it for SM synthesis is the main remaining lowering gap.
 
 ### Band 4 — Feature completion (HIGH)
 - User generic types (monomorphize or reify — decision required), protected-type
-  locking, `@projectable` twins, range-subtype validation, wire
+  locking, ~~`@projectable` twins~~ (done — PR #3015 MSIL, #3044 JVM),
+  range-subtype validation, wire
   `bind`/`scoped`/`provided` + ordering/cycle-detection, named/default/`out`/`inout`
   arguments, FFI class/object signatures + `clrAssemblyForType` hard-diagnostic
   fallback + auto-FFI beyond static-void, custom `@generate` generator wiring,
@@ -527,7 +529,8 @@ The authoritative tactical task list is `docs/12-todo-plan.md`._
 - **Band 4 (feature completion, HIGH):** C8 (cross-package generic-type
   reification — in-bundle MSIL records/unions done #2362; cross-package remains,
   #1496), C12 (protected-type locking — zero mutual exclusion emitted, #1499),
-  H2 (`@projectable` twins, #1500), H3 (range-subtype validation, #1501), H10
+  H2 (`@projectable` twins, #1500 — **done**, PR #3015 MSIL + #3044 JVM),
+  H3 (range-subtype validation, #1501), H10
   (custom `@generate` never invoked, #1505), H11 (`old()`/`forall`/`exists`
   panic, #1506), M3 (`config{}` no-op, #1508), M4 (`@derive(Ord)`/union/enum
   derives, #1507).

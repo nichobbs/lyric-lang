@@ -23981,3 +23981,27 @@ Verified by the existing F# emitter `OpaqueTypeTests.fs` (12 projectable cases p
 **Cross-package generic-function monomorphization (#1498)** (`bridge.l`):
 
 Added `collectRestoredGenericFuncs(artifacts: in List[SynthesisedArtifact]): List[FunctionDecl]` which extracts generic `pub func`s with block bodies from each restored dependency's synthesised `source: SourceFile`. In practice synthesised sources emit stub bodies so this currently collects nothing — forward-compatible with a future contract format that includes source bodies.
+
+### D-progress-493 — JVM parity for `@projectable` opaque-twin synthesis + CI wiring of the m87 self-test (#3044, #3045)
+
+**Status:** Shipped (2026-06-10).
+
+**JVM `@projectable` opaque-twin synthesis (#3044)** (`jvm/lowering.l`, `jvm/codegen/06_items.l`, `jvm/codegen/02_exprs.l`, `jvm/bridge.l`):
+
+The self-hosted JVM backend now mirrors the MSIL projectable path shipped in D-progress-492. A `@projectable` opaque type lowers through the new `LPProjectable` package item into `Jvm.Lowering.lowerProjectableType`, which emits:
+
+- the opaque class (private `$`-mangled fields + accessors + ctor, as before) **plus** a `toView(): <Name>View` instance method that loads each visible field — calling `invokevirtual <FieldClass>.toView()` for non-`@projectionBoundary` nested projectables — and constructs the view;
+- the `<Name>View` class: `ACC_PUBLIC ACC_FINAL` fields per non-`@hidden` field (types substituted with `<FieldType>View` for non-boundary nested projectables), an all-fields public ctor, and — when no field is `@hidden` and no visible field is a non-boundary nested projectable — a `tryInto(): Std.Core.Result` method that reconstructs the opaque from the view fields and wraps it in `Std/Core/Result$Ok` (the erased sealed-case ctor `(Ljava/lang/Object;)V`). Unlike MSIL there is no `Result_Ok` token gate: the JVM links the Result classes lazily at first invocation;
+- the existing `<Name>$Facade` Java-interop class, matching the plain-opaque arm.
+
+`tryInto()` eligibility (`projCanTryInto`) and the per-field metadata (`buildProjFieldInfos` → `LProjFieldInfo` with `hidden` / `boundary` / `nestedViewClass`) live in `Jvm.Codegen` and are shared by registration and emission — the discover/real divergence class of bug fixed on MSIL in #3035 can't arise. Declaration-order/package-order independence comes from a whole-compilation pre-scan (`collectFileProjectables` → `allProjFqns`, the JVM counterpart of MSIL's `prescanProjectableFqns`), run by `Jvm.Bridge.compileToJarBundled` over the user file plus every stdlib file before `registerProjectableViews` populates the shared registries: `caseFields[<Pkg>/<Name>View]` (visible fields, view-substituted types — drives precise `getfield` on view receivers) and `funcSigs[<Pkg>/<Name>#toView]` / `funcSigs[<Pkg>/<Name>View#tryInto]` (drives precisely-typed `invokevirtual` at call sites). `codegenPackageWithSigs` gained the `allProjFqns` parameter.
+
+**Erased-Object receiver fallback** (`collectFileSigs` + `EMember`): a match binding on a union payload (e.g. `case Ok(u2)` on `tryInto()`'s result) is statically `Object` on the JVM, so a field read like `u2.id` previously no-opped silently. `collectFileSigs` now registers every opaque-type field under the `field:<name>` funcSigs key (owner class + declared type); the `EMember` lowering's unknown-member arm consults it for `java/lang/Object` receivers and emits `checkcast <owner>` + the `$<name>()` accessor call. This is the JVM counterpart of the MSIL `fieldTokensByName` package-level reverse lookup (first-wins on name collisions).
+
+**Value-position `and`/`or` verification fix** (`02_exprs.l`): the boolean short-circuit lowering materialised its result with `iconst_1; goto after; falseL: iconst_0; after:`, carrying `{int}` on the operand stack across a branch — but the StackMapTable generator types every branch-target frame with an empty stack, so any `and`/`or` in *value* position (e.g. a match-arm result `u2.id == 7 and u2.name == "alice"`) failed class-loading with `VerifyError: Inconsistent stackmap frames`. Condition position (`if`/`while`) was unaffected (it routes through the stack-neutral `lowerBoolCond`). Both ops now materialise through a local slot (`iconst; istore; …; iload`), the same invariant-preserving pattern `lowerCmpExpr` uses. Pinned by the tryInto round-trip case in the new JVM self-test.
+
+**CI wiring (#3045)** (`msil_self_test_m87.l`, `projectable_jvm_self_test.l`, `ci.yml`):
+
+`lyric-compiler/msil/msil_self_test_m87.l` is converted from a manual-run `func main` program to a `@test_module` and wired into CI via native `lyric test --target dotnet` (the bitwise_self_test pattern — it imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`; the in-process `Msil.Bridge` codegen performs the @projectable lowering under test). The JVM twin `lyric-compiler/jvm/projectable_jvm_self_test.l` runs the same ten checks via `lyric test --target jvm` (in-process `Jvm.Bridge` `compileToJarBundled`, executed under `java`). Both cover: basic `toView()` projection, `tryInto()` round-trip, `@hidden` suppression, `@projectionBoundary` type preservation, nested recursive projection, and two-level transitive projection.
+
+docs/41 §3 H2 is marked RESOLVED (MSIL in PR #3015, JVM here). Closes #3044, #3045.

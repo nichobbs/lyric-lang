@@ -253,33 +253,49 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
     // ── Arithmetic / logic binary ops ─────────────────────────────────────
     case EBinop(op, lhs, rhs) -> {
       match op {
-        // Boolean short-circuit: lower to branch+const sequence.
+        // Boolean short-circuit: lower to branch+const sequence.  The result
+        // is materialised through a local slot — never carried on the operand
+        // stack across a branch — because the StackMapTable generator types
+        // every branch-target frame with an EMPTY operand stack (the same
+        // invariant lowerCmpExpr's slot materialisation upholds).  The old
+        // `iconst_1; goto after; falseL: iconst_0; after:` form reached
+        // `after` with {int} on the stack and failed verification
+        // ("Inconsistent stackmap frames") whenever the and/or appeared in
+        // value position, e.g. a match-arm result (#3044).
         case BAnd -> {
           val falseL = freshLabel(ctx)
           val afterL = freshLabel(ctx)
+          val resSlot = allocSlot(ctx, "__and_" + toString(ctx.slotTicker.count), JBoolean)
           lowerExpr(ctx, insns, lhs)
           insns.add(LIfeq(label = falseL))
           lowerExpr(ctx, insns, rhs)
           insns.add(LIfeq(label = falseL))
           insns.add(LIconst(v = 1))
+          insns.add(LIstore(slot = resSlot))
           insns.add(LGoto(label = afterL))
           insns.add(LLabel(name = falseL))
           insns.add(LIconst(v = 0))
+          insns.add(LIstore(slot = resSlot))
           insns.add(LLabel(name = afterL))
+          insns.add(LIload(slot = resSlot))
           JBoolean
         }
         case BOr -> {
           val trueL = freshLabel(ctx)
           val afterL = freshLabel(ctx)
+          val resSlot = allocSlot(ctx, "__or_" + toString(ctx.slotTicker.count), JBoolean)
           lowerExpr(ctx, insns, lhs)
           insns.add(LIfne(label = trueL))
           lowerExpr(ctx, insns, rhs)
           insns.add(LIfne(label = trueL))
           insns.add(LIconst(v = 0))
+          insns.add(LIstore(slot = resSlot))
           insns.add(LGoto(label = afterL))
           insns.add(LLabel(name = trueL))
           insns.add(LIconst(v = 1))
+          insns.add(LIstore(slot = resSlot))
           insns.add(LLabel(name = afterL))
+          insns.add(LIload(slot = resSlot))
           JBoolean
         }
         // Comparison ops — produce 0 or 1 on the stack.
@@ -623,7 +639,29 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                 fty
               }
               case None -> {
-                JRef(className = "java/lang/Object")
+                // Erased-Object receiver fallback (#3044): a match binding on a
+                // union payload (e.g. `case Ok(u2)` on `tryInto()`'s result) is
+                // statically `Object`, so the precise class is unknown here.
+                // When the member names a registered opaque-type field
+                // (`field:<name>` in funcSigs, collected by `collectFileSigs`),
+                // checkcast to the owner and read through its `$<name>()`
+                // accessor — `field:` keys are registered only for opaque
+                // types, which always accessor-route.  Mirrors the MSIL
+                // `fieldTokensByName` fallback.  Anything else keeps the
+                // legacy Object result.
+                if cls == "java/lang/Object" {
+                  match mapGet(ctx.funcSigs, "field:" + memberName) {
+                    case Some(fsig) -> {
+                      insns.add(LCheckcast(className = fsig.owner))
+                      val fbPs: List[JvmType] = newList()
+                      insns.add(LInvokevirtual(owner = fsig.owner, name = "$" + memberName, params = fbPs, ret = fsig.ret))
+                      fsig.ret
+                    }
+                    case None -> JRef(className = "java/lang/Object")
+                  }
+                } else {
+                  JRef(className = "java/lang/Object")
+                }
               }
             }
           }
