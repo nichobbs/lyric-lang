@@ -5743,6 +5743,42 @@ D-progress-454/456), docs/43, Band 4 of docs/41.
 
 ---
 
+### D-progress-473: Band 5 — remove `Lyric.Emitter.dll` + `FSharp.Core.dll` from stage-1 runtime bundle
+
+**Problem.** `scripts/bootstrap.sh` was copying `Lyric.Emitter.dll` (the F#
+bootstrap emitter) and `FSharp.Core.dll` into the stage-1 and stage-2 runtime
+bundles, and `Lyric.Cli.Aot.csproj` carried an explicit `<Reference>` to
+`FSharp.Core.dll`.  The stated justification was that stdlib kernel modules
+`@externTarget`-ed into `Lyric.Emitter.*` helper types at runtime.
+
+**Audit result.** All four kernel modules that previously went through
+`Lyric.Emitter.*` host shims had already migrated:
+- `console_host.l` / `verifier_env_host.l` — migrated in #1493
+- `process_capture_host.l` — migrated in #1489
+- `http_host.l` — migrated in G12 / #1576
+
+A strings scan of every Lyric DLL in stage-1 found zero `AssemblyRef` entries to
+`Lyric.Emitter` or `FSharp.Core`.  The one string hit (`Lyric.Emitter` in
+`Lyric.Lyric.Emitter.dll`) was the package name in embedded JSON contract
+metadata — not a binary reference.
+
+**Changes.**
+- `scripts/bootstrap.sh` (stage-1 and stage-2 CLI bundle sections): removed
+  `FSharp.Core.dll` and `Lyric.Emitter.dll` copy blocks; replaced with a comment
+  explaining the audit result.
+- `bootstrap/src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj`: removed explicit
+  `<Reference Include=".../FSharp.Core.dll">`.
+- `bootstrap/tests/Lyric.Emitter.Tests/EmitTestKit.fs`: removed the defensive
+  `FSharp.Core.dll` and `Lyric.Emitter.dll` copies from `prepareOutputDir`;
+  updated docstring.
+- `docs/23-fsharp-shim-elimination.md`: opening policy section updated.
+
+**Verified.** `make stage1` produces a bundle with 103 DLLs, none of which are
+`FSharp.Core.dll` or `Lyric.Emitter.dll`.  `make aot` succeeds with 0 warnings.
+All 827 emitter tests pass.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

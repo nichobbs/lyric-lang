@@ -18,11 +18,20 @@ for the existing bootstrap compiler only"):
   follow-up), `Lyric.Session.Host` (PR #3016 / #1777),
   `Lyric.Ws.Host` (D-progress-426), `Lyric.Jobs.Host`,
   `Lyric.Mq.Host`, `Lyric.Web.Host`, and `Lyric.Jvm.Hosts`
-  (#733 follow-up, this PR). No ecosystem host shim remains under
+  (PR #3053). No ecosystem host shim remains under
   `bootstrap/src/`. **No new host shims** are permitted; new BCL
   externs go in `lyric-<lib>/src/_kernel/**` or
   `lyric-stdlib/std/_kernel/*.l` via `extern type` / `extern
   package` declarations directly.
+- **`Lyric.Emitter.dll` and `FSharp.Core.dll` are no longer in the
+  stage-1 / stage-2 runtime bundle** (Band 5). All stdlib kernel
+  modules — `console_host.l`, `process_capture_host.l`,
+  `verifier_env_host.l`, `http_host.l` — migrated off
+  `Lyric.Emitter.*` host shims to direct BCL externs (#1489, #1493,
+  G12, #1576). Strings scan of every stage-1 Lyric DLL confirmed
+  zero `AssemblyRef` entries to either assembly. The
+  `Lyric.Cli.Aot` csproj no longer carries an explicit
+  `FSharp.Core.dll` reference.
 - The F# stage-0 bootstrap compiler under `bootstrap/src/Lyric.{Lexer,
   Parser,TypeChecker,Emitter,Cli}/` continues to exist solely so the
   stage-0 binary can build the self-hosted Lyric compiler from `.l`
