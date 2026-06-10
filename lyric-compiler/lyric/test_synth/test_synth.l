@@ -11,7 +11,8 @@
 //!     test inside `try`/`catch Bug as b { … }` and prints a
 //!     TAP-shaped report to stdout.
 //!   * Properties parse but skip with a `# skip` line.
-//!   * Fixtures emit a `T0901`-shaped outcome.
+//!   * Fixtures are rewritten to module-level `val` declarations
+//!     (D-progress-474).
 //!
 //! The rewrite operates on *spans into the original source string*
 //! so user-authored test bodies stay byte-identical (line numbers

@@ -1424,7 +1424,7 @@ is fixed. The watch loop runs in the CLI process (always the .NET host).
 
 **Project mode.** When invoked with no source file, `lyric test` discovers the nearest `lyric.toml` and runs every `[project.tests]` entry in sequence. Pass `--manifest <lyric.toml>` to override discovery. The command exits non-zero if any test entry fails.
 
-`--filter <substring>` runs only tests whose title contains `<substring>`; non-matching tests are reported as `# skip` lines. `--list` prints titles only without compiling. `property` declarations parse but skip at runtime in v1 (`# skip` line); `fixture` declarations are not yet supported (`T0901`). v2 adds cross-package non-`pub` access (§3.2), property execution (`--properties`), and doctest extraction. See `docs/24-test-runner-plan.md` for the v1 design and v2 scope.
+`--filter <substring>` runs only tests whose title contains `<substring>`; non-matching tests are reported as `# skip` lines. `--list` prints titles only without compiling. `property` declarations parse but skip at runtime in v1 (`# skip` line); `fixture name[: T] = expr` declarations are rewritten to module-level `val` declarations in the synthesised source (D-progress-474). v2 adds cross-package non-`pub` access (§3.2), property execution (`--properties`), and doctest extraction. See `docs/24-test-runner-plan.md` for the v1 design and v2 scope.
 
 ### 13.3 Verifier
 

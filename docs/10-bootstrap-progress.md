@@ -958,7 +958,7 @@ program that runs each test inside a `try`/`catch Bug as b` and
 prints a TAP-shaped report (`1..N`, `ok`/`not ok`, summary
 counters).  Exit codes per the design: `0` (all selected tests
 passed), `1` (failure), `2` (compilation / language-class error,
-including `T0901` fixture and `T0902` user-main rejections), `64`
+including `T0902` user-main rejection), `64`
 (usage error / missing `@test_module`).
 
 Implementation is a 200-line source-text rewriter
@@ -970,8 +970,8 @@ success.  No emitter changes; no AST construction in F#.  The user's
 test bodies are sliced byte-identically from the original source so
 diagnostics still point at user code.  Property declarations parse
 but report as `# skip` lines (v1 surface; property execution is
-v2).  Fixtures hard-error today (`T0901`); the worked-example
-pattern that uses `wire` blocks for test fixtures works as-is.
+v2).  Fixtures are rewritten to module-level `val` declarations in
+the synthesised source (D-progress-474).
 
 `--filter <substring>` and `--list` ship; the richer surface
 (`--manifest` discovery, `--properties`, `--doctests`,
