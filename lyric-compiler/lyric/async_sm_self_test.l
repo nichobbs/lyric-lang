@@ -531,6 +531,33 @@ async func asyncTryTrailing(x: in Int): Int {
   20
 }
 
+// #2736: await is OUTSIDE the try; the return is INSIDE the try.  This routes
+// through the await-bearing Phase B.1 MoveNext (not the no-await Phase A path),
+// which must still stash the protected-region return into retvalSlot so the
+// epilogue's SetResult reads the right value.
+async func asyncAwaitThenTryReturn(n: in Int): Int {
+  val y = await asyncAddOne(n)
+  try {
+    return y
+  } catch Bug as _ {
+    return 0
+  }
+}
+
+// Phase B variant where the try body panics so the catch-handler return is the
+// live path after a preceding await.
+async func asyncAwaitThenTryCatch(x: in Int): Int {
+  val y = await asyncAddOne(x)
+  try {
+    if y > 1 {
+      panic("boom")
+    }
+    return y
+  } catch Bug as _ {
+    return 99
+  }
+}
+
 test "#2289: return inside try body in no-await async func" {
   val result = await asyncTryReturn()
   assertEqualInt(result, 42, "asyncTryReturn: try-body return reaches SetResult")
@@ -549,4 +576,13 @@ test "#2289: return inside try with finally in no-await async func" {
 test "#2289: protected-region return plus trailing fall-through value" {
   assertEqualInt(await asyncTryTrailing(1), 10, "asyncTryTrailing(1): try-region return = 10")
   assertEqualInt(await asyncTryTrailing(0), 20, "asyncTryTrailing(0): fall-through trailing value = 20")
+}
+
+test "#2736: await outside try, return inside try (Phase B)" {
+  assertEqualInt(await asyncAwaitThenTryReturn(41), 42, "Phase B: await-outside + try-body return = 42")
+}
+
+test "#2736: await outside try, return from catch after panic (Phase B)" {
+  assertEqualInt(await asyncAwaitThenTryCatch(0), 1, "Phase B: await then try-body return = 1")
+  assertEqualInt(await asyncAwaitThenTryCatch(5), 99, "Phase B: await then catch-handler return = 99")
 }
