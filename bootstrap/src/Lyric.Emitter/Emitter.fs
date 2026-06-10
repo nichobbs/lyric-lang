@@ -4175,6 +4175,14 @@ let private emitAssembly
         //   A.4c: non-`@asyncLocal` `IVal` bindings whose init is NOT a pure integer
         //         constant (those are already in `constsTable`).  Requires a type
         //         annotation; init expression emitted via `Codegen.emitExpr`.
+        //
+        // CLAUDE.md exception (no-new-F# rule): A.4c is bootstrap-parity code —
+        // the self-hosted MSIL emitter already supports module-val ldsfld in
+        // `lyric-compiler/msil/codegen.l` (Pass 1b at ~line 2090; EPath at ~line 3820).
+        // This F# pass mirrors that self-hosted behaviour so that stdlib `pub val`
+        // declarations (e.g. `pub val defaultClient: HttpClient = newClient()` in
+        // `std/_kernel/http_host.l`) compile correctly through the stage-0 bootstrap
+        // path.  Authorised override of review finding #3038 (2026-06-10).
         let asyncLocalTable = Dictionary<string, System.Reflection.FieldInfo>()
         let moduleValsTable = Dictionary<string, System.Reflection.FieldInfo>()
         let asyncLocalVals =
