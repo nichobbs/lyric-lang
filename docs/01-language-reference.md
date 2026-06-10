@@ -1380,11 +1380,12 @@ Currently `--release` covers **single-file** programs on the **.NET** target. Pr
 
 **Project-aware defaults.** Running `lyric` with no command builds the current
 project: it discovers the nearest `lyric.toml` by walking up from the working
-directory and runs `lyric build` against it. `lyric build` and `lyric restore`
-do the same discovery when given no source file or `--manifest`, so they work
-from any subdirectory of a project. Outside a project (no `lyric.toml` in the
-directory tree) bare `lyric` prints help and exits non-zero. `lyric run`
-remains the build-and-execute dev loop and still takes an explicit source file.
+directory and runs `lyric build` against it. All seven dev-loop commands —
+`build`, `run`, `fmt`, `lint`, `prove`, `doc`, `test`, and `bench` — do the
+same discovery when given no source file or `--manifest`, so they work from
+any subdirectory of a project. Each command also accepts `--manifest <lyric.toml>`
+to override discovery with an explicit path. Outside a project (no `lyric.toml`
+in the directory tree) bare `lyric` prints help and exits non-zero.
 `lyric --help` (also `-h`, `help`) prints the grouped command list and exits 0;
 an unrecognised command prints a "did you mean …?" suggestion when a close
 match exists.
@@ -1419,19 +1420,25 @@ is fixed. The watch loop runs in the CLI process (always the .NET host).
 
 ### 13.2 Test runner
 
-`lyric test <source.l>` compiles a `@test_module` file, synthesises a runnable program from its `test "title" { … }` items, and reports results in TAP-shaped form (`1..N`, `ok N - title` / `not ok N - title`, summary counts). Exit codes: `0` (every selected test passed), `1` (at least one failure), `2` (compilation error), `64` (usage error).
+`lyric test [<source.l>]` compiles a `@test_module` file, synthesises a runnable program from its `test "title" { … }` items, and reports results in TAP-shaped form (`1..N`, `ok N - title` / `not ok N - title`, summary counts). Exit codes: `0` (every selected test passed), `1` (at least one failure), `2` (compilation error), `64` (usage error).
 
-`--filter <substring>` runs only tests whose title contains `<substring>`; non-matching tests are reported as `# skip` lines. `--list` prints titles only without compiling. `property` declarations parse but skip at runtime in v1 (`# skip` line); `fixture` declarations are not yet supported (`T0901`). v2 adds `--manifest` discovery, cross-package non-`pub` access (§3.2), property execution (`--properties`), and doctest extraction. See `docs/24-test-runner-plan.md` for the v1 design and v2 scope.
+**Project mode.** When invoked with no source file, `lyric test` discovers the nearest `lyric.toml` and runs every `[project.tests]` entry in sequence. Pass `--manifest <lyric.toml>` to override discovery. The command exits non-zero if any test entry fails.
+
+`--filter <substring>` runs only tests whose title contains `<substring>`; non-matching tests are reported as `# skip` lines. `--list` prints titles only without compiling. `property` declarations parse but skip at runtime in v1 (`# skip` line); `fixture` declarations are not yet supported (`T0901`). v2 adds cross-package non-`pub` access (§3.2), property execution (`--properties`), and doctest extraction. See `docs/24-test-runner-plan.md` for the v1 design and v2 scope.
 
 ### 13.3 Verifier
 
-`lyric prove` runs the SMT-backed verifier on `@proof_required` modules. Reports unverified obligations with counterexamples.
+`lyric prove [<source.l>]` runs the SMT-backed verifier on `@proof_required` modules. Reports unverified obligations with counterexamples.
+
+**Project mode.** When invoked with no source file, `lyric prove` discovers the nearest `lyric.toml` and proves contracts in every `[project.packages]` source file. Pass `--manifest <lyric.toml>` to override discovery. The flags `--json` and `--explain --goal N` require an explicit source file.
 
 **NaN and ±Infinity in proof goals (`V0013`):** SMT-LIB Real has no representation for non-finite IEEE 754 values. When a proof goal contains a NaN or ±Infinity float literal, the emitter substitutes `0.0` in the generated SMT-LIB and emits warning `V0013`. The verification result may be incorrect; review such goals manually.
 
 ### 13.4 Documentation
 
-`lyric doc` generates HTML/JSON documentation from doc comments and contract metadata. Includes signatures, contracts, examples (extracted from doctests), and dependency graphs.
+`lyric doc [<source.l>]` generates Markdown documentation from doc comments and contract metadata. Includes signatures and contracts.
+
+**Project mode.** When invoked with no source file, `lyric doc` discovers the nearest `lyric.toml` and generates documentation for every `[project.packages]` source file, writing one Markdown file per source file into a `docs/` output directory relative to the manifest. Pass `--manifest <lyric.toml>` to override discovery. Pass `-o <dir>` to override the output directory.
 
 ### 13.5 Public API diff
 
@@ -1467,18 +1474,23 @@ The bootstrap formatter works directly from the parsed AST; it does not require 
 - Contract clauses (`requires:`, `ensures:`, `invariant:`) each on their own line, indented 2 spaces under the function signature.
 - Trailing newline; no trailing whitespace per line.
 
+**Project mode.** `lyric fmt` with no source file discovers the nearest `lyric.toml` and operates over every `[project.packages]` source. Pass `--manifest <lyric.toml>` to override discovery. Behaviour depends on flags: the default is a **dry-run** (lists files that would change without writing them); `--write` applies changes in place; `--check` is the silent CI gate.
+
 **Flags:**
 
-| Flag | Effect |
-|------|--------|
-| _(default)_ | Print formatted source to stdout |
-| `--write` | Overwrite the file in place |
-| `--check` | Exit 1 if the file would change; print nothing (CI use) |
-| `--legacy` | **Deprecated — removed in v1.1.** Falls back to the AST-only formatter (`Fmt.fs`). Drops all non-doc `//` comments. Use only as a temporary workaround if the CST formatter produces unexpected output. |
+| Flag | Scope | Effect |
+|------|-------|--------|
+| _(default, single-file)_ | Single file | Print formatted source to stdout |
+| _(default, project mode)_ | Project | Dry-run: print which files would change; exit 1 if any; does **not** write |
+| `--write` | Single file or project | Overwrite file(s) in place; print each reformatted path |
+| `--check` | Single file or project | Exit 1 if any file would change; prints the unformatted paths |
+| `--legacy` | Single file | **Deprecated — removed in v1.1.** Falls back to the AST-only formatter (`Fmt.fs`). Drops all non-doc `//` comments. |
 
 ### 13.8 Linter
 
-`lyric lint` checks source code for style and quality issues. It works entirely from the parsed AST — no type-checker context is needed — so it is fast and runs on files that do not yet compile.
+`lyric lint [<source.l>]` checks source code for style and quality issues. It works entirely from the parsed AST — no type-checker context is needed — so it is fast and runs on files that do not yet compile.
+
+**Project mode.** When invoked with no source file, `lyric lint` discovers the nearest `lyric.toml` and lints every `[project.packages]` source file, prefixing each diagnostic with its source path. Pass `--manifest <lyric.toml>` to override discovery.
 
 **Diagnostic codes:**
 
@@ -1503,7 +1515,9 @@ The bootstrap formatter works directly from the parsed AST; it does not require 
 
 ### 13.9 Benchmark runner
 
-`lyric bench <source.l>` compiles a `@bench_module` file, synthesises a timing harness around each `@bench`-annotated function, and reports wall-clock statistics to stdout.
+`lyric bench [<source.l>]` compiles a `@bench_module` file, synthesises a timing harness around each `@bench`-annotated function, and reports wall-clock statistics to stdout.
+
+**Project mode.** When invoked with no source file, `lyric bench` discovers the nearest `lyric.toml` and runs benchmarks for every `[project.packages]` source file that contains a `@bench_module` annotation. Pass `--manifest <lyric.toml>` to override discovery.
 
 **Annotations:**
 

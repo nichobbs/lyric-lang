@@ -9,7 +9,7 @@
 //! Commands (project-aware: omit source file to auto-discover from lyric.toml):
 //!   build   [<source.l>] [-o <output>] [--force] [--manifest <lyric.toml>]
 //!              [--target dotnet|jvm]
-//!   run     [<source.l>] [--manifest <lyric.toml>] [--watch] [-- <args>...]
+//!   run     [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm] [--watch] [-- <args>...]
 //!   fmt     [<source.l>] [--manifest <lyric.toml>] [--check] [--write]
 //!   lint    [<source.l>] [--manifest <lyric.toml>] [--error-on-warning]
 //!   prove   [<source.l>] [--manifest <lyric.toml>] [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]
@@ -178,7 +178,7 @@ func usageText(): String {
     "  lyric search  <term>\n" +
     "\n" +
     "Dev loop:\n" +
-    "  lyric run     [<source.l>] [--manifest <lyric.toml>] [--watch] [-- <args>...]\n" +
+    "  lyric run     [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm] [--watch] [-- <args>...]\n" +
     "                (no source: builds and runs the discovered project;\n" +
     "                 --watch: rebuild & re-run on source changes; Ctrl-C to stop)\n" +
     "  lyric test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list] [--target dotnet|jvm]\n" +
@@ -189,7 +189,7 @@ func usageText(): String {
     "\n" +
     "Quality:\n" +
     "  lyric fmt     [<source.l>] [--manifest <lyric.toml>] [--check] [--write]\n" +
-    "                (no source: formats all project source files in-place; --check to just report)\n" +
+    "                (no source: dry-run shows what would change; --write to apply; --check exits 1 if any would change)\n" +
     "  lyric lint    [<source.l>] [--manifest <lyric.toml>] [--error-on-warning]\n" +
     "                (no source: lints all project source files)\n" +
     "  lyric prove   [<source.l>] [--manifest <lyric.toml>] [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]\n" +
@@ -207,7 +207,7 @@ func usageText(): String {
     "  build is incremental — same source + stdlib skips emit; --force rebuilds.\n" +
     "  build/restore/run/fmt/lint/prove/doc/test/bench all discover the nearest\n" +
     "  lyric.toml by walking up from the current directory when no source file is given.\n" +
-    "  fmt:  no-arg project mode rewrites files in-place; --check exits 1 if any would change.\n" +
+    "  fmt:  no-arg project mode dry-run shows what would change; --write applies; --check exits 1 if any would change.\n" +
     "        Non-doc comments (//) are not preserved — only /// and //!.\n" +
     "  lint: L001-L005 style checks. --error-on-warning exits 1 on warnings."
 }
@@ -1087,6 +1087,27 @@ func projectBinDllPath(mfDir: in String, proj: in ProjectSection): String {
   Path.join(Path.join(mfDir, "bin"), stem)
 }
 
+// Target-aware variant of projectBinDllPath: returns the runnable artifact path
+// (.dll for Dotnet, .jar for Jvm) that buildProject writes.
+func projectBinOutputPath(mfDir: in String, proj: in ProjectSection, target: in CompileTarget): String {
+  match target {
+    case Jvm -> {
+      val stem = match proj.outputAssembly {
+        case Some(s) -> {
+          if Str.endsWith(s, ".dll") {
+            Str.substring(s, 0, s.length - 4) + ".jar"
+          } else {
+            s
+          }
+        }
+        case None -> proj.name + ".jar"
+      }
+      Path.join(Path.join(mfDir, "bin"), stem)
+    }
+    case Dotnet -> projectBinDllPath(mfDir, proj)
+  }
+}
+
 // Collect all .l source file paths from [project.packages] in a lyric.toml.
 // Returns (paths, hadFatal). A file entry yields itself; a directory entry yields
 // all .l files under it, sorted deterministically.
@@ -1149,8 +1170,8 @@ func collectProjectSourcePaths(mfPath: in String): (List[String], Bool) {
   (paths, hadFatal)
 }
 
-// Build a project and run its output DLL.
-func runProjectOnce(mfPath: in String, userArgs: in List[String]): Int {
+// Build a project and run its output artifact.
+func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in CompileTarget): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(t) -> t
     case Err(e) -> {
@@ -1173,27 +1194,46 @@ func runProjectOnce(mfPath: in String, userArgs: in List[String]): Int {
     case Some(p) -> p
   }
   val mfDir = Path.dirname(mfPath)
-  val buildRc = buildProject(mfPath, None, Dotnet, newList(), false, false, false)
+  val buildRc = buildProject(mfPath, None, target, newList(), false, false, false)
   if buildRc != 0 {
     return buildRc
   }
-  val dllPath = projectBinDllPath(mfDir, proj)
-  if not File.fileExists(dllPath) {
-    printErr("run: project DLL not found after build: " + dllPath)
+  val outPath = projectBinOutputPath(mfDir, proj, target)
+  if not File.fileExists(outPath) {
+    printErr("run: project output not found after build: " + outPath)
     return 1
   }
-  copyRuntimeDepsBeside(dllPath, findCompiledLibDir())
-  val execArgs: List[String] = newList()
-  execArgs.add("exec")
-  execArgs.add(dllPath)
-  for a in userArgs.toArray() {
-    execArgs.add(a)
-  }
-  match Process.run("dotnet", execArgs) {
-    case Ok(code) -> code
-    case Err(e) -> {
-      printErr("run: failed to start dotnet: " + IOError.message(e))
-      1
+  match target {
+    case Jvm -> {
+      val execArgs: List[String] = newList()
+      execArgs.add("-jar")
+      execArgs.add(outPath)
+      for a in userArgs.toArray() {
+        execArgs.add(a)
+      }
+      match Process.run("java", execArgs) {
+        case Ok(code) -> code
+        case Err(e) -> {
+          printErr("run: failed to start java: " + IOError.message(e))
+          1
+        }
+      }
+    }
+    case Dotnet -> {
+      copyRuntimeDepsBeside(outPath, findCompiledLibDir())
+      val execArgs: List[String] = newList()
+      execArgs.add("exec")
+      execArgs.add(outPath)
+      for a in userArgs.toArray() {
+        execArgs.add(a)
+      }
+      match Process.run("dotnet", execArgs) {
+        case Ok(code) -> code
+        case Err(e) -> {
+          printErr("run: failed to start dotnet: " + IOError.message(e))
+          1
+        }
+      }
     }
   }
 }
@@ -1214,7 +1254,7 @@ val WATCH_POLL_MS: Int = 400
 // The deferred action a watch loop re-runs on each detected change.
 union WatchAction {
   case RunFile(sourcePath: String, userArgs: List[String])
-  case RunProj(mfPath: String, userArgs: List[String])
+  case RunProj(mfPath: String, userArgs: List[String], target: CompileTarget)
   case BuildProj(mfPath: String, outArg: Option[String], target: CompileTarget, feats: List[String], noDef: Bool, allF: Bool, noRestore: Bool)
   case BuildFile(sourcePath: String, outArg: String, target: CompileTarget, manifest: Option[String])
 }
@@ -1256,7 +1296,7 @@ func runOnce(sourcePath: in String, userArgs: in List[String]): Int {
 func runWatchAction(a: in WatchAction): Int {
   match a {
     case RunFile(sp, ua) -> runOnce(sp, ua)
-    case RunProj(mp, ua) -> runProjectOnce(mp, ua)
+    case RunProj(mp, ua, t) -> runProjectOnce(mp, ua, t)
     case BuildProj(mf, o, t, f, nd, af, nr) -> buildProject(mf, o, t, f, nd, af, nr)
     case BuildFile(sp, o, t, m) -> buildOne(sp, o, t, m)
   }
@@ -1320,6 +1360,7 @@ func cmdRun(argv: in slice[String]): Int {
   var sourcePath = ""
   var haveSource = false
   var manifestArg: Option[String] = None
+  var targetArg: Option[String] = None
   val userArgs: List[String] = newList()
 
   var i = 1
@@ -1328,8 +1369,10 @@ func cmdRun(argv: in slice[String]): Int {
     val arg = argv[i]
     if pastSep {
       userArgs.add(arg)
+      i += 1
     } else if arg == "--" {
       pastSep = true
+      i += 1
     } else if arg == "--watch" {
       watch = true
       i += 1
@@ -1339,6 +1382,14 @@ func cmdRun(argv: in slice[String]): Int {
         i += 2
       } else {
         printErr("run: --manifest requires a path")
+        return 1
+      }
+    } else if arg == "--target" {
+      if i + 1 < argv.length {
+        targetArg = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("run: --target requires dotnet or jvm")
         return 1
       }
     } else if not haveSource {
@@ -1351,6 +1402,8 @@ func cmdRun(argv: in slice[String]): Int {
     }
   }
 
+  val runTarget = match targetArg { case Some(t) -> if t == "jvm" { Jvm } else { Dotnet }; case None -> Dotnet }
+
   // Project-mode: no explicit source file — discover or use --manifest.
   if not haveSource {
     val mfPath = match discoverManifest(manifestArg) {
@@ -1362,9 +1415,9 @@ func cmdRun(argv: in slice[String]): Int {
       }
     }
     if watch {
-      return watchLoop(projectWatchFiles(mfPath), RunProj(mfPath = mfPath, userArgs = userArgs))
+      return watchLoop(projectWatchFiles(mfPath), RunProj(mfPath = mfPath, userArgs = userArgs, target = runTarget))
     }
-    return runProjectOnce(mfPath, userArgs)
+    return runProjectOnce(mfPath, userArgs, runTarget)
   }
 
   if not File.fileExists(sourcePath) {
@@ -1433,6 +1486,7 @@ func cmdFmt(argv: in slice[String]): Int {
       return 1
     }
     if checkMode {
+      // --check: silently exit 1 if any file needs formatting; print which ones.
       var anyUnformatted = false
       var pi = 0
       while pi < sourcePaths.count {
@@ -1447,7 +1501,7 @@ func cmdFmt(argv: in slice[String]): Int {
           }
         }
         if not Fmt.isFormattedSource(source) {
-          printErr(sp + ": not formatted — run `lyric fmt --write`")
+          printErr(sp + ": not formatted — run `lyric fmt --write` to reformat")
           anyUnformatted = true
         }
       }
@@ -1456,39 +1510,65 @@ func cmdFmt(argv: in slice[String]): Int {
       }
       return 0
     }
-    // Format every file in-place; skip files that are already correct.
-    var anyFailed = false
-    var fi = 0
-    while fi < sourcePaths.count {
-      val sp = sourcePaths[fi]
-      fi += 1
+    if writeMode {
+      // --write: format every file in-place; skip files that are already correct.
+      var anyFailed = false
+      var fi = 0
+      while fi < sourcePaths.count {
+        val sp = sourcePaths[fi]
+        fi += 1
+        val source = match File.readText(sp) {
+          case Ok(t) -> t
+          case Err(e) -> {
+            printErr("fmt: " + IOError.message(e))
+            anyFailed = true
+            continue
+          }
+        }
+        val checkResult = Fmt.formatSourceChecked(source)
+        if not Fmt.fmtCheckIsOk(checkResult) {
+          printErr(sp + ": " + Fmt.fmtCheckMessage(checkResult))
+          anyFailed = true
+          continue
+        }
+        val formatted = Fmt.fmtCheckText(checkResult)
+        if formatted == source {
+          continue
+        }
+        match File.writeText(sp, formatted) {
+          case Ok(_) -> Console.println("formatted " + sp)
+          case Err(e) -> {
+            printErr("fmt: " + IOError.message(e))
+            anyFailed = true
+          }
+        }
+      }
+      if anyFailed {
+        return 1
+      }
+      return 0
+    }
+    // Default (no --write, no --check): dry-run — report what would change without writing.
+    var anyUnformatted = false
+    var di = 0
+    while di < sourcePaths.count {
+      val sp = sourcePaths[di]
+      di += 1
       val source = match File.readText(sp) {
         case Ok(t) -> t
         case Err(e) -> {
           printErr("fmt: " + IOError.message(e))
-          anyFailed = true
+          anyUnformatted = true
           continue
         }
       }
-      val checkResult = Fmt.formatSourceChecked(source)
-      if not Fmt.fmtCheckIsOk(checkResult) {
-        printErr(sp + ": " + Fmt.fmtCheckMessage(checkResult))
-        anyFailed = true
-        continue
-      }
-      val formatted = Fmt.fmtCheckText(checkResult)
-      if formatted == source {
-        continue
-      }
-      match File.writeText(sp, formatted) {
-        case Ok(_) -> Console.println("formatted " + sp)
-        case Err(e) -> {
-          printErr("fmt: " + IOError.message(e))
-          anyFailed = true
-        }
+      if not Fmt.isFormattedSource(source) {
+        Console.println(sp + ": would reformat")
+        anyUnformatted = true
       }
     }
-    if anyFailed {
+    if anyUnformatted {
+      Console.println("run `lyric fmt --write` to apply")
       return 1
     }
     return 0
@@ -2016,8 +2096,20 @@ func cmdDoc(argv: in slice[String]): Int {
         }
       }
       val md = Doc.generate(source)
-      val stem = stemOf(Path.basename(sp), 2)
-      val outPath = Path.join(outDir, stem + ".md")
+      // Preserve subdirectory structure so auth/main.l → docs/auth/main.md
+      // rather than colliding with web/main.l → docs/main.md.
+      val relLen = if Str.startsWith(sp, mfDir) { mfDir.length + 1 } else { 0 }
+      val relPath = if relLen > 0 and relLen < sp.length {
+        Str.substring(sp, relLen, sp.length - relLen)
+      } else {
+        Path.basename(sp)
+      }
+      val mdRel = stemOf(relPath, 2) + ".md"
+      val outPath = Path.join(outDir, mdRel)
+      val outParent = Path.dirname(outPath)
+      if outParent != outDir {
+        val _ = File.createDir(outParent)
+      }
       match File.writeText(outPath, md) {
         case Ok(_) -> Console.println("wrote " + outPath)
         case Err(e) -> {
