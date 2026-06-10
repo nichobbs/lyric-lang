@@ -23918,3 +23918,30 @@ Eight test cases covering: value field round-trip, counter starts at zero, value
 **`docs/41-self-hosted-compiler-gap-analysis.md`** — L5 marked RESOLVED; H12 count corrected.
 **`docs/36-v1-roadmap.md`** — R7.5 row updated: `StubCounterHost (L5) resolved (#1776)`.
 **`docs/12-todo-plan.md`** — `fix the broken StubCounterHost externs (#1776)` removed from Band 5 F# elimination item.
+
+### D-progress-490 — F# shim elimination: ProcessCapture, Session.Host, HttpClientHost, .cctor fix, AOT smoke test (PR #3016)
+
+**Status:** Shipped (PR #3016, 2026-06-10).
+
+Five F# shim elimination milestones shipped in a single PR.
+
+**AOT CI smoke test (#1975):**
+New `lyric-aot-test` CI job (`ci.yml`) runs `./bin/lyric build --release` on `examples/hello_world/` and verifies the resulting AOT binary exits 0 and prints the expected output.  Catches regressions in the NativeAOT publish pipeline before merge.
+
+**`.cctor` codegen fix (#1576) + `HttpClientHost.fs` deleted:**
+`typeExprToMsilCtx` previously fell through to `resolveTypeFqn` for reference-typed `extern type` names, encoding the FieldDef signature as `ELEMENT_TYPE_OBJECT`. Any package-level `pub val` whose declared type is a reference-typed `extern type` was initialised in `.cctor` but the field carried the wrong CLR type, returning null at runtime.
+
+Fix: `typeExprToMsilCtx` now checks `externTypeNames` first; reference-typed externs resolve to `MClassRef(typeRefCode, clrFqn)` (correct `ELEMENT_TYPE_CLASS + TypeRef` encoding). IVal codegen in `codegenMPackage` uses `typeExprToMsilCtx` instead of the context-free `typeExprToMsil`.  `module_val_self_test.l` adds an extern-type val regression (test 9: `sharedSb: SB = newSb()` → `sbToString(sharedSb) == ""`).
+
+`HttpClientHost.fs` (previously the F# shim for `Std.HttpHost`) deleted; replaced by `pub val defaultClient: HttpClient = newClient()` (singleton via `.cctor`) plus direct BCL `@externTarget` declarations in `lyric-stdlib/std/_kernel/http_host.l`. `hostDefaultClient()` continues to call `newClient()` per-call due to an F# emitter `EPath` gap (tracked #3027).
+
+**ProcessCapture.fs deleted, ported to pure Lyric (#1489 tail):**
+`bootstrap/src/Lyric.Emitter/ProcessCapture.fs` deleted.  `lyric-stdlib/std/_kernel/process_capture_host.l` rewired from `@externTarget("Lyric.Emitter.ProcessCapture.run")` to direct BCL externs: `System.Diagnostics.Process`, `System.IO.StreamReader`, `System.Threading.Tasks.Task` (async drain pattern).  The concurrent async pipe-drain pattern (`startReadAll` on both stdout and stderr before `procWaitMs`) prevents the deadlock that sequential synchronous reads cause when a child writes more than the OS pipe buffer to either stream — a faithful Lyric port of the F# original.  `bootstrap.sh` and `ci.yml` updated to remove the deleted project reference.
+
+**Lyric.Session.Host deleted, replaced by direct BCL externs (#1777):**
+`bootstrap/src/Lyric.Session.Host/` project deleted.  `lyric-session/src/_kernel/net/session_kernel.l` (new) provides the `Session.Kernel.Net` package: StackExchange.Redis `IConnectionMultiplexer`/`IDatabase` BCL externs, `RedisStoreHandle` record (eliminates the F# `ConcurrentDictionary<int,RedisHandle>` registry), and the five public kernel ops (`connect`, `create`, `load`, `save`, `destroy`, `touch`) implemented in pure Lyric with `try`/`catch Bug` wrapping.  Session IDs now use `Std.Uuid.newUuid()` / `uuidToString()` (hyphenated V4 UUID) instead of `Guid.NewGuid().ToString("N")` (no-dash hex) — both are unique; the format difference is internal and documented as a breaking change for the `feature = "redis"` path (which is `@experimental`).  `bootstrap.sh` and `ci.yml` updated to remove the deleted project reference.
+
+**`fillCtorDefaultArgs` — partial named-arg ctor fix (#stubbable-ci):**
+`reorderCtorNamedArgs` bailed when a field had no matching arg, returning the partial arg list; then `newobj .ctor(N params)` with fewer values on the stack caused "Common Language Runtime detected an invalid program" for all 8 `stubbable_self_test.l` tests.  Replaced with `fillCtorDefaultArgs`: counts total fields via `fieldDeclaredNames`, injects default exprs from new `ctorDefaultExprs: Map[String, Expr]` (populated in `addPackageTokens` from `FieldDecl.dflt`), falls back to original args when a required field has no default.  All 8 `stubbable_self_test.l` cases pass via `lyric test`.
+
+**`docs/23-fsharp-shim-elimination.md`** — `Lyric.Session.Host` removed from active shim table; `HttpClientHost` marked as deleted with link to #3027 for the `hostDefaultClient()` singleton gap.

@@ -142,9 +142,8 @@ async func contentReadAsBytesCancel(c: in HttpContent, token: in CancellationTok
 // `hostDefaultClient()` calls `newClient()` rather than returning `defaultClient`
 // directly because the F# bootstrap emitter's EPath handler resolves only locals,
 // params, integer-literal vals, and @asyncLocal vals; it has no ldsfld path for
-// arbitrary reference-typed module-level vals.  Once Std.Http migrates to
-// `HostHttp.defaultClient` (cross-package val access, tracked in #1576-followup),
-// this wrapper can be inlined.
+// arbitrary reference-typed module-level vals.  Tracked in #3027, which details
+// the exact emitter fix needed and the follow-on inlining of this wrapper.
 pub val defaultClient: HttpClient = newClient()
 
 pub func hostDefaultClient(): HttpClient {
