@@ -1,4 +1,4 @@
-//! lyric/cli.l — self-hosted Lyric CLI (Phase 5 §M5.3).
+//! lyric/cli/ — self-hosted Lyric CLI (Phase 5 §M5.3).
 //!
 //! Command dispatch for the `lyric` command-line tool.  Mirrors the F#
 //! bootstrap CLI (compiler/src/Lyric.Cli/Program.fs) but written entirely

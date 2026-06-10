@@ -386,6 +386,8 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
   }
 
   val mfDir = Path.dirname(mfPath)
+  val testExt = if targetJvm { ".jar" } else { ".dll" }
+  val testTarget: CompileTarget = if targetJvm { Jvm } else { Dotnet }
 
   // Resolve active feature set from manifest defaults (no CLI flags in the test runner).
   val mfDefaults = Mf.readFeatureDefaultsFromToml(mfText, mfPath)
@@ -581,13 +583,13 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
         match Mf.parseManifest(buildText, buildToml) {
           case Ok(buildMf) -> {
             val buildDllName = match buildMf.project {
-              case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
-              case None -> buildMf.packageSection.name + ".dll"
+              case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + testExt }
+              case None -> buildMf.packageSection.name + testExt
             }
             val buildDllPath = Path.join(Path.join(Path.dirname(buildToml), "bin"), buildDllName)
             if not File.fileExists(buildDllPath) {
               Console.println("test: building dep '" + buildMf.packageSection.name + "' ...")
-              val buildRc = buildProject(buildToml, None, Dotnet, newList(), false, false, false)
+              val buildRc = buildProject(buildToml, None, testTarget, newList(), false, false, false)
               if buildRc != 0 {
                 printErr("test: failed to build dep '" + buildMf.packageSection.name + "'")
                 return 1
@@ -629,8 +631,8 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
               match Mf.parseManifest(depMfText, depToml) {
                 case Ok(depMf) -> {
                   val dllName = match depMf.project {
-                    case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
-                    case None -> depMf.packageSection.name + ".dll"
+                    case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + testExt }
+                    case None -> depMf.packageSection.name + testExt
                   }
                   val dllPath = Path.join(depBinDir, dllName)
                   if File.fileExists(dllPath) {
@@ -764,13 +766,13 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
       si += 1
     }
     val asmStem = stemOf(Path.basename(testEntry.path), 2)
-    val outPath = Path.join(testOutDir, asmStem + ".dll")
+    val outPath = Path.join(testOutDir, asmStem + testExt)
 
     val projReq = EmitProjectRequest(
       packages = allPkgs,
       assemblyName = asmStem,
       outputPath = outPath,
-      target = Dotnet,
+      target = testTarget,
       restoredDllPaths = restoredDlls,
       activeFeatures = activeFeatures,
       declaredFeatures = mfDeclared,
@@ -803,33 +805,57 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
     // the referenced assemblies next to the test instead — mirroring the
     // single-file `cmdTest` path.  Without this `dotnet exec` fails with
     // `Could not load file or assembly 'Lyric.Stdlib.Core'` (#1468 / #1841).
-    copyRuntimeDepsBeside(outPath, Environment.appBaseDirectory())
-    // Co-locate each local-path dependency's output DLL (e.g. a sibling
-    // package's `Cache.dll`) beside the test assembly — a flat probing path
-    // can't resolve the dep's non-NuGet bin layout.  This subsumes the manual
-    // dep-DLL copy the CI ecosystem step used to do by hand.
-    copyRestoredDepDlls(outPath, restoredDlls)
-    writeRuntimeConfigWithProbing(outPath, depBinDirs)
-
-    val execArgs: List[String] = newList()
-    execArgs.add("exec")
-    execArgs.add(outPath)
-    val mfDotnetRes = ProcessCapture.runCaptureWithDiagnosticsTimeout("dotnet", execArgs, "", 600000)
-    Console.print(mfDotnetRes.stdout)
-    if mfDotnetRes.stderr.length > 0 {
-      Console.error(mfDotnetRes.stderr)
-    }
-    val testExitCode = if mfDotnetRes.exitCode == -1 {
-      printErr("test: failed to start dotnet")
-      1
-    } else if mfDotnetRes.timedOut {
-      printErr("test: test binary timed out (600 s limit reached)")
-      1
-    } else if mfDotnetRes.stdout.length == 0 and mfDotnetRes.exitCode == 0 {
-      printErr("test: compiled test binary produced no TAP output — possible silent compile or runtime failure")
-      1
+    val testExitCode = if targetJvm {
+      // JVM: bundled JAR is self-contained; skip .NET-specific runtime staging.
+      val jvmArgs: List[String] = newList()
+      jvmArgs.add("-jar")
+      jvmArgs.add(outPath)
+      val jvmRes = ProcessCapture.runCaptureWithDiagnosticsTimeout("java", jvmArgs, "", 600000)
+      Console.print(jvmRes.stdout)
+      if jvmRes.stderr.length > 0 {
+        Console.error(jvmRes.stderr)
+      }
+      if jvmRes.exitCode == -1 {
+        printErr("test: failed to start java")
+        1
+      } else if jvmRes.timedOut {
+        printErr("test: test binary timed out (600 s limit reached)")
+        1
+      } else if jvmRes.stdout.length == 0 and jvmRes.exitCode == 0 {
+        printErr("test: compiled test binary produced no TAP output — possible silent compile or runtime failure")
+        1
+      } else {
+        jvmRes.exitCode
+      }
     } else {
-      mfDotnetRes.exitCode
+      copyRuntimeDepsBeside(outPath, Environment.appBaseDirectory())
+      // Co-locate each local-path dependency's output DLL (e.g. a sibling
+      // package's `Cache.dll`) beside the test assembly — a flat probing path
+      // can't resolve the dep's non-NuGet bin layout.  This subsumes the manual
+      // dep-DLL copy the CI ecosystem step used to do by hand.
+      copyRestoredDepDlls(outPath, restoredDlls)
+      writeRuntimeConfigWithProbing(outPath, depBinDirs)
+
+      val execArgs: List[String] = newList()
+      execArgs.add("exec")
+      execArgs.add(outPath)
+      val mfDotnetRes = ProcessCapture.runCaptureWithDiagnosticsTimeout("dotnet", execArgs, "", 600000)
+      Console.print(mfDotnetRes.stdout)
+      if mfDotnetRes.stderr.length > 0 {
+        Console.error(mfDotnetRes.stderr)
+      }
+      if mfDotnetRes.exitCode == -1 {
+        printErr("test: failed to start dotnet")
+        1
+      } else if mfDotnetRes.timedOut {
+        printErr("test: test binary timed out (600 s limit reached)")
+        1
+      } else if mfDotnetRes.stdout.length == 0 and mfDotnetRes.exitCode == 0 {
+        printErr("test: compiled test binary produced no TAP output — possible silent compile or runtime failure")
+        1
+      } else {
+        mfDotnetRes.exitCode
+      }
     }
     if testExitCode == 0 {
       totalPassed += 1
