@@ -23,7 +23,7 @@
 //!   access_no_panic=true
 //!
 //! CI wiring: not yet wired — requires F# emitter test runner which cannot
-//! be added per CLAUDE.md.  Tracked in #2989.
+//! be added per CLAUDE.md.  Tracked in #2983.
 package Msil.SelfTestM85
 
 config Settings {
