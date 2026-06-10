@@ -344,7 +344,7 @@ pub func crc32(data: in List[Byte]): Int {
 /// phantom entries (empty lists) mark the second slot consumed by Long and
 /// Double constants.  `nextSlot` is the next available 1-based index
 /// (= constant_pool_count).
-record Pool {
+pub record Pool {
   entries: List[List[Int]]
   cache: Map[String, Int]
   var nextSlot: Int = 1
