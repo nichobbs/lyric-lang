@@ -1501,11 +1501,86 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/datetime_tostring_self_test.l
 
-      # Release Native AOT end-to-end — `lyric build --release` produces a
-      # self-contained native binary and runs it (#1975 / D079).  This is the
-      # integration test for the AOT pipeline (host project + trampoline +
-      # `dotnet publish -p:PublishAot=true`); it downloads the ILCompiler
-      # package on first run, so it is the heaviest CLI step.
+  # Release Native AOT end-to-end — `lyric build --release` compiles a
+  # hello-world Lyric program to a self-contained native binary via
+  # `dotnet publish -p:PublishAot=true` and asserts it executes correctly
+  # (#1975 / D079).  Isolated into its own job because it needs clang/lld
+  # for the ILCompiler linker pass and downloads the Microsoft.DotNet.ILCompiler
+  # NuGet package (~200 MB) on first run.
+  aot-smoke:
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+    if: needs.build.outputs.has_code_changes == 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: bootstrap/global.json
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+      - name: Restore executable permissions
+        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+
+      # ILCompiler package cache — keyed on the .NET SDK version so the
+      # ~200 MB compiler package is not re-downloaded on every run.
+      - name: Cache ILCompiler NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.nuget/packages/microsoft.dotnet.ilcompiler
+          key: ${{ runner.os }}-ilcompiler-${{ hashFiles('bootstrap/global.json') }}
+
+      # clang and zlib1g-dev are required by the ILCompiler linker pass on Linux.
+      - name: Install native-AOT linker prerequisites
+        run: sudo apt-get update -qq && sudo apt-get install -y clang zlib1g-dev
+
+      # Build a minimal hello-world Lyric program to a native binary, then run
+      # it and assert the output.  This exercises the full pipeline:
+      #   lyric build → F# emit → staging DLL → dotnet publish -p:PublishAot=true → native ELF
+      - name: Release Native AOT smoke test (lyric build --release, #1975)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; native AOT smoke test cannot run"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin"
+            exit 1
+          fi
+          dir="$(mktemp -d)"
+          src="$dir/hello.l"
+          cat > "$src" <<'LYRIC'
+          package Hello
+          import Std.Core
+          func main(): Int {
+            println("hello-aot")
+            0
+          }
+          LYRIC
+          native_bin="$dir/hello"
+          "$lyric_bin" build --release "$src" -o "$native_bin"
+          if [ ! -x "$native_bin" ]; then
+            echo "::error::native binary not produced at $native_bin"
+            exit 1
+          fi
+          out="$("$native_bin" 2>&1)"
+          echo "native AOT output: $out"
+          if [ "$out" != "hello-aot" ]; then
+            echo "::error::native AOT smoke test produced unexpected output: '$out'"
+            exit 1
+          fi
+          echo "OK: native AOT binary produced and executed correctly." >> "$GITHUB_STEP_SUMMARY"
+
   compiler-self-tests-jvm:
     runs-on: ubuntu-latest
     needs: [build]
@@ -3423,7 +3498,7 @@ jobs:
 
   build-and-test:
     runs-on: ubuntu-latest
-    needs: [build, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, compiler-self-tests-jvm, ecosystem-security-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests]
+    needs: [build, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, aot-smoke, compiler-self-tests-jvm, ecosystem-security-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests]
     if: always()
     permissions:
       contents: read
