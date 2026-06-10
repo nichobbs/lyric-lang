@@ -11,17 +11,13 @@
   <!-- Stage-1 DLL references.  The wildcard pulls in every artefact
        `bootstrap.sh -stage 1` deposits, which is exactly the closed
        set the AOT linker needs: Lyric.Lyric.Cli.dll + transitive
-       Lyric.Lyric.Pkg.dll + Lyric.Stdlib.Pkg.dll. -->
+       Lyric.Lyric.Pkg.dll + Lyric.Stdlib.Pkg.dll.
+       `Lyric.Emitter.dll` and `FSharp.Core.dll` are no longer staged here —
+       all stdlib kernel modules migrated off Lyric.Emitter.* host shims to
+       direct BCL externs; no Lyric-compiled DLL carries an AssemblyRef to
+       either assembly (docs/23-fsharp-shim-elimination.md Band 5). -->
   <ItemGroup>
     <Reference Include="../../../.bootstrap/stage1/Lyric.*.dll">
-      <Private>true</Private>
-    </Reference>
-    <!-- `Lyric.Emitter.dll` (the F# bootstrap emitter, included above via the
-         Lyric.*.dll wildcard) is an F# assembly that needs FSharp.Core at
-         runtime.  Staged into .bootstrap/stage1 by bootstrap.sh.
-         `Lyric.Jvm.Hosts` was the previous reason for this reference; it has
-         been deleted (docs/23-fsharp-shim-elimination.md). -->
-    <Reference Include="../../../.bootstrap/stage1/FSharp.Core.dll">
       <Private>true</Private>
     </Reference>
   </ItemGroup>

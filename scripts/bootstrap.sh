@@ -308,33 +308,13 @@ EOF
   # (docs/23-fsharp-shim-elimination.md).  No F# shim is published or copied
   # into the stage-1 bundle.
 
-  # `FSharp.Core.dll` — `Lyric.Emitter.dll` (the F# bootstrap emitter, copied
-  # below) is an F# assembly, so the AOT binary's runtime directory must
-  # contain FSharp.Core for it to load.  The AOT csproj references
-  # `.bootstrap/stage1/FSharp.Core.dll`.
-  if [[ -f "$BUILD_DIR/stage0-publish/FSharp.Core.dll" ]]; then
-    cp -f "$BUILD_DIR/stage0-publish/FSharp.Core.dll" "$STAGE1_DIR/"
-    copied=$((copied + 1))
-  else
-    die "stage-1 CLI bundle: FSharp.Core.dll not found in stage-0 publish"
-  fi
-
-  # `Lyric.Emitter.dll` (the F# bootstrap emitter) hosts a small set of
-  # helper types — `ConsoleHelper`, `ProcessCapture`, `VerifierEnv`,
-  # `HttpClientHost` — that the stdlib kernel modules `@externTarget`
-  # against (see `lyric-stdlib/std/_kernel/{console,process_capture,
-  # verifier_env,http}_host.l`).  The Lyric-emitted stdlib DLLs carry
-  # AssemblyRefs to `Lyric.Emitter` for those externs, so at runtime
-  # any program that prints to stderr / launches a subprocess / reads
-  # an env var / makes an HTTP call needs the emitter DLL on disk.
-  # Stage 0 publishes it; stage 1 copies it alongside the other
-  # bootstrap DLLs so the AOT entry-point project resolves the externs.
-  if [[ -f "$BUILD_DIR/stage0-publish/Lyric.Emitter.dll" ]]; then
-    cp -f "$BUILD_DIR/stage0-publish/Lyric.Emitter.dll" "$STAGE1_DIR/"
-    copied=$((copied + 1))
-  else
-    die "stage-1 CLI bundle: Lyric.Emitter.dll not found in stage-0 publish"
-  fi
+  # `FSharp.Core.dll` and `Lyric.Emitter.dll` are no longer bundled.
+  # All stdlib kernel modules (`console_host.l`, `process_capture_host.l`,
+  # `verifier_env_host.l`, `http_host.l`) migrated off `Lyric.Emitter.*`
+  # host shims to direct BCL externs (#1489, #1493, G12, #1576).
+  # No Lyric-compiled DLL in stage1 carries an AssemblyRef to either
+  # `Lyric.Emitter` or `FSharp.Core` (verified by strings scan of stage1 DLLs).
+  # The `Lyric.Cli.Aot` csproj no longer references `FSharp.Core.dll` explicitly.
 
   # `Lyric.Session.Host` is gone — `Session.Kernel.Net` now binds
   # StackExchange.Redis directly via `@externTarget` in native Lyric
@@ -521,23 +501,8 @@ EOF
     copied=$((copied + 1))
   done
 
-  # Copy the same host shim DLLs the stage-1 bundle includes so the two
-  # directories contain the same reference set for a fair comparison.
-  # `Lyric.Jvm.Hosts` is gone — see stage-1 comment above.
-
-  if [[ -f "$BUILD_DIR/stage0-publish/FSharp.Core.dll" ]]; then
-    cp -f "$BUILD_DIR/stage0-publish/FSharp.Core.dll" "$STAGE2_DIR/"
-    copied=$((copied + 1))
-  else
-    die "stage-2 CLI bundle: FSharp.Core.dll not found in stage-0 publish"
-  fi
-
-  if [[ -f "$BUILD_DIR/stage0-publish/Lyric.Emitter.dll" ]]; then
-    cp -f "$BUILD_DIR/stage0-publish/Lyric.Emitter.dll" "$STAGE2_DIR/"
-    copied=$((copied + 1))
-  else
-    die "stage-2 CLI bundle: Lyric.Emitter.dll not found in stage-0 publish"
-  fi
+  # `FSharp.Core.dll` and `Lyric.Emitter.dll` are no longer bundled —
+  # see stage-1 comment above.  Stage-2 mirrors stage-1 for a fair comparison.
 
   # Lyric.Session.Host is gone — see stage-1 comment above (#1777).
   # Lyric.Jobs.Host is gone — see stage-1 comment above.

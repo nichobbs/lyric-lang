@@ -91,27 +91,13 @@ let private copyAllStdlibDlls (outDir: string) : unit =
 /// Produce a clean output directory and stage every precompiled
 /// `Lyric.Stdlib.<X>.dll` next to it so emitted assemblies that
 /// `import Std.X` resolve their cross-assembly references at runtime.
-/// `FSharp.Core.dll` is copied unconditionally — JVM kernel helpers in
-/// `lyric-compiler/jvm/_kernel/kernel.l` are now pure Lyric BCL externs
-/// so `Lyric.Jvm.Hosts.dll` is no longer needed here.
+/// Neither `FSharp.Core.dll` nor `Lyric.Emitter.dll` is needed here:
+/// all stdlib kernel modules migrated off `Lyric.Emitter.*` host shims to
+/// direct BCL externs (#1489, #1493, G12, #1576, Band 5), so no
+/// Lyric-compiled DLL carries an AssemblyRef to either assembly.
 let prepareOutputDir (name: string) : string =
     let dir = Path.Combine(Path.GetTempPath(), "lyric-emit-" + name + "-" + Guid.NewGuid().ToString("N"))
     Directory.CreateDirectory(dir) |> ignore
-    let fsharpCore =
-        Path.Combine(AppContext.BaseDirectory, "FSharp.Core.dll")
-    if File.Exists fsharpCore then
-        File.Copy(fsharpCore, Path.Combine(dir, "FSharp.Core.dll"), overwrite = true)
-    // Lyric.Emitter.dll is no longer needed at runtime by any kernel that
-    // was previously externally-bound to it.  Kept in the staging directory
-    // for safety (some test-harness internals may load it by reflection)
-    // but no user-facing stdlib kernel references it:
-    //   - Std.HttpHost's defaultClient → native Lyric val (#1576)
-    //   - Std.ProcessCaptureHost → direct BCL externs (#1489)
-    //   - console/env/log kernels → migrated off F# shims (#1493)
-    let lyricEmitter =
-        Path.Combine(AppContext.BaseDirectory, "Lyric.Emitter.dll")
-    if File.Exists lyricEmitter then
-        File.Copy(lyricEmitter, Path.Combine(dir, "Lyric.Emitter.dll"), overwrite = true)
     copyAllStdlibDlls dir
     dir
 
