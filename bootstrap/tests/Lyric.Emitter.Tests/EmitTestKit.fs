@@ -91,16 +91,12 @@ let private copyAllStdlibDlls (outDir: string) : unit =
 /// Produce a clean output directory and stage every precompiled
 /// `Lyric.Stdlib.<X>.dll` next to it so emitted assemblies that
 /// `import Std.X` resolve their cross-assembly references at runtime.
-/// `Lyric.Jvm.Hosts.dll` (Bucket D) and `FSharp.Core.dll` are copied
-/// unconditionally — non-JVM / non-FSharp programs don't reference
-/// them, but staging them uniformly keeps the test runner simple.
+/// `FSharp.Core.dll` is copied unconditionally — JVM kernel helpers in
+/// `lyric-compiler/jvm/_kernel/kernel.l` are now pure Lyric BCL externs
+/// so `Lyric.Jvm.Hosts.dll` is no longer needed here.
 let prepareOutputDir (name: string) : string =
     let dir = Path.Combine(Path.GetTempPath(), "lyric-emit-" + name + "-" + Guid.NewGuid().ToString("N"))
     Directory.CreateDirectory(dir) |> ignore
-    let jvmHosts =
-        Path.Combine(AppContext.BaseDirectory, "Lyric.Jvm.Hosts.dll")
-    if File.Exists jvmHosts then
-        File.Copy(jvmHosts, Path.Combine(dir, "Lyric.Jvm.Hosts.dll"), overwrite = true)
     let fsharpCore =
         Path.Combine(AppContext.BaseDirectory, "FSharp.Core.dll")
     if File.Exists fsharpCore then

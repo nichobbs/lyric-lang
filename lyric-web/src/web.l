@@ -37,6 +37,7 @@
 package Web
 
 import Std.Core
+import Std.Char
 import Std.Environment as Env
 import Std.Iter
 
@@ -45,16 +46,112 @@ import Std.Iter
 // import resolution does not yet propagate function signatures to the caller's
 // type-checker.
 //
-// Phase-8 host-shim path of #733: `serve` is bound to
-// `Lyric.Web.HttpListenerHost.serve` (BCL System.Net.HttpListener) as a
-// path-finder backend.  The listener actually binds the port (fixing
-// the silent no-op symptom from #784) and serves a JSON description of
-// the routing table for every request.  Real ASP.NET Core Kestrel +
-// minimal-API integration with Lyric-side handler dispatch is a
-// follow-up under #784 — that path needs Microsoft.AspNetCore NuGet
-// deps + a Lyric-to-host callback mechanism that #784 will track.
-@axiom("Lyric.Web.HttpListenerHost.serve — BCL System.Net.HttpListener path-finder; binds the port and serves a JSON route-table description for every request")
-@externTarget("Lyric.Web.HttpListenerHost.serve")
+// Direct BCL targeting: System.Net.HttpListener + System.Text.Encoding.
+// Replaces the former @externTarget("Lyric.Web.HttpListenerHost.serve") which
+// pointed at a non-existent F# host shim (#733 Phase 8 follow-up).
+extern type HttpListener = "System.Net.HttpListener"
+
+extern type HttpListenerCtx = "System.Net.HttpListenerContext"
+
+extern type HttpListenerResp = "System.Net.HttpListenerResponse"
+
+extern type PrefixCollection = "System.Net.HttpListenerPrefixCollection"
+
+extern type IOStream = "System.IO.Stream"
+
+extern type Encoding = "System.Text.Encoding"
+
+@externTarget("System.Net.HttpListener..ctor")
+func newHttpListener(): HttpListener = ()
+
+@externTarget("System.Net.HttpListener.get_Prefixes")
+func listenerPrefixes(l: in HttpListener): PrefixCollection = ()
+
+@externTarget("System.Net.HttpListenerPrefixCollection.Add")
+func prefixAdd(c: in PrefixCollection, prefix: in String): Unit = ()
+
+@externTarget("System.Net.HttpListener.Start")
+func listenerStart(l: in HttpListener): Unit = ()
+
+@externTarget("System.Net.HttpListener.GetContext")
+func listenerGetContext(l: in HttpListener): HttpListenerCtx = ()
+
+@externTarget("System.Net.HttpListener.Close")
+func listenerClose(l: in HttpListener): Unit = ()
+
+@externTarget("System.Net.HttpListenerContext.get_Response")
+func contextResponse(ctx: in HttpListenerCtx): HttpListenerResp = ()
+
+@externTarget("System.Net.HttpListenerResponse.set_StatusCode")
+func responseSetStatus(r: in HttpListenerResp, code: in Int): Unit = ()
+
+@externTarget("System.Net.HttpListenerResponse.set_ContentType")
+func responseSetContentType(r: in HttpListenerResp, ct: in String): Unit = ()
+
+@externTarget("System.Net.HttpListenerResponse.get_OutputStream")
+func responseOutputStream(r: in HttpListenerResp): IOStream = ()
+
+@externTarget("System.IO.Stream.Write")
+func streamWrite(s: in IOStream, buffer: in slice[Byte], offset: in Int, count: in Int): Unit = ()
+
+@externTarget("System.IO.Stream.Close")
+func streamClose(s: in IOStream): Unit = ()
+
+@externTarget("System.Text.Encoding.get_UTF8")
+func encodingUtf8(): Encoding = ()
+
+@externTarget("System.Text.Encoding.GetBytes")
+func encodingGetBytes(enc: in Encoding, str: in String): slice[Byte] = ()
+
+func webJsonStr(s: in String): String {
+  var r = "\""
+  var i = 0
+  while i < s.length {
+    val code = toInt(s[i])
+    if code == 34 {
+      r = r + "\\\""
+    } else if code == 92 {
+      r = r + "\\\\"
+    } else if code == 10 {
+      r = r + "\\n"
+    } else if code == 13 {
+      r = r + "\\r"
+    } else if code == 9 {
+      r = r + "\\t"
+    } else {
+      r = r + s[i].toString()
+    }
+    i = i + 1
+  }
+  r + "\""
+}
+
+func webJsonArr(arr: in slice[String]): String {
+  var r = "["
+  var i = 0
+  while i < arr.length {
+    if i > 0 {
+      r = r + ","
+    }
+    r = r + webJsonStr(arr[i])
+    i = i + 1
+  }
+  r + "]"
+}
+
+func webJsonIntArr(arr: in slice[Int]): String {
+  var r = "["
+  var i = 0
+  while i < arr.length {
+    if i > 0 {
+      r = r + ","
+    }
+    r = r + arr[i].toString()
+    i = i + 1
+  }
+  r + "]"
+}
+
 func serve(
   host: in String,
   port: in Int,
@@ -76,7 +173,59 @@ func serve(
   requires: host.length > 0
   requires: port >= 1
   requires: port <= 65535
-  = ()
+{
+  val bindHost = if host == "0.0.0.0" or host == "+" or host == "*" { "+" } else { host }
+  val prefix = "http://" + bindHost + ":" + port.toString() + "/"
+  val swaggerStr = if swaggerEnabled { "true" } else { "false" }
+  val corsStr = if corsEnabled { "true" } else { "false" }
+  val payload = "{\"lyric-web\":\"phase-8-pathfinder\",\"host\":" + webJsonStr(host) + ",\"port\":" + port.toString() +
+    ",\"swagger\":" +
+    swaggerStr +
+    ",\"specPath\":" +
+    webJsonStr(specPath) +
+    ",\"cors\":" +
+    corsStr +
+    ",\"routes\":{\"methods\":" +
+    webJsonArr(routeMethods) +
+    ",\"patterns\":" +
+    webJsonArr(routePatterns) +
+    ",\"handlers\":" +
+    webJsonArr(routeHandlers) +
+    ",\"summaries\":" +
+    webJsonArr(routeSummaries) +
+    "},\"workers\":{\"names\":" +
+    webJsonArr(workerNames) +
+    ",\"intervals\":" +
+    webJsonIntArr(workerIntervals) +
+    ",\"handlers\":" +
+    webJsonArr(workerHandlers) +
+    "}}"
+  val listener = newHttpListener()
+  val prefs = listenerPrefixes(listener)
+  prefixAdd(prefs, prefix)
+  try {
+    listenerStart(listener)
+    var running = true
+    while running {
+      try {
+        val ctx = listenerGetContext(listener)
+        val resp = contextResponse(ctx)
+        responseSetStatus(resp, 200)
+        responseSetContentType(resp, "application/json")
+        val utf8 = encodingUtf8()
+        val bytes = encodingGetBytes(utf8, payload)
+        val stream = responseOutputStream(resp)
+        streamWrite(stream, bytes, 0, bytes.length)
+        streamClose(stream)
+      } catch Bug as e {
+        running = false
+      }
+    }
+  } catch Bug as e {
+    ()
+  }
+  listenerClose(listener)
+}
 
 // ─── ApiError ─────────────────────────────────────────────────────────────────
 /// HTTP API error.  Handlers return Result[T, ApiError] where the error
