@@ -249,3 +249,20 @@ test "await in try runtime checked no v0012" {
   val result = parseCheck(src)
   assertTrue(not (hasDiagCode(result, "V0012")), "rc-await-in-try: no V0012")
 }
+
+test "await in lambda inside try no v0012" {
+  // A lambda defined inside a try block has its own independent state; the
+  // await in its body must NOT be flagged as V0012 for the outer function.
+  // Uses Lyric zero-param lambda syntax `{ -> body }`.
+  val src = "@proof_required\npackage P\nasync func f(): Unit {\n  try {\n    val lam = { -> await someTask() }\n  } catch (e: Exception) {\n  }\n}\nfunc someTask(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0012")), "lambda-await-in-outer-try: no V0012")
+}
+
+test "await in try inside record method v0012" {
+  // V0012 must fire for async methods defined inside a record in a
+  // @proof_required package, not just top-level functions.
+  val src = "@proof_required\npackage P\nrecord R {\n  async func doWork(): Unit {\n    try {\n      await someTask()\n    } catch (e: Exception) {\n    }\n  }\n}\nfunc someTask(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0012"), "record-method-await-in-try: V0012 emitted")
+}

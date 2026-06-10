@@ -1209,7 +1209,10 @@ func walkExprForAwaitInTry(ctx: in AwaitTryCtx, e: in Expr): Unit {
     case EMember(recv, _) -> walkExprForAwaitInTry(ctx, recv)
     case EBlock(blk) -> walkBlockForAwaitInTry(ctx, blk)
     case EUnsafe(blk) -> walkBlockForAwaitInTry(ctx, blk)
-    case ELambda(_, body) -> walkBlockForAwaitInTry(ctx, body)
+    case ELambda(_, body) -> {
+      val lambdaCtx = AwaitTryCtx(fnName = ctx.fnName, inTry = false, diag = ctx.diag)
+      walkBlockForAwaitInTry(lambdaCtx, body)
+    }
     case EInterpolated(segs) -> {
       var i = 0
       while i < segs.count {
@@ -1339,6 +1342,22 @@ func walkBlockForAwaitInTry(ctx: in AwaitTryCtx, blk: in Block): Unit {
   }
 }
 
+func checkFuncForAwaitInTry(fn: in FunctionDecl, diag: in List[Diagnostic]): Unit {
+  if fn.isAsync {
+    match fn.body {
+      case None -> {
+      }
+      case Some(body) -> {
+        val ctx = AwaitTryCtx(fnName = fn.name, inTry = false, diag = diag)
+        match body {
+          case FBExpr(e) -> walkExprForAwaitInTry(ctx, e)
+          case FBBlock(blk) -> walkBlockForAwaitInTry(ctx, blk)
+        }
+      }
+    }
+  }
+}
+
 func checkAwaitInTry(file: in SourceFile, fileLevel: in VerificationLevel, diag: in List[Diagnostic]): Unit {
   if not vlIsProofRequired(fileLevel) {
     return
@@ -1346,19 +1365,38 @@ func checkAwaitInTry(file: in SourceFile, fileLevel: in VerificationLevel, diag:
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
-      case IFunc(fn) -> {
-        if fn.isAsync {
-          match fn.body {
-            case None -> {
-            }
-            case Some(body) -> {
-              val ctx = AwaitTryCtx(fnName = fn.name, inTry = false, diag = diag)
-              match body {
-                case FBExpr(e) -> walkExprForAwaitInTry(ctx, e)
-                case FBBlock(blk) -> walkBlockForAwaitInTry(ctx, blk)
-              }
+      case IFunc(fn) -> checkFuncForAwaitInTry(fn, diag)
+      case IRecord(decl) | IExposedRec(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case RMFunc(fn) -> checkFuncForAwaitInTry(fn, diag)
+            case _ -> {
             }
           }
+          mi = mi + 1
+        }
+      }
+      case IInterface(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMFunc(fn) -> checkFuncForAwaitInTry(fn, diag)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
+      case IImpl(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMplFunc(fn) -> checkFuncForAwaitInTry(fn, diag)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
         }
       }
       case _ -> {
