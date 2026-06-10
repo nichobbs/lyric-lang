@@ -3876,6 +3876,9 @@ pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
       case MPOpaque(op) -> {
         lowerMOpaque(op, ctx)
       }
+      case MPConfig(ns, typeName, fields, configToks) -> {
+        lowerMConfig(ns, typeName, fields, configToks, ctx)
+      }
     }
     i = i + 1
   }
@@ -3938,7 +3941,7 @@ func lowerMConfig(
   fields: in List[MConfigField],
   configToks: in ConfigTokens,
   ctx: in LoweringCtx,
-): Unit {
+): Int {
   val sh = ctx.strings
   val bh = ctx.blobs
   val t = ctx.tables
@@ -4051,6 +4054,7 @@ func lowerMConfig(
       methodList = firstMethod
     )
   )
+  t.typeDefs.count
 }
 
 // Lower one `MPackageItem` into `ctx`'s metadata tables.  Single dispatch
@@ -4087,7 +4091,7 @@ func lowerMPackageItem(item: in MPackageItem, ctx: in LoweringCtx): Unit {
       val _ = lowerMOpaque(op, ctx)
     }
     case MPConfig(ns, typeName, fields, configToks) -> {
-      lowerMConfig(ns, typeName, fields, configToks, ctx)
+      val _ = lowerMConfig(ns, typeName, fields, configToks, ctx)
     }
   }
 }
