@@ -1004,12 +1004,26 @@ func wireMemberNameJvm(m: in WireMember): String {
 
 // Topologically sort wire members using Kahn's BFS algorithm.  Returns
 // WTRSorted with members in dependency order, or WTRCycle when a cycle exists.
+// WMExpose members share names with the WMSingleton/WMLocal they expose and
+// have no init expression, so they are excluded from the graph and appended
+// after sorting to avoid duplicate-key crashes and false cycle detection.
 func wireTopoSortJvm(members: in List[WireMember]): WireTopoResult {
+  val sortable: List[WireMember] = newList()
+  val exposeMembers: List[WireMember] = newList()
+  var sep = 0
+  while sep < members.count {
+    match members[sep] {
+      case WMExpose(_, _) -> exposeMembers.add(members[sep])
+      case _ -> sortable.add(members[sep])
+    }
+    sep = sep + 1
+  }
+
   val nameToIdx: Map[String, Int] = newMap()
   val knownNames: Map[String, Bool] = newMap()
   var i = 0
-  while i < members.count {
-    val n = wireMemberNameJvm(members[i])
+  while i < sortable.count {
+    val n = wireMemberNameJvm(sortable[i])
     if n.length > 0 and not nameToIdx.containsKey(n) {
       nameToIdx.add(n, i)
       knownNames.add(n, true)
@@ -1019,10 +1033,10 @@ func wireTopoSortJvm(members: in List[WireMember]): WireTopoResult {
 
   val depsOf: Map[String, List[String]] = newMap()
   var j = 0
-  while j < members.count {
-    val n = wireMemberNameJvm(members[j])
+  while j < sortable.count {
+    val n = wireMemberNameJvm(sortable[j])
     val initDeps: List[String] = newList()
-    match wireMemberInitJvm(members[j]) {
+    match wireMemberInitJvm(sortable[j]) {
       case Some(e) -> {
         val raw: List[String] = newList()
         wireExprDepsJvm(e, knownNames, raw)
@@ -1044,41 +1058,49 @@ func wireTopoSortJvm(members: in List[WireMember]): WireTopoResult {
 
   val inDegree: Map[String, Int] = newMap()
   var k = 0
-  while k < members.count {
-    val n = wireMemberNameJvm(members[k])
+  while k < sortable.count {
+    val n = wireMemberNameJvm(sortable[k])
     if not inDegree.containsKey(n) {
       inDegree.add(n, 0)
     }
     k = k + 1
   }
   var m2 = 0
-  while m2 < members.count {
-    val n = wireMemberNameJvm(members[m2])
-    match mapGet(depsOf, n) {
-      case Some(dList) -> {
-        val seen: Map[String, Bool] = newMap()
-        var di = 0
-        while di < dList.count {
-          val dep = dList[di]
-          if not seen.containsKey(dep) {
-            seen.add(dep, true)
-            match mapGet(inDegree, n) {
-              case Some(cur) -> inDegree.add(n, cur + 1)
-              case None -> inDegree.add(n, 1)
+  while m2 < sortable.count {
+    match wireMemberInitJvm(sortable[m2]) {
+      case None -> ()
+      case Some(_) -> {
+        val n = wireMemberNameJvm(sortable[m2])
+        match mapGet(depsOf, n) {
+          case Some(dList) -> {
+            val seen: Map[String, Bool] = newMap()
+            var di = 0
+            while di < dList.count {
+              val dep = dList[di]
+              if not seen.containsKey(dep) {
+                seen.add(dep, true)
+                match mapGet(inDegree, n) {
+                  case Some(cur) -> {
+                    inDegree.remove(n)
+                    inDegree.add(n, cur + 1)
+                  }
+                  case None -> inDegree.add(n, 1)
+                }
+              }
+              di = di + 1
             }
           }
-          di = di + 1
+          case None -> ()
         }
       }
-      case None -> ()
     }
     m2 = m2 + 1
   }
 
   val queue: List[String] = newList()
   var qi = 0
-  while qi < members.count {
-    val n = wireMemberNameJvm(members[qi])
+  while qi < sortable.count {
+    val n = wireMemberNameJvm(sortable[qi])
     match mapGet(inDegree, n) {
       case Some(deg) -> {
         if deg == 0 {
@@ -1096,8 +1118,8 @@ func wireTopoSortJvm(members: in List[WireMember]): WireTopoResult {
     val current = queue[head]
     sortedNames.add(current)
     var ri = 0
-    while ri < members.count {
-      val rn = wireMemberNameJvm(members[ri])
+    while ri < sortable.count {
+      val rn = wireMemberNameJvm(sortable[ri])
       match mapGet(depsOf, rn) {
         case Some(dList) -> {
           var found = false
@@ -1112,6 +1134,7 @@ func wireTopoSortJvm(members: in List[WireMember]): WireTopoResult {
             match mapGet(inDegree, rn) {
               case Some(deg) -> {
                 val newDeg = deg - 1
+                inDegree.remove(rn)
                 inDegree.add(rn, newDeg)
                 if newDeg == 0 {
                   queue.add(rn)
@@ -1128,7 +1151,7 @@ func wireTopoSortJvm(members: in List[WireMember]): WireTopoResult {
     head = head + 1
   }
 
-  if sortedNames.count < members.count {
+  if sortedNames.count < sortable.count {
     val sortedSet: Map[String, Bool] = newMap()
     var si = 0
     while si < sortedNames.count {
@@ -1137,8 +1160,8 @@ func wireTopoSortJvm(members: in List[WireMember]): WireTopoResult {
     }
     val cyclePath: List[String] = newList()
     var ci = 0
-    while ci < members.count {
-      val cn = wireMemberNameJvm(members[ci])
+    while ci < sortable.count {
+      val cn = wireMemberNameJvm(sortable[ci])
       if not sortedSet.containsKey(cn) {
         cyclePath.add(cn)
       }
@@ -1152,10 +1175,15 @@ func wireTopoSortJvm(members: in List[WireMember]): WireTopoResult {
   while sni < sortedNames.count {
     val sn = sortedNames[sni]
     match mapGet(nameToIdx, sn) {
-      case Some(idx) -> sorted.add(members[idx])
+      case Some(idx) -> sorted.add(sortable[idx])
       case None -> ()
     }
     sni = sni + 1
+  }
+  var ei = 0
+  while ei < exposeMembers.count {
+    sorted.add(exposeMembers[ei])
+    ei = ei + 1
   }
   WTRSorted(members = sorted)
 }

@@ -24032,6 +24032,18 @@ Two pre-existing formatter bugs fixed as part of this PR:
 
 **New self-tests** (`lyric-compiler/lyric/`):
 - `func_default_args_self_test.l` — `@test_module` exercising named-arg reorder and default-param fill (8 test cases including `addWithDefault(5)`, `greetFull(first, last)` omitting the defaulted `suffix`, `tri(1)` omitting two defaults; imports `Std.*` only; CI-wired in `compiler-self-tests-dotnet-b` and JVM analog step).
-- `wire_di_self_test.l` — `@test_module` exercising `@provided`, singleton-with-dependency, and topo sort (placeholder assertions; CI-wired pending, blocked on self-hosted parser gap for wire blocks in `lyric test`).
+- `wire_di_self_test.l` — `@test_module` exercising `@provided`, singleton-with-dependency, and topo sort (placeholder assertions for full invocation; CI-wired on `--target dotnet`).
+
+**`addPackageTokens` IWire MethodDef-token-reservation fix** (`msil/codegen.l`):
+
+`addPackageTokens` Pass 2 had no `case IWire` branch, so the one `TestWire_create` MethodDef row emitted by `lowerWireMsil` was never reserved in the pre-scan.  This silently displaced every subsequent IFunc token by 1, making the PE EntryPointToken point to the function immediately preceding `main()` rather than `main()` itself.  The test binary ran and exited 0 with no TAP output.  Fix: added `case IWire(_) -> { methodDefRow = methodDefRow + 1 }` in the Pass 2 loop so IWire's `_create` method occupies the correct row before IFunc assignments.
+
+**`wireTopoSortMsil`/`wireTopoSortJvm` WMExpose separation fix** (`msil/codegen.l`, `jvm/codegen/06_items.l`):
+
+`WMExpose` members share the same name as the `WMSingleton`/`WMLocal` they expose, and have no init expression.  Including them in the dependency graph caused two bugs: (1) `inDegree.add(n, ...)` threw `ArgumentException` on duplicate key when the same name appeared for both `WMSingleton` and `WMExpose`; (2) cycle detection compared `sortedNames.count < members.count`, which fired falsely because `WMExpose` was never added to `sortedNames`.  Fix: both sort functions now separate `WMExpose` members into a `exposeMembers` list before building the graph, run all graph logic on the `sortable` (non-expose) list, compare cycle detection against `sortable.count`, and append `exposeMembers` after the topologically sorted result.
+
+**JVM `bsMaxLocals` fix** (`jvm/lowering.l`):
+
+`bootstrap()` method's `maxLocals` was set to `w.providedParams.count` (number of provided-param parameters), but `Long`/`Double` parameters each occupy 2 local slots per JVM spec §4.7.3.  The loop variable `bsSlot` already tracks the actual slot count.  Fix: `bsMaxLocals = bsSlot`.
 
 Closes #1502, #1503.

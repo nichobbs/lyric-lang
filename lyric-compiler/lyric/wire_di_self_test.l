@@ -1,42 +1,52 @@
 //! Regression test for wire/DI: WMProvided, WMBind, cycle detection,
 //! topological ordering (#1502).
+//!
+//! Also pins the addPackageTokens IWire MethodDef-token-reservation fix:
+//! without it, IWire silently displaced the PE entry point by one row,
+//! causing the test binary to exit 0 with no TAP output.
+//!
+//! CI wiring: wired on --target dotnet.  The placeholder assertions call
+//! assertTrue(true, ...) because the bootstrap() factory method requires a
+//! @provided argument that cannot be injected from a @test_module body
+//! without the wire-test infra tracked in #3057.  The tests still exercise
+//! the parser, type checker, and MSIL emitter for every wire construct.
 @test_module
 package Lyric.WireDISelfTest
 
 import Std.Core
 import Std.Testing
 
-interface Logger {
+interface WireLogger {
   func log(msg: in String): Unit
 }
 
-record ConsoleLogger {
+record WireConsoleLogger {
   prefix: String
 }
 
-impl Logger for ConsoleLogger {
+impl WireLogger for WireConsoleLogger {
   func log(msg: in String): Unit {
   }
 }
 
-record AppConfig {
+record WireAppConfig {
   debug: Bool
 }
 
-func makeConsoleLogger(debug: in Bool): ConsoleLogger {
-  ConsoleLogger(prefix = "LOG")
+func makeWireConsoleLogger(debug: in Bool): WireConsoleLogger {
+  WireConsoleLogger(prefix = "LOG")
 }
 
 wire TestWire {
-  @provided config: AppConfig
-  singleton logger: ConsoleLogger = makeConsoleLogger(config.debug)
+  @provided config: WireAppConfig
+  singleton logger: WireConsoleLogger = makeWireConsoleLogger(config.debug)
   expose logger
 }
 
 test "wire singleton is constructible" {
-  assertTrue(true, "wire test placeholder")
+  assertTrue(true, "placeholder: real assertion needs #3057")
 }
 
 test "wire provided param referenced in singleton init" {
-  assertTrue(true, "wire topo sort test placeholder")
+  assertTrue(true, "placeholder: real assertion needs #3057")
 }

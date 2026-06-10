@@ -2522,6 +2522,11 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         }
         methodDefRow = methodDefRow + 1
       }
+      // IWire emits exactly one static factory method (<name>_create) in MPFuncs.
+      // Reserve its MethodDef row so subsequent IFunc token assignments remain correct.
+      case IWire(_) -> {
+        methodDefRow = methodDefRow + 1
+      }
       case _ -> {
       }
     }
@@ -14385,15 +14390,30 @@ func wireMemberNameMsil(m: in WireMember): String {
 // Topologically sort wire members by their init-expression dependencies using
 // Kahn's BFS algorithm.  Returns WTRSorted with members in dependency order,
 // or WTRCycle with the names of members involved in the cycle.
-// WMProvided and WMExpose have no deps and appear in their original relative
-// positions (provided first because they have zero in-degree).
+// WMExpose members are separated out before sorting (they have no init of
+// their own and share a name with the member they expose) and re-appended at
+// the end.  WMProvided members have zero in-degree and sort to the front.
 func wireTopoSortMsil(members: in List[WireMember]): WireTopoResult {
+  // Separate expose members — they are pass-through and must not participate
+  // in the dep graph (they share names with sortable members, which would
+  // cause duplicate-key crashes and false cycle detection).
+  val sortable: List[WireMember] = newList()
+  val exposeMembers: List[WireMember] = newList()
+  var sep = 0
+  while sep < members.count {
+    match members[sep] {
+      case WMExpose(_, _) -> exposeMembers.add(members[sep])
+      case _ -> sortable.add(members[sep])
+    }
+    sep = sep + 1
+  }
+
   // Build name → member index and known-name set.
   val nameToIdx: Map[String, Int] = newMap()
   val knownNames: Map[String, Bool] = newMap()
   var i = 0
-  while i < members.count {
-    val n = wireMemberNameMsil(members[i])
+  while i < sortable.count {
+    val n = wireMemberNameMsil(sortable[i])
     if n.length > 0 and not nameToIdx.containsKey(n) {
       nameToIdx.add(n, i)
       knownNames.add(n, true)
@@ -14404,10 +14424,10 @@ func wireTopoSortMsil(members: in List[WireMember]): WireTopoResult {
   // Build adjacency list: name → list of dependency names (deps it references).
   val depsOf: Map[String, List[String]] = newMap()
   var j = 0
-  while j < members.count {
-    val n = wireMemberNameMsil(members[j])
+  while j < sortable.count {
+    val n = wireMemberNameMsil(sortable[j])
     val initDeps: List[String] = newList()
-    match wireMemberInitMsil(members[j]) {
+    match wireMemberInitMsil(sortable[j]) {
       case Some(e) -> {
         val raw: List[String] = newList()
         wireExprDepsMsil(e, knownNames, raw)
@@ -14427,54 +14447,54 @@ func wireTopoSortMsil(members: in List[WireMember]): WireTopoResult {
     j = j + 1
   }
 
-  // Compute in-degree: for each name, how many other members list it as a dep.
-  // (In-degree = number of edges pointing TO this node.)
+  // Compute in-degree for sortable members only.
   val inDegree: Map[String, Int] = newMap()
   var k = 0
-  while k < members.count {
-    val n = wireMemberNameMsil(members[k])
+  while k < sortable.count {
+    val n = wireMemberNameMsil(sortable[k])
     if not inDegree.containsKey(n) {
       inDegree.add(n, 0)
     }
     k = k + 1
   }
-  // For each member m, increment in-degree of each dep of m (because m depends on dep,
-  // meaning dep must come before m — dep has a "must precede" edge TO m,
-  // but for Kahn's we track: in-degree of a node = how many nodes it depends on that
-  // haven't been emitted yet).
-  // Actually: Kahn's uses the standard graph direction.  We want to order members such
-  // that if m depends on d, d appears before m.  So we build: edge d → m (d must precede m).
-  // in-degree[m] = number of distinct deps of m (in the known set).
   var m2 = 0
-  while m2 < members.count {
-    val n = wireMemberNameMsil(members[m2])
-    match mapGet(depsOf, n) {
-      case Some(dList) -> {
-        // Use a set to avoid counting a dep twice.
-        val seen: Map[String, Bool] = newMap()
-        var di = 0
-        while di < dList.count {
-          val dep = dList[di]
-          if not seen.containsKey(dep) {
-            seen.add(dep, true)
-            match mapGet(inDegree, n) {
-              case Some(cur) -> inDegree.add(n, cur + 1)
-              case None -> inDegree.add(n, 1)
+  while m2 < sortable.count {
+    // WMProvided has no init; skip so it keeps in-degree 0 and sorts first.
+    match wireMemberInitMsil(sortable[m2]) {
+      case None -> ()
+      case Some(_) -> {
+        val n = wireMemberNameMsil(sortable[m2])
+        match mapGet(depsOf, n) {
+          case Some(dList) -> {
+            val seen: Map[String, Bool] = newMap()
+            var di = 0
+            while di < dList.count {
+              val dep = dList[di]
+              if not seen.containsKey(dep) {
+                seen.add(dep, true)
+                match mapGet(inDegree, n) {
+                  case Some(cur) -> {
+                    inDegree.remove(n)
+                    inDegree.add(n, cur + 1)
+                  }
+                  case None -> inDegree.add(n, 1)
+                }
+              }
+              di = di + 1
             }
           }
-          di = di + 1
+          case None -> ()
         }
       }
-      case None -> ()
     }
     m2 = m2 + 1
   }
 
-  // Kahn's BFS: start with all nodes with in-degree 0.
+  // Kahn's BFS: start with all sortable nodes with in-degree 0.
   val queue: List[String] = newList()
   var qi = 0
-  while qi < members.count {
-    val n = wireMemberNameMsil(members[qi])
+  while qi < sortable.count {
+    val n = wireMemberNameMsil(sortable[qi])
     match mapGet(inDegree, n) {
       case Some(deg) -> {
         if deg == 0 {
@@ -14491,10 +14511,9 @@ func wireTopoSortMsil(members: in List[WireMember]): WireTopoResult {
   while head < queue.count {
     val current = queue[head]
     sortedNames.add(current)
-    // For each member that lists `current` as a dep, decrement its in-degree.
     var ri = 0
-    while ri < members.count {
-      val rn = wireMemberNameMsil(members[ri])
+    while ri < sortable.count {
+      val rn = wireMemberNameMsil(sortable[ri])
       match mapGet(depsOf, rn) {
         case Some(dList) -> {
           var found = false
@@ -14509,6 +14528,7 @@ func wireTopoSortMsil(members: in List[WireMember]): WireTopoResult {
             match mapGet(inDegree, rn) {
               case Some(deg) -> {
                 val newDeg = deg - 1
+                inDegree.remove(rn)
                 inDegree.add(rn, newDeg)
                 if newDeg == 0 {
                   queue.add(rn)
@@ -14525,8 +14545,8 @@ func wireTopoSortMsil(members: in List[WireMember]): WireTopoResult {
     head = head + 1
   }
 
-  // If sortedNames has fewer entries than members, there is a cycle.
-  if sortedNames.count < members.count {
+  // Cycle detection compares against sortable (not total) member count.
+  if sortedNames.count < sortable.count {
     val sortedSet: Map[String, Bool] = newMap()
     var si = 0
     while si < sortedNames.count {
@@ -14535,8 +14555,8 @@ func wireTopoSortMsil(members: in List[WireMember]): WireTopoResult {
     }
     val cyclePath: List[String] = newList()
     var ci = 0
-    while ci < members.count {
-      val cn = wireMemberNameMsil(members[ci])
+    while ci < sortable.count {
+      val cn = wireMemberNameMsil(sortable[ci])
       if not sortedSet.containsKey(cn) {
         cyclePath.add(cn)
       }
@@ -14545,16 +14565,21 @@ func wireTopoSortMsil(members: in List[WireMember]): WireTopoResult {
     return WTRCycle(path = cyclePath)
   }
 
-  // Reassemble in sorted order.
+  // Reassemble in sorted order, then append expose members.
   val sorted: List[WireMember] = newList()
   var sni = 0
   while sni < sortedNames.count {
     val sn = sortedNames[sni]
     match mapGet(nameToIdx, sn) {
-      case Some(idx) -> sorted.add(members[idx])
+      case Some(idx) -> sorted.add(sortable[idx])
       case None -> ()
     }
     sni = sni + 1
+  }
+  var ei = 0
+  while ei < exposeMembers.count {
+    sorted.add(exposeMembers[ei])
+    ei = ei + 1
   }
   WTRSorted(members = sorted)
 }

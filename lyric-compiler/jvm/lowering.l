@@ -1864,7 +1864,9 @@ pub func lowerWire(w: in LWire, pool: in Pool): ClassFile {
   lowerInsn(LReturn, bsAsm)
 
   val bsMaxStack = 3
-  val bsMaxLocals = if w.providedParams.count > 0 { w.providedParams.count } else { 0 }
+  // bsSlot is the total local-slot count after the loop (category-2 types
+  // like Long/Double occupy 2 slots each per JVM spec §4.7.3).
+  val bsMaxLocals = bsSlot
   val bsCode = assembleCode(bsAsm, bsMaxStack, bsMaxLocals)
   val bsAttrs: List[Attribute] = newList()
   bsAttrs.add(bsCode)
