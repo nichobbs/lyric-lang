@@ -49,7 +49,11 @@ func cmdFmt(argv: in slice[String]): Int {
 
   // --stdin: read all of stdin, format, write to stdout.
   if stdinMode {
-    var source = ""
+    if writeMode {
+      printErr("fmt: --stdin and --write are mutually exclusive — --write has no effect on stdin")
+      return 1
+    }
+    val stdinLines: List[String] = newList()
     var reading = true
     while reading {
       match Console.readLine() {
@@ -57,10 +61,11 @@ func cmdFmt(argv: in slice[String]): Int {
           reading = false
         }
         case Ok(line) -> {
-          source = source + line + "\n"
+          stdinLines.add(line)
         }
       }
     }
+    val source = if stdinLines.count > 0 { Str.joinList("\n", stdinLines) + "\n" } else { "" }
     if checkMode {
       if Fmt.isFormattedSource(source) {
         return 0

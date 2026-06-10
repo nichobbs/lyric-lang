@@ -49,6 +49,7 @@ func cmdClean(argv: in slice[String]): Int {
   toRemove.add(Path.join(rootDir, ".lyric-release"))
 
   var anyRemoved = false
+  var anyFailed = false
   var ri = 0
   while ri < toRemove.count {
     val dir = toRemove[ri]
@@ -61,14 +62,18 @@ func cmdClean(argv: in slice[String]): Int {
         }
         case Err(e) -> {
           printErr("clean: could not remove " + dir + ": " + IOError.message(e))
-          return 1
+          anyFailed = true
         }
       }
     }
   }
 
-  if not anyRemoved {
+  if not anyRemoved and not anyFailed {
     Console.println("clean: nothing to remove")
   }
-  0
+  if anyFailed {
+    1
+  } else {
+    0
+  }
 }

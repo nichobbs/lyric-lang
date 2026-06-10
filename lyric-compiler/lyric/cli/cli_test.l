@@ -414,7 +414,7 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
         var hasTestMod = false
         var li = 0
         while li < srcLines.length {
-          if Str.trim(srcLines[li]) == "@test_module" {
+          if Str.startsWith(Str.trim(srcLines[li]), "@test_module") {
             hasTestMod = true
           }
           li += 1
