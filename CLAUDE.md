@@ -560,7 +560,8 @@ Rules for where new code goes:
   (as a `Lyric.<Feature>` package).  The AOT entry-point project
   (`bootstrap/src/Lyric.Cli.Aot/`) trampolines into the Lyric-emitted
   `Lyric.Cli.Program.main`, so new commands land in
-  `lyric-compiler/lyric/cli.l`'s dispatcher.
+  `lyric-compiler/lyric/cli/cli_main.l`'s dispatcher (the `Lyric.Cli`
+  package lives in `lyric-compiler/lyric/cli/`).
 - **New externs** → `lyric-stdlib/std/_kernel/` only, via `extern type`
   / `extern package` in `.l`. No `@externTarget` declarations pointing
   at F# host code.
@@ -782,12 +783,16 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
   - `test_synth/test_synth.l` — `Lyric.TestSynth` rewriter (see above).
   - `test_synth_bridge.l` — `Lyric.TestSynthBridge` protocol bridge used
     by `SelfHostedTestSynth.fs` (D-progress-231).
-  - `cli.l` — `Lyric.Cli` full command dispatcher (M5.3, D-progress-260).
-    Handles all CLI commands: `build`, `run`, `fmt`, `lint`, `prove`
-    (including `--json`, `--explain`, `--goal`), `doc`, `public-api-diff`,
-    `restore`, `publish`, `repl`, `test`, `bench`, `openapi`, `lsp`
-    (dispatched into `Lyric.Lsp.lspRunLoop`), and `--version`.  Wired
-    as the primary dispatcher via `SelfHostedCli.fs`.
+  - `cli/` — `Lyric.Cli` full command dispatcher (M5.3, D-progress-260);
+    split into 13 files: `cli_shared.l` (helpers), `cli_build.l`,
+    `cli_run.l`, `cli_fmt.l`, `cli_lint.l`, `cli_prove.l`, `cli_doc.l`,
+    `cli_restore.l`, `cli_publish.l`, `cli_test.l`, `cli_bench.l`,
+    `cli_openapi.l`, `cli_main.l` (dispatcher).  Handles all CLI commands:
+    `build`, `run`, `fmt`, `lint`, `prove` (including `--json`,
+    `--explain`, `--goal`), `doc`, `public-api-diff`, `restore`, `publish`,
+    `repl`, `test`, `bench`, `openapi`, `lsp` (dispatched into
+    `Lyric.Lsp.lspRunLoop`), and `--version`.  Wired as the primary
+    dispatcher via `SelfHostedCli.fs`.
   - `repl/repl.l` — `Lyric.Repl` interactive REPL (D-progress-260).
     Script-accumulation loop; entry point `pub func runRepl(argv)`.
     `lyric repl` routes through this package via `SelfHostedCli`.
