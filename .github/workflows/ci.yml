@@ -3481,7 +3481,7 @@ jobs:
                 error.status === 403 ||
                 (Array.isArray(error.errors) && error.errors.some(e => e.type === 'FORBIDDEN' || e.type === 'NOT_FOUND'));
               if (isSoftError) {
-                console.log(`[auto-promote] PR #${prNumber}: ⚠ Skipping promotion — permission denied or PR not found (check that the workflow token has pull-requests:write scope and that org policy permits the workflow to update PRs)`);  
+                console.log(`[auto-promote] PR #${prNumber}: ⚠ Skipping promotion — permission denied or PR not found (check that the workflow token has pull-requests:write scope and that org policy permits the workflow to update PRs)`);
               } else {
                 core.setFailed(`[auto-promote] PR #${prNumber}: ✗ GraphQL error: ${error.message}`);
               }

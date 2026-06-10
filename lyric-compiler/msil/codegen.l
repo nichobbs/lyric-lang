@@ -383,6 +383,7 @@ pub record CodegenCtx {
   trValueTask1: Int  // System.Threading.Tasks.ValueTask`1 (open generic struct, row)
   trValueTask: Int  // System.Threading.Tasks.ValueTask (non-generic struct, row)
   trCancToken: Int  // System.Threading.CancellationToken
+  trTcs1: Int  // System.Threading.Tasks.TaskCompletionSource`1 (open generic, row)
   // Monotonically-increasing counter for unique generator class names.
   // Pattern: "<funcName>__Gen_<ticker>".  Both addPackageTokens and
   // synthesizeGeneratorMsil increment this in source-declaration order so
@@ -1141,6 +1142,7 @@ pub func newCodegenCtx(
   val trValueTask1 = ctxAddTypeRef(lctx, "System.Threading.Tasks", "ValueTask`1", lctx.arRuntime)
   val trValueTask = ctxAddTypeRef(lctx, "System.Threading.Tasks", "ValueTask", lctx.arRuntime)
   val trCancToken = ctxAddTypeRef(lctx, "System.Threading", "CancellationToken", lctx.arRuntime)
+  val trTcs1 = ctxAddTypeRef(lctx, "System.Threading.Tasks", "TaskCompletionSource`1", arTasks)
 
   val recCtorToks: Map[String, Int] = newMap()
   val fieldToks: Map[String, Int] = newMap()
@@ -1281,6 +1283,7 @@ pub func newCodegenCtx(
     trValueTask1 = trValueTask1,
     trValueTask = trValueTask,
     trCancToken = trCancToken,
+    trTcs1 = trTcs1,
     genTicker = newList()
   )
 }
@@ -1959,7 +1962,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
   methodDefRow = methodDefRow + smClassCountPts * 3
   // Reserve MethodDef rows for synthesised generator classes (Phase 5, Epic #2070).
   // Each async generator contributes 6 rows before MPFuncs:
-  //   .ctor (useDefaultCtor), RunBody, GetAsyncEnumerator, MoveNextAsync, get_Current, DisposeAsync.
+  //   .ctor (useDefaultCtor), MoveNext, SetStateMachine, GetAsyncEnumerator, MoveNextAsync, get_Current, DisposeAsync.
   //
   // Ordering note (#2466): this pre-scan reserves ALL SM rows then ALL generator rows,
   // but codegenMPackage emits SM and generator MPRecord items in source-declaration order
@@ -1984,7 +1987,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
     }
     gkPts = gkPts + 1
   }
-  methodDefRow = methodDefRow + genClassCountPts * 6
+  // 7 methods: .ctor, MoveNext, SetStateMachine, GetAsyncEnumerator, MoveNextAsync,
+  //            get_Current, DisposeAsync.
+  methodDefRow = methodDefRow + genClassCountPts * 7
   // Pass 2: MPFuncs — optional .cctor then IFunc items (in source order).
   if hasValCctor {
     methodDefRow = methodDefRow + 1
@@ -2198,6 +2203,21 @@ func isLiteralI4ExprMsilWithEnv(e: in Expr, env: in Map[String, Bool]): Bool {
 // Parameters and locals share the `slots` map but use different namespaces:
 //   • params: slots 0..paramCount-1, accessed via MLdarg(slot)
 // ─────────────────────────────────────────────────────────────────────────────
+// Lazy generator state-machine context (#1490).
+// Installed in FuncCtx.lazyGenCtx (singleton) while synthesizeGeneratorMsil
+// is lowering the MoveNext body.  The EYield handler uses it to emit the
+// lazy TCS-based suspend protocol instead of eager list appends.
+// ─────────────────────────────────────────────────────────────────────────────
+pub record LazyGenCtx {
+  genFqn: String  // FQN of the generator sealed class
+  resumeLabels: List[Int]  // pre-allocated label ID per yield site (index = state N − 1)
+  nextYieldIndex: List[Int]  // length = next yield index (list-as-counter)
+  leaveLabel: Int  // label to MLeave to after each yield (the after-try label)
+  tokTcsSetResult: Int  // 0x0A000000 | MemberRef row for TCS<bool>::SetResult(bool)
+  tokTcsSetException: Int  // 0x0A000000 | MemberRef row for TCS<bool>::SetException(Exception)
+  tcsTypeSpecToken: Int  // 0x1B000000 | TypeSpec row for TCS<bool> (for castclass)
+}
+
 // Phase B.1 async state machine context.
 // Installed in FuncCtx.phaseBCtx (singleton) while synthesiseAsyncSmPhaseBMsil
 // is lowering the MoveNext body.  The EAwait handler checks this to switch from
@@ -2327,6 +2347,10 @@ pub record FuncCtx {
   // is lowering the MoveNext body (singleton then).  The EAwait handler checks
   // this to switch from the blocking shim to the real suspend/resume protocol.
   phaseBCtx: List[PhaseBCtx]
+  // Lazy generator SM context (#1490).  Empty except when synthesizeGeneratorMsil
+  // is lowering the MoveNext body (singleton then).  The EYield handler checks
+  // this to emit the TCS-based lazy suspend protocol.
+  lazyGenCtx: List[LazyGenCtx]
 }
 
 // Allocate a fresh label ID (0, 1, 2, …) for use with MLabel/MBr* instructions.
@@ -3987,7 +4011,31 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     // @async_generator annotation.  Returns MVoid so the statement wrapper pops
     // nothing (void instructions push nothing).
     case EYield(inner) -> {
-      if fctx.yieldSlots.count > 0 {
+      if fctx.lazyGenCtx.count > 0 {
+        val lgctx = fctx.lazyGenCtx[0]
+        val idx = lgctx.nextYieldIndex.count
+        lgctx.nextYieldIndex.add(0)
+        val resumeLabel = lgctx.resumeLabels[idx]
+        // this.__current = box(inner)
+        insns.add(MLdarg(slot = 0))
+        val eTy = lowerExprMsil(cctx, fctx, insns, inner)
+        boxIfNeededMsil(cctx, insns, eTy)
+        insns.add(MStfldByName(ownerFqn = lgctx.genFqn, fieldName = "__current"))
+        // this._state = idx  (0-based; switch(resumeLabels)[idx] dispatches here next call)
+        insns.add(MLdarg(slot = 0))
+        insns.add(MLdcI4(v = idx))
+        insns.add(MStfldByName(ownerFqn = lgctx.genFqn, fieldName = "_state"))
+        // this._tcs.SetResult(true)
+        insns.add(MLdarg(slot = 0))
+        insns.add(MLdfldByName(ownerFqn = lgctx.genFqn, fieldName = "_tcs"))
+        insns.add(MCastclass(typeToken = lgctx.tcsTypeSpecToken))
+        insns.add(MLdcI4(v = 1))
+        insns.add(MCallvirt(methodToken = lgctx.tokTcsSetResult))
+        // leave AFTER_TRY  (exit the try block; stack is clear after leave)
+        insns.add(MLeave(label = lgctx.leaveLabel))
+        // Resume label: next MoveNextAsync call dispatches here via state switch
+        insns.add(MLabel(id = resumeLabel))
+      } else if fctx.yieldSlots.count > 0 {
         val collSlot = fctx.yieldSlots[0]
         insns.add(MLdloc(slot = collSlot - fctx.paramCount))
         // The collector local is typed `object` (MObject) but `List<object>::Add`
@@ -8902,7 +8950,8 @@ func makeFuncCtxMsil(
     hoistedCellSlot = hoistedCellSlot,
     hoistedCellType = hoistedCellType,
     captureCellNames = captureCellNames,
-    phaseBCtx = newList()
+    phaseBCtx = newList(),
+    lazyGenCtx = newList()
   )
 }
 
@@ -8932,6 +8981,140 @@ func endsWithReturnMsil(insns: in List[MInsn]): Bool {
     }
   }
   false
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §8b-pre. computeMaxStackMsil — conservative maxStack from instruction stream.
+// Linear scan; for instructions with unknown arity (MCall, MCallvirt, MNewobj,
+// etc.) we use +1 as a conservative upper-bound delta so the actual peak
+// (captured during arg-push sequences) is never underestimated.  The result
+// is always >= 8 to handle fixed preamble/epilogue code in generated SMs.
+// ─────────────────────────────────────────────────────────────────────────────
+func listOpStackDelta(op: in ListOp): Int {
+  match op {
+    case LoCastclass -> 0
+    case _ -> 1
+  }
+}
+
+func dictOpStackDelta(op: in DictOp): Int {
+  match op {
+    case DoCastclass -> 0
+    case _ -> 1
+  }
+}
+
+func insnStackDelta(insn: in MInsn): Int {
+  match insn {
+    case MLabel(_) -> 0
+    case MBr(_) -> 0
+    case MBrTrue(_) -> -1
+    case MBrFalse(_) -> -1
+    case MBrEq(_) -> -2
+    case MBrNe(_) -> -2
+    case MBrLt(_) -> -2
+    case MBrGt(_) -> -2
+    case MBrLe(_) -> -2
+    case MBrGe(_) -> -2
+    case MNop -> 0
+    case MRet -> 0
+    case MLdNull -> 1
+    case MLdcI4(_) -> 1
+    case MLdcI8(_) -> 1
+    case MLdcR8(_) -> 1
+    case MLdStr(_) -> 1
+    case MLdarg(_) -> 1
+    case MStarg(_) -> -1
+    case MLdloc(_) -> 1
+    case MStloc(_) -> -1
+    case MLdloca(_) -> 1
+    case MLdarga(_) -> 1
+    case MLdind(_) -> 0
+    case MStind(_) -> -2
+    case MAdd -> -1
+    case MSub -> -1
+    case MMul -> -1
+    case MDiv -> -1
+    case MRem -> -1
+    case MAnd -> -1
+    case MOr -> -1
+    case MXor -> -1
+    case MNeg -> 0
+    case MNot -> 0
+    case MShl -> -1
+    case MShr -> -1
+    case MShrUn -> -1
+    case MCeq -> -1
+    case MClt -> -1
+    case MCgt -> -1
+    case MConvI4 -> 0
+    case MConvI8 -> 0
+    case MConvR8 -> 0
+    case MConvU1 -> 0
+    case MConvU2 -> 0
+    case MNewobj(_) -> 1
+    case MLdfld(_) -> 0
+    case MLdflda(_) -> 0
+    case MStfld(_) -> -2
+    case MLdsfld(_) -> 1
+    case MStsfld(_) -> -1
+    case MCall(_) -> 1
+    case MCallvirt(_) -> 1
+    case MCastclass(_) -> 0
+    case MCastclassByName(_) -> 0
+    case MIsinst(_) -> 0
+    case MIsinstByName(_) -> 0
+    case MIsinstGeneric(_, _) -> 0
+    case MCastclassGeneric(_, _) -> 0
+    case MListOp(op, _) -> listOpStackDelta(op)
+    case MDictOp(op, _, _) -> dictOpStackDelta(op)
+    case MLdfldGeneric(_, _, _, _) -> 0
+    case MNewobjGenericCase(_, _, _) -> 1
+    case MNewobjGenericByName(_, _, _) -> 1
+    case MBox(_) -> 0
+    case MUnboxAny(_) -> 0
+    case MNewarr(_) -> 0
+    case MStelemRef -> -3
+    case MStelem(_) -> -3
+    case MDup -> 1
+    case MPop -> -1
+    case MThrow -> 0
+    case MLdlen -> 0
+    case MLdelemRef -> -1
+    case MLdelemU1 -> -1
+    case MLdelemI4 -> -1
+    case MLdftn(_) -> 1
+    case MLeave(_) -> 0
+    case MEndfinally -> 0
+    case MEHClause(_, _, _, _, _, _) -> 0
+    case MLdfldByName(_, _) -> 0
+    case MLdfldaByName(_, _) -> 0
+    case MStfldByName(_, _) -> -2
+    case MNewobjByName(_) -> 1
+    case MCallAtmbStart(_, _, _) -> 1
+    case MSwitch(_) -> -1
+    case MInitobj(_) -> -1
+    case MCallAwaitUnsafeOnCompleted(_, _, _) -> 1
+    case MCallByName(_, _) -> 1
+  }
+}
+
+pub func computeMaxStackMsil(insns: in List[MInsn]): Int {
+  var cur = 0
+  var peak = 0
+  var i = 0
+  while i < insns.count {
+    cur = cur + insnStackDelta(insns[i])
+    if cur > peak {
+      peak = cur
+    }
+    i = i + 1
+  }
+  if peak < 8 {
+    8
+  } else {
+    peak
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -9631,6 +9814,108 @@ func funcBodyContainsYieldMsil(decl: in FunctionDecl): Bool {
   match decl.body {
     case Some(body) -> match body { case FBBlock(blk) -> blockContainsYieldMsil(blk); case FBExpr(e) -> exprContainsYieldMsil(e) }
     case None -> false
+  }
+}
+
+// Count all EYield nodes in an expression / statement / block.
+// Used by synthesizeGeneratorMsil to pre-allocate the correct number of
+// resume labels before lowering the generator body.
+func countYieldsInExpr(e: in Expr): Int {
+  match e.kind {
+    case EYield(_) -> 1
+    case EBlock(b) -> countYieldsInBlock(b)
+    case EUnsafe(b) -> countYieldsInBlock(b)
+    case EIf(c, t, el, _) -> {
+      var n = countYieldsInExpr(c)
+      n = n + match t { case EOBExpr(ex) -> countYieldsInExpr(ex); case EOBBlock(blk) -> countYieldsInBlock(blk) }
+      n = n +
+        match el {
+          case Some(elB) -> match elB { case EOBExpr(ex) -> countYieldsInExpr(ex); case EOBBlock(blk) -> countYieldsInBlock(blk) }
+          case None -> 0
+        }
+      n
+    }
+    case ECall(fn, args) -> {
+      var n = countYieldsInExpr(fn)
+      var ai = 0
+      while ai < args.count {
+        n = n +
+          match args[ai] {
+            case CAPositional(ex) -> countYieldsInExpr(ex)
+            case CANamed(_, ex, _) -> countYieldsInExpr(ex)
+          }
+        ai = ai + 1
+      }
+      n
+    }
+    case EBinop(_, l, r) -> countYieldsInExpr(l) + countYieldsInExpr(r)
+    case EPrefix(_, op) -> countYieldsInExpr(op)
+    case EParen(inner) -> countYieldsInExpr(inner)
+    case EMember(recv, _) -> countYieldsInExpr(recv)
+    case EAwait(inner) -> countYieldsInExpr(inner)
+    case ESpawn(inner) -> countYieldsInExpr(inner)
+    case ETry(inner) -> countYieldsInExpr(inner)
+    case EPropagate(inner) -> countYieldsInExpr(inner)
+    case EMatch(scr, arms) -> {
+      var n = countYieldsInExpr(scr)
+      var ai = 0
+      while ai < arms.count {
+        n = n +
+          match arms[ai].body { case EOBExpr(ex) -> countYieldsInExpr(ex); case EOBBlock(blk) -> countYieldsInBlock(blk) }
+        ai = ai + 1
+      }
+      n
+    }
+    case _ -> 0
+  }
+}
+
+func countYieldsInStmt(s: in Statement): Int {
+  match s.kind {
+    case SExpr(e) -> countYieldsInExpr(e)
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> countYieldsInExpr(init)
+        case LBLet(_, _, init) -> countYieldsInExpr(init)
+        case LBVar(_, _, initOpt) -> match initOpt { case Some(init) -> countYieldsInExpr(init); case None -> 0 }
+      }
+    }
+    case SReturn(valOpt) -> match valOpt { case Some(e) -> countYieldsInExpr(e); case None -> 0 }
+    case SAssign(_, _, v) -> countYieldsInExpr(v)
+    case SThrow(e) -> countYieldsInExpr(e)
+    case SWhile(_, c, b) -> countYieldsInExpr(c) + countYieldsInBlock(b)
+    case SFor(_, _, i, b) -> countYieldsInExpr(i) + countYieldsInBlock(b)
+    case SLoop(_, b) -> countYieldsInBlock(b)
+    case SScope(_, b) -> countYieldsInBlock(b)
+    case SDefer(b) -> countYieldsInBlock(b)
+    case STry(b, catches, finally_) -> {
+      var n = countYieldsInBlock(b)
+      var ci = 0
+      while ci < catches.count {
+        n = n + countYieldsInBlock(catches[ci].body)
+        ci = ci + 1
+      }
+      n = n + match finally_ { case None -> 0; case Some(fb) -> countYieldsInBlock(fb) }
+      n
+    }
+    case _ -> 0
+  }
+}
+
+func countYieldsInBlock(block: in Block): Int {
+  var n = 0
+  var i = 0
+  while i < block.statements.count {
+    n = n + countYieldsInStmt(block.statements[i])
+    i = i + 1
+  }
+  n
+}
+
+func countYieldsInFuncBody(decl: in FunctionDecl): Int {
+  match decl.body {
+    case Some(body) -> match body { case FBBlock(blk) -> countYieldsInBlock(blk); case FBExpr(e) -> countYieldsInExpr(e) }
+    case None -> 0
   }
 }
 
@@ -10566,7 +10851,7 @@ func synthesizeAsyncSmMsil(
     params = newList(),
     ret = MVoid,
     insns = mnInsns,
-    maxStack = 8,
+    maxStack = computeMaxStackMsil(mnInsns),
     locals = mnFctx.locals
   )
 
@@ -11095,12 +11380,7 @@ func synthesizeAsyncSmPhaseBMsil(
     params = newList(),
     ret = MVoid,
     insns = mnInsns,
-    // maxStack: state-dispatch = 2 (this + switch operand),
-    // suspend path = 4 (this, &builder, &awaiter, &sm),
-    // SetResult = 3 (this, &builder, result), SetException = 3 (this, &builder, ex).
-    // 8 covers those fixed preamble/epilogue slots plus ~4 slots of user-body depth.
-    // If a user body needs deeper expression nesting the CLR raises VerificationException.
-    maxStack = 8,
+    maxStack = computeMaxStackMsil(mnInsns),
     locals = mnFctx.locals
   )
 
@@ -11257,20 +11537,25 @@ func synthesizeAsyncSmPhaseBMsil(
 // ── Phase 5: IAsyncEnumerable<T> generator synthesis (Epic #2070) ─────────────
 //
 // Emits a sealed class `<funcName>__Gen_N` that implements:
-//   IAsyncEnumerable<object>, IAsyncEnumerator<object>, IAsyncDisposable
+//   IAsyncEnumerable<object>, IAsyncEnumerator<object>, IAsyncDisposable,
+//   IAsyncStateMachine
 //
-// Eager-producer pattern: RunBody() executes the full generator body synchronously,
-// populating `_values` via EYield, and the enumerator protocol serves them one-at-a-time
-// from `_values[_pos]`.
+// Lazy-producer state-machine pattern (#1490).  MoveNextAsync creates a fresh
+// TaskCompletionSource<bool>, calls MoveNext() (which drives the SM one step and
+// synchronously calls TCS.SetResult/SetException), then returns
+// new ValueTask<bool>(_tcs.Task).  Each `yield expr` stores the value in
+// __current, updates _state, calls _tcs.SetResult(true), and leaves the try
+// block.  End-of-body calls _tcs.SetResult(false).
 //
-// Class fields: _values (List<object>), _pos (int32), __p0..N-1 (user params)
-// Methods (6 MethodDef rows):
-//   .ctor     (useDefaultCtor) — zero-initialises the instance
-//   RunBody   — executes the user body, appending yields to this._values
-//   GetAsyncEnumerator(CancellationToken) — resets _pos=0, returns this
-//   MoveNextAsync() — advances if available, returns ValueTask<bool>
-//   get_Current — returns _values[_pos-1]
-//   DisposeAsync() — no-op, returns default(ValueTask)
+// Class fields: _state (Int), _tcs (object), __current (object), __pN (params)
+// Methods (7 MethodDef rows):
+//   .ctor (useDefaultCtor) — zero-initialises; kickoff sets _state = -1
+//   MoveNext()                          — IAsyncStateMachine.MoveNext (SM body)
+//   SetStateMachine(IAsyncStateMachine) — stub (no-op)
+//   GetAsyncEnumerator(CancellationToken) — resets _state=-1, returns this
+//   MoveNextAsync()                     — creates TCS, drives MoveNext, returns ValueTask<bool>
+//   get_Current                         — returns __current
+//   DisposeAsync()                      — no-op, returns default(ValueTask)
 func synthesizeGeneratorMsil(
   cctx: in CodegenCtx,
   decl: in FunctionDecl,
@@ -11284,6 +11569,8 @@ func synthesizeGeneratorMsil(
   cctx.genTicker.add(0)
   val genSimple = "<" + decl.name + ">__Gen_" + toString(tick)
   val genFqn = pkgName + "." + genSimple
+
+  val yieldCount = countYieldsInFuncBody(decl)
 
   // ── TypeSpecs for generic interfaces (idempotent — shared across generators) ──
 
@@ -11305,34 +11592,15 @@ func synthesizeGeneratorMsil(
   val vtBoolBlob = buildValueTypeGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trValueTask1), vtBoolArgs)
   val tsVtBoolRow = ctxAddTypeSpec(lctx, "ts_vt_bool", vtBoolBlob)
 
-  // ── MemberRefs for generator class methods ────────────────────────────────────
+  // TaskCompletionSource<bool> TypeSpec (reference type, CLASS encoding)
+  val tcsBoolArgs: List[MsilType] = newList()
+  tcsBoolArgs.add(MBool)
+  val tcsBoolBlob = buildGenericInstBlobWithCtx(lctx, tdrTypeRef(cctx.trTcs1), tcsBoolArgs)
+  val tsTcsBoolRow = ctxAddTypeSpec(lctx, "ts_tcs_bool", tcsBoolBlob)
 
-  // List<object>::get_Count() — already on cctx; used in MoveNextAsync body
-  val tokListCount = cctx.tokListObjGetCount
-  // List<object>::get_Item(int32) — already on cctx; used in get_Current body
-  val tokListGetItem = cctx.tokListObjGetItem
-
-  // ValueTask<bool>::.ctor(!0) — newobj to construct the return value
-  val vtBoolCtorPs: List[MsilType] = newList()
-  vtBoolCtorPs.add(MTypeVar(index = 0))
-  val vtBoolCtorSig = buildInstanceMethodSig(vtBoolCtorPs, MVoid)
-  val tokVtBoolCtor = 0x0A000000 + ctxAddMemberRefForTypeSpec(lctx, tsVtBoolRow, ".ctor", "vt_bool_ctor", vtBoolCtorSig)
-
-  // ValueTask<bool>::get_Result() → !0 — to extract bool from struct in consumer loop
-  val vtBoolResPs: List[MsilType] = newList()
-  val tokVtBoolGetResult = 0x0A000000 +
-    ctxAddMemberRefForTypeSpec(
-      lctx,
-      tsVtBoolRow,
-      "get_Result",
-      "vt_bool_getresult",
-      buildInstanceMethodSig(vtBoolResPs, MTypeVar(index = 0))
-    )
+  // ── MemberRefs for interface dispatch ─────────────────────────────────────
 
   // IAsyncEnumerator<object>::MoveNextAsync() → ValueTask<bool>
-  // Return type: GENERICINST VALUETYPE TypeRef(ValueTask`1) bool — inline encoding,
-  // no TypeSpec token in the blob (ELEMENT_TYPE_VALUETYPE + TypeSpec is rejected
-  // by the CLR JIT verifier; GENERICINST VALUETYPE + TypeRef is valid everywhere).
   val moveNextPs: List[MsilType] = newList()
   val vtBoolInlineTy: List[MsilType] = newList()
   vtBoolInlineTy.add(MBool)
@@ -11386,10 +11654,97 @@ func synthesizeGeneratorMsil(
       buildInstanceMethodSig(getEnumPs, getEnumRetTy)
     )
 
-  // ── Generator class fields ─────────────────────────────────────────────────────
+  // ── MemberRefs for TCS<bool> ──────────────────────────────────────────────
+
+  // TCS<bool>::.ctor() → void
+  val tokTcsCtor = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      lctx,
+      tsTcsBoolRow,
+      ".ctor",
+      "tcs_bool_ctor",
+      buildInstanceMethodSig(newList(), MVoid)
+    )
+
+  // TCS<bool>::SetResult(!0) → void  (type variable for open form)
+  val tcsSetResultPs: List[MsilType] = newList()
+  tcsSetResultPs.add(MTypeVar(index = 0))
+  val tokTcsSetResult = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      lctx,
+      tsTcsBoolRow,
+      "SetResult",
+      "tcs_bool_setresult",
+      buildInstanceMethodSig(tcsSetResultPs, MVoid)
+    )
+
+  // TCS<bool>::SetException(Exception) → void
+  val tcsSetExcPs: List[MsilType] = newList()
+  tcsSetExcPs.add(MClassRef(typeRefCode = tdrTypeRef(cctx.trException), clrFqn = "System.Exception"))
+  val tokTcsSetException = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      lctx,
+      tsTcsBoolRow,
+      "SetException",
+      "tcs_bool_setexception",
+      buildInstanceMethodSig(tcsSetExcPs, MVoid)
+    )
+
+  // TCS<bool>::get_Task → Task<!0>  (open type-variable for MemberRef on TypeSpec)
+  val tcsGetTaskVarArgs: List[MsilType] = newList()
+  tcsGetTaskVarArgs.add(MTypeVar(index = 0))
+  val tcsGetTaskRetTy = MGenericInst(
+    typeRefCode = tdrTypeRef(cctx.trTask1),
+    headFqn = "System.Threading.Tasks.Task`1",
+    typeArgs = tcsGetTaskVarArgs
+  )
+  val tokTcsGetTask = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      lctx,
+      tsTcsBoolRow,
+      "get_Task",
+      "tcs_bool_gettask",
+      buildInstanceMethodSig(newList(), tcsGetTaskRetTy)
+    )
+
+  // ── MemberRefs for ValueTask<bool> ────────────────────────────────────────
+
+  // ValueTask<bool>::.ctor(Task<!0>) → void  — task-based ctor for MoveNextAsync
+  val vtTaskVarArgs: List[MsilType] = newList()
+  vtTaskVarArgs.add(MTypeVar(index = 0))
+  val vtBoolFromTaskCtorPs: List[MsilType] = newList()
+  vtBoolFromTaskCtorPs.add(
+    MGenericInst(
+      typeRefCode = tdrTypeRef(cctx.trTask1),
+      headFqn = "System.Threading.Tasks.Task`1",
+      typeArgs = vtTaskVarArgs
+    )
+  )
+  val tokVtBoolFromTaskCtor = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      lctx,
+      tsVtBoolRow,
+      ".ctor",
+      "vt_bool_task_ctor",
+      buildInstanceMethodSig(vtBoolFromTaskCtorPs, MVoid)
+    )
+
+  // ValueTask<bool>::get_Result() → !0 — needed by the consumer for-await loop
+  val vtBoolResPs: List[MsilType] = newList()
+  val tokVtBoolGetResult = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      lctx,
+      tsVtBoolRow,
+      "get_Result",
+      "vt_bool_getresult",
+      buildInstanceMethodSig(vtBoolResPs, MTypeVar(index = 0))
+    )
+
+  // ── Generator class fields ─────────────────────────────────────────────────
   val genFields: List[MField] = newList()
-  genFields.add(MField(flags = FDA_PUBLIC, name = "_values", fieldType = MObject))
-  genFields.add(MField(flags = FDA_PUBLIC, name = "_pos", fieldType = MInt))
+  genFields.add(MField(flags = FDA_PUBLIC, name = "_state", fieldType = MInt))
+  genFields.add(MField(flags = FDA_PUBLIC, name = "_tcs", fieldType = MObject))
+  genFields.add(MField(flags = FDA_PUBLIC, name = "__current", fieldType = MObject))
   var gfi = 0
   while gfi < decl.params.count {
     val p = decl.params[gfi]
@@ -11398,74 +11753,246 @@ func synthesizeGeneratorMsil(
     gfi = gfi + 1
   }
 
-  // ── RunBody() — executes user body, yields into this._values ──────────────────
-  // Instance method: slot 0 = this.  User params loaded from fields into locals.
-  val rbInsns: List[MInsn] = newList()
-  val rbFctx = makeFuncCtxMsil(pkgName, genFqn, "RunBody", 1, MVoid)
-  // Seed slotTicker with one entry for `this` (slot 0 = the 'this' argument).
-  rbFctx.slotTicker.add(0)
+  // Closed TypeSpec token for TCS<bool> castclass (TypeSpec table = 0x1B).
+  val tsTcsBoolToken = 0x1B000000 + tsTcsBoolRow
 
-  // Load this._values into a local so EYield can append to it.
-  rbInsns.add(MLdarg(slot = 0))
-  rbInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "_values"))
-  val rbCollSlot = allocSlotMsil(rbFctx, "__yield_collector", MObject)
-  rbInsns.add(MStloc(slot = rbCollSlot - 1))
-  rbFctx.yieldSlots.add(rbCollSlot)
+  // ── MoveNext() — IAsyncStateMachine body wrapped in try/catch ─────────────
+  // paramCount = 1 (slot 0 = 'this').
+  val mnInsns: List[MInsn] = newList()
+  val mnFctx = makeFuncCtxMsil(pkgName, genFqn, "MoveNext", 1, MVoid)
+  mnFctx.slotTicker.add(0)  // reserve slot 0 for 'this'
 
-  // Load user params from fields into named locals.
-  var rbPi = 0
-  while rbPi < decl.params.count {
-    val p = decl.params[rbPi]
-    val pTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
-    val pSlot = allocSlotMsil(rbFctx, p.name, pTy)
-    rbInsns.add(MLdarg(slot = 0))
-    rbInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "__p" + toString(rbPi)))
-    rbInsns.add(MStloc(slot = pSlot - 1))
-    rbPi = rbPi + 1
+  // Pre-allocate labels.
+  val tryStartL = freshLabelMsil(mnFctx)
+  val bodyStartL = freshLabelMsil(mnFctx)
+  val normalDoneL = freshLabelMsil(mnFctx)
+  val afterTryL = freshLabelMsil(mnFctx)
+  val tryBodyEndL = freshLabelMsil(mnFctx)
+  val catchHandlerStartL = freshLabelMsil(mnFctx)
+  val catchHandlerEndL = freshLabelMsil(mnFctx)
+
+  // One resume label per yield site (0-based; EYield stores state = idx).
+  val resumeLabels: List[Int] = newList()
+  var rli = 0
+  while rli < yieldCount {
+    resumeLabels.add(freshLabelMsil(mnFctx))
+    rli = rli + 1
   }
 
-  // Reserve epilogue label.
-  rbFctx.epilogueLabel = freshLabelMsil(rbFctx)
+  // epilogueLabel points to normalDoneL so any `return` inside the body
+  // (patched by emitEpilogueMsil if used) reaches the end-of-sequence path.
+  mnFctx.epilogueLabel = normalDoneL
 
-  // Lower the user body (same as `lowerFuncMsil` generator path, but void return).
+  // Install LazyGenCtx so EYield emits the lazy TCS protocol.
+  val lgCtx = LazyGenCtx(
+    genFqn = genFqn,
+    resumeLabels = resumeLabels,
+    nextYieldIndex = newList(),
+    leaveLabel = afterTryL,
+    tokTcsSetResult = tokTcsSetResult,
+    tokTcsSetException = tokTcsSetException,
+    tcsTypeSpecToken = tsTcsBoolToken
+  )
+  mnFctx.lazyGenCtx.add(lgCtx)
+
+  // Preamble: load user params from fields into local slots (before the try).
+  var mpre = 0
+  while mpre < decl.params.count {
+    val p = decl.params[mpre]
+    val pTy = typeExprToMsilCtx(cctx, p.ty, pkgName)
+    val pSlot = allocSlotMsil(mnFctx, p.name, pTy)
+    mnInsns.add(MLdarg(slot = 0))
+    mnInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "__p" + toString(mpre)))
+    mnInsns.add(MStloc(slot = pSlot - 1))
+    mpre = mpre + 1
+  }
+
+  // ── Try block ────────────────────────────────────────────────────────────────
+  mnInsns.add(MLabel(id = tryStartL))
+  mnFctx.tryRegionStack.add(0)
+
+  // State dispatch: switch(resumeLabels) dispatches state 0→labels[0], etc.
+  // state -1 (initial) and -2 (done) are negative → switch falls through → br bodyStartL.
+  mnInsns.add(MLdarg(slot = 0))
+  mnInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "_state"))
+  mnInsns.add(MSwitch(labels = resumeLabels))
+  mnInsns.add(MBr(label = bodyStartL))
+  mnInsns.add(MLabel(id = bodyStartL))
+
+  // Lower user body.
   match decl.body {
     case Some(body) -> {
       match body {
         case FBBlock(block) -> {
-          lowerBlockMsil(cctx, rbFctx, rbInsns, block)
-          if not endsWithReturnMsil(rbInsns) {
-            rbInsns.add(MRet)
-          }
+          lowerBlockMsil(cctx, mnFctx, mnInsns, block)
         }
         case FBExpr(e) -> {
-          lowerExprMsil(cctx, rbFctx, rbInsns, e)
-          rbInsns.add(MPop)
-          rbInsns.add(MRet)
+          lowerExprMsil(cctx, mnFctx, mnInsns, e)
+          mnInsns.add(MPop)
         }
       }
     }
     case None -> {
-      rbInsns.add(MRet)
     }
   }
-  emitEpilogueMsil(rbFctx, rbInsns)
 
-  val rbFunc = MFunc(
-    flags = MDA_PUBLIC + MDA_HIDE_BY_SIG,
-    name = "RunBody",
-    params = newList(),
-    ret = MVoid,
-    insns = rbInsns,
-    maxStack = 8,
-    locals = rbFctx.locals
+  // Normal-completion epilogue (also reached by patched returns if any).
+  mnInsns.add(MLabel(id = normalDoneL))
+  mnInsns.add(MLdarg(slot = 0))
+  mnInsns.add(MLdcI4(v = -2))
+  mnInsns.add(MStfldByName(ownerFqn = genFqn, fieldName = "_state"))
+  mnInsns.add(MLdarg(slot = 0))
+  mnInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "_tcs"))
+  mnInsns.add(MCastclass(typeToken = tsTcsBoolToken))
+  mnInsns.add(MLdcI4(v = 0))
+  mnInsns.add(MCallvirt(methodToken = tokTcsSetResult))
+  mnInsns.add(MLeave(label = afterTryL))
+
+  mnFctx.tryRegionStack.removeAt(mnFctx.tryRegionStack.count - 1)
+  mnInsns.add(MLabel(id = tryBodyEndL))
+
+  // ── Catch handler ─────────────────────────────────────────────────────────────
+  mnInsns.add(MLabel(id = catchHandlerStartL))
+  mnFctx.tryRegionStack.add(0)
+  val exTy = MClassRef(typeRefCode = tdrTypeRef(cctx.trException), clrFqn = "System.Exception")
+  val exSlot = allocSlotMsil(mnFctx, "__gen_ex", exTy)
+  mnInsns.add(MStloc(slot = exSlot - 1))
+  mnInsns.add(MLdarg(slot = 0))
+  mnInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "_tcs"))
+  mnInsns.add(MCastclass(typeToken = tsTcsBoolToken))
+  mnInsns.add(MLdloc(slot = exSlot - 1))
+  mnInsns.add(MCallvirt(methodToken = tokTcsSetException))
+  mnInsns.add(MLeave(label = afterTryL))
+  mnFctx.tryRegionStack.removeAt(mnFctx.tryRegionStack.count - 1)
+  mnInsns.add(MLabel(id = catchHandlerEndL))
+
+  // EH clause: typed catch(Exception).
+  mnInsns.add(
+    MEHClause(
+      flags = 0,
+      tryStart = tryStartL,
+      tryEnd = tryBodyEndL,
+      handlerStart = catchHandlerStartL,
+      handlerEnd = catchHandlerEndL,
+      catchToken = 0x01000000 + cctx.trException
+    )
   )
 
-  // ── GetAsyncEnumerator(CancellationToken) → IAsyncEnumerator<object> ──────────
-  // Resets _pos to 0 and returns `this`.
+  // After-try: ret.
+  mnInsns.add(MLabel(id = afterTryL))
+  mnInsns.add(MRet)
+
+  // ── Hoist loop-carried locals to generator fields ─────────────────────────
+  // Locals that survive across yield points are zeroed on each MoveNext call;
+  // they must be stored in instance fields and saved/restored at each yield
+  // boundary.  Local indices 0..decl.params.count-1 are param aliases that the
+  // preamble re-loads from __pN fields on every call, so they are excluded.
+  // All other locals (user body locals + __gen_ex) are hoisted.
+  val hoistParamCount = decl.params.count
+  val hoistSeen: Map[Int, Bool] = newMap()
+  val hoistLocalIndices: List[Int] = newList()
+  var hsiScan = 0
+  while hsiScan < mnInsns.count {
+    val hInsn = mnInsns[hsiScan]
+    val hSlot = match hInsn {
+      case MLdloc(s) -> s
+      case MStloc(s) -> s
+      case _ -> -1
+    }
+    if hSlot >= hoistParamCount {
+      if not hoistSeen.containsKey(hSlot) {
+        hoistSeen.add(hSlot, true)
+        hoistLocalIndices.add(hSlot)
+      }
+    }
+    hsiScan = hsiScan + 1
+  }
+  val hoistFieldNames: List[String] = newList()
+  var hfScan = 0
+  while hfScan < hoistLocalIndices.count {
+    val localIdx = hoistLocalIndices[hfScan]
+    val fname = "__local_" + toString(localIdx)
+    val fty = mnFctx.locals[localIdx]
+    genFields.add(MField(flags = FDA_PUBLIC, name = fname, fieldType = fty))
+    hoistFieldNames.add(fname)
+    hfScan = hfScan + 1
+  }
+  // Rebuild instruction list with save/restore inserted at each yield boundary.
+  val hoistedInsns: List[MInsn] = newList()
+  var hriScan = 0
+  while hriScan < mnInsns.count {
+    val hInsn = mnInsns[hriScan]
+    match hInsn {
+      case MLeave(lbl) -> {
+        // Yield-leave: MLeave(afterTryL) immediately followed by a resume MLabel.
+        val isYieldLeave =
+          lbl == afterTryL and
+          hriScan + 1 < mnInsns.count and
+          (match mnInsns[hriScan + 1] {
+            case MLabel(nxtId) -> resumeLabels.contains(nxtId)
+            case _ -> false
+          })
+        if isYieldLeave {
+          var sv = 0
+          while sv < hoistLocalIndices.count {
+            hoistedInsns.add(MLdarg(slot = 0))
+            hoistedInsns.add(MLdloc(slot = hoistLocalIndices[sv]))
+            hoistedInsns.add(MStfldByName(ownerFqn = genFqn, fieldName = hoistFieldNames[sv]))
+            sv = sv + 1
+          }
+        }
+        hoistedInsns.add(hInsn)
+      }
+      case MLabel(labelId) -> {
+        hoistedInsns.add(hInsn)
+        if resumeLabels.contains(labelId) {
+          var rv = 0
+          while rv < hoistLocalIndices.count {
+            hoistedInsns.add(MLdarg(slot = 0))
+            hoistedInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = hoistFieldNames[rv]))
+            hoistedInsns.add(MStloc(slot = hoistLocalIndices[rv]))
+            rv = rv + 1
+          }
+        }
+      }
+      case _ -> hoistedInsns.add(hInsn)
+    }
+    hriScan = hriScan + 1
+  }
+
+  val mnFunc = MFunc(
+    flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_FINAL,
+    name = "MoveNext",
+    params = newList(),
+    ret = MVoid,
+    insns = hoistedInsns,
+    maxStack = computeMaxStackMsil(hoistedInsns),
+    locals = mnFctx.locals
+  )
+
+  // ── SetStateMachine() stub ─────────────────────────────────────────────────
+  val ssmInsns: List[MInsn] = newList()
+  ssmInsns.add(MRet)
+  val ssmParams: List[MsilType] = newList()
+  ssmParams.add(
+    MClassRef(typeRefCode = tdrTypeRef(cctx.trIAsm), clrFqn = "System.Runtime.CompilerServices.IAsyncStateMachine")
+  )
+  val ssmFunc = MFunc(
+    flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_FINAL,
+    name = "SetStateMachine",
+    params = ssmParams,
+    ret = MVoid,
+    insns = ssmInsns,
+    maxStack = 1,
+    locals = newList()
+  )
+
+  // ── GetAsyncEnumerator(CancellationToken) → IAsyncEnumerator<object> ──────
+  // Resets _state to -1 (restarts iteration) and returns this.
   val gaeInsns: List[MInsn] = newList()
   gaeInsns.add(MLdarg(slot = 0))
-  gaeInsns.add(MLdcI4(v = 0))
-  gaeInsns.add(MStfldByName(ownerFqn = genFqn, fieldName = "_pos"))
+  gaeInsns.add(MLdcI4(v = -1))
+  gaeInsns.add(MStfldByName(ownerFqn = genFqn, fieldName = "_state"))
   gaeInsns.add(MLdarg(slot = 0))
   gaeInsns.add(MRet)
   val gaeParams: List[MsilType] = newList()
@@ -11487,46 +12014,27 @@ func synthesizeGeneratorMsil(
     locals = newList()
   )
 
-  // ── MoveNextAsync() → ValueTask<bool> ─────────────────────────────────────────
+  // ── MoveNextAsync() → ValueTask<bool> ────────────────────────────────────
+  // Creates a fresh TCS<bool>, calls this.MoveNext() (which drives the SM one
+  // step and synchronously calls TCS.SetResult/SetException), then returns
+  // new ValueTask<bool>(_tcs.Task).
   val mnaInsns: List[MInsn] = newList()
-  val mnaFctx = makeFuncCtxMsil(pkgName, genFqn, "MoveNextAsync", 1, MVoid)
-  mnaFctx.slotTicker.add(0)  // seed for this
 
-  // local 0: pos_val (Int)
-  val mnaPosSlot = allocSlotMsil(mnaFctx, "__gen_pos", MInt)
+  // this._tcs = new TaskCompletionSource<bool>()
   mnaInsns.add(MLdarg(slot = 0))
-  mnaInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "_pos"))
-  mnaInsns.add(MStloc(slot = mnaPosSlot - 1))
+  mnaInsns.add(MNewobj(ctorToken = tokTcsCtor))
+  mnaInsns.add(MStfldByName(ownerFqn = genFqn, fieldName = "_tcs"))
 
-  // local 1: count_val (Int)
-  val mnaCntSlot = allocSlotMsil(mnaFctx, "__gen_cnt", MInt)
+  // this.MoveNext()
   mnaInsns.add(MLdarg(slot = 0))
-  mnaInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "_values"))
-  mnaInsns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
-  mnaInsns.add(MCallvirt(methodToken = tokListCount))
-  mnaInsns.add(MStloc(slot = mnaCntSlot - 1))
+  mnaInsns.add(MCallByName(className = genFqn, methodName = "MoveNext"))
 
-  // local 2: advance (Bool)
-  val mnaAdvSlot = allocSlotMsil(mnaFctx, "__gen_adv", MBool)
-  mnaInsns.add(MLdloc(slot = mnaPosSlot - 1))
-  mnaInsns.add(MLdloc(slot = mnaCntSlot - 1))
-  mnaInsns.add(MClt)
-  mnaInsns.add(MStloc(slot = mnaAdvSlot - 1))
-
-  // if advance { _pos++ }
-  val mnaSkipL = freshLabelMsil(mnaFctx)
-  mnaInsns.add(MLdloc(slot = mnaAdvSlot - 1))
-  mnaInsns.add(MBrFalse(label = mnaSkipL))
+  // return new ValueTask<bool>(_tcs.Task)
   mnaInsns.add(MLdarg(slot = 0))
-  mnaInsns.add(MLdloc(slot = mnaPosSlot - 1))
-  mnaInsns.add(MLdcI4(v = 1))
-  mnaInsns.add(MAdd)
-  mnaInsns.add(MStfldByName(ownerFqn = genFqn, fieldName = "_pos"))
-  mnaInsns.add(MLabel(id = mnaSkipL))
-
-  // return new ValueTask<bool>(advance)
-  mnaInsns.add(MLdloc(slot = mnaAdvSlot - 1))
-  mnaInsns.add(MNewobj(ctorToken = tokVtBoolCtor))
+  mnaInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "_tcs"))
+  mnaInsns.add(MCastclass(typeToken = tsTcsBoolToken))
+  mnaInsns.add(MCallvirt(methodToken = tokTcsGetTask))
+  mnaInsns.add(MNewobj(ctorToken = tokVtBoolFromTaskCtor))
   mnaInsns.add(MRet)
 
   val mnaRetArgs: List[MsilType] = newList()
@@ -11542,20 +12050,14 @@ func synthesizeGeneratorMsil(
     params = newList(),
     ret = mnaRetTy,
     insns = mnaInsns,
-    maxStack = 4,
-    locals = mnaFctx.locals
+    maxStack = computeMaxStackMsil(mnaInsns),
+    locals = newList()
   )
 
-  // ── get_Current() → object ──────────────────────────────────────────────────
+  // ── get_Current() → object ────────────────────────────────────────────────
   val gcInsns: List[MInsn] = newList()
   gcInsns.add(MLdarg(slot = 0))
-  gcInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "_values"))
-  gcInsns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
-  gcInsns.add(MLdarg(slot = 0))
-  gcInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "_pos"))
-  gcInsns.add(MLdcI4(v = 1))
-  gcInsns.add(MSub)
-  gcInsns.add(MCallvirt(methodToken = tokListGetItem))
+  gcInsns.add(MLdfldByName(ownerFqn = genFqn, fieldName = "__current"))
   gcInsns.add(MRet)
   val gcFunc = MFunc(
     flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG + MDA_FINAL + MDA_SPECIAL_NAME,
@@ -11563,11 +12065,11 @@ func synthesizeGeneratorMsil(
     params = newList(),
     ret = MObject,
     insns = gcInsns,
-    maxStack = 3,
+    maxStack = 1,
     locals = newList()
   )
 
-  // ── DisposeAsync() → ValueTask ─────────────────────────────────────────────
+  // ── DisposeAsync() → ValueTask ────────────────────────────────────────────
   val daFctx = makeFuncCtxMsil(pkgName, genFqn, "DisposeAsync", 1, MVoid)
   daFctx.slotTicker.add(0)
   val daVtTy = MValueTypeRef(typeRefCode = tdrTypeRef(cctx.trValueTask), clrFqn = "System.Threading.Tasks.ValueTask")
@@ -11588,9 +12090,10 @@ func synthesizeGeneratorMsil(
     locals = daFctx.locals
   )
 
-  // ── Generator MRecord ────────────────────────────────────────────────────────
+  // ── Generator MRecord ──────────────────────────────────────────────────────
   val genMethods: List[MFunc] = newList()
-  genMethods.add(rbFunc)
+  genMethods.add(mnFunc)
+  genMethods.add(ssmFunc)
   genMethods.add(gaeFunc)
   genMethods.add(mnaFunc)
   genMethods.add(gcFunc)
@@ -11606,8 +12109,32 @@ func synthesizeGeneratorMsil(
   )
   items.add(MPRecord(rec = genRec))
 
-  // ── Interface implementation MPImpl rows ──────────────────────────────────────
-  // IAsyncEnumerable<object> — TypeSpec interface: explicit MethodImpl rows required.
+  // ── IAsyncStateMachine MPImpl ─────────────────────────────────────────────
+  val smImplSlots: List[MImplSlot] = newList()
+  smImplSlots.add(
+    MImplSlot(ifaceMethodToken = 0, implMethodToken = 0, ifaceMethodName = "MoveNext", implMethodName = "MoveNext")
+  )
+  smImplSlots.add(
+    MImplSlot(
+      ifaceMethodToken = 0,
+      implMethodToken = 0,
+      ifaceMethodName = "SetStateMachine",
+      implMethodName = "SetStateMachine"
+    )
+  )
+  items.add(
+    MPImpl(
+      implData = MImplData(
+        targetTypeDefRow = 0,
+        ifaceTypeToken = 0,
+        slots = smImplSlots,
+        targetTypeName = genFqn,
+        ifaceTypeName = "System.Runtime.CompilerServices.IAsyncStateMachine"
+      )
+    )
+  )
+
+  // ── IAsyncEnumerable<object> MPImpl ───────────────────────────────────────
   val iaeSlots: List[MImplSlot] = newList()
   iaeSlots.add(
     MImplSlot(
@@ -11629,7 +12156,7 @@ func synthesizeGeneratorMsil(
     )
   )
 
-  // IAsyncEnumerator<object> — TypeSpec interface: explicit MethodImpl rows required.
+  // ── IAsyncEnumerator<object> MPImpl ───────────────────────────────────────
   val iaetSlots: List[MImplSlot] = newList()
   iaetSlots.add(
     MImplSlot(
@@ -11659,7 +12186,7 @@ func synthesizeGeneratorMsil(
     )
   )
 
-  // IAsyncDisposable
+  // ── IAsyncDisposable MPImpl ────────────────────────────────────────────────
   val iasyncDispSlots: List[MImplSlot] = newList()
   iasyncDispSlots.add(
     MImplSlot(
@@ -11681,23 +12208,21 @@ func synthesizeGeneratorMsil(
     )
   )
 
-  // ── Kickoff MFunc ─────────────────────────────────────────────────────────────
-  // Allocates the generator, stores user params as fields, initialises _values,
-  // calls RunBody() to eagerly produce all yields, and returns the generator.
+  // ── Kickoff MFunc ──────────────────────────────────────────────────────────
+  // Creates the generator, sets _state=-1 (initial), copies user params, returns it.
   val kfInsns: List[MInsn] = newList()
   val kfLocals: List[MsilType] = newList()
-  kfLocals.add(MClass(genFqn))  // local 0: gen instance
+  kfLocals.add(MClass(genFqn))
 
-  // gen = new Gen()
   kfInsns.add(MNewobjByName(className = genFqn))
   kfInsns.add(MStloc(slot = 0))
 
-  // gen._values = new List<object>()
+  // gen._state = -1  (useDefaultCtor zeroes fields; -1 is the correct initial state)
   kfInsns.add(MLdloc(slot = 0))
-  kfInsns.add(MNewobj(ctorToken = cctx.tokListObjCtor))
-  kfInsns.add(MStfldByName(ownerFqn = genFqn, fieldName = "_values"))
+  kfInsns.add(MLdcI4(v = -1))
+  kfInsns.add(MStfldByName(ownerFqn = genFqn, fieldName = "_state"))
 
-  // Copy user params into gen fields: ldloc gen; ldarg i; stfld __pi
+  // Copy user params into gen fields.
   var kpi = 0
   while kpi < decl.params.count {
     kfInsns.add(MLdloc(slot = 0))
@@ -11705,10 +12230,6 @@ func synthesizeGeneratorMsil(
     kfInsns.add(MStfldByName(ownerFqn = genFqn, fieldName = "__p" + toString(kpi)))
     kpi = kpi + 1
   }
-
-  // gen.RunBody()
-  kfInsns.add(MLdloc(slot = 0))
-  kfInsns.add(MCallByName(className = genFqn, methodName = "RunBody"))
 
   // return gen (as IAsyncEnumerable<object>)
   kfInsns.add(MLdloc(slot = 0))
@@ -11734,7 +12255,7 @@ func synthesizeGeneratorMsil(
       params = byrefWrapSigTypes(decl.params, kfParamTypes),
       ret = kfRetTy,
       insns = kfInsns,
-      maxStack = 4,
+      maxStack = 3 + decl.params.count,
       locals = kfLocals
     )
   )
