@@ -25,7 +25,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
           filter: blob:none
@@ -109,13 +109,13 @@ jobs:
 
       - name: Set up .NET (uses bootstrap/global.json)
         if: steps.changes.outputs.has_code_changes == 'true'
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
         with:
           global-json-file: bootstrap/global.json
 
       - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
         if: steps.changes.outputs.has_code_changes == 'true'
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654  # v5.2.0
         with:
           distribution: temurin
           java-version: '21'
@@ -126,7 +126,7 @@ jobs:
 
       - name: Cache NuGet packages
         if: steps.changes.outputs.has_code_changes == 'true'
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: ~/.nuget/packages
           key: ${{ runner.os }}-nuget-${{ hashFiles('bootstrap/**/*.fsproj', 'bootstrap/**/*.csproj', 'bootstrap/global.json') }}
@@ -143,7 +143,7 @@ jobs:
       # full rebuild. Saves a full Release publish on the common .l-only PR.
       - name: Cache stage-0 F# publish
         if: steps.changes.outputs.has_code_changes == 'true'
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: .bootstrap/stage0-publish
           key: ${{ runner.os }}-stage0-${{ hashFiles('bootstrap/src/**/*.fs', 'bootstrap/src/**/*.fsproj', 'bootstrap/global.json', 'bootstrap/Directory.Build.props', 'scripts/bootstrap.sh') }}
@@ -237,7 +237,7 @@ jobs:
       # and actually fail, so security regressions are caught on every push.
       - name: Upload build artifacts
         if: steps.changes.outputs.has_code_changes == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: build-artifacts
           path: |
@@ -258,23 +258,23 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
         with:
           global-json-file: bootstrap/global.json
       - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654  # v5.2.0
         with:
           distribution: temurin
           java-version: '21'
       - name: Install Z3 (for the Phase 4 verifier smoke tests)
         run: sudo apt-get update && sudo apt-get install -y z3
       - name: Cache NuGet packages
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: ~/.nuget/packages
           key: ${{ runner.os }}-nuget-${{ hashFiles('bootstrap/**/*.fsproj', 'bootstrap/**/*.csproj', 'bootstrap/global.json') }}
@@ -330,16 +330,16 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: build-artifacts
       - name: Restore executable permissions
@@ -985,16 +985,16 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: build-artifacts
       - name: Restore executable permissions
@@ -1496,21 +1496,21 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
         with:
           global-json-file: bootstrap/global.json
       - name: Set up Java 21 (for JVM emitter tests)
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654  # v5.2.0
         with:
           distribution: temurin
           java-version: '21'
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: build-artifacts
       - name: Restore executable permissions
@@ -1795,16 +1795,16 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: build-artifacts
       - name: Restore executable permissions
@@ -1919,16 +1919,16 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: build-artifacts
       - name: Restore executable permissions
@@ -2099,16 +2099,16 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: build-artifacts
       - name: Restore executable permissions
@@ -2924,16 +2924,16 @@ jobs:
       contents: read
     if: needs.build.outputs.has_code_changes == 'true'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: build-artifacts
       - name: Restore executable permissions
@@ -3352,16 +3352,16 @@ jobs:
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
           filter: blob:none
       - name: Set up .NET (uses bootstrap/global.json)
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7  # v5.2.0
         with:
           global-json-file: bootstrap/global.json
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           name: build-artifacts
       - name: Restore executable permissions
@@ -3397,7 +3397,7 @@ jobs:
           ls -lah ../coverage || true
 
       - name: Upload coverage artifact (main only)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: code-coverage
           path: coverage/
@@ -3432,7 +3432,7 @@ jobs:
 
     steps:
       - name: Mark PR ready for review if build succeeds
-        uses: actions/github-script@v7
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # v7.0.1
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         with:

@@ -111,7 +111,7 @@ pub func checkStatement(
       // assignment whose target is an immutable binding is rejected (T0087).
       // `var` locals and `out`/`inout` params are mutable and unaffected.
       match target.kind {
-        case EPath(p) -> if p.segments.count == 1 { match scopeTryFind(sc, p.segments[0]) { case Some(b) -> if not b.isMutable { diag.add(errorDiagnostic("T0087", "cannot reassign immutable binding '" + p.segments[0] + "' (a `val`/`let` or an `in` parameter)", target.span)) }; case None -> {  } } }
+        case EPath(p) -> if p.segments.count == 1 { match scopeTryFind(sc, p.segments[0]) { case Some(b) -> if not b.isMutable { diag.add(errorDiagnostic("T0087", t0087Msg(p.segments[0]), target.span)) }; case None -> {  } } }
         case _ -> {
         }
       }

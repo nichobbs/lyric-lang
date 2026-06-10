@@ -82,6 +82,11 @@ func checkDuplicate(
   }
 }
 
+func t0087Msg(name: in String): String {
+  "cannot reassign immutable binding '" + name +
+    "' (`in`/`val` prevents rebinding, not mutation of the referenced object)"
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Item registration.
 // ─────────────────────────────────────────────────────────────────────────────
