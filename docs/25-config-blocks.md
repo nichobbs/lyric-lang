@@ -1,13 +1,9 @@
 # 25 — Config Blocks (typed, env-backed, read-once)
 
-**Status:** Partially shipped — v1 surface (parser + AST +
+**Status:** MSIL backend shipped (PR #2966, D-progress-488). JVM backend
+parity not yet implemented; tracked in #2998.  v1 surface (parser + AST +
 type-check + symbol table) implemented in the F# bootstrap and
-self-hosted compiler (PRs #206, #227).  Emitter lowering
-(env-var startup hook + static fields + field-access
-resolution) is the remaining v1 work; deferred to whichever
-compiler ships it first (the F# bootstrap is being retired,
-so most likely the self-hosted compiler once M5.2 stage 3+
-ships the AST→MSIL bridge).  v2 spec:
+self-hosted compiler (PRs #206, #227).  v2 spec:
 `docs/29-config-v2-sketch.md` (D048, file source + layered
 precedence — settled, implementation gated on M5.2 stage 3+).
 **Implementation:** prerequisite for `docs/26-aspects.md` runtime

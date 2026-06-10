@@ -403,6 +403,100 @@ func findFuncInFile(sf: in SourceFile, name: in String): Bool {
   false
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Union derive tests (#1507).
+// ─────────────────────────────────────────────────────────────────────────────
+test "derive equals union" {
+  val src = "package P\n@derive(Equals)\nunion Shape { case Circle(r: Float); case Rect(w: Float, h: Float); case Dot }\n"
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
+  assertTrue(parseDeriveAndFindFunc(src, "Shape.equals"), "union-eq: Shape.equals synthesised")
+}
+
+test "derive hash union" {
+  val src = "package P\n@derive(Hash)\nunion Shape { case Circle(r: Float); case Dot }\n"
+  assertTrue(parseDeriveAndFindFunc(src, "Shape.hash"), "union-hash: Shape.hash synthesised")
+}
+
+test "derive show union" {
+  val src = "package P\n@derive(Show)\nunion Shape { case Circle(r: Float); case Dot }\n"
+  assertTrue(parseDeriveAndFindFunc(src, "Shape.show"), "union-show: Shape.show synthesised")
+}
+
+test "derive ord union" {
+  val src = "package P\n@derive(Ord)\nunion Priority { case Low; case Medium; case High }\n"
+  assertTrue(parseDeriveAndFindFunc(src, "Priority.compare"), "union-ord: Priority.compare synthesised")
+}
+
+test "derive all union" {
+  val src = "package P\n@derive(Equals)\n@derive(Hash)\n@derive(Show)\nunion Expr { case Num(n: Int); case Add(l: Int, r: Int) }\n"
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
+  assertEqualInt(sf.items.count, 4, "union-all: 1 union + 3 synths")
+  assertTrue(parseDeriveAndFindFunc(src, "Expr.equals"), "union-all: equals present")
+  assertTrue(parseDeriveAndFindFunc(src, "Expr.hash"), "union-all: hash present")
+  assertTrue(parseDeriveAndFindFunc(src, "Expr.show"), "union-all: show present")
+}
+
+test "derive equals nullary union" {
+  // Union where all cases are nullary — equals should still produce correct structure.
+  val src = "package P\n@derive(Equals)\nunion Direction { case North; case South; case East; case West }\n"
+  assertTrue(parseDeriveAndFindFunc(src, "Direction.equals"), "union-eq-null: Direction.equals synthesised")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enum derive tests (#1507).
+// ─────────────────────────────────────────────────────────────────────────────
+test "derive equals enum" {
+  val src = "package P\n@derive(Equals)\nenum Color { case Red; case Green; case Blue }\n"
+  assertTrue(parseDeriveAndFindFunc(src, "Color.equals"), "enum-eq: Color.equals synthesised")
+}
+
+test "derive hash enum" {
+  val src = "package P\n@derive(Hash)\nenum Color { case Red; case Green; case Blue }\n"
+  assertTrue(parseDeriveAndFindFunc(src, "Color.hash"), "enum-hash: Color.hash synthesised")
+}
+
+test "derive show enum" {
+  val src = "package P\n@derive(Show)\nenum Color { case Red; case Green; case Blue }\n"
+  assertTrue(parseDeriveAndFindFunc(src, "Color.show"), "enum-show: Color.show synthesised")
+}
+
+test "derive ord enum" {
+  val src = "package P\n@derive(Ord)\nenum Priority { case Low; case Medium; case High }\n"
+  assertTrue(parseDeriveAndFindFunc(src, "Priority.compare"), "enum-ord: Priority.compare synthesised")
+}
+
+test "derive all enum" {
+  val src = "package P\n@derive(Equals)\n@derive(Hash)\n@derive(Show)\nenum Day { case Mon; case Tue; case Wed }\n"
+  val pr = parse(src)
+  val sf = deriveFile(pr.file)
+  assertEqualInt(sf.items.count, 4, "enum-all: 1 enum + 3 synths")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// @derive(Ord) for records and distinct types (#1507).
+// ─────────────────────────────────────────────────────────────────────────────
+test "derive ord record" {
+  val src = "package P\n@derive(Ord)\nrecord Version { major: Int; minor: Int; patch: Int }\n"
+  assertTrue(parseDeriveAndFindFunc(src, "Version.compare"), "ord-rec: Version.compare synthesised")
+}
+
+test "derive ord record empty" {
+  val src = "package P\n@derive(Ord)\nrecord Unit {}\n"
+  assertTrue(parseDeriveAndFindFunc(src, "Unit.compare"), "ord-rec-empty: Unit.compare synthesised (always 0)")
+}
+
+test "derive ord distinct" {
+  val src = "package P\ntype Score = Int derives Ord\n"
+  assertTrue(parseDeriveAndFindFunc(src, "Score.compare"), "ord-distinct: Score.compare synthesised")
+}
+
+test "derive ord distinct annotation" {
+  val src = "package P\n@derive(Ord)\ntype Score = Int\n"
+  assertTrue(parseDeriveAndFindFunc(src, "Score.compare"), "ord-distinct-ann: Score.compare synthesised via @derive")
+}
+
 test "mono retains derived helpers" {
   val src = "package P\n" + "@derive(Equals)\n@derive(Hash)\n@derive(Show)\n" + "record Point { x: Int; y: Int }\n" +
     "func gid[T](v: in T): T { v }\n"

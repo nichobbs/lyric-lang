@@ -174,7 +174,7 @@ val age: Age = Age.tryFrom(human.years)?
 val total: Int = age.toInt() + 5
 ```
 
-Range-violating values cause a runtime check failure on construction (`tryFrom` returns `Result`; `from` panics). Inside a `@proof_required` module, the prover discharges the range obligation statically; runtime checks are elided when proof succeeds.
+Range-violating values cause a runtime check failure on construction (`tryFrom` returns `Result`; `from` throws `System.ArgumentOutOfRangeException` on .NET). JVM bounds-checking is not yet implemented (tracked in #2997). Inside a `@proof_required` module, the prover discharges the range obligation statically; runtime checks are elided when proof succeeds.
 
 Range syntax:
 - `a ..= b` — closed range, both endpoints included
@@ -208,7 +208,7 @@ type Cents = Long range 0 ..= 1_000_000_000_00 derives Add, Sub, Compare
 type UserId = Long derives Compare, Hash    // no arithmetic on user IDs
 ```
 
-Available derives: `Add`, `Sub`, `Mul`, `Div`, `Mod`, `Compare`, `Hash`, `Equals`, `Default`. Numeric distinct types with `Add`/`Sub` permit operations only with values of the *same* type. `derives Default` is rejected when the underlying primitive's default value falls outside the declared range. The closed marker set is fixed by D034; see `docs/03-decision-log.md`.
+Available derives: `Add`, `Sub`, `Mul`, `Div`, `Mod`, `Compare`, `Ord`, `Hash`, `Equals`, `Default`. `Ord` synthesises a total ordering (`compare(self, other): Int` returning negative/zero/positive); valid on records, unions, enums, and distinct types. Numeric distinct types with `Add`/`Sub` permit operations only with values of the *same* type. `derives Default` is rejected when the underlying primitive's default value falls outside the declared range. The closed marker set is fixed by D034; see `docs/03-decision-log.md`.
 
 ### 2.4 Records
 
@@ -817,8 +817,8 @@ Internal mutations may temporarily violate the invariant; the invariant is check
 Contract expressions are pure: no side effects, no I/O, no mutation. They may use:
 - Standard arithmetic and comparison operators
 - Calls to functions explicitly marked `@pure`
-- `forall` and `exists` over finite ranges or collections (decidable fragment for proof; runtime checks just iterate)
-- `old(expr)` in `ensures` clauses
+- `forall` and `exists` over finite ranges or collections (decidable fragment for proof; in `@runtime_checked` modules these are approximated as `true` — a sound over-approximation that does not verify the quantified property at runtime)
+- `old(expr)` in `ensures` clauses — captures the value of `expr` at function entry; the elaborator inserts a `let __old_N = expr` snapshot before any `requires` assertions
 - `result` in `ensures` clauses
 - `implies` (`a implies b` ≡ `not a or b`)
 

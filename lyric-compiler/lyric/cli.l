@@ -923,9 +923,17 @@ func buildProject(
     val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
     val pkgSources: List[String] = newList()
     if File.fileExists(abs) {
-      // Single .l file: read it directly.
+      // Single .l file: read it directly, then run custom generators.
       match File.readText(abs) {
-        case Ok(t) -> pkgSources.add(t)
+        case Ok(raw) -> {
+          match Generator.preprocess(raw, mfPath, abs) {
+            case Ok(t) -> pkgSources.add(t)
+            case Err(e) -> {
+              printErr("build: package '" + pkgEntry.name + "': generator error in " + abs + ": " + e)
+              hadFatal = true
+            }
+          }
+        }
         case Err(e) -> {
           printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
           hadFatal = true
@@ -954,7 +962,15 @@ func buildProject(
         val sorted = sortFileList(lFiles)
         for f in sorted {
           match File.readText(f) {
-            case Ok(t) -> pkgSources.add(t)
+            case Ok(raw) -> {
+              match Generator.preprocess(raw, mfPath, f) {
+                case Ok(t) -> pkgSources.add(t)
+                case Err(e) -> {
+                  printErr("build: package '" + pkgEntry.name + "': generator error in " + f + ": " + e)
+                  hadFatal = true
+                }
+              }
+            }
             case Err(e) -> {
               printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
               hadFatal = true

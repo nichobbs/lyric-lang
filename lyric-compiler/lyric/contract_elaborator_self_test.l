@@ -703,3 +703,93 @@ test "protected invariant appended to entries" {
   // Original entry contracts preserved (1 requires clause only, not the added invariant)
   assertEqualInt(ed.contracts.count, 1, "protected-invariant: original entry contracts preserved")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §15. EOld / old() snapshotting (#1506).
+// ─────────────────────────────────────────────────────────────────────────────
+// `old(e)` in an ensures clause must be materialised as a snapshot binding
+// prepended to the function body before the requires asserts.
+test "old() snapshot prepended before requires" {
+  val src = "package P\n" + "func incr(x: inout Int): Unit\n" + "  ensures: x == old(x) + 1\n" + "{\n" + "  x = x + 1\n" +
+    "}\n"
+  val file = parseAndElaborate(src)
+  val fn = firstFunction(file, "incr")
+  val blk = bodyBlockOf(fn)
+  // Expected layout:
+  //   [0] = let __old_0 = x        (snapshot)
+  //   [1] = x = x + 1              (body)  — no requires here
+  //   plus ensures assert and trailing return if present
+  assertTrue(blk.statements.count >= 2, "old-snapshot: body has at least 2 stmts")
+  // stmt[0] must be a let binding named __old_0
+  assertTrue(isLetBinding(blk.statements[0]), "old-snapshot: stmt[0] is a let binding")
+  assertEqual(letName(blk.statements[0]), "__old_0", "old-snapshot: stmt[0] is __old_0")
+}
+
+test "old() snapshot before requires asserts" {
+  val src = "package P\n" + "func incr(x: inout Int): Unit\n" + "  requires: x >= 0\n" + "  ensures: x == old(x) + 1\n" +
+    "{\n" +
+    "  x = x + 1\n" +
+    "}\n"
+  val file = parseAndElaborate(src)
+  val fn = firstFunction(file, "incr")
+  val blk = bodyBlockOf(fn)
+  // Expected layout:
+  //   [0] = let __old_0 = x        (snapshot — before requires)
+  //   [1] = assert(x >= 0)         (requires)
+  //   [2] = x = x + 1              (body)
+  //   ...
+  assertTrue(blk.statements.count >= 3, "old-before-req: at least 3 stmts")
+  assertTrue(isLetBinding(blk.statements[0]), "old-before-req: stmt[0] is let binding")
+  assertEqual(letName(blk.statements[0]), "__old_0", "old-before-req: stmt[0] is __old_0")
+  assertTrue(isAssertCall(blk.statements[1]), "old-before-req: stmt[1] is requires assert")
+}
+
+test "no old() means no snapshot" {
+  val src = "package P\n" + "func f(x: in Int): Int\n" + "  ensures: result > 0\n" + "{\n" + "  x + 1\n" + "}\n"
+  val file = parseAndElaborate(src)
+  val fn = firstFunction(file, "f")
+  val blk = bodyBlockOf(fn)
+  // No snapshot binding: first stmt is the result let-binding (__lyric_result_0), not __old_N.
+  // Expected: [let __lyric_result_0 = x + 1, assert(__lyric_result_0 > 0), __lyric_result_0]
+  assertTrue(blk.statements.count >= 1, "no-old: at least 1 stmt")
+  assertTrue(isLetBinding(blk.statements[0]), "no-old: stmt[0] is let binding (result, not snapshot)")
+  assertEqual(letName(blk.statements[0]), "__lyric_result_0", "no-old: first let is result binding, not __old_N")
+}
+
+test "multiple old() snapshots get distinct names" {
+  val src = "package P\n" + "func swap(a: inout Int, b: inout Int): Unit\n" + "  ensures: a == old(b) and b == old(a)\n" +
+    "{\n" +
+    "  val tmp = a\n" +
+    "  a = b\n" +
+    "  b = tmp\n" +
+    "}\n"
+  val file = parseAndElaborate(src)
+  val fn = firstFunction(file, "swap")
+  val blk = bodyBlockOf(fn)
+  // Two old() → two snapshot bindings at positions 0 and 1.
+  assertTrue(blk.statements.count >= 2, "multi-old: at least 2 stmts")
+  assertTrue(isLetBinding(blk.statements[0]), "multi-old: stmt[0] is let binding")
+  assertTrue(isLetBinding(blk.statements[1]), "multi-old: stmt[1] is let binding")
+  assertEqual(letName(blk.statements[0]), "__old_0", "multi-old: stmt[0] is __old_0")
+  assertEqual(letName(blk.statements[1]), "__old_1", "multi-old: stmt[1] is __old_1")
+}
+
+test "old() in range bounds creates snapshot" {
+  // Regression for #2990: replaceOldExpr had a shadowing `case ERange(_) -> e`
+  // arm that prevented the recursive arm from ever running, leaving EOld nodes
+  // unreplaced inside range bound expressions.
+  val src = "package P\n" + "func clamp(x: in Int, lo: in Int, hi: in Int): Int\n" +
+    "  ensures: result >= old(lo) and result <= old(hi)\n" +
+    "{\n" +
+    "  if x < lo { lo } else { if x > hi { hi } else { x } }\n" +
+    "}\n"
+  val file = parseAndElaborate(src)
+  val fn = firstFunction(file, "clamp")
+  val blk = bodyBlockOf(fn)
+  // Two old() (lo and hi) → two snapshot bindings at positions 0 and 1.
+  assertTrue(blk.statements.count >= 2, "old-range: at least 2 stmts")
+  assertTrue(isLetBinding(blk.statements[0]), "old-range: stmt[0] is let binding")
+  assertTrue(isLetBinding(blk.statements[1]), "old-range: stmt[1] is let binding")
+  assertEqual(letName(blk.statements[0]), "__old_0", "old-range: stmt[0] is __old_0")
+  assertEqual(letName(blk.statements[1]), "__old_1", "old-range: stmt[1] is __old_1")
+}

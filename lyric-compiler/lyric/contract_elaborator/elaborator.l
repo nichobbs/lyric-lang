@@ -508,9 +508,407 @@ func substResultRange(b: in RangeBound, name: in String): RangeBound {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §4b. EOld collection and replacement.
+//
+//     `old(e)` in an `ensures:` clause captures the value of expression `e`
+//     at function entry (the pre-state).  The elaborator materialises each
+//     `EOld(inner)` as a synthetic `let __old_N = inner` binding prepended
+//     to the function body before requires asserts, then rewrites the ensures
+//     expressions to replace `EOld(inner)` with `EPath("__old_N")`.
+//
+//     Collection and replacement traverse ensures expressions in the same
+//     depth-first left-to-right order so counter values stay in sync.
+//     `EOld` is treated as a leaf in both passes (no recursion into `inner`).
+// ─────────────────────────────────────────────────────────────────────────────
+func freshOldName(n: in Int): String {
+  "__old_" + toString(n)
+}
+
+func collectOldExpr(e: in Expr, acc: inout List[Expr]) {
+  match e.kind {
+    case EOld(inner) -> acc.add(inner)
+    case ELiteral(_) -> ()
+    case EPath(_) -> ()
+    case ESelf -> ()
+    case EResult -> ()
+    case EError -> ()
+    case ERange(bound) -> collectOldExprRange(bound, acc)
+    case EParen(inner) -> collectOldExpr(inner, acc)
+    case ETuple(exprs) -> collectOldExprList(exprs, acc)
+    case EList(exprs) -> collectOldExprList(exprs, acc)
+    case EIf(cond, thenBranch, elseOpt, _) -> {
+      collectOldExpr(cond, acc)
+      collectOldExprEob(thenBranch, acc)
+      match elseOpt {
+        case Some(eb) -> collectOldExprEob(eb, acc)
+        case None -> ()
+      }
+    }
+    case EMatch(scrutinee, arms) -> {
+      collectOldExpr(scrutinee, acc)
+      var i = 0
+      while i < arms.count {
+        match arms[i].guard {
+          case Some(g) -> collectOldExpr(g, acc)
+          case None -> ()
+        }
+        collectOldExprEob(arms[i].body, acc)
+        i = i + 1
+      }
+    }
+    case ECall(fn, args) -> {
+      collectOldExpr(fn, acc)
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CAPositional(v) -> collectOldExpr(v, acc)
+          case CANamed(_, v, _) -> collectOldExpr(v, acc)
+        }
+        i = i + 1
+      }
+    }
+    case ETypeApp(fn, _) -> collectOldExpr(fn, acc)
+    case EIndex(recv, indices) -> {
+      collectOldExpr(recv, acc)
+      collectOldExprList(indices, acc)
+    }
+    case EMember(recv, _) -> collectOldExpr(recv, acc)
+    case EBinop(_, l, r) -> {
+      collectOldExpr(l, acc)
+      collectOldExpr(r, acc)
+    }
+    case EPrefix(_, x) -> collectOldExpr(x, acc)
+    case EPropagate(inner) -> collectOldExpr(inner, acc)
+    case EAwait(inner) -> collectOldExpr(inner, acc)
+    case EYield(inner) -> collectOldExpr(inner, acc)
+    case ESpawn(inner) -> collectOldExpr(inner, acc)
+    case ETry(inner) -> collectOldExpr(inner, acc)
+    case EForall(_, whereOpt, body) -> {
+      match whereOpt {
+        case Some(w) -> collectOldExpr(w, acc)
+        case None -> ()
+      }
+      collectOldExpr(body, acc)
+    }
+    case EExists(_, whereOpt, body) -> {
+      match whereOpt {
+        case Some(w) -> collectOldExpr(w, acc)
+        case None -> ()
+      }
+      collectOldExpr(body, acc)
+    }
+    case ELambda(_, body) -> collectOldExprBlock(body, acc)
+    case EAssign(t, _, v) -> {
+      collectOldExpr(t, acc)
+      collectOldExpr(v, acc)
+    }
+    case EBlock(blk) -> collectOldExprBlock(blk, acc)
+    case EUnsafe(blk) -> collectOldExprBlock(blk, acc)
+    case EInterpolated(segs) -> {
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISExpr(x) -> collectOldExpr(x, acc)
+          case ISText(_, _) -> ()
+        }
+        i = i + 1
+      }
+    }
+  }
+}
+
+func collectOldExprList(exprs: in List[Expr], acc: inout List[Expr]) {
+  var i = 0
+  while i < exprs.count {
+    collectOldExpr(exprs[i], acc)
+    i = i + 1
+  }
+}
+
+func collectOldExprRange(b: in RangeBound, acc: inout List[Expr]) {
+  match b {
+    case RBClosed(lo, hi) -> {
+      collectOldExpr(lo, acc)
+      collectOldExpr(hi, acc)
+    }
+    case RBHalfOpen(lo, hi) -> {
+      collectOldExpr(lo, acc)
+      collectOldExpr(hi, acc)
+    }
+    case RBLowerOpen(hi) -> collectOldExpr(hi, acc)
+    case RBUpperOpen(lo) -> collectOldExpr(lo, acc)
+  }
+}
+
+func collectOldExprEob(eob: in ExprOrBlock, acc: inout List[Expr]) {
+  match eob {
+    case EOBExpr(e) -> collectOldExpr(e, acc)
+    case EOBBlock(blk) -> collectOldExprBlock(blk, acc)
+  }
+}
+
+func collectOldExprBlock(blk: in Block, acc: inout List[Expr]) {
+  var i = 0
+  while i < blk.statements.count {
+    collectOldExprStmt(blk.statements[i], acc)
+    i = i + 1
+  }
+}
+
+func collectOldExprStmt(s: in Statement, acc: inout List[Expr]) {
+  match s.kind {
+    case SReturn(opt) -> {
+      match opt {
+        case Some(e) -> collectOldExpr(e, acc)
+        case None -> ()
+      }
+    }
+    case SExpr(e) -> collectOldExpr(e, acc)
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> collectOldExpr(init, acc)
+        case LBLet(_, _, init) -> collectOldExpr(init, acc)
+        case LBVar(_, _, optInit) -> {
+          match optInit {
+            case Some(init) -> collectOldExpr(init, acc)
+            case None -> ()
+          }
+        }
+      }
+    }
+    case SAssign(t, _, v) -> {
+      collectOldExpr(t, acc)
+      collectOldExpr(v, acc)
+    }
+    case SFor(_, _, iter, body) -> {
+      collectOldExpr(iter, acc)
+      collectOldExprBlock(body, acc)
+    }
+    case SWhile(_, cond, body) -> {
+      collectOldExpr(cond, acc)
+      collectOldExprBlock(body, acc)
+    }
+    case SLoop(_, body) -> collectOldExprBlock(body, acc)
+    case SInvariant(x) -> collectOldExpr(x, acc)
+    case SRule(l, r) -> {
+      collectOldExpr(l, acc)
+      collectOldExpr(r, acc)
+    }
+    case _ -> ()
+  }
+}
+
+// Replace each `EOld` node in `e` with `EPath("__old_N")` (same traversal
+// order as `collectOldExpr`), incrementing `counter.next` each time.
+func replaceOldExpr(e: in Expr, counter: inout RenameCounter): Expr {
+  match e.kind {
+    case EOld(_) -> {
+      val n = counter.next
+      counter.next = n + 1
+      mkPath(freshOldName(n), e.span)
+    }
+    case ELiteral(_) -> e
+    case EPath(_) -> e
+    case ESelf -> e
+    case EResult -> e
+    case EError -> e
+    case EParen(inner) -> mkExpr(EParen(inner = replaceOldExpr(inner, counter)), e.span)
+    case ETuple(exprs) -> {
+      val outs: List[Expr] = newList()
+      var i = 0
+      while i < exprs.count {
+        outs.add(replaceOldExpr(exprs[i], counter))
+        i = i + 1
+      }
+      mkExpr(ETuple(exprs = outs), e.span)
+    }
+    case EList(exprs) -> {
+      val outs: List[Expr] = newList()
+      var i = 0
+      while i < exprs.count {
+        outs.add(replaceOldExpr(exprs[i], counter))
+        i = i + 1
+      }
+      mkExpr(EList(exprs = outs), e.span)
+    }
+    case EIf(cond, thenBranch, elseOpt, thenForm) -> {
+      val newElse: Option[ExprOrBlock] = match elseOpt {
+        case Some(eb) -> Some(value = replaceOldExprEob(eb, counter))
+        case None -> None
+      }
+      mkExpr(
+        EIf(
+          cond = replaceOldExpr(cond, counter),
+          thenBranch = replaceOldExprEob(thenBranch, counter),
+          elseBranch = newElse,
+          thenForm = thenForm
+        ),
+        e.span
+      )
+    }
+    case EMatch(scrutinee, arms) -> {
+      val newArms: List[MatchArm] = newList()
+      var i = 0
+      while i < arms.count {
+        val arm = arms[i]
+        val newGuard: Option[Expr] = match arm.guard {
+          case Some(g) -> Some(value = replaceOldExpr(g, counter))
+          case None -> None
+        }
+        newArms.add(
+          MatchArm(pattern = arm.pattern, guard = newGuard, body = replaceOldExprEob(arm.body, counter), span = arm.span)
+        )
+        i = i + 1
+      }
+      mkExpr(EMatch(scrutinee = replaceOldExpr(scrutinee, counter), arms = newArms), e.span)
+    }
+    case EAwait(inner) -> mkExpr(EAwait(inner = replaceOldExpr(inner, counter)), e.span)
+    case EYield(inner) -> mkExpr(EYield(inner = replaceOldExpr(inner, counter)), e.span)
+    case ESpawn(inner) -> mkExpr(ESpawn(inner = replaceOldExpr(inner, counter)), e.span)
+    case ETry(inner) -> mkExpr(ETry(inner = replaceOldExpr(inner, counter)), e.span)
+    case EForall(binders, whereOpt, body) -> {
+      val newWhere: Option[Expr] = match whereOpt {
+        case Some(w) -> Some(value = replaceOldExpr(w, counter))
+        case None -> None
+      }
+      mkExpr(EForall(binders = binders, whereExpr = newWhere, body = replaceOldExpr(body, counter)), e.span)
+    }
+    case EExists(binders, whereOpt, body) -> {
+      val newWhere: Option[Expr] = match whereOpt {
+        case Some(w) -> Some(value = replaceOldExpr(w, counter))
+        case None -> None
+      }
+      mkExpr(EExists(binders = binders, whereExpr = newWhere, body = replaceOldExpr(body, counter)), e.span)
+    }
+    case ELambda(params, body) -> {
+      mkExpr(ELambda(lambdaParams = params, body = replaceOldExprBlock(body, counter)), e.span)
+    }
+    case ECall(fn, args) -> {
+      val newArgs: List[CallArg] = newList()
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case CANamed(n, v, sp) -> newArgs.add(CANamed(name = n, value = replaceOldExpr(v, counter), span = sp))
+          case CAPositional(v) -> newArgs.add(CAPositional(expr = replaceOldExpr(v, counter)))
+        }
+        i = i + 1
+      }
+      mkExpr(ECall(fn = replaceOldExpr(fn, counter), args = newArgs), e.span)
+    }
+    case ETypeApp(fn, ts) -> mkExpr(ETypeApp(fn = replaceOldExpr(fn, counter), args = ts), e.span)
+    case EIndex(recv, indices) -> {
+      val newIdx: List[Expr] = newList()
+      var i = 0
+      while i < indices.count {
+        newIdx.add(replaceOldExpr(indices[i], counter))
+        i = i + 1
+      }
+      mkExpr(EIndex(receiver = replaceOldExpr(recv, counter), indices = newIdx), e.span)
+    }
+    case EMember(recv, mname) -> mkExpr(EMember(receiver = replaceOldExpr(recv, counter), memberName = mname), e.span)
+    case EPropagate(inner) -> mkExpr(EPropagate(inner = replaceOldExpr(inner, counter)), e.span)
+    case EPrefix(op, x) -> mkExpr(EPrefix(op = op, operand = replaceOldExpr(x, counter)), e.span)
+    case EBinop(op, l, r) -> {
+      mkExpr(EBinop(op = op, lhs = replaceOldExpr(l, counter), rhs = replaceOldExpr(r, counter)), e.span)
+    }
+    case ERange(bound) -> mkExpr(ERange(bound = replaceOldExprRange(bound, counter)), e.span)
+    case EAssign(t, op, v) -> {
+      mkExpr(EAssign(target = replaceOldExpr(t, counter), op = op, value = replaceOldExpr(v, counter)), e.span)
+    }
+    case EBlock(blk) -> mkExpr(EBlock(block = replaceOldExprBlock(blk, counter)), e.span)
+    case EUnsafe(blk) -> mkExpr(EUnsafe(block = replaceOldExprBlock(blk, counter)), e.span)
+    case EInterpolated(segs) -> {
+      val outs: List[InterpolatedSegment] = newList()
+      var i = 0
+      while i < segs.count {
+        match segs[i] {
+          case ISText(t, sp) -> outs.add(ISText(text = t, span = sp))
+          case ISExpr(x) -> outs.add(ISExpr(expr = replaceOldExpr(x, counter)))
+        }
+        i = i + 1
+      }
+      mkExpr(EInterpolated(segments = outs), e.span)
+    }
+  }
+}
+
+func replaceOldExprEob(eob: in ExprOrBlock, counter: inout RenameCounter): ExprOrBlock {
+  match eob {
+    case EOBExpr(x) -> EOBExpr(expr = replaceOldExpr(x, counter))
+    case EOBBlock(blk) -> EOBBlock(block = replaceOldExprBlock(blk, counter))
+  }
+}
+
+func replaceOldExprBlock(blk: in Block, counter: inout RenameCounter): Block {
+  val outs: List[Statement] = newList()
+  var i = 0
+  while i < blk.statements.count {
+    outs.add(replaceOldExprStmt(blk.statements[i], counter))
+    i = i + 1
+  }
+  Block(statements = outs, span = blk.span)
+}
+
+func replaceOldExprRange(b: in RangeBound, counter: inout RenameCounter): RangeBound {
+  match b {
+    case RBClosed(lo, hi) -> RBClosed(lo = replaceOldExpr(lo, counter), hi = replaceOldExpr(hi, counter))
+    case RBHalfOpen(lo, hi) -> RBHalfOpen(lo = replaceOldExpr(lo, counter), hi = replaceOldExpr(hi, counter))
+    case RBLowerOpen(hi) -> RBLowerOpen(hi = replaceOldExpr(hi, counter))
+    case RBUpperOpen(lo) -> RBUpperOpen(lo = replaceOldExpr(lo, counter))
+  }
+}
+
+func replaceOldExprStmt(s: in Statement, counter: inout RenameCounter): Statement {
+  match s.kind {
+    case SReturn(opt) -> {
+      match opt {
+        case Some(v) -> mkStmt(SReturn(value = Some(value = replaceOldExpr(v, counter))), s.span)
+        case None -> s
+      }
+    }
+    case SLocal(binding) -> mkStmt(SLocal(binding = replaceOldExprBinding(binding, counter)), s.span)
+    case SAssign(t, op, v) -> {
+      mkStmt(SAssign(target = replaceOldExpr(t, counter), op = op, value = replaceOldExpr(v, counter)), s.span)
+    }
+    case SFor(label, pat, iter, body) -> {
+      mkStmt(
+        SFor(label = label, pat = pat, iter = replaceOldExpr(iter, counter), body = replaceOldExprBlock(body, counter)),
+        s.span
+      )
+    }
+    case SWhile(label, cond, body) -> {
+      mkStmt(SWhile(label = label, cond = replaceOldExpr(cond, counter), body = replaceOldExprBlock(body, counter)), s.span)
+    }
+    case SLoop(label, body) -> mkStmt(SLoop(label = label, body = replaceOldExprBlock(body, counter)), s.span)
+    case SInvariant(x) -> mkStmt(SInvariant(expr = replaceOldExpr(x, counter)), s.span)
+    case SExpr(x) -> mkStmt(SExpr(expr = replaceOldExpr(x, counter)), s.span)
+    case SRule(l, r) -> {
+      mkStmt(SRule(lhs = replaceOldExpr(l, counter), rhs = replaceOldExpr(r, counter)), s.span)
+    }
+    case _ -> s
+  }
+}
+
+func replaceOldExprBinding(b: in LocalBinding, counter: inout RenameCounter): LocalBinding {
+  match b {
+    case LBVal(pat, ty, init) -> LBVal(pat = pat, ty = ty, init = replaceOldExpr(init, counter))
+    case LBLet(n, ty, init) -> LBLet(name = n, ty = ty, init = replaceOldExpr(init, counter))
+    case LBVar(n, ty, initOpt) -> {
+      val newInit: Option[Expr] = match initOpt {
+        case Some(x) -> Some(value = replaceOldExpr(x, counter))
+        case None -> None
+      }
+      LBVar(name = n, ty = ty, init = newInit)
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §5. Function-body elaboration.
 //
 //     `elaborateFunctionBody` produces a transformed `Block` with:
+//       0. `let __old_N = expr` snapshot bindings for each `old()` in ensures,
+//          prepended at function entry before requires asserts;
 //       1. one `assert(req)` statement per `CCRequires` clause, prepended
 //          in source order;
 //       2. each top-level `SReturn(Some(e))` rewritten to
@@ -916,6 +1314,35 @@ func elaborateFunctionBody(contracts: in List[ContractClause], body: in Block, c
 
   val outs: List[Statement] = newList()
 
+  // (0) Materialise `old()` snapshots.  Collect all `EOld(inner)` inner
+  //     expressions from the ensures clauses in traversal order, emit one
+  //     `let __old_N = inner` binding per occurrence, then rewrite the
+  //     ensures expressions with EOld replaced by `EPath("__old_N")`.
+  //     Snapshots are emitted before requires asserts so they capture the
+  //     genuine pre-state even when a requires assertion fires first.
+  val oldInners: List[Expr] = newList()
+  var oei = 0
+  while oei < ensuresExprs.count {
+    collectOldExpr(ensuresExprs[oei], oldInners)
+    oei = oei + 1
+  }
+  var rewrittenEnsures = ensuresExprs
+  if oldInners.count > 0 {
+    var oi = 0
+    while oi < oldInners.count {
+      outs.add(mkLetBinding(freshOldName(oi), oldInners[oi], body.span))
+      oi = oi + 1
+    }
+    val replCounter = newRenameCounter()
+    val rewritten: List[Expr] = newList()
+    var rei = 0
+    while rei < ensuresExprs.count {
+      rewritten.add(replaceOldExpr(ensuresExprs[rei], replCounter))
+      rei = rei + 1
+    }
+    rewrittenEnsures = rewritten
+  }
+
   // (1) Prepend requires asserts at the body's start span.
   var ri = 0
   while ri < requiresExprs.count {
@@ -927,7 +1354,7 @@ func elaborateFunctionBody(contracts: in List[ContractClause], body: in Block, c
   var si = 0
   while si < body.statements.count {
     val isLast = si == body.statements.count - 1
-    elaborateTopLevelStmt(body.statements[si], isLast, ensuresExprs, counter, outs)
+    elaborateTopLevelStmt(body.statements[si], isLast, rewrittenEnsures, counter, outs)
     si = si + 1
   }
 
