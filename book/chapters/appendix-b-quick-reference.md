@@ -836,17 +836,20 @@ lyric test <file.l>                    # run test blocks in a @test_module file
                                        # (TAP-shaped output; exit 1 on any failure)
 lyric test <file.l> --filter <substr>  # only run tests whose title contains <substr>
 lyric test <file.l> --list             # print test titles only; do not compile or run
-lyric test <file.l> --jvm              # compile with JVM backend; write annotated JAR
-                                       # (full JUnit 5 ConsoleLauncher integration in progress)
-lyric test                             # project mode: run every [project.tests] entry
+lyric test <file.l> --target jvm       # compile with JVM backend and run with java -jar
+lyric test                             # project mode: run every [project.tests] entry;
+                                       # falls back to scanning [project.packages] for
+                                       # @test_module files when [project.tests] is empty
 lyric test --manifest <lyric.toml>     # project mode: override manifest discovery
                                        # (v2: --doctests, --update-snapshots, property execution)
 
 # Format
 lyric fmt <file.l>                     # print formatted source to stdout (no configuration)
+lyric fmt <file1.l> <file2.l> ...      # format multiple files (multi-file variadic)
 lyric fmt --write <file.l>             # overwrite file in place
 lyric fmt --check <file.l>             # exit 1 if not formatted; prints filename (CI gate)
-lyric fmt --legacy <file.l>            # AST-only fallback (drops `//` comments) — DEPRECATED, removed in v1.1
+lyric fmt --stdin                      # read from stdin, write formatted output to stdout
+                                       # (editor integration: pipe source through fmt)
 lyric fmt                              # project mode (dry-run): list files that would change
 lyric fmt --write                      # project mode: rewrite all files in place
 lyric fmt --check                      # project mode: exit 1 if any unformatted; prints paths (CI gate)
@@ -856,10 +859,13 @@ lyric fmt --check                      # project mode: exit 1 if any unformatted
 # Lint
 lyric lint <file.l>                    # report style/quality diagnostics (AST-only; fast)
 lyric lint --error-on-warning <file.l> # treat warnings as errors (CI gate)
-lyric lint                             # project mode: lint every [project.packages] source file
+lyric lint                             # project mode: lint every [project.packages] source file;
+                                       # prints summary: "N error(s), M warning(s) in K file(s)"
+                                       # or "K file(s) clean"
 lyric lint --manifest <lyric.toml>     # project mode: override manifest discovery
 # Codes: L001 PascalCase types, L002 camelCase funcs, L003 missing pub doc,
 #        L004 TODO/FIXME in doc, L005 pub func without contracts
+# Exit codes: 0 = clean, 1 = errors (or warnings with --error-on-warning)
 
 # Documentation
 lyric doc <file.l>                     # generate Markdown docs from doc comments + contracts
@@ -896,10 +902,27 @@ lyric openapi <spec.json> -o <out.l>  # write generated source to a specific pat
 lyric openapi <spec.json> --client-name <Name>   # override the generated client type name
 lyric openapi <spec.json> --package <Pkg.Name>   # override the generated package declaration
 
+# Type checking (without output artifact)
+lyric check <file.l>                   # type-check without producing a usable bin/ artifact
+lyric check <file1.l> <file2.l> ...    # type-check multiple files
+lyric check --target jvm <file.l>      # type-check against the JVM target
+lyric check                            # project mode: type-check all [project.packages]
+lyric check --manifest <lyric.toml>    # project mode: override manifest discovery
+# Output is written to .lyric-check/; exit 0 = clean, 1 = type errors
+
+# Clean (remove build artifacts)
+lyric clean                            # remove bin/, .lyric-run/, .lyric-test/, .lyric-bench/,
+                                       # .lyric-check/, .lyric-release/ from the project root
+lyric clean --manifest <lyric.toml>    # clean the project at the given manifest's directory
+lyric clean <dir>                      # clean a specific directory
+
 # Package management
 lyric restore                          # download all dependencies declared in lyric.toml
 lyric restore --locked                 # restore strictly from lyric.lock (fail if lock is stale)
-lyric add Foo@1.2.0                     # add/update a [dependencies] registry entry, then restore
+lyric update                           # re-resolve all deps to latest compatible versions
+                                       # and rewrite lyric.lock (deletes the old lock first)
+lyric deps                             # print the resolved dependency tree from lyric.lock
+lyric add Foo@1.2.0                    # add/update a [dependencies] registry entry, then restore
 lyric add Lib --path ../lib            # add a path dependency
 lyric add Bar --git <url> --tag v1     # add a git dependency (or --rev/--branch)
 lyric add Pkg@1.0 --nuget              # add to the [nuget] table instead

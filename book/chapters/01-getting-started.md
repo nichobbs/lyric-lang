@@ -229,15 +229,18 @@ Core commands you will use constantly:
 | `lyric run --target jvm` | Build and run the project on the JVM target |
 | `lyric --help` | Print the grouped command list |
 | `lyric test <file.l>` | Run `test` declarations in a `@test_module` file (TAP-shaped output, exit 1 on failure) |
-| `lyric test` | Run tests for the discovered project |
+| `lyric test` | Run tests for the discovered project; falls back to scanning packages for `@test_module` |
 | `lyric test <file.l> --list` | Print test titles without compiling |
 | `lyric test <file.l> --filter <substring>` | Run only tests whose title contains the substring |
+| `lyric check <file.l>` | Type-check without producing a usable output artifact |
+| `lyric check` | Type-check the discovered project (output to `.lyric-check/`, not `bin/`) |
+| `lyric clean` | Remove `bin/`, `.lyric-run/`, `.lyric-test/`, `.lyric-bench/`, `.lyric-check/`, `.lyric-release/` |
 | `lyric fmt` | Dry-run: list files that would be reformatted (exit 1 if any) |
 | `lyric fmt --write` | Reformat all project source files in place |
 | `lyric fmt --check` | Exit 1 if any file is not formatted (CI gate) |
-| `lyric fmt <file.l>` | Dry-run format check on a single file |
-| `lyric fmt --write <file.l>` | Reformat a single file in place |
-| `lyric lint` | Report style and quality diagnostics |
+| `lyric fmt <file.l> [<file2.l> …]` | Format one or more explicit files |
+| `lyric fmt --stdin` | Read from stdin, write formatted output to stdout (editor integration) |
+| `lyric lint` | Report style diagnostics; prints summary `N error(s), M warning(s) in K file(s)` |
 | `lyric lint --error-on-warning` | Treat warnings as errors (CI gate) |
 | `lyric doc <file.l>` | Generate Markdown documentation from doc comments |
 | `lyric doc` | Generate docs for all packages in the discovered project |
@@ -253,6 +256,8 @@ Core commands you will use constantly:
 | `lyric publish --registry <url> --api-key <key>` | Publish to a specific feed with an API key |
 | `lyric restore` | Restore all dependencies declared in `lyric.toml`; writes `lyric.lock` |
 | `lyric restore --locked` | Restore strictly from `lyric.lock` (fail if lock is stale) |
+| `lyric update` | Re-resolve all deps to latest compatible versions; rewrites `lyric.lock` |
+| `lyric deps` | Print the resolved dependency list from `lyric.lock` |
 | `lyric search <query>` | Search the registry for matching packages |
 | `lyric repl` | Start an interactive read-eval-print loop |
 | `lyric repl --verbose` | REPL with diagnostic output on each evaluation |
@@ -262,9 +267,7 @@ Core commands you will use constantly:
 
 `lyric fmt` walks the parser's red/green concrete syntax tree, so **all comments are preserved**: `///` and `//!` doc comments, `//` line comments, and `/* … */` block comments — at item, member, statement, and nested-block boundaries.  Intentional blank lines are also preserved (collapsed to at most one blank per spot, Black-style).
 
-If you need the older AST-based formatter (which drops `//` comments, retained for one release as a compatibility fallback), pass `--legacy` or set the environment variable `LYRIC_FMT_LEGACY=1`.
-
-`lyric lint` catches five categories of issue without needing a full compile: PascalCase for types (L001), camelCase for functions (L002), missing doc comments on `pub` items (L003), TODO/FIXME in doc comments (L004), and `pub func` with a block body but no contracts (L005). L001/L002 are errors; L003–L005 are warnings that become errors under `--error-on-warning`.
+`lyric lint` catches five categories of issue without needing a full compile: PascalCase for types (L001), camelCase for functions (L002), missing doc comments on `pub` items (L003), TODO/FIXME in doc comments (L004), and `pub func` with a block body but no contracts (L005). L001/L002 are errors; L003–L005 are warnings that become errors under `--error-on-warning`. In project mode, lint prints a summary at the end: `"K file(s) clean"` or `"N error(s), M warning(s) in K file(s)"`.
 
 ## Your first error message
 

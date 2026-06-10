@@ -153,6 +153,22 @@ pub func main(argv: in slice[String]): Int {
     return cmdBench(argv)
   }
 
+  if cmd == "check" {
+    return cmdCheck(argv)
+  }
+
+  if cmd == "clean" {
+    return cmdClean(argv)
+  }
+
+  if cmd == "update" {
+    return cmdUpdate(argv)
+  }
+
+  if cmd == "deps" {
+    return cmdDeps(argv)
+  }
+
   if cmd == "openapi" {
     return cmdOpenApi(argv)
   }

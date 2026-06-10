@@ -32,7 +32,7 @@ func cmdLint(argv: in slice[String]): Int {
         i += 2
       } else {
         printErr("lint: --manifest requires a path")
-        return 2
+        return 1
       }
     } else {
       positional.add(arg)
@@ -47,28 +47,33 @@ func cmdLint(argv: in slice[String]): Int {
       case None -> {
         printErr("lint: missing source file and no lyric.toml found")
         printUsage()
-        return 2
+        return 1
       }
     }
     val (sourcePaths, hadFatal) = collectProjectSourcePaths(mfPath)
     if hadFatal {
-      return 2
+      return 1
     }
     if sourcePaths.count == 0 {
       printErr("lint: no source files found in project")
-      return 2
+      return 1
     }
     var hasError = false
     var hasWarning = false
+    var errorCount = 0
+    var warningCount = 0
+    var fileCount = 0
     var pi = 0
     while pi < sourcePaths.count {
       val sp = sourcePaths[pi]
       pi += 1
+      fileCount += 1
       val source = match File.readText(sp) {
         case Ok(t) -> t
         case Err(e) -> {
           printErr("lint: " + IOError.message(e))
           hasError = true
+          errorCount += 1
           continue
         }
       }
@@ -83,12 +88,22 @@ func cmdLint(argv: in slice[String]): Int {
         match d.severity {
           case LintError -> {
             hasError = true
+            errorCount += 1
           }
           case LintWarning -> {
             hasWarning = true
+            warningCount += 1
           }
         }
       }
+    }
+    if errorCount > 0 or warningCount > 0 {
+      Console.println(
+        "lint: " + toString(errorCount) + " error(s), " + toString(warningCount) + " warning(s) in " + toString(fileCount) +
+          " file(s)"
+      )
+    } else {
+      Console.println("lint: " + toString(fileCount) + " file(s) clean")
     }
     if hasError or (errorOnWarning and hasWarning) {
       return 1
@@ -102,7 +117,7 @@ func cmdLint(argv: in slice[String]): Int {
     case Ok(text) -> text
     case Err(e) -> {
       printErr("lint: " + IOError.message(e))
-      return 2
+      return 1
     }
   }
 

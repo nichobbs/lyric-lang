@@ -380,12 +380,85 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String], targetJvm:
     }
   }
 
+  val mfDir = Path.dirname(mfPath)
+
   if proj.tests.count == 0 {
-    printErr("test: " + mfPath + " has no [project.tests] entries")
-    return 1
+    // Fallback: scan [project.packages] source paths for @test_module files and
+    // run each as a single-file test.  Avoids requiring an explicit [project.tests]
+    // entry when the test modules live beside their library packages.
+    val scanPaths: List[String] = newList()
+    var spi = 0
+    while spi < proj.packages.count {
+      val pkgEntry = proj.packages[spi]
+      spi += 1
+      val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
+      if File.fileExists(abs) {
+        scanPaths.add(abs)
+      } else if File.dirExists(abs) {
+        val allFiles = match File.listFilesRecursive(abs) { case Ok(fs) -> fs; case Err(_) -> newList() }
+        for f in allFiles.toArray() {
+          if Str.endsWith(f, ".l") {
+            scanPaths.add(f)
+          }
+        }
+      }
+    }
+    val testFiles: List[String] = newList()
+    var si = 0
+    while si < scanPaths.count {
+      val sp = scanPaths[si]
+      si += 1
+      val src = match File.readText(sp) { case Ok(t) -> t; case Err(_) -> "" }
+      if src.length > 0 {
+        val srcLines = Str.split(src, "\n")
+        var hasTestMod = false
+        var li = 0
+        while li < srcLines.length {
+          if Str.trim(srcLines[li]) == "@test_module" {
+            hasTestMod = true
+          }
+          li += 1
+        }
+        if hasTestMod {
+          testFiles.add(sp)
+        }
+      }
+    }
+    if testFiles.count == 0 {
+      printErr("test: " + mfPath + " has no [project.tests] entries and no @test_module files found in [project.packages]")
+      return 1
+    }
+    var anyFailed = false
+    var ti = 0
+    while ti < testFiles.count {
+      val tPath = testFiles[ti]
+      ti += 1
+      Console.println("== test: " + tPath)
+      val testArgv: List[String] = newList()
+      testArgv.add("test")
+      testArgv.add(tPath)
+      match filterArg {
+        case Some(f) -> {
+          testArgv.add("--filter")
+          testArgv.add(f)
+        }
+        case None -> ()
+      }
+      if targetJvm {
+        testArgv.add("--target")
+        testArgv.add("jvm")
+      }
+      val rc = cmdTest(testArgv.toArray())
+      if rc != 0 {
+        anyFailed = true
+      }
+    }
+    if anyFailed {
+      return 1
+    }
+    return 0
   }
 
-  val mfDir = Path.dirname(mfPath)
   val testExt = if targetJvm { ".jar" } else { ".dll" }
   val testTarget: CompileTarget = if targetJvm { Jvm } else { Dotnet }
 
