@@ -6,19 +6,19 @@
 //! Lyric.Parser, Lyric.Emitter, Lyric.Fmt, Lyric.Lint, Lyric.Verifier,
 //! and Lyric.Doc are available.
 //!
-//! Commands:
-//!   build   <source.l> [-o <output>] [--force] [--manifest <lyric.toml>]
+//! Commands (project-aware: omit source file to auto-discover from lyric.toml):
+//!   build   [<source.l>] [-o <output>] [--force] [--manifest <lyric.toml>]
 //!              [--target dotnet|jvm]
-//!   run     <source.l> [-- <args>...]
-//!   fmt     <source.l> [--check] [--write]
-//!   lint    <source.l> [--error-on-warning]
-//!   prove   <source.l> [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]
-//!   doc     <source.l> [-o <out.md>]
+//!   run     [<source.l>] [--manifest <lyric.toml>] [--watch] [-- <args>...]
+//!   fmt     [<source.l>] [--manifest <lyric.toml>] [--check] [--write]
+//!   lint    [<source.l>] [--manifest <lyric.toml>] [--error-on-warning]
+//!   prove   [<source.l>] [--manifest <lyric.toml>] [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]
+//!   doc     [<source.l>] [--manifest <lyric.toml>] [-o <out.md|dir>]
 //!   public-api-diff <old.dll> <new.dll>
 //!   restore [--manifest <lyric.toml>]
 //!   publish [--manifest <lyric.toml>] [--dll <path>] [-o <dir>]
-//!   test    <source.l> [--filter <prefix>] [--list]
-//!   bench   <source.l> [--runs N] [--warmup N] [--filter <prefix>]
+//!   test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list]
+//!   bench   [<source.l>] [--manifest <lyric.toml>] [--runs N] [--warmup N] [--filter <prefix>]
 //!   openapi <spec.json> [-o <out.l>] [--client-name <Name>] [--package <Pkg>]
 //!   --version / -v
 //!
@@ -178,17 +178,24 @@ func usageText(): String {
     "  lyric search  <term>\n" +
     "\n" +
     "Dev loop:\n" +
-    "  lyric run     <source.l> [--watch] [-- <args>...]\n" +
-    "                (--watch: rebuild & re-run on source changes; Ctrl-C to stop)\n" +
-    "  lyric test    <source.l> [--filter <prefix>] [--list] [--target dotnet|jvm]\n" +
-    "  lyric bench   <source.l> [--runs N] [--warmup N] [--filter <prefix>]\n" +
+    "  lyric run     [<source.l>] [--manifest <lyric.toml>] [--watch] [-- <args>...]\n" +
+    "                (no source: builds and runs the discovered project;\n" +
+    "                 --watch: rebuild & re-run on source changes; Ctrl-C to stop)\n" +
+    "  lyric test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list] [--target dotnet|jvm]\n" +
+    "                (no source: runs all [project.tests] from the discovered project)\n" +
+    "  lyric bench   [<source.l>] [--manifest <lyric.toml>] [--runs N] [--warmup N] [--filter <prefix>]\n" +
+    "                (no source: benchmarks all @bench_module files in the discovered project)\n" +
     "  lyric repl\n" +
     "\n" +
     "Quality:\n" +
-    "  lyric fmt     <source.l> [--check] [--write]\n" +
-    "  lyric lint    <source.l> [--error-on-warning]\n" +
-    "  lyric prove   <source.l> [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]\n" +
-    "  lyric doc     <source.l> [-o out.md]\n" +
+    "  lyric fmt     [<source.l>] [--manifest <lyric.toml>] [--check] [--write]\n" +
+    "                (no source: formats all project source files in-place; --check to just report)\n" +
+    "  lyric lint    [<source.l>] [--manifest <lyric.toml>] [--error-on-warning]\n" +
+    "                (no source: lints all project source files)\n" +
+    "  lyric prove   [<source.l>] [--manifest <lyric.toml>] [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]\n" +
+    "                (no source: proves contracts in all project source files)\n" +
+    "  lyric doc     [<source.l>] [--manifest <lyric.toml>] [-o <out.md|dir>]\n" +
+    "                (no source: generates docs/ for all project source files)\n" +
     "  lyric public-api-diff <old.dll> <new.dll>\n" +
     "\n" +
     "Codegen:\n" +
@@ -198,9 +205,9 @@ func usageText(): String {
     "\n" +
     "Notes:\n" +
     "  build is incremental — same source + stdlib skips emit; --force rebuilds.\n" +
-    "  build/restore discover the nearest lyric.toml by walking up from the\n" +
-    "  current directory, so they work from any subdirectory of a project.\n" +
-    "  fmt:  --write overwrites in place; --check exits 1 if would change.\n" +
+    "  build/restore/run/fmt/lint/prove/doc/test/bench all discover the nearest\n" +
+    "  lyric.toml by walking up from the current directory when no source file is given.\n" +
+    "  fmt:  no-arg project mode rewrites files in-place; --check exits 1 if any would change.\n" +
     "        Non-doc comments (//) are not preserved — only /// and //!.\n" +
     "  lint: L001-L005 style checks. --error-on-warning exits 1 on warnings."
 }
@@ -1074,6 +1081,123 @@ func buildProject(
   0
 }
 
+// Compute the default output DLL path for a project build (no explicit -o).
+func projectBinDllPath(mfDir: in String, proj: in ProjectSection): String {
+  val stem = match proj.outputAssembly { case Some(s) -> s; case None -> proj.name + ".dll" }
+  Path.join(Path.join(mfDir, "bin"), stem)
+}
+
+// Collect all .l source file paths from [project.packages] in a lyric.toml.
+// Returns (paths, hadFatal). A file entry yields itself; a directory entry yields
+// all .l files under it, sorted deterministically.
+func collectProjectSourcePaths(mfPath: in String): (List[String], Bool) {
+  val paths: List[String] = newList()
+  val mfText = match File.readText(mfPath) {
+    case Ok(text) -> text
+    case Err(e) -> {
+      printErr("cannot read manifest: " + IOError.message(e))
+      return (paths, true)
+    }
+  }
+  val manifest = match Mf.parseManifest(mfText, mfPath) {
+    case Ok(m) -> m
+    case Err(e) -> {
+      printErr("cannot parse manifest: " + ManifestError.message(e))
+      return (paths, true)
+    }
+  }
+  val proj = match manifest.project {
+    case Some(p) -> p
+    case None -> {
+      printErr(mfPath + " has no [project] section")
+      return (paths, true)
+    }
+  }
+  val mfDir = Path.dirname(mfPath)
+  var hadFatal = false
+  var pi = 0
+  while pi < proj.packages.count {
+    val pkgEntry = proj.packages[pi]
+    val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
+    if File.fileExists(abs) {
+      paths.add(abs)
+    } else if File.dirExists(abs) {
+      val allFiles = match File.listFilesRecursive(abs) {
+        case Ok(fs) -> fs
+        case Err(e) -> {
+          printErr("package '" + pkgEntry.name + "': " + IOError.message(e))
+          hadFatal = true
+          newList()
+        }
+      }
+      val lFiles: List[String] = newList()
+      for f in allFiles.toArray() {
+        if Str.endsWith(f, ".l") {
+          lFiles.add(f)
+        }
+      }
+      val sorted = sortFileList(lFiles)
+      for f in sorted {
+        paths.add(f)
+      }
+    } else {
+      printErr("package '" + pkgEntry.name + "': path not found: " + abs)
+      hadFatal = true
+    }
+    pi += 1
+  };
+  (paths, hadFatal)
+}
+
+// Build a project and run its output DLL.
+func runProjectOnce(mfPath: in String, userArgs: in List[String]): Int {
+  val mfText = match File.readText(mfPath) {
+    case Ok(t) -> t
+    case Err(e) -> {
+      printErr("run: " + IOError.message(e))
+      return 1
+    }
+  }
+  val manifest = match Mf.parseManifest(mfText, mfPath) {
+    case Ok(m) -> m
+    case Err(e) -> {
+      printErr("run: " + ManifestError.message(e))
+      return 1
+    }
+  }
+  val proj = match manifest.project {
+    case None -> {
+      printErr("run: " + mfPath + " has no [project] section")
+      return 1
+    }
+    case Some(p) -> p
+  }
+  val mfDir = Path.dirname(mfPath)
+  val buildRc = buildProject(mfPath, None, Dotnet, newList(), false, false, false)
+  if buildRc != 0 {
+    return buildRc
+  }
+  val dllPath = projectBinDllPath(mfDir, proj)
+  if not File.fileExists(dllPath) {
+    printErr("run: project DLL not found after build: " + dllPath)
+    return 1
+  }
+  copyRuntimeDepsBeside(dllPath, findCompiledLibDir())
+  val execArgs: List[String] = newList()
+  execArgs.add("exec")
+  execArgs.add(dllPath)
+  for a in userArgs.toArray() {
+    execArgs.add(a)
+  }
+  match Process.run("dotnet", execArgs) {
+    case Ok(code) -> code
+    case Err(e) -> {
+      printErr("run: failed to start dotnet: " + IOError.message(e))
+      1
+    }
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Run command
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1090,6 +1214,7 @@ val WATCH_POLL_MS: Int = 400
 // The deferred action a watch loop re-runs on each detected change.
 union WatchAction {
   case RunFile(sourcePath: String, userArgs: List[String])
+  case RunProj(mfPath: String, userArgs: List[String])
   case BuildProj(mfPath: String, outArg: Option[String], target: CompileTarget, feats: List[String], noDef: Bool, allF: Bool, noRestore: Bool)
   case BuildFile(sourcePath: String, outArg: String, target: CompileTarget, manifest: Option[String])
 }
@@ -1131,6 +1256,7 @@ func runOnce(sourcePath: in String, userArgs: in List[String]): Int {
 func runWatchAction(a: in WatchAction): Int {
   match a {
     case RunFile(sp, ua) -> runOnce(sp, ua)
+    case RunProj(mp, ua) -> runProjectOnce(mp, ua)
     case BuildProj(mf, o, t, f, nd, af, nr) -> buildProject(mf, o, t, f, nd, af, nr)
     case BuildFile(sp, o, t, m) -> buildOne(sp, o, t, m)
   }
@@ -1193,6 +1319,7 @@ func cmdRun(argv: in slice[String]): Int {
   var watch = false
   var sourcePath = ""
   var haveSource = false
+  var manifestArg: Option[String] = None
   val userArgs: List[String] = newList()
 
   var i = 1
@@ -1205,20 +1332,41 @@ func cmdRun(argv: in slice[String]): Int {
       pastSep = true
     } else if arg == "--watch" {
       watch = true
+      i += 1
+    } else if arg == "--manifest" {
+      if i + 1 < argv.length {
+        manifestArg = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("run: --manifest requires a path")
+        return 1
+      }
     } else if not haveSource {
       sourcePath = arg
       haveSource = true
+      i += 1
     } else {
       userArgs.add(arg)
+      i += 1
     }
-    i += 1
   }
 
+  // Project-mode: no explicit source file — discover or use --manifest.
   if not haveSource {
-    printErr("run: missing source file")
-    printUsage()
-    return 1
+    val mfPath = match discoverManifest(manifestArg) {
+      case Some(p) -> p
+      case None -> {
+        printErr("run: missing source file and no lyric.toml found")
+        printUsage()
+        return 1
+      }
+    }
+    if watch {
+      return watchLoop(projectWatchFiles(mfPath), RunProj(mfPath = mfPath, userArgs = userArgs))
+    }
+    return runProjectOnce(mfPath, userArgs)
   }
+
   if not File.fileExists(sourcePath) {
     printErr("run: source file not found: " + sourcePath)
     return 1
@@ -1239,6 +1387,7 @@ func cmdRun(argv: in slice[String]): Int {
 func cmdFmt(argv: in slice[String]): Int {
   var checkMode = false
   var writeMode = false
+  var manifestArg: Option[String] = None
   val positional: List[String] = newList()
 
   var i = 1
@@ -1250,18 +1399,102 @@ func cmdFmt(argv: in slice[String]): Int {
     } else if arg == "--write" {
       writeMode = true
       i += 1
+    } else if arg == "--manifest" {
+      if i + 1 < argv.length {
+        manifestArg = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("fmt: --manifest requires a path")
+        return 1
+      }
     } else {
       positional.add(arg)
       i += 1
     }
   }
 
+  // Project-mode: no explicit source file — discover or use --manifest.
+  // In-place write is implicit (like `cargo fmt`); --check just reports.
   if positional.count == 0 {
-    printErr("fmt: missing source file")
-    printUsage()
-    return 1
+    val mfPath = match discoverManifest(manifestArg) {
+      case Some(p) -> p
+      case None -> {
+        printErr("fmt: missing source file and no lyric.toml found")
+        printUsage()
+        return 1
+      }
+    }
+    val (sourcePaths, hadFatal) = collectProjectSourcePaths(mfPath)
+    if hadFatal {
+      return 1
+    }
+    if sourcePaths.count == 0 {
+      printErr("fmt: no source files found in project")
+      return 1
+    }
+    if checkMode {
+      var anyUnformatted = false
+      var pi = 0
+      while pi < sourcePaths.count {
+        val sp = sourcePaths[pi]
+        pi += 1
+        val source = match File.readText(sp) {
+          case Ok(t) -> t
+          case Err(e) -> {
+            printErr("fmt: " + IOError.message(e))
+            anyUnformatted = true
+            continue
+          }
+        }
+        if not Fmt.isFormattedSource(source) {
+          printErr(sp + ": not formatted — run `lyric fmt --write`")
+          anyUnformatted = true
+        }
+      }
+      if anyUnformatted {
+        return 1
+      }
+      return 0
+    }
+    // Format every file in-place; skip files that are already correct.
+    var anyFailed = false
+    var fi = 0
+    while fi < sourcePaths.count {
+      val sp = sourcePaths[fi]
+      fi += 1
+      val source = match File.readText(sp) {
+        case Ok(t) -> t
+        case Err(e) -> {
+          printErr("fmt: " + IOError.message(e))
+          anyFailed = true
+          continue
+        }
+      }
+      val checkResult = Fmt.formatSourceChecked(source)
+      if not Fmt.fmtCheckIsOk(checkResult) {
+        printErr(sp + ": " + Fmt.fmtCheckMessage(checkResult))
+        anyFailed = true
+        continue
+      }
+      val formatted = Fmt.fmtCheckText(checkResult)
+      if formatted == source {
+        continue
+      }
+      match File.writeText(sp, formatted) {
+        case Ok(_) -> Console.println("formatted " + sp)
+        case Err(e) -> {
+          printErr("fmt: " + IOError.message(e))
+          anyFailed = true
+        }
+      }
+    }
+    if anyFailed {
+      return 1
+    }
+    return 0
   }
 
+  // Single-file mode (existing behaviour):
   val sourcePath = positional[0]
   val source = match File.readText(sourcePath) {
     case Ok(text) -> text
@@ -1315,6 +1548,7 @@ func cmdFmt(argv: in slice[String]): Int {
 // ─────────────────────────────────────────────────────────────────────────────
 func cmdLint(argv: in slice[String]): Int {
   var errorOnWarning = false
+  var manifestArg: Option[String] = None
   val positional: List[String] = newList()
 
   var i = 1
@@ -1323,18 +1557,77 @@ func cmdLint(argv: in slice[String]): Int {
     if arg == "--error-on-warning" {
       errorOnWarning = true
       i += 1
+    } else if arg == "--manifest" {
+      if i + 1 < argv.length {
+        manifestArg = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("lint: --manifest requires a path")
+        return 2
+      }
     } else {
       positional.add(arg)
       i += 1
     }
   }
 
+  // Project-mode: no explicit source file — discover or use --manifest.
   if positional.count == 0 {
-    printErr("lint: missing source file")
-    printUsage()
-    return 2
+    val mfPath = match discoverManifest(manifestArg) {
+      case Some(p) -> p
+      case None -> {
+        printErr("lint: missing source file and no lyric.toml found")
+        printUsage()
+        return 2
+      }
+    }
+    val (sourcePaths, hadFatal) = collectProjectSourcePaths(mfPath)
+    if hadFatal {
+      return 2
+    }
+    if sourcePaths.count == 0 {
+      printErr("lint: no source files found in project")
+      return 2
+    }
+    var hasError = false
+    var hasWarning = false
+    var pi = 0
+    while pi < sourcePaths.count {
+      val sp = sourcePaths[pi]
+      pi += 1
+      val source = match File.readText(sp) {
+        case Ok(t) -> t
+        case Err(e) -> {
+          printErr("lint: " + IOError.message(e))
+          hasError = true
+          continue
+        }
+      }
+      val lintDiags = Lint.lint(source)
+      for d in lintDiags.toArray() {
+        val sev = match d.severity { case LintError -> "error"; case LintWarning -> "warning" }
+        printErr(
+          sp + ": " + d.code + " " + sev + " [" + toString(d.span.startPos.line) + ":" + toString(d.span.startPos.column) +
+            "]: " +
+            d.message
+        )
+        match d.severity {
+          case LintError -> {
+            hasError = true
+          }
+          case LintWarning -> {
+            hasWarning = true
+          }
+        }
+      }
+    }
+    if hasError or (errorOnWarning and hasWarning) {
+      return 1
+    }
+    return 0
   }
 
+  // Single-file mode (existing behaviour):
   val sourcePath = positional[0]
   val source = match File.readText(sourcePath) {
     case Ok(text) -> text
@@ -1407,6 +1700,7 @@ func cmdProve(argv: in slice[String]): Int {
   var jsonOutput = false
   var explain = false
   var explainGoal: Option[Int] = None
+  var manifestArg: Option[String] = None
   val positional: List[String] = newList()
 
   var i = 1
@@ -1440,15 +1734,90 @@ func cmdProve(argv: in slice[String]): Int {
         printErr("prove: --goal requires a value")
         return 1
       }
+    } else if arg == "--manifest" {
+      if i + 1 < argv.length {
+        manifestArg = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("prove: --manifest requires a path")
+        return 1
+      }
     } else {
       positional.add(arg)
       i += 1
     }
   }
 
+  // Project-mode: no explicit source file — discover or use --manifest.
+  // --json and --explain are file-specific and require an explicit source.
   if positional.count == 0 {
-    printErr("prove: missing source file")
-    return 1
+    if jsonOutput {
+      printErr("prove: --json requires a source file")
+      return 1
+    }
+    if explain {
+      printErr("prove: --explain requires a source file")
+      return 1
+    }
+    val mfPath = match discoverManifest(manifestArg) {
+      case Some(p) -> p
+      case None -> {
+        printErr("prove: missing source file and no lyric.toml found")
+        return 1
+      }
+    }
+    val (sourcePaths, hadFatal) = collectProjectSourcePaths(mfPath)
+    if hadFatal {
+      return 1
+    }
+    if sourcePaths.count == 0 {
+      printErr("prove: no source files found in project")
+      return 1
+    }
+    var totalGoals = 0
+    var totalDischarged = 0
+    var anyError = false
+    var pi = 0
+    while pi < sourcePaths.count {
+      val sp = sourcePaths[pi]
+      pi += 1
+      val source = match File.readText(sp) {
+        case Ok(t) -> t
+        case Err(e) -> {
+          printErr("prove: " + IOError.message(e))
+          anyError = true
+          continue
+        }
+      }
+      val summary = Verifier.proveSourceWithOptions(source, allowUnverified)
+      for d in summary.diagnostics.toArray() {
+        printDiag(d)
+      }
+      val total = Verifier.summaryTotalCount(summary)
+      val discharged = Verifier.summaryDischargedCount(summary)
+      val levelStr = MC.vlDisplay(summary.level)
+      if MC.vlIsProofRequired(summary.level) {
+        Console.println(
+          sp + ": " + toString(discharged) + "/" + toString(total) + " obligations discharged (" + levelStr + ")"
+        )
+      } else {
+        Console.println(sp + ": no proof obligations (" + levelStr + ")")
+      }
+      totalGoals += total
+      totalDischarged += discharged
+      if Verifier.summaryHasErrorDiag(summary) or Verifier.summaryHasCounterexample(summary) {
+        anyError = true
+      }
+    }
+    if sourcePaths.count > 1 {
+      Console.println(
+        "project: " + toString(totalDischarged) + "/" + toString(totalGoals) + " total obligations discharged"
+      )
+    }
+    if anyError {
+      return 1
+    }
+    return 0
   }
 
   val sourcePath = positional[0]
@@ -1578,6 +1947,7 @@ func cmdProve(argv: in slice[String]): Int {
 // ─────────────────────────────────────────────────────────────────────────────
 func cmdDoc(argv: in slice[String]): Int {
   var explicitOut: Option[String] = None
+  var manifestArg: Option[String] = None
   val positional: List[String] = newList()
 
   var i = 1
@@ -1591,15 +1961,75 @@ func cmdDoc(argv: in slice[String]): Int {
         printErr("doc: -o requires an argument")
         return 1
       }
+    } else if arg == "--manifest" {
+      if i + 1 < argv.length {
+        manifestArg = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("doc: --manifest requires a path")
+        return 1
+      }
     } else {
       positional.add(arg)
       i += 1
     }
   }
 
+  // Project-mode: no explicit source file — discover or use --manifest.
+  // Writes <stem>.md for each source file into docs/ (or -o <dir>).
   if positional.count == 0 {
-    printErr("doc: missing source file")
-    return 1
+    val mfPath = match discoverManifest(manifestArg) {
+      case Some(p) -> p
+      case None -> {
+        printErr("doc: missing source file and no lyric.toml found")
+        return 1
+      }
+    }
+    val (sourcePaths, hadFatal) = collectProjectSourcePaths(mfPath)
+    if hadFatal {
+      return 1
+    }
+    if sourcePaths.count == 0 {
+      printErr("doc: no source files found in project")
+      return 1
+    }
+    val mfDir = Path.dirname(mfPath)
+    val outDir = match explicitOut { case Some(d) -> d; case None -> Path.join(mfDir, "docs") }
+    match File.createDir(outDir) {
+      case Ok(_) -> ()
+      case Err(e) -> {
+        printErr("doc: cannot create output directory '" + outDir + "': " + IOError.message(e))
+        return 1
+      }
+    }
+    var anyFailed = false
+    var pi = 0
+    while pi < sourcePaths.count {
+      val sp = sourcePaths[pi]
+      pi += 1
+      val source = match File.readText(sp) {
+        case Ok(t) -> t
+        case Err(e) -> {
+          printErr("doc: " + IOError.message(e))
+          anyFailed = true
+          continue
+        }
+      }
+      val md = Doc.generate(source)
+      val stem = stemOf(Path.basename(sp), 2)
+      val outPath = Path.join(outDir, stem + ".md")
+      match File.writeText(outPath, md) {
+        case Ok(_) -> Console.println("wrote " + outPath)
+        case Err(e) -> {
+          printErr("doc: " + IOError.message(e))
+          anyFailed = true
+        }
+      }
+    }
+    if anyFailed {
+      return 1
+    }
+    return 0
   }
 
   val sourcePath = positional[0]
@@ -3098,14 +3528,21 @@ func cmdTest(argv: in slice[String]): Int {
   // each test file bundled with the manifest's `[project.packages]`
   // (#465).  Each test contributes one synthesised executable; the
   // command's exit code is non-zero if any test fails.
+  // Explicit --manifest takes precedence.
   match manifestArg {
     case Some(p) -> return cmdTestManifest(p, filterArg)
     case None -> ()
   }
 
   if positional.count == 0 {
-    printErr("test: missing source file (or pass --manifest <lyric.toml>)")
-    return 1
+    // No explicit source file and no --manifest: auto-discover project.
+    match Disc.findNearestManifest(Environment.currentDirectory()) {
+      case Some(p) -> return cmdTestManifest(p, filterArg)
+      case None -> {
+        printErr("test: missing source file and no lyric.toml found")
+        return 1
+      }
+    }
   }
 
   val sourcePath = positional[0]
@@ -3817,6 +4254,7 @@ func cmdBench(argv: in slice[String]): Int {
   var runsArg = 100
   var warmupArg = 5
   var filterArg = ""
+  var manifestArg: Option[String] = None
   val positional: List[String] = newList()
 
   var i = 1
@@ -3862,15 +4300,77 @@ func cmdBench(argv: in slice[String]): Int {
         printErr("bench: --filter requires a value")
         return 1
       }
+    } else if arg == "--manifest" {
+      if i + 1 < argv.length {
+        manifestArg = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("bench: --manifest requires a path")
+        return 1
+      }
     } else {
       positional.add(arg)
       i += 1
     }
   }
 
+  // Project-mode: no explicit source file — discover or use --manifest.
+  // Scans all [project.packages] source files for @bench_module and runs each.
   if positional.count == 0 {
-    printErr("bench: missing source file")
-    return 1
+    val mfPath = match discoverManifest(manifestArg) {
+      case Some(p) -> p
+      case None -> {
+        printErr("bench: missing source file and no lyric.toml found")
+        return 1
+      }
+    }
+    val (sourcePaths, hadFatal) = collectProjectSourcePaths(mfPath)
+    if hadFatal {
+      return 1
+    }
+    val benchFiles: List[String] = newList()
+    var pi = 0
+    while pi < sourcePaths.count {
+      val sp = sourcePaths[pi]
+      pi += 1
+      val source = match File.readText(sp) { case Ok(t) -> t; case Err(_) -> "" }
+      if source.length > 0 {
+        match Str.indexOf(source, "@bench_module") {
+          case Some(_) -> benchFiles.add(sp)
+          case None -> ()
+        }
+      }
+    }
+    if benchFiles.count == 0 {
+      printErr("bench: no @bench_module files found in project")
+      return 1
+    }
+    var anyFailed = false
+    var bi = 0
+    while bi < benchFiles.count {
+      val bPath = benchFiles[bi]
+      bi += 1
+      Console.println("== bench: " + bPath)
+      val benchArgv: List[String] = newList()
+      benchArgv.add("bench")
+      benchArgv.add(bPath)
+      benchArgv.add("--runs")
+      benchArgv.add(toString(runsArg))
+      benchArgv.add("--warmup")
+      benchArgv.add(toString(warmupArg))
+      if filterArg.length > 0 {
+        benchArgv.add("--filter")
+        benchArgv.add(filterArg)
+      }
+      val rc = cmdBench(benchArgv.toArray())
+      if rc != 0 {
+        anyFailed = true
+      }
+    }
+    if anyFailed {
+      return 1
+    }
+    return 0
   }
 
   val sourcePath = positional[0]
