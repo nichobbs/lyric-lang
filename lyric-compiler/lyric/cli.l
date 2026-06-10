@@ -1253,49 +1253,68 @@ val WATCH_POLL_MS: Int = 400
 
 // The deferred action a watch loop re-runs on each detected change.
 union WatchAction {
-  case RunFile(sourcePath: String, userArgs: List[String])
+  case RunFile(sourcePath: String, userArgs: List[String], target: CompileTarget)
   case RunProj(mfPath: String, userArgs: List[String], target: CompileTarget)
   case BuildProj(mfPath: String, outArg: Option[String], target: CompileTarget, feats: List[String], noDef: Bool, allF: Bool, noRestore: Bool)
   case BuildFile(sourcePath: String, outArg: String, target: CompileTarget, manifest: Option[String])
 }
 
-// Build the program once and `dotnet exec` it.  Extracted from cmdRun so the
+// Build the program once and execute it.  Target-aware: Dotnet runs via
+// `dotnet exec`, Jvm runs via `java -jar`.  Extracted from cmdRun so the
 // watch loop can re-run it.
-func runOnce(sourcePath: in String, userArgs: in List[String]): Int {
+func runOnce(sourcePath: in String, userArgs: in List[String], target: in CompileTarget): Int {
   val srcDir = Path.dirname(sourcePath)
   val stem = stemOf(Path.basename(sourcePath), 2)
-  val outPath = Path.join(Path.join(srcDir, ".lyric-run"), stem + ".dll")
+  val outPath = match target {
+    case Jvm -> Path.join(Path.join(srcDir, ".lyric-run"), stem + ".jar")
+    case Dotnet -> Path.join(Path.join(srcDir, ".lyric-run"), stem + ".dll")
+  }
 
-  val buildExit = buildOne(sourcePath, outPath, Dotnet, None)
+  val buildExit = buildOne(sourcePath, outPath, target, None)
   if buildExit != 0 {
     return buildExit
   }
 
-  // Co-locate the fully-compiled stdlib runtime assemblies beside the output
-  // so a program using real stdlib `pub func`s (Std.Testing / Std.Json /
-  // Std.Time / … — anything not lowered to a BCL intrinsic) resolves them
-  // under `dotnet exec`.  Discovery is non-hardcoded (see findCompiledLibDir).
-  copyRuntimeDepsBeside(outPath, findCompiledLibDir())
-
-  val execArgs: List[String] = newList()
-  execArgs.add("exec")
-  execArgs.add(outPath)
-  for a in userArgs.toArray() {
-    execArgs.add(a)
-  }
-
-  match Process.run("dotnet", execArgs) {
-    case Ok(code) -> code
-    case Err(e) -> {
-      printErr("run: failed to start dotnet: " + IOError.message(e))
-      1
+  match target {
+    case Jvm -> {
+      val execArgs: List[String] = newList()
+      execArgs.add("-jar")
+      execArgs.add(outPath)
+      for a in userArgs.toArray() {
+        execArgs.add(a)
+      }
+      match Process.run("java", execArgs) {
+        case Ok(code) -> code
+        case Err(e) -> {
+          printErr("run: failed to start java: " + IOError.message(e))
+          1
+        }
+      }
+    }
+    case Dotnet -> {
+      // Co-locate the fully-compiled stdlib runtime assemblies beside the output
+      // so a program using real stdlib `pub func`s resolves them under `dotnet exec`.
+      copyRuntimeDepsBeside(outPath, findCompiledLibDir())
+      val execArgs: List[String] = newList()
+      execArgs.add("exec")
+      execArgs.add(outPath)
+      for a in userArgs.toArray() {
+        execArgs.add(a)
+      }
+      match Process.run("dotnet", execArgs) {
+        case Ok(code) -> code
+        case Err(e) -> {
+          printErr("run: failed to start dotnet: " + IOError.message(e))
+          1
+        }
+      }
     }
   }
 }
 
 func runWatchAction(a: in WatchAction): Int {
   match a {
-    case RunFile(sp, ua) -> runOnce(sp, ua)
+    case RunFile(sp, ua, t) -> runOnce(sp, ua, t)
     case RunProj(mp, ua, t) -> runProjectOnce(mp, ua, t)
     case BuildProj(mf, o, t, f, nd, af, nr) -> buildProject(mf, o, t, f, nd, af, nr)
     case BuildFile(sp, o, t, m) -> buildOne(sp, o, t, m)
@@ -1402,7 +1421,10 @@ func cmdRun(argv: in slice[String]): Int {
     }
   }
 
-  val runTarget = match targetArg { case Some(t) -> if t == "jvm" { Jvm } else { Dotnet }; case None -> Dotnet }
+  val runTarget: CompileTarget = match targetArg {
+    case None -> Dotnet
+    case Some(t) -> if t == "jvm" { Jvm } else if t == "dotnet" { Dotnet } else { printErr("run: unknown target '" + t + "' — expected dotnet or jvm"); return 1 }
+  }
 
   // Project-mode: no explicit source file — discover or use --manifest.
   if not haveSource {
@@ -1428,10 +1450,10 @@ func cmdRun(argv: in slice[String]): Int {
   if watch {
     val files: List[String] = newList()
     files.add(sourcePath)
-    return watchLoop(files, RunFile(sourcePath = sourcePath, userArgs = userArgs))
+    return watchLoop(files, RunFile(sourcePath = sourcePath, userArgs = userArgs, target = runTarget))
   }
 
-  runOnce(sourcePath, userArgs)
+  runOnce(sourcePath, userArgs, runTarget)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
