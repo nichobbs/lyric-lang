@@ -186,7 +186,13 @@ let tests =
             //               `Task<string>` (5 extern types + 19 extern funcs).
             //               `ProcessCaptureResult` promoted from opaque F#-shim
             //               extern type to a native Lyric `pub record`.
-            Expect.isLessThanOrEqual total 334
+            //   334 → 335 — `Std.HttpHost.hostDefaultClient` restored to
+            //               `@externTarget("Lyric.Emitter.HttpClientHost.defaultClient")`
+            //               so the process-wide `Lazy<HttpClient>` singleton is
+            //               preserved (#3027 tracks the follow-up that replaces
+            //               this with a pure-Lyric `ldsfld` path once the F#
+            //               emitter gains module-val `ldsfld` support).
+            Expect.isLessThanOrEqual total 335
                 "total extern surface unexpectedly large"
         }
     ]

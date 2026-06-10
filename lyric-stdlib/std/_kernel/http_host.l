@@ -135,16 +135,9 @@ async func contentReadAsBytesCancel(c: in HttpContent, token: in CancellationTok
 // the F# `Lazy<HttpClient>` in `Lyric.Emitter.HttpClientHost` so the same client
 // instance is reused across all requests — per-call construction exhausts the TCP
 // socket pool (sockets stay in TIME_WAIT for two MSL after GC).
-//
-// `pub val defaultClient` below proves the .cctor encoding fix (#1576) is correct:
-// a reference-typed `extern type` val is initialised once as CLASS+TypeRef (not
-// ELEMENT_TYPE_OBJECT).  It is NOT the singleton used by callers — they go through
-// `hostDefaultClient()` → F# `HttpClientHost.defaultClient()`.  Once the F#
-// bootstrap emitter gains `ldsfld` support for reference-typed module vals (#3027),
-// `hostDefaultClient()` will be rewritten to `return defaultClient` and
-// `HttpClientHost.fs` deleted.
-pub val defaultClient: HttpClient = newClient()
-
+// Once the F# bootstrap emitter gains `ldsfld` support for reference-typed module
+// vals (#3027), `hostDefaultClient()` will be rewritten to a pure-Lyric `pub val`
+// and `HttpClientHost.fs` deleted.
 @externTarget("Lyric.Emitter.HttpClientHost.defaultClient")
 pub func hostDefaultClient(): HttpClient = ()
 
