@@ -158,6 +158,12 @@ pub record CodegenCtx {
   //                  (`case Some(x)` instead of `case Some(value)`).
   fieldSigBytes: Map[String, List[Byte]]
   fieldDeclaredNames: Map[String, String]
+  // Default value expressions for record fields with `= expr` initialisers.
+  // Keyed `<className>/field<pos>` (matching fieldDeclaredNames).  Populated by
+  // addPackageTokens when a FieldDecl carries a dflt.  fillCtorDefaultArgs uses
+  // these to complete a partial named-arg constructor call (e.g. `R(a = 1)` when
+  // field `b` has a default) so the newobj stack arity matches the .ctor signature.
+  ctorDefaultExprs: Map[String, Expr]
   fieldVarIndices: Map[String, Int]
   // MSIL type for in-package record/union-case fields.  Key = "FQClassName/fieldName".
   // Populated by addPackageTokens so EMember returns the actual ldfld type (MBool,
@@ -1309,6 +1315,7 @@ pub func newCodegenCtx(
     fieldTokens = fieldToks,
     fieldSigBytes = newMap(),
     fieldDeclaredNames = newMap(),
+    ctorDefaultExprs = newMap(),
     fieldVarIndices = newMap(),
     fieldMsilTypes = newMap(),
     funcTokens = funcToks,
@@ -1626,6 +1633,14 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
               val byPosKey = className + "/field" + toString(fpos)
               if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
                 cctx.fieldDeclaredNames.add(byPosKey, f.name)
+              }
+              match f.dflt {
+                case Some(dfltExpr) -> {
+                  if not cctx.ctorDefaultExprs.containsKey(byPosKey) {
+                    cctx.ctorDefaultExprs.add(byPosKey, dfltExpr)
+                  }
+                }
+                case None -> ()
               }
               fpos = fpos + 1
               fieldDefRow = fieldDefRow + 1
@@ -6780,20 +6795,17 @@ func callArgExpr(arg: in CallArg): Expr {
 // Reorder a record/union-case constructor's arguments to field-declaration
 // order (#1730).  A named-argument call (`R(c = …, a = …)`) may list fields in
 // any order, but the constructor `newobj` consumes them positionally in
-// declaration order — lowering them in call-site order stored each value into
-// the wrong field slot, producing invalid IL / cross-typed fields.  Using the
-// `<ctorKey>/field<pos>` → declared-name map (`fieldDeclaredNames`, populated
-// for both in-bundle and restored records), build a new arg list where slot `i`
-// holds the call arg whose name matches field `i`.  Returns `args` unchanged
-// when: any arg is positional (no reorder possible/needed — already in order),
-// or the field-name map is absent for this ctor (defensive — preserves the
-// historical positional behaviour).
-func reorderCtorNamedArgs(cctx: in CodegenCtx, ctorKey: in String, args: in List[CallArg]): List[CallArg] {
+// declaration order.  Build a complete positional arg list in field-declaration
+// order: named args are matched by name, and fields with no matching arg are
+// filled from `ctorDefaultExprs` (populated by addPackageTokens for fields
+// that carry a `= expr` default).  Returns `args` unchanged when: any arg is
+// positional (already in order), the field-name map is absent (defensive), or
+// a required field has neither a named arg nor a registered default.
+func fillCtorDefaultArgs(cctx: in CodegenCtx, ctorKey: in String, args: in List[CallArg]): List[CallArg] {
   if args.count == 0 {
     return args
   }
-  // Build name → arg index from the call site; bail to positional if any arg
-  // is unnamed (a mixed/positional call is already in declaration order).
+  // Build name → arg from the call site; bail if any arg is positional.
   val nameToArg: Map[String, CallArg] = newMap()
   var i = 0
   while i < args.count {
@@ -6810,22 +6822,40 @@ func reorderCtorNamedArgs(cctx: in CodegenCtx, ctorKey: in String, args: in List
     }
     i = i + 1
   }
-  // Reassemble in field-declaration order using the positional name map.
+  // Count total fields by probing fieldDeclaredNames until a key is absent.
+  var totalFields = 0
+  while cctx.fieldDeclaredNames.containsKey(ctorKey + "/field" + toString(totalFields)) {
+    totalFields = totalFields + 1
+  }
+  if totalFields == 0 {
+    return args  // no field-order info — preserve current behaviour
+  }
+  // Reassemble in field-declaration order, injecting defaults for missing fields.
   val ordered: List[CallArg] = newList()
   var fp = 0
-  while fp < args.count {
+  while fp < totalFields {
     val byPosKey = ctorKey + "/field" + toString(fp)
     match mapGet(cctx.fieldDeclaredNames, byPosKey) {
-      case None -> return args  // no field-order info — preserve current behaviour
-      case Some(fname) -> match mapGet(nameToArg, fname) { case Some(a) -> ordered.add(a); case None -> return args }
-    }  // a field has no matching arg — bail safely
+      case None -> return args  // defensive
+      case Some(fname) -> {
+        match mapGet(nameToArg, fname) {
+          case Some(a) -> ordered.add(a)
+          case None -> {
+            match mapGet(cctx.ctorDefaultExprs, byPosKey) {
+              case Some(dflt) -> ordered.add(CAPositional(expr = dflt))
+              case None -> return args  // required field missing — bail
+            }
+          }
+        }
+      }
+    }
     fp = fp + 1
   }
   ordered
 }
 
 // Reorder a static/method function call's arguments to parameter-declaration
-// order (#1503).  Mirrors reorderCtorNamedArgs but uses `funcParamNames` (the
+// order (#1503).  Mirrors fillCtorDefaultArgs but uses `funcParamNames` (the
 // declared parameter-name list keyed by `tokKey`) instead of `fieldDeclaredNames`.
 // Returns `args` unchanged when: any arg is positional, the name map is absent
 // for this function (e.g. a cross-package restored function), or a named arg
@@ -7287,7 +7317,7 @@ func lowerBuiltinOrStaticCallMsil(
         // `R(c = …, a = …)` stores each value into its own field rather than the
         // positional slot it was written in (#1730).  Positional calls and
         // ctors without a field-name map pass through unchanged.
-        val ctorArgs = reorderCtorNamedArgs(cctx, ctorKey, args)
+        val ctorArgs = fillCtorDefaultArgs(cctx, ctorKey, args)
         // Resolved before arg lowering so each payload gets its inner-type hint (#1687).
         val outerCtxTyArgs: List[MsilType] = newList()
         if fctx.contextHintTyArgs.count > 0 {
