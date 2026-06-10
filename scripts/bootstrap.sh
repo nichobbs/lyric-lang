@@ -7,7 +7,7 @@
 #           Lyric.ModeChecker, Lyric.ContractElaborator, Msil.Codegen,
 #           Msil.Lowering, Msil.Bridge) into DLLs.  Then drive the F#
 #           emitter via a tiny `import Lyric.Cli` driver so it precompiles
-#           the full CLI dependency closure (cli.l + ~25 Lyric packages)
+#           the full CLI dependency closure (cli/ + ~25 Lyric packages)
 #           and copies the artefacts into `.bootstrap/stage1/`.  These are
 #           the DLLs Track A's AOT entry-point project will reference.
 # Stage 2:  [BLOCKED — A1.2 stage-2 rewrite pending: snapshot the
@@ -187,7 +187,7 @@ stage1() {
     die "stdlib bundle build failed"
 
   if [[ "$SKIP_CLI_BUNDLE" != "1" ]]; then
-    # Track A (A1.2) — precompile cli.l + the full Lyric.Cli dependency
+    # Track A (A1.2) — precompile cli/ + the full Lyric.Cli dependency
     # closure into $STAGE1_DIR.  The F# emitter's stdlib auto-resolve
     # discovers every transitive import (lexer, parser, type-checker,
     # mode-checker, contract-elaborator, MSIL backend, manifest, pack,
@@ -211,7 +211,7 @@ stage1() {
 # Stage 1 — CLI bundle precompile (Track A, A1.2)
 #
 # Compile a tiny driver program that does `import Lyric.Cli`.  The F#
-# emitter's stdlib auto-resolve discovers cli.l's full transitive
+# emitter's stdlib auto-resolve discovers the cli/ package's full transitive
 # dependency closure (~25 Lyric packages plus the existing compiler
 # packages built above) and emits each one as a DLL in its per-process
 # scratch cache.  We then copy those DLLs into $STAGE1_DIR so the
@@ -231,7 +231,7 @@ stage1_cli_bundle() {
 
   cat > "$driver_dir/driver.l" <<'EOF'
 // Auto-generated driver for the bootstrap CLI-bundle precompile.
-// Importing Lyric.Cli forces the F# emitter to compile cli.l and
+// Importing Lyric.Cli forces the F# emitter to compile the cli/ package and
 // every transitively-imported Lyric package into its stdlib cache.
 //
 // Std.Time / Std.Math are imported *directly* because neither appears in

@@ -24,6 +24,7 @@ func cmdBench(argv: in slice[String]): Int {
   var warmupArg = 5
   var filterArg = ""
   var manifestArg: Option[String] = None
+  var targetJvm = false
   val positional: List[String] = newList()
 
   var i = 1
@@ -75,6 +76,22 @@ func cmdBench(argv: in slice[String]): Int {
         i += 2
       } else {
         printErr("bench: --manifest requires a path")
+        return 1
+      }
+    } else if arg == "--target" {
+      if i + 1 < argv.length {
+        val t = argv[i + 1]
+        if t == "jvm" {
+          targetJvm = true
+        } else if t == "dotnet" {
+          targetJvm = false
+        } else {
+          printErr("bench: --target must be 'dotnet' or 'jvm'")
+          return 1
+        }
+        i += 2
+      } else {
+        printErr("bench: --target requires an argument (dotnet|jvm)")
         return 1
       }
     } else {
@@ -143,6 +160,8 @@ func cmdBench(argv: in slice[String]): Int {
         benchArgv.add("--filter")
         benchArgv.add(filterArg)
       }
+      benchArgv.add("--target")
+      benchArgv.add(if targetJvm { "jvm" } else { "dotnet" })
       val rc = cmdBench(benchArgv.toArray())
       if rc != 0 {
         anyFailed = true
@@ -164,7 +183,8 @@ func cmdBench(argv: in slice[String]): Int {
   }
 
   val stem = stemOf(Path.basename(sourcePath), 2)
-  val outPath = Path.join(Path.join(Path.dirname(sourcePath), ".lyric-bench"), stem + ".dll")
+  val benchExt = if targetJvm { ".jar" } else { ".dll" }
+  val outPath = Path.join(Path.join(Path.dirname(sourcePath), ".lyric-bench"), stem + benchExt)
 
   match BenchSynth.synthesizeBench(source, runsArg, warmupArg, filterArg) {
     case NoBenchModule(span) -> {
@@ -189,11 +209,12 @@ func cmdBench(argv: in slice[String]): Int {
         case Err(_) -> ()
       }
 
+      val benchTarget: CompileTarget = if targetJvm { Jvm } else { Dotnet }
       val req = EmitRequest(
         source = rewritten,
         assemblyName = stem,
         outputPath = outPath,
-        target = Dotnet,
+        target = benchTarget,
         packageVersion = ""
       )
       val result = Emitter.emit(req)
@@ -217,16 +238,28 @@ func cmdBench(argv: in slice[String]): Int {
         }
         case Some(_) -> ()
       }
-      writeRuntimeConfig(outPath)
-
-      val execArgs: List[String] = newList()
-      execArgs.add("exec")
-      execArgs.add(outPath)
-      match Process.run("dotnet", execArgs) {
-        case Ok(code) -> code
-        case Err(e) -> {
-          printErr("bench: failed to start dotnet: " + IOError.message(e))
-          1
+      if targetJvm {
+        val jvmArgs: List[String] = newList()
+        jvmArgs.add("-jar")
+        jvmArgs.add(outPath)
+        match Process.run("java", jvmArgs) {
+          case Ok(code) -> code
+          case Err(e) -> {
+            printErr("bench: failed to start java: " + IOError.message(e))
+            1
+          }
+        }
+      } else {
+        writeRuntimeConfig(outPath)
+        val execArgs: List[String] = newList()
+        execArgs.add("exec")
+        execArgs.add(outPath)
+        match Process.run("dotnet", execArgs) {
+          case Ok(code) -> code
+          case Err(e) -> {
+            printErr("bench: failed to start dotnet: " + IOError.message(e))
+            1
+          }
         }
       }
     }

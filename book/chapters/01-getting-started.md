@@ -244,7 +244,9 @@ Core commands you will use constantly:
 | `lyric prove <file.l>` | Run the SMT-backed verifier on `@proof_required` modules |
 | `lyric prove` | Verify all packages in the discovered project |
 | `lyric bench <file.l>` | Measure runtime performance of `@bench_module` functions |
+| `lyric bench <file.l> --target jvm` | Benchmark on the JVM target (`java -jar`) |
 | `lyric bench` | Run benchmarks for all packages in the discovered project |
+| `lyric bench --target jvm` | Project mode on JVM target |
 | `lyric bench <file.l> --runs <N> --warmup <N>` | Control timed and warmup iteration counts |
 | `lyric bench <file.l> --filter <substring>` | Run only benchmarks whose name contains the substring |
 | `lyric publish` | Pack and push the current package to the configured registry |

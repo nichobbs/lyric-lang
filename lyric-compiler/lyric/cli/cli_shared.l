@@ -128,7 +128,7 @@ func usageText(): String {
     "                 --watch: rebuild & re-run on source changes; Ctrl-C to stop)\n" +
     "  lyric test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list] [--target dotnet|jvm]\n" +
     "                (no source: runs all [project.tests] from the discovered project)\n" +
-    "  lyric bench   [<source.l>] [--manifest <lyric.toml>] [--runs N] [--warmup N] [--filter <prefix>]\n" +
+    "  lyric bench   [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm] [--runs N] [--warmup N] [--filter <prefix>]\n" +
     "                (no source: benchmarks all @bench_module files in the discovered project)\n" +
     "  lyric repl\n" +
     "\n" +

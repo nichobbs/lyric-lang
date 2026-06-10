@@ -880,10 +880,12 @@ lyric prove --manifest <lyric.toml>    # project mode: override manifest discove
 
 # Benchmarking  (see chapter 28)
 lyric bench <file.l>                   # compile and run @bench_module timing harness
+lyric bench <file.l> --target jvm      # benchmark on JVM target (java -jar)
 lyric bench <file.l> --runs <N>        # number of timed iterations (default: 10)
 lyric bench <file.l> --warmup <N>      # un-timed warmup iterations (default: 3)
 lyric bench <file.l> --filter <substr> # only run benchmarks whose name contains <substr>
 lyric bench                            # project mode: run all @bench_module files in project
+lyric bench --target jvm               # project mode: JVM target for all benchmark files
 lyric bench --manifest <lyric.toml>    # project mode: override manifest discovery
 # Output: "name  min=Xms  max=Xms  mean=Xms" per @bench function
 # Requirements: file must carry @bench_module; @bench functions must be pub func f(): Unit

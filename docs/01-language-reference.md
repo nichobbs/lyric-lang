@@ -1515,9 +1515,9 @@ The bootstrap formatter works directly from the parsed AST; it does not require 
 
 ### 13.9 Benchmark runner
 
-`lyric bench [<source.l>]` compiles a `@bench_module` file, synthesises a timing harness around each `@bench`-annotated function, and reports wall-clock statistics to stdout.
+`lyric bench [<source.l>] [--target dotnet|jvm]` compiles a `@bench_module` file, synthesises a timing harness around each `@bench`-annotated function, and reports wall-clock statistics to stdout. `--target dotnet` (default) runs via `dotnet exec`; `--target jvm` produces a self-contained JAR and runs via `java -jar`.
 
-**Project mode.** When invoked with no source file, `lyric bench` discovers the nearest `lyric.toml` and runs benchmarks for every `[project.packages]` source file that contains a `@bench_module` annotation. Pass `--manifest <lyric.toml>` to override discovery.
+**Project mode.** When invoked with no source file, `lyric bench` discovers the nearest `lyric.toml` and runs benchmarks for every `[project.packages]` source file that contains a `@bench_module` annotation. Pass `--manifest <lyric.toml>` to override discovery. `--target` applies to all files in the project.
 
 **Annotations:**
 
