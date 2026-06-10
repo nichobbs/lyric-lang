@@ -77,7 +77,7 @@ order:
    for the `.lyric-release` target — a CI smoke test using this path is still
    needed. F# residue still load-bearing: close the `HttpClientHost` class-`val`
    `.cctor` gap (#1576), port `ProcessCapture` to async (#1489 tail), fix the
-   broken `StubCounterHost` externs (#1776), migrate `Lyric.Session.Host` off F#
+   migrate `Lyric.Session.Host` off F#
    (#1777). (docs/41 H12, H13 partial.)
 
 ---

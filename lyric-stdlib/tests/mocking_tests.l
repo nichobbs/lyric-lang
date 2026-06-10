@@ -4,11 +4,13 @@
 //! and StubCounter call-count verification. The pattern:
 //!
 //!   1. Annotate the dependency interface with @stubbable.
-//!   2. The compiler synthesises a <Name>Stub record with _value and
-//!      _counter fields for every non-Unit method.
-//!   3. Inject the stub (or a thin TrackedX wrapper) into the unit under
-//!      test instead of the real implementation.
-//!   4. After exercising the unit, read StubCounter to assert the
+//!   2. The self-hosted compiler synthesises a <Name>Stub record with one
+//!      `_value` field per non-Unit method and one `_counter: StubCounter`
+//!      field per supported method (counter auto-increments on each call).
+//!   3. For the F# bootstrap path: wrap the stub in a thin TrackedX record
+//!      that holds a StubCounter and proxies the interface calls manually.
+//!   4. Inject the stub (or TrackedX wrapper) into the unit under test.
+//!   5. After exercising the unit, read StubCounter to assert the
 //!      dependency was called the expected number of times.
 package Std.Testing.Mocking.Tests
 

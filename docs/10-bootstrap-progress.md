@@ -23896,3 +23896,25 @@ Full implementation of `config BlockName { field: Type = default }` lowering for
 The bootstrap-grade per-call allocation arm for scoped wire members was removed. `WMScoped` now emits nothing until `AsyncLocal<T>`-backed scoping lands in #2972.
 
 All 827 emitter tests and 85 CLI tests pass.
+
+### D-progress-489 — `@stubbable` counter synthesis + StubCounterHost externs cleanup (PR #1776-fix)
+
+**Status:** Shipped (2026-06-10).
+
+Resolved issue #1776: the broken `@externTarget("Lyric.Stdlib.StubCounterHost.*")` externs in `lyric-stdlib/std/_kernel/testing_mocking.l` had already been deleted as part of D-progress-467. This entry documents the complementary self-hosted compiler work that wires the `@stubbable` annotation through the existing pure-Lyric `StubCounter` protected type.
+
+**`lyric-compiler/lyric/stubbable.l`** — counter synthesis added:
+- `counterFieldName(methodName)` → `"<method>_counter"`.
+- `appendCounterField` appends `pub <method>_counter: StubCounter = makeStubCounter()` for every supported method (including `Unit`-returning ones). The `makeStubCounter()` default means construction without specifying the counter field works transparently.
+- `stubMethodBody` now always emits a `FBBlock` that first calls `stubCounterIncrement(self.<method>_counter)`, then (for non-Unit methods) returns `self.<method>_value`. Previously it returned a bare expression; now every stub increments its per-method counter on each call.
+- `synthesiseStubRecord` calls both `appendStubField` and `appendCounterField` per member.
+- `hasMockingImport` / `addMockingImport` / `buildImports` added: when stubs are synthesised and `import Std.Testing.Mocking` is absent, `stubbableRewriteFile` injects it automatically so `StubCounter` and `makeStubCounter()` resolve during type-check without requiring the user to add the import manually.
+
+**`lyric-compiler/lyric/stubbable_self_test.l`** (new `@test_module`):
+Eight test cases covering: value field round-trip, counter starts at zero, value-method counter increments, Unit-method counter increments, independent counters across methods, counter reset, default counter without explicit field init, and cross-method counter isolation. The file intentionally omits `import Std.Testing.Mocking` to exercise the auto-injection path. Wired into CI via native `lyric test` (compiles against the self-hosted MSIL bridge as a restored dep, same mechanism as `stubbable_self_test.l` in the existing suite).
+
+**`lyric-stdlib/tests/mocking_tests.l`** — docstring corrected to accurately describe the two-path model: the self-hosted compiler path auto-synthesises `_counter` fields; the F# bootstrap path (used by `StdlibLyricTests.fs`) requires the manual `TrackedX` wrapper pattern. The test body is unchanged.
+
+**`docs/41-self-hosted-compiler-gap-analysis.md`** — L5 marked RESOLVED; H12 count corrected.
+**`docs/36-v1-roadmap.md`** — R7.5 row updated: `StubCounterHost (L5) resolved (#1776)`.
+**`docs/12-todo-plan.md`** — `fix the broken StubCounterHost externs (#1776)` removed from Band 5 F# elimination item.
