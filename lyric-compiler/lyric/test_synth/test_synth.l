@@ -11,7 +11,8 @@
 //!     test inside `try`/`catch Bug as b { … }` and prints a
 //!     TAP-shaped report to stdout.
 //!   * Properties parse but skip with a `# skip` line.
-//!   * Fixtures emit a `T0901`-shaped outcome.
+//!   * Fixtures are rewritten to module-level `val` declarations
+//!     (D-progress-474).
 //!
 //! The rewrite operates on *spans into the original source string*
 //! so user-authored test bodies stay byte-identical (line numbers
@@ -23,6 +24,10 @@
 //! `synthesize` / `listEntries` directly (D-progress-260).  The earlier
 //! F# `Lyric.Cli.TestSynth` has been removed along with the rest of the
 //! F# user-facing CLI (#860).
+//!
+//! Fixtures (`fixture name[: T] = expr`) are rewritten to `val` declarations
+//! at the package level of the synthesised source so their initialiser runs
+//! once and the name is in scope for all test functions.
 package Lyric.TestSynth
 
 import Std.Core
@@ -38,7 +43,6 @@ pub union Outcome {
   case Synthesised(source: String, testCount: Int, skipCount: Int)
   case NoTestModule(span: Span)
   case UserMainExists(span: Span)
-  case FixtureUnsupported(span: Span)
   case ParseFailures(diagnostics: List[Diagnostic])
 }
 
@@ -210,25 +214,6 @@ func userMainSpan(items: in List[Item]): Option[Span] {
   found
 }
 
-func fixtureSpan(items: in List[Item]): Option[Span] {
-  var i = 0
-  var found: Option[Span] = None
-  while i < items.count {
-    val it = items[i]
-    match it.kind {
-      case IFixture(_) -> {
-        if isNone(found) {
-          found = Some(value = it.span)
-        }
-      }
-      case _ -> {
-      }
-    }
-    i = i + 1
-  }
-  found
-}
-
 func parseErrors(diags: in List[Diagnostic]): List[Diagnostic] {
   var acc: List[Diagnostic] = newList()
   var i = 0
@@ -259,12 +244,6 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
     case None -> {
     }
   }
-  match fixtureSpan(pf.file.items) {
-    case Some(sp) -> return FixtureUnsupported(span = sp)
-    case None -> {
-    }
-  }
-
   var sb = slice(source, pf.file.packageDecl.span)
   sb = sb + "\n"
   var ii = 0
@@ -302,6 +281,22 @@ pub func synthesize(source: in String, filter: in Option[String]): Outcome {
       }
       case IProperty(p) -> {
         skipped.add(SkipSlot(title = p.title, reason = "property: not implemented in v1"))
+      }
+      case IFixture(f) -> {
+        // Preserve any annotations before the `fixture` keyword, then
+        // rewrite "fixture " (8 chars) to "val " so the initialiser
+        // becomes a module-level val in scope for all test functions.
+        val fixStart = f.span.startPos.offset
+        val annLen = fixStart - s
+        if annLen > 0 {
+          sb = sb + source.substring(s, annLen)
+        }
+        sb = sb + "val "
+        val afterKw = fixStart + 8
+        val fixEnd = f.span.endPos.offset
+        if fixEnd > afterKw {
+          sb = sb + source.substring(afterKw, fixEnd - afterKw)
+        }
       }
       case _ -> {
         if e > s {

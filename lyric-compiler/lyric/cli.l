@@ -3690,10 +3690,6 @@ func cmdTest(argv: in slice[String]): Int {
       printErr(sourcePath + ":" + toString(span.startPos.line) + ": @test_module cannot define func main()")
       return 1
     }
-    case FixtureUnsupported(span) -> {
-      printErr(sourcePath + ":" + toString(span.startPos.line) + ": fixture types are not yet supported by `lyric test`")
-      return 1
-    }
     case ParseFailures(diags) -> {
       for d in diags.toArray() {
         printDiag(d)
@@ -4228,11 +4224,6 @@ func cmdTestManifest(mfPath: in String, filterArg: in Option[String]): Int {
       }
       case UserMainExists(span) -> {
         printErr(abs + ":" + toString(span.startPos.line) + ": @test_module cannot define func main()")
-        totalFailed += 1
-        synthFailed = true
-      }
-      case FixtureUnsupported(span) -> {
-        printErr(abs + ":" + toString(span.startPos.line) + ": fixture types are not yet supported by `lyric test`")
         totalFailed += 1
         synthFailed = true
       }
