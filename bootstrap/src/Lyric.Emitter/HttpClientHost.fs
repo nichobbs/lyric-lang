@@ -15,6 +15,7 @@
 /// inside an F# helper module.  Once wire-emitter support for
 /// non-constant module vals lands (M5.2 stage 3+), the host shim can
 /// retire in favour of a pure-Lyric `pub val` in `Std.Http`.
+/// Tracked in #3027.
 module Lyric.Emitter.HttpClientHost
 
 open System

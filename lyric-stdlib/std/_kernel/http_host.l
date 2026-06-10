@@ -131,20 +131,13 @@ async func contentReadAsBytesCancel(c: in HttpContent, token: in CancellationTok
 // `import Std.HttpHost as HostHttp`.  Each is either a thin alias or
 // a multi-step composition that wraps the primitives above.
 // =====================================================================
-// #333: process-wide HttpClient singleton.
-//
-// Creating a new HttpClient per call is the canonical .NET anti-pattern:
-// under load the per-call clients exhaust the TCP socket pool because
-// sockets stay in TIME_WAIT for two MSL after the client is GC'd.  The
-// natural fix is a package-level `val` initialised once in the host type's
-// `.cctor`, but the self-hosted emitter does not yet run the `.cctor` for a
-// class-typed package-level `val` — the static field stays null and the
-// first access NREs (verified via a StringBuilder-singleton repro; tracked
-// for #1493 follow-up).  Until that codegen gap is fixed, the singleton
-// stays in the F# helper `Lyric.Emitter.HttpClientHost.defaultClient`, which
-// holds a thread-safe `Lazy<HttpClient>`.  Callers that need a custom client
-// (e.g. disabled redirects) should still construct their own via
-// `hostClientWithRedirects` / `hostClientNoRedirects` and retain it.
+// #333: process-wide HttpClient singleton.  `hostDefaultClient()` routes through
+// the F# `Lazy<HttpClient>` in `Lyric.Emitter.HttpClientHost` so the same client
+// instance is reused across all requests — per-call construction exhausts the TCP
+// socket pool (sockets stay in TIME_WAIT for two MSL after GC).
+// Once the F# bootstrap emitter gains `ldsfld` support for reference-typed module
+// vals (#3027), `hostDefaultClient()` will be rewritten to a pure-Lyric `pub val`
+// and `HttpClientHost.fs` deleted.
 @externTarget("Lyric.Emitter.HttpClientHost.defaultClient")
 pub func hostDefaultClient(): HttpClient = ()
 

@@ -1467,6 +1467,23 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/module_val_self_test.l
 
+      # @stubbable + StubCounter self-test (#1776).  Verifies the full
+      # @stubbable → synthesised Stub record + impl path combined with the
+      # Std.Testing.Mocking StubCounter call-count API (makeStubCounter /
+      # stubCounterIncrement / stubCounterGet / stubCounterReset).  Compiled
+      # in-process through the self-hosted Msil.Bridge.  Imports only Std.*;
+      # no LYRIC_LOAD_COMPILER=1 needed.
+      - name: Stubbable + StubCounter self-test (native lyric test, #1776)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping stubbable self-test"
+            exit 1
+          fi
+          "$lyric_bin" test lyric-compiler/lyric/stubbable_self_test.l
+
       # Culture-invariant toString(DateTime) self-test (#2184).  Pins the
       # self-hosted MSIL emitter's `toString` builtin to InvariantCulture for
       # DateTime values so stage-0 (F#) and stage-1 (self-hosted) render
@@ -1484,11 +1501,86 @@ jobs:
           fi
           "$lyric_bin" test lyric-compiler/lyric/datetime_tostring_self_test.l
 
-      # Release Native AOT end-to-end — `lyric build --release` produces a
-      # self-contained native binary and runs it (#1975 / D079).  This is the
-      # integration test for the AOT pipeline (host project + trampoline +
-      # `dotnet publish -p:PublishAot=true`); it downloads the ILCompiler
-      # package on first run, so it is the heaviest CLI step.
+  # Release Native AOT end-to-end — `lyric build --release` compiles a
+  # hello-world Lyric program to a self-contained native binary via
+  # `dotnet publish -p:PublishAot=true` and asserts it executes correctly
+  # (#1975 / D079).  Isolated into its own job because it needs clang/lld
+  # for the ILCompiler linker pass and downloads the Microsoft.DotNet.ILCompiler
+  # NuGet package (~200 MB) on first run.
+  aot-smoke:
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+    if: needs.build.outputs.has_code_changes == 'true'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: bootstrap/global.json
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+      - name: Restore executable permissions
+        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
+
+      # ILCompiler package cache — keyed on the .NET SDK version so the
+      # ~200 MB compiler package is not re-downloaded on every run.
+      - name: Cache ILCompiler NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.nuget/packages/microsoft.dotnet.ilcompiler
+          key: ${{ runner.os }}-ilcompiler-${{ hashFiles('bootstrap/global.json') }}
+
+      # clang and zlib1g-dev are required by the ILCompiler linker pass on Linux.
+      - name: Install native-AOT linker prerequisites
+        run: sudo apt-get update -qq && sudo apt-get install -y clang zlib1g-dev
+
+      # Build a minimal hello-world Lyric program to a native binary, then run
+      # it and assert the output.  This exercises the full pipeline:
+      #   lyric build → F# emit → staging DLL → dotnet publish -p:PublishAot=true → native ELF
+      - name: Release Native AOT smoke test (lyric build --release, #1975)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; native AOT smoke test cannot run"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin"
+            exit 1
+          fi
+          dir="$(mktemp -d)"
+          src="$dir/hello.l"
+          cat > "$src" <<'LYRIC'
+          package Hello
+          import Std.Core
+          func main(): Int {
+            println("hello-aot")
+            0
+          }
+          LYRIC
+          native_bin="$dir/hello"
+          "$lyric_bin" build --release "$src" -o "$native_bin"
+          if [ ! -x "$native_bin" ]; then
+            echo "::error::native binary not produced at $native_bin"
+            exit 1
+          fi
+          out="$("$native_bin" 2>&1)"
+          echo "native AOT output: $out"
+          if [ "$out" != "hello-aot" ]; then
+            echo "::error::native AOT smoke test produced unexpected output: '$out'"
+            exit 1
+          fi
+          echo "OK: native AOT binary produced and executed correctly." >> "$GITHUB_STEP_SUMMARY"
+
   compiler-self-tests-jvm:
     runs-on: ubuntu-latest
     needs: [build]
@@ -1845,32 +1937,11 @@ jobs:
           # The `mkdir` stays because the Session.Host pre-copy below runs
           # before `lyric test` creates the directory.
           mkdir -p lyric-session/.lyric-test
-          # lyric-session's compiled test DLL carries @externTarget
-          # references into its F# host shim (Session.Host).
-          # `additionalProbingPaths` in the runtimeconfig only resolves
-          # NuGet-style versioned layouts, so the host DLL must live
-          # alongside the test DLL itself for `dotnet exec` to load it.
-          # Session.Host is `dotnet publish`-ed by bootstrap.sh into
-          # .bootstrap/stage1/, so we copy from there.
-          #
-          # lyric-auth no longer needs a host shim: its kernel binds
-          # HMAC-SHA256 directly to System.Security.Cryptography.HMACSHA256
-          # and implements constant-time comparison in pure Lyric.
+          # lyric-session no longer needs a host shim: Session.Kernel.Net
+          # binds StackExchange.Redis directly via @externTarget in native
+          # Lyric (#1777). lyric-auth likewise needs no shim (pure Lyric
+          # HMAC-SHA256 + constant-time comparison).
           cli_bin_dir="$(pwd)/bootstrap/src/Lyric.Cli/bin/${BUILD_CONFIG}/net10.0"
-          if [ -f .bootstrap/stage1/Lyric.Session.Host.dll ]; then
-            cp .bootstrap/stage1/Lyric.Session.Host.dll lyric-session/.lyric-test/
-          else
-            echo "::error::Lyric.Session.Host.dll missing from .bootstrap/stage1"
-            exit 1
-          fi
-          # StackExchange.Redis ships next to Session.Host (bootstrap.sh
-          # copies it from the publish output).  Load is lazy — copy
-          # if present so Redis-backed tests can run. Silent skip is
-          # acceptable: if the DLL is absent, Redis-backed tests skip
-          # gracefully via the SessionStore factory (#1145).
-          if [ -f .bootstrap/stage1/StackExchange.Redis.dll ]; then
-            cp .bootstrap/stage1/StackExchange.Redis.dll lyric-session/.lyric-test/
-          fi
           # Route emitProject subprocess calls to the F# bootstrap CLI, which
           # handles --internal-project-build.  The AOT binary is a pure trampoline
           # into the Lyric CLI dispatcher and does not handle internal flags
@@ -3406,7 +3477,7 @@ jobs:
 
   build-and-test:
     runs-on: ubuntu-latest
-    needs: [build, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, compiler-self-tests-jvm, ecosystem-security-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests]
+    needs: [build, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, aot-smoke, compiler-self-tests-jvm, ecosystem-security-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests]
     if: always()
     permissions:
       contents: read

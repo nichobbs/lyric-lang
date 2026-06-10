@@ -128,7 +128,7 @@ pub interface SessionStore {
 @experimental
 @cfg(feature = "redis")
 pub record NativeSessionStore {
-  storeHandle: Int
+  storeHandle: SessionKernel.RedisStoreHandle
 }
 
 @experimental

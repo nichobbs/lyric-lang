@@ -244,10 +244,16 @@ stage1_cli_bundle() {
 // that imports Std.Time or Std.Math (lyric-session, lyric-auth,
 // lyric-cache, …) then fails at run time with "Could not load file or
 // assembly 'Lyric.Stdlib.Time'".
+//
+// Std.Testing.Mocking is imported directly so Lyric.Stdlib.Testing.Mocking.dll
+// lands in $STAGE1_DIR.  The testing self-tests (stubbable_self_test.l etc.)
+// import this package and the compiled test DLL then references it at runtime
+// — without a standalone DLL the CLR load fails with a file-not-found error.
 package Lyric.CliBundle
 import Lyric.Cli
 import Std.Time
 import Std.Math
+import Std.Testing.Mocking
 func main(): Unit { }
 EOF
 
@@ -339,30 +345,12 @@ EOF
     die "stage-1 CLI bundle: Lyric.Emitter.dll not found in stage-0 publish"
   fi
 
-  # `Lyric.Session.Host.dll` is the path-finder host shim for the #733
-  # ecosystem-library restoration plan: it bridges the
-  # `Session.Kernel.Net` Lyric kernel to StackExchange.Redis via the
-  # `Lyric.Session.RedisStore` static class.  The Lyric-emitted Session
-  # DLL carries `@externTarget("Lyric.Session.RedisStore.*")` references
-  # that need this DLL on disk at runtime.  Build + copy it alongside
-  # the other bootstrap DLLs so the AOT entry-point project + any user
-  # program that links `lyric-session` resolves the externs.
-  dotnet publish "$COMPILER_DIR/src/Lyric.Session.Host/Lyric.Session.Host.fsproj" \
-    --configuration Release \
-    --output "$BUILD_DIR/stage0-publish-session" \
-    --nologo -v q
-  if [[ -f "$BUILD_DIR/stage0-publish-session/Lyric.Session.Host.dll" ]]; then
-    cp -f "$BUILD_DIR/stage0-publish-session/Lyric.Session.Host.dll" "$STAGE1_DIR/"
-    # The Redis client library is shipped alongside so the host shim's
-    # AssemblyRef to StackExchange.Redis resolves at runtime.
-    if [[ -f "$BUILD_DIR/stage0-publish-session/StackExchange.Redis.dll" ]]; then
-      cp -f "$BUILD_DIR/stage0-publish-session/StackExchange.Redis.dll" "$STAGE1_DIR/"
-      copied=$((copied + 1))
-    fi
-    copied=$((copied + 1))
-  else
-    die "stage-1 CLI bundle: Lyric.Session.Host.dll not found in publish output"
-  fi
+  # `Lyric.Session.Host` is gone — `Session.Kernel.Net` now binds
+  # StackExchange.Redis directly via `@externTarget` in native Lyric
+  # (`lyric-session/src/_kernel/net/session_kernel.l`, #1777).
+  # No F# shim is published or copied into the stage-1 bundle.
+  # StackExchange.Redis.dll is resolved at user-program build time via
+  # the `[nuget]` entry in lyric-session/lyric.toml.
 
   # `Lyric.Storage.Host` is gone — the lyric-storage local-filesystem
   # backend now binds the BCL externs (System.IO.File, System.IO.Directory,
@@ -602,20 +590,7 @@ EOF
     die "stage-2 CLI bundle: Lyric.Emitter.dll not found in stage-0 publish"
   fi
 
-  dotnet publish "$COMPILER_DIR/src/Lyric.Session.Host/Lyric.Session.Host.fsproj" \
-    --configuration Release \
-    --output "$BUILD_DIR/stage0-publish-session" \
-    --nologo -v q
-  if [[ -f "$BUILD_DIR/stage0-publish-session/Lyric.Session.Host.dll" ]]; then
-    cp -f "$BUILD_DIR/stage0-publish-session/Lyric.Session.Host.dll" "$STAGE2_DIR/"
-    if [[ -f "$BUILD_DIR/stage0-publish-session/StackExchange.Redis.dll" ]]; then
-      cp -f "$BUILD_DIR/stage0-publish-session/StackExchange.Redis.dll" "$STAGE2_DIR/"
-      copied=$((copied + 1))
-    fi
-    copied=$((copied + 1))
-  else
-    die "stage-2 CLI bundle: Lyric.Session.Host.dll not found in publish output"
-  fi
+  # Lyric.Session.Host is gone — see stage-1 comment above (#1777).
 
   dotnet publish "$COMPILER_DIR/src/Lyric.Jobs.Host/Lyric.Jobs.Host.fsproj" \
     --configuration Release \
