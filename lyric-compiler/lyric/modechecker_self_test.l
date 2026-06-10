@@ -268,3 +268,19 @@ test "await in try inside record method v0012" {
   val result = parseCheck(src)
   assertTrue(hasDiagCode(result, "V0012"), "record-method-await-in-try: V0012 emitted")
 }
+
+test "await in try inside interface default method v0012" {
+  // V0012 must fire for an async default method (IMFunc — a method body on the
+  // interface itself, not a bare signature) in a @proof_required package.
+  val src = "@proof_required\npackage P\ninterface Svc {\n  async func doWork(): Unit {\n    try {\n      await someTask()\n    } catch (e: Exception) {\n    }\n  }\n}\nfunc someTask(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0012"), "interface-method-await-in-try: V0012 emitted")
+}
+
+test "await in try inside impl method v0012" {
+  // V0012 must fire for an async method defined in an impl block (IMplFunc) in a
+  // @proof_required package.
+  val src = "@proof_required\npackage P\ninterface Svc {\n  async func doWork(): Unit\n}\nrecord R {\n}\nimpl Svc for R {\n  async func doWork(): Unit {\n    try {\n      await someTask()\n    } catch (e: Exception) {\n    }\n  }\n}\nfunc someTask(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0012"), "impl-method-await-in-try: V0012 emitted")
+}
