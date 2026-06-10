@@ -158,57 +158,6 @@ jobs:
         working-directory: bootstrap
         run: dotnet build Bootstrap.sln --configuration $BUILD_CONFIG --no-restore
 
-      - name: Lexer tests
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: bootstrap
-        run: dotnet run --project tests/Lyric.Lexer.Tests --no-build --configuration $BUILD_CONFIG
-
-      - name: Parser tests
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: bootstrap
-        run: dotnet run --project tests/Lyric.Parser.Tests --no-build --configuration $BUILD_CONFIG
-
-      - name: Type-checker tests
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: bootstrap
-        run: dotnet run --project tests/Lyric.TypeChecker.Tests --no-build --configuration $BUILD_CONFIG
-
-      - name: Emitter tests
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: bootstrap
-        run: dotnet run --project tests/Lyric.Emitter.Tests --no-build --configuration $BUILD_CONFIG
-
-      # The emitter test suite writes /tmp/lyric-jvm-selftest/Hello.class via the
-      # Jvm.SelfTest stage-B2 program.  Existing tests verify structural validity
-      # with `javap -c` but never execute the class via `java`, so JVM-side
-      # codegen bugs (linkage, descriptor mismatches, etc.) reach main undetected.
-      # Closes #744.
-      - name: JVM execution smoke (run Hello.class via `java`)
-        if: steps.changes.outputs.has_code_changes == 'true'
-        timeout-minutes: 1
-        env:
-          # Hardcoded path; shared with the emitter test that writes the
-          # class so a rename in either site is caught here as a missing
-          # file rather than a silent skip (#776).
-          JVM_SELFTEST_DIR: /tmp/lyric-jvm-selftest
-        run: |
-          set -euo pipefail
-          if [ ! -f "$JVM_SELFTEST_DIR/Hello.class" ]; then
-            echo "::error::Hello.class missing under $JVM_SELFTEST_DIR — Jvm.SelfTest must have run during the Emitter tests step"
-            exit 1
-          fi
-          out=$(java -cp "$JVM_SELFTEST_DIR" Hello)
-          echo "java output: $out"
-          if [ "$out" != "hello from lyric-jvm" ]; then
-            echo "::error::JVM execution produced unexpected output: '$out'"
-            exit 1
-          fi
-
-      - name: CLI tests
-        if: steps.changes.outputs.has_code_changes == 'true'
-        working-directory: bootstrap
-        run: dotnet run --project tests/Lyric.Cli.Tests --no-build --configuration $BUILD_CONFIG
-
       - name: Bootstrap stage 1 (F# → self-hosted packages)
         if: steps.changes.outputs.has_code_changes == 'true'
         # Stage 1 is required: the AOT smoke test, ecosystem tests, and
@@ -297,7 +246,83 @@ jobs:
             bootstrap/src/Lyric.Cli/bin/${{ env.BUILD_CONFIG }}
           retention-days: 1
 
-  compiler-self-tests-dotnet:
+  # F# test suites (Lexer, Parser, TypeChecker, Emitter, CLI + JVM smoke) run in
+  # parallel with all downstream self-test jobs, decoupled from the stage-1
+  # bootstrap that used to block them in `build`.  Saves ~8–12 min off the
+  # critical path.
+  test-bootstrap:
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+    if: needs.build.outputs.has_code_changes == 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: bootstrap/global.json
+      - name: Set up Java 21 (for JVM emitter tests — class files target major version 65)
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install Z3 (for the Phase 4 verifier smoke tests)
+        run: sudo apt-get update && sudo apt-get install -y z3
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('bootstrap/**/*.fsproj', 'bootstrap/**/*.csproj', 'bootstrap/global.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+      - name: Restore
+        working-directory: bootstrap
+        run: dotnet restore Bootstrap.sln
+      - name: Build
+        working-directory: bootstrap
+        run: dotnet build Bootstrap.sln --configuration $BUILD_CONFIG --no-restore
+      - name: Lexer tests
+        working-directory: bootstrap
+        run: dotnet run --project tests/Lyric.Lexer.Tests --no-build --configuration $BUILD_CONFIG
+      - name: Parser tests
+        working-directory: bootstrap
+        run: dotnet run --project tests/Lyric.Parser.Tests --no-build --configuration $BUILD_CONFIG
+      - name: Type-checker tests
+        working-directory: bootstrap
+        run: dotnet run --project tests/Lyric.TypeChecker.Tests --no-build --configuration $BUILD_CONFIG
+      - name: Emitter tests
+        working-directory: bootstrap
+        run: dotnet run --project tests/Lyric.Emitter.Tests --no-build --configuration $BUILD_CONFIG
+      # The emitter test suite writes /tmp/lyric-jvm-selftest/Hello.class via the
+      # Jvm.SelfTest stage-B2 program.  Existing tests verify structural validity
+      # with `javap -c` but never execute the class via `java`, so JVM-side
+      # codegen bugs (linkage, descriptor mismatches, etc.) reach main undetected.
+      # Closes #744.
+      - name: JVM execution smoke (run Hello.class via `java`)
+        timeout-minutes: 1
+        env:
+          JVM_SELFTEST_DIR: /tmp/lyric-jvm-selftest
+        run: |
+          set -euo pipefail
+          if [ ! -f "$JVM_SELFTEST_DIR/Hello.class" ]; then
+            echo "::error::Hello.class missing under $JVM_SELFTEST_DIR — Jvm.SelfTest must have run during the Emitter tests step"
+            exit 1
+          fi
+          out=$(java -cp "$JVM_SELFTEST_DIR" Hello)
+          echo "java output: $out"
+          if [ "$out" != "hello from lyric-jvm" ]; then
+            echo "::error::JVM execution produced unexpected output: '$out'"
+            exit 1
+          fi
+      - name: CLI tests
+        working-directory: bootstrap
+        run: dotnet run --project tests/Lyric.Cli.Tests --no-build --configuration $BUILD_CONFIG
+
+  compiler-self-tests-dotnet-a:
     runs-on: ubuntu-latest
     needs: [build]
     permissions:
@@ -950,6 +975,29 @@ jobs:
             fi
           done
           echo "OK: by-reference (\`var\`) capture shares a mutable cell across the closure boundary."
+
+  # Second half of compiler self-tests (.NET target), running in parallel with job -a.
+  compiler-self-tests-dotnet-b:
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+    if: needs.build.outputs.has_code_changes == 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: bootstrap/global.json
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+      - name: Restore executable permissions
+        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
       # Out/inout-parameter self-test — pins the self-hosted MSIL byref calling
       # convention (#1761): `out`/`inout` parameters are passed by managed
@@ -1739,7 +1787,7 @@ jobs:
       # field `+=` no longer drops the operator; `a[i] op= v` is a real
       # read-modify-write).  MSIL target only; JVM parity tracked under #1470's
       # JVM-deferral note.  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
-  ecosystem-and-stdlib-tests:
+  ecosystem-security-tests:
     runs-on: ubuntu-latest
     needs: [build]
     permissions:
@@ -1861,6 +1909,29 @@ jobs:
             exit $overall
           fi
           echo "ecosystem test suite passed"
+
+  # Stdlib and ecosystem-library builds — runs in parallel with ecosystem-security-tests.
+  stdlib-builds:
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+    if: needs.build.outputs.has_code_changes == 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Set up .NET (uses bootstrap/global.json)
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: bootstrap/global.json
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+      - name: Restore executable permissions
+        run: chmod +x bootstrap/src/Lyric.Cli.Aot/bin/${{ env.BUILD_CONFIG }}/net10.0/lyric
 
       # Full self-hosted stdlib bundle (#2592, stage-2 milestone) — builds
       # the entire public Std.* surface through the self-hosted MSIL backend
@@ -3334,7 +3405,7 @@ jobs:
 
   build-and-test:
     runs-on: ubuntu-latest
-    needs: [build, compiler-self-tests-dotnet, compiler-self-tests-jvm, ecosystem-and-stdlib-tests, crosspackage-and-codegen-tests, e2e-cli-tests]
+    needs: [build, test-bootstrap, compiler-self-tests-dotnet-a, compiler-self-tests-dotnet-b, compiler-self-tests-jvm, ecosystem-security-tests, stdlib-builds, crosspackage-and-codegen-tests, e2e-cli-tests]
     if: always()
     permissions:
       contents: read
@@ -3404,7 +3475,7 @@ jobs:
               }
             } catch (error) {
               const isSoftError =
-                (error.message && error.message.includes('NOT_FOUND')) ||
+                error.status === 403 ||
                 (Array.isArray(error.errors) && error.errors.some(e => e.type === 'FORBIDDEN' || e.type === 'NOT_FOUND'));
               if (isSoftError) {
                 console.log(`[auto-promote] PR #${prNumber}: ⚠ PR not found or permission denied (fork PRs cannot be promoted by the workflow)`);
