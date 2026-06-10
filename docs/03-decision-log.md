@@ -5777,6 +5777,22 @@ metadata — not a binary reference.
 `FSharp.Core.dll` or `Lyric.Emitter.dll`.  `make aot` succeeds with 0 warnings.
 All 827 emitter tests pass.
 
+## D097 — Cross-package restored generic TypeRefs carry the arity suffix and full metadata maps (#1496, D-progress-494)
+
+**Context.** D096 resolved in-bundle generic records and unions (types defined and consumed in the same compilation unit). A separate gap existed for *cross-package* generic types: when a consumer imports a restored dependency DLL that exports `record Box[T]` or `union Maybe[T]`, the self-hosted MSIL backend must re-register those types from the synthesised `PackageDecl` extracted from the DLL's contract metadata. The registration path (`registerRestoredTypeDecl`, `registerRestoredRecordCtor`, `registerRestoredRecordFields`, `registerRestoredUnion`, `ensureCaseClassTypeRefRow`) was not populating the four metadata maps that `MNewobjGenericByName` / `MLdfldGeneric` / `MIsinstGeneric` lowering requires.
+
+**Decision.** Cross-package restored generic TypeRefs carry the CLR arity suffix and the full metadata maps required for generic lowering.
+
+Concretely:
+- `registerRestoredRecordCtor` adds a second `ctxAddTypeRef` call with the arity-suffixed name (`` Box`1 ``) when `recGenerics.count > 0`, and populates `genericTypeArity` (FQN → arity) and `genericCtorParams` (FQN → VAR-form field types via `typeExprToMsilG`).
+- `registerRestoredRecordFields` populates `fieldSigBytes` (raw `FIELD VAR(n)` blob), `fieldVarIndices` (VAR parameter index), and positional `byPosKey` mirrors for each field; stores `MObject` (not `MTypeVar(n)`) in `fieldMsilTypes` to avoid the `pushCollExpect` collection-element mis-path.
+- `ensureCaseClassTypeRefRow` gains an `arity` parameter and appends the `` `n `` suffix when non-zero; call sites in `registerRestoredUnionCase` pass the case-class arity.
+- `registerRestoredUnion` populates `genericTypeArity` for the union base type and passes `uGenerics` to each case registration.
+
+**Rationale.** The arity suffix on a TypeRef's `Name` field is what `findTypeRefRowByName` matches against when resolving `MNewobjGenericByName`. Without it the lowering falls back to a wrong TypeRef (or finds none), and the resulting `.ctor` MemberRef carries a non-generic sig that mismatches the VAR-form ctor in the DLL — producing "Method not found" at runtime. The `fieldSigBytes` gap caused `MLdfldGeneric` to fall through to a plain `ldfld` on an `MObject`-typed field, silently returning 0. The `MTypeVar` → `MObject` substitution in `fieldMsilTypes` prevents `pushCollExpect` from routing a scalar constructor argument through the collection-element path, which was causing an `InvalidCastException` (String → IList) at runtime.
+
+**Related:** D096, D-progress-495, epic #1470 Band 4, issue #1496.
+
 ---
 
 ## Decisions deferred to v2 or later

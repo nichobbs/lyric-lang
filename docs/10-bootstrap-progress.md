@@ -24047,3 +24047,38 @@ Two pre-existing formatter bugs fixed as part of this PR:
 `bootstrap()` method's `maxLocals` was set to `w.providedParams.count` (number of provided-param parameters), but `Long`/`Double` parameters each occupy 2 local slots per JVM spec §4.7.3.  The loop variable `bsSlot` already tracks the actual slot count.  Fix: `bsMaxLocals = bsSlot`.
 
 Closes #1502, #1503.
+
+### D-progress-495 — cross-package user-defined generic types: restored-dep TypeRef arity suffix + metadata maps (#1496)
+
+**Status:** Shipped (2026-06-10).
+
+**Root cause of issue #1496:**
+
+When the self-hosted MSIL emitter registered a restored package that contained a generic record (`record Box[T]`) or union (`union Maybe[T]`), three metadata gaps caused silent failures:
+
+1. **`registerRestoredTypeDecl`** emitted a plain `TypeRef` using the bare name (`Box`, `Maybe`) instead of the arity-suffixed CLR name (`Box`1`, `Maybe`1`).  A consumer's `MNewobjGenericByName` lowering calls `findTypeRefRowByName` which matches by CLR name; the suffix mismatch caused it to fall back to a wrong TypeRef, and the resulting `.ctor` MemberRef sig mismatched the DLL's VAR-form ctor, producing "Method not found" at runtime.
+2. **`genericTypeArity` and `genericCtorParams`** were never populated for restored generic types. `buildInBundleGenericCtorTok` routes generic construction through `MNewobjGenericByName` only when `genericTypeArity` has an entry for the FQN; without it, construction fell to a plain `MemberRef` with a non-generic sig.
+3. **`fieldSigBytes` and `fieldVarIndices`** were not populated for restored record fields.  The `MLdfldGeneric` lowering builds a TypeSpec-parented field MemberRef from the raw `FIELD VAR(n)` blob in `fieldSigBytes`; without it the path emitted a plain `ldfld` on an `MObject`-typed field, returning 0 or the wrong value.
+
+**Fix** (`lyric-compiler/msil/codegen.l`):
+
+- **`registerRestoredRecordCtor`**: when `recGenerics.count > 0`, calls `ctxAddTypeRef` with the arity-suffixed name (e.g. ``Box`1``), and populates `genericTypeArity` (FQN → arity) and `genericCtorParams` (FQN → per-field MSIL types from `typeExprToMsilG`, the generic-aware type expression resolver).
+- **`registerRestoredRecordFields`**: for each field, computes `gIdx` (VAR index from `typeExprToMsilG`), builds the raw `FIELD VAR(n)` sig via `buildGenericParamFieldSig(gIdx)` for generic fields, stores that blob into `fieldSigBytes`, stores the VAR index into `fieldVarIndices`, and stores `MObject` (not `MTypeVar(n)`) into `fieldMsilTypes` — the `MTypeVar` form caused `pushCollExpect` to treat the argument as a collection element rather than a scalar.  Positional `byPosKey` entries mirror the by-name entries.
+- **`ensureCaseClassTypeRefRow`**: gains an `arity: in Int` parameter; when `arity > 0` the CLR name is arity-suffixed.  All call sites in `registerRestoredUnionCase` and `registerRestoredUnion` pass the appropriate arity.
+- **`registerRestoredUnion`**: populates `genericTypeArity` for the union base type when `uArity > 0`, and passes `uGenerics` into each `registerRestoredUnionCase` call so case-class TypeRefs are also arity-suffixed where applicable.
+
+**Test** (`lyric-compiler/lyric/cross_package_generics_self_test.l`):
+
+A `@test_module` with six end-to-end regression cases, each of which builds a producer DLL in-process via `Lyric.Emitter.emitProject`, then builds a consumer that imports it as a restored dep, runs it under `dotnet exec`, and asserts stdout + exit code:
+
+1. `Box[Int]` — construct via named arg, read `.value` via unbox helper
+2. `Box[String]` — construct + direct `.value` field read on reference-typed param
+3. `Pair[Int, String]` — two type parameters, read both fields
+4. `Maybe[Int] Just` — union construction + `match` dispatch, Just arm
+5. `Maybe[Int] Nothing` — union construction + `match` dispatch, Nothing arm
+6. `Maybe[String] Just` — reference-typed union payload, pattern-bound extraction
+
+All six cases pass via `lyric test`.  CI step added at the in-bundle generics position (`LYRIC_LOAD_COMPILER=1 lyric test cross_package_generics_self_test.l`).
+
+Closes #1496.
+
