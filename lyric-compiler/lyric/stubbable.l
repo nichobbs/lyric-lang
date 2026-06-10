@@ -1,20 +1,30 @@
 //! AST-level synthesis for `@stubbable` interfaces.
 //!
-//! Mirrors `bootstrap/src/Lyric.Parser/Stubbable.fs`.  A `@stubbable`
-//! interface gets a sibling stub record + impl synthesised before the type
-//! checker runs:
+//! A `@stubbable` interface gets a sibling stub record + impl synthesised
+//! before the type checker runs.  For each non-Unit method a `_value` field
+//! is added; for every supported method (including Unit) a `_counter` field
+//! of type `StubCounter` is added with a `makeStubCounter()` default.  The
+//! synthesised impl increments the counter on entry before returning the value.
+//! `import Std.Testing.Mocking` is injected automatically when any stub is
+//! synthesised so `StubCounter` and `makeStubCounter()` are in scope.
 //!
 //!   @stubbable
 //!   pub interface Clock { func now(): Instant }
 //!
 //! becomes (additionally):
 //!
-//!   pub record ClockStub { pub now_value: Instant }
-//!   impl Clock for ClockStub { func now(): Instant = self.now_value }
+//!   pub record ClockStub {
+//!     pub now_value: Instant
+//!     pub now_counter: StubCounter = makeStubCounter()
+//!   }
+//!   impl Clock for ClockStub {
+//!     func now(): Instant {
+//!       stubCounterIncrement(self.now_counter)
+//!       return self.now_value
+//!     }
+//!   }
 //!
-//! so callers can construct the stub directly (`ClockStub(now_value = …)`) and
-//! pass it where the interface is expected.  Generic interfaces, `Self`-bearing
-//! and async methods are skipped (left in the interface untouched).
+//! Generic interfaces, `Self`-bearing and async methods are skipped.
 package Lyric.Stubbable
 
 import Std.Core
@@ -128,6 +138,10 @@ func valueFieldName(methodName: in String): String {
   methodName + "_value"
 }
 
+func counterFieldName(methodName: in String): String {
+  methodName + "_counter"
+}
+
 // Append the `pub <method>_value: <ReturnType>` field for one supported,
 // non-Unit method (no-op for Unit / unsupported methods).
 func appendStubField(fields: in List[RecordMember], sg: in FunctionSig): Unit {
@@ -156,16 +170,51 @@ func appendStubField(fields: in List[RecordMember], sg: in FunctionSig): Unit {
   )
 }
 
-// The stub method body: `self.<method>_value` for a value-returning method, or
-// an empty block for a Unit-returning one.
-func stubMethodBody(sg: in FunctionSig): FunctionBody {
-  if isUnitReturn(sg) {
-    val noStmts: List[Statement] = newList()
-    return FBBlock(block = Block(statements = noStmts, span = sg.span))
+// Append the `pub <method>_counter: StubCounter = makeStubCounter()` field for
+// every supported method, including Unit-returning ones.  Callers read the
+// counter after exercising the stub to assert the expected call count.
+func appendCounterField(fields: in List[RecordMember], sg: in FunctionSig): Unit {
+  if not isStubbableMethodSig(sg) {
+    return
   }
+  val noDoc: List[DocComment] = newList()
+  val noAnn: List[Annotation] = newList()
+  val counterTy = TypeExpr(kind = TRef(path = mkPath("StubCounter", sg.span)), span = sg.span)
+  val calleePath = Expr(kind = EPath(path = mkPath("makeStubCounter", sg.span)), span = sg.span)
+  val noArgs: List[CallArg] = newList()
+  val defaultExpr = Expr(kind = ECall(fn = calleePath, args = noArgs), span = sg.span)
+  fields.add(
+    RMField(
+      field = FieldDecl(
+        docComments = noDoc,
+        annotations = noAnn,
+        visibility = Some(value = VisPub(span = sg.span)),
+        isMutable = false,
+        name = counterFieldName(sg.name),
+        ty = counterTy,
+        dflt = Some(value = defaultExpr),
+        span = sg.span
+      )
+    )
+  )
+}
+
+// The stub method body: always a block that first increments the call counter,
+// then returns `self.<method>_value` for non-Unit methods.
+func stubMethodBody(sg: in FunctionSig): FunctionBody {
+  val stmts: List[Statement] = newList()
   val selfE = Expr(kind = ESelf, span = sg.span)
-  val mem = Expr(kind = EMember(receiver = selfE, memberName = valueFieldName(sg.name)), span = sg.span)
-  FBExpr(expr = mem)
+  val counterAcc = Expr(kind = EMember(receiver = selfE, memberName = counterFieldName(sg.name)), span = sg.span)
+  val incrFn = Expr(kind = EPath(path = mkPath("stubCounterIncrement", sg.span)), span = sg.span)
+  val incrArgs: List[CallArg] = newList()
+  incrArgs.add(CAPositional(expr = counterAcc))
+  val incrCall = Expr(kind = ECall(fn = incrFn, args = incrArgs), span = sg.span)
+  stmts.add(Statement(kind = SExpr(expr = incrCall), span = sg.span))
+  if not isUnitReturn(sg) {
+    val valueAcc = Expr(kind = EMember(receiver = selfE, memberName = valueFieldName(sg.name)), span = sg.span)
+    stmts.add(Statement(kind = SReturn(value = Some(value = valueAcc)), span = sg.span))
+  }
+  FBBlock(block = Block(statements = stmts, span = sg.span))
 }
 
 // Append the impl method for one supported interface method (no-op otherwise).
@@ -196,13 +245,17 @@ func appendStubMethod(methods: in List[ImplMember], sg: in FunctionSig): Unit {
   )
 }
 
-// One `pub <method>_value` field per non-Unit supported method.
+// One `pub <method>_value` field per non-Unit supported method, plus one
+// `pub <method>_counter: StubCounter = makeStubCounter()` per supported method.
 func synthesiseStubRecord(id: in InterfaceDecl): RecordDecl {
   val fields: List[RecordMember] = newList()
   var i = 0
   while i < id.members.count {
     match id.members[i] {
-      case IMSig(sg) -> appendStubField(fields, sg)
+      case IMSig(sg) -> {
+        appendStubField(fields, sg)
+        appendCounterField(fields, sg)
+      }
       case _ -> {
       }
     }
@@ -291,14 +344,68 @@ pub func synthesiseItems(items: in List[Item]): List[Item] {
   result
 }
 
-// Return `file` with the synthesised `@stubbable` items appended.
+// Return true if the file already has `import Std.Testing.Mocking`.
+func hasMockingImport(imports: in List[ImportDecl]): Bool {
+  var i = 0
+  while i < imports.count {
+    val imp = imports[i]
+    if imp.path.segments.count == 3
+      and imp.path.segments[0] == "Std"
+      and imp.path.segments[1] == "Testing"
+      and imp.path.segments[2] == "Mocking" {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Return a copy of `imports` with a synthetic `import Std.Testing.Mocking` appended.
+func addMockingImport(imports: in List[ImportDecl], span: in Span): List[ImportDecl] {
+  val result: List[ImportDecl] = newList()
+  var i = 0
+  while i < imports.count {
+    result.add(imports[i])
+    i = i + 1
+  }
+  val segs: List[String] = newList()
+  segs.add("Std")
+  segs.add("Testing")
+  segs.add("Mocking")
+  result.add(ImportDecl(
+    path = ModulePath(segments = segs, span = span),
+    selector = None,
+    asAlias = None,
+    isPubUse = false,
+    span = span
+  ))
+  result
+}
+
+// Return the import list to use for the rewritten file.  If stubs were
+// synthesised and `Std.Testing.Mocking` is not yet imported, add it so
+// `StubCounter` and `makeStubCounter()` resolve during type-check.
+func buildImports(file: in SourceFile, stubsAdded: in Bool): List[ImportDecl] {
+  if not stubsAdded {
+    return file.imports
+  }
+  if hasMockingImport(file.imports) {
+    return file.imports
+  }
+  addMockingImport(file.imports, file.span)
+}
+
+// Return `file` with the synthesised `@stubbable` items appended and, when
+// stubs are present, `import Std.Testing.Mocking` ensured in the import list.
 pub func stubbableRewriteFile(file: in SourceFile): SourceFile {
+  val newItems = synthesiseItems(file.items)
+  val stubsAdded = newItems.count > file.items.count
   SourceFile(
     moduleDoc = file.moduleDoc,
     fileAnnotations = file.fileAnnotations,
     packageDecl = file.packageDecl,
-    imports = file.imports,
-    items = synthesiseItems(file.items),
+    imports = buildImports(file, stubsAdded),
+    items = newItems,
     span = file.span
   )
 }
