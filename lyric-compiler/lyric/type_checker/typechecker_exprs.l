@@ -2167,17 +2167,34 @@ pub func inferExpr(
       val directSig = findDirectSig(sc, tbl, sigs, fn, args.count, argTypes)
       match directSig {
         case Some(sig) -> {
-          if sig.params.count != args.count {
+          // Count required params (those without a default value) to allow
+          // calls that omit trailing defaulted parameters (#1503).
+          var minRequired = 0
+          var mri = 0
+          while mri < sig.params.count {
+            if not sig.params[mri].hasDefault {
+              minRequired = minRequired + 1
+            }
+            mri = mri + 1
+          }
+          if args.count < minRequired or args.count > sig.params.count {
+            val expectedMsg = if minRequired == sig.params.count {
+              toString(sig.params.count) + " argument(s)"
+            } else {
+              toString(minRequired) + "–" + toString(sig.params.count) + " argument(s)"
+            }
             diag.add(
               errorDiagnostic(
                 "T0042",
-                "expected " + toString(sig.params.count) + " argument(s), got " + toString(args.count),
+                "expected " + expectedMsg + ", got " + toString(args.count),
                 e.span
               )
             )
           } else {
+            // Only validate the args that were actually supplied; missing
+            // trailing params with defaults are filled in by codegen.
             var k = 0
-            while k < sig.params.count {
+            while k < args.count {
               val p = sig.params[k]
               if not argSatisfiesParam(tbl, p.ty, argTypes[k]) {
                 diag.add(
