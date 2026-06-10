@@ -3403,8 +3403,11 @@ jobs:
                 console.log(`[auto-promote] PR #${prNumber}: ⚠ Mutation returned but PR is still draft`);
               }
             } catch (error) {
-              if (error.message && error.message.includes('NOT_FOUND')) {
-                console.log(`[auto-promote] PR #${prNumber}: ⚠ PR not found (may be a fork or permission issue)`);
+              const isSoftError =
+                (error.message && error.message.includes('NOT_FOUND')) ||
+                (Array.isArray(error.errors) && error.errors.some(e => e.type === 'FORBIDDEN' || e.type === 'NOT_FOUND'));
+              if (isSoftError) {
+                console.log(`[auto-promote] PR #${prNumber}: ⚠ PR not found or permission denied (fork PRs cannot be promoted by the workflow)`);
               } else {
                 core.setFailed(`[auto-promote] PR #${prNumber}: ✗ GraphQL error: ${error.message}`);
               }
