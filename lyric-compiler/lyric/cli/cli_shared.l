@@ -168,7 +168,7 @@ func usageText(): String {
     "  lyric.toml by walking up from the current directory when no source file is given.\n" +
     "  fmt:  no-arg project mode dry-run shows what would change; --write applies; --check exits 1 if any would change.\n" +
     "        --stdin reads stdin and writes formatted output to stdout (editor integration).\n" +
-    "        Non-doc comments (//) are not preserved — only /// and //!.\n" +
+    "        All comment forms (//, ///, //!) are preserved by the CST formatter.\n" +
     "  lint: L001-L005 style checks. --error-on-warning exits 1 on warnings."
 }
 
