@@ -423,6 +423,87 @@ func lowerCallArg(ctx: in FuncCtx, insns: in List[LInsn], arg: in CallArg): JvmT
   }
 }
 
+// Reorder a function call's arguments to parameter-declaration order and fill
+// missing defaulted parameters (#1503).  Uses `sig.paramNames` and
+// `sig.paramDefaults` when present.  Returns `args` unchanged when: any arg
+// is positional but count equals sig.params.count (already in order), no
+// param names are registered, or a required param is missing.
+func reorderAndFillJvmArgs(sig: in JvmFuncSig, args: in List[CallArg]): List[CallArg] {
+  if args.count == 0 and sig.params.count == 0 {
+    return args
+  }
+  if sig.paramNames.count == 0 {
+    return args  // no name info available
+  }
+  // Check if any arg is named.
+  var anyNamed = false
+  var i = 0
+  while i < args.count {
+    match args[i] {
+      case CANamed(_, _, _) -> {
+        anyNamed = true
+      }
+      case CAPositional(_) -> ()
+    }
+    i = i + 1
+  }
+  if not anyNamed {
+    // Positional call: only append defaults for trailing missing params.
+    if args.count >= sig.paramNames.count {
+      return args
+    }
+    val filled: List[CallArg] = newList()
+    var j = 0
+    while j < args.count {
+      filled.add(args[j])
+      j = j + 1
+    }
+    var k = args.count
+    while k < sig.paramNames.count {
+      match sig.paramDefaults[k] {
+        case Some(dflt) -> filled.add(CAPositional(expr = dflt))
+        case None -> return args  // required param missing — bail
+      }
+      k = k + 1
+    }
+    return filled
+  }
+  // Named call: build name → arg map, then reassemble in declaration order.
+  val byName: Map[String, CallArg] = newMap()
+  var ni = 0
+  while ni < args.count {
+    match args[ni] {
+      case CANamed(nm, _, _) -> {
+        if not byName.containsKey(nm) {
+          byName.add(nm, args[ni])
+        }
+      }
+      case CAPositional(_) -> return args  // mixed call — already in order
+    }
+    ni = ni + 1
+  }
+  val ordered: List[CallArg] = newList()
+  var pi = 0
+  while pi < sig.paramNames.count {
+    val pname = sig.paramNames[pi]
+    match mapGet(byName, pname) {
+      case Some(a) -> ordered.add(a)
+      case None -> {
+        if pi < sig.paramDefaults.count {
+          match sig.paramDefaults[pi] {
+            case Some(dflt) -> ordered.add(CAPositional(expr = dflt))
+            case None -> return args  // required param missing — bail
+          }
+        } else {
+          return args
+        }
+      }
+    }
+    pi = pi + 1
+  }
+  ordered
+}
+
 // Lower a builtin or static function call.
 func lowerBuiltinOrStaticCall(
   ctx: in FuncCtx,
@@ -1328,9 +1409,10 @@ func lowerGeneralStaticCall(
   }
   match sigOpt {
     case Some(sig) -> {
+      val callArgs = reorderAndFillJvmArgs(sig, args)
       var ai = 0
-      while ai < args.count {
-        val aTy = lowerCallArg(ctx, insns, args[ai])
+      while ai < callArgs.count {
+        val aTy = lowerCallArg(ctx, insns, callArgs[ai])
         if ai < sig.params.count {
           // A primitive `byte[]` (e.g. a JDK `getBytes()` / `digest()`
           // result) passed where a Lyric `slice[Byte]`

@@ -24005,3 +24005,45 @@ The self-hosted JVM backend now mirrors the MSIL projectable path shipped in D-p
 `lyric-compiler/msil/msil_self_test_m87.l` is converted from a manual-run `func main` program to a `@test_module` and wired into CI via native `lyric test --target dotnet` (the bitwise_self_test pattern — it imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1`; the in-process `Msil.Bridge` codegen performs the @projectable lowering under test). The JVM twin `lyric-compiler/jvm/projectable_jvm_self_test.l` runs the same ten checks via `lyric test --target jvm` (in-process `Jvm.Bridge` `compileToJarBundled`, executed under `java`). Both cover: basic `toView()` projection, `tryInto()` round-trip, `@hidden` suppression, `@projectionBoundary` type preservation, nested recursive projection, and two-level transitive projection.
 
 docs/41 §3 H2 is marked RESOLVED (MSIL in PR #3015, JVM here). Closes #3044, #3045.
+
+### D-progress-494 — Call-site named-arg reorder + default-param fill; wire topo sort + cycle detection on both targets; formatter `@provided`/`wire` fixes (#1502, #1503)
+
+**Status:** Shipped (2026-06-10).
+
+**Issue #1503 — Named-arg reorder and default-param fill (JVM)** (`jvm/codegen/04_calls.l`, `jvm/codegen/01_types.l`, `jvm/codegen/06_items.l`):
+
+`JvmFuncSig` gained two new fields: `paramNames: List[String]` (declared parameter names, empty when unknown) and `paramDefaults: List[Option[Expr]]` (per-param default expression, `None` = no default). `collectFileSigs` populates both from `IFunc` items' `Param.name` / `Param.dflt`. A new `reorderAndFillJvmArgs` function in `04_calls.l` accepts a `JvmFuncSig` and a raw `List[CallArg]`, detects whether any `CANamed` args are present, and if so: (a) maps each named arg to its declared position, (b) fills any absent positional that has a default, and (c) returns a positional `List[CallArg]` in declaration order for subsequent lowering. Called from `lowerBuiltinOrStaticCall` before argument lowering. Fixed a T0068 type-mismatch in the named-arg detection loop (`case CANamed -> anyNamed = true` returned `Bool`, while `case CAPositional -> ()` returned `Unit`; wrapped in a block `{ anyNamed = true }`).
+
+**Issue #1502 — Wire/DI: `@provided` params, `WMBind`, topological ordering, cycle detection (both targets):**
+
+*MSIL (`msil/codegen.l`)*: `lowerWireMsil` now calls `wireTopoSortMsil` (Kahn's BFS) before emitting any binding. The helper suite — `wireExprDepsMsil`, `wireExprOrBlockDepsMsil`, `wireBlockDepsMsil`, `wireStmtDepsMsil`, `wireMemberInitMsil`, `wireMemberNameMsil` — walks each member's init expression collecting name refs against the known-member set, builds the dependency DAG, and returns `WTRSorted(members)` in emission order or `WTRCycle(path)` on a cycle (which panics with `W0001`).
+
+*JVM (`jvm/codegen/06_items.l`, `jvm/lowering.l`)*: Equivalent JVM suite — `wireExprDepsJvm`, `wireBlockDepsJvm`, `wireStmtDepsJvm`, `wireMemberInitJvm`, `wireMemberNameJvm`, `wireTopoSortJvm`, `WireTopoResult` union — mirrors the MSIL implementation. `buildWire` calls `wireTopoSortJvm` at the top; the sorted member list replaces `decl.members` in both the `@provided` pre-pass and the main binding loop. `LWire` gained a `providedParams: List[LWireParam]` field; `lowerWire` emits `ACC_PRIVATE + ACC_STATIC` fields for each provided param and includes them in the `bootstrap()` parameter list and the `putstatic` preamble. `WMBind` lowers as a static field binding under the interface's simple name. `WMScoped` remains stubbed pending #2972. `self_test_b6.l` and `self_test_b94.l` updated to pass the new `providedParams = newList()` field.
+
+**Formatter fixes** (`lyric-compiler/lyric/fmt/fmt_items.l`):
+
+Two pre-existing formatter bugs fixed as part of this PR:
+- `WMProvided` was emitted as `"provided name: type"` (missing `@`); the parser requires `@provided name: type`. Fixed to `"@provided " + n + ": " + typeStr(ty)`.
+- `wireDoc` always emitted `wire Name(...) {` even when there are no wire parameters; the parser expects `wire Name {` for the no-params form. Fixed to emit `wire Name(params) {` only when `params.length > 0`, otherwise `wire Name {`.
+
+**Self-hosted type checker fix** (`lyric-compiler/lyric/type_checker/typechecker_exprs.l`):
+
+`Msil.Bridge` (and `Jvm.Bridge`) both `import Lyric.TypeChecker` — the self-hosted type checker is the one invoked for all user-code compilation on both targets.  The `directSig` path in `ECall` inference was checking `sig.params.count != args.count` (strict arity), which fired T0042 even when the missing trailing params carry `hasDefault = true` on their `ResolvedParam`.  Fixed: compute `minRequired` (count of params where `hasDefault == false`), emit T0042 only when `args.count < minRequired or args.count > sig.params.count`, and only type-check the params that were actually supplied (codegen fills the rest from default expressions).  `F# Lyric.TypeChecker` is not involved in user-program compilation; any T004x error from `lyric build / lyric test` comes from `typechecker_exprs.l`.
+
+**New self-tests** (`lyric-compiler/lyric/`):
+- `func_default_args_self_test.l` — `@test_module` exercising named-arg reorder and default-param fill (8 test cases including `addWithDefault(5)`, `greetFull(first, last)` omitting the defaulted `suffix`, `tri(1)` omitting two defaults; imports `Std.*` only; CI-wired in `compiler-self-tests-dotnet-b` and JVM analog step).
+- `wire_di_self_test.l` — `@test_module` exercising `@provided`, singleton-with-dependency, and topo sort (placeholder assertions for full invocation; CI-wired on `--target dotnet`).
+
+**`addPackageTokens` IWire MethodDef-token-reservation fix** (`msil/codegen.l`):
+
+`addPackageTokens` Pass 2 had no `case IWire` branch, so the one `TestWire_create` MethodDef row emitted by `lowerWireMsil` was never reserved in the pre-scan.  This silently displaced every subsequent IFunc token by 1, making the PE EntryPointToken point to the function immediately preceding `main()` rather than `main()` itself.  The test binary ran and exited 0 with no TAP output.  Fix: added `case IWire(_) -> { methodDefRow = methodDefRow + 1 }` in the Pass 2 loop so IWire's `_create` method occupies the correct row before IFunc assignments.
+
+**`wireTopoSortMsil`/`wireTopoSortJvm` WMExpose separation fix** (`msil/codegen.l`, `jvm/codegen/06_items.l`):
+
+`WMExpose` members share the same name as the `WMSingleton`/`WMLocal` they expose, and have no init expression.  Including them in the dependency graph caused two bugs: (1) `inDegree.add(n, ...)` threw `ArgumentException` on duplicate key when the same name appeared for both `WMSingleton` and `WMExpose`; (2) cycle detection compared `sortedNames.count < members.count`, which fired falsely because `WMExpose` was never added to `sortedNames`.  Fix: both sort functions now separate `WMExpose` members into a `exposeMembers` list before building the graph, run all graph logic on the `sortable` (non-expose) list, compare cycle detection against `sortable.count`, and append `exposeMembers` after the topologically sorted result.
+
+**JVM `bsMaxLocals` fix** (`jvm/lowering.l`):
+
+`bootstrap()` method's `maxLocals` was set to `w.providedParams.count` (number of provided-param parameters), but `Long`/`Double` parameters each occupy 2 local slots per JVM spec §4.7.3.  The loop variable `bsSlot` already tracks the actual slot count.  Fix: `bsMaxLocals = bsSlot`.
+
+Closes #1502, #1503.

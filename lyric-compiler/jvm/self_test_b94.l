@@ -29,7 +29,7 @@ func makeConfigBytes(): List[Byte] {
   val exposes: List[String] = newList()
   exposes.add("answer")
 
-  val w = LWire(className = "Config", bindings = bindings, exposes = exposes)
+  val w = LWire(className = "Config", providedParams = newList(), bindings = bindings, exposes = exposes)
   val cf = lowerWire(w, pool)
   serializeClassWithPool(cf, pool)
 }
