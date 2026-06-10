@@ -2057,9 +2057,6 @@ let private findClrType (qualifiedName: string) : System.Type option =
     // `_kernel/*` Lyric code), but the BCL assemblies referenced by
     // common stdlib modules (`Std.Json`, `Std.Regex`, `Std.Time`,
     // `Std.Http`) aren't auto-loaded on demand and need a touch.
-    // Pin `JvmByteHost` to force-load `Lyric.Jvm.Hosts` — the JVM emitter's
-    // `lyric-compiler/jvm/_kernel/kernel.l` `@externTarget`s these.
-    let _ = typeof<Lyric.Jvm.Hosts.JvmByteHost>
     let _ = typeof<System.Text.Json.JsonDocument>
     let _ = typeof<System.Text.RegularExpressions.Regex>
     let _ = typeof<System.Net.HttpListener>

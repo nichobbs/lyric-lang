@@ -303,24 +303,15 @@ EOF
     copied=$((copied + 1))
   done
 
-  # `Lyric.Jvm.Hosts.dll` is a hand-written F# project (provides the
-  # `Jvm.Hosts.*` extern surface that the JVM kernel calls into), not
-  # a Lyric-emitted artefact, so it doesn't land in the F# emitter's
-  # stdlib cache.  But Msil.Lowering / Msil.Codegen reference it
-  # statically.  Copy it from the stage-0 publish output so stage 1
-  # contains a complete reference set for the AOT entry-point project.
-  if [[ -f "$BUILD_DIR/stage0-publish/Lyric.Jvm.Hosts.dll" ]]; then
-    cp -f "$BUILD_DIR/stage0-publish/Lyric.Jvm.Hosts.dll" "$STAGE1_DIR/"
-    copied=$((copied + 1))
-  else
-    die "stage-1 CLI bundle: Lyric.Jvm.Hosts.dll not found in stage-0 publish"
-  fi
+  # `Lyric.Jvm.Hosts` is gone — the JVM byte-writer and constant-pool helpers
+  # are now pure-Lyric BCL externs in `lyric-compiler/jvm/_kernel/kernel.l`
+  # (docs/23-fsharp-shim-elimination.md).  No F# shim is published or copied
+  # into the stage-1 bundle.
 
-  # `FSharp.Core.dll` — `Lyric.Jvm.Hosts` (above) is F#, so the in-process
-  # `--target jvm` build path (Lyric.Emitter -> Jvm.Bridge -> Jvm.Kernel ->
-  # Jvm.Hosts) needs the F# runtime deployed beside the AOT binary.  The
-  # MSIL kernel is pure-Lyric and never loads it, so this is JVM-only.  The
-  # AOT csproj references `.bootstrap/stage1/FSharp.Core.dll`.
+  # `FSharp.Core.dll` — `Lyric.Emitter.dll` (the F# bootstrap emitter, copied
+  # below) is an F# assembly, so the AOT binary's runtime directory must
+  # contain FSharp.Core for it to load.  The AOT csproj references
+  # `.bootstrap/stage1/FSharp.Core.dll`.
   if [[ -f "$BUILD_DIR/stage0-publish/FSharp.Core.dll" ]]; then
     cp -f "$BUILD_DIR/stage0-publish/FSharp.Core.dll" "$STAGE1_DIR/"
     copied=$((copied + 1))
@@ -360,59 +351,22 @@ EOF
   # `NOT_IMPLEMENTED` until their native NuGet SDK bindings land.
 
 
-  # `Lyric.Jobs.Host.dll` is the Phase-3 host shim for #733 — bridges the
-  # lyric-jobs in-process scheduler through `Lyric.Jobs.InProcessHost` and
-  # the threading primitives through `Lyric.Jobs.Threading`.  No NuGet
-  # dependencies (BCL System.Threading + DateTimeOffset only); Hangfire and
-  # Quartz.NET shims land as separate phases under #781 with their own
-  # durable-persistence Testcontainers infrastructure.
-  dotnet publish "$COMPILER_DIR/src/Lyric.Jobs.Host/Lyric.Jobs.Host.fsproj" \
-    --configuration Release \
-    --output "$BUILD_DIR/stage0-publish-jobs" \
-    --nologo -v q
-  if [[ -f "$BUILD_DIR/stage0-publish-jobs/Lyric.Jobs.Host.dll" ]]; then
-    cp -f "$BUILD_DIR/stage0-publish-jobs/Lyric.Jobs.Host.dll" "$STAGE1_DIR/"
-    copied=$((copied + 1))
-  else
-    die "stage-1 CLI bundle: Lyric.Jobs.Host.dll not found in publish output"
-  fi
+  # `Lyric.Jobs.Host` is gone — the in-process scheduler helpers are now
+  # pure-Lyric BCL externs in `lyric-jobs/src/_kernel/net/jobs_kernel.l`
+  # (docs/23-fsharp-shim-elimination.md).  No F# shim is published or copied.
 
   # `Lyric.Mail.Host` is gone — the lyric-mail SMTP backend now binds
   # `System.Net.Mail` directly from its kernel.  No F# host shim is
   # published or copied into the stage-1 bundle.
 
-  # `Lyric.Mq.Host.dll` is the Phase-5 host shim for #733 — bridges the
-  # lyric-mq in-memory queue backend through `Lyric.Mq.InMemoryHost`.  No
-  # NuGet dependencies (ConcurrentQueue + ConcurrentDictionary only);
-  # RabbitMQ / Azure Service Bus / SQS / Kafka driver shims land as
-  # separate phases under #779.
-  dotnet publish "$COMPILER_DIR/src/Lyric.Mq.Host/Lyric.Mq.Host.fsproj" \
-    --configuration Release \
-    --output "$BUILD_DIR/stage0-publish-mq" \
-    --nologo -v q
-  if [[ -f "$BUILD_DIR/stage0-publish-mq/Lyric.Mq.Host.dll" ]]; then
-    cp -f "$BUILD_DIR/stage0-publish-mq/Lyric.Mq.Host.dll" "$STAGE1_DIR/"
-    copied=$((copied + 1))
-  else
-    die "stage-1 CLI bundle: Lyric.Mq.Host.dll not found in publish output"
-  fi
+  # `Lyric.Mq.Host` is gone — the in-memory queue helpers are now
+  # pure-Lyric BCL externs in `lyric-mq/src/_kernel/net/mq_kernel.l`
+  # (docs/23-fsharp-shim-elimination.md).  No F# shim is published or copied.
 
-  # `Lyric.Web.Host.dll` is the Phase-8 host shim for #733 — bridges the
-  # lyric-web `Web.start` entry point through `Lyric.Web.HttpListenerHost`
-  # using BCL System.Net.HttpListener.  The path-finder actually binds
-  # the port (fixing the silent no-op from #784) and serves a JSON
-  # description of the routing table for every request.  Real ASP.NET
-  # Core Kestrel + minimal-API dispatch lands as a follow-up.
-  dotnet publish "$COMPILER_DIR/src/Lyric.Web.Host/Lyric.Web.Host.fsproj" \
-    --configuration Release \
-    --output "$BUILD_DIR/stage0-publish-web" \
-    --nologo -v q
-  if [[ -f "$BUILD_DIR/stage0-publish-web/Lyric.Web.Host.dll" ]]; then
-    cp -f "$BUILD_DIR/stage0-publish-web/Lyric.Web.Host.dll" "$STAGE1_DIR/"
-    copied=$((copied + 1))
-  else
-    die "stage-1 CLI bundle: Lyric.Web.Host.dll not found in publish output"
-  fi
+  # `Lyric.Web.Host` is gone — the HTTP listener path-finder is now
+  # pure-Lyric BCL externs in `lyric-web/src/_kernel/net/web_kernel.l`
+  # and `lyric-web/src/web.l` (docs/23-fsharp-shim-elimination.md).
+  # No F# shim is published or copied.
 
   info "  copied $copied DLLs into $STAGE1_DIR"
 
@@ -569,12 +523,7 @@ EOF
 
   # Copy the same host shim DLLs the stage-1 bundle includes so the two
   # directories contain the same reference set for a fair comparison.
-  if [[ -f "$BUILD_DIR/stage0-publish/Lyric.Jvm.Hosts.dll" ]]; then
-    cp -f "$BUILD_DIR/stage0-publish/Lyric.Jvm.Hosts.dll" "$STAGE2_DIR/"
-    copied=$((copied + 1))
-  else
-    die "stage-2 CLI bundle: Lyric.Jvm.Hosts.dll not found in stage-0 publish"
-  fi
+  # `Lyric.Jvm.Hosts` is gone — see stage-1 comment above.
 
   if [[ -f "$BUILD_DIR/stage0-publish/FSharp.Core.dll" ]]; then
     cp -f "$BUILD_DIR/stage0-publish/FSharp.Core.dll" "$STAGE2_DIR/"
@@ -591,39 +540,9 @@ EOF
   fi
 
   # Lyric.Session.Host is gone — see stage-1 comment above (#1777).
-
-  dotnet publish "$COMPILER_DIR/src/Lyric.Jobs.Host/Lyric.Jobs.Host.fsproj" \
-    --configuration Release \
-    --output "$BUILD_DIR/stage0-publish-jobs" \
-    --nologo -v q
-  if [[ -f "$BUILD_DIR/stage0-publish-jobs/Lyric.Jobs.Host.dll" ]]; then
-    cp -f "$BUILD_DIR/stage0-publish-jobs/Lyric.Jobs.Host.dll" "$STAGE2_DIR/"
-    copied=$((copied + 1))
-  else
-    die "stage-2 CLI bundle: Lyric.Jobs.Host.dll not found in publish output"
-  fi
-
-  dotnet publish "$COMPILER_DIR/src/Lyric.Mq.Host/Lyric.Mq.Host.fsproj" \
-    --configuration Release \
-    --output "$BUILD_DIR/stage0-publish-mq" \
-    --nologo -v q
-  if [[ -f "$BUILD_DIR/stage0-publish-mq/Lyric.Mq.Host.dll" ]]; then
-    cp -f "$BUILD_DIR/stage0-publish-mq/Lyric.Mq.Host.dll" "$STAGE2_DIR/"
-    copied=$((copied + 1))
-  else
-    die "stage-2 CLI bundle: Lyric.Mq.Host.dll not found in publish output"
-  fi
-
-  dotnet publish "$COMPILER_DIR/src/Lyric.Web.Host/Lyric.Web.Host.fsproj" \
-    --configuration Release \
-    --output "$BUILD_DIR/stage0-publish-web" \
-    --nologo -v q
-  if [[ -f "$BUILD_DIR/stage0-publish-web/Lyric.Web.Host.dll" ]]; then
-    cp -f "$BUILD_DIR/stage0-publish-web/Lyric.Web.Host.dll" "$STAGE2_DIR/"
-    copied=$((copied + 1))
-  else
-    die "stage-2 CLI bundle: Lyric.Web.Host.dll not found in publish output"
-  fi
+  # Lyric.Jobs.Host is gone — see stage-1 comment above.
+  # Lyric.Mq.Host is gone — see stage-1 comment above.
+  # Lyric.Web.Host is gone — see stage-1 comment above.
 
   info "  copied $copied DLLs into $STAGE2_DIR"
 
