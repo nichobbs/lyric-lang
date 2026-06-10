@@ -2417,7 +2417,7 @@ pub func inferExpr(
         )
       }
       match target.kind {
-        case EPath(p) -> if p.segments.count == 1 { match scopeTryFind(sc, p.segments[0]) { case Some(b) -> if not b.isMutable { diag.add(errorDiagnostic("T0087", "cannot reassign immutable binding '" + p.segments[0] + "' (a `val`/`let` or an `in` parameter)", target.span)) }; case None -> {  } } }
+        case EPath(p) -> if p.segments.count == 1 { match scopeTryFind(sc, p.segments[0]) { case Some(b) -> if not b.isMutable { diag.add(errorDiagnostic("T0087", "cannot reassign immutable binding '" + p.segments[0] + "' (a `val`/`let` or `in` parameter); `in` prevents rebinding, not mutating-method calls on the referenced object (e.g. list.add(x) on an `in List[T]` is still valid)", target.span)) }; case None -> {  } } }
         case _ -> {
         }
       }

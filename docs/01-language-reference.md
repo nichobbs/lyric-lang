@@ -661,6 +661,20 @@ let z: Int = expensive()    // lazy, evaluated on first use
 
 Type annotations are optional when inference can resolve the type. Function parameter types and return types are mandatory; `pub` declaration types are mandatory.
 
+**Immutability of `val` and `in` bindings is reference-level, not deep.**  A `val`
+binding or an `in` function parameter prevents *rebinding* — you cannot write
+`x = newValue` — but it does not make the *referenced object* immutable.  If `items`
+is a `val` or `in List[T]`, `items.add(x)` is a valid call because `add` mutates
+the heap-allocated list object, not the binding itself.  This is standard
+reference-immutability: the pointer is frozen, the data is not.
+
+This is a common source of confusion with `in List[T]` parameters: callers may
+expect the list to be read-only, but the callee can still append, remove, or clear
+it.  If you need a read-only view of a collection, accept `in slice[T]` (slices do
+not expose mutation methods) or copy on entry.  For the full mode rules see §5.2.
+Attempting to rebind an `in` parameter (e.g. `param = otherList`) is a compile
+error (**T0087**).
+
 ### 4.5 Error propagation
 
 The `?` operator propagates errors:
@@ -1210,6 +1224,18 @@ pub func Integer_parseInt(s: in String): Int
 @externTarget("java.lang.String.length")
 pub func stringLength(s: in String): Int
 ```
+
+> **Warning — silent miscompile risk.**  The `PascalCase_` heuristic (known
+> internally as `isStaticExternByName`) is applied at code-generation time with
+> **no diagnostic** when the name does not match the actual dispatch kind.  A
+> hand-written extern whose Lyric name starts with a PascalCase segment and
+> underscore but targets an *instance* method will silently emit `invokestatic`,
+> crashing at JVM link time or producing wrong results at runtime.  Conversely, an
+> extern targeting a *static* method whose name does not follow the convention will
+> emit `invokevirtual` and fail at runtime.  **Always annotate new externs with
+> `@externStatic` or `@externInstance` explicitly** — do not rely on the naming
+> convention.  A `kind` field on `@externTarget` is the planned long-term
+> replacement for this heuristic; track progress in #370.
 
 **Unresolvable extern types.**  On `--target dotnet` an `@externTarget`
 whose CLR type cannot be resolved to a known reference assembly
