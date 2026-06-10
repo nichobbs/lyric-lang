@@ -3875,65 +3875,67 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
         )
       } else {
         val trResultOk2 = ctx.stdCoreResultOk2Row[0]
-        val opaqueCtorRow = match mapGet(ctx.projectableCtorMDef, op.className) { case Some(r) -> r; case None -> 0 }
-        if opaqueCtorRow > 0 {
-          // Build type args once — shared by signature return type and body TypeSpec.
-          val tiTypeArgs: List[MsilType] = newList()
-          tiTypeArgs.add(MClass(className = op.className))
-          tiTypeArgs.add(MString)
-          // Return type is Result_Ok<OpaqueType, String> as a GENERICINST, not MObject.
-          // bufMsilTypeWithCtx encodes as 0x15 0x12 <coded-TypeRef> 2 <CLASS:OpaqueType> <STRING>.
-          val tryIntoRetType = MGenericInst(
-            typeRefCode = tdrTypeRef(trResultOk2),
-            headFqn = "Std.Core.Result_Ok",
-            typeArgs = tiTypeArgs
-          )
-          val tryIntoPsNone: List[MsilType] = newList()
-          val tryIntoSig = buildInstanceMethodSigWithCtx(tryIntoPsNone, tryIntoRetType, ctx)
-          val bTryIntoSig = internBlob(bh, "vtryinto_" + viewFqn, tryIntoSig)
-          val sTryInto = internString(sh, "tryInto")
-
-          val mbTryInto = newMethodBody()
-          // Push each opaque field in .ctor order from the view's matching field.
-          // All opaque fields are visible (hasHiddenFields = false at this point).
-          mbTryInto.maxStack = op.fields.count + 2
-          var tifi = 0
-          while tifi < viewFieldIdxs.count {
-            emitLdarg_0(mbTryInto)
-            emitLdfld(mbTryInto, 0x04000000 + firstViewField + tifi)
-            tifi = tifi + 1
-          }
-          // newobj the opaque using its pre-computed MethodDef (forward reference valid).
-          emitNewobj(mbTryInto, 0x06000000 + opaqueCtorRow)
-          // Wrap in Result_Ok<OpaqueType, String> via closed GENERICINST TypeSpec.
-          val okBlob = buildGenericInstBlobWithCtx(ctx, tdrTypeRef(trResultOk2), tiTypeArgs)
-          val tsOkKey = "ts_tryinto_ok_" + op.className
-          val tsOkRow = ctxAddTypeSpec(ctx, tsOkKey, okBlob)
-          // ctor param: MTypeVar(0) = T (the value field of Ok<T,E>)
-          val tiCtorPs: List[MsilType] = newList()
-          tiCtorPs.add(MTypeVar(index = 0))
-          val tiCtorSig = buildInstanceMethodSig(tiCtorPs, MVoid)
-          val tiMrKey = "mr_tryinto_ok_" + op.className
-          val tiMrRow = ctxAddMemberRefForTypeSpec(ctx, tsOkRow, ".ctor", tiMrKey, tiCtorSig)
-          emitNewobj(mbTryInto, 0x0A000000 + tiMrRow)
-          emitRet(mbTryInto)
-
-          ctx.bodies.add(mbTryInto)
-          val rvasTryInto = methodBodyRvas(ctx.bodies)
-          val tryIntoRva = rvasTryInto[ctx.bodies.count - 1]
-          val fpti = t.params_.count + 1
-          addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-          addMethodDef(
-            t,
-            MethodDefRow(
-              rva = tryIntoRva,
-              implFlags = 0,
-              flags = MDA_PUBLIC + MDA_HIDE_BY_SIG,
-              name = sTryInto,
-              signature = bTryIntoSig,
-              paramList = fpti
+        match mapGet(ctx.projectableCtorMDef, op.className) {
+          case Some(opaqueCtorRow) -> {
+            // Build type args once — shared by signature return type and body TypeSpec.
+            val tiTypeArgs: List[MsilType] = newList()
+            tiTypeArgs.add(MClass(className = op.className))
+            tiTypeArgs.add(MString)
+            // Return type is Result_Ok<OpaqueType, String> as a GENERICINST, not MObject.
+            // bufMsilTypeWithCtx encodes as 0x15 0x12 <coded-TypeRef> 2 <CLASS:OpaqueType> <STRING>.
+            val tryIntoRetType = MGenericInst(
+              typeRefCode = tdrTypeRef(trResultOk2),
+              headFqn = "Std.Core.Result_Ok",
+              typeArgs = tiTypeArgs
             )
-          )
+            val tryIntoPsNone: List[MsilType] = newList()
+            val tryIntoSig = buildInstanceMethodSigWithCtx(tryIntoPsNone, tryIntoRetType, ctx)
+            val bTryIntoSig = internBlob(bh, "vtryinto_" + viewFqn, tryIntoSig)
+            val sTryInto = internString(sh, "tryInto")
+
+            val mbTryInto = newMethodBody()
+            // Push each opaque field in .ctor order from the view's matching field.
+            // All opaque fields are visible (hasHiddenFields = false at this point).
+            mbTryInto.maxStack = op.fields.count + 2
+            var tifi = 0
+            while tifi < viewFieldIdxs.count {
+              emitLdarg_0(mbTryInto)
+              emitLdfld(mbTryInto, 0x04000000 + firstViewField + tifi)
+              tifi = tifi + 1
+            }
+            // newobj the opaque using its pre-computed MethodDef (forward reference valid).
+            emitNewobj(mbTryInto, 0x06000000 + opaqueCtorRow)
+            // Wrap in Result_Ok<OpaqueType, String> via closed GENERICINST TypeSpec.
+            val okBlob = buildGenericInstBlobWithCtx(ctx, tdrTypeRef(trResultOk2), tiTypeArgs)
+            val tsOkKey = "ts_tryinto_ok_" + op.className
+            val tsOkRow = ctxAddTypeSpec(ctx, tsOkKey, okBlob)
+            // ctor param: MTypeVar(0) = T (the value field of Ok<T,E>)
+            val tiCtorPs: List[MsilType] = newList()
+            tiCtorPs.add(MTypeVar(index = 0))
+            val tiCtorSig = buildInstanceMethodSig(tiCtorPs, MVoid)
+            val tiMrKey = "mr_tryinto_ok_" + op.className
+            val tiMrRow = ctxAddMemberRefForTypeSpec(ctx, tsOkRow, ".ctor", tiMrKey, tiCtorSig)
+            emitNewobj(mbTryInto, 0x0A000000 + tiMrRow)
+            emitRet(mbTryInto)
+
+            ctx.bodies.add(mbTryInto)
+            val rvasTryInto = methodBodyRvas(ctx.bodies)
+            val tryIntoRva = rvasTryInto[ctx.bodies.count - 1]
+            val fpti = t.params_.count + 1
+            addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+            val _ = addMethodDef(
+              t,
+              MethodDefRow(
+                rva = tryIntoRva,
+                implFlags = 0,
+                flags = MDA_PUBLIC + MDA_HIDE_BY_SIG,
+                name = sTryInto,
+                signature = bTryIntoSig,
+                paramList = fpti
+              )
+            )
+          }
+          case None -> ()
         }
       }
     }
