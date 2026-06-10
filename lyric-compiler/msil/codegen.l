@@ -2293,8 +2293,8 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         var pmi = 0
         while pmi < decl.params.count {
           paramModes.add(decl.params[pmi].mode)
-          // Flat-encode parameter names to avoid nested-generic inference issues
-          // in the stage-0 bootstrap emitter.  Key: "<fqn>/param<i>".
+          // Flat-encode parameter names to allow both FQN and arity-suffix lookups.
+          // Key: "<fqn>/param<i>" and "<arityKey>/param<i>".
           val pnKey = fqn + "/param" + toString(pmi)
           val pnKeyA = arityKey + "/param" + toString(pmi)
           if not cctx.funcParamNames.containsKey(pnKey) {
@@ -13759,23 +13759,11 @@ func lowerProtectedMsil(
   val enterPs: List[MsilType] = newList()
   enterPs.add(MObject)
   val tokEnter = 0x0A000000 +
-    ctxAddMemberRef(
-      cctx.lctx,
-      trMonitor,
-      "Enter",
-      "monitor_enter_" + decl.name,
-      buildStaticMethodSig(enterPs, MVoid)
-    )
+    ctxAddMemberRef(cctx.lctx, trMonitor, "Enter", "monitor_enter", buildStaticMethodSig(enterPs, MVoid))
   val exitPs: List[MsilType] = newList()
   exitPs.add(MObject)
   val tokExit = 0x0A000000 +
-    ctxAddMemberRef(
-      cctx.lctx,
-      trMonitor,
-      "Exit",
-      "monitor_exit_" + decl.name,
-      buildStaticMethodSig(exitPs, MVoid)
-    )
+    ctxAddMemberRef(cctx.lctx, trMonitor, "Exit", "monitor_exit", buildStaticMethodSig(exitPs, MVoid))
 
   val recFields: List[MField] = newList()
   val recMethods: List[MFunc] = newList()
@@ -13857,8 +13845,6 @@ func lowerProtectedMsil(
                 emitStoreSlot(entryInsns, entryFctx.retvalSlot, entryFctx.paramCount)
                 entryInsns.add(MLeave(label = afterL))
               }
-              val tryBodyEndL = freshLabelMsil(entryFctx)
-              entryInsns.add(MLabel(id = tryBodyEndL))
               val finallyStartL = freshLabelMsil(entryFctx)
               val finallyEndL = freshLabelMsil(entryFctx)
               entryInsns.add(MLabel(id = finallyStartL))
@@ -13887,8 +13873,6 @@ func lowerProtectedMsil(
               if entryFctx.epilogueUsed.count == 0 {
                 entryInsns.add(MLeave(label = afterL))
               }
-              val tryBodyEndL = freshLabelMsil(entryFctx)
-              entryInsns.add(MLabel(id = tryBodyEndL))
               val finallyStartL = freshLabelMsil(entryFctx)
               val finallyEndL = freshLabelMsil(entryFctx)
               entryInsns.add(MLabel(id = finallyStartL))
@@ -13919,8 +13903,6 @@ func lowerProtectedMsil(
             }
             emitStoreSlot(entryInsns, entryFctx.retvalSlot, entryFctx.paramCount)
             entryInsns.add(MLeave(label = afterL))
-            val tryBodyEndL = freshLabelMsil(entryFctx)
-            entryInsns.add(MLabel(id = tryBodyEndL))
             val finallyStartL = freshLabelMsil(entryFctx)
             val finallyEndL = freshLabelMsil(entryFctx)
             entryInsns.add(MLabel(id = finallyStartL))
