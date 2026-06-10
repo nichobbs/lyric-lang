@@ -3773,7 +3773,7 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
       if not op.projBoundaryMask[origIdx] {
         match op.fields[origIdx].fieldType {
           case MClass(srcFqn) -> {
-            if ctx.allProjFqns.containsKey(srcFqn) or ctx.projectableToViewMDef.containsKey(srcFqn) {
+            if ctx.allProjFqns.containsKey(srcFqn) {
               hasNestedProjField = true
             }
           }

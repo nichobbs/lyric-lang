@@ -29,8 +29,8 @@
 //!   company_city_name=true
 //!
 //! CI wiring: not yet wired — cannot add F# runner shim per CLAUDE.md.
-//! Tracked as part of #1500; wiring via native `lyric test` when the
-//! self-hosted bridge supports loading compiler packages in test mode.
+//! Tracked in #3045; wiring via native `lyric test` when the self-hosted
+//! bridge supports loading compiler packages in test mode.
 package Msil.SelfTestM87
 import Std.Core
 
