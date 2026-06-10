@@ -430,9 +430,10 @@ func codegenPackageInto(
   caseReg: in Map[String, List[JvmCaseField]],
   ctorReg: in Map[String, String],
   autoFfi: in AutoFfiCtx,
+  allProjFqns: in Map[String, Bool],
   acc: in List[BuiltClass],
 ): Unit {
-  val pkg = codegenPackageWithSigs(file, registry, caseReg, ctorReg, autoFfi)
+  val pkg = codegenPackageWithSigs(file, registry, caseReg, ctorReg, autoFfi, allProjFqns)
   val pool = poolNew()
   val classFiles = lowerPackage(pkg, pool)
   var j = 0
@@ -792,12 +793,27 @@ pub func compileToJarBundledWithFeatures(
   collectFileCases(userFile, caseReg)
   val ctorReg: Map[String, String] = newMap()
   collectFileCtors(userFile, ctorReg)
+  // #3044: complete @projectable pre-scan across the whole compilation, so
+  // nested-view substitution / tryInto() eligibility see every projectable
+  // regardless of declaration or package order (JVM counterpart of the MSIL
+  // `prescanProjectableFqns`).
+  val allProjFqns: Map[String, Bool] = newMap()
+  collectFileProjectables(userFile, allProjFqns)
   var ri = 0
   while ri < stdlibFiles.count {
     collectFileSigs(stdlibFiles[ri], registry)
     collectFileCases(stdlibFiles[ri], caseReg)
     collectFileCtors(stdlibFiles[ri], ctorReg)
+    collectFileProjectables(stdlibFiles[ri], allProjFqns)
     ri = ri + 1
+  }
+  // View-twin registration must run after the pre-scan is complete (the
+  // substituted view field types depend on the full projectable set).
+  registerProjectableViews(userFile, allProjFqns, caseReg, registry)
+  var rvi = 0
+  while rvi < stdlibFiles.count {
+    registerProjectableViews(stdlibFiles[rvi], allProjFqns, caseReg, registry)
+    rvi = rvi + 1
   }
 
   // Transitive import closure: the stdlib packages whose bytecode must be
@@ -952,7 +968,7 @@ pub func compileToJarBundledWithFeatures(
   // User package first (its codegen failing is always fatal).  Its type-check
   // advisories are echoed (they are about the program the user actually wrote).
   match runMiddleEnd(userFile, importedPkgs, stdlibGenFuncs, true) {
-    case Some(f) -> codegenPackageInto(f, registry, caseReg, ctorReg, autoFfi, allClasses)
+    case Some(f) -> codegenPackageInto(f, registry, caseReg, ctorReg, autoFfi, allProjFqns, allClasses)
     case None -> return false
   }
 
@@ -978,7 +994,7 @@ pub func compileToJarBundledWithFeatures(
     val ok = try {
       match runMiddleEnd(f, importedPkgs, stdlibGenFuncs, false) {
         case Some(ff) -> {
-          codegenPackageInto(ff, registry, caseReg, ctorReg, autoFfi, allClasses)
+          codegenPackageInto(ff, registry, caseReg, ctorReg, autoFfi, allProjFqns, allClasses)
           true
         }
         // A fatal middle-end diagnostic (already reported) aborts the build only

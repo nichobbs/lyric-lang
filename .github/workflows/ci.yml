@@ -616,6 +616,28 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/auto_ffi_self_test.l
 
+      # @projectable opaque-twin self-test (#1500 / PR #3015, wired per #3045).
+      # Exercises the self-hosted MSIL lowering for `@projectable` opaque types:
+      # `<Name>View` TypeDef synthesis, `toView()`, `tryInto()` round-trip,
+      # `@hidden` suppression, `@projectionBoundary` type preservation, and
+      # nested/transitive recursive projection (the ten m87 checks).  Compiled
+      # in-process through the self-hosted `Msil.Bridge`; imports only `Std.*`,
+      # so no `LYRIC_LOAD_COMPILER=1`.  The JVM twin runs in the JVM job below.
+      - name: Projectable opaque-twin self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping projectable self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping projectable self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target dotnet lyric-compiler/msil/msil_self_test_m87.l
+
       # In-bundle generic records self-test (#2362, docs/43, epic #2359 Stage 3).
       # Exercises the self-hosted MSIL backend emitting a `record Box[T]` as a
       # truly generic TypeDef: GenericParam metadata rows (table 0x2A), VAR-typed
@@ -1871,6 +1893,30 @@ jobs:
             exit 1
           fi
           "$lyric_bin" test --target jvm lyric-compiler/jvm/control_flow_jvm_self_test.l
+
+      # @projectable opaque-twin self-test on JVM (#3044) — JVM parity twin of
+      # the MSIL m87 self-test (PR #3015): `<Name>View` class synthesis,
+      # `toView()`, `tryInto()` round-trip via Std.Core.Result, `@hidden`
+      # suppression, `@projectionBoundary` type preservation, and
+      # nested/transitive recursive projection, compiled in-process through the
+      # self-hosted `Jvm.Bridge` and executed under `java`.  Also pins the
+      # value-position `and`/`or` slot materialisation (the old stack-carrying
+      # form failed JVM verification inside match-arm results).  Imports only
+      # `Std.*`, so no `LYRIC_LOAD_COMPILER=1`.
+      - name: Projectable opaque-twin self-test on JVM (native lyric test --target jvm)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping projectable JVM self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping projectable JVM self-test"
+            exit 1
+          fi
+          "$lyric_bin" test --target jvm lyric-compiler/jvm/projectable_jvm_self_test.l
       # Match-literal + compound-assignment self-test — pins two self-hosted
       # MSIL backend correctness fixes from #1481 (epic #1470, Band 2): Float
       # literal *match* patterns now emit a real `ldc.r8; ceq` compare instead

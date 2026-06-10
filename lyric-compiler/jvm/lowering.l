@@ -3209,6 +3209,223 @@ pub func lowerProjectable(p: in LProjectable, pool: in Pool): List[ClassFile] {
   result
 }
 
+// ── #3044: lowerProjectableType (@projectable opaque + view twin, full form) ──
+//
+// Full-feature JVM counterpart of the MSIL `lowerMOpaque` projectable path
+// (PR #3015, D-progress-492): `@hidden` suppression, `@projectionBoundary`
+// type preservation, nested-view recursion, and `tryInto()` synthesis.
+// Supersedes the basic B117 `lowerProjectable` above (kept for the
+// emission-library self-test) on the user compile pipeline.
+pub record LProjFieldInfo {
+  name: String
+  // Declared (opaque storage) type.
+  fieldType: JvmType
+  // @hidden — stored on the opaque, omitted from the view.
+  hidden: Bool
+  // @projectionBoundary — the view field keeps the source opaque type.
+  boundary: Bool
+  // Some(view class) when the field's type is a non-boundary projectable
+  // (the view field substitutes the nested view and toView() recurses).
+  nestedViewClass: Option[String]
+}
+
+pub record LProjectableType {
+  opaqueClassName: String
+  viewClassName: String
+  fields: List[LProjFieldInfo]
+  // True when no field is @hidden and no visible field is a non-boundary
+  // nested projectable — the conditions under which the view can reconstruct
+  // the opaque (mirrors the MSIL canEmitTryInto eligibility).
+  emitTryInto: Bool
+}
+
+// The view field's declared type: a boundary field keeps the source opaque
+// type; a nested projectable substitutes its view class; all else unchanged.
+pub func projViewFieldType(f: in LProjFieldInfo): JvmType {
+  if f.boundary {
+    f.fieldType
+  } else {
+    match f.nestedViewClass {
+      case Some(v) -> JRef(className = v)
+      case None -> f.fieldType
+    }
+  }
+}
+
+// `tryInto()` wraps the reconstructed opaque in `Std.Core.Result.Ok`; the
+// erased case-class shapes come from `lowerUnion` / `lowerSealedCase`
+// (public ctor `(Ljava/lang/Object;)V`, sealed interface base).
+func projResultBase(): String {
+  "Std/Core/Result"
+}
+
+func projResultOk(): String {
+  "Std/Core/Result$Ok"
+}
+
+/// Lower a full-feature `@projectable` opaque type to its ClassFiles:
+///   index 0 — the opaque class (private `$`-mangled fields, accessors, ctor,
+///             plus a `toView(): <Name>View` instance method)
+///   index 1 — the `<Name>View` class (public final fields per visible field,
+///             an all-fields ctor, and — when `emitTryInto` — a
+///             `tryInto(): Std.Core.Result` method reconstructing the opaque)
+pub func lowerProjectableType(p: in LProjectableType, pool: in Pool): List[ClassFile] {
+  val result: List[ClassFile] = newList()
+
+  val visible: List[LProjFieldInfo] = newList()
+  for f in p.fields.toArray() {
+    if not f.hidden {
+      visible.add(f)
+    }
+  }
+
+  // ── Opaque class: base form + toView() ────────────────────────────────────
+  val allFields: List[LOpaqueField] = newList()
+  for f in p.fields.toArray() {
+    allFields.add(LOpaqueField(name = f.name, fieldType = f.fieldType))
+  }
+  val opaqueCf = lowerOpaqueType(LOpaqueType(className = p.opaqueClassName, fields = allFields), pool)
+
+  // toView(): new <Name>View; dup; per visible field: aload_0, getfield
+  // $<name>, then — for a non-boundary nested projectable — invokevirtual
+  // <FieldClass>.toView() so the view holds the nested view; finally
+  // invokespecial <Name>View.<init>(viewFieldTypes)V.
+  val tvAsm = newAssembler(pool)
+  lowerInsn(LNew(className = p.viewClassName), tvAsm)
+  lowerInsn(LDup, tvAsm)
+  val viewCtorParams: List[JvmType] = newList()
+  for f in visible.toArray() {
+    lowerInsn(LAload(slot = 0), tvAsm)
+    lowerInsn(LGetfield(owner = p.opaqueClassName, name = "$" + f.name, t = f.fieldType), tvAsm)
+    match f.nestedViewClass {
+      case Some(v) -> {
+        val srcCls = match f.fieldType {
+          case JRef(c) -> c
+          case _ -> panic("Jvm.Lowering: nested projectable field '" + f.name + "' is not a reference type")
+        }
+        val noPs: List[JvmType] = newList()
+        lowerInsn(LInvokevirtual(owner = srcCls, name = "toView", params = noPs, ret = JRef(className = v)), tvAsm)
+      }
+      case None -> ()
+    }
+    viewCtorParams.add(projViewFieldType(f))
+  }
+  lowerInsn(LInvokespecial(owner = p.viewClassName, name = "<init>", params = viewCtorParams, ret = JVoid), tvAsm)
+  lowerInsn(LAreturn, tvAsm)
+  var tvStack = 3
+  for f in visible.toArray() {
+    tvStack = tvStack + fieldSlotSize(projViewFieldType(f))
+  }
+  val tvCode = assembleCode(tvAsm, tvStack, 1)
+  val tvAttrs: List[Attribute] = newList()
+  tvAttrs.add(tvCode)
+  val tvPs: List[JvmType] = newList()
+  val toViewMethod = makeMethodInfo(
+    ACC_PUBLIC,
+    "toView",
+    buildDescriptor(tvPs, JRef(className = p.viewClassName)),
+    tvAttrs
+  )
+
+  val opaqueMethods: List[MethodInfo] = newList()
+  for m in opaqueCf.methods.toArray() {
+    opaqueMethods.add(m)
+  }
+  opaqueMethods.add(toViewMethod)
+  result.add(
+    ClassFile(
+      minorVersion = opaqueCf.minorVersion,
+      majorVersion = opaqueCf.majorVersion,
+      flags = opaqueCf.flags,
+      thisClass = opaqueCf.thisClass,
+      superClass = opaqueCf.superClass,
+      interfaces = opaqueCf.interfaces,
+      fields = opaqueCf.fields,
+      methods = opaqueMethods,
+      attrs = opaqueCf.attrs
+    )
+  )
+
+  // ── View class: public final fields + all-fields ctor (+ tryInto()) ───────
+  val viewFields: List[FieldInfo] = newList()
+  for f in visible.toArray() {
+    val fa: List[Attribute] = newList()
+    viewFields.add(makeFieldInfo(ACC_PUBLIC + ACC_FINAL, f.name, typeDescriptor(projViewFieldType(f)), fa))
+  }
+
+  val vcAsm = newAssembler(pool)
+  lowerInsn(LAload(slot = 0), vcAsm)
+  val superPs: List[JvmType] = newList()
+  lowerInsn(LInvokespecial(owner = "java/lang/Object", name = "<init>", params = superPs, ret = JVoid), vcAsm)
+  var vcSlot = 1
+  for f in visible.toArray() {
+    val vty = projViewFieldType(f)
+    lowerInsn(LAload(slot = 0), vcAsm)
+    emitFieldLoad(vty, vcSlot, vcAsm)
+    lowerInsn(LPutfield(owner = p.viewClassName, name = f.name, t = vty), vcAsm)
+    vcSlot = vcSlot + fieldSlotSize(vty)
+  }
+  lowerInsn(LReturn, vcAsm)
+  val vcCode = assembleCode(vcAsm, vcSlot + 1, vcSlot)
+  val vcAttrs: List[Attribute] = newList()
+  vcAttrs.add(vcCode)
+  val viewCtorMethod = makeMethodInfo(ACC_PUBLIC, "<init>", buildDescriptor(viewCtorParams, JVoid), vcAttrs)
+
+  val viewMethods: List[MethodInfo] = newList()
+  viewMethods.add(viewCtorMethod)
+
+  if p.emitTryInto {
+    // tryInto(): reconstruct the opaque from the view fields (eligibility
+    // guarantees every opaque field is visible and view-typed identically),
+    // then wrap in Std.Core.Result.Ok.  Straight-line code, so no
+    // StackMapTable frames are required.  The Result classes resolve lazily
+    // at first invocation, matching the JVM's per-method linking model.
+    val tiAsm = newAssembler(pool)
+    lowerInsn(LNew(className = projResultOk()), tiAsm)
+    lowerInsn(LDup, tiAsm)
+    lowerInsn(LNew(className = p.opaqueClassName), tiAsm)
+    lowerInsn(LDup, tiAsm)
+    val opaqueCtorParams: List[JvmType] = newList()
+    for f in visible.toArray() {
+      lowerInsn(LAload(slot = 0), tiAsm)
+      lowerInsn(LGetfield(owner = p.viewClassName, name = f.name, t = projViewFieldType(f)), tiAsm)
+      opaqueCtorParams.add(f.fieldType)
+    }
+    lowerInsn(LInvokespecial(owner = p.opaqueClassName, name = "<init>", params = opaqueCtorParams, ret = JVoid), tiAsm)
+    val okPs: List[JvmType] = newList()
+    okPs.add(JRef(className = "java/lang/Object"))
+    lowerInsn(LInvokespecial(owner = projResultOk(), name = "<init>", params = okPs, ret = JVoid), tiAsm)
+    lowerInsn(LAreturn, tiAsm)
+    var tiStack = 5
+    for f in visible.toArray() {
+      tiStack = tiStack + fieldSlotSize(f.fieldType)
+    }
+    val tiCode = assembleCode(tiAsm, tiStack, 1)
+    val tiAttrs: List[Attribute] = newList()
+    tiAttrs.add(tiCode)
+    val tiPs: List[JvmType] = newList()
+    viewMethods.add(
+      makeMethodInfo(ACC_PUBLIC, "tryInto", buildDescriptor(tiPs, JRef(className = projResultBase())), tiAttrs)
+    )
+  }
+
+  result.add(
+    ClassFile(
+      minorVersion = 0,
+      majorVersion = 65,
+      flags = ACC_PUBLIC + ACC_SUPER + ACC_FINAL,
+      thisClass = p.viewClassName,
+      superClass = "java/lang/Object",
+      interfaces = newList(),
+      fields = viewFields,
+      methods = viewMethods,
+      attrs = newList()
+    )
+  )
+
+  result
+}
+
 // ── B118: lowerProtectedWithBarriers (when: Condition-variable barriers) ───────
 pub record LBarrierEntry {
   entryFunc: LFunc
@@ -4526,6 +4743,9 @@ pub union LPackageItem {
   case LPSealedUnion(su: LSealedUnion)
   case LPEnum(en: LEnumType)
   case LPOpaqueType(ot: LOpaqueType)
+  // #3044: full-feature `@projectable` opaque (view twin + toView() +
+  // optional tryInto(), with @hidden / @projectionBoundary / nesting).
+  case LPProjectable(pt: LProjectableType)
   case LPDistinctType(dt: LDistinctType)
   case LPRangeType(rt: LRangeType)
   case LPExposedRecord(er: LExposedRecord)
@@ -4623,6 +4843,18 @@ pub func lowerPackage(pkg: in LPackage, pool: in Pool): List[ClassFile] {
       case LPOpaqueType(ot) -> {
         result.add(lowerOpaqueType(ot, pool))
         result.add(lowerOpaqueFacade(ot, pool))
+      }
+      case LPProjectable(pt) -> {
+        val pcfs = lowerProjectableType(pt, pool)
+        for cf in pcfs.toArray() {
+          result.add(cf)
+        }
+        // Java-interop facade over the opaque, mirroring the plain-opaque arm.
+        val pfFields: List[LOpaqueField] = newList()
+        for f in pt.fields.toArray() {
+          pfFields.add(LOpaqueField(name = f.name, fieldType = f.fieldType))
+        }
+        result.add(lowerOpaqueFacade(LOpaqueType(className = pt.opaqueClassName, fields = pfFields), pool))
       }
       case LPDistinctType(dt) -> {
         result.add(lowerDistinctType(dt, pool))

@@ -1471,6 +1471,32 @@ pub func collectFileSigs(file: in SourceFile, into: in Map[String, JvmFuncSig]):
           mi = mi + 1
         }
       }
+      case IOpaque(decl) -> {
+        // Erased-Object receiver fallback (#3044): register each opaque field
+        // under the `field:<name>` key (owner class + declared type) so a
+        // member read on a statically-Object receiver — e.g. the match
+        // binding on `tryInto()`'s `Ok` payload — can checkcast to the owner
+        // and read through its `$<name>()` accessor.  First-wins on
+        // cross-type field-name collisions, mirroring the MSIL
+        // `fieldTokensByName` package-level reverse lookup.
+        if decl.hasBody {
+          val opqCls = owner + "/" + decl.name
+          var mi = 0
+          while mi < decl.members.count {
+            match decl.members[mi] {
+              case OMField(f) -> {
+                val fkey = "field:" + f.name
+                if not into.containsKey(fkey) {
+                  val fPs: List[JvmType] = newList()
+                  into.add(fkey, JvmFuncSig(owner = opqCls, params = fPs, ret = typeExprToJvm(f.ty, owner)))
+                }
+              }
+              case OMInvariant(_) -> ()
+            }
+            mi = mi + 1
+          }
+        }
+      }
       case IWire(decl) -> {
         // J3 M-3: register the wire's static factory methods under the
         // `<wireShortName>.<method>` key so `AppWire.bootstrap()` /
@@ -1775,6 +1801,157 @@ pub func collectFileOpaque(file: in SourceFile, owner: in String, into: in Map[S
   }
 }
 
+// True when the annotation list carries `@<headName>` (first path segment
+// match).  Mirrors the MSIL backend's `hasAnnotationMsil`.
+pub func hasAnnotationJvm(anns: in List[Annotation], headName: in String): Bool {
+  var i = 0
+  while i < anns.count {
+    val segs = anns[i].name.segments
+    if segs.count > 0 and segs[0] == headName {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Collect every `@projectable` opaque type's JVM class name into `into`
+// (value always `true`).  Run over the user file plus every bundled file
+// BEFORE any per-package codegen so nested-projectable detection is
+// declaration-order- and package-order-independent — the JVM counterpart of
+// the MSIL `prescanProjectableFqns` (#3044).
+pub func collectFileProjectables(file: in SourceFile, into: in Map[String, Bool]): Unit {
+  val owner = segmentsToJvmPath(file.packageDecl.path.segments)
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IOpaque(decl) -> {
+        if decl.hasBody and hasAnnotationJvm(decl.annotations, "projectable") {
+          val cls = owner + "/" + decl.name
+          if not into.containsKey(cls) {
+            into.add(cls, true)
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
+// Per-field projection metadata for one `@projectable` opaque declaration:
+// @hidden / @projectionBoundary flags plus the nested view class when the
+// field's type is itself a non-boundary projectable (per `allProjFqns`).
+func buildProjFieldInfos(
+  decl: in OpaqueTypeDecl, owner: in String, allProjFqns: in Map[String, Bool]
+): List[LProjFieldInfo] {
+  val infos: List[LProjFieldInfo] = newList()
+  var mi = 0
+  while mi < decl.members.count {
+    match decl.members[mi] {
+      case OMField(f) -> {
+        val hidden = hasAnnotationJvm(f.annotations, "hidden")
+        val boundary = hasAnnotationJvm(f.annotations, "projectionBoundary")
+        val srcTy = typeExprToJvm(f.ty, owner)
+        val nested: Option[String] = if boundary {
+          None
+        } else {
+          match srcTy {
+            case JRef(c) -> {
+              if allProjFqns.containsKey(c) {
+                Some(value = c + "View")
+              } else {
+                None
+              }
+            }
+            case _ -> None
+          }
+        }
+        infos.add(
+          LProjFieldInfo(name = f.name, fieldType = srcTy, hidden = hidden, boundary = boundary, nestedViewClass = nested)
+        )
+      }
+      case OMInvariant(_) -> ()
+    }
+    mi = mi + 1
+  }
+  infos
+}
+
+// tryInto() eligibility: every field visible (no @hidden) and no visible
+// field is a non-boundary nested projectable (those would need monadic
+// bind).  Mirrors the MSIL `canEmitTryInto` (minus the Result-token gate —
+// the JVM links `Std.Core.Result` lazily at first invocation).
+func projCanTryInto(infos: in List[LProjFieldInfo]): Bool {
+  var i = 0
+  while i < infos.count {
+    if infos[i].hidden {
+      return false
+    }
+    match infos[i].nestedViewClass {
+      case Some(_) -> return false
+      case None -> ()
+    }
+    i = i + 1
+  }
+  true
+}
+
+// Register a file's `@projectable` artifacts into the shared registries so
+// call sites and field reads resolve across the whole compilation (#3044):
+//   • caseFields[`<Pkg>/<Name>View`] — the view's visible fields with
+//     view-substituted types (drives `uv.<field>` getfield emission);
+//   • funcSigs[`<Pkg>/<Name>#toView`] — `()L<Pkg>/<Name>View;`;
+//   • funcSigs[`<Pkg>/<Name>View#tryInto`] — `()LStd/Core/Result;`
+//     (only when eligible, matching the emitted class).
+// Must run AFTER `allProjFqns` is fully populated for every file in the
+// compilation.
+pub func registerProjectableViews(
+  file: in SourceFile,
+  allProjFqns: in Map[String, Bool],
+  caseFields: in Map[String, List[JvmCaseField]],
+  funcSigs: in Map[String, JvmFuncSig],
+): Unit {
+  val owner = segmentsToJvmPath(file.packageDecl.path.segments)
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IOpaque(decl) -> {
+        if decl.hasBody and hasAnnotationJvm(decl.annotations, "projectable") {
+          val cls = owner + "/" + decl.name
+          val viewCls = cls + "View"
+          val infos = buildProjFieldInfos(decl, owner, allProjFqns)
+          if not caseFields.containsKey(viewCls) {
+            val vflds: List[JvmCaseField] = newList()
+            var fi = 0
+            while fi < infos.count {
+              if not infos[fi].hidden {
+                vflds.add(JvmCaseField(name = infos[fi].name, ty = projViewFieldType(infos[fi])))
+              }
+              fi = fi + 1
+            }
+            caseFields.add(viewCls, vflds)
+          }
+          val tvKey = cls + "#toView"
+          if not funcSigs.containsKey(tvKey) {
+            val tvPs: List[JvmType] = newList()
+            funcSigs.add(tvKey, JvmFuncSig(owner = cls, params = tvPs, ret = JRef(className = viewCls)))
+          }
+          if projCanTryInto(infos) {
+            val tiKey = viewCls + "#tryInto"
+            if not funcSigs.containsKey(tiKey) {
+              val tiPs: List[JvmType] = newList()
+              funcSigs.add(tiKey, JvmFuncSig(owner = viewCls, params = tiPs, ret = JRef(className = "Std/Core/Result")))
+            }
+          }
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+}
+
 // Best-effort static type of a module-level `val` initialiser without a
 // declared annotation: literals map to their JVM type; everything else falls
 // back to a `java/lang/Object` reference.  The field type only needs to be the
@@ -1865,8 +2042,13 @@ pub func codegenPackage(file: in SourceFile): LPackage {
   collectFileCases(file, cases)
   val ctors: Map[String, String] = newMap()
   collectFileCtors(file, ctors)
+  // #3044: @projectable pre-scan + view/toView/tryInto registration (single-
+  // file entry, so the scan covers only this file's own projectables).
+  val allProjFqns: Map[String, Bool] = newMap()
+  collectFileProjectables(file, allProjFqns)
+  registerProjectableViews(file, allProjFqns, cases, sigs)
   val autoFfi = buildAutoFfiCtx()
-  codegenPackageWithSigs(file, sigs, cases, ctors, autoFfi)
+  codegenPackageWithSigs(file, sigs, cases, ctors, autoFfi, allProjFqns)
 }
 
 // Codegen a package against a pre-built call registry `funcSigs` spanning the
@@ -1879,6 +2061,11 @@ pub func codegenPackageWithSigs(
   caseFields: in Map[String, List[JvmCaseField]],
   ctors: in Map[String, String],
   autoFfi: in AutoFfiCtx,
+  // #3044: complete set of @projectable opaque JVM class names across the
+  // whole compilation (pre-scanned via `collectFileProjectables`), so the
+  // nested-view substitution and tryInto() eligibility are declaration-order-
+  // independent — the JVM counterpart of the MSIL `allProjFqns`.
+  allProjFqns: in Map[String, Bool],
 ): LPackage {
   val pkgName = segmentsToJvmPath(file.packageDecl.path.segments)
   val funcsClass = pkgName
@@ -2197,17 +2384,35 @@ pub func codegenPackageWithSigs(
         // `lowerOpaqueFacade` (driven from `LPOpaqueType`).  A body-less opaque
         // declaration (`opaque type X` with no `{ … }`) has no fields to wrap,
         // so it contributes no class — matching the MSIL `hasBody` guard.
+        // A `@projectable` opaque (#3044) instead drives `lowerProjectableType`
+        // (via `LPProjectable`), which additionally emits the `<Name>View`
+        // twin, `toView()`, and — when eligible — `tryInto()`, mirroring the
+        // MSIL `lowerMOpaque` projectable path (PR #3015).
         if decl.hasBody {
-          val oFields: List[LOpaqueField] = newList()
-          var ofi = 0
-          while ofi < decl.members.count {
-            match decl.members[ofi] {
-              case OMField(f) -> oFields.add(LOpaqueField(name = f.name, fieldType = typeExprToJvm(f.ty, pkgName)))
-              case OMInvariant(_) -> ()
+          if hasAnnotationJvm(decl.annotations, "projectable") {
+            val pInfos = buildProjFieldInfos(decl, pkgName, allProjFqns)
+            items.add(
+              LPProjectable(
+                pt = LProjectableType(
+                  opaqueClassName = pkgName + "/" + decl.name,
+                  viewClassName = pkgName + "/" + decl.name + "View",
+                  fields = pInfos,
+                  emitTryInto = projCanTryInto(pInfos)
+                )
+              )
+            )
+          } else {
+            val oFields: List[LOpaqueField] = newList()
+            var ofi = 0
+            while ofi < decl.members.count {
+              match decl.members[ofi] {
+                case OMField(f) -> oFields.add(LOpaqueField(name = f.name, fieldType = typeExprToJvm(f.ty, pkgName)))
+                case OMInvariant(_) -> ()
+              }
+              ofi = ofi + 1
             }
-            ofi = ofi + 1
+            items.add(LPOpaqueType(ot = LOpaqueType(className = pkgName + "/" + decl.name, fields = oFields)))
           }
-          items.add(LPOpaqueType(ot = LOpaqueType(className = pkgName + "/" + decl.name, fields = oFields)))
         }
       }
       case IProtected(decl) -> {

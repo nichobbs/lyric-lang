@@ -1,11 +1,13 @@
-//! msil_self_test_m87.l — Stage M87: @projectable opaque-twin synthesis.
+//! projectable_jvm_self_test.l — JVM parity test for `@projectable`
+//! opaque-twin synthesis (#3044), the JVM equivalent of
+//! `lyric-compiler/msil/msil_self_test_m87.l` (#1500 / PR #3015).
 //!
-//! Exercises the self-hosted MSIL lowering path for `@projectable` opaque
-//! types added in issue #1500.  The lowering generates a `<Name>View`
-//! TypeDef with public fields plus `toView()` and (when possible) `tryInto()`
-//! methods, mirroring the F# emitter's M2.0–M2.2 region.
+//! Exercises the self-hosted JVM lowering path for `@projectable` opaque
+//! types: the codegen emits a `<Name>View` class with public fields plus
+//! `toView()` and (when eligible) `tryInto()` methods via
+//! `Jvm.Lowering.lowerProjectableType`.
 //!
-//! Checks:
+//! Checks (same ten as the MSIL twin):
 //!   * Basic projectable — toView() exposes all fields.
 //!   * Basic projectable — tryInto() round-trips the opaque value.
 //!   * @hidden field — toView() exposes only non-hidden fields.
@@ -13,18 +15,14 @@
 //!   * Nested projectable — view field becomes <FieldType>View (recursive projection).
 //!   * Two-level nesting — recursive projection applies transitively.
 //!
-//! Run in CI via native `lyric test` (#3045): the test blocks are synthesised
-//! into a runnable program and compiled IN-PROCESS through the self-hosted
-//! `Msil.Bridge`, whose codegen performs the @projectable lowering under
-//! test.  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1` is needed
-//! (the bitwise_self_test.l pattern):
+//! Run in CI via native `lyric test --target jvm`: the test blocks are
+//! synthesised into a runnable program, compiled in-process through the
+//! self-hosted `Jvm.Bridge` (`compileToJarBundled`), and executed under
+//! `java`.  Imports only `Std.*`, so no `LYRIC_LOAD_COMPILER=1` is needed:
 //!
-//!   lyric test --target dotnet lyric-compiler/msil/msil_self_test_m87.l
-//!
-//! The JVM equivalent (same ten checks through the self-hosted `Jvm.Bridge`)
-//! is `lyric-compiler/jvm/projectable_jvm_self_test.l` (#3044).
+//!   lyric test --target jvm lyric-compiler/jvm/projectable_jvm_self_test.l
 @test_module
-package Msil.SelfTestM87
+package Lyric.ProjectableJvmSelfTest
 
 import Std.Core
 import Std.Testing
