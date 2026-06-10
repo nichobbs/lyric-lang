@@ -9,7 +9,7 @@ The phased plan in `docs/05-implementation-plan.md` is the strategic view.
 purposes and retained as a historical reference only.  Technical per-gap
 evidence lives in `docs/41-self-hosted-compiler-gap-analysis.md`.
 
-_Last verified against source: **2026-06-09**._
+_Last verified against source: **2026-06-10**._
 
 ---
 
@@ -69,9 +69,18 @@ order:
    `old()`/quantifier lowering (H11, #1506), `config{}` lowering (M3, #1508),
    `@derive(Ord)`/union-enum derives (M4, #1507), user cross-package generic-fn
    mono (H6, #1498 — stdlib wired, user cross-package funcs not yet collected),
-   wire `bind`/`scoped`/`provided` (H4, #1502 — `WMExpose` lowers;
-   `bind`/`scoped`/`provided` still dropped), call-site named/default args
-   (H5, #1503 — record ctor reordering done; function call-site still broken).
+   wire `@provided`/`WMBind` + topo sort + cycle detection (H4, #1502 —
+   **shipped** D-progress-494: `@provided` params lower as `ACC_PRIVATE+STATIC`
+   fields bootstrapped from the `bootstrap()` method, `WMBind` lowers as a
+   static field under the interface's simple name, Kahn's BFS topo sort emitted
+   on both MSIL and JVM targets, cycle panics `W0001`; `WMScoped` scoped
+   lifetime remains stubbed pending #2972),
+   call-site named/default args (H5, #1503 — **shipped** D-progress-494:
+   `reorderAndFillMsil`/`reorderAndFillJvmArgs` reorder named args and fill
+   omitted defaulted params in codegen on both targets; self-hosted
+   `Lyric.TypeChecker` T0042 check updated to allow omitted trailing defaulted
+   params via `minRequired` count, so the type checker no longer rejects
+   valid calls).
 5. **F# elimination + AOT (HIGH).** AOT is now wired: `release.l` emits
    `<PublishAot>true</PublishAot>` and invokes `dotnet publish -p:PublishAot=true`
    for the `.lyric-release` target — a CI smoke test using this path is still
