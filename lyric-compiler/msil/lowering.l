@@ -812,6 +812,11 @@ pub record MOpaque {
   fields: List[MField]    // private storage fields
   methods: List[MFunc]     // public methods declared in the package
   isProjectable: Bool           // true if @projectable — emit twin Exposed TypeDef
+  // Projectable field metadata (parallel to `fields`; only meaningful when isProjectable=true).
+  // visibleFieldMask[i]=true → fields[i] is NOT @hidden (appears in view twin).
+  // projBoundaryMask[i]=true → fields[i] IS @projectionBoundary (no recursive toView()).
+  visibleFieldMask: List[Bool]
+  projBoundaryMask: List[Bool]
 }
 
 // ── MDistinctType / MRangeType — thin newtype wrappers ───────────────────────
@@ -984,6 +989,22 @@ pub record LoweringCtx {
   // while the callvirt uses row N (M≠N), and the CLR virtual-dispatch resolver
   // fails to match the two as the same slot → MissingMethodException.
   memberRefRowByKey: Map[String, Int]
+  // ── Projectable synthesis tracking (@projectable / toView / tryInto) ─────────
+  // Maps opaque FQN → MethodDef row for its `toView()` method.  Pre-populated
+  // from the discovery pass (same MethodDef order as the real pass) so that
+  // `A.toView()` can emit `callvirt B.toView()` when B is lowered after A.
+  projectableToViewMDef: Map[String, Int]
+  projectableToViewMDefKeys: List[String]
+  // Maps opaque FQN → MethodDef row for its `.ctor`.  Used by
+  // `<Name>View.tryInto()` to construct the opaque from view fields without
+  // a forward-reference problem.
+  projectableCtorMDef: Map[String, Int]
+  projectableCtorMDefKeys: List[String]
+  // Stdlib TypeRef row for `Std.Core.Result_Ok` open generic (the F#-compiled
+  // case class name with underscore separator).  Populated by the codegen layer
+  // after stdlib registration.  Empty list = stdlib not imported; skip
+  // tryInto() generation in that case.
+  stdCoreResultOk2Row: List[Int]
 }
 
 // Build and intern the Microsoft framework public key token blob.
@@ -1117,7 +1138,12 @@ pub func newLoweringCtx(packageName: in String, major: in Int, minor: in Int): L
     dictTokenCache = newMap(),
     discovering = newList(),
     typeSpecRowByKey = newMap(),
-    memberRefRowByKey = newMap()
+    memberRefRowByKey = newMap(),
+    projectableToViewMDef = newMap(),
+    projectableToViewMDefKeys = newList(),
+    projectableCtorMDef = newMap(),
+    projectableCtorMDefKeys = newList(),
+    stdCoreResultOk2Row = newList()
   )
 }
 
@@ -3285,6 +3311,38 @@ pub func discoverTypeDefRowsInto(dst: in LoweringCtx, pkgs: in List[MPackage]): 
     }
     k = k + 1
   }
+  // Copy projectable MethodDef rows so the real pass can use them as
+  // forward references (A.toView() may call B.toView() even when B's
+  // TypeDef is emitted after A's — the pre-computed row is valid because
+  // the discovery and real passes process items in the same order).
+  var pk = 0
+  while pk < dctx.projectableToViewMDefKeys.count {
+    val fqn2 = dctx.projectableToViewMDefKeys[pk]
+    match mapGet(dctx.projectableToViewMDef, fqn2) {
+      case Some(row) -> {
+        if not dst.projectableToViewMDef.containsKey(fqn2) {
+          dst.projectableToViewMDef.add(fqn2, row)
+          dst.projectableToViewMDefKeys.add(fqn2)
+        }
+      }
+      case None -> ()
+    }
+    pk = pk + 1
+  }
+  var ck = 0
+  while ck < dctx.projectableCtorMDefKeys.count {
+    val fqn3 = dctx.projectableCtorMDefKeys[ck]
+    match mapGet(dctx.projectableCtorMDef, fqn3) {
+      case Some(row) -> {
+        if not dst.projectableCtorMDef.containsKey(fqn3) {
+          dst.projectableCtorMDef.add(fqn3, row)
+          dst.projectableCtorMDefKeys.add(fqn3)
+        }
+      }
+      case None -> ()
+    }
+    ck = ck + 1
+  }
 }
 
 // Build (and cache) the concrete `List`1<elemTy>` operation tokens (epic #2359
@@ -3594,12 +3652,23 @@ pub func lowerMImpl(d: in MImplData, ctx: in LoweringCtx): Int {
 
 // ── Opaque type lowering ──────────────────────────────────────────────────────
 // Lower an MOpaque to a sealed TypeDef with private storage fields.
-// When isProjectable=true, also emits a sibling TypeDef with public fields
-// and toExposed/fromExposed static methods.
+// When isProjectable=true, also emits a sibling `<Name>View` TypeDef with
+// public fields, a `.ctor`, an optional `tryInto()` method, and a `toView()`
+// instance method on the opaque itself — mirroring the F# emitter M2.0–M2.2
+// four-pass approach (Pass A: view stub, Pass B: view fields/ctor, Pass C:
+// toView IL, Pass D: tryInto).
+//
+// Multi-pass ordering: the view TypeDef is emitted BEFORE the opaque TypeDef
+// so that `toView()` on the opaque can reference the view's `.ctor` MethodDef
+// (forward references into later TypeDefs are valid in ECMA-335 metadata).
+// The `toView()` method may call a sibling projectable's `toView()` even when
+// that sibling is lowered later; the MethodDef row is pre-computed from the
+// discovery pass and copied by `discoverTypeDefRowsInto`.
 pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
   val sh = ctx.strings
   val bh = ctx.blobs
   val t = ctx.tables
+  val isDiscover = ctx.discovering.count > 0
 
   val simpleNameOpaque = if op.namespace.length == 0 {
     op.className
@@ -3609,95 +3678,496 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
   val sName = internString(sh, simpleNameOpaque)
   val sNs = internString(sh, op.namespace)
 
-  val firstField = t.fields.count + 1
-  val firstMethod = t.methodDefs.count + 1
+  if op.isProjectable {
+    // ── Phase 1: emit <Name>View TypeDef (view twin) ─────────────────────────
+    val viewSimpleName = simpleNameOpaque + "View"
+    val viewFqn = op.className + "View"
+    val sViewName = internString(sh, viewSimpleName)
 
-  // Emit private storage fields (no public field access outside the package).
-  var fi = 0
-  while fi < op.fields.count {
-    val f = op.fields[fi]
-    val sF = internString(sh, f.name)
-    val fSig = buildFieldSigWithCtx(f.fieldType, ctx)
-    val bSig = internBlob(bh, "ofield_" + op.className + "_" + f.name, fSig)
-    addField(t, FieldRow(flags = FDA_PRIVATE, name = sF, signature = bSig))
-    fi = fi + 1
-  }
+    // Build the list of visible (non-@hidden) field indices and their view types.
+    // A view field's type substitutes the source type with the sibling view type
+    // when the source is also projectable — unless @projectionBoundary blocks it.
+    val viewFieldIdxs: List[Int] = newList()
+    val viewFieldTypes: List[MsilType] = newList()
+    var fvi = 0
+    while fvi < op.fields.count {
+      if op.visibleFieldMask[fvi] {
+        viewFieldIdxs.add(fvi)
+        val srcTy = op.fields[fvi].fieldType
+        val vTy = if op.projBoundaryMask[fvi] {
+          srcTy
+        } else {
+          match srcTy {
+            case MClass(srcFqn) -> {
+              if ctx.projectableToViewMDef.containsKey(srcFqn) {
+                MClass(className = srcFqn + "View")
+              } else {
+                srcTy
+              }
+            }
+            case _ -> srcTy
+          }
+        }
+        viewFieldTypes.add(vTy)
+      }
+      fvi = fvi + 1
+    }
 
-  // Synthesise .ctor from declared fields.
-  val ctorPs: List[MsilType] = newList()
-  var ci = 0
-  while ci < op.fields.count {
-    ctorPs.add(op.fields[ci].fieldType)
-    ci = ci + 1
-  }
-  val ctorSig = buildInstanceMethodSigWithCtx(ctorPs, MVoid, ctx)
-  val bCtorSig = internBlob(bh, "octor_" + op.className, ctorSig)
-  val sCtor = internString(sh, ".ctor")
+    // Whether tryInto() can be emitted:
+    //   - stdlib Result_Ok TypeRef must be available
+    //   - no visible field is of a nested projectable type (those need monadic bind)
+    //   - all @hidden (non-visible) fields must be of primitive type (so we can
+    //     push a default without declaring locals)
+    val hasHiddenFields = viewFieldIdxs.count < op.fields.count
+    var hasNestedProjField = false
+    var vfti = 0
+    while vfti < viewFieldIdxs.count {
+      val origIdx = viewFieldIdxs[vfti]
+      if not op.projBoundaryMask[origIdx] {
+        match op.fields[origIdx].fieldType {
+          case MClass(srcFqn) -> {
+            if ctx.projectableToViewMDef.containsKey(srcFqn) {
+              hasNestedProjField = true
+            }
+          }
+          case _ -> ()
+        }
+      }
+      vfti = vfti + 1
+    }
+    // In the discover pass stdCoreResultOk2Row is empty (fresh ctx), so we treat
+    // isDiscover as a stand-in for "Result_Ok is available" — we just need to
+    // count the MethodDef row; the actual stub body is empty and harmless.
+    val canEmitTryInto = (isDiscover or ctx.stdCoreResultOk2Row.count > 0) and not hasNestedProjField and
+      not hasHiddenFields
 
-  val mbCtor = newMethodBody()
-  mbCtor.maxStack = 2
-  emitLdarg_0(mbCtor)
-  emitCall(mbCtor, 0x0A000000 + ctx.mrObjectCtor)
-  var ai = 0
-  while ai < op.fields.count {
-    emitLdarg_0(mbCtor)
-    emitLdarg(mbCtor, ai + 1)
-    emitStfld(mbCtor, 0x04000000 + firstField + ai)
-    ai = ai + 1
-  }
-  emitRet(mbCtor)
-  ctx.bodies.add(mbCtor)
+    // View TypeDef: field and method ranges.
+    val firstViewField = t.fields.count + 1
+    val firstViewMethod = t.methodDefs.count + 1
 
-  val rvas = methodBodyRvas(ctx.bodies)
-  val ctorRva = rvas[ctx.bodies.count - 1]
-  val fp = t.params_.count + 1
-  addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
-  addMethodDef(
-    t,
-    MethodDefRow(
-      rva = ctorRva,
-      implFlags = 0,
-      flags = MDA_PUBLIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
-      name = sCtor,
-      signature = bCtorSig,
-      paramList = fp
-    )
-  )
+    // Emit public view fields.
+    var vfi2 = 0
+    while vfi2 < viewFieldIdxs.count {
+      val origIdx2 = viewFieldIdxs[vfi2]
+      val sF = internString(sh, op.fields[origIdx2].name)
+      val fSig = buildFieldSigWithCtx(viewFieldTypes[vfi2], ctx)
+      val bSig = internBlob(bh, "vfield_" + viewFqn + "_" + op.fields[origIdx2].name, fSig)
+      addField(t, FieldRow(flags = FDA_PUBLIC, name = sF, signature = bSig))
+      vfi2 = vfi2 + 1
+    }
 
-  // Emit explicit instance methods.
-  var mi = 0
-  while mi < op.methods.count {
-    val m = op.methods[mi]
-    val mbM = lowerMFunc(m, ctx)
-    ctx.bodies.add(mbM)
-    val rvasM = methodBodyRvas(ctx.bodies)
-    val mRva = rvasM[ctx.bodies.count - 1]
-    val sN = internString(sh, m.name)
-    val mSig = buildInstanceMethodSigWithCtx(m.params, m.ret, ctx)
-    val bMSig = internBlob(bh, "ometh_" + op.className + "_" + m.name, mSig)
-    val fpm = t.params_.count + 1
+    // Emit view .ctor(fields...).
+    val viewCtorPs: List[MsilType] = newList()
+    var vci = 0
+    while vci < viewFieldTypes.count {
+      viewCtorPs.add(viewFieldTypes[vci])
+      vci = vci + 1
+    }
+    val viewCtorSig = buildInstanceMethodSigWithCtx(viewCtorPs, MVoid, ctx)
+    val bViewCtorSig = internBlob(bh, "vctor_" + viewFqn, viewCtorSig)
+    val sViewCtor = internString(sh, ".ctor")
+
+    val mbViewCtor = newMethodBody()
+    if not isDiscover {
+      mbViewCtor.maxStack = 2
+      emitLdarg_0(mbViewCtor)
+      emitCall(mbViewCtor, 0x0A000000 + ctx.mrObjectCtor)
+      var vca = 0
+      while vca < viewFieldIdxs.count {
+        emitLdarg_0(mbViewCtor)
+        emitLdarg(mbViewCtor, vca + 1)
+        emitStfld(mbViewCtor, 0x04000000 + firstViewField + vca)
+        vca = vca + 1
+      }
+      emitRet(mbViewCtor)
+    }
+    ctx.bodies.add(mbViewCtor)
+    val rvasVCtor = methodBodyRvas(ctx.bodies)
+    val viewCtorRva = rvasVCtor[ctx.bodies.count - 1]
+    val fpvc = t.params_.count + 1
     addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
     addMethodDef(
       t,
-      MethodDefRow(rva = mRva, implFlags = 0, flags = m.flags, name = sN, signature = bMSig, paramList = fpm)
+      MethodDefRow(
+        rva = viewCtorRva,
+        implFlags = 0,
+        flags = MDA_PUBLIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
+        name = sViewCtor,
+        signature = bViewCtorSig,
+        paramList = fpvc
+      )
     )
-    mi = mi + 1
+    val viewCtorMDefRow = t.methodDefs.count
+
+    // Emit tryInto(): Result[OpaqueType, String] on the view (Pass D).
+    // Uses the pre-computed opaque .ctor MethodDef row from the discovery pass.
+    if canEmitTryInto {
+      if isDiscover {
+        // Discover-pass stub: emit an empty body to reserve the MethodDef row so
+        // the discover and real passes assign identical row numbers to every
+        // subsequent method.  Must not access stdCoreResultOk2Row[0] — the fresh
+        // discover ctx has that list empty.
+        val mbStub = newMethodBody()
+        ctx.bodies.add(mbStub)
+        val rvasStub = methodBodyRvas(ctx.bodies)
+        val stubRva = rvasStub[ctx.bodies.count - 1]
+        val sTryIntoD = internString(sh, "tryInto")
+        val dSig = buildInstanceMethodSig(newList(), MObject)
+        val bTryIntoSigD = internBlob(bh, "vtryinto_disc_" + viewFqn, dSig)
+        val fptiD = t.params_.count + 1
+        addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+        addMethodDef(
+          t,
+          MethodDefRow(
+            rva = stubRva,
+            implFlags = 0,
+            flags = MDA_PUBLIC + MDA_HIDE_BY_SIG,
+            name = sTryIntoD,
+            signature = bTryIntoSigD,
+            paramList = fptiD
+          )
+        )
+      } else {
+        val trResultOk2 = ctx.stdCoreResultOk2Row[0]
+        val opaqueCtorRow = match mapGet(ctx.projectableCtorMDef, op.className) { case Some(r) -> r; case None -> 0 }
+        if opaqueCtorRow > 0 {
+          // Build type args once — shared by signature return type and body TypeSpec.
+          val tiTypeArgs: List[MsilType] = newList()
+          tiTypeArgs.add(MClass(className = op.className))
+          tiTypeArgs.add(MString)
+          // Return type is Result_Ok<OpaqueType, String> as a GENERICINST, not MObject.
+          // bufMsilTypeWithCtx encodes as 0x15 0x12 <coded-TypeRef> 2 <CLASS:OpaqueType> <STRING>.
+          val tryIntoRetType = MGenericInst(
+            typeRefCode = tdrTypeRef(trResultOk2),
+            headFqn = "Std.Core.Result_Ok",
+            typeArgs = tiTypeArgs
+          )
+          val tryIntoPsNone: List[MsilType] = newList()
+          val tryIntoSig = buildInstanceMethodSigWithCtx(tryIntoPsNone, tryIntoRetType, ctx)
+          val bTryIntoSig = internBlob(bh, "vtryinto_" + viewFqn, tryIntoSig)
+          val sTryInto = internString(sh, "tryInto")
+
+          val mbTryInto = newMethodBody()
+          // Push each opaque field in .ctor order from the view's matching field.
+          // All opaque fields are visible (hasHiddenFields = false at this point).
+          mbTryInto.maxStack = op.fields.count + 2
+          var tifi = 0
+          while tifi < viewFieldIdxs.count {
+            emitLdarg_0(mbTryInto)
+            emitLdfld(mbTryInto, 0x04000000 + firstViewField + tifi)
+            tifi = tifi + 1
+          }
+          // newobj the opaque using its pre-computed MethodDef (forward reference valid).
+          emitNewobj(mbTryInto, 0x06000000 + opaqueCtorRow)
+          // Wrap in Result_Ok<OpaqueType, String> via closed GENERICINST TypeSpec.
+          val okBlob = buildGenericInstBlobWithCtx(ctx, tdrTypeRef(trResultOk2), tiTypeArgs)
+          val tsOkKey = "ts_tryinto_ok_" + op.className
+          val tsOkRow = ctxAddTypeSpec(ctx, tsOkKey, okBlob)
+          // ctor param: MTypeVar(0) = T (the value field of Ok<T,E>)
+          val tiCtorPs: List[MsilType] = newList()
+          tiCtorPs.add(MTypeVar(index = 0))
+          val tiCtorSig = buildInstanceMethodSig(tiCtorPs, MVoid)
+          val tiMrKey = "mr_tryinto_ok_" + op.className
+          val tiMrRow = ctxAddMemberRefForTypeSpec(ctx, tsOkRow, ".ctor", tiMrKey, tiCtorSig)
+          emitNewobj(mbTryInto, 0x0A000000 + tiMrRow)
+          emitRet(mbTryInto)
+
+          ctx.bodies.add(mbTryInto)
+          val rvasTryInto = methodBodyRvas(ctx.bodies)
+          val tryIntoRva = rvasTryInto[ctx.bodies.count - 1]
+          val fpti = t.params_.count + 1
+          addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+          addMethodDef(
+            t,
+            MethodDefRow(
+              rva = tryIntoRva,
+              implFlags = 0,
+              flags = MDA_PUBLIC + MDA_HIDE_BY_SIG,
+              name = sTryInto,
+              signature = bTryIntoSig,
+              paramList = fpti
+            )
+          )
+        }
+      }
+    }
+
+    // Emit view TypeDef row.
+    val viewTypeDefRow = addTypeDef(
+      t,
+      TypeDefRow(
+        flags = TDF_PUBLIC + TDF_SEALED + TDF_BEFORE_FIELD_INIT,
+        typeName = sViewName,
+        typeNamespace = sNs,
+        extends = objectTypeToken(ctx),
+        fieldList = firstViewField,
+        methodList = firstViewMethod
+      )
+    )
+    recordUserTypeDefRow(ctx, op.namespace, viewSimpleName, viewTypeDefRow)
+
+    // ── Phase 2: emit opaque TypeDef with toView() (Passes B/C) ─────────────
+    val firstOpaqueField = t.fields.count + 1
+    val firstOpaqueMethod = t.methodDefs.count + 1
+
+    // Emit private storage fields.
+    var ofi = 0
+    while ofi < op.fields.count {
+      val f = op.fields[ofi]
+      val sF2 = internString(sh, f.name)
+      val fSig2 = buildFieldSigWithCtx(f.fieldType, ctx)
+      val bSig2 = internBlob(bh, "ofield_" + op.className + "_" + f.name, fSig2)
+      // FDA_ASSEMBLY (internal) allows same-assembly access so that same-package
+      // code (e.g. `addrv.country.iso` via a @projectionBoundary view field) can
+      // read the field.  The Lyric type checker enforces the stricter package-
+      // level visibility at the source level; the MSIL flag mirrors the
+      // assembly boundary, which corresponds to the package/compilation-unit
+      // boundary in the single-assembly output model.
+      addField(t, FieldRow(flags = FDA_ASSEMBLY, name = sF2, signature = bSig2))
+      ofi = ofi + 1
+    }
+
+    // Register the .ctor MethodDef row BEFORE addMethodDef so that sibling
+    // view's tryInto() (emitted earlier) can reference it as a forward ref.
+    val predictedCtorRow = t.methodDefs.count + 1
+    if not ctx.projectableCtorMDef.containsKey(op.className) {
+      ctx.projectableCtorMDef.add(op.className, predictedCtorRow)
+      ctx.projectableCtorMDefKeys.add(op.className)
+    }
+
+    // Emit opaque .ctor.
+    val ctorPs2: List[MsilType] = newList()
+    var ci2 = 0
+    while ci2 < op.fields.count {
+      ctorPs2.add(op.fields[ci2].fieldType)
+      ci2 = ci2 + 1
+    }
+    val ctorSig2 = buildInstanceMethodSigWithCtx(ctorPs2, MVoid, ctx)
+    val bCtorSig2 = internBlob(bh, "octor_" + op.className, ctorSig2)
+    val sCtor2 = internString(sh, ".ctor")
+
+    val mbCtor2 = newMethodBody()
+    if not isDiscover {
+      mbCtor2.maxStack = 2
+      emitLdarg_0(mbCtor2)
+      emitCall(mbCtor2, 0x0A000000 + ctx.mrObjectCtor)
+      var ai2 = 0
+      while ai2 < op.fields.count {
+        emitLdarg_0(mbCtor2)
+        emitLdarg(mbCtor2, ai2 + 1)
+        emitStfld(mbCtor2, 0x04000000 + firstOpaqueField + ai2)
+        ai2 = ai2 + 1
+      }
+      emitRet(mbCtor2)
+    }
+    ctx.bodies.add(mbCtor2)
+    val rvasCtor2 = methodBodyRvas(ctx.bodies)
+    val ctorRva2 = rvasCtor2[ctx.bodies.count - 1]
+    val fp2 = t.params_.count + 1
+    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+    addMethodDef(
+      t,
+      MethodDefRow(
+        rva = ctorRva2,
+        implFlags = 0,
+        flags = MDA_PUBLIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
+        name = sCtor2,
+        signature = bCtorSig2,
+        paramList = fp2
+      )
+    )
+
+    // Emit explicit instance methods declared in the opaque body.
+    var mi2 = 0
+    while mi2 < op.methods.count {
+      val m2 = op.methods[mi2]
+      val mbM2 = lowerMFunc(m2, ctx)
+      ctx.bodies.add(mbM2)
+      val rvasM2 = methodBodyRvas(ctx.bodies)
+      val mRva2 = rvasM2[ctx.bodies.count - 1]
+      val sN2 = internString(sh, m2.name)
+      val mSig2 = buildInstanceMethodSigWithCtx(m2.params, m2.ret, ctx)
+      val bMSig2 = internBlob(bh, "ometh_" + op.className + "_" + m2.name, mSig2)
+      val fpm2 = t.params_.count + 1
+      addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+      addMethodDef(
+        t,
+        MethodDefRow(rva = mRva2, implFlags = 0, flags = m2.flags, name = sN2, signature = bMSig2, paramList = fpm2)
+      )
+      mi2 = mi2 + 1
+    }
+
+    // Emit toView(): <Name>View instance method (Pass C).
+    // Register BEFORE addMethodDef so sibling A.toView() sees B.toView()'s row.
+    val predictedToViewRow = t.methodDefs.count + 1
+    if not ctx.projectableToViewMDef.containsKey(op.className) {
+      ctx.projectableToViewMDef.add(op.className, predictedToViewRow)
+      ctx.projectableToViewMDefKeys.add(op.className)
+    }
+
+    val toViewRetTy = MClass(className = viewFqn)
+    val toViewPsNone: List[MsilType] = newList()
+    val toViewSig = buildInstanceMethodSigWithCtx(toViewPsNone, toViewRetTy, ctx)
+    val bToViewSig = internBlob(bh, "otoview_" + op.className, toViewSig)
+    val sToView = internString(sh, "toView")
+
+    val mbToView = newMethodBody()
+    if not isDiscover {
+      mbToView.maxStack = viewFieldIdxs.count + 2
+      // For each visible field, load from opaque and optionally project to view type.
+      var tvfi2 = 0
+      while tvfi2 < viewFieldIdxs.count {
+        val origIdx3 = viewFieldIdxs[tvfi2]
+        emitLdarg_0(mbToView)
+        emitLdfld(mbToView, 0x04000000 + firstOpaqueField + origIdx3)
+        // Call toView() on the field if it is a projectable opaque and not @projectionBoundary.
+        if not op.projBoundaryMask[origIdx3] {
+          match op.fields[origIdx3].fieldType {
+            case MClass(srcFqn2) -> {
+              match mapGet(ctx.projectableToViewMDef, srcFqn2) {
+                case Some(nestedToViewRow) -> {
+                  // callvirt on the nested projectable's toView() MethodDef.
+                  emitCallvirt(mbToView, 0x06000000 + nestedToViewRow)
+                }
+                case None -> ()
+              }
+            }
+            case _ -> ()
+          }
+        }
+        tvfi2 = tvfi2 + 1
+      }
+      // newobj the view using the view's .ctor MethodDef (same assembly forward ref).
+      emitNewobj(mbToView, 0x06000000 + viewCtorMDefRow)
+      emitRet(mbToView)
+    }
+    ctx.bodies.add(mbToView)
+    val rvasToView = methodBodyRvas(ctx.bodies)
+    val toViewRva = rvasToView[ctx.bodies.count - 1]
+    val fptvw = t.params_.count + 1
+    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+    addMethodDef(
+      t,
+      MethodDefRow(
+        rva = toViewRva,
+        implFlags = 0,
+        flags = MDA_PUBLIC + MDA_HIDE_BY_SIG,
+        name = sToView,
+        signature = bToViewSig,
+        paramList = fptvw
+      )
+    )
+
+    // Emit opaque TypeDef row.
+    val opaqueRowP = addTypeDef(
+      t,
+      TypeDefRow(
+        flags = TDF_PUBLIC + TDF_SEALED + TDF_BEFORE_FIELD_INIT,
+        typeName = sName,
+        typeNamespace = sNs,
+        extends = objectTypeToken(ctx),
+        fieldList = firstOpaqueField,
+        methodList = firstOpaqueMethod
+      )
+    )
+    recordUserTypeDefRow(ctx, op.namespace, simpleNameOpaque, opaqueRowP)
+
+    opaqueRowP
+  } else {
+    // Non-projectable opaque: emit a sealed TypeDef with private fields and
+    // a synthesised .ctor (the original behaviour, unchanged).
+    val firstField = t.fields.count + 1
+    val firstMethod = t.methodDefs.count + 1
+
+    // Emit private storage fields (no public field access outside the package).
+    var fi = 0
+    while fi < op.fields.count {
+      val f = op.fields[fi]
+      val sF = internString(sh, f.name)
+      val fSig = buildFieldSigWithCtx(f.fieldType, ctx)
+      val bSig = internBlob(bh, "ofield_" + op.className + "_" + f.name, fSig)
+      addField(t, FieldRow(flags = FDA_PRIVATE, name = sF, signature = bSig))
+      fi = fi + 1
+    }
+
+    // Synthesise .ctor from declared fields.
+    val ctorPs: List[MsilType] = newList()
+    var ci = 0
+    while ci < op.fields.count {
+      ctorPs.add(op.fields[ci].fieldType)
+      ci = ci + 1
+    }
+    val ctorSig = buildInstanceMethodSigWithCtx(ctorPs, MVoid, ctx)
+    val bCtorSig = internBlob(bh, "octor_" + op.className, ctorSig)
+    val sCtor = internString(sh, ".ctor")
+
+    val mbCtor = newMethodBody()
+    if not isDiscover {
+      mbCtor.maxStack = 2
+      emitLdarg_0(mbCtor)
+      emitCall(mbCtor, 0x0A000000 + ctx.mrObjectCtor)
+      var ai = 0
+      while ai < op.fields.count {
+        emitLdarg_0(mbCtor)
+        emitLdarg(mbCtor, ai + 1)
+        emitStfld(mbCtor, 0x04000000 + firstField + ai)
+        ai = ai + 1
+      }
+      emitRet(mbCtor)
+    }
+    ctx.bodies.add(mbCtor)
+
+    val rvas = methodBodyRvas(ctx.bodies)
+    val ctorRva = rvas[ctx.bodies.count - 1]
+    val fp = t.params_.count + 1
+    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+    addMethodDef(
+      t,
+      MethodDefRow(
+        rva = ctorRva,
+        implFlags = 0,
+        flags = MDA_PUBLIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
+        name = sCtor,
+        signature = bCtorSig,
+        paramList = fp
+      )
+    )
+
+    // Emit explicit instance methods.
+    var mi = 0
+    while mi < op.methods.count {
+      val m = op.methods[mi]
+      val mbM = lowerMFunc(m, ctx)
+      ctx.bodies.add(mbM)
+      val rvasM = methodBodyRvas(ctx.bodies)
+      val mRva = rvasM[ctx.bodies.count - 1]
+      val sN = internString(sh, m.name)
+      val mSig = buildInstanceMethodSigWithCtx(m.params, m.ret, ctx)
+      val bMSig = internBlob(bh, "ometh_" + op.className + "_" + m.name, mSig)
+      val fpm = t.params_.count + 1
+      addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+      addMethodDef(
+        t,
+        MethodDefRow(rva = mRva, implFlags = 0, flags = m.flags, name = sN, signature = bMSig, paramList = fpm)
+      )
+      mi = mi + 1
+    }
+
+    val opaqueRow = addTypeDef(
+      t,
+      TypeDefRow(
+        flags = TDF_PUBLIC + TDF_SEALED + TDF_BEFORE_FIELD_INIT,
+        typeName = sName,
+        typeNamespace = sNs,
+        extends = objectTypeToken(ctx),
+        fieldList = firstField,
+        methodList = firstMethod
+      )
+    )
+    recordUserTypeDefRow(ctx, op.namespace, simpleNameOpaque, opaqueRow)
+
+    opaqueRow
   }
-
-  val opaqueRow = addTypeDef(
-    t,
-    TypeDefRow(
-      flags = TDF_PUBLIC + TDF_SEALED + TDF_BEFORE_FIELD_INIT,
-      typeName = sName,
-      typeNamespace = sNs,
-      extends = objectTypeToken(ctx),
-      fieldList = firstField,
-      methodList = firstMethod
-    )
-  )
-  recordUserTypeDefRow(ctx, op.namespace, simpleNameOpaque, opaqueRow)
-
-  opaqueRow
 }
 
 // ── Top-level static functions lowering ───────────────────────────────────────
