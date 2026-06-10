@@ -131,15 +131,14 @@ async func contentReadAsBytesCancel(c: in HttpContent, token: in CancellationTok
 // `import Std.HttpHost as HostHttp`.  Each is either a thin alias or
 // a multi-step composition that wraps the primitives above.
 // =====================================================================
-// #333: process-wide HttpClient singleton.  `hostDefaultClient()` routes through
-// the F# `Lazy<HttpClient>` in `Lyric.Emitter.HttpClientHost` so the same client
-// instance is reused across all requests — per-call construction exhausts the TCP
-// socket pool (sockets stay in TIME_WAIT for two MSL after GC).
-// Once the F# bootstrap emitter gains `ldsfld` support for reference-typed module
-// vals (#3027), `hostDefaultClient()` will be rewritten to a pure-Lyric `pub val`
-// and `HttpClientHost.fs` deleted.
-@externTarget("Lyric.Emitter.HttpClientHost.defaultClient")
-pub func hostDefaultClient(): HttpClient = ()
+// #333: process-wide HttpClient singleton — initialised once in the package `.cctor`,
+// reused on every request.  Per-call construction exhausts the TCP socket pool
+// (sockets stay in TIME_WAIT for two MSL after GC).
+pub val defaultClient: HttpClient = newClient()
+
+pub func hostDefaultClient(): HttpClient {
+  defaultClient
+}
 
 pub func hostMakeRequest(httpMethod: in String, url: in String): HttpRequestMessage {
   newRequest(newHttpMethod(httpMethod), url)
