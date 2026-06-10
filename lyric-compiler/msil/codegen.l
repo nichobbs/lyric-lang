@@ -17248,16 +17248,47 @@ func registerRestoredRecordCtor(cctx: in CodegenCtx, packageName: in String, rec
     return
   }
 
+  val recGenerics = genericNamesOf(rec.generics)
+
+  // For generic records the self-hosted MSIL emitter names the TypeDef
+  // "Box`1`" etc.  Register the arity-suffixed TypeRef so MNewobjGenericByName,
+  // MCastclassGeneric, and MLdfldGeneric can resolve it via findTypeRefRowByName
+  // at Phase 5 lowering.  Also seed genericTypeArity so typeExprToMsilCtx
+  // returns MGenericInstByName (arity-suffixed) rather than MGenericInst
+  // (plain-TypeRef path, which references the wrong TypeDef name).
+  if recGenerics.count > 0 {
+    val asmRefRow = ensureAssemblyRefForArtifact(cctx, packageName)
+    val arityName = rec.name + "`" + toString(recGenerics.count)
+    ctxAddTypeRef(cctx.lctx, packageName, arityName, asmRefRow)
+    if not cctx.genericTypeArity.containsKey(className) {
+      cctx.genericTypeArity.add(className, recGenerics.count)
+    }
+  }
+
   val ctorParams: List[MsilType] = newList()
   var fi = 0
   while fi < rec.members.count {
     match rec.members[fi] {
       case RMField(f) -> {
-        ctorParams.add(typeExprToMsilCtx(cctx, f.ty, packageName))
+        val fty = if recGenerics.count > 0 {
+          typeExprToMsilG(f.ty, packageName, recGenerics)
+        } else {
+          typeExprToMsilCtx(cctx, f.ty, packageName)
+        }
+        ctorParams.add(fty)
       }
       case _ -> ()
     }
     fi = fi + 1
+  }
+
+  // For generic records, seed genericCtorParams with the VAR-form parameter list
+  // so buildInBundleGenericCtorTok can construct the TypeSpec-parented .ctor
+  // MemberRef at Phase 5.  The same ctorParams list drives the fallback
+  // recordCtorTokens MemberRef below (plain TypeRef, not used for generic construction
+  // but needed as the "this case exists" marker for ctorKeyOpt lookups).
+  if recGenerics.count > 0 and not cctx.genericCtorParams.containsKey(className) {
+    cctx.genericCtorParams.add(className, ctorParams)
   }
 
   val ctorSig = buildInstanceMethodSigWithCtx(ctorParams, MVoid, cctx.lctx)
@@ -17286,6 +17317,8 @@ func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, r
     return
   }
 
+  val recGenerics = genericNamesOf(rec.generics)
+
   var fi = 0
   var fpos = 0
   while fi < rec.members.count {
@@ -17293,12 +17326,33 @@ func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, r
       case RMField(f) -> {
         val key = className + "/" + f.name
         if not cctx.fieldTokens.containsKey(key) {
-          val fty = typeExprToMsilCtx(cctx, f.ty, packageName)
-          val fSig = buildFieldSigWithCtx(fty, cctx.lctx)
+          val fty = if recGenerics.count > 0 {
+            typeExprToMsilG(f.ty, packageName, recGenerics)
+          } else {
+            typeExprToMsilCtx(cctx, f.ty, packageName)
+          }
+          // For generic-parameter fields (MTypeVar) use the VAR-form field sig so
+          // the MemberRef byte-matches the DLL's FIELD VAR(n) declaration.  Also
+          // seed fieldSigBytes / fieldVarIndices so the MLdfldGeneric path (taken
+          // when the receiver is typed as MGenericInstByName) can build the
+          // TypeSpec-parented ldfld MemberRef at Phase 5.
+          val gIdx = match fty { case MTypeVar(idx) -> idx; case _ -> -1 }
+          val fSig = if gIdx >= 0 { buildGenericParamFieldSig(gIdx) } else { buildFieldSigWithCtx(fty, cctx.lctx) }
           val sigKey = "restored_field_" + key
           val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, f.name, sigKey, fSig)
           cctx.fieldTokens.add(key, 0x0A000000 + memberRow)
-          cctx.fieldMsilTypes.add(key, fty)
+          // Store MObject for type-variable fields: fieldMsilTypes drives the
+          // inner-hint path during construction argument lowering, and a MTypeVar
+          // there causes pushCollExpect to treat the argument as a collection
+          // element.  The VAR index is tracked separately in fieldVarIndices and
+          // fieldSigBytes for the MLdfldGeneric path.
+          cctx.fieldMsilTypes.add(key, if gIdx >= 0 { MObject } else { fty })
+          if not cctx.fieldSigBytes.containsKey(key) {
+            cctx.fieldSigBytes.add(key, fSig)
+          }
+          if not cctx.fieldVarIndices.containsKey(key) {
+            cctx.fieldVarIndices.add(key, gIdx)
+          }
         }
         // Positional name map (#1730 / #2592 slice 2): mirror the in-bundle
         // record registration so a CONSUMER constructing this restored record
@@ -17310,6 +17364,16 @@ func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, r
         val byPosKey = className + "/field" + toString(fpos)
         if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
           cctx.fieldDeclaredNames.add(byPosKey, f.name)
+        }
+        // Also mirror fieldSigBytes / fieldVarIndices at the positional key so
+        // MLdfldGeneric and pattern field-binding can resolve by position.
+        if not cctx.fieldSigBytes.containsKey(byPosKey) {
+          val byNameSig = match mapGet(cctx.fieldSigBytes, key) { case Some(s) -> s; case None -> buildFieldSig(MObject) }
+          cctx.fieldSigBytes.add(byPosKey, byNameSig)
+        }
+        if not cctx.fieldVarIndices.containsKey(byPosKey) {
+          val byNameVi = match mapGet(cctx.fieldVarIndices, key) { case Some(v) -> v; case None -> -1 }
+          cctx.fieldVarIndices.add(byPosKey, byNameVi)
         }
         fpos = fpos + 1
       }
@@ -17369,11 +17433,22 @@ func registerRestoredFunc(cctx: in CodegenCtx, packageName: in String, fn: in Fu
 }
 
 // Allocate a TypeRef row for a union's case class (named
-// `<UnionName>$<CaseName>`).  Cached in `ffiTypeRefs` under the
+// `<UnionName>_<CaseName>`).  Cached in `ffiTypeRefs` under the
 // case-class FQN so multiple `registerRestoredUnionCase` calls
 // against the same case share one TypeRef row.
+//
+// `arity` is the number of type parameters on the parent union.  When > 0 the
+// self-hosted MSIL emitter stamps an arity suffix onto the TypeDef name
+// (e.g. "Maybe_Just`1`"), so the TypeRef must use the same suffixed name or
+// the CLR loader cannot resolve the binding.  Pass 0 for non-generic unions
+// to keep the original plain-name behaviour (also used by stdlib, where the
+// F# bootstrap emitter omits the suffix on case classes).
 func ensureCaseClassTypeRefRow(
-  cctx: in CodegenCtx, packageName: in String, caseClassName: in String, asmRefRow: in Int
+  cctx: in CodegenCtx,
+  packageName: in String,
+  caseClassName: in String,
+  asmRefRow: in Int,
+  arity: in Int,
 ): Int {
   // Cache key is the case-class FQN; sibling lookups
   // (`lookupRestoredTypeRefRow`) use the same `<pkg>/<fqn>` shape so
@@ -17384,7 +17459,8 @@ func ensureCaseClassTypeRefRow(
     case Some(row) -> return row
     case None -> ()
   }
-  val row = ctxAddTypeRef(cctx.lctx, packageName, caseClassName, asmRefRow)
+  val typeRefName = if arity > 0 { caseClassName + "`" + toString(arity) } else { caseClassName }
+  val row = ctxAddTypeRef(cctx.lctx, packageName, typeRefName, asmRefRow)
   cctx.ffiTypeRefs.add(typeRefKey, row)
   row
 }
@@ -17399,19 +17475,28 @@ func unionFieldType(uf: in UnionField): TypeExpr {
 }
 
 // Register one union case's ctor MemberRef and field MemberRef rows.
-// The case class is named `<UnionName>$<CaseName>` and its ctor signature
+// The case class is named `<UnionName>_<CaseName>` and its ctor signature
 // follows the same HASTHIS convention as record ctors — one param per field.
 // Field MemberRefs are registered under both the declared field name
 // (`<caseFqn>/<name>`) and the positional key (`<caseFqn>/field<i>`) so that
 // pattern bindings using alias names (e.g. `case IFunc(fn)` where the field
 // is declared as `decl`) resolve via the positional fallback.  Skipped if
 // the case-class FQN is already registered.
+//
+// `uGenerics` is the list of the parent union's type-parameter names.  When
+// non-empty the case class is generic (arity = uGenerics.count): field types
+// that are a bare type-parameter reference (e.g. `value: T`) lower to
+// MTypeVar(n) so the ctor signature and field sigs byte-match the DLL's
+// FIELD VAR(n) declarations.  The arity-suffixed TypeRef (e.g. "Maybe_Just`1`")
+// is registered in place of the plain name so ECMA-335 TypeSpec-parented
+// instructions resolve correctly against the DLL's TypeDef.
 func registerRestoredUnionCase(
   cctx: in CodegenCtx,
   packageName: in String,
   unionName: in String,
   c: in UnionCase,
   asmRefRow: in Int,
+  uGenerics: in List[String],
 ): Unit {
   val caseClassName = unionName + "_" + c.name
   val caseFqn = packageName + "." + caseClassName
@@ -17422,20 +17507,29 @@ func registerRestoredUnionCase(
     cctx.caseParentUnion.add(caseFqn, packageName + "." + unionName)
   }
 
-  val typeRefRow = ensureCaseClassTypeRefRow(cctx, packageName, caseClassName, asmRefRow)
+  val typeRefRow = ensureCaseClassTypeRefRow(cctx, packageName, caseClassName, asmRefRow, uGenerics.count)
 
   val ctorParams: List[MsilType] = newList()
   var fi = 0
   while fi < c.fields.count {
     val uf = c.fields[fi]
-    val fty = typeExprToMsilCtx(cctx, unionFieldType(uf), packageName)
+    val rawTy = unionFieldType(uf)
+    val fty = if uGenerics.count > 0 {
+      typeExprToMsilG(rawTy, packageName, uGenerics)
+    } else {
+      typeExprToMsilCtx(cctx, rawTy, packageName)
+    }
+    val gIdx = match fty { case MTypeVar(idx) -> idx; case _ -> -1 }
+    val fSig = if gIdx >= 0 { buildGenericParamFieldSig(gIdx) } else { buildFieldSigWithCtx(fty, cctx.lctx) }
     ctorParams.add(fty)
     // Register field MemberRef rows under both the declared name and the
     // positional alias so pattern-match binding alias resolution finds them.
     // For UFNamed the actual DLL field name is the declared name; UFPos uses
     // "field<i>".  The positional alias entry points to the SAME MemberRef
     // row so `ldfld` resolves correctly against the real field name.
-    val fSig = buildFieldSigWithCtx(fty, cctx.lctx)
+    // fieldSigBytes / fieldVarIndices are also seeded so the MLdfldGeneric
+    // path (MGenericInstByName receiver) can build the TypeSpec-parented
+    // ldfld MemberRef at Phase 5.
     match uf {
       case UFNamed(fname, _, _) -> {
         val nameKey = caseFqn + "/" + fname
@@ -17444,12 +17538,32 @@ func registerRestoredUnionCase(
           val nameFieldRow = ctxAddMemberRef(cctx.lctx, typeRefRow, fname, nameSigKey, fSig)
           val tok = 0x0A000000 + nameFieldRow
           cctx.fieldTokens.add(nameKey, tok)
-          cctx.fieldMsilTypes.add(nameKey, fty)
+          // Store MObject for type-variable fields: fieldMsilTypes is used as the
+          // inner-hint during construction argument lowering; a MTypeVar there causes
+          // pushCollExpect to treat the argument as a collection element.  The actual
+          // VAR index is tracked in fieldVarIndices for the MLdfldGeneric path.
+          val hintTy = if gIdx >= 0 { MObject } else { fty }
+          cctx.fieldMsilTypes.add(nameKey, hintTy)
+          if not cctx.fieldSigBytes.containsKey(nameKey) {
+            cctx.fieldSigBytes.add(nameKey, fSig)
+          }
+          if not cctx.fieldVarIndices.containsKey(nameKey) {
+            cctx.fieldVarIndices.add(nameKey, gIdx)
+          }
           // Also register the positional alias pointing to the same MemberRef.
           val posKey = caseFqn + "/field" + toString(fi)
           if not cctx.fieldTokens.containsKey(posKey) {
             cctx.fieldTokens.add(posKey, tok)
-            cctx.fieldMsilTypes.add(posKey, fty)
+            cctx.fieldMsilTypes.add(posKey, hintTy)
+          }
+          if not cctx.fieldSigBytes.containsKey(posKey) {
+            cctx.fieldSigBytes.add(posKey, fSig)
+          }
+          if not cctx.fieldVarIndices.containsKey(posKey) {
+            cctx.fieldVarIndices.add(posKey, gIdx)
+          }
+          if not cctx.fieldDeclaredNames.containsKey(posKey) {
+            cctx.fieldDeclaredNames.add(posKey, fname)
           }
         }
       }
@@ -17460,7 +17574,13 @@ func registerRestoredUnionCase(
           val posSigKey = "restored_ucfield_" + posKey
           val posFieldRow = ctxAddMemberRef(cctx.lctx, typeRefRow, "field" + toString(fi), posSigKey, fSig)
           cctx.fieldTokens.add(posKey, 0x0A000000 + posFieldRow)
-          cctx.fieldMsilTypes.add(posKey, fty)
+          cctx.fieldMsilTypes.add(posKey, if gIdx >= 0 { MObject } else { fty })
+          if not cctx.fieldSigBytes.containsKey(posKey) {
+            cctx.fieldSigBytes.add(posKey, fSig)
+          }
+          if not cctx.fieldVarIndices.containsKey(posKey) {
+            cctx.fieldVarIndices.add(posKey, gIdx)
+          }
         }
       }
     }
@@ -17471,13 +17591,47 @@ func registerRestoredUnionCase(
   val sigKey = "restored_ucase_" + caseFqn
   val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, ".ctor", sigKey, ctorSig)
   cctx.recordCtorTokens.add(caseFqn, 0x0A000000 + memberRow)
+
+  // For generic union cases, route construction through buildInBundleGenericCtorTok
+  // (which emits MNewobjGenericByName → TypeSpec-parented .ctor at Phase 5) and
+  // produce an MGenericInstByName result type (needed for correct isinst / ldfld
+  // via MIsinstGeneric / MLdfldGeneric with arity-suffixed class names).
+  if uGenerics.count > 0 {
+    if not cctx.genericTypeArity.containsKey(caseFqn) {
+      cctx.genericTypeArity.add(caseFqn, uGenerics.count)
+    }
+    if not cctx.genericCtorParams.containsKey(caseFqn) {
+      cctx.genericCtorParams.add(caseFqn, ctorParams)
+    }
+  }
 }
 
 // Walk every case of a union and register its case-class ctor.
+// For generic unions, also seeds the arity-suffixed TypeRef for the union base
+// and genericTypeArity so typeExprToMsilCtx returns MGenericInstByName for
+// type annotations like `val m: Maybe[Int]`.
 func registerRestoredUnion(cctx: in CodegenCtx, packageName: in String, decl: in UnionDecl, asmRefRow: in Int): Unit {
+  val uGenerics = genericNamesOf(decl.generics)
+  val uArity = uGenerics.count
+  val unionFqn = packageName + "." + decl.name
+
+  // The self-hosted MSIL emitter names generic union TypeDefs with an arity
+  // suffix (e.g. "Maybe`1`").  Register the suffixed TypeRef so that
+  // bufMsilTypeWithCtx correctly encodes MGenericInstByName in method and
+  // field signatures.  Also register genericTypeArity so typeExprToMsilCtx
+  // routes `Maybe[Int]` through the by-name path rather than the plain
+  // ffiTypeRefs path (which carries the wrong TypeRef name).
+  if uArity > 0 {
+    val arityName = decl.name + "`" + toString(uArity)
+    ctxAddTypeRef(cctx.lctx, packageName, arityName, asmRefRow)
+    if not cctx.genericTypeArity.containsKey(unionFqn) {
+      cctx.genericTypeArity.add(unionFqn, uArity)
+    }
+  }
+
   var ci = 0
   while ci < decl.cases.count {
-    registerRestoredUnionCase(cctx, packageName, decl.name, decl.cases[ci], asmRefRow)
+    registerRestoredUnionCase(cctx, packageName, decl.name, decl.cases[ci], asmRefRow, uGenerics)
     ci = ci + 1
   }
 }

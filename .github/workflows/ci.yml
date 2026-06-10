@@ -664,6 +664,31 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/inbundle_generics_self_test.l
 
+      # Cross-package generic records/unions self-test (#1496, D-progress-494).
+      # Builds a PRODUCER DLL (generic record / union) in-process via
+      # `Lyric.Emitter.emitProject`, then compiles a CONSUMER that imports the
+      # producer as a restored dep and runs it.  Verifies that TypeRef names carry
+      # the arity suffix, that generic metadata maps (genericTypeArity,
+      # genericCtorParams, fieldSigBytes, fieldVarIndices) are populated from the
+      # restored PackageDecl so that construction and field reads work without
+      # runtime mismatches.  Six scenarios: Box[Int], Box[String], Pair[Int,String],
+      # Maybe[Int] Just, Maybe[Int] Nothing, Maybe[String] Just.  Uses
+      # `Lyric.Emitter` so LYRIC_LOAD_COMPILER=1 is needed.
+      - name: Cross-package generics self-test (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
+            echo "::error::stage 1 bundle missing; skipping cross-package generics self-test"
+            exit 1
+          fi
+          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+          if [ ! -x "$lyric_bin" ]; then
+            echo "::error::AOT binary not found at $lyric_bin; skipping cross-package generics self-test"
+            exit 1
+          fi
+          LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/cross_package_generics_self_test.l
+
       # Async extern unwrapping self-test — pins the Band 3 Phase A fix for the
       # @externTarget async silent miscompile (epic #2070, D085, D-progress-415).
       # Before this fix, @externTarget async func left Task<T> on the stack where
