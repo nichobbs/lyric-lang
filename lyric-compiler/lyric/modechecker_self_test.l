@@ -210,3 +210,61 @@ test "cross package single segment v0002" {
     "single-seg-pkg: V0002 emitted for single-segment runtime_checked package call"
   )
 }
+
+test "await in try v0012" {
+  // await inside a try block in a proof_required async func must emit V0012;
+  // the CLR verifier rejects AwaitUnsafeOnCompleted inside a protected region,
+  // and the self-hosted Phase B.1 emitter cannot hoist awaits out of try bodies.
+  val src = "@proof_required\npackage P\nasync func f(): Unit {\n  try {\n    await someTask()\n  } catch (e: Exception) {\n  }\n}\nfunc someTask(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0012"), "await-in-try: V0012 emitted")
+}
+
+test "await in finally v0012" {
+  val src = "@proof_required\npackage P\nasync func f(): Unit {\n  try {\n    doSomething()\n  } finally {\n    await cleanup()\n  }\n}\nfunc doSomething(): Unit {}\nfunc cleanup(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0012"), "await-in-finally: V0012 emitted")
+}
+
+test "await outside try no v0012" {
+  // await outside a try block is fine even in proof_required — no V0012.
+  val src = "@proof_required\npackage P\nasync func f(): Unit {\n  await someTask()\n  try {\n    doSomething()\n  } catch (e: Exception) {\n  }\n}\nfunc someTask(): Unit {}\nfunc doSomething(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0012")), "await-before-try: no V0012")
+}
+
+test "await in try non-async no v0012" {
+  // Non-async functions don't emit V0012 even if they contain await-like text
+  // (the parser won't produce EAwait in a non-async func, but the walker must
+  // skip non-async funcs regardless).
+  val src = "@proof_required\npackage P\nfunc f(): Unit {\n  try {\n    doSomething()\n  } catch (e: Exception) {\n  }\n}\nfunc doSomething(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0012")), "non-async-try: no V0012")
+}
+
+test "await in try runtime checked no v0012" {
+  // V0012 is currently scoped to @proof_required packages only.  @runtime_checked
+  // async functions share the same CLR constraint but are excluded until the
+  // emitter gains await-hoist capability or all callsites are audited.
+  // See issue #2985 for the remediation plan.
+  val src = "@runtime_checked\npackage P\nasync func f(): Unit {\n  try {\n    await someTask()\n  } catch (e: Exception) {\n  }\n}\nfunc someTask(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0012")), "rc-await-in-try: no V0012 (scope limited per #2985)")
+}
+
+test "await in lambda inside try no v0012" {
+  // A lambda defined inside a try block has its own independent state; the
+  // await in its body must NOT be flagged as V0012 for the outer function.
+  // Uses Lyric zero-param lambda syntax `{ -> body }`.
+  val src = "@proof_required\npackage P\nasync func f(): Unit {\n  try {\n    val lam = { -> await someTask() }\n  } catch (e: Exception) {\n  }\n}\nfunc someTask(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "V0012")), "lambda-await-in-outer-try: no V0012")
+}
+
+test "await in try inside record method v0012" {
+  // V0012 must fire for async methods defined inside a record in a
+  // @proof_required package, not just top-level functions.
+  val src = "@proof_required\npackage P\nrecord R {\n  async func doWork(): Unit {\n    try {\n      await someTask()\n    } catch (e: Exception) {\n    }\n  }\n}\nfunc someTask(): Unit {}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "V0012"), "record-method-await-in-try: V0012 emitted")
+}
