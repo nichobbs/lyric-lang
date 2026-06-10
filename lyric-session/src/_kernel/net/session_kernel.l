@@ -1,87 +1,201 @@
-//! Session.Kernel.Net — Redis extern boundary for distributed session storage.
+//! Session.Kernel.Net — direct BCL extern boundary for Redis-backed session
+//! storage via StackExchange.Redis.
 //!
-//! Bridges the Session package to StackExchange.Redis via the
-//! `Lyric.Session.RedisStore` host shim (bootstrap/src/Lyric.Session.Host/):
-//!   - connect()  — open a connection pool and return a store handle
-//!   - create()   — allocate a new session with the given TTL
-//!   - load()     — fetch a session as serialised JSON (empty string = not found)
-//!   - save()     — persist serialised session JSON (preserves TTL via KeepTtl=true)
-//!   - destroy()  — permanently delete a session
-//!   - touch()    — refresh the session TTL without changing its contents
+//! Replaces the F# host shim (`Lyric.Session.RedisStore` in
+//! `bootstrap/src/Lyric.Session.Host/RedisStore.fs`) with native Lyric
+//! `@externTarget` bindings (#1777).
 //!
-//! Phase-1 host-shim path (#733).  The `extern package StackExchange.Redis`
-//! block form used in the original restoration (PR #987) is metadata-only
-//! — the emitter does not emit IL for those declarations, so any user
-//! code calling through them would fail at runtime.  This file uses the
-//! `@externTarget("Lyric.Session.RedisStore.<method>")` form instead,
-//! which the emitter resolves to a real static-method call at codegen
-//! time.  The shim translates StackExchange.Redis exceptions into the
-//! Lyric `Result[T, String]` convention so failures never escape the
-//! language-level boundary.
+//! Design changes vs the old shim path:
 //!
-//! Only active when compiled with feature = "redis".
-//! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+//!   * Handle type — the opaque `Int` store handle is replaced by a
+//!     `RedisStoreHandle` record `{ db: RedisDb, keyPrefix: String }`.
+//!     The F# shim maintained an in-process `ConcurrentDictionary<int,
+//!     RedisHandle>`; this record IS the handle, eliminating the registry
+//!     entirely.  `session.l` stores `RedisStoreHandle` in `NativeSessionStore`
+//!     and passes it back to each kernel call.
+//!
+//!   * Session IDs — generated via `Std.Uuid.newUuid()` / `uuidToString()`
+//!     (hyphenated format), replacing `Guid.NewGuid().ToString("N")` (no-dash
+//!     hex).  Both are unique V4 UUIDs; the format difference is internal.
+//!
+//!   * `Nullable<TimeSpan>` — `default(): NullableTimeSpan` produces the null
+//!     (no-TTL) form; `wrapNullableTs(timeSpanFromSecs(n.toDouble()))` produces
+//!     the non-null form.  The F# bootstrap emitter emits `initobj` for
+//!     `default()` on value-type extern types and `newobj` for `..ctor` calls.
+//!
+//! Only active when compiled with `feature = "redis"`.
+@axiom("StackExchange.Redis.ConnectionMultiplexer / IDatabase conform to StackExchange.Redis 2.x documented contracts")
 @cfg(feature = "redis")
 package Session.Kernel.Net
 
 import Std.Core
+import Std.Uuid
 
-// ─── Redis session backend (host-shim bindings) ───────────────────────────────
+// ── BCL / StackExchange.Redis extern types ────────────────────────────────────
+extern type Multiplexer = "StackExchange.Redis.IConnectionMultiplexer"
+
+extern type RedisDb = "StackExchange.Redis.IDatabase"
+
+extern type RedisKeyT = "StackExchange.Redis.RedisKey"
+
+extern type RedisValueT = "StackExchange.Redis.RedisValue"
+
+// For TTL: `System.TimeSpan` (value type) and its nullable wrapper.
+extern type TimeSpanT = "System.TimeSpan"
+
+// `System.Nullable`1[System.TimeSpan]` is a value type (struct).
+// `default(): NullableTimeSpan` → `initobj` (null / HasValue=false).
+// `wrapNullableTs(ts)` → `newobj Nullable<TimeSpan>::.ctor(TimeSpan)`.
+extern type NullableTimeSpan = "System.Nullable`1[System.TimeSpan]"
+
+// StackExchange.Redis enum types: default value 0 is the "no-flag" case.
+// `When.Always = 0`, `CommandFlags.None = 0`, `ExpireWhen.Always = 0`.
+extern type WhenEnum = "StackExchange.Redis.When"
+
+extern type CommandFlagsT = "StackExchange.Redis.CommandFlags"
+
+// For the `TextWriter log` param of `ConnectionMultiplexer.Connect`; pass null.
+extern type TextWriter = "System.IO.TextWriter"
+
+// For the `Object asyncState` param of `IConnectionMultiplexer.GetDatabase`.
+extern type AnyObj = "System.Object"
+
+// ── Primitive extern functions ────────────────────────────────────────────────
+// ConnectionMultiplexer.Connect(string configuration, TextWriter log)
+// Static; pass null TextWriter to suppress log output.
+@externStatic
+@externTarget("StackExchange.Redis.ConnectionMultiplexer.Connect")
+func connectMultiplexer(configuration: in String, log: in TextWriter): Multiplexer = ()
+
+// IConnectionMultiplexer.GetDatabase(int db, object asyncState)
+// Use db=-1 (default DB) and asyncState=null.
+@externTarget("StackExchange.Redis.IConnectionMultiplexer.GetDatabase")
+func getDatabase(mux: in Multiplexer, db: in Int, asyncState: in AnyObj): RedisDb = ()
+
+// String → RedisKey implicit conversion (StackExchange.Redis.RedisKey.op_Implicit(string)).
+@externStatic
+@externTarget("StackExchange.Redis.RedisKey.op_Implicit")
+func toRedisKey(s: in String): RedisKeyT = ()
+
+// String → RedisValue implicit conversion (StackExchange.Redis.RedisValue.op_Implicit(string)).
+@externStatic
+@externTarget("StackExchange.Redis.RedisValue.op_Implicit")
+func toRedisValue(s: in String): RedisValueT = ()
+
+// StringSet(key, value, Nullable<TimeSpan> expiry, When when): used by `create`.
+// When.Always = 0 = default(); pass default() for `when`.
+@externTarget("StackExchange.Redis.IDatabase.StringSet")
+func strSetCreate(
+  db: in RedisDb,
+  key: in RedisKeyT,
+  value: in RedisValueT,
+  expiry: in NullableTimeSpan,
+  setWhen: in WhenEnum,
+): Bool = ()
+
+// StringSet(key, value, Nullable<TimeSpan> expiry, bool keepTtl, When when, CommandFlags flags): used by `save`.
+// Pass null expiry, keepTtl=true, default When and CommandFlags.
+@externTarget("StackExchange.Redis.IDatabase.StringSet")
+func strSetKeepTtl(
+  db: in RedisDb,
+  key: in RedisKeyT,
+  value: in RedisValueT,
+  expiry: in NullableTimeSpan,
+  keepTtl: in Bool,
+  setWhen: in WhenEnum,
+  flags: in CommandFlagsT,
+): Bool = ()
+
+// StringGet(key, CommandFlags flags): used by `load`.
+@externTarget("StackExchange.Redis.IDatabase.StringGet")
+func strGet(db: in RedisDb, key: in RedisKeyT, flags: in CommandFlagsT): RedisValueT = ()
+
+// KeyDelete(key, CommandFlags flags): used by `destroy`.
+@externTarget("StackExchange.Redis.IDatabase.KeyDelete")
+func keyDel(db: in RedisDb, key: in RedisKeyT, flags: in CommandFlagsT): Bool = ()
+
+// KeyExpire(key, Nullable<TimeSpan> expiry, CommandFlags flags): used by `touch`.
+@externTarget("StackExchange.Redis.IDatabase.KeyExpire")
+func keyExpire(db: in RedisDb, key: in RedisKeyT, expiry: in NullableTimeSpan, flags: in CommandFlagsT): Bool = ()
+
+// TimeSpan.FromSeconds(double value): constructs a non-null TimeSpan.
+@externStatic
+@externTarget("System.TimeSpan.FromSeconds")
+func timeSpanFromSecs(secs: in Double): TimeSpanT = ()
+
+// Nullable<TimeSpan> constructor: wraps a TimeSpan in a non-null nullable.
+@externTarget("System.Nullable`1[System.TimeSpan]..ctor")
+func wrapNullableTs(ts: in TimeSpanT): NullableTimeSpan = ()
+
+// RedisValue.IsNullOrEmpty (get_IsNullOrEmpty): true if the value is null or empty.
+@externTarget("StackExchange.Redis.RedisValue.get_IsNullOrEmpty")
+func redisValueIsNull(rv: in RedisValueT): Bool = ()
+
+// RedisValue.ToString(): extract the string value from a RedisValue.
+@externTarget("StackExchange.Redis.RedisValue.ToString")
+func redisValueToString(rv: in RedisValueT): String = ()
+
+// ── Opaque store handle ───────────────────────────────────────────────────────
+/// Opaque handle returned by `connect` and consumed by every other kernel
+/// function.  Holds the `IDatabase` reference (which transitively keeps the
+/// `IConnectionMultiplexer` alive) and the key prefix for session keys.
+pub record RedisStoreHandle {
+  db: RedisDb
+  keyPrefix: String
+}
+
+// ── Helper: compute the full Redis key for a session ────────────────────────
+func sessionKey(h: in RedisStoreHandle, sessionId: in String): String {
+  h.keyPrefix + sessionId
+}
+
+// ── Public kernel entry points ────────────────────────────────────────────────
 /// Open a connection pool to the Redis server at `url`.
 /// `keyPrefix` is prepended to every session key (e.g. "session:").
-/// Returns an opaque handle used in subsequent calls.
-@axiom("Lyric.Session.RedisStore.connect — StackExchange.Redis ConnectionMultiplexer.Connect + per-process handle registration")
-@externTarget("Lyric.Session.RedisStore.connect")
+/// Returns a `RedisStoreHandle` used in subsequent calls.
+@axiom("StackExchange.Redis.ConnectionMultiplexer.Connect opens a managed connection pool; GetDatabase returns a lightweight IDatabase proxy")
 @stable(since = "0.1")
-pub func connect(url: in String, keyPrefix: in String): Result[Int, String]
+pub func connect(url: in String, keyPrefix: in String): Result[RedisStoreHandle, String]
   requires: url.length > 0
-  = ()
+  = { val nullLog: TextWriter = default(); try { val mux = connectMultiplexer(url, nullLog); val nullState: AnyObj = default(); val db = getDatabase(mux, -1, nullState); Ok(RedisStoreHandle(db = db, keyPrefix = keyPrefix)) } catch Bug as b { Err(b.message) } }
 
 /// Allocate a new empty session.
 /// `ttlSeconds` sets the Redis key TTL; 0 means no expiry.
 /// Returns the new session ID (a UUID string).
-@axiom("Lyric.Session.RedisStore.create — StringSet new UUID key with TTL")
-@externTarget("Lyric.Session.RedisStore.create")
+@axiom("IDatabase.StringSet with a freshly generated UUID key; TTL applied when ttlSeconds > 0")
 @stable(since = "0.1")
-pub func create(storeHandle: in Int, ttlSeconds: in Int): Result[String, String]
+pub func create(handle: in RedisStoreHandle, ttlSeconds: in Int): Result[String, String]
   requires: ttlSeconds >= 0
-  = ()
+  = { val sessionId = uuidToString(newUuid()); val key = toRedisKey(sessionKey(handle, sessionId)); val val_ = toRedisValue("{}"); val expiry: NullableTimeSpan = if ttlSeconds > 0 { wrapNullableTs(timeSpanFromSecs(ttlSeconds.toDouble())) } else { default() }; val when_: WhenEnum = default(); try { val _ = strSetCreate(handle.db, key, val_, expiry, when_); Ok(sessionId) } catch Bug as b { Err(b.message) } }
 
 /// Fetch the serialised JSON for the given session ID.
 /// Returns an empty string if the session does not exist or has expired.
-@axiom("Lyric.Session.RedisStore.load — StringGet; '' on miss")
-@externTarget("Lyric.Session.RedisStore.load")
+@axiom("IDatabase.StringGet; empty string on key-miss or expiry")
 @stable(since = "0.1")
-pub func load(storeHandle: in Int, sessionId: in String): Result[String, String]
+pub func load(handle: in RedisStoreHandle, sessionId: in String): Result[String, String]
   requires: sessionId.length > 0
-  = ()
+  = { val key = toRedisKey(sessionKey(handle, sessionId)); val flags: CommandFlagsT = default(); try { val rv = strGet(handle.db, key, flags); if redisValueIsNull(rv) { Ok("") } else { Ok(redisValueToString(rv)) } } catch Bug as b { Err(b.message) } }
 
-/// Persist the serialised session JSON.  Overwrites any existing entry,
-/// preserving the original TTL (StringSet with keepTtl=true).  The
-/// `sessionId` is passed explicitly so the host shim can compute the
-/// Redis key directly without parsing the JSON payload.
-@axiom("Lyric.Session.RedisStore.save — StringSet keepTtl=true")
-@externTarget("Lyric.Session.RedisStore.save")
+/// Persist the serialised session JSON, preserving the original TTL.
+@axiom("IDatabase.StringSet with keepTtl=true; null expiry so StackExchange.Redis honours the key's existing TTL")
 @stable(since = "0.1")
-pub func save(storeHandle: in Int, sessionId: in String, sessionJson: in String): Result[Unit, String]
+pub func save(handle: in RedisStoreHandle, sessionId: in String, sessionJson: in String): Result[Unit, String]
   requires: sessionId.length > 0
   requires: sessionJson.length > 0
-  = ()
+  = { val key = toRedisKey(sessionKey(handle, sessionId)); val val_ = toRedisValue(sessionJson); val nullExpiry: NullableTimeSpan = default(); val when_: WhenEnum = default(); val flags: CommandFlagsT = default(); try { val _ = strSetKeepTtl(handle.db, key, val_, nullExpiry, true, when_, flags); Ok(()) } catch Bug as b { Err(b.message) } }
 
 /// Permanently delete a session.  No-op if the key is absent.
-@axiom("Lyric.Session.RedisStore.destroy — KeyDelete")
-@externTarget("Lyric.Session.RedisStore.destroy")
+@axiom("IDatabase.KeyDelete; silent no-op on missing key")
 @stable(since = "0.1")
-pub func destroy(storeHandle: in Int, sessionId: in String): Result[Unit, String]
+pub func destroy(handle: in RedisStoreHandle, sessionId: in String): Result[Unit, String]
   requires: sessionId.length > 0
-  = ()
+  = { val key = toRedisKey(sessionKey(handle, sessionId)); val flags: CommandFlagsT = default(); try { val _ = keyDel(handle.db, key, flags); Ok(()) } catch Bug as b { Err(b.message) } }
 
 /// Refresh the session's TTL without changing its content.
-/// `ttlSeconds = 0` leaves the TTL unchanged.
-@axiom("Lyric.Session.RedisStore.touch — KeyExpire; ttlSeconds=0 is a no-op")
-@externTarget("Lyric.Session.RedisStore.touch")
+/// `ttlSeconds = 0` is a no-op.
+@axiom("IDatabase.KeyExpire; ttlSeconds=0 leaves TTL unchanged")
 @stable(since = "0.1")
-pub func touch(storeHandle: in Int, sessionId: in String, ttlSeconds: in Int): Result[Unit, String]
+pub func touch(handle: in RedisStoreHandle, sessionId: in String, ttlSeconds: in Int): Result[Unit, String]
   requires: sessionId.length > 0
   requires: ttlSeconds >= 0
-  = ()
+  = { if ttlSeconds == 0 { return Ok(()) }; val key = toRedisKey(sessionKey(handle, sessionId)); val expiry = wrapNullableTs(timeSpanFromSecs(ttlSeconds.toDouble())); val flags: CommandFlagsT = default(); try { val _ = keyExpire(handle.db, key, expiry, flags); Ok(()) } catch Bug as b { Err(b.message) } }
