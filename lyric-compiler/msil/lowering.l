@@ -2862,7 +2862,7 @@ pub func lowerMRangeType(r: in MRangeType, ctx: in LoweringCtx): Int {
   val excCtorPs: List[MsilType] = newList()
   excCtorPs.add(MString)
   val excCtorSig = buildInstanceMethodSig(excCtorPs, MVoid)
-  val mrExcCtor = 0x0A000000 + ctxAddMemberRef(ctx, trExc, ".ctor", "range_exc_ctor_" + r.className, excCtorSig)
+  val mrExcCtor = 0x0A000000 + ctxAddMemberRef(ctx, trExc, ".ctor", "range_exc_ctor", excCtorSig)
 
   // Build .ctor(value: inner) body:
   //   ldarg.0; call Object..ctor()
