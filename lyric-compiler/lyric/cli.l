@@ -901,7 +901,8 @@ func buildProject(
   val outPath = match explicitOut {
     case Some(o) -> o
     case None -> {
-      val stem = match proj.outputAssembly { case Some(s) -> s; case None -> proj.name + ".dll" }
+      val ext = match target { case Jvm -> ".jar"; case Dotnet -> ".dll" }
+      val stem = match proj.outputAssembly { case Some(s) -> s; case None -> proj.name + ext }
       Path.join(Path.join(mfDir, "bin"), stem)
     }
   }
@@ -1087,25 +1088,12 @@ func projectBinDllPath(mfDir: in String, proj: in ProjectSection): String {
   Path.join(Path.join(mfDir, "bin"), stem)
 }
 
-// Target-aware variant of projectBinDllPath: returns the runnable artifact path
-// (.dll for Dotnet, .jar for Jvm) that buildProject writes.
+// Compute the default output artifact path for a project build (no explicit -o).
+// Mirrors the extension logic in buildProject so runProjectOnce finds the file.
 func projectBinOutputPath(mfDir: in String, proj: in ProjectSection, target: in CompileTarget): String {
-  match target {
-    case Jvm -> {
-      val stem = match proj.outputAssembly {
-        case Some(s) -> {
-          if Str.endsWith(s, ".dll") {
-            Str.substring(s, 0, s.length - 4) + ".jar"
-          } else {
-            s
-          }
-        }
-        case None -> proj.name + ".jar"
-      }
-      Path.join(Path.join(mfDir, "bin"), stem)
-    }
-    case Dotnet -> projectBinDllPath(mfDir, proj)
-  }
+  val ext = match target { case Jvm -> ".jar"; case Dotnet -> ".dll" }
+  val stem = match proj.outputAssembly { case Some(s) -> s; case None -> proj.name + ext }
+  Path.join(Path.join(mfDir, "bin"), stem)
 }
 
 // Collect all .l source file paths from [project.packages] in a lyric.toml.
