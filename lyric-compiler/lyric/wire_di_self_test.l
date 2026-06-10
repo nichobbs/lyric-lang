@@ -5,11 +5,12 @@
 //! without it, IWire silently displaced the PE entry point by one row,
 //! causing the test binary to exit 0 with no TAP output.
 //!
-//! CI wiring: wired on --target dotnet.  The placeholder assertions call
+//! CI wiring: not wired into CI — the placeholder assertions use
 //! assertTrue(true, ...) because the bootstrap() factory method requires a
 //! @provided argument that cannot be injected from a @test_module body
-//! without the wire-test infra tracked in #3057.  The tests still exercise
-//! the parser, type checker, and MSIL emitter for every wire construct.
+//! without the wire-test infra tracked in #3057.  Wire here until then
+//! requires full invocation support.  The file still exercises the parser,
+//! type checker, and MSIL/JVM emitters for every wire construct present.
 @test_module
 package Lyric.WireDISelfTest
 

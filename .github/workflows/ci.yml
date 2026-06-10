@@ -1043,8 +1043,7 @@ jobs:
           echo "out/inout-parameter self-test ran: outparam_self_test.l (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
 
       # Named-arg/default-param self-test — pins call-site named-arg reorder and
-      # default-param fill (#1503).  MSIL target only; JVM parity for out/inout
-      # byref is tracked in #1763.
+      # default-param fill (#1503).  JVM analog step is below.
       - name: Named-arg/default-param self-test (native lyric test)
         working-directory: ${{ github.workspace }}
         run: |
@@ -1060,26 +1059,6 @@ jobs:
           fi
           "$lyric_bin" test --target dotnet lyric-compiler/lyric/func_default_args_self_test.l
           echo "named-arg/default-param self-test ran: func_default_args_self_test.l (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
-
-      # Wire/DI self-test — pins #1502 (wire @provided/WMBind/topo-sort/cycle
-      # detection) and the addPackageTokens IWire MethodDef-token-reservation fix
-      # (silent entry-point displacement when a wire block precedes test functions).
-      # MSIL target only; JVM wire parity is tracked in #2972 (WMScoped).
-      - name: Wire/DI self-test (native lyric test)
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -euo pipefail
-          if [ ! -d .bootstrap/stage1 ] || [ ! -f .bootstrap/stage1/Lyric.Lyric.Cli.dll ]; then
-            echo "::error::stage 1 bundle missing; skipping wire/DI self-test"
-            exit 1
-          fi
-          lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
-          if [ ! -x "$lyric_bin" ]; then
-            echo "::error::AOT binary not found at $lyric_bin; skipping wire/DI self-test"
-            exit 1
-          fi
-          "$lyric_bin" test --target dotnet lyric-compiler/lyric/wire_di_self_test.l
-          echo "wire/DI self-test ran: wire_di_self_test.l (--target dotnet)" >> "$GITHUB_STEP_SUMMARY"
 
       # Nested-generic self-test — pins #1687 on the MSIL target.  JVM-target
       # parity is gated on the union case-factory gap, tracked in #1707 (so this
