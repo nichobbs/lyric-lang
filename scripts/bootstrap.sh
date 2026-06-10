@@ -244,10 +244,16 @@ stage1_cli_bundle() {
 // that imports Std.Time or Std.Math (lyric-session, lyric-auth,
 // lyric-cache, …) then fails at run time with "Could not load file or
 // assembly 'Lyric.Stdlib.Time'".
+//
+// Std.Testing.Mocking is imported directly so Lyric.Stdlib.Testing.Mocking.dll
+// lands in $STAGE1_DIR.  The testing self-tests (stubbable_self_test.l etc.)
+// import this package and the compiled test DLL then references it at runtime
+// — without a standalone DLL the CLR load fails with a file-not-found error.
 package Lyric.CliBundle
 import Lyric.Cli
 import Std.Time
 import Std.Math
+import Std.Testing.Mocking
 func main(): Unit { }
 EOF
 

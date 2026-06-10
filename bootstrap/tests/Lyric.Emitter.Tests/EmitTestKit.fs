@@ -105,10 +105,10 @@ let prepareOutputDir (name: string) : string =
         Path.Combine(AppContext.BaseDirectory, "FSharp.Core.dll")
     if File.Exists fsharpCore then
         File.Copy(fsharpCore, Path.Combine(dir, "FSharp.Core.dll"), overwrite = true)
-    // Lyric.Emitter.dll is still needed at runtime by the kernels that have
-    // not yet migrated off it: Std.ProcessCaptureHost (ProcessCapture) and
-    // Std.HttpHost's defaultClient (HttpClientHost).  The console/env/log
-    // kernels no longer extern into it (#1493).
+    // Lyric.Emitter.dll is still needed at runtime by the kernel that has
+    // not yet migrated off it: Std.ProcessCaptureHost (ProcessCapture).
+    // Std.HttpHost's defaultClient migrated to a native Lyric val (#1576).
+    // The console/env/log kernels no longer extern into it (#1493).
     let lyricEmitter =
         Path.Combine(AppContext.BaseDirectory, "Lyric.Emitter.dll")
     if File.Exists lyricEmitter then

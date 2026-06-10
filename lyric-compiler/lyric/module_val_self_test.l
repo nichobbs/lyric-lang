@@ -15,6 +15,12 @@
 //! JVM target parity is tracked in issue #2210.  The JVM emitter currently
 //! no-ops on `IVal` items at package scope; this CI step covers MSIL only.
 //!
+//! Also covers `extern type`-typed module vals: the #1576 codegen fix ensures
+//! that a `val` whose type is a reference-typed `extern type` (e.g. `StringBuilder`)
+//! encodes its FieldDef signature as `ELEMENT_TYPE_CLASS + TypeRef` (correct CLR
+//! FQN) rather than `ELEMENT_TYPE_OBJECT`, and that the `.cctor` properly
+//! initializes the field.
+//!
 //! Runs in CI via:
 //!
 //!   lyric test lyric-compiler/lyric/module_val_self_test.l
@@ -23,6 +29,18 @@ package Lyric.ModuleValSelfTest
 
 import Std.Core
 import Std.Testing
+
+// ── Extern-type val test infrastructure (#1576) ───────────────────────────────
+// StringBuilder is a reference-typed extern: its FieldDef must encode as
+// ELEMENT_TYPE_CLASS + TypeRef, not ELEMENT_TYPE_OBJECT.
+extern type SB = "System.Text.StringBuilder"
+
+@externTarget("System.Text.StringBuilder..ctor")
+func newSb(): SB = ()
+
+@externTarget("System.Text.StringBuilder.ToString")
+@externInstance
+func sbToString(sb: in SB): String = ()
 
 // ── Literal inits (inline ldc.i4 path) ────────────────────────────────────────
 // Literal IVal items (Int/Bool in the ldc.i4 range) DO emit a FieldDef row
@@ -47,6 +65,9 @@ val computedSum: Int = 1 + 1
 val negated: Int = 0 - 55
 
 // EBinop → non-literal, static field
+// Reference-typed extern val: initialized via newSb() in .cctor (#1576).
+val sharedSb: SB = newSb()
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -82,4 +103,9 @@ test "module-level val usable in local expression" {
 test "module-level String val usable in string operations" {
   val len = greeting.length
   assertEqualInt(len, 12, "greeting.length")
+}
+
+test "extern-type val initialized in .cctor (#1576)" {
+  val result = sbToString(sharedSb)
+  assertEqual(result, "", "extern-type val is non-null: empty StringBuilder produces empty string")
 }

@@ -17505,6 +17505,7 @@ func registerStdlibTypeItem(cctx: in CodegenCtx, packageName: in String, it: in 
     case IInterface(decl) -> decl.name
     case IOpaque(decl) -> decl.name
     case IDistinctType(decl) -> decl.name
+    case IProtected(decl) -> decl.name
     case _ -> return
   }
   val typeFqn = packageName + "." + typeName
@@ -17825,12 +17826,13 @@ func stdlibAssemblyName(packageName: in String): String {
     return "Lyric.Unknown"
   }
   val head = segs[0]
+  // Concatenate tail segments WITHOUT separators — mirrors the F# emitter's
+  // `String.concat "" rest` convention (Emitter.fs).  E.g. "Std.Testing.Mocking"
+  // → tail = "TestingMocking" → "Lyric.Stdlib.TestingMocking", matching the
+  // F#-emitted DLL name.  Single-segment tails are unaffected.
   var tail = ""
   var i = 1
   while i < segs.count {
-    if i > 1 {
-      tail = tail + "."
-    }
     tail = tail + segs[i]
     i = i + 1
   }

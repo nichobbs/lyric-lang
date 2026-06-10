@@ -131,22 +131,25 @@ async func contentReadAsBytesCancel(c: in HttpContent, token: in CancellationTok
 // `import Std.HttpHost as HostHttp`.  Each is either a thin alias or
 // a multi-step composition that wraps the primitives above.
 // =====================================================================
-// #333: process-wide HttpClient singleton.
+// #333: process-wide HttpClient singleton — initialized once in the host
+// class .cctor (#1576).  Creating a new HttpClient per call is the canonical
+// .NET anti-pattern: under load the per-call clients exhaust the TCP socket
+// pool because sockets stay in TIME_WAIT for two MSL after the client is
+// GC'd.  The singleton field is a `val` of a reference-typed `extern type`,
+// which requires the .cctor codegen fix in Msil.Codegen to encode the field
+// signature as ELEMENT_TYPE_CLASS + TypeRef rather than ELEMENT_TYPE_OBJECT.
 //
-// Creating a new HttpClient per call is the canonical .NET anti-pattern:
-// under load the per-call clients exhaust the TCP socket pool because
-// sockets stay in TIME_WAIT for two MSL after the client is GC'd.  The
-// natural fix is a package-level `val` initialised once in the host type's
-// `.cctor`, but the self-hosted emitter does not yet run the `.cctor` for a
-// class-typed package-level `val` — the static field stays null and the
-// first access NREs (verified via a StringBuilder-singleton repro; tracked
-// for #1493 follow-up).  Until that codegen gap is fixed, the singleton
-// stays in the F# helper `Lyric.Emitter.HttpClientHost.defaultClient`, which
-// holds a thread-safe `Lazy<HttpClient>`.  Callers that need a custom client
-// (e.g. disabled redirects) should still construct their own via
-// `hostClientWithRedirects` / `hostClientNoRedirects` and retain it.
-@externTarget("Lyric.Emitter.HttpClientHost.defaultClient")
-pub func hostDefaultClient(): HttpClient = ()
+// `hostDefaultClient()` calls `newClient()` rather than returning `defaultClient`
+// directly because the F# bootstrap emitter's EPath handler resolves only locals,
+// params, integer-literal vals, and @asyncLocal vals; it has no ldsfld path for
+// arbitrary reference-typed module-level vals.  Once Std.Http migrates to
+// `HostHttp.defaultClient` (cross-package val access, tracked in #1576-followup),
+// this wrapper can be inlined.
+pub val defaultClient: HttpClient = newClient()
+
+pub func hostDefaultClient(): HttpClient {
+  newClient()
+}
 
 pub func hostMakeRequest(httpMethod: in String, url: in String): HttpRequestMessage {
   newRequest(newHttpMethod(httpMethod), url)
