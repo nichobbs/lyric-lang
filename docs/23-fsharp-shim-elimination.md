@@ -32,6 +32,15 @@ for the existing bootstrap compiler only"):
   zero `AssemblyRef` entries to either assembly. The
   `Lyric.Cli.Aot` csproj no longer carries an explicit
   `FSharp.Core.dll` reference.
+- **`lyric test` supports fixture declarations** (D-progress-474).
+  `fixture name[: T] = expr` items in `@test_module` files are
+  rewritten to module-level `val` declarations in the synthesised
+  source. The `FixtureUnsupported` outcome variant is removed.
+  Migration of `MsilSelfTestM2{a,b,c,d}.fs` to native `lyric test`
+  was attempted but blocked by two pre-existing bugs: the
+  `ByteWriter` name collision (#2737) and module-level `pub val`
+  constants absent from contract metadata (#2738). The F# wrappers
+  remain until those are fixed.
 - The F# stage-0 bootstrap compiler under `bootstrap/src/Lyric.{Lexer,
   Parser,TypeChecker,Emitter,Cli}/` continues to exist solely so the
   stage-0 binary can build the self-hosted Lyric compiler from `.l`

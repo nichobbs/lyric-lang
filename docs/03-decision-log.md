@@ -5797,6 +5797,57 @@ Concretely:
 
 ---
 
+### D-progress-474: Fixture support in `lyric test`
+
+**Date:** 2026-06-10
+
+**What changed:**
+
+`lyric test` now supports `fixture name[: T] = expr` items in `@test_module`
+files.  `TestSynth.synthesize` rewrites each fixture to a module-level `val`
+declaration in the synthesised source, making its value available to all test
+functions.  The `FixtureUnsupported` outcome variant and the `fixtureSpan`
+scanner that triggered it are removed.
+
+**Files changed:**
+- `lyric-compiler/lyric/test_synth/test_synth.l`: removed `FixtureUnsupported`
+  variant, removed `fixtureSpan` function and early-return guard, added
+  `IFixture` case in the item loop (replaces `fixture ` with `val `).
+- `lyric-compiler/lyric/cli.l`: removed `FixtureUnsupported` match arms from
+  `cmdTest` and `cmdTestManifest`.
+- `lyric-compiler/lyric/test_synth_self_test.l`: replaced `testRejectsFixture`
+  (expected `FixtureUnsupported`) with `testSynthesisesFixture` (verifies the
+  fixture is rewritten to `val`).
+
+**M2a–M2d migration attempted but blocked:** Migration of `MsilSelfTestM2a.fs`
+through `MsilSelfTestM2d.fs` to native `lyric test` was attempted in the same
+PR but had to be reverted due to two pre-existing self-hosted compiler bugs:
+
+1. **`ByteWriter` name collision** (`#2737`): `Msil.Kernel.ByteWriter` (record)
+   and `Std.Stream.ByteWriter` (interface imported transitively from the stdlib
+   bundle) share the same short name.  When M2a/M2b compile against restored
+   `Msil.Kernel.dll`, the self-hosted type checker resolves `ByteWriter` to
+   `Std.Stream.ByteWriter`, causing a CLR runtime error:
+   `Method not found: 'Std.Stream.ByteWriter Msil.Kernel.Program.bufNew()'`.
+
+2. **Module-level `pub val` constants absent from contract metadata** (`#2738`):
+   Constants such as `MIA_IL`, `MDA_PUBLIC`, `HASH_ALG_SHA1`, `TDF_PUBLIC`,
+   `FIRST_METHOD_RVA`, and `ASF_NONE` defined in `Msil.Tables` and
+   `Msil.Assembler` are not emitted into those DLLs' embedded contract metadata.
+   When M2c/M2d load them as restored deps, the names are invisible to the
+   self-hosted type checker (T0020 "unknown name").
+
+The F# wrappers (`MsilSelfTestM2{a,b,c,d}.fs`) and the `func main(): Unit`
+`.l` sources remain unchanged.  Migration will proceed once #2737 and #2738
+are resolved.
+
+**Not migrated (separate issue):** `msil_self_test_m1.l` imports `Msil.Pe`
+which is not in the stage-1 DLL closure (`Lyric.Msil.Pe.dll` is not reachable
+from `Lyric.Cli`).  Migration requires either adding `Msil.Pe` to stage-1 or
+inlining the test helper.  Tracked separately.
+
+---
+
 ## Decisions deferred to v2 or later
 
 - Package generics (Ada-style module-level parameterization)

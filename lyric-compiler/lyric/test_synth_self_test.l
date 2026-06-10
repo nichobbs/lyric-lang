@@ -71,11 +71,15 @@ func testRejectsUserMain(): Unit {
   }
 }
 
-func testRejectsFixture(): Unit {
-  match synthesize(fixtureSource(), None) {
-    case FixtureUnsupported(_) -> {
+func testSynthesisesFixture(): Unit {
+  match synthesize(fixtureSource(), Some(value = "")) {
+    case Synthesised(rewritten, n, sk) -> {
+      assertEqualInt(n, 1, "one test")
+      assertEqualInt(sk, 0, "no skips")
+      assertTrue(Str.contains(rewritten, "val clock: Int = 0"), "fixture rewritten as val")
+      assertTrue(not Str.contains(rewritten, "fixture "), "no fixture keyword in output")
     }
-    case _ -> panic("expected FixtureUnsupported")
+    case _ -> panic("expected Synthesised outcome")
   }
 }
 
@@ -134,8 +138,8 @@ test "rejects user-defined main" {
   testRejectsUserMain()
 }
 
-test "rejects fixture" {
-  testRejectsFixture()
+test "synthesises fixture as val" {
+  testSynthesisesFixture()
 }
 
 test "property reported as skip" {
