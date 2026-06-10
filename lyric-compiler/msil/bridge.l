@@ -625,6 +625,12 @@ pub func compileProjectToMsilWithRestoredAndVersion(
     prtpi = prtpi + 1
   }
 
+  // Pre-seed lctx.allProjFqns with all @projectable FQNs from every bundle
+  // package before per-package addPackageTokens calls.  This lets each
+  // per-package addPackageTokens correctly identify cross-package nested
+  // projectable fields (matching what lowerMOpaque checks via lctx.allProjFqns).
+  prescanProjectableFqns(cctx, perPkgFiles, perPkgNames)
+
   val liftedFiles: List[SourceFile] = newList()
   var li = 0
   while li < perPkgFiles.count {

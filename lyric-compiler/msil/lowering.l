@@ -1005,6 +1005,12 @@ pub record LoweringCtx {
   // after stdlib registration.  Empty list = stdlib not imported; skip
   // tryInto() generation in that case.
   stdCoreResultOk2Row: List[Int]
+  // Complete set of in-bundle @projectable type FQNs, pre-populated by
+  // discoverTypeDefRowsInto before any lowering pass starts.  Used for
+  // declaration-order-independent hasNestedProjField checks in lowerMOpaque so
+  // the discover and real passes always agree on tryInto() eligibility.
+  allProjFqns: Map[String, Bool]
+  allProjFqnKeys: List[String]
 }
 
 // Build and intern the Microsoft framework public key token blob.
@@ -1143,7 +1149,9 @@ pub func newLoweringCtx(packageName: in String, major: in Int, minor: in Int): L
     projectableToViewMDefKeys = newList(),
     projectableCtorMDef = newMap(),
     projectableCtorMDefKeys = newList(),
-    stdCoreResultOk2Row = newList()
+    stdCoreResultOk2Row = newList(),
+    allProjFqns = newMap(),
+    allProjFqnKeys = newList()
   )
 }
 
@@ -3272,9 +3280,36 @@ pub func resolveSigTypeDefRow(ctx: in LoweringCtx, fqn: in String): Int {
 // BCL / stdlib / restored types are TypeRefs — the throwaway pass assigns
 // identical row numbers regardless of the real context's pre-seeded
 // TypeRef / MemberRef / AssemblyRef rows.
-pub func discoverTypeDefRowsInto(dst: in LoweringCtx, pkgs: in List[MPackage]): Unit {
+pub func discoverTypeDefRowsInto(dst: in LoweringCtx, pkgs: in List[MPackage], hasResultOk: Bool): Unit {
   val dctx = newLoweringCtx("__lyric_typedef_discovery__", 0, 0)
   dctx.discovering.add(true)
+  // Pre-scan: collect ALL @projectable type FQNs from all packages before processing
+  // any items.  This makes hasNestedProjField in lowerMOpaque declaration-order-
+  // independent: both the discover and the real pass see the same complete set.
+  var psi = 0
+  while psi < pkgs.count {
+    val pspkg = pkgs[psi]
+    var psj = 0
+    while psj < pspkg.items.count {
+      match pspkg.items[psj] {
+        case MPOpaque(op) -> {
+          if op.isProjectable and not dctx.allProjFqns.containsKey(op.className) {
+            dctx.allProjFqns.add(op.className, true)
+            dctx.allProjFqnKeys.add(op.className)
+          }
+        }
+        case _ -> ()
+      }
+      psj = psj + 1
+    }
+    psi = psi + 1
+  }
+  // Mirror the real context's stdCoreResultOk2Row so canEmitTryInto agrees
+  // between discover and real passes: if the caller's context has Result_Ok seeded,
+  // so should the discover context.
+  if hasResultOk and dctx.stdCoreResultOk2Row.count == 0 {
+    dctx.stdCoreResultOk2Row.add(1)
+  }
   var pi = 0
   while pi < pkgs.count {
     val pkg = pkgs[pi]
@@ -3342,6 +3377,16 @@ pub func discoverTypeDefRowsInto(dst: in LoweringCtx, pkgs: in List[MPackage]): 
       case None -> ()
     }
     ck = ck + 1
+  }
+  // Copy the declaration-order-independent allProjFqns set to the real context.
+  var apk = 0
+  while apk < dctx.allProjFqnKeys.count {
+    val apfqn = dctx.allProjFqnKeys[apk]
+    if not dst.allProjFqns.containsKey(apfqn) {
+      dst.allProjFqns.add(apfqn, true)
+      dst.allProjFqnKeys.add(apfqn)
+    }
+    apk = apk + 1
   }
 }
 
@@ -3716,8 +3761,10 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
     // Whether tryInto() can be emitted:
     //   - stdlib Result_Ok TypeRef must be available
     //   - no visible field is of a nested projectable type (those need monadic bind)
-    //   - all @hidden (non-visible) fields must be of primitive type (so we can
-    //     push a default without declaring locals)
+    //   - no fields are @hidden (suppresses round-trip reconstruction)
+    // hasNestedProjField uses ctx.allProjFqns (pre-populated before any lowering
+    // starts) so both the discover and real passes see the same complete set,
+    // regardless of declaration order.
     val hasHiddenFields = viewFieldIdxs.count < op.fields.count
     var hasNestedProjField = false
     var vfti = 0
@@ -3726,7 +3773,7 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
       if not op.projBoundaryMask[origIdx] {
         match op.fields[origIdx].fieldType {
           case MClass(srcFqn) -> {
-            if ctx.projectableToViewMDef.containsKey(srcFqn) {
+            if ctx.allProjFqns.containsKey(srcFqn) or ctx.projectableToViewMDef.containsKey(srcFqn) {
               hasNestedProjField = true
             }
           }
@@ -3735,11 +3782,10 @@ pub func lowerMOpaque(op: in MOpaque, ctx: in LoweringCtx): Int {
       }
       vfti = vfti + 1
     }
-    // In the discover pass stdCoreResultOk2Row is empty (fresh ctx), so we treat
-    // isDiscover as a stand-in for "Result_Ok is available" — we just need to
-    // count the MethodDef row; the actual stub body is empty and harmless.
-    val canEmitTryInto = (isDiscover or ctx.stdCoreResultOk2Row.count > 0) and not hasNestedProjField and
-      not hasHiddenFields
+    // Both discover and real passes use the same condition: stdCoreResultOk2Row
+    // is seeded in the discover context by discoverTypeDefRowsInto when the real
+    // context already has it (hasResultOk=true), so no isDiscover shortcut needed.
+    val canEmitTryInto = ctx.stdCoreResultOk2Row.count > 0 and not hasNestedProjField and not hasHiddenFields
 
     // View TypeDef: field and method ranges.
     val firstViewField = t.fields.count + 1
@@ -4314,7 +4360,7 @@ pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
 
   val discPkgs: List[MPackage] = newList()
   discPkgs.add(pkg)
-  discoverTypeDefRowsInto(ctx, discPkgs)
+  discoverTypeDefRowsInto(ctx, discPkgs, ctx.stdCoreResultOk2Row.count > 0)
 
   var i = 0
   while i < pkg.items.count {
@@ -4569,7 +4615,7 @@ func lowerMPackageItem(item: in MPackageItem, ctx: in LoweringCtx): Unit {
 pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx, entryMethodToken: in Int): List[Byte] {
   val discPkgs: List[MPackage] = newList()
   discPkgs.add(pkg)
-  discoverTypeDefRowsInto(ctx, discPkgs)
+  discoverTypeDefRowsInto(ctx, discPkgs, ctx.stdCoreResultOk2Row.count > 0)
 
   var i = 0
   while i < pkg.items.count {
@@ -4608,7 +4654,7 @@ pub func lowerMPackageWithCtx(pkg: in MPackage, ctx: in LoweringCtx, entryMethod
 // resolved to bundle-local `MethodDef` tokens during codegen point at the
 // correct row in the unified table.
 pub func lowerMPackagesWithCtx(pkgs: in List[MPackage], ctx: in LoweringCtx, entryMethodToken: in Int): List[Byte] {
-  discoverTypeDefRowsInto(ctx, pkgs)
+  discoverTypeDefRowsInto(ctx, pkgs, ctx.stdCoreResultOk2Row.count > 0)
 
   var pi = 0
   while pi < pkgs.count {

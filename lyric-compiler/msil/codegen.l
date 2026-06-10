@@ -1457,6 +1457,37 @@ func registerMethodRetTyMsil(cctx: in CodegenCtx, key: in String, mty: in MsilTy
   }
 }
 
+// Pre-populate lctx.allProjFqns with the FQNs of all @projectable opaque types
+// declared across all bundle packages before any per-package addPackageTokens
+// call.  This lets addPackageTokens detect cross-package nested projectable
+// fields (i.e., a visible non-@projectionBoundary field whose type is a
+// projectable from a different package in the same bundle), matching the check
+// that lowerMOpaque uses via lctx.allProjFqns.
+pub func prescanProjectableFqns(cctx: in CodegenCtx, files: in List[SourceFile], pkgNames: in List[String]): Unit {
+  var i = 0
+  while i < files.count {
+    val file = files[i]
+    val pkgName = pkgNames[i]
+    var j = 0
+    while j < file.items.count {
+      match file.items[j].kind {
+        case IOpaque(decl) -> {
+          if decl.hasBody and hasAnnotationMsil(decl.annotations, "projectable") {
+            val pfqn = pkgName + "." + decl.name
+            if not cctx.lctx.allProjFqns.containsKey(pfqn) {
+              cctx.lctx.allProjFqns.add(pfqn, true)
+              cctx.lctx.allProjFqnKeys.add(pfqn)
+            }
+          }
+        }
+        case _ -> ()
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+}
+
 // Pre-scan the AST and assign MethodDef/FieldDef row numbers for every
 // record, function, union case, interface method, opaque type, and protected
 // type in the package.  Must be called before any `lowerFuncMsil` invocations
@@ -2014,13 +2045,15 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                   } else {
                     // hasNestedProjField: visible non-@projectionBoundary field whose
                     // type is another projectable type → tryInto() is suppressed.
-                    // Mirrors lowerMOpaque's hasNestedProjField computation exactly.
+                    // Checks projFqns (current file) AND cctx.lctx.allProjFqns
+                    // (all bundle packages, pre-seeded by prescanProjectableFqns)
+                    // so cross-package nested projectables are detected correctly.
                     val isBoundary = hasAnnotationMsil(f.annotations, "projectionBoundary")
                     val fMsilTy = typeExprToMsilCtx(cctx, f.ty, pkgName)
                     if not isBoundary {
                       match fMsilTy {
                         case MClass(srcFqn) -> {
-                          if projFqns.containsKey(srcFqn) {
+                          if projFqns.containsKey(srcFqn) or cctx.lctx.allProjFqns.containsKey(srcFqn) {
                             hasNestedProjField = true
                           }
                         }
@@ -2031,7 +2064,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                     val viewFieldTy = if not isBoundary {
                       match fMsilTy {
                         case MClass(srcFqn2) -> {
-                          if projFqns.containsKey(srcFqn2) {
+                          if projFqns.containsKey(srcFqn2) or cctx.lctx.allProjFqns.containsKey(srcFqn2) {
                             MClass(className = srcFqn2 + "View")
                           } else {
                             fMsilTy
