@@ -729,6 +729,32 @@ pub record MEnum {
   cases: List[String] // case names; ordinals = 0..n-1
 }
 
+// ── MConfigField / ConfigTokens — config block static fields (D046) ──────────
+// BCL tokens threaded through MPConfig so lowerMConfig can emit the .cctor
+// without reaching back into CodegenCtx (which lives in a different file).
+pub record ConfigTokens {
+  tokGetEnvVar: Int      // Environment.GetEnvironmentVariable(string): string
+  tokIsNullOrEmpty: Int  // String.IsNullOrEmpty(string): bool
+  tokConsoleError: Int   // Console.get_Error(): TextWriter  (static)
+  tokTwWriteLine: Int    // TextWriter.WriteLine(string): void  (instance HASTHIS)
+  tokEnvExit: Int        // Environment.Exit(int32): void  (static)
+  tokInt32Parse: Int     // Int32.Parse(string): int32  (static)
+  tokBoolParse: Int      // Boolean.Parse(string): bool  (static)
+}
+
+// One field inside a config block.  `defaultInsns` is a one-instruction list
+// that pushes the literal default (MLdcI4 or MLdStr); empty for required fields.
+pub record MConfigField {
+  name: String
+  fieldType: MsilType      // MInt, MBool, or MString
+  // ldstr token (0x70000000 | US heap offset) for the env var name.
+  envVarTok: Int
+  hasDefault: Bool
+  defaultInsns: List[MInsn]
+  // ldstr token for the stderr error message (0 when hasDefault = true).
+  requiredMsgTok: Int
+}
+
 // ── MInterface / MImplData ───────────────────────────────────────────────────
 pub record MInterfaceMethod {
   name: String
@@ -816,6 +842,10 @@ pub union MPackageItem {
   case MPInterface(iface: MInterface)
   case MPImpl(implData: MImplData)
   case MPOpaque(opaqueData: MOpaque)
+  // MPConfig: config block (D046 / docs/25-config-blocks.md).
+  // Emits a sealed static class with one public static field per config field,
+  // initialised from environment variables by a .cctor at first class access.
+  case MPConfig(ns: String, typeName: String, fields: List[MConfigField], configToks: ConfigTokens)
 }
 
 pub record MPackage {
@@ -3877,6 +3907,152 @@ pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
 // external method tokens) before any user-defined types are added.
 // Used by `Msil.Codegen` + `Msil.Bridge` so that stdlib call tokens baked
 // into `MInsn` values are stable.
+// Lower a `config { }` block (D046 / docs/25-config-blocks.md) into a sealed
+// static CLR class whose fields are initialised from environment variables by a
+// .cctor.  The field order, flag, and method-def numbering exactly mirror
+// `lowerMFuncsToHostClass` so the pre-allocated token budget in
+// `addPackageTokens` remains consistent.
+//
+// Emitted structure:
+//   TypeDef  (ns = pkgName, name = blockName, TDF_PUBLIC|TDF_SEALED|TDF_BFI)
+//     FieldDef  per field  (FDA_PUBLIC | FDA_STATIC)
+//     MethodDef .cctor      (MDA_PRIVATE | MDA_STATIC | special-name + rts-special)
+//
+// .cctor body for each field i:
+//   ldstr envVarName
+//   call  Environment.GetEnvironmentVariable(string): string
+//   call  String.IsNullOrEmpty(string): bool
+//   brfalse parseLabel_i   ; env var is set → go parse
+//   ; absent path
+//   <defaultInsns or Console.Error + Exit(78)>
+//   br doneLabel_i
+//   parseLabel_i:
+//   ldstr envVarName
+//   call  Environment.GetEnvironmentVariable(string): string
+//   [call Int32.Parse / Boolean.Parse — omitted for String fields]
+//   stsfld fieldToken_i
+//   doneLabel_i:
+func lowerMConfig(
+  ns: in String,
+  typeName: in String,
+  fields: in List[MConfigField],
+  configToks: in ConfigTokens,
+  ctx: in LoweringCtx,
+): Unit {
+  val sh = ctx.strings
+  val bh = ctx.blobs
+  val t = ctx.tables
+  val firstField = t.fields.count + 1
+  val firstMethod = t.methodDefs.count + 1
+
+  // Emit one FieldDef per config field.
+  var fi = 0
+  while fi < fields.count {
+    val f = fields[fi]
+    val sN = internString(sh, f.name)
+    val fSig = buildFieldSig(f.fieldType)
+    val bSig = internBlob(bh, "cfgfld_" + ns + "_" + typeName + "_" + f.name, fSig)
+    val _ = addField(t, FieldRow(flags = FDA_PUBLIC + FDA_STATIC, name = sN, signature = bSig))
+    fi = fi + 1
+  }
+
+  // Emit the .cctor.  Label IDs: field i → parseLabel = 2*i, doneLabel = 2*i+1.
+  if fields.count > 0 {
+    val cctorInsns: List[MInsn] = newList()
+    var ci = 0
+    while ci < fields.count {
+      val f = fields[ci]
+      val fieldTok = 0x04000000 + firstField + ci
+      val parseLabel = 2 * ci
+      val doneLabel = 2 * ci + 1
+
+      // Check whether the env var is set.
+      cctorInsns.add(MLdStr(token = f.envVarTok))
+      cctorInsns.add(MCall(methodToken = configToks.tokGetEnvVar))
+      cctorInsns.add(MCall(methodToken = configToks.tokIsNullOrEmpty))
+      // brfalse to parseLabel when IsNullOrEmpty returns false (env var is set).
+      cctorInsns.add(MBrFalse(label = parseLabel))
+
+      // Absent path.
+      if f.hasDefault {
+        var di = 0
+        while di < f.defaultInsns.count {
+          cctorInsns.add(f.defaultInsns[di])
+          di = di + 1
+        }
+        cctorInsns.add(MStsfld(fieldToken = fieldTok))
+      } else {
+        // Required field: print error to stderr and exit with code 78.
+        cctorInsns.add(MCall(methodToken = configToks.tokConsoleError))
+        cctorInsns.add(MLdStr(token = f.requiredMsgTok))
+        cctorInsns.add(MCallvirt(methodToken = configToks.tokTwWriteLine))
+        cctorInsns.add(MLdcI4(v = 78))
+        cctorInsns.add(MCall(methodToken = configToks.tokEnvExit))
+      }
+      // Unconditional branch to done (dead after Exit for required fields;
+      // needed for verifier structural correctness).
+      cctorInsns.add(MBr(label = doneLabel))
+
+      // Present path: re-load env var and parse.
+      cctorInsns.add(MLabel(id = parseLabel))
+      cctorInsns.add(MLdStr(token = f.envVarTok))
+      cctorInsns.add(MCall(methodToken = configToks.tokGetEnvVar))
+      match f.fieldType {
+        case MInt -> cctorInsns.add(MCall(methodToken = configToks.tokInt32Parse))
+        case MBool -> cctorInsns.add(MCall(methodToken = configToks.tokBoolParse))
+        case _ -> () // MString: already on stack, no parse needed
+      }
+      cctorInsns.add(MStsfld(fieldToken = fieldTok))
+      cctorInsns.add(MLabel(id = doneLabel))
+
+      ci = ci + 1
+    }
+    cctorInsns.add(MRet)
+
+    val mbCctor = newMethodBody()
+    mbCctor.maxStack = 8
+    var insnIdx = 0
+    while insnIdx < cctorInsns.count {
+      lowerMInsn(ctx, cctorInsns[insnIdx], mbCctor)
+      insnIdx = insnIdx + 1
+    }
+    ctx.bodies.add(mbCctor)
+    val cctorRvas = methodBodyRvas(ctx.bodies)
+    val cctorRva = cctorRvas[ctx.bodies.count - 1]
+
+    val sCctor = internString(sh, ".cctor")
+    val cctorSig = buildStaticMethodSig(newList(), MVoid)
+    val bCctorSig = internBlob(bh, "cfg_cctor_" + ns + "_" + typeName, cctorSig)
+    val fpc = t.params_.count + 1
+    addParam(t, ParamRow(flags = PRA_NONE, sequence = 0, name = 0))
+    addMethodDef(
+      t,
+      MethodDefRow(
+        rva = cctorRva,
+        implFlags = 0,
+        flags = MDA_PRIVATE + MDA_STATIC + MDA_HIDE_BY_SIG + MDA_SPECIAL_NAME + MDA_RTS_SPECIAL_NAME,
+        name = sCctor,
+        signature = bCctorSig,
+        paramList = fpc
+      )
+    )
+  }
+
+  val sName = internString(sh, typeName)
+  val sNs = internString(sh, ns)
+  val _ = addTypeDef(
+    t,
+    TypeDefRow(
+      flags = TDF_PUBLIC + TDF_SEALED + TDF_BEFORE_FIELD_INIT,
+      typeName = sName,
+      typeNamespace = sNs,
+      extends = objectTypeToken(ctx),
+      fieldList = firstField,
+      methodList = firstMethod
+    )
+  )
+}
+
 // Lower one `MPackageItem` into `ctx`'s metadata tables.  Single dispatch
 // point shared by `lowerMPackageWithCtx` and `lowerMPackagesWithCtx` so
 // that new `MPackageItem` variants don't silently fall through the
@@ -3909,6 +4085,9 @@ func lowerMPackageItem(item: in MPackageItem, ctx: in LoweringCtx): Unit {
     }
     case MPOpaque(op) -> {
       val _ = lowerMOpaque(op, ctx)
+    }
+    case MPConfig(ns, typeName, fields, configToks) -> {
+      lowerMConfig(ns, typeName, fields, configToks, ctx)
     }
   }
 }
