@@ -712,6 +712,15 @@ The bootstrap compiler (Phase 1, in F# on .NET 10) lives in `bootstrap/`:
     `typechecker_resolver.l`, `typechecker_scope.l`,
     `typechecker_signature.l`, `typechecker_stmts.l`,
     `typechecker_symbols.l`, `typechecker_types.l`.
+    **This is the type checker used for all user-code compilation** —
+    `Msil.Bridge` (for `--target dotnet`) and `Jvm.Bridge` (for
+    `--target jvm`) both `import Lyric.TypeChecker` and call
+    `checkFile`.  Any T004x type error reported during `lyric build /
+    lyric test` comes from `typechecker_exprs.l` (or the other files
+    in this directory), **not** from `bootstrap/src/Lyric.TypeChecker/`.
+    The F# `Lyric.TypeChecker` project is only involved in the
+    stage-0 bootstrap build itself and is never invoked for
+    user-program compilation.
   - `mode_checker/` — self-hosted mode checker `Lyric.ModeChecker`
     (PR #198, D-progress-133); two files: `modechecker_mode.l`,
     `modechecker_check.l`.  Enforces V0001–V0006 / V0009–V0011

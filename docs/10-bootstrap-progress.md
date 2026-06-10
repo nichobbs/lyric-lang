@@ -24026,8 +24026,12 @@ Two pre-existing formatter bugs fixed as part of this PR:
 - `WMProvided` was emitted as `"provided name: type"` (missing `@`); the parser requires `@provided name: type`. Fixed to `"@provided " + n + ": " + typeStr(ty)`.
 - `wireDoc` always emitted `wire Name(...) {` even when there are no wire parameters; the parser expects `wire Name {` for the no-params form. Fixed to emit `wire Name(params) {` only when `params.length > 0`, otherwise `wire Name {`.
 
+**Self-hosted type checker fix** (`lyric-compiler/lyric/type_checker/typechecker_exprs.l`):
+
+`Msil.Bridge` (and `Jvm.Bridge`) both `import Lyric.TypeChecker` — the self-hosted type checker is the one invoked for all user-code compilation on both targets.  The `directSig` path in `ECall` inference was checking `sig.params.count != args.count` (strict arity), which fired T0042 even when the missing trailing params carry `hasDefault = true` on their `ResolvedParam`.  Fixed: compute `minRequired` (count of params where `hasDefault == false`), emit T0042 only when `args.count < minRequired or args.count > sig.params.count`, and only type-check the params that were actually supplied (codegen fills the rest from default expressions).  `F# Lyric.TypeChecker` is not involved in user-program compilation; any T004x error from `lyric build / lyric test` comes from `typechecker_exprs.l`.
+
 **New self-tests** (`lyric-compiler/lyric/`):
-- `func_default_args_self_test.l` — `@test_module` exercising named-arg reorder and default-param fill (8 test cases; imports `Std.*` only; CI-wired pending).
+- `func_default_args_self_test.l` — `@test_module` exercising named-arg reorder and default-param fill (8 test cases including `addWithDefault(5)`, `greetFull(first, last)` omitting the defaulted `suffix`, `tri(1)` omitting two defaults; imports `Std.*` only; CI-wired in `compiler-self-tests-dotnet-b` and JVM analog step).
 - `wire_di_self_test.l` — `@test_module` exercising `@provided`, singleton-with-dependency, and topo sort (placeholder assertions; CI-wired pending, blocked on self-hosted parser gap for wire blocks in `lyric test`).
 
 Closes #1502, #1503.
