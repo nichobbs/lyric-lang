@@ -1380,7 +1380,7 @@ Currently `--release` covers **single-file** programs on the **.NET** target. Pr
 
 **Project-aware defaults.** Running `lyric` with no command builds the current
 project: it discovers the nearest `lyric.toml` by walking up from the working
-directory and runs `lyric build` against it. All seven dev-loop commands —
+directory and runs `lyric build` against it. All eight dev-loop commands —
 `build`, `run`, `fmt`, `lint`, `prove`, `doc`, `test`, and `bench` — do the
 same discovery when given no source file or `--manifest`, so they work from
 any subdirectory of a project. Each command also accepts `--manifest <lyric.toml>`

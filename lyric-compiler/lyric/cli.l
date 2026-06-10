@@ -1477,7 +1477,7 @@ func cmdFmt(argv: in slice[String]): Int {
   }
 
   // Project-mode: no explicit source file — discover or use --manifest.
-  // In-place write is implicit (like `cargo fmt`); --check just reports.
+  // Project-mode: default is dry-run (lists what would change); --write applies changes; --check gates CI.
   if positional.count == 0 {
     val mfPath = match discoverManifest(manifestArg) {
       case Some(p) -> p
